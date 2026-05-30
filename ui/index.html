@@ -1,0 +1,2171 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SGE | Cadastro de Pipeline — Caixa Vida e Previdência</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --cvp-blue:#005ca9; --cvp-blue-d:#004177; --cvp-orange:#f39200;
+    --bg:#f8fafc; --card:#fff; --text:#1e293b; --muted:#64748b; --border:#e2e8f0;
+    --green:#16a34a; --red:#dc2626;
+    --toggle-off:#cbd5e1; --toggle-on:#005ca9;
+    --radius:24px;
+    --radius-sm:14px;
+    --shadow:0 16px 45px -12px rgba(2, 8, 23, .22);
+    --ring:0 0 0 3px rgba(243,146,0,.22);
+  }
+  html.dark {
+    --bg:#0b1220; --card:#0f172a; --text:#e2e8f0;
+    --muted:#94a3b8; --border:rgba(148,163,184,.28);
+    --toggle-off:#334155;
+    --shadow:0 18px 55px -12px rgba(0,0,0,.55);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:'Inter',Arial,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; position:relative; }
+  body::before{
+    content:'';
+    position:fixed;
+    inset:-120px;
+    z-index:-1;
+    background:
+      radial-gradient(900px 520px at 20% 12%, rgba(0, 92, 169, .14), transparent 60%),
+      radial-gradient(680px 460px at 86% 18%, rgba(243, 146, 0, .12), transparent 55%),
+      radial-gradient(820px 560px at 60% 92%, rgba(0, 92, 169, .10), transparent 58%),
+      linear-gradient(180deg, rgba(255,255,255,.70), rgba(255,255,255,0));
+    filter:saturate(1.1);
+    pointer-events:none;
+  }
+  html.dark body::before{
+    background:
+      radial-gradient(900px 520px at 20% 12%, rgba(0, 92, 169, .18), transparent 60%),
+      radial-gradient(680px 460px at 86% 18%, rgba(243, 146, 0, .12), transparent 55%),
+      radial-gradient(820px 560px at 60% 92%, rgba(0, 92, 169, .10), transparent 58%),
+      linear-gradient(180deg, rgba(2, 6, 23, .82), rgba(2, 6, 23, 0));
+    filter:saturate(1.05);
+  }
+  .hidden { display:none !important; }
+
+  /* LOGIN */
+  .login-wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:1rem; }
+  .login-box  { width:100%; max-width:920px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; box-shadow:var(--shadow); }
+  .grad { background:linear-gradient(135deg,#005ca9 0%,#0077d6 100%); color:#fff; }
+  .grad-pad { padding:2rem; }
+  .logo { height:40px; display:block; margin:0 auto 1rem; }
+  .t-center { text-align:center; }
+  h1 { font-size:1.25rem; font-weight:800; margin:0; }
+  .orange { color:var(--cvp-orange); }
+  .sub { font-size:11px; letter-spacing:.15em; text-transform:uppercase; opacity:.85; margin:.35rem 0 0; font-weight:600; }
+  .body-pad { padding:2rem; }
+  label { display:block; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:0 0 .4rem; }
+  .field { margin-bottom:1.1rem; }
+  input[type=text], input[type=password], input[type=time], select, textarea {
+    width:100%; padding:.75rem 1rem; border:1px solid var(--border);
+    border-radius:12px; background:var(--card); color:var(--text);
+    font-size:.95rem; font-family:inherit; transition:border-color .15s, box-shadow .15s;
+  }
+  textarea { resize:vertical; min-height:100px; line-height:1.5; }
+  input:focus, select:focus, textarea:focus {
+    outline:none; border-color:var(--cvp-orange);
+    box-shadow:0 0 0 3px rgba(243,146,0,.18);
+  }
+  .btn {
+    width:100%;
+    padding:.85rem;
+    border:1px solid transparent;
+    border-radius:12px;
+    background:var(--cvp-blue);
+    color:#fff;
+    font-weight:800;
+    font-size:.8rem;
+    text-transform:uppercase;
+    letter-spacing:.08em;
+    cursor:pointer;
+    transition:background .2s, border-color .2s, color .2s, box-shadow .15s;
+    font-family:inherit;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:.45rem;
+  }
+  .btn:hover    { background:var(--cvp-blue-d); }
+  .btn:disabled { opacity:.55; cursor:not-allowed; }
+
+  /* Alias/variações para manter padrão de botões */
+  .btn-primary { background:var(--cvp-blue); color:#fff; }
+  .btn-primary:hover { background:var(--cvp-blue-d); }
+
+  .btn-sm { padding:.55rem 1rem; font-size:.75rem; width:auto; border-radius:10px; white-space:nowrap; }
+  .btn-outline { background:transparent; border:1px solid var(--cvp-blue); color:var(--cvp-blue); font-weight:800; }
+  .btn-outline:hover { background:var(--cvp-blue); color:#fff; }
+
+  .btn-ghost {
+    background:transparent;
+    border:1px solid var(--border);
+    color:var(--text);
+    font-weight:800;
+    padding:.85rem;
+    border-radius:12px;
+    cursor:pointer;
+    transition:background .2s, border-color .2s, color .2s, box-shadow .15s;
+    font-family:inherit;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:.45rem;
+  }
+  .btn-ghost:hover { background:rgba(0,92,169,.06); border-color:rgba(0,92,169,.25); }
+  .btn-ghost:disabled { opacity:.55; cursor:not-allowed; }
+
+  .btn-danger {
+    background:rgba(220,38,38,.08);
+    border:1px solid rgba(220,38,38,.25);
+    color:var(--red);
+    font-weight:900;
+  }
+  .btn-danger:hover { background:rgba(220,38,38,.14); border-color:rgba(220,38,38,.35); }
+
+  /* Acessibilidade: foco consistente em todos os botões */
+  .btn:focus-visible,
+  .btn-ghost:focus-visible,
+  .btn-outline:focus-visible,
+  .btn-primary:focus-visible,
+  .mode-btn:focus-visible,
+  .tab-btn:focus-visible,
+  .pag-btn:focus-visible,
+  .icon-btn:focus-visible,
+  .btn-modal-close:focus-visible,
+  .rm-btn:focus-visible {
+    outline:none;
+    box-shadow:0 0 0 3px rgba(243,146,0,.22);
+  }
+  .msg { margin-top:1rem; font-size:13px; font-weight:600; min-height:18px; line-height:1.5; }
+  .msg.erro { color:var(--red); background:rgba(220,38,38,.06); border-radius:10px; padding:8px 12px; border:0.5px solid rgba(220,38,38,.2); }
+  .msg.ok   { color:var(--green); }
+  .erro { color:var(--red); } .ok { color:var(--green); }
+  .foot { text-align:center; font-size:11px; color:var(--muted); margin-top:1rem; }
+
+  .login-card{
+    display:grid;
+    grid-template-columns:1fr;
+    min-height:520px;
+  }
+  .login-side{
+    padding:2.2rem 2rem;
+    display:flex;
+    align-items:flex-end;
+    position:relative;
+    overflow:hidden;
+  }
+  .login-side::after{
+    content:'';
+    position:absolute;
+    inset:-1px;
+    background:
+      radial-gradient(500px 280px at 18% 22%, rgba(255,255,255,.16), transparent 60%),
+      radial-gradient(600px 340px at 90% 30%, rgba(243,146,0,.18), transparent 55%),
+      linear-gradient(135deg, rgba(0,0,0,.08), transparent 45%);
+    pointer-events:none;
+    mix-blend-mode:overlay;
+  }
+  .login-side-inner{ position:relative; z-index:1; width:100%; }
+  .login-kicker{ font-size:11px; letter-spacing:.16em; text-transform:uppercase; opacity:.85; font-weight:700; margin-top:.35rem; }
+  .login-points{ margin:1.2rem 0 0; padding:0; list-style:none; display:grid; gap:.55rem; }
+  .login-points li{ display:flex; gap:.55rem; align-items:flex-start; font-size:13px; opacity:.95; }
+  .login-dot{ width:10px; height:10px; border-radius:999px; background:rgba(255,255,255,.8); margin-top:.35rem; flex:0 0 auto; }
+  .login-main{
+    padding:2.2rem 2rem;
+    display:flex;
+    align-items:center;
+  }
+  .login-main-inner{ width:100%; max-width:420px; margin:0 auto; }
+  .helper{ font-size:12px; color:var(--muted); line-height:1.45; margin-top:.35rem; }
+  @media(min-width:920px){
+    .login-card{ grid-template-columns:1.15fr .85fr; }
+    .login-side{ padding:2.6rem 2.4rem; }
+    .login-main{ padding:2.6rem 2.4rem; }
+    .login-main-inner{ max-width:380px; }
+  }
+
+  /* HEADER */
+  header { position:sticky; top:0; z-index:50; box-shadow:0 2px 12px rgba(0,0,0,.12); }
+  .hd-inner { max-width:1100px; margin:0 auto; padding:0 1rem; height:76px; display:flex; align-items:center; justify-content:space-between; }
+  .hd-left  { display:flex; align-items:center; gap:1rem; }
+  .hd-title { font-size:.85rem; font-weight:600; text-transform:uppercase; letter-spacing:.12em; opacity:.9; }
+  .hd-right { display:flex; align-items:center; gap:.8rem; }
+  .icon-btn { background:rgba(255,255,255,.12); border:none; color:#fff; padding:.55rem .7rem; border-radius:12px; cursor:pointer; transition:background .2s; font-size:.95rem; }
+  .icon-btn:hover { background:rgba(255,255,255,.24); }
+  .logout { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
+  .whoami { font-size:12px; opacity:.85; }
+
+  /* MAIN / TABS */
+  main { max-width:1100px; margin:0 auto; padding:2rem 1rem; }
+  .app-grid{
+    display:grid;
+    grid-template-columns:1fr;
+    gap:1rem;
+    align-items:start;
+  }
+  .tabs { display:flex; gap:4px; background:var(--card); border:1px solid var(--border); border-radius:14px; padding:4px; margin-bottom:1.5rem; }
+  .tab-btn {
+    flex:1;
+    padding:.7rem .75rem;
+    border:none;
+    border-radius:12px;
+    background:transparent;
+    color:var(--muted);
+    font-size:13px;
+    font-weight:800;
+    cursor:pointer;
+    transition:all .2s;
+    font-family:inherit;
+    display:flex;
+    align-items:center;
+    justify-content:flex-start;
+    gap:.6rem;
+    white-space:nowrap;
+  }
+  .tab-btn.active { background:var(--cvp-blue); color:#fff; box-shadow:0 2px 8px rgba(0,92,169,.25); }
+  .page { display:none; }
+  .page.active { display:block; }
+  @media(min-width:920px){
+    .app-grid{ grid-template-columns:240px 1fr; gap:1.25rem; }
+    .tabs{
+      flex-direction:column;
+      margin-bottom:0;
+      position:sticky;
+      top:92px;
+      padding:8px;
+      border-radius:18px;
+    }
+    .tab-btn{ flex:0 0 auto; }
+  }
+
+  /* SECTION DIVIDER */
+  .section-sep {
+    display:flex; align-items:center; gap:.75rem;
+    margin: 1.5rem 0 1rem;
+  }
+  .section-sep span {
+    font-size:10px; font-weight:800; text-transform:uppercase;
+    letter-spacing:.12em; color:var(--muted); white-space:nowrap;
+  }
+  .section-sep::before, .section-sep::after {
+    content:''; flex:1; height:1px; background:var(--border);
+  }
+
+  /* TOGGLE SWITCH */
+  .toggle-group {
+    display:grid; grid-template-columns:1fr 1fr; gap:.6rem;
+    margin-bottom:1.1rem;
+  }
+  .toggle-item {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:.7rem .9rem;
+    border:1px solid var(--border); border-radius:12px;
+    background:var(--bg); cursor:pointer;
+    transition:border-color .15s, background .15s;
+    user-select:none;
+  }
+  .toggle-item:hover { border-color:var(--cvp-blue); }
+  .toggle-item.on { border-color:var(--cvp-blue); background:rgba(0,92,169,.05); }
+  .toggle-item .ti-label {
+    display:flex; flex-direction:column; gap:2px;
+  }
+  .toggle-item .ti-title {
+    font-size:13px; font-weight:700; color:var(--text);
+  }
+  .toggle-item .ti-desc {
+    font-size:11px; color:var(--muted);
+  }
+  /* pill switch */
+  .sw { position:relative; width:40px; height:22px; flex-shrink:0; }
+  .sw input { opacity:0; width:0; height:0; position:absolute; }
+  .sw-track {
+    position:absolute; inset:0; border-radius:22px;
+    background:var(--toggle-off); transition:background .2s;
+    cursor:pointer;
+  }
+  .sw-track::after {
+    content:''; position:absolute; width:16px; height:16px;
+    border-radius:50%; background:#fff;
+    top:3px; left:3px; transition:transform .2s;
+    box-shadow:0 1px 3px rgba(0,0,0,.25);
+  }
+  .sw input:checked ~ .sw-track { background:var(--toggle-on); }
+  .sw input:checked ~ .sw-track::after { transform:translateX(18px); }
+  /* status toggle especial */
+  .status-toggle {
+    display:flex; gap:.5rem; margin-bottom:1.1rem;
+  }
+  .st-opt {
+    flex:1; padding:.65rem; border:1px solid var(--border); border-radius:12px;
+    text-align:center; cursor:pointer; transition:all .15s;
+    font-size:13px; font-weight:700;
+  }
+  .st-opt:hover { border-color:var(--cvp-blue); }
+  .st-opt.active-green { border-color:var(--green); background:rgba(22,163,74,.06); color:var(--green); }
+  .st-opt.active-red   { border-color:var(--red);   background:rgba(220,38,38,.06);  color:var(--red); }
+
+  /* JOB ROWS */
+  .job-list { display:flex; flex-direction:column; gap:.5rem; margin-bottom:1rem; }
+  .job-row  { display:grid; grid-template-columns:1fr 96px 56px 36px; gap:.5rem; align-items:center; }
+  .job-row input { margin:0; }
+  .rm-btn { width:36px; height:36px; border:none; border-radius:10px; background:#fef2f2; color:var(--red); font-size:1rem; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:background .2s; }
+  .rm-btn:hover { background:#fee2e2; }
+  .job-hint { display:flex; gap:.5rem; margin-bottom:.4rem; }
+  .job-hint span { font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); }
+
+  /* BULK */
+  .mode-toggle { display:flex; gap:.5rem; margin-bottom:1rem; }
+  .mode-btn { flex:1; padding:.5rem; border:1px solid var(--border); border-radius:10px; background:transparent; color:var(--muted); font-size:.75rem; font-weight:700; text-transform:uppercase; letter-spacing:.07em; cursor:pointer; font-family:inherit; transition:all .15s; }
+  .mode-btn.active { border-color:var(--cvp-blue); color:var(--cvp-blue); background:rgba(0,92,169,.06); }
+
+  /* TOAST */
+  .toast { position:fixed; top:1.5rem; right:1.5rem; background:var(--card); border:1px solid var(--border); border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.15); padding:.8rem 1rem; display:flex; align-items:center; gap:.7rem; z-index:999; }
+  .toast .dot { width:10px; height:10px; border-radius:50%; background:var(--green); flex-shrink:0; }
+  .toast .dot.err { background:var(--red); }
+  .toast p { margin:0; font-size:12px; font-weight:700; letter-spacing:.05em; }
+
+  @keyframes fade { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+  .fade { animation:fade .35s ease-out; }
+
+  @media(max-width:600px) {
+    .hd-title, .whoami { display:none; }
+    .toggle-group { grid-template-columns:1fr; }
+    .job-row { grid-template-columns:1fr 80px 50px 36px; }
+  }
+
+  /* MODAL DE STATUS */
+  .modal-backdrop {
+    display:none; position:fixed; inset:0; z-index:200;
+    background:rgba(15,23,42,.55);
+    align-items:center; justify-content:center; padding:1rem;
+  }
+  .modal-backdrop.open { display:flex; }
+  .modal-box {
+    background:var(--card); border:1px solid var(--border);
+    border-radius:24px; width:100%; max-width:420px;
+    padding:2rem; text-align:center;
+    animation:fade .25s ease-out;
+  }
+  .modal-icon {
+    width:64px; height:64px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    font-size:2rem; margin:0 auto 1.25rem;
+  }
+  .modal-icon.sending  { background:#eff6ff; }
+  .modal-icon.success  { background:#f0fdf4; }
+  .modal-icon.failed   { background:#fef2f2; }
+  .modal-icon.timeout  { background:#fffbeb; }
+  .modal-title  { font-size:1.1rem; font-weight:800; margin:0 0 .4rem; }
+  .modal-desc   { font-size:13px; color:var(--muted); margin:0 0 1.5rem; line-height:1.6; }
+  .modal-meta   {
+    font-size:11px; color:var(--muted); font-family:monospace;
+    background:var(--bg); border:1px solid var(--border);
+    border-radius:8px; padding:.5rem .75rem; margin-bottom:1.25rem;
+    text-align:left; word-break:break-all;
+  }
+  .spinner {
+    width:40px; height:40px; border:3px solid var(--border);
+    border-top-color:var(--cvp-blue); border-radius:50%;
+    animation:spin .8s linear infinite; margin:0 auto 1.25rem;
+  }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .progress-bar  { height:4px; background:var(--border); border-radius:4px; margin-bottom:1.25rem; overflow:hidden; }
+  .progress-fill { height:100%; background:var(--cvp-blue); border-radius:4px; transition:width .4s linear; }
+  .modal-link {
+    display:inline-flex; align-items:center; gap:.4rem;
+    font-size:12px; font-weight:700; color:var(--cvp-blue);
+    text-decoration:none; margin-bottom:1rem;
+  }
+  .modal-link:hover { text-decoration:underline; }
+  .btn-modal-close {
+    width:100%; padding:.75rem; border:1px solid var(--border);
+    border-radius:12px; background:transparent; color:var(--text);
+    font-weight:700; font-size:.8rem; text-transform:uppercase;
+    letter-spacing:.08em; cursor:pointer; font-family:inherit; transition:background .15s;
+  }
+  .btn-modal-close:hover { background:var(--bg); }
+
+  
+/* CHIPS DE TAGS */
+  .chip-input-wrap {
+    display:flex; flex-wrap:wrap; gap:.4rem; align-items:center;
+    padding:.5rem .75rem; border:1px solid var(--border); border-radius:12px;
+    background:var(--card); cursor:text; min-height:44px;
+    transition:border-color .15s, box-shadow .15s;
+  }
+  .chip-input-wrap:focus-within {
+    border-color:var(--cvp-orange); box-shadow:0 0 0 3px rgba(243,146,0,.18);
+  }
+  .chip-input-wrap input {
+    border:none; outline:none; background:transparent; padding:0;
+    font-size:.9rem; width:120px; flex:1; min-width:80px;
+    box-shadow:none !important;
+  }
+  .chip {
+    display:inline-flex; align-items:center; gap:.3rem;
+    background:rgba(0,92,169,.1); color:var(--cvp-blue);
+    border:1px solid rgba(0,92,169,.25); border-radius:20px;
+    padding:.2rem .65rem; font-size:12px; font-weight:700;
+    white-space:nowrap;
+  }
+  .chip-rm {
+    background:none; border:none; cursor:pointer; color:var(--cvp-blue);
+    font-size:14px; line-height:1; padding:0; opacity:.7;
+  }
+  .chip-rm:hover { opacity:1; }
+
+  /* LINEAGE */
+  .lineage-section {
+    border:1px solid var(--border); border-radius:14px;
+    overflow:hidden; margin-bottom:1rem;
+  }
+  .lineage-header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:.65rem 1rem;
+    font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.08em;
+  }
+  .lineage-header.origem  { background:rgba(0,92,169,.07); color:var(--cvp-blue); border-bottom:1px solid var(--border); }
+  .lineage-header.destino { background:rgba(22,163,74,.07); color:#15803d;        border-bottom:1px solid var(--border); }
+  .lineage-body { padding:.75rem 1rem; display:flex; flex-direction:column; gap:.5rem; }
+  .lineage-row  { display:grid; grid-template-columns:130px 1fr 32px; gap:.5rem; align-items:center; }
+  .lineage-row select, .lineage-row input { margin:0; font-size:13px; padding:.5rem .75rem; }
+  .lineage-add {
+    display:flex; align-items:center; gap:.4rem;
+    font-size:12px; font-weight:700; color:var(--cvp-blue);
+    background:none; border:none; cursor:pointer; padding:.4rem 0;
+    font-family:inherit;
+  }
+  .lineage-add:hover { text-decoration:underline; }
+  .lineage-rm {
+    width:32px; height:32px; border:none; border-radius:8px;
+    background:#fef2f2; color:var(--red); cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    font-size:.9rem; flex-shrink:0;
+  }
+  .lineage-rm:hover { background:#fee2e2; }
+  /* separador visual entre job rows no modo individual */
+  .job-card {
+    border:1px solid var(--border); border-radius:14px;
+    padding:1rem; margin-bottom:.75rem; background:var(--bg);
+    overflow:hidden; min-width:0;
+  }
+  .job-card-header {
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:.75rem;
+  }
+  .job-card-title { font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+
+  /* CONSULTA */
+  .query-filters { display:grid; grid-template-columns:1fr 140px 80px; gap:.5rem; margin-bottom:1rem; }
+  .query-table-wrap { overflow-x:auto; border:0.5px solid var(--border); border-radius:12px; }
+  .query-table { width:100%; border-collapse:collapse; font-size:13px; }
+  .query-table th { padding:.5rem .75rem; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); border-bottom:0.5px solid var(--border); text-align:left; white-space:nowrap; background:var(--bg); }
+  .query-table td { padding:.55rem .75rem; border-bottom:0.5px solid var(--border); vertical-align:middle; }
+  .query-table tr:last-child td { border-bottom:none; }
+  .query-table tr:hover td { background:var(--bg); }
+  .bit-on  { display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;background:rgba(22,163,74,.1);color:var(--green);font-size:12px; }
+  .bit-off { display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;background:var(--border);color:var(--muted);font-size:12px; }
+  .pagination { display:flex;align-items:center;justify-content:space-between;padding:.75rem 0;font-size:12px;color:var(--muted); }
+  .pag-btns { display:flex;gap:4px; }
+  .pag-btn { padding:.3rem .65rem;border-radius:8px;border:0.5px solid var(--border);background:transparent;color:var(--muted);font-size:12px;cursor:pointer;font-family:inherit; }
+  .pag-btn:hover:not(:disabled) { background:var(--bg); }
+  .pag-btn.active { background:var(--cvp-blue);border-color:var(--cvp-blue);color:#fff; }
+  .pag-btn:disabled { opacity:.4;cursor:not-allowed; }
+  .empty-query { text-align:center;padding:2rem;color:var(--muted);font-size:13px; }
+  .tag-pill { font-size:10px;padding:1px 6px;border-radius:20px;background:rgba(0,92,169,.08);border:0.5px solid rgba(0,92,169,.2);color:var(--cvp-blue);margin-right:3px;white-space:nowrap; }
+  .row-actions{ display:flex; gap:6px; justify-content:flex-end; }
+  .row-actions .btn-ghost.btn-sm, .row-actions .btn-danger.btn-sm{ padding:.35rem .6rem; border-radius:10px; font-size:11px; }
+  .inline-order {
+    width:76px;
+    padding:.35rem .5rem;
+    border-radius:10px;
+    border:1px solid var(--border);
+    background:var(--card);
+    color:var(--text);
+    font-weight:800;
+    text-align:center;
+    font-family:inherit;
+  }
+  .inline-order:focus { outline:none; border-color:var(--cvp-orange); box-shadow:var(--ring); }
+</style>
+</head>
+<body>
+
+<div id="toast" class="toast hidden">
+  <span class="dot" id="toastDot"></span>
+  <p id="toastText">Registro salvo</p>
+</div>
+
+<!-- LOGIN -->
+<div id="loginScreen" class="login-wrap">
+  <div class="login-box fade">
+    <div class="card">
+      <div class="login-card">
+        <div class="login-side grad">
+          <div class="login-side-inner">
+            <img class="logo" style="margin:0 0 1rem 0" src="https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/lc_decoracoes/cvp.png" alt="Caixa Vida e Previdência" onerror="this.style.display='none'" />
+            <h1 style="font-size:1.35rem;line-height:1.1">SGE — Cadastro de Pipeline</h1>
+            <div class="login-kicker">Acesso restrito</div>
+            <ul class="login-points">
+              <li><span class="login-dot"></span><span>Cadastre pipelines e jobs com validação simples.</span></li>
+              <li><span class="login-dot"></span><span>Envie para o Airflow e acompanhe o status em tempo real.</span></li>
+              <li><span class="login-dot"></span><span>Consulta rápida por projeto, status e nome.</span></li>
+            </ul>
+          </div>
+        </div>
+        <div class="login-main">
+          <div class="login-main-inner">
+            <div style="margin-bottom:1.25rem">
+              <div style="font-weight:900;letter-spacing:.02em">Entrar</div>
+              <div class="helper">Use sua credencial de rede (matrícula). Se não tiver acesso, entre em contato com a engenharia.</div>
+            </div>
+
+            <div class="field">
+              <label for="login_user">Usuário (rede / matrícula)</label>
+              <input id="login_user" type="text" placeholder="ex: CVP12345" autocomplete="username" />
+            </div>
+            <div class="field">
+              <label for="login_pass">Senha</label>
+              <input id="login_pass" type="password" autocomplete="current-password"
+                  onkeyup="checkCapsLock(event)" onkeydown="checkCapsLock(event)" />
+              <div id="caps-warn" style="display:none;align-items:center;gap:6px;margin-top:6px;
+                padding:6px 10px;border-radius:12px;background:#FAEEDA;border:0.5px solid #EF9F27;
+                font-size:12px;font-weight:700;color:#633806">
+                <span style="font-size:14px">⇪</span> Caps Lock ativado — verifique antes de digitar
+              </div>
+            </div>
+
+            <button class="btn" id="login_btn" onclick="entrar()">
+              <span id="login_btn_txt">Entrar</span>
+            </button>
+            <div id="login_msg" class="msg"></div>
+            <div class="helper" style="margin-top:.9rem">
+              Dica: pressione <strong>Enter</strong> para entrar.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="foot">Caixa Vida e Previdência · SGE</p>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="appScreen" class="hidden">
+  <header class="grad">
+    <div class="hd-inner">
+      <div class="hd-left">
+        <img class="logo" style="margin:0;height:36px;" src="https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/lc_decoracoes/cvp.png" alt="CVP" onerror="this.style.display='none'" />
+        <span class="hd-title">Cadastro de Pipeline</span>
+      </div>
+      <div class="hd-right">
+        <span class="whoami">Olá, <strong id="who"></strong></span>
+        <button class="icon-btn" onclick="toggleTheme()" title="Tema" aria-label="Alternar tema"><span id="theme-emoji">🌙</span></button>
+        <button class="icon-btn logout" onclick="sair()">Sair</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="app-grid">
+      <div class="tabs" aria-label="Navegação">
+        <button class="tab-btn active" onclick="switchPage('page-pipelines',this);loadQuery(0)">🏷️ <span>Pipelines</span></button>
+        <button class="tab-btn" onclick="switchPage('page-jobs',this)">🧩 <span>Jobs</span></button>
+      </div>
+
+      <div class="pages">
+        <!-- PÁGINA: PIPELINES -->
+        <div id="page-pipelines" class="page active">
+          <div class="card fade">
+            <div class="grad grad-pad">
+              <h1 style="font-size:1.1rem;font-weight:800;margin:0;display:flex;align-items:center;gap:.5rem">
+                <span class="orange">🏷️</span> Pipelines
+              </h1>
+              <p class="sub">Listagem e consulta via DAG · etl_pipeline_query</p>
+            </div>
+            <div class="body-pad">
+              <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap">
+                <div class="helper" style="margin:0">Use os filtros para buscar e clique em <strong>Novo Pipeline</strong> para cadastrar.</div>
+                <button class="btn btn-outline btn-sm" onclick="openPipelineCreate()">+ Novo Pipeline</button>
+              </div>
+
+              <div class="query-filters">
+                <div class="field" style="margin:0">
+                  <label style="font-size:10px">Nome do pipeline</label>
+                  <input id="qf-name" type="text" placeholder="filtrar por nome..." style="font-size:13px" onkeydown="if(event.key==='Enter') loadQuery()" />
+                </div>
+                <div class="field" style="margin:0">
+                  <label style="font-size:10px">Projeto</label>
+                  <select id="qf-project" style="font-size:13px">
+                    <option value="">Todos</option>
+                    <option>BI_CVP</option>
+                    <option>BI_VIDA</option>
+                    <option>BI_PRESTAMISTA</option>
+                    <option>BI_PREVIDENCIA</option>
+                  </select>
+                </div>
+                <div class="field" style="margin:0">
+                  <label style="font-size:10px">Status</label>
+                  <select id="qf-active" style="font-size:13px">
+                    <option value="">Todos</option>
+                    <option value="1">Ativo</option>
+                    <option value="0">Inativo</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style="display:flex;gap:8px;margin-bottom:1rem">
+                <button class="btn btn-primary" id="btn-query" onclick="loadQuery()" style="flex:1">
+                  <span id="query-btn-txt">Buscar</span>
+                </button>
+                <button class="btn-ghost btn-sm" onclick="clearQuery()" title="Limpar filtros">✕ limpar</button>
+              </div>
+
+              <div id="query-status" style="font-size:12px;color:var(--muted);margin-bottom:.5rem;min-height:16px"></div>
+
+              <div id="query-table-area">
+                <div class="empty-query">Use os filtros acima e clique em Buscar para carregar os pipelines.</div>
+              </div>
+            </div>
+          </div>
+
+          <div id="pipeline-editor" class="hidden" style="margin-top:1rem">
+      <div class="card fade">
+        <div class="grad grad-pad" style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem">
+          <div>
+            <h1 id="pipelineFormTitle" style="font-size:1.1rem;font-weight:800;margin:0;display:flex;align-items:center;gap:.5rem">
+              <span class="orange">＋</span> Novo Pipeline
+            </h1>
+            <p class="sub">Chama DAG · etl_pipeline_register</p>
+          </div>
+          <button class="icon-btn" onclick="closePipelineEditor()" title="Fechar" aria-label="Fechar">✕</button>
+        </div>
+        <div class="body-pad">
+
+          <p style="font-size:11px;color:var(--muted);margin:0 0 1.25rem;display:flex;align-items:center;gap:.3rem"><span style="color:var(--red);font-weight:800">*</span> Campos obrigatórios</p>
+          <div id="pipelineFormHint" class="helper" style="margin:-.75rem 0 1.25rem 0"></div>
+
+          <!-- Identificação -->
+          <div class="section-sep"><span>Identificação</span></div>
+          <div class="field">
+            <label for="pipeline_name">Nome do pipeline <span style="color:var(--red)">*</span></label>
+            <input id="pipeline_name" type="text" placeholder="ex: etl_cobranca_diaria" />
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+            <div class="field">
+              <label for="p-project">Projeto <span style="color:var(--red)">*</span></label>
+              <select id="p-project" required>
+                <option value="">Selecione...</option>
+                <option value="BI_CVP">BI_CVP</option>
+                <option value="BI_VIDA">BI_VIDA</option>
+                <option value="BI_PRESTAMISTA">BI_PRESTAMISTA</option>
+                <option value="BI_PREVIDENCIA">BI_PREVIDENCIA</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="p-domain">Domínio <span style="color:var(--red)">*</span></label>
+              <input id="p-domain" type="text" placeholder="ex: Clientes, Cobrança" required />
+            </div>
+          </div>
+          <div class="field">
+            <label for="scheduled_time">Horário de execução <span style="color:var(--red)">*</span></label>
+            <input id="scheduled_time" type="time" required />
+            <div class="helper">Formato 24h (HH:MM). Ex.: 09:30.</div>
+          </div>
+          <div class="field">
+            <label>Tags <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">— opcional · pressione Enter para adicionar</span></label>
+            <div class="chip-input-wrap" id="tags-wrap" onclick="document.getElementById('tag-input').focus()">
+              <input id="tag-input" type="text" placeholder="ex: datastage, diario..." onkeydown="handleTagInput(event)" />
+            </div>
+            <input type="hidden" id="p-tags" value="" />
+            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Exemplo: datastage, diario, cobranca</p>
+          </div>
+
+          <!-- Status -->
+          <div class="section-sep"><span>Status inicial</span></div>
+          <div class="status-toggle">
+            <div class="st-opt active-green" id="st-ativo" onclick="setStatus(1)">
+              ✅ Ativo
+            </div>
+            <div class="st-opt" id="st-inativo" onclick="setStatus(0)">
+              ⏸ Inativo
+            </div>
+          </div>
+          <input type="hidden" id="p-active" value="1" />
+
+          <!-- Notificações Teams -->
+          <div class="section-sep"><span>Notificações Microsoft Teams</span></div>
+          <div class="toggle-group">
+
+            <label class="toggle-item on" id="lbl-inicio" for="tog-inicio">
+              <div class="ti-label">
+                <span class="ti-title">Início do processo</span>
+                <span class="ti-desc">Notifica ao iniciar</span>
+              </div>
+              <div class="sw">
+                <input type="checkbox" id="tog-inicio" checked onchange="syncToggle('lbl-inicio',this)" />
+                <span class="sw-track"></span>
+              </div>
+            </label>
+
+            <label class="toggle-item on" id="lbl-fim" for="tog-fim">
+              <div class="ti-label">
+                <span class="ti-title">Fim do processo</span>
+                <span class="ti-desc">Notifica ao concluir</span>
+              </div>
+              <div class="sw">
+                <input type="checkbox" id="tog-fim" checked onchange="syncToggle('lbl-fim',this)" />
+                <span class="sw-track"></span>
+              </div>
+            </label>
+
+            <label class="toggle-item on" id="lbl-erro" for="tog-erro">
+              <div class="ti-label">
+                <span class="ti-title">Falha / Erro</span>
+                <span class="ti-desc">Notifica em caso de erro</span>
+              </div>
+              <div class="sw">
+                <input type="checkbox" id="tog-erro" checked onchange="syncToggle('lbl-erro',this)" />
+                <span class="sw-track"></span>
+              </div>
+            </label>
+
+
+
+          </div>
+
+          <button class="btn" id="btn-save-pipeline" onclick="registrarPipeline()">
+            <span id="save_pipeline_txt">Salvar Pipeline</span>
+          </button>
+          <div id="msg-pipeline" class="msg"></div>
+        </div>
+      </div>
+          </div>
+        </div>
+
+        <!-- PÁGINA: JOBS -->
+        <div id="page-jobs" class="page">
+      <div class="card fade">
+        <div class="grad grad-pad">
+          <h1 style="font-size:1.1rem;font-weight:800;margin:0;display:flex;align-items:center;gap:.5rem">
+            <span class="orange">🧩</span> Jobs
+          </h1>
+          <p class="sub">Chama DAG · etl_pipeline_job_register</p>
+        </div>
+        <div class="body-pad">
+          <div class="helper" style="margin:0 0 1rem 0">
+            Consulte os jobs existentes por pipeline e, se necessário, cadastre/atualize abaixo.
+          </div>
+
+          <div class="section-sep"><span>Consultar jobs</span></div>
+
+          <div style="display:grid;grid-template-columns:1fr 220px 140px;gap:.6rem;align-items:end">
+            <div class="field" style="margin:0">
+              <label for="job_pipeline_name">Pipeline <span style="color:var(--red)">*</span></label>
+              <input id="job_pipeline_name" type="text" placeholder="ex: etl_cobranca_diaria" />
+              <div class="helper">Obrigatório para listar jobs. É a chave do CRUD.</div>
+            </div>
+            <div class="field" style="margin:0">
+              <label for="jq-name">Nome do job</label>
+              <input id="jq-name" type="text" placeholder="filtrar por nome..." style="font-size:13px" onkeydown="if(event.key==='Enter') loadJobsQuery()" />
+            </div>
+            <div class="field" style="margin:0">
+              <label for="jq-type">Tipo</label>
+              <select id="jq-type" style="font-size:13px">
+                <option value="">Todos</option>
+                <option value="datastage">datastage</option>
+                <option value="shell">shell</option>
+                <option value="python">python</option>
+                <option value="storedproc">storedproc</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px;margin:1rem 0 .75rem">
+            <button class="btn btn-primary" id="btn-jq" onclick="loadJobsQuery()" style="flex:1">
+              <span id="btn-jq-txt">Buscar jobs</span>
+            </button>
+            <button class="btn-ghost btn-sm" onclick="clearJobsQuery()" title="Limpar filtros">✕ limpar</button>
+          </div>
+
+          <div id="job-query-status" style="font-size:12px;color:var(--muted);margin-bottom:.5rem;min-height:16px"></div>
+          <div id="job-query-actions" class="hidden" style="display:flex;gap:8px;justify-content:flex-end;margin-bottom:.75rem;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" id="btn-save-order" onclick="saveJobsOrder()" disabled>Salvar ordem</button>
+            <button class="btn btn-outline btn-sm" onclick="openJobCreateModal('single')">+ Adicionar job</button>
+            <button class="btn-ghost btn-sm" onclick="openJobCreateModal('bulk')">📋 Colar lista</button>
+          </div>
+          <div id="job-query-table-area">
+            <div class="empty-query">Informe o pipeline e clique em Buscar jobs.</div>
+          </div>
+        </div>
+      </div>
+        </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+let authHeader = null;
+let jobMode = 'manual';
+let pipelineStatus = 1;
+const $ = (id) => document.getElementById(id);
+
+// Links para UI do Airflow (usado nos modais de erro/timeout)
+const AIRFLOW_UI_BASE = 'https://airflow.caixavidaeprevidencia.intranet/';
+const AIRFLOW_UI = AIRFLOW_UI_BASE.replace(/\/$/, '');
+
+/* ══ LOGIN ══ */
+async function entrar() {
+  const m = $('login_msg');
+  m.className = 'msg';
+  const u = $('login_user').value.trim();
+  const p = $('login_pass').value;
+  if (!u) { m.textContent = 'Informe o usuário'; m.className = 'msg erro'; return; }
+  if (!p) { m.textContent = 'Informe a senha'; m.className = 'msg erro'; return; }
+  const hdr = 'Basic ' + btoa(u + ':' + p);
+  $('login_btn_txt').textContent = 'Validando...';
+  $('login_btn').disabled = true;
+  try {
+    const r = await fetch('/api/v1/dags?limit=1', { headers: { 'Authorization': hdr } });
+    if (r.status === 401) {
+      m.textContent = 'Usuário ou senha inválidos. Verifique e tente novamente.';
+      m.className = 'msg erro';
+      $('login_pass').value = ''; $('login_pass').focus(); return;
+    }
+    if (r.status === 403) {
+      m.textContent = 'Acesso negado. Usuário sem permissão no Airflow.';
+      m.className = 'msg erro'; return;
+    }
+    if (!r.ok) {
+      m.textContent = 'Erro HTTP ' + r.status + '. Contate o administrador.';
+      m.className = 'msg erro'; return;
+    }
+    authHeader = hdr;
+    $('who').textContent = u;
+    $('loginScreen').classList.add('hidden');
+    $('appScreen').classList.remove('hidden');
+    $('login_pass').value = '';
+    const cw = $('caps-warn'); if (cw) cw.style.display = 'none';
+    // Tela inicial: Pipelines
+    try { loadQuery(0); } catch(e) {}
+  } catch(e) {
+    m.textContent = 'Não foi possível conectar ao Airflow. Verifique a rede.';
+    m.className = 'msg erro';
+  } finally {
+    $('login_btn_txt').textContent = 'Entrar';
+    $('login_btn').disabled = false;
+  }
+}
+
+function sair() {
+  authHeader = null;
+  $('appScreen').classList.add('hidden');
+  $('loginScreen').classList.remove('hidden');
+  $('login_msg').textContent = '';
+  $('login_user').value = '';
+  $('login_pass').value = '';
+  setTimeout(() => { try { $('login_user').focus(); } catch(e){} }, 100);
+}
+
+function checkCapsLock(e) {
+  const warn = $('caps-warn');
+  if (!warn) return;
+  warn.style.display = (e.getModifierState && e.getModifierState('CapsLock')) ? 'flex' : 'none';
+}
+
+/* ══ TEMA ══ */
+function applyTheme(m) {
+  const dark = m === 'dark';
+  document.documentElement.classList.toggle('dark', dark);
+  try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch(e) {}
+  const e = $('theme-emoji'); if (e) e.textContent = dark ? '☀️' : '🌙';
+}
+function toggleTheme() { applyTheme(document.documentElement.classList.contains('dark') ? 'light' : 'dark'); }
+(function(){ let s=null; try{s=localStorage.getItem('theme');}catch(e) {} applyTheme(s==='dark'?'dark':'light'); })();
+
+/* ══ TOAST ══ */
+let _tt = null;
+function showToast(msg, isErr) {
+  $('toastDot').className = 'dot' + (isErr ? ' err' : '');
+  $('toastText').textContent = msg || 'Registro salvo';
+  $('toast').classList.remove('hidden');
+  if (_tt) clearTimeout(_tt);
+  _tt = setTimeout(() => $('toast').classList.add('hidden'), 2800);
+}
+
+/* ══ TABS ══ */
+function switchPage(pageId, btn) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  $(pageId).classList.add('active');
+  btn.classList.add('active');
+}
+
+/* ══ STATUS ATIVO/INATIVO ══ */
+function setStatus(val) {
+  pipelineStatus = val;
+  $('p-active').value = val;
+  $('st-ativo').className   = 'st-opt' + (val === 1 ? ' active-green' : '');
+  $('st-inativo').className = 'st-opt' + (val === 0 ? ' active-red'   : '');
+}
+
+/* ══ SYNC TOGGLE VISUAL ══ */
+function syncToggle(lblId, chk) {
+  $(lblId).classList.toggle('on', chk.checked);
+}
+
+/* ══ MODO JOBS ══ */
+function setMode(m) {
+  jobMode = m;
+  $('mode-manual-btn').classList.toggle('active', m === 'manual');
+  $('mode-bulk-btn').classList.toggle('active', m === 'bulk');
+  $('mode-manual').classList.toggle('hidden', m !== 'manual');
+  $('mode-bulk').classList.toggle('hidden', m !== 'bulk');
+}
+
+/* ══ OPÇÃO B — LISTA DE JOBS + MODAL DE LINEAGE ══ */
+let jobsBdata = [];
+let jbLineId  = 0;
+let activeJobModal = null;
+const OBJ_TYPES_B = ['Tabela','View','CSV','DataSet','TXT','XLS','XLSX','Proc','Query'];
+const JOB_TYPES_B  = ['datastage','shell','python','storedproc'];
+const JOB_LABELS_B = {'datastage':'DataStage','shell':'Shell','python':'Python','storedproc':'Proc SQL'};
+
+function _ensureModal() {
+  if ($('modal-lineage-b')) return;
+  const d = document.createElement('div');
+  d.id = 'modal-lineage-b';
+  d.className = 'modal-backdrop';
+  d.innerHTML = `
+    <div class="modal-box" style="max-width:480px;text-align:left">
+      <div class="modal-title" id="mlb-title" style="margin-bottom:1rem">Lineage do job</div>
+      <div id="mlb-body"></div>
+    </div>`;
+  d.addEventListener('click', e => { if (e.target === d) closeLineageModal(); });
+  document.body.appendChild(d);
+}
+
+function openLineageModal(jobId) {
+  _ensureModal();
+  activeJobModal = jobId;
+  const j = jobsBdata.find(x => x.id === jobId);
+  $('mlb-title').textContent = 'Lineage — ' + (j.name || 'job sem nome');
+  renderModalBody();
+  $('modal-lineage-b').classList.add('open');
+}
+
+function closeLineageModal() {
+  if ($('modal-lineage-b')) $('modal-lineage-b').classList.remove('open');
+  activeJobModal = null;
+  renderJobLinesB();
+}
+
+function renderModalBody() {
+  const j = jobsBdata.find(x => x.id === activeJobModal);
+  if (!j) return;
+  const linRows = (arr, dir) => arr.map((o, i) => `
+    <div style="display:grid;grid-template-columns:110px minmax(0,1fr) 28px;gap:6px;align-items:center;margin-bottom:5px">
+      <select style="font-size:13px" onchange="updateLinB(${activeJobModal},'${dir}',${i},'t',this.value)">
+        ${OBJ_TYPES_B.map(t => `<option value="${t}" ${o.t===t?'selected':''}>${t}</option>`).join('')}
+      </select>
+      <input type="text" style="font-size:13px" placeholder="ex: dbo.tabela" value="${o.n}"
+        oninput="updateLinB(${activeJobModal},'${dir}',${i},'n',this.value)" />
+      <button class="rm-btn" style="width:28px;height:28px;font-size:12px"
+        onclick="rmLinB(${activeJobModal},'${dir}',${i})" aria-label="Remover">x</button>
+    </div>`).join('');
+  $('mlb-body').innerHTML = `
+    <div style="margin-bottom:1rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
+        <span style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--cvp-blue)">
+          Origens <span style="color:var(--red)">*</span>
+        </span>
+        <button class="btn-ghost btn-sm" onclick="addLinB(${j.id},'ori')">+ adicionar</button>
+      </div>
+      <div id="mlb-origens">${linRows(j.origens,'ori')}</div>
+    </div>
+    <div style="margin-bottom:1.25rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
+        <span style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:#15803d">
+          Destinos <span style="color:var(--red)">*</span>
+        </span>
+        <button class="btn-ghost btn-sm" onclick="addLinB(${j.id},'dst')">+ adicionar</button>
+      </div>
+      <div id="mlb-destinos">${linRows(j.destinos,'dst')}</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn-ghost" onclick="closeLineageModal()" style="flex:1">Confirmar</button>
+    </div>`;
+}
+
+function updateLinB(jobId, dir, idx, field, val) {
+  const j = jobsBdata.find(x => x.id === jobId);
+  const arr = dir === 'ori' ? j.origens : j.destinos;
+  arr[idx][field] = val;
+}
+
+function addLinB(jobId, dir) {
+  const j = jobsBdata.find(x => x.id === jobId);
+  if (dir === 'ori') j.origens.push({t:'Tabela', n:''});
+  else               j.destinos.push({t:'Tabela', n:''});
+  renderModalBody();
+}
+
+function rmLinB(jobId, dir, idx) {
+  const j = jobsBdata.find(x => x.id === jobId);
+  const arr = dir === 'ori' ? j.origens : j.destinos;
+  if (arr.length > 1) arr.splice(idx, 1);
+  renderModalBody();
+}
+
+function addJobLineB(data) {
+  jbLineId++;
+  const id = jbLineId;
+  jobsBdata.push({
+    id,
+    name:    data && data.job_name        || '',
+    type:    data && data.job_type        || 'datastage',
+    order:   data && data.execution_order || id,
+    cmd:     data && data.job_command     || '',
+    origens: [{t:'Tabela', n:''}],
+    destinos:[{t:'Tabela', n:''}],
+  });
+  renderJobLinesB();
+}
+
+function removeJobLineB(id) {
+  jobsBdata = jobsBdata.filter(j => j.id !== id);
+  if (!jobsBdata.length) addJobLineB();
+  else renderJobLinesB();
+}
+
+function renderJobLinesB() {
+  const el = $('job-lines-b');
+  if (!el) return;
+  el.innerHTML = jobsBdata.map(j => {
+    const hasOri = j.origens.some(o => o.n.trim());
+    const hasDst = j.destinos.some(o => o.n.trim());
+    const ok = hasOri && hasDst;
+    return `
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) 110px 52px 80px 32px;gap:6px;align-items:center;margin-bottom:6px">
+      <input type="text" style="font-size:13px" placeholder="job_extrai_pedidos"
+        value="${j.name}" oninput="jobsBdata.find(x=>x.id===${j.id}).name=this.value" />
+      <select style="font-size:13px" onchange="onJobTypeChangeB(${j.id},this.value)">
+        ${JOB_TYPES_B.map(t => '<option value="'+t+'" '+(j.type===t?'selected':'')+'>'+JOB_LABELS_B[t]+'</option>').join('')}
+      </select>
+      <input type="number" min="1" style="font-size:13px;text-align:center"
+        value="${j.order}" oninput="jobsBdata.find(x=>x.id===${j.id}).order=+this.value" />
+      <button onclick="openLineageModal(${j.id})"
+        style="font-size:11px;font-weight:700;padding:.3rem .5rem;border-radius:10px;border:0.5px solid;cursor:pointer;white-space:nowrap;font-family:inherit;background:${ok?'rgba(22,163,74,.08)':'rgba(202,138,4,.08)'};border-color:${ok?'#16a34a':'#ca8a04'};color:${ok?'#15803d':'#92400e'}">
+        ${ok ? 'OK' : 'Lineage'}
+      </button>
+      <button class="rm-btn" style="width:32px;height:32px;font-size:12px"
+        onclick="removeJobLineB(${j.id})" aria-label="Remover job">x</button>
+    </div>`;
+  }).join('');
+}
+
+function onJobTypeChangeB(id, val) {
+  jobsBdata.find(x => x.id === id).type = val;
+  renderJobLinesB();
+}
+
+function collectJobRows() {
+  return jobsBdata
+    .filter(j => j.name.trim() && !isNaN(j.order))
+    .map(j => ({
+      job_name:        j.name.trim(),
+      execution_order: j.order,
+      job_type:        j.type,
+      job_command:     j.cmd || null,
+      origens:  j.origens.filter(o => o.n.trim()).map(o => ({object_type:o.t, object_name:o.n.trim()})),
+      destinos: j.destinos.filter(o => o.n.trim()).map(o => ({object_type:o.t, object_name:o.n.trim()})),
+    }));
+}
+
+function addJobRow(n, o, t, c) { addJobLineB({job_name:n, execution_order:o, job_type:t, job_command:c}); }
+function removeJobRow(id) { removeJobLineB(id); }
+
+addJobLineB();
+
+/* ══ MODAL DE STATUS DA DAG ══ */
+let _pollTimer = null;
+
+function openModal() {
+  $('statusModal').classList.add('open');
+  $('md-icon').className    = 'modal-icon sending';
+  $('md-icon').textContent  = '...';
+  $('md-spinner').style.display  = 'block';
+  $('md-progress').style.display = 'block';
+  $('md-fill').style.width  = '0%';
+  $('md-title').textContent = 'Enviando para o Airflow...';
+  $('md-desc').textContent  = 'Sua solicitação foi recebida. Aguarde enquanto verificamos a execução no banco de dados.';
+  $('md-meta').classList.add('hidden');
+  $('md-link').classList.add('hidden');
+  $('md-close').classList.add('hidden');
+}
+
+function closeModal() {
+  $('statusModal').classList.remove('open');
+  if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
+}
+
+function setModalProcessing(runId) {
+  $('md-title').textContent = 'Verificando execução...';
+  $('md-desc').textContent  = 'A tarefa foi iniciada no Airflow. Aguardando confirmação de que os dados foram gravados no banco.';
+  $('md-meta').textContent  = 'run_id: ' + runId;
+  $('md-meta').classList.remove('hidden');
+}
+
+function setModalSuccess(label) {
+  $('md-icon').className   = 'modal-icon success';
+  $('md-icon').textContent = 'OK';
+  $('md-spinner').style.display  = 'none';
+  $('md-progress').style.display = 'none';
+  $('md-fill').style.width = '100%';
+  $('md-title').textContent = 'Dados gravados com sucesso!';
+  $('md-desc').textContent  = label + ' foi registrado no banco de dados.';
+  $('md-close').classList.remove('hidden');
+}
+
+function setModalFailed(runId, dagId) {
+  $('md-icon').className   = 'modal-icon failed';
+  $('md-icon').textContent = 'ERRO';
+  $('md-spinner').style.display  = 'none';
+  $('md-progress').style.display = 'none';
+  $('md-title').textContent = 'Falha na execução';
+  $('md-desc').textContent  = 'Ocorreu um erro ao gravar os dados. Verifique o log completo no Airflow.';
+  $('md-link').href = AIRFLOW_UI + '/dags/' + dagId + '/grid';
+  $('md-link').classList.remove('hidden');
+  $('md-close').classList.remove('hidden');
+}
+
+function setModalTimeout(dagId) {
+  $('md-icon').className   = 'modal-icon timeout';
+  $('md-icon').textContent = 'TIMEOUT';
+  $('md-spinner').style.display  = 'none';
+  $('md-progress').style.display = 'none';
+  $('md-title').textContent = 'Tempo de espera excedido';
+  $('md-desc').textContent  = 'Não foi possível confirmar a execução em 30 segundos. Verifique o status no Airflow.';
+  $('md-link').href = AIRFLOW_UI + '/dags/' + dagId + '/grid';
+  $('md-link').classList.remove('hidden');
+  $('md-close').classList.remove('hidden');
+}
+
+async function pollDagRun(dagId, runId, label, startTime, resolve) {
+  const elapsed = (Date.now() - startTime) / 1000;
+  $('md-fill').style.width = Math.min(90, Math.round((elapsed/30)*90)) + '%';
+  if (elapsed > 30) { setModalTimeout(dagId); resolve('timeout'); return; }
+  try {
+    const r = await fetch('/api/v1/dags/' + dagId + '/dagRuns/' + runId, {
+      headers: { 'Authorization': authHeader }
+    });
+    if (!r.ok) { _pollTimer = setTimeout(() => pollDagRun(dagId, runId, label, startTime, resolve), 2000); return; }
+    const data = await r.json();
+    if (data.state === 'success') {
+      $('md-fill').style.width = '100%'; setModalSuccess(label); resolve('success');
+    } else if (data.state === 'failed') {
+      setModalFailed(runId, dagId); resolve('failed');
+    } else {
+      _pollTimer = setTimeout(() => pollDagRun(dagId, runId, label, startTime, resolve), 2000);
+    }
+  } catch(e) {
+    _pollTimer = setTimeout(() => pollDagRun(dagId, runId, label, startTime, resolve), 2000);
+  }
+}
+
+async function triggerDag(dagId, conf) {
+  return fetch('/api/v1/dags/' + dagId + '/dagRuns', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+    body: JSON.stringify({ conf }),
+  });
+}
+
+async function triggerAndPoll(dagId, conf, label, btnId, btnTxtId, btnTxt) {
+  const btn = btnId ? $(btnId) : null;
+  const btnTxtEl = btnTxtId ? $(btnTxtId) : null;
+  if (btn) btn.disabled = true;
+  if (btnTxtEl) btnTxtEl.textContent = 'Enviando...';
+  openModal();
+  try {
+    const r = await triggerDag(dagId, conf);
+    if (r.status === 401) { closeModal(); sair(); return; }
+    if (r.status === 403) { closeModal(); alert('Sem permissão (requer Operator ou Admin no Airflow).'); return; }
+    if (!r.ok) { closeModal(); alert('Erro ao enviar: ' + await r.text()); return; }
+    const data = await r.json();
+    const runId = data.dag_run_id || data.run_id;
+    setModalProcessing(runId);
+    await new Promise(resolve => pollDagRun(dagId, runId, label, Date.now(), resolve));
+  } catch(e) {
+    closeModal(); alert('Erro de conexão com o Airflow.');
+  } finally {
+    if (btn) btn.disabled = false;
+    if (btnTxtEl && btnTxt) btnTxtEl.textContent = btnTxt;
+  }
+}
+
+/* ══ SALVAR PIPELINE ══ */
+async function registrarPipeline() {
+  const pipeline = $('pipeline_name').value.trim();
+  const time     = $('scheduled_time').value;
+  const project  = $('p-project').value.trim();
+  const domain   = $('p-domain').value.trim();
+  const tags     = $('p-tags').value;
+  const m        = $('msg-pipeline');
+  m.className    = 'msg';
+  if (!pipeline) { m.textContent = 'Informe o nome do pipeline'; m.className = 'msg erro'; return; }
+  if (!time)     { m.textContent = 'Informe o horário de execução'; m.className = 'msg erro'; return; }
+  if (!project)  { m.textContent = 'Selecione o projeto'; m.className = 'msg erro'; return; }
+  if (!domain)   { m.textContent = 'Informe o domínio (ex: Clientes, Cobrança)'; m.className = 'msg erro'; return; }
+  await triggerAndPoll(
+    'etl_pipeline_register',
+    {
+      pipeline_name: pipeline, scheduled_time: time + ':00',
+      active: pipelineStatus,
+      envia_msg_inicio: $('tog-inicio').checked ? 1 : 0,
+      envia_msg_fim:    $('tog-fim').checked    ? 1 : 0,
+      envia_msg_erro:   $('tog-erro').checked   ? 1 : 0,
+      project_name: project, domain: domain, tags: tags,
+    },
+    'Pipeline "' + pipeline + '"',
+    'btn-save-pipeline', 'save_pipeline_txt', 'Salvar Pipeline'
+  );
+  $('pipeline_name').value = ''; $('scheduled_time').value = '';
+  $('p-project').value = ''; $('p-domain').value = '';
+  $('p-tags').value = ''; $('tags-wrap').querySelectorAll('.chip').forEach(c => c.remove());
+  setStatus(1);
+  ['tog-inicio','tog-fim','tog-erro'].forEach(id => { $(id).checked = true; syncToggle('lbl-'+id.replace('tog-',''), $(id)); });
+  closePipelineEditor();
+  try { loadQuery(0); } catch(e) {}
+}
+
+/* ══ SALVAR JOBS ══ */
+async function registrarJobs() {
+  const pipeline = $('job_pipeline_name').value.trim();
+  if (!pipeline) {
+    const m = $('msg-job'); m.textContent = 'Informe o nome do pipeline'; m.className = 'msg erro'; return;
+  }
+  let jobs = [];
+  if (jobMode === 'bulk') {
+    const raw = $('bulk-jobs').value.trim();
+    if (!raw) { const m = $('msg-job'); m.textContent = 'Cole ao menos um job'; m.className = 'msg erro'; return; }
+    raw.split('\n').forEach(line => {
+      const p = line.trim().split(',').map(s => s.trim());
+      if (p.length >= 2 && p[0] && !isNaN(parseInt(p[1])))
+        jobs.push({ job_name:p[0], execution_order:parseInt(p[1]), job_type:p[2]||'datastage', job_command:p[3]||null, origens:[], destinos:[] });
+    });
+    if (!jobs.length) { const m = $('msg-job'); m.textContent = 'Nenhuma linha válida. Formato: nome,ordem,tipo,comando'; m.className = 'msg erro'; return; }
+  } else {
+    jobs = collectJobRows();
+    if (!jobs.length) { const m = $('msg-job'); m.textContent = 'Preencha ao menos um job com nome e ordem'; m.className = 'msg erro'; return; }
+    for (const j of jobs) {
+      if (!j.origens || j.origens.length === 0) {
+        const m = $('msg-job'); m.textContent = 'Job "' + j.job_name + '": clique em Lineage e informe 1 origem'; m.className = 'msg erro'; return;
+      }
+      if (!j.destinos || j.destinos.length === 0) {
+        const m = $('msg-job'); m.textContent = 'Job "' + j.job_name + '": clique em Lineage e informe 1 destino'; m.className = 'msg erro'; return;
+      }
+    }
+  }
+  await triggerAndPoll(
+    'etl_pipeline_job_register',
+    { pipeline_name: pipeline, jobs },
+    jobs.length + ' job(s) do pipeline "' + pipeline + '"',
+    'btn-save-job', 'save_job_txt', 'Salvar Jobs'
+  );
+  $('job_pipeline_name').value = '';
+  jobsBdata = []; jbLineId = 0; addJobLineB();
+  $('bulk-jobs').value = '';
+}
+
+/* ══ CHIPS DE TAGS ══ */
+function handleTagInput(e) {
+  if (e.key !== 'Enter' && e.key !== ',') return;
+  e.preventDefault();
+  const input = $('tag-input');
+  const val = input.value.trim().replace(/,/g,'');
+  if (!val) return;
+  addChip(val);
+  input.value = '';
+}
+function addChip(val) {
+  const existing = [...$('tags-wrap').querySelectorAll('.chip')].map(c => c.dataset.val);
+  if (existing.includes(val)) return;
+  const chip = document.createElement('span');
+  chip.className = 'chip'; chip.dataset.val = val;
+  chip.innerHTML = val + '<button class="chip-rm" onclick="removeChip(this)" title="Remover">×</button>';
+  $('tags-wrap').insertBefore(chip, $('tag-input'));
+  syncTags();
+}
+function removeChip(btn) { btn.parentElement.remove(); syncTags(); }
+function syncTags() {
+  const vals = [...$('tags-wrap').querySelectorAll('.chip')].map(c => c.dataset.val);
+  $('p-tags').value = vals.join(',');
+}
+
+/* ══ ENTER no login ══ */
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !$('loginScreen').classList.contains('hidden')) entrar();
+});
+
+
+/* ══ CONSULTA DE PIPELINES ══ */
+let queryState = { offset: 0, limit: 20, total: 0, pages: 0 };
+
+function normalizeXcomValue(x) {
+  // Airflow API normalmente retorna: { key: "return_value", value: <...> }
+  if (x && typeof x === 'object' && x.value !== undefined && x.data === undefined) {
+    x = x.value;
+  }
+
+  // Às vezes o "value" chega como string (JSON stringificado)
+  if (typeof x === 'string') {
+    const s = x.trim();
+    // tenta JSON puro primeiro
+    if ((s.startsWith('{') && s.endsWith('}')) || (s.startsWith('[') && s.endsWith(']'))) {
+      try { x = JSON.parse(s); } catch(e) {}
+    }
+
+    // fallback: alguns ambientes salvam repr de dict python (aspas simples / True/False/None)
+    if (typeof x === 'string') {
+      const py = s
+        .replace(/\bNone\b/g, 'null')
+        .replace(/\bTrue\b/g, 'true')
+        .replace(/\bFalse\b/g, 'false');
+      // tenta converter aspas simples para duplas quando parece dict/list
+      if ((py.startsWith('{') && py.endsWith('}')) || (py.startsWith('[') && py.endsWith(']'))) {
+        try { x = JSON.parse(py.replace(/'/g, '"')); } catch(e) {}
+      }
+    }
+  }
+
+  // Se "data" veio como string, tenta parsear
+  if (x && typeof x === 'object' && typeof x.data === 'string') {
+    try { x.data = JSON.parse(x.data); } catch(e) {}
+  }
+
+  return x;
+}
+
+/* ══ CONSULTA DE JOBS ══ */
+let jobQueryState = { offset: 0, limit: 50, total: 0, pages: 0 };
+let jobOrderDirty = false;
+
+async function loadJobsQuery(offset) {
+  if (!authHeader) { alert('Faça login primeiro'); return; }
+  const pipeline = $('job_pipeline_name') ? $('job_pipeline_name').value.trim() : '';
+  const name = $('jq-name') ? $('jq-name').value.trim() : '';
+  const type = $('jq-type') ? $('jq-type').value : '';
+  const qs = $('job-query-status');
+  const btn = $('btn-jq');
+  const btnTxt = $('btn-jq-txt');
+
+  if (!pipeline) {
+    if (qs) qs.textContent = 'Informe o pipeline para consultar os jobs.';
+    return;
+  }
+
+  if (offset !== undefined) jobQueryState.offset = offset;
+  const conf = { offset: jobQueryState.offset, limit: jobQueryState.limit, filter_pipeline: pipeline };
+  if (name) conf.filter_job_name = name;
+  if (type) conf.filter_job_type = type;
+
+  if (btn) btn.disabled = true;
+  if (btnTxt) btnTxt.textContent = 'Buscando...';
+  if (qs) qs.textContent = 'Disparando DAG de consulta de jobs...';
+
+  try {
+    const r = await fetch('/api/v1/dags/etl_pipeline_job_query/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ conf }),
+    });
+    if (r.status === 401) { sair(); return; }
+    if (r.status === 403) { if (qs) qs.textContent = 'Acesso negado (403). Sem permissão para consultar jobs.'; return; }
+    if (!r.ok) { if (qs) qs.textContent = 'Erro ao disparar DAG: ' + r.status; return; }
+
+    const run = await r.json();
+    const runId = run.dag_run_id || run.run_id;
+    if (qs) qs.textContent = 'Aguardando execução... (' + runId + ')';
+
+    const state = await pollJobsRun(runId);
+    if (state === 'failed') return;
+    if (qs) qs.textContent = (state === 'timeout')
+      ? 'A execução está demorando. Tentando ler o último resultado (XCom)...'
+      : 'Carregando dados...';
+
+    const xr = await fetch(
+      '/api/v1/dags/etl_pipeline_job_query/dagRuns/' + runId + '/taskInstances/consultar_jobs/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (xr.status === 401) { sair(); return; }
+    if (xr.status === 403) { if (qs) qs.textContent = 'Acesso negado (403) ao ler XCom.'; return; }
+    if (xr.status === 404) { if (qs) qs.textContent = 'Resultado ainda não disponível. Aguarde e tente novamente.'; return; }
+    if (!xr.ok) { if (qs) qs.textContent = 'Erro ao ler XCom: ' + xr.status; return; }
+
+    const xdata = await xr.json();
+    const payload = normalizeXcomValue(xdata);
+    try { window.__lastJobsPayload = payload; } catch(e) {}
+    renderJobsTable(payload);
+  } catch (err) {
+    if (qs) qs.textContent = 'Erro de conexão: ' + err.message;
+  } finally {
+    if (btn) btn.disabled = false;
+    if (btnTxt) btnTxt.textContent = 'Buscar jobs';
+  }
+}
+
+async function pollJobsRun(runId) {
+  const start = Date.now();
+  const timeoutMs = 120000;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const r = await fetch('/api/v1/dags/etl_pipeline_job_query/dagRuns/' + runId, { headers: { 'Authorization': authHeader } });
+      if (r.ok) {
+        const d = await r.json();
+        if (d.state === 'success') return 'success';
+        if (d.state === 'failed') { if ($('job-query-status')) $('job-query-status').textContent = 'A execução falhou no Airflow. Verifique o log do DAG.'; return 'failed'; }
+      }
+    } catch(e) {}
+    await new Promise(res => setTimeout(res, 2000));
+  }
+  if ($('job-query-status')) $('job-query-status').textContent = 'A execução está demorando (timeout de 2 min). Você pode aguardar e clicar em Buscar jobs novamente.';
+  return 'timeout';
+}
+
+function renderJobsTable(payload) {
+  const area = $('job-query-table-area');
+  if (!area) return;
+  payload = normalizeXcomValue(payload);
+  if (!payload || !payload.data || !payload.data.length) {
+    const act = $('job-query-actions');
+    if (act) act.classList.add('hidden');
+    jobOrderDirty = false;
+    const btnSave = $('btn-save-order'); if (btnSave) btnSave.disabled = true;
+    area.innerHTML =
+      '<div class="empty-query">' +
+        '<div style="margin-bottom:.6rem">Nenhum job encontrado para os filtros aplicados.</div>' +
+        '<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">' +
+          '<button class="btn btn-outline btn-sm" onclick="openJobCreateModal(\'single\')">+ Adicionar job</button>' +
+          '<button class="btn-ghost btn-sm" onclick="openJobCreateModal(\'bulk\')">📋 Colar lista</button>' +
+        '</div>' +
+      '</div>';
+    if ($('job-query-status')) $('job-query-status').textContent = 'Nenhum resultado';
+    return;
+  }
+  const { data, total, offset, limit, pages, table } = payload;
+  try { window.__jobs = data; } catch(e) {}
+  const act = $('job-query-actions');
+  if (act) act.classList.remove('hidden');
+  jobOrderDirty = false;
+  const btnSave = $('btn-save-order'); if (btnSave) btnSave.disabled = true;
+  jobQueryState.total = total; jobQueryState.pages = pages; jobQueryState.offset = offset;
+  const from = offset + 1, to = Math.min(offset + limit, total);
+  if ($('job-query-status')) $('job-query-status').textContent = 'Exibindo ' + from + '–' + to + ' de ' + total + ' job(s)' + (table ? ' · fonte: ' + table : '');
+
+  const rows = data.map((j, i) =>
+    '<tr>' +
+    '<td style="font-weight:500;white-space:nowrap">' + (j.pipeline_name || '—') + '</td>' +
+    '<td style="font-weight:500;white-space:nowrap">' + (j.job_name || '—') + '</td>' +
+    '<td style="text-align:center">' +
+      '<input class="inline-order" type="number" min="1" value="' + (j.execution_order ?? '') + '" ' +
+        'oninput="onJobOrderChange(' + i + ', this.value)" />' +
+    '</td>' +
+    '<td><span class="tag-pill">' + (j.job_type || '—') + '</span></td>' +
+    '<td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (j.job_command || '') + '">' + (j.job_command || '—') + '</td>' +
+    '<td style="white-space:nowrap">' +
+      '<div class="row-actions">' +
+        '<button class="btn-ghost btn-sm" onclick="openJobEdit(' + i + ')">Editar</button>' +
+      '</div>' +
+    '</td>' +
+    '</tr>'
+  ).join('');
+
+  area.innerHTML =
+    '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
+    '<th>Pipeline</th><th>Job</th><th>Ordem</th><th>Tipo</th><th>Comando</th><th>Ações</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    (pages > 1 ? renderJobsPagination(offset, limit, total, pages) : '');
+}
+
+function renderJobsPagination(offset, limit, total, pages) {
+  const cur = Math.floor(offset / limit);
+  let btns = '<button class="pag-btn" ' + (cur > 0 ? '' : 'disabled') + ' onclick="loadJobsQuery(' + ((cur-1)*limit) + ')">‹</button>';
+  for (let i = 0; i < Math.min(pages, 7); i++)
+    btns += '<button class="pag-btn ' + (i === cur ? 'active' : '') + '" onclick="loadJobsQuery(' + (i*limit) + ')">' + (i+1) + '</button>';
+  if (pages > 7) btns += '<span style="padding:.3rem .4rem;font-size:12px;color:var(--muted)">…' + pages + '</span>';
+  btns += '<button class="pag-btn" ' + (cur < pages-1 ? '' : 'disabled') + ' onclick="loadJobsQuery(' + ((cur+1)*limit) + ')">›</button>';
+  return '<div class="pagination"><span>' + total + ' registros · página ' + (cur+1) + ' de ' + pages + '</span><div class="pag-btns">' + btns + '</div></div>';
+}
+
+function clearJobsQuery() {
+  if ($('jq-name')) $('jq-name').value = '';
+  if ($('jq-type')) $('jq-type').value = '';
+  jobQueryState = { offset: 0, limit: 50, total: 0, pages: 0 };
+  const area = $('job-query-table-area');
+  if (area) area.innerHTML = '<div class="empty-query">Informe o pipeline e clique em Buscar jobs.</div>';
+  if ($('job-query-status')) $('job-query-status').textContent = '';
+  const act = $('job-query-actions');
+  if (act) act.classList.add('hidden');
+  jobOrderDirty = false;
+  const btnSave = $('btn-save-order'); if (btnSave) btnSave.disabled = true;
+}
+
+function onJobOrderChange(idx, val) {
+  const list = window.__jobs || [];
+  const j = list[idx];
+  if (!j) return;
+  const n = parseInt((val || '').toString().trim(), 10);
+  j.execution_order = isNaN(n) ? null : n;
+  jobOrderDirty = true;
+  const btnSave = $('btn-save-order');
+  if (btnSave) btnSave.disabled = false;
+}
+
+async function saveJobsOrder() {
+  const pipeline = $('job_pipeline_name') ? $('job_pipeline_name').value.trim() : '';
+  const list = window.__jobs || [];
+  const btnSave = $('btn-save-order');
+  const qs = $('job-query-status');
+
+  if (!pipeline) { if (qs) qs.textContent = 'Informe o pipeline.'; return; }
+  if (!jobOrderDirty) { if (qs) qs.textContent = 'Nenhuma alteração de ordem para salvar.'; return; }
+  if (!list.length) { if (qs) qs.textContent = 'Nenhum job carregado.'; return; }
+
+  for (const j of list) {
+    if (!j.job_name) { if (qs) qs.textContent = 'Existe um job sem nome (não é possível salvar).'; return; }
+    if (!j.job_type) { if (qs) qs.textContent = 'Job "' + j.job_name + '" sem tipo (não é possível salvar).'; return; }
+    if (!j.execution_order || isNaN(j.execution_order) || j.execution_order < 1) {
+      if (qs) qs.textContent = 'Ordem inválida no job "' + j.job_name + '".';
+      return;
+    }
+  }
+
+  const seen = new Set();
+  let hasDup = false;
+  for (const j of list) {
+    if (seen.has(j.execution_order)) { hasDup = true; break; }
+    seen.add(j.execution_order);
+  }
+  if (hasDup) {
+    const ok = confirm('Existem ordens repetidas. Deseja salvar mesmo assim?');
+    if (!ok) return;
+  }
+
+  const jobs = list.map(j => ({
+    job_name: j.job_name,
+    execution_order: j.execution_order,
+    job_type: j.job_type,
+    job_command: j.job_command || null,
+    origens: [],
+    destinos: [],
+  }));
+
+  const ok = confirm('Salvar nova ordem de execução para ' + jobs.length + ' job(s) do pipeline "' + pipeline + '"?');
+  if (!ok) return;
+
+  if (btnSave) btnSave.disabled = true;
+  await triggerAndPoll(
+    'etl_pipeline_job_register',
+    { pipeline_name: pipeline, jobs },
+    'Atualizar ordem de execução (pipeline "' + pipeline + '")',
+    null, null, null
+  );
+  jobOrderDirty = false;
+  try { loadJobsQuery(jobQueryState.offset); } catch(e) {}
+}
+
+/* ══ CADASTRO DE JOBS (MODAL) ══ */
+let _jobCreateMode = 'single'; // 'single' | 'bulk'
+
+function openJobCreateModal(mode) {
+  const pipeline = $('job_pipeline_name') ? $('job_pipeline_name').value.trim() : '';
+  if (!pipeline) {
+    if ($('job-query-status')) $('job-query-status').textContent = 'Informe o pipeline antes de adicionar jobs.';
+    return;
+  }
+  _jobCreateMode = mode === 'bulk' ? 'bulk' : 'single';
+
+  // título
+  const ttl = $('jcm-title');
+  if (ttl) ttl.textContent = _jobCreateMode === 'bulk' ? 'Colar lista de jobs' : 'Adicionar job';
+
+  // pipeline (fixo)
+  $('jcm-pipeline').value = pipeline;
+
+  // reset mensagens
+  $('jobCreateMsg').textContent = '';
+  $('jobCreateMsg').className = 'msg';
+
+  // alterna views
+  $('jcm-single').classList.toggle('hidden', _jobCreateMode !== 'single');
+  $('jcm-bulk').classList.toggle('hidden', _jobCreateMode !== 'bulk');
+
+  // reset campos
+  if (_jobCreateMode === 'single') {
+    $('jcm-name').value = '';
+    $('jcm-order').value = '';
+    $('jcm-type').value = '';
+    $('jcm-cmd').value = '';
+    try { $('jcm-name').focus(); } catch(e) {}
+  } else {
+    $('jcm-bulk-text').value = '';
+    try { $('jcm-bulk-text').focus(); } catch(e) {}
+  }
+
+  $('jobCreateModal').classList.add('open');
+}
+
+function closeJobCreateModal() {
+  $('jobCreateModal').classList.remove('open');
+}
+
+async function saveJobCreate() {
+  return (_jobCreateMode === 'bulk') ? saveJobCreateBulk() : saveJobCreateSingle();
+}
+
+async function saveJobCreateSingle() {
+  const pipeline = $('jcm-pipeline').value.trim();
+  const name = $('jcm-name').value.trim();
+  const order = parseInt(($('jcm-order').value || '').trim(), 10);
+  const type = ($('jcm-type').value || '').trim();
+  const cmd = ($('jcm-cmd').value || '').trim();
+  const m = $('jobCreateMsg');
+  m.className = 'msg';
+
+  if (!pipeline) { m.textContent = 'Pipeline obrigatório'; m.className = 'msg erro'; return; }
+  if (!name) { m.textContent = 'Nome do job obrigatório'; m.className = 'msg erro'; return; }
+  if (!order || isNaN(order) || order < 1) { m.textContent = 'Ordem inválida'; m.className = 'msg erro'; return; }
+  if (!type) { m.textContent = 'Tipo obrigatório'; m.className = 'msg erro'; return; }
+
+  const conf = {
+    pipeline_name: pipeline,
+    jobs: [{
+      job_name: name,
+      execution_order: order,
+      job_type: type,
+      job_command: cmd || null,
+      origens: [],
+      destinos: [],
+    }]
+  };
+
+  await triggerAndPoll(
+    'etl_pipeline_job_register',
+    conf,
+    'Adicionar job "' + name + '" no pipeline "' + pipeline + '"',
+    null, null, null
+  );
+
+  closeJobCreateModal();
+  try { loadJobsQuery(jobQueryState.offset); } catch(e) {}
+}
+
+function _parseBulkJobs(raw) {
+  const jobs = [];
+  raw.split('\n').forEach(line => {
+    const p = line.trim();
+    if (!p) return;
+    const parts = p.split(',').map(s => s.trim());
+    const nm = parts[0];
+    const ord = parseInt(parts[1], 10);
+    const tp = parts[2] || 'datastage';
+    const cm = parts[3] || null;
+    if (!nm || isNaN(ord)) return;
+    jobs.push({
+      job_name: nm,
+      execution_order: ord,
+      job_type: tp,
+      job_command: cm,
+      origens: [],
+      destinos: [],
+    });
+  });
+  return jobs;
+}
+
+async function saveJobCreateBulk() {
+  const pipeline = $('jcm-pipeline').value.trim();
+  const raw = ($('jcm-bulk-text').value || '').trim();
+  const m = $('jobCreateMsg');
+  m.className = 'msg';
+
+  if (!pipeline) { m.textContent = 'Pipeline obrigatório'; m.className = 'msg erro'; return; }
+  if (!raw) { m.textContent = 'Cole ao menos uma linha de job'; m.className = 'msg erro'; return; }
+
+  const jobs = _parseBulkJobs(raw);
+  if (!jobs.length) {
+    m.textContent = 'Nenhuma linha válida. Formato: nome,ordem,tipo,comando(opcional)';
+    m.className = 'msg erro';
+    return;
+  }
+
+  const conf = { pipeline_name: pipeline, jobs };
+  await triggerAndPoll(
+    'etl_pipeline_job_register',
+    conf,
+    'Adicionar ' + jobs.length + ' job(s) no pipeline "' + pipeline + '"',
+    null, null, null
+  );
+
+  closeJobCreateModal();
+  try { loadJobsQuery(jobQueryState.offset); } catch(e) {}
+}
+
+function openJobEdit(idx) {
+  const list = window.__jobs || [];
+  const j = list[idx];
+  if (!j) return;
+  // garante que o filtro principal esteja preenchido (boa UX)
+  if ($('job_pipeline_name') && j.pipeline_name) $('job_pipeline_name').value = j.pipeline_name;
+
+  $('jem-pipeline').value = j.pipeline_name || '';
+  $('jem-name').value = j.job_name || '';
+  $('jem-order').value = (j.execution_order ?? '');
+  $('jem-type').value = j.job_type || '';
+  $('jem-cmd').value = j.job_command || '';
+  $('jobEditMsg').textContent = '';
+  $('jobEditMsg').className = 'msg';
+
+  $('jobEditModal').classList.add('open');
+}
+
+function closeJobEdit() {
+  $('jobEditModal').classList.remove('open');
+}
+
+async function saveJobEdit() {
+  const pipeline = $('jem-pipeline').value.trim();
+  const name = $('jem-name').value.trim();
+  const order = parseInt(($('jem-order').value || '').trim(), 10);
+  const type = ($('jem-type').value || '').trim();
+  const cmd = ($('jem-cmd').value || '').trim();
+  const m = $('jobEditMsg');
+  m.className = 'msg';
+
+  if (!pipeline) { m.textContent = 'Pipeline obrigatório'; m.className = 'msg erro'; return; }
+  if (!name) { m.textContent = 'Nome do job obrigatório'; m.className = 'msg erro'; return; }
+  if (!order || isNaN(order) || order < 1) { m.textContent = 'Ordem inválida'; m.className = 'msg erro'; return; }
+  if (!type) { m.textContent = 'Tipo obrigatório'; m.className = 'msg erro'; return; }
+
+  const conf = {
+    pipeline_name: pipeline,
+    jobs: [{
+      job_name: name,
+      execution_order: order,
+      job_type: type,
+      job_command: cmd || null,
+      // Para edição linha-a-linha, mantemos origens/destinos vazios (mesmo padrão do bulk)
+      origens: [],
+      destinos: [],
+    }]
+  };
+
+  await triggerAndPoll(
+    'etl_pipeline_job_register',
+    conf,
+    'Atualizar job "' + name + '" do pipeline "' + pipeline + '"',
+    null, null, null
+  );
+
+  closeJobEdit();
+  try { loadJobsQuery(jobQueryState.offset); } catch(e) {}
+}
+
+function openPipelineCreate() {
+  $('pipelineFormTitle').innerHTML = '<span class="orange">＋</span> Novo Pipeline';
+  $('pipelineFormHint').textContent = 'Cadastro de novo pipeline. O nome é a chave única (pipeline_name).';
+  $('pipeline_name').disabled = false;
+  $('pipeline_name').value = '';
+  $('scheduled_time').value = '';
+  $('p-project').value = '';
+  $('p-domain').value = '';
+  $('p-tags').value = '';
+  $('tags-wrap').querySelectorAll('.chip').forEach(c => c.remove());
+  setStatus(1);
+  ['tog-inicio','tog-fim','tog-erro'].forEach(id => { $(id).checked = true; syncToggle('lbl-'+id.replace('tog-',''), $(id)); });
+  $('msg-pipeline').textContent = '';
+  $('msg-pipeline').className = 'msg';
+  $('pipeline-editor').classList.remove('hidden');
+  try { $('pipeline_name').focus(); } catch(e) {}
+  try { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); } catch(e) {}
+}
+
+function closePipelineEditor() {
+  const pe = $('pipeline-editor');
+  if (pe) pe.classList.add('hidden');
+}
+
+function openPipelineEdit(idx) {
+  const list = window.__pipelines || [];
+  const p = list[idx];
+  if (!p) return;
+  $('pipelineFormTitle').innerHTML = '<span class="orange">✎</span> Editar Pipeline';
+  $('pipelineFormHint').textContent = 'Edição do pipeline. Para “renomear”, crie um novo pipeline.';
+  $('pipeline_name').disabled = true;
+  $('pipeline_name').value = p.pipeline_name || '';
+  $('p-project').value = p.project_name || '';
+  $('p-domain').value = p.domain || '';
+  const st = (p.scheduled_time || '').toString();
+  $('scheduled_time').value = st.length >= 5 ? st.slice(0,5) : '';
+  // tags
+  $('p-tags').value = '';
+  $('tags-wrap').querySelectorAll('.chip').forEach(c => c.remove());
+  if (p.tags) {
+    p.tags.split(',').map(t => t.trim()).filter(Boolean).forEach(t => addChip(t));
+  }
+  // status e notificações
+  setStatus(p.active ? 1 : 0);
+  $('tog-inicio').checked = !!p.envia_msg_inicio; syncToggle('lbl-inicio', $('tog-inicio'));
+  $('tog-fim').checked    = !!p.envia_msg_fim;    syncToggle('lbl-fim',    $('tog-fim'));
+  $('tog-erro').checked   = !!p.envia_msg_erro;   syncToggle('lbl-erro',   $('tog-erro'));
+
+  $('msg-pipeline').textContent = '';
+  $('msg-pipeline').className = 'msg';
+  $('pipeline-editor').classList.remove('hidden');
+  try { $('scheduled_time').focus(); } catch(e) {}
+  try { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); } catch(e) {}
+}
+
+async function softDeletePipeline(idx) {
+  const list = window.__pipelines || [];
+  const p = list[idx];
+  if (!p) return;
+  const ok = confirm('Inativar o pipeline "' + (p.pipeline_name || '') + '"? (soft delete = active=0)');
+  if (!ok) return;
+  const conf = {
+    pipeline_name: p.pipeline_name,
+    scheduled_time: (p.scheduled_time || '00:00:00'),
+    active: 0,
+    envia_msg_inicio: p.envia_msg_inicio ? 1 : 0,
+    envia_msg_fim:    p.envia_msg_fim ? 1 : 0,
+    envia_msg_erro:   p.envia_msg_erro ? 1 : 0,
+    project_name: p.project_name || '',
+    domain: p.domain || '',
+    tags: p.tags || '',
+  };
+  await triggerAndPoll('etl_pipeline_register', conf, 'Inativar pipeline "' + p.pipeline_name + '"', null, null, null);
+  try { loadQuery(0); } catch(e) {}
+}
+
+async function loadQuery(offset) {
+  if (!authHeader) { alert('Faça login primeiro'); return; }
+  if (offset !== undefined) queryState.offset = offset;
+  const conf = { offset: queryState.offset, limit: queryState.limit };
+  const fname = $('qf-name') ? $('qf-name').value.trim() : '';
+  const fproj = $('qf-project') ? $('qf-project').value : '';
+  const fact  = $('qf-active')  ? $('qf-active').value  : '';
+  if (fname)        conf.filter_name    = fname;
+  if (fproj)        conf.filter_project = fproj;
+  if (fact !== '')  conf.filter_active  = parseInt(fact);
+  const btn = $('btn-query'), btnTxt = $('query-btn-txt'), qs = $('query-status');
+  if (btn) btn.disabled = true;
+  if (btnTxt) btnTxt.textContent = 'Buscando...';
+  if (qs) qs.textContent = 'Disparando DAG de consulta...';
+  try {
+    const r = await fetch('/api/v1/dags/etl_pipeline_query/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ conf }),
+    });
+    if (r.status === 401) { sair(); return; }
+    if (r.status === 403) { if (qs) qs.textContent = 'Acesso negado (403). Seu usuário não tem permissão para disparar/ler este DAG.'; return; }
+    if (!r.ok) { if (qs) qs.textContent = 'Erro ao disparar DAG: ' + r.status; return; }
+    const run  = await r.json();
+    const runId = run.dag_run_id || run.run_id;
+    if (qs) qs.textContent = 'Aguardando execução... (' + runId + ')';
+    const state = await pollQueryRun(runId);
+    if (state === 'failed') return;
+
+    // Mesmo em "timeout", tentamos ler o XCom (às vezes o DAG conclui mas o polling estoura o tempo)
+    if (qs) qs.textContent = (state === 'timeout')
+      ? 'A execução está demorando. Tentando ler o último resultado (XCom)...'
+      : 'Carregando dados...';
+
+    const xr = await fetch(
+      '/api/v1/dags/etl_pipeline_query/dagRuns/' + runId + '/taskInstances/consultar_pipelines/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+
+    if (xr.status === 401) { sair(); return; }
+    if (xr.status === 403) { if (qs) qs.textContent = 'Acesso negado (403) ao ler XCom. Verifique permissões do usuário no Airflow.'; return; }
+    if (xr.status === 404) { if (qs) qs.textContent = 'Resultado ainda não disponível. Aguarde alguns segundos e clique em Buscar novamente.'; return; }
+    if (!xr.ok) { if (qs) qs.textContent = 'Erro ao ler XCom: ' + xr.status; return; }
+
+    const xdata = await xr.json();
+    let payload = normalizeXcomValue(xdata);
+    // Debug/inspeção rápida (ajuda a diagnosticar quando o response chega mas não renderiza)
+    try { window.__lastQueryPayload = payload; } catch(e) {}
+
+    if (qs) {
+      try {
+        const keys = payload && typeof payload === 'object' ? Object.keys(payload).join(',') : '';
+        const len  = payload && payload.data && Array.isArray(payload.data) ? payload.data.length : 0;
+        qs.textContent = (qs.textContent || '') + (keys ? ` | payload.keys=[${keys}] data.len=${len}` : '');
+      } catch(e) {}
+    }
+    try {
+      renderQueryTable(payload);
+    } catch (e) {
+      if (qs) qs.textContent = 'Erro ao renderizar o grid: ' + (e && e.message ? e.message : e);
+      const area = $('query-table-area');
+      if (area) {
+        const pretty = (() => { try { return JSON.stringify(payload, null, 2); } catch(_) { return String(payload); } })();
+        area.innerHTML = '<div class="empty-query" style="text-align:left;white-space:pre-wrap;font-family:monospace;line-height:1.45">' +
+          pretty.replace(/[&<>]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[ch])) +
+          '</div>';
+      }
+    }
+  } catch(err) {
+    if (qs) qs.textContent = 'Erro de conexão: ' + err.message;
+  } finally {
+    if (btn) btn.disabled = false;
+    if (btnTxt) btnTxt.textContent = 'Buscar';
+  }
+}
+
+async function pollQueryRun(runId) {
+  const start = Date.now();
+  const timeoutMs = 120000; // 2 min
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const r = await fetch('/api/v1/dags/etl_pipeline_query/dagRuns/' + runId, { headers: { 'Authorization': authHeader } });
+      if (r.ok) {
+        const d = await r.json();
+        if (d.state === 'success') return 'success';
+        if (d.state === 'failed') { if ($('query-status')) $('query-status').textContent = 'A execução falhou no Airflow. Verifique o log do DAG.'; return 'failed'; }
+      }
+    } catch(e) {}
+    await new Promise(res => setTimeout(res, 2000));
+  }
+  if ($('query-status')) $('query-status').textContent = 'A execução está demorando (timeout de 2 min). Você pode aguardar e clicar em Buscar novamente.';
+  return 'timeout';
+}
+
+function renderQueryTable(payload) {
+  const area = $('query-table-area');
+  if (!area) return;
+  payload = normalizeXcomValue(payload);
+  if (!payload || !payload.data || !payload.data.length) {
+    area.innerHTML = '<div class="empty-query">Nenhum pipeline encontrado.</div>';
+    if ($('query-status')) $('query-status').textContent = 'Nenhum resultado';
+    return;
+  }
+  const { data, total, offset, limit, pages } = payload;
+  try { window.__pipelines = data; } catch(e) {}
+  queryState.total = total; queryState.pages = pages; queryState.offset = offset;
+  const from = offset + 1, to = Math.min(offset + limit, total);
+  if ($('query-status')) $('query-status').textContent = 'Exibindo ' + from + '–' + to + ' de ' + total + ' pipeline(s)';
+  const rows = data.map((p, i) =>
+    '<tr>' +
+    '<td style="font-weight:500;white-space:nowrap">' + p.pipeline_name + '</td>' +
+    '<td><span class="tag-pill">' + p.project_name + '</span></td>' +
+    '<td>' + (p.domain || '—') + '</td>' +
+    '<td style="white-space:nowrap">' + (p.scheduled_time || '—') + '</td>' +
+    '<td style="text-align:center">' + (p.active ? '<span class="bit-on">✓</span>' : '<span class="bit-off">—</span>') + '</td>' +
+    '<td style="text-align:center">' + (p.dag_criada ? '<span class="bit-on">✓</span>' : '<span class="bit-off">—</span>') + '</td>' +
+    '<td style="text-align:center">' + (p.envia_msg_inicio ? '<span class="bit-on">✓</span>' : '<span class="bit-off">—</span>') + '</td>' +
+    '<td style="text-align:center">' + (p.envia_msg_fim ? '<span class="bit-on">✓</span>' : '<span class="bit-off">—</span>') + '</td>' +
+    '<td style="text-align:center">' + (p.envia_msg_erro ? '<span class="bit-on">✓</span>' : '<span class="bit-off">—</span>') + '</td>' +
+    '<td style="white-space:nowrap;font-size:11px;color:var(--muted)">' + (p.last_execution || '—') + '</td>' +
+    '<td style="white-space:nowrap">' +
+      '<div class="row-actions">' +
+        '<button class="btn-ghost btn-sm" onclick="openPipelineEdit(' + i + ')">Editar</button>' +
+        (p.active ? '<button class="btn-danger btn-sm" onclick="softDeletePipeline(' + i + ')">Inativar</button>' : '') +
+      '</div>' +
+    '</td>' +
+    '</tr>'
+  ).join('');
+  area.innerHTML =
+    '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
+    '<th>Pipeline</th><th>Projeto</th><th>Domínio</th><th>Horário</th>' +
+    '<th title="Ativo">Ativo</th><th title="DAG Criada">DAG</th>' +
+    '<th title="Notif. Início">Início</th><th title="Notif. Fim">Fim</th><th title="Notif. Erro">Erro</th>' +
+    '<th>Última exec.</th><th>Ações</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    (pages > 1 ? renderPagination(offset, limit, total, pages) : '');
+}
+
+function renderPagination(offset, limit, total, pages) {
+  const cur = Math.floor(offset / limit);
+  let btns = '<button class="pag-btn" ' + (cur > 0 ? '' : 'disabled') + ' onclick="loadQuery(' + ((cur-1)*limit) + ')">‹</button>';
+  for (let i = 0; i < Math.min(pages, 7); i++)
+    btns += '<button class="pag-btn ' + (i === cur ? 'active' : '') + '" onclick="loadQuery(' + (i*limit) + ')">' + (i+1) + '</button>';
+  if (pages > 7) btns += '<span style="padding:.3rem .4rem;font-size:12px;color:var(--muted)">…' + pages + '</span>';
+  btns += '<button class="pag-btn" ' + (cur < pages-1 ? '' : 'disabled') + ' onclick="loadQuery(' + ((cur+1)*limit) + ')">›</button>';
+  return '<div class="pagination"><span>' + total + ' registros · página ' + (cur+1) + ' de ' + pages + '</span><div class="pag-btns">' + btns + '</div></div>';
+}
+
+function clearQuery() {
+  if ($('qf-name')) $('qf-name').value = '';
+  if ($('qf-project')) $('qf-project').value = '';
+  if ($('qf-active')) $('qf-active').value = '';
+  queryState = { offset:0, limit:20, total:0, pages:0 };
+  const area = $('query-table-area');
+  if (area) area.innerHTML = '<div class="empty-query">Use os filtros acima e clique em Buscar para carregar os pipelines.</div>';
+  if ($('query-status')) $('query-status').textContent = '';
+}
+</script>
+
+<!-- MODAL DE STATUS DA DAG -->
+<div class="modal-backdrop" id="statusModal">
+  <div class="modal-box">
+    <div id="md-icon" class="modal-icon sending">⏳</div>
+    <div id="md-spinner" class="spinner"></div>
+    <div id="md-progress" class="progress-bar"><div class="progress-fill" id="md-fill" style="width:0%"></div></div>
+    <p id="md-title" class="modal-title">Enviando para o Airflow...</p>
+    <p id="md-desc"  class="modal-desc">Sua solicitação foi recebida.<br>Aguarde enquanto verificamos a execução.</p>
+    <div id="md-meta" class="modal-meta hidden"></div>
+    <a id="md-link" class="modal-link hidden" href="#" target="_blank">↗ Abrir execução no Airflow</a>
+    <button id="md-close" class="btn-modal-close hidden" onclick="closeModal()">Fechar</button>
+  </div>
+</div>
+
+<!-- MODAL: EDITAR JOB -->
+<div class="modal-backdrop" id="jobEditModal">
+  <div class="modal-box" style="max-width:560px;text-align:left">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:.75rem">
+      <div>
+        <div class="modal-title" style="margin:0">Editar job</div>
+        <div class="modal-desc" style="margin:.35rem 0 0">
+          Alterações são aplicadas <strong>linha a linha</strong> para o pipeline informado.
+        </div>
+      </div>
+      <button class="icon-btn" onclick="closeJobEdit()" title="Fechar" aria-label="Fechar" style="color:var(--text);background:rgba(100,116,139,.12)">✕</button>
+    </div>
+
+    <div class="field">
+      <label>Pipeline</label>
+      <input id="jem-pipeline" type="text" disabled />
+      <div class="helper">O pipeline é a chave. Para trocar, abra outro pipeline e edite novamente.</div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 120px;gap:.6rem">
+      <div class="field">
+        <label>Nome do job <span style="color:var(--red)">*</span></label>
+        <input id="jem-name" type="text" placeholder="ex: job_extrai_pedidos" />
+      </div>
+      <div class="field">
+        <label>Ordem <span style="color:var(--red)">*</span></label>
+        <input id="jem-order" type="number" min="1" placeholder="1" />
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:180px 1fr;gap:.6rem">
+      <div class="field">
+        <label>Tipo <span style="color:var(--red)">*</span></label>
+        <select id="jem-type">
+          <option value="">Selecione...</option>
+          <option value="datastage">datastage</option>
+          <option value="shell">shell</option>
+          <option value="python">python</option>
+          <option value="storedproc">storedproc</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Comando</label>
+        <input id="jem-cmd" type="text" placeholder="opcional" />
+      </div>
+    </div>
+
+    <div id="jobEditMsg" class="msg"></div>
+
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn-ghost" onclick="closeJobEdit()" style="flex:1">Cancelar</button>
+      <button class="btn" onclick="saveJobEdit()" style="flex:1">Salvar alterações</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: ADICIONAR JOB(S) -->
+<div class="modal-backdrop" id="jobCreateModal">
+  <div class="modal-box" style="max-width:640px;text-align:left">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:.75rem">
+      <div>
+        <div class="modal-title" id="jcm-title" style="margin:0">Adicionar job</div>
+        <div class="modal-desc" style="margin:.35rem 0 0">
+          Use <strong>Adicionar job</strong> para cadastrar um único registro ou <strong>Colar lista</strong> para vários.
+        </div>
+      </div>
+      <button class="icon-btn" onclick="closeJobCreateModal()" title="Fechar" aria-label="Fechar" style="color:var(--text);background:rgba(100,116,139,.12)">✕</button>
+    </div>
+
+    <div class="field">
+      <label>Pipeline</label>
+      <input id="jcm-pipeline" type="text" disabled />
+    </div>
+
+    <!-- VIEW: SINGLE -->
+    <div id="jcm-single">
+      <div style="display:grid;grid-template-columns:1fr 120px;gap:.6rem">
+        <div class="field">
+          <label>Nome do job <span style="color:var(--red)">*</span></label>
+          <input id="jcm-name" type="text" placeholder="ex: job_extrai_pedidos" />
+        </div>
+        <div class="field">
+          <label>Ordem <span style="color:var(--red)">*</span></label>
+          <input id="jcm-order" type="number" min="1" placeholder="1" />
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:180px 1fr;gap:.6rem">
+        <div class="field">
+          <label>Tipo <span style="color:var(--red)">*</span></label>
+          <select id="jcm-type">
+            <option value="">Selecione...</option>
+            <option value="datastage">datastage</option>
+            <option value="shell">shell</option>
+            <option value="python">python</option>
+            <option value="storedproc">storedproc</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Comando</label>
+          <input id="jcm-cmd" type="text" placeholder="opcional" />
+        </div>
+      </div>
+      <div class="helper" style="margin-top:-.25rem">
+        Dica: se o backend exigir lineage, você pode inserir depois. Aqui cadastramos com origens/destinos vazios.
+      </div>
+    </div>
+
+    <!-- VIEW: BULK -->
+    <div id="jcm-bulk" class="hidden">
+      <div class="field">
+        <label>Jobs — uma por linha <span style="color:var(--red)">*</span>
+          <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:10px">
+            &nbsp;formato: nome,ordem,tipo,comando(opcional)
+          </span>
+        </label>
+        <textarea id="jcm-bulk-text" placeholder="job_extrai_pedidos,1,datastage&#10;job_transforma_dados,2,python,jobs.transforma&#10;job_carrega_dw,3,storedproc,dbo.sp_carga_dw"></textarea>
+      </div>
+    </div>
+
+    <div id="jobCreateMsg" class="msg"></div>
+
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn-ghost" onclick="closeJobCreateModal()" style="flex:1">Cancelar</button>
+      <button class="btn" onclick="saveJobCreate()" style="flex:1">Salvar</button>
+    </div>
+  </div>
+</div>
+<script>
+  // Fecha modais clicando fora
+  (function () {
+    const m = document.getElementById('jobEditModal');
+    if (!m) return;
+    m.addEventListener('click', (e) => { if (e.target === m) closeJobEdit(); });
+  })();
+  (function () {
+    const m = document.getElementById('jobCreateModal');
+    if (!m) return;
+    m.addEventListener('click', (e) => { if (e.target === m) closeJobCreateModal(); });
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+## OS / Editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+.vscode/
+
+## Logs
+*.log
+
+## Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+## Node (se futuramente for usado)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+## Build / dist
+dist/
+build/
+
+## Config (se houver secrets)
+config/*.env
+config/*.local
