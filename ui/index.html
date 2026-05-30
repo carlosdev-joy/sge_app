@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SGE | Cadastro de Pipeline — Caixa Vida e Previdência</title>
+<title>ORQUESTRA — Caixa Vida e Previdência</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 <style>
   :root {
@@ -12,9 +12,11 @@
     --bg:#f8fafc; --card:#fff; --text:#1e293b; --muted:#64748b; --border:#e2e8f0;
     --green:#16a34a; --red:#dc2626;
     --toggle-off:#cbd5e1; --toggle-on:#005ca9;
-    --radius:24px;
-    --radius-sm:14px;
-    --shadow:0 16px 45px -12px rgba(2, 8, 23, .22);
+    --radius:16px;
+    --radius-sm:10px;
+    --shadow:0 16px 45px -12px rgba(2,8,23,.22); /* login */
+    --shadow-card:0 2px 12px rgba(0,0,0,.08);    /* cards internos */
+    --shadow-modal:0 20px 60px -10px rgba(0,0,0,.25); /* modais */
     --ring:0 0 0 3px rgba(243,146,0,.22);
   }
   html.dark {
@@ -30,20 +32,12 @@
     position:fixed;
     inset:-120px;
     z-index:-1;
-    background:
-      radial-gradient(900px 520px at 20% 12%, rgba(0, 92, 169, .14), transparent 60%),
-      radial-gradient(680px 460px at 86% 18%, rgba(243, 146, 0, .12), transparent 55%),
-      radial-gradient(820px 560px at 60% 92%, rgba(0, 92, 169, .10), transparent 58%),
-      linear-gradient(180deg, rgba(255,255,255,.70), rgba(255,255,255,0));
-    filter:saturate(1.1);
+    background: radial-gradient(900px 520px at 25% 18%, rgba(26,95,168,.14), transparent 62%);
+    filter:saturate(1.05);
     pointer-events:none;
   }
   html.dark body::before{
-    background:
-      radial-gradient(900px 520px at 20% 12%, rgba(0, 92, 169, .18), transparent 60%),
-      radial-gradient(680px 460px at 86% 18%, rgba(243, 146, 0, .12), transparent 55%),
-      radial-gradient(820px 560px at 60% 92%, rgba(0, 92, 169, .10), transparent 58%),
-      linear-gradient(180deg, rgba(2, 6, 23, .82), rgba(2, 6, 23, 0));
+    background: radial-gradient(900px 520px at 25% 18%, rgba(26,95,168,.18), transparent 62%);
     filter:saturate(1.05);
   }
   .hidden { display:none !important; }
@@ -51,16 +45,17 @@
   /* LOGIN */
   .login-wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:1rem; }
   .login-box  { width:100%; max-width:920px; }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; box-shadow:var(--shadow); }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; box-shadow:var(--shadow-card); }
+  .login-wrap .card { box-shadow:var(--shadow); }
   .grad { background:linear-gradient(135deg,var(--cvp-blue) 0%,#0F4C88 55%, var(--cvp-blue-d) 100%); color:#fff; }
   .grad-pad { padding:2rem; }
   .logo { height:40px; display:block; margin:0 auto 1rem; }
   .t-center { text-align:center; }
-  h1 { font-size:1.25rem; font-weight:800; margin:0; }
+  h1 { font-size:1.25rem; font-weight:600; margin:0; }
   .orange { color:var(--cvp-orange); }
   .sub { font-size:11px; letter-spacing:.15em; text-transform:uppercase; opacity:.85; margin:.35rem 0 0; font-weight:600; }
   .body-pad { padding:2rem; }
-  label { display:block; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:0 0 .4rem; }
+  label { display:block; font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:0 0 .4rem; }
   .field { margin-bottom:1.1rem; }
   input[type=text], input[type=password], input[type=time], select, textarea {
     width:100%; padding:.75rem 1rem; border:1px solid var(--border);
@@ -79,7 +74,7 @@
     border-radius:12px;
     background:var(--cvp-blue);
     color:#fff;
-    font-weight:800;
+    font-weight:600;
     font-size:.8rem;
     text-transform:uppercase;
     letter-spacing:.08em;
@@ -99,14 +94,14 @@
   .btn-primary:hover { background:var(--cvp-blue-d); }
 
   .btn-sm { padding:.55rem 1rem; font-size:.75rem; width:auto; border-radius:10px; white-space:nowrap; }
-  .btn-outline { background:transparent; border:1px solid var(--cvp-blue); color:var(--cvp-blue); font-weight:800; }
+  .btn-outline { background:transparent; border:1px solid var(--cvp-blue); color:var(--cvp-blue); font-weight:500; }
   .btn-outline:hover { background:var(--cvp-blue); color:#fff; }
 
   .btn-ghost {
     background:transparent;
     border:1px solid var(--border);
     color:var(--text);
-    font-weight:800;
+    font-weight:500;
     padding:.85rem;
     border-radius:12px;
     cursor:pointer;
@@ -124,7 +119,7 @@
     background:rgba(220,38,38,.08);
     border:1px solid rgba(220,38,38,.25);
     color:var(--red);
-    font-weight:900;
+    font-weight:600;
   }
   .btn-danger:hover { background:rgba(220,38,38,.14); border-color:rgba(220,38,38,.35); }
 
@@ -210,7 +205,9 @@
   header { position:sticky; top:0; z-index:50; box-shadow:0 2px 12px rgba(0,0,0,.12); }
   .hd-inner { max-width:1100px; margin:0 auto; padding:0 1rem; height:76px; display:flex; align-items:center; justify-content:space-between; }
   .hd-left  { display:flex; align-items:center; gap:1rem; }
-  .hd-title { font-size:.85rem; font-weight:600; text-transform:uppercase; letter-spacing:.12em; opacity:.9; }
+  .hd-brand { display:flex; flex-direction:column; line-height:1.05; }
+  .hd-title { font-size:.9rem; font-weight:600; letter-spacing:.06em; opacity:.95; text-transform:uppercase; }
+  .hd-subtitle { font-size:.7rem; opacity:.65; letter-spacing:.04em; margin-top:1px; }
   .hd-right { display:flex; align-items:center; gap:.8rem; }
   .icon-btn { background:rgba(255,255,255,.12); border:none; color:#fff; padding:.55rem .7rem; border-radius:12px; cursor:pointer; transition:background .2s; font-size:.95rem; }
   .icon-btn:hover { background:rgba(255,255,255,.24); }
@@ -234,7 +231,7 @@
     background:transparent;
     color:var(--muted);
     font-size:13px;
-    font-weight:800;
+    font-weight:600;
     cursor:pointer;
     transition:all .2s;
     font-family:inherit;
@@ -245,6 +242,8 @@
     white-space:nowrap;
   }
   .tab-btn.active { background:var(--cvp-blue); color:#fff; box-shadow:0 2px 8px rgba(0,92,169,.25); }
+  .tab-btn:disabled { opacity:.45; cursor:not-allowed; }
+  .tab-badge-soon { font-size:9px; background:rgba(26,95,168,.1); color:var(--cvp-blue); border:0.5px solid rgba(26,95,168,.2); border-radius:20px; padding:1px 6px; font-weight:500; letter-spacing:.03em; margin-left:4px; }
   .page { display:none; }
   .page.active { display:block; }
   @media(min-width:920px){
@@ -266,7 +265,7 @@
     margin: 1.5rem 0 1rem;
   }
   .section-sep span {
-    font-size:10px; font-weight:800; text-transform:uppercase;
+    font-size:10px; font-weight:500; text-transform:uppercase;
     letter-spacing:.12em; color:var(--muted); white-space:nowrap;
   }
   .section-sep::before, .section-sep::after {
@@ -320,11 +319,14 @@
   .st-opt {
     flex:1; padding:.65rem; border:1px solid var(--border); border-radius:12px;
     text-align:center; cursor:pointer; transition:all .15s;
-    font-size:13px; font-weight:700;
+    font-size:13px; font-weight:500;
   }
   .st-opt:hover { border-color:var(--cvp-blue); }
   .st-opt.active-green { border-color:var(--green); background:rgba(22,163,74,.06); color:var(--green); }
   .st-opt.active-red   { border-color:var(--red);   background:rgba(220,38,38,.06);  color:var(--red); }
+  .st-dot{ display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+  .st-dot.on{ background:var(--green); }
+  .st-dot.off{ border:1.5px solid var(--muted); background:transparent; }
 
   /* JOB ROWS */
   .job-list { display:flex; flex-direction:column; gap:.5rem; margin-bottom:1rem; }
@@ -333,7 +335,7 @@
   .rm-btn { width:36px; height:36px; border:none; border-radius:10px; background:#fef2f2; color:var(--red); font-size:1rem; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:background .2s; }
   .rm-btn:hover { background:#fee2e2; }
   .job-hint { display:flex; gap:.5rem; margin-bottom:.4rem; }
-  .job-hint span { font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); }
+  .job-hint span { font-size:10px; font-weight:500; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); }
 
   /* BULK */
   .mode-toggle { display:flex; gap:.5rem; margin-bottom:1rem; }
@@ -367,6 +369,7 @@
     border-radius:24px; width:100%; max-width:420px;
     padding:2rem; text-align:center;
     animation:fade .25s ease-out;
+    box-shadow:var(--shadow-modal);
   }
   .modal-icon {
     width:64px; height:64px; border-radius:50%;
@@ -377,7 +380,7 @@
   .modal-icon.success  { background:#f0fdf4; }
   .modal-icon.failed   { background:#fef2f2; }
   .modal-icon.timeout  { background:#fffbeb; }
-  .modal-title  { font-size:1.1rem; font-weight:800; margin:0 0 .4rem; }
+  .modal-title  { font-size:1.1rem; font-weight:600; margin:0 0 .4rem; }
   .modal-desc   { font-size:13px; color:var(--muted); margin:0 0 1.5rem; line-height:1.6; }
   .modal-meta   {
     font-size:11px; color:var(--muted); font-family:monospace;
@@ -481,7 +484,7 @@
   .query-filters { display:grid; grid-template-columns:1fr 140px 80px; gap:.5rem; margin-bottom:1rem; }
   .query-table-wrap { overflow-x:auto; border:0.5px solid var(--border); border-radius:12px; }
   .query-table { width:100%; border-collapse:collapse; font-size:13px; }
-  .query-table th { padding:.5rem .75rem; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); border-bottom:0.5px solid var(--border); text-align:left; white-space:nowrap; background:var(--bg); }
+  .query-table th { padding:.5rem .75rem; font-size:10px; font-weight:500; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); border-bottom:0.5px solid var(--border); text-align:left; white-space:nowrap; background:var(--bg); }
   .query-table td { padding:.55rem .75rem; border-bottom:0.5px solid var(--border); vertical-align:middle; }
   .query-table tr:last-child td { border-bottom:none; }
   .query-table tr:hover td { background:var(--bg); }
@@ -494,6 +497,20 @@
   .pag-btn.active { background:var(--cvp-blue);border-color:var(--cvp-blue);color:#fff; }
   .pag-btn:disabled { opacity:.4;cursor:not-allowed; }
   .empty-query { text-align:center;padding:2rem;color:var(--muted);font-size:13px; }
+  .empty-state { text-align:center; padding:2.5rem 1rem; }
+  .empty-state .es-icon { font-size:2rem; color:var(--border); display:block; margin-bottom:.75rem; }
+  .empty-state .es-title { font-size:13px; font-weight:500; color:var(--muted); margin-bottom:.3rem; }
+  .empty-state .es-sub { font-size:12px; color:var(--muted); opacity:.7; margin:0; }
+
+  /* headers internos (substitui gradiente repetido) */
+  .card-section-head { padding:1rem 1.25rem; border-bottom:1px solid var(--border); background:var(--card); }
+  .card-section-head h2 { font-size:1rem; font-weight:600; color:var(--cvp-blue); margin:0; letter-spacing:.01em; }
+  .card-section-head .sub { font-size:11px; color:var(--muted); margin:.2rem 0 0; letter-spacing:.04em; text-transform:none; opacity:1; font-weight:500; }
+
+  /* lineage button (remove estilos hardcoded no JS) */
+  .lineage-btn{ font-size:11px; font-weight:500; padding:.3rem .5rem; border-radius:10px; border:0.5px solid; cursor:pointer; white-space:nowrap; font-family:inherit; }
+  .lineage-btn-ok { background: rgba(22,163,74,.08); border: 0.5px solid #16a34a; color: #15803d; }
+  .lineage-btn-pending { background: rgba(202,138,4,.08); border: 0.5px solid #ca8a04; color: #92400e; }
   .tag-pill { font-size:10px;padding:1px 6px;border-radius:20px;background:rgba(0,92,169,.08);border:0.5px solid rgba(0,92,169,.2);color:var(--cvp-blue);margin-right:3px;white-space:nowrap; }
   .row-actions{ display:flex; gap:6px; justify-content:flex-end; }
   .row-actions .btn-ghost.btn-sm, .row-actions .btn-danger.btn-sm{ padding:.35rem .6rem; border-radius:10px; font-size:11px; }
@@ -583,11 +600,14 @@
     <div class="hd-inner">
       <div class="hd-left">
         <img class="logo" style="margin:0;height:36px;" src="https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/lc_decoracoes/cvp.png" alt="CVP" onerror="this.style.display='none'" />
-        <span class="hd-title">Cadastro de Pipeline</span>
+        <div class="hd-brand">
+          <div class="hd-title">ORQUESTRA</div>
+          <div class="hd-subtitle">Gestão de Pipelines</div>
+        </div>
       </div>
       <div class="hd-right">
         <span class="whoami">Olá, <strong id="who"></strong></span>
-        <button class="icon-btn" onclick="toggleTheme()" title="Tema" aria-label="Alternar tema"><span id="theme-emoji">🌙</span></button>
+        <button class="icon-btn" onclick="toggleTheme()" title="Tema" aria-label="Alternar tema"><span id="theme-emoji">◐</span></button>
         <button class="icon-btn logout" onclick="sair()">Sair</button>
       </div>
     </div>
@@ -596,19 +616,19 @@
   <main>
     <div class="app-grid">
       <div class="tabs" aria-label="Navegação">
-        <button class="tab-btn active" onclick="switchPage('page-pipelines',this);loadQuery(0)">🏷️ <span>Pipelines</span></button>
-        <button class="tab-btn" onclick="switchPage('page-jobs',this)">🧩 <span>Jobs</span></button>
+        <button class="tab-btn active" onclick="switchPage('page-pipelines',this);loadQuery(0)">≡ <span>Pipelines</span></button>
+        <button class="tab-btn" onclick="switchPage('page-jobs',this)">⬡ <span>Jobs</span></button>
+        <button class="tab-btn" disabled aria-disabled="true">◫ <span>Dashboard</span><span class="tab-badge-soon">em breve</span></button>
+        <button class="tab-btn" disabled aria-disabled="true">≣ <span>Logs</span><span class="tab-badge-soon">em breve</span></button>
       </div>
 
       <div class="pages">
         <!-- PÁGINA: PIPELINES -->
         <div id="page-pipelines" class="page active">
           <div class="card fade">
-            <div class="grad grad-pad">
-              <h1 style="font-size:1.1rem;font-weight:800;margin:0;display:flex;align-items:center;gap:.5rem">
-                <span class="orange">🏷️</span> Pipelines
-              </h1>
-              <p class="sub">Listagem e consulta via DAG · etl_pipeline_query</p>
+            <div class="card-section-head">
+              <h2>Pipelines</h2>
+              <p class="sub">Gestão de pipelines</p>
             </div>
             <div class="body-pad">
               <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap">
@@ -645,27 +665,29 @@
                 <button class="btn btn-primary" id="btn-query" onclick="loadQuery()" style="flex:1">
                   <span id="query-btn-txt">Buscar</span>
                 </button>
-                <button class="btn-ghost btn-sm" onclick="clearQuery()" title="Limpar filtros">✕ limpar</button>
+                <button class="btn-ghost btn-sm" onclick="clearQuery()" title="Limpar filtros">× limpar</button>
               </div>
 
               <div id="query-status" style="font-size:12px;color:var(--muted);margin-bottom:.5rem;min-height:16px"></div>
 
               <div id="query-table-area">
-                <div class="empty-query">Use os filtros acima e clique em Buscar para carregar os pipelines.</div>
+                <div class="empty-state">
+                  <span class="es-icon">≡</span>
+                  <p class="es-title">Nenhum pipeline carregado</p>
+                  <p class="es-sub">Use os filtros acima e clique em Buscar para carregar os pipelines.</p>
+                </div>
               </div>
             </div>
           </div>
 
           <div id="pipeline-editor" class="hidden" style="margin-top:1rem">
       <div class="card fade">
-        <div class="grad grad-pad" style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem">
+        <div class="card-section-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem">
           <div>
-            <h1 id="pipelineFormTitle" style="font-size:1.1rem;font-weight:800;margin:0;display:flex;align-items:center;gap:.5rem">
-              <span class="orange">＋</span> Novo Pipeline
-            </h1>
-            <p class="sub">Chama DAG · etl_pipeline_register</p>
+            <h2 id="pipelineFormTitle"><span class="orange">+</span> Novo Pipeline</h2>
+            <p class="sub">Cadastro / edição de pipeline</p>
           </div>
-          <button class="icon-btn" onclick="closePipelineEditor()" title="Fechar" aria-label="Fechar">✕</button>
+          <button class="icon-btn" onclick="closePipelineEditor()" title="Fechar" aria-label="Fechar">×</button>
         </div>
         <div class="body-pad">
 
@@ -712,10 +734,10 @@
           <div class="section-sep"><span>Status inicial</span></div>
           <div class="status-toggle">
             <div class="st-opt active-green" id="st-ativo" onclick="setStatus(1)">
-              ✅ Ativo
+              <span class="st-dot on"></span>Ativo
             </div>
             <div class="st-opt" id="st-inativo" onclick="setStatus(0)">
-              ⏸ Inativo
+              <span class="st-dot off"></span>Inativo
             </div>
           </div>
           <input type="hidden" id="p-active" value="1" />
@@ -762,7 +784,7 @@
           </div>
 
           <button class="btn" id="btn-save-pipeline" onclick="registrarPipeline()">
-            <span id="save_pipeline_txt">Salvar Pipeline</span>
+            <span id="save_pipeline_txt">Salvar</span>
           </button>
           <div id="msg-pipeline" class="msg"></div>
         </div>
@@ -773,11 +795,9 @@
         <!-- PÁGINA: JOBS -->
         <div id="page-jobs" class="page">
       <div class="card fade">
-        <div class="grad grad-pad">
-          <h1 style="font-size:1.1rem;font-weight:800;margin:0;display:flex;align-items:center;gap:.5rem">
-            <span class="orange">🧩</span> Jobs
-          </h1>
-          <p class="sub">Chama DAG · etl_pipeline_job_register</p>
+        <div class="card-section-head">
+          <h2>Jobs</h2>
+          <p class="sub">Gestão de jobs</p>
         </div>
         <div class="body-pad">
           <div class="helper" style="margin:0 0 1rem 0">
@@ -812,17 +832,21 @@
             <button class="btn btn-primary" id="btn-jq" onclick="loadJobsQuery()" style="flex:1">
               <span id="btn-jq-txt">Buscar jobs</span>
             </button>
-            <button class="btn-ghost btn-sm" onclick="clearJobsQuery()" title="Limpar filtros">✕ limpar</button>
+            <button class="btn-ghost btn-sm" onclick="clearJobsQuery()" title="Limpar filtros">× limpar</button>
           </div>
 
           <div id="job-query-status" style="font-size:12px;color:var(--muted);margin-bottom:.5rem;min-height:16px"></div>
           <div id="job-query-actions" class="hidden" style="display:flex;gap:8px;justify-content:flex-end;margin-bottom:.75rem;flex-wrap:wrap">
             <button class="btn btn-primary btn-sm" id="btn-save-order" onclick="saveJobsOrder()" disabled>Salvar ordem</button>
             <button class="btn btn-outline btn-sm" onclick="openJobCreateModal('single')">+ Adicionar job</button>
-            <button class="btn-ghost btn-sm" onclick="openJobCreateModal('bulk')">📋 Colar lista</button>
+            <button class="btn-ghost btn-sm" onclick="openJobCreateModal('bulk')">Colar lista</button>
           </div>
           <div id="job-query-table-area">
-            <div class="empty-query">Informe o pipeline e clique em Buscar jobs.</div>
+            <div class="empty-state">
+              <span class="es-icon">⬡</span>
+              <p class="es-title">Nenhum job carregado</p>
+              <p class="es-sub">Informe o pipeline e clique em Buscar jobs.</p>
+            </div>
           </div>
         </div>
       </div>
@@ -880,7 +904,7 @@ async function entrar() {
     m.textContent = 'Não foi possível conectar ao Airflow. Verifique a rede.';
     m.className = 'msg erro';
   } finally {
-    $('login_btn_txt').textContent = 'Entrar';
+    $('login_btn_txt').textContent = 'ENTRAR';
     $('login_btn').disabled = false;
   }
 }
@@ -906,7 +930,8 @@ function applyTheme(m) {
   const dark = m === 'dark';
   document.documentElement.classList.toggle('dark', dark);
   try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch(e) {}
-  const e = $('theme-emoji'); if (e) e.textContent = dark ? '☀️' : '🌙';
+  // Spec: evitar emojis — usar símbolo unicode neutro
+  const e = $('theme-emoji'); if (e) e.textContent = dark ? '◑' : '◐';
 }
 function toggleTheme() { applyTheme(document.documentElement.classList.contains('dark') ? 'light' : 'dark'); }
 (function(){ let s=null; try{s=localStorage.getItem('theme');}catch(e) {} applyTheme(s==='dark'?'dark':'light'); })();
@@ -1083,7 +1108,7 @@ function renderJobLinesB() {
       <input type="number" min="1" style="font-size:13px;text-align:center"
         value="${j.order}" oninput="jobsBdata.find(x=>x.id===${j.id}).order=+this.value" />
       <button onclick="openLineageModal(${j.id})"
-        style="font-size:11px;font-weight:700;padding:.3rem .5rem;border-radius:10px;border:0.5px solid;cursor:pointer;white-space:nowrap;font-family:inherit;background:${ok?'rgba(22,163,74,.08)':'rgba(202,138,4,.08)'};border-color:${ok?'#16a34a':'#ca8a04'};color:${ok?'#15803d':'#92400e'}">
+        class="lineage-btn ${ok ? 'lineage-btn-ok' : 'lineage-btn-pending'}">
         ${ok ? 'OK' : 'Lineage'}
       </button>
       <button class="rm-btn" style="width:32px;height:32px;font-size:12px"
@@ -1256,7 +1281,7 @@ async function registrarPipeline() {
       project_name: project, domain: domain, tags: tags,
     },
     'Pipeline "' + pipeline + '"',
-    'btn-save-pipeline', 'save_pipeline_txt', 'Salvar Pipeline'
+    'btn-save-pipeline', 'save_pipeline_txt', 'Salvar'
   );
   $('pipeline_name').value = ''; $('scheduled_time').value = '';
   $('p-project').value = ''; $('p-domain').value = '';
@@ -1471,11 +1496,13 @@ function renderJobsTable(payload) {
     jobOrderDirty = false;
     const btnSave = $('btn-save-order'); if (btnSave) btnSave.disabled = true;
     area.innerHTML =
-      '<div class="empty-query">' +
-        '<div style="margin-bottom:.6rem">Nenhum job encontrado para os filtros aplicados.</div>' +
-        '<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">' +
+      '<div class="empty-state">' +
+        '<span class="es-icon">⬡</span>' +
+        '<p class="es-title">Nenhum job encontrado</p>' +
+        '<p class="es-sub">Ajuste os filtros ou cadastre um job para este pipeline.</p>' +
+        '<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:1rem">' +
           '<button class="btn btn-outline btn-sm" onclick="openJobCreateModal(\'single\')">+ Adicionar job</button>' +
-          '<button class="btn-ghost btn-sm" onclick="openJobCreateModal(\'bulk\')">📋 Colar lista</button>' +
+          '<button class="btn-ghost btn-sm" onclick="openJobCreateModal(\'bulk\')">Colar lista</button>' +
         '</div>' +
       '</div>';
     if ($('job-query-status')) $('job-query-status').textContent = 'Nenhum resultado';
@@ -1531,7 +1558,12 @@ function clearJobsQuery() {
   if ($('jq-type')) $('jq-type').value = '';
   jobQueryState = { offset: 0, limit: 50, total: 0, pages: 0 };
   const area = $('job-query-table-area');
-  if (area) area.innerHTML = '<div class="empty-query">Informe o pipeline e clique em Buscar jobs.</div>';
+  if (area) area.innerHTML =
+    '<div class="empty-state">' +
+      '<span class="es-icon">⬡</span>' +
+      '<p class="es-title">Nenhum job carregado</p>' +
+      '<p class="es-sub">Informe o pipeline e clique em Buscar jobs.</p>' +
+    '</div>';
   if ($('job-query-status')) $('job-query-status').textContent = '';
   const act = $('job-query-actions');
   if (act) act.classList.add('hidden');
@@ -1798,7 +1830,7 @@ async function saveJobEdit() {
 }
 
 function openPipelineCreate() {
-  $('pipelineFormTitle').innerHTML = '<span class="orange">＋</span> Novo Pipeline';
+  $('pipelineFormTitle').innerHTML = '<span class="orange">+</span> Novo Pipeline';
   $('pipelineFormHint').textContent = 'Cadastro de novo pipeline. O nome é a chave única (pipeline_name).';
   $('pipeline_name').disabled = false;
   $('pipeline_name').value = '';
@@ -1972,7 +2004,12 @@ function renderQueryTable(payload) {
   if (!area) return;
   payload = normalizeXcomValue(payload);
   if (!payload || !payload.data || !payload.data.length) {
-    area.innerHTML = '<div class="empty-query">Nenhum pipeline encontrado.</div>';
+    area.innerHTML =
+      '<div class="empty-state">' +
+        '<span class="es-icon">≡</span>' +
+        '<p class="es-title">Nenhum pipeline encontrado</p>' +
+        '<p class="es-sub">Ajuste os filtros e tente novamente.</p>' +
+      '</div>';
     if ($('query-status')) $('query-status').textContent = 'Nenhum resultado';
     return;
   }
@@ -2026,7 +2063,12 @@ function clearQuery() {
   if ($('qf-active')) $('qf-active').value = '';
   queryState = { offset:0, limit:20, total:0, pages:0 };
   const area = $('query-table-area');
-  if (area) area.innerHTML = '<div class="empty-query">Use os filtros acima e clique em Buscar para carregar os pipelines.</div>';
+  if (area) area.innerHTML =
+    '<div class="empty-state">' +
+      '<span class="es-icon">≡</span>' +
+      '<p class="es-title">Nenhum pipeline carregado</p>' +
+      '<p class="es-sub">Use os filtros acima e clique em Buscar para carregar os pipelines.</p>' +
+    '</div>';
   if ($('query-status')) $('query-status').textContent = '';
 }
 </script>
@@ -2034,7 +2076,7 @@ function clearQuery() {
 <!-- MODAL DE STATUS DA DAG -->
 <div class="modal-backdrop" id="statusModal">
   <div class="modal-box">
-    <div id="md-icon" class="modal-icon sending">⏳</div>
+    <div id="md-icon" class="modal-icon sending"></div>
     <div id="md-spinner" class="spinner"></div>
     <div id="md-progress" class="progress-bar"><div class="progress-fill" id="md-fill" style="width:0%"></div></div>
     <p id="md-title" class="modal-title">Enviando para o Airflow...</p>
@@ -2055,7 +2097,7 @@ function clearQuery() {
           Alterações são aplicadas <strong>linha a linha</strong> para o pipeline informado.
         </div>
       </div>
-      <button class="icon-btn" onclick="closeJobEdit()" title="Fechar" aria-label="Fechar" style="color:var(--text);background:rgba(100,116,139,.12)">✕</button>
+      <button class="icon-btn" onclick="closeJobEdit()" title="Fechar" aria-label="Fechar" style="color:var(--text);background:rgba(100,116,139,.12)">×</button>
     </div>
 
     <div class="field">
@@ -2111,7 +2153,7 @@ function clearQuery() {
           Use <strong>Adicionar job</strong> para cadastrar um único registro ou <strong>Colar lista</strong> para vários.
         </div>
       </div>
-      <button class="icon-btn" onclick="closeJobCreateModal()" title="Fechar" aria-label="Fechar" style="color:var(--text);background:rgba(100,116,139,.12)">✕</button>
+      <button class="icon-btn" onclick="closeJobCreateModal()" title="Fechar" aria-label="Fechar" style="color:var(--text);background:rgba(100,116,139,.12)">×</button>
     </div>
 
     <div class="field">
