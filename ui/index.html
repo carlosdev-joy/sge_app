@@ -57,7 +57,7 @@
   .body-pad { padding:2rem; }
   label { display:block; font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:0 0 .4rem; }
   .field { margin-bottom:1.1rem; }
-  input[type=text], input[type=password], input[type=time], select, textarea {
+  input[type=text], input[type=password], input[type=time], input[type=number], select, textarea {
     width:100%; padding:.75rem 1rem; border:1px solid var(--border);
     border-radius:12px; background:var(--card); color:var(--text);
     font-size:.95rem; font-family:inherit; transition:border-color .15s, box-shadow .15s;
@@ -410,6 +410,26 @@
   }
   .btn-modal-close:hover { background:var(--bg); }
 
+  /* MODAL DE CONFIRMAÇÃO */
+  .confirm-box {
+    background:var(--card); border:1px solid var(--border);
+    border-radius:var(--radius); width:100%; max-width:420px;
+    padding:1.75rem 2rem; text-align:left;
+    box-shadow:var(--shadow-modal);
+    animation:fade .2s ease-out;
+  }
+  .confirm-icon {
+    width:44px; height:44px; border-radius:50%;
+    background:rgba(243,146,0,.1); border:1px solid rgba(243,146,0,.25);
+    display:flex; align-items:center; justify-content:center;
+    font-size:1.25rem; margin-bottom:1rem; color:var(--cvp-orange);
+  }
+  .confirm-title { font-size:1rem; font-weight:600; margin:0 0 .4rem; color:var(--text); }
+  .confirm-msg   { font-size:13px; color:var(--muted); margin:0 0 1.5rem; line-height:1.6; }
+  .confirm-actions { display:flex; gap:.6rem; }
+  .confirm-actions .btn-ghost { flex:1; padding:.7rem; font-size:.8rem; }
+  .confirm-actions .btn       { flex:1; padding:.7rem; font-size:.8rem; }
+
   
 /* CHIPS DE TAGS */
   .chip-input-wrap {
@@ -561,7 +581,7 @@
       <div class="login-card">
         <div class="login-side grad">
           <div class="login-side-inner">
-            <img class="logo" style="margin:0 0 1rem 0" src="https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/lc_decoracoes/cvp.png" alt="Caixa Vida e Previdência" onerror="this.style.display='none'" />
+            <img class="logo" style="margin:0 0 1rem 0" src="https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/mundolc/Vertical_Branco.png" alt="Caixa Vida e Previdência" onerror="this.style.display='none'" />
             <h1 style="font-size:22px;line-height:1.1;font-weight:500;margin:0">ORQUESTRA</h1>
             <div class="login-kicker">ORQ · Organizador de Rotinas, Queues e Execução</div>
             <div class="login-badge" aria-label="Plataforma de Engenharia de Dados">
@@ -618,7 +638,7 @@
   <header class="grad">
     <div class="hd-inner">
       <div class="hd-left">
-        <img class="logo" style="margin:0;height:36px;" src="https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/lc_decoracoes/cvp.png" alt="CVP" onerror="this.style.display='none'" />
+        <img class="logo" style="margin:0;height:36px;" src="https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/mundolc/Vertical_Branco.png" alt="CVP" onerror="this.style.display='none'" />
         <div class="hd-brand">
           <div class="hd-title">ORQUESTRA</div>
           <div class="hd-subtitle">Gestão de Pipelines</div>
@@ -825,7 +845,7 @@
 
           <div class="section-sep"><span>Consultar jobs</span></div>
 
-          <div style="display:grid;grid-template-columns:1fr 220px 140px;gap:.6rem;align-items:end">
+          <div style="display:grid;grid-template-columns:1fr 220px 140px;gap:.6rem;align-items:start">
             <div class="field" style="margin:0">
               <label for="job_pipeline_name">Pipeline <span style="color:var(--red)">*</span></label>
               <input id="job_pipeline_name" type="text" placeholder="ex: etl_cobranca_diaria" />
@@ -1262,14 +1282,14 @@ async function triggerAndPoll(dagId, conf, label, btnId, btnTxtId, btnTxt) {
   try {
     const r = await triggerDag(dagId, conf);
     if (r.status === 401) { closeModal(); sair(); return; }
-    if (r.status === 403) { closeModal(); alert('Sem permissão (requer Operator ou Admin no Airflow).'); return; }
-    if (!r.ok) { closeModal(); alert('Erro ao enviar: ' + await r.text()); return; }
+    if (r.status === 403) { closeModal(); showToast('Sem permissão (requer Operator ou Admin no Airflow).', true); return; }
+    if (!r.ok) { closeModal(); showToast('Erro ao enviar: ' + await r.text(), true); return; }
     const data = await r.json();
     const runId = data.dag_run_id || data.run_id;
     setModalProcessing(runId);
     await new Promise(resolve => pollDagRun(dagId, runId, label, Date.now(), resolve));
   } catch(e) {
-    closeModal(); alert('Erro de conexão com o Airflow.');
+    closeModal(); showToast('Erro de conexão com o Airflow.', true);
   } finally {
     if (btn) btn.disabled = false;
     if (btnTxtEl && btnTxt) btnTxtEl.textContent = btnTxt;
@@ -1424,7 +1444,7 @@ let jobQueryState = { offset: 0, limit: 50, total: 0, pages: 0 };
 let jobOrderDirty = false;
 
 async function loadJobsQuery(offset) {
-  if (!authHeader) { alert('Faça login primeiro'); return; }
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
   const pipeline = $('job_pipeline_name') ? $('job_pipeline_name').value.trim() : '';
   const name = $('jq-name') ? $('jq-name').value.trim() : '';
   const type = $('jq-type') ? $('jq-type').value : '';
@@ -1626,7 +1646,7 @@ async function saveJobsOrder() {
     seen.add(j.execution_order);
   }
   if (hasDup) {
-    const ok = confirm('Existem ordens repetidas. Deseja salvar mesmo assim?');
+    const ok = await showConfirm('Existem ordens repetidas nos jobs. Deseja salvar mesmo assim?', 'Ordens duplicadas');
     if (!ok) return;
   }
 
@@ -1637,7 +1657,10 @@ async function saveJobsOrder() {
     execution_order: j.execution_order,
   }));
 
-  const ok = confirm('Salvar nova ordem de execução para ' + jobs.length + ' job(s) do pipeline "' + pipeline + '"?');
+  const ok = await showConfirm(
+    'Salvar nova ordem de execução para ' + jobs.length + ' job(s) do pipeline "' + pipeline + '"?',
+    'Salvar ordem'
+  );
   if (!ok) return;
 
   if (btnSave) btnSave.disabled = true;
@@ -1907,7 +1930,10 @@ async function softDeletePipeline(idx) {
   const list = window.__pipelines || [];
   const p = list[idx];
   if (!p) return;
-  const ok = confirm('Inativar o pipeline "' + (p.pipeline_name || '') + '"? (soft delete = active=0)');
+  const ok = await showConfirm(
+    'Inativar o pipeline "' + (p.pipeline_name || '') + '"? Esta ação pode ser revertida reativando o pipeline.',
+    'Inativar pipeline'
+  );
   if (!ok) return;
   const conf = {
     pipeline_name: p.pipeline_name,
@@ -1925,7 +1951,7 @@ async function softDeletePipeline(idx) {
 }
 
 async function loadQuery(offset) {
-  if (!authHeader) { alert('Faça login primeiro'); return; }
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
   if (offset !== undefined) queryState.offset = offset;
   const conf = { offset: queryState.offset, limit: queryState.limit };
   const fname = $('qf-name') ? $('qf-name').value.trim() : '';
@@ -2246,6 +2272,39 @@ function clearQuery() {
     if (!m) return;
     m.addEventListener('click', (e) => { if (e.target === m) closeJobCreateModal(); });
   })();
+</script>
+<!-- MODAL: CONFIRMAÇÃO -->
+<div class="modal-backdrop" id="confirmModal">
+  <div class="confirm-box">
+    <div class="confirm-icon">!</div>
+    <p class="confirm-title" id="confirm-title">Confirmar ação</p>
+    <p class="confirm-msg" id="confirm-msg"></p>
+    <div class="confirm-actions">
+      <button class="btn-ghost" id="confirm-cancel" onclick="closeConfirm(false)">Cancelar</button>
+      <button class="btn" id="confirm-ok" onclick="closeConfirm(true)">Confirmar</button>
+    </div>
+  </div>
+</div>
+<script>
+  // Modal de confirmação — substitui confirm() nativo
+  let _confirmResolve = null;
+
+  function showConfirm(msg, title) {
+    $('confirm-title').textContent = title || 'Confirmar ação';
+    $('confirm-msg').textContent   = msg;
+    $('confirmModal').classList.add('open');
+    return new Promise(resolve => { _confirmResolve = resolve; });
+  }
+
+  function closeConfirm(result) {
+    $('confirmModal').classList.remove('open');
+    if (_confirmResolve) { _confirmResolve(result); _confirmResolve = null; }
+  }
+
+  // Fecha clicando fora
+  document.getElementById('confirmModal').addEventListener('click', function(e) {
+    if (e.target === this) closeConfirm(false);
+  });
 </script>
 </body>
 </html>
