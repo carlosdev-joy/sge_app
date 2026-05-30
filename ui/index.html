@@ -177,7 +177,7 @@
     font-size:10px;
     letter-spacing:.03em;
     text-transform:uppercase;
-    font-weight:800;
+    font-weight:600;
     color:#fff;
     white-space:nowrap;
   }
@@ -447,7 +447,7 @@
   .lineage-header {
     display:flex; align-items:center; justify-content:space-between;
     padding:.65rem 1rem;
-    font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.08em;
+    font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.08em;
   }
   .lineage-header.origem  { background:rgba(0,92,169,.07); color:var(--cvp-blue); border-bottom:1px solid var(--border); }
   .lineage-header.destino { background:rgba(22,163,74,.07); color:#15803d;        border-bottom:1px solid var(--border); }
@@ -521,11 +521,30 @@
     border:1px solid var(--border);
     background:var(--card);
     color:var(--text);
-    font-weight:800;
+    font-weight:500;
     text-align:center;
     font-family:inherit;
   }
   .inline-order:focus { outline:none; border-color:var(--cvp-orange); box-shadow:var(--ring); }
+
+  /* labels do modal lineage (template JS) */
+  .lin-label{ font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; }
+
+  /* botão de fechar padronizado (modais e painéis claros) */
+  .btn-close{ color:var(--text) !important; background:rgba(100,116,139,.12) !important; }
+  .btn-close:hover{ background:rgba(100,116,139,.18) !important; }
+
+  /* utilitários (spec v1) */
+  .mt-sm { margin-top:.5rem; } .mb-sm { margin-bottom:.5rem; }
+  .mt-md { margin-top:1rem; }  .mb-md { margin-bottom:1rem; }
+  .mt-0 { margin-top:0; }      .mb-0 { margin-bottom:0; }
+  .fs-xs { font-size:11px; } .fs-sm { font-size:12px; } .fs-md { font-size:13px; } .fs-base { font-size:.95rem; }
+  .fw-400 { font-weight:400; } .fw-500 { font-weight:500; } .fw-600 { font-weight:600; }
+  .flex-row { display:flex; align-items:center; }
+  .flex-col { display:flex; flex-direction:column; }
+  .flex-between { display:flex; align-items:center; justify-content:space-between; }
+  .gap-xs { gap:.4rem; } .gap-sm { gap:.6rem; } .gap-md { gap:1rem; }
+  .flex-wrap { flex-wrap:wrap; }
 </style>
 </head>
 <body>
@@ -546,7 +565,7 @@
             <h1 style="font-size:22px;line-height:1.1;font-weight:500;margin:0">ORQUESTRA</h1>
             <div class="login-kicker">ORQ · Organizador de Rotinas, Queues e Execução</div>
             <div class="login-badge" aria-label="Plataforma de Engenharia de Dados">
-              <span class="login-badge-ic">🗄️</span>
+              <span class="login-badge-ic">⬡</span>
               <span>Plataforma de Engenharia de Dados</span>
             </div>
             <ul class="login-points">
@@ -687,11 +706,11 @@
             <h2 id="pipelineFormTitle"><span class="orange">+</span> Novo Pipeline</h2>
             <p class="sub">Cadastro / edição de pipeline</p>
           </div>
-          <button class="icon-btn" onclick="closePipelineEditor()" title="Fechar" aria-label="Fechar">×</button>
+          <button class="icon-btn btn-close" onclick="closePipelineEditor()" title="Fechar" aria-label="Fechar">×</button>
         </div>
         <div class="body-pad">
 
-          <p style="font-size:11px;color:var(--muted);margin:0 0 1.25rem;display:flex;align-items:center;gap:.3rem"><span style="color:var(--red);font-weight:800">*</span> Campos obrigatórios</p>
+          <p style="font-size:11px;color:var(--muted);margin:0 0 1.25rem;display:flex;align-items:center;gap:.3rem"><span style="color:var(--red);font-weight:600">*</span> Campos obrigatórios</p>
           <div id="pipelineFormHint" class="helper" style="margin:-.75rem 0 1.25rem 0"></div>
 
           <!-- Identificação -->
@@ -1029,7 +1048,7 @@ function renderModalBody() {
   $('mlb-body').innerHTML = `
     <div style="margin-bottom:1rem">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
-        <span style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--cvp-blue)">
+        <span class="lin-label" style="color:var(--cvp-blue)">
           Origens <span style="color:var(--red)">*</span>
         </span>
         <button class="btn-ghost btn-sm" onclick="addLinB(${j.id},'ori')">+ adicionar</button>
@@ -1038,7 +1057,7 @@ function renderModalBody() {
     </div>
     <div style="margin-bottom:1.25rem">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
-        <span style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:#15803d">
+        <span class="lin-label" style="color:#15803d">
           Destinos <span style="color:var(--red)">*</span>
         </span>
         <button class="btn-ghost btn-sm" onclick="addLinB(${j.id},'dst')">+ adicionar</button>
@@ -2097,7 +2116,7 @@ function clearQuery() {
           Alterações são aplicadas <strong>linha a linha</strong> para o pipeline informado.
         </div>
       </div>
-      <button class="icon-btn" onclick="closeJobEdit()" title="Fechar" aria-label="Fechar" style="color:var(--text);background:rgba(100,116,139,.12)">×</button>
+      <button class="icon-btn btn-close" onclick="closeJobEdit()" title="Fechar" aria-label="Fechar">×</button>
     </div>
 
     <div class="field">
@@ -2153,7 +2172,7 @@ function clearQuery() {
           Use <strong>Adicionar job</strong> para cadastrar um único registro ou <strong>Colar lista</strong> para vários.
         </div>
       </div>
-      <button class="icon-btn" onclick="closeJobCreateModal()" title="Fechar" aria-label="Fechar" style="color:var(--text);background:rgba(100,116,139,.12)">×</button>
+      <button class="icon-btn btn-close" onclick="closeJobCreateModal()" title="Fechar" aria-label="Fechar">×</button>
     </div>
 
     <div class="field">
