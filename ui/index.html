@@ -7,7 +7,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 <style>
   :root {
-    --cvp-blue:#005ca9; --cvp-blue-d:#004177; --cvp-orange:#f39200;
+    /* Paleta ORQUESTRA (Spec Login v1) */
+    --cvp-blue:#1A5FA8; --cvp-blue-d:#0D3D6B; --cvp-orange:#f39200;
     --bg:#f8fafc; --card:#fff; --text:#1e293b; --muted:#64748b; --border:#e2e8f0;
     --green:#16a34a; --red:#dc2626;
     --toggle-off:#cbd5e1; --toggle-on:#005ca9;
@@ -51,7 +52,7 @@
   .login-wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:1rem; }
   .login-box  { width:100%; max-width:920px; }
   .card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; box-shadow:var(--shadow); }
-  .grad { background:linear-gradient(135deg,#005ca9 0%,#0077d6 100%); color:#fff; }
+  .grad { background:linear-gradient(135deg,var(--cvp-blue) 0%,#0F4C88 55%, var(--cvp-blue-d) 100%); color:#fff; }
   .grad-pad { padding:2rem; }
   .logo { height:40px; display:block; margin:0 auto 1rem; }
   .t-center { text-align:center; }
@@ -171,7 +172,22 @@
     mix-blend-mode:overlay;
   }
   .login-side-inner{ position:relative; z-index:1; width:100%; }
-  .login-kicker{ font-size:11px; letter-spacing:.16em; text-transform:uppercase; opacity:.85; font-weight:700; margin-top:.35rem; }
+  .login-badge{
+    display:inline-flex; align-items:center; gap:.45rem;
+    margin-top:.9rem;
+    padding:.35rem .65rem;
+    border-radius:999px;
+    background:rgba(255,255,255,.12);
+    border:1px solid rgba(255,255,255,.25);
+    font-size:10px;
+    letter-spacing:.03em;
+    text-transform:uppercase;
+    font-weight:800;
+    color:#fff;
+    white-space:nowrap;
+  }
+  .login-badge-ic{ font-size:12px; opacity:.95; }
+  .login-kicker{ font-size:11px; letter-spacing:.04em; text-transform:none; opacity:.55; font-weight:600; margin-top:.35rem; }
   .login-points{ margin:1.2rem 0 0; padding:0; list-style:none; display:grid; gap:.55rem; }
   .login-points li{ display:flex; gap:.55rem; align-items:flex-start; font-size:13px; opacity:.95; }
   .login-dot{ width:10px; height:10px; border-radius:999px; background:rgba(255,255,255,.8); margin-top:.35rem; flex:0 0 auto; }
@@ -183,7 +199,8 @@
   .login-main-inner{ width:100%; max-width:420px; margin:0 auto; }
   .helper{ font-size:12px; color:var(--muted); line-height:1.45; margin-top:.35rem; }
   @media(min-width:920px){
-    .login-card{ grid-template-columns:1.15fr .85fr; }
+    /* Spec: painel esquerdo ~45% e direito ~55% */
+    .login-card{ grid-template-columns:.85fr 1.15fr; }
     .login-side{ padding:2.6rem 2.4rem; }
     .login-main{ padding:2.6rem 2.4rem; }
     .login-main-inner{ max-width:380px; }
@@ -509,28 +526,33 @@
         <div class="login-side grad">
           <div class="login-side-inner">
             <img class="logo" style="margin:0 0 1rem 0" src="https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/lc_decoracoes/cvp.png" alt="Caixa Vida e Previdência" onerror="this.style.display='none'" />
-            <h1 style="font-size:1.35rem;line-height:1.1">SGE — Cadastro de Pipeline</h1>
-            <div class="login-kicker">Acesso restrito</div>
+            <h1 style="font-size:22px;line-height:1.1;font-weight:500;margin:0">ORQUESTRA</h1>
+            <div class="login-kicker">ORQ · Organizador de Rotinas, Queues e Execução</div>
+            <div class="login-badge" aria-label="Plataforma de Engenharia de Dados">
+              <span class="login-badge-ic">🗄️</span>
+              <span>Plataforma de Engenharia de Dados</span>
+            </div>
             <ul class="login-points">
-              <li><span class="login-dot"></span><span>Cadastre pipelines e jobs com validação simples.</span></li>
-              <li><span class="login-dot"></span><span>Envie para o Airflow e acompanhe o status em tempo real.</span></li>
-              <li><span class="login-dot"></span><span>Consulta rápida por projeto, status e nome.</span></li>
+              <li><span class="login-dot"></span><span>Centralize e controle todos os pipelines em um só lugar</span></li>
+              <li><span class="login-dot"></span><span>Crie e gerencie DAGs com rastreamento de origem e destino</span></li>
+              <li><span class="login-dot"></span><span>Vincule jobs aos pipelines e acompanhe execuções em tempo real</span></li>
+              <li><span class="login-dot"></span><span>Logs detalhados e dashboard com os principais indicadores</span></li>
             </ul>
           </div>
         </div>
         <div class="login-main">
           <div class="login-main-inner">
             <div style="margin-bottom:1.25rem">
-              <div style="font-weight:900;letter-spacing:.02em">Entrar</div>
-              <div class="helper">Use sua credencial de rede (matrícula). Se não tiver acesso, entre em contato com a engenharia.</div>
+              <div style="font-weight:500;font-size:16px;letter-spacing:.01em">Entrar no ORQUESTRA</div>
+              <div class="helper">Use sua matrícula de rede. Sem acesso, fale com a engenharia de dados.</div>
             </div>
 
             <div class="field">
-              <label for="login_user">Usuário (rede / matrícula)</label>
+              <label for="login_user">MATRÍCULA</label>
               <input id="login_user" type="text" placeholder="ex: CVP12345" autocomplete="username" />
             </div>
             <div class="field">
-              <label for="login_pass">Senha</label>
+              <label for="login_pass">SENHA</label>
               <input id="login_pass" type="password" autocomplete="current-password"
                   onkeyup="checkCapsLock(event)" onkeydown="checkCapsLock(event)" />
               <div id="caps-warn" style="display:none;align-items:center;gap:6px;margin-top:6px;
@@ -541,17 +563,17 @@
             </div>
 
             <button class="btn" id="login_btn" onclick="entrar()">
-              <span id="login_btn_txt">Entrar</span>
+              <span id="login_btn_txt">ENTRAR</span>
             </button>
             <div id="login_msg" class="msg"></div>
             <div class="helper" style="margin-top:.9rem">
-              Dica: pressione <strong>Enter</strong> para entrar.
+              Pressione <strong>Enter</strong> para entrar <span style="opacity:.6">·</span>
+              <span style="color:var(--cvp-blue);font-weight:700">Desenvolvido pela Engenharia de Dados</span>
             </div>
           </div>
         </div>
       </div>
     </div>
-    <p class="foot">Caixa Vida e Previdência · SGE</p>
   </div>
 </div>
 
