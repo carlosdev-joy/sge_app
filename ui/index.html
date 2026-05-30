@@ -1540,7 +1540,6 @@ async function saveJobsOrder() {
 
   for (const j of list) {
     if (!j.job_name) { if (qs) qs.textContent = 'Existe um job sem nome (não é possível salvar).'; return; }
-    if (!j.job_type) { if (qs) qs.textContent = 'Job "' + j.job_name + '" sem tipo (não é possível salvar).'; return; }
     if (!j.execution_order || isNaN(j.execution_order) || j.execution_order < 1) {
       if (qs) qs.textContent = 'Ordem inválida no job "' + j.job_name + '".';
       return;
@@ -1558,13 +1557,11 @@ async function saveJobsOrder() {
     if (!ok) return;
   }
 
+  // Reorder seguro: envia SOMENTE {job_name, execution_order}
+  // (não toca em lineage / não exige origens/destinos)
   const jobs = list.map(j => ({
     job_name: j.job_name,
     execution_order: j.execution_order,
-    job_type: j.job_type,
-    job_command: j.job_command || null,
-    origens: [],
-    destinos: [],
   }));
 
   const ok = confirm('Salvar nova ordem de execução para ' + jobs.length + ' job(s) do pipeline "' + pipeline + '"?');
@@ -1572,7 +1569,7 @@ async function saveJobsOrder() {
 
   if (btnSave) btnSave.disabled = true;
   await triggerAndPoll(
-    'etl_pipeline_job_register',
+    'etl_pipeline_job_reorder',
     { pipeline_name: pipeline, jobs },
     'Atualizar ordem de execução (pipeline "' + pipeline + '")',
     null, null, null

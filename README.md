@@ -22,6 +22,15 @@ Para jobs, o fluxo é equivalente usando:
 - DAG: `etl_pipeline_job_query`
 - task: `consultar_jobs`
 
+## Reordenar jobs (sem mexer em lineage)
+
+Para permitir edição rápida de ordem na UI sem risco de sobrescrever lineage, o projeto inclui:
+
+- PROC: `script/proc/sp_etl_pipeline_job_reorder.sql`
+- DAG: `dags/etl_pipeline_job_reorder.py` (dag_id `etl_pipeline_job_reorder`)
+
+A UI envia somente `{ job_name, execution_order }` para essa DAG.
+
 ## Nginx (exemplo)
 
 O proxy recomendado para evitar CORS:
