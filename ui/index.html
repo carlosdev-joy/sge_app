@@ -57,7 +57,7 @@
   .body-pad { padding:2rem; }
   label { display:block; font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:0 0 .4rem; }
   .field { margin-bottom:1.1rem; }
-  input[type=text], input[type=password], input[type=time], input[type=number], select, textarea {
+  input[type=text], input[type=password], input[type=time], input[type=date], input[type=number], select, textarea {
     width:100%; padding:.75rem 1rem; border:1px solid var(--border);
     border-radius:12px; background:var(--card); color:var(--text);
     font-size:.95rem; font-family:inherit; transition:border-color .15s, box-shadow .15s;
@@ -1209,8 +1209,10 @@ function renderLogsTable(result, area, statusEl) {
     if (falha > 0) fw = '<span class="log-pill failed">✕ ' + falha + '</span>';
     else if (warn > 0) fw = '<span class="log-pill warning">! ' + warn + '</span>';
 
-    const ex = JSON.stringify(r.execution_id || '');
-    const pip = JSON.stringify(r.pipeline || '');
+    // Importante: os parâmetros do onclick precisam estar entre aspas simples,
+    // senão o HTML quebra (ex.: onclick="openLogDetail("abc","def")").
+    const ex = String(r.execution_id || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const pip = String(r.pipeline || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     return '<tr>' +
       '<td style="font-weight:500;white-space:nowrap">' + (r.pipeline || '—') + '</td>' +
       '<td><span class="tag-pill">' + (r.project || '—') + '</span></td>' +
@@ -1221,7 +1223,7 @@ function renderLogsTable(result, area, statusEl) {
       '<td style="text-align:center">' + (r.total_jobs ?? '—') + '</td>' +
       '<td style="text-align:center">' + fw + '</td>' +
       '<td style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:11px;color:var(--muted)">' + (r.execution_id || '—') + '</td>' +
-      '<td style="white-space:nowrap"><button class="btn-ghost btn-sm" onclick="openLogDetail(' + ex + ',' + pip + ')">Ver jobs</button></td>' +
+      '<td style="white-space:nowrap"><button class="btn-ghost btn-sm" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')">Ver jobs</button></td>' +
     '</tr>';
   }).join('');
 
