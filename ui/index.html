@@ -775,7 +775,7 @@
           <div class="section-sep"><span>Identificação</span></div>
           <div class="field">
             <label for="pipeline_name">Nome do pipeline <span style="color:var(--red)">*</span></label>
-            <input id="pipeline_name" type="text" placeholder="ex: etl_cobranca_diaria" />
+            <input id="pipeline_name" type="text" placeholder="ex: ETL_COBRANCA_DIARIA" oninput="this.value=this.value.toUpperCase()" />
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
             <div class="field">
@@ -790,7 +790,7 @@
             </div>
             <div class="field">
               <label for="p-domain">Domínio <span style="color:var(--red)">*</span></label>
-              <input id="p-domain" type="text" placeholder="ex: Clientes, Cobrança" required />
+              <input id="p-domain" type="text" placeholder="ex: CLIENTES_COBRANCA" required oninput="this.value=this.value.toUpperCase()" />
             </div>
           </div>
           <div class="field">
@@ -801,10 +801,10 @@
           <div class="field">
             <label>Tags <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">— opcional · pressione Enter para adicionar</span></label>
             <div class="chip-input-wrap" id="tags-wrap" onclick="document.getElementById('tag-input').focus()">
-              <input id="tag-input" type="text" placeholder="ex: datastage, diario..." onkeydown="handleTagInput(event)" />
+              <input id="tag-input" type="text" placeholder="ex: DATASTAGE, DIARIO..." onkeydown="handleTagInput(event)" />
             </div>
             <input type="hidden" id="p-tags" value="" />
-            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Exemplo: datastage, diario, cobranca</p>
+            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Use apenas letras, números e <strong>_</strong> (sem espaços). Ex.: DATASTAGE, DIARIO, COBRANCA</p>
           </div>
 
           <!-- Status -->
@@ -1739,18 +1739,49 @@ async function triggerAndPoll(dagId, conf, label, btnId, btnTxtId, btnTxt) {
 }
 
 /* ══ SALVAR PIPELINE ══ */
+function normalizeIdent(val) {
+  // Regra: permitir somente A-Z 0-9 e underscore. Sem espaços e sem caracteres especiais.
+  const v = (val || '').trim().toUpperCase();
+  if (!v) return '';
+  if (!/^[A-Z0-9_]+$/.test(v)) return null;
+  return v;
+}
+
 async function registrarPipeline() {
-  const pipeline = $('pipeline_name').value.trim();
+  const pipelineIn = $('pipeline_name').value;
   const time     = $('scheduled_time').value;
   const project  = $('p-project').value.trim();
-  const domain   = $('p-domain').value.trim();
-  const tags     = $('p-tags').value;
+  const domainIn = $('p-domain').value;
+  const tagsIn   = $('p-tags').value;
   const m        = $('msg-pipeline');
   m.className    = 'msg';
+
+  const pipeline = normalizeIdent(pipelineIn);
   if (!pipeline) { m.textContent = 'Informe o nome do pipeline'; m.className = 'msg erro'; return; }
+  if (pipeline === null) { m.textContent = 'Nome do pipeline inválido. Use apenas letras, números e "_" (sem espaços).'; m.className = 'msg erro'; return; }
+
   if (!time)     { m.textContent = 'Informe o horário de execução'; m.className = 'msg erro'; return; }
   if (!project)  { m.textContent = 'Selecione o projeto'; m.className = 'msg erro'; return; }
-  if (!domain)   { m.textContent = 'Informe o domínio (ex: Clientes, Cobrança)'; m.className = 'msg erro'; return; }
+
+  const domain = normalizeIdent(domainIn);
+  if (!domain) { m.textContent = 'Informe o domínio (use "_" no lugar de espaços)'; m.className = 'msg erro'; return; }
+  if (domain === null) { m.textContent = 'Domínio inválido. Use apenas letras, números e "_" (sem espaços).'; m.className = 'msg erro'; return; }
+
+  // Tags: podem ser vazias, mas quando houver, validar e padronizar em caixa alta.
+  const tags = (tagsIn || '').trim();
+  if (tags) {
+    const parts = tags.split(',').map(s => s.trim()).filter(Boolean);
+    for (const t of parts) {
+      const nt = normalizeIdent(t);
+      if (nt === null) { m.textContent = 'Tag inválida: "' + t + '". Use apenas letras, números e "_" (sem espaços).'; m.className = 'msg erro'; return; }
+    }
+  }
+
+  // Reflete padronização no formulário (exibição sempre em caixa alta)
+  $('pipeline_name').value = pipeline;
+  $('p-domain').value = domain;
+  $('p-tags').value = (tags ? tags.split(',').map(s => normalizeIdent(s)).filter(Boolean).join(',') : '');
+
   await triggerAndPoll(
     'etl_pipeline_register',
     {
@@ -1823,11 +1854,14 @@ function handleTagInput(e) {
   input.value = '';
 }
 function addChip(val) {
+  const norm = normalizeIdent(val);
+  if (!norm) return;
+  if (norm === null) { showToast('Tag inválida. Use apenas letras, números e "_" (sem espaços).', true); return; }
   const existing = [...$('tags-wrap').querySelectorAll('.chip')].map(c => c.dataset.val);
-  if (existing.includes(val)) return;
+  if (existing.includes(norm)) return;
   const chip = document.createElement('span');
-  chip.className = 'chip'; chip.dataset.val = val;
-  chip.innerHTML = val + '<button class="chip-rm" onclick="removeChip(this)" title="Remover">×</button>';
+  chip.className = 'chip'; chip.dataset.val = norm;
+  chip.innerHTML = norm + '<button class="chip-rm" onclick="removeChip(this)" title="Remover">×</button>';
   $('tags-wrap').insertBefore(chip, $('tag-input'));
   syncTags();
 }
