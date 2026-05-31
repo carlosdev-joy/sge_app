@@ -57,6 +57,21 @@
   .body-pad { padding:2rem; }
   label { display:block; font-size:11px; font-weight:500; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:0 0 .4rem; }
   .field { margin-bottom:1.1rem; }
+  .field-error{
+    display:none;
+    margin-top:6px;
+    font-size:11px;
+    color:var(--red);
+    font-weight:600;
+    letter-spacing:.01em;
+  }
+  .field.invalid label{ color:var(--red); }
+  .field.invalid input,
+  .field.invalid select,
+  .field.invalid textarea{
+    border-color:rgba(220,38,38,.8);
+    box-shadow:0 0 0 3px rgba(220,38,38,.12);
+  }
   input[type=text], input[type=password], input[type=time], input[type=date], input[type=number], select, textarea {
     width:100%; padding:.75rem 1rem; border:1px solid var(--border);
     border-radius:12px; background:var(--card); color:var(--text);
@@ -436,8 +451,18 @@
   }
   .chip-input-wrap input {
     border:none; outline:none; background:transparent; padding:0;
-    font-size:.9rem; width:120px; flex:1; min-width:80px;
+    font-size:12px;
+    line-height:1.2;
+    padding:.25rem .4rem;
+    width:180px;
+    flex:1;
+    min-width:140px;
     box-shadow:none !important;
+  }
+  /* validação de tags (quando o erro é no wrapper, não no input padrão) */
+  .field.invalid .chip-input-wrap{
+    border-color:rgba(220,38,38,.8);
+    box-shadow:0 0 0 3px rgba(220,38,38,.12);
   }
   .chip {
     display:inline-flex; align-items:center; gap:.3rem;
@@ -775,7 +800,8 @@
           <div class="section-sep"><span>Identificação</span></div>
           <div class="field">
             <label for="pipeline_name">Nome do pipeline <span style="color:var(--red)">*</span></label>
-            <input id="pipeline_name" type="text" placeholder="ex: ETL_COBRANCA_DIARIA" oninput="this.value=this.value.toUpperCase()" />
+            <input id="pipeline_name" type="text" placeholder="ex: ETL_COBRANCA_DIARIA" oninput="this.value=this.value.toUpperCase();validateIdentField('pipeline_name','err-pipeline','Nome do pipeline',true)" />
+            <div id="err-pipeline" class="field-error"></div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
             <div class="field">
@@ -790,7 +816,8 @@
             </div>
             <div class="field">
               <label for="p-domain">Domínio <span style="color:var(--red)">*</span></label>
-              <input id="p-domain" type="text" placeholder="ex: CLIENTES_COBRANCA" required oninput="this.value=this.value.toUpperCase()" />
+              <input id="p-domain" type="text" placeholder="ex: CLIENTES_COBRANCA" required oninput="this.value=this.value.toUpperCase();validateIdentField('p-domain','err-domain','Domínio',true)" />
+              <div id="err-domain" class="field-error"></div>
             </div>
           </div>
           <div class="field">
@@ -801,10 +828,11 @@
           <div class="field">
             <label>Tags <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">— opcional · pressione Enter para adicionar</span></label>
             <div class="chip-input-wrap" id="tags-wrap" onclick="document.getElementById('tag-input').focus()">
-              <input id="tag-input" type="text" placeholder="ex: DATASTAGE, DIARIO..." onkeydown="handleTagInput(event)" />
+              <input id="tag-input" type="text" placeholder="ex: DATASTAGE, DIARIO..." oninput="this.value=this.value.toUpperCase();validateTagDraft()" onkeydown="handleTagInput(event)" />
             </div>
             <input type="hidden" id="p-tags" value="" />
             <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Use apenas letras, números e <strong>_</strong> (sem espaços). Ex.: DATASTAGE, DIARIO, COBRANCA</p>
+            <div id="err-tags" class="field-error"></div>
           </div>
 
           <!-- Status -->
@@ -1014,6 +1042,68 @@ const DAG_FACTORY_ID = 'etl_dag_factory';
 const LOGS_DAG_ID = 'etl_job_execution_query';
 let logsCurrentOffset = 0;
 const LOGS_LIMIT = 30;
+
+/* ══ Validações (Pipelines) ══ */
+const IDENT_RE = /^[A-Z0-9_]+$/;
+
+function setFieldInvalidById(inputId, errId, message) {
+  const inp = $(inputId);
+  const err = $(errId);
+  if (inp && inp.closest) {
+    const field = inp.closest('.field');
+    if (field) field.classList.add('invalid');
+  }
+  if (err) {
+    err.textContent = message || '';
+    err.style.display = message ? 'block' : 'none';
+  }
+}
+
+function clearFieldInvalidById(inputId, errId) {
+  const inp = $(inputId);
+  const err = $(errId);
+  if (inp && inp.closest) {
+    const field = inp.closest('.field');
+    if (field) field.classList.remove('invalid');
+  }
+  if (err) {
+    err.textContent = '';
+    err.style.display = 'none';
+  }
+}
+
+function validateIdentField(inputId, errId, label, required) {
+  const inp = $(inputId);
+  if (!inp) return true;
+  const v = (inp.value || '').trim().toUpperCase();
+  inp.value = v;
+  if (!v) {
+    if (required) {
+      setFieldInvalidById(inputId, errId, (label || 'Campo') + ' obrigatório. Use apenas letras, números e "_" (sem espaços).');
+      return false;
+    }
+    clearFieldInvalidById(inputId, errId);
+    return true;
+  }
+  if (!IDENT_RE.test(v)) {
+    setFieldInvalidById(inputId, errId, (label || 'Campo') + ' inválido. Use apenas letras, números e "_" (sem espaços).');
+    return false;
+  }
+  clearFieldInvalidById(inputId, errId);
+  return true;
+}
+
+function validateTagDraft() {
+  const inp = $('tag-input');
+  if (!inp) return true;
+  const v = (inp.value || '').trim().toUpperCase();
+  inp.value = v;
+  // rascunho (antes do Enter) não precisa ser obrigatório
+  if (!v) { clearFieldInvalidById('tag-input', 'err-tags'); return true; }
+  if (!IDENT_RE.test(v)) { setFieldInvalidById('tag-input', 'err-tags', 'Tag inválida. Use apenas letras, números e "_" (sem espaços).'); return false; }
+  clearFieldInvalidById('tag-input', 'err-tags');
+  return true;
+}
 
 async function waitDagRun(dagId, runId, maxSec) {
   const end = Date.now() + (maxSec * 1000);
@@ -1743,11 +1833,38 @@ function normalizeIdent(val) {
   // Regra: permitir somente A-Z 0-9 e underscore. Sem espaços e sem caracteres especiais.
   const v = (val || '').trim().toUpperCase();
   if (!v) return '';
-  if (!/^[A-Z0-9_]+$/.test(v)) return null;
+  if (!IDENT_RE.test(v)) return null;
   return v;
 }
 
 async function registrarPipeline() {
+  // Validação antecipada (mostra erros no próprio campo)
+  const okPipeline = validateIdentField('pipeline_name', 'err-pipeline', 'Nome do pipeline', true);
+  const okDomain   = validateIdentField('p-domain', 'err-domain', 'Domínio', true);
+
+  // Tags: validar todos os chips já adicionados (p-tags)
+  const tagsRaw = ($('p-tags') ? $('p-tags').value : '').trim();
+  if (tagsRaw) {
+    const parts = tagsRaw.split(',').map(s => s.trim()).filter(Boolean);
+    for (const t of parts) {
+      if (!IDENT_RE.test(String(t).toUpperCase())) {
+        setFieldInvalidById('tag-input', 'err-tags', 'Tag inválida: "' + t + '". Use apenas letras, números e "_" (sem espaços).');
+        break;
+      }
+    }
+  }
+  const okTags = !$('tag-input') ? true : !($('tag-input').closest('.field')?.classList.contains('invalid'));
+
+  if (!okPipeline || !okDomain || !okTags) {
+    const m = $('msg-pipeline');
+    if (m) { m.textContent = ''; m.className = 'msg'; }
+    // foca no primeiro campo inválido
+    if (!okPipeline) { try { $('pipeline_name').focus(); } catch(_) {} return; }
+    if (!okDomain)   { try { $('p-domain').focus(); } catch(_) {} return; }
+    try { $('tag-input')?.focus(); } catch(_) {}
+    return;
+  }
+
   const pipelineIn = $('pipeline_name').value;
   const time     = $('scheduled_time').value;
   const project  = $('p-project').value.trim();
@@ -1856,7 +1973,7 @@ function handleTagInput(e) {
 function addChip(val) {
   const norm = normalizeIdent(val);
   if (!norm) return;
-  if (norm === null) { showToast('Tag inválida. Use apenas letras, números e "_" (sem espaços).', true); return; }
+  if (norm === null) { setFieldInvalidById('tag-input', 'err-tags', 'Tag inválida. Use apenas letras, números e "_" (sem espaços).'); return; }
   const existing = [...$('tags-wrap').querySelectorAll('.chip')].map(c => c.dataset.val);
   if (existing.includes(norm)) return;
   const chip = document.createElement('span');
@@ -1864,6 +1981,7 @@ function addChip(val) {
   chip.innerHTML = norm + '<button class="chip-rm" onclick="removeChip(this)" title="Remover">×</button>';
   $('tags-wrap').insertBefore(chip, $('tag-input'));
   syncTags();
+  clearFieldInvalidById('tag-input', 'err-tags');
 }
 function removeChip(btn) { btn.parentElement.remove(); syncTags(); }
 function syncTags() {
@@ -2361,6 +2479,9 @@ function openPipelineCreate() {
   ['tog-inicio','tog-fim','tog-erro'].forEach(id => { $(id).checked = true; syncToggle('lbl-'+id.replace('tog-',''), $(id)); });
   $('msg-pipeline').textContent = '';
   $('msg-pipeline').className = 'msg';
+  clearFieldInvalidById('pipeline_name','err-pipeline');
+  clearFieldInvalidById('p-domain','err-domain');
+  clearFieldInvalidById('tag-input','err-tags');
   $('pipeline-editor').classList.remove('hidden');
   try { $('pipeline_name').focus(); } catch(e) {}
   try { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); } catch(e) {}
@@ -2378,9 +2499,9 @@ function openPipelineEdit(idx) {
   $('pipelineFormTitle').innerHTML = '<span class="orange">✎</span> Editar Pipeline';
   $('pipelineFormHint').textContent = 'Edição do pipeline. Para “renomear”, crie um novo pipeline.';
   $('pipeline_name').disabled = true;
-  $('pipeline_name').value = p.pipeline_name || '';
+  $('pipeline_name').value = (p.pipeline_name || '').toString().toUpperCase();
   $('p-project').value = p.project_name || '';
-  $('p-domain').value = p.domain || '';
+  $('p-domain').value = (p.domain || '').toString().toUpperCase();
   const st = (p.scheduled_time || '').toString();
   $('scheduled_time').value = st.length >= 5 ? st.slice(0,5) : '';
   // tags
@@ -2397,6 +2518,9 @@ function openPipelineEdit(idx) {
 
   $('msg-pipeline').textContent = '';
   $('msg-pipeline').className = 'msg';
+  clearFieldInvalidById('pipeline_name','err-pipeline');
+  clearFieldInvalidById('p-domain','err-domain');
+  clearFieldInvalidById('tag-input','err-tags');
   $('pipeline-editor').classList.remove('hidden');
   try { $('scheduled_time').focus(); } catch(e) {}
   try { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); } catch(e) {}
