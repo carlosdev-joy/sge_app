@@ -534,6 +534,46 @@
   .tag-pill { font-size:10px;padding:1px 6px;border-radius:20px;background:rgba(0,92,169,.08);border:0.5px solid rgba(0,92,169,.2);color:var(--cvp-blue);margin-right:3px;white-space:nowrap; }
   .row-actions{ display:flex; gap:6px; justify-content:flex-end; }
   .row-actions .btn-ghost.btn-sm, .row-actions .btn-danger.btn-sm{ padding:.35rem .6rem; border-radius:10px; font-size:11px; }
+
+  /* Botões Gerar DAG / Regenerar (tabela de pipelines) */
+  .btn-dag{
+    padding:.35rem .7rem;
+    border-radius:10px;
+    font-size:11px;
+    font-weight:500;
+    border:0.5px solid var(--cvp-blue);
+    background:rgba(26,95,168,.08);
+    color:var(--cvp-blue);
+    cursor:pointer;
+    transition:all .12s;
+    white-space:nowrap;
+    font-family:inherit;
+  }
+  .btn-dag:hover{ background:var(--cvp-blue); color:#fff; }
+  .btn-dag:disabled{ opacity:.4; cursor:not-allowed; }
+
+  .btn-dag-ok{
+    padding:.35rem .7rem;
+    border-radius:10px;
+    font-size:11px;
+    font-weight:500;
+    border:0.5px solid var(--green);
+    background:rgba(22,163,74,.07);
+    color:var(--green);
+    cursor:pointer;
+    transition:all .12s;
+    white-space:nowrap;
+    font-family:inherit;
+  }
+  .btn-dag-ok:hover{ background:var(--green); color:#fff; }
+  .btn-dag-ok:disabled{ opacity:.4; cursor:not-allowed; }
+
+  /* Status pills para tela de Logs */
+  .log-pill{ display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:500;padding:2px 8px;border-radius:10px;border:0.5px solid transparent; white-space:nowrap; }
+  .log-pill.success{ background:rgba(22,163,74,.1); color:#15803d; border-color:rgba(22,163,74,.3); }
+  .log-pill.failed{  background:rgba(220,38,38,.1); color:#b91c1c; border-color:rgba(220,38,38,.3); }
+  .log-pill.warning{ background:rgba(202,138,4,.1); color:#92400e; border-color:rgba(202,138,4,.3); }
+  .log-pill.running{ background:rgba(26,95,168,.1); color:var(--cvp-blue); border-color:rgba(26,95,168,.3); }
   .inline-order {
     width:76px;
     padding:.35rem .5rem;
@@ -665,7 +705,7 @@
         <button class="tab-btn active" onclick="switchPage('page-pipelines',this);loadQuery(0)">≡ <span>Pipelines</span></button>
         <button class="tab-btn" onclick="switchPage('page-jobs',this)">⬡ <span>Jobs</span></button>
         <button class="tab-btn" disabled aria-disabled="true">◫ <span>Dashboard</span><span class="tab-badge-soon">em breve</span></button>
-        <button class="tab-btn" disabled aria-disabled="true">≣ <span>Logs</span><span class="tab-badge-soon">em breve</span></button>
+        <button class="tab-btn" onclick="switchPage('page-logs',this);loadLogs(0)">≣ <span>Logs</span></button>
       </div>
 
       <div class="pages">
@@ -897,6 +937,65 @@
         </div>
       </div>
         </div>
+
+        <!-- PÁGINA: LOGS DE EXECUÇÃO -->
+        <div id="page-logs" class="page">
+          <div class="card fade">
+            <div class="card-section-head">
+              <h2>Logs de Execução</h2>
+              <p class="sub">Histórico de execuções por pipeline e projeto</p>
+            </div>
+            <div class="body-pad">
+              <div class="section-sep" style="margin-bottom:1rem">FILTROS</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 180px 160px;gap:.6rem;align-items:start;margin-bottom:1rem">
+                <div class="field" style="margin:0">
+                  <label>Projeto</label>
+                  <select id="lf-project">
+                    <option value="">Todos</option>
+                    <option value="BI_CVP">BI_CVP</option>
+                    <option value="BI_VIDA">BI_VIDA</option>
+                    <option value="BI_PREVIDENCIA">BI_PREVIDENCIA</option>
+                    <option value="BI_PRESTAMISTA">BI_PRESTAMISTA</option>
+                  </select>
+                </div>
+                <div class="field" style="margin:0">
+                  <label>Pipeline</label>
+                  <input id="lf-pipeline" type="text" placeholder="filtrar por nome..." onkeydown="if(event.key==='Enter') loadLogs(0)" />
+                </div>
+                <div class="field" style="margin:0">
+                  <label>Status</label>
+                  <select id="lf-status">
+                    <option value="">Todos</option>
+                    <option value="SUCCESS">Success</option>
+                    <option value="FAILED">Failed</option>
+                    <option value="WARNING">Warning</option>
+                    <option value="RUNNING">Running</option>
+                  </select>
+                </div>
+                <div class="field" style="margin:0">
+                  <label>Data início</label>
+                  <input id="lf-date-from" type="date" />
+                </div>
+              </div><!-- fim grid filtros -->
+
+              <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap">
+                <button class="btn btn-primary" id="btn-logs-query" onclick="loadLogs(0)" style="flex:1;max-width:220px">
+                  <span id="btn-logs-txt">Buscar logs</span>
+                </button>
+                <button class="btn-ghost btn-sm" onclick="clearLogsFilters()">× limpar</button>
+              </div>
+
+              <div id="logs-status" style="font-size:12px;color:var(--muted);margin-bottom:.5rem;min-height:16px"></div>
+              <div id="logs-table-area">
+                <div class="empty-state">
+                  <span class="es-icon">≣</span>
+                  <p class="es-title">Nenhum log carregado</p>
+                  <p class="es-sub">Use os filtros acima e clique em Buscar logs.</p>
+                </div>
+              </div>
+            </div><!-- fim body-pad -->
+          </div><!-- fim card -->
+        </div><!-- fim page-logs -->
     </div>
 
   </main>
@@ -911,6 +1010,225 @@ const $ = (id) => document.getElementById(id);
 // Links para UI do Airflow (usado nos modais de erro/timeout)
 const AIRFLOW_UI_BASE = 'https://airflow.caixavidaeprevidencia.intranet/';
 const AIRFLOW_UI = AIRFLOW_UI_BASE.replace(/\/$/, '');
+
+/* ══ ORQUESTRA — DAG Factory + Logs (Spec Alterações index.html v1.0) ══ */
+const DAG_FACTORY_ID = 'etl_dag_factory';
+const LOGS_DAG_ID = 'etl_job_execution_query';
+let logsCurrentOffset = 0;
+const LOGS_LIMIT = 30;
+
+async function waitDagRun(dagId, runId, maxSec) {
+  const end = Date.now() + (maxSec * 1000);
+  while (Date.now() < end) {
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      const r = await fetch('/api/v1/dags/' + dagId + '/dagRuns/' + runId, { headers: { 'Authorization': authHeader } });
+      if (r.status === 401) { sair(); return 'failed'; }
+      if (!r.ok) return 'failed';
+      const d = await r.json();
+      if (d.state === 'success' || d.state === 'failed') return d.state;
+    } catch(_) {
+      return 'failed';
+    }
+  }
+  return 'failed'; // timeout
+}
+
+async function gerarDAG(idx) {
+  const list = window.__pipelines || [];
+  const p = list[idx];
+  if (!p) return;
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
+
+  const btn = document.getElementById('dag-btn-' + idx);
+  const isRegen = !!p.dag_criada;
+  const labelDefault = isRegen ? '↺ Regenerar' : '⚙ Gerar DAG';
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Gerando...';
+  }
+
+  try {
+    const runId = 'orquestra_ui_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + DAG_FACTORY_ID + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: { pipeline_name: p.pipeline_name } })
+    });
+    if (r.status === 401) { sair(); return; }
+    if (!r.ok) {
+      showToast('Erro ao disparar factory: ' + await r.text(), true);
+      if (btn) { btn.disabled = false; btn.textContent = labelDefault; }
+      return;
+    }
+    const data = await r.json();
+    showToast('Factory disparada para "' + p.pipeline_name + '" — aguardando...', false);
+    const state = await waitDagRun(DAG_FACTORY_ID, data.dag_run_id || data.run_id, 60);
+    if (state === 'success') {
+      showToast('DAG gerada: ' + p.pipeline_name, false);
+      p.dag_criada = 1;
+      if (btn) {
+        btn.disabled = false;
+        btn.className = 'btn-dag-ok btn-sm';
+        btn.title = 'DAG já criada — clique para regenerar após mudanças';
+        btn.textContent = '↺ Regenerar';
+      }
+    } else {
+      showToast('Falha ao gerar DAG. Verifique os logs no Airflow.', true);
+      if (btn) { btn.disabled = false; btn.textContent = labelDefault; }
+    }
+  } catch(e) {
+    showToast('Erro: ' + (e && e.message ? e.message : e), true);
+    if (btn) { btn.disabled = false; btn.textContent = labelDefault; }
+  }
+}
+
+function clearLogsFilters() {
+  ['lf-project','lf-pipeline','lf-status','lf-date-from'].forEach(id => { if ($(id)) $(id).value = ''; });
+  const area = $('logs-table-area');
+  if (area) area.innerHTML =
+    '<div class="empty-state">' +
+      '<span class="es-icon">≣</span>' +
+      '<p class="es-title">Nenhum log carregado</p>' +
+      '<p class="es-sub">Use os filtros acima e clique em Buscar logs.</p>' +
+    '</div>';
+  if ($('logs-status')) $('logs-status').textContent = '';
+  logsCurrentOffset = 0;
+}
+
+async function loadLogs(offset) {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
+  logsCurrentOffset = (offset !== undefined ? offset : logsCurrentOffset) || 0;
+
+  const conf = { offset: logsCurrentOffset, limit: LOGS_LIMIT };
+  const fproj = $('lf-project') ? $('lf-project').value : '';
+  const fpip  = $('lf-pipeline') ? $('lf-pipeline').value.trim() : '';
+  const fstat = $('lf-status') ? $('lf-status').value : '';
+  const fdf   = $('lf-date-from') ? $('lf-date-from').value : '';
+  if (fproj) conf.filter_project = fproj;
+  if (fpip)  conf.filter_pipeline = fpip;
+  if (fstat) conf.filter_status = fstat;
+  if (fdf)   conf.filter_date_from = fdf;
+
+  const btn = $('btn-logs-query'), btnTxt = $('btn-logs-txt'), st = $('logs-status'), area = $('logs-table-area');
+  if (btn) btn.disabled = true;
+  if (btnTxt) btnTxt.textContent = 'Buscando...';
+  if (st) st.textContent = 'Disparando DAG de consulta...';
+
+  try {
+    const runId = 'orq_logs_ui_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + LOGS_DAG_ID + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf }),
+    });
+    if (r.status === 401) { sair(); return; }
+    if (r.status === 403) { if (st) st.textContent = 'Acesso negado (403).'; return; }
+    if (!r.ok) { if (st) st.textContent = 'Erro ao disparar DAG: ' + r.status; return; }
+
+    const run = await r.json();
+    const rid = run.dag_run_id || run.run_id;
+    if (st) st.textContent = 'Aguardando execução... (' + rid + ')';
+
+    const state = await waitDagRun(LOGS_DAG_ID, rid, 45);
+    if (state !== 'success') {
+      if (st) st.textContent = 'Não foi possível confirmar a execução. Verifique o DAG no Airflow.';
+      return;
+    }
+
+    if (st) st.textContent = 'Carregando dados...';
+    const xr = await fetch(
+      '/api/v1/dags/' + LOGS_DAG_ID + '/dagRuns/' + rid + '/taskInstances/consultar_logs/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (xr.status === 401) { sair(); return; }
+    if (xr.status === 403) { if (st) st.textContent = 'Acesso negado (403) ao ler XCom.'; return; }
+    if (xr.status === 404) { if (st) st.textContent = 'Resultado ainda não disponível. Aguarde e tente novamente.'; return; }
+    if (!xr.ok) { if (st) st.textContent = 'Erro ao ler XCom: ' + xr.status; return; }
+
+    const xdata = await xr.json();
+    const payload = normalizeXcomValue(xdata);
+    try { window.__lastLogsPayload = payload; } catch(e) {}
+    renderLogsTable(payload, area, st);
+  } catch(err) {
+    if (st) st.textContent = 'Erro de conexão: ' + (err && err.message ? err.message : err);
+  } finally {
+    if (btn) btn.disabled = false;
+    if (btnTxt) btnTxt.textContent = 'Buscar logs';
+  }
+}
+
+function renderLogsTable(result, area, statusEl) {
+  if (!area) return;
+  const rows = (result && (result.data || result.rows)) || [];
+  const total = (result && result.total) || 0;
+  const offset = (result && (result.offset || 0)) || 0;
+  const limit = (result && (result.limit || LOGS_LIMIT)) || LOGS_LIMIT;
+  const pages = (result && (result.pages || 0)) || 0;
+
+  const from = total ? (offset + 1) : 0;
+  const to = total ? Math.min(offset + limit, total) : 0;
+  if (statusEl) statusEl.textContent = total ? ('Exibindo ' + from + '–' + to + ' de ' + total + ' execução(ões)') : 'Nenhum resultado';
+
+  const statusPill = (s) => {
+    const v = (s || '').toUpperCase();
+    if (v === 'SUCCESS') return '<span class="log-pill success">✓ SUCCESS</span>';
+    if (v === 'FAILED')  return '<span class="log-pill failed">✕ FAILED</span>';
+    if (v === 'WARNING') return '<span class="log-pill warning">! WARNING</span>';
+    if (v === 'RUNNING') return '<span class="log-pill running">… RUNNING</span>';
+    return '<span class="log-pill running">… ' + (v || 'DESCONHECIDO') + '</span>';
+  };
+
+  const fmtDur = (sec) => {
+    if (sec === null || sec === undefined || sec === '') return '—';
+    const n = parseInt(sec, 10);
+    if (isNaN(n)) return '—';
+    if (n < 60) return n + 's';
+    const m = Math.floor(n / 60);
+    const s = n % 60;
+    return m + 'm ' + s + 's';
+  };
+
+  const fmtDt16 = (v) => v ? String(v).slice(0, 16) : '—';
+
+  if (!rows.length) {
+    area.innerHTML =
+      '<div class="empty-state">' +
+        '<span class="es-icon">≣</span>' +
+        '<p class="es-title">Nenhum log encontrado</p>' +
+        '<p class="es-sub">Ajuste os filtros e tente novamente.</p>' +
+      '</div>';
+    return;
+  }
+
+  const body = rows.map(r => {
+    const falha = parseInt(r.jobs_falha || 0, 10);
+    const warn  = parseInt(r.jobs_warning || 0, 10);
+    let fw = '—';
+    if (falha > 0) fw = '<span class="log-pill failed">✕ ' + falha + '</span>';
+    else if (warn > 0) fw = '<span class="log-pill warning">! ' + warn + '</span>';
+
+    return '<tr>' +
+      '<td style="font-weight:500;white-space:nowrap">' + (r.pipeline || '—') + '</td>' +
+      '<td><span class="tag-pill">' + (r.project || '—') + '</span></td>' +
+      '<td style="white-space:nowrap">' + statusPill(r.status_geral) + '</td>' +
+      '<td style="white-space:nowrap">' + fmtDt16(r.inicio) + '</td>' +
+      '<td style="white-space:nowrap">' + fmtDt16(r.fim) + '</td>' +
+      '<td style="white-space:nowrap">' + fmtDur(r.duracao_total_segundos) + '</td>' +
+      '<td style="text-align:center">' + (r.total_jobs ?? '—') + '</td>' +
+      '<td style="text-align:center">' + fw + '</td>' +
+      '<td style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:11px;color:var(--muted)">' + (r.execution_id || '—') + '</td>' +
+    '</tr>';
+  }).join('');
+
+  area.innerHTML =
+    '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
+      '<th>Pipeline</th><th>Projeto</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th>' +
+      '<th>Jobs</th><th>Falha/Aviso</th><th>Execution ID</th>' +
+    '</tr></thead><tbody>' + body + '</tbody></table></div>' +
+    (pages > 1 ? renderPagination(offset, limit, total, pages, 'loadLogs') : '');
+}
 
 /* ══ LOGIN ══ */
 async function entrar() {
@@ -2086,6 +2404,10 @@ function renderQueryTable(payload) {
       '<div class="row-actions">' +
         '<button class="btn-ghost btn-sm" onclick="openPipelineEdit(' + i + ')">Editar</button>' +
         (p.active ? '<button class="btn-danger btn-sm" onclick="softDeletePipeline(' + i + ')">Inativar</button>' : '') +
+        (!p.dag_criada
+          ? '<button class="btn-dag btn-sm" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')">⚙ Gerar DAG</button>'
+          : '<button class="btn-dag-ok btn-sm" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="DAG já criada — clique para regenerar após mudanças">↺ Regenerar</button>'
+        ) +
       '</div>' +
     '</td>' +
     '</tr>'
@@ -2099,13 +2421,14 @@ function renderQueryTable(payload) {
     (pages > 1 ? renderPagination(offset, limit, total, pages) : '');
 }
 
-function renderPagination(offset, limit, total, pages) {
+function renderPagination(offset, limit, total, pages, loaderFnName) {
   const cur = Math.floor(offset / limit);
-  let btns = '<button class="pag-btn" ' + (cur > 0 ? '' : 'disabled') + ' onclick="loadQuery(' + ((cur-1)*limit) + ')">‹</button>';
+  const fn = loaderFnName || 'loadQuery';
+  let btns = '<button class="pag-btn" ' + (cur > 0 ? '' : 'disabled') + ' onclick="' + fn + '(' + ((cur-1)*limit) + ')">‹</button>';
   for (let i = 0; i < Math.min(pages, 7); i++)
-    btns += '<button class="pag-btn ' + (i === cur ? 'active' : '') + '" onclick="loadQuery(' + (i*limit) + ')">' + (i+1) + '</button>';
+    btns += '<button class="pag-btn ' + (i === cur ? 'active' : '') + '" onclick="' + fn + '(' + (i*limit) + ')">' + (i+1) + '</button>';
   if (pages > 7) btns += '<span style="padding:.3rem .4rem;font-size:12px;color:var(--muted)">…' + pages + '</span>';
-  btns += '<button class="pag-btn" ' + (cur < pages-1 ? '' : 'disabled') + ' onclick="loadQuery(' + ((cur+1)*limit) + ')">›</button>';
+  btns += '<button class="pag-btn" ' + (cur < pages-1 ? '' : 'disabled') + ' onclick="' + fn + '(' + ((cur+1)*limit) + ')">›</button>';
   return '<div class="pagination"><span>' + total + ' registros · página ' + (cur+1) + ' de ' + pages + '</span><div class="pag-btns">' + btns + '</div></div>';
 }
 
