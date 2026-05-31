@@ -39,4 +39,62 @@ GO
 ALTER TABLE [dbo].[etl_job_execution] ADD  DEFAULT (getdate()) FOR [created_at]
 GO
 
+/* ============================================================
+   ORQUESTRA — Índices dbo.etl_job_execution (v1.0)
+   - Não altera a PK (clustered) existente
+   - Índices NONCLUSTERED para suportar consultas (Logs/Dashboard/teams_end)
+   - Script idempotente (seguro rodar múltiplas vezes)
+   ============================================================ */
+
+-- Índice 1: pipeline + status + start_time
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_etl_job_execution_pipeline_status_start'
+      AND object_id = OBJECT_ID('dbo.etl_job_execution')
+)
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_etl_job_execution_pipeline_status_start]
+    ON [dbo].[etl_job_execution] ([pipeline] ASC, [status] ASC, [start_time] ASC)
+    INCLUDE ([execution_id], [job_name], [end_time], [duration_seconds], [project], [task_id]);
+    PRINT 'OK: IX_etl_job_execution_pipeline_status_start';
+END
+ELSE
+    PRINT 'JA EXISTE: IX_etl_job_execution_pipeline_status_start';
+GO
+
+-- Índice 2: project + status + start_time
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_etl_job_execution_project_status_start'
+      AND object_id = OBJECT_ID('dbo.etl_job_execution')
+)
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_etl_job_execution_project_status_start]
+    ON [dbo].[etl_job_execution] ([project] ASC, [status] ASC, [start_time] ASC)
+    INCLUDE ([execution_id], [pipeline], [job_name], [end_time], [duration_seconds], [task_id]);
+    PRINT 'OK: IX_etl_job_execution_project_status_start';
+END
+ELSE
+    PRINT 'JA EXISTE: IX_etl_job_execution_project_status_start';
+GO
+
+-- Índice 3: execution_id + pipeline
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_etl_job_execution_execution_id_pipeline'
+      AND object_id = OBJECT_ID('dbo.etl_job_execution')
+)
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_etl_job_execution_execution_id_pipeline]
+    ON [dbo].[etl_job_execution] ([execution_id] ASC, [pipeline] ASC)
+    INCLUDE ([status], [start_time], [end_time], [duration_seconds]);
+    PRINT 'OK: IX_etl_job_execution_execution_id_pipeline';
+END
+ELSE
+    PRINT 'JA EXISTE: IX_etl_job_execution_execution_id_pipeline';
+GO
+
 
