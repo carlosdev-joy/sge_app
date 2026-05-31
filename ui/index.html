@@ -203,11 +203,40 @@
 
   /* HEADER */
   header { position:sticky; top:0; z-index:50; box-shadow:0 2px 12px rgba(0,0,0,.12); }
-  .hd-inner { max-width:1100px; margin:0 auto; padding:0 1rem; height:76px; display:flex; align-items:center; justify-content:space-between; }
+  .hd-inner { width:100%; margin:0; padding:0 1rem; height:76px; display:flex; align-items:center; justify-content:space-between; gap:1rem; }
   .hd-left  { display:flex; align-items:center; gap:1rem; }
   .hd-brand { display:flex; flex-direction:column; line-height:1.05; }
   .hd-title { font-size:.9rem; font-weight:600; letter-spacing:.06em; opacity:.95; text-transform:uppercase; }
   .hd-subtitle { font-size:.7rem; opacity:.65; letter-spacing:.04em; margin-top:1px; }
+  .hd-nav{
+    display:flex;
+    gap:6px;
+    align-items:center;
+    padding:4px;
+    border-radius:14px;
+    background:rgba(255,255,255,.08);
+    overflow:auto;
+    -webkit-overflow-scrolling:touch;
+  }
+  .hd-tab{
+    padding:.55rem .75rem;
+    border:none;
+    border-radius:12px;
+    background:rgba(255,255,255,.15);
+    color:rgba(255,255,255,.7);
+    font-size:13px;
+    font-weight:600;
+    cursor:pointer;
+    transition:all .15s;
+    font-family:inherit;
+    display:flex;
+    align-items:center;
+    gap:.5rem;
+    white-space:nowrap;
+  }
+  .hd-tab:hover:not(:disabled){ background:rgba(255,255,255,.20); color:#fff; }
+  .hd-tab.active{ background:rgba(255,255,255,.22); color:#fff; }
+  .hd-tab:disabled{ opacity:.45; cursor:not-allowed; }
   .hd-right { display:flex; align-items:center; gap:.8rem; }
   .icon-btn { background:rgba(255,255,255,.12); border:none; color:#fff; padding:.55rem .7rem; border-radius:12px; cursor:pointer; transition:background .2s; font-size:.95rem; }
   .icon-btn:hover { background:rgba(255,255,255,.24); }
@@ -215,48 +244,12 @@
   .whoami { font-size:12px; opacity:.85; }
 
   /* MAIN / TABS */
-  main { max-width:1100px; margin:0 auto; padding:2rem 1rem; }
-  .app-grid{
-    display:grid;
-    grid-template-columns:1fr;
-    gap:1rem;
-    align-items:start;
-  }
-  .tabs { display:flex; gap:4px; background:var(--card); border:1px solid var(--border); border-radius:14px; padding:4px; margin-bottom:1.5rem; }
-  .tab-btn {
-    flex:1;
-    padding:.7rem .75rem;
-    border:none;
-    border-radius:12px;
-    background:transparent;
-    color:var(--muted);
-    font-size:13px;
-    font-weight:600;
-    cursor:pointer;
-    transition:all .2s;
-    font-family:inherit;
-    display:flex;
-    align-items:center;
-    justify-content:flex-start;
-    gap:.6rem;
-    white-space:nowrap;
-  }
-  .tab-btn.active { background:var(--cvp-blue); color:#fff; box-shadow:0 2px 8px rgba(0,92,169,.25); }
-  .tab-btn:disabled { opacity:.45; cursor:not-allowed; }
-  .tab-badge-soon { font-size:9px; background:rgba(26,95,168,.1); color:var(--cvp-blue); border:0.5px solid rgba(26,95,168,.2); border-radius:20px; padding:1px 6px; font-weight:500; letter-spacing:.03em; margin-left:4px; }
+  main { width:100%; max-width:none; margin:0; padding:1.5rem 1rem; }
+  .pages{ width:100%; }
   .page { display:none; }
   .page.active { display:block; }
-  @media(min-width:920px){
-    .app-grid{ grid-template-columns:240px 1fr; gap:1.25rem; }
-    .tabs{
-      flex-direction:column;
-      margin-bottom:0;
-      position:sticky;
-      top:92px;
-      padding:8px;
-      border-radius:18px;
-    }
-    .tab-btn{ flex:0 0 auto; }
+  @media(max-width:600px){
+    .hd-nav{ max-width:50vw; }
   }
 
   /* SECTION DIVIDER */
@@ -691,6 +684,12 @@
           <div class="hd-subtitle">Gestão de Pipelines</div>
         </div>
       </div>
+      <nav class="hd-nav" aria-label="Navegação">
+        <button class="hd-tab active" onclick="switchPage('page-pipelines',this);loadQuery(0)">≡ <span>Pipelines</span></button>
+        <button class="hd-tab" onclick="switchPage('page-jobs',this)">⬡ <span>Jobs</span></button>
+        <button class="hd-tab" disabled aria-disabled="true">◫ <span>Dashboard</span></button>
+        <button class="hd-tab" onclick="switchPage('page-logs',this);loadLogs(0)">≣ <span>Logs</span></button>
+      </nav>
       <div class="hd-right">
         <span class="whoami">Olá, <strong id="who"></strong></span>
         <button class="icon-btn" onclick="toggleTheme()" title="Tema" aria-label="Alternar tema"><span id="theme-emoji">◐</span></button>
@@ -700,14 +699,6 @@
   </header>
 
   <main>
-    <div class="app-grid">
-      <div class="tabs" aria-label="Navegação">
-        <button class="tab-btn active" onclick="switchPage('page-pipelines',this);loadQuery(0)">≡ <span>Pipelines</span></button>
-        <button class="tab-btn" onclick="switchPage('page-jobs',this)">⬡ <span>Jobs</span></button>
-        <button class="tab-btn" disabled aria-disabled="true">◫ <span>Dashboard</span><span class="tab-badge-soon">em breve</span></button>
-        <button class="tab-btn" onclick="switchPage('page-logs',this);loadLogs(0)">≣ <span>Logs</span></button>
-      </div>
-
       <div class="pages">
         <!-- PÁGINA: PIPELINES -->
         <div id="page-pipelines" class="page active">
@@ -978,6 +969,15 @@
                 </div>
               </div><!-- fim grid filtros -->
 
+              <!-- linha 2 de filtros -->
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;align-items:start;margin:-.2rem 0 1rem">
+                <div class="field" style="margin:0">
+                  <label>Execution ID</label>
+                  <input id="lf-execution-id" type="text" placeholder="ex: 20260531_090000" onkeydown="if(event.key==='Enter') loadLogs(0)" />
+                </div>
+                <div></div>
+              </div>
+
               <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap">
                 <button class="btn btn-primary" id="btn-logs-query" onclick="loadLogs(0)" style="flex:1;max-width:220px">
                   <span id="btn-logs-txt">Buscar logs</span>
@@ -996,8 +996,6 @@
             </div><!-- fim body-pad -->
           </div><!-- fim card -->
         </div><!-- fim page-logs -->
-    </div>
-
   </main>
 </div>
 
@@ -1085,7 +1083,7 @@ async function gerarDAG(idx) {
 }
 
 function clearLogsFilters() {
-  ['lf-project','lf-pipeline','lf-status','lf-date-from'].forEach(id => { if ($(id)) $(id).value = ''; });
+  ['lf-project','lf-pipeline','lf-status','lf-date-from','lf-execution-id'].forEach(id => { if ($(id)) $(id).value = ''; });
   const area = $('logs-table-area');
   if (area) area.innerHTML =
     '<div class="empty-state">' +
@@ -1106,10 +1104,12 @@ async function loadLogs(offset) {
   const fpip  = $('lf-pipeline') ? $('lf-pipeline').value.trim() : '';
   const fstat = $('lf-status') ? $('lf-status').value : '';
   const fdf   = $('lf-date-from') ? $('lf-date-from').value : '';
+  const fexec = $('lf-execution-id') ? $('lf-execution-id').value.trim() : '';
   if (fproj) conf.filter_project = fproj;
   if (fpip)  conf.filter_pipeline = fpip;
   if (fstat) conf.filter_status = fstat;
   if (fdf)   conf.filter_date_from = fdf;
+  if (fexec) conf.filter_execution_id = fexec;
 
   const btn = $('btn-logs-query'), btnTxt = $('btn-logs-txt'), st = $('logs-status'), area = $('logs-table-area');
   if (btn) btn.disabled = true;
@@ -1209,6 +1209,8 @@ function renderLogsTable(result, area, statusEl) {
     if (falha > 0) fw = '<span class="log-pill failed">✕ ' + falha + '</span>';
     else if (warn > 0) fw = '<span class="log-pill warning">! ' + warn + '</span>';
 
+    const ex = JSON.stringify(r.execution_id || '');
+    const pip = JSON.stringify(r.pipeline || '');
     return '<tr>' +
       '<td style="font-weight:500;white-space:nowrap">' + (r.pipeline || '—') + '</td>' +
       '<td><span class="tag-pill">' + (r.project || '—') + '</span></td>' +
@@ -1219,15 +1221,128 @@ function renderLogsTable(result, area, statusEl) {
       '<td style="text-align:center">' + (r.total_jobs ?? '—') + '</td>' +
       '<td style="text-align:center">' + fw + '</td>' +
       '<td style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:11px;color:var(--muted)">' + (r.execution_id || '—') + '</td>' +
+      '<td style="white-space:nowrap"><button class="btn-ghost btn-sm" onclick="openLogDetail(' + ex + ',' + pip + ')">Ver jobs</button></td>' +
     '</tr>';
   }).join('');
 
   area.innerHTML =
     '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
       '<th>Pipeline</th><th>Projeto</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th>' +
-      '<th>Jobs</th><th>Falha/Aviso</th><th>Execution ID</th>' +
+      '<th>Jobs</th><th>Falha/Aviso</th><th>Execution ID</th><th>Ações</th>' +
     '</tr></thead><tbody>' + body + '</tbody></table></div>' +
     (pages > 1 ? renderPagination(offset, limit, total, pages, 'loadLogs') : '');
+}
+
+function openLogDetail(executionId, pipeline) {
+  if (!executionId) { showToast('Execution ID inválido.', true); return; }
+  $('ld-title').textContent = 'Detalhe da execução';
+  $('ld-sub').textContent = 'Execution ID: ' + executionId + (pipeline ? (' · Pipeline: ' + pipeline) : '');
+  $('ld-status').textContent = 'Carregando...';
+  $('ld-table-area').innerHTML = '<div class="empty-state"><span class="es-icon">≣</span><p class="es-title">Carregando...</p><p class="es-sub">Aguarde o retorno do Airflow.</p></div>';
+  $('logDetailModal').classList.add('open');
+  loadLogDetail(executionId, pipeline);
+}
+
+function closeLogDetail() {
+  $('logDetailModal').classList.remove('open');
+}
+
+async function loadLogDetail(executionId, pipeline) {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
+  const conf = {
+    offset: 0,
+    limit: 200,
+    detail_mode: true,
+    filter_execution_id: executionId,
+  };
+  if (pipeline) conf.filter_pipeline = pipeline; // aceita LIKE; passar exato resolve o drill-down
+
+  $('ld-status').textContent = 'Disparando DAG...';
+  try {
+    const runId = 'orq_log_detail_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + LOGS_DAG_ID + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf }),
+    });
+    if (r.status === 401) { sair(); return; }
+    if (!r.ok) { $('ld-status').textContent = 'Erro ao disparar DAG: ' + r.status; return; }
+
+    const run = await r.json();
+    const rid = run.dag_run_id || run.run_id;
+    $('ld-status').textContent = 'Aguardando execução...';
+    const state = await waitDagRun(LOGS_DAG_ID, rid, 45);
+    if (state !== 'success') { $('ld-status').textContent = 'Falha/timeout. Verifique o Airflow.'; return; }
+
+    $('ld-status').textContent = 'Carregando dados (XCom)...';
+    const xr = await fetch(
+      '/api/v1/dags/' + LOGS_DAG_ID + '/dagRuns/' + rid + '/taskInstances/consultar_logs/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (xr.status === 401) { sair(); return; }
+    if (!xr.ok) { $('ld-status').textContent = 'Erro ao ler XCom: ' + xr.status; return; }
+
+    const xdata = await xr.json();
+    const payload = normalizeXcomValue(xdata);
+    renderLogDetailTable(payload);
+  } catch (e) {
+    $('ld-status').textContent = 'Erro: ' + (e && e.message ? e.message : e);
+  }
+}
+
+function renderLogDetailTable(result) {
+  const area = $('ld-table-area');
+  if (!area) return;
+
+  const rows = (result && result.data) || [];
+  if (!rows.length) {
+    $('ld-status').textContent = 'Nenhum job encontrado para esta execução.';
+    area.innerHTML =
+      '<div class="empty-state">' +
+        '<span class="es-icon">≣</span>' +
+        '<p class="es-title">Nenhum job encontrado</p>' +
+        '<p class="es-sub">Verifique se o execution_id está correto.</p>' +
+      '</div>';
+    return;
+  }
+
+  $('ld-status').textContent = 'Exibindo ' + rows.length + ' job(s)';
+
+  const statusPill = (s) => {
+    const v = (s || '').toUpperCase();
+    if (v === 'SUCCESS') return '<span class="log-pill success">✓ SUCCESS</span>';
+    if (v === 'FAILED')  return '<span class="log-pill failed">✕ FAILED</span>';
+    if (v === 'WARNING') return '<span class="log-pill warning">! WARNING</span>';
+    if (v === 'RUNNING') return '<span class="log-pill running">… RUNNING</span>';
+    return '<span class="log-pill running">… ' + (v || 'DESCONHECIDO') + '</span>';
+  };
+  const fmtDur = (sec) => {
+    if (sec === null || sec === undefined || sec === '') return '—';
+    const n = parseInt(sec, 10);
+    if (isNaN(n)) return '—';
+    if (n < 60) return n + 's';
+    const m = Math.floor(n / 60);
+    const s = n % 60;
+    return m + 'm ' + s + 's';
+  };
+  const fmtDt16 = (v) => v ? String(v).slice(0, 16) : '—';
+
+  const body = rows.map(r =>
+    '<tr>' +
+      '<td style="font-weight:500;white-space:nowrap">' + (r.job_name || '—') + '</td>' +
+      '<td style="white-space:nowrap">' + statusPill(r.status) + '</td>' +
+      '<td style="white-space:nowrap">' + fmtDt16(r.inicio) + '</td>' +
+      '<td style="white-space:nowrap">' + fmtDt16(r.fim) + '</td>' +
+      '<td style="white-space:nowrap">' + fmtDur(r.duration_seconds) + '</td>' +
+      '<td style="text-align:center">' + (r.status_code ?? '—') + '</td>' +
+      '<td style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:11px;color:var(--muted);max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + ((r.log_file || '').replace(/\"/g,'&quot;')) + '">' + (r.log_file || '—') + '</td>' +
+    '</tr>'
+  ).join('');
+
+  area.innerHTML =
+    '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
+      '<th>Job</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th><th>Código</th><th>Log</th>' +
+    '</tr></thead><tbody>' + body + '</tbody></table></div>';
 }
 
 /* ══ LOGIN ══ */
@@ -1313,7 +1428,7 @@ function showToast(msg, isErr) {
 /* ══ TABS ══ */
 function switchPage(pageId, btn) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.hd-tab').forEach(b => b.classList.remove('active'));
   $(pageId).classList.add('active');
   btn.classList.add('active');
 }
@@ -2462,6 +2577,24 @@ function clearQuery() {
   </div>
 </div>
 
+<!-- MODAL: DETALHE DE LOG (DRILL-DOWN) -->
+<div class="modal-backdrop" id="logDetailModal">
+  <div class="modal-box" style="max-width:980px;text-align:left">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:.75rem">
+      <div>
+        <div class="modal-title" id="ld-title" style="margin:0">Detalhe da execução</div>
+        <div class="modal-desc" id="ld-sub" style="margin:.35rem 0 0">Execution ID</div>
+      </div>
+      <button class="icon-btn btn-close" onclick="closeLogDetail()" title="Fechar" aria-label="Fechar">×</button>
+    </div>
+    <div id="ld-status" style="font-size:12px;color:var(--muted);margin-bottom:.75rem;min-height:16px"></div>
+    <div id="ld-table-area"></div>
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn-ghost" onclick="closeLogDetail()" style="flex:1">Fechar</button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL: EDITAR JOB -->
 <div class="modal-backdrop" id="jobEditModal">
   <div class="modal-box" style="max-width:560px;text-align:left">
@@ -2601,6 +2734,11 @@ function clearQuery() {
     const m = document.getElementById('jobCreateModal');
     if (!m) return;
     m.addEventListener('click', (e) => { if (e.target === m) closeJobCreateModal(); });
+  })();
+  (function () {
+    const m = document.getElementById('logDetailModal');
+    if (!m) return;
+    m.addEventListener('click', (e) => { if (e.target === m) closeLogDetail(); });
   })();
 </script>
 <!-- MODAL: CONFIRMAÇÃO -->

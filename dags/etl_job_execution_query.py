@@ -38,9 +38,11 @@ Conf esperado:
   "limit":           50,
   "filter_project":  "BI_CVP",        // opcional — filtra por projeto (igualdade)
   "filter_pipeline": "datastage_",    // opcional — LIKE %valor%
+  "filter_execution_id": "20260531_090000", // opcional — match exato
   "filter_status":   "FAILED",        // opcional — SUCCESS | FAILED | WARNING | RUNNING
   "filter_date_from":"2026-05-01",    // opcional — YYYY-MM-DD
-  "filter_date_to":  "2026-05-31"     // opcional — YYYY-MM-DD (inclusive)
+  "filter_date_to":  "2026-05-31",    // opcional — YYYY-MM-DD (inclusive)
+  "detail_mode":     false            // opcional — quando true retorna linhas por job (sem GROUP BY)
 }
 
 Task que produz o XCom: consultar_logs
@@ -82,9 +84,11 @@ def consultar_logs(**context):
 
     filter_project = (conf.get("filter_project") or "").strip()
     filter_pipeline = (conf.get("filter_pipeline") or "").strip()
+    filter_execution_id = (conf.get("filter_execution_id") or "").strip()
     filter_status = (conf.get("filter_status") or "").strip().upper()
     filter_date_from = (conf.get("filter_date_from") or "").strip()
     filter_date_to = (conf.get("filter_date_to") or "").strip()
+    detail_mode = bool(conf.get("detail_mode", False))
 
     hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
 
@@ -99,6 +103,10 @@ def consultar_logs(**context):
     if filter_pipeline:
         where_parts.append("pipeline LIKE %s")
         params.append(f"%{filter_pipeline}%")
+
+    if filter_execution_id:
+        where_parts.append("execution_id = %s")
+        params.append(filter_execution_id)
 
     # Período (inclusive)
     # - date_from: >= 00:00:00
@@ -118,6 +126,83 @@ def consultar_logs(**context):
             params.append(filter_date_to + " 23:59:59")
 
     where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+    # ── DETAIL MODE (linhas individuais por job) ─────────────────────────────
+    # Quando detail_mode=true, retornamos os registros da etl_job_execution sem GROUP BY,
+    # permitindo drill-down por execution_id (e pipeline) na UI.
+    if detail_mode:
+        if filter_status:
+            where_parts.append("status = %s")
+            params.append(filter_status)
+
+        where_sql_detail = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+        count_sql = f"""
+            SELECT COUNT(*)
+            FROM dbo.etl_job_execution
+            {where_sql_detail}
+        """
+        total_row = hook.get_first(count_sql, parameters=params or None)
+        total = total_row[0] if total_row else 0
+        pages = _ceil_div(int(total), int(limit))
+
+        data_sql = f"""
+            SELECT
+                execution_id,
+                project,
+                pipeline,
+                job_name,
+                status,
+                start_time AS inicio,
+                end_time   AS fim,
+                duration_seconds,
+                status_code,
+                log_file,
+                task_id
+            FROM dbo.etl_job_execution
+            {where_sql_detail}
+            ORDER BY start_time DESC
+            OFFSET %s ROWS FETCH NEXT %s ROWS ONLY
+        """
+
+        rows = hook.get_records(data_sql, parameters=(params + [offset, limit]) if params else [offset, limit])
+
+        data = [
+            {
+                "execution_id": r[0],
+                "project": r[1],
+                "pipeline": r[2],
+                "job_name": r[3],
+                "status": r[4],
+                "inicio": _fmt_dt(r[5]),
+                "fim": _fmt_dt(r[6]),
+                "duration_seconds": int(r[7] or 0) if r[7] is not None else None,
+                "status_code": r[8],
+                "log_file": r[9],
+                "task_id": r[10],
+            }
+            for r in rows
+        ]
+
+        result = {
+            "mode": "detail",
+            "total": int(total),
+            "offset": int(offset),
+            "limit": int(limit),
+            "pages": int(pages),
+            "filters": {
+                "project": filter_project,
+                "pipeline": filter_pipeline,
+                "execution_id": filter_execution_id,
+                "status": filter_status,
+                "date_from": filter_date_from,
+                "date_to": filter_date_to,
+            },
+            "data": data,
+        }
+
+        print(f"[{DAG_ID}] detail_mode=1 total={total} | offset={offset} | limit={limit} | retornando={len(data)}")
+        return result
 
     # ── STATUS GERAL (agregado) / HAVING ──────────────────────────────────────
     # Regras do status_geral:
@@ -235,4 +320,3 @@ with DAG(
         python_callable=consultar_logs,
         do_xcom_push=True,
     )
-
