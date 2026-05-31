@@ -586,6 +586,23 @@
   .btn-dag-ok:hover{ background:var(--green); color:#fff; }
   .btn-dag-ok:disabled{ opacity:.4; cursor:not-allowed; }
 
+  /* Botão Ver jobs — abre detalhe da execução por job */
+  .btn-ver-jobs{
+    padding:.28rem .65rem;
+    border-radius:8px;
+    font-size:11px;
+    font-weight:500;
+    border:0.5px solid var(--cvp-blue);
+    background:rgba(26,95,168,.07);
+    color:var(--cvp-blue);
+    cursor:pointer;
+    transition:all .12s;
+    white-space:nowrap;
+    font-family:inherit;
+  }
+  .btn-ver-jobs:hover{ background:var(--cvp-blue); color:#fff; }
+  .btn-ver-jobs:disabled{ opacity:.4; cursor:not-allowed; }
+
   /* Status pills para tela de Logs */
   .log-pill{ display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:500;padding:2px 8px;border-radius:10px;border:0.5px solid transparent; white-space:nowrap; }
   .log-pill.success{ background:rgba(22,163,74,.1); color:#15803d; border-color:rgba(22,163,74,.3); }
@@ -1313,7 +1330,7 @@ function renderLogsTable(result, area, statusEl) {
       '<td style="text-align:center">' + (r.total_jobs ?? '—') + '</td>' +
       '<td style="text-align:center">' + fw + '</td>' +
       '<td style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:11px;color:var(--muted)">' + (r.execution_id || '—') + '</td>' +
-      '<td style="white-space:nowrap"><button class="btn-ghost btn-sm" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')">Ver jobs</button></td>' +
+      '<td style="white-space:nowrap"><button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução">Ver jobs</button></td>' +
     '</tr>';
   }).join('');
 
@@ -1391,9 +1408,9 @@ function renderLogDetailTable(result) {
     $('ld-status').textContent = 'Nenhum job encontrado para esta execução.';
     area.innerHTML =
       '<div class="empty-state">' +
-        '<span class="es-icon">≣</span>' +
+        '<span class="es-icon">⬡</span>' +
         '<p class="es-title">Nenhum job encontrado</p>' +
-        '<p class="es-sub">Verifique se o execution_id está correto.</p>' +
+        '<p class="es-sub">Sem registros para esta execução.</p>' +
       '</div>';
     return;
   }
@@ -1406,35 +1423,46 @@ function renderLogDetailTable(result) {
     if (v === 'FAILED')  return '<span class="log-pill failed">✕ FAILED</span>';
     if (v === 'WARNING') return '<span class="log-pill warning">! WARNING</span>';
     if (v === 'RUNNING') return '<span class="log-pill running">… RUNNING</span>';
-    return '<span class="log-pill running">… ' + (v || 'DESCONHECIDO') + '</span>';
+    return '<span class="log-pill running">… ' + (v || '—') + '</span>';
   };
   const fmtDur = (sec) => {
     if (sec === null || sec === undefined || sec === '') return '—';
     const n = parseInt(sec, 10);
     if (isNaN(n)) return '—';
     if (n < 60) return n + 's';
-    const m = Math.floor(n / 60);
-    const s = n % 60;
-    return m + 'm ' + s + 's';
+    return Math.floor(n / 60) + 'm ' + (n % 60) + 's';
   };
   const fmtDt16 = (v) => v ? String(v).slice(0, 16) : '—';
 
-  const body = rows.map(r =>
-    '<tr>' +
-      '<td style="font-weight:500;white-space:nowrap">' + (r.job_name || '—') + '</td>' +
+  const escAttr = (s) => String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const logName = (p) => {
+    if (!p) return '—';
+    const s = String(p);
+    const parts = s.split(/[\\/]/);
+    return parts[parts.length - 1] || '—';
+  };
+
+  const body = rows.map(r => {
+    const jobTitle = escAttr(r.job_name || '');
+    const fullLog = escAttr(r.log_file || '');
+    const statusCode = (r.status_code !== null && r.status_code !== undefined) ? r.status_code : '—';
+    return '<tr>' +
+      '<td style="font-weight:500;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis" title="' + jobTitle + '">' + (r.job_name || '—') + '</td>' +
       '<td style="white-space:nowrap">' + statusPill(r.status) + '</td>' +
-      '<td style="white-space:nowrap">' + fmtDt16(r.inicio) + '</td>' +
-      '<td style="white-space:nowrap">' + fmtDt16(r.fim) + '</td>' +
-      '<td style="white-space:nowrap">' + fmtDur(r.duration_seconds) + '</td>' +
-      '<td style="text-align:center">' + (r.status_code ?? '—') + '</td>' +
-      '<td style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:11px;color:var(--muted);max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + ((r.log_file || '').replace(/\"/g,'&quot;')) + '">' + (r.log_file || '—') + '</td>' +
-    '</tr>'
-  ).join('');
+      '<td style="white-space:nowrap;font-size:12px">' + fmtDt16(r.inicio) + '</td>' +
+      '<td style="white-space:nowrap;font-size:12px">' + fmtDt16(r.fim) + '</td>' +
+      '<td style="white-space:nowrap;font-size:12px">' + fmtDur(r.duration_seconds) + '</td>' +
+      '<td style="text-align:center;font-size:12px">' + statusCode + '</td>' +
+      '<td style="font-size:11px;color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + fullLog + '">' + logName(r.log_file) + '</td>' +
+    '</tr>';
+  }).join('');
 
   area.innerHTML =
-    '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
-      '<th>Job</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th><th>Código</th><th>Log</th>' +
-    '</tr></thead><tbody>' + body + '</tbody></table></div>';
+    '<div class="query-table-wrap">' +
+      '<table class="query-table"><thead><tr>' +
+        '<th>Job</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th><th>Código</th><th>Log</th>' +
+      '</tr></thead><tbody>' + body + '</tbody></table>' +
+    '</div>';
 }
 
 /* ══ LOGIN ══ */
