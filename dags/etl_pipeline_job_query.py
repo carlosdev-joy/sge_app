@@ -23,6 +23,7 @@ Saída via XCom (key='return_value'):
   "data"    : [
      {
        "pipeline_name": str,
+       "project_name": str | None,
        "job_name": str,
        "execution_order": int,
        "job_type": str | None,
@@ -112,6 +113,15 @@ def _get_columns(hook: MsSqlHook, table: str) -> set[str]:
     return {r[0] for r in hook.get_records(sql, parameters=[table])}
 
 
+def _table_exists(hook: MsSqlHook, table: str) -> bool:
+    sql = """
+    SELECT 1
+    FROM INFORMATION_SCHEMA.TABLES
+    WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME=%s
+    """
+    return bool(hook.get_first(sql, parameters=[table]))
+
+
 def consultar_jobs(**context):
     conf = context["dag_run"].conf or {}
     offset = max(0, int(conf.get("offset", 0)))
@@ -133,6 +143,13 @@ def consultar_jobs(**context):
     col_active = _pick_col(cols, "active", "is_active")
     col_created = _pick_col(cols, "created_at", "created_on", "dt_created")
     col_updated = _pick_col(cols, "updated_at", "updated_on", "dt_updated")
+
+    # Project (etl_pipeline.project_name) — usado pela UI no fluxo: Jobs → Lineage → Extrair DSX
+    pipeline_table = "etl_pipeline"
+    join_project = False
+    if _table_exists(hook, pipeline_table) and col_pipeline in ("pipeline_name", "pipeline"):
+        pcols = _get_columns(hook, pipeline_table)
+        join_project = "project_name" in pcols
 
     # Campos mínimos para o grid
     if not col_pipeline or not col_job_name or not col_order:
@@ -171,6 +188,7 @@ def consultar_jobs(**context):
     data_sql = f"""
     SELECT
       {sel(col_pipeline, 'pipeline_name')},
+      {('p.project_name AS project_name' if join_project else 'NULL AS project_name')},
       {sel(col_job_name, 'job_name')},
       {sel(col_order, 'execution_order', cast_int=True)},
       {sel(col_type, 'job_type')},
@@ -178,7 +196,8 @@ def consultar_jobs(**context):
       {sel(col_active, 'active', cast_int=True)},
       {sel(col_created, 'created_at')},
       {sel(col_updated, 'updated_at')}
-    FROM dbo.{table}
+    FROM dbo.{table} j
+    {('LEFT JOIN dbo.' + pipeline_table + ' p ON p.pipeline_name = j.' + col_pipeline if join_project else '')}
     {where_sql}
     ORDER BY {col_pipeline}, {col_order}, {col_job_name}
     OFFSET %s ROWS FETCH NEXT %s ROWS ONLY
@@ -191,13 +210,14 @@ def consultar_jobs(**context):
     for r in rows:
         rec = {
             "pipeline_name": r[0],
-            "job_name": r[1],
-            "execution_order": r[2],
-            "job_type": r[3],
-            "job_command": r[4],
-            "active": r[5],
-            "created_at": _fmt(r[6]),
-            "updated_at": _fmt(r[7]),
+            "project_name": r[1],
+            "job_name": r[2],
+            "execution_order": r[3],
+            "job_type": r[4],
+            "job_command": r[5],
+            "active": r[6],
+            "created_at": _fmt(r[7]),
+            "updated_at": _fmt(r[8]),
         }
         data.append(rec)
 
