@@ -1690,9 +1690,13 @@ async function loadLineageDSX(jobId) {
   if (!j.name || !j.name.trim()) { showToast('Informe o nome do job antes de extrair.', true); return; }
   if ((j.type || '') !== 'datastage') { showToast('Extrair do DSX está disponível somente para jobs DataStage.', true); return; }
 
-  const projectName = _inferProjectFromPipeline(pipelineName);
+  // Prioridade: project salvo no ctx (vem de etl_pipeline_job_query com project_name)
+  // Fallback: inferir pelo nome do pipeline (retrocompatibilidade)
+  const projectName = (window.__lineageTableCtx && window.__lineageTableCtx.project)
+    ? window.__lineageTableCtx.project
+    : _inferProjectFromPipeline(pipelineName);
   if (!projectName) {
-    showToast('Não foi possível determinar o projeto. Use pipeline iniciando com BI_CVP/BI_VIDA/BI_PREVIDENCIA/BI_PRESTAMISTA.', true);
+    showToast('Projeto não encontrado para este job. Contate o administrador para verificar o campo project_name no cadastro do pipeline.', true);
     return;
   }
 
@@ -2209,7 +2213,10 @@ function openJobLineageFromTable(idx) {
   }
 
   // Guarda contexto: ao fechar o modal, salva automaticamente
-  window.__lineageTableCtx = { pipeline: j.pipeline_name };
+  // project_name vem do resultado da DAG etl_pipeline_job_query (campo adicionado no Fix do backend)
+  // Fallback: tenta inferir do nome do pipeline para retrocompatibilidade
+  const project = j.project_name || _inferProjectFromPipeline(j.pipeline_name) || null;
+  window.__lineageTableCtx = { pipeline: j.pipeline_name, project: project };
 
   openLineageModal(jobsBdata[0].id);
 }
@@ -2366,18 +2373,36 @@ function closeLineageModal() {
   activeJobModal = null;
 
   if (window.__lineageTableCtx) {
-    // Veio da tabela de jobs — salva direto no banco
     const ctx = window.__lineageTableCtx;
     window.__lineageTableCtx = null;
     const jobs = collectJobRows();
-    if (jobs.length && ctx.pipeline) {
-      triggerAndPoll(
-        'etl_pipeline_job_register',
-        { pipeline_name: ctx.pipeline, jobs },
-        'Lineage de "' + jobs[0].job_name + '"',
-        null, null, null
+    const j0 = jobs[0];
+
+    // Sem job válido ou pipeline: apenas fecha
+    if (!j0 || !ctx.pipeline) return;
+
+    const temOrigem  = j0.origens  && j0.origens.length  > 0;
+    const temDestino = j0.destinos && j0.destinos.length > 0;
+
+    // Nenhum campo preenchido: fecha silenciosamente (usuário saiu sem preencher)
+    if (!temOrigem && !temDestino) return;
+
+    // Preenchimento parcial: avisa e NÃO dispara a DAG
+    if (!temOrigem || !temDestino) {
+      showToast(
+        'Preencha ao menos 1 ' + (!temOrigem ? 'origem' : 'destino') + ' para salvar a linhagem.',
+        true
       );
+      return;
     }
+
+    // Tudo OK: dispara etl_pipeline_job_register
+    triggerAndPoll(
+      'etl_pipeline_job_register',
+      { pipeline_name: ctx.pipeline, jobs },
+      'Lineage de "' + j0.job_name + '"',
+      null, null, null
+    );
   } else {
     renderJobLinesB();
   }
