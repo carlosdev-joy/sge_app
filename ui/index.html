@@ -775,18 +775,18 @@
   <header class="grad">
     <div class="hd-inner">
       <div class="hd-left">
-        <img class="logo" style="margin:0;height:36px;" src="https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/mundolc/Vertical_Branco.png" alt="CVP" onerror="this.style.display='none'" />
-        <div class="hd-brand">
+        <img class="logo" style="margin:0;height:36px;cursor:pointer" src="https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/mundolc/Vertical_Branco.png" alt="CVP" onerror="this.style.display='none'" onclick="goDashboard()" />
+        <div class="hd-brand" style="cursor:pointer" onclick="goDashboard()">
           <div class="hd-title">ORQUESTRA</div>
           <div class="hd-subtitle">Gestão de Pipelines</div>
         </div>
       </div>
       <nav class="hd-nav" aria-label="Navegação">
-        <button class="hd-tab active" onclick="switchPage('page-pipelines',this);loadQuery(0)">≡ <span>Pipelines</span></button>
-        <button class="hd-tab" onclick="switchPage('page-jobs',this)">⬡ <span>Jobs</span></button>
-        <button class="hd-tab" onclick="switchPage('page-dashboard',this);loadDashboard()">◫ <span>Dashboard</span></button>
-        <button class="hd-tab" onclick="switchPage('page-logs',this);loadLogs(0)">≣ <span>Logs</span></button>
-        <button class="hd-tab" onclick="switchPage('page-governanca',this)">◈ <span>Governança</span></button>
+        <button id="tab-dashboard" class="hd-tab active" onclick="switchPage('page-dashboard',this);loadDashboard()">◫ <span>Dashboard</span></button>
+        <button id="tab-pipelines" class="hd-tab" onclick="switchPage('page-pipelines',this);loadQuery(0)">≡ <span>Pipelines</span></button>
+        <button id="tab-jobs" class="hd-tab" onclick="switchPage('page-jobs',this)">⬡ <span>Jobs</span></button>
+        <button id="tab-logs" class="hd-tab" onclick="switchPage('page-logs',this);loadLogs(0)">≣ <span>Logs</span></button>
+        <button id="tab-governanca" class="hd-tab" onclick="switchPage('page-governanca',this)">◈ <span>Governança</span></button>
       </nav>
       <div class="hd-right">
         <span class="whoami">Olá, <strong id="who"></strong></span>
@@ -799,7 +799,7 @@
   <main>
       <div class="pages">
         <!-- PÁGINA: PIPELINES -->
-        <div id="page-pipelines" class="page active">
+        <div id="page-pipelines" class="page">
           <div class="card fade">
             <div class="card-section-head">
               <h2>Pipelines</h2>
@@ -1099,7 +1099,7 @@
         </div><!-- fim page-logs -->
 
         <!-- PÁGINA: DASHBOARD -->
-        <div id="page-dashboard" class="page">
+        <div id="page-dashboard" class="page active">
           <div class="card fade">
             <div class="card-section-head">
               <h2>Dashboard</h2>
@@ -2246,8 +2246,8 @@ async function entrar() {
     $('appScreen').classList.remove('hidden');
     $('login_pass').value = '';
     const cw = $('caps-warn'); if (cw) cw.style.display = 'none';
-    // Tela inicial: Pipelines
-    try { loadQuery(0); } catch(e) {}
+    // Tela inicial: Dashboard
+    try { goDashboard(); } catch(e) {}
   } catch(e) {
     m.textContent = 'Não foi possível conectar ao Airflow. Verifique a rede.';
     m.className = 'msg erro';
@@ -2300,6 +2300,12 @@ function switchPage(pageId, btn) {
   document.querySelectorAll('.hd-tab').forEach(b => b.classList.remove('active'));
   $(pageId).classList.add('active');
   btn.classList.add('active');
+}
+
+function goDashboard() {
+  const btn = $('tab-dashboard');
+  if (btn) switchPage('page-dashboard', btn);
+  try { loadDashboard(); } catch(e) {}
 }
 
 /* ══ STATUS ATIVO/INATIVO ══ */
