@@ -15,6 +15,14 @@ CREATE TABLE [dbo].[etl_job_lineage](
 	[direction] [nvarchar](10) NOT NULL,
 	[object_type] [nvarchar](20) NOT NULL,
 	[object_name] [nvarchar](500) NOT NULL,
+	-- ORQUESTRA — Schema Lineage v2 (enriquecimento DSXEngine) — colunas opcionais
+	[stage_name] [varchar](200) NULL,
+	[stage_type_raw] [varchar](100) NULL,
+	[database_name] [varchar](200) NULL,
+	[sql_expression] [nvarchar](max) NULL,
+	[dsx_source_file] [varchar](500) NULL,
+	[extracted_at] [datetime2](7) NULL,
+	[extraction_method] [varchar](20) NULL, -- 'manual' | 'dsx_auto'
 	[created_at] [datetime2](7) NOT NULL,
 	[updated_at] [datetime2](7) NOT NULL,
  CONSTRAINT [PK_etl_job_lineage] PRIMARY KEY CLUSTERED 
