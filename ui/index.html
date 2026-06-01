@@ -603,6 +603,41 @@
   .btn-ver-jobs:hover{ background:var(--cvp-blue); color:#fff; }
   .btn-ver-jobs:disabled{ opacity:.4; cursor:not-allowed; }
 
+  /* Dashboard v2 */
+  .kpi-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:.6rem;margin-bottom:1.5rem}
+  @media(max-width:900px){.kpi-grid{grid-template-columns:repeat(3,1fr)}}
+  @media(max-width:600px){.kpi-grid{grid-template-columns:1fr 1fr}}
+  .kpi-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:.9rem 1.1rem;display:flex;flex-direction:column;gap:3px;box-shadow:var(--shadow-card)}
+  .kpi-card.kpi-blue{border-left:4px solid var(--cvp-blue)}
+  .kpi-card.kpi-green{border-left:4px solid var(--green)}
+  .kpi-card.kpi-red{border-left:4px solid var(--red)}
+  .kpi-card.kpi-orange{border-left:4px solid var(--cvp-orange)}
+  .kpi-card.kpi-purple{border-left:4px solid #7c3aed}
+  .kpi-value{font-size:1.9rem;font-weight:600;line-height:1;letter-spacing:-.02em}
+  .kpi-card.kpi-blue .kpi-value{color:var(--cvp-blue)}
+  .kpi-card.kpi-green .kpi-value{color:var(--green)}
+  .kpi-card.kpi-red .kpi-value{color:var(--red)}
+  .kpi-card.kpi-orange .kpi-value{color:var(--cvp-orange)}
+  .kpi-card.kpi-purple .kpi-value{color:#7c3aed}
+  .kpi-label{font-size:10px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  .kpi-sub{font-size:11px;color:var(--muted);margin-top:1px}
+  .proj-badges{display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:1.25rem}
+  .proj-badge{display:inline-flex;align-items:center;gap:5px;padding:.3rem .7rem;border-radius:20px;font-size:12px;font-weight:500;border:1px solid var(--border);background:var(--bg)}
+  .proj-badge.fail{border-color:rgba(220,38,38,.3);background:rgba(220,38,38,.05);color:var(--red)}
+  .proj-badge.ok{border-color:rgba(22,163,74,.3);background:rgba(22,163,74,.05);color:var(--green)}
+  .proj-badge.warn{border-color:rgba(202,138,4,.3);background:rgba(202,138,4,.05);color:#92400e}
+  .dash-section-h{font-size:13px;font-weight:600;color:var(--text);margin:0 0 .7rem;display:flex;align-items:center;gap:.5rem}
+  .alerta-3h{background:rgba(202,138,4,.06);border:0.5px solid rgba(202,138,4,.3);color:#92400e}
+  .alerta-6h{background:rgba(234,88,12,.08);border:0.5px solid rgba(234,88,12,.35);color:#9a3412}
+  .alerta-12h{background:rgba(220,38,38,.08);border:0.5px solid rgba(220,38,38,.3);color:var(--red)}
+  .alerta-row{display:flex;align-items:center;gap:.6rem;padding:.55rem .75rem;border-radius:10px;margin-bottom:.35rem;font-size:12px}
+  .alerta-badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;border:0.5px solid;flex-shrink:0}
+  .running-row{display:flex;align-items:center;gap:.6rem;padding:.55rem .75rem;border-radius:10px;margin-bottom:.35rem;font-size:12px;background:rgba(26,95,168,.05);border:0.5px solid rgba(26,95,168,.2)}
+  .failure-row{padding:.6rem .7rem;border-radius:10px;background:rgba(220,38,38,.04);border:0.5px solid rgba(220,38,38,.2);margin-bottom:.35rem;font-size:12px;display:flex;align-items:flex-start;gap:.6rem}
+  .failure-row .fr-body{flex:1;min-width:0}
+  .failure-row .fr-name{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .failure-row .fr-meta{color:var(--muted);font-size:11px;margin-top:1px}
+
   /* Status pills para tela de Logs */
   .log-pill{ display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:500;padding:2px 8px;border-radius:10px;border:0.5px solid transparent; white-space:nowrap; }
   .log-pill.success{ background:rgba(22,163,74,.1); color:#15803d; border-color:rgba(22,163,74,.3); }
@@ -729,7 +764,7 @@
       <nav class="hd-nav" aria-label="Navegação">
         <button class="hd-tab active" onclick="switchPage('page-pipelines',this);loadQuery(0)">≡ <span>Pipelines</span></button>
         <button class="hd-tab" onclick="switchPage('page-jobs',this)">⬡ <span>Jobs</span></button>
-        <button class="hd-tab" disabled aria-disabled="true">◫ <span>Dashboard</span></button>
+        <button class="hd-tab" onclick="switchPage('page-dashboard',this);loadDashboard()">◫ <span>Dashboard</span></button>
         <button class="hd-tab" onclick="switchPage('page-logs',this);loadLogs(0)">≣ <span>Logs</span></button>
       </nav>
       <div class="hd-right">
@@ -1041,8 +1076,99 @@
             </div><!-- fim body-pad -->
           </div><!-- fim card -->
         </div><!-- fim page-logs -->
+
+        <!-- PÁGINA: DASHBOARD -->
+        <div id="page-dashboard" class="page">
+          <div class="card fade">
+            <div class="card-section-head">
+              <h2>Dashboard</h2>
+              <p class="sub">Observabilidade de execuções — <span id="dash-date-label"></span></p>
+            </div>
+            <div class="body-pad">
+              <!-- Filtros -->
+              <div style="display:flex;gap:.75rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:1.25rem">
+                <div class="field" style="margin:0;min-width:180px">
+                  <label>Projeto</label>
+                  <select id="df-project">
+                    <option value="">Todos</option>
+                    <option value="BI_CVP">BI_CVP</option>
+                    <option value="BI_VIDA">BI_VIDA</option>
+                    <option value="BI_PREVIDENCIA">BI_PREVIDENCIA</option>
+                    <option value="BI_PRESTAMISTA">BI_PRESTAMISTA</option>
+                  </select>
+                </div>
+                <div class="field" style="margin:0;min-width:150px">
+                  <label>Data referência</label>
+                  <input id="df-date" type="date" />
+                </div>
+                <button class="btn btn-primary btn-sm" id="btn-dash" onclick="loadDashboard()" style="height:40px;max-width:180px">
+                  <span id="btn-dash-txt">Atualizar</span>
+                </button>
+              </div>
+
+              <div id="dash-status" style="font-size:12px;color:var(--muted);margin-bottom:.75rem;min-height:16px"></div>
+
+              <!-- KPI Cards (5) -->
+              <div class="kpi-grid">
+                <div class="kpi-card kpi-blue">
+                  <div class="kpi-label">Execuções hoje</div>
+                  <div class="kpi-value" id="kpi-total">—</div>
+                  <div class="kpi-sub" id="kpi-total-sub"></div>
+                </div>
+                <div class="kpi-card kpi-green">
+                  <div class="kpi-label">Taxa de sucesso</div>
+                  <div class="kpi-value" id="kpi-taxa">—</div>
+                  <div class="kpi-sub" id="kpi-taxa-sub"></div>
+                </div>
+                <div class="kpi-card kpi-red">
+                  <div class="kpi-label">Falhas</div>
+                  <div class="kpi-value" id="kpi-falha">—</div>
+                  <div class="kpi-sub" id="kpi-falha-sub"></div>
+                </div>
+                <div class="kpi-card kpi-orange">
+                  <div class="kpi-label">Duração média</div>
+                  <div class="kpi-value" id="kpi-dur">—</div>
+                  <div class="kpi-sub" id="kpi-dur-sub">por execução</div>
+                </div>
+                <div class="kpi-card kpi-purple">
+                  <div class="kpi-label">Em execução agora</div>
+                  <div class="kpi-value" id="kpi-running">—</div>
+                  <div class="kpi-sub" id="kpi-running-sub">pipeline(s)</div>
+                </div>
+              </div>
+
+              <!-- Badges por projeto -->
+              <div id="dash-projetos" class="proj-badges"></div>
+
+              <!-- Alertas de performance -->
+              <div style="margin-bottom:1.5rem">
+                <div class="dash-section-h">⚠ Performance <span style="font-size:11px;font-weight:400;color:var(--muted)" id="dash-alerta-count"></span></div>
+                <div id="dash-alertas"><p style="font-size:12px;color:var(--muted)">Carregando...</p></div>
+              </div>
+
+              <!-- Executando agora -->
+              <div style="margin-bottom:1.5rem">
+                <div class="dash-section-h">▶ Executando agora <span style="font-size:11px;font-weight:400;color:var(--muted)" id="dash-running-count"></span></div>
+                <div id="dash-running-area"><p style="font-size:12px;color:var(--muted)">Carregando...</p></div>
+              </div>
+
+              <!-- Status por pipeline -->
+              <div style="margin-bottom:1.5rem">
+                <div class="dash-section-h">≡ Status por pipeline <span style="font-size:11px;font-weight:400;color:var(--muted)" id="dash-pipe-count"></span></div>
+                <div id="dash-pipelines"></div>
+              </div>
+
+              <!-- Últimas falhas -->
+              <div>
+                <div class="dash-section-h">✕ Últimas falhas <span style="font-size:11px;font-weight:400;color:var(--muted)" id="dash-fail-count"></span></div>
+                <div id="dash-falhas"></div>
+              </div>
+            </div>
+          </div>
+        </div><!-- fim page-dashboard -->
   </main>
 </div>
+
 
 <script>
 let authHeader = null;
@@ -1463,6 +1589,208 @@ function renderLogDetailTable(result) {
         '<th>Job</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th><th>Código</th><th>Log</th>' +
       '</tr></thead><tbody>' + body + '</tbody></table>' +
     '</div>';
+}
+
+/* ══ DASHBOARD v2 ══ */
+const DASHBOARD_DAG_ID = 'etl_dashboard_query';
+
+function setTodayIfEmptyDate(id) {
+  const el = $(id);
+  if (!el) return;
+  if (el.value) return;
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  el.value = d.getFullYear() + '-' + mm + '-' + dd;
+}
+
+function escJsSingle(str) {
+  return String(str || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function fmtHMS(sec) {
+  const n = parseInt(sec || 0, 10);
+  if (!n || isNaN(n)) return '—';
+  const h = Math.floor(n / 3600);
+  const m = Math.floor((n % 3600) / 60);
+  const s = n % 60;
+  if (h > 0) return h + 'h ' + m + 'm';
+  if (m > 0) return m + 'm ' + s + 's';
+  return s + 's';
+}
+
+async function loadDashboard() {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
+  setTodayIfEmptyDate('df-date');
+
+  const st = $('dash-status');
+  const btn = $('btn-dash');
+  const btnTxt = $('btn-dash-txt');
+  if (btn) btn.disabled = true;
+  if (btnTxt) btnTxt.textContent = 'Atualizando...';
+  if (st) st.textContent = 'Consultando dashboard...';
+
+  try {
+    const conf = {};
+    const proj = $('df-project') ? $('df-project').value : '';
+    const dateRef = $('df-date') ? $('df-date').value : '';
+    if (proj) conf.filter_project = proj;
+    if (dateRef) conf.date_ref = dateRef;
+
+    const runId = 'orq_dash_ui_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + DASHBOARD_DAG_ID + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf }),
+    });
+    if (r.status === 401) { sair(); return; }
+    if (!r.ok) { if (st) st.textContent = 'Erro ao disparar DAG: ' + r.status; return; }
+
+    const run = await r.json();
+    const rid = run.dag_run_id || run.run_id;
+    if (st) st.textContent = 'Aguardando execução...';
+    const state = await waitDagRun(DASHBOARD_DAG_ID, rid, 60);
+    if (state !== 'success') { if (st) st.textContent = 'Falha/timeout. Verifique o Airflow.'; return; }
+
+    const xr = await fetch(
+      '/api/v1/dags/' + DASHBOARD_DAG_ID + '/dagRuns/' + rid + '/taskInstances/consultar_dashboard/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (xr.status === 401) { sair(); return; }
+    if (!xr.ok) { if (st) st.textContent = 'Erro ao ler XCom: ' + xr.status; return; }
+    const xdata = await xr.json();
+    const payload = normalizeXcomValue(xdata);
+    renderDashboard(payload);
+    if (st) st.textContent = 'Atualizado.';
+  } catch (e) {
+    if (st) st.textContent = 'Erro: ' + (e && e.message ? e.message : e);
+  } finally {
+    if (btn) btn.disabled = false;
+    if (btnTxt) btnTxt.textContent = 'Atualizar';
+  }
+}
+
+function renderDashboard(result) {
+  const dateRef = (result && result.date_ref) || '';
+  if ($('dash-date-label')) $('dash-date-label').textContent = dateRef ? ('Data: ' + dateRef) : '';
+
+  const k = (result && result.kpis) || {};
+  const total = k.total_execucoes ?? 0;
+  const falha = k.total_falha ?? 0;
+  const warn = k.total_warning ?? 0;
+  const dur = k.duracao_media_segundos ?? 0;
+  const taxa = (k.taxa_sucesso_pct !== undefined && k.taxa_sucesso_pct !== null) ? k.taxa_sucesso_pct : 0;
+
+  $('kpi-total').textContent = String(total);
+  $('kpi-total-sub').textContent = (k.filter_project ? 'Projeto: ' + k.filter_project : 'Todos os projetos');
+  $('kpi-taxa').textContent = String(taxa).replace('.', ',') + '%';
+  $('kpi-taxa-sub').textContent = (k.total_sucesso ?? 0) + ' sucesso(s)';
+  $('kpi-falha').textContent = String(falha);
+  $('kpi-falha-sub').textContent = falha ? 'Atenção: falhas hoje' : 'Sem falhas hoje';
+  $('kpi-dur').textContent = fmtHMS(dur);
+
+  const runningNow = ((result && result.executando_agora) || []).length;
+  $('kpi-running').textContent = String(runningNow);
+
+  // Badges por projeto
+  const proj = (k.por_projeto || []);
+  const pb = $('dash-projetos');
+  if (pb) {
+    pb.innerHTML = proj.length
+      ? proj.map(p => {
+          const cls = p.falhas > 0 ? 'fail' : (p.warnings > 0 ? 'warn' : 'ok');
+          return '<span class="proj-badge ' + cls + '">' + (p.project || '—') +
+            '<span style="opacity:.7;font-weight:400">·</span>' + (p.execucoes ?? 0) + '</span>';
+        }).join('')
+      : '<span style="font-size:12px;color:var(--muted)">Nenhum dado por projeto.</span>';
+  }
+
+  // Alertas performance
+  const alertas = (result && result.alertas_perf) || [];
+  $('dash-alerta-count').textContent = alertas.length ? ('(' + alertas.length + ')') : '(0)';
+  const da = $('dash-alertas');
+  if (da) {
+    da.innerHTML = alertas.length ? alertas.map(a => {
+      const h = parseInt(a.alerta_horas || 3, 10);
+      const cls = h >= 12 ? 'alerta-12h' : (h >= 6 ? 'alerta-6h' : 'alerta-3h');
+      const badge = h >= 12 ? '12h+' : (h >= 6 ? '6h+' : '3h+');
+      return '<div class="alerta-row ' + cls + '">' +
+        '<span class="alerta-badge" style="border-color:currentColor">' + badge + '</span>' +
+        '<span style="font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (a.pipeline || '—') + '</span>' +
+        '<span style="margin-left:auto;opacity:.9">' + (a.elapsed_seconds ? fmtHMS(a.elapsed_seconds) : '—') + '</span>' +
+      '</div>';
+    }).join('') : '<p style="font-size:12px;color:var(--muted);margin:0">Sem alertas no momento.</p>';
+  }
+
+  // Executando agora
+  const rn = (result && result.executando_agora) || [];
+  $('dash-running-count').textContent = rn.length ? ('(' + rn.length + ')') : '(0)';
+  const ra = $('dash-running-area');
+  if (ra) {
+    ra.innerHTML = rn.length ? rn.map(x => {
+      const ex = escJsSingle(x.execution_id);
+      const pip = escJsSingle(x.pipeline);
+      return '<div class="running-row">' +
+        '<span style="font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (x.pipeline || '—') + '</span>' +
+        '<span class="tag-pill">' + (x.project || '—') + '</span>' +
+        '<span style="margin-left:auto;color:var(--muted)">' + fmtHMS(x.elapsed_seconds) + '</span>' +
+        '<button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" style="margin-left:.4rem">Ver jobs</button>' +
+      '</div>';
+    }).join('') : '<p style="font-size:12px;color:var(--muted);margin:0">Nenhum pipeline em execução.</p>';
+  }
+
+  // Status por pipeline (última execução)
+  const ps = (result && result.pipeline_status) || [];
+  $('dash-pipe-count').textContent = ps.length ? ('(' + ps.length + ')') : '(0)';
+  const dp = $('dash-pipelines');
+  if (dp) {
+    const pill = (s) => {
+      const v = (s || '').toUpperCase();
+      if (v === 'SUCCESS') return '<span class="log-pill success">✓ SUCCESS</span>';
+      if (v === 'FAILED')  return '<span class="log-pill failed">✕ FAILED</span>';
+      if (v === 'WARNING') return '<span class="log-pill warning">! WARNING</span>';
+      if (v === 'RUNNING') return '<span class="log-pill running">… RUNNING</span>';
+      return '<span class="log-pill running">… ' + (v || '—') + '</span>';
+    };
+    dp.innerHTML = ps.length
+      ? '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
+          '<th>Pipeline</th><th>Projeto</th><th>Status</th><th>Último início</th><th>Duração</th><th>Jobs</th><th>Ações</th>' +
+        '</tr></thead><tbody>' +
+        ps.map(p => {
+          const ex = escJsSingle(p.execution_id);
+          const pip = escJsSingle(p.pipeline);
+          return '<tr>' +
+            '<td style="font-weight:500;white-space:nowrap">' + (p.pipeline || '—') + '</td>' +
+            '<td><span class="tag-pill">' + (p.project || '—') + '</span></td>' +
+            '<td style="white-space:nowrap">' + pill(p.ultimo_status) + '</td>' +
+            '<td style="white-space:nowrap;font-size:12px">' + (p.ultimo_inicio ? String(p.ultimo_inicio).slice(0,16) : '—') + '</td>' +
+            '<td style="white-space:nowrap;font-size:12px">' + fmtHMS(p.duracao_segundos) + '</td>' +
+            '<td style="text-align:center">' + (p.total_jobs ?? '—') + '</td>' +
+            '<td style="white-space:nowrap"><button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')">Ver jobs</button></td>' +
+          '</tr>';
+        }).join('') +
+        '</tbody></table></div>'
+      : '<p style="font-size:12px;color:var(--muted);margin:0">Sem dados.</p>';
+  }
+
+  // Últimas falhas
+  const ff = (result && result.ultimas_falhas) || [];
+  $('dash-fail-count').textContent = ff.length ? ('(' + ff.length + ')') : '(0)';
+  const df = $('dash-falhas');
+  if (df) {
+    df.innerHTML = ff.length ? ff.map(f => {
+      const ex = escJsSingle(f.execution_id);
+      const pip = escJsSingle(f.pipeline);
+      return '<div class="failure-row">' +
+        '<span class="log-pill failed">✕</span>' +
+        '<div class="fr-body">' +
+          '<div class="fr-name">' + (f.job_name || '—') + '</div>' +
+          '<div class="fr-meta">' + (f.pipeline || '—') + ' · ' + (f.project || '—') + (f.inicio ? (' · ' + String(f.inicio).slice(0,16)) : '') + '</div>' +
+        '</div>' +
+        '<button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" style="margin-left:auto">Ver jobs</button>' +
+      '</div>';
+    }).join('') : '<p style="font-size:12px;color:var(--muted);margin:0">Sem falhas recentes.</p>';
+  }
 }
 
 /* ══ LOGIN ══ */
