@@ -55,7 +55,11 @@ x-airflow-common:
     AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: America/Sao_Paulo
     TZ: America/Sao_Paulo
 
-    PYTHONPATH: /opt/airflow
+    PYTHONPATH: /opt/airflow/dags/Orquestrador:/opt/airflow
+
+    # ── ORQUESTRA: caminho dos arquivos .dsx no container ──────────────────
+    # Deve coincidir com o volume montado em: ${AIRFLOW_PROJ_DIR:-.}/dsx:/opt/airflow/dsx
+    DSX_BASE_DIR: /opt/airflow/dsx
     
     
     AIRFLOW__API__ACCESS_CONTROL_ALLOW_ORIGINS: "*"
