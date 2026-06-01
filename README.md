@@ -78,3 +78,26 @@ Objetivo: enriquecer `dbo.etl_job_lineage` com metadados de extração do DataSt
 - Em `UPDATE`, usa `COALESCE` para não sobrescrever valores existentes com `NULL`.
 
 > Nota: o design da futura tabela `etl_job_lineage_column` (fase 2) não é implementado nesta etapa.
+
+---
+
+## Lineage DSX v1 (extração automática via DSXEngine)
+
+Objetivo: permitir que o usuário extraia origens/destinos automaticamente de jobs **DataStage** a partir de arquivos `.dsx`.
+
+### Airflow
+
+- Utils: `dags/utils/dsx_engine.py`
+  - Diretório base configurável via Airflow Variable `DSX_BASE_DIR` (default `/opt/airflow/dsx`).
+- DAG: `dags/etl_lineage_extract_dsx.py`
+  - `dag_id`: `etl_lineage_extract_dsx`
+  - Task (XCom): `extrair_lineage_dsx`
+
+### Docker (local)
+
+- `docker-compose.yaml` monta `./dsx` em `/opt/airflow/dsx`
+- Pasta no repo: `dsx/` (coloque aqui os arquivos `BI_CVP.dsx`, `BI_VIDA.dsx`, etc.)
+
+### UI
+
+- Na edição de lineage (modo manual / opção B), jobs `datastage` exibem botão **“⬡ Extrair linhagem do DSX”**.

@@ -68,7 +68,14 @@ def registrar_pipeline_jobs(**context):
         @job_name      = %s,
         @direction     = %s,
         @object_type   = %s,
-        @object_name   = %s
+        @object_name   = %s,
+        @stage_name        = %s,
+        @stage_type_raw    = %s,
+        @database_name     = %s,
+        @sql_expression    = %s,
+        @dsx_source_file   = %s,
+        @extracted_at      = %s,
+        @extraction_method = %s
     """
 
     erros = []
@@ -117,9 +124,23 @@ def registrar_pipeline_jobs(**context):
                     continue
 
                 try:
-                    hook.run(sql_lineage, parameters=(
-                        pipeline_name, j_name, direction, obj_type, obj_name
-                    ))
+                    hook.run(
+                        sql_lineage,
+                        parameters=(
+                            pipeline_name,
+                            j_name,
+                            direction,
+                            obj_type,
+                            obj_name,
+                            obj.get("stage_name"),
+                            obj.get("stage_type_raw"),
+                            obj.get("database_name"),
+                            obj.get("sql_expression"),
+                            obj.get("dsx_source_file"),
+                            obj.get("extracted_at"),
+                            obj.get("extraction_method"),
+                        ),
+                    )
                     print(f"  [OK] lineage {direction} → {obj_type}:{obj_name}")
                 except Exception as e:
                     erros.append(f"Item {idx} ({j_name}) {direction} '{obj_name}': {e}")

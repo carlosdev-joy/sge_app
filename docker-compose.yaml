@@ -83,6 +83,7 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/config/webserver_config.py:/opt/airflow/webserver_config.py
     
     - ${AIRFLOW_PROJ_DIR:-.}/config/ui:/opt/airflow/www
+    - ${AIRFLOW_PROJ_DIR:-.}/dsx:/opt/airflow/dsx
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on

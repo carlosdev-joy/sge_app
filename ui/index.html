@@ -1591,6 +1591,159 @@ function renderLogDetailTable(result) {
     '</div>';
 }
 
+/* ══ LINEAGE DSX v1 ══ */
+const LINEAGE_DSX_DAG = 'etl_lineage_extract_dsx';
+let _dsxLineageData = [];
+let _dsxTargetJobId = null;
+let _dsxCtx = null; // { project_name, job_name, dsx_file }
+
+function _inferProjectFromPipeline(pipelineName) {
+  const p = (pipelineName || '').toUpperCase().trim();
+  return ['BI_CVP','BI_VIDA','BI_PREVIDENCIA','BI_PRESTAMISTA'].find(x => p.startsWith(x)) || '';
+}
+
+function _nowSql() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2,'0');
+  return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
+function openLineageDSXPreview() { $('lineageDSXPreviewModal').classList.add('open'); }
+function closeLineageDSXPreview() { $('lineageDSXPreviewModal').classList.remove('open'); }
+
+async function loadLineageDSX(jobId) {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
+
+  const pipelineName = $('job_pipeline_name') ? $('job_pipeline_name').value.trim() : '';
+  const j = jobsBdata.find(x => x.id === jobId);
+  if (!j) { showToast('Job inválido.', true); return; }
+  if (!pipelineName) { showToast('Informe o pipeline antes de extrair.', true); return; }
+  if (!j.name || !j.name.trim()) { showToast('Informe o nome do job antes de extrair.', true); return; }
+  if ((j.type || '') !== 'datastage') { showToast('Extrair do DSX está disponível somente para jobs DataStage.', true); return; }
+
+  const projectName = _inferProjectFromPipeline(pipelineName);
+  if (!projectName) {
+    showToast('Não foi possível determinar o projeto. Use pipeline iniciando com BI_CVP/BI_VIDA/BI_PREVIDENCIA/BI_PRESTAMISTA.', true);
+    return;
+  }
+
+  _dsxTargetJobId = jobId;
+  _dsxCtx = { project_name: projectName, job_name: j.name.trim(), dsx_file: projectName + '.dsx' };
+
+  // UI do modal
+  $('dsx-prev-title').textContent = 'Prévia — Linhagem DSX';
+  $('dsx-prev-sub').textContent = projectName + ' / ' + j.name.trim();
+  $('dsx-prev-status').textContent = 'Buscando no arquivo .dsx...';
+  $('dsx-prev-table').innerHTML = '';
+  $('btn-apply-dsx').disabled = true;
+  openLineageDSXPreview();
+
+  const btn = $('btn-dsx-extract');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Extraindo...'; }
+
+  try {
+    const runId = 'orq_dsx_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + LINEAGE_DSX_DAG + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: { project_name: projectName, job_name: j.name.trim() } }),
+    });
+    if (r.status === 401) { sair(); return; }
+    if (!r.ok) { $('dsx-prev-status').textContent = 'Erro ao disparar DAG: ' + r.status; return; }
+
+    const run = await r.json();
+    const rid = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(LINEAGE_DSX_DAG, rid, 60);
+    if (state !== 'success') { $('dsx-prev-status').textContent = 'Falha/timeout na DAG.'; return; }
+
+    const xr = await fetch(
+      '/api/v1/dags/' + LINEAGE_DSX_DAG + '/dagRuns/' + rid + '/taskInstances/extrair_lineage_dsx/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) { $('dsx-prev-status').textContent = 'Erro ao ler XCom: ' + xr.status; return; }
+    const payload = normalizeXcomValue(await xr.json());
+    showLineageDSXPreview(payload);
+  } catch (e) {
+    $('dsx-prev-status').textContent = 'Erro: ' + (e && e.message ? e.message : e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⬡ Extrair linhagem do DSX'; }
+  }
+}
+
+function showLineageDSXPreview(payload) {
+  const dados = (payload && payload.dados) || [];
+  _dsxLineageData = dados;
+  if (payload && payload.dsx_file) _dsxCtx.dsx_file = payload.dsx_file;
+
+  $('dsx-prev-status').textContent = dados.length + ' ponto(s) de contato encontrado(s). Revise e clique em Aplicar.';
+  if (!dados.length) {
+    $('dsx-prev-table').innerHTML = '<p style="font-size:12px;color:var(--muted)">Nenhum dado extraído.</p>';
+    $('btn-apply-dsx').disabled = true;
+    return;
+  }
+  $('btn-apply-dsx').disabled = false;
+
+  const rows = dados.map(d =>
+    '<tr>' +
+      '<td style="white-space:nowrap">' + (d['Direção'] || '—') + '</td>' +
+      '<td style="white-space:nowrap">' + (d['Tipo de Objeto'] || '—') + '</td>' +
+      '<td>' + (d['Nome do Objeto'] || '—') + '</td>' +
+      '<td style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:11px">' + (d['Tabela / Arquivo'] || '—') + '</td>' +
+    '</tr>'
+  ).join('');
+
+  $('dsx-prev-table').innerHTML =
+    '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
+      '<th>Direção</th><th>Tipo</th><th>Stage (Nome do Objeto)</th><th>Tabela / Arquivo</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+function applyLineageDSX() {
+  if (!_dsxTargetJobId) return;
+  const j = jobsBdata.find(x => x.id === _dsxTargetJobId);
+  if (!j) return;
+
+  const typeMap = {
+    'Banco de Dados (ODBC)': 'Tabela',
+    'Arquivo DataSet (.ds/.dx)': 'Arquivo',
+    'Arquivo Sequencial': 'Arquivo',
+    'Transformação': 'Query',
+  };
+
+  const now = _nowSql();
+  const dsxFile = (_dsxCtx && _dsxCtx.dsx_file) ? _dsxCtx.dsx_file : null;
+
+  const origens = _dsxLineageData.filter(d => (d['Direção'] || '') === 'Origem');
+  const destinos = _dsxLineageData.filter(d => (d['Direção'] || '') === 'Destino');
+
+  j.origens = origens.map(o => ({
+    t: typeMap[o['Tipo de Objeto']] || 'Tabela',
+    n: (o['Tabela / Arquivo'] || o['Nome do Objeto'] || '').toString(),
+    stage_name: (o['Nome do Objeto'] || null),
+    stage_type_raw: (o['Tipo de Objeto'] || null),
+    dsx_source_file: dsxFile,
+    extracted_at: now,
+    extraction_method: 'dsx_auto',
+  }));
+  j.destinos = destinos.map(d => ({
+    t: typeMap[d['Tipo de Objeto']] || 'Tabela',
+    n: (d['Tabela / Arquivo'] || d['Nome do Objeto'] || '').toString(),
+    stage_name: (d['Nome do Objeto'] || null),
+    stage_type_raw: (d['Tipo de Objeto'] || null),
+    dsx_source_file: dsxFile,
+    extracted_at: now,
+    extraction_method: 'dsx_auto',
+  }));
+
+  if (!j.origens.length) j.origens = [{ t: 'Tabela', n: '' }];
+  if (!j.destinos.length) j.destinos = [{ t: 'Tabela', n: '' }];
+
+  renderModalBody();
+  renderJobLinesB();
+  closeLineageDSXPreview();
+  showToast('Linhagem extraída do DSX aplicada — revise e salve.', false);
+}
+
 /* ══ DASHBOARD v2 ══ */
 const DASHBOARD_DAG_ID = 'etl_dashboard_query';
 
@@ -1953,7 +2106,17 @@ function renderModalBody() {
       <button class="rm-btn" style="width:28px;height:28px;font-size:12px"
         onclick="rmLinB(${activeJobModal},'${dir}',${i})" aria-label="Remover">x</button>
     </div>`).join('');
+  const canDSX = (j.type || '') === 'datastage';
   $('mlb-body').innerHTML = `
+    ${canDSX ? `
+    <div style="margin-bottom:1rem">
+      <button class="btn btn-outline btn-sm" style="width:100%" onclick="loadLineageDSX(${j.id})" id="btn-dsx-extract">
+        ⬡ Extrair linhagem do DSX
+      </button>
+      <div class="helper" style="margin-top:.35rem">
+        Busca origens e destinos automaticamente no arquivo <strong>.dsx</strong> do projeto.
+      </div>
+    </div>` : ``}
     <div style="margin-bottom:1rem">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
         <span class="lin-label" style="color:var(--cvp-blue)">
@@ -2057,8 +2220,32 @@ function collectJobRows() {
       execution_order: j.order,
       job_type:        j.type,
       job_command:     j.cmd || null,
-      origens:  j.origens.filter(o => o.n.trim()).map(o => ({object_type:o.t, object_name:o.n.trim()})),
-      destinos: j.destinos.filter(o => o.n.trim()).map(o => ({object_type:o.t, object_name:o.n.trim()})),
+      origens: j.origens
+        .filter(o => o.n.trim())
+        .map(o => ({
+          object_type: o.t,
+          object_name: o.n.trim(),
+          stage_name: o.stage_name || null,
+          stage_type_raw: o.stage_type_raw || null,
+          database_name: o.database_name || null,
+          sql_expression: o.sql_expression || null,
+          dsx_source_file: o.dsx_source_file || null,
+          extracted_at: o.extracted_at || null,
+          extraction_method: o.extraction_method || null,
+        })),
+      destinos: j.destinos
+        .filter(o => o.n.trim())
+        .map(o => ({
+          object_type: o.t,
+          object_name: o.n.trim(),
+          stage_name: o.stage_name || null,
+          stage_type_raw: o.stage_type_raw || null,
+          database_name: o.database_name || null,
+          sql_expression: o.sql_expression || null,
+          dsx_source_file: o.dsx_source_file || null,
+          extracted_at: o.extracted_at || null,
+          extraction_method: o.extraction_method || null,
+        })),
     }));
 }
 
@@ -3111,6 +3298,25 @@ function clearQuery() {
   </div>
 </div>
 
+<!-- MODAL: PRÉVIA — LINEAGE DSX -->
+<div class="modal-backdrop" id="lineageDSXPreviewModal">
+  <div class="modal-box" style="max-width:680px;text-align:left">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:.75rem">
+      <div>
+        <div class="modal-title" id="dsx-prev-title" style="margin:0">Prévia — Linhagem DSX</div>
+        <div class="modal-desc" id="dsx-prev-sub" style="margin:.3rem 0 0"></div>
+      </div>
+      <button class="icon-btn btn-close" onclick="closeLineageDSXPreview()" title="Fechar" aria-label="Fechar">×</button>
+    </div>
+    <div id="dsx-prev-status" style="font-size:12px;color:var(--muted);margin-bottom:.75rem"></div>
+    <div id="dsx-prev-table"></div>
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn-ghost" onclick="closeLineageDSXPreview()" style="flex:1">Cancelar</button>
+      <button class="btn" onclick="applyLineageDSX()" id="btn-apply-dsx" style="flex:1">Aplicar linhagem</button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL: EDITAR JOB -->
 <div class="modal-backdrop" id="jobEditModal">
   <div class="modal-box" style="max-width:560px;text-align:left">
@@ -3255,6 +3461,11 @@ function clearQuery() {
     const m = document.getElementById('logDetailModal');
     if (!m) return;
     m.addEventListener('click', (e) => { if (e.target === m) closeLogDetail(); });
+  })();
+  (function () {
+    const m = document.getElementById('lineageDSXPreviewModal');
+    if (!m) return;
+    m.addEventListener('click', (e) => { if (e.target === m) closeLineageDSXPreview(); });
   })();
 </script>
 <!-- MODAL: CONFIRMAÇÃO -->
