@@ -37,3 +37,22 @@ O proxy recomendado para evitar CORS:
 
 - UI: `/`
 - Airflow API: `/api/` → `http://airflow-webserver:8080/api/`
+
+---
+
+## Performance Monitor v1 (snapshot histórico de alertas)
+
+Objetivo: registrar histórico de pipelines que ultrapassaram **3h / 6h / 12h** em execução (status `RUNNING`) para análise de tendência ao longo do tempo.
+
+### SQL
+
+- Tabela (DDL para novos ambientes): `script/tabela/etl_pipeline_performance_snapshot.sql`
+- Script de implantação (ambiente existente): `script/alteracoes/20260601_perf_snapshot_v1/001_create_table_etl_pipeline_performance_snapshot.sql`
+
+### Airflow
+
+- DAG: `dags/etl_performance_monitor.py`
+  - `dag_id`: `etl_performance_monitor`
+  - `schedule`: `0 * * * *` (minuto 0 de cada hora)
+  - Task: `monitorar_performance`
+  - Anti-duplicata: não insere novamente o mesmo `(execution_id, alerta_horas)` no mesmo dia.
