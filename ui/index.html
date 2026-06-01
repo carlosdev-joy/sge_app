@@ -638,6 +638,26 @@
   .failure-row .fr-name{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .failure-row .fr-meta{color:var(--muted);font-size:11px;margin-top:1px}
 
+  /* ── Aba Governança ──────────────────────────── */
+  .gov-filter{display:flex;gap:.75rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:1.25rem}
+  .gov-mode-toggle{display:flex;gap:.5rem;margin-bottom:1.25rem}
+  .gov-mode-btn{flex:1;padding:.55rem;border:1px solid var(--border);border-radius:10px;background:transparent;color:var(--muted);font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;cursor:pointer;font-family:inherit}
+  .gov-mode-btn.active{border-color:var(--cvp-blue);color:var(--cvp-blue);background:rgba(0,92,169,.06)}
+  .lineage-svg-wrap{overflow-x:auto;padding:.5rem 0}
+  .ls-node{font-family:inherit}
+  .ls-node-box{border-radius:10px;padding:8px 12px;min-width:140px;max-width:200px;word-break:break-word;text-align:center;border:1px solid}
+  .ls-node-box.origem{background:#EEF5FD;border-color:#A3C7F0;color:#185FA5}
+  .ls-node-box.destino{background:#EEF9F2;border-color:#A8D5B5;color:#27500A}
+  .ls-node-box.job{background:#F3EFFE;border-color:#C5A8F5;color:#534AB7;font-weight:600}
+  .ls-node-box.transf{background:#FDF8EE;border-color:#F0D68C;color:#854F0B}
+  .ls-node-label{font-size:10px;opacity:.65;margin-top:2px;display:block}
+  .ls-node-db{font-size:10px;opacity:.7;font-style:italic;display:block}
+  .ls-arrow{color:var(--muted);padding:0 8px;font-size:18px;align-self:center}
+  .pipeline-flow{display:flex;flex-direction:column;gap:12px}
+  .pf-step{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .pf-order{width:26px;height:26px;border-radius:50%;background:var(--cvp-blue);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .pf-connector{width:2px;height:16px;background:var(--border);margin:0 auto}
+
   /* Status pills para tela de Logs */
   .log-pill{ display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:500;padding:2px 8px;border-radius:10px;border:0.5px solid transparent; white-space:nowrap; }
   .log-pill.success{ background:rgba(22,163,74,.1); color:#15803d; border-color:rgba(22,163,74,.3); }
@@ -766,6 +786,7 @@
         <button class="hd-tab" onclick="switchPage('page-jobs',this)">⬡ <span>Jobs</span></button>
         <button class="hd-tab" onclick="switchPage('page-dashboard',this);loadDashboard()">◫ <span>Dashboard</span></button>
         <button class="hd-tab" onclick="switchPage('page-logs',this);loadLogs(0)">≣ <span>Logs</span></button>
+        <button class="hd-tab" onclick="switchPage('page-governanca',this)">◈ <span>Governança</span></button>
       </nav>
       <div class="hd-right">
         <span class="whoami">Olá, <strong id="who"></strong></span>
@@ -1166,6 +1187,54 @@
             </div>
           </div>
         </div><!-- fim page-dashboard -->
+
+        <!-- PÁGINA: GOVERNANÇA -->
+        <div id="page-governanca" class="page">
+          <div class="card fade">
+            <div class="card-section-head">
+              <h2>Governança</h2>
+              <p class="sub">Visualização de lineage — nível job e nível pipeline</p>
+            </div>
+            <div class="body-pad">
+              <!-- Filtro -->
+              <div class="gov-filter">
+                <div class="field" style="margin:0;min-width:280px">
+                  <label>Pipeline <span style="color:var(--red)">*</span></label>
+                  <input id="gov-pipeline" type="text" placeholder="ex: datastage_cobranca_diario" />
+                </div>
+                <button class="btn btn-primary btn-sm" id="btn-gov" onclick="loadGovernanca()" style="height:40px">
+                  <span id="btn-gov-txt">Carregar lineage</span>
+                </button>
+              </div>
+              <div id="gov-status" style="font-size:12px;color:var(--muted);margin-bottom:.75rem;min-height:16px"></div>
+
+              <!-- Modo: job / pipeline -->
+              <div class="gov-mode-toggle" id="gov-mode-row" style="display:none">
+                <button class="gov-mode-btn active" id="gov-btn-job" onclick="setGovMode('job')">◎ Nível Job</button>
+                <button class="gov-mode-btn" id="gov-btn-pipe" onclick="setGovMode('pipeline')">◈ Nível Pipeline</button>
+              </div>
+
+              <!-- Seletor de job (nível job) -->
+              <div id="gov-job-selector" style="margin-bottom:1rem;display:none">
+                <div class="field" style="margin:0;max-width:360px">
+                  <label>Job</label>
+                  <select id="gov-job-select" onchange="renderLineageJob()">
+                    <option value="">Selecione o job...</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Área de visualização -->
+              <div id="gov-visual">
+                <div class="empty-state">
+                  <span class="es-icon">◈</span>
+                  <p class="es-title">Informe o pipeline e carregue o lineage</p>
+                  <p class="es-sub">O diagrama aparecerá aqui.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div><!-- fim page-governanca -->
   </main>
 </div>
 
@@ -1944,6 +2013,179 @@ function renderDashboard(result) {
       '</div>';
     }).join('') : '<p style="font-size:12px;color:var(--muted);margin:0">Sem falhas recentes.</p>';
   }
+}
+
+/* ══ GOVERNANÇA v1 ══ */
+const LINEAGE_QUERY_DAG = 'etl_lineage_query';
+let _govData = null; // cache do resultado da DAG
+let _govMode = 'job';
+
+async function loadGovernanca() {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
+  const pipeline = $('gov-pipeline') ? $('gov-pipeline').value.trim() : '';
+  if (!pipeline) { showToast('Informe o nome do pipeline.', true); return; }
+
+  const btn = $('btn-gov'), bt = $('btn-gov-txt'), st = $('gov-status');
+  if (btn) btn.disabled = true;
+  if (bt) bt.textContent = 'Carregando...';
+  if (st) st.textContent = 'Consultando lineage...';
+
+  try {
+    const runId = 'orq_lin_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + LINEAGE_QUERY_DAG + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: { pipeline_name: pipeline } }),
+    });
+    if (r.status === 401) { sair(); return; }
+    if (!r.ok) { if (st) st.textContent = 'Erro ' + r.status; return; }
+
+    const run = await r.json();
+    const rid = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(LINEAGE_QUERY_DAG, rid, 45);
+    if (state !== 'success') { if (st) st.textContent = 'Falha/timeout.'; return; }
+
+    const xr = await fetch(
+      '/api/v1/dags/' + LINEAGE_QUERY_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_lineage/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) { if (st) st.textContent = 'Erro XCom ' + xr.status; return; }
+
+    _govData = normalizeXcomValue(await xr.json());
+    const jobs = (_govData && _govData.jobs) || [];
+    if (st) st.textContent = 'Lineage de ' + jobs.length + ' job(s) carregado.';
+
+    // Preencher seletor de jobs
+    const sel = $('gov-job-select');
+    if (sel) {
+      sel.innerHTML = '<option value="">Selecione o job...</option>';
+      jobs.forEach(j => {
+        const o = document.createElement('option');
+        o.value = j.job_name;
+        o.textContent = '#' + j.execution_order + ' ' + j.job_name;
+        sel.appendChild(o);
+      });
+    }
+
+    const modeRow = $('gov-mode-row');
+    if (modeRow) modeRow.style.display = '';
+    setGovMode('job');
+  } catch (e) {
+    if (st) st.textContent = 'Erro: ' + (e && e.message ? e.message : e);
+  } finally {
+    if (btn) btn.disabled = false;
+    if (bt) bt.textContent = 'Carregar lineage';
+  }
+}
+
+function setGovMode(mode) {
+  _govMode = mode;
+  $('gov-btn-job').classList.toggle('active', mode === 'job');
+  $('gov-btn-pipe').classList.toggle('active', mode === 'pipeline');
+  const jsel = $('gov-job-selector');
+  if (jsel) jsel.style.display = mode === 'job' ? '' : 'none';
+  if (mode === 'job') renderLineageJob();
+  if (mode === 'pipeline') renderLineagePipeline();
+}
+
+function _lineageNode(label, sublabel, dbName, cls) {
+  return '<div class="ls-node"><div class="ls-node-box ' + cls + '">' +
+    '<span style="font-size:12px;font-weight:500">' + (label || '—') + '</span>' +
+    (sublabel ? '<span class="ls-node-label">' + sublabel + '</span>' : '') +
+    (dbName ? '<span class="ls-node-db">' + dbName + '</span>' : '') +
+  '</div></div>';
+}
+
+function renderLineageJob() {
+  const vis = $('gov-visual');
+  if (!vis || !_govData) return;
+  const sel = $('gov-job-select');
+  const jobName = sel ? sel.value : '';
+  if (!jobName) {
+    vis.innerHTML = '<div class="empty-state"><span class="es-icon">◎</span><p class="es-title">Selecione um job</p></div>';
+    return;
+  }
+
+  const job = (_govData.jobs || []).find(j => j.job_name === jobName);
+  if (!job) {
+    vis.innerHTML = '<div class="empty-state"><p class="es-title">Job não encontrado.</p></div>';
+    return;
+  }
+
+  const ori = job.origens || [];
+  const dst = job.destinos || [];
+  if (!ori.length && !dst.length) {
+    vis.innerHTML =
+      '<div class="empty-state">' +
+        '<span class="es-icon">◎</span>' +
+        '<p class="es-title">Sem lineage cadastrado para este job</p>' +
+        '<p class="es-sub">Cadastre origens e destinos na tela de Jobs.</p>' +
+      '</div>';
+    return;
+  }
+
+  const oriH = ori.map(o => _lineageNode(o.object_name, o.object_type, o.database_name, 'origem')).join('<div style="height:8px"></div>');
+  const dstH = dst.map(d => _lineageNode(d.object_name, d.object_type, d.database_name, 'destino')).join('<div style="height:8px"></div>');
+  const jobH = _lineageNode(job.job_name, 'Job #' + job.execution_order, job.job_type, 'job');
+
+  vis.innerHTML =
+    '<div class="lineage-svg-wrap">' +
+      '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
+        '<div style="display:flex;flex-direction:column;gap:8px">' + (oriH || '<i style="font-size:12px;color:var(--muted)">Sem origens</i>') + '</div>' +
+        '<div class="ls-arrow">→</div>' +
+        jobH +
+        '<div class="ls-arrow">→</div>' +
+        '<div style="display:flex;flex-direction:column;gap:8px">' + (dstH || '<i style="font-size:12px;color:var(--muted)">Sem destinos</i>') + '</div>' +
+      '</div>' +
+    '</div>';
+}
+
+function renderLineagePipeline() {
+  const vis = $('gov-visual');
+  if (!vis || !_govData) return;
+  const jobs = (_govData.jobs) || [];
+  if (!jobs.length) {
+    vis.innerHTML = '<div class="empty-state"><p class="es-title">Nenhum job encontrado.</p></div>';
+    return;
+  }
+
+  const stepsHtml = jobs.map((job, idx) => {
+    const ori = (job.origens || []).map(o =>
+      '<span class="ls-node-box origem" style="font-size:11px;padding:4px 8px;display:inline-block;margin:2px">' +
+        (o.object_name || '?') + '<br><span style="font-size:9px;opacity:.65">' +
+        (o.object_type || '') + (o.database_name ? ('·' + o.database_name) : '') +
+        '</span></span>'
+    ).join('');
+
+    const dst = (job.destinos || []).map(d =>
+      '<span class="ls-node-box destino" style="font-size:11px;padding:4px 8px;display:inline-block;margin:2px">' +
+        (d.object_name || '?') + '<br><span style="font-size:9px;opacity:.65">' +
+        (d.object_type || '') + (d.database_name ? ('·' + d.database_name) : '') +
+        '</span></span>'
+    ).join('');
+
+    const connector = idx < jobs.length - 1 ? '<div class="pf-connector"></div>' : '';
+    return '<div>' +
+      '<div class="pf-step">' +
+        '<div class="pf-order">' + job.execution_order + '</div>' +
+        (ori
+          ? '<div style="display:flex;flex-wrap:wrap;gap:4px">' + ori + '</div><div class="ls-arrow" style="font-size:14px">→</div>'
+          : '<span style="font-size:11px;color:var(--muted);margin:0 6px">sem origens →</span>'
+        ) +
+        '<div class="ls-node-box job" style="padding:6px 12px;font-size:12px">' +
+          job.job_name +
+          '<span class="ls-node-label">' + (job.job_type || '') + '</span>' +
+        '</div>' +
+        (dst
+          ? '<div class="ls-arrow" style="font-size:14px">→</div><div style="display:flex;flex-wrap:wrap;gap:4px">' + dst + '</div>'
+          : '<span style="font-size:11px;color:var(--muted);margin:0 6px">→ sem destinos</span>'
+        ) +
+      '</div>' +
+      connector +
+    '</div>';
+  }).join('');
+
+  vis.innerHTML = '<div class="lineage-svg-wrap"><div class="pipeline-flow">' + stepsHtml + '</div></div>';
 }
 
 /* ══ LOGIN ══ */

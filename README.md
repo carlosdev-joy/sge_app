@@ -101,3 +101,18 @@ Objetivo: permitir que o usuário extraia origens/destinos automaticamente de jo
 ### UI
 
 - Na edição de lineage (modo manual / opção B), jobs `datastage` exibem botão **“⬡ Extrair linhagem do DSX”**.
+
+---
+
+## Governança v1 (visualização de lineage)
+
+Objetivo: disponibilizar uma aba **Governança** na UI para visualizar lineage:
+- **Nível Job**: origens → job → destinos
+- **Nível Pipeline**: visão sequencial por `execution_order`
+
+### Airflow
+
+- DAG: `dags/etl_lineage_query.py`
+  - `dag_id`: `etl_lineage_query`
+  - Task (XCom): `consultar_lineage`
+  - Conf: `{ "pipeline_name": "<pipeline>" }`
