@@ -371,6 +371,7 @@
     background:rgba(15,23,42,.55);
     align-items:center; justify-content:center; padding:1rem;
   }
+#lineageDSXPreviewModal { z-index:310; } /* DSX preview acima do modal de lineage */
   .modal-backdrop.open { display:flex; }
   .modal-box {
     background:var(--card); border:1px solid var(--border);
@@ -1677,7 +1678,14 @@ function _nowSql() {
   return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
 }
 
-function openLineageDSXPreview() { $('lineageDSXPreviewModal').classList.add('open'); }
+function openLineageDSXPreview() {
+  const m = $('lineageDSXPreviewModal');
+  if (!m) return;
+  // Reposicionar no final do body garante stacking order correto
+  // independente de qual modal foi aberto primeiro
+  document.body.appendChild(m);
+  m.classList.add('open');
+}
 function closeLineageDSXPreview() { $('lineageDSXPreviewModal').classList.remove('open'); }
 
 async function loadLineageDSX(jobId) {
