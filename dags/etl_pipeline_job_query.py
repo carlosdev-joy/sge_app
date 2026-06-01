@@ -162,26 +162,26 @@ def consultar_jobs(**context):
         if not col:
             return f"NULL AS {alias}"
         if cast_int:
-            return f"CAST({col} AS INT) AS {alias}"
-        return f"{col} AS {alias}"
+            return f"CAST(j.{col} AS INT) AS {alias}"
+        return f"j.{col} AS {alias}"
 
     # WHERE dinâmico
     where = []
     params = []
     if fp:
-        where.append(f"{col_pipeline} = %s")
+        where.append(f"j.{col_pipeline} = %s")
         params.append(fp)
     if fj:
-        where.append(f"{col_job_name} LIKE %s")
+        where.append(f"j.{col_job_name} LIKE %s")
         params.append(f"%{fj}%")
     if ft and col_type:
-        where.append(f"{col_type} = %s")
+        where.append(f"j.{col_type} = %s")
         params.append(ft)
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     # COUNT
-    count_sql = f"SELECT COUNT(*) FROM dbo.{table} {where_sql}"
+    count_sql = f"SELECT COUNT(*) FROM dbo.{table} j {where_sql}"
     total = hook.get_first(count_sql, parameters=params or None)[0]
 
     # DATA
@@ -199,7 +199,7 @@ def consultar_jobs(**context):
     FROM dbo.{table} j
     {('LEFT JOIN dbo.' + pipeline_table + ' p ON p.pipeline_name = j.' + col_pipeline if join_project else '')}
     {where_sql}
-    ORDER BY {col_pipeline}, {col_order}, {col_job_name}
+    ORDER BY j.{col_pipeline}, j.{col_order}, j.{col_job_name}
     OFFSET %s ROWS FETCH NEXT %s ROWS ONLY
     """
     data_params = list(params)
