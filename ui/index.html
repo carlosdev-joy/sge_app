@@ -1672,6 +1672,18 @@ function _inferProjectFromPipeline(pipelineName) {
   return ['BI_CVP','BI_VIDA','BI_PREVIDENCIA','BI_PRESTAMISTA'].find(x => p.startsWith(x)) || '';
 }
 
+function _tryGetProjectFromJobsList(pipelineName) {
+  const list = window.__jobs || [];
+  const j = list.find(x => x && x.pipeline_name === pipelineName && x.project_name);
+  return j ? j.project_name : null;
+}
+
+function _tryGetProjectFromPipelinesCache(pipelineName) {
+  const list = window.__pipelines || [];
+  const p = list.find(x => x && x.pipeline_name === pipelineName && x.project_name);
+  return p ? p.project_name : null;
+}
+
 function _nowSql() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2,'0');
@@ -3198,27 +3210,30 @@ async function saveJobCreateSingle() {
   if (!order || isNaN(order) || order < 1) { m.textContent = 'Ordem inválida'; m.className = 'msg erro'; return; }
   if (!type) { m.textContent = 'Tipo obrigatório'; m.className = 'msg erro'; return; }
 
-  const conf = {
-    pipeline_name: pipeline,
-    jobs: [{
-      job_name: name,
-      execution_order: order,
-      job_type: type,
-      job_command: cmd || null,
-      origens: [],
-      destinos: [],
-    }]
-  };
-
-  await triggerAndPoll(
-    'etl_pipeline_job_register',
-    conf,
-    'Adicionar job "' + name + '" no pipeline "' + pipeline + '"',
-    null, null, null
-  );
-
   closeJobCreateModal();
-  try { loadJobsQuery(jobQueryState.offset); } catch(e) {}
+
+  // O backend exige lineage (origem + destino). Então abrimos o modal de Lineage
+  // e salvamos automaticamente ao confirmar.
+  jobsBdata = [];
+  jbLineId  = 0;
+  addJobLineB({
+    job_name: name,
+    execution_order: order,
+    job_type: type,
+    job_command: cmd || null,
+  });
+
+  if ($('job_pipeline_name')) $('job_pipeline_name').value = pipeline;
+
+  const project =
+    _tryGetProjectFromJobsList(pipeline) ||
+    _tryGetProjectFromPipelinesCache(pipeline) ||
+    _inferProjectFromPipeline(pipeline) ||
+    null;
+
+  window.__lineageTableCtx = { pipeline: pipeline, project: project };
+  openLineageModal(jobsBdata[0].id);
+  showToast('Preencha a lineage e clique em Confirmar para concluir o cadastro.', false);
 }
 
 function _parseBulkJobs(raw) {
@@ -3260,16 +3275,20 @@ async function saveJobCreateBulk() {
     return;
   }
 
-  const conf = { pipeline_name: pipeline, jobs };
-  await triggerAndPoll(
-    'etl_pipeline_job_register',
-    conf,
-    'Adicionar ' + jobs.length + ' job(s) no pipeline "' + pipeline + '"',
-    null, null, null
-  );
-
   closeJobCreateModal();
-  try { loadJobsQuery(jobQueryState.offset); } catch(e) {}
+
+  // Em lote, o backend também exige lineage. Então carregamos os jobs no modo manual
+  // para o usuário preencher lineage e clicar em "Salvar Jobs".
+  if ($('job_pipeline_name')) $('job_pipeline_name').value = pipeline;
+  jobsBdata = [];
+  jbLineId  = 0;
+  jobs.forEach(j => addJobLineB({
+    job_name: j.job_name,
+    execution_order: j.execution_order,
+    job_type: j.job_type || 'datastage',
+    job_command: j.job_command || null,
+  }));
+  showToast('Jobs carregados. Agora preencha a lineage de cada um e clique em "Salvar Jobs".', false);
 }
 
 function openJobEdit(idx) {
