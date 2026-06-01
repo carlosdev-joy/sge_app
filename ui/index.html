@@ -2383,7 +2383,8 @@ function openLineageModal(jobId) {
   _ensureModal();
   activeJobModal = jobId;
   const j = jobsBdata.find(x => x.id === jobId);
-  $('mlb-title').textContent = 'Lineage — ' + (j.name || 'job sem nome');
+  const isStep2 = window.__lineageTableCtx && window.__lineageTableCtx.source === 'jobCreate';
+  $('mlb-title').textContent = (isStep2 ? 'Etapa 2/2 — Lineage — ' : 'Lineage — ') + (j.name || 'job sem nome');
   renderModalBody();
   $('modal-lineage-b').classList.add('open');
 }
@@ -3160,7 +3161,7 @@ function openJobCreateModal(mode) {
 
   // título
   const ttl = $('jcm-title');
-  if (ttl) ttl.textContent = _jobCreateMode === 'bulk' ? 'Colar lista de jobs' : 'Adicionar job';
+  if (ttl) ttl.textContent = _jobCreateMode === 'bulk' ? 'Colar lista de jobs' : 'Etapa 1/2 — Dados do job';
 
   // pipeline (fixo)
   $('jcm-pipeline').value = pipeline;
@@ -3231,7 +3232,7 @@ async function saveJobCreateSingle() {
     _inferProjectFromPipeline(pipeline) ||
     null;
 
-  window.__lineageTableCtx = { pipeline: pipeline, project: project };
+  window.__lineageTableCtx = { pipeline: pipeline, project: project, source: 'jobCreate' };
   openLineageModal(jobsBdata[0].id);
   showToast('Preencha a lineage e clique em Confirmar para concluir o cadastro.', false);
 }

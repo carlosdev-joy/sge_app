@@ -8,7 +8,12 @@ MSSQL_CONN_ID = "SQL14_DMDB41"
 
 VALID_JOB_TYPES    = {"datastage", "shell", "python", "storedproc"}
 VALID_DIRECTIONS   = {"origem", "destino"}
-VALID_OBJECT_TYPES = {"Tabela", "View", "Arquivo", "Proc", "Query"}
+#
+# IMPORTANTE:
+# A validação de object_type foi removida.
+# Motivo: em DataStage/DSX podem surgir tipos como "DataSet" e outros,
+# e o processo de cadastro não deve falhar por causa disso.
+# Mantemos apenas a validação de object_name obrigatório.
 
 
 def registrar_pipeline_jobs(**context):
@@ -113,14 +118,11 @@ def registrar_pipeline_jobs(**context):
         # 2. Grava lineage (origens + destinos)
         for direction, objects in [("origem", origens), ("destino", destinos)]:
             for obj_idx, obj in enumerate(objects):
-                obj_type = obj.get("object_type", "")
+                obj_type = (obj.get("object_type") or "Tabela").strip()
                 obj_name = obj.get("object_name", "").strip()
 
                 if not obj_name:
                     erros.append(f"Item {idx} ({j_name}) {direction}[{obj_idx}]: object_name obrigatório")
-                    continue
-                if obj_type not in VALID_OBJECT_TYPES:
-                    erros.append(f"Item {idx} ({j_name}) {direction}[{obj_idx}]: object_type '{obj_type}' inválido")
                     continue
 
                 try:
