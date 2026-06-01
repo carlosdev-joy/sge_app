@@ -2188,6 +2188,32 @@ function renderLineagePipeline() {
   vis.innerHTML = '<div class="lineage-svg-wrap"><div class="pipeline-flow">' + stepsHtml + '</div></div>';
 }
 
+function openJobLineageFromTable(idx) {
+  const list = window.__jobs || [];
+  const j = list[idx];
+  if (!j) return;
+
+  // Prepara jobsBdata com apenas este job
+  jobsBdata = [];
+  jbLineId  = 0;
+  addJobLineB({
+    job_name:        j.job_name,
+    execution_order: j.execution_order,
+    job_type:        j.job_type || 'datastage',
+    job_command:     j.job_command || null,
+  });
+
+  // Garante que pipeline está preenchido (necessário para DSX + save)
+  if ($('job_pipeline_name') && j.pipeline_name) {
+    $('job_pipeline_name').value = j.pipeline_name;
+  }
+
+  // Guarda contexto: ao fechar o modal, salva automaticamente
+  window.__lineageTableCtx = { pipeline: j.pipeline_name };
+
+  openLineageModal(jobsBdata[0].id);
+}
+
 /* ══ LOGIN ══ */
 async function entrar() {
   const m = $('login_msg');
@@ -2332,7 +2358,23 @@ function openLineageModal(jobId) {
 function closeLineageModal() {
   if ($('modal-lineage-b')) $('modal-lineage-b').classList.remove('open');
   activeJobModal = null;
-  renderJobLinesB();
+
+  if (window.__lineageTableCtx) {
+    // Veio da tabela de jobs — salva direto no banco
+    const ctx = window.__lineageTableCtx;
+    window.__lineageTableCtx = null;
+    const jobs = collectJobRows();
+    if (jobs.length && ctx.pipeline) {
+      triggerAndPoll(
+        'etl_pipeline_job_register',
+        { pipeline_name: ctx.pipeline, jobs },
+        'Lineage de "' + jobs[0].job_name + '"',
+        null, null, null
+      );
+    }
+  } else {
+    renderJobLinesB();
+  }
 }
 
 function renderModalBody() {
@@ -2949,6 +2991,7 @@ function renderJobsTable(payload) {
     '<td style="white-space:nowrap">' +
       '<div class="row-actions">' +
         '<button class="btn-ghost btn-sm" onclick="openJobEdit(' + i + ')">Editar</button>' +
+        '<button class="btn-ghost btn-sm" onclick="openJobLineageFromTable(' + i + ')">Lineage</button>' +
       '</div>' +
     '</td>' +
     '</tr>'
