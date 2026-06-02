@@ -1855,17 +1855,25 @@ function showLineageDSXPreview(payload) {
   };
 
   const rows = dados.map(d => {
-    const dir = d.direction || 'transformacao';
+    // Suporta formato novo (direction, object_name) E legado (Direção, Nome do Objeto)
+    const dirRaw = (d.direction || d['Direção'] || '').toLowerCase();
+    const dir = dirRaw.startsWith('orig') ? 'origem'
+              : dirRaw.startsWith('dest') ? 'destino'
+              : 'transformacao';
     const c = dirColors[dir] || dirColors.transformacao;
-    const cat = (d.type_category || (dir === 'transformacao' ? 'transformacao' : '—'));
-    const typeLabel = d.type_label || getTypeLabel(d.stage_type_raw) || d.object_type || '—';
-    const stage = d.stage_name || d.object_name || '—';
+    const cat = d.type_category || dir;
+    const typeRaw  = d.stage_type_raw || d['Tipo de Objeto'] || '';
+    const typeLabel = d.type_label || getTypeLabel(typeRaw) || d.object_type || typeRaw || '—';
+    const stage = d.stage_name || d.object_name || d['Nome do Objeto'] || '—';
+    const tabArq  = d['Tabela / Arquivo'] || '';
     const detail =
       d.file_path
         ? d.file_path
-        : (d.database_name && d.object_name)
-          ? (d.database_name + '.' + d.object_name)
-          : (d.object_name || '—');
+        : d.sql_expression
+          ? d.sql_expression.replace(/\n/g, ', ')
+          : (d.database_name && d.object_name)
+            ? (d.database_name + '.' + d.object_name)
+            : (tabArq || '—');
 
     return '<tr>' +
       '<td style="white-space:nowrap"><span style="display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;background:' + c.bg + ';color:' + c.color + ';font-size:11px;font-weight:700">' + c.label + '</span></td>' +
@@ -1890,20 +1898,27 @@ function applyLineageDSX() {
   const now = _nowSql();
   const dsxFile = (_dsxCtx && _dsxCtx.dsx_file) ? _dsxCtx.dsx_file : null;
 
-  const origens = _dsxLineageData.filter(d => (d.direction || '') === 'origem');
-  const destinos = _dsxLineageData.filter(d => (d.direction || '') === 'destino');
-  const transfs  = _dsxLineageData.filter(d => (d.direction || '') === 'transformacao');
+  // Suporta formato novo (d.direction) e legado (d['Direção'])
+  const _getDir = d => (d.direction || d['Direção'] || '').toLowerCase();
+  const origens = _dsxLineageData.filter(d => _getDir(d).startsWith('orig'));
+  const destinos = _dsxLineageData.filter(d => _getDir(d).startsWith('dest'));
+  const transfs  = _dsxLineageData.filter(d => {
+    const dir = _getDir(d);
+    return !dir.startsWith('orig') && !dir.startsWith('dest');
+  });
 
   const toObj = (x) => ({
-    t: x.object_type || (x.type_category === 'arquivo' ? 'Arquivo' : (x.type_category === 'transformacao' ? 'Transformação' : 'Tabela')),
-    n: (x.object_name || x.stage_name || '').toString(),
-    stage_name: x.stage_name || null,
-    stage_type_raw: x.stage_type_raw || null,
-    database_name: x.database_name || null,
-    sql_expression: x.sql_expression || null,
-    file_path: x.file_path || null,
+    t: x.object_type || x['Tipo de Objeto']
+      || (x.type_category === 'arquivo' ? 'Arquivo'
+        : x.type_category === 'transformacao' ? 'Transformação' : 'Tabela'),
+    n: (x.object_name || x.stage_name || x['Nome do Objeto'] || '').toString(),
+    stage_name:      x.stage_name      || x['Nome do Objeto']  || null,
+    stage_type_raw:  x.stage_type_raw  || x['Tipo de Objeto']  || null,
+    database_name:   x.database_name   || null,
+    sql_expression:  x.sql_expression  || x['Tabela / Arquivo'] || null,
+    file_path:       x.file_path       || null,
     dsx_source_file: dsxFile,
-    extracted_at: now,
+    extracted_at:    now,
     extraction_method: 'dsx_auto',
   });
 
