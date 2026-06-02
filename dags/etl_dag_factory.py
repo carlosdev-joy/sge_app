@@ -40,6 +40,51 @@ def _time_to_cron(t: str) -> str:
     return f"{int(parts[1]) if len(parts) > 1 else 0} {int(parts[0])} * * *"
 
 
+def _build_cron(schedule_type, hour, minute, dow, dom, scheduled_time: str | None = None) -> str:
+    """
+    Fase 3: Cron avançado.
+    - Se schedule_type não estiver preenchido (legado), usa scheduled_time (diário).
+    """
+    st = (schedule_type or "").strip().lower()
+    try:
+        h = int(hour) if hour is not None and str(hour).strip() != "" else None
+    except Exception:
+        h = None
+    try:
+        m = int(minute) if minute is not None and str(minute).strip() != "" else None
+    except Exception:
+        m = None
+    try:
+        d = int(dow) if dow is not None and str(dow).strip() != "" else None
+    except Exception:
+        d = None
+    try:
+        dm = int(dom) if dom is not None and str(dom).strip() != "" else None
+    except Exception:
+        dm = None
+
+    # fallback legado: scheduled_time (HH:MM:SS)
+    if not st:
+        if scheduled_time:
+            return _time_to_cron(str(scheduled_time))
+        return "0 6 * * *"
+
+    if m is None:
+        m = 0
+    if h is None:
+        h = 0
+
+    if st == "hourly":
+        return f"{m} * * * *"
+    if st == "daily":
+        return f"{m} {h} * * *"
+    if st == "weekly":
+        return f"{m} {h} * * {d if d is not None else 1}"
+    if st == "monthly":
+        return f"{m} {h} {dm if dm is not None else 1} * *"
+    return f"{m} {h} * * *"
+
+
 def _ind(code: str, n: int = 4) -> str:
     pad = " " * n
     return "\n".join(pad + ln if ln.strip() else ln for ln in code.split("\n"))
@@ -135,12 +180,17 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
     project = pipeline["project_name"]
     domain  = pipeline["domain"]
     tags_raw= pipeline["tags"]
-    sched   = pipeline["scheduled_time"]
+    sched   = pipeline.get("scheduled_time")
+    stype   = pipeline.get("schedule_type")
+    shour   = pipeline.get("schedule_hour")
+    smin    = pipeline.get("schedule_minute")
+    sdow    = pipeline.get("schedule_dow")
+    sdom    = pipeline.get("schedule_dom")
     f_ini   = bool(pipeline["envia_msg_inicio"])
     f_fim   = bool(pipeline["envia_msg_fim"])
     f_err   = bool(pipeline["envia_msg_erro"])
 
-    cron        = _time_to_cron(sched)
+    cron        = _build_cron(stype, shour, smin, sdow, sdom, sched)
     base_log    = BASE_LOG_ROOT.format(project=project)
     user_tags   = [t.strip() for t in tags_raw.split(",") if t.strip()]
     all_tags    = list(dict.fromkeys([project, domain] + user_tags))

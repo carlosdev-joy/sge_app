@@ -651,6 +651,12 @@
   .ls-node-box.destino{background:#EEF9F2;border-color:#A8D5B5;color:#27500A}
   .ls-node-box.job{background:#F3EFFE;border-color:#C5A8F5;color:#534AB7;font-weight:600}
   .ls-node-box.transf{background:#FDF8EE;border-color:#F0D68C;color:#854F0B}
+  .ls-detail-btn{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;border:1px solid currentColor;font-size:11px;font-weight:700;cursor:pointer;margin-left:6px;opacity:.7;flex-shrink:0;background:none;transition:opacity .2s}
+  .ls-detail-btn:hover{opacity:1}
+  .ls-detail-popover{position:fixed;z-index:500;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.5rem .75rem;min-width:180px;max-width:320px;font-size:11px;box-shadow:0 4px 16px rgba(0,0,0,.12);white-space:pre-wrap;word-break:break-all}
+  .ls-detail-popover .ls-pop-title{font-weight:700;font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-bottom:.3rem}
+  .ls-detail-popover .ls-pop-item{font-family:ui-monospace,'Courier New',monospace;font-size:11px;padding:2px 0;border-bottom:1px solid var(--border-light)}
+  .ls-detail-popover .ls-pop-item:last-child{border-bottom:none}
   .ls-node-label{font-size:10px;opacity:.65;margin-top:2px;display:block}
   .ls-node-db{font-size:10px;opacity:.7;font-style:italic;display:block}
   .ls-arrow{color:var(--muted);padding:0 8px;font-size:18px;align-self:center}
@@ -894,10 +900,44 @@
               <div id="err-domain" class="field-error"></div>
             </div>
           </div>
-          <div class="field">
-            <label for="scheduled_time">Horário de execução <span style="color:var(--red)">*</span></label>
-            <input id="scheduled_time" type="time" required />
-            <div class="helper">Formato 24h (HH:MM). Ex.: 09:30.</div>
+          <div class="field-group" id="schedule-builder">
+            <label>Agendamento <span style="color:var(--red)">*</span></label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <select id="sch-type" onchange="_scheduleTypeChange()" style="min-width:180px">
+                <option value="daily">Diário</option>
+                <option value="hourly">A cada hora</option>
+                <option value="weekly">Semanal</option>
+                <option value="monthly">Mensal</option>
+              </select>
+
+              <!-- Hora e minuto — oculto para hourly -->
+              <div id="sch-time-row" style="display:flex;gap:6px;align-items:center">
+                <label style="font-size:11px;color:var(--muted);margin:0">Às</label>
+                <input type="number" id="sch-hour" min="0" max="23" value="6" style="width:55px" placeholder="HH" oninput="_scheduleUpdatePreview()" />
+                <span>:</span>
+                <input type="number" id="sch-minute" min="0" max="59" value="0" style="width:55px" placeholder="MM" oninput="_scheduleUpdatePreview()" />
+              </div>
+
+              <!-- Dia da semana — só para weekly -->
+              <div id="sch-dow-row" style="display:none;gap:6px;align-items:center">
+                <label style="font-size:11px;color:var(--muted);margin:0">Dia</label>
+                <select id="sch-dow" onchange="_scheduleUpdatePreview()">
+                  <option value="1">Segunda</option><option value="2">Terça</option>
+                  <option value="3">Quarta</option><option value="4">Quinta</option>
+                  <option value="5">Sexta</option><option value="6">Sábado</option>
+                  <option value="0">Domingo</option>
+                </select>
+              </div>
+
+              <!-- Dia do mês — só para monthly -->
+              <div id="sch-dom-row" style="display:none;gap:6px;align-items:center">
+                <label style="font-size:11px;color:var(--muted);margin:0">Dia do mês</label>
+                <input type="number" id="sch-dom" min="1" max="31" value="1" style="width:55px" oninput="_scheduleUpdatePreview()" />
+              </div>
+            </div>
+
+            <!-- Preview do cron gerado -->
+            <div id="sch-preview" style="font-size:11px;font-family:ui-monospace, 'Courier New', monospace;color:var(--muted);margin-top:6px">cron: 0 6 * * *</div>
           </div>
           <div class="field">
             <label>Tags <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">— opcional · pressione Enter para adicionar</span></label>
@@ -2163,6 +2203,50 @@ function _lineageNode(label, sublabel, dbName, cls) {
   '</div></div>';
 }
 
+// Cria e mostra o popover de drill-down ao clicar em +
+function _lsDetailPopover(btn, content, title) {
+  // Fecha qualquer popover aberto
+  document.querySelectorAll('.ls-detail-popover').forEach(p => p.remove());
+
+  const pop = document.createElement('div');
+  pop.className = 'ls-detail-popover';
+
+  const titleEl = document.createElement('div');
+  titleEl.className = 'ls-pop-title';
+  titleEl.textContent = title || 'Detalhes';
+  pop.appendChild(titleEl);
+
+  const items = (content || '').toString().split('\n').filter(Boolean);
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'ls-pop-item';
+    empty.textContent = '—';
+    pop.appendChild(empty);
+  } else {
+    items.forEach(function(item) {
+      const el = document.createElement('div');
+      el.className = 'ls-pop-item';
+      el.textContent = item;
+      pop.appendChild(el);
+    });
+  }
+
+  // Posiciona relativo ao botão
+  const rect = btn.getBoundingClientRect();
+  pop.style.left = (rect.right + 6) + 'px';
+  pop.style.top  = (rect.top) + 'px';
+  document.body.appendChild(pop);
+
+  // Fecha ao clicar fora
+  function closeOnOutside(e) {
+    if (!pop.contains(e.target) && e.target !== btn) {
+      pop.remove();
+      document.removeEventListener('click', closeOnOutside);
+    }
+  }
+  setTimeout(() => document.addEventListener('click', closeOnOutside), 50);
+}
+
 function renderLineageJob() {
   const vis = $('gov-visual');
   if (!vis || !_govData) return;
@@ -2192,12 +2276,29 @@ function renderLineageJob() {
     return;
   }
 
-  const mk = (o, cls) => _lineageNode(
-    o.stage_name || o.object_name,
-    (o.type_label || o.object_type || '—'),
-    (o.file_path || (o.database_name ? (o.database_name + (o.object_name ? ('.' + o.object_name) : '')) : '')),
-    cls
-  );
+  const mk = (o, cls) => {
+    const label = o.stage_name || o.object_name;
+    const typeLabel = (o.type_label || o.object_type || '—');
+    const dbLine = (o.file_path || (o.database_name ? (o.database_name + (o.object_name ? ('.' + o.object_name) : '')) : ''));
+
+    const hasDetail = (o.sql_expression && String(o.sql_expression).trim()) || (o.file_path && String(o.file_path).trim());
+    const detailContent = (o.file_path && String(o.file_path).trim()) ? String(o.file_path) : (o.sql_expression ? String(o.sql_expression) : '');
+    const detailTitle = (o.file_path && String(o.file_path).trim()) ? 'Arquivo' : 'Tabelas extraídas do SQL';
+
+    const btnHtml = hasDetail
+      ? ('<button class="ls-detail-btn" title="Ver ' + detailTitle + '" onclick="_lsDetailPopover(this, ' +
+          JSON.stringify(detailContent) + ', ' + JSON.stringify(detailTitle) + ')">+</button>')
+      : '';
+
+    return '<div class="ls-node"><div class="ls-node-box ' + cls + '">' +
+      '<div style="display:flex;align-items:center;justify-content:center;gap:4px">' +
+        '<span style="font-size:12px;font-weight:500">' + (label || '—') + '</span>' +
+        btnHtml +
+      '</div>' +
+      (typeLabel ? '<span class="ls-node-label">' + typeLabel + '</span>' : '') +
+      (dbLine ? '<span class="ls-node-db">' + dbLine + '</span>' : '') +
+    '</div></div>';
+  };
 
   const oriH = ori.map(o => mk(o, 'origem')).join('<div style="height:8px"></div>');
   const trfH = trf.map(o => mk(o, 'transf')).join('<div style="height:8px"></div>');
@@ -2797,6 +2898,75 @@ function normalizeIdent(val) {
   return v;
 }
 
+function _pad2(n) { return String(n).padStart(2, '0'); }
+
+function _scheduleTypeChange() {
+  const type = $('sch-type') ? $('sch-type').value : 'daily';
+  const timeRow = $('sch-time-row');
+  const dowRow = $('sch-dow-row');
+  const domRow = $('sch-dom-row');
+  if (timeRow) timeRow.style.display = type === 'hourly' ? 'none' : 'flex';
+  if (dowRow) dowRow.style.display = type === 'weekly' ? 'flex' : 'none';
+  if (domRow) domRow.style.display = type === 'monthly' ? 'flex' : 'none';
+  _scheduleUpdatePreview();
+}
+
+function _scheduleUpdatePreview() {
+  const type = $('sch-type') ? $('sch-type').value : 'daily';
+  const h = parseInt($('sch-hour') ? $('sch-hour').value : 6) || 0;
+  const m = parseInt($('sch-minute') ? $('sch-minute').value : 0) || 0;
+  const dow = $('sch-dow') ? $('sch-dow').value : 1;
+  const dom = parseInt($('sch-dom') ? $('sch-dom').value : 1) || 1;
+  let cron;
+  if (type === 'hourly') cron = `${m} * * * *`;
+  else if (type === 'daily') cron = `${m} ${h} * * *`;
+  else if (type === 'weekly') cron = `${m} ${h} * * ${dow}`;
+  else if (type === 'monthly') cron = `${m} ${h} ${dom} * *`;
+  else cron = `${m} ${h} * * *`;
+  if ($('sch-preview')) $('sch-preview').textContent = 'cron: ' + cron;
+  return cron;
+}
+
+function _scheduleGetConf() {
+  const type = $('sch-type') ? $('sch-type').value : 'daily';
+  const h = parseInt($('sch-hour') ? $('sch-hour').value : 6);
+  const m = parseInt($('sch-minute') ? $('sch-minute').value : 0);
+  const dow = type === 'weekly' ? parseInt($('sch-dow') ? $('sch-dow').value : 1) : null;
+  const dom = type === 'monthly' ? parseInt($('sch-dom') ? $('sch-dom').value : 1) : null;
+  return {
+    schedule_type: type,
+    schedule_hour: isNaN(h) ? null : h,
+    schedule_minute: isNaN(m) ? null : m,
+    schedule_dow: isNaN(dow) ? null : dow,
+    schedule_dom: isNaN(dom) ? null : dom,
+  };
+}
+
+function _scheduleSetFromRecord(rec) {
+  // Pré-popula o builder ao editar um pipeline existente
+  if (!rec) return;
+  const type = rec.schedule_type || 'daily';
+  if ($('sch-type')) $('sch-type').value = type;
+
+  // fallback: se não houver schedule_hour/minute, tenta parse do scheduled_time (HH:MM:SS)
+  let hh = rec.schedule_hour;
+  let mm = rec.schedule_minute;
+  if ((hh === undefined || hh === null || mm === undefined || mm === null) && rec.scheduled_time) {
+    const st = String(rec.scheduled_time);
+    const parts = st.split(':');
+    if (parts.length >= 2) {
+      hh = parseInt(parts[0], 10);
+      mm = parseInt(parts[1], 10);
+    }
+  }
+
+  if ($('sch-hour')) $('sch-hour').value = (hh ?? 6);
+  if ($('sch-minute')) $('sch-minute').value = (mm ?? 0);
+  if ($('sch-dow')) $('sch-dow').value = (rec.schedule_dow ?? 1);
+  if ($('sch-dom')) $('sch-dom').value = (rec.schedule_dom ?? 1);
+  _scheduleTypeChange();
+}
+
 async function registrarPipeline() {
   // Validação antecipada (mostra erros no próprio campo)
   const okPipeline = validateIdentField('pipeline_name', 'err-pipeline', 'Nome do pipeline', true);
@@ -2826,7 +2996,6 @@ async function registrarPipeline() {
   }
 
   const pipelineIn = $('pipeline_name').value;
-  const time     = $('scheduled_time').value;
   const project  = $('p-project').value.trim();
   const domainIn = $('p-domain').value;
   const tagsIn   = $('p-tags').value;
@@ -2837,7 +3006,6 @@ async function registrarPipeline() {
   if (!pipeline) { m.textContent = 'Informe o nome do pipeline'; m.className = 'msg erro'; return; }
   if (pipeline === null) { m.textContent = 'Nome do pipeline inválido. Use apenas letras, números e "_" (sem espaços).'; m.className = 'msg erro'; return; }
 
-  if (!time)     { m.textContent = 'Informe o horário de execução'; m.className = 'msg erro'; return; }
   if (!project)  { m.textContent = 'Selecione o projeto'; m.className = 'msg erro'; return; }
 
   const domain = normalizeIdent(domainIn);
@@ -2859,20 +3027,42 @@ async function registrarPipeline() {
   $('p-domain').value = domain;
   $('p-tags').value = (tags ? tags.split(',').map(s => normalizeIdent(s)).filter(Boolean).join(',') : '');
 
+  // Agendamento (Fase 3): builder avançado
+  const schedConf = _scheduleGetConf();
+  const cron = _scheduleUpdatePreview();
+
+  // Valida ranges básicos
+  const stype = schedConf.schedule_type || 'daily';
+  const sh = (schedConf.schedule_hour ?? 0);
+  const sm = (schedConf.schedule_minute ?? 0);
+  if (stype !== 'hourly') {
+    if (sh < 0 || sh > 23) { m.textContent = 'Hora inválida (0-23)'; m.className = 'msg erro'; return; }
+  }
+  if (sm < 0 || sm > 59) { m.textContent = 'Minuto inválido (0-59)'; m.className = 'msg erro'; return; }
+  if (stype === 'weekly' && (schedConf.schedule_dow < 0 || schedConf.schedule_dow > 6)) { m.textContent = 'Dia da semana inválido'; m.className = 'msg erro'; return; }
+  if (stype === 'monthly' && (schedConf.schedule_dom < 1 || schedConf.schedule_dom > 31)) { m.textContent = 'Dia do mês inválido'; m.className = 'msg erro'; return; }
+
+  // scheduled_time (legado) — mantém compatibilidade
+  // hourly: cron usa somente minuto; salvamos scheduled_time como 00:MM:00
+  const scheduled_time = _pad2(stype === 'hourly' ? 0 : sh) + ':' + _pad2(sm) + ':00';
+
   await triggerAndPoll(
     'etl_pipeline_register',
     {
-      pipeline_name: pipeline, scheduled_time: time + ':00',
+      pipeline_name: pipeline, scheduled_time: scheduled_time,
       active: pipelineStatus,
       envia_msg_inicio: $('tog-inicio').checked ? 1 : 0,
       envia_msg_fim:    $('tog-fim').checked    ? 1 : 0,
       envia_msg_erro:   $('tog-erro').checked   ? 1 : 0,
       project_name: project, domain: domain, tags: tags,
+      ...schedConf,
+      schedule_cron_preview: cron, // apenas para debug/log; backend ignora se não usar
     },
     'Pipeline "' + pipeline + '"',
     'btn-save-pipeline', 'save_pipeline_txt', 'Salvar'
   );
-  $('pipeline_name').value = ''; $('scheduled_time').value = '';
+  $('pipeline_name').value = '';
+  _scheduleSetFromRecord({ schedule_type: 'daily', schedule_hour: 6, schedule_minute: 0, schedule_dow: 1, schedule_dom: 1 });
   $('p-project').value = ''; $('p-domain').value = '';
   $('p-tags').value = ''; $('tags-wrap').querySelectorAll('.chip').forEach(c => c.remove());
   setStatus(1);
@@ -3438,7 +3628,7 @@ function openPipelineCreate() {
   $('pipelineFormHint').textContent = 'Cadastro de novo pipeline. O nome é a chave única (pipeline_name).';
   $('pipeline_name').disabled = false;
   $('pipeline_name').value = '';
-  $('scheduled_time').value = '';
+  _scheduleSetFromRecord({ schedule_type: 'daily', schedule_hour: 6, schedule_minute: 0, schedule_dow: 1, schedule_dom: 1 });
   $('p-project').value = '';
   $('p-domain').value = '';
   $('p-tags').value = '';
@@ -3470,8 +3660,14 @@ function openPipelineEdit(idx) {
   $('pipeline_name').value = (p.pipeline_name || '').toString().toUpperCase();
   $('p-project').value = p.project_name || '';
   $('p-domain').value = (p.domain || '').toString().toUpperCase();
-  const st = (p.scheduled_time || '').toString();
-  $('scheduled_time').value = st.length >= 5 ? st.slice(0,5) : '';
+  _scheduleSetFromRecord({
+    schedule_type: p.schedule_type,
+    schedule_hour: p.schedule_hour,
+    schedule_minute: p.schedule_minute,
+    schedule_dow: p.schedule_dow,
+    schedule_dom: p.schedule_dom,
+    scheduled_time: p.scheduled_time,
+  });
   // tags
   $('p-tags').value = '';
   $('tags-wrap').querySelectorAll('.chip').forEach(c => c.remove());
@@ -3490,7 +3686,7 @@ function openPipelineEdit(idx) {
   clearFieldInvalidById('p-domain','err-domain');
   clearFieldInvalidById('tag-input','err-tags');
   $('pipeline-editor').classList.remove('hidden');
-  try { $('scheduled_time').focus(); } catch(e) {}
+  try { $('sch-type').focus(); } catch(e) {}
   try { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); } catch(e) {}
 }
 
@@ -3506,6 +3702,11 @@ async function softDeletePipeline(idx) {
   const conf = {
     pipeline_name: p.pipeline_name,
     scheduled_time: (p.scheduled_time || '00:00:00'),
+    schedule_type: p.schedule_type || null,
+    schedule_hour: (p.schedule_hour ?? null),
+    schedule_minute: (p.schedule_minute ?? null),
+    schedule_dow: (p.schedule_dow ?? null),
+    schedule_dom: (p.schedule_dom ?? null),
     active: 0,
     envia_msg_inicio: p.envia_msg_inicio ? 1 : 0,
     envia_msg_fim:    p.envia_msg_fim ? 1 : 0,

@@ -8,7 +8,7 @@ GO
 SET QUOTED_IDENTIFIER ON
 GO
 
-CREATE PROCEDURE [dbo].[sp_etl_pipelines_pendentes_criar]
+CREATE OR ALTER PROCEDURE [dbo].[sp_etl_pipelines_pendentes_criar]
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -19,6 +19,11 @@ BEGIN
         p.domain,
         p.tags,
         CONVERT(VARCHAR(8), p.scheduled_time, 108) AS scheduled_time,
+        p.schedule_type,
+        p.schedule_hour,
+        p.schedule_minute,
+        p.schedule_dow,
+        p.schedule_dom,
         p.ENVIA_MSG_INICIO,
         p.ENVIA_MSG_FIM,
         p.ENVIA_MSG_ERRO

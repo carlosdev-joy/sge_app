@@ -79,14 +79,29 @@ class DSXEngine:
             return "transformacao"
         return "transformacao"
 
-    def _extract_tables_from_component(self, record_content):
-        tables = []
-        table_name_match = re.search(r"<TableName[^>]*><!\[CDATA\[(.*?)\]\]></TableName>", record_content)
+    def _extract_tables_from_sql(self, record_content: str) -> list[str]:
+        """
+        Extrai tabelas usadas em stages ODBC:
+        - <TableName><![CDATA[...]]></TableName>
+        - <SelectStatement><![CDATA[ ... ]]></SelectStatement> com parsing FROM/JOIN
+          e exclusão de CTEs.
+        Retorna lista sem duplicatas (preservando ordem).
+        """
+        tables: list[str] = []
+
+        # 1) TableName explícito (estágio com tabela configurada)
+        table_name_match = re.search(
+            r"<TableName[^>]*><!\[CDATA\[(.*?)\]\]></TableName>",
+            record_content,
+        )
         if table_name_match and table_name_match.group(1).strip():
             tables.append(table_name_match.group(1).strip())
 
+        # 2) SelectStatement — FROM/JOIN com exclusão de CTEs
         select_match = re.search(
-            r"<SelectStatement[^>]*><!\[CDATA\[(.*?)\]\]></SelectStatement>", record_content, re.DOTALL
+            r"<SelectStatement[^>]*><!\[CDATA\[(.*?)\]\]></SelectStatement>",
+            record_content,
+            re.DOTALL,
         )
         if select_match:
             sql_text = select_match.group(1)
@@ -95,11 +110,10 @@ class DSXEngine:
             cte_blacklist = {cte.strip().lower() for cte in cte_pattern.findall(sql_text)}
 
             pattern = re.compile(r"\b(?:FROM|JOIN)\s+([a-zA-Z0-9_.\[\]]+)", re.IGNORECASE)
-            for t in pattern.findall(sql_text):
-                t_clean = t.strip()
+            for t_raw in pattern.findall(sql_text):
+                t_clean = t_raw.strip()
                 t_compare = t_clean.split(".")[-1].replace("[", "").replace("]", "").lower()
-
-                if t_clean and (t_compare not in cte_blacklist):
+                if t_clean and t_compare not in cte_blacklist:
                     tables.append(t_clean)
 
         return list(dict.fromkeys(tables))
@@ -150,18 +164,19 @@ class DSXEngine:
 
                 direction_key = self._infer_direction_key(has_inputs, has_outputs)
 
-                tables_or_files = []
-                sql_expression = ""
-                file_path = ""
+                tables_or_files: list[str] = []
+                sql_expression: str | None = None
+                file_path: str | None = None
 
                 if any(db_type in raw_type for db_type in ["ODBC", "Oracle", "DB2", "SQL"]):
-                    tables_or_files = self._extract_tables_from_component(record)
-                    sql_expression = self._extract_select_statement(record)
+                    tables_or_files = self._extract_tables_from_sql(record)
+                    # Fase 3: gravar lista de tabelas (1 por linha) em sql_expression
+                    sql_expression = "\n".join(tables_or_files) if tables_or_files else None
                 elif any(file_type in raw_type for file_type in ["DataSet", "SequentialFile"]):
-                    file_name = self._extract_file_name(record)
-                    if file_name:
-                        tables_or_files = [file_name]
-                    file_path = self._extract_file_path(record)
+                    # Fase 3: file_path = path do arquivo (DataSet/SequentialFile)
+                    file_path = self._extract_file_name(record) or None
+                    if file_path:
+                        tables_or_files = [file_path]
 
                 # Fase 2: retornar TODOS os stages (inclui transformações)
                 # - Para estágios com múltiplas tabelas (FROM/JOIN), gera 1 registro por tabela.
@@ -177,8 +192,8 @@ class DSXEngine:
                             "object_name": obj_name,
                             "object_type": "Transformação" if direction_key == "transformacao" else "",
                             "database_name": None,
-                            "sql_expression": sql_expression or None,
-                            "file_path": file_path or None,
+                            "sql_expression": sql_expression,
+                            "file_path": file_path,
                         }
                     )
                 else:
@@ -193,8 +208,8 @@ class DSXEngine:
                                 "object_name": item,
                                 "object_type": "Tabela" if any(db_type in raw_type for db_type in ["ODBC", "Oracle", "DB2", "SQL"]) else "Arquivo",
                                 "database_name": None,
-                                "sql_expression": sql_expression or None,
-                                "file_path": file_path or None,
+                                "sql_expression": sql_expression,
+                                "file_path": file_path,
                             }
                         )
 

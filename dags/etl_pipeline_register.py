@@ -9,12 +9,35 @@ MSSQL_CONN_ID = "SQL14_DMDB41"
 VALID_PROJECTS = {"BI_CVP", "BI_VIDA", "BI_PRESTAMISTA", "BI_PREVIDENCIA"}
 
 
+def _build_cron(schedule_type: str | None, hour, minute, dow, dom) -> str:
+    """Converte schedule_type + parâmetros para cron expression."""
+    st = (schedule_type or "daily").strip().lower()
+    h = int(hour or 0)
+    m = int(minute or 0)
+    if st == "hourly":
+        return f"{m} * * * *"
+    if st == "daily":
+        return f"{m} {h} * * *"
+    if st == "weekly":
+        d = int(dow if dow is not None else 1)
+        return f"{m} {h} * * {d}"
+    if st == "monthly":
+        day = int(dom if dom is not None else 1)
+        return f"{m} {h} {day} * *"
+    return f"{m} {h} * * *"
+
+
 def registrar_pipeline(**context):
     """
     Parâmetros esperados via conf:
 
       pipeline_name    : str  — obrigatório
-      scheduled_time   : str  — obrigatório  ex: "08:00:00"
+      scheduled_time   : str  — obrigatório (legado) ex: "08:00:00"
+      schedule_type    : str  — hourly | daily | weekly | monthly (opcional)
+      schedule_hour    : int  — 0-23 (opcional)
+      schedule_minute  : int  — 0-59 (opcional)
+      schedule_dow     : int  — 0=Dom..6=Sab (opcional, weekly)
+      schedule_dom     : int  — 1-31 (opcional, monthly)
       active           : int  — 0 | 1  (default 1)
       envia_msg_inicio : int  — 0 | 1  (default 1)
       envia_msg_fim    : int  — 0 | 1  (default 1)
@@ -43,12 +66,26 @@ def registrar_pipeline(**context):
     domain           = conf.get("domain", "Geral")
     tags             = conf.get("tags", "")
 
+    # ── Schedule avançado (Fase 3) ───────────────────────────
+    schedule_type   = (conf.get("schedule_type") or None)
+    schedule_hour   = conf.get("schedule_hour")
+    schedule_minute = conf.get("schedule_minute")
+    schedule_dow    = conf.get("schedule_dow")
+    schedule_dom    = conf.get("schedule_dom")
+
+    cron = _build_cron(schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom)
+
     hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
 
     sql = """
     EXEC dbo.sp_etl_pipeline_upsert
         @pipeline_name    = %s,
         @scheduled_time   = %s,
+        @schedule_type    = %s,
+        @schedule_hour    = %s,
+        @schedule_minute  = %s,
+        @schedule_dow     = %s,
+        @schedule_dom     = %s,
         @active           = %s,
         @envia_msg_inicio = %s,
         @envia_msg_fim    = %s,
@@ -60,13 +97,15 @@ def registrar_pipeline(**context):
     """
 
     hook.run(sql, parameters=(
-        pipeline, horario, active,
+        pipeline, horario,
+        schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom,
+        active,
         envia_msg_inicio, envia_msg_fim, envia_msg_erro,
         dag_criada, project, domain, tags,
     ))
 
     print(
-        f"[OK] pipeline='{pipeline}' | horario={horario} | project={project} | "
+        f"[OK] pipeline='{pipeline}' | horario={horario} | cron='{cron}' | project={project} | "
         f"domain={domain} | tags={tags} | active={active} | "
         f"msg_inicio={envia_msg_inicio} | msg_fim={envia_msg_fim} | "
         f"msg_erro={envia_msg_erro} | dag_criada={dag_criada}"

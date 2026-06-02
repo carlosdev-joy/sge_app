@@ -11,6 +11,11 @@ GO
 CREATE TABLE [dbo].[etl_pipeline](
 	[pipeline_name] [nvarchar](200) NOT NULL,
 	[scheduled_time] [time](0) NOT NULL,
+	[schedule_type] [varchar](20) NULL, -- hourly | daily | weekly | monthly
+	[schedule_hour] [tinyint] NULL, -- 0-23
+	[schedule_minute] [tinyint] NULL, -- 0-59
+	[schedule_dow] [tinyint] NULL, -- 0=Dom .. 6=Sab
+	[schedule_dom] [tinyint] NULL, -- 1-31
 	[active] [bit] NULL,
 	[last_execution] [datetime2](0) NULL,
 	[created_at] [datetime2](0) NULL,

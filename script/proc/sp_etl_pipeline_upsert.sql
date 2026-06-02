@@ -8,10 +8,15 @@ GO
 SET QUOTED_IDENTIFIER ON
 GO
 
-CREATE PROCEDURE [dbo].[sp_etl_pipeline_upsert]
+CREATE OR ALTER PROCEDURE [dbo].[sp_etl_pipeline_upsert]
 (
     @pipeline_name    NVARCHAR(200),
     @scheduled_time   TIME(0),
+    @schedule_type    VARCHAR(20)    = NULL,
+    @schedule_hour    TINYINT        = NULL,
+    @schedule_minute  TINYINT        = NULL,
+    @schedule_dow     TINYINT        = NULL,
+    @schedule_dom     TINYINT        = NULL,
     @active           BIT           = 1,
     @envia_msg_inicio BIT           = 1,
     @envia_msg_fim    BIT           = 1,
@@ -32,6 +37,11 @@ BEGIN
         UPDATE dbo.etl_pipeline
         SET
             scheduled_time   = @scheduled_time,
+            schedule_type    = COALESCE(@schedule_type, schedule_type),
+            schedule_hour    = COALESCE(@schedule_hour, schedule_hour),
+            schedule_minute  = COALESCE(@schedule_minute, schedule_minute),
+            schedule_dow     = COALESCE(@schedule_dow, schedule_dow),
+            schedule_dom     = COALESCE(@schedule_dom, schedule_dom),
             active           = @active,
             ENVIA_MSG_INICIO = @envia_msg_inicio,
             ENVIA_MSG_FIM    = @envia_msg_fim,
@@ -46,13 +56,17 @@ BEGIN
     ELSE
     BEGIN
         INSERT INTO dbo.etl_pipeline (
-            pipeline_name, scheduled_time, active,
+            pipeline_name, scheduled_time,
+            schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom,
+            active,
             last_execution, created_at, updated_at,
             ENVIA_MSG_INICIO, ENVIA_MSG_FIM, ENVIA_MSG_ERRO, DAG_CRIADA,
             project_name, domain, tags
         )
         VALUES (
-            @pipeline_name, @scheduled_time, @active,
+            @pipeline_name, @scheduled_time,
+            @schedule_type, @schedule_hour, @schedule_minute, @schedule_dow, @schedule_dom,
+            @active,
             NULL, SYSDATETIME(), SYSDATETIME(),
             @envia_msg_inicio, @envia_msg_fim, @envia_msg_erro, @dag_criada,
             @project_name, @domain, @tags

@@ -19,6 +19,7 @@ Retorna via XCom (key='return_value'):
   "pages"   : int,
   "data"    : [ { pipeline_name, project_name, domain, tags,
                   scheduled_time, active, dag_criada,
+                  schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom,
                   envia_msg_inicio, envia_msg_fim, envia_msg_erro,
                   last_execution, created_at, updated_at } ]
 }
@@ -94,6 +95,11 @@ def consultar_pipelines(**context):
         domain,
         tags,
         CONVERT(VARCHAR(8), scheduled_time, 108) AS scheduled_time,
+        schedule_type,
+        CAST(schedule_hour   AS INT) AS schedule_hour,
+        CAST(schedule_minute AS INT) AS schedule_minute,
+        CAST(schedule_dow    AS INT) AS schedule_dow,
+        CAST(schedule_dom    AS INT) AS schedule_dom,
         CAST(active           AS INT) AS active,
         CAST(DAG_CRIADA       AS INT) AS dag_criada,
         CAST(ENVIA_MSG_INICIO AS INT) AS envia_msg_inicio,
@@ -113,7 +119,9 @@ def consultar_pipelines(**context):
 
     cols = [
         "pipeline_name", "project_name", "domain", "tags",
-        "scheduled_time", "active", "dag_criada",
+        "scheduled_time",
+        "schedule_type", "schedule_hour", "schedule_minute", "schedule_dow", "schedule_dom",
+        "active", "dag_criada",
         "envia_msg_inicio", "envia_msg_fim", "envia_msg_erro",
         "last_execution", "created_at", "updated_at",
     ]
