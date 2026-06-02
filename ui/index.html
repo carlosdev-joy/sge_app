@@ -2262,6 +2262,19 @@ function _lsDetailPopover(btn, content, title) {
   setTimeout(() => document.addEventListener('click', closeOnOutside), 50);
 }
 
+// Delegação de eventos para botões "+" (evita quebra de HTML por aspas no onclick inline)
+document.addEventListener('click', function(e) {
+  const btn = e.target && e.target.closest ? e.target.closest('.ls-detail-btn') : null;
+  if (!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const enc = btn.getAttribute('data-ls-content') || '';
+  let content = '';
+  try { content = decodeURIComponent(enc); } catch(_) { content = enc; }
+  const title = btn.getAttribute('data-ls-title') || 'Detalhes';
+  _lsDetailPopover(btn, content, title);
+});
+
 function renderLineageJob() {
   const vis = $('gov-visual');
   if (!vis || !_govData) return;
@@ -2301,8 +2314,9 @@ function renderLineageJob() {
     const detailTitle = (o.file_path && String(o.file_path).trim()) ? 'Arquivo' : 'Tabelas extraídas do SQL';
 
     const btnHtml = hasDetail
-      ? ('<button class="ls-detail-btn" title="Ver ' + detailTitle + '" onclick="_lsDetailPopover(this, ' +
-          JSON.stringify(detailContent) + ', ' + JSON.stringify(detailTitle) + ')">+</button>')
+      ? ('<button class="ls-detail-btn" title="Ver ' + detailTitle.replace(/\"/g,'&quot;') + '" ' +
+          'data-ls-title="' + detailTitle.replace(/\"/g,'&quot;') + '" ' +
+          'data-ls-content="' + encodeURIComponent(detailContent) + '">+</button>')
       : '';
 
     return '<div class="ls-node"><div class="ls-node-box ' + cls + '">' +
