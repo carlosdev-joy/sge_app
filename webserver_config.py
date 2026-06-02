@@ -147,7 +147,11 @@ PERMANENT_SESSION_LIFETIME = 1800
 # APP_THEME = "united.css"
 # APP_THEME = "yeti.css"
 
-from flask import Blueprint, send_from_directory
+import os
+import re
+from datetime import datetime
+
+from flask import Blueprint, send_from_directory, request, jsonify
 
 # cria blueprint
 ui_bp = Blueprint(
@@ -160,6 +164,28 @@ ui_bp = Blueprint(
 @ui_bp.route("/ui.html")
 def serve_ui():
     return send_from_directory("/opt/airflow/config/ui", "index.html")
+
+
+@ui_bp.route("/orquestra/upload-dsx", methods=["POST"])
+def upload_dsx():
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"ok": False, "error": "Arquivo não enviado (campo 'file')"}), 400
+
+    filename = (f.filename or "").strip()
+    if not filename.lower().endswith(".dsx"):
+        return jsonify({"ok": False, "error": "Apenas arquivos .dsx são permitidos"}), 400
+
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_name = f"{ts}__{safe}"
+
+    out_dir = os.environ.get("DSX_IMPORT_DIR", "/opt/airflow/dsx/imports")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, out_name)
+    f.save(out_path)
+
+    return jsonify({"ok": True, "filename": out_name})
 
 
 # REGISTRO CORRETO (ESSE É O PONTO CRÍTICO)

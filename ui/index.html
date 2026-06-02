@@ -91,6 +91,21 @@
   #schedule-builder #sch-dom{ width:56px; text-align:center; }
   #schedule-builder #sch-time-row{ gap:6px; }
   #schedule-builder #sch-dow{ max-width:170px; }
+
+  /* Schedule Builder (Sequence Import) */
+  #seq-schedule-builder select,
+  #seq-schedule-builder input[type=number]{
+    width:auto;
+    padding:.45rem .55rem;
+    border-radius:10px;
+    font-size:13px;
+  }
+  #seq-schedule-builder #seq-sch-type{ max-width:220px; }
+  #seq-schedule-builder #seq-sch-hour,
+  #seq-schedule-builder #seq-sch-minute,
+  #seq-schedule-builder #seq-sch-dom{ width:56px; text-align:center; }
+  #seq-schedule-builder #seq-sch-time-row{ gap:6px; }
+  #seq-schedule-builder #seq-sch-dow{ max-width:170px; }
   textarea { resize:vertical; min-height:100px; line-height:1.5; }
   input:focus, select:focus, textarea:focus {
     outline:none; border-color:var(--cvp-orange);
@@ -829,7 +844,10 @@
             <div class="body-pad">
               <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap">
                 <div class="helper" style="margin:0">Use os filtros para buscar e clique em <strong>Novo Pipeline</strong> para cadastrar.</div>
-                <button class="btn btn-outline btn-sm" onclick="openPipelineCreate()">+ Novo Pipeline</button>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                  <button class="btn btn-outline btn-sm" onclick="openPipelineCreate()">+ Novo Pipeline</button>
+                  <button class="btn btn-outline btn-sm" onclick="openSeqImportModal()">⬆ Importar Sequence (DSX)</button>
+                </div>
               </div>
 
               <div class="query-filters">
@@ -2230,6 +2248,204 @@ function clearGovernanca() {
     '</div>';
   _govData = null;
   _govMode = 'job';
+}
+
+async function triggerAndGetXcom(dagId, conf, taskId, label) {
+  openModal();
+  try {
+    const r = await triggerDag(dagId, conf);
+    if (r.status === 401) { closeModal(); sair(); return null; }
+    if (r.status === 403) { closeModal(); showToast('Sem permissão (requer Operator ou Admin no Airflow).', true); return null; }
+    if (!r.ok) { closeModal(); showToast('Erro ao enviar: ' + await r.text(), true); return null; }
+    const data = await r.json();
+    const runId = data.dag_run_id || data.run_id;
+    setModalProcessing(runId);
+    const state = await new Promise(resolve => pollDagRun(dagId, runId, label || dagId, Date.now(), resolve));
+    if (state !== 'success') return null;
+
+    const x = await fetch('/api/v1/dags/' + dagId + '/dagRuns/' + runId + '/taskInstances/' + taskId + '/xcomEntries/return_value', {
+      headers: { 'Authorization': authHeader }
+    });
+    if (!x.ok) { showToast('Execução OK, mas não foi possível ler XCom (return_value).', true); return null; }
+    const xjson = await x.json();
+    // Airflow pode retornar {"value":"..."} ou {"value":{...}}
+    return xjson.value ?? xjson;
+  } catch(e) {
+    closeModal();
+    showToast('Erro de conexão com o Airflow.', true);
+    return null;
+  } finally {
+    // fecha modal após leitura (sucesso ou falha)
+    closeModal();
+  }
+}
+
+/* ══ IMPORTAÇÃO DE SEQUENCE (DSX) ══ */
+let _seqImp = null; // estado do wizard
+
+function openSeqImportModal() {
+  _seqImp = { step: 1, file: null, dsx_filename: null, import_id: null, jobs: [] };
+  $('seqImpStep1').classList.remove('hidden');
+  $('seqImpStep2').classList.add('hidden');
+  $('seqImpStep3').classList.add('hidden');
+  $('seqImpStatus').textContent = '';
+  $('seqImpFile').value = '';
+  $('seqImpProject').value = '';
+  $('seqImpDomain').value = '';
+  $('seqImpModal').classList.add('open');
+}
+
+function closeSeqImportModal() {
+  $('seqImpModal').classList.remove('open');
+  _seqImp = null;
+}
+
+async function seqImpAnalyze() {
+  const file = $('seqImpFile').files && $('seqImpFile').files[0];
+  const project = ($('seqImpProject').value || '').trim();
+  const domain = ($('seqImpDomain').value || '').trim();
+
+  if (!file) { $('seqImpStatus').textContent = 'Selecione um arquivo .dsx'; return; }
+  if (!project) { $('seqImpStatus').textContent = 'Selecione o projeto'; return; }
+
+  $('seqImpStatus').textContent = 'Enviando arquivo...';
+
+  // 1) upload para /orquestra/upload-dsx
+  const fd = new FormData();
+  fd.append('file', file);
+  const up = await fetch('/orquestra/upload-dsx', { method: 'POST', headers: { 'Authorization': authHeader }, body: fd });
+  if (!up.ok) { $('seqImpStatus').textContent = 'Falha no upload: ' + await up.text(); return; }
+  const upj = await up.json();
+  if (!upj.ok) { $('seqImpStatus').textContent = 'Falha no upload: ' + (upj.error || 'erro'); return; }
+
+  _seqImp.dsx_filename = upj.filename;
+  $('seqImpStatus').textContent = 'Analisando sequence...';
+
+  // 2) parse DAG (retorna preview via XCom)
+  const x = await triggerAndGetXcom('etl_sequence_import_parse', {
+    dsx_filename: _seqImp.dsx_filename,
+    project_name: project,
+    domain: domain || null,
+    imported_by: (window.__user || null),
+  }, 'parse_sequence', 'Importação de Sequence');
+
+  if (!x || !x.import_id) { $('seqImpStatus').textContent = 'Falha ao analisar a sequence.'; return; }
+
+  _seqImp.import_id = x.import_id;
+  _seqImp.jobs = x.jobs || [];
+
+  // preenche etapa 2
+  $('seqImpImportId').textContent = String(_seqImp.import_id);
+  $('seqImpSeqName').textContent = (x.seq_name || '—');
+  $('seqImpPipeline').value = (x.pipeline_name_suggest || '').toUpperCase();
+
+  // schedule defaults
+  if ($('seq-sch-type')) $('seq-sch-type').value = 'daily';
+  if ($('seq-sch-hour')) $('seq-sch-hour').value = 6;
+  if ($('seq-sch-minute')) $('seq-sch-minute').value = 0;
+  if ($('seq-sch-dow')) $('seq-sch-dow').value = 1;
+  if ($('seq-sch-dom')) $('seq-sch-dom').value = 1;
+  seqScheduleTypeChange();
+
+  renderSeqImpJobs();
+
+  $('seqImpStep1').classList.add('hidden');
+  $('seqImpStep2').classList.remove('hidden');
+  $('seqImpStep3').classList.add('hidden');
+  $('seqImpStatus').textContent = '';
+}
+
+function renderSeqImpJobs() {
+  const rows = (_seqImp.jobs || []).map(j => {
+    const chk = j.ignored ? 'checked' : '';
+    return '<tr>' +
+      '<td style="white-space:nowrap">' + j.execution_order + '</td>' +
+      '<td>' + j.job_name_ds + '</td>' +
+      '<td><input type="text" value="' + (j.job_name_orq || '') + '" style="font-size:12px;padding:6px 8px;border-radius:10px" ' +
+        'oninput="seqImpSetJobName(' + j.import_job_id + ', this.value)" /></td>' +
+      '<td style="white-space:nowrap;text-align:center"><span class="chip" style="font-size:11px">' + (j.lineage_count || 0) + '</span></td>' +
+      '<td style="white-space:nowrap;text-align:center"><input type="checkbox" ' + chk + ' onchange="seqImpSetIgnored(' + j.import_job_id + ', this.checked)" /></td>' +
+    '</tr>';
+  }).join('');
+
+  $('seqImpJobsTable').innerHTML =
+    '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
+      '<th>#</th><th>Job (DSX)</th><th>Job (ORQUESTRA)</th><th>Lineage</th><th>Ignorar</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+function seqImpSetJobName(importJobId, val) {
+  const j = (_seqImp.jobs || []).find(x => x.import_job_id === importJobId);
+  if (j) j.job_name_orq = val;
+}
+function seqImpSetIgnored(importJobId, checked) {
+  const j = (_seqImp.jobs || []).find(x => x.import_job_id === importJobId);
+  if (j) j.ignored = checked ? 1 : 0;
+}
+
+function seqScheduleTypeChange() {
+  const type = $('seq-sch-type') ? $('seq-sch-type').value : 'daily';
+  const timeRow = $('seq-sch-time-row');
+  const dowRow = $('seq-sch-dow-row');
+  const domRow = $('seq-sch-dom-row');
+  if (timeRow) timeRow.style.display = type === 'hourly' ? 'none' : 'flex';
+  if (dowRow) dowRow.style.display = type === 'weekly' ? 'flex' : 'none';
+  if (domRow) domRow.style.display = type === 'monthly' ? 'flex' : 'none';
+  seqScheduleUpdatePreview();
+}
+function seqScheduleUpdatePreview() {
+  const type = $('seq-sch-type') ? $('seq-sch-type').value : 'daily';
+  const h = parseInt($('seq-sch-hour') ? $('seq-sch-hour').value : 6) || 0;
+  const m = parseInt($('seq-sch-minute') ? $('seq-sch-minute').value : 0) || 0;
+  const dow = $('seq-sch-dow') ? $('seq-sch-dow').value : 1;
+  const dom = parseInt($('seq-sch-dom') ? $('seq-sch-dom').value : 1) || 1;
+  let cron;
+  if (type === 'hourly') cron = `${m} * * * *`;
+  else if (type === 'daily') cron = `${m} ${h} * * *`;
+  else if (type === 'weekly') cron = `${m} ${h} * * ${dow}`;
+  else if (type === 'monthly') cron = `${m} ${h} ${dom} * *`;
+  else cron = `${m} ${h} * * *`;
+  if ($('seq-sch-preview')) $('seq-sch-preview').textContent = 'cron: ' + cron;
+  return cron;
+}
+
+async function seqImpApprove() {
+  const pipeline = normalizeIdent(($('seqImpPipeline').value || '').trim());
+  if (!pipeline) { $('seqImpStatus').textContent = 'Pipeline inválido (use A-Z, 0-9 e "_")'; return; }
+
+  const domain = ($('seqImpDomain').value || '').trim();
+  const type = $('seq-sch-type').value;
+  const h = parseInt($('seq-sch-hour') ? $('seq-sch-hour').value : 6);
+  const m = parseInt($('seq-sch-minute') ? $('seq-sch-minute').value : 0);
+  const dow = type === 'weekly' ? parseInt($('seq-sch-dow').value) : null;
+  const dom = type === 'monthly' ? parseInt($('seq-sch-dom').value) : null;
+
+  $('seqImpStatus').textContent = 'Aprovando e importando...';
+
+  const x = await triggerAndGetXcom('etl_sequence_import_approve', {
+    import_id: _seqImp.import_id,
+    reviewed_by: (window.__user || 'ui'),
+    pipeline_name_override: pipeline,
+    domain: domain || null,
+    schedule_type: type,
+    schedule_hour: isNaN(h) ? null : h,
+    schedule_minute: isNaN(m) ? null : m,
+    schedule_dow: isNaN(dow) ? null : dow,
+    schedule_dom: isNaN(dom) ? null : dom,
+    jobs: (_seqImp.jobs || []).map(j => ({
+      import_job_id: j.import_job_id,
+      job_name_orq: (j.job_name_orq || '').trim(),
+      ignored: j.ignored ? 1 : 0,
+    })),
+  }, 'approve_sequence', 'Importação de Sequence');
+
+  if (!x) { $('seqImpStatus').textContent = 'Falha ao aprovar.'; return; }
+
+  $('seqImpDonePipeline').textContent = (x.pipeline_name || pipeline);
+  $('seqImpStep1').classList.add('hidden');
+  $('seqImpStep2').classList.add('hidden');
+  $('seqImpStep3').classList.remove('hidden');
+  $('seqImpStatus').textContent = '';
 }
 
 function setGovMode(mode) {
@@ -4150,6 +4366,122 @@ function clearQuery() {
     </div>
   </div>
 </div>
+
+<!-- MODAL: IMPORTAÇÃO DE SEQUENCE (DSX) -->
+<div class="modal-backdrop" id="seqImpModal">
+  <div class="modal-box" style="max-width:860px;text-align:left">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:.75rem">
+      <div>
+        <div class="modal-title" style="margin:0">Importar Sequence (DSX)</div>
+        <div class="modal-desc" style="margin:.35rem 0 0">
+          Etapa 1/3: Upload e análise • Etapa 2/3: Revisão • Etapa 3/3: Aprovação
+        </div>
+      </div>
+      <button class="icon-btn btn-close" onclick="closeSeqImportModal()" title="Fechar" aria-label="Fechar">×</button>
+    </div>
+
+    <div id="seqImpStep1">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+        <div class="field">
+          <label>Arquivo .dsx <span style="color:var(--red)">*</span></label>
+          <input id="seqImpFile" type="file" accept=".dsx" />
+          <div class="helper" style="margin-top:.35rem">O arquivo será salvo em /opt/airflow/dsx/imports (via upload).</div>
+        </div>
+        <div class="field">
+          <label>Projeto <span style="color:var(--red)">*</span></label>
+          <select id="seqImpProject">
+            <option value="">Selecione...</option>
+            <option value="BI_CVP">BI_CVP</option>
+            <option value="BI_VIDA">BI_VIDA</option>
+            <option value="BI_PRESTAMISTA">BI_PRESTAMISTA</option>
+            <option value="BI_PREVIDENCIA">BI_PREVIDENCIA</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Domínio (opcional)</label>
+        <input id="seqImpDomain" type="text" placeholder="ex: COBRANCA" oninput="this.value=this.value.toUpperCase()" />
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:1rem">
+        <button class="btn-ghost" onclick="closeSeqImportModal()" style="flex:1">Cancelar</button>
+        <button class="btn" onclick="seqImpAnalyze()" style="flex:1">Analisar arquivo</button>
+      </div>
+    </div>
+
+    <div id="seqImpStep2" class="hidden">
+      <div class="helper" style="margin:0 0 .75rem 0">
+        Import ID: <strong id="seqImpImportId">—</strong> • Sequence: <strong id="seqImpSeqName">—</strong>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+        <div class="field">
+          <label>Pipeline (ORQUESTRA) <span style="color:var(--red)">*</span></label>
+          <input id="seqImpPipeline" type="text" placeholder="ex: ETL_COBRANCA_DIARIA" oninput="this.value=this.value.toUpperCase()" />
+        </div>
+        <div class="field">
+          <label>Domínio (opcional)</label>
+          <input id="seqImpDomain2" type="text" placeholder="ex: COBRANCA" oninput="this.value=this.value.toUpperCase();$('seqImpDomain').value=this.value" />
+          <div class="helper" style="margin-top:.35rem">Se informado aqui, substitui o valor da etapa 1.</div>
+        </div>
+      </div>
+
+      <div class="field-group" id="seq-schedule-builder" style="margin-top:.75rem">
+        <label>Agendamento <span style="color:var(--red)">*</span></label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <select id="seq-sch-type" onchange="seqScheduleTypeChange()" style="min-width:180px">
+            <option value="daily">Diário</option>
+            <option value="hourly">A cada hora</option>
+            <option value="weekly">Semanal</option>
+            <option value="monthly">Mensal</option>
+          </select>
+          <div id="seq-sch-time-row" style="display:flex;gap:6px;align-items:center">
+            <label style="font-size:11px;color:var(--muted);margin:0">Às</label>
+            <input type="number" id="seq-sch-hour" min="0" max="23" value="6" style="width:55px" oninput="seqScheduleUpdatePreview()" />
+            <span>:</span>
+            <input type="number" id="seq-sch-minute" min="0" max="59" value="0" style="width:55px" oninput="seqScheduleUpdatePreview()" />
+          </div>
+          <div id="seq-sch-dow-row" style="display:none;gap:6px;align-items:center">
+            <label style="font-size:11px;color:var(--muted);margin:0">Dia</label>
+            <select id="seq-sch-dow" onchange="seqScheduleUpdatePreview()">
+              <option value="1">Segunda</option><option value="2">Terça</option>
+              <option value="3">Quarta</option><option value="4">Quinta</option>
+              <option value="5">Sexta</option><option value="6">Sábado</option>
+              <option value="0">Domingo</option>
+            </select>
+          </div>
+          <div id="seq-sch-dom-row" style="display:none;gap:6px;align-items:center">
+            <label style="font-size:11px;color:var(--muted);margin:0">Dia do mês</label>
+            <input type="number" id="seq-sch-dom" min="1" max="31" value="1" style="width:55px" oninput="seqScheduleUpdatePreview()" />
+          </div>
+        </div>
+        <div id="seq-sch-preview" style="font-size:11px;font-family:ui-monospace, 'Courier New', monospace;color:var(--muted);margin-top:6px">cron: 0 6 * * *</div>
+      </div>
+
+      <div class="section-sep" style="margin-top:1rem"><span>Jobs detectados</span></div>
+      <div id="seqImpJobsTable"></div>
+
+      <div style="display:flex;gap:8px;margin-top:1rem">
+        <button class="btn-ghost" onclick="closeSeqImportModal()" style="flex:1">Cancelar</button>
+        <button class="btn" onclick="seqImpApprove()" style="flex:1">Aprovar e Importar</button>
+      </div>
+    </div>
+
+    <div id="seqImpStep3" class="hidden">
+      <div class="empty-state" style="margin:0">
+        <span class="es-icon">✓</span>
+        <p class="es-title">Importação concluída</p>
+        <p class="es-sub">Pipeline: <strong id="seqImpDonePipeline">—</strong></p>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:1rem">
+        <button class="btn" onclick="closeSeqImportModal()" style="flex:1">Fechar</button>
+      </div>
+    </div>
+
+    <div id="seqImpStatus" class="msg" style="margin-top:.75rem"></div>
+  </div>
+</div>
 <script>
   // Fecha modais clicando fora
   (function () {
@@ -4171,6 +4503,11 @@ function clearQuery() {
     const m = document.getElementById('lineageDSXPreviewModal');
     if (!m) return;
     m.addEventListener('click', (e) => { if (e.target === m) closeLineageDSXPreview(); });
+  })();
+  (function () {
+    const m = document.getElementById('seqImpModal');
+    if (!m) return;
+    m.addEventListener('click', (e) => { if (e.target === m) closeSeqImportModal(); });
   })();
 </script>
 <!-- MODAL: CONFIRMAÇÃO -->
