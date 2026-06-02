@@ -77,6 +77,20 @@
     border-radius:12px; background:var(--card); color:var(--text);
     font-size:.95rem; font-family:inherit; transition:border-color .15s, box-shadow .15s;
   }
+  /* Schedule Builder (Fase 3) — reduzir padding/tamanho para não “estourar” o layout */
+  #schedule-builder select,
+  #schedule-builder input[type=number]{
+    width:auto;
+    padding:.45rem .55rem;
+    border-radius:10px;
+    font-size:13px;
+  }
+  #schedule-builder #sch-type{ max-width:220px; }
+  #schedule-builder #sch-hour,
+  #schedule-builder #sch-minute,
+  #schedule-builder #sch-dom{ width:56px; text-align:center; }
+  #schedule-builder #sch-time-row{ gap:6px; }
+  #schedule-builder #sch-dow{ max-width:170px; }
   textarea { resize:vertical; min-height:100px; line-height:1.5; }
   input:focus, select:focus, textarea:focus {
     outline:none; border-color:var(--cvp-orange);
@@ -790,9 +804,9 @@
       </div>
       <nav class="hd-nav" aria-label="Navegação">
         <button id="tab-dashboard" class="hd-tab active" onclick="switchPage('page-dashboard',this);loadDashboard()">◫ <span>Dashboard</span></button>
-        <button id="tab-pipelines" class="hd-tab" onclick="switchPage('page-pipelines',this);loadQuery(0)">≡ <span>Pipelines</span></button>
+        <button id="tab-pipelines" class="hd-tab" onclick="switchPage('page-pipelines',this)">≡ <span>Pipelines</span></button>
         <button id="tab-jobs" class="hd-tab" onclick="switchPage('page-jobs',this)">⬡ <span>Jobs</span></button>
-        <button id="tab-logs" class="hd-tab" onclick="switchPage('page-logs',this);loadLogs(0)">≣ <span>Logs</span></button>
+        <button id="tab-logs" class="hd-tab" onclick="switchPage('page-logs',this)">≣ <span>Logs</span></button>
         <button id="tab-governanca" class="hd-tab" onclick="switchPage('page-governanca',this)">◈ <span>Governança</span></button>
       </nav>
       <div class="hd-right">
@@ -1246,6 +1260,7 @@
                 <button class="btn btn-primary btn-sm" id="btn-gov" onclick="loadGovernanca()" style="height:40px">
                   <span id="btn-gov-txt">Carregar lineage</span>
                 </button>
+                <button class="btn-ghost btn-sm" onclick="clearGovernanca()" title="Limpar pesquisa">× limpar</button>
               </div>
               <div id="gov-status" style="font-size:12px;color:var(--muted);margin-bottom:.75rem;min-height:16px"></div>
 
@@ -2200,6 +2215,23 @@ async function loadGovernanca() {
   }
 }
 
+function clearGovernanca() {
+  if ($('gov-pipeline')) $('gov-pipeline').value = '';
+  if ($('gov-status')) $('gov-status').textContent = '';
+  const modeRow = $('gov-mode-row'); if (modeRow) modeRow.style.display = 'none';
+  const jsel = $('gov-job-selector'); if (jsel) jsel.style.display = 'none';
+  const sel = $('gov-job-select'); if (sel) sel.innerHTML = '<option value="">Selecione o job...</option>';
+  const vis = $('gov-visual');
+  if (vis) vis.innerHTML =
+    '<div class="empty-state">' +
+      '<span class="es-icon">◈</span>' +
+      '<p class="es-title">Informe o pipeline e carregue o lineage</p>' +
+      '<p class="es-sub">O diagrama aparecerá aqui.</p>' +
+    '</div>';
+  _govData = null;
+  _govMode = 'job';
+}
+
 function setGovMode(mode) {
   _govMode = mode;
   $('gov-btn-job').classList.toggle('active', mode === 'job');
@@ -2511,6 +2543,24 @@ function showToast(msg, isErr) {
 
 /* ══ TABS ══ */
 function switchPage(pageId, btn) {
+  // Ao trocar de aba, sempre “zera” o estado para evitar filtros antigos e dados enganadores
+  try {
+    if (pageId === 'page-pipelines') {
+      closePipelineEditor();
+      clearQuery();
+    }
+    if (pageId === 'page-jobs') {
+      if ($('job_pipeline_name')) $('job_pipeline_name').value = '';
+      clearJobsQuery();
+    }
+    if (pageId === 'page-logs') {
+      clearLogsFilters();
+    }
+    if (pageId === 'page-governanca') {
+      clearGovernanca();
+    }
+  } catch(_) {}
+
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.hd-tab').forEach(b => b.classList.remove('active'));
   $(pageId).classList.add('active');
