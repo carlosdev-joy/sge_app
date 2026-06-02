@@ -12,7 +12,7 @@ CREATE OR ALTER PROCEDURE [dbo].[sp_etl_job_lineage_upsert]
 (
     @pipeline_name NVARCHAR(200),
     @job_name      NVARCHAR(200),
-    @direction     NVARCHAR(10),
+    @direction     NVARCHAR(30), -- origem | destino | transformacao
     @object_type   NVARCHAR(20),
     @object_name   NVARCHAR(500),
 
@@ -21,6 +21,7 @@ CREATE OR ALTER PROCEDURE [dbo].[sp_etl_job_lineage_upsert]
     @stage_type_raw    VARCHAR(100)   = NULL,
     @database_name     VARCHAR(200)   = NULL,
     @sql_expression    NVARCHAR(MAX)  = NULL,
+    @file_path         VARCHAR(500)   = NULL,
     @dsx_source_file   VARCHAR(500)   = NULL,
     @extracted_at      DATETIME2      = NULL,
     @extraction_method VARCHAR(20)    = NULL
@@ -30,6 +31,9 @@ BEGIN
     SET NOCOUNT ON;
 
     BEGIN TRY
+
+        IF @direction NOT IN ('origem','destino','transformacao')
+            RAISERROR ('direction inválido: %s', 16, 1, @direction);
 
         IF EXISTS (
             SELECT 1 FROM dbo.etl_job_lineage
@@ -46,6 +50,7 @@ BEGIN
                 stage_type_raw = COALESCE(@stage_type_raw, stage_type_raw),
                 database_name = COALESCE(@database_name, database_name),
                 sql_expression = COALESCE(@sql_expression, sql_expression),
+                file_path = COALESCE(@file_path, file_path),
                 dsx_source_file = COALESCE(@dsx_source_file, dsx_source_file),
                 extracted_at = COALESCE(@extracted_at, extracted_at),
                 extraction_method = COALESCE(@extraction_method, extraction_method),
@@ -60,13 +65,13 @@ BEGIN
             INSERT INTO dbo.etl_job_lineage
                 (
                     pipeline_name, job_name, direction, object_type, object_name,
-                    stage_name, stage_type_raw, database_name, sql_expression, dsx_source_file, extracted_at, extraction_method,
+                    stage_name, stage_type_raw, database_name, sql_expression, file_path, dsx_source_file, extracted_at, extraction_method,
                     created_at, updated_at
                 )
             VALUES
                 (
                     @pipeline_name, @job_name, @direction, @object_type, @object_name,
-                    @stage_name, @stage_type_raw, @database_name, @sql_expression, @dsx_source_file, @extracted_at, @extraction_method,
+                    @stage_name, @stage_type_raw, @database_name, @sql_expression, @file_path, @dsx_source_file, @extracted_at, @extraction_method,
                     SYSDATETIME(), SYSDATETIME()
                 )
         END

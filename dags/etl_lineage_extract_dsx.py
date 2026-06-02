@@ -18,7 +18,7 @@ Retorno via XCom (task: extrair_lineage_dsx):
   "project_name": "BI_CVP",
   "job_name": "BiCvp_Extrai_Pedidos",
   "dsx_file": "BI_CVP.dsx",
-  "dados": [ ... ]
+  "dados": [ ... ]  # lista de objetos (origem/destino/transformacao)
 }
 """
 

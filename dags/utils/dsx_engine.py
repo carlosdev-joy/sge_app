@@ -35,7 +35,7 @@ class DSXEngine:
             "ODBCConnectorPX": "Banco de Dados (ODBC)",
             "PxDataSet": "Arquivo DataSet (.ds/.dx)",
             "PxSequentialFile": "Arquivo Sequencial",
-            "TransformerStage": "Transformação",
+            "TransformerStage": "TransformerStage",
         }
 
     def _get_functional_name(self, stage_type):
@@ -51,6 +51,33 @@ class DSXEngine:
             return seq_match.group(1).strip()
 
         return ""
+
+    def _extract_file_path(self, record_content: str) -> str:
+        """
+        Tenta capturar o path completo do arquivo (principalmente DataSet/SequentialFile).
+        Em DSX, é comum aparecer em variáveis/props como:
+          Name "resources.filename" Value "/caminho/arquivo.ds"
+          Name "filename" Value "/caminho/arquivo.txt"
+        """
+        for key in ["resources.filename", "filename", "FileName", "fileName"]:
+            m = re.search(rf'Name "{re.escape(key)}"\s*Value "(.*?)"', record_content, re.IGNORECASE)
+            if m and m.group(1).strip():
+                return m.group(1).strip()
+        # fallback: alguns dumps aparecem como XMLish
+        m2 = re.search(r"(resources\.filename|filename)[^\"=]*=\"([^\"]+)\"", record_content, re.IGNORECASE)
+        if m2 and m2.group(2).strip():
+            return m2.group(2).strip()
+        return ""
+
+    def _infer_direction_key(self, has_inputs: bool, has_outputs: bool) -> str:
+        # padroniza para keys consumidas pelo ORQUESTRA
+        if has_outputs and not has_inputs:
+            return "origem"
+        if has_inputs and not has_outputs:
+            return "destino"
+        if has_inputs and has_outputs:
+            return "transformacao"
+        return "transformacao"
 
     def _extract_tables_from_component(self, record_content):
         tables = []
@@ -76,6 +103,14 @@ class DSXEngine:
                     tables.append(t_clean)
 
         return list(dict.fromkeys(tables))
+
+    def _extract_select_statement(self, record_content: str) -> str:
+        select_match = re.search(
+            r"<SelectStatement[^>]*><!\[CDATA\[(.*?)\]\]></SelectStatement>", record_content, re.DOTALL
+        )
+        if select_match:
+            return select_match.group(1).strip()
+        return ""
 
     def buscar_linhagem(self, nome_projeto, nome_job):
         self.extracted_lineage = []
@@ -113,44 +148,53 @@ class DSXEngine:
                 has_inputs = "InputPins" in record
                 has_outputs = "OutputPins" in record
 
-                if has_outputs and not has_inputs:
-                    direction = "Origem"
-                elif has_inputs and not has_outputs:
-                    direction = "Destino"
-                elif has_inputs and has_outputs:
-                    direction = "Transformação"
-                else:
-                    direction = "Isolado"
+                direction_key = self._infer_direction_key(has_inputs, has_outputs)
 
                 tables_or_files = []
+                sql_expression = ""
+                file_path = ""
+
                 if any(db_type in raw_type for db_type in ["ODBC", "Oracle", "DB2", "SQL"]):
                     tables_or_files = self._extract_tables_from_component(record)
+                    sql_expression = self._extract_select_statement(record)
                 elif any(file_type in raw_type for file_type in ["DataSet", "SequentialFile"]):
                     file_name = self._extract_file_name(record)
                     if file_name:
                         tables_or_files = [file_name]
+                    file_path = self._extract_file_path(record)
 
+                # Fase 2: retornar TODOS os stages (inclui transformações)
+                # - Para estágios com múltiplas tabelas (FROM/JOIN), gera 1 registro por tabela.
+                # - Para transformações (sem tabela/arquivo), gera 1 registro com object_name=stage.
                 if not tables_or_files:
                     self.extracted_lineage.append(
                         {
-                            "Projeto": nome_projeto,
-                            "Job": nome_job,
-                            "Direção": direction,
-                            "Tipo de Objeto": functional_type,
-                            "Nome do Objeto": obj_name,
-                            "Tabela / Arquivo": "",
+                            "project_name": nome_projeto,
+                            "job_name": nome_job,
+                            "direction": direction_key,
+                            "stage_name": obj_name,
+                            "stage_type_raw": functional_type,
+                            "object_name": obj_name,
+                            "object_type": "Transformação" if direction_key == "transformacao" else "",
+                            "database_name": None,
+                            "sql_expression": sql_expression or None,
+                            "file_path": file_path or None,
                         }
                     )
                 else:
                     for item in tables_or_files:
                         self.extracted_lineage.append(
                             {
-                                "Projeto": nome_projeto,
-                                "Job": nome_job,
-                                "Direção": direction,
-                                "Tipo de Objeto": functional_type,
-                                "Nome do Objeto": obj_name,
-                                "Tabela / Arquivo": item,
+                                "project_name": nome_projeto,
+                                "job_name": nome_job,
+                                "direction": direction_key,
+                                "stage_name": obj_name,
+                                "stage_type_raw": functional_type,
+                                "object_name": item,
+                                "object_type": "Tabela" if any(db_type in raw_type for db_type in ["ODBC", "Oracle", "DB2", "SQL"]) else "Arquivo",
+                                "database_name": None,
+                                "sql_expression": sql_expression or None,
+                                "file_path": file_path or None,
                             }
                         )
 

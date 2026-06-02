@@ -1667,6 +1667,38 @@ let _dsxLineageData = [];
 let _dsxTargetJobId = null;
 let _dsxCtx = null; // { project_name, job_name, dsx_file }
 
+// De-para client-side (fallback para preview antes do JOIN do banco)
+const STAGE_TYPE_LABELS = {
+  'Banco de Dados (ODBC)': 'Banco de Dados ODBC',
+  'ODBCConnectorPX': 'Banco de Dados ODBC',
+  'Arquivo DataSet (.ds/.dx)': 'DataSet (arquivo DS)',
+  'DataSetStage': 'DataSet (arquivo DS)',
+  'PxDataSet': 'DataSet (arquivo DS)',
+  'SequentialFile': 'Arquivo sequencial',
+  'PxSequentialFile': 'Arquivo sequencial',
+  'PxSort': 'Ordenação',
+  'PxRemDup': 'Remover duplicatas',
+  'PxFunnel': 'Funil (consolidação)',
+  'PxLookup': 'Lookup (enriquecimento)',
+  'PxAggregator': 'Agregador',
+  'PxJoin': 'Join',
+  'PxMerge': 'Merge',
+  'PxFilter': 'Filtro',
+  'PxModify': 'Modificar registro',
+  'CTransformerStage': 'Transformação customizada',
+  'TransformerStage': 'Transformação',
+  'PxSwitch': 'Desvio condicional',
+  'PxPivot': 'Pivotamento',
+  'PxSurrogateKeyGen': 'Gerador chave surrogate',
+  'PxChangeCapture': 'Captura de alterações',
+  'PxPeek': 'Peek (debug)',
+  'RowGenerator': 'Gerador de linhas (teste)',
+  'ColumnGenerator': 'Gerador de colunas (teste)',
+};
+function getTypeLabel(stageTypeRaw) {
+  return STAGE_TYPE_LABELS[stageTypeRaw] || stageTypeRaw || 'Tipo desconhecido';
+}
+
 function _inferProjectFromPipeline(pipelineName) {
   const p = (pipelineName || '').toUpperCase().trim();
   return ['BI_CVP','BI_VIDA','BI_PREVIDENCIA','BI_PRESTAMISTA'].find(x => p.startsWith(x)) || '';
@@ -1776,18 +1808,37 @@ function showLineageDSXPreview(payload) {
   }
   $('btn-apply-dsx').disabled = false;
 
-  const rows = dados.map(d =>
-    '<tr>' +
-      '<td style="white-space:nowrap">' + (d['Direção'] || '—') + '</td>' +
-      '<td style="white-space:nowrap">' + (d['Tipo de Objeto'] || '—') + '</td>' +
-      '<td>' + (d['Nome do Objeto'] || '—') + '</td>' +
-      '<td style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:11px">' + (d['Tabela / Arquivo'] || '—') + '</td>' +
-    '</tr>'
-  ).join('');
+  const dirColors = {
+    origem:        { bg:'#E6F1FB', color:'#0C447C', label:'Origem' },
+    destino:       { bg:'#EAF3DE', color:'#27500A', label:'Destino' },
+    transformacao: { bg:'#EEEDFE', color:'#3C3489', label:'Transformação' },
+  };
+
+  const rows = dados.map(d => {
+    const dir = d.direction || 'transformacao';
+    const c = dirColors[dir] || dirColors.transformacao;
+    const cat = (d.type_category || (dir === 'transformacao' ? 'transformacao' : '—'));
+    const typeLabel = d.type_label || getTypeLabel(d.stage_type_raw) || d.object_type || '—';
+    const stage = d.stage_name || d.object_name || '—';
+    const detail =
+      d.file_path
+        ? d.file_path
+        : (d.database_name && d.object_name)
+          ? (d.database_name + '.' + d.object_name)
+          : (d.object_name || '—');
+
+    return '<tr>' +
+      '<td style="white-space:nowrap"><span style="display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;background:' + c.bg + ';color:' + c.color + ';font-size:11px;font-weight:700">' + c.label + '</span></td>' +
+      '<td style="white-space:nowrap">' + (cat || '—') + '</td>' +
+      '<td style="white-space:nowrap">' + (typeLabel || '—') + '</td>' +
+      '<td>' + (stage || '—') + '</td>' +
+      '<td style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:11px">' + esc(detail || '—') + '</td>' +
+    '</tr>';
+  }).join('');
 
   $('dsx-prev-table').innerHTML =
     '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
-      '<th>Direção</th><th>Tipo</th><th>Stage (Nome do Objeto)</th><th>Tabela / Arquivo</th>' +
+      '<th>Direção</th><th>Categoria</th><th>Tipo (label)</th><th>Stage</th><th>Tabela / Arquivo / Path</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 
@@ -1796,37 +1847,29 @@ function applyLineageDSX() {
   const j = jobsBdata.find(x => x.id === _dsxTargetJobId);
   if (!j) return;
 
-  const typeMap = {
-    'Banco de Dados (ODBC)': 'Tabela',
-    'Arquivo DataSet (.ds/.dx)': 'Arquivo',
-    'Arquivo Sequencial': 'Arquivo',
-    'Transformação': 'Query',
-  };
-
   const now = _nowSql();
   const dsxFile = (_dsxCtx && _dsxCtx.dsx_file) ? _dsxCtx.dsx_file : null;
 
-  const origens = _dsxLineageData.filter(d => (d['Direção'] || '') === 'Origem');
-  const destinos = _dsxLineageData.filter(d => (d['Direção'] || '') === 'Destino');
+  const origens = _dsxLineageData.filter(d => (d.direction || '') === 'origem');
+  const destinos = _dsxLineageData.filter(d => (d.direction || '') === 'destino');
+  const transfs  = _dsxLineageData.filter(d => (d.direction || '') === 'transformacao');
 
-  j.origens = origens.map(o => ({
-    t: typeMap[o['Tipo de Objeto']] || 'Tabela',
-    n: (o['Tabela / Arquivo'] || o['Nome do Objeto'] || '').toString(),
-    stage_name: (o['Nome do Objeto'] || null),
-    stage_type_raw: (o['Tipo de Objeto'] || null),
+  const toObj = (x) => ({
+    t: x.object_type || (x.type_category === 'arquivo' ? 'Arquivo' : (x.type_category === 'transformacao' ? 'Transformação' : 'Tabela')),
+    n: (x.object_name || x.stage_name || '').toString(),
+    stage_name: x.stage_name || null,
+    stage_type_raw: x.stage_type_raw || null,
+    database_name: x.database_name || null,
+    sql_expression: x.sql_expression || null,
+    file_path: x.file_path || null,
     dsx_source_file: dsxFile,
     extracted_at: now,
     extraction_method: 'dsx_auto',
-  }));
-  j.destinos = destinos.map(d => ({
-    t: typeMap[d['Tipo de Objeto']] || 'Tabela',
-    n: (d['Tabela / Arquivo'] || d['Nome do Objeto'] || '').toString(),
-    stage_name: (d['Nome do Objeto'] || null),
-    stage_type_raw: (d['Tipo de Objeto'] || null),
-    dsx_source_file: dsxFile,
-    extracted_at: now,
-    extraction_method: 'dsx_auto',
-  }));
+  });
+
+  j.origens = origens.map(toObj);
+  j.destinos = destinos.map(toObj);
+  j.transformacoes = transfs.map(toObj);
 
   if (!j.origens.length) j.origens = [{ t: 'Tabela', n: '' }];
   if (!j.destinos.length) j.destinos = [{ t: 'Tabela', n: '' }];
@@ -2137,8 +2180,9 @@ function renderLineageJob() {
   }
 
   const ori = job.origens || [];
+  const trf = job.transformacoes || [];
   const dst = job.destinos || [];
-  if (!ori.length && !dst.length) {
+  if (!ori.length && !dst.length && !trf.length) {
     vis.innerHTML =
       '<div class="empty-state">' +
         '<span class="es-icon">◎</span>' +
@@ -2148,15 +2192,29 @@ function renderLineageJob() {
     return;
   }
 
-  const oriH = ori.map(o => _lineageNode(o.object_name, o.object_type, o.database_name, 'origem')).join('<div style="height:8px"></div>');
-  const dstH = dst.map(d => _lineageNode(d.object_name, d.object_type, d.database_name, 'destino')).join('<div style="height:8px"></div>');
+  const mk = (o, cls) => _lineageNode(
+    o.stage_name || o.object_name,
+    (o.type_label || o.object_type || '—'),
+    (o.file_path || (o.database_name ? (o.database_name + (o.object_name ? ('.' + o.object_name) : '')) : '')),
+    cls
+  );
+
+  const oriH = ori.map(o => mk(o, 'origem')).join('<div style="height:8px"></div>');
+  const trfH = trf.map(o => mk(o, 'transf')).join('<div style="height:8px"></div>');
+  const dstH = dst.map(d => mk(d, 'destino')).join('<div style="height:8px"></div>');
   const jobH = _lineageNode(job.job_name, 'Job #' + job.execution_order, job.job_type, 'job');
 
+  const hasTrans = trf.length > 0;
   vis.innerHTML =
     '<div class="lineage-svg-wrap">' +
       '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
         '<div style="display:flex;flex-direction:column;gap:8px">' + (oriH || '<i style="font-size:12px;color:var(--muted)">Sem origens</i>') + '</div>' +
         '<div class="ls-arrow">→</div>' +
+        (hasTrans
+          ? ('<div style="display:flex;flex-direction:column;gap:8px">' + (trfH || '<i style="font-size:12px;color:var(--muted)">Sem transformações</i>') + '</div>' +
+             '<div class="ls-arrow">→</div>')
+          : ''
+        ) +
         jobH +
         '<div class="ls-arrow">→</div>' +
         '<div style="display:flex;flex-direction:column;gap:8px">' + (dstH || '<i style="font-size:12px;color:var(--muted)">Sem destinos</i>') + '</div>' +
@@ -2507,6 +2565,7 @@ function addJobLineB(data) {
     cmd:     data && data.job_command     || '',
     origens: [{t:'Tabela', n:''}],
     destinos:[{t:'Tabela', n:''}],
+    transformacoes: [],
   });
   renderJobLinesB();
 }
@@ -2548,6 +2607,15 @@ function onJobTypeChangeB(id, val) {
   renderJobLinesB();
 }
 
+function normalizeLineageObjectType(t) {
+  // Compatibilidade com backend legado (que validava tipos fixos)
+  // e padronização para armazenamento.
+  const v = (t || '').toString().trim();
+  if (!v) return 'Tabela';
+  if (['CSV','DataSet','TXT','XLS','XLSX'].includes(v)) return 'Arquivo';
+  return v;
+}
+
 function collectJobRows() {
   return jobsBdata
     .filter(j => j.name.trim() && !isNaN(j.order))
@@ -2559,7 +2627,7 @@ function collectJobRows() {
       origens: j.origens
         .filter(o => o.n.trim())
         .map(o => ({
-          object_type: o.t,
+          object_type: normalizeLineageObjectType(o.t),
           object_name: o.n.trim(),
           stage_name: o.stage_name || null,
           stage_type_raw: o.stage_type_raw || null,
@@ -2569,15 +2637,28 @@ function collectJobRows() {
           extracted_at: o.extracted_at || null,
           extraction_method: o.extraction_method || null,
         })),
+      transformacoes: (j.transformacoes || []).filter(o => (o.n || '').trim()).map(o => ({
+        object_type: normalizeLineageObjectType(o.t),
+        object_name: (o.n || '').trim(),
+        stage_name: o.stage_name || null,
+        stage_type_raw: o.stage_type_raw || null,
+        database_name: o.database_name || null,
+        sql_expression: o.sql_expression || null,
+        file_path: o.file_path || null,
+        dsx_source_file: o.dsx_source_file || null,
+        extracted_at: o.extracted_at || null,
+        extraction_method: o.extraction_method || null,
+      })),
       destinos: j.destinos
         .filter(o => o.n.trim())
         .map(o => ({
-          object_type: o.t,
+          object_type: normalizeLineageObjectType(o.t),
           object_name: o.n.trim(),
           stage_name: o.stage_name || null,
           stage_type_raw: o.stage_type_raw || null,
           database_name: o.database_name || null,
           sql_expression: o.sql_expression || null,
+          file_path: o.file_path || null,
           dsx_source_file: o.dsx_source_file || null,
           extracted_at: o.extracted_at || null,
           extraction_method: o.extraction_method || null,

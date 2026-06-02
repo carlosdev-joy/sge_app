@@ -7,7 +7,7 @@ DAG_ID        = "etl_pipeline_job_register"
 MSSQL_CONN_ID = "SQL14_DMDB41"
 
 VALID_JOB_TYPES    = {"datastage", "shell", "python", "storedproc"}
-VALID_DIRECTIONS   = {"origem", "destino"}
+VALID_DIRECTIONS   = {"origem", "destino", "transformacao"}
 #
 # IMPORTANTE:
 # A validação de object_type foi removida.
@@ -78,6 +78,7 @@ def registrar_pipeline_jobs(**context):
         @stage_type_raw    = %s,
         @database_name     = %s,
         @sql_expression    = %s,
+        @file_path         = %s,
         @dsx_source_file   = %s,
         @extracted_at      = %s,
         @extraction_method = %s
@@ -92,6 +93,7 @@ def registrar_pipeline_jobs(**context):
         j_command = job.get("job_command") or None
         origens   = job.get("origens",  [])
         destinos  = job.get("destinos", [])
+        transfs   = job.get("transformacoes", []) or job.get("transformacoes", []) or []
 
         # Validações básicas
         if not j_name or j_order is None:
@@ -100,10 +102,14 @@ def registrar_pipeline_jobs(**context):
         if j_type not in VALID_JOB_TYPES:
             erros.append(f"Item {idx} ({j_name}): job_type '{j_type}' inválido")
             continue
-        if not origens:
+        # Fase 2: transformacoes[] é opcional.
+        # Regras:
+        # - Se o payload vier somente com transformações (sem origem/destino), aceitamos.
+        # - Caso contrário, exigimos ao menos 1 origem e 1 destino.
+        if not origens and not transfs:
             erros.append(f"Item {idx} ({j_name}): pelo menos 1 origem é obrigatória")
             continue
-        if not destinos:
+        if not destinos and not transfs:
             erros.append(f"Item {idx} ({j_name}): pelo menos 1 destino é obrigatório")
             continue
 
@@ -116,7 +122,7 @@ def registrar_pipeline_jobs(**context):
             continue
 
         # 2. Grava lineage (origens + destinos)
-        for direction, objects in [("origem", origens), ("destino", destinos)]:
+        for direction, objects in [("origem", origens), ("transformacao", transfs), ("destino", destinos)]:
             for obj_idx, obj in enumerate(objects):
                 obj_type = (obj.get("object_type") or "Tabela").strip()
                 obj_name = obj.get("object_name", "").strip()
@@ -138,6 +144,7 @@ def registrar_pipeline_jobs(**context):
                             obj.get("stage_type_raw"),
                             obj.get("database_name"),
                             obj.get("sql_expression"),
+                            obj.get("file_path"),
                             obj.get("dsx_source_file"),
                             obj.get("extracted_at"),
                             obj.get("extraction_method"),

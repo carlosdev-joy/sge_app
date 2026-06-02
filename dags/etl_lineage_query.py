@@ -1,7 +1,7 @@
 """
 etl_lineage_query.py
 ====================
-Consulta de lineage para a aba "Governança".
+Consulta de lineage para a aba "Governança" (Fase 2).
 
 Conf esperado:
 {
@@ -16,7 +16,8 @@ Retorna via XCom (task: consultar_lineage):
       "execution_order": 1,
       "job_name": "job_x",
       "job_type": "datastage",
-      "origens":  [ { "object_name": "...", "object_type": "...", "stage_name": "...", "database_name": "...", "extraction_method": "..." }, ... ],
+      "origens":  [ ... ],
+      "transformacoes": [ ... ],
       "destinos": [ ... ]
     }
   ]
@@ -37,6 +38,14 @@ LOCAL_TZ = "America/Sao_Paulo"
 default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
 
 
+def _fmt(val):
+    if val is None:
+        return None
+    if hasattr(val, "strftime"):
+        return val.strftime("%Y-%m-%d %H:%M:%S")
+    return str(val)
+
+
 def consultar_lineage(**context):
     conf = context["dag_run"].conf or {}
     pipeline_name = (conf.get("pipeline_name") or "").strip()
@@ -52,16 +61,35 @@ def consultar_lineage(**context):
             j.job_type,
             l.direction,
             l.object_name,
-            l.object_type,
+            COALESCE(m.type_label, l.object_type) AS object_type,
+            COALESCE(m.type_label, l.stage_type_raw) AS type_label,
+            m.type_category,
+            m.role_hint,
             l.stage_name,
+            l.stage_type_raw,
             l.database_name,
+            l.sql_expression,
+            l.file_path,
+            l.dsx_source_file,
+            l.extracted_at,
             l.extraction_method
         FROM dbo.etl_pipeline_job j
         LEFT JOIN dbo.etl_job_lineage l
                ON l.pipeline_name = j.pipeline_name
               AND l.job_name = j.job_name
+        LEFT JOIN dbo.etl_stage_type_map m
+               ON m.type_raw = l.stage_type_raw
         WHERE j.pipeline_name = %s
-        ORDER BY j.execution_order, j.job_name
+        ORDER BY
+            j.execution_order,
+            j.job_name,
+            CASE l.direction
+                WHEN 'origem' THEN 1
+                WHEN 'transformacao' THEN 2
+                WHEN 'destino' THEN 3
+                ELSE 9
+            END,
+            l.object_name
     """
 
     rows = hook.get_records(sql, parameters=[pipeline_name])
@@ -69,7 +97,25 @@ def consultar_lineage(**context):
     # agrega por job
     jobs_map: dict[str, dict] = {}
     for r in rows or []:
-        order, job_name, job_type, direction, obj_name, obj_type, stage_name, db_name, extraction_method = r
+        (
+            order,
+            job_name,
+            job_type,
+            direction,
+            obj_name,
+            obj_type,
+            type_label,
+            type_category,
+            role_hint,
+            stage_name,
+            stage_type_raw,
+            db_name,
+            sql_expression,
+            file_path,
+            dsx_source_file,
+            extracted_at,
+            extraction_method,
+        ) = r
 
         if job_name not in jobs_map:
             jobs_map[job_name] = {
@@ -77,6 +123,7 @@ def consultar_lineage(**context):
                 "job_name": job_name,
                 "job_type": job_type,
                 "origens": [],
+                "transformacoes": [],
                 "destinos": [],
             }
 
@@ -87,12 +134,22 @@ def consultar_lineage(**context):
             "object_name": obj_name,
             "object_type": obj_type,
             "stage_name": stage_name,
+            "stage_type_raw": stage_type_raw,
+            "type_label": type_label,
+            "type_category": type_category,
+            "role_hint": role_hint,
             "database_name": db_name,
+            "sql_expression": sql_expression,
+            "file_path": file_path,
+            "dsx_source_file": dsx_source_file,
+            "extracted_at": _fmt(extracted_at),
             "extraction_method": extraction_method,
         }
 
         if direction == "origem":
             jobs_map[job_name]["origens"].append(item)
+        elif direction == "transformacao":
+            jobs_map[job_name]["transformacoes"].append(item)
         elif direction == "destino":
             jobs_map[job_name]["destinos"].append(item)
 

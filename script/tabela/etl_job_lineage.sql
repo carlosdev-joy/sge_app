@@ -12,7 +12,7 @@ CREATE TABLE [dbo].[etl_job_lineage](
 	[id] [int] IDENTITY(1,1) NOT NULL,
 	[pipeline_name] [nvarchar](200) NOT NULL,
 	[job_name] [nvarchar](200) NOT NULL,
-	[direction] [nvarchar](10) NOT NULL,
+	[direction] [nvarchar](30) NOT NULL, -- origem | destino | transformacao
 	[object_type] [nvarchar](20) NOT NULL,
 	[object_name] [nvarchar](500) NOT NULL,
 	-- ORQUESTRA — Schema Lineage v2 (enriquecimento DSXEngine) — colunas opcionais
@@ -20,6 +20,7 @@ CREATE TABLE [dbo].[etl_job_lineage](
 	[stage_type_raw] [varchar](100) NULL,
 	[database_name] [varchar](200) NULL,
 	[sql_expression] [nvarchar](max) NULL,
+	[file_path] [varchar](500) NULL, -- path completo quando houver (DataSet/SequentialFile)
 	[dsx_source_file] [varchar](500) NULL,
 	[extracted_at] [datetime2](7) NULL,
 	[extraction_method] [varchar](20) NULL, -- 'manual' | 'dsx_auto'
