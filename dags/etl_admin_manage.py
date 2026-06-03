@@ -118,6 +118,45 @@ def admin_manage(**context):
             'detalhes': detalhes,
         }
 
+    # ── dag_file_delete ─────────────────────────────────────────────
+    elif action == 'dag_file_delete':
+        pipeline_name = (conf.get('pipeline_name') or '').strip()
+        if not pipeline_name:
+            raise ValueError("pipeline_name obrigatório.")
+
+        import os, glob
+
+        # dag_id = pipeline_name em minúsculo (padrão da etl_dag_factory)
+        dag_id = pipeline_name.lower()
+
+        # Diretórios onde a factory pode ter criado o arquivo
+        dags_base = os.environ.get('DAGS_FOLDER', '/opt/airflow/dags')
+        candidates = [
+            os.path.join(dags_base, dag_id + '.py'),
+            os.path.join(dags_base, 'Orquestrador', dag_id + '.py'),
+            os.path.join(dags_base, pipeline_name + '.py'),
+            os.path.join(dags_base, 'Orquestrador', pipeline_name + '.py'),
+        ]
+        # Busca por glob para cobrir variações de nome
+        candidates += glob.glob(os.path.join(dags_base, '**', dag_id + '.py'), recursive=True)
+        candidates += glob.glob(os.path.join(dags_base, '**', pipeline_name + '.py'), recursive=True)
+
+        removed = []
+        for path in set(candidates):
+            if os.path.isfile(path):
+                os.remove(path)
+                removed.append(path)
+                print(f"[ADMIN] Arquivo DAG removido: {path}")
+
+        if not removed:
+            print(f"[ADMIN] Nenhum arquivo .py encontrado para pipeline '{pipeline_name}' — pode já ter sido removido.")
+
+        return {
+            'sucesso': True,
+            'mensagem': f'{len(removed)} arquivo(s) removido(s) para "{pipeline_name}".',
+            'detalhes': {'arquivos_removidos': removed},
+        }
+
     else:
         raise ValueError(f"Action desconhecida: '{action}'")
 
