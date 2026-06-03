@@ -312,13 +312,16 @@ def parse_sequence(**context):
 
     jobs_preview = []
     for order, job_name in enumerate(jobs_in_order):
-        job_name_clean = _sanitize_name(job_name)
+        # job_name_orq = nome original do DSX (mantém CamelCase)
+        # Garante que o botão "Lineage" encontre o job no arquivo .dsx
+        # sem precisar de fallback. O usuário pode renomear na etapa de revisão.
+        job_name_orq = job_name
 
         hook.run("""
             INSERT INTO dbo.etl_seq_import_job
                 (import_id, execution_order, job_name_ds, job_name_orq, job_type, status)
             VALUES (%s, %s, %s, %s, 'datastage', 'pendente')
-        """, parameters=[import_id, order, job_name, job_name_clean])
+        """, parameters=[import_id, order, job_name, job_name_orq])
 
         job_id = hook.get_first("""
             SELECT MAX(id) FROM dbo.etl_seq_import_job
@@ -366,7 +369,7 @@ def parse_sequence(**context):
             "import_job_id":    job_id,
             "execution_order":  order,
             "job_name_ds":      job_name,
-            "job_name_orq":     job_name_clean,
+            "job_name_orq":     job_name,   # nome original do DSX
             "lineage_extracted": lineage_ok,
             "lineage_count":    len(lineage_data),
             "lineage":          lineage_data,
