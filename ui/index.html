@@ -2837,8 +2837,18 @@ function _updateFailureBadge(count) {
 function _extractFailuresFromDash(dashPayload) {
   if (!dashPayload) return 0;
   const ff = dashPayload.ultimas_falhas || [];
-  const kpis = dashPayload.kpis || {};
-  return ff.length || (kpis.total_falha || 0);
+  // Contar pipelines únicos com falha — evita discrepância com a tela de Logs
+  // (que agrupa por pipeline, não por job individual)
+  if (ff.length) {
+    const pipelines = new Set(ff.map(f => f.pipeline || f.pipeline_name || '').filter(Boolean));
+    return pipelines.size || ff.length;
+  }
+  // Fallback: usar pipeline_status que já é por pipeline
+  const ps = dashPayload.pipeline_status || [];
+  const failedPipelines = ps.filter(p =>
+    (p.ultimo_status || '').toUpperCase() === 'FAILED'
+  ).length;
+  return failedPipelines || (dashPayload.kpis && dashPayload.kpis.total_falha) || 0;
 }
 
 function _startFailureBadgeTimer() {
@@ -3115,33 +3125,61 @@ async function admFetchDeps() {
 async function admConfirmDelete() {
   const pipeline = $('adm-del-pipeline') ? $('adm-del-pipeline').value.trim() : '';
   if (!pipeline) { showToast('Informe o nome do pipeline.', true); return; }
+  _admDeleteWizardOpen(pipeline);
+}
 
-  const ok = await showConfirm(
-    '⚠ ATENÇÃO — Esta ação é IRREVERSÍVEL.\n\n' +
-    'Serão removidos permanentemente:\n' +
-    '• Pipeline "' + pipeline + '"\n' +
-    '• Todos os jobs vinculados\n' +
-    '• Todo o histórico de lineage\n' +
-    '• Todas as execuções registradas\n\n' +
-    'Tem certeza que deseja prosseguir?',
-    '🗑 Confirmar exclusão completa'
-  );
-  if (!ok) return;
+function _admDeleteWizardOpen(pipeline) {
+  const nameEl = $('adm-wizard-pipeline-name');
+  if (nameEl) nameEl.textContent = pipeline;
+  const inp = $('adm-wizard-confirm-input');
+  if (inp) inp.value = '';
+  const msg = $('adm-wizard-step2-msg');
+  if (msg) { msg.textContent = ''; msg.className = 'msg'; }
+  const btn = $('adm-wiz-confirm-btn');
+  if (btn) { btn.disabled = false; btn.textContent = 'Confirmar Exclusão'; }
+  _admDeleteWizardStep(1);
+  $('modal-adm-delete-wizard').classList.add('open');
+}
 
-  // Segunda confirmação — digitar o nome
-  const confirmName = window.prompt('Digite o nome do pipeline para confirmar a exclusão: ' + pipeline);
-  if ((confirmName || '').trim().toUpperCase() !== pipeline.toUpperCase()) {
-    showToast('Confirmação inválida. Exclusão cancelada.', true);
+function _admDeleteWizardStep(n) {
+  [$('adm-wiz-step1'), $('adm-wiz-step2')].forEach((el, i) => {
+    if (el) el.style.display = (i + 1 === n) ? '' : 'none';
+  });
+  const lbl = $('adm-wiz-step-label');
+  if (lbl) lbl.textContent = 'Etapa ' + n + ' de 2';
+  if (n === 2) {
+    setTimeout(() => { try { $('adm-wizard-confirm-input').focus(); } catch(e) {} }, 100);
+  }
+}
+
+function _admDeleteWizardClose() {
+  const m = $('modal-adm-delete-wizard');
+  if (m) m.classList.remove('open');
+}
+
+async function _admDeleteWizardConfirm() {
+  const pipeline = $('adm-wizard-pipeline-name') ? $('adm-wizard-pipeline-name').textContent.trim() : '';
+  const typed    = $('adm-wizard-confirm-input')  ? $('adm-wizard-confirm-input').value.trim()      : '';
+  const msgEl    = $('adm-wizard-step2-msg');
+
+  if (typed.toUpperCase() !== pipeline.toUpperCase()) {
+    if (msgEl) { msgEl.textContent = 'Nome digitado não confere. Digite exatamente: ' + pipeline; msgEl.className = 'msg erro'; }
     return;
   }
 
+  const btn = $('adm-wiz-confirm-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Excluindo...'; }
+
   const res = await _admAction({ action: 'pipeline_delete', pipeline_name: pipeline });
   if (res) {
-    $('adm-del-pipeline').value = '';
+    _admDeleteWizardClose();
+    if ($('adm-del-pipeline')) $('adm-del-pipeline').value = '';
     const preview = $('adm-del-preview');
     if (preview) preview.style.display = 'none';
     showToast('Pipeline "' + pipeline + '" removido com sucesso.', false);
     try { loadQuery(0); } catch(e) {}
+  } else {
+    if (btn) { btn.disabled = false; btn.textContent = 'Confirmar Exclusão'; }
   }
 }
 
@@ -5452,6 +5490,91 @@ async function approveSeqImport() {
 document.getElementById('modal-seq-import').addEventListener('click', function(e) {
   if (e.target === this) closeSeqImportModal();
 });
+</script>
+
+
+<!-- MODAL: WIZARD EXCLUSÃO DE PIPELINE (2 etapas, sem window.prompt) -->
+<div class="modal-backdrop" id="modal-adm-delete-wizard">
+  <div class="modal-box" style="max-width:480px;text-align:left;padding:1.75rem 2rem">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+      <div>
+        <div class="modal-title" style="margin:0;color:var(--red)">🗑 Excluir Pipeline</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:.2rem" id="adm-wiz-step-label">Etapa 1 de 2</div>
+      </div>
+      <button class="icon-btn btn-close" onclick="_admDeleteWizardClose()" title="Cancelar" aria-label="Cancelar">×</button>
+    </div>
+
+    <!-- STEP 1: Aviso -->
+    <div id="adm-wiz-step1">
+      <div style="background:rgba(220,38,38,.06);border:1px solid rgba(220,38,38,.25);border-radius:12px;padding:1rem;margin-bottom:1.25rem">
+        <div style="font-size:13px;font-weight:600;color:var(--red);margin-bottom:.5rem">⚠ Ação irreversível</div>
+        <div style="font-size:13px;color:var(--text);line-height:1.6">
+          Serão removidos permanentemente:
+          <ul style="margin:.5rem 0 0 1rem;padding:0;font-size:12px;color:var(--muted)">
+            <li>Pipeline <strong id="adm-wizard-pipeline-name" style="color:var(--text)"></strong></li>
+            <li>Todos os jobs vinculados</li>
+            <li>Todo o histórico de lineage</li>
+            <li>Todas as execuções registradas</li>
+          </ul>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn-ghost" onclick="_admDeleteWizardClose()" style="flex:1">Cancelar</button>
+        <button class="btn btn-danger" onclick="_admDeleteWizardStep(2)" style="flex:1;background:rgba(220,38,38,.12);border-color:rgba(220,38,38,.35);color:var(--red)">
+          Prosseguir →
+        </button>
+      </div>
+    </div>
+
+    <!-- STEP 2: Confirmação digitando o nome -->
+    <div id="adm-wiz-step2" style="display:none">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:1rem;line-height:1.6">
+        Para confirmar, digite o nome exato do pipeline no campo abaixo:
+        <div style="font-family:monospace;font-size:12px;font-weight:600;color:var(--text);
+          background:var(--bg);border:1px solid var(--border);border-radius:8px;
+          padding:.4rem .75rem;margin-top:.5rem;word-break:break-all"
+          id="adm-wiz-pipeline-display"></div>
+      </div>
+      <div class="field" style="margin-bottom:.75rem">
+        <label>Nome do pipeline <span style="color:var(--red)">*</span></label>
+        <input id="adm-wizard-confirm-input" type="text"
+          placeholder="Digite o nome exato para confirmar"
+          onkeydown="if(event.key==='Enter') _admDeleteWizardConfirm()"
+          oninput="this.value=this.value.toUpperCase()" />
+      </div>
+      <div id="adm-wizard-step2-msg" class="msg" style="min-height:14px;margin-top:.25rem"></div>
+      <div style="display:flex;gap:8px;margin-top:.75rem">
+        <button class="btn-ghost" onclick="_admDeleteWizardStep(1)" style="flex:1">← Voltar</button>
+        <button id="adm-wiz-confirm-btn" onclick="_admDeleteWizardConfirm()"
+          style="flex:1;padding:.85rem;border-radius:12px;background:var(--red);color:#fff;
+          border:none;font-weight:600;font-size:.8rem;text-transform:uppercase;
+          letter-spacing:.08em;cursor:pointer;font-family:inherit;
+          display:inline-flex;align-items:center;justify-content:center;gap:.45rem">
+          Confirmar Exclusão
+        </button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  // Atualizar display do nome no step 2
+  const _admWizOrig = _admDeleteWizardStep;
+  _admDeleteWizardStep = function(n) {
+    _admWizOrig(n);
+    if (n === 2) {
+      const nameEl = $('adm-wizard-pipeline-name');
+      const dispEl = $('adm-wiz-pipeline-display');
+      if (nameEl && dispEl) dispEl.textContent = nameEl.textContent;
+    }
+  };
+  // Fechar ao clicar fora
+  document.getElementById('modal-adm-delete-wizard').addEventListener('click', function(e) {
+    if (e.target === this) _admDeleteWizardClose();
+  });
 </script>
 
 </body>
