@@ -126,13 +126,11 @@ class DSXEngine:
             return select_match.group(1).strip()
         return ""
 
-    def buscar_linhagem(self, nome_projeto, nome_job, dsx_file: str | None = None):
+    def buscar_linhagem(self, nome_projeto, nome_job):
         self.extracted_lineage = []
 
-        # Monta o caminho do arquivo DSX:
-        # - padrão: diretorio_base/<project>.dsx
-        # - override (Importação Sequence): diretorio_base/<dsx_file>
-        nome_arquivo = dsx_file or f"{nome_projeto}.dsx"
+        # Monta o caminho dinâmico: diretorio_base/nome_projeto.dsx
+        nome_arquivo = f"{nome_projeto}.dsx"
         file_path = os.path.join(self.diretorio_base, nome_arquivo)
 
         if not os.path.exists(file_path):

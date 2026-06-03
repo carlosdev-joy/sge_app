@@ -60,8 +60,6 @@ x-airflow-common:
     # ── ORQUESTRA: caminho dos arquivos .dsx no container ──────────────────
     # Deve coincidir com o volume montado em: ${AIRFLOW_PROJ_DIR:-.}/dsx:/opt/airflow/dsx
     DSX_BASE_DIR: /opt/airflow/dsx
-    # ── ORQUESTRA: staging de uploads de DSX (Importação Sequence) ─────────
-    DSX_IMPORT_DIR: /opt/airflow/dsx/imports
     
     
     AIRFLOW__API__ACCESS_CONTROL_ALLOW_ORIGINS: "*"
