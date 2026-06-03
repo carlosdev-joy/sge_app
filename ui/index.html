@@ -832,7 +832,7 @@
       <div class="hd-right">
         <!-- Badge de falhas (S2) -->
         <div id="failure-badge-wrap" style="display:none;position:relative;cursor:pointer"
-             onclick="switchPage('page-logs',document.getElementById('tab-logs'));$('lf-status').value='FAILED';loadLogs(0)"
+             onclick="switchPage('page-logs',document.getElementById('tab-logs'));_applyFailedFilter(window.__appConfig&&window.__appConfig.failure_badge_hours_lookback||24)"
              title="Falhas recentes — clique para ver logs">
           <button class="icon-btn" style="background:rgba(220,38,38,.18);color:#fff;font-size:.8rem;font-weight:700">✕</button>
           <span id="failure-badge" style="position:absolute;top:-5px;right:-5px;background:var(--red);color:#fff;
@@ -1165,12 +1165,32 @@
               </div><!-- fim grid filtros -->
 
               <!-- linha 2 de filtros -->
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;align-items:start;margin:-.2rem 0 1rem">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;align-items:start;margin:-.2rem 0 .75rem">
                 <div class="field" style="margin:0">
                   <label>Execution ID</label>
                   <input id="lf-execution-id" type="text" placeholder="ex: 20260531_090000" onkeydown="if(event.key==='Enter') loadLogs(0)" />
                 </div>
-                <div></div>
+                <div class="field" style="margin:0">
+                  <label>Período rápido</label>
+                  <select id="lf-period" onchange="_applyQuickPeriod()" style="font-size:13px">
+                    <option value="">Todos os períodos</option>
+                    <option value="1">Últimas 1h</option>
+                    <option value="6">Últimas 6h</option>
+                    <option value="24">Últimas 24h</option>
+                    <option value="48">Últimas 48h</option>
+                    <option value="168">Última semana</option>
+                  </select>
+                </div>
+              </div>
+              <!-- Atalhos rápidos -->
+              <div style="display:flex;gap:6px;margin-bottom:.75rem;flex-wrap:wrap">
+                <span style="font-size:11px;color:var(--muted);align-self:center">Atalhos:</span>
+                <button class="btn-ghost btn-sm" style="font-size:11px;padding:.25rem .6rem"
+                  onclick="_applyFailedFilter(24)">✕ Falhas 24h</button>
+                <button class="btn-ghost btn-sm" style="font-size:11px;padding:.25rem .6rem"
+                  onclick="_applyFailedFilter(168)">✕ Falhas semana</button>
+                <button class="btn-ghost btn-sm" style="font-size:11px;padding:.25rem .6rem"
+                  onclick="_applyFailedFilter(0)">✕ Todas as falhas</button>
               </div>
 
               <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap">
@@ -1557,7 +1577,7 @@ async function gerarDAG(idx) {
 }
 
 function clearLogsFilters() {
-  ['lf-project','lf-pipeline','lf-status','lf-date-from','lf-execution-id'].forEach(id => { if ($(id)) $(id).value = ''; });
+  ['lf-project','lf-pipeline','lf-status','lf-date-from','lf-execution-id','lf-period'].forEach(id => { if ($(id)) $(id).value = ''; });
   const area = $('logs-table-area');
   if (area) area.innerHTML =
     '<div class="empty-state">' +
@@ -2830,8 +2850,8 @@ function _updateFailureBadge(count) {
   }
   wrap.style.display = 'flex';
   badge.textContent  = count > 99 ? '99+' : String(count);
-  badge.title        = count + ' falha(s) nas últimas ' +
-                       (window.__appConfig.failure_badge_hours_lookback || 24) + 'h — clique para ver';
+  badge.title        = count + ' pipeline(s) com falha últimas ' +
+                       (window.__appConfig.failure_badge_hours_lookback || 24) + 'h — clique para filtrar';
 }
 
 function _extractFailuresFromDash(dashPayload) {
@@ -3172,11 +3192,13 @@ async function _admDeleteWizardConfirm() {
 
   const res = await _admAction({ action: 'pipeline_delete', pipeline_name: pipeline });
   if (res) {
+    // Remover DAG do Airflow (arquivo .py + metadata)
+    await _deleteDagFromAirflow(pipeline);
     _admDeleteWizardClose();
     if ($('adm-del-pipeline')) $('adm-del-pipeline').value = '';
     const preview = $('adm-del-preview');
     if (preview) preview.style.display = 'none';
-    showToast('Pipeline "' + pipeline + '" removido com sucesso.', false);
+    showToast('Pipeline "' + pipeline + '" removido do banco e do Airflow.', false);
     try { loadQuery(0); } catch(e) {}
   } else {
     if (btn) { btn.disabled = false; btn.textContent = 'Confirmar Exclusão'; }
@@ -3258,6 +3280,76 @@ document.addEventListener('click', function(e) {
   if (action === 'save') admSaveParam(key);
   if (action === 'del')  admDeleteParam(key);
 });
+
+
+// S2 — Filtros rápidos de período nos Logs
+function _applyQuickPeriod() {
+  const period = $('lf-period') ? $('lf-period').value : '';
+  if (!period) { if ($('lf-date-from')) $('lf-date-from').value = ''; return; }
+  const hours = parseInt(period, 10);
+  const d = new Date(Date.now() - hours * 3600000);
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  const dd = String(d.getDate()).padStart(2,'0');
+  if ($('lf-date-from')) $('lf-date-from').value = d.getFullYear() + '-' + mm + '-' + dd;
+}
+
+function _applyFailedFilter(hours) {
+  if ($('lf-status')) $('lf-status').value = 'FAILED';
+  if ($('lf-period')) $('lf-period').value = hours > 0 ? String(hours) : '';
+  _applyQuickPeriod();
+  loadLogs(0);
+}
+
+// Clique no badge de falhas → aplica filtro FAILED + últimas 24h
+// (sobrescreve o onclick inline do header que apenas mudava de aba)
+
+
+// Remover DAG do Airflow: chama REST API DELETE + dispara DAG de limpeza de arquivo
+async function _deleteDagFromAirflow(pipelineName) {
+  const dagId = _pipelineToDagId(pipelineName);
+
+  // 1. Pausar a DAG imediatamente (evita execuções enquanto remove)
+  try {
+    await fetch('/api/v1/dags/' + dagId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ is_paused: true }),
+    });
+  } catch(e) { console.warn('[ORQ] Não foi possível pausar DAG antes de deletar:', e.message); }
+
+  // 2. Deletar DAG do Airflow via REST API (remove do metadata do scheduler)
+  try {
+    const r = await fetch('/api/v1/dags/' + dagId, {
+      method: 'DELETE',
+      headers: { 'Authorization': authHeader },
+    });
+    if (r.ok || r.status === 404) {
+      console.log('[ORQ] DAG "' + dagId + '" removida do Airflow.');
+    } else {
+      console.warn('[ORQ] DELETE /api/v1/dags/' + dagId + ' retornou ' + r.status);
+    }
+  } catch(e) {
+    console.warn('[ORQ] Erro ao deletar DAG do Airflow:', e.message);
+  }
+
+  // 3. Disparar DAG de limpeza do arquivo .py no servidor
+  // (etl_admin_manage com action=dag_file_delete cuida da remoção física)
+  try {
+    const runId = 'orq_dag_cleanup_' + Date.now();
+    await fetch('/api/v1/dags/' + ADMIN_DAG_ID + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: {
+        action: 'dag_file_delete',
+        pipeline_name: pipelineName,
+        requested_by: window.__currentUser || ADMIN_USER,
+      }}),
+    });
+    console.log('[ORQ] DAG de limpeza de arquivo disparada para "' + pipelineName + '"');
+  } catch(e) {
+    console.warn('[ORQ] Não foi possível disparar limpeza de arquivo:', e.message);
+  }
+}
 
 /* ══ LOGIN ══ */
 async function entrar() {
