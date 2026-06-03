@@ -604,6 +604,22 @@
   .btn-exec:hover{ background:var(--green); color:#fff; }
   .btn-exec:disabled{ opacity:.4; cursor:not-allowed; }
 
+  /* Admin — sub-abas */
+  .adm-tab{
+    padding:.5rem 1rem; border:1px solid var(--border); border-radius:10px;
+    background:transparent; color:var(--muted); font-size:.8rem; font-weight:600;
+    text-transform:uppercase; letter-spacing:.06em; cursor:pointer;
+    font-family:inherit; transition:all .15s;
+  }
+  .adm-tab:hover{ border-color:var(--cvp-blue); color:var(--cvp-blue); }
+  .adm-tab.active{ border-color:var(--cvp-blue); color:var(--cvp-blue); background:rgba(0,92,169,.07); }
+  /* edição inline na tabela de config */
+  .cfg-edit-input{
+    width:100%; padding:.3rem .5rem; border:1px solid var(--border); border-radius:8px;
+    background:var(--card); color:var(--text); font-size:12px; font-family:inherit;
+  }
+  .cfg-edit-input:focus{ outline:none; border-color:var(--cvp-orange); box-shadow:var(--ring); }
+
   /* Botão Ver jobs — abre detalhe da execução por job */
   .btn-ver-jobs{
     padding:.28rem .65rem;
@@ -811,9 +827,25 @@
         <button id="tab-jobs" class="hd-tab" onclick="switchPage('page-jobs',this)">⬡ <span>Jobs</span></button>
         <button id="tab-logs" class="hd-tab" onclick="switchPage('page-logs',this);loadLogs(0)">≣ <span>Logs</span></button>
         <button id="tab-governanca" class="hd-tab" onclick="switchPage('page-governanca',this)">◈ <span>Governança</span></button>
+        <button id="tab-admin" class="hd-tab hidden" onclick="switchPage('page-admin',this)">⚙ <span>Admin</span></button>
       </nav>
       <div class="hd-right">
+        <!-- Badge de falhas (S2) -->
+        <div id="failure-badge-wrap" style="display:none;position:relative;cursor:pointer"
+             onclick="switchPage('page-logs',document.getElementById('tab-logs'));$('lf-status').value='FAILED';loadLogs(0)"
+             title="Falhas recentes — clique para ver logs">
+          <button class="icon-btn" style="background:rgba(220,38,38,.18);color:#fff;font-size:.8rem;font-weight:700">✕</button>
+          <span id="failure-badge" style="position:absolute;top:-5px;right:-5px;background:var(--red);color:#fff;
+            border-radius:999px;font-size:10px;font-weight:700;min-width:18px;height:18px;
+            display:flex;align-items:center;justify-content:center;padding:0 4px;
+            border:2px solid var(--cvp-blue-d);line-height:1"></span>
+        </div>
         <span class="whoami">Olá, <strong id="who"></strong></span>
+        <!-- Badge de versão -->
+        <span id="orq-version-badge" style="font-size:10px;opacity:.55;cursor:default;
+          background:rgba(255,255,255,.1);padding:2px 7px;border-radius:999px;
+          border:1px solid rgba(255,255,255,.2);color:#fff;white-space:nowrap"
+          title="ORQUESTRA v2.1.0">v2.1.0</span>
         <button class="icon-btn" onclick="toggleTheme()" title="Tema" aria-label="Alternar tema"><span id="theme-emoji">◐</span></button>
         <button class="icon-btn logout" onclick="sair()">Sair</button>
       </div>
@@ -1189,7 +1221,21 @@
                 </button>
               </div>
 
-              <div id="dash-status" style="font-size:12px;color:var(--muted);margin-bottom:.75rem;min-height:16px"></div>
+              <!-- S5: Auto-refresh controls -->
+              <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.5rem;flex-wrap:wrap">
+                <div id="dash-status" style="font-size:12px;color:var(--muted);min-height:16px;flex:1"></div>
+                <span id="dash-last-updated" style="font-size:11px;color:var(--muted)"></span>
+                <label style="display:flex;align-items:center;gap:.4rem;font-size:12px;color:var(--muted);
+                  cursor:pointer;user-select:none;margin:0;text-transform:none;letter-spacing:0">
+                  <div class="sw" style="width:34px;height:18px">
+                    <input type="checkbox" id="dash-autorefresh-toggle" checked
+                           onchange="_toggleDashAutoRefresh()" style="opacity:0;width:0;height:0;position:absolute" />
+                    <span class="sw-track" style="border-radius:18px"></span>
+                  </div>
+                  <span id="dash-autorefresh-label">Auto</span>
+                  <span style="opacity:.6;font-size:10px" id="dash-refresh-interval-hint">1min</span>
+                </label>
+              </div>
 
               <!-- KPI Cards (5) -->
               <div class="kpi-grid">
@@ -1297,6 +1343,70 @@
             </div>
           </div>
         </div><!-- fim page-governanca -->
+        <!-- PÁGINA: ADMIN (restrito CVT38571) -->
+        <div id="page-admin" class="page">
+          <div class="card fade">
+            <div class="card-section-head" style="display:flex;align-items:center;justify-content:space-between">
+              <div><h2>⚙ Administração</h2><p class="sub">Painel restrito — configurações e manutenção</p></div>
+              <span style="font-size:11px;background:rgba(220,38,38,.1);color:var(--red);border:0.5px solid rgba(220,38,38,.3);border-radius:20px;padding:3px 10px;font-weight:600">🔒 Restrito</span>
+            </div>
+            <div class="body-pad">
+              <div style="display:flex;gap:6px;margin-bottom:1.5rem;border-bottom:1px solid var(--border);padding-bottom:.75rem">
+                <button id="adm-tab-config" class="adm-tab active" onclick="admSwitch('config')">⚙ Configurações</button>
+                <button id="adm-tab-delete" class="adm-tab" onclick="admSwitch('delete')">🗑 Excluir Pipeline</button>
+              </div>
+
+              <!-- SUB: Configurações -->
+              <div id="adm-panel-config">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+                  <div>
+                    <div style="font-size:13px;font-weight:600">Parâmetros da Aplicação</div>
+                    <div class="helper" style="margin:0">Tabela <code>dbo.etl_app_config</code> — alterações refletem no próximo carregamento.</div>
+                  </div>
+                  <div style="display:flex;gap:6px">
+                    <button class="btn btn-outline btn-sm" onclick="admLoadConfig()">↻ Recarregar</button>
+                    <button class="btn btn-primary btn-sm" onclick="admOpenNewParam()">+ Novo parâmetro</button>
+                  </div>
+                </div>
+                <div id="adm-new-param-form" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1rem;margin-bottom:1rem">
+                  <div style="font-size:12px;font-weight:600;margin-bottom:.75rem;color:var(--cvp-blue)">Novo Parâmetro</div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:.6rem">
+                    <div class="field" style="margin:0"><label>Chave <span style="color:var(--red)">*</span></label><input id="adm-new-key" type="text" placeholder="ex: meu_parametro" /></div>
+                    <div class="field" style="margin:0"><label>Valor <span style="color:var(--red)">*</span></label><input id="adm-new-value" type="text" placeholder="valor" /></div>
+                  </div>
+                  <div class="field" style="margin:0 0 .75rem"><label>Descrição</label><input id="adm-new-desc" type="text" placeholder="Para que serve este parâmetro?" /></div>
+                  <div style="display:flex;gap:6px">
+                    <button class="btn-ghost btn-sm" onclick="admCloseNewParam()">Cancelar</button>
+                    <button class="btn btn-primary btn-sm" onclick="admSaveNewParam()">Salvar</button>
+                  </div>
+                </div>
+                <div id="adm-config-status" style="font-size:12px;color:var(--muted);margin-bottom:.5rem;min-height:16px"></div>
+                <div id="adm-config-table"></div>
+              </div>
+
+              <!-- SUB: Excluir Pipeline -->
+              <div id="adm-panel-delete" style="display:none">
+                <div class="helper" style="margin:0 0 1rem;background:rgba(220,38,38,.05);border:0.5px solid rgba(220,38,38,.2);border-radius:10px;padding:.75rem 1rem;color:var(--red)">
+                  ⚠ <strong>Atenção:</strong> Remove permanentemente o pipeline e <strong>todas</strong> as dependências (jobs, lineage, execuções). Irreversível.
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 140px;gap:.6rem;align-items:end;margin-bottom:1rem">
+                  <div class="field" style="margin:0">
+                    <label>Nome do pipeline <span style="color:var(--red)">*</span></label>
+                    <input id="adm-del-pipeline" type="text" placeholder="ex: ETL_COBRANCA_DIARIA" oninput="this.value=this.value.toUpperCase()" />
+                  </div>
+                  <button class="btn btn-danger btn-sm" style="height:46px;font-size:.8rem" onclick="admConfirmDelete()">🗑 Excluir tudo</button>
+                </div>
+                <div id="adm-del-preview" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1rem;margin-bottom:1rem">
+                  <div style="font-size:12px;font-weight:600;margin-bottom:.5rem">Buscar dependências antes de confirmar:</div>
+                  <div id="adm-del-preview-content"></div>
+                  <button class="btn-ghost btn-sm" style="margin-top:.75rem" onclick="admFetchDeps()">🔍 Verificar dependências</button>
+                </div>
+                <div id="adm-delete-status" style="font-size:12px;color:var(--muted);min-height:16px"></div>
+              </div>
+            </div>
+          </div>
+        </div><!-- fim page-admin -->
+
   </main>
 </div>
 
@@ -1525,7 +1635,9 @@ async function loadLogs(offset) {
 
 function renderLogsTable(result, area, statusEl) {
   if (!area) return;
-  const rows = (result && (result.data || result.rows)) || [];
+  const _rawRows = (result && (result.data || result.rows)) || [];
+  const st_l = window.__sortState['logs'];
+  const rows = st_l ? _sortData(_rawRows, st_l.col, st_l.dir) : _rawRows;
   const total = (result && result.total) || 0;
   const offset = (result && (result.offset || 0)) || 0;
   const limit = (result && (result.limit || LOGS_LIMIT)) || LOGS_LIMIT;
@@ -1591,10 +1703,17 @@ function renderLogsTable(result, area, statusEl) {
     '</tr>';
   }).join('');
 
+  const _lHdr = (label, col) =>
+    '<th style="cursor:pointer;user-select:none;white-space:nowrap" ' +
+    'data-sort-table="logs" data-sort-col="' + col + '">' +
+    label + _sortIcon('logs', col) + '</th>';
+
   area.innerHTML =
     '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
-      '<th>Pipeline</th><th>Projeto</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th>' +
-      '<th>Jobs</th><th>Falha/Aviso</th><th>Execution ID</th><th>Ações</th>' +
+    _lHdr('Pipeline','pipeline') + _lHdr('Projeto','project') +
+    _lHdr('Status','status_geral') + _lHdr('Início','inicio') +
+    _lHdr('Fim','fim') + _lHdr('Duração','duracao_total_segundos') +
+    '<th>Jobs</th><th>Falha/Aviso</th><th>Execution ID</th><th>Ações</th>' +
     '</tr></thead><tbody>' + body + '</tbody></table></div>' +
     (pages > 1 ? renderPagination(offset, limit, total, pages, 'loadLogs') : '');
 }
@@ -2018,7 +2137,11 @@ async function loadDashboard() {
     const xdata = await xr.json();
     const payload = normalizeXcomValue(xdata);
     renderDashboard(payload);
-    if (st) st.textContent = 'Atualizado.';
+    if (st) st.textContent = '';
+    _updateDashLastUpdated();
+    // S2: atualizar badge de falhas com dados já carregados
+    window.__lastDashPayload = payload;
+    _updateFailureBadge(_extractFailuresFromDash(payload));
   } catch (e) {
     if (st) st.textContent = 'Erro: ' + (e && e.message ? e.message : e);
   } finally {
@@ -2638,6 +2761,466 @@ async function executarPipelineDoJob() {
   }
 }
 
+
+/* ══ APP CONFIG — parâmetros carregados do banco ══════════════════ */
+const APP_CONFIG_DAG = 'etl_app_config_query';
+window.__appConfig = {
+  dashboard_refresh_interval_sec: 60,
+  failure_badge_refresh_sec: 300,
+  failure_badge_hours_lookback: 24,
+  app_version: '2.1.0',
+  app_release_name: 'Sprint 1 — Junho/2026',
+  pipeline_query_limit: 20,
+  jobs_query_limit: 50,
+  logs_query_limit: 30,
+};
+
+async function loadAppConfig() {
+  if (!authHeader) return;
+  try {
+    const runId = 'orq_cfg_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + APP_CONFIG_DAG + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: {} }),
+    });
+    if (!r.ok) return;
+    const run = await r.json();
+    const rid = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(APP_CONFIG_DAG, rid, 30);
+    if (state !== 'success') return;
+    const xr = await fetch(
+      '/api/v1/dags/' + APP_CONFIG_DAG + '/dagRuns/' + rid +
+      '/taskInstances/buscar_configuracoes/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) return;
+    const cfg = normalizeXcomValue(await xr.json());
+    if (cfg && typeof cfg === 'object') {
+      window.__appConfig = { ...window.__appConfig, ...cfg };
+      console.log('[ORQ] App config carregado:', window.__appConfig);
+      // Atualizar badge de versão após carregar config
+      _renderVersionBadge();
+    }
+  } catch(e) {
+    console.warn('[ORQ] Config não carregado, usando defaults:', e.message);
+  }
+}
+
+/* ══ VERSÃO — badge no header ════════════════════════════════════ */
+function _renderVersionBadge() {
+  const el = $('orq-version-badge');
+  if (!el) return;
+  const v   = window.__appConfig.app_version     || '—';
+  const rel = window.__appConfig.app_release_name || '';
+  el.textContent = 'v' + v;
+  el.title = 'ORQUESTRA v' + v + (rel ? ' · ' + rel : '');
+}
+
+/* ══ S2 — Badge de falhas no header ══════════════════════════════ */
+let _failureBadgeTimer = null;
+
+function _updateFailureBadge(count) {
+  const badge = $('failure-badge');
+  const wrap  = $('failure-badge-wrap');
+  if (!badge || !wrap) return;
+  if (!count || count <= 0) {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = 'flex';
+  badge.textContent  = count > 99 ? '99+' : String(count);
+  badge.title        = count + ' falha(s) nas últimas ' +
+                       (window.__appConfig.failure_badge_hours_lookback || 24) + 'h — clique para ver';
+}
+
+function _extractFailuresFromDash(dashPayload) {
+  if (!dashPayload) return 0;
+  const ff = dashPayload.ultimas_falhas || [];
+  const kpis = dashPayload.kpis || {};
+  return ff.length || (kpis.total_falha || 0);
+}
+
+function _startFailureBadgeTimer() {
+  if (_failureBadgeTimer) clearInterval(_failureBadgeTimer);
+  const interval = (window.__appConfig.failure_badge_refresh_sec || 300) * 1000;
+  _failureBadgeTimer = setInterval(() => {
+    // Reutiliza dados já carregados — sem nova DAG
+    if (window.__lastDashPayload) {
+      _updateFailureBadge(_extractFailuresFromDash(window.__lastDashPayload));
+    }
+  }, interval);
+}
+
+/* ══ S5 — Auto-refresh do Dashboard ══════════════════════════════ */
+let _dashRefreshTimer = null;
+let _dashLastUpdate   = null;
+
+function _startDashAutoRefresh() {
+  _stopDashAutoRefresh();
+  const toggle = $('dash-autorefresh-toggle');
+  if (!toggle || !toggle.checked) return;
+  const secs = window.__appConfig.dashboard_refresh_interval_sec || 60;
+  if (secs <= 0) return;
+  _dashRefreshTimer = setInterval(() => {
+    if (document.getElementById('page-dashboard').classList.contains('active')) {
+      loadDashboard();
+    }
+  }, secs * 1000);
+  console.log('[ORQ] Auto-refresh dashboard: ' + secs + 's');
+}
+
+function _stopDashAutoRefresh() {
+  if (_dashRefreshTimer) { clearInterval(_dashRefreshTimer); _dashRefreshTimer = null; }
+}
+
+function _toggleDashAutoRefresh() {
+  const toggle = $('dash-autorefresh-toggle');
+  const label  = $('dash-autorefresh-label');
+  const on = toggle && toggle.checked;
+  if (label) label.textContent = on ? 'Auto' : 'Manual';
+  if (on) _startDashAutoRefresh();
+  else    _stopDashAutoRefresh();
+}
+
+function _updateDashLastUpdated() {
+  _dashLastUpdate = new Date();
+  const el = $('dash-last-updated');
+  if (el) {
+    const hm = _dashLastUpdate.toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
+    el.textContent = 'Atualizado às ' + hm;
+  }
+}
+
+/* ══ ORDENAÇÃO POR COLUNA (client-side) ══════════════════════════ */
+// Estado global de ordenação por tabela
+window.__sortState = {};
+
+function _sortData(data, col, dir) {
+  if (!col || !data || !data.length) return data;
+  return [...data].sort((a, b) => {
+    let va = a[col], vb = b[col];
+    // Null/undefined sempre por último
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    // Numérico
+    if (typeof va === 'number' && typeof vb === 'number') {
+      return dir === 'asc' ? va - vb : vb - va;
+    }
+    // String case-insensitive
+    va = String(va).toLowerCase();
+    vb = String(vb).toLowerCase();
+    if (va < vb) return dir === 'asc' ? -1 : 1;
+    if (va > vb) return dir === 'asc' ?  1 : -1;
+    return 0;
+  });
+}
+
+// Renderiza o ícone de sort na coluna ativa
+function _sortIcon(tableId, col) {
+  const st = window.__sortState[tableId];
+  if (!st || st.col !== col) return '<span style="opacity:.3;font-size:10px;margin-left:3px">⇅</span>';
+  return st.dir === 'asc'
+    ? '<span style="font-size:10px;margin-left:3px;color:var(--cvp-blue)">↑</span>'
+    : '<span style="font-size:10px;margin-left:3px;color:var(--cvp-blue)">↓</span>';
+}
+
+// Clique numa coluna → alterna dir ou define nova coluna
+function _onSortClick(tableId, col, renderFn) {
+  const st = window.__sortState[tableId] || {};
+  const newDir = (st.col === col && st.dir === 'asc') ? 'desc' : 'asc';
+  window.__sortState[tableId] = { col, dir: newDir };
+  renderFn();
+}
+
+
+/* ══ ADMIN — Painel restrito CVT38571 ══════════════════════════ */
+const ADMIN_DAG_ID    = 'etl_admin_manage';
+const ADMIN_USER      = 'CVT38571';
+
+function _isAdmin() { return (window.__currentUser || '').toUpperCase() === ADMIN_USER; }
+
+// Mostra/oculta aba Admin baseado no usuário logado
+function _applyAdminVisibility() {
+  const tab = $('tab-admin');
+  if (!tab) return;
+  if (_isAdmin()) tab.classList.remove('hidden');
+  else            tab.classList.add('hidden');
+}
+
+// Sub-navegação Admin
+function admSwitch(panel) {
+  ['config','delete'].forEach(p => {
+    $('adm-panel-' + p).style.display = p === panel ? '' : 'none';
+    const btn = $('adm-tab-' + p);
+    if (btn) btn.classList.toggle('active', p === panel);
+  });
+  if (panel === 'config') admLoadConfig();
+}
+
+// ── Configurações: carregar tabela ─────────────────────────────
+async function admLoadConfig() {
+  if (!authHeader) return;
+  const st = $('adm-config-status');
+  const tbl = $('adm-config-table');
+  if (st) st.textContent = 'Carregando parâmetros...';
+  if (tbl) tbl.innerHTML = '';
+
+  try {
+    const runId = 'orq_cfg_load_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + APP_CONFIG_DAG + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: {} }),
+    });
+    if (!r.ok) { if (st) st.textContent = 'Erro ao carregar: ' + r.status; return; }
+    const run = await r.json();
+    const rid = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(APP_CONFIG_DAG, rid, 30);
+    if (state !== 'success') { if (st) st.textContent = 'Falha ao carregar configs.'; return; }
+    const xr = await fetch(
+      '/api/v1/dags/' + APP_CONFIG_DAG + '/dagRuns/' + rid +
+      '/taskInstances/buscar_configuracoes/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) { if (st) st.textContent = 'Erro XCom: ' + xr.status; return; }
+    const cfg = normalizeXcomValue(await xr.json());
+    window.__appConfig = { ...window.__appConfig, ...(cfg || {}) };
+    _renderConfigTable(cfg);
+    if (st) st.textContent = Object.keys(cfg || {}).length + ' parâmetro(s) carregado(s).';
+  } catch(e) {
+    if (st) st.textContent = 'Erro: ' + (e.message || e);
+  }
+}
+
+function _renderConfigTable(cfg) {
+  const tbl = $('adm-config-table');
+  if (!tbl || !cfg) return;
+  const rows = Object.entries(cfg).map(([key, value]) => {
+    const safeKey = key.replace(/'/g, "\'");
+    const safeVal = String(value).replace(/'/g, "\'").replace(/"/g, '&quot;');
+    return '<tr>' +
+      '<td style="font-family:monospace;font-size:12px;font-weight:600;white-space:nowrap">' + key + '</td>' +
+      '<td><input class="cfg-edit-input" id="cfgval-' + key + '" value="' + safeVal + '" /></td>' +
+      '<td style="white-space:nowrap">' +
+        '<div class="row-actions">' +
+          '<button class="btn-ghost btn-sm" data-cfg-action="save" data-cfg-key="' + key + '" style="font-size:11px">💾 Salvar</button>' +
+          '<button class="btn-danger btn-sm" data-cfg-action="del" data-cfg-key="' + key + '" style="font-size:11px">✕</button>' +
+        '</div>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+
+  tbl.innerHTML =
+    '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
+    '<th>Chave</th><th>Valor</th><th>Ações</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+function admOpenNewParam() {
+  const f = $('adm-new-param-form');
+  if (f) { f.style.display = ''; $('adm-new-key').focus(); }
+}
+function admCloseNewParam() {
+  const f = $('adm-new-param-form');
+  if (f) f.style.display = 'none';
+  ['adm-new-key','adm-new-value','adm-new-desc'].forEach(id => { if ($(id)) $(id).value = ''; });
+}
+
+async function admSaveParam(key) {
+  const input = $('cfgval-' + key);
+  if (!input) return;
+  const value = input.value.trim();
+  if (!value) { showToast('Valor não pode ser vazio.', true); return; }
+  await _admAction({ action: 'config_upsert', config_key: key, config_value: value });
+  window.__appConfig[key] = value;
+}
+
+async function admSaveNewParam() {
+  const key   = $('adm-new-key')   ? $('adm-new-key').value.trim()   : '';
+  const value = $('adm-new-value') ? $('adm-new-value').value.trim() : '';
+  const desc  = $('adm-new-desc')  ? $('adm-new-desc').value.trim()  : '';
+  if (!key || !value) { showToast('Chave e valor são obrigatórios.', true); return; }
+  const ok = await _admAction({ action: 'config_upsert', config_key: key, config_value: value, descricao: desc });
+  if (ok) { admCloseNewParam(); admLoadConfig(); }
+}
+
+async function admDeleteParam(key) {
+  const ok = await showConfirm(
+    'Remover "' + key + '"? Se for parâmetro do sistema, o ORQUESTRA usará o valor padrão.',
+    'Remover parâmetro'
+  );
+  if (!ok) return;
+  const res = await _admAction({ action: 'config_delete', config_key: key });
+  if (res) { delete window.__appConfig[key]; admLoadConfig(); }
+}
+
+// ── Excluir Pipeline ────────────────────────────────────────────
+async function admFetchDeps() {
+  const pipeline = $('adm-del-pipeline') ? $('adm-del-pipeline').value.trim() : '';
+  if (!pipeline) { showToast('Informe o nome do pipeline.', true); return; }
+  const st = $('adm-delete-status');
+  if (st) st.textContent = 'Buscando dependências...';
+
+  try {
+    const r = await fetch('/api/v1/dags/etl_pipeline_query/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ conf: { filter_name: pipeline, offset: 0, limit: 1 } }),
+    });
+    if (!r.ok) { if (st) st.textContent = 'Erro ' + r.status; return; }
+    const run = await r.json();
+    const rid = run.dag_run_id || run.run_id;
+    const state = await waitDagRun('etl_pipeline_query', rid, 30);
+    if (state !== 'success') { if (st) st.textContent = 'Timeout na busca.'; return; }
+    const xr = await fetch(
+      '/api/v1/dags/etl_pipeline_query/dagRuns/' + rid +
+      '/taskInstances/consultar_pipelines/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) { if (st) st.textContent = 'Erro XCom: ' + xr.status; return; }
+    const payload = normalizeXcomValue(await xr.json());
+    const found = (payload && payload.data || []).find(p => p.pipeline_name.toUpperCase() === pipeline);
+    const preview = $('adm-del-preview');
+    const prevContent = $('adm-del-preview-content');
+    if (preview) preview.style.display = '';
+    if (found && prevContent) {
+      prevContent.innerHTML =
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.5rem;font-size:12px">' +
+          '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:.5rem .75rem">' +
+            '<div style="font-weight:600;color:var(--red)">Pipeline</div>' +
+            '<div>' + found.pipeline_name + '</div>' +
+            '<div style="color:var(--muted)">' + (found.project_name||'') + '</div>' +
+          '</div>' +
+          '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:.5rem .75rem">' +
+            '<div style="font-weight:600">DAG Airflow</div>' +
+            '<div>' + (found.dag_criada ? '✅ Criada' : '—') + '</div>' +
+          '</div>' +
+          '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:.5rem .75rem">' +
+            '<div style="font-weight:600">Status</div>' +
+            '<div>' + (found.active ? '🟢 Ativo' : '🔴 Inativo') + '</div>' +
+          '</div>' +
+        '</div>';
+      if (st) st.textContent = 'Pipeline encontrado. Confirme a exclusão abaixo.';
+    } else {
+      if (prevContent) prevContent.innerHTML = '<span style="color:var(--red);font-size:12px">Pipeline não encontrado.</span>';
+      if (st) st.textContent = 'Pipeline não encontrado no banco.';
+    }
+  } catch(e) {
+    if (st) st.textContent = 'Erro: ' + (e.message || e);
+  }
+}
+
+async function admConfirmDelete() {
+  const pipeline = $('adm-del-pipeline') ? $('adm-del-pipeline').value.trim() : '';
+  if (!pipeline) { showToast('Informe o nome do pipeline.', true); return; }
+
+  const ok = await showConfirm(
+    '⚠ ATENÇÃO — Esta ação é IRREVERSÍVEL.\n\n' +
+    'Serão removidos permanentemente:\n' +
+    '• Pipeline "' + pipeline + '"\n' +
+    '• Todos os jobs vinculados\n' +
+    '• Todo o histórico de lineage\n' +
+    '• Todas as execuções registradas\n\n' +
+    'Tem certeza que deseja prosseguir?',
+    '🗑 Confirmar exclusão completa'
+  );
+  if (!ok) return;
+
+  // Segunda confirmação — digitar o nome
+  const confirmName = window.prompt('Digite o nome do pipeline para confirmar a exclusão: ' + pipeline);
+  if ((confirmName || '').trim().toUpperCase() !== pipeline.toUpperCase()) {
+    showToast('Confirmação inválida. Exclusão cancelada.', true);
+    return;
+  }
+
+  const res = await _admAction({ action: 'pipeline_delete', pipeline_name: pipeline });
+  if (res) {
+    $('adm-del-pipeline').value = '';
+    const preview = $('adm-del-preview');
+    if (preview) preview.style.display = 'none';
+    showToast('Pipeline "' + pipeline + '" removido com sucesso.', false);
+    try { loadQuery(0); } catch(e) {}
+  }
+}
+
+// ── Helper genérico para ações admin via DAG ────────────────────
+async function _admAction(conf) {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return false; }
+  conf.requested_by = window.__currentUser || ADMIN_USER;
+  const st = conf.action.startsWith('config') ? $('adm-config-status') : $('adm-delete-status');
+  if (st) st.textContent = 'Processando...';
+  try {
+    const runId = 'orq_adm_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + ADMIN_DAG_ID + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf }),
+    });
+    if (r.status === 401) { sair(); return false; }
+    if (!r.ok) { if (st) st.textContent = 'Erro: ' + r.status; return false; }
+    const run = await r.json();
+    const rid = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(ADMIN_DAG_ID, rid, 30);
+    if (state === 'success') {
+      if (st) st.textContent = '✓ Operação concluída com sucesso.';
+      showToast('Operação concluída.', false);
+      return true;
+    } else {
+      if (st) st.textContent = 'Falha na operação. Verifique os logs do Airflow.';
+      return false;
+    }
+  } catch(e) {
+    if (st) st.textContent = 'Erro: ' + (e.message || e);
+    return false;
+  }
+}
+
+
+// Wrappers globais para re-renderização após sort
+// (necessários porque as tabelas usam variáveis locais area/statusEl)
+function _reRenderPipelines() {
+  if (window.__lastQueryPayload) renderQueryTable(window.__lastQueryPayload);
+}
+function _reRenderJobs() {
+  if (window.__lastJobsPayload) renderJobsTable(window.__lastJobsPayload);
+}
+function _reRenderLogs() {
+  const area = $('logs-table-area');
+  const st   = $('logs-status');
+  if (window.__lastLogsPayload) renderLogsTable(window.__lastLogsPayload, area, st);
+}
+
+
+// Event delegation para ordenação por coluna (data-sort-table + data-sort-col)
+// Evita o problema de aspas simples em onclick strings
+document.addEventListener('click', function(e) {
+  const th = e.target && e.target.closest ? e.target.closest('th[data-sort-col]') : null;
+  if (!th) return;
+  const tbl = th.getAttribute('data-sort-table');
+  const col = th.getAttribute('data-sort-col');
+  if (!tbl || !col) return;
+  const renders = {
+    'pipelines': _reRenderPipelines,
+    'jobs':      _reRenderJobs,
+    'logs':      _reRenderLogs,
+  };
+  if (renders[tbl]) _onSortClick(tbl, col, renders[tbl]);
+});
+
+
+// Event delegation para botões da tabela de config admin
+document.addEventListener('click', function(e) {
+  const btn = e.target && e.target.closest ? e.target.closest('[data-cfg-action]') : null;
+  if (!btn) return;
+  const action = btn.getAttribute('data-cfg-action');
+  const key    = btn.getAttribute('data-cfg-key');
+  if (!key) return;
+  if (action === 'save') admSaveParam(key);
+  if (action === 'del')  admDeleteParam(key);
+});
+
 /* ══ LOGIN ══ */
 async function entrar() {
   const m = $('login_msg');
@@ -2675,7 +3258,17 @@ async function entrar() {
     fetchUserFirstName().then(firstName => {
       if (firstName) $('who').textContent = firstName;
     }).catch(() => {});
-    window.__currentUser = u; // guardar matrícula para uso nas DAGs
+    window.__currentUser = u;
+    _applyAdminVisibility();   // mostra aba Admin só para CVT38571
+    // Carregar config do banco (S5/S2 — assíncrono, não bloqueia)
+    loadAppConfig().then(() => {
+      _startDashAutoRefresh();
+      _startFailureBadgeTimer();
+      // Atualizar hint de intervalo no dashboard
+      const hint = $('dash-refresh-interval-hint');
+      const secs = window.__appConfig.dashboard_refresh_interval_sec || 60;
+      if (hint) hint.textContent = secs >= 60 ? Math.round(secs/60) + 'min' : secs + 's';
+    });
     // Tela inicial: Dashboard
     try { goDashboard(); } catch(e) {}
   } catch(e) {
@@ -2741,6 +3334,10 @@ function switchPage(pageId, btn) {
     }
     if (pageId === 'page-governanca') {
       clearGovernanca();
+    }
+    if (pageId === 'page-admin') {
+      // Carregar configs ao abrir o painel Admin
+      try { admSwitch('config'); } catch(_) {}
     }
   } catch(_) {}
 
@@ -3557,8 +4154,10 @@ function renderJobsTable(payload) {
     if ($('job-query-status')) $('job-query-status').textContent = 'Nenhum resultado';
     return;
   }
-  const { data, total, offset, limit, pages, table } = payload;
-  try { window.__jobs = data; } catch(e) {}
+  const { total, offset, limit, pages, table } = payload;
+  const st_j = window.__sortState['jobs'];
+  const data  = st_j ? _sortData(payload.data, st_j.col, st_j.dir) : payload.data;
+  try { window.__jobs = payload.data; window.__lastJobsPayload = payload; } catch(e) {}
   const act = $('job-query-actions');
   if (act) act.classList.remove('hidden');
   jobOrderDirty = false;
@@ -3586,9 +4185,16 @@ function renderJobsTable(payload) {
     '</tr>'
   ).join('');
 
+  const _jHdr = (label, col) =>
+    '<th style="cursor:pointer;user-select:none;white-space:nowrap" ' +
+    'data-sort-table="jobs" data-sort-col="' + col + '">' +
+    label + _sortIcon('jobs', col) + '</th>';
+
   area.innerHTML =
     '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
-    '<th>Pipeline</th><th>Job</th><th>Ordem</th><th>Tipo</th><th>Comando</th><th>Ações</th>' +
+    _jHdr('Pipeline','pipeline_name') + _jHdr('Job','job_name') +
+    _jHdr('Ordem','execution_order') + _jHdr('Tipo','job_type') +
+    '<th>Comando</th><th>Ações</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
     (pages > 1 ? renderJobsPagination(offset, limit, total, pages) : '');
 }
@@ -4100,8 +4706,10 @@ function renderQueryTable(payload) {
     if ($('query-status')) $('query-status').textContent = 'Nenhum resultado';
     return;
   }
-  const { data, total, offset, limit, pages } = payload;
-  try { window.__pipelines = data; } catch(e) {}
+  const { total, offset, limit, pages } = payload;
+  const st_p = window.__sortState['pipelines'];
+  const data  = st_p ? _sortData(payload.data, st_p.col, st_p.dir) : payload.data;
+  try { window.__pipelines = payload.data; window.__lastQueryPayload = payload; } catch(e) {}
   queryState.total = total; queryState.pages = pages; queryState.offset = offset;
   const from = offset + 1, to = Math.min(offset + limit, total);
   if ($('query-status')) $('query-status').textContent = 'Exibindo ' + from + '–' + to + ' de ' + total + ' pipeline(s)';
@@ -4133,12 +4741,19 @@ function renderQueryTable(payload) {
     '</td>' +
     '</tr>'
   ).join('');
+  const _pHdr = (label, col) =>
+    '<th style="cursor:pointer;user-select:none;white-space:nowrap" ' +
+    'data-sort-table="pipelines" data-sort-col="' + col + '">' +
+    label + _sortIcon('pipelines', col) + '</th>';
+
   area.innerHTML =
     '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
-    '<th>Pipeline</th><th>Projeto</th><th>Domínio</th><th>Horário</th>' +
+    _pHdr('Pipeline','pipeline_name') + _pHdr('Projeto','project_name') +
+    _pHdr('Domínio','domain') + _pHdr('Horário','scheduled_time') +
     '<th title="Ativo">Ativo</th><th title="DAG Criada">DAG</th>' +
     '<th title="Notif. Início">Início</th><th title="Notif. Fim">Fim</th><th title="Notif. Erro">Erro</th>' +
-    '<th>Última exec.</th><th>Ações</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    _pHdr('Última exec.','last_execution') + '<th>Ações</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
     (pages > 1 ? renderPagination(offset, limit, total, pages) : '');
 }
 
