@@ -2449,18 +2449,19 @@ const USER_NAME_API = 'https://servicosaondev.caixavidaeprevidencia.intranet/api
 
 async function fetchUserFirstName(matricula, senha) {
   // Busca o nome real do usuário no AD da CVP.
-  // Usa as credenciais do próprio usuário (não do usuário de serviço).
-  // Silencioso: se falhar por qualquer motivo, mantém a matrícula como exibição.
+  // O endpoint aceita GET (405 ao usar POST) e usa Windows Authentication.
+  // credentials:'include' envia o ticket Kerberos/NTLM da sessão Windows do navegador,
+  // garantindo que o AD retorna os dados do usuário logado (não do serviço).
   try {
-    const r = await fetch(USER_NAME_API, {
-      method: 'POST',
+    // Tentativa 1: GET com Windows Auth (credentials:include) + matricula na query
+    const url = USER_NAME_API + '?matricula=' + encodeURIComponent(matricula);
+    const r = await fetch(url, {
+      method: 'GET',
+      credentials: 'include',   // envia cookies/token Windows do usuário atual
       headers: {
-        'Content-Type': 'application/json',
-        // Authorization com as credenciais do usuário logado
-        // garante que o endpoint AD autentica o usuário correto
+        'Accept': 'application/json',
         'Authorization': 'Basic ' + btoa(matricula + ':' + senha),
       },
-      body: JSON.stringify({ matricula, senha }),
     });
     if (!r.ok) return null;
     const data = await r.json();
