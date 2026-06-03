@@ -2447,34 +2447,27 @@ function openJobLineageFromTable(idx) {
 /* ══ NOME DO USUÁRIO (intranet CVP) ══ */
 const USER_NAME_API = 'https://servicosaondev.caixavidaeprevidencia.intranet/api/AssistenteOnline/AssistenteOnline_UsuarioLoginAd';
 
-async function fetchUserFirstName(matricula, senha) {
-  // Busca o nome real do usuário no AD da CVP.
-  // O endpoint aceita GET (405 ao usar POST) e usa Windows Authentication.
-  // credentials:'include' envia o ticket Kerberos/NTLM da sessão Windows do navegador,
-  // garantindo que o AD retorna os dados do usuário logado (não do serviço).
+async function fetchUserFirstName() {
+  // Busca o nome do usuário logado via Windows Authentication.
+  // O endpoint usa a sessão Windows do navegador (Kerberos/NTLM) — igual ao acesso direto pela URL.
+  // NÃO enviar Authorization header — isso abre o dialog de senha do Chrome.
+  // credentials:'include' replica o comportamento do browser ao acessar a URL diretamente.
   try {
-    // Tentativa 1: GET com Windows Auth (credentials:include) + matricula na query
-    const url = USER_NAME_API + '?matricula=' + encodeURIComponent(matricula);
-    const r = await fetch(url, {
+    const r = await fetch(USER_NAME_API, {
       method: 'GET',
-      credentials: 'include',   // envia cookies/token Windows do usuário atual
-      headers: {
-        'Accept': 'application/json',
-        'Authorization': 'Basic ' + btoa(matricula + ':' + senha),
-      },
+      credentials: 'include',   // envia a sessão Windows do usuário atual
+      headers: { 'Accept': 'application/json' },
     });
     if (!r.ok) return null;
     const data = await r.json();
-    // Caminho principal: data.dataUsuario.desNome
     if (data && data.sucesso && data.data && data.data.dataUsuario && data.data.dataUsuario.desNome) {
       const fullName = String(data.data.dataUsuario.desNome).trim();
-      return fullName.split(' ')[0] || fullName; // "Carlos Henrique de Oliveira" → "Carlos"
+      return fullName.split(' ')[0] || fullName;
     }
-    // Fallback: idt_usuario
     if (data && data.data && data.data.idt_usuario) {
       return String(data.data.idt_usuario).split(' ')[0];
     }
-  } catch(e) { /* silencioso */ }
+  } catch(e) { /* silencioso — mantém matrícula no header */ }
   return null;
 }
 
@@ -2508,12 +2501,11 @@ async function entrar() {
     $('who').textContent = u;  // placeholder — atualizado com primeiro nome abaixo
     $('loginScreen').classList.add('hidden');
     $('appScreen').classList.remove('hidden');
-    const senhaCopy = p; // captura ANTES de limpar o campo
     $('login_pass').value = '';
     const cw = $('caps-warn'); if (cw) cw.style.display = 'none';
     // Buscar primeiro nome com as credenciais do usuário logado
     // (senhaCopy garante que usamos a senha do usuário, não do serviço)
-    fetchUserFirstName(u, senhaCopy).then(firstName => {
+    fetchUserFirstName().then(firstName => {
       if (firstName) $('who').textContent = firstName;
     }).catch(() => {});
     window.__currentUser = u; // guardar matrícula para uso nas DAGs
