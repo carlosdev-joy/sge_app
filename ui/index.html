@@ -77,6 +77,20 @@
     border-radius:12px; background:var(--card); color:var(--text);
     font-size:.95rem; font-family:inherit; transition:border-color .15s, box-shadow .15s;
   }
+  /* Schedule Builder (Fase 3) — reduzir padding/tamanho para não “estourar” o layout */
+  #schedule-builder select,
+  #schedule-builder input[type=number]{
+    width:auto;
+    padding:.45rem .55rem;
+    border-radius:10px;
+    font-size:13px;
+  }
+  #schedule-builder #sch-type{ max-width:220px; }
+  #schedule-builder #sch-hour,
+  #schedule-builder #sch-minute,
+  #schedule-builder #sch-dom{ width:56px; text-align:center; }
+  #schedule-builder #sch-time-row{ gap:6px; }
+  #schedule-builder #sch-dow{ max-width:170px; }
   textarea { resize:vertical; min-height:100px; line-height:1.5; }
   input:focus, select:focus, textarea:focus {
     outline:none; border-color:var(--cvp-orange);
@@ -790,9 +804,9 @@
       </div>
       <nav class="hd-nav" aria-label="Navegação">
         <button id="tab-dashboard" class="hd-tab active" onclick="switchPage('page-dashboard',this);loadDashboard()">◫ <span>Dashboard</span></button>
-        <button id="tab-pipelines" class="hd-tab" onclick="switchPage('page-pipelines',this);loadQuery(0)">≡ <span>Pipelines</span></button>
+        <button id="tab-pipelines" class="hd-tab" onclick="switchPage('page-pipelines',this)">≡ <span>Pipelines</span></button>
         <button id="tab-jobs" class="hd-tab" onclick="switchPage('page-jobs',this)">⬡ <span>Jobs</span></button>
-        <button id="tab-logs" class="hd-tab" onclick="switchPage('page-logs',this);loadLogs(0)">≣ <span>Logs</span></button>
+        <button id="tab-logs" class="hd-tab" onclick="switchPage('page-logs',this)">≣ <span>Logs</span></button>
         <button id="tab-governanca" class="hd-tab" onclick="switchPage('page-governanca',this)">◈ <span>Governança</span></button>
       </nav>
       <div class="hd-right">
@@ -815,10 +829,7 @@
             <div class="body-pad">
               <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap">
                 <div class="helper" style="margin:0">Use os filtros para buscar e clique em <strong>Novo Pipeline</strong> para cadastrar.</div>
-                <div style="display:flex;gap:6px;flex-wrap:wrap">
-                  <button class="btn btn-outline btn-sm" onclick="openSeqImportModal()" title="Importar sequence DataStage completa">⬆ Importar Sequence</button>
-                  <button class="btn btn-outline btn-sm" onclick="openPipelineCreate()">+ Novo Pipeline</button>
-                </div>
+                <button class="btn btn-outline btn-sm" onclick="openPipelineCreate()">+ Novo Pipeline</button>
               </div>
 
               <div class="query-filters">
@@ -1249,6 +1260,7 @@
                 <button class="btn btn-primary btn-sm" id="btn-gov" onclick="loadGovernanca()" style="height:40px">
                   <span id="btn-gov-txt">Carregar lineage</span>
                 </button>
+                <button class="btn-ghost btn-sm" onclick="clearGovernanca()" title="Limpar pesquisa">× limpar</button>
               </div>
               <div id="gov-status" style="font-size:12px;color:var(--muted);margin-bottom:.75rem;min-height:16px"></div>
 
@@ -1858,17 +1870,25 @@ function showLineageDSXPreview(payload) {
   };
 
   const rows = dados.map(d => {
-    const dir = d.direction || 'transformacao';
+    // Suporta formato novo (direction, object_name) E legado (Direção, Nome do Objeto)
+    const dirRaw = (d.direction || d['Direção'] || '').toLowerCase();
+    const dir = dirRaw.startsWith('orig') ? 'origem'
+              : dirRaw.startsWith('dest') ? 'destino'
+              : 'transformacao';
     const c = dirColors[dir] || dirColors.transformacao;
-    const cat = (d.type_category || (dir === 'transformacao' ? 'transformacao' : '—'));
-    const typeLabel = d.type_label || getTypeLabel(d.stage_type_raw) || d.object_type || '—';
-    const stage = d.stage_name || d.object_name || '—';
+    const cat = d.type_category || dir;
+    const typeRaw  = d.stage_type_raw || d['Tipo de Objeto'] || '';
+    const typeLabel = d.type_label || getTypeLabel(typeRaw) || d.object_type || typeRaw || '—';
+    const stage = d.stage_name || d.object_name || d['Nome do Objeto'] || '—';
+    const tabArq  = d['Tabela / Arquivo'] || '';
     const detail =
       d.file_path
         ? d.file_path
-        : (d.database_name && d.object_name)
-          ? (d.database_name + '.' + d.object_name)
-          : (d.object_name || '—');
+        : d.sql_expression
+          ? d.sql_expression.replace(/\n/g, ', ')
+          : (d.database_name && d.object_name)
+            ? (d.database_name + '.' + d.object_name)
+            : (tabArq || '—');
 
     return '<tr>' +
       '<td style="white-space:nowrap"><span style="display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;background:' + c.bg + ';color:' + c.color + ';font-size:11px;font-weight:700">' + c.label + '</span></td>' +
@@ -1893,20 +1913,27 @@ function applyLineageDSX() {
   const now = _nowSql();
   const dsxFile = (_dsxCtx && _dsxCtx.dsx_file) ? _dsxCtx.dsx_file : null;
 
-  const origens = _dsxLineageData.filter(d => (d.direction || '') === 'origem');
-  const destinos = _dsxLineageData.filter(d => (d.direction || '') === 'destino');
-  const transfs  = _dsxLineageData.filter(d => (d.direction || '') === 'transformacao');
+  // Suporta formato novo (d.direction) e legado (d['Direção'])
+  const _getDir = d => (d.direction || d['Direção'] || '').toLowerCase();
+  const origens = _dsxLineageData.filter(d => _getDir(d).startsWith('orig'));
+  const destinos = _dsxLineageData.filter(d => _getDir(d).startsWith('dest'));
+  const transfs  = _dsxLineageData.filter(d => {
+    const dir = _getDir(d);
+    return !dir.startsWith('orig') && !dir.startsWith('dest');
+  });
 
   const toObj = (x) => ({
-    t: x.object_type || (x.type_category === 'arquivo' ? 'Arquivo' : (x.type_category === 'transformacao' ? 'Transformação' : 'Tabela')),
-    n: (x.object_name || x.stage_name || '').toString(),
-    stage_name: x.stage_name || null,
-    stage_type_raw: x.stage_type_raw || null,
-    database_name: x.database_name || null,
-    sql_expression: x.sql_expression || null,
-    file_path: x.file_path || null,
+    t: x.object_type || x['Tipo de Objeto']
+      || (x.type_category === 'arquivo' ? 'Arquivo'
+        : x.type_category === 'transformacao' ? 'Transformação' : 'Tabela'),
+    n: (x.object_name || x.stage_name || x['Nome do Objeto'] || '').toString(),
+    stage_name:      x.stage_name      || x['Nome do Objeto']  || null,
+    stage_type_raw:  x.stage_type_raw  || x['Tipo de Objeto']  || null,
+    database_name:   x.database_name   || null,
+    sql_expression:  x.sql_expression  || x['Tabela / Arquivo'] || null,
+    file_path:       x.file_path       || null,
     dsx_source_file: dsxFile,
-    extracted_at: now,
+    extracted_at:    now,
     extraction_method: 'dsx_auto',
   });
 
@@ -2188,6 +2215,23 @@ async function loadGovernanca() {
   }
 }
 
+function clearGovernanca() {
+  if ($('gov-pipeline')) $('gov-pipeline').value = '';
+  if ($('gov-status')) $('gov-status').textContent = '';
+  const modeRow = $('gov-mode-row'); if (modeRow) modeRow.style.display = 'none';
+  const jsel = $('gov-job-selector'); if (jsel) jsel.style.display = 'none';
+  const sel = $('gov-job-select'); if (sel) sel.innerHTML = '<option value="">Selecione o job...</option>';
+  const vis = $('gov-visual');
+  if (vis) vis.innerHTML =
+    '<div class="empty-state">' +
+      '<span class="es-icon">◈</span>' +
+      '<p class="es-title">Informe o pipeline e carregue o lineage</p>' +
+      '<p class="es-sub">O diagrama aparecerá aqui.</p>' +
+    '</div>';
+  _govData = null;
+  _govMode = 'job';
+}
+
 function setGovMode(mode) {
   _govMode = mode;
   $('gov-btn-job').classList.toggle('active', mode === 'job');
@@ -2250,6 +2294,19 @@ function _lsDetailPopover(btn, content, title) {
   setTimeout(() => document.addEventListener('click', closeOnOutside), 50);
 }
 
+// Delegação de eventos para botões "+" (evita quebra de HTML por aspas no onclick inline)
+document.addEventListener('click', function(e) {
+  const btn = e.target && e.target.closest ? e.target.closest('.ls-detail-btn') : null;
+  if (!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const enc = btn.getAttribute('data-ls-content') || '';
+  let content = '';
+  try { content = decodeURIComponent(enc); } catch(_) { content = enc; }
+  const title = btn.getAttribute('data-ls-title') || 'Detalhes';
+  _lsDetailPopover(btn, content, title);
+});
+
 function renderLineageJob() {
   const vis = $('gov-visual');
   if (!vis || !_govData) return;
@@ -2289,8 +2346,9 @@ function renderLineageJob() {
     const detailTitle = (o.file_path && String(o.file_path).trim()) ? 'Arquivo' : 'Tabelas extraídas do SQL';
 
     const btnHtml = hasDetail
-      ? ('<button class="ls-detail-btn" title="Ver ' + detailTitle + '" onclick="_lsDetailPopover(this, ' +
-          JSON.stringify(detailContent) + ', ' + JSON.stringify(detailTitle) + ')">+</button>')
+      ? ('<button class="ls-detail-btn" title="Ver ' + detailTitle.replace(/\"/g,'&quot;') + '" ' +
+          'data-ls-title="' + detailTitle.replace(/\"/g,'&quot;') + '" ' +
+          'data-ls-content="' + encodeURIComponent(detailContent) + '">+</button>')
       : '';
 
     return '<div class="ls-node"><div class="ls-node-box ' + cls + '">' +
@@ -2403,33 +2461,6 @@ function openJobLineageFromTable(idx) {
   openLineageModal(jobsBdata[0].id);
 }
 
-/* ══ NOME DO USUÁRIO (intranet) ══ */
-const USER_NAME_API = 'https://servicosaondev.caixavidaeprevidencia.intranet/api/AssistenteOnline/AssistenteOnline_UsuarioLoginAd';
-
-async function fetchUserFirstName(matricula, senha) {
-  // Tenta buscar o nome real do usuário no AD da CVP.
-  // Silencioso: se falhar, a UI continua mostrando a matrícula.
-  try {
-    const r = await fetch(USER_NAME_API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ matricula: matricula, senha: senha }),
-    });
-    if (!r.ok) return null;
-    const data = await r.json();
-    if (data && data.sucesso && data.data && data.data.dataUsuario && data.data.dataUsuario.desNome) {
-      const fullName = String(data.data.dataUsuario.desNome).trim();
-      // Retorna apenas o primeiro nome: "Carlos Henrique de Oliveira" → "Carlos"
-      return fullName.split(' ')[0] || fullName;
-    }
-    // Fallback: idt_usuario também tem o nome
-    if (data && data.data && data.data.idt_usuario) {
-      return String(data.data.idt_usuario).split(' ')[0];
-    }
-  } catch(e) {}
-  return null;
-}
-
 /* ══ LOGIN ══ */
 async function entrar() {
   const m = $('login_msg');
@@ -2457,14 +2488,10 @@ async function entrar() {
       m.className = 'msg erro'; return;
     }
     authHeader = hdr;
-    $('who').textContent = u;  // placeholder; será atualizado com nome real abaixo
+    $('who').textContent = u;
     $('loginScreen').classList.add('hidden');
     $('appScreen').classList.remove('hidden');
     $('login_pass').value = '';
-    // Buscar primeiro nome pelo endpoint da intranet (assíncrono — não bloqueia o login)
-    fetchUserFirstName(u, p).then(firstName => {
-      if (firstName) $('who').textContent = firstName;
-    }).catch(() => {});
     const cw = $('caps-warn'); if (cw) cw.style.display = 'none';
     // Tela inicial: Dashboard
     try { goDashboard(); } catch(e) {}
@@ -2516,6 +2543,24 @@ function showToast(msg, isErr) {
 
 /* ══ TABS ══ */
 function switchPage(pageId, btn) {
+  // Ao trocar de aba, sempre “zera” o estado para evitar filtros antigos e dados enganadores
+  try {
+    if (pageId === 'page-pipelines') {
+      closePipelineEditor();
+      clearQuery();
+    }
+    if (pageId === 'page-jobs') {
+      if ($('job_pipeline_name')) $('job_pipeline_name').value = '';
+      clearJobsQuery();
+    }
+    if (pageId === 'page-logs') {
+      clearLogsFilters();
+    }
+    if (pageId === 'page-governanca') {
+      clearGovernanca();
+    }
+  } catch(_) {}
+
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.hd-tab').forEach(b => b.classList.remove('active'));
   $(pageId).classList.add('active');
@@ -4161,417 +4206,5 @@ function clearQuery() {
     if (e.target === this) closeConfirm(false);
   });
 </script>
-
-<!-- MODAL: IMPORTAR SEQUENCE DATASTAGE -->
-<div class="modal-backdrop" id="modal-seq-import">
-  <div class="modal-box" style="max-width:700px;text-align:left;padding:1.75rem 2rem">
-
-    <!-- Header -->
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:1.25rem">
-      <div>
-        <div class="modal-title" style="margin:0">Importar Sequence DataStage</div>
-        <div style="font-size:12px;color:var(--muted);margin-top:.3rem" id="seq-step-label">Etapa 1 de 3 — Configuração</div>
-      </div>
-      <button class="icon-btn btn-close" onclick="closeSeqImportModal()" title="Fechar" aria-label="Fechar">×</button>
-    </div>
-
-    <!-- Etapa 1: Configuração -->
-    <div id="seq-step-1">
-      <p style="font-size:13px;color:var(--muted);margin:0 0 1.25rem">
-        O arquivo <code>.dsx</code> é buscado automaticamente a partir do projeto selecionado.
-        Informe o nome exato da sequence como está no DataStage (com acentos).
-      </p>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
-        <div class="field" style="margin:0">
-          <label>Projeto <span style="color:var(--red)">*</span></label>
-          <select id="seq-project">
-            <option value="">Selecione...</option>
-            <option value="BI_CVP">BI_CVP → BI_CVP.dsx</option>
-            <option value="BI_VIDA">BI_VIDA → BI_VIDA.dsx</option>
-            <option value="BI_PREVIDENCIA">BI_PREVIDENCIA → BI_PREVIDENCIA.dsx</option>
-            <option value="BI_PRESTAMISTA">BI_PRESTAMISTA → BI_PRESTAMISTA.dsx</option>
-          </select>
-        </div>
-        <div class="field" style="margin:0">
-          <label>Domínio <span style="font-weight:400;font-size:10px;color:var(--muted)">(opcional)</span></label>
-          <input id="seq-domain" type="text" placeholder="ex: COBRANCA" oninput="this.value=this.value.toUpperCase()" />
-        </div>
-      </div>
-      <div class="field" style="margin:.75rem 0 0">
-        <label>Nome da sequence <span style="color:var(--red)">*</span></label>
-        <input id="seq-name-input" type="text" placeholder="ex: Seq_Flexibilização_Cobrança" />
-        <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
-          Digite o nome como aparece no DataStage — incluindo acentos e maiúsculas/minúsculas.
-        </p>
-      </div>
-      <div id="seq-step1-msg" class="msg" style="min-height:16px"></div>
-      <div style="display:flex;gap:8px;margin-top:1rem">
-        <button class="btn-ghost" onclick="closeSeqImportModal()" style="flex:1">Cancelar</button>
-        <button class="btn" onclick="seqImportAnalyze()" style="flex:1" id="btn-seq-analyze">
-          <span id="btn-seq-analyze-txt">Analisar sequence →</span>
-        </button>
-      </div>
-    </div>
-
-    <!-- Etapa 2: Revisão do preview -->
-    <div id="seq-step-2" style="display:none">
-      <div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:.75rem 1rem;margin-bottom:1rem">
-        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:.4rem;font-size:13px">
-          <div><strong id="seq-preview-name">—</strong> <span style="color:var(--muted);font-size:11px" id="seq-preview-project"></span></div>
-          <span class="tag-pill" id="seq-preview-count"></span>
-        </div>
-      </div>
-      <div class="field" style="margin-bottom:.75rem">
-        <label>Nome do pipeline no ORQUESTRA <span style="color:var(--red)">*</span></label>
-        <input id="seq-pipeline-name" type="text" oninput="this.value=this.value.toUpperCase()" />
-      </div>
-      <div id="seq-jobs-table" style="max-height:320px;overflow-y:auto"></div>
-      <div id="seq-step2-msg" class="msg" style="min-height:16px"></div>
-      <div style="display:flex;gap:8px;margin-top:1rem">
-        <button class="btn-ghost" onclick="seqImportBack()" style="flex:1">← Voltar</button>
-        <button class="btn" onclick="seqImportStep3()" style="flex:1">Configurar schedule →</button>
-      </div>
-    </div>
-
-    <!-- Etapa 3: Schedule + Aprovação -->
-    <div id="seq-step-3" style="display:none">
-      <p style="font-size:13px;color:var(--muted);margin:0 0 1rem">
-        Defina o agendamento do pipeline. Após aprovar, o pipeline será criado no ORQUESTRA
-        com todos os jobs e lineage importados.
-      </p>
-      <!-- Schedule Builder (reutiliza os mesmos IDs com prefixo seq-) -->
-      <div class="field-group" id="seq-schedule-builder">
-        <label>Agendamento <span style="color:var(--red)">*</span></label>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <select id="seq-sch-type" onchange="_seqScheduleTypeChange()" style="min-width:180px">
-            <option value="daily">Diário</option>
-            <option value="hourly">A cada hora</option>
-            <option value="weekly">Semanal</option>
-            <option value="monthly">Mensal</option>
-          </select>
-          <div id="seq-sch-time-row" style="display:flex;gap:6px;align-items:center">
-            <label style="font-size:11px;color:var(--muted);margin:0">Às</label>
-            <input type="number" id="seq-sch-hour" min="0" max="23" value="6" style="width:55px" oninput="_seqScheduleUpdatePreview()" />
-            <span>:</span>
-            <input type="number" id="seq-sch-minute" min="0" max="59" value="0" style="width:55px" oninput="_seqScheduleUpdatePreview()" />
-          </div>
-          <div id="seq-sch-dow-row" style="display:none;gap:6px;align-items:center">
-            <label style="font-size:11px;color:var(--muted);margin:0">Dia</label>
-            <select id="seq-sch-dow" onchange="_seqScheduleUpdatePreview()">
-              <option value="1">Segunda</option><option value="2">Terça</option>
-              <option value="3">Quarta</option><option value="4">Quinta</option>
-              <option value="5">Sexta</option><option value="6">Sábado</option>
-              <option value="0">Domingo</option>
-            </select>
-          </div>
-          <div id="seq-sch-dom-row" style="display:none;gap:6px;align-items:center">
-            <label style="font-size:11px;color:var(--muted);margin:0">Dia do mês</label>
-            <input type="number" id="seq-sch-dom" min="1" max="31" value="1" style="width:55px" oninput="_seqScheduleUpdatePreview()" />
-          </div>
-        </div>
-        <div id="seq-sch-preview" style="font-size:11px;font-family:ui-monospace,'Courier New',monospace;color:var(--muted);margin-top:6px">cron: 0 6 * * *</div>
-      </div>
-      <div id="seq-step3-msg" class="msg" style="min-height:16px"></div>
-      <div style="display:flex;gap:8px;margin-top:1rem">
-        <button class="btn-ghost" onclick="seqImportBackTo2()" style="flex:1">← Revisão</button>
-        <button class="btn" onclick="approveSeqImport()" style="flex:1" id="btn-seq-approve">
-          <span id="btn-seq-approve-txt">Aprovar e Importar</span>
-        </button>
-      </div>
-    </div>
-
-  </div>
-</div>
-
-<script>
-/* ══ IMPORTAR SEQUENCE DATASTAGE ══ */
-const SEQ_PARSE_DAG   = 'etl_sequence_import_parse';
-const SEQ_APPROVE_DAG = 'etl_sequence_import_approve';
-let _seqImportId      = null;
-let _seqPreviewData   = null;
-
-function openSeqImportModal() {
-  // Reset estado
-  _seqImportId = null;
-  _seqPreviewData = null;
-  if ($('seq-project')) $('seq-project').value = '';
-  if ($('seq-name-input')) $('seq-name-input').value = '';
-  if ($('seq-domain')) $('seq-domain').value = '';
-  if ($('seq-step1-msg')) { $('seq-step1-msg').textContent = ''; $('seq-step1-msg').className = 'msg'; }
-  _seqShowStep(1);
-  $('modal-seq-import').classList.add('open');
-  setTimeout(() => { try { $('seq-name-input').focus(); } catch(e) {} }, 100);
-}
-
-function closeSeqImportModal() {
-  $('modal-seq-import').classList.remove('open');
-  _seqImportId    = null;
-  _seqPreviewData = null;
-}
-
-function _seqShowStep(n) {
-  [1,2,3].forEach(i => {
-    const el = $('seq-step-' + i);
-    if (el) el.style.display = (i === n) ? '' : 'none';
-  });
-  const labels = {1:'Etapa 1 de 3 — Configuração', 2:'Etapa 2 de 3 — Revisão', 3:'Etapa 3 de 3 — Agendamento e Aprovação'};
-  if ($('seq-step-label')) $('seq-step-label').textContent = labels[n] || '';
-}
-
-function seqImportBack() { _seqShowStep(1); }
-function seqImportBackTo2() { _seqShowStep(2); }
-
-function _seqScheduleTypeChange() {
-  const type = $('seq-sch-type') ? $('seq-sch-type').value : 'daily';
-  if ($('seq-sch-time-row')) $('seq-sch-time-row').style.display = type === 'hourly' ? 'none' : 'flex';
-  if ($('seq-sch-dow-row'))  $('seq-sch-dow-row').style.display  = type === 'weekly'  ? 'flex' : 'none';
-  if ($('seq-sch-dom-row'))  $('seq-sch-dom-row').style.display  = type === 'monthly' ? 'flex' : 'none';
-  _seqScheduleUpdatePreview();
-}
-
-function _seqScheduleUpdatePreview() {
-  const type = $('seq-sch-type') ? $('seq-sch-type').value : 'daily';
-  const h   = parseInt($('seq-sch-hour') ? $('seq-sch-hour').value : 6) || 0;
-  const m   = parseInt($('seq-sch-minute') ? $('seq-sch-minute').value : 0) || 0;
-  const dow = $('seq-sch-dow') ? $('seq-sch-dow').value : 1;
-  const dom = parseInt($('seq-sch-dom') ? $('seq-sch-dom').value : 1) || 1;
-  let cron;
-  if (type === 'hourly')  cron = m + ' * * * *';
-  else if (type === 'daily')   cron = m + ' ' + h + ' * * *';
-  else if (type === 'weekly')  cron = m + ' ' + h + ' * * ' + dow;
-  else if (type === 'monthly') cron = m + ' ' + h + ' ' + dom + ' * *';
-  else cron = m + ' ' + h + ' * * *';
-  if ($('seq-sch-preview')) $('seq-sch-preview').textContent = 'cron: ' + cron;
-  return cron;
-}
-
-function _seqScheduleGetConf() {
-  const type = $('seq-sch-type') ? $('seq-sch-type').value : 'daily';
-  const h = parseInt($('seq-sch-hour') ? $('seq-sch-hour').value : 6);
-  const m = parseInt($('seq-sch-minute') ? $('seq-sch-minute').value : 0);
-  const dow = type === 'weekly'  ? parseInt($('seq-sch-dow')  ? $('seq-sch-dow').value  : 1) : null;
-  const dom = type === 'monthly' ? parseInt($('seq-sch-dom')  ? $('seq-sch-dom').value  : 1) : null;
-  return {
-    schedule_type: type, schedule_hour: isNaN(h)?6:h, schedule_minute: isNaN(m)?0:m,
-    schedule_dow: isNaN(dow)?null:dow, schedule_dom: isNaN(dom)?null:dom,
-  };
-}
-
-async function seqImportAnalyze() {
-  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
-  const project = $('seq-project') ? $('seq-project').value : '';
-  const seqName = $('seq-name-input') ? $('seq-name-input').value.trim() : '';
-  const msg = $('seq-step1-msg');
-  if (msg) { msg.textContent = ''; msg.className = 'msg'; }
-
-  if (!project) { if (msg) { msg.textContent = 'Selecione o projeto.'; msg.className = 'msg erro'; } return; }
-  if (!seqName) { if (msg) { msg.textContent = 'Informe o nome da sequence.'; msg.className = 'msg erro'; } return; }
-
-  const btn = $('btn-seq-analyze');
-  const btnTxt = $('btn-seq-analyze-txt');
-  if (btn) btn.disabled = true;
-  if (btnTxt) btnTxt.textContent = '⏳ Analisando...';
-
-  try {
-    const importedBy = window.__currentUser || ($('who') ? $('who').textContent : 'system');
-    const domain     = $('seq-domain') ? $('seq-domain').value.trim() : '';
-    const runId = 'orq_seq_parse_' + Date.now();
-    if (msg) { msg.textContent = 'Disparando DAG de análise...'; msg.className = 'msg'; }
-
-    const r = await fetch('/api/v1/dags/' + SEQ_PARSE_DAG + '/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
-      body: JSON.stringify({ dag_run_id: runId, conf: {
-        project_name: project, seq_name: seqName,
-        imported_by: importedBy, domain: domain || null,
-      }}),
-    });
-    if (r.status === 401) { sair(); return; }
-    if (!r.ok) {
-      if (msg) { msg.textContent = 'Erro ao disparar DAG: ' + r.status; msg.className = 'msg erro'; }
-      return;
-    }
-
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    if (msg) msg.textContent = 'Aguardando análise... (' + rid + ')';
-
-    const state = await waitDagRun(SEQ_PARSE_DAG, rid, 120);
-    if (state !== 'success') {
-      if (msg) { msg.textContent = 'Falha ou timeout na análise. Verifique os logs no Airflow.'; msg.className = 'msg erro'; }
-      return;
-    }
-
-    if (msg) msg.textContent = 'Carregando preview...';
-    const xr = await fetch(
-      '/api/v1/dags/' + SEQ_PARSE_DAG + '/dagRuns/' + rid + '/taskInstances/parse_sequence/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
-    );
-    if (!xr.ok) {
-      if (msg) { msg.textContent = 'Erro ao ler resultado: ' + xr.status; msg.className = 'msg erro'; }
-      return;
-    }
-    const payload = normalizeXcomValue(await xr.json());
-    if (!payload || payload.erro) {
-      if (msg) { msg.textContent = payload && payload.erro ? payload.erro : 'Resultado inválido.'; msg.className = 'msg erro'; }
-      return;
-    }
-
-    _seqImportId    = payload.import_id;
-    _seqPreviewData = payload;
-    _renderSeqPreview(payload);
-    _seqShowStep(2);
-  } catch (e) {
-    if (msg) { msg.textContent = 'Erro: ' + (e && e.message ? e.message : e); msg.className = 'msg erro'; }
-  } finally {
-    if (btn) btn.disabled = false;
-    if (btnTxt) btnTxt.textContent = 'Analisar sequence →';
-  }
-}
-
-function _renderSeqPreview(payload) {
-  if ($('seq-preview-name')) $('seq-preview-name').textContent = payload.seq_name || '—';
-  if ($('seq-preview-project')) $('seq-preview-project').textContent = payload.project_name || '';
-  const jobs = payload.jobs || [];
-  if ($('seq-preview-count')) $('seq-preview-count').textContent = jobs.length + ' job(s)';
-
-  // Pipeline name suggestion (sanitizado)
-  if ($('seq-pipeline-name')) {
-    $('seq-pipeline-name').value = (payload.pipeline_name_suggestion || '').toUpperCase();
-  }
-
-  const tbl = $('seq-jobs-table');
-  if (!tbl) return;
-
-  if (!jobs.length) {
-    tbl.innerHTML = '<div class="empty-state"><span class="es-icon">⬡</span><p class="es-title">Nenhum job encontrado na sequence.</p></div>';
-    return;
-  }
-
-  const rows = jobs.map((j, i) => {
-    const linItems = (j.lineage || []).map(l => {
-      const dir  = (l.direction || '').toLowerCase();
-      const badge = dir.startsWith('orig') ? 'origem' : dir.startsWith('dest') ? 'destino' : 'transformacao';
-      const dirColors = {origem:'#185FA5',destino:'#27500A',transformacao:'#3C3489'};
-      const detail = l.file_path || (l.sql_expression ? l.sql_expression.replace(/
-/g,', ') : '') || l.object_name || '';
-      return '<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--border);display:flex;align-items:baseline;gap:6px">' +
-        '<span style="min-width:72px;font-weight:600;color:' + (dirColors[badge]||'var(--muted)') + '">' + (badge.charAt(0).toUpperCase()+badge.slice(1)) + '</span>' +
-        '<span style="flex:1;font-family:monospace;color:var(--text)">' + (l.object_name || '—') + '</span>' +
-        (detail ? '<span style="color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + detail + '">' + detail + '</span>' : '') +
-      '</div>';
-    }).join('');
-    return '<div style="border:1px solid var(--border);border-radius:10px;margin-bottom:6px;overflow:hidden">' +
-      '<div style="display:grid;grid-template-columns:30px 1fr 90px 80px 28px;gap:6px;align-items:center;padding:.5rem .75rem;background:var(--bg)">' +
-        '<span style="font-size:11px;font-weight:700;color:var(--muted);text-align:center">' + (j.execution_order + 1) + '</span>' +
-        '<input type="text" style="font-size:13px;padding:.35rem .5rem;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text)" value="' + (j.job_name_orq || '') + '" ' +
-          'oninput="_seqJobs[' + i + '].job_name_orq=this.value" />' +
-        '<span class="tag-pill" style="text-align:center">' + (j.lineage_count || 0) + ' obj.</span>' +
-        '<button class="btn-ghost btn-sm" style="font-size:11px;padding:.25rem .5rem" onclick="this.closest('div').nextElementSibling.style.display=this.closest('div').nextElementSibling.style.display==='none'?'':'none'">' +
-          (j.lineage_count ? '+ Lineage' : 'Sem lineage') +
-        '</button>' +
-        '<button class="btn-ghost btn-sm" style="font-size:11px;padding:.2rem .35rem;color:var(--muted)" title="Ignorar este job" onclick="_seqToggleIgnoreJob(' + i + ', this)">&times;</button>' +
-      '</div>' +
-      '<div style="display:none;padding:.5rem .75rem;background:var(--card);border-top:1px solid var(--border)">' +
-        (linItems || '<span style="font-size:12px;color:var(--muted)">Lineage não extraída — job pode não existir no arquivo .dsx ou não ter stages mapeados.</span>') +
-      '</div>' +
-    '</div>';
-  }).join('');
-
-  tbl.innerHTML = rows;
-
-  // Salvar referência mutável dos jobs (para edição de nomes)
-  window._seqJobs = jobs.map(j => Object.assign({}, j));
-}
-
-function _seqToggleIgnoreJob(idx, btn) {
-  if (!window._seqJobs) return;
-  const j = window._seqJobs[idx];
-  if (!j) return;
-  j._ignored = !j._ignored;
-  // Visual
-  const row = btn.closest('[style*="border:1px solid"]');
-  if (row) {
-    row.style.opacity = j._ignored ? '0.38' : '1';
-    btn.title = j._ignored ? 'Reativar este job' : 'Ignorar este job';
-    btn.textContent = j._ignored ? '↩' : '×';
-  }
-}
-
-function seqImportStep3() {
-  const pipeName = $('seq-pipeline-name') ? $('seq-pipeline-name').value.trim() : '';
-  const msg = $('seq-step2-msg');
-  if (msg) { msg.textContent = ''; msg.className = 'msg'; }
-  if (!pipeName) {
-    if (msg) { msg.textContent = 'Informe o nome do pipeline no ORQUESTRA.'; msg.className = 'msg erro'; }
-    return;
-  }
-  _seqScheduleUpdatePreview();
-  _seqShowStep(3);
-}
-
-async function approveSeqImport() {
-  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
-  if (!_seqImportId) { showToast('Import ID inválido. Refaça a análise.', true); return; }
-  const pipelineOverride = $('seq-pipeline-name') ? $('seq-pipeline-name').value.trim().toUpperCase() : '';
-  if (!pipelineOverride) {
-    if ($('seq-step3-msg')) { $('seq-step3-msg').textContent = 'Informe o nome do pipeline.'; $('seq-step3-msg').className = 'msg erro'; }
-    return;
-  }
-  const schedConf = _seqScheduleGetConf();
-  const cron = _seqScheduleUpdatePreview();
-  const reviewedBy = window.__currentUser || ($('who') ? $('who').textContent : 'system');
-
-  const btn = $('btn-seq-approve');
-  const btnTxt = $('btn-seq-approve-txt');
-  const msg = $('seq-step3-msg');
-  if (btn) btn.disabled = true;
-  if (btnTxt) btnTxt.textContent = '⏳ Importando...';
-  if (msg) { msg.textContent = 'Aprovando importação...'; msg.className = 'msg'; }
-
-  try {
-    const runId = 'orq_seq_approve_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + SEQ_APPROVE_DAG + '/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
-      body: JSON.stringify({ dag_run_id: runId, conf: {
-        import_id: _seqImportId,
-        reviewed_by: reviewedBy,
-        pipeline_name_override: pipelineOverride,
-        schedule_cron: cron,
-        ...schedConf,
-      }}),
-    });
-    if (r.status === 401) { sair(); return; }
-    if (!r.ok) {
-      if (msg) { msg.textContent = 'Erro ao disparar DAG: ' + r.status; msg.className = 'msg erro'; }
-      return;
-    }
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    if (msg) msg.textContent = 'Aguardando aprovação... (' + rid + ')';
-
-    const state = await waitDagRun(SEQ_APPROVE_DAG, rid, 120);
-    if (state === 'success') {
-      closeSeqImportModal();
-      showToast('Pipeline "' + pipelineOverride + '" importado com sucesso!', false);
-      try { loadQuery(0); } catch(e) {}
-    } else {
-      if (msg) { msg.textContent = 'Falha na aprovação. Verifique os logs no Airflow.'; msg.className = 'msg erro'; }
-    }
-  } catch (e) {
-    if (msg) { msg.textContent = 'Erro: ' + (e && e.message ? e.message : e); msg.className = 'msg erro'; }
-  } finally {
-    if (btn) btn.disabled = false;
-    if (btnTxt) btnTxt.textContent = 'Aprovar e Importar';
-  }
-}
-
-// Fecha clicando fora
-document.getElementById('modal-seq-import').addEventListener('click', function(e) {
-  if (e.target === this) closeSeqImportModal();
-});
-</script>
-
 </body>
 </html>
