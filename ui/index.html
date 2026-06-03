@@ -587,6 +587,23 @@
   .btn-dag-ok:hover{ background:var(--green); color:#fff; }
   .btn-dag-ok:disabled{ opacity:.4; cursor:not-allowed; }
 
+  /* Botão ▶ Executar manualmente (Sprint 1) */
+  .btn-exec{
+    padding:.35rem .6rem;
+    border-radius:10px;
+    font-size:12px;
+    font-weight:600;
+    border:0.5px solid var(--green);
+    background:rgba(22,163,74,.07);
+    color:var(--green);
+    cursor:pointer;
+    transition:all .12s;
+    white-space:nowrap;
+    font-family:inherit;
+  }
+  .btn-exec:hover{ background:var(--green); color:#fff; }
+  .btn-exec:disabled{ opacity:.4; cursor:not-allowed; }
+
   /* Botão Ver jobs — abre detalhe da execução por job */
   .btn-ver-jobs{
     padding:.28rem .65rem;
@@ -1062,6 +1079,7 @@
             <button class="btn btn-primary btn-sm" id="btn-save-order" onclick="saveJobsOrder()" disabled>Salvar ordem</button>
             <button class="btn btn-outline btn-sm" onclick="openJobCreateModal('single')">+ Adicionar job</button>
             <button class="btn-ghost btn-sm" onclick="openJobCreateModal('bulk')">Colar lista</button>
+            <button class="btn-exec btn-sm" id="btn-exec-pipeline" onclick="executarPipelineDoJob()" title="Executar o pipeline deste job agora">▶ Executar agora</button>
           </div>
           <div id="job-query-table-area">
             <div class="empty-state">
@@ -2471,6 +2489,155 @@ async function fetchUserFirstName() {
   return null;
 }
 
+
+/* ══ SPRINT 1: Regenerar DAG, Toggle Airflow, Execução Manual ══ */
+
+// Deriva o dag_id do Airflow a partir do pipeline_name
+// O etl_dag_factory cria o DAG com o mesmo nome em minúsculo
+function _pipelineToDagId(pipelineName) {
+  return (pipelineName || '').toLowerCase();
+}
+
+// F3 — Ativar ou pausar uma DAG no Airflow via REST API
+async function _toggleDagAirflow(pipelineName, isActive) {
+  const dagId = _pipelineToDagId(pipelineName);
+  if (!dagId) return;
+  try {
+    const r = await fetch('/api/v1/dags/' + dagId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ is_paused: !isActive }),
+    });
+    if (r.status === 404) {
+      // DAG ainda não foi criada no Airflow — silencioso
+      console.log('[ORQ] DAG não encontrada no Airflow para toggle:', dagId);
+      return;
+    }
+    if (r.ok) {
+      showToast(isActive ? 'DAG ativada no Airflow ✓' : 'DAG pausada no Airflow ✓', false);
+    }
+  } catch(e) {
+    console.warn('[ORQ] Não foi possível atualizar status da DAG no Airflow:', e);
+  }
+}
+
+// F2 — Perguntar se quer regenerar a DAG após uma alteração
+async function _offerRegenDag(pipelineName) {
+  if (!pipelineName) return;
+  const ok = await showConfirm(
+    'Pipeline "' + pipelineName + '" salvo com sucesso.\n\nDeseja regenerar a DAG no Airflow agora para aplicar as mudanças?',
+    'Regenerar DAG?'
+  );
+  if (!ok) return;
+  const idx = (window.__pipelines || []).findIndex(p => p.pipeline_name === pipelineName);
+  const btn = idx >= 0 ? document.getElementById('dag-btn-' + idx) : null;
+  if (btn) {
+    btn.click();  // reutiliza o botão Gerar/Regenerar existente
+  } else {
+    // Dispara direto sem precisar do índice
+    const runId = 'orquestra_regen_' + Date.now();
+    try {
+      const r = await fetch('/api/v1/dags/' + DAG_FACTORY_ID + '/dagRuns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+        body: JSON.stringify({ dag_run_id: runId, conf: { pipeline_name: pipelineName } }),
+      });
+      if (r.ok) {
+        showToast('DAG factory disparada para "' + pipelineName + '"', false);
+      }
+    } catch(e) { showToast('Erro ao disparar factory: ' + e.message, true); }
+  }
+}
+
+// F4 — Executar pipeline manualmente agora
+async function executarPipelineAgora(idx) {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
+  const list = window.__pipelines || [];
+  const p = list[idx];
+  if (!p) return;
+
+  const dagId = _pipelineToDagId(p.pipeline_name);
+
+  const ok = await showConfirm(
+    'Executar o pipeline "' + p.pipeline_name + '" agora, fora do agendamento?\n\nUma execução manual será disparada imediatamente no Airflow.',
+    '▶ Executar agora'
+  );
+  if (!ok) return;
+
+  const btn = document.getElementById('exec-btn-' + idx);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+
+  try {
+    const runId = 'manual_orq_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + dagId + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: {} }),
+    });
+    if (r.status === 401) { sair(); return; }
+    if (r.status === 404) {
+      showToast('DAG "' + dagId + '" não encontrada. Gere o DAG primeiro.', true);
+      return;
+    }
+    if (r.status === 409) {
+      showToast('Já existe uma execução ativa para este pipeline.', true);
+      return;
+    }
+    if (!r.ok) {
+      showToast('Erro ao executar: ' + r.status, true);
+      return;
+    }
+    const data = await r.json();
+    const rid = data.dag_run_id || data.run_id;
+    showToast('Pipeline "' + p.pipeline_name + '" disparado! (' + rid + ')', false);
+
+    // Abrir a execução no Airflow Grid após 1s
+    setTimeout(() => {
+      const airflowUrl = AIRFLOW_UI + '/dags/' + dagId + '/grid';
+      const ok2 = window.open(airflowUrl, '_blank');
+      if (!ok2) showToast('Popup bloqueado — acesse ' + airflowUrl, false);
+    }, 1200);
+
+  } catch(e) {
+    showToast('Erro de conexão: ' + (e.message || e), true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '▶'; }
+  }
+}
+
+
+// F4 — Executar pipeline a partir da aba Jobs
+async function executarPipelineDoJob() {
+  const pipeline = $('job_pipeline_name') ? $('job_pipeline_name').value.trim() : '';
+  if (!pipeline) { showToast('Informe o pipeline antes de executar.', true); return; }
+  const dagId = _pipelineToDagId(pipeline);
+  const ok = await showConfirm(
+    'Executar o pipeline "' + pipeline + '" agora, fora do agendamento?',
+    '▶ Executar agora'
+  );
+  if (!ok) return;
+  const btn = $('btn-exec-pipeline');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+  try {
+    const runId = 'manual_orq_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + dagId + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: {} }),
+    });
+    if (r.status === 404) { showToast('DAG não encontrada. Gere o DAG primeiro.', true); return; }
+    if (r.status === 409) { showToast('Já existe uma execução ativa.', true); return; }
+    if (!r.ok) { showToast('Erro ao executar: ' + r.status, true); return; }
+    const data = await r.json();
+    showToast('Pipeline "' + pipeline + '" disparado! (' + (data.dag_run_id || data.run_id) + ')', false);
+    setTimeout(() => { window.open(AIRFLOW_UI + '/dags/' + dagId + '/grid', '_blank'); }, 1200);
+  } catch(e) {
+    showToast('Erro: ' + (e.message || e), true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '▶ Executar agora'; }
+  }
+}
+
 /* ══ LOGIN ══ */
 async function entrar() {
   const m = $('login_msg');
@@ -3164,6 +3331,10 @@ async function registrarPipeline() {
   ['tog-inicio','tog-fim','tog-erro'].forEach(id => { $(id).checked = true; syncToggle('lbl-'+id.replace('tog-',''), $(id)); });
   closePipelineEditor();
   try { loadQuery(0); } catch(e) {}
+  // F3 — sincronizar status ativo/inativo com Airflow
+  try { await _toggleDagAirflow(pipeline, pipelineStatus); } catch(e) {}
+  // F2 — oferecer regenerar DAG após salvar
+  try { _offerRegenDag(pipeline); } catch(e) {}
 }
 
 /* ══ SALVAR JOBS ══ */
@@ -3716,6 +3887,11 @@ async function saveJobEdit() {
 
   closeJobEdit();
   try { loadJobsQuery(jobQueryState.offset); } catch(e) {}
+  // F2 — oferecer regenerar DAG após editar job
+  try {
+    const _jePipeline = $('jem-pipeline') ? $('jem-pipeline').value.trim() : '';
+    if (_jePipeline) _offerRegenDag(_jePipeline);
+  } catch(e) {}
 }
 
 function openPipelineCreate() {
@@ -3811,6 +3987,8 @@ async function softDeletePipeline(idx) {
     tags: p.tags || '',
   };
   await triggerAndPoll('etl_pipeline_register', conf, 'Inativar pipeline "' + p.pipeline_name + '"', null, null, null);
+  // F3 — pausar/ativar DAG no Airflow
+  try { await _toggleDagAirflow(p.pipeline_name, 0); } catch(e) {}
   try { loadQuery(0); } catch(e) {}
 }
 
@@ -3946,6 +4124,10 @@ function renderQueryTable(payload) {
         (!p.dag_criada
           ? '<button class="btn-dag btn-sm" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')">⚙ Gerar DAG</button>'
           : '<button class="btn-dag-ok btn-sm" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="DAG já criada — clique para regenerar após mudanças">↺ Regenerar</button>'
+        ) +
+        (p.dag_criada
+          ? '<button class="btn-exec btn-sm" id="exec-btn-' + i + '" onclick="executarPipelineAgora(' + i + ')" title="Executar pipeline agora, fora do agendamento">▶</button>'
+          : ''
         ) +
       '</div>' +
     '</td>' +
