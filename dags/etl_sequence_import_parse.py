@@ -58,16 +58,32 @@ default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
 
 # ── Importar DSXEngine (já presente no servidor) ─────────────────
 def _load_engine():
-    """Importa DSXEngine de forma segura, adicionando o path correto."""
+    """
+    Importa DSXEngine de forma segura.
+    Tenta múltiplos caminhos para cobrir qualquer estrutura de deploy.
+    """
     dags_dir = os.path.dirname(os.path.abspath(__file__))
-    for candidate in [
-        dags_dir,
-        os.path.dirname(dags_dir),
-    ]:
+    parent   = os.path.dirname(dags_dir)
+    for candidate in [dags_dir, parent, os.path.join(parent, 'Orquestrador')]:
         if candidate not in sys.path:
             sys.path.insert(0, candidate)
-    from dsx_engine import DSXEngine  # noqa: PLC0415
-    return DSXEngine
+
+    # Caminho 1 — estrutura padrão do projeto (utils/dsx_engine.py)
+    try:
+        from utils.dsx_engine import DSXEngine  # noqa: PLC0415
+        return DSXEngine
+    except ImportError:
+        pass
+    # Caminho 2 — dsx_engine.py na mesma pasta da DAG
+    try:
+        from dsx_engine import DSXEngine  # noqa: PLC0415
+        return DSXEngine
+    except ImportError:
+        pass
+    raise ImportError(
+        "Não foi possível importar DSXEngine. "
+        "Verifique se dsx_engine.py está em utils/ ou na mesma pasta da DAG."
+    )
 
 
 # ── Decodificação de nomes DSX ───────────────────────────────────
@@ -183,24 +199,43 @@ def _extract_sequence_info(seq_block: str) -> dict | None:
 
     if jcc_m:
         jcc = jcc_m.group(1)
-        # DSAttachJob revela os nomes — primeira ocorrência = definição
-        attach_jobs = re.findall(r'DSAttachJob\(\\"([^\\]+)\\"', jcc)
-        # Deduplicar preservando a primeira ocorrência (ordem correta)
+        # 3 formatos possíveis no JobControlCode do DSX:
+        #   1. DSAttachJob(\"nome\", ...) — escapes com backslash (mais comum)
+        #   2. DSAttachJob("nome", ...)    — sem escape (algumas versões do DataStage)
+        #   3. DSAttachJob('nome', ...)    — aspas simples (raro)
         seen: set[str] = set()
-        for job in attach_jobs:
-            if job not in seen:
-                seen.add(job)
-                jobs_in_order.append(job)
+        for pattern in [
+            r'DSAttachJob\(\\"([^\\"]+)\\"',   # formato \"-escaped
+            r'DSAttachJob\(\"([^\"]+)\"',          # formato "-escaped simples
+            r'DSAttachJob\("([^"]+)"',                # formato sem escape
+        ]:
+            for job in re.findall(pattern, jcc):
+                if job and job not in seen:
+                    seen.add(job)
+                    jobs_in_order.append(job)
+            if jobs_in_order:
+                break  # parar no primeiro padrão que funcionar
 
-    # Fallback: CJobActivity records (ordem de aparição)
+    # Fallback 1: CJobActivity — busca simplificada por Name nas activities
     if not jobs_in_order:
-        activities = re.findall(
-            r'BEGIN DSRECORD.*?OLEType "CJobActivity".*?Name "([^"]+)".*?END DSRECORD',
+        for m in re.finditer(
+            r'BEGIN DSRECORD.*?OLEType\s+"CJobActivity".*?END DSRECORD',
             seq_block, re.DOTALL
-        )
-        # Excluir o root (Name = "Job")
-        jobs_in_order = [a for a in activities if a and a != "Job"]
+        ):
+            name_m = re.search(r'Name\s+"([^"]+)"', m.group(0))
+            if name_m:
+                name = name_m.group(1)
+                if name and name not in ("Job", "ROOT") and name not in jobs_in_order:
+                    jobs_in_order.append(name)
 
+    # Fallback 2: tokens * IdVxSy <= job_name nos comentários do JobControlCode
+    if not jobs_in_order and jcc_m:
+        jcc = jcc_m.group(1)
+        # Linha: * IdV0S0%%Name%%2 <= BiCvp_BaseCobranca_00_ext_Parcelas_Pagas.$JobName
+        for m in re.finditer(r'\*\s+IdV\w+%%Name%%\d+\s+<=\s+([^.]+)\.\$JobName', jcc):
+            job = m.group(1).strip()
+            if job and job not in jobs_in_order:
+                jobs_in_order.append(job)
     return {
         "seq_name_raw": seq_name_raw,
         "seq_name":     seq_name,
