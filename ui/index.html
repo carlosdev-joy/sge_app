@@ -1375,6 +1375,7 @@
               <div style="display:flex;gap:6px;margin-bottom:1.5rem;border-bottom:1px solid var(--border);padding-bottom:.75rem">
                 <button id="adm-tab-config" class="adm-tab active" onclick="admSwitch('config')">⚙ Configurações</button>
                 <button id="adm-tab-delete" class="adm-tab" onclick="admSwitch('delete')">🗑 Excluir Pipeline</button>
+                <button id="adm-tab-regen" class="adm-tab" onclick="admSwitch('regen')">♻ Regenerar DAGs</button>
               </div>
 
               <!-- SUB: Configurações -->
@@ -1403,6 +1404,53 @@
                 </div>
                 <div id="adm-config-status" style="font-size:12px;color:var(--muted);margin-bottom:.5rem;min-height:16px"></div>
                 <div id="adm-config-table"></div>
+              </div>
+
+
+              <!-- SUB: Regenerar Todas as DAGs -->
+              <div id="adm-panel-regen" style="display:none">
+                <div class="helper" style="margin:0 0 1rem;background:rgba(0,92,169,.05);border:0.5px solid rgba(0,92,169,.2);border-radius:10px;padding:.75rem 1rem">
+                  ♻ Regenera os arquivos <code>.py</code> de todas as DAGs a partir dos pipelines cadastrados,
+                  aplicando as regras mais recentes do <code>etl_dag_factory</code> (inclusive <strong>fail-fast</strong>).
+                  <br>O Airflow detecta e carrega as DAGs atualizadas automaticamente.
+                </div>
+
+                <!-- Filtro opcional por projeto -->
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:1rem">
+                  <div class="field" style="margin:0">
+                    <label>Filtrar por projeto <span style="color:var(--muted)">(opcional — vazio = todos)</span></label>
+                    <select id="adm-regen-project" style="font-size:13px">
+                      <option value="">Todos os projetos</option>
+                      <option value="BI_CVP">BI_CVP</option>
+                      <option value="BI_GERESD">BI_GERESD</option>
+                    </select>
+                  </div>
+                  <div style="display:flex;align-items:flex-end">
+                    <div class="helper" style="margin:0;font-size:11px">
+                      Passo 1: marca <code>dag_criada=0</code> nos pipelines.<br>
+                      Passo 2: dispara <code>etl_dag_factory</code> com <code>force_all=true</code>.<br>
+                      Airflow regenera os arquivos .py em segundos.
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Estimativa -->
+                <div id="adm-regen-estimate" style="font-size:12px;color:var(--muted);margin-bottom:1rem;min-height:16px"></div>
+
+                <!-- Botão ação -->
+                <div style="display:flex;gap:8px;margin-bottom:1.25rem">
+                  <button class="btn btn-outline btn-sm" onclick="admRegenEstimate()">🔍 Estimar impacto</button>
+                  <button id="adm-regen-btn" class="btn btn-primary btn-sm" onclick="admRegenAllDags()"
+                    style="background:var(--cvp-blue);color:#fff;border-color:var(--cvp-blue)">
+                    ♻ Regenerar DAGs
+                  </button>
+                </div>
+
+                <!-- Status / progresso -->
+                <div id="adm-regen-status" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1rem">
+                  <div style="font-size:12px;font-weight:600;margin-bottom:.5rem" id="adm-regen-title">Aguardando...</div>
+                  <div id="adm-regen-log" style="font-size:11px;color:var(--muted);font-family:monospace;max-height:180px;overflow-y:auto;line-height:1.7"></div>
+                </div>
               </div>
 
               <!-- SUB: Excluir Pipeline -->
@@ -1729,6 +1777,10 @@ function renderLogsTable(result, area, statusEl) {
       '<td style="text-align:center">' + (r.total_jobs ?? '—') + '</td>' +
       '<td style="text-align:center">' + fw + '</td>' +
       '<td style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:11px;color:var(--muted)">' + (r.execution_id || '—') + '</td>' +
+      '<td style="white-space:nowrap">' +
+        '<button class="btn-ghost" style="font-size:11px;padding:.25rem .55rem" ' +
+        'onclick="_showAirflowLogPicker(\'' + pip + '\',\'' + ex + '\')" title="Ver log do Airflow">📋 Log</button>' +
+      '</td>' +
       '<td style="white-space:nowrap"><button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução">Ver jobs</button></td>' +
     '</tr>';
   }).join('');
@@ -1743,7 +1795,7 @@ function renderLogsTable(result, area, statusEl) {
     _lHdr('Pipeline','pipeline') + _lHdr('Projeto','project') +
     _lHdr('Status','status_geral') + _lHdr('Início','inicio') +
     _lHdr('Fim','fim') + _lHdr('Duração','duracao_total_segundos') +
-    '<th>Jobs</th><th>Falha/Aviso</th><th>Execution ID</th><th>Ações</th>' +
+    '<th>Jobs</th><th>Falha/Aviso</th><th>Execution ID</th><th>Log Airflow</th><th>Ações</th>' +
     '</tr></thead><tbody>' + body + '</tbody></table></div>' +
     (pages > 1 ? renderPagination(offset, limit, total, pages, 'loadLogs') : '');
 }
@@ -2991,7 +3043,7 @@ function _applyAdminVisibility() {
 
 // Sub-navegação Admin
 function admSwitch(panel) {
-  ['config','delete'].forEach(p => {
+  ['config','delete','regen'].forEach(p => {
     $('adm-panel-' + p).style.display = p === panel ? '' : 'none';
     const btn = $('adm-tab-' + p);
     if (btn) btn.classList.toggle('active', p === panel);
@@ -3366,6 +3418,98 @@ async function _deleteDagFromAirflow(pipelineName) {
     console.log('[ORQ] DAG de limpeza de arquivo disparada para "' + pipelineName + '"');
   } catch(e) {
     console.warn('[ORQ] Não foi possível disparar limpeza de arquivo:', e.message);
+  }
+}
+
+
+// ── Regenerar Todas as DAGs ──────────────────────────────────────────────────
+async function admRegenEstimate() {
+  const project = $('adm-regen-project') ? $('adm-regen-project').value : '';
+  const estEl   = $('adm-regen-estimate');
+  if (estEl) estEl.textContent = '⏳ Consultando...';
+
+  // Buscar pipelines ativos via DAG de query
+  try {
+    const runId = 'orq_regen_est_' + Date.now();
+    const r1 = await fetch('/api/v1/dags/' + QUERY_DAG_ID + '/dagRuns', {
+      method: 'POST', headers: {'Content-Type':'application/json','Authorization':authHeader},
+      body: JSON.stringify({ dag_run_id: runId, conf: {
+        filter_project: project, limit: 1, offset: 0,
+      }}),
+    });
+    if (!r1.ok) throw new Error('Falha ao consultar');
+    const xcom = await _pollXcom(QUERY_DAG_ID, runId, 'consultar_pipelines');
+    const total = xcom && xcom.total ? xcom.total : '?';
+    if (estEl) estEl.textContent = `📊 ${total} pipeline(s) serão regenerados${project ? ' no projeto ' + project : ''}.`;
+  } catch(e) {
+    if (estEl) estEl.textContent = 'Não foi possível estimar — clique em Regenerar para prosseguir.';
+  }
+}
+
+async function admRegenAllDags() {
+  const project = $('adm-regen-project') ? $('adm-regen-project').value : '';
+  const statusEl = $('adm-regen-status');
+  const titleEl  = $('adm-regen-title');
+  const logEl    = $('adm-regen-log');
+  const btn      = $('adm-regen-btn');
+
+  if (statusEl) statusEl.style.display = '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Processando...'; }
+  if (logEl)  logEl.textContent = '';
+
+  function _log(msg) {
+    if (!logEl) return;
+    logEl.textContent += '[' + new Date().toLocaleTimeString('pt-BR') + '] ' + msg + '\n';
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  try {
+    // Passo 1: resetar dag_criada via etl_admin_manage
+    if (titleEl) titleEl.textContent = 'Passo 1/2 — Marcando pipelines para regeneração...';
+    _log('Disparando reset de dag_criada...');
+
+    const res = await _admAction({ action: 'regenerate_all_dags', filter_project: project });
+    if (!res) throw new Error('Falha no passo 1');
+    _log('✓ ' + (res.mensagem || 'Pipelines marcados.'));
+
+    // Passo 2: disparar etl_dag_factory com force_all=true
+    if (titleEl) titleEl.textContent = 'Passo 2/2 — Disparando etl_dag_factory...';
+    _log('Disparando etl_dag_factory com force_all=true...');
+
+    const runId2 = 'orq_regen_factory_' + Date.now();
+    const r2 = await fetch('/api/v1/dags/etl_dag_factory/dagRuns', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','Authorization':authHeader},
+      body: JSON.stringify({ dag_run_id: runId2, conf: {
+        force_all: true,
+        filter_project: project,
+        requested_by: window.__currentUser || ADMIN_USER,
+      }}),
+    });
+    if (!r2.ok) {
+      const err = await r2.text();
+      throw new Error('Factory falhou: ' + err);
+    }
+    _log('✓ etl_dag_factory disparada: ' + runId2);
+    _log('Aguardando conclusão...');
+
+    // Polling do resultado
+    const fResult = await _pollXcom('etl_dag_factory', runId2, 'gerar_dags', 120000);
+    if (fResult) {
+      _log('✓ Factory concluída.');
+    }
+
+    if (titleEl) titleEl.textContent = '✅ Regeneração concluída!';
+    _log('Todos os .py foram regenerados com as novas regras (fail-fast, etc).');
+    _log('O Airflow detectará as mudanças automaticamente no próximo scan.');
+    showToast('DAGs regeneradas com sucesso.', false);
+
+  } catch(e) {
+    if (titleEl) titleEl.textContent = '❌ Erro durante regeneração';
+    _log('ERRO: ' + e.message);
+    showToast('Erro ao regenerar: ' + e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '♻ Regenerar DAGs'; }
   }
 }
 
@@ -5685,6 +5829,222 @@ document.getElementById('modal-seq-import').addEventListener('click', function(e
   document.getElementById('modal-adm-delete-wizard').addEventListener('click', function(e) {
     if (e.target === this) _admDeleteWizardClose();
   });
+</script>
+
+
+<!-- MODAL: VIEWER DE LOG DO AIRFLOW -->
+<div class="modal-backdrop" id="modal-airflow-log">
+  <div class="modal-box" style="max-width:860px;width:95vw;padding:1.5rem 1.75rem;display:flex;flex-direction:column;max-height:88vh">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-shrink:0">
+      <div>
+        <div class="modal-title" style="margin:0">📋 Log do Airflow</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:.2rem" id="afl-subtitle">—</div>
+      </div>
+      <button class="icon-btn btn-close" onclick="_airflowLogClose()" aria-label="Fechar">×</button>
+    </div>
+
+    <!-- Seletor de job (quando há múltiplos jobs) -->
+    <div id="afl-job-selector" style="display:none;margin-bottom:.75rem;flex-shrink:0">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:.3rem">Selecionar job</label>
+      <select id="afl-job-select" onchange="_airflowLogFetch()"
+        style="width:100%;font-size:13px;padding:.5rem .75rem;border:1px solid var(--border);
+          border-radius:10px;background:var(--card);color:var(--text);font-family:inherit">
+      </select>
+    </div>
+
+    <!-- Status / loader -->
+    <div id="afl-loading" style="text-align:center;padding:2rem;color:var(--muted);font-size:13px;flex-shrink:0">
+      ⏳ Buscando log...
+    </div>
+
+    <!-- Área do log -->
+    <div id="afl-content" style="display:none;flex:1;overflow:auto;
+      background:#0d1117;border-radius:10px;padding:1rem;
+      font-family:ui-monospace,'SFMono-Regular','Menlo','Monaco','Consolas',monospace;
+      font-size:11.5px;line-height:1.65;color:#e6edf3;
+      white-space:pre-wrap;word-break:break-all">
+    </div>
+
+    <!-- Footer -->
+    <div style="display:flex;gap:8px;margin-top:.75rem;flex-shrink:0;align-items:center;flex-wrap:wrap">
+      <button class="btn-ghost btn-sm" onclick="_airflowLogCopy()" id="afl-copy-btn" style="display:none">⎘ Copiar</button>
+      <a id="afl-airflow-link" href="#" target="_blank" class="btn-ghost btn-sm" style="display:none;text-decoration:none">↗ Abrir no Airflow</a>
+      <span style="flex:1"></span>
+      <span id="afl-lines-count" style="font-size:11px;color:var(--muted)"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  let _aflState = { pipeline: '', executionId: '', dagRunId: '', taskId: '', tryNum: 1 };
+
+  window._showAirflowLogPicker = function(pipeline, executionId, project) {
+    _aflState.pipeline    = pipeline;
+    _aflState.executionId = executionId;
+    _aflState.dagRunId    = _buildDagRunId(executionId);
+    _aflState.tryNum      = 1;
+
+    const sub = $('afl-subtitle');
+    if (sub) sub.textContent = pipeline + ' · ' + executionId;
+
+    // Buscar lista de jobs para esse execution via detail_mode
+    _airflowLogShowPicker(pipeline, executionId);
+    $('modal-airflow-log').classList.add('open');
+  };
+
+  window._airflowLogClose = function() {
+    $('modal-airflow-log').classList.remove('open');
+    const content = $('afl-content');
+    if (content) content.textContent = '';
+  };
+
+  async function _airflowLogShowPicker(pipeline, executionId) {
+    const loadEl = $('afl-loading');
+    const selDiv = $('afl-job-selector');
+    const selEl  = $('afl-job-select');
+    if (loadEl) { loadEl.style.display = ''; loadEl.textContent = '⏳ Buscando tarefas...'; }
+    if (selDiv) selDiv.style.display = 'none';
+
+    try {
+      // Buscar task instances via Airflow REST API
+      const dagId   = _pipelineToDagId(pipeline);
+      const dagRunId = _aflState.dagRunId;
+      const resp = await fetch(
+        '/api/v1/dags/' + encodeURIComponent(dagId) +
+        '/dagRuns/' + encodeURIComponent(dagRunId) + '/taskInstances',
+        { headers: { 'Authorization': authHeader } }
+      );
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      const tasks = (data.task_instances || [])
+        .filter(t => !t.task_id.startsWith('log_') && !t.task_id.startsWith('teams_'))
+        .sort((a, b) => (a.task_id > b.task_id ? 1 : -1));
+
+      if (tasks.length === 0) throw new Error('Nenhuma task encontrada.');
+
+      // Preencher select
+      if (selEl) {
+        selEl.innerHTML = tasks.map(t =>
+          '<option value="' + t.task_id + '" data-try="' + (t.try_number || 1) + '">' +
+          t.task_id + ' — ' + (t.state || '?') +
+          '</option>'
+        ).join('');
+        // Selecionar a primeira task com estado != success para ir direto ao erro
+        const failedTask = tasks.find(t => t.state === 'failed' || t.state === 'upstream_failed');
+        if (failedTask) {
+          selEl.value = failedTask.task_id;
+        }
+      }
+      if (selDiv) selDiv.style.display = tasks.length > 1 ? '' : 'none';
+      _airflowLogFetch();
+    } catch(e) {
+      if (loadEl) loadEl.textContent = '⚠ ' + e.message + ' — tente abrir o log diretamente no Airflow.';
+    }
+  }
+
+  window._airflowLogFetch = async function() {
+    const selEl   = $('afl-job-select');
+    const loadEl  = $('afl-loading');
+    const contEl  = $('afl-content');
+    const copyBtn = $('afl-copy-btn');
+    const linkEl  = $('afl-airflow-link');
+    const cntEl   = $('afl-lines-count');
+
+    if (!selEl || !selEl.value) return;
+    const taskId = selEl.value;
+    const opt    = selEl.selectedOptions[0];
+    const tryNum = opt ? (parseInt(opt.dataset.try || '1', 10) || 1) : 1;
+    _aflState.taskId = taskId;
+    _aflState.tryNum = tryNum;
+
+    if (loadEl) { loadEl.style.display = ''; loadEl.textContent = '⏳ Buscando log...'; }
+    if (contEl) contEl.style.display = 'none';
+    if (copyBtn) copyBtn.style.display = 'none';
+    if (linkEl)  linkEl.style.display  = 'none';
+
+    const dagId    = _pipelineToDagId(_aflState.pipeline);
+    const dagRunId = _aflState.dagRunId;
+
+    // Link direto para o Airflow
+    const airflowUrl = '/dags/' + dagId + '/grid?dag_run_id=' + encodeURIComponent(dagRunId) + '&task_id=' + encodeURIComponent(taskId) + '&tab=logs';
+    if (linkEl) { linkEl.href = airflowUrl; linkEl.style.display = ''; }
+
+    try {
+      const logResp = await fetch(
+        '/api/v1/dags/' + encodeURIComponent(dagId) +
+        '/dagRuns/' + encodeURIComponent(dagRunId) +
+        '/taskInstances/' + encodeURIComponent(taskId) +
+        '/logs/' + tryNum,
+        { headers: { 'Authorization': authHeader, 'Accept': 'text/plain' } }
+      );
+      if (!logResp.ok) throw new Error('HTTP ' + logResp.status);
+      let text = await logResp.text();
+
+      // Limpar marcadores de continuação do Airflow
+      text = text.replace(/\r/g, '').replace(/[\x00-\x08\x0E-\x1F\x7F]|\x1b\[[0-9;]*[A-Za-z]/g, '');
+
+      if (contEl) {
+        contEl.textContent = text;
+        contEl.style.display = '';
+        // Colorir linhas de erro
+        _colorizeLog(contEl);
+      }
+      if (loadEl) loadEl.style.display = 'none';
+      if (copyBtn) copyBtn.style.display = '';
+      const lines = text.split('\n').length;
+      if (cntEl) cntEl.textContent = lines + ' linha(s)';
+    } catch(e) {
+      if (loadEl) loadEl.textContent = '⚠ Não foi possível buscar o log: ' + e.message;
+    }
+  };
+
+  function _colorizeLog(el) {
+    if (!el) return;
+    const raw = el.textContent;
+    const colored = raw.split('\n').map(line => {
+      if (/error|exception|failed|traceback|critical/i.test(line))
+        return '<span style="color:#ff7b72">' + _escHtml(line) + '</span>';
+      if (/warning|warn/i.test(line))
+        return '<span style="color:#e3b341">' + _escHtml(line) + '</span>';
+      if (/success|completed|finished/i.test(line))
+        return '<span style="color:#7ee787">' + _escHtml(line) + '</span>';
+      if (/INFO/i.test(line))
+        return '<span style="color:#79c0ff">' + _escHtml(line) + '</span>';
+      return _escHtml(line);
+    }).join('\n');
+    el.innerHTML = colored;
+  }
+
+  function _escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  window._airflowLogCopy = function() {
+    const contEl = $('afl-content');
+    if (!contEl) return;
+    navigator.clipboard.writeText(contEl.textContent || '').then(() => showToast('Log copiado.', false));
+  };
+
+  function _buildDagRunId(executionId) {
+    // Airflow gera dag_run_id como "scheduled__YYYY-MM-DDTHH:MM:SS+00:00" para agendados
+    // ou o execution_id se disparado manualmente (ex: "20260603T100000")
+    // Tenta formatos comuns
+    if (/^\d{8}T\d{6}$/.test(executionId)) {
+      const y  = executionId.slice(0,4), mo = executionId.slice(4,6), d = executionId.slice(6,8);
+      const h  = executionId.slice(9,11), mi = executionId.slice(11,13), s = executionId.slice(13,15);
+      return 'scheduled__' + y + '-' + mo + '-' + d + 'T' + h + ':' + mi + ':' + s + '+00:00';
+    }
+    return executionId; // fallback: usar como está
+  }
+
+  // Fechar ao clicar fora
+  document.getElementById('modal-airflow-log').addEventListener('click', function(e) {
+    if (e.target === this) _airflowLogClose();
+  });
+})();
 </script>
 
 </body>
