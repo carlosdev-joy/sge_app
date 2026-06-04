@@ -551,58 +551,68 @@
   .lineage-btn-ok { background: rgba(22,163,74,.08); border: 0.5px solid #16a34a; color: #15803d; }
   .lineage-btn-pending { background: rgba(202,138,4,.08); border: 0.5px solid #ca8a04; color: #92400e; }
   .tag-pill { font-size:10px;padding:1px 6px;border-radius:20px;background:rgba(0,92,169,.08);border:0.5px solid rgba(0,92,169,.2);color:var(--cvp-blue);margin-right:3px;white-space:nowrap; }
-  .row-actions{ display:flex; gap:6px; justify-content:flex-end; }
+  .row-actions{ display:flex; gap:4px; justify-content:flex-end; align-items:center; }
   .row-actions .btn-ghost.btn-sm, .row-actions .btn-danger.btn-sm{ padding:.35rem .6rem; border-radius:10px; font-size:11px; }
 
-  /* Botões Gerar DAG / Regenerar (tabela de pipelines) */
-  .btn-dag{
-    padding:.35rem .7rem;
-    border-radius:10px;
-    font-size:11px;
-    font-weight:500;
-    border:0.5px solid var(--cvp-blue);
-    background:rgba(26,95,168,.08);
-    color:var(--cvp-blue);
-    cursor:pointer;
-    transition:all .12s;
-    white-space:nowrap;
-    font-family:inherit;
+  /* ── Botões de ação SVG (icon-only) ── */
+  .act-btn{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:28px; height:28px; padding:0; border-radius:8px;
+    border:none; cursor:pointer; transition:background .12s, color .12s;
+    background:transparent; color:var(--muted); flex-shrink:0;
   }
-  .btn-dag:hover{ background:var(--cvp-blue); color:#fff; }
-  .btn-dag:disabled{ opacity:.4; cursor:not-allowed; }
+  .act-btn svg{ display:block; pointer-events:none; }
+  .act-btn:disabled{ opacity:.35; cursor:not-allowed; }
 
-  .btn-dag-ok{
-    padding:.35rem .7rem;
-    border-radius:10px;
-    font-size:11px;
-    font-weight:500;
-    border:0.5px solid var(--green);
-    background:rgba(22,163,74,.07);
-    color:var(--green);
-    cursor:pointer;
-    transition:all .12s;
-    white-space:nowrap;
-    font-family:inherit;
-  }
-  .btn-dag-ok:hover{ background:var(--green); color:#fff; }
-  .btn-dag-ok:disabled{ opacity:.4; cursor:not-allowed; }
+  .act-btn.act-edit   { color:var(--cvp-blue); }
+  .act-btn.act-edit:hover   { background:rgba(26,95,168,.12); }
 
-  /* Botão ▶ Executar manualmente (Sprint 1) */
-  .btn-exec{
-    padding:.35rem .6rem;
-    border-radius:10px;
-    font-size:12px;
-    font-weight:600;
-    border:0.5px solid var(--green);
-    background:rgba(22,163,74,.07);
-    color:var(--green);
-    cursor:pointer;
-    transition:all .12s;
-    white-space:nowrap;
-    font-family:inherit;
+  .act-btn.act-del    { color:var(--red); }
+  .act-btn.act-del:hover    { background:rgba(220,38,38,.12); }
+
+  .act-btn.act-disable{ color:var(--red); }
+  .act-btn.act-disable:hover{ background:rgba(220,38,38,.12); }
+
+  .act-btn.act-dag    { color:var(--cvp-blue); }
+  .act-btn.act-dag:hover    { background:rgba(26,95,168,.12); }
+
+  .act-btn.act-regen  { color:var(--green); }
+  .act-btn.act-regen:hover  { background:rgba(22,163,74,.12); }
+
+  .act-btn.act-exec   { color:var(--green); }
+  .act-btn.act-exec:hover   { background:rgba(22,163,74,.12); }
+
+  .act-btn.act-lineage{ color:#7c3aed; }
+  .act-btn.act-lineage:hover{ background:rgba(124,58,237,.12); }
+
+  .act-btn.act-save   { color:var(--green); }
+  .act-btn.act-save:hover   { background:rgba(22,163,74,.12); }
+
+  .act-btn.act-view   { color:var(--cvp-blue); }
+  .act-btn.act-view:hover   { background:rgba(26,95,168,.12); }
+
+  /* Botão Ver jobs (logs) — mantém compatibilidade com usos inline */
+  .btn-ver-jobs{ display:inline-flex; align-items:center; justify-content:center;
+    width:28px; height:28px; padding:0; border-radius:8px; border:none;
+    cursor:pointer; background:transparent; color:var(--cvp-blue); transition:background .12s; }
+  .btn-ver-jobs:hover{ background:rgba(26,95,168,.12); }
+
+  /* Botões Gerar DAG / Regenerar / Executar — agora são .act-btn, mantém IDs para JS */
+  .btn-dag, .btn-dag-ok, .btn-exec{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:28px; height:28px; padding:0; border-radius:8px;
+    border:none; cursor:pointer; transition:background .12s, color .12s;
+    background:transparent; flex-shrink:0;
   }
-  .btn-exec:hover{ background:var(--green); color:#fff; }
-  .btn-exec:disabled{ opacity:.4; cursor:not-allowed; }
+  .btn-dag    { color:var(--cvp-blue); }
+  .btn-dag:hover    { background:rgba(26,95,168,.12); }
+  .btn-dag:disabled { opacity:.35; cursor:not-allowed; }
+  .btn-dag-ok { color:var(--green); }
+  .btn-dag-ok:hover { background:rgba(22,163,74,.12); }
+  .btn-dag-ok:disabled{ opacity:.35; cursor:not-allowed; }
+  .btn-exec   { color:var(--green); }
+  .btn-exec:hover   { background:rgba(22,163,74,.12); }
+  .btn-exec:disabled{ opacity:.35; cursor:not-allowed; }
 
   /* Admin — sub-abas */
   .adm-tab{
@@ -1503,6 +1513,19 @@
 
 
 <script>
+/* ══ Ícones SVG inline — sem dependências externas (compatível air-gap/Docker) ══ */
+const ICONS = {
+  edit:    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
+  trash:   `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>`,
+  disable: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>`,
+  play:    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`,
+  refresh: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`,
+  gear:    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
+  graph:   `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>`,
+  check:   `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`,
+  detail:  `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>`,
+};
+
 let authHeader = null;
 let jobMode = 'manual';
 let pipelineStatus = 1;
@@ -1799,7 +1822,7 @@ function renderLogsTable(result, area, statusEl) {
       '<td style="text-align:center">' + (r.total_jobs ?? '—') + '</td>' +
       '<td style="text-align:center">' + fw + '</td>' +
       '<td style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:11px;color:var(--muted)">' + (r.execution_id || '—') + '</td>' +
-      '<td style="white-space:nowrap"><button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução — logs disponíveis por job">Ver jobs</button></td>' +
+      '<td style="white-space:nowrap"><div class="row-actions"><button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução">' + ICONS.detail + '</button></div></td>' +
     '</tr>';
   }).join('');
 
@@ -2327,7 +2350,7 @@ function renderDashboard(result) {
         '<span style="font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (x.pipeline || '—') + '</span>' +
         '<span class="tag-pill">' + (x.project || '—') + '</span>' +
         '<span style="margin-left:auto;color:var(--muted)">' + fmtHMS(x.elapsed_seconds) + '</span>' +
-        '<button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" style="margin-left:.4rem">Ver jobs</button>' +
+        '<button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução" style="margin-left:.4rem">' + ICONS.detail + '</button>' +
       '</div>';
     }).join('') : '<p style="font-size:12px;color:var(--muted);margin:0">Nenhum pipeline em execução.</p>';
   }
@@ -2359,7 +2382,7 @@ function renderDashboard(result) {
             '<td style="white-space:nowrap;font-size:12px">' + (p.ultimo_inicio ? String(p.ultimo_inicio).slice(0,16) : '—') + '</td>' +
             '<td style="white-space:nowrap;font-size:12px">' + fmtHMS(p.duracao_segundos) + '</td>' +
             '<td style="text-align:center">' + (p.total_jobs ?? '—') + '</td>' +
-            '<td style="white-space:nowrap"><button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')">Ver jobs</button></td>' +
+            '<td style="white-space:nowrap"><button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução">' + ICONS.detail + '</button></td>' +
           '</tr>';
         }).join('') +
         '</tbody></table></div>'
@@ -2380,7 +2403,7 @@ function renderDashboard(result) {
           '<div class="fr-name">' + (f.job_name || '—') + '</div>' +
           '<div class="fr-meta">' + (f.pipeline || '—') + ' · ' + (f.project || '—') + (f.inicio ? (' · ' + String(f.inicio).slice(0,16)) : '') + '</div>' +
         '</div>' +
-        '<button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" style="margin-left:auto">Ver jobs</button>' +
+        '<button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução" style="margin-left:auto">' + ICONS.detail + '</button>' +
       '</div>';
     }).join('') : '<p style="font-size:12px;color:var(--muted);margin:0">Sem falhas recentes.</p>';
   }
@@ -3138,8 +3161,8 @@ function _renderConfigTable(cfg) {
       '<td><input class="cfg-edit-input" id="cfgval-' + key + '" value="' + safeVal + '" /></td>' +
       '<td style="white-space:nowrap">' +
         '<div class="row-actions">' +
-          '<button class="btn-ghost btn-sm" data-cfg-action="save" data-cfg-key="' + key + '" style="font-size:11px">💾 Salvar</button>' +
-          '<button class="btn-danger btn-sm" data-cfg-action="del" data-cfg-key="' + key + '" style="font-size:11px">✕</button>' +
+          '<button class="act-btn act-save" data-cfg-action="save" data-cfg-key="' + key + '" title="Salvar configuração">' + ICONS.check + '</button>' +
+          '<button class="act-btn act-del" data-cfg-action="del" data-cfg-key="' + key + '" title="Excluir configuração">' + ICONS.trash + '</button>' +
         '</div>' +
       '</td>' +
     '</tr>';
@@ -4555,8 +4578,8 @@ function renderJobsTable(payload) {
     '<td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (j.job_command || '') + '">' + (j.job_command || '—') + '</td>' +
     '<td style="white-space:nowrap">' +
       '<div class="row-actions">' +
-        '<button class="btn-ghost btn-sm" onclick="openJobEdit(' + i + ')">Editar</button>' +
-        '<button class="btn-ghost btn-sm" onclick="openJobLineageFromTable(' + i + ')">Lineage</button>' +
+        '<button class="act-btn act-edit" onclick="openJobEdit(' + i + ')" title="Editar job">' + ICONS.edit + '</button>' +
+        '<button class="act-btn act-lineage" onclick="openJobLineageFromTable(' + i + ')" title="Ver lineage">' + ICONS.graph + '</button>' +
       '</div>' +
     '</td>' +
     '</tr>'
@@ -5104,14 +5127,14 @@ function renderQueryTable(payload) {
     '<td style="white-space:nowrap;font-size:11px;color:var(--muted)">' + (p.last_execution || '—') + '</td>' +
     '<td style="white-space:nowrap">' +
       '<div class="row-actions">' +
-        '<button class="btn-ghost btn-sm" onclick="openPipelineEdit(' + i + ')">Editar</button>' +
-        (p.active ? '<button class="btn-danger btn-sm" onclick="softDeletePipeline(' + i + ')">Inativar</button>' : '') +
+        '<button class="act-btn act-edit" onclick="openPipelineEdit(' + i + ')" title="Editar pipeline">' + ICONS.edit + '</button>' +
+        (p.active ? '<button class="act-btn act-disable" onclick="softDeletePipeline(' + i + ')" title="Inativar pipeline">' + ICONS.disable + '</button>' : '') +
         (!p.dag_criada
-          ? '<button class="btn-dag btn-sm" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')">⚙ Gerar DAG</button>'
-          : '<button class="btn-dag-ok btn-sm" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="DAG já criada — clique para regenerar após mudanças">↺ Regenerar</button>'
+          ? '<button class="btn-dag act-btn act-dag" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="Gerar DAG no Airflow">' + ICONS.gear + '</button>'
+          : '<button class="btn-dag-ok act-btn act-regen" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="DAG já criada — regenerar após mudanças">' + ICONS.refresh + '</button>'
         ) +
         (p.dag_criada
-          ? '<button class="btn-exec btn-sm" id="exec-btn-' + i + '" onclick="executarPipelineAgora(' + i + ')" title="Executar pipeline agora, fora do agendamento">▶</button>'
+          ? '<button class="btn-exec act-btn act-exec" id="exec-btn-' + i + '" onclick="executarPipelineAgora(' + i + ')" title="Executar agora, fora do agendamento">' + ICONS.play + '</button>'
           : ''
         ) +
       '</div>' +
