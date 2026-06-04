@@ -140,11 +140,12 @@ def _task_block(job: dict, project: str, pipeline: str) -> str:
 
 
 def _generate_dag_source(pipeline: dict, jobs: list) -> str:
-    pname   = pipeline["pipeline_name"]
-    project = pipeline["project_name"]
-    domain  = pipeline["domain"]
-    tags_raw= pipeline["tags"]
-    sched   = pipeline["scheduled_time"]
+    pname      = pipeline["pipeline_name"]
+    project    = pipeline["project_name"]
+    domain     = pipeline["domain"]
+    tags_raw   = pipeline["tags"]
+    sched      = pipeline["scheduled_time"]
+    depends_on = (pipeline.get("depends_on") or "").strip() or None
     f_ini   = bool(pipeline["envia_msg_inicio"])
     f_fim   = bool(pipeline["envia_msg_fim"])
     f_err   = bool(pipeline["envia_msg_erro"])
@@ -164,6 +165,8 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
     import_lines = ["from airflow import DAG"]
     if ssh_needed:
         import_lines.append("from airflow.providers.ssh.operators.ssh import SSHOperator")
+    if depends_on:
+        import_lines.append("from airflow.sensors.external_task import ExternalTaskSensor")
     import_lines += [
         "from airflow.operators.python import PythonOperator",
         "from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook",
@@ -192,6 +195,8 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         f'default_args  = {{"owner": "airflow", "depends_on_past": False, "retries": 0}}',
         f'JOBS          = {repr([j["job_name"] for j in sorted_jobs])}',
     ]
+    if depends_on:
+        consts_lines.append(f'DEPENDS_ON_DAG_ID = "{depends_on}"')
     consts_str = "\n".join(consts_lines)
 
     # ── Helpers (bloco fixo — sem aspas triplas) ─────────────
@@ -366,10 +371,30 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
 
     job_blocks = [_task_block(j, project, pname) for j in sorted_jobs]
 
+    # ── S4: ExternalTaskSensor (depende_on) ───────────────────
+    sensor_block = None
+    if depends_on:
+        sensor_block = "\n".join([
+            "t_wait_dependency = ExternalTaskSensor(",
+            '    task_id="wait_dependency",',
+            f'    external_dag_id=DEPENDS_ON_DAG_ID,',
+            "    external_task_id=None,",
+            "    allowed_states=['success'],",
+            "    failed_states=['failed', 'upstream_failed'],",
+            "    mode='reschedule',",
+            "    timeout=7200,",
+            "    poke_interval=60,",
+            ")",
+        ])
+
     if f_ini:
         first_chain = f"t_start_{first} >> t_teams_start >> t_job_{first} >> t_end_{first}"
     else:
         first_chain = f"t_start_{first} >> t_job_{first} >> t_end_{first}"
+
+    # Prefixa a cadeia com o sensor se houver dependência
+    if depends_on:
+        first_chain = f"t_wait_dependency >> {first_chain}"
 
     dep_lines = [
         f"previous = t_end_{first}",
@@ -389,6 +414,8 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
 
     # Junta tudo indentado dentro do with
     with_parts = []
+    if sensor_block:
+        with_parts.append(_ind(sensor_block))
     for t in teams_tasks:
         with_parts.append(_ind(t))
     for b in job_blocks:

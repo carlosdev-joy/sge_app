@@ -8,6 +8,24 @@ MSSQL_CONN_ID = "SQL14_DMDB41"
 
 VALID_PROJECTS = {"BI_CVP", "BI_VIDA", "BI_PRESTAMISTA", "BI_PREVIDENCIA"}
 
+# Campos rastreados pelo audit trail (nome_conf -> coluna_db)
+AUDIT_FIELDS = {
+    "active":           "active",
+    "scheduled_time":   "scheduled_time",
+    "schedule_type":    "schedule_type",
+    "schedule_hour":    "schedule_hour",
+    "schedule_minute":  "schedule_minute",
+    "schedule_dow":     "schedule_dow",
+    "schedule_dom":     "schedule_dom",
+    "envia_msg_inicio": "envia_msg_inicio",
+    "envia_msg_fim":    "envia_msg_fim",
+    "envia_msg_erro":   "envia_msg_erro",
+    "project_name":     "project_name",
+    "domain":           "domain",
+    "tags":             "tags",
+    "depends_on":       "depends_on",
+}
+
 
 def _build_cron(schedule_type: str | None, hour, minute, dow, dom) -> str:
     """Converte schedule_type + parâmetros para cron expression."""
@@ -25,6 +43,55 @@ def _build_cron(schedule_type: str | None, hour, minute, dow, dom) -> str:
         day = int(dom if dom is not None else 1)
         return f"{m} {h} {day} * *"
     return f"{m} {h} * * *"
+
+
+def _read_current_record(hook, pipeline_name: str) -> dict | None:
+    """Lê o registro atual do pipeline para comparação no audit trail."""
+    conn   = hook.get_conn()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            active, scheduled_time, schedule_type, schedule_hour, schedule_minute,
+            schedule_dow, schedule_dom, envia_msg_inicio, envia_msg_fim, envia_msg_erro,
+            project_name, domain, tags, depends_on
+        FROM dbo.etl_pipeline
+        WHERE pipeline_name = %s
+        """,
+        (pipeline_name,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        cursor.close()
+        conn.close()
+        return None
+    cols = [d[0] for d in cursor.description]
+    cursor.close()
+    conn.close()
+    return dict(zip(cols, row))
+
+
+def _write_audit(hook, pipeline_name: str, changed_by: str, old: dict, new_vals: dict):
+    """Registra em dbo.etl_pipeline_audit os campos que mudaram."""
+    entries = []
+    for conf_key, db_col in AUDIT_FIELDS.items():
+        old_val = str(old.get(db_col, "") or "")
+        new_val = str(new_vals.get(conf_key, "") or "")
+        if old_val != new_val:
+            entries.append((pipeline_name, changed_by, db_col, old_val, new_val))
+
+    if not entries:
+        print(f"[AUDIT] pipeline='{pipeline_name}' — nenhuma alteração detectada.")
+        return
+
+    sql = """
+        INSERT INTO dbo.etl_pipeline_audit
+            (pipeline_name, changed_by, field_name, old_value, new_value, changed_at)
+        VALUES (%s, %s, %s, %s, %s, GETDATE())
+    """
+    for entry in entries:
+        hook.run(sql, parameters=entry)
+    print(f"[AUDIT] pipeline='{pipeline_name}' | {len(entries)} campo(s) auditado(s) por '{changed_by}'")
 
 
 def registrar_pipeline(**context):
@@ -46,6 +113,8 @@ def registrar_pipeline(**context):
       project_name     : str  — BI_CVP | BI_VIDA | BI_PRESTAMISTA | BI_PREVIDENCIA
       domain           : str  — ex: Clientes, Cobrança (default 'Geral')
       tags             : str  — separadas por vírgula (default '')
+      depends_on       : str  — pipeline_name do qual este depende (S4, opcional)
+      changed_by       : str  — usuário que realizou a alteração (S1 audit trail)
     """
     conf = context["dag_run"].conf or {}
 
@@ -65,8 +134,9 @@ def registrar_pipeline(**context):
     dag_criada       = int(conf.get("dag_criada",       0))
     domain           = conf.get("domain", "Geral")
     tags             = conf.get("tags", "")
+    depends_on       = (conf.get("depends_on") or "").strip() or None
+    changed_by       = (conf.get("changed_by") or "system").strip()
 
-    # ── Schedule avançado (Fase 3) ───────────────────────────
     schedule_type   = (conf.get("schedule_type") or None)
     schedule_hour   = conf.get("schedule_hour")
     schedule_minute = conf.get("schedule_minute")
@@ -77,7 +147,14 @@ def registrar_pipeline(**context):
 
     hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
 
-    sql = """
+    # ── S1: Audit Trail — lê o estado atual ANTES do upsert ──────────────
+    old_record = _read_current_record(hook, pipeline)
+    is_new     = old_record is None
+    if is_new:
+        print(f"[AUDIT] pipeline='{pipeline}' — novo registro, criação será auditada.")
+
+    # ── Upsert principal ──────────────────────────────────────────────────
+    sql_upsert = """
     EXEC dbo.sp_etl_pipeline_upsert
         @pipeline_name    = %s,
         @scheduled_time   = %s,
@@ -95,8 +172,7 @@ def registrar_pipeline(**context):
         @domain           = %s,
         @tags             = %s
     """
-
-    hook.run(sql, parameters=(
+    hook.run(sql_upsert, parameters=(
         pipeline, horario,
         schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom,
         active,
@@ -104,11 +180,48 @@ def registrar_pipeline(**context):
         dag_criada, project, domain, tags,
     ))
 
+    # ── S4: Persiste depends_on (coluna adicionada via migration) ─────────
+    hook.run(
+        "UPDATE dbo.etl_pipeline SET depends_on = %s, updated_at = GETDATE() "
+        "WHERE pipeline_name = %s",
+        parameters=(depends_on, pipeline),
+    )
+
+    # ── S1: Audit Trail — registra campos alterados APÓS o upsert ─────────
+    new_vals = {
+        "active":           active,
+        "scheduled_time":   horario,
+        "schedule_type":    schedule_type,
+        "schedule_hour":    schedule_hour,
+        "schedule_minute":  schedule_minute,
+        "schedule_dow":     schedule_dow,
+        "schedule_dom":     schedule_dom,
+        "envia_msg_inicio": envia_msg_inicio,
+        "envia_msg_fim":    envia_msg_fim,
+        "envia_msg_erro":   envia_msg_erro,
+        "project_name":     project,
+        "domain":           domain,
+        "tags":             tags,
+        "depends_on":       depends_on,
+    }
+    if is_new:
+        # Novo pipeline: audita todos os campos como criação
+        for field, val in new_vals.items():
+            hook.run(
+                "INSERT INTO dbo.etl_pipeline_audit "
+                "(pipeline_name, changed_by, field_name, old_value, new_value, changed_at) "
+                "VALUES (%s, %s, %s, %s, %s, GETDATE())",
+                parameters=(pipeline, changed_by, field, None, str(val) if val is not None else ""),
+            )
+        print(f"[AUDIT] pipeline='{pipeline}' — criação registrada com {len(new_vals)} campo(s).")
+    else:
+        _write_audit(hook, pipeline, changed_by, old_record, new_vals)
+
     print(
         f"[OK] pipeline='{pipeline}' | horario={horario} | cron='{cron}' | project={project} | "
-        f"domain={domain} | tags={tags} | active={active} | "
+        f"domain={domain} | tags={tags} | depends_on={depends_on} | active={active} | "
         f"msg_inicio={envia_msg_inicio} | msg_fim={envia_msg_fim} | "
-        f"msg_erro={envia_msg_erro} | dag_criada={dag_criada}"
+        f"msg_erro={envia_msg_erro} | dag_criada={dag_criada} | changed_by={changed_by}"
     )
 
 

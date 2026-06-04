@@ -4346,7 +4346,8 @@ async function registrarPipeline() {
   // hourly: cron usa somente minuto; salvamos scheduled_time como 00:MM:00
   const scheduled_time = _pad2(stype === 'hourly' ? 0 : sh) + ':' + _pad2(sm) + ':00';
 
-  const dependsOn = ($('p-depends-on') ? $('p-depends-on').value.trim().toUpperCase() : '') || null;
+  const dependsOn  = ($('p-depends-on') ? $('p-depends-on').value.trim().toUpperCase() : '') || null;
+  const changedBy  = window.__currentUser || 'system';
 
   await triggerAndPoll(
     'etl_pipeline_register',
@@ -4358,6 +4359,7 @@ async function registrarPipeline() {
       envia_msg_erro:   $('tog-erro').checked   ? 1 : 0,
       project_name: project, domain: domain, tags: tags,
       depends_on: dependsOn,
+      changed_by: changedBy,
       ...schedConf,
       schedule_cron_preview: cron,
     },
