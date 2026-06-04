@@ -1604,11 +1604,15 @@ async function loadLogs(offset) {
   if (fproj) conf.filter_project = fproj;
   if (fpip)  conf.filter_pipeline = fpip;
   if (fstat) conf.filter_status = fstat;
-  // Usar datetime exato (quando vem de filtro rápido) ou só a data (quando manual)
-  if (fdtFrom) conf.filter_date_from = fdtFrom;  // datetime: "2026-06-03 09:44:00"
-  else if (fdf) conf.filter_date_from = fdf;     // date:     "2026-06-03"
-  // Expor nos logs para debug
-  console.log('[ORQ Logs] filter_date_from =', conf.filter_date_from || '(sem filtro)');
+  // fdtFrom agora é um número de horas (ex: "24") quando vem de filtro rápido
+  // filter_hours_back = backend calcula: WHERE start_time >= DATEADD(hour, -N, GETDATE())
+  if (fdtFrom && !isNaN(parseInt(fdtFrom, 10))) {
+    conf.filter_hours_back = parseInt(fdtFrom, 10);  // ex: 24
+    // Manter filter_date_from como data (sem hora) para compatibilidade
+    if (fdf) conf.filter_date_from = fdf;
+  } else if (fdf) {
+    conf.filter_date_from = fdf;   // data manual: "2026-06-03" (sem hora)
+  }
   if (fexec) conf.filter_execution_id = fexec;
 
   const btn = $('btn-logs-query'), btnTxt = $('btn-logs-txt'), st = $('logs-status'), area = $('logs-table-area');
@@ -3291,25 +3295,20 @@ document.addEventListener('click', function(e) {
 // S2 — Filtros rápidos de período nos Logs
 function _applyQuickPeriod() {
   const period = $('lf-period') ? $('lf-period').value : '';
+  // Limpar sempre ao trocar
+  if ($('lf-datetime-from')) $('lf-datetime-from').value = '';
   if (!period) {
-    if ($('lf-date-from'))     $('lf-date-from').value = '';
-    if ($('lf-datetime-from')) $('lf-datetime-from').value = '';
+    if ($('lf-date-from')) $('lf-date-from').value = '';
     return;
   }
   const hours = parseInt(period, 10);
+  // Gravar horas no hidden (enviado ao backend como filter_hours_back)
+  if ($('lf-datetime-from')) $('lf-datetime-from').value = String(hours);
+  // Atualizar campo visual com a data calculada (só feedback — não enviado ao backend)
   const d = new Date(Date.now() - hours * 3600000);
-
-  // Gravar date no campo visível (feedback UX)
   const mm = String(d.getMonth()+1).padStart(2,'0');
   const dd = String(d.getDate()).padStart(2,'0');
   if ($('lf-date-from')) $('lf-date-from').value = d.getFullYear() + '-' + mm + '-' + dd;
-
-  // Gravar datetime EXATO no campo hidden (usado no filtro real)
-  const HH  = String(d.getHours()).padStart(2,'0');
-  const MIN = String(d.getMinutes()).padStart(2,'0');
-  const SS  = String(d.getSeconds()).padStart(2,'0');
-  const iso = d.getFullYear() + '-' + mm + '-' + dd + ' ' + HH + ':' + MIN + ':' + SS;
-  if ($('lf-datetime-from')) $('lf-datetime-from').value = iso;
 }
 
 function _applyFailedFilter(hours) {
