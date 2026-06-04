@@ -3556,11 +3556,9 @@ function _showAirflowJobLog(pipeline, executionId, taskId) {
   const sub = $('afl-subtitle');
   if (sub) sub.textContent = taskId + ' · ' + executionId;
 
-  // Estado global do modal
-  if (window._aflState) {
-    window._aflState.pipeline    = pipeline;
-    window._aflState.executionId = executionId;
-    window._aflState.taskId      = taskId;
+  // Alimentar o _aflState do IIFE via setter global (evita problema de escopo)
+  if (window._setAflState) {
+    window._setAflState(pipeline, executionId, taskId);
   }
 
   // Esconder o seletor de job (já sabemos qual é)
@@ -3574,24 +3572,7 @@ function _showAirflowJobLog(pipeline, executionId, taskId) {
     selEl.value = taskId;
   }
 
-  // Montar link direto para o Airflow
-  const dagId = _pipelineToDagId(pipeline);
-  // _buildDagRunId está em closure — replicar lógica aqui no escopo global
-  let dagRunId = executionId;
-  if (/^\d{8}T\d{6}$/.test(executionId)) {
-    const y = executionId.slice(0,4), mo = executionId.slice(4,6), d = executionId.slice(6,8);
-    const h = executionId.slice(9,11), mi = executionId.slice(11,13), s = executionId.slice(13,15);
-    dagRunId = 'scheduled__' + y + '-' + mo + '-' + d + 'T' + h + ':' + mi + ':' + s + '+00:00';
-  }
-  const linkEl   = $('afl-airflow-link');
-  if (linkEl) {
-    linkEl.href = '/dags/' + encodeURIComponent(dagId) +
-      '/grid?dag_run_id=' + encodeURIComponent(dagRunId) +
-      '&task_id=' + encodeURIComponent(taskId) + '&tab=logs';
-    linkEl.style.display = '';
-  }
-
-  // Abrir modal e buscar log
+  // Abrir modal — _airflowLogFetch usará _aflState já alimentado acima
   $('modal-airflow-log').classList.add('open');
   _airflowLogFetch();
 }
@@ -6002,9 +5983,16 @@ document.getElementById('modal-seq-import').addEventListener('click', function(e
       );
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const data = await resp.json();
+      // Incluir TODAS as tasks de job (exceto helpers log_* e teams_*)
+      // independente do estado (success, failed, warning, skipped)
       const tasks = (data.task_instances || [])
         .filter(t => !t.task_id.startsWith('log_') && !t.task_id.startsWith('teams_'))
-        .sort((a, b) => (a.task_id > b.task_id ? 1 : -1));
+        .sort((a, b) => {
+          // Ordenar: FAILED primeiro, depois WARNING, depois demais
+          const order = { failed: 0, upstream_failed: 1, warning: 2, success: 3, skipped: 4 };
+          const oa = order[t.state] ?? 5, ob = order[b.state] ?? 5;
+          return oa !== ob ? oa - ob : (a.task_id > b.task_id ? 1 : -1);
+        });
 
       if (tasks.length === 0) throw new Error('Nenhuma task encontrada.');
 
@@ -6121,6 +6109,15 @@ document.getElementById('modal-seq-import').addEventListener('click', function(e
   }
   // Expor globalmente para que funções fora do IIFE possam usar
   window._buildDagRunId = _buildDagRunId;
+
+  // Setter global — permite que funções fora do IIFE alimentem _aflState
+  window._setAflState = function(pipeline, executionId, taskId) {
+    _aflState.pipeline    = pipeline    || '';
+    _aflState.executionId = executionId || '';
+    _aflState.dagRunId    = _buildDagRunId(executionId || '');
+    _aflState.taskId      = taskId      || '';
+    _aflState.tryNum      = 1;
+  };
 
   // Fechar ao clicar fora
   document.getElementById('modal-airflow-log').addEventListener('click', function(e) {
