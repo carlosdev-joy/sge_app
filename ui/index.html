@@ -551,67 +551,69 @@
   .lineage-btn-ok { background: rgba(22,163,74,.08); border: 0.5px solid #16a34a; color: #15803d; }
   .lineage-btn-pending { background: rgba(202,138,4,.08); border: 0.5px solid #ca8a04; color: #92400e; }
   .tag-pill { font-size:10px;padding:1px 6px;border-radius:20px;background:rgba(0,92,169,.08);border:0.5px solid rgba(0,92,169,.2);color:var(--cvp-blue);margin-right:3px;white-space:nowrap; }
-  .row-actions{ display:flex; gap:4px; justify-content:flex-start; align-items:center; }
+  .row-actions{ display:flex; gap:8px; justify-content:flex-start; align-items:center; }
   .row-actions .btn-ghost.btn-sm, .row-actions .btn-danger.btn-sm{ padding:.35rem .6rem; border-radius:10px; font-size:11px; }
-  /* Coluna Ações: largura fixa e alinhada à esquerda para que th e td batam */
-  th.col-actions, td.col-actions{ width:100px; min-width:100px; text-align:left !important; }
+  /* Coluna Ações: largura mínima e alinhada à esquerda para que th e td batam */
+  th.col-actions, td.col-actions{ min-width:120px; text-align:left !important; white-space:nowrap; }
 
-  /* ── Botões de ação SVG (icon-only) ── */
+  /* ── Botões de ação SVG — sem caixa, só ícone colorido ── */
   .act-btn{
     display:inline-flex; align-items:center; justify-content:center;
-    width:28px; height:28px; padding:0; border-radius:8px;
-    border:none; cursor:pointer; transition:background .12s, color .12s;
-    background:transparent; color:var(--muted); flex-shrink:0;
+    padding:2px; border:none; cursor:pointer; background:transparent;
+    color:var(--muted); flex-shrink:0; transition:color .12s, opacity .12s;
+    border-radius:4px;
   }
   .act-btn svg{ display:block; pointer-events:none; }
-  .act-btn:disabled{ opacity:.35; cursor:not-allowed; }
+  .act-btn:disabled{ opacity:.3; cursor:not-allowed; }
 
-  .act-btn.act-edit   { color:var(--cvp-blue); }
-  .act-btn.act-edit:hover   { background:rgba(26,95,168,.12); }
+  .act-btn.act-edit    { color:var(--cvp-blue); }
+  .act-btn.act-edit:hover    { opacity:.7; }
 
-  .act-btn.act-del    { color:var(--red); }
-  .act-btn.act-del:hover    { background:rgba(220,38,38,.12); }
+  .act-btn.act-del     { color:var(--red); }
+  .act-btn.act-del:hover     { opacity:.7; }
 
-  .act-btn.act-disable{ color:var(--red); }
-  .act-btn.act-disable:hover{ background:rgba(220,38,38,.12); }
+  .act-btn.act-disable { color:var(--red); }
+  .act-btn.act-disable:hover { opacity:.7; }
 
-  .act-btn.act-dag    { color:var(--cvp-blue); }
-  .act-btn.act-dag:hover    { background:rgba(26,95,168,.12); }
+  .act-btn.act-dag     { color:var(--cvp-blue); }
+  .act-btn.act-dag:hover     { opacity:.7; }
 
-  .act-btn.act-regen  { color:var(--green); }
-  .act-btn.act-regen:hover  { background:rgba(22,163,74,.12); }
+  .act-btn.act-regen   { color:var(--green); }
+  .act-btn.act-regen:hover   { opacity:.7; }
 
-  .act-btn.act-exec   { color:var(--green); }
-  .act-btn.act-exec:hover   { background:rgba(22,163,74,.12); }
+  .act-btn.act-exec    { color:var(--green); }
+  .act-btn.act-exec:hover    { opacity:.7; }
 
-  .act-btn.act-lineage{ color:#7c3aed; }
-  .act-btn.act-lineage:hover{ background:rgba(124,58,237,.12); }
+  .act-btn.act-lineage { color:#7c3aed; }
+  .act-btn.act-lineage:hover { opacity:.7; }
 
-  .act-btn.act-save   { color:var(--green); }
-  .act-btn.act-save:hover   { background:rgba(22,163,74,.12); }
+  .act-btn.act-save    { color:var(--green); }
+  .act-btn.act-save:hover    { opacity:.7; }
 
-  .act-btn.act-view   { color:var(--cvp-blue); }
-  .act-btn.act-view:hover   { background:rgba(26,95,168,.12); }
+  .act-btn.act-view    { color:var(--cvp-blue); }
+  .act-btn.act-view:hover    { opacity:.7; }
 
-  /* Botão Ver jobs (logs) — ícone olho */
+  .act-btn.act-audit   { color:#b45309; }
+  .act-btn.act-audit:hover   { opacity:.7; }
+
+  /* Botão Ver jobs (logs) — ícone olho, sem caixa */
   .btn-ver-jobs{ display:inline-flex; align-items:center; justify-content:center;
-    width:28px; height:28px; padding:0; border-radius:8px; border:none;
-    cursor:pointer; background:transparent; color:var(--cvp-blue); transition:background .12s; }
-  .btn-ver-jobs:hover{ background:rgba(26,95,168,.12); }
+    padding:2px; border-radius:4px; border:none;
+    cursor:pointer; background:transparent; color:var(--cvp-blue); transition:opacity .12s; }
+  .btn-ver-jobs:hover{ opacity:.7; }
 
-  /* Botões Gerar DAG / Regenerar — icon-only na tabela (mantém IDs para JS) */
+  /* Botões Gerar DAG / Regenerar — icon-only na tabela */
   .btn-dag, .btn-dag-ok{
     display:inline-flex; align-items:center; justify-content:center;
-    width:28px; height:28px; padding:0; border-radius:8px;
-    border:none; cursor:pointer; transition:background .12s, color .12s;
-    background:transparent; flex-shrink:0;
+    padding:2px; border-radius:4px; border:none;
+    cursor:pointer; background:transparent; flex-shrink:0; transition:opacity .12s;
   }
   .btn-dag    { color:var(--cvp-blue); }
-  .btn-dag:hover    { background:rgba(26,95,168,.12); }
-  .btn-dag:disabled { opacity:.35; cursor:not-allowed; }
+  .btn-dag:hover    { opacity:.7; }
+  .btn-dag:disabled { opacity:.3; cursor:not-allowed; }
   .btn-dag-ok { color:var(--green); }
-  .btn-dag-ok:hover { background:rgba(22,163,74,.12); }
-  .btn-dag-ok:disabled{ opacity:.35; cursor:not-allowed; }
+  .btn-dag-ok:hover { opacity:.7; }
+  .btn-dag-ok:disabled{ opacity:.3; cursor:not-allowed; }
 
   /* btn-exec: botão de texto (barra de ações de Jobs) — NÃO é icon-only */
   .btn-exec{
@@ -994,6 +996,7 @@
               <div id="err-domain" class="field-error"></div>
             </div>
           </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;align-items:start">
           <div class="field-group" id="schedule-builder">
             <label>Agendamento <span style="color:var(--red)">*</span></label>
             <!-- Linha 1: tipo + hora/minuto lado a lado -->
@@ -1044,14 +1047,29 @@
             <!-- Preview do cron gerado -->
             <div id="sch-preview" style="font-size:11px;font-family:ui-monospace,'Courier New',monospace;color:var(--muted);margin-top:6px">cron: 0 6 * * *</div>
           </div>
+          <!-- Tags: coluna direita do grid Agendamento+Tags -->
           <div class="field">
-            <label>Tags <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">— opcional · pressione Enter para adicionar</span></label>
+            <label>Tags <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">— opcional · Enter para adicionar</span></label>
             <div class="chip-input-wrap" id="tags-wrap" onclick="document.getElementById('tag-input').focus()">
               <input id="tag-input" type="text" placeholder="ex: DATASTAGE, DIARIO..." oninput="this.value=this.value.toUpperCase();validateTagDraft()" onkeydown="handleTagInput(event)" />
             </div>
             <input type="hidden" id="p-tags" value="" />
-            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Use apenas letras, números e <strong>_</strong> (sem espaços). Ex.: DATASTAGE, DIARIO, COBRANCA</p>
+            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Letras, números e <strong>_</strong> (sem espaços).</p>
             <div id="err-tags" class="field-error"></div>
+          </div>
+          </div><!-- /grid agendamento+tags -->
+
+          <!-- S4: Dependência entre pipelines -->
+          <div class="section-sep"><span>Dependência</span></div>
+          <div class="field">
+            <label for="p-depends-on">Depende de <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+            <input id="p-depends-on" type="text" placeholder="ex: ETL_CARGA_BASE_DIARIA"
+              oninput="this.value=this.value.toUpperCase()"
+              list="depends-on-list" autocomplete="off" />
+            <datalist id="depends-on-list"></datalist>
+            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
+              Nome exato de outro pipeline. Gera um <code>ExternalTaskSensor</code> na DAG factory — este pipeline só inicia após o dependente concluir com sucesso.
+            </p>
           </div>
 
           <!-- Status -->
@@ -1536,15 +1554,17 @@
 <script>
 /* ══ Ícones SVG inline — sem dependências externas (compatível air-gap/Docker) ══ */
 const ICONS = {
-  edit:    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
-  trash:   `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>`,
-  disable: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>`,
-  play:    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`,
-  refresh: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`,
-  gear:    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
-  graph:   `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>`,
-  check:   `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`,
-  detail:  `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
+  edit:    `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
+  trash:   `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>`,
+  disable: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>`,
+  play:    `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`,
+  refresh: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`,
+  gear:    `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
+  graph:   `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>`,
+  check:   `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`,
+  detail:  `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
+  history: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.95L1 10"/><polyline points="12 7 12 12 15 15"/></svg>`,
+  link:    `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
 };
 
 let authHeader = null;
@@ -4326,6 +4346,8 @@ async function registrarPipeline() {
   // hourly: cron usa somente minuto; salvamos scheduled_time como 00:MM:00
   const scheduled_time = _pad2(stype === 'hourly' ? 0 : sh) + ':' + _pad2(sm) + ':00';
 
+  const dependsOn = ($('p-depends-on') ? $('p-depends-on').value.trim().toUpperCase() : '') || null;
+
   await triggerAndPoll(
     'etl_pipeline_register',
     {
@@ -4335,8 +4357,9 @@ async function registrarPipeline() {
       envia_msg_fim:    $('tog-fim').checked    ? 1 : 0,
       envia_msg_erro:   $('tog-erro').checked   ? 1 : 0,
       project_name: project, domain: domain, tags: tags,
+      depends_on: dependsOn,
       ...schedConf,
-      schedule_cron_preview: cron, // apenas para debug/log; backend ignora se não usar
+      schedule_cron_preview: cron,
     },
     'Pipeline "' + pipeline + '"',
     'btn-save-pipeline', 'save_pipeline_txt', 'Salvar'
@@ -4345,6 +4368,7 @@ async function registrarPipeline() {
   _scheduleSetFromRecord({ schedule_type: 'daily', schedule_hour: 6, schedule_minute: 0, schedule_dow: 1, schedule_dom: 1 });
   $('p-project').value = ''; $('p-domain').value = '';
   $('p-tags').value = ''; $('tags-wrap').querySelectorAll('.chip').forEach(c => c.remove());
+  if ($('p-depends-on')) $('p-depends-on').value = '';
   setStatus(1);
   ['tog-inicio','tog-fim','tog-erro'].forEach(id => { $(id).checked = true; syncToggle('lbl-'+id.replace('tog-',''), $(id)); });
   closePipelineEditor();
@@ -4972,6 +4996,17 @@ function openPipelineEdit(idx) {
   if (p.tags) {
     p.tags.split(',').map(t => t.trim()).filter(Boolean).forEach(t => addChip(t));
   }
+  // S4: dependência
+  if ($('p-depends-on')) $('p-depends-on').value = (p.depends_on || '').toString().toUpperCase();
+  // Preenche datalist com pipelines disponíveis (exceto o próprio)
+  const dl = $('depends-on-list');
+  if (dl) {
+    dl.innerHTML = (window.__pipelines || [])
+      .filter(pl => pl.pipeline_name !== p.pipeline_name)
+      .map(pl => '<option value="' + pl.pipeline_name + '">')
+      .join('');
+  }
+
   // status e notificações
   setStatus(p.active ? 1 : 0);
   $('tog-inicio').checked = !!p.envia_msg_inicio; syncToggle('lbl-inicio', $('tog-inicio'));
@@ -5140,6 +5175,9 @@ function renderQueryTable(payload) {
     '<td><span class="tag-pill">' + p.project_name + '</span></td>' +
     '<td>' + (p.domain || '—') + '</td>' +
     '<td style="white-space:nowrap">' + (p.scheduled_time || '—') + '</td>' +
+    '<td style="font-size:11px;color:var(--muted);white-space:nowrap" title="' + (p.depends_on ? 'Depende de: ' + p.depends_on : '') + '">' +
+      (p.depends_on ? '<span style="display:inline-flex;align-items:center;gap:3px">' + ICONS.link.replace('width="18" height="18"','width="11" height="11"') + ' ' + p.depends_on + '</span>' : '—') +
+    '</td>' +
     '<td style="text-align:center">' + (p.active ? '<span class="bit-on">✓</span>' : '<span class="bit-off">—</span>') + '</td>' +
     '<td style="text-align:center">' + (p.dag_criada ? '<span class="bit-on">✓</span>' : '<span class="bit-off">—</span>') + '</td>' +
     '<td style="text-align:center">' + (p.envia_msg_inicio ? '<span class="bit-on">✓</span>' : '<span class="bit-off">—</span>') + '</td>' +
@@ -5149,6 +5187,7 @@ function renderQueryTable(payload) {
     '<td class="col-actions">' +
       '<div class="row-actions">' +
         '<button class="act-btn act-edit" onclick="openPipelineEdit(' + i + ')" title="Editar pipeline">' + ICONS.edit + '</button>' +
+        '<button class="act-btn act-audit" onclick="openPipelineAudit(' + i + ')" title="Histórico de alterações">' + ICONS.history + '</button>' +
         (p.active ? '<button class="act-btn act-disable" onclick="softDeletePipeline(' + i + ')" title="Inativar pipeline">' + ICONS.disable + '</button>' : '') +
         (!p.dag_criada
           ? '<button class="btn-dag act-btn act-dag" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="Gerar DAG no Airflow">' + ICONS.gear + '</button>'
@@ -5171,6 +5210,7 @@ function renderQueryTable(payload) {
     '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
     _pHdr('Pipeline','pipeline_name') + _pHdr('Projeto','project_name') +
     _pHdr('Domínio','domain') + _pHdr('Horário','scheduled_time') +
+    '<th title="Dependência de pipeline">Depende de</th>' +
     '<th title="Ativo">Ativo</th><th title="DAG Criada">DAG</th>' +
     '<th title="Notif. Início">Início</th><th title="Notif. Fim">Fim</th><th title="Notif. Erro">Erro</th>' +
     _pHdr('Última exec.','last_execution') + '<th class="col-actions">Ações</th>' +
@@ -6263,6 +6303,106 @@ document.getElementById('modal-seq-import').addEventListener('click', function(e
     if (e.target === this) _airflowLogClose();
   });
 })();
+</script>
+
+<!-- ══ MODAL: Audit Trail (S1) ══════════════════════════════════════════ -->
+<div id="modal-audit" style="display:none;position:fixed;inset:0;z-index:900;background:rgba(0,0,0,.45);align-items:center;justify-content:center;padding:1rem">
+  <div style="background:var(--bg);border-radius:16px;border:1px solid var(--border);width:100%;max-width:780px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.25)">
+    <div style="padding:1.25rem 1.5rem .75rem;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);flex-shrink:0">
+      <div>
+        <h3 style="margin:0;font-size:1rem;font-weight:700" id="audit-modal-title">Histórico de alterações</h3>
+        <p style="margin:.2rem 0 0;font-size:12px;color:var(--muted)" id="audit-modal-sub"></p>
+      </div>
+      <button onclick="closeAuditModal()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:1.3rem;line-height:1;padding:4px">×</button>
+    </div>
+    <div id="audit-modal-body" style="overflow-y:auto;padding:1rem 1.5rem;flex:1">
+      <div class="empty-state"><span class="es-icon">⏳</span><p class="es-title">Carregando...</p></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ══ S1 — Audit Trail ══════════════════════════════════════════════════ */
+const AUDIT_DAG_ID = 'etl_pipeline_audit_query';
+
+function closeAuditModal() {
+  const m = $('modal-audit');
+  if (m) m.style.display = 'none';
+}
+document.getElementById('modal-audit').addEventListener('click', function(e) {
+  if (e.target === this) closeAuditModal();
+});
+
+async function openPipelineAudit(idx) {
+  const p = (window.__pipelines || [])[idx];
+  if (!p) return;
+  const modal = $('modal-audit');
+  const body  = $('audit-modal-body');
+  $('audit-modal-title').textContent = 'Histórico — ' + p.pipeline_name;
+  $('audit-modal-sub').textContent   = p.project_name + ' · ' + (p.domain || '');
+  body.innerHTML = '<div class="empty-state"><span class="es-icon">⏳</span><p class="es-title">Consultando...</p></div>';
+  modal.style.display = 'flex';
+
+  try {
+    const runId = 'orq_audit_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + AUDIT_DAG_ID + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: { pipeline_name: p.pipeline_name, limit: 50 } }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const run   = await r.json();
+    const rid   = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(AUDIT_DAG_ID, rid, 30);
+    if (state !== 'success') throw new Error('DAG finalizou com estado: ' + state);
+
+    const xr = await fetch(
+      '/api/v1/dags/' + AUDIT_DAG_ID + '/dagRuns/' + rid + '/taskInstances/consultar_audit/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) throw new Error('XCom HTTP ' + xr.status);
+    const payload = normalizeXcomValue(await xr.json());
+    _renderAuditTable(payload, body);
+  } catch(e) {
+    body.innerHTML = '<p style="color:var(--red);font-size:13px;padding:1rem">Erro: ' + (e.message || e) + '</p>';
+  }
+}
+
+function _renderAuditTable(payload, body) {
+  const rows = (payload && (payload.data || payload)) || [];
+  if (!Array.isArray(rows) || rows.length === 0) {
+    body.innerHTML =
+      '<div class="empty-state">' +
+        '<span class="es-icon">📋</span>' +
+        '<p class="es-title">Sem histórico registrado</p>' +
+        '<p class="es-sub">Alterações futuras aparecerão aqui.</p>' +
+      '</div>';
+    return;
+  }
+  const thead =
+    '<thead><tr>' +
+    '<th style="width:140px">Data/hora</th>' +
+    '<th style="width:120px">Usuário</th>' +
+    '<th>Campo</th><th>Valor anterior</th><th>Novo valor</th>' +
+    '</tr></thead>';
+  const tbody = rows.map(r => {
+    const dt  = r.changed_at || r.timestamp || '';
+    const usr = r.changed_by || r.user || '—';
+    const fld = r.field_name || r.campo || '—';
+    const old = r.old_value != null ? String(r.old_value) : '—';
+    const nv  = r.new_value != null ? String(r.new_value) : '—';
+    return '<tr>' +
+      '<td style="font-size:11px;color:var(--muted);white-space:nowrap">' + String(dt).slice(0,16) + '</td>' +
+      '<td style="font-size:11px;font-weight:600">' + usr + '</td>' +
+      '<td style="font-family:monospace;font-size:11px">' + fld + '</td>' +
+      '<td style="font-size:11px;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis" title="' + old + '">' + old + '</td>' +
+      '<td style="font-size:11px;' + (old !== nv ? 'color:var(--cvp-blue);font-weight:600' : '') + ';max-width:160px;overflow:hidden;text-overflow:ellipsis" title="' + nv + '">' + nv + '</td>' +
+    '</tr>';
+  }).join('');
+  body.innerHTML =
+    '<p style="font-size:11px;color:var(--muted);margin:0 0 .75rem">' + rows.length + ' registro(s)</p>' +
+    '<div class="query-table-wrap"><table class="query-table">' + thead + '<tbody>' + tbody + '</tbody></table></div>';
+}
 </script>
 
 </body>
