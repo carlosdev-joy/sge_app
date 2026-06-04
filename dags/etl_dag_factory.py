@@ -1,6 +1,15 @@
 """
 etl_dag_factory.py
 Gera DAGs automaticamente a partir de pipelines cadastrados (dag_criada=0).
+
+Parâmetros opcionais no conf (via Admin ORQUESTRA):
+  force_all      (bool) — regenera todas as DAGs, incluindo as já criadas
+  filter_project (str)  — restringe a regeneração a um projeto específico
+
+Comportamento fail-fast (desde v2.3.0):
+  Se log_end detecta que o job falhou (status FAILED/DESCONHECIDO),
+  levanta RuntimeError para interromper a cadeia de tarefas seguintes.
+  t_teams_error (ONE_FAILED) é então acionado automaticamente.
 """
 from __future__ import annotations
 import os
@@ -38,51 +47,6 @@ def _get_output_root() -> str:
 def _time_to_cron(t: str) -> str:
     parts = t.split(":")
     return f"{int(parts[1]) if len(parts) > 1 else 0} {int(parts[0])} * * *"
-
-
-def _build_cron(schedule_type, hour, minute, dow, dom, scheduled_time: str | None = None) -> str:
-    """
-    Fase 3: Cron avançado.
-    - Se schedule_type não estiver preenchido (legado), usa scheduled_time (diário).
-    """
-    st = (schedule_type or "").strip().lower()
-    try:
-        h = int(hour) if hour is not None and str(hour).strip() != "" else None
-    except Exception:
-        h = None
-    try:
-        m = int(minute) if minute is not None and str(minute).strip() != "" else None
-    except Exception:
-        m = None
-    try:
-        d = int(dow) if dow is not None and str(dow).strip() != "" else None
-    except Exception:
-        d = None
-    try:
-        dm = int(dom) if dom is not None and str(dom).strip() != "" else None
-    except Exception:
-        dm = None
-
-    # fallback legado: scheduled_time (HH:MM:SS)
-    if not st:
-        if scheduled_time:
-            return _time_to_cron(str(scheduled_time))
-        return "0 6 * * *"
-
-    if m is None:
-        m = 0
-    if h is None:
-        h = 0
-
-    if st == "hourly":
-        return f"{m} * * * *"
-    if st == "daily":
-        return f"{m} {h} * * *"
-    if st == "weekly":
-        return f"{m} {h} * * {d if d is not None else 1}"
-    if st == "monthly":
-        return f"{m} {h} {dm if dm is not None else 1} * *"
-    return f"{m} {h} * * *"
 
 
 def _ind(code: str, n: int = 4) -> str:
@@ -180,17 +144,12 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
     project = pipeline["project_name"]
     domain  = pipeline["domain"]
     tags_raw= pipeline["tags"]
-    sched   = pipeline.get("scheduled_time")
-    stype   = pipeline.get("schedule_type")
-    shour   = pipeline.get("schedule_hour")
-    smin    = pipeline.get("schedule_minute")
-    sdow    = pipeline.get("schedule_dow")
-    sdom    = pipeline.get("schedule_dom")
+    sched   = pipeline["scheduled_time"]
     f_ini   = bool(pipeline["envia_msg_inicio"])
     f_fim   = bool(pipeline["envia_msg_fim"])
     f_err   = bool(pipeline["envia_msg_erro"])
 
-    cron        = _build_cron(stype, shour, smin, sdow, sdom, sched)
+    cron        = _time_to_cron(sched)
     base_log    = BASE_LOG_ROOT.format(project=project)
     user_tags   = [t.strip() for t in tags_raw.split(",") if t.strip()]
     all_tags    = list(dict.fromkeys([project, domain] + user_tags))
@@ -370,6 +329,12 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         "    _exec_telemetry(hook, execution_id, job_name, task_key, final_status,",
         "                    '', end_time, duration_seconds, _build_log_file(job_name, execution_id))",
         "    _update_status_code(hook, execution_id, job_name, task_key, status_code)",
+        "    # Fail-fast: propagar falha para interromper tarefas seguintes",
+        "    if final_status in ('FAILED', 'DESCONHECIDO'):",
+        "        raise RuntimeError(",
+        "            f\"Job '{job_name}' finalizou com status {final_status} — \"",
+        "            \"execução interrompida. Corrija o erro antes de reprocessar.\"",
+        "        )",
     ]
     helpers_str = "\n".join(helpers_lines)
 
@@ -465,6 +430,25 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
 def gerar_dags(**context):
     hook        = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
     output_root = _get_output_root()
+    conf        = context["dag_run"].conf or {}
+
+    # Parâmetros para regeneração forçada (via Admin ORQUESTRA)
+    force_all      = bool(conf.get("force_all", False))
+    filter_project = (conf.get("filter_project") or "").strip()
+
+    # Se force_all: resetar dag_criada=0 para forçar regeneração
+    if force_all:
+        if filter_project:
+            hook.run(
+                "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "                "WHERE project_name=%s AND DAG_CRIADA=1",
+                parameters=(filter_project,),
+            )
+            print(f"[FACTORY] force_all=True, project='{filter_project}' — dag_criada resetado")
+        else:
+            hook.run(
+                "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "                "WHERE DAG_CRIADA=1"
+            )
+            print("[FACTORY] force_all=True — dag_criada resetado para todos os pipelines")
 
     conn   = hook.get_conn()
     cursor = conn.cursor()

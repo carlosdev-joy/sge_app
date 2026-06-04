@@ -157,6 +157,40 @@ def admin_manage(**context):
             'detalhes': {'arquivos_removidos': removed},
         }
 
+    # ── regenerate_all_dags ──────────────────────────────────────────────────
+    elif action == 'regenerate_all_dags':
+        filter_project = (conf.get('filter_project') or '').strip()
+
+        # Resetar dag_criada=0 para os pipelines selecionados
+        if filter_project:
+            affected = hook.get_first(
+                "SELECT COUNT(*) FROM dbo.etl_pipeline WHERE project_name=%s AND DAG_CRIADA=1",
+                parameters=(filter_project,)
+            )
+            n = affected[0] if affected else 0
+            hook.run(
+                "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
+                "WHERE project_name=%s AND DAG_CRIADA=1",
+                parameters=(filter_project,),
+            )
+            print(f"[ADMIN] dag_criada=0 para {n} pipeline(s) do projeto '{filter_project}'")
+        else:
+            affected = hook.get_first(
+                "SELECT COUNT(*) FROM dbo.etl_pipeline WHERE DAG_CRIADA=1"
+            )
+            n = affected[0] if affected else 0
+            hook.run(
+                "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() WHERE DAG_CRIADA=1"
+            )
+            print(f"[ADMIN] dag_criada=0 para {n} pipeline(s) (todos os projetos)")
+
+        return {
+            'sucesso': True,
+            'mensagem': f'{n} pipeline(s) marcados para regeneração.',
+            'instrucao': 'Dispare etl_dag_factory com force_all=true para regenerar as DAGs.',
+            'detalhes': {'pipelines_marcados': n, 'filter_project': filter_project or '(todos)'},
+        }
+
     else:
         raise ValueError(f"Action desconhecida: '{action}'")
 
