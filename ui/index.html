@@ -637,6 +637,28 @@
   .btn-ver-jobs:hover{ background:var(--cvp-blue); color:#fff; }
   .btn-ver-jobs:disabled{ opacity:.4; cursor:not-allowed; }
 
+  /* Botão Log Airflow por job no detalhe de execução */
+  .btn-log-job{
+    padding:.26rem .6rem;
+    border-radius:8px;
+    font-size:11px;
+    font-weight:500;
+    border:0.5px solid var(--border);
+    background:transparent;
+    color:var(--muted);
+    cursor:pointer;
+    transition:all .12s;
+    white-space:nowrap;
+    font-family:inherit;
+  }
+  .btn-log-job:hover{ border-color:var(--cvp-blue); color:var(--cvp-blue); background:rgba(0,92,169,.06); }
+  .btn-log-job--err{
+    border-color:rgba(220,38,38,.35);
+    color:var(--red);
+    background:rgba(220,38,38,.05);
+  }
+  .btn-log-job--err:hover{ background:rgba(220,38,38,.1); }
+
   /* Dashboard v2 */
   .kpi-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:.6rem;margin-bottom:1.5rem}
   @media(max-width:900px){.kpi-grid{grid-template-columns:repeat(3,1fr)}}
@@ -1777,11 +1799,7 @@ function renderLogsTable(result, area, statusEl) {
       '<td style="text-align:center">' + (r.total_jobs ?? '—') + '</td>' +
       '<td style="text-align:center">' + fw + '</td>' +
       '<td style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:11px;color:var(--muted)">' + (r.execution_id || '—') + '</td>' +
-      '<td style="white-space:nowrap">' +
-        '<button class="btn-ghost" style="font-size:11px;padding:.25rem .55rem" ' +
-        'onclick="_showAirflowLogPicker(\'' + pip + '\',\'' + ex + '\')" title="Ver log do Airflow">📋 Log</button>' +
-      '</td>' +
-      '<td style="white-space:nowrap"><button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução">Ver jobs</button></td>' +
+      '<td style="white-space:nowrap"><button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução — logs disponíveis por job">Ver jobs</button></td>' +
     '</tr>';
   }).join('');
 
@@ -1795,7 +1813,7 @@ function renderLogsTable(result, area, statusEl) {
     _lHdr('Pipeline','pipeline') + _lHdr('Projeto','project') +
     _lHdr('Status','status_geral') + _lHdr('Início','inicio') +
     _lHdr('Fim','fim') + _lHdr('Duração','duracao_total_segundos') +
-    '<th>Jobs</th><th>Falha/Aviso</th><th>Execution ID</th><th>Log Airflow</th><th>Ações</th>' +
+    '<th>Jobs</th><th>Falha/Aviso</th><th>Execution ID</th><th>Ações</th>' +
     '</tr></thead><tbody>' + body + '</tbody></table></div>' +
     (pages > 1 ? renderPagination(offset, limit, total, pages, 'loadLogs') : '');
 }
@@ -1900,25 +1918,38 @@ function renderLogDetailTable(result) {
     return parts[parts.length - 1] || '—';
   };
 
+  // Pipeline/execution_id ficam no escopo para o botão de log
+  const detPipeline    = (result && result.filters && result.filters.pipeline) || '';
+  const detExecutionId = (result && result.filters && result.filters.execution_id) || '';
+
   const body = rows.map(r => {
-    const jobTitle = escAttr(r.job_name || '');
-    const fullLog = escAttr(r.log_file || '');
-    const statusCode = (r.status_code !== null && r.status_code !== undefined) ? r.status_code : '—';
+    const jobTitle  = escAttr(r.job_name || '');
+    const taskId    = escAttr(r.task_id  || r.job_name || '');
+    const pipEsc    = escAttr(r.pipeline || detPipeline);
+    const execEsc   = escAttr(r.execution_id || detExecutionId);
+    const logBtnCls = r.status === 'FAILED' || r.status === 'WARNING'
+      ? 'btn-ghost btn-log-job btn-log-job--err'
+      : 'btn-ghost btn-log-job';
     return '<tr>' +
       '<td style="font-weight:500;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis" title="' + jobTitle + '">' + (r.job_name || '—') + '</td>' +
       '<td style="white-space:nowrap">' + statusPill(r.status) + '</td>' +
       '<td style="white-space:nowrap;font-size:12px">' + fmtDt16(r.inicio) + '</td>' +
       '<td style="white-space:nowrap;font-size:12px">' + fmtDt16(r.fim) + '</td>' +
       '<td style="white-space:nowrap;font-size:12px">' + fmtDur(r.duration_seconds) + '</td>' +
-      '<td style="text-align:center;font-size:12px">' + statusCode + '</td>' +
-      '<td style="font-size:11px;color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + fullLog + '">' + logName(r.log_file) + '</td>' +
+      '<td style="white-space:nowrap">' +
+        '<button class="' + logBtnCls + '" ' +
+          'onclick="_showAirflowJobLog(\'' + pipEsc + '\',\'' + execEsc + '\',\'' + taskId + '\')" ' +
+          'title="Ver log do Airflow para este job">' +
+          '📋 Log' +
+        '</button>' +
+      '</td>' +
     '</tr>';
   }).join('');
 
   area.innerHTML =
     '<div class="query-table-wrap">' +
       '<table class="query-table"><thead><tr>' +
-        '<th>Job</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th><th>Código</th><th>Log</th>' +
+        '<th>Job</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th><th>Log Airflow</th>' +
       '</tr></thead><tbody>' + body + '</tbody></table>' +
     '</div>';
 }
@@ -3511,6 +3542,52 @@ async function admRegenAllDags() {
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '♻ Regenerar DAGs'; }
   }
+}
+
+
+// Abre o log do Airflow diretamente para um job específico (sem picker)
+function _showAirflowJobLog(pipeline, executionId, taskId) {
+  if (!pipeline || !executionId || !taskId) {
+    showToast('Dados insuficientes para buscar o log.', true);
+    return;
+  }
+
+  // Reusar o modal existente de log do Airflow
+  const sub = $('afl-subtitle');
+  if (sub) sub.textContent = taskId + ' · ' + executionId;
+
+  // Estado global do modal
+  if (window._aflState) {
+    window._aflState.pipeline    = pipeline;
+    window._aflState.executionId = executionId;
+    window._aflState.taskId      = taskId;
+  }
+
+  // Esconder o seletor de job (já sabemos qual é)
+  const selDiv = $('afl-job-selector');
+  if (selDiv) selDiv.style.display = 'none';
+
+  // Preencher o select oculto para que _airflowLogFetch funcione
+  const selEl = $('afl-job-select');
+  if (selEl) {
+    selEl.innerHTML = '<option value="' + taskId + '" data-try="1">' + taskId + '</option>';
+    selEl.value = taskId;
+  }
+
+  // Montar link direto para o Airflow
+  const dagId    = _pipelineToDagId(pipeline);
+  const dagRunId = _buildDagRunId ? _buildDagRunId(executionId) : executionId;
+  const linkEl   = $('afl-airflow-link');
+  if (linkEl) {
+    linkEl.href = '/dags/' + encodeURIComponent(dagId) +
+      '/grid?dag_run_id=' + encodeURIComponent(dagRunId) +
+      '&task_id=' + encodeURIComponent(taskId) + '&tab=logs';
+    linkEl.style.display = '';
+  }
+
+  // Abrir modal e buscar log
+  $('modal-airflow-log').classList.add('open');
+  _airflowLogFetch();
 }
 
 /* ══ LOGIN ══ */
