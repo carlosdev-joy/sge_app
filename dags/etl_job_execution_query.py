@@ -34,15 +34,17 @@ Retorno via XCom (key='return_value') — mesmo padrão das outras query DAGs:
 
 Conf esperado:
 {
-  "offset":          0,
-  "limit":           50,
-  "filter_project":  "BI_CVP",        // opcional — filtra por projeto (igualdade)
-  "filter_pipeline": "datastage_",    // opcional — LIKE %valor%
-  "filter_execution_id": "20260531_090000", // opcional — match exato
-  "filter_status":   "FAILED",        // opcional — SUCCESS | FAILED | WARNING | RUNNING
-  "filter_date_from":"2026-05-01",    // opcional — YYYY-MM-DD
-  "filter_date_to":  "2026-05-31",    // opcional — YYYY-MM-DD (inclusive)
-  "detail_mode":     false            // opcional — quando true retorna linhas por job (sem GROUP BY)
+  "offset":             0,
+  "limit":              50,
+  "filter_project":     "BI_CVP",        // opcional — filtra por projeto (igualdade)
+  "filter_pipeline":    "datastage_",    // opcional — LIKE %valor%
+  "filter_execution_id":"20260531_090000", // opcional — match exato
+  "filter_status":      "FAILED",        // opcional — SUCCESS | FAILED | WARNING | RUNNING
+  "filter_hours_back":  24,              // opcional — últimas N horas (int); PRECEDE filter_date_from
+                                         //            usa DATEADD(hour,-N,GETDATE()) sem risco de erro 241
+  "filter_date_from":  "2026-05-01",    // opcional — YYYY-MM-DD (só data, sem hora)
+  "filter_date_to":    "2026-05-31",    // opcional — YYYY-MM-DD (inclusive)
+  "detail_mode":        false            // opcional — quando true retorna linhas por job (sem GROUP BY)
 }
 
 Task que produz o XCom: consultar_logs
@@ -86,9 +88,19 @@ def consultar_logs(**context):
     filter_pipeline = (conf.get("filter_pipeline") or "").strip()
     filter_execution_id = (conf.get("filter_execution_id") or "").strip()
     filter_status = (conf.get("filter_status") or "").strip().upper()
-    filter_date_from = (conf.get("filter_date_from") or "").strip()
-    filter_date_to = (conf.get("filter_date_to") or "").strip()
-    detail_mode = bool(conf.get("detail_mode", False))
+    filter_date_from  = (conf.get("filter_date_from") or "").strip()
+    filter_date_to    = (conf.get("filter_date_to")   or "").strip()
+    filter_hours_back = conf.get("filter_hours_back")          # int | str | None
+    detail_mode       = bool(conf.get("detail_mode", False))
+
+    # Normalizar filter_hours_back para int (ou None se inválido)
+    if filter_hours_back is not None:
+        try:
+            filter_hours_back = int(filter_hours_back)
+            if filter_hours_back <= 0:
+                filter_hours_back = None
+        except (ValueError, TypeError):
+            filter_hours_back = None
 
     hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
 
@@ -108,10 +120,19 @@ def consultar_logs(**context):
         where_parts.append("execution_id = %s")
         params.append(filter_execution_id)
 
-    # Período (inclusive)
-    # - date_from: >= 00:00:00
-    # - date_to:   < (date_to + 1 dia) 00:00:00  (equivalente a <= 23:59:59, porém mais seguro)
-    if filter_date_from:
+    # ── Filtro de período ─────────────────────────────────────────────────────
+    # Prioridade: filter_hours_back (N horas atrás calculado no banco)
+    #             > filter_date_from (data manual, só data YYYY-MM-DD)
+    #
+    # MOTIVO: filter_date_from + " 00:00:00" causava erro 241 no SQL Server
+    #         quando o front enviava strings com hora embutida.
+    #         filter_hours_back usa DATEADD e é 100% seguro de formato.
+    if filter_hours_back:
+        # Calculado diretamente no SQL Server — sem risco de conversão de string
+        where_parts.append(f"start_time >= DATEADD(hour, -{filter_hours_back}, GETDATE())")
+        # Não adiciona parâmetro — o valor está embutido na cláusula SQL como literal int
+    elif filter_date_from:
+        # Filtro manual por data (somente YYYY-MM-DD sem hora — evitar erro 241)
         where_parts.append("start_time >= %s")
         params.append(filter_date_from + " 00:00:00")
 
@@ -121,7 +142,6 @@ def consultar_logs(**context):
             where_parts.append("start_time < %s")
             params.append(dt_to + " 00:00:00")
         except Exception:
-            # fallback (mantém compatível)
             where_parts.append("start_time < %s")
             params.append(filter_date_to + " 23:59:59")
 
@@ -292,11 +312,12 @@ def consultar_logs(**context):
         "limit": int(limit),
         "pages": int(pages),
         "filters": {
-            "project": filter_project,
-            "pipeline": filter_pipeline,
-            "status": filter_status,
-            "date_from": filter_date_from,
-            "date_to": filter_date_to,
+            "project":     filter_project,
+            "pipeline":    filter_pipeline,
+            "status":      filter_status,
+            "hours_back":  filter_hours_back,
+            "date_from":   filter_date_from,
+            "date_to":     filter_date_to,
         },
         "data": data,
     }
