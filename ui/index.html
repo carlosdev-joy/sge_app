@@ -854,7 +854,7 @@
       <div class="hd-right">
         <!-- Badge de falhas (S2) -->
         <div id="failure-badge-wrap" style="display:none;position:relative;cursor:pointer"
-             onclick="switchPage('page-logs',document.getElementById('tab-logs'));_applyFailedFilter(window.__appConfig&&window.__appConfig.failure_badge_hours_lookback||24)"
+             onclick="switchPage('page-logs',document.getElementById('tab-logs'));_applyFailedFilter(window.__badgeHoursLookback||(window.__appConfig&&window.__appConfig.failure_badge_hours_lookback)||24)"
              title="Falhas recentes — clique para ver logs">
           <button class="icon-btn" style="background:rgba(220,38,38,.18);color:#fff;font-size:.8rem;font-weight:700">✕</button>
           <span id="failure-badge" style="position:absolute;top:-5px;right:-5px;background:var(--red);color:#fff;
@@ -2934,6 +2934,9 @@ function _renderVersionBadge() {
 let _failureBadgeTimer = null;
 
 function _updateFailureBadge(count) {
+  // Persiste as horas usadas na contagem para que o clique envie exatamente o mesmo filtro
+  const hours = (window.__appConfig && window.__appConfig.failure_badge_hours_lookback) || 24;
+  window.__badgeHoursLookback = hours;
   const badge = $('failure-badge');
   const wrap  = $('failure-badge-wrap');
   if (!badge || !wrap) return;
@@ -2943,8 +2946,7 @@ function _updateFailureBadge(count) {
   }
   wrap.style.display = 'flex';
   badge.textContent  = count > 99 ? '99+' : String(count);
-  badge.title        = count + ' pipeline(s) com falha últimas ' +
-                       (window.__appConfig.failure_badge_hours_lookback || 24) + 'h — clique para filtrar';
+  badge.title        = count + ' pipeline(s) com falha últimas ' + hours + 'h — clique para filtrar';
 }
 
 function _extractFailuresFromDash(dashPayload) {
@@ -3396,8 +3398,19 @@ function _applyQuickPeriod() {
 
 function _applyFailedFilter(hours) {
   if ($('lf-status')) $('lf-status').value = 'FAILED';
+  // Tenta selecionar opção visual no select (para feedback ao usuário)
   if ($('lf-period')) $('lf-period').value = hours > 0 ? String(hours) : '';
-  _applyQuickPeriod();
+  if (hours > 0) {
+    // Seta o hidden field diretamente — garante filter_hours_back mesmo se a opção
+    // não existir no <select> (ex: failure_badge_hours_lookback = 12 ou 72)
+    if ($('lf-datetime-from')) $('lf-datetime-from').value = String(hours);
+    const d  = new Date(Date.now() - hours * 3600000);
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    if ($('lf-date-from')) $('lf-date-from').value = d.getFullYear() + '-' + mm + '-' + dd;
+  } else {
+    _applyQuickPeriod();
+  }
   loadLogs(0);
 }
 
