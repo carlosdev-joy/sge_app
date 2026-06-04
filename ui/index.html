@@ -2951,19 +2951,27 @@ function _updateFailureBadge(count) {
 
 function _extractFailuresFromDash(dashPayload) {
   if (!dashPayload) return 0;
+  const hours   = (window.__appConfig && window.__appConfig.failure_badge_hours_lookback) || 24;
+  const cutoffMs = Date.now() - hours * 3600000;
+
+  // Filtra ultimas_falhas pela mesma janela de tempo usada na query de logs
   const ff = dashPayload.ultimas_falhas || [];
-  // Contar pipelines únicos com falha — evita discrepância com a tela de Logs
-  // (que agrupa por pipeline, não por job individual)
   if (ff.length) {
-    const pipelines = new Set(ff.map(f => f.pipeline || f.pipeline_name || '').filter(Boolean));
-    return pipelines.size || ff.length;
+    const recent = ff.filter(f => {
+      const t = f.inicio || f.start_time;
+      // Se não tiver timestamp, inclui (confiança no backend)
+      return !t || new Date(t).getTime() >= cutoffMs;
+    });
+    const pipelines = new Set(recent.map(f => f.pipeline || f.pipeline_name || '').filter(Boolean));
+    return pipelines.size || recent.length;
   }
-  // Fallback: usar pipeline_status que já é por pipeline
+
+  // Fallback: pipeline_status — filtra pelo mesmo cutoff (pipeline_status não tem filtro de tempo no backend)
   const ps = dashPayload.pipeline_status || [];
-  const failedPipelines = ps.filter(p =>
-    (p.ultimo_status || '').toUpperCase() === 'FAILED'
+  return ps.filter(p =>
+    (p.ultimo_status || '').toUpperCase() === 'FAILED' &&
+    (!p.inicio || new Date(p.inicio).getTime() >= cutoffMs)
   ).length;
-  return failedPipelines || (dashPayload.kpis && dashPayload.kpis.total_falha) || 0;
 }
 
 function _startFailureBadgeTimer() {
