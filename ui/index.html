@@ -1160,7 +1160,8 @@
                 </div>
                 <div class="field" style="margin:0">
                   <label>Data início</label>
-                  <input id="lf-date-from" type="date" />
+                  <input id="lf-date-from" type="date" onchange="$('lf-datetime-from').value=''" />
+                  <input type="hidden" id="lf-datetime-from" />
                 </div>
               </div><!-- fim grid filtros -->
 
@@ -1577,7 +1578,7 @@ async function gerarDAG(idx) {
 }
 
 function clearLogsFilters() {
-  ['lf-project','lf-pipeline','lf-status','lf-date-from','lf-execution-id','lf-period'].forEach(id => { if ($(id)) $(id).value = ''; });
+  ['lf-project','lf-pipeline','lf-status','lf-date-from','lf-datetime-from','lf-execution-id','lf-period'].forEach(id => { if ($(id)) $(id).value = ''; });
   const area = $('logs-table-area');
   if (area) area.innerHTML =
     '<div class="empty-state">' +
@@ -1597,12 +1598,17 @@ async function loadLogs(offset) {
   const fproj = $('lf-project') ? $('lf-project').value : '';
   const fpip  = $('lf-pipeline') ? $('lf-pipeline').value.trim() : '';
   const fstat = $('lf-status') ? $('lf-status').value : '';
-  const fdf   = $('lf-date-from') ? $('lf-date-from').value : '';
+  const fdf     = $('lf-date-from')     ? $('lf-date-from').value     : '';
+  const fdtFrom = $('lf-datetime-from') ? $('lf-datetime-from').value : '';
   const fexec = $('lf-execution-id') ? $('lf-execution-id').value.trim() : '';
   if (fproj) conf.filter_project = fproj;
   if (fpip)  conf.filter_pipeline = fpip;
   if (fstat) conf.filter_status = fstat;
-  if (fdf)   conf.filter_date_from = fdf;
+  // Usar datetime exato (quando vem de filtro rápido) ou só a data (quando manual)
+  if (fdtFrom) conf.filter_date_from = fdtFrom;  // datetime: "2026-06-03 09:44:00"
+  else if (fdf) conf.filter_date_from = fdf;     // date:     "2026-06-03"
+  // Expor nos logs para debug
+  console.log('[ORQ Logs] filter_date_from =', conf.filter_date_from || '(sem filtro)');
   if (fexec) conf.filter_execution_id = fexec;
 
   const btn = $('btn-logs-query'), btnTxt = $('btn-logs-txt'), st = $('logs-status'), area = $('logs-table-area');
@@ -3285,12 +3291,25 @@ document.addEventListener('click', function(e) {
 // S2 — Filtros rápidos de período nos Logs
 function _applyQuickPeriod() {
   const period = $('lf-period') ? $('lf-period').value : '';
-  if (!period) { if ($('lf-date-from')) $('lf-date-from').value = ''; return; }
+  if (!period) {
+    if ($('lf-date-from'))     $('lf-date-from').value = '';
+    if ($('lf-datetime-from')) $('lf-datetime-from').value = '';
+    return;
+  }
   const hours = parseInt(period, 10);
   const d = new Date(Date.now() - hours * 3600000);
+
+  // Gravar date no campo visível (feedback UX)
   const mm = String(d.getMonth()+1).padStart(2,'0');
   const dd = String(d.getDate()).padStart(2,'0');
   if ($('lf-date-from')) $('lf-date-from').value = d.getFullYear() + '-' + mm + '-' + dd;
+
+  // Gravar datetime EXATO no campo hidden (usado no filtro real)
+  const HH  = String(d.getHours()).padStart(2,'0');
+  const MIN = String(d.getMinutes()).padStart(2,'0');
+  const SS  = String(d.getSeconds()).padStart(2,'0');
+  const iso = d.getFullYear() + '-' + mm + '-' + dd + ' ' + HH + ':' + MIN + ':' + SS;
+  if ($('lf-datetime-from')) $('lf-datetime-from').value = iso;
 }
 
 function _applyFailedFilter(hours) {
