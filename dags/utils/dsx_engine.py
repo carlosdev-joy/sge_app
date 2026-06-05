@@ -69,6 +69,47 @@ class DSXEngine:
             return m2.group(2).strip()
         return ""
 
+    def _extract_database_name(self, record_content: str) -> str | None:
+        """
+        Extrai o nome do banco/DSN ao qual o stage ODBC está conectado.
+        Tenta diversas formas em que o DataStage grava essa informação no DSX.
+        """
+        # 1. CDATA tags mais comuns (ODBC Connector PX / Server ODBC)
+        for tag in ["DataSourceName", "DatabaseName", "Database", "DSN", "DataSource"]:
+            m = re.search(
+                rf"<{tag}[^>]*><!\[CDATA\[(.*?)\]\]></{tag}>",
+                record_content, re.IGNORECASE | re.DOTALL
+            )
+            if m and m.group(1).strip():
+                return m.group(1).strip()
+
+        # 2. Atributo XML: <DataSourceName value="..." /> ou name="..." value="..."
+        m = re.search(
+            r'<(?:DataSourceName|DatabaseName|DSN)[^>]+value="([^"]+)"',
+            record_content, re.IGNORECASE
+        )
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+
+        # 3. Propriedade flat-DSX:  Name "DataSourceName"  Value "MY_DSN"
+        for key in ["DataSourceName", "DatabaseName", "DataSource", "DSN", "Database"]:
+            m = re.search(
+                rf'Name\s+"{re.escape(key)}"\s+Value\s+"([^"]+)"',
+                record_content, re.IGNORECASE
+            )
+            if m and m.group(1).strip():
+                return m.group(1).strip()
+
+        # 4. String de conexão ODBC: DSN=NOME; ou DATABASE=NOME;
+        m = re.search(r'\bDSN=([^;"\s]+)', record_content, re.IGNORECASE)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+        m = re.search(r'\bDATABASE=([^;"\s]+)', record_content, re.IGNORECASE)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+
+        return None
+
     def _infer_direction_key(self, has_inputs: bool, has_outputs: bool) -> str:
         # padroniza para keys consumidas pelo ORQUESTRA
         if has_outputs and not has_inputs:
@@ -295,12 +336,13 @@ class DSXEngine:
                 columns: list[str] = []
 
                 per_table_cols: dict[str, list[str]] = {}
+                db_name: str | None = None
 
                 if any(db_type in raw_type for db_type in ["ODBC", "Oracle", "DB2", "SQL"]):
                     tables_or_files = self._extract_tables_from_sql(record)
                     sql_expression = "\n".join(tables_or_files) if tables_or_files else None
+                    db_name = self._extract_database_name(record)
                     # Colunas = schema de OUTPUT do stage (o que realmente flui para a próxima etapa)
-                    # O SELECT é usado só para identificar tabelas, não para extrair colunas.
                     output_cols = self._extract_schema_columns(record)
                     for tbl in tables_or_files:
                         tbl_key = tbl.split(".")[-1].strip("[]").lower()
@@ -325,7 +367,7 @@ class DSXEngine:
                             "stage_type_raw": functional_type,
                             "object_name": obj_name,
                             "object_type": "Transformação" if direction_key == "transformacao" else "",
-                            "database_name": None,
+                            "database_name": db_name,
                             "sql_expression": sql_expression,
                             "file_path": file_path,
                             "columns": columns,
@@ -344,7 +386,7 @@ class DSXEngine:
                                 "stage_type_raw": functional_type,
                                 "object_name": item,
                                 "object_type": "Tabela" if any(db_type in raw_type for db_type in ["ODBC", "Oracle", "DB2", "SQL"]) else "Arquivo",
-                                "database_name": None,
+                                "database_name": db_name,
                                 "sql_expression": sql_expression,
                                 "file_path": file_path,
                                 "columns": item_cols,
