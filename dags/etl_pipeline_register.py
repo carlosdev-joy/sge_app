@@ -169,6 +169,7 @@ def registrar_pipeline(**context):
     tags             = conf.get("tags", "")
     depends_on       = (conf.get("depends_on") or "").strip() or None
     changed_by       = (conf.get("changed_by") or "system").strip()
+    dag_start_date   = (conf.get("dag_start_date") or "").strip() or None
 
     schedule_type   = (conf.get("schedule_type") or None)
     schedule_hour   = conf.get("schedule_hour")
@@ -221,11 +222,11 @@ def registrar_pipeline(**context):
         dag_criada, project, domain, tags,
     ))
 
-    # ── S4: Persiste depends_on (coluna adicionada via migration) ─────────
+    # ── S4: Persiste depends_on + dag_start_date (colunas de migration) ──
     hook.run(
-        "UPDATE dbo.etl_pipeline SET depends_on = %s, updated_at = GETDATE() "
-        "WHERE pipeline_name = %s",
-        parameters=(depends_on, pipeline),
+        "UPDATE dbo.etl_pipeline SET depends_on = %s, dag_start_date = %s, "
+        "updated_at = GETDATE() WHERE pipeline_name = %s",
+        parameters=(depends_on, dag_start_date, pipeline),
     )
 
     # ── S1: Audit Trail — registra campos alterados APÓS o upsert ─────────

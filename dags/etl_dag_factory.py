@@ -149,6 +149,7 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
     f_ini   = bool(pipeline["envia_msg_inicio"])
     f_fim   = bool(pipeline["envia_msg_fim"])
     f_err   = bool(pipeline["envia_msg_erro"])
+    dag_start_date_raw = pipeline.get("dag_start_date")  # DATE or None
 
     cron        = _time_to_cron(sched)
     base_log    = BASE_LOG_ROOT.format(project=project)
@@ -318,6 +319,14 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         "    _exec_telemetry(hook, execution_id, job_name, task_key, 'RUNNING',",
         "                    _now_str(), '', 0, _build_log_file(job_name, execution_id))",
         "",
+        "def _update_last_execution():",
+        "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "    hook.run(",
+        '        "UPDATE dbo.etl_pipeline SET last_execution=GETDATE(), updated_at=GETDATE() "',
+        '        "WHERE pipeline_name=%s",',
+        "        parameters=(PIPELINE_NAME,),",
+        "    )",
+        "",
         "def log_end(job_name, task_key, upstream_task_id, **context):",
         "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
         "    execution_id = context['ts_nodash']",
@@ -423,15 +432,29 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
     for d in dep_lines:
         with_parts.append("    " + d)
 
+    # Determina start_date: usa dag_start_date do banco ou fallback para 2026-01-01
+    if dag_start_date_raw:
+        if hasattr(dag_start_date_raw, "year"):
+            sd_y, sd_m, sd_d = dag_start_date_raw.year, dag_start_date_raw.month, dag_start_date_raw.day
+        else:
+            parts = str(dag_start_date_raw).split("-")
+            sd_y, sd_m, sd_d = int(parts[0]), int(parts[1]), int(parts[2])
+    else:
+        sd_y, sd_m, sd_d = 2026, 1, 1
+
     dag_header = "\n".join([
+        "def _on_dag_success(context):",
+        "    _update_last_execution()",
+        "",
         "with DAG(",
         "    dag_id=DAG_ID,",
         "    default_args=default_args,",
         f'    description="Pipeline {pname} — {project} / {domain}",',
-        "    start_date=pendulum.datetime(2026, 1, 1, tz=LOCAL_TZ),",
+        f"    start_date=pendulum.datetime({sd_y}, {sd_m}, {sd_d}, tz=LOCAL_TZ),",
         f'    schedule="{cron}",',
         "    catchup=False,",
         f"    tags={repr(all_tags)},",
+        "    on_success_callback=_on_dag_success,",
         ") as dag:",
     ])
 

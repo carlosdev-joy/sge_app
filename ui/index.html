@@ -889,10 +889,10 @@
         </div>
         <span class="whoami">Olá, <strong id="who"></strong></span>
         <!-- Badge de versão -->
-        <span id="orq-version-badge" style="font-size:10px;opacity:.55;cursor:default;
+        <span id="orq-version-badge" onclick="openChangelog()" style="font-size:10px;cursor:pointer;
           background:rgba(255,255,255,.1);padding:2px 7px;border-radius:999px;
           border:1px solid rgba(255,255,255,.2);color:#fff;white-space:nowrap"
-          title="ORQUESTRA v2.1.0">v2.1.0</span>
+          title="Ver histórico de versões">v2.1.0</span>
         <button class="icon-btn" onclick="toggleTheme()" title="Tema" aria-label="Alternar tema"><span id="theme-emoji">◐</span></button>
         <button class="icon-btn logout" onclick="sair()">Sair</button>
       </div>
@@ -1018,12 +1018,12 @@
                 <div id="sch-time-row" style="display:flex;gap:6px;align-items:flex-end">
                   <div>
                     <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Hora</label>
-                    <input type="number" id="sch-hour" min="0" max="23" value="6" style="width:64px" placeholder="HH" oninput="_scheduleUpdatePreview()" />
+                    <input type="number" id="sch-hour" min="0" max="23" value="6" style="width:76px;text-align:center;font-size:15px;font-weight:600;letter-spacing:.05em" placeholder="HH" oninput="_scheduleUpdatePreview()" />
                   </div>
-                  <span style="padding-bottom:8px;font-weight:700;color:var(--muted)">:</span>
+                  <span style="padding-bottom:8px;font-weight:700;color:var(--muted);font-size:18px">:</span>
                   <div>
                     <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Min</label>
-                    <input type="number" id="sch-minute" min="0" max="59" value="0" style="width:64px" placeholder="MM" oninput="_scheduleUpdatePreview()" />
+                    <input type="number" id="sch-minute" min="0" max="59" value="0" style="width:76px;text-align:center;font-size:15px;font-weight:600;letter-spacing:.05em" placeholder="MM" oninput="_scheduleUpdatePreview()" />
                   </div>
                 </div>
                 <!-- Dia da semana — só para weekly -->
@@ -1073,6 +1073,16 @@
             <div id="err-depends-on" class="field-error"></div>
             <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
               Nome exato de outro pipeline. Gera um <code>ExternalTaskSensor</code> na DAG factory — este pipeline só inicia após o dependente concluir com sucesso.
+            </p>
+          </div>
+
+          <!-- Data de início da DAG -->
+          <div class="section-sep"><span>Agendamento avançado</span></div>
+          <div class="field">
+            <label for="p-dag-start-date">Data de início da DAG <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+            <input type="date" id="p-dag-start-date" style="max-width:200px" />
+            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
+              Define quando o agendamento começa a executar. Deixe em branco para iniciar imediatamente (usa 01/01/2026 como padrão). Use data futura para adiar a primeira execução.
             </p>
           </div>
 
@@ -1448,9 +1458,10 @@
             </div>
             <div class="body-pad">
               <div style="display:flex;gap:6px;margin-bottom:1.5rem;border-bottom:1px solid var(--border);padding-bottom:.75rem">
-                <button id="adm-tab-config" class="adm-tab active" onclick="admSwitch('config')">⚙ Configurações</button>
-                <button id="adm-tab-delete" class="adm-tab" onclick="admSwitch('delete')">🗑 Excluir Pipeline</button>
-                <button id="adm-tab-regen" class="adm-tab" onclick="admSwitch('regen')">♻ Regenerar DAGs</button>
+                <button id="adm-tab-config"  class="adm-tab active" onclick="admSwitch('config')">⚙ Configurações</button>
+                <button id="adm-tab-delete"  class="adm-tab" onclick="admSwitch('delete')">🗑 Excluir Pipeline</button>
+                <button id="adm-tab-regen"   class="adm-tab" onclick="admSwitch('regen')">♻ Regenerar DAGs</button>
+                <button id="adm-tab-versoes" class="adm-tab" onclick="admSwitch('versoes')">📋 Versões</button>
               </div>
 
               <!-- SUB: Configurações -->
@@ -1547,6 +1558,49 @@
                 </div>
                 <div id="adm-delete-status" style="font-size:12px;color:var(--muted);min-height:16px"></div>
               </div>
+
+              <!-- SUB: Versões da Ferramenta -->
+              <div id="adm-panel-versoes" style="display:none">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+                  <div>
+                    <div style="font-size:13px;font-weight:600">Histórico de Versões</div>
+                    <div class="helper" style="margin:0">Registre novas versões com título e descrição em markdown.</div>
+                  </div>
+                  <div style="display:flex;gap:6px">
+                    <button class="btn btn-outline btn-sm" onclick="admLoadVersoes()">↻ Recarregar</button>
+                    <button class="btn btn-primary btn-sm" onclick="admOpenNewVersao()">+ Nova versão</button>
+                  </div>
+                </div>
+
+                <!-- Formulário nova/edição versão -->
+                <div id="adm-versao-form" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1rem;margin-bottom:1rem">
+                  <div style="font-size:12px;font-weight:600;margin-bottom:.75rem;color:var(--cvp-blue)" id="adm-versao-form-title">Nova Versão</div>
+                  <input type="hidden" id="adm-versao-edit-id" value="" />
+                  <div style="display:grid;grid-template-columns:140px 1fr;gap:.6rem;margin-bottom:.6rem">
+                    <div class="field" style="margin:0">
+                      <label>Versão <span style="color:var(--red)">*</span></label>
+                      <input id="adm-versao-num" type="text" placeholder="ex: 2.2.0" />
+                    </div>
+                    <div class="field" style="margin:0">
+                      <label>Título <span style="color:var(--red)">*</span></label>
+                      <input id="adm-versao-titulo" type="text" placeholder="ex: Parâmetros de data nos pipelines" />
+                    </div>
+                  </div>
+                  <div class="field" style="margin:0 0 .75rem">
+                    <label>Descrição <span style="font-weight:400;color:var(--muted)">— markdown</span></label>
+                    <textarea id="adm-versao-desc" rows="8" style="font-family:ui-monospace,'Courier New',monospace;font-size:12px;resize:vertical;width:100%;padding:.6rem;border:1px solid var(--border);border-radius:10px;background:var(--card);color:var(--text);line-height:1.6" placeholder="## O que há de novo&#10;&#10;- **Funcionalidade X**: descrição&#10;- **Melhoria Y**: descrição&#10;&#10;### Correções&#10;- Bug Z corrigido"></textarea>
+                  </div>
+                  <div id="adm-versao-msg" class="msg" style="min-height:14px;margin-bottom:.5rem"></div>
+                  <div style="display:flex;gap:6px">
+                    <button class="btn-ghost btn-sm" onclick="admCloseVersaoForm()">Cancelar</button>
+                    <button class="btn btn-primary btn-sm" onclick="admSaveVersao()">Salvar</button>
+                  </div>
+                </div>
+
+                <div id="adm-versoes-status" style="font-size:12px;color:var(--muted);margin-bottom:.5rem;min-height:16px"></div>
+                <div id="adm-versoes-list"></div>
+              </div>
+
             </div>
           </div>
         </div><!-- fim page-admin -->
@@ -3198,12 +3252,14 @@ function _applyAdminVisibility() {
 
 // Sub-navegação Admin
 function admSwitch(panel) {
-  ['config','delete','regen'].forEach(p => {
-    $('adm-panel-' + p).style.display = p === panel ? '' : 'none';
+  ['config','delete','regen','versoes'].forEach(p => {
+    const el = $('adm-panel-' + p);
+    if (el) el.style.display = p === panel ? '' : 'none';
     const btn = $('adm-tab-' + p);
     if (btn) btn.classList.toggle('active', p === panel);
   });
-  if (panel === 'config') admLoadConfig();
+  if (panel === 'config')  admLoadConfig();
+  if (panel === 'versoes') admLoadVersoes();
 }
 
 // ── Configurações: carregar tabela ─────────────────────────────
@@ -4447,8 +4503,9 @@ async function registrarPipeline() {
   // hourly: cron usa somente minuto; salvamos scheduled_time como 00:MM:00
   const scheduled_time = _pad2(stype === 'hourly' ? 0 : sh) + ':' + _pad2(sm) + ':00';
 
-  const dependsOn  = ($('p-depends-on') ? $('p-depends-on').value.trim().toUpperCase() : '') || null;
-  const changedBy  = window.__currentUser || 'system';
+  const dependsOn    = ($('p-depends-on') ? $('p-depends-on').value.trim().toUpperCase() : '') || null;
+  const changedBy    = window.__currentUser || 'system';
+  const dagStartDate = ($('p-dag-start-date') ? $('p-dag-start-date').value.trim() : '') || null;
 
   // Validação client-side de dependência circular antes de enviar ao backend
   if (!_validateDependsOnField()) {
@@ -4467,6 +4524,7 @@ async function registrarPipeline() {
       envia_msg_erro:   $('tog-erro').checked   ? 1 : 0,
       project_name: project, domain: domain, tags: tags,
       depends_on: dependsOn,
+      dag_start_date: dagStartDate,
       changed_by: changedBy,
       ...schedConf,
       schedule_cron_preview: cron,
@@ -4478,7 +4536,8 @@ async function registrarPipeline() {
   _scheduleSetFromRecord({ schedule_type: 'daily', schedule_hour: 6, schedule_minute: 0, schedule_dow: 1, schedule_dom: 1 });
   $('p-project').value = ''; $('p-domain').value = '';
   $('p-tags').value = ''; $('tags-wrap').querySelectorAll('.chip').forEach(c => c.remove());
-  if ($('p-depends-on')) $('p-depends-on').value = '';
+  if ($('p-depends-on'))     $('p-depends-on').value = '';
+  if ($('p-dag-start-date')) $('p-dag-start-date').value = '';
   setStatus(1);
   ['tog-inicio','tog-fim','tog-erro'].forEach(id => { $(id).checked = true; syncToggle('lbl-'+id.replace('tog-',''), $(id)); });
   closePipelineEditor();
@@ -5108,6 +5167,8 @@ function openPipelineEdit(idx) {
   }
   // S4: dependência
   if ($('p-depends-on')) $('p-depends-on').value = (p.depends_on || '').toString().toUpperCase();
+  // dag_start_date
+  if ($('p-dag-start-date')) $('p-dag-start-date').value = p.dag_start_date || '';
   // Preenche datalist com pipelines disponíveis (exceto o próprio)
   const dl = $('depends-on-list');
   if (dl) {
@@ -5622,7 +5683,7 @@ function clearQuery() {
           </select>
         </div>
         <div class="field" style="margin:0">
-          <label>Domínio <span style="font-weight:400;text-transform:none;font-size:10px;color:var(--muted)">(opcional)</span></label>
+          <label>Domínio <span style="color:var(--red)">*</span></label>
           <input id="seq-domain" type="text" placeholder="ex: COBRANCA" oninput="this.value=this.value.toUpperCase()" />
         </div>
       </div>
@@ -5704,6 +5765,39 @@ function clearQuery() {
         </div>
       </div>
       <div id="seq-sch-preview" style="font-size:11px;font-family:ui-monospace,'Courier New',monospace;color:var(--muted);margin-bottom:1rem">cron: 0 6 * * *</div>
+
+      <!-- Status inicial + Data de início -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:.75rem">
+        <div class="field" style="margin:0">
+          <label>Status inicial <span style="color:var(--red)">*</span></label>
+          <select id="seq-active" style="font-size:13px">
+            <option value="1">Ativo — DAG habilitada ao criar</option>
+            <option value="0">Inativo — DAG pausada ao criar</option>
+          </select>
+        </div>
+        <div class="field" style="margin:0">
+          <label>Data de início da DAG <span style="color:var(--red)">*</span></label>
+          <input type="date" id="seq-dag-start-date" style="font-size:13px" />
+          <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Define quando o agendamento começa. Use data futura para adiar.</p>
+        </div>
+      </div>
+
+      <!-- Notificações Teams -->
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:.65rem 1rem;margin-bottom:.75rem">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:.5rem">Notificações Teams</div>
+        <div style="display:flex;gap:1.5rem;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:13px;cursor:pointer">
+            <input type="checkbox" id="seq-msg-inicio" checked style="accent-color:var(--cvp-blue)"> Início
+          </label>
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:13px;cursor:pointer">
+            <input type="checkbox" id="seq-msg-fim" checked style="accent-color:var(--cvp-blue)"> Conclusão
+          </label>
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:13px;cursor:pointer">
+            <input type="checkbox" id="seq-msg-erro" checked style="accent-color:var(--cvp-blue)"> Erro
+          </label>
+        </div>
+      </div>
+
       <div id="seq-step3-msg" class="msg" style="min-height:14px"></div>
       <div style="display:flex;gap:8px;margin-top:1rem">
         <button class="btn-ghost" onclick="seqImportBackTo2()" style="flex:1">← Revisão</button>
@@ -5729,11 +5823,19 @@ function openSeqImportModal() {
   _seqPreviewData = null;
   window._seqJobs = [];
   // Reset campos
-  if ($('seq-project'))    $('seq-project').value = '';
-  if ($('seq-name-input')) $('seq-name-input').value = '';
-  if ($('seq-domain'))     $('seq-domain').value = '';
-  if ($('seq-step1-msg'))  { $('seq-step1-msg').textContent = ''; $('seq-step1-msg').className = 'msg'; }
-  if ($('seq-jobs-table')) $('seq-jobs-table').innerHTML = '';
+  if ($('seq-project'))       $('seq-project').value = '';
+  if ($('seq-name-input'))    $('seq-name-input').value = '';
+  if ($('seq-domain'))        $('seq-domain').value = '';
+  if ($('seq-step1-msg'))     { $('seq-step1-msg').textContent = ''; $('seq-step1-msg').className = 'msg'; }
+  if ($('seq-jobs-table'))    $('seq-jobs-table').innerHTML = '';
+  if ($('seq-active'))        $('seq-active').value = '1';
+  if ($('seq-dag-start-date')) {
+    const today = new Date(); const y=today.getFullYear(), m=String(today.getMonth()+1).padStart(2,'0'), d=String(today.getDate()).padStart(2,'0');
+    $('seq-dag-start-date').value = y+'-'+m+'-'+d;
+  }
+  if ($('seq-msg-inicio'))    $('seq-msg-inicio').checked = true;
+  if ($('seq-msg-fim'))       $('seq-msg-fim').checked = true;
+  if ($('seq-msg-erro'))      $('seq-msg-erro').checked = true;
   _seqShowStep(1);
   $('modal-seq-import').classList.add('open');
   setTimeout(() => { try { $('seq-name-input').focus(); } catch(e) {} }, 120);
@@ -5811,6 +5913,7 @@ async function seqImportAnalyze() {
 
   if (!project) { if (msg) { msg.textContent = 'Selecione o projeto.'; msg.className = 'msg erro'; } return; }
   if (!seqName) { if (msg) { msg.textContent = 'Informe o nome da sequence.'; msg.className = 'msg erro'; } return; }
+  if (!domain)  { if (msg) { msg.textContent = 'Informe o domínio.'; msg.className = 'msg erro'; } return; }
 
   const btn    = $('btn-seq-analyze');
   const btnTxt = $('btn-seq-analyze-txt');
@@ -5992,6 +6095,11 @@ async function approveSeqImport() {
         pipeline_name_override: pipeName,
         schedule_cron:         cron,
         ...schedConf,
+        active:            parseInt($('seq-active') ? $('seq-active').value : 1),
+        dag_start_date:    $('seq-dag-start-date') ? $('seq-dag-start-date').value : '',
+        envia_msg_inicio:  ($('seq-msg-inicio') && $('seq-msg-inicio').checked) ? 1 : 0,
+        envia_msg_fim:     ($('seq-msg-fim')    && $('seq-msg-fim').checked)    ? 1 : 0,
+        envia_msg_erro:    ($('seq-msg-erro')   && $('seq-msg-erro').checked)   ? 1 : 0,
       }}),
     });
     if (r.status === 401) { sair(); return; }
@@ -6023,8 +6131,255 @@ async function approveSeqImport() {
 document.getElementById('modal-seq-import').addEventListener('click', function(e) {
   if (e.target === this) closeSeqImportModal();
 });
+document.getElementById('modal-changelog').addEventListener('click', function(e) {
+  if (e.target === this) closeChangelog();
+});
 </script>
 
+<script>
+/* ══ CHANGELOG / VERSÕES ══════════════════════════════════════════ */
+const VERSAO_QUERY_DAG    = 'etl_versao_query';
+const VERSAO_REGISTER_DAG = 'etl_versao_register';
+
+function _renderMarkdown(text) {
+  if (!text) return '';
+  let html = text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    // code blocks ```...```
+    .replace(/```([\s\S]*?)```/g, '<pre style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.65rem .9rem;overflow-x:auto;font-size:12px;line-height:1.6">$1</pre>')
+    // inline code
+    .replace(/`([^`]+)`/g, '<code style="background:var(--bg);padding:1px 5px;border-radius:4px;font-size:12px">$1</code>')
+    // headers
+    .replace(/^### (.+)$/gm, '<h4 style="margin:.9rem 0 .3rem;font-size:13px;font-weight:700">$1</h4>')
+    .replace(/^## (.+)$/gm, '<h3 style="margin:1rem 0 .4rem;font-size:14px;font-weight:700">$1</h3>')
+    .replace(/^# (.+)$/gm, '<h2 style="margin:1rem 0 .4rem;font-size:16px;font-weight:700">$1</h2>')
+    // bold, italic
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    // bullet lists
+    .replace(/^[-*] (.+)$/gm, '<li style="margin:.2rem 0 .2rem 1rem">$1</li>')
+    // paragraphs (double newlines)
+    .replace(/\n\n/g, '</p><p style="margin:.5rem 0">')
+    // single newlines
+    .replace(/\n/g, '<br>');
+  return '<div style="line-height:1.65;font-size:13px"><p style="margin:.5rem 0">' + html + '</p></div>';
+}
+
+async function openChangelog() {
+  $('modal-changelog').classList.add('open');
+  $('changelog-loading').style.display = '';
+  $('changelog-list').style.display = 'none';
+  $('changelog-list').innerHTML = '';
+
+  if (!authHeader) {
+    $('changelog-loading').textContent = 'Faça login para ver o histórico.';
+    return;
+  }
+
+  try {
+    const runId = 'orq_versao_q_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: {} }),
+    });
+    if (!r.ok) { $('changelog-loading').textContent = 'Erro ao carregar: ' + r.status; return; }
+    const run   = await r.json();
+    const rid   = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(VERSAO_QUERY_DAG, rid, 60);
+    if (state !== 'success') { $('changelog-loading').textContent = 'Falha ao carregar versões.'; return; }
+
+    const xr = await fetch(
+      '/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_versoes/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) { $('changelog-loading').textContent = 'Erro ao ler dados: ' + xr.status; return; }
+    const payload = normalizeXcomValue(await xr.json());
+    const versions = (payload && payload.data) ? payload.data : [];
+
+    $('changelog-loading').style.display = 'none';
+    $('changelog-list').style.display = '';
+
+    if (!versions.length) {
+      $('changelog-list').innerHTML = '<div style="text-align:center;padding:2rem;color:var(--muted);font-size:13px">Nenhuma versão registrada ainda.</div>';
+      return;
+    }
+
+    $('changelog-list').innerHTML = versions.map((v, i) => {
+      const isFirst = i === 0;
+      return `<div style="border:1px solid var(--border);border-radius:12px;margin-bottom:.75rem;overflow:hidden">
+        <div onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none';this.querySelector('.cl-arrow').textContent=this.nextElementSibling.style.display===''?'▲':'▼'"
+          style="display:flex;align-items:center;gap:.75rem;padding:.75rem 1rem;cursor:pointer;background:var(--bg);user-select:none">
+          <span style="background:var(--cvp-blue);color:#fff;font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;flex-shrink:0">v${v.versao || '?'}</span>
+          <div style="flex:1">
+            <div style="font-size:13px;font-weight:600">${v.titulo || '—'}</div>
+            <div style="font-size:11px;color:var(--muted)">${(v.criado_em || '').substring(0,10)} · ${v.criado_por || 'admin'}</div>
+          </div>
+          <span class="cl-arrow" style="color:var(--muted);font-size:12px">${isFirst ? '▲' : '▼'}</span>
+        </div>
+        <div style="padding:.85rem 1.1rem;border-top:1px solid var(--border);display:${isFirst ? '' : 'none'}">
+          ${v.descricao_md ? _renderMarkdown(v.descricao_md) : '<span style="color:var(--muted);font-size:12px">Sem descrição.</span>'}
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    $('changelog-loading').textContent = 'Erro: ' + (e && e.message ? e.message : e);
+  }
+}
+
+function closeChangelog() {
+  $('modal-changelog').classList.remove('open');
+}
+
+/* ── Admin: Versões CRUD ──────────────────────────────────────── */
+async function admLoadVersoes() {
+  if (!authHeader) return;
+  const st  = $('adm-versoes-status');
+  const lst = $('adm-versoes-list');
+  if (st)  st.textContent = 'Carregando...';
+  if (lst) lst.innerHTML  = '';
+
+  try {
+    const runId = 'orq_versao_adm_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: {} }),
+    });
+    if (!r.ok) { if (st) st.textContent = 'Erro: ' + r.status; return; }
+    const run   = await r.json();
+    const rid   = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(VERSAO_QUERY_DAG, rid, 60);
+    if (state !== 'success') { if (st) st.textContent = 'Falha ao carregar.'; return; }
+
+    const xr = await fetch(
+      '/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_versoes/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) { if (st) st.textContent = 'Erro ao ler: ' + xr.status; return; }
+    const payload  = normalizeXcomValue(await xr.json());
+    const versions = (payload && payload.data) ? payload.data : [];
+    if (st) st.textContent = '';
+
+    if (!lst) return;
+    if (!versions.length) {
+      lst.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:.5rem 0">Nenhuma versão registrada.</div>';
+      return;
+    }
+
+    lst.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+      '<thead><tr style="border-bottom:2px solid var(--border)">' +
+        '<th style="text-align:left;padding:.4rem .5rem;font-size:11px;color:var(--muted)">Versão</th>' +
+        '<th style="text-align:left;padding:.4rem .5rem;font-size:11px;color:var(--muted)">Título</th>' +
+        '<th style="text-align:left;padding:.4rem .5rem;font-size:11px;color:var(--muted)">Data</th>' +
+        '<th style="text-align:left;padding:.4rem .5rem;font-size:11px;color:var(--muted)">Por</th>' +
+        '<th style="padding:.4rem .5rem;font-size:11px;color:var(--muted)">Ações</th>' +
+      '</tr></thead><tbody>' +
+      versions.map(v =>
+        `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:.5rem"><span style="background:var(--cvp-blue);color:#fff;font-size:11px;font-weight:700;padding:2px 7px;border-radius:999px">v${v.versao||'?'}</span></td>
+          <td style="padding:.5rem">${v.titulo||'—'}</td>
+          <td style="padding:.5rem;font-size:11px;color:var(--muted)">${(v.criado_em||'').substring(0,10)}</td>
+          <td style="padding:.5rem;font-size:11px;color:var(--muted)">${v.criado_por||'admin'}</td>
+          <td style="padding:.5rem;white-space:nowrap">
+            <button class="btn-ghost btn-sm" style="font-size:11px;margin-right:4px" onclick="admEditVersao(${v.id},'${(v.versao||'').replace(/'/g,"\\'")}','${(v.titulo||'').replace(/'/g,"\\'")}',${JSON.stringify(v.descricao_md||'').replace(/</g,'&lt;')})">Editar</button>
+            <button class="btn-ghost btn-sm" style="font-size:11px;color:var(--red)" onclick="admDeleteVersao(${v.id},'${(v.versao||'').replace(/'/g,"\\'")}')">Excluir</button>
+          </td>
+        </tr>`
+      ).join('') + '</tbody></table>';
+  } catch(e) {
+    if (st) st.textContent = 'Erro: ' + (e && e.message ? e.message : e);
+  }
+}
+
+function admOpenNewVersao() {
+  if ($('adm-versao-form-title')) $('adm-versao-form-title').textContent = 'Nova Versão';
+  if ($('adm-versao-edit-id'))    $('adm-versao-edit-id').value = '';
+  if ($('adm-versao-num'))        $('adm-versao-num').value = '';
+  if ($('adm-versao-titulo'))     $('adm-versao-titulo').value = '';
+  if ($('adm-versao-desc'))       $('adm-versao-desc').value = '';
+  if ($('adm-versao-msg'))        { $('adm-versao-msg').textContent = ''; $('adm-versao-msg').className = 'msg'; }
+  if ($('adm-versao-form'))       $('adm-versao-form').style.display = '';
+  try { $('adm-versao-num').focus(); } catch(e) {}
+}
+
+function admCloseVersaoForm() {
+  if ($('adm-versao-form')) $('adm-versao-form').style.display = 'none';
+}
+
+function admEditVersao(id, versao, titulo, descricaoJson) {
+  let desc = '';
+  try { desc = JSON.parse(descricaoJson); } catch(e) { desc = descricaoJson || ''; }
+  if ($('adm-versao-form-title')) $('adm-versao-form-title').textContent = 'Editar Versão';
+  if ($('adm-versao-edit-id'))    $('adm-versao-edit-id').value = id;
+  if ($('adm-versao-num'))        $('adm-versao-num').value = versao;
+  if ($('adm-versao-titulo'))     $('adm-versao-titulo').value = titulo;
+  if ($('adm-versao-desc'))       $('adm-versao-desc').value = desc;
+  if ($('adm-versao-msg'))        { $('adm-versao-msg').textContent = ''; $('adm-versao-msg').className = 'msg'; }
+  if ($('adm-versao-form'))       $('adm-versao-form').style.display = '';
+  try { $('adm-versao-num').focus(); } catch(e) {}
+}
+
+async function admSaveVersao() {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
+  const editId  = $('adm-versao-edit-id') ? $('adm-versao-edit-id').value.trim() : '';
+  const versao  = $('adm-versao-num')     ? $('adm-versao-num').value.trim()     : '';
+  const titulo  = $('adm-versao-titulo')  ? $('adm-versao-titulo').value.trim()  : '';
+  const desc    = $('adm-versao-desc')    ? $('adm-versao-desc').value.trim()    : '';
+  const msg     = $('adm-versao-msg');
+  if (msg) { msg.textContent = ''; msg.className = 'msg'; }
+
+  if (!versao || !titulo) {
+    if (msg) { msg.textContent = 'Versão e título são obrigatórios.'; msg.className = 'msg erro'; }
+    return;
+  }
+
+  const action     = editId ? 'update' : 'create';
+  const criado_por = window.__currentUser || 'admin';
+  const conf = { action, versao, titulo, descricao_md: desc || null, criado_por };
+  if (editId) conf.id = parseInt(editId);
+
+  await triggerAndPoll(
+    VERSAO_REGISTER_DAG, conf,
+    action === 'update' ? 'Versão v' + versao : 'Nova versão v' + versao,
+    null, null, null
+  );
+  admCloseVersaoForm();
+  admLoadVersoes();
+  // Atualiza o badge de versão no header com a versão mais recente
+  if ($('orq-version-badge')) $('orq-version-badge').textContent = 'v' + versao;
+  if ($('orq-version-badge')) $('orq-version-badge').title = 'ORQUESTRA v' + versao;
+}
+
+async function admDeleteVersao(id, versao) {
+  if (!authHeader) return;
+  if (!confirm('Excluir a versão v' + versao + '? Esta ação é irreversível.')) return;
+
+  await triggerAndPoll(
+    VERSAO_REGISTER_DAG,
+    { action: 'delete', id: id, criado_por: window.__currentUser || 'admin' },
+    'Excluir versão v' + versao,
+    null, null, null
+  );
+  admLoadVersoes();
+}
+</script>
+
+
+<!-- MODAL: CHANGELOG / VERSÕES -->
+<div class="modal-backdrop" id="modal-changelog">
+  <div class="modal-box" style="max-width:640px;text-align:left;padding:1.75rem 2rem;max-height:80vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:1.25rem;flex-shrink:0">
+      <div>
+        <div class="modal-title" style="margin:0">📋 Histórico de Versões</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:.3rem">ORQUESTRA — atualizações e melhorias</div>
+      </div>
+      <button class="icon-btn btn-close" onclick="closeChangelog()" title="Fechar" aria-label="Fechar">×</button>
+    </div>
+    <div id="changelog-loading" style="text-align:center;padding:2rem;color:var(--muted);font-size:13px;flex-shrink:0">Carregando versões...</div>
+    <div id="changelog-list" style="overflow-y:auto;flex:1;display:none"></div>
+  </div>
+</div>
 
 <!-- MODAL: WIZARD EXCLUSÃO DE PIPELINE (2 etapas, sem window.prompt) -->
 <div class="modal-backdrop" id="modal-adm-delete-wizard">

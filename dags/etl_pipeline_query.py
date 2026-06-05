@@ -106,6 +106,7 @@ def consultar_pipelines(**context):
         CAST(ENVIA_MSG_FIM    AS INT) AS envia_msg_fim,
         CAST(ENVIA_MSG_ERRO   AS INT) AS envia_msg_erro,
         depends_on,
+        CONVERT(VARCHAR(10), dag_start_date, 120) AS dag_start_date,
         last_execution,
         created_at,
         updated_at
@@ -125,6 +126,7 @@ def consultar_pipelines(**context):
         "active", "dag_criada",
         "envia_msg_inicio", "envia_msg_fim", "envia_msg_erro",
         "depends_on",
+        "dag_start_date",
         "last_execution", "created_at", "updated_at",
     ]
 
