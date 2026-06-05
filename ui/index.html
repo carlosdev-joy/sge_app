@@ -596,6 +596,9 @@
   .act-btn.act-audit   { color:#b45309; }
   .act-btn.act-audit:hover   { opacity:.7; }
 
+  .act-btn.act-rerun   { color:var(--green); }
+  .act-btn.act-rerun:hover   { opacity:.7; }
+
   /* Botão Ver jobs (logs) — ícone olho, sem caixa */
   .btn-ver-jobs{ display:inline-flex; align-items:center; justify-content:center;
     padding:2px; border-radius:4px; border:none;
@@ -1064,9 +1067,10 @@
           <div class="field">
             <label for="p-depends-on">Depende de <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
             <input id="p-depends-on" type="text" placeholder="ex: ETL_CARGA_BASE_DIARIA"
-              oninput="this.value=this.value.toUpperCase()"
+              oninput="this.value=this.value.toUpperCase();_validateDependsOnField()"
               list="depends-on-list" autocomplete="off" />
             <datalist id="depends-on-list"></datalist>
+            <div id="err-depends-on" class="field-error"></div>
             <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
               Nome exato de outro pipeline. Gera um <code>ExternalTaskSensor</code> na DAG factory — este pipeline só inicia após o dependente concluir com sucesso.
             </p>
@@ -1565,6 +1569,7 @@ const ICONS = {
   detail:  `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
   history: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.95L1 10"/><polyline points="12 7 12 12 15 15"/></svg>`,
   link:    `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
+  rerun:   `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>`,
 };
 
 let authHeader = null;
@@ -1863,7 +1868,10 @@ function renderLogsTable(result, area, statusEl) {
       '<td style="text-align:center">' + (r.total_jobs ?? '—') + '</td>' +
       '<td style="text-align:center">' + fw + '</td>' +
       '<td style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:11px;color:var(--muted)">' + (r.execution_id || '—') + '</td>' +
-      '<td class="col-actions"><div class="row-actions"><button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução">' + ICONS.detail + '</button></div></td>' +
+      '<td class="col-actions"><div class="row-actions">' +
+        '<button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução">' + ICONS.detail + '</button>' +
+        '<button class="act-btn act-rerun" onclick="reexecutarDoPipelineLog(\'' + pip + '\')" title="Reexecutar este pipeline agora">' + ICONS.rerun + '</button>' +
+      '</div></td>' +
     '</tr>';
   }).join('');
 
@@ -2905,6 +2913,48 @@ async function executarPipelineAgora(idx) {
   }
 }
 
+
+// F5 — Reexecutar pipeline direto da tela de Logs (sem trocar de tela)
+async function reexecutarDoPipelineLog(pipelineName) {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
+  if (!pipelineName) { showToast('Pipeline não identificado.', true); return; }
+
+  const dagId = _pipelineToDagId(pipelineName);
+
+  const ok = await showConfirm(
+    'Reexecutar o pipeline "' + pipelineName + '" agora, fora do agendamento?\n\nUma execução manual será disparada imediatamente no Airflow.',
+    '↺ Reexecutar'
+  );
+  if (!ok) return;
+
+  try {
+    const runId = 'manual_orq_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + dagId + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: {} }),
+    });
+    if (r.status === 401) { sair(); return; }
+    if (r.status === 404) {
+      showToast('DAG "' + dagId + '" não encontrada no Airflow. Verifique se a DAG foi gerada.', true);
+      return;
+    }
+    if (r.status === 409) {
+      showToast('Já existe uma execução ativa para "' + pipelineName + '". Aguarde a conclusão.', true);
+      return;
+    }
+    if (!r.ok) {
+      const txt = await r.text().catch(() => r.status);
+      showToast('Erro ao reexecutar: ' + txt, true);
+      return;
+    }
+    const data = await r.json();
+    const rid = data.dag_run_id || data.run_id;
+    showToast('↺ Pipeline "' + pipelineName + '" disparado! (' + rid + ')', false);
+  } catch(e) {
+    showToast('Erro de conexão: ' + (e.message || e), true);
+  }
+}
 
 // F4 — Executar pipeline a partir da aba Jobs
 async function executarPipelineDoJob() {
@@ -4200,6 +4250,57 @@ function normalizeIdent(val) {
 
 function _pad2(n) { return String(n).padStart(2, '0'); }
 
+/* ── S4: Validação de dependência circular (client-side) ───────────────── */
+function _detectCircularDep(startPipeline, targetDep, pipelines) {
+  // Monta mapa depends_on a partir dos pipelines carregados
+  const depMap = {};
+  for (const p of pipelines) depMap[p.pipeline_name] = (p.depends_on || '').trim() || null;
+
+  const visited = new Set();
+  let current = targetDep;
+  let hops = 0;
+  while (current && hops < 50) {
+    if (current === startPipeline) return true;  // ciclo encontrado
+    if (visited.has(current)) break;             // nó já visitado, sem ciclo
+    visited.add(current);
+    current = depMap[current] || null;
+    hops++;
+  }
+  return false;
+}
+
+function _validateDependsOnField() {
+  const val      = ($('p-depends-on') ? $('p-depends-on').value.trim() : '');
+  const errEl    = $('err-depends-on');
+  const self     = ($('pipeline_name') ? $('pipeline_name').value.trim() : '');
+  const pipelines = window.__pipelines || [];
+
+  if (!errEl) return true;
+  errEl.textContent = '';
+
+  if (!val) return true;
+
+  if (val === self) {
+    errEl.textContent = 'Um pipeline não pode depender de si mesmo.';
+    return false;
+  }
+
+  // Verifica se o pipeline alvo existe
+  const exists = pipelines.some(p => p.pipeline_name === val);
+  if (!exists) {
+    errEl.textContent = 'Pipeline "' + val + '" não encontrado. Verifique o nome exato.';
+    return false;
+  }
+
+  // Detecção de ciclo
+  if (self && _detectCircularDep(self, val, pipelines)) {
+    errEl.textContent = 'Dependência circular detectada: "' + val + '" já depende (direta ou indiretamente) de "' + self + '".';
+    return false;
+  }
+
+  return true;
+}
+
 function _scheduleTypeChange() {
   const type = $('sch-type') ? $('sch-type').value : 'daily';
   const timeRow = $('sch-time-row');
@@ -4348,6 +4449,13 @@ async function registrarPipeline() {
 
   const dependsOn  = ($('p-depends-on') ? $('p-depends-on').value.trim().toUpperCase() : '') || null;
   const changedBy  = window.__currentUser || 'system';
+
+  // Validação client-side de dependência circular antes de enviar ao backend
+  if (!_validateDependsOnField()) {
+    m.textContent = 'Corrija o campo "Depende de" antes de salvar.';
+    m.className = 'msg erro';
+    return;
+  }
 
   await triggerAndPoll(
     'etl_pipeline_register',

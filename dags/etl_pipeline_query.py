@@ -105,6 +105,7 @@ def consultar_pipelines(**context):
         CAST(ENVIA_MSG_INICIO AS INT) AS envia_msg_inicio,
         CAST(ENVIA_MSG_FIM    AS INT) AS envia_msg_fim,
         CAST(ENVIA_MSG_ERRO   AS INT) AS envia_msg_erro,
+        depends_on,
         last_execution,
         created_at,
         updated_at
@@ -123,6 +124,7 @@ def consultar_pipelines(**context):
         "schedule_type", "schedule_hour", "schedule_minute", "schedule_dow", "schedule_dom",
         "active", "dag_criada",
         "envia_msg_inicio", "envia_msg_fim", "envia_msg_erro",
+        "depends_on",
         "last_execution", "created_at", "updated_at",
     ]
 

@@ -45,6 +45,39 @@ def _build_cron(schedule_type: str | None, hour, minute, dow, dom) -> str:
     return f"{m} {h} * * *"
 
 
+def _check_circular_dependency(hook, pipeline_name: str, depends_on: str) -> None:
+    """
+    Percorre o grafo de depends_on em profundidade e lança ValueError
+    se encontrar pipeline_name em qualquer ponto da cadeia.
+    Proteção máxima: para após 50 saltos (evita loop infinito por dados corrompidos).
+    """
+    if not depends_on:
+        return
+    visited: set[str] = set()
+    current: str | None = depends_on
+    hops = 0
+    while current and hops < 50:
+        if current == pipeline_name:
+            raise ValueError(
+                f"Dependência circular detectada: '{pipeline_name}' → '{depends_on}' "
+                f"cria um ciclo no grafo de dependências. "
+                f"Corrija o campo 'depends_on' antes de salvar."
+            )
+        if current in visited:
+            break  # nó já visitado sem envolver pipeline_name → sem ciclo
+        visited.add(current)
+        row = hook.get_first(
+            "SELECT depends_on FROM dbo.etl_pipeline WHERE pipeline_name = %s",
+            parameters=(current,),
+        )
+        current = (str(row[0]).strip() if row and row[0] else None)
+        hops += 1
+    print(
+        f"[S4] Validação de ciclo OK: '{pipeline_name}' → '{depends_on}' "
+        f"({hops} salto(s), {len(visited)} nó(s) visitado(s))"
+    )
+
+
 def _read_current_record(hook, pipeline_name: str) -> dict | None:
     """Lê o registro atual do pipeline para comparação no audit trail."""
     conn   = hook.get_conn()
@@ -146,6 +179,14 @@ def registrar_pipeline(**context):
     cron = _build_cron(schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom)
 
     hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
+
+    # ── S4: Validação de dependência circular ANTES de qualquer escrita ───
+    if depends_on:
+        if depends_on == pipeline:
+            raise ValueError(
+                f"Pipeline não pode depender de si mesmo: depends_on='{depends_on}'"
+            )
+        _check_circular_dependency(hook, pipeline, depends_on)
 
     # ── S1: Audit Trail — lê o estado atual ANTES do upsert ──────────────
     old_record = _read_current_record(hook, pipeline)
