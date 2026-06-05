@@ -1587,8 +1587,19 @@
                     </div>
                   </div>
                   <div class="field" style="margin:0 0 .75rem">
-                    <label>Descrição <span style="font-weight:400;color:var(--muted)">— markdown</span></label>
-                    <textarea id="adm-versao-desc" rows="8" style="font-family:ui-monospace,'Courier New',monospace;font-size:12px;resize:vertical;width:100%;padding:.6rem;border:1px solid var(--border);border-radius:10px;background:var(--card);color:var(--text);line-height:1.6" placeholder="## O que há de novo&#10;&#10;- **Funcionalidade X**: descrição&#10;- **Melhoria Y**: descrição&#10;&#10;### Correções&#10;- Bug Z corrigido"></textarea>
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.4rem">
+                      <label style="margin:0">Descrição <span style="font-weight:400;color:var(--muted)">— markdown</span></label>
+                      <div style="display:flex;gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:11px">
+                        <button id="adm-versao-tab-edit" onclick="_versaoTabSwitch('edit')"
+                          style="padding:3px 12px;border:none;cursor:pointer;background:var(--cvp-blue);color:#fff;font-size:11px">Editar</button>
+                        <button id="adm-versao-tab-preview" onclick="_versaoTabSwitch('preview')"
+                          style="padding:3px 12px;border:none;cursor:pointer;background:var(--card);color:var(--text);font-size:11px">Visualizar</button>
+                      </div>
+                    </div>
+                    <textarea id="adm-versao-desc" rows="8" oninput="_versaoLivePreview()"
+                      style="font-family:ui-monospace,'Courier New',monospace;font-size:12px;resize:vertical;width:100%;padding:.6rem;border:1px solid var(--border);border-radius:10px;background:var(--card);color:var(--text);line-height:1.6"
+                      placeholder="## O que há de novo&#10;&#10;- **Funcionalidade X**: descrição&#10;- **Melhoria Y**: descrição&#10;&#10;### Correções&#10;- Bug Z corrigido"></textarea>
+                    <div id="adm-versao-preview-box" style="display:none;min-height:160px;border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;background:var(--card);overflow-y:auto;max-height:320px"></div>
                   </div>
                   <div id="adm-versao-msg" class="msg" style="min-height:14px;margin-bottom:.5rem"></div>
                   <div style="display:flex;gap:6px">
@@ -6292,6 +6303,36 @@ async function admLoadVersoes() {
   }
 }
 
+function _versaoTabSwitch(tab) {
+  const isEdit = tab === 'edit';
+  const ta  = $('adm-versao-desc');
+  const pv  = $('adm-versao-preview-box');
+  const tEdit = $('adm-versao-tab-edit');
+  const tPrev = $('adm-versao-tab-preview');
+  if (!ta || !pv) return;
+  if (isEdit) {
+    ta.style.display  = '';
+    pv.style.display  = 'none';
+    if (tEdit) { tEdit.style.background = 'var(--cvp-blue)'; tEdit.style.color = '#fff'; }
+    if (tPrev) { tPrev.style.background = 'var(--card)'; tPrev.style.color = 'var(--text)'; }
+  } else {
+    ta.style.display  = 'none';
+    pv.style.display  = '';
+    pv.innerHTML = ta.value.trim() ? _renderMarkdown(ta.value) : '<span style="color:var(--muted);font-size:12px">Nenhum conteúdo para visualizar.</span>';
+    if (tEdit) { tEdit.style.background = 'var(--card)'; tEdit.style.color = 'var(--text)'; }
+    if (tPrev) { tPrev.style.background = 'var(--cvp-blue)'; tPrev.style.color = '#fff'; }
+  }
+}
+
+function _versaoLivePreview() {
+  // Atualiza preview em background se já estiver visível
+  const pv = $('adm-versao-preview-box');
+  const ta = $('adm-versao-desc');
+  if (pv && pv.style.display !== 'none' && ta) {
+    pv.innerHTML = ta.value.trim() ? _renderMarkdown(ta.value) : '<span style="color:var(--muted);font-size:12px">Nenhum conteúdo para visualizar.</span>';
+  }
+}
+
 function admOpenNewVersao() {
   if ($('adm-versao-form-title')) $('adm-versao-form-title').textContent = 'Nova Versão';
   if ($('adm-versao-edit-id'))    $('adm-versao-edit-id').value = '';
@@ -6305,6 +6346,7 @@ function admOpenNewVersao() {
 
 function admCloseVersaoForm() {
   if ($('adm-versao-form')) $('adm-versao-form').style.display = 'none';
+  _versaoTabSwitch('edit'); // volta sempre para aba de edição
 }
 
 function admEditVersao(id, versao, titulo, descricaoJson) {
@@ -6346,9 +6388,12 @@ async function admSaveVersao() {
   );
   admCloseVersaoForm();
   admLoadVersoes();
-  // Atualiza o badge de versão no header com a versão mais recente
-  if ($('orq-version-badge')) $('orq-version-badge').textContent = 'v' + versao;
-  if ($('orq-version-badge')) $('orq-version-badge').title = 'ORQUESTRA v' + versao;
+  // Sincroniza window.__appConfig e badge de versão no header
+  if (window.__appConfig) {
+    window.__appConfig.app_version     = versao;
+    window.__appConfig.app_release_name = titulo;
+  }
+  _renderVersionBadge();
 }
 
 async function admDeleteVersao(id, versao) {
