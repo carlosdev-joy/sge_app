@@ -2779,19 +2779,24 @@ function renderLineageJob() {
   }
 
   const mk = (o, cls) => {
-    const label = o.stage_name || o.object_name;
-    const typeLabel = (o.type_label || o.object_type || '—');
-    const dbLine = (o.file_path || (o.database_name ? (o.database_name + (o.object_name ? ('.' + o.object_name) : '')) : ''));
+    // Para stages de banco/arquivo: label principal = tabela/arquivo real
+    // Para transformações: label principal = nome do componente
+    const isTransf = cls === 'transf';
+    const label     = isTransf ? (o.stage_name || o.object_name) : (o.object_name || o.stage_name);
+    const sublabel  = (!isTransf && o.stage_name && o.stage_name !== label) ? o.stage_name : null;
+    const typeLabel = (o.type_label || o.object_type || '');
+    // db line: apenas banco quando não está já visível no label
+    const dbLine = o.database_name && !label.includes(o.database_name) ? o.database_name : '';
 
-    const hasDetail = (o.sql_expression && String(o.sql_expression).trim()) || (o.file_path && String(o.file_path).trim());
-    const detailContent = (o.file_path && String(o.file_path).trim()) ? String(o.file_path) : (o.sql_expression ? String(o.sql_expression) : '');
-    const detailTitle = (o.file_path && String(o.file_path).trim()) ? 'Arquivo' : 'Tabelas extraídas do SQL';
-
-    const btnHtml = hasDetail
+    // Botão SQL (só mantém se ainda houver sql_expression legada com múltiplas tabelas)
+    const sqlStr = o.sql_expression ? String(o.sql_expression).trim() : '';
+    const sqlHasExtra = sqlStr && sqlStr.split('\n').filter(Boolean).length > 1
+                        && !sqlStr.toLowerCase().includes(label.toLowerCase());
+    const btnHtml = sqlHasExtra
       ? ('<button class="ls-detail-btn" ' +
-          'title="Ver ' + detailTitle.replace(/"/g,'&quot;') + '" ' +
-          'data-ls-title="' + detailTitle.replace(/"/g,'&quot;') + '" ' +
-          'data-ls-content="' + encodeURIComponent(detailContent) + '">+</button>')
+          'title="Ver tabelas extraídas do SQL" ' +
+          'data-ls-title="Tabelas extraídas do SQL" ' +
+          'data-ls-content="' + encodeURIComponent(sqlStr) + '">+</button>')
       : '';
 
     const cols = Array.isArray(o.columns) ? o.columns : [];
@@ -2809,6 +2814,7 @@ function renderLineageJob() {
         btnHtml +
         colsHtml +
       '</div>' +
+      (sublabel ? '<span class="ls-node-label" style="opacity:.7;font-size:10px">' + sublabel + '</span>' : '') +
       (typeLabel ? '<span class="ls-node-label">' + typeLabel + '</span>' : '') +
       (dbLine ? '<span class="ls-node-db">' + dbLine + '</span>' : '') +
     '</div></div>';
