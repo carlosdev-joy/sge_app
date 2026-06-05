@@ -299,22 +299,12 @@ class DSXEngine:
                 if any(db_type in raw_type for db_type in ["ODBC", "Oracle", "DB2", "SQL"]):
                     tables_or_files = self._extract_tables_from_sql(record)
                     sql_expression = "\n".join(tables_or_files) if tables_or_files else None
-                    sql_text = self._extract_select_statement(record)
-                    if sql_text:
-                        # Extrai colunas por tabela via aliases do SQL
-                        per_table_cols = self._extract_columns_per_table(sql_text)
-                        if not per_table_cols:
-                            # SELECT simples sem aliases: mesmas colunas para todos
-                            fallback = self._extract_columns_from_select(sql_text)
-                            for tbl in tables_or_files:
-                                tbl_key = tbl.split(".")[-1].strip("[]").lower()
-                                per_table_cols[tbl_key] = fallback
-                    if not per_table_cols:
-                        # Sem SQL: tenta schema XML/DSX da definição do stage
-                        schema_cols = self._extract_schema_columns(record)
-                        for tbl in tables_or_files:
-                            tbl_key = tbl.split(".")[-1].strip("[]").lower()
-                            per_table_cols[tbl_key] = schema_cols
+                    # Colunas = schema de OUTPUT do stage (o que realmente flui para a próxima etapa)
+                    # O SELECT é usado só para identificar tabelas, não para extrair colunas.
+                    output_cols = self._extract_schema_columns(record)
+                    for tbl in tables_or_files:
+                        tbl_key = tbl.split(".")[-1].strip("[]").lower()
+                        per_table_cols[tbl_key] = output_cols
                 elif any(file_type in raw_type for file_type in ["DataSet", "SequentialFile"]):
                     file_path = self._extract_file_name(record) or None
                     if file_path:
