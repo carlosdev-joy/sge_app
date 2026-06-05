@@ -2,6 +2,26 @@
 
 ---
 
+## v2.3.0 — Catálogo de Dados
+
+### Catálogo de Dados — Governança
+- Nova aba **Catálogo de Dados** dentro da tela de Governança, ao lado da visualização de Lineage
+- Busque qualquer tabela ou objeto pelo nome e veja todos os pipelines que a utilizam, com indicação de direção (origem ou destino) e qual job específico faz o acesso
+- Resultados em lista expansível por pipeline — mostra projeto, domínio e status ativo/inativo sem precisar abrir o detalhe
+- Filtro por **direção**: busque onde o objeto é lido (origem), onde é gravado (destino) ou ambos
+- Filtro por **banco de dados** para refinar a busca quando o mesmo nome existe em mais de um ambiente
+
+### Análise de Impacto
+- Botão **⚡ Impacto** responde à pergunta: "se essa tabela mudar, quais pipelines ativos serão afetados?"
+- Mostra somente pipelines em produção que leem o objeto como origem — útil antes de qualquer mudança na estrutura de uma tabela
+
+### Tabelas mais utilizadas
+- Ranking automático dos objetos que aparecem no maior número de pipelines
+- Exibe contagem separada de quantos pipelines leem e quantos gravam em cada tabela
+- Clicar no nome de qualquer objeto do ranking preenche a busca e executa automaticamente
+
+---
+
 ## v2.2.0 — Importação avançada, Agendamento e Última Execução
 
 ### Importar Sequence
