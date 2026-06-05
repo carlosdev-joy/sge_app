@@ -179,6 +179,27 @@ def approve_sequence(**context):
             f"msg_err={envia_msg_erro} start_date={dag_start_date}"
         )
 
+    # 4c. Sincronizar columns_json do staging para produção
+    # Faz UPDATE por correspondência de pipeline_name + job + direction + object_name
+    try:
+        hook.run("""
+            UPDATE jl
+            SET jl.columns_json = sil.columns_json
+            FROM dbo.etl_job_lineage jl
+            JOIN dbo.etl_pipeline_job pj  ON pj.pipeline_name = jl.pipeline_name
+                                         AND pj.job_name      = jl.job_name
+            JOIN dbo.etl_seq_import_job sij ON sij.job_name_orq = pj.job_name
+                                            AND sij.import_id   = %s
+            JOIN dbo.etl_seq_import_lineage sil ON sil.import_job_id = sij.id
+                                               AND sil.direction    = jl.direction
+                                               AND sil.object_name  = jl.object_name
+            WHERE jl.pipeline_name = %s
+              AND sil.columns_json IS NOT NULL
+        """, parameters=[import_id, pipeline_name])
+        print(f"[SEQ_APPROVE] columns_json sincronizado para '{pipeline_name}'")
+    except Exception as exc:
+        print(f"[SEQ_APPROVE] Aviso: não foi possível sincronizar columns_json — {exc}")
+
     # 5. Disparar etl_dag_factory para gerar o DAG Airflow automaticamente
     if pipeline_name:
         try:

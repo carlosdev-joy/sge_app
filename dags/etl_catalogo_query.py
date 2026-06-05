@@ -45,6 +45,7 @@ Suporta dois modos via conf.mode:
 """
 from __future__ import annotations
 
+import json
 import pendulum
 from collections import defaultdict
 from airflow import DAG
@@ -86,7 +87,8 @@ def _search(hook, object_name: str, direction: str, database_name: str) -> dict:
             l.object_name,
             ISNULL(stm.type_label, l.object_type) AS object_type,
             ISNULL(l.database_name, '')            AS database_name,
-            ISNULL(l.stage_name,   '')             AS stage_name
+            ISNULL(l.stage_name,   '')             AS stage_name,
+            l.columns_json
         FROM dbo.etl_job_lineage l
         JOIN dbo.etl_pipeline     p   ON p.pipeline_name  = l.pipeline_name
         JOIN dbo.etl_pipeline_job pj  ON pj.pipeline_name = l.pipeline_name
@@ -99,7 +101,7 @@ def _search(hook, object_name: str, direction: str, database_name: str) -> dict:
     cols = [
         "pipeline_name", "project_name", "domain", "active",
         "job_name", "execution_order", "job_type",
-        "direction", "object_name", "object_type", "database_name", "stage_name",
+        "direction", "object_name", "object_type", "database_name", "stage_name", "columns_json",
     ]
 
     # Agrupa por pipeline → jobs
@@ -116,6 +118,10 @@ def _search(hook, object_name: str, direction: str, database_name: str) -> dict:
                 "ocorrencias":    0,
                 "jobs":           [],
             }
+        try:
+            cols = json.loads(rec["columns_json"]) if rec["columns_json"] else []
+        except Exception:
+            cols = []
         by_pipeline[pname]["ocorrencias"] += 1
         by_pipeline[pname]["jobs"].append({
             "job_name":       rec["job_name"],
@@ -126,6 +132,7 @@ def _search(hook, object_name: str, direction: str, database_name: str) -> dict:
             "object_type":    rec["object_type"],
             "database_name":  rec["database_name"],
             "stage_name":     rec["stage_name"],
+            "columns":        cols,
         })
 
     pipelines = sorted(by_pipeline.values(), key=lambda x: x["pipeline_name"])

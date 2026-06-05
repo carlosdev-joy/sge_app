@@ -126,6 +126,64 @@ class DSXEngine:
             return select_match.group(1).strip()
         return ""
 
+    def _extract_columns_from_select(self, sql_text: str) -> list[str]:
+        """Parse SELECT clause and return column names/aliases."""
+        m = re.search(r"\bSELECT\s+(.*?)\bFROM\b", sql_text, re.IGNORECASE | re.DOTALL)
+        if not m:
+            return []
+        select_part = m.group(1).strip()
+        if select_part in ("*", "1"):
+            return []
+
+        # Split by top-level commas (respects parentheses)
+        tokens: list[str] = []
+        depth, buf = 0, []
+        for ch in select_part:
+            if ch == "(":
+                depth += 1; buf.append(ch)
+            elif ch == ")":
+                depth -= 1; buf.append(ch)
+            elif ch == "," and depth == 0:
+                tokens.append("".join(buf).strip()); buf = []
+            else:
+                buf.append(ch)
+        if buf:
+            tokens.append("".join(buf).strip())
+
+        result: list[str] = []
+        for tok in tokens:
+            tok = tok.strip()
+            as_m = re.search(r"\bAS\s+([a-zA-Z0-9_\[\]]+)\s*$", tok, re.IGNORECASE)
+            if as_m:
+                result.append(as_m.group(1).strip("[]"))
+            else:
+                id_m = re.search(r"([a-zA-Z0-9_\[\]]+)\s*$", tok)
+                if id_m:
+                    name = id_m.group(1).strip("[]")
+                    if name and name.upper() not in ("FROM", "WHERE", "GROUP", "ORDER", "SELECT"):
+                        result.append(name)
+        return result
+
+    def _extract_schema_columns(self, record_content: str) -> list[str]:
+        """Extract column names from XML schema/column definitions embedded in a stage record."""
+        # <Column name="..." or <Column Name="..."
+        cols = re.findall(r"<Column[^>]+\bname=\"([^\"]+)\"", record_content, re.IGNORECASE)
+        if cols:
+            return cols
+        # <SqlColumnDef name="..."
+        cols = re.findall(r"<SqlColumnDef[^>]+\bname=\"([^\"]+)\"", record_content, re.IGNORECASE)
+        if cols:
+            return cols
+        # DSX flat format: Name "COL" / SqlType "N" pairs (innermost DSRECORDs with SqlType)
+        inner_records = re.findall(r"BEGIN DSRECORD(.*?)END DSRECORD", record_content, re.DOTALL)
+        col_names: list[str] = []
+        for inner in inner_records:
+            if "SqlType" in inner or "DataType" in inner:
+                nm = re.search(r'Name\s+"([^"]+)"', inner)
+                if nm and nm.group(1) not in ("", "input", "output", "Input", "Output"):
+                    col_names.append(nm.group(1))
+        return col_names
+
     def buscar_linhagem(self, nome_projeto, nome_job):
         self.extracted_lineage = []
 
@@ -167,20 +225,27 @@ class DSXEngine:
                 tables_or_files: list[str] = []
                 sql_expression: str | None = None
                 file_path: str | None = None
+                columns: list[str] = []
 
                 if any(db_type in raw_type for db_type in ["ODBC", "Oracle", "DB2", "SQL"]):
                     tables_or_files = self._extract_tables_from_sql(record)
-                    # Fase 3: gravar lista de tabelas (1 por linha) em sql_expression
                     sql_expression = "\n".join(tables_or_files) if tables_or_files else None
+                    # Extract columns: try SELECT clause first, fallback to schema definitions
+                    sql_text = self._extract_select_statement(record)
+                    if sql_text:
+                        columns = self._extract_columns_from_select(sql_text)
+                    if not columns:
+                        columns = self._extract_schema_columns(record)
                 elif any(file_type in raw_type for file_type in ["DataSet", "SequentialFile"]):
-                    # Fase 3: file_path = path do arquivo (DataSet/SequentialFile)
                     file_path = self._extract_file_name(record) or None
                     if file_path:
                         tables_or_files = [file_path]
+                    columns = self._extract_schema_columns(record)
+                else:
+                    columns = self._extract_schema_columns(record)
 
-                # Fase 2: retornar TODOS os stages (inclui transformações)
-                # - Para estágios com múltiplas tabelas (FROM/JOIN), gera 1 registro por tabela.
-                # - Para transformações (sem tabela/arquivo), gera 1 registro com object_name=stage.
+                # Para estágios com múltiplas tabelas (FROM/JOIN), gera 1 registro por tabela.
+                # Para transformações (sem tabela/arquivo), gera 1 registro com object_name=stage.
                 if not tables_or_files:
                     self.extracted_lineage.append(
                         {
@@ -194,6 +259,7 @@ class DSXEngine:
                             "database_name": None,
                             "sql_expression": sql_expression,
                             "file_path": file_path,
+                            "columns": columns,
                         }
                     )
                 else:
@@ -210,8 +276,13 @@ class DSXEngine:
                                 "database_name": None,
                                 "sql_expression": sql_expression,
                                 "file_path": file_path,
+                                "columns": columns,
                             }
                         )
 
         return {"sucesso": True, "dados": self.extracted_lineage}
+
+    # Alias usado em etl_sequence_import_parse
+    def extrair(self, nome_projeto: str, nome_job: str) -> dict:
+        return self.buscar_linhagem(nome_projeto, nome_job)
 

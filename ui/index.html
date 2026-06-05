@@ -2794,10 +2794,20 @@ function renderLineageJob() {
           'data-ls-content="' + encodeURIComponent(detailContent) + '">+</button>')
       : '';
 
+    const cols = Array.isArray(o.columns) ? o.columns : [];
+    const colsHtml = cols.length
+      ? ('<button class="ls-detail-btn" ' +
+          'title="Ver campos utilizados" ' +
+          'data-ls-title="Campos utilizados (' + cols.length + ')" ' +
+          'data-ls-content="' + encodeURIComponent(cols.join('\n')) + '" ' +
+          'style="background:rgba(243,146,0,.12);border-color:var(--cvp-orange);color:#b45309">⊞</button>')
+      : '';
+
     return '<div class="ls-node"><div class="ls-node-box ' + cls + '">' +
       '<div style="display:flex;align-items:center;justify-content:center;gap:4px">' +
         '<span style="font-size:12px;font-weight:500">' + (label || '—') + '</span>' +
         btnHtml +
+        colsHtml +
       '</div>' +
       (typeLabel ? '<span class="ls-node-label">' + typeLabel + '</span>' : '') +
       (dbLine ? '<span class="ls-node-db">' + dbLine + '</span>' : '') +
@@ -3228,6 +3238,35 @@ async function _catTrigger(conf, statusMsg) {
   return normalizeXcomValue(await xr.json());
 }
 
+function _catShowColumns(evt, encodedJson) {
+  evt.stopPropagation();
+  document.querySelectorAll('.ls-detail-popover').forEach(p => p.remove());
+  let cols = [];
+  try { cols = JSON.parse(decodeURIComponent(encodedJson)); } catch(_) {}
+  const pop = document.createElement('div');
+  pop.className = 'ls-detail-popover';
+  const title = document.createElement('div');
+  title.className = 'ls-pop-title';
+  title.textContent = 'Campos utilizados (' + cols.length + ')';
+  pop.appendChild(title);
+  (cols.length ? cols : ['—']).forEach(function(c) {
+    const el = document.createElement('div');
+    el.className = 'ls-pop-item';
+    el.textContent = c;
+    pop.appendChild(el);
+  });
+  const rect = evt.target.getBoundingClientRect();
+  pop.style.left = (rect.right + 6) + 'px';
+  pop.style.top  = rect.top + 'px';
+  document.body.appendChild(pop);
+  function close(e) {
+    if (!pop.contains(e.target) && e.target !== evt.target) {
+      pop.remove(); document.removeEventListener('click', close);
+    }
+  }
+  setTimeout(() => document.addEventListener('click', close), 50);
+}
+
 function _catDirBadge(dir) {
   const cfg = {
     origem:       { label: 'Origem',       bg: 'rgba(24,95,165,.12)', color: '#185FA5', border: 'rgba(24,95,165,.3)' },
@@ -3274,16 +3313,23 @@ function _renderCatResults(payload, impactoMode) {
   }
 
   el.innerHTML = pipelines.map((p, pi) => {
-    const jobRows = (p.jobs || []).map(j =>
-      `<div style="display:grid;grid-template-columns:26px 1fr auto auto auto;gap:8px;align-items:center;
+    const jobRows = (p.jobs || []).map(j => {
+      const cols = Array.isArray(j.columns) ? j.columns : [];
+      const colsChip = cols.length
+        ? `<span title="${cols.join(', ')}" style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:999px;
+            background:rgba(243,146,0,.12);color:#b45309;border:1px solid rgba(243,146,0,.35);
+            cursor:default;white-space:nowrap" onclick="event.stopPropagation();_catShowColumns(event,'${encodeURIComponent(JSON.stringify(cols))}')">⊞ ${cols.length} campo(s)</span>`
+        : '';
+      return `<div style="display:grid;grid-template-columns:26px 1fr auto auto auto auto;gap:8px;align-items:center;
         padding:.4rem .75rem;border-bottom:1px solid var(--border);font-size:12px">
         <span style="font-size:11px;font-weight:700;color:var(--muted);text-align:center">#${j.execution_order}</span>
         <span style="font-family:monospace;font-size:12px">${j.job_name}</span>
         ${_catDirBadge(j.direction)}
         <span style="font-size:11px;color:var(--text)">${j.object_name || '—'}</span>
         <span style="font-size:11px;color:var(--muted)">${j.database_name || ''}</span>
-      </div>`
-    ).join('');
+        ${colsChip}
+      </div>`;
+    }).join('');
 
     const isOpen = pi === 0;
     return `<div style="border:1px solid var(--border);border-radius:12px;margin-bottom:.65rem;overflow:hidden">
@@ -3303,13 +3349,14 @@ function _renderCatResults(payload, impactoMode) {
         <span class="cat-arrow" style="color:var(--muted);font-size:12px;flex-shrink:0">${isOpen ? '▲' : '▼'}</span>
       </div>
       <div style="display:${isOpen ? '' : 'none'}">
-        <div style="display:grid;grid-template-columns:26px 1fr auto auto auto;gap:8px;padding:.35rem .75rem;
+        <div style="display:grid;grid-template-columns:26px 1fr auto auto auto auto;gap:8px;padding:.35rem .75rem;
           background:var(--bg);border-bottom:1px solid var(--border);border-top:1px solid var(--border)">
           <span style="font-size:10px;color:var(--muted);font-weight:600">Ord.</span>
           <span style="font-size:10px;color:var(--muted);font-weight:600">Job</span>
           <span style="font-size:10px;color:var(--muted);font-weight:600">Direção</span>
           <span style="font-size:10px;color:var(--muted);font-weight:600">Objeto</span>
           <span style="font-size:10px;color:var(--muted);font-weight:600">Banco</span>
+          <span style="font-size:10px;color:var(--muted);font-weight:600">Campos</span>
         </div>
         ${jobRows}
       </div>
