@@ -127,16 +127,22 @@ class DSXEngine:
         return ""
 
     def _extract_columns_from_select(self, sql_text: str) -> list[str]:
-        """Parse SELECT clause and return column names/aliases."""
+        """Parse SELECT clause and return column names/aliases (sem distinção de tabela)."""
         m = re.search(r"\bSELECT\s+(.*?)\bFROM\b", sql_text, re.IGNORECASE | re.DOTALL)
         if not m:
             return []
         select_part = m.group(1).strip()
         if select_part in ("*", "1"):
             return []
+        return [col for _, col in self._tokenize_select(select_part)]
 
-        # Split by top-level commas (respects parentheses)
-        tokens: list[str] = []
+    def _tokenize_select(self, select_part: str) -> list[tuple[str | None, str]]:
+        """
+        Divide o SELECT em tokens e retorna lista de (alias_tabela, nome_coluna).
+        alias_tabela é None quando a coluna não tem prefixo de tabela.
+        """
+        # Split por vírgulas de nível 0 (respeita parênteses)
+        raw_tokens: list[str] = []
         depth, buf = 0, []
         for ch in select_part:
             if ch == "(":
@@ -144,25 +150,86 @@ class DSXEngine:
             elif ch == ")":
                 depth -= 1; buf.append(ch)
             elif ch == "," and depth == 0:
-                tokens.append("".join(buf).strip()); buf = []
+                raw_tokens.append("".join(buf).strip()); buf = []
             else:
                 buf.append(ch)
         if buf:
-            tokens.append("".join(buf).strip())
+            raw_tokens.append("".join(buf).strip())
 
-        result: list[str] = []
-        for tok in tokens:
+        result: list[tuple[str | None, str]] = []
+        skip = {"FROM", "WHERE", "GROUP", "ORDER", "SELECT", "HAVING", "UNION"}
+        for tok in raw_tokens:
             tok = tok.strip()
+            # Alias explícito: ... AS nome
             as_m = re.search(r"\bAS\s+([a-zA-Z0-9_\[\]]+)\s*$", tok, re.IGNORECASE)
-            if as_m:
-                result.append(as_m.group(1).strip("[]"))
-            else:
-                id_m = re.search(r"([a-zA-Z0-9_\[\]]+)\s*$", tok)
-                if id_m:
-                    name = id_m.group(1).strip("[]")
-                    if name and name.upper() not in ("FROM", "WHERE", "GROUP", "ORDER", "SELECT"):
-                        result.append(name)
+            col_name = as_m.group(1).strip("[]") if as_m else None
+
+            # Prefixo de tabela: alias.coluna
+            prefix_m = re.match(r"([a-zA-Z0-9_]+)\.([a-zA-Z0-9_\[\]]+)", tok)
+            tbl_alias = prefix_m.group(1).lower() if prefix_m else None
+
+            if col_name is None:
+                if prefix_m:
+                    col_name = prefix_m.group(2).strip("[]")
+                else:
+                    id_m = re.search(r"([a-zA-Z0-9_\[\]]+)\s*$", tok)
+                    if id_m:
+                        col_name = id_m.group(1).strip("[]")
+
+            if col_name and col_name.upper() not in skip:
+                result.append((tbl_alias, col_name))
         return result
+
+    def _extract_columns_per_table(self, sql_text: str) -> dict[str, list[str]]:
+        """
+        Retorna dict  table_name_lower → [colunas daquela tabela].
+        Usa os aliases do FROM/JOIN para atribuir cada coluna à tabela correta.
+        Colunas sem prefixo de alias são associadas a todas as tabelas (fallback).
+        """
+        # 1. Monta alias → table_name (lower, sem schema)
+        alias_map: dict[str, str] = {}
+        for m in re.finditer(
+            r"\b(?:FROM|JOIN)\s+([a-zA-Z0-9_.\[\]]+)(?:\s+AS)?\s+([a-zA-Z0-9_]+)",
+            sql_text, re.IGNORECASE
+        ):
+            table_full = m.group(1).strip()
+            alias = m.group(2).strip().lower()
+            skip_kw = {"ON", "WHERE", "INNER", "LEFT", "RIGHT", "OUTER", "FULL", "CROSS",
+                       "WITH", "SET", "AND", "OR"}
+            if alias.upper() in skip_kw:
+                continue
+            table_simple = table_full.split(".")[-1].strip("[]").lower()
+            alias_map[alias] = table_simple
+            alias_map[table_simple] = table_simple  # sem alias também funciona
+
+        if not alias_map:
+            return {}
+
+        # 2. Parse SELECT
+        m_sel = re.search(r"\bSELECT\s+(.*?)\bFROM\b", sql_text, re.IGNORECASE | re.DOTALL)
+        if not m_sel:
+            return {}
+        select_part = m_sel.group(1).strip()
+        if select_part in ("*", "1"):
+            return {}
+
+        tokens = self._tokenize_select(select_part)
+        unaliased: list[str] = []   # colunas sem prefixo de tabela
+        per_table: dict[str, list[str]] = {}
+
+        for tbl_alias, col_name in tokens:
+            if tbl_alias and tbl_alias in alias_map:
+                tbl = alias_map[tbl_alias]
+                per_table.setdefault(tbl, []).append(col_name)
+            else:
+                unaliased.append(col_name)
+
+        # Colunas sem alias → distribui para todas as tabelas
+        if unaliased:
+            for tbl in set(alias_map.values()):
+                per_table.setdefault(tbl, []).extend(unaliased)
+
+        return per_table
 
     def _extract_schema_columns(self, record_content: str) -> list[str]:
         """Extract column names from XML schema/column definitions embedded in a stage record."""
@@ -227,15 +294,27 @@ class DSXEngine:
                 file_path: str | None = None
                 columns: list[str] = []
 
+                per_table_cols: dict[str, list[str]] = {}
+
                 if any(db_type in raw_type for db_type in ["ODBC", "Oracle", "DB2", "SQL"]):
                     tables_or_files = self._extract_tables_from_sql(record)
                     sql_expression = "\n".join(tables_or_files) if tables_or_files else None
-                    # Extract columns: try SELECT clause first, fallback to schema definitions
                     sql_text = self._extract_select_statement(record)
                     if sql_text:
-                        columns = self._extract_columns_from_select(sql_text)
-                    if not columns:
-                        columns = self._extract_schema_columns(record)
+                        # Extrai colunas por tabela via aliases do SQL
+                        per_table_cols = self._extract_columns_per_table(sql_text)
+                        if not per_table_cols:
+                            # SELECT simples sem aliases: mesmas colunas para todos
+                            fallback = self._extract_columns_from_select(sql_text)
+                            for tbl in tables_or_files:
+                                tbl_key = tbl.split(".")[-1].strip("[]").lower()
+                                per_table_cols[tbl_key] = fallback
+                    if not per_table_cols:
+                        # Sem SQL: tenta schema XML/DSX da definição do stage
+                        schema_cols = self._extract_schema_columns(record)
+                        for tbl in tables_or_files:
+                            tbl_key = tbl.split(".")[-1].strip("[]").lower()
+                            per_table_cols[tbl_key] = schema_cols
                 elif any(file_type in raw_type for file_type in ["DataSet", "SequentialFile"]):
                     file_path = self._extract_file_name(record) or None
                     if file_path:
@@ -264,6 +343,8 @@ class DSXEngine:
                     )
                 else:
                     for item in tables_or_files:
+                        tbl_key = item.split(".")[-1].strip("[]").lower()
+                        item_cols = per_table_cols.get(tbl_key, columns)
                         self.extracted_lineage.append(
                             {
                                 "project_name": nome_projeto,
@@ -276,7 +357,7 @@ class DSXEngine:
                                 "database_name": None,
                                 "sql_expression": sql_expression,
                                 "file_path": file_path,
-                                "columns": columns,
+                                "columns": item_cols,
                             }
                         )
 
