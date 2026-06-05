@@ -59,7 +59,10 @@ default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
 
 
 def _search(hook, object_name: str, direction: str, database_name: str) -> dict:
-    where = ["l.object_name LIKE %s", "l.direction IN ('origem','destino','transformacao')"]
+    where = [
+        "l.object_name LIKE %s",
+        "ISNULL(stm.type_category, 'banco') IN ('banco', 'arquivo')",
+    ]
     params: list = [f"%{object_name}%"]
 
     if direction and direction != "all":
@@ -75,19 +78,20 @@ def _search(hook, object_name: str, direction: str, database_name: str) -> dict:
             l.pipeline_name,
             p.project_name,
             p.domain,
-            CAST(p.active AS INT)        AS active,
+            CAST(p.active AS INT)           AS active,
             l.job_name,
             CAST(pj.execution_order AS INT) AS execution_order,
             pj.job_type,
             l.direction,
             l.object_name,
-            l.object_type,
-            ISNULL(l.database_name, '')  AS database_name,
-            ISNULL(l.stage_name,   '')   AS stage_name
+            ISNULL(stm.type_label, l.object_type) AS object_type,
+            ISNULL(l.database_name, '')            AS database_name,
+            ISNULL(l.stage_name,   '')             AS stage_name
         FROM dbo.etl_job_lineage l
-        JOIN dbo.etl_pipeline     p  ON p.pipeline_name = l.pipeline_name
-        JOIN dbo.etl_pipeline_job pj ON pj.pipeline_name = l.pipeline_name
-                                     AND pj.job_name     = l.job_name
+        JOIN dbo.etl_pipeline     p   ON p.pipeline_name  = l.pipeline_name
+        JOIN dbo.etl_pipeline_job pj  ON pj.pipeline_name = l.pipeline_name
+                                      AND pj.job_name     = l.job_name
+        LEFT JOIN dbo.etl_stage_type_map stm ON stm.type_raw = l.object_type
         WHERE {' AND '.join(where)}
         ORDER BY l.pipeline_name, pj.execution_order, l.direction, l.object_name
     """
@@ -151,7 +155,9 @@ def _ranking(hook, top_n: int) -> dict:
             SUM(CASE WHEN l.direction = 'origem'  THEN 1 ELSE 0 END)          AS as_origem,
             SUM(CASE WHEN l.direction = 'destino' THEN 1 ELSE 0 END)          AS as_destino
         FROM dbo.etl_job_lineage l
+        LEFT JOIN dbo.etl_stage_type_map stm ON stm.type_raw = l.object_type
         WHERE l.direction IN ('origem', 'destino')
+          AND ISNULL(stm.type_category, 'banco') IN ('banco', 'arquivo')
           AND l.object_name IS NOT NULL
           AND l.object_name <> ''
         GROUP BY l.object_name, l.database_name
