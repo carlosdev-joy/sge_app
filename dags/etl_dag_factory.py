@@ -343,6 +343,11 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         "    _exec_telemetry(hook, execution_id, job_name, task_key, final_status,",
         "                    '', end_time, duration_seconds, _build_log_file(job_name, execution_id))",
         "    _update_status_code(hook, execution_id, job_name, task_key, status_code)",
+        "    # Atualiza last_execution no pipeline a cada log_end — o último job grava o horário final",
+        "    try:",
+        "        _update_last_execution()",
+        "    except Exception as _ule_exc:",
+        "        print(f'[log_end] Aviso: não foi possível atualizar last_execution — {_ule_exc}')",
         "    # Fail-fast: propagar falha para interromper tarefas seguintes",
         "    if final_status in ('FAILED', 'DESCONHECIDO'):",
         "        raise RuntimeError(",
@@ -443,9 +448,6 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         sd_y, sd_m, sd_d = 2026, 1, 1
 
     dag_header = "\n".join([
-        "def _on_dag_success(context):",
-        "    _update_last_execution()",
-        "",
         "with DAG(",
         "    dag_id=DAG_ID,",
         "    default_args=default_args,",
@@ -454,7 +456,6 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         f'    schedule="{cron}",',
         "    catchup=False,",
         f"    tags={repr(all_tags)},",
-        "    on_success_callback=_on_dag_success,",
         ") as dag:",
     ])
 
