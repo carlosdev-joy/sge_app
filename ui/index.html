@@ -1407,45 +1407,114 @@
           <div class="card fade">
             <div class="card-section-head">
               <h2>Governança</h2>
-              <p class="sub">Visualização de lineage — nível job e nível pipeline</p>
+              <p class="sub">Lineage de pipelines e catálogo de dados</p>
             </div>
             <div class="body-pad">
-              <!-- Filtro -->
-              <div class="gov-filter">
-                <div class="field" style="margin:0;min-width:280px">
-                  <label>Pipeline <span style="color:var(--red)">*</span></label>
-                  <input id="gov-pipeline" type="text" placeholder="ex: datastage_cobranca_diario" />
-                </div>
-                <button class="btn btn-primary btn-sm" id="btn-gov" onclick="loadGovernanca()" style="height:40px">
-                  <span id="btn-gov-txt">Carregar lineage</span>
-                </button>
-              </div>
-              <div id="gov-status" style="font-size:12px;color:var(--muted);margin-bottom:.75rem;min-height:16px"></div>
 
-              <!-- Modo: job / pipeline -->
-              <div class="gov-mode-toggle" id="gov-mode-row" style="display:none">
-                <button class="gov-mode-btn active" id="gov-btn-job" onclick="setGovMode('job')">◎ Nível Job</button>
-                <button class="gov-mode-btn" id="gov-btn-pipe" onclick="setGovMode('pipeline')">◈ Nível Pipeline</button>
+              <!-- Abas internas -->
+              <div style="display:flex;gap:6px;margin-bottom:1.5rem;border-bottom:1px solid var(--border);padding-bottom:.75rem">
+                <button id="gov-tab-lineage"  class="adm-tab active" onclick="govTabSwitch('lineage')">◈ Lineage</button>
+                <button id="gov-tab-catalogo" class="adm-tab"        onclick="govTabSwitch('catalogo')">◫ Catálogo de Dados</button>
               </div>
 
-              <!-- Seletor de job (nível job) -->
-              <div id="gov-job-selector" style="margin-bottom:1rem;display:none">
-                <div class="field" style="margin:0;max-width:360px">
-                  <label>Job</label>
-                  <select id="gov-job-select" onchange="renderLineageJob()">
-                    <option value="">Selecione o job...</option>
-                  </select>
+              <!-- ── PAINEL: LINEAGE ── -->
+              <div id="gov-panel-lineage">
+                <!-- Filtro -->
+                <div class="gov-filter">
+                  <div class="field" style="margin:0;min-width:280px">
+                    <label>Pipeline <span style="color:var(--red)">*</span></label>
+                    <input id="gov-pipeline" type="text" placeholder="ex: datastage_cobranca_diario" />
+                  </div>
+                  <button class="btn btn-primary btn-sm" id="btn-gov" onclick="loadGovernanca()" style="height:40px">
+                    <span id="btn-gov-txt">Carregar lineage</span>
+                  </button>
                 </div>
-              </div>
+                <div id="gov-status" style="font-size:12px;color:var(--muted);margin-bottom:.75rem;min-height:16px"></div>
 
-              <!-- Área de visualização -->
-              <div id="gov-visual">
-                <div class="empty-state">
-                  <span class="es-icon">◈</span>
-                  <p class="es-title">Informe o pipeline e carregue o lineage</p>
-                  <p class="es-sub">O diagrama aparecerá aqui.</p>
+                <!-- Modo: job / pipeline -->
+                <div class="gov-mode-toggle" id="gov-mode-row" style="display:none">
+                  <button class="gov-mode-btn active" id="gov-btn-job"  onclick="setGovMode('job')">◎ Nível Job</button>
+                  <button class="gov-mode-btn"        id="gov-btn-pipe" onclick="setGovMode('pipeline')">◈ Nível Pipeline</button>
                 </div>
-              </div>
+
+                <!-- Seletor de job (nível job) -->
+                <div id="gov-job-selector" style="margin-bottom:1rem;display:none">
+                  <div class="field" style="margin:0;max-width:360px">
+                    <label>Job</label>
+                    <select id="gov-job-select" onchange="renderLineageJob()">
+                      <option value="">Selecione o job...</option>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- Área de visualização -->
+                <div id="gov-visual">
+                  <div class="empty-state">
+                    <span class="es-icon">◈</span>
+                    <p class="es-title">Informe o pipeline e carregue o lineage</p>
+                    <p class="es-sub">O diagrama aparecerá aqui.</p>
+                  </div>
+                </div>
+              </div><!-- /gov-panel-lineage -->
+
+              <!-- ── PAINEL: CATÁLOGO ── -->
+              <div id="gov-panel-catalogo" style="display:none">
+
+                <!-- Busca -->
+                <div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1rem 1.25rem;margin-bottom:1.25rem">
+                  <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:.75rem">Buscar tabela ou objeto</div>
+                  <div style="display:grid;grid-template-columns:1fr 160px 200px auto;gap:.6rem;align-items:end;flex-wrap:wrap">
+                    <div class="field" style="margin:0">
+                      <label>Nome da tabela / objeto <span style="color:var(--red)">*</span></label>
+                      <input id="cat-object-name" type="text" placeholder="ex: TB_CLIENTE, DW_COBRANCA..."
+                        oninput="this.value=this.value.toUpperCase()"
+                        onkeydown="if(event.key==='Enter') catalogoSearch()" />
+                    </div>
+                    <div class="field" style="margin:0">
+                      <label>Direção</label>
+                      <select id="cat-direction">
+                        <option value="all">Todas</option>
+                        <option value="origem">Somente origem</option>
+                        <option value="destino">Somente destino</option>
+                        <option value="transformacao">Transformação</option>
+                      </select>
+                    </div>
+                    <div class="field" style="margin:0">
+                      <label>Banco de dados <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+                      <input id="cat-database" type="text" placeholder="ex: DW_PROD" oninput="this.value=this.value.toUpperCase()" />
+                    </div>
+                    <div style="display:flex;gap:6px">
+                      <button class="btn btn-primary btn-sm" onclick="catalogoSearch()" id="btn-cat-search" style="height:46px;min-width:80px">
+                        <span id="btn-cat-txt">Buscar</span>
+                      </button>
+                      <button class="btn btn-outline btn-sm" onclick="catalogoImpacto()" title="Ver só pipelines ativos que leem este objeto como origem" style="height:46px;min-width:90px">
+                        <span id="btn-cat-imp-txt">⚡ Impacto</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Status busca -->
+                <div id="cat-status" style="font-size:12px;color:var(--muted);min-height:16px;margin-bottom:.5rem"></div>
+
+                <!-- Resultados de busca -->
+                <div id="cat-results"></div>
+
+                <!-- Separador ranking -->
+                <div class="section-sep" style="margin:1.5rem 0 1rem"><span>◫ Tabelas mais utilizadas</span></div>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem;flex-wrap:wrap;gap:.5rem">
+                  <div style="font-size:12px;color:var(--muted)">Objetos que aparecem em mais pipelines na lineage cadastrada.</div>
+                  <button class="btn btn-outline btn-sm" onclick="catalogoRanking()">↻ Atualizar ranking</button>
+                </div>
+                <div id="cat-ranking">
+                  <div class="empty-state" style="padding:1.5rem">
+                    <span class="es-icon" style="font-size:28px">◫</span>
+                    <p class="es-title">Clique em "Atualizar ranking" para carregar</p>
+                  </div>
+                </div>
+
+              </div><!-- /gov-panel-catalogo -->
+
             </div>
           </div>
         </div><!-- fim page-governanca -->
@@ -3107,6 +3176,256 @@ function _renderVersionBadge() {
   const rel = window.__appConfig.app_release_name || '';
   el.textContent = 'v' + v;
   el.title = 'ORQUESTRA v' + v + (rel ? ' · ' + rel : '');
+}
+
+/* ══ GOVERNANÇA — tab switch ══════════════════════════════════════ */
+function govTabSwitch(tab) {
+  ['lineage','catalogo'].forEach(t => {
+    const panel = $('gov-panel-' + t);
+    const btn   = $('gov-tab-' + t);
+    if (panel) panel.style.display = t === tab ? '' : 'none';
+    if (btn)   btn.classList.toggle('active', t === tab);
+  });
+  if (tab === 'catalogo' && !_catRankingLoaded) catalogoRanking();
+}
+
+/* ══ CATÁLOGO DE DADOS ════════════════════════════════════════════ */
+const CATALOGO_DAG = 'etl_catalogo_query';
+let _catRankingLoaded = false;
+
+async function _catTrigger(conf, statusMsg) {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return null; }
+  const st = $('cat-status');
+  if (st) { st.textContent = statusMsg; st.style.color = 'var(--muted)'; }
+
+  const runId = 'orq_cat_' + Date.now();
+  const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+    body: JSON.stringify({ dag_run_id: runId, conf }),
+  });
+  if (r.status === 401) { sair(); return null; }
+  if (!r.ok) {
+    if (st) { st.textContent = 'Erro ao disparar: ' + r.status; st.style.color = 'var(--red)'; }
+    return null;
+  }
+  const run   = await r.json();
+  const rid   = run.dag_run_id || run.run_id;
+  const state = await waitDagRun(CATALOGO_DAG, rid, 60);
+  if (state !== 'success') {
+    if (st) { st.textContent = 'Falha/timeout na consulta.'; st.style.color = 'var(--red)'; }
+    return null;
+  }
+  const xr = await fetch(
+    '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid +
+    '/taskInstances/consultar_catalogo/xcomEntries/return_value',
+    { headers: { 'Authorization': authHeader } }
+  );
+  if (!xr.ok) {
+    if (st) { st.textContent = 'Erro ao ler resultado: ' + xr.status; st.style.color = 'var(--red)'; }
+    return null;
+  }
+  return normalizeXcomValue(await xr.json());
+}
+
+function _catDirBadge(dir) {
+  const cfg = {
+    origem:       { label: 'Origem',       bg: 'rgba(24,95,165,.12)', color: '#185FA5', border: 'rgba(24,95,165,.3)' },
+    destino:      { label: 'Destino',      bg: 'rgba(39,80,10,.12)',  color: '#27500A', border: 'rgba(39,80,10,.3)'  },
+    transformacao:{ label: 'Transformação',bg: 'rgba(60,52,137,.12)', color: '#3C3489', border: 'rgba(60,52,137,.3)' },
+  };
+  const c = cfg[dir] || { label: dir, bg: 'var(--bg)', color: 'var(--muted)', border: 'var(--border)' };
+  return `<span style="font-size:10px;font-weight:600;padding:1px 7px;border-radius:999px;
+    background:${c.bg};color:${c.color};border:1px solid ${c.border};white-space:nowrap">${c.label}</span>`;
+}
+
+function _catActiveChip(active) {
+  return active
+    ? '<span style="font-size:10px;font-weight:600;padding:1px 7px;border-radius:999px;background:rgba(34,197,94,.12);color:#15803d;border:1px solid rgba(34,197,94,.3)">Ativo</span>'
+    : '<span style="font-size:10px;font-weight:600;padding:1px 7px;border-radius:999px;background:rgba(156,163,175,.12);color:var(--muted);border:1px solid var(--border)">Inativo</span>';
+}
+
+function _renderCatResults(payload, impactoMode) {
+  const el = $('cat-results');
+  const st = $('cat-status');
+  if (!el) return;
+
+  const pipelines = payload.pipelines || [];
+  const total     = payload.total_pipelines || 0;
+  const occ       = payload.total_ocorrencias || 0;
+  const term      = payload.term || '';
+
+  if (st) {
+    const modeLabel = impactoMode ? '⚡ Análise de impacto' : 'Busca';
+    st.style.color = 'var(--muted)';
+    st.textContent = total
+      ? `${modeLabel}: "${term}" — ${total} pipeline(s) · ${occ} ocorrência(s)`
+      : `${modeLabel}: "${term}" — nenhum resultado encontrado.`;
+  }
+
+  if (!pipelines.length) {
+    el.innerHTML =
+      '<div class="empty-state" style="padding:1.5rem">' +
+        '<span class="es-icon" style="font-size:28px">◫</span>' +
+        '<p class="es-title">Nenhum pipeline encontrado</p>' +
+        '<p class="es-sub">Tente um termo diferente ou verifique se o lineage foi importado.</p>' +
+      '</div>';
+    return;
+  }
+
+  el.innerHTML = pipelines.map((p, pi) => {
+    const jobRows = (p.jobs || []).map(j =>
+      `<div style="display:grid;grid-template-columns:26px 1fr auto auto auto;gap:8px;align-items:center;
+        padding:.4rem .75rem;border-bottom:1px solid var(--border);font-size:12px">
+        <span style="font-size:11px;font-weight:700;color:var(--muted);text-align:center">#${j.execution_order}</span>
+        <span style="font-family:monospace;font-size:12px">${j.job_name}</span>
+        ${_catDirBadge(j.direction)}
+        <span style="font-size:11px;color:var(--text)">${j.object_name || '—'}</span>
+        <span style="font-size:11px;color:var(--muted)">${j.database_name || ''}</span>
+      </div>`
+    ).join('');
+
+    const isOpen = pi === 0;
+    return `<div style="border:1px solid var(--border);border-radius:12px;margin-bottom:.65rem;overflow:hidden">
+      <div onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none';
+                   this.querySelector('.cat-arrow').textContent=this.nextElementSibling.style.display===''?'▲':'▼'"
+        style="display:flex;align-items:center;gap:.65rem;padding:.7rem 1rem;cursor:pointer;
+               background:var(--bg);user-select:none">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+            <span style="font-size:13px;font-weight:600;font-family:monospace">${p.pipeline_name}</span>
+            ${_catActiveChip(p.active)}
+            <span class="tag-pill" style="font-size:10px">${p.project_name}</span>
+            <span class="tag-pill" style="font-size:10px;background:var(--bg)">${p.domain}</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:.2rem">${p.ocorrencias} ocorrência(s)</div>
+        </div>
+        <span class="cat-arrow" style="color:var(--muted);font-size:12px;flex-shrink:0">${isOpen ? '▲' : '▼'}</span>
+      </div>
+      <div style="display:${isOpen ? '' : 'none'}">
+        <div style="display:grid;grid-template-columns:26px 1fr auto auto auto;gap:8px;padding:.35rem .75rem;
+          background:var(--bg);border-bottom:1px solid var(--border);border-top:1px solid var(--border)">
+          <span style="font-size:10px;color:var(--muted);font-weight:600">Ord.</span>
+          <span style="font-size:10px;color:var(--muted);font-weight:600">Job</span>
+          <span style="font-size:10px;color:var(--muted);font-weight:600">Direção</span>
+          <span style="font-size:10px;color:var(--muted);font-weight:600">Objeto</span>
+          <span style="font-size:10px;color:var(--muted);font-weight:600">Banco</span>
+        </div>
+        ${jobRows}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function catalogoSearch() {
+  const obj  = $('cat-object-name') ? $('cat-object-name').value.trim() : '';
+  const dir  = $('cat-direction')   ? $('cat-direction').value           : 'all';
+  const db   = $('cat-database')    ? $('cat-database').value.trim()     : '';
+  const btn  = $('btn-cat-search');
+  const btnT = $('btn-cat-txt');
+
+  if (!obj) { showToast('Informe o nome da tabela ou objeto.', true); return; }
+  if (btn)  btn.disabled = true;
+  if (btnT) btnT.textContent = '⏳';
+  $('cat-results').innerHTML = '';
+
+  try {
+    const payload = await _catTrigger(
+      { mode: 'search', object_name: obj, direction: dir, database_name: db || null },
+      'Buscando "' + obj + '"...'
+    );
+    if (payload) _renderCatResults(payload, false);
+  } finally {
+    if (btn)  btn.disabled = false;
+    if (btnT) btnT.textContent = 'Buscar';
+  }
+}
+
+async function catalogoImpacto() {
+  const obj  = $('cat-object-name') ? $('cat-object-name').value.trim() : '';
+  const db   = $('cat-database')    ? $('cat-database').value.trim()    : '';
+  const btn  = $('btn-cat-search');
+  const btnI = $('btn-cat-imp-txt');
+
+  if (!obj) { showToast('Informe o nome do objeto para análise de impacto.', true); return; }
+  if (btn)  btn.disabled = true;
+  if (btnI) btnI.textContent = '⏳';
+  $('cat-results').innerHTML = '';
+
+  try {
+    // Impacto = somente pipelines ATIVOS que usam o objeto como origem
+    const payload = await _catTrigger(
+      { mode: 'search', object_name: obj, direction: 'origem', database_name: db || null },
+      '⚡ Analisando impacto de "' + obj + '"...'
+    );
+    if (payload) {
+      // Filtra apenas ativos no cliente (a query já retorna todos; filtro visual)
+      if (payload.pipelines) {
+        payload.pipelines = payload.pipelines.filter(p => p.active);
+        payload.total_pipelines   = payload.pipelines.length;
+        payload.total_ocorrencias = payload.pipelines.reduce((s, p) => s + p.ocorrencias, 0);
+      }
+      _renderCatResults(payload, true);
+    }
+  } finally {
+    if (btn)  btn.disabled = false;
+    if (btnI) btnI.textContent = '⚡ Impacto';
+  }
+}
+
+async function catalogoRanking() {
+  const el = $('cat-ranking');
+  if (!el) return;
+  el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:.5rem 0">Carregando ranking...</div>';
+
+  try {
+    const payload = await _catTrigger({ mode: 'ranking', top_n: 15 }, '');
+    _catRankingLoaded = true;
+    const st = $('cat-status');
+    if (st && !st.textContent) st.textContent = '';
+
+    const data = (payload && payload.data) || [];
+    if (!data.length) {
+      el.innerHTML = '<div style="font-size:12px;color:var(--muted)">Nenhum objeto com lineage cadastrada.</div>';
+      return;
+    }
+
+    const maxCount = data[0].pipeline_count || 1;
+    el.innerHTML =
+      '<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden">' +
+      data.map((d, i) => {
+        const pct   = Math.round((d.pipeline_count / maxCount) * 100);
+        const isOri = d.as_origem  > 0;
+        const isDst = d.as_destino > 0;
+        const tags  = [
+          isOri ? `<span style="font-size:10px;padding:1px 6px;border-radius:999px;background:rgba(24,95,165,.1);color:#185FA5;border:1px solid rgba(24,95,165,.25)">Origem ×${d.as_origem}</span>` : '',
+          isDst ? `<span style="font-size:10px;padding:1px 6px;border-radius:999px;background:rgba(39,80,10,.1);color:#27500A;border:1px solid rgba(39,80,10,.25)">Destino ×${d.as_destino}</span>` : '',
+        ].filter(Boolean).join(' ');
+
+        return `<div style="padding:.65rem 1rem;border-bottom:${i < data.length-1 ? '1px solid var(--border)' : 'none'};
+                  display:grid;grid-template-columns:28px 1fr auto;gap:.65rem;align-items:center">
+          <span style="font-size:12px;font-weight:700;color:var(--muted);text-align:center">${i+1}</span>
+          <div>
+            <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.3rem">
+              <span style="font-size:13px;font-weight:600;font-family:monospace;cursor:pointer;color:var(--cvp-blue)"
+                onclick="$('cat-object-name').value='${d.object_name}';${d.database_name ? `$('cat-database').value='${d.database_name}';` : ''}catalogoSearch()"
+                title="Clique para buscar">${d.object_name}</span>
+              ${d.database_name ? `<span style="font-size:11px;color:var(--muted)">${d.database_name}</span>` : ''}
+              ${tags}
+            </div>
+            <div style="background:var(--border);border-radius:999px;height:4px;overflow:hidden">
+              <div style="background:var(--cvp-blue);width:${pct}%;height:100%;border-radius:999px;transition:width .3s"></div>
+            </div>
+          </div>
+          <div style="text-align:right;min-width:64px">
+            <div style="font-size:15px;font-weight:700">${d.pipeline_count}</div>
+            <div style="font-size:10px;color:var(--muted)">pipeline(s)</div>
+          </div>
+        </div>`;
+      }).join('') + '</div>';
+  } catch(e) {
+    if (el) el.innerHTML = '<div style="font-size:12px;color:var(--red)">Erro: ' + (e && e.message ? e.message : e) + '</div>';
+  }
 }
 
 /* ══ S2 — Badge de falhas no header ══════════════════════════════ */
