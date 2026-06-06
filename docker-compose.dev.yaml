@@ -3,55 +3,86 @@
 # Override para ambiente de DESENVOLVIMENTO na VPS.
 #
 # Uso:
-#   docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up -d
+#   docker compose -f docker-compose.yaml -f docker-compose.dev.yaml --env-file .env.dev up -d
 #
-# Diferenças do ambiente de produção:
-#   - UI  na porta 8081  (prod: 80)
-#   - Airflow na porta 8082  (prod: 8080)
-#   - Volume postgres separado (postgres-db-volume-dev)
-#   - Variáveis de ambiente carregadas de .env.dev
-#   - Conexão MSSQL aponta para banco de DEV via AIRFLOW_CONN_*
-#   - Branch: definida no clone/pull — não é controlada pelo compose
+# Portas expostas:
+#   :8081  → UI (Nginx)
+#   :8082  → Airflow webserver
+#   :1433  → SQL Server de dev (acesso externo via SSMS)
 
 x-airflow-common-dev:
   &airflow-common-dev
+  build:
+    context: .
+    dockerfile: Dockerfile.dev
   environment:
     &airflow-common-dev-env
-    # Sobrescreve conexão MSSQL para ambiente de dev
-    # Formato: mssql+pyodbc://user:pass@host:1433/db?driver=ODBC+Driver+17+for+SQL+Server
-    AIRFLOW_CONN_SQL14_DMDB41: "${DEV_MSSQL_CONN:-mssql+pyodbc://sa:SuaSenha@host-dev:1433/orquestra_dev?driver=ODBC+Driver+17+for+SQL+Server}"
-    # Usuário/senha do Airflow web de dev
+    AIRFLOW_CONN_SQL14_DMDB41: "mssql+pyodbc://sa:${DEV_MSSQL_SA_PASSWORD:-Orquestra@Dev2024}@sqlserver-dev:1433/orquestra_dev?driver=ODBC+Driver+17+for+SQL+Server&TrustServerCertificate=yes"
     _AIRFLOW_WWW_USER_USERNAME: "${DEV_AIRFLOW_USER:-admin}"
     _AIRFLOW_WWW_USER_PASSWORD: "${DEV_AIRFLOW_PASSWORD:-admin123}"
 
 services:
+
+  # ── SQL Server de dev ──────────────────────────────────────────────────────
+  sqlserver-dev:
+    image: mcr.microsoft.com/mssql/server:2019-latest
+    container_name: orquestra-sqlserver-dev
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${DEV_MSSQL_SA_PASSWORD:-Orquestra@Dev2024}"
+      MSSQL_PID: "Developer"
+    ports:
+      - "1433:1433"           # acesso externo via SSMS
+    volumes:
+      - sqlserver-dev-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P \"${DEV_MSSQL_SA_PASSWORD:-Orquestra@Dev2024}\" -Q 'SELECT 1' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── Postgres separado do de prod ───────────────────────────────────────────
   postgres:
     volumes:
       - postgres-db-volume-dev:/var/lib/postgresql/data
 
+  # ── UI na porta 8081 ───────────────────────────────────────────────────────
   ui-nginx:
     ports:
-      - "8081:80"           # UI dev em :8081 para não conflitar com prod (:80)
-    environment:
-      - NGINX_ENV=dev
+      - "8081:80"
 
+  # ── Airflow webserver na porta 8082 ────────────────────────────────────────
   airflow-webserver:
     ports:
-      - "8082:8080"         # Airflow webserver dev em :8082
+      - "8082:8080"
     environment:
       <<: *airflow-common-dev-env
+    depends_on:
+      sqlserver-dev:
+        condition: service_healthy
 
   airflow-scheduler:
     environment:
       <<: *airflow-common-dev-env
+    depends_on:
+      sqlserver-dev:
+        condition: service_healthy
 
   airflow-worker:
     environment:
       <<: *airflow-common-dev-env
+    depends_on:
+      sqlserver-dev:
+        condition: service_healthy
 
   airflow-triggerer:
     environment:
       <<: *airflow-common-dev-env
+    depends_on:
+      sqlserver-dev:
+        condition: service_healthy
 
   airflow-init:
     environment:
@@ -63,3 +94,4 @@ services:
 
 volumes:
   postgres-db-volume-dev:
+  sqlserver-dev-data:
