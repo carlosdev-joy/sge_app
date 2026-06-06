@@ -40,7 +40,7 @@ run_sql_file() {
     # Copia, substitui o banco e executa
     docker cp "$file" "$CONTAINER:/tmp/_current.sql"
     docker exec "$CONTAINER" bash -c "
-        sed -i 's/USE \[DMDB41\]/USE [orquestra_dev]/gi; s/\[DMDB41\]\.\[dbo\]/[orquestra_dev].[dbo]/gi' /tmp/_current.sql
+        sed 's/USE \[DMDB41\]/USE [orquestra_dev]/gi; s/\[DMDB41\]\.\[dbo\]/[orquestra_dev].[dbo]/gi' /tmp/_current.sql > /tmp/_patched.sql && cp /tmp/_patched.sql /tmp/_current.sql
     "
     docker exec "$CONTAINER" bash -c "$SQLCMD_BIN -C -S localhost -U sa -P '$SA_PASS' -d orquestra_dev -i /tmp/_current.sql -b 2>&1 | grep -v '^$' | grep -v '^--'" || true
 }
