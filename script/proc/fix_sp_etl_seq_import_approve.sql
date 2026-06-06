@@ -71,38 +71,54 @@ BEGIN
             @schedule_dow    = @schedule_dow,
             @schedule_dom    = @schedule_dom;
 
-        -- ── 2. Criar os jobs (apenas status != 'ignorado') ────────────────
-        INSERT INTO dbo.etl_pipeline_job (
-            pipeline_name, job_name, execution_order, job_type, job_command,
-            created_at, updated_at
-        )
-        SELECT
-            @pipeline_name,
-            j.job_name_orq,
-            j.execution_order,
-            j.job_type,
-            j.job_command,
-            GETDATE(),
-            GETDATE()
-        FROM dbo.etl_seq_import_job j
-        WHERE j.import_id = @import_id
-          AND j.status    <> 'ignorado'
-        ORDER BY j.execution_order;
+        -- ── 2. UPSERT jobs (permite reimportação sem duplicatas) ─────────
+        MERGE dbo.etl_pipeline_job AS tgt
+        USING (
+            SELECT
+                @pipeline_name  AS pipeline_name,
+                j.job_name_orq  AS job_name,
+                j.execution_order,
+                j.job_type,
+                j.job_command
+            FROM dbo.etl_seq_import_job j
+            WHERE j.import_id = @import_id
+              AND j.status    <> 'ignorado'
+        ) AS src
+        ON tgt.pipeline_name = src.pipeline_name
+       AND tgt.job_name      = src.job_name
+        WHEN MATCHED THEN
+            UPDATE SET
+                execution_order = src.execution_order,
+                job_type        = src.job_type,
+                job_command     = src.job_command,
+                updated_at      = GETDATE()
+        WHEN NOT MATCHED THEN
+            INSERT (pipeline_name, job_name, execution_order, job_type, job_command, created_at, updated_at)
+            VALUES (src.pipeline_name, src.job_name, src.execution_order, src.job_type, src.job_command, GETDATE(), GETDATE());
 
         -- Marcar jobs staging como aprovados
-        -- (sem FK para etl_pipeline_job.id pois essa tabela usa pipeline_name+job_name como chave)
         UPDATE dbo.etl_seq_import_job
         SET status = 'aprovado'
         WHERE import_id = @import_id
           AND status    <> 'ignorado';
 
-        -- ── 3. Criar lineage (apenas status != 'ignorado') ────────────────
+        -- ── 3. UPSERT lineage (permite reimportação sem duplicatas) ──────
+        -- Remove lineage existente do pipeline/job para reinserir limpa
+        DELETE tgt
+        FROM dbo.etl_job_lineage tgt
+        WHERE tgt.pipeline_name = @pipeline_name
+          AND tgt.job_name IN (
+              SELECT j.job_name_orq
+              FROM dbo.etl_seq_import_job j
+              WHERE j.import_id = @import_id AND j.status = 'aprovado'
+          );
+
         INSERT INTO dbo.etl_job_lineage (
             pipeline_name, job_name, direction,
             object_name, object_type, stage_name, stage_type_raw,
             database_name, sql_expression, file_path,
             dsx_source_file, extracted_at, extraction_method,
-            created_at, updated_at
+            columns_json, created_at, updated_at
         )
         SELECT
             @pipeline_name,
@@ -110,7 +126,7 @@ BEGIN
             l.direction,
             l.object_name,
             l.object_type,
-            l.object_name,        -- stage_name = object_name
+            l.object_name,
             l.stage_type_raw,
             l.database_name,
             l.sql_expression,
@@ -118,6 +134,7 @@ BEGIN
             l.dsx_source_file,
             GETDATE(),
             l.extraction_method,
+            l.columns_json,
             GETDATE(),
             GETDATE()
         FROM dbo.etl_seq_import_lineage l

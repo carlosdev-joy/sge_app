@@ -3621,9 +3621,9 @@ function _onSortClick(tableId, col, renderFn) {
 
 /* ══ ADMIN — Painel restrito CVT38571 ══════════════════════════ */
 const ADMIN_DAG_ID    = 'etl_admin_manage';
-const ADMIN_USER      = 'CVT38571';
+const ADMIN_USERS     = ['CVT38571', 'ADMIN', 'DEVADMIN'];
 
-function _isAdmin() { return (window.__currentUser || '').toUpperCase() === ADMIN_USER; }
+function _isAdmin() { return ADMIN_USERS.includes((window.__currentUser || '').toUpperCase()); }
 
 // Mostra/oculta aba Admin baseado no usuário logado
 function _applyAdminVisibility() {
