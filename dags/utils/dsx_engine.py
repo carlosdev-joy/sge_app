@@ -260,7 +260,12 @@ class DSXEngine:
                         break
             if not file_path and xml_blob:
                 file_path = self._extract_file_path_from_xml(xml_blob)
+            # Gravar somente o nome do arquivo (sem diretório/parâmetros)
+            if file_path:
+                file_path = file_path.replace("\\", "/").split("/")[-1] or file_path
             object_type = "Arquivo DataSet (.ds/.dx)" if "DataSet" in stage_type else "Arquivo Sequencial"
+            # Colunas dos pins para stages de arquivo também
+            columns = self._extract_columns_from_pin(output_pin_content)
 
         return {
             "project_name":      project_name,

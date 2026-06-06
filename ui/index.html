@@ -2784,30 +2784,34 @@ function renderLineageJob() {
   }
 
   const mk = (o, cls) => {
-    // Para stages de banco/arquivo: label principal = tabela/arquivo real
-    // Para transformações: label principal = nome do componente
     const isTransf = cls === 'transf';
-    const rawLabel  = isTransf ? (o.stage_name || o.object_name) : (o.object_name || o.stage_name);
-    // Para nós de arquivo: label principal = basename do file_path (ex: DS_EXT.dx); sublabel = object_name se diferente
-    const label     = (!isTransf && o.file_path) ? _fileBasename(o.file_path) : rawLabel;
-    const sublabel  = (!isTransf && o.stage_name && o.stage_name !== label) ? o.stage_name
-                    : (!isTransf && o.file_path && o.object_name && o.object_name !== label) ? o.object_name
-                    : null;
-    const typeLabel = (o.type_label || o.object_type || '');
-    // db line: apenas banco quando não está já visível no label
-    const dbLine = o.database_name && !label.includes(o.database_name) ? o.database_name : '';
+    const isFile   = !isTransf && !!o.file_path;
+    const isDb     = !isTransf && !isFile && (!!o.database_name || !!(o.object_type || '').toLowerCase().includes('odbc') || !!(o.object_type || '').toLowerCase().includes('banco'));
 
-    // Botão SQL (só mantém se ainda houver sql_expression legada com múltiplas tabelas)
-    const sqlStr = o.sql_expression ? String(o.sql_expression).trim() : '';
-    const sqlHasExtra = sqlStr && sqlStr.split('\n').filter(Boolean).length > 1
-                        && !sqlStr.toLowerCase().includes(label.toLowerCase());
-    const btnHtml = sqlHasExtra
+    // Label principal = stage_name sempre
+    const label = o.stage_name || o.object_name || '—';
+
+    // Linha de tipo + detalhe em negrito
+    const typeBase = o.type_label || o.object_type || '';
+    let detailLine = '';
+    if (isFile && o.file_path) {
+      detailLine = typeBase + (o.file_path ? ': <strong>' + _fileBasename(o.file_path) + '</strong>' : '');
+    } else if (isDb) {
+      detailLine = typeBase + (o.database_name ? ': <strong>' + o.database_name + '</strong>' : '');
+    } else if (typeBase) {
+      detailLine = typeBase;
+    }
+
+    // Botão SQL — só para banco, quando há sql_expression
+    const sqlStr = (!isFile && o.sql_expression) ? String(o.sql_expression).trim() : '';
+    const btnHtml = sqlStr
       ? ('<button class="ls-detail-btn" ' +
-          'title="Ver tabelas extraídas do SQL" ' +
-          'data-ls-title="Tabelas extraídas do SQL" ' +
+          'title="Ver SQL / tabelas" ' +
+          'data-ls-title="SQL / Tabelas" ' +
           'data-ls-content="' + encodeURIComponent(sqlStr) + '">+</button>')
       : '';
 
+    // Botão colunas — banco e arquivo
     const cols = Array.isArray(o.columns) ? o.columns : [];
     const colsHtml = cols.length
       ? ('<button class="ls-detail-btn" ' +
@@ -2819,13 +2823,11 @@ function renderLineageJob() {
 
     return '<div class="ls-node"><div class="ls-node-box ' + cls + '">' +
       '<div style="display:flex;align-items:center;justify-content:center;gap:4px">' +
-        '<span style="font-size:12px;font-weight:500">' + (label || '—') + '</span>' +
+        '<span style="font-size:12px;font-weight:500">' + label + '</span>' +
         btnHtml +
         colsHtml +
       '</div>' +
-      (sublabel ? '<span class="ls-node-label" style="opacity:.7;font-size:10px">' + sublabel + '</span>' : '') +
-      (typeLabel ? '<span class="ls-node-label">' + typeLabel + '</span>' : '') +
-      (dbLine ? '<span class="ls-node-db" style="font-weight:700">' + dbLine + '</span>' : '') +
+      (detailLine ? '<span class="ls-node-label">' + detailLine + '</span>' : '') +
     '</div></div>';
   };
 
