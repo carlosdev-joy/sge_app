@@ -5,21 +5,24 @@
 # Uso:
 #   docker compose -f docker-compose.yaml -f docker-compose.dev.yaml --env-file .env.dev up -d
 #
-# Portas expostas:
+# Portas:
 #   :8081  → UI (Nginx)
 #   :8082  → Airflow webserver
-#   :1433  → SQL Server de dev (acesso externo via SSMS)
+#   :1433  → SQL Server dev
 
-x-airflow-common-dev:
-  &airflow-common-dev
+# Build dev — usa Dockerfile.dev (instala via PyPI, sem wheels offline)
+x-dev-build:
+  &dev-build
   build:
     context: .
     dockerfile: Dockerfile.dev
-  environment:
-    &airflow-common-dev-env
-    AIRFLOW_CONN_SQL14_DMDB41: "mssql+pyodbc://sa:${DEV_MSSQL_SA_PASSWORD:-Orquestra@Dev2024}@sqlserver-dev:1433/orquestra_dev?driver=ODBC+Driver+17+for+SQL+Server&TrustServerCertificate=yes"
-    _AIRFLOW_WWW_USER_USERNAME: "${DEV_AIRFLOW_USER:-admin}"
-    _AIRFLOW_WWW_USER_PASSWORD: "${DEV_AIRFLOW_PASSWORD:-admin123}"
+
+# Variáveis de ambiente dev
+x-dev-env:
+  &dev-env
+  AIRFLOW_CONN_SQL14_DMDB41: "mssql+pyodbc://sa:${DEV_MSSQL_SA_PASSWORD:-Orquestra@Dev2024}@sqlserver-dev:1433/orquestra_dev?driver=ODBC+Driver+17+for+SQL+Server&TrustServerCertificate=yes"
+  _AIRFLOW_WWW_USER_USERNAME: "${DEV_AIRFLOW_USER:-admin}"
+  _AIRFLOW_WWW_USER_PASSWORD: "${DEV_AIRFLOW_PASSWORD:-admin123}"
 
 services:
 
@@ -32,7 +35,7 @@ services:
       MSSQL_SA_PASSWORD: "${DEV_MSSQL_SA_PASSWORD:-Orquestra@Dev2024}"
       MSSQL_PID: "Developer"
     ports:
-      - "1433:1433"           # acesso externo via SSMS
+      - "1433:1433"
     volumes:
       - sqlserver-dev-data:/var/opt/mssql
     healthcheck:
@@ -43,7 +46,7 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # ── Postgres separado do de prod ───────────────────────────────────────────
+  # ── Postgres separado do prod ──────────────────────────────────────────────
   postgres:
     volumes:
       - postgres-db-volume-dev:/var/lib/postgresql/data
@@ -53,40 +56,45 @@ services:
     ports:
       - "8081:80"
 
-  # ── Airflow webserver na porta 8082 ────────────────────────────────────────
+  # ── Airflow — todos usam Dockerfile.dev e variáveis de dev ─────────────────
   airflow-webserver:
+    <<: *dev-build
     ports:
       - "8082:8080"
     environment:
-      <<: *airflow-common-dev-env
+      <<: *dev-env
     depends_on:
       sqlserver-dev:
         condition: service_healthy
 
   airflow-scheduler:
+    <<: *dev-build
     environment:
-      <<: *airflow-common-dev-env
+      <<: *dev-env
     depends_on:
       sqlserver-dev:
         condition: service_healthy
 
   airflow-worker:
+    <<: *dev-build
     environment:
-      <<: *airflow-common-dev-env
+      <<: *dev-env
     depends_on:
       sqlserver-dev:
         condition: service_healthy
 
   airflow-triggerer:
+    <<: *dev-build
     environment:
-      <<: *airflow-common-dev-env
+      <<: *dev-env
     depends_on:
       sqlserver-dev:
         condition: service_healthy
 
   airflow-init:
+    <<: *dev-build
     environment:
-      <<: *airflow-common-dev-env
+      <<: *dev-env
       _AIRFLOW_DB_MIGRATE: 'true'
       _AIRFLOW_WWW_USER_CREATE: 'true'
       _AIRFLOW_WWW_USER_USERNAME: "${DEV_AIRFLOW_USER:-admin}"
