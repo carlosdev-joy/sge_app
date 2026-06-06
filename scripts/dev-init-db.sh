@@ -27,7 +27,8 @@ set -a; source "$ENV_FILE"; set +a
 
 SA_PASS="${DEV_MSSQL_SA_PASSWORD:-Orquestra@Dev2024}"
 CONTAINER="orquestra-sqlserver-dev"
-SQLCMD="docker exec $CONTAINER /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P $SA_PASS"
+SQLCMD_BIN=$(docker exec "$CONTAINER" bash -c 'ls /opt/mssql-tools18/bin/sqlcmd 2>/dev/null || echo /opt/mssql-tools/bin/sqlcmd')
+SQLCMD="docker exec $CONTAINER $SQLCMD_BIN -S localhost -U sa -P $SA_PASS"
 
 # ── Função para executar SQL substituindo USE [DMDB41] pelo banco de dev ─────
 run_sql_file() {
@@ -40,18 +41,13 @@ run_sql_file() {
     docker exec "$CONTAINER" bash -c "
         sed -i 's/USE \[DMDB41\]/USE [orquestra_dev]/gi; s/\[DMDB41\]\.\[dbo\]/[orquestra_dev].[dbo]/gi' /tmp/_current.sql
     "
-    docker exec "$CONTAINER" /opt/mssql-tools/bin/sqlcmd \
-        -S localhost -U sa -P "$SA_PASS" \
-        -d orquestra_dev \
-        -i /tmp/_current.sql \
-        -b 2>&1 | grep -v "^$" | grep -v "^--" || true
+    docker exec "$CONTAINER" bash -c "$SQLCMD_BIN -S localhost -U sa -P '$SA_PASS' -d orquestra_dev -i /tmp/_current.sql -b 2>&1 | grep -v '^$' | grep -v '^--'" || true
 }
 
 # ── Aguarda SQL Server ────────────────────────────────────────────────────────
 info "Aguardando SQL Server..."
 for i in $(seq 1 40); do
-    if docker exec "$CONTAINER" /opt/mssql-tools/bin/sqlcmd \
-        -S localhost -U sa -P "$SA_PASS" -Q "SELECT 1" &>/dev/null 2>&1; then
+    if docker exec "$CONTAINER" bash -c "(/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '$SA_PASS' -Q 'SELECT 1' || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P '$SA_PASS' -Q 'SELECT 1') &>/dev/null 2>&1"; then
         ok "SQL Server disponível."
         break
     fi
