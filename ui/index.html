@@ -812,6 +812,61 @@
   .flex-between { display:flex; align-items:center; justify-content:space-between; }
   .gap-xs { gap:.4rem; } .gap-sm { gap:.6rem; } .gap-md { gap:1rem; }
   .flex-wrap { flex-wrap:wrap; }
+
+  /* ── Pipeline Wizard Stepper ── */
+  #wiz-stepper { padding:.5rem 0 1rem; }
+  .wiz-circle {
+    width:32px; height:32px; border-radius:50%;
+    border:2px solid var(--border);
+    display:flex; align-items:center; justify-content:center;
+    font-size:12px; font-weight:700; flex-shrink:0;
+    background:var(--card); color:var(--muted);
+    transition:background .2s, border-color .2s, color .2s;
+  }
+  .wiz-label {
+    font-size:11px; color:var(--muted); white-space:nowrap;
+    transition:color .2s;
+  }
+  .wiz-connector {
+    flex:1; min-width:20px; height:2px;
+    background:var(--border); transition:background .2s;
+  }
+  /* active step */
+  .wiz-step.active .wiz-circle {
+    background:var(--accent); border-color:var(--accent); color:#fff;
+  }
+  .wiz-step.active .wiz-label { color:var(--accent); font-weight:600; }
+  /* completed step */
+  .wiz-step.done .wiz-circle {
+    background:var(--success,#22c55e); border-color:var(--success,#22c55e); color:#fff;
+  }
+  .wiz-step.done .wiz-label { color:var(--success,#22c55e); }
+  .wiz-step.done + .wiz-connector { background:var(--success,#22c55e); }
+  /* error step */
+  .wiz-step.error .wiz-circle {
+    background:#ef4444; border-color:#ef4444; color:#fff;
+  }
+  .wiz-step.error .wiz-label { color:#ef4444; }
+  /* job row in wizard */
+  .wiz-job-row {
+    display:grid; grid-template-columns:32px 1fr 70px 120px 1fr 36px;
+    gap:6px; padding:.35rem .6rem; border-bottom:1px solid var(--border);
+    align-items:center;
+  }
+  .wiz-job-row:last-child { border-bottom:none; }
+  .wiz-job-row input, .wiz-job-row select {
+    width:100%; font-size:12px; padding:3px 6px;
+    border:1px solid var(--border); border-radius:6px;
+    background:var(--input,var(--bg)); color:var(--fg);
+  }
+  /* review grid */
+  .wiz-review-row {
+    display:flex; gap:.5rem; padding:.3rem 0;
+    border-bottom:1px solid rgba(128,128,128,.1); font-size:13px;
+  }
+  .wiz-review-row:last-child { border-bottom:none; }
+  .wiz-review-key { color:var(--muted); min-width:160px; flex-shrink:0; font-size:12px; }
+  .wiz-review-val { font-weight:500; }
 </style>
 </head>
 <body>
@@ -984,145 +1039,170 @@
             </div>
           </div>
 
+          <!-- ══ WIZARD: NOVO / EDITAR PIPELINE ══ -->
           <div id="pipeline-editor" class="hidden" style="margin-top:1rem">
       <div class="card fade">
         <div class="card-section-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem">
           <div>
             <h2 id="pipelineFormTitle"><span class="orange">+</span> Novo Pipeline</h2>
-            <p class="sub">Cadastro / edição de pipeline</p>
+            <div id="pipelineFormHint" class="helper" style="margin:.2rem 0 0"></div>
           </div>
           <button class="icon-btn btn-close" onclick="closePipelineEditor()" title="Fechar" aria-label="Fechar">×</button>
         </div>
         <div class="body-pad">
 
-          <p style="font-size:11px;color:var(--muted);margin:0 0 1.25rem;display:flex;align-items:center;gap:.3rem"><span style="color:var(--red);font-weight:600">*</span> Campos obrigatórios</p>
-          <div id="pipelineFormHint" class="helper" style="margin:-.75rem 0 1.25rem 0"></div>
+          <!-- Stepper -->
+          <div id="wiz-stepper" style="display:flex;align-items:center;gap:0;margin-bottom:1.75rem;overflow-x:auto">
+            <div class="wiz-step active" id="wstep-1" onclick="wizGoTo(1)" style="display:flex;align-items:center;gap:8px;cursor:pointer;flex-shrink:0">
+              <div class="wiz-circle" id="wcirc-1">1</div>
+              <span class="wiz-label" id="wlbl-1">Identificação</span>
+            </div>
+            <div class="wiz-connector" id="wconn-1"></div>
+            <div class="wiz-step" id="wstep-2" onclick="wizGoTo(2)" style="display:flex;align-items:center;gap:8px;cursor:pointer;flex-shrink:0">
+              <div class="wiz-circle" id="wcirc-2">2</div>
+              <span class="wiz-label" id="wlbl-2">Agendamento</span>
+            </div>
+            <div class="wiz-connector" id="wconn-2"></div>
+            <div class="wiz-step" id="wstep-3" onclick="wizGoTo(3)" style="display:flex;align-items:center;gap:8px;cursor:pointer;flex-shrink:0">
+              <div class="wiz-circle" id="wcirc-3">3</div>
+              <span class="wiz-label" id="wlbl-3">Configurações</span>
+            </div>
+            <div class="wiz-connector" id="wconn-3"></div>
+            <div class="wiz-step" id="wstep-4" onclick="wizGoTo(4)" style="display:flex;align-items:center;gap:8px;cursor:pointer;flex-shrink:0">
+              <div class="wiz-circle" id="wcirc-4">4</div>
+              <span class="wiz-label" id="wlbl-4">Jobs</span>
+            </div>
+            <div class="wiz-connector" id="wconn-4"></div>
+            <div class="wiz-step" id="wstep-5" onclick="wizGoTo(5)" style="display:flex;align-items:center;gap:8px;cursor:pointer;flex-shrink:0">
+              <div class="wiz-circle" id="wcirc-5">5</div>
+              <span class="wiz-label" id="wlbl-5">Revisão</span>
+            </div>
+          </div>
 
-          <!-- Identificação -->
-          <div class="section-sep"><span>Identificação</span></div>
-          <div class="field">
-            <label for="pipeline_name">Nome do pipeline <span style="color:var(--red)">*</span></label>
-            <input id="pipeline_name" type="text" placeholder="ex: ETL_COBRANCA_DIARIA" oninput="this.value=this.value.toUpperCase();validateIdentField('pipeline_name','err-pipeline','Nome do pipeline',true)" />
-            <div id="err-pipeline" class="field-error"></div>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+          <!-- ── PASSO 1: Identificação ── -->
+          <div id="wiz-step-1">
+            <p style="font-size:11px;color:var(--muted);margin:0 0 1rem"><span style="color:var(--red);font-weight:600">*</span> Campos obrigatórios</p>
             <div class="field">
-              <label for="p-project">Projeto <span style="color:var(--red)">*</span></label>
-              <select id="p-project" required>
-                <option value="">Carregando projetos…</option>
-              </select>
+              <label for="pipeline_name">Nome do pipeline <span style="color:var(--red)">*</span></label>
+              <input id="pipeline_name" type="text" placeholder="ex: ETL_COBRANCA_DIARIA"
+                oninput="this.value=this.value.toUpperCase();validateIdentField('pipeline_name','err-pipeline','Nome do pipeline',true)" />
+              <div id="err-pipeline" class="field-error"></div>
             </div>
-            <div class="field">
-              <label for="p-domain">Domínio <span style="color:var(--red)">*</span></label>
-              <input id="p-domain" type="text" placeholder="ex: CLIENTES_COBRANCA" required oninput="this.value=this.value.toUpperCase();validateIdentField('p-domain','err-domain','Domínio',true)" />
-              <div id="err-domain" class="field-error"></div>
-            </div>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;align-items:start">
-          <div class="field-group" id="schedule-builder">
-            <label>Agendamento <span style="color:var(--red)">*</span></label>
-            <!-- Linha 1: tipo + hora/minuto lado a lado -->
-            <div style="display:grid;grid-template-columns:180px auto;gap:8px;align-items:end">
-              <div>
-                <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Frequência</label>
-                <select id="sch-type" onchange="_scheduleTypeChange()" style="width:100%">
-                  <option value="daily">Diário</option>
-                  <option value="hourly">A cada hora</option>
-                  <option value="weekly">Semanal</option>
-                  <option value="monthly">Mensal</option>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+              <div class="field">
+                <label for="p-project">Projeto <span style="color:var(--red)">*</span></label>
+                <select id="p-project" required>
+                  <option value="">Carregando projetos…</option>
                 </select>
               </div>
-              <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
-                <!-- Hora e minuto — oculto para hourly -->
-                <div id="sch-time-row" style="display:flex;gap:6px;align-items:flex-end">
-                  <div>
-                    <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Hora</label>
-                    <input type="number" id="sch-hour" min="0" max="23" value="6" style="width:76px;text-align:center;font-size:15px;font-weight:600;letter-spacing:.05em" placeholder="HH" oninput="_scheduleUpdatePreview()" />
-                  </div>
-                  <span style="padding-bottom:8px;font-weight:700;color:var(--muted);font-size:18px">:</span>
-                  <div>
-                    <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Min</label>
-                    <input type="number" id="sch-minute" min="0" max="59" value="0" style="width:76px;text-align:center;font-size:15px;font-weight:600;letter-spacing:.05em" placeholder="MM" oninput="_scheduleUpdatePreview()" />
-                  </div>
+              <div class="field">
+                <label for="p-domain">Domínio <span style="color:var(--red)">*</span></label>
+                <input id="p-domain" type="text" placeholder="ex: CLIENTES_COBRANCA" required
+                  oninput="this.value=this.value.toUpperCase();validateIdentField('p-domain','err-domain','Domínio',true)" />
+                <div id="err-domain" class="field-error"></div>
+              </div>
+            </div>
+            <div class="field">
+              <label>Tags <span style="font-weight:400;color:var(--muted)">— opcional · Enter para adicionar</span></label>
+              <div class="chip-input-wrap" id="tags-wrap" onclick="document.getElementById('tag-input').focus()">
+                <input id="tag-input" type="text" placeholder="ex: DATASTAGE, DIARIO…"
+                  oninput="this.value=this.value.toUpperCase();validateTagDraft()"
+                  onkeydown="handleTagInput(event)" />
+              </div>
+              <input type="hidden" id="p-tags" value="" />
+              <div id="err-tags" class="field-error"></div>
+            </div>
+          </div>
+
+          <!-- ── PASSO 2: Agendamento ── -->
+          <div id="wiz-step-2" style="display:none">
+            <div class="field-group" id="schedule-builder">
+              <label>Frequência <span style="color:var(--red)">*</span></label>
+              <div style="display:grid;grid-template-columns:180px auto;gap:8px;align-items:end">
+                <div>
+                  <select id="sch-type" onchange="_scheduleTypeChange()" style="width:100%">
+                    <option value="daily">Diário</option>
+                    <option value="hourly">A cada hora</option>
+                    <option value="weekly">Semanal</option>
+                    <option value="monthly">Mensal</option>
+                  </select>
                 </div>
-                <!-- Dia da semana — só para weekly -->
-                <div id="sch-dow-row" style="display:none;gap:6px;align-items:flex-end">
-                  <div>
-                    <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Dia da semana</label>
-                    <select id="sch-dow" onchange="_scheduleUpdatePreview()">
-                      <option value="1">Segunda</option><option value="2">Terça</option>
-                      <option value="3">Quarta</option><option value="4">Quinta</option>
-                      <option value="5">Sexta</option><option value="6">Sábado</option>
-                      <option value="0">Domingo</option>
-                    </select>
+                <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+                  <div id="sch-time-row" style="display:flex;gap:6px;align-items:flex-end">
+                    <div>
+                      <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Hora</label>
+                      <input type="number" id="sch-hour" min="0" max="23" value="6"
+                        style="width:76px;text-align:center;font-size:15px;font-weight:600" placeholder="HH"
+                        oninput="_scheduleUpdatePreview()" />
+                    </div>
+                    <span style="padding-bottom:8px;font-weight:700;color:var(--muted);font-size:18px">:</span>
+                    <div>
+                      <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Min</label>
+                      <input type="number" id="sch-minute" min="0" max="59" value="0"
+                        style="width:76px;text-align:center;font-size:15px;font-weight:600" placeholder="MM"
+                        oninput="_scheduleUpdatePreview()" />
+                    </div>
                   </div>
-                </div>
-                <!-- Dia do mês — só para monthly -->
-                <div id="sch-dom-row" style="display:none;gap:6px;align-items:flex-end">
-                  <div>
-                    <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Dia do mês</label>
-                    <input type="number" id="sch-dom" min="1" max="31" value="1" style="width:64px" oninput="_scheduleUpdatePreview()" />
+                  <div id="sch-dow-row" style="display:none;gap:6px;align-items:flex-end">
+                    <div>
+                      <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Dia da semana</label>
+                      <select id="sch-dow" onchange="_scheduleUpdatePreview()">
+                        <option value="1">Segunda</option><option value="2">Terça</option>
+                        <option value="3">Quarta</option><option value="4">Quinta</option>
+                        <option value="5">Sexta</option><option value="6">Sábado</option><option value="0">Domingo</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div id="sch-dom-row" style="display:none;gap:6px;align-items:flex-end">
+                    <div>
+                      <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Dia do mês</label>
+                      <input type="number" id="sch-dom" min="1" max="31" value="1" style="width:64px"
+                        oninput="_scheduleUpdatePreview()" />
+                    </div>
                   </div>
                 </div>
               </div>
+              <div id="sch-preview" style="font-size:12px;font-family:ui-monospace,'Courier New',monospace;color:var(--muted);margin-top:8px;padding:6px 10px;background:rgba(128,128,128,.07);border-radius:6px;display:inline-block">cron: 0 6 * * *</div>
+              <div id="sch-overlap-hint" style="font-size:11px;margin-top:4px"></div>
             </div>
-            <!-- Preview do cron gerado -->
-            <div id="sch-preview" style="font-size:11px;font-family:ui-monospace,'Courier New',monospace;color:var(--muted);margin-top:6px">cron: 0 6 * * *</div>
-            <div id="sch-overlap-hint" style="font-size:11px;margin-top:3px"></div>
-          </div>
-          <!-- Tags: coluna direita do grid Agendamento+Tags -->
-          <div class="field">
-            <label>Tags <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">— opcional · Enter para adicionar</span></label>
-            <div class="chip-input-wrap" id="tags-wrap" onclick="document.getElementById('tag-input').focus()">
-              <input id="tag-input" type="text" placeholder="ex: DATASTAGE, DIARIO..." oninput="this.value=this.value.toUpperCase();validateTagDraft()" onkeydown="handleTagInput(event)" />
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-top:.75rem">
+              <div class="field">
+                <label for="p-dag-start-date">Data de início da DAG <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+                <input type="date" id="p-dag-start-date" style="max-width:220px" />
+                <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Vazio = inicia imediatamente (padrão 01/01/2026).</p>
+              </div>
+              <div class="field">
+                <label>Status inicial</label>
+                <div class="status-toggle" style="margin-top:.3rem">
+                  <div class="st-opt active-green" id="st-ativo" onclick="setStatus(1)"><span class="st-dot on"></span>Ativo</div>
+                  <div class="st-opt" id="st-inativo" onclick="setStatus(0)"><span class="st-dot off"></span>Inativo</div>
+                </div>
+                <input type="hidden" id="p-active" value="1" />
+              </div>
             </div>
-            <input type="hidden" id="p-tags" value="" />
-            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Letras, números e <strong>_</strong> (sem espaços).</p>
-            <div id="err-tags" class="field-error"></div>
-          </div>
-          </div><!-- /grid agendamento+tags -->
-
-          <!-- S4: Dependência entre pipelines -->
-          <div class="section-sep"><span>Dependência</span></div>
-          <div class="field">
-            <label>Depende de <span style="font-weight:400;color:var(--muted)">— opcional · Enter ou vírgula para adicionar</span></label>
-            <div class="chip-input-wrap" id="deps-wrap" onclick="document.getElementById('p-depends-on').focus()" style="min-height:46px;cursor:text">
-              <input id="p-depends-on" type="text" placeholder="nome do pipeline upstream…"
-                oninput="this.value=this.value.toUpperCase()"
-                onkeydown="handleDepsInput(event)"
-                list="depends-on-list" autocomplete="off"
-                style="border:none;outline:none;background:transparent;flex:1;min-width:160px;font-size:13px" />
+            <div class="field" style="margin-top:.75rem">
+              <label>Depende de <span style="font-weight:400;color:var(--muted)">— opcional · Enter ou vírgula</span></label>
+              <div class="chip-input-wrap" id="deps-wrap" onclick="document.getElementById('p-depends-on').focus()" style="min-height:46px;cursor:text">
+                <input id="p-depends-on" type="text" placeholder="pipeline upstream…"
+                  oninput="this.value=this.value.toUpperCase()"
+                  onkeydown="handleDepsInput(event)"
+                  list="depends-on-list" autocomplete="off"
+                  style="border:none;outline:none;background:transparent;flex:1;min-width:140px;font-size:13px" />
+              </div>
+              <input type="hidden" id="p-deps-hidden" value="" />
+              <datalist id="depends-on-list"></datalist>
+              <div id="err-depends-on" class="field-error"></div>
+              <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Gera <code>ExternalTaskSensor</code> por upstream (mode=reschedule).</p>
             </div>
-            <input type="hidden" id="p-deps-hidden" value="" />
-            <datalist id="depends-on-list"></datalist>
-            <div id="err-depends-on" class="field-error"></div>
-            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
-              Pipelines upstream. Gera um <code>ExternalTaskSensor</code> por dependência (mode=reschedule).
-            </p>
           </div>
 
-          <!-- Agendamento avançado -->
-          <div class="section-sep"><span>Agendamento avançado</span></div>
-          <div class="field">
-            <label for="p-dag-start-date">Data de início da DAG <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
-            <input type="date" id="p-dag-start-date" style="max-width:200px" />
-            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
-              Define quando o agendamento começa a executar. Deixe em branco para iniciar imediatamente (usa 01/01/2026 como padrão). Use data futura para adiar a primeira execução.
-            </p>
-          </div>
-
-          <!-- Configurações Avançadas -->
-          <div class="section-sep" style="cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:space-between" onclick="_toggleAdvSection()">
-            <span>⚙ Configurações Avançadas</span>
-            <span id="sep-adv-icon" style="font-size:10px;color:var(--muted);font-weight:400">(clique para expandir)</span>
-          </div>
-          <div id="adv-section" style="display:none">
-
+          <!-- ── PASSO 3: Configurações ── -->
+          <div id="wiz-step-3" style="display:none">
             <div class="field">
               <label for="p-descricao">Descrição / Objetivo <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
-              <textarea id="p-descricao" rows="2" placeholder="Descreva o objetivo deste pipeline…" style="width:100%;box-sizing:border-box;resize:vertical;font-family:inherit;font-size:13px;padding:.5rem .75rem;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"></textarea>
+              <textarea id="p-descricao" rows="2" placeholder="Descreva o objetivo deste pipeline…"
+                style="width:100%;box-sizing:border-box;resize:vertical;font-family:inherit;font-size:13px;padding:.5rem .75rem;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"></textarea>
             </div>
-
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem">
               <div class="field">
                 <label for="p-criticidade">Criticidade</label>
@@ -1141,15 +1221,14 @@
                 </select>
               </div>
               <div class="field">
-                <label for="p-sla-minutos">SLA máximo (minutos) <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
-                <input type="number" id="p-sla-minutos" min="1" max="1440" placeholder="ex: 60 — vazio = sem SLA" />
-                <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">DAG falha se exceder este tempo.</p>
+                <label for="p-sla-minutos">SLA máximo (min) <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+                <input type="number" id="p-sla-minutos" min="1" max="1440" placeholder="ex: 60" />
+                <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">DAG falha se exceder.</p>
               </div>
             </div>
-
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:.75rem">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:.75rem;margin-top:.25rem">
               <div class="field">
-                <label for="p-max-active-runs">Execuções simultâneas</label>
+                <label for="p-max-active-runs">Exec. simultâneas</label>
                 <input type="number" id="p-max-active-runs" min="1" max="10" value="1" />
               </div>
               <div class="field">
@@ -1157,74 +1236,83 @@
                 <input type="number" id="p-retries" min="0" max="10" value="1" />
               </div>
               <div class="field">
-                <label for="p-retry-delay">Intervalo retry (seg)</label>
+                <label for="p-retry-delay">Retry delay (seg)</label>
                 <input type="number" id="p-retry-delay" min="30" max="7200" value="300" />
               </div>
               <div class="field">
                 <label for="p-pool">Pool Airflow <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
-                <input type="text" id="p-pool" placeholder="ex: datastage_pool" oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9_]/g,'')" />
+                <input type="text" id="p-pool" placeholder="default_pool"
+                  oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9_]/g,'')" />
               </div>
             </div>
-
-          </div><!-- /adv-section -->
-
-          <!-- Status -->
-          <div class="section-sep"><span>Status inicial</span></div>
-          <div class="status-toggle">
-            <div class="st-opt active-green" id="st-ativo" onclick="setStatus(1)">
-              <span class="st-dot on"></span>Ativo
-            </div>
-            <div class="st-opt" id="st-inativo" onclick="setStatus(0)">
-              <span class="st-dot off"></span>Inativo
+            <div class="section-sep" style="margin-top:1rem"><span>Notificações Teams</span></div>
+            <div class="toggle-group">
+              <label class="toggle-item on" id="lbl-inicio" for="tog-inicio">
+                <div class="ti-label"><span class="ti-title">Início do processo</span><span class="ti-desc">Notifica ao iniciar</span></div>
+                <div class="sw"><input type="checkbox" id="tog-inicio" checked onchange="syncToggle('lbl-inicio',this)" /><span class="sw-track"></span></div>
+              </label>
+              <label class="toggle-item on" id="lbl-fim" for="tog-fim">
+                <div class="ti-label"><span class="ti-title">Fim do processo</span><span class="ti-desc">Notifica ao concluir</span></div>
+                <div class="sw"><input type="checkbox" id="tog-fim" checked onchange="syncToggle('lbl-fim',this)" /><span class="sw-track"></span></div>
+              </label>
+              <label class="toggle-item on" id="lbl-erro" for="tog-erro">
+                <div class="ti-label"><span class="ti-title">Falha / Erro</span><span class="ti-desc">Notifica em caso de erro</span></div>
+                <div class="sw"><input type="checkbox" id="tog-erro" checked onchange="syncToggle('lbl-erro',this)" /><span class="sw-track"></span></div>
+              </label>
             </div>
           </div>
-          <input type="hidden" id="p-active" value="1" />
 
-          <!-- Notificações Teams -->
-          <div class="section-sep"><span>Notificações Microsoft Teams</span></div>
-          <div class="toggle-group">
-
-            <label class="toggle-item on" id="lbl-inicio" for="tog-inicio">
-              <div class="ti-label">
-                <span class="ti-title">Início do processo</span>
-                <span class="ti-desc">Notifica ao iniciar</span>
+          <!-- ── PASSO 4: Jobs ── -->
+          <div id="wiz-step-4" style="display:none">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
+              <p style="font-size:12px;color:var(--muted);margin:0">Adicione os jobs que compõem este pipeline em ordem de execução.</p>
+              <button class="btn btn-outline btn-sm" onclick="wizAddJobRow()">+ Adicionar Job</button>
+            </div>
+            <div style="border:1px solid var(--border);border-radius:10px;overflow:hidden">
+              <div style="display:grid;grid-template-columns:32px 1fr 70px 120px 1fr 36px;gap:6px;padding:.4rem .6rem;background:rgba(128,128,128,.05);border-bottom:1px solid var(--border);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)">
+                <span>#</span><span>Nome do Job</span><span>Ordem</span><span>Tipo</span><span>Comando / path</span><span></span>
               </div>
-              <div class="sw">
-                <input type="checkbox" id="tog-inicio" checked onchange="syncToggle('lbl-inicio',this)" />
-                <span class="sw-track"></span>
-              </div>
-            </label>
-
-            <label class="toggle-item on" id="lbl-fim" for="tog-fim">
-              <div class="ti-label">
-                <span class="ti-title">Fim do processo</span>
-                <span class="ti-desc">Notifica ao concluir</span>
-              </div>
-              <div class="sw">
-                <input type="checkbox" id="tog-fim" checked onchange="syncToggle('lbl-fim',this)" />
-                <span class="sw-track"></span>
-              </div>
-            </label>
-
-            <label class="toggle-item on" id="lbl-erro" for="tog-erro">
-              <div class="ti-label">
-                <span class="ti-title">Falha / Erro</span>
-                <span class="ti-desc">Notifica em caso de erro</span>
-              </div>
-              <div class="sw">
-                <input type="checkbox" id="tog-erro" checked onchange="syncToggle('lbl-erro',this)" />
-                <span class="sw-track"></span>
-              </div>
-            </label>
-
-
-
+              <div id="wiz-jobs-body"></div>
+            </div>
+            <div id="wiz-jobs-empty" style="text-align:center;padding:1.5rem;color:var(--muted);font-size:12px">
+              Nenhum job adicionado. Clique em <strong>+ Adicionar Job</strong> para começar.
+            </div>
+            <div id="err-wiz-jobs" class="field-error" style="margin-top:.5rem"></div>
           </div>
 
-          <button class="btn" id="btn-save-pipeline" onclick="registrarPipeline()">
-            <span id="save_pipeline_txt">Salvar</span>
-          </button>
-          <div id="msg-pipeline" class="msg"></div>
+          <!-- ── PASSO 5: Revisão ── -->
+          <div id="wiz-step-5" style="display:none">
+            <div style="display:grid;grid-template-columns:1fr 320px;gap:1rem;align-items:start">
+              <!-- Resumo -->
+              <div>
+                <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:.6rem">Resumo</div>
+                <div id="wiz-review-summary" style="font-size:13px;line-height:1.7"></div>
+                <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:.85rem 0 .5rem">Jobs</div>
+                <div id="wiz-review-jobs" style="font-size:12px"></div>
+              </div>
+              <!-- Lineage hint -->
+              <div style="border:1px solid var(--border);border-radius:10px;padding:.85rem;font-size:12px">
+                <div style="font-weight:700;margin-bottom:.4rem;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">⊕ Lineage</div>
+                <p style="color:var(--muted);margin:0 0 .6rem">Após salvar, acesse a aba <strong>Jobs</strong> para configurar origens e destinos de cada job (lineage detalhada).</p>
+                <p style="color:var(--muted);margin:0">Ou importe um arquivo <code>.dsx</code> pela opção <strong>Importar Sequence</strong> para extrair a lineage automaticamente.</p>
+              </div>
+            </div>
+            <div id="msg-pipeline" class="msg" style="margin-top:1rem"></div>
+          </div>
+
+          <!-- Navegação do wizard -->
+          <div id="wiz-nav" style="display:flex;align-items:center;justify-content:space-between;margin-top:1.5rem;padding-top:1rem;border-top:1px solid var(--border)">
+            <button class="btn btn-outline" id="wiz-btn-back" onclick="wizBack()" style="display:none">← Voltar</button>
+            <div style="flex:1"></div>
+            <div style="display:flex;gap:.5rem;align-items:center">
+              <span id="wiz-step-label" style="font-size:11px;color:var(--muted)">Passo 1 de 5</span>
+              <button class="btn btn-primary" id="wiz-btn-next" onclick="wizNext()">Próximo →</button>
+              <button class="btn" id="btn-save-pipeline" onclick="registrarPipeline()" style="display:none">
+                <span id="save_pipeline_txt">Criar Pipeline</span>
+              </button>
+            </div>
+          </div>
+
         </div>
       </div>
           </div>
@@ -6456,6 +6544,206 @@ async function saveJobEdit() {
   } catch(e) {}
 }
 
+// ── Wizard state ──────────────────────────────────────────────────────────────
+let _wizCurrentStep = 1;
+const WIZ_TOTAL = 5;
+
+function _wizUpdateStepper(step) {
+  for (let i = 1; i <= WIZ_TOTAL; i++) {
+    const el = $('wstep-' + i);
+    if (!el) continue;
+    el.classList.remove('active', 'done', 'error');
+    if (i < step) el.classList.add('done');
+    else if (i === step) el.classList.add('active');
+  }
+}
+
+function _wizShowStep(step) {
+  for (let i = 1; i <= WIZ_TOTAL; i++) {
+    const el = $('wiz-step-' + i);
+    if (el) el.style.display = (i === step) ? '' : 'none';
+  }
+  _wizUpdateStepper(step);
+  const lbl = $('wiz-step-label');
+  if (lbl) lbl.textContent = 'Passo ' + step + ' de ' + WIZ_TOTAL;
+  const back = $('wiz-btn-back');
+  const next = $('wiz-btn-next');
+  const save = $('btn-save-pipeline');
+  if (back) back.style.display = step > 1 ? '' : 'none';
+  if (next) next.style.display = step < WIZ_TOTAL ? '' : 'none';
+  if (save) save.style.display = step === WIZ_TOTAL ? '' : 'none';
+  if (step === WIZ_TOTAL) _wizRenderReview();
+}
+
+function wizGoTo(step) {
+  // Allow free navigation forward only if all prior steps validated (or going back)
+  if (step > _wizCurrentStep) {
+    for (let s = _wizCurrentStep; s < step; s++) {
+      if (!_wizValidateStep(s)) return;
+    }
+  }
+  _wizCurrentStep = step;
+  _wizShowStep(step);
+}
+
+function wizNext() {
+  if (!_wizValidateStep(_wizCurrentStep)) return;
+  if (_wizCurrentStep < WIZ_TOTAL) {
+    _wizCurrentStep++;
+    _wizShowStep(_wizCurrentStep);
+    try { window.scrollTo({ top: document.getElementById('pipeline-editor').offsetTop - 20, behavior: 'smooth' }); } catch(e) {}
+  }
+}
+
+function wizBack() {
+  if (_wizCurrentStep > 1) {
+    _wizCurrentStep--;
+    _wizShowStep(_wizCurrentStep);
+    try { window.scrollTo({ top: document.getElementById('pipeline-editor').offsetTop - 20, behavior: 'smooth' }); } catch(e) {}
+  }
+}
+
+function _wizValidateStep(step) {
+  const mark = (elId, errId, msg) => {
+    if ($(elId)) $(elId).classList.add('field-invalid');
+    if ($(errId)) { $(errId).textContent = msg; $(errId).style.display = ''; }
+    const el = $('wstep-' + step);
+    if (el) { el.classList.remove('done'); el.classList.add('error'); }
+    try { $(elId) && $(elId).focus(); } catch(e) {}
+    return false;
+  };
+  const clear = (elId, errId) => {
+    if ($(elId)) $(elId).classList.remove('field-invalid');
+    if ($(errId)) { $(errId).textContent = ''; $(errId).style.display = 'none'; }
+  };
+
+  if (step === 1) {
+    const nm = $('pipeline_name');
+    clear('pipeline_name', 'err-pipeline');
+    if (!nm || !nm.value.trim()) return mark('pipeline_name', 'err-pipeline', 'Nome do pipeline é obrigatório.');
+    const dom = $('p-domain');
+    clear('p-domain', 'err-domain');
+    if (!dom || !dom.value.trim()) return mark('p-domain', 'err-domain', 'Domínio é obrigatório.');
+  }
+  if (step === 2) {
+    // depends_on circular check (client-side fast path)
+    const h = $('p-deps-hidden');
+    const depVal = h ? h.value : ($('p-depends-on') ? $('p-depends-on').value : '');
+    const deps = depVal.split(',').map(d => d.trim()).filter(Boolean);
+    const pname = ($('pipeline_name') ? $('pipeline_name').value : '').trim().toUpperCase();
+    for (const d of deps) {
+      if (d.toUpperCase() === pname) return mark('p-depends-on', 'err-depends-on', 'Pipeline não pode depender de si mesmo.');
+    }
+    clear('p-depends-on', 'err-depends-on');
+  }
+  // Steps 3 and 4 are optional — always valid
+  return true;
+}
+
+function wizAddJobRow() {
+  const body = $('wiz-jobs-body');
+  if (!body) return;
+  const empty = $('wiz-jobs-empty');
+  if (empty) empty.style.display = 'none';
+  const idx = body.children.length + 1;
+  const row = document.createElement('div');
+  row.className = 'wiz-job-row';
+  row.innerHTML =
+    '<span style="color:var(--muted);font-size:11px;text-align:center">' + idx + '</span>' +
+    '<input type="text" placeholder="nome_do_job" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()">' +
+    '<input type="number" placeholder="1" value="' + idx + '" min="1">' +
+    '<select>' +
+      '<option value="sql">SQL</option>' +
+      '<option value="python">Python</option>' +
+      '<option value="bash">Bash</option>' +
+      '<option value="spark">Spark</option>' +
+      '<option value="dbt">dbt</option>' +
+    '</select>' +
+    '<input type="text" placeholder="comando ou caminho">' +
+    '<button class="btn btn-outline btn-sm" style="padding:2px 6px;color:#ef4444" onclick="this.closest(\'.wiz-job-row\').remove();_wizRenumberJobs()">' +
+      '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M5.5 5.5A.5.5 0 016 6v6a.5.5 0 01-1 0V6a.5.5 0 01.5-.5zm2.5 0a.5.5 0 01.5.5v6a.5.5 0 01-1 0V6a.5.5 0 01.5-.5zm2.5.5a.5.5 0 00-1 0v6a.5.5 0 001 0V6z"/><path fill-rule="evenodd" d="M14.5 3a1 1 0 01-1 1H13v9a2 2 0 01-2 2H5a2 2 0 01-2-2V4h-.5a1 1 0 010-2h3a1 1 0 011-1h2a1 1 0 011 1h3a1 1 0 011 1zM4.118 4L4 4.059V13a1 1 0 001 1h6a1 1 0 001-1V4.059L11.882 4H4.118zM2.5 3h11V2h-11v1z"/></svg>' +
+    '</button>';
+  body.appendChild(row);
+}
+
+function _wizRenumberJobs() {
+  const body = $('wiz-jobs-body');
+  if (!body) return;
+  Array.from(body.children).forEach((row, i) => {
+    const num = row.querySelector('span');
+    if (num) num.textContent = i + 1;
+  });
+  const empty = $('wiz-jobs-empty');
+  if (empty) empty.style.display = body.children.length === 0 ? '' : 'none';
+}
+
+function _wizGetJobs() {
+  const body = $('wiz-jobs-body');
+  if (!body) return [];
+  return Array.from(body.children).map((row, i) => {
+    const inputs = row.querySelectorAll('input, select');
+    return {
+      name:    (inputs[0] ? inputs[0].value.trim() : ''),
+      order:   parseInt(inputs[1] ? inputs[1].value : i + 1, 10),
+      type:    (inputs[2] ? inputs[2].value : 'sql'),
+      command: (inputs[3] ? inputs[3].value.trim() : ''),
+    };
+  }).filter(j => j.name);
+}
+
+function _wizRenderReview() {
+  const nm    = ($('pipeline_name') ? $('pipeline_name').value : '—');
+  const proj  = ($('p-project')     ? $('p-project').value     : '—');
+  const dom   = ($('p-domain')      ? $('p-domain').value      : '—');
+  const tags  = ($('p-tags')        ? $('p-tags').value        : '');
+  const schEl = $('sch-preview');
+  const sch   = (schEl ? schEl.textContent : '—');
+  const deps  = ($('p-deps-hidden') ? $('p-deps-hidden').value : ($('p-depends-on') ? $('p-depends-on').value : '—'));
+  const sdt   = ($('p-dag-start-date') ? $('p-dag-start-date').value : '—');
+  const crit  = ($('p-criticidade') ? $('p-criticidade').value : '—');
+  const env   = ($('p-ambiente')    ? $('p-ambiente').value    : '—');
+  const sla   = ($('p-sla-minutos') ? $('p-sla-minutos').value : '—');
+  const pool  = ($('p-pool')        ? $('p-pool').value        : '—');
+  const ret   = ($('p-retries')     ? $('p-retries').value     : '—');
+
+  const rows = [
+    ['Nome',           nm],
+    ['Projeto',        proj],
+    ['Domínio',        dom],
+    ['Tags',           tags || '—'],
+    ['Agendamento',    sch],
+    ['Data início',    sdt || '—'],
+    ['Dependências',   deps || '—'],
+    ['Criticidade',    crit],
+    ['Ambiente',       env],
+    ['SLA (min)',      sla || '—'],
+    ['Pool',           pool || '—'],
+    ['Retries',        ret],
+  ];
+
+  const sumEl = $('wiz-review-summary');
+  if (sumEl) {
+    sumEl.innerHTML = rows.map(([k, v]) =>
+      '<div class="wiz-review-row"><span class="wiz-review-key">' + _escHtml(k) + '</span>' +
+      '<span class="wiz-review-val">' + _escHtml(String(v)) + '</span></div>'
+    ).join('');
+  }
+
+  const jobs = _wizGetJobs();
+  const jobsEl = $('wiz-review-jobs');
+  if (jobsEl) {
+    if (!jobs.length) {
+      jobsEl.innerHTML = '<span style="color:var(--muted);font-size:12px">Nenhum job adicionado (pipeline sem jobs).</span>';
+    } else {
+      jobsEl.innerHTML = jobs.map((j, i) =>
+        '<div class="wiz-review-row"><span class="wiz-review-key">' + (i+1) + '. ' + _escHtml(j.name) + '</span>' +
+        '<span class="wiz-review-val" style="color:var(--muted)">' + _escHtml(j.type) + (j.command ? ' · ' + _escHtml(j.command) : '') + '</span></div>'
+      ).join('');
+    }
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 function openPipelineCreate() {
   _pipelineIsNew = true;
   $('pipelineFormTitle').innerHTML = '<span class="orange">+</span> Novo Pipeline';
@@ -6488,8 +6776,15 @@ function openPipelineCreate() {
   clearFieldInvalidById('p-domain','err-domain');
   clearFieldInvalidById('tag-input','err-tags');
   $('pipeline-editor').classList.remove('hidden');
+  // Reset wizard jobs and go to step 1
+  const jobsBody = $('wiz-jobs-body');
+  if (jobsBody) jobsBody.innerHTML = '';
+  const jobsEmpty = $('wiz-jobs-empty');
+  if (jobsEmpty) jobsEmpty.style.display = '';
+  _wizCurrentStep = 1;
+  _wizShowStep(1);
   try { $('pipeline_name').focus(); } catch(e) {}
-  try { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); } catch(e) {}
+  try { window.scrollTo({ top: document.getElementById('pipeline-editor').offsetTop - 20, behavior: 'smooth' }); } catch(e) {}
 }
 
 function closePipelineEditor() {
@@ -6570,8 +6865,11 @@ function openPipelineEdit(idx) {
   clearFieldInvalidById('p-domain','err-domain');
   clearFieldInvalidById('tag-input','err-tags');
   $('pipeline-editor').classList.remove('hidden');
+  // Go directly to step 2 (schedule) when editing — identification already known
+  _wizCurrentStep = 2;
+  _wizShowStep(2);
   try { $('sch-type').focus(); } catch(e) {}
-  try { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); } catch(e) {}
+  try { window.scrollTo({ top: document.getElementById('pipeline-editor').offsetTop - 20, behavior: 'smooth' }); } catch(e) {}
 }
 
 async function softDeletePipeline(idx) {
