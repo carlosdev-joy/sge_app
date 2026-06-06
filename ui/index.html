@@ -1484,103 +1484,163 @@
               </div><!-- /gov-panel-lineage -->
 
               <!-- ── PAINEL: CATÁLOGO ── -->
-              <div id="gov-panel-catalogo" style="display:none">
+<div id="gov-panel-catalogo" style="display:none">
 
-                <!-- Busca -->
-                <div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1rem 1.25rem;margin-bottom:1.25rem">
-                  <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:.75rem">Buscar no catálogo</div>
-                  <!-- Busca unificada -->
-                  <div style="margin-bottom:.85rem">
-                    <div class="field" style="margin:0 0 .5rem">
-                      <label>Busca rápida <span style="font-weight:400;color:var(--muted)">— tabela, arquivo (.dx/.ds) ou banco</span></label>
-                      <div style="display:flex;gap:.5rem">
-                        <input id="cat-smart-input" type="text" placeholder="ex: TB_CLIENTE  ou  DS_EXT_PARCELAS.dx  ou  DW_COBRANCA..."
-                          style="flex:1"
-                          oninput="catSmartDetect(this.value)"
-                          onkeydown="if(event.key==='Enter') catSmartSearch()" />
-                        <button class="btn btn-primary btn-sm" onclick="catSmartSearch()" style="height:46px;min-width:80px">Buscar</button>
-                        <button class="btn btn-outline btn-sm" onclick="catSwitchAdvanced()" style="height:46px;white-space:nowrap">⚙ Avançado</button>
-                      </div>
-                      <div id="cat-smart-hint" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
-                    </div>
-                  </div>
-                  <!-- Toggle tipo busca (avançado) -->
-                  <div id="cat-advanced" style="display:none">
-                  <div style="display:flex;gap:6px;margin-bottom:.85rem">
-                    <button id="cat-tab-tabela" class="adm-tab active" onclick="catSwitchTab('tabela')">◫ Tabela / Banco</button>
-                    <button id="cat-tab-arquivo" class="adm-tab" onclick="catSwitchTab('arquivo')">◈ Arquivo</button>
-                  </div>
-                  <!-- Campos dinâmicos -->
-                  <div id="cat-fields-tabela" style="display:grid;grid-template-columns:1fr 180px 200px auto;gap:.6rem;align-items:end">
-                    <div class="field" style="margin:0">
-                      <label>Nome da tabela <span style="color:var(--red)">*</span></label>
-                      <input id="cat-object-name" type="text" placeholder="ex: TB_CLIENTE, DW_COBRANCA..."
-                        oninput="this.value=this.value.toUpperCase()"
-                        onkeydown="if(event.key==='Enter') catalogoSearch()" />
-                    </div>
-                    <div class="field" style="margin:0">
-                      <label>Direção</label>
-                      <select id="cat-direction">
-                        <option value="all">Todas</option>
-                        <option value="origem">Origem</option>
-                        <option value="destino">Destino</option>
-                      </select>
-                    </div>
-                    <div class="field" style="margin:0">
-                      <label>Banco <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
-                      <input id="cat-database" type="text" placeholder="ex: DW_PROD" oninput="this.value=this.value.toUpperCase()" />
-                    </div>
-                    <div style="display:flex;gap:6px">
-                      <button class="btn btn-primary btn-sm" onclick="catalogoSearch()" id="btn-cat-search" style="height:46px;min-width:80px"><span id="btn-cat-txt">Buscar</span></button>
-                      <button class="btn btn-outline btn-sm" onclick="catalogoImpacto()" title="Pipelines ativos que leem este objeto como origem" style="height:46px;min-width:90px"><span id="btn-cat-imp-txt">⚡ Impacto</span></button>
-                    </div>
-                  </div>
-                  <div id="cat-fields-arquivo" style="display:none;grid-template-columns:1fr 180px auto;gap:.6rem;align-items:end">
-                    <div class="field" style="margin:0">
-                      <label>Nome do arquivo <span style="color:var(--red)">*</span></label>
-                      <input id="cat-file-name" type="text" placeholder="ex: DS_EXT_PARCELAS, .dx, .ds..."
-                        oninput="this.value=this.value.toUpperCase()"
-                        onkeydown="if(event.key==='Enter') catalogoSearch()" />
-                    </div>
-                    <div class="field" style="margin:0">
-                      <label>Direção</label>
-                      <select id="cat-direction-arq">
-                        <option value="all">Todas</option>
-                        <option value="origem">Origem</option>
-                        <option value="destino">Destino</option>
-                      </select>
-                    </div>
-                    <div style="display:flex;gap:6px">
-                      <button class="btn btn-primary btn-sm" onclick="catalogoSearch()" style="height:46px;min-width:80px"><span>Buscar</span></button>
-                    </div>
-                  </div>
-                  </div><!-- /cat-advanced -->
-                </div>
+  <!-- 4-tab navigation -->
+  <div style="display:flex;gap:6px;margin-bottom:1rem;border-bottom:1px solid var(--border);padding-bottom:.75rem;overflow-x:auto">
+    <button id="ctab-overview"  class="adm-tab active" onclick="catMainTab('overview')">◈ Visão Geral</button>
+    <button id="ctab-explore"   class="adm-tab"        onclick="catMainTab('explore')">⊞ Explorar</button>
+    <button id="ctab-list"      class="adm-tab"        onclick="catMainTab('list')">≡ Tabelas & Arquivos</button>
+    <button id="ctab-pipelines" class="adm-tab"        onclick="catMainTab('pipelines')">◎ Pipelines</button>
+  </div>
 
-                <!-- Status busca -->
-                <div id="cat-status" style="font-size:12px;color:var(--muted);min-height:16px;margin-bottom:.5rem"></div>
+  <!-- TAB: Visão Geral -->
+  <div id="cpanel-overview">
+    <!-- Universal search -->
+    <div style="margin-bottom:1.25rem">
+      <div style="display:flex;gap:.5rem">
+        <input id="cat-uni-search" type="text" placeholder="🔎  Busque tabela, arquivo, banco ou coluna…"
+          style="flex:1;font-size:14px;padding:.55rem .85rem"
+          oninput="catSmartDetect(this.value)"
+          onkeydown="if(event.key==='Enter') catUnifiedSearch()" />
+        <button class="btn btn-primary" onclick="catUnifiedSearch()" style="height:46px;min-width:90px">Buscar</button>
+      </div>
+      <div id="cat-uni-hint" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
+    </div>
 
-                <!-- Resultados de busca -->
-                <div id="cat-results"></div>
+    <!-- KPI strip -->
+    <div id="cat-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.65rem;margin-bottom:1.25rem">
+      <div class="empty-state" style="padding:.75rem"><span class="es-icon" style="font-size:20px">⏳</span><p class="es-title" style="font-size:11px">Carregando…</p></div>
+    </div>
 
-                <!-- Separador ranking -->
-                <div class="section-sep" style="margin:1.5rem 0 1rem"><span>◫ Ranking de uso</span></div>
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem;flex-wrap:wrap;gap:.5rem">
-                  <div style="display:flex;gap:6px">
-                    <button id="rank-tab-tabela" class="adm-tab active" onclick="rankSwitchTab('tabela')">◫ Tabelas</button>
-                    <button id="rank-tab-arquivo" class="adm-tab" onclick="rankSwitchTab('arquivo')">◈ Arquivos</button>
-                  </div>
-                  <button class="btn btn-outline btn-sm" onclick="catalogoRanking()">↻ Atualizar ranking</button>
-                </div>
-                <div style="font-size:12px;color:var(--muted);margin-bottom:.75rem">Tabelas ou arquivos que aparecem em mais pipelines na lineage cadastrada.</div>
-                <div id="cat-ranking">
-                  <div class="empty-state" style="padding:1.5rem">
-                    <span class="es-icon" style="font-size:28px">◫</span>
-                    <p class="es-title">Clique em "Atualizar ranking" para carregar</p>
-                  </div>
-                </div>
+    <!-- Popular + Recent + Alerts -->
+    <div style="display:grid;grid-template-columns:1fr 320px;gap:1rem;align-items:start">
+      <div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:.6rem">◈ Mais utilizados</div>
+        <div id="cat-popular" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.5rem"></div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:.6rem">⏱ Vistos recentemente</div>
+        <div id="cat-recent"></div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:.85rem 0 .6rem">⚠ Atenção</div>
+        <div id="cat-alerts"></div>
+      </div>
+    </div>
+  </div>
 
-              </div><!-- /gov-panel-catalogo -->
+  <!-- TAB: Explorar -->
+  <div id="cpanel-explore" style="display:none">
+    <div style="display:grid;grid-template-columns:200px 1fr;gap:1rem;align-items:start">
+      <!-- Facets -->
+      <div style="border:1px solid var(--border);border-radius:10px;padding:.75rem;font-size:12px">
+        <div style="font-weight:700;margin-bottom:.65rem;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)">Filtros</div>
+        <div style="margin-bottom:.75rem">
+          <div style="font-weight:600;margin-bottom:.3rem">Tipo</div>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:3px"><input type="radio" name="f-type" value="" checked onchange="catExploreFilter()"> Todos</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:3px"><input type="radio" name="f-type" value="tabela" onchange="catExploreFilter()"> Tabela</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="f-type" value="arquivo" onchange="catExploreFilter()"> Arquivo</label>
+        </div>
+        <div style="margin-bottom:.75rem">
+          <div style="font-weight:600;margin-bottom:.3rem">Banco</div>
+          <select id="f-database" onchange="catExploreFilter()" style="width:100%;font-size:11px">
+            <option value="">Todos</option>
+          </select>
+        </div>
+        <div style="margin-bottom:.75rem">
+          <div style="font-weight:600;margin-bottom:.3rem">Classificação</div>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:3px"><input type="radio" name="f-class" value="" checked onchange="catExploreFilter()"> Todas</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:3px"><input type="radio" name="f-class" value="PII" onchange="catExploreFilter()"> <span class="tag-pill gov-tag-pii">PII</span></label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:3px"><input type="radio" name="f-class" value="Regulado" onchange="catExploreFilter()"> <span class="tag-pill gov-tag-regulado">Regulado</span></label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:3px"><input type="radio" name="f-class" value="Confidencial" onchange="catExploreFilter()"> <span class="tag-pill gov-tag-confidencial">Conf.</span></label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="f-class" value="Publico" onchange="catExploreFilter()"> <span class="tag-pill gov-tag-publico">Público</span></label>
+        </div>
+        <div>
+          <div style="font-weight:600;margin-bottom:.3rem">Buscar</div>
+          <input id="f-search" type="text" placeholder="nome…" style="width:100%;font-size:11px;box-sizing:border-box"
+            onkeydown="if(event.key==='Enter') catExploreFilter()" />
+        </div>
+        <button class="btn btn-outline btn-sm" style="width:100%;margin-top:.65rem;font-size:11px" onclick="catExploreFilter()">↻ Filtrar</button>
+      </div>
+      <!-- Asset grid -->
+      <div>
+        <div id="cat-explore-status" style="font-size:11px;color:var(--muted);margin-bottom:.5rem"></div>
+        <div id="cat-explore-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.5rem"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB: Tabelas & Arquivos -->
+  <div id="cpanel-list" style="display:none">
+    <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem;flex-wrap:wrap">
+      <input id="list-search" type="text" placeholder="Filtrar por nome…" style="flex:1;min-width:160px"
+        oninput="catListFilter()" />
+      <select id="list-type" onchange="catListFilter()" style="min-width:110px">
+        <option value="">Tipo: Todos</option>
+        <option value="tabela">Tabela</option>
+        <option value="arquivo">Arquivo</option>
+      </select>
+      <select id="list-sort" onchange="catListSort()" style="min-width:160px">
+        <option value="pipeline_count">↓ Mais usados</option>
+        <option value="asset_name">A→Z Nome</option>
+        <option value="as_origem">↓ Origens</option>
+        <option value="as_destino">↓ Destinos</option>
+      </select>
+      <button class="btn btn-outline btn-sm" onclick="_catExportListCSV()" style="white-space:nowrap">⬇ CSV</button>
+    </div>
+    <div id="cat-list-status" style="font-size:11px;color:var(--muted);margin-bottom:.5rem"></div>
+    <div style="border:1px solid var(--border);border-radius:10px;overflow:hidden">
+      <div style="display:grid;grid-template-columns:1fr 80px 120px 60px 60px 80px;gap:8px;padding:.4rem .75rem;background:rgba(128,128,128,.05);border-bottom:1px solid var(--border);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)">
+        <span>Objeto</span><span>Tipo</span><span>Banco / Caminho</span><span style="text-align:center">Origem</span><span style="text-align:center">Destino</span><span style="text-align:center">Pipelines</span>
+      </div>
+      <div id="cat-list-body"></div>
+    </div>
+  </div>
+
+  <!-- TAB: Pipelines (busca antiga, movida aqui) -->
+  <div id="cpanel-pipelines" style="display:none">
+    <!-- Busca por pipeline/objeto/arquivo -->
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1rem 1.25rem;margin-bottom:1rem">
+      <div style="display:flex;gap:6px;margin-bottom:.75rem">
+        <button id="cat-tab-tabela" class="adm-tab active" onclick="catSwitchTab('tabela')">◫ Tabela / Banco</button>
+        <button id="cat-tab-arquivo" class="adm-tab" onclick="catSwitchTab('arquivo')">◈ Arquivo</button>
+      </div>
+      <div id="cat-fields-tabela" style="display:grid;grid-template-columns:1fr 160px 180px auto;gap:.6rem;align-items:end">
+        <div class="field" style="margin:0">
+          <label>Nome da tabela <span style="color:var(--red)">*</span></label>
+          <input id="cat-object-name" type="text" placeholder="ex: TB_CLIENTE…" oninput="this.value=this.value.toUpperCase()" onkeydown="if(event.key==='Enter') catalogoSearch()" />
+        </div>
+        <div class="field" style="margin:0">
+          <label>Direção</label>
+          <select id="cat-direction"><option value="all">Todas</option><option value="origem">Origem</option><option value="destino">Destino</option></select>
+        </div>
+        <div class="field" style="margin:0">
+          <label>Banco <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+          <input id="cat-database" type="text" placeholder="ex: DW_PROD" oninput="this.value=this.value.toUpperCase()" />
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-primary btn-sm" onclick="catalogoSearch()" id="btn-cat-search" style="height:46px;min-width:80px"><span id="btn-cat-txt">Buscar</span></button>
+          <button class="btn btn-outline btn-sm" onclick="catalogoImpacto()" style="height:46px;min-width:90px"><span id="btn-cat-imp-txt">⚡ Impacto</span></button>
+        </div>
+      </div>
+      <div id="cat-fields-arquivo" style="display:none;grid-template-columns:1fr 160px auto;gap:.6rem;align-items:end">
+        <div class="field" style="margin:0">
+          <label>Nome do arquivo <span style="color:var(--red)">*</span></label>
+          <input id="cat-file-name" type="text" placeholder="ex: DS_EXT_PARCELAS, .dx…" oninput="this.value=this.value.toUpperCase()" onkeydown="if(event.key==='Enter') catalogoSearch()" />
+        </div>
+        <div class="field" style="margin:0">
+          <label>Direção</label>
+          <select id="cat-direction-arq"><option value="all">Todas</option><option value="origem">Origem</option><option value="destino">Destino</option></select>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-primary btn-sm" onclick="catalogoSearch()" style="height:46px;min-width:80px">Buscar</button>
+        </div>
+      </div>
+    </div>
+    <div id="cat-status" style="font-size:12px;color:var(--muted);min-height:16px;margin-bottom:.5rem"></div>
+    <div id="cat-results"></div>
+  </div>
+
+</div><!-- /gov-panel-catalogo -->
 
             </div>
           </div>
@@ -3297,14 +3357,309 @@ function govTabSwitch(tab) {
     if (panel) panel.style.display = t === tab ? '' : 'none';
     if (btn)   btn.classList.toggle('active', t === tab);
   });
-  if (tab === 'catalogo' && !_catRankingLoaded) catalogoRanking();
+  if (tab === 'catalogo') catMainTab('overview');
 }
 
-/* ══ CATÁLOGO DE DADOS ════════════════════════════════════════════ */
+/* ══ CATÁLOGO DE DADOS — redesign ═══════════════════════════════ */
 const CATALOGO_DAG = 'etl_catalogo_query';
-let _catRankingLoaded = false;
 let _catSearchType  = 'tabela';
 let _rankType       = 'tabela';
+let _browseData     = null; // cache for explore/list tab
+let _catMainTab     = 'overview';
+
+// ── Tab switching ─────────────────────────────────────────────────
+function catMainTab(tab) {
+  _catMainTab = tab;
+  ['overview','explore','list','pipelines'].forEach(t => {
+    const btn = $('ctab-' + t), panel = $('cpanel-' + t);
+    if (btn)   btn.classList.toggle('active', t === tab);
+    if (panel) panel.style.display = t === tab ? '' : 'none';
+  });
+  if (tab === 'overview' && !_overviewLoaded) catOverviewLoad();
+  if ((tab === 'explore' || tab === 'list') && !_browseData) catBrowseLoad();
+}
+
+// ── Overview ──────────────────────────────────────────────────────
+let _overviewLoaded = false;
+
+async function catOverviewLoad() {
+  _overviewLoaded = true;
+  const kpiEl = $('cat-kpis'), popEl = $('cat-popular'), alertEl = $('cat-alerts');
+
+  const payload = await _catTrigger({ mode: 'overview' }, '');
+  if (!payload) return;
+
+  // KPI strip
+  const kpis = [
+    { label: 'Objetos', value: payload.total_assets || 0, icon: '◫', color: 'var(--cvp-blue)' },
+    { label: 'Pipelines', value: payload.total_pipelines || 0, icon: '◎', color: 'var(--cvp-blue)' },
+    { label: 'Com owner', value: (payload.total_with_owner || 0) + ' / ' + (payload.total_pipelines || 0), icon: '👤', color: '#16a34a' },
+    { label: 'PII', value: (payload.classification_counts || {}).pii || 0, icon: '🔴', color: '#dc2626', onclick: "catMainTab('explore');document.querySelector('[name=f-class][value=PII]').checked=true;catExploreFilter()" },
+    { label: 'Regulado', value: (payload.classification_counts || {}).regulado || 0, icon: '🟣', color: '#7c3aed', onclick: "catMainTab('explore');document.querySelector('[name=f-class][value=Regulado]').checked=true;catExploreFilter()" },
+    { label: 'Confidencial', value: (payload.classification_counts || {}).confidencial || 0, icon: '🟠', color: '#ea580c', onclick: "catMainTab('explore');document.querySelector('[name=f-class][value=Confidencial]').checked=true;catExploreFilter()" },
+  ];
+  if (kpiEl) kpiEl.innerHTML = kpis.map(k =>
+    `<div onclick="${k.onclick || ''}" style="border:1px solid var(--border);border-radius:10px;padding:.65rem .85rem;cursor:${k.onclick?'pointer':'default'};transition:box-shadow .15s" onmouseenter="this.style.boxShadow='0 2px 8px rgba(0,0,0,.1)'" onmouseleave="this.style.boxShadow=''">
+      <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.2rem">${k.icon} ${k.label}</div>
+      <div style="font-size:20px;font-weight:700;color:${k.color}">${k.value}</div>
+    </div>`
+  ).join('');
+
+  // Popular assets
+  const tops = payload.top_assets || [];
+  if (popEl) popEl.innerHTML = tops.length ? tops.map(a =>
+    `<div onclick="catAssetDetail('${_escHtml((a.database_name ? a.database_name + '.' : '') + a.asset_name)}','${a.asset_type}','${_escHtml(a.asset_name)}','${_escHtml(a.database_name||'')}')"
+      style="border:1px solid var(--border);border-radius:8px;padding:.55rem .75rem;cursor:pointer;transition:all .15s"
+      onmouseenter="this.style.background='rgba(0,92,169,.05)'" onmouseleave="this.style.background=''">
+      <div style="font-size:11px;font-weight:600;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_escHtml(a.asset_name)}">${_escHtml(a.asset_name)}</div>
+      <div style="font-size:10px;color:var(--muted);display:flex;justify-content:space-between;margin-top:2px">
+        <span>${a.asset_type === 'arquivo' ? '◈ Arquivo' : '◫ ' + (a.database_name || 'ODBC')}</span>
+        <span style="font-weight:600;color:var(--cvp-blue)">${a.pipeline_count} pipeline(s)</span>
+      </div>
+    </div>`
+  ).join('') : '<div style="font-size:12px;color:var(--muted)">Nenhum dado encontrado.</div>';
+
+  // Recently viewed
+  _catRenderRecent();
+
+  // Alerts
+  const alerts = payload.alerts || [];
+  if (alertEl) alertEl.innerHTML = alerts.length ? alerts.map(a =>
+    `<div style="font-size:11px;padding:.3rem .5rem;border-left:3px solid ${a.type.includes('pii') ? '#dc2626' : '#d97706'};margin-bottom:.3rem;color:var(--text)">${a.message}</div>`
+  ).join('') : '<div style="font-size:11px;color:var(--muted)">Nenhum alerta.</div>';
+}
+
+// ── Recently viewed (localStorage) ───────────────────────────────
+function _catRecentPush(name, type, dbName) {
+  try {
+    let list = JSON.parse(localStorage.getItem('orq_cat_recent') || '[]');
+    list = list.filter(x => x.name !== name || x.type !== type);
+    list.unshift({ name, type, dbName: dbName || '', ts: Date.now() });
+    if (list.length > 8) list = list.slice(0, 8);
+    localStorage.setItem('orq_cat_recent', JSON.stringify(list));
+  } catch(_) {}
+}
+
+function _catRenderRecent() {
+  const el = $('cat-recent');
+  if (!el) return;
+  try {
+    const list = JSON.parse(localStorage.getItem('orq_cat_recent') || '[]');
+    el.innerHTML = list.length ? list.map(x =>
+      `<div onclick="catAssetDetail('${_escHtml((x.dbName?x.dbName+'.':'')+x.name)}','${x.type}','${_escHtml(x.name)}','${_escHtml(x.dbName||'')}')"
+        style="font-size:11px;padding:.25rem .5rem;border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:.4rem;margin-bottom:2px"
+        onmouseenter="this.style.background='rgba(0,92,169,.06)'" onmouseleave="this.style.background=''">
+        <span style="color:var(--muted)">${x.type === 'arquivo' ? '◈' : '◫'}</span>
+        <span style="font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_escHtml(x.name)}">${_escHtml(x.name)}</span>
+        ${x.dbName ? `<span style="font-size:10px;color:var(--muted);flex-shrink:0">${_escHtml(x.dbName)}</span>` : ''}
+      </div>`
+    ).join('') : '<div style="font-size:11px;color:var(--muted)">—</div>';
+  } catch(_) {}
+}
+
+// ── Browse / Explore ──────────────────────────────────────────────
+async function catBrowseLoad() {
+  $('cat-explore-status') && ($('cat-explore-status').textContent = 'Carregando…');
+  $('cat-list-status')    && ($('cat-list-status').textContent    = 'Carregando…');
+
+  const payload = await _catTrigger({ mode: 'browse', top_n: 200 }, '');
+  if (!payload) return;
+  _browseData = payload;
+
+  // Populate database facet select
+  const dbSel = $('f-database');
+  if (dbSel) {
+    const dbs = (payload.facets && payload.facets.databases) || [];
+    dbSel.innerHTML = '<option value="">Todos</option>' + dbs.map(d => `<option>${_escHtml(d)}</option>`).join('');
+  }
+
+  catExploreFilter();
+  catListFilter();
+}
+
+function catExploreFilter() {
+  if (!_browseData) { catBrowseLoad(); return; }
+  const typeVal  = document.querySelector('[name=f-type]:checked')?.value || '';
+  const classVal = document.querySelector('[name=f-class]:checked')?.value || '';
+  const dbVal    = ($('f-database') || {}).value || '';
+  const q        = (($('f-search') || {}).value || '').toLowerCase();
+
+  const assets = (_browseData.assets || []).filter(a =>
+    (!typeVal  || a.asset_type === typeVal) &&
+    (!dbVal    || a.database_name === dbVal) &&
+    (!q        || a.asset_name.toLowerCase().includes(q))
+  );
+
+  const st = $('cat-explore-status');
+  if (st) st.textContent = assets.length + ' objeto(s)';
+
+  const grid = $('cat-explore-grid');
+  if (!grid) return;
+  grid.innerHTML = assets.length ? assets.map(a =>
+    `<div onclick="catAssetDetail('${_escHtml((a.database_name?a.database_name+'.':'')+a.asset_name)}','${a.asset_type}','${_escHtml(a.asset_name)}','${_escHtml(a.database_name||'')}')"
+      style="border:1px solid var(--border);border-radius:8px;padding:.55rem .75rem;cursor:pointer;transition:all .15s"
+      onmouseenter="this.style.background='rgba(0,92,169,.05)'" onmouseleave="this.style.background=''">
+      <div style="font-size:11px;font-weight:600;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_escHtml(a.asset_name)}">${_escHtml(a.asset_name)}</div>
+      <div style="font-size:10px;color:var(--muted);display:flex;justify-content:space-between;margin-top:3px">
+        <span>${a.asset_type === 'arquivo' ? '◈ Arquivo' : '◫ ' + (a.database_name || 'ODBC')}</span>
+        <span style="font-weight:600">${a.pipeline_count}p</span>
+      </div>
+    </div>`
+  ).join('') : '<div style="font-size:12px;color:var(--muted);padding:.5rem">Nenhum objeto encontrado.</div>';
+}
+
+let _listAssets = [];
+function catListFilter() {
+  if (!_browseData) return;
+  const q    = (($('list-search') || {}).value || '').toLowerCase();
+  const type = ($('list-type') || {}).value || '';
+  _listAssets = (_browseData.assets || []).filter(a =>
+    (!q    || a.asset_name.toLowerCase().includes(q)) &&
+    (!type || a.asset_type === type)
+  );
+  catListSort();
+}
+
+function catListSort() {
+  const sort = ($('list-sort') || {}).value || 'pipeline_count';
+  _listAssets.sort((a, b) => {
+    if (sort === 'asset_name') return a.asset_name.localeCompare(b.asset_name);
+    return (b[sort] || 0) - (a[sort] || 0);
+  });
+  _catRenderList();
+}
+
+function _catRenderList() {
+  const st = $('cat-list-status');
+  if (st) st.textContent = _listAssets.length + ' objeto(s)';
+  const body = $('cat-list-body');
+  if (!body) return;
+  body.innerHTML = _listAssets.map(a =>
+    `<div onclick="catAssetDetail('${_escHtml((a.database_name?a.database_name+'.':'')+a.asset_name)}','${a.asset_type}','${_escHtml(a.asset_name)}','${_escHtml(a.database_name||'')}')"
+      style="display:grid;grid-template-columns:1fr 80px 120px 60px 60px 80px;gap:8px;padding:.4rem .75rem;border-bottom:1px solid var(--border);font-size:12px;cursor:pointer;transition:background .1s"
+      onmouseenter="this.style.background='rgba(0,92,169,.04)'" onmouseleave="this.style.background=''">
+      <span style="font-family:monospace;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_escHtml(a.asset_name)}">${_escHtml(a.asset_name)}</span>
+      <span style="font-size:10px;color:var(--muted)">${a.asset_type === 'arquivo' ? '◈ Arq' : '◫ Tab'}</span>
+      <span style="font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_escHtml(a.database_name || (a.asset_type === 'arquivo' ? a.asset_name : ''))}</span>
+      <span style="text-align:center;font-size:11px;color:#185FA5;font-weight:600">${a.as_origem || 0}</span>
+      <span style="text-align:center;font-size:11px;color:#27500A;font-weight:600">${a.as_destino || 0}</span>
+      <span style="text-align:center;font-size:12px;font-weight:700">${a.pipeline_count || 0}</span>
+    </div>`
+  ).join('') || '<div style="padding:.75rem;font-size:12px;color:var(--muted)">Nenhum resultado.</div>';
+}
+
+function _catExportListCSV() {
+  if (!_listAssets.length) { showToast('Nenhum dado para exportar.', true); return; }
+  const rows = [['objeto','tipo','banco','como_origem','como_destino','pipelines']];
+  _listAssets.forEach(a => rows.push([a.asset_name, a.asset_type, a.database_name||'', a.as_origem||0, a.as_destino||0, a.pipeline_count||0]));
+  const csv = rows.map(r => r.map(v => '"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\r\n');
+  const link = document.createElement('a');
+  link.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  link.download = 'catalogo_objetos_' + new Date().toISOString().slice(0,10) + '.csv';
+  link.click();
+}
+
+// ── Asset Detail Modal ────────────────────────────────────────────
+async function catAssetDetail(objectKey, assetType, assetName, dbName) {
+  _catRecentPush(assetName, assetType, dbName);
+  _catRenderRecent();
+
+  // Open modal immediately with loading state
+  const overlay = $('ls-modal-overlay');
+  const titleEl = $('ls-modal-title');
+  const countEl = $('ls-modal-count');
+  const searchEl = $('ls-modal-search');
+  const listEl  = $('ls-modal-list');
+  if (!overlay) return;
+
+  if (titleEl) titleEl.textContent = assetName;
+  if (countEl) countEl.textContent = assetType === 'arquivo' ? '◈ Arquivo' : '◫ ' + (dbName || 'Tabela');
+  if (searchEl) searchEl.style.display = 'none';
+  if (listEl) listEl.innerHTML = '<li style="padding:.75rem 1rem;font-size:12px;color:var(--muted)">⏳ Carregando detalhes…</li>';
+  overlay.classList.add('open');
+
+  const payload = await _catTrigger({ mode: 'asset_detail', asset_name: assetName, asset_type: assetType, database_name: dbName || '' }, '');
+  if (!payload || !overlay.classList.contains('open')) return;
+
+  const readers  = payload.pipelines_origem  || [];
+  const writers  = payload.pipelines_destino || [];
+  const columns  = payload.columns  || [];
+  const tags     = payload.tags     || [];
+  const sqlExpr  = payload.sql_expression || '';
+
+  const tagChips = tags.map(t => `<span class="tag-pill gov-tag-${t.toLowerCase()}">${t}</span>`).join(' ');
+
+  const pipeRow = (p, dir) => {
+    const dirColor = dir === 'origem' ? '#185FA5' : '#27500A';
+    const dirLabel = dir === 'origem' ? '← lê' : '→ grava';
+    const cols = (() => { try { return JSON.parse(p.columns_json || '[]'); } catch(_) { return []; } })();
+    return `<div style="display:flex;align-items:center;gap:.5rem;padding:.3rem .5rem;border-radius:6px;margin-bottom:3px"
+      onmouseenter="this.style.background='rgba(0,92,169,.05)'" onmouseleave="this.style.background=''">
+      <span style="font-size:10px;font-weight:700;color:${dirColor};min-width:40px">${dirLabel}</span>
+      <span style="font-family:monospace;font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_escHtml(p.pipeline_name)}</span>
+      <span style="font-size:10px;color:var(--muted)">#${p.execution_order}</span>
+      ${cols.length ? `<button class="ls-detail-btn" style="background:rgba(243,146,0,.12);border-color:var(--cvp-orange);color:#b45309;font-size:9px"
+        onclick="event.stopPropagation();_lsDetailPopover(this,'${encodeURIComponent(cols.join('\\n'))}','Campos (${cols.length})')">⊞</button>` : ''}
+      <button onclick="event.stopPropagation();_catGoLineage('${_escHtml(p.pipeline_name)}')"
+        style="font-size:9px;padding:1px 6px;border-radius:4px;border:1px solid var(--cvp-blue);background:none;color:var(--cvp-blue);cursor:pointer">→</button>
+    </div>`;
+  };
+
+  const section = (title, content) =>
+    `<div style="margin-bottom:.75rem">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:.35rem;padding:.3rem .5rem;background:rgba(128,128,128,.06);border-radius:4px">${title}</div>
+      ${content}
+    </div>`;
+
+  if (searchEl) searchEl.style.display = 'none';
+  if (listEl) listEl.innerHTML =
+    // Classification + meta
+    (tags.length ? section('Classificação', `<div style="padding:.2rem .5rem">${tagChips}</div>`) : '') +
+    // Pipelines que leem
+    (readers.length ? section(`← Lido por (${readers.length} pipeline${readers.length>1?'s':''})`,
+      `<div style="padding:0 .25rem">${readers.map(p => pipeRow(p, 'origem')).join('')}</div>`) : '') +
+    // Pipelines que gravam
+    (writers.length ? section(`→ Gravado por (${writers.length} pipeline${writers.length>1?'s':''})`,
+      `<div style="padding:0 .25rem">${writers.map(p => pipeRow(p, 'destino')).join('')}</div>`) : '') +
+    // Colunas
+    (columns.length ? section(`Colunas (${columns.length})`,
+      `<div style="padding:.2rem .5rem;display:flex;flex-wrap:wrap;gap:4px">${
+        columns.map(c => `<span style="font-family:monospace;font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(0,92,169,.07);color:var(--cvp-blue)">${_escHtml(c)}</span>`).join('')
+      }</div>`) : '') +
+    // SQL
+    (sqlExpr ? section('SQL / Tabelas referenciadas',
+      `<pre style="font-size:10px;background:rgba(128,128,128,.07);border-radius:6px;padding:.5rem .75rem;overflow-x:auto;margin:.2rem .5rem;white-space:pre-wrap;word-break:break-all">${_escHtml(sqlExpr)}</pre>`) : '') +
+    // Nenhum dado
+    (!readers.length && !writers.length ? '<li style="padding:.75rem 1rem;font-size:12px;color:var(--muted)">Nenhuma linhagem encontrada para este objeto.</li>' : '');
+}
+
+// ── Busca universal (overview search bar) ─────────────────────────
+function catSmartDetect(val) {
+  const hint = $('cat-uni-hint') || $('cat-smart-hint');
+  if (!hint || !val) { if (hint) hint.textContent = ''; return; }
+  if (/\.(ds|dx|csv|txt|seq|dat)$/i.test(val) || /^(ds_|seq_|file:|arquivo:)/i.test(val)) {
+    hint.innerHTML = '◈ Detectado como <strong>arquivo</strong>';
+  } else {
+    hint.innerHTML = '◫ Detectado como <strong>tabela/banco</strong>';
+  }
+}
+
+function catUnifiedSearch() {
+  const val = (($('cat-uni-search') || {}).value || '').trim();
+  if (!val) return;
+  // Switch to Pipelines tab and run the appropriate search
+  catMainTab('pipelines');
+  if (/\.(ds|dx|csv|txt|seq|dat)$/i.test(val) || /^(ds_|seq_|file:|arquivo:)/i.test(val)) {
+    _catSearchType = 'arquivo';
+    catSwitchTab('arquivo');
+    if ($('cat-file-name')) $('cat-file-name').value = val.toUpperCase();
+  } else {
+    _catSearchType = 'tabela';
+    catSwitchTab('tabela');
+    if ($('cat-object-name')) $('cat-object-name').value = val.toUpperCase();
+  }
+  catalogoSearch();
+}
 
 // ── Deep-link: catálogo → lineage ─────────────────────────────────
 function _catGoLineage(pipelineName) {
@@ -3373,42 +3728,6 @@ async function loadPipelineList() {
       dl.innerHTML = names.map(n => `<option value="${_escHtml(n)}">`).join('');
     }
   } catch(_) {}
-}
-
-// ── Busca unificada inteligente ───────────────────────────────────
-const _FILE_EXT_RE = /\.(ds|dx|csv|txt|seq|dat)$/i;
-const _FILE_PREFIX_RE = /^(ds_|seq_|file:|arquivo:)/i;
-
-function catSmartDetect(val) {
-  const hint = $('cat-smart-hint');
-  if (!hint) return;
-  if (!val) { hint.textContent = ''; return; }
-  if (_FILE_EXT_RE.test(val) || _FILE_PREFIX_RE.test(val)) {
-    hint.innerHTML = '◈ Detectado como <strong>arquivo</strong> — buscará em file_path';
-  } else {
-    hint.innerHTML = '◫ Detectado como <strong>tabela/banco</strong> — buscará em object_name e sql_expression';
-  }
-}
-
-function catSmartSearch() {
-  const val = ($('cat-smart-input') || {}).value || '';
-  const term = val.trim().toUpperCase();
-  if (!term) { showToast('Digite um termo para buscar.', true); return; }
-  if (_FILE_EXT_RE.test(term) || _FILE_PREFIX_RE.test(term)) {
-    _catSearchType = 'arquivo';
-    if ($('cat-file-name')) $('cat-file-name').value = term.replace(/^arquivo:/i,'').replace(/^file:/i,'').trim();
-  } else {
-    _catSearchType = 'tabela';
-    if ($('cat-object-name')) $('cat-object-name').value = term;
-  }
-  catalogoSearch();
-}
-
-function catSwitchAdvanced() {
-  const adv = $('cat-advanced');
-  if (!adv) return;
-  const open = adv.style.display === 'none' || !adv.style.display;
-  adv.style.display = open ? '' : 'none';
 }
 
 // ── Saúde do pipeline via Airflow API ────────────────────────────
