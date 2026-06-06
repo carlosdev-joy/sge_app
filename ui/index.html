@@ -3848,37 +3848,6 @@ function _catExportCSV() {
   a.click();
 }
 
-// ── Autocomplete de pipelines ──────────────────────────────────────
-let _pipeListLoaded = false;
-async function loadPipelineList() {
-  if (_pipeListLoaded || !authHeader) return;
-  _pipeListLoaded = true;
-  try {
-    const runId = 'orq_piplist_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
-      body: JSON.stringify({ dag_run_id: runId, conf: { mode: 'list_pipelines' } }),
-    });
-    if (!r.ok) return;
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    const state = await waitDagRun(CATALOGO_DAG, rid, 30);
-    if (state !== 'success') return;
-    const xr = await fetch(
-      '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_catalogo/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
-    );
-    if (!xr.ok) return;
-    const data = normalizeXcomValue(await xr.json());
-    const names = (data && data.pipelines) || [];
-    const dl = $('gov-pipeline-list');
-    if (dl && names.length) {
-      dl.innerHTML = names.map(n => `<option value="${_escHtml(n)}">`).join('');
-    }
-  } catch(_) {}
-}
-
 // ── Saúde do pipeline via Airflow API ────────────────────────────
 async function _pipelineHealthLoad(idx, pipelineName) {
   const el = document.getElementById('health-' + idx);
@@ -7995,7 +7964,6 @@ async function admDeleteVersao(id, versao) {
 </div>
 
 <script>
-  document.addEventListener('DOMContentLoaded', function() {
   // Atualizar display do nome no step 2
   const _admWizOrig = _admDeleteWizardStep;
   _admDeleteWizardStep = function(n) {
@@ -8006,7 +7974,6 @@ async function admDeleteVersao(id, versao) {
       if (nameEl && dispEl) dispEl.textContent = nameEl.textContent;
     }
   };
-  });
   // Fechar ao clicar fora
   document.getElementById('modal-adm-delete-wizard').addEventListener('click', function(e) {
     if (e.target === this) _admDeleteWizardClose();
