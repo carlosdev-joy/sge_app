@@ -55,8 +55,11 @@ services:
   ui-nginx: {}
 
   # ── Airflow — todos usam Dockerfile.dev e variáveis de dev ─────────────────
+  # webserver_config.dev.py substitui o de prod (LDAP → DB auth)
   airflow-webserver:
     <<: *dev-build
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/config/webserver_config.dev.py:/opt/airflow/webserver_config.py
     environment:
       <<: *dev-env
     depends_on:
@@ -65,6 +68,8 @@ services:
 
   airflow-scheduler:
     <<: *dev-build
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/config/webserver_config.dev.py:/opt/airflow/webserver_config.py
     environment:
       <<: *dev-env
     depends_on:
@@ -73,6 +78,8 @@ services:
 
   airflow-worker:
     <<: *dev-build
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/config/webserver_config.dev.py:/opt/airflow/webserver_config.py
     environment:
       <<: *dev-env
     depends_on:
@@ -81,6 +88,8 @@ services:
 
   airflow-triggerer:
     <<: *dev-build
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/config/webserver_config.dev.py:/opt/airflow/webserver_config.py
     environment:
       <<: *dev-env
     depends_on:
@@ -89,6 +98,8 @@ services:
 
   airflow-init:
     <<: *dev-build
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/config/webserver_config.dev.py:/opt/airflow/webserver_config.py
     environment:
       <<: *dev-env
       _AIRFLOW_DB_MIGRATE: 'true'
