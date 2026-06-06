@@ -2791,15 +2791,15 @@ function renderLineageJob() {
     // Label principal = stage_name sempre
     const label = o.stage_name || o.object_name || '—';
 
-    // Linha de tipo + detalhe em negrito
-    const typeBase = o.type_label || o.object_type || '';
+    // Linha de tipo simplificada + detalhe em negrito
     let detailLine = '';
-    if (isFile && o.file_path) {
-      detailLine = typeBase + (o.file_path ? ': <strong>' + _fileBasename(o.file_path) + '</strong>' : '');
+    if (isFile) {
+      detailLine = 'Arquivo' + (o.file_path ? ': <strong>' + _fileBasename(o.file_path) + '</strong>' : '');
     } else if (isDb) {
-      detailLine = typeBase + (o.database_name ? ': <strong>' + o.database_name + '</strong>' : '');
-    } else if (typeBase) {
-      detailLine = typeBase;
+      detailLine = 'ODBC' + (o.database_name ? ': <strong>' + o.database_name + '</strong>' : '');
+    } else {
+      const typeBase = o.type_label || o.object_type || '';
+      if (typeBase) detailLine = typeBase;
     }
 
     // Botão SQL — só para banco, quando há sql_expression

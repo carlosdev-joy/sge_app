@@ -217,8 +217,9 @@ class DSXEngine:
         direction = self._infer_direction(rec, stage_type)
         xml_blob  = self._extract_xml_blob(rec)
 
-        # Coletar conteúdo dos OutputPin records para extração de colunas
+        # Coletar pins para extração de colunas (OutputPins primeiro, InputPins como fallback)
         output_pin_content = self._collect_pin_content(rec, records_by_id, "OutputPins")
+        input_pin_content  = self._collect_pin_content(rec, records_by_id, "InputPins")
 
         sql_expression: Optional[str] = None
         file_path:      Optional[str] = None
@@ -241,9 +242,9 @@ class DSXEngine:
                 sql_expression = "\n".join(tables)
             if db_hint:
                 database_name = db_hint
-            object_type = "Banco de Dados (ODBC)"
-            # Colunas dos OutputPins (o que realmente flui para a próxima etapa)
-            columns = self._extract_columns_from_pin(output_pin_content)
+            object_type = "ODBC"
+            columns = self._extract_columns_from_pin(output_pin_content) or \
+                      self._extract_columns_from_pin(input_pin_content)
 
         if is_file:
             file_path = self._extract_dataset_path(rec)
@@ -263,9 +264,9 @@ class DSXEngine:
             # Gravar somente o nome do arquivo (sem diretório/parâmetros)
             if file_path:
                 file_path = file_path.replace("\\", "/").split("/")[-1] or file_path
-            object_type = "Arquivo DataSet (.ds/.dx)" if "DataSet" in stage_type else "Arquivo Sequencial"
-            # Colunas dos pins para stages de arquivo também
-            columns = self._extract_columns_from_pin(output_pin_content)
+            object_type = "Arquivo"
+            columns = self._extract_columns_from_pin(output_pin_content) or \
+                      self._extract_columns_from_pin(input_pin_content)
 
         return {
             "project_name":      project_name,
