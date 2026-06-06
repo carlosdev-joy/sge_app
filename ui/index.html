@@ -2321,7 +2321,7 @@ function showLineageDSXPreview(payload) {
     const stage = d.stage_name || d.object_name || '—';
     const detail =
       d.file_path
-        ? d.file_path
+        ? _fileBasename(d.file_path)
         : (d.database_name && d.object_name)
           ? (d.database_name + '.' + d.object_name)
           : (d.object_name || '—');
@@ -2682,6 +2682,11 @@ function setGovMode(mode) {
   if (mode === 'pipeline') renderLineagePipeline();
 }
 
+function _fileBasename(p) {
+  if (!p) return p;
+  return p.replace(/\\/g, '/').split('/').filter(Boolean).pop() || p;
+}
+
 function _lineageNode(label, sublabel, dbName, cls) {
   return '<div class="ls-node"><div class="ls-node-box ' + cls + '">' +
     '<span style="font-size:12px;font-weight:500">' + (label || '—') + '</span>' +
@@ -2782,7 +2787,8 @@ function renderLineageJob() {
     // Para stages de banco/arquivo: label principal = tabela/arquivo real
     // Para transformações: label principal = nome do componente
     const isTransf = cls === 'transf';
-    const label     = isTransf ? (o.stage_name || o.object_name) : (o.object_name || o.stage_name);
+    const rawLabel  = isTransf ? (o.stage_name || o.object_name) : (o.object_name || o.stage_name);
+    const label     = o.file_path ? _fileBasename(rawLabel) : rawLabel;
     const sublabel  = (!isTransf && o.stage_name && o.stage_name !== label) ? o.stage_name : null;
     const typeLabel = (o.type_label || o.object_type || '');
     // db line: apenas banco quando não está já visível no label
@@ -2816,7 +2822,7 @@ function renderLineageJob() {
       '</div>' +
       (sublabel ? '<span class="ls-node-label" style="opacity:.7;font-size:10px">' + sublabel + '</span>' : '') +
       (typeLabel ? '<span class="ls-node-label">' + typeLabel + '</span>' : '') +
-      (dbLine ? '<span class="ls-node-db">' + dbLine + '</span>' : '') +
+      (dbLine ? '<span class="ls-node-db" style="font-weight:700">' + dbLine + '</span>' : '') +
     '</div></div>';
   };
 
@@ -2856,14 +2862,14 @@ function renderLineagePipeline() {
     const ori = (job.origens || []).map(o =>
       '<span class="ls-node-box origem" style="font-size:11px;padding:4px 8px;display:inline-block;margin:2px">' +
         (o.object_name || '?') + '<br><span style="font-size:9px;opacity:.65">' +
-        (o.object_type || '') + (o.database_name ? ('·' + o.database_name) : '') +
+        (o.object_type || '') + (o.database_name ? ('·<strong>' + o.database_name + '</strong>') : '') +
         '</span></span>'
     ).join('');
 
     const dst = (job.destinos || []).map(d =>
       '<span class="ls-node-box destino" style="font-size:11px;padding:4px 8px;display:inline-block;margin:2px">' +
         (d.object_name || '?') + '<br><span style="font-size:9px;opacity:.65">' +
-        (d.object_type || '') + (d.database_name ? ('·' + d.database_name) : '') +
+        (d.object_type || '') + (d.database_name ? ('·<strong>' + d.database_name + '</strong>') : '') +
         '</span></span>'
     ).join('');
 
@@ -3332,7 +3338,7 @@ function _renderCatResults(payload, impactoMode) {
         <span style="font-family:monospace;font-size:12px">${j.job_name}</span>
         ${_catDirBadge(j.direction)}
         <span style="font-size:11px;color:var(--text)">${j.object_name || '—'}</span>
-        <span style="font-size:11px;color:var(--muted)">${j.database_name || ''}</span>
+        <span style="font-size:11px;color:var(--muted);font-weight:700">${j.database_name || ''}</span>
         ${colsChip}
       </div>`;
     }).join('');
@@ -3463,7 +3469,7 @@ async function catalogoRanking() {
               <span style="font-size:13px;font-weight:600;font-family:monospace;cursor:pointer;color:var(--cvp-blue)"
                 onclick="$('cat-object-name').value='${d.object_name}';${d.database_name ? `$('cat-database').value='${d.database_name}';` : ''}catalogoSearch()"
                 title="Clique para buscar">${d.object_name}</span>
-              ${d.database_name ? `<span style="font-size:11px;color:var(--muted)">${d.database_name}</span>` : ''}
+              ${d.database_name ? `<span style="font-size:11px;color:var(--muted);font-weight:700">${d.database_name}</span>` : ''}
               ${tags}
             </div>
             <div style="background:var(--border);border-radius:999px;height:4px;overflow:hidden">
