@@ -543,7 +543,7 @@ def gerar_dags(**context):
         cur2  = conn2.cursor()
         cur2.execute(
             f"SELECT pipeline_name, criticidade, sla_minutos, ambiente, "
-            f"max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao "
+            f"max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao, dag_start_date "
             f"FROM dbo.etl_pipeline WHERE pipeline_name IN ({pnames_sql})"
         )
         adv_rows = cur2.fetchall()

@@ -1085,30 +1085,6 @@
           <!-- S4: Dependência entre pipelines -->
           <div class="section-sep"><span>Dependência</span></div>
           <div class="field">
-            <label for="p-depends-on">Depende de <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
-            <input id="p-depends-on" type="text" placeholder="ex: ETL_CARGA_BASE_DIARIA"
-              oninput="this.value=this.value.toUpperCase();_validateDependsOnField()"
-              list="depends-on-list" autocomplete="off" />
-            <datalist id="depends-on-list"></datalist>
-            <div id="err-depends-on" class="field-error"></div>
-            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
-              Nome exato de outro pipeline. Gera um <code>ExternalTaskSensor</code> na DAG factory — este pipeline só inicia após o dependente concluir com sucesso.
-            </p>
-          </div>
-
-          <!-- Data de início da DAG -->
-          <div class="section-sep"><span>Agendamento avançado</span></div>
-          <div class="field">
-            <label for="p-dag-start-date">Data de início da DAG <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
-            <input type="date" id="p-dag-start-date" style="max-width:200px" />
-            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
-              Define quando o agendamento começa a executar. Deixe em branco para iniciar imediatamente (usa 01/01/2026 como padrão). Use data futura para adiar a primeira execução.
-            </p>
-          </div>
-
-          <!-- S4: Dependência entre pipelines -->
-          <div class="section-sep"><span>Dependência</span></div>
-          <div class="field">
             <label>Depende de <span style="font-weight:400;color:var(--muted)">— opcional · Enter ou vírgula para adicionar</span></label>
             <div class="chip-input-wrap" id="deps-wrap" onclick="document.getElementById('p-depends-on').focus()" style="min-height:46px;cursor:text">
               <input id="p-depends-on" type="text" placeholder="nome do pipeline upstream…"
@@ -5625,6 +5601,7 @@ async function _dszProcessFile(file) {
     const sizeKB = (file.size / 1024).toFixed(0);
     if (status) status.innerHTML = '✅ <strong>' + _escHtml(file.name) + '</strong> (' + sizeKB + ' KB) — pronto para importar';
     if (dz) dz.style.borderColor = 'var(--green,#22c55e)';
+    const cl = $('dsx-drop-clear'); if (cl) cl.style.display = '';
     showToast('Arquivo "' + file.name + '" carregado — clique em Pré-visualizar para continuar.', false);
     // Pre-fill server path field hint if empty
     const pathInput = document.querySelector('[id*="dsx"][id*="path"], [placeholder*=".dsx"]');
@@ -7075,6 +7052,7 @@ function clearQuery() {
         <div style="font-size:28px;margin-bottom:.3rem">📂</div>
         <div style="font-weight:600;font-size:13px">Arraste o arquivo .dsx aqui ou clique para selecionar</div>
         <div id="dsx-drop-status" style="font-size:11px;color:var(--muted);margin-top:.3rem">Aceita .dsx e .xml — máx. 100 MB</div>
+        <div id="dsx-drop-clear" style="display:none;margin-top:.3rem"><button class="btn-ghost" style="font-size:11px;padding:2px 8px" onclick="event.stopPropagation();_resetDszDropzone()">✕ Limpar arquivo</button></div>
       </div>
       <input type="file" id="dsx-file-input" accept=".dsx,.xml" style="display:none" onchange="_dszFileSelected(event)" />
       <div style="text-align:center;font-size:11px;color:var(--muted);margin:.4rem 0 .75rem">— ou selecione o projeto abaixo —</div>
@@ -7245,6 +7223,15 @@ function openSeqImportModal() {
   if ($('seq-msg-erro'))      $('seq-msg-erro').checked = true;
   _seqShowStep(1);
   $('modal-seq-import').classList.add('open');
+  // Restore dropzone state if a file was previously loaded
+  if (window.__dszFileName) {
+    const st = $('dsx-drop-status');
+    const dz = $('dsx-dropzone');
+    const cl = $('dsx-drop-clear');
+    if (st) st.innerHTML = '✅ <strong>' + _escHtml(window.__dszFileName) + '</strong> — pronto para importar';
+    if (dz) dz.style.borderColor = 'var(--green,#22c55e)';
+    if (cl) cl.style.display = '';
+  }
   setTimeout(() => { try { $('seq-name-input').focus(); } catch(e) {} }, 120);
 }
 
@@ -7253,6 +7240,19 @@ function closeSeqImportModal() {
   _seqImportId    = null;
   _seqPreviewData = null;
   window._seqJobs = [];
+  // Preserve DSX file content so reopening doesn't lose the uploaded file
+  // (window.__dszFileContent and window.__dszFileName are kept intentionally)
+}
+
+function _resetDszDropzone() {
+  window.__dszFileContent = null;
+  window.__dszFileName    = null;
+  const dz = $('dsx-dropzone');
+  const st = $('dsx-drop-status');
+  if (dz) { dz.style.borderColor = ''; dz.style.background = ''; }
+  if (st) st.textContent = 'Aceita .dsx e .xml — máx. 100 MB';
+  const fi = $('dsx-file-input'); if (fi) fi.value = '';
+  const cl = $('dsx-drop-clear'); if (cl) cl.style.display = 'none';
 }
 
 function _seqShowStep(n) {
