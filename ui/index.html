@@ -961,11 +961,7 @@
             <div class="field">
               <label for="p-project">Projeto <span style="color:var(--red)">*</span></label>
               <select id="p-project" required>
-                <option value="">Selecione...</option>
-                <option value="BI_CVP">BI_CVP</option>
-                <option value="BI_VIDA">BI_VIDA</option>
-                <option value="BI_PRESTAMISTA">BI_PRESTAMISTA</option>
-                <option value="BI_PREVIDENCIA">BI_PREVIDENCIA</option>
+                <option value="">Carregando projetos…</option>
               </select>
             </div>
             <div class="field">
@@ -1012,6 +1008,7 @@
 
             <!-- Preview do cron gerado -->
             <div id="sch-preview" style="font-size:11px;font-family:ui-monospace, 'Courier New', monospace;color:var(--muted);margin-top:6px">cron: 0 6 * * *</div>
+            <div id="sch-overlap-hint" style="font-size:11px;margin-top:3px"></div>
           </div>
           <div class="field">
             <label>Tags <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">— opcional · pressione Enter para adicionar</span></label>
@@ -1022,6 +1019,92 @@
             <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Use apenas letras, números e <strong>_</strong> (sem espaços). Ex.: DATASTAGE, DIARIO, COBRANCA</p>
             <div id="err-tags" class="field-error"></div>
           </div>
+
+          <!-- S4: Dependência entre pipelines -->
+          <div class="section-sep"><span>Dependência</span></div>
+          <div class="field">
+            <label>Depende de <span style="font-weight:400;color:var(--muted)">— opcional · Enter ou vírgula para adicionar</span></label>
+            <div class="chip-input-wrap" id="deps-wrap" onclick="document.getElementById('p-depends-on').focus()" style="min-height:46px;cursor:text">
+              <input id="p-depends-on" type="text" placeholder="nome do pipeline upstream…"
+                oninput="this.value=this.value.toUpperCase()"
+                onkeydown="handleDepsInput(event)"
+                list="depends-on-list" autocomplete="off"
+                style="border:none;outline:none;background:transparent;flex:1;min-width:160px;font-size:13px" />
+            </div>
+            <input type="hidden" id="p-deps-hidden" value="" />
+            <datalist id="depends-on-list"></datalist>
+            <div id="err-depends-on" class="field-error"></div>
+            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
+              Pipelines upstream. Gera um <code>ExternalTaskSensor</code> por dependência (mode=reschedule).
+            </p>
+          </div>
+
+          <!-- Agendamento avançado -->
+          <div class="section-sep"><span>Agendamento avançado</span></div>
+          <div class="field">
+            <label for="p-dag-start-date">Data de início da DAG <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+            <input type="date" id="p-dag-start-date" style="max-width:200px" />
+            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
+              Define quando o agendamento começa a executar. Deixe em branco para iniciar imediatamente (usa 01/01/2026 como padrão). Use data futura para adiar a primeira execução.
+            </p>
+          </div>
+
+          <!-- Configurações Avançadas -->
+          <div class="section-sep" style="cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:space-between" onclick="_toggleAdvSection()">
+            <span>⚙ Configurações Avançadas</span>
+            <span id="sep-adv-icon" style="font-size:10px;color:var(--muted);font-weight:400">(clique para expandir)</span>
+          </div>
+          <div id="adv-section" style="display:none">
+
+            <div class="field">
+              <label for="p-descricao">Descrição / Objetivo <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+              <textarea id="p-descricao" rows="2" placeholder="Descreva o objetivo deste pipeline…" style="width:100%;box-sizing:border-box;resize:vertical;font-family:inherit;font-size:13px;padding:.5rem .75rem;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"></textarea>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem">
+              <div class="field">
+                <label for="p-criticidade">Criticidade</label>
+                <select id="p-criticidade">
+                  <option value="Alta">🔴 Alta</option>
+                  <option value="Media" selected>🟡 Média</option>
+                  <option value="Baixa">🟢 Baixa</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="p-ambiente">Ambiente</label>
+                <select id="p-ambiente">
+                  <option value="PROD" selected>PROD</option>
+                  <option value="HOM">HOM</option>
+                  <option value="DEV">DEV</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="p-sla-minutos">SLA máximo (minutos) <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+                <input type="number" id="p-sla-minutos" min="1" max="1440" placeholder="ex: 60 — vazio = sem SLA" />
+                <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">DAG falha se exceder este tempo.</p>
+              </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:.75rem">
+              <div class="field">
+                <label for="p-max-active-runs">Execuções simultâneas</label>
+                <input type="number" id="p-max-active-runs" min="1" max="10" value="1" />
+              </div>
+              <div class="field">
+                <label for="p-retries">Retentativas</label>
+                <input type="number" id="p-retries" min="0" max="10" value="1" />
+              </div>
+              <div class="field">
+                <label for="p-retry-delay">Intervalo retry (seg)</label>
+                <input type="number" id="p-retry-delay" min="30" max="7200" value="300" />
+              </div>
+              <div class="field">
+                <label for="p-pool">Pool Airflow <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+                <input type="text" id="p-pool" placeholder="ex: datastage_pool" oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9_]/g,'')" />
+              </div>
+            </div>
+
+          </div><!-- /adv-section -->
 
           <!-- Status -->
           <div class="section-sep"><span>Status inicial</span></div>
@@ -1507,6 +1590,7 @@ let authHeader = null;
 let jobMode = 'manual';
 let pipelineStatus = 1;
 const $ = (id) => document.getElementById(id);
+function _escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 // Links para UI do Airflow (usado nos modais de erro/timeout)
 const AIRFLOW_UI_BASE = 'https://airflow.caixavidaeprevidencia.intranet/';
@@ -2920,6 +3004,72 @@ async function loadAppConfig() {
   }
 }
 
+/* ══ PIPELINE / PROJECT LIST ══════════════════════════════════════ */
+const CATALOGO_DAG = 'etl_catalogo_query';
+let _pipeListLoaded = false;
+
+async function loadPipelineList() {
+  if (_pipeListLoaded || !authHeader) return;
+  _pipeListLoaded = true;
+  try {
+    const runId = 'orq_piplist_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: { mode: 'list_pipelines' } }),
+    });
+    if (!r.ok) return;
+    const run = await r.json();
+    const rid = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(CATALOGO_DAG, rid, 30);
+    if (state !== 'success') return;
+    const xr = await fetch(
+      '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_catalogo/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) return;
+    const data = normalizeXcomValue(await xr.json());
+    const names = (data && data.pipelines) || [];
+    const dl = $('gov-pipeline-list');
+    if (dl && names.length) {
+      dl.innerHTML = names.map(n => `<option value="${_escHtml(n)}">`).join('');
+    }
+  } catch(_) {}
+}
+
+async function loadProjectList() {
+  // NOTE: mode:'list_projects' must exist in the backend DAG etl_catalogo_query
+  const sel = $('p-project');
+  if (!sel) return;
+  if (!authHeader) return;
+  try {
+    const runId = 'proj-' + Date.now();
+    const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: { mode: 'list_projects' } }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const run = await r.json();
+    const rid = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(CATALOGO_DAG, rid, 30);
+    if (state !== 'success') throw new Error('DAG state: ' + state);
+    const xr = await fetch(
+      '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_catalogo/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) throw new Error('XCom HTTP ' + xr.status);
+    const data = normalizeXcomValue(await xr.json());
+    const projects = data.projects || [];
+    if (projects.length) {
+      sel.innerHTML = '<option value="">Selecione…</option>' +
+        projects.map(p => `<option value="${_escHtml(p)}">${_escHtml(p)}</option>`).join('');
+    } else { throw new Error('empty'); }
+  } catch(_) {
+    sel.innerHTML = '<option value="">Selecione…</option><option value="BI_CVP">BI_CVP</option><option value="BI_VIDA">BI_VIDA</option><option value="BI_PRESTAMISTA">BI_PRESTAMISTA</option><option value="BI_PREVIDENCIA">BI_PREVIDENCIA</option>';
+  }
+}
+
 /* ══ VERSÃO — badge no header ════════════════════════════════════ */
 function _renderVersionBadge() {
   const el = $('orq-version-badge');
@@ -3625,6 +3775,8 @@ async function entrar() {
       const secs = window.__appConfig.dashboard_refresh_interval_sec || 60;
       if (hint) hint.textContent = secs >= 60 ? Math.round(secs/60) + 'min' : secs + 's';
     });
+    // Carregar lista dinâmica de projetos no formulário de pipeline
+    try { loadProjectList(); } catch(e) {}
     // Tela inicial: Dashboard
     try { goDashboard(); } catch(e) {}
   } catch(e) {
@@ -4104,6 +4256,133 @@ async function triggerAndPoll(dagId, conf, label, btnId, btnTxtId, btnTxt) {
   }
 }
 
+/* ══ PIPELINE EDITOR — helpers novos ══ */
+
+function _toggleAdvSection() {
+  const s = $('adv-section');
+  const icon = $('sep-adv-icon');
+  if (!s) return;
+  const isHidden = s.style.display === 'none';
+  s.style.display = isHidden ? 'block' : 'none';
+  if (icon) icon.textContent = isHidden ? '(clique para recolher)' : '(clique para expandir)';
+}
+
+function handleDepsInput(event) {
+  if (event.key !== 'Enter' && event.key !== ',') return;
+  event.preventDefault();
+  const input = $('p-depends-on');
+  if (!input) return;
+  const val = input.value.trim().toUpperCase();
+  if (!val) return;
+  const hidden = $('p-deps-hidden');
+  const existing = hidden && hidden.value ? hidden.value.split(',').filter(Boolean) : [];
+  const self = $('pipeline_name') ? $('pipeline_name').value.trim() : '';
+  const errEl = $('err-depends-on');
+  if (val === self) { if (errEl) errEl.textContent = 'Um pipeline não pode depender de si mesmo.'; return; }
+  if (existing.includes(val)) { input.value = ''; return; }
+  existing.push(val);
+  if (hidden) hidden.value = existing.join(',');
+  _addDepChip(val);
+  input.value = '';
+  if (errEl) errEl.textContent = '';
+}
+
+function _addDepChip(name) {
+  const wrap = $('deps-wrap');
+  const input = $('p-depends-on');
+  if (!wrap || !input) return;
+  const chip = document.createElement('span');
+  chip.className = 'chip';
+  chip.setAttribute('data-dep', name);
+  chip.innerHTML = _escHtml(name) + '<span style="cursor:pointer;margin-left:4px;opacity:.7" onclick="_removeDepChip(this)">×</span>';
+  wrap.insertBefore(chip, input);
+}
+
+function _removeDepChip(spanEl) {
+  const chip = spanEl.closest('.chip');
+  if (!chip) return;
+  const name = chip.getAttribute('data-dep');
+  chip.remove();
+  const hidden = $('p-deps-hidden');
+  if (hidden) hidden.value = hidden.value.split(',').filter(v => v && v !== name).join(',');
+}
+
+function _cronOverlapCheck() {
+  const cron = _scheduleUpdatePreview ? _scheduleUpdatePreview() : '';
+  const pipelines = window.__pipelines || [];
+  const self = $('pipeline_name') ? $('pipeline_name').value.trim() : '';
+  function buildCron(p) {
+    const st = p.schedule_type || 'daily';
+    const h = p.schedule_hour ?? 6, m = p.schedule_minute ?? 0;
+    if (st === 'hourly')  return `${m} * * * *`;
+    if (st === 'daily')   return `${m} ${h} * * *`;
+    if (st === 'weekly')  return `${m} ${h} * * ${p.schedule_dow ?? 1}`;
+    if (st === 'monthly') return `${m} ${h} ${p.schedule_dom ?? 1} * *`;
+    return `${m} ${h} * * *`;
+  }
+  const conflicts = pipelines.filter(p => p.pipeline_name !== self && p.active && buildCron(p) === cron);
+  const hint = $('sch-overlap-hint');
+  if (!hint) return;
+  if (conflicts.length) {
+    hint.innerHTML = '⚠ <strong>' + conflicts.length + '</strong> pipeline(s) com mesmo horário: ' +
+      conflicts.map(p => '<code>' + _escHtml(p.pipeline_name) + '</code>').join(', ');
+    hint.style.color = 'var(--cvp-orange,#f59e0b)';
+  } else {
+    hint.textContent = '';
+  }
+}
+
+/* DSX drag-and-drop upload */
+function _dszDragOver(e) {
+  e.preventDefault();
+  const dz = $('dsx-dropzone');
+  if (dz) { dz.style.borderColor = 'var(--cvp-orange)'; dz.style.background = 'rgba(255,140,0,.06)'; }
+}
+function _dszDragLeave(e) {
+  const dz = $('dsx-dropzone');
+  if (dz) { dz.style.borderColor = 'var(--border)'; dz.style.background = ''; }
+}
+function _dszDrop(e) {
+  e.preventDefault();
+  _dszDragLeave(e);
+  const file = e.dataTransfer?.files?.[0];
+  if (file) _dszProcessFile(file);
+}
+function _dszFileSelected(e) {
+  const file = e.target?.files?.[0];
+  if (file) _dszProcessFile(file);
+  if (e.target) e.target.value = '';
+}
+async function _dszProcessFile(file) {
+  const status = $('dsx-drop-status');
+  const dz = $('dsx-dropzone');
+  if (!file.name.match(/\.(dsx|xml)$/i)) {
+    if (status) status.textContent = '❌ Arquivo inválido. Use .dsx ou .xml';
+    return;
+  }
+  if (file.size > 100 * 1024 * 1024) {
+    if (status) status.textContent = '❌ Arquivo muito grande (máx 100 MB)';
+    return;
+  }
+  if (status) status.textContent = '⏳ Lendo arquivo…';
+  if (dz) dz.style.borderColor = 'var(--cvp-orange)';
+  try {
+    const text = await file.text();
+    window.__dszFileContent = text;
+    window.__dszFileName = file.name;
+    const sizeKB = (file.size / 1024).toFixed(0);
+    if (status) status.innerHTML = '✅ <strong>' + _escHtml(file.name) + '</strong> (' + sizeKB + ' KB) — pronto para importar';
+    if (dz) dz.style.borderColor = 'var(--green,#22c55e)';
+    showToast('Arquivo "' + file.name + '" carregado — clique em Pré-visualizar para continuar.', false);
+    // Pre-fill server path field hint if empty
+    const pathInput = document.querySelector('[id*="dsx"][id*="path"], [placeholder*=".dsx"]');
+    if (pathInput && !pathInput.value) pathInput.value = file.name;
+  } catch(err) {
+    if (status) status.textContent = '❌ Erro ao ler arquivo: ' + err.message;
+    if (dz) dz.style.borderColor = 'var(--red)';
+  }
+}
+
 /* ══ SALVAR PIPELINE ══ */
 function normalizeIdent(val) {
   // Regra: permitir somente A-Z 0-9 e underscore. Sem espaços e sem caracteres especiais.
@@ -4139,6 +4418,7 @@ function _scheduleUpdatePreview() {
   else if (type === 'monthly') cron = `${m} ${h} ${dom} * *`;
   else cron = `${m} ${h} * * *`;
   if ($('sch-preview')) $('sch-preview').textContent = 'cron: ' + cron;
+  try { _cronOverlapCheck(); } catch(_) {}
   return cron;
 }
 
@@ -4180,6 +4460,57 @@ function _scheduleSetFromRecord(rec) {
   if ($('sch-dow')) $('sch-dow').value = (rec.schedule_dow ?? 1);
   if ($('sch-dom')) $('sch-dom').value = (rec.schedule_dom ?? 1);
   _scheduleTypeChange();
+}
+
+/* ── S4: Validação de dependências (multi-dep) ──────────────────── */
+function _detectCircularDep(startPipeline, targetDep, pipelines) {
+  const depMap = {};
+  for (const p of pipelines) depMap[p.pipeline_name] = (p.depends_on || '').trim() || null;
+  const visited = new Set();
+  let current = targetDep;
+  let hops = 0;
+  while (current && hops < 50) {
+    if (current === startPipeline) return true;
+    if (visited.has(current)) break;
+    visited.add(current);
+    current = depMap[current] || null;
+    hops++;
+  }
+  return false;
+}
+
+function _validateDependsOnField() {
+  // Use multi-dep hidden field if available, else fall back to text input
+  const hiddenEl = $('p-deps-hidden');
+  const inputEl  = $('p-depends-on');
+  const errEl    = $('err-depends-on');
+  const self     = ($('pipeline_name') ? $('pipeline_name').value.trim() : '');
+  const pipelines = window.__pipelines || [];
+
+  if (!errEl) return true;
+  errEl.textContent = '';
+
+  const depsRaw = (hiddenEl && hiddenEl.value) ? hiddenEl.value : (inputEl ? inputEl.value.trim() : '');
+  const deps = depsRaw ? depsRaw.split(',').map(d => d.trim().toUpperCase()).filter(Boolean) : [];
+
+  if (!deps.length) return true;
+
+  for (const val of deps) {
+    if (val === self) {
+      errEl.textContent = 'Um pipeline não pode depender de si mesmo.';
+      return false;
+    }
+    const exists = pipelines.some(p => p.pipeline_name === val);
+    if (!exists) {
+      errEl.textContent = 'Pipeline "' + val + '" não encontrado. Verifique o nome exato.';
+      return false;
+    }
+    if (self && _detectCircularDep(self, val, pipelines)) {
+      errEl.textContent = 'Dependência circular detectada: "' + val + '" já depende (direta ou indiretamente) de "' + self + '".';
+      return false;
+    }
+  }
+  return true;
 }
 
 async function registrarPipeline() {
@@ -4261,6 +4592,17 @@ async function registrarPipeline() {
   // hourly: cron usa somente minuto; salvamos scheduled_time como 00:MM:00
   const scheduled_time = _pad2(stype === 'hourly' ? 0 : sh) + ':' + _pad2(sm) + ':00';
 
+  const dependsOnLegacy = ($('p-depends-on') ? $('p-depends-on').value.trim().toUpperCase() : '') || null;
+
+  // Validação client-side de dependência circular antes de enviar ao backend
+  if (!_validateDependsOnField()) {
+    m.textContent = 'Corrija o campo "Depende de" antes de salvar.';
+    m.className = 'msg erro';
+    return;
+  }
+
+  const dagStartDate = ($('p-dag-start-date') ? $('p-dag-start-date').value.trim() : '') || null;
+
   await triggerAndPoll(
     'etl_pipeline_register',
     {
@@ -4270,6 +4612,16 @@ async function registrarPipeline() {
       envia_msg_fim:    $('tog-fim').checked    ? 1 : 0,
       envia_msg_erro:   $('tog-erro').checked   ? 1 : 0,
       project_name: project, domain: domain, tags: tags,
+      depends_on:          $('p-deps-hidden') ? ($('p-deps-hidden').value.trim() || null) : dependsOnLegacy,
+      dag_start_date:      dagStartDate,
+      descricao:           ($('p-descricao') ? $('p-descricao').value.trim() : '') || null,
+      criticidade:         $('p-criticidade') ? $('p-criticidade').value : 'Media',
+      ambiente:            $('p-ambiente') ? $('p-ambiente').value : 'PROD',
+      sla_minutos:         $('p-sla-minutos') ? (parseInt($('p-sla-minutos').value) || null) : null,
+      max_active_runs:     $('p-max-active-runs') ? (parseInt($('p-max-active-runs').value) || 1) : 1,
+      retries_count:       $('p-retries') ? (parseInt($('p-retries').value) ?? 1) : 1,
+      retry_delay_seconds: $('p-retry-delay') ? (parseInt($('p-retry-delay').value) || 300) : 300,
+      pool_name:           ($('p-pool') ? $('p-pool').value.trim() : '') || null,
       ...schedConf,
       schedule_cron_preview: cron, // apenas para debug/log; backend ignora se não usar
     },
@@ -4280,6 +4632,19 @@ async function registrarPipeline() {
   _scheduleSetFromRecord({ schedule_type: 'daily', schedule_hour: 6, schedule_minute: 0, schedule_dow: 1, schedule_dom: 1 });
   $('p-project').value = ''; $('p-domain').value = '';
   $('p-tags').value = ''; $('tags-wrap').querySelectorAll('.chip').forEach(c => c.remove());
+  if ($('p-depends-on'))     $('p-depends-on').value = '';
+  if ($('p-deps-hidden'))    $('p-deps-hidden').value = '';
+  if ($('deps-wrap'))        $('deps-wrap').querySelectorAll('.chip').forEach(c => c.remove());
+  if ($('p-dag-start-date')) $('p-dag-start-date').value = '';
+  if ($('p-descricao'))      $('p-descricao').value = '';
+  if ($('p-criticidade'))    $('p-criticidade').value = 'Media';
+  if ($('p-ambiente'))       $('p-ambiente').value = 'PROD';
+  if ($('p-sla-minutos'))    $('p-sla-minutos').value = '';
+  if ($('p-max-active-runs')) $('p-max-active-runs').value = 1;
+  if ($('p-retries'))        $('p-retries').value = 1;
+  if ($('p-retry-delay'))    $('p-retry-delay').value = 300;
+  if ($('p-pool'))           $('p-pool').value = '';
+  if ($('adv-section'))      { $('adv-section').style.display = 'none'; if ($('sep-adv-icon')) $('sep-adv-icon').textContent = '(clique para expandir)'; }
   setStatus(1);
   ['tog-inicio','tog-fim','tog-erro'].forEach(id => { $(id).checked = true; syncToggle('lbl-'+id.replace('tog-',''), $(id)); });
   closePipelineEditor();
@@ -4866,6 +5231,19 @@ function openPipelineCreate() {
   $('p-domain').value = '';
   $('p-tags').value = '';
   $('tags-wrap').querySelectorAll('.chip').forEach(c => c.remove());
+  if ($('p-depends-on'))     $('p-depends-on').value = '';
+  if ($('p-deps-hidden'))    $('p-deps-hidden').value = '';
+  if ($('deps-wrap'))        $('deps-wrap').querySelectorAll('.chip').forEach(c => c.remove());
+  if ($('p-dag-start-date')) $('p-dag-start-date').value = '';
+  if ($('p-descricao'))      $('p-descricao').value = '';
+  if ($('p-criticidade'))    $('p-criticidade').value = 'Media';
+  if ($('p-ambiente'))       $('p-ambiente').value = 'PROD';
+  if ($('p-sla-minutos'))    $('p-sla-minutos').value = '';
+  if ($('p-max-active-runs')) $('p-max-active-runs').value = 1;
+  if ($('p-retries'))        $('p-retries').value = 1;
+  if ($('p-retry-delay'))    $('p-retry-delay').value = 300;
+  if ($('p-pool'))           $('p-pool').value = '';
+  if ($('adv-section'))      { $('adv-section').style.display = 'none'; if ($('sep-adv-icon')) $('sep-adv-icon').textContent = '(clique para expandir)'; }
   setStatus(1);
   ['tog-inicio','tog-fim','tog-erro'].forEach(id => { $(id).checked = true; syncToggle('lbl-'+id.replace('tog-',''), $(id)); });
   $('msg-pipeline').textContent = '';
@@ -4912,6 +5290,37 @@ function openPipelineEdit(idx) {
   $('tog-inicio').checked = !!p.envia_msg_inicio; syncToggle('lbl-inicio', $('tog-inicio'));
   $('tog-fim').checked    = !!p.envia_msg_fim;    syncToggle('lbl-fim',    $('tog-fim'));
   $('tog-erro').checked   = !!p.envia_msg_erro;   syncToggle('lbl-erro',   $('tog-erro'));
+
+  // Advanced fields
+  if ($('p-descricao'))      $('p-descricao').value      = p.descricao || '';
+  if ($('p-criticidade'))    $('p-criticidade').value    = p.criticidade || 'Media';
+  if ($('p-ambiente'))       $('p-ambiente').value       = p.ambiente || 'PROD';
+  if ($('p-sla-minutos'))    $('p-sla-minutos').value    = p.sla_minutos != null ? p.sla_minutos : '';
+  if ($('p-max-active-runs')) $('p-max-active-runs').value = p.max_active_runs || 1;
+  if ($('p-retries'))        $('p-retries').value        = p.retries_count != null ? p.retries_count : 1;
+  if ($('p-retry-delay'))    $('p-retry-delay').value    = p.retry_delay_seconds || 300;
+  if ($('p-pool'))           $('p-pool').value           = p.pool_name || '';
+  if ($('p-dag-start-date')) $('p-dag-start-date').value = p.dag_start_date || '';
+  // Multi-dep chips
+  if ($('deps-wrap')) {
+    $('deps-wrap').querySelectorAll('.chip').forEach(c => c.remove());
+    if ($('p-deps-hidden')) $('p-deps-hidden').value = '';
+    const deps = (p.depends_on || '').split(',').map(d => d.trim()).filter(Boolean);
+    deps.forEach(d => {
+      _addDepChip(d);
+      const h = $('p-deps-hidden');
+      if (h) { const cur = h.value ? h.value.split(',') : []; if (!cur.includes(d)) { cur.push(d); h.value = cur.join(','); } }
+    });
+  }
+  if ($('p-depends-on')) $('p-depends-on').value = '';
+  // Preenche datalist com pipelines disponíveis (exceto o próprio)
+  const dl = $('depends-on-list');
+  if (dl) {
+    dl.innerHTML = (window.__pipelines || [])
+      .filter(pl => pl.pipeline_name !== p.pipeline_name)
+      .map(pl => '<option value="' + pl.pipeline_name + '">')
+      .join('');
+  }
 
   $('msg-pipeline').textContent = '';
   $('msg-pipeline').className = 'msg';
@@ -5395,6 +5804,17 @@ function clearQuery() {
         é buscado automaticamente a partir do projeto selecionado — não é necessário fazer upload.
         Informe o nome exato da sequence como aparece no DataStage (incluindo acentos).
       </p>
+      <!-- DSX browser upload -->
+      <div id="dsx-dropzone"
+        style="border:2px dashed var(--border);border-radius:10px;padding:1.25rem;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;margin-bottom:.75rem"
+        ondragover="_dszDragOver(event)" ondragleave="_dszDragLeave(event)" ondrop="_dszDrop(event)"
+        onclick="$('dsx-file-input').click()">
+        <div style="font-size:28px;margin-bottom:.3rem">📂</div>
+        <div style="font-weight:600;font-size:13px">Arraste o arquivo .dsx aqui ou clique para selecionar</div>
+        <div id="dsx-drop-status" style="font-size:11px;color:var(--muted);margin-top:.3rem">Aceita .dsx e .xml — máx. 100 MB</div>
+      </div>
+      <input type="file" id="dsx-file-input" accept=".dsx,.xml" style="display:none" onchange="_dszFileSelected(event)" />
+      <div style="text-align:center;font-size:11px;color:var(--muted);margin:.4rem 0 .75rem">— ou selecione o projeto abaixo —</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
         <div class="field" style="margin:0">
           <label>Projeto <span style="color:var(--red)">*</span></label>
