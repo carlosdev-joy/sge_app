@@ -2907,10 +2907,6 @@ function _lineageNode(label, sublabel, dbName, cls) {
 }
 
 // Cria e mostra o popover de drill-down ao clicar em +
-function _escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
 function _lsDetailPopover(btn, content, title) {
   const allItems = (content || '').toString().split('\n').map(s => s.trim()).filter(Boolean);
   const overlay  = document.getElementById('ls-modal-overlay');
@@ -5650,56 +5646,6 @@ function normalizeIdent(val) {
 
 function _pad2(n) { return String(n).padStart(2, '0'); }
 
-/* ── S4: Validação de dependência circular (client-side) ───────────────── */
-function _detectCircularDep(startPipeline, targetDep, pipelines) {
-  // Monta mapa depends_on a partir dos pipelines carregados
-  const depMap = {};
-  for (const p of pipelines) depMap[p.pipeline_name] = (p.depends_on || '').trim() || null;
-
-  const visited = new Set();
-  let current = targetDep;
-  let hops = 0;
-  while (current && hops < 50) {
-    if (current === startPipeline) return true;  // ciclo encontrado
-    if (visited.has(current)) break;             // nó já visitado, sem ciclo
-    visited.add(current);
-    current = depMap[current] || null;
-    hops++;
-  }
-  return false;
-}
-
-function _validateDependsOnField() {
-  const val      = ($('p-depends-on') ? $('p-depends-on').value.trim() : '');
-  const errEl    = $('err-depends-on');
-  const self     = ($('pipeline_name') ? $('pipeline_name').value.trim() : '');
-  const pipelines = window.__pipelines || [];
-
-  if (!errEl) return true;
-  errEl.textContent = '';
-
-  if (!val) return true;
-
-  if (val === self) {
-    errEl.textContent = 'Um pipeline não pode depender de si mesmo.';
-    return false;
-  }
-
-  // Verifica se o pipeline alvo existe
-  const exists = pipelines.some(p => p.pipeline_name === val);
-  if (!exists) {
-    errEl.textContent = 'Pipeline "' + val + '" não encontrado. Verifique o nome exato.';
-    return false;
-  }
-
-  // Detecção de ciclo
-  if (self && _detectCircularDep(self, val, pipelines)) {
-    errEl.textContent = 'Dependência circular detectada: "' + val + '" já depende (direta ou indiretamente) de "' + self + '".';
-    return false;
-  }
-
-  return true;
-}
 
 function _scheduleTypeChange() {
   const type = $('sch-type') ? $('sch-type').value : 'daily';
@@ -6633,14 +6579,6 @@ function openPipelineEdit(idx) {
     });
   }
   if ($('p-depends-on')) $('p-depends-on').value = '';
-  // Preenche datalist com pipelines disponíveis (exceto o próprio)
-  const dl = $('depends-on-list');
-  if (dl) {
-    dl.innerHTML = (window.__pipelines || [])
-      .filter(pl => pl.pipeline_name !== p.pipeline_name)
-      .map(pl => '<option value="' + pl.pipeline_name + '">')
-      .join('');
-  }
 
   $('msg-pipeline').textContent = '';
   $('msg-pipeline').className = 'msg';
