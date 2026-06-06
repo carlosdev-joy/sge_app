@@ -51,9 +51,9 @@ services:
     volumes:
       - postgres-db-volume-dev:/var/lib/postgresql/data
 
-  # ── UI na porta 8081 ───────────────────────────────────────────────────────
+  # ── UI na porta 8081 (substitui 80:80 do base) ────────────────────────────
   ui-nginx:
-    ports:
+    ports: !reset
       - "8081:80"
 
   # ── Airflow — todos usam Dockerfile.dev e variáveis de dev ─────────────────
