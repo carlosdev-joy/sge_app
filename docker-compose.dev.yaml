@@ -1,0 +1,65 @@
+# docker-compose.dev.yaml
+# ========================
+# Override para ambiente de DESENVOLVIMENTO na VPS.
+#
+# Uso:
+#   docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up -d
+#
+# Diferenças do ambiente de produção:
+#   - UI  na porta 8081  (prod: 80)
+#   - Airflow na porta 8082  (prod: 8080)
+#   - Volume postgres separado (postgres-db-volume-dev)
+#   - Variáveis de ambiente carregadas de .env.dev
+#   - Conexão MSSQL aponta para banco de DEV via AIRFLOW_CONN_*
+#   - Branch: definida no clone/pull — não é controlada pelo compose
+
+x-airflow-common-dev:
+  &airflow-common-dev
+  environment:
+    &airflow-common-dev-env
+    # Sobrescreve conexão MSSQL para ambiente de dev
+    # Formato: mssql+pyodbc://user:pass@host:1433/db?driver=ODBC+Driver+17+for+SQL+Server
+    AIRFLOW_CONN_SQL14_DMDB41: "${DEV_MSSQL_CONN:-mssql+pyodbc://sa:SuaSenha@host-dev:1433/orquestra_dev?driver=ODBC+Driver+17+for+SQL+Server}"
+    # Usuário/senha do Airflow web de dev
+    _AIRFLOW_WWW_USER_USERNAME: "${DEV_AIRFLOW_USER:-admin}"
+    _AIRFLOW_WWW_USER_PASSWORD: "${DEV_AIRFLOW_PASSWORD:-admin123}"
+
+services:
+  postgres:
+    volumes:
+      - postgres-db-volume-dev:/var/lib/postgresql/data
+
+  ui-nginx:
+    ports:
+      - "8081:80"           # UI dev em :8081 para não conflitar com prod (:80)
+    environment:
+      - NGINX_ENV=dev
+
+  airflow-webserver:
+    ports:
+      - "8082:8080"         # Airflow webserver dev em :8082
+    environment:
+      <<: *airflow-common-dev-env
+
+  airflow-scheduler:
+    environment:
+      <<: *airflow-common-dev-env
+
+  airflow-worker:
+    environment:
+      <<: *airflow-common-dev-env
+
+  airflow-triggerer:
+    environment:
+      <<: *airflow-common-dev-env
+
+  airflow-init:
+    environment:
+      <<: *airflow-common-dev-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: "${DEV_AIRFLOW_USER:-admin}"
+      _AIRFLOW_WWW_USER_PASSWORD: "${DEV_AIRFLOW_PASSWORD:-admin123}"
+
+volumes:
+  postgres-db-volume-dev:
