@@ -66,79 +66,81 @@ IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = 'orquestra_dev')
 ok "Banco criado."
 
 # ── Aplica schema ─────────────────────────────────────────────────────────────
+# ── Aplica schema externo (opcional) ─────────────────────────────────────────
 if [ -n "$SCHEMA_FILE" ] && [ -f "$SCHEMA_FILE" ]; then
     info "Aplicando schema externo: $SCHEMA_FILE"
     run_sql_file "$SCHEMA_FILE" "$(basename "$SCHEMA_FILE")"
     ok "Schema externo aplicado."
-else
-    echo ""
-    info "Aplicando scripts do repositório..."
+fi
 
-    # ORDEM IMPORTA: tabelas base → tabelas dependentes → procs → alterações → migrations
+# ── Aplica scripts do repositório (tabelas etl_*, procs, migrations) ─────────
+echo ""
+info "Aplicando scripts do repositório (Orquestra)..."
 
-    # 1. Tabelas base
-    info "1/5 Tabelas base..."
-    for f in \
-        "script/tabela/etl_pipeline.sql" \
-        "script/tabela/etl_pipeline_job.sql" \
-        "script/tabela/etl_job_execution.sql" \
-        "script/tabela/etl_job_lineage.sql" \
-        "script/tabela/etl_stage_type_map.sql" \
-        "script/tabela/etl_pipeline_performance_snapshot.sql"
-    do
-        [ -f "$PROJECT_DIR/$f" ] && run_sql_file "$PROJECT_DIR/$f" "$(basename "$f")"
-    done
+# ORDEM IMPORTA: tabelas base → tabelas dependentes → procs → alterações → migrations
 
-    # 2. Tabelas de config e staging
-    info "2/5 Tabelas de config e staging..."
-    for f in \
-        "script/proc/etl_app_config_tables.sql" \
-        "script/proc/etl_seq_import_tables.sql" \
-        "script/proc/etl_admin_sql.sql"
-    do
-        [ -f "$PROJECT_DIR/$f" ] && run_sql_file "$PROJECT_DIR/$f" "$(basename "$f")"
-    done
+# 1. Tabelas base
+info "1/5 Tabelas base..."
+for f in \
+    "script/tabela/etl_pipeline.sql" \
+    "script/tabela/etl_pipeline_job.sql" \
+    "script/tabela/etl_job_execution.sql" \
+    "script/tabela/etl_job_lineage.sql" \
+    "script/tabela/etl_stage_type_map.sql" \
+    "script/tabela/etl_pipeline_performance_snapshot.sql"
+do
+    [ -f "$PROJECT_DIR/$f" ] && run_sql_file "$PROJECT_DIR/$f" "$(basename "$f")"
+done
 
-    # 3. Stored procedures
-    info "3/5 Stored procedures..."
-    for f in \
-        "script/proc/sp_etl_pipeline_upsert.sql" \
-        "script/proc/sp_etl_pipeline_job_upsert.sql" \
-        "script/proc/sp_etl_pipeline_job_reorder.sql" \
-        "script/proc/sp_etl_job_execution_log.sql" \
-        "script/proc/sp_etl_job_lineage_upsert.sql" \
-        "script/proc/sp_etl_pipelines_pendentes_criar.sql" \
-        "script/proc/fix_sp_etl_seq_import_approve.sql"
-    do
-        [ -f "$PROJECT_DIR/$f" ] && run_sql_file "$PROJECT_DIR/$f" "$(basename "$f")"
-    done
+# 2. Tabelas de config e staging
+info "2/5 Tabelas de config e staging..."
+for f in \
+    "script/proc/etl_app_config_tables.sql" \
+    "script/proc/etl_seq_import_tables.sql" \
+    "script/proc/etl_admin_sql.sql"
+do
+    [ -f "$PROJECT_DIR/$f" ] && run_sql_file "$PROJECT_DIR/$f" "$(basename "$f")"
+done
 
-    # 4. Alterações (em ordem cronológica)
-    info "4/5 Alterações históricas..."
-    for dir in $(ls -d "$PROJECT_DIR"/script/alteracoes/2* 2>/dev/null | sort); do
-        # Prefere 000_deploy_all.sql se existir, senão aplica arquivo por arquivo
-        if [ -f "$dir/000_deploy_all.sql" ]; then
-            run_sql_file "$dir/000_deploy_all.sql" "$(basename "$dir")/000_deploy_all.sql"
-        else
-            for f in $(ls "$dir"/*.sql 2>/dev/null | sort); do
-                run_sql_file "$f" "$(basename "$dir")/$(basename "$f")"
-            done
-        fi
-    done
-    for dir in $(ls -d "$PROJECT_DIR"/script/alteracoes/ui* 2>/dev/null | sort); do
+# 3. Stored procedures
+info "3/5 Stored procedures..."
+for f in \
+    "script/proc/sp_etl_pipeline_upsert.sql" \
+    "script/proc/sp_etl_pipeline_job_upsert.sql" \
+    "script/proc/sp_etl_pipeline_job_reorder.sql" \
+    "script/proc/sp_etl_job_execution_log.sql" \
+    "script/proc/sp_etl_job_lineage_upsert.sql" \
+    "script/proc/sp_etl_pipelines_pendentes_criar.sql" \
+    "script/proc/fix_sp_etl_seq_import_approve.sql"
+do
+    [ -f "$PROJECT_DIR/$f" ] && run_sql_file "$PROJECT_DIR/$f" "$(basename "$f")"
+done
+
+# 4. Alterações (em ordem cronológica)
+info "4/5 Alterações históricas..."
+for dir in $(ls -d "$PROJECT_DIR"/script/alteracoes/2* 2>/dev/null | sort); do
+    # Prefere 000_deploy_all.sql se existir, senão aplica arquivo por arquivo
+    if [ -f "$dir/000_deploy_all.sql" ]; then
+        run_sql_file "$dir/000_deploy_all.sql" "$(basename "$dir")/000_deploy_all.sql"
+    else
         for f in $(ls "$dir"/*.sql 2>/dev/null | sort); do
             run_sql_file "$f" "$(basename "$dir")/$(basename "$f")"
         done
+    fi
+done
+for dir in $(ls -d "$PROJECT_DIR"/script/alteracoes/ui* 2>/dev/null | sort); do
+    for f in $(ls "$dir"/*.sql 2>/dev/null | sort); do
+        run_sql_file "$f" "$(basename "$dir")/$(basename "$f")"
     done
+done
 
-    # 5. Migrations (novas colunas/tabelas adicionadas no branch atual)
-    info "5/5 Migrations recentes..."
-    for f in $(ls "$PROJECT_DIR"/sql/migrations/*.sql 2>/dev/null | sort); do
-        run_sql_file "$f" "migrations/$(basename "$f")"
-    done
+# 5. Migrations (novas colunas/tabelas adicionadas no branch atual)
+info "5/5 Migrations recentes..."
+for f in $(ls "$PROJECT_DIR"/sql/migrations/*.sql 2>/dev/null | sort); do
+    run_sql_file "$f" "migrations/$(basename "$f")"
+done
 
-    ok "Todos os scripts aplicados."
-fi
+ok "Todos os scripts aplicados."
 
 # ── Cria usuário de aplicação ─────────────────────────────────────────────────
 info "Criando usuário de aplicação..."
