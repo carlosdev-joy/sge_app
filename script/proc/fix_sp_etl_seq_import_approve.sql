@@ -65,7 +65,6 @@ BEGIN
             @project_name    = @project_name,
             @domain          = @domain,
             @scheduled_time  = @scheduled_time,
-            @schedule        = @schedule_cron,
             @schedule_type   = @schedule_type,
             @schedule_hour   = @schedule_hour,
             @schedule_minute = @schedule_minute,
