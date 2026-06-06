@@ -34,7 +34,8 @@ BEGIN
         @schedule_hour   TINYINT,
         @schedule_minute TINYINT,
         @schedule_dow    TINYINT,
-        @schedule_dom    TINYINT;
+        @schedule_dom    TINYINT,
+        @scheduled_time  TIME(0);
 
     SELECT
         @pipeline_name   = COALESCE(pipeline_name_override, seq_name),
@@ -49,6 +50,12 @@ BEGIN
     FROM dbo.etl_seq_import
     WHERE id = @import_id;
 
+    -- Derivar @scheduled_time a partir de schedule_hour/schedule_minute
+    SET @scheduled_time = CAST(
+        RIGHT('00' + CAST(COALESCE(@schedule_hour,   0) AS VARCHAR(2)), 2) + ':' +
+        RIGHT('00' + CAST(COALESCE(@schedule_minute, 0) AS VARCHAR(2)), 2) + ':00'
+    AS TIME(0));
+
     BEGIN TRANSACTION;
     BEGIN TRY
 
@@ -57,6 +64,7 @@ BEGIN
             @pipeline_name   = @pipeline_name,
             @project_name    = @project_name,
             @domain          = @domain,
+            @scheduled_time  = @scheduled_time,
             @schedule        = @schedule_cron,
             @schedule_type   = @schedule_type,
             @schedule_hour   = @schedule_hour,
