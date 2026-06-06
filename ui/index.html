@@ -3511,7 +3511,6 @@ function govTabSwitch(tab) {
 }
 
 /* ══ CATÁLOGO DE DADOS — redesign ═══════════════════════════════ */
-const CATALOGO_DAG = 'etl_catalogo_query';
 let _catSearchType  = 'tabela';
 let _rankType       = 'tabela';
 let _browseData     = null; // cache for explore/list tab
@@ -7996,6 +7995,7 @@ async function admDeleteVersao(id, versao) {
 </div>
 
 <script>
+  document.addEventListener('DOMContentLoaded', function() {
   // Atualizar display do nome no step 2
   const _admWizOrig = _admDeleteWizardStep;
   _admDeleteWizardStep = function(n) {
@@ -8006,6 +8006,7 @@ async function admDeleteVersao(id, versao) {
       if (nameEl && dispEl) dispEl.textContent = nameEl.textContent;
     }
   };
+  });
   // Fechar ao clicar fora
   document.getElementById('modal-adm-delete-wizard').addEventListener('click', function(e) {
     if (e.target === this) _admDeleteWizardClose();
