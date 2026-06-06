@@ -15,6 +15,4 @@ USER airflow
 
 RUN pip install --no-cache-dir \
     apache-airflow-providers-microsoft-mssql==3.9.0 \
-    apache-airflow-providers-ssh==3.13.1 \
-    apache-airflow-providers-celery==3.10.0 \
-    "celery==5.3.6"
+    apache-airflow-providers-ssh==3.13.1
