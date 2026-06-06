@@ -72,7 +72,8 @@ def consultar_lineage(**context):
             l.file_path,
             l.dsx_source_file,
             l.extracted_at,
-            l.extraction_method
+            l.extraction_method,
+            l.columns_json
         FROM dbo.etl_pipeline_job j
         LEFT JOIN dbo.etl_job_lineage l
                ON l.pipeline_name = j.pipeline_name
@@ -115,6 +116,7 @@ def consultar_lineage(**context):
             dsx_source_file,
             extracted_at,
             extraction_method,
+            columns_json,
         ) = r
 
         if job_name not in jobs_map:
@@ -130,6 +132,12 @@ def consultar_lineage(**context):
         if obj_name is None:
             continue
 
+        import json as _json  # noqa: PLC0415
+        try:
+            cols = _json.loads(columns_json) if columns_json else []
+        except Exception:
+            cols = []
+
         item = {
             "object_name": obj_name,
             "object_type": obj_type,
@@ -144,6 +152,7 @@ def consultar_lineage(**context):
             "dsx_source_file": dsx_source_file,
             "extracted_at": _fmt(extracted_at),
             "extraction_method": extraction_method,
+            "columns": cols,
         }
 
         if direction == "origem":

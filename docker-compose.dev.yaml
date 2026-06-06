@@ -1,0 +1,113 @@
+# docker-compose.dev.yaml
+# ========================
+# Override para ambiente de DESENVOLVIMENTO na VPS.
+#
+# Uso:
+#   docker compose -f docker-compose.yaml -f docker-compose.dev.yaml --env-file .env.dev up -d
+#
+# Portas:
+#   :8081  → UI (Nginx)
+#   :8082  → Airflow webserver
+#   :1433  → SQL Server dev
+
+# Build dev — usa Dockerfile.dev (instala via PyPI, sem wheels offline)
+x-dev-build:
+  &dev-build
+  build:
+    context: .
+    dockerfile: Dockerfile.dev
+
+# Variáveis de ambiente dev
+x-dev-env:
+  &dev-env
+  AIRFLOW_CONN_SQL14_DMDB41: "mssql+pyodbc://sa:${DEV_MSSQL_SA_PASSWORD:-Orquestra@Dev2024}@sqlserver-dev:1433/orquestra_dev?driver=ODBC+Driver+17+for+SQL+Server&TrustServerCertificate=yes"
+  _AIRFLOW_WWW_USER_USERNAME: "${DEV_AIRFLOW_USER:-admin}"
+  _AIRFLOW_WWW_USER_PASSWORD: "${DEV_AIRFLOW_PASSWORD:-admin123}"
+  AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
+
+services:
+
+  # ── SQL Server de dev ──────────────────────────────────────────────────────
+  sqlserver-dev:
+    image: mcr.microsoft.com/mssql/server:2019-latest
+    container_name: orquestra-sqlserver-dev
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${DEV_MSSQL_SA_PASSWORD:-Orquestra@Dev2024}"
+      MSSQL_PID: "Developer"
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver-dev-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"${DEV_MSSQL_SA_PASSWORD:-Orquestra@Dev2024}\" -Q 'SELECT 1' -C || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── Postgres separado do prod ──────────────────────────────────────────────
+  postgres:
+    volumes:
+      - postgres-db-volume-dev:/var/lib/postgresql/data
+
+  # ── UI na porta 8081 — UI_PORT=8081 no .env.dev ───────────────────────────
+  ui-nginx: {}
+
+  # ── Airflow — todos usam Dockerfile.dev e variáveis de dev ─────────────────
+  # webserver_config.dev.py substitui o de prod (LDAP → DB auth)
+  airflow-webserver:
+    <<: *dev-build
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/config/webserver_config.dev.py:/opt/airflow/webserver_config.py
+    environment:
+      <<: *dev-env
+    depends_on:
+      sqlserver-dev:
+        condition: service_healthy
+
+  airflow-scheduler:
+    <<: *dev-build
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/config/webserver_config.dev.py:/opt/airflow/webserver_config.py
+    environment:
+      <<: *dev-env
+    depends_on:
+      sqlserver-dev:
+        condition: service_healthy
+
+  airflow-worker:
+    <<: *dev-build
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/config/webserver_config.dev.py:/opt/airflow/webserver_config.py
+    environment:
+      <<: *dev-env
+    depends_on:
+      sqlserver-dev:
+        condition: service_healthy
+
+  airflow-triggerer:
+    <<: *dev-build
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/config/webserver_config.dev.py:/opt/airflow/webserver_config.py
+    environment:
+      <<: *dev-env
+    depends_on:
+      sqlserver-dev:
+        condition: service_healthy
+
+  airflow-init:
+    <<: *dev-build
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/config/webserver_config.dev.py:/opt/airflow/webserver_config.py
+    environment:
+      <<: *dev-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: "${DEV_AIRFLOW_USER:-admin}"
+      _AIRFLOW_WWW_USER_PASSWORD: "${DEV_AIRFLOW_PASSWORD:-admin123}"
+
+volumes:
+  postgres-db-volume-dev:
+  sqlserver-dev-data:
