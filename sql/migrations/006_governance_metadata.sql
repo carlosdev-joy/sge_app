@@ -6,15 +6,14 @@
 -- Donos de pipeline (Data Owner / Steward)
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'etl_pipeline_owner')
 CREATE TABLE dbo.etl_pipeline_owner (
-    pipeline_name  VARCHAR(300) NOT NULL,
-    owner_name     VARCHAR(100) NULL,
-    owner_email    VARCHAR(150) NULL,
-    steward_name   VARCHAR(100) NULL,
-    steward_email  VARCHAR(150) NULL,
-    updated_at     DATETIME     NOT NULL DEFAULT GETDATE(),
-    updated_by     VARCHAR(100) NULL,
-    CONSTRAINT PK_etl_pipeline_owner PRIMARY KEY (pipeline_name),
-    CONSTRAINT FK_pipeline_owner FOREIGN KEY (pipeline_name) REFERENCES dbo.etl_pipeline(pipeline_name)
+    pipeline_name  NVARCHAR(300) NOT NULL,
+    owner_name     NVARCHAR(100) NULL,
+    owner_email    NVARCHAR(150) NULL,
+    steward_name   NVARCHAR(100) NULL,
+    steward_email  NVARCHAR(150) NULL,
+    updated_at     DATETIME      NOT NULL DEFAULT GETDATE(),
+    updated_by     NVARCHAR(100) NULL,
+    CONSTRAINT PK_etl_pipeline_owner PRIMARY KEY (pipeline_name)
 );
 
 -- Tags de classificação por objeto (tabela ou arquivo)
