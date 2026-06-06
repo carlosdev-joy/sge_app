@@ -160,8 +160,16 @@ class DSXEngine:
         return list(dict.fromkeys(tables))
 
     def _extract_select_statement(self, record_content: str) -> str:
+        # Standard form: <SelectStatement><![CDATA[...]]></SelectStatement>
         select_match = re.search(
             r"<SelectStatement[^>]*><!\[CDATA\[(.*?)\]\]></SelectStatement>", record_content, re.DOTALL
+        )
+        if select_match:
+            return select_match.group(1).strip()
+        # XMLProperties form: CDATA followed by other child elements before </SelectStatement>
+        select_match = re.search(
+            r"<SelectStatement[^>]*>.*?<!\[CDATA\[(.*?)\]\]>",
+            record_content, re.DOTALL
         )
         if select_match:
             return select_match.group(1).strip()
@@ -282,13 +290,26 @@ class DSXEngine:
         cols = re.findall(r"<SqlColumnDef[^>]+\bname=\"([^\"]+)\"", record_content, re.IGNORECASE)
         if cols:
             return cols
+        # OutputPin DSSUBRECORD format: BEGIN DSSUBRECORD / Name "COL" / SqlType "N" / END DSSUBRECORD
+        _skip = {"", "input", "output", "Input", "Output", "lookup\\type", "dataset",
+                 "datasetmode", "VariantName", "VariantLibrary", "VariantVersion",
+                 "ConnectorName", "Engine", "Context", "ConnectionString", "Username",
+                 "Password", "XMLProperties"}
+        sub_records = re.findall(r"BEGIN DSSUBRECORD(.*?)END DSSUBRECORD", record_content, re.DOTALL)
+        col_names: list[str] = []
+        for sub in sub_records:
+            if "SqlType" in sub or "Precision" in sub:
+                nm = re.search(r'^\s*Name\s+"([^"]+)"', sub, re.MULTILINE)
+                if nm and nm.group(1) not in _skip:
+                    col_names.append(nm.group(1))
+        if col_names:
+            return col_names
         # DSX flat format: Name "COL" / SqlType "N" pairs (innermost DSRECORDs with SqlType)
         inner_records = re.findall(r"BEGIN DSRECORD(.*?)END DSRECORD", record_content, re.DOTALL)
-        col_names: list[str] = []
         for inner in inner_records:
             if "SqlType" in inner or "DataType" in inner:
                 nm = re.search(r'Name\s+"([^"]+)"', inner)
-                if nm and nm.group(1) not in ("", "input", "output", "Input", "Output"):
+                if nm and nm.group(1) not in _skip:
                     col_names.append(nm.group(1))
         return col_names
 
@@ -316,6 +337,13 @@ class DSXEngine:
         record_pattern = re.compile(r"BEGIN DSRECORD.*?END DSRECORD", re.DOTALL)
         records = record_pattern.findall(job_block)
 
+        # Index records by identifier for pin lookup
+        records_by_id: dict[str, str] = {}
+        for rec in records:
+            id_m = re.search(r'Identifier\s+"([^"]+)"', rec)
+            if id_m:
+                records_by_id[id_m.group(1)] = rec
+
         for record in records:
             if 'OLEType "CCustomStage"' in record or 'OLEType "CStage"' in record:
                 name_match = re.search(r'Name "(.*?)"', record)
@@ -338,12 +366,21 @@ class DSXEngine:
                 per_table_cols: dict[str, list[str]] = {}
                 db_name: str | None = None
 
+                # Collect content from output pin records for column extraction
+                output_pin_content = ""
+                for pin_id_raw in re.findall(r'OutputPins\s+"([^"]+)"', record):
+                    for pin_id in pin_id_raw.split("|"):
+                        pin_id = pin_id.strip()
+                        if pin_id in records_by_id:
+                            output_pin_content += records_by_id[pin_id]
+
                 if any(db_type in raw_type for db_type in ["ODBC", "Oracle", "DB2", "SQL"]):
                     tables_or_files = self._extract_tables_from_sql(record)
-                    sql_expression = "\n".join(tables_or_files) if tables_or_files else None
+                    sql_text = self._extract_select_statement(record)
+                    sql_expression = sql_text if sql_text else ("\n".join(tables_or_files) if tables_or_files else None)
                     db_name = self._extract_database_name(record)
                     # Colunas = schema de OUTPUT do stage (o que realmente flui para a próxima etapa)
-                    output_cols = self._extract_schema_columns(record)
+                    output_cols = self._extract_schema_columns(output_pin_content or record)
                     for tbl in tables_or_files:
                         tbl_key = tbl.split(".")[-1].strip("[]").lower()
                         per_table_cols[tbl_key] = output_cols
@@ -351,9 +388,9 @@ class DSXEngine:
                     file_path = self._extract_file_name(record) or None
                     if file_path:
                         tables_or_files = [file_path]
-                    columns = self._extract_schema_columns(record)
+                    columns = self._extract_schema_columns(output_pin_content or record)
                 else:
-                    columns = self._extract_schema_columns(record)
+                    columns = self._extract_schema_columns(output_pin_content or record)
 
                 # Para estágios com múltiplas tabelas (FROM/JOIN), gera 1 registro por tabela.
                 # Para transformações (sem tabela/arquivo), gera 1 registro com object_name=stage.
