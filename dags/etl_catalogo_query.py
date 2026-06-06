@@ -102,8 +102,10 @@ _COL_NAMES = [
 
 
 def _search_tabela(hook, object_name: str, direction: str, database_name: str) -> dict:
-    where = ["l.object_name LIKE %s"]
-    params: list = [f"%{object_name}%"]
+    # Busca em sql_expression (tabelas reais do SQL) OU object_name (nome do stage)
+    where = ["(l.sql_expression LIKE %s OR l.object_name LIKE %s)"]
+    term = f"%{object_name}%"
+    params: list = [term, term]
 
     if direction and direction != "all":
         where.append("l.direction = %s")
@@ -159,21 +161,49 @@ def _search_arquivo(hook, file_name: str, direction: str) -> dict:
 
 
 def _ranking_tabela(hook, top_n: int) -> dict:
+    # Usa STRING_SPLIT para extrair cada tabela individual do sql_expression
+    # (armazenado como lista separada por \n). Quando sql_expression é NULL/vazio
+    # usa object_name como fallback (stages sem SQL explícito).
     sql = f"""
         SELECT TOP {top_n}
-            l.object_name,
-            ISNULL(l.database_name, '') AS database_name,
-            COUNT(DISTINCT l.pipeline_name)                           AS pipeline_count,
-            COUNT(DISTINCT l.job_name)                                AS job_count,
-            SUM(CASE WHEN l.direction = 'origem'  THEN 1 ELSE 0 END) AS as_origem,
-            SUM(CASE WHEN l.direction = 'destino' THEN 1 ELSE 0 END) AS as_destino
-        FROM dbo.etl_job_lineage l
-        LEFT JOIN dbo.etl_stage_type_map stm ON stm.type_raw = l.object_type
-        WHERE l.direction IN ('origem', 'destino')
-          AND (l.file_path IS NULL OR l.file_path = '')
-          AND l.object_name IS NOT NULL AND l.object_name <> ''
-        GROUP BY l.object_name, l.database_name
-        ORDER BY COUNT(DISTINCT l.pipeline_name) DESC, l.object_name
+            tbl_name,
+            ISNULL(database_name, '') AS database_name,
+            COUNT(DISTINCT pipeline_name)                           AS pipeline_count,
+            COUNT(DISTINCT job_name)                                AS job_count,
+            SUM(CASE WHEN direction = 'origem'  THEN 1 ELSE 0 END) AS as_origem,
+            SUM(CASE WHEN direction = 'destino' THEN 1 ELSE 0 END) AS as_destino
+        FROM (
+            -- Stages COM sql_expression: expande cada linha como uma tabela
+            SELECT
+                LTRIM(RTRIM(s.value)) AS tbl_name,
+                l.database_name,
+                l.pipeline_name,
+                l.job_name,
+                l.direction
+            FROM dbo.etl_job_lineage l
+            CROSS APPLY STRING_SPLIT(l.sql_expression, CHAR(10)) s
+            WHERE l.direction IN ('origem', 'destino')
+              AND (l.file_path IS NULL OR l.file_path = '')
+              AND l.sql_expression IS NOT NULL AND l.sql_expression <> ''
+              AND LTRIM(RTRIM(s.value)) <> ''
+
+            UNION ALL
+
+            -- Stages SEM sql_expression: usa object_name como fallback
+            SELECT
+                l.object_name AS tbl_name,
+                l.database_name,
+                l.pipeline_name,
+                l.job_name,
+                l.direction
+            FROM dbo.etl_job_lineage l
+            WHERE l.direction IN ('origem', 'destino')
+              AND (l.file_path IS NULL OR l.file_path = '')
+              AND (l.sql_expression IS NULL OR l.sql_expression = '')
+              AND l.object_name IS NOT NULL AND l.object_name <> ''
+        ) x
+        GROUP BY tbl_name, database_name
+        ORDER BY COUNT(DISTINCT pipeline_name) DESC, tbl_name
     """
     rows = hook.get_records(sql)
     cols = ["object_name", "database_name", "pipeline_count", "job_count", "as_origem", "as_destino"]
