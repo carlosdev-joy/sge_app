@@ -1895,6 +1895,7 @@ const ICONS = {
 let authHeader = null;
 let jobMode = 'manual';
 let pipelineStatus = 1;
+let _pipelineIsNew  = true;  // false quando editando pipeline existente
 const $ = (id) => document.getElementById(id);
 function _escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
@@ -5879,10 +5880,14 @@ async function registrarPipeline() {
   ['tog-inicio','tog-fim','tog-erro'].forEach(id => { $(id).checked = true; syncToggle('lbl-'+id.replace('tog-',''), $(id)); });
   closePipelineEditor();
   try { loadQuery(0); } catch(e) {}
-  // F3 — sincronizar status ativo/inativo com Airflow
-  try { await _toggleDagAirflow(pipeline, pipelineStatus); } catch(e) {}
-  // F2 — oferecer regenerar DAG após salvar
-  try { _offerRegenDag(pipeline); } catch(e) {}
+  // F3 — sincronizar status ativo/inativo com Airflow (só se já existia — nova DAG ainda não está no Airflow)
+  if (!_pipelineIsNew) {
+    try { await _toggleDagAirflow(pipeline, pipelineStatus); } catch(e) {}
+  }
+  // F2 — oferecer regenerar DAG somente ao editar (nova pipeline é gerada automaticamente pela factory)
+  if (!_pipelineIsNew) {
+    try { _offerRegenDag(pipeline); } catch(e) {}
+  }
 }
 
 /* ══ SALVAR JOBS ══ */
@@ -6452,8 +6457,9 @@ async function saveJobEdit() {
 }
 
 function openPipelineCreate() {
+  _pipelineIsNew = true;
   $('pipelineFormTitle').innerHTML = '<span class="orange">+</span> Novo Pipeline';
-  $('pipelineFormHint').textContent = 'Cadastro de novo pipeline. O nome é a chave única (pipeline_name).';
+  $('pipelineFormHint').textContent = 'Cadastro de novo pipeline. O nome é a chave único (pipeline_name).';
   $('pipeline_name').disabled = false;
   $('pipeline_name').value = '';
   _scheduleSetFromRecord({ schedule_type: 'daily', schedule_hour: 6, schedule_minute: 0, schedule_dow: 1, schedule_dom: 1 });
@@ -6492,6 +6498,7 @@ function closePipelineEditor() {
 }
 
 function openPipelineEdit(idx) {
+  _pipelineIsNew = false;
   const list = window.__pipelines || [];
   const p = list[idx];
   if (!p) return;
