@@ -23,6 +23,7 @@ x-dev-env:
   AIRFLOW_CONN_SQL14_DMDB41: "mssql+pyodbc://sa:${DEV_MSSQL_SA_PASSWORD:-Orquestra@Dev2024}@sqlserver-dev:1433/orquestra_dev?driver=ODBC+Driver+17+for+SQL+Server&TrustServerCertificate=yes"
   _AIRFLOW_WWW_USER_USERNAME: "${DEV_AIRFLOW_USER:-admin}"
   _AIRFLOW_WWW_USER_PASSWORD: "${DEV_AIRFLOW_PASSWORD:-admin123}"
+  AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
 
 services:
 
