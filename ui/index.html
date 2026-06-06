@@ -551,58 +551,87 @@
   .lineage-btn-ok { background: rgba(22,163,74,.08); border: 0.5px solid #16a34a; color: #15803d; }
   .lineage-btn-pending { background: rgba(202,138,4,.08); border: 0.5px solid #ca8a04; color: #92400e; }
   .tag-pill { font-size:10px;padding:1px 6px;border-radius:20px;background:rgba(0,92,169,.08);border:0.5px solid rgba(0,92,169,.2);color:var(--cvp-blue);margin-right:3px;white-space:nowrap; }
-  .row-actions{ display:flex; gap:6px; justify-content:flex-end; }
+  .gov-tag-pii        { background:rgba(220,38,38,.1);color:#dc2626;border-color:rgba(220,38,38,.3) }
+  .gov-tag-confidencial{ background:rgba(234,88,12,.1);color:#ea580c;border-color:rgba(234,88,12,.3) }
+  .gov-tag-regulado   { background:rgba(124,58,237,.1);color:#7c3aed;border-color:rgba(124,58,237,.3) }
+  .gov-tag-publico    { background:rgba(22,163,74,.1);color:#16a34a;border-color:rgba(22,163,74,.3) }
+  .row-actions{ display:flex; gap:8px; justify-content:flex-start; align-items:center; }
   .row-actions .btn-ghost.btn-sm, .row-actions .btn-danger.btn-sm{ padding:.35rem .6rem; border-radius:10px; font-size:11px; }
+  /* Coluna Ações: largura mínima e alinhada à esquerda para que th e td batam */
+  th.col-actions, td.col-actions{ min-width:120px; text-align:left !important; white-space:nowrap; }
 
-  /* Botões Gerar DAG / Regenerar (tabela de pipelines) */
-  .btn-dag{
-    padding:.35rem .7rem;
-    border-radius:10px;
-    font-size:11px;
-    font-weight:500;
-    border:0.5px solid var(--cvp-blue);
-    background:rgba(26,95,168,.08);
-    color:var(--cvp-blue);
-    cursor:pointer;
-    transition:all .12s;
-    white-space:nowrap;
-    font-family:inherit;
+  /* ── Botões de ação SVG — sem caixa, só ícone colorido ── */
+  .act-btn{
+    display:inline-flex; align-items:center; justify-content:center;
+    padding:2px; border:none; cursor:pointer; background:transparent;
+    color:var(--muted); flex-shrink:0; transition:color .12s, opacity .12s;
+    border-radius:4px;
   }
-  .btn-dag:hover{ background:var(--cvp-blue); color:#fff; }
-  .btn-dag:disabled{ opacity:.4; cursor:not-allowed; }
+  .act-btn svg{ display:block; pointer-events:none; }
+  .act-btn:disabled{ opacity:.3; cursor:not-allowed; }
 
-  .btn-dag-ok{
-    padding:.35rem .7rem;
-    border-radius:10px;
-    font-size:11px;
-    font-weight:500;
-    border:0.5px solid var(--green);
-    background:rgba(22,163,74,.07);
-    color:var(--green);
-    cursor:pointer;
-    transition:all .12s;
-    white-space:nowrap;
-    font-family:inherit;
+  .act-btn.act-edit    { color:var(--cvp-blue); }
+  .act-btn.act-edit:hover    { opacity:.7; }
+
+  .act-btn.act-del     { color:var(--red); }
+  .act-btn.act-del:hover     { opacity:.7; }
+
+  .act-btn.act-disable { color:var(--red); }
+  .act-btn.act-disable:hover { opacity:.7; }
+
+  .act-btn.act-dag     { color:var(--cvp-blue); }
+  .act-btn.act-dag:hover     { opacity:.7; }
+
+  .act-btn.act-regen   { color:var(--green); }
+  .act-btn.act-regen:hover   { opacity:.7; }
+
+  .act-btn.act-exec    { color:var(--green); }
+  .act-btn.act-exec:hover    { opacity:.7; }
+
+  .act-btn.act-lineage { color:#7c3aed; }
+  .act-btn.act-lineage:hover { opacity:.7; }
+
+  .act-btn.act-save    { color:var(--green); }
+  .act-btn.act-save:hover    { opacity:.7; }
+
+  .act-btn.act-view    { color:var(--cvp-blue); }
+  .act-btn.act-view:hover    { opacity:.7; }
+
+  .act-btn.act-audit   { color:#b45309; }
+  .act-btn.act-audit:hover   { opacity:.7; }
+
+  .act-btn.act-rerun   { color:var(--green); }
+  .act-btn.act-rerun:hover   { opacity:.7; }
+
+  /* Botão Ver jobs (logs) — ícone olho, sem caixa */
+  .btn-ver-jobs{ display:inline-flex; align-items:center; justify-content:center;
+    padding:2px; border-radius:4px; border:none;
+    cursor:pointer; background:transparent; color:var(--cvp-blue); transition:opacity .12s; }
+  .btn-ver-jobs:hover{ opacity:.7; }
+
+  /* Botões Gerar DAG / Regenerar — icon-only na tabela */
+  .btn-dag, .btn-dag-ok{
+    display:inline-flex; align-items:center; justify-content:center;
+    padding:2px; border-radius:4px; border:none;
+    cursor:pointer; background:transparent; flex-shrink:0; transition:opacity .12s;
   }
-  .btn-dag-ok:hover{ background:var(--green); color:#fff; }
-  .btn-dag-ok:disabled{ opacity:.4; cursor:not-allowed; }
+  .btn-dag    { color:var(--cvp-blue); }
+  .btn-dag:hover    { opacity:.7; }
+  .btn-dag:disabled { opacity:.3; cursor:not-allowed; }
+  .btn-dag-ok { color:var(--green); }
+  .btn-dag-ok:hover { opacity:.7; }
+  .btn-dag-ok:disabled{ opacity:.3; cursor:not-allowed; }
 
-  /* Botão ▶ Executar manualmente (Sprint 1) */
+  /* btn-exec: botão de texto (barra de ações de Jobs) — NÃO é icon-only */
   .btn-exec{
-    padding:.35rem .6rem;
-    border-radius:10px;
-    font-size:12px;
-    font-weight:600;
-    border:0.5px solid var(--green);
-    background:rgba(22,163,74,.07);
-    color:var(--green);
-    cursor:pointer;
-    transition:all .12s;
-    white-space:nowrap;
-    font-family:inherit;
+    display:inline-flex; align-items:center; gap:5px;
+    padding:.35rem .75rem; border-radius:10px; font-size:11px; font-weight:600;
+    border:0.5px solid var(--green); background:rgba(22,163,74,.08);
+    color:var(--green); cursor:pointer; white-space:nowrap;
+    font-family:inherit; transition:background .12s, color .12s;
   }
-  .btn-exec:hover{ background:var(--green); color:#fff; }
-  .btn-exec:disabled{ opacity:.4; cursor:not-allowed; }
+  .btn-exec:hover   { background:var(--green); color:#fff; }
+  .btn-exec:disabled{ opacity:.35; cursor:not-allowed; }
 
   /* Admin — sub-abas */
   .adm-tab{
@@ -712,6 +741,25 @@
   .ls-detail-popover .ls-pop-title{font-weight:700;font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-bottom:.3rem}
   .ls-detail-popover .ls-pop-item{font-family:ui-monospace,'Courier New',monospace;font-size:11px;padding:2px 0;border-bottom:1px solid var(--border-light)}
   .ls-detail-popover .ls-pop-item:last-child{border-bottom:none}
+  /* ── Detail modal (searchable list) ─────────────────── */
+  #ls-modal-overlay{display:none;position:fixed;inset:0;z-index:900;background:rgba(0,0,0,.45);align-items:center;justify-content:center}
+  #ls-modal-overlay.open{display:flex}
+  #ls-modal-box{background:var(--bg);border:1px solid var(--border);border-radius:14px;width:min(560px,94vw);max-height:82vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.22);overflow:hidden}
+  #ls-modal-header{display:flex;align-items:center;gap:.6rem;padding:.7rem 1rem .6rem;border-bottom:1px solid var(--border);background:var(--bg);position:sticky;top:0;z-index:1}
+  #ls-modal-title{font-size:.85rem;font-weight:700;color:var(--text);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #ls-modal-count{font-size:.72rem;font-weight:600;color:var(--muted);white-space:nowrap}
+  #ls-modal-close{background:none;border:none;cursor:pointer;color:var(--muted);font-size:1.1rem;line-height:1;padding:0 .2rem}
+  #ls-modal-close:hover{color:var(--text)}
+  #ls-modal-search{width:100%;padding:.3rem .6rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:.82rem;outline:none;margin:.5rem 1rem;width:calc(100% - 2rem);box-sizing:border-box;transition:border-color .15s}
+  #ls-modal-search:focus{border-color:var(--cvp-blue)}
+  #ls-modal-search::-webkit-search-cancel-button{display:none}
+  #ls-modal-list{list-style:none;margin:0;padding:.25rem 0 .5rem;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+  #ls-modal-list::-webkit-scrollbar{width:5px}
+  #ls-modal-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+  .ls-mitem{padding:.28rem 1rem;font-family:ui-monospace,'Courier New',monospace;font-size:.8rem;color:var(--text);line-height:1.5;border-left:2px solid transparent;transition:background .1s,border-color .1s;cursor:default;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ls-mitem:nth-child(even){background:rgba(128,128,128,.04)}
+  .ls-mitem:hover{background:rgba(0,100,220,.08);border-left-color:var(--cvp-blue)}
+  .ls-mitem[hidden]{display:none}
   .ls-node-label{font-size:10px;opacity:.65;margin-top:2px;display:block}
   .ls-node-db{font-size:10px;opacity:.7;font-style:italic;display:block}
   .ls-arrow{color:var(--muted);padding:0 8px;font-size:18px;align-self:center}
@@ -854,7 +902,7 @@
       <div class="hd-right">
         <!-- Badge de falhas (S2) -->
         <div id="failure-badge-wrap" style="display:none;position:relative;cursor:pointer"
-             onclick="switchPage('page-logs',document.getElementById('tab-logs'));_applyFailedFilter(window.__appConfig&&window.__appConfig.failure_badge_hours_lookback||24)"
+             onclick="switchPage('page-logs',document.getElementById('tab-logs'));_applyFailedFilter(window.__badgeHoursLookback||(window.__appConfig&&window.__appConfig.failure_badge_hours_lookback)||24)"
              title="Falhas recentes — clique para ver logs">
           <button class="icon-btn" style="background:rgba(220,38,38,.18);color:#fff;font-size:.8rem;font-weight:700">✕</button>
           <span id="failure-badge" style="position:absolute;top:-5px;right:-5px;background:var(--red);color:#fff;
@@ -864,10 +912,10 @@
         </div>
         <span class="whoami">Olá, <strong id="who"></strong></span>
         <!-- Badge de versão -->
-        <span id="orq-version-badge" style="font-size:10px;opacity:.55;cursor:default;
+        <span id="orq-version-badge" onclick="openChangelog()" style="font-size:10px;cursor:pointer;
           background:rgba(255,255,255,.1);padding:2px 7px;border-radius:999px;
           border:1px solid rgba(255,255,255,.2);color:#fff;white-space:nowrap"
-          title="ORQUESTRA v2.1.0">v2.1.0</span>
+          title="Ver histórico de versões">v2.1.0</span>
         <button class="icon-btn" onclick="toggleTheme()" title="Tema" aria-label="Alternar tema"><span id="theme-emoji">◐</span></button>
         <button class="icon-btn logout" onclick="sair()">Sair</button>
       </div>
@@ -974,53 +1022,91 @@
               <div id="err-domain" class="field-error"></div>
             </div>
           </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;align-items:start">
           <div class="field-group" id="schedule-builder">
             <label>Agendamento <span style="color:var(--red)">*</span></label>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-              <select id="sch-type" onchange="_scheduleTypeChange()" style="min-width:180px">
-                <option value="daily">Diário</option>
-                <option value="hourly">A cada hora</option>
-                <option value="weekly">Semanal</option>
-                <option value="monthly">Mensal</option>
-              </select>
-
-              <!-- Hora e minuto — oculto para hourly -->
-              <div id="sch-time-row" style="display:flex;gap:6px;align-items:center">
-                <label style="font-size:11px;color:var(--muted);margin:0">Às</label>
-                <input type="number" id="sch-hour" min="0" max="23" value="6" style="width:55px" placeholder="HH" oninput="_scheduleUpdatePreview()" />
-                <span>:</span>
-                <input type="number" id="sch-minute" min="0" max="59" value="0" style="width:55px" placeholder="MM" oninput="_scheduleUpdatePreview()" />
-              </div>
-
-              <!-- Dia da semana — só para weekly -->
-              <div id="sch-dow-row" style="display:none;gap:6px;align-items:center">
-                <label style="font-size:11px;color:var(--muted);margin:0">Dia</label>
-                <select id="sch-dow" onchange="_scheduleUpdatePreview()">
-                  <option value="1">Segunda</option><option value="2">Terça</option>
-                  <option value="3">Quarta</option><option value="4">Quinta</option>
-                  <option value="5">Sexta</option><option value="6">Sábado</option>
-                  <option value="0">Domingo</option>
+            <!-- Linha 1: tipo + hora/minuto lado a lado -->
+            <div style="display:grid;grid-template-columns:180px auto;gap:8px;align-items:end">
+              <div>
+                <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Frequência</label>
+                <select id="sch-type" onchange="_scheduleTypeChange()" style="width:100%">
+                  <option value="daily">Diário</option>
+                  <option value="hourly">A cada hora</option>
+                  <option value="weekly">Semanal</option>
+                  <option value="monthly">Mensal</option>
                 </select>
               </div>
-
-              <!-- Dia do mês — só para monthly -->
-              <div id="sch-dom-row" style="display:none;gap:6px;align-items:center">
-                <label style="font-size:11px;color:var(--muted);margin:0">Dia do mês</label>
-                <input type="number" id="sch-dom" min="1" max="31" value="1" style="width:55px" oninput="_scheduleUpdatePreview()" />
+              <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+                <!-- Hora e minuto — oculto para hourly -->
+                <div id="sch-time-row" style="display:flex;gap:6px;align-items:flex-end">
+                  <div>
+                    <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Hora</label>
+                    <input type="number" id="sch-hour" min="0" max="23" value="6" style="width:76px;text-align:center;font-size:15px;font-weight:600;letter-spacing:.05em" placeholder="HH" oninput="_scheduleUpdatePreview()" />
+                  </div>
+                  <span style="padding-bottom:8px;font-weight:700;color:var(--muted);font-size:18px">:</span>
+                  <div>
+                    <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Min</label>
+                    <input type="number" id="sch-minute" min="0" max="59" value="0" style="width:76px;text-align:center;font-size:15px;font-weight:600;letter-spacing:.05em" placeholder="MM" oninput="_scheduleUpdatePreview()" />
+                  </div>
+                </div>
+                <!-- Dia da semana — só para weekly -->
+                <div id="sch-dow-row" style="display:none;gap:6px;align-items:flex-end">
+                  <div>
+                    <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Dia da semana</label>
+                    <select id="sch-dow" onchange="_scheduleUpdatePreview()">
+                      <option value="1">Segunda</option><option value="2">Terça</option>
+                      <option value="3">Quarta</option><option value="4">Quinta</option>
+                      <option value="5">Sexta</option><option value="6">Sábado</option>
+                      <option value="0">Domingo</option>
+                    </select>
+                  </div>
+                </div>
+                <!-- Dia do mês — só para monthly -->
+                <div id="sch-dom-row" style="display:none;gap:6px;align-items:flex-end">
+                  <div>
+                    <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Dia do mês</label>
+                    <input type="number" id="sch-dom" min="1" max="31" value="1" style="width:64px" oninput="_scheduleUpdatePreview()" />
+                  </div>
+                </div>
               </div>
             </div>
-
             <!-- Preview do cron gerado -->
-            <div id="sch-preview" style="font-size:11px;font-family:ui-monospace, 'Courier New', monospace;color:var(--muted);margin-top:6px">cron: 0 6 * * *</div>
+            <div id="sch-preview" style="font-size:11px;font-family:ui-monospace,'Courier New',monospace;color:var(--muted);margin-top:6px">cron: 0 6 * * *</div>
           </div>
+          <!-- Tags: coluna direita do grid Agendamento+Tags -->
           <div class="field">
-            <label>Tags <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">— opcional · pressione Enter para adicionar</span></label>
+            <label>Tags <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">— opcional · Enter para adicionar</span></label>
             <div class="chip-input-wrap" id="tags-wrap" onclick="document.getElementById('tag-input').focus()">
               <input id="tag-input" type="text" placeholder="ex: DATASTAGE, DIARIO..." oninput="this.value=this.value.toUpperCase();validateTagDraft()" onkeydown="handleTagInput(event)" />
             </div>
             <input type="hidden" id="p-tags" value="" />
-            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Use apenas letras, números e <strong>_</strong> (sem espaços). Ex.: DATASTAGE, DIARIO, COBRANCA</p>
+            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Letras, números e <strong>_</strong> (sem espaços).</p>
             <div id="err-tags" class="field-error"></div>
+          </div>
+          </div><!-- /grid agendamento+tags -->
+
+          <!-- S4: Dependência entre pipelines -->
+          <div class="section-sep"><span>Dependência</span></div>
+          <div class="field">
+            <label for="p-depends-on">Depende de <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+            <input id="p-depends-on" type="text" placeholder="ex: ETL_CARGA_BASE_DIARIA"
+              oninput="this.value=this.value.toUpperCase();_validateDependsOnField()"
+              list="depends-on-list" autocomplete="off" />
+            <datalist id="depends-on-list"></datalist>
+            <div id="err-depends-on" class="field-error"></div>
+            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
+              Nome exato de outro pipeline. Gera um <code>ExternalTaskSensor</code> na DAG factory — este pipeline só inicia após o dependente concluir com sucesso.
+            </p>
+          </div>
+
+          <!-- Data de início da DAG -->
+          <div class="section-sep"><span>Agendamento avançado</span></div>
+          <div class="field">
+            <label for="p-dag-start-date">Data de início da DAG <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+            <input type="date" id="p-dag-start-date" style="max-width:200px" />
+            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
+              Define quando o agendamento começa a executar. Deixe em branco para iniciar imediatamente (usa 01/01/2026 como padrão). Use data futura para adiar a primeira execução.
+            </p>
           </div>
 
           <!-- Status -->
@@ -1344,45 +1430,218 @@
           <div class="card fade">
             <div class="card-section-head">
               <h2>Governança</h2>
-              <p class="sub">Visualização de lineage — nível job e nível pipeline</p>
+              <p class="sub">Lineage de pipelines e catálogo de dados</p>
             </div>
             <div class="body-pad">
-              <!-- Filtro -->
-              <div class="gov-filter">
-                <div class="field" style="margin:0;min-width:280px">
-                  <label>Pipeline <span style="color:var(--red)">*</span></label>
-                  <input id="gov-pipeline" type="text" placeholder="ex: datastage_cobranca_diario" />
-                </div>
-                <button class="btn btn-primary btn-sm" id="btn-gov" onclick="loadGovernanca()" style="height:40px">
-                  <span id="btn-gov-txt">Carregar lineage</span>
-                </button>
-              </div>
-              <div id="gov-status" style="font-size:12px;color:var(--muted);margin-bottom:.75rem;min-height:16px"></div>
 
-              <!-- Modo: job / pipeline -->
-              <div class="gov-mode-toggle" id="gov-mode-row" style="display:none">
-                <button class="gov-mode-btn active" id="gov-btn-job" onclick="setGovMode('job')">◎ Nível Job</button>
-                <button class="gov-mode-btn" id="gov-btn-pipe" onclick="setGovMode('pipeline')">◈ Nível Pipeline</button>
+              <!-- Abas internas -->
+              <div style="display:flex;gap:6px;margin-bottom:1.5rem;border-bottom:1px solid var(--border);padding-bottom:.75rem">
+                <button id="gov-tab-lineage"  class="adm-tab active" onclick="govTabSwitch('lineage')">◈ Lineage</button>
+                <button id="gov-tab-catalogo" class="adm-tab"        onclick="govTabSwitch('catalogo')">◫ Catálogo de Dados</button>
               </div>
 
-              <!-- Seletor de job (nível job) -->
-              <div id="gov-job-selector" style="margin-bottom:1rem;display:none">
-                <div class="field" style="margin:0;max-width:360px">
-                  <label>Job</label>
-                  <select id="gov-job-select" onchange="renderLineageJob()">
-                    <option value="">Selecione o job...</option>
-                  </select>
+              <!-- ── PAINEL: LINEAGE ── -->
+              <div id="gov-panel-lineage">
+                <!-- Filtro -->
+                <div class="gov-filter">
+                  <div class="field" style="margin:0;min-width:280px">
+                    <label>Pipeline <span style="color:var(--red)">*</span></label>
+                    <input id="gov-pipeline" type="text" placeholder="ex: datastage_cobranca_diario"
+                      list="gov-pipeline-list" autocomplete="off"
+                      onfocus="loadPipelineList()" />
+                    <datalist id="gov-pipeline-list"></datalist>
+                  </div>
+                  <button class="btn btn-primary btn-sm" id="btn-gov" onclick="loadGovernanca()" style="height:40px">
+                    <span id="btn-gov-txt">Carregar lineage</span>
+                  </button>
                 </div>
-              </div>
+                <div id="gov-status" style="font-size:12px;color:var(--muted);margin-bottom:.75rem;min-height:16px"></div>
 
-              <!-- Área de visualização -->
-              <div id="gov-visual">
-                <div class="empty-state">
-                  <span class="es-icon">◈</span>
-                  <p class="es-title">Informe o pipeline e carregue o lineage</p>
-                  <p class="es-sub">O diagrama aparecerá aqui.</p>
+                <!-- Modo: job / pipeline -->
+                <div class="gov-mode-toggle" id="gov-mode-row" style="display:none">
+                  <button class="gov-mode-btn active" id="gov-btn-job"  onclick="setGovMode('job')">◎ Nível Job</button>
+                  <button class="gov-mode-btn"        id="gov-btn-pipe" onclick="setGovMode('pipeline')">◈ Nível Pipeline</button>
                 </div>
-              </div>
+
+                <!-- Seletor de job (nível job) -->
+                <div id="gov-job-selector" style="margin-bottom:1rem;display:none">
+                  <div class="field" style="margin:0;max-width:360px">
+                    <label>Job</label>
+                    <select id="gov-job-select" onchange="renderLineageJob()">
+                      <option value="">Selecione o job...</option>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- Área de visualização -->
+                <div id="gov-visual">
+                  <div class="empty-state">
+                    <span class="es-icon">◈</span>
+                    <p class="es-title">Informe o pipeline e carregue o lineage</p>
+                    <p class="es-sub">O diagrama aparecerá aqui.</p>
+                  </div>
+                </div>
+              </div><!-- /gov-panel-lineage -->
+
+              <!-- ── PAINEL: CATÁLOGO ── -->
+<div id="gov-panel-catalogo" style="display:none">
+
+  <!-- 4-tab navigation -->
+  <div style="display:flex;gap:6px;margin-bottom:1rem;border-bottom:1px solid var(--border);padding-bottom:.75rem;overflow-x:auto">
+    <button id="ctab-overview"  class="adm-tab active" onclick="catMainTab('overview')">◈ Visão Geral</button>
+    <button id="ctab-explore"   class="adm-tab"        onclick="catMainTab('explore')">⊞ Explorar</button>
+    <button id="ctab-list"      class="adm-tab"        onclick="catMainTab('list')">≡ Tabelas & Arquivos</button>
+    <button id="ctab-pipelines" class="adm-tab"        onclick="catMainTab('pipelines')">◎ Pipelines</button>
+  </div>
+
+  <!-- TAB: Visão Geral -->
+  <div id="cpanel-overview">
+    <!-- Universal search -->
+    <div style="margin-bottom:1.25rem">
+      <div style="display:flex;gap:.5rem">
+        <input id="cat-uni-search" type="text" placeholder="🔎  Busque tabela, arquivo, banco ou coluna…"
+          style="flex:1;font-size:14px;padding:.55rem .85rem"
+          oninput="catSmartDetect(this.value)"
+          onkeydown="if(event.key==='Enter') catUnifiedSearch()" />
+        <button class="btn btn-primary" onclick="catUnifiedSearch()" style="height:46px;min-width:90px">Buscar</button>
+      </div>
+      <div id="cat-uni-hint" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
+    </div>
+
+    <!-- KPI strip -->
+    <div id="cat-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.65rem;margin-bottom:1.25rem">
+      <div class="empty-state" style="padding:.75rem"><span class="es-icon" style="font-size:20px">⏳</span><p class="es-title" style="font-size:11px">Carregando…</p></div>
+    </div>
+
+    <!-- Popular + Recent + Alerts -->
+    <div style="display:grid;grid-template-columns:1fr 320px;gap:1rem;align-items:start">
+      <div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:.6rem">◈ Mais utilizados</div>
+        <div id="cat-popular" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.5rem"></div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:.6rem">⏱ Vistos recentemente</div>
+        <div id="cat-recent"></div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:.85rem 0 .6rem">⚠ Atenção</div>
+        <div id="cat-alerts"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB: Explorar -->
+  <div id="cpanel-explore" style="display:none">
+    <div style="display:grid;grid-template-columns:200px 1fr;gap:1rem;align-items:start">
+      <!-- Facets -->
+      <div style="border:1px solid var(--border);border-radius:10px;padding:.75rem;font-size:12px">
+        <div style="font-weight:700;margin-bottom:.65rem;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)">Filtros</div>
+        <div style="margin-bottom:.75rem">
+          <div style="font-weight:600;margin-bottom:.3rem">Tipo</div>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:3px"><input type="radio" name="f-type" value="" checked onchange="catExploreFilter()"> Todos</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:3px"><input type="radio" name="f-type" value="tabela" onchange="catExploreFilter()"> Tabela</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="f-type" value="arquivo" onchange="catExploreFilter()"> Arquivo</label>
+        </div>
+        <div style="margin-bottom:.75rem">
+          <div style="font-weight:600;margin-bottom:.3rem">Banco</div>
+          <select id="f-database" onchange="catExploreFilter()" style="width:100%;font-size:11px">
+            <option value="">Todos</option>
+          </select>
+        </div>
+        <div style="margin-bottom:.75rem">
+          <div style="font-weight:600;margin-bottom:.3rem">Classificação</div>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:3px"><input type="radio" name="f-class" value="" checked onchange="catExploreFilter()"> Todas</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:3px"><input type="radio" name="f-class" value="PII" onchange="catExploreFilter()"> <span class="tag-pill gov-tag-pii">PII</span></label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:3px"><input type="radio" name="f-class" value="Regulado" onchange="catExploreFilter()"> <span class="tag-pill gov-tag-regulado">Regulado</span></label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:3px"><input type="radio" name="f-class" value="Confidencial" onchange="catExploreFilter()"> <span class="tag-pill gov-tag-confidencial">Conf.</span></label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="f-class" value="Publico" onchange="catExploreFilter()"> <span class="tag-pill gov-tag-publico">Público</span></label>
+        </div>
+        <div>
+          <div style="font-weight:600;margin-bottom:.3rem">Buscar</div>
+          <input id="f-search" type="text" placeholder="nome…" style="width:100%;font-size:11px;box-sizing:border-box"
+            onkeydown="if(event.key==='Enter') catExploreFilter()" />
+        </div>
+        <button class="btn btn-outline btn-sm" style="width:100%;margin-top:.65rem;font-size:11px" onclick="catExploreFilter()">↻ Filtrar</button>
+      </div>
+      <!-- Asset grid -->
+      <div>
+        <div id="cat-explore-status" style="font-size:11px;color:var(--muted);margin-bottom:.5rem"></div>
+        <div id="cat-explore-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.5rem"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB: Tabelas & Arquivos -->
+  <div id="cpanel-list" style="display:none">
+    <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem;flex-wrap:wrap">
+      <input id="list-search" type="text" placeholder="Filtrar por nome…" style="flex:1;min-width:160px"
+        oninput="catListFilter()" />
+      <select id="list-type" onchange="catListFilter()" style="min-width:110px">
+        <option value="">Tipo: Todos</option>
+        <option value="tabela">Tabela</option>
+        <option value="arquivo">Arquivo</option>
+      </select>
+      <select id="list-sort" onchange="catListSort()" style="min-width:160px">
+        <option value="pipeline_count">↓ Mais usados</option>
+        <option value="asset_name">A→Z Nome</option>
+        <option value="as_origem">↓ Origens</option>
+        <option value="as_destino">↓ Destinos</option>
+      </select>
+      <button class="btn btn-outline btn-sm" onclick="_catExportListCSV()" style="white-space:nowrap">⬇ CSV</button>
+    </div>
+    <div id="cat-list-status" style="font-size:11px;color:var(--muted);margin-bottom:.5rem"></div>
+    <div style="border:1px solid var(--border);border-radius:10px;overflow:hidden">
+      <div style="display:grid;grid-template-columns:1fr 80px 120px 60px 60px 80px;gap:8px;padding:.4rem .75rem;background:rgba(128,128,128,.05);border-bottom:1px solid var(--border);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)">
+        <span>Objeto</span><span>Tipo</span><span>Banco / Caminho</span><span style="text-align:center">Origem</span><span style="text-align:center">Destino</span><span style="text-align:center">Pipelines</span>
+      </div>
+      <div id="cat-list-body"></div>
+    </div>
+  </div>
+
+  <!-- TAB: Pipelines (busca antiga, movida aqui) -->
+  <div id="cpanel-pipelines" style="display:none">
+    <!-- Busca por pipeline/objeto/arquivo -->
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1rem 1.25rem;margin-bottom:1rem">
+      <div style="display:flex;gap:6px;margin-bottom:.75rem">
+        <button id="cat-tab-tabela" class="adm-tab active" onclick="catSwitchTab('tabela')">◫ Tabela / Banco</button>
+        <button id="cat-tab-arquivo" class="adm-tab" onclick="catSwitchTab('arquivo')">◈ Arquivo</button>
+      </div>
+      <div id="cat-fields-tabela" style="display:grid;grid-template-columns:1fr 160px 180px auto;gap:.6rem;align-items:end">
+        <div class="field" style="margin:0">
+          <label>Nome da tabela <span style="color:var(--red)">*</span></label>
+          <input id="cat-object-name" type="text" placeholder="ex: TB_CLIENTE…" oninput="this.value=this.value.toUpperCase()" onkeydown="if(event.key==='Enter') catalogoSearch()" />
+        </div>
+        <div class="field" style="margin:0">
+          <label>Direção</label>
+          <select id="cat-direction"><option value="all">Todas</option><option value="origem">Origem</option><option value="destino">Destino</option></select>
+        </div>
+        <div class="field" style="margin:0">
+          <label>Banco <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+          <input id="cat-database" type="text" placeholder="ex: DW_PROD" oninput="this.value=this.value.toUpperCase()" />
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-primary btn-sm" onclick="catalogoSearch()" id="btn-cat-search" style="height:46px;min-width:80px"><span id="btn-cat-txt">Buscar</span></button>
+          <button class="btn btn-outline btn-sm" onclick="catalogoImpacto()" style="height:46px;min-width:90px"><span id="btn-cat-imp-txt">⚡ Impacto</span></button>
+        </div>
+      </div>
+      <div id="cat-fields-arquivo" style="display:none;grid-template-columns:1fr 160px auto;gap:.6rem;align-items:end">
+        <div class="field" style="margin:0">
+          <label>Nome do arquivo <span style="color:var(--red)">*</span></label>
+          <input id="cat-file-name" type="text" placeholder="ex: DS_EXT_PARCELAS, .dx…" oninput="this.value=this.value.toUpperCase()" onkeydown="if(event.key==='Enter') catalogoSearch()" />
+        </div>
+        <div class="field" style="margin:0">
+          <label>Direção</label>
+          <select id="cat-direction-arq"><option value="all">Todas</option><option value="origem">Origem</option><option value="destino">Destino</option></select>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-primary btn-sm" onclick="catalogoSearch()" style="height:46px;min-width:80px">Buscar</button>
+        </div>
+      </div>
+    </div>
+    <div id="cat-status" style="font-size:12px;color:var(--muted);min-height:16px;margin-bottom:.5rem"></div>
+    <div id="cat-results"></div>
+  </div>
+
+</div><!-- /gov-panel-catalogo -->
+
             </div>
           </div>
         </div><!-- fim page-governanca -->
@@ -1395,9 +1654,10 @@
             </div>
             <div class="body-pad">
               <div style="display:flex;gap:6px;margin-bottom:1.5rem;border-bottom:1px solid var(--border);padding-bottom:.75rem">
-                <button id="adm-tab-config" class="adm-tab active" onclick="admSwitch('config')">⚙ Configurações</button>
-                <button id="adm-tab-delete" class="adm-tab" onclick="admSwitch('delete')">🗑 Excluir Pipeline</button>
-                <button id="adm-tab-regen" class="adm-tab" onclick="admSwitch('regen')">♻ Regenerar DAGs</button>
+                <button id="adm-tab-config"  class="adm-tab active" onclick="admSwitch('config')">⚙ Configurações</button>
+                <button id="adm-tab-delete"  class="adm-tab" onclick="admSwitch('delete')">🗑 Excluir Pipeline</button>
+                <button id="adm-tab-regen"   class="adm-tab" onclick="admSwitch('regen')">♻ Regenerar DAGs</button>
+                <button id="adm-tab-versoes" class="adm-tab" onclick="admSwitch('versoes')">📋 Versões</button>
               </div>
 
               <!-- SUB: Configurações -->
@@ -1494,6 +1754,60 @@
                 </div>
                 <div id="adm-delete-status" style="font-size:12px;color:var(--muted);min-height:16px"></div>
               </div>
+
+              <!-- SUB: Versões da Ferramenta -->
+              <div id="adm-panel-versoes" style="display:none">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+                  <div>
+                    <div style="font-size:13px;font-weight:600">Histórico de Versões</div>
+                    <div class="helper" style="margin:0">Registre novas versões com título e descrição em markdown.</div>
+                  </div>
+                  <div style="display:flex;gap:6px">
+                    <button class="btn btn-outline btn-sm" onclick="admLoadVersoes()">↻ Recarregar</button>
+                    <button class="btn btn-primary btn-sm" onclick="admOpenNewVersao()">+ Nova versão</button>
+                  </div>
+                </div>
+
+                <!-- Formulário nova/edição versão -->
+                <div id="adm-versao-form" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1rem;margin-bottom:1rem">
+                  <div style="font-size:12px;font-weight:600;margin-bottom:.75rem;color:var(--cvp-blue)" id="adm-versao-form-title">Nova Versão</div>
+                  <input type="hidden" id="adm-versao-edit-id" value="" />
+                  <div style="display:grid;grid-template-columns:140px 1fr;gap:.6rem;margin-bottom:.6rem">
+                    <div class="field" style="margin:0">
+                      <label>Versão <span style="color:var(--red)">*</span></label>
+                      <input id="adm-versao-num" type="text" placeholder="ex: 2.2.0" />
+                    </div>
+                    <div class="field" style="margin:0">
+                      <label>Título <span style="color:var(--red)">*</span></label>
+                      <input id="adm-versao-titulo" type="text" placeholder="ex: Parâmetros de data nos pipelines" />
+                    </div>
+                  </div>
+                  <div class="field" style="margin:0 0 .75rem">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.4rem">
+                      <label style="margin:0">Descrição <span style="font-weight:400;color:var(--muted)">— markdown</span></label>
+                      <div style="display:flex;gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:11px">
+                        <button id="adm-versao-tab-edit" onclick="_versaoTabSwitch('edit')"
+                          style="padding:3px 12px;border:none;cursor:pointer;background:var(--cvp-blue);color:#fff;font-size:11px">Editar</button>
+                        <button id="adm-versao-tab-preview" onclick="_versaoTabSwitch('preview')"
+                          style="padding:3px 12px;border:none;cursor:pointer;background:var(--card);color:var(--text);font-size:11px">Visualizar</button>
+                      </div>
+                    </div>
+                    <textarea id="adm-versao-desc" rows="8" oninput="_versaoLivePreview()"
+                      style="font-family:ui-monospace,'Courier New',monospace;font-size:12px;resize:vertical;width:100%;padding:.6rem;border:1px solid var(--border);border-radius:10px;background:var(--card);color:var(--text);line-height:1.6"
+                      placeholder="## O que há de novo&#10;&#10;- **Funcionalidade X**: descrição&#10;- **Melhoria Y**: descrição&#10;&#10;### Correções&#10;- Bug Z corrigido"></textarea>
+                    <div id="adm-versao-preview-box" style="display:none;min-height:160px;border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;background:var(--card);overflow-y:auto;max-height:320px"></div>
+                  </div>
+                  <div id="adm-versao-msg" class="msg" style="min-height:14px;margin-bottom:.5rem"></div>
+                  <div style="display:flex;gap:6px">
+                    <button class="btn-ghost btn-sm" onclick="admCloseVersaoForm()">Cancelar</button>
+                    <button class="btn btn-primary btn-sm" onclick="admSaveVersao()">Salvar</button>
+                  </div>
+                </div>
+
+                <div id="adm-versoes-status" style="font-size:12px;color:var(--muted);margin-bottom:.5rem;min-height:16px"></div>
+                <div id="adm-versoes-list"></div>
+              </div>
+
             </div>
           </div>
         </div><!-- fim page-admin -->
@@ -1503,6 +1817,22 @@
 
 
 <script>
+/* ══ Ícones SVG inline — sem dependências externas (compatível air-gap/Docker) ══ */
+const ICONS = {
+  edit:    `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
+  trash:   `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>`,
+  disable: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>`,
+  play:    `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`,
+  refresh: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`,
+  gear:    `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
+  graph:   `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>`,
+  check:   `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`,
+  detail:  `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
+  history: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.95L1 10"/><polyline points="12 7 12 12 15 15"/></svg>`,
+  link:    `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
+  rerun:   `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>`,
+};
+
 let authHeader = null;
 let jobMode = 'manual';
 let pipelineStatus = 1;
@@ -1799,7 +2129,10 @@ function renderLogsTable(result, area, statusEl) {
       '<td style="text-align:center">' + (r.total_jobs ?? '—') + '</td>' +
       '<td style="text-align:center">' + fw + '</td>' +
       '<td style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;font-size:11px;color:var(--muted)">' + (r.execution_id || '—') + '</td>' +
-      '<td style="white-space:nowrap"><button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução — logs disponíveis por job">Ver jobs</button></td>' +
+      '<td class="col-actions"><div class="row-actions">' +
+        '<button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução">' + ICONS.detail + '</button>' +
+        '<button class="act-btn act-rerun" onclick="reexecutarDoPipelineLog(\'' + pip + '\')" title="Reexecutar este pipeline agora">' + ICONS.rerun + '</button>' +
+      '</div></td>' +
     '</tr>';
   }).join('');
 
@@ -1813,7 +2146,7 @@ function renderLogsTable(result, area, statusEl) {
     _lHdr('Pipeline','pipeline') + _lHdr('Projeto','project') +
     _lHdr('Status','status_geral') + _lHdr('Início','inicio') +
     _lHdr('Fim','fim') + _lHdr('Duração','duracao_total_segundos') +
-    '<th>Jobs</th><th>Falha/Aviso</th><th>Execution ID</th><th>Ações</th>' +
+    '<th>Jobs</th><th>Falha/Aviso</th><th>Execution ID</th><th class="col-actions">Ações</th>' +
     '</tr></thead><tbody>' + body + '</tbody></table></div>' +
     (pages > 1 ? renderPagination(offset, limit, total, pages, 'loadLogs') : '');
 }
@@ -2115,7 +2448,7 @@ function showLineageDSXPreview(payload) {
     const stage = d.stage_name || d.object_name || '—';
     const detail =
       d.file_path
-        ? d.file_path
+        ? _fileBasename(d.file_path)
         : (d.database_name && d.object_name)
           ? (d.database_name + '.' + d.object_name)
           : (d.object_name || '—');
@@ -2327,7 +2660,7 @@ function renderDashboard(result) {
         '<span style="font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (x.pipeline || '—') + '</span>' +
         '<span class="tag-pill">' + (x.project || '—') + '</span>' +
         '<span style="margin-left:auto;color:var(--muted)">' + fmtHMS(x.elapsed_seconds) + '</span>' +
-        '<button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" style="margin-left:.4rem">Ver jobs</button>' +
+        '<button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução" style="margin-left:.4rem">' + ICONS.detail + '</button>' +
       '</div>';
     }).join('') : '<p style="font-size:12px;color:var(--muted);margin:0">Nenhum pipeline em execução.</p>';
   }
@@ -2359,7 +2692,7 @@ function renderDashboard(result) {
             '<td style="white-space:nowrap;font-size:12px">' + (p.ultimo_inicio ? String(p.ultimo_inicio).slice(0,16) : '—') + '</td>' +
             '<td style="white-space:nowrap;font-size:12px">' + fmtHMS(p.duracao_segundos) + '</td>' +
             '<td style="text-align:center">' + (p.total_jobs ?? '—') + '</td>' +
-            '<td style="white-space:nowrap"><button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')">Ver jobs</button></td>' +
+            '<td style="white-space:nowrap"><button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução">' + ICONS.detail + '</button></td>' +
           '</tr>';
         }).join('') +
         '</tbody></table></div>'
@@ -2380,7 +2713,7 @@ function renderDashboard(result) {
           '<div class="fr-name">' + (f.job_name || '—') + '</div>' +
           '<div class="fr-meta">' + (f.pipeline || '—') + ' · ' + (f.project || '—') + (f.inicio ? (' · ' + String(f.inicio).slice(0,16)) : '') + '</div>' +
         '</div>' +
-        '<button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" style="margin-left:auto">Ver jobs</button>' +
+        '<button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução" style="margin-left:auto">' + ICONS.detail + '</button>' +
       '</div>';
     }).join('') : '<p style="font-size:12px;color:var(--muted);margin:0">Sem falhas recentes.</p>';
   }
@@ -2476,6 +2809,11 @@ function setGovMode(mode) {
   if (mode === 'pipeline') renderLineagePipeline();
 }
 
+function _fileBasename(p) {
+  if (!p) return p;
+  return p.replace(/\\/g, '/').split('/').filter(Boolean).pop() || p;
+}
+
 function _lineageNode(label, sublabel, dbName, cls) {
   return '<div class="ls-node"><div class="ls-node-box ' + cls + '">' +
     '<span style="font-size:12px;font-weight:500">' + (label || '—') + '</span>' +
@@ -2485,48 +2823,56 @@ function _lineageNode(label, sublabel, dbName, cls) {
 }
 
 // Cria e mostra o popover de drill-down ao clicar em +
-function _lsDetailPopover(btn, content, title) {
-  // Fecha qualquer popover aberto
-  document.querySelectorAll('.ls-detail-popover').forEach(p => p.remove());
-
-  const pop = document.createElement('div');
-  pop.className = 'ls-detail-popover';
-
-  const titleEl = document.createElement('div');
-  titleEl.className = 'ls-pop-title';
-  titleEl.textContent = title || 'Detalhes';
-  pop.appendChild(titleEl);
-
-  const items = (content || '').toString().split('\n').filter(Boolean);
-  if (!items.length) {
-    const empty = document.createElement('div');
-    empty.className = 'ls-pop-item';
-    empty.textContent = '—';
-    pop.appendChild(empty);
-  } else {
-    items.forEach(function(item) {
-      const el = document.createElement('div');
-      el.className = 'ls-pop-item';
-      el.textContent = item;
-      pop.appendChild(el);
-    });
-  }
-
-  // Posiciona relativo ao botão
-  const rect = btn.getBoundingClientRect();
-  pop.style.left = (rect.right + 6) + 'px';
-  pop.style.top  = (rect.top) + 'px';
-  document.body.appendChild(pop);
-
-  // Fecha ao clicar fora
-  function closeOnOutside(e) {
-    if (!pop.contains(e.target) && e.target !== btn) {
-      pop.remove();
-      document.removeEventListener('click', closeOnOutside);
-    }
-  }
-  setTimeout(() => document.addEventListener('click', closeOnOutside), 50);
+function _escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
+
+function _lsDetailPopover(btn, content, title) {
+  const allItems = (content || '').toString().split('\n').map(s => s.trim()).filter(Boolean);
+  const overlay  = document.getElementById('ls-modal-overlay');
+  const titleEl  = document.getElementById('ls-modal-title');
+  const countEl  = document.getElementById('ls-modal-count');
+  const searchEl = document.getElementById('ls-modal-search');
+  const listEl   = document.getElementById('ls-modal-list');
+
+  titleEl.textContent = title || 'Detalhes';
+  countEl.textContent = allItems.length + ' ' + (title && title.toLowerCase().includes('campo') ? 'campos' : 'itens');
+  searchEl.value = '';
+
+  listEl.innerHTML = allItems.length
+    ? allItems.map(item => '<li class="ls-mitem">' + _escHtml(item) + '</li>').join('')
+    : '<li class="ls-mitem" style="color:var(--muted)">—</li>';
+
+  const liItems = listEl.querySelectorAll('.ls-mitem');
+
+  searchEl.oninput = function() {
+    const q = searchEl.value.toLowerCase();
+    let vis = 0;
+    liItems.forEach(li => {
+      const match = !q || li.textContent.toLowerCase().includes(q);
+      li.hidden = !match;
+      if (match) vis++;
+    });
+    const noun = title && title.toLowerCase().includes('campo') ? 'campos' : 'itens';
+    countEl.textContent = q ? (vis + ' de ' + allItems.length + ' ' + noun) : (allItems.length + ' ' + noun);
+  };
+
+  overlay.classList.add('open');
+  if (allItems.length > 8) setTimeout(() => searchEl.focus(), 50);
+}
+
+// Fecha modal ao clicar no overlay fora do box
+document.addEventListener('click', function(e) {
+  const overlay = document.getElementById('ls-modal-overlay');
+  if (overlay && overlay.classList.contains('open') && e.target === overlay)
+    overlay.classList.remove('open');
+});
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    const overlay = document.getElementById('ls-modal-overlay');
+    if (overlay) overlay.classList.remove('open');
+  }
+});
 
 
 // Delegação de eventos para botões "+" da Governança
@@ -2573,28 +2919,50 @@ function renderLineageJob() {
   }
 
   const mk = (o, cls) => {
-    const label = o.stage_name || o.object_name;
-    const typeLabel = (o.type_label || o.object_type || '—');
-    const dbLine = (o.file_path || (o.database_name ? (o.database_name + (o.object_name ? ('.' + o.object_name) : '')) : ''));
+    const isTransf = cls === 'transf';
+    const isFile   = !isTransf && !!o.file_path;
+    const isDb     = !isTransf && !isFile && (!!o.database_name || !!(o.object_type || '').toLowerCase().includes('odbc') || !!(o.object_type || '').toLowerCase().includes('banco'));
 
-    const hasDetail = (o.sql_expression && String(o.sql_expression).trim()) || (o.file_path && String(o.file_path).trim());
-    const detailContent = (o.file_path && String(o.file_path).trim()) ? String(o.file_path) : (o.sql_expression ? String(o.sql_expression) : '');
-    const detailTitle = (o.file_path && String(o.file_path).trim()) ? 'Arquivo' : 'Tabelas extraídas do SQL';
+    // Label principal = stage_name sempre
+    const label = o.stage_name || o.object_name || '—';
 
-    const btnHtml = hasDetail
+    // Linha de tipo simplificada + detalhe em negrito
+    let detailLine = '';
+    if (isFile) {
+      detailLine = 'Arquivo' + (o.file_path ? ': <strong>' + _fileBasename(o.file_path) + '</strong>' : '');
+    } else if (isDb) {
+      detailLine = 'ODBC' + (o.database_name ? ': <strong>' + o.database_name + '</strong>' : '');
+    } else {
+      const typeBase = o.type_label || o.object_type || '';
+      if (typeBase) detailLine = typeBase;
+    }
+
+    // Botão SQL — só para banco, quando há sql_expression
+    const sqlStr = (!isFile && o.sql_expression) ? String(o.sql_expression).trim() : '';
+    const btnHtml = sqlStr
       ? ('<button class="ls-detail-btn" ' +
-          'title="Ver ' + detailTitle.replace(/"/g,'&quot;') + '" ' +
-          'data-ls-title="' + detailTitle.replace(/"/g,'&quot;') + '" ' +
-          'data-ls-content="' + encodeURIComponent(detailContent) + '">+</button>')
+          'title="Ver SQL / tabelas" ' +
+          'data-ls-title="SQL / Tabelas" ' +
+          'data-ls-content="' + encodeURIComponent(sqlStr) + '">+</button>')
+      : '';
+
+    // Botão colunas — banco e arquivo
+    const cols = Array.isArray(o.columns) ? o.columns : [];
+    const colsHtml = cols.length
+      ? ('<button class="ls-detail-btn" ' +
+          'title="Ver campos utilizados" ' +
+          'data-ls-title="Campos utilizados (' + cols.length + ')" ' +
+          'data-ls-content="' + encodeURIComponent(cols.join('\n')) + '" ' +
+          'style="background:rgba(243,146,0,.12);border-color:var(--cvp-orange);color:#b45309">⊞</button>')
       : '';
 
     return '<div class="ls-node"><div class="ls-node-box ' + cls + '">' +
       '<div style="display:flex;align-items:center;justify-content:center;gap:4px">' +
-        '<span style="font-size:12px;font-weight:500">' + (label || '—') + '</span>' +
+        '<span style="font-size:12px;font-weight:500">' + label + '</span>' +
         btnHtml +
+        colsHtml +
       '</div>' +
-      (typeLabel ? '<span class="ls-node-label">' + typeLabel + '</span>' : '') +
-      (dbLine ? '<span class="ls-node-db">' + dbLine + '</span>' : '') +
+      (detailLine ? '<span class="ls-node-label">' + detailLine + '</span>' : '') +
     '</div></div>';
   };
 
@@ -2630,35 +2998,44 @@ function renderLineagePipeline() {
     return;
   }
 
-  const stepsHtml = jobs.map((job, idx) => {
-    const ori = (job.origens || []).map(o =>
-      '<span class="ls-node-box origem" style="font-size:11px;padding:4px 8px;display:inline-block;margin:2px">' +
-        (o.object_name || '?') + '<br><span style="font-size:9px;opacity:.65">' +
-        (o.object_type || '') + (o.database_name ? ('·' + o.database_name) : '') +
-        '</span></span>'
-    ).join('');
+  const mkMini = (o, cls) => {
+    const lbl   = o.stage_name || o.object_name || '?';
+    const isFile = !!o.file_path;
+    const sub   = isFile
+      ? ('Arquivo: <strong>' + _fileBasename(o.file_path) + '</strong>')
+      : (o.database_name ? ('ODBC: <strong>' + o.database_name + '</strong>') : (o.object_type || ''));
+    const cols  = Array.isArray(o.columns) ? o.columns : [];
+    const chip  = cols.length
+      ? ('<button class="ls-detail-btn" style="background:rgba(243,146,0,.12);border-color:var(--cvp-orange);color:#b45309" ' +
+         'data-ls-title="Campos (' + cols.length + ')" data-ls-content="' + encodeURIComponent(cols.join('\n')) + '">⊞</button>')
+      : '';
+    return '<div class="ls-node"><div class="ls-node-box ' + cls + '" style="min-width:120px;max-width:200px">' +
+      '<div style="display:flex;align-items:center;gap:4px;justify-content:center">' +
+        '<span style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + lbl + '">' + lbl + '</span>' +
+        chip +
+      '</div>' +
+      (sub ? '<span class="ls-node-label" style="font-size:9px">' + sub + '</span>' : '') +
+    '</div></div>';
+  };
 
-    const dst = (job.destinos || []).map(d =>
-      '<span class="ls-node-box destino" style="font-size:11px;padding:4px 8px;display:inline-block;margin:2px">' +
-        (d.object_name || '?') + '<br><span style="font-size:9px;opacity:.65">' +
-        (d.object_type || '') + (d.database_name ? ('·' + d.database_name) : '') +
-        '</span></span>'
-    ).join('');
+  const stepsHtml = jobs.map((job, idx) => {
+    const ori = (job.origens || []).map(o => mkMini(o, 'origem')).join('');
+    const dst = (job.destinos || []).map(d => mkMini(d, 'destino')).join('');
 
     const connector = idx < jobs.length - 1 ? '<div class="pf-connector"></div>' : '';
     return '<div>' +
       '<div class="pf-step">' +
         '<div class="pf-order">' + job.execution_order + '</div>' +
         (ori
-          ? '<div style="display:flex;flex-wrap:wrap;gap:4px">' + ori + '</div><div class="ls-arrow" style="font-size:14px">→</div>'
+          ? '<div style="display:flex;flex-direction:column;gap:4px">' + ori + '</div><div class="ls-arrow" style="font-size:14px">→</div>'
           : '<span style="font-size:11px;color:var(--muted);margin:0 6px">sem origens →</span>'
         ) +
-        '<div class="ls-node-box job" style="padding:6px 12px;font-size:12px">' +
-          job.job_name +
-          '<span class="ls-node-label">' + (job.job_type || '') + '</span>' +
-        '</div>' +
+        '<div class="ls-node"><div class="ls-node-box job" style="min-width:140px">' +
+          '<span style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block" title="' + job.job_name + '">' + job.job_name + '</span>' +
+          '<span class="ls-node-label">Job #' + job.execution_order + ' · ' + (job.job_type || '') + '</span>' +
+        '</div></div>' +
         (dst
-          ? '<div class="ls-arrow" style="font-size:14px">→</div><div style="display:flex;flex-wrap:wrap;gap:4px">' + dst + '</div>'
+          ? '<div class="ls-arrow" style="font-size:14px">→</div><div style="display:flex;flex-direction:column;gap:4px">' + dst + '</div>'
           : '<span style="font-size:11px;color:var(--muted);margin:0 6px">→ sem destinos</span>'
         ) +
       '</div>' +
@@ -2666,7 +3043,7 @@ function renderLineagePipeline() {
     '</div>';
   }).join('');
 
-  vis.innerHTML = '<div class="lineage-svg-wrap"><div class="pipeline-flow">' + stepsHtml + '</div></div>';
+  vis.innerHTML = '<div class="lineage-svg-wrap" style="overflow-x:auto"><div class="pipeline-flow">' + stepsHtml + '</div></div>';
 }
 
 function openJobLineageFromTable(idx) {
@@ -2729,9 +3106,9 @@ async function fetchUserFirstName() {
 /* ══ SPRINT 1: Regenerar DAG, Toggle Airflow, Execução Manual ══ */
 
 // Deriva o dag_id do Airflow a partir do pipeline_name
-// O etl_dag_factory cria o DAG com o mesmo nome em minúsculo
+// Preserva o case exato para corresponder ao dag_id registrado no Airflow
 function _pipelineToDagId(pipelineName) {
-  return (pipelineName || '').toLowerCase();
+  return (pipelineName || '');
 }
 
 // F3 — Ativar ou pausar uma DAG no Airflow via REST API
@@ -2842,6 +3219,48 @@ async function executarPipelineAgora(idx) {
 }
 
 
+// F5 — Reexecutar pipeline direto da tela de Logs (sem trocar de tela)
+async function reexecutarDoPipelineLog(pipelineName) {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
+  if (!pipelineName) { showToast('Pipeline não identificado.', true); return; }
+
+  const dagId = _pipelineToDagId(pipelineName);
+
+  const ok = await showConfirm(
+    'Reexecutar o pipeline "' + pipelineName + '" agora, fora do agendamento?\n\nUma execução manual será disparada imediatamente no Airflow.',
+    '↺ Reexecutar'
+  );
+  if (!ok) return;
+
+  try {
+    const runId = 'manual_orq_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + dagId + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: {} }),
+    });
+    if (r.status === 401) { sair(); return; }
+    if (r.status === 404) {
+      showToast('DAG "' + dagId + '" não encontrada no Airflow. Verifique se a DAG foi gerada.', true);
+      return;
+    }
+    if (r.status === 409) {
+      showToast('Já existe uma execução ativa para "' + pipelineName + '". Aguarde a conclusão.', true);
+      return;
+    }
+    if (!r.ok) {
+      const txt = await r.text().catch(() => r.status);
+      showToast('Erro ao reexecutar: ' + txt, true);
+      return;
+    }
+    const data = await r.json();
+    const rid = data.dag_run_id || data.run_id;
+    showToast('↺ Pipeline "' + pipelineName + '" disparado! (' + rid + ')', false);
+  } catch(e) {
+    showToast('Erro de conexão: ' + (e.message || e), true);
+  }
+}
+
 // F4 — Executar pipeline a partir da aba Jobs
 async function executarPipelineDoJob() {
   const pipeline = $('job_pipeline_name') ? $('job_pipeline_name').value.trim() : '';
@@ -2930,10 +3349,859 @@ function _renderVersionBadge() {
   el.title = 'ORQUESTRA v' + v + (rel ? ' · ' + rel : '');
 }
 
+/* ══ GOVERNANÇA — tab switch ══════════════════════════════════════ */
+function govTabSwitch(tab) {
+  ['lineage','catalogo'].forEach(t => {
+    const panel = $('gov-panel-' + t);
+    const btn   = $('gov-tab-' + t);
+    if (panel) panel.style.display = t === tab ? '' : 'none';
+    if (btn)   btn.classList.toggle('active', t === tab);
+  });
+  if (tab === 'catalogo') catMainTab('overview');
+}
+
+/* ══ CATÁLOGO DE DADOS — redesign ═══════════════════════════════ */
+const CATALOGO_DAG = 'etl_catalogo_query';
+let _catSearchType  = 'tabela';
+let _rankType       = 'tabela';
+let _browseData     = null; // cache for explore/list tab
+let _catMainTab     = 'overview';
+
+// ── Tab switching ─────────────────────────────────────────────────
+function catMainTab(tab) {
+  _catMainTab = tab;
+  ['overview','explore','list','pipelines'].forEach(t => {
+    const btn = $('ctab-' + t), panel = $('cpanel-' + t);
+    if (btn)   btn.classList.toggle('active', t === tab);
+    if (panel) panel.style.display = t === tab ? '' : 'none';
+  });
+  if (tab === 'overview' && !_overviewLoaded) catOverviewLoad();
+  if ((tab === 'explore' || tab === 'list') && !_browseData) catBrowseLoad();
+}
+
+// ── Overview ──────────────────────────────────────────────────────
+let _overviewLoaded = false;
+
+async function catOverviewLoad() {
+  _overviewLoaded = true;
+  const kpiEl = $('cat-kpis'), popEl = $('cat-popular'), alertEl = $('cat-alerts');
+
+  const payload = await _catTrigger({ mode: 'overview' }, '');
+  if (!payload) return;
+
+  // KPI strip
+  const kpis = [
+    { label: 'Objetos', value: payload.total_assets || 0, icon: '◫', color: 'var(--cvp-blue)' },
+    { label: 'Pipelines', value: payload.total_pipelines || 0, icon: '◎', color: 'var(--cvp-blue)' },
+    { label: 'Com owner', value: (payload.total_with_owner || 0) + ' / ' + (payload.total_pipelines || 0), icon: '👤', color: '#16a34a' },
+    { label: 'PII', value: (payload.classification_counts || {}).pii || 0, icon: '🔴', color: '#dc2626', onclick: "catMainTab('explore');document.querySelector('[name=f-class][value=PII]').checked=true;catExploreFilter()" },
+    { label: 'Regulado', value: (payload.classification_counts || {}).regulado || 0, icon: '🟣', color: '#7c3aed', onclick: "catMainTab('explore');document.querySelector('[name=f-class][value=Regulado]').checked=true;catExploreFilter()" },
+    { label: 'Confidencial', value: (payload.classification_counts || {}).confidencial || 0, icon: '🟠', color: '#ea580c', onclick: "catMainTab('explore');document.querySelector('[name=f-class][value=Confidencial]').checked=true;catExploreFilter()" },
+  ];
+  if (kpiEl) kpiEl.innerHTML = kpis.map(k =>
+    `<div onclick="${k.onclick || ''}" style="border:1px solid var(--border);border-radius:10px;padding:.65rem .85rem;cursor:${k.onclick?'pointer':'default'};transition:box-shadow .15s" onmouseenter="this.style.boxShadow='0 2px 8px rgba(0,0,0,.1)'" onmouseleave="this.style.boxShadow=''">
+      <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.2rem">${k.icon} ${k.label}</div>
+      <div style="font-size:20px;font-weight:700;color:${k.color}">${k.value}</div>
+    </div>`
+  ).join('');
+
+  // Popular assets
+  const tops = payload.top_assets || [];
+  if (popEl) popEl.innerHTML = tops.length ? tops.map(a =>
+    `<div onclick="catAssetDetail('${_escHtml((a.database_name ? a.database_name + '.' : '') + a.asset_name)}','${a.asset_type}','${_escHtml(a.asset_name)}','${_escHtml(a.database_name||'')}')"
+      style="border:1px solid var(--border);border-radius:8px;padding:.55rem .75rem;cursor:pointer;transition:all .15s"
+      onmouseenter="this.style.background='rgba(0,92,169,.05)'" onmouseleave="this.style.background=''">
+      <div style="font-size:11px;font-weight:600;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_escHtml(a.asset_name)}">${_escHtml(a.asset_name)}</div>
+      <div style="font-size:10px;color:var(--muted);display:flex;justify-content:space-between;margin-top:2px">
+        <span>${a.asset_type === 'arquivo' ? '◈ Arquivo' : '◫ ' + (a.database_name || 'ODBC')}</span>
+        <span style="font-weight:600;color:var(--cvp-blue)">${a.pipeline_count} pipeline(s)</span>
+      </div>
+    </div>`
+  ).join('') : '<div style="font-size:12px;color:var(--muted)">Nenhum dado encontrado.</div>';
+
+  // Recently viewed
+  _catRenderRecent();
+
+  // Alerts
+  const alerts = payload.alerts || [];
+  if (alertEl) alertEl.innerHTML = alerts.length ? alerts.map(a =>
+    `<div style="font-size:11px;padding:.3rem .5rem;border-left:3px solid ${a.type.includes('pii') ? '#dc2626' : '#d97706'};margin-bottom:.3rem;color:var(--text)">${a.message}</div>`
+  ).join('') : '<div style="font-size:11px;color:var(--muted)">Nenhum alerta.</div>';
+}
+
+// ── Recently viewed (localStorage) ───────────────────────────────
+function _catRecentPush(name, type, dbName) {
+  try {
+    let list = JSON.parse(localStorage.getItem('orq_cat_recent') || '[]');
+    list = list.filter(x => x.name !== name || x.type !== type);
+    list.unshift({ name, type, dbName: dbName || '', ts: Date.now() });
+    if (list.length > 8) list = list.slice(0, 8);
+    localStorage.setItem('orq_cat_recent', JSON.stringify(list));
+  } catch(_) {}
+}
+
+function _catRenderRecent() {
+  const el = $('cat-recent');
+  if (!el) return;
+  try {
+    const list = JSON.parse(localStorage.getItem('orq_cat_recent') || '[]');
+    el.innerHTML = list.length ? list.map(x =>
+      `<div onclick="catAssetDetail('${_escHtml((x.dbName?x.dbName+'.':'')+x.name)}','${x.type}','${_escHtml(x.name)}','${_escHtml(x.dbName||'')}')"
+        style="font-size:11px;padding:.25rem .5rem;border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:.4rem;margin-bottom:2px"
+        onmouseenter="this.style.background='rgba(0,92,169,.06)'" onmouseleave="this.style.background=''">
+        <span style="color:var(--muted)">${x.type === 'arquivo' ? '◈' : '◫'}</span>
+        <span style="font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_escHtml(x.name)}">${_escHtml(x.name)}</span>
+        ${x.dbName ? `<span style="font-size:10px;color:var(--muted);flex-shrink:0">${_escHtml(x.dbName)}</span>` : ''}
+      </div>`
+    ).join('') : '<div style="font-size:11px;color:var(--muted)">—</div>';
+  } catch(_) {}
+}
+
+// ── Browse / Explore ──────────────────────────────────────────────
+async function catBrowseLoad() {
+  $('cat-explore-status') && ($('cat-explore-status').textContent = 'Carregando…');
+  $('cat-list-status')    && ($('cat-list-status').textContent    = 'Carregando…');
+
+  const payload = await _catTrigger({ mode: 'browse', top_n: 200 }, '');
+  if (!payload) return;
+  _browseData = payload;
+
+  // Populate database facet select
+  const dbSel = $('f-database');
+  if (dbSel) {
+    const dbs = (payload.facets && payload.facets.databases) || [];
+    dbSel.innerHTML = '<option value="">Todos</option>' + dbs.map(d => `<option>${_escHtml(d)}</option>`).join('');
+  }
+
+  catExploreFilter();
+  catListFilter();
+}
+
+function catExploreFilter() {
+  if (!_browseData) { catBrowseLoad(); return; }
+  const typeVal  = document.querySelector('[name=f-type]:checked')?.value || '';
+  const classVal = document.querySelector('[name=f-class]:checked')?.value || '';
+  const dbVal    = ($('f-database') || {}).value || '';
+  const q        = (($('f-search') || {}).value || '').toLowerCase();
+
+  const assets = (_browseData.assets || []).filter(a =>
+    (!typeVal  || a.asset_type === typeVal) &&
+    (!dbVal    || a.database_name === dbVal) &&
+    (!q        || a.asset_name.toLowerCase().includes(q))
+  );
+
+  const st = $('cat-explore-status');
+  if (st) st.textContent = assets.length + ' objeto(s)';
+
+  const grid = $('cat-explore-grid');
+  if (!grid) return;
+  grid.innerHTML = assets.length ? assets.map(a =>
+    `<div onclick="catAssetDetail('${_escHtml((a.database_name?a.database_name+'.':'')+a.asset_name)}','${a.asset_type}','${_escHtml(a.asset_name)}','${_escHtml(a.database_name||'')}')"
+      style="border:1px solid var(--border);border-radius:8px;padding:.55rem .75rem;cursor:pointer;transition:all .15s"
+      onmouseenter="this.style.background='rgba(0,92,169,.05)'" onmouseleave="this.style.background=''">
+      <div style="font-size:11px;font-weight:600;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_escHtml(a.asset_name)}">${_escHtml(a.asset_name)}</div>
+      <div style="font-size:10px;color:var(--muted);display:flex;justify-content:space-between;margin-top:3px">
+        <span>${a.asset_type === 'arquivo' ? '◈ Arquivo' : '◫ ' + (a.database_name || 'ODBC')}</span>
+        <span style="font-weight:600">${a.pipeline_count}p</span>
+      </div>
+    </div>`
+  ).join('') : '<div style="font-size:12px;color:var(--muted);padding:.5rem">Nenhum objeto encontrado.</div>';
+}
+
+let _listAssets = [];
+function catListFilter() {
+  if (!_browseData) return;
+  const q    = (($('list-search') || {}).value || '').toLowerCase();
+  const type = ($('list-type') || {}).value || '';
+  _listAssets = (_browseData.assets || []).filter(a =>
+    (!q    || a.asset_name.toLowerCase().includes(q)) &&
+    (!type || a.asset_type === type)
+  );
+  catListSort();
+}
+
+function catListSort() {
+  const sort = ($('list-sort') || {}).value || 'pipeline_count';
+  _listAssets.sort((a, b) => {
+    if (sort === 'asset_name') return a.asset_name.localeCompare(b.asset_name);
+    return (b[sort] || 0) - (a[sort] || 0);
+  });
+  _catRenderList();
+}
+
+function _catRenderList() {
+  const st = $('cat-list-status');
+  if (st) st.textContent = _listAssets.length + ' objeto(s)';
+  const body = $('cat-list-body');
+  if (!body) return;
+  body.innerHTML = _listAssets.map(a =>
+    `<div onclick="catAssetDetail('${_escHtml((a.database_name?a.database_name+'.':'')+a.asset_name)}','${a.asset_type}','${_escHtml(a.asset_name)}','${_escHtml(a.database_name||'')}')"
+      style="display:grid;grid-template-columns:1fr 80px 120px 60px 60px 80px;gap:8px;padding:.4rem .75rem;border-bottom:1px solid var(--border);font-size:12px;cursor:pointer;transition:background .1s"
+      onmouseenter="this.style.background='rgba(0,92,169,.04)'" onmouseleave="this.style.background=''">
+      <span style="font-family:monospace;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_escHtml(a.asset_name)}">${_escHtml(a.asset_name)}</span>
+      <span style="font-size:10px;color:var(--muted)">${a.asset_type === 'arquivo' ? '◈ Arq' : '◫ Tab'}</span>
+      <span style="font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_escHtml(a.database_name || (a.asset_type === 'arquivo' ? a.asset_name : ''))}</span>
+      <span style="text-align:center;font-size:11px;color:#185FA5;font-weight:600">${a.as_origem || 0}</span>
+      <span style="text-align:center;font-size:11px;color:#27500A;font-weight:600">${a.as_destino || 0}</span>
+      <span style="text-align:center;font-size:12px;font-weight:700">${a.pipeline_count || 0}</span>
+    </div>`
+  ).join('') || '<div style="padding:.75rem;font-size:12px;color:var(--muted)">Nenhum resultado.</div>';
+}
+
+function _catExportListCSV() {
+  if (!_listAssets.length) { showToast('Nenhum dado para exportar.', true); return; }
+  const rows = [['objeto','tipo','banco','como_origem','como_destino','pipelines']];
+  _listAssets.forEach(a => rows.push([a.asset_name, a.asset_type, a.database_name||'', a.as_origem||0, a.as_destino||0, a.pipeline_count||0]));
+  const csv = rows.map(r => r.map(v => '"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\r\n');
+  const link = document.createElement('a');
+  link.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  link.download = 'catalogo_objetos_' + new Date().toISOString().slice(0,10) + '.csv';
+  link.click();
+}
+
+// ── Asset Detail Modal ────────────────────────────────────────────
+async function catAssetDetail(objectKey, assetType, assetName, dbName) {
+  _catRecentPush(assetName, assetType, dbName);
+  _catRenderRecent();
+
+  // Open modal immediately with loading state
+  const overlay = $('ls-modal-overlay');
+  const titleEl = $('ls-modal-title');
+  const countEl = $('ls-modal-count');
+  const searchEl = $('ls-modal-search');
+  const listEl  = $('ls-modal-list');
+  if (!overlay) return;
+
+  if (titleEl) titleEl.textContent = assetName;
+  if (countEl) countEl.textContent = assetType === 'arquivo' ? '◈ Arquivo' : '◫ ' + (dbName || 'Tabela');
+  if (searchEl) searchEl.style.display = 'none';
+  if (listEl) listEl.innerHTML = '<li style="padding:.75rem 1rem;font-size:12px;color:var(--muted)">⏳ Carregando detalhes…</li>';
+  overlay.classList.add('open');
+
+  const payload = await _catTrigger({ mode: 'asset_detail', asset_name: assetName, asset_type: assetType, database_name: dbName || '' }, '');
+  if (!payload || !overlay.classList.contains('open')) return;
+
+  const readers  = payload.pipelines_origem  || [];
+  const writers  = payload.pipelines_destino || [];
+  const columns  = payload.columns  || [];
+  const tags     = payload.tags     || [];
+  const sqlExpr  = payload.sql_expression || '';
+
+  const tagChips = tags.map(t => `<span class="tag-pill gov-tag-${t.toLowerCase()}">${t}</span>`).join(' ');
+
+  const pipeRow = (p, dir) => {
+    const dirColor = dir === 'origem' ? '#185FA5' : '#27500A';
+    const dirLabel = dir === 'origem' ? '← lê' : '→ grava';
+    const cols = (() => { try { return JSON.parse(p.columns_json || '[]'); } catch(_) { return []; } })();
+    return `<div style="display:flex;align-items:center;gap:.5rem;padding:.3rem .5rem;border-radius:6px;margin-bottom:3px"
+      onmouseenter="this.style.background='rgba(0,92,169,.05)'" onmouseleave="this.style.background=''">
+      <span style="font-size:10px;font-weight:700;color:${dirColor};min-width:40px">${dirLabel}</span>
+      <span style="font-family:monospace;font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_escHtml(p.pipeline_name)}</span>
+      <span style="font-size:10px;color:var(--muted)">#${p.execution_order}</span>
+      ${cols.length ? `<button class="ls-detail-btn" style="background:rgba(243,146,0,.12);border-color:var(--cvp-orange);color:#b45309;font-size:9px"
+        onclick="event.stopPropagation();_lsDetailPopover(this,'${encodeURIComponent(cols.join('\\n'))}','Campos (${cols.length})')">⊞</button>` : ''}
+      <button onclick="event.stopPropagation();_catGoLineage('${_escHtml(p.pipeline_name)}')"
+        style="font-size:9px;padding:1px 6px;border-radius:4px;border:1px solid var(--cvp-blue);background:none;color:var(--cvp-blue);cursor:pointer">→</button>
+    </div>`;
+  };
+
+  const section = (title, content) =>
+    `<div style="margin-bottom:.75rem">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:.35rem;padding:.3rem .5rem;background:rgba(128,128,128,.06);border-radius:4px">${title}</div>
+      ${content}
+    </div>`;
+
+  if (searchEl) searchEl.style.display = 'none';
+  if (listEl) listEl.innerHTML =
+    // Classification + meta
+    (tags.length ? section('Classificação', `<div style="padding:.2rem .5rem">${tagChips}</div>`) : '') +
+    // Pipelines que leem
+    (readers.length ? section(`← Lido por (${readers.length} pipeline${readers.length>1?'s':''})`,
+      `<div style="padding:0 .25rem">${readers.map(p => pipeRow(p, 'origem')).join('')}</div>`) : '') +
+    // Pipelines que gravam
+    (writers.length ? section(`→ Gravado por (${writers.length} pipeline${writers.length>1?'s':''})`,
+      `<div style="padding:0 .25rem">${writers.map(p => pipeRow(p, 'destino')).join('')}</div>`) : '') +
+    // Colunas
+    (columns.length ? section(`Colunas (${columns.length})`,
+      `<div style="padding:.2rem .5rem;display:flex;flex-wrap:wrap;gap:4px">${
+        columns.map(c => `<span style="font-family:monospace;font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(0,92,169,.07);color:var(--cvp-blue)">${_escHtml(c)}</span>`).join('')
+      }</div>`) : '') +
+    // SQL
+    (sqlExpr ? section('SQL / Tabelas referenciadas',
+      `<pre style="font-size:10px;background:rgba(128,128,128,.07);border-radius:6px;padding:.5rem .75rem;overflow-x:auto;margin:.2rem .5rem;white-space:pre-wrap;word-break:break-all">${_escHtml(sqlExpr)}</pre>`) : '') +
+    // Nenhum dado
+    (!readers.length && !writers.length ? '<li style="padding:.75rem 1rem;font-size:12px;color:var(--muted)">Nenhuma linhagem encontrada para este objeto.</li>' : '');
+}
+
+// ── Busca universal (overview search bar) ─────────────────────────
+function catSmartDetect(val) {
+  const hint = $('cat-uni-hint') || $('cat-smart-hint');
+  if (!hint || !val) { if (hint) hint.textContent = ''; return; }
+  if (/\.(ds|dx|csv|txt|seq|dat)$/i.test(val) || /^(ds_|seq_|file:|arquivo:)/i.test(val)) {
+    hint.innerHTML = '◈ Detectado como <strong>arquivo</strong>';
+  } else {
+    hint.innerHTML = '◫ Detectado como <strong>tabela/banco</strong>';
+  }
+}
+
+function catUnifiedSearch() {
+  const val = (($('cat-uni-search') || {}).value || '').trim();
+  if (!val) return;
+  // Switch to Pipelines tab and run the appropriate search
+  catMainTab('pipelines');
+  if (/\.(ds|dx|csv|txt|seq|dat)$/i.test(val) || /^(ds_|seq_|file:|arquivo:)/i.test(val)) {
+    _catSearchType = 'arquivo';
+    catSwitchTab('arquivo');
+    if ($('cat-file-name')) $('cat-file-name').value = val.toUpperCase();
+  } else {
+    _catSearchType = 'tabela';
+    catSwitchTab('tabela');
+    if ($('cat-object-name')) $('cat-object-name').value = val.toUpperCase();
+  }
+  catalogoSearch();
+}
+
+// ── Deep-link: catálogo → lineage ─────────────────────────────────
+function _catGoLineage(pipelineName) {
+  govTabSwitch('lineage');
+  if ($('gov-pipeline')) $('gov-pipeline').value = pipelineName;
+  loadGovernanca();
+}
+
+// ── Expandir / recolher todos os cards de resultado ───────────────
+function _catExpandAll(open) {
+  document.querySelectorAll('.cat-pipeline-card').forEach(card => {
+    const body = card.querySelector('div + div');
+    const arr  = card.querySelector('.cat-arrow');
+    if (body) body.style.display = open ? '' : 'none';
+    if (arr)  arr.textContent    = open ? '▲' : '▼';
+  });
+}
+
+// ── Export CSV ────────────────────────────────────────────────────
+function _catExportCSV() {
+  const payload = window.__catPayload;
+  if (!payload || !payload.pipelines) { showToast('Nenhum resultado para exportar.', true); return; }
+  const rows = [['pipeline','project','domain','active','job','direction','object','database','file_path','campos']];
+  (payload.pipelines || []).forEach(p => {
+    (p.jobs || []).forEach(j => {
+      rows.push([
+        p.pipeline_name, p.project_name, p.domain, p.active ? 'Ativo' : 'Inativo',
+        j.job_name, j.direction, j.object_name || '', j.database_name || '',
+        j.file_path || '', (Array.isArray(j.columns) ? j.columns.join('; ') : ''),
+      ]);
+    });
+  });
+  const csv = rows.map(r => r.map(v => '"' + String(v).replace(/"/g,'""') + '"').join(',')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'catalogo_' + (payload.term || 'export') + '_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+}
+
+// ── Autocomplete de pipelines ──────────────────────────────────────
+let _pipeListLoaded = false;
+async function loadPipelineList() {
+  if (_pipeListLoaded || !authHeader) return;
+  _pipeListLoaded = true;
+  try {
+    const runId = 'orq_piplist_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: { mode: 'list_pipelines' } }),
+    });
+    if (!r.ok) return;
+    const run = await r.json();
+    const rid = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(CATALOGO_DAG, rid, 30);
+    if (state !== 'success') return;
+    const xr = await fetch(
+      '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_catalogo/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) return;
+    const data = normalizeXcomValue(await xr.json());
+    const names = (data && data.pipelines) || [];
+    const dl = $('gov-pipeline-list');
+    if (dl && names.length) {
+      dl.innerHTML = names.map(n => `<option value="${_escHtml(n)}">`).join('');
+    }
+  } catch(_) {}
+}
+
+// ── Saúde do pipeline via Airflow API ────────────────────────────
+async function _pipelineHealthLoad(idx, pipelineName) {
+  const el = document.getElementById('health-' + idx);
+  if (!el || !authHeader) return;
+  try {
+    const dagId = pipelineName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const r = await fetch(
+      '/api/v1/dags/' + encodeURIComponent(dagId) + '/dagRuns?limit=1&order_by=-start_date',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!r.ok) { el.textContent = ''; return; }
+    const data = await r.json();
+    const runs = data.dag_runs || [];
+    if (!runs.length) { el.textContent = ''; return; }
+    const last = runs[0];
+    const state = last.state;
+    const date  = last.start_date ? last.start_date.slice(0,10) : '';
+    const cfg = {
+      success: { icon: '✔', color: '#16a34a' },
+      failed:  { icon: '✘', color: '#dc2626' },
+      running: { icon: '↻', color: '#d97706' },
+    };
+    const c = cfg[state] || { icon: '○', color: 'var(--muted)' };
+    el.innerHTML = `<span style="color:${c.color};font-weight:600">${c.icon} ${state}</span> <span style="color:var(--muted)">${date}</span>`;
+  } catch(_) { el.textContent = ''; }
+}
+
+// ── Histórico de importações ──────────────────────────────────────
+async function _catHistory(pipelineName) {
+  try {
+    const payload = await _catTrigger({ mode: 'pipeline_history', pipeline_name: pipelineName }, '');
+    if (!payload || !payload.history) { showToast('Sem histórico para este pipeline.'); return; }
+    const rows = payload.history;
+    const content = rows.map(r =>
+      (r.imported_at || '').slice(0,16) + ' · ' + (r.status || '') +
+      (r.reviewed_by ? ' · aprovado por ' + r.reviewed_by : '') +
+      (r.obs ? ' · ' + r.obs : '')
+    ).join('\n');
+    _lsDetailPopover(document.body, content || 'Sem registros.', 'Histórico: ' + pipelineName);
+  } catch(_) { showToast('Erro ao carregar histórico.', true); }
+}
+
+// ── Linhagem completa de arquivo (quem escreve e quem lê) ────────
+async function _fileLineage(fileName) {
+  try {
+    const payload = await _catTrigger({ mode: 'file_lineage', file_name: fileName }, '');
+    if (!payload) return;
+    const writers = (payload.writers || []).map(p => '✍ ' + p.pipeline_name + ' (Job: ' + p.job_name + ')');
+    const readers = (payload.readers || []).map(p => '👁 ' + p.pipeline_name + ' (Job: ' + p.job_name + ')');
+    const content = [
+      writers.length ? '── GRAVA ──\n' + writers.join('\n') : '',
+      readers.length ? '── LÊ ──\n' + readers.join('\n') : '',
+    ].filter(Boolean).join('\n\n') || 'Nenhum pipeline encontrado.';
+    _lsDetailPopover(document.body, content, 'Linhagem do arquivo: ' + fileName);
+  } catch(_) { showToast('Erro ao carregar linhagem do arquivo.', true); }
+}
+
+function catSwitchTab(type) {
+  _catSearchType = type;
+  ['tabela','arquivo'].forEach(t => {
+    const btn = $('cat-tab-' + t);
+    const fld = $('cat-fields-' + t);
+    if (btn) btn.classList.toggle('active', t === type);
+    if (fld) fld.style.display = t === type ? 'grid' : 'none';
+  });
+}
+
+function rankSwitchTab(type) {
+  _rankType = type;
+  ['tabela','arquivo'].forEach(t => {
+    const btn = $('rank-tab-' + t);
+    if (btn) btn.classList.toggle('active', t === type);
+  });
+}
+
+async function _catTrigger(conf, statusMsg) {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return null; }
+  const st = $('cat-status');
+  if (st) { st.textContent = statusMsg; st.style.color = 'var(--muted)'; }
+
+  const runId = 'orq_cat_' + Date.now();
+  const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+    body: JSON.stringify({ dag_run_id: runId, conf }),
+  });
+  if (r.status === 401) { sair(); return null; }
+  if (!r.ok) {
+    if (st) { st.textContent = 'Erro ao disparar: ' + r.status; st.style.color = 'var(--red)'; }
+    return null;
+  }
+  const run   = await r.json();
+  const rid   = run.dag_run_id || run.run_id;
+  const state = await waitDagRun(CATALOGO_DAG, rid, 60);
+  if (state !== 'success') {
+    if (st) { st.textContent = 'Falha/timeout na consulta.'; st.style.color = 'var(--red)'; }
+    return null;
+  }
+  const xr = await fetch(
+    '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid +
+    '/taskInstances/consultar_catalogo/xcomEntries/return_value',
+    { headers: { 'Authorization': authHeader } }
+  );
+  if (!xr.ok) {
+    if (st) { st.textContent = 'Erro ao ler resultado: ' + xr.status; st.style.color = 'var(--red)'; }
+    return null;
+  }
+  return normalizeXcomValue(await xr.json());
+}
+
+function _catShowColumns(evt, encodedJson) {
+  evt.stopPropagation();
+  let cols = [];
+  try { cols = JSON.parse(decodeURIComponent(encodedJson)); } catch(_) {}
+  _lsDetailPopover(evt.target, cols.join('\n'), 'Campos utilizados (' + cols.length + ')');
+}
+
+function _catDirBadge(dir) {
+  const cfg = {
+    origem:       { label: 'Origem',       bg: 'rgba(24,95,165,.12)', color: '#185FA5', border: 'rgba(24,95,165,.3)' },
+    destino:      { label: 'Destino',      bg: 'rgba(39,80,10,.12)',  color: '#27500A', border: 'rgba(39,80,10,.3)'  },
+    transformacao:{ label: 'Transformação',bg: 'rgba(60,52,137,.12)', color: '#3C3489', border: 'rgba(60,52,137,.3)' },
+  };
+  const c = cfg[dir] || { label: dir, bg: 'var(--bg)', color: 'var(--muted)', border: 'var(--border)' };
+  return `<span style="font-size:10px;font-weight:600;padding:1px 7px;border-radius:999px;
+    background:${c.bg};color:${c.color};border:1px solid ${c.border};white-space:nowrap">${c.label}</span>`;
+}
+
+function _catActiveChip(active) {
+  return active
+    ? '<span style="font-size:10px;font-weight:600;padding:1px 7px;border-radius:999px;background:rgba(34,197,94,.12);color:#15803d;border:1px solid rgba(34,197,94,.3)">Ativo</span>'
+    : '<span style="font-size:10px;font-weight:600;padding:1px 7px;border-radius:999px;background:rgba(156,163,175,.12);color:var(--muted);border:1px solid var(--border)">Inativo</span>';
+}
+
+function _renderCatResults(payload, impactoMode) {
+  const el = $('cat-results');
+  const st = $('cat-status');
+  if (!el) return;
+
+  const pipelines = payload.pipelines || [];
+  const total     = payload.total_pipelines || 0;
+  const occ       = payload.total_ocorrencias || 0;
+  const term      = payload.term || '';
+
+  if (st) {
+    const modeLabel = impactoMode ? '⚡ Análise de impacto' : 'Busca';
+    st.style.color = 'var(--muted)';
+    st.textContent = total
+      ? `${modeLabel}: "${term}" — ${total} pipeline(s) · ${occ} ocorrência(s)`
+      : `${modeLabel}: "${term}" — nenhum resultado encontrado.`;
+  }
+
+  if (!pipelines.length) {
+    el.innerHTML =
+      '<div class="empty-state" style="padding:1.5rem">' +
+        '<span class="es-icon" style="font-size:28px">◫</span>' +
+        '<p class="es-title">Nenhum pipeline encontrado</p>' +
+        '<p class="es-sub">Tente um termo diferente ou verifique se o lineage foi importado.</p>' +
+      '</div>';
+    return;
+  }
+
+  // Banner de impacto upstream/downstream
+  let impactBanner = '';
+  if (impactoMode) {
+    const leitores = pipelines.filter(p => (p.jobs||[]).some(j => j.direction === 'origem')).length;
+    const gravadores = pipelines.filter(p => (p.jobs||[]).some(j => j.direction === 'destino')).length;
+    impactBanner = `<div style="display:flex;gap:.75rem;margin-bottom:.85rem;flex-wrap:wrap">
+      ${leitores > 0 ? `<div style="display:flex;align-items:center;gap:.4rem;padding:.4rem .85rem;border-radius:8px;background:rgba(243,146,0,.1);border:1px solid rgba(243,146,0,.3)">
+        <span style="font-size:13px;font-weight:700;color:#b45309">${leitores}</span>
+        <span style="font-size:11px;color:#b45309">pipeline(s) <strong>leem</strong> como origem →</span>
+      </div>` : ''}
+      ${gravadores > 0 ? `<div style="display:flex;align-items:center;gap:.4rem;padding:.4rem .85rem;border-radius:8px;background:rgba(24,95,165,.1);border:1px solid rgba(24,95,165,.3)">
+        <span style="font-size:13px;font-weight:700;color:#185FA5">${gravadores}</span>
+        <span style="font-size:11px;color:#185FA5">pipeline(s) <strong>gravam</strong> como destino →</span>
+      </div>` : ''}
+    </div>`;
+  }
+
+  // Toolbar: expandir/recolher + export CSV
+  const toolbar = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;gap:.5rem;flex-wrap:wrap">
+    <div style="display:flex;gap:6px">
+      <button class="btn btn-outline btn-sm" style="font-size:11px" onclick="_catExpandAll(true)">▼ Expandir todos</button>
+      <button class="btn btn-outline btn-sm" style="font-size:11px" onclick="_catExpandAll(false)">▲ Recolher todos</button>
+    </div>
+    <button class="btn btn-outline btn-sm" style="font-size:11px" onclick="_catExportCSV()">⬇ Exportar CSV</button>
+  </div>`;
+
+  // Guarda dados para export
+  window.__catPayload = payload;
+
+  el.innerHTML = impactBanner + toolbar + pipelines.map((p, pi) => {
+    const jobRows = (p.jobs || []).map(j => {
+      const cols = Array.isArray(j.columns) ? j.columns : [];
+      const colsChip = cols.length
+        ? `<span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:999px;
+            background:rgba(243,146,0,.12);color:#b45309;border:1px solid rgba(243,146,0,.35);
+            cursor:pointer;white-space:nowrap" onclick="event.stopPropagation();_catShowColumns(event,'${encodeURIComponent(JSON.stringify(cols))}')">⊞ ${cols.length} campo(s)</span>`
+        : '';
+      const hasFile = !!(j.file_path);
+      const objKey  = hasFile ? j.file_path : ((j.database_name ? j.database_name + '.' : '') + (j.object_name || ''));
+      const fileLineageBtn = hasFile
+        ? `<button onclick="event.stopPropagation();_fileLineage('${(j.file_path||'').replace(/'/g,"\\'")}')"
+            style="font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;white-space:nowrap"
+            title="Ver quem lê e quem grava este arquivo">⇄ Linhagem</button>` : '';
+      const detail  = hasFile
+        ? `<span style="font-size:11px;color:var(--text);font-family:monospace">${j.file_path}</span>${fileLineageBtn}`
+        : `<span style="font-size:11px;color:var(--text)">${j.object_name || '—'}</span>
+           <span style="font-size:11px;color:var(--muted);font-weight:700">${j.database_name || ''}</span>`;
+      const tagKey = encodeURIComponent(objKey);
+      const tagBtn = `<button onclick="event.stopPropagation();_tagEdit('${tagKey}')"
+        style="font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer"
+        title="Classificar objeto">🏷</button>`;
+      return `<div style="display:grid;grid-template-columns:26px 1fr auto 1fr auto auto;gap:8px;align-items:center;
+        padding:.4rem .75rem;border-bottom:1px solid var(--border);font-size:12px">
+        <span style="font-size:11px;font-weight:700;color:var(--muted);text-align:center">#${j.execution_order}</span>
+        <span style="font-family:monospace;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${j.job_name}</span>
+        ${_catDirBadge(j.direction)}
+        ${detail}
+        ${colsChip}
+        ${tagBtn}
+      </div>`;
+    }).join('');
+
+    const isOpen = pi < 3;
+    const pipeEnc = encodeURIComponent(p.pipeline_name);
+    return `<div class="cat-pipeline-card" style="border:1px solid var(--border);border-radius:12px;margin-bottom:.65rem;overflow:hidden">
+      <div onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none';this.querySelector('.cat-arrow').textContent=this.nextElementSibling.style.display===''?'▲':'▼'"
+        style="display:flex;align-items:center;gap:.65rem;padding:.7rem 1rem;cursor:pointer;background:var(--bg);user-select:none">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+            <span style="font-size:13px;font-weight:600;font-family:monospace">${p.pipeline_name}</span>
+            ${_catActiveChip(p.active)}
+            <span class="tag-pill" style="font-size:10px">${p.project_name}</span>
+            <span class="tag-pill" style="font-size:10px;background:var(--bg)">${p.domain}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:.5rem;margin-top:.2rem;flex-wrap:wrap">
+            <span style="font-size:11px;color:var(--muted)">${p.ocorrencias} ocorrência(s)</span>
+            <span id="health-${pi}" style="font-size:10px;color:var(--muted)">⏳</span>
+          </div>
+        </div>
+        <button onclick="event.stopPropagation();_catHistory('${p.pipeline_name.replace(/'/g,"\\'")}')"
+          style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:6px;border:1px solid var(--border);
+                 background:none;color:var(--muted);cursor:pointer;white-space:nowrap;flex-shrink:0"
+          title="Histórico de importações">📋 Histórico</button>
+        <button onclick="event.stopPropagation();_catGoLineage('${p.pipeline_name.replace(/'/g,"\\'")}')"
+          style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:6px;border:1px solid var(--cvp-blue);
+                 background:rgba(24,95,165,.08);color:var(--cvp-blue);cursor:pointer;white-space:nowrap;flex-shrink:0"
+          title="Ver lineage deste pipeline">→ Lineage</button>
+        <span class="cat-arrow" style="color:var(--muted);font-size:12px;flex-shrink:0">${isOpen ? '▲' : '▼'}</span>
+      </div>
+      <div style="display:${isOpen ? '' : 'none'}">
+        <div style="display:grid;grid-template-columns:26px 1fr auto 1fr auto;gap:8px;padding:.35rem .75rem;
+          background:var(--bg);border-bottom:1px solid var(--border);border-top:1px solid var(--border)">
+          <span style="font-size:10px;color:var(--muted);font-weight:600">Ord.</span>
+          <span style="font-size:10px;color:var(--muted);font-weight:600">Job</span>
+          <span style="font-size:10px;color:var(--muted);font-weight:600">Direção</span>
+          <span style="font-size:10px;color:var(--muted);font-weight:600">Objeto / Arquivo</span>
+          <span style="font-size:10px;color:var(--muted);font-weight:600">Campos</span>
+        </div>
+        ${jobRows}
+        <!-- Ownership inline -->
+        <div style="display:flex;align-items:center;gap:.5rem;padding:.45rem .75rem;background:rgba(128,128,128,.04);border-top:1px solid var(--border);flex-wrap:wrap">
+          <span style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Responsável:</span>
+          <span id="own-${pi}-display" style="font-size:11px;color:var(--muted)">—</span>
+          <button onclick="_ownerEdit(${pi},'${p.pipeline_name.replace(/'/g,"\\'")}')"
+            style="font-size:10px;padding:1px 7px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;margin-left:auto">✎ Editar</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Carrega owners e saúde de forma assíncrona após render
+  pipelines.forEach((p, pi) => {
+    _ownerLoad(pi, p.pipeline_name);
+    _pipelineHealthLoad(pi, p.pipeline_name);
+  });
+}
+
+async function _ownerLoad(idx, pipelineName) {
+  try {
+    const payload = await _catTrigger({ mode: 'get_owner', pipeline_name: pipelineName }, '');
+    if (!payload) return;
+    const el = document.getElementById('own-' + idx + '-display');
+    if (!el) return;
+    const parts = [];
+    if (payload.owner_name)   parts.push('Owner: <strong>' + _escHtml(payload.owner_name) + '</strong>');
+    if (payload.steward_name) parts.push('Steward: <strong>' + _escHtml(payload.steward_name) + '</strong>');
+    el.innerHTML = parts.length ? parts.join(' · ') : '—';
+  } catch(_) {}
+}
+
+const _TAG_OPTIONS = ['PII', 'Confidencial', 'Regulado', 'Publico'];
+const _TAG_COLORS  = { PII: 'gov-tag-pii', Confidencial: 'gov-tag-confidencial', Regulado: 'gov-tag-regulado', Publico: 'gov-tag-publico' };
+
+async function _tagEdit(encodedKey) {
+  const objectKey = decodeURIComponent(encodedKey);
+  // Carrega tags atuais
+  let current = [];
+  try {
+    const r = await _catTrigger({ mode: 'get_tags', object_key: objectKey }, '');
+    if (r && r.tags) current = r.tags.map(t => t.tag);
+  } catch(_) {}
+
+  const chosen = prompt(
+    'Classificações para "' + objectKey + '".\n\nOpções: ' + _TAG_OPTIONS.join(', ') +
+    '\nAtuais: ' + (current.join(', ') || 'nenhuma') +
+    '\n\nDigite as tags separadas por vírgula (deixe vazio para remover todas):'
+  , current.join(', '));
+  if (chosen === null) return;
+
+  const newTags = chosen.split(',').map(t => t.trim()).filter(t => _TAG_OPTIONS.includes(t));
+  const toAdd   = newTags.filter(t => !current.includes(t));
+  const toRemove = current.filter(t => !newTags.includes(t));
+  const user = window._authUser || 'sistema';
+
+  try {
+    for (const t of toAdd)    await _catTrigger({ mode: 'save_tag', object_key: objectKey, tag: t, user, remove: false }, '');
+    for (const t of toRemove) await _catTrigger({ mode: 'save_tag', object_key: objectKey, tag: t, user, remove: true  }, '');
+    showToast('Tags salvas: ' + (newTags.join(', ') || 'nenhuma'));
+  } catch(_) { showToast('Erro ao salvar tags.', true); }
+}
+
+async function _ownerEdit(idx, pipelineName) {
+  const current = document.getElementById('own-' + idx + '-display');
+  const ownerName   = prompt('Nome do Data Owner (ex: João Silva):',   '');
+  if (ownerName === null) return;
+  const ownerEmail  = prompt('Email do Data Owner:',  '');
+  if (ownerEmail === null) return;
+  const stewardName = prompt('Nome do Data Steward:', '');
+  if (stewardName === null) return;
+  const stewardEmail = prompt('Email do Data Steward:', '');
+  if (stewardEmail === null) return;
+  try {
+    await _catTrigger({
+      mode: 'save_owner', pipeline_name: pipelineName,
+      user: window._authUser || 'sistema',
+      data: { owner_name: ownerName, owner_email: ownerEmail,
+              steward_name: stewardName, steward_email: stewardEmail }
+    }, '');
+    showToast('Responsabilidade salva.');
+    _ownerLoad(idx, pipelineName);
+  } catch(_) { showToast('Erro ao salvar.', true); }
+}
+
+async function catalogoSearch() {
+  const btn  = $('btn-cat-search');
+  const btnT = $('btn-cat-txt');
+  if (btn)  btn.disabled = true;
+  if (btnT) btnT.textContent = '⏳';
+  $('cat-results').innerHTML = '';
+
+  try {
+    let conf, statusMsg;
+    if (_catSearchType === 'arquivo') {
+      const fn  = $('cat-file-name') ? $('cat-file-name').value.trim() : '';
+      const dir = $('cat-direction-arq') ? $('cat-direction-arq').value : 'all';
+      if (!fn) { showToast('Informe o nome do arquivo.', true); return; }
+      conf = { mode: 'search', search_type: 'arquivo', file_name: fn, direction: dir };
+      statusMsg = 'Buscando arquivo "' + fn + '"...';
+    } else {
+      const obj = $('cat-object-name') ? $('cat-object-name').value.trim() : '';
+      const dir = $('cat-direction')   ? $('cat-direction').value           : 'all';
+      const db  = $('cat-database')    ? $('cat-database').value.trim()     : '';
+      if (!obj) { showToast('Informe o nome da tabela.', true); return; }
+      conf = { mode: 'search', search_type: 'tabela', object_name: obj, direction: dir, database_name: db || null };
+      statusMsg = 'Buscando "' + obj + '"...';
+    }
+    const payload = await _catTrigger(conf, statusMsg);
+    if (payload) {
+      _renderCatResults(payload, false);
+      catalogoRanking(); // auto-refresh ranking após busca
+    }
+  } finally {
+    if (btn)  btn.disabled = false;
+    if (btnT) btnT.textContent = 'Buscar';
+  }
+}
+
+async function catalogoImpacto() {
+  const obj  = $('cat-object-name') ? $('cat-object-name').value.trim() : '';
+  const db   = $('cat-database')    ? $('cat-database').value.trim()    : '';
+  const btn  = $('btn-cat-search');
+  const btnI = $('btn-cat-imp-txt');
+
+  if (!obj) { showToast('Informe o nome da tabela para análise de impacto.', true); return; }
+  if (btn)  btn.disabled = true;
+  if (btnI) btnI.textContent = '⏳';
+  $('cat-results').innerHTML = '';
+
+  try {
+    const payload = await _catTrigger(
+      { mode: 'search', search_type: 'tabela', object_name: obj, direction: 'origem', database_name: db || null },
+      '⚡ Analisando impacto de "' + obj + '"...'
+    );
+    if (payload) {
+      if (payload.pipelines) {
+        payload.pipelines = payload.pipelines.filter(p => p.active);
+        payload.total_pipelines   = payload.pipelines.length;
+        payload.total_ocorrencias = payload.pipelines.reduce((s, p) => s + p.ocorrencias, 0);
+      }
+      _renderCatResults(payload, true);
+    }
+  } finally {
+    if (btn)  btn.disabled = false;
+    if (btnI) btnI.textContent = '⚡ Impacto';
+  }
+}
+
+async function catalogoRanking() {
+  const el = $('cat-ranking');
+  if (!el) return;
+  el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:.5rem 0">Carregando ranking...</div>';
+
+  try {
+    const payload = await _catTrigger({ mode: 'ranking', ranking_type: _rankType, top_n: 20 }, '');
+    _catRankingLoaded = true;
+
+    const data = (payload && payload.data) || [];
+    if (!data.length) {
+      el.innerHTML = '<div style="font-size:12px;color:var(--muted)">Nenhum objeto com lineage cadastrada.</div>';
+      return;
+    }
+
+    const maxCount = data[0].pipeline_count || 1;
+    el.innerHTML =
+      '<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden">' +
+      data.map((d, i) => {
+        const pct   = Math.round((d.pipeline_count / maxCount) * 100);
+        const tags  = [
+          d.as_origem  > 0 ? `<span style="font-size:10px;padding:1px 6px;border-radius:999px;background:rgba(24,95,165,.1);color:#185FA5;border:1px solid rgba(24,95,165,.25)">Origem ×${d.as_origem}</span>` : '',
+          d.as_destino > 0 ? `<span style="font-size:10px;padding:1px 6px;border-radius:999px;background:rgba(39,80,10,.1);color:#27500A;border:1px solid rgba(39,80,10,.25)">Destino ×${d.as_destino}</span>` : '',
+        ].filter(Boolean).join(' ');
+
+        const isArq = _rankType === 'arquivo';
+        const nameVal  = isArq ? d.file_path  : d.object_name;
+        const clickFn  = isArq
+          ? `catSwitchTab('arquivo');$('cat-file-name').value='${(d.file_path||'').replace(/'/g,"\\'")}';catalogoSearch()`
+          : `catSwitchTab('tabela');$('cat-object-name').value='${(d.object_name||'').replace(/'/g,"\\'")}';${d.database_name ? `$('cat-database').value='${d.database_name}';` : ''}catalogoSearch()`;
+
+        return `<div style="padding:.65rem 1rem;border-bottom:${i < data.length-1 ? '1px solid var(--border)' : 'none'};
+                  display:grid;grid-template-columns:28px 1fr auto;gap:.65rem;align-items:center">
+          <span style="font-size:12px;font-weight:700;color:var(--muted);text-align:center">${i+1}</span>
+          <div>
+            <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.3rem">
+              <span style="font-size:13px;font-weight:600;font-family:monospace;cursor:pointer;color:var(--cvp-blue)"
+                onclick="${clickFn}" title="Clique para buscar">${nameVal || '—'}</span>
+              ${(!isArq && d.database_name) ? `<span style="font-size:11px;color:var(--muted);font-weight:700">${d.database_name}</span>` : ''}
+              ${tags}
+            </div>
+            <div style="background:var(--border);border-radius:999px;height:4px;overflow:hidden">
+              <div style="background:var(--cvp-blue);width:${pct}%;height:100%;border-radius:999px;transition:width .3s"></div>
+            </div>
+          </div>
+          <div style="text-align:right;min-width:64px">
+            <div style="font-size:15px;font-weight:700">${d.pipeline_count}</div>
+            <div style="font-size:10px;color:var(--muted)">pipeline(s)</div>
+          </div>
+        </div>`;
+      }).join('') + '</div>';
+  } catch(e) {
+    if (el) el.innerHTML = '<div style="font-size:12px;color:var(--red)">Erro: ' + (e && e.message ? e.message : e) + '</div>';
+  }
+}
+
 /* ══ S2 — Badge de falhas no header ══════════════════════════════ */
 let _failureBadgeTimer = null;
 
 function _updateFailureBadge(count) {
+  // Persiste as horas usadas na contagem para que o clique envie exatamente o mesmo filtro
+  const hours = (window.__appConfig && window.__appConfig.failure_badge_hours_lookback) || 24;
+  window.__badgeHoursLookback = hours;
   const badge = $('failure-badge');
   const wrap  = $('failure-badge-wrap');
   if (!badge || !wrap) return;
@@ -2943,25 +4211,32 @@ function _updateFailureBadge(count) {
   }
   wrap.style.display = 'flex';
   badge.textContent  = count > 99 ? '99+' : String(count);
-  badge.title        = count + ' pipeline(s) com falha últimas ' +
-                       (window.__appConfig.failure_badge_hours_lookback || 24) + 'h — clique para filtrar';
+  badge.title        = count + ' pipeline(s) com falha últimas ' + hours + 'h — clique para filtrar';
 }
 
 function _extractFailuresFromDash(dashPayload) {
   if (!dashPayload) return 0;
+  const hours   = (window.__appConfig && window.__appConfig.failure_badge_hours_lookback) || 24;
+  const cutoffMs = Date.now() - hours * 3600000;
+
+  // Filtra ultimas_falhas pela mesma janela de tempo usada na query de logs
   const ff = dashPayload.ultimas_falhas || [];
-  // Contar pipelines únicos com falha — evita discrepância com a tela de Logs
-  // (que agrupa por pipeline, não por job individual)
   if (ff.length) {
-    const pipelines = new Set(ff.map(f => f.pipeline || f.pipeline_name || '').filter(Boolean));
-    return pipelines.size || ff.length;
+    const recent = ff.filter(f => {
+      const t = f.inicio || f.start_time;
+      // Se não tiver timestamp, inclui (confiança no backend)
+      return !t || new Date(t).getTime() >= cutoffMs;
+    });
+    const pipelines = new Set(recent.map(f => f.pipeline || f.pipeline_name || '').filter(Boolean));
+    return pipelines.size || recent.length;
   }
-  // Fallback: usar pipeline_status que já é por pipeline
+
+  // Fallback: pipeline_status — filtra pelo mesmo cutoff (pipeline_status não tem filtro de tempo no backend)
   const ps = dashPayload.pipeline_status || [];
-  const failedPipelines = ps.filter(p =>
-    (p.ultimo_status || '').toUpperCase() === 'FAILED'
+  return ps.filter(p =>
+    (p.ultimo_status || '').toUpperCase() === 'FAILED' &&
+    (!p.inicio || new Date(p.inicio).getTime() >= cutoffMs)
   ).length;
-  return failedPipelines || (dashPayload.kpis && dashPayload.kpis.total_falha) || 0;
 }
 
 function _startFailureBadgeTimer() {
@@ -3060,9 +4335,9 @@ function _onSortClick(tableId, col, renderFn) {
 
 /* ══ ADMIN — Painel restrito CVT38571 ══════════════════════════ */
 const ADMIN_DAG_ID    = 'etl_admin_manage';
-const ADMIN_USER      = 'CVT38571';
+const ADMIN_USERS     = ['CVT38571', 'ADMIN', 'DEVADMIN'];
 
-function _isAdmin() { return (window.__currentUser || '').toUpperCase() === ADMIN_USER; }
+function _isAdmin() { return ADMIN_USERS.includes((window.__currentUser || '').toUpperCase()); }
 
 // Mostra/oculta aba Admin baseado no usuário logado
 function _applyAdminVisibility() {
@@ -3074,12 +4349,14 @@ function _applyAdminVisibility() {
 
 // Sub-navegação Admin
 function admSwitch(panel) {
-  ['config','delete','regen'].forEach(p => {
-    $('adm-panel-' + p).style.display = p === panel ? '' : 'none';
+  ['config','delete','regen','versoes'].forEach(p => {
+    const el = $('adm-panel-' + p);
+    if (el) el.style.display = p === panel ? '' : 'none';
     const btn = $('adm-tab-' + p);
     if (btn) btn.classList.toggle('active', p === panel);
   });
-  if (panel === 'config') admLoadConfig();
+  if (panel === 'config')  admLoadConfig();
+  if (panel === 'versoes') admLoadVersoes();
 }
 
 // ── Configurações: carregar tabela ─────────────────────────────
@@ -3126,10 +4403,10 @@ function _renderConfigTable(cfg) {
     return '<tr>' +
       '<td style="font-family:monospace;font-size:12px;font-weight:600;white-space:nowrap">' + key + '</td>' +
       '<td><input class="cfg-edit-input" id="cfgval-' + key + '" value="' + safeVal + '" /></td>' +
-      '<td style="white-space:nowrap">' +
+      '<td class="col-actions">' +
         '<div class="row-actions">' +
-          '<button class="btn-ghost btn-sm" data-cfg-action="save" data-cfg-key="' + key + '" style="font-size:11px">💾 Salvar</button>' +
-          '<button class="btn-danger btn-sm" data-cfg-action="del" data-cfg-key="' + key + '" style="font-size:11px">✕</button>' +
+          '<button class="act-btn act-save" data-cfg-action="save" data-cfg-key="' + key + '" title="Salvar configuração">' + ICONS.check + '</button>' +
+          '<button class="act-btn act-del" data-cfg-action="del" data-cfg-key="' + key + '" title="Excluir configuração">' + ICONS.trash + '</button>' +
         '</div>' +
       '</td>' +
     '</tr>';
@@ -3137,7 +4414,7 @@ function _renderConfigTable(cfg) {
 
   tbl.innerHTML =
     '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
-    '<th>Chave</th><th>Valor</th><th>Ações</th>' +
+    '<th>Chave</th><th>Valor</th><th class="col-actions">Ações</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 
@@ -3396,8 +4673,19 @@ function _applyQuickPeriod() {
 
 function _applyFailedFilter(hours) {
   if ($('lf-status')) $('lf-status').value = 'FAILED';
+  // Tenta selecionar opção visual no select (para feedback ao usuário)
   if ($('lf-period')) $('lf-period').value = hours > 0 ? String(hours) : '';
-  _applyQuickPeriod();
+  if (hours > 0) {
+    // Seta o hidden field diretamente — garante filter_hours_back mesmo se a opção
+    // não existir no <select> (ex: failure_badge_hours_lookback = 12 ou 72)
+    if ($('lf-datetime-from')) $('lf-datetime-from').value = String(hours);
+    const d  = new Date(Date.now() - hours * 3600000);
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    if ($('lf-date-from')) $('lf-date-from').value = d.getFullYear() + '-' + mm + '-' + dd;
+  } else {
+    _applyQuickPeriod();
+  }
   loadLogs(0);
 }
 
@@ -4115,6 +5403,57 @@ function normalizeIdent(val) {
 
 function _pad2(n) { return String(n).padStart(2, '0'); }
 
+/* ── S4: Validação de dependência circular (client-side) ───────────────── */
+function _detectCircularDep(startPipeline, targetDep, pipelines) {
+  // Monta mapa depends_on a partir dos pipelines carregados
+  const depMap = {};
+  for (const p of pipelines) depMap[p.pipeline_name] = (p.depends_on || '').trim() || null;
+
+  const visited = new Set();
+  let current = targetDep;
+  let hops = 0;
+  while (current && hops < 50) {
+    if (current === startPipeline) return true;  // ciclo encontrado
+    if (visited.has(current)) break;             // nó já visitado, sem ciclo
+    visited.add(current);
+    current = depMap[current] || null;
+    hops++;
+  }
+  return false;
+}
+
+function _validateDependsOnField() {
+  const val      = ($('p-depends-on') ? $('p-depends-on').value.trim() : '');
+  const errEl    = $('err-depends-on');
+  const self     = ($('pipeline_name') ? $('pipeline_name').value.trim() : '');
+  const pipelines = window.__pipelines || [];
+
+  if (!errEl) return true;
+  errEl.textContent = '';
+
+  if (!val) return true;
+
+  if (val === self) {
+    errEl.textContent = 'Um pipeline não pode depender de si mesmo.';
+    return false;
+  }
+
+  // Verifica se o pipeline alvo existe
+  const exists = pipelines.some(p => p.pipeline_name === val);
+  if (!exists) {
+    errEl.textContent = 'Pipeline "' + val + '" não encontrado. Verifique o nome exato.';
+    return false;
+  }
+
+  // Detecção de ciclo
+  if (self && _detectCircularDep(self, val, pipelines)) {
+    errEl.textContent = 'Dependência circular detectada: "' + val + '" já depende (direta ou indiretamente) de "' + self + '".';
+    return false;
+  }
+
+  return true;
+}
+
 function _scheduleTypeChange() {
   const type = $('sch-type') ? $('sch-type').value : 'daily';
   const timeRow = $('sch-time-row');
@@ -4261,6 +5600,17 @@ async function registrarPipeline() {
   // hourly: cron usa somente minuto; salvamos scheduled_time como 00:MM:00
   const scheduled_time = _pad2(stype === 'hourly' ? 0 : sh) + ':' + _pad2(sm) + ':00';
 
+  const dependsOn    = ($('p-depends-on') ? $('p-depends-on').value.trim().toUpperCase() : '') || null;
+  const changedBy    = window.__currentUser || 'system';
+  const dagStartDate = ($('p-dag-start-date') ? $('p-dag-start-date').value.trim() : '') || null;
+
+  // Validação client-side de dependência circular antes de enviar ao backend
+  if (!_validateDependsOnField()) {
+    m.textContent = 'Corrija o campo "Depende de" antes de salvar.';
+    m.className = 'msg erro';
+    return;
+  }
+
   await triggerAndPoll(
     'etl_pipeline_register',
     {
@@ -4270,8 +5620,11 @@ async function registrarPipeline() {
       envia_msg_fim:    $('tog-fim').checked    ? 1 : 0,
       envia_msg_erro:   $('tog-erro').checked   ? 1 : 0,
       project_name: project, domain: domain, tags: tags,
+      depends_on: dependsOn,
+      dag_start_date: dagStartDate,
+      changed_by: changedBy,
       ...schedConf,
-      schedule_cron_preview: cron, // apenas para debug/log; backend ignora se não usar
+      schedule_cron_preview: cron,
     },
     'Pipeline "' + pipeline + '"',
     'btn-save-pipeline', 'save_pipeline_txt', 'Salvar'
@@ -4280,6 +5633,8 @@ async function registrarPipeline() {
   _scheduleSetFromRecord({ schedule_type: 'daily', schedule_hour: 6, schedule_minute: 0, schedule_dow: 1, schedule_dom: 1 });
   $('p-project').value = ''; $('p-domain').value = '';
   $('p-tags').value = ''; $('tags-wrap').querySelectorAll('.chip').forEach(c => c.remove());
+  if ($('p-depends-on'))     $('p-depends-on').value = '';
+  if ($('p-dag-start-date')) $('p-dag-start-date').value = '';
   setStatus(1);
   ['tog-inicio','tog-fim','tog-erro'].forEach(id => { $(id).checked = true; syncToggle('lbl-'+id.replace('tog-',''), $(id)); });
   closePipelineEditor();
@@ -4532,10 +5887,10 @@ function renderJobsTable(payload) {
     '</td>' +
     '<td><span class="tag-pill">' + (j.job_type || '—') + '</span></td>' +
     '<td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (j.job_command || '') + '">' + (j.job_command || '—') + '</td>' +
-    '<td style="white-space:nowrap">' +
+    '<td class="col-actions">' +
       '<div class="row-actions">' +
-        '<button class="btn-ghost btn-sm" onclick="openJobEdit(' + i + ')">Editar</button>' +
-        '<button class="btn-ghost btn-sm" onclick="openJobLineageFromTable(' + i + ')">Lineage</button>' +
+        '<button class="act-btn act-edit" onclick="openJobEdit(' + i + ')" title="Editar job">' + ICONS.edit + '</button>' +
+        '<button class="act-btn act-lineage" onclick="openJobLineageFromTable(' + i + ')" title="Ver lineage">' + ICONS.graph + '</button>' +
       '</div>' +
     '</td>' +
     '</tr>'
@@ -4550,7 +5905,7 @@ function renderJobsTable(payload) {
     '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
     _jHdr('Pipeline','pipeline_name') + _jHdr('Job','job_name') +
     _jHdr('Ordem','execution_order') + _jHdr('Tipo','job_type') +
-    '<th>Comando</th><th>Ações</th>' +
+    '<th>Comando</th><th class="col-actions">Ações</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
     (pages > 1 ? renderJobsPagination(offset, limit, total, pages) : '');
 }
@@ -4907,6 +6262,19 @@ function openPipelineEdit(idx) {
   if (p.tags) {
     p.tags.split(',').map(t => t.trim()).filter(Boolean).forEach(t => addChip(t));
   }
+  // S4: dependência
+  if ($('p-depends-on')) $('p-depends-on').value = (p.depends_on || '').toString().toUpperCase();
+  // dag_start_date
+  if ($('p-dag-start-date')) $('p-dag-start-date').value = p.dag_start_date || '';
+  // Preenche datalist com pipelines disponíveis (exceto o próprio)
+  const dl = $('depends-on-list');
+  if (dl) {
+    dl.innerHTML = (window.__pipelines || [])
+      .filter(pl => pl.pipeline_name !== p.pipeline_name)
+      .map(pl => '<option value="' + pl.pipeline_name + '">')
+      .join('');
+  }
+
   // status e notificações
   setStatus(p.active ? 1 : 0);
   $('tog-inicio').checked = !!p.envia_msg_inicio; syncToggle('lbl-inicio', $('tog-inicio'));
@@ -5075,22 +6443,26 @@ function renderQueryTable(payload) {
     '<td><span class="tag-pill">' + p.project_name + '</span></td>' +
     '<td>' + (p.domain || '—') + '</td>' +
     '<td style="white-space:nowrap">' + (p.scheduled_time || '—') + '</td>' +
+    '<td style="font-size:11px;color:var(--muted);white-space:nowrap" title="' + (p.depends_on ? 'Depende de: ' + p.depends_on : '') + '">' +
+      (p.depends_on ? '<span style="display:inline-flex;align-items:center;gap:3px">' + ICONS.link.replace('width="18" height="18"','width="11" height="11"') + ' ' + p.depends_on + '</span>' : '—') +
+    '</td>' +
     '<td style="text-align:center">' + (p.active ? '<span class="bit-on">✓</span>' : '<span class="bit-off">—</span>') + '</td>' +
     '<td style="text-align:center">' + (p.dag_criada ? '<span class="bit-on">✓</span>' : '<span class="bit-off">—</span>') + '</td>' +
     '<td style="text-align:center">' + (p.envia_msg_inicio ? '<span class="bit-on">✓</span>' : '<span class="bit-off">—</span>') + '</td>' +
     '<td style="text-align:center">' + (p.envia_msg_fim ? '<span class="bit-on">✓</span>' : '<span class="bit-off">—</span>') + '</td>' +
     '<td style="text-align:center">' + (p.envia_msg_erro ? '<span class="bit-on">✓</span>' : '<span class="bit-off">—</span>') + '</td>' +
     '<td style="white-space:nowrap;font-size:11px;color:var(--muted)">' + (p.last_execution || '—') + '</td>' +
-    '<td style="white-space:nowrap">' +
+    '<td class="col-actions">' +
       '<div class="row-actions">' +
-        '<button class="btn-ghost btn-sm" onclick="openPipelineEdit(' + i + ')">Editar</button>' +
-        (p.active ? '<button class="btn-danger btn-sm" onclick="softDeletePipeline(' + i + ')">Inativar</button>' : '') +
+        '<button class="act-btn act-edit" onclick="openPipelineEdit(' + i + ')" title="Editar pipeline">' + ICONS.edit + '</button>' +
+        '<button class="act-btn act-audit" onclick="openPipelineAudit(' + i + ')" title="Histórico de alterações">' + ICONS.history + '</button>' +
+        (p.active ? '<button class="act-btn act-disable" onclick="softDeletePipeline(' + i + ')" title="Inativar pipeline">' + ICONS.disable + '</button>' : '') +
         (!p.dag_criada
-          ? '<button class="btn-dag btn-sm" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')">⚙ Gerar DAG</button>'
-          : '<button class="btn-dag-ok btn-sm" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="DAG já criada — clique para regenerar após mudanças">↺ Regenerar</button>'
+          ? '<button class="btn-dag act-btn act-dag" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="Gerar DAG no Airflow">' + ICONS.gear + '</button>'
+          : '<button class="btn-dag-ok act-btn act-regen" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="DAG já criada — regenerar após mudanças">' + ICONS.refresh + '</button>'
         ) +
         (p.dag_criada
-          ? '<button class="btn-exec btn-sm" id="exec-btn-' + i + '" onclick="executarPipelineAgora(' + i + ')" title="Executar pipeline agora, fora do agendamento">▶</button>'
+          ? '<button class="act-btn act-exec" id="exec-btn-' + i + '" onclick="executarPipelineAgora(' + i + ')" title="Executar agora, fora do agendamento">' + ICONS.play + '</button>'
           : ''
         ) +
       '</div>' +
@@ -5106,9 +6478,10 @@ function renderQueryTable(payload) {
     '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
     _pHdr('Pipeline','pipeline_name') + _pHdr('Projeto','project_name') +
     _pHdr('Domínio','domain') + _pHdr('Horário','scheduled_time') +
+    '<th title="Dependência de pipeline">Depende de</th>' +
     '<th title="Ativo">Ativo</th><th title="DAG Criada">DAG</th>' +
     '<th title="Notif. Início">Início</th><th title="Notif. Fim">Fim</th><th title="Notif. Erro">Erro</th>' +
-    _pHdr('Última exec.','last_execution') + '<th>Ações</th>' +
+    _pHdr('Última exec.','last_execution') + '<th class="col-actions">Ações</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
     (pages > 1 ? renderPagination(offset, limit, total, pages) : '');
 }
@@ -5407,7 +6780,7 @@ function clearQuery() {
           </select>
         </div>
         <div class="field" style="margin:0">
-          <label>Domínio <span style="font-weight:400;text-transform:none;font-size:10px;color:var(--muted)">(opcional)</span></label>
+          <label>Domínio <span style="color:var(--red)">*</span></label>
           <input id="seq-domain" type="text" placeholder="ex: COBRANCA" oninput="this.value=this.value.toUpperCase()" />
         </div>
       </div>
@@ -5489,6 +6862,39 @@ function clearQuery() {
         </div>
       </div>
       <div id="seq-sch-preview" style="font-size:11px;font-family:ui-monospace,'Courier New',monospace;color:var(--muted);margin-bottom:1rem">cron: 0 6 * * *</div>
+
+      <!-- Status inicial + Data de início -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:.75rem">
+        <div class="field" style="margin:0">
+          <label>Status inicial <span style="color:var(--red)">*</span></label>
+          <select id="seq-active" style="font-size:13px">
+            <option value="1">Ativo — DAG habilitada ao criar</option>
+            <option value="0">Inativo — DAG pausada ao criar</option>
+          </select>
+        </div>
+        <div class="field" style="margin:0">
+          <label>Data de início da DAG <span style="color:var(--red)">*</span></label>
+          <input type="date" id="seq-dag-start-date" style="font-size:13px" />
+          <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Define quando o agendamento começa. Use data futura para adiar.</p>
+        </div>
+      </div>
+
+      <!-- Notificações Teams -->
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:.65rem 1rem;margin-bottom:.75rem">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:.5rem">Notificações Teams</div>
+        <div style="display:flex;gap:1.5rem;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:13px;cursor:pointer">
+            <input type="checkbox" id="seq-msg-inicio" checked style="accent-color:var(--cvp-blue)"> Início
+          </label>
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:13px;cursor:pointer">
+            <input type="checkbox" id="seq-msg-fim" checked style="accent-color:var(--cvp-blue)"> Conclusão
+          </label>
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:13px;cursor:pointer">
+            <input type="checkbox" id="seq-msg-erro" checked style="accent-color:var(--cvp-blue)"> Erro
+          </label>
+        </div>
+      </div>
+
       <div id="seq-step3-msg" class="msg" style="min-height:14px"></div>
       <div style="display:flex;gap:8px;margin-top:1rem">
         <button class="btn-ghost" onclick="seqImportBackTo2()" style="flex:1">← Revisão</button>
@@ -5514,11 +6920,19 @@ function openSeqImportModal() {
   _seqPreviewData = null;
   window._seqJobs = [];
   // Reset campos
-  if ($('seq-project'))    $('seq-project').value = '';
-  if ($('seq-name-input')) $('seq-name-input').value = '';
-  if ($('seq-domain'))     $('seq-domain').value = '';
-  if ($('seq-step1-msg'))  { $('seq-step1-msg').textContent = ''; $('seq-step1-msg').className = 'msg'; }
-  if ($('seq-jobs-table')) $('seq-jobs-table').innerHTML = '';
+  if ($('seq-project'))       $('seq-project').value = '';
+  if ($('seq-name-input'))    $('seq-name-input').value = '';
+  if ($('seq-domain'))        $('seq-domain').value = '';
+  if ($('seq-step1-msg'))     { $('seq-step1-msg').textContent = ''; $('seq-step1-msg').className = 'msg'; }
+  if ($('seq-jobs-table'))    $('seq-jobs-table').innerHTML = '';
+  if ($('seq-active'))        $('seq-active').value = '1';
+  if ($('seq-dag-start-date')) {
+    const today = new Date(); const y=today.getFullYear(), m=String(today.getMonth()+1).padStart(2,'0'), d=String(today.getDate()).padStart(2,'0');
+    $('seq-dag-start-date').value = y+'-'+m+'-'+d;
+  }
+  if ($('seq-msg-inicio'))    $('seq-msg-inicio').checked = true;
+  if ($('seq-msg-fim'))       $('seq-msg-fim').checked = true;
+  if ($('seq-msg-erro'))      $('seq-msg-erro').checked = true;
   _seqShowStep(1);
   $('modal-seq-import').classList.add('open');
   setTimeout(() => { try { $('seq-name-input').focus(); } catch(e) {} }, 120);
@@ -5596,6 +7010,7 @@ async function seqImportAnalyze() {
 
   if (!project) { if (msg) { msg.textContent = 'Selecione o projeto.'; msg.className = 'msg erro'; } return; }
   if (!seqName) { if (msg) { msg.textContent = 'Informe o nome da sequence.'; msg.className = 'msg erro'; } return; }
+  if (!domain)  { if (msg) { msg.textContent = 'Informe o domínio.'; msg.className = 'msg erro'; } return; }
 
   const btn    = $('btn-seq-analyze');
   const btnTxt = $('btn-seq-analyze-txt');
@@ -5777,6 +7192,11 @@ async function approveSeqImport() {
         pipeline_name_override: pipeName,
         schedule_cron:         cron,
         ...schedConf,
+        active:            parseInt($('seq-active') ? $('seq-active').value : 1),
+        dag_start_date:    $('seq-dag-start-date') ? $('seq-dag-start-date').value : '',
+        envia_msg_inicio:  ($('seq-msg-inicio') && $('seq-msg-inicio').checked) ? 1 : 0,
+        envia_msg_fim:     ($('seq-msg-fim')    && $('seq-msg-fim').checked)    ? 1 : 0,
+        envia_msg_erro:    ($('seq-msg-erro')   && $('seq-msg-erro').checked)   ? 1 : 0,
       }}),
     });
     if (r.status === 401) { sair(); return; }
@@ -5808,8 +7228,301 @@ async function approveSeqImport() {
 document.getElementById('modal-seq-import').addEventListener('click', function(e) {
   if (e.target === this) closeSeqImportModal();
 });
+document.getElementById('modal-changelog') && document.getElementById('modal-changelog').addEventListener('click', function(e) {
+  if (e.target === this) closeChangelog();
+});
 </script>
 
+<script>
+/* ══ CHANGELOG / VERSÕES ══════════════════════════════════════════ */
+const VERSAO_QUERY_DAG    = 'etl_versao_query';
+const VERSAO_REGISTER_DAG = 'etl_versao_register';
+
+function _renderMarkdown(text) {
+  if (!text) return '';
+  let html = text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    // code blocks ```...```
+    .replace(/```([\s\S]*?)```/g, '<pre style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.65rem .9rem;overflow-x:auto;font-size:12px;line-height:1.6">$1</pre>')
+    // inline code
+    .replace(/`([^`]+)`/g, '<code style="background:var(--bg);padding:1px 5px;border-radius:4px;font-size:12px">$1</code>')
+    // headers
+    .replace(/^### (.+)$/gm, '<h4 style="margin:.9rem 0 .3rem;font-size:13px;font-weight:700">$1</h4>')
+    .replace(/^## (.+)$/gm, '<h3 style="margin:1rem 0 .4rem;font-size:14px;font-weight:700">$1</h3>')
+    .replace(/^# (.+)$/gm, '<h2 style="margin:1rem 0 .4rem;font-size:16px;font-weight:700">$1</h2>')
+    // bold, italic
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    // bullet lists
+    .replace(/^[-*] (.+)$/gm, '<li style="margin:.2rem 0 .2rem 1rem">$1</li>')
+    // paragraphs (double newlines)
+    .replace(/\n\n/g, '</p><p style="margin:.5rem 0">')
+    // single newlines
+    .replace(/\n/g, '<br>');
+  return '<div style="line-height:1.65;font-size:13px"><p style="margin:.5rem 0">' + html + '</p></div>';
+}
+
+async function openChangelog() {
+  $('modal-changelog').classList.add('open');
+  $('changelog-loading').style.display = '';
+  $('changelog-list').style.display = 'none';
+  $('changelog-list').innerHTML = '';
+
+  if (!authHeader) {
+    $('changelog-loading').textContent = 'Faça login para ver o histórico.';
+    return;
+  }
+
+  try {
+    const runId = 'orq_versao_q_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: {} }),
+    });
+    if (!r.ok) { $('changelog-loading').textContent = 'Erro ao carregar: ' + r.status; return; }
+    const run   = await r.json();
+    const rid   = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(VERSAO_QUERY_DAG, rid, 60);
+    if (state !== 'success') { $('changelog-loading').textContent = 'Falha ao carregar versões.'; return; }
+
+    const xr = await fetch(
+      '/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_versoes/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) { $('changelog-loading').textContent = 'Erro ao ler dados: ' + xr.status; return; }
+    const payload = normalizeXcomValue(await xr.json());
+    const versions = (payload && payload.data) ? payload.data : [];
+
+    $('changelog-loading').style.display = 'none';
+    $('changelog-list').style.display = '';
+
+    if (!versions.length) {
+      $('changelog-list').innerHTML = '<div style="text-align:center;padding:2rem;color:var(--muted);font-size:13px">Nenhuma versão registrada ainda.</div>';
+      return;
+    }
+
+    $('changelog-list').innerHTML = versions.map((v, i) => {
+      const isFirst = i === 0;
+      return `<div style="border:1px solid var(--border);border-radius:12px;margin-bottom:.75rem;overflow:hidden">
+        <div onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none';this.querySelector('.cl-arrow').textContent=this.nextElementSibling.style.display===''?'▲':'▼'"
+          style="display:flex;align-items:center;gap:.75rem;padding:.75rem 1rem;cursor:pointer;background:var(--bg);user-select:none">
+          <span style="background:var(--cvp-blue);color:#fff;font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;flex-shrink:0">v${v.versao || '?'}</span>
+          <div style="flex:1">
+            <div style="font-size:13px;font-weight:600">${v.titulo || '—'}</div>
+            <div style="font-size:11px;color:var(--muted)">${(v.criado_em || '').substring(0,10)} · ${v.criado_por || 'admin'}</div>
+          </div>
+          <span class="cl-arrow" style="color:var(--muted);font-size:12px">${isFirst ? '▲' : '▼'}</span>
+        </div>
+        <div style="padding:.85rem 1.1rem;border-top:1px solid var(--border);display:${isFirst ? '' : 'none'}">
+          ${v.descricao_md ? _renderMarkdown(v.descricao_md) : '<span style="color:var(--muted);font-size:12px">Sem descrição.</span>'}
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    $('changelog-loading').textContent = 'Erro: ' + (e && e.message ? e.message : e);
+  }
+}
+
+function closeChangelog() {
+  $('modal-changelog').classList.remove('open');
+}
+
+/* ── Admin: Versões CRUD ──────────────────────────────────────── */
+async function admLoadVersoes() {
+  if (!authHeader) return;
+  const st  = $('adm-versoes-status');
+  const lst = $('adm-versoes-list');
+  if (st)  st.textContent = 'Carregando...';
+  if (lst) lst.innerHTML  = '';
+
+  try {
+    const runId = 'orq_versao_adm_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: {} }),
+    });
+    if (!r.ok) { if (st) st.textContent = 'Erro: ' + r.status; return; }
+    const run   = await r.json();
+    const rid   = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(VERSAO_QUERY_DAG, rid, 60);
+    if (state !== 'success') { if (st) st.textContent = 'Falha ao carregar.'; return; }
+
+    const xr = await fetch(
+      '/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_versoes/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) { if (st) st.textContent = 'Erro ao ler: ' + xr.status; return; }
+    const payload  = normalizeXcomValue(await xr.json());
+    const versions = (payload && payload.data) ? payload.data : [];
+    if (st) st.textContent = '';
+
+    if (!lst) return;
+    if (!versions.length) {
+      lst.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:.5rem 0">Nenhuma versão registrada.</div>';
+      return;
+    }
+
+    lst.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+      '<thead><tr style="border-bottom:2px solid var(--border)">' +
+        '<th style="text-align:left;padding:.4rem .5rem;font-size:11px;color:var(--muted)">Versão</th>' +
+        '<th style="text-align:left;padding:.4rem .5rem;font-size:11px;color:var(--muted)">Título</th>' +
+        '<th style="text-align:left;padding:.4rem .5rem;font-size:11px;color:var(--muted)">Data</th>' +
+        '<th style="text-align:left;padding:.4rem .5rem;font-size:11px;color:var(--muted)">Por</th>' +
+        '<th style="padding:.4rem .5rem;font-size:11px;color:var(--muted)">Ações</th>' +
+      '</tr></thead><tbody>' +
+      versions.map(v =>
+        `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:.5rem"><span style="background:var(--cvp-blue);color:#fff;font-size:11px;font-weight:700;padding:2px 7px;border-radius:999px">v${v.versao||'?'}</span></td>
+          <td style="padding:.5rem">${v.titulo||'—'}</td>
+          <td style="padding:.5rem;font-size:11px;color:var(--muted)">${(v.criado_em||'').substring(0,10)}</td>
+          <td style="padding:.5rem;font-size:11px;color:var(--muted)">${v.criado_por||'admin'}</td>
+          <td style="padding:.5rem;white-space:nowrap">
+            <button class="btn-ghost btn-sm" style="font-size:11px;margin-right:4px" onclick="admEditVersao(${v.id},'${(v.versao||'').replace(/'/g,"\\'")}','${(v.titulo||'').replace(/'/g,"\\'")}',${JSON.stringify(v.descricao_md||'').replace(/</g,'&lt;')})">Editar</button>
+            <button class="btn-ghost btn-sm" style="font-size:11px;color:var(--red)" onclick="admDeleteVersao(${v.id},'${(v.versao||'').replace(/'/g,"\\'")}')">Excluir</button>
+          </td>
+        </tr>`
+      ).join('') + '</tbody></table>';
+  } catch(e) {
+    if (st) st.textContent = 'Erro: ' + (e && e.message ? e.message : e);
+  }
+}
+
+function _versaoTabSwitch(tab) {
+  const isEdit = tab === 'edit';
+  const ta  = $('adm-versao-desc');
+  const pv  = $('adm-versao-preview-box');
+  const tEdit = $('adm-versao-tab-edit');
+  const tPrev = $('adm-versao-tab-preview');
+  if (!ta || !pv) return;
+  if (isEdit) {
+    ta.style.display  = '';
+    pv.style.display  = 'none';
+    if (tEdit) { tEdit.style.background = 'var(--cvp-blue)'; tEdit.style.color = '#fff'; }
+    if (tPrev) { tPrev.style.background = 'var(--card)'; tPrev.style.color = 'var(--text)'; }
+  } else {
+    ta.style.display  = 'none';
+    pv.style.display  = '';
+    pv.innerHTML = ta.value.trim() ? _renderMarkdown(ta.value) : '<span style="color:var(--muted);font-size:12px">Nenhum conteúdo para visualizar.</span>';
+    if (tEdit) { tEdit.style.background = 'var(--card)'; tEdit.style.color = 'var(--text)'; }
+    if (tPrev) { tPrev.style.background = 'var(--cvp-blue)'; tPrev.style.color = '#fff'; }
+  }
+}
+
+function _versaoLivePreview() {
+  // Atualiza preview em background se já estiver visível
+  const pv = $('adm-versao-preview-box');
+  const ta = $('adm-versao-desc');
+  if (pv && pv.style.display !== 'none' && ta) {
+    pv.innerHTML = ta.value.trim() ? _renderMarkdown(ta.value) : '<span style="color:var(--muted);font-size:12px">Nenhum conteúdo para visualizar.</span>';
+  }
+}
+
+function admOpenNewVersao() {
+  if ($('adm-versao-form-title')) $('adm-versao-form-title').textContent = 'Nova Versão';
+  if ($('adm-versao-edit-id'))    $('adm-versao-edit-id').value = '';
+  if ($('adm-versao-num'))        $('adm-versao-num').value = '';
+  if ($('adm-versao-titulo'))     $('adm-versao-titulo').value = '';
+  if ($('adm-versao-desc'))       $('adm-versao-desc').value = '';
+  if ($('adm-versao-msg'))        { $('adm-versao-msg').textContent = ''; $('adm-versao-msg').className = 'msg'; }
+  if ($('adm-versao-form'))       $('adm-versao-form').style.display = '';
+  try { $('adm-versao-num').focus(); } catch(e) {}
+}
+
+function admCloseVersaoForm() {
+  if ($('adm-versao-form')) $('adm-versao-form').style.display = 'none';
+  _versaoTabSwitch('edit'); // volta sempre para aba de edição
+}
+
+function admEditVersao(id, versao, titulo, descricaoJson) {
+  let desc = '';
+  try { desc = JSON.parse(descricaoJson); } catch(e) { desc = descricaoJson || ''; }
+  if ($('adm-versao-form-title')) $('adm-versao-form-title').textContent = 'Editar Versão';
+  if ($('adm-versao-edit-id'))    $('adm-versao-edit-id').value = id;
+  if ($('adm-versao-num'))        $('adm-versao-num').value = versao;
+  if ($('adm-versao-titulo'))     $('adm-versao-titulo').value = titulo;
+  if ($('adm-versao-desc'))       $('adm-versao-desc').value = desc;
+  if ($('adm-versao-msg'))        { $('adm-versao-msg').textContent = ''; $('adm-versao-msg').className = 'msg'; }
+  if ($('adm-versao-form'))       $('adm-versao-form').style.display = '';
+  try { $('adm-versao-num').focus(); } catch(e) {}
+}
+
+async function admSaveVersao() {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
+  const editId  = $('adm-versao-edit-id') ? $('adm-versao-edit-id').value.trim() : '';
+  const versao  = $('adm-versao-num')     ? $('adm-versao-num').value.trim()     : '';
+  const titulo  = $('adm-versao-titulo')  ? $('adm-versao-titulo').value.trim()  : '';
+  const desc    = $('adm-versao-desc')    ? $('adm-versao-desc').value.trim()    : '';
+  const msg     = $('adm-versao-msg');
+  if (msg) { msg.textContent = ''; msg.className = 'msg'; }
+
+  if (!versao || !titulo) {
+    if (msg) { msg.textContent = 'Versão e título são obrigatórios.'; msg.className = 'msg erro'; }
+    return;
+  }
+
+  const action     = editId ? 'update' : 'create';
+  const criado_por = window.__currentUser || 'admin';
+  const conf = { action, versao, titulo, descricao_md: desc || null, criado_por };
+  if (editId) conf.id = parseInt(editId);
+
+  await triggerAndPoll(
+    VERSAO_REGISTER_DAG, conf,
+    action === 'update' ? 'Versão v' + versao : 'Nova versão v' + versao,
+    null, null, null
+  );
+  admCloseVersaoForm();
+  admLoadVersoes();
+  // Sincroniza window.__appConfig e badge de versão no header
+  if (window.__appConfig) {
+    window.__appConfig.app_version     = versao;
+    window.__appConfig.app_release_name = titulo;
+  }
+  _renderVersionBadge();
+}
+
+async function admDeleteVersao(id, versao) {
+  if (!authHeader) return;
+  if (!confirm('Excluir a versão v' + versao + '? Esta ação é irreversível.')) return;
+
+  await triggerAndPoll(
+    VERSAO_REGISTER_DAG,
+    { action: 'delete', id: id, criado_por: window.__currentUser || 'admin' },
+    'Excluir versão v' + versao,
+    null, null, null
+  );
+  admLoadVersoes();
+}
+</script>
+
+
+<!-- MODAL: CHANGELOG / VERSÕES -->
+<div id="ls-modal-overlay" role="dialog" aria-modal="true">
+  <div id="ls-modal-box">
+    <div id="ls-modal-header">
+      <span id="ls-modal-title"></span>
+      <span id="ls-modal-count"></span>
+      <button id="ls-modal-close" onclick="document.getElementById('ls-modal-overlay').classList.remove('open')" title="Fechar">✕</button>
+    </div>
+    <input id="ls-modal-search" type="search" placeholder="Filtrar…" autocomplete="off" spellcheck="false"/>
+    <ul id="ls-modal-list"></ul>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modal-changelog">
+  <div class="modal-box" style="max-width:640px;text-align:left;padding:1.75rem 2rem;max-height:80vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:1.25rem;flex-shrink:0">
+      <div>
+        <div class="modal-title" style="margin:0">📋 Histórico de Versões</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:.3rem">ORQUESTRA — atualizações e melhorias</div>
+      </div>
+      <button class="icon-btn btn-close" onclick="closeChangelog()" title="Fechar" aria-label="Fechar">×</button>
+    </div>
+    <div id="changelog-loading" style="text-align:center;padding:2rem;color:var(--muted);font-size:13px;flex-shrink:0">Carregando versões...</div>
+    <div id="changelog-list" style="overflow-y:auto;flex:1;display:none"></div>
+  </div>
+</div>
 
 <!-- MODAL: WIZARD EXCLUSÃO DE PIPELINE (2 etapas, sem window.prompt) -->
 <div class="modal-backdrop" id="modal-adm-delete-wizard">
@@ -5927,8 +7640,8 @@ document.getElementById('modal-seq-import').addEventListener('click', function(e
     <div id="afl-content" style="display:none;flex:1;overflow:auto;
       background:#0d1117;border-radius:10px;padding:1rem;
       font-family:ui-monospace,'SFMono-Regular','Menlo','Monaco','Consolas',monospace;
-      font-size:11.5px;line-height:1.65;color:#e6edf3;
-      white-space:pre-wrap;word-break:break-all">
+      font-size:10.5px;line-height:1.65;color:#e6edf3;
+      white-space:pre;overflow-x:auto;text-align:left">
     </div>
 
     <!-- Footer -->
@@ -6135,9 +7848,9 @@ document.getElementById('modal-seq-import').addEventListener('click', function(e
   }
 
 
-  // Resolve o dag_run_id REAL consultando a API do Airflow
-  // Necessário porque runs manuais/ORQUESTRA usam "manual__" ou ID customizado,
-  // nunca "scheduled__" como _buildDagRunId gerava.
+  // Resolve o dag_run_id REAL consultando a API do Airflow.
+  // Busca as 50 runs mais recentes sem filtro de data e compara client-side,
+  // evitando que filtros server-side do Airflow retornem runs de outras datas.
   async function _resolveAirflowDagRunId(dagId, executionId) {
     // Converter ts_nodash (20260602T130000) → ISO (2026-06-02T13:00:00+00:00)
     let isoStr = executionId;
@@ -6146,22 +7859,25 @@ document.getElementById('modal-seq-import').addEventListener('click', function(e
       const h=executionId.slice(9,11), mi=executionId.slice(11,13), s=executionId.slice(13,15);
       isoStr = y+'-'+mo+'-'+d+'T'+h+':'+mi+':'+s+'+00:00';
     }
-    // Janela ±5min ao redor do execution_id para encontrar o run correto
+    const targetMs = new Date(isoStr).getTime();
+    const TEN_MIN  = 10 * 60 * 1000;
     try {
-      const dt     = new Date(isoStr);
-      const dtMinus = new Date(dt.getTime() - 5*60000).toISOString();
-      const dtPlus  = new Date(dt.getTime() + 5*60000).toISOString();
-      const url = '/api/v1/dags/' + encodeURIComponent(dagId) + '/dagRuns' +
-        '?execution_date_gte=' + encodeURIComponent(dtMinus) +
-        '&execution_date_lte=' + encodeURIComponent(dtPlus) +
-        '&limit=5&order_by=-execution_date';
+      const url = '/api/v1/dags/' + encodeURIComponent(dagId) +
+        '/dagRuns?limit=50&order_by=-execution_date';
       const r = await fetch(url, { headers: { 'Authorization': authHeader } });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const data = await r.json();
       const runs = data.dag_runs || [];
-      if (runs.length > 0) {
-        console.log('[ORQ] dag_run_id resolvido:', runs[0].dag_run_id);
-        return runs[0].dag_run_id;
+      // Correspondência client-side: aceita o run mais próximo dentro de ±10min
+      let best = null, bestDelta = Infinity;
+      for (const run of runs) {
+        const runMs = new Date(run.execution_date).getTime();
+        const delta = Math.abs(runMs - targetMs);
+        if (delta < bestDelta) { bestDelta = delta; best = run; }
+      }
+      if (best && bestDelta <= TEN_MIN) {
+        console.log('[ORQ] dag_run_id resolvido (delta=' + Math.round(bestDelta/1000) + 's):', best.dag_run_id);
+        return best.dag_run_id;
       }
     } catch(e) {
       console.warn('[ORQ] _resolveAirflowDagRunId fallback:', e.message);
@@ -6195,6 +7911,106 @@ document.getElementById('modal-seq-import').addEventListener('click', function(e
     if (e.target === this) _airflowLogClose();
   });
 })();
+</script>
+
+<!-- ══ MODAL: Audit Trail (S1) ══════════════════════════════════════════ -->
+<div id="modal-audit" style="display:none;position:fixed;inset:0;z-index:900;background:rgba(0,0,0,.45);align-items:center;justify-content:center;padding:1rem">
+  <div style="background:var(--bg);border-radius:16px;border:1px solid var(--border);width:100%;max-width:780px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.25)">
+    <div style="padding:1.25rem 1.5rem .75rem;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);flex-shrink:0">
+      <div>
+        <h3 style="margin:0;font-size:1rem;font-weight:700" id="audit-modal-title">Histórico de alterações</h3>
+        <p style="margin:.2rem 0 0;font-size:12px;color:var(--muted)" id="audit-modal-sub"></p>
+      </div>
+      <button onclick="closeAuditModal()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:1.3rem;line-height:1;padding:4px">×</button>
+    </div>
+    <div id="audit-modal-body" style="overflow-y:auto;padding:1rem 1.5rem;flex:1">
+      <div class="empty-state"><span class="es-icon">⏳</span><p class="es-title">Carregando...</p></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ══ S1 — Audit Trail ══════════════════════════════════════════════════ */
+const AUDIT_DAG_ID = 'etl_pipeline_audit_query';
+
+function closeAuditModal() {
+  const m = $('modal-audit');
+  if (m) m.style.display = 'none';
+}
+document.getElementById('modal-audit').addEventListener('click', function(e) {
+  if (e.target === this) closeAuditModal();
+});
+
+async function openPipelineAudit(idx) {
+  const p = (window.__pipelines || [])[idx];
+  if (!p) return;
+  const modal = $('modal-audit');
+  const body  = $('audit-modal-body');
+  $('audit-modal-title').textContent = 'Histórico — ' + p.pipeline_name;
+  $('audit-modal-sub').textContent   = p.project_name + ' · ' + (p.domain || '');
+  body.innerHTML = '<div class="empty-state"><span class="es-icon">⏳</span><p class="es-title">Consultando...</p></div>';
+  modal.style.display = 'flex';
+
+  try {
+    const runId = 'orq_audit_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + AUDIT_DAG_ID + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: { pipeline_name: p.pipeline_name, limit: 50 } }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const run   = await r.json();
+    const rid   = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(AUDIT_DAG_ID, rid, 30);
+    if (state !== 'success') throw new Error('DAG finalizou com estado: ' + state);
+
+    const xr = await fetch(
+      '/api/v1/dags/' + AUDIT_DAG_ID + '/dagRuns/' + rid + '/taskInstances/consultar_audit/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) throw new Error('XCom HTTP ' + xr.status);
+    const payload = normalizeXcomValue(await xr.json());
+    _renderAuditTable(payload, body);
+  } catch(e) {
+    body.innerHTML = '<p style="color:var(--red);font-size:13px;padding:1rem">Erro: ' + (e.message || e) + '</p>';
+  }
+}
+
+function _renderAuditTable(payload, body) {
+  const rows = (payload && (payload.data || payload)) || [];
+  if (!Array.isArray(rows) || rows.length === 0) {
+    body.innerHTML =
+      '<div class="empty-state">' +
+        '<span class="es-icon">📋</span>' +
+        '<p class="es-title">Sem histórico registrado</p>' +
+        '<p class="es-sub">Alterações futuras aparecerão aqui.</p>' +
+      '</div>';
+    return;
+  }
+  const thead =
+    '<thead><tr>' +
+    '<th style="width:140px">Data/hora</th>' +
+    '<th style="width:120px">Usuário</th>' +
+    '<th>Campo</th><th>Valor anterior</th><th>Novo valor</th>' +
+    '</tr></thead>';
+  const tbody = rows.map(r => {
+    const dt  = r.changed_at || r.timestamp || '';
+    const usr = r.changed_by || r.user || '—';
+    const fld = r.field_name || r.campo || '—';
+    const old = r.old_value != null ? String(r.old_value) : '—';
+    const nv  = r.new_value != null ? String(r.new_value) : '—';
+    return '<tr>' +
+      '<td style="font-size:11px;color:var(--muted);white-space:nowrap">' + String(dt).slice(0,16) + '</td>' +
+      '<td style="font-size:11px;font-weight:600">' + usr + '</td>' +
+      '<td style="font-family:monospace;font-size:11px">' + fld + '</td>' +
+      '<td style="font-size:11px;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis" title="' + old + '">' + old + '</td>' +
+      '<td style="font-size:11px;' + (old !== nv ? 'color:var(--cvp-blue);font-weight:600' : '') + ';max-width:160px;overflow:hidden;text-overflow:ellipsis" title="' + nv + '">' + nv + '</td>' +
+    '</tr>';
+  }).join('');
+  body.innerHTML =
+    '<p style="font-size:11px;color:var(--muted);margin:0 0 .75rem">' + rows.length + ' registro(s)</p>' +
+    '<div class="query-table-wrap"><table class="query-table">' + thead + '<tbody>' + tbody + '</tbody></table></div>';
+}
 </script>
 
 </body>

@@ -36,6 +36,7 @@ Saída via XCom (key='return_value'):
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -338,12 +339,14 @@ def parse_sequence(**context):
             lineage_data = lineage_result.get("dados", [])
 
             for item in lineage_data:
+                cols = item.get("columns") or []
+                cols_json = json.dumps(cols, ensure_ascii=False) if cols else None
                 hook.run("""
                     INSERT INTO dbo.etl_seq_import_lineage
                         (import_job_id, direction, object_name, object_type,
                          stage_type_raw, sql_expression, file_path, database_name,
-                         dsx_source_file, extraction_method, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'dsx_auto', 'pendente')
+                         dsx_source_file, extraction_method, columns_json, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'dsx_auto', %s, 'pendente')
                 """, parameters=[
                     job_id,
                     item.get("direction"),
@@ -354,6 +357,7 @@ def parse_sequence(**context):
                     item.get("file_path"),
                     item.get("database_name"),
                     item.get("dsx_source_file"),
+                    cols_json,
                 ])
 
             hook.run("""

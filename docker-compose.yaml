@@ -130,7 +130,7 @@ services:
     image: nginx:latest
     container_name: airflow-ui
     ports:
-      - "80:80"
+      - "${UI_PORT:-80}:80"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}/ui:/usr/share/nginx/html
       - ${AIRFLOW_PROJ_DIR:-.}/ui/nginx.conf:/etc/nginx/nginx.conf
@@ -141,7 +141,7 @@ services:
     <<: *airflow-common
     command: webserver
     ports:
-      - "8080:8080"
+      - "${AIRFLOW_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
       interval: 30s

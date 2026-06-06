@@ -31,7 +31,7 @@ BASE_LOG_ROOT = "/Projetos/{project}/Logs/Airflow"
 default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
 
 
-def _get_output_root() -> str:
+def _get_output_root():
     try:
         root = Variable.get("DAG_FACTORY_OUTPUT").rstrip("/")
         if root:
@@ -45,17 +45,17 @@ def _get_output_root() -> str:
         return "/opt/airflow/dags"
 
 
-def _time_to_cron(t: str) -> str:
+def _time_to_cron(t):
     parts = t.split(":")
     return f"{int(parts[1]) if len(parts) > 1 else 0} {int(parts[0])} * * *"
 
 
-def _ind(code: str, n: int = 4) -> str:
+def _ind(code, n=4):
     pad = " " * n
     return "\n".join(pad + ln if ln.strip() else ln for ln in code.split("\n"))
 
 
-def _task_block(job: dict, project: str, pipeline: str) -> str:
+def _task_block(job, project, pipeline):
     name  = job["job_name"]
     jtype = job["job_type"].lower().strip()
     jcmd  = job["job_command"] or ""
@@ -140,7 +140,7 @@ def _task_block(job: dict, project: str, pipeline: str) -> str:
     return "\n\n".join([log_start, main, log_end])
 
 
-def _generate_dag_source(pipeline: dict, jobs: list) -> str:
+def _generate_dag_source(pipeline, jobs):
     pname      = pipeline["pipeline_name"]
     project    = pipeline["project_name"]
     domain     = pipeline["domain"]
@@ -150,7 +150,7 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
     f_ini   = bool(pipeline["envia_msg_inicio"])
     f_fim   = bool(pipeline["envia_msg_fim"])
     f_err   = bool(pipeline["envia_msg_erro"])
-    dag_start_date_raw = pipeline.get("dag_start_date")  # DATE or None
+    dag_start_date_raw = pipeline.get("dag_start_date")
 
     retries_val         = int(pipeline.get("retries_count") or 1)
     retry_delay_val     = int(pipeline.get("retry_delay_seconds") or 300)
@@ -169,7 +169,7 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
 
     ssh_needed = any(j["job_type"].lower() in ("datastage", "shell") for j in sorted_jobs)
 
-    # ── Seção de imports ─────────────────────────────────────
+    # Seção de imports
     import_lines = ["from airflow import DAG"]
     import_lines.append("from datetime import timedelta")
     if ssh_needed:
@@ -186,9 +186,8 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         "import re",
         "import requests",
     ]
-    imports_str = "\n".join(import_lines)
 
-    # ── Constantes ───────────────────────────────────────────
+    # Constantes
     consts_lines = [
         f'DAG_ID        = "{pname}"',
         f'SSH_CONN_ID   = "ssh_lnxprd021"',
@@ -208,7 +207,7 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         consts_lines.append(f'POOL_NAME = "{pool_name_val}"')
     consts_str = "\n".join(consts_lines)
 
-    # ── Helpers (bloco fixo — sem aspas triplas) ─────────────
+    # Helpers
     helpers_lines = [
         "def _now_str():",
         "    return pendulum.now(LOCAL_TZ).to_datetime_string()",
@@ -262,7 +261,7 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         "    except Exception:",
         "        print(f\"[TEAMS] Variable '{TEAMS_WEBHOOK_VAR}' nao encontrada.\")",
         "        return",
-        '    emoji = {"SUCCESS": "🟢", "WARNING": "🟡", "FAILED": "🔴", "INFO": "🔵"}.get(status, "🔵")',
+        '    emoji = {"SUCCESS": "OK", "WARNING": "WARN", "FAILED": "ERR", "INFO": "INFO"}.get(status, "INFO")',
         "    payload = {",
         '        "type": "message",',
         '        "attachments": [{',
@@ -351,21 +350,19 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         "    _exec_telemetry(hook, execution_id, job_name, task_key, final_status,",
         "                    '', end_time, duration_seconds, _build_log_file(job_name, execution_id))",
         "    _update_status_code(hook, execution_id, job_name, task_key, status_code)",
-        "    # Atualiza last_execution no pipeline a cada log_end — o último job grava o horário final",
         "    try:",
         "        _update_last_execution()",
         "    except Exception as _ule_exc:",
-        "        print(f'[log_end] Aviso: não foi possível atualizar last_execution — {_ule_exc}')",
-        "    # Fail-fast: propagar falha para interromper tarefas seguintes",
+        "        print(f'[log_end] Aviso: nao foi possivel atualizar last_execution — {_ule_exc}')",
         "    if final_status in ('FAILED', 'DESCONHECIDO'):",
         "        raise RuntimeError(",
         "            f\"Job '{job_name}' finalizou com status {final_status} — \"",
-        "            \"execução interrompida. Corrija o erro antes de reprocessar.\"",
+        "            \"execucao interrompida. Corrija o erro antes de reprocessar.\"",
         "        )",
     ]
     helpers_str = "\n".join(helpers_lines)
 
-    # ── Bloco with DAG ───────────────────────────────────────
+    # Bloco with DAG
     teams_tasks = []
     if f_ini:
         teams_tasks.append("\n".join([
@@ -393,7 +390,7 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
 
     job_blocks = [_task_block(j, project, pname) for j in sorted_jobs]
 
-    # ── S4: ExternalTaskSensor — suporte a múltiplas dependências ────────
+    # S4: ExternalTaskSensor — suporte a múltiplas dependências
     dep_list = [d.strip() for d in depends_on.split(",") if d.strip()] if depends_on else []
     sensor_block = ""
     sensor_names = []
@@ -426,11 +423,9 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         f"previous = t_end_{first}",
         first_chain,
     ]
-    # Prefixa a cadeia do primeiro job com todos os sensores
     if sensor_names:
         sensors_ref = "[" + ", ".join(sensor_names) + "]"
-        dep_lines.insert(0, f"{sensors_ref} >> t_log_start_{first}" if not f_ini else f"{sensors_ref} >> t_start_{first}")
-        # Override first_chain to not re-add the sensor prefix — keep dep_lines[1] as-is
+        dep_lines.insert(0, f"{sensors_ref} >> t_start_{first}")
 
     for j in others:
         n = j["job_name"]
@@ -444,7 +439,6 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
     if f_err:
         dep_lines.append(f"{end_tasks_ref} >> t_teams_error")
 
-    # Junta tudo indentado dentro do with
     with_parts = []
     if sensor_block:
         with_parts.append(_ind(sensor_block))
@@ -455,7 +449,6 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
     for d in dep_lines:
         with_parts.append("    " + d)
 
-    # Determina start_date: usa dag_start_date do banco ou fallback para 2026-01-01
     if dag_start_date_raw:
         if hasattr(dag_start_date_raw, "year"):
             sd_y, sd_m, sd_d = dag_start_date_raw.year, dag_start_date_raw.month, dag_start_date_raw.day
@@ -469,7 +462,7 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         "with DAG(",
         "    dag_id=DAG_ID,",
         "    default_args=default_args,",
-        f'    description="Pipeline {pname} — {project} / {domain}",',
+        f'    description="Pipeline {pname} - {project} / {domain}",',
         f"    start_date=pendulum.datetime({sd_y}, {sd_m}, {sd_d}, tz=LOCAL_TZ),",
         f'    schedule="{cron}",',
         "    catchup=False,",
@@ -485,7 +478,6 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
 
     dag_block = dag_header + "\n\n" + "\n\n".join(with_parts) + "\n"
 
-    # ── Arquivo final ────────────────────────────────────────
     sep = "# " + "=" * 25
     parts = [
         imports_str,
@@ -507,11 +499,9 @@ def gerar_dags(**context):
     output_root = _get_output_root()
     conf        = context["dag_run"].conf or {}
 
-    # Parâmetros para regeneração forçada (via Admin ORQUESTRA)
     force_all      = bool(conf.get("force_all", False))
     filter_project = (conf.get("filter_project") or "").strip()
 
-    # Se force_all: resetar dag_criada=0 para forçar regeneração
     if force_all:
         if filter_project:
             hook.run(
@@ -563,7 +553,7 @@ def gerar_dags(**context):
         for p in pipelines:
             p.update(adv_map.get(p['pipeline_name'], {}))
 
-    jobs_by_pipeline: dict[str, list] = defaultdict(list)
+    jobs_by_pipeline = defaultdict(list)
     for j in jobs_all:
         jobs_by_pipeline[j["pipeline_name"]].append(j)
 

@@ -21,6 +21,11 @@ Entrada via conf:
   schedule_minute        : int   (opcional)
   schedule_dow           : int   (opcional) — 0=Dom ... 6=Sab
   schedule_dom           : int   (opcional) — 1-31
+  active                 : int   (opcional) — 0|1, default 1
+  dag_start_date         : str   (opcional) — YYYY-MM-DD, define o start_date da DAG
+  envia_msg_inicio       : int   (opcional) — 0|1, default 1
+  envia_msg_fim          : int   (opcional) — 0|1, default 1
+  envia_msg_erro         : int   (opcional) — 0|1, default 1
 """
 
 from __future__ import annotations
@@ -138,6 +143,13 @@ def approve_sequence(**context):
     )
     print(f"[SEQ_APPROVE] sp_etl_seq_import_approve executada com sucesso")
 
+    # 4b. Aplicar campos adicionais após aprovação
+    active           = int(conf.get("active",           1))
+    envia_msg_inicio = int(conf.get("envia_msg_inicio", 1))
+    envia_msg_fim    = int(conf.get("envia_msg_fim",    1))
+    envia_msg_erro   = int(conf.get("envia_msg_erro",   1))
+    dag_start_date   = (conf.get("dag_start_date") or "").strip() or None
+
     # 4. Recuperar o pipeline_name final para disparar a factory
     pipeline_name_row = hook.get_first("""
         SELECT COALESCE(pipeline_name_override, seq_name)
@@ -145,6 +157,48 @@ def approve_sequence(**context):
         WHERE id = %s
     """, parameters=[import_id])
     pipeline_name = pipeline_name_row[0] if pipeline_name_row else None
+
+    # Aplicar campos adicionais no pipeline recém-criado
+    if pipeline_name:
+        extra_parts  = [
+            "active=%s", "envia_msg_inicio=%s", "envia_msg_fim=%s",
+            "envia_msg_erro=%s", "updated_at=GETDATE()",
+        ]
+        extra_params = [active, envia_msg_inicio, envia_msg_fim, envia_msg_erro]
+        if dag_start_date:
+            extra_parts.append("dag_start_date=%s")
+            extra_params.append(dag_start_date)
+        extra_params.append(pipeline_name)
+        hook.run(
+            f"UPDATE dbo.etl_pipeline SET {', '.join(extra_parts)} WHERE pipeline_name=%s",
+            parameters=extra_params,
+        )
+        print(
+            f"[SEQ_APPROVE] pipeline='{pipeline_name}' atualizado: "
+            f"active={active} msg_ini={envia_msg_inicio} msg_fim={envia_msg_fim} "
+            f"msg_err={envia_msg_erro} start_date={dag_start_date}"
+        )
+
+    # 4c. Sincronizar columns_json do staging para produção
+    # Faz UPDATE por correspondência de pipeline_name + job + direction + object_name
+    try:
+        hook.run("""
+            UPDATE jl
+            SET jl.columns_json = sil.columns_json
+            FROM dbo.etl_job_lineage jl
+            JOIN dbo.etl_pipeline_job pj  ON pj.pipeline_name = jl.pipeline_name
+                                         AND pj.job_name      = jl.job_name
+            JOIN dbo.etl_seq_import_job sij ON sij.job_name_orq = pj.job_name
+                                            AND sij.import_id   = %s
+            JOIN dbo.etl_seq_import_lineage sil ON sil.import_job_id = sij.id
+                                               AND sil.direction    = jl.direction
+                                               AND sil.object_name  = jl.object_name
+            WHERE jl.pipeline_name = %s
+              AND sil.columns_json IS NOT NULL
+        """, parameters=[import_id, pipeline_name])
+        print(f"[SEQ_APPROVE] columns_json sincronizado para '{pipeline_name}'")
+    except Exception as exc:
+        print(f"[SEQ_APPROVE] Aviso: não foi possível sincronizar columns_json — {exc}")
 
     # 5. Disparar etl_dag_factory para gerar o DAG Airflow automaticamente
     if pipeline_name:
