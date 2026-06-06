@@ -6514,7 +6514,7 @@ async function approveSeqImport() {
 document.getElementById('modal-seq-import').addEventListener('click', function(e) {
   if (e.target === this) closeSeqImportModal();
 });
-document.getElementById('modal-changelog').addEventListener('click', function(e) {
+document.getElementById('modal-changelog') && document.getElementById('modal-changelog').addEventListener('click', function(e) {
   if (e.target === this) closeChangelog();
 });
 </script>
