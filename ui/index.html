@@ -2788,8 +2788,11 @@ function renderLineageJob() {
     // Para transformações: label principal = nome do componente
     const isTransf = cls === 'transf';
     const rawLabel  = isTransf ? (o.stage_name || o.object_name) : (o.object_name || o.stage_name);
-    const label     = o.file_path ? _fileBasename(rawLabel) : rawLabel;
-    const sublabel  = (!isTransf && o.stage_name && o.stage_name !== label) ? o.stage_name : null;
+    // Para nós de arquivo: label principal = basename do file_path (ex: DS_EXT.dx); sublabel = object_name se diferente
+    const label     = (!isTransf && o.file_path) ? _fileBasename(o.file_path) : rawLabel;
+    const sublabel  = (!isTransf && o.stage_name && o.stage_name !== label) ? o.stage_name
+                    : (!isTransf && o.file_path && o.object_name && o.object_name !== label) ? o.object_name
+                    : null;
     const typeLabel = (o.type_label || o.object_type || '');
     // db line: apenas banco quando não está já visível no label
     const dbLine = o.database_name && !label.includes(o.database_name) ? o.database_name : '';
