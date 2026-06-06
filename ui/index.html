@@ -1489,7 +1489,23 @@
                 <!-- Busca -->
                 <div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1rem 1.25rem;margin-bottom:1.25rem">
                   <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:.75rem">Buscar no catálogo</div>
-                  <!-- Toggle tipo busca -->
+                  <!-- Busca unificada -->
+                  <div style="margin-bottom:.85rem">
+                    <div class="field" style="margin:0 0 .5rem">
+                      <label>Busca rápida <span style="font-weight:400;color:var(--muted)">— tabela, arquivo (.dx/.ds) ou banco</span></label>
+                      <div style="display:flex;gap:.5rem">
+                        <input id="cat-smart-input" type="text" placeholder="ex: TB_CLIENTE  ou  DS_EXT_PARCELAS.dx  ou  DW_COBRANCA..."
+                          style="flex:1"
+                          oninput="catSmartDetect(this.value)"
+                          onkeydown="if(event.key==='Enter') catSmartSearch()" />
+                        <button class="btn btn-primary btn-sm" onclick="catSmartSearch()" style="height:46px;min-width:80px">Buscar</button>
+                        <button class="btn btn-outline btn-sm" onclick="catSwitchAdvanced()" style="height:46px;white-space:nowrap">⚙ Avançado</button>
+                      </div>
+                      <div id="cat-smart-hint" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
+                    </div>
+                  </div>
+                  <!-- Toggle tipo busca (avançado) -->
+                  <div id="cat-advanced" style="display:none">
                   <div style="display:flex;gap:6px;margin-bottom:.85rem">
                     <button id="cat-tab-tabela" class="adm-tab active" onclick="catSwitchTab('tabela')">◫ Tabela / Banco</button>
                     <button id="cat-tab-arquivo" class="adm-tab" onclick="catSwitchTab('arquivo')">◈ Arquivo</button>
@@ -1538,6 +1554,7 @@
                       <button class="btn btn-primary btn-sm" onclick="catalogoSearch()" style="height:46px;min-width:80px"><span>Buscar</span></button>
                     </div>
                   </div>
+                  </div><!-- /cat-advanced -->
                 </div>
 
                 <!-- Status busca -->
@@ -3358,6 +3375,99 @@ async function loadPipelineList() {
   } catch(_) {}
 }
 
+// ── Busca unificada inteligente ───────────────────────────────────
+const _FILE_EXT_RE = /\.(ds|dx|csv|txt|seq|dat)$/i;
+const _FILE_PREFIX_RE = /^(ds_|seq_|file:|arquivo:)/i;
+
+function catSmartDetect(val) {
+  const hint = $('cat-smart-hint');
+  if (!hint) return;
+  if (!val) { hint.textContent = ''; return; }
+  if (_FILE_EXT_RE.test(val) || _FILE_PREFIX_RE.test(val)) {
+    hint.innerHTML = '◈ Detectado como <strong>arquivo</strong> — buscará em file_path';
+  } else {
+    hint.innerHTML = '◫ Detectado como <strong>tabela/banco</strong> — buscará em object_name e sql_expression';
+  }
+}
+
+function catSmartSearch() {
+  const val = ($('cat-smart-input') || {}).value || '';
+  const term = val.trim().toUpperCase();
+  if (!term) { showToast('Digite um termo para buscar.', true); return; }
+  if (_FILE_EXT_RE.test(term) || _FILE_PREFIX_RE.test(term)) {
+    _catSearchType = 'arquivo';
+    if ($('cat-file-name')) $('cat-file-name').value = term.replace(/^arquivo:/i,'').replace(/^file:/i,'').trim();
+  } else {
+    _catSearchType = 'tabela';
+    if ($('cat-object-name')) $('cat-object-name').value = term;
+  }
+  catalogoSearch();
+}
+
+function catSwitchAdvanced() {
+  const adv = $('cat-advanced');
+  if (!adv) return;
+  const open = adv.style.display === 'none' || !adv.style.display;
+  adv.style.display = open ? '' : 'none';
+}
+
+// ── Saúde do pipeline via Airflow API ────────────────────────────
+async function _pipelineHealthLoad(idx, pipelineName) {
+  const el = document.getElementById('health-' + idx);
+  if (!el || !authHeader) return;
+  try {
+    const dagId = pipelineName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const r = await fetch(
+      '/api/v1/dags/' + encodeURIComponent(dagId) + '/dagRuns?limit=1&order_by=-start_date',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!r.ok) { el.textContent = ''; return; }
+    const data = await r.json();
+    const runs = data.dag_runs || [];
+    if (!runs.length) { el.textContent = ''; return; }
+    const last = runs[0];
+    const state = last.state;
+    const date  = last.start_date ? last.start_date.slice(0,10) : '';
+    const cfg = {
+      success: { icon: '✔', color: '#16a34a' },
+      failed:  { icon: '✘', color: '#dc2626' },
+      running: { icon: '↻', color: '#d97706' },
+    };
+    const c = cfg[state] || { icon: '○', color: 'var(--muted)' };
+    el.innerHTML = `<span style="color:${c.color};font-weight:600">${c.icon} ${state}</span> <span style="color:var(--muted)">${date}</span>`;
+  } catch(_) { el.textContent = ''; }
+}
+
+// ── Histórico de importações ──────────────────────────────────────
+async function _catHistory(pipelineName) {
+  try {
+    const payload = await _catTrigger({ mode: 'pipeline_history', pipeline_name: pipelineName }, '');
+    if (!payload || !payload.history) { showToast('Sem histórico para este pipeline.'); return; }
+    const rows = payload.history;
+    const content = rows.map(r =>
+      (r.imported_at || '').slice(0,16) + ' · ' + (r.status || '') +
+      (r.reviewed_by ? ' · aprovado por ' + r.reviewed_by : '') +
+      (r.obs ? ' · ' + r.obs : '')
+    ).join('\n');
+    _lsDetailPopover(document.body, content || 'Sem registros.', 'Histórico: ' + pipelineName);
+  } catch(_) { showToast('Erro ao carregar histórico.', true); }
+}
+
+// ── Linhagem completa de arquivo (quem escreve e quem lê) ────────
+async function _fileLineage(fileName) {
+  try {
+    const payload = await _catTrigger({ mode: 'file_lineage', file_name: fileName }, '');
+    if (!payload) return;
+    const writers = (payload.writers || []).map(p => '✍ ' + p.pipeline_name + ' (Job: ' + p.job_name + ')');
+    const readers = (payload.readers || []).map(p => '👁 ' + p.pipeline_name + ' (Job: ' + p.job_name + ')');
+    const content = [
+      writers.length ? '── GRAVA ──\n' + writers.join('\n') : '',
+      readers.length ? '── LÊ ──\n' + readers.join('\n') : '',
+    ].filter(Boolean).join('\n\n') || 'Nenhum pipeline encontrado.';
+    _lsDetailPopover(document.body, content, 'Linhagem do arquivo: ' + fileName);
+  } catch(_) { showToast('Erro ao carregar linhagem do arquivo.', true); }
+}
+
 function catSwitchTab(type) {
   _catSearchType = type;
   ['tabela','arquivo'].forEach(t => {
@@ -3502,8 +3612,12 @@ function _renderCatResults(payload, impactoMode) {
         : '';
       const hasFile = !!(j.file_path);
       const objKey  = hasFile ? j.file_path : ((j.database_name ? j.database_name + '.' : '') + (j.object_name || ''));
+      const fileLineageBtn = hasFile
+        ? `<button onclick="event.stopPropagation();_fileLineage('${(j.file_path||'').replace(/'/g,"\\'")}')"
+            style="font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;white-space:nowrap"
+            title="Ver quem lê e quem grava este arquivo">⇄ Linhagem</button>` : '';
       const detail  = hasFile
-        ? `<span style="font-size:11px;color:var(--text);font-family:monospace">${j.file_path}</span>`
+        ? `<span style="font-size:11px;color:var(--text);font-family:monospace">${j.file_path}</span>${fileLineageBtn}`
         : `<span style="font-size:11px;color:var(--text)">${j.object_name || '—'}</span>
            <span style="font-size:11px;color:var(--muted);font-weight:700">${j.database_name || ''}</span>`;
       const tagKey = encodeURIComponent(objKey);
@@ -3533,8 +3647,15 @@ function _renderCatResults(payload, impactoMode) {
             <span class="tag-pill" style="font-size:10px">${p.project_name}</span>
             <span class="tag-pill" style="font-size:10px;background:var(--bg)">${p.domain}</span>
           </div>
-          <div style="font-size:11px;color:var(--muted);margin-top:.2rem">${p.ocorrencias} ocorrência(s)</div>
+          <div style="display:flex;align-items:center;gap:.5rem;margin-top:.2rem;flex-wrap:wrap">
+            <span style="font-size:11px;color:var(--muted)">${p.ocorrencias} ocorrência(s)</span>
+            <span id="health-${pi}" style="font-size:10px;color:var(--muted)">⏳</span>
+          </div>
         </div>
+        <button onclick="event.stopPropagation();_catHistory('${p.pipeline_name.replace(/'/g,"\\'")}')"
+          style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:6px;border:1px solid var(--border);
+                 background:none;color:var(--muted);cursor:pointer;white-space:nowrap;flex-shrink:0"
+          title="Histórico de importações">📋 Histórico</button>
         <button onclick="event.stopPropagation();_catGoLineage('${p.pipeline_name.replace(/'/g,"\\'")}')"
           style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:6px;border:1px solid var(--cvp-blue);
                  background:rgba(24,95,165,.08);color:var(--cvp-blue);cursor:pointer;white-space:nowrap;flex-shrink:0"
@@ -3562,9 +3683,10 @@ function _renderCatResults(payload, impactoMode) {
     </div>`;
   }).join('');
 
-  // Carrega owners de forma assíncrona após render
+  // Carrega owners e saúde de forma assíncrona após render
   pipelines.forEach((p, pi) => {
     _ownerLoad(pi, p.pipeline_name);
+    _pipelineHealthLoad(pi, p.pipeline_name);
   });
 }
 

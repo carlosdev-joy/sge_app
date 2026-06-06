@@ -287,6 +287,43 @@ def _save_tag(hook, object_key: str, tag: str, user: str, remove: bool) -> dict:
     return {"ok": True}
 
 
+def _pipeline_history(hook, pipeline_name: str) -> dict:
+    sql = """
+        SELECT TOP 20
+            created_at   AS imported_at,
+            status,
+            reviewed_by,
+            reviewed_at,
+            LEFT(ISNULL(obs, ''), 120) AS obs
+        FROM dbo.etl_seq_import
+        WHERE seq_name = %s OR pipeline_name_override = %s
+        ORDER BY created_at DESC
+    """
+    rows = hook.get_records(sql, parameters=[pipeline_name, pipeline_name])
+    cols = ["imported_at", "status", "reviewed_by", "reviewed_at", "obs"]
+    history = []
+    for r in rows:
+        rec = dict(zip(cols, r))
+        rec["imported_at"] = str(rec["imported_at"]) if rec["imported_at"] else None
+        rec["reviewed_at"] = str(rec["reviewed_at"]) if rec["reviewed_at"] else None
+        history.append(rec)
+    return {"mode": "pipeline_history", "pipeline_name": pipeline_name, "history": history}
+
+
+def _file_lineage(hook, file_name: str) -> dict:
+    sql = """
+        SELECT l.pipeline_name, l.job_name, l.direction
+        FROM dbo.etl_job_lineage l
+        WHERE l.file_path LIKE %s
+          AND l.direction IN ('origem', 'destino')
+        ORDER BY l.direction, l.pipeline_name
+    """
+    rows = hook.get_records(sql, parameters=[f"%{file_name}%"])
+    writers = [{"pipeline_name": r[0], "job_name": r[1]} for r in rows if r[2] == "destino"]
+    readers = [{"pipeline_name": r[0], "job_name": r[1]} for r in rows if r[2] == "origem"]
+    return {"mode": "file_lineage", "file_name": file_name, "writers": writers, "readers": readers}
+
+
 def _list_pipelines(hook) -> dict:
     sql = "SELECT pipeline_name FROM dbo.etl_pipeline ORDER BY pipeline_name"
     rows = hook.get_records(sql)
@@ -317,6 +354,12 @@ def consultar_catalogo(**context):
         return _save_tag(hook, conf.get("object_key", ""),
                          conf.get("tag", ""), conf.get("user", "sistema"),
                          bool(conf.get("remove", False)))
+
+    if mode == "pipeline_history":
+        return _pipeline_history(hook, conf.get("pipeline_name", ""))
+
+    if mode == "file_lineage":
+        return _file_lineage(hook, conf.get("file_name", ""))
 
     if mode == "ranking":
         top_n        = min(50, max(1, int(conf.get("top_n", 15))))
