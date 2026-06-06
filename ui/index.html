@@ -1481,10 +1481,16 @@
 
                 <!-- Busca -->
                 <div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:1rem 1.25rem;margin-bottom:1.25rem">
-                  <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:.75rem">Buscar tabela ou objeto</div>
-                  <div style="display:grid;grid-template-columns:1fr 160px 200px auto;gap:.6rem;align-items:end;flex-wrap:wrap">
+                  <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:.75rem">Buscar no catálogo</div>
+                  <!-- Toggle tipo busca -->
+                  <div style="display:flex;gap:6px;margin-bottom:.85rem">
+                    <button id="cat-tab-tabela" class="adm-tab active" onclick="catSwitchTab('tabela')">◫ Tabela / Banco</button>
+                    <button id="cat-tab-arquivo" class="adm-tab" onclick="catSwitchTab('arquivo')">◈ Arquivo</button>
+                  </div>
+                  <!-- Campos dinâmicos -->
+                  <div id="cat-fields-tabela" style="display:grid;grid-template-columns:1fr 180px 200px auto;gap:.6rem;align-items:end">
                     <div class="field" style="margin:0">
-                      <label>Nome da tabela / objeto <span style="color:var(--red)">*</span></label>
+                      <label>Nome da tabela <span style="color:var(--red)">*</span></label>
                       <input id="cat-object-name" type="text" placeholder="ex: TB_CLIENTE, DW_COBRANCA..."
                         oninput="this.value=this.value.toUpperCase()"
                         onkeydown="if(event.key==='Enter') catalogoSearch()" />
@@ -1493,22 +1499,36 @@
                       <label>Direção</label>
                       <select id="cat-direction">
                         <option value="all">Todas</option>
-                        <option value="origem">Somente origem</option>
-                        <option value="destino">Somente destino</option>
-                        <option value="transformacao">Transformação</option>
+                        <option value="origem">Origem</option>
+                        <option value="destino">Destino</option>
                       </select>
                     </div>
                     <div class="field" style="margin:0">
-                      <label>Banco de dados <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+                      <label>Banco <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
                       <input id="cat-database" type="text" placeholder="ex: DW_PROD" oninput="this.value=this.value.toUpperCase()" />
                     </div>
                     <div style="display:flex;gap:6px">
-                      <button class="btn btn-primary btn-sm" onclick="catalogoSearch()" id="btn-cat-search" style="height:46px;min-width:80px">
-                        <span id="btn-cat-txt">Buscar</span>
-                      </button>
-                      <button class="btn btn-outline btn-sm" onclick="catalogoImpacto()" title="Ver só pipelines ativos que leem este objeto como origem" style="height:46px;min-width:90px">
-                        <span id="btn-cat-imp-txt">⚡ Impacto</span>
-                      </button>
+                      <button class="btn btn-primary btn-sm" onclick="catalogoSearch()" id="btn-cat-search" style="height:46px;min-width:80px"><span id="btn-cat-txt">Buscar</span></button>
+                      <button class="btn btn-outline btn-sm" onclick="catalogoImpacto()" title="Pipelines ativos que leem este objeto como origem" style="height:46px;min-width:90px"><span id="btn-cat-imp-txt">⚡ Impacto</span></button>
+                    </div>
+                  </div>
+                  <div id="cat-fields-arquivo" style="display:none;grid-template-columns:1fr 180px auto;gap:.6rem;align-items:end">
+                    <div class="field" style="margin:0">
+                      <label>Nome do arquivo <span style="color:var(--red)">*</span></label>
+                      <input id="cat-file-name" type="text" placeholder="ex: DS_EXT_PARCELAS, .dx, .ds..."
+                        oninput="this.value=this.value.toUpperCase()"
+                        onkeydown="if(event.key==='Enter') catalogoSearch()" />
+                    </div>
+                    <div class="field" style="margin:0">
+                      <label>Direção</label>
+                      <select id="cat-direction-arq">
+                        <option value="all">Todas</option>
+                        <option value="origem">Origem</option>
+                        <option value="destino">Destino</option>
+                      </select>
+                    </div>
+                    <div style="display:flex;gap:6px">
+                      <button class="btn btn-primary btn-sm" onclick="catalogoSearch()" style="height:46px;min-width:80px"><span>Buscar</span></button>
                     </div>
                   </div>
                 </div>
@@ -1520,11 +1540,15 @@
                 <div id="cat-results"></div>
 
                 <!-- Separador ranking -->
-                <div class="section-sep" style="margin:1.5rem 0 1rem"><span>◫ Tabelas mais utilizadas</span></div>
+                <div class="section-sep" style="margin:1.5rem 0 1rem"><span>◫ Ranking de uso</span></div>
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem;flex-wrap:wrap;gap:.5rem">
-                  <div style="font-size:12px;color:var(--muted)">Objetos que aparecem em mais pipelines na lineage cadastrada.</div>
+                  <div style="display:flex;gap:6px">
+                    <button id="rank-tab-tabela" class="adm-tab active" onclick="rankSwitchTab('tabela')">◫ Tabelas</button>
+                    <button id="rank-tab-arquivo" class="adm-tab" onclick="rankSwitchTab('arquivo')">◈ Arquivos</button>
+                  </div>
                   <button class="btn btn-outline btn-sm" onclick="catalogoRanking()">↻ Atualizar ranking</button>
                 </div>
+                <div style="font-size:12px;color:var(--muted);margin-bottom:.75rem">Tabelas ou arquivos que aparecem em mais pipelines na lineage cadastrada.</div>
                 <div id="cat-ranking">
                   <div class="empty-state" style="padding:1.5rem">
                     <span class="es-icon" style="font-size:28px">◫</span>
@@ -3246,6 +3270,26 @@ function govTabSwitch(tab) {
 /* ══ CATÁLOGO DE DADOS ════════════════════════════════════════════ */
 const CATALOGO_DAG = 'etl_catalogo_query';
 let _catRankingLoaded = false;
+let _catSearchType  = 'tabela';
+let _rankType       = 'tabela';
+
+function catSwitchTab(type) {
+  _catSearchType = type;
+  ['tabela','arquivo'].forEach(t => {
+    const btn = $('cat-tab-' + t);
+    const fld = $('cat-fields-' + t);
+    if (btn) btn.classList.toggle('active', t === type);
+    if (fld) fld.style.display = t === type ? 'grid' : 'none';
+  });
+}
+
+function rankSwitchTab(type) {
+  _rankType = type;
+  ['tabela','arquivo'].forEach(t => {
+    const btn = $('rank-tab-' + t);
+    if (btn) btn.classList.toggle('active', t === type);
+  });
+}
 
 async function _catTrigger(conf, statusMsg) {
   if (!authHeader) { showToast('Faça login primeiro.', true); return null; }
@@ -3284,31 +3328,9 @@ async function _catTrigger(conf, statusMsg) {
 
 function _catShowColumns(evt, encodedJson) {
   evt.stopPropagation();
-  document.querySelectorAll('.ls-detail-popover').forEach(p => p.remove());
   let cols = [];
   try { cols = JSON.parse(decodeURIComponent(encodedJson)); } catch(_) {}
-  const pop = document.createElement('div');
-  pop.className = 'ls-detail-popover';
-  const title = document.createElement('div');
-  title.className = 'ls-pop-title';
-  title.textContent = 'Campos utilizados (' + cols.length + ')';
-  pop.appendChild(title);
-  (cols.length ? cols : ['—']).forEach(function(c) {
-    const el = document.createElement('div');
-    el.className = 'ls-pop-item';
-    el.textContent = c;
-    pop.appendChild(el);
-  });
-  const rect = evt.target.getBoundingClientRect();
-  pop.style.left = (rect.right + 6) + 'px';
-  pop.style.top  = rect.top + 'px';
-  document.body.appendChild(pop);
-  function close(e) {
-    if (!pop.contains(e.target) && e.target !== evt.target) {
-      pop.remove(); document.removeEventListener('click', close);
-    }
-  }
-  setTimeout(() => document.addEventListener('click', close), 50);
+  _lsDetailPopover(evt.target, cols.join('\n'), 'Campos utilizados (' + cols.length + ')');
 }
 
 function _catDirBadge(dir) {
@@ -3360,17 +3382,21 @@ function _renderCatResults(payload, impactoMode) {
     const jobRows = (p.jobs || []).map(j => {
       const cols = Array.isArray(j.columns) ? j.columns : [];
       const colsChip = cols.length
-        ? `<span title="${cols.join(', ')}" style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:999px;
+        ? `<span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:999px;
             background:rgba(243,146,0,.12);color:#b45309;border:1px solid rgba(243,146,0,.35);
-            cursor:default;white-space:nowrap" onclick="event.stopPropagation();_catShowColumns(event,'${encodeURIComponent(JSON.stringify(cols))}')">⊞ ${cols.length} campo(s)</span>`
+            cursor:pointer;white-space:nowrap" onclick="event.stopPropagation();_catShowColumns(event,'${encodeURIComponent(JSON.stringify(cols))}')">⊞ ${cols.length} campo(s)</span>`
         : '';
-      return `<div style="display:grid;grid-template-columns:26px 1fr auto auto auto auto;gap:8px;align-items:center;
+      const hasFile = !!(j.file_path);
+      const detail = hasFile
+        ? `<span style="font-size:11px;color:var(--text);font-family:monospace">${j.file_path}</span>`
+        : `<span style="font-size:11px;color:var(--text)">${j.object_name || '—'}</span>
+           <span style="font-size:11px;color:var(--muted);font-weight:700">${j.database_name || ''}</span>`;
+      return `<div style="display:grid;grid-template-columns:26px 1fr auto ${hasFile ? '' : 'auto '}auto auto;gap:8px;align-items:center;
         padding:.4rem .75rem;border-bottom:1px solid var(--border);font-size:12px">
         <span style="font-size:11px;font-weight:700;color:var(--muted);text-align:center">#${j.execution_order}</span>
-        <span style="font-family:monospace;font-size:12px">${j.job_name}</span>
+        <span style="font-family:monospace;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${j.job_name}</span>
         ${_catDirBadge(j.direction)}
-        <span style="font-size:11px;color:var(--text)">${j.object_name || '—'}</span>
-        <span style="font-size:11px;color:var(--muted);font-weight:700">${j.database_name || ''}</span>
+        ${detail}
         ${colsChip}
       </div>`;
     }).join('');
@@ -3393,13 +3419,12 @@ function _renderCatResults(payload, impactoMode) {
         <span class="cat-arrow" style="color:var(--muted);font-size:12px;flex-shrink:0">${isOpen ? '▲' : '▼'}</span>
       </div>
       <div style="display:${isOpen ? '' : 'none'}">
-        <div style="display:grid;grid-template-columns:26px 1fr auto auto auto auto;gap:8px;padding:.35rem .75rem;
+        <div style="display:grid;grid-template-columns:26px 1fr auto 1fr auto;gap:8px;padding:.35rem .75rem;
           background:var(--bg);border-bottom:1px solid var(--border);border-top:1px solid var(--border)">
           <span style="font-size:10px;color:var(--muted);font-weight:600">Ord.</span>
           <span style="font-size:10px;color:var(--muted);font-weight:600">Job</span>
           <span style="font-size:10px;color:var(--muted);font-weight:600">Direção</span>
-          <span style="font-size:10px;color:var(--muted);font-weight:600">Objeto</span>
-          <span style="font-size:10px;color:var(--muted);font-weight:600">Banco</span>
+          <span style="font-size:10px;color:var(--muted);font-weight:600">Objeto / Arquivo</span>
           <span style="font-size:10px;color:var(--muted);font-weight:600">Campos</span>
         </div>
         ${jobRows}
@@ -3409,22 +3434,29 @@ function _renderCatResults(payload, impactoMode) {
 }
 
 async function catalogoSearch() {
-  const obj  = $('cat-object-name') ? $('cat-object-name').value.trim() : '';
-  const dir  = $('cat-direction')   ? $('cat-direction').value           : 'all';
-  const db   = $('cat-database')    ? $('cat-database').value.trim()     : '';
   const btn  = $('btn-cat-search');
   const btnT = $('btn-cat-txt');
-
-  if (!obj) { showToast('Informe o nome da tabela ou objeto.', true); return; }
   if (btn)  btn.disabled = true;
   if (btnT) btnT.textContent = '⏳';
   $('cat-results').innerHTML = '';
 
   try {
-    const payload = await _catTrigger(
-      { mode: 'search', object_name: obj, direction: dir, database_name: db || null },
-      'Buscando "' + obj + '"...'
-    );
+    let conf, statusMsg;
+    if (_catSearchType === 'arquivo') {
+      const fn  = $('cat-file-name') ? $('cat-file-name').value.trim() : '';
+      const dir = $('cat-direction-arq') ? $('cat-direction-arq').value : 'all';
+      if (!fn) { showToast('Informe o nome do arquivo.', true); return; }
+      conf = { mode: 'search', search_type: 'arquivo', file_name: fn, direction: dir };
+      statusMsg = 'Buscando arquivo "' + fn + '"...';
+    } else {
+      const obj = $('cat-object-name') ? $('cat-object-name').value.trim() : '';
+      const dir = $('cat-direction')   ? $('cat-direction').value           : 'all';
+      const db  = $('cat-database')    ? $('cat-database').value.trim()     : '';
+      if (!obj) { showToast('Informe o nome da tabela.', true); return; }
+      conf = { mode: 'search', search_type: 'tabela', object_name: obj, direction: dir, database_name: db || null };
+      statusMsg = 'Buscando "' + obj + '"...';
+    }
+    const payload = await _catTrigger(conf, statusMsg);
     if (payload) _renderCatResults(payload, false);
   } finally {
     if (btn)  btn.disabled = false;
@@ -3438,19 +3470,17 @@ async function catalogoImpacto() {
   const btn  = $('btn-cat-search');
   const btnI = $('btn-cat-imp-txt');
 
-  if (!obj) { showToast('Informe o nome do objeto para análise de impacto.', true); return; }
+  if (!obj) { showToast('Informe o nome da tabela para análise de impacto.', true); return; }
   if (btn)  btn.disabled = true;
   if (btnI) btnI.textContent = '⏳';
   $('cat-results').innerHTML = '';
 
   try {
-    // Impacto = somente pipelines ATIVOS que usam o objeto como origem
     const payload = await _catTrigger(
-      { mode: 'search', object_name: obj, direction: 'origem', database_name: db || null },
+      { mode: 'search', search_type: 'tabela', object_name: obj, direction: 'origem', database_name: db || null },
       '⚡ Analisando impacto de "' + obj + '"...'
     );
     if (payload) {
-      // Filtra apenas ativos no cliente (a query já retorna todos; filtro visual)
       if (payload.pipelines) {
         payload.pipelines = payload.pipelines.filter(p => p.active);
         payload.total_pipelines   = payload.pipelines.length;
@@ -3470,10 +3500,8 @@ async function catalogoRanking() {
   el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:.5rem 0">Carregando ranking...</div>';
 
   try {
-    const payload = await _catTrigger({ mode: 'ranking', top_n: 15 }, '');
+    const payload = await _catTrigger({ mode: 'ranking', ranking_type: _rankType, top_n: 20 }, '');
     _catRankingLoaded = true;
-    const st = $('cat-status');
-    if (st && !st.textContent) st.textContent = '';
 
     const data = (payload && payload.data) || [];
     if (!data.length) {
@@ -3486,12 +3514,16 @@ async function catalogoRanking() {
       '<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden">' +
       data.map((d, i) => {
         const pct   = Math.round((d.pipeline_count / maxCount) * 100);
-        const isOri = d.as_origem  > 0;
-        const isDst = d.as_destino > 0;
         const tags  = [
-          isOri ? `<span style="font-size:10px;padding:1px 6px;border-radius:999px;background:rgba(24,95,165,.1);color:#185FA5;border:1px solid rgba(24,95,165,.25)">Origem ×${d.as_origem}</span>` : '',
-          isDst ? `<span style="font-size:10px;padding:1px 6px;border-radius:999px;background:rgba(39,80,10,.1);color:#27500A;border:1px solid rgba(39,80,10,.25)">Destino ×${d.as_destino}</span>` : '',
+          d.as_origem  > 0 ? `<span style="font-size:10px;padding:1px 6px;border-radius:999px;background:rgba(24,95,165,.1);color:#185FA5;border:1px solid rgba(24,95,165,.25)">Origem ×${d.as_origem}</span>` : '',
+          d.as_destino > 0 ? `<span style="font-size:10px;padding:1px 6px;border-radius:999px;background:rgba(39,80,10,.1);color:#27500A;border:1px solid rgba(39,80,10,.25)">Destino ×${d.as_destino}</span>` : '',
         ].filter(Boolean).join(' ');
+
+        const isArq = _rankType === 'arquivo';
+        const nameVal  = isArq ? d.file_path  : d.object_name;
+        const clickFn  = isArq
+          ? `catSwitchTab('arquivo');$('cat-file-name').value='${(d.file_path||'').replace(/'/g,"\\'")}';catalogoSearch()`
+          : `catSwitchTab('tabela');$('cat-object-name').value='${(d.object_name||'').replace(/'/g,"\\'")}';${d.database_name ? `$('cat-database').value='${d.database_name}';` : ''}catalogoSearch()`;
 
         return `<div style="padding:.65rem 1rem;border-bottom:${i < data.length-1 ? '1px solid var(--border)' : 'none'};
                   display:grid;grid-template-columns:28px 1fr auto;gap:.65rem;align-items:center">
@@ -3499,9 +3531,8 @@ async function catalogoRanking() {
           <div>
             <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.3rem">
               <span style="font-size:13px;font-weight:600;font-family:monospace;cursor:pointer;color:var(--cvp-blue)"
-                onclick="$('cat-object-name').value='${d.object_name}';${d.database_name ? `$('cat-database').value='${d.database_name}';` : ''}catalogoSearch()"
-                title="Clique para buscar">${d.object_name}</span>
-              ${d.database_name ? `<span style="font-size:11px;color:var(--muted);font-weight:700">${d.database_name}</span>` : ''}
+                onclick="${clickFn}" title="Clique para buscar">${nameVal || '—'}</span>
+              ${(!isArq && d.database_name) ? `<span style="font-size:11px;color:var(--muted);font-weight:700">${d.database_name}</span>` : ''}
               ${tags}
             </div>
             <div style="background:var(--border);border-radius:999px;height:4px;overflow:hidden">
