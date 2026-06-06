@@ -233,10 +233,90 @@ def _ranking_arquivo(hook, top_n: int) -> dict:
     return {"mode": "ranking", "ranking_type": "arquivo", "data": data}
 
 
+def _get_owner(hook, pipeline_name: str) -> dict:
+    sql = """
+        SELECT owner_name, owner_email, steward_name, steward_email, updated_at, updated_by
+        FROM dbo.etl_pipeline_owner WHERE pipeline_name = %s
+    """
+    rows = hook.get_records(sql, parameters=[pipeline_name])
+    if rows:
+        r = rows[0]
+        return {"pipeline_name": pipeline_name,
+                "owner_name": r[0], "owner_email": r[1],
+                "steward_name": r[2], "steward_email": r[3],
+                "updated_at": str(r[4]) if r[4] else None, "updated_by": r[5]}
+    return {"pipeline_name": pipeline_name}
+
+
+def _save_owner(hook, pipeline_name: str, data: dict, user: str) -> dict:
+    sql = """
+        MERGE dbo.etl_pipeline_owner AS tgt
+        USING (SELECT %s AS pipeline_name) AS src ON tgt.pipeline_name = src.pipeline_name
+        WHEN MATCHED THEN UPDATE SET
+            owner_name=%s, owner_email=%s, steward_name=%s, steward_email=%s,
+            updated_at=GETDATE(), updated_by=%s
+        WHEN NOT MATCHED THEN INSERT (pipeline_name,owner_name,owner_email,steward_name,steward_email,updated_at,updated_by)
+            VALUES (%s,%s,%s,%s,%s,GETDATE(),%s);
+    """
+    hook.run(sql, parameters=[
+        pipeline_name,
+        data.get("owner_name"), data.get("owner_email"),
+        data.get("steward_name"), data.get("steward_email"), user,
+        pipeline_name,
+        data.get("owner_name"), data.get("owner_email"),
+        data.get("steward_name"), data.get("steward_email"), user,
+    ])
+    return {"ok": True, "pipeline_name": pipeline_name}
+
+
+def _get_tags(hook, object_key: str) -> dict:
+    sql = "SELECT tag, added_by, added_at FROM dbo.etl_object_tag WHERE object_key = %s ORDER BY tag"
+    rows = hook.get_records(sql, parameters=[object_key])
+    return {"object_key": object_key,
+            "tags": [{"tag": r[0], "added_by": r[1], "added_at": str(r[2])} for r in rows]}
+
+
+def _save_tag(hook, object_key: str, tag: str, user: str, remove: bool) -> dict:
+    if remove:
+        hook.run("DELETE FROM dbo.etl_object_tag WHERE object_key=%s AND tag=%s", parameters=[object_key, tag])
+    else:
+        hook.run("""
+            IF NOT EXISTS (SELECT 1 FROM dbo.etl_object_tag WHERE object_key=%s AND tag=%s)
+                INSERT INTO dbo.etl_object_tag (object_key, tag, added_by) VALUES (%s, %s, %s)
+        """, parameters=[object_key, tag, object_key, tag, user])
+    return {"ok": True}
+
+
+def _list_pipelines(hook) -> dict:
+    sql = "SELECT pipeline_name FROM dbo.etl_pipeline ORDER BY pipeline_name"
+    rows = hook.get_records(sql)
+    names = [r[0] for r in rows]
+    print(f"[CATALOGO] list_pipelines → {len(names)} pipeline(s)")
+    return {"mode": "list_pipelines", "pipelines": names}
+
+
 def consultar_catalogo(**context):
     conf = context["dag_run"].conf or {}
     mode = (conf.get("mode") or "search").strip().lower()
     hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
+
+    if mode == "list_pipelines":
+        return _list_pipelines(hook)
+
+    if mode == "get_owner":
+        return _get_owner(hook, conf.get("pipeline_name", ""))
+
+    if mode == "save_owner":
+        return _save_owner(hook, conf.get("pipeline_name", ""),
+                           conf.get("data", {}), conf.get("user", "sistema"))
+
+    if mode == "get_tags":
+        return _get_tags(hook, conf.get("object_key", ""))
+
+    if mode == "save_tag":
+        return _save_tag(hook, conf.get("object_key", ""),
+                         conf.get("tag", ""), conf.get("user", "sistema"),
+                         bool(conf.get("remove", False)))
 
     if mode == "ranking":
         top_n        = min(50, max(1, int(conf.get("top_n", 15))))

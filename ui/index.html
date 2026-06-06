@@ -551,6 +551,10 @@
   .lineage-btn-ok { background: rgba(22,163,74,.08); border: 0.5px solid #16a34a; color: #15803d; }
   .lineage-btn-pending { background: rgba(202,138,4,.08); border: 0.5px solid #ca8a04; color: #92400e; }
   .tag-pill { font-size:10px;padding:1px 6px;border-radius:20px;background:rgba(0,92,169,.08);border:0.5px solid rgba(0,92,169,.2);color:var(--cvp-blue);margin-right:3px;white-space:nowrap; }
+  .gov-tag-pii        { background:rgba(220,38,38,.1);color:#dc2626;border-color:rgba(220,38,38,.3) }
+  .gov-tag-confidencial{ background:rgba(234,88,12,.1);color:#ea580c;border-color:rgba(234,88,12,.3) }
+  .gov-tag-regulado   { background:rgba(124,58,237,.1);color:#7c3aed;border-color:rgba(124,58,237,.3) }
+  .gov-tag-publico    { background:rgba(22,163,74,.1);color:#16a34a;border-color:rgba(22,163,74,.3) }
   .row-actions{ display:flex; gap:8px; justify-content:flex-start; align-items:center; }
   .row-actions .btn-ghost.btn-sm, .row-actions .btn-danger.btn-sm{ padding:.35rem .6rem; border-radius:10px; font-size:11px; }
   /* Coluna Ações: largura mínima e alinhada à esquerda para que th e td batam */
@@ -1442,7 +1446,10 @@
                 <div class="gov-filter">
                   <div class="field" style="margin:0;min-width:280px">
                     <label>Pipeline <span style="color:var(--red)">*</span></label>
-                    <input id="gov-pipeline" type="text" placeholder="ex: datastage_cobranca_diario" />
+                    <input id="gov-pipeline" type="text" placeholder="ex: datastage_cobranca_diario"
+                      list="gov-pipeline-list" autocomplete="off"
+                      onfocus="loadPipelineList()" />
+                    <datalist id="gov-pipeline-list"></datalist>
                   </div>
                   <button class="btn btn-primary btn-sm" id="btn-gov" onclick="loadGovernanca()" style="height:40px">
                     <span id="btn-gov-txt">Carregar lineage</span>
@@ -2914,35 +2921,44 @@ function renderLineagePipeline() {
     return;
   }
 
-  const stepsHtml = jobs.map((job, idx) => {
-    const ori = (job.origens || []).map(o =>
-      '<span class="ls-node-box origem" style="font-size:11px;padding:4px 8px;display:inline-block;margin:2px">' +
-        (o.object_name || '?') + '<br><span style="font-size:9px;opacity:.65">' +
-        (o.object_type || '') + (o.database_name ? ('·<strong>' + o.database_name + '</strong>') : '') +
-        '</span></span>'
-    ).join('');
+  const mkMini = (o, cls) => {
+    const lbl   = o.stage_name || o.object_name || '?';
+    const isFile = !!o.file_path;
+    const sub   = isFile
+      ? ('Arquivo: <strong>' + _fileBasename(o.file_path) + '</strong>')
+      : (o.database_name ? ('ODBC: <strong>' + o.database_name + '</strong>') : (o.object_type || ''));
+    const cols  = Array.isArray(o.columns) ? o.columns : [];
+    const chip  = cols.length
+      ? ('<button class="ls-detail-btn" style="background:rgba(243,146,0,.12);border-color:var(--cvp-orange);color:#b45309" ' +
+         'data-ls-title="Campos (' + cols.length + ')" data-ls-content="' + encodeURIComponent(cols.join('\n')) + '">⊞</button>')
+      : '';
+    return '<div class="ls-node"><div class="ls-node-box ' + cls + '" style="min-width:120px;max-width:200px">' +
+      '<div style="display:flex;align-items:center;gap:4px;justify-content:center">' +
+        '<span style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + lbl + '">' + lbl + '</span>' +
+        chip +
+      '</div>' +
+      (sub ? '<span class="ls-node-label" style="font-size:9px">' + sub + '</span>' : '') +
+    '</div></div>';
+  };
 
-    const dst = (job.destinos || []).map(d =>
-      '<span class="ls-node-box destino" style="font-size:11px;padding:4px 8px;display:inline-block;margin:2px">' +
-        (d.object_name || '?') + '<br><span style="font-size:9px;opacity:.65">' +
-        (d.object_type || '') + (d.database_name ? ('·<strong>' + d.database_name + '</strong>') : '') +
-        '</span></span>'
-    ).join('');
+  const stepsHtml = jobs.map((job, idx) => {
+    const ori = (job.origens || []).map(o => mkMini(o, 'origem')).join('');
+    const dst = (job.destinos || []).map(d => mkMini(d, 'destino')).join('');
 
     const connector = idx < jobs.length - 1 ? '<div class="pf-connector"></div>' : '';
     return '<div>' +
       '<div class="pf-step">' +
         '<div class="pf-order">' + job.execution_order + '</div>' +
         (ori
-          ? '<div style="display:flex;flex-wrap:wrap;gap:4px">' + ori + '</div><div class="ls-arrow" style="font-size:14px">→</div>'
+          ? '<div style="display:flex;flex-direction:column;gap:4px">' + ori + '</div><div class="ls-arrow" style="font-size:14px">→</div>'
           : '<span style="font-size:11px;color:var(--muted);margin:0 6px">sem origens →</span>'
         ) +
-        '<div class="ls-node-box job" style="padding:6px 12px;font-size:12px">' +
-          job.job_name +
-          '<span class="ls-node-label">' + (job.job_type || '') + '</span>' +
-        '</div>' +
+        '<div class="ls-node"><div class="ls-node-box job" style="min-width:140px">' +
+          '<span style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block" title="' + job.job_name + '">' + job.job_name + '</span>' +
+          '<span class="ls-node-label">Job #' + job.execution_order + ' · ' + (job.job_type || '') + '</span>' +
+        '</div></div>' +
         (dst
-          ? '<div class="ls-arrow" style="font-size:14px">→</div><div style="display:flex;flex-wrap:wrap;gap:4px">' + dst + '</div>'
+          ? '<div class="ls-arrow" style="font-size:14px">→</div><div style="display:flex;flex-direction:column;gap:4px">' + dst + '</div>'
           : '<span style="font-size:11px;color:var(--muted);margin:0 6px">→ sem destinos</span>'
         ) +
       '</div>' +
@@ -2950,7 +2966,7 @@ function renderLineagePipeline() {
     '</div>';
   }).join('');
 
-  vis.innerHTML = '<div class="lineage-svg-wrap"><div class="pipeline-flow">' + stepsHtml + '</div></div>';
+  vis.innerHTML = '<div class="lineage-svg-wrap" style="overflow-x:auto"><div class="pipeline-flow">' + stepsHtml + '</div></div>';
 }
 
 function openJobLineageFromTable(idx) {
@@ -3273,6 +3289,75 @@ let _catRankingLoaded = false;
 let _catSearchType  = 'tabela';
 let _rankType       = 'tabela';
 
+// ── Deep-link: catálogo → lineage ─────────────────────────────────
+function _catGoLineage(pipelineName) {
+  govTabSwitch('lineage');
+  if ($('gov-pipeline')) $('gov-pipeline').value = pipelineName;
+  loadGovernanca();
+}
+
+// ── Expandir / recolher todos os cards de resultado ───────────────
+function _catExpandAll(open) {
+  document.querySelectorAll('.cat-pipeline-card').forEach(card => {
+    const body = card.querySelector('div + div');
+    const arr  = card.querySelector('.cat-arrow');
+    if (body) body.style.display = open ? '' : 'none';
+    if (arr)  arr.textContent    = open ? '▲' : '▼';
+  });
+}
+
+// ── Export CSV ────────────────────────────────────────────────────
+function _catExportCSV() {
+  const payload = window.__catPayload;
+  if (!payload || !payload.pipelines) { showToast('Nenhum resultado para exportar.', true); return; }
+  const rows = [['pipeline','project','domain','active','job','direction','object','database','file_path','campos']];
+  (payload.pipelines || []).forEach(p => {
+    (p.jobs || []).forEach(j => {
+      rows.push([
+        p.pipeline_name, p.project_name, p.domain, p.active ? 'Ativo' : 'Inativo',
+        j.job_name, j.direction, j.object_name || '', j.database_name || '',
+        j.file_path || '', (Array.isArray(j.columns) ? j.columns.join('; ') : ''),
+      ]);
+    });
+  });
+  const csv = rows.map(r => r.map(v => '"' + String(v).replace(/"/g,'""') + '"').join(',')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'catalogo_' + (payload.term || 'export') + '_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+}
+
+// ── Autocomplete de pipelines ──────────────────────────────────────
+let _pipeListLoaded = false;
+async function loadPipelineList() {
+  if (_pipeListLoaded || !authHeader) return;
+  _pipeListLoaded = true;
+  try {
+    const runId = 'orq_piplist_' + Date.now();
+    const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify({ dag_run_id: runId, conf: { mode: 'list_pipelines' } }),
+    });
+    if (!r.ok) return;
+    const run = await r.json();
+    const rid = run.dag_run_id || run.run_id;
+    const state = await waitDagRun(CATALOGO_DAG, rid, 30);
+    if (state !== 'success') return;
+    const xr = await fetch(
+      '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_catalogo/xcomEntries/return_value',
+      { headers: { 'Authorization': authHeader } }
+    );
+    if (!xr.ok) return;
+    const data = normalizeXcomValue(await xr.json());
+    const names = (data && data.pipelines) || [];
+    const dl = $('gov-pipeline-list');
+    if (dl && names.length) {
+      dl.innerHTML = names.map(n => `<option value="${_escHtml(n)}">`).join('');
+    }
+  } catch(_) {}
+}
+
 function catSwitchTab(type) {
   _catSearchType = type;
   ['tabela','arquivo'].forEach(t => {
@@ -3378,7 +3463,36 @@ function _renderCatResults(payload, impactoMode) {
     return;
   }
 
-  el.innerHTML = pipelines.map((p, pi) => {
+  // Banner de impacto upstream/downstream
+  let impactBanner = '';
+  if (impactoMode) {
+    const leitores = pipelines.filter(p => (p.jobs||[]).some(j => j.direction === 'origem')).length;
+    const gravadores = pipelines.filter(p => (p.jobs||[]).some(j => j.direction === 'destino')).length;
+    impactBanner = `<div style="display:flex;gap:.75rem;margin-bottom:.85rem;flex-wrap:wrap">
+      ${leitores > 0 ? `<div style="display:flex;align-items:center;gap:.4rem;padding:.4rem .85rem;border-radius:8px;background:rgba(243,146,0,.1);border:1px solid rgba(243,146,0,.3)">
+        <span style="font-size:13px;font-weight:700;color:#b45309">${leitores}</span>
+        <span style="font-size:11px;color:#b45309">pipeline(s) <strong>leem</strong> como origem →</span>
+      </div>` : ''}
+      ${gravadores > 0 ? `<div style="display:flex;align-items:center;gap:.4rem;padding:.4rem .85rem;border-radius:8px;background:rgba(24,95,165,.1);border:1px solid rgba(24,95,165,.3)">
+        <span style="font-size:13px;font-weight:700;color:#185FA5">${gravadores}</span>
+        <span style="font-size:11px;color:#185FA5">pipeline(s) <strong>gravam</strong> como destino →</span>
+      </div>` : ''}
+    </div>`;
+  }
+
+  // Toolbar: expandir/recolher + export CSV
+  const toolbar = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;gap:.5rem;flex-wrap:wrap">
+    <div style="display:flex;gap:6px">
+      <button class="btn btn-outline btn-sm" style="font-size:11px" onclick="_catExpandAll(true)">▼ Expandir todos</button>
+      <button class="btn btn-outline btn-sm" style="font-size:11px" onclick="_catExpandAll(false)">▲ Recolher todos</button>
+    </div>
+    <button class="btn btn-outline btn-sm" style="font-size:11px" onclick="_catExportCSV()">⬇ Exportar CSV</button>
+  </div>`;
+
+  // Guarda dados para export
+  window.__catPayload = payload;
+
+  el.innerHTML = impactBanner + toolbar + pipelines.map((p, pi) => {
     const jobRows = (p.jobs || []).map(j => {
       const cols = Array.isArray(j.columns) ? j.columns : [];
       const colsChip = cols.length
@@ -3387,26 +3501,31 @@ function _renderCatResults(payload, impactoMode) {
             cursor:pointer;white-space:nowrap" onclick="event.stopPropagation();_catShowColumns(event,'${encodeURIComponent(JSON.stringify(cols))}')">⊞ ${cols.length} campo(s)</span>`
         : '';
       const hasFile = !!(j.file_path);
-      const detail = hasFile
+      const objKey  = hasFile ? j.file_path : ((j.database_name ? j.database_name + '.' : '') + (j.object_name || ''));
+      const detail  = hasFile
         ? `<span style="font-size:11px;color:var(--text);font-family:monospace">${j.file_path}</span>`
         : `<span style="font-size:11px;color:var(--text)">${j.object_name || '—'}</span>
            <span style="font-size:11px;color:var(--muted);font-weight:700">${j.database_name || ''}</span>`;
-      return `<div style="display:grid;grid-template-columns:26px 1fr auto ${hasFile ? '' : 'auto '}auto auto;gap:8px;align-items:center;
+      const tagKey = encodeURIComponent(objKey);
+      const tagBtn = `<button onclick="event.stopPropagation();_tagEdit('${tagKey}')"
+        style="font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer"
+        title="Classificar objeto">🏷</button>`;
+      return `<div style="display:grid;grid-template-columns:26px 1fr auto 1fr auto auto;gap:8px;align-items:center;
         padding:.4rem .75rem;border-bottom:1px solid var(--border);font-size:12px">
         <span style="font-size:11px;font-weight:700;color:var(--muted);text-align:center">#${j.execution_order}</span>
         <span style="font-family:monospace;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${j.job_name}</span>
         ${_catDirBadge(j.direction)}
         ${detail}
         ${colsChip}
+        ${tagBtn}
       </div>`;
     }).join('');
 
-    const isOpen = pi === 0;
-    return `<div style="border:1px solid var(--border);border-radius:12px;margin-bottom:.65rem;overflow:hidden">
-      <div onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none';
-                   this.querySelector('.cat-arrow').textContent=this.nextElementSibling.style.display===''?'▲':'▼'"
-        style="display:flex;align-items:center;gap:.65rem;padding:.7rem 1rem;cursor:pointer;
-               background:var(--bg);user-select:none">
+    const isOpen = pi < 3;
+    const pipeEnc = encodeURIComponent(p.pipeline_name);
+    return `<div class="cat-pipeline-card" style="border:1px solid var(--border);border-radius:12px;margin-bottom:.65rem;overflow:hidden">
+      <div onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none';this.querySelector('.cat-arrow').textContent=this.nextElementSibling.style.display===''?'▲':'▼'"
+        style="display:flex;align-items:center;gap:.65rem;padding:.7rem 1rem;cursor:pointer;background:var(--bg);user-select:none">
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
             <span style="font-size:13px;font-weight:600;font-family:monospace">${p.pipeline_name}</span>
@@ -3416,6 +3535,10 @@ function _renderCatResults(payload, impactoMode) {
           </div>
           <div style="font-size:11px;color:var(--muted);margin-top:.2rem">${p.ocorrencias} ocorrência(s)</div>
         </div>
+        <button onclick="event.stopPropagation();_catGoLineage('${p.pipeline_name.replace(/'/g,"\\'")}')"
+          style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:6px;border:1px solid var(--cvp-blue);
+                 background:rgba(24,95,165,.08);color:var(--cvp-blue);cursor:pointer;white-space:nowrap;flex-shrink:0"
+          title="Ver lineage deste pipeline">→ Lineage</button>
         <span class="cat-arrow" style="color:var(--muted);font-size:12px;flex-shrink:0">${isOpen ? '▲' : '▼'}</span>
       </div>
       <div style="display:${isOpen ? '' : 'none'}">
@@ -3428,9 +3551,87 @@ function _renderCatResults(payload, impactoMode) {
           <span style="font-size:10px;color:var(--muted);font-weight:600">Campos</span>
         </div>
         ${jobRows}
+        <!-- Ownership inline -->
+        <div style="display:flex;align-items:center;gap:.5rem;padding:.45rem .75rem;background:rgba(128,128,128,.04);border-top:1px solid var(--border);flex-wrap:wrap">
+          <span style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Responsável:</span>
+          <span id="own-${pi}-display" style="font-size:11px;color:var(--muted)">—</span>
+          <button onclick="_ownerEdit(${pi},'${p.pipeline_name.replace(/'/g,"\\'")}')"
+            style="font-size:10px;padding:1px 7px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;margin-left:auto">✎ Editar</button>
+        </div>
       </div>
     </div>`;
   }).join('');
+
+  // Carrega owners de forma assíncrona após render
+  pipelines.forEach((p, pi) => {
+    _ownerLoad(pi, p.pipeline_name);
+  });
+}
+
+async function _ownerLoad(idx, pipelineName) {
+  try {
+    const payload = await _catTrigger({ mode: 'get_owner', pipeline_name: pipelineName }, '');
+    if (!payload) return;
+    const el = document.getElementById('own-' + idx + '-display');
+    if (!el) return;
+    const parts = [];
+    if (payload.owner_name)   parts.push('Owner: <strong>' + _escHtml(payload.owner_name) + '</strong>');
+    if (payload.steward_name) parts.push('Steward: <strong>' + _escHtml(payload.steward_name) + '</strong>');
+    el.innerHTML = parts.length ? parts.join(' · ') : '—';
+  } catch(_) {}
+}
+
+const _TAG_OPTIONS = ['PII', 'Confidencial', 'Regulado', 'Publico'];
+const _TAG_COLORS  = { PII: 'gov-tag-pii', Confidencial: 'gov-tag-confidencial', Regulado: 'gov-tag-regulado', Publico: 'gov-tag-publico' };
+
+async function _tagEdit(encodedKey) {
+  const objectKey = decodeURIComponent(encodedKey);
+  // Carrega tags atuais
+  let current = [];
+  try {
+    const r = await _catTrigger({ mode: 'get_tags', object_key: objectKey }, '');
+    if (r && r.tags) current = r.tags.map(t => t.tag);
+  } catch(_) {}
+
+  const chosen = prompt(
+    'Classificações para "' + objectKey + '".\n\nOpções: ' + _TAG_OPTIONS.join(', ') +
+    '\nAtuais: ' + (current.join(', ') || 'nenhuma') +
+    '\n\nDigite as tags separadas por vírgula (deixe vazio para remover todas):'
+  , current.join(', '));
+  if (chosen === null) return;
+
+  const newTags = chosen.split(',').map(t => t.trim()).filter(t => _TAG_OPTIONS.includes(t));
+  const toAdd   = newTags.filter(t => !current.includes(t));
+  const toRemove = current.filter(t => !newTags.includes(t));
+  const user = window._authUser || 'sistema';
+
+  try {
+    for (const t of toAdd)    await _catTrigger({ mode: 'save_tag', object_key: objectKey, tag: t, user, remove: false }, '');
+    for (const t of toRemove) await _catTrigger({ mode: 'save_tag', object_key: objectKey, tag: t, user, remove: true  }, '');
+    showToast('Tags salvas: ' + (newTags.join(', ') || 'nenhuma'));
+  } catch(_) { showToast('Erro ao salvar tags.', true); }
+}
+
+async function _ownerEdit(idx, pipelineName) {
+  const current = document.getElementById('own-' + idx + '-display');
+  const ownerName   = prompt('Nome do Data Owner (ex: João Silva):',   '');
+  if (ownerName === null) return;
+  const ownerEmail  = prompt('Email do Data Owner:',  '');
+  if (ownerEmail === null) return;
+  const stewardName = prompt('Nome do Data Steward:', '');
+  if (stewardName === null) return;
+  const stewardEmail = prompt('Email do Data Steward:', '');
+  if (stewardEmail === null) return;
+  try {
+    await _catTrigger({
+      mode: 'save_owner', pipeline_name: pipelineName,
+      user: window._authUser || 'sistema',
+      data: { owner_name: ownerName, owner_email: ownerEmail,
+              steward_name: stewardName, steward_email: stewardEmail }
+    }, '');
+    showToast('Responsabilidade salva.');
+    _ownerLoad(idx, pipelineName);
+  } catch(_) { showToast('Erro ao salvar.', true); }
 }
 
 async function catalogoSearch() {
@@ -3457,7 +3658,10 @@ async function catalogoSearch() {
       statusMsg = 'Buscando "' + obj + '"...';
     }
     const payload = await _catTrigger(conf, statusMsg);
-    if (payload) _renderCatResults(payload, false);
+    if (payload) {
+      _renderCatResults(payload, false);
+      catalogoRanking(); // auto-refresh ranking após busca
+    }
   } finally {
     if (btn)  btn.disabled = false;
     if (btnT) btnT.textContent = 'Buscar';
