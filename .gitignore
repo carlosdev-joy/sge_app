@@ -38,3 +38,4 @@ config/*.local
 .env.dev
 .env.prod
 .env.local
+.claude/
