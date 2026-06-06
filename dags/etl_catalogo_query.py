@@ -17,6 +17,54 @@ Modos (conf.mode):
     Parâmetros:
       ranking_type : 'tabela' | 'arquivo'  (default 'tabela')
       top_n        : int  (default 15, max 50)
+
+  list_pipelines — lista todos os pipelines cadastrados
+
+  get_owner — retorna owner/steward de um pipeline
+    Parâmetros:
+      pipeline_name: str
+
+  save_owner — salva/atualiza owner/steward de um pipeline
+    Parâmetros:
+      pipeline_name: str
+      data         : dict {owner_name, owner_email, steward_name, steward_email}
+      user         : str
+
+  get_tags — retorna tags de um objeto
+    Parâmetros:
+      object_key: str
+
+  save_tag — adiciona ou remove uma tag de um objeto
+    Parâmetros:
+      object_key: str
+      tag       : str
+      user      : str
+      remove    : bool (default False)
+
+  pipeline_history — histórico de importações de um pipeline
+    Parâmetros:
+      pipeline_name: str
+
+  file_lineage — leitores/escritores de um arquivo
+    Parâmetros:
+      file_name: str
+
+  overview — resumo geral do catálogo
+    Retorna totais, classificações, top assets e alertas.
+
+  browse — navegação/filtro de assets
+    Parâmetros:
+      search        : str  (opcional, LIKE)
+      database_name : str  (opcional, filtro exato)
+      asset_type    : 'tabela' | 'arquivo'  (opcional)
+      classification: 'PII' | 'Confidencial' | 'Regulado' | 'Publico'  (opcional)
+      top_n         : int  (default 100, max 200)
+
+  asset_detail — detalhes de um asset específico
+    Parâmetros:
+      asset_name   : str  (obrigatório)
+      asset_type   : 'tabela' | 'arquivo'
+      database_name: str  (opcional)
 """
 from __future__ import annotations
 
@@ -31,6 +79,56 @@ MSSQL_CONN_ID = "SQL14_DMDB41"
 LOCAL_TZ      = "America/Sao_Paulo"
 
 default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
+
+# ---------------------------------------------------------------------------
+# CTE base para assets unificados (tabelas + arquivos)
+# Usada por overview, browse e asset_detail.
+# ---------------------------------------------------------------------------
+_ASSETS_CTE = """
+    WITH assets AS (
+        SELECT
+            LTRIM(RTRIM(s.value))          AS asset_name,
+            'tabela'                        AS asset_type,
+            ISNULL(l.database_name, '')     AS database_name,
+            COUNT(DISTINCT l.pipeline_name) AS pipeline_count,
+            SUM(CASE WHEN l.direction = 'origem'  THEN 1 ELSE 0 END) AS as_origem,
+            SUM(CASE WHEN l.direction = 'destino' THEN 1 ELSE 0 END) AS as_destino
+        FROM dbo.etl_job_lineage l
+        CROSS APPLY STRING_SPLIT(l.sql_expression, CHAR(10)) s
+        WHERE l.sql_expression IS NOT NULL AND l.sql_expression <> ''
+          AND (l.file_path IS NULL OR l.file_path = '')
+          AND LTRIM(RTRIM(s.value)) <> ''
+        GROUP BY LTRIM(RTRIM(s.value)), l.database_name
+
+        UNION ALL
+
+        SELECT
+            l.object_name,
+            'tabela',
+            ISNULL(l.database_name, ''),
+            COUNT(DISTINCT l.pipeline_name),
+            SUM(CASE WHEN l.direction = 'origem'  THEN 1 ELSE 0 END),
+            SUM(CASE WHEN l.direction = 'destino' THEN 1 ELSE 0 END)
+        FROM dbo.etl_job_lineage l
+        WHERE (l.sql_expression IS NULL OR l.sql_expression = '')
+          AND (l.file_path IS NULL OR l.file_path = '')
+          AND l.object_name IS NOT NULL AND l.object_name <> ''
+        GROUP BY l.object_name, l.database_name
+
+        UNION ALL
+
+        SELECT
+            l.file_path,
+            'arquivo',
+            '',
+            COUNT(DISTINCT l.pipeline_name),
+            SUM(CASE WHEN l.direction = 'origem'  THEN 1 ELSE 0 END),
+            SUM(CASE WHEN l.direction = 'destino' THEN 1 ELSE 0 END)
+        FROM dbo.etl_job_lineage l
+        WHERE l.file_path IS NOT NULL AND l.file_path <> ''
+        GROUP BY l.file_path
+    )
+"""
 
 
 def _build_pipeline_list(rows, col_names: list) -> tuple[list, int]:
@@ -101,8 +199,11 @@ _COL_NAMES = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Existing mode: search
+# ---------------------------------------------------------------------------
+
 def _search_tabela(hook, object_name: str, direction: str, database_name: str) -> dict:
-    # Busca em sql_expression (tabelas reais do SQL) OU object_name (nome do stage)
     where = ["(l.sql_expression LIKE %s OR l.object_name LIKE %s)"]
     term = f"%{object_name}%"
     params: list = [term, term]
@@ -160,10 +261,11 @@ def _search_arquivo(hook, file_name: str, direction: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Existing mode: ranking
+# ---------------------------------------------------------------------------
+
 def _ranking_tabela(hook, top_n: int) -> dict:
-    # Usa STRING_SPLIT para extrair cada tabela individual do sql_expression
-    # (armazenado como lista separada por \n). Quando sql_expression é NULL/vazio
-    # usa object_name como fallback (stages sem SQL explícito).
     sql = f"""
         SELECT TOP {top_n}
             tbl_name,
@@ -173,7 +275,6 @@ def _ranking_tabela(hook, top_n: int) -> dict:
             SUM(CASE WHEN direction = 'origem'  THEN 1 ELSE 0 END) AS as_origem,
             SUM(CASE WHEN direction = 'destino' THEN 1 ELSE 0 END) AS as_destino
         FROM (
-            -- Stages COM sql_expression: expande cada linha como uma tabela
             SELECT
                 LTRIM(RTRIM(s.value)) AS tbl_name,
                 l.database_name,
@@ -189,7 +290,6 @@ def _ranking_tabela(hook, top_n: int) -> dict:
 
             UNION ALL
 
-            -- Stages SEM sql_expression: usa object_name como fallback
             SELECT
                 l.object_name AS tbl_name,
                 l.database_name,
@@ -232,6 +332,10 @@ def _ranking_arquivo(hook, top_n: int) -> dict:
     print(f"[CATALOGO] ranking arquivo top={top_n} → {len(data)} objeto(s)")
     return {"mode": "ranking", "ranking_type": "arquivo", "data": data}
 
+
+# ---------------------------------------------------------------------------
+# Existing modes: owner, tags, history, lineage, list
+# ---------------------------------------------------------------------------
 
 def _get_owner(hook, pipeline_name: str) -> dict:
     sql = """
@@ -332,6 +436,317 @@ def _list_pipelines(hook) -> dict:
     return {"mode": "list_pipelines", "pipelines": names}
 
 
+# ---------------------------------------------------------------------------
+# New mode: overview
+# ---------------------------------------------------------------------------
+
+def _overview(hook) -> dict:
+    # Total distinct assets
+    sql_total_assets = f"""
+        {_ASSETS_CTE}
+        SELECT COUNT(*) FROM (
+            SELECT asset_name, asset_type, database_name
+            FROM assets
+            GROUP BY asset_name, asset_type, database_name
+        ) sub
+    """
+    total_assets: int = hook.get_first(sql_total_assets)[0]
+
+    # Total pipelines
+    total_pipelines: int = hook.get_first(
+        "SELECT COUNT(*) FROM dbo.etl_pipeline"
+    )[0]
+
+    # Total pipelines with at least one owner
+    total_with_owner: int = hook.get_first(
+        "SELECT COUNT(DISTINCT pipeline_name) FROM dbo.etl_pipeline_owner"
+    )[0]
+
+    # Classification counts (distinct object_keys per tag)
+    sql_class = """
+        SELECT
+            SUM(CASE WHEN tag = 'PII'          THEN 1 ELSE 0 END) AS pii,
+            SUM(CASE WHEN tag = 'Confidencial' THEN 1 ELSE 0 END) AS confidencial,
+            SUM(CASE WHEN tag = 'Regulado'     THEN 1 ELSE 0 END) AS regulado,
+            SUM(CASE WHEN tag = 'Publico'      THEN 1 ELSE 0 END) AS publico
+        FROM (
+            SELECT tag, object_key
+            FROM dbo.etl_object_tag
+            WHERE tag IN ('PII', 'Confidencial', 'Regulado', 'Publico')
+            GROUP BY tag, object_key
+        ) sub
+    """
+    row_class = hook.get_first(sql_class) or (0, 0, 0, 0)
+    classification_counts = {
+        "pii":          int(row_class[0] or 0),
+        "confidencial": int(row_class[1] or 0),
+        "regulado":     int(row_class[2] or 0),
+        "publico":      int(row_class[3] or 0),
+    }
+
+    # Top 15 assets
+    sql_top = f"""
+        {_ASSETS_CTE}
+        SELECT TOP 15
+            asset_name, asset_type, database_name,
+            SUM(pipeline_count) AS pipeline_count,
+            SUM(as_origem)      AS as_origem,
+            SUM(as_destino)     AS as_destino
+        FROM assets
+        GROUP BY asset_name, asset_type, database_name
+        ORDER BY SUM(pipeline_count) DESC
+    """
+    rows_top = hook.get_records(sql_top)
+    top_cols = ["asset_name", "asset_type", "database_name", "pipeline_count", "as_origem", "as_destino"]
+    top_assets = [dict(zip(top_cols, r)) for r in rows_top]
+
+    # Alerts: pipelines without owner (limit 5)
+    sql_no_owner = """
+        SELECT TOP 5 pipeline_name
+        FROM dbo.etl_pipeline
+        WHERE pipeline_name NOT IN (
+            SELECT DISTINCT pipeline_name FROM dbo.etl_pipeline_owner
+        )
+        ORDER BY pipeline_name
+    """
+    rows_no_owner = hook.get_records(sql_no_owner)
+    alerts = [
+        {"type": "pipeline_sem_owner", "message": f"Pipeline sem owner: {r[0]}"}
+        for r in rows_no_owner
+    ]
+
+    # Alerts: PII/Regulado assets without an owner on any pipeline that uses them (limit 5)
+    sql_pii_no_owner = """
+        SELECT TOP 5 ot.object_key
+        FROM dbo.etl_object_tag ot
+        WHERE ot.tag IN ('PII', 'Regulado')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM dbo.etl_job_lineage l
+              JOIN dbo.etl_pipeline_owner po ON po.pipeline_name = l.pipeline_name
+              WHERE l.object_name = ot.object_key
+                 OR l.file_path   = ot.object_key
+                 OR (l.database_name + '.' + l.object_name) = ot.object_key
+          )
+        GROUP BY ot.object_key
+        ORDER BY ot.object_key
+    """
+    rows_pii = hook.get_records(sql_pii_no_owner)
+    for r in rows_pii:
+        alerts.append({"type": "pii_sem_owner", "message": f"Asset PII/Regulado sem owner: {r[0]}"})
+
+    print(f"[CATALOGO] overview → assets={total_assets} pipelines={total_pipelines} "
+          f"with_owner={total_with_owner} alerts={len(alerts)}")
+    return {
+        "mode": "overview",
+        "total_assets": total_assets,
+        "total_pipelines": total_pipelines,
+        "total_with_owner": total_with_owner,
+        "classification_counts": classification_counts,
+        "top_assets": top_assets,
+        "alerts": alerts,
+    }
+
+
+# ---------------------------------------------------------------------------
+# New mode: browse
+# ---------------------------------------------------------------------------
+
+def _browse(hook, search: str, database_name: str, asset_type: str,
+            classification: str, top_n: int) -> dict:
+    top_n = min(200, max(1, top_n))
+
+    where_clauses: list[str] = []
+    params: list = []
+
+    if search:
+        where_clauses.append("a.asset_name LIKE %s")
+        params.append(f"%{search}%")
+    if database_name:
+        where_clauses.append("a.database_name = %s")
+        params.append(database_name)
+    if asset_type:
+        where_clauses.append("a.asset_type = %s")
+        params.append(asset_type)
+
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+    if classification:
+        # Join to etl_object_tag; object_key is database_name.asset_name for tables, asset_name for files
+        sql = f"""
+            {_ASSETS_CTE}
+            SELECT TOP {top_n}
+                a.asset_name, a.asset_type, a.database_name,
+                SUM(a.pipeline_count) AS pipeline_count,
+                SUM(a.as_origem)      AS as_origem,
+                SUM(a.as_destino)     AS as_destino
+            FROM assets a
+            JOIN dbo.etl_object_tag ot
+              ON ot.tag = %s
+             AND (
+                   (a.asset_type = 'tabela'  AND ot.object_key = a.database_name + '.' + a.asset_name)
+                OR (a.asset_type = 'tabela'  AND ot.object_key = a.asset_name)
+                OR (a.asset_type = 'arquivo' AND ot.object_key = a.asset_name)
+             )
+            {where_sql}
+            GROUP BY a.asset_name, a.asset_type, a.database_name
+            ORDER BY SUM(a.pipeline_count) DESC, a.asset_name
+        """
+        params = [classification] + params
+    else:
+        sql = f"""
+            {_ASSETS_CTE}
+            SELECT TOP {top_n}
+                a.asset_name, a.asset_type, a.database_name,
+                SUM(a.pipeline_count) AS pipeline_count,
+                SUM(a.as_origem)      AS as_origem,
+                SUM(a.as_destino)     AS as_destino
+            FROM assets a
+            {where_sql}
+            GROUP BY a.asset_name, a.asset_type, a.database_name
+            ORDER BY SUM(a.pipeline_count) DESC, a.asset_name
+        """
+
+    rows = hook.get_records(sql, parameters=params if params else None)
+    asset_cols = ["asset_name", "asset_type", "database_name", "pipeline_count", "as_origem", "as_destino"]
+    assets = [dict(zip(asset_cols, r)) for r in rows]
+
+    # Facets — computed independently (no top_n limit, no filters applied)
+    sql_facets_db = f"""
+        {_ASSETS_CTE}
+        SELECT DISTINCT database_name FROM assets WHERE database_name <> '' ORDER BY database_name
+    """
+    sql_facets_type = f"""
+        {_ASSETS_CTE}
+        SELECT DISTINCT asset_type FROM assets ORDER BY asset_type
+    """
+    sql_facets_class = """
+        SELECT DISTINCT tag FROM dbo.etl_object_tag
+        WHERE tag IN ('PII', 'Confidencial', 'Regulado', 'Publico')
+        ORDER BY tag
+    """
+    databases      = [r[0] for r in hook.get_records(sql_facets_db)]
+    types          = [r[0] for r in hook.get_records(sql_facets_type)]
+    classifications = [r[0] for r in hook.get_records(sql_facets_class)]
+
+    print(f"[CATALOGO] browse → {len(assets)} asset(s) returned (top_n={top_n})")
+    return {
+        "mode": "browse",
+        "assets": assets,
+        "facets": {
+            "databases":       databases,
+            "types":           types,
+            "classifications": classifications,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# New mode: asset_detail
+# ---------------------------------------------------------------------------
+
+def _asset_detail(hook, asset_name: str, asset_type: str, database_name: str) -> dict:
+    asset_type = (asset_type or "tabela").strip().lower()
+
+    if asset_type == "arquivo":
+        where_lineage = "l.file_path = %s"
+        params_lineage: list = [asset_name]
+    else:
+        where_lineage = "(l.sql_expression LIKE %s OR l.object_name = %s)"
+        params_lineage = [f"%{asset_name}%", asset_name]
+        if database_name:
+            where_lineage += " AND l.database_name = %s"
+            params_lineage.append(database_name)
+
+    sql_lineage = f"""
+        SELECT
+            l.pipeline_name,
+            l.job_name,
+            CAST(pj.execution_order AS INT) AS execution_order,
+            l.columns_json,
+            l.direction,
+            ISNULL(l.sql_expression, '') AS sql_expression
+        FROM dbo.etl_job_lineage l
+        JOIN dbo.etl_pipeline_job pj
+          ON pj.pipeline_name = l.pipeline_name AND pj.job_name = l.job_name
+        WHERE {where_lineage}
+        ORDER BY l.direction, l.pipeline_name, pj.execution_order
+    """
+    rows_lineage = hook.get_records(sql_lineage, parameters=params_lineage)
+
+    pipelines_origem: list[dict] = []
+    pipelines_destino: list[dict] = []
+    all_columns: list[str] = []
+    first_sql: str = ""
+
+    for r in rows_lineage:
+        p_name, j_name, exec_order, cols_json, direction, sql_expr = r
+        try:
+            cols = json.loads(cols_json) if cols_json else []
+        except Exception:
+            cols = []
+        all_columns.extend(cols)
+        if not first_sql and sql_expr:
+            first_sql = sql_expr
+        entry = {
+            "pipeline_name":   p_name,
+            "job_name":        j_name,
+            "execution_order": exec_order,
+            "columns_json":    cols_json or "",
+        }
+        if direction == "origem":
+            pipelines_origem.append(entry)
+        else:
+            pipelines_destino.append(entry)
+
+    # Unique column names preserving first-seen order
+    seen: set = set()
+    unique_columns: list[str] = []
+    for c in all_columns:
+        if c not in seen:
+            seen.add(c)
+            unique_columns.append(c)
+
+    # Tags for this asset
+    if asset_type == "arquivo":
+        object_key_candidates = [asset_name]
+    else:
+        object_key_candidates = [
+            f"{database_name}.{asset_name}" if database_name else asset_name,
+            asset_name,
+        ]
+
+    tags: list[str] = []
+    seen_tags: set = set()
+    for ok in object_key_candidates:
+        rows_tags = hook.get_records(
+            "SELECT tag FROM dbo.etl_object_tag WHERE object_key = %s ORDER BY tag",
+            parameters=[ok],
+        )
+        for rt in rows_tags:
+            if rt[0] not in seen_tags:
+                seen_tags.add(rt[0])
+                tags.append(rt[0])
+
+    print(f"[CATALOGO] asset_detail asset='{asset_name}' type='{asset_type}' "
+          f"→ origem={len(pipelines_origem)} destino={len(pipelines_destino)}")
+    return {
+        "mode": "asset_detail",
+        "asset_name":        asset_name,
+        "asset_type":        asset_type,
+        "database_name":     database_name or "",
+        "pipelines_origem":  pipelines_origem,
+        "pipelines_destino": pipelines_destino,
+        "columns":           unique_columns,
+        "tags":              tags,
+        "sql_expression":    first_sql,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main callable
+# ---------------------------------------------------------------------------
+
 def consultar_catalogo(**context):
     conf = context["dag_run"].conf or {}
     mode = (conf.get("mode") or "search").strip().lower()
@@ -368,6 +783,30 @@ def consultar_catalogo(**context):
             return _ranking_arquivo(hook, top_n)
         return _ranking_tabela(hook, top_n)
 
+    if mode == "overview":
+        return _overview(hook)
+
+    if mode == "browse":
+        return _browse(
+            hook,
+            search=       (conf.get("search")        or "").strip(),
+            database_name=(conf.get("database_name") or "").strip(),
+            asset_type=   (conf.get("asset_type")    or "").strip().lower(),
+            classification=(conf.get("classification") or "").strip(),
+            top_n=        int(conf.get("top_n", 100)),
+        )
+
+    if mode == "asset_detail":
+        asset_name = (conf.get("asset_name") or "").strip()
+        if not asset_name:
+            raise ValueError("Parâmetro 'asset_name' é obrigatório para mode=asset_detail.")
+        return _asset_detail(
+            hook,
+            asset_name=   asset_name,
+            asset_type=   (conf.get("asset_type")    or "tabela").strip().lower(),
+            database_name=(conf.get("database_name") or "").strip(),
+        )
+
     # mode == "search"
     search_type   = (conf.get("search_type") or "tabela").strip().lower()
     direction     = (conf.get("direction")    or "all").strip().lower()
@@ -384,6 +823,10 @@ def consultar_catalogo(**context):
         raise ValueError("Parâmetro 'object_name' é obrigatório para search_type=tabela.")
     return _search_tabela(hook, object_name, direction, database_name)
 
+
+# ---------------------------------------------------------------------------
+# DAG definition
+# ---------------------------------------------------------------------------
 
 with DAG(
     dag_id=DAG_ID,
