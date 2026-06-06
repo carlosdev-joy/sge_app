@@ -243,8 +243,6 @@ class DSXEngine:
             if db_hint:
                 database_name = db_hint
             object_type = "ODBC"
-            columns = self._extract_columns_from_pin(output_pin_content) or \
-                      self._extract_columns_from_pin(input_pin_content)
 
         if is_file:
             file_path = self._extract_dataset_path(rec)
@@ -265,8 +263,10 @@ class DSXEngine:
             if file_path:
                 file_path = file_path.replace("\\", "/").split("/")[-1] or file_path
             object_type = "Arquivo"
-            columns = self._extract_columns_from_pin(output_pin_content) or \
-                      self._extract_columns_from_pin(input_pin_content)
+
+        # Colunas para todos os tipos: OutputPins primeiro, InputPins como fallback
+        columns = (self._extract_columns_from_pin(output_pin_content) or
+                   self._extract_columns_from_pin(input_pin_content))
 
         return {
             "project_name":      project_name,

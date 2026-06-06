@@ -737,6 +737,25 @@
   .ls-detail-popover .ls-pop-title{font-weight:700;font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-bottom:.3rem}
   .ls-detail-popover .ls-pop-item{font-family:ui-monospace,'Courier New',monospace;font-size:11px;padding:2px 0;border-bottom:1px solid var(--border-light)}
   .ls-detail-popover .ls-pop-item:last-child{border-bottom:none}
+  /* ── Detail modal (searchable list) ─────────────────── */
+  #ls-modal-overlay{display:none;position:fixed;inset:0;z-index:900;background:rgba(0,0,0,.45);align-items:center;justify-content:center}
+  #ls-modal-overlay.open{display:flex}
+  #ls-modal-box{background:var(--bg);border:1px solid var(--border);border-radius:14px;width:min(560px,94vw);max-height:82vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.22);overflow:hidden}
+  #ls-modal-header{display:flex;align-items:center;gap:.6rem;padding:.7rem 1rem .6rem;border-bottom:1px solid var(--border);background:var(--bg);position:sticky;top:0;z-index:1}
+  #ls-modal-title{font-size:.85rem;font-weight:700;color:var(--text);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #ls-modal-count{font-size:.72rem;font-weight:600;color:var(--muted);white-space:nowrap}
+  #ls-modal-close{background:none;border:none;cursor:pointer;color:var(--muted);font-size:1.1rem;line-height:1;padding:0 .2rem}
+  #ls-modal-close:hover{color:var(--text)}
+  #ls-modal-search{width:100%;padding:.3rem .6rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:.82rem;outline:none;margin:.5rem 1rem;width:calc(100% - 2rem);box-sizing:border-box;transition:border-color .15s}
+  #ls-modal-search:focus{border-color:var(--cvp-blue)}
+  #ls-modal-search::-webkit-search-cancel-button{display:none}
+  #ls-modal-list{list-style:none;margin:0;padding:.25rem 0 .5rem;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+  #ls-modal-list::-webkit-scrollbar{width:5px}
+  #ls-modal-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+  .ls-mitem{padding:.28rem 1rem;font-family:ui-monospace,'Courier New',monospace;font-size:.8rem;color:var(--text);line-height:1.5;border-left:2px solid transparent;transition:background .1s,border-color .1s;cursor:default;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ls-mitem:nth-child(even){background:rgba(128,128,128,.04)}
+  .ls-mitem:hover{background:rgba(0,100,220,.08);border-left-color:var(--cvp-blue)}
+  .ls-mitem[hidden]{display:none}
   .ls-node-label{font-size:10px;opacity:.65;margin-top:2px;display:block}
   .ls-node-db{font-size:10px;opacity:.7;font-style:italic;display:block}
   .ls-arrow{color:var(--muted);padding:0 8px;font-size:18px;align-self:center}
@@ -2696,48 +2715,56 @@ function _lineageNode(label, sublabel, dbName, cls) {
 }
 
 // Cria e mostra o popover de drill-down ao clicar em +
-function _lsDetailPopover(btn, content, title) {
-  // Fecha qualquer popover aberto
-  document.querySelectorAll('.ls-detail-popover').forEach(p => p.remove());
-
-  const pop = document.createElement('div');
-  pop.className = 'ls-detail-popover';
-
-  const titleEl = document.createElement('div');
-  titleEl.className = 'ls-pop-title';
-  titleEl.textContent = title || 'Detalhes';
-  pop.appendChild(titleEl);
-
-  const items = (content || '').toString().split('\n').filter(Boolean);
-  if (!items.length) {
-    const empty = document.createElement('div');
-    empty.className = 'ls-pop-item';
-    empty.textContent = '—';
-    pop.appendChild(empty);
-  } else {
-    items.forEach(function(item) {
-      const el = document.createElement('div');
-      el.className = 'ls-pop-item';
-      el.textContent = item;
-      pop.appendChild(el);
-    });
-  }
-
-  // Posiciona relativo ao botão
-  const rect = btn.getBoundingClientRect();
-  pop.style.left = (rect.right + 6) + 'px';
-  pop.style.top  = (rect.top) + 'px';
-  document.body.appendChild(pop);
-
-  // Fecha ao clicar fora
-  function closeOnOutside(e) {
-    if (!pop.contains(e.target) && e.target !== btn) {
-      pop.remove();
-      document.removeEventListener('click', closeOnOutside);
-    }
-  }
-  setTimeout(() => document.addEventListener('click', closeOnOutside), 50);
+function _escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
+
+function _lsDetailPopover(btn, content, title) {
+  const allItems = (content || '').toString().split('\n').map(s => s.trim()).filter(Boolean);
+  const overlay  = document.getElementById('ls-modal-overlay');
+  const titleEl  = document.getElementById('ls-modal-title');
+  const countEl  = document.getElementById('ls-modal-count');
+  const searchEl = document.getElementById('ls-modal-search');
+  const listEl   = document.getElementById('ls-modal-list');
+
+  titleEl.textContent = title || 'Detalhes';
+  countEl.textContent = allItems.length + ' ' + (title && title.toLowerCase().includes('campo') ? 'campos' : 'itens');
+  searchEl.value = '';
+
+  listEl.innerHTML = allItems.length
+    ? allItems.map(item => '<li class="ls-mitem">' + _escHtml(item) + '</li>').join('')
+    : '<li class="ls-mitem" style="color:var(--muted)">—</li>';
+
+  const liItems = listEl.querySelectorAll('.ls-mitem');
+
+  searchEl.oninput = function() {
+    const q = searchEl.value.toLowerCase();
+    let vis = 0;
+    liItems.forEach(li => {
+      const match = !q || li.textContent.toLowerCase().includes(q);
+      li.hidden = !match;
+      if (match) vis++;
+    });
+    const noun = title && title.toLowerCase().includes('campo') ? 'campos' : 'itens';
+    countEl.textContent = q ? (vis + ' de ' + allItems.length + ' ' + noun) : (allItems.length + ' ' + noun);
+  };
+
+  overlay.classList.add('open');
+  if (allItems.length > 8) setTimeout(() => searchEl.focus(), 50);
+}
+
+// Fecha modal ao clicar no overlay fora do box
+document.addEventListener('click', function(e) {
+  const overlay = document.getElementById('ls-modal-overlay');
+  if (overlay && overlay.classList.contains('open') && e.target === overlay)
+    overlay.classList.remove('open');
+});
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    const overlay = document.getElementById('ls-modal-overlay');
+    if (overlay) overlay.classList.remove('open');
+  }
+});
 
 
 // Delegação de eventos para botões "+" da Governança
@@ -6795,6 +6822,18 @@ async function admDeleteVersao(id, versao) {
 
 
 <!-- MODAL: CHANGELOG / VERSÕES -->
+<div id="ls-modal-overlay" role="dialog" aria-modal="true">
+  <div id="ls-modal-box">
+    <div id="ls-modal-header">
+      <span id="ls-modal-title"></span>
+      <span id="ls-modal-count"></span>
+      <button id="ls-modal-close" onclick="document.getElementById('ls-modal-overlay').classList.remove('open')" title="Fechar">✕</button>
+    </div>
+    <input id="ls-modal-search" type="search" placeholder="Filtrar…" autocomplete="off" spellcheck="false"/>
+    <ul id="ls-modal-list"></ul>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="modal-changelog">
   <div class="modal-box" style="max-width:640px;text-align:left;padding:1.75rem 2rem;max-height:80vh;display:flex;flex-direction:column">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:1.25rem;flex-shrink:0">
