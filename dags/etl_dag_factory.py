@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import ast
 from collections import defaultdict
+from datetime import timedelta
 import pendulum
 from airflow import DAG
 from airflow.models import Variable
@@ -140,14 +141,22 @@ def _task_block(job: dict, project: str, pipeline: str) -> str:
 
 
 def _generate_dag_source(pipeline: dict, jobs: list) -> str:
-    pname   = pipeline["pipeline_name"]
-    project = pipeline["project_name"]
-    domain  = pipeline["domain"]
-    tags_raw= pipeline["tags"]
-    sched   = pipeline["scheduled_time"]
+    pname      = pipeline["pipeline_name"]
+    project    = pipeline["project_name"]
+    domain     = pipeline["domain"]
+    tags_raw   = pipeline["tags"]
+    sched      = pipeline["scheduled_time"]
+    depends_on = (pipeline.get("depends_on") or "").strip() or None
     f_ini   = bool(pipeline["envia_msg_inicio"])
     f_fim   = bool(pipeline["envia_msg_fim"])
     f_err   = bool(pipeline["envia_msg_erro"])
+    dag_start_date_raw = pipeline.get("dag_start_date")  # DATE or None
+
+    retries_val         = int(pipeline.get("retries_count") or 1)
+    retry_delay_val     = int(pipeline.get("retry_delay_seconds") or 300)
+    max_active_runs_val = int(pipeline.get("max_active_runs") or 1)
+    pool_name_val       = (pipeline.get("pool_name") or "").strip() or None
+    sla_minutos_val     = pipeline.get("sla_minutos")
 
     cron        = _time_to_cron(sched)
     base_log    = BASE_LOG_ROOT.format(project=project)
@@ -162,6 +171,7 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
 
     # ── Seção de imports ─────────────────────────────────────
     import_lines = ["from airflow import DAG"]
+    import_lines.append("from datetime import timedelta")
     if ssh_needed:
         import_lines.append("from airflow.providers.ssh.operators.ssh import SSHOperator")
     import_lines += [
@@ -189,9 +199,13 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         f'BASE_LOG_DIR  = "{base_log}"',
         f'LOCAL_TZ      = "America/Sao_Paulo"',
         f'TEAMS_WEBHOOK_VAR = "TEAMS_WEBHOOK_URL_CVP"',
-        f'default_args  = {{"owner": "airflow", "depends_on_past": False, "retries": 0}}',
+        f'default_args  = {{"owner": "airflow", "depends_on_past": False, "retries": {retries_val}, "retry_delay": timedelta(seconds={retry_delay_val})}}',
         f'JOBS          = {repr([j["job_name"] for j in sorted_jobs])}',
     ]
+    if depends_on:
+        consts_lines.append(f'DEPENDS_ON_DAG_ID = "{depends_on}"')
+    if pool_name_val:
+        consts_lines.append(f'POOL_NAME = "{pool_name_val}"')
     consts_str = "\n".join(consts_lines)
 
     # ── Helpers (bloco fixo — sem aspas triplas) ─────────────
@@ -313,6 +327,14 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         "    _exec_telemetry(hook, execution_id, job_name, task_key, 'RUNNING',",
         "                    _now_str(), '', 0, _build_log_file(job_name, execution_id))",
         "",
+        "def _update_last_execution():",
+        "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "    hook.run(",
+        '        "UPDATE dbo.etl_pipeline SET last_execution=GETDATE(), updated_at=GETDATE() "',
+        '        "WHERE pipeline_name=%s",',
+        "        parameters=(PIPELINE_NAME,),",
+        "    )",
+        "",
         "def log_end(job_name, task_key, upstream_task_id, **context):",
         "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
         "    execution_id = context['ts_nodash']",
@@ -329,6 +351,11 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         "    _exec_telemetry(hook, execution_id, job_name, task_key, final_status,",
         "                    '', end_time, duration_seconds, _build_log_file(job_name, execution_id))",
         "    _update_status_code(hook, execution_id, job_name, task_key, status_code)",
+        "    # Atualiza last_execution no pipeline a cada log_end — o último job grava o horário final",
+        "    try:",
+        "        _update_last_execution()",
+        "    except Exception as _ule_exc:",
+        "        print(f'[log_end] Aviso: não foi possível atualizar last_execution — {_ule_exc}')",
         "    # Fail-fast: propagar falha para interromper tarefas seguintes",
         "    if final_status in ('FAILED', 'DESCONHECIDO'):",
         "        raise RuntimeError(",
@@ -366,6 +393,30 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
 
     job_blocks = [_task_block(j, project, pname) for j in sorted_jobs]
 
+    # ── S4: ExternalTaskSensor — suporte a múltiplas dependências ────────
+    dep_list = [d.strip() for d in depends_on.split(",") if d.strip()] if depends_on else []
+    sensor_block = ""
+    sensor_names = []
+    if dep_list:
+        if "from airflow.sensors.external_task import ExternalTaskSensor" not in import_lines:
+            import_lines.append("from airflow.sensors.external_task import ExternalTaskSensor")
+        sensor_parts = []
+        for dep in dep_list:
+            sname = f"t_sensor_{dep}"
+            sensor_names.append(sname)
+            sensor_parts.append("\n".join([
+                f'{sname} = ExternalTaskSensor(',
+                f'    task_id="wait_{dep}",',
+                f'    external_dag_id="{dep}",',
+                f'    mode="reschedule",',
+                f'    timeout=3600,',
+                f'    poke_interval=60,',
+                f')',
+            ]))
+        sensor_block = "\n\n".join(sensor_parts)
+    # Rebuild imports_str after potential append
+    imports_str = "\n".join(import_lines)
+
     if f_ini:
         first_chain = f"t_start_{first} >> t_teams_start >> t_job_{first} >> t_end_{first}"
     else:
@@ -375,6 +426,12 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
         f"previous = t_end_{first}",
         first_chain,
     ]
+    # Prefixa a cadeia do primeiro job com todos os sensores
+    if sensor_names:
+        sensors_ref = "[" + ", ".join(sensor_names) + "]"
+        dep_lines.insert(0, f"{sensors_ref} >> t_log_start_{first}" if not f_ini else f"{sensors_ref} >> t_start_{first}")
+        # Override first_chain to not re-add the sensor prefix — keep dep_lines[1] as-is
+
     for j in others:
         n = j["job_name"]
         dep_lines.append(f"previous >> t_start_{n} >> t_job_{n} >> t_end_{n}")
@@ -389,6 +446,8 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
 
     # Junta tudo indentado dentro do with
     with_parts = []
+    if sensor_block:
+        with_parts.append(_ind(sensor_block))
     for t in teams_tasks:
         with_parts.append(_ind(t))
     for b in job_blocks:
@@ -396,17 +455,33 @@ def _generate_dag_source(pipeline: dict, jobs: list) -> str:
     for d in dep_lines:
         with_parts.append("    " + d)
 
-    dag_header = "\n".join([
+    # Determina start_date: usa dag_start_date do banco ou fallback para 2026-01-01
+    if dag_start_date_raw:
+        if hasattr(dag_start_date_raw, "year"):
+            sd_y, sd_m, sd_d = dag_start_date_raw.year, dag_start_date_raw.month, dag_start_date_raw.day
+        else:
+            parts = str(dag_start_date_raw).split("-")
+            sd_y, sd_m, sd_d = int(parts[0]), int(parts[1]), int(parts[2])
+    else:
+        sd_y, sd_m, sd_d = 2026, 1, 1
+
+    dag_header_lines = [
         "with DAG(",
         "    dag_id=DAG_ID,",
         "    default_args=default_args,",
         f'    description="Pipeline {pname} — {project} / {domain}",',
-        "    start_date=pendulum.datetime(2026, 1, 1, tz=LOCAL_TZ),",
+        f"    start_date=pendulum.datetime({sd_y}, {sd_m}, {sd_d}, tz=LOCAL_TZ),",
         f'    schedule="{cron}",',
         "    catchup=False,",
+        f"    max_active_runs={max_active_runs_val},",
+    ]
+    if sla_minutos_val is not None:
+        dag_header_lines.append(f"    dagrun_timeout=timedelta(minutes={int(sla_minutos_val)}),")
+    dag_header_lines += [
         f"    tags={repr(all_tags)},",
         ") as dag:",
-    ])
+    ]
+    dag_header = "\n".join(dag_header_lines)
 
     dag_block = dag_header + "\n\n" + "\n\n".join(with_parts) + "\n"
 
@@ -440,13 +515,15 @@ def gerar_dags(**context):
     if force_all:
         if filter_project:
             hook.run(
-                "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "                "WHERE project_name=%s AND DAG_CRIADA=1",
+                "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
+                "WHERE project_name=%s AND DAG_CRIADA=1",
                 parameters=(filter_project,),
             )
             print(f"[FACTORY] force_all=True, project='{filter_project}' — dag_criada resetado")
         else:
             hook.run(
-                "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "                "WHERE DAG_CRIADA=1"
+                "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
+                "WHERE DAG_CRIADA=1"
             )
             print("[FACTORY] force_all=True — dag_criada resetado para todos os pipelines")
 
@@ -468,6 +545,23 @@ def gerar_dags(**context):
 
     pipelines = [dict(zip(pipeline_cols, row)) for row in pipelines_rows]
     jobs_all  = [dict(zip(jobs_cols, row))     for row in jobs_rows]
+
+    # Supplement with advanced fields (not in SP result set)
+    if pipelines:
+        pnames_sql = ",".join(f"'{p['pipeline_name']}'" for p in pipelines)
+        conn2 = hook.get_conn()
+        cur2  = conn2.cursor()
+        cur2.execute(
+            f"SELECT pipeline_name, criticidade, sla_minutos, ambiente, "
+            f"max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao "
+            f"FROM dbo.etl_pipeline WHERE pipeline_name IN ({pnames_sql})"
+        )
+        adv_rows = cur2.fetchall()
+        adv_cols = [d[0].lower() for d in cur2.description]
+        cur2.close(); conn2.close()
+        adv_map = {r[0]: dict(zip(adv_cols, r)) for r in adv_rows}
+        for p in pipelines:
+            p.update(adv_map.get(p['pipeline_name'], {}))
 
     jobs_by_pipeline: dict[str, list] = defaultdict(list)
     for j in jobs_all:
