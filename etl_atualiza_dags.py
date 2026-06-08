@@ -38,16 +38,16 @@ def grant_etl_permissions_to_viewer():
                     ON CONFLICT (name) DO NOTHING
                 """), {"name": resource_name})
 
-                # Garante permission
+                # Garante permission (action)
                 session.execute(text("""
                     INSERT INTO ab_permission (name)
                     VALUES (:action)
                     ON CONFLICT (name) DO NOTHING
                 """), {"action": action_name})
 
-                # Garante permission_view_menu
+                # Garante ab_permission_view  ← nome corrigido
                 session.execute(text("""
-                    INSERT INTO ab_permission_view_menu (permission_id, view_menu_id)
+                    INSERT INTO ab_permission_view (permission_id, view_menu_id)
                     SELECT p.id, vm.id
                     FROM ab_permission p, ab_view_menu vm
                     WHERE p.name = :action AND vm.name = :resource
@@ -57,10 +57,10 @@ def grant_etl_permissions_to_viewer():
                 # Garante vínculo com o role Viewer
                 session.execute(text("""
                     INSERT INTO ab_permission_view_role (permission_view_id, role_id)
-                    SELECT pvm.id, :role_id
-                    FROM ab_permission_view_menu pvm
-                    JOIN ab_permission p ON p.id = pvm.permission_id
-                    JOIN ab_view_menu vm ON vm.id = pvm.view_menu_id
+                    SELECT pv.id, :role_id
+                    FROM ab_permission_view pv
+                    JOIN ab_permission p ON p.id = pv.permission_id
+                    JOIN ab_view_menu vm ON vm.id = pv.view_menu_id
                     WHERE p.name = :action AND vm.name = :resource
                     ON CONFLICT DO NOTHING
                 """), {"role_id": viewer_role_id, "action": action_name, "resource": resource_name})
