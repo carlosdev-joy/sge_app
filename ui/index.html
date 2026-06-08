@@ -816,6 +816,56 @@
   .flex-between { display:flex; align-items:center; justify-content:space-between; }
   .gap-xs { gap:.4rem; } .gap-sm { gap:.6rem; } .gap-md { gap:1rem; }
   .flex-wrap { flex-wrap:wrap; }
+
+  /* ── Pipeline Wizard — stepper ── */
+  #wiz-stepper { display:flex; align-items:center; gap:0; padding:.4rem 0 .8rem; overflow-x:auto; }
+  .wiz-circle {
+    width:26px; height:26px; border-radius:50%;
+    border:2px solid var(--border);
+    display:flex; align-items:center; justify-content:center;
+    font-size:11px; font-weight:700; flex-shrink:0;
+    background:var(--card); color:var(--muted);
+    transition:background .2s, border-color .2s, color .2s;
+  }
+  .wiz-label { font-size:10px; color:var(--muted); white-space:nowrap; transition:color .2s; }
+  .wiz-connector { flex:1; min-width:16px; height:2px; background:var(--border); transition:background .2s; }
+  .wiz-step.active .wiz-circle  { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .wiz-step.active .wiz-label   { color:var(--accent); font-weight:600; }
+  .wiz-step.done .wiz-circle    { background:var(--success,#22c55e); border-color:var(--success,#22c55e); color:#fff; }
+  .wiz-step.done .wiz-label     { color:var(--success,#22c55e); }
+  .wiz-step.done + .wiz-connector { background:var(--success,#22c55e); }
+  .wiz-step.error .wiz-circle   { background:#ef4444; border-color:#ef4444; color:#fff; }
+  .wiz-step.error .wiz-label    { color:#ef4444; }
+
+  /* ── Pipeline Wizard — compact field sizes ── */
+  #pipeline-editor .field { margin-bottom:.4rem; }
+  #pipeline-editor label  { font-size:11px; margin-bottom:.15rem; display:block; }
+  #pipeline-editor input:not([type=checkbox]):not([type=radio]),
+  #pipeline-editor select,
+  #pipeline-editor textarea { font-size:12px; padding:.28rem .5rem; }
+  #pipeline-editor .section-sep { font-size:10px; letter-spacing:.06em; margin:.4rem 0 .3rem; }
+  #pipeline-editor .field-error { font-size:10px; }
+  #pipeline-editor p, #pipeline-editor small { font-size:11px; }
+  #pipeline-editor .helper { font-size:11px; padding:.35rem .6rem; }
+
+  /* ── Pipeline Wizard — job row + review ── */
+  .wiz-job-row {
+    display:grid; grid-template-columns:24px 1fr 58px 100px 1fr 30px;
+    gap:5px; padding:.28rem .55rem; border-bottom:1px solid var(--border); align-items:center;
+  }
+  .wiz-job-row:last-child { border-bottom:none; }
+  .wiz-job-row input, .wiz-job-row select { width:100%; font-size:11px; padding:2px 5px;
+    border:1px solid var(--border); border-radius:5px; background:var(--input,var(--bg)); color:var(--fg); }
+  .wiz-review-row { display:flex; gap:.5rem; padding:.25rem 0; border-bottom:1px solid rgba(128,128,128,.1); font-size:12px; }
+  .wiz-review-row:last-child { border-bottom:none; }
+  .wiz-review-key { color:var(--muted); min-width:130px; flex-shrink:0; font-size:11px; }
+  .wiz-review-val { font-weight:500; }
+
+  /* ── help tooltip ── */
+  .help-btn{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;border:1.5px solid var(--muted);color:var(--muted);font-size:8px;font-weight:700;cursor:pointer;background:none;line-height:1;vertical-align:middle;margin-left:3px;position:relative;flex-shrink:0}
+  .help-btn:hover{border-color:var(--accent);color:var(--accent)}
+  .help-popup{display:none;position:absolute;z-index:1200;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:.55rem .7rem;font-size:11px;color:var(--text);width:240px;box-shadow:0 4px 20px rgba(0,0,0,.18);line-height:1.5;white-space:normal;pointer-events:none}
+  .help-btn:hover .help-popup,.help-btn:focus .help-popup{display:block}
 </style>
 </head>
 <body>
@@ -988,9 +1038,9 @@
             </div>
           </div>
 
-          <div id="pipeline-editor" style="display:none;position:fixed;inset:0;z-index:800;background:rgba(0,0,0,.5);align-items:flex-start;justify-content:center;padding:1.5rem 1rem;overflow-y:auto">
-      <div style="background:var(--bg);border-radius:16px;border:1px solid var(--border);width:100%;max-width:860px;box-shadow:0 12px 48px rgba(0,0,0,.3);margin:auto">
-        <div style="padding:1rem 1.5rem .75rem;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)">
+          <div id="pipeline-editor" style="display:none;position:fixed;inset:0;z-index:800;background:rgba(0,0,0,.5);align-items:flex-start;justify-content:center;padding:.75rem 1rem;overflow-y:auto">
+      <div style="background:var(--bg);border-radius:14px;border:1px solid var(--border);width:100%;max-width:860px;max-height:calc(100vh - 1.5rem);overflow-y:auto;box-shadow:0 12px 48px rgba(0,0,0,.3);margin:auto">
+        <div style="padding:.6rem 1rem .5rem;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)">
           <div>
             <div style="font-size:.95rem;font-weight:700" id="pipelineFormTitle"><span class="orange">+</span> Novo Pipeline</div>
             <div style="font-size:11px;color:var(--muted);margin-top:.2rem" id="pipelineFormHint"></div>
@@ -998,9 +1048,9 @@
           <span id="wiz-step-label-top" style="font-size:12px;font-weight:600;color:var(--accent);background:rgba(0,92,169,.08);padding:.25rem .6rem;border-radius:20px;border:1px solid rgba(0,92,169,.18)"></span>
           <button onclick="closePipelineEditor()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:1.5rem;line-height:1;padding:4px 6px">×</button>
         </div>
-        <div style="padding:1rem 1.5rem 0">
+        <div style="padding:.65rem 1rem 0">
 
-          <p style="font-size:11px;color:var(--muted);margin:0 0 1.25rem;display:flex;align-items:center;gap:.3rem"><span style="color:var(--red);font-weight:600">*</span> Campos obrigatórios</p>
+          <p style="font-size:10px;color:var(--muted);margin:0 0 .5rem;display:flex;align-items:center;gap:.3rem"><span style="color:var(--red);font-weight:600">*</span> Campos obrigatórios</p>
 
           <!-- Identificação -->
           <div class="section-sep"><span>Identificação</span></div>
@@ -1203,10 +1253,19 @@
             </label>
           </div>
 
-          <button class="btn" id="btn-save-pipeline" onclick="registrarPipeline()">
-            <span id="save_pipeline_txt">Salvar</span>
-          </button>
-          <div id="msg-pipeline" class="msg"></div>
+          <!-- Navegação do wizard -->
+          <div id="wiz-nav" style="display:flex;align-items:center;justify-content:space-between;margin-top:1rem;padding-top:.75rem;border-top:1px solid var(--border)">
+            <button class="btn btn-outline btn-sm" id="wiz-btn-back" onclick="wizBack()" style="display:none;min-width:90px">← Voltar</button>
+            <div style="flex:1"></div>
+            <div style="display:flex;gap:.5rem;align-items:center">
+              <span id="wiz-step-label" style="font-size:11px;color:var(--muted)">Passo 1 de 5</span>
+              <button class="btn btn-primary btn-sm" id="wiz-btn-next" onclick="wizNext()" style="min-width:90px">Avançar →</button>
+              <button class="btn btn-sm" id="btn-save-pipeline" onclick="registrarPipeline()" style="display:none;min-width:110px">
+                <span id="save_pipeline_txt">Criar Pipeline</span>
+              </button>
+            </div>
+          </div>
+          <div id="msg-pipeline" class="msg" style="margin-top:.5rem"></div>
         </div>
       </div>
           </div>
