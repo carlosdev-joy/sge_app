@@ -1,56 +1,69 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.models import DagBag
 from airflow.utils.dates import days_ago
-
 from airflow.www.app import create_app
+from airflow.models import DagModel
+from sqlalchemy.orm import Session
 
-ROLE_NAME = "Viewer"
-PREFIX = "etl_"
+def grant_etl_permissions_to_viewer():
+    """
+    Concede can_read e can_edit no role Viewer
+    para todas as DAGs com prefixo 'etl_'.
+    """
+    from airflow.www.app import create_app
+    from flask_appbuilder.security.sqla.models import Role, PermissionView
+    from airflow.www.fab_security.sqla.models import Permission, ViewMenu
 
-def sync_dag_permissions():
-    app = create_app()
-    with app.app_context():
-        sm = app.appbuilder.sm
+    flask_app = create_app()
 
-        # pegar role
-        role = sm.find_role(ROLE_NAME)
-        if not role:
-            raise Exception(f"Role {ROLE_NAME} não encontrado")
+    with flask_app.app_context():
+        sm = flask_app.appbuilder.sm
+        session: Session = sm.get_session
 
-        dag_bag = DagBag()
-        dags = dag_bag.dags.keys()
+        # Busca o role Viewer
+        viewer_role = sm.find_role("Viewer")
+        if not viewer_role:
+            raise ValueError("Role 'Viewer' não encontrado.")
 
-        for dag_id in dags:
-            if not dag_id.startswith(PREFIX):
-                continue
+        # Busca todas as DAGs com prefixo etl_
+        etl_dags = session.query(DagModel).filter(
+            DagModel.dag_id.like("etl_%")
+        ).all()
 
-            resource_name = f"DAG:{dag_id}"
+        print(f"DAGs encontradas com prefixo 'etl_': {[d.dag_id for d in etl_dags]}")
 
-            # garantir permissões necessárias
-            for action in ["can_read", "can_dag_trigger"]:
-                perm = sm.find_permission(action, resource_name)
+        actions = ["can_read", "can_edit"]
 
-                if not perm:
-                    perm = sm.add_permission_view_menu(action, resource_name)
+        for dag in etl_dags:
+            resource_name = f"DAG:{dag.dag_id}"
 
-                if perm not in role.permissions:
-                    sm.add_permission_role(role, perm)
-                    print(f"Adicionada {action} em {resource_name} ao role {ROLE_NAME}")
+            for action_name in actions:
+                # Garante que o recurso existe
+                resource = sm.add_view_menu(resource_name)
 
-default_args = {
-    "owner": "airflow",
-}
+                # Garante que a permissão existe
+                perm = sm.add_permission_view_menu(action_name, resource_name)
+
+                # Adiciona ao role Viewer se ainda não tiver
+                if perm not in viewer_role.permissions:
+                    sm.add_permission_role(viewer_role, perm)
+                    print(f"  ✔ Adicionado: {action_name} on {resource_name}")
+                else:
+                    print(f"  — Já existe: {action_name} on {resource_name}")
+
+        print("Concluído.")
+
 
 with DAG(
-    dag_id="sync_etl_permissions",
-    default_args=default_args,
-    schedule_interval="@daily",
+    dag_id="admin_grant_etl_permissions_to_viewer",
+    schedule_interval=None,  # execução manual ou via trigger
     start_date=days_ago(1),
     catchup=False,
+    tags=["admin", "segurança", "permissões"],
+    description="Concede permissão de execução nas DAGs etl_ ao role Viewer",
 ) as dag:
 
-    sync_permissions = PythonOperator(
-        task_id="sync_permissions",
-        python_callable=sync_dag_permissions
+    grant_permissions = PythonOperator(
+        task_id="grant_etl_permissions_to_viewer",
+        python_callable=grant_etl_permissions_to_viewer,
     )
