@@ -4,42 +4,77 @@ from airflow.utils.dates import days_ago
 
 
 def grant_etl_permissions_to_viewer():
-    from airflow.www.app import cached_app
-    from airflow.models import DagModel
+    from airflow.settings import Session
+    from sqlalchemy import text
 
-    app = cached_app()
+    session = Session()
 
-    with app.app_context():
-        sm = app.appbuilder.sm
-        session = sm.get_session
+    try:
+        viewer_role = session.execute(
+            text("SELECT id FROM ab_role WHERE name = 'Viewer'")
+        ).fetchone()
 
-        viewer_role = sm.find_role("Viewer")
         if not viewer_role:
             raise ValueError("Role 'Viewer' não encontrado.")
 
-        etl_dags = (
-            session.query(DagModel)
-            .filter(
-                DagModel.dag_id.like("etl_%"),
-                DagModel.is_active == True,
-            )
-            .all()
-        )
+        viewer_role_id = viewer_role[0]
+        print(f"[INFO] Viewer role id: {viewer_role_id}")
 
-        print(f"[INFO] {len(etl_dags)} DAGs etl_ encontradas.")
+        etl_dags = session.execute(
+            text("SELECT dag_id FROM dag WHERE dag_id LIKE 'etl_%' AND is_active = true")
+        ).fetchall()
 
-        for dag in etl_dags:
-            resource_name = f"DAG:{dag.dag_id}"
-            for action in ["can_read", "can_edit"]:
-                sm.add_view_menu(resource_name)
-                perm = sm.add_permission_view_menu(action, resource_name)
-                if perm not in viewer_role.permissions:
-                    sm.add_permission_role(viewer_role, perm)
-                    print(f"  ✔ {action} on {resource_name}")
-                else:
-                    print(f"  — Já existe: {action} on {resource_name}")
+        print(f"[INFO] {len(etl_dags)} DAGs encontradas.")
 
-        print("[INFO] Concluído.")
+        for (dag_id,) in etl_dags:
+            resource_name = f"DAG:{dag_id}"
+
+            for action_name in ["can_read", "can_edit"]:
+
+                # Garante view_menu
+                session.execute(text("""
+                    INSERT INTO ab_view_menu (name)
+                    VALUES (:name)
+                    ON CONFLICT (name) DO NOTHING
+                """), {"name": resource_name})
+
+                # Garante permission
+                session.execute(text("""
+                    INSERT INTO ab_permission (name)
+                    VALUES (:action)
+                    ON CONFLICT (name) DO NOTHING
+                """), {"action": action_name})
+
+                # Garante permission_view_menu
+                session.execute(text("""
+                    INSERT INTO ab_permission_view_menu (permission_id, view_menu_id)
+                    SELECT p.id, vm.id
+                    FROM ab_permission p, ab_view_menu vm
+                    WHERE p.name = :action AND vm.name = :resource
+                    ON CONFLICT DO NOTHING
+                """), {"action": action_name, "resource": resource_name})
+
+                # Garante vínculo com o role Viewer
+                session.execute(text("""
+                    INSERT INTO ab_permission_view_role (permission_view_id, role_id)
+                    SELECT pvm.id, :role_id
+                    FROM ab_permission_view_menu pvm
+                    JOIN ab_permission p ON p.id = pvm.permission_id
+                    JOIN ab_view_menu vm ON vm.id = pvm.view_menu_id
+                    WHERE p.name = :action AND vm.name = :resource
+                    ON CONFLICT DO NOTHING
+                """), {"role_id": viewer_role_id, "action": action_name, "resource": resource_name})
+
+                print(f"  ✔ {action_name} on {resource_name}")
+
+        session.commit()
+        print("[INFO] Concluído com sucesso.")
+
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
 
 
 with DAG(
