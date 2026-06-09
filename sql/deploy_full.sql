@@ -170,6 +170,15 @@ BEGIN
         type_label  NVARCHAR(100) NOT NULL,
         CONSTRAINT PK_etl_stage_type_map PRIMARY KEY (stage_type)
     );
+    PRINT '[OK] Tabela dbo.etl_stage_type_map criada';
+END
+ELSE
+    PRINT '[--] dbo.etl_stage_type_map já existe';
+GO
+
+-- Seed separado em batch próprio para evitar erro de coluna não reconhecida no mesmo batch
+IF NOT EXISTS (SELECT 1 FROM dbo.etl_stage_type_map WHERE stage_type = 'CTransformerStage')
+BEGIN
     INSERT INTO dbo.etl_stage_type_map (stage_type, type_label) VALUES
         ('CTransformerStage',      'Transformer'),
         ('CHashPartitionStage',    'Hash Partition'),
@@ -191,10 +200,10 @@ BEGIN
         ('CRemoveDuplicatesStage', 'Remove Duplicates'),
         ('CChangeApplyStage',      'Change Apply'),
         ('CChangeCaptureStage',    'Change Capture');
-    PRINT '[OK] Tabela dbo.etl_stage_type_map criada e populada';
+    PRINT '[OK] Seed de etl_stage_type_map aplicado';
 END
 ELSE
-    PRINT '[--] dbo.etl_stage_type_map já existe';
+    PRINT '[--] etl_stage_type_map já possui dados';
 GO
 
 -- ------------------------------------------------------------
