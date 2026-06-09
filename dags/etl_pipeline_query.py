@@ -107,6 +107,14 @@ def consultar_pipelines(**context):
         CAST(ENVIA_MSG_ERRO   AS INT) AS envia_msg_erro,
         depends_on,
         CONVERT(VARCHAR(10), dag_start_date, 120) AS dag_start_date,
+        descricao,
+        ISNULL(criticidade, 'Media')  AS criticidade,
+        sla_minutos,
+        ISNULL(ambiente, 'PROD')      AS ambiente,
+        ISNULL(CAST(max_active_runs    AS INT), 1)   AS max_active_runs,
+        ISNULL(CAST(retries_count      AS INT), 1)   AS retries_count,
+        ISNULL(CAST(retry_delay_seconds AS INT), 300) AS retry_delay_seconds,
+        pool_name,
         last_execution,
         created_at,
         updated_at
@@ -127,6 +135,8 @@ def consultar_pipelines(**context):
         "envia_msg_inicio", "envia_msg_fim", "envia_msg_erro",
         "depends_on",
         "dag_start_date",
+        "descricao", "criticidade", "sla_minutos", "ambiente",
+        "max_active_runs", "retries_count", "retry_delay_seconds", "pool_name",
         "last_execution", "created_at", "updated_at",
     ]
 

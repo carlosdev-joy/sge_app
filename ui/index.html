@@ -830,7 +830,7 @@
   .wiz-label { font-size:10px; color:var(--muted); white-space:nowrap; transition:color .2s; }
   .wiz-connector { flex:1; min-width:16px; height:2px; background:var(--border); transition:background .2s; }
   .wiz-step.active .wiz-circle  { background:var(--accent); border-color:var(--accent); color:#fff; }
-  .wiz-step.active .wiz-label   { color:var(--accent); font-weight:600; }
+  .wiz-step.active .wiz-label   { color:var(--accent,#005ca9); font-weight:600; }
   .wiz-step.done .wiz-circle    { background:var(--success,#22c55e); border-color:var(--success,#22c55e); color:#fff; }
   .wiz-step.done .wiz-label     { color:var(--success,#22c55e); }
   .wiz-step.done + .wiz-connector { background:var(--success,#22c55e); }
@@ -1045,7 +1045,7 @@
             <div style="font-size:.95rem;font-weight:700" id="pipelineFormTitle"><span class="orange">+</span> Novo Pipeline</div>
             <div style="font-size:11px;color:var(--muted);margin-top:.2rem" id="pipelineFormHint"></div>
           </div>
-          <span id="wiz-step-label-top" style="font-size:12px;font-weight:600;color:var(--accent);background:rgba(0,92,169,.08);padding:.25rem .6rem;border-radius:20px;border:1px solid rgba(0,92,169,.18)"></span>
+          <span id="wiz-step-label-top" style="font-size:12px;font-weight:600;color:var(--accent,#005ca9);background:rgba(0,92,169,.08);padding:.25rem .6rem;border-radius:20px;border:1px solid rgba(0,92,169,.18)"></span>
           <button onclick="closePipelineEditor()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:1.5rem;line-height:1;padding:4px 6px">×</button>
         </div>
         <div style="padding:.65rem 1rem 0">
@@ -6843,6 +6843,56 @@ function _wizRenderReview() {
 }
 // ──────────────────────────────────────────────────────────────────────────────
 
+// ── View mode (read-only) ─────────────────────────────────────────────────────
+function openPipelineView(idx) {
+  const p = (window.__pipelines || [])[idx];
+  if (!p) return;
+  window.__viewPipelineIdx = idx;
+  const m = $('modal-view-pipeline');
+  if (!m) return;
+  $('view-pipeline-title').textContent = p.pipeline_name;
+  $('view-pipeline-sub').textContent = (p.project_name || '') + (p.domain ? ' · ' + p.domain : '');
+  const pill = (v, ok) => ok
+    ? '<span style="display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;background:rgba(22,163,74,.1);color:#15803d;border:1px solid rgba(22,163,74,.3)">' + _escHtml(v) + '</span>'
+    : '<span style="display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;background:rgba(128,128,128,.08);color:var(--muted);border:1px solid var(--border)">' + _escHtml(v) + '</span>';
+  const row = (label, val) =>
+    '<div style="padding:.3rem 0;border-bottom:1px solid rgba(128,128,128,.07)">' +
+    '<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:.15rem">' + label + '</div>' +
+    '<div style="font-size:13px;font-weight:500">' + val + '</div></div>';
+  const crit = p.criticidade || '—';
+  const critColor = crit === 'Alta' ? '#ef4444' : crit === 'Media' ? '#ca8a04' : '#16a34a';
+  const body = $('view-pipeline-body');
+  body.innerHTML = [
+    row('Nome',          '<span style="font-family:ui-monospace,monospace;font-size:12px">' + _escHtml(p.pipeline_name) + '</span>'),
+    row('Projeto',       _escHtml(p.project_name || '—')),
+    row('Domínio',       _escHtml(p.domain || '—')),
+    row('Tags',          p.tags ? p.tags.split(',').map(t => pill(t.trim(), true)).join(' ') : '—'),
+    row('Agendamento',   _escHtml(p.scheduled_time || '—') + (p.schedule_type ? ' <span style="font-size:10px;color:var(--muted)">(' + p.schedule_type + ')</span>' : '')),
+    row('Data início',   _escHtml(p.dag_start_date || 'imediato')),
+    row('Depende de',    p.depends_on ? p.depends_on.split(',').map(d => pill(d.trim(), false)).join(' ') : '—'),
+    row('Status',        p.active ? pill('Ativo', true) : pill('Inativo', false)),
+    row('Descrição',     p.descricao ? '<span style="font-size:12px;white-space:pre-wrap">' + _escHtml(p.descricao) + '</span>' : '<span style="color:var(--muted);font-size:11px">— sem descrição —</span>'),
+    row('Criticidade',   '<span style="color:' + critColor + ';font-weight:600">' + _escHtml(crit) + '</span>'),
+    row('Ambiente',      _escHtml(p.ambiente || 'PROD')),
+    row('SLA',           p.sla_minutos ? p.sla_minutos + ' min' : '—'),
+    row('Retries',       (p.retries_count != null ? p.retries_count : 1) + 'x · ' + (p.retry_delay_seconds || 300) + 's'),
+    row('Fila exec.',    _escHtml(p.pool_name || 'padrão')),
+    row('Notificações',  (p.envia_msg_inicio ? '▶ Início ' : '') + (p.envia_msg_fim ? '✓ Conclusão ' : '') + (p.envia_msg_erro ? '⚠ Erro' : '') || '—'),
+    row('Criado em',     _escHtml(p.created_at || '—')),
+    row('Atualizado',    _escHtml(p.updated_at || '—')),
+  ].join('');
+  m.style.display = 'flex';
+}
+function closePipelineView() {
+  const m = $('modal-view-pipeline');
+  if (m) m.style.display = 'none';
+}
+document.addEventListener('DOMContentLoaded', function() {
+  const mv = $('modal-view-pipeline');
+  if (mv) mv.addEventListener('click', function(e){ if(e.target===this) closePipelineView(); });
+});
+// ─────────────────────────────────────────────────────────────────────────────
+
 function openPipelineCreate() {
   _pipelineIsNew = true;
   $('pipelineFormTitle').innerHTML = '<span class="orange">+</span> Novo Pipeline';
@@ -7137,6 +7187,7 @@ function renderQueryTable(payload) {
     '<td style="white-space:nowrap;font-size:11px;color:var(--muted)">' + (p.last_execution || '—') + '</td>' +
     '<td class="col-actions">' +
       '<div class="row-actions">' +
+        '<button class="act-btn act-view" onclick="openPipelineView(' + i + ')" title="Visualizar pipeline">' + ICONS.detail + '</button>' +
         '<button class="act-btn act-edit" onclick="openPipelineEdit(' + i + ')" title="Editar pipeline">' + ICONS.edit + '</button>' +
         '<button class="act-btn act-audit" onclick="openPipelineAudit(' + i + ')" title="Histórico de alterações">' + ICONS.history + '</button>' +
         (p.active ? '<button class="act-btn act-disable" onclick="softDeletePipeline(' + i + ')" title="Inativar pipeline">' + ICONS.disable + '</button>' : '') +
@@ -8606,6 +8657,23 @@ async function admDeleteVersao(id, versao) {
   });
 })();
 </script>
+
+<!-- ══ MODAL: Visualizar Pipeline ═══════════════════════════════════════ -->
+<div id="modal-view-pipeline" style="display:none;position:fixed;inset:0;z-index:900;background:rgba(0,0,0,.45);align-items:flex-start;justify-content:center;padding:1rem;overflow-y:auto">
+  <div style="background:var(--bg);border-radius:14px;border:1px solid var(--border);width:100%;max-width:700px;box-shadow:0 8px 40px rgba(0,0,0,.25);margin:auto">
+    <div style="padding:.75rem 1rem .6rem;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)">
+      <div>
+        <div style="font-size:.95rem;font-weight:700" id="view-pipeline-title">Pipeline</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:.15rem" id="view-pipeline-sub"></div>
+      </div>
+      <div style="display:flex;gap:.4rem;align-items:center">
+        <button class="btn btn-outline btn-sm" id="view-pipeline-edit-btn" onclick="closePipelineView();openPipelineEdit(window.__viewPipelineIdx)">✎ Editar</button>
+        <button onclick="closePipelineView()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:1.4rem;line-height:1;padding:2px 6px">×</button>
+      </div>
+    </div>
+    <div id="view-pipeline-body" style="padding:.75rem 1rem 1rem;display:grid;grid-template-columns:1fr 1fr;gap:.5rem 1.5rem"></div>
+  </div>
+</div>
 
 <!-- ══ MODAL: Audit Trail (S1) ══════════════════════════════════════════ -->
 <div id="modal-audit" style="display:none;position:fixed;inset:0;z-index:900;background:rgba(0,0,0,.45);align-items:center;justify-content:center;padding:1rem">
