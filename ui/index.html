@@ -798,6 +798,9 @@
   }
   .inline-order:focus { outline:none; border-color:var(--cvp-orange); box-shadow:var(--ring); }
 
+  /* ── Viewer mode — oculta controles de edição para usuários somente-leitura ── */
+  body.viewer-mode .viewer-hidden { display: none !important; }
+
   /* labels do modal lineage (template JS) */
   .lin-label{ font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; }
 
@@ -989,8 +992,8 @@
               <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap">
                 <div class="helper" style="margin:0">Use os filtros para buscar e clique em <strong>Novo Pipeline</strong> para cadastrar.</div>
                 <div style="display:flex;gap:6px;flex-wrap:wrap">
-                  <button class="btn btn-outline btn-sm" onclick="openSeqImportModal()" title="Importar sequence DataStage completa — projeto, jobs, ordem e lineage de uma vez">⬆ Importar Sequence</button>
-                  <button class="btn btn-outline btn-sm" onclick="openPipelineCreate()">+ Novo Pipeline</button>
+                  <button class="btn btn-outline btn-sm viewer-hidden" onclick="openSeqImportModal()" title="Importar sequence DataStage completa — projeto, jobs, ordem e lineage de uma vez">⬆ Importar Sequence</button>
+                  <button class="btn btn-outline btn-sm viewer-hidden" onclick="openPipelineCreate()">+ Novo Pipeline</button>
                 </div>
               </div>
 
@@ -1405,10 +1408,10 @@
 
           <div id="job-query-status" style="font-size:12px;color:var(--muted);margin-bottom:.5rem;min-height:16px"></div>
           <div id="job-query-actions" class="hidden" style="display:flex;gap:8px;justify-content:flex-end;margin-bottom:.75rem;flex-wrap:wrap">
-            <button class="btn btn-primary btn-sm" id="btn-save-order" onclick="saveJobsOrder()" disabled>Salvar ordem</button>
-            <button class="btn btn-outline btn-sm" onclick="openJobCreateModal('single')">+ Adicionar job</button>
-            <button class="btn-ghost btn-sm" onclick="openJobCreateModal('bulk')">Colar lista</button>
-            <button class="btn-exec btn-sm" id="btn-exec-pipeline" onclick="executarPipelineDoJob()" title="Executar o pipeline deste job agora">▶ Executar agora</button>
+            <button class="btn btn-primary btn-sm viewer-hidden" id="btn-save-order" onclick="saveJobsOrder()" disabled>Salvar ordem</button>
+            <button class="btn btn-outline btn-sm viewer-hidden" onclick="openJobCreateModal('single')">+ Adicionar job</button>
+            <button class="btn-ghost btn-sm viewer-hidden" onclick="openJobCreateModal('bulk')">Colar lista</button>
+            <button class="btn-exec btn-sm viewer-hidden" id="btn-exec-pipeline" onclick="executarPipelineDoJob()" title="Executar o pipeline deste job agora">▶ Executar agora</button>
           </div>
           <div id="job-query-table-area">
             <div class="empty-state">
@@ -2075,6 +2078,67 @@ const ICONS = {
 };
 
 let authHeader = null;
+
+// ── Auth sistêmico (service account para chamadas de leitura) ─────────────────
+let __sysAuth = null;
+
+/** Retorna o auth do usuário sistêmico se disponível, senão o do usuário logado. */
+function _sysAuth() { return __sysAuth || authHeader; }
+
+/** Modos que ESCREVEM dados — usam authHeader do usuário logado. */
+const _WRITE_MODES = new Set([
+  'save_tag','save_owner','save_job_type','delete_job_type',
+  'save_version','delete_version','save_pipeline','delete_pipeline',
+]);
+
+/**
+ * Carrega credenciais do usuário sistêmico a partir da Variable 'ORQUESTRA_SYSTEM_AUTH'.
+ * O valor deve ser um Basic auth header: "Basic base64(user:pass)".
+ * Qualquer usuário Airflow (inclusive Viewer) pode ler Variables.
+ */
+async function _initSystemAuth() {
+  try {
+    const r = await fetch('/api/v1/variables/ORQUESTRA_SYSTEM_AUTH',
+      { headers: { Authorization: authHeader } });
+    if (r.ok) {
+      const v = await r.json();
+      if (v && v.value) {
+        __sysAuth = v.value.trim();
+        console.log('[ORQ] Auth sistêmico carregado.');
+      }
+    }
+  } catch(e) {
+    console.warn('[ORQ] Auth sistêmico não disponível — usando auth do usuário:', e.message);
+  }
+}
+
+/**
+ * Detecta se o usuário logado é somente-visualizador (Viewer no Airflow).
+ * Viewers não possuem roles Op/User/Admin — apenas Viewer.
+ * Aplica classe 'viewer-mode' no body para ocultar controles de edição.
+ */
+async function _detectViewerRole() {
+  try {
+    const usr = encodeURIComponent(window.__currentUser || '');
+    const r = await fetch('/api/v1/users/' + usr, { headers: { Authorization: authHeader } });
+    if (!r.ok) return;
+    const u = await r.json();
+    const roleNames = (u.roles || []).map(x => (x.name || '').toLowerCase());
+    const editRoles = ['op', 'user', 'admin'];
+    if (roleNames.length > 0 && !roleNames.some(rn => editRoles.includes(rn))) {
+      window.__isViewer = true;
+      document.body.classList.add('viewer-mode');
+      console.log('[ORQ] Modo visualizador ativado para', window.__currentUser);
+    } else {
+      window.__isViewer = false;
+    }
+  } catch(e) {
+    console.warn('[ORQ] Detecção de role falhou (assumindo editor):', e.message);
+    window.__isViewer = false;
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 let jobMode = 'manual';
 let pipelineStatus = 1;
 const $ = (id) => document.getElementById(id);
@@ -2157,7 +2221,7 @@ async function waitDagRun(dagId, runId, maxSec) {
   while (Date.now() < end) {
     await new Promise(r => setTimeout(r, 3000));
     try {
-      const r = await fetch('/api/v1/dags/' + dagId + '/dagRuns/' + runId, { headers: { 'Authorization': authHeader } });
+      const r = await fetch('/api/v1/dags/' + dagId + '/dagRuns/' + runId, { headers: { 'Authorization': _sysAuth() } });
       if (r.status === 401) { sair(); return 'failed'; }
       if (!r.ok) return 'failed';
       const d = await r.json();
@@ -2266,7 +2330,7 @@ async function loadLogs(offset) {
     const runId = 'orq_logs_ui_' + Date.now();
     const r = await fetch('/api/v1/dags/' + LOGS_DAG_ID + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf }),
     });
     if (r.status === 401) { sair(); return; }
@@ -2286,7 +2350,7 @@ async function loadLogs(offset) {
     if (st) st.textContent = 'Carregando dados...';
     const xr = await fetch(
       '/api/v1/dags/' + LOGS_DAG_ID + '/dagRuns/' + rid + '/taskInstances/consultar_logs/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (xr.status === 401) { sair(); return; }
     if (xr.status === 403) { if (st) st.textContent = 'Acesso negado (403) ao ler XCom.'; return; }
@@ -2422,7 +2486,7 @@ async function loadLogDetail(executionId, pipeline) {
     const runId = 'orq_log_detail_' + Date.now();
     const r = await fetch('/api/v1/dags/' + LOGS_DAG_ID + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf }),
     });
     if (r.status === 401) { sair(); return; }
@@ -2437,7 +2501,7 @@ async function loadLogDetail(executionId, pipeline) {
     $('ld-status').textContent = 'Carregando dados (XCom)...';
     const xr = await fetch(
       '/api/v1/dags/' + LOGS_DAG_ID + '/dagRuns/' + rid + '/taskInstances/consultar_logs/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (xr.status === 401) { sair(); return; }
     if (!xr.ok) { $('ld-status').textContent = 'Erro ao ler XCom: ' + xr.status; return; }
@@ -2638,7 +2702,7 @@ async function loadLineageDSX(jobId) {
     const runId = 'orq_dsx_' + Date.now();
     const r = await fetch('/api/v1/dags/' + LINEAGE_DSX_DAG + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf: { project_name: projectName, job_name: j.name.trim() } }),
     });
     if (r.status === 401) { sair(); return; }
@@ -2651,7 +2715,7 @@ async function loadLineageDSX(jobId) {
 
     const xr = await fetch(
       '/api/v1/dags/' + LINEAGE_DSX_DAG + '/dagRuns/' + rid + '/taskInstances/extrair_lineage_dsx/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (!xr.ok) { $('dsx-prev-status').textContent = 'Erro ao ler XCom: ' + xr.status; return; }
     const payload = normalizeXcomValue(await xr.json());
@@ -2804,7 +2868,7 @@ async function loadDashboard() {
     const runId = 'orq_dash_ui_' + Date.now();
     const r = await fetch('/api/v1/dags/' + DASHBOARD_DAG_ID + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf }),
     });
     if (r.status === 401) { sair(); return; }
@@ -2818,7 +2882,7 @@ async function loadDashboard() {
 
     const xr = await fetch(
       '/api/v1/dags/' + DASHBOARD_DAG_ID + '/dagRuns/' + rid + '/taskInstances/consultar_dashboard/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (xr.status === 401) { sair(); return; }
     if (!xr.ok) { if (st) st.textContent = 'Erro ao ler XCom: ' + xr.status; return; }
@@ -2980,7 +3044,7 @@ async function loadGovernanca() {
     const runId = 'orq_lin_' + Date.now();
     const r = await fetch('/api/v1/dags/' + LINEAGE_QUERY_DAG + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf: { pipeline_name: pipeline } }),
     });
     if (r.status === 401) { sair(); return; }
@@ -2993,7 +3057,7 @@ async function loadGovernanca() {
 
     const xr = await fetch(
       '/api/v1/dags/' + LINEAGE_QUERY_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_lineage/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (!xr.ok) { if (st) st.textContent = 'Erro XCom ' + xr.status; return; }
 
@@ -3555,7 +3619,7 @@ async function loadAppConfig() {
     const runId = 'orq_cfg_' + Date.now();
     const r = await fetch('/api/v1/dags/' + APP_CONFIG_DAG + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf: {} }),
     });
     if (!r.ok) return;
@@ -3566,7 +3630,7 @@ async function loadAppConfig() {
     const xr = await fetch(
       '/api/v1/dags/' + APP_CONFIG_DAG + '/dagRuns/' + rid +
       '/taskInstances/buscar_configuracoes/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (!xr.ok) return;
     const cfg = normalizeXcomValue(await xr.json());
@@ -3592,7 +3656,7 @@ async function loadPipelineList() {
     const runId = 'orq_piplist_' + Date.now();
     const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf: { mode: 'list_pipelines' } }),
     });
     if (!r.ok) return;
@@ -3602,7 +3666,7 @@ async function loadPipelineList() {
     if (state !== 'success') return;
     const xr = await fetch(
       '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_catalogo/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (!xr.ok) return;
     const data = normalizeXcomValue(await xr.json());
@@ -3623,7 +3687,7 @@ async function loadProjectList() {
     const runId = 'proj-' + Date.now();
     const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf: { mode: 'list_projects' } }),
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -3633,7 +3697,7 @@ async function loadProjectList() {
     if (state !== 'success') throw new Error('DAG state: ' + state);
     const xr = await fetch(
       '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_catalogo/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (!xr.ok) throw new Error('XCom HTTP ' + xr.status);
     const data = normalizeXcomValue(await xr.json());
@@ -4014,7 +4078,7 @@ async function _pipelineHealthLoad(idx, pipelineName) {
     const dagId = pipelineName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
     const r = await fetch(
       '/api/v1/dags/' + encodeURIComponent(dagId) + '/dagRuns?limit=1&order_by=-start_date',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (!r.ok) { el.textContent = ''; return; }
     const data = await r.json();
@@ -4083,13 +4147,15 @@ function rankSwitchTab(type) {
 
 async function _catTrigger(conf, statusMsg) {
   if (!authHeader) { showToast('Faça login primeiro.', true); return null; }
+  // Operações de escrita usam auth do usuário logado; leituras usam auth sistêmico
+  const _auth = _WRITE_MODES.has(conf.mode || '') ? authHeader : _sysAuth();
   const st = $('cat-status');
   if (st) { st.textContent = statusMsg; st.style.color = 'var(--muted)'; }
 
   const runId = 'orq_cat_' + Date.now();
   const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+    headers: { 'Content-Type': 'application/json', 'Authorization': _auth },
     body: JSON.stringify({ dag_run_id: runId, conf }),
   });
   if (r.status === 401) { sair(); return null; }
@@ -4107,7 +4173,7 @@ async function _catTrigger(conf, statusMsg) {
   const xr = await fetch(
     '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid +
     '/taskInstances/consultar_catalogo/xcomEntries/return_value',
-    { headers: { 'Authorization': authHeader } }
+    { headers: { 'Authorization': _auth } }
   );
   if (!xr.ok) {
     if (st) { st.textContent = 'Erro ao ler resultado: ' + xr.status; st.style.color = 'var(--red)'; }
@@ -4216,7 +4282,7 @@ function _renderCatResults(payload, impactoMode) {
         : `<span style="font-size:11px;color:var(--text)">${j.object_name || '—'}</span>
            <span style="font-size:11px;color:var(--muted);font-weight:700">${j.database_name || ''}</span>`;
       const tagKey = encodeURIComponent(objKey);
-      const tagBtn = `<button onclick="event.stopPropagation();_tagEdit('${tagKey}')"
+      const tagBtn = window.__isViewer ? '' : `<button onclick="event.stopPropagation();_tagEdit('${tagKey}')"
         style="font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer"
         title="Classificar objeto">🏷</button>`;
       return `<div style="display:grid;grid-template-columns:26px 1fr auto 1fr auto auto;gap:8px;align-items:center;
@@ -4271,8 +4337,8 @@ function _renderCatResults(payload, impactoMode) {
         <div style="display:flex;align-items:center;gap:.5rem;padding:.45rem .75rem;background:rgba(128,128,128,.04);border-top:1px solid var(--border);flex-wrap:wrap">
           <span style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Responsável:</span>
           <span id="own-${pi}-display" style="font-size:11px;color:var(--muted)">—</span>
-          <button onclick="_ownerEdit(${pi},'${p.pipeline_name.replace(/'/g,"\\'")}')"
-            style="font-size:10px;padding:1px 7px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;margin-left:auto">✎ Editar</button>
+          ${window.__isViewer ? '' : `<button onclick="_ownerEdit(${pi},'${p.pipeline_name.replace(/'/g,"\\'")}')"
+            style="font-size:10px;padding:1px 7px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;margin-left:auto">✎ Editar</button>`}
         </div>
       </div>
     </div>`;
@@ -4647,7 +4713,7 @@ async function admLoadJobTypes() {
     const runId = 'jt-' + Date.now();
     const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf: { mode: 'list_job_types' } }),
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -4657,7 +4723,7 @@ async function admLoadJobTypes() {
     if (state !== 'success') throw new Error('state: ' + state);
     const xr = await fetch(
       '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_catalogo/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (!xr.ok) throw new Error('XCom ' + xr.status);
     const data = normalizeXcomValue(await xr.json());
@@ -4787,7 +4853,7 @@ async function admLoadConfig() {
     const runId = 'orq_cfg_load_' + Date.now();
     const r = await fetch('/api/v1/dags/' + APP_CONFIG_DAG + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf: {} }),
     });
     if (!r.ok) { if (st) st.textContent = 'Erro ao carregar: ' + r.status; return; }
@@ -4798,7 +4864,7 @@ async function admLoadConfig() {
     const xr = await fetch(
       '/api/v1/dags/' + APP_CONFIG_DAG + '/dagRuns/' + rid +
       '/taskInstances/buscar_configuracoes/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (!xr.ok) { if (st) st.textContent = 'Erro XCom: ' + xr.status; return; }
     const cfg = normalizeXcomValue(await xr.json());
@@ -5167,7 +5233,7 @@ async function admRegenEstimate() {
   try {
     const runId = 'orq_regen_est_' + Date.now();
     const r1 = await fetch('/api/v1/dags/' + QUERY_DAG_ID + '/dagRuns', {
-      method: 'POST', headers: {'Content-Type':'application/json','Authorization':authHeader},
+      method: 'POST', headers: {'Content-Type':'application/json','Authorization': _sysAuth()},
       body: JSON.stringify({ dag_run_id: runId, conf: {
         filter_project: project, limit: 1, offset: 0,
       }}),
@@ -5214,7 +5280,7 @@ async function admRegenAllDags() {
     const runId2 = 'orq_regen_factory_' + Date.now();
     const r2 = await fetch('/api/v1/dags/etl_dag_factory/dagRuns', {
       method: 'POST',
-      headers: {'Content-Type':'application/json','Authorization':authHeader},
+      headers: {'Content-Type':'application/json','Authorization': authHeader},
       body: JSON.stringify({ dag_run_id: runId2, conf: {
         force_all: true,
         filter_project: project,
@@ -5319,7 +5385,11 @@ async function entrar() {
       if (firstName) $('who').textContent = firstName;
     }).catch(() => {});
     window.__currentUser = u;
-    _applyAdminVisibility();   // mostra aba Admin só para CVT38571
+    // Carrega auth sistêmico + detecta role (assíncrono, não bloqueia UI)
+    Promise.all([_initSystemAuth(), _detectViewerRole()]).then(() => {
+      _applyAdminVisibility();
+    });
+    _applyAdminVisibility();   // aplica imediatamente com role default; reaplica após detecção
     // Carregar config do banco (S5/S2 — assíncrono, não bloqueia)
     loadAppConfig().then(() => {
       _startDashAutoRefresh();
@@ -5763,7 +5833,7 @@ async function pollDagRun(dagId, runId, label, startTime, resolve) {
   if (elapsed > 30) { setModalTimeout(dagId); resolve('timeout'); return; }
   try {
     const r = await fetch('/api/v1/dags/' + dagId + '/dagRuns/' + runId, {
-      headers: { 'Authorization': authHeader }
+      headers: { 'Authorization': _sysAuth() }
     });
     if (!r.ok) { _pollTimer = setTimeout(() => pollDagRun(dagId, runId, label, startTime, resolve), 2000); return; }
     const data = await r.json();
@@ -6423,7 +6493,7 @@ async function loadJobsQuery(offset) {
   try {
     const r = await fetch('/api/v1/dags/etl_pipeline_job_query/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ conf }),
     });
     if (r.status === 401) { sair(); return; }
@@ -6442,7 +6512,7 @@ async function loadJobsQuery(offset) {
 
     const xr = await fetch(
       '/api/v1/dags/etl_pipeline_job_query/dagRuns/' + runId + '/taskInstances/consultar_jobs/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (xr.status === 401) { sair(); return; }
     if (xr.status === 403) { if (qs) qs.textContent = 'Acesso negado (403) ao ler XCom.'; return; }
@@ -6466,7 +6536,7 @@ async function pollJobsRun(runId) {
   const timeoutMs = 120000;
   while (Date.now() - start < timeoutMs) {
     try {
-      const r = await fetch('/api/v1/dags/etl_pipeline_job_query/dagRuns/' + runId, { headers: { 'Authorization': authHeader } });
+      const r = await fetch('/api/v1/dags/etl_pipeline_job_query/dagRuns/' + runId, { headers: { 'Authorization': _sysAuth() } });
       if (r.ok) {
         const d = await r.json();
         if (d.state === 'success') return 'success';
@@ -6525,7 +6595,7 @@ function renderJobsTable(payload) {
     '<td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (j.job_command || '') + '">' + (j.job_command || '—') + '</td>' +
     '<td class="col-actions">' +
       '<div class="row-actions">' +
-        '<button class="act-btn act-edit" onclick="openJobEdit(' + i + ')" title="Editar job">' + ICONS.edit + '</button>' +
+        (!window.__isViewer ? '<button class="act-btn act-edit" onclick="openJobEdit(' + i + ')" title="Editar job">' + ICONS.edit + '</button>' : '') +
         '<button class="act-btn act-lineage" onclick="openJobLineageFromTable(' + i + ')" title="Ver lineage">' + ICONS.graph + '</button>' +
       '</div>' +
     '</td>' +
@@ -7279,7 +7349,7 @@ async function openPipelineLineage(idx) {
     const runId = 'pl-' + Date.now();
     const r = await fetch('/api/v1/dags/' + PIPE_JOBS_DAG + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf: { mode: 'list_jobs_lineage', pipeline_name: p.pipeline_name } }),
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -7289,7 +7359,7 @@ async function openPipelineLineage(idx) {
     if (state !== 'success') throw new Error('state: ' + state);
     const xr = await fetch(
       '/api/v1/dags/' + PIPE_JOBS_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_catalogo/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (!xr.ok) throw new Error('XCom ' + xr.status);
     const data = normalizeXcomValue(await xr.json());
@@ -7507,7 +7577,7 @@ async function loadQuery(offset) {
   try {
     const r = await fetch('/api/v1/dags/etl_pipeline_query/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ conf }),
     });
     if (r.status === 401) { sair(); return; }
@@ -7526,7 +7596,7 @@ async function loadQuery(offset) {
 
     const xr = await fetch(
       '/api/v1/dags/etl_pipeline_query/dagRuns/' + runId + '/taskInstances/consultar_pipelines/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
 
     if (xr.status === 401) { sair(); return; }
@@ -7571,7 +7641,7 @@ async function pollQueryRun(runId) {
   const timeoutMs = 120000; // 2 min
   while (Date.now() - start < timeoutMs) {
     try {
-      const r = await fetch('/api/v1/dags/etl_pipeline_query/dagRuns/' + runId, { headers: { 'Authorization': authHeader } });
+      const r = await fetch('/api/v1/dags/etl_pipeline_query/dagRuns/' + runId, { headers: { 'Authorization': _sysAuth() } });
       if (r.ok) {
         const d = await r.json();
         if (d.state === 'success') return 'success';
@@ -7627,15 +7697,16 @@ function renderQueryTable(payload) {
     '<td class="col-actions">' +
       '<div class="row-actions">' +
         '<button class="act-btn act-view" onclick="openPipelineView(' + i + ')" title="Visualizar pipeline">' + ICONS.detail + '</button>' +
-        '<button class="act-btn act-edit" onclick="openPipelineEdit(' + i + ')" title="Editar pipeline">' + ICONS.edit + '</button>' +
+        (!window.__isViewer ? '<button class="act-btn act-edit" onclick="openPipelineEdit(' + i + ')" title="Editar pipeline">' + ICONS.edit + '</button>' : '') +
         '<button class="act-btn act-lineage" onclick="openPipelineLineage(' + i + ')" title="Lineage do pipeline">' + ICONS.graph + '</button>' +
         '<button class="act-btn act-audit" onclick="openPipelineAudit(' + i + ')" title="Histórico de alterações">' + ICONS.history + '</button>' +
-        (p.active ? '<button class="act-btn act-disable" onclick="softDeletePipeline(' + i + ')" title="Inativar pipeline">' + ICONS.disable + '</button>' : '') +
-        (!p.dag_criada
-          ? '<button class="btn-dag act-btn act-dag" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="Gerar DAG no Airflow">' + ICONS.gear + '</button>'
-          : '<button class="btn-dag-ok act-btn act-regen" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="DAG já criada — regenerar após mudanças">' + ICONS.refresh + '</button>'
-        ) +
-        (p.dag_criada
+        (!window.__isViewer && p.active ? '<button class="act-btn act-disable" onclick="softDeletePipeline(' + i + ')" title="Inativar pipeline">' + ICONS.disable + '</button>' : '') +
+        (!window.__isViewer ? (
+          !p.dag_criada
+            ? '<button class="btn-dag act-btn act-dag" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="Gerar DAG no Airflow">' + ICONS.gear + '</button>'
+            : '<button class="btn-dag-ok act-btn act-regen" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="DAG já criada — regenerar após mudanças">' + ICONS.refresh + '</button>'
+        ) : '') +
+        (!window.__isViewer && p.dag_criada
           ? '<button class="act-btn act-exec" id="exec-btn-' + i + '" onclick="executarPipelineAgora(' + i + ')" title="Executar agora, fora do agendamento">' + ICONS.play + '</button>'
           : ''
         ) +
@@ -8209,7 +8280,7 @@ async function seqImportAnalyze() {
 
     const r = await fetch('/api/v1/dags/' + SEQ_PARSE_DAG + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf: {
         project_name: project,
         seq_name:     seqName,
@@ -8236,7 +8307,7 @@ async function seqImportAnalyze() {
     const xr = await fetch(
       '/api/v1/dags/' + SEQ_PARSE_DAG + '/dagRuns/' + rid +
       '/taskInstances/parse_sequence/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (!xr.ok) {
       if (msg) { msg.textContent = 'Erro ao ler resultado: ' + xr.status; msg.className = 'msg erro'; }
@@ -8462,7 +8533,7 @@ async function openChangelog() {
     const runId = 'orq_versao_q_' + Date.now();
     const r = await fetch('/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf: {} }),
     });
     if (!r.ok) { $('changelog-loading').textContent = 'Erro ao carregar: ' + r.status; return; }
@@ -8473,7 +8544,7 @@ async function openChangelog() {
 
     const xr = await fetch(
       '/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_versoes/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (!xr.ok) { $('changelog-loading').textContent = 'Erro ao ler dados: ' + xr.status; return; }
     const payload = normalizeXcomValue(await xr.json());
@@ -8525,7 +8596,7 @@ async function admLoadVersoes() {
     const runId = 'orq_versao_adm_' + Date.now();
     const r = await fetch('/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf: {} }),
     });
     if (!r.ok) { if (st) st.textContent = 'Erro: ' + r.status; return; }
@@ -8536,7 +8607,7 @@ async function admLoadVersoes() {
 
     const xr = await fetch(
       '/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_versoes/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (!xr.ok) { if (st) st.textContent = 'Erro ao ler: ' + xr.status; return; }
     const payload  = normalizeXcomValue(await xr.json());
@@ -8879,7 +8950,7 @@ async function admDeleteVersao(id, versao) {
       const resp = await fetch(
         '/api/v1/dags/' + encodeURIComponent(dagId) +
         '/dagRuns/' + encodeURIComponent(dagRunId) + '/taskInstances',
-        { headers: { 'Authorization': authHeader } }
+        { headers: { 'Authorization': _sysAuth() } }
       );
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const data = await resp.json();
@@ -8958,7 +9029,7 @@ async function admDeleteVersao(id, versao) {
         '/dagRuns/' + encodeURIComponent(dagRunId) +
         '/taskInstances/' + encodeURIComponent(taskId) +
         '/logs/' + tryNum,
-        { headers: { 'Authorization': authHeader, 'Accept': 'text/plain' } }
+        { headers: { 'Authorization': _sysAuth(), 'Accept': 'text/plain' } }
       );
       if (!logResp.ok) throw new Error('HTTP ' + logResp.status);
       let text = await logResp.text();
@@ -9049,7 +9120,7 @@ async function admDeleteVersao(id, versao) {
     try {
       const url = '/api/v1/dags/' + encodeURIComponent(dagId) +
         '/dagRuns?limit=50&order_by=-execution_date';
-      const r = await fetch(url, { headers: { 'Authorization': authHeader } });
+      const r = await fetch(url, { headers: { 'Authorization': _sysAuth() } });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const data = await r.json();
       const runs = data.dag_runs || [];
@@ -9173,7 +9244,7 @@ async function openPipelineAudit(idx) {
     const runId = 'orq_audit_' + Date.now();
     const r = await fetch('/api/v1/dags/' + AUDIT_DAG_ID + '/dagRuns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
       body: JSON.stringify({ dag_run_id: runId, conf: { pipeline_name: p.pipeline_name, limit: 50 } }),
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -9184,7 +9255,7 @@ async function openPipelineAudit(idx) {
 
     const xr = await fetch(
       '/api/v1/dags/' + AUDIT_DAG_ID + '/dagRuns/' + rid + '/taskInstances/consultar_audit/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
+      { headers: { 'Authorization': _sysAuth() } }
     );
     if (!xr.ok) throw new Error('XCom HTTP ' + xr.status);
     const payload = normalizeXcomValue(await xr.json());
