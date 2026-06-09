@@ -829,47 +829,61 @@ def _list_jobs_lineage(hook, pipeline_name: str):
     if not pipeline_name:
         return {"jobs": []}
 
-    rows = hook.get_records(
+    # Busca jobs do pipeline
+    job_rows = hook.get_records(
         """
         SELECT
-            j.job_name,
-            j.execution_order,
-            j.job_type,
-            j.job_command
-        FROM dbo.etl_job j
-        WHERE j.pipeline_name = %s
-        ORDER BY j.execution_order, j.job_name
+            pj.job_name,
+            CAST(pj.execution_order AS INT) AS execution_order,
+            pj.job_type,
+            ISNULL(pj.job_command, '')     AS job_command
+        FROM dbo.etl_pipeline_job pj
+        WHERE pj.pipeline_name = %s
+        ORDER BY pj.execution_order, pj.job_name
         """,
         parameters=[pipeline_name],
     )
 
+    # Busca lineage de todos os jobs do pipeline numa só query
+    lin_rows = hook.get_records(
+        """
+        SELECT
+            l.job_name,
+            ISNULL(stm.type_label, l.object_type) AS object_type,
+            l.object_name,
+            l.direction
+        FROM dbo.etl_job_lineage l
+        LEFT JOIN dbo.etl_stage_type_map stm ON stm.type_raw = l.object_type
+        WHERE l.pipeline_name = %s
+          AND l.object_name IS NOT NULL AND l.object_name <> ''
+        ORDER BY l.job_name, l.direction, l.object_type, l.object_name
+        """,
+        parameters=[pipeline_name],
+    )
+
+    # Agrupa lineage por job
+    lineage_map: dict = {}
+    for r in lin_rows:
+        jn, otype, oname, direction = r
+        if jn not in lineage_map:
+            lineage_map[jn] = {"origens": [], "destinos": []}
+        entry = {"tipo": otype or "", "nome": oname or ""}
+        if direction == "origem":
+            lineage_map[jn]["origens"].append(entry)
+        else:
+            lineage_map[jn]["destinos"].append(entry)
+
     job_list = []
-    for row in rows:
+    for row in job_rows:
         job_name, order, job_type, cmd = row
-
-        lin_rows = hook.get_records(
-            """
-            SELECT
-                object_type  AS tipo,
-                object_name  AS nome,
-                direction
-            FROM dbo.etl_job_lineage
-            WHERE pipeline_name = %s AND job_name = %s
-            ORDER BY direction, object_type, object_name
-            """,
-            parameters=[pipeline_name, job_name],
-        )
-
-        origens  = [{"tipo": r[0], "nome": r[1]} for r in lin_rows if r[2] == "origem"]
-        destinos = [{"tipo": r[0], "nome": r[1]} for r in lin_rows if r[2] == "destino"]
-
+        lg = lineage_map.get(job_name, {"origens": [], "destinos": []})
         job_list.append({
             "job_name":        job_name,
-            "execution_order": int(order) if order is not None else None,
+            "execution_order": order,
             "job_type":        job_type or "",
             "job_command":     cmd or "",
-            "origens":         origens,
-            "destinos":        destinos,
+            "origens":         lg["origens"],
+            "destinos":        lg["destinos"],
         })
 
     return {"pipeline_name": pipeline_name, "jobs": job_list}
