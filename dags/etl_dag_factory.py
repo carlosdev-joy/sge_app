@@ -55,9 +55,19 @@ def _ind(code, n=4):
     return "\n".join(pad + ln if ln.strip() else ln for ln in code.split("\n"))
 
 
+_TYPE_ALIAS = {
+    "bash":         "shell",
+    "shell script": "shell",
+    "proc":         "storedproc",
+    "stored proc":  "storedproc",
+    "stored_proc":  "storedproc",
+    "procedure":    "storedproc",
+}
+
+
 def _task_block(job, project, pipeline):
     name  = job["job_name"]
-    jtype = job["job_type"].lower().strip()
+    jtype = _TYPE_ALIAS.get(job["job_type"].lower().strip(), job["job_type"].lower().strip())
     jcmd  = job["job_command"] or ""
 
     if jtype == "datastage":
@@ -113,6 +123,33 @@ def _task_block(job, project, pipeline):
             f'    python_callable=_run_{name},',
             f')',
         ])
+    elif jtype == "sql":
+        # job_command = SQL inline ou nome de arquivo .sql (relativo a BASE_LOG_DIR)
+        sql_stmt = jcmd or f"SELECT 1 -- job {name}"
+        safe_sql = sql_stmt.replace('"', '\\"').replace('\n', ' ')
+        main = "\n".join([
+            f'def _run_{name}(**context):',
+            f'    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)',
+            f'    hook.run("{safe_sql}")',
+            f'',
+            f't_job_{name} = PythonOperator(',
+            f'    task_id="{name}",',
+            f'    python_callable=_run_{name},',
+            f')',
+        ])
+    elif jtype == "http":
+        url = jcmd or "https://httpbin.org/get"
+        main = "\n".join([
+            f'def _run_{name}(**context):',
+            f'    resp = requests.get("{url}", timeout=30)',
+            f'    resp.raise_for_status()',
+            f'    print(f"HTTP {name}: status={{resp.status_code}}")',
+            f'',
+            f't_job_{name} = PythonOperator(',
+            f'    task_id="{name}",',
+            f'    python_callable=_run_{name},',
+            f')',
+        ])
     else:
         main = "\n".join([
             f't_job_{name} = PythonOperator(',
@@ -157,6 +194,7 @@ def _generate_dag_source(pipeline, jobs):
     max_active_runs_val = int(pipeline.get("max_active_runs") or 1)
     pool_name_val       = (pipeline.get("pool_name") or "").strip() or None
     sla_minutos_val     = pipeline.get("sla_minutos")
+    ssh_conn_id_val     = (pipeline.get("ssh_conn_id") or "ssh_lnxprd021").strip()
 
     cron        = _time_to_cron(sched)
     base_log    = BASE_LOG_ROOT.format(project=project)
@@ -167,7 +205,10 @@ def _generate_dag_source(pipeline, jobs):
     others      = sorted_jobs[1:]
     all_ends    = [f"t_end_{j['job_name']}" for j in sorted_jobs]
 
-    ssh_needed = any(j["job_type"].lower() in ("datastage", "shell") for j in sorted_jobs)
+    ssh_needed = any(
+        _TYPE_ALIAS.get(j["job_type"].lower(), j["job_type"].lower()) in ("datastage", "shell")
+        for j in sorted_jobs
+    )
 
     # Seção de imports
     import_lines = ["from airflow import DAG"]
@@ -190,7 +231,7 @@ def _generate_dag_source(pipeline, jobs):
     # Constantes
     consts_lines = [
         f'DAG_ID        = "{pname}"',
-        f'SSH_CONN_ID   = "ssh_lnxprd021"',
+        f'SSH_CONN_ID   = "{ssh_conn_id_val}"',
         f'MSSQL_CONN_ID = "SQL14_DMDB41"',
         f'PROJECT_NAME  = "{project}"',
         f'DOMAIN        = "{domain}"',
