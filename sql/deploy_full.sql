@@ -166,14 +166,24 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE object_id = OBJECT_ID('dbo.etl_stage_type_map'))
 BEGIN
     CREATE TABLE dbo.etl_stage_type_map (
-        stage_type  NVARCHAR(100) NOT NULL,
-        type_label  NVARCHAR(100) NOT NULL,
+        stage_type    NVARCHAR(100) NOT NULL,
+        type_label    NVARCHAR(100) NOT NULL,
+        type_category NVARCHAR(50)  NULL,
+        role_hint     NVARCHAR(50)  NULL,
         CONSTRAINT PK_etl_stage_type_map PRIMARY KEY (stage_type)
     );
     PRINT '[OK] Tabela dbo.etl_stage_type_map criada';
 END
 ELSE
     PRINT '[--] dbo.etl_stage_type_map já existe';
+GO
+
+-- Adicionar colunas type_category e role_hint se não existirem
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_stage_type_map') AND name='type_category')
+    ALTER TABLE dbo.etl_stage_type_map ADD type_category NVARCHAR(50) NULL;
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_stage_type_map') AND name='role_hint')
+    ALTER TABLE dbo.etl_stage_type_map ADD role_hint NVARCHAR(50) NULL;
+PRINT '[OK] Colunas type_category e role_hint garantidas em etl_stage_type_map';
 GO
 
 -- Seed via EXEC (SQL dinâmico) para evitar validação de colunas em tempo de compilação
@@ -206,6 +216,22 @@ END
 ELSE
     PRINT ''[--] etl_stage_type_map ja possui dados'';
 ');
+GO
+
+-- Classificar type_category e role_hint
+UPDATE dbo.etl_stage_type_map SET type_category='storage',   role_hint='source'
+WHERE stage_type IN ('CSeqFileStage','CDataSetStage');
+
+UPDATE dbo.etl_stage_type_map SET type_category='database',  role_hint='source'
+WHERE stage_type IN ('COracleConnectorPX','DB2ConnectorPX','CODBCConnectorPX',
+                     'CNetezzaConnectorPX','SAPConnectorPX','CBMSOraBulkLoaderStage');
+
+UPDATE dbo.etl_stage_type_map SET type_category='transform', role_hint='transform'
+WHERE stage_type IN ('CTransformerStage','CHashPartitionStage','CLookupStage',
+                     'CSortStage','CFilterStage','CJoinStage','CFunnelStage',
+                     'CSampleStage','CRemoveDuplicatesStage','CChangeApplyStage',
+                     'CChangeCaptureStage','CRowGeneratorStage');
+PRINT '[OK] type_category e role_hint atualizados em etl_stage_type_map';
 GO
 
 -- ------------------------------------------------------------
