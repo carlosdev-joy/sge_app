@@ -1052,125 +1052,195 @@
 
           <p style="font-size:10px;color:var(--muted);margin:0 0 .5rem;display:flex;align-items:center;gap:.3rem"><span style="color:var(--red);font-weight:600">*</span> Campos obrigatórios</p>
 
-          <!-- Identificação -->
-          <div class="section-sep"><span>Identificação</span></div>
-          <div class="field">
-            <label for="pipeline_name">Nome do pipeline <span style="color:var(--red)">*</span></label>
-            <input id="pipeline_name" type="text" placeholder="ex: ETL_COBRANCA_DIARIA" oninput="this.value=this.value.toUpperCase();validateIdentField('pipeline_name','err-pipeline','Nome do pipeline',true)" />
-            <div id="err-pipeline" class="field-error"></div>
+          <!-- Stepper -->
+          <div id="wiz-stepper">
+            <div class="wiz-step" id="wstep-1" onclick="wizGoTo(1)" style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer">
+              <div class="wiz-circle">1</div>
+              <div class="wiz-label">Identificação</div>
+            </div>
+            <div class="wiz-connector"></div>
+            <div class="wiz-step" id="wstep-2" onclick="wizGoTo(2)" style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer">
+              <div class="wiz-circle">2</div>
+              <div class="wiz-label">Agendamento</div>
+            </div>
+            <div class="wiz-connector"></div>
+            <div class="wiz-step" id="wstep-3" onclick="wizGoTo(3)" style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer">
+              <div class="wiz-circle">3</div>
+              <div class="wiz-label">Status</div>
+            </div>
+            <div class="wiz-connector"></div>
+            <div class="wiz-step" id="wstep-4" onclick="wizGoTo(4)" style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer">
+              <div class="wiz-circle">4</div>
+              <div class="wiz-label">Configurações</div>
+            </div>
+            <div class="wiz-connector"></div>
+            <div class="wiz-step" id="wstep-5" onclick="wizGoTo(5)" style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer">
+              <div class="wiz-circle">5</div>
+              <div class="wiz-label">Jobs</div>
+            </div>
+            <div class="wiz-connector"></div>
+            <div class="wiz-step" id="wstep-6" onclick="wizGoTo(6)" style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer">
+              <div class="wiz-circle">6</div>
+              <div class="wiz-label">Revisão</div>
+            </div>
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+
+          <!-- PASSO 1: Identificação -->
+          <div id="wiz-step-1">
+            <div class="section-sep"><span>Identificação</span></div>
             <div class="field">
-              <label for="p-project">Projeto <span style="color:var(--red)">*</span></label>
-              <select id="p-project" required>
-                <option value="">Carregando projetos…</option>
-              </select>
+              <label for="pipeline_name">Nome do pipeline <span style="color:var(--red)">*</span></label>
+              <input id="pipeline_name" type="text" placeholder="ex: ETL_COBRANCA_DIARIA" oninput="this.value=this.value.toUpperCase();validateIdentField('pipeline_name','err-pipeline','Nome do pipeline',true)" />
+              <div id="err-pipeline" class="field-error"></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+              <div class="field">
+                <label for="p-project">Projeto <span style="color:var(--red)">*</span></label>
+                <select id="p-project" required>
+                  <option value="">Carregando projetos…</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="p-domain">Domínio <span style="color:var(--red)">*</span></label>
+                <input id="p-domain" type="text" placeholder="ex: CLIENTES_COBRANCA" required oninput="this.value=this.value.toUpperCase();validateIdentField('p-domain','err-domain','Domínio',true)" />
+                <div id="err-domain" class="field-error"></div>
+              </div>
             </div>
             <div class="field">
-              <label for="p-domain">Domínio <span style="color:var(--red)">*</span></label>
-              <input id="p-domain" type="text" placeholder="ex: CLIENTES_COBRANCA" required oninput="this.value=this.value.toUpperCase();validateIdentField('p-domain','err-domain','Domínio',true)" />
-              <div id="err-domain" class="field-error"></div>
+              <label>Tags <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">— opcional · Enter para adicionar</span></label>
+              <div class="chip-input-wrap" id="tags-wrap" onclick="document.getElementById('tag-input').focus()">
+                <input id="tag-input" type="text" placeholder="ex: DATASTAGE, DIARIO..." oninput="this.value=this.value.toUpperCase();validateTagDraft()" onkeydown="handleTagInput(event)" />
+              </div>
+              <input type="hidden" id="p-tags" value="" />
+              <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Letras, números e <strong>_</strong> (sem espaços).</p>
+              <div id="err-tags" class="field-error"></div>
             </div>
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;align-items:start">
-          <div class="field-group" id="schedule-builder">
-            <label>Agendamento <span style="color:var(--red)">*</span></label>
-            <!-- Linha 1: tipo + hora/minuto lado a lado -->
-            <div style="display:grid;grid-template-columns:180px auto;gap:8px;align-items:end">
-              <div>
-                <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Frequência</label>
-                <select id="sch-type" onchange="_scheduleTypeChange()" style="width:100%">
+
+          <!-- PASSO 2: Agendamento -->
+          <div id="wiz-step-2" style="display:none">
+            <div class="field-group" id="schedule-builder">
+              <label>Agendamento <span style="color:var(--red)">*</span></label>
+              <!-- Row 1: Frequência full width -->
+              <div class="field" style="margin-bottom:.4rem">
+                <label style="font-size:11px;color:var(--muted);margin:0 0 3px;display:block">Frequência</label>
+                <select id="sch-type" onchange="_scheduleTypeChange()" style="width:100%;max-width:220px">
                   <option value="daily">Diário</option>
                   <option value="hourly">A cada hora</option>
                   <option value="weekly">Semanal</option>
                   <option value="monthly">Mensal</option>
                 </select>
               </div>
-              <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
-                <!-- Hora e minuto — oculto para hourly -->
+              <!-- Row 2: Hora:Min + Dia da semana/mês (always same height) -->
+              <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:nowrap">
                 <div id="sch-time-row" style="display:flex;gap:6px;align-items:flex-end">
                   <div>
-                    <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Hora</label>
-                    <input type="number" id="sch-hour" min="0" max="23" value="6" style="width:76px;text-align:center;font-size:15px;font-weight:600;letter-spacing:.05em" placeholder="HH" oninput="_scheduleUpdatePreview()" />
+                    <label style="font-size:11px;color:var(--muted);margin:0 0 3px;display:block">Hora</label>
+                    <input type="number" id="sch-hour" min="0" max="23" value="6" style="width:56px;text-align:center;font-size:14px;font-weight:600" placeholder="HH" oninput="_scheduleUpdatePreview()" />
                   </div>
-                  <span style="padding-bottom:8px;font-weight:700;color:var(--muted);font-size:18px">:</span>
+                  <span style="padding-bottom:6px;font-weight:700;color:var(--muted);font-size:16px">:</span>
                   <div>
-                    <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Min</label>
-                    <input type="number" id="sch-minute" min="0" max="59" value="0" style="width:76px;text-align:center;font-size:15px;font-weight:600;letter-spacing:.05em" placeholder="MM" oninput="_scheduleUpdatePreview()" />
+                    <label style="font-size:11px;color:var(--muted);margin:0 0 3px;display:block">Min</label>
+                    <input type="number" id="sch-minute" min="0" max="59" value="0" style="width:56px;text-align:center;font-size:14px;font-weight:600" placeholder="MM" oninput="_scheduleUpdatePreview()" />
                   </div>
                 </div>
-                <!-- Dia da semana — só para weekly -->
-                <div id="sch-dow-row" style="display:none;gap:6px;align-items:flex-end">
-                  <div>
-                    <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Dia da semana</label>
-                    <select id="sch-dow" onchange="_scheduleUpdatePreview()">
-                      <option value="1">Segunda</option><option value="2">Terça</option>
-                      <option value="3">Quarta</option><option value="4">Quinta</option>
-                      <option value="5">Sexta</option><option value="6">Sábado</option>
-                      <option value="0">Domingo</option>
-                    </select>
-                  </div>
+                <div id="sch-dow-row" style="display:none;flex-shrink:0">
+                  <label style="font-size:11px;color:var(--muted);margin:0 0 3px;display:block">Dia da semana</label>
+                  <select id="sch-dow" onchange="_scheduleUpdatePreview()" style="min-width:110px">
+                    <option value="1">Segunda</option><option value="2">Terça</option>
+                    <option value="3">Quarta</option><option value="4">Quinta</option>
+                    <option value="5">Sexta</option><option value="6">Sábado</option>
+                    <option value="0">Domingo</option>
+                  </select>
                 </div>
-                <!-- Dia do mês — só para monthly -->
-                <div id="sch-dom-row" style="display:none;gap:6px;align-items:flex-end">
-                  <div>
-                    <label style="font-size:11px;color:var(--muted);margin:0 0 4px;display:block">Dia do mês</label>
-                    <input type="number" id="sch-dom" min="1" max="31" value="1" style="width:64px" oninput="_scheduleUpdatePreview()" />
-                  </div>
+                <div id="sch-dom-row" style="display:none;flex-shrink:0">
+                  <label style="font-size:11px;color:var(--muted);margin:0 0 3px;display:block">Dia do mês</label>
+                  <input type="number" id="sch-dom" min="1" max="31" value="1" style="width:64px" oninput="_scheduleUpdatePreview()" />
                 </div>
               </div>
+              <div id="sch-preview" style="font-size:11px;font-family:ui-monospace,'Courier New',monospace;color:var(--muted);margin-top:5px">cron: 0 6 * * *</div>
+              <div id="sch-overlap-hint" style="font-size:11px;margin-top:3px"></div>
             </div>
-            <!-- Preview do cron gerado -->
-            <div id="sch-preview" style="font-size:11px;font-family:ui-monospace,'Courier New',monospace;color:var(--muted);margin-top:6px">cron: 0 6 * * *</div>
-            <div id="sch-overlap-hint" style="font-size:11px;margin-top:3px"></div>
-          </div>
-          <!-- Tags: coluna direita do grid Agendamento+Tags -->
-          <div class="field">
-            <label>Tags <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">— opcional · Enter para adicionar</span></label>
-            <div class="chip-input-wrap" id="tags-wrap" onclick="document.getElementById('tag-input').focus()">
-              <input id="tag-input" type="text" placeholder="ex: DATASTAGE, DIARIO..." oninput="this.value=this.value.toUpperCase();validateTagDraft()" onkeydown="handleTagInput(event)" />
-            </div>
-            <input type="hidden" id="p-tags" value="" />
-            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">Letras, números e <strong>_</strong> (sem espaços).</p>
-            <div id="err-tags" class="field-error"></div>
-          </div>
-          </div><!-- /grid agendamento+tags -->
 
-          <!-- S4: Dependência entre pipelines -->
-          <div class="section-sep"><span>Dependência</span></div>
-          <div class="field">
-            <label for="p-depends-on">Depende de <button class="help-btn" tabindex="-1">?<span class="help-popup">Define quais pipelines precisam <strong>concluir com sucesso</strong> antes deste iniciar.<br><br>Use vírgula para múltiplas dependências.<br><br>O Airflow aguardará a conclusão de cada pipeline listado na data de referência antes de liberar este pipeline para execução.</span></button></label>
-            <div class="chip-input-wrap" id="deps-wrap" onclick="document.getElementById('p-depends-on').focus()" style="min-height:46px;cursor:text">
-              <input id="p-depends-on" type="text" placeholder="nome do pipeline upstream…"
-                oninput="this.value=this.value.toUpperCase()"
-                onkeydown="handleDepsInput(event)"
-                list="depends-on-list" autocomplete="off"
-                style="border:none;outline:none;background:transparent;flex:1;min-width:160px;font-size:13px" />
+            <!-- Dependência -->
+            <div class="section-sep"><span>Dependência</span></div>
+            <div class="field">
+              <label for="p-depends-on">Depende de <button class="help-btn" tabindex="-1">?<span class="help-popup">Define quais pipelines precisam <strong>concluir com sucesso</strong> antes deste iniciar.<br><br>Use vírgula para múltiplas dependências.<br><br>O Airflow aguardará a conclusão de cada pipeline listado na data de referência antes de liberar este pipeline para execução.</span></button></label>
+              <div class="chip-input-wrap" id="deps-wrap" onclick="document.getElementById('p-depends-on').focus()" style="min-height:46px;cursor:text">
+                <input id="p-depends-on" type="text" placeholder="nome do pipeline upstream…"
+                  oninput="this.value=this.value.toUpperCase()"
+                  onkeydown="handleDepsInput(event)"
+                  list="depends-on-list" autocomplete="off"
+                  style="border:none;outline:none;background:transparent;flex:1;min-width:160px;font-size:13px" />
+              </div>
+              <input type="hidden" id="p-deps-hidden" value="" />
+              <datalist id="depends-on-list"></datalist>
+              <div id="err-depends-on" class="field-error"></div>
+              <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
+                Pipelines upstream. Gera um <code>ExternalTaskSensor</code> por dependência (mode=reschedule).
+              </p>
             </div>
-            <input type="hidden" id="p-deps-hidden" value="" />
-            <datalist id="depends-on-list"></datalist>
-            <div id="err-depends-on" class="field-error"></div>
-            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
-              Pipelines upstream. Gera um <code>ExternalTaskSensor</code> por dependência (mode=reschedule).
-            </p>
+
+            <!-- Data de Início -->
+            <div class="section-sep"><span>Data de Início</span></div>
+            <div class="field">
+              <label for="p-dag-start-date">Data de início da DAG <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
+              <input type="date" id="p-dag-start-date" style="max-width:200px" />
+              <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
+                Define quando o agendamento começa a executar. Deixe em branco para iniciar imediatamente (usa 01/01/2026 como padrão). Use data futura para adiar a primeira execução.
+              </p>
+            </div>
           </div>
 
-          <!-- Agendamento avançado -->
-          <div class="section-sep"><span>Agendamento avançado</span></div>
-          <div class="field">
-            <label for="p-dag-start-date">Data de início da DAG <span style="font-weight:400;color:var(--muted)">— opcional</span></label>
-            <input type="date" id="p-dag-start-date" style="max-width:200px" />
-            <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
-              Define quando o agendamento começa a executar. Deixe em branco para iniciar imediatamente (usa 01/01/2026 como padrão). Use data futura para adiar a primeira execução.
-            </p>
+          <!-- PASSO 3: Status & Notificações -->
+          <div id="wiz-step-3" style="display:none">
+            <!-- Status -->
+            <div class="section-sep"><span>Status inicial</span></div>
+            <div class="status-toggle">
+              <div class="st-opt active-green" id="st-ativo" onclick="setStatus(1)">
+                <span class="st-dot on"></span>Ativo
+              </div>
+              <div class="st-opt" id="st-inativo" onclick="setStatus(0)">
+                <span class="st-dot off"></span>Inativo
+              </div>
+            </div>
+            <input type="hidden" id="p-active" value="1" />
+
+            <!-- Notificações Teams — cards visuais em vez de só toggles -->
+            <div class="section-sep" style="margin-top:.75rem"><span>Notificações Microsoft Teams</span></div>
+            <p style="font-size:11px;color:var(--muted);margin:0 0 .6rem">Escolha quais eventos disparam notificação no canal do Teams.</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.5rem">
+              <label style="border:1px solid var(--border);border-radius:10px;padding:.6rem .75rem;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:.5rem;transition:border-color .15s" id="card-inicio">
+                <div>
+                  <div style="font-size:12px;font-weight:600">&#9654; Início</div>
+                  <div style="font-size:10px;color:var(--muted)">Ao iniciar execução</div>
+                </div>
+                <div class="sw"><input type="checkbox" id="tog-inicio" checked onchange="syncToggle('lbl-inicio',this);_syncNotifCard('card-inicio',this)" /><span class="sw-track"></span></div>
+              </label>
+              <label style="border:1px solid var(--border);border-radius:10px;padding:.6rem .75rem;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:.5rem;transition:border-color .15s" id="card-fim">
+                <div>
+                  <div style="font-size:12px;font-weight:600">&#10003; Conclusão</div>
+                  <div style="font-size:10px;color:var(--muted)">Ao concluir com sucesso</div>
+                </div>
+                <div class="sw"><input type="checkbox" id="tog-fim" checked onchange="syncToggle('lbl-fim',this);_syncNotifCard('card-fim',this)" /><span class="sw-track"></span></div>
+              </label>
+              <label style="border:1px solid var(--border);border-radius:10px;padding:.6rem .75rem;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:.5rem;transition:border-color .15s" id="card-erro">
+                <div>
+                  <div style="font-size:12px;font-weight:600">&#9888; Erro</div>
+                  <div style="font-size:10px;color:var(--muted)">Em caso de falha</div>
+                </div>
+                <div class="sw"><input type="checkbox" id="tog-erro" checked onchange="syncToggle('lbl-erro',this);_syncNotifCard('card-erro',this)" /><span class="sw-track"></span></div>
+              </label>
+            </div>
+            <!-- hidden spans for syncToggle compatibility -->
+            <span id="lbl-inicio" style="display:none">Início</span>
+            <span id="lbl-fim"    style="display:none">Conclusão</span>
+            <span id="lbl-erro"   style="display:none">Erro</span>
           </div>
 
-          <!-- Configurações Avançadas -->
-          <div class="section-sep" style="cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:space-between" onclick="_toggleAdvSection()">
-            <span>⚙ Configurações Avançadas</span>
-            <span id="sep-adv-icon" style="font-size:10px;color:var(--muted);font-weight:400">(clique para expandir)</span>
-          </div>
-          <div id="adv-section" style="display:none">
+          <!-- PASSO 4: Configurações -->
+          <div id="wiz-step-4" style="display:none">
+            <div class="section-sep"><span>Configurações</span></div>
 
             <div class="field">
               <label for="p-descricao">Descrição / Objetivo <span style="color:var(--red)">*</span></label>
@@ -1182,9 +1252,9 @@
               <div class="field">
                 <label for="p-criticidade">Criticidade <button class="help-btn" tabindex="-1">?<span class="help-popup"><strong>Alta:</strong> impacto direto em produção/faturamento — acionamento imediato.<br><strong>Média:</strong> impacto em processos de apoio — acionamento no dia.<br><strong>Baixa:</strong> relatórios/análises — acionamento planejado.</span></button></label>
                 <select id="p-criticidade">
-                  <option value="Alta">🔴 Alta</option>
-                  <option value="Media" selected>🟡 Média</option>
-                  <option value="Baixa">🟢 Baixa</option>
+                  <option value="Alta">&#128308; Alta</option>
+                  <option value="Media" selected>&#128993; Média</option>
+                  <option value="Baixa">&#128994; Baixa</option>
                 </select>
               </div>
               <div class="field">
@@ -1221,51 +1291,47 @@
                 <input type="text" id="p-pool" placeholder="ex: datastage_pool" oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9_]/g,'')" />
               </div>
             </div>
-
-          </div><!-- /adv-section -->
-
-          <!-- Status -->
-          <div class="section-sep"><span>Status inicial</span></div>
-          <div class="status-toggle">
-            <div class="st-opt active-green" id="st-ativo" onclick="setStatus(1)">
-              <span class="st-dot on"></span>Ativo
-            </div>
-            <div class="st-opt" id="st-inativo" onclick="setStatus(0)">
-              <span class="st-dot off"></span>Inativo
-            </div>
           </div>
-          <input type="hidden" id="p-active" value="1" />
 
-          <!-- Notificações Teams -->
-          <div class="section-sep"><span>Notificações Microsoft Teams</span></div>
-          <div style="display:flex;gap:1.5rem;flex-wrap:wrap;padding:.5rem 0">
-            <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;font-size:13px">
-              <div class="sw" style="transform:scale(.85)"><input type="checkbox" id="tog-inicio" checked onchange="syncToggle('lbl-inicio',this)" /><span class="sw-track"></span></div>
-              <span id="lbl-inicio">Início</span>
-            </label>
-            <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;font-size:13px">
-              <div class="sw" style="transform:scale(.85)"><input type="checkbox" id="tog-fim" checked onchange="syncToggle('lbl-fim',this)" /><span class="sw-track"></span></div>
-              <span id="lbl-fim">Conclusão</span>
-            </label>
-            <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;font-size:13px">
-              <div class="sw" style="transform:scale(.85)"><input type="checkbox" id="tog-erro" checked onchange="syncToggle('lbl-erro',this)" /><span class="sw-track"></span></div>
-              <span id="lbl-erro">Erro</span>
-            </label>
+          <!-- PASSO 5: Jobs -->
+          <div id="wiz-step-5" style="display:none">
+            <div class="section-sep"><span>Jobs do pipeline</span></div>
+            <div style="display:grid;grid-template-columns:24px 1fr 58px 100px 1fr 30px;gap:5px;padding:.25rem .55rem;background:var(--muted-bg,rgba(128,128,128,.06));border-radius:6px 6px 0 0;border-bottom:1px solid var(--border)">
+              <span style="font-size:10px;color:var(--muted)">#</span>
+              <span style="font-size:10px;color:var(--muted)">Nome do job</span>
+              <span style="font-size:10px;color:var(--muted)">Ordem</span>
+              <span style="font-size:10px;color:var(--muted)">Tipo</span>
+              <span style="font-size:10px;color:var(--muted)">Comando / caminho</span>
+              <span></span>
+            </div>
+            <div id="wiz-jobs-body" style="border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px;min-height:40px"></div>
+            <div id="wiz-jobs-empty" style="padding:.6rem;font-size:12px;color:var(--muted);text-align:center;border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px">
+              Nenhum job adicionado — pipeline sem jobs por ora.
+            </div>
+            <button class="btn btn-outline btn-sm" onclick="wizAddJobRow()" style="margin-top:.5rem">+ Adicionar job</button>
+          </div>
+
+          <!-- PASSO 6: Revisão -->
+          <div id="wiz-step-6" style="display:none">
+            <div class="section-sep"><span>Revisão</span></div>
+            <div id="wiz-review-summary" style="border:1px solid var(--border);border-radius:8px;padding:.5rem .75rem;margin-bottom:.5rem"></div>
+            <div class="section-sep" style="margin-top:.5rem"><span>Jobs</span></div>
+            <div id="wiz-review-jobs" style="border:1px solid var(--border);border-radius:8px;padding:.5rem .75rem"></div>
+            <div id="msg-pipeline" class="msg" style="margin-top:.5rem"></div>
           </div>
 
           <!-- Navegação do wizard -->
           <div id="wiz-nav" style="display:flex;align-items:center;justify-content:space-between;margin-top:1rem;padding-top:.75rem;border-top:1px solid var(--border)">
-            <button class="btn btn-outline btn-sm" id="wiz-btn-back" onclick="wizBack()" style="display:none;min-width:90px">← Voltar</button>
+            <button class="btn btn-outline btn-sm" id="wiz-btn-back" onclick="wizBack()" style="display:none;min-width:90px">&#8592; Voltar</button>
             <div style="flex:1"></div>
             <div style="display:flex;gap:.5rem;align-items:center">
-              <span id="wiz-step-label" style="font-size:11px;color:var(--muted)">Passo 1 de 5</span>
-              <button class="btn btn-primary btn-sm" id="wiz-btn-next" onclick="wizNext()" style="min-width:90px">Avançar →</button>
+              <span id="wiz-step-label" style="font-size:11px;color:var(--muted)">Passo 1 de 6</span>
+              <button class="btn btn-primary btn-sm" id="wiz-btn-next" onclick="wizNext()" style="min-width:90px">Avançar &#8594;</button>
               <button class="btn btn-sm" id="btn-save-pipeline" onclick="registrarPipeline()" style="display:none;min-width:110px">
                 <span id="save_pipeline_txt">Criar Pipeline</span>
               </button>
             </div>
           </div>
-          <div id="msg-pipeline" class="msg" style="margin-top:.5rem"></div>
         </div>
       </div>
           </div>
@@ -6568,8 +6634,15 @@ async function saveJobEdit() {
 
 // ── Wizard state ──────────────────────────────────────────────────────────────
 let _wizCurrentStep = 1;
-const WIZ_TOTAL = 5;
+const WIZ_TOTAL = 6;
 let _pipelineIsNew = true;
+
+function _syncNotifCard(cardId, checkbox) {
+  const card = $(cardId);
+  if (!card) return;
+  card.style.borderColor = checkbox.checked ? 'var(--accent)' : 'var(--border)';
+  card.style.background  = checkbox.checked ? 'rgba(0,92,169,.04)' : '';
+}
 
 function _wizUpdateStepper(step) {
   for (let i = 1; i <= WIZ_TOTAL; i++) {
@@ -6663,7 +6736,7 @@ function _wizValidateStep(step) {
     }
     clear("p-depends-on","err-depends-on");
   }
-  if (step === 3) {
+  if (step === 4) {
     clear("p-descricao","err-descricao");
     const desc = $("p-descricao");
     if (!desc || !desc.value.trim()) return mark("p-descricao","err-descricao","Descrição / Objetivo é obrigatório.");
@@ -6793,9 +6866,8 @@ function openPipelineCreate() {
   if ($('p-retries'))        $('p-retries').value = 1;
   if ($('p-retry-delay'))    $('p-retry-delay').value = 300;
   if ($('p-pool'))           $('p-pool').value = '';
-  if ($('adv-section'))      { $('adv-section').style.display = 'none'; if ($('sep-adv-icon')) $('sep-adv-icon').textContent = '(clique para expandir)'; }
   setStatus(1);
-  ['tog-inicio','tog-fim','tog-erro'].forEach(id => { $(id).checked = true; syncToggle('lbl-'+id.replace('tog-',''), $(id)); });
+  ['tog-inicio','tog-fim','tog-erro'].forEach(id => { $(id).checked = true; syncToggle('lbl-'+id.replace('tog-',''), $(id)); _syncNotifCard('card-'+id.replace('tog-',''), $(id)); });
   $('msg-pipeline').textContent = '';
   $('msg-pipeline').className = 'msg';
   clearFieldInvalidById('pipeline_name','err-pipeline');
@@ -6858,9 +6930,9 @@ function openPipelineEdit(idx) {
 
   // status e notificações
   setStatus(p.active ? 1 : 0);
-  $('tog-inicio').checked = !!p.envia_msg_inicio; syncToggle('lbl-inicio', $('tog-inicio'));
-  $('tog-fim').checked    = !!p.envia_msg_fim;    syncToggle('lbl-fim',    $('tog-fim'));
-  $('tog-erro').checked   = !!p.envia_msg_erro;   syncToggle('lbl-erro',   $('tog-erro'));
+  $('tog-inicio').checked = !!p.envia_msg_inicio; syncToggle('lbl-inicio', $('tog-inicio')); _syncNotifCard('card-inicio', $('tog-inicio'));
+  $('tog-fim').checked    = !!p.envia_msg_fim;    syncToggle('lbl-fim',    $('tog-fim'));    _syncNotifCard('card-fim',    $('tog-fim'));
+  $('tog-erro').checked   = !!p.envia_msg_erro;   syncToggle('lbl-erro',   $('tog-erro'));   _syncNotifCard('card-erro',   $('tog-erro'));
 
   // Advanced fields
   if ($('p-descricao'))      $('p-descricao').value      = p.descricao || '';
