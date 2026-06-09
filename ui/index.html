@@ -2114,24 +2114,21 @@ async function _initSystemAuth() {
 
 /**
  * Detecta se o usuário logado é somente-visualizador (Viewer no Airflow).
- * Viewers não possuem roles Op/User/Admin — apenas Viewer.
- * Aplica classe 'viewer-mode' no body para ocultar controles de edição.
+ * Estratégia: GET /api/v1/pools requer role Op ou superior.
+ *   - 200 → usuário tem Op/Admin → editor
+ *   - 403 → usuário é Viewer → modo somente-leitura
+ * Funciona com autenticação LDAP sem precisar de credencial Admin.
  */
 async function _detectViewerRole() {
   try {
-    const usr = encodeURIComponent(window.__currentUser || '');
-    // Usa auth sistêmico (Admin) para ler roles — usuários Viewer não têm acesso ao endpoint /users
-    const r = await fetch('/api/v1/users/' + usr, { headers: { Authorization: __sysAuth || authHeader } });
-    if (!r.ok) return;
-    const u = await r.json();
-    const roleNames = (u.roles || []).map(x => (x.name || '').toLowerCase());
-    const editRoles = ['op', 'user', 'admin'];
-    if (roleNames.length > 0 && !roleNames.some(rn => editRoles.includes(rn))) {
+    const r = await fetch('/api/v1/pools?limit=1', { headers: { Authorization: authHeader } });
+    if (r.status === 403) {
       window.__isViewer = true;
       document.body.classList.add('viewer-mode');
       console.log('[ORQ] Modo visualizador ativado para', window.__currentUser);
     } else {
       window.__isViewer = false;
+      console.log('[ORQ] Usuário editor confirmado para', window.__currentUser);
     }
   } catch(e) {
     console.warn('[ORQ] Detecção de role falhou (assumindo editor):', e.message);
