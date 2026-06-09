@@ -3499,7 +3499,7 @@ async function loadProjectList() {
     const projects = data.projects || [];
     if (projects.length) {
       sel.innerHTML = '<option value="">Selecione…</option>' +
-        projects.map(p => `<option value="${_escHtml(p)}">${_escHtml(p)}</option>`).join('');
+        projects.map(p => `<option value="${_escHtml(p.project_name)}">${_escHtml(p.project_name)}</option>`).join('');
     } else { throw new Error('empty'); }
   } catch(_) {
     sel.innerHTML = '<option value="">Selecione…</option><option value="BI_CVP">BI_CVP</option><option value="BI_VIDA">BI_VIDA</option><option value="BI_PRESTAMISTA">BI_PRESTAMISTA</option><option value="BI_PREVIDENCIA">BI_PREVIDENCIA</option>';
