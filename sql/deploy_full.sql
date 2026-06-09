@@ -176,34 +176,36 @@ ELSE
     PRINT '[--] dbo.etl_stage_type_map já existe';
 GO
 
--- Seed separado em batch próprio para evitar erro de coluna não reconhecida no mesmo batch
-IF NOT EXISTS (SELECT 1 FROM dbo.etl_stage_type_map WHERE stage_type = 'CTransformerStage')
+-- Seed via EXEC (SQL dinâmico) para evitar validação de colunas em tempo de compilação
+EXEC('
+IF NOT EXISTS (SELECT 1 FROM dbo.etl_stage_type_map WHERE stage_type = ''CTransformerStage'')
 BEGIN
     INSERT INTO dbo.etl_stage_type_map (stage_type, type_label) VALUES
-        ('CTransformerStage',      'Transformer'),
-        ('CHashPartitionStage',    'Hash Partition'),
-        ('CSeqFileStage',          'Arquivo Sequencial'),
-        ('CDataSetStage',          'Arquivo DataSet (.ds/.dx)'),
-        ('COracleConnectorPX',     'Oracle'),
-        ('DB2ConnectorPX',         'DB2'),
-        ('CODBCConnectorPX',       'ODBC / SQL Server'),
-        ('CNetezzaConnectorPX',    'Netezza'),
-        ('SAPConnectorPX',         'SAP'),
-        ('CBMSOraBulkLoaderStage', 'Oracle Bulk Loader'),
-        ('CRowGeneratorStage',     'Row Generator'),
-        ('CLookupStage',           'Lookup'),
-        ('CSortStage',             'Sort'),
-        ('CFilterStage',           'Filter'),
-        ('CJoinStage',             'Join'),
-        ('CFunnelStage',           'Funnel'),
-        ('CSampleStage',           'Sample'),
-        ('CRemoveDuplicatesStage', 'Remove Duplicates'),
-        ('CChangeApplyStage',      'Change Apply'),
-        ('CChangeCaptureStage',    'Change Capture');
-    PRINT '[OK] Seed de etl_stage_type_map aplicado';
+        (''CTransformerStage'',      ''Transformer''),
+        (''CHashPartitionStage'',    ''Hash Partition''),
+        (''CSeqFileStage'',          ''Arquivo Sequencial''),
+        (''CDataSetStage'',          ''Arquivo DataSet (.ds/.dx)''),
+        (''COracleConnectorPX'',     ''Oracle''),
+        (''DB2ConnectorPX'',         ''DB2''),
+        (''CODBCConnectorPX'',       ''ODBC / SQL Server''),
+        (''CNetezzaConnectorPX'',    ''Netezza''),
+        (''SAPConnectorPX'',         ''SAP''),
+        (''CBMSOraBulkLoaderStage'', ''Oracle Bulk Loader''),
+        (''CRowGeneratorStage'',     ''Row Generator''),
+        (''CLookupStage'',           ''Lookup''),
+        (''CSortStage'',             ''Sort''),
+        (''CFilterStage'',           ''Filter''),
+        (''CJoinStage'',             ''Join''),
+        (''CFunnelStage'',           ''Funnel''),
+        (''CSampleStage'',           ''Sample''),
+        (''CRemoveDuplicatesStage'', ''Remove Duplicates''),
+        (''CChangeApplyStage'',      ''Change Apply''),
+        (''CChangeCaptureStage'',    ''Change Capture'');
+    PRINT ''[OK] Seed de etl_stage_type_map aplicado'';
 END
 ELSE
-    PRINT '[--] etl_stage_type_map já possui dados';
+    PRINT ''[--] etl_stage_type_map ja possui dados'';
+');
 GO
 
 -- ------------------------------------------------------------
