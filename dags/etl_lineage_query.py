@@ -62,32 +62,24 @@ def consultar_lineage(**context):
             l.direction,
             l.object_name,
             COALESCE(m.type_label, l.object_type) AS object_type,
-            COALESCE(m.type_label, l.stage_type_raw) AS type_label,
-            m.type_category,
-            m.role_hint,
-            l.stage_name,
-            l.stage_type_raw,
             l.database_name,
-            l.sql_expression,
-            l.file_path,
-            l.dsx_source_file,
-            l.extracted_at,
-            l.extraction_method,
             l.columns_json
         FROM dbo.etl_pipeline_job j
         LEFT JOIN dbo.etl_job_lineage l
                ON l.pipeline_name = j.pipeline_name
               AND l.job_name = j.job_name
         LEFT JOIN dbo.etl_stage_type_map m
-               ON m.type_raw = l.stage_type_raw
+               ON m.stage_type = l.object_type
         WHERE j.pipeline_name = %s
         ORDER BY
             j.execution_order,
             j.job_name,
             CASE l.direction
-                WHEN 'origem' THEN 1
+                WHEN 'origem'       THEN 1
+                WHEN 'INPUT'        THEN 1
                 WHEN 'transformacao' THEN 2
-                WHEN 'destino' THEN 3
+                WHEN 'destino'      THEN 3
+                WHEN 'OUTPUT'       THEN 3
                 ELSE 9
             END,
             l.object_name
@@ -105,17 +97,7 @@ def consultar_lineage(**context):
             direction,
             obj_name,
             obj_type,
-            type_label,
-            type_category,
-            role_hint,
-            stage_name,
-            stage_type_raw,
             db_name,
-            sql_expression,
-            file_path,
-            dsx_source_file,
-            extracted_at,
-            extraction_method,
             columns_json,
         ) = r
 
@@ -141,25 +123,16 @@ def consultar_lineage(**context):
         item = {
             "object_name": obj_name,
             "object_type": obj_type,
-            "stage_name": stage_name,
-            "stage_type_raw": stage_type_raw,
-            "type_label": type_label,
-            "type_category": type_category,
-            "role_hint": role_hint,
             "database_name": db_name,
-            "sql_expression": sql_expression,
-            "file_path": file_path,
-            "dsx_source_file": dsx_source_file,
-            "extracted_at": _fmt(extracted_at),
-            "extraction_method": extraction_method,
             "columns": cols,
         }
 
-        if direction == "origem":
+        dir_norm = (direction or "").lower()
+        if dir_norm in ("origem", "input"):
             jobs_map[job_name]["origens"].append(item)
-        elif direction == "transformacao":
+        elif dir_norm in ("transformacao",):
             jobs_map[job_name]["transformacoes"].append(item)
-        elif direction == "destino":
+        elif dir_norm in ("destino", "output"):
             jobs_map[job_name]["destinos"].append(item)
 
     # ordena por execution_order (e nome)
