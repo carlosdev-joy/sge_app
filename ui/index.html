@@ -2120,7 +2120,8 @@ async function _initSystemAuth() {
 async function _detectViewerRole() {
   try {
     const usr = encodeURIComponent(window.__currentUser || '');
-    const r = await fetch('/api/v1/users/' + usr, { headers: { Authorization: authHeader } });
+    // Usa auth sistêmico (Admin) para ler roles — usuários Viewer não têm acesso ao endpoint /users
+    const r = await fetch('/api/v1/users/' + usr, { headers: { Authorization: __sysAuth || authHeader } });
     if (!r.ok) return;
     const u = await r.json();
     const roleNames = (u.roles || []).map(x => (x.name || '').toLowerCase());
@@ -5385,11 +5386,16 @@ async function entrar() {
       if (firstName) $('who').textContent = firstName;
     }).catch(() => {});
     window.__currentUser = u;
-    // Carrega auth sistêmico + detecta role (assíncrono, não bloqueia UI)
-    Promise.all([_initSystemAuth(), _detectViewerRole()]).then(() => {
-      _applyAdminVisibility();
+    // Carrega auth sistêmico PRIMEIRO, depois detecta role (sysAuth é Admin = pode ler users API)
+    _applyAdminVisibility();   // aplica imediatamente com role default
+    _initSystemAuth().then(() => _detectViewerRole()).then(() => {
+      _applyAdminVisibility(); // reaplica após detecção de viewer
+      // Re-renderiza grids que já estejam carregados caso viewer-mode foi ativado
+      if (window.__isViewer) {
+        try { if (window.__lastQueryPayload) renderQueryTable(window.__lastQueryPayload); } catch(e) {}
+        try { if (window.__lastJobsPayload)  renderJobsTable(window.__lastJobsPayload);  } catch(e) {}
+      }
     });
-    _applyAdminVisibility();   // aplica imediatamente com role default; reaplica após detecção
     // Carregar config do banco (S5/S2 — assíncrono, não bloqueia)
     loadAppConfig().then(() => {
       _startDashAutoRefresh();
