@@ -80,6 +80,10 @@ Modos (conf.mode):
       asset_name   : str  (obrigatório)
       asset_type   : 'tabela' | 'arquivo'
       database_name: str  (opcional)
+
+  list_jobs_lineage — jobs e lineage de um pipeline
+    Parâmetros:
+      pipeline_name: str  (obrigatório)
 """
 from __future__ import annotations
 
@@ -820,6 +824,57 @@ def _delete_job_type(hook, jt_id: int):
     return {"ok": True, "action": "deleted", "id": jt_id}
 
 
+def _list_jobs_lineage(hook, pipeline_name: str):
+    """Retorna jobs e lineage de um pipeline específico."""
+    if not pipeline_name:
+        return {"jobs": []}
+
+    rows = hook.get_records(
+        """
+        SELECT
+            j.job_name,
+            j.execution_order,
+            j.job_type,
+            j.job_command
+        FROM dbo.etl_job j
+        WHERE j.pipeline_name = %s
+        ORDER BY j.execution_order, j.job_name
+        """,
+        parameters=[pipeline_name],
+    )
+
+    job_list = []
+    for row in rows:
+        job_name, order, job_type, cmd = row
+
+        lin_rows = hook.get_records(
+            """
+            SELECT
+                object_type  AS tipo,
+                object_name  AS nome,
+                direction
+            FROM dbo.etl_job_lineage
+            WHERE pipeline_name = %s AND job_name = %s
+            ORDER BY direction, object_type, object_name
+            """,
+            parameters=[pipeline_name, job_name],
+        )
+
+        origens  = [{"tipo": r[0], "nome": r[1]} for r in lin_rows if r[2] == "origem"]
+        destinos = [{"tipo": r[0], "nome": r[1]} for r in lin_rows if r[2] == "destino"]
+
+        job_list.append({
+            "job_name":        job_name,
+            "execution_order": int(order) if order is not None else None,
+            "job_type":        job_type or "",
+            "job_command":     cmd or "",
+            "origens":         origens,
+            "destinos":        destinos,
+        })
+
+    return {"pipeline_name": pipeline_name, "jobs": job_list}
+
+
 # ---------------------------------------------------------------------------
 # Main callable
 # ---------------------------------------------------------------------------
@@ -844,6 +899,9 @@ def consultar_catalogo(**context):
         if not jt_id:
             raise ValueError("Parâmetro 'id' é obrigatório para mode=delete_job_type.")
         return _delete_job_type(hook, jt_id)
+
+    if mode == "list_jobs_lineage":
+        return _list_jobs_lineage(hook, conf.get("pipeline_name", ""))
 
     if mode == "list_pipelines":
         return _list_pipelines(hook)
