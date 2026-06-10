@@ -133,9 +133,15 @@ async def _fetch_airflow_dags() -> dict[str, dict]:
 
 
 def _dag_file_exists(pipeline_name: str) -> bool:
-    """Verifica se o arquivo .py da DAG existe no DAGS_FOLDER."""
-    path = os.path.join(DAGS_FOLDER, f"{pipeline_name}.py")
-    return os.path.isfile(path)
+    """Verifica se o arquivo .py da DAG existe em dags/generated/**/pipeline_name.py."""
+    generated_root = os.path.join(DAGS_FOLDER, "generated")
+    if not os.path.isdir(generated_root):
+        return False
+    target = f"{pipeline_name}.py"
+    for dirpath, _, filenames in os.walk(generated_root):
+        if target in filenames:
+            return True
+    return False
 
 
 def _build_sync_actions(
