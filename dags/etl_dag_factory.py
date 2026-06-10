@@ -76,7 +76,7 @@ def _task_block(job, project, pipeline):
             f'    task_id="{name}",',
             f'    ssh_conn_id=SSH_CONN_ID,',
             f'    command=(',
-            f'        "/Projetos/{project}/Scripts/Airflow/run_datastage_job.sh "',
+            f'        "/Projetos/BI_CVP/Scripts/Airflow/run_datastage_job.sh "',
             f'        f"{project} {name} "',
             r'        "{{ ts_nodash }} "',
             f'        f"{pipeline} "',
