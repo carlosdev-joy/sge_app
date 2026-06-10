@@ -1474,3 +1474,946 @@ async def sync_pipeline_status():
         "summary": {**result, "total_pipelines": len(pipelines), "airflow_dags_found": len(airflow_dags)},
         "actions": actions,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUDIT
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/audit", tags=["audit"])
+def get_audit(
+    pipeline_name: str = Query(...),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """Histórico de alterações de um pipeline (etl_pipeline_audit_query)."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM dbo.etl_pipeline_audit WHERE pipeline_name = ?",
+            (pipeline_name,),
+        )
+        total = cur.fetchone()[0] or 0
+
+        cur.execute(
+            """
+            SELECT changed_at, changed_by, field_name, old_value, new_value
+            FROM dbo.etl_pipeline_audit
+            WHERE pipeline_name = ?
+            ORDER BY changed_at DESC
+            OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+            """,
+            (pipeline_name, offset, limit),
+        )
+        cols = [d[0] for d in cur.description]
+        rows = []
+        for row in cur.fetchall():
+            r = dict(zip(cols, row))
+            if r.get("changed_at") and hasattr(r["changed_at"], "isoformat"):
+                r["changed_at"] = r["changed_at"].isoformat()
+            rows.append(r)
+        cur.close(); conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    pages = max(1, -(-total // limit))
+    return {"total": total, "offset": offset, "limit": limit, "pages": pages,
+            "filters": {"pipeline_name": pipeline_name}, "data": rows}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PIPELINE REGISTER (upsert)
+# ─────────────────────────────────────────────────────────────────────────────
+
+AUDIT_FIELDS = {
+    "active", "scheduled_time", "schedule_type", "schedule_hour", "schedule_minute",
+    "schedule_dow", "schedule_dom", "envia_msg_inicio", "envia_msg_fim", "envia_msg_erro",
+    "project_name", "domain", "tags", "depends_on", "criticidade", "sla_minutos",
+    "ambiente", "max_active_runs", "retries_count", "retry_delay_seconds", "pool_name", "descricao",
+}
+
+
+def _build_cron(schedule_type, hour, minute, dow, dom):
+    st = (schedule_type or "daily").strip().lower()
+    h, m = int(hour or 0), int(minute or 0)
+    if st == "hourly":   return f"{m} * * * *"
+    if st == "daily":    return f"{m} {h} * * *"
+    if st == "weekly":   return f"{m} {h} * * {int(dow or 1)}"
+    if st == "monthly":  return f"{m} {h} {int(dom or 1)} * *"
+    return f"{m} {h} * * *"
+
+
+def _get_valid_projects(cur):
+    try:
+        cur.execute("SELECT project_name FROM dbo.etl_project WHERE ativo=1")
+        rows = cur.fetchall()
+        if rows:
+            return {r[0] for r in rows}
+    except Exception:
+        pass
+    return {"BI_CVP", "BI_VIDA", "BI_PRESTAMISTA", "BI_PREVIDENCIA"}
+
+
+def _check_circular(cur, pipeline_name, depends_on_list):
+    for dep in depends_on_list:
+        if not dep:
+            continue
+        visited, current, hops = set(), dep, 0
+        while current and hops < 50:
+            if current == pipeline_name:
+                raise ValueError(f"Dependência circular: '{pipeline_name}' → '{dep}'")
+            if current in visited:
+                break
+            visited.add(current)
+            cur.execute("SELECT depends_on FROM dbo.etl_pipeline WHERE pipeline_name = ?", (current,))
+            row = cur.fetchone()
+            raw = (str(row[0]).strip() if row and row[0] else None)
+            current = raw.split(",")[0].strip() if raw else None
+            hops += 1
+
+
+def _read_pipeline_record(cur, pipeline_name):
+    cur.execute(
+        """SELECT active, scheduled_time, schedule_type, schedule_hour, schedule_minute,
+                  schedule_dow, schedule_dom, envia_msg_inicio, envia_msg_fim, envia_msg_erro,
+                  project_name, domain, tags, depends_on, criticidade, sla_minutos, ambiente,
+                  max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao
+           FROM dbo.etl_pipeline WHERE pipeline_name = ?""",
+        (pipeline_name,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    cols = [d[0] for d in cur.description]
+    return dict(zip(cols, row))
+
+
+def _write_audit(cur, pipeline_name, changed_by, old, new_vals):
+    for field in AUDIT_FIELDS:
+        old_val = str(old.get(field, "") or "")
+        new_val = str(new_vals.get(field, "") or "")
+        if old_val != new_val:
+            cur.execute(
+                "INSERT INTO dbo.etl_pipeline_audit "
+                "(pipeline_name, changed_by, field_name, old_value, new_value, changed_at) "
+                "VALUES (?, ?, ?, ?, ?, GETDATE())",
+                (pipeline_name, changed_by, field, old_val, new_val),
+            )
+
+
+@app.post("/pipelines/register", tags=["pipelines"])
+def register_pipeline(body: dict = Body(default={})):
+    """Cria ou atualiza um pipeline (etl_pipeline_register)."""
+    pipeline    = (body.get("pipeline_name") or "").strip()
+    horario     = (body.get("scheduled_time") or "").strip()
+    if not pipeline or not horario:
+        raise HTTPException(status_code=422, detail="pipeline_name e scheduled_time são obrigatórios")
+
+    project          = body.get("project_name", "BI_CVP")
+    active           = int(body.get("active",           1))
+    envia_msg_inicio = int(body.get("envia_msg_inicio", 1))
+    envia_msg_fim    = int(body.get("envia_msg_fim",    1))
+    envia_msg_erro   = int(body.get("envia_msg_erro",   1))
+    dag_criada       = int(body.get("dag_criada",       0))
+    domain           = body.get("domain", "Geral")
+    tags             = body.get("tags", "")
+    depends_on_raw   = (body.get("depends_on") or "").strip()
+    depends_on_list  = [d.strip() for d in depends_on_raw.split(",") if d.strip()]
+    depends_on       = ",".join(depends_on_list) or None
+    changed_by       = (body.get("changed_by") or "system").strip()
+    dag_start_date   = (body.get("dag_start_date") or "").strip() or None
+    schedule_type    = body.get("schedule_type")
+    schedule_hour    = body.get("schedule_hour")
+    schedule_minute  = body.get("schedule_minute")
+    schedule_dow     = body.get("schedule_dow")
+    schedule_dom     = body.get("schedule_dom")
+    descricao        = (body.get("descricao") or "").strip() or None
+    criticidade      = (body.get("criticidade") or "Media").strip()
+    sla_minutos      = int(body["sla_minutos"]) if body.get("sla_minutos") is not None else None
+    ambiente         = (body.get("ambiente") or "PROD").strip()
+    max_active_runs  = int(body.get("max_active_runs",  1))
+    retries_count    = int(body.get("retries_count",    1))
+    retry_delay_secs = int(body.get("retry_delay_seconds", 300))
+    pool_name        = (body.get("pool_name") or "").strip() or None
+
+    if pipeline in depends_on_list:
+        raise HTTPException(status_code=422, detail="Pipeline não pode depender de si mesmo")
+
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        valid_projects = _get_valid_projects(cur)
+        if project not in valid_projects:
+            raise HTTPException(status_code=422, detail=f"project_name inválido: '{project}'")
+        _check_circular(cur, pipeline, depends_on_list)
+        old_record = _read_pipeline_record(cur, pipeline)
+        is_new = old_record is None
+
+        cur.execute(
+            "EXEC dbo.sp_etl_pipeline_upsert "
+            "@pipeline_name=?, @scheduled_time=?, @schedule_type=?, @schedule_hour=?, "
+            "@schedule_minute=?, @schedule_dow=?, @schedule_dom=?, @active=?, "
+            "@envia_msg_inicio=?, @envia_msg_fim=?, @envia_msg_erro=?, @dag_criada=?, "
+            "@project_name=?, @domain=?, @tags=?",
+            (pipeline, horario, schedule_type, schedule_hour, schedule_minute, schedule_dow,
+             schedule_dom, active, envia_msg_inicio, envia_msg_fim, envia_msg_erro,
+             dag_criada, project, domain, tags),
+        )
+        cur.execute(
+            "UPDATE dbo.etl_pipeline SET depends_on=?, dag_start_date=?, updated_at=GETDATE() "
+            "WHERE pipeline_name=?",
+            (depends_on, dag_start_date, pipeline),
+        )
+        cur.execute(
+            "UPDATE dbo.etl_pipeline SET descricao=?, criticidade=?, sla_minutos=?, ambiente=?, "
+            "max_active_runs=?, retries_count=?, retry_delay_seconds=?, pool_name=?, "
+            "updated_at=GETDATE() WHERE pipeline_name=?",
+            (descricao, criticidade, sla_minutos, ambiente,
+             max_active_runs, retries_count, retry_delay_secs, pool_name, pipeline),
+        )
+        new_vals = {
+            "active": active, "scheduled_time": horario, "schedule_type": schedule_type,
+            "schedule_hour": schedule_hour, "schedule_minute": schedule_minute,
+            "schedule_dow": schedule_dow, "schedule_dom": schedule_dom,
+            "envia_msg_inicio": envia_msg_inicio, "envia_msg_fim": envia_msg_fim,
+            "envia_msg_erro": envia_msg_erro, "project_name": project, "domain": domain,
+            "tags": tags, "depends_on": depends_on, "criticidade": criticidade,
+            "sla_minutos": sla_minutos, "ambiente": ambiente, "max_active_runs": max_active_runs,
+            "retries_count": retries_count, "retry_delay_seconds": retry_delay_secs,
+            "pool_name": pool_name, "descricao": descricao,
+        }
+        if is_new:
+            for field, val in new_vals.items():
+                cur.execute(
+                    "INSERT INTO dbo.etl_pipeline_audit "
+                    "(pipeline_name, changed_by, field_name, old_value, new_value, changed_at) "
+                    "VALUES (?, ?, ?, ?, ?, GETDATE())",
+                    (pipeline, changed_by, field, None, str(val) if val is not None else ""),
+                )
+        else:
+            _write_audit(cur, pipeline, changed_by, old_record, new_vals)
+        conn.commit()
+        cur.close(); conn.close()
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    return {"ok": True, "pipeline_name": pipeline, "is_new": is_new,
+            "cron": _build_cron(schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PIPELINE JOB REGISTER (upsert com lineage)
+# ─────────────────────────────────────────────────────────────────────────────
+
+VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc"}
+
+
+@app.post("/pipelines/jobs/register", tags=["jobs"])
+def register_pipeline_jobs(body: dict = Body(default={})):
+    """Registra/atualiza jobs e lineage de um pipeline (etl_pipeline_job_register)."""
+    pipeline_name = (body.get("pipeline_name") or "").strip()
+    if not pipeline_name:
+        raise HTTPException(status_code=422, detail="pipeline_name é obrigatório")
+
+    jobs_raw = body.get("jobs")
+    if jobs_raw:
+        if not isinstance(jobs_raw, list) or len(jobs_raw) == 0:
+            raise HTTPException(status_code=422, detail="jobs deve ser lista não vazia")
+        jobs = jobs_raw
+    else:
+        job_name = body.get("job_name")
+        order    = body.get("execution_order")
+        if not job_name or order is None:
+            raise HTTPException(status_code=422, detail="Informe jobs[] ou job_name+execution_order")
+        jobs = [{"job_name": job_name, "execution_order": int(order),
+                 "job_type": body.get("job_type", "datastage"),
+                 "job_command": body.get("job_command"),
+                 "origens": body.get("origens", []),
+                 "destinos": body.get("destinos", [])}]
+
+    erros = []
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        for idx, job in enumerate(jobs):
+            j_name   = (job.get("job_name") or "").strip()
+            j_order  = job.get("execution_order")
+            j_type   = (job.get("job_type") or "datastage").lower().strip()
+            j_cmd    = job.get("job_command") or None
+            origens  = job.get("origens",  [])
+            destinos = job.get("destinos", [])
+            transfs  = job.get("transformacoes", [])
+
+            if not j_name or j_order is None:
+                erros.append(f"Item {idx}: job_name e execution_order obrigatórios"); continue
+            if j_type not in VALID_JOB_TYPES:
+                erros.append(f"Item {idx} ({j_name}): job_type '{j_type}' inválido"); continue
+            if not origens and not transfs:
+                erros.append(f"Item {idx} ({j_name}): ao menos 1 origem é obrigatória"); continue
+            if not destinos and not transfs:
+                erros.append(f"Item {idx} ({j_name}): ao menos 1 destino é obrigatório"); continue
+
+            try:
+                cur.execute(
+                    "EXEC dbo.sp_etl_pipeline_job_upsert "
+                    "@pipeline_name=?, @job_name=?, @execution_order=?, @job_type=?, @job_command=?",
+                    (pipeline_name, j_name, int(j_order), j_type, j_cmd),
+                )
+            except Exception as e:
+                erros.append(f"Item {idx} ({j_name}): erro ao gravar job — {e}"); continue
+
+            for direction, objects in [("origem", origens), ("transformacao", transfs), ("destino", destinos)]:
+                for oi, obj in enumerate(objects):
+                    obj_name = (obj.get("object_name") or "").strip()
+                    if not obj_name:
+                        erros.append(f"Item {idx} ({j_name}) {direction}[{oi}]: object_name obrigatório"); continue
+                    try:
+                        cur.execute(
+                            "EXEC dbo.sp_etl_job_lineage_upsert "
+                            "@pipeline_name=?, @job_name=?, @direction=?, @object_type=?, @object_name=?, "
+                            "@stage_name=?, @stage_type_raw=?, @database_name=?, @sql_expression=?, "
+                            "@file_path=?, @dsx_source_file=?, @extracted_at=?, @extraction_method=?",
+                            (pipeline_name, j_name, direction,
+                             (obj.get("object_type") or "Tabela").strip(), obj_name,
+                             obj.get("stage_name"), obj.get("stage_type_raw"),
+                             obj.get("database_name"), obj.get("sql_expression"),
+                             obj.get("file_path"), obj.get("dsx_source_file"),
+                             obj.get("extracted_at"), obj.get("extraction_method")),
+                        )
+                    except Exception as e:
+                        erros.append(f"Item {idx} ({j_name}) {direction} '{obj_name}': {e}")
+
+        if erros:
+            conn.rollback()
+            raise HTTPException(status_code=422, detail={"errors": erros})
+        conn.commit()
+        cur.close(); conn.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    return {"ok": True, "pipeline_name": pipeline_name, "jobs_registered": len(jobs)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PIPELINE JOB REORDER
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/pipelines/jobs/reorder", tags=["jobs"])
+def reorder_pipeline_jobs(body: dict = Body(default={})):
+    """Reordena jobs sem tocar em lineage (etl_pipeline_job_reorder)."""
+    pipeline_name = (body.get("pipeline_name") or "").strip()
+    if not pipeline_name:
+        raise HTTPException(status_code=422, detail="pipeline_name é obrigatório")
+
+    jobs_raw = body.get("jobs")
+    if jobs_raw:
+        if not isinstance(jobs_raw, list) or len(jobs_raw) == 0:
+            raise HTTPException(status_code=422, detail="jobs deve ser lista não vazia")
+        jobs = jobs_raw
+    else:
+        job_name = body.get("job_name")
+        order    = body.get("execution_order")
+        if not job_name or order is None:
+            raise HTTPException(status_code=422, detail="Informe jobs[] ou job_name+execution_order")
+        jobs = [{"job_name": job_name, "execution_order": int(order)}]
+
+    erros = []
+    for idx, j in enumerate(jobs):
+        name  = (j.get("job_name") or "").strip()
+        order = j.get("execution_order")
+        if not name or order is None:
+            erros.append(f"Item {idx}: job_name e execution_order obrigatórios")
+        elif int(order) < 1:
+            erros.append(f"Item {idx} ({name}): execution_order deve ser >= 1")
+    if erros:
+        raise HTTPException(status_code=422, detail={"errors": erros})
+
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        for j in jobs:
+            cur.execute(
+                "EXEC dbo.sp_etl_pipeline_job_reorder @pipeline_name=?, @job_name=?, @execution_order=?",
+                (pipeline_name, j["job_name"].strip(), int(j["execution_order"])),
+            )
+        conn.commit()
+        cur.close(); conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    return {"ok": True, "pipeline_name": pipeline_name, "jobs_reordered": len(jobs)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PERFORMANCE MONITOR (leitura de snapshots)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/performance", tags=["monitor"])
+def get_performance(
+    pipeline: str = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """Retorna snapshots de performance (pipelines com alertas de duração)."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        where = "WHERE 1=1"
+        params: list = []
+        if pipeline:
+            where += " AND pipeline = ?"; params.append(pipeline)
+
+        cur.execute(f"SELECT COUNT(*) FROM dbo.etl_pipeline_performance_snapshot {where}", params)
+        total = cur.fetchone()[0] or 0
+
+        cur.execute(
+            f"""SELECT pipeline, project, execution_id, alerta_horas, elapsed_seconds, snapshot_at
+                FROM dbo.etl_pipeline_performance_snapshot
+                {where}
+                ORDER BY snapshot_at DESC
+                OFFSET ? ROWS FETCH NEXT ? ROWS ONLY""",
+            params + [offset, limit],
+        )
+        cols = [d[0] for d in cur.description]
+        rows = []
+        for row in cur.fetchall():
+            r = dict(zip(cols, row))
+            if r.get("snapshot_at") and hasattr(r["snapshot_at"], "isoformat"):
+                r["snapshot_at"] = r["snapshot_at"].isoformat()
+            rows.append(r)
+        cur.close(); conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    pages = max(1, -(-total // limit))
+    return {"total": total, "offset": offset, "limit": limit, "pages": pages, "data": rows}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADMIN MANAGE
+# ─────────────────────────────────────────────────────────────────────────────
+
+ADMIN_USERS = {"CVT38571"}
+
+
+@app.post("/admin", tags=["admin"])
+def admin_manage(body: dict = Body(default={})):
+    """Operações administrativas restritas (etl_admin_manage).
+
+    actions: config_upsert | config_delete | pipeline_delete |
+             dag_file_delete | regenerate_all_dags
+    """
+    action       = (body.get("action") or "").strip()
+    requested_by = (body.get("requested_by") or "").strip().upper()
+
+    if requested_by not in ADMIN_USERS:
+        raise HTTPException(status_code=403, detail=f"Usuário '{requested_by}' não autorizado")
+    if not action:
+        raise HTTPException(status_code=422, detail="action é obrigatório")
+
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+
+        if action == "config_upsert":
+            key   = (body.get("config_key")   or "").strip()
+            value = (body.get("config_value") or "").strip()
+            desc  = (body.get("descricao")    or "").strip() or None
+            if not key or not value:
+                raise HTTPException(status_code=422, detail="config_key e config_value obrigatórios")
+            cur.execute(
+                "MERGE dbo.etl_app_config AS t "
+                "USING (SELECT ? AS k, ? AS v, ? AS d) AS s ON t.config_key = s.k "
+                "WHEN MATCHED THEN UPDATE SET config_value=?, descricao=COALESCE(?,t.descricao), "
+                "  updated_by=?, updated_at=GETDATE() "
+                "WHEN NOT MATCHED THEN INSERT (config_key,config_value,descricao,updated_by,updated_at) "
+                "  VALUES (s.k, s.v, s.d, ?, GETDATE());",
+                [key, value, desc, value, desc, requested_by, requested_by],
+            )
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True, "mensagem": f'Parâmetro "{key}" salvo.', "detalhes": {"key": key, "value": value}}
+
+        elif action == "config_delete":
+            key = (body.get("config_key") or "").strip()
+            if not key:
+                raise HTTPException(status_code=422, detail="config_key obrigatório")
+            cur.execute("DELETE FROM dbo.etl_app_config WHERE config_key = ?", (key,))
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True, "mensagem": f'Parâmetro "{key}" removido.'}
+
+        elif action == "pipeline_delete":
+            pipeline_name = (body.get("pipeline_name") or "").strip()
+            if not pipeline_name:
+                raise HTTPException(status_code=422, detail="pipeline_name obrigatório")
+            cur.execute(
+                "SELECT total_jobs, total_lineage, dag_criada FROM dbo.vw_pipeline_dependencies "
+                "WHERE pipeline_name = ?", (pipeline_name,)
+            )
+            deps = cur.fetchone()
+            if not deps:
+                raise HTTPException(status_code=404, detail=f"Pipeline '{pipeline_name}' não encontrado")
+            cur.execute("EXEC dbo.sp_etl_pipeline_delete ?, ?", (pipeline_name, requested_by))
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True,
+                    "mensagem": f'Pipeline "{pipeline_name}" removido.',
+                    "detalhes": {"pipeline_name": pipeline_name,
+                                 "jobs_removidos": deps[0], "lineage_removidos": deps[1],
+                                 "dag_existia": bool(deps[2])}}
+
+        elif action == "dag_file_delete":
+            import os, glob
+            pipeline_name = (body.get("pipeline_name") or "").strip()
+            if not pipeline_name:
+                raise HTTPException(status_code=422, detail="pipeline_name obrigatório")
+            cur.close(); conn.close()
+            dag_id    = pipeline_name.lower()
+            dags_base = os.environ.get("DAGS_FOLDER", "/opt/airflow/dags")
+            candidates = [
+                os.path.join(dags_base, dag_id + ".py"),
+                os.path.join(dags_base, pipeline_name + ".py"),
+            ]
+            candidates += glob.glob(os.path.join(dags_base, "**", dag_id + ".py"), recursive=True)
+            removed = [p for p in set(candidates) if os.path.isfile(p)]
+            for p in removed:
+                os.remove(p)
+            return {"sucesso": True, "mensagem": f"{len(removed)} arquivo(s) removido(s).",
+                    "detalhes": {"arquivos_removidos": removed}}
+
+        elif action == "regenerate_all_dags":
+            filter_project = (body.get("filter_project") or "").strip()
+            if filter_project:
+                cur.execute(
+                    "SELECT COUNT(*) FROM dbo.etl_pipeline WHERE project_name=? AND dag_criada=1",
+                    (filter_project,)
+                )
+                n = cur.fetchone()[0] or 0
+                cur.execute(
+                    "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
+                    "WHERE project_name=? AND dag_criada=1", (filter_project,)
+                )
+            else:
+                cur.execute("SELECT COUNT(*) FROM dbo.etl_pipeline WHERE dag_criada=1")
+                n = cur.fetchone()[0] or 0
+                cur.execute("UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() WHERE dag_criada=1")
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True, "mensagem": f"{n} pipeline(s) marcados para regeneração.",
+                    "detalhes": {"pipelines_marcados": n, "filter_project": filter_project or "(todos)"}}
+
+        else:
+            raise HTTPException(status_code=422, detail=f"Action desconhecida: '{action}'")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VERSAO REGISTER (CRUD)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/versao/register", tags=["config"])
+def register_versao(body: dict = Body(default={})):
+    """CRUD de versões do ORQUESTRA (etl_versao_register).
+
+    body.action: create | update | delete
+    """
+    action = (body.get("action") or "create").strip().lower()
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+
+        if action == "delete":
+            record_id = int(body.get("id", 0))
+            if not record_id:
+                raise HTTPException(status_code=422, detail="id é obrigatório para action=delete")
+            cur.execute("DELETE FROM dbo.etl_versao_ferramenta WHERE id = ?", (record_id,))
+            conn.commit(); cur.close(); conn.close()
+            return {"action": "delete", "id": record_id}
+
+        versao     = (body.get("versao") or "").strip()
+        titulo     = (body.get("titulo") or "").strip()
+        descricao  = (body.get("descricao_md") or "").strip() or None
+        criado_por = (body.get("criado_por") or "admin").strip()
+
+        if not versao or not titulo:
+            raise HTTPException(status_code=422, detail="versao e titulo são obrigatórios")
+
+        def _sync_config(cur, v, t):
+            for key, val in (("app_version", v), ("app_release_name", t)):
+                cur.execute(
+                    "UPDATE dbo.etl_app_config SET config_value=? WHERE config_key=?", (val, key)
+                )
+                cur.execute(
+                    "INSERT INTO dbo.etl_app_config (config_key, config_value) "
+                    "SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_app_config WHERE config_key=?)",
+                    (key, val, key),
+                )
+
+        if action == "update":
+            record_id = int(body.get("id", 0))
+            if not record_id:
+                raise HTTPException(status_code=422, detail="id é obrigatório para action=update")
+            cur.execute(
+                "UPDATE dbo.etl_versao_ferramenta SET versao=?, titulo=?, descricao_md=?, criado_por=? "
+                "WHERE id=?", (versao, titulo, descricao, criado_por, record_id)
+            )
+            _sync_config(cur, versao, titulo)
+            conn.commit(); cur.close(); conn.close()
+            return {"action": "update", "id": record_id, "versao": versao}
+
+        # create
+        cur.execute(
+            "INSERT INTO dbo.etl_versao_ferramenta (versao, titulo, descricao_md, criado_por) "
+            "VALUES (?, ?, ?, ?)", (versao, titulo, descricao, criado_por)
+        )
+        _sync_config(cur, versao, titulo)
+        conn.commit(); cur.close(); conn.close()
+        return {"action": "create", "versao": versao, "titulo": titulo}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LINEAGE EXTRACT DSX
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/lineage/extract-dsx", tags=["lineage"])
+def lineage_extract_dsx(body: dict = Body(default={})):
+    """Extrai lineage de um job DataStage a partir do arquivo .dsx (etl_lineage_extract_dsx)."""
+    import os, sys
+    project_name = (body.get("project_name") or "").strip()
+    job_name     = (body.get("job_name") or "").strip()
+    if not project_name or not job_name:
+        raise HTTPException(status_code=422, detail="project_name e job_name são obrigatórios")
+
+    dags_folder = os.environ.get("DAGS_FOLDER", "/opt/airflow/dags")
+    if dags_folder not in sys.path:
+        sys.path.insert(0, dags_folder)
+    try:
+        from utils.dsx_engine import DSXEngine, _DEFAULT_DSX_DIR  # type: ignore
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"DSXEngine não disponível: {e}")
+
+    try:
+        motor = DSXEngine(diretorio_base=_DEFAULT_DSX_DIR)
+        resultado = motor.buscar_linhagem(nome_projeto=project_name, nome_job=job_name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao extrair DSX: {e}")
+
+    if resultado.get("erro"):
+        raise HTTPException(status_code=422, detail=resultado["erro"])
+
+    dados = resultado.get("dados") or []
+    return {"sucesso": True, "project_name": project_name, "job_name": job_name,
+            "dsx_file": f"{project_name}.dsx", "dados": dados}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LINEAGE NORMALIZE
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/lineage/normalize", tags=["lineage"])
+def lineage_normalize(body: dict = Body(default={})):
+    """Normaliza lineage legado: object_name → tabela real (etl_lineage_normalize)."""
+    pipeline_filter = (body.get("pipeline_name") or "").strip() or None
+    dry_run = str(body.get("dry_run", "false")).lower() in ("true", "1", "yes")
+
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        where_extra = "AND l.pipeline_name = ?" if pipeline_filter else ""
+        params = [pipeline_filter] if pipeline_filter else []
+
+        cur.execute(
+            f"""SELECT l.id, l.pipeline_name, l.job_name, l.direction, l.object_type,
+                       l.stage_name, l.stage_type_raw, l.database_name, l.sql_expression,
+                       l.file_path, l.dsx_source_file, l.extraction_method, l.columns_json, l.object_name
+                FROM dbo.etl_job_lineage l
+                WHERE l.sql_expression IS NOT NULL AND l.sql_expression <> ''
+                  AND CHARINDEX(l.object_name, l.sql_expression) = 0
+                  {where_extra}
+                ORDER BY l.pipeline_name, l.job_name""",
+            params if params else [],
+        )
+        rows = cur.fetchall()
+
+        total_old, total_new, ids_to_del = 0, 0, []
+        for row in rows:
+            (rec_id, pip, job, direction, obj_type, stage_name, stage_type_raw,
+             db_name, sql_expr, fp, dsx_src, extr_method, cols_json, obj_name) = row
+            tables = [t.strip() for t in sql_expr.split("\n") if t.strip()]
+            if not tables or obj_name.strip().lower() in {t.lower() for t in tables}:
+                continue
+            total_old += 1
+            if not dry_run:
+                for tbl in tables:
+                    cur.execute(
+                        """INSERT INTO dbo.etl_job_lineage
+                           (pipeline_name, job_name, direction, object_type, object_name,
+                            stage_name, stage_type_raw, database_name, sql_expression,
+                            file_path, dsx_source_file, extraction_method, columns_json,
+                            extracted_at, created_at, updated_at)
+                           SELECT ?, ?, ?,
+                               CASE WHEN CHARINDEX('.', ?) > 0 THEN 'Tabela' ELSE ISNULL(?,'Tabela') END,
+                               ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), GETDATE()
+                           WHERE NOT EXISTS (
+                               SELECT 1 FROM dbo.etl_job_lineage
+                               WHERE pipeline_name=? AND job_name=? AND direction=? AND object_name=?
+                           )""",
+                        [pip, job, direction, tbl, obj_type,
+                         tbl, stage_name, stage_type_raw, db_name,
+                         sql_expr, fp, dsx_src, extr_method, cols_json,
+                         pip, job, direction, tbl],
+                    )
+                    total_new += 1
+                ids_to_del.append(rec_id)
+
+        if not dry_run and ids_to_del:
+            for i in range(0, len(ids_to_del), 100):
+                chunk = ids_to_del[i:i+100]
+                cur.execute(f"DELETE FROM dbo.etl_job_lineage WHERE id IN ({','.join(['?']*len(chunk))})", chunk)
+        if not dry_run:
+            conn.commit()
+        cur.close(); conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    return {"dry_run": dry_run, "entradas_antigas": total_old,
+            "entradas_novas": total_new, "removidas": len(ids_to_del)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SEQUENCE IMPORT — PARSE
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/sequence/parse", tags=["sequence"])
+def sequence_parse(body: dict = Body(default={})):
+    """Faz parse de uma sequence DataStage .dsx e grava em staging (etl_sequence_import_parse)."""
+    import os, sys, re, json
+
+    project_name = (body.get("project_name") or "").strip()
+    seq_name     = (body.get("seq_name") or "").strip()
+    imported_by  = (body.get("imported_by") or "system").strip()
+    domain       = (body.get("domain") or "").strip() or None
+
+    if not project_name or not seq_name:
+        raise HTTPException(status_code=422, detail="project_name e seq_name são obrigatórios")
+
+    dsx_base = os.environ.get("DSX_BASE_DIR", "/opt/airflow/dsx")
+    dsx_path = os.path.join(dsx_base, f"{project_name}.dsx")
+    if not os.path.exists(dsx_path):
+        raise HTTPException(status_code=404,
+            detail=f"Arquivo '{project_name}.dsx' não encontrado em '{dsx_base}'")
+
+    dags_folder = os.environ.get("DAGS_FOLDER", "/opt/airflow/dags")
+    for p in [dags_folder, os.path.dirname(dags_folder)]:
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    try:
+        from utils.dsx_engine import DSXEngine  # type: ignore
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"DSXEngine não disponível: {e}")
+
+    def _decode_dsx(text):
+        return re.sub(r'\\\(([0-9A-Fa-f]{2})\)', lambda m: chr(int(m.group(1), 16)), text)
+
+    def _sanitize(name):
+        for c, r in [('ç','c'),('ã','a'),('â','a'),('á','a'),('à','a'),('é','e'),('ê','e'),
+                     ('í','i'),('ó','o'),('ô','o'),('õ','o'),('ú','u')]:
+            name = name.replace(c, r).replace(c.upper(), r.upper())
+        return re.sub(r'_+', '_', re.sub(r'[^a-zA-Z0-9_]', '_', name)).strip('_').lower()
+
+    try:
+        with open(dsx_path, "r", encoding="utf-8", errors="ignore") as fh:
+            content = fh.read()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao ler DSX: {e}")
+
+    # Localizar a sequence no arquivo
+    pattern = re.escape(seq_name)
+    match = re.search(
+        r'(BEGIN DSJOB\s+Identifier\s+"' + pattern + r'".*?)(?=BEGIN DSJOB|\Z)',
+        content, re.DOTALL | re.IGNORECASE
+    )
+    if not match:
+        raise HTTPException(status_code=404,
+            detail=f"Sequence '{seq_name}' não encontrada em '{project_name}.dsx'")
+
+    seq_block = match.group(1)
+    jtype = re.search(r'JobType\s+"?(\d+)"?', seq_block)
+    if not jtype or jtype.group(1) != '2':
+        raise HTTPException(status_code=422, detail="O bloco encontrado não é uma sequence (JobType != 2)")
+
+    # Extrair jobs em ordem
+    jcc_m = re.search(r'JobControlCode\s*=\+=\+=\+=\s*(.*?)\s*=\+=\+=\+=', seq_block, re.DOTALL)
+    jobs_in_order: list[str] = []
+    if jcc_m:
+        jcc  = jcc_m.group(1)
+        seen: set[str] = set()
+        for pat in [r'DSAttachJob\(\\"([^\\"]+)\\"', r'DSAttachJob\(\"([^\"]+)\"', r'DSAttachJob\("([^"]+)"']:
+            for job in re.findall(pat, jcc):
+                if job and job not in seen:
+                    seen.add(job); jobs_in_order.append(job)
+            if jobs_in_order:
+                break
+
+    name_m   = re.search(r'^\s+Name\s+"([^"]+)"', seq_block, re.MULTILINE)
+    seq_decoded = _decode_dsx(name_m.group(1) if name_m else seq_name)
+    pipeline_suggestion = _sanitize(seq_decoded)
+
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO dbo.etl_seq_import "
+            "(dsx_filename, seq_name_raw, seq_name, project_name, domain, "
+            "pipeline_name_override, status, imported_by, imported_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'pendente_aprovacao', ?, GETDATE())",
+            [f"{project_name}.dsx", seq_decoded, seq_decoded, project_name, domain,
+             pipeline_suggestion, imported_by],
+        )
+        cur.execute("SELECT MAX(id) FROM dbo.etl_seq_import")
+        import_id = cur.fetchone()[0]
+
+        engine = DSXEngine(dsx_base)
+        jobs_preview = []
+        for order, job_name in enumerate(jobs_in_order):
+            cur.execute(
+                "INSERT INTO dbo.etl_seq_import_job "
+                "(import_id, execution_order, job_name_ds, job_name_orq, job_type, status) "
+                "VALUES (?, ?, ?, ?, 'datastage', 'pendente')",
+                [import_id, order, job_name, job_name],
+            )
+            cur.execute(
+                "SELECT MAX(id) FROM dbo.etl_seq_import_job WHERE import_id=? AND execution_order=?",
+                [import_id, order]
+            )
+            job_id = cur.fetchone()[0]
+
+            lineage_result = engine.extrair(project_name, job_name)
+            lineage_data, lineage_ok = [], False
+            if lineage_result.get("sucesso"):
+                lineage_ok   = True
+                lineage_data = lineage_result.get("dados", [])
+                for item in lineage_data:
+                    cols = item.get("columns") or []
+                    cols_json = json.dumps(cols, ensure_ascii=False) if cols else None
+                    cur.execute(
+                        "INSERT INTO dbo.etl_seq_import_lineage "
+                        "(import_job_id, direction, object_name, object_type, stage_type_raw, "
+                        "sql_expression, file_path, database_name, dsx_source_file, "
+                        "extraction_method, columns_json, status) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'dsx_auto', ?, 'pendente')",
+                        [job_id, item.get("direction"), item.get("object_name"),
+                         item.get("object_type"), item.get("stage_type_raw"),
+                         item.get("sql_expression"), item.get("file_path"),
+                         item.get("database_name"), item.get("dsx_source_file"), cols_json],
+                    )
+                cur.execute(
+                    "UPDATE dbo.etl_seq_import_job SET lineage_extracted=1, lineage_count=? WHERE id=?",
+                    [len(lineage_data), job_id]
+                )
+            jobs_preview.append({"import_job_id": job_id, "execution_order": order,
+                                  "job_name_ds": job_name, "job_name_orq": job_name,
+                                  "lineage_extracted": lineage_ok, "lineage_count": len(lineage_data),
+                                  "lineage": lineage_data})
+
+        conn.commit(); cur.close(); conn.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao processar sequence: {e}")
+
+    return {"import_id": import_id, "seq_name": seq_decoded, "project_name": project_name,
+            "pipeline_name_suggestion": pipeline_suggestion,
+            "jobs_count": len(jobs_in_order), "jobs": jobs_preview}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SEQUENCE IMPORT — APPROVE
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/sequence/approve", tags=["sequence"])
+def sequence_approve(body: dict = Body(default={})):
+    """Aprova importação de sequence: move staging → tabelas principais (etl_sequence_import_approve)."""
+    import_id    = int(body.get("import_id", 0))
+    reviewed_by  = (body.get("reviewed_by") or "system").strip()
+    if not import_id:
+        raise HTTPException(status_code=422, detail="import_id é obrigatório")
+
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT id, seq_name, project_name, status FROM dbo.etl_seq_import WHERE id = ?",
+            (import_id,)
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Importação id={import_id} não encontrada")
+        if row[3] != "pendente_aprovacao":
+            raise HTTPException(status_code=422,
+                detail=f"Importação id={import_id} está com status '{row[3]}' e não pode ser aprovada")
+
+        seq_name, project_name = row[1], row[2]
+        pipeline_override = (body.get("pipeline_name_override") or "").strip() or None
+        schedule_type     = (body.get("schedule_type") or "").strip() or None
+
+        if pipeline_override or schedule_type:
+            parts, params = [], []
+            if pipeline_override:
+                parts.append("pipeline_name_override = ?"); params.append(pipeline_override)
+            if schedule_type:
+                h   = int(body.get("schedule_hour",   6))
+                m   = int(body.get("schedule_minute", 0))
+                dow = body.get("schedule_dow")
+                dom = body.get("schedule_dom")
+                cron = _build_cron(schedule_type, h, m, dow, dom)
+                parts += ["schedule_type = ?", "schedule_cron = ?",
+                          "schedule_hour = ?", "schedule_minute = ?"]
+                params += [schedule_type, cron, h, m]
+                if dow is not None: parts.append("schedule_dow = ?"); params.append(int(dow))
+                if dom is not None: parts.append("schedule_dom = ?"); params.append(int(dom))
+            params.append(import_id)
+            cur.execute(f"UPDATE dbo.etl_seq_import SET {', '.join(parts)} WHERE id = ?", params)
+
+        cur.execute("EXEC dbo.sp_etl_seq_import_approve ?, ?", (import_id, reviewed_by))
+
+        active           = int(body.get("active",           1))
+        envia_msg_inicio = int(body.get("envia_msg_inicio", 1))
+        envia_msg_fim    = int(body.get("envia_msg_fim",    1))
+        envia_msg_erro   = int(body.get("envia_msg_erro",   1))
+        dag_start_date   = (body.get("dag_start_date") or "").strip() or None
+
+        cur.execute(
+            "SELECT COALESCE(pipeline_name_override, seq_name) FROM dbo.etl_seq_import WHERE id = ?",
+            (import_id,)
+        )
+        pipeline_name = (cur.fetchone() or [None])[0]
+
+        if pipeline_name:
+            extra_parts  = ["active=?","envia_msg_inicio=?","envia_msg_fim=?","envia_msg_erro=?","updated_at=GETDATE()"]
+            extra_params = [active, envia_msg_inicio, envia_msg_fim, envia_msg_erro]
+            if dag_start_date:
+                extra_parts.append("dag_start_date=?"); extra_params.append(dag_start_date)
+            extra_params.append(pipeline_name)
+            cur.execute(f"UPDATE dbo.etl_pipeline SET {', '.join(extra_parts)} WHERE pipeline_name=?", extra_params)
+
+            try:
+                cur.execute(
+                    """UPDATE jl SET jl.columns_json = sil.columns_json
+                       FROM dbo.etl_job_lineage jl
+                       JOIN dbo.etl_pipeline_job pj  ON pj.pipeline_name=jl.pipeline_name AND pj.job_name=jl.job_name
+                       JOIN dbo.etl_seq_import_job sij ON sij.job_name_orq=pj.job_name AND sij.import_id=?
+                       JOIN dbo.etl_seq_import_lineage sil ON sil.import_job_id=sij.id
+                           AND sil.direction=jl.direction AND sil.object_name=jl.object_name
+                       WHERE jl.pipeline_name=? AND sil.columns_json IS NOT NULL""",
+                    [import_id, pipeline_name],
+                )
+            except Exception:
+                pass
+
+        conn.commit(); cur.close(); conn.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao aprovar sequence: {e}")
+
+    return {"import_id": import_id, "pipeline_name": pipeline_name,
+            "project_name": project_name, "status": "aprovado", "reviewed_by": reviewed_by}
+
