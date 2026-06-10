@@ -555,8 +555,17 @@ def gerar_dags(**context):
 
     force_all      = bool(conf.get("force_all", False))
     filter_project = (conf.get("filter_project") or "").strip()
+    pipeline_name  = (conf.get("pipeline_name")  or "").strip()
 
-    if force_all:
+    if pipeline_name:
+        # Regerar pipeline específico — reseta dag_criada só para ele
+        hook.run(
+            "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
+            "WHERE pipeline_name=%s",
+            parameters=(pipeline_name,),
+        )
+        print(f"[FACTORY] pipeline_name='{pipeline_name}' — dag_criada resetado para regeneração")
+    elif force_all:
         if filter_project:
             hook.run(
                 "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
