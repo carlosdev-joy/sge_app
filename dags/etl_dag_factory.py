@@ -26,7 +26,7 @@ DAG_ID        = "etl_dag_factory"
 MSSQL_CONN_ID = "SQL14_DMDB41"
 LOCAL_TZ      = "America/Sao_Paulo"
 SSH_CONN_ID   = "ssh_lnxprd021"
-BASE_LOG_ROOT = "/Projetos/{project}/Logs/Airflow"
+BASE_LOG_ROOT = "/Projetos/BI_CVP/Logs/Airflow"
 
 default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
 
@@ -198,7 +198,7 @@ def _generate_dag_source(pipeline, jobs):
     ssh_conn_id_val     = (pipeline.get("ssh_conn_id") or "ssh_lnxprd021").strip()
 
     cron        = _time_to_cron(sched)
-    base_log    = BASE_LOG_ROOT.format(project=project)
+    base_log    = BASE_LOG_ROOT
     user_tags   = [t.strip() for t in tags_raw.split(",") if t.strip()]
     all_tags    = list(dict.fromkeys([project, domain] + user_tags))
     sorted_jobs = sorted(jobs, key=lambda j: j["execution_order"])
