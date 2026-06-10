@@ -29,19 +29,59 @@ AIRFLOW_USER     = os.getenv("AIRFLOW_USER",     "airflow")
 AIRFLOW_PASSWORD = os.getenv("AIRFLOW_PASSWORD", "airflow")
 DAGS_FOLDER      = os.getenv("DAGS_FOLDER",      "/opt/airflow/dags")
 
-MSSQL_SERVER   = os.getenv("MSSQL_SERVER",   "orquestra-sqlserver-dev")
-MSSQL_DATABASE = os.getenv("MSSQL_DATABASE", "orquestra_dev")
-MSSQL_USER     = os.getenv("MSSQL_USER",     "sa")
-MSSQL_PASSWORD = os.getenv("MSSQL_PASSWORD", "")
+MSSQL_CONN_ID = os.getenv("MSSQL_CONN_ID", "SQL14_DMDB41")
+
+# cache em memória para não buscar a cada request
+_db_conn_cache: dict = {}
+
+
+async def _fetch_airflow_connection(conn_id: str) -> dict:
+    """Busca os dados de uma connection do Airflow via REST."""
+    async with get_airflow_client() as client:
+        r = await client.get(f"/api/v1/connections/{conn_id}")
+        if r.status_code == 404:
+            raise HTTPException(status_code=500, detail=f"Connection '{conn_id}' não encontrada no Airflow")
+        if r.status_code == 401:
+            raise HTTPException(status_code=401, detail="Credenciais Airflow inválidas")
+        r.raise_for_status()
+        return r.json()
+
+
+async def get_db_conn_async():
+    """Retorna conexão pyodbc usando credenciais da connection do Airflow."""
+    global _db_conn_cache
+    if not _db_conn_cache:
+        conn_data = await _fetch_airflow_connection(MSSQL_CONN_ID)
+        _db_conn_cache = {
+            "server":   conn_data.get("host", ""),
+            "database": conn_data.get("schema", ""),
+            "user":     conn_data.get("login", ""),
+            "password": conn_data.get("password", ""),
+        }
+        log.info("DB connection carregada do Airflow: server=%s db=%s",
+                 _db_conn_cache["server"], _db_conn_cache["database"])
+
+    conn_str = (
+        f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+        f"SERVER={_db_conn_cache['server']};"
+        f"DATABASE={_db_conn_cache['database']};"
+        f"UID={_db_conn_cache['user']};"
+        f"PWD={_db_conn_cache['password']};"
+        "TrustServerCertificate=yes;"
+    )
+    return pyodbc.connect(conn_str, timeout=10)
 
 
 def get_db_conn():
+    """Conexão síncrona usando cache já carregado. Requer get_db_conn_async chamado antes."""
+    if not _db_conn_cache:
+        raise RuntimeError("Cache de conexão DB não inicializado — use get_db_conn_async()")
     conn_str = (
         f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-        f"SERVER={MSSQL_SERVER};"
-        f"DATABASE={MSSQL_DATABASE};"
-        f"UID={MSSQL_USER};"
-        f"PWD={MSSQL_PASSWORD};"
+        f"SERVER={_db_conn_cache['server']};"
+        f"DATABASE={_db_conn_cache['database']};"
+        f"UID={_db_conn_cache['user']};"
+        f"PWD={_db_conn_cache['password']};"
         "TrustServerCertificate=yes;"
     )
     return pyodbc.connect(conn_str, timeout=10)
@@ -87,10 +127,10 @@ def health():
 # ── Pipelines ─────────────────────────────────────────────────────────────────
 
 @app.get("/pipelines", tags=["pipelines"])
-def list_pipelines(project: str | None = None, active_only: bool = False):
+async def list_pipelines(project: str | None = None, active_only: bool = False):
     """Lista pipelines cadastrados no banco."""
     try:
-        conn = get_db_conn()
+        conn = await get_db_conn_async()
         cur  = conn.cursor()
         sql  = """
             SELECT pipeline_name, project_name, domain, active, dag_criada,
@@ -255,7 +295,7 @@ async def sync_dry_run():
     Retorna quais pipelines seriam afetados e por quê.
     """
     try:
-        conn = get_db_conn()
+        conn = await get_db_conn_async()
         cur  = conn.cursor()
         cur.execute("SELECT pipeline_name, active, dag_criada FROM dbo.etl_pipeline ORDER BY pipeline_name")
         pipelines = [{"pipeline_name": r[0], "active": r[1], "dag_criada": r[2]} for r in cur.fetchall()]
@@ -290,7 +330,7 @@ async def sync_pipeline_status():
     - Pipelines com dag_criada=0 são ignorados
     """
     try:
-        conn = get_db_conn()
+        conn = await get_db_conn_async()
         cur  = conn.cursor()
         cur.execute("SELECT pipeline_name, active, dag_criada FROM dbo.etl_pipeline ORDER BY pipeline_name")
         pipelines = [{"pipeline_name": r[0], "active": r[1], "dag_criada": r[2]} for r in cur.fetchall()]
