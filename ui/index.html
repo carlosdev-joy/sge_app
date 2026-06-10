@@ -2349,41 +2349,25 @@ async function loadLogs(offset) {
   const btn = $('btn-logs-query'), btnTxt = $('btn-logs-txt'), st = $('logs-status'), area = $('logs-table-area');
   if (btn) btn.disabled = true;
   if (btnTxt) btnTxt.textContent = 'Buscando...';
-  if (st) st.textContent = 'Disparando DAG de consulta...';
+  if (st) st.textContent = 'Consultando API...';
 
   try {
-    const runId = 'orq_logs_ui_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + LOGS_DAG_ID + '/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf }),
-    });
-    if (r.status === 401) { sair(); return; }
-    if (r.status === 403) { if (st) st.textContent = 'Acesso negado (403).'; return; }
-    if (!r.ok) { if (st) st.textContent = 'Erro ao disparar DAG: ' + r.status; return; }
-
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    if (st) st.textContent = 'Aguardando execução... (' + rid + ')';
-
-    const state = await waitDagRun(LOGS_DAG_ID, rid, 45);
-    if (state !== 'success') {
-      if (st) st.textContent = 'Não foi possível confirmar a execução. Verifique o DAG no Airflow.';
-      return;
-    }
+    const params = new URLSearchParams();
+    params.set('offset', conf.offset || 0);
+    params.set('limit',  conf.limit  || LOGS_LIMIT);
+    if (conf.filter_project)      params.set('filter_project',      conf.filter_project);
+    if (conf.filter_pipeline)     params.set('filter_pipeline',     conf.filter_pipeline);
+    if (conf.filter_status)       params.set('filter_status',       conf.filter_status);
+    if (conf.filter_hours_back)   params.set('filter_hours_back',   conf.filter_hours_back);
+    if (conf.filter_date_from)    params.set('filter_date_from',    conf.filter_date_from);
+    if (conf.filter_execution_id) params.set('filter_execution_id', conf.filter_execution_id);
 
     if (st) st.textContent = 'Carregando dados...';
-    const xr = await fetch(
-      '/api/v1/dags/' + LOGS_DAG_ID + '/dagRuns/' + rid + '/taskInstances/consultar_logs/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (xr.status === 401) { sair(); return; }
-    if (xr.status === 403) { if (st) st.textContent = 'Acesso negado (403) ao ler XCom.'; return; }
-    if (xr.status === 404) { if (st) st.textContent = 'Resultado ainda não disponível. Aguarde e tente novamente.'; return; }
-    if (!xr.ok) { if (st) st.textContent = 'Erro ao ler XCom: ' + xr.status; return; }
+    const r = await fetch(ORQUESTRA_API + '/execucoes?' + params.toString());
+    if (r.status === 401) { sair(); return; }
+    if (!r.ok) { if (st) st.textContent = 'Erro API: ' + r.status; return; }
 
-    const xdata = await xr.json();
-    const payload = normalizeXcomValue(xdata);
+    const payload = await r.json();
     try { window.__lastLogsPayload = payload; } catch(e) {}
     renderLogsTable(payload, area, st);
   } catch(err) {
@@ -2506,33 +2490,20 @@ async function loadLogDetail(executionId, pipeline) {
   };
   if (pipeline) conf.filter_pipeline = pipeline; // aceita LIKE; passar exato resolve o drill-down
 
-  $('ld-status').textContent = 'Disparando DAG...';
+  $('ld-status').textContent = 'Consultando API...';
   try {
-    const runId = 'orq_log_detail_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + LOGS_DAG_ID + '/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf }),
-    });
+    const params = new URLSearchParams();
+    params.set('detail_mode', 'true');
+    params.set('offset', 0);
+    params.set('limit', 200);
+    params.set('filter_execution_id', executionId);
+    if (pipeline) params.set('filter_pipeline', pipeline);
+
+    const r = await fetch(ORQUESTRA_API + '/execucoes?' + params.toString());
     if (r.status === 401) { sair(); return; }
-    if (!r.ok) { $('ld-status').textContent = 'Erro ao disparar DAG: ' + r.status; return; }
+    if (!r.ok) { $('ld-status').textContent = 'Erro API: ' + r.status; return; }
 
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    $('ld-status').textContent = 'Aguardando execução...';
-    const state = await waitDagRun(LOGS_DAG_ID, rid, 45);
-    if (state !== 'success') { $('ld-status').textContent = 'Falha/timeout. Verifique o Airflow.'; return; }
-
-    $('ld-status').textContent = 'Carregando dados (XCom)...';
-    const xr = await fetch(
-      '/api/v1/dags/' + LOGS_DAG_ID + '/dagRuns/' + rid + '/taskInstances/consultar_logs/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (xr.status === 401) { sair(); return; }
-    if (!xr.ok) { $('ld-status').textContent = 'Erro ao ler XCom: ' + xr.status; return; }
-
-    const xdata = await xr.json();
-    const payload = normalizeXcomValue(xdata);
+    const payload = await r.json();
     renderLogDetailTable(payload);
   } catch (e) {
     $('ld-status').textContent = 'Erro: ' + (e && e.message ? e.message : e);
@@ -3149,27 +3120,11 @@ async function loadGovernanca() {
   if (st) st.textContent = 'Consultando lineage...';
 
   try {
-    const runId = 'orq_lin_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + LINEAGE_QUERY_DAG + '/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf: { pipeline_name: pipeline } }),
-    });
+    const r = await fetch(ORQUESTRA_API + '/lineage?pipeline_name=' + encodeURIComponent(pipeline));
     if (r.status === 401) { sair(); return; }
-    if (!r.ok) { if (st) st.textContent = 'Erro ' + r.status; return; }
+    if (!r.ok) { if (st) st.textContent = 'Erro API ' + r.status; return; }
 
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    const state = await waitDagRun(LINEAGE_QUERY_DAG, rid, 45);
-    if (state !== 'success') { if (st) st.textContent = 'Falha/timeout.'; return; }
-
-    const xr = await fetch(
-      '/api/v1/dags/' + LINEAGE_QUERY_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_lineage/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (!xr.ok) { if (st) st.textContent = 'Erro XCom ' + xr.status; return; }
-
-    _govData = normalizeXcomValue(await xr.json());
+    _govData = await r.json();
     const jobs = (_govData && _govData.jobs) || [];
     if (st) st.textContent = 'Lineage de ' + jobs.length + ' job(s) carregado.';
 
@@ -3722,30 +3677,13 @@ window.__appConfig = {
 };
 
 async function loadAppConfig() {
-  if (!authHeader) return;
   try {
-    const runId = 'orq_cfg_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + APP_CONFIG_DAG + '/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf: {} }),
-    });
+    const r = await fetch(ORQUESTRA_API + '/config');
     if (!r.ok) return;
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    const state = await waitDagRun(APP_CONFIG_DAG, rid, 30);
-    if (state !== 'success') return;
-    const xr = await fetch(
-      '/api/v1/dags/' + APP_CONFIG_DAG + '/dagRuns/' + rid +
-      '/taskInstances/buscar_configuracoes/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (!xr.ok) return;
-    const cfg = normalizeXcomValue(await xr.json());
+    const cfg = await r.json();
     if (cfg && typeof cfg === 'object') {
       window.__appConfig = { ...window.__appConfig, ...cfg };
       console.log('[ORQ] App config carregado:', window.__appConfig);
-      // Atualizar badge de versão após carregar config
       _renderVersionBadge();
     }
   } catch(e) {
@@ -3761,23 +3699,13 @@ async function loadPipelineList() {
   if (_pipeListLoaded || !authHeader) return;
   _pipeListLoaded = true;
   try {
-    const runId = 'orq_piplist_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
+    const r = await fetch(ORQUESTRA_API + '/catalogo', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf: { mode: 'list_pipelines' } }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'list_pipelines' }),
     });
     if (!r.ok) return;
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    const state = await waitDagRun(CATALOGO_DAG, rid, 30);
-    if (state !== 'success') return;
-    const xr = await fetch(
-      '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_catalogo/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (!xr.ok) return;
-    const data = normalizeXcomValue(await xr.json());
+    const data = await r.json();
     const names = (data && data.pipelines) || [];
     const dl = $('gov-pipeline-list');
     if (dl && names.length) {
@@ -3787,28 +3715,16 @@ async function loadPipelineList() {
 }
 
 async function loadProjectList() {
-  // NOTE: mode:'list_projects' must exist in the backend DAG etl_catalogo_query
   const sel = $('p-project');
-  if (!sel) return;
-  if (!authHeader) return;
+  if (!sel || !authHeader) return;
   try {
-    const runId = 'proj-' + Date.now();
-    const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
+    const r = await fetch(ORQUESTRA_API + '/catalogo', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf: { mode: 'list_projects' } }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'list_projects' }),
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    const state = await waitDagRun(CATALOGO_DAG, rid, 30);
-    if (state !== 'success') throw new Error('DAG state: ' + state);
-    const xr = await fetch(
-      '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_catalogo/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (!xr.ok) throw new Error('XCom HTTP ' + xr.status);
-    const data = normalizeXcomValue(await xr.json());
+    const data = await r.json();
     const projects = data.projects || [];
     if (projects.length) {
       sel.innerHTML = '<option value="">Selecione…</option>' +
@@ -4260,34 +4176,17 @@ async function _catTrigger(conf, statusMsg) {
   const st = $('cat-status');
   if (st) { st.textContent = statusMsg; st.style.color = 'var(--muted)'; }
 
-  const runId = 'orq_cat_' + Date.now();
-  const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
+  const r = await fetch(ORQUESTRA_API + '/catalogo', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': _auth },
-    body: JSON.stringify({ dag_run_id: runId, conf }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(conf),
   });
   if (r.status === 401) { sair(); return null; }
   if (!r.ok) {
-    if (st) { st.textContent = 'Erro ao disparar: ' + r.status; st.style.color = 'var(--red)'; }
+    if (st) { st.textContent = 'Erro API: ' + r.status; st.style.color = 'var(--red)'; }
     return null;
   }
-  const run   = await r.json();
-  const rid   = run.dag_run_id || run.run_id;
-  const state = await waitDagRun(CATALOGO_DAG, rid, 60);
-  if (state !== 'success') {
-    if (st) { st.textContent = 'Falha/timeout na consulta.'; st.style.color = 'var(--red)'; }
-    return null;
-  }
-  const xr = await fetch(
-    '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid +
-    '/taskInstances/consultar_catalogo/xcomEntries/return_value',
-    { headers: { 'Authorization': _auth } }
-  );
-  if (!xr.ok) {
-    if (st) { st.textContent = 'Erro ao ler resultado: ' + xr.status; st.style.color = 'var(--red)'; }
-    return null;
-  }
-  return normalizeXcomValue(await xr.json());
+  return await r.json();
 }
 
 function _catShowColumns(evt, encodedJson) {
@@ -4818,23 +4717,13 @@ async function admLoadJobTypes() {
   if (tbl) tbl.innerHTML   = '';
   if (!authHeader) { if (st) st.textContent = 'Sem autenticação.'; return; }
   try {
-    const runId = 'jt-' + Date.now();
-    const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
+    const r = await fetch(ORQUESTRA_API + '/catalogo', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf: { mode: 'list_job_types' } }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'list_job_types' }),
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    const state = await waitDagRun(CATALOGO_DAG, rid, 30);
-    if (state !== 'success') throw new Error('state: ' + state);
-    const xr = await fetch(
-      '/api/v1/dags/' + CATALOGO_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_catalogo/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (!xr.ok) throw new Error('XCom ' + xr.status);
-    const data = normalizeXcomValue(await xr.json());
+    const data = await r.json();
     const list = (data && data.job_types) || [];
     window.__jobTypes = list;
     if (st) st.textContent = list.length + ' tipo(s) encontrado(s)';
@@ -4912,16 +4801,12 @@ async function admSaveJobType() {
   };
   if (msg) { msg.textContent = 'Salvando...'; msg.className = 'msg'; }
   try {
-    const runId = 'jtw-' + Date.now();
-    const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
+    const r = await fetch(ORQUESTRA_API + '/catalogo', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
-      body: JSON.stringify({ dag_run_id: runId, conf }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(conf),
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const run = await r.json();
-    const state = await waitDagRun(CATALOGO_DAG, run.dag_run_id || run.run_id, 30);
-    if (state !== 'success') throw new Error('DAG: ' + state);
     if (msg) { msg.textContent = 'Salvo com sucesso!'; msg.className = 'msg msg-ok'; }
     setTimeout(() => { admCloseJobTypeForm(); admLoadJobTypes(); }, 800);
   } catch(e) {
@@ -4932,16 +4817,12 @@ async function admSaveJobType() {
 async function admDeleteJobType(id, nome) {
   if (!confirm('Excluir tipo de job "' + nome + '"? Pipelines já cadastrados não serão afetados.')) return;
   try {
-    const runId = 'jtd-' + Date.now();
-    const r = await fetch('/api/v1/dags/' + CATALOGO_DAG + '/dagRuns', {
+    const r = await fetch(ORQUESTRA_API + '/catalogo', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
-      body: JSON.stringify({ dag_run_id: runId, conf: { mode: 'delete_job_type', id } }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'delete_job_type', id }),
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const run = await r.json();
-    const state = await waitDagRun(CATALOGO_DAG, run.dag_run_id || run.run_id, 30);
-    if (state !== 'success') throw new Error('DAG: ' + state);
     showToast('Tipo "' + nome + '" excluído.');
     admLoadJobTypes();
   } catch(e) {
@@ -4958,24 +4839,9 @@ async function admLoadConfig() {
   if (tbl) tbl.innerHTML = '';
 
   try {
-    const runId = 'orq_cfg_load_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + APP_CONFIG_DAG + '/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf: {} }),
-    });
+    const r = await fetch(ORQUESTRA_API + '/config');
     if (!r.ok) { if (st) st.textContent = 'Erro ao carregar: ' + r.status; return; }
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    const state = await waitDagRun(APP_CONFIG_DAG, rid, 30);
-    if (state !== 'success') { if (st) st.textContent = 'Falha ao carregar configs.'; return; }
-    const xr = await fetch(
-      '/api/v1/dags/' + APP_CONFIG_DAG + '/dagRuns/' + rid +
-      '/taskInstances/buscar_configuracoes/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (!xr.ok) { if (st) st.textContent = 'Erro XCom: ' + xr.status; return; }
-    const cfg = normalizeXcomValue(await xr.json());
+    const cfg = await r.json();
     window.__appConfig = { ...window.__appConfig, ...(cfg || {}) };
     _renderConfigTable(cfg);
     if (st) st.textContent = Object.keys(cfg || {}).length + ' parâmetro(s) carregado(s).';
@@ -5054,23 +4920,10 @@ async function admFetchDeps() {
   if (st) st.textContent = 'Buscando dependências...';
 
   try {
-    const r = await fetch('/api/v1/dags/etl_pipeline_query/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
-      body: JSON.stringify({ conf: { filter_name: pipeline, offset: 0, limit: 1 } }),
-    });
-    if (!r.ok) { if (st) st.textContent = 'Erro ' + r.status; return; }
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    const state = await waitDagRun('etl_pipeline_query', rid, 30);
-    if (state !== 'success') { if (st) st.textContent = 'Timeout na busca.'; return; }
-    const xr = await fetch(
-      '/api/v1/dags/etl_pipeline_query/dagRuns/' + rid +
-      '/taskInstances/consultar_pipelines/xcomEntries/return_value',
-      { headers: { 'Authorization': authHeader } }
-    );
-    if (!xr.ok) { if (st) st.textContent = 'Erro XCom: ' + xr.status; return; }
-    const payload = normalizeXcomValue(await xr.json());
+    const params = new URLSearchParams({ filter_name: pipeline, offset: 0, limit: 1 });
+    const r = await fetch(ORQUESTRA_API + '/pipelines?' + params.toString());
+    if (!r.ok) { if (st) st.textContent = 'Erro API: ' + r.status; return; }
+    const payload = await r.json();
     const found = (payload && payload.data || []).find(p => p.pipeline_name.toUpperCase() === pipeline);
     const preview = $('adm-del-preview');
     const prevContent = $('adm-del-preview-content');
@@ -6601,39 +6454,22 @@ async function loadJobsQuery(offset) {
 
   if (btn) btn.disabled = true;
   if (btnTxt) btnTxt.textContent = 'Buscando...';
-  if (qs) qs.textContent = 'Disparando DAG de consulta de jobs...';
+  if (qs) qs.textContent = 'Consultando API...';
 
   try {
-    const r = await fetch('/api/v1/dags/etl_pipeline_job_query/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ conf }),
-    });
+    const params = new URLSearchParams();
+    params.set('offset', conf.offset || 0);
+    params.set('limit',  conf.limit  || 50);
+    params.set('filter_pipeline', conf.filter_pipeline);
+    if (conf.filter_job_name) params.set('filter_job_name', conf.filter_job_name);
+    if (conf.filter_job_type) params.set('filter_job_type', conf.filter_job_type);
+
+    if (qs) qs.textContent = 'Carregando dados...';
+    const r = await fetch(ORQUESTRA_API + '/jobs?' + params.toString());
     if (r.status === 401) { sair(); return; }
-    if (r.status === 403) { if (qs) qs.textContent = 'Acesso negado (403). Sem permissão para consultar jobs.'; return; }
-    if (!r.ok) { if (qs) qs.textContent = 'Erro ao disparar DAG: ' + r.status; return; }
+    if (!r.ok) { if (qs) qs.textContent = 'Erro API: ' + r.status; return; }
 
-    const run = await r.json();
-    const runId = run.dag_run_id || run.run_id;
-    if (qs) qs.textContent = 'Aguardando execução... (' + runId + ')';
-
-    const state = await pollJobsRun(runId);
-    if (state === 'failed') return;
-    if (qs) qs.textContent = (state === 'timeout')
-      ? 'A execução está demorando. Tentando ler o último resultado (XCom)...'
-      : 'Carregando dados...';
-
-    const xr = await fetch(
-      '/api/v1/dags/etl_pipeline_job_query/dagRuns/' + runId + '/taskInstances/consultar_jobs/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (xr.status === 401) { sair(); return; }
-    if (xr.status === 403) { if (qs) qs.textContent = 'Acesso negado (403) ao ler XCom.'; return; }
-    if (xr.status === 404) { if (qs) qs.textContent = 'Resultado ainda não disponível. Aguarde e tente novamente.'; return; }
-    if (!xr.ok) { if (qs) qs.textContent = 'Erro ao ler XCom: ' + xr.status; return; }
-
-    const xdata = await xr.json();
-    const payload = normalizeXcomValue(xdata);
+    const payload = await r.json();
     try { window.__lastJobsPayload = payload; } catch(e) {}
     renderJobsTable(payload);
   } catch (err) {
@@ -7686,40 +7522,21 @@ async function loadQuery(offset) {
   const btn = $('btn-query'), btnTxt = $('query-btn-txt'), qs = $('query-status');
   if (btn) btn.disabled = true;
   if (btnTxt) btnTxt.textContent = 'Buscando...';
-  if (qs) qs.textContent = 'Disparando DAG de consulta...';
+  if (qs) qs.textContent = 'Consultando API...';
   try {
-    const r = await fetch('/api/v1/dags/etl_pipeline_query/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ conf }),
-    });
+    const params = new URLSearchParams();
+    params.set('offset', conf.offset || 0);
+    params.set('limit',  conf.limit  || 20);
+    if (conf.filter_name)    params.set('filter_name',    conf.filter_name);
+    if (conf.filter_project) params.set('filter_project', conf.filter_project);
+    if (conf.filter_active !== undefined && conf.filter_active !== '') params.set('filter_active', conf.filter_active);
+
+    if (qs) qs.textContent = 'Carregando dados...';
+    const r = await fetch(ORQUESTRA_API + '/pipelines?' + params.toString());
     if (r.status === 401) { sair(); return; }
-    if (r.status === 403) { if (qs) qs.textContent = 'Acesso negado (403). Seu usuário não tem permissão para disparar/ler este DAG.'; return; }
-    if (!r.ok) { if (qs) qs.textContent = 'Erro ao disparar DAG: ' + r.status; return; }
-    const run  = await r.json();
-    const runId = run.dag_run_id || run.run_id;
-    if (qs) qs.textContent = 'Aguardando execução... (' + runId + ')';
-    const state = await pollQueryRun(runId);
-    if (state === 'failed') return;
+    if (!r.ok) { if (qs) qs.textContent = 'Erro API: ' + r.status; return; }
 
-    // Mesmo em "timeout", tentamos ler o XCom (às vezes o DAG conclui mas o polling estoura o tempo)
-    if (qs) qs.textContent = (state === 'timeout')
-      ? 'A execução está demorando. Tentando ler o último resultado (XCom)...'
-      : 'Carregando dados...';
-
-    const xr = await fetch(
-      '/api/v1/dags/etl_pipeline_query/dagRuns/' + runId + '/taskInstances/consultar_pipelines/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-
-    if (xr.status === 401) { sair(); return; }
-    if (xr.status === 403) { if (qs) qs.textContent = 'Acesso negado (403) ao ler XCom. Verifique permissões do usuário no Airflow.'; return; }
-    if (xr.status === 404) { if (qs) qs.textContent = 'Resultado ainda não disponível. Aguarde alguns segundos e clique em Buscar novamente.'; return; }
-    if (!xr.ok) { if (qs) qs.textContent = 'Erro ao ler XCom: ' + xr.status; return; }
-
-    const xdata = await xr.json();
-    let payload = normalizeXcomValue(xdata);
-    // Debug/inspeção rápida (ajuda a diagnosticar quando o response chega mas não renderiza)
+    let payload = await r.json();
     try { window.__lastQueryPayload = payload; } catch(e) {}
 
     if (qs) {
@@ -8643,24 +8460,9 @@ async function openChangelog() {
   }
 
   try {
-    const runId = 'orq_versao_q_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf: {} }),
-    });
+    const r = await fetch(ORQUESTRA_API + '/versao');
     if (!r.ok) { $('changelog-loading').textContent = 'Erro ao carregar: ' + r.status; return; }
-    const run   = await r.json();
-    const rid   = run.dag_run_id || run.run_id;
-    const state = await waitDagRun(VERSAO_QUERY_DAG, rid, 60);
-    if (state !== 'success') { $('changelog-loading').textContent = 'Falha ao carregar versões.'; return; }
-
-    const xr = await fetch(
-      '/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_versoes/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (!xr.ok) { $('changelog-loading').textContent = 'Erro ao ler dados: ' + xr.status; return; }
-    const payload = normalizeXcomValue(await xr.json());
+    const payload = await r.json();
     const versions = (payload && payload.data) ? payload.data : [];
 
     $('changelog-loading').style.display = 'none';
@@ -8706,24 +8508,9 @@ async function admLoadVersoes() {
   if (lst) lst.innerHTML  = '';
 
   try {
-    const runId = 'orq_versao_adm_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf: {} }),
-    });
+    const r = await fetch(ORQUESTRA_API + '/versao');
     if (!r.ok) { if (st) st.textContent = 'Erro: ' + r.status; return; }
-    const run   = await r.json();
-    const rid   = run.dag_run_id || run.run_id;
-    const state = await waitDagRun(VERSAO_QUERY_DAG, rid, 60);
-    if (state !== 'success') { if (st) st.textContent = 'Falha ao carregar.'; return; }
-
-    const xr = await fetch(
-      '/api/v1/dags/' + VERSAO_QUERY_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_versoes/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (!xr.ok) { if (st) st.textContent = 'Erro ao ler: ' + xr.status; return; }
-    const payload  = normalizeXcomValue(await xr.json());
+    const payload  = await r.json();
     const versions = (payload && payload.data) ? payload.data : [];
     if (st) st.textContent = '';
 
