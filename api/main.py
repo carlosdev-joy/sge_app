@@ -286,6 +286,18 @@ def list_jobs(
         conn = get_db_conn()
         cur  = conn.cursor()
 
+        # Detecta quais colunas opcionais existem na tabela
+        cur.execute("""
+            SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job'
+        """)
+        existing_cols = {r[0].lower() for r in cur.fetchall()}
+
+        def _sel(col: str, alias: str, cast_int: bool = False) -> str:
+            if col.lower() in existing_cols:
+                return f"CAST(j.{col} AS INT) AS {alias}" if cast_int else f"j.{col} AS {alias}"
+            return f"NULL AS {alias}"
+
         where: list[str] = []
         params: list = []
         if fp:
@@ -309,11 +321,11 @@ def list_jobs(
                 p.project_name,
                 j.job_name,
                 CAST(j.execution_order AS INT) AS execution_order,
-                j.job_type,
-                j.job_command,
-                CAST(j.active AS INT) AS active,
-                j.created_at,
-                j.updated_at
+                {_sel('job_type',    'job_type')},
+                {_sel('job_command', 'job_command')},
+                {_sel('active',      'active', cast_int=True)},
+                {_sel('created_at',  'created_at')},
+                {_sel('updated_at',  'updated_at')}
             FROM dbo.etl_pipeline_job j
             LEFT JOIN dbo.etl_pipeline p ON p.pipeline_name = j.pipeline_name
             {where_sql}
