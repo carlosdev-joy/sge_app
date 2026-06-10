@@ -148,10 +148,7 @@ services:
       AIRFLOW_USER:     "${AIRFLOW_WWW_USER_USERNAME:-airflow}"
       AIRFLOW_PASSWORD: "${AIRFLOW_WWW_USER_PASSWORD:-airflow}"
       DAGS_FOLDER:      "/opt/airflow/dags"
-      MSSQL_SERVER:     "${MSSQL_SERVER:-orquestra-sqlserver-dev}"
-      MSSQL_DATABASE:   "${MSSQL_DATABASE:-orquestra_dev}"
-      MSSQL_USER:       "${MSSQL_USER:-sa}"
-      MSSQL_PASSWORD:   "${MSSQL_PASSWORD:-}"
+      MSSQL_CONN_ID:    "${MSSQL_CONN_ID:-SQL14_DMDB41}"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags:ro
     restart: unless-stopped
