@@ -843,23 +843,26 @@
   .flex-wrap { flex-wrap:wrap; }
 
   /* Pipeline tree view */
-  .ptree { display:flex; flex-direction:column; gap:6px; }
-  .ptree-project { border:1px solid var(--border); border-radius:8px; overflow:hidden; background:var(--card); }
-  .ptree-project-hdr { display:flex; align-items:center; gap:8px; padding:10px 14px; cursor:pointer; background:rgba(26,95,168,.06); user-select:none; }
-  .ptree-project-hdr:hover { background:rgba(26,95,168,.12); }
-  .ptree-project-name { font-weight:600; font-size:13px; color:var(--cvp-blue); flex:1; }
-  .ptree-project-body { display:flex; flex-direction:column; gap:4px; padding:6px 8px 8px; }
-  .ptree-domain { border:1px solid var(--border); border-radius:6px; overflow:hidden; background:var(--bg); }
-  .ptree-domain-hdr { display:flex; align-items:center; gap:8px; padding:7px 12px; cursor:pointer; user-select:none; }
-  .ptree-domain-hdr:hover { background:rgba(0,0,0,.04); }
-  .ptree-domain-name { font-weight:500; font-size:12px; color:var(--text-muted); flex:1; }
-  .ptree-domain-body { display:flex; flex-direction:column; gap:2px; padding:4px 6px 6px; }
-  .ptree-chevron { font-size:12px; color:var(--text-muted); transition:transform .15s; width:14px; display:inline-block; }
-  .ptree-badge { font-size:10px; font-weight:500; padding:1px 7px; border-radius:8px; background:rgba(0,0,0,.07); color:var(--text-muted); white-space:nowrap; }
-  .ptree-pipeline { border-radius:5px; transition:background .1s; }
-  .ptree-pipeline:hover { background:rgba(26,95,168,.05); }
-  .ptree-pipeline-main { display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:pointer; flex-wrap:wrap; }
-  .ptree-pipeline-name { font-size:12px; font-weight:500; flex:1; min-width:120px; }
+  .ptree { display:flex; flex-direction:column; gap:4px; }
+  .ptree-project { border:1px solid var(--border); border-radius:7px; overflow:hidden; background:var(--card); }
+  .ptree-project-hdr { display:flex; align-items:center; gap:6px; padding:6px 10px; cursor:pointer; background:rgba(26,95,168,.05); user-select:none; }
+  .ptree-project-hdr:hover { background:rgba(26,95,168,.1); }
+  .ptree-project-name { font-weight:600; font-size:11px; color:var(--cvp-blue); flex:1; letter-spacing:.02em; text-transform:uppercase; }
+  .ptree-project-body { display:flex; flex-direction:column; gap:3px; padding:4px 6px 6px; }
+  .ptree-domain { border:1px solid var(--border); border-radius:5px; overflow:hidden; background:var(--bg); }
+  .ptree-domain-hdr { display:flex; align-items:center; gap:6px; padding:5px 10px; cursor:pointer; user-select:none; }
+  .ptree-domain-hdr:hover { background:rgba(0,0,0,.03); }
+  .ptree-domain-name { font-weight:500; font-size:10px; color:var(--text-muted); flex:1; letter-spacing:.03em; text-transform:uppercase; }
+  .ptree-domain-body { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:3px; padding:4px 6px 6px; }
+  .ptree-chevron { font-size:10px; color:var(--text-muted); width:12px; display:inline-block; flex-shrink:0; }
+  .ptree-badge { font-size:9px; font-weight:500; padding:1px 6px; border-radius:8px; background:rgba(0,0,0,.07); color:var(--text-muted); white-space:nowrap; }
+  .ptree-pipeline { border-radius:4px; border:1px solid transparent; transition:border-color .1s, background .1s; }
+  .ptree-pipeline:hover { background:rgba(26,95,168,.04); border-color:var(--border); }
+  .ptree-pipeline-main { display:flex; align-items:center; gap:4px; padding:3px 6px; min-width:0; flex-wrap:nowrap; }
+  .ptree-pipeline-name { font-size:11px; font-weight:500; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ptree-pipeline .ptree-acts { display:flex; align-items:center; gap:2px; flex-shrink:0; margin-left:auto; }
+  .ptree-pipeline .ptree-acts .act-btn { padding:2px 3px; font-size:10px; opacity:.55; transition:opacity .15s; }
+  .ptree-pipeline:hover .ptree-acts .act-btn { opacity:1; }
 
   /* ── Pipeline Wizard — stepper ── */
   #wiz-stepper { display:flex; align-items:center; gap:0; padding:.4rem 0 .8rem; overflow-x:auto; }
@@ -7654,27 +7657,28 @@ function renderQueryTable(payload) {
       : '';
 
     return '<div class="ptree-pipeline" data-idx="' + i + '">' +
-      '<div class="ptree-pipeline-main" onclick="openPipelineView(' + i + ')">' +
-        '<span style="display:flex;align-items:center;gap:5px;color:var(--muted);flex-shrink:0">' + ICON_PIPE + '</span>' +
+      '<div class="ptree-pipeline-main">' +
         statusDot +
-        '<span class="ptree-pipeline-name">' + _escHtml(p.pipeline_name) + '</span>' +
-        dagBadge + sched + lastExec + notifBits +
-      '</div>' +
-      '<div class="row-actions">' +
-        '<button class="act-btn act-view" onclick="event.stopPropagation();openPipelineView(' + i + ')" title="Visualizar pipeline">' + ICONS.detail + '</button>' +
-        (!window.__isViewer ? '<button class="act-btn act-edit" onclick="event.stopPropagation();openPipelineEdit(' + i + ')" title="Editar pipeline">' + ICONS.edit + '</button>' : '') +
-        '<button class="act-btn act-lineage" onclick="event.stopPropagation();openPipelineLineage(' + i + ')" title="Lineage do pipeline">' + ICONS.graph + '</button>' +
-        '<button class="act-btn act-audit" onclick="event.stopPropagation();openPipelineAudit(' + i + ')" title="Histórico de alterações">' + ICONS.history + '</button>' +
-        (!window.__isViewer && p.active ? '<button class="act-btn act-disable" onclick="event.stopPropagation();softDeletePipeline(' + i + ')" title="Inativar pipeline">' + ICONS.disable + '</button>' : '') +
-        (!window.__isViewer ? (
-          !p.dag_criada
-            ? '<button class="btn-dag act-btn act-dag" id="dag-btn-' + i + '" onclick="event.stopPropagation();gerarDAG(' + i + ')" title="Gerar DAG no Airflow">' + ICONS.gear + '</button>'
-            : '<button class="btn-dag-ok act-btn act-regen" id="dag-btn-' + i + '" onclick="event.stopPropagation();gerarDAG(' + i + ')" title="DAG já criada — regenerar após mudanças">' + ICONS.refresh + '</button>'
-        ) : '') +
-        (!window.__isViewer && p.dag_criada
-          ? '<button class="act-btn act-exec" id="exec-btn-' + i + '" onclick="event.stopPropagation();executarPipelineAgora(' + i + ')" title="Executar agora, fora do agendamento">' + ICONS.play + '</button>'
-          : ''
-        ) +
+        '<span class="ptree-pipeline-name" title="' + _escHtml(p.pipeline_name) + '">' + _escHtml(p.pipeline_name) + '</span>' +
+        dagBadge +
+        (p.scheduled_time ? '<span style="font-size:9px;color:var(--muted);white-space:nowrap;flex-shrink:0">' + p.scheduled_time + '</span>' : '') +
+        ((p.envia_msg_inicio || p.envia_msg_fim || p.envia_msg_erro) ? '<span style="font-size:9px;color:var(--muted);flex-shrink:0" title="Notificações">✉</span>' : '') +
+        '<div class="ptree-acts">' +
+          '<button class="act-btn act-view" onclick="openPipelineView(' + i + ')" title="Visualizar">' + ICONS.detail + '</button>' +
+          (!window.__isViewer ? '<button class="act-btn act-edit" onclick="openPipelineEdit(' + i + ')" title="Editar">' + ICONS.edit + '</button>' : '') +
+          '<button class="act-btn act-lineage" onclick="openPipelineLineage(' + i + ')" title="Lineage">' + ICONS.graph + '</button>' +
+          '<button class="act-btn act-audit" onclick="openPipelineAudit(' + i + ')" title="Histórico">' + ICONS.history + '</button>' +
+          (!window.__isViewer && p.active ? '<button class="act-btn act-disable" onclick="softDeletePipeline(' + i + ')" title="Inativar">' + ICONS.disable + '</button>' : '') +
+          (!window.__isViewer ? (
+            !p.dag_criada
+              ? '<button class="btn-dag act-btn act-dag" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="Gerar DAG">' + ICONS.gear + '</button>'
+              : '<button class="btn-dag-ok act-btn act-regen" id="dag-btn-' + i + '" onclick="gerarDAG(' + i + ')" title="Regenerar DAG">' + ICONS.refresh + '</button>'
+          ) : '') +
+          (!window.__isViewer && p.dag_criada
+            ? '<button class="act-btn act-exec" id="exec-btn-' + i + '" onclick="executarPipelineAgora(' + i + ')" title="Executar agora">' + ICONS.play + '</button>'
+            : ''
+          ) +
+        '</div>' +
       '</div>' +
     '</div>';
   }
@@ -7689,13 +7693,13 @@ function renderQueryTable(payload) {
     html +=
       '<div class="ptree-project">' +
         '<div class="ptree-project-hdr" onclick="_ptreeToggle(\'' + projId + '\')">' +
-          '<span class="ptree-chevron" id="chv-' + projId + '">▾</span>' +
+          '<span class="ptree-chevron" id="chv-' + projId + '">▸</span>' +
           '<span style="color:var(--cvp-blue)">' + ICON_PROJ + '</span>' +
           '<span class="ptree-project-name">' + _escHtml(proj) + '</span>' +
           '<span class="ptree-badge">' + totalProj + ' pipeline' + (totalProj !== 1 ? 's' : '') + '</span>' +
           '<span class="ptree-badge" style="background:rgba(22,163,74,.1);color:#16a34a">' + activeProj + ' ativo' + (activeProj !== 1 ? 's' : '') + '</span>' +
         '</div>' +
-        '<div class="ptree-project-body" id="' + projId + '">';
+        '<div class="ptree-project-body" id="' + projId + '" style="display:none">';
 
     domNames.forEach((dom, di) => {
       const domId    = 'ptree-d-' + pi + '-' + di;
@@ -7704,13 +7708,13 @@ function renderQueryTable(payload) {
       html +=
         '<div class="ptree-domain">' +
           '<div class="ptree-domain-hdr" onclick="_ptreeToggle(\'' + domId + '\')">' +
-            '<span class="ptree-chevron" id="chv-' + domId + '">▾</span>' +
+            '<span class="ptree-chevron" id="chv-' + domId + '">▸</span>' +
             '<span style="color:var(--cvp-orange)">' + ICON_DOM + '</span>' +
             '<span class="ptree-domain-name">' + _escHtml(dom) + '</span>' +
             '<span class="ptree-badge">' + pipes.length + '</span>' +
             '<span class="ptree-badge" style="background:rgba(22,163,74,.1);color:#16a34a">' + activeDom + ' ativo' + (activeDom !== 1 ? 's' : '') + '</span>' +
           '</div>' +
-          '<div class="ptree-domain-body" id="' + domId + '">';
+          '<div class="ptree-domain-body" id="' + domId + '" style="display:none">';
 
       pipes.sort((a, b) => a.pipeline_name.localeCompare(b.pipeline_name))
            .forEach(p => { html += _pipelineRow(p, p._idx); });
@@ -7731,9 +7735,13 @@ function _ptreeToggle(id) {
   const el  = $(id);
   const chv = $('chv-' + id);
   if (!el) return;
-  const open = el.style.display !== 'none';
-  el.style.display  = open ? 'none' : '';
-  if (chv) chv.textContent = open ? '▸' : '▾';
+  const isHidden = el.style.display === 'none';
+  if (isHidden) {
+    el.style.display = el.classList.contains('ptree-domain-body') ? 'grid' : '';
+  } else {
+    el.style.display = 'none';
+  }
+  if (chv) chv.textContent = isHidden ? '▾' : '▸';
 }
 
 function renderPagination(offset, limit, total, pages, loaderFnName) {
