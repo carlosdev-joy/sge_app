@@ -693,7 +693,7 @@
   .btn-log-job--err:hover{ background:rgba(220,38,38,.1); }
 
   /* Dashboard v2 */
-  .kpi-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:.6rem;margin-bottom:1.5rem}
+  .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.6rem;margin-bottom:1.5rem}
   @media(max-width:900px){.kpi-grid{grid-template-columns:repeat(3,1fr)}}
   @media(max-width:600px){.kpi-grid{grid-template-columns:1fr 1fr}}
   .kpi-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:.9rem 1.1rem;display:flex;flex-direction:column;gap:3px;box-shadow:var(--shadow-card)}
@@ -702,7 +702,16 @@
   .kpi-card.kpi-red{border-left:4px solid var(--red)}
   .kpi-card.kpi-orange{border-left:4px solid var(--cvp-orange)}
   .kpi-card.kpi-purple{border-left:4px solid #7c3aed}
+  .kpi-card.kpi-crit{border-left:4px solid var(--red)}
+  .kpi-card.kpi-crit .kpi-value{color:var(--red)}
+  .kpi-card.kpi-crit.has-alert{background:rgba(220,38,38,.05);box-shadow:0 0 0 2px rgba(220,38,38,.15),var(--shadow-card);animation:crit-pulse 2.5s ease-in-out infinite}
+  @keyframes crit-pulse{0%,100%{box-shadow:0 0 0 2px rgba(220,38,38,.15),var(--shadow-card)}50%{box-shadow:0 0 0 5px rgba(220,38,38,.08),var(--shadow-card)}}
   .kpi-value{font-size:1.9rem;font-weight:600;line-height:1;letter-spacing:-.02em}
+  .crit-badge{display:inline-flex;align-items:center;padding:.15rem .45rem;border-radius:5px;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+  .crit-alta{background:rgba(220,38,38,.10);border:1px solid rgba(220,38,38,.30);color:var(--red)}
+  .crit-media{background:rgba(243,146,0,.10);border:1px solid rgba(243,146,0,.30);color:#b45309}
+  .crit-baixa{background:rgba(22,163,74,.08);border:1px solid rgba(22,163,74,.25);color:var(--green)}
+  .pipe-row-crit-fail{background:rgba(220,38,38,.04)!important;border-left:3px solid var(--red)}
   .kpi-card.kpi-blue .kpi-value{color:var(--cvp-blue)}
   .kpi-card.kpi-green .kpi-value{color:var(--green)}
   .kpi-card.kpi-red .kpi-value{color:var(--red)}
@@ -1584,6 +1593,11 @@
                   <div class="kpi-label">Em execução agora</div>
                   <div class="kpi-value" id="kpi-running">—</div>
                   <div class="kpi-sub" id="kpi-running-sub">pipeline(s)</div>
+                </div>
+                <div class="kpi-card kpi-crit" id="kpi-crit-card">
+                  <div class="kpi-label">Falhas críticas</div>
+                  <div class="kpi-value" id="kpi-crit">—</div>
+                  <div class="kpi-sub" id="kpi-crit-sub">pipelines ALTA com falha</div>
                 </div>
               </div>
 
@@ -2972,6 +2986,19 @@ function renderDashboard(result) {
   // Status por pipeline (última execução)
   const ps = (result && result.pipeline_status) || [];
   $('dash-pipe-count').textContent = ps.length ? ('(' + ps.length + ')') : '(0)';
+
+  // KPI falhas críticas
+  const critFails = ps.filter(p =>
+    (p.criticidade || '').toUpperCase() === 'ALTA' &&
+    (p.ultimo_status || '').toUpperCase() === 'FAILED'
+  ).length;
+  const critCard = $('kpi-crit-card');
+  const critVal  = $('kpi-crit');
+  const critSub  = $('kpi-crit-sub');
+  if (critVal) critVal.textContent = String(critFails);
+  if (critSub) critSub.textContent = critFails > 0 ? '⚠ Atenção imediata!' : 'Nenhuma no momento';
+  if (critCard) critCard.classList.toggle('has-alert', critFails > 0);
+
   const dp = $('dash-pipelines');
   if (dp) {
     const pill = (s) => {
@@ -2982,15 +3009,25 @@ function renderDashboard(result) {
       if (v === 'RUNNING') return '<span class="log-pill running">… RUNNING</span>';
       return '<span class="log-pill running">… ' + (v || '—') + '</span>';
     };
+    const critBadge = (c) => {
+      const v = (c || '').toUpperCase();
+      if (v === 'ALTA')  return '<span class="crit-badge crit-alta">▲ ALTA</span>';
+      if (v === 'MEDIA') return '<span class="crit-badge crit-media">◆ MÉDIA</span>';
+      if (v === 'BAIXA') return '<span class="crit-badge crit-baixa">▼ BAIXA</span>';
+      return '<span class="crit-badge" style="opacity:.35">—</span>';
+    };
     dp.innerHTML = ps.length
       ? '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
-          '<th>Pipeline</th><th>Projeto</th><th>Status</th><th>Último início</th><th>Duração</th><th>Jobs</th><th>Ações</th>' +
+          '<th>Pipeline</th><th>Crit.</th><th>Projeto</th><th>Status</th><th>Último início</th><th>Duração</th><th>Jobs</th><th>Ações</th>' +
         '</tr></thead><tbody>' +
         ps.map(p => {
           const ex = escJsSingle(p.execution_id);
           const pip = escJsSingle(p.pipeline);
-          return '<tr>' +
+          const isCritFail = (p.criticidade || '').toUpperCase() === 'ALTA'
+            && (p.ultimo_status || '').toUpperCase() === 'FAILED';
+          return '<tr class="' + (isCritFail ? 'pipe-row-crit-fail' : '') + '">' +
             '<td style="font-weight:500;white-space:nowrap">' + (p.pipeline || '—') + '</td>' +
+            '<td>' + critBadge(p.criticidade) + '</td>' +
             '<td><span class="tag-pill">' + (p.project || '—') + '</span></td>' +
             '<td style="white-space:nowrap">' + pill(p.ultimo_status) + '</td>' +
             '<td style="white-space:nowrap;font-size:12px">' + (p.ultimo_inicio ? String(p.ultimo_inicio).slice(0,16) : '—') + '</td>' +

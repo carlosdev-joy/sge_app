@@ -135,21 +135,28 @@ def consultar_dashboard(**context):
             FROM execs
         )
         SELECT TOP 20
-            pipeline, project, ultimo_status, inicio, duracao_segundos, total_jobs, execution_id
-        FROM ranked
+            r.pipeline, r.project, r.ultimo_status, r.inicio, r.duracao_segundos,
+            r.total_jobs, r.execution_id,
+            COALESCE(p.criticidade, '') AS criticidade
+        FROM ranked r
+        LEFT JOIN dbo.etl_pipeline p ON p.pipeline_name = r.pipeline
         WHERE rn = 1
-        ORDER BY inicio DESC;
+        ORDER BY
+            CASE COALESCE(p.criticidade,'') WHEN 'ALTA' THEN 1 WHEN 'MEDIA' THEN 2 WHEN 'BAIXA' THEN 3 ELSE 4 END,
+            CASE r.ultimo_status WHEN 'FAILED' THEN 1 WHEN 'WARNING' THEN 2 WHEN 'RUNNING' THEN 3 ELSE 4 END,
+            r.inicio DESC;
     """
     ps_rows = hook.get_records(pipe_status_sql, parameters=params_base or None)
     pipeline_status = [
         {
-            "pipeline": r[0],
-            "project": r[1],
+            "pipeline":      r[0],
+            "project":       r[1],
             "ultimo_status": r[2],
             "ultimo_inicio": _fmt_dt(r[3]),
             "duracao_segundos": int(r[4] or 0),
-            "total_jobs": int(r[5] or 0),
-            "execution_id": r[6],
+            "total_jobs":    int(r[5] or 0),
+            "execution_id":  r[6],
+            "criticidade":   r[7] or "",
         }
         for r in (ps_rows or [])
     ]
