@@ -97,7 +97,7 @@ def get_airflow_client() -> httpx.AsyncClient:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("ORQUESTRA API iniciando — Airflow: %s | DB: %s/%s", AIRFLOW_URL, MSSQL_SERVER, MSSQL_DATABASE)
+    log.info("ORQUESTRA API iniciando — Airflow: %s | DB conn_id: %s", AIRFLOW_URL, MSSQL_CONN_ID)
     yield
     log.info("ORQUESTRA API encerrando.")
 
