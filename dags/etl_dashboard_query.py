@@ -69,7 +69,7 @@ def consultar_dashboard(**context):
             FROM dbo.etl_job_execution e
             JOIN dbo.etl_pipeline p ON p.pipeline_name = e.pipeline
             WHERE e.start_time >= %s AND e.start_time < %s
-              AND COALESCE(p.ambiente, 'PRD') = 'PRD'
+              AND COALESCE(p.ambiente, 'PROD') = 'PROD'
               {where_proj_alias}
             GROUP BY e.execution_id, e.project, e.pipeline
         )
@@ -99,7 +99,7 @@ def consultar_dashboard(**context):
             FROM dbo.etl_job_execution e
             JOIN dbo.etl_pipeline p ON p.pipeline_name = e.pipeline
             WHERE e.start_time >= %s AND e.start_time < %s
-              AND COALESCE(p.ambiente, 'PRD') = 'PRD'
+              AND COALESCE(p.ambiente, 'PROD') = 'PROD'
             GROUP BY e.execution_id, e.project, e.pipeline
         )
         SELECT
@@ -147,7 +147,7 @@ def consultar_dashboard(**context):
         FROM ranked r
         LEFT JOIN dbo.etl_pipeline p ON p.pipeline_name = r.pipeline
         WHERE rn = 1
-          AND COALESCE(p.ambiente, 'PRD') = 'PRD'
+          AND COALESCE(p.ambiente, 'PROD') = 'PROD'
         ORDER BY
             CASE COALESCE(p.criticidade,'') WHEN 'ALTA' THEN 1 WHEN 'MEDIA' THEN 2 WHEN 'BAIXA' THEN 3 ELSE 4 END,
             CASE r.ultimo_status WHEN 'FAILED' THEN 1 WHEN 'WARNING' THEN 2 WHEN 'RUNNING' THEN 3 ELSE 4 END,
@@ -175,7 +175,7 @@ def consultar_dashboard(**context):
         FROM dbo.etl_job_execution e
         JOIN dbo.etl_pipeline p ON p.pipeline_name = e.pipeline
         WHERE e.status = 'FAILED'
-          AND COALESCE(p.ambiente, 'PRD') = 'PRD'
+          AND COALESCE(p.ambiente, 'PROD') = 'PROD'
           {where_proj_alias}
         ORDER BY e.start_time DESC;
     """
