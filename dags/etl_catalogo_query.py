@@ -60,11 +60,30 @@ Modos (conf.mode):
       classification: 'PII' | 'Confidencial' | 'Regulado' | 'Publico'  (opcional)
       top_n         : int  (default 100, max 200)
 
+  list_projects — lista projetos ativos de dbo.etl_project
+
+  list_job_types — lista tipos de job de dbo.etl_job_type
+    Parâmetros:
+      include_inactive: bool (default False) — inclui tipos inativos
+
+  save_job_type — cria ou atualiza um tipo de job (admin)
+    Parâmetros:
+      data: dict {id?, nome, descricao?, lineage_enabled, status}
+      user: str
+
+  delete_job_type — remove um tipo de job (admin)
+    Parâmetros:
+      id: int
+
   asset_detail — detalhes de um asset específico
     Parâmetros:
       asset_name   : str  (obrigatório)
       asset_type   : 'tabela' | 'arquivo'
       database_name: str  (opcional)
+
+  list_jobs_lineage — jobs e lineage de um pipeline
+    Parâmetros:
+      pipeline_name: str  (obrigatório)
 """
 from __future__ import annotations
 
@@ -744,6 +763,133 @@ def _asset_detail(hook, asset_name: str, asset_type: str, database_name: str) ->
 
 
 # ---------------------------------------------------------------------------
+# Projects + Job Types
+# ---------------------------------------------------------------------------
+
+def _list_projects(hook):
+    try:
+        rows = hook.get_records(
+            "SELECT project_name, ativo FROM dbo.etl_project ORDER BY project_name"
+        )
+        return {"projects": [{"project_name": r[0], "ativo": r[1]} for r in rows]}
+    except Exception:
+        return {"projects": [
+            {"project_name": "BI_CVP",         "ativo": 1},
+            {"project_name": "BI_VIDA",         "ativo": 1},
+            {"project_name": "BI_PRESTAMISTA",  "ativo": 1},
+            {"project_name": "BI_PREVIDENCIA",  "ativo": 1},
+        ]}
+
+
+def _list_job_types(hook, include_inactive: bool = False):
+    where = "" if include_inactive else "WHERE status = 1"
+    rows = hook.get_records(
+        f"SELECT id, nome, descricao, lineage_enabled, status FROM dbo.etl_job_type {where} ORDER BY nome"
+    )
+    return {"job_types": [
+        {"id": r[0], "nome": r[1], "descricao": r[2], "lineage_enabled": bool(r[3]), "status": bool(r[4])}
+        for r in rows
+    ]}
+
+
+def _save_job_type(hook, data: dict, user: str):
+    jt_id       = data.get("id")
+    nome        = (data.get("nome") or "").strip()
+    descricao   = (data.get("descricao") or "").strip() or None
+    lineage_en  = 1 if data.get("lineage_enabled") else 0
+    status      = 1 if data.get("status", True) else 0
+
+    if not nome:
+        raise ValueError("Campo 'nome' é obrigatório para salvar tipo de job.")
+
+    if jt_id:
+        hook.run(
+            "UPDATE dbo.etl_job_type SET nome=%s, descricao=%s, lineage_enabled=%s, status=%s "
+            "WHERE id=%s",
+            parameters=(nome, descricao, lineage_en, status, int(jt_id)),
+        )
+        return {"ok": True, "action": "updated", "id": int(jt_id)}
+    else:
+        hook.run(
+            "INSERT INTO dbo.etl_job_type (nome, descricao, lineage_enabled, status, criado_por) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            parameters=(nome, descricao, lineage_en, status, user),
+        )
+        row = hook.get_first("SELECT MAX(id) FROM dbo.etl_job_type WHERE nome=%s", parameters=(nome,))
+        return {"ok": True, "action": "created", "id": row[0] if row else None}
+
+
+def _delete_job_type(hook, jt_id: int):
+    hook.run("DELETE FROM dbo.etl_job_type WHERE id=%s", parameters=(jt_id,))
+    return {"ok": True, "action": "deleted", "id": jt_id}
+
+
+def _list_jobs_lineage(hook, pipeline_name: str):
+    """Retorna jobs e lineage de um pipeline específico."""
+    if not pipeline_name:
+        return {"jobs": []}
+
+    # Busca jobs do pipeline
+    job_rows = hook.get_records(
+        """
+        SELECT
+            pj.job_name,
+            CAST(pj.execution_order AS INT) AS execution_order,
+            pj.job_type,
+            ISNULL(pj.job_command, '')     AS job_command
+        FROM dbo.etl_pipeline_job pj
+        WHERE pj.pipeline_name = %s
+        ORDER BY pj.execution_order, pj.job_name
+        """,
+        parameters=[pipeline_name],
+    )
+
+    # Busca lineage de todos os jobs do pipeline numa só query
+    lin_rows = hook.get_records(
+        """
+        SELECT
+            l.job_name,
+            ISNULL(stm.type_label, l.object_type) AS object_type,
+            l.object_name,
+            l.direction
+        FROM dbo.etl_job_lineage l
+        LEFT JOIN dbo.etl_stage_type_map stm ON stm.type_raw = l.object_type
+        WHERE l.pipeline_name = %s
+          AND l.object_name IS NOT NULL AND l.object_name <> ''
+        ORDER BY l.job_name, l.direction, l.object_type, l.object_name
+        """,
+        parameters=[pipeline_name],
+    )
+
+    # Agrupa lineage por job
+    lineage_map: dict = {}
+    for r in lin_rows:
+        jn, otype, oname, direction = r
+        if jn not in lineage_map:
+            lineage_map[jn] = {"origens": [], "destinos": []}
+        entry = {"tipo": otype or "", "nome": oname or ""}
+        if direction == "origem":
+            lineage_map[jn]["origens"].append(entry)
+        else:
+            lineage_map[jn]["destinos"].append(entry)
+
+    job_list = []
+    for row in job_rows:
+        job_name, order, job_type, cmd = row
+        lg = lineage_map.get(job_name, {"origens": [], "destinos": []})
+        job_list.append({
+            "job_name":        job_name,
+            "execution_order": order,
+            "job_type":        job_type or "",
+            "job_command":     cmd or "",
+            "origens":         lg["origens"],
+            "destinos":        lg["destinos"],
+        })
+
+    return {"pipeline_name": pipeline_name, "jobs": job_list}
+
+
+# ---------------------------------------------------------------------------
 # Main callable
 # ---------------------------------------------------------------------------
 
@@ -751,6 +897,25 @@ def consultar_catalogo(**context):
     conf = context["dag_run"].conf or {}
     mode = (conf.get("mode") or "search").strip().lower()
     hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
+
+    if mode == "list_projects":
+        return _list_projects(hook)
+
+    if mode == "list_job_types":
+        include_inactive = bool(conf.get("include_inactive", False))
+        return _list_job_types(hook, include_inactive)
+
+    if mode == "save_job_type":
+        return _save_job_type(hook, conf.get("data", {}), conf.get("user", "admin"))
+
+    if mode == "delete_job_type":
+        jt_id = int(conf.get("id", 0))
+        if not jt_id:
+            raise ValueError("Parâmetro 'id' é obrigatório para mode=delete_job_type.")
+        return _delete_job_type(hook, jt_id)
+
+    if mode == "list_jobs_lineage":
+        return _list_jobs_lineage(hook, conf.get("pipeline_name", ""))
 
     if mode == "list_pipelines":
         return _list_pipelines(hook)

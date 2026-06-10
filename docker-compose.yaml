@@ -71,7 +71,7 @@ x-airflow-common:
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
 
-    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW__CORE__FERNET_KEY:-}'
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
@@ -135,6 +135,25 @@ services:
       - ${AIRFLOW_PROJ_DIR:-.}/ui:/usr/share/nginx/html
       - ${AIRFLOW_PROJ_DIR:-.}/ui/nginx.conf:/etc/nginx/nginx.conf
     restart: always
+
+  orquestra-api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: orquestra-api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      AIRFLOW_URL:      "http://airflow-webserver:8080"
+      AIRFLOW_USER:     "${AIRFLOW_WWW_USER_USERNAME:-airflow}"
+      AIRFLOW_PASSWORD: "${AIRFLOW_WWW_USER_PASSWORD:-airflow}"
+      DAGS_FOLDER:      "/opt/airflow/dags"
+      MSSQL_CONN_STR:   "${MSSQL_CONN_STR:-}"
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags:ro
+    restart: unless-stopped
+    depends_on:
+      - airflow-webserver
 
 
   airflow-webserver:
