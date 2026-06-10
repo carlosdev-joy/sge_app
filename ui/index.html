@@ -2718,26 +2718,17 @@ async function loadLineageDSX(jobId) {
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Extraindo...'; }
 
   try {
-    const runId = 'orq_dsx_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + LINEAGE_DSX_DAG + '/dagRuns', {
+    const r = await fetch(ORQUESTRA_API + '/lineage/extract-dsx', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf: { project_name: projectName, job_name: j.name.trim() } }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_name: projectName, job_name: j.name.trim() }),
     });
-    if (r.status === 401) { sair(); return; }
-    if (!r.ok) { $('dsx-prev-status').textContent = 'Erro ao disparar DAG: ' + r.status; return; }
-
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    const state = await waitDagRun(LINEAGE_DSX_DAG, rid, 60);
-    if (state !== 'success') { $('dsx-prev-status').textContent = 'Falha/timeout na DAG.'; return; }
-
-    const xr = await fetch(
-      '/api/v1/dags/' + LINEAGE_DSX_DAG + '/dagRuns/' + rid + '/taskInstances/extrair_lineage_dsx/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (!xr.ok) { $('dsx-prev-status').textContent = 'Erro ao ler XCom: ' + xr.status; return; }
-    const payload = normalizeXcomValue(await xr.json());
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      $('dsx-prev-status').textContent = 'Erro: ' + (err.detail || ('HTTP ' + r.status));
+      return;
+    }
+    const payload = await r.json();
     showLineageDSXPreview(payload);
   } catch (e) {
     $('dsx-prev-status').textContent = 'Erro: ' + (e && e.message ? e.message : e);
@@ -5048,25 +5039,21 @@ async function _admAction(conf) {
   const st = conf.action.startsWith('config') ? $('adm-config-status') : $('adm-delete-status');
   if (st) st.textContent = 'Processando...';
   try {
-    const runId = 'orq_adm_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + ADMIN_DAG_ID + '/dagRuns', {
+    const r = await fetch(ORQUESTRA_API + '/admin', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
-      body: JSON.stringify({ dag_run_id: runId, conf }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(conf),
     });
-    if (r.status === 401) { sair(); return false; }
-    if (!r.ok) { if (st) st.textContent = 'Erro: ' + r.status; return false; }
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    const state = await waitDagRun(ADMIN_DAG_ID, rid, 30);
-    if (state === 'success') {
-      if (st) st.textContent = '✓ Operação concluída com sucesso.';
-      showToast('Operação concluída.', false);
-      return true;
-    } else {
-      if (st) st.textContent = 'Falha na operação. Verifique os logs do Airflow.';
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const msg = data.detail || data.message || ('Erro ' + r.status);
+      if (st) st.textContent = '✗ ' + (typeof msg === 'string' ? msg : JSON.stringify(msg));
+      showToast('Erro: ' + (typeof msg === 'string' ? msg : 'Falha na operação'), true);
       return false;
     }
+    if (st) st.textContent = '✓ ' + (data.mensagem || 'Operação concluída com sucesso.');
+    showToast(data.mensagem || 'Operação concluída.', false);
+    return data;
   } catch(e) {
     if (st) st.textContent = 'Erro: ' + (e.message || e);
     return false;
@@ -5187,22 +5174,20 @@ async function _deleteDagFromAirflow(pipelineName) {
     console.warn('[ORQ] Erro ao deletar DAG do Airflow:', e.message);
   }
 
-  // 3. Disparar DAG de limpeza do arquivo .py no servidor
-  // (etl_admin_manage com action=dag_file_delete cuida da remoção física)
+  // 3. Remover arquivo .py via API ORQUESTRA
   try {
-    const runId = 'orq_dag_cleanup_' + Date.now();
-    await fetch('/api/v1/dags/' + ADMIN_DAG_ID + '/dagRuns', {
+    await fetch(ORQUESTRA_API + '/admin', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
-      body: JSON.stringify({ dag_run_id: runId, conf: {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
         action: 'dag_file_delete',
         pipeline_name: pipelineName,
         requested_by: window.__currentUser || ADMIN_USER,
-      }}),
+      }),
     });
-    console.log('[ORQ] DAG de limpeza de arquivo disparada para "' + pipelineName + '"');
+    console.log('[ORQ] Arquivo DAG removido via API para "' + pipelineName + '"');
   } catch(e) {
-    console.warn('[ORQ] Não foi possível disparar limpeza de arquivo:', e.message);
+    console.warn('[ORQ] Não foi possível remover arquivo DAG:', e.message);
   }
 }
 
@@ -5212,20 +5197,14 @@ async function admRegenEstimate() {
   const project = $('adm-regen-project') ? $('adm-regen-project').value : '';
   const estEl   = $('adm-regen-estimate');
   if (estEl) estEl.textContent = '⏳ Consultando...';
-
-  // Buscar pipelines ativos via DAG de query
   try {
-    const runId = 'orq_regen_est_' + Date.now();
-    const r1 = await fetch('/api/v1/dags/' + QUERY_DAG_ID + '/dagRuns', {
-      method: 'POST', headers: {'Content-Type':'application/json','Authorization': _sysAuth()},
-      body: JSON.stringify({ dag_run_id: runId, conf: {
-        filter_project: project, limit: 1, offset: 0,
-      }}),
-    });
-    if (!r1.ok) throw new Error('Falha ao consultar');
-    const xcom = await _pollXcom(QUERY_DAG_ID, runId, 'consultar_pipelines');
-    const total = xcom && xcom.total ? xcom.total : '?';
-    if (estEl) estEl.textContent = `📊 ${total} pipeline(s) serão regenerados${project ? ' no projeto ' + project : ''}.`;
+    const params = new URLSearchParams({ limit: 1, offset: 0 });
+    if (project) params.set('filter_project', project);
+    const r = await fetch(ORQUESTRA_API + '/pipelines?' + params.toString());
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const total = data.total ?? '?';
+    if (estEl) estEl.textContent = '📊 ' + total + ' pipeline(s) serão regenerados' + (project ? ' no projeto ' + project : '') + '.';
   } catch(e) {
     if (estEl) estEl.textContent = 'Não foi possível estimar — clique em Regenerar para prosseguir.';
   }
@@ -5278,11 +5257,9 @@ async function admRegenAllDags() {
     _log('✓ etl_dag_factory disparada: ' + runId2);
     _log('Aguardando conclusão...');
 
-    // Polling do resultado
-    const fResult = await _pollXcom('etl_dag_factory', runId2, 'gerar_dags', 120000);
-    if (fResult) {
-      _log('✓ Factory concluída.');
-    }
+    // Aguardar conclusão da factory
+    const fState = await waitDagRun('etl_dag_factory', runId2, 120);
+    _log(fState === 'success' ? '✓ Factory concluída.' : '⚠ Factory finalizou com estado: ' + fState);
 
     if (titleEl) titleEl.textContent = '✅ Regeneração concluída!';
     _log('Todos os .py foram regenerados com as novas regras (fail-fast, etc).');
@@ -5869,6 +5846,49 @@ async function triggerAndPoll(dagId, conf, label, btnId, btnTxtId, btnTxt) {
   }
 }
 
+async function _orqPost(url, body, label, btnId, btnTxtId, btnTxt) {
+  const btn = btnId ? $(btnId) : null;
+  const btnTxtEl = btnTxtId ? $(btnTxtId) : null;
+  if (btn) btn.disabled = true;
+  if (btnTxtEl) btnTxtEl.textContent = 'Enviando...';
+  openModal();
+  $('md-title').textContent = 'Processando...';
+  $('md-desc').textContent  = 'Gravando dados no banco de dados...';
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const msg = data.detail || data.message || ('HTTP ' + r.status);
+      $('md-icon').className = 'modal-icon failed';
+      $('md-icon').textContent = 'ERRO';
+      $('md-spinner').style.display = 'none';
+      $('md-progress').style.display = 'none';
+      $('md-title').textContent = 'Erro ao salvar';
+      $('md-desc').textContent  = typeof msg === 'string' ? msg : JSON.stringify(msg);
+      $('md-close').classList.remove('hidden');
+      return null;
+    }
+    setModalSuccess(label);
+    return { ok: true, data };
+  } catch(e) {
+    $('md-icon').className = 'modal-icon failed';
+    $('md-icon').textContent = 'ERRO';
+    $('md-spinner').style.display = 'none';
+    $('md-progress').style.display = 'none';
+    $('md-title').textContent = 'Erro de conexão';
+    $('md-desc').textContent  = e.message || String(e);
+    $('md-close').classList.remove('hidden');
+    return null;
+  } finally {
+    if (btn) btn.disabled = false;
+    if (btnTxtEl && btnTxt) btnTxtEl.textContent = btnTxt;
+  }
+}
+
 /* ══ PIPELINE EDITOR — helpers novos ══ */
 
 function _toggleAdvSection() {
@@ -6286,8 +6306,8 @@ async function registrarPipeline() {
     return;
   }
 
-  await triggerAndPoll(
-    'etl_pipeline_register',
+  await _orqPost(
+    ORQUESTRA_API + '/pipelines/register',
     {
       pipeline_name: pipeline, scheduled_time: scheduled_time,
       active: pipelineStatus,
@@ -6307,7 +6327,6 @@ async function registrarPipeline() {
       retry_delay_seconds: $('p-retry-delay') ? (parseInt($('p-retry-delay').value) || 300) : 300,
       pool_name:           ($('p-pool') ? $('p-pool').value.trim() : '') || null,
       ...schedConf,
-      schedule_cron_preview: cron,
     },
     'Pipeline "' + pipeline + '"',
     'btn-save-pipeline', 'save_pipeline_txt', 'Salvar'
@@ -6368,8 +6387,8 @@ async function registrarJobs() {
       }
     }
   }
-  await triggerAndPoll(
-    'etl_pipeline_job_register',
+  await _orqPost(
+    ORQUESTRA_API + '/pipelines/jobs/register',
     { pipeline_name: pipeline, jobs },
     jobs.length + ' job(s) do pipeline "' + pipeline + '"',
     'btn-save-job', 'save_job_txt', 'Salvar Jobs'
@@ -7318,23 +7337,9 @@ async function openPipelineLineage(idx) {
   modal.style.display = 'flex';
 
   try {
-    const runId = 'pl-' + Date.now();
-    const r = await fetch('/api/v1/dags/' + PIPE_JOBS_DAG + '/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf: { mode: 'list_jobs_lineage', pipeline_name: p.pipeline_name } }),
-    });
+    const r = await fetch(ORQUESTRA_API + '/lineage?pipeline_name=' + encodeURIComponent(p.pipeline_name));
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    const state = await waitDagRun(PIPE_JOBS_DAG, rid, 30);
-    if (state !== 'success') throw new Error('state: ' + state);
-    const xr = await fetch(
-      '/api/v1/dags/' + PIPE_JOBS_DAG + '/dagRuns/' + rid + '/taskInstances/consultar_catalogo/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (!xr.ok) throw new Error('XCom ' + xr.status);
-    const data = normalizeXcomValue(await xr.json());
+    const data = await r.json();
     _renderPipelineLineageBody(body, data);
   } catch(e) {
     body.innerHTML = '<div class="empty-state"><span class="es-icon">⚠</span><p class="es-title">Erro ao carregar lineage</p><p class="es-sub">' + _escHtml(e.message) + '</p></div>';
@@ -7526,7 +7531,7 @@ async function softDeletePipeline(idx) {
     domain: p.domain || '',
     tags: p.tags || '',
   };
-  await triggerAndPoll('etl_pipeline_register', conf, 'Inativar pipeline "' + p.pipeline_name + '"', null, null, null);
+  await _orqPost(ORQUESTRA_API + '/pipelines/register', conf, 'Inativar pipeline "' + p.pipeline_name + '"', null, null, null);
   // F3 — pausar/ativar DAG no Airflow
   try { await _toggleDagAirflow(p.pipeline_name, 0); } catch(e) {}
   try { loadQuery(0); } catch(e) {}
@@ -8289,45 +8294,24 @@ async function seqImportAnalyze() {
 
   try {
     const importedBy = window.__currentUser || ($('who') ? $('who').textContent.trim() : 'system');
-    const runId = 'orq_seq_parse_' + Date.now();
-    if (msg) { msg.textContent = 'Disparando DAG de análise...'; msg.className = 'msg'; }
 
-    const r = await fetch('/api/v1/dags/' + SEQ_PARSE_DAG + '/dagRuns', {
+    if (msg) { msg.textContent = 'Analisando sequence...'; msg.className = 'msg'; }
+    const r = await fetch(ORQUESTRA_API + '/sequence/parse', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf: {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
         project_name: project,
         seq_name:     seqName,
         imported_by:  importedBy,
         domain:       domain || null,
-      }}),
+      }),
     });
-    if (r.status === 401) { sair(); return; }
+    const payload = await r.json().catch(() => null);
     if (!r.ok) {
-      if (msg) { msg.textContent = 'Erro ao disparar DAG: ' + r.status; msg.className = 'msg erro'; }
+      const errMsg = (payload && payload.detail) ? payload.detail : ('HTTP ' + r.status);
+      if (msg) { msg.textContent = 'Erro: ' + (typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg)); msg.className = 'msg erro'; }
       return;
     }
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    if (msg) msg.textContent = 'Aguardando análise... (' + rid + ')';
-
-    const state = await waitDagRun(SEQ_PARSE_DAG, rid, 180);
-    if (state !== 'success') {
-      if (msg) { msg.textContent = 'Falha ou timeout na análise. Verifique os logs no Airflow.'; msg.className = 'msg erro'; }
-      return;
-    }
-
-    if (msg) msg.textContent = 'Carregando preview...';
-    const xr = await fetch(
-      '/api/v1/dags/' + SEQ_PARSE_DAG + '/dagRuns/' + rid +
-      '/taskInstances/parse_sequence/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (!xr.ok) {
-      if (msg) { msg.textContent = 'Erro ao ler resultado: ' + xr.status; msg.className = 'msg erro'; }
-      return;
-    }
-    const payload = normalizeXcomValue(await xr.json());
     if (!payload || payload.erro) {
       if (msg) { msg.textContent = payload && payload.erro ? payload.erro : 'Resultado inválido.'; msg.className = 'msg erro'; }
       return;
@@ -8452,40 +8436,30 @@ async function approveSeqImport() {
   if (msg) { msg.textContent = 'Aprovando importação...'; msg.className = 'msg'; }
 
   try {
-    const runId = 'orq_seq_approve_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + SEQ_APPROVE_DAG + '/dagRuns', {
+    const r = await fetch(ORQUESTRA_API + '/sequence/approve', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
-      body: JSON.stringify({ dag_run_id: runId, conf: {
-        import_id:             _seqImportId,
-        reviewed_by:           reviewedBy,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        import_id:              _seqImportId,
+        reviewed_by:            reviewedBy,
         pipeline_name_override: pipeName,
-        schedule_cron:         cron,
         ...schedConf,
-        active:            parseInt($('seq-active') ? $('seq-active').value : 1),
-        dag_start_date:    $('seq-dag-start-date') ? $('seq-dag-start-date').value : '',
-        envia_msg_inicio:  ($('seq-msg-inicio') && $('seq-msg-inicio').checked) ? 1 : 0,
-        envia_msg_fim:     ($('seq-msg-fim')    && $('seq-msg-fim').checked)    ? 1 : 0,
-        envia_msg_erro:    ($('seq-msg-erro')   && $('seq-msg-erro').checked)   ? 1 : 0,
-      }}),
+        active:           parseInt($('seq-active') ? $('seq-active').value : 1),
+        dag_start_date:   $('seq-dag-start-date') ? $('seq-dag-start-date').value : '',
+        envia_msg_inicio: ($('seq-msg-inicio') && $('seq-msg-inicio').checked) ? 1 : 0,
+        envia_msg_fim:    ($('seq-msg-fim')    && $('seq-msg-fim').checked)    ? 1 : 0,
+        envia_msg_erro:   ($('seq-msg-erro')   && $('seq-msg-erro').checked)   ? 1 : 0,
+      }),
     });
-    if (r.status === 401) { sair(); return; }
+    const data = await r.json().catch(() => ({}));
     if (!r.ok) {
-      if (msg) { msg.textContent = 'Erro ao disparar DAG: ' + r.status; msg.className = 'msg erro'; }
+      const errMsg = data.detail || data.message || ('HTTP ' + r.status);
+      if (msg) { msg.textContent = 'Erro: ' + (typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg)); msg.className = 'msg erro'; }
       return;
     }
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    if (msg) msg.textContent = 'Aguardando aprovação... (' + rid + ')';
-
-    const state = await waitDagRun(SEQ_APPROVE_DAG, rid, 180);
-    if (state === 'success') {
-      closeSeqImportModal();
-      showToast('Pipeline "' + pipeName + '" importado com sucesso!', false);
-      try { loadQuery(0); } catch(e) {}
-    } else {
-      if (msg) { msg.textContent = 'Falha na aprovação. Verifique os logs no Airflow.'; msg.className = 'msg erro'; }
-    }
+    closeSeqImportModal();
+    showToast('Pipeline "' + pipeName + '" importado com sucesso!', false);
+    try { loadQuery(0); } catch(e) {}
   } catch (e) {
     if (msg) { msg.textContent = 'Erro: ' + (e && e.message ? e.message : e); msg.className = 'msg erro'; }
   } finally {
@@ -9225,24 +9199,9 @@ async function openPipelineAudit(idx) {
   modal.style.display = 'flex';
 
   try {
-    const runId = 'orq_audit_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + AUDIT_DAG_ID + '/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf: { pipeline_name: p.pipeline_name, limit: 50 } }),
-    });
+    const r = await fetch(ORQUESTRA_API + '/audit?pipeline_name=' + encodeURIComponent(p.pipeline_name) + '&limit=50');
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const run   = await r.json();
-    const rid   = run.dag_run_id || run.run_id;
-    const state = await waitDagRun(AUDIT_DAG_ID, rid, 30);
-    if (state !== 'success') throw new Error('DAG finalizou com estado: ' + state);
-
-    const xr = await fetch(
-      '/api/v1/dags/' + AUDIT_DAG_ID + '/dagRuns/' + rid + '/taskInstances/consultar_audit/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (!xr.ok) throw new Error('XCom HTTP ' + xr.status);
-    const payload = normalizeXcomValue(await xr.json());
+    const payload = await r.json();
     _renderAuditTable(payload, body);
   } catch(e) {
     body.innerHTML = '<p style="color:var(--red);font-size:13px;padding:1rem">Erro: ' + (e.message || e) + '</p>';
