@@ -853,15 +853,16 @@
   .ptree-domain-hdr { display:flex; align-items:center; gap:6px; padding:5px 10px; cursor:pointer; user-select:none; }
   .ptree-domain-hdr:hover { background:rgba(0,0,0,.03); }
   .ptree-domain-name { font-weight:500; font-size:10px; color:var(--text-muted); flex:1; letter-spacing:.03em; text-transform:uppercase; }
-  .ptree-domain-body { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:3px; padding:4px 6px 6px; }
+  .ptree-domain-body { display:flex; flex-direction:column; padding:0; border-top:1px solid var(--border); }
   .ptree-chevron { font-size:10px; color:var(--text-muted); width:12px; display:inline-block; flex-shrink:0; }
   .ptree-badge { font-size:9px; font-weight:500; padding:1px 6px; border-radius:8px; background:rgba(0,0,0,.07); color:var(--text-muted); white-space:nowrap; }
-  .ptree-pipeline { border-radius:4px; border:1px solid transparent; transition:border-color .1s, background .1s; }
-  .ptree-pipeline:hover { background:rgba(26,95,168,.04); border-color:var(--border); }
-  .ptree-pipeline-main { display:flex; align-items:center; gap:4px; padding:3px 6px; min-width:0; flex-wrap:nowrap; }
+  .ptree-pipeline { border-bottom:1px solid var(--border); }
+  .ptree-pipeline:last-child { border-bottom:none; }
+  .ptree-pipeline:hover { background:rgba(26,95,168,.03); }
+  .ptree-pipeline-main { display:flex; align-items:center; gap:6px; padding:5px 10px; min-width:0; flex-wrap:nowrap; }
   .ptree-pipeline-name { font-size:11px; font-weight:500; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .ptree-pipeline .ptree-acts { display:flex; align-items:center; gap:2px; flex-shrink:0; margin-left:auto; }
-  .ptree-pipeline .ptree-acts .act-btn { padding:2px 3px; font-size:10px; opacity:.55; transition:opacity .15s; }
+  .ptree-pipeline .ptree-acts { display:flex; align-items:center; gap:1px; flex-shrink:0; margin-left:auto; }
+  .ptree-pipeline .ptree-acts .act-btn { padding:2px 4px; opacity:.5; transition:opacity .15s; }
   .ptree-pipeline:hover .ptree-acts .act-btn { opacity:1; }
 
   /* ── Pipeline Wizard — stepper ── */
@@ -7737,7 +7738,7 @@ function _ptreeToggle(id) {
   if (!el) return;
   const isHidden = el.style.display === 'none';
   if (isHidden) {
-    el.style.display = el.classList.contains('ptree-domain-body') ? 'grid' : '';
+    el.style.display = el.classList.contains('ptree-domain-body') ? 'flex' : '';
   } else {
     el.style.display = 'none';
   }
