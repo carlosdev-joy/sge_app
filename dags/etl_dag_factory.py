@@ -682,6 +682,15 @@ def gerar_dags(**context):
     for e in erros:
         print(f"  x {e}")
 
+    if geradas:
+        try:
+            import httpx as _httpx
+            api_url = Variable.get("ORQUESTRA_API_URL", default_var="http://orquestra-api:8000")
+            r = _httpx.post(f"{api_url}/sync/pipeline-status", timeout=15)
+            print(f"[FACTORY] sync/pipeline-status → HTTP {r.status_code}")
+        except Exception as _e:
+            print(f"[FACTORY] AVISO: sync/pipeline-status falhou (não bloqueante) — {_e}")
+
     if erros:
         raise RuntimeError(f"{len(erros)} pipeline(s) com erro:\n" + "\n".join(erros))
 
