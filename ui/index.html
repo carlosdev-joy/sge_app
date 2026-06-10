@@ -858,9 +858,11 @@
   .ptree-badge { font-size:9px; font-weight:500; padding:1px 6px; border-radius:8px; background:rgba(0,0,0,.07); color:var(--text-muted); white-space:nowrap; }
   .ptree-pipeline { border-radius:4px; border:1px solid transparent; transition:border-color .1s, background .1s; }
   .ptree-pipeline:hover { background:rgba(26,95,168,.04); border-color:var(--border); }
-  .ptree-pipeline-main { display:flex; align-items:center; gap:5px; padding:4px 6px; min-width:0; overflow:hidden; }
+  .ptree-pipeline-main { display:flex; align-items:center; gap:4px; padding:3px 6px; min-width:0; flex-wrap:nowrap; }
   .ptree-pipeline-name { font-size:11px; font-weight:500; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .ptree-pipeline .row-actions { padding:0 4px 3px; justify-content:flex-start; }
+  .ptree-pipeline .ptree-acts { display:flex; align-items:center; gap:2px; flex-shrink:0; margin-left:auto; }
+  .ptree-pipeline .ptree-acts .act-btn { padding:2px 3px; font-size:10px; opacity:.55; transition:opacity .15s; }
+  .ptree-pipeline:hover .ptree-acts .act-btn { opacity:1; }
 
   /* ── Pipeline Wizard — stepper ── */
   #wiz-stepper { display:flex; align-items:center; gap:0; padding:.4rem 0 .8rem; overflow-x:auto; }
@@ -7659,9 +7661,9 @@ function renderQueryTable(payload) {
         statusDot +
         '<span class="ptree-pipeline-name" title="' + _escHtml(p.pipeline_name) + '">' + _escHtml(p.pipeline_name) + '</span>' +
         dagBadge +
-        (sched ? '<span style="font-size:9px;color:var(--muted);white-space:nowrap">' + p.scheduled_time + '</span>' : '') +
-        (notifBits ? '<span style="font-size:9px;color:var(--muted)" title="Notificações">✉</span>' : '') +
-        '<div class="row-actions" style="margin-left:auto;flex-shrink:0">' +
+        (p.scheduled_time ? '<span style="font-size:9px;color:var(--muted);white-space:nowrap;flex-shrink:0">' + p.scheduled_time + '</span>' : '') +
+        ((p.envia_msg_inicio || p.envia_msg_fim || p.envia_msg_erro) ? '<span style="font-size:9px;color:var(--muted);flex-shrink:0" title="Notificações">✉</span>' : '') +
+        '<div class="ptree-acts">' +
           '<button class="act-btn act-view" onclick="openPipelineView(' + i + ')" title="Visualizar">' + ICONS.detail + '</button>' +
           (!window.__isViewer ? '<button class="act-btn act-edit" onclick="openPipelineEdit(' + i + ')" title="Editar">' + ICONS.edit + '</button>' : '') +
           '<button class="act-btn act-lineage" onclick="openPipelineLineage(' + i + ')" title="Lineage">' + ICONS.graph + '</button>' +
