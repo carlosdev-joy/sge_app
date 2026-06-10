@@ -29,62 +29,17 @@ AIRFLOW_USER     = os.getenv("AIRFLOW_USER",     "airflow")
 AIRFLOW_PASSWORD = os.getenv("AIRFLOW_PASSWORD", "airflow")
 DAGS_FOLDER      = os.getenv("DAGS_FOLDER",      "/opt/airflow/dags")
 
-MSSQL_CONN_ID = os.getenv("MSSQL_CONN_ID", "SQL14_DMDB41")
-
-# cache em memória para não buscar a cada request
-_db_conn_cache: dict = {}
-
-
-async def _fetch_airflow_connection(conn_id: str) -> dict:
-    """Busca os dados de uma connection do Airflow via REST."""
-    async with get_airflow_client() as client:
-        r = await client.get(f"/api/v1/connections/{conn_id}")
-        if r.status_code == 404:
-            raise HTTPException(status_code=500, detail=f"Connection '{conn_id}' não encontrada no Airflow")
-        if r.status_code == 401:
-            raise HTTPException(status_code=401, detail="Credenciais Airflow inválidas")
-        r.raise_for_status()
-        return r.json()
-
-
-async def get_db_conn_async():
-    """Retorna conexão pyodbc usando credenciais da connection do Airflow."""
-    global _db_conn_cache
-    if not _db_conn_cache:
-        conn_data = await _fetch_airflow_connection(MSSQL_CONN_ID)
-        _db_conn_cache = {
-            "server":   conn_data.get("host", ""),
-            "database": conn_data.get("schema", ""),
-            "user":     conn_data.get("login", ""),
-            "password": conn_data.get("password", ""),
-        }
-        log.info("DB connection carregada do Airflow: server=%s db=%s",
-                 _db_conn_cache["server"], _db_conn_cache["database"])
-
-    conn_str = (
-        f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-        f"SERVER={_db_conn_cache['server']};"
-        f"DATABASE={_db_conn_cache['database']};"
-        f"UID={_db_conn_cache['user']};"
-        f"PWD={_db_conn_cache['password']};"
-        "TrustServerCertificate=yes;"
-    )
-    return pyodbc.connect(conn_str, timeout=10)
+MSSQL_CONN_STR = os.getenv("MSSQL_CONN_STR", "")
 
 
 def get_db_conn():
-    """Conexão síncrona usando cache já carregado. Requer get_db_conn_async chamado antes."""
-    if not _db_conn_cache:
-        raise RuntimeError("Cache de conexão DB não inicializado — use get_db_conn_async()")
-    conn_str = (
-        f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-        f"SERVER={_db_conn_cache['server']};"
-        f"DATABASE={_db_conn_cache['database']};"
-        f"UID={_db_conn_cache['user']};"
-        f"PWD={_db_conn_cache['password']};"
-        "TrustServerCertificate=yes;"
-    )
-    return pyodbc.connect(conn_str, timeout=10)
+    if not MSSQL_CONN_STR:
+        raise HTTPException(status_code=500, detail="MSSQL_CONN_STR não configurada")
+    return pyodbc.connect(MSSQL_CONN_STR, timeout=10)
+
+
+async def get_db_conn_async():
+    return get_db_conn()
 
 
 def get_airflow_client() -> httpx.AsyncClient:
@@ -97,7 +52,7 @@ def get_airflow_client() -> httpx.AsyncClient:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("ORQUESTRA API iniciando — Airflow: %s | DB conn_id: %s", AIRFLOW_URL, MSSQL_CONN_ID)
+    log.info("ORQUESTRA API iniciando — Airflow: %s", AIRFLOW_URL)
     yield
     log.info("ORQUESTRA API encerrando.")
 
