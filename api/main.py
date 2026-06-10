@@ -1127,6 +1127,7 @@ def catalogo(body: dict = Body(default={})):
     except HTTPException:
         raise
     except Exception as e:
+        log.exception("catalogo mode=%s error=%s", mode, e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2218,7 +2219,7 @@ def sequence_parse(body: dict = Body(default={})):
         for c, r in [('ç','c'),('ã','a'),('â','a'),('á','a'),('à','a'),('é','e'),('ê','e'),
                      ('í','i'),('ó','o'),('ô','o'),('õ','o'),('ú','u')]:
             name = name.replace(c, r).replace(c.upper(), r.upper())
-        return re.sub(r'_+', '_', re.sub(r'[^a-zA-Z0-9_]', '_', name)).strip('_').lower()
+        return re.sub(r'_+', '_', re.sub(r'[^a-zA-Z0-9_]', '_', name)).strip('_')
 
     try:
         with open(dsx_path, "r", encoding="utf-8", errors="ignore") as fh:
