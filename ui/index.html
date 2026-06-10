@@ -2845,7 +2845,7 @@ function applyLineageDSX() {
 }
 
 /* ══ DASHBOARD v2 ══ */
-const DASHBOARD_DAG_ID = 'etl_dashboard_query';
+const ORQUESTRA_API = window.location.protocol + '//' + window.location.hostname + ':8000';
 
 function setTodayIfEmptyDate(id) {
   const el = $(id);
@@ -2906,39 +2906,20 @@ async function loadDashboard() {
   if (st) st.textContent = 'Consultando dashboard...';
 
   try {
-    const conf = {};
-    const proj = $('df-project') ? $('df-project').value : '';
-    const dateRef = $('df-date') ? $('df-date').value : '';
-    if (proj) conf.filter_project = proj;
-    if (dateRef) conf.date_ref = dateRef;
+    const proj    = $('df-project') ? $('df-project').value.trim() : '';
+    const dateRef = $('df-date')    ? $('df-date').value.trim()    : '';
+    const params  = new URLSearchParams();
+    if (proj)    params.set('filter_project', proj);
+    if (dateRef) params.set('date_ref', dateRef);
 
-    const runId = 'orq_dash_ui_' + Date.now();
-    const r = await fetch('/api/v1/dags/' + DASHBOARD_DAG_ID + '/dagRuns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': _sysAuth() },
-      body: JSON.stringify({ dag_run_id: runId, conf }),
-    });
-    if (r.status === 401) { sair(); return; }
-    if (!r.ok) { if (st) st.textContent = 'Erro ao disparar DAG: ' + r.status; return; }
+    const url = ORQUESTRA_API + '/dashboard' + (params.toString() ? '?' + params.toString() : '');
+    const r = await fetch(url);
+    if (!r.ok) { if (st) st.textContent = 'Erro API: ' + r.status; return; }
 
-    const run = await r.json();
-    const rid = run.dag_run_id || run.run_id;
-    if (st) st.textContent = 'Aguardando execução...';
-    const state = await waitDagRun(DASHBOARD_DAG_ID, rid, 60);
-    if (state !== 'success') { if (st) st.textContent = 'Falha/timeout. Verifique o Airflow.'; return; }
-
-    const xr = await fetch(
-      '/api/v1/dags/' + DASHBOARD_DAG_ID + '/dagRuns/' + rid + '/taskInstances/consultar_dashboard/xcomEntries/return_value',
-      { headers: { 'Authorization': _sysAuth() } }
-    );
-    if (xr.status === 401) { sair(); return; }
-    if (!xr.ok) { if (st) st.textContent = 'Erro ao ler XCom: ' + xr.status; return; }
-    const xdata = await xr.json();
-    const payload = normalizeXcomValue(xdata);
+    const payload = await r.json();
     renderDashboard(payload);
     if (st) st.textContent = '';
     _updateDashLastUpdated();
-    // S2: atualizar badge de falhas com dados já carregados
     window.__lastDashPayload = payload;
     _updateFailureBadge(_extractFailuresFromDash(payload));
   } catch (e) {
