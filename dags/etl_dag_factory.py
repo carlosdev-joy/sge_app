@@ -184,9 +184,10 @@ def _generate_dag_source(pipeline, jobs):
     tags_raw   = pipeline["tags"]
     sched      = pipeline["scheduled_time"]
     depends_on = (pipeline.get("depends_on") or "").strip() or None
-    f_ini   = bool(pipeline["envia_msg_inicio"])
-    f_fim   = bool(pipeline["envia_msg_fim"])
-    f_err   = bool(pipeline["envia_msg_erro"])
+    is_prd  = (pipeline.get("ambiente") or "PRD").upper() == "PRD"
+    f_ini   = bool(pipeline["envia_msg_inicio"]) and is_prd
+    f_fim   = bool(pipeline["envia_msg_fim"])    and is_prd
+    f_err   = bool(pipeline["envia_msg_erro"])   and is_prd
     dag_start_date_raw = pipeline.get("dag_start_date")
 
     retries_val         = int(pipeline.get("retries_count") or 1)
