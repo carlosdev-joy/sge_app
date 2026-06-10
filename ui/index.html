@@ -526,11 +526,24 @@
   /* CONSULTA */
   .query-filters { display:grid; grid-template-columns:1fr 140px 80px; gap:.5rem; margin-bottom:1rem; }
   .query-table-wrap { overflow-x:auto; border:0.5px solid var(--border); border-radius:12px; }
-  .query-table { width:100%; border-collapse:collapse; font-size:13px; }
-  .query-table th { padding:.5rem .75rem; font-size:10px; font-weight:500; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); border-bottom:0.5px solid var(--border); text-align:left; white-space:nowrap; background:var(--bg); }
-  .query-table td { padding:.55rem .75rem; border-bottom:0.5px solid var(--border); vertical-align:middle; }
+  .query-table { width:100%; border-collapse:collapse; font-size:11.5px; }
+  .query-table th { padding:.3rem .5rem; font-size:9px; font-weight:500; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); border-bottom:0.5px solid var(--border); text-align:left; white-space:nowrap; background:var(--bg); }
+  .query-table td { padding:.3rem .5rem; font-size:11.5px; border-bottom:0.5px solid var(--border); vertical-align:middle; }
   .query-table tr:last-child td { border-bottom:none; }
   .query-table tr:hover td { background:var(--bg); }
+  /* ── Accordion de grupos por projeto ── */
+  .pipe-group-header { cursor:pointer; user-select:none; background:var(--bg) !important; }
+  .pipe-group-header td { padding:.45rem .6rem; border-bottom:0.5px solid var(--border); }
+  .pipe-group-header:hover td { background:rgba(0,92,169,.04) !important; }
+  .pipe-group-toggle { display:inline-flex; align-items:center; gap:.5rem; font-size:11px; font-weight:600; color:var(--text); white-space:nowrap; }
+  .pipe-group-toggle .toggle-icon { font-size:9px; color:var(--muted); transition:transform .18s; display:inline-block; }
+  .pipe-group-toggle.open .toggle-icon { transform:rotate(90deg); }
+  .pipe-group-name { font-size:11.5px; font-weight:600; color:var(--text); }
+  .pipe-group-summary { display:inline-flex; align-items:center; gap:.35rem; margin-left:.5rem; font-size:10px; }
+  .pipe-group-rows { transition:opacity .18s; }
+  .pipe-group-rows.collapsed { display:none; }
+  .pipe-group-rows.collapsing { opacity:0; pointer-events:none; }
+  .pipe-group-count { font-size:10px; color:var(--muted); font-weight:400; }
   .bit-on  { display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;background:rgba(22,163,74,.1);color:var(--green);font-size:12px; }
   .bit-off { display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;background:var(--border);color:var(--muted);font-size:12px; }
   .pagination { display:flex;align-items:center;justify-content:space-between;padding:.75rem 0;font-size:12px;color:var(--muted); }
@@ -2848,6 +2861,28 @@ function escJsSingle(str) {
   return String(str || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
+/* ── Accordion de grupos por projeto no dash-pipelines ── */
+function pipGroupToggle(headerRow) {
+  const gid = headerRow.dataset.gid;
+  if (!gid) return;
+  const toggleEl = headerRow.querySelector('.pipe-group-toggle');
+  const isOpen = toggleEl && toggleEl.classList.contains('open');
+  const tbody = headerRow.closest('tbody');
+  if (!tbody) return;
+  const childRows = tbody.querySelectorAll('tr[data-group="' + gid + '"]');
+  childRows.forEach(r => {
+    if (isOpen) { r.classList.add('collapsed'); }
+    else        { r.classList.remove('collapsed'); }
+  });
+  if (toggleEl) toggleEl.classList.toggle('open', !isOpen);
+  // persiste estado
+  const LS_KEY = 'orq_pipe_groups_collapsed';
+  let state = {};
+  try { state = JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch(e) {}
+  state[gid] = isOpen; // true = colapsado
+  try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch(e) {}
+}
+
 function fmtHMS(sec) {
   const n = parseInt(sec || 0, 10);
   if (!n || isNaN(n)) return '—';
@@ -3016,28 +3051,85 @@ function renderDashboard(result) {
       if (v === 'BAIXA') return '<span class="crit-badge crit-baixa">▼ BAIXA</span>';
       return '<span class="crit-badge" style="opacity:.35">—</span>';
     };
-    dp.innerHTML = ps.length
-      ? '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
-          '<th>Pipeline</th><th>Crit.</th><th>Projeto</th><th>Status</th><th>Último início</th><th>Duração</th><th>Jobs</th><th>Ações</th>' +
-        '</tr></thead><tbody>' +
-        ps.map(p => {
+
+    if (!ps.length) {
+      dp.innerHTML = '<p style="font-size:12px;color:var(--muted);margin:0">Sem dados.</p>';
+    } else {
+      // ── Lê estado persistido no localStorage ──
+      const LS_KEY = 'orq_pipe_groups_collapsed';
+      let collapsed = {};
+      try { collapsed = JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch(e) {}
+
+      // ── Agrupa por project ──
+      const groups = {};
+      ps.forEach(p => {
+        const proj = p.project || '(sem projeto)';
+        if (!groups[proj]) groups[proj] = [];
+        groups[proj].push(p);
+      });
+
+      // ── Calcula resumo do grupo ──
+      const groupSummary = (items) => {
+        let ok=0, fail=0, warn=0, run=0;
+        let topCrit = ''; // ALTA > MEDIA > BAIXA
+        const critRank = {ALTA:3, MEDIA:2, BAIXA:1};
+        items.forEach(p => {
+          const st = (p.ultimo_status||'').toUpperCase();
+          if (st === 'SUCCESS') ok++;
+          else if (st === 'FAILED') fail++;
+          else if (st === 'WARNING') warn++;
+          else if (st === 'RUNNING') run++;
+          const cr = (p.criticidade||'').toUpperCase();
+          if ((critRank[cr]||0) > (critRank[topCrit]||0)) topCrit = cr;
+        });
+        let badges = '';
+        if (ok)   badges += '<span class="log-pill success" style="font-size:10px;padding:1px 6px">✓ '+ok+'</span>';
+        if (fail) badges += '<span class="log-pill failed"  style="font-size:10px;padding:1px 6px">✕ '+fail+'</span>';
+        if (warn) badges += '<span class="log-pill warning" style="font-size:10px;padding:1px 6px">! '+warn+'</span>';
+        if (run)  badges += '<span class="log-pill running" style="font-size:10px;padding:1px 6px">… '+run+'</span>';
+        return { badges, topCrit, hasFail: fail > 0, hasRun: run > 0 };
+      };
+
+      // ── Monta HTML ──
+      let rows = '';
+      Object.entries(groups).sort((a,b) => a[0].localeCompare(b[0])).forEach(([proj, items]) => {
+        const gid = 'pg_' + proj.replace(/[^a-zA-Z0-9]/g,'_');
+        const isOpen = collapsed[gid] !== true; // aberto por padrão
+        const { badges, topCrit } = groupSummary(items);
+        const toggleIcon = '<span class="toggle-icon">▶</span>';
+        rows += '<tr class="pipe-group-header" data-gid="'+gid+'" onclick="pipGroupToggle(this)">' +
+          '<td colspan="8">' +
+            '<span class="pipe-group-toggle'+(isOpen?' open':'')+'">' +
+              toggleIcon +
+              '<span class="pipe-group-name">'+proj+'</span>' +
+              '<span class="pipe-group-count">('+items.length+')</span>' +
+            '</span>' +
+            '<span class="pipe-group-summary">'+badges+'</span>' +
+            '<span style="margin-left:.5rem">'+critBadge(topCrit)+'</span>' +
+          '</td>' +
+        '</tr>';
+
+        items.forEach(p => {
           const ex = escJsSingle(p.execution_id);
           const pip = escJsSingle(p.pipeline);
-          const isCritFail = (p.criticidade || '').toUpperCase() === 'ALTA'
-            && (p.ultimo_status || '').toUpperCase() === 'FAILED';
-          return '<tr class="' + (isCritFail ? 'pipe-row-crit-fail' : '') + '">' +
-            '<td style="font-weight:500;white-space:nowrap">' + (p.pipeline || '—') + '</td>' +
+          const isCritFail = (p.criticidade||'').toUpperCase()==='ALTA' && (p.ultimo_status||'').toUpperCase()==='FAILED';
+          rows += '<tr class="pipe-group-rows'+(isOpen?'':' collapsed')+' '+(isCritFail?'pipe-row-crit-fail':'')+'" data-group="'+gid+'">' +
+            '<td style="font-weight:500;white-space:nowrap;padding-left:1.6rem">' + (p.pipeline || '—') + '</td>' +
             '<td>' + critBadge(p.criticidade) + '</td>' +
-            '<td><span class="tag-pill">' + (p.project || '—') + '</span></td>' +
             '<td style="white-space:nowrap">' + pill(p.ultimo_status) + '</td>' +
-            '<td style="white-space:nowrap;font-size:12px">' + (p.ultimo_inicio ? String(p.ultimo_inicio).slice(0,16) : '—') + '</td>' +
-            '<td style="white-space:nowrap;font-size:12px">' + fmtHMS(p.duracao_segundos) + '</td>' +
+            '<td style="white-space:nowrap">' + (p.ultimo_inicio ? String(p.ultimo_inicio).slice(0,16) : '—') + '</td>' +
+            '<td style="white-space:nowrap">' + fmtHMS(p.duracao_segundos) + '</td>' +
             '<td style="text-align:center">' + (p.total_jobs ?? '—') + '</td>' +
-            '<td style="white-space:nowrap"><button class="btn-ver-jobs" onclick="openLogDetail(\'' + ex + '\',\'' + pip + '\')" title="Ver jobs desta execução">' + ICONS.detail + '</button></td>' +
+            '<td></td>' +
+            '<td style="white-space:nowrap"><button class="btn-ver-jobs" onclick="event.stopPropagation();openLogDetail(\''+ex+'\',\''+pip+'\')" title="Ver jobs desta execução">'+ICONS.detail+'</button></td>' +
           '</tr>';
-        }).join('') +
-        '</tbody></table></div>'
-      : '<p style="font-size:12px;color:var(--muted);margin:0">Sem dados.</p>';
+        });
+      });
+
+      dp.innerHTML = '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
+        '<th>Pipeline</th><th>Crit.</th><th>Status</th><th>Último início</th><th>Duração</th><th>Jobs</th><th></th><th>Ações</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
   }
 
   // Últimas falhas
