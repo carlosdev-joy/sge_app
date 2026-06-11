@@ -77,7 +77,6 @@ def _task_block(job, project, pipeline):
             f'    project=PROJECT_NAME,',
             f'    job_name="{name}",',
             f'    ssh_conn_id=SSH_CONN_ID,',
-            f'    execution_date_param="p_exec_date",',
             f')',
         ])
     elif jtype == "shell":
