@@ -652,7 +652,7 @@ def gerar_dags(**context):
     if pipeline_name:
         cursor.execute(
             "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
-            "WHERE pipeline_name=?",
+            "WHERE pipeline_name=%s",
             (pipeline_name,),
         )
         print(f"[FACTORY] pipeline_name='{pipeline_name}' — dag_criada resetado para regeneração")
@@ -660,7 +660,7 @@ def gerar_dags(**context):
         if filter_project:
             cursor.execute(
                 "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
-                "WHERE project_name=? AND dag_criada=1",
+                "WHERE project_name=%s AND dag_criada=1",
                 (filter_project,),
             )
             print(f"[FACTORY] force_all=True, project='{filter_project}' — dag_criada resetado")
@@ -691,8 +691,8 @@ def gerar_dags(**context):
 
     # Supplement with advanced fields (not in SP result set)
     if pipelines:
-        pnames_sql = ",".join("?" * len(pipelines))
-        pnames_vals = [p['pipeline_name'] for p in pipelines]
+        pnames_sql = ",".join(["%s"] * len(pipelines))
+        pnames_vals = tuple(p['pipeline_name'] for p in pipelines)
         cursor.execute(
             f"SELECT pipeline_name, criticidade, sla_minutos, ambiente, "
             f"max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao, dag_start_date, "
