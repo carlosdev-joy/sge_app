@@ -1774,11 +1774,15 @@
 
                 <div class="section-sep" style="margin-bottom:1rem">SELECIONAR PIPELINE</div>
                 <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1.25rem">
+                  <div style="flex:1;min-width:140px">
+                    <label class="field-label">Projeto</label>
+                    <input id="dsm-pip-project-input" type="text" placeholder="ex: BI_CVP" style="width:100%"
+                      onkeydown="if(event.key==='Enter') dsmPipelineLoad()" />
+                  </div>
                   <div style="flex:2;min-width:200px">
-                    <label class="field-label">Pipeline Orquestra</label>
-                    <select id="dsm-pip-select" style="width:100%">
-                      <option value="">— carregando pipelines… —</option>
-                    </select>
+                    <label class="field-label">Nome do Pipeline</label>
+                    <input id="dsm-pip-name-input" type="text" placeholder="ex: carga_base_cobranca" style="width:100%"
+                      onkeydown="if(event.key==='Enter') dsmPipelineLoad()" />
                   </div>
                   <button class="btn btn-primary" onclick="dsmPipelineLoad()" style="height:38px;padding:0 1.25rem">
                     ▶ Carregar
@@ -9735,32 +9739,13 @@ function dsmSwitchTab(tab) {
   document.getElementById('dsm-panel-pipeline').style.display = tab === 'pipeline' ? '' : 'none';
   document.getElementById('dsm-tab-job').classList.toggle('dsm-subtab--active',      tab === 'job');
   document.getElementById('dsm-tab-pipeline').classList.toggle('dsm-subtab--active', tab === 'pipeline');
-  if (tab === 'pipeline') _dsmFillPipelineSelect();
-}
-
-async function _dsmFillPipelineSelect() {
-  const sel = document.getElementById('dsm-pip-select');
-  if (sel.dataset.loaded) return;
-  try {
-    const r = await fetch(ORQUESTRA_API + '/pipelines?limit=200', {
-      headers: authHeader ? { Authorization: authHeader } : {},
-    });
-    if (!r.ok) return;
-    const d = await r.json();
-    const pips = d.data || d.rows || d.pipelines || (Array.isArray(d) ? d : []);
-    sel.innerHTML = '<option value="">— selecione um pipeline —</option>' +
-      pips.map(p => `<option value="${_esc(p.pipeline||p.pipeline_name||p.nome||'')}">${_esc(p.pipeline||p.pipeline_name||p.nome||'')} · ${_esc(p.project||p.projeto||'')}</option>`).join('');
-    sel.dataset.loaded = '1';
-  } catch(e) {
-    sel.innerHTML = '<option value="">Erro ao carregar pipelines</option>';
-  }
 }
 
 async function dsmPipelineLoad() {
-  const sel = document.getElementById('dsm-pip-select');
-  const pipeline = (sel.value || '').trim();
+  const pipeline = (document.getElementById('dsm-pip-name-input').value || '').trim();
+  const project  = (document.getElementById('dsm-pip-project-input').value || '').trim();
   const msg = document.getElementById('dsm-pip-status-msg');
-  if (!pipeline) { showToast('Selecione um pipeline.', true); return; }
+  if (!pipeline) { showToast('Informe o nome do pipeline.', true); return; }
 
   msg.textContent = 'Carregando…';
   document.getElementById('dsm-pip-header').style.display     = 'none';
@@ -9770,6 +9755,7 @@ async function dsmPipelineLoad() {
   try {
     // Busca jobs da última execução via /execucoes (detail_mode)
     const params = new URLSearchParams({ detail_mode: 'true', limit: 100, filter_pipeline: pipeline });
+    if (project) params.set('filter_project', project);
     const r = await fetch(ORQUESTRA_API + '/execucoes?' + params.toString(), {
       headers: authHeader ? { Authorization: authHeader } : {},
     });
@@ -9791,7 +9777,7 @@ async function dsmPipelineLoad() {
 
     // Pipeline header
     const pipName    = pipeline;
-    const pipProject = jobs[0]?.project || '';
+    const pipProject = project || jobs[0]?.project || '';
     const pipStatus  = d.filters?.status_geral || jobs.find(j => j.status === 'RUNNING')?.status || jobs[0]?.status || '—';
     const execId     = jobs[0]?.execution_id || d.filters?.execution_id || '';
 
