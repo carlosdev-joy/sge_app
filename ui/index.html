@@ -713,6 +713,7 @@
   .kpi-card.kpi-blue{border-left:4px solid var(--cvp-blue)}
   .kpi-card.kpi-green{border-left:4px solid var(--green)}
   .kpi-card.kpi-red{border-left:4px solid var(--red)}
+  #kpi-card-falha:hover{box-shadow:0 0 0 2px rgba(220,38,38,.35);transform:translateY(-1px);transition:all .15s}
   .kpi-card.kpi-orange{border-left:4px solid var(--cvp-orange)}
   .kpi-card.kpi-purple{border-left:4px solid #7c3aed}
   .kpi-card.kpi-crit{border-left:4px solid var(--red)}
@@ -1616,7 +1617,7 @@
                   <div class="kpi-value" id="kpi-taxa">—</div>
                   <div class="kpi-sub" id="kpi-taxa-sub"></div>
                 </div>
-                <div class="kpi-card kpi-red">
+                <div class="kpi-card kpi-red" id="kpi-card-falha" style="cursor:pointer" onclick="_drillDownFalhas()" title="Clique para ver as falhas de hoje">
                   <div class="kpi-label">Falhas</div>
                   <div class="kpi-value" id="kpi-falha">—</div>
                   <div class="kpi-sub" id="kpi-falha-sub"></div>
@@ -2504,6 +2505,19 @@ async function gerarDAG(idx) {
   }
 }
 
+// Drill-down do Dashboard: abre aba Logs filtrado por FAILED de hoje
+function _drillDownFalhas() {
+  const falhaCount = parseInt(($('kpi-falha') || {}).textContent || '0', 10);
+  if (!falhaCount) { showToast('Sem falhas hoje.', false); return; }
+  navigate('logs');
+  const today = new Date().toISOString().slice(0, 10);
+  if ($('lf-status'))    $('lf-status').value   = 'FAILED';
+  if ($('lf-date-from')) $('lf-date-from').value = today;
+  // Limpar outros filtros
+  ['lf-project','lf-pipeline','lf-datetime-from','lf-execution-id','lf-period'].forEach(id => { if ($(id)) $(id).value = ''; });
+  setTimeout(() => loadLogs(0), 50);
+}
+
 function clearLogsFilters() {
   ['lf-project','lf-pipeline','lf-status','lf-date-from','lf-datetime-from','lf-execution-id','lf-period'].forEach(id => { if ($(id)) $(id).value = ''; });
   const area = $('logs-table-area');
@@ -2678,13 +2692,6 @@ function closeLogDetail() {
 
 async function loadLogDetail(executionId, pipeline) {
   if (!authHeader) { showToast('Faça login primeiro.', true); return; }
-  const conf = {
-    offset: 0,
-    limit: 200,
-    detail_mode: true,
-    filter_execution_id: executionId,
-  };
-  if (pipeline) conf.filter_pipeline = pipeline; // aceita LIKE; passar exato resolve o drill-down
 
   $('ld-status').textContent = 'Consultando API...';
   try {
@@ -2695,11 +2702,24 @@ async function loadLogDetail(executionId, pipeline) {
     params.set('filter_execution_id', executionId);
     if (pipeline) params.set('filter_pipeline', pipeline);
 
-    const r = await fetch(ORQUESTRA_API + '/execucoes?' + params.toString());
+    // Buscar jobs e duração média em paralelo
+    const [r, rMedia] = await Promise.all([
+      fetch(ORQUESTRA_API + '/execucoes?' + params.toString()),
+      pipeline
+        ? fetch(ORQUESTRA_API + '/execucoes/duracao-media?pipeline=' + encodeURIComponent(pipeline) + '&limit=30')
+        : Promise.resolve(null),
+    ]);
+
     if (r.status === 401) { sair(); return; }
     if (!r.ok) { $('ld-status').textContent = 'Erro API: ' + r.status; return; }
 
-    const payload = await r.json();
+    const payload  = await r.json();
+    let avgData = {};
+    if (rMedia && rMedia.ok) {
+      try { avgData = (await rMedia.json()).data || {}; } catch(_) {}
+    }
+    payload._avgData  = avgData;
+    payload._pipeline = pipeline || '';
     renderLogDetailTable(payload);
   } catch (e) {
     $('ld-status').textContent = 'Erro: ' + (e && e.message ? e.message : e);
@@ -2750,8 +2770,20 @@ function renderLogDetailTable(result) {
   };
 
   // Pipeline/execution_id ficam no escopo para o botão de log
-  const detPipeline    = (result && result.filters && result.filters.pipeline) || '';
+  const detPipeline    = (result && result._pipeline) || (result && result.filters && result.filters.pipeline) || '';
   const detExecutionId = (result && result.filters && result.filters.execution_id) || '';
+  const avgData        = (result && result._avgData) || {};
+
+  // Desvio de duração vs histórico
+  const fmtDesvio = (jobName, sec) => {
+    const info = avgData[jobName];
+    if (!info || !info.avg || sec === null || sec === undefined) return '';
+    const pct = Math.round(((sec - info.avg) / info.avg) * 100);
+    if (Math.abs(pct) < 10) return '';  // variação < 10% — não exibir
+    const color = pct > 30 ? '#dc2626' : pct > 0 ? '#d97706' : '#16a34a';
+    const arrow = pct > 0 ? '▲' : '▼';
+    return ' <span style="font-size:10px;color:' + color + ';font-weight:600" title="Média: ' + fmtDur(info.avg) + '">' + arrow + ' ' + Math.abs(pct) + '%</span>';
+  };
 
   const body = rows.map(r => {
     const jobTitle  = escAttr(r.job_name || '');
@@ -2761,12 +2793,19 @@ function renderLogDetailTable(result) {
     const logBtnCls = r.status === 'FAILED' || r.status === 'WARNING'
       ? 'btn-ghost btn-log-job btn-log-job--err'
       : 'btn-ghost btn-log-job';
+    const rerunBtn = (!window.__isViewer && r.status === 'FAILED')
+      ? '<button class="btn-ghost btn-sm" style="font-size:11px;padding:.2rem .5rem;color:var(--green)" ' +
+          'onclick="_rerunFromTask(\'' + pipEsc + '\',\'' + execEsc + '\',\'' + taskId + '\',this)" ' +
+          'title="Reexecutar a partir deste job (e downstream)">' +
+          '🔁 Rerun' +
+        '</button>'
+      : '';
     return '<tr>' +
       '<td style="font-weight:500;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis" title="' + jobTitle + '">' + (r.job_name || '—') + '</td>' +
       '<td style="white-space:nowrap">' + statusPill(r.status) + '</td>' +
       '<td style="white-space:nowrap;font-size:12px">' + fmtDt16(r.inicio) + '</td>' +
       '<td style="white-space:nowrap;font-size:12px">' + fmtDt16(r.fim) + '</td>' +
-      '<td style="white-space:nowrap;font-size:12px">' + fmtDur(r.duration_seconds) + '</td>' +
+      '<td style="white-space:nowrap;font-size:12px">' + fmtDur(r.duration_seconds) + fmtDesvio(r.job_name, r.duration_seconds) + '</td>' +
       '<td style="white-space:nowrap;display:flex;gap:4px;flex-wrap:wrap">' +
         '<button class="' + logBtnCls + '" ' +
           'onclick="_showAirflowJobLog(\'' + pipEsc + '\',\'' + execEsc + '\',\'' + taskId + '\')" ' +
@@ -2778,6 +2817,7 @@ function renderLogDetailTable(result) {
           'title="Ver log DataStage (etl_ds_job_log)">' +
           '⬡ DS Log' +
         '</button>' +
+        rerunBtn +
       '</td>' +
     '</tr>';
   }).join('');
@@ -2785,7 +2825,7 @@ function renderLogDetailTable(result) {
   area.innerHTML =
     '<div class="query-table-wrap">' +
       '<table class="query-table"><thead><tr>' +
-        '<th>Job</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th><th>Logs</th>' +
+        '<th>Job</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th><th>Ações</th>' +
       '</tr></thead><tbody>' + body + '</tbody></table>' +
     '</div>';
 }
@@ -3878,6 +3918,40 @@ async function executarPipelineAgora(idx) {
   }
 }
 
+
+// Reexecutar a partir de um job específico com falha (e downstream)
+async function _rerunFromTask(pipeline, executionId, taskId, btn) {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
+  if (!pipeline || !taskId) { showToast('Dados insuficientes para reexecutar.', true); return; }
+
+  const ok = await showConfirm(
+    'Reexecutar o pipeline "' + pipeline + '" a partir do job "' + taskId + '"?\n\nEste job e todos os jobs posteriores serão limpos e reexecutados.',
+    '🔁 Reexecutar a partir daqui'
+  );
+  if (!ok) return;
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+  try {
+    const r = await fetch(ORQUESTRA_API + '/execucoes/rerun', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+      body: JSON.stringify({ pipeline_name: pipeline, execution_id: executionId, task_id: taskId }),
+    });
+    if (r.status === 401) { sair(); return; }
+    if (!r.ok) {
+      const txt = await r.text().catch(() => r.status);
+      showToast('Erro ao reexecutar: ' + txt, true);
+      if (btn) { btn.disabled = false; btn.textContent = '🔁 Rerun'; }
+      return;
+    }
+    const data = await r.json();
+    showToast('🔁 Reexecução disparada! ' + data.tasks_cleared + ' task(s) limpas — ' + (data.dag_run_id || ''), false);
+    if (btn) { btn.textContent = '✓ Disparado'; }
+  } catch(e) {
+    showToast('Erro de conexão: ' + (e.message || e), true);
+    if (btn) { btn.disabled = false; btn.textContent = '🔁 Rerun'; }
+  }
+}
 
 // F5 — Reexecutar pipeline direto da tela de Logs (sem trocar de tela)
 async function reexecutarDoPipelineLog(pipelineName) {

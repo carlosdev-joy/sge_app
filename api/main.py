@@ -2603,6 +2603,105 @@ async def datastage_job_status(
         raise HTTPException(status_code=500, detail=f"Erro ao consultar DS status: {e}")
 
 
+@app.post("/execucoes/rerun", tags=["execucoes"])
+async def rerun_from_task(body: dict = Body(default={})):
+    """Limpa tasks a partir de um job específico e reexecuta o DAG.
+
+    Body:
+      pipeline_name  — nome do pipeline (= dag_id no Airflow)
+      execution_id   — execution_id da execução original (usado para localizar o dag_run_id)
+      task_id        — task_id a partir da qual reexecutar (inclusive, com downstream)
+      dag_run_id     — dag_run_id real (opcional; se não informado, tenta resolver via API)
+    """
+    pipeline   = (body.get("pipeline_name") or "").strip()
+    exec_id    = (body.get("execution_id")  or "").strip()
+    task_id    = (body.get("task_id")       or "").strip()
+    dag_run_id = (body.get("dag_run_id")    or "").strip()
+
+    if not pipeline or not task_id:
+        raise HTTPException(status_code=422, detail="pipeline_name e task_id são obrigatórios")
+
+    dag_id = pipeline  # no Airflow o dag_id = pipeline_name exato
+
+    async with get_airflow_client() as client:
+        # 1. Resolver dag_run_id se não fornecido
+        if not dag_run_id:
+            r = await client.get(f"/api/v1/dags/{dag_id}/dagRuns",
+                                 params={"limit": 50, "order_by": "-execution_date"})
+            if not r.is_success:
+                raise HTTPException(status_code=502, detail=f"Airflow: {r.status_code}")
+            runs = r.json().get("dag_runs", [])
+            if not runs:
+                raise HTTPException(status_code=404, detail="Nenhum dag_run encontrado para este pipeline")
+            # Tentar casar pelo execution_id (formato ts_nodash) ou pegar o mais recente com falha
+            chosen = None
+            for run in runs:
+                if run.get("state") in ("failed", "success"):
+                    chosen = run; break
+            dag_run_id = (chosen or runs[0])["dag_run_id"]
+
+        # 2. Limpar a task e downstream via clearTaskInstances
+        clear_body = {
+            "dry_run": False,
+            "task_ids": [task_id],
+            "include_downstream": True,
+            "include_future": False,
+            "include_past": False,
+            "include_upstream": False,
+            "reset_dag_runs": True,
+        }
+        r2 = await client.post(
+            f"/api/v1/dags/{dag_id}/clearTaskInstances",
+            json=clear_body,
+        )
+        if not r2.is_success:
+            raise HTTPException(status_code=502,
+                detail=f"Airflow clearTaskInstances falhou: {r2.status_code} — {r2.text[:300]}")
+
+        cleared = r2.json()
+        log.info("Rerun %s/%s a partir de %s — %s tasks limpas",
+                 dag_id, dag_run_id, task_id, len(cleared.get("task_instances", [])))
+
+        return {
+            "ok": True,
+            "pipeline_name": pipeline,
+            "dag_id": dag_id,
+            "dag_run_id": dag_run_id,
+            "task_id": task_id,
+            "tasks_cleared": len(cleared.get("task_instances", [])),
+        }
+
+
+@app.get("/execucoes/duracao-media", tags=["execucoes"])
+def get_duracao_media(pipeline: str = Query(...), limit: int = Query(30, ge=5, le=200)):
+    """Retorna duração média (P50) por job_name para um pipeline — usado para desvio de duração."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(f"""
+            SELECT job_name,
+                   AVG(CAST(duration_seconds AS FLOAT)) AS avg_sec,
+                   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_seconds)
+                       OVER (PARTITION BY job_name) AS p50_sec,
+                   COUNT(*) AS execucoes
+            FROM (
+                SELECT TOP {limit * 10} job_name, duration_seconds
+                FROM dbo.etl_job_execution
+                WHERE pipeline = ? AND status IN ('SUCCESS','WARNING')
+                  AND duration_seconds IS NOT NULL AND duration_seconds > 0
+                ORDER BY start_time DESC
+            ) t
+            GROUP BY job_name
+        """, [pipeline])
+        data = {r[0]: {"avg": round(r[1] or 0), "p50": round(r[2] or 0), "n": r[3]}
+                for r in cur.fetchall()}
+        cur.close(); conn.close()
+        return {"pipeline": pipeline, "data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/airflow/connections/ssh")
 async def list_ssh_connections():
     """Lista conexões SSH cadastradas no Airflow (conn_type=ssh)."""
