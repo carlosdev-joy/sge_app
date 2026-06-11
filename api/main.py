@@ -2801,9 +2801,84 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
     }
     try:
         resp = _req.post(webhook_url, json=payload, timeout=10)
-        log.info("[ACK] Teams status=%s", resp.status_code)
+        log.info("[ACK] Teams status=%s body=%.120s", resp.status_code, resp.text)
     except Exception as e:
         log.warning("[ACK] Falha ao enviar Teams: %s", e)
+
+
+@app.post("/admin/test-webhook", tags=["admin"])
+def test_webhook(body: dict = Body(default={})):
+    """Testa envio ao Teams e devolve diagnóstico completo (uso exclusivo Admin).
+
+    Body: { "requested_by": "CVT00000", "webhook_key": "teams_webhook_url_ack" }
+    webhook_key é opcional — testa a mesma cascata do ack se omitido.
+    """
+    import requests as _req
+
+    requested_by = (body.get("requested_by") or "").strip().upper()
+    if requested_by not in ADMIN_USERS:
+        raise HTTPException(status_code=403, detail=f"Usuário '{requested_by}' não autorizado")
+
+    # ── 1. Resolver qual URL será usada ────────────────────────────────────
+    key_ack     = "teams_webhook_url_ack"
+    key_default = "teams_webhook_url"
+
+    val_ack     = _get_app_config_value(key_ack)
+    val_default = _get_app_config_value(key_default)
+    val_env     = os.getenv("TEAMS_WEBHOOK_URL_CVP", "")
+
+    diag = {
+        "resolucao": {
+            key_ack:     "✓ preenchida" if val_ack     else "✗ vazia/ausente",
+            key_default: "✓ preenchida" if val_default else "✗ vazia/ausente",
+            "env_TEAMS_WEBHOOK_URL_CVP": "✓ presente" if val_env else "✗ ausente",
+        }
+    }
+
+    webhook_url = val_ack or val_default or val_env
+    if not webhook_url:
+        diag["erro"] = "Nenhum webhook configurado. Preencha teams_webhook_url_ack em Admin > Configurações."
+        return diag
+
+    diag["url_usada"] = webhook_url[:40] + "..." + webhook_url[-20:] if len(webhook_url) > 64 else webhook_url
+    diag["fonte"] = key_ack if val_ack else (key_default if val_default else "env")
+
+    # ── 2. Disparar card de teste ───────────────────────────────────────────
+    payload = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard", "version": "1.4",
+                "body": [
+                    {"type": "TextBlock",
+                     "text": "🔔 ORQUESTRA — Teste de webhook",
+                     "size": "Large", "weight": "Bolder", "wrap": True, "color": "Accent"},
+                    {"type": "TextBlock",
+                     "text": f"Testado por {requested_by} via Admin > Configurações.",
+                     "wrap": True, "isSubtle": True},
+                    {"type": "FactSet", "facts": [
+                        {"title": "Chave usada",  "value": diag["fonte"]},
+                        {"title": "URL (parcial)", "value": diag["url_usada"]},
+                    ]},
+                ],
+            },
+        }],
+    }
+
+    try:
+        resp = _req.post(webhook_url, json=payload, timeout=15)
+        diag["http_status"]   = resp.status_code
+        diag["http_response"] = resp.text[:300] or "(vazio)"
+        diag["ok"] = resp.status_code in (200, 202)
+        if not diag["ok"]:
+            diag["erro"] = f"Teams rejeitou: HTTP {resp.status_code} — {resp.text[:200]}"
+    except Exception as e:
+        diag["ok"]   = False
+        diag["erro"] = f"Erro de conexão: {e}"
+
+    return diag
 
 
 @app.post("/execucoes/ack", tags=["execucoes"])

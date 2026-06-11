@@ -2090,6 +2090,7 @@
                   </div>
                   <div style="display:flex;gap:6px">
                     <button class="btn btn-outline btn-sm" onclick="admLoadConfig()">↻ Recarregar</button>
+                    <button class="btn btn-outline btn-sm" onclick="admTestWebhook()" title="Dispara um card de teste para o canal configurado em teams_webhook_url_ack">📣 Testar webhook Teams</button>
                     <button class="btn btn-primary btn-sm" onclick="admOpenNewParam()">+ Novo parâmetro</button>
                   </div>
                 </div>
@@ -5282,6 +5283,34 @@ async function admDeleteJobType(id, nome) {
 }
 
 // ── Configurações: carregar tabela ─────────────────────────────
+async function admTestWebhook() {
+  const st = $('adm-config-status');
+  if (st) st.textContent = 'Enviando card de teste ao Teams...';
+  try {
+    const r = await fetch(ORQUESTRA_API + '/admin/test-webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requested_by: window.__currentUser || '' })
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      const msg = d.erro || d.detail || JSON.stringify(d);
+      if (st) st.innerHTML = '<span style="color:var(--red)">✗ Falha: ' + msg + '</span>';
+      // Exibe diagnóstico completo abaixo
+      const tbl = $('adm-config-table');
+      const box = document.createElement('div');
+      box.style = 'background:rgba(220,38,38,.06);border:1px solid rgba(220,38,38,.3);border-radius:10px;padding:1rem;margin-bottom:1rem;font-size:12px';
+      box.innerHTML = '<div style="font-weight:600;margin-bottom:.5rem;color:var(--red)">📋 Diagnóstico</div>' +
+        '<pre style="margin:0;white-space:pre-wrap;word-break:break-all">' + JSON.stringify(d, null, 2) + '</pre>';
+      tbl.insertAdjacentElement('beforebegin', box);
+    } else {
+      if (st) st.innerHTML = '<span style="color:var(--green)">✓ Card enviado (HTTP ' + d.http_status + '). Verifique o canal Teams.</span>';
+    }
+  } catch(e) {
+    if (st) st.innerHTML = '<span style="color:var(--red)">✗ Erro: ' + (e.message || e) + '</span>';
+  }
+}
+
 async function admLoadConfig() {
   if (!authHeader) return;
   const st = $('adm-config-status');
