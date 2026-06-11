@@ -637,13 +637,51 @@ def _generate_dag_source(pipeline, jobs):
 
 
 def gerar_dags(**context):
+    import json as _json
     hook        = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
     output_root = _get_output_root()
     conf        = context["dag_run"].conf or {}
+    dag_run_id  = context["dag_run"].run_id
 
     force_all      = bool(conf.get("force_all", False))
     filter_project = (conf.get("filter_project") or "").strip()
     pipeline_name  = (conf.get("pipeline_name")  or "").strip()
+
+    if pipeline_name:
+        escopo = f"Pipeline específico: {pipeline_name}"
+    elif force_all and filter_project:
+        escopo = f"Todos os pipelines do projeto {filter_project} (regeneração forçada)"
+    elif force_all:
+        escopo = "Todos os pipelines (regeneração forçada)"
+    else:
+        escopo = "Apenas pipelines pendentes de criação"
+
+    def _log_upsert(estado, geradas_count=0, erros_count=0, steps=None, erros_list=None):
+        try:
+            hook.run(
+                "MERGE dbo.etl_factory_log AS t "
+                "USING (SELECT %s AS r) AS s ON t.dag_run_id = s.r "
+                "WHEN MATCHED THEN UPDATE SET "
+                "  estado=%s, finalizado_em=CASE WHEN %s IN ('SUCCESS','FAILED') THEN GETDATE() ELSE NULL END, "
+                "  geradas=%s, erros=%s, detalhes_json=%s "
+                "WHEN NOT MATCHED THEN INSERT "
+                "  (dag_run_id, estado, escopo, pipeline_name, geradas, erros, detalhes_json) "
+                "  VALUES (%s, %s, %s, %s, %s, %s, %s);",
+                parameters=(
+                    dag_run_id,
+                    estado, estado,
+                    geradas_count, erros_count,
+                    _json.dumps({"steps": steps or [], "erros": erros_list or []}, ensure_ascii=False),
+                    dag_run_id, estado, escopo, pipeline_name or None,
+                    geradas_count, erros_count,
+                    _json.dumps({"steps": steps or [], "erros": erros_list or []}, ensure_ascii=False),
+                ),
+            )
+        except Exception as _le:
+            print(f"[FACTORY] AVISO: falha ao gravar etl_factory_log — {_le}")
+
+    steps_log: list = []
+    _log_upsert("RUNNING")
 
     # ── Tudo na mesma conexão: reset + SP rodam na mesma sessão após commit ──
     conn   = hook.get_conn()
@@ -655,7 +693,9 @@ def gerar_dags(**context):
             "WHERE pipeline_name=%s",
             (pipeline_name,),
         )
-        print(f"[FACTORY] pipeline_name='{pipeline_name}' — dag_criada resetado para regeneração")
+        msg = f"Pipeline '{pipeline_name}' liberado para regeneração"
+        print(f"[FACTORY] {msg}")
+        steps_log.append({"tipo": "reset", "msg": msg})
     elif force_all:
         if filter_project:
             cursor.execute(
@@ -663,13 +703,17 @@ def gerar_dags(**context):
                 "WHERE project_name=%s AND dag_criada=1",
                 (filter_project,),
             )
-            print(f"[FACTORY] force_all=True, project='{filter_project}' — dag_criada resetado")
+            msg = f"Todos os pipelines do projeto '{filter_project}' liberados para regeneração"
+            print(f"[FACTORY] {msg}")
+            steps_log.append({"tipo": "reset", "msg": msg})
         else:
             cursor.execute(
                 "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
                 "WHERE dag_criada=1"
             )
-            print("[FACTORY] force_all=True — dag_criada resetado para todos os pipelines")
+            msg = "Todos os pipelines liberados para regeneração"
+            print(f"[FACTORY] {msg}")
+            steps_log.append({"tipo": "reset", "msg": msg})
 
     conn.commit()   # commit antes da SP — mesma sessão, sem problema de isolamento
 
@@ -683,7 +727,10 @@ def gerar_dags(**context):
 
     if not pipelines_rows:
         cursor.close(); conn.close()
-        print("[FACTORY] Nenhum pipeline pendente.")
+        msg = "Nenhum pipeline pendente encontrado — nada foi regenerado"
+        print(f"[FACTORY] {msg}")
+        steps_log.append({"tipo": "vazio", "msg": msg})
+        _log_upsert("SUCCESS", 0, 0, steps_log, [])
         return
 
     pipelines = [dict(zip(pipeline_cols, row)) for row in pipelines_rows]
@@ -744,9 +791,12 @@ def gerar_dags(**context):
         try:
             with open(dest_file, "w", encoding="utf-8") as f:
                 f.write(source)
+            msg = f"Arquivo da DAG gravado em {dest_file}"
             print(f"[FACTORY] OK -> {dest_file}")
+            steps_log.append({"tipo": "gerada", "msg": msg})
         except Exception as e:
             erros.append(f"{pname}: erro ao salvar — {e}")
+            steps_log.append({"tipo": "erro", "msg": f"Erro ao gravar arquivo de '{pname}': {e}"})
             continue
 
         try:
@@ -764,14 +814,21 @@ def gerar_dags(**context):
                 ),
             )
             print(f"[FACTORY] dag_criada=1 -> '{pname}'")
+            steps_log.append({"tipo": "banco", "msg": f"Pipeline '{pname}' marcado como criado no cadastro"})
         except Exception as e:
             erros.append(f"{pname}: dag gerada mas erro ao atualizar banco — {e}")
+            steps_log.append({"tipo": "erro", "msg": f"Erro ao atualizar cadastro de '{pname}': {e}"})
 
         geradas.append(pname)
 
+    resumo = f"{len(geradas)} DAG(s) regenerada(s) com sucesso, {len(erros)} erro(s)"
     print(f"\n[FACTORY] Geradas: {len(geradas)} | Erros: {len(erros)}")
     for e in erros:
         print(f"  x {e}")
+    steps_log.append({"tipo": "resumo", "msg": resumo})
+
+    estado_final = "FAILED" if erros else "SUCCESS"
+    _log_upsert(estado_final, len(geradas), len(erros), steps_log, erros)
 
     if geradas:
         try:

@@ -2677,106 +2677,62 @@ FACTORY_TASK_ID = "gerar_dags"
 
 
 @app.get("/factory/runs", tags=["factory"])
-async def factory_runs(limit: int = Query(20, le=100)):
-    """Últimas execuções da etl_dag_factory com conf (o que foi pedido) e estado."""
-    async with get_airflow_client() as client:
-        r = await client.get(
-            f"/api/v1/dags/{FACTORY_DAG_ID}/dagRuns",
-            params={"limit": limit, "order_by": "-execution_date"})
-        if not r.is_success:
-            raise HTTPException(status_code=502, detail=f"Airflow: {r.status_code} — {r.text[:200]}")
-        out = []
-        for run in r.json().get("dag_runs", []):
-            conf = run.get("conf") or {}
-            if conf.get("pipeline_name"):
-                escopo = f"Pipeline específico: {conf['pipeline_name']}"
-            elif conf.get("force_all") and conf.get("filter_project"):
-                escopo = f"Todos os pipelines do projeto {conf['filter_project']} (regeneração forçada)"
-            elif conf.get("force_all"):
-                escopo = "Todos os pipelines (regeneração forçada)"
-            else:
-                escopo = "Apenas pipelines pendentes de criação"
-            out.append({
-                "dag_run_id": run.get("dag_run_id"),
-                "state":      run.get("state"),
-                "start_date": run.get("start_date"),
-                "end_date":   run.get("end_date"),
-                "conf":       conf,
-                "escopo":     escopo,
-                "trigger":    run.get("run_type"),
-            })
-        return {"data": out}
-
-
-def _parse_factory_log(raw: str) -> dict:
-    """Transforma o log bruto da task gerar_dags em etapas estruturadas."""
-    import re as _re
-    steps, geradas, erros = [], [], []
-    resumo = None
-    for line in raw.splitlines():
-        # remove prefixo de timestamp do Airflow: [2026-06-11, 17:51:24 -03] {arquivo:linha} INFO -
-        m = _re.search(r"\[FACTORY\]\s*(.*)", line)
-        if m:
-            msg = m.group(1).strip()
-            if msg.startswith("OK ->"):
-                arquivo = msg[5:].strip()
-                geradas.append(arquivo)
-                steps.append({"tipo": "gerada", "msg": f"Arquivo da DAG gravado em {arquivo}"})
-            elif msg.startswith("dag_criada=1"):
-                pnm = _re.search(r"'([^']+)'", msg)
-                steps.append({"tipo": "banco",
-                              "msg": f"Pipeline '{pnm.group(1)}' marcado como criado no cadastro" if pnm else msg})
-            elif "resetado" in msg:
-                pnm = _re.search(r"'([^']+)'", msg)
-                steps.append({"tipo": "reset",
-                              "msg": f"Pipeline '{pnm.group(1)}' liberado para regeneração" if pnm else
-                                     "Pipelines liberados para regeneração"})
-            elif msg.startswith("Nenhum pipeline pendente"):
-                steps.append({"tipo": "vazio", "msg": "Nenhum pipeline pendente encontrado — nada foi regenerado. "
-                              "Verifique se o pipeline existe e se o reset funcionou."})
-            elif msg.startswith("Geradas:"):
-                nums = _re.findall(r"\d+", msg)
-                if len(nums) >= 2:
-                    resumo = f"{nums[0]} DAG(s) regenerada(s) com sucesso, {nums[1]} erro(s)"
-                else:
-                    resumo = msg
-                steps.append({"tipo": "resumo", "msg": resumo})
-            elif msg.startswith("SINTAXE INVALIDA") or msg.startswith("AVISO"):
-                erros.append(msg)
-                steps.append({"tipo": "erro", "msg": msg})
-            else:
-                steps.append({"tipo": "info", "msg": msg})
-        elif "ERROR" in line and "Task failed with exception" in line:
-            erros.append("Task falhou com exceção — veja o log bruto")
-            steps.append({"tipo": "erro", "msg": "Task falhou com exceção (traceback no log bruto)"})
-        elif _re.search(r"^\s*pymssql\.|^\s*Traceback|Error\b.*Exception", line):
-            erros.append(line.strip()[:200])
-    return {"steps": steps, "geradas": geradas, "erros": erros, "resumo": resumo}
+def factory_runs(limit: int = Query(20, le=100)):
+    """Últimas execuções da etl_dag_factory lidas de dbo.etl_factory_log."""
+    import json as _json
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT TOP (?) dag_run_id, iniciado_em, finalizado_em, estado, "
+            "       escopo, pipeline_name, geradas, erros "
+            "FROM dbo.etl_factory_log "
+            "ORDER BY iniciado_em DESC",
+            (limit,),
+        )
+        cols = ["dag_run_id", "iniciado_em", "finalizado_em", "estado",
+                "escopo", "pipeline_name", "geradas", "erros"]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        cur.close(); conn.close()
+        for r in rows:
+            r["iniciado_em"]   = _fmt_dt(r["iniciado_em"])
+            r["finalizado_em"] = _fmt_dt(r["finalizado_em"])
+        return {"data": rows}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao consultar factory log: {e}")
 
 
 @app.get("/factory/runs/{dag_run_id}/log", tags=["factory"])
-async def factory_run_log(dag_run_id: str, raw: bool = Query(False)):
-    """Log da task gerar_dags de uma execução da factory, bruto e estruturado."""
-    async with get_airflow_client() as client:
-        # tenta a última tentativa (try 3..1)
-        texto = None
-        for try_number in (3, 2, 1):
-            r = await client.get(
-                f"/api/v1/dags/{FACTORY_DAG_ID}/dagRuns/{dag_run_id}"
-                f"/taskInstances/{FACTORY_TASK_ID}/logs/{try_number}",
-                params={"full_content": "true"},
-                headers={"Accept": "text/plain"})
-            if r.is_success and r.text.strip():
-                texto = r.text
-                break
-        if texto is None:
-            raise HTTPException(status_code=404, detail="Log não encontrado para esta execução")
-
-    parsed = _parse_factory_log(texto)
-    resp = {"dag_run_id": dag_run_id, **parsed}
-    if raw:
-        resp["log_bruto"] = texto[-20000:]
-    return resp
+def factory_run_log(dag_run_id: str):
+    """Etapas estruturadas de uma execução da factory (de dbo.etl_factory_log)."""
+    import json as _json
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT estado, escopo, geradas, erros, detalhes_json, iniciado_em, finalizado_em "
+            "FROM dbo.etl_factory_log WHERE dag_run_id=?",
+            (dag_run_id,),
+        )
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="Execução não encontrada no banco")
+        estado, escopo, geradas_n, erros_n, detalhes_json, ini, fim = row
+        detalhes = _json.loads(detalhes_json) if detalhes_json else {}
+        return {
+            "dag_run_id":    dag_run_id,
+            "estado":        estado,
+            "escopo":        escopo,
+            "geradas":       geradas_n,
+            "erros":         erros_n,
+            "iniciado_em":   _fmt_dt(ini),
+            "finalizado_em": _fmt_dt(fim),
+            "steps":         detalhes.get("steps", []),
+            "erros_lista":   detalhes.get("erros", []),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao consultar log: {e}")
 
 
 @app.post("/execucoes/rerun", tags=["execucoes"])

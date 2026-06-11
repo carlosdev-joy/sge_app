@@ -2593,19 +2593,26 @@ async function loadFactoryRuns() {
     }
     const fmtDt = (s) => s ? new Date(s).toLocaleString('pt-BR') : '—';
     const rows = data.map((run, i) => {
-      const badge = FACTORY_STATE_BADGE[run.state] || ('<span class="badge">' + run.state + '</span>');
+      const estado = (run.estado || '').toLowerCase();
+      const badge = FACTORY_STATE_BADGE[estado] || ('<span class="badge">' + (run.estado || '—') + '</span>');
+      const geradasTxt = run.geradas > 0
+        ? '<span style="color:var(--green);font-weight:600">' + run.geradas + ' gerada(s)</span>'
+        : '<span style="color:var(--muted)">—</span>';
+      const errosTxt = run.erros > 0
+        ? ' <span style="color:var(--red);font-weight:600">' + run.erros + ' erro(s)</span>'
+        : '';
       return '<tr style="cursor:pointer" onclick="toggleFactoryDetail(' + i + ', \'' + encodeURIComponent(run.dag_run_id) + '\')">' +
-        '<td style="font-size:12px;white-space:nowrap">' + fmtDt(run.start_date) + '</td>' +
+        '<td style="font-size:12px;white-space:nowrap">' + (run.iniciado_em || '—') + '</td>' +
         '<td>' + badge + '</td>' +
         '<td style="font-size:12px">' + (run.escopo || '—') + '</td>' +
-        '<td style="font-size:11px;color:var(--muted)">' + ({ manual: 'Manual', scheduled: 'Agendado', dataset_triggered: 'Por dependência', backfill: 'Reprocessamento' }[run.trigger] || run.trigger) + '</td>' +
-        '<td style="font-size:11px;font-family:monospace;color:var(--muted)">' + run.dag_run_id + '</td>' +
+        '<td style="text-align:center">' + geradasTxt + errosTxt + '</td>' +
+        '<td style="font-size:11px;color:var(--muted);white-space:nowrap">' + (run.finalizado_em || '—') + '</td>' +
       '</tr>' +
       '<tr id="factory-detail-' + i + '" style="display:none"><td colspan="5" style="background:var(--bg);padding:1rem">' +
         '<div id="factory-detail-body-' + i + '" style="font-size:12px;color:var(--muted)">…</div></td></tr>';
     }).join('');
     area.innerHTML = '<div class="query-table-wrap"><table class="query-table">' +
-      '<thead><tr><th>Início</th><th>Situação</th><th>O que foi regenerado</th><th>Disparo</th><th>Identificador</th></tr></thead>' +
+      '<thead><tr><th>Início</th><th>Situação</th><th>O que foi regenerado</th><th>Resultado</th><th>Concluído em</th></tr></thead>' +
       '<tbody>' + rows + '</tbody></table></div>';
     if (st) st.textContent = data.length + ' execução(ões). Clique numa linha para ver as etapas.';
   } catch(e) {
@@ -2652,15 +2659,10 @@ async function toggleFactoryDetail(i, encodedRunId) {
     } else {
       html += '<div style="color:var(--orange);margin-bottom:.75rem">Nenhuma etapa [FACTORY] encontrada no log — a task pode ter falhado antes de iniciar.</div>';
     }
-    if (d.erros && d.erros.length) {
+    if (d.erros_lista && d.erros_lista.length) {
       html += '<div style="background:rgba(220,38,38,.06);border:1px solid rgba(220,38,38,.3);border-radius:8px;padding:.6rem;margin-bottom:.75rem">' +
         '<div style="font-weight:600;color:var(--red);margin-bottom:.3rem">Erros detectados</div>' +
-        d.erros.map(e => '<div style="font-family:monospace;font-size:11px">' + e + '</div>').join('') + '</div>';
-    }
-    if (d.log_bruto) {
-      html += '<details><summary style="cursor:pointer;font-size:11px;color:var(--muted)">Ver log bruto completo</summary>' +
-        '<pre style="font-size:10px;max-height:300px;overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:.6rem;white-space:pre-wrap;word-break:break-all">' +
-        d.log_bruto.replace(/</g, '&lt;') + '</pre></details>';
+        d.erros_lista.map(e => '<div style="font-family:monospace;font-size:11px">' + e + '</div>').join('') + '</div>';
     }
     body.innerHTML = html;
   } catch(e) {
