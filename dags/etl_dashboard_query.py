@@ -46,9 +46,11 @@ def consultar_dashboard(**context):
 
     hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
     params_base: list[object] = []
-    where_proj = ""
+    where_proj      = ""   # sem alias — usado em queries sem JOIN
+    where_proj_alias = ""  # com alias e.project — usado em queries com JOIN
     if filter_project:
-        where_proj = " AND project = %s "
+        where_proj       = " AND project = %s "
+        where_proj_alias = " AND e.project = %s "
         params_base.append(filter_project)
 
     status_expr = _status_expr_sql()
@@ -64,10 +66,12 @@ def consultar_dashboard(**context):
                 MAX(end_time)   AS fim,
                 COALESCE(SUM(duration_seconds), 0) AS duracao_total_segundos,
                 {status_expr} AS status_geral
-            FROM dbo.etl_job_execution
-            WHERE start_time >= %s AND start_time < %s
-              {where_proj}
-            GROUP BY execution_id, project, pipeline
+            FROM dbo.etl_job_execution e
+            JOIN dbo.etl_pipeline p ON p.pipeline_name = e.pipeline
+            WHERE e.start_time >= %s AND e.start_time < %s
+              AND COALESCE(p.ambiente, 'PROD') = 'PROD'
+              {where_proj_alias}
+            GROUP BY e.execution_id, e.project, e.pipeline
         )
         SELECT
             COUNT(*) AS total_execucoes,
@@ -92,9 +96,11 @@ def consultar_dashboard(**context):
                 project,
                 pipeline,
                 {status_expr} AS status_geral
-            FROM dbo.etl_job_execution
-            WHERE start_time >= %s AND start_time < %s
-            GROUP BY execution_id, project, pipeline
+            FROM dbo.etl_job_execution e
+            JOIN dbo.etl_pipeline p ON p.pipeline_name = e.pipeline
+            WHERE e.start_time >= %s AND e.start_time < %s
+              AND COALESCE(p.ambiente, 'PROD') = 'PROD'
+            GROUP BY e.execution_id, e.project, e.pipeline
         )
         SELECT
             project,
@@ -135,21 +141,29 @@ def consultar_dashboard(**context):
             FROM execs
         )
         SELECT TOP 20
-            pipeline, project, ultimo_status, inicio, duracao_segundos, total_jobs, execution_id
-        FROM ranked
+            r.pipeline, r.project, r.ultimo_status, r.inicio, r.duracao_segundos,
+            r.total_jobs, r.execution_id,
+            COALESCE(p.criticidade, '') AS criticidade
+        FROM ranked r
+        LEFT JOIN dbo.etl_pipeline p ON p.pipeline_name = r.pipeline
         WHERE rn = 1
-        ORDER BY inicio DESC;
+          AND COALESCE(p.ambiente, 'PROD') = 'PROD'
+        ORDER BY
+            CASE COALESCE(p.criticidade,'') WHEN 'ALTA' THEN 1 WHEN 'MEDIA' THEN 2 WHEN 'BAIXA' THEN 3 ELSE 4 END,
+            CASE r.ultimo_status WHEN 'FAILED' THEN 1 WHEN 'WARNING' THEN 2 WHEN 'RUNNING' THEN 3 ELSE 4 END,
+            r.inicio DESC;
     """
     ps_rows = hook.get_records(pipe_status_sql, parameters=params_base or None)
     pipeline_status = [
         {
-            "pipeline": r[0],
-            "project": r[1],
+            "pipeline":      r[0],
+            "project":       r[1],
             "ultimo_status": r[2],
             "ultimo_inicio": _fmt_dt(r[3]),
             "duracao_segundos": int(r[4] or 0),
-            "total_jobs": int(r[5] or 0),
-            "execution_id": r[6],
+            "total_jobs":    int(r[5] or 0),
+            "execution_id":  r[6],
+            "criticidade":   r[7] or "",
         }
         for r in (ps_rows or [])
     ]
@@ -157,11 +171,13 @@ def consultar_dashboard(**context):
     # ── Últimas falhas (jobs) ────────────────────────────────────────────────
     falhas_sql = f"""
         SELECT TOP 5
-            pipeline, project, job_name, status, start_time AS inicio, execution_id, log_file
-        FROM dbo.etl_job_execution
-        WHERE status = 'FAILED'
-          {where_proj}
-        ORDER BY start_time DESC;
+            e.pipeline, e.project, e.job_name, e.status, e.start_time AS inicio, e.execution_id, e.log_file
+        FROM dbo.etl_job_execution e
+        JOIN dbo.etl_pipeline p ON p.pipeline_name = e.pipeline
+        WHERE e.status = 'FAILED'
+          AND COALESCE(p.ambiente, 'PROD') = 'PROD'
+          {where_proj_alias}
+        ORDER BY e.start_time DESC;
     """
     ff_rows = hook.get_records(falhas_sql, parameters=params_base or None)
     ultimas_falhas = [

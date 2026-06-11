@@ -33,3 +33,9 @@ build/
 ## Config (se houver secrets)
 config/*.env
 config/*.local
+
+## Dev / env files
+.env.dev
+.env.prod
+.env.local
+.claude/
