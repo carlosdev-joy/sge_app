@@ -495,7 +495,7 @@ def list_execucoes(
                 GROUP BY execution_id, project, pipeline
                 {having_sql}
             )
-            SELECT a.*, ack.ack_by, ack.ack_at
+            SELECT a.*, ack.ack_by, ack.display_name, ack.ack_at
             FROM agg a
             LEFT JOIN dbo.etl_failure_ack ack
                    ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
@@ -510,7 +510,7 @@ def list_execucoes(
                 "total_jobs": int(r[6] or 0), "jobs_ok": int(r[7] or 0),
                 "jobs_falha": int(r[8] or 0), "jobs_warning": int(r[9] or 0),
                 "jobs_running": int(r[10] or 0), "status_geral": r[11],
-                "ack_by": r[12], "ack_at": _fmt_dt(r[13]),
+                "ack_by": r[12], "display_name": r[13], "ack_at": _fmt_dt(r[14]),
             }
             for r in cur.fetchall()
         ]
@@ -2681,17 +2681,70 @@ async def rerun_from_task(body: dict = Body(default={})):
         }
 
 
+def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
+                    ack_at: str, note: str | None, webhook_var: str) -> None:
+    """Posta card no Teams informando que alguém assumiu a falha."""
+    import requests as _req
+    try:
+        from airflow.models import Variable
+        webhook_url = Variable.get(webhook_var)
+    except Exception:
+        # Fora do contexto Airflow: tenta via variável de ambiente
+        webhook_url = os.getenv("TEAMS_WEBHOOK_URL_CVP", "")
+    if not webhook_url:
+        log.warning("[ACK] TEAMS_WEBHOOK_URL_CVP não configurada — notificação ignorada.")
+        return
+
+    identity = f"{display_name} ({ack_by})" if display_name and display_name != ack_by else ack_by
+    facts = [
+        {"title": "Pipeline",    "value": pipeline},
+        {"title": "Responsável", "value": identity},
+        {"title": "Matrícula",   "value": ack_by},
+        {"title": "Assumido em", "value": ack_at or "agora"},
+        {"title": "Execution ID","value": exec_id},
+    ]
+    if note:
+        facts.append({"title": "Observação", "value": note})
+
+    payload = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard", "version": "1.4",
+                "body": [
+                    {"type": "TextBlock",
+                     "text": f"👁 Falha assumida para análise",
+                     "size": "Large", "weight": "Bolder", "wrap": True, "color": "Accent"},
+                    {"type": "TextBlock",
+                     "text": f"{identity} está investigando a falha no pipeline {pipeline}.",
+                     "wrap": True, "spacing": "None", "isSubtle": True},
+                    {"type": "FactSet", "spacing": "Medium", "facts": facts},
+                ],
+            },
+        }],
+    }
+    try:
+        resp = _req.post(webhook_url, json=payload, timeout=10)
+        log.info("[ACK] Teams status=%s", resp.status_code)
+    except Exception as e:
+        log.warning("[ACK] Falha ao enviar Teams: %s", e)
+
+
 @app.post("/execucoes/ack", tags=["execucoes"])
 def ack_failure(body: dict = Body(default={})):
-    """Acknowledge de falha — operador assume o incidente.
+    """Acknowledge de falha — operador assume o incidente e notifica o Teams.
 
-    Body: execution_id, pipeline, user (matrícula), note (opcional), remove (bool, desfaz)
+    Body: execution_id, pipeline, user (matrícula), display_name (nome completo),
+          note (opcional), remove (bool, desfaz)
     """
-    exec_id  = (body.get("execution_id") or "").strip()
-    pipeline = (body.get("pipeline")     or "").strip()
-    user     = (body.get("user")         or "").strip()
-    note     = (body.get("note")         or "").strip() or None
-    remove   = bool(body.get("remove", False))
+    exec_id      = (body.get("execution_id") or "").strip()
+    pipeline     = (body.get("pipeline")     or "").strip()
+    user         = (body.get("user")         or "").strip()
+    display_name = (body.get("display_name") or "").strip() or None
+    note         = (body.get("note")         or "").strip() or None
+    remove       = bool(body.get("remove", False))
 
     if not exec_id or not pipeline:
         raise HTTPException(status_code=422, detail="execution_id e pipeline são obrigatórios")
@@ -2707,21 +2760,40 @@ def ack_failure(body: dict = Body(default={})):
             conn.commit(); cur.close(); conn.close()
             return {"ok": True, "action": "removed"}
 
+        # Idempotente: só insere se ainda não existe
         cur.execute("""
             IF NOT EXISTS (SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?)
-                INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, note)
-                VALUES (?, ?, ?, ?)
-        """, (exec_id, pipeline, exec_id, pipeline, user, note))
+                INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name, note)
+                VALUES (?, ?, ?, ?, ?)
+        """, (exec_id, pipeline, exec_id, pipeline, user, display_name, note))
         conn.commit()
 
         cur.execute(
-            "SELECT ack_by, ack_at FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?",
+            "SELECT ack_by, display_name, ack_at FROM dbo.etl_failure_ack "
+            "WHERE execution_id=? AND pipeline=?",
             (exec_id, pipeline))
         row = cur.fetchone()
         cur.close(); conn.close()
+
+        ack_by_db      = row[0] if row else user
+        display_name_db = row[1] if row else display_name
+        ack_at_db      = _fmt_dt(row[2]) if row else None
+
+        # Notificar Teams (em background — falha silenciosa para não bloquear o ACK)
+        try:
+            _teams_ack_card(
+                pipeline=pipeline, exec_id=exec_id,
+                ack_by=ack_by_db, display_name=display_name_db or ack_by_db,
+                ack_at=ack_at_db, note=note,
+                webhook_var="TEAMS_WEBHOOK_URL_CVP",
+            )
+        except Exception as e:
+            log.warning("[ACK] Teams ignorado: %s", e)
+
         return {"ok": True, "action": "acked",
-                "ack_by": row[0] if row else user,
-                "ack_at": _fmt_dt(row[1]) if row else None}
+                "ack_by": ack_by_db,
+                "display_name": display_name_db or ack_by_db,
+                "ack_at": ack_at_db}
     except HTTPException:
         raise
     except Exception as e:

@@ -2652,7 +2652,8 @@ function renderLogsTable(result, area, statusEl) {
     let ackHtml = '';
     if (r.status_geral === 'FAILED') {
       if (r.ack_by) {
-        ackHtml = '<span style="font-size:10px;color:var(--muted);white-space:nowrap" title="Assumido em ' + (r.ack_at || '') + '">👁 ' + r.ack_by + '</span>';
+        const ackLabel = r.display_name ? r.display_name + ' (' + r.ack_by + ')' : r.ack_by;
+        ackHtml = '<span style="font-size:10px;color:var(--muted);white-space:nowrap" title="Assumido em ' + (r.ack_at || '') + '">👁 ' + _escHtml(ackLabel) + '</span>';
       } else if (!window.__isViewer) {
         ackHtml = '<button class="btn-ghost btn-sm" style="font-size:10px;padding:.15rem .4rem" ' +
           'onclick="_ackFailure(\'' + ex + '\',\'' + pip + '\',this)" ' +
@@ -3829,6 +3830,7 @@ async function fetchUserFirstName() {
     const data = await r.json();
     if (data && data.sucesso && data.data && data.data.dataUsuario && data.data.dataUsuario.desNome) {
       const fullName = String(data.data.dataUsuario.desNome).trim();
+      window.__displayName = fullName;   // guarda nome completo para uso no ack
       return fullName.split(' ')[0] || fullName;
     }
     if (data && data.data && data.data.idt_usuario) {
@@ -3989,10 +3991,11 @@ async function _rerunFromTask(pipeline, executionId, taskId, btn) {
   }
 }
 
-// Acknowledge de falha — operador assume o incidente
+// Acknowledge de falha — operador assume o incidente e notifica o Teams
 async function _ackFailure(executionId, pipeline, btn) {
   if (!authHeader) { showToast('Faça login primeiro.', true); return; }
-  const user = window.__currentUser || '';
+  const user        = window.__currentUser || '';
+  const displayName = window.__displayName || user;
   if (!user) { showToast('Usuário não identificado.', true); return; }
 
   if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
@@ -4000,7 +4003,12 @@ async function _ackFailure(executionId, pipeline, btn) {
     const r = await fetch(ORQUESTRA_API + '/execucoes/ack', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
-      body: JSON.stringify({ execution_id: executionId, pipeline: pipeline, user: user }),
+      body: JSON.stringify({
+        execution_id: executionId,
+        pipeline:     pipeline,
+        user:         user,
+        display_name: displayName,
+      }),
     });
     if (r.status === 401) { sair(); return; }
     if (!r.ok) {
@@ -4010,11 +4018,13 @@ async function _ackFailure(executionId, pipeline, btn) {
       return;
     }
     const data = await r.json();
-    showToast('👁 Falha assumida por ' + (data.ack_by || user), false);
+    const label = data.display_name || data.ack_by || user;
+    showToast('👁 Falha assumida por ' + label, false);
     if (btn) {
       const span = document.createElement('span');
       span.style.cssText = 'font-size:10px;color:var(--muted);white-space:nowrap';
-      span.textContent = '👁 ' + (data.ack_by || user);
+      span.title = 'Assumido em ' + (data.ack_at || '');
+      span.textContent = '👁 ' + label;
       btn.replaceWith(span);
     }
   } catch(e) {

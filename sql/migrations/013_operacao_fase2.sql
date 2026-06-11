@@ -34,12 +34,20 @@ IF OBJECT_ID('dbo.etl_failure_ack', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.etl_failure_ack (
         id           INT IDENTITY(1,1) PRIMARY KEY,
-        execution_id VARCHAR(100) NOT NULL,
-        pipeline     VARCHAR(200) NOT NULL,
-        ack_by       VARCHAR(100) NOT NULL,
-        ack_at       DATETIME     NOT NULL DEFAULT GETDATE(),
+        execution_id VARCHAR(100)  NOT NULL,
+        pipeline     VARCHAR(200)  NOT NULL,
+        ack_by       VARCHAR(100)  NOT NULL,
+        display_name NVARCHAR(200) NULL,
+        ack_at       DATETIME      NOT NULL DEFAULT GETDATE(),
         note         NVARCHAR(500) NULL
     );
     CREATE UNIQUE INDEX UX_etl_failure_ack ON dbo.etl_failure_ack (execution_id, pipeline);
+END
+ELSE
+BEGIN
+    -- Adiciona display_name se já existia a tabela sem ela
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                   WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_failure_ack' AND COLUMN_NAME='display_name')
+        ALTER TABLE dbo.etl_failure_ack ADD display_name NVARCHAR(200) NULL;
 END
 GO
