@@ -5292,7 +5292,14 @@ async function admTestWebhook() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ requested_by: window.__currentUser || '' })
     });
-    const d = await r.json();
+    const raw = await r.text();
+    let d;
+    try { d = JSON.parse(raw); }
+    catch(_) {
+      // Resposta não-JSON (ex.: 500 de proxy, container antigo sem o endpoint)
+      d = { ok: false, erro: 'HTTP ' + r.status + ' — resposta não-JSON (container da API foi rebuildado?)',
+            http_status: r.status, corpo_bruto: raw.slice(0, 400) };
+    }
     if (!r.ok || !d.ok) {
       const msg = d.erro || d.detail || JSON.stringify(d);
       if (st) st.innerHTML = '<span style="color:var(--red)">✗ Falha: ' + msg + '</span>';

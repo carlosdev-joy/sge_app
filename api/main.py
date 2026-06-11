@@ -2814,11 +2814,21 @@ def test_webhook(body: dict = Body(default={})):
     webhook_key é opcional — testa a mesma cascata do ack se omitido.
     """
     import requests as _req
+    import traceback
 
     requested_by = (body.get("requested_by") or "").strip().upper()
     if requested_by not in ADMIN_USERS:
         raise HTTPException(status_code=403, detail=f"Usuário '{requested_by}' não autorizado")
 
+    try:
+        return _test_webhook_impl(requested_by, _req)
+    except Exception:
+        # Nunca deixa virar 500 sem JSON — devolve o traceback para o Admin
+        return {"ok": False, "erro": "Exceção interna no teste",
+                "traceback": traceback.format_exc()[-1500:]}
+
+
+def _test_webhook_impl(requested_by: str, _req):
     # ── 1. Resolver qual URL será usada ────────────────────────────────────
     key_ack     = "teams_webhook_url_ack"
     key_default = "teams_webhook_url"
