@@ -202,13 +202,11 @@ class DataStageOperator(BaseOperator):
         return self._trigger_run(logical_date)
 
     def _trigger_run(self, logical_date: str) -> int:
-        parts = [
-            f"{self.dshome}/bin/dsjob",
-            "-run", "-mode", "NORMAL",
-            self.project, self.job_name,
-        ]
+        # dsjob requer todas as flags ANTES de project/job
+        parts = [f"{self.dshome}/bin/dsjob", "-run", "-mode", "NORMAL"]
         if self.execution_date_param and logical_date:
             parts += ["-param", f"{self.execution_date_param}={logical_date}"]
+        parts += [self.project, self.job_name]
 
         rc, out, err = self._exec(" ".join(parts), timeout=60)
         combined = (out + " " + err).strip()
