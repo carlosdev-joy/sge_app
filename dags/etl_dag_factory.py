@@ -62,18 +62,12 @@ def _task_block(job, project, pipeline):
 
     if jtype == "datastage":
         main = "\n".join([
-            f't_job_{name} = SSHOperator(',
+            f't_job_{name} = DataStageOperator(',
             f'    task_id="{name}",',
+            f'    project=PROJECT_NAME,',
+            f'    job_name="{name}",',
             f'    ssh_conn_id=SSH_CONN_ID,',
-            f'    command=(',
-            f'        "/Projetos/{project}/Scripts/Airflow/run_datastage_job.sh "',
-            f'        f"{project} {name} "',
-            r'        "{{ ts_nodash }} "',
-            f'        f"{pipeline} "',
-            r'        "{{ task_instance.task_id }}"',
-            f'    ),',
-            f'    cmd_timeout=None,',
-            f'    do_xcom_push=True,',
+            f'    execution_date_param="p_exec_date",',
             f')',
         ])
     elif jtype == "shell":
@@ -168,11 +162,15 @@ def _generate_dag_source(pipeline, jobs):
     all_ends    = [f"t_end_{j['job_name']}" for j in sorted_jobs]
 
     ssh_needed = any(j["job_type"].lower() in ("datastage", "shell") for j in sorted_jobs)
+    ds_needed  = any(j["job_type"].lower() == "datastage" for j in sorted_jobs)
+    sh_needed  = any(j["job_type"].lower() == "shell" for j in sorted_jobs)
 
     # Seção de imports
     import_lines = ["from airflow import DAG"]
     import_lines.append("from datetime import timedelta")
-    if ssh_needed:
+    if ds_needed:
+        import_lines.append("from utils.datastage_operator import DataStageOperator")
+    if sh_needed:
         import_lines.append("from airflow.providers.ssh.operators.ssh import SSHOperator")
     import_lines += [
         "from airflow.operators.python import PythonOperator",
