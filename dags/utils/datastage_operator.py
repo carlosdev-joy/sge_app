@@ -57,6 +57,7 @@ class DataStageOperator(BaseOperator):
     _ST_OK      = 1
     _ST_WARNING = 2
     _ST_ABORTED = 3
+    _ST_QUEUED  = 4
     _ST_NOT_RUN = 99
 
     def __init__(
@@ -140,7 +141,7 @@ class DataStageOperator(BaseOperator):
                 info.get("pid"), _status_label(sc), sc, [], "", snapshot,
             )
 
-            if sc == self._ST_RUNNING:
+            if sc in (self._ST_RUNNING, self._ST_QUEUED):
                 continue
 
             if sc in (self._ST_OK, self._ST_WARNING):
@@ -385,4 +386,4 @@ class DataStageOperator(BaseOperator):
 
 
 def _status_label(sc: int) -> str:
-    return {0: "RUNNING", 1: "SUCCESS", 2: "WARNING", 3: "ABORTED"}.get(sc, "UNKNOWN")
+    return {0: "RUNNING", 1: "SUCCESS", 2: "WARNING", 3: "ABORTED", 4: "QUEUED"}.get(sc, "UNKNOWN")
