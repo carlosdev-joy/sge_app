@@ -645,31 +645,34 @@ def gerar_dags(**context):
     filter_project = (conf.get("filter_project") or "").strip()
     pipeline_name  = (conf.get("pipeline_name")  or "").strip()
 
+    # ── Tudo na mesma conexão: reset + SP rodam na mesma sessão após commit ──
+    conn   = hook.get_conn()
+    cursor = conn.cursor()
+
     if pipeline_name:
-        # Regerar pipeline específico — reseta dag_criada só para ele
-        hook.run(
+        cursor.execute(
             "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
-            "WHERE pipeline_name=%s",
-            parameters=(pipeline_name,),
+            "WHERE pipeline_name=?",
+            (pipeline_name,),
         )
         print(f"[FACTORY] pipeline_name='{pipeline_name}' — dag_criada resetado para regeneração")
     elif force_all:
         if filter_project:
-            hook.run(
+            cursor.execute(
                 "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
-                "WHERE project_name=%s AND DAG_CRIADA=1",
-                parameters=(filter_project,),
+                "WHERE project_name=? AND dag_criada=1",
+                (filter_project,),
             )
             print(f"[FACTORY] force_all=True, project='{filter_project}' — dag_criada resetado")
         else:
-            hook.run(
+            cursor.execute(
                 "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
-                "WHERE DAG_CRIADA=1"
+                "WHERE dag_criada=1"
             )
             print("[FACTORY] force_all=True — dag_criada resetado para todos os pipelines")
 
-    conn   = hook.get_conn()
-    cursor = conn.cursor()
+    conn.commit()   # commit antes da SP — mesma sessão, sem problema de isolamento
+
     cursor.execute("EXEC dbo.sp_etl_pipelines_pendentes_criar")
 
     pipelines_rows = cursor.fetchall()
@@ -677,10 +680,9 @@ def gerar_dags(**context):
     cursor.nextset()
     jobs_rows = cursor.fetchall()
     jobs_cols = [d[0].lower() for d in cursor.description]
-    cursor.close()
-    conn.close()
 
     if not pipelines_rows:
+        cursor.close(); conn.close()
         print("[FACTORY] Nenhum pipeline pendente.")
         return
 
@@ -689,21 +691,22 @@ def gerar_dags(**context):
 
     # Supplement with advanced fields (not in SP result set)
     if pipelines:
-        pnames_sql = ",".join(f"'{p['pipeline_name']}'" for p in pipelines)
-        conn2 = hook.get_conn()
-        cur2  = conn2.cursor()
-        cur2.execute(
+        pnames_sql = ",".join("?" * len(pipelines))
+        pnames_vals = [p['pipeline_name'] for p in pipelines]
+        cursor.execute(
             f"SELECT pipeline_name, criticidade, sla_minutos, ambiente, "
             f"max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao, dag_start_date, "
             f"runbook_md "
-            f"FROM dbo.etl_pipeline WHERE pipeline_name IN ({pnames_sql})"
+            f"FROM dbo.etl_pipeline WHERE pipeline_name IN ({pnames_sql})",
+            pnames_vals,
         )
-        adv_rows = cur2.fetchall()
-        adv_cols = [d[0].lower() for d in cur2.description]
-        cur2.close(); conn2.close()
-        adv_map = {r[0]: dict(zip(adv_cols, r)) for r in adv_rows}
+        adv_rows = cursor.fetchall()
+        adv_cols = [d[0].lower() for d in cursor.description]
+        adv_map  = {r[0]: dict(zip(adv_cols, r)) for r in adv_rows}
         for p in pipelines:
             p.update(adv_map.get(p['pipeline_name'], {}))
+
+    cursor.close(); conn.close()
 
     jobs_by_pipeline = defaultdict(list)
     for j in jobs_all:
