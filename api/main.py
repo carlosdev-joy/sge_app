@@ -36,8 +36,7 @@ AIRFLOW_URL      = os.getenv("AIRFLOW_URL",      "http://airflow-webserver:8080"
 AIRFLOW_USER     = os.getenv("AIRFLOW_USER",     "airflow")
 AIRFLOW_PASSWORD = os.getenv("AIRFLOW_PASSWORD", "airflow")
 DAGS_FOLDER      = os.getenv("DAGS_FOLDER",      "/opt/airflow/dags")
-MSSQL_CONN_STR        = os.getenv("MSSQL_CONN_STR",        "")
-MSSQL_DMDB41_CONN_STR = os.getenv("MSSQL_DMDB41_CONN_STR", MSSQL_CONN_STR)  # fallback para MSSQL_CONN_STR se não configurada
+MSSQL_CONN_STR   = os.getenv("MSSQL_CONN_STR",  "")
 
 MAX_LIMIT = 200
 
@@ -46,14 +45,6 @@ def get_db_conn():
     if not MSSQL_CONN_STR:
         raise HTTPException(status_code=500, detail="MSSQL_CONN_STR não configurada")
     return pyodbc.connect(MSSQL_CONN_STR, timeout=10)
-
-
-def get_dmdb41_conn():
-    """Conexão com DMDB41 — banco onde ficam etl_ds_job_log e logs de ETL."""
-    cs = MSSQL_DMDB41_CONN_STR
-    if not cs:
-        raise HTTPException(status_code=500, detail="MSSQL_DMDB41_CONN_STR não configurada")
-    return pyodbc.connect(cs, timeout=10)
 
 
 def get_airflow_client() -> httpx.AsyncClient:
@@ -2503,7 +2494,7 @@ async def datastage_log_query(
     Parâmetros opcionais: job_name, execution_id, project, pipeline_name, limit (default 10)
     """
     try:
-        conn   = get_dmdb41_conn()
+        conn   = get_db_conn()
         cursor = conn.cursor()
 
         where_parts  = []
@@ -2564,7 +2555,7 @@ async def datastage_job_status(
     Usado pelo painel de monitor no ORQUESTRA para refresh sem novo trigger.
     """
     try:
-        conn   = get_dmdb41_conn()
+        conn   = get_db_conn()
         cursor = conn.cursor()
         cursor.execute(
             """
