@@ -65,14 +65,21 @@ _TYPE_ALIAS = {
 }
 
 
+def _varname(job_name: str) -> str:
+    """Converte um nome de job em identificador Python válido (substitui chars inválidos por _)."""
+    import re as _re
+    return _re.sub(r"[^A-Za-z0-9_]", "_", job_name)
+
+
 def _task_block(job, project, pipeline):
     name  = job["job_name"]
+    vname = _varname(name)   # identificador Python seguro
     jtype = _TYPE_ALIAS.get(job["job_type"].lower().strip(), job["job_type"].lower().strip())
     jcmd  = job["job_command"] or ""
 
     if jtype == "datastage":
         main = "\n".join([
-            f't_job_{name} = DataStageOperator(',
+            f't_job_{vname} = DataStageOperator(',
             f'    task_id="{name}",',
             f'    project=PROJECT_NAME,',
             f'    job_name="{name}",',
@@ -82,7 +89,7 @@ def _task_block(job, project, pipeline):
     elif jtype == "shell":
         cmd = jcmd or "echo 'comando nao configurado'"
         main = "\n".join([
-            f't_job_{name} = SSHOperator(',
+            f't_job_{vname} = SSHOperator(',
             f'    task_id="{name}",',
             f'    ssh_conn_id=SSH_CONN_ID,',
             f'    command="{cmd}",',
@@ -93,73 +100,72 @@ def _task_block(job, project, pipeline):
     elif jtype == "python":
         mod = jcmd or name
         main = "\n".join([
-            f'def _run_{name}(**context):',
+            f'def _run_{vname}(**context):',
             f'    import importlib',
             f'    mod = importlib.import_module("{mod}")',
             f'    if hasattr(mod, "run"): mod.run(**context)',
             f'    elif hasattr(mod, "main"): mod.main()',
             f'',
-            f't_job_{name} = PythonOperator(',
+            f't_job_{vname} = PythonOperator(',
             f'    task_id="{name}",',
-            f'    python_callable=_run_{name},',
+            f'    python_callable=_run_{vname},',
             f')',
         ])
     elif jtype == "storedproc":
         proc = jcmd or name
         main = "\n".join([
-            f'def _run_{name}(**context):',
+            f'def _run_{vname}(**context):',
             f'    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)',
             f'    hook.run("EXEC {proc}")',
             f'',
-            f't_job_{name} = PythonOperator(',
+            f't_job_{vname} = PythonOperator(',
             f'    task_id="{name}",',
-            f'    python_callable=_run_{name},',
+            f'    python_callable=_run_{vname},',
             f')',
         ])
     elif jtype == "sql":
-        # job_command = SQL inline ou nome de arquivo .sql (relativo a BASE_LOG_DIR)
         sql_stmt = jcmd or f"SELECT 1 -- job {name}"
         safe_sql = sql_stmt.replace('"', '\\"').replace('\n', ' ')
         main = "\n".join([
-            f'def _run_{name}(**context):',
+            f'def _run_{vname}(**context):',
             f'    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)',
             f'    hook.run("{safe_sql}")',
             f'',
-            f't_job_{name} = PythonOperator(',
+            f't_job_{vname} = PythonOperator(',
             f'    task_id="{name}",',
-            f'    python_callable=_run_{name},',
+            f'    python_callable=_run_{vname},',
             f')',
         ])
     elif jtype == "http":
         url = jcmd or "https://httpbin.org/get"
         main = "\n".join([
-            f'def _run_{name}(**context):',
+            f'def _run_{vname}(**context):',
             f'    resp = requests.get("{url}", timeout=30)',
             f'    resp.raise_for_status()',
             f'    print(f"HTTP {name}: status={{resp.status_code}}")',
             f'',
-            f't_job_{name} = PythonOperator(',
+            f't_job_{vname} = PythonOperator(',
             f'    task_id="{name}",',
-            f'    python_callable=_run_{name},',
+            f'    python_callable=_run_{vname},',
             f')',
         ])
     else:
         main = "\n".join([
-            f't_job_{name} = PythonOperator(',
+            f't_job_{vname} = PythonOperator(',
             f'    task_id="{name}",',
             f'    python_callable=lambda **kw: print("job_type desconhecido: {jtype}"),',
             f')',
         ])
 
     log_start = "\n".join([
-        f't_start_{name} = PythonOperator(',
+        f't_start_{vname} = PythonOperator(',
         f'    task_id="log_start_{name}",',
         f'    python_callable=log_start,',
         f'    op_kwargs={{"job_name": "{name}", "task_key": "{name}"}},',
         f')',
     ])
     log_end = "\n".join([
-        f't_end_{name} = PythonOperator(',
+        f't_end_{vname} = PythonOperator(',
         f'    task_id="log_end_{name}",',
         f'    python_callable=log_end,',
         f'    op_kwargs={{"job_name": "{name}", "task_key": "{name}", "upstream_task_id": "{name}"}},',
@@ -195,9 +201,10 @@ def _generate_dag_source(pipeline, jobs):
     user_tags   = [t.strip() for t in tags_raw.split(",") if t.strip()]
     all_tags    = list(dict.fromkeys([project, domain] + user_tags))
     sorted_jobs = sorted(jobs, key=lambda j: j["execution_order"])
-    first       = sorted_jobs[0]["job_name"]
+    first       = _varname(sorted_jobs[0]["job_name"])
+    first_name  = sorted_jobs[0]["job_name"]
     others      = sorted_jobs[1:]
-    all_ends    = [f"t_end_{j['job_name']}" for j in sorted_jobs]
+    all_ends    = [f"t_end_{_varname(j['job_name'])}" for j in sorted_jobs]
 
     def _jtypes(jobs):
         return {_TYPE_ALIAS.get(j["job_type"].lower(), j["job_type"].lower()) for j in jobs}
@@ -552,7 +559,7 @@ def _generate_dag_source(pipeline, jobs):
         dep_lines.insert(0, f"{sensors_ref} >> t_start_{first}")
 
     for j in others:
-        n = j["job_name"]
+        n = _varname(j["job_name"])
         dep_lines.append(f"previous >> t_start_{n} >> t_job_{n} >> t_end_{n}")
         dep_lines.append(f"previous = t_end_{n}")
 

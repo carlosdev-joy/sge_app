@@ -6860,7 +6860,10 @@ function renderJobsTable(payload) {
   const rows = data.map((j, i) =>
     '<tr>' +
     '<td style="font-weight:500;white-space:nowrap">' + (j.pipeline_name || '—') + '</td>' +
-    '<td style="font-weight:500;white-space:nowrap">' + (j.job_name || '—') + '</td>' +
+    '<td style="font-weight:500;white-space:nowrap">' +
+      (j.job_name || '—') +
+      '<button class="btn-copy-inline" onclick="_copyText(\'' + _esc(j.job_name || '') + '\',this)" title="Copiar nome do job" style="margin-left:5px;background:none;border:none;cursor:pointer;color:var(--muted);padding:0 2px;vertical-align:middle;font-size:13px;opacity:.55;transition:opacity .15s" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.55">⎘</button>' +
+    '</td>' +
     '<td style="text-align:center">' +
       '<input class="inline-order" type="number" min="1" value="' + (j.execution_order ?? '') + '" ' +
         'oninput="onJobOrderChange(' + i + ', this.value)" />' +
@@ -9731,6 +9734,17 @@ function _dsmStartAutoRefresh(project, job) {
       await dsmLoadStatus(project, job);
     }
   }, 30000);
+}
+
+/* ══ COPY HELPER ══ */
+function _copyText(text, btn) {
+  navigator.clipboard.writeText(text).then(() => {
+    const prev = btn.textContent;
+    btn.textContent = '✓';
+    btn.style.color = 'var(--green, #16a34a)';
+    btn.style.opacity = '1';
+    setTimeout(() => { btn.textContent = prev; btn.style.color = ''; btn.style.opacity = '.55'; }, 1200);
+  }).catch(() => showToast('Não foi possível copiar.', true));
 }
 
 /* ══ DS MONITOR — SUB-TABS ══ */
