@@ -2688,11 +2688,16 @@ function renderLogDetailTable(result) {
       '<td style="white-space:nowrap;font-size:12px">' + fmtDt16(r.inicio) + '</td>' +
       '<td style="white-space:nowrap;font-size:12px">' + fmtDt16(r.fim) + '</td>' +
       '<td style="white-space:nowrap;font-size:12px">' + fmtDur(r.duration_seconds) + '</td>' +
-      '<td style="white-space:nowrap">' +
+      '<td style="white-space:nowrap;display:flex;gap:4px;flex-wrap:wrap">' +
         '<button class="' + logBtnCls + '" ' +
           'onclick="_showAirflowJobLog(\'' + pipEsc + '\',\'' + execEsc + '\',\'' + taskId + '\')" ' +
           'title="Ver log do Airflow para este job">' +
           '📋 Log' +
+        '</button>' +
+        '<button class="btn-ghost btn-sm" style="font-size:11px;padding:.2rem .5rem" ' +
+          'onclick="_showDsLog(\'' + execEsc + '\',\'' + jobTitle + '\')" ' +
+          'title="Ver log DataStage (etl_ds_job_log)">' +
+          '⬡ DS Log' +
         '</button>' +
       '</td>' +
     '</tr>';
@@ -2701,9 +2706,81 @@ function renderLogDetailTable(result) {
   area.innerHTML =
     '<div class="query-table-wrap">' +
       '<table class="query-table"><thead><tr>' +
-        '<th>Job</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th><th>Log Airflow</th>' +
+        '<th>Job</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th><th>Logs</th>' +
       '</tr></thead><tbody>' + body + '</tbody></table>' +
     '</div>';
+}
+
+/* ══ DS LOG MODAL ══ */
+async function _showDsLog(executionId, jobName) {
+  const modal = $('dsLogModal');
+  $('dsl-title').textContent = 'Log DataStage — ' + (jobName || '');
+  $('dsl-sub').textContent = 'Execution ID: ' + (executionId || '');
+  $('dsl-status').textContent = 'Carregando...';
+  $('dsl-body').innerHTML = '';
+  modal.classList.add('open');
+
+  try {
+    const params = new URLSearchParams();
+    if (executionId) params.set('execution_id', executionId);
+    if (jobName)     params.set('job_name', jobName);
+    const r = await fetch(ORQUESTRA_API + '/datastage/log?' + params.toString(), {
+      headers: authHeader ? { Authorization: authHeader } : {},
+    });
+    if (!r.ok) {
+      $('dsl-status').textContent = 'Erro API: ' + r.status;
+      $('dsl-body').innerHTML = '<p style="color:var(--danger)">Não foi possível carregar o log DataStage.</p>';
+      return;
+    }
+    const data = await r.json();
+    const rows = data.data || data.rows || (Array.isArray(data) ? data : []);
+    if (!rows.length) {
+      $('dsl-status').textContent = 'Nenhum registro encontrado.';
+      $('dsl-body').innerHTML = '<div class="empty-state"><span class="es-icon">⬡</span><p class="es-title">Sem log DataStage</p><p class="es-sub">Este job pode não ter sido executado pelo DataStageOperator.</p></div>';
+      return;
+    }
+    const row = rows[0];
+    $('dsl-status').textContent = 'Registro encontrado — wave ' + (row.wave_number ?? '—');
+
+    const pill = (s) => {
+      const v = (s || '').toUpperCase();
+      if (v === 'SUCCESS') return '<span class="log-pill success">✓ SUCCESS</span>';
+      if (v === 'ABORTED' || v === 'FAILED') return '<span class="log-pill failed">✕ ' + v + '</span>';
+      if (v === 'WARNING') return '<span class="log-pill warning">! WARNING</span>';
+      return '<span class="log-pill running">… ' + (v || '—') + '</span>';
+    };
+
+    let childHtml = '';
+    try {
+      const cj = typeof row.child_jobs === 'string' ? JSON.parse(row.child_jobs || '[]') : (row.child_jobs || []);
+      if (cj.length) {
+        childHtml = '<div class="section-sep" style="margin:.75rem 0 .4rem">JOBS FILHOS (' + cj.length + ')</div>' +
+          '<table class="query-table" style="font-size:12px"><thead><tr><th>Job</th><th>Status</th><th>Código</th></tr></thead><tbody>' +
+          cj.map(c => '<tr><td>' + (c.name || '—') + '</td><td>' + pill(c.status) + '</td><td>' + (c.status_code ?? '—') + '</td></tr>').join('') +
+          '</tbody></table>';
+      }
+    } catch (_) {}
+
+    const logLines = (row.log_summary || '').slice(0, 4000);
+
+    $('dsl-body').innerHTML =
+      '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem .75rem;font-size:12px;margin-bottom:.75rem">' +
+        '<div><span style="color:var(--muted)">Status:</span> ' + pill(row.status) + '</div>' +
+        '<div><span style="color:var(--muted)">Wave:</span> ' + (row.wave_number ?? '—') + '</div>' +
+        '<div><span style="color:var(--muted)">PID:</span> ' + (row.pid || '—') + '</div>' +
+        '<div><span style="color:var(--muted)">Projeto:</span> ' + (row.project || '—') + '</div>' +
+        '<div><span style="color:var(--muted)">Pipeline:</span> ' + (row.pipeline_name || '—') + '</div>' +
+        '<div><span style="color:var(--muted)">Atualizado:</span> ' + (row.updated_at ? String(row.updated_at).slice(0,16) : '—') + '</div>' +
+      '</div>' +
+      childHtml +
+      (logLines ? '<div class="section-sep" style="margin:.75rem 0 .4rem">LOG SUMMARY</div>' +
+        '<pre style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:.75rem;font-size:11px;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-all">' +
+        logLines.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') +
+        '</pre>' : '');
+
+  } catch (e) {
+    $('dsl-status').textContent = 'Erro: ' + (e && e.message ? e.message : e);
+  }
 }
 
 /* ══ LINEAGE DSX v1 ══ */
@@ -7905,6 +7982,24 @@ function clearQuery() {
     <div id="ld-table-area"></div>
     <div style="display:flex;gap:8px;margin-top:1rem">
       <button class="btn-ghost" onclick="closeLogDetail()" style="flex:1">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: DS LOG -->
+<div class="modal-backdrop" id="dsLogModal">
+  <div class="modal-box" style="max-width:900px;text-align:left">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:.75rem">
+      <div>
+        <div class="modal-title" id="dsl-title" style="margin:0">Log DataStage</div>
+        <div class="modal-desc" id="dsl-sub" style="margin:.35rem 0 0"></div>
+      </div>
+      <button class="icon-btn btn-close" onclick="$('dsLogModal').classList.remove('open')" title="Fechar" aria-label="Fechar">×</button>
+    </div>
+    <div id="dsl-status" style="font-size:12px;color:var(--muted);margin-bottom:.75rem;min-height:16px"></div>
+    <div id="dsl-body"></div>
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn-ghost" onclick="$('dsLogModal').classList.remove('open')" style="flex:1">Fechar</button>
     </div>
   </div>
 </div>
