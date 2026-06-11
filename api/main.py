@@ -209,6 +209,13 @@ def list_pipelines(
         cur.execute(f"SELECT COUNT(*) FROM dbo.etl_pipeline {where_sql}", params_count)
         total = cur.fetchone()[0]
 
+        # runbook_md pode não existir ainda (migration 013) — degrada para NULL
+        cur.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' AND COLUMN_NAME='runbook_md'
+        """)
+        runbook_col = "runbook_md" if cur.fetchone()[0] else "NULL AS runbook_md"
+
         data_sql = f"""
             SELECT
                 pipeline_name, project_name, domain, tags,
@@ -232,7 +239,7 @@ def list_pipelines(
                 ISNULL(CAST(max_active_runs    AS INT), 1)   AS max_active_runs,
                 ISNULL(CAST(retries_count      AS INT), 1)   AS retries_count,
                 ISNULL(CAST(retry_delay_seconds AS INT), 300) AS retry_delay_seconds,
-                pool_name, runbook_md, last_execution, created_at, updated_at
+                pool_name, {runbook_col}, last_execution, created_at, updated_at
             FROM dbo.etl_pipeline
             {where_sql}
             ORDER BY project_name, domain, pipeline_name
@@ -477,7 +484,7 @@ def list_execucoes(
         """, params + having_params)
         total = cur.fetchone()[0]
 
-        cur.execute(f"""
+        agg_cte = f"""
             WITH agg AS (
                 SELECT
                     execution_id, project, pipeline,
@@ -495,13 +502,27 @@ def list_execucoes(
                 GROUP BY execution_id, project, pipeline
                 {having_sql}
             )
-            SELECT a.*, ack.ack_by, ack.display_name, ack.ack_at
-            FROM agg a
-            LEFT JOIN dbo.etl_failure_ack ack
-                   ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
-            ORDER BY a.inicio DESC
-            OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
-        """, params + having_params + [offset, limit])
+        """
+        # etl_failure_ack pode não existir ainda (migration 013) — degrada sem ack
+        has_ack = True
+        try:
+            cur.execute(agg_cte + """
+                SELECT a.*, ack.ack_by, ack.display_name, ack.ack_at
+                FROM agg a
+                LEFT JOIN dbo.etl_failure_ack ack
+                       ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
+                ORDER BY a.inicio DESC
+                OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+            """, params + having_params + [offset, limit])
+        except Exception:
+            has_ack = False
+            try: conn.rollback()
+            except Exception: pass
+            cur.execute(agg_cte + """
+                SELECT a.* FROM agg a
+                ORDER BY a.inicio DESC
+                OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+            """, params + having_params + [offset, limit])
         data = [
             {
                 "execution_id": r[0], "project": r[1], "pipeline": r[2],
@@ -510,7 +531,9 @@ def list_execucoes(
                 "total_jobs": int(r[6] or 0), "jobs_ok": int(r[7] or 0),
                 "jobs_falha": int(r[8] or 0), "jobs_warning": int(r[9] or 0),
                 "jobs_running": int(r[10] or 0), "status_geral": r[11],
-                "ack_by": r[12], "display_name": r[13], "ack_at": _fmt_dt(r[14]),
+                "ack_by": r[12] if has_ack else None,
+                "display_name": r[13] if has_ack else None,
+                "ack_at": _fmt_dt(r[14]) if has_ack else None,
             }
             for r in cur.fetchall()
         ]
@@ -1595,14 +1618,21 @@ def _check_circular(cur, pipeline_name, depends_on_list):
 
 
 def _read_pipeline_record(cur, pipeline_name):
-    cur.execute(
-        """SELECT active, scheduled_time, schedule_type, schedule_hour, schedule_minute,
+    base_cols = """active, scheduled_time, schedule_type, schedule_hour, schedule_minute,
                   schedule_dow, schedule_dom, envia_msg_inicio, envia_msg_fim, envia_msg_erro,
                   project_name, domain, tags, depends_on, criticidade, sla_minutos, ambiente,
-                  max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao, runbook_md
-           FROM dbo.etl_pipeline WHERE pipeline_name = ?""",
-        (pipeline_name,),
-    )
+                  max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao"""
+    try:
+        cur.execute(
+            f"SELECT {base_cols}, runbook_md FROM dbo.etl_pipeline WHERE pipeline_name = ?",
+            (pipeline_name,),
+        )
+    except Exception:
+        # runbook_md pode não existir ainda (migration 013)
+        cur.execute(
+            f"SELECT {base_cols} FROM dbo.etl_pipeline WHERE pipeline_name = ?",
+            (pipeline_name,),
+        )
     row = cur.fetchone()
     if row is None:
         return None
@@ -1686,13 +1716,23 @@ def register_pipeline(body: dict = Body(default={})):
             "WHERE pipeline_name=?",
             (depends_on, dag_start_date, pipeline),
         )
-        cur.execute(
-            "UPDATE dbo.etl_pipeline SET descricao=?, criticidade=?, sla_minutos=?, ambiente=?, "
-            "max_active_runs=?, retries_count=?, retry_delay_seconds=?, pool_name=?, runbook_md=?, "
-            "updated_at=GETDATE() WHERE pipeline_name=?",
-            (descricao, criticidade, sla_minutos, ambiente,
-             max_active_runs, retries_count, retry_delay_secs, pool_name, runbook_md, pipeline),
-        )
+        try:
+            cur.execute(
+                "UPDATE dbo.etl_pipeline SET descricao=?, criticidade=?, sla_minutos=?, ambiente=?, "
+                "max_active_runs=?, retries_count=?, retry_delay_seconds=?, pool_name=?, runbook_md=?, "
+                "updated_at=GETDATE() WHERE pipeline_name=?",
+                (descricao, criticidade, sla_minutos, ambiente,
+                 max_active_runs, retries_count, retry_delay_secs, pool_name, runbook_md, pipeline),
+            )
+        except Exception:
+            # runbook_md pode não existir ainda (migration 013) — grava sem o campo
+            cur.execute(
+                "UPDATE dbo.etl_pipeline SET descricao=?, criticidade=?, sla_minutos=?, ambiente=?, "
+                "max_active_runs=?, retries_count=?, retry_delay_seconds=?, pool_name=?, "
+                "updated_at=GETDATE() WHERE pipeline_name=?",
+                (descricao, criticidade, sla_minutos, ambiente,
+                 max_active_runs, retries_count, retry_delay_secs, pool_name, pipeline),
+            )
         new_vals = {
             "active": active, "scheduled_time": horario, "schedule_type": schedule_type,
             "schedule_hour": schedule_hour, "schedule_minute": schedule_minute,
