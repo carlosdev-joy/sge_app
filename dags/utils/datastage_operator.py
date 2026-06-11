@@ -122,13 +122,15 @@ class DataStageOperator(BaseOperator):
                 ti.xcom_push(key="ds_wave_num", value=wave_num)
                 self.log.info("[DS] Job triggered — wave_num=%s", wave_num)
 
-        # Persist initial RUNNING state to DB
-        self._persist(execution_id, pipeline, wave_num, None, "RUNNING", 0, [], "", None)
+        # Persist initial state to DB
+        self._persist(execution_id, pipeline, wave_num, None, "QUEUED", self._ST_QUEUED, [], "", None)
 
         # Polling loop
-        ds_attempt    = 0
-        poll_count    = 0
+        ds_attempt      = 0
+        poll_count      = 0
         logsum_interval = 5  # chama -logsum a cada N polls para ver progresso dos filhos
+        queued_since: datetime | None = datetime.utcnow()   # hora em que o job foi submetido
+        queued_seconds: int = 0                              # acumulado enquanto QUEUED
         while True:
             time.sleep(self.poll_interval)
             poll_count += 1
@@ -139,6 +141,14 @@ class DataStageOperator(BaseOperator):
                 info.get("wave_number"), sc, info.get("status_text"),
                 info.get("controller"),
             )
+
+            # Detecta transição QUEUED → RUNNING: calcula tempo de espera em fila
+            if sc != self._ST_QUEUED and queued_since is not None:
+                queued_seconds = int((datetime.utcnow() - queued_since).total_seconds())
+                queued_since   = None
+                if queued_seconds > 0:
+                    self.log.info("[DS] Tempo em fila: %ds", queued_seconds)
+                    self._persist_queued_seconds(execution_id, queued_seconds)
 
             # A cada N polls, chama -logsum parcial para mostrar progresso dos filhos
             partial_logsum = ""
@@ -349,6 +359,20 @@ class DataStageOperator(BaseOperator):
             self.log.info("  [%s] %-50s  %s", icon, cj["name"], cj.get("status", ""))
 
     # ── DB persistence ────────────────────────────────────────────────────────
+
+    def _persist_queued_seconds(self, execution_id: str, queued_seconds: int) -> None:
+        """Grava o tempo de espera em fila do WM DataStage em etl_ds_job_log."""
+        try:
+            from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
+            hook = MsSqlHook(mssql_conn_id=self.mssql_conn_id)
+            hook.run(
+                "UPDATE dbo.etl_ds_job_log "
+                "SET queued_seconds=%s, updated_at=GETDATE() "
+                "WHERE execution_id=%s AND job_name=%s",
+                parameters=(queued_seconds, execution_id, self.job_name),
+            )
+        except Exception as exc:
+            self.log.warning("[DS] Não foi possível gravar queued_seconds: %s", exc)
 
     def _persist(
         self, execution_id, pipeline, wave_num, pid, status, status_code,
