@@ -126,9 +126,12 @@ class DataStageOperator(BaseOperator):
         self._persist(execution_id, pipeline, wave_num, None, "RUNNING", 0, [], "", None)
 
         # Polling loop
-        ds_attempt = 0
+        ds_attempt    = 0
+        poll_count    = 0
+        logsum_interval = 5  # chama -logsum a cada N polls para ver progresso dos filhos
         while True:
             time.sleep(self.poll_interval)
+            poll_count += 1
             info = self._jobinfo()
             sc   = info["status_code"]
             self.log.info(
@@ -136,6 +139,18 @@ class DataStageOperator(BaseOperator):
                 info.get("wave_number"), sc, info.get("status_text"),
                 info.get("controller"),
             )
+
+            # A cada N polls, chama -logsum parcial para mostrar progresso dos filhos
+            partial_logsum = ""
+            if sc == self._ST_RUNNING and poll_count % logsum_interval == 0:
+                try:
+                    partial_logsum = self._logsum()
+                    partial_children = self._parse_child_jobs(partial_logsum)
+                    if partial_children:
+                        self.log.info("[DS] Progresso parcial — %d job(s) filhos até agora:", len(partial_children))
+                        self._log_child_jobs(partial_children)
+                except Exception as exc:
+                    self.log.debug("[DS] logsum parcial ignorado: %s", exc)
 
             # Save poll snapshot to DB
             snapshot = json.dumps({
