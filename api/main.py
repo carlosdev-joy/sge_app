@@ -2760,7 +2760,7 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
       2. dbo.etl_app_config chave 'teams_webhook_url'     (canal padrão/geral)
       3. variável de ambiente TEAMS_WEBHOOK_URL_CVP
     """
-    import requests as _req
+    import httpx as _req
     webhook_url = _get_app_config_value("teams_webhook_url_ack") \
         or _get_app_config_value("teams_webhook_url") \
         or os.getenv("TEAMS_WEBHOOK_URL_CVP", "")
@@ -2813,7 +2813,7 @@ def test_webhook(body: dict = Body(default={})):
     Body: { "requested_by": "CVT00000", "webhook_key": "teams_webhook_url_ack" }
     webhook_key é opcional — testa a mesma cascata do ack se omitido.
     """
-    import requests as _req
+    import httpx as _req
     import traceback
 
     requested_by = (body.get("requested_by") or "").strip().upper()
