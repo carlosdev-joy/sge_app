@@ -232,7 +232,7 @@ def list_pipelines(
                 ISNULL(CAST(max_active_runs    AS INT), 1)   AS max_active_runs,
                 ISNULL(CAST(retries_count      AS INT), 1)   AS retries_count,
                 ISNULL(CAST(retry_delay_seconds AS INT), 300) AS retry_delay_seconds,
-                pool_name, last_execution, created_at, updated_at
+                pool_name, runbook_md, last_execution, created_at, updated_at
             FROM dbo.etl_pipeline
             {where_sql}
             ORDER BY project_name, domain, pipeline_name
@@ -246,7 +246,7 @@ def list_pipelines(
             "active", "dag_criada", "envia_msg_inicio", "envia_msg_fim", "envia_msg_erro",
             "depends_on", "dag_start_date", "descricao", "criticidade", "sla_minutos",
             "ambiente", "max_active_runs", "retries_count", "retry_delay_seconds",
-            "pool_name", "last_execution", "created_at", "updated_at",
+            "pool_name", "runbook_md", "last_execution", "created_at", "updated_at",
         ]
         data = []
         for row in cur.fetchall():
@@ -478,22 +478,28 @@ def list_execucoes(
         total = cur.fetchone()[0]
 
         cur.execute(f"""
-            SELECT
-                execution_id, project, pipeline,
-                MIN(start_time)                    AS inicio,
-                MAX(end_time)                      AS fim,
-                COALESCE(SUM(duration_seconds), 0) AS duracao_total_segundos,
-                COUNT(*)                           AS total_jobs,
-                SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) AS jobs_ok,
-                SUM(CASE WHEN status='FAILED'  THEN 1 ELSE 0 END) AS jobs_falha,
-                SUM(CASE WHEN status='WARNING' THEN 1 ELSE 0 END) AS jobs_warning,
-                SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) AS jobs_running,
-                {status_expr} AS status_geral
-            FROM dbo.etl_job_execution
-            {where_sql}
-            GROUP BY execution_id, project, pipeline
-            {having_sql}
-            ORDER BY MIN(start_time) DESC
+            WITH agg AS (
+                SELECT
+                    execution_id, project, pipeline,
+                    MIN(start_time)                    AS inicio,
+                    MAX(end_time)                      AS fim,
+                    COALESCE(SUM(duration_seconds), 0) AS duracao_total_segundos,
+                    COUNT(*)                           AS total_jobs,
+                    SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) AS jobs_ok,
+                    SUM(CASE WHEN status='FAILED'  THEN 1 ELSE 0 END) AS jobs_falha,
+                    SUM(CASE WHEN status='WARNING' THEN 1 ELSE 0 END) AS jobs_warning,
+                    SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) AS jobs_running,
+                    {status_expr} AS status_geral
+                FROM dbo.etl_job_execution
+                {where_sql}
+                GROUP BY execution_id, project, pipeline
+                {having_sql}
+            )
+            SELECT a.*, ack.ack_by, ack.ack_at
+            FROM agg a
+            LEFT JOIN dbo.etl_failure_ack ack
+                   ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
+            ORDER BY a.inicio DESC
             OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
         """, params + having_params + [offset, limit])
         data = [
@@ -504,6 +510,7 @@ def list_execucoes(
                 "total_jobs": int(r[6] or 0), "jobs_ok": int(r[7] or 0),
                 "jobs_falha": int(r[8] or 0), "jobs_warning": int(r[9] or 0),
                 "jobs_running": int(r[10] or 0), "status_geral": r[11],
+                "ack_by": r[12], "ack_at": _fmt_dt(r[13]),
             }
             for r in cur.fetchall()
         ]
@@ -1544,6 +1551,7 @@ AUDIT_FIELDS = {
     "schedule_dow", "schedule_dom", "envia_msg_inicio", "envia_msg_fim", "envia_msg_erro",
     "project_name", "domain", "tags", "depends_on", "criticidade", "sla_minutos",
     "ambiente", "max_active_runs", "retries_count", "retry_delay_seconds", "pool_name", "descricao",
+    "runbook_md",
 }
 
 
@@ -1591,7 +1599,7 @@ def _read_pipeline_record(cur, pipeline_name):
         """SELECT active, scheduled_time, schedule_type, schedule_hour, schedule_minute,
                   schedule_dow, schedule_dom, envia_msg_inicio, envia_msg_fim, envia_msg_erro,
                   project_name, domain, tags, depends_on, criticidade, sla_minutos, ambiente,
-                  max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao
+                  max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao, runbook_md
            FROM dbo.etl_pipeline WHERE pipeline_name = ?""",
         (pipeline_name,),
     )
@@ -1649,6 +1657,7 @@ def register_pipeline(body: dict = Body(default={})):
     retries_count    = int(body.get("retries_count",    1))
     retry_delay_secs = int(body.get("retry_delay_seconds", 300))
     pool_name        = (body.get("pool_name") or "").strip() or None
+    runbook_md       = (body.get("runbook_md") or "").strip() or None
 
     if pipeline in depends_on_list:
         raise HTTPException(status_code=422, detail="Pipeline não pode depender de si mesmo")
@@ -1679,10 +1688,10 @@ def register_pipeline(body: dict = Body(default={})):
         )
         cur.execute(
             "UPDATE dbo.etl_pipeline SET descricao=?, criticidade=?, sla_minutos=?, ambiente=?, "
-            "max_active_runs=?, retries_count=?, retry_delay_seconds=?, pool_name=?, "
+            "max_active_runs=?, retries_count=?, retry_delay_seconds=?, pool_name=?, runbook_md=?, "
             "updated_at=GETDATE() WHERE pipeline_name=?",
             (descricao, criticidade, sla_minutos, ambiente,
-             max_active_runs, retries_count, retry_delay_secs, pool_name, pipeline),
+             max_active_runs, retries_count, retry_delay_secs, pool_name, runbook_md, pipeline),
         )
         new_vals = {
             "active": active, "scheduled_time": horario, "schedule_type": schedule_type,
@@ -1693,7 +1702,7 @@ def register_pipeline(body: dict = Body(default={})):
             "tags": tags, "depends_on": depends_on, "criticidade": criticidade,
             "sla_minutos": sla_minutos, "ambiente": ambiente, "max_active_runs": max_active_runs,
             "retries_count": retries_count, "retry_delay_seconds": retry_delay_secs,
-            "pool_name": pool_name, "descricao": descricao,
+            "pool_name": pool_name, "descricao": descricao, "runbook_md": runbook_md,
         }
         if is_new:
             for field, val in new_vals.items():
@@ -2670,6 +2679,53 @@ async def rerun_from_task(body: dict = Body(default={})):
             "task_id": task_id,
             "tasks_cleared": len(cleared.get("task_instances", [])),
         }
+
+
+@app.post("/execucoes/ack", tags=["execucoes"])
+def ack_failure(body: dict = Body(default={})):
+    """Acknowledge de falha — operador assume o incidente.
+
+    Body: execution_id, pipeline, user (matrícula), note (opcional), remove (bool, desfaz)
+    """
+    exec_id  = (body.get("execution_id") or "").strip()
+    pipeline = (body.get("pipeline")     or "").strip()
+    user     = (body.get("user")         or "").strip()
+    note     = (body.get("note")         or "").strip() or None
+    remove   = bool(body.get("remove", False))
+
+    if not exec_id or not pipeline:
+        raise HTTPException(status_code=422, detail="execution_id e pipeline são obrigatórios")
+    if not remove and not user:
+        raise HTTPException(status_code=422, detail="user é obrigatório")
+
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        if remove:
+            cur.execute(
+                "DELETE FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?",
+                (exec_id, pipeline))
+            conn.commit(); cur.close(); conn.close()
+            return {"ok": True, "action": "removed"}
+
+        cur.execute("""
+            IF NOT EXISTS (SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?)
+                INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, note)
+                VALUES (?, ?, ?, ?)
+        """, (exec_id, pipeline, exec_id, pipeline, user, note))
+        conn.commit()
+
+        cur.execute(
+            "SELECT ack_by, ack_at FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?",
+            (exec_id, pipeline))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        return {"ok": True, "action": "acked",
+                "ack_by": row[0] if row else user,
+                "ack_at": _fmt_dt(row[1]) if row else None}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/execucoes/duracao-media", tags=["execucoes"])

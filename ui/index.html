@@ -1301,6 +1301,10 @@
               <label for="p-descricao">Descrição / Objetivo <span style="color:var(--red)">*</span></label>
               <textarea id="p-descricao" rows="2" placeholder="Descreva o objetivo deste pipeline…" style="width:100%;box-sizing:border-box;resize:vertical;font-family:inherit;font-size:13px;padding:.5rem .75rem;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"></textarea>
               <div id="err-descricao" class="field-error"></div>
+              <label for="p-runbook" style="margin-top:.75rem">Runbook — instruções em caso de falha
+                <button type="button" class="help-btn" tabindex="0">?<span class="help-popup">Instruções para o operador quando este pipeline falhar: o que verificar, quem acionar, como reprocessar. Aparece no alerta do Teams e no detalhe da execução.</span></button>
+              </label>
+              <textarea id="p-runbook" rows="3" placeholder="Ex.: 1. Verificar espaço em disco no LNXPRD021&#10;2. Reprocessar via Rerun a partir do job que falhou&#10;3. Se persistir, acionar fulano@empresa.com" style="width:100%;box-sizing:border-box;resize:vertical;font-family:inherit;font-size:13px;padding:.5rem .75rem;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"></textarea>
             </div>
 
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem">
@@ -2644,10 +2648,21 @@ function renderLogsTable(result, area, statusEl) {
     // senão o HTML quebra (ex.: onclick="openLogDetail("abc","def")").
     const ex = String(r.execution_id || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const pip = String(r.pipeline || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    // Acknowledge: badge se já assumido, botão se FAILED sem ack
+    let ackHtml = '';
+    if (r.status_geral === 'FAILED') {
+      if (r.ack_by) {
+        ackHtml = '<span style="font-size:10px;color:var(--muted);white-space:nowrap" title="Assumido em ' + (r.ack_at || '') + '">👁 ' + r.ack_by + '</span>';
+      } else if (!window.__isViewer) {
+        ackHtml = '<button class="btn-ghost btn-sm" style="font-size:10px;padding:.15rem .4rem" ' +
+          'onclick="_ackFailure(\'' + ex + '\',\'' + pip + '\',this)" ' +
+          'title="Assumir investigação desta falha — sinaliza ao time que alguém já está olhando">👁 Assumir</button>';
+      }
+    }
     return '<tr>' +
       '<td style="font-weight:500;white-space:nowrap">' + (r.pipeline || '—') + '</td>' +
       '<td><span class="tag-pill">' + (r.project || '—') + '</span></td>' +
-      '<td style="white-space:nowrap">' + statusPill(r.status_geral) + '</td>' +
+      '<td style="white-space:nowrap">' + statusPill(r.status_geral) + (ackHtml ? '<br>' + ackHtml : '') + '</td>' +
       '<td style="white-space:nowrap">' + fmtDt16(r.inicio) + '</td>' +
       '<td style="white-space:nowrap">' + fmtDt16(r.fim) + '</td>' +
       '<td style="white-space:nowrap">' + fmtDur(r.duracao_total_segundos) + '</td>' +
@@ -2702,11 +2717,14 @@ async function loadLogDetail(executionId, pipeline) {
     params.set('filter_execution_id', executionId);
     if (pipeline) params.set('filter_pipeline', pipeline);
 
-    // Buscar jobs e duração média em paralelo
-    const [r, rMedia] = await Promise.all([
+    // Buscar jobs, duração média e runbook em paralelo
+    const [r, rMedia, rPip] = await Promise.all([
       fetch(ORQUESTRA_API + '/execucoes?' + params.toString()),
       pipeline
         ? fetch(ORQUESTRA_API + '/execucoes/duracao-media?pipeline=' + encodeURIComponent(pipeline) + '&limit=30')
+        : Promise.resolve(null),
+      pipeline
+        ? fetch(ORQUESTRA_API + '/pipelines?filter_name=' + encodeURIComponent(pipeline) + '&limit=1')
         : Promise.resolve(null),
     ]);
 
@@ -2714,12 +2732,20 @@ async function loadLogDetail(executionId, pipeline) {
     if (!r.ok) { $('ld-status').textContent = 'Erro API: ' + r.status; return; }
 
     const payload  = await r.json();
-    let avgData = {};
+    let avgData = {}, runbook = '';
     if (rMedia && rMedia.ok) {
       try { avgData = (await rMedia.json()).data || {}; } catch(_) {}
     }
+    if (rPip && rPip.ok) {
+      try {
+        const pd = await rPip.json();
+        const rec = (pd.data || []).find(p => p.pipeline_name === pipeline) || (pd.data || [])[0];
+        runbook = (rec && rec.runbook_md) || '';
+      } catch(_) {}
+    }
     payload._avgData  = avgData;
     payload._pipeline = pipeline || '';
+    payload._runbook  = runbook;
     renderLogDetailTable(payload);
   } catch (e) {
     $('ld-status').textContent = 'Erro: ' + (e && e.message ? e.message : e);
@@ -2822,7 +2848,17 @@ function renderLogDetailTable(result) {
     '</tr>';
   }).join('');
 
+  // Runbook: exibir quando houver job com falha e o pipeline tiver instruções cadastradas
+  const hasFailed  = rows.some(r => r.status === 'FAILED');
+  const runbookBox = (hasFailed && result._runbook)
+    ? '<div style="margin-bottom:.75rem;padding:.6rem .8rem;border:1px solid rgba(220,38,38,.35);border-left:4px solid var(--red);border-radius:8px;background:rgba(220,38,38,.05)">' +
+        '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--red);margin-bottom:.3rem">📖 Runbook — em caso de falha</div>' +
+        '<div style="font-size:12px;white-space:pre-wrap;line-height:1.5">' + _escHtml(result._runbook) + '</div>' +
+      '</div>'
+    : '';
+
   area.innerHTML =
+    runbookBox +
     '<div class="query-table-wrap">' +
       '<table class="query-table"><thead><tr>' +
         '<th>Job</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th><th>Ações</th>' +
@@ -3950,6 +3986,40 @@ async function _rerunFromTask(pipeline, executionId, taskId, btn) {
   } catch(e) {
     showToast('Erro de conexão: ' + (e.message || e), true);
     if (btn) { btn.disabled = false; btn.textContent = '🔁 Rerun'; }
+  }
+}
+
+// Acknowledge de falha — operador assume o incidente
+async function _ackFailure(executionId, pipeline, btn) {
+  if (!authHeader) { showToast('Faça login primeiro.', true); return; }
+  const user = window.__currentUser || '';
+  if (!user) { showToast('Usuário não identificado.', true); return; }
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+  try {
+    const r = await fetch(ORQUESTRA_API + '/execucoes/ack', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+      body: JSON.stringify({ execution_id: executionId, pipeline: pipeline, user: user }),
+    });
+    if (r.status === 401) { sair(); return; }
+    if (!r.ok) {
+      const txt = await r.text().catch(() => r.status);
+      showToast('Erro ao assumir: ' + txt, true);
+      if (btn) { btn.disabled = false; btn.textContent = '👁 Assumir'; }
+      return;
+    }
+    const data = await r.json();
+    showToast('👁 Falha assumida por ' + (data.ack_by || user), false);
+    if (btn) {
+      const span = document.createElement('span');
+      span.style.cssText = 'font-size:10px;color:var(--muted);white-space:nowrap';
+      span.textContent = '👁 ' + (data.ack_by || user);
+      btn.replaceWith(span);
+    }
+  } catch(e) {
+    showToast('Erro de conexão: ' + (e.message || e), true);
+    if (btn) { btn.disabled = false; btn.textContent = '👁 Assumir'; }
   }
 }
 
@@ -6676,6 +6746,7 @@ async function registrarPipeline() {
       dag_start_date:      ($('p-dag-start-date') ? $('p-dag-start-date').value.trim() : '') || null,
       changed_by:          changedBy,
       descricao:           ($('p-descricao') ? $('p-descricao').value.trim() : '') || null,
+      runbook_md:          ($('p-runbook') ? $('p-runbook').value.trim() : '') || null,
       criticidade:         $('p-criticidade') ? $('p-criticidade').value : 'Media',
       ambiente:            $('p-ambiente') ? $('p-ambiente').value : 'PROD',
       sla_minutos:         $('p-sla-minutos') ? (parseInt($('p-sla-minutos').value) || null) : null,
@@ -6697,6 +6768,7 @@ async function registrarPipeline() {
   if ($('deps-wrap'))        $('deps-wrap').querySelectorAll('.chip').forEach(c => c.remove());
   if ($('p-dag-start-date')) $('p-dag-start-date').value = '';
   if ($('p-descricao'))      $('p-descricao').value = '';
+  if ($('p-runbook'))        $('p-runbook').value = '';
   if ($('p-criticidade'))    $('p-criticidade').value = 'Media';
   if ($('p-ambiente'))       $('p-ambiente').value = 'PROD';
   if ($('p-sla-minutos'))    $('p-sla-minutos').value = '';
@@ -7789,6 +7861,7 @@ function openPipelineCreate() {
   if ($('deps-wrap'))        $('deps-wrap').querySelectorAll('.chip').forEach(c => c.remove());
   if ($('p-dag-start-date')) $('p-dag-start-date').value = '';
   if ($('p-descricao'))      $('p-descricao').value = '';
+  if ($('p-runbook'))        $('p-runbook').value = '';
   if ($('p-criticidade'))    $('p-criticidade').value = 'Media';
   if ($('p-ambiente'))       $('p-ambiente').value = 'PROD';
   if ($('p-sla-minutos'))    $('p-sla-minutos').value = '';
@@ -7866,6 +7939,7 @@ function openPipelineEdit(idx) {
 
   // Advanced fields
   if ($('p-descricao'))      $('p-descricao').value      = p.descricao || '';
+  if ($('p-runbook'))        $('p-runbook').value        = p.runbook_md || '';
   if ($('p-criticidade'))    $('p-criticidade').value    = p.criticidade || 'Media';
   if ($('p-ambiente'))       $('p-ambiente').value       = p.ambiente || 'PROD';
   if ($('p-sla-minutos'))    $('p-sla-minutos').value    = p.sla_minutos != null ? p.sla_minutos : '';

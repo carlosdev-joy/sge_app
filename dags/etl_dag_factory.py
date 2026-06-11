@@ -201,6 +201,7 @@ def _generate_dag_source(pipeline, jobs):
     _DS_QUEUE_MAP = {"ALTA": "HighPriorityJobs", "CRITICA": "HighPriorityJobs",
                      "MEDIA": "MediumPriorityJobs", "BAIXA": "LowPriorityJobs"}
     ds_queue_val = _DS_QUEUE_MAP.get((pipeline.get("criticidade") or "").upper().strip())
+    runbook_val  = (pipeline.get("runbook_md") or "").strip() or None
 
     cron        = _time_to_cron(sched)
     base_log    = BASE_LOG_ROOT
@@ -251,6 +252,7 @@ def _generate_dag_source(pipeline, jobs):
         f'LOCAL_TZ      = "America/Sao_Paulo"',
         f'TEAMS_WEBHOOK_VAR = "TEAMS_WEBHOOK_URL_CVP"',
         f'DS_QUEUE      = {repr(ds_queue_val)}',  # None = usa fila padrão do projeto DS
+        f'RUNBOOK_MD    = {repr(runbook_val)}',
         f'default_args  = {{"owner": "airflow", "depends_on_past": False, "retries": {retries_val}, "retry_delay": timedelta(seconds={retry_delay_val})}}',
         f'JOBS          = {repr([j["job_name"] for j in sorted_jobs])}',
     ]
@@ -451,6 +453,8 @@ def _generate_dag_source(pipeline, jobs):
         '            facts.append(_fact("  Duração", _fmt_duration(jdur)))',
         "    else:",
         '        facts.append(_fact("Job com falha", "Não identificado"))',
+        "    if RUNBOOK_MD:",
+        '        facts.append(_fact("📖 Runbook", RUNBOOK_MD[:400] + ("…" if len(RUNBOOK_MD) > 400 else "")))',
         "    _teams_post_card(",
         '        title="Falha na execução",',
         '        subtitle=f"O pipeline {pipeline_nm} foi interrompido por falha em um ou mais jobs. Verifique os detalhes abaixo.",',
@@ -690,7 +694,8 @@ def gerar_dags(**context):
         cur2  = conn2.cursor()
         cur2.execute(
             f"SELECT pipeline_name, criticidade, sla_minutos, ambiente, "
-            f"max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao, dag_start_date "
+            f"max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao, dag_start_date, "
+            f"runbook_md "
             f"FROM dbo.etl_pipeline WHERE pipeline_name IN ({pnames_sql})"
         )
         adv_rows = cur2.fetchall()
