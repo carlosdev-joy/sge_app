@@ -6862,14 +6862,14 @@ function renderJobsTable(payload) {
     '<td style="font-weight:500;white-space:nowrap">' + (j.pipeline_name || '—') + '</td>' +
     '<td style="font-weight:500;white-space:nowrap">' +
       (j.job_name || '—') +
-      '<button class="btn-copy-inline" onclick="_copyText(\'' + _esc(j.job_name || '') + '\',this)" title="Copiar nome do job" style="margin-left:5px;background:none;border:none;cursor:pointer;color:var(--muted);padding:0 2px;vertical-align:middle;font-size:13px;opacity:.55;transition:opacity .15s" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.55">⎘</button>' +
+      '<button class="btn-copy-inline" onclick="_copyText(\'' + _escHtml(j.job_name || '') + '\',this)" title="Copiar nome do job" style="margin-left:5px;background:none;border:none;cursor:pointer;color:var(--muted);padding:0 2px;vertical-align:middle;font-size:13px;opacity:.55;transition:opacity .15s" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.55">⎘</button>' +
     '</td>' +
     '<td style="text-align:center">' +
       '<input class="inline-order" type="number" min="1" value="' + (j.execution_order ?? '') + '" ' +
         'oninput="onJobOrderChange(' + i + ', this.value)" />' +
     '</td>' +
     '<td><span class="tag-pill">' + (j.job_type || '—') + '</span></td>' +
-    '<td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (j.job_command || '') + '">' + (j.job_command || '—') + (j.job_type === 'shell' && j.ssh_conn_id ? ' <span class="tag-pill" style="font-size:10px;margin-left:4px">' + _esc(j.ssh_conn_id) + '</span>' : '') + '</td>' +
+    '<td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (j.job_command || '') + '">' + (j.job_command || '—') + (j.job_type === 'shell' && j.ssh_conn_id ? ' <span class="tag-pill" style="font-size:10px;margin-left:4px">' + _escHtml(j.ssh_conn_id) + '</span>' : '') + '</td>' +
     '<td class="col-actions">' +
       '<div class="row-actions">' +
         (!window.__isViewer ? '<button class="act-btn act-edit" onclick="openJobEdit(' + i + ')" title="Editar job">' + ICONS.edit + '</button>' : '') +
@@ -7150,7 +7150,7 @@ async function _loadSshOptions(selectId) {
     if (!r.ok) return;
     const d = await r.json();
     const opts = (d.connections || []).map(c =>
-      `<option value="${_esc(c.conn_id)}">${_esc(c.conn_id)}${c.host ? ' · ' + _esc(c.host) : ''}</option>`
+      `<option value="${_escHtml(c.conn_id)}">${_escHtml(c.conn_id)}${c.host ? ' · ' + _escHtml(c.host) : ''}</option>`
     ).join('');
     sel.innerHTML = '<option value="">Padrão do pipeline (SSH_CONN_ID)</option>' + opts;
     sel.dataset.loaded = '1';
@@ -9740,8 +9740,8 @@ function _dsmRenderStatus(data) {
     const cbg   = csc === 1 ? '#dcfce7' : csc === 2 ? '#fef9c3' : csc === 3 ? '#fee2e2' : '#f1f5f9';
     const ctxt  = csc === 1 ? '#16a34a' : csc === 2 ? '#a16207' : csc === 3 ? '#dc2626' : '#64748b';
     return `<tr>
-      <td style="font-family:monospace;font-size:.82rem">${_esc(cj.name)}</td>
-      <td><span style="background:${cbg};color:${ctxt};padding:2px 8px;border-radius:10px;font-size:.8rem;font-weight:600">${_esc(cj.status||'')}</span></td>
+      <td style="font-family:monospace;font-size:.82rem">${_escHtml(cj.name)}</td>
+      <td><span style="background:${cbg};color:${ctxt};padding:2px 8px;border-radius:10px;font-size:.8rem;font-weight:600">${_escHtml(cj.status||'')}</span></td>
       <td style="text-align:center;color:var(--muted)">${cj.status_code ?? '—'}</td>
     </tr>`;
   }).join('');
@@ -9867,8 +9867,8 @@ async function dsmPipelineLoad() {
     tbody.innerHTML = jobs.map((j, i) => {
       const dsLog  = dsLogs[j.job_name] || {};
       const wave   = dsLog.wave_number ?? '—';
-      const ex     = _esc(j.execution_id || execId);
-      const jn     = _esc(j.job_name || '');
+      const ex     = _escHtml(j.execution_id || execId);
+      const jn     = _escHtml(j.job_name || '');
       const statusLabel = dsLog.status || j.status || '—';
       let badge = '';
       const sv = (statusLabel).toUpperCase();
@@ -9877,7 +9877,7 @@ async function dsmPipelineLoad() {
       else if (sv === 'QUEUED')    badge = '<span class="log-pill running">◌ QUEUED</span>';
       else if (sv === 'WARNING')   badge = '<span class="log-pill warning">! WARNING</span>';
       else if (sv === 'ABORTED' || sv === 'FAILED') badge = '<span class="log-pill failed">✕ ' + sv + '</span>';
-      else badge = '<span class="log-pill running">… ' + _esc(statusLabel) + '</span>';
+      else badge = '<span class="log-pill running">… ' + _escHtml(statusLabel) + '</span>';
 
       return `<tr>
         <td style="text-align:center;color:var(--muted);font-weight:600">${i+1}</td>
