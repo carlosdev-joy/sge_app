@@ -7059,6 +7059,7 @@ async function saveJobCreateSingle() {
     execution_order: order,
     job_type: type,
     job_command: cmd || null,
+    ssh_conn_id: (type === 'shell') ? ($('jcm-ssh').value || null) : null,
   });
 
   if ($('job_pipeline_name')) $('job_pipeline_name').value = pipeline;
@@ -7129,6 +7130,33 @@ async function saveJobCreateBulk() {
   showToast('Jobs carregados. Agora preencha a lineage de cada um e clique em "Salvar Jobs".', false);
 }
 
+function _dsmToggleSshField(prefix) {
+  const type = $(prefix + '-type').value;
+  const wrap = $(prefix + '-ssh-wrap');
+  if (!wrap) return;
+  wrap.style.display = type === 'shell' ? '' : 'none';
+  if (type === 'shell' && !$(prefix + '-ssh').dataset.loaded) {
+    _loadSshOptions(prefix + '-ssh');
+  }
+}
+
+async function _loadSshOptions(selectId) {
+  const sel = $(selectId);
+  if (!sel || sel.dataset.loaded) return;
+  try {
+    const r = await fetch(ORQUESTRA_API + '/airflow/connections/ssh', {
+      headers: authHeader ? { Authorization: authHeader } : {},
+    });
+    if (!r.ok) return;
+    const d = await r.json();
+    const opts = (d.connections || []).map(c =>
+      `<option value="${_esc(c.conn_id)}">${_esc(c.conn_id)}${c.host ? ' · ' + _esc(c.host) : ''}</option>`
+    ).join('');
+    sel.innerHTML = '<option value="">Padrão do pipeline (SSH_CONN_ID)</option>' + opts;
+    sel.dataset.loaded = '1';
+  } catch(e) {}
+}
+
 function openJobEdit(idx) {
   const list = window.__jobs || [];
   const j = list[idx];
@@ -7143,6 +7171,11 @@ function openJobEdit(idx) {
   $('jem-cmd').value = j.job_command || '';
   $('jobEditMsg').textContent = '';
   $('jobEditMsg').className = 'msg';
+
+  const sshWrap = $('jem-ssh-wrap');
+  if (sshWrap) sshWrap.style.display = (j.job_type === 'shell') ? '' : 'none';
+  const sshSel = $('jem-ssh');
+  if (sshSel) { sshSel.value = j.ssh_conn_id || ''; if (j.job_type === 'shell' && !sshSel.dataset.loaded) _loadSshOptions('jem-ssh'); }
 
   $('jobEditModal').classList.add('open');
 }
@@ -7172,6 +7205,7 @@ async function saveJobEdit() {
       execution_order: order,
       job_type: type,
       job_command: cmd || null,
+      ssh_conn_id: (type === 'shell') ? ($('jem-ssh').value || null) : null,
       // Para edição linha-a-linha, mantemos origens/destinos vazios (mesmo padrão do bulk)
       origens: [],
       destinos: [],
@@ -8165,7 +8199,7 @@ function clearQuery() {
     <div style="display:grid;grid-template-columns:180px 1fr;gap:.6rem">
       <div class="field">
         <label>Tipo <span style="color:var(--red)">*</span></label>
-        <select id="jem-type">
+        <select id="jem-type" onchange="_dsmToggleSshField('jem')">
           <option value="">Selecione...</option>
           <option value="datastage">datastage</option>
           <option value="shell">shell</option>
@@ -8177,6 +8211,14 @@ function clearQuery() {
         <label>Comando</label>
         <input id="jem-cmd" type="text" placeholder="opcional" />
       </div>
+    </div>
+
+    <div id="jem-ssh-wrap" class="field" style="display:none">
+      <label>Servidor SSH (conexão)</label>
+      <select id="jem-ssh">
+        <option value="">Padrão do pipeline (SSH_CONN_ID)</option>
+      </select>
+      <div class="helper">Somente para jobs do tipo shell. Deixe em branco para usar a conexão padrão do pipeline.</div>
     </div>
 
     <div id="jobEditMsg" class="msg"></div>
@@ -8222,7 +8264,7 @@ function clearQuery() {
       <div style="display:grid;grid-template-columns:180px 1fr;gap:.6rem">
         <div class="field">
           <label>Tipo <span style="color:var(--red)">*</span></label>
-          <select id="jcm-type">
+          <select id="jcm-type" onchange="_dsmToggleSshField('jcm')">
             <option value="">Selecione...</option>
             <option value="datastage">datastage</option>
             <option value="shell">shell</option>
@@ -8237,6 +8279,14 @@ function clearQuery() {
       </div>
       <div class="helper" style="margin-top:-.25rem">
         Dica: se o backend exigir lineage, você pode inserir depois. Aqui cadastramos com origens/destinos vazios.
+      </div>
+
+      <div id="jcm-ssh-wrap" class="field" style="display:none">
+        <label>Servidor SSH (conexão)</label>
+        <select id="jcm-ssh">
+          <option value="">Padrão do pipeline (SSH_CONN_ID)</option>
+        </select>
+        <div class="helper">Somente para jobs do tipo shell. Deixe em branco para usar a conexão padrão do pipeline.</div>
       </div>
     </div>
 

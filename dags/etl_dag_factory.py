@@ -88,10 +88,12 @@ def _task_block(job, project, pipeline):
         ])
     elif jtype == "shell":
         cmd = jcmd or "echo 'comando nao configurado'"
+        ssh = job.get("ssh_conn_id") or None
+        ssh_val = f'"{ssh}"' if ssh else 'SSH_CONN_ID'
         main = "\n".join([
             f't_job_{vname} = SSHOperator(',
             f'    task_id="{name}",',
-            f'    ssh_conn_id=SSH_CONN_ID,',
+            f'    ssh_conn_id={ssh_val},',
             f'    command="{cmd}",',
             f'    cmd_timeout=None,',
             f'    do_xcom_push=True,',
