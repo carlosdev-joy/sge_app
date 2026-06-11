@@ -1,7 +1,9 @@
-📋 Diagnóstico
-{
-  "ok": false,
-  "erro": "HTTP 500 — resposta não-JSON (container da API foi rebuildado?)",
-  "http_status": 500,
-  "corpo_bruto": "Internal Server Error"
-}
+# Ver qual imagem está rodando (confirma que é a antiga)
+docker compose ps
+docker compose images orquestra-api
+
+# Rebuild + restart apenas da API (sem derrubar o resto)
+docker compose build orquestra-api && docker compose up -d --no-deps orquestra-api
+
+# Acompanhar os logs até aparecer "Application startup complete."
+docker compose logs -f orquestra-api
