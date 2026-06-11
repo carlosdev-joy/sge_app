@@ -2689,13 +2689,13 @@ async def factory_runs(limit: int = Query(20, le=100)):
         for run in r.json().get("dag_runs", []):
             conf = run.get("conf") or {}
             if conf.get("pipeline_name"):
-                escopo = f"Pipeline: {conf['pipeline_name']}"
+                escopo = f"Pipeline específico: {conf['pipeline_name']}"
             elif conf.get("force_all") and conf.get("filter_project"):
-                escopo = f"Todos do projeto {conf['filter_project']}"
+                escopo = f"Todos os pipelines do projeto {conf['filter_project']} (regeneração forçada)"
             elif conf.get("force_all"):
-                escopo = "Todos os pipelines (force_all)"
+                escopo = "Todos os pipelines (regeneração forçada)"
             else:
-                escopo = "Apenas pendentes (dag_criada=0)"
+                escopo = "Apenas pipelines pendentes de criação"
             out.append({
                 "dag_run_id": run.get("dag_run_id"),
                 "state":      run.get("state"),
@@ -2721,17 +2721,26 @@ def _parse_factory_log(raw: str) -> dict:
             if msg.startswith("OK ->"):
                 arquivo = msg[5:].strip()
                 geradas.append(arquivo)
-                steps.append({"tipo": "gerada", "msg": f"DAG gravada em {arquivo}"})
+                steps.append({"tipo": "gerada", "msg": f"Arquivo da DAG gravado em {arquivo}"})
             elif msg.startswith("dag_criada=1"):
-                steps.append({"tipo": "banco", "msg": msg})
+                pnm = _re.search(r"'([^']+)'", msg)
+                steps.append({"tipo": "banco",
+                              "msg": f"Pipeline '{pnm.group(1)}' marcado como criado no cadastro" if pnm else msg})
             elif "resetado" in msg:
-                steps.append({"tipo": "reset", "msg": msg})
+                pnm = _re.search(r"'([^']+)'", msg)
+                steps.append({"tipo": "reset",
+                              "msg": f"Pipeline '{pnm.group(1)}' liberado para regeneração" if pnm else
+                                     "Pipelines liberados para regeneração"})
             elif msg.startswith("Nenhum pipeline pendente"):
                 steps.append({"tipo": "vazio", "msg": "Nenhum pipeline pendente encontrado — nada foi regenerado. "
                               "Verifique se o pipeline existe e se o reset funcionou."})
             elif msg.startswith("Geradas:"):
-                resumo = msg
-                steps.append({"tipo": "resumo", "msg": msg})
+                nums = _re.findall(r"\d+", msg)
+                if len(nums) >= 2:
+                    resumo = f"{nums[0]} DAG(s) regenerada(s) com sucesso, {nums[1]} erro(s)"
+                else:
+                    resumo = msg
+                steps.append({"tipo": "resumo", "msg": resumo})
             elif msg.startswith("SINTAXE INVALIDA") or msg.startswith("AVISO"):
                 erros.append(msg)
                 steps.append({"tipo": "erro", "msg": msg})

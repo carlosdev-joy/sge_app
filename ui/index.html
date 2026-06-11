@@ -2573,10 +2573,10 @@ function logsSwitchTab(which) {
 }
 
 const FACTORY_STATE_BADGE = {
-  success: '<span class="badge badge-success">✓ sucesso</span>',
-  failed:  '<span class="badge badge-failed">✕ falhou</span>',
-  running: '<span class="badge badge-running">… executando</span>',
-  queued:  '<span class="badge">⏳ na fila</span>',
+  success: '<span class="badge badge-success">✓ Concluída</span>',
+  failed:  '<span class="badge badge-failed">✕ Com erro</span>',
+  running: '<span class="badge badge-running">… Em execução</span>',
+  queued:  '<span class="badge">⏳ Aguardando</span>',
 };
 
 async function loadFactoryRuns() {
@@ -2598,14 +2598,14 @@ async function loadFactoryRuns() {
         '<td style="font-size:12px;white-space:nowrap">' + fmtDt(run.start_date) + '</td>' +
         '<td>' + badge + '</td>' +
         '<td style="font-size:12px">' + (run.escopo || '—') + '</td>' +
-        '<td style="font-size:11px;color:var(--muted)">' + (run.trigger === 'manual' ? 'manual' : run.trigger) + '</td>' +
+        '<td style="font-size:11px;color:var(--muted)">' + ({ manual: 'Manual', scheduled: 'Agendado', dataset_triggered: 'Por dependência', backfill: 'Reprocessamento' }[run.trigger] || run.trigger) + '</td>' +
         '<td style="font-size:11px;font-family:monospace;color:var(--muted)">' + run.dag_run_id + '</td>' +
       '</tr>' +
       '<tr id="factory-detail-' + i + '" style="display:none"><td colspan="5" style="background:var(--bg);padding:1rem">' +
         '<div id="factory-detail-body-' + i + '" style="font-size:12px;color:var(--muted)">…</div></td></tr>';
     }).join('');
     area.innerHTML = '<div class="query-table-wrap"><table class="query-table">' +
-      '<thead><tr><th>Início</th><th>Status</th><th>Escopo</th><th>Disparo</th><th>Run ID</th></tr></thead>' +
+      '<thead><tr><th>Início</th><th>Situação</th><th>O que foi regenerado</th><th>Disparo</th><th>Identificador</th></tr></thead>' +
       '<tbody>' + rows + '</tbody></table></div>';
     if (st) st.textContent = data.length + ' execução(ões). Clique numa linha para ver as etapas.';
   } catch(e) {
@@ -2614,13 +2614,13 @@ async function loadFactoryRuns() {
 }
 
 const FACTORY_STEP_STYLE = {
-  reset:  { icon: '🔄', color: 'var(--cvp-blue)', label: 'Reset' },
-  gerada: { icon: '📝', color: 'var(--green)',    label: 'DAG gerada' },
-  banco:  { icon: '💾', color: 'var(--green)',    label: 'Banco' },
+  reset:  { icon: '🔄', color: 'var(--cvp-blue)', label: 'Preparação' },
+  gerada: { icon: '📝', color: 'var(--green)',    label: 'Arquivo gerado' },
+  banco:  { icon: '💾', color: 'var(--green)',    label: 'Cadastro atualizado' },
   vazio:  { icon: '⚠️', color: 'var(--orange)',   label: 'Atenção' },
-  resumo: { icon: '🏁', color: 'var(--cvp-blue)', label: 'Resumo' },
+  resumo: { icon: '🏁', color: 'var(--cvp-blue)', label: 'Resultado final' },
   erro:   { icon: '❌', color: 'var(--red)',      label: 'Erro' },
-  info:   { icon: 'ℹ️', color: 'var(--muted)',    label: 'Info' },
+  info:   { icon: 'ℹ️', color: 'var(--muted)',    label: 'Informação' },
 };
 
 async function toggleFactoryDetail(i, encodedRunId) {
