@@ -84,6 +84,7 @@ def _task_block(job, project, pipeline):
             f'    project=PROJECT_NAME,',
             f'    job_name="{name}",',
             f'    ssh_conn_id=SSH_CONN_ID,',
+            f'    queue_name=DS_QUEUE,',
             f')',
         ])
     elif jtype == "shell":
@@ -197,6 +198,9 @@ def _generate_dag_source(pipeline, jobs):
     pool_name_val       = (pipeline.get("pool_name") or "").strip() or None
     sla_minutos_val     = pipeline.get("sla_minutos")
     ssh_conn_id_val     = (pipeline.get("ssh_conn_id") or "ssh_lnxprd021").strip()
+    _DS_QUEUE_MAP = {"ALTA": "HighPriorityJobs", "CRITICA": "HighPriorityJobs",
+                     "MEDIA": "MediumPriorityJobs", "BAIXA": "LowPriorityJobs"}
+    ds_queue_val = _DS_QUEUE_MAP.get((pipeline.get("criticidade") or "").upper().strip())
 
     cron        = _time_to_cron(sched)
     base_log    = BASE_LOG_ROOT
@@ -246,6 +250,7 @@ def _generate_dag_source(pipeline, jobs):
         f'BASE_LOG_DIR  = "{base_log}"',
         f'LOCAL_TZ      = "America/Sao_Paulo"',
         f'TEAMS_WEBHOOK_VAR = "TEAMS_WEBHOOK_URL_CVP"',
+        f'DS_QUEUE      = {repr(ds_queue_val)}',  # None = usa fila padrão do projeto DS
         f'default_args  = {{"owner": "airflow", "depends_on_past": False, "retries": {retries_val}, "retry_delay": timedelta(seconds={retry_delay_val})}}',
         f'JOBS          = {repr([j["job_name"] for j in sorted_jobs])}',
     ]

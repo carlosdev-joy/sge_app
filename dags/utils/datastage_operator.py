@@ -13,12 +13,17 @@ Features:
   - DB persistence to etl_ds_job_log via sp_etl_ds_job_log_upsert
   - attach_only mode: monitor an already-running job without triggering
   - XCom JSON output compatible with etl_dag_factory._extract_status_code()
+  - Workload queue: criticidade do pipeline é mapeada para a fila de
+    execução do DataStage Workload Management via -queuename no dsjob -run
+    (ALTA/CRÍTICO → HighPriorityJobs · MEDIA/NORMAL → MediumPriorityJobs
+     BAIXA → LowPriorityJobs). Sem configuração usa o padrão do projeto.
 
 dsjob -jobinfo "Job Status" codes:
    0 = RUNNING
    1 = Finished OK
    2 = Finished with warnings
    3 = Aborted
+   4 = Queued
   99 = Not running
 """
 
@@ -73,6 +78,7 @@ class DataStageOperator(BaseOperator):
         attach_only: bool = False,
         mssql_conn_id: str = "SQL14_DMDB41",
         pipeline_name: str = "",
+        queue_name: str | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -86,7 +92,8 @@ class DataStageOperator(BaseOperator):
         self.execution_date_param = execution_date_param
         self.attach_only          = attach_only
         self.mssql_conn_id        = mssql_conn_id
-        self.pipeline_name        = pipeline_name  # used for DB persistence
+        self.pipeline_name        = pipeline_name
+        self.queue_name           = queue_name  # DS Workload Management queue
 
     # ── entry point ──────────────────────────────────────────────────────────
 
@@ -205,6 +212,8 @@ class DataStageOperator(BaseOperator):
     def _trigger_run(self, logical_date: str) -> int:
         # dsjob requer todas as flags ANTES de project/job
         parts = [f"{self.dshome}/bin/dsjob", "-run", "-mode", "NORMAL"]
+        if self.queue_name:
+            parts += ["-queuename", self.queue_name]
         if self.execution_date_param and logical_date:
             parts += ["-param", f"{self.execution_date_param}={logical_date}"]
         parts += [self.project, self.job_name]
