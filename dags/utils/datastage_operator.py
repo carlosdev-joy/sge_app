@@ -363,18 +363,26 @@ class DataStageOperator(BaseOperator):
         self.log.info("[DS] %s — %d child job(s)", label, len(child_jobs))
         self._log_child_jobs(child_jobs)
 
+        # Para WARNING: grava o detalhe real no DS log, mas reporta SUCCESS
+        # ao Airflow/factory (job finalizou — só teve avisos, não falhou)
+        ds_label = "Finished with warnings" if label == "WARNING" else label
+        xcom_status_code = 1  # SUCCESS para o factory em ambos OK e WARNING
+        if label not in ("SUCCESS", "WARNING"):
+            xcom_status_code = status_code  # ABORTED etc. mantém o código original
+
         self._persist(
             execution_id, pipeline,
             info.get("wave_number"), info.get("pid"),
-            label, status_code, child_jobs, logsum, None,
+            ds_label, status_code, child_jobs, logsum, None,
         )
 
         return json.dumps({
             "system":      "datastage",
             "project":     self.project,
             "job":         self.job_name,
-            "status":      label,
-            "status_code": status_code,
+            "status":      "SUCCESS",
+            "status_code": xcom_status_code,
+            "ds_status":   ds_label,        # detalhe real visível no DS Log
             "wave_number": info.get("wave_number"),
             "start_time":  info.get("start_time"),
             "pid":         info.get("pid"),

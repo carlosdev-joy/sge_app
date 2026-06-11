@@ -266,7 +266,7 @@ def _generate_dag_source(pipeline, jobs):
         "",
         "def _status_from_code(code, upstream_state):",
         '    if code == 1:  return "SUCCESS"',
-        '    if code == 2:  return "WARNING"',
+        '    if code == 2:  return "SUCCESS"  # WARNING = finalizou, conta como sucesso',
         '    if code is not None: return "FAILED"',
         "    if upstream_state == State.SUCCESS: return \"SUCCESS\"",
         '    return "FAILED"',
