@@ -55,9 +55,19 @@ def _ind(code, n=4):
     return "\n".join(pad + ln if ln.strip() else ln for ln in code.split("\n"))
 
 
+_TYPE_ALIAS = {
+    "bash":         "shell",
+    "shell script": "shell",
+    "proc":         "storedproc",
+    "stored proc":  "storedproc",
+    "stored_proc":  "storedproc",
+    "procedure":    "storedproc",
+}
+
+
 def _task_block(job, project, pipeline):
     name  = job["job_name"]
-    jtype = job["job_type"].lower().strip()
+    jtype = _TYPE_ALIAS.get(job["job_type"].lower().strip(), job["job_type"].lower().strip())
     jcmd  = job["job_command"] or ""
 
     if jtype == "datastage":
@@ -107,6 +117,33 @@ def _task_block(job, project, pipeline):
             f'    python_callable=_run_{name},',
             f')',
         ])
+    elif jtype == "sql":
+        # job_command = SQL inline ou nome de arquivo .sql (relativo a BASE_LOG_DIR)
+        sql_stmt = jcmd or f"SELECT 1 -- job {name}"
+        safe_sql = sql_stmt.replace('"', '\\"').replace('\n', ' ')
+        main = "\n".join([
+            f'def _run_{name}(**context):',
+            f'    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)',
+            f'    hook.run("{safe_sql}")',
+            f'',
+            f't_job_{name} = PythonOperator(',
+            f'    task_id="{name}",',
+            f'    python_callable=_run_{name},',
+            f')',
+        ])
+    elif jtype == "http":
+        url = jcmd or "https://httpbin.org/get"
+        main = "\n".join([
+            f'def _run_{name}(**context):',
+            f'    resp = requests.get("{url}", timeout=30)',
+            f'    resp.raise_for_status()',
+            f'    print(f"HTTP {name}: status={{resp.status_code}}")',
+            f'',
+            f't_job_{name} = PythonOperator(',
+            f'    task_id="{name}",',
+            f'    python_callable=_run_{name},',
+            f')',
+        ])
     else:
         main = "\n".join([
             f't_job_{name} = PythonOperator(',
@@ -141,9 +178,10 @@ def _generate_dag_source(pipeline, jobs):
     tags_raw   = pipeline["tags"]
     sched      = pipeline["scheduled_time"]
     depends_on = (pipeline.get("depends_on") or "").strip() or None
-    f_ini   = bool(pipeline["envia_msg_inicio"])
-    f_fim   = bool(pipeline["envia_msg_fim"])
-    f_err   = bool(pipeline["envia_msg_erro"])
+    is_prd  = (pipeline.get("ambiente") or "PROD").upper() == "PROD"
+    f_ini   = bool(pipeline["envia_msg_inicio"]) and is_prd
+    f_fim   = bool(pipeline["envia_msg_fim"])    and is_prd
+    f_err   = bool(pipeline["envia_msg_erro"])   and is_prd
     dag_start_date_raw = pipeline.get("dag_start_date")
 
     retries_val         = int(pipeline.get("retries_count") or 1)
@@ -151,6 +189,7 @@ def _generate_dag_source(pipeline, jobs):
     max_active_runs_val = int(pipeline.get("max_active_runs") or 1)
     pool_name_val       = (pipeline.get("pool_name") or "").strip() or None
     sla_minutos_val     = pipeline.get("sla_minutos")
+    ssh_conn_id_val     = (pipeline.get("ssh_conn_id") or "ssh_lnxprd021").strip()
 
     cron        = _time_to_cron(sched)
     base_log    = BASE_LOG_ROOT.format(project=project)
@@ -161,9 +200,12 @@ def _generate_dag_source(pipeline, jobs):
     others      = sorted_jobs[1:]
     all_ends    = [f"t_end_{j['job_name']}" for j in sorted_jobs]
 
-    ssh_needed = any(j["job_type"].lower() in ("datastage", "shell") for j in sorted_jobs)
-    ds_needed  = any(j["job_type"].lower() == "datastage" for j in sorted_jobs)
-    sh_needed  = any(j["job_type"].lower() == "shell" for j in sorted_jobs)
+    def _jtypes(jobs):
+        return {_TYPE_ALIAS.get(j["job_type"].lower(), j["job_type"].lower()) for j in jobs}
+
+    job_types  = _jtypes(sorted_jobs)
+    ds_needed  = "datastage" in job_types
+    sh_needed  = "shell"     in job_types
 
     # Seção de imports
     import_lines = ["from airflow import DAG"]
@@ -188,7 +230,7 @@ def _generate_dag_source(pipeline, jobs):
     # Constantes
     consts_lines = [
         f'DAG_ID        = "{pname}"',
-        f'SSH_CONN_ID   = "ssh_lnxprd021"',
+        f'SSH_CONN_ID   = "{ssh_conn_id_val}"',
         f'MSSQL_CONN_ID = "SQL14_DMDB41"',
         f'PROJECT_NAME  = "{project}"',
         f'DOMAIN        = "{domain}"',
@@ -313,9 +355,22 @@ def _generate_dag_source(pipeline, jobs):
         "",
         "def teams_error(**context):",
         "    execution_id = context['ts_nodash']",
+        "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "    try:",
+        "        failed = hook.get_records(",
+        '            "SELECT job_name FROM dbo.etl_job_execution "',
+        '            "WHERE execution_id=%s AND pipeline=%s AND status=\'FAILED\' "',
+        '            "ORDER BY start_time",',
+        "            parameters=(execution_id, PIPELINE_NAME),",
+        "        )",
+        '        failed_names = ", ".join(r[0] for r in failed) if failed else "Desconhecido"',
+        "    except Exception:",
+        '        failed_names = "Desconhecido"',
         '    _teams_post_card("Falha na execucao", [',
         '        f"Processo: {PIPELINE_NAME}", f"Projeto: {PROJECT_NAME} | Dominio: {DOMAIN}",',
-        '        "", f"ID: {execution_id}", "Uma ou mais tasks falharam.",',
+        '        "", f"ID: {execution_id}",',
+        '        f"Job com falha: {failed_names}",',
+        '        f"Hora: {_now_str()}",',
         "    ], status='FAILED')",
         "",
         "def log_start(job_name, task_key, **context):",
@@ -499,8 +554,17 @@ def gerar_dags(**context):
 
     force_all      = bool(conf.get("force_all", False))
     filter_project = (conf.get("filter_project") or "").strip()
+    pipeline_name  = (conf.get("pipeline_name")  or "").strip()
 
-    if force_all:
+    if pipeline_name:
+        # Regerar pipeline específico — reseta dag_criada só para ele
+        hook.run(
+            "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
+            "WHERE pipeline_name=%s",
+            parameters=(pipeline_name,),
+        )
+        print(f"[FACTORY] pipeline_name='{pipeline_name}' — dag_criada resetado para regeneração")
+    elif force_all:
         if filter_project:
             hook.run(
                 "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
@@ -541,7 +605,7 @@ def gerar_dags(**context):
         cur2  = conn2.cursor()
         cur2.execute(
             f"SELECT pipeline_name, criticidade, sla_minutos, ambiente, "
-            f"max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao "
+            f"max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao, dag_start_date "
             f"FROM dbo.etl_pipeline WHERE pipeline_name IN ({pnames_sql})"
         )
         adv_rows = cur2.fetchall()
@@ -615,6 +679,15 @@ def gerar_dags(**context):
     print(f"\n[FACTORY] Geradas: {len(geradas)} | Erros: {len(erros)}")
     for e in erros:
         print(f"  x {e}")
+
+    if geradas:
+        try:
+            import httpx as _httpx
+            api_url = Variable.get("ORQUESTRA_API_URL", default_var="http://orquestra-api:8000")
+            r = _httpx.post(f"{api_url}/sync/pipeline-status", timeout=15)
+            print(f"[FACTORY] sync/pipeline-status → HTTP {r.status_code}")
+        except Exception as _e:
+            print(f"[FACTORY] AVISO: sync/pipeline-status falhou (não bloqueante) — {_e}")
 
     if erros:
         raise RuntimeError(f"{len(erros)} pipeline(s) com erro:\n" + "\n".join(erros))
