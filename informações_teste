@@ -8,10 +8,43 @@ docker compose build orquestra-api && docker compose up -d --no-deps orquestra-a
 # Acompanhar os logs até aparecer "Application startup complete."
 docker compose logs -f orquestra-api
 
-[2026-06-11, 16:57:57 -03] {local_task_job_runner.py:123} ▶ Pre task execution logs
-[2026-06-11, 16:57:57 -03] {base.py:84} INFO - Retrieving connection 'SQL14_DMDB41'
-[2026-06-11, 16:57:57 -03] {sql.py:861} INFO - Running statement: UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() WHERE pipeline_name=%s, parameters: ('DATASTAGE_GECOMIS_MOV_DIARIO',)
-[2026-06-11, 16:57:57 -03] {sql.py:879} INFO - Rows affected: 1
-[2026-06-11, 16:57:57 -03] {logging_mixin.py:190} INFO - [FACTORY] pipeline_name='DATASTAGE_GECOMIS_MOV_DIARIO' — dag_criada resetado para regeneração
-[2026-06-11, 16:57:57 -03] {logging_mixin.py:190} INFO - [FACTORY] Nenhum pipeline pendente.
-[2026-06-11, 16:57:57 -03] {python.py:240} INFO - Done. Returned value was: None
+[2026-06-11, 17:51:24 -03] {local_task_job_runner.py:123} ▶ Pre task execution logs
+[2026-06-11, 17:51:24 -03] {base.py:84} INFO - Retrieving connection 'SQL14_DMDB41'
+[2026-06-11, 17:51:24 -03] {taskinstance.py:3337} ERROR - Task failed with exception
+Traceback (most recent call last):
+  File "src/pymssql/_pymssql.pyx", line 447, in pymssql._pymssql.Cursor.execute
+  File "src/pymssql/_mssql.pyx", line 1145, in pymssql._mssql.MSSQLConnection.execute_query
+  File "src/pymssql/_mssql.pyx", line 1176, in pymssql._mssql.MSSQLConnection.execute_query
+  File "src/pymssql/_mssql.pyx", line 1309, in pymssql._mssql.MSSQLConnection.format_and_run_query
+  File "src/pymssql/_mssql.pyx", line 1886, in pymssql._mssql.check_cancel_and_raise
+  File "src/pymssql/_mssql.pyx", line 1932, in pymssql._mssql.raise_MSSQLDatabaseException
+pymssql._mssql.MSSQLDatabaseException: (102, b"Incorrect syntax near '?'.DB-Lib error message 20018, severity 15:\nGeneral SQL Server error: Check messages from the SQL Server\n")
+During handling of the above exception, another exception occurred:
+Traceback (most recent call last):
+  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/models/taskinstance.py", line 776, in _execute_task
+    result = _execute_callable(context=context, **execute_callable_kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/models/taskinstance.py", line 742, in _execute_callable
+    return ExecutionCallableRunner(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/utils/operator_helpers.py", line 252, in run
+    return self.func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/models/baseoperator.py", line 425, in wrapper
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/operators/python.py", line 238, in execute
+    return_value = self.execute_callable()
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/operators/python.py", line 256, in execute_callable
+    return runner.run(*self.op_args, **self.op_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/utils/operator_helpers.py", line 252, in run
+    return self.func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/airflow/dags/etl_dag_factory.py", line 653, in gerar_dags
+    cursor.execute(
+  File "src/pymssql/_pymssql.pyx", line 462, in pymssql._pymssql.Cursor.execute
+pymssql.exceptions.ProgrammingError: (102, b"Incorrect syntax near '?'.DB-Lib error message 20018, severity 15:\nGeneral SQL Server error: Check messages from the SQL Server\n")
+[2026-06-11, 17:51:24 -03] {taskinstance.py:1242} INFO - Marking task as FAILED. dag_id=etl_dag_factory, task_id=gerar_dags, run_id=orquestra_ui_1781211083738, execution_date=20260611T205123, start_date=20260611T205124, end_date=20260611T205124
+[2026-06-11, 17:51:24 -03] {taskinstance.py:349} ▶ Post task execution logs
