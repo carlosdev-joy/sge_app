@@ -3,18 +3,16 @@ utils/datastage_operator.py
 
 Async DataStage operator for Apache Airflow 2.x.
 
-Replaces the SSHOperator + run_datastage_job.sh shell script with a Python
-implementation that provides:
+Features:
   - Idempotent trigger: attaches to an already-running job on Airflow restart
   - Real-time polling via dsjob -jobinfo (no blocking -wait flag)
   - Full log capture via dsjob -logsum on completion or failure
   - Child job visibility for SEQUENCE type jobs (BATCH/finish events)
   - Auto RESET + retry on ABORTED status (up to max_ds_retries)
   - Optional logical-date parameter for catch-up scheduling correctness
+  - DB persistence to etl_ds_job_log via sp_etl_ds_job_log_upsert
+  - attach_only mode: monitor an already-running job without triggering
   - XCom JSON output compatible with etl_dag_factory._extract_status_code()
-
-SSH connection (default: ssh_lnxprd021) must point to the DataStage engine server.
-dsjob user on the remote host must have access to the target project.
 
 dsjob -jobinfo "Job Status" codes:
    0 = RUNNING
@@ -29,6 +27,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from datetime import datetime
 
 from airflow.exceptions import AirflowException
 from airflow.models import BaseOperator
@@ -37,25 +36,28 @@ from airflow.providers.ssh.hooks.ssh import SSHHook
 
 class DataStageOperator(BaseOperator):
     """
-    Triggers a DataStage job asynchronously over SSH via dsjob CLI and polls
-    until completion.  Works for both SEQUENCE and regular ETL jobs.
+    Triggers (or attaches to) a DataStage job asynchronously over SSH via dsjob CLI
+    and polls until completion.  Works for SEQUENCE and regular ETL jobs.
 
-    XCom return value is a JSON string with keys:
+    Set attach_only=True to monitor a job that was triggered externally (e.g. the
+    etl_datastage_monitor DAG) without starting a new run.
+
+    XCom return value is a JSON string with:
         system, project, job, status, status_code, wave_number,
         start_time, pid, child_jobs, log_summary
 
-    ``status_code`` uses the standard dsjob convention (1=OK, 2=WARNING, 3=ABORTED)
-    which is compatible with ``etl_dag_factory._extract_status_code()``.
+    status_code uses the standard dsjob convention (1=OK, 2=WARNING, 3=ABORTED),
+    compatible with etl_dag_factory._extract_status_code().
     """
 
-    ui_color  = "#4A90D9"
+    ui_color   = "#4A90D9"
     ui_fgcolor = "#FFFFFF"
 
-    _ST_RUNNING  = 0
-    _ST_OK       = 1
-    _ST_WARNING  = 2
-    _ST_ABORTED  = 3
-    _ST_NOT_RUN  = 99
+    _ST_RUNNING = 0
+    _ST_OK      = 1
+    _ST_WARNING = 2
+    _ST_ABORTED = 3
+    _ST_NOT_RUN = 99
 
     def __init__(
         self,
@@ -67,32 +69,53 @@ class DataStageOperator(BaseOperator):
         max_ds_retries: int = 3,
         retry_wait: int = 60,
         execution_date_param: str | None = None,
+        attach_only: bool = False,
+        mssql_conn_id: str = "SQL14_DMDB41",
+        pipeline_name: str = "",
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
-        self.project             = project
-        self.job_name            = job_name
-        self.ssh_conn_id         = ssh_conn_id
-        self.dshome              = dshome
-        self.poll_interval       = poll_interval
-        self.max_ds_retries      = max_ds_retries
-        self.retry_wait          = retry_wait
+        self.project              = project
+        self.job_name             = job_name
+        self.ssh_conn_id          = ssh_conn_id
+        self.dshome               = dshome
+        self.poll_interval        = poll_interval
+        self.max_ds_retries       = max_ds_retries
+        self.retry_wait           = retry_wait
         self.execution_date_param = execution_date_param
+        self.attach_only          = attach_only
+        self.mssql_conn_id        = mssql_conn_id
+        self.pipeline_name        = pipeline_name  # used for DB persistence
 
     # ── entry point ──────────────────────────────────────────────────────────
 
     def execute(self, context: dict) -> str:
         ti           = context["ti"]
-        logical_date = context["ds"]  # Airflow logical date string (YYYY-MM-DD)
+        logical_date = context["ds"]
+        execution_id = context["ts_nodash"]
+        pipeline     = self.pipeline_name or context["dag"].dag_id
 
-        # Idempotency: if a previous attempt already triggered a run, reuse it
-        wave_num = ti.xcom_pull(key="ds_wave_num", task_ids=ti.task_id)
-        if wave_num is not None:
-            self.log.info("[DS] Resuming from XCom wave_num=%s", wave_num)
+        if self.attach_only:
+            # Monitor mode: attach to whatever is running, don't trigger
+            info = self._jobinfo()
+            if info["status_code"] != self._ST_RUNNING:
+                self.log.warning(
+                    "[DS] attach_only=True but job is not RUNNING (status=%s). "
+                    "Will still poll for final state.", info["status_code"]
+                )
+            wave_num = info.get("wave_number", 0)
+            self.log.info("[DS] Attached to job (wave=%s)", wave_num)
         else:
-            wave_num = self._trigger_or_attach(logical_date)
-            ti.xcom_push(key="ds_wave_num", value=wave_num)
-            self.log.info("[DS] Job triggered — wave_num=%s", wave_num)
+            wave_num = ti.xcom_pull(key="ds_wave_num", task_ids=ti.task_id)
+            if wave_num is not None:
+                self.log.info("[DS] Resuming from XCom wave_num=%s", wave_num)
+            else:
+                wave_num = self._trigger_or_attach(logical_date)
+                ti.xcom_push(key="ds_wave_num", value=wave_num)
+                self.log.info("[DS] Job triggered — wave_num=%s", wave_num)
+
+        # Persist initial RUNNING state to DB
+        self._persist(execution_id, pipeline, wave_num, None, "RUNNING", 0, [], "", None)
 
         # Polling loop
         ds_attempt = 0
@@ -102,7 +125,19 @@ class DataStageOperator(BaseOperator):
             sc   = info["status_code"]
             self.log.info(
                 "[DS] wave=%s  status=%s(%s)  controller=%s",
-                info.get("wave_number"), sc, info.get("status_text"), info.get("controller"),
+                info.get("wave_number"), sc, info.get("status_text"),
+                info.get("controller"),
+            )
+
+            # Save poll snapshot to DB
+            snapshot = json.dumps({
+                "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "status_code": sc,
+                "status_text": info.get("status_text", ""),
+            }, ensure_ascii=False)
+            self._persist(
+                execution_id, pipeline, info.get("wave_number") or wave_num,
+                info.get("pid"), _status_label(sc), sc, [], "", snapshot,
             )
 
             if sc == self._ST_RUNNING:
@@ -110,7 +145,7 @@ class DataStageOperator(BaseOperator):
 
             if sc in (self._ST_OK, self._ST_WARNING):
                 label = "SUCCESS" if sc == self._ST_OK else "WARNING"
-                return self._finish(sc, label, info)
+                return self._finish(execution_id, pipeline, sc, label, info)
 
             if sc == self._ST_ABORTED:
                 ds_attempt += 1
@@ -118,6 +153,17 @@ class DataStageOperator(BaseOperator):
                 logsum     = self._logsum()
                 child_jobs = self._parse_child_jobs(logsum)
                 self._log_child_jobs(child_jobs)
+                self._persist(
+                    execution_id, pipeline, info.get("wave_number") or wave_num,
+                    info.get("pid"), "ABORTED", sc, child_jobs, logsum, None,
+                )
+
+                if self.attach_only:
+                    # In monitor mode, don't reset — just report ABORTED
+                    raise AirflowException(
+                        f"[DS] '{self.project}/{self.job_name}' ABORTED.\n"
+                        f"Log summary (2 000 chars):\n{logsum[:2000]}"
+                    )
 
                 if ds_attempt < self.max_ds_retries:
                     self.log.info("[DS] RESET + retry in %ds …", self.retry_wait)
@@ -127,7 +173,6 @@ class DataStageOperator(BaseOperator):
                     ti.xcom_push(key="ds_wave_num", value=wave_num)
                     continue
 
-                logsum = self._logsum()
                 raise AirflowException(
                     f"[DS] '{self.project}/{self.job_name}' ABORTED after "
                     f"{self.max_ds_retries} attempt(s).\n"
@@ -148,8 +193,7 @@ class DataStageOperator(BaseOperator):
         info = self._jobinfo()
         if info["status_code"] == self._ST_RUNNING:
             self.log.info(
-                "[DS] Already RUNNING (wave=%s) — attaching without new trigger",
-                info.get("wave_number"),
+                "[DS] Already RUNNING (wave=%s) — attaching", info.get("wave_number")
             )
             try:
                 return int(info["wave_number"])
@@ -201,9 +245,8 @@ class DataStageOperator(BaseOperator):
     # ── SSH execution ────────────────────────────────────────────────────────
 
     def _exec(self, cmd: str, timeout: int = 120):
-        """Execute cmd on remote host via SSH, sourcing dsenv first."""
         full_cmd = f"source {self.dshome}/dsenv && {cmd}"
-        hook = SSHHook(ssh_conn_id=self.ssh_conn_id)
+        hook   = SSHHook(ssh_conn_id=self.ssh_conn_id)
         client = hook.get_conn()
         try:
             _, stdout, stderr = client.exec_command(full_cmd, timeout=timeout)
@@ -242,15 +285,10 @@ class DataStageOperator(BaseOperator):
         }
 
     def _parse_child_jobs(self, logsum: str) -> list:
-        """
-        Extract child job events from dsjob -logsum output.
-
-        SEQUENCE logs include:
-          BATCH  SeqName -> (ChildName): Job run requested
-          INFO   Job ChildName has finished, status = 1 (Finished OK)
-        """
+        """Extract child job events from dsjob -logsum output (SEQUENCE jobs)."""
         batch_re  = re.compile(r"BATCH\s+.*?->\s+\(([^)]+)\):\s+Job run requested")
         finish_re = re.compile(r"Job (\S+) has finished,\s*status\s*=\s*(\d+)\s+\(([^)]+)\)")
+        warning_re = re.compile(r"(FATAL|WARNING).*?(\S+).*?code\s*=\s*(-?\d+)")
 
         tracked: dict = {}
         result:  list = []
@@ -282,27 +320,69 @@ class DataStageOperator(BaseOperator):
             return
         self.log.info("[DS] Child jobs (%d):", len(child_jobs))
         for cj in child_jobs:
-            icon = "OK" if cj.get("status_code") == 1 else ("WARN" if cj.get("status_code") == 2 else "FAIL" if cj.get("status_code") == 3 else "...")
+            icon = {"1": "OK", "2": "WARN", "3": "FAIL"}.get(
+                str(cj.get("status_code")), "..."
+            )
             self.log.info("  [%s] %-50s  %s", icon, cj["name"], cj.get("status", ""))
 
-    # ── XCom payload ─────────────────────────────────────────────────────────
+    # ── DB persistence ────────────────────────────────────────────────────────
 
-    def _finish(self, status_code: int, status_name: str, info: dict) -> str:
+    def _persist(
+        self, execution_id, pipeline, wave_num, pid, status, status_code,
+        child_jobs, log_summary, poll_snapshot,
+    ) -> None:
+        try:
+            from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
+            hook = MsSqlHook(mssql_conn_id=self.mssql_conn_id)
+            hook.run(
+                "EXEC dbo.sp_etl_ds_job_log_upsert "
+                "@execution_id=%s, @pipeline_name=%s, @job_name=%s, @project=%s, "
+                "@wave_number=%s, @pid=%s, @status=%s, @status_code=%s, "
+                "@child_jobs=%s, @log_summary=%s, @poll_snapshot=%s",
+                parameters=(
+                    execution_id,
+                    pipeline,
+                    self.job_name,
+                    self.project,
+                    wave_num,
+                    pid or "",
+                    status,
+                    status_code,
+                    json.dumps(child_jobs, ensure_ascii=False) if child_jobs else "",
+                    (log_summary or "")[:8000],
+                    poll_snapshot or "",
+                ),
+            )
+        except Exception as exc:
+            self.log.warning("[DS] Could not persist to etl_ds_job_log: %s", exc)
+
+    # ── finish ────────────────────────────────────────────────────────────────
+
+    def _finish(self, execution_id, pipeline, status_code, label, info) -> str:
         logsum     = self._logsum()
         child_jobs = self._parse_child_jobs(logsum)
-        self.log.info("[DS] %s — %d child job(s)", status_name, len(child_jobs))
+        self.log.info("[DS] %s — %d child job(s)", label, len(child_jobs))
         self._log_child_jobs(child_jobs)
 
-        payload = {
+        self._persist(
+            execution_id, pipeline,
+            info.get("wave_number"), info.get("pid"),
+            label, status_code, child_jobs, logsum, None,
+        )
+
+        return json.dumps({
             "system":      "datastage",
             "project":     self.project,
             "job":         self.job_name,
-            "status":      status_name,
+            "status":      label,
             "status_code": status_code,
             "wave_number": info.get("wave_number"),
             "start_time":  info.get("start_time"),
             "pid":         info.get("pid"),
             "child_jobs":  child_jobs,
             "log_summary": logsum[:3000] if logsum else "",
-        }
-        return json.dumps(payload, ensure_ascii=False)
+        }, ensure_ascii=False)
+
+
+def _status_label(sc: int) -> str:
+    return {0: "RUNNING", 1: "SUCCESS", 2: "WARNING", 3: "ABORTED"}.get(sc, "UNKNOWN")
