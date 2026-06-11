@@ -14,7 +14,7 @@ Features:
   - attach_only mode: monitor an already-running job without triggering
   - XCom JSON output compatible with etl_dag_factory._extract_status_code()
   - Workload queue: criticidade do pipeline é mapeada para a fila de
-    execução do DataStage Workload Management via -queuename no dsjob -run
+    execução do DataStage Workload Management via -queue no dsjob -run
     (ALTA/CRÍTICO → HighPriorityJobs · MEDIA/NORMAL → MediumPriorityJobs
      BAIXA → LowPriorityJobs). Sem configuração usa o padrão do projeto.
 
@@ -228,7 +228,7 @@ class DataStageOperator(BaseOperator):
         # dsjob requer todas as flags ANTES de project/job
         parts = [f"{self.dshome}/bin/dsjob", "-run", "-mode", "NORMAL"]
         if self.queue_name:
-            parts += ["-queuename", self.queue_name]
+            parts += ["-queue", self.queue_name]
         if self.execution_date_param and logical_date:
             parts += ["-param", f"{self.execution_date_param}={logical_date}"]
         parts += [self.project, self.job_name]
