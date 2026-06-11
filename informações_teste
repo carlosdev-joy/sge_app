@@ -7,3 +7,82 @@ docker compose build orquestra-api && docker compose up -d --no-deps orquestra-a
 
 # Acompanhar os logs até aparecer "Application startup complete."
 docker compose logs -f orquestra-api
+
+
+
+[root@vmlnxprd083 airflow]# docker compose logs -f orquestra-api
+orquestra-api  | INFO:     Will watch for changes in these directories: ['/app']
+orquestra-api  | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+orquestra-api  | INFO:     Started reloader process [1] using WatchFiles
+orquestra-api  | INFO:     Started server process [7]
+orquestra-api  | INFO:     Waiting for application startup.
+orquestra-api  | 2026-06-11 20:36:21,966 [INFO] ORQUESTRA API v0.3.0 iniciando — Airflow: http://airflow-webserver:8080
+orquestra-api  | INFO:     Application startup complete.
+orquestra-api  | INFO:     172.18.0.8:51666 - "POST /catalogo HTTP/1.1" 200 OK
+orquestra-api  | INFO:     172.18.0.8:51676 - "GET /config HTTP/1.1" 200 OK
+orquestra-api  | INFO:     172.18.0.8:51684 - "GET /dashboard?date_ref=2026-06-11 HTTP/1.1" 200 OK
+orquestra-api  | INFO:     172.18.0.8:51694 - "POST /admin HTTP/1.1" 200 OK
+orquestra-api  | INFO:     172.18.0.8:51702 - "POST /admin/test-webhook HTTP/1.1" 500 Internal Server Error
+orquestra-api  | ERROR:    Exception in ASGI application
+orquestra-api  | Traceback (most recent call last):
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/uvicorn/protocols/http/httptools_impl.py", line 409, in run_asgi
+orquestra-api  |     result = await app(  # type: ignore[func-returns-value]
+orquestra-api  |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+orquestra-api  |     return await self.app(scope, receive, send)
+orquestra-api  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/fastapi/applications.py", line 1054, in __call__
+orquestra-api  |     await super().__call__(scope, receive, send)
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/applications.py", line 113, in __call__
+orquestra-api  |     await self.middleware_stack(scope, receive, send)
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/middleware/errors.py", line 187, in __call__
+orquestra-api  |     raise exc
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/middleware/errors.py", line 165, in __call__
+orquestra-api  |     await self.app(scope, receive, _send)
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/middleware/cors.py", line 93, in __call__
+orquestra-api  |     await self.simple_response(scope, receive, send, request_headers=headers)
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/middleware/cors.py", line 144, in simple_response
+orquestra-api  |     await self.app(scope, receive, send)
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 62, in __call__
+orquestra-api  |     await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+orquestra-api  |     raise exc
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+orquestra-api  |     await app(scope, receive, sender)
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/routing.py", line 715, in __call__
+orquestra-api  |     await self.middleware_stack(scope, receive, send)
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/routing.py", line 735, in app
+orquestra-api  |     await route.handle(scope, receive, send)
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/routing.py", line 288, in handle
+orquestra-api  |     await self.app(scope, receive, send)
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/routing.py", line 76, in app
+orquestra-api  |     await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+orquestra-api  |     raise exc
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+orquestra-api  |     await app(scope, receive, sender)
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/routing.py", line 73, in app
+orquestra-api  |     response = await f(request)
+orquestra-api  |                ^^^^^^^^^^^^^^^^
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/fastapi/routing.py", line 301, in app
+orquestra-api  |     raw_response = await run_endpoint_function(
+orquestra-api  |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/fastapi/routing.py", line 214, in run_endpoint_function
+orquestra-api  |     return await run_in_threadpool(dependant.call, **values)
+orquestra-api  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/starlette/concurrency.py", line 39, in run_in_threadpool
+orquestra-api  |     return await anyio.to_thread.run_sync(func, *args)
+orquestra-api  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/anyio/to_thread.py", line 63, in run_sync
+orquestra-api  |     return await get_async_backend().run_sync_in_worker_thread(
+orquestra-api  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 2518, in run_sync_in_worker_thread
+orquestra-api  |     return await future
+orquestra-api  |            ^^^^^^^^^^^^
+orquestra-api  |   File "/usr/local/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 1002, in run
+orquestra-api  |     result = context.run(func, *args)
+orquestra-api  |              ^^^^^^^^^^^^^^^^^^^^^^^^
+orquestra-api  |   File "/app/main.py", line 2816, in test_webhook
+orquestra-api  |     import requests as _req
+orquestra-api  | ModuleNotFoundError: No module named 'requests'
+
