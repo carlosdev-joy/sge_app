@@ -1849,7 +1849,7 @@
       <div id="cat-fields-tabela" style="display:grid;grid-template-columns:1fr 160px 180px auto;gap:.6rem;align-items:end">
         <div class="field" style="margin:0">
           <label>Nome da tabela <span style="color:var(--red)">*</span></label>
-          <input id="cat-object-name" type="text" placeholder="ex: TB_CLIENTE…" oninput="this.value=this.value.toUpperCase()" onkeydown="if(event.key==='Enter') catalogoSearch()" />
+          <input id="cat-object-name" type="text" placeholder="ex: TB_CLIENTE…" onkeydown="if(event.key==='Enter') catalogoSearch()" />
         </div>
         <div class="field" style="margin:0">
           <label>Direção</label>
@@ -1867,7 +1867,7 @@
       <div id="cat-fields-arquivo" style="display:none;grid-template-columns:1fr 160px auto;gap:.6rem;align-items:end">
         <div class="field" style="margin:0">
           <label>Nome do arquivo <span style="color:var(--red)">*</span></label>
-          <input id="cat-file-name" type="text" placeholder="ex: DS_EXT_PARCELAS, .dx…" oninput="this.value=this.value.toUpperCase()" onkeydown="if(event.key==='Enter') catalogoSearch()" />
+          <input id="cat-file-name" type="text" placeholder="ex: DS_EXT_PARCELAS, .dx…" onkeydown="if(event.key==='Enter') catalogoSearch()" />
         </div>
         <div class="field" style="margin:0">
           <label>Direção</label>
@@ -4197,7 +4197,13 @@ async function _catTrigger(conf, statusMsg) {
   });
   if (r.status === 401) { sair(); return null; }
   if (!r.ok) {
-    if (st) { st.textContent = 'Erro API: ' + r.status; st.style.color = 'var(--red)'; }
+    let errMsg = 'HTTP ' + r.status;
+    try {
+      const errBody = await r.json();
+      if (errBody && errBody.detail) errMsg = (typeof errBody.detail === 'string') ? errBody.detail : JSON.stringify(errBody.detail);
+    } catch(_) {}
+    if (st) { st.textContent = 'Erro: ' + errMsg; st.style.color = 'var(--red)'; }
+    showToast('Catálogo: ' + errMsg, true);
     return null;
   }
   return await r.json();
