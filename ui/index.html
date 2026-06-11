@@ -6869,7 +6869,7 @@ function renderJobsTable(payload) {
         'oninput="onJobOrderChange(' + i + ', this.value)" />' +
     '</td>' +
     '<td><span class="tag-pill">' + (j.job_type || '—') + '</span></td>' +
-    '<td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (j.job_command || '') + '">' + (j.job_command || '—') + '</td>' +
+    '<td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (j.job_command || '') + '">' + (j.job_command || '—') + (j.job_type === 'shell' && j.ssh_conn_id ? ' <span class="tag-pill" style="font-size:10px;margin-left:4px">' + _esc(j.ssh_conn_id) + '</span>' : '') + '</td>' +
     '<td class="col-actions">' +
       '<div class="row-actions">' +
         (!window.__isViewer ? '<button class="act-btn act-edit" onclick="openJobEdit(' + i + ')" title="Editar job">' + ICONS.edit + '</button>' : '') +
