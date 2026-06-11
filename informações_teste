@@ -8,62 +8,12 @@ docker compose build orquestra-api && docker compose up -d --no-deps orquestra-a
 # Acompanhar os logs até aparecer "Application startup complete."
 docker compose logs -f orquestra-api
 
-71adb627cc1e
- ▶ Log message source details
-[2026-06-11, 18:16:06 -03] {local_task_job_runner.py:123} ▶ Pre task execution logs
-[2026-06-11, 18:16:06 -03] {base.py:84} INFO - Retrieving connection 'ssh_lnxprd021'
-[2026-06-11, 18:16:06 -03] {ssh.py:298} WARNING - No Host Key Verification. This won't protect against Man-In-The-Middle attacks
-[2026-06-11, 18:16:06 -03] {transport.py:1944} INFO - Connected (version 2.0, client OpenSSH_8.0)
-[2026-06-11, 18:16:06 -03] {transport.py:1944} INFO - Authentication (password) successful!
-[2026-06-11, 18:16:07 -03] {base.py:84} INFO - Retrieving connection 'ssh_lnxprd021'
-[2026-06-11, 18:16:07 -03] {ssh.py:298} WARNING - No Host Key Verification. This won't protect against Man-In-The-Middle attacks
-[2026-06-11, 18:16:07 -03] {transport.py:1944} INFO - Connected (version 2.0, client OpenSSH_8.0)
-[2026-06-11, 18:16:07 -03] {transport.py:1944} INFO - Authentication (password) successful!
-[2026-06-11, 18:16:07 -03] {datastage_operator.py:238} INFO - [DS] trigger rc=255 | Invalid arguments: dsjob -run
-			[-mode <NORMAL | RESET | RESTART | VALIDATE>]
-			[-queue <queue name>]
-			[-ignextraparams]
-			[-paramfile <filename>]
-			[-param <name>=<value>]
-			[-warn <n>]
-			[-rows <n>]
-			[-wait]
-			[-opmetadata <TRUE | FALSE>]
-			[-disableprjhandler]
-			[-disablejobhandler]
-[2026-06-11, 18:16:07 -03] {taskinstance.py:3337} ERROR - Task failed with exception
-Traceback (most recent call last):
-  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/models/taskinstance.py", line 776, in _execute_task
-    result = _execute_callable(context=context, **execute_callable_kwargs)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/models/taskinstance.py", line 742, in _execute_callable
-    return ExecutionCallableRunner(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/utils/operator_helpers.py", line 252, in run
-    return self.func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/models/baseoperator.py", line 425, in wrapper
-    return func(self, *args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/opt/airflow/dags/utils/datastage_operator.py", line 121, in execute
-    wave_num = self._trigger_or_attach(logical_date)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/opt/airflow/dags/utils/datastage_operator.py", line 225, in _trigger_or_attach
-    return self._trigger_run(logical_date)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/opt/airflow/dags/utils/datastage_operator.py", line 241, in _trigger_run
-    raise AirflowException(
-airflow.exceptions.AirflowException: [DS] Failed to trigger 'BiCvp_BaseCobranca_00_ext_Parcelas_Pagas': rc=255 | Invalid arguments: dsjob -run
-			[-mode <NORMAL | RESET | RESTART | VALIDATE>]
-			[-queue <queue name>]
-			[-ignextraparams]
-			[-paramfile <filename>]
-			[-param <name>=<value>]
-			[-warn <n>]
-			[-rows <n>]
-			[-wait]
-			[-opmetadata <TRUE | FALSE>]
-			[-disableprjhandler]
-			[-disablejobhandler]
-[2026-06-11, 18:16:07 -03] {taskinstance.py:1242} INFO - Marking task as UP_FOR_RETRY. dag_id=DATASTAGE_FLEXIBILIZACAO_COBRANCA, task_id=BiCvp_BaseCobranca_00_ext_Parcelas_Pagas, run_id=manual_orq_1781212563381, execution_date=20260611T211603, start_date=20260611T211606, end_date=20260611T211607
-[2026-06-11, 18:16:07 -03] {taskinstance.py:349} ▶ Post task execution logs
+
+(index):2373 [ORQ] Auth sistêmico carregado.
+(index):4516 [ORQ] App config carregado: Object
+(index):5453 [ORQ] Auto-refresh dashboard: 120s
+(index):2397 [ORQ] Usuário editor confirmado para CVT38571
+/orquestra/execucoes/duracao-media?pipeline=DATASTAGE_MALHA_VIDA&limit=30:1  Failed to load resource: the server responded with a status of 500 (Internal Server Error)
+(index):2554 Uncaught ReferenceError: navigate is not defined
+    at _drillDownFalhas ((index):2554:3)
+    at HTMLDivElement.onclick ((index):1650:161)
