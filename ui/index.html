@@ -9766,7 +9766,7 @@ async function dsmLoadHistory(job, project) {
       const upd = row.updated_at ? new Date(row.updated_at).toLocaleString('pt-BR') : '—';
       return `<tr>
         <td style="font-size:.8rem;color:var(--muted)">${row.execution_id || '—'}</td>
-        <td style="font-size:.82rem">${_esc(row.pipeline_name||'')}</td>
+        <td style="font-size:.82rem">${(row.pipeline_name||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</td>
         <td><span style="background:${bg};color:${txt};padding:2px 8px;border-radius:10px;font-size:.78rem;font-weight:600">${row.status||'?'}</span></td>
         <td style="text-align:center">${row.wave_number ?? '—'}</td>
         <td style="font-size:.78rem;color:var(--muted)">${upd}</td>
