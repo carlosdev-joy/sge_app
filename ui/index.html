@@ -5290,10 +5290,16 @@ async function admLoadConfig() {
   if (tbl) tbl.innerHTML = '';
 
   try {
-    const r = await fetch(ORQUESTRA_API + '/config');
+    // Lista completa (inclui chaves sensíveis como teams_webhook_url) — só via /admin
+    const r = await fetch(ORQUESTRA_API + '/admin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'config_list', requested_by: window.__currentUser || '' })
+    });
     if (!r.ok) { if (st) st.textContent = 'Erro ao carregar: ' + r.status; return; }
-    const cfg = await r.json();
-    window.__appConfig = { ...window.__appConfig, ...(cfg || {}) };
+    const resp = await r.json();
+    const cfg = (resp && resp.config) || {};
+    window.__appConfig = { ...window.__appConfig, ...cfg };
     _renderConfigTable(cfg);
     if (st) st.textContent = Object.keys(cfg || {}).length + ' parâmetro(s) carregado(s).';
   } catch(e) {
