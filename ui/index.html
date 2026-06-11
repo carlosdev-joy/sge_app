@@ -998,6 +998,7 @@
         <button id="tab-pipelines" class="hd-tab" onclick="switchPage('page-pipelines',this);loadQuery(0)">≡ <span>Pipelines</span></button>
         <button id="tab-jobs" class="hd-tab" onclick="switchPage('page-jobs',this)">⬡ <span>Jobs</span></button>
         <button id="tab-logs" class="hd-tab" onclick="switchPage('page-logs',this);loadLogs(0)">≣ <span>Logs</span></button>
+        <button id="tab-ds-monitor" class="hd-tab" onclick="switchPage('page-ds-monitor',this);dsMonitorInit()">⬡ <span>DS Monitor</span></button>
         <button id="tab-governanca" class="hd-tab" onclick="switchPage('page-governanca',this)">◈ <span>Governança</span></button>
         <button id="tab-admin" class="hd-tab hidden" onclick="switchPage('page-admin',this)">⚙ <span>Admin</span></button>
       </nav>
@@ -1668,6 +1669,99 @@
         </div><!-- fim page-dashboard -->
 
         <!-- PÁGINA: GOVERNANÇA -->
+        <!-- ═══════════════════ DS MONITOR ═══════════════════ -->
+        <div id="page-ds-monitor" class="page">
+          <div class="card fade">
+            <div class="card-section-head">
+              <h2>DataStage Monitor</h2>
+              <p class="sub">Monitore jobs DataStage em execução — acompanhe status, jobs filhos e logs em tempo real</p>
+            </div>
+            <div class="body-pad">
+
+              <!-- Trigger monitor -->
+              <div class="section-sep" style="margin-bottom:1rem">INICIAR MONITORAMENTO</div>
+              <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1.5rem">
+                <div style="flex:1;min-width:160px">
+                  <label class="field-label">Projeto DataStage</label>
+                  <input id="dsm-project" type="text" placeholder="ex: BI_VIDA" style="width:100%" />
+                </div>
+                <div style="flex:2;min-width:220px">
+                  <label class="field-label">Nome do Job</label>
+                  <input id="dsm-job" type="text" placeholder="ex: SeqExecCargaVida" style="width:100%" />
+                </div>
+                <div style="flex:0 0 120px">
+                  <label class="field-label">Poll (segundos)</label>
+                  <input id="dsm-interval" type="number" value="60" min="15" max="300" style="width:100%" />
+                </div>
+                <button class="btn btn-primary" onclick="dsmTrigger()" style="height:38px;padding:0 1.25rem">
+                  ▶ Monitorar
+                </button>
+                <button class="btn btn-outline" onclick="dsmRefresh()" style="height:38px;padding:0 1rem" title="Atualizar painel com último status do banco">
+                  ↺ Atualizar
+                </button>
+              </div>
+              <div id="dsm-trigger-status" style="margin-bottom:1rem;font-size:.85rem;color:var(--muted)"></div>
+
+              <!-- Status em tempo real -->
+              <div id="dsm-panel" style="display:none">
+                <div class="section-sep" style="margin-bottom:1rem">STATUS ATUAL</div>
+                <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
+                  <div class="ds-stat-card">
+                    <div class="ds-stat-label">Status</div>
+                    <div id="dsm-badge" class="status-badge" style="font-size:1rem">—</div>
+                  </div>
+                  <div class="ds-stat-card">
+                    <div class="ds-stat-label">Wave #</div>
+                    <div id="dsm-wave" style="font-size:1.1rem;font-weight:600">—</div>
+                  </div>
+                  <div class="ds-stat-card">
+                    <div class="ds-stat-label">PID</div>
+                    <div id="dsm-pid" style="font-size:1rem;color:var(--muted)">—</div>
+                  </div>
+                  <div class="ds-stat-card">
+                    <div class="ds-stat-label">Última atualização</div>
+                    <div id="dsm-polled" style="font-size:.85rem;color:var(--muted)">—</div>
+                  </div>
+                </div>
+
+                <!-- Audit trail -->
+                <div id="dsm-trail" style="margin-bottom:1rem;font-size:.8rem;color:var(--muted);font-family:monospace"></div>
+
+                <!-- Jobs filhos -->
+                <div class="section-sep" style="margin-bottom:.75rem">JOBS FILHOS</div>
+                <div id="dsm-children-wrap" style="overflow-x:auto;margin-bottom:1.5rem">
+                  <table class="data-table" id="dsm-children">
+                    <thead><tr><th>Job Filho</th><th>Status</th><th>Código</th></tr></thead>
+                    <tbody></tbody>
+                  </table>
+                </div>
+
+                <!-- Histórico de polls -->
+                <div class="section-sep" style="margin-bottom:.75rem">HISTÓRICO DE POLLS</div>
+                <div id="dsm-snapshots" style="font-size:.78rem;font-family:monospace;background:var(--surface2);border-radius:6px;padding:.75rem;max-height:120px;overflow-y:auto;margin-bottom:1.5rem;color:var(--muted)"></div>
+
+                <!-- Log summary -->
+                <details id="dsm-logsum-wrap" style="margin-bottom:1.5rem">
+                  <summary style="cursor:pointer;font-weight:600;color:var(--primary);margin-bottom:.5rem">
+                    ≡ Log Summary (dsjob -logsum)
+                  </summary>
+                  <pre id="dsm-logsum" style="font-size:.75rem;background:var(--surface2);border-radius:6px;padding:.75rem;max-height:320px;overflow-y:auto;white-space:pre-wrap;word-break:break-word"></pre>
+                </details>
+
+                <!-- Histórico de runs recentes -->
+                <div class="section-sep" style="margin-bottom:.75rem">RUNS RECENTES NESTE JOB</div>
+                <div id="dsm-history-wrap" style="overflow-x:auto">
+                  <table class="data-table" id="dsm-history">
+                    <thead><tr><th>Execução</th><th>Pipeline</th><th>Status</th><th>Wave</th><th>Atualizado</th></tr></thead>
+                    <tbody></tbody>
+                  </table>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div><!-- /page-ds-monitor -->
+
         <div id="page-governanca" class="page">
           <div class="card fade">
             <div class="card-section-head">
@@ -9273,6 +9367,194 @@ function _renderAuditTable(payload, body) {
   });
   body.innerHTML = html;
 }
+</script>
+
+<script>
+// ══════════════════════════════════════════════════════
+// DataStage Monitor
+// ══════════════════════════════════════════════════════
+
+let _dsmAutoRefresh = null;
+
+function dsMonitorInit() {
+  // Se havia um auto-refresh rodando, mantém
+}
+
+async function dsmTrigger() {
+  const project  = (document.getElementById('dsm-project').value || '').trim();
+  const job      = (document.getElementById('dsm-job').value || '').trim();
+  const interval = parseInt(document.getElementById('dsm-interval').value || '60');
+  const st       = document.getElementById('dsm-trigger-status');
+
+  if (!project || !job) {
+    st.textContent = 'Preencha Projeto e Nome do Job.';
+    st.style.color = 'var(--red)';
+    return;
+  }
+
+  st.textContent = 'Disparando monitoramento…';
+  st.style.color = 'var(--muted)';
+
+  try {
+    const r = await fetch('/orquestra/datastage/monitor', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ project, job_name: job, poll_interval: interval }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      st.textContent = 'Erro: ' + (data.detail || r.status);
+      st.style.color = 'var(--red)';
+      return;
+    }
+    st.textContent = `Monitor iniciado — run_id: ${data.dag_run_id}`;
+    st.style.color = 'var(--green)';
+    showToast(`Monitorando ${project}/${job}`);
+
+    // Inicia auto-refresh do painel a cada 30s
+    _dsmStartAutoRefresh(project, job);
+    await dsmLoadStatus(project, job);
+  } catch(e) {
+    st.textContent = 'Erro de conexão: ' + e.message;
+    st.style.color = 'var(--red)';
+  }
+}
+
+async function dsmRefresh() {
+  const project = (document.getElementById('dsm-project').value || '').trim();
+  const job     = (document.getElementById('dsm-job').value || '').trim();
+  if (!project || !job) { showToast('Preencha Projeto e Job antes de atualizar.', true); return; }
+  await dsmLoadStatus(project, job);
+  await dsmLoadHistory(job);
+}
+
+async function dsmLoadStatus(project, job) {
+  try {
+    const r    = await fetch(`/orquestra/datastage/status?project=${encodeURIComponent(project)}&job_name=${encodeURIComponent(job)}`);
+    if (r.status === 404) { document.getElementById('dsm-panel').style.display = 'none'; return; }
+    const data = await r.json();
+
+    document.getElementById('dsm-panel').style.display = '';
+    _dsmRenderStatus(data);
+    await dsmLoadHistory(job, project);
+  } catch(e) {
+    console.error('[DSM]', e);
+  }
+}
+
+function _dsmRenderStatus(data) {
+  const badge  = document.getElementById('dsm-badge');
+  const sc     = data.status_code;
+  const label  = data.status || 'UNKNOWN';
+  const color  = sc === 1 ? 'var(--green)' : sc === 2 ? 'var(--yellow,#f59e0b)' : sc === 0 ? 'var(--primary)' : 'var(--red)';
+
+  badge.textContent  = label;
+  badge.style.background = color;
+  badge.style.color  = '#fff';
+  badge.style.padding = '3px 12px';
+  badge.style.borderRadius = '12px';
+  badge.style.fontWeight = '700';
+
+  document.getElementById('dsm-wave').textContent   = data.wave_number ?? '—';
+  document.getElementById('dsm-pid').textContent    = data.pid || '—';
+  document.getElementById('dsm-polled').textContent = data.last_polled_at
+    ? new Date(data.last_polled_at).toLocaleString('pt-BR') : '—';
+
+  // Audit trail de snapshots
+  const snaps   = Array.isArray(data.poll_snapshots) ? data.poll_snapshots : [];
+  const trail   = document.getElementById('dsm-trail');
+  if (snaps.length > 0) {
+    trail.textContent = snaps.map(s => {
+      const t = s.ts ? new Date(s.ts).toLocaleTimeString('pt-BR') : '?';
+      return `${t} → ${s.status_text || s.status_code}`;
+    }).join('  ▸  ');
+  } else {
+    trail.textContent = '';
+  }
+
+  // Snapshots brutos
+  const snapBox = document.getElementById('dsm-snapshots');
+  snapBox.textContent = snaps.length
+    ? snaps.map(s => `${s.ts || ''} | code=${s.status_code} | ${s.status_text || ''}`).join('\n')
+    : '(sem snapshots ainda)';
+
+  // Jobs filhos
+  const children = Array.isArray(data.child_jobs) ? data.child_jobs : [];
+  const tbody     = document.querySelector('#dsm-children tbody');
+  tbody.innerHTML = children.map(cj => {
+    const csc   = cj.status_code;
+    const cbg   = csc === 1 ? '#dcfce7' : csc === 2 ? '#fef9c3' : csc === 3 ? '#fee2e2' : '#f1f5f9';
+    const ctxt  = csc === 1 ? '#16a34a' : csc === 2 ? '#a16207' : csc === 3 ? '#dc2626' : '#64748b';
+    return `<tr>
+      <td style="font-family:monospace;font-size:.82rem">${_esc(cj.name)}</td>
+      <td><span style="background:${cbg};color:${ctxt};padding:2px 8px;border-radius:10px;font-size:.8rem;font-weight:600">${_esc(cj.status||'')}</span></td>
+      <td style="text-align:center;color:var(--muted)">${cj.status_code ?? '—'}</td>
+    </tr>`;
+  }).join('');
+
+  // Log summary
+  const ls = typeof data.log_summary === 'string' ? data.log_summary : '';
+  document.getElementById('dsm-logsum').textContent = ls || '(sem log summary neste registro)';
+}
+
+async function dsmLoadHistory(job, project) {
+  try {
+    let url = `/orquestra/datastage/log?job_name=${encodeURIComponent(job)}&limit=5`;
+    if (project) url += `&project=${encodeURIComponent(project)}`;
+    const r    = await fetch(url);
+    const data = await r.json();
+    const rows = (data.logs || []);
+    const tbody = document.querySelector('#dsm-history tbody');
+    tbody.innerHTML = rows.map(row => {
+      const sc  = row.status_code;
+      const bg  = sc === 1 ? '#dcfce7' : sc === 2 ? '#fef9c3' : sc === 3 || sc === null ? '#fee2e2' : '#e0f2fe';
+      const txt = sc === 1 ? '#16a34a' : sc === 2 ? '#a16207' : sc === 3 ? '#dc2626' : '#0369a1';
+      const upd = row.updated_at ? new Date(row.updated_at).toLocaleString('pt-BR') : '—';
+      return `<tr>
+        <td style="font-size:.8rem;color:var(--muted)">${row.execution_id || '—'}</td>
+        <td style="font-size:.82rem">${_esc(row.pipeline_name||'')}</td>
+        <td><span style="background:${bg};color:${txt};padding:2px 8px;border-radius:10px;font-size:.78rem;font-weight:600">${row.status||'?'}</span></td>
+        <td style="text-align:center">${row.wave_number ?? '—'}</td>
+        <td style="font-size:.78rem;color:var(--muted)">${upd}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--muted)">Nenhum registro ainda</td></tr>';
+  } catch(e) {
+    console.error('[DSM history]', e);
+  }
+}
+
+function _dsmStartAutoRefresh(project, job) {
+  if (_dsmAutoRefresh) clearInterval(_dsmAutoRefresh);
+  _dsmAutoRefresh = setInterval(async () => {
+    if (document.getElementById('page-ds-monitor').classList.contains('active')) {
+      await dsmLoadStatus(project, job);
+    }
+  }, 30000);
+}
+
+// CSS para os stat-cards do monitor (injeta uma vez)
+(function() {
+  if (document.getElementById('dsm-styles')) return;
+  const s = document.createElement('style');
+  s.id = 'dsm-styles';
+  s.textContent = `
+    .ds-stat-card {
+      background: var(--surface2);
+      border-radius: 8px;
+      padding: .6rem 1rem;
+      min-width: 120px;
+      flex: 1;
+    }
+    .ds-stat-label {
+      font-size: .72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      margin-bottom: .25rem;
+    }
+  `;
+  document.head.appendChild(s);
+})();
 </script>
 
 </body>
