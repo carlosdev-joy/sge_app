@@ -2838,9 +2838,36 @@ async function _showDsLog(executionId, jobName) {
 
     const logLines = (row.log_summary || '').slice(0, 4000);
 
+    // Cabeçalho de timing DataStage
+    const dsStart = row.ds_start_time || '';
+    const dsEnd   = row.ds_end_time   ? String(row.ds_end_time).slice(0, 19).replace('T', ' ') : '';
+    let durationStr = '—';
+    if (dsEnd && dsStart) {
+      try {
+        // ds_start_time vem no formato do dsjob: "Wed Jun 11 03:45:12 2025"
+        const tEnd = new Date(dsEnd.replace(' ', 'T') + 'Z');
+        const tStt = new Date(dsStart);
+        if (!isNaN(tEnd) && !isNaN(tStt)) {
+          const diff = Math.round((tEnd - tStt) / 1000);
+          durationStr = diff < 60 ? diff + 's' : Math.floor(diff/60) + 'm ' + (diff%60) + 's';
+        }
+      } catch(_) {}
+    }
+
+    const timingHtml = (dsStart || dsEnd) ?
+      '<div style="background:var(--surface2);border-radius:8px;padding:.6rem 1rem;margin-bottom:.9rem;display:grid;grid-template-columns:repeat(3,1fr);gap:.4rem .75rem;font-size:12px">' +
+        '<div><div style="font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">Início DataStage</div>' +
+          '<strong>' + (dsStart || '—') + '</strong></div>' +
+        '<div><div style="font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">Fim DataStage</div>' +
+          '<strong>' + (dsEnd || '—') + '</strong></div>' +
+        '<div><div style="font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">Duração</div>' +
+          '<strong>' + durationStr + '</strong></div>' +
+      '</div>' : '';
+
     $('dsl-body').innerHTML =
+      timingHtml +
       '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem .75rem;font-size:12px;margin-bottom:.75rem">' +
-        '<div><span style="color:var(--muted)">Status:</span> ' + pill(row.status) + '</div>' +
+        '<div><span style="color:var(--muted)">Status DS:</span> ' + pill(row.status) + '</div>' +
         '<div><span style="color:var(--muted)">Wave:</span> ' + (row.wave_number ?? '—') + '</div>' +
         '<div><span style="color:var(--muted)">PID:</span> ' + (row.pid || '—') + '</div>' +
         '<div><span style="color:var(--muted)">Projeto:</span> ' + (row.project || '—') + '</div>' +

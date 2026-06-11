@@ -2515,7 +2515,8 @@ async def datastage_log_query(
             f"""
             SELECT TOP (?) id, execution_id, pipeline_name, job_name, project,
                    wave_number, pid, status, status_code, child_jobs,
-                   log_summary, poll_snapshots, last_polled_at, created_at, updated_at
+                   log_summary, poll_snapshots, last_polled_at, created_at, updated_at,
+                   ds_start_time, ds_end_time
             FROM dbo.etl_ds_job_log
             {where}
             ORDER BY created_at DESC

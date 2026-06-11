@@ -329,6 +329,7 @@ class DataStageOperator(BaseOperator):
     def _persist(
         self, execution_id, pipeline, wave_num, pid, status, status_code,
         child_jobs, log_summary, poll_snapshot,
+        ds_start_time=None, ds_end_time=None,
     ) -> None:
         try:
             from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
@@ -337,7 +338,8 @@ class DataStageOperator(BaseOperator):
                 "EXEC dbo.sp_etl_ds_job_log_upsert "
                 "@execution_id=%s, @pipeline_name=%s, @job_name=%s, @project=%s, "
                 "@wave_number=%s, @pid=%s, @status=%s, @status_code=%s, "
-                "@child_jobs=%s, @log_summary=%s, @poll_snapshot=%s",
+                "@child_jobs=%s, @log_summary=%s, @poll_snapshot=%s, "
+                "@ds_start_time=%s, @ds_end_time=%s",
                 parameters=(
                     execution_id,
                     pipeline,
@@ -350,6 +352,8 @@ class DataStageOperator(BaseOperator):
                     json.dumps(child_jobs, ensure_ascii=False) if child_jobs else "",
                     (log_summary or "")[:8000],
                     poll_snapshot or "",
+                    ds_start_time or "",
+                    ds_end_time,
                 ),
             )
         except Exception as exc:
@@ -370,10 +374,14 @@ class DataStageOperator(BaseOperator):
         if label not in ("SUCCESS", "WARNING"):
             xcom_status_code = status_code  # ABORTED etc. mantém o código original
 
+        ds_end_time = datetime.utcnow()
+
         self._persist(
             execution_id, pipeline,
             info.get("wave_number"), info.get("pid"),
             ds_label, status_code, child_jobs, logsum, None,
+            ds_start_time=info.get("start_time"),
+            ds_end_time=ds_end_time,
         )
 
         return json.dumps({
