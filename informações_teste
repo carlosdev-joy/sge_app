@@ -8,43 +8,13 @@ docker compose build orquestra-api && docker compose up -d --no-deps orquestra-a
 # Acompanhar os logs até aparecer "Application startup complete."
 docker compose logs -f orquestra-api
 
-[2026-06-11, 17:51:24 -03] {local_task_job_runner.py:123} ▶ Pre task execution logs
-[2026-06-11, 17:51:24 -03] {base.py:84} INFO - Retrieving connection 'SQL14_DMDB41'
-[2026-06-11, 17:51:24 -03] {taskinstance.py:3337} ERROR - Task failed with exception
-Traceback (most recent call last):
-  File "src/pymssql/_pymssql.pyx", line 447, in pymssql._pymssql.Cursor.execute
-  File "src/pymssql/_mssql.pyx", line 1145, in pymssql._mssql.MSSQLConnection.execute_query
-  File "src/pymssql/_mssql.pyx", line 1176, in pymssql._mssql.MSSQLConnection.execute_query
-  File "src/pymssql/_mssql.pyx", line 1309, in pymssql._mssql.MSSQLConnection.format_and_run_query
-  File "src/pymssql/_mssql.pyx", line 1886, in pymssql._mssql.check_cancel_and_raise
-  File "src/pymssql/_mssql.pyx", line 1932, in pymssql._mssql.raise_MSSQLDatabaseException
-pymssql._mssql.MSSQLDatabaseException: (102, b"Incorrect syntax near '?'.DB-Lib error message 20018, severity 15:\nGeneral SQL Server error: Check messages from the SQL Server\n")
-During handling of the above exception, another exception occurred:
-Traceback (most recent call last):
-  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/models/taskinstance.py", line 776, in _execute_task
-    result = _execute_callable(context=context, **execute_callable_kwargs)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/models/taskinstance.py", line 742, in _execute_callable
-    return ExecutionCallableRunner(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/utils/operator_helpers.py", line 252, in run
-    return self.func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/models/baseoperator.py", line 425, in wrapper
-    return func(self, *args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/operators/python.py", line 238, in execute
-    return_value = self.execute_callable()
-                   ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/operators/python.py", line 256, in execute_callable
-    return runner.run(*self.op_args, **self.op_kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/airflow/.local/lib/python3.12/site-packages/airflow/utils/operator_helpers.py", line 252, in run
-    return self.func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/opt/airflow/dags/etl_dag_factory.py", line 653, in gerar_dags
-    cursor.execute(
-  File "src/pymssql/_pymssql.pyx", line 462, in pymssql._pymssql.Cursor.execute
-pymssql.exceptions.ProgrammingError: (102, b"Incorrect syntax near '?'.DB-Lib error message 20018, severity 15:\nGeneral SQL Server error: Check messages from the SQL Server\n")
-[2026-06-11, 17:51:24 -03] {taskinstance.py:1242} INFO - Marking task as FAILED. dag_id=etl_dag_factory, task_id=gerar_dags, run_id=orquestra_ui_1781211083738, execution_date=20260611T205123, start_date=20260611T205124, end_date=20260611T205124
-[2026-06-11, 17:51:24 -03] {taskinstance.py:349} ▶ Post task execution logs
+Início	Situação	O que foi regenerado	Disparo	Identificador
+11/06/2026, 17:56:31	✓ Concluída	Pipeline específico: DATASTAGE_GECOMIS_MOV_DIARIO	Manual	orquestra_ui_1781211391244
+Nenhuma etapa [FACTORY] encontrada no log — a task pode ter falhado antes de iniciar.
+Ver log bruto completo
+71adb627cc1e
+ INFO - ::group::Log message source details
+*** !!!! Please make sure that all your Airflow components (e.g. schedulers, webservers, workers and triggerer) have the same 'secret_key' configured in 'webserver' section and time is synchronized on all your machines (for example with ntpd)
+See more at https://airflow.apache.org/docs/apache-airflow/stable/configurations-ref.html#secret-key
+*** Could not read served logs: 403 Client Error: FORBIDDEN for url: http://71adb627cc1e:8793/log/dag_id=etl_dag_factory/run_id=orquestra_ui_1781211391244/task_id=gerar_dags/attempt=3.log
+ INFO - ::endgroup::
