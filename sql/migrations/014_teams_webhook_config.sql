@@ -14,11 +14,22 @@ BEGIN
 END
 GO
 
--- 2. Semeia o parâmetro (valor vazio — preencher no Admin)
+-- 2. Semeia os parâmetros (valor vazio — preencher no Admin)
+--    Nomeados por finalidade: cada tipo de notificação pode apontar para um
+--    canal/time distinto. Se o webhook específico estiver vazio, a API usa
+--    o 'teams_webhook_url' (canal padrão) como fallback.
 IF NOT EXISTS (SELECT 1 FROM dbo.etl_app_config WHERE config_key = 'teams_webhook_url')
 BEGIN
     INSERT INTO dbo.etl_app_config (config_key, config_value, descricao)
     VALUES ('teams_webhook_url', '',
-            'URL do webhook do Teams usada pela API (assumir falha). Cole aqui a mesma URL da Variable TEAMS_WEBHOOK_URL_CVP do Airflow.');
+            'Webhook padrão do Teams (fallback geral da API). Cole a mesma URL da Variable TEAMS_WEBHOOK_URL_CVP do Airflow.');
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM dbo.etl_app_config WHERE config_key = 'teams_webhook_url_ack')
+BEGIN
+    INSERT INTO dbo.etl_app_config (config_key, config_value, descricao)
+    VALUES ('teams_webhook_url_ack', '',
+            'Webhook do Teams para notificações de falha assumida (Assumir). Se vazio, usa teams_webhook_url.');
 END
 GO

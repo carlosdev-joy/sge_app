@@ -119,6 +119,11 @@ INT_CONFIG_KEYS = {
 SENSITIVE_CONFIG_KEYS = {"teams_webhook_url"}
 
 
+def _is_sensitive_config(key: str) -> bool:
+    """Webhooks (teams_webhook_*) e chaves listadas não vazam no /config público."""
+    return key in SENSITIVE_CONFIG_KEYS or key.startswith("teams_webhook")
+
+
 @app.get("/config", tags=["config"])
 def get_config():
     """Retorna parâmetros de configuração da aplicação. Substitui etl_app_config_query."""
@@ -128,7 +133,7 @@ def get_config():
         cur  = conn.cursor()
         cur.execute("SELECT config_key, config_value FROM dbo.etl_app_config")
         for key, value in cur.fetchall():
-            if key in SENSITIVE_CONFIG_KEYS:
+            if _is_sensitive_config(key):
                 continue
             if key in INT_CONFIG_KEYS:
                 try:
@@ -2751,15 +2756,17 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
     """Posta card no Teams informando que alguém assumiu a falha.
 
     Ordem de resolução do webhook:
-      1. dbo.etl_app_config chave 'teams_webhook_url' (Admin > Configurações)
-      2. variável de ambiente TEAMS_WEBHOOK_URL_CVP
+      1. dbo.etl_app_config chave 'teams_webhook_url_ack' (canal dedicado a acks)
+      2. dbo.etl_app_config chave 'teams_webhook_url'     (canal padrão/geral)
+      3. variável de ambiente TEAMS_WEBHOOK_URL_CVP
     """
     import requests as _req
-    webhook_url = _get_app_config_value("teams_webhook_url") \
+    webhook_url = _get_app_config_value("teams_webhook_url_ack") \
+        or _get_app_config_value("teams_webhook_url") \
         or os.getenv("TEAMS_WEBHOOK_URL_CVP", "")
     if not webhook_url:
         log.warning("[ACK] webhook do Teams não configurado — cadastre o parâmetro "
-                    "'teams_webhook_url' em Admin > Configurações. Notificação ignorada.")
+                    "'teams_webhook_url_ack' em Admin > Configurações. Notificação ignorada.")
         return
 
     identity = f"{display_name} ({ack_by})" if display_name and display_name != ack_by else ack_by
