@@ -1367,6 +1367,25 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
             for r in cur.fetchall()
         ]
 
+        # Tempo de fila WM DataStage (graceful: coluna pode não existir ainda)
+        fila_media = fila_max = fila_jobs = 0
+        try:
+            cur.execute("""
+                SELECT CAST(AVG(CAST(queued_seconds AS float)) AS int),
+                       MAX(queued_seconds), COUNT(*)
+                FROM dbo.etl_ds_job_log
+                WHERE queued_seconds IS NOT NULL AND queued_seconds > 0
+                  AND created_at >= ? AND created_at < ?
+            """, (dt_ini, dt_fim))
+            frow = cur.fetchone()
+            if frow:
+                fila_media = int(frow[0] or 0)
+                fila_max   = int(frow[1] or 0)
+                fila_jobs  = int(frow[2] or 0)
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+
         cur.close()
         conn.close()
 
@@ -1381,6 +1400,8 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
             "total_execucoes": total_exec, "total_sucesso": total_sucesso,
             "total_falha": total_falha, "total_warning": total_warning,
             "taxa_sucesso_pct": taxa, "duracao_media_segundos": duracao_media,
+            "fila_media_segundos": fila_media, "fila_max_segundos": fila_max,
+            "fila_jobs": fila_jobs,
             "por_projeto": por_projeto, "filter_project": fp,
         },
         "pipeline_status": pipeline_status,
@@ -1388,6 +1409,54 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
         "executando_agora": executando_agora,
         "alertas_perf": alertas_perf,
     }
+
+
+@app.get("/dashboard/gantt", tags=["dashboard"])
+def get_dashboard_gantt(filter_project: Optional[str] = None, date_ref: Optional[str] = None):
+    """Linha do tempo das execuções do dia (uma barra por execução de pipeline)."""
+    fp = (filter_project or "").strip()
+    dr = (date_ref or "").strip() or datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
+    try:
+        dt_ini_obj = datetime.strptime(dr, "%Y-%m-%d").replace(tzinfo=LOCAL_TZ)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"date_ref inválido: '{dr}'")
+    dt_ini = dt_ini_obj.strftime("%Y-%m-%d 00:00:00")
+    dt_fim = (dt_ini_obj + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+    where_proj = " AND e.project = ? " if fp else ""
+    status_expr = _status_expr_sql()
+
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(f"""
+            SELECT e.execution_id, e.pipeline, e.project,
+                MIN(e.start_time) AS inicio,
+                MAX(COALESCE(e.end_time, GETDATE())) AS fim,
+                {status_expr} AS status_geral,
+                COUNT(*) AS total_jobs,
+                COALESCE(p.criticidade, '') AS criticidade
+            FROM dbo.etl_job_execution e
+            JOIN dbo.etl_pipeline p ON p.pipeline_name = e.pipeline
+            WHERE e.start_time >= ? AND e.start_time < ?
+              AND COALESCE(p.ambiente, 'PROD') = 'PROD'
+              {where_proj}
+            GROUP BY e.execution_id, e.pipeline, e.project, p.criticidade
+            ORDER BY MIN(e.start_time)
+        """, [dt_ini, dt_fim] + ([fp] if fp else []))
+        data = [
+            {
+                "execution_id": r[0], "pipeline": r[1], "project": r[2],
+                "inicio": _fmt_dt(r[3]), "fim": _fmt_dt(r[4]),
+                "status": r[5], "total_jobs": int(r[6] or 0),
+                "criticidade": r[7] or "",
+            }
+            for r in cur.fetchall()
+        ]
+        cur.close(); conn.close()
+        return {"date_ref": dr, "data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
 
 
 # ── Sync pipeline status ──────────────────────────────────────────────────────
@@ -2578,18 +2647,28 @@ async def datastage_log_query(
 
         where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
-        cursor.execute(
-            f"""
-            SELECT TOP (?) id, execution_id, pipeline_name, job_name, project,
-                   wave_number, pid, status, status_code, child_jobs,
-                   log_summary, poll_snapshots, last_polled_at, created_at, updated_at,
-                   ds_start_time, ds_end_time
-            FROM dbo.etl_ds_job_log
-            {where}
-            ORDER BY created_at DESC
-            """,
-            [limit] + params,
+        base_cols = (
+            "id, execution_id, pipeline_name, job_name, project, "
+            "wave_number, pid, status, status_code, child_jobs, "
+            "log_summary, poll_snapshots, last_polled_at, created_at, updated_at, "
+            "ds_start_time, ds_end_time"
         )
+        try:
+            cursor.execute(
+                f"SELECT TOP (?) {base_cols}, queued_seconds "
+                f"FROM dbo.etl_ds_job_log {where} ORDER BY created_at DESC",
+                [limit] + params,
+            )
+        except Exception:
+            # coluna queued_seconds pode não existir (migration 016 não aplicada)
+            try: conn.rollback()
+            except Exception: pass
+            cursor = conn.cursor()
+            cursor.execute(
+                f"SELECT TOP (?) {base_cols} "
+                f"FROM dbo.etl_ds_job_log {where} ORDER BY created_at DESC",
+                [limit] + params,
+            )
         cols = [d[0] for d in cursor.description]
         rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
         cursor.close(); conn.close()

@@ -1667,6 +1667,17 @@
                   <div class="kpi-value" id="kpi-crit">—</div>
                   <div class="kpi-sub" id="kpi-crit-sub">pipelines ALTA com falha</div>
                 </div>
+                <div class="kpi-card kpi-blue" title="Tempo médio que os jobs DataStage aguardaram na fila do Workload Management antes de iniciar">
+                  <div class="kpi-label">Espera em fila (DS)</div>
+                  <div class="kpi-value" id="kpi-fila">—</div>
+                  <div class="kpi-sub" id="kpi-fila-sub">média por job</div>
+                </div>
+              </div>
+
+              <!-- Gantt do dia -->
+              <div style="margin-bottom:1.5rem">
+                <div class="dash-section-h">📅 Linha do tempo do dia <span style="font-size:11px;font-weight:400;color:var(--muted)" id="gantt-count"></span></div>
+                <div id="dash-gantt"><p style="font-size:12px;color:var(--muted)">Carregando...</p></div>
               </div>
 
               <!-- Badges por projeto -->
@@ -2853,8 +2864,8 @@ async function loadLogDetail(executionId, pipeline) {
     params.set('filter_execution_id', executionId);
     if (pipeline) params.set('filter_pipeline', pipeline);
 
-    // Buscar jobs, duração média e runbook em paralelo
-    const [r, rMedia, rPip] = await Promise.all([
+    // Buscar jobs, duração média, runbook e tempos de fila DS em paralelo
+    const [r, rMedia, rPip, rDs] = await Promise.all([
       fetch(ORQUESTRA_API + '/execucoes?' + params.toString()),
       pipeline
         ? fetch(ORQUESTRA_API + '/execucoes/duracao-media?pipeline=' + encodeURIComponent(pipeline) + '&limit=30')
@@ -2862,6 +2873,7 @@ async function loadLogDetail(executionId, pipeline) {
       pipeline
         ? fetch(ORQUESTRA_API + '/pipelines?filter_name=' + encodeURIComponent(pipeline) + '&limit=1')
         : Promise.resolve(null),
+      fetch(ORQUESTRA_API + '/datastage/log?execution_id=' + encodeURIComponent(executionId) + '&limit=100').catch(() => null),
     ]);
 
     if (r.status === 401) { sair(); return; }
@@ -2879,9 +2891,21 @@ async function loadLogDetail(executionId, pipeline) {
         runbook = (rec && rec.runbook_md) || '';
       } catch(_) {}
     }
-    payload._avgData  = avgData;
-    payload._pipeline = pipeline || '';
-    payload._runbook  = runbook;
+    // Mapa job_name → queued_seconds (tempo em fila WM DataStage)
+    let queuedMap = {};
+    if (rDs && rDs.ok) {
+      try {
+        for (const lg of ((await rDs.json()).logs || [])) {
+          if (lg.queued_seconds !== null && lg.queued_seconds !== undefined) {
+            queuedMap[lg.job_name] = lg.queued_seconds;
+          }
+        }
+      } catch(_) {}
+    }
+    payload._avgData   = avgData;
+    payload._pipeline  = pipeline || '';
+    payload._runbook   = runbook;
+    payload._queuedMap = queuedMap;
     renderLogDetailTable(payload);
   } catch (e) {
     $('ld-status').textContent = 'Erro: ' + (e && e.message ? e.message : e);
@@ -2935,6 +2959,15 @@ function renderLogDetailTable(result) {
   const detPipeline    = (result && result._pipeline) || (result && result.filters && result.filters.pipeline) || '';
   const detExecutionId = (result && result.filters && result.filters.execution_id) || '';
   const avgData        = (result && result._avgData) || {};
+  const queuedMap      = (result && result._queuedMap) || {};
+
+  // Tempo em fila WM: badge azul ao lado da duração
+  const fmtFila = (jobName) => {
+    const q = queuedMap[jobName];
+    if (q === null || q === undefined || q <= 0) return '';
+    return ' <span style="font-size:10px;color:var(--cvp-blue);font-weight:600" ' +
+      'title="Tempo aguardando na fila do Workload Management DataStage antes de iniciar">⏳ fila ' + fmtDur(q) + '</span>';
+  };
 
   // Desvio de duração vs histórico
   const fmtDesvio = (jobName, sec) => {
@@ -2967,7 +3000,7 @@ function renderLogDetailTable(result) {
       '<td style="white-space:nowrap">' + statusPill(r.status) + '</td>' +
       '<td style="white-space:nowrap;font-size:12px">' + fmtDt16(r.inicio) + '</td>' +
       '<td style="white-space:nowrap;font-size:12px">' + fmtDt16(r.fim) + '</td>' +
-      '<td style="white-space:nowrap;font-size:12px">' + fmtDur(r.duration_seconds) + fmtDesvio(r.job_name, r.duration_seconds) + '</td>' +
+      '<td style="white-space:nowrap;font-size:12px">' + fmtDur(r.duration_seconds) + fmtDesvio(r.job_name, r.duration_seconds) + fmtFila(r.job_name) + '</td>' +
       '<td style="white-space:nowrap;display:flex;gap:4px;flex-wrap:wrap">' +
         '<button class="' + logBtnCls + '" ' +
           'onclick="_showAirflowJobLog(\'' + pipEsc + '\',\'' + execEsc + '\',\'' + taskId + '\')" ' +
@@ -2993,8 +3026,29 @@ function renderLogDetailTable(result) {
       '</div>'
     : '';
 
+  // Mini-grafo: cadeia visual dos jobs na ordem de execução
+  const NODE_COLORS = { SUCCESS: 'var(--green)', FAILED: 'var(--red)', WARNING: 'var(--cvp-orange)', RUNNING: 'var(--cvp-blue)' };
+  const sortedRows = rows.slice().sort((a, b) => String(a.inicio || '').localeCompare(String(b.inicio || '')));
+  const miniGraph = sortedRows.length > 1
+    ? '<div style="display:flex;align-items:center;gap:0;overflow-x:auto;padding:.6rem .4rem;margin-bottom:.75rem;background:var(--bg);border:1px solid var(--border);border-radius:10px">' +
+      sortedRows.map((r2, idx) => {
+        const c = NODE_COLORS[(r2.status || '').toUpperCase()] || 'var(--muted)';
+        const shortName = String(r2.job_name || '').length > 22 ? String(r2.job_name).slice(0, 20) + '…' : (r2.job_name || '—');
+        const node = '<div style="display:flex;flex-direction:column;align-items:center;min-width:90px;flex-shrink:0" title="' + escAttr(r2.job_name) + ' — ' + (r2.status || '') + '">' +
+          '<div style="width:14px;height:14px;border-radius:50%;background:' + c + ';box-shadow:0 0 0 3px color-mix(in srgb, ' + c + ' 25%, transparent)"></div>' +
+          '<div style="font-size:9px;margin-top:4px;color:var(--muted);max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + shortName + '</div>' +
+        '</div>';
+        const arrow = idx < sortedRows.length - 1
+          ? '<div style="flex-shrink:0;color:var(--border);font-size:14px;margin:0 2px;padding-bottom:14px">→</div>'
+          : '';
+        return node + arrow;
+      }).join('') +
+      '</div>'
+    : '';
+
   area.innerHTML =
     runbookBox +
+    miniGraph +
     '<div class="query-table-wrap">' +
       '<table class="query-table"><thead><tr>' +
         '<th>Job</th><th>Status</th><th>Início</th><th>Fim</th><th>Duração</th><th>Ações</th>' +
@@ -3368,6 +3422,189 @@ function fmtHMS(sec) {
   return s + 's';
 }
 
+/* ══ BUSCA GLOBAL (Ctrl+K) ══ */
+let _ckPipelines = null;   // cache de pipelines para a busca
+let _ckSelIdx = 0;
+
+const CK_PAGES = [
+  { label: '◫ Ir para Dashboard',  act: () => { $('tab-dashboard').click(); } },
+  { label: '≡ Ir para Pipelines',  act: () => { $('tab-pipelines').click(); } },
+  { label: '⬡ Ir para Jobs',       act: () => { $('tab-jobs').click(); } },
+  { label: '≣ Ir para Logs',       act: () => { $('tab-logs').click(); } },
+  { label: '♻ Regenerações de DAG', act: () => { $('tab-logs').click(); setTimeout(() => logsSwitchTab('factory'), 150); } },
+  { label: '⬡ Ir para DS Monitor', act: () => { $('tab-ds-monitor').click(); } },
+  { label: '◈ Ir para Governança', act: () => { $('tab-governanca').click(); } },
+];
+
+function ckOpen() {
+  let ov = $('ck-overlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'ck-overlay';
+    ov.style = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh';
+    ov.innerHTML =
+      '<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;width:560px;max-width:92vw;box-shadow:0 18px 60px rgba(0,0,0,.35);overflow:hidden">' +
+        '<input id="ck-input" type="text" placeholder="Buscar pipeline ou ação...  (Esc fecha)" ' +
+          'style="width:100%;border:0;outline:0;background:transparent;padding:1rem 1.2rem;font-size:15px;color:var(--text)" ' +
+          'oninput="ckRender()" onkeydown="ckKeydown(event)" />' +
+        '<div id="ck-results" style="max-height:46vh;overflow-y:auto;border-top:1px solid var(--border)"></div>' +
+      '</div>';
+    ov.addEventListener('click', (e) => { if (e.target === ov) ckClose(); });
+    document.body.appendChild(ov);
+  }
+  ov.style.display = 'flex';
+  _ckSelIdx = 0;
+  const inp = $('ck-input');
+  inp.value = '';
+  setTimeout(() => inp.focus(), 30);
+  ckRender();
+  // Carrega pipelines em background na primeira abertura
+  if (_ckPipelines === null) {
+    _ckPipelines = [];
+    fetch(ORQUESTRA_API + '/pipelines?limit=500')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) { _ckPipelines = d.data || []; ckRender(); } })
+      .catch(() => {});
+  }
+}
+
+function ckClose() {
+  const ov = $('ck-overlay');
+  if (ov) ov.style.display = 'none';
+}
+
+function ckItems() {
+  const q = ($('ck-input') ? $('ck-input').value : '').trim().toLowerCase();
+  const items = [];
+  for (const p of CK_PAGES) {
+    if (!q || p.label.toLowerCase().includes(q)) items.push({ label: p.label, sub: 'Navegação', act: p.act });
+  }
+  if (q && _ckPipelines && _ckPipelines.length) {
+    for (const p of _ckPipelines) {
+      const nm = p.pipeline_name || '';
+      if (nm.toLowerCase().includes(q)) {
+        items.push({
+          label: '≡ ' + nm,
+          sub: (p.project_name || '') + (p.active ? ' · ativo' : ' · inativo'),
+          act: () => {
+            $('tab-pipelines').click();
+            setTimeout(() => { const f = $('qf-name'); if (f) { f.value = nm; } loadQuery(0); }, 200);
+          },
+        });
+        if (items.length > 25) break;
+      }
+    }
+  }
+  return items.slice(0, 25);
+}
+
+function ckRender() {
+  const res = $('ck-results');
+  if (!res) return;
+  const items = ckItems();
+  if (_ckSelIdx >= items.length) _ckSelIdx = Math.max(0, items.length - 1);
+  res.innerHTML = items.length
+    ? items.map((it, i) =>
+        '<div onclick="ckExec(' + i + ')" onmouseenter="_ckSelIdx=' + i + ';ckHighlight()" data-ck-idx="' + i + '" ' +
+          'style="padding:.6rem 1.2rem;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:1rem' +
+          (i === _ckSelIdx ? ';background:color-mix(in srgb, var(--cvp-blue) 12%, transparent)' : '') + '">' +
+          '<span style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + it.label + '</span>' +
+          '<span style="font-size:10px;color:var(--muted);white-space:nowrap">' + (it.sub || '') + '</span>' +
+        '</div>').join('')
+    : '<div style="padding:1rem 1.2rem;font-size:12px;color:var(--muted)">Nada encontrado.</div>';
+}
+
+function ckHighlight() {
+  const res = $('ck-results');
+  if (!res) return;
+  res.querySelectorAll('[data-ck-idx]').forEach(el => {
+    const i = parseInt(el.getAttribute('data-ck-idx'), 10);
+    el.style.background = (i === _ckSelIdx) ? 'color-mix(in srgb, var(--cvp-blue) 12%, transparent)' : '';
+  });
+}
+
+function ckExec(i) {
+  const items = ckItems();
+  if (items[i]) { ckClose(); items[i].act(); }
+}
+
+function ckKeydown(ev) {
+  if (ev.key === 'Escape') { ckClose(); return; }
+  const items = ckItems();
+  if (ev.key === 'ArrowDown') { ev.preventDefault(); _ckSelIdx = Math.min(items.length - 1, _ckSelIdx + 1); ckHighlight(); }
+  else if (ev.key === 'ArrowUp') { ev.preventDefault(); _ckSelIdx = Math.max(0, _ckSelIdx - 1); ckHighlight(); }
+  else if (ev.key === 'Enter') { ev.preventDefault(); ckExec(_ckSelIdx); }
+}
+
+document.addEventListener('keydown', (ev) => {
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'k') {
+    ev.preventDefault();
+    ckOpen();
+  }
+});
+
+/* ══ GANTT DO DIA ══ */
+const GANTT_COLORS = { SUCCESS: 'var(--green)', FAILED: 'var(--red)', WARNING: 'var(--cvp-orange)', RUNNING: 'var(--cvp-blue)' };
+
+async function loadDashGantt() {
+  const box = $('dash-gantt');
+  if (!box) return;
+  try {
+    const proj    = $('df-project') ? $('df-project').value.trim() : '';
+    const dateRef = $('df-date')    ? $('df-date').value.trim()    : '';
+    const params  = new URLSearchParams();
+    if (proj)    params.set('filter_project', proj);
+    if (dateRef) params.set('date_ref', dateRef);
+    const r = await fetch(ORQUESTRA_API + '/dashboard/gantt?' + params.toString());
+    if (!r.ok) { box.innerHTML = '<p style="font-size:12px;color:var(--muted)">Erro ao carregar linha do tempo (' + r.status + ')</p>'; return; }
+    const data = (await r.json()).data || [];
+    if ($('gantt-count')) $('gantt-count').textContent = '(' + data.length + ')';
+    if (!data.length) {
+      box.innerHTML = '<p style="font-size:12px;color:var(--muted)">Nenhuma execução no dia.</p>';
+      return;
+    }
+    // Janela: min(início) → max(fim)
+    const toMs = (s) => s ? new Date(String(s).replace(' ', 'T')).getTime() : null;
+    let tMin = Infinity, tMax = -Infinity;
+    for (const d of data) {
+      const a = toMs(d.inicio), b = toMs(d.fim) || Date.now();
+      if (a) tMin = Math.min(tMin, a);
+      if (b) tMax = Math.max(tMax, b);
+    }
+    if (!isFinite(tMin) || tMax <= tMin) { box.innerHTML = ''; return; }
+    const span = tMax - tMin;
+    const fmtH = (ms) => new Date(ms).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+    // Régua de horas (4 marcos)
+    let ruler = '<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin:0 0 .3rem 180px">';
+    for (let i = 0; i <= 4; i++) ruler += '<span>' + fmtH(tMin + span * i / 4) + '</span>';
+    ruler += '</div>';
+
+    const rows = data.map(d => {
+      const a = toMs(d.inicio), b = toMs(d.fim) || Date.now();
+      const left  = Math.max(0, (a - tMin) / span * 100);
+      const width = Math.max(0.8, (b - a) / span * 100);
+      const color = GANTT_COLORS[d.status] || 'var(--muted)';
+      const durMin = Math.round((b - a) / 60000);
+      const durTxt = durMin >= 60 ? Math.floor(durMin/60) + 'h' + (durMin%60 ? (durMin%60) + 'min' : '') : durMin + 'min';
+      const crit = d.criticidade === 'ALTA' ? ' 🔺' : '';
+      return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;cursor:pointer" ' +
+        'onclick="openLogDetail(decodeURIComponent(\'' + encodeURIComponent(d.execution_id) + '\'),decodeURIComponent(\'' + encodeURIComponent(d.pipeline) + '\'))" ' +
+        'title="' + d.pipeline + ' — ' + d.status + ' — ' + d.inicio + ' → ' + (d.fim || 'agora') + ' (' + durTxt + ')">' +
+        '<div style="width:172px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right" title="' + d.pipeline + '">' + d.pipeline + crit + '</div>' +
+        '<div style="flex:1;position:relative;height:16px;background:var(--bg);border-radius:4px">' +
+          '<div style="position:absolute;left:' + left + '%;width:' + width + '%;height:100%;background:' + color + ';border-radius:4px;opacity:.85"></div>' +
+        '</div>' +
+        '<div style="width:52px;font-size:10px;color:var(--muted);white-space:nowrap">' + durTxt + '</div>' +
+      '</div>';
+    }).join('');
+
+    box.innerHTML = ruler + '<div style="max-height:320px;overflow-y:auto;padding-right:4px">' + rows + '</div>';
+  } catch(e) {
+    box.innerHTML = '<p style="font-size:12px;color:var(--muted)">Erro: ' + (e.message || e) + '</p>';
+  }
+}
+
 async function loadDashboard() {
   if (!authHeader) { showToast('Faça login primeiro.', true); return; }
   setTodayIfEmptyDate('df-date');
@@ -3425,6 +3662,19 @@ function renderDashboard(result) {
 
   const runningNow = ((result && result.executando_agora) || []).length;
   $('kpi-running').textContent = String(runningNow);
+
+  // Espera em fila WM DataStage
+  const filaMedia = k.fila_media_segundos ?? 0;
+  const filaJobs  = k.fila_jobs ?? 0;
+  if ($('kpi-fila')) {
+    $('kpi-fila').textContent = filaJobs ? fmtHMS(filaMedia) : '—';
+    $('kpi-fila-sub').textContent = filaJobs
+      ? filaJobs + ' job(s) · pico ' + fmtHMS(k.fila_max_segundos ?? 0)
+      : 'sem espera registrada hoje';
+  }
+
+  // Gantt do dia (não-bloqueante)
+  loadDashGantt();
 
   // Badges por projeto
   const proj = (k.por_projeto || []);
