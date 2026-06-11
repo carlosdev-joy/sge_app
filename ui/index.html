@@ -1678,6 +1678,15 @@
             </div>
             <div class="body-pad">
 
+              <!-- Sub-tab bar -->
+              <div style="display:flex;gap:4px;border-bottom:2px solid var(--border);margin-bottom:1.25rem">
+                <button id="dsm-tab-job" class="dsm-subtab dsm-subtab--active" onclick="dsmSwitchTab('job')">Por Job</button>
+                <button id="dsm-tab-pipeline" class="dsm-subtab" onclick="dsmSwitchTab('pipeline')">Por Pipeline</button>
+              </div>
+
+              <!-- ══ PAINEL: POR JOB ══ -->
+              <div id="dsm-panel-job">
+
               <!-- Trigger monitor -->
               <div class="section-sep" style="margin-bottom:1rem">INICIAR MONITORAMENTO</div>
               <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1.5rem">
@@ -1757,6 +1766,72 @@
                   </table>
                 </div>
               </div>
+
+              </div><!-- /dsm-panel-job -->
+
+              <!-- ══ PAINEL: POR PIPELINE ══ -->
+              <div id="dsm-panel-pipeline" style="display:none">
+
+                <div class="section-sep" style="margin-bottom:1rem">SELECIONAR PIPELINE</div>
+                <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1.25rem">
+                  <div style="flex:2;min-width:200px">
+                    <label class="field-label">Pipeline Orquestra</label>
+                    <select id="dsm-pip-select" style="width:100%">
+                      <option value="">— carregando pipelines… —</option>
+                    </select>
+                  </div>
+                  <button class="btn btn-primary" onclick="dsmPipelineLoad()" style="height:38px;padding:0 1.25rem">
+                    ▶ Carregar
+                  </button>
+                  <button class="btn btn-outline" onclick="dsmPipelineLoad()" style="height:38px;padding:0 1rem" title="Atualizar">
+                    ↺ Atualizar
+                  </button>
+                </div>
+
+                <!-- Badge pipeline -->
+                <div id="dsm-pip-header" style="display:none;margin-bottom:1rem">
+                  <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center;background:var(--surface2);border-radius:8px;padding:.75rem 1rem">
+                    <div>
+                      <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Pipeline</div>
+                      <div id="dsm-pip-name" style="font-weight:700;font-size:1rem"></div>
+                    </div>
+                    <div>
+                      <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Projeto</div>
+                      <div id="dsm-pip-project" style="font-size:.9rem"></div>
+                    </div>
+                    <div style="margin-left:auto">
+                      <div id="dsm-pip-status-badge" style="padding:3px 14px;border-radius:12px;font-weight:700;font-size:.9rem;background:var(--surface3);color:var(--text)">—</div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Tabela de jobs -->
+                <div id="dsm-pip-table-wrap" style="display:none;overflow-x:auto">
+                  <table class="query-table" style="font-size:.82rem">
+                    <thead>
+                      <tr>
+                        <th style="width:36px;text-align:center">#</th>
+                        <th>Job DataStage</th>
+                        <th>Status</th>
+                        <th>Wave</th>
+                        <th>Último início</th>
+                        <th>Duração</th>
+                        <th>Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody id="dsm-pip-tbody"></tbody>
+                  </table>
+                </div>
+                <div id="dsm-pip-empty" style="display:none">
+                  <div class="empty-state">
+                    <span class="es-icon">⬡</span>
+                    <p class="es-title">Nenhum job encontrado</p>
+                    <p class="es-sub">Este pipeline não possui execuções registradas ainda.</p>
+                  </div>
+                </div>
+                <div id="dsm-pip-status-msg" style="font-size:.82rem;color:var(--muted);margin-top:.5rem;min-height:16px"></div>
+
+              </div><!-- /dsm-panel-pipeline -->
 
             </div>
           </div>
@@ -2733,7 +2808,7 @@ async function _showDsLog(executionId, jobName) {
       return;
     }
     const data = await r.json();
-    const rows = data.data || data.rows || (Array.isArray(data) ? data : []);
+    const rows = data.logs || data.data || data.rows || (Array.isArray(data) ? data : []);
     if (!rows.length) {
       $('dsl-status').textContent = 'Nenhum registro encontrado.';
       $('dsl-body').innerHTML = '<div class="empty-state"><span class="es-icon">⬡</span><p class="es-title">Sem log DataStage</p><p class="es-sub">Este job pode não ter sido executado pelo DataStageOperator.</p></div>';
@@ -9627,12 +9702,162 @@ function _dsmStartAutoRefresh(project, job) {
   }, 30000);
 }
 
+/* ══ DS MONITOR — SUB-TABS ══ */
+function dsmSwitchTab(tab) {
+  document.getElementById('dsm-panel-job').style.display      = tab === 'job'      ? '' : 'none';
+  document.getElementById('dsm-panel-pipeline').style.display = tab === 'pipeline' ? '' : 'none';
+  document.getElementById('dsm-tab-job').classList.toggle('dsm-subtab--active',      tab === 'job');
+  document.getElementById('dsm-tab-pipeline').classList.toggle('dsm-subtab--active', tab === 'pipeline');
+  if (tab === 'pipeline') _dsmFillPipelineSelect();
+}
+
+async function _dsmFillPipelineSelect() {
+  const sel = document.getElementById('dsm-pip-select');
+  if (sel.dataset.loaded) return;
+  try {
+    const r = await fetch(ORQUESTRA_API + '/pipelines?limit=200', {
+      headers: authHeader ? { Authorization: authHeader } : {},
+    });
+    if (!r.ok) return;
+    const d = await r.json();
+    const pips = d.data || d.rows || d.pipelines || (Array.isArray(d) ? d : []);
+    sel.innerHTML = '<option value="">— selecione um pipeline —</option>' +
+      pips.map(p => `<option value="${_esc(p.pipeline||p.pipeline_name||p.nome||'')}">${_esc(p.pipeline||p.pipeline_name||p.nome||'')} · ${_esc(p.project||p.projeto||'')}</option>`).join('');
+    sel.dataset.loaded = '1';
+  } catch(e) {
+    sel.innerHTML = '<option value="">Erro ao carregar pipelines</option>';
+  }
+}
+
+async function dsmPipelineLoad() {
+  const sel = document.getElementById('dsm-pip-select');
+  const pipeline = (sel.value || '').trim();
+  const msg = document.getElementById('dsm-pip-status-msg');
+  if (!pipeline) { showToast('Selecione um pipeline.', true); return; }
+
+  msg.textContent = 'Carregando…';
+  document.getElementById('dsm-pip-header').style.display     = 'none';
+  document.getElementById('dsm-pip-table-wrap').style.display = 'none';
+  document.getElementById('dsm-pip-empty').style.display      = 'none';
+
+  try {
+    // Busca jobs da última execução via /execucoes (detail_mode)
+    const params = new URLSearchParams({ detail_mode: 'true', limit: 100, filter_pipeline: pipeline });
+    const r = await fetch(ORQUESTRA_API + '/execucoes?' + params.toString(), {
+      headers: authHeader ? { Authorization: authHeader } : {},
+    });
+    if (!r.ok) { msg.textContent = 'Erro API: ' + r.status; return; }
+    const d = await r.json();
+    const jobs = d.data || d.rows || [];
+
+    // Busca logs DS (etl_ds_job_log) para cruzar status DataStage
+    let dsLogs = {};
+    try {
+      const rl = await fetch(ORQUESTRA_API + '/datastage/log?limit=100&pipeline_name=' + encodeURIComponent(pipeline), {
+        headers: authHeader ? { Authorization: authHeader } : {},
+      });
+      if (rl.ok) {
+        const dl = await rl.json();
+        (dl.logs || []).forEach(l => { dsLogs[l.job_name] = l; });
+      }
+    } catch(_) {}
+
+    // Pipeline header
+    const pipName    = pipeline;
+    const pipProject = jobs[0]?.project || '';
+    const pipStatus  = d.filters?.status_geral || jobs.find(j => j.status === 'RUNNING')?.status || jobs[0]?.status || '—';
+    const execId     = jobs[0]?.execution_id || d.filters?.execution_id || '';
+
+    document.getElementById('dsm-pip-name').textContent    = pipName;
+    document.getElementById('dsm-pip-project').textContent = pipProject;
+    _dsmSetBadge(document.getElementById('dsm-pip-status-badge'), pipStatus);
+    document.getElementById('dsm-pip-header').style.display = '';
+
+    if (!jobs.length) {
+      document.getElementById('dsm-pip-empty').style.display = '';
+      msg.textContent = 'Nenhum job registrado para este pipeline.';
+      return;
+    }
+
+    const fmtDt = (v) => v ? String(v).slice(0,16) : '—';
+    const fmtDur = (s) => {
+      if (!s && s !== 0) return '—';
+      const n = parseInt(s, 10); if (isNaN(n)) return '—';
+      return n < 60 ? n + 's' : Math.floor(n/60) + 'm ' + (n%60) + 's';
+    };
+
+    const tbody = document.getElementById('dsm-pip-tbody');
+    tbody.innerHTML = jobs.map((j, i) => {
+      const dsLog  = dsLogs[j.job_name] || {};
+      const wave   = dsLog.wave_number ?? '—';
+      const ex     = _esc(j.execution_id || execId);
+      const jn     = _esc(j.job_name || '');
+      const statusLabel = dsLog.status || j.status || '—';
+      let badge = '';
+      const sv = (statusLabel).toUpperCase();
+      if (sv === 'SUCCESS')        badge = '<span class="log-pill success">✓ SUCCESS</span>';
+      else if (sv === 'RUNNING')   badge = '<span class="log-pill running">▶ RUNNING</span>';
+      else if (sv === 'QUEUED')    badge = '<span class="log-pill running">◌ QUEUED</span>';
+      else if (sv === 'WARNING')   badge = '<span class="log-pill warning">! WARNING</span>';
+      else if (sv === 'ABORTED' || sv === 'FAILED') badge = '<span class="log-pill failed">✕ ' + sv + '</span>';
+      else badge = '<span class="log-pill running">… ' + _esc(statusLabel) + '</span>';
+
+      return `<tr>
+        <td style="text-align:center;color:var(--muted);font-weight:600">${i+1}</td>
+        <td style="font-family:monospace;font-size:.8rem;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${jn}">${jn}</td>
+        <td>${badge}</td>
+        <td style="text-align:center">${wave}</td>
+        <td style="white-space:nowrap;font-size:.78rem">${fmtDt(j.inicio)}</td>
+        <td style="white-space:nowrap;font-size:.78rem">${fmtDur(j.duration_seconds)}</td>
+        <td><button class="btn-ghost btn-sm" style="font-size:11px;padding:.2rem .5rem"
+          onclick="_showDsLog('${ex}','${jn}')" title="Ver log DataStage">⬡ DS Log</button></td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('dsm-pip-table-wrap').style.display = '';
+    msg.textContent = `Pipeline: ${jobs.length} job(s) · Execution: ${execId || '—'}`;
+  } catch(e) {
+    msg.textContent = 'Erro: ' + (e && e.message ? e.message : e);
+  }
+}
+
+function _dsmSetBadge(el, status) {
+  const v = (status || '').toUpperCase();
+  const map = {
+    SUCCESS: ['#dcfce7','#16a34a'],
+    RUNNING: ['#dbeafe','#1d4ed8'],
+    QUEUED:  ['#e0f2fe','#0369a1'],
+    WARNING: ['#fef9c3','#a16207'],
+    ABORTED: ['#fee2e2','#dc2626'],
+    FAILED:  ['#fee2e2','#dc2626'],
+  };
+  const [bg, fg] = map[v] || ['var(--surface3)', 'var(--text)'];
+  el.style.background = bg;
+  el.style.color      = fg;
+  el.textContent      = status || '—';
+}
+
 // CSS para os stat-cards do monitor (injeta uma vez)
 (function() {
   if (document.getElementById('dsm-styles')) return;
   const s = document.createElement('style');
   s.id = 'dsm-styles';
   s.textContent = `
+    .dsm-subtab {
+      background: none;
+      border: none;
+      border-bottom: 3px solid transparent;
+      padding: .45rem 1.1rem;
+      font-size: .85rem;
+      font-weight: 600;
+      color: var(--muted);
+      cursor: pointer;
+      margin-bottom: -2px;
+      border-radius: 0;
+      transition: color .15s, border-color .15s;
+    }
+    .dsm-subtab:hover { color: var(--primary); }
+    .dsm-subtab--active { color: var(--primary); border-bottom-color: var(--primary); }
     .ds-stat-card {
       background: var(--surface2);
       border-radius: 8px;

@@ -2482,15 +2482,16 @@ async def datastage_monitor_trigger(body: dict = Body(...)):
 
 @app.get("/datastage/log")
 async def datastage_log_query(
-    job_name:     str            = Query(None),
-    execution_id: str            = Query(None),
-    project:      str            = Query(None),
-    limit:        int            = Query(10),
+    job_name:      str = Query(None),
+    execution_id:  str = Query(None),
+    project:       str = Query(None),
+    pipeline_name: str = Query(None),
+    limit:         int = Query(10),
 ):
     """
     Consulta logs detalhados DataStage persistidos em etl_ds_job_log.
 
-    Parâmetros opcionais: job_name, execution_id, project, limit (default 10)
+    Parâmetros opcionais: job_name, execution_id, project, pipeline_name, limit (default 10)
     """
     try:
         conn   = get_conn()
@@ -2505,6 +2506,8 @@ async def datastage_log_query(
             where_parts.append("job_name = ?"); params.append(job_name)
         if project:
             where_parts.append("project = ?"); params.append(project)
+        if pipeline_name:
+            where_parts.append("pipeline_name = ?"); params.append(pipeline_name)
 
         where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
