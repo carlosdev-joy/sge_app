@@ -1483,6 +1483,12 @@
               <p class="sub">Histórico de execuções por pipeline e projeto</p>
             </div>
             <div class="body-pad">
+              <div style="display:flex;gap:6px;margin-bottom:1.25rem;border-bottom:1px solid var(--border);padding-bottom:.75rem">
+                <button id="log-tab-exec"    class="adm-tab active" onclick="logsSwitchTab('exec')">≣ Execuções</button>
+                <button id="log-tab-factory" class="adm-tab" onclick="logsSwitchTab('factory')">♻ Regeneração de DAGs</button>
+              </div>
+
+              <div id="log-panel-exec">
               <div class="section-sep" style="margin-bottom:1rem">FILTROS</div>
               <div style="display:grid;grid-template-columns:1fr 1fr 180px 160px;gap:.6rem;align-items:start;margin-bottom:1rem">
                 <div class="field" style="margin:0">
@@ -1560,6 +1566,26 @@
                   <p class="es-sub">Use os filtros acima e clique em Buscar logs.</p>
                 </div>
               </div>
+              </div><!-- fim log-panel-exec -->
+
+              <!-- PANEL: Factory / Regeneração de DAGs -->
+              <div id="log-panel-factory" style="display:none">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+                  <div>
+                    <div style="font-size:13px;font-weight:600">Execuções da Factory</div>
+                    <div class="helper" style="margin:0">Cada linha é uma chamada do "Regenerar DAG" — clique para ver as etapas executadas.</div>
+                  </div>
+                  <button class="btn btn-outline btn-sm" onclick="loadFactoryRuns()">↻ Atualizar</button>
+                </div>
+                <div id="factory-status" style="font-size:12px;color:var(--muted);margin-bottom:.5rem;min-height:16px"></div>
+                <div id="factory-table-area">
+                  <div class="empty-state">
+                    <span class="es-icon">♻</span>
+                    <p class="es-title">Nenhuma execução carregada</p>
+                    <p class="es-sub">Clique em Atualizar para listar as regenerações.</p>
+                  </div>
+                </div>
+              </div><!-- fim log-panel-factory -->
             </div><!-- fim body-pad -->
           </div><!-- fim card -->
         </div><!-- fim page-logs -->
@@ -2534,6 +2560,112 @@ function clearLogsFilters() {
     '</div>';
   if ($('logs-status')) $('logs-status').textContent = '';
   logsCurrentOffset = 0;
+}
+
+function logsSwitchTab(which) {
+  const tabs = { exec: $('log-tab-exec'), factory: $('log-tab-factory') };
+  const panels = { exec: $('log-panel-exec'), factory: $('log-panel-factory') };
+  for (const k of Object.keys(tabs)) {
+    if (tabs[k])   tabs[k].classList.toggle('active', k === which);
+    if (panels[k]) panels[k].style.display = (k === which) ? '' : 'none';
+  }
+  if (which === 'factory') loadFactoryRuns();
+}
+
+const FACTORY_STATE_BADGE = {
+  success: '<span class="badge badge-success">✓ sucesso</span>',
+  failed:  '<span class="badge badge-failed">✕ falhou</span>',
+  running: '<span class="badge badge-running">… executando</span>',
+  queued:  '<span class="badge">⏳ na fila</span>',
+};
+
+async function loadFactoryRuns() {
+  const st = $('factory-status'), area = $('factory-table-area');
+  if (st) st.textContent = 'Carregando execuções da factory...';
+  try {
+    const r = await fetch(ORQUESTRA_API + '/factory/runs?limit=20');
+    if (!r.ok) { if (st) st.textContent = 'Erro ' + r.status + ' ao consultar o Airflow.'; return; }
+    const data = (await r.json()).data || [];
+    if (!data.length) {
+      area.innerHTML = '<div class="empty-state"><span class="es-icon">♻</span><p class="es-title">Nenhuma regeneração encontrada</p></div>';
+      if (st) st.textContent = '';
+      return;
+    }
+    const fmtDt = (s) => s ? new Date(s).toLocaleString('pt-BR') : '—';
+    const rows = data.map((run, i) => {
+      const badge = FACTORY_STATE_BADGE[run.state] || ('<span class="badge">' + run.state + '</span>');
+      return '<tr style="cursor:pointer" onclick="toggleFactoryDetail(' + i + ', \'' + encodeURIComponent(run.dag_run_id) + '\')">' +
+        '<td style="font-size:12px;white-space:nowrap">' + fmtDt(run.start_date) + '</td>' +
+        '<td>' + badge + '</td>' +
+        '<td style="font-size:12px">' + (run.escopo || '—') + '</td>' +
+        '<td style="font-size:11px;color:var(--muted)">' + (run.trigger === 'manual' ? 'manual' : run.trigger) + '</td>' +
+        '<td style="font-size:11px;font-family:monospace;color:var(--muted)">' + run.dag_run_id + '</td>' +
+      '</tr>' +
+      '<tr id="factory-detail-' + i + '" style="display:none"><td colspan="5" style="background:var(--bg);padding:1rem">' +
+        '<div id="factory-detail-body-' + i + '" style="font-size:12px;color:var(--muted)">…</div></td></tr>';
+    }).join('');
+    area.innerHTML = '<div class="query-table-wrap"><table class="query-table">' +
+      '<thead><tr><th>Início</th><th>Status</th><th>Escopo</th><th>Disparo</th><th>Run ID</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody></table></div>';
+    if (st) st.textContent = data.length + ' execução(ões). Clique numa linha para ver as etapas.';
+  } catch(e) {
+    if (st) st.textContent = 'Erro: ' + (e.message || e);
+  }
+}
+
+const FACTORY_STEP_STYLE = {
+  reset:  { icon: '🔄', color: 'var(--cvp-blue)', label: 'Reset' },
+  gerada: { icon: '📝', color: 'var(--green)',    label: 'DAG gerada' },
+  banco:  { icon: '💾', color: 'var(--green)',    label: 'Banco' },
+  vazio:  { icon: '⚠️', color: 'var(--orange)',   label: 'Atenção' },
+  resumo: { icon: '🏁', color: 'var(--cvp-blue)', label: 'Resumo' },
+  erro:   { icon: '❌', color: 'var(--red)',      label: 'Erro' },
+  info:   { icon: 'ℹ️', color: 'var(--muted)',    label: 'Info' },
+};
+
+async function toggleFactoryDetail(i, encodedRunId) {
+  const row = $('factory-detail-' + i);
+  if (!row) return;
+  if (row.style.display !== 'none') { row.style.display = 'none'; return; }
+  row.style.display = '';
+  const body = $('factory-detail-body-' + i);
+  body.textContent = 'Buscando log no Airflow...';
+  try {
+    const r = await fetch(ORQUESTRA_API + '/factory/runs/' + encodedRunId + '/log?raw=true');
+    if (!r.ok) {
+      const t = await r.text();
+      body.innerHTML = '<span style="color:var(--red)">Erro ' + r.status + ': ' + t.slice(0, 200) + '</span>';
+      return;
+    }
+    const d = await r.json();
+    let html = '';
+    if (d.steps && d.steps.length) {
+      html += '<div style="display:flex;flex-direction:column;gap:.4rem;margin-bottom:.75rem">';
+      for (const s of d.steps) {
+        const sty = FACTORY_STEP_STYLE[s.tipo] || FACTORY_STEP_STYLE.info;
+        html += '<div style="display:flex;gap:.5rem;align-items:flex-start">' +
+          '<span>' + sty.icon + '</span>' +
+          '<span style="font-size:11px;font-weight:600;min-width:80px;color:' + sty.color + '">' + sty.label + '</span>' +
+          '<span style="font-size:12px;color:var(--text)">' + s.msg + '</span></div>';
+      }
+      html += '</div>';
+    } else {
+      html += '<div style="color:var(--orange);margin-bottom:.75rem">Nenhuma etapa [FACTORY] encontrada no log — a task pode ter falhado antes de iniciar.</div>';
+    }
+    if (d.erros && d.erros.length) {
+      html += '<div style="background:rgba(220,38,38,.06);border:1px solid rgba(220,38,38,.3);border-radius:8px;padding:.6rem;margin-bottom:.75rem">' +
+        '<div style="font-weight:600;color:var(--red);margin-bottom:.3rem">Erros detectados</div>' +
+        d.erros.map(e => '<div style="font-family:monospace;font-size:11px">' + e + '</div>').join('') + '</div>';
+    }
+    if (d.log_bruto) {
+      html += '<details><summary style="cursor:pointer;font-size:11px;color:var(--muted)">Ver log bruto completo</summary>' +
+        '<pre style="font-size:10px;max-height:300px;overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:.6rem;white-space:pre-wrap;word-break:break-all">' +
+        d.log_bruto.replace(/</g, '&lt;') + '</pre></details>';
+    }
+    body.innerHTML = html;
+  } catch(e) {
+    body.innerHTML = '<span style="color:var(--red)">Erro: ' + (e.message || e) + '</span>';
+  }
 }
 
 async function loadLogs(offset) {
