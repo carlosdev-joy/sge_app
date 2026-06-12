@@ -12,24 +12,12 @@ docker compose restart ui-nginx
 docker compose logs orquestra-api --tail=20
 curl -s http://localhost/orquestra/health
 
-[root@vmlnxprd083 airflow]# docker compose logs ui-nginx --tail=20
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:37:12 +0000] "GET /orquestra/dashboard?date_ref=2026-06-12 HTTP/1.1" 200 4001 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:37:12 +0000] "GET /orquestra/dashboard/gantt?date_ref=2026-06-12 HTTP/1.1" 200 1091 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:39:12 +0000] "GET /orquestra/dashboard?date_ref=2026-06-12 HTTP/1.1" 200 4001 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:39:12 +0000] "GET /orquestra/dashboard/gantt?date_ref=2026-06-12 HTTP/1.1" 200 1091 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:41:13 +0000] "GET /orquestra/dashboard?date_ref=2026-06-12 HTTP/1.1" 200 4001 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:41:13 +0000] "GET /orquestra/dashboard/gantt?date_ref=2026-06-12 HTTP/1.1" 200 1091 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:42:06 +0000] "GET / HTTP/1.1" 200 151283 "-" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:42:06 +0000] "GET /css/app.css HTTP/1.1" 200 151283 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:42:06 +0000] "GET /js/app.js HTTP/1.1" 200 151283 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:42:06 +0000] "GET /js/modal-close.js HTTP/1.1" 200 151283 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:42:06 +0000] "GET /js/confirm.js HTTP/1.1" 200 151283 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:42:06 +0000] "GET /js/sequence-import.js HTTP/1.1" 200 151283 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:42:06 +0000] "GET /js/versoes.js HTTP/1.1" 200 151283 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:42:06 +0000] "GET /js/admin-wizard-patch.js HTTP/1.1" 200 151283 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:42:06 +0000] "GET /js/airflow-log.js HTTP/1.1" 200 151283 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:42:06 +0000] "GET /js/audit.js HTTP/1.1" 200 151283 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:42:06 +0000] "GET /js/datastage-monitor.js HTTP/1.1" 200 151283 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:42:07 +0000] "GET /js/malha.js HTTP/1.1" 200 151283 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:42:08 +0000] "GET /favicon.ico HTTP/1.1" 200 151283 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-airflow-ui  | 10.170.2.120 - - [12/Jun/2026:22:44:14 +0000] "GET /css/app.css HTTP/1.1" 304 0 "http://vmlnxprd083/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+ls /opt/airflow/ui/js/
+ls /opt/airflow/ui/css/
+
+cd /opt/airflow
+git pull origin main
+# nginx não precisa reiniciar — é volume bind mount, pega imediatamente
+
+docker compose exec ui-nginx ls /usr/share/nginx/html/js/
+curl -I http://localhost/js/app.js   # deve retornar 200, não 301/404
