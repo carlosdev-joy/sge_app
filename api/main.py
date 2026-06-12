@@ -16,6 +16,8 @@ Endpoints:
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import logging
@@ -25,7 +27,7 @@ from typing import Any, Optional
 
 import httpx
 import pyodbc
-from fastapi import FastAPI, HTTPException, Body, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -37,8 +39,13 @@ AIRFLOW_USER     = os.getenv("AIRFLOW_USER",     "airflow")
 AIRFLOW_PASSWORD = os.getenv("AIRFLOW_PASSWORD", "airflow")
 DAGS_FOLDER      = os.getenv("DAGS_FOLDER",      "/opt/airflow/dags")
 MSSQL_CONN_STR   = os.getenv("MSSQL_CONN_STR",  "")
+CORS_ORIGINS     = os.getenv("CORS_ORIGINS",     "*").split(",")
 
 MAX_LIMIT = 200
+
+# ── Auth cache: sha256(auth_header) → (matricula, perfil, expires) ────────────
+_auth_cache: dict[str, tuple[str, str, datetime]] = {}
+_AUTH_TTL_MINUTES = 5
 
 
 def get_db_conn():
@@ -71,10 +78,93 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Autenticação e RBAC ───────────────────────────────────────────────────────
+
+async def _validate_auth(authorization: str | None) -> tuple[str, str]:
+    """Valida o header Authorization contra o Airflow (com cache TTL=5min).
+    Retorna (matricula_uppercase, perfil). Levanta 401/403 se inválido."""
+    if not authorization or not authorization.startswith("Basic "):
+        raise HTTPException(
+            status_code=401,
+            detail="Autenticação necessária",
+            headers={"WWW-Authenticate": "Basic realm=\"ORQUESTRA\""},
+        )
+
+    cache_key = hashlib.sha256(authorization.encode()).hexdigest()
+    now = datetime.now(timezone.utc)
+
+    cached = _auth_cache.get(cache_key)
+    if cached:
+        user, perfil, expires = cached
+        if now < expires:
+            return user, perfil
+
+    async with httpx.AsyncClient(base_url=AIRFLOW_URL, timeout=5) as client:
+        r = await client.get("/api/v1/dags?limit=1", headers={"Authorization": authorization})
+        if r.status_code == 401:
+            _auth_cache.pop(cache_key, None)
+            raise HTTPException(
+                status_code=401,
+                detail="Credenciais inválidas",
+                headers={"WWW-Authenticate": "Basic realm=\"ORQUESTRA\""},
+            )
+        if r.status_code == 403:
+            raise HTTPException(status_code=403, detail="Sem permissão no Airflow")
+        if not r.is_success:
+            raise HTTPException(status_code=502, detail="Erro ao validar credenciais com Airflow")
+
+    try:
+        user = base64.b64decode(authorization[6:]).decode("utf-8").split(":", 1)[0].strip().upper()
+    except Exception:
+        raise HTTPException(status_code=401, detail="Header de autenticação inválido")
+
+    perfil = "consulta"
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT perfil FROM dbo.etl_usuario_perfil WHERE matricula = ?", [user])
+        row = cur.fetchone()
+        if row:
+            perfil = row[0]
+        cur.close(); conn.close()
+    except Exception:
+        pass  # DB indisponível: mantém perfil padrão 'consulta'
+
+    _auth_cache[cache_key] = (user, perfil, now + timedelta(minutes=_AUTH_TTL_MINUTES))
+    return user, perfil
+
+
+async def get_current_user(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> tuple[str, str]:
+    """Dependency: valida auth e retorna (matricula, perfil)."""
+    return await _validate_auth(authorization)
+
+
+async def get_admin_user(
+    user_info: tuple[str, str] = Depends(get_current_user),
+) -> tuple[str, str]:
+    """Dependency: requer perfil 'admin'."""
+    user, perfil = user_info
+    if perfil != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail=f"Perfil '{perfil}' não tem permissão. Requer: admin",
+        )
+    return user_info
+
+
+@app.get("/me", tags=["auth"])
+async def get_me(user_info: tuple[str, str] = Depends(get_current_user)):
+    """Retorna matricula e perfil do usuário autenticado."""
+    user, perfil = user_info
+    return {"matricula": user, "perfil": perfil}
 
 LOCAL_TZ = timezone(timedelta(hours=-3))  # America/Sao_Paulo
 
@@ -670,7 +760,7 @@ def get_lineage(pipeline_name: str):
 
 
 @app.put("/lineage/job", tags=["lineage"])
-def put_lineage_job(body: dict = Body(default={})):
+async def put_lineage_job(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
     """Substitui a lineage de um job: remove tudo e regrava o que veio no payload.
 
     Diferente da DAG etl_pipeline_job_register (upsert puro, nunca apaga),
@@ -1817,7 +1907,7 @@ def _write_audit(cur, pipeline_name, changed_by, old, new_vals):
 
 
 @app.post("/pipelines/register", tags=["pipelines"])
-def register_pipeline(body: dict = Body(default={})):
+async def register_pipeline(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
     """Cria ou atualiza um pipeline (etl_pipeline_register)."""
     pipeline    = (body.get("pipeline_name") or "").strip()
     horario     = (body.get("scheduled_time") or "").strip()
@@ -1976,7 +2066,7 @@ VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc"}
 
 
 @app.post("/pipelines/jobs/register", tags=["jobs"])
-def register_pipeline_jobs(body: dict = Body(default={})):
+async def register_pipeline_jobs(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
     """Registra/atualiza jobs e lineage de um pipeline (etl_pipeline_job_register)."""
     pipeline_name = (body.get("pipeline_name") or "").strip()
     if not pipeline_name:
@@ -2068,7 +2158,7 @@ def register_pipeline_jobs(body: dict = Body(default={})):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/pipelines/jobs/reorder", tags=["jobs"])
-def reorder_pipeline_jobs(body: dict = Body(default={})):
+async def reorder_pipeline_jobs(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
     """Reordena jobs sem tocar em lineage (etl_pipeline_job_reorder)."""
     pipeline_name = (body.get("pipeline_name") or "").strip()
     if not pipeline_name:
@@ -2158,21 +2248,17 @@ def get_performance(
 # ADMIN MANAGE
 # ─────────────────────────────────────────────────────────────────────────────
 
-ADMIN_USERS = {"CVT38571"}
-
 
 @app.post("/admin", tags=["admin"])
-def admin_manage(body: dict = Body(default={})):
+async def admin_manage(body: dict = Body(default={}), _admin: tuple = Depends(get_admin_user)):
     """Operações administrativas restritas (etl_admin_manage).
 
     actions: config_upsert | config_delete | pipeline_delete |
              dag_file_delete | regenerate_all_dags
     """
     action       = (body.get("action") or "").strip()
-    requested_by = (body.get("requested_by") or "").strip().upper()
+    requested_by = _admin[0]  # usa a matrícula autenticada como audit trail
 
-    if requested_by not in ADMIN_USERS:
-        raise HTTPException(status_code=403, detail=f"Usuário '{requested_by}' não autorizado")
     if not action:
         raise HTTPException(status_code=422, detail="action é obrigatório")
 
@@ -2285,13 +2371,6 @@ def admin_manage(body: dict = Body(default={})):
 FREEZE_MOTIVO = "Congelamento manual do ambiente"
 
 
-def _check_admin(requested_by: str):
-    rb = (requested_by or "").strip().upper()
-    if rb not in ADMIN_USERS:
-        raise HTTPException(status_code=403, detail=f"Usuário '{rb}' não autorizado")
-    return rb
-
-
 @app.get("/agenda/calendarios", tags=["agenda"])
 def list_calendarios():
     """Lista calendários (nome + qtde de datas + próxima data bloqueada)."""
@@ -2327,12 +2406,12 @@ def get_calendario(nome: str):
 
 
 @app.post("/agenda/calendarios", tags=["agenda"])
-def upsert_calendario(body: dict = Body(default={})):
+async def upsert_calendario(body: dict = Body(default={}), _admin: tuple = Depends(get_admin_user)):
     """Adiciona datas a um calendário (cria se não existir).
 
-    Body: { requested_by, calendario_nome, datas: ["YYYY-MM-DD", ...], descricao }
+    Body: { calendario_nome, datas: ["YYYY-MM-DD", ...], descricao }
     """
-    rb = _check_admin(body.get("requested_by"))
+    rb = _admin[0]
     nome = (body.get("calendario_nome") or "").strip()
     datas = body.get("datas") or []
     descricao = (body.get("descricao") or "").strip() or None
@@ -2360,9 +2439,8 @@ def upsert_calendario(body: dict = Body(default={})):
 
 
 @app.delete("/agenda/calendarios/{nome}", tags=["agenda"])
-def delete_calendario(nome: str, data: Optional[str] = None, requested_by: str = ""):
+async def delete_calendario(nome: str, data: Optional[str] = None, _admin: tuple = Depends(get_admin_user)):
     """Remove uma data (?data=YYYY-MM-DD) ou o calendário inteiro."""
-    _check_admin(requested_by)
     try:
         conn = get_db_conn(); cur = conn.cursor()
         if data:
@@ -2405,9 +2483,9 @@ def list_blackouts(incluir_historico: int = 0):
 
 
 @app.post("/agenda/blackouts", tags=["agenda"])
-def create_blackout(body: dict = Body(default={})):
-    """Cria janela de blackout. Body: { requested_by, inicio, fim, escopo, motivo }"""
-    rb = _check_admin(body.get("requested_by"))
+async def create_blackout(body: dict = Body(default={}), _admin: tuple = Depends(get_admin_user)):
+    """Cria janela de blackout. Body: { inicio, fim, escopo, motivo }"""
+    rb = _admin[0]
     inicio = (body.get("inicio") or "").strip()
     fim    = (body.get("fim") or "").strip()
     escopo = (body.get("escopo") or "").strip() or None
@@ -2428,9 +2506,9 @@ def create_blackout(body: dict = Body(default={})):
 
 
 @app.post("/agenda/blackouts/{blackout_id}/encerrar", tags=["agenda"])
-def encerrar_blackout(blackout_id: int, body: dict = Body(default={})):
+async def encerrar_blackout(blackout_id: int, body: dict = Body(default={}), _admin: tuple = Depends(get_admin_user)):
     """Desativa um blackout antes do fim programado."""
-    rb = _check_admin(body.get("requested_by"))
+    rb = _admin[0]
     try:
         conn = get_db_conn(); cur = conn.cursor()
         cur.execute(
@@ -2448,14 +2526,14 @@ def encerrar_blackout(blackout_id: int, body: dict = Body(default={})):
 
 
 @app.post("/admin/freeze", tags=["agenda"])
-def freeze_ambiente(body: dict = Body(default={})):
+async def freeze_ambiente(body: dict = Body(default={}), _admin: tuple = Depends(get_admin_user)):
     """Congela/descongela o ambiente inteiro.
 
     Implementado como blackout global aberto (fim 9999) — toda DAG gerada
     verifica blackout na task check_agenda e se auto-pula enquanto vigente.
-    Body: { requested_by, acao: 'congelar' | 'descongelar' }
+    Body: { acao: 'congelar' | 'descongelar' }
     """
-    rb = _check_admin(body.get("requested_by"))
+    rb = _admin[0]
     acao = (body.get("acao") or "").strip().lower()
     if acao not in ("congelar", "descongelar"):
         raise HTTPException(status_code=422, detail="acao deve ser 'congelar' ou 'descongelar'")
@@ -2495,7 +2573,7 @@ def freeze_ambiente(body: dict = Body(default={})):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/versao/register", tags=["config"])
-def register_versao(body: dict = Body(default={})):
+async def register_versao(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
     """CRUD de versões do ORQUESTRA (etl_versao_register).
 
     body.action: create | update | delete
@@ -2563,7 +2641,7 @@ def register_versao(body: dict = Body(default={})):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/lineage/extract-dsx", tags=["lineage"])
-def lineage_extract_dsx(body: dict = Body(default={})):
+async def lineage_extract_dsx(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
     """Extrai lineage de um job DataStage a partir do arquivo .dsx (etl_lineage_extract_dsx)."""
     import os, sys
     project_name = (body.get("project_name") or "").strip()
@@ -2598,7 +2676,7 @@ def lineage_extract_dsx(body: dict = Body(default={})):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/lineage/normalize", tags=["lineage"])
-def lineage_normalize(body: dict = Body(default={})):
+async def lineage_normalize(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
     """Normaliza lineage legado: object_name → tabela real (etl_lineage_normalize)."""
     pipeline_filter = (body.get("pipeline_name") or "").strip() or None
     dry_run = str(body.get("dry_run", "false")).lower() in ("true", "1", "yes")
@@ -2670,7 +2748,7 @@ def lineage_normalize(body: dict = Body(default={})):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/sequence/parse", tags=["sequence"])
-def sequence_parse(body: dict = Body(default={})):
+async def sequence_parse(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
     """Faz parse de uma sequence DataStage .dsx e grava em staging (etl_sequence_import_parse)."""
     import os, sys, re, json
 
@@ -2816,7 +2894,7 @@ def sequence_parse(body: dict = Body(default={})):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/sequence/approve", tags=["sequence"])
-def sequence_approve(body: dict = Body(default={})):
+async def sequence_approve(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
     """Aprova importação de sequence: move staging → tabelas principais (etl_sequence_import_approve)."""
     import_id    = int(body.get("import_id", 0))
     reviewed_by  = (body.get("reviewed_by") or "system").strip()
@@ -3290,19 +3368,12 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
 
 
 @app.post("/admin/test-webhook", tags=["admin"])
-def test_webhook(body: dict = Body(default={})):
-    """Testa envio ao Teams e devolve diagnóstico completo (uso exclusivo Admin).
-
-    Body: { "requested_by": "CVT00000", "webhook_key": "teams_webhook_url_ack" }
-    webhook_key é opcional — testa a mesma cascata do ack se omitido.
-    """
+async def test_webhook(body: dict = Body(default={}), _admin: tuple = Depends(get_admin_user)):
+    """Testa envio ao Teams e devolve diagnóstico completo (uso exclusivo Admin)."""
     import httpx as _req
     import traceback
 
-    requested_by = (body.get("requested_by") or "").strip().upper()
-    if requested_by not in ADMIN_USERS:
-        raise HTTPException(status_code=403, detail=f"Usuário '{requested_by}' não autorizado")
-
+    requested_by = _admin[0]
     try:
         return _test_webhook_impl(requested_by, _req)
     except Exception:
@@ -3375,7 +3446,7 @@ def _test_webhook_impl(requested_by: str, _req):
 
 
 @app.post("/execucoes/ack", tags=["execucoes"])
-def ack_failure(body: dict = Body(default={})):
+async def ack_failure(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
     """Acknowledge de falha — operador assume o incidente e notifica o Teams.
 
     Body: execution_id, pipeline, user (matrícula), display_name (nome completo),

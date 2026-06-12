@@ -19,4 +19,4 @@ RUN pip install --no-cache-dir --no-index --find-links=wheels -r requirements.tx
 
 COPY . .
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

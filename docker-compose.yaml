@@ -127,7 +127,7 @@ services:
     restart: always
 
   ui-nginx:
-    image: nginx:latest
+    image: nginx:1.27
     container_name: airflow-ui
     ports:
       - "${UI_PORT:-80}:80"

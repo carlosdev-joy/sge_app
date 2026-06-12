@@ -14,6 +14,7 @@ Comportamento fail-fast (desde v2.3.0):
 from __future__ import annotations
 import os
 import ast
+import shlex
 from collections import defaultdict
 from datetime import timedelta
 import pendulum
@@ -140,13 +141,15 @@ def _task_block(job, project, pipeline):
         ])
     elif jtype == "shell":
         cmd = jcmd or "echo 'comando nao configurado'"
+        # shlex.quote garante que o comando não escape das aspas no código gerado
+        cmd_safe = shlex.quote(cmd)
         ssh = job.get("ssh_conn_id") or None
         ssh_val = f'"{ssh}"' if ssh else 'SSH_CONN_ID'
         main = "\n".join([
             f't_job_{vname} = SSHOperator(',
             f'    task_id="{name}",',
             f'    ssh_conn_id={ssh_val},',
-            f'    command="{cmd}",',
+            f'    command={cmd_safe},',
             f'    cmd_timeout=None,',
             f'    do_xcom_push=True,',
             f')',
