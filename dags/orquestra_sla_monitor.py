@@ -72,6 +72,42 @@ def _fmt_min(minutes):
     return f"{h}h {rem}min" if h else f"{rem}min"
 
 
+def _p90_duracao_minutos(hook):
+    """Duração típica (P90) por pipeline, em minutos, das últimas 30 execuções concluídas.
+
+    Base do SLA preditivo: se a duração típica já excede o SLA, alertamos
+    no início da execução — antes de o tempo decorrido chegar perto do limite.
+    """
+    try:
+        rows = hook.get_records("""
+            WITH execs AS (
+                SELECT execution_id, pipeline,
+                       SUM(duration_seconds) / 60.0 AS total_min,
+                       ROW_NUMBER() OVER (PARTITION BY pipeline
+                                          ORDER BY MIN(start_time) DESC) AS rn
+                FROM dbo.etl_job_execution
+                WHERE status IN ('SUCCESS', 'WARNING')
+                  AND duration_seconds IS NOT NULL
+                GROUP BY execution_id, pipeline
+            )
+            SELECT pipeline, total_min FROM execs WHERE rn <= 30
+        """)
+    except Exception as e:
+        print(f"[SLA] Aviso: não foi possível calcular P90 ({e})")
+        return {}
+    por_pipeline: dict[str, list] = {}
+    for pipeline, total_min in rows or []:
+        por_pipeline.setdefault(pipeline, []).append(float(total_min or 0))
+    p90 = {}
+    for pipeline, vals in por_pipeline.items():
+        if len(vals) < 5:
+            continue  # histórico insuficiente para prever
+        vals.sort()
+        idx = min(len(vals) - 1, int(round(0.9 * (len(vals) - 1))))
+        p90[pipeline] = vals[idx]
+    return p90
+
+
 def monitorar_sla(**context):
     hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
 
@@ -100,17 +136,23 @@ def monitorar_sla(**context):
         )
     """
 
+    p90_map = _p90_duracao_minutos(hook)
+
     alerts = 0
     for exec_id, pipeline, project, sla_min, criticidade, runbook, elapsed in rows:
         sla_min  = int(sla_min)
         elapsed  = int(elapsed or 0)
         breached = elapsed >= sla_min
         at_risk  = (not breached) and elapsed >= sla_min * RISK_THRESHOLD
+        # SLA preditivo: duração típica (P90) já excede o SLA → alerta antecipado
+        p90_min  = p90_map.get(pipeline)
+        predict  = (not breached and not at_risk
+                    and p90_min is not None and p90_min > sla_min)
 
-        if not breached and not at_risk:
+        if not breached and not at_risk and not predict:
             continue
 
-        alert_type = "BREACH" if breached else "RISK"
+        alert_type = "BREACH" if breached else ("RISK" if at_risk else "PREDICT")
         before = hook.get_first(
             "SELECT COUNT(*) FROM dbo.etl_sla_alert "
             "WHERE execution_id=%s AND pipeline=%s AND alert_type=%s",
@@ -138,11 +180,18 @@ def monitorar_sla(**context):
             subtitle = (f"O pipeline {pipeline} ultrapassou o SLA de {_fmt_min(sla_min)} "
                         f"e continua em execução ({_fmt_min(elapsed)} decorridos).")
             status   = "FAILED"
-        else:
+        elif at_risk:
             title    = "SLA em risco"
             subtitle = (f"O pipeline {pipeline} já consumiu {elapsed * 100 // sla_min}% do SLA "
                         f"de {_fmt_min(sla_min)} e ainda está em execução.")
             status   = "WARNING"
+        else:
+            title    = "SLA em risco (previsão)"
+            subtitle = (f"A duração típica do pipeline {pipeline} é {_fmt_min(p90_min)} (P90 das "
+                        f"últimas execuções), acima do SLA de {_fmt_min(sla_min)}. "
+                        f"Provável estouro nesta execução.")
+            status   = "WARNING"
+            facts.append(_fact("Duração típica (P90)", _fmt_min(p90_min)))
         if runbook:
             facts.append(_fact("Runbook", (runbook[:300] + "…") if len(runbook) > 300 else runbook))
 

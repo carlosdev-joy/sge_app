@@ -226,6 +226,18 @@ def list_pipelines(
         """)
         runbook_col = "runbook_md" if cur.fetchone()[0] else "NULL AS runbook_md"
 
+        # colunas da migration 017 (scheduling avançado) — degradam para defaults
+        cur.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' AND COLUMN_NAME='calendario_nome'
+        """)
+        if cur.fetchone()[0]:
+            sched_cols = ("calendario_nome, CAST(somente_dias_uteis AS INT) AS somente_dias_uteis, "
+                          "CAST(trigger_por_dependencia AS INT) AS trigger_por_dependencia")
+        else:
+            sched_cols = ("NULL AS calendario_nome, 0 AS somente_dias_uteis, "
+                          "0 AS trigger_por_dependencia")
+
         data_sql = f"""
             SELECT
                 pipeline_name, project_name, domain, tags,
@@ -249,7 +261,7 @@ def list_pipelines(
                 ISNULL(CAST(max_active_runs    AS INT), 1)   AS max_active_runs,
                 ISNULL(CAST(retries_count      AS INT), 1)   AS retries_count,
                 ISNULL(CAST(retry_delay_seconds AS INT), 300) AS retry_delay_seconds,
-                pool_name, {runbook_col}, last_execution, created_at, updated_at
+                pool_name, {runbook_col}, {sched_cols}, last_execution, created_at, updated_at
             FROM dbo.etl_pipeline
             {where_sql}
             ORDER BY project_name, domain, pipeline_name
@@ -263,7 +275,8 @@ def list_pipelines(
             "active", "dag_criada", "envia_msg_inicio", "envia_msg_fim", "envia_msg_erro",
             "depends_on", "dag_start_date", "descricao", "criticidade", "sla_minutos",
             "ambiente", "max_active_runs", "retries_count", "retry_delay_seconds",
-            "pool_name", "runbook_md", "last_execution", "created_at", "updated_at",
+            "pool_name", "runbook_md", "calendario_nome", "somente_dias_uteis",
+            "trigger_por_dependencia", "last_execution", "created_at", "updated_at",
         ]
         data = []
         for row in cur.fetchall():
@@ -1824,6 +1837,10 @@ def register_pipeline(body: dict = Body(default={})):
     retry_delay_secs = int(body.get("retry_delay_seconds", 300))
     pool_name        = (body.get("pool_name") or "").strip() or None
     runbook_md       = (body.get("runbook_md") or "").strip() or None
+    # Fase 4 — scheduling avançado
+    calendario_nome  = (body.get("calendario_nome") or "").strip() or None
+    somente_dias_uteis      = int(body.get("somente_dias_uteis", 0))
+    trigger_por_dependencia = int(body.get("trigger_por_dependencia", 0))
 
     if pipeline in depends_on_list:
         raise HTTPException(status_code=422, detail="Pipeline não pode depender de si mesmo")
@@ -1869,6 +1886,14 @@ def register_pipeline(body: dict = Body(default={})):
                 (descricao, criticidade, sla_minutos, ambiente,
                  max_active_runs, retries_count, retry_delay_secs, pool_name, pipeline),
             )
+        try:
+            cur.execute(
+                "UPDATE dbo.etl_pipeline SET calendario_nome=?, somente_dias_uteis=?, "
+                "trigger_por_dependencia=?, updated_at=GETDATE() WHERE pipeline_name=?",
+                (calendario_nome, somente_dias_uteis, trigger_por_dependencia, pipeline),
+            )
+        except Exception:
+            pass  # colunas da migration 017 podem não existir ainda — degrada sem erro
         new_vals = {
             "active": active, "scheduled_time": horario, "schedule_type": schedule_type,
             "schedule_hour": schedule_hour, "schedule_minute": schedule_minute,
@@ -2208,6 +2233,218 @@ def admin_manage(body: dict = Body(default={})):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FASE 4 — SCHEDULING AVANÇADO: calendários, blackouts e freeze
+# ─────────────────────────────────────────────────────────────────────────────
+
+FREEZE_MOTIVO = "Congelamento manual do ambiente"
+
+
+def _check_admin(requested_by: str):
+    rb = (requested_by or "").strip().upper()
+    if rb not in ADMIN_USERS:
+        raise HTTPException(status_code=403, detail=f"Usuário '{rb}' não autorizado")
+    return rb
+
+
+@app.get("/agenda/calendarios", tags=["agenda"])
+def list_calendarios():
+    """Lista calendários (nome + qtde de datas + próxima data bloqueada)."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT calendario_nome, COUNT(*) AS datas,
+                   MIN(CASE WHEN data >= CAST(GETDATE() AS DATE) THEN data END) AS proxima
+            FROM dbo.etl_calendario
+            GROUP BY calendario_nome ORDER BY calendario_nome
+        """)
+        data = [{"calendario_nome": r[0], "datas": int(r[1] or 0),
+                 "proxima": str(r[2]) if r[2] else None} for r in cur.fetchall()]
+        cur.close(); conn.close()
+        return {"calendarios": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/agenda/calendarios/{nome}", tags=["agenda"])
+def get_calendario(nome: str):
+    """Datas de um calendário."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT data, descricao FROM dbo.etl_calendario "
+            "WHERE calendario_nome = ? ORDER BY data", (nome,))
+        data = [{"data": str(r[0]), "descricao": r[1]} for r in cur.fetchall()]
+        cur.close(); conn.close()
+        return {"calendario_nome": nome, "datas": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/agenda/calendarios", tags=["agenda"])
+def upsert_calendario(body: dict = Body(default={})):
+    """Adiciona datas a um calendário (cria se não existir).
+
+    Body: { requested_by, calendario_nome, datas: ["YYYY-MM-DD", ...], descricao }
+    """
+    rb = _check_admin(body.get("requested_by"))
+    nome = (body.get("calendario_nome") or "").strip()
+    datas = body.get("datas") or []
+    descricao = (body.get("descricao") or "").strip() or None
+    if not nome or not datas:
+        raise HTTPException(status_code=422, detail="calendario_nome e datas são obrigatórios")
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        inseridas = 0
+        for d in datas:
+            d = str(d).strip()[:10]
+            if not d:
+                continue
+            cur.execute(
+                "INSERT INTO dbo.etl_calendario (calendario_nome, data, descricao, created_by) "
+                "SELECT ?, ?, ?, ? WHERE NOT EXISTS "
+                "(SELECT 1 FROM dbo.etl_calendario WHERE calendario_nome=? AND data=?)",
+                (nome, d, descricao, rb, nome, d))
+            inseridas += cur.rowcount
+        conn.commit(); cur.close(); conn.close()
+        return {"sucesso": True, "calendario_nome": nome, "inseridas": inseridas}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/agenda/calendarios/{nome}", tags=["agenda"])
+def delete_calendario(nome: str, data: Optional[str] = None, requested_by: str = ""):
+    """Remove uma data (?data=YYYY-MM-DD) ou o calendário inteiro."""
+    _check_admin(requested_by)
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        if data:
+            cur.execute("DELETE FROM dbo.etl_calendario WHERE calendario_nome=? AND data=?",
+                        (nome, data))
+        else:
+            cur.execute("DELETE FROM dbo.etl_calendario WHERE calendario_nome=?", (nome,))
+        removidas = cur.rowcount
+        conn.commit(); cur.close(); conn.close()
+        return {"sucesso": True, "removidas": removidas}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/agenda/blackouts", tags=["agenda"])
+def list_blackouts(incluir_historico: int = 0):
+    """Blackouts ativos (e histórico recente se incluir_historico=1) + estado de freeze."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        where = "WHERE ativo = 1" if not incluir_historico else \
+                "WHERE ativo = 1 OR created_at >= DATEADD(DAY, -30, GETDATE())"
+        cur.execute(f"""
+            SELECT TOP 100 id, inicio, fim, escopo, motivo, ativo, criado_por, created_at,
+                   CASE WHEN ativo = 1 AND GETDATE() BETWEEN inicio AND fim THEN 1 ELSE 0 END AS vigente
+            FROM dbo.etl_blackout {where}
+            ORDER BY ativo DESC, inicio DESC
+        """)
+        data = [{"id": r[0], "inicio": _fmt_dt(r[1]), "fim": _fmt_dt(r[2]),
+                 "escopo": r[3], "motivo": r[4], "ativo": int(r[5] or 0),
+                 "criado_por": r[6], "created_at": _fmt_dt(r[7]), "vigente": int(r[8] or 0)}
+                for r in cur.fetchall()]
+        cur.close(); conn.close()
+        congelado = any(b["vigente"] and b["escopo"] is None and b["motivo"] == FREEZE_MOTIVO
+                        for b in data)
+        return {"blackouts": data, "ambiente_congelado": congelado}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/agenda/blackouts", tags=["agenda"])
+def create_blackout(body: dict = Body(default={})):
+    """Cria janela de blackout. Body: { requested_by, inicio, fim, escopo, motivo }"""
+    rb = _check_admin(body.get("requested_by"))
+    inicio = (body.get("inicio") or "").strip()
+    fim    = (body.get("fim") or "").strip()
+    escopo = (body.get("escopo") or "").strip() or None
+    motivo = (body.get("motivo") or "").strip()
+    if not inicio or not fim or not motivo:
+        raise HTTPException(status_code=422, detail="inicio, fim e motivo são obrigatórios")
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO dbo.etl_blackout (inicio, fim, escopo, motivo, ativo, criado_por) "
+            "VALUES (?, ?, ?, ?, 1, ?)", (inicio, fim, escopo, motivo, rb))
+        conn.commit(); cur.close(); conn.close()
+        return {"sucesso": True, "mensagem": "Blackout criado."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/agenda/blackouts/{blackout_id}/encerrar", tags=["agenda"])
+def encerrar_blackout(blackout_id: int, body: dict = Body(default={})):
+    """Desativa um blackout antes do fim programado."""
+    rb = _check_admin(body.get("requested_by"))
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "UPDATE dbo.etl_blackout SET ativo=0, encerrado_por=?, encerrado_em=GETDATE() "
+            "WHERE id=? AND ativo=1", (rb, blackout_id))
+        n = cur.rowcount
+        conn.commit(); cur.close(); conn.close()
+        if not n:
+            raise HTTPException(status_code=404, detail="Blackout não encontrado ou já encerrado")
+        return {"sucesso": True, "mensagem": "Blackout encerrado."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/freeze", tags=["agenda"])
+def freeze_ambiente(body: dict = Body(default={})):
+    """Congela/descongela o ambiente inteiro.
+
+    Implementado como blackout global aberto (fim 9999) — toda DAG gerada
+    verifica blackout na task check_agenda e se auto-pula enquanto vigente.
+    Body: { requested_by, acao: 'congelar' | 'descongelar' }
+    """
+    rb = _check_admin(body.get("requested_by"))
+    acao = (body.get("acao") or "").strip().lower()
+    if acao not in ("congelar", "descongelar"):
+        raise HTTPException(status_code=422, detail="acao deve ser 'congelar' ou 'descongelar'")
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        if acao == "congelar":
+            cur.execute(
+                "SELECT TOP 1 id FROM dbo.etl_blackout "
+                "WHERE ativo=1 AND escopo IS NULL AND motivo=? AND GETDATE() BETWEEN inicio AND fim",
+                (FREEZE_MOTIVO,))
+            if cur.fetchone():
+                cur.close(); conn.close()
+                return {"sucesso": True, "mensagem": "Ambiente já está congelado.", "congelado": True}
+            cur.execute(
+                "INSERT INTO dbo.etl_blackout (inicio, fim, escopo, motivo, ativo, criado_por) "
+                "VALUES (GETDATE(), '9999-12-31', NULL, ?, 1, ?)", (FREEZE_MOTIVO, rb))
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True, "mensagem": "Ambiente congelado — nenhuma DAG gerada iniciará execução.",
+                    "congelado": True}
+        else:
+            cur.execute(
+                "UPDATE dbo.etl_blackout SET ativo=0, encerrado_por=?, encerrado_em=GETDATE() "
+                "WHERE ativo=1 AND escopo IS NULL AND motivo=?", (rb, FREEZE_MOTIVO))
+            n = cur.rowcount
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True,
+                    "mensagem": "Ambiente descongelado." if n else "Ambiente não estava congelado.",
+                    "congelado": False}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

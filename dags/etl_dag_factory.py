@@ -198,6 +198,10 @@ def _generate_dag_source(pipeline, jobs):
     pool_name_val       = (pipeline.get("pool_name") or "").strip() or None
     sla_minutos_val     = pipeline.get("sla_minutos")
     ssh_conn_id_val     = (pipeline.get("ssh_conn_id") or "ssh_lnxprd021").strip()
+    # Fase 4 — scheduling avançado
+    calendario_val      = (pipeline.get("calendario_nome") or "").strip() or None
+    dias_uteis_val      = bool(pipeline.get("somente_dias_uteis") or 0)
+    trigger_dep_val     = bool(pipeline.get("trigger_por_dependencia") or 0)
     _DS_QUEUE_MAP = {"ALTA": "HighPriorityJobs", "CRITICA": "HighPriorityJobs",
                      "MEDIA": "MediumPriorityJobs", "BAIXA": "LowPriorityJobs"}
     ds_queue_val = _DS_QUEUE_MAP.get((pipeline.get("criticidade") or "").upper().strip())
@@ -228,7 +232,9 @@ def _generate_dag_source(pipeline, jobs):
     if sh_needed:
         import_lines.append("from airflow.providers.ssh.operators.ssh import SSHOperator")
     import_lines += [
-        "from airflow.operators.python import PythonOperator",
+        "from airflow.operators.python import PythonOperator, ShortCircuitOperator",
+        "from airflow.operators.empty import EmptyOperator",
+        "from airflow.datasets import Dataset",
         "from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook",
         "from airflow.utils.trigger_rule import TriggerRule",
         "from airflow.utils.state import State",
@@ -253,6 +259,9 @@ def _generate_dag_source(pipeline, jobs):
         f'TEAMS_WEBHOOK_VAR = "TEAMS_WEBHOOK_URL_CVP"',
         f'DS_QUEUE      = {repr(ds_queue_val)}',  # None = usa fila padrão do projeto DS
         f'RUNBOOK_MD    = {repr(runbook_val)}',
+        f'CALENDARIO_NOME    = {repr(calendario_val)}',
+        f'SOMENTE_DIAS_UTEIS = {dias_uteis_val}',
+        f'DATASET_URI   = "orq://pipeline/{pname}"',
         f'default_args  = {{"owner": "airflow", "depends_on_past": False, "retries": {retries_val}, "retry_delay": timedelta(seconds={retry_delay_val})}}',
         f'JOBS          = {repr([j["job_name"] for j in sorted_jobs])}',
     ]
@@ -501,6 +510,39 @@ def _generate_dag_source(pipeline, jobs):
         "            f\"Job '{job_name}' finalizou com status {final_status} — \"",
         "            \"execucao interrompida. Corrija o erro antes de reprocessar.\"",
         "        )",
+        "",
+        "def check_agenda(**context):",
+        "    \"\"\"Fase 4 — blackout/freeze, dias úteis e calendário de feriados.",
+        "    Retorna False (ShortCircuit) para pular a execução inteira.\"\"\"",
+        "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "    try:",
+        "        row = hook.get_first(",
+        '            "SELECT TOP 1 motivo FROM dbo.etl_blackout "',
+        '            "WHERE ativo=1 AND GETDATE() BETWEEN inicio AND fim "',
+        '            "AND (escopo IS NULL OR escopo=%s OR escopo=%s)",',
+        "            parameters=(PROJECT_NAME, PIPELINE_NAME),",
+        "        )",
+        "        if row:",
+        "            print(f\"[AGENDA] Blackout vigente: {row[0]} — execucao pulada.\")",
+        "            return False",
+        "    except Exception as e:",
+        "        print(f\"[AGENDA] Aviso: verificacao de blackout falhou ({e}) — seguindo.\")",
+        "    if SOMENTE_DIAS_UTEIS and pendulum.now(LOCAL_TZ).weekday() >= 5:",
+        "        print(\"[AGENDA] Fim de semana e pipeline e somente dias uteis — execucao pulada.\")",
+        "        return False",
+        "    if CALENDARIO_NOME:",
+        "        try:",
+        "            row = hook.get_first(",
+        '                "SELECT TOP 1 ISNULL(descricao, \'\') FROM dbo.etl_calendario "',
+        '                "WHERE calendario_nome=%s AND data=CAST(GETDATE() AS DATE)",',
+        "                parameters=(CALENDARIO_NOME,),",
+        "            )",
+        "            if row is not None:",
+        "                print(f\"[AGENDA] Data bloqueada no calendario {CALENDARIO_NOME} ({row[0]}) — execucao pulada.\")",
+        "                return False",
+        "        except Exception as e:",
+        "            print(f\"[AGENDA] Aviso: verificacao de calendario falhou ({e}) — seguindo.\")",
+        "    return True",
     ]
     helpers_str = "\n".join(helpers_lines)
 
@@ -532,8 +574,30 @@ def _generate_dag_source(pipeline, jobs):
 
     job_blocks = [_task_block(j, project, pname) for j in sorted_jobs]
 
+    # Fase 4 — check_agenda: blackout/freeze + calendário + dias úteis.
+    # ShortCircuitOperator pula TODAS as tasks downstream (inclusive ALL_DONE).
+    check_block = "\n".join([
+        't_check_agenda = ShortCircuitOperator(',
+        '    task_id="check_agenda",',
+        '    python_callable=check_agenda,',
+        ')',
+    ])
+
+    # Fase 4 — publica Dataset ao final (consumido por pipelines com trigger_por_dependencia)
+    publish_block = "\n".join([
+        't_publish_dataset = EmptyOperator(',
+        '    task_id="publish_dataset",',
+        '    outlets=[Dataset(DATASET_URI)],',
+        ')',
+    ])
+
     # S4: ExternalTaskSensor — suporte a múltiplas dependências
     dep_list = [d.strip() for d in depends_on.split(",") if d.strip()] if depends_on else []
+    # Em modo trigger_por_dependencia o schedule já é dirigido pelos Datasets
+    # dos pipelines dos quais depende — sensores são desnecessários.
+    use_dataset_schedule = trigger_dep_val and bool(dep_list)
+    if use_dataset_schedule:
+        dep_list = []
     sensor_block = ""
     sensor_names = []
     if dep_list:
@@ -568,6 +632,9 @@ def _generate_dag_source(pipeline, jobs):
     if sensor_names:
         sensors_ref = "[" + ", ".join(sensor_names) + "]"
         dep_lines.insert(0, f"{sensors_ref} >> t_start_{first}")
+        dep_lines.insert(0, f"t_check_agenda >> {sensors_ref}")
+    else:
+        dep_lines.insert(0, f"t_check_agenda >> t_start_{first}")
 
     for j in others:
         n = _varname(j["job_name"])
@@ -576,12 +643,15 @@ def _generate_dag_source(pipeline, jobs):
 
     end_tasks_ref = "[" + ", ".join(all_ends) + "]"
     dep_lines.append(f"end_tasks = {end_tasks_ref}")
+    dep_lines.append(f"{end_tasks_ref} >> t_publish_dataset")
     if f_fim:
         dep_lines.append(f"{end_tasks_ref} >> t_teams_end")
     if f_err:
         dep_lines.append(f"{end_tasks_ref} >> t_teams_error")
 
     with_parts = []
+    with_parts.append(_ind(check_block))
+    with_parts.append(_ind(publish_block))
     if sensor_block:
         with_parts.append(_ind(sensor_block))
     for t in teams_tasks:
@@ -600,13 +670,20 @@ def _generate_dag_source(pipeline, jobs):
     else:
         sd_y, sd_m, sd_d = 2026, 1, 1
 
+    if use_dataset_schedule:
+        deps_orig = [d.strip() for d in depends_on.split(",") if d.strip()]
+        ds_items = ", ".join(f'Dataset("orq://pipeline/{d}")' for d in deps_orig)
+        schedule_line = f"    schedule=[{ds_items}],  # dispara quando as dependências publicarem"
+    else:
+        schedule_line = f'    schedule="{cron}",'
+
     dag_header_lines = [
         "with DAG(",
         "    dag_id=DAG_ID,",
         "    default_args=default_args,",
         f'    description="Pipeline {pname} - {project} / {domain}",',
         f"    start_date=pendulum.datetime({sd_y}, {sd_m}, {sd_d}, tz=LOCAL_TZ),",
-        f'    schedule="{cron}",',
+        schedule_line,
         "    catchup=False,",
         f"    max_active_runs={max_active_runs_val},",
     ]
@@ -740,10 +817,21 @@ def gerar_dags(**context):
     if pipelines:
         pnames_sql = ",".join(["%s"] * len(pipelines))
         pnames_vals = tuple(p['pipeline_name'] for p in pipelines)
+        # colunas da migration 017 (scheduling avançado) — degradam se ausentes
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' "
+            "AND COLUMN_NAME='calendario_nome'"
+        )
+        has_sched_cols = bool(cursor.fetchone()[0])
+        sched_cols = (
+            ", calendario_nome, somente_dias_uteis, trigger_por_dependencia"
+            if has_sched_cols else ""
+        )
         cursor.execute(
             f"SELECT pipeline_name, criticidade, sla_minutos, ambiente, "
             f"max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao, dag_start_date, "
-            f"runbook_md "
+            f"runbook_md{sched_cols} "
             f"FROM dbo.etl_pipeline WHERE pipeline_name IN ({pnames_sql})",
             pnames_vals,
         )

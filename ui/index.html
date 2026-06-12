@@ -1215,6 +1215,22 @@
               </div>
               <div id="sch-preview" style="font-size:11px;font-family:ui-monospace,'Courier New',monospace;color:var(--muted);margin-top:5px">cron: 0 6 * * *</div>
               <div id="sch-overlap-hint" style="font-size:11px;margin-top:3px"></div>
+
+              <!-- Fase 4: calendário + dias úteis -->
+              <div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;margin-top:.75rem">
+                <div>
+                  <label style="font-size:11px;color:var(--muted);margin:0 0 3px;display:block">Calendário de bloqueio
+                    <button class="help-btn" tabindex="-1">?<span class="help-popup">Datas em que o pipeline <strong>não roda</strong> (feriados, fechamento). A execução é pulada automaticamente (skip) nesses dias.<br><br>Gerencie os calendários em Admin ▸ Agendamento.</span></button>
+                  </label>
+                  <select id="sch-calendario" style="min-width:180px">
+                    <option value="">— nenhum —</option>
+                  </select>
+                </div>
+                <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding-bottom:8px;cursor:pointer">
+                  <input type="checkbox" id="sch-dias-uteis" />
+                  Somente dias úteis (pula sáb/dom)
+                </label>
+              </div>
             </div>
 
             <!-- Dependência -->
@@ -1234,6 +1250,11 @@
               <p style="font-size:11px;color:var(--muted);margin:.3rem 0 0">
                 Pipelines upstream. Gera um <code>ExternalTaskSensor</code> por dependência (mode=reschedule).
               </p>
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-top:.5rem;cursor:pointer">
+                <input type="checkbox" id="sch-trigger-dep" />
+                Disparar quando as dependências concluírem (ignora o horário)
+                <button class="help-btn" tabindex="-1">?<span class="help-popup">Em vez de rodar no horário agendado, o pipeline é disparado <strong>automaticamente</strong> assim que todos os pipelines listados acima concluírem com sucesso (Airflow Datasets).<br><br>Requer ao menos 1 dependência.</span></button>
+              </label>
             </div>
 
             <!-- Data de Início -->
@@ -2116,6 +2137,7 @@
                 <button id="adm-tab-regen"   class="adm-tab" onclick="admSwitch('regen')">♻ Regenerar DAGs</button>
                 <button id="adm-tab-versoes" class="adm-tab" onclick="admSwitch('versoes')">📋 Versões</button>
                 <button id="adm-tab-tipos"  class="adm-tab" onclick="admSwitch('tipos')">◎ Tipos de Job</button>
+                <button id="adm-tab-agenda" class="adm-tab" onclick="admSwitch('agenda')">📅 Agendamento</button>
               </div>
 
               <!-- SUB: Configurações -->
@@ -2145,6 +2167,54 @@
                 </div>
                 <div id="adm-config-status" style="font-size:12px;color:var(--muted);margin-bottom:.5rem;min-height:16px"></div>
                 <div id="adm-config-table"></div>
+              </div>
+
+              <!-- SUB: Agendamento avançado (Fase 4) -->
+              <div id="adm-panel-agenda" style="display:none">
+                <!-- Freeze do ambiente -->
+                <div id="adm-freeze-box" style="border:1px solid var(--border);border-radius:12px;padding:1rem;margin-bottom:1.25rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+                  <div>
+                    <div style="font-size:13px;font-weight:600">🚫 Congelamento do ambiente</div>
+                    <div class="helper" style="margin:.2rem 0 0">Quando congelado, <strong>nenhuma DAG gerada inicia execução</strong> (a task <code>check_agenda</code> pula a execução). Execuções em andamento não são interrompidas.</div>
+                    <div id="adm-freeze-status" style="font-size:12px;margin-top:.4rem;font-weight:600">—</div>
+                  </div>
+                  <button class="btn btn-outline" id="adm-freeze-btn" onclick="admToggleFreeze()">…</button>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;align-items:start">
+                  <!-- Calendários -->
+                  <div style="border:1px solid var(--border);border-radius:12px;padding:1rem">
+                    <div style="font-size:13px;font-weight:600;margin-bottom:.25rem">📅 Calendários de bloqueio</div>
+                    <div class="helper" style="margin:0 0 .75rem">Datas em que os pipelines com o calendário aplicado <strong>não rodam</strong> (feriados, fechamento). Aplique no passo Agendamento do pipeline.</div>
+                    <div id="adm-cal-list" style="margin-bottom:.75rem"></div>
+                    <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:.75rem">
+                      <div style="font-size:12px;font-weight:600;margin-bottom:.5rem;color:var(--cvp-blue)">Adicionar datas</div>
+                      <div class="field" style="margin:0 0 .5rem"><label>Calendário</label><input id="adm-cal-nome" type="text" placeholder="ex: Feriados BR, Fechamento mensal" list="adm-cal-nomes" /><datalist id="adm-cal-nomes"></datalist></div>
+                      <div class="field" style="margin:0 0 .5rem"><label>Datas (uma por linha, AAAA-MM-DD)</label><textarea id="adm-cal-datas" rows="3" placeholder="2026-12-25&#10;2026-12-31" style="font-family:monospace;font-size:12px"></textarea></div>
+                      <div class="field" style="margin:0 0 .6rem"><label>Descrição (opcional)</label><input id="adm-cal-desc" type="text" placeholder="ex: Natal" /></div>
+                      <button class="btn btn-primary btn-sm" onclick="admCalAdd()">+ Adicionar</button>
+                      <span id="adm-cal-msg" style="font-size:12px;margin-left:.5rem"></span>
+                    </div>
+                  </div>
+
+                  <!-- Blackouts -->
+                  <div style="border:1px solid var(--border);border-radius:12px;padding:1rem">
+                    <div style="font-size:13px;font-weight:600;margin-bottom:.25rem">⛔ Janelas de blackout</div>
+                    <div class="helper" style="margin:0 0 .75rem">Período em que execuções são puladas (ex.: backup do banco). Escopo vazio = <strong>global</strong>; ou informe um projeto/pipeline.</div>
+                    <div id="adm-blk-list" style="margin-bottom:.75rem"></div>
+                    <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:.75rem">
+                      <div style="font-size:12px;font-weight:600;margin-bottom:.5rem;color:var(--cvp-blue)">Nova janela</div>
+                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.5rem">
+                        <div class="field" style="margin:0"><label>Início</label><input id="adm-blk-inicio" type="datetime-local" /></div>
+                        <div class="field" style="margin:0"><label>Fim</label><input id="adm-blk-fim" type="datetime-local" /></div>
+                      </div>
+                      <div class="field" style="margin:0 0 .5rem"><label>Escopo (vazio = global)</label><input id="adm-blk-escopo" type="text" placeholder="projeto ou pipeline (opcional)" /></div>
+                      <div class="field" style="margin:0 0 .6rem"><label>Motivo</label><input id="adm-blk-motivo" type="text" placeholder="ex: Backup mensal do SQL14" /></div>
+                      <button class="btn btn-primary btn-sm" onclick="admBlkAdd()">+ Criar blackout</button>
+                      <span id="adm-blk-msg" style="font-size:12px;margin-left:.5rem"></span>
+                    </div>
+                  </div>
+                </div>
               </div>
 
 
@@ -5576,7 +5646,7 @@ function _applyAdminVisibility() {
 
 // Sub-navegação Admin
 function admSwitch(panel) {
-  ['config','delete','regen','versoes','tipos'].forEach(p => {
+  ['config','delete','regen','versoes','tipos','agenda'].forEach(p => {
     const el = $('adm-panel-' + p);
     if (el) el.style.display = p === panel ? '' : 'none';
     const btn = $('adm-tab-' + p);
@@ -5585,9 +5655,180 @@ function admSwitch(panel) {
   if (panel === 'config')  admLoadConfig();
   if (panel === 'versoes') admLoadVersoes();
   if (panel === 'tipos')   admLoadJobTypes();
+  if (panel === 'agenda')  admLoadAgenda();
 }
 
-// ── Admin: Tipos de Job ───────────────────────────────────────────────────────
+//* ── Admin: Agendamento avançado (Fase 4) ─────────────────────────────────── */
+async function admLoadAgenda() {
+  await Promise.all([admLoadCalendarios(), admLoadBlackouts()]);
+}
+
+async function admLoadCalendarios() {
+  const el = $('adm-cal-list');
+  if (!el) return;
+  el.innerHTML = '<span style="font-size:12px;color:var(--muted)">Carregando…</span>';
+  try {
+    const r = await fetch(ORQUESTRA_API + '/agenda/calendarios');
+    const data = r.ok ? await r.json() : { calendarios: [] };
+    const cals = data.calendarios || [];
+    if ($('adm-cal-nomes')) {
+      $('adm-cal-nomes').innerHTML = cals.map(c => '<option value="' + _escHtml(c.calendario_nome) + '">').join('');
+    }
+    if (!cals.length) {
+      el.innerHTML = '<span style="font-size:12px;color:var(--muted)">Nenhum calendário cadastrado.</span>';
+      return;
+    }
+    el.innerHTML = cals.map(c =>
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;padding:.4rem 0;border-bottom:1px solid var(--border);font-size:13px">' +
+        '<div><strong>' + _escHtml(c.calendario_nome) + '</strong>' +
+        ' <span style="color:var(--muted);font-size:11px">' + c.datas + ' data(s)' +
+        (c.proxima ? ' · próx. bloqueio ' + _escHtml(c.proxima) : '') + '</span></div>' +
+        '<div style="white-space:nowrap">' +
+        '<button class="btn-ghost btn-sm" onclick="admCalVerDatas(\'' + _escHtml(c.calendario_nome).replace(/'/g, "\\'") + '\')">⊞ datas</button> ' +
+        '<button class="btn-ghost btn-sm" style="color:var(--red)" onclick="admCalDelete(\'' + _escHtml(c.calendario_nome).replace(/'/g, "\\'") + '\')">✕</button>' +
+        '</div></div>'
+    ).join('');
+  } catch(e) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--red)">Erro: ' + _escHtml(e.message) + '</span>';
+  }
+}
+
+async function admCalVerDatas(nome) {
+  try {
+    const r = await fetch(ORQUESTRA_API + '/agenda/calendarios/' + encodeURIComponent(nome));
+    const data = await r.json();
+    const linhas = (data.datas || []).map(d => d.data + (d.descricao ? ' — ' + d.descricao : ''));
+    _lsDetailPopover(null, linhas.join('\n'), 'Calendário ' + nome);
+  } catch(e) { showToast('Erro ao listar datas: ' + e.message, true); }
+}
+
+async function admCalAdd() {
+  const nome  = ($('adm-cal-nome')  ? $('adm-cal-nome').value.trim()  : '');
+  const datas = ($('adm-cal-datas') ? $('adm-cal-datas').value : '').split('\n').map(s => s.trim()).filter(Boolean);
+  const desc  = ($('adm-cal-desc')  ? $('adm-cal-desc').value.trim()  : '');
+  const msg   = $('adm-cal-msg');
+  if (!nome || !datas.length) { if (msg) { msg.textContent = 'Informe calendário e ao menos 1 data.'; msg.style.color = 'var(--red)'; } return; }
+  if (datas.some(d => !/^\d{4}-\d{2}-\d{2}$/.test(d))) { if (msg) { msg.textContent = 'Use o formato AAAA-MM-DD.'; msg.style.color = 'var(--red)'; } return; }
+  try {
+    const r = await fetch(ORQUESTRA_API + '/agenda/calendarios', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requested_by: window.__currentUser || '', calendario_nome: nome, datas, descricao: desc || null }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    if (msg) { msg.textContent = d.inseridas + ' data(s) adicionada(s).'; msg.style.color = 'var(--green)'; }
+    if ($('adm-cal-datas')) $('adm-cal-datas').value = '';
+    admLoadCalendarios();
+  } catch(e) { if (msg) { msg.textContent = 'Erro: ' + e.message; msg.style.color = 'var(--red)'; } }
+}
+
+async function admCalDelete(nome) {
+  const ok = await showConfirm('Excluir o calendário "' + nome + '" inteiro?\n\nPipelines que o utilizam deixarão de ter datas bloqueadas.', '✕ Excluir');
+  if (!ok) return;
+  try {
+    const r = await fetch(ORQUESTRA_API + '/agenda/calendarios/' + encodeURIComponent(nome) +
+      '?requested_by=' + encodeURIComponent(window.__currentUser || ''), { method: 'DELETE' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    showToast('Calendário "' + nome + '" removido (' + d.removidas + ' data(s)).', false);
+    admLoadCalendarios();
+  } catch(e) { showToast('Erro: ' + e.message, true); }
+}
+
+async function admLoadBlackouts() {
+  const el = $('adm-blk-list');
+  if (!el) return;
+  el.innerHTML = '<span style="font-size:12px;color:var(--muted)">Carregando…</span>';
+  try {
+    const r = await fetch(ORQUESTRA_API + '/agenda/blackouts');
+    const data = r.ok ? await r.json() : { blackouts: [], ambiente_congelado: false };
+    _admRenderFreeze(!!data.ambiente_congelado);
+    const list = (data.blackouts || []).filter(b => b.ativo);
+    if (!list.length) {
+      el.innerHTML = '<span style="font-size:12px;color:var(--muted)">Nenhum blackout ativo.</span>';
+      return;
+    }
+    el.innerHTML = list.map(b =>
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;padding:.4rem 0;border-bottom:1px solid var(--border);font-size:12px">' +
+        '<div>' + (b.vigente ? '<span style="color:var(--red);font-weight:700">● vigente</span> ' : '<span style="color:var(--muted)">○ agendado</span> ') +
+        '<strong>' + _escHtml(b.motivo || '') + '</strong>' +
+        '<br><span style="color:var(--muted)">' + _escHtml(b.inicio || '') + ' → ' + _escHtml(b.fim || '') +
+        ' · escopo: ' + _escHtml(b.escopo || 'global') + '</span></div>' +
+        '<button class="btn-ghost btn-sm" style="color:var(--red);white-space:nowrap" onclick="admBlkEncerrar(' + b.id + ')">✕ encerrar</button>' +
+      '</div>'
+    ).join('');
+  } catch(e) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--red)">Erro: ' + _escHtml(e.message) + '</span>';
+  }
+}
+
+async function admBlkAdd() {
+  const inicio = $('adm-blk-inicio') ? $('adm-blk-inicio').value : '';
+  const fim    = $('adm-blk-fim')    ? $('adm-blk-fim').value    : '';
+  const escopo = $('adm-blk-escopo') ? $('adm-blk-escopo').value.trim() : '';
+  const motivo = $('adm-blk-motivo') ? $('adm-blk-motivo').value.trim() : '';
+  const msg    = $('adm-blk-msg');
+  if (!inicio || !fim || !motivo) { if (msg) { msg.textContent = 'Início, fim e motivo são obrigatórios.'; msg.style.color = 'var(--red)'; } return; }
+  try {
+    const r = await fetch(ORQUESTRA_API + '/agenda/blackouts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requested_by: window.__currentUser || '',
+        inicio: inicio.replace('T', ' '), fim: fim.replace('T', ' '),
+        escopo: escopo || null, motivo }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    if (msg) { msg.textContent = 'Blackout criado.'; msg.style.color = 'var(--green)'; }
+    ['adm-blk-inicio','adm-blk-fim','adm-blk-escopo','adm-blk-motivo'].forEach(id => { if ($(id)) $(id).value = ''; });
+    admLoadBlackouts();
+  } catch(e) { if (msg) { msg.textContent = 'Erro: ' + e.message; msg.style.color = 'var(--red)'; } }
+}
+
+async function admBlkEncerrar(id) {
+  const ok = await showConfirm('Encerrar este blackout agora? As execuções voltam ao normal.', '✕ Encerrar');
+  if (!ok) return;
+  try {
+    const r = await fetch(ORQUESTRA_API + '/agenda/blackouts/' + id + '/encerrar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requested_by: window.__currentUser || '' }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    showToast('Blackout encerrado.', false);
+    admLoadBlackouts();
+  } catch(e) { showToast('Erro: ' + e.message, true); }
+}
+
+let _admCongelado = false;
+function _admRenderFreeze(congelado) {
+  _admCongelado = congelado;
+  const st  = $('adm-freeze-status');
+  const btn = $('adm-freeze-btn');
+  if (st)  { st.textContent = congelado ? '🔴 AMBIENTE CONGELADO — execuções pausadas' : '🟢 Ambiente liberado';
+             st.style.color = congelado ? 'var(--red)' : 'var(--green)'; }
+  if (btn) { btn.textContent = congelado ? '▶ Descongelar ambiente' : '🚫 Congelar ambiente'; }
+}
+
+async function admToggleFreeze() {
+  const acao = _admCongelado ? 'descongelar' : 'congelar';
+  const aviso = acao === 'congelar'
+    ? 'Congelar o ambiente?\n\nNENHUMA DAG gerada iniciará execução até descongelar. Execuções em andamento não são interrompidas.'
+    : 'Descongelar o ambiente? As execuções voltam ao agendamento normal.';
+  const ok = await showConfirm(aviso, acao === 'congelar' ? '🚫 Congelar' : '▶ Descongelar');
+  if (!ok) return;
+  try {
+    const r = await fetch(ORQUESTRA_API + '/admin/freeze', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requested_by: window.__currentUser || '', acao }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    showToast(d.mensagem || 'OK', false);
+    admLoadBlackouts();
+  } catch(e) { showToast('Erro: ' + e.message, true); }
+}
+
+/ ── Admin: Tipos de Job ───────────────────────────────────────────────────────
 async function admLoadJobTypes() {
   const st  = $('adm-tipos-status');
   const tbl = $('adm-tipos-table');
@@ -7149,6 +7390,24 @@ function _scheduleSetFromRecord(rec) {
   _scheduleTypeChange();
 }
 
+/* ── Fase 4: calendários no wizard ──────────────────────────────── */
+async function loadCalendarioOptions(selected) {
+  const sel = $('sch-calendario');
+  if (!sel) return;
+  try {
+    const r = await fetch(ORQUESTRA_API + '/agenda/calendarios');
+    const data = r.ok ? await r.json() : { calendarios: [] };
+    const cals = data.calendarios || [];
+    sel.innerHTML = '<option value="">— nenhum —</option>' +
+      cals.map(c => '<option value="' + _escHtml(c.calendario_nome) + '">' +
+        _escHtml(c.calendario_nome) + ' (' + c.datas + ' data(s))</option>').join('');
+  } catch(_) {
+    sel.innerHTML = '<option value="">— nenhum —</option>';
+  }
+  sel.value = selected || '';
+  if (sel.value !== (selected || '')) sel.value = ''; // calendário removido do banco
+}
+
 /* ── S4: Validação de dependências (multi-dep) ──────────────────── */
 function _detectCircularDep(startPipeline, targetDep, pipelines) {
   const depMap = {};
@@ -7309,6 +7568,17 @@ async function registrarPipeline() {
     return;
   }
 
+  // Fase 4: disparo por dependência exige ao menos 1 pipeline em "Depende de"
+  if ($('sch-trigger-dep') && $('sch-trigger-dep').checked) {
+    const depsVal = ($('p-deps-hidden') ? $('p-deps-hidden').value.trim() : '') ||
+                    ($('p-depends-on') ? $('p-depends-on').value.trim() : '');
+    if (!depsVal) {
+      m.textContent = 'Disparo por dependência exige ao menos 1 pipeline em "Depende de".';
+      m.className = 'msg erro';
+      return;
+    }
+  }
+
   await _orqPost(
     ORQUESTRA_API + '/pipelines/register',
     {
@@ -7330,6 +7600,9 @@ async function registrarPipeline() {
       retries_count:       $('p-retries') ? (parseInt($('p-retries').value) ?? 1) : 1,
       retry_delay_seconds: $('p-retry-delay') ? (parseInt($('p-retry-delay').value) || 300) : 300,
       pool_name:           ($('p-pool') ? $('p-pool').value.trim() : '') || null,
+      calendario_nome:     ($('sch-calendario') ? $('sch-calendario').value : '') || null,
+      somente_dias_uteis:  ($('sch-dias-uteis') && $('sch-dias-uteis').checked) ? 1 : 0,
+      trigger_por_dependencia: ($('sch-trigger-dep') && $('sch-trigger-dep').checked) ? 1 : 0,
       ...schedConf,
     },
     'Pipeline "' + pipeline + '"',
@@ -8463,6 +8736,9 @@ function openPipelineCreate() {
   if ($('p-retries'))        $('p-retries').value = 1;
   if ($('p-retry-delay'))    $('p-retry-delay').value = 300;
   if ($('p-pool'))           $('p-pool').value = '';
+  loadCalendarioOptions('');
+  if ($('sch-dias-uteis'))  $('sch-dias-uteis').checked  = false;
+  if ($('sch-trigger-dep')) $('sch-trigger-dep').checked = false;
   setStatus(1);
   ['tog-inicio','tog-fim','tog-erro'].forEach(id => { $(id).checked = true; syncToggle('lbl-'+id.replace('tog-',''), $(id)); _syncNotifCard('card-'+id.replace('tog-',''), $(id)); });
   $('msg-pipeline').textContent = '';
@@ -8542,6 +8818,10 @@ function openPipelineEdit(idx) {
   if ($('p-retry-delay'))    $('p-retry-delay').value    = p.retry_delay_seconds || 300;
   if ($('p-pool'))           $('p-pool').value           = p.pool_name || '';
   if ($('p-dag-start-date')) $('p-dag-start-date').value = p.dag_start_date || '';
+  // Fase 4 — scheduling avançado
+  loadCalendarioOptions(p.calendario_nome || '');
+  if ($('sch-dias-uteis'))  $('sch-dias-uteis').checked  = !!p.somente_dias_uteis;
+  if ($('sch-trigger-dep')) $('sch-trigger-dep').checked = !!p.trigger_por_dependencia;
   // Multi-dep chips
   if ($('deps-wrap')) {
     $('deps-wrap').querySelectorAll('.chip').forEach(c => c.remove());
