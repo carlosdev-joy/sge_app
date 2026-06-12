@@ -3453,3 +3453,61 @@ async def list_ssh_connections():
     except Exception as e:
         log.warning("Erro ao listar conexões SSH: %s", e)
         return {"connections": []}
+
+
+# ── Malha ─────────────────────────────────────────────────────────────────────
+
+@app.get("/malha", tags=["pipelines"])
+def get_malha():
+    """Retorna todos os pipelines com seus jobs embutidos para a visualização de malha."""
+    try:
+        conn = get_db_conn()
+        cur  = conn.cursor()
+
+        cur.execute("""
+            SELECT pipeline_name, project_name, domain, tags,
+                   CONVERT(VARCHAR(8), scheduled_time, 108) AS scheduled_time,
+                   schedule_type,
+                   CAST(active AS INT) AS active,
+                   depends_on,
+                   descricao,
+                   ISNULL(criticidade, 'Media') AS criticidade,
+                   sla_minutos,
+                   ISNULL(ambiente, 'PROD') AS ambiente,
+                   last_execution
+            FROM dbo.etl_pipeline
+            ORDER BY project_name, domain, pipeline_name
+        """)
+        pipe_cols = ["pipeline_name", "project_name", "domain", "tags",
+                     "scheduled_time", "schedule_type", "active", "depends_on",
+                     "descricao", "criticidade", "sla_minutos", "ambiente",
+                     "last_execution"]
+        pipelines: dict[str, dict] = {}
+        for row in cur.fetchall():
+            rec = dict(zip(pipe_cols, row))
+            rec["last_execution"] = _fmt_dt(rec.get("last_execution"))
+            rec["jobs"] = []
+            pipelines[rec["pipeline_name"]] = rec
+
+        cur.execute("""
+            SELECT pipeline_name, job_name,
+                   CAST(execution_order AS INT) AS execution_order,
+                   job_type, command_or_path
+            FROM dbo.etl_pipeline_job
+            ORDER BY pipeline_name, execution_order, job_name
+        """)
+        for pname, jname, order, jtype, cmd in cur.fetchall():
+            if pname in pipelines:
+                pipelines[pname]["jobs"].append({
+                    "job_name":        jname or "",
+                    "execution_order": int(order or 0),
+                    "job_type":        jtype or "",
+                    "command":         cmd  or "",
+                })
+
+        cur.close(); conn.close()
+        return {"data": list(pipelines.values())}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

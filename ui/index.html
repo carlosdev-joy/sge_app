@@ -910,6 +910,50 @@
   .wiz-review-key { color:var(--muted); min-width:130px; flex-shrink:0; font-size:11px; }
   .wiz-review-val { font-weight:500; }
 
+  /* ── Malha de Pipelines ── */
+  .malha-info-banner{background:linear-gradient(135deg,rgba(26,95,168,.07),rgba(243,146,0,.06));border:1px solid rgba(26,95,168,.18);border-radius:12px;padding:.9rem 1.1rem;margin:0 0 1rem}
+  .malha-toolbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.75rem}
+  .malha-toolbar input[type=search]{flex:2;min-width:140px}
+  .malha-toolbar select{flex:1;min-width:110px}
+  .malha-view-group{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  .malha-view-btn{padding:5px 13px;border:none;background:transparent;cursor:pointer;font-size:12px;color:var(--muted);transition:background .15s}
+  .malha-view-btn.active{background:var(--cvp-blue);color:#fff}
+  .malha-stats{display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:.8rem}
+  .malha-stat{background:var(--muted-bg,rgba(128,128,128,.06));border-radius:8px;padding:5px 14px;font-size:12px;color:var(--muted)}
+  .malha-stat strong{color:var(--text);font-size:18px;display:block;line-height:1.2}
+  .malha-section{margin-bottom:1.5rem}
+  .malha-section-title{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.6rem;display:flex;align-items:center;gap:.4rem}
+  .malha-cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:.65rem}
+  .malha-card{border:1px solid var(--border);border-radius:12px;padding:.85rem 1rem;background:var(--card);cursor:pointer;transition:box-shadow .15s,border-color .15s}
+  .malha-card:hover{box-shadow:var(--shadow-card);border-color:var(--cvp-blue)}
+  .malha-card-header{display:flex;align-items:center;gap:.4rem;margin-bottom:.4rem}
+  .malha-card-name{font-weight:700;font-size:13px;flex:1;word-break:break-all}
+  .malha-crit{font-size:9px;padding:2px 7px;border-radius:999px;font-weight:800;white-space:nowrap}
+  .malha-crit-ALTA{background:#fee2e2;color:#dc2626}
+  .malha-crit-MEDIA{background:#fef3c7;color:#d97706}
+  .malha-crit-CRITICA{background:#fce7f3;color:#9d174d}
+  .malha-crit-BAIXA{background:#dcfce7;color:#16a34a}
+  .malha-badge-on{color:var(--green);font-size:11px}
+  .malha-badge-off{color:var(--muted);font-size:11px}
+  .malha-card-meta{display:flex;gap:.6rem;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-bottom:.4rem}
+  .malha-card-desc{font-size:11px;color:var(--muted);margin-bottom:.4rem;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .malha-card-flow{margin-top:.65rem;padding-top:.65rem;border-top:1px solid var(--border)}
+  .malha-card-toggle{font-size:11px;color:var(--cvp-blue);text-align:right;margin-top:.4rem}
+  /* job chain inside malha */
+  .job-chain{display:flex;align-items:center;flex-wrap:wrap;gap:3px}
+  .jc-arrow{color:var(--muted);font-size:16px;padding:0 1px;user-select:none}
+  .jc-node{border:1.5px solid;border-radius:7px;padding:3px 7px;font-size:10px;min-width:52px;text-align:center;background:var(--card)}
+  .jc-node-name{font-weight:700;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:90px}
+  .jc-node-type{font-size:8px;opacity:.65;display:block}
+  .jc-parallel{display:flex;flex-direction:column;gap:2px;align-items:stretch}
+  .jc-par-label{font-size:8px;color:var(--muted);text-align:center;letter-spacing:.08em;margin:1px 0}
+  /* diagram view */
+  .malha-diag-row{display:flex;align-items:flex-start;gap:1rem;padding:.7rem 0;border-bottom:1px solid var(--border)}
+  .malha-diag-label{min-width:190px;max-width:190px}
+  .malha-diag-name{font-weight:700;font-size:13px;word-break:break-all}
+  .malha-diag-meta{font-size:11px;color:var(--muted);margin-top:2px}
+  .malha-diag-chain{flex:1;overflow-x:auto}
+  .malha-dep-tag{font-size:10px;color:var(--cvp-orange);margin-bottom:4px;display:flex;align-items:center;gap:3px}
   /* ── help tooltip ── */
   .help-btn{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;border:1.5px solid var(--muted);color:var(--muted);font-size:8px;font-weight:700;cursor:pointer;background:none;line-height:1;vertical-align:middle;margin-left:3px;position:relative;flex-shrink:0}
   .help-btn:hover{border-color:var(--accent);color:var(--accent)}
@@ -1001,6 +1045,7 @@
         <button id="tab-logs" class="hd-tab" onclick="switchPage('page-logs',this);loadLogs(0)">≣ <span>Logs</span></button>
         <button id="tab-ds-monitor" class="hd-tab" onclick="switchPage('page-ds-monitor',this);dsMonitorInit()">⬡ <span>DS Monitor</span></button>
         <button id="tab-governanca" class="hd-tab" onclick="switchPage('page-governanca',this)">◈ <span>Governança</span></button>
+        <button id="tab-malha" class="hd-tab" onclick="switchPage('page-malha',this);_malhaRaw=null;if($('malha-body'))$('malha-body').dataset.loaded='';loadMalha()">⊞ <span>Malha</span></button>
         <button id="tab-admin" class="hd-tab hidden" onclick="switchPage('page-admin',this)">⚙ <span>Admin</span></button>
       </nav>
       <div class="hd-right">
@@ -1036,6 +1081,22 @@
               <p class="sub">Gestão de pipelines</p>
             </div>
             <div class="body-pad">
+              <!-- Banner explicativo pipelines -->
+              <div id="pip-banner" class="malha-info-banner" style="margin-bottom:1rem">
+                <div style="display:flex;gap:10px;align-items:flex-start">
+                  <span style="font-size:1.3rem;line-height:1">≡</span>
+                  <div style="flex:1">
+                    <strong style="font-size:13px">O que é um Pipeline?</strong>
+                    <ul style="margin:.35rem 0 0;padding-left:1.1rem;font-size:12px;color:var(--muted);line-height:1.7">
+                      <li>Um <strong>pipeline</strong> é o orquestrador de um processo de dados — define <em>quando</em>, <em>como</em> e <em>em qual ordem</em> os jobs são executados.</li>
+                      <li>Cada pipeline gera automaticamente um <strong>DAG no Airflow</strong> ao ser registrado.</li>
+                      <li>Jobs com a <strong>mesma ordem</strong> são executados <strong>em paralelo</strong>; grupos de ordens distintas são encadeados em série.</li>
+                      <li>Use a aba <strong>Malha</strong> para visualizar todos os pipelines e suas cadeias de execução lado a lado.</li>
+                    </ul>
+                  </div>
+                  <button onclick="$('pip-banner').style.display='none'" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:1.2rem;line-height:1;padding:0 2px">×</button>
+                </div>
+              </div>
               <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap">
                 <div class="helper" style="margin:0">Use os filtros para buscar e clique em <strong>Novo Pipeline</strong> para cadastrar.</div>
                 <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -1376,6 +1437,26 @@
           <!-- PASSO 5: Jobs -->
           <div id="wiz-step-5" style="display:none">
             <div class="section-sep"><span>Jobs do pipeline</span></div>
+            <!-- Explicação inline sobre jobs e ordem de execução -->
+            <div style="background:rgba(26,95,168,.05);border:1px solid rgba(26,95,168,.15);border-radius:9px;padding:.6rem .85rem;margin-bottom:.65rem;font-size:12px;color:var(--muted)">
+              <strong style="color:var(--text)">Como configurar jobs:</strong>
+              <ul style="margin:.25rem 0 0;padding-left:1rem;line-height:1.75">
+                <li><strong>Nome do job</strong> — identificador único dentro do pipeline (ex: <code>extract_clientes</code>).</li>
+                <li><strong>Ordem</strong> — define a sequência. <em>Mesma ordem = execução paralela.</em> Ex: dois jobs com ordem <code>2</code> rodam simultaneamente; o de ordem <code>3</code> só inicia quando ambos terminarem.</li>
+                <li><strong>Tipo</strong> — <code>datastage</code>, <code>shell</code>, <code>python</code> ou <code>storedproc</code>.</li>
+                <li><strong>Comando/caminho</strong> — nome do job DataStage, script ou procedure conforme o tipo.</li>
+              </ul>
+              <div style="margin-top:.4rem;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+                <span style="font-size:11px;font-weight:600;color:var(--text)">Exemplo de execução paralela:</span>
+                <div class="job-chain" style="flex-wrap:nowrap">
+                  <div class="jc-node" style="border-color:#1A5FA8"><span class="jc-node-name">extract</span><span class="jc-node-type">datastage</span></div>
+                  <div class="jc-arrow">→</div>
+                  <div class="jc-parallel"><div class="jc-node" style="border-color:#16a34a"><span class="jc-node-name">carga_a</span><span class="jc-node-type">shell</span></div><div class="jc-par-label">‖ paralelo</div><div class="jc-node" style="border-color:#16a34a"><span class="jc-node-name">carga_b</span><span class="jc-node-type">shell</span></div></div>
+                  <div class="jc-arrow">→</div>
+                  <div class="jc-node" style="border-color:#7c3aed"><span class="jc-node-name">consolida</span><span class="jc-node-type">python</span></div>
+                </div>
+              </div>
+            </div>
             <div style="display:grid;grid-template-columns:24px 1fr 58px 100px 1fr 30px;gap:5px;padding:.25rem .55rem;background:var(--muted-bg,rgba(128,128,128,.06));border-radius:6px 6px 0 0;border-bottom:1px solid var(--border)">
               <span style="font-size:10px;color:var(--muted)">#</span>
               <span style="font-size:10px;color:var(--muted)">Nome do job</span>
@@ -1443,6 +1524,22 @@
           <p class="sub">Gestão de jobs</p>
         </div>
         <div class="body-pad">
+          <!-- Banner explicativo jobs -->
+          <div id="job-banner" class="malha-info-banner" style="margin-bottom:1rem">
+            <div style="display:flex;gap:10px;align-items:flex-start">
+              <span style="font-size:1.3rem;line-height:1">⬡</span>
+              <div style="flex:1">
+                <strong style="font-size:13px">O que é um Job?</strong>
+                <ul style="margin:.35rem 0 0;padding-left:1.1rem;font-size:12px;color:var(--muted);line-height:1.7">
+                  <li>Um <strong>job</strong> é a unidade mínima de trabalho dentro de um pipeline — uma extração, transformação ou carga específica.</li>
+                  <li><strong>Tipos disponíveis:</strong> <code>datastage</code> (jobs IBM DataStage), <code>shell</code> (scripts bash), <code>python</code> (scripts .py) e <code>storedproc</code> (procedures SQL).</li>
+                  <li>A <strong>Ordem</strong> define a sequência: jobs com <em>mesma ordem</em> rodam <strong>em paralelo</strong>; ordens distintas rodam em série (fan-out → fan-in).</li>
+                  <li>Exemplo: ordem 1 → extração; ordem 2 → carga A <strong>e</strong> carga B simultâneas; ordem 3 → consolidação.</li>
+                </ul>
+              </div>
+              <button onclick="$('job-banner').style.display='none'" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:1.2rem;line-height:1;padding:0 2px">×</button>
+            </div>
+          </div>
           <div class="helper" style="margin:0 0 1rem 0">
             Consulte os jobs existentes por pipeline e, se necessário, cadastre/atualize abaixo.
           </div>
@@ -2391,6 +2488,69 @@
             </div>
           </div>
         </div><!-- fim page-admin -->
+
+        <!-- PÁGINA: MALHA DE PIPELINES -->
+        <div id="page-malha" class="page">
+          <div class="card fade">
+            <div class="card-section-head">
+              <h2>Malha de Pipelines</h2>
+              <p class="sub">Visualize e exporte a estrutura de execução de todos os pipelines</p>
+            </div>
+            <div class="body-pad">
+              <div id="malha-banner" class="malha-info-banner">
+                <div style="display:flex;gap:10px;align-items:flex-start">
+                  <span style="font-size:1.4rem;line-height:1">⊞</span>
+                  <div style="flex:1">
+                    <strong style="font-size:13px">O que é a Malha?</strong>
+                    <ul style="margin:.35rem 0 0;padding-left:1.1rem;font-size:12px;color:var(--muted);line-height:1.75">
+                      <li>Visualize <strong>todos os pipelines</strong> e como seus jobs são executados — em série ou em paralelo.</li>
+                      <li>Jobs com a <strong>mesma ordem</strong> são executados <strong>em paralelo</strong> (fan-out); o próximo grupo aguarda a conclusão de todos.</li>
+                      <li>Identifique <strong>dependências entre pipelines</strong> — quais aguardam outros para iniciar.</li>
+                      <li>Use <strong>⬇ Exportar</strong> para baixar o inventário completo em CSV (abre no Excel).</li>
+                    </ul>
+                  </div>
+                  <button onclick="$('malha-banner').style.display='none'" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:1.2rem;line-height:1;padding:0 2px">×</button>
+                </div>
+              </div>
+
+              <!-- Toolbar -->
+              <div class="malha-toolbar">
+                <input id="malha-q" type="search" placeholder="Buscar pipeline ou projeto..." oninput="malhaFilterChange()" style="flex:2;min-width:140px">
+                <select id="malha-proj" onchange="malhaFilterChange()" style="flex:1;min-width:110px"><option value="">Todos os projetos</option></select>
+                <select id="malha-crit" onchange="malhaFilterChange()" style="flex:1;min-width:110px">
+                  <option value="">Toda criticidade</option>
+                  <option value="CRITICA">Crítica</option>
+                  <option value="ALTA">Alta</option>
+                  <option value="MEDIA">Média</option>
+                  <option value="BAIXA">Baixa</option>
+                </select>
+                <select id="malha-status" onchange="malhaFilterChange()" style="flex:1;min-width:100px">
+                  <option value="">Todos</option>
+                  <option value="1">Ativos</option>
+                  <option value="0">Inativos</option>
+                </select>
+                <div class="malha-view-group">
+                  <button id="malha-btn-cards" class="malha-view-btn active" onclick="malhaSetView('cards')" title="Visão em cards agrupados por projeto">⊞ Cards</button>
+                  <button id="malha-btn-diagram" class="malha-view-btn" onclick="malhaSetView('diagram')" title="Visão em diagrama com cadeias de jobs">◈ Diagrama</button>
+                </div>
+                <button class="btn btn-outline btn-sm" onclick="malhaExport()" title="Exportar inventário para CSV (abre no Excel)">⬇ Exportar</button>
+                <button class="btn-ghost btn-sm" onclick="loadMalha()" title="Atualizar dados">↺</button>
+              </div>
+
+              <!-- Stats bar -->
+              <div id="malha-stats" class="malha-stats"></div>
+
+              <!-- Conteúdo -->
+              <div id="malha-body">
+                <div class="empty-state">
+                  <span class="es-icon">⊞</span>
+                  <p class="es-title">Carregando malha…</p>
+                  <p class="es-sub">Aguarde enquanto os dados são carregados.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div><!-- fim page-malha -->
 
   </main>
 </div>
@@ -10974,6 +11134,213 @@ function _dsmSetBadge(el, status) {
   `;
   document.head.appendChild(s);
 })();
+</script>
+
+<script>
+/* ══════════════════════════════════════════════════════
+   MALHA DE PIPELINES
+   ══════════════════════════════════════════════════════ */
+let _malhaRaw  = null;
+let _malhaView = 'cards';
+
+async function loadMalha() {
+  const body = $('malha-body');
+  if (_malhaRaw !== null && body.dataset.loaded === '1') return; // já carregado nesta sessão
+  body.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--muted);font-size:13px">Carregando…</div>';
+  try {
+    const r = await fetch(ORQUESTRA_API + '/malha');
+    if (!r.ok) throw new Error(r.statusText);
+    const d = await r.json();
+    _malhaRaw = d.data || [];
+    body.dataset.loaded = '1';
+    _malhaPopulateFilters();
+    renderMalha();
+  } catch(e) {
+    body.innerHTML = `<div class="toast toast-err" style="margin:1rem 0">Erro ao carregar malha: ${e.message}</div>`;
+  }
+}
+
+function _malhaPopulateFilters() {
+  const projects = [...new Set((_malhaRaw||[]).map(p => p.project_name).filter(Boolean))].sort();
+  const sel = $('malha-proj');
+  sel.innerHTML = '<option value="">Todos os projetos</option>';
+  projects.forEach(p => {
+    const o = document.createElement('option');
+    o.value = o.textContent = p;
+    sel.appendChild(o);
+  });
+}
+
+function malhaSetView(v) {
+  _malhaView = v;
+  $('malha-btn-cards').classList.toggle('active', v === 'cards');
+  $('malha-btn-diagram').classList.toggle('active', v === 'diagram');
+  renderMalha();
+}
+
+function malhaFilterChange() { renderMalha(); }
+
+function _malhaFiltered() {
+  const q      = ($('malha-q').value || '').toLowerCase();
+  const proj   = ($('malha-proj').value   || '');
+  const crit   = ($('malha-crit').value   || '');
+  const status = ($('malha-status').value || '');
+  return (_malhaRaw || []).filter(p => {
+    if (q && !(p.pipeline_name||'').toLowerCase().includes(q) &&
+             !(p.project_name ||'').toLowerCase().includes(q) &&
+             !(p.domain       ||'').toLowerCase().includes(q)) return false;
+    if (proj   && p.project_name !== proj) return false;
+    if (crit   && (p.criticidade||'').toUpperCase() !== crit) return false;
+    if (status !== '' && String(p.active) !== status) return false;
+    return true;
+  });
+}
+
+function renderMalha() {
+  if (!_malhaRaw) return;
+  const data = _malhaFiltered();
+
+  // Stats
+  const projSet  = new Set(data.map(p => p.project_name));
+  const totalJobs = data.reduce((s,p) => s + (p.jobs||[]).length, 0);
+  $('malha-stats').innerHTML = [
+    `<div class="malha-stat"><strong>${data.length}</strong>Pipelines</div>`,
+    `<div class="malha-stat"><strong>${data.filter(p=>p.active).length}</strong>Ativos</div>`,
+    `<div class="malha-stat"><strong>${totalJobs}</strong>Jobs</div>`,
+    `<div class="malha-stat"><strong>${projSet.size}</strong>Projetos</div>`,
+    data.filter(p=>p.depends_on).length
+      ? `<div class="malha-stat"><strong>${data.filter(p=>p.depends_on).length}</strong>c/ dependência</div>` : '',
+  ].join('');
+
+  const body = $('malha-body');
+  if (!data.length) {
+    body.innerHTML = '<div class="empty-state"><span class="es-icon">⊞</span><p class="es-title">Nenhum pipeline encontrado</p><p class="es-sub">Ajuste os filtros acima.</p></div>';
+    return;
+  }
+  body.innerHTML = _malhaView === 'cards'
+    ? _renderMalhaCards(data)
+    : _renderMalhaDiagram(data);
+}
+
+/* ── Job chain visual ── */
+const _JC_COLORS = {datastage:'#1A5FA8', shell:'#16a34a', python:'#7c3aed', storedproc:'#b45309'};
+function _jobChainHtml(jobs) {
+  if (!jobs || !jobs.length) return '<span style="font-size:11px;color:var(--muted)">Sem jobs cadastrados</span>';
+  const groups = {};
+  for (const j of jobs) { const k = j.execution_order ?? 0; (groups[k]=groups[k]||[]).push(j); }
+  const nodeHtml = j => {
+    const c = _JC_COLORS[(j.job_type||'').toLowerCase()] || '#64748b';
+    return `<div class="jc-node" style="border-color:${c}" title="${j.job_type||''}: ${j.command||''}">
+      <span class="jc-node-name" style="max-width:80px">${j.job_name}</span>
+      <span class="jc-node-type">${j.job_type||'—'}</span>
+    </div>`;
+  };
+  const parts = Object.keys(groups).sort((a,b)=>+a-+b).map(k => {
+    const g = groups[k];
+    if (g.length === 1) return nodeHtml(g[0]);
+    return `<div class="jc-parallel">${g.map(nodeHtml).join('<div class="jc-par-label">‖ paralelo</div>')}</div>`;
+  });
+  return `<div class="job-chain">${parts.join('<div class="jc-arrow">→</div>')}</div>`;
+}
+
+/* ── Cards view ── */
+function _renderMalhaCards(data) {
+  const byProj = {};
+  for (const p of data) { const k = p.project_name || '(sem projeto)'; (byProj[k]=byProj[k]||[]).push(p); }
+  return Object.entries(byProj).sort(([a],[b])=>a.localeCompare(b)).map(([proj,pips]) => {
+    const cards = pips.map(p => {
+      const crit = (p.criticidade||'MEDIA').toUpperCase();
+      const schedInfo = p.scheduled_time ? `📅 ${p.scheduled_time}` : p.schedule_type||'';
+      return `<div class="malha-card" onclick="_malhaToggleFlow(this)">
+        <div class="malha-card-header">
+          <span class="malha-crit malha-crit-${crit}">${crit}</span>
+          <span class="malha-card-name">${p.pipeline_name}</span>
+          <span class="${p.active ? 'malha-badge-on':'malha-badge-off'}">${p.active?'●':'○'}</span>
+        </div>
+        <div class="malha-card-meta">
+          ${schedInfo ? `<span>${schedInfo}</span>` : ''}
+          <span>⚙ ${(p.jobs||[]).length} job${(p.jobs||[]).length!==1?'s':''}</span>
+          ${p.sla_minutos ? `<span>⏱ SLA ${p.sla_minutos}min</span>` : ''}
+          <span>🖥 ${p.ambiente||'PROD'}</span>
+          ${p.depends_on ? `<span title="Depende de: ${p.depends_on}">🔗 dep</span>` : ''}
+        </div>
+        ${p.descricao ? `<div class="malha-card-desc">${p.descricao}</div>` : ''}
+        <div class="malha-card-flow" style="display:none">${_jobChainHtml(p.jobs)}</div>
+        <div class="malha-card-toggle">▾ ver fluxo de jobs</div>
+      </div>`;
+    }).join('');
+    return `<div class="malha-section">
+      <div class="malha-section-title">📁 ${proj} <span style="font-weight:400">(${pips.length})</span></div>
+      <div class="malha-cards-grid">${cards}</div>
+    </div>`;
+  }).join('');
+}
+
+function _malhaToggleFlow(card) {
+  const flow = card.querySelector('.malha-card-flow');
+  const lbl  = card.querySelector('.malha-card-toggle');
+  if (!flow) return;
+  const vis = flow.style.display !== 'none';
+  flow.style.display = vis ? 'none' : '';
+  if (lbl) lbl.textContent = vis ? '▾ ver fluxo de jobs' : '▴ ocultar fluxo';
+}
+
+/* ── Diagram view ── */
+function _renderMalhaDiagram(data) {
+  const rows = data.map(p => {
+    const crit = (p.criticidade||'MEDIA').toUpperCase();
+    return `<div class="malha-diag-row">
+      <div class="malha-diag-label">
+        <div class="malha-diag-name">${p.pipeline_name}</div>
+        <div class="malha-diag-meta">
+          ${p.project_name||''} · <span class="malha-crit malha-crit-${crit}">${crit}</span>
+          · <span class="${p.active?'malha-badge-on':'malha-badge-off'}">${p.active?'● Ativo':'○ Inativo'}</span>
+        </div>
+        ${p.scheduled_time ? `<div class="malha-diag-meta">📅 ${p.scheduled_time}</div>` : ''}
+        ${p.sla_minutos ? `<div class="malha-diag-meta">⏱ SLA ${p.sla_minutos}min</div>` : ''}
+      </div>
+      <div class="malha-diag-chain">
+        ${p.depends_on ? `<div class="malha-dep-tag">🔗 aguarda: <em>${p.depends_on}</em></div>` : ''}
+        ${_jobChainHtml(p.jobs)}
+      </div>
+    </div>`;
+  }).join('');
+  return `<div>${rows}</div>`;
+}
+
+/* ── Export CSV ── */
+function malhaExport() {
+  const data = _malhaFiltered();
+  if (!data.length) { alert('Nenhum dado para exportar.'); return; }
+  const esc = v => '"' + String(v == null ? '' : v).replace(/"/g,'""') + '"';
+  const row = arr => arr.map(esc).join(',');
+
+  const pipHdr = ['Pipeline','Projeto','Domínio','Criticidade','Ambiente','Status','Agendamento','SLA (min)','Nº Jobs','Depende de','Descrição'];
+  const pipRows = data.map(p => [
+    p.pipeline_name, p.project_name||'', p.domain||'',
+    (p.criticidade||'').toUpperCase(), p.ambiente||'PROD',
+    p.active ? 'Ativo' : 'Inativo',
+    p.scheduled_time||p.schedule_type||'', p.sla_minutos||'',
+    (p.jobs||[]).length, p.depends_on||'', p.descricao||''
+  ]);
+
+  const jobHdr = ['Pipeline','Job','Ordem','Tipo','Comando'];
+  const jobRows = [];
+  for (const p of data) {
+    for (const j of (p.jobs||[])) {
+      jobRows.push([p.pipeline_name, j.job_name, j.execution_order, j.job_type, j.command||'']);
+    }
+  }
+
+  const csv = '﻿' +
+    '=== PIPELINES ===\r\n' + row(pipHdr) + '\r\n' + pipRows.map(row).join('\r\n') +
+    '\r\n\r\n=== JOBS ===\r\n' + row(jobHdr) + '\r\n' + jobRows.map(row).join('\r\n');
+
+  const a  = document.createElement('a');
+  a.href   = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'malha_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+}
 </script>
 
 </body>

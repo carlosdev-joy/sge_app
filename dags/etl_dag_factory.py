@@ -212,9 +212,18 @@ def _generate_dag_source(pipeline, jobs):
     user_tags   = [t.strip() for t in tags_raw.split(",") if t.strip()]
     all_tags    = list(dict.fromkeys([project, domain] + user_tags))
     sorted_jobs = sorted(jobs, key=lambda j: j["execution_order"])
-    first       = _varname(sorted_jobs[0]["job_name"])
-    first_name  = sorted_jobs[0]["job_name"]
-    others      = sorted_jobs[1:]
+    # Group by execution_order — same order → parallel execution
+    _grp_key = lambda j: j["execution_order"]
+    job_groups = []
+    _last_key = object()
+    for j in sorted_jobs:
+        if j["execution_order"] != _last_key:
+            job_groups.append([])
+            _last_key = j["execution_order"]
+        job_groups[-1].append(j)
+    first       = _varname(job_groups[0][0]["job_name"])
+    first_name  = job_groups[0][0]["job_name"]
+    others      = sorted_jobs[1:]   # kept for jtypes — not used for chaining anymore
     all_ends    = [f"t_end_{_varname(j['job_name'])}" for j in sorted_jobs]
 
     def _jtypes(jobs):
@@ -620,26 +629,35 @@ def _generate_dag_source(pipeline, jobs):
     # Rebuild imports_str after potential append
     imports_str = "\n".join(import_lines)
 
-    if f_ini:
-        first_chain = f"t_start_{first} >> t_teams_start >> t_job_{first} >> t_end_{first}"
-    else:
-        first_chain = f"t_start_{first} >> t_job_{first} >> t_end_{first}"
+    dep_lines = []
 
-    dep_lines = [
-        f"previous = t_end_{first}",
-        first_chain,
-    ]
+    # anchor: check_agenda → (sensors or first group)
     if sensor_names:
         sensors_ref = "[" + ", ".join(sensor_names) + "]"
-        dep_lines.insert(0, f"{sensors_ref} >> t_start_{first}")
-        dep_lines.insert(0, f"t_check_agenda >> {sensors_ref}")
-    else:
-        dep_lines.insert(0, f"t_check_agenda >> t_start_{first}")
+        dep_lines.append(f"t_check_agenda >> {sensors_ref}")
 
-    for j in others:
-        n = _varname(j["job_name"])
-        dep_lines.append(f"previous >> t_start_{n} >> t_job_{n} >> t_end_{n}")
-        dep_lines.append(f"previous = t_end_{n}")
+    # Walk groups — build fan-out/fan-in chains
+    prev_ends: list[str] = []  # ends of the previous group (empty = start of DAG)
+    for g_idx, group in enumerate(job_groups):
+        g_ends = [f"t_end_{_varname(j['job_name'])}" for j in group]
+        # Determine upstream anchor for this group
+        if prev_ends:
+            up = "[" + ", ".join(prev_ends) + "]" if len(prev_ends) > 1 else prev_ends[0]
+        elif sensor_names:
+            up = sensors_ref
+        else:
+            up = "t_check_agenda"
+
+        for j_idx, j in enumerate(group):
+            n = _varname(j["job_name"])
+            # Teams start notification only on first job of first group
+            if g_idx == 0 and j_idx == 0 and f_ini:
+                chain = f"{up} >> t_start_{n} >> t_teams_start >> t_job_{n} >> t_end_{n}"
+            else:
+                chain = f"{up} >> t_start_{n} >> t_job_{n} >> t_end_{n}"
+            dep_lines.append(chain)
+
+        prev_ends = g_ends
 
     end_tasks_ref = "[" + ", ".join(all_ends) + "]"
     dep_lines.append(f"end_tasks = {end_tasks_ref}")
