@@ -94,6 +94,10 @@ def _build_cron(pipeline):
     if stype == "monthly":
         dom = pipeline.get("schedule_dom")
         return f"{m} {h} {int(dom) if dom is not None else 1} * *", None
+    if stype == "biweekly":  # quinzenal: dia D e D+15 de cada mês
+        dom = pipeline.get("schedule_dom")
+        d = int(dom) if dom is not None else 1
+        return f"{m} {h} {d},{d + 15} * *", None
     return f"{m} {h} * * {dow_expr}", None
 
 

@@ -1244,6 +1244,7 @@
                   <option value="daily">Diário</option>
                   <option value="hourly">A cada hora</option>
                   <option value="weekly">Semanal</option>
+                  <option value="biweekly">Quinzenal</option>
                   <option value="monthly">Mensal</option>
                   <option value="custom">Horários específicos</option>
                 </select>
@@ -1271,8 +1272,9 @@
                   </select>
                 </div>
                 <div id="sch-dom-row" style="display:none;flex-shrink:0">
-                  <label style="font-size:11px;color:var(--muted);margin:0 0 3px;display:block">Dia do mês</label>
+                  <label id="sch-dom-label" style="font-size:11px;color:var(--muted);margin:0 0 3px;display:block">Dia do mês</label>
                   <input type="number" id="sch-dom" min="1" max="31" value="1" style="width:64px" oninput="_scheduleUpdatePreview()" />
+                  <div class="helper" id="sch-dom-hint" style="display:none;margin-top:3px;max-width:200px">Roda no dia escolhido e 15 dias depois (ex: dia 1 → executa nos dias 1 e 16).</div>
                 </div>
               </div>
 
@@ -7519,8 +7521,13 @@ function _scheduleTypeChange() {
   const customRows = $('sch-custom-rows');
   if (timeRow) timeRow.style.display = (type === 'hourly' || type === 'custom') ? 'none' : 'flex';
   if (dowRow) dowRow.style.display = type === 'weekly' ? 'flex' : 'none';
-  if (domRow) domRow.style.display = type === 'monthly' ? 'flex' : 'none';
+  if (domRow) domRow.style.display = (type === 'monthly' || type === 'biweekly') ? 'flex' : 'none';
   if (customRows) customRows.style.display = type === 'custom' ? '' : 'none';
+  // Quinzenal: o dia escolhido vale para a 1ª quinzena (máx 15)
+  const domInput = $('sch-dom'), domLabel = $('sch-dom-label'), domHint = $('sch-dom-hint');
+  if (domInput) domInput.max = type === 'biweekly' ? 15 : 31;
+  if (domLabel) domLabel.textContent = type === 'biweekly' ? 'Dia da 1ª quinzena' : 'Dia do mês';
+  if (domHint)  domHint.style.display = type === 'biweekly' ? '' : 'none';
   _scheduleUpdatePreview();
 }
 
@@ -7576,9 +7583,12 @@ function _scheduleUpdatePreview() {
   if (type === 'hourly') cron = `${m} * * * *`;
   else if (type === 'daily') cron = `${m} ${h} * * *`;
   else if (type === 'weekly') cron = `${m} ${h} * * ${dow}`;
+  else if (type === 'biweekly') cron = `${m} ${h} ${dom},${dom + 15} * *`;
   else if (type === 'monthly') cron = `${m} ${h} ${dom} * *`;
   else cron = `${m} ${h} * * *`;
-  if ($('sch-preview')) $('sch-preview').textContent = 'cron: ' + cron;
+  if ($('sch-preview')) $('sch-preview').textContent = type === 'biweekly'
+    ? `cron: ${cron} — dias ${dom} e ${dom + 15} de cada mês`
+    : 'cron: ' + cron;
   try { _cronOverlapCheck(); } catch(_) {}
   return cron;
 }
@@ -7602,7 +7612,7 @@ function _scheduleGetConf() {
   const h = parseInt($('sch-hour') ? $('sch-hour').value : 6);
   const m = parseInt($('sch-minute') ? $('sch-minute').value : 0);
   const dow = type === 'weekly' ? parseInt($('sch-dow') ? $('sch-dow').value : 1) : null;
-  const dom = type === 'monthly' ? parseInt($('sch-dom') ? $('sch-dom').value : 1) : null;
+  const dom = (type === 'monthly' || type === 'biweekly') ? parseInt($('sch-dom') ? $('sch-dom').value : 1) : null;
   return {
     schedule_type: type,
     schedule_hour: isNaN(h) ? null : h,
@@ -7818,6 +7828,7 @@ async function registrarPipeline() {
   if (sm < 0 || sm > 59) { m.textContent = 'Minuto inválido (0-59)'; m.className = 'msg erro'; return; }
   if (stype === 'weekly' && (schedConf.schedule_dow < 0 || schedConf.schedule_dow > 6)) { m.textContent = 'Dia da semana inválido'; m.className = 'msg erro'; return; }
   if (stype === 'monthly' && (schedConf.schedule_dom < 1 || schedConf.schedule_dom > 31)) { m.textContent = 'Dia do mês inválido'; m.className = 'msg erro'; return; }
+  if (stype === 'biweekly' && (schedConf.schedule_dom < 1 || schedConf.schedule_dom > 15)) { m.textContent = 'Quinzenal: o dia da 1ª quinzena deve estar entre 1 e 15.'; m.className = 'msg erro'; return; }
 
   // scheduled_time (legado) — mantém compatibilidade
   // hourly: cron usa somente minuto; salvamos scheduled_time como 00:MM:00

@@ -1745,6 +1745,9 @@ def _build_cron(schedule_type, hour, minute, dow, dom):
     if st == "daily":    return f"{m} {h} * * *"
     if st == "weekly":   return f"{m} {h} * * {int(dow or 1)}"
     if st == "monthly":  return f"{m} {h} {int(dom or 1)} * *"
+    if st == "biweekly":                       # quinzenal: dia D e D+15
+        d = int(dom or 1)
+        return f"{m} {h} {d},{d + 15} * *"
     return f"{m} {h} * * *"
 
 
