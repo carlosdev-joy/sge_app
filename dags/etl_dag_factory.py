@@ -50,6 +50,53 @@ def _time_to_cron(t):
     return f"{int(parts[1]) if len(parts) > 1 else 0} {int(parts[0])} * * *"
 
 
+def _build_cron(pipeline):
+    """Monta o cron a partir do agendamento do pipeline.
+
+    Retorna (cron, horarios) onde horarios é a lista normalizada "HH:MM" quando
+    o pipeline usa horários específicos (None caso contrário). Como um único
+    cron não expressa horários arbitrários (ex: 09:00 e 10:30 geram também
+    09:30 e 10:00), o cron dispara na união minuto×hora e o check_agenda
+    pula as combinações que não estão na lista.
+    """
+    sched = str(pipeline.get("scheduled_time") or "06:00:00")
+    stype = (pipeline.get("schedule_type") or "daily").lower().strip()
+    horarios_raw = (pipeline.get("horarios_especificos") or "").strip()
+    dias_semana  = (pipeline.get("dias_semana") or "").strip()
+    parts = sched.split(":")
+    h = int(parts[0]) if parts[0].isdigit() else 6
+    m = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    dow_expr = dias_semana if dias_semana else "*"
+
+    if horarios_raw:
+        times = []
+        for t in horarios_raw.split(","):
+            t = t.strip()
+            if not t:
+                continue
+            tp = t.split(":")
+            try:
+                times.append((int(tp[0]), int(tp[1]) if len(tp) > 1 else 0))
+            except ValueError:
+                continue
+        if times:
+            mins  = sorted({mm for _, mm in times})
+            hours = sorted({hh for hh, _ in times})
+            cron = (f"{','.join(map(str, mins))} {','.join(map(str, hours))} "
+                    f"* * {dow_expr}")
+            return cron, sorted(f"{hh:02d}:{mm:02d}" for hh, mm in times)
+
+    if stype == "hourly":
+        return f"{m} * * * *", None
+    if stype == "weekly":
+        dow = pipeline.get("schedule_dow")
+        return f"{m} {h} * * {int(dow) if dow is not None else 1}", None
+    if stype == "monthly":
+        dom = pipeline.get("schedule_dom")
+        return f"{m} {h} {int(dom) if dom is not None else 1} * *", None
+    return f"{m} {h} * * {dow_expr}", None
+
+
 def _ind(code, n=4):
     pad = " " * n
     return "\n".join(pad + ln if ln.strip() else ln for ln in code.split("\n"))
@@ -207,7 +254,7 @@ def _generate_dag_source(pipeline, jobs):
     ds_queue_val = _DS_QUEUE_MAP.get((pipeline.get("criticidade") or "").upper().strip())
     runbook_val  = (pipeline.get("runbook_md") or "").strip() or None
 
-    cron        = _time_to_cron(sched)
+    cron, horarios_list = _build_cron(pipeline)
     base_log    = BASE_LOG_ROOT
     user_tags   = [t.strip() for t in tags_raw.split(",") if t.strip()]
     all_tags    = list(dict.fromkeys([project, domain] + user_tags))
@@ -270,6 +317,7 @@ def _generate_dag_source(pipeline, jobs):
         f'RUNBOOK_MD    = {repr(runbook_val)}',
         f'CALENDARIO_NOME    = {repr(calendario_val)}',
         f'SOMENTE_DIAS_UTEIS = {dias_uteis_val}',
+        f'HORARIOS_ESPECIFICOS = {repr(horarios_list)}',
         f'DATASET_URI   = "orq://pipeline/{pname}"',
         f'default_args  = {{"owner": "airflow", "depends_on_past": False, "retries": {retries_val}, "retry_delay": timedelta(seconds={retry_delay_val})}}',
         f'JOBS          = {repr([j["job_name"] for j in sorted_jobs])}',
@@ -523,6 +571,15 @@ def _generate_dag_source(pipeline, jobs):
         "def check_agenda(**context):",
         "    \"\"\"Fase 4 — blackout/freeze, dias úteis e calendário de feriados.",
         "    Retorna False (ShortCircuit) para pular a execução inteira.\"\"\"",
+        "    # Horários específicos: o cron dispara na união minuto×hora;",
+        "    # só executa se o horário agendado estiver na lista configurada.",
+        "    if HORARIOS_ESPECIFICOS and not str(context.get('run_id', '')).startswith('manual'):",
+        "        _die = context.get('data_interval_end') or context.get('logical_date')",
+        "        if _die is not None:",
+        "            _hhmm = _die.in_timezone(LOCAL_TZ).strftime('%H:%M')",
+        "            if _hhmm not in HORARIOS_ESPECIFICOS:",
+        "                print(f\"[AGENDA] {_hhmm} fora dos horarios configurados {HORARIOS_ESPECIFICOS} — execucao pulada.\")",
+        "                return False",
         "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
         "    try:",
         "        row = hook.get_first(",
@@ -846,6 +903,22 @@ def gerar_dags(**context):
             ", calendario_nome, somente_dias_uteis, trigger_por_dependencia"
             if has_sched_cols else ""
         )
+        # colunas da migration 018 (horários múltiplos) — degradam se ausentes
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' "
+            "AND COLUMN_NAME='horarios_especificos'"
+        )
+        if cursor.fetchone()[0]:
+            sched_cols += ", horarios_especificos, dias_semana"
+        # colunas do builder de agendamento (Fase 3) — degradam se ausentes
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' "
+            "AND COLUMN_NAME='schedule_type'"
+        )
+        if cursor.fetchone()[0]:
+            sched_cols += ", schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom"
         cursor.execute(
             f"SELECT pipeline_name, criticidade, sla_minutos, ambiente, "
             f"max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao, dag_start_date, "

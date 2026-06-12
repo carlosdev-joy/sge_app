@@ -1245,6 +1245,7 @@
                   <option value="hourly">A cada hora</option>
                   <option value="weekly">Semanal</option>
                   <option value="monthly">Mensal</option>
+                  <option value="custom">Horários específicos</option>
                 </select>
               </div>
               <!-- Row 2: Hora:Min + Dia da semana/mês (always same height) -->
@@ -1272,6 +1273,30 @@
                 <div id="sch-dom-row" style="display:none;flex-shrink:0">
                   <label style="font-size:11px;color:var(--muted);margin:0 0 3px;display:block">Dia do mês</label>
                   <input type="number" id="sch-dom" min="1" max="31" value="1" style="width:64px" oninput="_scheduleUpdatePreview()" />
+                </div>
+              </div>
+
+              <!-- Horários específicos (migration 018) -->
+              <div id="sch-custom-rows" style="display:none;margin-top:.5rem">
+                <div class="field" style="margin:0 0 .5rem">
+                  <label style="font-size:11px;color:var(--muted);margin:0 0 3px;display:block">Horários de execução
+                    <button class="help-btn" tabindex="-1">?<span class="help-popup">Lista de horários em que o pipeline roda, separados por vírgula.<br><br>Exemplo: <code>09:00, 10:30, 13:00, 15:30, 18:00</code><br><br>O pipeline dispara <strong>uma vez em cada horário</strong> listado, nos dias da semana selecionados abaixo.</span></button>
+                  </label>
+                  <input type="text" id="sch-horarios" placeholder="ex: 09:00, 10:30, 13:00, 15:30" oninput="_scheduleUpdatePreview()" />
+                  <div class="helper" id="sch-horarios-hint" style="margin-top:3px">Separe os horários por vírgula (formato HH:MM).</div>
+                </div>
+                <div class="field" style="margin:0">
+                  <label style="font-size:11px;color:var(--muted);margin:0 0 3px;display:block">Dias da semana</label>
+                  <div id="sch-dias-semana" style="display:flex;gap:4px;flex-wrap:wrap">
+                    <label class="sch-dia-chk" style="display:flex;align-items:center;gap:3px;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:4px 9px;cursor:pointer"><input type="checkbox" value="1" checked onchange="_scheduleUpdatePreview()">Seg</label>
+                    <label class="sch-dia-chk" style="display:flex;align-items:center;gap:3px;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:4px 9px;cursor:pointer"><input type="checkbox" value="2" checked onchange="_scheduleUpdatePreview()">Ter</label>
+                    <label class="sch-dia-chk" style="display:flex;align-items:center;gap:3px;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:4px 9px;cursor:pointer"><input type="checkbox" value="3" checked onchange="_scheduleUpdatePreview()">Qua</label>
+                    <label class="sch-dia-chk" style="display:flex;align-items:center;gap:3px;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:4px 9px;cursor:pointer"><input type="checkbox" value="4" checked onchange="_scheduleUpdatePreview()">Qui</label>
+                    <label class="sch-dia-chk" style="display:flex;align-items:center;gap:3px;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:4px 9px;cursor:pointer"><input type="checkbox" value="5" checked onchange="_scheduleUpdatePreview()">Sex</label>
+                    <label class="sch-dia-chk" style="display:flex;align-items:center;gap:3px;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:4px 9px;cursor:pointer"><input type="checkbox" value="6" onchange="_scheduleUpdatePreview()">Sáb</label>
+                    <label class="sch-dia-chk" style="display:flex;align-items:center;gap:3px;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:4px 9px;cursor:pointer"><input type="checkbox" value="0" onchange="_scheduleUpdatePreview()">Dom</label>
+                  </div>
+                  <div class="helper" style="margin-top:3px">Feriados <strong>não são pulados</strong> por padrão — só se você selecionar um calendário de bloqueio abaixo.</div>
                 </div>
               </div>
               <div id="sch-preview" style="font-size:11px;font-family:ui-monospace,'Courier New',monospace;color:var(--muted);margin-top:5px">cron: 0 6 * * *</div>
@@ -1445,6 +1470,8 @@
                 <li><strong>Ordem</strong> — define a sequência. <em>Mesma ordem = execução paralela.</em> Ex: dois jobs com ordem <code>2</code> rodam simultaneamente; o de ordem <code>3</code> só inicia quando ambos terminarem.</li>
                 <li><strong>Tipo</strong> — <code>datastage</code>, <code>shell</code>, <code>python</code> ou <code>storedproc</code>.</li>
                 <li><strong>Comando/caminho</strong> — nome do job DataStage, script ou procedure conforme o tipo.</li>
+                <li>✅ Ao <strong>editar</strong> um pipeline, os jobs já cadastrados são carregados automaticamente aqui. Tudo o que estiver nesta lista é <strong>salvo junto com o pipeline</strong>.</li>
+                <li>⚠ Remover uma linha aqui <strong>não exclui</strong> o job do banco — é apenas removido desta edição. Para excluir definitivamente um job, use a tela <strong>Jobs</strong>.</li>
               </ul>
               <div style="margin-top:.4rem;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
                 <span style="font-size:11px;font-weight:600;color:var(--text)">Exemplo de execução paralela:</span>
@@ -1481,7 +1508,9 @@
           <div id="wiz-step-6" style="display:none">
             <div class="section-sep"><span>Lineage dos jobs</span></div>
             <div class="helper" style="margin:0 0 .75rem;font-size:12px">
-              Para cada job, informe as origens (fontes de dados lidas) e destinos (tabelas/arquivos gerados). Opcional — pode ser preenchido depois.
+              Para cada job, informe as origens (fontes de dados lidas) e destinos (tabelas/arquivos gerados).
+              <br>✅ Ao editar um pipeline, o lineage já cadastrado aparece preenchido aqui e é salvo junto.
+              <br>ℹ Neste passo o lineage é <strong>opcional</strong> — pode ser completado depois na tela <strong>Jobs ▸ Lineage</strong>, onde ele passa a ser obrigatório (1 origem + 1 destino por job).
             </div>
             <div id="wiz-lineage-body">
               <div style="font-size:12px;color:var(--muted);text-align:center;padding:1rem">
@@ -7487,10 +7516,32 @@ function _scheduleTypeChange() {
   const timeRow = $('sch-time-row');
   const dowRow = $('sch-dow-row');
   const domRow = $('sch-dom-row');
-  if (timeRow) timeRow.style.display = type === 'hourly' ? 'none' : 'flex';
+  const customRows = $('sch-custom-rows');
+  if (timeRow) timeRow.style.display = (type === 'hourly' || type === 'custom') ? 'none' : 'flex';
   if (dowRow) dowRow.style.display = type === 'weekly' ? 'flex' : 'none';
   if (domRow) domRow.style.display = type === 'monthly' ? 'flex' : 'none';
+  if (customRows) customRows.style.display = type === 'custom' ? '' : 'none';
   _scheduleUpdatePreview();
+}
+
+function _schGetHorarios() {
+  const raw = $('sch-horarios') ? $('sch-horarios').value : '';
+  const out = [];
+  for (const t of raw.split(',')) {
+    const m = t.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) continue;
+    const hh = parseInt(m[1], 10), mm = parseInt(m[2], 10);
+    if (hh > 23 || mm > 59) continue;
+    const v = String(hh).padStart(2,'0') + ':' + String(mm).padStart(2,'0');
+    if (!out.includes(v)) out.push(v);
+  }
+  return out.sort();
+}
+
+function _schGetDiasSemana() {
+  const box = $('sch-dias-semana');
+  if (!box) return [];
+  return Array.from(box.querySelectorAll('input:checked')).map(c => c.value);
 }
 
 function _scheduleUpdatePreview() {
@@ -7500,6 +7551,28 @@ function _scheduleUpdatePreview() {
   const dow = $('sch-dow') ? $('sch-dow').value : 1;
   const dom = parseInt($('sch-dom') ? $('sch-dom').value : 1) || 1;
   let cron;
+  if (type === 'custom') {
+    const horarios = _schGetHorarios();
+    const dias = _schGetDiasSemana();
+    const diasLbl = { '1':'Seg','2':'Ter','3':'Qua','4':'Qui','5':'Sex','6':'Sáb','0':'Dom' };
+    if ($('sch-preview')) {
+      $('sch-preview').textContent = horarios.length
+        ? horarios.length + ' execução(ões)/dia às ' + horarios.join(', ') +
+          ' (' + (dias.length === 7 || dias.length === 0 ? 'todos os dias' : dias.map(d => diasLbl[d]).join(', ')) + ')'
+        : 'Informe ao menos um horário (HH:MM).';
+    }
+    const hint = $('sch-horarios-hint');
+    if (hint) {
+      const raw = ($('sch-horarios') ? $('sch-horarios').value : '').split(',').map(s=>s.trim()).filter(Boolean);
+      const invalid = raw.filter(t => !/^(\d{1,2}):(\d{2})$/.test(t) || parseInt(t) > 23 || parseInt(t.split(':')[1]) > 59);
+      hint.textContent = invalid.length
+        ? '⚠ Horário(s) inválido(s): ' + invalid.join(', ') + ' — use o formato HH:MM.'
+        : 'Separe os horários por vírgula (formato HH:MM).';
+      hint.style.color = invalid.length ? 'var(--red)' : '';
+    }
+    try { _cronOverlapCheck(); } catch(_) {}
+    return null;
+  }
   if (type === 'hourly') cron = `${m} * * * *`;
   else if (type === 'daily') cron = `${m} ${h} * * *`;
   else if (type === 'weekly') cron = `${m} ${h} * * ${dow}`;
@@ -7512,6 +7585,20 @@ function _scheduleUpdatePreview() {
 
 function _scheduleGetConf() {
   const type = $('sch-type') ? $('sch-type').value : 'daily';
+  if (type === 'custom') {
+    const horarios = _schGetHorarios();
+    const dias = _schGetDiasSemana();
+    const first = horarios[0] || '06:00';
+    return {
+      schedule_type: 'custom',
+      schedule_hour: parseInt(first.split(':')[0], 10),
+      schedule_minute: parseInt(first.split(':')[1], 10),
+      schedule_dow: null,
+      schedule_dom: null,
+      horarios_especificos: horarios.join(','),
+      dias_semana: (dias.length && dias.length < 7) ? dias.join(',') : null,
+    };
+  }
   const h = parseInt($('sch-hour') ? $('sch-hour').value : 6);
   const m = parseInt($('sch-minute') ? $('sch-minute').value : 0);
   const dow = type === 'weekly' ? parseInt($('sch-dow') ? $('sch-dow').value : 1) : null;
@@ -7522,6 +7609,8 @@ function _scheduleGetConf() {
     schedule_minute: isNaN(m) ? null : m,
     schedule_dow: isNaN(dow) ? null : dow,
     schedule_dom: isNaN(dom) ? null : dom,
+    horarios_especificos: null,
+    dias_semana: null,
   };
 }
 
@@ -7547,6 +7636,15 @@ function _scheduleSetFromRecord(rec) {
   if ($('sch-minute')) $('sch-minute').value = (mm ?? 0);
   if ($('sch-dow')) $('sch-dow').value = (rec.schedule_dow ?? 1);
   if ($('sch-dom')) $('sch-dom').value = (rec.schedule_dom ?? 1);
+  // Horários específicos (migration 018)
+  if ($('sch-horarios')) $('sch-horarios').value = rec.horarios_especificos || '';
+  if ($('sch-dias-semana')) {
+    const dias = (rec.dias_semana || '').split(',').map(s => s.trim()).filter(Boolean);
+    const def = ['1','2','3','4','5'];  // padrão seg-sex quando não configurado
+    const sel = dias.length ? dias : def;
+    $('sch-dias-semana').querySelectorAll('input').forEach(c => { c.checked = sel.includes(c.value); });
+  }
+  if (rec.horarios_especificos && $('sch-type')) $('sch-type').value = 'custom';
   _scheduleTypeChange();
 }
 
@@ -7707,6 +7805,13 @@ async function registrarPipeline() {
   const stype = schedConf.schedule_type || 'daily';
   const sh = (schedConf.schedule_hour ?? 0);
   const sm = (schedConf.schedule_minute ?? 0);
+  if (stype === 'custom' && !(schedConf.horarios_especificos || '').length) {
+    m.textContent = 'Informe ao menos um horário de execução (formato HH:MM).';
+    m.className = 'msg erro';
+    _wizShowStep(2);
+    try { $('sch-horarios').focus(); } catch(_) {}
+    return;
+  }
   if (stype !== 'hourly') {
     if (sh < 0 || sh > 23) { m.textContent = 'Hora inválida (0-23)'; m.className = 'msg erro'; return; }
   }
@@ -9020,6 +9125,8 @@ function openPipelineEdit(idx) {
     schedule_dow: p.schedule_dow,
     schedule_dom: p.schedule_dom,
     scheduled_time: p.scheduled_time,
+    horarios_especificos: p.horarios_especificos,
+    dias_semana: p.dias_semana,
   });
   // tags
   $('p-tags').value = '';

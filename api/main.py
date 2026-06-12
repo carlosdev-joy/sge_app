@@ -238,6 +238,16 @@ def list_pipelines(
             sched_cols = ("NULL AS calendario_nome, 0 AS somente_dias_uteis, "
                           "0 AS trigger_por_dependencia")
 
+        # colunas da migration 018 (horários múltiplos) — degradam para NULL
+        cur.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' AND COLUMN_NAME='horarios_especificos'
+        """)
+        if cur.fetchone()[0]:
+            sched_cols += ", horarios_especificos, dias_semana"
+        else:
+            sched_cols += ", NULL AS horarios_especificos, NULL AS dias_semana"
+
         data_sql = f"""
             SELECT
                 pipeline_name, project_name, domain, tags,
@@ -276,7 +286,8 @@ def list_pipelines(
             "depends_on", "dag_start_date", "descricao", "criticidade", "sla_minutos",
             "ambiente", "max_active_runs", "retries_count", "retry_delay_seconds",
             "pool_name", "runbook_md", "calendario_nome", "somente_dias_uteis",
-            "trigger_por_dependencia", "last_execution", "created_at", "updated_at",
+            "trigger_por_dependencia", "horarios_especificos", "dias_semana",
+            "last_execution", "created_at", "updated_at",
         ]
         data = []
         for row in cur.fetchall():
@@ -1841,6 +1852,25 @@ def register_pipeline(body: dict = Body(default={})):
     calendario_nome  = (body.get("calendario_nome") or "").strip() or None
     somente_dias_uteis      = int(body.get("somente_dias_uteis", 0))
     trigger_por_dependencia = int(body.get("trigger_por_dependencia", 0))
+    # Migration 018 — horários múltiplos
+    horarios_raw = (body.get("horarios_especificos") or "").strip()
+    horarios_especificos = None
+    if horarios_raw:
+        _hrs = []
+        for t in horarios_raw.split(","):
+            t = t.strip()
+            if not t:
+                continue
+            tp = t.split(":")
+            try:
+                hh, mm = int(tp[0]), int(tp[1]) if len(tp) > 1 else 0
+            except ValueError:
+                raise HTTPException(status_code=422, detail=f"Horário inválido: '{t}' (use HH:MM)")
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                raise HTTPException(status_code=422, detail=f"Horário fora do intervalo: '{t}'")
+            _hrs.append(f"{hh:02d}:{mm:02d}")
+        horarios_especificos = ",".join(sorted(set(_hrs))) or None
+    dias_semana = (body.get("dias_semana") or "").strip() or None
 
     if pipeline in depends_on_list:
         raise HTTPException(status_code=422, detail="Pipeline não pode depender de si mesmo")
@@ -1894,6 +1924,14 @@ def register_pipeline(body: dict = Body(default={})):
             )
         except Exception:
             pass  # colunas da migration 017 podem não existir ainda — degrada sem erro
+        try:
+            cur.execute(
+                "UPDATE dbo.etl_pipeline SET horarios_especificos=?, dias_semana=?, "
+                "updated_at=GETDATE() WHERE pipeline_name=?",
+                (horarios_especificos, dias_semana, pipeline),
+            )
+        except Exception:
+            pass  # colunas da migration 018 podem não existir ainda — degrada sem erro
         new_vals = {
             "active": active, "scheduled_time": horario, "schedule_type": schedule_type,
             "schedule_hour": schedule_hour, "schedule_minute": schedule_minute,
