@@ -12,13 +12,6 @@ docker compose restart ui-nginx
 docker compose logs orquestra-api --tail=20
 curl -s http://localhost/orquestra/health
 
-app.js:1 Uncaught SyntaxError: Unexpected token '<'
-modal-close.js:1 Uncaught SyntaxError: Unexpected token '<'
-confirm.js:1 Uncaught SyntaxError: Unexpected token '<'
-sequence-import.js:1 Uncaught SyntaxError: Unexpected token '<'
-versoes.js:1 Uncaught SyntaxError: Unexpected token '<'
-admin-wizard-patch.js:1 Uncaught SyntaxError: Unexpected token '<'
-airflow-log.js:1 Uncaught SyntaxError: Unexpected token '<'
-audit.js:1 Uncaught SyntaxError: Unexpected token '<'
-datastage-monitor.js:1 Uncaught SyntaxError: Unexpected token '<'
-malha.js:1 Uncaught SyntaxError: Unexpected token '<'
+ls /opt/airflow/certs/
+ls /opt/airflow/ui/js/
+docker compose logs ui-nginx --tail=20
