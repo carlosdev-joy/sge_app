@@ -150,6 +150,7 @@ services:
       DAGS_FOLDER:      "/opt/airflow/dags"
       MSSQL_CONN_STR:   "${MSSQL_CONN_STR:-}"
       DSX_BASE_DIR:     "/opt/airflow/dsx"
+      CORS_ORIGINS:     "${CORS_ORIGINS:-http://localhost}"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags:ro
       - ${AIRFLOW_PROJ_DIR:-.}/dsx:/opt/airflow/dsx:ro
