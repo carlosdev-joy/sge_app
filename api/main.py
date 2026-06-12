@@ -84,87 +84,258 @@ app.add_middleware(
 )
 
 
-# ── Autenticação e RBAC ───────────────────────────────────────────────────────
+# ── Autenticação, sessões e RBAC ──────────────────────────────────────────────
+#
+# Padrão: token de sessão OPACO (secrets.token_urlsafe) com hash SHA-256
+# armazenado em dbo.etl_sessao. A senha do usuário NUNCA é guardada — ela é
+# usada uma única vez no POST /auth/login para validar contra o Airflow.
+# A UI guarda apenas o token (localStorage), que sobrevive ao F5 e expira
+# conforme session_ttl_hours (config, padrão 12h). Tokens são revogáveis
+# (DELETE em etl_sessao = logout forçado).
 
-async def _validate_auth(authorization: str | None) -> tuple[str, str]:
-    """Valida o header Authorization contra o Airflow (com cache TTL=5min).
-    Retorna (matricula_uppercase, perfil). Levanta 401/403 se inválido."""
-    if not authorization or not authorization.startswith("Basic "):
-        raise HTTPException(
-            status_code=401,
-            detail="Autenticação necessária",
-            headers={"WWW-Authenticate": "Basic realm=\"ORQUESTRA\""},
-        )
+import secrets
 
-    cache_key = hashlib.sha256(authorization.encode()).hexdigest()
-    now = datetime.now(timezone.utc)
+SESSION_TTL_HOURS_DEFAULT = 12
 
-    cached = _auth_cache.get(cache_key)
-    if cached:
-        user, perfil, expires = cached
-        if now < expires:
-            return user, perfil
+# Telas/ações que cada grupo de endpoint exige (espelha etl_perfil_permissao)
+PERM_EDITAR   = "acao_editar"
+PERM_EXECUTAR = "acao_executar"
+PERM_ADMIN    = "acao_admin"
 
+
+def _carregar_usuario(cur, matricula: str) -> dict:
+    """Lê usuário + perfil + permissões. Retorna defaults se não cadastrado."""
+    cur.execute(
+        "SELECT u.matricula, u.perfil_nome, u.primeiro_nome, u.ultimo_nome, u.email, u.ativo "
+        "FROM dbo.etl_usuario u WHERE u.matricula = ?", [matricula])
+    row = cur.fetchone()
+    if row:
+        if not row[5]:
+            raise HTTPException(status_code=403, detail="Usuário desativado no ORQUESTRA")
+        info = {"matricula": row[0], "perfil": row[1],
+                "primeiro_nome": row[2], "ultimo_nome": row[3], "email": row[4]}
+    else:
+        info = {"matricula": matricula, "perfil": "consulta",
+                "primeiro_nome": None, "ultimo_nome": None, "email": None}
+    cur.execute(
+        "SELECT recurso FROM dbo.etl_perfil_permissao WHERE perfil_nome = ?", [info["perfil"]])
+    info["permissoes"] = sorted(r[0] for r in cur.fetchall())
+    return info
+
+
+async def _airflow_check_credentials(authorization: str) -> None:
+    """Valida um header Basic contra o Airflow. Levanta 401/403/502."""
     async with httpx.AsyncClient(base_url=AIRFLOW_URL, timeout=5) as client:
         r = await client.get("/api/v1/dags?limit=1", headers={"Authorization": authorization})
         if r.status_code == 401:
-            _auth_cache.pop(cache_key, None)
-            raise HTTPException(
-                status_code=401,
-                detail="Credenciais inválidas",
-                headers={"WWW-Authenticate": "Basic realm=\"ORQUESTRA\""},
-            )
+            raise HTTPException(status_code=401, detail="Credenciais inválidas")
         if r.status_code == 403:
             raise HTTPException(status_code=403, detail="Sem permissão no Airflow")
         if not r.is_success:
             raise HTTPException(status_code=502, detail="Erro ao validar credenciais com Airflow")
 
-    try:
-        user = base64.b64decode(authorization[6:]).decode("utf-8").split(":", 1)[0].strip().upper()
-    except Exception:
-        raise HTTPException(status_code=401, detail="Header de autenticação inválido")
 
-    perfil = "consulta"
+async def _airflow_user_details(username: str, authorization: str) -> dict:
+    """Busca dados do usuário no Airflow (nome, email). Falha silenciosa → {}."""
     try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT perfil FROM dbo.etl_usuario_perfil WHERE matricula = ?", [user])
+        async with httpx.AsyncClient(base_url=AIRFLOW_URL, timeout=5) as client:
+            r = await client.get(f"/api/v1/users/{username}",
+                                 headers={"Authorization": authorization})
+            if r.is_success:
+                d = r.json()
+                return {"first_name": d.get("first_name"), "last_name": d.get("last_name"),
+                        "email": d.get("email")}
+            # usuário comum pode não ter permissão de ler /users — tenta com service account
+            r = await client.get(f"/api/v1/users/{username}",
+                                 auth=(AIRFLOW_USER, AIRFLOW_PASSWORD))
+            if r.is_success:
+                d = r.json()
+                return {"first_name": d.get("first_name"), "last_name": d.get("last_name"),
+                        "email": d.get("email")}
+    except Exception:
+        pass
+    return {}
+
+
+def _session_ttl_hours() -> int:
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("SELECT config_value FROM dbo.etl_app_config WHERE config_key='session_ttl_hours'")
         row = cur.fetchone()
-        if row:
-            perfil = row[0]
         cur.close(); conn.close()
+        if row and str(row[0]).strip().isdigit():
+            return int(row[0])
     except Exception:
-        pass  # DB indisponível: mantém perfil padrão 'consulta'
+        pass
+    return SESSION_TTL_HOURS_DEFAULT
 
-    _auth_cache[cache_key] = (user, perfil, now + timedelta(minutes=_AUTH_TTL_MINUTES))
-    return user, perfil
+
+@app.post("/auth/login", tags=["auth"])
+async def auth_login(body: dict = Body(default={})):
+    """Login: valida credencial no Airflow, registra/atualiza o usuário em
+    etl_usuario (dados do Airflow no 1º acesso) e emite token de sessão."""
+    usuario = (body.get("usuario") or "").strip()
+    senha   = body.get("senha") or ""
+    if not usuario or not senha:
+        raise HTTPException(status_code=422, detail="usuario e senha são obrigatórios")
+
+    basic = "Basic " + base64.b64encode(f"{usuario}:{senha}".encode()).decode()
+    await _airflow_check_credentials(basic)
+
+    matricula = usuario.upper()
+    detalhes = await _airflow_user_details(usuario, basic)
+
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    ttl_h = _session_ttl_hours()
+
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        # upsert usuário — preenche dados do Airflow no 1º login, atualiza nos demais
+        cur.execute("SELECT matricula FROM dbo.etl_usuario WHERE matricula = ?", [matricula])
+        if cur.fetchone():
+            cur.execute(
+                "UPDATE dbo.etl_usuario SET ultimo_login = GETDATE(), "
+                "primeiro_nome = COALESCE(?, primeiro_nome), "
+                "ultimo_nome   = COALESCE(?, ultimo_nome), "
+                "email         = COALESCE(?, email) "
+                "WHERE matricula = ?",
+                [detalhes.get("first_name"), detalhes.get("last_name"),
+                 detalhes.get("email"), matricula])
+        else:
+            cur.execute(
+                "INSERT INTO dbo.etl_usuario "
+                "(matricula, perfil_nome, primeiro_nome, ultimo_nome, email, "
+                " primeiro_login, ultimo_login, criado_por) "
+                "VALUES (?, 'consulta', ?, ?, ?, GETDATE(), GETDATE(), 'auto-login')",
+                [matricula, detalhes.get("first_name"), detalhes.get("last_name"),
+                 detalhes.get("email")])
+        # grava sessão e remove sessões expiradas do usuário
+        cur.execute("DELETE FROM dbo.etl_sessao WHERE matricula = ? AND expira_em < GETDATE()",
+                    [matricula])
+        cur.execute(
+            "INSERT INTO dbo.etl_sessao (token_hash, matricula, expira_em) "
+            "VALUES (?, ?, DATEADD(HOUR, ?, GETDATE()))",
+            [token_hash, matricula, ttl_h])
+        conn.commit()
+        usuario_info = _carregar_usuario(cur, matricula)
+        cur.close(); conn.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("Erro no login")
+        raise HTTPException(status_code=500, detail=f"Erro ao criar sessão: {e}")
+
+    return {"token": token, "expira_em_horas": ttl_h, "usuario": usuario_info}
+
+
+@app.post("/auth/logout", tags=["auth"])
+async def auth_logout(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    """Encerra a sessão (revoga o token)."""
+    if authorization and authorization.startswith("Bearer "):
+        token_hash = hashlib.sha256(authorization[7:].encode()).hexdigest()
+        try:
+            conn = get_db_conn(); cur = conn.cursor()
+            cur.execute("DELETE FROM dbo.etl_sessao WHERE token_hash = ?", [token_hash])
+            conn.commit(); cur.close(); conn.close()
+        except Exception:
+            pass
+    return {"sucesso": True}
 
 
 async def get_current_user(
     authorization: str | None = Header(default=None, alias="Authorization"),
-) -> tuple[str, str]:
-    """Dependency: valida auth e retorna (matricula, perfil)."""
-    return await _validate_auth(authorization)
+) -> dict:
+    """Dependency: valida Bearer (sessão) ou Basic (compatibilidade).
+    Retorna dict {matricula, perfil, permissoes, ...}."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Autenticação necessária")
+
+    # ── Bearer: token de sessão ───────────────────────────────────────────
+    if authorization.startswith("Bearer "):
+        token_hash = hashlib.sha256(authorization[7:].encode()).hexdigest()
+        try:
+            conn = get_db_conn(); cur = conn.cursor()
+            cur.execute(
+                "SELECT matricula FROM dbo.etl_sessao "
+                "WHERE token_hash = ? AND expira_em > GETDATE()", [token_hash])
+            row = cur.fetchone()
+            if not row:
+                cur.close(); conn.close()
+                raise HTTPException(status_code=401, detail="Sessão expirada ou inválida")
+            info = _carregar_usuario(cur, row[0])
+            cur.close(); conn.close()
+            return info
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Erro ao validar sessão: {e}")
+
+    # ── Basic: valida no Airflow (cache TTL=5min) — compatibilidade ──────
+    if authorization.startswith("Basic "):
+        cache_key = hashlib.sha256(authorization.encode()).hexdigest()
+        now = datetime.now(timezone.utc)
+        cached = _auth_cache.get(cache_key)
+        if cached and now < cached[2]:
+            matricula = cached[0]
+        else:
+            await _airflow_check_credentials(authorization)
+            try:
+                matricula = base64.b64decode(authorization[6:]).decode("utf-8") \
+                    .split(":", 1)[0].strip().upper()
+            except Exception:
+                raise HTTPException(status_code=401, detail="Header de autenticação inválido")
+            _auth_cache[cache_key] = (matricula, "", now + timedelta(minutes=_AUTH_TTL_MINUTES))
+        try:
+            conn = get_db_conn(); cur = conn.cursor()
+            info = _carregar_usuario(cur, matricula)
+            cur.close(); conn.close()
+            return info
+        except HTTPException:
+            raise
+        except Exception:
+            return {"matricula": matricula, "perfil": "consulta", "permissoes": [],
+                    "primeiro_nome": None, "ultimo_nome": None, "email": None}
+
+    raise HTTPException(status_code=401, detail="Esquema de autenticação não suportado")
 
 
-async def get_admin_user(
-    user_info: tuple[str, str] = Depends(get_current_user),
-) -> tuple[str, str]:
-    """Dependency: requer perfil 'admin'."""
-    user, perfil = user_info
-    if perfil != "admin":
+def require_perm(recurso: str):
+    """Factory de dependency: exige que o perfil do usuário tenha o recurso."""
+    async def _dep(user: dict = Depends(get_current_user)) -> dict:
+        if recurso not in user.get("permissoes", []):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Perfil '{user.get('perfil')}' não possui a permissão '{recurso}'")
+        return user
+    return _dep
+
+
+async def get_admin_user(user: dict = Depends(get_current_user)) -> dict:
+    """Dependency: requer permissão de admin."""
+    if PERM_ADMIN not in user.get("permissoes", []):
         raise HTTPException(
             status_code=403,
-            detail=f"Perfil '{perfil}' não tem permissão. Requer: admin",
-        )
-    return user_info
+            detail=f"Perfil '{user.get('perfil')}' não tem acesso administrativo")
+    return user
 
 
 @app.get("/me", tags=["auth"])
-async def get_me(user_info: tuple[str, str] = Depends(get_current_user)):
-    """Retorna matricula e perfil do usuário autenticado."""
-    user, perfil = user_info
-    return {"matricula": user, "perfil": perfil}
+async def get_me(user: dict = Depends(get_current_user)):
+    """Dados do usuário autenticado (matricula, nome, perfil, permissões)."""
+    return user
+
+
+@app.get("/auth/airflow-header", tags=["auth"])
+async def auth_airflow_header(user: dict = Depends(get_current_user)):
+    """Header Basic da service account para chamadas diretas ao Airflow após
+    restaurar a sessão (F5) — equivale à Variable ORQUESTRA_SYSTEM_AUTH que a
+    UI já lê hoje do Airflow."""
+    header = "Basic " + base64.b64encode(
+        f"{AIRFLOW_USER}:{AIRFLOW_PASSWORD}".encode()).decode()
+    return {"header": header}
 
 LOCAL_TZ = timezone(timedelta(hours=-3))  # America/Sao_Paulo
 
@@ -760,7 +931,7 @@ def get_lineage(pipeline_name: str):
 
 
 @app.put("/lineage/job", tags=["lineage"])
-async def put_lineage_job(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
+async def put_lineage_job(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Substitui a lineage de um job: remove tudo e regrava o que veio no payload.
 
     Diferente da DAG etl_pipeline_job_register (upsert puro, nunca apaga),
@@ -1748,7 +1919,7 @@ async def sync_dry_run():
 
 
 @app.post("/sync/pipeline-status", tags=["sync"])
-async def sync_pipeline_status():
+async def sync_pipeline_status(_auth: dict = Depends(require_perm(PERM_EXECUTAR))):
     """Sincroniza status dos pipelines com Airflow."""
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -1907,7 +2078,7 @@ def _write_audit(cur, pipeline_name, changed_by, old, new_vals):
 
 
 @app.post("/pipelines/register", tags=["pipelines"])
-async def register_pipeline(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
+async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Cria ou atualiza um pipeline (etl_pipeline_register)."""
     pipeline    = (body.get("pipeline_name") or "").strip()
     horario     = (body.get("scheduled_time") or "").strip()
@@ -2066,7 +2237,7 @@ VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc"}
 
 
 @app.post("/pipelines/jobs/register", tags=["jobs"])
-async def register_pipeline_jobs(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
+async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Registra/atualiza jobs e lineage de um pipeline (etl_pipeline_job_register)."""
     pipeline_name = (body.get("pipeline_name") or "").strip()
     if not pipeline_name:
@@ -2158,7 +2329,7 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: tuple = D
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/pipelines/jobs/reorder", tags=["jobs"])
-async def reorder_pipeline_jobs(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
+async def reorder_pipeline_jobs(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Reordena jobs sem tocar em lineage (etl_pipeline_job_reorder)."""
     pipeline_name = (body.get("pipeline_name") or "").strip()
     if not pipeline_name:
@@ -2250,14 +2421,14 @@ def get_performance(
 
 
 @app.post("/admin", tags=["admin"])
-async def admin_manage(body: dict = Body(default={}), _admin: tuple = Depends(get_admin_user)):
+async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get_admin_user)):
     """Operações administrativas restritas (etl_admin_manage).
 
     actions: config_upsert | config_delete | pipeline_delete |
              dag_file_delete | regenerate_all_dags
     """
     action       = (body.get("action") or "").strip()
-    requested_by = _admin[0]  # usa a matrícula autenticada como audit trail
+    requested_by = _admin["matricula"]  # usa a matrícula autenticada como audit trail
 
     if not action:
         raise HTTPException(status_code=422, detail="action é obrigatório")
@@ -2296,6 +2467,110 @@ async def admin_manage(body: dict = Body(default={}), _admin: tuple = Depends(ge
             cur.execute("DELETE FROM dbo.etl_app_config WHERE config_key = ?", (key,))
             conn.commit(); cur.close(); conn.close()
             return {"sucesso": True, "mensagem": f'Parâmetro "{key}" removido.'}
+
+        # ── Gestão de usuários e perfis (RBAC) ─────────────────────────────
+        elif action == "user_list":
+            cur.execute(
+                "SELECT u.matricula, u.perfil_nome, u.primeiro_nome, u.ultimo_nome, "
+                "       u.email, u.ativo, u.primeiro_login, u.ultimo_login "
+                "FROM dbo.etl_usuario u ORDER BY u.matricula")
+            data = [{"matricula": r[0], "perfil": r[1], "primeiro_nome": r[2],
+                     "ultimo_nome": r[3], "email": r[4], "ativo": bool(r[5]),
+                     "primeiro_login": _fmt_dt(r[6]), "ultimo_login": _fmt_dt(r[7])}
+                    for r in cur.fetchall()]
+            cur.close(); conn.close()
+            return {"sucesso": True, "usuarios": data}
+
+        elif action == "user_upsert":
+            mat    = (body.get("matricula") or "").strip().upper()
+            perfil = (body.get("perfil") or "consulta").strip()
+            ativo  = 1 if body.get("ativo", True) else 0
+            if not mat:
+                raise HTTPException(status_code=422, detail="matricula obrigatória")
+            cur.execute("SELECT 1 FROM dbo.etl_perfil WHERE perfil_nome = ?", [perfil])
+            if not cur.fetchone():
+                raise HTTPException(status_code=422, detail=f"Perfil '{perfil}' não existe")
+            cur.execute("SELECT 1 FROM dbo.etl_usuario WHERE matricula = ?", [mat])
+            if cur.fetchone():
+                cur.execute(
+                    "UPDATE dbo.etl_usuario SET perfil_nome = ?, ativo = ? WHERE matricula = ?",
+                    [perfil, ativo, mat])
+            else:
+                cur.execute(
+                    "INSERT INTO dbo.etl_usuario (matricula, perfil_nome, ativo, criado_por) "
+                    "VALUES (?, ?, ?, ?)", [mat, perfil, ativo, requested_by])
+            # perfil mudou → invalida sessões para forçar recarga de permissões
+            cur.execute("DELETE FROM dbo.etl_sessao WHERE matricula = ? AND matricula <> ?",
+                        [mat, requested_by])
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True, "mensagem": f"Usuário {mat} → perfil '{perfil}'."}
+
+        elif action == "user_delete":
+            mat = (body.get("matricula") or "").strip().upper()
+            if not mat:
+                raise HTTPException(status_code=422, detail="matricula obrigatória")
+            if mat == requested_by:
+                raise HTTPException(status_code=422, detail="Não é possível excluir o próprio usuário")
+            cur.execute("DELETE FROM dbo.etl_sessao WHERE matricula = ?", [mat])
+            cur.execute("DELETE FROM dbo.etl_usuario WHERE matricula = ?", [mat])
+            n = cur.rowcount
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True, "mensagem": f"Usuário {mat} removido." if n else f"Usuário {mat} não encontrado."}
+
+        elif action == "perfil_list":
+            cur.execute("SELECT perfil_nome, descricao FROM dbo.etl_perfil ORDER BY perfil_nome")
+            perfis = [{"perfil_nome": r[0], "descricao": r[1]} for r in cur.fetchall()]
+            cur.execute("SELECT perfil_nome, recurso FROM dbo.etl_perfil_permissao")
+            perms: dict = {}
+            for pn, rec in cur.fetchall():
+                perms.setdefault(pn, []).append(rec)
+            for p in perfis:
+                p["permissoes"] = sorted(perms.get(p["perfil_nome"], []))
+            cur.close(); conn.close()
+            return {"sucesso": True, "perfis": perfis}
+
+        elif action == "perfil_upsert":
+            nome = (body.get("perfil_nome") or "").strip().lower()
+            desc = (body.get("descricao") or "").strip() or None
+            permissoes = body.get("permissoes")
+            if not nome:
+                raise HTTPException(status_code=422, detail="perfil_nome obrigatório")
+            cur.execute("SELECT 1 FROM dbo.etl_perfil WHERE perfil_nome = ?", [nome])
+            if cur.fetchone():
+                if desc is not None:
+                    cur.execute("UPDATE dbo.etl_perfil SET descricao = ? WHERE perfil_nome = ?",
+                                [desc, nome])
+            else:
+                cur.execute("INSERT INTO dbo.etl_perfil (perfil_nome, descricao, criado_por) "
+                            "VALUES (?, ?, ?)", [nome, desc, requested_by])
+            if isinstance(permissoes, list):
+                # trava de segurança: o perfil 'admin' nunca perde acao_admin
+                if nome == "admin" and PERM_ADMIN not in permissoes:
+                    permissoes = permissoes + [PERM_ADMIN]
+                cur.execute("DELETE FROM dbo.etl_perfil_permissao WHERE perfil_nome = ?", [nome])
+                for rec in permissoes:
+                    rec = str(rec).strip()
+                    if rec:
+                        cur.execute(
+                            "INSERT INTO dbo.etl_perfil_permissao (perfil_nome, recurso, criado_por) "
+                            "VALUES (?, ?, ?)", [nome, rec, requested_by])
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True, "mensagem": f"Perfil '{nome}' salvo."}
+
+        elif action == "perfil_delete":
+            nome = (body.get("perfil_nome") or "").strip().lower()
+            if not nome:
+                raise HTTPException(status_code=422, detail="perfil_nome obrigatório")
+            if nome in ("admin", "consulta"):
+                raise HTTPException(status_code=422, detail=f"Perfil '{nome}' é protegido e não pode ser excluído")
+            cur.execute("SELECT COUNT(*) FROM dbo.etl_usuario WHERE perfil_nome = ?", [nome])
+            em_uso = cur.fetchone()[0]
+            if em_uso:
+                raise HTTPException(status_code=422,
+                                    detail=f"Perfil '{nome}' está em uso por {em_uso} usuário(s)")
+            cur.execute("DELETE FROM dbo.etl_perfil WHERE perfil_nome = ?", [nome])
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True, "mensagem": f"Perfil '{nome}' removido."}
 
         elif action == "pipeline_delete":
             pipeline_name = (body.get("pipeline_name") or "").strip()
@@ -2406,12 +2681,12 @@ def get_calendario(nome: str):
 
 
 @app.post("/agenda/calendarios", tags=["agenda"])
-async def upsert_calendario(body: dict = Body(default={}), _admin: tuple = Depends(get_admin_user)):
+async def upsert_calendario(body: dict = Body(default={}), _admin: dict = Depends(get_admin_user)):
     """Adiciona datas a um calendário (cria se não existir).
 
     Body: { calendario_nome, datas: ["YYYY-MM-DD", ...], descricao }
     """
-    rb = _admin[0]
+    rb = _admin["matricula"]
     nome = (body.get("calendario_nome") or "").strip()
     datas = body.get("datas") or []
     descricao = (body.get("descricao") or "").strip() or None
@@ -2439,7 +2714,7 @@ async def upsert_calendario(body: dict = Body(default={}), _admin: tuple = Depen
 
 
 @app.delete("/agenda/calendarios/{nome}", tags=["agenda"])
-async def delete_calendario(nome: str, data: Optional[str] = None, _admin: tuple = Depends(get_admin_user)):
+async def delete_calendario(nome: str, data: Optional[str] = None, _admin: dict = Depends(get_admin_user)):
     """Remove uma data (?data=YYYY-MM-DD) ou o calendário inteiro."""
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -2483,9 +2758,9 @@ def list_blackouts(incluir_historico: int = 0):
 
 
 @app.post("/agenda/blackouts", tags=["agenda"])
-async def create_blackout(body: dict = Body(default={}), _admin: tuple = Depends(get_admin_user)):
+async def create_blackout(body: dict = Body(default={}), _admin: dict = Depends(get_admin_user)):
     """Cria janela de blackout. Body: { inicio, fim, escopo, motivo }"""
-    rb = _admin[0]
+    rb = _admin["matricula"]
     inicio = (body.get("inicio") or "").strip()
     fim    = (body.get("fim") or "").strip()
     escopo = (body.get("escopo") or "").strip() or None
@@ -2506,9 +2781,9 @@ async def create_blackout(body: dict = Body(default={}), _admin: tuple = Depends
 
 
 @app.post("/agenda/blackouts/{blackout_id}/encerrar", tags=["agenda"])
-async def encerrar_blackout(blackout_id: int, body: dict = Body(default={}), _admin: tuple = Depends(get_admin_user)):
+async def encerrar_blackout(blackout_id: int, body: dict = Body(default={}), _admin: dict = Depends(get_admin_user)):
     """Desativa um blackout antes do fim programado."""
-    rb = _admin[0]
+    rb = _admin["matricula"]
     try:
         conn = get_db_conn(); cur = conn.cursor()
         cur.execute(
@@ -2526,14 +2801,14 @@ async def encerrar_blackout(blackout_id: int, body: dict = Body(default={}), _ad
 
 
 @app.post("/admin/freeze", tags=["agenda"])
-async def freeze_ambiente(body: dict = Body(default={}), _admin: tuple = Depends(get_admin_user)):
+async def freeze_ambiente(body: dict = Body(default={}), _admin: dict = Depends(get_admin_user)):
     """Congela/descongela o ambiente inteiro.
 
     Implementado como blackout global aberto (fim 9999) — toda DAG gerada
     verifica blackout na task check_agenda e se auto-pula enquanto vigente.
     Body: { acao: 'congelar' | 'descongelar' }
     """
-    rb = _admin[0]
+    rb = _admin["matricula"]
     acao = (body.get("acao") or "").strip().lower()
     if acao not in ("congelar", "descongelar"):
         raise HTTPException(status_code=422, detail="acao deve ser 'congelar' ou 'descongelar'")
@@ -2573,7 +2848,7 @@ async def freeze_ambiente(body: dict = Body(default={}), _admin: tuple = Depends
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/versao/register", tags=["config"])
-async def register_versao(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
+async def register_versao(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """CRUD de versões do ORQUESTRA (etl_versao_register).
 
     body.action: create | update | delete
@@ -2641,7 +2916,7 @@ async def register_versao(body: dict = Body(default={}), _auth: tuple = Depends(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/lineage/extract-dsx", tags=["lineage"])
-async def lineage_extract_dsx(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
+async def lineage_extract_dsx(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Extrai lineage de um job DataStage a partir do arquivo .dsx (etl_lineage_extract_dsx)."""
     import os, sys
     project_name = (body.get("project_name") or "").strip()
@@ -2676,7 +2951,7 @@ async def lineage_extract_dsx(body: dict = Body(default={}), _auth: tuple = Depe
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/lineage/normalize", tags=["lineage"])
-async def lineage_normalize(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
+async def lineage_normalize(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Normaliza lineage legado: object_name → tabela real (etl_lineage_normalize)."""
     pipeline_filter = (body.get("pipeline_name") or "").strip() or None
     dry_run = str(body.get("dry_run", "false")).lower() in ("true", "1", "yes")
@@ -2748,7 +3023,7 @@ async def lineage_normalize(body: dict = Body(default={}), _auth: tuple = Depend
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/sequence/parse", tags=["sequence"])
-async def sequence_parse(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
+async def sequence_parse(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Faz parse de uma sequence DataStage .dsx e grava em staging (etl_sequence_import_parse)."""
     import os, sys, re, json
 
@@ -2894,7 +3169,7 @@ async def sequence_parse(body: dict = Body(default={}), _auth: tuple = Depends(g
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/sequence/approve", tags=["sequence"])
-async def sequence_approve(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
+async def sequence_approve(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Aprova importação de sequence: move staging → tabelas principais (etl_sequence_import_approve)."""
     import_id    = int(body.get("import_id", 0))
     reviewed_by  = (body.get("reviewed_by") or "system").strip()
@@ -2986,7 +3261,7 @@ async def sequence_approve(body: dict = Body(default={}), _auth: tuple = Depends
 # ── DataStage Monitor ─────────────────────────────────────────────────────────
 
 @app.post("/datastage/monitor")
-async def datastage_monitor_trigger(body: dict = Body(...)):
+async def datastage_monitor_trigger(body: dict = Body(...), _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
     """
     Dispara a DAG etl_datastage_monitor para monitorar um job já em execução.
 
@@ -3230,7 +3505,7 @@ def factory_run_log(dag_run_id: str):
 
 
 @app.post("/execucoes/rerun", tags=["execucoes"])
-async def rerun_from_task(body: dict = Body(default={})):
+async def rerun_from_task(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
     """Limpa tasks a partir de um job específico e reexecuta o DAG.
 
     Body:
@@ -3368,12 +3643,12 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
 
 
 @app.post("/admin/test-webhook", tags=["admin"])
-async def test_webhook(body: dict = Body(default={}), _admin: tuple = Depends(get_admin_user)):
+async def test_webhook(body: dict = Body(default={}), _admin: dict = Depends(get_admin_user)):
     """Testa envio ao Teams e devolve diagnóstico completo (uso exclusivo Admin)."""
     import httpx as _req
     import traceback
 
-    requested_by = _admin[0]
+    requested_by = _admin["matricula"]
     try:
         return _test_webhook_impl(requested_by, _req)
     except Exception:
@@ -3446,7 +3721,7 @@ def _test_webhook_impl(requested_by: str, _req):
 
 
 @app.post("/execucoes/ack", tags=["execucoes"])
-async def ack_failure(body: dict = Body(default={}), _auth: tuple = Depends(get_current_user)):
+async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
     """Acknowledge de falha — operador assume o incidente e notifica o Teams.
 
     Body: execution_id, pipeline, user (matrícula), display_name (nome completo),

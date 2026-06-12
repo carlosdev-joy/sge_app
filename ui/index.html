@@ -2266,6 +2266,7 @@
                 <button id="adm-tab-versoes" class="adm-tab" onclick="admSwitch('versoes')">📋 Versões</button>
                 <button id="adm-tab-tipos"  class="adm-tab" onclick="admSwitch('tipos')">◎ Tipos de Job</button>
                 <button id="adm-tab-agenda" class="adm-tab" onclick="admSwitch('agenda')">📅 Agendamento</button>
+                <button id="adm-tab-usuarios" class="adm-tab" onclick="admSwitch('usuarios')">👤 Usuários &amp; Perfis</button>
               </div>
 
               <!-- SUB: Configurações -->
@@ -2345,6 +2346,49 @@
                 </div>
               </div>
 
+
+              <!-- SUB: Usuários & Perfis (RBAC) -->
+              <div id="adm-panel-usuarios" style="display:none">
+                <div class="helper" style="margin:0 0 1rem;background:rgba(0,92,169,.05);border:0.5px solid rgba(0,92,169,.2);border-radius:10px;padding:.75rem 1rem">
+                  👤 <strong>Controle de acesso.</strong> Cada usuário recebe um <strong>perfil</strong>; cada perfil define
+                  quais <strong>telas</strong> e <strong>ações</strong> ficam disponíveis. Usuários entram automaticamente
+                  no 1º login com perfil <code>consulta</code> — promova-os aqui. Mudanças de perfil derrubam as sessões
+                  ativas do usuário (ele só precisa logar de novo).
+                </div>
+
+                <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:1.25rem;align-items:start">
+                  <!-- Usuários -->
+                  <div style="border:1px solid var(--border);border-radius:12px;padding:1rem">
+                    <div style="font-size:13px;font-weight:600;margin-bottom:.5rem">👤 Usuários</div>
+                    <div id="adm-user-list" style="margin-bottom:.75rem"></div>
+                    <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:.75rem">
+                      <div style="font-size:12px;font-weight:600;margin-bottom:.5rem;color:var(--cvp-blue)">Adicionar / alterar usuário</div>
+                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.6rem">
+                        <div class="field" style="margin:0"><label>Matrícula</label><input id="adm-user-mat" type="text" placeholder="ex: CVT12345" /></div>
+                        <div class="field" style="margin:0"><label>Perfil</label><select id="adm-user-perfil"></select></div>
+                      </div>
+                      <button class="btn btn-primary btn-sm" onclick="admUserSave()">💾 Salvar</button>
+                      <span id="adm-user-msg" style="font-size:12px;margin-left:.5rem"></span>
+                    </div>
+                  </div>
+
+                  <!-- Perfis -->
+                  <div style="border:1px solid var(--border);border-radius:12px;padding:1rem">
+                    <div style="font-size:13px;font-weight:600;margin-bottom:.25rem">🛡 Perfis e permissões</div>
+                    <div class="helper" style="margin:0 0 .75rem">Marque o que cada perfil acessa. Os perfis <code>admin</code> e <code>consulta</code> são protegidos contra exclusão.</div>
+                    <div id="adm-perfil-list"></div>
+                    <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:.75rem;margin-top:.75rem">
+                      <div style="font-size:12px;font-weight:600;margin-bottom:.5rem;color:var(--cvp-blue)">Novo perfil</div>
+                      <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:.5rem;margin-bottom:.6rem">
+                        <div class="field" style="margin:0"><label>Nome</label><input id="adm-perfil-nome" type="text" placeholder="ex: auditoria" /></div>
+                        <div class="field" style="margin:0"><label>Descrição</label><input id="adm-perfil-desc" type="text" placeholder="ex: Acesso de leitura p/ auditoria" /></div>
+                      </div>
+                      <button class="btn btn-primary btn-sm" onclick="admPerfilCreate()">+ Criar perfil</button>
+                      <span id="adm-perfil-msg" style="font-size:12px;margin-left:.5rem"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
 
               <!-- SUB: Regenerar Todas as DAGs -->
               <div id="adm-panel-regen" style="display:none">
@@ -2606,18 +2650,87 @@ const ICONS = {
 
 let authHeader = null;
 
-// ── Perfil do usuário logado (carregado do banco via GET /me) ─────────────────
-window.__userPerfil = 'consulta';
+/* ── Sessão ORQUESTRA (token opaco; sobrevive ao F5) ──────────────────────────
+   - POST /auth/login devolve token + dados do usuário (perfil, permissões, nome)
+   - O token (NUNCA a senha) fica no localStorage em ORQ_SESSION_KEY
+   - No F5, restoreSession() valida o token via GET /me e religa a aplicação   */
+const ORQ_SESSION_KEY = 'orq_session';
+let __orqToken = null;
 
-async function _fetchUserPerfil() {
-  if (!authHeader) return;
+window.__userPerfil = 'consulta';
+window.__userPerms  = [];
+
+/** Header de autenticação para a API ORQUESTRA: Bearer (sessão) > Basic. */
+function _orqAuthHeader() {
+  if (__orqToken)  return { Authorization: 'Bearer ' + __orqToken };
+  if (authHeader)  return { Authorization: authHeader };
+  return {};
+}
+
+function _saveSession(token, ttlHours) {
   try {
-    const r = await fetch(ORQUESTRA_API + '/me', { headers: { Authorization: authHeader } });
-    if (r.ok) {
-      const d = await r.json();
-      window.__userPerfil = d.perfil || 'consulta';
-    }
+    localStorage.setItem(ORQ_SESSION_KEY, JSON.stringify({
+      token, exp: Date.now() + (ttlHours || 12) * 3600 * 1000 }));
   } catch(e) {}
+}
+function _loadSession() {
+  try {
+    const s = JSON.parse(localStorage.getItem(ORQ_SESSION_KEY) || 'null');
+    if (s && s.token && s.exp > Date.now()) return s;
+  } catch(e) {}
+  return null;
+}
+function _clearSession() {
+  __orqToken = null;
+  try { localStorage.removeItem(ORQ_SESSION_KEY); } catch(e) {}
+}
+
+/** Aplica os dados do usuário (de /auth/login ou GET /me) nos globals e na UI. */
+function _applyUserInfo(u) {
+  window.__currentUser = u.matricula || '';
+  window.__userPerfil  = u.perfil || 'consulta';
+  window.__userPerms   = u.permissoes || [];
+  window.__displayName = [u.primeiro_nome, u.ultimo_nome].filter(Boolean).join(' ') || u.matricula;
+  const who = $('who');
+  if (who) who.textContent = u.primeiro_nome || u.matricula || '';
+}
+
+function _hasPerm(p) { return (window.__userPerms || []).includes(p); }
+
+/** Esconde abas que o perfil não pode ver. */
+function _applyPermVisibility() {
+  const mapa = {
+    'tab-dashboard':  'tela_dashboard',  'tab-pipelines': 'tela_pipelines',
+    'tab-jobs':       'tela_jobs',       'tab-logs':      'tela_logs',
+    'tab-ds-monitor': 'tela_ds_monitor', 'tab-governanca':'tela_governanca',
+    'tab-malha':      'tela_malha',      'tab-admin':     'tela_admin',
+  };
+  Object.entries(mapa).forEach(([id, perm]) => {
+    const el = $(id);
+    if (el) el.classList.toggle('hidden', !_hasPerm(perm));
+  });
+}
+
+/** Restaura a sessão após F5: valida o token e religa a aplicação. */
+async function restoreSession() {
+  const s = _loadSession();
+  if (!s) return false;
+  try {
+    const r = await fetch(ORQUESTRA_API + '/me', { headers: { Authorization: 'Bearer ' + s.token } });
+    if (!r.ok) { _clearSession(); return false; }
+    __orqToken = s.token;
+    _applyUserInfo(await r.json());
+    // Header da service account para as chamadas diretas ao Airflow
+    try {
+      const ra = await fetch(ORQUESTRA_API + '/auth/airflow-header',
+        { headers: { Authorization: 'Bearer ' + __orqToken } });
+      if (ra.ok) { const da = await ra.json(); authHeader = da.header || null; }
+    } catch(e) {}
+    $('loginScreen').classList.add('hidden');
+    $('appScreen').classList.remove('hidden');
+    _postLoginInit();
+    return true;
+  } catch(e) { return false; }
 }
 
 // ── Auth sistêmico (service account para chamadas de leitura) ─────────────────
@@ -3538,7 +3651,7 @@ async function loadLineageDSX(jobId) {
   try {
     const r = await fetch(ORQUESTRA_API + '/lineage/extract-dsx', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ..._orqAuthHeader() },
       body: JSON.stringify({ project_name: projectName, job_name: j.name.trim() }),
     });
     if (!r.ok) {
@@ -4674,7 +4787,7 @@ async function _rerunFromTask(pipeline, executionId, taskId, btn) {
   try {
     const r = await fetch(ORQUESTRA_API + '/execucoes/rerun', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+      headers: { 'Content-Type': 'application/json', ..._orqAuthHeader() },
       body: JSON.stringify({ pipeline_name: pipeline, execution_id: executionId, task_id: taskId }),
     });
     if (r.status === 401) { sair(); return; }
@@ -4704,7 +4817,7 @@ async function _ackFailure(executionId, pipeline, btn) {
   try {
     const r = await fetch(ORQUESTRA_API + '/execucoes/ack', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+      headers: { 'Content-Type': 'application/json', ..._orqAuthHeader() },
       body: JSON.stringify({
         execution_id: executionId,
         pipeline:     pipeline,
@@ -5835,10 +5948,10 @@ function _onSortClick(tableId, col, renderFn) {
 }
 
 
-/* ══ ADMIN — Painel restrito CVT38571 ══════════════════════════ */
+/* ══ ADMIN — Painel restrito (perfil com acao_admin) ══════════════════════════ */
 const ADMIN_DAG_ID    = 'etl_admin_manage';
-// Perfil carregado do banco via GET /me após login — substitui lista hardcoded
-function _isAdmin() { return window.__userPerfil === 'admin'; }
+// Permissões vêm do banco (etl_perfil_permissao) via /auth/login ou GET /me
+function _isAdmin() { return _hasPerm('acao_admin') || window.__userPerfil === 'admin'; }
 
 // Mostra/oculta aba Admin baseado no usuário logado
 function _applyAdminVisibility() {
@@ -5848,18 +5961,171 @@ function _applyAdminVisibility() {
   else            tab.classList.add('hidden');
 }
 
+/* ── Admin: Usuários & Perfis (RBAC) ─────────────────────────────────────────── */
+const RBAC_RECURSOS = [
+  ['tela_dashboard',  'Dashboard'],   ['tela_pipelines', 'Pipelines'],
+  ['tela_jobs',       'Jobs'],        ['tela_logs',      'Logs'],
+  ['tela_ds_monitor', 'DS Monitor'],  ['tela_governanca','Governança'],
+  ['tela_malha',      'Malha'],       ['tela_admin',     'Admin'],
+  ['acao_executar',   'Executar/Rerun/Ack'],
+  ['acao_editar',     'Cadastrar/Editar'],
+  ['acao_admin',      'Administração'],
+];
+
+async function _admRbac(action, extra) {
+  const r = await fetch(ORQUESTRA_API + '/admin', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ..._orqAuthHeader() },
+    body: JSON.stringify({ action, ...(extra || {}) }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+  return d;
+}
+
+async function admLoadUsuariosPerfis() {
+  await Promise.all([admLoadUsuarios(), admLoadPerfis()]);
+}
+
+async function admLoadUsuarios() {
+  const el = $('adm-user-list');
+  if (!el) return;
+  el.innerHTML = '<span style="font-size:12px;color:var(--muted)">Carregando...</span>';
+  try {
+    const d = await _admRbac('user_list');
+    const us = d.usuarios || [];
+    if (!us.length) { el.innerHTML = '<span style="font-size:12px;color:var(--muted)">Nenhum usuário cadastrado ainda — entram automaticamente no 1º login.</span>'; return; }
+    let h = '<table style="width:100%;font-size:12px;border-collapse:collapse">' +
+      '<tr style="text-align:left;color:var(--muted)"><th style="padding:.3rem">Matrícula</th><th>Nome</th><th>Perfil</th><th>Último login</th><th>Ativo</th><th></th></tr>';
+    us.forEach(u => {
+      const nome = [u.primeiro_nome, u.ultimo_nome].filter(Boolean).join(' ') || '—';
+      h += '<tr style="border-top:1px solid var(--border)">' +
+        '<td style="padding:.35rem .3rem;font-weight:600">' + u.matricula + '</td>' +
+        '<td>' + nome + '</td>' +
+        '<td><span style="background:rgba(0,92,169,.1);border-radius:6px;padding:.1rem .45rem">' + u.perfil + '</span></td>' +
+        '<td style="color:var(--muted)">' + (u.ultimo_login || '—') + '</td>' +
+        '<td>' + (u.ativo ? '✓' : '<span style="color:var(--red)">✕</span>') + '</td>' +
+        '<td style="text-align:right;white-space:nowrap">' +
+          '<button class="btn btn-outline btn-sm" onclick="admUserEdit(\'' + u.matricula + '\',\'' + u.perfil + '\')">✎</button> ' +
+          '<button class="btn btn-outline btn-sm" onclick="admUserDelete(\'' + u.matricula + '\')">🗑</button>' +
+        '</td></tr>';
+    });
+    el.innerHTML = h + '</table>';
+  } catch(e) { el.innerHTML = '<span style="font-size:12px;color:var(--red)">Erro: ' + e.message + '</span>'; }
+}
+
+function admUserEdit(mat, perfil) {
+  if ($('adm-user-mat'))    $('adm-user-mat').value = mat;
+  if ($('adm-user-perfil')) $('adm-user-perfil').value = perfil;
+}
+
+async function admUserSave() {
+  const mat    = $('adm-user-mat')    ? $('adm-user-mat').value.trim().toUpperCase() : '';
+  const perfil = $('adm-user-perfil') ? $('adm-user-perfil').value : 'consulta';
+  const msg    = $('adm-user-msg');
+  if (!mat) { if (msg) { msg.textContent = 'Informe a matrícula.'; msg.style.color = 'var(--red)'; } return; }
+  try {
+    const d = await _admRbac('user_upsert', { matricula: mat, perfil, ativo: true });
+    if (msg) { msg.textContent = d.mensagem || 'Salvo.'; msg.style.color = 'var(--green)'; }
+    if ($('adm-user-mat')) $('adm-user-mat').value = '';
+    admLoadUsuarios();
+  } catch(e) { if (msg) { msg.textContent = 'Erro: ' + e.message; msg.style.color = 'var(--red)'; } }
+}
+
+async function admUserDelete(mat) {
+  const ok = await showConfirm('Remover o usuário ' + mat + ' do ORQUESTRA?\n\nEle volta ao perfil "consulta" se logar novamente.', '🗑 Remover');
+  if (!ok) return;
+  try {
+    await _admRbac('user_delete', { matricula: mat });
+    showToast('Usuário ' + mat + ' removido.', false);
+    admLoadUsuarios();
+  } catch(e) { showToast('Erro: ' + e.message, true); }
+}
+
+let __admPerfis = [];
+async function admLoadPerfis() {
+  const el = $('adm-perfil-list');
+  if (!el) return;
+  el.innerHTML = '<span style="font-size:12px;color:var(--muted)">Carregando...</span>';
+  try {
+    const d = await _admRbac('perfil_list');
+    __admPerfis = d.perfis || [];
+    // popula o select de perfis do formulário de usuário
+    const sel = $('adm-user-perfil');
+    if (sel) sel.innerHTML = __admPerfis.map(p =>
+      '<option value="' + p.perfil_nome + '">' + p.perfil_nome + '</option>').join('');
+    let h = '';
+    __admPerfis.forEach(p => {
+      const checks = RBAC_RECURSOS.map(([rec, lbl]) => {
+        const on = (p.permissoes || []).includes(rec);
+        return '<label style="display:inline-flex;align-items:center;gap:.3rem;font-size:11px;' +
+          'margin:.15rem .5rem .15rem 0;text-transform:none;letter-spacing:0;cursor:pointer">' +
+          '<input type="checkbox" data-perfil="' + p.perfil_nome + '" data-rec="' + rec + '"' +
+          (on ? ' checked' : '') + ' style="width:auto"> ' + lbl + '</label>';
+      }).join('');
+      const protegido = (p.perfil_nome === 'admin' || p.perfil_nome === 'consulta');
+      h += '<div style="border:1px solid var(--border);border-radius:10px;padding:.6rem .75rem;margin-bottom:.5rem">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.25rem">' +
+          '<span style="font-size:12px;font-weight:700">' + p.perfil_nome + '</span>' +
+          '<span>' +
+            '<button class="btn btn-primary btn-sm" onclick="admPerfilSave(\'' + p.perfil_nome + '\')">💾</button>' +
+            (protegido ? '' : ' <button class="btn btn-outline btn-sm" onclick="admPerfilDelete(\'' + p.perfil_nome + '\')">🗑</button>') +
+          '</span>' +
+        '</div>' +
+        '<div style="font-size:11px;color:var(--muted);margin-bottom:.35rem">' + (p.descricao || '') + '</div>' +
+        '<div>' + checks + '</div></div>';
+    });
+    el.innerHTML = h || '<span style="font-size:12px;color:var(--muted)">Nenhum perfil.</span>';
+  } catch(e) { el.innerHTML = '<span style="font-size:12px;color:var(--red)">Erro: ' + e.message + '</span>'; }
+}
+
+async function admPerfilSave(nome) {
+  const permissoes = Array.from(
+    document.querySelectorAll('#adm-perfil-list input[data-perfil="' + nome + '"]:checked'))
+    .map(c => c.dataset.rec);
+  try {
+    const d = await _admRbac('perfil_upsert', { perfil_nome: nome, permissoes });
+    showToast(d.mensagem || ('Perfil "' + nome + '" salvo.'), false);
+    admLoadPerfis();
+  } catch(e) { showToast('Erro: ' + e.message, true); }
+}
+
+async function admPerfilCreate() {
+  const nome = $('adm-perfil-nome') ? $('adm-perfil-nome').value.trim().toLowerCase() : '';
+  const desc = $('adm-perfil-desc') ? $('adm-perfil-desc').value.trim() : '';
+  const msg  = $('adm-perfil-msg');
+  if (!nome) { if (msg) { msg.textContent = 'Informe o nome.'; msg.style.color = 'var(--red)'; } return; }
+  try {
+    await _admRbac('perfil_upsert', { perfil_nome: nome, descricao: desc, permissoes: [] });
+    if (msg) { msg.textContent = 'Perfil criado — marque as permissões e salve.'; msg.style.color = 'var(--green)'; }
+    if ($('adm-perfil-nome')) $('adm-perfil-nome').value = '';
+    if ($('adm-perfil-desc')) $('adm-perfil-desc').value = '';
+    admLoadPerfis();
+  } catch(e) { if (msg) { msg.textContent = 'Erro: ' + e.message; msg.style.color = 'var(--red)'; } }
+}
+
+async function admPerfilDelete(nome) {
+  const ok = await showConfirm('Excluir o perfil "' + nome + '"?\n\nSó é possível se nenhum usuário o utiliza.', '🗑 Excluir');
+  if (!ok) return;
+  try {
+    await _admRbac('perfil_delete', { perfil_nome: nome });
+    showToast('Perfil "' + nome + '" removido.', false);
+    admLoadPerfis();
+  } catch(e) { showToast('Erro: ' + e.message, true); }
+}
+
 // Sub-navegação Admin
 function admSwitch(panel) {
-  ['config','delete','regen','versoes','tipos','agenda'].forEach(p => {
+  ['config','delete','regen','versoes','tipos','agenda','usuarios'].forEach(p => {
     const el = $('adm-panel-' + p);
     if (el) el.style.display = p === panel ? '' : 'none';
     const btn = $('adm-tab-' + p);
     if (btn) btn.classList.toggle('active', p === panel);
   });
-  if (panel === 'config')  admLoadConfig();
-  if (panel === 'versoes') admLoadVersoes();
-  if (panel === 'tipos')   admLoadJobTypes();
-  if (panel === 'agenda')  admLoadAgenda();
+  if (panel === 'config')   admLoadConfig();
+  if (panel === 'versoes')  admLoadVersoes();
+  if (panel === 'tipos')    admLoadJobTypes();
+  if (panel === 'agenda')   admLoadAgenda();
+  if (panel === 'usuarios') admLoadUsuariosPerfis();
 }
 
 //* ── Admin: Agendamento avançado (Fase 4) ─────────────────────────────────── */
@@ -5915,7 +6181,7 @@ async function admCalAdd() {
   if (datas.some(d => !/^\d{4}-\d{2}-\d{2}$/.test(d))) { if (msg) { msg.textContent = 'Use o formato AAAA-MM-DD.'; msg.style.color = 'var(--red)'; } return; }
   try {
     const r = await fetch(ORQUESTRA_API + '/agenda/calendarios', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ..._orqAuthHeader() },
       body: JSON.stringify({ calendario_nome: nome, datas, descricao: desc || null }),
     });
     const d = await r.json().catch(() => ({}));
@@ -5931,7 +6197,7 @@ async function admCalDelete(nome) {
   if (!ok) return;
   try {
     const r = await fetch(ORQUESTRA_API + '/agenda/calendarios/' + encodeURIComponent(nome), {
-      method: 'DELETE', headers: { ...(authHeader ? { Authorization: authHeader } : {}) },
+      method: 'DELETE', headers: { ..._orqAuthHeader() },
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
@@ -5976,7 +6242,7 @@ async function admBlkAdd() {
   if (!inicio || !fim || !motivo) { if (msg) { msg.textContent = 'Início, fim e motivo são obrigatórios.'; msg.style.color = 'var(--red)'; } return; }
   try {
     const r = await fetch(ORQUESTRA_API + '/agenda/blackouts', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ..._orqAuthHeader() },
       body: JSON.stringify({
         inicio: inicio.replace('T', ' '), fim: fim.replace('T', ' '),
         escopo: escopo || null, motivo }),
@@ -5994,7 +6260,7 @@ async function admBlkEncerrar(id) {
   if (!ok) return;
   try {
     const r = await fetch(ORQUESTRA_API + '/agenda/blackouts/' + id + '/encerrar', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ..._orqAuthHeader() },
       body: JSON.stringify({}),
     });
     const d = await r.json().catch(() => ({}));
@@ -6023,7 +6289,7 @@ async function admToggleFreeze() {
   if (!ok) return;
   try {
     const r = await fetch(ORQUESTRA_API + '/admin/freeze', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ..._orqAuthHeader() },
       body: JSON.stringify({ acao }),
     });
     const d = await r.json().catch(() => ({}));
@@ -6161,7 +6427,7 @@ async function admTestWebhook() {
   try {
     const r = await fetch(ORQUESTRA_API + '/admin/test-webhook', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+      headers: { 'Content-Type': 'application/json', ..._orqAuthHeader() },
       body: JSON.stringify({})
     });
     const raw = await r.text();
@@ -6201,7 +6467,7 @@ async function admLoadConfig() {
     // Lista completa (inclui chaves sensíveis como teams_webhook_url) — só via /admin
     const r = await fetch(ORQUESTRA_API + '/admin', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+      headers: { 'Content-Type': 'application/json', ..._orqAuthHeader() },
       body: JSON.stringify({ action: 'config_list' })
     });
     if (!r.ok) { if (st) st.textContent = 'Erro ao carregar: ' + r.status; return; }
@@ -6386,7 +6652,7 @@ async function _admDeleteWizardConfirm() {
 // ── Helper genérico para ações admin via DAG ────────────────────
 async function _admAction(conf) {
   if (!authHeader) { showToast('Faça login primeiro.', true); return false; }
-  conf.requested_by = window.__currentUser || ADMIN_USER;
+  conf.requested_by = window.__currentUser || '';
   const st = conf.action.startsWith('config') ? $('adm-config-status') : $('adm-delete-status');
   if (st) st.textContent = 'Processando...';
   try {
@@ -6533,7 +6799,7 @@ async function _deleteDagFromAirflow(pipelineName) {
       body: JSON.stringify({
         action: 'dag_file_delete',
         pipeline_name: pipelineName,
-        requested_by: window.__currentUser || ADMIN_USER,
+        requested_by: window.__currentUser || '',
       }),
     });
     console.log('[ORQ] Arquivo DAG removido via API para "' + pipelineName + '"');
@@ -6598,7 +6864,7 @@ async function admRegenAllDags() {
       body: JSON.stringify({ dag_run_id: runId2, conf: {
         force_all: true,
         filter_project: project,
-        requested_by: window.__currentUser || ADMIN_USER,
+        requested_by: window.__currentUser || '',
       }}),
     });
     if (!r2.ok) {
@@ -6667,63 +6933,47 @@ async function entrar() {
   const p = $('login_pass').value;
   if (!u) { m.textContent = 'Informe o usuário'; m.className = 'msg erro'; return; }
   if (!p) { m.textContent = 'Informe a senha'; m.className = 'msg erro'; return; }
-  const hdr = 'Basic ' + btoa(u + ':' + p);
   $('login_btn_txt').textContent = 'Validando...';
   $('login_btn').disabled = true;
   try {
-    const r = await fetch('/api/v1/dags?limit=1', { headers: { 'Authorization': hdr } });
+    // Login na API ORQUESTRA: valida no Airflow, registra o usuário no banco
+    // (dados do Airflow no 1º acesso) e devolve token de sessão + perfil
+    const r = await fetch(ORQUESTRA_API + '/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ usuario: u, senha: p }),
+    });
+    const d = await r.json().catch(() => ({}));
     if (r.status === 401) {
       m.textContent = 'Usuário ou senha inválidos. Verifique e tente novamente.';
       m.className = 'msg erro';
       $('login_pass').value = ''; $('login_pass').focus(); return;
     }
     if (r.status === 403) {
-      m.textContent = 'Acesso negado. Usuário sem permissão no Airflow.';
+      m.textContent = d.detail || 'Acesso negado.';
       m.className = 'msg erro'; return;
     }
     if (!r.ok) {
-      m.textContent = 'Erro HTTP ' + r.status + '. Contate o administrador.';
+      m.textContent = (d.detail || ('Erro HTTP ' + r.status)) + '. Contate o administrador.';
       m.className = 'msg erro'; return;
     }
-    authHeader = hdr;
-    $('who').textContent = u;  // placeholder — atualizado com primeiro nome abaixo
+    __orqToken = d.token;
+    _saveSession(d.token, d.expira_em_horas);
+    _applyUserInfo(d.usuario || {});
+    // Basic em memória apenas nesta aba, para chamadas diretas ao Airflow
+    authHeader = 'Basic ' + btoa(u + ':' + p);
     $('loginScreen').classList.add('hidden');
     $('appScreen').classList.remove('hidden');
     $('login_pass').value = '';
     const cw = $('caps-warn'); if (cw) cw.style.display = 'none';
-    // Buscar primeiro nome com as credenciais do usuário logado
-    // (senhaCopy garante que usamos a senha do usuário, não do serviço)
-    fetchUserFirstName().then(firstName => {
-      if (firstName) $('who').textContent = firstName;
-    }).catch(() => {});
-    window.__currentUser = u;
-    window.__userPerfil  = 'consulta';  // default até o GET /me retornar
-    // Busca perfil do banco e detecta roles em paralelo
-    _applyAdminVisibility();   // aplica imediatamente com role default
-    _fetchUserPerfil().then(() => _applyAdminVisibility());  // reaplica com perfil real
-    _initSystemAuth().then(() => _detectViewerRole()).then(() => {
-      _applyAdminVisibility(); // reaplica após detecção de viewer
-      // Re-renderiza grids que já estejam carregados caso viewer-mode foi ativado
-      if (window.__isViewer) {
-        try { if (window.__lastQueryPayload) renderQueryTable(window.__lastQueryPayload); } catch(e) {}
-        try { if (window.__lastJobsPayload)  renderJobsTable(window.__lastJobsPayload);  } catch(e) {}
-      }
-    });
-    // Carregar config do banco (S5/S2 — assíncrono, não bloqueia)
-    loadAppConfig().then(() => {
-      _startDashAutoRefresh();
-      _startFailureBadgeTimer();
-      // Atualizar hint de intervalo no dashboard
-      const hint = $('dash-refresh-interval-hint');
-      const secs = window.__appConfig.dashboard_refresh_interval_sec || 60;
-      if (hint) hint.textContent = secs >= 60 ? Math.round(secs/60) + 'min' : secs + 's';
-    });
-    // Carregar lista dinâmica de projetos no formulário de pipeline
-    try { loadProjectList(); } catch(e) {}
-    // Tela inicial: Dashboard
-    try { goDashboard(); } catch(e) {}
+    // Nome ainda não veio do banco (1º login sem permissão no /users do Airflow)?
+    if (!(d.usuario || {}).primeiro_nome) {
+      fetchUserFirstName().then(firstName => {
+        if (firstName) $('who').textContent = firstName;
+      }).catch(() => {});
+    }
+    _postLoginInit();
   } catch(e) {
-    m.textContent = 'Não foi possível conectar ao Airflow. Verifique a rede.';
+    m.textContent = 'Não foi possível conectar ao servidor. Verifique a rede.';
     m.className = 'msg erro';
   } finally {
     $('login_btn_txt').textContent = 'ENTRAR';
@@ -6731,9 +6981,41 @@ async function entrar() {
   }
 }
 
+/** Inicialização comum pós-login (login manual ou sessão restaurada no F5). */
+function _postLoginInit() {
+  _applyPermVisibility();
+  _applyAdminVisibility();
+  _initSystemAuth().then(() => _detectViewerRole()).then(() => {
+    _applyAdminVisibility(); // reaplica após detecção de viewer
+    if (window.__isViewer) {
+      try { if (window.__lastQueryPayload) renderQueryTable(window.__lastQueryPayload); } catch(e) {}
+      try { if (window.__lastJobsPayload)  renderJobsTable(window.__lastJobsPayload);  } catch(e) {}
+    }
+  });
+  // Carregar config do banco (assíncrono, não bloqueia)
+  loadAppConfig().then(() => {
+    _startDashAutoRefresh();
+    _startFailureBadgeTimer();
+    const hint = $('dash-refresh-interval-hint');
+    const secs = window.__appConfig.dashboard_refresh_interval_sec || 60;
+    if (hint) hint.textContent = secs >= 60 ? Math.round(secs/60) + 'min' : secs + 's';
+  });
+  try { loadProjectList(); } catch(e) {}
+  try { goDashboard(); } catch(e) {}
+}
+
 function sair() {
+  // Revoga o token de sessão no servidor (best-effort)
+  if (__orqToken) {
+    try {
+      fetch(ORQUESTRA_API + '/auth/logout', {
+        method: 'POST', headers: { Authorization: 'Bearer ' + __orqToken } });
+    } catch(e) {}
+  }
+  _clearSession();
   authHeader = null;
   window.__userPerfil = 'consulta';
+  window.__userPerms  = [];
   $('appScreen').classList.add('hidden');
   $('loginScreen').classList.remove('hidden');
   $('login_msg').textContent = '';
@@ -6741,6 +7023,9 @@ function sair() {
   $('login_pass').value = '';
   setTimeout(() => { try { $('login_user').focus(); } catch(e){} }, 100);
 }
+
+// ── Boot: tenta restaurar a sessão salva (F5 não desloga mais) ───────────────
+window.addEventListener('DOMContentLoaded', () => { restoreSession(); });
 
 function checkCapsLock(e) {
   const warn = $('caps-warn');
@@ -6936,7 +7221,7 @@ function closeLineageModal() {
       if (vazio && !confirm('Remover TODA a lineage do job "' + j0.job_name + '"?')) return;
       fetch(ORQUESTRA_API + '/lineage/job', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ..._orqAuthHeader() },
         body: JSON.stringify({
           pipeline_name: ctx.pipeline, job_name: j0.job_name,
           origens: j0.origens, destinos: j0.destinos, transformacoes: j0.transformacoes,
@@ -7309,7 +7594,7 @@ async function _orqPost(url, body, label, btnId, btnTxtId, btnTxt) {
   try {
     const r = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+      headers: { 'Content-Type': 'application/json', ..._orqAuthHeader() },
       body: JSON.stringify(body),
     });
     const data = await r.json().catch(() => ({}));
@@ -10050,7 +10335,7 @@ async function seqImportAnalyze() {
     if (msg) { msg.textContent = 'Analisando sequence...'; msg.className = 'msg'; }
     const r = await fetch(ORQUESTRA_API + '/sequence/parse', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+      headers: { 'Content-Type': 'application/json', ..._orqAuthHeader() },
       body: JSON.stringify({
         project_name: project,
         seq_name:     seqName,
@@ -10190,7 +10475,7 @@ async function approveSeqImport() {
   try {
     const r = await fetch(ORQUESTRA_API + '/sequence/approve', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
+      headers: { 'Content-Type': 'application/json', ..._orqAuthHeader() },
       body: JSON.stringify({
         import_id:              _seqImportId,
         reviewed_by:            reviewedBy,
@@ -11050,7 +11335,7 @@ async function dsmTrigger() {
   try {
     const r = await fetch('/orquestra/datastage/monitor', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
+      headers: {'Content-Type':'application/json', ..._orqAuthHeader()},
       body: JSON.stringify({ project, job_name: job, poll_interval: interval }),
     });
     const data = await r.json();

@@ -14,7 +14,7 @@
 | **Desenvolvedor ETL** | Equipe de engenharia de dados | Tudo do Operador + cadastrar/editar pipelines, jobs, lineage, agendamentos, importar sequences DSX |
 | **Administrador** | Responsável pela plataforma | Tudo + aba Admin: configurações, tipos de job, regenerar DAGs, excluir pipelines, calendários/blackout |
 
-> **Nota técnica (versão atual):** o sistema hoje distingue tecnicamente apenas *Administrador* vs. *demais usuários*. Os perfis Consulta/Operador/Desenvolvedor são uma convenção de uso até a implantação do RBAC (ver roadmap em `AUDITORIA_TECNICA.md`). Este manual já está organizado pelos quatro perfis para não precisar ser reescrito.
+> **Como funciona:** todo usuário entra automaticamente no 1º login com perfil **consulta**. O administrador promove usuários e ajusta o que cada perfil acessa (telas e ações) em **Admin → Usuários & Perfis** — sem mexer no banco. A sessão sobrevive ao F5 e expira após o período configurado (padrão 12h); a senha nunca é armazenada, apenas um token de sessão revogável.
 
 ---
 
@@ -126,7 +126,12 @@ CRUD dos tipos de job aceitos no cadastro (nome, descrição, lineage habilitado
 - **Calendários** (ex.: feriados nacionais/ANBIMA): cadastre datas; pipelines vinculados não rodam nessas datas.
 - **Blackout**: janelas início/fim em que execuções agendadas são suprimidas globalmente ou por pipeline.
 
-### 4.5 Rotina de deploy (servidor air-gapped)
+### 4.5 Usuários & Perfis (Admin → 👤 Usuários & Perfis)
+- **Usuários**: lista quem já acessou (matrícula, nome — preenchido automaticamente com os dados do Airflow no 1º login —, perfil, último login). Altere o perfil pelo formulário; mudar o perfil derruba as sessões ativas do usuário (ele só precisa logar de novo). Remover um usuário faz com que ele volte ao perfil `consulta` se logar novamente.
+- **Perfis**: marque por checkbox quais telas (Dashboard, Pipelines, Jobs, Logs, DS Monitor, Governança, Malha, Admin) e ações (Executar, Cadastrar/Editar, Administração) cada perfil possui. Crie perfis novos se precisar (ex.: `auditoria`). Os perfis `admin` e `consulta` são protegidos contra exclusão, e o `admin` nunca perde a permissão de administração.
+- O TTL da sessão é configurável pela chave `session_ttl_hours` em Admin → Configurações.
+
+### 4.6 Rotina de deploy (servidor air-gapped)
 ```bash
 cd /opt/airflow && git pull
 # se houver migration nova:
@@ -151,4 +156,6 @@ Lembretes:
 
 **Execução manual rodou em feriado.** Comportamento esperado: execuções manuais ignoram calendário/blackout/horários.
 
-**Não vejo a aba Admin.** Seu usuário não é administrador — solicite ao responsável pela plataforma.
+**Não vejo a aba Admin (ou outra aba).** Seu perfil não tem acesso a essa tela — solicite ao administrador em Admin → Usuários & Perfis.
+
+**Apertei F5 e continuei logado — é normal?** Sim. A sessão usa um token salvo no navegador (a senha nunca fica armazenada) e expira automaticamente após o período configurado (padrão 12h). Para encerrar antes, use Sair.
