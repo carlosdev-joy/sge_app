@@ -91,18 +91,47 @@ echo "[4/4] Verificando migrações SQL..."
 
 if [ "$SQL_CHANGED" = "true" ]; then
   echo ""
-  echo "  ╔══════════════════════════════════════════════════════╗"
-  echo "  ║  ATENÇÃO: Migrações SQL detectadas — execute manualmente  ║"
-  echo "  ╚══════════════════════════════════════════════════════╝"
+  echo "  Migrações SQL detectadas. Tentando aplicar via sql/migrate.py..."
   echo ""
-  echo "  Arquivos novos em sql/migrations/:"
-  git diff --name-only "$BEFORE" "$AFTER" | grep "^sql/migrations/" | sed 's/^/    /'
-  echo ""
-  echo "  Execute no SQL Server Management Studio ou sqlcmd:"
-  echo ""
-  git diff --name-only "$BEFORE" "$AFTER" | grep "^sql/migrations/" | while read f; do
-    echo "    sqlcmd -S <SERVIDOR> -d <BANCO> -i $REPO_DIR/$f"
-  done
+
+  # Tenta usar migrate.py (requer MSSQL_CONN_STR no ambiente ou no .env)
+  if [ -f "$REPO_DIR/sql/migrate.py" ] && python3 -c "import pyodbc" 2>/dev/null; then
+    if python3 "$REPO_DIR/sql/migrate.py" --status 2>/dev/null | grep -q "PENDENTE"; then
+      echo "  Aplicando migrations pendentes..."
+      if python3 "$REPO_DIR/sql/migrate.py"; then
+        echo "  ✓ Migrations aplicadas com sucesso."
+      else
+        echo ""
+        echo "  ╔══════════════════════════════════════════════════════╗"
+        echo "  ║  ERRO ao aplicar migrations — execute manualmente    ║"
+        echo "  ╚══════════════════════════════════════════════════════╝"
+        echo ""
+        echo "  Comando alternativo:"
+        echo "    MSSQL_CONN_STR=\"...\" python3 $REPO_DIR/sql/migrate.py"
+        echo ""
+        echo "  Ou via sqlcmd (arquivos novos detectados):"
+        git diff --name-only "$BEFORE" "$AFTER" | grep "^sql/migrations/" | while read f; do
+          echo "    sqlcmd -S <SERVIDOR> -d <BANCO> -i $REPO_DIR/$f"
+        done
+      fi
+    else
+      echo "  ✓ Nenhuma migration pendente (todas já aplicadas)."
+    fi
+  else
+    # Fallback: instrução manual
+    echo "  ╔══════════════════════════════════════════════════════╗"
+    echo "  ║  Aplique as migrations manualmente (pyodbc ausente)  ║"
+    echo "  ╚══════════════════════════════════════════════════════╝"
+    echo ""
+    echo "  Opção 1 — migrate.py (recomendado, offline):"
+    echo "    MSSQL_CONN_STR=\"DSN=...\" python3 $REPO_DIR/sql/migrate.py"
+    echo ""
+    echo "  Opção 2 — sqlcmd por arquivo:"
+    git diff --name-only "$BEFORE" "$AFTER" | grep "^sql/migrations/" | while read f; do
+      echo "    sqlcmd -S <SERVIDOR> -d <BANCO> -i $REPO_DIR/$f"
+    done
+    echo ""
+  fi
   echo ""
 else
   echo "      Nenhuma migration nova."
