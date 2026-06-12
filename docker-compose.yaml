@@ -131,11 +131,9 @@ services:
     container_name: airflow-ui
     ports:
       - "${UI_PORT:-80}:80"
-      - "443:443"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}/ui:/usr/share/nginx/html
       - ${AIRFLOW_PROJ_DIR:-.}/ui/nginx.conf:/etc/nginx/nginx.conf
-      - ${AIRFLOW_PROJ_DIR:-.}/certs:/etc/nginx/certs:ro
     restart: always
 
   orquestra-api:
@@ -152,7 +150,7 @@ services:
       DAGS_FOLDER:      "/opt/airflow/dags"
       MSSQL_CONN_STR:   "${MSSQL_CONN_STR:-}"
       DSX_BASE_DIR:     "/opt/airflow/dsx"
-      CORS_ORIGINS:     "${CORS_ORIGINS:-https://localhost}"
+      CORS_ORIGINS:     "${CORS_ORIGINS:-http://vmlnxprd083}"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags:ro
       - ${AIRFLOW_PROJ_DIR:-.}/dsx:/opt/airflow/dsx:ro
