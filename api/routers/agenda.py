@@ -6,8 +6,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from api.db import get_db_conn
-from api.deps import get_admin_user
+from db import get_db_conn
+from deps import get_admin_user
 
 log = logging.getLogger("orquestra-api")
 

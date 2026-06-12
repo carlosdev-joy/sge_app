@@ -2,7 +2,7 @@
 api/db.py — Utilitários de conexão com o SQL Server.
 
 Uso:
-    from api.db import get_db_conn, managed_conn
+    from db import get_db_conn, managed_conn
 
     # one-shot (fecha manualmente):
     conn = get_db_conn()

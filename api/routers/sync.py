@@ -8,8 +8,8 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
-from api.db import get_db_conn
-from api.deps import (
+from db import get_db_conn
+from deps import (
     AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
     PERM_EXECUTAR,
     require_perm,

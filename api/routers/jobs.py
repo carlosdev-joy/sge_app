@@ -6,8 +6,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from api.db import get_db_conn
-from api.deps import (
+from db import get_db_conn
+from deps import (
     PERM_EDITAR,
     get_current_user, require_perm,
 )

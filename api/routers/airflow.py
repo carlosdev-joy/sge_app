@@ -6,7 +6,7 @@ import logging
 import httpx
 from fastapi import APIRouter, HTTPException
 
-from api.deps import (
+from deps import (
     AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
 )
 

@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
-from api.db import get_db_conn
+from db import get_db_conn
 
 log = logging.getLogger("orquestra-api")
 

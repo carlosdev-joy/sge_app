@@ -7,8 +7,8 @@ import os
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from api.db import get_db_conn
-from api.deps import (
+from db import get_db_conn
+from deps import (
     PERM_ADMIN,
     get_current_user, get_admin_user,
 )

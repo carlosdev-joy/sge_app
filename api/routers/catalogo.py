@@ -6,7 +6,7 @@ import logging
 
 from fastapi import APIRouter, Body, HTTPException
 
-from api.db import get_db_conn
+from db import get_db_conn
 
 log = logging.getLogger("orquestra-api")
 

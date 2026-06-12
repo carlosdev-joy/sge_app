@@ -9,8 +9,8 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from api.db import get_db_conn
-from api.deps import (
+from db import get_db_conn
+from deps import (
     AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
     PERM_EXECUTAR,
     get_current_user, require_perm,

@@ -7,8 +7,8 @@ import secrets
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
 
-from api.db import get_db_conn
-from api.deps import (
+from db import get_db_conn
+from deps import (
     AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
     PERM_ADMIN, PERM_EDITAR, PERM_EXECUTAR,
     airflow_check_credentials, airflow_user_details,

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from fastapi import Depends, Header, HTTPException
 
-from api.db import get_db_conn
+from db import get_db_conn
 
 # ── Configuração via env ───────────────────────────────────────────────────────
 AIRFLOW_URL      = os.getenv("AIRFLOW_URL",      "http://airflow-webserver:8080")
