@@ -6391,11 +6391,48 @@ function _ensureModal() {
   const d = document.createElement('div');
   d.id = 'modal-lineage-b';
   d.className = 'modal-backdrop';
+  // Modal de formulário: alinhado ao topo (não centralizado), cresce com o conteúdo,
+  // scroll interno no body para não ultrapassar a viewport.
   d.innerHTML = `
-    <div class="modal-box" style="max-width:480px;text-align:left">
-      <div class="modal-title" id="mlb-title" style="margin-bottom:1rem">Lineage do job</div>
-      <div id="mlb-body"></div>
+    <div style="
+      background:var(--card);
+      border:1px solid var(--border);
+      border-radius:18px;
+      width:100%;
+      max-width:600px;
+      max-height:calc(100vh - 2rem);
+      display:flex;
+      flex-direction:column;
+      box-shadow:var(--shadow-modal);
+      animation:fade .2s ease-out;
+      overflow:hidden;
+    ">
+      <!-- cabeçalho fixo -->
+      <div style="
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        padding:.85rem 1.25rem;
+        border-bottom:1px solid var(--border);
+        flex-shrink:0;
+      ">
+        <span class="modal-title" id="mlb-title" style="margin:0;font-size:1rem">Lineage do job</span>
+        <button onclick="closeLineageModal()" style="
+          background:none;border:none;cursor:pointer;
+          color:var(--muted);font-size:1.3rem;line-height:1;
+          padding:2px 6px;border-radius:6px;
+        " title="Fechar">×</button>
+      </div>
+      <!-- corpo com scroll -->
+      <div id="mlb-body" style="
+        overflow-y:auto;
+        padding:1rem 1.25rem 1.25rem;
+        flex:1;
+        min-height:0;
+      "></div>
     </div>`;
+  d.style.alignItems = 'flex-start';
+  d.style.paddingTop = '3rem';
   d.addEventListener('click', e => { if (e.target === d) closeLineageModal(); });
   document.body.appendChild(d);
 }
@@ -6499,24 +6536,26 @@ function renderModalBody() {
     const job = _mlbRowsToJob(j);
     const temAlgo = job.origens.length || job.transformacoes.length || job.destinos.length;
     $('mlb-body').innerHTML =
+      '<div style="overflow-x:auto;padding-bottom:.25rem">' +
       (temAlgo
         ? _lineageJobDiagramHtml(job)
         : '<div class="empty-state"><span class="es-icon">◎</span><p class="es-title">Sem lineage para visualizar</p><p class="es-sub">Adicione origens e destinos no modo de edição.</p></div>') +
-      `<div style="display:flex;gap:8px;margin-top:1rem">
+      '</div>' +
+      `<div style="display:flex;gap:8px;margin-top:1rem;padding-top:.75rem;border-top:1px solid var(--border)">
         <button class="btn-ghost" onclick="_mlbToggleView()" style="flex:1">✎ Voltar à edição</button>
       </div>`;
     return;
   }
 
   const linRows = (arr, dir) => arr.map((o, i) => `
-    <div style="display:grid;grid-template-columns:110px minmax(0,1fr) 28px;gap:6px;align-items:center;margin-bottom:5px">
-      <select style="font-size:13px" onchange="updateLinB(${activeJobModal},'${dir}',${i},'t',this.value)">
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:5px">
+      <select style="font-size:13px;flex:0 0 120px" onchange="updateLinB(${activeJobModal},'${dir}',${i},'t',this.value)">
         ${(OBJ_TYPES_B.includes(o.t) ? OBJ_TYPES_B : [o.t].concat(OBJ_TYPES_B)).map(t => `<option value="${t}" ${o.t===t?'selected':''}>${t}</option>`).join('')}
       </select>
-      <input type="text" style="font-size:13px" placeholder="ex: dbo.tabela" value="${o.n}"
+      <input type="text" style="font-size:13px;flex:1;min-width:0" placeholder="ex: dbo.tabela" value="${o.n}"
         oninput="updateLinB(${activeJobModal},'${dir}',${i},'n',this.value)" />
-      <button class="rm-btn" style="width:28px;height:28px;font-size:12px"
-        onclick="rmLinB(${activeJobModal},'${dir}',${i})" aria-label="Remover">x</button>
+      <button class="rm-btn" style="flex:0 0 28px;width:28px;height:28px;font-size:12px"
+        onclick="rmLinB(${activeJobModal},'${dir}',${i})" aria-label="Remover">×</button>
     </div>`).join('');
   const canDSX = (j.type || '') === 'datastage';
   $('mlb-body').innerHTML = `
