@@ -11,3 +11,25 @@ docker compose restart ui-nginx
 
 docker compose logs orquestra-api --tail=20
 curl -s http://localhost/orquestra/health
+
+
+
+[root@vmlnxprd083 airflow]# docker compose logs orquestra-api --tail=20
+orquestra-api  | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+orquestra-api  | INFO:     Started parent process [1]
+orquestra-api  | INFO:     Started server process [8]
+orquestra-api  | INFO:     Waiting for application startup.
+orquestra-api  | INFO:     Started server process [9]
+orquestra-api  | INFO:     Waiting for application startup.
+orquestra-api  | 2026-06-12 22:34:32,278 [WARNING] CORS_ORIGINS='*' — recomendado restringir à origem do nginx via env CORS_ORIGINS
+orquestra-api  | 2026-06-12 22:34:32,279 [INFO] ORQUESTRA API v0.3.0 iniciando
+orquestra-api  | INFO:     Application startup complete.
+orquestra-api  | 2026-06-12 22:34:32,280 [WARNING] CORS_ORIGINS='*' — recomendado restringir à origem do nginx via env CORS_ORIGINS
+orquestra-api  | 2026-06-12 22:34:32,280 [INFO] ORQUESTRA API v0.3.0 iniciando
+orquestra-api  | INFO:     Application startup complete.
+orquestra-api  | INFO:     172.18.0.8:38810 - "GET /dashboard?date_ref=2026-06-12 HTTP/1.1" 200 OK
+orquestra-api  | INFO:     172.18.0.8:38826 - "GET /dashboard/gantt?date_ref=2026-06-12 HTTP/1.1" 200 OK
+
+
+[root@vmlnxprd083 airflow]# curl -s http://localhost/orquestra/health
+{"status":"ok","version":"0.3.0"}[root@vmlnxprd083 airflow]#
