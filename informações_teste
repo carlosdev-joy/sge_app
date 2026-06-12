@@ -12,36 +12,13 @@ docker compose restart ui-nginx
 docker compose logs orquestra-api --tail=20
 curl -s http://localhost/orquestra/health
 
-#!/bin/bash
-set -e
+cp /opt/git/deploy.sh /opt/git/deploy.sh.bak   # backup do antigo
+curl -fsSL https://raw.githubusercontent.com/carlosdev-joy/sge_app/main/scripts/deploy.sh \
+  -o /opt/git/deploy.sh
+# OU copie manualmente o conteúdo de scripts/deploy.sh
 
-REPO_URL="https://github.com/carlosdev-joy/sge_app.git"
-BRANCH="main"
-TMP_DIR="/opt/git/checkout_tmp"
-AIRFLOW_DIR="/opt/airflow"
+curl -s http://localhost/orquestra/health
+# deve retornar {"status":"ok"}
 
-echo "[DEPLOY] Iniciando deploy — $(date '+%Y-%m-%d %H:%M:%S')"
-
-rm -rf "$TMP_DIR"
-git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$TMP_DIR"
-
-COMMIT=$(git -C "$TMP_DIR" log -1 --format="%h %s (%ai)")
-echo "[DEPLOY] Commit: $COMMIT"
-
-cp "$TMP_DIR/ui/index.html" "$AIRFLOW_DIR/ui/index.html"
-cp "$TMP_DIR/ui/nginx.conf" "$AIRFLOW_DIR/ui/nginx.conf"
-
-rsync -av "$TMP_DIR/dags/" "$AIRFLOW_DIR/dags/"
-chown -R airflow:airflow "$AIRFLOW_DIR/dags/"
-chmod -R 777 "$AIRFLOW_DIR/dags/"
-
-cp "$TMP_DIR/docker-compose.yaml" "$AIRFLOW_DIR/docker-compose.yaml"
-
-rsync -av "$TMP_DIR/api/" "$AIRFLOW_DIR/api/"
-
-docker restart airflow-ui
-
-rm -rf "$TMP_DIR"
-
-echo "[DEPLOY] ✓ Concluído em $(date '+%Y-%m-%d %H:%M:%S')"
-echo "[DEPLOY] ✓ Deploy concluído com sucesso"
+curl -I http://localhost/js/app.js
+# deve retornar Content-Type: application/javascript (não text/html)
