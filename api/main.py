@@ -645,6 +645,61 @@ def get_lineage(pipeline_name: str):
     return {"pipeline_name": pipeline_name, "jobs": jobs}
 
 
+@app.put("/lineage/job", tags=["lineage"])
+def put_lineage_job(body: dict = Body(default={})):
+    """Substitui a lineage de um job: remove tudo e regrava o que veio no payload.
+
+    Diferente da DAG etl_pipeline_job_register (upsert puro, nunca apaga),
+    este endpoint permite editar e excluir entradas erradas pela UI.
+    Body: { pipeline_name, job_name, origens: [], destinos: [], transformacoes: [] }
+    """
+    pipeline_name = (body.get("pipeline_name") or "").strip()
+    job_name      = (body.get("job_name") or "").strip()
+    if not pipeline_name or not job_name:
+        raise HTTPException(status_code=422, detail="pipeline_name e job_name são obrigatórios")
+
+    grupos = [("origem", body.get("origens") or []),
+              ("transformacao", body.get("transformacoes") or []),
+              ("destino", body.get("destinos") or [])]
+
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM dbo.etl_job_lineage WHERE pipeline_name = ? AND job_name = ?",
+            [pipeline_name, job_name])
+        removidos = cur.rowcount
+
+        inseridos = 0
+        for direction, objects in grupos:
+            for obj in objects:
+                obj_name = (obj.get("object_name") or "").strip()
+                if not obj_name:
+                    continue
+                cur.execute(
+                    """INSERT INTO dbo.etl_job_lineage
+                       (pipeline_name, job_name, direction, object_type, object_name,
+                        stage_name, stage_type_raw, database_name, sql_expression,
+                        file_path, dsx_source_file, extraction_method,
+                        extracted_at, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), GETDATE())""",
+                    [pipeline_name, job_name, direction,
+                     (obj.get("object_type") or "Tabela").strip(), obj_name,
+                     obj.get("stage_name"), obj.get("stage_type_raw"),
+                     obj.get("database_name"), obj.get("sql_expression"),
+                     obj.get("file_path"), obj.get("dsx_source_file"),
+                     obj.get("extraction_method") or "manual"])
+                inseridos += 1
+
+        conn.commit()
+        cur.close(); conn.close()
+        return {"sucesso": True, "pipeline_name": pipeline_name, "job_name": job_name,
+                "removidos": removidos, "inseridos": inseridos}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Catálogo ──────────────────────────────────────────────────────────────────
 
 _ASSETS_CTE = """
@@ -3110,18 +3165,24 @@ def get_duracao_media(pipeline: str = Query(...), limit: int = Query(30, ge=5, l
     """Retorna duração média (P50) por job_name para um pipeline — usado para desvio de duração."""
     try:
         conn = get_db_conn(); cur = conn.cursor()
+        # PERCENTILE_CONT é função de janela — não pode coexistir com GROUP BY
+        # no mesmo nível; calculamos a janela em subquery e agregamos por fora.
         cur.execute(f"""
             SELECT job_name,
                    AVG(CAST(duration_seconds AS FLOAT)) AS avg_sec,
-                   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_seconds)
-                       OVER (PARTITION BY job_name) AS p50_sec,
+                   MAX(p50_sec) AS p50_sec,
                    COUNT(*) AS execucoes
             FROM (
-                SELECT TOP {limit * 10} job_name, duration_seconds
-                FROM dbo.etl_job_execution
-                WHERE pipeline = ? AND status IN ('SUCCESS','WARNING')
-                  AND duration_seconds IS NOT NULL AND duration_seconds > 0
-                ORDER BY start_time DESC
+                SELECT job_name, duration_seconds,
+                       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_seconds)
+                           OVER (PARTITION BY job_name) AS p50_sec
+                FROM (
+                    SELECT TOP {limit * 10} job_name, duration_seconds
+                    FROM dbo.etl_job_execution
+                    WHERE pipeline = ? AND status IN ('SUCCESS','WARNING')
+                      AND duration_seconds IS NOT NULL AND duration_seconds > 0
+                    ORDER BY start_time DESC
+                ) base
             ) t
             GROUP BY job_name
         """, [pipeline])

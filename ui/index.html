@@ -2551,7 +2551,7 @@ async function gerarDAG(idx) {
 function _drillDownFalhas() {
   const falhaCount = parseInt(($('kpi-falha') || {}).textContent || '0', 10);
   if (!falhaCount) { showToast('Sem falhas hoje.', false); return; }
-  navigate('logs');
+  switchPage('page-logs', $('tab-logs'));
   const today = new Date().toISOString().slice(0, 10);
   if ($('lf-status'))    $('lf-status').value   = 'FAILED';
   if ($('lf-date-from')) $('lf-date-from').value = today;
@@ -4168,7 +4168,18 @@ function renderLineagePipeline() {
   vis.innerHTML = '<div class="lineage-svg-wrap" style="overflow-x:auto"><div class="pipeline-flow">' + stepsHtml + '</div></div>';
 }
 
-function openJobLineageFromTable(idx) {
+function _linToRowB(o) {
+  // Converte item do GET /lineage para o formato de linha do modal ({t, n, ...extras})
+  return {
+    t: o.object_type || 'Tabela', n: o.object_name || '',
+    stage_name: o.stage_name || null, stage_type_raw: o.stage_type_raw || null,
+    database_name: o.database_name || null, sql_expression: o.sql_expression || null,
+    file_path: o.file_path || null, dsx_source_file: o.dsx_source_file || null,
+    extracted_at: o.extracted_at || null, extraction_method: o.extraction_method || null,
+  };
+}
+
+async function openJobLineageFromTable(idx) {
   const list = window.__jobs || [];
   const j = list[idx];
   if (!j) return;
@@ -4192,9 +4203,30 @@ function openJobLineageFromTable(idx) {
   // project_name vem do resultado da DAG etl_pipeline_job_query (campo adicionado no Fix do backend)
   // Fallback: tenta inferir do nome do pipeline para retrocompatibilidade
   const project = j.project_name || _inferProjectFromPipeline(j.pipeline_name) || null;
-  window.__lineageTableCtx = { pipeline: j.pipeline_name, project: project };
+  window.__lineageTableCtx = { pipeline: j.pipeline_name, project: project, source: 'jobEdit' };
 
   openLineageModal(jobsBdata[0].id);
+
+  // Carrega a lineage já cadastrada no banco para permitir editar/excluir
+  try {
+    const r = await fetch(ORQUESTRA_API + '/lineage?pipeline_name=' + encodeURIComponent(j.pipeline_name));
+    if (r.ok) {
+      const data = await r.json();
+      const dbJob = ((data && data.jobs) || []).find(x => x.job_name === j.job_name);
+      const jb = jobsBdata[0];
+      if (dbJob && jb) {
+        if ((dbJob.origens  || []).length) jb.origens  = dbJob.origens.map(_linToRowB);
+        if ((dbJob.destinos || []).length) jb.destinos = dbJob.destinos.map(_linToRowB);
+        jb.transformacoes = (dbJob.transformacoes || []).map(_linToRowB);
+        renderModalBody();
+      }
+    }
+  } catch(_) { /* sem lineage prévia — segue com linhas vazias */ }
+
+  // Snapshot para detectar se houve alteração ao fechar
+  if (window.__lineageTableCtx) {
+    window.__lineageTableCtx.orig = JSON.stringify(collectJobRows());
+  }
 }
 
 /* ══ NOME DO USUÁRIO (intranet CVP) ══ */
@@ -6381,6 +6413,26 @@ function closeLineageModal() {
     // Sem job válido ou pipeline: apenas fecha
     if (!j0 || !ctx.pipeline) return;
 
+    // Edição de lineage de job já cadastrado: substitui no banco (permite editar/excluir)
+    if (ctx.source === 'jobEdit') {
+      if (ctx.orig && ctx.orig === JSON.stringify(jobs)) return; // nada mudou
+      const vazio = !(j0.origens || []).length && !(j0.destinos || []).length && !(j0.transformacoes || []).length;
+      if (vazio && !confirm('Remover TODA a lineage do job "' + j0.job_name + '"?')) return;
+      fetch(ORQUESTRA_API + '/lineage/job', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pipeline_name: ctx.pipeline, job_name: j0.job_name,
+          origens: j0.origens, destinos: j0.destinos, transformacoes: j0.transformacoes,
+        }),
+      }).then(async r => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+        showToast('Lineage de "' + j0.job_name + '" atualizada (' + d.inseridos + ' objeto(s)).', false);
+      }).catch(e => showToast('Erro ao salvar lineage: ' + e.message, true));
+      return;
+    }
+
     const temOrigem  = j0.origens  && j0.origens.length  > 0;
     const temDestino = j0.destinos && j0.destinos.length > 0;
 
@@ -6414,7 +6466,7 @@ function renderModalBody() {
   const linRows = (arr, dir) => arr.map((o, i) => `
     <div style="display:grid;grid-template-columns:110px minmax(0,1fr) 28px;gap:6px;align-items:center;margin-bottom:5px">
       <select style="font-size:13px" onchange="updateLinB(${activeJobModal},'${dir}',${i},'t',this.value)">
-        ${OBJ_TYPES_B.map(t => `<option value="${t}" ${o.t===t?'selected':''}>${t}</option>`).join('')}
+        ${(OBJ_TYPES_B.includes(o.t) ? OBJ_TYPES_B : [o.t].concat(OBJ_TYPES_B)).map(t => `<option value="${t}" ${o.t===t?'selected':''}>${t}</option>`).join('')}
       </select>
       <input type="text" style="font-size:13px" placeholder="ex: dbo.tabela" value="${o.n}"
         oninput="updateLinB(${activeJobModal},'${dir}',${i},'n',this.value)" />
@@ -6451,7 +6503,7 @@ function renderModalBody() {
       <div id="mlb-destinos">${linRows(j.destinos,'dst')}</div>
     </div>
     <div style="display:flex;gap:8px">
-      <button class="btn-ghost" onclick="closeLineageModal()" style="flex:1">Confirmar</button>
+      <button class="btn-ghost" onclick="closeLineageModal()" style="flex:1">${(window.__lineageTableCtx && window.__lineageTableCtx.source === 'jobEdit') ? 'Salvar alterações' : 'Confirmar'}</button>
     </div>`;
 }
 
@@ -6471,7 +6523,7 @@ function addLinB(jobId, dir) {
 function rmLinB(jobId, dir, idx) {
   const j = jobsBdata.find(x => x.id === jobId);
   const arr = dir === 'ori' ? j.origens : j.destinos;
-  if (arr.length > 1) arr.splice(idx, 1);
+  arr.splice(idx, 1);
   renderModalBody();
 }
 
@@ -8249,34 +8301,52 @@ async function openPipelineLineage(idx) {
 }
 
 function _renderPipelineLineageBody(body, data) {
+  // Visão consolidada a nível de PIPELINE (somente visualização):
+  // origens únicas de todos os jobs → nó do pipeline → destinos únicos.
   const jobs = (data && data.jobs) || [];
   if (!jobs.length) {
     body.innerHTML = '<div class="empty-state"><span class="es-icon">◎</span><p class="es-title">Nenhum job cadastrado</p><p class="es-sub">Adicione jobs ao pipeline para visualizar o lineage.</p></div>';
     return;
   }
-  body.innerHTML = jobs.map(j => {
-    const origens  = (j.origens  || []);
-    const destinos = (j.destinos || []);
-    const mkList = (arr) => arr.length
-      ? arr.map(o => '<div style="padding:.15rem 0;font-size:12px"><span style="font-size:10px;color:var(--muted)">' + _escHtml(o.tipo||o.type||'') + '</span> ' + _escHtml(o.nome||o.name||o) + '</div>').join('')
-      : '<span style="font-size:11px;color:var(--muted)">—</span>';
-    return '<div style="border:1px solid var(--border);border-radius:10px;margin-bottom:.6rem;overflow:hidden">' +
-      '<div style="padding:.4rem .75rem;background:rgba(0,92,169,.04);border-bottom:1px solid var(--border);font-size:12px;font-weight:600">' +
-      '<span style="color:var(--muted);margin-right:.4rem">#' + (j.execution_order||'?') + '</span>' +
-      _escHtml(j.job_name||j.nome||'') +
-      ' <span style="font-weight:400;color:var(--muted)">· ' + _escHtml(j.job_type||j.tipo||'') + '</span>' +
-      '</div>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0">' +
-        '<div style="padding:.5rem .75rem;border-right:1px solid var(--border)">' +
-          '<div style="font-size:10px;font-weight:700;letter-spacing:.05em;color:var(--cvp-blue);margin-bottom:.3rem">ORIGENS</div>' +
-          mkList(origens) +
-        '</div>' +
-        '<div style="padding:.5rem .75rem">' +
-          '<div style="font-size:10px;font-weight:700;letter-spacing:.05em;color:#15803d;margin-bottom:.3rem">DESTINOS</div>' +
-          mkList(destinos) +
-        '</div>' +
-      '</div></div>';
-  }).join('');
+
+  const dedupe = (side) => {
+    const seen = {};
+    jobs.forEach(j => (j[side] || []).forEach(o => {
+      const nm = o.object_name || o.nome || o.name || '';
+      if (!nm) return;
+      const key = nm.toLowerCase();
+      if (!seen[key]) seen[key] = { nome: nm, tipo: o.object_type || o.tipo || o.type || '', db: o.database_name || '' };
+    }));
+    return Object.values(seen).sort((a, b) => a.nome.localeCompare(b.nome));
+  };
+  const origens  = dedupe('origens');
+  const destinos = dedupe('destinos');
+
+  const mkNode = (o, cls) =>
+    '<div class="ls-node"><div class="ls-node-box ' + cls + '" style="min-width:140px;max-width:240px">' +
+      '<span style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block" title="' + _escHtml(o.nome) + '">' + _escHtml(o.nome) + '</span>' +
+      '<span class="ls-node-label" style="font-size:9px">' + _escHtml(o.db ? o.db : o.tipo) + '</span>' +
+    '</div></div>';
+
+  const col = (arr, cls, vazio) => arr.length
+    ? '<div style="display:flex;flex-direction:column;gap:6px">' + arr.map(o => mkNode(o, cls)).join('') + '</div>'
+    : '<span style="font-size:11px;color:var(--muted)">' + vazio + '</span>';
+
+  const pipeNode =
+    '<div class="ls-node"><div class="ls-node-box job" style="min-width:160px">' +
+      '<span style="font-size:12px;font-weight:700;display:block">' + _escHtml(data.pipeline_name || '') + '</span>' +
+      '<span class="ls-node-label">' + jobs.length + ' job(s)</span>' +
+    '</div></div>';
+
+  body.innerHTML =
+    '<div style="display:grid;grid-template-columns:1fr 60px auto 60px 1fr;gap:.5rem;align-items:center;justify-items:center;padding:.5rem 0">' +
+      '<div style="justify-self:stretch"><div style="font-size:10px;font-weight:700;letter-spacing:.05em;color:var(--cvp-blue);margin-bottom:.4rem;text-align:center">ORIGENS (' + origens.length + ')</div>' + col(origens, 'origem', 'sem origens cadastradas') + '</div>' +
+      '<div class="ls-arrow" style="font-size:20px">→</div>' +
+      pipeNode +
+      '<div class="ls-arrow" style="font-size:20px">→</div>' +
+      '<div style="justify-self:stretch"><div style="font-size:10px;font-weight:700;letter-spacing:.05em;color:#15803d;margin-bottom:.4rem;text-align:center">DESTINOS (' + destinos.length + ')</div>' + col(destinos, 'destino', 'sem destinos cadastrados') + '</div>' +
+    '</div>' +
+    '<div style="font-size:11px;color:var(--muted);text-align:center;border-top:1px solid var(--border);padding-top:.5rem;margin-top:.25rem">Visualização consolidada do pipeline — para detalhe por job, use Governança ▸ Lineage.</div>';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
