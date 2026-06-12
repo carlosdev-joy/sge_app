@@ -9,3 +9,6 @@ docker compose build orquestra-api && docker compose up -d --no-deps orquestra-a
 docker compose logs -f orquestra-api
 docker compose restart ui-nginx
 
+docker compose ps                                          # todos healthy?
+curl -s http://localhost/orquestra/health | python3 -m json.tool   # {"status":"ok"}
+curl -s http://localhost/orquestra/openapi.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d['paths']), 'endpoints')"
