@@ -12,12 +12,153 @@ docker compose restart ui-nginx
 docker compose logs orquestra-api --tail=20
 curl -s http://localhost/orquestra/health
 
-ls /opt/airflow/ui/js/
-ls /opt/airflow/ui/css/
+[root@vmlnxprd083 airflow]# /opt/git/deploy.sh
+[DEPLOY] Iniciando deploy — 2026-06-12 19:51:41
+Cloning into '/opt/git/checkout_tmp'...
+remote: Enumerating objects: 222, done.
+remote: Counting objects: 100% (222/222), done.
+remote: Compressing objects: 100% (197/197), done.
+remote: Total 222 (delta 20), reused 149 (delta 14), pack-reused 0 (from 0)
+Receiving objects: 100% (222/222), 11.56 MiB | 25.67 MiB/s, done.
+Resolving deltas: 100% (20/20), done.
+[DEPLOY] Commit: fe5fa51 Update informações_teste (2026-06-12 19:50:21 -0300)
+sending incremental file list
+./
+.gitkeep
+etl_admin_manage.py
+etl_app_config_query.py
+etl_catalogo_query.py
+etl_dag_factory.py
+etl_datastage_monitor.py
+etl_job_execution_query.py
+etl_lineage_extract_dsx.py
+etl_lineage_normalize.py
+etl_lineage_query.py
+etl_performance_monitor.py
+etl_pipeline_audit_query.py
+etl_pipeline_job_query.py
+etl_pipeline_job_register.py
+etl_pipeline_job_reorder.py
+etl_pipeline_query.py
+etl_pipeline_register.py
+etl_sequence_import_approve.py
+etl_sequence_import_parse.py
+etl_versao_query.py
+etl_versao_register.py
+orquestra_daily_report.py
+orquestra_sla_monitor.py
+orquestra_teste.py
+utils/
+utils/__init__.py
+utils/datastage_operator.py
+utils/dsx_engine.py
 
-cd /opt/airflow
-git pull origin main
-# nginx não precisa reiniciar — é volume bind mount, pega imediatamente
+sent 259,407 bytes  received 544 bytes  519,902.00 bytes/sec
+total size is 257,391  speedup is 0.99
+sending incremental file list
+./
+.dockerignore
+Dockerfile
+db.py
+deps.py
+main.py
+requirements.txt
+routers/
+routers/__init__.py
+routers/admin.py
+routers/agenda.py
+routers/airflow.py
+routers/auth.py
+routers/catalogo.py
+routers/dashboard.py
+routers/datastage.py
+routers/execucoes.py
+routers/factory.py
+routers/infra.py
+routers/jobs.py
+routers/lineage.py
+routers/pipelines.py
+routers/sequence.py
+routers/sync.py
+wheels/
+wheels/annotated_types-0.7.0-py3-none-any.whl
+wheels/anyio-4.13.0-py3-none-any.whl
+wheels/certifi-2026.5.20-py3-none-any.whl
+wheels/click-8.4.1-py3-none-any.whl
+wheels/fastapi-0.115.5-py3-none-any.whl
+wheels/h11-0.16.0-py3-none-any.whl
+wheels/httpcore-1.0.9-py3-none-any.whl
+wheels/httptools-0.6.4-cp311-cp311-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+wheels/httpx-0.27.2-py3-none-any.whl
+wheels/idna-3.18-py3-none-any.whl
+wheels/packaging-26.2-py3-none-any.whl
+wheels/pydantic-2.13.4-py3-none-any.whl
+wheels/pydantic_core-2.46.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+wheels/pyodbc-5.2.0.tar.gz
+wheels/python_dotenv-1.0.1-py3-none-any.whl
+wheels/pyyaml-6.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+wheels/setuptools-82.0.1-py3-none-any.whl
+wheels/sniffio-1.3.1-py3-none-any.whl
+wheels/starlette-0.41.3-py3-none-any.whl
+wheels/typing_extensions-4.15.0-py3-none-any.whl
+wheels/typing_inspection-0.4.2-py3-none-any.whl
+wheels/uvicorn-0.32.1-py3-none-any.whl
+wheels/uvloop-0.22.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+wheels/watchfiles-1.2.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+wheels/websockets-16.0-py3-none-any.whl
+wheels/wheel-0.47.0-py3-none-any.whl
 
-docker compose exec ui-nginx ls /usr/share/nginx/html/js/
-curl -I http://localhost/js/app.js   # deve retornar 200, não 301/404
+sent 10,675,479 bytes  received 951 bytes  21,352,860.00 bytes/sec
+total size is 10,668,946  speedup is 1.00
+airflow-ui
+[DEPLOY] ✓ Concluído em 2026-06-12 19:51:43
+[DEPLOY] ✓ Deploy concluído com sucesso
+[root@vmlnxprd083 airflow]# docker compose build orquestra-api && docker compose up -d --no-deps orquestra-api
+[+] Building 2.1s (14/14) FINISHED
+ => [internal] load local bake definitions                                                                                                                                                               0.0s
+ => => reading from stdin 1.30kB                                                                                                                                                                         0.0s
+ => [internal] load build definition from Dockerfile                                                                                                                                                     0.0s
+ => => transferring dockerfile: 954B                                                                                                                                                                     0.0s
+ => [internal] load metadata for docker.io/library/python:3.11-slim                                                                                                                                      1.7s
+ => [internal] load .dockerignore                                                                                                                                                                        0.0s
+ => => transferring context: 116B                                                                                                                                                                        0.0s
+ => [1/7] FROM docker.io/library/python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457                                                                                0.0s
+ => => resolve docker.io/library/python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457                                                                                0.0s
+ => [internal] load build context                                                                                                                                                                        0.1s
+ => => transferring context: 10.68MB                                                                                                                                                                     0.1s
+ => CACHED [2/7] RUN apt-get update && apt-get install -y --no-install-recommends     curl gnupg2 unixodbc-dev gcc g++     && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc        | gpg  0.0s
+ => CACHED [3/7] WORKDIR /app                                                                                                                                                                            0.0s
+ => CACHED [4/7] COPY requirements.txt .                                                                                                                                                                 0.0s
+ => CACHED [5/7] COPY wheels/ wheels/                                                                                                                                                                    0.0s
+ => CACHED [6/7] RUN pip install --no-cache-dir --no-index --find-links=wheels -r requirements.txt     && rm -rf wheels/                                                                                 0.0s
+ => CACHED [7/7] COPY . .                                                                                                                                                                                0.0s
+ => exporting to image                                                                                                                                                                                   0.0s
+ => => exporting layers                                                                                                                                                                                  0.0s
+ => => exporting manifest sha256:79e7681b3cc0f9450280127f7e6f43b81080b9b27791dbb3f9f4d11498b27414                                                                                                        0.0s
+ => => exporting config sha256:3bdbc90220eaae9ec1051bed4fb9b3c8bb0e0b0cb98e3254202ce6792343b1b2                                                                                                          0.0s
+ => => exporting attestation manifest sha256:f446fc8dda23ceab3dd016280301009fc9f9811b7acf3125b97a9b32f2ffd23a                                                                                            0.0s
+ => => exporting manifest list sha256:fd72fcda77b267d0367608d6b8ec2fcd59959bb8c082e7d1dfb0536d48c250db                                                                                                   0.0s
+ => => naming to docker.io/library/airflow-orquestra-api:latest                                                                                                                                          0.0s
+ => => unpacking to docker.io/library/airflow-orquestra-api:latest                                                                                                                                       0.0s
+ => resolving provenance for metadata file                                                                                                                                                               0.0s
+[+] build 1/3
+ ⠙ Image airflow-airflow-init      Building                                                                                                                                                               2.2s
+ ⠙ Image airflow-airflow-webserver Building                                                                                                                                                               2.2s
+ ✔ Image airflow-orquestra-api     Built                                                                                                                                                                  2.2s
+[+] up 1/1
+ ✔ Container orquestra-api Started                                                                                                                                                                        1.3s
+[root@vmlnxprd083 airflow]# docker compose restart ui-nginx
+[+] restart 0/1
+ ⠹ Container airflow-ui Restarting                                                                                                                                                                        0.2s
+[root@vmlnxprd083 airflow]# ls /opt/airflow/ui/js/
+ls: cannot access '/opt/airflow/ui/js/': No such file or directory
+[root@vmlnxprd083 airflow]# ls /opt/airflow/ui/css/
+ls: cannot access '/opt/airflow/ui/css/': No such file or directory
+[root@vmlnxprd083 airflow]# cd /opt/airflow
+[root@vmlnxprd083 airflow]# git pull origin main
+fatal: not a git repository (or any of the parent directories): .git
+[root@vmlnxprd083 airflow]# docker compose exec ui-nginx ls /usr/share/nginx/html/js/
+Error response from daemon: Container 3bcaa721b31f8599263524685b4162b7f4a5d46fdcaccaaef4e9d68b1e2a8e49 is restarting, wait until the container is running
+[root@vmlnxprd083 airflow]# curl -I http://localhost/js/app.js   # deve retornar 200, não 301/404
+curl: (7) Failed to connect to localhost port 80: Connection refused
+
