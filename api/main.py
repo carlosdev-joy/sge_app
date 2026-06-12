@@ -3492,7 +3492,7 @@ def get_malha():
         cur.execute("""
             SELECT pipeline_name, job_name,
                    CAST(execution_order AS INT) AS execution_order,
-                   job_type, command_or_path
+                   job_type, job_command
             FROM dbo.etl_pipeline_job
             ORDER BY pipeline_name, execution_order, job_name
         """)
