@@ -675,19 +675,21 @@ def put_lineage_job(body: dict = Body(default={})):
                 obj_name = (obj.get("object_name") or "").strip()
                 if not obj_name:
                     continue
+                cols = obj.get("columns")
+                columns_json = json.dumps(cols, ensure_ascii=False) if cols else None
                 cur.execute(
                     """INSERT INTO dbo.etl_job_lineage
                        (pipeline_name, job_name, direction, object_type, object_name,
                         stage_name, stage_type_raw, database_name, sql_expression,
-                        file_path, dsx_source_file, extraction_method,
+                        file_path, dsx_source_file, extraction_method, columns_json,
                         extracted_at, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), GETDATE())""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), GETDATE(), GETDATE())""",
                     [pipeline_name, job_name, direction,
                      (obj.get("object_type") or "Tabela").strip(), obj_name,
                      obj.get("stage_name"), obj.get("stage_type_raw"),
                      obj.get("database_name"), obj.get("sql_expression"),
                      obj.get("file_path"), obj.get("dsx_source_file"),
-                     obj.get("extraction_method") or "manual"])
+                     obj.get("extraction_method") or "manual", columns_json])
                 inseridos += 1
 
         conn.commit()

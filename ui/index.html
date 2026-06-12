@@ -4040,6 +4040,16 @@ function renderLineageJob() {
     return;
   }
 
+  vis.innerHTML = _lineageJobDiagramHtml(job);
+}
+
+// Diagrama de lineage de um job (origens → [transformações] → job → destinos).
+// Reutilizado pela Governança (renderLineageJob) e pelo modal de lineage da tela de Jobs.
+function _lineageJobDiagramHtml(job) {
+  const ori = job.origens || [];
+  const trf = job.transformacoes || [];
+  const dst = job.destinos || [];
+
   const mk = (o, cls) => {
     const isTransf = cls === 'transf';
     const isFile   = !isTransf && !!o.file_path;
@@ -4094,8 +4104,7 @@ function renderLineageJob() {
   const jobH = _lineageNode(job.job_name, 'Job #' + job.execution_order, job.job_type, 'job');
 
   const hasTrans = trf.length > 0;
-  vis.innerHTML =
-    '<div class="lineage-svg-wrap">' +
+  return '<div class="lineage-svg-wrap">' +
       '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
         '<div style="display:flex;flex-direction:column;gap:8px">' + (oriH || '<i style="font-size:12px;color:var(--muted)">Sem origens</i>') + '</div>' +
         '<div class="ls-arrow">→</div>' +
@@ -4176,6 +4185,7 @@ function _linToRowB(o) {
     database_name: o.database_name || null, sql_expression: o.sql_expression || null,
     file_path: o.file_path || null, dsx_source_file: o.dsx_source_file || null,
     extracted_at: o.extracted_at || null, extraction_method: o.extraction_method || null,
+    columns: Array.isArray(o.columns) ? o.columns : null,
   };
 }
 
@@ -6390,9 +6400,29 @@ function _ensureModal() {
   document.body.appendChild(d);
 }
 
+let _mlbView = 'edit'; // 'edit' | 'diagram'
+
+function _mlbToggleView() {
+  _mlbView = _mlbView === 'edit' ? 'diagram' : 'edit';
+  renderModalBody();
+}
+
+// Converte as linhas em edição do modal para o formato de job do GET /lineage,
+// para renderizar o mesmo diagrama da aba Governança.
+function _mlbRowsToJob(j) {
+  const map = arr => (arr || []).filter(o => (o.n || '').trim()).map(o => ({
+    object_name: o.n, object_type: o.t, stage_name: o.stage_name || null,
+    database_name: o.database_name || null, sql_expression: o.sql_expression || null,
+    file_path: o.file_path || null, columns: Array.isArray(o.columns) ? o.columns : [],
+  }));
+  return { job_name: j.name || 'job', execution_order: j.order, job_type: j.type,
+           origens: map(j.origens), transformacoes: map(j.transformacoes), destinos: map(j.destinos) };
+}
+
 function openLineageModal(jobId) {
   _ensureModal();
   activeJobModal = jobId;
+  _mlbView = 'edit';
   const j = jobsBdata.find(x => x.id === jobId);
   const isStep2 = window.__lineageTableCtx && window.__lineageTableCtx.source === 'jobCreate';
   $('mlb-title').textContent = (isStep2 ? 'Etapa 2/2 — Lineage — ' : 'Lineage — ') + (j.name || 'job sem nome');
@@ -6463,6 +6493,21 @@ function closeLineageModal() {
 function renderModalBody() {
   const j = jobsBdata.find(x => x.id === activeJobModal);
   if (!j) return;
+
+  // Modo visualização: mesmo diagrama da aba Governança ▸ Lineage
+  if (_mlbView === 'diagram') {
+    const job = _mlbRowsToJob(j);
+    const temAlgo = job.origens.length || job.transformacoes.length || job.destinos.length;
+    $('mlb-body').innerHTML =
+      (temAlgo
+        ? _lineageJobDiagramHtml(job)
+        : '<div class="empty-state"><span class="es-icon">◎</span><p class="es-title">Sem lineage para visualizar</p><p class="es-sub">Adicione origens e destinos no modo de edição.</p></div>') +
+      `<div style="display:flex;gap:8px;margin-top:1rem">
+        <button class="btn-ghost" onclick="_mlbToggleView()" style="flex:1">✎ Voltar à edição</button>
+      </div>`;
+    return;
+  }
+
   const linRows = (arr, dir) => arr.map((o, i) => `
     <div style="display:grid;grid-template-columns:110px minmax(0,1fr) 28px;gap:6px;align-items:center;margin-bottom:5px">
       <select style="font-size:13px" onchange="updateLinB(${activeJobModal},'${dir}',${i},'t',this.value)">
@@ -6503,6 +6548,7 @@ function renderModalBody() {
       <div id="mlb-destinos">${linRows(j.destinos,'dst')}</div>
     </div>
     <div style="display:flex;gap:8px">
+      <button class="btn btn-outline" onclick="_mlbToggleView()" style="flex:1" title="Visualizar o diagrama de lineage (igual à aba Governança)">◈ Ver diagrama</button>
       <button class="btn-ghost" onclick="closeLineageModal()" style="flex:1">${(window.__lineageTableCtx && window.__lineageTableCtx.source === 'jobEdit') ? 'Salvar alterações' : 'Confirmar'}</button>
     </div>`;
 }
@@ -6609,6 +6655,7 @@ function collectJobRows() {
           dsx_source_file: o.dsx_source_file || null,
           extracted_at: o.extracted_at || null,
           extraction_method: o.extraction_method || null,
+          columns: Array.isArray(o.columns) ? o.columns : null,
         })),
       transformacoes: (j.transformacoes || []).filter(o => (o.n || '').trim()).map(o => ({
         object_type: normalizeLineageObjectType(o.t),
@@ -6621,6 +6668,7 @@ function collectJobRows() {
         dsx_source_file: o.dsx_source_file || null,
         extracted_at: o.extracted_at || null,
         extraction_method: o.extraction_method || null,
+        columns: Array.isArray(o.columns) ? o.columns : null,
       })),
       destinos: j.destinos
         .filter(o => o.n.trim())
@@ -6635,6 +6683,7 @@ function collectJobRows() {
           dsx_source_file: o.dsx_source_file || null,
           extracted_at: o.extracted_at || null,
           extraction_method: o.extraction_method || null,
+          columns: Array.isArray(o.columns) ? o.columns : null,
         })),
     }));
 }
