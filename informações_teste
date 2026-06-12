@@ -9,11 +9,96 @@ docker compose build orquestra-api && docker compose up -d --no-deps orquestra-a
 docker compose logs -f orquestra-api
 
 
-(index):2373 [ORQ] Auth sistêmico carregado.
-(index):4516 [ORQ] App config carregado: Object
-(index):5453 [ORQ] Auto-refresh dashboard: 120s
-(index):2397 [ORQ] Usuário editor confirmado para CVT38571
-/orquestra/execucoes/duracao-media?pipeline=DATASTAGE_MALHA_VIDA&limit=30:1  Failed to load resource: the server responded with a status of 500 (Internal Server Error)
-(index):2554 Uncaught ReferenceError: navigate is not defined
-    at _drillDownFalhas ((index):2554:3)
-    at HTMLDivElement.onclick ((index):1650:161)
+(index):5831 Uncaught SyntaxError: Invalid regular expression: missing /
+(index):10186 Uncaught ReferenceError: _admDeleteWizardStep is not defined
+    at (index):10186:23
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+(index):971 Uncaught ReferenceError: entrar is not defined
+    at HTMLButtonElement.onclick ((index):971:67)
+(index):971 Uncaught ReferenceError: entrar is not defined
+    at HTMLButtonElement.onclick ((index):971:67)
+(index):971 Uncaught ReferenceError: entrar is not defined
+    at HTMLButtonElement.onclick ((index):971:67)
+(index):971 Uncaught ReferenceError: entrar is not defined
+    at HTMLButtonElement.onclick ((index):971:67)
+(index):971 Uncaught ReferenceError: entrar is not defined
+    at HTMLButtonElement.onclick ((index):971:67)
+(index):971 Uncaught ReferenceError: entrar is not defined
+    at HTMLButtonElement.onclick ((index):971:67)
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+onkeydown @ (index):963
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+onkeyup @ (index):963
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+onkeydown @ (index):963
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+onkeyup @ (index):963
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeydown ((index):963:85)
+onkeydown @ (index):963
+(index):963 Uncaught ReferenceError: checkCapsLock is not defined
+    at HTMLInputElement.onkeyup ((index):963:85)
+onkeyup @ (index):963
