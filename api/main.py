@@ -136,25 +136,44 @@ async def _airflow_check_credentials(authorization: str) -> None:
 
 
 async def _airflow_user_details(username: str, authorization: str) -> dict:
-    """Busca dados do usuário no Airflow (nome, email). Falha silenciosa → {}."""
+    """Busca dados do usuário no Airflow (nome, email, roles). Falha silenciosa → {}."""
+    def _parse(d: dict) -> dict:
+        return {
+            "first_name": d.get("first_name"),
+            "last_name":  d.get("last_name"),
+            "email":      d.get("email"),
+            "roles":      [r["name"] for r in (d.get("roles") or []) if r.get("name")],
+        }
     try:
         async with httpx.AsyncClient(base_url=AIRFLOW_URL, timeout=5) as client:
             r = await client.get(f"/api/v1/users/{username}",
                                  headers={"Authorization": authorization})
             if r.is_success:
-                d = r.json()
-                return {"first_name": d.get("first_name"), "last_name": d.get("last_name"),
-                        "email": d.get("email")}
+                return _parse(r.json())
             # usuário comum pode não ter permissão de ler /users — tenta com service account
             r = await client.get(f"/api/v1/users/{username}",
                                  auth=(AIRFLOW_USER, AIRFLOW_PASSWORD))
             if r.is_success:
-                d = r.json()
-                return {"first_name": d.get("first_name"), "last_name": d.get("last_name"),
-                        "email": d.get("email")}
+                return _parse(r.json())
     except Exception:
         pass
     return {}
+
+
+def _resolve_perfil_by_roles(cur, roles: list[str]) -> str | None:
+    """Resolve o perfil ORQUESTRA de maior prioridade a partir dos roles do Airflow.
+    Retorna None se nenhum role estiver mapeado."""
+    if not roles:
+        return None
+    placeholders = ",".join(["?" for _ in roles])
+    cur.execute(
+        f"SELECT TOP 1 perfil_nome FROM dbo.etl_airflow_role_perfil "
+        f"WHERE role_airflow IN ({placeholders}) AND ativo = 1 "
+        f"ORDER BY ordem_prioridade ASC",
+        roles,
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
 
 
 def _session_ttl_hours() -> int:
@@ -203,13 +222,18 @@ async def auth_login(body: dict = Body(default={})):
                 [detalhes.get("first_name"), detalhes.get("last_name"),
                  detalhes.get("email"), matricula])
         else:
+            # 1º login: resolve perfil pelo role Airflow; fallback = 'consulta'
+            perfil_inicial = (
+                _resolve_perfil_by_roles(cur, detalhes.get("roles") or [])
+                or "consulta"
+            )
             cur.execute(
                 "INSERT INTO dbo.etl_usuario "
                 "(matricula, perfil_nome, primeiro_nome, ultimo_nome, email, "
                 " primeiro_login, ultimo_login, criado_por) "
-                "VALUES (?, 'consulta', ?, ?, ?, GETDATE(), GETDATE(), 'auto-login')",
-                [matricula, detalhes.get("first_name"), detalhes.get("last_name"),
-                 detalhes.get("email")])
+                "VALUES (?, ?, ?, ?, ?, GETDATE(), GETDATE(), 'auto-login')",
+                [matricula, perfil_inicial, detalhes.get("first_name"),
+                 detalhes.get("last_name"), detalhes.get("email")])
         # grava sessão e remove sessões expiradas do usuário
         cur.execute("DELETE FROM dbo.etl_sessao WHERE matricula = ? AND expira_em < GETDATE()",
                     [matricula])
@@ -2629,6 +2653,55 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             conn.commit(); cur.close(); conn.close()
             return {"sucesso": True, "mensagem": f"{n} pipeline(s) marcados para regeneração.",
                     "detalhes": {"pipelines_marcados": n, "filter_project": filter_project or "(todos)"}}
+
+        # ── role_map_list ──────────────────────────────────────────────────────
+        elif action == "role_map_list":
+            cur.execute(
+                "SELECT role_airflow, perfil_nome, ordem_prioridade, descricao, ativo "
+                "FROM dbo.etl_airflow_role_perfil ORDER BY ordem_prioridade, role_airflow"
+            )
+            cols = [c[0] for c in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            cur.close(); conn.close()
+            return {"sucesso": True, "dados": rows}
+
+        # ── role_map_upsert ────────────────────────────────────────────────────
+        elif action == "role_map_upsert":
+            role        = (body.get("role_airflow")     or "").strip()
+            perfil      = (body.get("perfil_nome")      or "").strip().lower()
+            prioridade  = int(body.get("ordem_prioridade") or 99)
+            descricao   = (body.get("descricao")        or "").strip() or None
+            ativo       = bool(body.get("ativo", True))
+            if not role:
+                raise HTTPException(status_code=422, detail="role_airflow obrigatório")
+            if not perfil:
+                raise HTTPException(status_code=422, detail="perfil_nome obrigatório")
+            cur.execute("SELECT 1 FROM dbo.etl_perfil WHERE perfil_nome = ?", [perfil])
+            if not cur.fetchone():
+                raise HTTPException(status_code=422,
+                                    detail=f"Perfil '{perfil}' não existe")
+            cur.execute("""
+                MERGE dbo.etl_airflow_role_perfil AS t
+                USING (SELECT ? AS r) AS s ON t.role_airflow = s.r
+                WHEN MATCHED THEN UPDATE SET
+                    perfil_nome=?, ordem_prioridade=?, descricao=?,
+                    ativo=?, atualizado_em=GETDATE(), atualizado_por=?
+                WHEN NOT MATCHED THEN INSERT
+                    (role_airflow, perfil_nome, ordem_prioridade, descricao, ativo, criado_por)
+                    VALUES (?, ?, ?, ?, ?, ?);
+            """, [role, perfil, prioridade, descricao, 1 if ativo else 0, requested_by,
+                  role, perfil, prioridade, descricao, 1 if ativo else 0, requested_by])
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True, "mensagem": f"Mapeamento '{role}' → '{perfil}' salvo."}
+
+        # ── role_map_delete ────────────────────────────────────────────────────
+        elif action == "role_map_delete":
+            role = (body.get("role_airflow") or "").strip()
+            if not role:
+                raise HTTPException(status_code=422, detail="role_airflow obrigatório")
+            cur.execute("DELETE FROM dbo.etl_airflow_role_perfil WHERE role_airflow = ?", [role])
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True, "mensagem": f"Mapeamento '{role}' removido."}
 
         else:
             raise HTTPException(status_code=422, detail=f"Action desconhecida: '{action}'")

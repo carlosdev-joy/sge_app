@@ -2351,9 +2351,9 @@
               <div id="adm-panel-usuarios" style="display:none">
                 <div class="helper" style="margin:0 0 1rem;background:rgba(0,92,169,.05);border:0.5px solid rgba(0,92,169,.2);border-radius:10px;padding:.75rem 1rem">
                   👤 <strong>Controle de acesso.</strong> Cada usuário recebe um <strong>perfil</strong>; cada perfil define
-                  quais <strong>telas</strong> e <strong>ações</strong> ficam disponíveis. Usuários entram automaticamente
-                  no 1º login com perfil <code>consulta</code> — promova-os aqui. Mudanças de perfil derrubam as sessões
-                  ativas do usuário (ele só precisa logar de novo).
+                  quais <strong>telas</strong> e <strong>ações</strong> ficam disponíveis. No 1º login, o perfil é
+                  atribuído automaticamente pelo <strong>role do Airflow</strong> (configurável em Mapeamento de Roles abaixo).
+                  Mudanças de perfil derrubam as sessões ativas do usuário (ele só precisa logar de novo).
                 </div>
 
                 <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:1.25rem;align-items:start">
@@ -2385,6 +2385,33 @@
                       </div>
                       <button class="btn btn-primary btn-sm" onclick="admPerfilCreate()">+ Criar perfil</button>
                       <span id="adm-perfil-msg" style="font-size:12px;margin-left:.5rem"></span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Mapeamento Airflow Role → Perfil -->
+                <div style="border:1px solid var(--border);border-radius:12px;padding:1rem;margin-top:1.25rem">
+                  <div style="font-size:13px;font-weight:600;margin-bottom:.25rem">🔗 Mapeamento Airflow Role → Perfil</div>
+                  <div class="helper" style="margin:0 0 .75rem">
+                    No <strong>1º login</strong>, o sistema consulta o role do usuário no Airflow e atribui
+                    o perfil correspondente. Se o usuário tiver múltiplos roles, o de maior prioridade
+                    (menor número) prevalece. Após o 1º login, o admin pode ajustar manualmente.
+                  </div>
+                  <div id="adm-rolemap-list" style="margin-bottom:.75rem"></div>
+                  <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:.75rem">
+                    <div style="font-size:12px;font-weight:600;margin-bottom:.5rem;color:var(--cvp-blue)">Adicionar / editar mapeamento</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr 80px 1.5fr;gap:.5rem;margin-bottom:.6rem">
+                      <div class="field" style="margin:0"><label>Role Airflow</label><input id="adm-rm-role" type="text" placeholder="ex: Op" /></div>
+                      <div class="field" style="margin:0"><label>Perfil ORQUESTRA</label><select id="adm-rm-perfil"></select></div>
+                      <div class="field" style="margin:0"><label>Prioridade</label><input id="adm-rm-prio" type="number" value="99" min="1" max="999" /></div>
+                      <div class="field" style="margin:0"><label>Descrição</label><input id="adm-rm-desc" type="text" placeholder="opcional" /></div>
+                    </div>
+                    <div style="display:flex;gap:.5rem;align-items:center">
+                      <button class="btn btn-primary btn-sm" onclick="admRoleMapSave()">💾 Salvar</button>
+                      <label style="font-size:12px;display:flex;align-items:center;gap:.3rem">
+                        <input type="checkbox" id="adm-rm-ativo" checked> Ativo
+                      </label>
+                      <span id="adm-rm-msg" style="font-size:12px;margin-left:.25rem"></span>
                     </div>
                   </div>
                 </div>
@@ -5983,7 +6010,7 @@ async function _admRbac(action, extra) {
 }
 
 async function admLoadUsuariosPerfis() {
-  await Promise.all([admLoadUsuarios(), admLoadPerfis()]);
+  await Promise.all([admLoadUsuarios(), admLoadPerfis(), admLoadRoleMap()]);
 }
 
 async function admLoadUsuarios() {
@@ -6049,10 +6076,13 @@ async function admLoadPerfis() {
   try {
     const d = await _admRbac('perfil_list');
     __admPerfis = d.perfis || [];
-    // popula o select de perfis do formulário de usuário
-    const sel = $('adm-user-perfil');
-    if (sel) sel.innerHTML = __admPerfis.map(p =>
+    // popula os selects de perfis (formulário de usuário e de mapeamento de roles)
+    const perfisOpts = __admPerfis.map(p =>
       '<option value="' + p.perfil_nome + '">' + p.perfil_nome + '</option>').join('');
+    const sel = $('adm-user-perfil');
+    if (sel) sel.innerHTML = perfisOpts;
+    const selRm = $('adm-rm-perfil');
+    if (selRm) selRm.innerHTML = perfisOpts;
     let h = '';
     __admPerfis.forEach(p => {
       const checks = RBAC_RECURSOS.map(([rec, lbl]) => {
@@ -6110,6 +6140,83 @@ async function admPerfilDelete(nome) {
     await _admRbac('perfil_delete', { perfil_nome: nome });
     showToast('Perfil "' + nome + '" removido.', false);
     admLoadPerfis();
+  } catch(e) { showToast('Erro: ' + e.message, true); }
+}
+
+// ── Mapeamento Airflow Role → Perfil ────────────────────────────────────────
+async function admLoadRoleMap() {
+  const el = $('adm-rolemap-list');
+  if (!el) return;
+  el.innerHTML = '<span style="font-size:12px;color:var(--muted)">Carregando...</span>';
+  try {
+    const d = await _admRbac('role_map_list', {});
+    const rows = d.dados || [];
+    if (!rows.length) { el.innerHTML = '<span style="font-size:12px;color:var(--muted)">Nenhum mapeamento cadastrado.</span>'; return; }
+    let h = '<table style="width:100%;font-size:12px;border-collapse:collapse">'
+      + '<thead><tr style="border-bottom:1px solid var(--border)">'
+      + '<th style="text-align:left;padding:.35rem .5rem;color:var(--muted)">Role Airflow</th>'
+      + '<th style="text-align:left;padding:.35rem .5rem;color:var(--muted)">Perfil</th>'
+      + '<th style="text-align:center;padding:.35rem .5rem;color:var(--muted)">Prio</th>'
+      + '<th style="text-align:left;padding:.35rem .5rem;color:var(--muted)">Descrição</th>'
+      + '<th style="text-align:center;padding:.35rem .5rem;color:var(--muted)">Ativo</th>'
+      + '<th></th></tr></thead><tbody>';
+    rows.forEach(r => {
+      h += '<tr style="border-bottom:.5px solid var(--border);vertical-align:middle">'
+        + '<td style="padding:.35rem .5rem;font-weight:600">' + _escHtml(r.role_airflow) + '</td>'
+        + '<td style="padding:.35rem .5rem"><code>' + _escHtml(r.perfil_nome) + '</code></td>'
+        + '<td style="padding:.35rem .5rem;text-align:center">' + r.ordem_prioridade + '</td>'
+        + '<td style="padding:.35rem .5rem;color:var(--muted)">' + _escHtml(r.descricao || '') + '</td>'
+        + '<td style="padding:.35rem .5rem;text-align:center">' + (r.ativo ? '✅' : '⏸') + '</td>'
+        + '<td style="padding:.35rem .5rem;white-space:nowrap">'
+        + '<button class="btn btn-outline btn-xs" style="font-size:11px;padding:2px 8px" '
+        + 'onclick="admRoleMapEdit(' + JSON.stringify(r) + ')">✏</button> '
+        + '<button class="btn btn-outline btn-xs" style="font-size:11px;padding:2px 8px;color:var(--red);border-color:var(--red)" '
+        + 'onclick="admRoleMapDelete(' + JSON.stringify(r.role_airflow) + ')">🗑</button>'
+        + '</td></tr>';
+    });
+    h += '</tbody></table>';
+    el.innerHTML = h;
+  } catch(e) { el.innerHTML = '<span style="color:var(--red);font-size:12px">Erro: ' + e.message + '</span>'; }
+}
+
+function admRoleMapEdit(r) {
+  if ($('adm-rm-role'))  { $('adm-rm-role').value  = r.role_airflow; }
+  if ($('adm-rm-prio'))  { $('adm-rm-prio').value  = r.ordem_prioridade; }
+  if ($('adm-rm-desc'))  { $('adm-rm-desc').value  = r.descricao || ''; }
+  if ($('adm-rm-ativo')) { $('adm-rm-ativo').checked = !!r.ativo; }
+  // seleciona o perfil no <select>
+  const sel = $('adm-rm-perfil');
+  if (sel) { for (let o of sel.options) { if (o.value === r.perfil_nome) { o.selected = true; break; } } }
+}
+
+async function admRoleMapSave() {
+  const role   = $('adm-rm-role')  ? $('adm-rm-role').value.trim()   : '';
+  const perfil = $('adm-rm-perfil')? $('adm-rm-perfil').value        : '';
+  const prio   = $('adm-rm-prio')  ? parseInt($('adm-rm-prio').value) : 99;
+  const desc   = $('adm-rm-desc')  ? $('adm-rm-desc').value.trim()   : '';
+  const ativo  = $('adm-rm-ativo') ? $('adm-rm-ativo').checked       : true;
+  const msg    = $('adm-rm-msg');
+  if (!role)   { if (msg) { msg.textContent='Role obrigatório.';  msg.style.color='var(--red)'; } return; }
+  if (!perfil) { if (msg) { msg.textContent='Perfil obrigatório.';msg.style.color='var(--red)'; } return; }
+  try {
+    const d = await _admRbac('role_map_upsert', { role_airflow: role, perfil_nome: perfil, ordem_prioridade: prio, descricao: desc, ativo });
+    showToast(d.mensagem, false);
+    if ($('adm-rm-role'))  $('adm-rm-role').value  = '';
+    if ($('adm-rm-desc'))  $('adm-rm-desc').value  = '';
+    if ($('adm-rm-prio'))  $('adm-rm-prio').value  = '99';
+    if ($('adm-rm-ativo')) $('adm-rm-ativo').checked = true;
+    if (msg) msg.textContent = '';
+    admLoadRoleMap();
+  } catch(e) { if (msg) { msg.textContent='Erro: '+e.message; msg.style.color='var(--red)'; } }
+}
+
+async function admRoleMapDelete(role) {
+  const ok = await showConfirm('Remover mapeamento do role "' + role + '"?', '🗑 Remover');
+  if (!ok) return;
+  try {
+    await _admRbac('role_map_delete', { role_airflow: role });
+    showToast('Mapeamento "' + role + '" removido.', false);
+    admLoadRoleMap();
   } catch(e) { showToast('Erro: ' + e.message, true); }
 }
 
