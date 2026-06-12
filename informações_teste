@@ -7,8 +7,5 @@ docker compose build orquestra-api && docker compose up -d --no-deps orquestra-a
 
 # Acompanhar os logs até aparecer "Application startup complete."
 docker compose logs -f orquestra-api
+docker compose restart ui-nginx
 
-Rodam de segunda a sexta todos.
- SeqSsdExecPrevRel_5085_PORTAB_INTERFACE_AVISO_CREDITO_ORACLE - 09:00, 10:30, 13:00, 13:30, 14:00, 14:30, 15:00, 15:30, 16:00, 16:30, 17:00, 17:30, 18:00
- SeqSsdExecPrevRel5066_Portab_Saida_KIPREV_SIDE - 07:30, 09:50, 12:50,, 13:50, 14:50,, 15:50, 21:50
- SsdPrevRel_5018_PropostasPendentes_PONTUAL_KIPREV - 07:00, 08:30, 12:00, 15:00
