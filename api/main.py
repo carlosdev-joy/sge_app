@@ -1940,6 +1940,8 @@ def register_pipeline_jobs(body: dict = Body(default={})):
     pipeline_name = (body.get("pipeline_name") or "").strip()
     if not pipeline_name:
         raise HTTPException(status_code=422, detail="pipeline_name é obrigatório")
+    # Wizard de pipeline salva jobs antes do lineage estar completo
+    require_lineage = bool(body.get("require_lineage", True))
 
     jobs_raw = body.get("jobs")
     if jobs_raw:
@@ -1973,9 +1975,9 @@ def register_pipeline_jobs(body: dict = Body(default={})):
                 erros.append(f"Item {idx}: job_name e execution_order obrigatórios"); continue
             if j_type not in VALID_JOB_TYPES:
                 erros.append(f"Item {idx} ({j_name}): job_type '{j_type}' inválido"); continue
-            if not origens and not transfs:
+            if not origens and not transfs and require_lineage:
                 erros.append(f"Item {idx} ({j_name}): ao menos 1 origem é obrigatória"); continue
-            if not destinos and not transfs:
+            if not destinos and not transfs and require_lineage:
                 erros.append(f"Item {idx} ({j_name}): ao menos 1 destino é obrigatório"); continue
 
             try:

@@ -7768,6 +7768,30 @@ async function registrarPipeline() {
     'Pipeline "' + pipeline + '"',
     'btn-save-pipeline', 'save_pipeline_txt', 'Salvar'
   );
+
+  // Salva jobs + lineage do wizard (passos 5 e 6)
+  const wizJobs = _wizGetJobs();
+  if (wizJobs.length) {
+    const lg = _wizGetLineage();
+    const mapObjs = arr => (arr || []).map(o => ({ object_type: o.type || 'Tabela', object_name: o.name }));
+    const jobsPayload = {
+      pipeline_name: pipeline,
+      require_lineage: false,
+      jobs: wizJobs.map(j => ({
+        job_name: j.name,
+        execution_order: j.order,
+        job_type: (j.type || 'datastage').toLowerCase(),
+        job_command: j.command || null,
+        origens:  mapObjs((lg[j.name] || {}).origens),
+        destinos: mapObjs((lg[j.name] || {}).destinos),
+      })),
+    };
+    try {
+      await _orqPost(ORQUESTRA_API + '/pipelines/jobs/register', jobsPayload,
+        wizJobs.length + ' job(s) do pipeline "' + pipeline + '"', null, null, null);
+    } catch(e) { console.warn('[WIZ] Falha ao salvar jobs:', e); }
+  }
+
   $('pipeline_name').value = '';
   _scheduleSetFromRecord({ schedule_type: 'daily', schedule_hour: 6, schedule_minute: 0, schedule_dow: 1, schedule_dom: 1 });
   $('p-project').value = ''; $('p-domain').value = '';
@@ -8507,7 +8531,7 @@ function wizAddJobRow() {
   const idx = body.children.length + 1;
   const row = document.createElement('div');
   row.className = 'wiz-job-row';
-  const types = window.__jobTypes || [{nome:'SQL'},{nome:'Python'},{nome:'Bash'},{nome:'Spark'},{nome:'dbt'},{nome:'DataStage'}];
+  const types = window.__jobTypes || [{nome:'datastage'},{nome:'shell'},{nome:'python'},{nome:'storedproc'}];
   const typeOpts = types.map(t => '<option value=' + JSON.stringify(t.nome||t) + '>' + (t.nome||t) + '</option>').join('');
   const rmBtn = document.createElement('button');
   rmBtn.className = 'btn btn-outline btn-sm';
@@ -8524,6 +8548,60 @@ function wizAddJobRow() {
   row.appendChild(rmBtn);
   row.querySelector('input[type=text]').addEventListener('input', function(){ this.value = this.value.toUpperCase(); });
   body.appendChild(row);
+}
+
+function _wizAppendJobRow(name, order, type, command) {
+  wizAddJobRow();
+  const body = $('wiz-jobs-body');
+  const row = body.lastElementChild;
+  if (!row) return;
+  const inputs = row.querySelectorAll('input, select');
+  if (inputs[0]) inputs[0].value = (name || '').toUpperCase();
+  if (inputs[1]) inputs[1].value = order != null ? order : body.children.length;
+  if (inputs[2]) {
+    const sel = inputs[2];
+    const want = (type || '').toLowerCase();
+    let found = false;
+    for (const opt of sel.options) {
+      if (opt.value.toLowerCase() === want) { sel.value = opt.value; found = true; break; }
+    }
+    if (!found && type) {
+      const o = document.createElement('option');
+      o.value = o.textContent = type;
+      sel.appendChild(o);
+      sel.value = type;
+    }
+  }
+  if (inputs[3]) inputs[3].value = command || '';
+}
+
+async function _wizLoadExistingJobs(pname) {
+  const body  = $('wiz-jobs-body');
+  const empty = $('wiz-jobs-empty');
+  if (body) body.innerHTML = '';
+  if (empty) { empty.style.display = ''; empty.textContent = 'Carregando jobs existentes…'; }
+  window.__wizLineage = {};
+  try {
+    const r = await fetch(ORQUESTRA_API + '/jobs?limit=200&filter_pipeline=' + encodeURIComponent(pname));
+    const d = r.ok ? await r.json() : { data: [] };
+    (d.data || []).forEach(j => _wizAppendJobRow(j.job_name, j.execution_order, j.job_type, j.job_command));
+  } catch(e) { console.warn('[WIZ] Falha ao carregar jobs:', e); }
+  try {
+    const r2 = await fetch(ORQUESTRA_API + '/lineage?pipeline_name=' + encodeURIComponent(pname));
+    if (r2.ok) {
+      const d2 = await r2.json();
+      (d2.jobs || []).forEach(j => {
+        window.__wizLineage[j.job_name] = {
+          origens:  (j.origens  || []).map(o => ({ type: o.object_type || 'Tabela', name: o.object_name || '' })),
+          destinos: (j.destinos || []).map(o => ({ type: o.object_type || 'Tabela', name: o.object_name || '' })),
+        };
+      });
+    }
+  } catch(e) { console.warn('[WIZ] Falha ao carregar lineage:', e); }
+  if (empty) {
+    empty.textContent = 'Nenhum job adicionado — pipeline sem jobs por ora.';
+    empty.style.display = (body && body.children.length) ? 'none' : '';
+  }
 }
 
 function _wizRenumberJobs() {
@@ -8715,7 +8793,7 @@ function _wizAddJobRowData(nome, ordem, tipo, cmd) {
   const idx = body.children.length + 1;
   const row = document.createElement('div');
   row.className = 'wiz-job-row';
-  const types = window.__jobTypes || [{nome:'SQL'},{nome:'Python'},{nome:'Bash'},{nome:'Spark'},{nome:'dbt'},{nome:'DataStage'}];
+  const types = window.__jobTypes || [{nome:'datastage'},{nome:'shell'},{nome:'python'},{nome:'storedproc'}];
   const typeOpts = types.map(t => {
     const v = t.nome||t;
     return '<option value="' + v + '"' + (v===tipo?' selected':'') + '>' + v + '</option>';
@@ -8909,7 +8987,8 @@ function openPipelineCreate() {
   clearFieldInvalidById('p-descricao','err-descricao');
   clearFieldInvalidById('p-ambiente','err-ambiente');
   const _wjb = $('wiz-jobs-body'); if (_wjb) _wjb.innerHTML = '';
-  const _wje = $('wiz-jobs-empty'); if (_wje) _wje.style.display = '';
+  const _wje = $('wiz-jobs-empty'); if (_wje) { _wje.style.display = ''; _wje.textContent = 'Nenhum job adicionado — pipeline sem jobs por ora.'; }
+  window.__wizLineage = {};
   _wizCurrentStep = 1;
   $('pipeline-editor').style.display = 'flex';
   _wizShowStep(1);
@@ -9002,6 +9081,8 @@ function openPipelineEdit(idx) {
   clearFieldInvalidById('tag-input','err-tags');
   clearFieldInvalidById('p-descricao','err-descricao');
   clearFieldInvalidById('p-ambiente','err-ambiente');
+  // Carrega jobs e lineage já cadastrados no passo 5/6
+  _wizLoadExistingJobs(p.pipeline_name);
   _wizCurrentStep = 1;
   $('pipeline-editor').style.display = 'flex';
   _wizShowStep(1);
