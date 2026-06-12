@@ -39,3 +39,10 @@ config/*.local
 .env.prod
 .env.local
 .claude/
+
+## Certificados SSL (chave privada nunca entra no git)
+certs/*.crt
+certs/*.key
+certs/*.pem
+certs/*.p12
+!certs/.gitkeep
