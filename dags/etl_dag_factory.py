@@ -130,15 +130,17 @@ def _task_block(job, project, pipeline):
     jcmd  = job["job_command"] or ""
 
     if jtype == "datastage":
-        main = "\n".join([
+        verbose_line = f'    verbose_log=True,' if job.get("verbose_log") else ''
+        main = "\n".join(filter(None, [
             f't_job_{vname} = DataStageOperator(',
             f'    task_id="{name}",',
             f'    project=PROJECT_NAME,',
             f'    job_name="{name}",',
             f'    ssh_conn_id=SSH_CONN_ID,',
             f'    queue_name=DS_QUEUE,',
+            verbose_line,
             f')',
-        ])
+        ]))
     elif jtype == "shell":
         cmd = jcmd or "echo 'comando nao configurado'"
         # shlex.quote garante que o comando não escape das aspas no código gerado

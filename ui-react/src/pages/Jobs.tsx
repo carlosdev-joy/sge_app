@@ -15,9 +15,11 @@ import { useForm } from 'react-hook-form'
 const TIPOS = ['python', 'shell', 'sql', 'datastage', 'sensor', 'dummy']
 
 function JobModal({ job, pipeline, onClose }: { job?: Job; pipeline: string; onClose: () => void }) {
-  const { register, handleSubmit, formState: { errors } } = useForm<Omit<Job, 'pipeline_name'>>({
-    defaultValues: job ?? { job_name: '', ordem: 1, tipo: 'python', job_command: '', ativo: true }
+  const { register, handleSubmit, watch, formState: { errors } } = useForm<Omit<Job, 'pipeline_name'>>({
+    defaultValues: job ?? { job_name: '', ordem: 1, tipo: 'python', job_command: '', ativo: true, verbose_log: false }
   })
+
+  const tipoAtual = watch('tipo')
 
   const mut = useMutation({
     mutationFn: (data: any) => apiFetch('/pipelines/jobs/register', {
@@ -39,10 +41,28 @@ function JobModal({ job, pipeline, onClose }: { job?: Job; pipeline: string; onC
           </Select>
         </div>
         <Input label="Comando / Path" {...register('job_command')} placeholder="ex: dags.meu_modulo.run" />
-        <label className="flex items-center gap-2 text-sm text-[#94a3b8]">
-          <input type="checkbox" {...register('ativo')} className="accent-blue-500" />
-          Ativo
-        </label>
+
+        <div className="flex flex-col gap-2">
+          <label className="flex items-center gap-2 text-sm text-[#94a3b8]">
+            <input type="checkbox" {...register('ativo')} className="accent-blue-500" />
+            Ativo
+          </label>
+
+          {tipoAtual === 'datastage' && (
+            <div className="mt-1 rounded-lg border border-[#2a2d3a] bg-[#12141c] p-3 flex flex-col gap-1">
+              <label className="flex items-center gap-2 text-sm text-[#e2e8f0] cursor-pointer select-none">
+                <input type="checkbox" {...register('verbose_log')} className="accent-amber-400" />
+                <span className="font-medium">Log detalhado durante execução</span>
+              </label>
+              <p className="text-xs text-[#64748b] pl-5">
+                Quando ativo, registra o progresso dos jobs filhos a cada 5 minutos enquanto o job roda.
+                Útil para investigar lentidão em jobs do tipo SEQUENCE. Desative após a investigação
+                para reduzir o uso de SSH no servidor DataStage.
+              </p>
+            </div>
+          )}
+        </div>
+
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" type="button" onClick={onClose}>Cancelar</Button>
           <Button type="submit" loading={mut.isPending}>Salvar</Button>
@@ -105,6 +125,7 @@ export default function Jobs() {
               <th className="px-4 py-2 text-left">Tipo</th>
               <th className="px-4 py-2 text-left">Comando</th>
               <th className="px-4 py-2 text-left">Status</th>
+              <th className="px-4 py-2 text-left">Log</th>
               <th className="px-4 py-2 text-right">Ações</th>
             </tr></thead>
             <tbody>
@@ -116,6 +137,12 @@ export default function Jobs() {
                   <td className="px-4 py-2"><Badge value={j.tipo} /></td>
                   <td className="px-4 py-2 text-[#94a3b8] font-mono text-xs max-w-xs truncate">{j.job_command}</td>
                   <td className="px-4 py-2"><Badge value={j.ativo ? 'ativo' : 'inativo'} /></td>
+                  <td className="px-4 py-2">
+                    {j.tipo === 'datastage' && j.verbose_log
+                      ? <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full" title="Log detalhado ativo — registra progresso dos jobs filhos a cada 5 min">🔍 detalhado</span>
+                      : <span className="text-xs text-[#3d4152]">—</span>
+                    }
+                  </td>
                   <td className="px-4 py-2 flex justify-end gap-1.5">
                     <Button variant="ghost" size="sm" onClick={() => setEditJob(j)}><Edit size={13} /></Button>
                     <Button variant="ghost" size="sm" onClick={() => { if (confirm(`Remover ${j.job_name}?`)) deleteMut.mutate(j) }}><Trash2 size={13} className="text-red-400" /></Button>

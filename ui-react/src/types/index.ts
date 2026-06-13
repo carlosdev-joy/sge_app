@@ -20,6 +20,7 @@ export interface Job {
   job_command?: string
   ssh_conn_id?: string
   ativo?: boolean
+  verbose_log?: boolean
 }
 
 export interface Execucao {
