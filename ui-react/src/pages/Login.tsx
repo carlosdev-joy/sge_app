@@ -20,7 +20,7 @@ export default function Login() {
     try {
       const res = await apiFetch<{ token: string; usuario: any }>('/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ matricula, senha }),
+        body: JSON.stringify({ usuario: matricula, senha }),
       })
       setAuth(res.usuario, res.token)
       navigate('/dashboard')

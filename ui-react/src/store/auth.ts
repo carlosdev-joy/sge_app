@@ -3,9 +3,10 @@ import { persist } from 'zustand/middleware'
 
 export interface User {
   matricula: string
-  nome: string
+  primeiro_nome?: string
+  ultimo_nome?: string
   perfil: string
-  email: string
+  email?: string
   permissoes?: string[]
 }
 

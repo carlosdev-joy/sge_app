@@ -51,7 +51,7 @@ export function Header() {
       </nav>
       <div className="flex items-center gap-2 ml-2">
         <span className="text-xs text-[#94a3b8] flex items-center gap-1">
-          <User size={12} />{user?.nome ?? user?.matricula}
+          <User size={12} />{user?.primeiro_nome ?? user?.matricula}
         </span>
         <button onClick={handleLogout} className="text-[#94a3b8] hover:text-red-400 transition-colors p-1" title="Sair">
           <LogOut size={14} />
