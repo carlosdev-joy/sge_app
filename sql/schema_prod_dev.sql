@@ -40,6 +40,11 @@ GO
 -- ──────────────────────────────────────────────────────────────
 -- 2. Drop (filho → pai)
 -- ──────────────────────────────────────────────────────────────
+-- Views primeiro (runs anteriores podem ter criado etl_ds_job_log/
+-- etl_datastage_job_log como VIEW — DROP TABLE numa view dá erro).
+DROP VIEW IF EXISTS dbo.etl_ds_job_log;
+DROP VIEW IF EXISTS dbo.etl_datastage_job_log;
+GO
 DROP TABLE IF EXISTS dbo.etl_factory_log;
 DROP TABLE IF EXISTS dbo.etl_datastage_job_log;
 DROP TABLE IF EXISTS dbo.etl_ds_job_log;
@@ -63,7 +68,6 @@ DROP TABLE IF EXISTS dbo.etl_app_config;
 DROP TABLE IF EXISTS dbo.etl_project;
 -- resíduos do dev antigo
 DROP TABLE IF EXISTS dbo.etl_configuracao;
-DROP VIEW  IF EXISTS dbo.etl_ds_job_log;     -- caso exista como view
 PRINT 'Tabelas dropadas.';
 GO
 
