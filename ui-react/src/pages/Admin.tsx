@@ -8,32 +8,40 @@ import { Modal } from '../components/ui/Modal'
 import { PageSpinner } from '../components/ui/Spinner'
 import { toast } from '../components/ui/Toast'
 import { Tabs } from '../components/ui/Tabs'
-import type { AdminConfig, Usuario, Perfil, Versao, TipoJob, Calendario, Blackout } from '../types'
 import { queryClient } from '../lib/queryClient'
 import { Edit, Trash2, Plus, AlertTriangle } from 'lucide-react'
 
+const PROJETOS = ['BI_CVP', 'BI_VIDA', 'BI_PREVIDENCIA', 'BI_PRESTAMISTA']
+
+// helper: POST /admin com { action, ... }
+const adminPost = <T,>(action: string, extra: Record<string, unknown> = {}) =>
+  apiFetch<T>('/admin', { method: 'POST', body: JSON.stringify({ action, ...extra }) })
+
 // ── Configurações ───────────────────────────────────────────────
 function ConfigTab() {
-  const [editItem, setEditItem] = useState<AdminConfig | null>(null)
+  const [editKey, setEditKey] = useState<string | null>(null)
   const [newKey, setNewKey] = useState(''); const [newVal, setNewVal] = useState(''); const [newDesc, setNewDesc] = useState('')
 
-  const { data, isLoading } = useQuery<{ configs: AdminConfig[] }>({
+  const { data, isLoading } = useQuery<{ config: Record<string, string> }>({
     queryKey: ['admin-config'],
-    queryFn: () => apiFetch('/admin', { method: 'POST', body: JSON.stringify({ operacao: 'config_list' }) }),
+    queryFn: () => adminPost('config_list'),
   })
 
   const upsertMut = useMutation({
-    mutationFn: (c: AdminConfig) => apiFetch('/admin', { method: 'POST', body: JSON.stringify({ operacao: 'config_upsert', ...c }) }),
-    onSuccess: () => { toast.success('Configuração salva'); queryClient.invalidateQueries({ queryKey: ['admin-config'] }); setEditItem(null); setNewKey(''); setNewVal(''); setNewDesc('') },
+    mutationFn: (p: { config_key: string; config_value: string; descricao?: string }) =>
+      adminPost('config_upsert', p),
+    onSuccess: () => { toast.success('Configuração salva'); queryClient.invalidateQueries({ queryKey: ['admin-config'] }); setEditKey(null); setNewKey(''); setNewVal(''); setNewDesc('') },
     onError: (e: any) => toast.error(e.message),
   })
   const deleteMut = useMutation({
-    mutationFn: (chave: string) => apiFetch('/admin', { method: 'POST', body: JSON.stringify({ operacao: 'config_delete', chave }) }),
+    mutationFn: (config_key: string) => adminPost('config_delete', { config_key }),
     onSuccess: () => { toast.success('Removido'); queryClient.invalidateQueries({ queryKey: ['admin-config'] }) },
     onError: (e: any) => toast.error(e.message),
   })
 
   const testWebhook = () => apiFetch('/admin/test-webhook', { method: 'POST' }).then(() => toast.success('Webhook enviado')).catch((e: any) => toast.error(e.message))
+
+  const entries = Object.entries(data?.config ?? {})
 
   return (
     <div className="flex flex-col gap-4">
@@ -44,17 +52,16 @@ function ConfigTab() {
         <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
           <table className="w-full text-sm">
             <thead><tr className="text-xs text-[#94a3b8] border-b border-[#2a2d3a]">
-              <th className="px-4 py-2 text-left">Chave</th><th className="px-4 py-2 text-left">Valor</th><th className="px-4 py-2 text-left">Descrição</th><th className="px-4 py-2 text-right">Ações</th>
+              <th className="px-4 py-2 text-left">Chave</th><th className="px-4 py-2 text-left">Valor</th><th className="px-4 py-2 text-right">Ações</th>
             </tr></thead>
             <tbody>
-              {(data?.configs ?? []).map((c) => (
-                <tr key={c.chave} className="border-b border-[#2a2d3a]/50 hover:bg-[#2a2d3a]/30">
-                  <td className="px-4 py-2 font-mono text-xs text-blue-400">{c.chave}</td>
-                  <td className="px-4 py-2 font-mono text-xs text-[#e2e8f0]">{c.valor}</td>
-                  <td className="px-4 py-2 text-xs text-[#94a3b8]">{c.descricao}</td>
+              {entries.map(([k, v]) => (
+                <tr key={k} className="border-b border-[#2a2d3a]/50 hover:bg-[#2a2d3a]/30">
+                  <td className="px-4 py-2 font-mono text-xs text-blue-400">{k}</td>
+                  <td className="px-4 py-2 font-mono text-xs text-[#e2e8f0]">{v}</td>
                   <td className="px-4 py-2 flex justify-end gap-1.5">
-                    <Button variant="ghost" size="sm" onClick={() => setEditItem(c)}><Edit size={13} /></Button>
-                    <Button variant="ghost" size="sm" onClick={() => { if(confirm(`Remover ${c.chave}?`)) deleteMut.mutate(c.chave) }}><Trash2 size={13} className="text-red-400" /></Button>
+                    <Button variant="ghost" size="sm" onClick={() => setEditKey(k)}><Edit size={13} /></Button>
+                    <Button variant="ghost" size="sm" onClick={() => { if(confirm(`Remover ${k}?`)) deleteMut.mutate(k) }}><Trash2 size={13} className="text-red-400" /></Button>
                   </td>
                 </tr>
               ))}
@@ -62,25 +69,24 @@ function ConfigTab() {
           </table>
         </div>
       )}
-      {/* Novo parâmetro */}
       <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4 flex flex-wrap gap-3 items-end">
         <Input label="Chave" value={newKey} onChange={e => setNewKey(e.target.value)} className="w-48" />
         <Input label="Valor" value={newVal} onChange={e => setNewVal(e.target.value)} className="w-48" />
-        <Input label="Descrição" value={newDesc} onChange={e => setNewDesc(e.target.value)} className="w-56" />
-        <Button onClick={() => upsertMut.mutate({ chave: newKey, valor: newVal, descricao: newDesc })} disabled={!newKey || !newVal}><Plus size={13} /> Adicionar</Button>
+        <Input label="Descrição (opcional)" value={newDesc} onChange={e => setNewDesc(e.target.value)} className="w-56" />
+        <Button onClick={() => upsertMut.mutate({ config_key: newKey, config_value: newVal, descricao: newDesc || undefined })} disabled={!newKey || !newVal}><Plus size={13} /> Adicionar</Button>
       </div>
 
-      {editItem && (
-        <Modal open title={`Editar: ${editItem.chave}`} onClose={() => setEditItem(null)}>
+      {editKey && (
+        <Modal open title={`Editar: ${editKey}`} onClose={() => setEditKey(null)}>
           <div className="flex flex-col gap-3">
-            <Input label="Valor" defaultValue={editItem.valor} id="edit-val" />
-            <Input label="Descrição" defaultValue={editItem.descricao} id="edit-desc" />
+            <Input label="Valor" defaultValue={data?.config[editKey]} id="edit-val" />
+            <Input label="Descrição (opcional)" id="edit-desc" />
             <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setEditItem(null)}>Cancelar</Button>
+              <Button variant="secondary" onClick={() => setEditKey(null)}>Cancelar</Button>
               <Button onClick={() => {
                 const val = (document.getElementById('edit-val') as HTMLInputElement).value
                 const desc = (document.getElementById('edit-desc') as HTMLInputElement).value
-                upsertMut.mutate({ chave: editItem.chave, valor: val, descricao: desc })
+                upsertMut.mutate({ config_key: editKey, config_value: val, descricao: desc || undefined })
               }}>Salvar</Button>
             </div>
           </div>
@@ -99,30 +105,24 @@ function RegenDagsTab() {
   const regen = async () => {
     setLoading(true); setLog('')
     try {
-      const res = await apiFetch<any>('/admin', {
-        method: 'POST',
-        body: JSON.stringify({ operacao: 'regen_dags', projeto: projeto || undefined }),
-      })
+      const res = await adminPost<any>('regenerate_all_dags', { filter_project: projeto || undefined })
       setLog(JSON.stringify(res, null, 2))
-      toast.success('Regeneração concluída')
+      toast.success(res.mensagem ?? 'Regeneração concluída')
     } catch (e: any) {
-      toast.error(e.message)
-      setLog(e.message)
-    } finally {
-      setLoading(false)
-    }
+      toast.error(e.message); setLog(e.message)
+    } finally { setLoading(false) }
   }
 
   return (
     <div className="flex flex-col gap-4">
       <div className="bg-yellow-900/20 border border-yellow-700 rounded-lg p-3 flex items-start gap-2 text-sm text-yellow-300">
         <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-        A regeneração de DAGs dispara a etl_dag_factory. Todos os DAGs do projeto serão recriados no Airflow.
+        Marca os pipelines para regeneração (dag_criada=0). A etl_dag_factory recria os DAGs no próximo ciclo.
       </div>
       <div className="flex gap-3 items-end">
         <Select label="Projeto (opcional)" value={projeto} onChange={e => setProjeto(e.target.value)} className="w-48">
           <option value="">Todos</option>
-          {['BI_CVP','BI_VIDA','BI_PREVIDENCIA','BI_PRESTAMISTA'].map(p => <option key={p}>{p}</option>)}
+          {PROJETOS.map(p => <option key={p}>{p}</option>)}
         </Select>
         <Button onClick={regen} loading={loading} variant="danger">⟳ Regenerar DAGs</Button>
       </div>
@@ -134,24 +134,15 @@ function RegenDagsTab() {
 // ── Excluir Pipeline ────────────────────────────────────────────
 function DeletePipelineTab() {
   const [nome, setNome] = useState('')
-  const [preview, setPreview] = useState<any>(null)
   const [loading, setLoading] = useState(false)
-
-  const fetchDeps = async () => {
-    setLoading(true)
-    try {
-      const res = await apiFetch<any>('/admin', { method: 'POST', body: JSON.stringify({ operacao: 'pipeline_delete_preview', pipeline_name: nome }) })
-      setPreview(res)
-    } catch (e: any) { toast.error(e.message) }
-    finally { setLoading(false) }
-  }
+  const [result, setResult] = useState<any>(null)
 
   const del = async () => {
-    if (!confirm(`ATENÇÃO: Excluir "${nome}" é irreversível. Confirma?`)) return
-    setLoading(true)
+    if (!confirm(`ATENÇÃO: Excluir "${nome}" é irreversível (remove jobs, lineage e execuções). Confirma?`)) return
+    setLoading(true); setResult(null)
     try {
-      await apiFetch('/admin', { method: 'POST', body: JSON.stringify({ operacao: 'pipeline_delete', pipeline_name: nome }) })
-      toast.success('Pipeline excluído'); setNome(''); setPreview(null)
+      const res = await adminPost<any>('pipeline_delete', { pipeline_name: nome })
+      setResult(res); toast.success(res.mensagem ?? 'Pipeline excluído'); setNome('')
     } catch (e: any) { toast.error(e.message) }
     finally { setLoading(false) }
   }
@@ -160,33 +151,36 @@ function DeletePipelineTab() {
     <div className="flex flex-col gap-4">
       <div className="bg-red-900/20 border border-red-700 rounded-lg p-3 flex items-start gap-2 text-sm text-red-300">
         <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-        Esta operação é irreversível. Todos os jobs, execuções e lineage do pipeline serão removidos.
+        Operação irreversível. Todos os jobs, execuções e lineage do pipeline são removidos.
       </div>
       <div className="flex gap-3 items-end">
         <Input label="Nome do Pipeline" value={nome} onChange={e => setNome(e.target.value)} className="w-72" placeholder="nome exato" />
-        <Button variant="secondary" onClick={fetchDeps} loading={loading} disabled={!nome}>Ver Dependências</Button>
-        {preview && <Button variant="danger" onClick={del} loading={loading}>Excluir</Button>}
+        <Button variant="danger" onClick={del} loading={loading} disabled={!nome}>Excluir Pipeline</Button>
       </div>
-      {preview && (
-        <pre className="text-xs text-[#94a3b8] bg-[#0f1117] rounded-lg p-4 overflow-auto max-h-48">{JSON.stringify(preview, null, 2)}</pre>
-      )}
+      {result && <pre className="text-xs text-[#94a3b8] bg-[#0f1117] rounded-lg p-4 overflow-auto max-h-48">{JSON.stringify(result, null, 2)}</pre>}
     </div>
   )
 }
 
 // ── Versões ─────────────────────────────────────────────────────
+interface VersaoRow { id: number; versao: string; titulo: string; descricao_md?: string; criado_em?: string }
 function VersoesTab() {
-  const [nova, setNova] = useState<Partial<Versao>>({})
+  const [nova, setNova] = useState({ versao: '', titulo: '', descricao_md: '' })
   const [showForm, setShowForm] = useState(false)
 
-  const { data, isLoading } = useQuery<{ versoes: Versao[] }>({
+  const { data, isLoading } = useQuery<{ data: VersaoRow[] }>({
     queryKey: ['versoes'],
     queryFn: () => apiFetch('/versao'),
   })
 
-  const mut = useMutation({
-    mutationFn: (v: Versao) => apiFetch('/versao/register', { method: 'POST', body: JSON.stringify(v) }),
-    onSuccess: () => { toast.success('Versão salva'); queryClient.invalidateQueries({ queryKey: ['versoes'] }); setShowForm(false); setNova({}) },
+  const createMut = useMutation({
+    mutationFn: (v: typeof nova) => apiFetch('/versao/register', { method: 'POST', body: JSON.stringify({ action: 'create', ...v }) }),
+    onSuccess: () => { toast.success('Versão salva'); queryClient.invalidateQueries({ queryKey: ['versoes'] }); setShowForm(false); setNova({ versao: '', titulo: '', descricao_md: '' }) },
+    onError: (e: any) => toast.error(e.message),
+  })
+  const deleteMut = useMutation({
+    mutationFn: (id: number) => apiFetch('/versao/register', { method: 'POST', body: JSON.stringify({ action: 'delete', id }) }),
+    onSuccess: () => { toast.success('Versão removida'); queryClient.invalidateQueries({ queryKey: ['versoes'] }) },
     onError: (e: any) => toast.error(e.message),
   })
 
@@ -197,14 +191,15 @@ function VersoesTab() {
       </div>
       {isLoading ? <PageSpinner /> : (
         <div className="flex flex-col gap-3">
-          {(data?.versoes ?? []).map((v) => (
-            <div key={v.versao} className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4">
+          {(data?.data ?? []).map((v) => (
+            <div key={v.id} className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4">
               <div className="flex items-center gap-3 mb-2">
                 <span className="text-blue-400 font-bold font-mono">{v.versao}</span>
                 <span className="text-[#e2e8f0] font-medium">{v.titulo}</span>
-                {v.data && <span className="text-xs text-[#94a3b8] ml-auto">{v.data}</span>}
+                {v.criado_em && <span className="text-xs text-[#94a3b8] ml-auto">{v.criado_em}</span>}
+                <Button variant="ghost" size="sm" onClick={() => { if(confirm(`Remover versão ${v.versao}?`)) deleteMut.mutate(v.id) }}><Trash2 size={13} className="text-red-400" /></Button>
               </div>
-              {v.descricao && <p className="text-sm text-[#94a3b8] whitespace-pre-wrap">{v.descricao}</p>}
+              {v.descricao_md && <p className="text-sm text-[#94a3b8] whitespace-pre-wrap">{v.descricao_md}</p>}
             </div>
           ))}
         </div>
@@ -212,12 +207,12 @@ function VersoesTab() {
       {showForm && (
         <Modal open title="Nova Versão" onClose={() => setShowForm(false)}>
           <div className="flex flex-col gap-4">
-            <Input label="Versão" value={nova.versao ?? ''} onChange={e => setNova(n => ({ ...n, versao: e.target.value }))} placeholder="v2.5.0" />
-            <Input label="Título" value={nova.titulo ?? ''} onChange={e => setNova(n => ({ ...n, titulo: e.target.value }))} />
-            <Textarea label="Descrição (markdown)" value={nova.descricao ?? ''} onChange={e => setNova(n => ({ ...n, descricao: e.target.value }))} rows={5} />
+            <Input label="Versão" value={nova.versao} onChange={e => setNova(n => ({ ...n, versao: e.target.value }))} placeholder="v2.5.0" />
+            <Input label="Título" value={nova.titulo} onChange={e => setNova(n => ({ ...n, titulo: e.target.value }))} />
+            <Textarea label="Descrição (markdown)" value={nova.descricao_md} onChange={e => setNova(n => ({ ...n, descricao_md: e.target.value }))} rows={5} />
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setShowForm(false)}>Cancelar</Button>
-              <Button onClick={() => mut.mutate(nova as Versao)} loading={mut.isPending}>Salvar</Button>
+              <Button onClick={() => createMut.mutate(nova)} loading={createMut.isPending} disabled={!nova.versao || !nova.titulo}>Salvar</Button>
             </div>
           </div>
         </Modal>
@@ -227,10 +222,11 @@ function VersoesTab() {
 }
 
 // ── Tipos de Job ────────────────────────────────────────────────
+interface TipoJobRow { id: number; nome: string; descricao?: string; lineage_enabled: boolean; status: boolean }
 function TiposJobTab() {
-  const { data, isLoading } = useQuery<{ tipos: TipoJob[] }>({
+  const { data, isLoading } = useQuery<{ job_types: TipoJobRow[] }>({
     queryKey: ['tipos-job'],
-    queryFn: () => apiFetch('/admin', { method: 'POST', body: JSON.stringify({ operacao: 'tipo_job_list' }) }),
+    queryFn: () => apiFetch('/catalogo', { method: 'POST', body: JSON.stringify({ mode: 'list_job_types', include_inactive: true }) }),
   })
 
   return (
@@ -242,12 +238,12 @@ function TiposJobTab() {
               <th className="px-4 py-2 text-left">Nome</th><th className="px-4 py-2 text-left">Descrição</th><th className="px-4 py-2 text-left">Lineage</th><th className="px-4 py-2 text-left">Status</th>
             </tr></thead>
             <tbody>
-              {(data?.tipos ?? []).map((t) => (
-                <tr key={t.nome} className="border-b border-[#2a2d3a]/50">
+              {(data?.job_types ?? []).map((t) => (
+                <tr key={t.id} className="border-b border-[#2a2d3a]/50">
                   <td className="px-4 py-2 font-mono text-xs text-[#e2e8f0]">{t.nome}</td>
                   <td className="px-4 py-2 text-xs text-[#94a3b8]">{t.descricao}</td>
-                  <td className="px-4 py-2"><Badge value={t.lineage_habilitado ? 'sim' : 'não'} /></td>
-                  <td className="px-4 py-2"><Badge value={t.ativo ? 'ativo' : 'inativo'} /></td>
+                  <td className="px-4 py-2"><Badge value={t.lineage_enabled ? 'sim' : 'não'} /></td>
+                  <td className="px-4 py-2"><Badge value={t.status ? 'ativo' : 'inativo'} /></td>
                 </tr>
               ))}
             </tbody>
@@ -259,34 +255,39 @@ function TiposJobTab() {
 }
 
 // ── Agendamento ─────────────────────────────────────────────────
+interface CalendarioRow { calendario_nome: string; datas: number; proxima?: string | null }
+interface BlackoutRow { id: number; inicio: string; fim?: string; escopo?: string | null; motivo?: string; ativo: number; vigente: number }
 function AgendamentoTab() {
   const [freezeLoading, setFreezeLoading] = useState(false)
-  const [novoCalNome, setNovoCalNome] = useState(''); const [novoCalDatas, setNovoCalDatas] = useState(''); const [novoCalDesc, setNovoCalDesc] = useState('')
+  const [calNome, setCalNome] = useState(''); const [calDatas, setCalDatas] = useState(''); const [calDesc, setCalDesc] = useState('')
 
-  const { data: calendarios } = useQuery<{ calendarios: Calendario[] }>({
-    queryKey: ['calendarios'],
-    queryFn: () => apiFetch('/agenda/calendarios'),
+  const { data: cal } = useQuery<{ calendarios: CalendarioRow[] }>({
+    queryKey: ['calendarios'], queryFn: () => apiFetch('/agenda/calendarios'),
   })
-  const { data: blackouts } = useQuery<{ blackouts: Blackout[] }>({
-    queryKey: ['blackouts'],
-    queryFn: () => apiFetch('/agenda/blackouts'),
+  const { data: bo } = useQuery<{ blackouts: BlackoutRow[]; ambiente_congelado: boolean }>({
+    queryKey: ['blackouts'], queryFn: () => apiFetch('/agenda/blackouts?incluir_historico=1'),
   })
 
-  const freeze = async () => {
+  const freeze = async (acao: 'congelar' | 'descongelar') => {
     setFreezeLoading(true)
-    try { await apiFetch('/admin/freeze', { method: 'POST' }); toast.success('Ambiente alternado') }
-    catch (e: any) { toast.error(e.message) }
+    try {
+      await apiFetch('/admin/freeze', { method: 'POST', body: JSON.stringify({ acao }) })
+      toast.success(acao === 'congelar' ? 'Ambiente congelado' : 'Ambiente descongelado')
+      queryClient.invalidateQueries({ queryKey: ['blackouts'] })
+    } catch (e: any) { toast.error(e.message) }
     finally { setFreezeLoading(false) }
   }
 
   const addCal = useMutation({
     mutationFn: () => apiFetch('/agenda/calendarios', {
       method: 'POST',
-      body: JSON.stringify({ nome: novoCalNome, datas: novoCalDatas.split('\n').map(d=>d.trim()).filter(Boolean), descricao: novoCalDesc }),
+      body: JSON.stringify({ calendario_nome: calNome, datas: calDatas.split('\n').map(d => d.trim()).filter(Boolean), descricao: calDesc || undefined }),
     }),
-    onSuccess: () => { toast.success('Calendário adicionado'); queryClient.invalidateQueries({ queryKey: ['calendarios'] }) },
+    onSuccess: () => { toast.success('Calendário atualizado'); queryClient.invalidateQueries({ queryKey: ['calendarios'] }); setCalNome(''); setCalDatas(''); setCalDesc('') },
     onError: (e: any) => toast.error(e.message),
   })
+
+  const congelado = bo?.ambiente_congelado
 
   return (
     <div className="flex flex-col gap-6">
@@ -294,8 +295,10 @@ function AgendamentoTab() {
       <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4">
         <h3 className="text-sm font-semibold text-[#e2e8f0] mb-3">Congelamento de Ambiente</h3>
         <div className="flex items-center gap-3">
-          <Button variant="danger" onClick={freeze} loading={freezeLoading}>❄ Alternar Freeze</Button>
-          <span className="text-xs text-[#94a3b8]">Congela/descongela o disparo de pipelines no ambiente.</span>
+          <Badge value={congelado ? 'error' : 'success'}>{congelado ? '❄ CONGELADO' : '✓ ATIVO'}</Badge>
+          {congelado
+            ? <Button variant="secondary" onClick={() => freeze('descongelar')} loading={freezeLoading}>Descongelar</Button>
+            : <Button variant="danger" onClick={() => freeze('congelar')} loading={freezeLoading}>❄ Congelar Ambiente</Button>}
         </div>
       </div>
 
@@ -303,19 +306,19 @@ function AgendamentoTab() {
       <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4">
         <h3 className="text-sm font-semibold text-[#e2e8f0] mb-3">Calendários de Bloqueio</h3>
         <div className="flex flex-col gap-2 mb-4">
-          {(calendarios?.calendarios ?? []).map(c => (
-            <div key={c.nome} className="flex items-center gap-3 text-sm">
-              <span className="text-blue-400 font-mono">{c.nome}</span>
-              <span className="text-[#94a3b8] text-xs">{c.datas?.length ?? 0} datas</span>
-              {c.descricao && <span className="text-xs text-[#94a3b8]">{c.descricao}</span>}
+          {(cal?.calendarios ?? []).map(c => (
+            <div key={c.calendario_nome} className="flex items-center gap-3 text-sm">
+              <span className="text-blue-400 font-mono">{c.calendario_nome}</span>
+              <span className="text-[#94a3b8] text-xs">{c.datas} datas</span>
+              {c.proxima && <span className="text-xs text-[#94a3b8]">próxima: {c.proxima}</span>}
             </div>
           ))}
         </div>
         <div className="flex flex-wrap gap-3 items-end border-t border-[#2a2d3a] pt-3">
-          <Input label="Nome" value={novoCalNome} onChange={e => setNovoCalNome(e.target.value)} className="w-36" />
-          <Textarea label="Datas (uma por linha, YYYY-MM-DD)" value={novoCalDatas} onChange={e => setNovoCalDatas(e.target.value)} className="w-48" rows={3} />
-          <Input label="Descrição" value={novoCalDesc} onChange={e => setNovoCalDesc(e.target.value)} className="w-48" />
-          <Button onClick={() => addCal.mutate()} loading={addCal.isPending} disabled={!novoCalNome}><Plus size={13} /> Adicionar</Button>
+          <Input label="Nome" value={calNome} onChange={e => setCalNome(e.target.value)} className="w-40" />
+          <Textarea label="Datas (uma por linha, YYYY-MM-DD)" value={calDatas} onChange={e => setCalDatas(e.target.value)} className="w-48" rows={3} />
+          <Input label="Descrição" value={calDesc} onChange={e => setCalDesc(e.target.value)} className="w-48" />
+          <Button onClick={() => addCal.mutate()} loading={addCal.isPending} disabled={!calNome || !calDatas}><Plus size={13} /> Adicionar</Button>
         </div>
       </div>
 
@@ -323,18 +326,22 @@ function AgendamentoTab() {
       <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4">
         <h3 className="text-sm font-semibold text-[#e2e8f0] mb-3">Janelas de Blackout</h3>
         <div className="flex flex-col gap-2">
-          {(blackouts?.blackouts ?? []).map(b => (
+          {(bo?.blackouts ?? []).filter(b => b.motivo !== 'FREEZE_GLOBAL').map(b => (
             <div key={b.id} className="flex items-center gap-3 text-sm">
-              <Badge value={b.ativo ? 'ativo' : 'encerrado'} />
+              <Badge value={b.vigente ? 'warning' : b.ativo ? 'info' : 'neutral'}>{b.vigente ? 'vigente' : b.ativo ? 'agendado' : 'encerrado'}</Badge>
               <span className="text-[#e2e8f0] text-xs">{b.inicio} → {b.fim ?? '...'}</span>
+              {b.escopo && <span className="text-[#94a3b8] text-xs">{b.escopo}</span>}
               {b.motivo && <span className="text-[#94a3b8] text-xs">{b.motivo}</span>}
-              {b.ativo && (
-                <Button variant="ghost" size="sm" onClick={() => apiFetch(`/agenda/blackouts/${b.id}/encerrar`, { method: 'POST' }).then(() => { toast.success('Encerrado'); queryClient.invalidateQueries({ queryKey: ['blackouts'] }) })}>
+              {!!b.ativo && (
+                <Button variant="ghost" size="sm" onClick={() => apiFetch(`/agenda/blackouts/${b.id}/encerrar`, { method: 'POST', body: JSON.stringify({}) }).then(() => { toast.success('Encerrado'); queryClient.invalidateQueries({ queryKey: ['blackouts'] }) }).catch((e: any) => toast.error(e.message))}>
                   Encerrar
                 </Button>
               )}
             </div>
           ))}
+          {(bo?.blackouts ?? []).filter(b => b.motivo !== 'FREEZE_GLOBAL').length === 0 && (
+            <span className="text-xs text-[#94a3b8]">Nenhuma janela de blackout.</span>
+          )}
         </div>
       </div>
     </div>
@@ -342,24 +349,31 @@ function AgendamentoTab() {
 }
 
 // ── Usuários & Perfis ───────────────────────────────────────────
+interface UsuarioRow { matricula: string; perfil: string; primeiro_nome?: string; email?: string; ativo: boolean; ultimo_login?: string }
+interface PerfilRow { perfil_nome: string; descricao?: string; permissoes: string[] }
 function UsuariosTab() {
-  const [novoMat, setNovoMat] = useState(''); const [novoPerfil, setNovoPerfil] = useState('operador')
+  const [novoMat, setNovoMat] = useState(''); const [novoPerfil, setNovoPerfil] = useState('consulta')
 
-  const { data, isLoading } = useQuery<{ usuarios: Usuario[] }>({
-    queryKey: ['admin-usuarios'],
-    queryFn: () => apiFetch('/admin', { method: 'POST', body: JSON.stringify({ operacao: 'user_list' }) }),
+  const { data, isLoading } = useQuery<{ usuarios: UsuarioRow[] }>({
+    queryKey: ['admin-usuarios'], queryFn: () => adminPost('user_list'),
   })
-  const { data: perfis } = useQuery<{ perfis: Perfil[] }>({
-    queryKey: ['admin-perfis'],
-    queryFn: () => apiFetch('/admin', { method: 'POST', body: JSON.stringify({ operacao: 'perfil_list' }) }),
+  const { data: perfis } = useQuery<{ perfis: PerfilRow[] }>({
+    queryKey: ['admin-perfis'], queryFn: () => adminPost('perfil_list'),
   })
 
   const upsertMut = useMutation({
     mutationFn: ({ matricula, perfil }: { matricula: string; perfil: string }) =>
-      apiFetch('/admin', { method: 'POST', body: JSON.stringify({ operacao: 'user_upsert', matricula, perfil }) }),
+      adminPost('user_upsert', { matricula, perfil }),
     onSuccess: () => { toast.success('Usuário salvo'); queryClient.invalidateQueries({ queryKey: ['admin-usuarios'] }); setNovoMat('') },
     onError: (e: any) => toast.error(e.message),
   })
+  const deleteMut = useMutation({
+    mutationFn: (matricula: string) => adminPost('user_delete', { matricula }),
+    onSuccess: () => { toast.success('Usuário removido'); queryClient.invalidateQueries({ queryKey: ['admin-usuarios'] }) },
+    onError: (e: any) => toast.error(e.message),
+  })
+
+  const perfilOpts = perfis?.perfis ?? [{ perfil_nome: 'admin' }, { perfil_nome: 'operador' }, { perfil_nome: 'consulta' }] as PerfilRow[]
 
   return (
     <div className="flex flex-col gap-4">
@@ -367,7 +381,7 @@ function UsuariosTab() {
         <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
           <table className="w-full text-sm">
             <thead><tr className="text-xs text-[#94a3b8] border-b border-[#2a2d3a]">
-              <th className="px-4 py-2 text-left">Matrícula</th><th className="px-4 py-2 text-left">Nome</th><th className="px-4 py-2 text-left">Perfil</th><th className="px-4 py-2 text-left">Email</th><th className="px-4 py-2 text-left">Status</th><th className="px-4 py-2 text-left">Último Login</th>
+              <th className="px-4 py-2 text-left">Matrícula</th><th className="px-4 py-2 text-left">Nome</th><th className="px-4 py-2 text-left">Perfil</th><th className="px-4 py-2 text-left">Email</th><th className="px-4 py-2 text-left">Status</th><th className="px-4 py-2 text-left">Último Login</th><th className="px-4 py-2 text-right">Ações</th>
             </tr></thead>
             <tbody>
               {(data?.usuarios ?? []).map(u => (
@@ -378,6 +392,9 @@ function UsuariosTab() {
                   <td className="px-4 py-2 text-xs text-[#94a3b8]">{u.email}</td>
                   <td className="px-4 py-2"><Badge value={u.ativo ? 'ativo' : 'inativo'} /></td>
                   <td className="px-4 py-2 text-xs text-[#94a3b8]">{u.ultimo_login}</td>
+                  <td className="px-4 py-2 text-right">
+                    <Button variant="ghost" size="sm" onClick={() => { if(confirm(`Remover ${u.matricula}?`)) deleteMut.mutate(u.matricula) }}><Trash2 size={13} className="text-red-400" /></Button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -385,11 +402,29 @@ function UsuariosTab() {
         </div>
       )}
       <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4 flex flex-wrap gap-3 items-end">
-        <Input label="Matrícula" value={novoMat} onChange={e => setNovoMat(e.target.value)} className="w-36" placeholder="C123456" />
-        <Select label="Perfil" value={novoPerfil} onChange={e => setNovoPerfil(e.target.value)} className="w-36">
-          {(perfis?.perfis ?? [{ nome: 'admin' },{ nome: 'operador' },{ nome: 'consulta' }]).map(p => <option key={p.nome}>{p.nome}</option>)}
+        <Input label="Matrícula" value={novoMat} onChange={e => setNovoMat(e.target.value)} className="w-40" placeholder="C123456" />
+        <Select label="Perfil" value={novoPerfil} onChange={e => setNovoPerfil(e.target.value)} className="w-40">
+          {perfilOpts.map(p => <option key={p.perfil_nome}>{p.perfil_nome}</option>)}
         </Select>
         <Button onClick={() => upsertMut.mutate({ matricula: novoMat, perfil: novoPerfil })} loading={upsertMut.isPending} disabled={!novoMat}><Plus size={13} /> Adicionar/Atualizar</Button>
+      </div>
+
+      {/* Perfis e permissões */}
+      <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4">
+        <h3 className="text-sm font-semibold text-[#e2e8f0] mb-3">Perfis e Permissões</h3>
+        <div className="flex flex-col gap-2">
+          {(perfis?.perfis ?? []).map(p => (
+            <div key={p.perfil_nome} className="flex items-start gap-3 text-sm">
+              <Badge value={p.perfil_nome} />
+              <span className="text-[#94a3b8] text-xs">{p.descricao}</span>
+              <div className="flex flex-wrap gap-1 ml-auto">
+                {(p.permissoes ?? []).map(rec => (
+                  <span key={rec} className="text-[10px] bg-[#0f1117] border border-[#2a2d3a] rounded px-1.5 py-0.5 text-[#94a3b8] font-mono">{rec}</span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )
