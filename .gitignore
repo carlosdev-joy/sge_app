@@ -39,3 +39,7 @@ config/*.local
 .env.prod
 .env.local
 .claude/
+
+## Dumps de dados de produção (nunca commitar no git)
+dump_prod.sql
+*.dump.sql
