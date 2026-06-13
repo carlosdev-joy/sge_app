@@ -8,8 +8,8 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
 dist-ssr
+# dist/ é o artefato de deploy — NÃO ignorar (ver raiz do repo)
 *.local
 
 # Editor directories and files
