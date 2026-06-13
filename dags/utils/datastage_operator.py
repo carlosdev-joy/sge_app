@@ -18,6 +18,24 @@ Features:
     (ALTA/CRÍTICO → HighPriorityJobs · MEDIA/NORMAL → MediumPriorityJobs
      BAIXA → LowPriorityJobs). Sem configuração usa o padrão do projeto.
 
+Modos de polling (parâmetro de execução):
+  - DEFAULT (fire-and-forget): execute() dispara o job, persiste o estado
+    inicial QUEUED e RETORNA imediatamente — sem manter conexão SSH em loop.
+    O polling fica a cargo do DAG etl_ds_monitor_centralizado, que verifica
+    TODOS os jobs RUNNING/QUEUED reusando UMA conexão SSH por ciclo. Isso
+    reduz drasticamente o nº de conexões SSH ao servidor DataStage quando há
+    dezenas de jobs concorrentes (de N×duração/poll para duração/intervalo).
+  - blocking=True: comportamento legado — mantém o loop de polling dentro do
+    próprio operator até o job terminar (queued_seconds e progresso parcial
+    dos filhos são medidos aqui). Use para jobs isolados/críticos.
+  - attach_only=True: anexa a um job já em execução e faz o loop até o fim
+    (usado pelo etl_datastage_monitor manual). Não dispara novo run.
+
+  As features de observabilidade (queued_seconds, progresso parcial dos jobs
+  filhos, WARNING→SUCCESS) são preservadas em AMBOS os caminhos: no modo
+  blocking/attach pelo próprio operator; no modo fire-and-forget pelo
+  etl_ds_monitor_centralizado.
+
 dsjob -jobinfo "Job Status" codes:
    0 = RUNNING
    1 = Finished OK
@@ -79,6 +97,7 @@ class DataStageOperator(BaseOperator):
         mssql_conn_id: str = "SQL14_DMDB41",
         pipeline_name: str = "",
         queue_name: str | None = None,
+        blocking: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -94,6 +113,7 @@ class DataStageOperator(BaseOperator):
         self.mssql_conn_id        = mssql_conn_id
         self.pipeline_name        = pipeline_name
         self.queue_name           = queue_name  # DS Workload Management queue
+        self.blocking             = blocking     # True = loop de polling interno (legado)
 
     # ── entry point ──────────────────────────────────────────────────────────
 
@@ -113,18 +133,53 @@ class DataStageOperator(BaseOperator):
                 )
             wave_num = info.get("wave_number", 0)
             self.log.info("[DS] Attached to job (wave=%s)", wave_num)
-        else:
-            wave_num = ti.xcom_pull(key="ds_wave_num", task_ids=ti.task_id)
-            if wave_num is not None:
-                self.log.info("[DS] Resuming from XCom wave_num=%s", wave_num)
-            else:
-                wave_num = self._trigger_or_attach(logical_date)
-                ti.xcom_push(key="ds_wave_num", value=wave_num)
-                self.log.info("[DS] Job triggered — wave_num=%s", wave_num)
+            # attach_only sempre faz o loop até o fim (monitor manual de 1 job)
+            self._persist(execution_id, pipeline, wave_num, None,
+                          "QUEUED", self._ST_QUEUED, [], "", None)
+            return self._poll_until_done(execution_id, pipeline, logical_date, ti, wave_num)
 
-        # Persist initial state to DB
+        wave_num = ti.xcom_pull(key="ds_wave_num", task_ids=ti.task_id)
+        if wave_num is not None:
+            self.log.info("[DS] Resuming from XCom wave_num=%s", wave_num)
+        else:
+            wave_num = self._trigger_or_attach(logical_date)
+            ti.xcom_push(key="ds_wave_num", value=wave_num)
+            self.log.info("[DS] Job triggered — wave_num=%s", wave_num)
+
+        # Persist initial state to DB (QUEUED). created_at vira a referência de
+        # entrada na fila WM — o monitor centralizado calcula queued_seconds a
+        # partir daí quando o job transita para RUNNING.
         self._persist(execution_id, pipeline, wave_num, None, "QUEUED", self._ST_QUEUED, [], "", None)
 
+        if not self.blocking:
+            # ── fire-and-forget: dispara e sai. Polling delegado ao
+            #    etl_ds_monitor_centralizado (reuso de 1 conexão SSH p/ N jobs).
+            self.log.info(
+                "[DS] %s/%s disparado (wave=%s) em modo fire-and-forget. "
+                "Polling a cargo do etl_ds_monitor_centralizado.",
+                self.project, self.job_name, wave_num,
+            )
+            return json.dumps({
+                "system":      "datastage",
+                "project":     self.project,
+                "job":         self.job_name,
+                "status":      "QUEUED",
+                "status_code": self._ST_QUEUED,
+                "wave_number": wave_num,
+                "pid":         None,
+                "child_jobs":  [],
+                "log_summary": "",
+                "monitored_by": "etl_ds_monitor_centralizado",
+            }, ensure_ascii=False)
+
+        # ── blocking=True: loop de polling interno (legado) ──
+        return self._poll_until_done(execution_id, pipeline, logical_date, ti, wave_num)
+
+    # ── polling loop (modos blocking / attach_only) ───────────────────────────
+
+    def _poll_until_done(
+        self, execution_id, pipeline, logical_date, ti, wave_num,
+    ) -> str:
         # Polling loop
         ds_attempt      = 0
         poll_count      = 0
