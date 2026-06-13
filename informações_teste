@@ -9,16 +9,12 @@ docker compose build orquestra-api && docker compose up -d --no-deps orquestra-a
 docker compose logs -f orquestra-api
 docker compose restart ui-nginx
 
-docker compose logs orquestra-api --tail=20
-curl -s http://localhost/orquestra/health
+# Pega o script (do clone do repo em prod, ou clona fresh)
+git clone https://github.com/carlosdev-joy/sge_app.git /tmp/sge && cd /tmp/sge
 
-cp /opt/git/deploy.sh /opt/git/deploy.sh.bak   # backup do antigo
-curl -fsSL https://raw.githubusercontent.com/carlosdev-joy/sge_app/main/scripts/deploy.sh \
-  -o /opt/git/deploy.sh
-# OU copie manualmente o conteúdo de scripts/deploy.sh
+# Roda o dumper dentro do container da API (usa a conn de prod automaticamente)
+docker cp sql/dump_dados.py orquestra-api:/tmp/dump_dados.py
+docker exec orquestra-api python /tmp/dump_dados.py --out /tmp/dump_prod.sql
 
-curl -s http://localhost/orquestra/health
-# deve retornar {"status":"ok"}
-
-curl -I http://localhost/js/app.js
-# deve retornar Content-Type: application/javascript (não text/html)
+# Traz o arquivo para o host de prod
+docker cp orquestra-api:/tmp/dump_prod.sql ./dump_prod.sql
