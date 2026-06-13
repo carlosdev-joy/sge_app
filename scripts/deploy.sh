@@ -21,13 +21,13 @@ git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$TMP_DIR"
 COMMIT=$(git -C "$TMP_DIR" log -1 --format="%h %s (%ai)")
 echo "[DEPLOY] Commit: $COMMIT"
 
-# ── 2. UI — index.html, nginx.conf e módulos JS/CSS ──────────
-cp "$TMP_DIR/ui/index.html" "$AIRFLOW_DIR/ui/index.html"
+# ── 2. UI — React dist + nginx.conf ──────────────────────────
 cp "$TMP_DIR/ui/nginx.conf" "$AIRFLOW_DIR/ui/nginx.conf"
 
-# Sincroniza os módulos JS e CSS (Phase 3A — necessário desde v2.4.0)
-rsync -av --delete "$TMP_DIR/ui/js/"  "$AIRFLOW_DIR/ui/js/"
-rsync -av --delete "$TMP_DIR/ui/css/" "$AIRFLOW_DIR/ui/css/"
+# Sincroniza o dist/ do React (build commitado no git)
+mkdir -p "$AIRFLOW_DIR/ui-react/dist"
+rsync -av --delete "$TMP_DIR/ui-react/dist/" "$AIRFLOW_DIR/ui-react/dist/"
+echo "[DEPLOY] ✓ ui-react/dist sincronizado"
 
 # ── 3. DAGs ───────────────────────────────────────────────────
 rsync -av "$TMP_DIR/dags/" "$AIRFLOW_DIR/dags/"

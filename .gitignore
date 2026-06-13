@@ -26,9 +26,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-## Build / dist
-dist/
+## Build / dist (exceto ui-react/dist que é o artefato de deploy)
 build/
+ui-react/node_modules/
+ui-react/.vite/
+# dist/ genérico ignorado, mas ui-react/dist/ é commitado explicitamente
 
 ## Config (se houver secrets)
 config/*.env
