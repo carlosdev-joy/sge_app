@@ -10,6 +10,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from db import get_db_conn
 from deps import (
     PERM_ADMIN,
+    AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
     get_current_user, get_admin_user,
 )
 
@@ -231,6 +232,85 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
                 os.remove(p)
             return {"sucesso": True, "mensagem": f"{len(removed)} arquivo(s) removido(s).",
                     "detalhes": {"arquivos_removidos": removed}}
+
+        elif action == "dag_airflow_delete":
+            # Remove a DAG do Airflow (pausa + DELETE metadata) e apaga o arquivo .py.
+            # Server-side: o React não possui a auth básica do Airflow, então o backend
+            # — que já tem AIRFLOW_USER/PASSWORD — executa a limpeza completa.
+            import glob as _glob
+            pipeline_name = (body.get("pipeline_name") or "").strip()
+            if not pipeline_name:
+                raise HTTPException(status_code=422, detail="pipeline_name obrigatório")
+            cur.close(); conn.close()
+
+            dag_id = pipeline_name
+            resultado = {"dag_pausada": False, "dag_removida": False, "arquivos_removidos": []}
+            try:
+                async with httpx.AsyncClient(
+                    base_url=AIRFLOW_URL, auth=(AIRFLOW_USER, AIRFLOW_PASSWORD), timeout=15
+                ) as client:
+                    # 1. pausa a DAG (evita execuções enquanto remove)
+                    try:
+                        rp = await client.patch(f"/api/v1/dags/{dag_id}",
+                                                json={"is_paused": True})
+                        resultado["dag_pausada"] = rp.is_success
+                    except Exception as e:
+                        log.warning("Falha ao pausar DAG %s: %s", dag_id, e)
+                    # 2. remove a DAG do metadata do scheduler
+                    try:
+                        rd = await client.delete(f"/api/v1/dags/{dag_id}")
+                        resultado["dag_removida"] = rd.is_success or rd.status_code == 404
+                    except Exception as e:
+                        log.warning("Falha ao deletar DAG %s do Airflow: %s", dag_id, e)
+            except Exception as e:
+                log.warning("Cliente Airflow indisponível: %s", e)
+
+            # 3. remove o arquivo .py do DAGS_FOLDER
+            dags_base = os.environ.get("DAGS_FOLDER", "/opt/airflow/dags")
+            candidates = [
+                os.path.join(dags_base, pipeline_name.lower() + ".py"),
+                os.path.join(dags_base, pipeline_name + ".py"),
+            ]
+            candidates += _glob.glob(
+                os.path.join(dags_base, "**", pipeline_name.lower() + ".py"), recursive=True)
+            removed = [p for p in set(candidates) if os.path.isfile(p)]
+            for p in removed:
+                try:
+                    os.remove(p)
+                except Exception as e:
+                    log.warning("Falha ao remover arquivo %s: %s", p, e)
+            resultado["arquivos_removidos"] = removed
+            return {"sucesso": True,
+                    "mensagem": f'DAG "{dag_id}" removida do Airflow.',
+                    "detalhes": resultado}
+
+        elif action == "factory_trigger":
+            # Dispara a etl_dag_factory no Airflow (passo 2 da regeneração de DAGs).
+            import time as _time
+            filter_project = (body.get("filter_project") or "").strip()
+            force_all = bool(body.get("force_all", True))
+            cur.close(); conn.close()
+            run_id = f"orq_regen_factory_{int(_time.time() * 1000)}"
+            try:
+                async with httpx.AsyncClient(
+                    base_url=AIRFLOW_URL, auth=(AIRFLOW_USER, AIRFLOW_PASSWORD), timeout=20
+                ) as client:
+                    rf = await client.post(
+                        "/api/v1/dags/etl_dag_factory/dagRuns",
+                        json={"dag_run_id": run_id,
+                              "conf": {"force_all": force_all,
+                                       "filter_project": filter_project,
+                                       "requested_by": requested_by}})
+                    if not rf.is_success:
+                        raise HTTPException(status_code=502,
+                                            detail=f"Airflow rejeitou: HTTP {rf.status_code} — {rf.text[:200]}")
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"Erro ao disparar factory: {e}")
+            return {"sucesso": True,
+                    "mensagem": "etl_dag_factory disparada.",
+                    "detalhes": {"dag_run_id": run_id, "filter_project": filter_project or "(todos)"}}
 
         elif action == "regenerate_all_dags":
             filter_project = (body.get("filter_project") or "").strip()
