@@ -52,18 +52,22 @@ DAGS_CHANGED=false
 SQL_CHANGED=false
 
 UIREACT_CHANGED=false
+COMPOSE_CHANGED=false
 
 echo "$CHANGED_FILES" | grep -q "^api/"      && API_CHANGED=true  || true
 echo "$CHANGED_FILES" | grep -q "^ui/"       && UI_CHANGED=true   || true
 echo "$CHANGED_FILES" | grep -q "^ui-react/dist/" && UIREACT_CHANGED=true || true
 echo "$CHANGED_FILES" | grep -q "^dags/"     && DAGS_CHANGED=true || true
 echo "$CHANGED_FILES" | grep -q "^sql/migrations/" && SQL_CHANGED=true || true
+# Mudança na definição de infra (volumes/portas/imagem) exige recriar o container.
+echo "$CHANGED_FILES" | grep -q "^docker-compose.ya\?ml$" && COMPOSE_CHANGED=true || true
 
 echo "      api/            mudou: $API_CHANGED"
 echo "      ui/             mudou: $UI_CHANGED"
 echo "      ui-react/dist/  mudou: $UIREACT_CHANGED"
 echo "      dags/           mudou: $DAGS_CHANGED"
 echo "      migrations/     mudou: $SQL_CHANGED"
+echo "      docker-compose  mudou: $COMPOSE_CHANGED"
 echo ""
 
 # ── 3. Rebuild e restart ──────────────────────────────────────
@@ -77,8 +81,14 @@ if [ "$API_CHANGED" = "true" ]; then
 fi
 
 # nginx serve UI legada (ui/) e a UI React (ui-react/dist) por volume.
-# Qualquer mudança em uma das duas exige restart do nginx para revalidar mounts.
-if [ "$UI_CHANGED" = "true" ] || [ "$UIREACT_CHANGED" = "true" ]; then
+# - Conteúdo de ui/ ou ui-react/dist mudou  → restart simples (bind mount reflete vivo).
+# - docker-compose.yaml mudou (volumes/portas/imagem) → precisa --force-recreate,
+#   pois o Docker só aplica nova definição de infra recriando o container.
+if [ "$COMPOSE_CHANGED" = "true" ]; then
+  echo "      → docker-compose mudou — recriando ui-nginx (--force-recreate)"
+  docker compose up -d --no-deps --force-recreate ui-nginx
+  echo "      ✓ ui-nginx recriado com a nova definição"
+elif [ "$UI_CHANGED" = "true" ] || [ "$UIREACT_CHANGED" = "true" ]; then
   echo "      → UI servida por volume — restart do nginx (sem rebuild)"
   docker compose up -d --no-deps ui-nginx
   echo "      ✓ ui-nginx reiniciado"
@@ -90,7 +100,8 @@ if [ "$DAGS_CHANGED" = "true" ]; then
 fi
 
 if [ "$API_CHANGED" = "false" ] && [ "$UI_CHANGED" = "false" ] \
-   && [ "$UIREACT_CHANGED" = "false" ] && [ "$DAGS_CHANGED" = "false" ]; then
+   && [ "$UIREACT_CHANGED" = "false" ] && [ "$DAGS_CHANGED" = "false" ] \
+   && [ "$COMPOSE_CHANGED" = "false" ]; then
   echo "      Nenhum container precisa de restart."
 fi
 echo ""
