@@ -8,7 +8,7 @@ import { Modal } from '../components/ui/Modal'
 import { PageSpinner } from '../components/ui/Spinner'
 import { toast } from '../components/ui/Toast'
 import {
-  Edit, Plus, ClipboardList, Play, Save, X,
+  Edit, Plus, ClipboardList, Play, Save, X, Trash2,
   ChevronUp, ChevronDown, Copy, Network, ArrowUpDown,
 } from 'lucide-react'
 
@@ -239,7 +239,7 @@ function JobFormModal({
 function BulkModal({ pipeline, onClose }: { pipeline: string; onClose: () => void }) {
   const qc = useQueryClient()
   const [text, setText] = useState('')
-  const [preview, setPreview] = useState<{ ok: boolean; line: string; parsed?: any }[]>([])
+  const [preview, setPreview] = useState<{ ok: boolean; line: string; error?: string; parsed?: { job_name: string; execution_order: number; job_type: string; job_command: string | null } }[]>([])
   const [err, setErr] = useState('')
 
   function parseLines(raw: string) {
@@ -251,10 +251,10 @@ function BulkModal({ pipeline, onClose }: { pipeline: string; onClose: () => voi
       const job_command = rest.join(',').trim() || null
       const execution_order = parseInt(ordem)
       if (!job_name) return { ok: false, line: l, error: 'Nome ausente' }
-      if (isNaN(execution_order) || execution_order < 1) return { ok: false, line: l, error: 'Ordem inválida' }
-      if (!JOB_TYPES.includes(job_type as JobType)) return { ok: false, line: l, error: `Tipo inválido: ${job_type}` }
+      if (isNaN(execution_order) || execution_order < 1) return { ok: false, line: l, error: 'Ordem inválida (use número inteiro >= 1)' }
+      if (!JOB_TYPES.includes(job_type as JobType)) return { ok: false, line: l, error: `Tipo inválido: "${job_type}" — use: ${JOB_TYPES.join(', ')}` }
       return { ok: true, line: l, parsed: { job_name, execution_order, job_type, job_command } }
-    }).filter(Boolean) as { ok: boolean; line: string; parsed?: any }[]
+    }).filter(Boolean) as { ok: boolean; line: string; error?: string; parsed?: { job_name: string; execution_order: number; job_type: string; job_command: string | null } }[]
   }
 
   function handleChange(v: string) {
@@ -264,7 +264,7 @@ function BulkModal({ pipeline, onClose }: { pipeline: string; onClose: () => voi
   }
 
   const saveMut = useMutation({
-    mutationFn: (jobs: any[]) => apiFetch('/pipelines/jobs/register', {
+    mutationFn: (jobs: { job_name: string; execution_order: number; job_type: string; job_command: string | null }[]) => apiFetch('/pipelines/jobs/register', {
       method: 'POST',
       body: JSON.stringify({
         pipeline_name: pipeline,
@@ -286,7 +286,7 @@ function BulkModal({ pipeline, onClose }: { pipeline: string; onClose: () => voi
   function submit() {
     if (invalid.length > 0) { setErr('Corrija os erros antes de salvar'); return }
     if (valid.length === 0) { setErr('Nenhum job válido para importar'); return }
-    saveMut.mutate(valid.map(p => p.parsed))
+    saveMut.mutate(valid.map(p => p.parsed!))
   }
 
   return (
@@ -294,8 +294,8 @@ function BulkModal({ pipeline, onClose }: { pipeline: string; onClose: () => voi
       <div className="flex flex-col gap-4">
         <div className="bg-canvas border border-edge rounded-lg p-3 text-xs text-dim">
           <p className="font-medium text-ink mb-1">Formato: <span className="font-mono">nome,ordem,tipo,comando</span></p>
-          <p>Um job por linha. Exemplo:</p>
-          <pre className="mt-1 text-dim/80 font-mono">BiCvp_Extract_01,1,datastage,
+          <p>Um job por linha. Tipos válidos: <span className="font-mono text-blue-400">datastage</span>, <span className="font-mono text-amber-400">shell</span>, <span className="font-mono text-green-400">python</span>, <span className="font-mono text-purple-400">storedproc</span>.</p>
+          <pre className="mt-2 text-dim/80 font-mono bg-panel/50 rounded p-2">BiCvp_Extract_01,1,datastage,BiCvp.Extract_01
 BiCvp_Load_A,2,shell,/opt/scripts/load_a.sh
 BiCvp_Load_B,2,python,scripts.load_b.run</pre>
         </div>
@@ -311,15 +311,17 @@ BiCvp_Load_B,2,python,scripts.load_b.run</pre>
 
         {preview.length > 0 && (
           <div className="border border-edge rounded-lg overflow-hidden">
-            <div className="px-3 py-2 bg-canvas border-b border-edge text-xs text-dim">
-              Pré-visualização: {valid.length} válidos, {invalid.length} com erro
+            <div className="px-3 py-2 bg-canvas border-b border-edge text-xs flex items-center gap-2">
+              <span className="text-dim">Pré-visualização:</span>
+              {valid.length > 0 && <span className="text-green-400 font-medium">{valid.length} válidos</span>}
+              {invalid.length > 0 && <span className="text-red-400 font-medium">{invalid.length} com erro</span>}
             </div>
             <div className="max-h-48 overflow-y-auto">
               {preview.map((p, i) => (
                 <div key={i} className={`flex items-center gap-2 px-3 py-1.5 text-xs border-b border-edge/40 ${p.ok ? '' : 'bg-red-900/10'}`}>
                   <span className={p.ok ? 'text-green-400' : 'text-red-400'}>{p.ok ? '✓' : '✗'}</span>
                   <span className="font-mono text-dim flex-1 truncate">{p.line}</span>
-                  {!p.ok && <span className="text-red-400 shrink-0">{(p as any).error}</span>}
+                  {!p.ok && <span className="text-red-400 shrink-0 max-w-[260px] text-right">{p.error}</span>}
                 </div>
               ))}
             </div>
@@ -389,6 +391,54 @@ function ExecDiagram({ jobs }: { jobs: Job[] }) {
   )
 }
 
+// ── Confirmation modal for execute ─────────────────────────────────────────
+
+function ExecConfirmModal({ pipeline, onConfirm, onClose }: { pipeline: string; onConfirm: () => void; onClose: () => void }) {
+  return (
+    <Modal open title="Executar pipeline agora" onClose={onClose} size="sm">
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-dim">
+          Deseja disparar o pipeline <span className="font-mono text-ink font-medium">{pipeline}</span> agora, fora do agendamento?
+        </p>
+        <p className="text-xs text-amber-400 bg-amber-900/15 border border-amber-800/40 rounded-lg px-3 py-2">
+          ⚠ Esta ação inicia uma execução imediata no Airflow. Certifique-se que o pipeline não está em execução.
+        </p>
+        <div className="flex justify-end gap-2 border-t border-edge pt-3">
+          <Button variant="secondary" onClick={onClose}>Cancelar</Button>
+          <Button className="border-green-800/40 text-green-400" onClick={() => { onConfirm(); onClose() }}>
+            <Play size={13} /> Executar agora
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ── Delete confirmation modal ──────────────────────────────────────────────
+
+function DeleteConfirmModal({ job, onConfirm, onClose }: { job: Job; onConfirm: () => void; onClose: () => void }) {
+  return (
+    <Modal open title="Remover job" onClose={onClose} size="sm">
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-dim">
+          Tem certeza que deseja remover o job{' '}
+          <span className="font-mono text-ink font-medium">{job.job_name}</span>{' '}
+          do pipeline <span className="font-mono text-ink">{job.pipeline_name}</span>?
+        </p>
+        <p className="text-xs text-red-400 bg-red-900/15 border border-red-800/40 rounded-lg px-3 py-2">
+          Esta ação remove o job e sua lineage associada. Não pode ser desfeita.
+        </p>
+        <div className="flex justify-end gap-2 border-t border-edge pt-3">
+          <Button variant="secondary" onClick={onClose}>Cancelar</Button>
+          <Button className="border-red-800/40 text-red-400 hover:text-red-300" onClick={() => { onConfirm(); onClose() }}>
+            <Trash2 size={13} /> Remover job
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 // ── Main component ─────────────────────────────────────────────────────────
 
 type SortCol = 'job_name' | 'execution_order' | 'job_type' | 'pipeline_name'
@@ -413,6 +463,8 @@ export default function Jobs() {
   const [showNew, setShowNew] = useState(false)
   const [showBulk, setShowBulk] = useState(false)
   const [bannerVisible, setBannerVisible] = useState(true)
+  const [deleteJob, setDeleteJob] = useState<Job | undefined>()
+  const [showExecConfirm, setShowExecConfirm] = useState(false)
 
   // Sort state
   const [sortCol, setSortCol] = useState<SortCol>('execution_order')
@@ -421,6 +473,7 @@ export default function Jobs() {
   // Inline order edits
   const [orderEdits, setOrderEdits] = useState<Record<string, number>>({})
   const orderDirty = Object.keys(orderEdits).length > 0
+  const orderEditCount = Object.keys(orderEdits).length
 
   const qs = new URLSearchParams({
     limit: String(LIMIT), offset: String(page * LIMIT),
@@ -439,9 +492,12 @@ export default function Jobs() {
   const jobs = useMemo(() => {
     const rows = [...(data?.data ?? [])]
     rows.sort((a, b) => {
-      let av: any = a[sortCol], bv: any = b[sortCol]
-      if (sortCol === 'execution_order') { av = av ?? 999; bv = bv ?? 999 }
-      else { av = String(av ?? '').toLowerCase(); bv = String(bv ?? '').toLowerCase() }
+      const av = sortCol === 'execution_order'
+        ? (a[sortCol] ?? 999)
+        : String(a[sortCol] ?? '').toLowerCase()
+      const bv = sortCol === 'execution_order'
+        ? (b[sortCol] ?? 999)
+        : String(b[sortCol] ?? '').toLowerCase()
       return sortDir === 'asc' ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1)
     })
     return rows
@@ -487,6 +543,19 @@ export default function Jobs() {
     onError: (e: any) => toast.error(e.message),
   })
 
+  // Delete mutation
+  const deleteMut = useMutation({
+    mutationFn: (job: Job) =>
+      apiFetch(`/pipelines/jobs/${encodeURIComponent(job.pipeline_name)}/${encodeURIComponent(job.job_name)}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: (_d, job) => {
+      toast.success(`Job "${job.job_name}" removido`)
+      qc.invalidateQueries({ queryKey: ['jobs'] })
+    },
+    onError: (e: any) => toast.error(e.message),
+  })
+
   // Execute pipeline via Airflow
   const execMut = useMutation({
     mutationFn: () => {
@@ -497,15 +566,17 @@ export default function Jobs() {
         body: JSON.stringify({ dag_run_id: runId, conf: {} }),
       })
     },
-    onSuccess: (data: any) => {
+    onSuccess: (res: any) => {
       const dagId = pipelineToDagId(searched)
-      toast.success(`Pipeline disparado! (${data?.dag_run_id ?? 'ok'})`)
+      toast.success(`Pipeline disparado! (${res?.dag_run_id ?? 'ok'})`)
+      qc.invalidateQueries({ queryKey: ['jobs'] })
       setTimeout(() => window.open(`${AIRFLOW_UI}/dags/${dagId}/grid`, '_blank'), 1200)
     },
     onError: (e: any) => {
-      if (e.message?.includes('404')) toast.error('DAG não encontrada. Gere o DAG primeiro.')
-      else if (e.message?.includes('409')) toast.error('Já existe uma execução ativa.')
-      else toast.error(e.message)
+      const msg = e.message ?? ''
+      if (msg.startsWith('404') || msg.includes('not found')) toast.error('DAG não encontrada. Gere o DAG primeiro.')
+      else if (msg.startsWith('409') || msg.includes('already')) toast.error('Já existe uma execução ativa.')
+      else toast.error(msg || 'Erro ao disparar pipeline')
     },
   })
 
@@ -612,9 +683,14 @@ export default function Jobs() {
                   disabled={!orderDirty}
                   loading={reorderMut.isPending}
                   onClick={() => reorderMut.mutate()}
-                  className={orderDirty ? 'border-blue-600 text-blue-400' : ''}
+                  className={orderDirty ? 'border-blue-600 text-blue-400 ring-1 ring-blue-700/50' : ''}
                 >
                   <Save size={13} /> Salvar ordem
+                  {orderDirty && (
+                    <span className="ml-1 bg-blue-600 text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 leading-none">
+                      {orderEditCount}
+                    </span>
+                  )}
                 </Button>
                 <Button variant="secondary" size="sm" onClick={() => setShowNew(true)}>
                   <Plus size={13} /> Adicionar job
@@ -625,10 +701,7 @@ export default function Jobs() {
                 <Button
                   variant="secondary" size="sm"
                   loading={execMut.isPending}
-                  onClick={() => {
-                    if (confirm(`Executar o pipeline "${searched}" agora, fora do agendamento?`))
-                      execMut.mutate()
-                  }}
+                  onClick={() => setShowExecConfirm(true)}
                   className="border-green-800/40 text-green-400 hover:text-green-300"
                 >
                   <Play size={13} /> Executar agora
@@ -667,7 +740,7 @@ export default function Jobs() {
                       const currentOrder = orderEdits[j.job_name] ?? j.execution_order
                       const edited = orderEdits[j.job_name] !== undefined
                       return (
-                        <tr key={j.job_name} className="border-b border-edge/40 hover:bg-edge/20 transition-colors">
+                        <tr key={j.job_name} className="border-b border-edge/40 hover:bg-edge/20 transition-colors group">
                           <td className="px-3 py-2 text-dim text-xs">{(page * LIMIT) + i + 1}</td>
                           <td className="px-3 py-2 text-dim text-xs font-mono truncate max-w-[160px]"
                             title={j.pipeline_name}>{j.pipeline_name}</td>
@@ -717,9 +790,19 @@ export default function Jobs() {
                           </td>
                           {!isViewer && (
                             <td className="px-3 py-2 text-right">
-                              <Button variant="ghost" size="sm" title="Editar job" onClick={() => setEditJob(j)}>
-                                <Edit size={13} />
-                              </Button>
+                              <div className="flex items-center justify-end gap-1">
+                                <Button variant="ghost" size="sm" title="Editar job" onClick={() => setEditJob(j)}>
+                                  <Edit size={13} />
+                                </Button>
+                                <Button
+                                  variant="ghost" size="sm" title="Remover job"
+                                  loading={deleteMut.isPending && deleteJob?.job_name === j.job_name}
+                                  onClick={() => setDeleteJob(j)}
+                                  className="text-red-500/60 hover:text-red-400"
+                                >
+                                  <Trash2 size={13} />
+                                </Button>
+                              </div>
                             </td>
                           )}
                         </tr>
@@ -746,6 +829,20 @@ export default function Jobs() {
       {showNew && <JobFormModal pipeline={searched} onClose={() => setShowNew(false)} />}
       {editJob && <JobFormModal job={editJob} pipeline={searched} onClose={() => setEditJob(undefined)} />}
       {showBulk && <BulkModal pipeline={searched} onClose={() => setShowBulk(false)} />}
+      {deleteJob && (
+        <DeleteConfirmModal
+          job={deleteJob}
+          onConfirm={() => deleteMut.mutate(deleteJob)}
+          onClose={() => setDeleteJob(undefined)}
+        />
+      )}
+      {showExecConfirm && (
+        <ExecConfirmModal
+          pipeline={searched}
+          onConfirm={() => execMut.mutate()}
+          onClose={() => setShowExecConfirm(false)}
+        />
+      )}
     </div>
   )
 }

@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 
 import httpx
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, Body, HTTPException, Path
 from fastapi.responses import PlainTextResponse
 
 from deps import (
@@ -72,6 +72,26 @@ async def list_dag_runs(dag_id: str, limit: int = 50, order_by: str = "-executio
         raise
     except Exception as e:
         log.warning("Erro ao listar dagRuns %s: %s", dag_id, e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/airflow/dags/{dag_id}/dagRuns")
+async def trigger_dag_run(dag_id: str, body: dict = Body(default={})):
+    """Dispara uma execução manual de um DAG — proxy para Airflow REST API."""
+    try:
+        async with get_airflow_client() as client:
+            r = await client.post(
+                f"/api/v1/dags/{dag_id}/dagRuns",
+                json=body,
+                headers={"Content-Type": "application/json"},
+            )
+            if not r.is_success:
+                raise HTTPException(status_code=r.status_code, detail=r.text)
+            return r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.warning("Erro ao disparar DAG %s: %s", dag_id, e)
         raise HTTPException(status_code=502, detail=str(e))
 
 

@@ -1,4 +1,4 @@
-"""api/routers/jobs.py — GET /jobs, POST /pipelines/jobs/register, POST /pipelines/jobs/reorder."""
+"""api/routers/jobs.py — GET /jobs, POST/DELETE /pipelines/jobs, POST /pipelines/jobs/reorder."""
 from __future__ import annotations
 
 import logging
@@ -251,3 +251,33 @@ async def reorder_pipeline_jobs(body: dict = Body(default={}), _auth: dict = Dep
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
     return {"ok": True, "pipeline_name": pipeline_name, "jobs_reordered": len(jobs)}
+
+
+@router.delete("/pipelines/jobs/{pipeline_name}/{job_name}", tags=["jobs"])
+async def delete_pipeline_job(
+    pipeline_name: str,
+    job_name: str,
+    _auth: dict = Depends(require_perm(PERM_EDITAR)),
+):
+    """Remove um job de pipeline (etl_pipeline_job) e sua lineage associada."""
+    pipeline_name = pipeline_name.strip()
+    job_name = job_name.strip()
+    if not pipeline_name or not job_name:
+        raise HTTPException(status_code=422, detail="pipeline_name e job_name são obrigatórios")
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM dbo.etl_pipeline_job WHERE pipeline_name = ? AND job_name = ?",
+            (pipeline_name, job_name),
+        )
+        rows = cur.rowcount
+        if rows == 0:
+            conn.rollback()
+            raise HTTPException(status_code=404, detail=f"Job '{job_name}' não encontrado no pipeline '{pipeline_name}'")
+        conn.commit()
+        cur.close(); conn.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    return {"ok": True, "pipeline_name": pipeline_name, "job_name": job_name}
