@@ -36,3 +36,22 @@ export const useAuthStore = create<AuthState>()(
     { name: 'orquestra-auth', partialize: (s) => ({ user: s.user, token: s.token }) }
   )
 )
+
+// ── Bridge com a UI legada ────────────────────────────────────────────────────
+// O sistema legado grava a sessão em localStorage['orq_session'] = { token, exp }.
+// Como o app React roda na mesma origin (sub-path /v2), conseguimos reaproveitar
+// essa sessão e evitar login duplicado. Lê o token legado (se válido) sem precisar
+// de nova autenticação.
+const LEGACY_SESSION_KEY = 'orq_session'
+
+export function readLegacyToken(): string | null {
+  try {
+    const raw = localStorage.getItem(LEGACY_SESSION_KEY)
+    if (!raw) return null
+    const s = JSON.parse(raw)
+    if (s && s.token && (!s.exp || s.exp > Date.now())) return s.token
+  } catch {
+    /* ignora JSON inválido */
+  }
+  return null
+}
