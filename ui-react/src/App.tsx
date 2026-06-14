@@ -8,6 +8,7 @@ import { AppShell } from './components/layout/AppShell'
 import Login from './pages/Login'
 import Admin from './pages/Admin'
 import ImpactoCampo from './pages/ImpactoCampo'
+import PlanosAjuste from './pages/PlanosAjuste'
 
 // Telas já migradas para React são montadas abaixo. As demais permanecem na UI
 // legada (raiz) — ver src/lib/nav.ts. Mantemos os imports das páginas prontas
@@ -57,6 +58,7 @@ export default function App() {
             <Route index element={<Navigate to="/admin" replace />} />
             <Route path="admin/*" element={<Admin />} />
             <Route path="impacto-campo" element={<ImpactoCampo />} />
+            <Route path="planos-ajuste" element={<PlanosAjuste />} />
           </Route>
           {/* Telas ainda não migradas caem na raiz (UI legada) */}
           <Route path="*" element={<Navigate to="/admin" replace />} />
