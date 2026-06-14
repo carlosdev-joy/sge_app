@@ -23,6 +23,7 @@ const RBAC_RECURSOS: [string, string][] = [
   ['tela_jobs', 'Jobs'], ['tela_logs', 'Logs'],
   ['tela_ds_monitor', 'DS Monitor'], ['tela_governanca', 'Governança'],
   ['tela_malha', 'Malha'], ['tela_admin', 'Admin'],
+  ['tela_impacto_campo', 'Impacto Campo'], ['tela_plano_ajuste', 'Plano Ajuste'],
   ['acao_executar', 'Executar/Rerun/Ack'],
   ['acao_editar', 'Cadastrar/Editar'],
   ['acao_admin', 'Administração'],

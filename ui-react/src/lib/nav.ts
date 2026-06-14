@@ -30,7 +30,7 @@ export const NAV: NavItem[] = [
   { to: '/logs',       label: 'Logs',       icon: ScrollText,      legacyHref: '/', migrated: false },
   { to: '/ds-monitor', label: 'DS Monitor', icon: Activity,        legacyHref: '/', migrated: false },
   { to: '/governanca', label: 'Governança', icon: ShieldCheck,     legacyHref: '/', migrated: false },
-  { to: '/malha',      label: 'Malha',      icon: Network,         legacyHref: '/', migrated: false },
+  { to: '/malha',      label: 'Malha',      icon: Network,         legacyHref: '/', migrated: true },
   { to: '/impacto-campo', label: 'Impacto Campo', icon: FileSearch,    legacyHref: '/', migrated: true },
   { to: '/planos-ajuste', label: 'Planos Ajuste', icon: ClipboardList, legacyHref: '/', migrated: true },
   { to: '/admin',      label: 'Admin',      icon: Settings,        legacyHref: '/', migrated: true, adminOnly: true },
