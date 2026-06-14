@@ -7,6 +7,7 @@ import { useAuthStore, readLegacyToken } from './store/auth'
 import { AppShell } from './components/layout/AppShell'
 import Login from './pages/Login'
 import Admin from './pages/Admin'
+import ImpactoCampo from './pages/ImpactoCampo'
 
 // Telas já migradas para React são montadas abaixo. As demais permanecem na UI
 // legada (raiz) — ver src/lib/nav.ts. Mantemos os imports das páginas prontas
@@ -55,6 +56,7 @@ export default function App() {
           <Route path="/" element={<PrivateRoute><AppShell /></PrivateRoute>}>
             <Route index element={<Navigate to="/admin" replace />} />
             <Route path="admin/*" element={<Admin />} />
+            <Route path="impacto-campo" element={<ImpactoCampo />} />
           </Route>
           {/* Telas ainda não migradas caem na raiz (UI legada) */}
           <Route path="*" element={<Navigate to="/admin" replace />} />

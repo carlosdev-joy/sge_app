@@ -25,6 +25,29 @@ def _fmt_dt(v):
     return str(v)
 
 
+def _import_dsx_engine():
+    """Importa o DSXEngine do pacote utils das DAGs (mesmo padrão de extract-dsx)."""
+    import os, sys
+    dags_folder = os.environ.get("DAGS_FOLDER", "/opt/airflow/dags")
+    if dags_folder not in sys.path:
+        sys.path.insert(0, dags_folder)
+    try:
+        from utils.dsx_engine import DSXEngine, _DEFAULT_DSX_DIR  # type: ignore
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"DSXEngine não disponível: {e}")
+    return DSXEngine, _DEFAULT_DSX_DIR
+
+
+def _safe_project_name(dsx: str) -> str:
+    """Valida o nome do .dsx contra path traversal e devolve o nome de projeto."""
+    name = (dsx or "").strip()
+    if name.lower().endswith(".dsx"):
+        name = name[:-4]
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="Nome de DSX inválido.")
+    return name
+
+
 @router.get("/lineage", tags=["lineage"])
 def get_lineage(pipeline_name: str):
     """Retorna lineage de um pipeline. Substitui etl_lineage_query."""
@@ -193,6 +216,44 @@ async def lineage_extract_dsx(body: dict = Body(default={}), _auth: dict = Depen
     dados = resultado.get("dados") or []
     return {"sucesso": True, "project_name": project_name, "job_name": job_name,
             "dsx_file": f"{project_name}.dsx", "dados": dados}
+
+
+@router.get("/lineage/dsx-files", tags=["lineage"])
+def list_dsx_files():
+    """Lista os arquivos .dsx disponíveis para varredura (nome sem extensão)."""
+    DSXEngine, base_dir = _import_dsx_engine()
+    try:
+        files = DSXEngine(diretorio_base=base_dir).listar_dsx()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao listar DSX: {e}")
+    return {"base_dir": base_dir, "files": files}
+
+
+@router.get("/lineage/field-impact", tags=["lineage"])
+def field_impact(dsx: str, campo: str, exato: bool = False):
+    """Impacto por campo: varre um .dsx (escolhido pelo nome exato) e retorna
+    todos os jobs/stages cujas colunas casam com o termo (LIKE por padrão).
+
+    Query params:
+      dsx   — nome exato do arquivo .dsx (com ou sem extensão)
+      campo — termo do campo a procurar (busca substring case-insensitive)
+      exato — quando true, exige igualdade exata do nome da coluna
+    """
+    project = _safe_project_name(dsx)
+    termo = (campo or "").strip()
+    if not termo:
+        raise HTTPException(status_code=400, detail="O parâmetro 'campo' é obrigatório.")
+
+    DSXEngine, base_dir = _import_dsx_engine()
+    try:
+        resultado = DSXEngine(diretorio_base=base_dir).buscar_campo(
+            project_name=project, termo=termo, exato=exato)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao varrer DSX: {e}")
+
+    if resultado.get("erro"):
+        raise HTTPException(status_code=404, detail=resultado["erro"])
+    return resultado
 
 
 @router.post("/lineage/normalize", tags=["lineage"])
