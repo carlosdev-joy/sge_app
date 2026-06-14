@@ -30,10 +30,10 @@ export function KpiCard({ label, value, sub, color = 'blue' }: { label: string; 
     purple: 'text-purple-400',
   }
   return (
-    <div className="bg-panel border border-edge rounded-lg p-4 flex flex-col gap-1">
-      <span className="text-xs text-dim font-medium uppercase tracking-wide">{label}</span>
-      <span className={`text-3xl font-bold ${colors[color] ?? 'text-ink'}`}>{value}</span>
-      {sub && <span className="text-xs text-dim">{sub}</span>}
+    <div className="bg-panel border border-edge rounded-lg p-4 flex flex-col gap-1 min-w-0">
+      <span className="text-xs text-dim font-medium uppercase tracking-wide truncate">{label}</span>
+      <span className={`text-3xl font-bold leading-tight break-words ${colors[color] ?? 'text-ink'}`}>{value}</span>
+      {sub && <span className="text-xs text-dim break-words">{sub}</span>}
     </div>
   )
 }
