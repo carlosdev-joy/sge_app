@@ -119,6 +119,21 @@ def _write_audit(cur, pipeline_name, changed_by, old, new_vals):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+@router.get("/pipelines/projects", tags=["pipelines"])
+def list_pipeline_projects():
+    """Lista projetos disponíveis para uso em formulários."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("SELECT project_name FROM dbo.etl_project WHERE ativo=1 ORDER BY project_name")
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+        if rows:
+            return {"projects": [r[0] for r in rows]}
+    except Exception:
+        pass
+    return {"projects": ["BI_CVP", "BI_VIDA", "BI_PRESTAMISTA", "BI_PREVIDENCIA"]}
+
+
 @router.get("/pipelines", tags=["pipelines"])
 def list_pipelines(
     offset: int = 0,

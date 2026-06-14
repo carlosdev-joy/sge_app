@@ -95,6 +95,26 @@ async def trigger_dag_run(dag_id: str, body: dict = Body(default={})):
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@router.patch("/airflow/dags/{dag_id}")
+async def patch_dag(dag_id: str, body: dict = Body(default={})):
+    """Ativa ou pausa um DAG (is_paused) — proxy para Airflow REST API."""
+    try:
+        async with get_airflow_client() as client:
+            r = await client.patch(
+                f"/api/v1/dags/{dag_id}",
+                json=body,
+                headers={"Content-Type": "application/json"},
+            )
+            if not r.is_success:
+                raise HTTPException(status_code=r.status_code, detail=r.text)
+            return r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.warning("Erro ao atualizar DAG %s: %s", dag_id, e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @router.get("/airflow/connections/ssh")
 async def list_ssh_connections():
     """Lista conexões SSH cadastradas no Airflow (conn_type=ssh)."""
