@@ -357,33 +357,51 @@ function ExecDiagram({ jobs }: { jobs: Job[] }) {
 
   if (groups.length === 0) return null
 
-  const typeColor: Record<string, string> = {
-    datastage: 'border-blue-600 bg-blue-900/30 text-blue-300',
-    shell: 'border-amber-600 bg-amber-900/30 text-amber-300',
-    python: 'border-green-600 bg-green-900/30 text-green-300',
-    storedproc: 'border-purple-600 bg-purple-900/30 text-purple-300',
+  const typeStyle: Record<string, { wrap: string; label: string; dot: string }> = {
+    datastage:  { wrap: 'border-blue-500   bg-blue-50   dark:bg-blue-900/30   text-blue-800   dark:text-blue-200',   label: 'bg-blue-500   text-white', dot: 'bg-blue-500' },
+    shell:      { wrap: 'border-amber-500  bg-amber-50  dark:bg-amber-900/30  text-amber-800  dark:text-amber-200',  label: 'bg-amber-500  text-white', dot: 'bg-amber-500' },
+    python:     { wrap: 'border-green-500  bg-green-50  dark:bg-green-900/30  text-green-800  dark:text-green-200',  label: 'bg-green-500  text-white', dot: 'bg-green-500' },
+    storedproc: { wrap: 'border-purple-500 bg-purple-50 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200', label: 'bg-purple-500 text-white', dot: 'bg-purple-500' },
   }
+  const fallbackStyle = { wrap: 'border-slate-400 bg-slate-50 dark:bg-slate-800/30 text-slate-700 dark:text-slate-300', label: 'bg-slate-400 text-white', dot: 'bg-slate-400' }
 
   return (
     <div className="bg-canvas border border-edge rounded-xl p-4 overflow-x-auto">
-      <p className="text-xs text-dim font-medium mb-3">Diagrama de execução (ordens → paralelos)</p>
+      {/* Legenda */}
+      <div className="flex items-center gap-4 mb-3">
+        <p className="text-xs text-dim font-medium">Diagrama de execução (ordens → paralelos)</p>
+        <div className="flex items-center gap-3 ml-auto">
+          {Object.entries(typeStyle).map(([type, s]) => (
+            <span key={type} className="flex items-center gap-1 text-[10px] text-dim">
+              <span className={`w-2 h-2 rounded-full ${s.dot}`} />
+              {type}
+            </span>
+          ))}
+        </div>
+      </div>
       <div className="flex items-center gap-0 min-w-max">
         {groups.map(([order, gjobs], gi) => (
           <div key={order} className="flex items-center shrink-0">
-            <div className="flex flex-col gap-1.5">
-              {gjobs.map(j => (
-                <div
-                  key={j.job_name}
-                  className={`border rounded-lg px-2.5 py-1.5 text-xs font-mono min-w-[130px] max-w-[200px] ${typeColor[j.job_type] ?? 'border-slate-600 bg-slate-800/30 text-slate-300'}`}
-                  title={`${j.job_name} · Tipo: ${j.job_type}${j.job_command ? ' · ' + j.job_command : ''}`}
-                >
-                  <div className="truncate font-medium">{j.job_name}</div>
-                  <div className="text-[10px] opacity-60 mt-0.5">{j.job_type} · ord. {order}</div>
-                </div>
-              ))}
+            <div className="flex flex-col gap-2">
+              {gjobs.map(j => {
+                const s = typeStyle[j.job_type] ?? fallbackStyle
+                return (
+                  <div
+                    key={j.job_name}
+                    className={`border-2 rounded-lg px-3 py-2 text-xs font-mono min-w-[140px] max-w-[220px] shadow-sm ${s.wrap}`}
+                    title={`${j.job_name} · Tipo: ${j.job_type}${j.job_command ? ' · ' + j.job_command : ''}`}
+                  >
+                    <div className="truncate font-semibold leading-tight">{j.job_name}</div>
+                    <div className="flex items-center gap-1 mt-1">
+                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${s.label}`}>{j.job_type}</span>
+                      <span className="text-[9px] opacity-50">#{order}</span>
+                    </div>
+                  </div>
+                )
+              })}
             </div>
             {gi < groups.length - 1 && (
-              <div className="text-edge text-lg mx-2 font-thin">→</div>
+              <div className="text-dim text-base mx-3 font-light select-none">→</div>
             )}
           </div>
         ))}
