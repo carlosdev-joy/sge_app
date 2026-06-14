@@ -9,38 +9,73 @@ docker compose build orquestra-api && docker compose up -d --no-deps orquestra-a
 docker compose logs -f orquestra-api
 docker compose restart ui-nginx
 
-[root@vmlnxprd083 airflow]# grep -A4 'location /v2/' /opt/airflow/ui/nginx.conf
-        location /v2/ {
-            add_header Cache-Control "no-cache, must-revalidate";
-            try_files $uri $uri/ @v2spa;
-        }
-        location @v2spa {
-[root@vmlnxprd083 airflow]# docker compose restart ui-nginx
-[+] restart 0/1
- ⠴ Container airflow-ui Restarting                                                                                                                                                                        0.4s
-[root@vmlnxprd083 airflow]# curl -I http://localhost/v2/admin
-HTTP/1.1 404 Not Found
-Server: nginx/1.27.5
-Date: Sun, 14 Jun 2026 06:14:47 GMT
-Content-Type: text/html
-Content-Length: 153
-Connection: keep-alive
 
-[root@vmlnxprd083 airflow]# curl -I http://localhost/v2/admin
-HTTP/1.1 404 Not Found
-Server: nginx/1.27.5
-Date: Sun, 14 Jun 2026 06:14:53 GMT
-Content-Type: text/html
-Content-Length: 153
-Connection: keep-alive
+#!/bin/bash
+# =============================================================
+# deploy.sh — Deploy do ORQUESTRA a partir do GitHub
+#
+# Localização no servidor: /opt/git/deploy.sh
+# Uso: bash /opt/git/deploy.sh
+# =============================================================
+set -e
 
-[root@vmlnxprd083 airflow]# docker ps
-CONTAINER ID   IMAGE                       COMMAND                  CREATED         STATUS                PORTS                    NAMES
-769cf2de61ff   nginx:1.27                  "/docker-entrypoint.…"   8 minutes ago   Up 22 seconds         0.0.0.0:80->80/tcp       airflow-ui
-fef1c4247120   airflow-orquestra-api       "uvicorn main:app --…"   9 minutes ago   Up 9 minutes          0.0.0.0:8000->8000/tcp   orquestra-api
-bc11be9cd835   airflow-airflow-webserver   "/usr/bin/dumb-init …"   4 days ago      Up 4 days (healthy)   0.0.0.0:8080->8080/tcp   airflow-airflow-webserver-1
-39aeb30b94d6   airflow-airflow-triggerer   "/usr/bin/dumb-init …"   8 days ago      Up 8 days (healthy)   8080/tcp                 airflow-airflow-triggerer-1
-78d9db61783d   airflow-airflow-scheduler   "/usr/bin/dumb-init …"   8 days ago      Up 8 days (healthy)   8080/tcp                 airflow-airflow-scheduler-1
-71adb627cc1e   airflow-airflow-worker      "/usr/bin/dumb-init …"   8 days ago      Up 8 days (healthy)   8080/tcp                 airflow-airflow-worker-1
-81b212f4d062   postgres:13                 "docker-entrypoint.s…"   8 days ago      Up 8 days (healthy)   5432/tcp                 airflow-postgres-1
-2b34f17711f1   redis:7.2-bookworm          "docker-entrypoint.s…"   8 days ago      Up 8 days (healthy)   6379/tcp                 air
+REPO_URL="https://github.com/carlosdev-joy/sge_app.git"
+BRANCH="main"
+TMP_DIR="/opt/git/checkout_tmp"
+AIRFLOW_DIR="/opt/airflow"
+
+echo "[DEPLOY] Iniciando deploy — $(date '+%Y-%m-%d %H:%M:%S')"
+
+# ── 1. Clonar repositório ─────────────────────────────────────
+rm -rf "$TMP_DIR"
+git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$TMP_DIR"
+
+COMMIT=$(git -C "$TMP_DIR" log -1 --format="%h %s (%ai)")
+echo "[DEPLOY] Commit: $COMMIT"
+
+# ── 2. UI legada (raiz) + UI React (sub-path /v2) ────────────
+# Sincroniza TODA a UI legada (index.html, js/, css/, nginx.conf). Antes só o
+# nginx.conf era copiado — mudanças em ui/index.html / ui/js não chegavam a prod.
+mkdir -p "$AIRFLOW_DIR/ui"
+rsync -av --delete "$TMP_DIR/ui/" "$AIRFLOW_DIR/ui/"
+echo "[DEPLOY] ✓ ui/ (legado) sincronizado"
+
+# Sincroniza o dist/ do React (build commitado no git) — servido em /v2
+mkdir -p "$AIRFLOW_DIR/ui-react/dist"
+rsync -av --delete "$TMP_DIR/ui-react/dist/" "$AIRFLOW_DIR/ui-react/dist/"
+echo "[DEPLOY] ✓ ui-react/dist sincronizado"
+
+# ── 3. DAGs ───────────────────────────────────────────────────
+rsync -av "$TMP_DIR/dags/" "$AIRFLOW_DIR/dags/"
+chown -R airflow:airflow "$AIRFLOW_DIR/dags/"
+chmod -R 777 "$AIRFLOW_DIR/dags/"
+
+# ── 4. Docker Compose ─────────────────────────────────────────
+cp "$TMP_DIR/docker-compose.yaml" "$AIRFLOW_DIR/docker-compose.yaml"
+
+# ── 5. API — rebuild se houve mudança ─────────────────────────
+rsync -av "$TMP_DIR/api/" "$AIRFLOW_DIR/api/"
+
+cd "$AIRFLOW_DIR"
+echo "[DEPLOY] Rebuilding orquestra-api..."
+docker compose build orquestra-api
+docker compose up -d --no-deps orquestra-api
+echo "[DEPLOY] ✓ orquestra-api atualizado"
+
+# ── 6. Nginx — recria para aplicar a definição de volumes do compose ─
+# IMPORTANTE: 'docker restart' NÃO aplica novos volumes/portas do compose.
+# Como o ui-nginx passou a montar ui/ na raiz + ui-react/dist em /v2, é preciso
+# recriar o container. --force-recreate garante isso mesmo sem mudança de imagem.
+docker compose up -d --no-deps --force-recreate ui-nginx
+echo "[DEPLOY] ✓ ui-nginx recriado (volumes do compose aplicados)"
+
+# ── 7. Limpeza ────────────────────────────────────────────────
+rm -rf "$TMP_DIR"
+
+echo ""
+echo "[DEPLOY] ✓ Concluído em $(date '+%Y-%m-%d %H:%M:%S')"
+echo "[DEPLOY] ✓ Deploy concluído com sucesso"
+echo ""
+echo "  Verificar:"
+echo "    docker compose ps"
+echo "    curl -s http://localhost/orquestra/health"
