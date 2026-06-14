@@ -37,6 +37,15 @@ Endpoints:
   GET  /lineage/dsx-files                 — lista arquivos .dsx disponíveis
   GET  /lineage/field-impact              — impacto por campo (varredura de .dsx)
 
+  GET    /change-plans                    — lista planos de ajuste de campos
+  POST   /change-plans                    — cria plano (com itens opcionais)
+  GET    /change-plans/{id}               — plano + itens
+  POST   /change-plans/{id}/items         — adiciona itens ao plano
+  PATCH  /change-plans/{id}/items/{iid}   — atualiza item (status/alvo/obs)
+  DELETE /change-plans/{id}/items/{iid}   — remove item
+  POST   /change-plans/{id}/finalize      — finaliza (ou reabre) o plano
+  DELETE /change-plans/{id}               — remove plano
+
   POST /catalogo                          — catálogo de dados (multi-modo)
 
   GET  /sync/pipeline-status/dry-run      — simula sincronização sem alterar banco
@@ -78,7 +87,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers import (
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
-    datastage, factory, airflow
+    datastage, factory, airflow, change_plans
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -118,6 +127,6 @@ app.add_middleware(
 for _router_module in [
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
-    datastage, factory, airflow,
+    datastage, factory, airflow, change_plans,
 ]:
     app.include_router(_router_module.router)
