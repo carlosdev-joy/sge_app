@@ -72,6 +72,28 @@ _COL_SKIP: frozenset[str] = frozenset({
     "RejectUsesPercentage", "SupportedVariants",
 })
 
+# ── De-para: SqlType (código ODBC do DataStage) → nome legível ────
+_SQL_TYPE_MAP: dict[int, str] = {
+    1: "CHAR", 12: "VARCHAR", -1: "LONGVARCHAR",
+    -8: "NCHAR", -9: "NVARCHAR", -10: "LONGNVARCHAR",
+    2: "NUMERIC", 3: "DECIMAL",
+    4: "INTEGER", 5: "SMALLINT", -5: "BIGINT", -6: "TINYINT",
+    6: "FLOAT", 7: "REAL", 8: "DOUBLE", -7: "BIT",
+    9: "DATE", 10: "TIME", 11: "TIMESTAMP",
+    91: "DATE", 92: "TIME", 93: "TIMESTAMP",
+    -2: "BINARY", -3: "VARBINARY", -4: "LONGVARBINARY",
+}
+
+# Categorias de tipo (nomes em maiúsculas) para filtros de datatype
+_TEXT_TYPE_NAMES: frozenset[str] = frozenset({
+    "CHAR", "VARCHAR", "LONGVARCHAR", "NCHAR", "NVARCHAR",
+    "LONGNVARCHAR", "WCHAR", "WVARCHAR", "TEXT", "STRING",
+})
+_NUMERIC_TYPE_NAMES: frozenset[str] = frozenset({
+    "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "DECIMAL",
+    "NUMERIC", "FLOAT", "REAL", "DOUBLE", "BIT",
+})
+
 # ── Regex compiladas (seguras — aplicadas em blocos pequenos) ────
 _RE_DSX_ESCAPE  = re.compile(r'\\\(([0-9A-Fa-f]{2})\)')
 _RE_CDATA       = re.compile(r'<!\[CDATA\[(.*?)\]\]>', re.DOTALL)
@@ -144,16 +166,21 @@ class DSXEngine:
 
     # ── Busca de impacto por campo (varredura do .dsx) ──────────
     def buscar_campo(self, project_name: str, termo: str,
-                     exato: bool = False) -> dict:
+                     exato: bool = False, tipos=None,
+                     excluir: bool = False) -> dict:
         """
-        Varre TODOS os jobs do .dsx do projeto e retorna onde o campo aparece.
+        Varre TODOS os jobs do .dsx do projeto e retorna onde o campo aparece,
+        com o datatype de cada coluna que casou.
 
         Busca tipo LIKE (substring, case-insensitive) por padrão — útil quando
         não há padrão de nomenclatura (ex.: 'CNPJ' casa NUM_CNPJ, CPF_CNPJ…).
         Com exato=True, casa apenas igualdade exata (case-insensitive).
 
-        Retorna jobs agrupados, cada um com as ocorrências por stage e as
-        colunas que casaram (matched_columns).
+        Filtro de datatype (opcional):
+          tipos   — iterável de nomes de tipo (ex.: ['VARCHAR','CHAR'])
+          excluir — False: só colunas cujo tipo ESTÁ em `tipos`
+                    True:  só colunas cujo tipo NÃO está em `tipos`
+          (ex.: tipos=['VARCHAR','CHAR'], excluir=True → todo CNPJ que NÃO é texto)
         """
         termo_norm = (termo or "").strip().lower()
         if not termo_norm:
@@ -163,16 +190,28 @@ class DSXEngine:
         if isinstance(jobs_stages, dict) and jobs_stages.get("erro"):
             return jobs_stages
 
-        def _match(col: str) -> bool:
-            c = (col or "").lower()
+        tipos_set = {str(t).strip().upper() for t in (tipos or []) if str(t).strip()}
+
+        def _match_nome(name: str) -> bool:
+            c = (name or "").lower()
             return c == termo_norm if exato else termo_norm in c
+
+        def _match_tipo(col: dict) -> bool:
+            if not tipos_set:
+                return True
+            tname = (col.get("type_name") or "").upper()
+            if not tname:               # tipo desconhecido → não confirma o filtro
+                return False
+            return (tname not in tipos_set) if excluir else (tname in tipos_set)
 
         jobs_out: list[dict] = []
         total_ocorrencias = 0
         for job_name in sorted(jobs_stages, key=str.lower):
             ocorrencias = []
             for stage in jobs_stages[job_name]:
-                matched = [c for c in (stage.get("columns") or []) if _match(c)]
+                cols_detail = stage.get("columns_detail") or []
+                matched = [c for c in cols_detail
+                           if _match_nome(c.get("name")) and _match_tipo(c)]
                 if not matched:
                     continue
                 detalhe = (stage.get("sql_expression") or stage.get("file_path") or "")
@@ -187,7 +226,7 @@ class DSXEngine:
                     "database_name":   stage.get("database_name"),
                     "detalhe":         detalhe,
                     "matched_columns": matched,
-                    "total_columns":   len(stage.get("columns") or []),
+                    "total_columns":   len(cols_detail),
                 })
             if ocorrencias:
                 total_ocorrencias += sum(len(o["matched_columns"]) for o in ocorrencias)
@@ -199,6 +238,8 @@ class DSXEngine:
             "dsx_file":               f"{project_name}.dsx",
             "termo":                  termo,
             "exato":                  exato,
+            "filtro_tipos":           sorted(tipos_set),
+            "filtro_excluir":         excluir,
             "total_jobs_dsx":         len(jobs_stages),
             "total_jobs_impactados":  len(jobs_out),
             "total_ocorrencias":      total_ocorrencias,
@@ -403,9 +444,10 @@ class DSXEngine:
                 file_path = file_path.replace("\\", "/").split("/")[-1] or file_path
             object_type = "Arquivo"
 
-        # Colunas para todos os tipos: OutputPins primeiro, InputPins como fallback
-        columns = (self._extract_columns_from_pin(output_pin_content) or
-                   self._extract_columns_from_pin(input_pin_content))
+        # Colunas (com datatype): OutputPins primeiro, InputPins como fallback
+        columns_detail = (self._extract_columns_detail_from_pin(output_pin_content) or
+                          self._extract_columns_detail_from_pin(input_pin_content))
+        columns = [c["name"] for c in columns_detail]
 
         return {
             "project_name":      project_name,
@@ -422,6 +464,7 @@ class DSXEngine:
             "extracted_at":      now,
             "extraction_method": "dsx_auto",
             "columns":           columns,
+            "columns_detail":    columns_detail,
         }
 
     # ── Colunas dos OutputPins ───────────────────────────────────
@@ -440,33 +483,75 @@ class DSXEngine:
         return content
 
     def _extract_columns_from_pin(self, pin_content: str) -> list[str]:
+        """Nomes de coluna (retrocompat) — derivados de _extract_columns_detail_from_pin."""
+        return [c["name"] for c in self._extract_columns_detail_from_pin(pin_content)]
+
+    def _mk_col(self, name: str, sql_type, precision, scale, nullable) -> dict:
+        """Monta o dict de uma coluna com tipo legível.
+
+        sql_type pode ser int (código ODBC) ou str (texto vindo de XML).
         """
-        Extrai nomes de colunas do conteúdo de OutputPin records.
+        if isinstance(sql_type, int):
+            type_name = _SQL_TYPE_MAP.get(sql_type, f"SQL({sql_type})")
+            code = sql_type
+        elif isinstance(sql_type, str) and sql_type.strip():
+            type_name = sql_type.strip().upper()
+            code = None
+        else:
+            type_name = None
+            code = None
+        return {
+            "name":      name,
+            "sql_type":  code,
+            "type_name": type_name,
+            "precision": precision,
+            "scale":     scale,
+            "nullable":  nullable,
+        }
+
+    def _extract_columns_detail_from_pin(self, pin_content: str) -> list[dict]:
+        """
+        Extrai colunas (nome + datatype) do conteúdo de pin records.
         Suporta:
-          1. DSSUBRECORD com Name + SqlType (ODBCConnectorPX)
-          2. <Column name="..."> XML
+          1. DSSUBRECORD com Name + SqlType/Precision/Scale/Nullable (ODBCConnectorPX)
+          2. <Column name="..."> XML (tipo opcional via atributo)
         """
         if not pin_content:
             return []
 
-        # 1. XML <Column name="...">
-        cols = re.findall(r"<Column[^>]+\bname=\"([^\"]+)\"", pin_content, re.IGNORECASE)
-        if cols:
-            return cols
+        # 1. XML <Column name="..." ...>
+        detail: list[dict] = []
+        for tag in re.findall(r"<Column\b[^>]*>", pin_content, re.IGNORECASE):
+            nm = re.search(r'\bname="([^"]+)"', tag, re.IGNORECASE)
+            if not nm:
+                continue
+            tp = re.search(r'\b(?:sqlType|type|datatype)="([^"]+)"', tag, re.IGNORECASE)
+            detail.append(self._mk_col(nm.group(1), tp.group(1) if tp else None,
+                                       None, None, None))
+        if detail:
+            return detail
 
-        # 2. DSSUBRECORD com Name + (SqlType | Precision) — formato ODBCConnectorPX
-        col_names: list[str] = []
+        # 2. DSSUBRECORD com Name + SqlType/Precision/Scale/Nullable
         sub_blocks = re.split(r"BEGIN DSSUBRECORD|END DSSUBRECORD", pin_content)
         for block in sub_blocks:
             if "SqlType" not in block and "Precision" not in block:
                 continue
             nm = re.search(r'^\s*Name\s+"([^"]+)"', block, re.MULTILINE)
-            if nm:
-                name = nm.group(1)
-                if name not in _COL_SKIP:
-                    col_names.append(name)
+            if not nm or nm.group(1) in _COL_SKIP:
+                continue
+            st = re.search(r'^\s*SqlType\s+"(-?\d+)"', block, re.MULTILINE)
+            pr = re.search(r'^\s*Precision\s+"(-?\d+)"', block, re.MULTILINE)
+            sc = re.search(r'^\s*Scale\s+"(-?\d+)"', block, re.MULTILINE)
+            nl = re.search(r'^\s*Nullable\s+"(-?\d+)"', block, re.MULTILINE)
+            detail.append(self._mk_col(
+                nm.group(1),
+                int(st.group(1)) if st else None,
+                int(pr.group(1)) if pr else None,
+                int(sc.group(1)) if sc else None,
+                (nl.group(1) == "1") if nl else None,
+            ))
 
-        return col_names
+        return detail
 
     # ── Direção do stage ────────────────────────────────────────
     def _infer_direction(self, rec: str, stage_type: str) -> str:

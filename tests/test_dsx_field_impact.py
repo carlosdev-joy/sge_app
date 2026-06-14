@@ -47,6 +47,10 @@ def test_listar_jobs_retorna_lista(engine: DSXEngine):
     assert isinstance(r["jobs"], list) and len(r["jobs"]) > 0
 
 
+def _matched(r) -> list[dict]:
+    return [c for job in r["jobs"] for oc in job["ocorrencias"] for c in oc["matched_columns"]]
+
+
 def test_busca_like_eh_case_insensitive_e_substring(engine: DSXEngine):
     if not _has("seq_geral"):
         pytest.skip("seq_geral.dsx ausente")
@@ -54,13 +58,24 @@ def test_busca_like_eh_case_insensitive_e_substring(engine: DSXEngine):
     r = engine.buscar_campo("seq_geral", "cnpj")
     assert r.get("sucesso") is True
     assert r["total_jobs_impactados"] >= 1
-    matched = [
-        c
-        for job in r["jobs"]
-        for oc in job["ocorrencias"]
-        for c in oc["matched_columns"]
-    ]
-    assert any("cnpj" in c.lower() for c in matched)
+    cols = _matched(r)
+    # matched_columns agora são dicts com nome e datatype
+    assert all(isinstance(c, dict) and "name" in c and "type_name" in c for c in cols)
+    assert any("cnpj" in c["name"].lower() for c in cols)
+
+
+def test_datatype_extraido_e_filtro_nao_texto(engine: DSXEngine):
+    if not _has("seq_geral"):
+        pytest.skip("seq_geral.dsx ausente")
+    # codCpfCnpj é BIGINT no seq_geral → aparece no filtro "≠ texto" e some no "só texto".
+    nao_texto = engine.buscar_campo("seq_geral", "cnpj", tipos=["VARCHAR", "CHAR"], excluir=True)
+    so_texto = engine.buscar_campo("seq_geral", "cnpj", tipos=["VARCHAR", "CHAR"], excluir=False)
+    tipos_nt = {c["type_name"] for c in _matched(nao_texto)}
+    assert "BIGINT" in tipos_nt
+    assert "VARCHAR" not in tipos_nt and "CHAR" not in tipos_nt
+    # No filtro "só texto", nenhuma coluna pode ser não-texto
+    for c in _matched(so_texto):
+        assert c["type_name"] in ("VARCHAR", "CHAR")
 
 
 def test_busca_exata_nao_casa_substring(engine: DSXEngine):
@@ -73,7 +88,7 @@ def test_busca_exata_nao_casa_substring(engine: DSXEngine):
     for job in exato["jobs"]:
         for oc in job["ocorrencias"]:
             for c in oc["matched_columns"]:
-                assert c.lower() == "cnpj"
+                assert c["name"].lower() == "cnpj"
 
 
 def test_termo_vazio_retorna_erro(engine: DSXEngine):
