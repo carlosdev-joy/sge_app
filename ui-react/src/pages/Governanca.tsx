@@ -31,32 +31,32 @@ function LineageView() {
       {data?.jobs && (
         <div className="flex flex-col gap-3">
           {data.jobs.map((job) => (
-            <div key={job.job_name} className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4">
+            <div key={job.job_name} className="bg-panel border border-edge rounded-lg p-4">
               <div className="font-mono text-sm text-blue-400 mb-3">{job.job_name}</div>
               <div className="flex gap-6">
                 <div className="flex-1">
-                  <div className="text-xs text-[#94a3b8] mb-2 font-medium">ORIGENS</div>
+                  <div className="text-xs text-dim mb-2 font-medium">ORIGENS</div>
                   <div className="flex flex-col gap-1">
                     {job.origens.map((o, i) => (
                       <div key={i} className="flex items-center gap-2 text-xs">
                         <span className="text-green-400">←</span>
-                        <span className="text-[#e2e8f0] font-mono">{o.object_name}</span>
+                        <span className="text-ink font-mono">{o.object_name}</span>
                         {(o.type_label || o.object_type) && <Badge value={o.type_label || o.object_type} />}
-                        {o.database_name && <span className="text-[#94a3b8]">{o.database_name}</span>}
+                        {o.database_name && <span className="text-dim">{o.database_name}</span>}
                       </div>
                     ))}
                     {job.origens.length === 0 && <span className="text-xs text-[#4a4d5a]">—</span>}
                   </div>
                 </div>
                 <div className="flex-1">
-                  <div className="text-xs text-[#94a3b8] mb-2 font-medium">DESTINOS</div>
+                  <div className="text-xs text-dim mb-2 font-medium">DESTINOS</div>
                   <div className="flex flex-col gap-1">
                     {job.destinos.map((d, i) => (
                       <div key={i} className="flex items-center gap-2 text-xs">
                         <span className="text-blue-400">→</span>
-                        <span className="text-[#e2e8f0] font-mono">{d.object_name}</span>
+                        <span className="text-ink font-mono">{d.object_name}</span>
                         {(d.type_label || d.object_type) && <Badge value={d.type_label || d.object_type} />}
-                        {d.database_name && <span className="text-[#94a3b8]">{d.database_name}</span>}
+                        {d.database_name && <span className="text-dim">{d.database_name}</span>}
                       </div>
                     ))}
                     {job.destinos.length === 0 && <span className="text-xs text-[#4a4d5a]">—</span>}
@@ -107,16 +107,16 @@ function Catalogo() {
       {isLoading && <PageSpinner />}
       {data?.assets && (
         data.assets.length === 0
-          ? <div className="text-sm text-[#94a3b8] py-8 text-center">Nenhum ativo encontrado.</div>
+          ? <div className="text-sm text-dim py-8 text-center">Nenhum ativo encontrado.</div>
           : <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {data.assets.map((item, i) => (
-                <div key={i} className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4">
+                <div key={i} className="bg-panel border border-edge rounded-lg p-4">
                   <div className="flex items-start justify-between gap-2 mb-2">
-                    <span className="font-mono text-sm text-[#e2e8f0] break-all">{item.asset_name}</span>
+                    <span className="font-mono text-sm text-ink break-all">{item.asset_name}</span>
                     <Badge value={item.asset_type} />
                   </div>
-                  {item.database_name && <div className="text-xs text-[#94a3b8] mb-2">{item.database_name}</div>}
-                  <div className="flex gap-3 text-xs text-[#94a3b8]">
+                  {item.database_name && <div className="text-xs text-dim mb-2">{item.database_name}</div>}
+                  <div className="flex gap-3 text-xs text-dim">
                     <span>{item.pipeline_count ?? 0} pipelines</span>
                     <span className="text-green-400">←{item.as_origem ?? 0}</span>
                     <span className="text-blue-400">→{item.as_destino ?? 0}</span>
@@ -133,7 +133,7 @@ export default function Governanca() {
   const [tab, setTab] = useState('lineage')
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-lg font-bold text-[#e2e8f0]">Governança</h1>
+      <h1 className="text-lg font-bold text-ink">Governança</h1>
       <Tabs tabs={[{ id: 'lineage', label: 'Lineage' }, { id: 'catalogo', label: 'Catálogo de Dados' }]} active={tab} onChange={setTab} />
       <div className="mt-2">{tab === 'lineage' ? <LineageView /> : <Catalogo />}</div>
     </div>

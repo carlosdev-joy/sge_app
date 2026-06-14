@@ -38,7 +38,7 @@ function JobMonitor() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4 flex flex-wrap gap-3 items-end">
+      <div className="bg-panel border border-edge rounded-lg p-4 flex flex-wrap gap-3 items-end">
         <Select label="Projeto" value={projeto} onChange={e => setProjeto(e.target.value)} className="w-44">
           <option value="">Selecione…</option>
           {PROJETOS_DS.map(p => <option key={p}>{p}</option>)}
@@ -58,26 +58,26 @@ function JobMonitor() {
               <div className="flex flex-col gap-3">
                 <div className="flex items-center gap-3">
                   <Badge value={status.status} />
-                  {status.wave != null && <span className="text-xs text-[#94a3b8]">Wave {status.wave}</span>}
-                  {status.pid && <span className="text-xs text-[#94a3b8]">PID {status.pid}</span>}
+                  {status.wave != null && <span className="text-xs text-dim">Wave {status.wave}</span>}
+                  {status.pid && <span className="text-xs text-dim">PID {status.pid}</span>}
                 </div>
-                {status.atualizado && <span className="text-xs text-[#94a3b8]">Atualizado: {format(parseISO(status.atualizado), 'HH:mm:ss')}</span>}
+                {status.atualizado && <span className="text-xs text-dim">Atualizado: {format(parseISO(status.atualizado), 'HH:mm:ss')}</span>}
               </div>
             </Card>
             {status.filhos && status.filhos.length > 0 && (
               <Card title="Jobs Filhos">
                 <table className="w-full text-xs">
-                  <thead><tr className="text-[#94a3b8] border-b border-[#2a2d3a]">
+                  <thead><tr className="text-dim border-b border-edge">
                     <th className="py-1 text-left">Job</th>
                     <th className="py-1 text-left">Status</th>
                     <th className="py-1 text-left">Exit</th>
                   </tr></thead>
                   <tbody>
                     {status.filhos.map((f, i) => (
-                      <tr key={i} className="border-b border-[#2a2d3a]/40">
-                        <td className="py-1 font-mono text-[#e2e8f0]">{f.nome}</td>
+                      <tr key={i} className="border-b border-edge/40">
+                        <td className="py-1 font-mono text-ink">{f.nome}</td>
                         <td className="py-1"><Badge value={f.status} /></td>
-                        <td className="py-1 text-[#94a3b8]">{f.exit_code ?? '-'}</td>
+                        <td className="py-1 text-dim">{f.exit_code ?? '-'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -89,7 +89,7 @@ function JobMonitor() {
                 <div className="flex flex-col gap-1">
                   {status.historico.map((h, i) => (
                     <div key={i} className="flex items-center gap-3 text-xs">
-                      <span className="text-[#94a3b8] w-20 shrink-0">{format(parseISO(h.ts), 'HH:mm:ss')}</span>
+                      <span className="text-dim w-20 shrink-0">{format(parseISO(h.ts), 'HH:mm:ss')}</span>
                       <Badge value={h.status} />
                     </div>
                   ))}
@@ -116,7 +116,7 @@ function PipelineMonitor() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4 flex flex-wrap gap-3 items-end">
+      <div className="bg-panel border border-edge rounded-lg p-4 flex flex-wrap gap-3 items-end">
         <Select label="Projeto" value={projeto} onChange={e => setProjeto(e.target.value)} className="w-44">
           <option value="">Selecione…</option>
           {PROJETOS_DS.map(p => <option key={p}>{p}</option>)}
@@ -127,9 +127,9 @@ function PipelineMonitor() {
       </div>
 
       {loaded && (isLoading ? <PageSpinner /> : (
-        <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
+        <div className="bg-panel border border-edge rounded-lg overflow-hidden">
           <table className="w-full text-sm">
-            <thead><tr className="text-xs text-[#94a3b8] border-b border-[#2a2d3a]">
+            <thead><tr className="text-xs text-dim border-b border-edge">
               <th className="px-4 py-2 text-left">#</th>
               <th className="px-4 py-2 text-left">Job DataStage</th>
               <th className="px-4 py-2 text-left">Tipo</th>
@@ -137,11 +137,11 @@ function PipelineMonitor() {
             </tr></thead>
             <tbody>
               {(data?.jobs ?? []).filter(j => j.tipo === 'datastage').map((j, i) => (
-                <tr key={j.job_name} className="border-b border-[#2a2d3a]/50">
-                  <td className="px-4 py-2 text-[#94a3b8] text-xs">{i + 1}</td>
-                  <td className="px-4 py-2 text-[#e2e8f0] font-mono text-xs">{j.job_name}</td>
+                <tr key={j.job_name} className="border-b border-edge/50">
+                  <td className="px-4 py-2 text-dim text-xs">{i + 1}</td>
+                  <td className="px-4 py-2 text-ink font-mono text-xs">{j.job_name}</td>
                   <td className="px-4 py-2"><Badge value={j.tipo} /></td>
-                  <td className="px-4 py-2 text-[#94a3b8]">{j.ordem}</td>
+                  <td className="px-4 py-2 text-dim">{j.ordem}</td>
                 </tr>
               ))}
             </tbody>
@@ -156,7 +156,7 @@ export default function DSMonitor() {
   const [tab, setTab] = useState('job')
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-lg font-bold text-[#e2e8f0]">DS Monitor</h1>
+      <h1 className="text-lg font-bold text-ink">DS Monitor</h1>
       <Tabs tabs={[{ id: 'job', label: 'Por Job' }, { id: 'pipeline', label: 'Por Pipeline' }]} active={tab} onChange={setTab} />
       {tab === 'job' ? <JobMonitor /> : <PipelineMonitor />}
     </div>

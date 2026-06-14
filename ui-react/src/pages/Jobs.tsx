@@ -43,18 +43,18 @@ function JobModal({ job, pipeline, onClose }: { job?: Job; pipeline: string; onC
         <Input label="Comando / Path" {...register('job_command')} placeholder="ex: dags.meu_modulo.run" />
 
         <div className="flex flex-col gap-2">
-          <label className="flex items-center gap-2 text-sm text-[#94a3b8]">
+          <label className="flex items-center gap-2 text-sm text-dim">
             <input type="checkbox" {...register('ativo')} className="accent-blue-500" />
             Ativo
           </label>
 
           {tipoAtual === 'datastage' && (
-            <div className="mt-1 rounded-lg border border-[#2a2d3a] bg-[#12141c] p-3 flex flex-col gap-1">
-              <label className="flex items-center gap-2 text-sm text-[#e2e8f0] cursor-pointer select-none">
+            <div className="mt-1 rounded-lg border border-edge bg-canvas p-3 flex flex-col gap-1">
+              <label className="flex items-center gap-2 text-sm text-ink cursor-pointer select-none">
                 <input type="checkbox" {...register('verbose_log')} className="accent-amber-400" />
                 <span className="font-medium">Log detalhado durante execução</span>
               </label>
-              <p className="text-xs text-[#64748b] pl-5">
+              <p className="text-xs text-dim pl-5">
                 Quando ativo, registra o progresso dos jobs filhos a cada 5 minutos enquanto o job roda.
                 Útil para investigar lentidão em jobs do tipo SEQUENCE. Desative após a investigação
                 para reduzir o uso de SSH no servidor DataStage.
@@ -100,8 +100,8 @@ export default function Jobs() {
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-lg font-bold text-[#e2e8f0]">Jobs</h1>
-      <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4 flex flex-wrap gap-3 items-end">
+      <h1 className="text-lg font-bold text-ink">Jobs</h1>
+      <div className="bg-panel border border-edge rounded-lg p-4 flex flex-wrap gap-3 items-end">
         <Input label="Pipeline *" value={pipeline} onChange={e => setPipeline(e.target.value)} placeholder="nome exato do pipeline" className="w-64" />
         <Input label="Filtrar job" value={jobFilter} onChange={e => setJobFilter(e.target.value)} placeholder="parte do nome" className="w-44" />
         <Button onClick={() => { setSearched(pipeline) }} disabled={!pipeline}>Buscar</Button>
@@ -109,16 +109,16 @@ export default function Jobs() {
       </div>
 
       {!searched && (
-        <div className="text-center py-12 text-[#94a3b8] text-sm">Informe um pipeline e clique em Buscar</div>
+        <div className="text-center py-12 text-dim text-sm">Informe um pipeline e clique em Buscar</div>
       )}
 
       {searched && isLoading && <PageSpinner />}
 
       {searched && !isLoading && (
-        <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
-          <div className="px-4 py-2 border-b border-[#2a2d3a] text-xs text-[#94a3b8]">{jobs.length} jobs — Pipeline: <span className="text-[#e2e8f0] font-mono">{searched}</span></div>
+        <div className="bg-panel border border-edge rounded-lg overflow-hidden">
+          <div className="px-4 py-2 border-b border-edge text-xs text-dim">{jobs.length} jobs — Pipeline: <span className="text-ink font-mono">{searched}</span></div>
           <table className="w-full text-sm">
-            <thead><tr className="text-xs text-[#94a3b8] border-b border-[#2a2d3a]">
+            <thead><tr className="text-xs text-dim border-b border-edge">
               <th className="px-4 py-2 text-left">#</th>
               <th className="px-4 py-2 text-left">Job</th>
               <th className="px-4 py-2 text-left">Ordem</th>
@@ -130,17 +130,17 @@ export default function Jobs() {
             </tr></thead>
             <tbody>
               {jobs.map((j, i) => (
-                <tr key={j.job_name} className="border-b border-[#2a2d3a]/50 hover:bg-[#2a2d3a]/30">
-                  <td className="px-4 py-2 text-[#94a3b8] text-xs">{i + 1}</td>
-                  <td className="px-4 py-2 text-[#e2e8f0] font-mono text-xs">{j.job_name}</td>
-                  <td className="px-4 py-2 text-[#94a3b8]">{j.ordem}</td>
+                <tr key={j.job_name} className="border-b border-edge/50 hover:bg-edge/30">
+                  <td className="px-4 py-2 text-dim text-xs">{i + 1}</td>
+                  <td className="px-4 py-2 text-ink font-mono text-xs">{j.job_name}</td>
+                  <td className="px-4 py-2 text-dim">{j.ordem}</td>
                   <td className="px-4 py-2"><Badge value={j.tipo} /></td>
-                  <td className="px-4 py-2 text-[#94a3b8] font-mono text-xs max-w-xs truncate">{j.job_command}</td>
+                  <td className="px-4 py-2 text-dim font-mono text-xs max-w-xs truncate">{j.job_command}</td>
                   <td className="px-4 py-2"><Badge value={j.ativo ? 'ativo' : 'inativo'} /></td>
                   <td className="px-4 py-2">
                     {j.tipo === 'datastage' && j.verbose_log
                       ? <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full" title="Log detalhado ativo — registra progresso dos jobs filhos a cada 5 min">🔍 detalhado</span>
-                      : <span className="text-xs text-[#3d4152]">—</span>
+                      : <span className="text-xs text-dim">—</span>
                     }
                   </td>
                   <td className="px-4 py-2 flex justify-end gap-1.5">

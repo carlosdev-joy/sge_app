@@ -1,11 +1,15 @@
+import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useAuthStore } from '../../store/auth'
 import { apiFetch } from '../../lib/api'
 import { NAV } from '../../lib/nav'
-import { LogOut, User } from 'lucide-react'
+import { getTheme, toggleTheme } from '../../lib/theme'
+import { Logo } from './Logo'
+import { LogOut, User, Sun, Moon } from 'lucide-react'
 
 export function Header() {
   const { user, logout, isAdmin } = useAuthStore()
+  const [theme, setTheme] = useState(getTheme())
 
   const handleLogout = async () => {
     try { await apiFetch('/auth/logout', { method: 'POST' }) } catch {}
@@ -14,7 +18,7 @@ export function Header() {
   }
 
   const tabClass = (active: boolean) =>
-    `px-3 py-1.5 rounded text-xs font-medium whitespace-nowrap transition-colors ${
+    `flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium whitespace-nowrap transition-colors ${
       active
         ? 'bg-white/20 text-white'
         : 'text-white/75 hover:bg-white/15 hover:text-white'
@@ -27,42 +31,48 @@ export function Header() {
     >
       <div className="flex items-center gap-3 px-4 h-[52px]">
 
-        {/* Logo Caixa Vida e Previdência — PNG em public/images/logo-cvp.png.
-            Quando o arquivo não existir o img fica oculto (onerror) e só o
-            texto do brand aparece, igual ao fallback do legado. */}
-        <a href="/" className="shrink-0 flex items-center" title="Voltar ao sistema">
-          <img
-            src="/v2/images/logo-cvp.svg"
-            alt="CVP"
-            className="h-9 w-auto"
-            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
-          />
+        {/* Logo + brand → voltam ao sistema legado */}
+        <a href="/" className="shrink-0 flex items-center gap-2.5" title="Voltar ao sistema">
+          <Logo className="h-9 w-auto" />
+          <span className="flex flex-col leading-tight">
+            <span className="text-xs font-semibold tracking-widest uppercase opacity-95">ORQUESTRA</span>
+            <span className="text-[10px] opacity-60 tracking-wide">Gestão de Pipelines</span>
+          </span>
         </a>
 
-        {/* Brand */}
-        <a href="/" className="shrink-0 flex flex-col leading-tight mr-2" title="Voltar ao sistema">
-          <span className="text-xs font-semibold tracking-widest uppercase opacity-95">ORQUESTRA</span>
-          <span className="text-[10px] opacity-60 tracking-wide">Gestão de Pipelines</span>
-        </a>
-
-        {/* Nav */}
-        <nav className="flex items-center gap-0.5 flex-1 overflow-x-auto">
+        {/* Nav com ícones */}
+        <nav className="flex items-center gap-0.5 flex-1 overflow-x-auto ml-2">
           {NAV.map((n) => {
             if (n.adminOnly && !isAdmin()) return null
+            const Icon = n.icon
+            const content = (
+              <>
+                <Icon size={13} />
+                <span>{n.label}</span>
+              </>
+            )
             return n.migrated ? (
               <NavLink key={n.to} to={n.to} className={({ isActive }) => tabClass(isActive)}>
-                {n.label}
+                {content}
               </NavLink>
             ) : (
               <a key={n.to} href={n.legacyHref} className={tabClass(false)}>
-                {n.label}
+                {content}
               </a>
             )
           })}
         </nav>
 
-        {/* Usuário + logout */}
+        {/* Tema + usuário + logout */}
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setTheme(toggleTheme())}
+            className="text-white/70 hover:text-white transition-colors p-1 rounded hover:bg-white/10"
+            title={theme === 'dark' ? 'Mudar para tema claro' : 'Mudar para tema escuro'}
+            aria-label="Alternar tema"
+          >
+            {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
           <span className="flex items-center gap-1 text-xs text-white/70">
             <User size={12} />{user?.primeiro_nome ?? user?.matricula}
           </span>
