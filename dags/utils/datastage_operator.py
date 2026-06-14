@@ -6,7 +6,7 @@ Async DataStage operator for Apache Airflow 2.x.
 Features:
   - Idempotent trigger: attaches to an already-running job on Airflow restart
   - Real-time polling via dsjob -jobinfo (no blocking -wait flag)
-  - Full log capture via dsjob -logsum on completion or failure
+  - Full log capture via dsjob -logsum on completion or failure only
   - Child job visibility for SEQUENCE type jobs (BATCH/finish events)
   - Auto RESET + retry on ABORTED status (up to max_ds_retries)
   - Optional logical-date parameter for catch-up scheduling correctness
@@ -17,6 +17,10 @@ Features:
     execução do DataStage Workload Management via -queue no dsjob -run
     (ALTA/CRÍTICO → HighPriorityJobs · MEDIA/NORMAL → MediumPriorityJobs
      BAIXA → LowPriorityJobs). Sem configuração usa o padrão do projeto.
+  - verbose_log: quando True, chama dsjob -logsum a cada verbose_interval
+    polls durante a execução para mostrar progresso de jobs filhos
+    (SEQUENCE). Default False — use apenas para investigar jobs específicos.
+    Pode ser ativado regenerando a DAG via factory sem alterar a malha.
 
 dsjob -jobinfo "Job Status" codes:
    0 = RUNNING
@@ -46,6 +50,9 @@ class DataStageOperator(BaseOperator):
 
     Set attach_only=True to monitor a job that was triggered externally (e.g. the
     etl_datastage_monitor DAG) without starting a new run.
+
+    Set verbose_log=True to enable intermediate dsjob -logsum calls during execution
+    (useful for diagnosing slow SEQUENCE jobs). Off by default to minimize SSH load.
 
     XCom return value is a JSON string with:
         system, project, job, status, status_code, wave_number,
@@ -79,6 +86,8 @@ class DataStageOperator(BaseOperator):
         mssql_conn_id: str = "SQL14_DMDB41",
         pipeline_name: str = "",
         queue_name: str | None = None,
+        verbose_log: bool = False,
+        verbose_interval: int = 5,   # chama -logsum a cada N polls (só com verbose_log=True)
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -93,7 +102,9 @@ class DataStageOperator(BaseOperator):
         self.attach_only          = attach_only
         self.mssql_conn_id        = mssql_conn_id
         self.pipeline_name        = pipeline_name
-        self.queue_name           = queue_name  # DS Workload Management queue
+        self.queue_name           = queue_name    # DS Workload Management queue
+        self.verbose_log          = verbose_log   # logsum periódico durante execução
+        self.verbose_interval     = verbose_interval
 
     # ── entry point ──────────────────────────────────────────────────────────
 
@@ -125,12 +136,16 @@ class DataStageOperator(BaseOperator):
         # Persist initial state to DB
         self._persist(execution_id, pipeline, wave_num, None, "QUEUED", self._ST_QUEUED, [], "", None)
 
-        # Polling loop
+        if self.verbose_log:
+            self.log.info("[DS] verbose_log=True — logsum parcial a cada %d polls", self.verbose_interval)
+
+        # Polling loop — cada iteração faz apenas dsjob -jobinfo (leve).
+        # dsjob -logsum (pesado) só é chamado em: estado terminal, ABORTED,
+        # ou verbose_log=True (para investigação pontual de jobs específicos).
         ds_attempt      = 0
         poll_count      = 0
-        logsum_interval = 5  # chama -logsum a cada N polls para ver progresso dos filhos
-        queued_since: datetime | None = datetime.utcnow()   # hora em que o job foi submetido
-        queued_seconds: int = 0                              # acumulado enquanto QUEUED
+        queued_since: datetime | None = datetime.utcnow()
+        queued_seconds: int = 0
         while True:
             time.sleep(self.poll_interval)
             poll_count += 1
@@ -142,7 +157,7 @@ class DataStageOperator(BaseOperator):
                 info.get("controller"),
             )
 
-            # Detecta transição QUEUED → RUNNING: calcula tempo de espera em fila
+            # Detecta transição QUEUED → RUNNING: registra tempo de espera em fila
             if sc != self._ST_QUEUED and queued_since is not None:
                 queued_seconds = int((datetime.utcnow() - queued_since).total_seconds())
                 queued_since   = None
@@ -150,19 +165,18 @@ class DataStageOperator(BaseOperator):
                     self.log.info("[DS] Tempo em fila: %ds", queued_seconds)
                     self._persist_queued_seconds(execution_id, queued_seconds)
 
-            # A cada N polls, chama -logsum parcial para mostrar progresso dos filhos
-            partial_logsum = ""
-            if sc == self._ST_RUNNING and poll_count % logsum_interval == 0:
+            # Logsum parcial: só com verbose_log=True — opt-in por job/DAG
+            if self.verbose_log and sc == self._ST_RUNNING and poll_count % self.verbose_interval == 0:
                 try:
-                    partial_logsum = self._logsum()
+                    partial_logsum   = self._logsum()
                     partial_children = self._parse_child_jobs(partial_logsum)
                     if partial_children:
-                        self.log.info("[DS] Progresso parcial — %d job(s) filhos até agora:", len(partial_children))
+                        self.log.info("[DS][verbose] Progresso — %d job(s) filhos:", len(partial_children))
                         self._log_child_jobs(partial_children)
                 except Exception as exc:
-                    self.log.debug("[DS] logsum parcial ignorado: %s", exc)
+                    self.log.debug("[DS][verbose] logsum parcial ignorado: %s", exc)
 
-            # Save poll snapshot to DB
+            # Snapshot de poll (só status_code + text — sem logsum)
             snapshot = json.dumps({
                 "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "status_code": sc,
@@ -183,7 +197,7 @@ class DataStageOperator(BaseOperator):
             if sc == self._ST_ABORTED:
                 ds_attempt += 1
                 self.log.warning("[DS] ABORTED (attempt %d/%d)", ds_attempt, self.max_ds_retries)
-                logsum     = self._logsum()
+                logsum     = self._logsum()   # logsum sempre em ABORTED para diagnóstico
                 child_jobs = self._parse_child_jobs(logsum)
                 self._log_child_jobs(child_jobs)
                 self._persist(
@@ -192,7 +206,6 @@ class DataStageOperator(BaseOperator):
                 )
 
                 if self.attach_only:
-                    # In monitor mode, don't reset — just report ABORTED
                     raise AirflowException(
                         f"[DS] '{self.project}/{self.job_name}' ABORTED.\n"
                         f"Log summary (2 000 chars):\n{logsum[:2000]}"
@@ -321,7 +334,6 @@ class DataStageOperator(BaseOperator):
         """Extract child job events from dsjob -logsum output (SEQUENCE jobs)."""
         batch_re  = re.compile(r"BATCH\s+.*?->\s+\(([^)]+)\):\s+Job run requested")
         finish_re = re.compile(r"Job (\S+) has finished,\s*status\s*=\s*(\d+)\s+\(([^)]+)\)")
-        warning_re = re.compile(r"(FATAL|WARNING).*?(\S+).*?code\s*=\s*(-?\d+)")
 
         tracked: dict = {}
         result:  list = []
@@ -410,7 +422,7 @@ class DataStageOperator(BaseOperator):
     # ── finish ────────────────────────────────────────────────────────────────
 
     def _finish(self, execution_id, pipeline, status_code, label, info) -> str:
-        logsum     = self._logsum()
+        logsum     = self._logsum()   # uma única chamada -logsum, ao terminar
         child_jobs = self._parse_child_jobs(logsum)
         self.log.info("[DS] %s — %d child job(s)", label, len(child_jobs))
         self._log_child_jobs(child_jobs)
@@ -420,7 +432,7 @@ class DataStageOperator(BaseOperator):
         ds_label = "Finished with warnings" if label == "WARNING" else label
         xcom_status_code = 1  # SUCCESS para o factory em ambos OK e WARNING
         if label not in ("SUCCESS", "WARNING"):
-            xcom_status_code = status_code  # ABORTED etc. mantém o código original
+            xcom_status_code = status_code
 
         ds_end_time = datetime.utcnow()
 
@@ -438,7 +450,7 @@ class DataStageOperator(BaseOperator):
             "job":         self.job_name,
             "status":      "SUCCESS",
             "status_code": xcom_status_code,
-            "ds_status":   ds_label,        # detalhe real visível no DS Log
+            "ds_status":   ds_label,
             "wave_number": info.get("wave_number"),
             "start_time":  info.get("start_time"),
             "pid":         info.get("pid"),

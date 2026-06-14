@@ -87,7 +87,8 @@ def list_jobs(
                 {_sel('active',      'active', cast_int=True)},
                 {_sel('created_at',  'created_at')},
                 {_sel('updated_at',  'updated_at')},
-                {_sel('ssh_conn_id', 'ssh_conn_id')}
+                {_sel('ssh_conn_id',  'ssh_conn_id')},
+                {_sel('verbose_log', 'verbose_log', cast_int=True)}
             FROM dbo.etl_pipeline_job j
             LEFT JOIN dbo.etl_pipeline p ON p.pipeline_name = j.pipeline_name
             {where_sql}
@@ -101,7 +102,7 @@ def list_jobs(
                 "pipeline_name":  r[0], "project_name": r[1], "job_name": r[2],
                 "execution_order": r[3], "job_type": r[4], "job_command": r[5],
                 "active": r[6], "created_at": _fmt_dt(r[7]), "updated_at": _fmt_dt(r[8]),
-                "ssh_conn_id": r[9],
+                "ssh_conn_id": r[9], "verbose_log": bool(r[10]),
             }
             for r in cur.fetchall()
         ]
@@ -162,10 +163,13 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                 erros.append(f"Item {idx} ({j_name}): ao menos 1 destino é obrigatório"); continue
 
             try:
+                verbose = 1 if job.get("verbose_log") else 0
                 cur.execute(
                     "EXEC dbo.sp_etl_pipeline_job_upsert "
-                    "@pipeline_name=?, @job_name=?, @execution_order=?, @job_type=?, @job_command=?, @ssh_conn_id=?",
-                    (pipeline_name, j_name, int(j_order), j_type, j_cmd, job.get("ssh_conn_id") or None),
+                    "@pipeline_name=?, @job_name=?, @execution_order=?, @job_type=?, @job_command=?, "
+                    "@ssh_conn_id=?, @verbose_log=?",
+                    (pipeline_name, j_name, int(j_order), j_type, j_cmd,
+                     job.get("ssh_conn_id") or None, verbose),
                 )
             except Exception as e:
                 erros.append(f"Item {idx} ({j_name}): erro ao gravar job — {e}"); continue
