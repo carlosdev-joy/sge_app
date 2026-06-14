@@ -78,6 +78,17 @@ function typeLabel(c: MatchedColumn): string {
   return showPrec ? `${c.type_name}(${c.precision}${c.scale ? `,${c.scale}` : ''})` : c.type_name
 }
 
+// Rótulo curto do filtro de tipo aplicado (evita estourar o KPI card)
+function filtroNome(r: FieldImpactResult): string {
+  if (!r.filtro_tipos.length) return 'nenhum'
+  const s = new Set(r.filtro_tipos)
+  const eqSet = (o: Set<string>) => o.size === s.size && [...o].every((x) => s.has(x))
+  if (eqSet(TXT_SET)) return r.filtro_excluir ? '≠ Texto' : 'Texto'
+  if (eqSet(NUM_SET)) return r.filtro_excluir ? '≠ Num.' : 'Numéricos'
+  if (eqSet(DATE_SET)) return r.filtro_excluir ? '≠ Datas' : 'Datas'
+  return `${r.filtro_excluir ? '≠' : '='} ${r.filtro_tipos.length} tipos`
+}
+
 // ── Direção do stage ──────────────────────────────────────────────
 const DIR_LABEL: Record<string, string> = { origem: 'Origem', destino: 'Destino', transformacao: 'Transformação' }
 const DIR_CLS: Record<string, string> = {
@@ -252,7 +263,7 @@ export default function ImpactoCampo() {
             <KpiCard label="Jobs impactados" value={result.total_jobs_impactados} color={result.total_jobs_impactados ? 'red' : 'green'} />
             <KpiCard label="Colunas (ocorrências)" value={result.total_ocorrencias} color="purple" />
             <KpiCard label="Filtro de tipo"
-              value={result.filtro_tipos.length ? (result.filtro_excluir ? '≠ ' : '= ') + result.filtro_tipos.join('/') : 'nenhum'}
+              value={filtroNome(result)}
               sub={`termo: ${result.termo}${result.exato ? ' (exato)' : ''}`} color="yellow" />
           </div>
 
