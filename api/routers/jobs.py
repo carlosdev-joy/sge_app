@@ -138,6 +138,8 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
         jobs = [{"job_name": job_name, "execution_order": int(order),
                  "job_type": body.get("job_type", "datastage"),
                  "job_command": body.get("job_command"),
+                 "ssh_conn_id": body.get("ssh_conn_id"),
+                 "verbose_log": body.get("verbose_log", False),
                  "origens": body.get("origens", []),
                  "destinos": body.get("destinos", [])}]
 

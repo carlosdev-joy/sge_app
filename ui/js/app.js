@@ -5913,6 +5913,7 @@ function renderJobsTable(payload) {
     '</td>' +
     '<td><span class="tag-pill">' + (j.job_type || '—') + '</span></td>' +
     '<td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (j.job_command || '') + '">' + (j.job_command || '—') + (j.job_type === 'shell' && j.ssh_conn_id ? ' <span class="tag-pill" style="font-size:10px;margin-left:4px">' + _escHtml(j.ssh_conn_id) + '</span>' : '') + '</td>' +
+    '<td>' + (j.job_type === 'datastage' && j.verbose_log ? '<span class="tag-pill" style="background:rgba(245,158,11,.15);color:#f59e0b;font-size:10px" title="Log detalhado ativo — registra progresso dos jobs filhos a cada 5 min">🔍 detalhado</span>' : '<span style="color:#3d4152;font-size:12px">—</span>') + '</td>' +
     '<td class="col-actions">' +
       '<div class="row-actions">' +
         (!window.__isViewer ? '<button class="act-btn act-edit" onclick="openJobEdit(' + i + ')" title="Editar job">' + ICONS.edit + '</button>' : '') +
@@ -5931,7 +5932,7 @@ function renderJobsTable(payload) {
     '<div class="query-table-wrap"><table class="query-table"><thead><tr>' +
     _jHdr('Pipeline','pipeline_name') + _jHdr('Job','job_name') +
     _jHdr('Ordem','execution_order') + _jHdr('Tipo','job_type') +
-    '<th>Comando</th><th class="col-actions">Ações</th>' +
+    '<th>Comando</th><th>Log</th><th class="col-actions">Ações</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
     (pages > 1 ? renderJobsPagination(offset, limit, total, pages) : '');
 }
@@ -6176,11 +6177,14 @@ async function saveJobCreateBulk() {
 function _dsmToggleSshField(prefix) {
   const type = $(prefix + '-type').value;
   const wrap = $(prefix + '-ssh-wrap');
-  if (!wrap) return;
-  wrap.style.display = type === 'shell' ? '' : 'none';
-  if (type === 'shell' && !$(prefix + '-ssh').dataset.loaded) {
-    _loadSshOptions(prefix + '-ssh');
+  if (wrap) {
+    wrap.style.display = type === 'shell' ? '' : 'none';
+    if (type === 'shell' && !$(prefix + '-ssh').dataset.loaded) {
+      _loadSshOptions(prefix + '-ssh');
+    }
   }
+  const verboseWrap = $(prefix + '-verbose-wrap');
+  if (verboseWrap) verboseWrap.style.display = type === 'datastage' ? '' : 'none';
 }
 
 async function _loadSshOptions(selectId) {
@@ -6220,6 +6224,11 @@ function openJobEdit(idx) {
   const sshSel = $('jem-ssh');
   if (sshSel) { sshSel.value = j.ssh_conn_id || ''; if (j.job_type === 'shell' && !sshSel.dataset.loaded) _loadSshOptions('jem-ssh'); }
 
+  const verboseWrap = $('jem-verbose-wrap');
+  if (verboseWrap) verboseWrap.style.display = (j.job_type === 'datastage') ? '' : 'none';
+  const verboseChk = $('jem-verbose');
+  if (verboseChk) verboseChk.checked = !!(j.verbose_log);
+
   $('jobEditModal').classList.add('open');
 }
 
@@ -6241,24 +6250,22 @@ async function saveJobEdit() {
   if (!order || isNaN(order) || order < 1) { m.textContent = 'Ordem inválida'; m.className = 'msg erro'; return; }
   if (!type) { m.textContent = 'Tipo obrigatório'; m.className = 'msg erro'; return; }
 
-  const conf = {
+  const jobPayload = {
     pipeline_name: pipeline,
-    jobs: [{
-      job_name: name,
-      execution_order: order,
-      job_type: type,
-      job_command: cmd || null,
-      ssh_conn_id: (type === 'shell') ? ($('jem-ssh').value || null) : null,
-      // Para edição linha-a-linha, mantemos origens/destinos vazios (mesmo padrão do bulk)
-      origens: [],
-      destinos: [],
-    }]
+    job_name: name,
+    execution_order: order,
+    job_type: type,
+    job_command: cmd || null,
+    ssh_conn_id: (type === 'shell') ? ($('jem-ssh').value || null) : null,
+    verbose_log: (type === 'datastage') ? !!($('jem-verbose') && $('jem-verbose').checked) : false,
+    require_lineage: false,
+    operacao: 'upsert',
   };
 
-  await triggerAndPoll(
-    'etl_pipeline_job_register',
-    conf,
-    'Atualizar job "' + name + '" do pipeline "' + pipeline + '"',
+  await _orqPost(
+    ORQUESTRA_API + '/pipelines/jobs/register',
+    jobPayload,
+    'Job "' + name + '" do pipeline "' + pipeline + '"',
     null, null, null
   );
 
