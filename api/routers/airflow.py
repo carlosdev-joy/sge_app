@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 import logging
+import re
 
 import httpx
-from fastapi import APIRouter, Body, HTTPException, Path
+from fastapi import APIRouter, Body, Depends, HTTPException, Path
 from fastapi.responses import PlainTextResponse
 
 from deps import (
     AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
+    get_current_user, require_perm, PERM_EXECUTAR,
 )
+
+_DAG_ID_RE = re.compile(r'^[a-zA-Z0-9_.\-]+$')
 
 log = logging.getLogger("orquestra-api")
 
@@ -76,13 +80,16 @@ async def list_dag_runs(dag_id: str, limit: int = 50, order_by: str = "-executio
 
 
 @router.post("/airflow/dags/{dag_id}/dagRuns")
-async def trigger_dag_run(dag_id: str, body: dict = Body(default={})):
+async def trigger_dag_run(dag_id: str, body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
     """Dispara uma execução manual de um DAG — proxy para Airflow REST API."""
+    if not _DAG_ID_RE.match(dag_id):
+        raise HTTPException(status_code=400, detail="dag_id inválido")
+    safe_body = {k: body[k] for k in ('dag_run_id', 'conf', 'logical_date') if k in body}
     try:
         async with get_airflow_client() as client:
             r = await client.post(
                 f"/api/v1/dags/{dag_id}/dagRuns",
-                json=body,
+                json=safe_body,
                 headers={"Content-Type": "application/json"},
             )
             if not r.is_success:
@@ -96,13 +103,16 @@ async def trigger_dag_run(dag_id: str, body: dict = Body(default={})):
 
 
 @router.patch("/airflow/dags/{dag_id}")
-async def patch_dag(dag_id: str, body: dict = Body(default={})):
+async def patch_dag(dag_id: str, body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
     """Ativa ou pausa um DAG (is_paused) — proxy para Airflow REST API."""
+    if not _DAG_ID_RE.match(dag_id):
+        raise HTTPException(status_code=400, detail="dag_id inválido")
+    safe_body = {k: body[k] for k in ('is_paused',) if k in body}
     try:
         async with get_airflow_client() as client:
             r = await client.patch(
                 f"/api/v1/dags/{dag_id}",
-                json=body,
+                json=safe_body,
                 headers={"Content-Type": "application/json"},
             )
             if not r.is_success:

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { useAuthStore } from '../store/auth'
@@ -69,7 +69,11 @@ interface LineageJob {
 
 // ── constants ──────────────────────────────────────────────────────────────
 
-const SCHEDULE_TYPES = ['daily', 'weekly', 'monthly', 'hourly', 'biweekly'] as const
+const SCHEDULE_TYPES = ['daily', 'weekly', 'monthly', 'hourly', 'biweekly', 'on_demand'] as const
+const SCHEDULE_LABELS: Record<string, string> = {
+  daily: 'Diário', weekly: 'Semanal', monthly: 'Mensal',
+  hourly: 'A cada hora', biweekly: 'Quinzenal', on_demand: 'Sob demanda',
+}
 const CRITICIDADES   = ['Alta', 'Media', 'Baixa'] as const
 const AMBIENTES      = ['PROD', 'HML', 'DEV'] as const
 const DAG_FACTORY_ID = 'etl_dag_factory'
@@ -82,6 +86,7 @@ function pipelineToDagId(name: string) {
 }
 
 function buildCron(type: string, h: number, m: number, dow: number, dom: number) {
+  if (type === 'on_demand') return '(sem agendamento automático)'
   if (type === 'hourly')   return `${m} * * * *`
   if (type === 'daily')    return `${m} ${h} * * *`
   if (type === 'weekly')   return `${m} ${h} * * ${dow}`
@@ -170,6 +175,7 @@ function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose
   const isEdit = !!pipeline
   const [form, setForm]     = useState<FormState>(pipeline ? pipelineToForm(pipeline) : defaultForm())
   const [errs, setErrs]     = useState<string[]>([])
+  const [errTabs, setErrTabs] = useState<Set<FormSection>>(new Set())
   const [section, setSection] = useState<FormSection>('basic')
 
   const { data: projData } = useQuery<{ projects: string[] }>({
@@ -240,11 +246,24 @@ function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose
 
   function validate() {
     const e: string[] = []
-    if (!form.pipeline_name.trim()) e.push('Nome do pipeline é obrigatório')
-    if (!form.project_name) e.push('Projeto é obrigatório')
-    if (form.schedule_hour < 0 || form.schedule_hour > 23) e.push('Hora inválida (0–23)')
-    if (form.schedule_minute < 0 || form.schedule_minute > 59) e.push('Minuto inválido (0–59)')
+    const badTabs = new Set<FormSection>()
+    if (!form.pipeline_name.trim()) { e.push('Nome do pipeline é obrigatório'); badTabs.add('basic') }
+    if (!form.project_name) { e.push('Projeto é obrigatório'); badTabs.add('basic') }
+    if (form.schedule_type !== 'on_demand') {
+      if (form.schedule_hour < 0 || form.schedule_hour > 23) { e.push('Hora inválida (0–23)'); badTabs.add('schedule') }
+      if (form.schedule_minute < 0 || form.schedule_minute > 59) { e.push('Minuto inválido (0–59)'); badTabs.add('schedule') }
+      if ((form.schedule_type === 'weekly' || form.schedule_type === 'biweekly') && (form.schedule_dow < 0 || form.schedule_dow > 6)) {
+        e.push('Dia da semana inválido (0–6)'); badTabs.add('schedule')
+      }
+      if ((form.schedule_type === 'monthly' || form.schedule_type === 'biweekly') && (form.schedule_dom < 1 || form.schedule_dom > 28)) {
+        e.push('Dia do mês inválido (1–28)'); badTabs.add('schedule')
+      }
+    }
     setErrs(e)
+    setErrTabs(badTabs)
+    if (badTabs.size > 0 && !badTabs.has(section)) {
+      setSection([...badTabs][0])
+    }
     return e.length === 0
   }
 
@@ -265,9 +284,12 @@ function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose
             <button
               key={t.id}
               onClick={() => setSection(t.id)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-t transition-colors ${section === t.id ? 'bg-blue-600/20 text-blue-300 border-b-2 border-blue-500' : 'text-dim hover:text-ink'}`}
+              className={`px-3 py-1.5 text-xs font-medium rounded-t transition-colors relative ${section === t.id ? 'bg-blue-600/20 text-blue-300 border-b-2 border-blue-500' : 'text-dim hover:text-ink'}`}
             >
               {t.label}
+              {errTabs.has(t.id) && (
+                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-red-500" title="Campos inválidos nesta aba" />
+              )}
             </button>
           ))}
         </div>
@@ -305,45 +327,51 @@ function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose
         {/* ── AGENDAMENTO ── */}
         {section === 'schedule' && (
           <div className="flex flex-col gap-3">
-            <div className="grid grid-cols-2 gap-3">
-              <Select label="Tipo" value={form.schedule_type} onChange={e => f('schedule_type', e.target.value)}>
-                {SCHEDULE_TYPES.map(t => <option key={t}>{t}</option>)}
-              </Select>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-dim font-medium">Hora (0–23)</label>
-                  <input type="number" min={0} max={23} value={form.schedule_hour}
-                    onChange={e => f('schedule_hour', parseInt(e.target.value) || 0)}
-                    className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+            <Select label="Tipo" value={form.schedule_type} onChange={e => f('schedule_type', e.target.value)}>
+              {SCHEDULE_TYPES.map(t => <option key={t} value={t}>{SCHEDULE_LABELS[t]}</option>)}
+            </Select>
+            {form.schedule_type !== 'on_demand' && (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-dim font-medium">Hora (0–23)</label>
+                    <input type="number" min={0} max={23}
+                      value={form.schedule_hour === 0 ? '' : form.schedule_hour}
+                      onChange={e => f('schedule_hour', e.target.value === '' ? 0 : Math.min(23, Math.max(0, parseInt(e.target.value) || 0)))}
+                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-dim font-medium">Minuto (0–59)</label>
+                    <input type="number" min={0} max={59}
+                      value={form.schedule_minute === 0 ? '' : form.schedule_minute}
+                      onChange={e => f('schedule_minute', e.target.value === '' ? 0 : Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))}
+                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                  </div>
                 </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-dim font-medium">Minuto (0–59)</label>
-                  <input type="number" min={0} max={59} value={form.schedule_minute}
-                    onChange={e => f('schedule_minute', parseInt(e.target.value) || 0)}
-                    className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                </div>
-              </div>
-            </div>
-            {(form.schedule_type === 'weekly' || form.schedule_type === 'biweekly') && (
-              <Select label="Dia da semana" value={form.schedule_dow}
-                onChange={e => f('schedule_dow', parseInt(e.target.value))}>
-                {[['0','Domingo'],['1','Segunda'],['2','Terça'],['3','Quarta'],['4','Quinta'],['5','Sexta'],['6','Sábado']].map(([v, l]) =>
-                  <option key={v} value={v}>{l}</option>)}
-              </Select>
-            )}
-            {(form.schedule_type === 'monthly' || form.schedule_type === 'biweekly') && (
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-dim font-medium">Dia do mês (1–28)</label>
-                <input type="number" min={1} max={28} value={form.schedule_dom}
-                  onChange={e => f('schedule_dom', parseInt(e.target.value) || 1)}
-                  className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
-              </div>
+                {(form.schedule_type === 'weekly' || form.schedule_type === 'biweekly') && (
+                  <Select label="Dia da semana" value={form.schedule_dow}
+                    onChange={e => f('schedule_dow', parseInt(e.target.value))}>
+                    {[['0','Domingo'],['1','Segunda'],['2','Terça'],['3','Quarta'],['4','Quinta'],['5','Sexta'],['6','Sábado']].map(([v, l]) =>
+                      <option key={v} value={v}>{l}</option>)}
+                  </Select>
+                )}
+                {(form.schedule_type === 'monthly' || form.schedule_type === 'biweekly') && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-dim font-medium">Dia do mês (1–28)</label>
+                    <input type="number" min={1} max={28} value={form.schedule_dom}
+                      onChange={e => f('schedule_dom', Math.min(28, Math.max(1, parseInt(e.target.value) || 1)))}
+                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                  </div>
+                )}
+                <Input label="Data de início DAG (opcional)" type="date" value={form.dag_start_date}
+                  onChange={e => f('dag_start_date', e.target.value)} />
+              </>
             )}
             <div className="bg-canvas border border-edge rounded-lg px-3 py-2 text-xs text-dim font-mono">
-              CRON: {buildCron(form.schedule_type, form.schedule_hour, form.schedule_minute, form.schedule_dow, form.schedule_dom)}
+              {form.schedule_type === 'on_demand'
+                ? 'Sem agendamento automático — execução apenas manual ou por dependência'
+                : `CRON: ${buildCron(form.schedule_type, form.schedule_hour, form.schedule_minute, form.schedule_dow, form.schedule_dom)}`}
             </div>
-            <Input label="Data de início DAG (opcional)" type="date" value={form.dag_start_date}
-              onChange={e => f('dag_start_date', e.target.value)} />
           </div>
         )}
 
@@ -654,22 +682,33 @@ function InactivateModal({ pipeline, onClose }: { pipeline: Pipeline; onClose: (
     mutationFn: () => apiFetch('/pipelines/register', {
       method: 'POST',
       body: JSON.stringify({
-        pipeline_name:    pipeline.pipeline_name,
-        scheduled_time:   pipeline.scheduled_time ?? '00:00:00',
-        schedule_type:    pipeline.schedule_type,
-        schedule_hour:    pipeline.schedule_hour,
-        schedule_minute:  pipeline.schedule_minute,
-        schedule_dow:     pipeline.schedule_dow,
-        schedule_dom:     pipeline.schedule_dom,
-        active:           0,
-        envia_msg_inicio: pipeline.envia_msg_inicio,
-        envia_msg_fim:    pipeline.envia_msg_fim,
-        envia_msg_erro:   pipeline.envia_msg_erro,
-        project_name:     pipeline.project_name ?? '',
-        domain:           pipeline.domain ?? '',
-        tags:             pipeline.tags ?? '',
-        dag_criada:       pipeline.dag_criada,
-        changed_by:       user?.matricula ?? 'react-ui',
+        pipeline_name:       pipeline.pipeline_name,
+        scheduled_time:      pipeline.scheduled_time ?? '00:00:00',
+        schedule_type:       pipeline.schedule_type,
+        schedule_hour:       pipeline.schedule_hour,
+        schedule_minute:     pipeline.schedule_minute,
+        schedule_dow:        pipeline.schedule_dow,
+        schedule_dom:        pipeline.schedule_dom,
+        active:              0,
+        envia_msg_inicio:    pipeline.envia_msg_inicio,
+        envia_msg_fim:       pipeline.envia_msg_fim,
+        envia_msg_erro:      pipeline.envia_msg_erro,
+        project_name:        pipeline.project_name ?? '',
+        domain:              pipeline.domain ?? '',
+        tags:                pipeline.tags ?? '',
+        dag_criada:          pipeline.dag_criada,
+        descricao:           pipeline.descricao ?? null,
+        criticidade:         pipeline.criticidade ?? 'Media',
+        sla_minutos:         pipeline.sla_minutos ?? null,
+        ambiente:            pipeline.ambiente ?? 'PROD',
+        max_active_runs:     pipeline.max_active_runs ?? 1,
+        retries_count:       pipeline.retries_count ?? 1,
+        retry_delay_seconds: pipeline.retry_delay_seconds ?? 300,
+        pool_name:           pipeline.pool_name ?? null,
+        depends_on:          pipeline.depends_on ?? null,
+        runbook_md:          pipeline.runbook_md ?? null,
+        dag_start_date:      pipeline.dag_start_date ?? null,
+        changed_by:          user?.matricula ?? 'react-ui',
       }),
     }),
     onSuccess: () => {
@@ -698,9 +737,40 @@ function InactivateModal({ pipeline, onClose }: { pipeline: Pipeline; onClose: (
   )
 }
 
+// ── GenDagModal ────────────────────────────────────────────────────────────
+
+function GenDagModal({ pipeline, onConfirm, onClose, loading }: {
+  pipeline: Pipeline; onConfirm: () => void; onClose: () => void; loading: boolean
+}) {
+  return (
+    <Modal open title={pipeline.dag_criada ? 'Regenerar DAG' : 'Gerar DAG'} onClose={onClose} size="sm">
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-dim">
+          {pipeline.dag_criada
+            ? <>Regenerar a DAG de <span className="font-mono text-ink font-medium">{pipeline.pipeline_name}</span>? Isso irá atualizar a DAG no Airflow com as configurações atuais.</>
+            : <>Gerar a DAG para <span className="font-mono text-ink font-medium">{pipeline.pipeline_name}</span> no Airflow via etl_dag_factory?</>}
+        </p>
+        {pipeline.dag_criada ? (
+          <p className="text-xs text-amber-400 bg-amber-900/15 border border-amber-800/40 rounded-lg px-3 py-2">
+            ⚠ A DAG existente será sobrescrita com as configurações atuais do pipeline.
+          </p>
+        ) : null}
+        <div className="flex justify-end gap-2 border-t border-edge pt-3">
+          <Button variant="secondary" onClick={onClose} disabled={loading}>Cancelar</Button>
+          <Button loading={loading} className="border-blue-800/40 text-blue-400" onClick={onConfirm}>
+            <Settings size={13} /> {pipeline.dag_criada ? 'Regenerar' : 'Gerar DAG'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 // ── ExecModal ──────────────────────────────────────────────────────────────
 
-function ExecModal({ pipeline, onConfirm, onClose }: { pipeline: Pipeline; onConfirm: () => void; onClose: () => void }) {
+function ExecModal({ pipeline, onConfirm, onClose, loading }: {
+  pipeline: Pipeline; onConfirm: () => void; onClose: () => void; loading: boolean
+}) {
   return (
     <Modal open title="Executar pipeline agora" onClose={onClose} size="sm">
       <div className="flex flex-col gap-4">
@@ -711,8 +781,8 @@ function ExecModal({ pipeline, onConfirm, onClose }: { pipeline: Pipeline; onCon
           ⚠ Inicia uma execução imediata no Airflow. Certifique-se que não há execução ativa.
         </p>
         <div className="flex justify-end gap-2 border-t border-edge pt-3">
-          <Button variant="secondary" onClick={onClose}>Cancelar</Button>
-          <Button className="border-green-800/40 text-green-400" onClick={() => { onConfirm(); onClose() }}>
+          <Button variant="secondary" onClick={onClose} disabled={loading}>Cancelar</Button>
+          <Button loading={loading} className="border-green-800/40 text-green-400" onClick={onConfirm}>
             <Play size={13} /> Executar
           </Button>
         </div>
@@ -735,6 +805,10 @@ function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, onAudit
       <span className="font-mono text-xs text-ink font-medium flex-1 truncate min-w-0" title={p.pipeline_name}>
         {p.pipeline_name}
       </span>
+      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded flex-shrink-0 hidden sm:inline ${critColor(p.criticidade)}`}
+        title={`Criticidade: ${p.criticidade}`}>
+        {p.criticidade}
+      </span>
       <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border flex-shrink-0 ${p.dag_criada ? 'text-green-400 border-green-800/40 bg-green-900/10' : 'text-dim border-edge bg-canvas'}`}>
         {p.dag_criada ? 'DAG ✓' : 'DAG —'}
       </span>
@@ -747,25 +821,26 @@ function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, onAudit
           ✉
         </span>
       )}
-      <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-        <Button variant="ghost" size="sm" title="Visualizar" onClick={onView}><Eye size={12} /></Button>
-        {!isViewer && <Button variant="ghost" size="sm" title="Editar" onClick={onEdit}><Edit size={12} /></Button>}
-        <Button variant="ghost" size="sm" title="Lineage" onClick={onLineage}><GitBranch size={12} /></Button>
-        <Button variant="ghost" size="sm" title="Histórico" onClick={onAudit}><History size={12} /></Button>
+      <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        <Button variant="ghost" size="sm" title="Visualizar" aria-label={`Visualizar ${p.pipeline_name}`} onClick={onView}><Eye size={12} /></Button>
+        {!isViewer && <Button variant="ghost" size="sm" title="Editar" aria-label={`Editar ${p.pipeline_name}`} onClick={onEdit}><Edit size={12} /></Button>}
+        <Button variant="ghost" size="sm" title="Lineage" aria-label={`Ver lineage de ${p.pipeline_name}`} onClick={onLineage}><GitBranch size={12} /></Button>
+        <Button variant="ghost" size="sm" title="Histórico" aria-label={`Ver histórico de ${p.pipeline_name}`} onClick={onAudit}><History size={12} /></Button>
         {!isViewer && p.active && (
-          <Button variant="ghost" size="sm" title="Inativar" onClick={onInactivate}
+          <Button variant="ghost" size="sm" title="Inativar" aria-label={`Inativar ${p.pipeline_name}`} onClick={onInactivate}
             className="text-amber-500/60 hover:text-amber-400"><PowerOff size={12} /></Button>
         )}
         {!isViewer && (
           <Button variant="ghost" size="sm"
             title={p.dag_criada ? 'Regenerar DAG' : 'Gerar DAG'}
+            aria-label={p.dag_criada ? `Regenerar DAG de ${p.pipeline_name}` : `Gerar DAG para ${p.pipeline_name}`}
             onClick={onGenDag}
             className={p.dag_criada ? 'text-blue-400/70 hover:text-blue-300' : 'text-dim hover:text-ink'}>
             <Settings size={12} />
           </Button>
         )}
         {!isViewer && p.dag_criada ? (
-          <Button variant="ghost" size="sm" title="Executar agora" onClick={onExec}
+          <Button variant="ghost" size="sm" title="Executar agora" aria-label={`Executar ${p.pipeline_name} agora`} onClick={onExec}
             className="text-green-500/60 hover:text-green-400"><Play size={12} /></Button>
         ) : null}
       </div>
@@ -795,6 +870,12 @@ export default function Pipelines() {
   const [lineagePipeline,     setLineagePipeline]     = useState<Pipeline | undefined>()
   const [inactivatePipeline,  setInactivatePipeline]  = useState<Pipeline | undefined>()
   const [execPipeline,        setExecPipeline]        = useState<Pipeline | undefined>()
+  const [genDagPipeline,      setGenDagPipeline]      = useState<Pipeline | undefined>()
+  const revalidateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => { if (revalidateTimerRef.current) clearTimeout(revalidateTimerRef.current) }
+  }, [])
 
   const qs = new URLSearchParams({ limit: String(LIMIT), offset: String(page * LIMIT) })
   if (nameFilter)         qs.set('filter_name',    nameFilter)
@@ -838,33 +919,46 @@ export default function Pipelines() {
     },
     onSuccess: (_d, p) => {
       toast.success(`Factory disparada para "${p.pipeline_name}" — aguarde para ver resultado.`)
+      setGenDagPipeline(undefined)
       // Revalida após 10s para refletir dag_criada=1
-      setTimeout(() => qc.invalidateQueries({ queryKey: ['pipelines'] }), 10_000)
+      if (revalidateTimerRef.current) clearTimeout(revalidateTimerRef.current)
+      revalidateTimerRef.current = setTimeout(() => qc.invalidateQueries({ queryKey: ['pipelines'] }), 10_000)
     },
-    onError: (e: any) => toast.error(`Erro ao gerar DAG: ${e.message}`),
+    onError: (e: unknown) => {
+      const msg = e instanceof Error ? e.message : 'Erro inesperado'
+      toast.error(`Erro ao gerar DAG: ${msg}`)
+    },
   })
 
   // Executar agora
   const execMut = useMutation({
     mutationFn: (p: Pipeline) => {
       const dagId = pipelineToDagId(p.pipeline_name)
-      return apiFetch(`/airflow/dags/${encodeURIComponent(dagId)}/dagRuns`, {
+      return apiFetch<{ dag_run_id?: string }>(`/airflow/dags/${encodeURIComponent(dagId)}/dagRuns`, {
         method: 'POST',
         body: JSON.stringify({ dag_run_id: `manual_orq_${Date.now()}`, conf: {} }),
       })
     },
-    onSuccess: (res: any, p) => {
+    onSuccess: (res, p) => {
       const dagId = pipelineToDagId(p.pipeline_name)
+      setExecPipeline(undefined)
       toast.success(`Pipeline disparado! (${res?.dag_run_id ?? 'ok'})`)
-      setTimeout(() => window.open(`${AIRFLOW_UI}/dags/${dagId}/grid`, '_blank'), 1200)
+      window.open(`${AIRFLOW_UI}/dags/${dagId}/grid`, '_blank')
     },
-    onError: (e: any) => {
-      const msg = e.message ?? ''
+    onError: (e: unknown) => {
+      const msg = e instanceof Error ? e.message : ''
       if (msg.startsWith('404')) toast.error('DAG não encontrada. Gere o DAG primeiro.')
       else if (msg.startsWith('409')) toast.error('Já existe uma execução ativa para este pipeline.')
       else toast.error(msg || 'Erro ao executar')
     },
   })
+
+  const fetchPipelineNames = useCallback(
+    (q: string) =>
+      apiFetch<{ data: { pipeline_name: string }[] }>(`/pipelines?limit=10&filter_name=${encodeURIComponent(q)}`)
+        .then(r => r.data.map(p => p.pipeline_name)),
+    [],
+  )
 
   const total = data?.total ?? 0
   const pages = data?.pages ?? 1
@@ -879,10 +973,7 @@ export default function Pipelines() {
             label="Nome"
             value={nameFilter}
             onChange={v => { setNameFilter(v); setPage(0) }}
-            fetchSuggestions={q =>
-              apiFetch<{ data: { pipeline_name: string }[] }>(`/pipelines?limit=10&filter_name=${encodeURIComponent(q)}`)
-                .then(r => r.data.map(p => p.pipeline_name))
-            }
+            fetchSuggestions={fetchPipelineNames}
             placeholder="filtrar por nome…"
             className="w-64"
           />
@@ -969,7 +1060,7 @@ export default function Pipelines() {
                     onLineage={()     => setLineagePipeline(p)}
                     onAudit={()       => setAuditPipeline(p)}
                     onInactivate={()  => setInactivatePipeline(p)}
-                    onGenDag={()      => genDagMut.mutate(p)}
+                    onGenDag={()      => setGenDagPipeline(p)}
                     onExec={()        => setExecPipeline(p)}
                   />
                 ))}
@@ -989,8 +1080,17 @@ export default function Pipelines() {
       {execPipeline       && (
         <ExecModal
           pipeline={execPipeline}
+          loading={execMut.isPending}
           onConfirm={() => execMut.mutate(execPipeline)}
-          onClose={() => setExecPipeline(undefined)}
+          onClose={() => { if (!execMut.isPending) setExecPipeline(undefined) }}
+        />
+      )}
+      {genDagPipeline     && (
+        <GenDagModal
+          pipeline={genDagPipeline}
+          loading={genDagMut.isPending}
+          onConfirm={() => genDagMut.mutate(genDagPipeline)}
+          onClose={() => { if (!genDagMut.isPending) setGenDagPipeline(undefined) }}
         />
       )}
     </div>
