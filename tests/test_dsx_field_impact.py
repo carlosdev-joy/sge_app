@@ -111,6 +111,25 @@ def test_is_backup_category():
     assert not DSXEngine._is_backup_category("\\\\Jobs\\\\Projetos\\\\Coberturas")
 
 
+def test_ignora_jobs_copia_por_padrao(engine: DSXEngine):
+    if not _has("BI_CVP"):
+        pytest.skip("BI_CVP.dsx ausente")
+    # BI_CVP tem o job CopyOfBiCVP_CoberturasUnificadas_001
+    padrao = engine.buscar_campo("BI_CVP", "cobertura")                     # ignora bkp + copy
+    com_copy = engine.buscar_campo("BI_CVP", "cobertura", incluir_copy=True)
+    assert padrao["jobs_copy_ignorados"] >= 1
+    assert com_copy["jobs_copy_ignorados"] == 0
+    assert padrao["total_jobs_impactados"] < com_copy["total_jobs_impactados"]
+    for job in padrao["jobs"]:
+        assert "copyof" not in job["job_name"].lower()
+
+
+def test_is_copy_job():
+    assert DSXEngine._is_copy_job("CopyOfBiCVP_CoberturasUnificadas_001")
+    assert DSXEngine._is_copy_job("Copy of Algo")
+    assert not DSXEngine._is_copy_job("BiCVP_CoberturasUnificadas_001")
+
+
 def test_termo_vazio_retorna_erro(engine: DSXEngine):
     r = engine.buscar_campo("seq_geral", "   ")
     assert "erro" in r

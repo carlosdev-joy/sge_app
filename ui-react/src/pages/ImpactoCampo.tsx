@@ -40,7 +40,9 @@ interface FieldImpactResult {
   filtro_tipos: string[]
   filtro_excluir: boolean
   incluir_bkp: boolean
+  incluir_copy: boolean
   jobs_bkp_ignorados: number
+  jobs_copy_ignorados: number
   total_jobs_dsx: number
   total_jobs_impactados: number
   total_ocorrencias: number
@@ -125,6 +127,7 @@ export default function ImpactoCampo() {
   const [campo, setCampo] = useState('')
   const [exato, setExato] = useState(false)
   const [incluirBkp, setIncluirBkp] = useState(false)
+  const [incluirCopy, setIncluirCopy] = useState(false)
   const [tipoKey, setTipoKey] = useState('all')
   const [result, setResult] = useState<FieldImpactResult | null>(null)
   const [loading, setLoading] = useState(false)
@@ -145,6 +148,7 @@ export default function ImpactoCampo() {
       const q = new URLSearchParams({ dsx, campo: campo.trim(), exato: String(exato) })
       if (preset.tipo) { q.set('tipo', preset.tipo); q.set('excluir', String(preset.excluir)) }
       if (incluirBkp) q.set('incluir_bkp', 'true')
+      if (incluirCopy) q.set('incluir_copy', 'true')
       const r = await apiFetch<FieldImpactResult>(`/lineage/field-impact?${q.toString()}`)
       setResult(r)
       if (r.total_jobs_impactados === 0) toast.info('Nenhum job impactado para esse filtro.')
@@ -227,7 +231,10 @@ export default function ImpactoCampo() {
             <input type="checkbox" checked={exato} onChange={(e) => setExato(e.target.checked)} /> Nome exato
           </label>
           <label className="flex items-center gap-1.5 text-xs text-dim pb-2 select-none cursor-pointer" title="Por padrão, jobs em pastas bkp/bckp/backup são ignorados">
-            <input type="checkbox" checked={incluirBkp} onChange={(e) => setIncluirBkp(e.target.checked)} /> Incluir pastas de backup
+            <input type="checkbox" checked={incluirBkp} onChange={(e) => setIncluirBkp(e.target.checked)} /> Incluir backup
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-dim pb-2 select-none cursor-pointer" title="Por padrão, jobs cópia (CopyOf…) são ignorados">
+            <input type="checkbox" checked={incluirCopy} onChange={(e) => setIncluirCopy(e.target.checked)} /> Incluir cópias
           </label>
           <Button onClick={buscar} loading={loading} className="mb-0.5"><Search size={14} /> Buscar</Button>
           {result && result.total_ocorrencias > 0 && (
@@ -249,10 +256,10 @@ export default function ImpactoCampo() {
               sub={`termo: ${result.termo}${result.exato ? ' (exato)' : ''}`} color="yellow" />
           </div>
 
-          {result.jobs_bkp_ignorados > 0 && (
+          {(result.jobs_bkp_ignorados > 0 || result.jobs_copy_ignorados > 0) && (
             <p className="text-xs text-dim -mt-1">
-              {result.jobs_bkp_ignorados} job(s) em pastas de backup ignorados.
-              Marque <em>“Incluir pastas de backup”</em> para considerá-los.
+              Ignorados: {result.jobs_bkp_ignorados} em pastas de backup, {result.jobs_copy_ignorados} cópia(s).
+              Use <em>“Incluir backup”</em> / <em>“Incluir cópias”</em> para considerá-los.
             </p>
           )}
 
