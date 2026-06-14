@@ -14,6 +14,7 @@ Comportamento fail-fast (desde v2.3.0):
 from __future__ import annotations
 import os
 import ast
+import shlex
 from collections import defaultdict
 from datetime import timedelta
 import pendulum
@@ -26,7 +27,7 @@ DAG_ID        = "etl_dag_factory"
 MSSQL_CONN_ID = "SQL14_DMDB41"
 LOCAL_TZ      = "America/Sao_Paulo"
 SSH_CONN_ID   = "ssh_lnxprd021"
-BASE_LOG_ROOT = "/Projetos/{project}/Logs/Airflow"
+BASE_LOG_ROOT = "/Projetos/BI_CVP/Logs/Airflow"
 
 default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
 
@@ -50,6 +51,57 @@ def _time_to_cron(t):
     return f"{int(parts[1]) if len(parts) > 1 else 0} {int(parts[0])} * * *"
 
 
+def _build_cron(pipeline):
+    """Monta o cron a partir do agendamento do pipeline.
+
+    Retorna (cron, horarios) onde horarios é a lista normalizada "HH:MM" quando
+    o pipeline usa horários específicos (None caso contrário). Como um único
+    cron não expressa horários arbitrários (ex: 09:00 e 10:30 geram também
+    09:30 e 10:00), o cron dispara na união minuto×hora e o check_agenda
+    pula as combinações que não estão na lista.
+    """
+    sched = str(pipeline.get("scheduled_time") or "06:00:00")
+    stype = (pipeline.get("schedule_type") or "daily").lower().strip()
+    horarios_raw = (pipeline.get("horarios_especificos") or "").strip()
+    dias_semana  = (pipeline.get("dias_semana") or "").strip()
+    parts = sched.split(":")
+    h = int(parts[0]) if parts[0].isdigit() else 6
+    m = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    dow_expr = dias_semana if dias_semana else "*"
+
+    if horarios_raw:
+        times = []
+        for t in horarios_raw.split(","):
+            t = t.strip()
+            if not t:
+                continue
+            tp = t.split(":")
+            try:
+                times.append((int(tp[0]), int(tp[1]) if len(tp) > 1 else 0))
+            except ValueError:
+                continue
+        if times:
+            mins  = sorted({mm for _, mm in times})
+            hours = sorted({hh for hh, _ in times})
+            cron = (f"{','.join(map(str, mins))} {','.join(map(str, hours))} "
+                    f"* * {dow_expr}")
+            return cron, sorted(f"{hh:02d}:{mm:02d}" for hh, mm in times)
+
+    if stype == "hourly":
+        return f"{m} * * * *", None
+    if stype == "weekly":
+        dow = pipeline.get("schedule_dow")
+        return f"{m} {h} * * {int(dow) if dow is not None else 1}", None
+    if stype == "monthly":
+        dom = pipeline.get("schedule_dom")
+        return f"{m} {h} {int(dom) if dom is not None else 1} * *", None
+    if stype == "biweekly":  # quinzenal: dia D e D+15 de cada mês
+        dom = pipeline.get("schedule_dom")
+        d = int(dom) if dom is not None else 1
+        return f"{m} {h} {d},{d + 15} * *", None
+    return f"{m} {h} * * {dow_expr}", None
+
+
 def _ind(code, n=4):
     pad = " " * n
     return "\n".join(pad + ln if ln.strip() else ln for ln in code.split("\n"))
@@ -65,28 +117,41 @@ _TYPE_ALIAS = {
 }
 
 
+def _varname(job_name: str) -> str:
+    """Converte um nome de job em identificador Python válido (substitui chars inválidos por _)."""
+    import re as _re
+    return _re.sub(r"[^A-Za-z0-9_]", "_", job_name)
+
+
 def _task_block(job, project, pipeline):
     name  = job["job_name"]
+    vname = _varname(name)   # identificador Python seguro
     jtype = _TYPE_ALIAS.get(job["job_type"].lower().strip(), job["job_type"].lower().strip())
     jcmd  = job["job_command"] or ""
 
     if jtype == "datastage":
-        main = "\n".join([
-            f't_job_{name} = DataStageOperator(',
+        verbose_line = f'    verbose_log=True,' if job.get("verbose_log") else ''
+        main = "\n".join(filter(None, [
+            f't_job_{vname} = DataStageOperator(',
             f'    task_id="{name}",',
             f'    project=PROJECT_NAME,',
             f'    job_name="{name}",',
             f'    ssh_conn_id=SSH_CONN_ID,',
-            f'    execution_date_param="p_exec_date",',
+            f'    queue_name=DS_QUEUE,',
+            verbose_line,
             f')',
-        ])
+        ]))
     elif jtype == "shell":
         cmd = jcmd or "echo 'comando nao configurado'"
+        # shlex.quote garante que o comando não escape das aspas no código gerado
+        cmd_safe = shlex.quote(cmd)
+        ssh = job.get("ssh_conn_id") or None
+        ssh_val = f'"{ssh}"' if ssh else 'SSH_CONN_ID'
         main = "\n".join([
-            f't_job_{name} = SSHOperator(',
+            f't_job_{vname} = SSHOperator(',
             f'    task_id="{name}",',
-            f'    ssh_conn_id=SSH_CONN_ID,',
-            f'    command="{cmd}",',
+            f'    ssh_conn_id={ssh_val},',
+            f'    command={cmd_safe},',
             f'    cmd_timeout=None,',
             f'    do_xcom_push=True,',
             f')',
@@ -94,73 +159,72 @@ def _task_block(job, project, pipeline):
     elif jtype == "python":
         mod = jcmd or name
         main = "\n".join([
-            f'def _run_{name}(**context):',
+            f'def _run_{vname}(**context):',
             f'    import importlib',
             f'    mod = importlib.import_module("{mod}")',
             f'    if hasattr(mod, "run"): mod.run(**context)',
             f'    elif hasattr(mod, "main"): mod.main()',
             f'',
-            f't_job_{name} = PythonOperator(',
+            f't_job_{vname} = PythonOperator(',
             f'    task_id="{name}",',
-            f'    python_callable=_run_{name},',
+            f'    python_callable=_run_{vname},',
             f')',
         ])
     elif jtype == "storedproc":
         proc = jcmd or name
         main = "\n".join([
-            f'def _run_{name}(**context):',
+            f'def _run_{vname}(**context):',
             f'    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)',
             f'    hook.run("EXEC {proc}")',
             f'',
-            f't_job_{name} = PythonOperator(',
+            f't_job_{vname} = PythonOperator(',
             f'    task_id="{name}",',
-            f'    python_callable=_run_{name},',
+            f'    python_callable=_run_{vname},',
             f')',
         ])
     elif jtype == "sql":
-        # job_command = SQL inline ou nome de arquivo .sql (relativo a BASE_LOG_DIR)
         sql_stmt = jcmd or f"SELECT 1 -- job {name}"
         safe_sql = sql_stmt.replace('"', '\\"').replace('\n', ' ')
         main = "\n".join([
-            f'def _run_{name}(**context):',
+            f'def _run_{vname}(**context):',
             f'    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)',
             f'    hook.run("{safe_sql}")',
             f'',
-            f't_job_{name} = PythonOperator(',
+            f't_job_{vname} = PythonOperator(',
             f'    task_id="{name}",',
-            f'    python_callable=_run_{name},',
+            f'    python_callable=_run_{vname},',
             f')',
         ])
     elif jtype == "http":
         url = jcmd or "https://httpbin.org/get"
         main = "\n".join([
-            f'def _run_{name}(**context):',
+            f'def _run_{vname}(**context):',
             f'    resp = requests.get("{url}", timeout=30)',
             f'    resp.raise_for_status()',
             f'    print(f"HTTP {name}: status={{resp.status_code}}")',
             f'',
-            f't_job_{name} = PythonOperator(',
+            f't_job_{vname} = PythonOperator(',
             f'    task_id="{name}",',
-            f'    python_callable=_run_{name},',
+            f'    python_callable=_run_{vname},',
             f')',
         ])
     else:
         main = "\n".join([
-            f't_job_{name} = PythonOperator(',
+            f't_job_{vname} = PythonOperator(',
             f'    task_id="{name}",',
             f'    python_callable=lambda **kw: print("job_type desconhecido: {jtype}"),',
             f')',
         ])
 
     log_start = "\n".join([
-        f't_start_{name} = PythonOperator(',
+        f't_start_{vname} = PythonOperator(',
         f'    task_id="log_start_{name}",',
         f'    python_callable=log_start,',
         f'    op_kwargs={{"job_name": "{name}", "task_key": "{name}"}},',
         f')',
     ])
     log_end = "\n".join([
-        f't_end_{name} = PythonOperator(',
+        f't_end_{vname} = PythonOperator(',
         f'    task_id="log_end_{name}",',
         f'    python_callable=log_end,',
         f'    op_kwargs={{"job_name": "{name}", "task_key": "{name}", "upstream_task_id": "{name}"}},',
@@ -190,15 +254,33 @@ def _generate_dag_source(pipeline, jobs):
     pool_name_val       = (pipeline.get("pool_name") or "").strip() or None
     sla_minutos_val     = pipeline.get("sla_minutos")
     ssh_conn_id_val     = (pipeline.get("ssh_conn_id") or "ssh_lnxprd021").strip()
+    # Fase 4 — scheduling avançado
+    calendario_val      = (pipeline.get("calendario_nome") or "").strip() or None
+    dias_uteis_val      = bool(pipeline.get("somente_dias_uteis") or 0)
+    trigger_dep_val     = bool(pipeline.get("trigger_por_dependencia") or 0)
+    _DS_QUEUE_MAP = {"ALTA": "HighPriorityJobs", "CRITICA": "HighPriorityJobs",
+                     "MEDIA": "MediumPriorityJobs", "BAIXA": "LowPriorityJobs"}
+    ds_queue_val = _DS_QUEUE_MAP.get((pipeline.get("criticidade") or "").upper().strip())
+    runbook_val  = (pipeline.get("runbook_md") or "").strip() or None
 
-    cron        = _time_to_cron(sched)
-    base_log    = BASE_LOG_ROOT.format(project=project)
+    cron, horarios_list = _build_cron(pipeline)
+    base_log    = BASE_LOG_ROOT
     user_tags   = [t.strip() for t in tags_raw.split(",") if t.strip()]
     all_tags    = list(dict.fromkeys([project, domain] + user_tags))
     sorted_jobs = sorted(jobs, key=lambda j: j["execution_order"])
-    first       = sorted_jobs[0]["job_name"]
-    others      = sorted_jobs[1:]
-    all_ends    = [f"t_end_{j['job_name']}" for j in sorted_jobs]
+    # Group by execution_order — same order → parallel execution
+    _grp_key = lambda j: j["execution_order"]
+    job_groups = []
+    _last_key = object()
+    for j in sorted_jobs:
+        if j["execution_order"] != _last_key:
+            job_groups.append([])
+            _last_key = j["execution_order"]
+        job_groups[-1].append(j)
+    first       = _varname(job_groups[0][0]["job_name"])
+    first_name  = job_groups[0][0]["job_name"]
+    others      = sorted_jobs[1:]   # kept for jtypes — not used for chaining anymore
+    all_ends    = [f"t_end_{_varname(j['job_name'])}" for j in sorted_jobs]
 
     def _jtypes(jobs):
         return {_TYPE_ALIAS.get(j["job_type"].lower(), j["job_type"].lower()) for j in jobs}
@@ -215,7 +297,9 @@ def _generate_dag_source(pipeline, jobs):
     if sh_needed:
         import_lines.append("from airflow.providers.ssh.operators.ssh import SSHOperator")
     import_lines += [
-        "from airflow.operators.python import PythonOperator",
+        "from airflow.operators.python import PythonOperator, ShortCircuitOperator",
+        "from airflow.operators.empty import EmptyOperator",
+        "from airflow.datasets import Dataset",
         "from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook",
         "from airflow.utils.trigger_rule import TriggerRule",
         "from airflow.utils.state import State",
@@ -238,6 +322,12 @@ def _generate_dag_source(pipeline, jobs):
         f'BASE_LOG_DIR  = "{base_log}"',
         f'LOCAL_TZ      = "America/Sao_Paulo"',
         f'TEAMS_WEBHOOK_VAR = "TEAMS_WEBHOOK_URL_CVP"',
+        f'DS_QUEUE      = {repr(ds_queue_val)}',  # None = usa fila padrão do projeto DS
+        f'RUNBOOK_MD    = {repr(runbook_val)}',
+        f'CALENDARIO_NOME    = {repr(calendario_val)}',
+        f'SOMENTE_DIAS_UTEIS = {dias_uteis_val}',
+        f'HORARIOS_ESPECIFICOS = {repr(horarios_list)}',
+        f'DATASET_URI   = "orq://pipeline/{pname}"',
         f'default_args  = {{"owner": "airflow", "depends_on_past": False, "retries": {retries_val}, "retry_delay": timedelta(seconds={retry_delay_val})}}',
         f'JOBS          = {repr([j["job_name"] for j in sorted_jobs])}',
     ]
@@ -267,7 +357,7 @@ def _generate_dag_source(pipeline, jobs):
         "",
         "def _status_from_code(code, upstream_state):",
         '    if code == 1:  return "SUCCESS"',
-        '    if code == 2:  return "WARNING"',
+        '    if code == 2:  return "SUCCESS"  # WARNING = finalizou, conta como sucesso',
         '    if code is not None: return "FAILED"',
         "    if upstream_state == State.SUCCESS: return \"SUCCESS\"",
         '    return "FAILED"',
@@ -295,13 +385,21 @@ def _generate_dag_source(pipeline, jobs):
         "        parameters=(status_code, execution_id, job_name, task_key),",
         "    )",
         "",
-        "def _teams_post_card(title, lines, status='INFO'):",
+        "def _teams_post_card(title, facts, status='INFO', subtitle=None):",
         "    try:",
         "        webhook_url = Variable.get(TEAMS_WEBHOOK_VAR)",
         "    except Exception:",
         "        print(f\"[TEAMS] Variable '{TEAMS_WEBHOOK_VAR}' nao encontrada.\")",
         "        return",
-        '    emoji = {"SUCCESS": "OK", "WARNING": "WARN", "FAILED": "ERR", "INFO": "INFO"}.get(status, "INFO")',
+        '    icon = {"SUCCESS": "🟢", "WARNING": "🟡", "FAILED": "🔴", "INFO": "🔵"}.get(status, "⚪")',
+        '    color = {"SUCCESS": "Good", "WARNING": "Warning", "FAILED": "Attention", "INFO": "Accent"}.get(status, "Default")',
+        "    body = [",
+        '        {"type": "TextBlock", "text": f"{icon} {title}", "size": "Large", "weight": "Bolder", "wrap": True, "color": color},',
+        "    ]",
+        "    if subtitle:",
+        '        body.append({"type": "TextBlock", "text": subtitle, "wrap": True, "spacing": "None", "isSubtle": True})',
+        "    if facts:",
+        '        body.append({"type": "FactSet", "spacing": "Medium", "facts": facts})',
         "    payload = {",
         '        "type": "message",',
         '        "attachments": [{',
@@ -309,10 +407,7 @@ def _generate_dag_source(pipeline, jobs):
         '            "content": {',
         '                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",',
         '                "type": "AdaptiveCard", "version": "1.4",',
-        '                "body": [',
-        '                    {"type": "TextBlock", "text": f"{emoji} {title}", "size": "Large", "weight": "Bolder", "wrap": True},',
-        r'                    {"type": "TextBlock", "text": "\n".join(lines), "wrap": True},',
-        "                ],",
+        '                "body": body,',
         "            },",
         "        }],",
         "    }",
@@ -322,12 +417,32 @@ def _generate_dag_source(pipeline, jobs):
         "    except Exception as e:",
         "        print(f\"[TEAMS] Falha: {e}\")",
         "",
+        "def _fact(title, value):",
+        '    return {"title": title, "value": str(value) if value is not None else "—"}',
+        "",
+        "def _fmt_duration(seconds):",
+        "    if not seconds: return '—'",
+        "    s = int(seconds)",
+        "    h, rem = divmod(s, 3600)",
+        "    m, sec = divmod(rem, 60)",
+        "    if h: return f'{h}h {m}min {sec}s'",
+        "    if m: return f'{m}min {sec}s'",
+        "    return f'{sec}s'",
+        "",
         "def teams_start(**context):",
         "    execution_id = context['ts_nodash']",
-        '    _teams_post_card("Execucao iniciada", [',
-        '        f"Processo: {PIPELINE_NAME}", f"Projeto: {PROJECT_NAME} | Dominio: {DOMAIN}",',
-        '        "", f"ID: {execution_id}", f"Inicio: {_now_str()}",',
-        "    ], status='INFO')",
+        "    _teams_post_card(",
+        '        title="Execução iniciada",',
+        '        subtitle=f"O pipeline {PIPELINE_NAME} foi iniciado e está em processamento.",',
+        "        facts=[",
+        '            _fact("Pipeline",      PIPELINE_NAME),',
+        '            _fact("Domínio",       DOMAIN),',
+        '            _fact("Projeto",       PROJECT_NAME),',
+        '            _fact("Execution ID",  execution_id),',
+        '            _fact("Início",        _now_str()),',
+        "        ],",
+        "        status='INFO',",
+        "    )",
         "",
         "def teams_end(**context):",
         "    execution_id = context['ts_nodash']",
@@ -342,36 +457,85 @@ def _generate_dag_source(pipeline, jobs):
         "        parameters=(execution_id, PIPELINE_NAME),",
         "    )",
         "    if not row:",
-        '        _teams_post_card("Execucao finalizada", [f"Processo: {PIPELINE_NAME}", "Sem dados."], status="FAILED")',
+        "        _teams_post_card(",
+        '            title="Execução finalizada — sem dados",',
+        '            subtitle=f"O pipeline {PIPELINE_NAME} foi concluído, mas não foram encontrados registros de execução.",',
+        '            facts=[_fact("Pipeline", PIPELINE_NAME), _fact("Execution ID", execution_id)],',
+        "            status='WARNING',",
+        "        )",
         "        return",
         "    pipeline, inicio, fim, dur_seg, status_geral = row",
-        '    txt = {"SUCCESS": "Finalizado com sucesso", "WARNING": "Finalizado com avisos", "FAILED": "Falha na execucao"}',
-        '    _teams_post_card("Execucao finalizada", [',
-        '        f"Processo: {pipeline}", txt.get(status_geral, ""), "",',
-        '        f"Inicio: {inicio.strftime(\'%d/%m/%Y %H:%M\') if inicio else \'-\'}",',
-        '        f"Fim: {fim.strftime(\'%d/%m/%Y %H:%M\') if fim else \'-\'}",',
-        '        f"Duracao: {int(dur_seg/60) if dur_seg else 0} min",',
-        "    ], status=status_geral)",
+        '    titles = {"SUCCESS": "Execução concluída com sucesso", "WARNING": "Execução concluída com avisos", "FAILED": "Execução finalizada com falha"}',
+        '    subtitles = {',
+        '        "SUCCESS": f"O pipeline {pipeline} foi executado e finalizado sem erros.",',
+        '        "WARNING": f"O pipeline {pipeline} foi concluído, mas registrou avisos durante a execução.",',
+        '        "FAILED":  f"O pipeline {pipeline} foi encerrado com falha. Verifique os jobs com erro.",',
+        "    }",
+        "    _teams_post_card(",
+        "        title=titles.get(status_geral, 'Execução finalizada'),",
+        "        subtitle=subtitles.get(status_geral),",
+        "        facts=[",
+        '            _fact("Pipeline",      pipeline),',
+        '            _fact("Domínio",       DOMAIN),',
+        '            _fact("Projeto",       PROJECT_NAME),',
+        '            _fact("Execution ID",  execution_id),',
+        '            _fact("Início",        inicio.strftime(\'%d/%m/%Y %H:%M\') if inicio else \'—\'),',
+        '            _fact("Fim",           fim.strftime(\'%d/%m/%Y %H:%M\') if fim else \'—\'),',
+        '            _fact("Duração",       _fmt_duration(dur_seg)),',
+        "        ],",
+        "        status=status_geral,",
+        "    )",
         "",
         "def teams_error(**context):",
         "    execution_id = context['ts_nodash']",
         "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "    # Resumo do pipeline (mesma query do teams_end)",
+        "    row = hook.get_first(",
+        '        "SELECT pipeline, MIN(start_time), MAX(end_time), COALESCE(SUM(duration_seconds),0) "',
+        '        "FROM dbo.etl_job_execution WHERE execution_id=%s AND pipeline=%s GROUP BY pipeline",',
+        "        parameters=(execution_id, PIPELINE_NAME),",
+        "    )",
+        "    pipeline_nm = row[0] if row else PIPELINE_NAME",
+        "    inicio      = row[1] if row else None",
+        "    fim         = row[2] if row else None",
+        "    dur_seg     = row[3] if row else 0",
+        "    # Jobs com falha — detalhado",
         "    try:",
         "        failed = hook.get_records(",
-        '            "SELECT job_name FROM dbo.etl_job_execution "',
+        '            "SELECT job_name, start_time, end_time, COALESCE(duration_seconds,0), log_file "',
+        '            "FROM dbo.etl_job_execution "',
         '            "WHERE execution_id=%s AND pipeline=%s AND status=\'FAILED\' "',
         '            "ORDER BY start_time",',
         "            parameters=(execution_id, PIPELINE_NAME),",
         "        )",
-        '        failed_names = ", ".join(r[0] for r in failed) if failed else "Desconhecido"',
         "    except Exception:",
-        '        failed_names = "Desconhecido"',
-        '    _teams_post_card("Falha na execucao", [',
-        '        f"Processo: {PIPELINE_NAME}", f"Projeto: {PROJECT_NAME} | Dominio: {DOMAIN}",',
-        '        "", f"ID: {execution_id}",',
-        '        f"Job com falha: {failed_names}",',
-        '        f"Hora: {_now_str()}",',
-        "    ], status='FAILED')",
+        "        failed = []",
+        "    facts = [",
+        '        _fact("Pipeline",      pipeline_nm),',
+        '        _fact("Domínio",       DOMAIN),',
+        '        _fact("Projeto",       PROJECT_NAME),',
+        '        _fact("Execution ID",  execution_id),',
+        '        _fact("Início",        inicio.strftime(\'%d/%m/%Y %H:%M\') if inicio else \'—\'),',
+        '        _fact("Fim",           fim.strftime(\'%d/%m/%Y %H:%M\') if fim else \'—\'),',
+        '        _fact("Duração total", _fmt_duration(dur_seg)),',
+        "    ]",
+        "    if failed:",
+        '        facts.append(_fact("─────────────", "Jobs com falha"))',
+        "        for jname, jstart, jend, jdur, jlog in failed:",
+        '            facts.append(_fact("Job",     jname))',
+        '            facts.append(_fact("  Início",  jstart.strftime(\'%d/%m/%Y %H:%M\') if jstart else \'—\'))',
+        '            facts.append(_fact("  Fim",     jend.strftime(\'%d/%m/%Y %H:%M\') if jend else \'—\'))',
+        '            facts.append(_fact("  Duração", _fmt_duration(jdur)))',
+        "    else:",
+        '        facts.append(_fact("Job com falha", "Não identificado"))',
+        "    if RUNBOOK_MD:",
+        '        facts.append(_fact("📖 Runbook", RUNBOOK_MD[:400] + ("…" if len(RUNBOOK_MD) > 400 else "")))',
+        "    _teams_post_card(",
+        '        title="Falha na execução",',
+        '        subtitle=f"O pipeline {pipeline_nm} foi interrompido por falha em um ou mais jobs. Verifique os detalhes abaixo.",',
+        "        facts=facts,",
+        "        status='FAILED',",
+        "    )",
         "",
         "def log_start(job_name, task_key, **context):",
         "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
@@ -412,6 +576,48 @@ def _generate_dag_source(pipeline, jobs):
         "            f\"Job '{job_name}' finalizou com status {final_status} — \"",
         "            \"execucao interrompida. Corrija o erro antes de reprocessar.\"",
         "        )",
+        "",
+        "def check_agenda(**context):",
+        "    \"\"\"Fase 4 — blackout/freeze, dias úteis e calendário de feriados.",
+        "    Retorna False (ShortCircuit) para pular a execução inteira.\"\"\"",
+        "    # Horários específicos: o cron dispara na união minuto×hora;",
+        "    # só executa se o horário agendado estiver na lista configurada.",
+        "    if HORARIOS_ESPECIFICOS and not str(context.get('run_id', '')).startswith('manual'):",
+        "        _die = context.get('data_interval_end') or context.get('logical_date')",
+        "        if _die is not None:",
+        "            _hhmm = _die.in_timezone(LOCAL_TZ).strftime('%H:%M')",
+        "            if _hhmm not in HORARIOS_ESPECIFICOS:",
+        "                print(f\"[AGENDA] {_hhmm} fora dos horarios configurados {HORARIOS_ESPECIFICOS} — execucao pulada.\")",
+        "                return False",
+        "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "    try:",
+        "        row = hook.get_first(",
+        '            "SELECT TOP 1 motivo FROM dbo.etl_blackout "',
+        '            "WHERE ativo=1 AND GETDATE() BETWEEN inicio AND fim "',
+        '            "AND (escopo IS NULL OR escopo=%s OR escopo=%s)",',
+        "            parameters=(PROJECT_NAME, PIPELINE_NAME),",
+        "        )",
+        "        if row:",
+        "            print(f\"[AGENDA] Blackout vigente: {row[0]} — execucao pulada.\")",
+        "            return False",
+        "    except Exception as e:",
+        "        print(f\"[AGENDA] Aviso: verificacao de blackout falhou ({e}) — seguindo.\")",
+        "    if SOMENTE_DIAS_UTEIS and pendulum.now(LOCAL_TZ).weekday() >= 5:",
+        "        print(\"[AGENDA] Fim de semana e pipeline e somente dias uteis — execucao pulada.\")",
+        "        return False",
+        "    if CALENDARIO_NOME:",
+        "        try:",
+        "            row = hook.get_first(",
+        '                "SELECT TOP 1 ISNULL(descricao, \'\') FROM dbo.etl_calendario "',
+        '                "WHERE calendario_nome=%s AND data=CAST(GETDATE() AS DATE)",',
+        "                parameters=(CALENDARIO_NOME,),",
+        "            )",
+        "            if row is not None:",
+        "                print(f\"[AGENDA] Data bloqueada no calendario {CALENDARIO_NOME} ({row[0]}) — execucao pulada.\")",
+        "                return False",
+        "        except Exception as e:",
+        "            print(f\"[AGENDA] Aviso: verificacao de calendario falhou ({e}) — seguindo.\")",
+        "    return True",
     ]
     helpers_str = "\n".join(helpers_lines)
 
@@ -443,8 +649,30 @@ def _generate_dag_source(pipeline, jobs):
 
     job_blocks = [_task_block(j, project, pname) for j in sorted_jobs]
 
+    # Fase 4 — check_agenda: blackout/freeze + calendário + dias úteis.
+    # ShortCircuitOperator pula TODAS as tasks downstream (inclusive ALL_DONE).
+    check_block = "\n".join([
+        't_check_agenda = ShortCircuitOperator(',
+        '    task_id="check_agenda",',
+        '    python_callable=check_agenda,',
+        ')',
+    ])
+
+    # Fase 4 — publica Dataset ao final (consumido por pipelines com trigger_por_dependencia)
+    publish_block = "\n".join([
+        't_publish_dataset = EmptyOperator(',
+        '    task_id="publish_dataset",',
+        '    outlets=[Dataset(DATASET_URI)],',
+        ')',
+    ])
+
     # S4: ExternalTaskSensor — suporte a múltiplas dependências
     dep_list = [d.strip() for d in depends_on.split(",") if d.strip()] if depends_on else []
+    # Em modo trigger_por_dependencia o schedule já é dirigido pelos Datasets
+    # dos pipelines dos quais depende — sensores são desnecessários.
+    use_dataset_schedule = trigger_dep_val and bool(dep_list)
+    if use_dataset_schedule:
+        dep_list = []
     sensor_block = ""
     sensor_names = []
     if dep_list:
@@ -467,32 +695,47 @@ def _generate_dag_source(pipeline, jobs):
     # Rebuild imports_str after potential append
     imports_str = "\n".join(import_lines)
 
-    if f_ini:
-        first_chain = f"t_start_{first} >> t_teams_start >> t_job_{first} >> t_end_{first}"
-    else:
-        first_chain = f"t_start_{first} >> t_job_{first} >> t_end_{first}"
+    dep_lines = []
 
-    dep_lines = [
-        f"previous = t_end_{first}",
-        first_chain,
-    ]
+    # anchor: check_agenda → (sensors or first group)
     if sensor_names:
         sensors_ref = "[" + ", ".join(sensor_names) + "]"
-        dep_lines.insert(0, f"{sensors_ref} >> t_start_{first}")
+        dep_lines.append(f"t_check_agenda >> {sensors_ref}")
 
-    for j in others:
-        n = j["job_name"]
-        dep_lines.append(f"previous >> t_start_{n} >> t_job_{n} >> t_end_{n}")
-        dep_lines.append(f"previous = t_end_{n}")
+    # Walk groups — build fan-out/fan-in chains
+    prev_ends: list[str] = []  # ends of the previous group (empty = start of DAG)
+    for g_idx, group in enumerate(job_groups):
+        g_ends = [f"t_end_{_varname(j['job_name'])}" for j in group]
+        # Determine upstream anchor for this group
+        if prev_ends:
+            up = "[" + ", ".join(prev_ends) + "]" if len(prev_ends) > 1 else prev_ends[0]
+        elif sensor_names:
+            up = sensors_ref
+        else:
+            up = "t_check_agenda"
+
+        for j_idx, j in enumerate(group):
+            n = _varname(j["job_name"])
+            # Teams start notification only on first job of first group
+            if g_idx == 0 and j_idx == 0 and f_ini:
+                chain = f"{up} >> t_start_{n} >> t_teams_start >> t_job_{n} >> t_end_{n}"
+            else:
+                chain = f"{up} >> t_start_{n} >> t_job_{n} >> t_end_{n}"
+            dep_lines.append(chain)
+
+        prev_ends = g_ends
 
     end_tasks_ref = "[" + ", ".join(all_ends) + "]"
     dep_lines.append(f"end_tasks = {end_tasks_ref}")
+    dep_lines.append(f"{end_tasks_ref} >> t_publish_dataset")
     if f_fim:
         dep_lines.append(f"{end_tasks_ref} >> t_teams_end")
     if f_err:
         dep_lines.append(f"{end_tasks_ref} >> t_teams_error")
 
     with_parts = []
+    with_parts.append(_ind(check_block))
+    with_parts.append(_ind(publish_block))
     if sensor_block:
         with_parts.append(_ind(sensor_block))
     for t in teams_tasks:
@@ -511,13 +754,20 @@ def _generate_dag_source(pipeline, jobs):
     else:
         sd_y, sd_m, sd_d = 2026, 1, 1
 
+    if use_dataset_schedule:
+        deps_orig = [d.strip() for d in depends_on.split(",") if d.strip()]
+        ds_items = ", ".join(f'Dataset("orq://pipeline/{d}")' for d in deps_orig)
+        schedule_line = f"    schedule=[{ds_items}],  # dispara quando as dependências publicarem"
+    else:
+        schedule_line = f'    schedule="{cron}",'
+
     dag_header_lines = [
         "with DAG(",
         "    dag_id=DAG_ID,",
         "    default_args=default_args,",
         f'    description="Pipeline {pname} - {project} / {domain}",',
         f"    start_date=pendulum.datetime({sd_y}, {sd_m}, {sd_d}, tz=LOCAL_TZ),",
-        f'    schedule="{cron}",',
+        schedule_line,
         "    catchup=False,",
         f"    max_active_runs={max_active_runs_val},",
     ]
@@ -548,39 +798,86 @@ def _generate_dag_source(pipeline, jobs):
 
 
 def gerar_dags(**context):
+    import json as _json
     hook        = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
     output_root = _get_output_root()
     conf        = context["dag_run"].conf or {}
+    dag_run_id  = context["dag_run"].run_id
 
     force_all      = bool(conf.get("force_all", False))
     filter_project = (conf.get("filter_project") or "").strip()
     pipeline_name  = (conf.get("pipeline_name")  or "").strip()
 
     if pipeline_name:
-        # Regerar pipeline específico — reseta dag_criada só para ele
-        hook.run(
-            "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
-            "WHERE pipeline_name=%s",
-            parameters=(pipeline_name,),
-        )
-        print(f"[FACTORY] pipeline_name='{pipeline_name}' — dag_criada resetado para regeneração")
+        escopo = f"Pipeline específico: {pipeline_name}"
+    elif force_all and filter_project:
+        escopo = f"Todos os pipelines do projeto {filter_project} (regeneração forçada)"
     elif force_all:
-        if filter_project:
-            hook.run(
-                "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
-                "WHERE project_name=%s AND DAG_CRIADA=1",
-                parameters=(filter_project,),
-            )
-            print(f"[FACTORY] force_all=True, project='{filter_project}' — dag_criada resetado")
-        else:
-            hook.run(
-                "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
-                "WHERE DAG_CRIADA=1"
-            )
-            print("[FACTORY] force_all=True — dag_criada resetado para todos os pipelines")
+        escopo = "Todos os pipelines (regeneração forçada)"
+    else:
+        escopo = "Apenas pipelines pendentes de criação"
 
+    def _log_upsert(estado, geradas_count=0, erros_count=0, steps=None, erros_list=None):
+        try:
+            hook.run(
+                "MERGE dbo.etl_factory_log AS t "
+                "USING (SELECT %s AS r) AS s ON t.dag_run_id = s.r "
+                "WHEN MATCHED THEN UPDATE SET "
+                "  estado=%s, finalizado_em=CASE WHEN %s IN ('SUCCESS','FAILED') THEN GETDATE() ELSE NULL END, "
+                "  geradas=%s, erros=%s, detalhes_json=%s "
+                "WHEN NOT MATCHED THEN INSERT "
+                "  (dag_run_id, estado, escopo, pipeline_name, geradas, erros, detalhes_json) "
+                "  VALUES (%s, %s, %s, %s, %s, %s, %s);",
+                parameters=(
+                    dag_run_id,
+                    estado, estado,
+                    geradas_count, erros_count,
+                    _json.dumps({"steps": steps or [], "erros": erros_list or []}, ensure_ascii=False),
+                    dag_run_id, estado, escopo, pipeline_name or None,
+                    geradas_count, erros_count,
+                    _json.dumps({"steps": steps or [], "erros": erros_list or []}, ensure_ascii=False),
+                ),
+            )
+        except Exception as _le:
+            print(f"[FACTORY] AVISO: falha ao gravar etl_factory_log — {_le}")
+
+    steps_log: list = []
+    _log_upsert("RUNNING")
+
+    # ── Tudo na mesma conexão: reset + SP rodam na mesma sessão após commit ──
     conn   = hook.get_conn()
     cursor = conn.cursor()
+
+    if pipeline_name:
+        cursor.execute(
+            "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
+            "WHERE pipeline_name=%s",
+            (pipeline_name,),
+        )
+        msg = f"Pipeline '{pipeline_name}' liberado para regeneração"
+        print(f"[FACTORY] {msg}")
+        steps_log.append({"tipo": "reset", "msg": msg})
+    elif force_all:
+        if filter_project:
+            cursor.execute(
+                "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
+                "WHERE project_name=%s AND dag_criada=1",
+                (filter_project,),
+            )
+            msg = f"Todos os pipelines do projeto '{filter_project}' liberados para regeneração"
+            print(f"[FACTORY] {msg}")
+            steps_log.append({"tipo": "reset", "msg": msg})
+        else:
+            cursor.execute(
+                "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
+                "WHERE dag_criada=1"
+            )
+            msg = "Todos os pipelines liberados para regeneração"
+            print(f"[FACTORY] {msg}")
+            steps_log.append({"tipo": "reset", "msg": msg})
+
+    conn.commit()   # commit antes da SP — mesma sessão, sem problema de isolamento
+
     cursor.execute("EXEC dbo.sp_etl_pipelines_pendentes_criar")
 
     pipelines_rows = cursor.fetchall()
@@ -588,11 +885,13 @@ def gerar_dags(**context):
     cursor.nextset()
     jobs_rows = cursor.fetchall()
     jobs_cols = [d[0].lower() for d in cursor.description]
-    cursor.close()
-    conn.close()
 
     if not pipelines_rows:
-        print("[FACTORY] Nenhum pipeline pendente.")
+        cursor.close(); conn.close()
+        msg = "Nenhum pipeline pendente encontrado — nada foi regenerado"
+        print(f"[FACTORY] {msg}")
+        steps_log.append({"tipo": "vazio", "msg": msg})
+        _log_upsert("SUCCESS", 0, 0, steps_log, [])
         return
 
     pipelines = [dict(zip(pipeline_cols, row)) for row in pipelines_rows]
@@ -600,20 +899,49 @@ def gerar_dags(**context):
 
     # Supplement with advanced fields (not in SP result set)
     if pipelines:
-        pnames_sql = ",".join(f"'{p['pipeline_name']}'" for p in pipelines)
-        conn2 = hook.get_conn()
-        cur2  = conn2.cursor()
-        cur2.execute(
-            f"SELECT pipeline_name, criticidade, sla_minutos, ambiente, "
-            f"max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao, dag_start_date "
-            f"FROM dbo.etl_pipeline WHERE pipeline_name IN ({pnames_sql})"
+        pnames_sql = ",".join(["%s"] * len(pipelines))
+        pnames_vals = tuple(p['pipeline_name'] for p in pipelines)
+        # colunas da migration 017 (scheduling avançado) — degradam se ausentes
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' "
+            "AND COLUMN_NAME='calendario_nome'"
         )
-        adv_rows = cur2.fetchall()
-        adv_cols = [d[0].lower() for d in cur2.description]
-        cur2.close(); conn2.close()
-        adv_map = {r[0]: dict(zip(adv_cols, r)) for r in adv_rows}
+        has_sched_cols = bool(cursor.fetchone()[0])
+        sched_cols = (
+            ", calendario_nome, somente_dias_uteis, trigger_por_dependencia"
+            if has_sched_cols else ""
+        )
+        # colunas da migration 018 (horários múltiplos) — degradam se ausentes
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' "
+            "AND COLUMN_NAME='horarios_especificos'"
+        )
+        if cursor.fetchone()[0]:
+            sched_cols += ", horarios_especificos, dias_semana"
+        # colunas do builder de agendamento (Fase 3) — degradam se ausentes
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' "
+            "AND COLUMN_NAME='schedule_type'"
+        )
+        if cursor.fetchone()[0]:
+            sched_cols += ", schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom"
+        cursor.execute(
+            f"SELECT pipeline_name, criticidade, sla_minutos, ambiente, "
+            f"max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao, dag_start_date, "
+            f"runbook_md{sched_cols} "
+            f"FROM dbo.etl_pipeline WHERE pipeline_name IN ({pnames_sql})",
+            pnames_vals,
+        )
+        adv_rows = cursor.fetchall()
+        adv_cols = [d[0].lower() for d in cursor.description]
+        adv_map  = {r[0]: dict(zip(adv_cols, r)) for r in adv_rows}
         for p in pipelines:
             p.update(adv_map.get(p['pipeline_name'], {}))
+
+    cursor.close(); conn.close()
 
     jobs_by_pipeline = defaultdict(list)
     for j in jobs_all:
@@ -651,9 +979,12 @@ def gerar_dags(**context):
         try:
             with open(dest_file, "w", encoding="utf-8") as f:
                 f.write(source)
+            msg = f"Arquivo da DAG gravado em {dest_file}"
             print(f"[FACTORY] OK -> {dest_file}")
+            steps_log.append({"tipo": "gerada", "msg": msg})
         except Exception as e:
             erros.append(f"{pname}: erro ao salvar — {e}")
+            steps_log.append({"tipo": "erro", "msg": f"Erro ao gravar arquivo de '{pname}': {e}"})
             continue
 
         try:
@@ -671,14 +1002,21 @@ def gerar_dags(**context):
                 ),
             )
             print(f"[FACTORY] dag_criada=1 -> '{pname}'")
+            steps_log.append({"tipo": "banco", "msg": f"Pipeline '{pname}' marcado como criado no cadastro"})
         except Exception as e:
             erros.append(f"{pname}: dag gerada mas erro ao atualizar banco — {e}")
+            steps_log.append({"tipo": "erro", "msg": f"Erro ao atualizar cadastro de '{pname}': {e}"})
 
         geradas.append(pname)
 
+    resumo = f"{len(geradas)} DAG(s) regenerada(s) com sucesso, {len(erros)} erro(s)"
     print(f"\n[FACTORY] Geradas: {len(geradas)} | Erros: {len(erros)}")
     for e in erros:
         print(f"  x {e}")
+    steps_log.append({"tipo": "resumo", "msg": resumo})
+
+    estado_final = "FAILED" if erros else "SUCCESS"
+    _log_upsert(estado_final, len(geradas), len(erros), steps_log, erros)
 
     if geradas:
         try:

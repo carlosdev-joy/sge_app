@@ -26,9 +26,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-## Build / dist
-dist/
+## Build / dist (exceto ui-react/dist que é o artefato de deploy)
 build/
+ui-react/node_modules/
+ui-react/.vite/
+# dist/ genérico ignorado, mas ui-react/dist/ é commitado explicitamente
 
 ## Config (se houver secrets)
 config/*.env
@@ -40,6 +42,9 @@ config/*.local
 .env.local
 .claude/
 
-## Dumps de dados de produção (nunca commitar no git)
-dump_prod.sql
-*.dump.sql
+## Certificados SSL (chave privada nunca entra no git)
+certs/*.crt
+certs/*.key
+certs/*.pem
+certs/*.p12
+!certs/.gitkeep

@@ -1,30 +1,33 @@
 """
 utils/datastage_operator.py
 
-DataStage operator for Apache Airflow 2.x — fire-and-forget mode.
+Async DataStage operator for Apache Airflow 2.x.
 
-ARQUITETURA (v3 — monitor centralizado):
-  - execute() DISPARA o job DataStage e persiste estado RUNNING, depois SAI.
-  - O polling é responsabilidade do DAG etl_ds_monitor_centralizado, que roda
-    a cada N minutos, consulta todos os jobs RUNNING via um único loop SSH
-    reutilizado e grava os resultados no banco em batch.
-  - Isso reduz de N_jobs × (duração/poll_interval) conexões SSH para
-    (duração_total / intervalo_monitor) conexões — tipicamente 10-20× menos.
-
-  attach_only=True: mantido para compatibilidade — ignora trigger, apenas
-  consulta o estado atual e registra no banco (usado pelo monitor centralizado).
-
-XCom de retorno:
-    system, project, job, status, status_code, wave_number,
-    start_time, pid, child_jobs, log_summary
-
-status_code segue convenção dsjob: 1=OK, 2=WARNING, 3=ABORTED.
+Features:
+  - Idempotent trigger: attaches to an already-running job on Airflow restart
+  - Real-time polling via dsjob -jobinfo (no blocking -wait flag)
+  - Full log capture via dsjob -logsum on completion or failure only
+  - Child job visibility for SEQUENCE type jobs (BATCH/finish events)
+  - Auto RESET + retry on ABORTED status (up to max_ds_retries)
+  - Optional logical-date parameter for catch-up scheduling correctness
+  - DB persistence to etl_ds_job_log via sp_etl_ds_job_log_upsert
+  - attach_only mode: monitor an already-running job without triggering
+  - XCom JSON output compatible with etl_dag_factory._extract_status_code()
+  - Workload queue: criticidade do pipeline é mapeada para a fila de
+    execução do DataStage Workload Management via -queue no dsjob -run
+    (ALTA/CRÍTICO → HighPriorityJobs · MEDIA/NORMAL → MediumPriorityJobs
+     BAIXA → LowPriorityJobs). Sem configuração usa o padrão do projeto.
+  - verbose_log: quando True, chama dsjob -logsum a cada verbose_interval
+    polls durante a execução para mostrar progresso de jobs filhos
+    (SEQUENCE). Default False — use apenas para investigar jobs específicos.
+    Pode ser ativado regenerando a DAG via factory sem alterar a malha.
 
 dsjob -jobinfo "Job Status" codes:
    0 = RUNNING
    1 = Finished OK
    2 = Finished with warnings
    3 = Aborted
+   4 = Queued
   99 = Not running
 """
 
@@ -42,15 +45,21 @@ from airflow.providers.ssh.hooks.ssh import SSHHook
 
 class DataStageOperator(BaseOperator):
     """
-    Dispara (ou se acopla a) um job DataStage via SSH/dsjob CLI e RETORNA
-    imediatamente — sem loop de polling interno.
+    Triggers (or attaches to) a DataStage job asynchronously over SSH via dsjob CLI
+    and polls until completion.  Works for SEQUENCE and regular ETL jobs.
 
-    O polling periódico é feito pelo etl_ds_monitor_centralizado DAG, que
-    usa DataStageOperator(attach_only=True, fire_and_forget=False) para
-    verificar o estado final antes de marcar a task como concluída.
+    Set attach_only=True to monitor a job that was triggered externally (e.g. the
+    etl_datastage_monitor DAG) without starting a new run.
 
-    Para pipelines que ainda precisam do comportamento bloqueante (legado),
-    use blocking=True — isso reativa o loop de polling original.
+    Set verbose_log=True to enable intermediate dsjob -logsum calls during execution
+    (useful for diagnosing slow SEQUENCE jobs). Off by default to minimize SSH load.
+
+    XCom return value is a JSON string with:
+        system, project, job, status, status_code, wave_number,
+        start_time, pid, child_jobs, log_summary
+
+    status_code uses the standard dsjob convention (1=OK, 2=WARNING, 3=ABORTED),
+    compatible with etl_dag_factory._extract_status_code().
     """
 
     ui_color   = "#4A90D9"
@@ -76,7 +85,10 @@ class DataStageOperator(BaseOperator):
         attach_only: bool = False,
         mssql_conn_id: str = "SQL14_DMDB41",
         pipeline_name: str = "",
-        blocking: bool = False,   # True = comportamento legado com polling interno
+        queue_name: str | None = None,
+        verbose_log: bool = False,
+        verbose_interval: int = 5,   # chama -logsum a cada N polls (só com verbose_log=True)
+        logsum_max: int = 200,       # nº máx. de entradas no -logsum (limita ao run atual)
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -91,7 +103,10 @@ class DataStageOperator(BaseOperator):
         self.attach_only          = attach_only
         self.mssql_conn_id        = mssql_conn_id
         self.pipeline_name        = pipeline_name
-        self.blocking             = blocking
+        self.queue_name           = queue_name    # DS Workload Management queue
+        self.verbose_log          = verbose_log   # logsum periódico durante execução
+        self.verbose_interval     = verbose_interval
+        self.logsum_max           = logsum_max     # limita -logsum ao run atual
 
     # ── entry point ──────────────────────────────────────────────────────────
 
@@ -102,115 +117,75 @@ class DataStageOperator(BaseOperator):
         pipeline     = self.pipeline_name or context["dag"].dag_id
 
         if self.attach_only:
-            # Modo monitor: consulta estado atual, não dispara novo run.
-            return self._attach_and_report(execution_id, pipeline, logical_date, ti)
-
-        # Verifica se já disparou (idempotência em restart do Airflow)
-        wave_num = ti.xcom_pull(key="ds_wave_num", task_ids=ti.task_id)
-        if wave_num is not None:
-            self.log.info("[DS] Restart detectado — wave_num=%s já em XCom", wave_num)
+            # Monitor mode: attach to whatever is running, don't trigger
+            info = self._jobinfo()
+            if info["status_code"] != self._ST_RUNNING:
+                self.log.warning(
+                    "[DS] attach_only=True but job is not RUNNING (status=%s). "
+                    "Will still poll for final state.", info["status_code"]
+                )
+            wave_num = info.get("wave_number", 0)
+            self.log.info("[DS] Attached to job (wave=%s)", wave_num)
         else:
-            wave_num = self._trigger_or_attach(logical_date)
-            ti.xcom_push(key="ds_wave_num", value=wave_num)
-            self.log.info("[DS] Job disparado — wave_num=%s", wave_num)
+            wave_num = ti.xcom_pull(key="ds_wave_num", task_ids=ti.task_id)
+            if wave_num is not None:
+                self.log.info("[DS] Resuming from XCom wave_num=%s", wave_num)
+            else:
+                wave_num = self._trigger_or_attach(logical_date)
+                ti.xcom_push(key="ds_wave_num", value=wave_num)
+                self.log.info("[DS] Job triggered — wave_num=%s", wave_num)
 
-        # Persiste estado RUNNING inicial
-        self._persist(execution_id, pipeline, wave_num, None, "RUNNING", 0, [], "", None)
+        # Persist initial state to DB
+        self._persist(execution_id, pipeline, wave_num, None, "QUEUED", self._ST_QUEUED, [], "", None)
 
-        if self.blocking:
-            # Modo legado: polling interno (usar apenas quando monitor centralizado
-            # não estiver ativo ou para jobs isolados críticos)
-            return self._blocking_poll(execution_id, pipeline, wave_num, logical_date, ti)
+        if self.verbose_log:
+            self.log.info("[DS] verbose_log=True — logsum parcial a cada %d polls", self.verbose_interval)
 
-        # Modo padrão (fire-and-forget): retorna estado inicial RUNNING.
-        # O etl_ds_monitor_centralizado assume o polling e atualizará o banco.
-        self.log.info(
-            "[DS] Job %s/%s disparado (wave=%s). Polling delegado ao monitor centralizado.",
-            self.project, self.job_name, wave_num,
-        )
-        return json.dumps({
-            "system":      "datastage",
-            "project":     self.project,
-            "job":         self.job_name,
-            "status":      "RUNNING",
-            "status_code": 0,
-            "wave_number": wave_num,
-            "start_time":  None,
-            "pid":         None,
-            "child_jobs":  [],
-            "log_summary": "",
-        }, ensure_ascii=False)
-
-    # ── attach mode (usado pelo monitor centralizado) ─────────────────────────
-
-    def _attach_and_report(self, execution_id, pipeline, logical_date, ti) -> str:
-        """
-        Verifica estado atual do job. Usado pelo etl_ds_monitor_centralizado.
-        Não faz loop — apenas uma leitura de estado + persist.
-        """
-        info = self._jobinfo()
-        sc   = info["status_code"]
-
-        if sc in (self._ST_RUNNING, self._ST_QUEUED):
-            # Ainda rodando — persiste snapshot e retorna (o monitor chamará de novo)
-            snapshot = json.dumps({
-                "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "status_code": sc,
-                "status_text": info.get("status_text", ""),
-            }, ensure_ascii=False)
-            self._persist(
-                execution_id, pipeline,
-                info.get("wave_number", 0), info.get("pid"),
-                "RUNNING", sc, [], "", snapshot,
-            )
-            return json.dumps({
-                "system": "datastage", "project": self.project,
-                "job": self.job_name, "status": "RUNNING", "status_code": sc,
-            }, ensure_ascii=False)
-
-        if sc in (self._ST_OK, self._ST_WARNING):
-            label = "SUCCESS" if sc == self._ST_OK else "WARNING"
-            return self._finish(execution_id, pipeline, sc, label, info)
-
-        if sc == self._ST_ABORTED:
-            logsum     = self._logsum()
-            child_jobs = self._parse_child_jobs(logsum)
-            self._persist(
-                execution_id, pipeline,
-                info.get("wave_number", 0), info.get("pid"),
-                "ABORTED", sc, child_jobs, logsum, None,
-            )
-            raise AirflowException(
-                f"[DS] '{self.project}/{self.job_name}' ABORTED.\n"
-                f"Log summary:\n{logsum[:2000]}"
-            )
-
-        raise AirflowException(
-            f"[DS] '{self.project}/{self.job_name}' status inesperado: {sc}"
-        )
-
-    # ── blocking poll (legado) ────────────────────────────────────────────────
-
-    def _blocking_poll(self, execution_id, pipeline, wave_num, logical_date, ti) -> str:
-        """Loop de polling interno — mantido para compatibilidade (blocking=True)."""
-        ds_attempt = 0
+        # Polling loop — cada iteração faz apenas dsjob -jobinfo (leve).
+        # dsjob -logsum (pesado) só é chamado em: estado terminal, ABORTED,
+        # ou verbose_log=True (para investigação pontual de jobs específicos).
+        ds_attempt      = 0
+        poll_count      = 0
+        queued_since: datetime | None = datetime.utcnow()
+        queued_seconds: int = 0
         while True:
             time.sleep(self.poll_interval)
+            poll_count += 1
             info = self._jobinfo()
             sc   = info["status_code"]
             self.log.info(
-                "[DS][blocking] wave=%s status=%s(%s)",
+                "[DS] wave=%s  status=%s(%s)  controller=%s",
                 info.get("wave_number"), sc, info.get("status_text"),
+                info.get("controller"),
             )
 
+            # Detecta transição QUEUED → RUNNING: registra tempo de espera em fila
+            if sc != self._ST_QUEUED and queued_since is not None:
+                queued_seconds = int((datetime.utcnow() - queued_since).total_seconds())
+                queued_since   = None
+                if queued_seconds > 0:
+                    self.log.info("[DS] Tempo em fila: %ds", queued_seconds)
+                    self._persist_queued_seconds(execution_id, queued_seconds)
+
+            # Logsum parcial: só com verbose_log=True — opt-in por job/DAG
+            if self.verbose_log and sc == self._ST_RUNNING and poll_count % self.verbose_interval == 0:
+                try:
+                    partial_logsum   = self._logsum()
+                    partial_children = self._parse_child_jobs(partial_logsum)
+                    if partial_children:
+                        self.log.info("[DS][verbose] Progresso — %d job(s) filhos:", len(partial_children))
+                        self._log_child_jobs(partial_children)
+                except Exception as exc:
+                    self.log.debug("[DS][verbose] logsum parcial ignorado: %s", exc)
+
+            # Snapshot de poll (só status_code + text — sem logsum)
             snapshot = json.dumps({
                 "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "status_code": sc,
                 "status_text": info.get("status_text", ""),
             }, ensure_ascii=False)
             self._persist(
-                execution_id, pipeline,
-                info.get("wave_number") or wave_num,
+                execution_id, pipeline, info.get("wave_number") or wave_num,
                 info.get("pid"), _status_label(sc), sc, [], "", snapshot,
             )
 
@@ -224,38 +199,50 @@ class DataStageOperator(BaseOperator):
             if sc == self._ST_ABORTED:
                 ds_attempt += 1
                 self.log.warning("[DS] ABORTED (attempt %d/%d)", ds_attempt, self.max_ds_retries)
-                logsum     = self._logsum()
+                logsum     = self._logsum()   # logsum sempre em ABORTED para diagnóstico
                 child_jobs = self._parse_child_jobs(logsum)
+                self._log_child_jobs(child_jobs)
                 self._persist(
-                    execution_id, pipeline,
-                    info.get("wave_number") or wave_num,
+                    execution_id, pipeline, info.get("wave_number") or wave_num,
                     info.get("pid"), "ABORTED", sc, child_jobs, logsum, None,
                 )
+
+                if self.attach_only:
+                    raise AirflowException(
+                        f"[DS] '{self.project}/{self.job_name}' ABORTED.\n"
+                        f"Log summary (2 000 chars):\n{logsum[:2000]}"
+                    )
+
                 if ds_attempt < self.max_ds_retries:
-                    self.log.info("[DS] RESET + retry em %ds …", self.retry_wait)
+                    self.log.info("[DS] RESET + retry in %ds …", self.retry_wait)
                     self._reset()
                     time.sleep(self.retry_wait)
                     wave_num = self._trigger_run(logical_date)
                     ti.xcom_push(key="ds_wave_num", value=wave_num)
                     continue
+
                 raise AirflowException(
-                    f"[DS] '{self.project}/{self.job_name}' ABORTED após "
-                    f"{self.max_ds_retries} tentativa(s).\n{logsum[:2000]}"
+                    f"[DS] '{self.project}/{self.job_name}' ABORTED after "
+                    f"{self.max_ds_retries} attempt(s).\n"
+                    f"Log summary (2 000 chars):\n{logsum[:2000]}"
                 )
 
             if sc == self._ST_NOT_RUN:
                 raise AirflowException(
-                    f"[DS] '{self.project}/{self.job_name}' NOT RUNNING (wave {wave_num})"
+                    f"[DS] '{self.project}/{self.job_name}' is NOT RUNNING unexpectedly "
+                    f"(wave {wave_num}). Check DataStage logs."
                 )
 
-            raise AirflowException(f"[DS] Status desconhecido {sc} para '{self.job_name}'")
+            raise AirflowException(f"[DS] Unknown status code {sc} for '{self.job_name}'")
 
     # ── trigger / attach ─────────────────────────────────────────────────────
 
     def _trigger_or_attach(self, logical_date: str) -> int:
         info = self._jobinfo()
         if info["status_code"] == self._ST_RUNNING:
-            self.log.info("[DS] Já RUNNING (wave=%s) — acoplando", info.get("wave_number"))
+            self.log.info(
+                "[DS] Already RUNNING (wave=%s) — attaching", info.get("wave_number")
+            )
             try:
                 return int(info["wave_number"])
             except (TypeError, ValueError):
@@ -263,13 +250,13 @@ class DataStageOperator(BaseOperator):
         return self._trigger_run(logical_date)
 
     def _trigger_run(self, logical_date: str) -> int:
-        parts = [
-            f"{self.dshome}/bin/dsjob",
-            "-run", "-mode", "NORMAL",
-            self.project, self.job_name,
-        ]
+        # dsjob requer todas as flags ANTES de project/job
+        parts = [f"{self.dshome}/bin/dsjob", "-run", "-mode", "NORMAL"]
+        if self.queue_name:
+            parts += ["-queue", self.queue_name]
         if self.execution_date_param and logical_date:
             parts += ["-param", f"{self.execution_date_param}={logical_date}"]
+        parts += [self.project, self.job_name]
 
         rc, out, err = self._exec(" ".join(parts), timeout=60)
         combined = (out + " " + err).strip()
@@ -277,7 +264,7 @@ class DataStageOperator(BaseOperator):
 
         if rc not in (0, 1):
             raise AirflowException(
-                f"[DS] Falha ao disparar '{self.job_name}': rc={rc} | {err[:300]}"
+                f"[DS] Failed to trigger '{self.job_name}': rc={rc} | {err[:300]}"
             )
 
         info = self._jobinfo()
@@ -299,11 +286,14 @@ class DataStageOperator(BaseOperator):
         return self._parse_jobinfo(out)
 
     def _logsum(self) -> str:
-        cmd = f"{self.dshome}/bin/dsjob -logsum {self.project} {self.job_name}"
+        # -max limita às últimas N entradas (o run atual), evitando puxar o
+        # histórico inteiro do job (runs antigos) — isso reduz o tráfego SSH,
+        # o tamanho gravado em etl_ds_job_log e o eco no log do Airflow.
+        cmd = f"{self.dshome}/bin/dsjob -logsum -max {self.logsum_max} {self.project} {self.job_name}"
         _, out, _ = self._exec(cmd, timeout=120)
         return out
 
-    # ── SSH execution ─────────────────────────────────────────────────────────
+    # ── SSH execution ────────────────────────────────────────────────────────
 
     def _exec(self, cmd: str, timeout: int = 120):
         full_cmd = f"source {self.dshome}/dsenv && {cmd}"
@@ -346,8 +336,9 @@ class DataStageOperator(BaseOperator):
         }
 
     def _parse_child_jobs(self, logsum: str) -> list:
-        batch_re   = re.compile(r"BATCH\s+.*?->\s+\(([^)]+)\):\s+Job run requested")
-        finish_re  = re.compile(r"Job (\S+) has finished,\s*status\s*=\s*(\d+)\s+\(([^)]+)\)")
+        """Extract child job events from dsjob -logsum output (SEQUENCE jobs)."""
+        batch_re  = re.compile(r"BATCH\s+.*?->\s+\(([^)]+)\):\s+Job run requested")
+        finish_re = re.compile(r"Job (\S+) has finished,\s*status\s*=\s*(\d+)\s+\(([^)]+)\)")
 
         tracked: dict = {}
         result:  list = []
@@ -386,9 +377,24 @@ class DataStageOperator(BaseOperator):
 
     # ── DB persistence ────────────────────────────────────────────────────────
 
+    def _persist_queued_seconds(self, execution_id: str, queued_seconds: int) -> None:
+        """Grava o tempo de espera em fila do WM DataStage em etl_ds_job_log."""
+        try:
+            from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
+            hook = MsSqlHook(mssql_conn_id=self.mssql_conn_id)
+            hook.run(
+                "UPDATE dbo.etl_ds_job_log "
+                "SET queued_seconds=%s, updated_at=GETDATE() "
+                "WHERE execution_id=%s AND job_name=%s",
+                parameters=(queued_seconds, execution_id, self.job_name),
+            )
+        except Exception as exc:
+            self.log.warning("[DS] Não foi possível gravar queued_seconds: %s", exc)
+
     def _persist(
         self, execution_id, pipeline, wave_num, pid, status, status_code,
         child_jobs, log_summary, poll_snapshot,
+        ds_start_time=None, ds_end_time=None,
     ) -> None:
         try:
             from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
@@ -397,7 +403,8 @@ class DataStageOperator(BaseOperator):
                 "EXEC dbo.sp_etl_ds_job_log_upsert "
                 "@execution_id=%s, @pipeline_name=%s, @job_name=%s, @project=%s, "
                 "@wave_number=%s, @pid=%s, @status=%s, @status_code=%s, "
-                "@child_jobs=%s, @log_summary=%s, @poll_snapshot=%s",
+                "@child_jobs=%s, @log_summary=%s, @poll_snapshot=%s, "
+                "@ds_start_time=%s, @ds_end_time=%s",
                 parameters=(
                     execution_id,
                     pipeline,
@@ -410,31 +417,45 @@ class DataStageOperator(BaseOperator):
                     json.dumps(child_jobs, ensure_ascii=False) if child_jobs else "",
                     (log_summary or "")[:8000],
                     poll_snapshot or "",
+                    ds_start_time or "",
+                    ds_end_time,
                 ),
             )
         except Exception as exc:
-            self.log.warning("[DS] Não foi possível persistir em etl_ds_job_log: %s", exc)
+            self.log.warning("[DS] Could not persist to etl_ds_job_log: %s", exc)
 
     # ── finish ────────────────────────────────────────────────────────────────
 
     def _finish(self, execution_id, pipeline, status_code, label, info) -> str:
-        logsum     = self._logsum()
+        logsum     = self._logsum()   # uma única chamada -logsum, ao terminar
         child_jobs = self._parse_child_jobs(logsum)
         self.log.info("[DS] %s — %d child job(s)", label, len(child_jobs))
         self._log_child_jobs(child_jobs)
 
+        # Para WARNING: grava o detalhe real no DS log, mas reporta SUCCESS
+        # ao Airflow/factory (job finalizou — só teve avisos, não falhou)
+        ds_label = "Finished with warnings" if label == "WARNING" else label
+        xcom_status_code = 1  # SUCCESS para o factory em ambos OK e WARNING
+        if label not in ("SUCCESS", "WARNING"):
+            xcom_status_code = status_code
+
+        ds_end_time = datetime.utcnow()
+
         self._persist(
             execution_id, pipeline,
             info.get("wave_number"), info.get("pid"),
-            label, status_code, child_jobs, logsum, None,
+            ds_label, status_code, child_jobs, logsum, None,
+            ds_start_time=info.get("start_time"),
+            ds_end_time=ds_end_time,
         )
 
         return json.dumps({
             "system":      "datastage",
             "project":     self.project,
             "job":         self.job_name,
-            "status":      label,
-            "status_code": status_code,
+            "status":      "SUCCESS",
+            "status_code": xcom_status_code,
+            "ds_status":   ds_label,
             "wave_number": info.get("wave_number"),
             "start_time":  info.get("start_time"),
             "pid":         info.get("pid"),

@@ -1,0 +1,380 @@
+TABLE_NAME	ORDINAL_POSITION	COLUMN_NAME	DATA_TYPE	CHARACTER_MAXIMUM_LENGTH	IS_NULLABLE
+etl_airflow_role_perfil	1	role_airflow	varchar	100	NO
+etl_airflow_role_perfil	2	perfil_nome	varchar	30	NO
+etl_airflow_role_perfil	3	ordem_prioridade	int	NULL	NO
+etl_airflow_role_perfil	4	descricao	varchar	200	YES
+etl_airflow_role_perfil	5	ativo	bit	NULL	NO
+etl_airflow_role_perfil	6	criado_em	datetime	NULL	NO
+etl_airflow_role_perfil	7	criado_por	varchar	50	YES
+etl_airflow_role_perfil	8	atualizado_em	datetime	NULL	YES
+etl_airflow_role_perfil	9	atualizado_por	varchar	50	YES
+etl_app_config	1	config_key	varchar	100	NO
+etl_app_config	2	config_value	varchar	1000	NO
+etl_app_config	3	descricao	varchar	500	YES
+etl_app_config	4	updated_by	varchar	100	YES
+etl_app_config	5	updated_at	datetime	NULL	NO
+etl_blackout	1	id	int	NULL	NO
+etl_blackout	2	inicio	datetime	NULL	NO
+etl_blackout	3	fim	datetime	NULL	NO
+etl_blackout	4	escopo	nvarchar	200	YES
+etl_blackout	5	motivo	nvarchar	300	NO
+etl_blackout	6	ativo	bit	NULL	NO
+etl_blackout	7	criado_por	varchar	100	YES
+etl_blackout	8	created_at	datetime	NULL	NO
+etl_blackout	9	encerrado_por	varchar	100	YES
+etl_blackout	10	encerrado_em	datetime	NULL	YES
+etl_calendario	1	id	int	NULL	NO
+etl_calendario	2	calendario_nome	varchar	100	NO
+etl_calendario	3	data	date	NULL	NO
+etl_calendario	4	descricao	nvarchar	200	YES
+etl_calendario	5	created_by	varchar	100	YES
+etl_calendario	6	created_at	datetime	NULL	NO
+etl_configuracao	1	chave	nvarchar	100	NO
+etl_configuracao	2	valor	nvarchar	-1	YES
+etl_configuracao	3	descricao	nvarchar	500	YES
+etl_configuracao	4	atualizado_em	datetime2	NULL	NO
+etl_ds_job_log	1	id	int	NULL	NO
+etl_ds_job_log	2	execution_id	varchar	50	NO
+etl_ds_job_log	3	pipeline_name	varchar	200	NO
+etl_ds_job_log	4	job_name	varchar	200	NO
+etl_ds_job_log	5	project	varchar	100	NO
+etl_ds_job_log	6	wave_number	int	NULL	YES
+etl_ds_job_log	7	pid	varchar	20	YES
+etl_ds_job_log	8	status	varchar	50	NO
+etl_ds_job_log	9	status_code	int	NULL	YES
+etl_ds_job_log	10	child_jobs	nvarchar	-1	YES
+etl_ds_job_log	11	log_summary	nvarchar	-1	YES
+etl_ds_job_log	12	poll_snapshots	nvarchar	-1	YES
+etl_ds_job_log	13	last_polled_at	datetime	NULL	YES
+etl_ds_job_log	14	created_at	datetime	NULL	NO
+etl_ds_job_log	15	updated_at	datetime	NULL	NO
+etl_ds_job_log	16	ds_start_time	varchar	50	YES
+etl_ds_job_log	17	ds_end_time	datetime	NULL	YES
+etl_ds_job_log	18	queued_seconds	int	NULL	YES
+etl_factory_log	1	id	int	NULL	NO
+etl_factory_log	2	dag_run_id	varchar	200	NO
+etl_factory_log	3	iniciado_em	datetime	NULL	NO
+etl_factory_log	4	finalizado_em	datetime	NULL	YES
+etl_factory_log	5	estado	varchar	20	NO
+etl_factory_log	6	escopo	nvarchar	500	YES
+etl_factory_log	7	pipeline_name	varchar	200	YES
+etl_factory_log	8	geradas	int	NULL	NO
+etl_factory_log	9	erros	int	NULL	NO
+etl_factory_log	10	detalhes_json	nvarchar	-1	YES
+etl_failure_ack	1	id	int	NULL	NO
+etl_failure_ack	2	execution_id	varchar	100	NO
+etl_failure_ack	3	pipeline	varchar	200	NO
+etl_failure_ack	4	ack_by	varchar	100	NO
+etl_failure_ack	5	ack_at	datetime	NULL	NO
+etl_failure_ack	6	note	nvarchar	500	YES
+etl_failure_ack	7	display_name	nvarchar	200	YES
+etl_job_execution	1	execution_id	varchar	50	NO
+etl_job_execution	2	project	varchar	100	NO
+etl_job_execution	3	job_name	varchar	200	NO
+etl_job_execution	4	pipeline	varchar	200	YES
+etl_job_execution	5	host	varchar	200	YES
+etl_job_execution	6	start_time	datetime2	NULL	NO
+etl_job_execution	7	end_time	datetime2	NULL	YES
+etl_job_execution	8	duration_seconds	int	NULL	YES
+etl_job_execution	9	status_code	int	NULL	YES
+etl_job_execution	10	attempt	int	NULL	YES
+etl_job_execution	11	log_file	varchar	500	YES
+etl_job_execution	12	created_at	datetime2	NULL	YES
+etl_job_execution	13	status	varchar	20	YES
+etl_job_execution	14	updated_at	datetime2	NULL	YES
+etl_job_execution	15	task_id	varchar	200	NO
+etl_job_lineage	1	id	int	NULL	NO
+etl_job_lineage	2	pipeline_name	nvarchar	200	NO
+etl_job_lineage	3	job_name	nvarchar	200	NO
+etl_job_lineage	4	direction	nvarchar	30	NO
+etl_job_lineage	5	object_type	varchar	100	YES
+etl_job_lineage	6	object_name	nvarchar	500	NO
+etl_job_lineage	7	created_at	datetime2	NULL	NO
+etl_job_lineage	8	updated_at	datetime2	NULL	NO
+etl_job_lineage	9	stage_name	varchar	200	YES
+etl_job_lineage	10	stage_type_raw	varchar	100	YES
+etl_job_lineage	11	database_name	varchar	200	YES
+etl_job_lineage	12	sql_expression	nvarchar	-1	YES
+etl_job_lineage	13	dsx_source_file	varchar	500	YES
+etl_job_lineage	14	extracted_at	datetime2	NULL	YES
+etl_job_lineage	15	extraction_method	varchar	50	YES
+etl_job_lineage	16	file_path	varchar	500	YES
+etl_job_lineage	17	columns_json	nvarchar	-1	YES
+etl_job_type	1	id	int	NULL	NO
+etl_job_type	2	nome	nvarchar	100	NO
+etl_job_type	3	descricao	nvarchar	500	YES
+etl_job_type	4	lineage_enabled	bit	NULL	NO
+etl_job_type	5	status	bit	NULL	NO
+etl_job_type	6	criado_em	datetime2	NULL	NO
+etl_job_type	7	criado_por	nvarchar	100	NO
+etl_object_tag	1	id	int	NULL	NO
+etl_object_tag	2	object_key	varchar	400	NO
+etl_object_tag	3	tag	varchar	50	NO
+etl_object_tag	4	added_by	varchar	100	YES
+etl_object_tag	5	added_at	datetime	NULL	NO
+etl_perfil	1	perfil_nome	varchar	30	NO
+etl_perfil	2	descricao	varchar	200	YES
+etl_perfil	3	criado_em	datetime	NULL	NO
+etl_perfil	4	criado_por	varchar	50	YES
+etl_perfil_permissao	1	perfil_nome	varchar	30	NO
+etl_perfil_permissao	2	recurso	varchar	50	NO
+etl_perfil_permissao	3	criado_em	datetime	NULL	NO
+etl_perfil_permissao	4	criado_por	varchar	50	YES
+etl_pipeline	1	pipeline_name	nvarchar	200	NO
+etl_pipeline	2	scheduled_time	time	NULL	NO
+etl_pipeline	3	active	bit	NULL	YES
+etl_pipeline	4	last_execution	datetime2	NULL	YES
+etl_pipeline	5	created_at	datetime2	NULL	YES
+etl_pipeline	6	updated_at	datetime2	NULL	YES
+etl_pipeline	7	ENVIA_MSG_INICIO	bit	NULL	NO
+etl_pipeline	8	ENVIA_MSG_FIM	bit	NULL	NO
+etl_pipeline	9	ENVIA_MSG_ERRO	bit	NULL	NO
+etl_pipeline	10	DAG_CRIADA	bit	NULL	NO
+etl_pipeline	11	project_name	nvarchar	50	NO
+etl_pipeline	12	domain	nvarchar	100	NO
+etl_pipeline	13	tags	nvarchar	500	NO
+etl_pipeline	14	schedule_type	varchar	20	YES
+etl_pipeline	15	schedule_hour	tinyint	NULL	YES
+etl_pipeline	16	schedule_minute	tinyint	NULL	YES
+etl_pipeline	17	schedule_dow	tinyint	NULL	YES
+etl_pipeline	18	schedule_dom	tinyint	NULL	YES
+etl_pipeline	19	depends_on	nvarchar	2000	YES
+etl_pipeline	20	dag_start_date	date	NULL	YES
+etl_pipeline	21	descricao	nvarchar	500	YES
+etl_pipeline	22	criticidade	nvarchar	10	YES
+etl_pipeline	23	sla_minutos	int	NULL	YES
+etl_pipeline	24	ambiente	nvarchar	10	YES
+etl_pipeline	25	max_active_runs	int	NULL	YES
+etl_pipeline	26	retries_count	int	NULL	YES
+etl_pipeline	27	retry_delay_seconds	int	NULL	YES
+etl_pipeline	28	pool_name	nvarchar	100	YES
+etl_pipeline	29	runbook_md	nvarchar	-1	YES
+etl_pipeline	30	calendario_nome	varchar	100	YES
+etl_pipeline	31	somente_dias_uteis	bit	NULL	NO
+etl_pipeline	32	trigger_por_dependencia	bit	NULL	NO
+etl_pipeline	33	horarios_especificos	varchar	500	YES
+etl_pipeline	34	dias_semana	varchar	30	YES
+etl_pipeline_audit	1	id	bigint	NULL	NO
+etl_pipeline_audit	2	pipeline_name	nvarchar	200	NO
+etl_pipeline_audit	3	changed_by	nvarchar	100	NO
+etl_pipeline_audit	4	field_name	nvarchar	100	NO
+etl_pipeline_audit	5	old_value	nvarchar	-1	YES
+etl_pipeline_audit	6	new_value	nvarchar	-1	YES
+etl_pipeline_audit	7	changed_at	datetime2	NULL	NO
+etl_pipeline_job	1	pipeline_name	nvarchar	200	NO
+etl_pipeline_job	2	job_name	nvarchar	200	NO
+etl_pipeline_job	3	execution_order	int	NULL	NO
+etl_pipeline_job	4	created_at	datetime	NULL	NO
+etl_pipeline_job	5	updated_at	datetime	NULL	YES
+etl_pipeline_job	6	job_type	nvarchar	20	NO
+etl_pipeline_job	7	job_command	nvarchar	500	YES
+etl_pipeline_owner	1	pipeline_name	nvarchar	300	NO
+etl_pipeline_owner	2	owner_name	nvarchar	100	YES
+etl_pipeline_owner	3	owner_email	nvarchar	150	YES
+etl_pipeline_owner	4	steward_name	nvarchar	100	YES
+etl_pipeline_owner	5	steward_email	nvarchar	150	YES
+etl_pipeline_owner	6	updated_at	datetime	NULL	NO
+etl_pipeline_owner	7	updated_by	nvarchar	100	YES
+etl_pipeline_performance_snapshot	1	id	int	NULL	NO
+etl_pipeline_performance_snapshot	2	pipeline	varchar	200	NO
+etl_pipeline_performance_snapshot	3	project	varchar	100	NO
+etl_pipeline_performance_snapshot	4	execution_id	varchar	50	NO
+etl_pipeline_performance_snapshot	5	alerta_horas	int	NULL	NO
+etl_pipeline_performance_snapshot	6	elapsed_seconds	int	NULL	NO
+etl_pipeline_performance_snapshot	7	snapshot_at	datetime2	NULL	NO
+etl_project	1	project_name	nvarchar	100	NO
+etl_project	2	descricao	nvarchar	300	YES
+etl_project	3	ativo	bit	NULL	NO
+etl_project	4	criado_em	datetime	NULL	NO
+etl_schema_version	1	id	int	NULL	NO
+etl_schema_version	2	migration_name	varchar	120	NO
+etl_schema_version	3	applied_at	datetime	NULL	NO
+etl_schema_version	4	applied_by	varchar	50	YES
+etl_schema_version	5	checksum	varchar	64	YES
+etl_seq_import	1	id	int	NULL	NO
+etl_seq_import	2	dsx_filename	varchar	500	NO
+etl_seq_import	3	seq_name_raw	varchar	500	NO
+etl_seq_import	4	seq_name	varchar	500	NO
+etl_seq_import	5	project_name	varchar	100	NO
+etl_seq_import	6	domain	varchar	100	YES
+etl_seq_import	7	pipeline_name_override	varchar	300	YES
+etl_seq_import	8	schedule_type	varchar	20	YES
+etl_seq_import	9	schedule_cron	varchar	100	YES
+etl_seq_import	10	schedule_hour	tinyint	NULL	YES
+etl_seq_import	11	schedule_minute	tinyint	NULL	YES
+etl_seq_import	12	schedule_dow	tinyint	NULL	YES
+etl_seq_import	13	schedule_dom	tinyint	NULL	YES
+etl_seq_import	14	status	varchar	30	NO
+etl_seq_import	15	obs	varchar	1000	YES
+etl_seq_import	16	imported_by	varchar	100	NO
+etl_seq_import	17	imported_at	datetime	NULL	NO
+etl_seq_import	18	reviewed_by	varchar	100	YES
+etl_seq_import	19	reviewed_at	datetime	NULL	YES
+etl_seq_import	20	pipeline_id	int	NULL	YES
+etl_seq_import_job	1	id	int	NULL	NO
+etl_seq_import_job	2	import_id	int	NULL	NO
+etl_seq_import_job	3	execution_order	int	NULL	NO
+etl_seq_import_job	4	job_name_ds	varchar	300	NO
+etl_seq_import_job	5	job_name_orq	varchar	300	NO
+etl_seq_import_job	6	job_type	varchar	30	NO
+etl_seq_import_job	7	job_command	varchar	1000	YES
+etl_seq_import_job	8	status	varchar	30	NO
+etl_seq_import_job	9	lineage_extracted	bit	NULL	NO
+etl_seq_import_job	10	lineage_count	int	NULL	NO
+etl_seq_import_job	11	pipeline_job_id	int	NULL	YES
+etl_seq_import_lineage	1	id	int	NULL	NO
+etl_seq_import_lineage	2	import_job_id	int	NULL	NO
+etl_seq_import_lineage	3	direction	varchar	20	NO
+etl_seq_import_lineage	4	object_name	varchar	300	NO
+etl_seq_import_lineage	5	object_type	varchar	100	YES
+etl_seq_import_lineage	6	stage_type_raw	varchar	100	YES
+etl_seq_import_lineage	7	sql_expression	varchar	-1	YES
+etl_seq_import_lineage	8	file_path	varchar	500	YES
+etl_seq_import_lineage	9	database_name	varchar	255	YES
+etl_seq_import_lineage	10	dsx_source_file	varchar	500	YES
+etl_seq_import_lineage	11	extraction_method	varchar	50	YES
+etl_seq_import_lineage	12	status	varchar	30	NO
+etl_seq_import_lineage	13	lineage_id	int	NULL	YES
+etl_seq_import_lineage	14	columns_json	nvarchar	-1	YES
+etl_sessao	1	token_hash	char	64	NO
+etl_sessao	2	matricula	varchar	20	NO
+etl_sessao	3	criado_em	datetime	NULL	NO
+etl_sessao	4	expira_em	datetime	NULL	NO
+etl_sla_alert	1	id	int	NULL	NO
+etl_sla_alert	2	execution_id	varchar	100	NO
+etl_sla_alert	3	pipeline	varchar	200	NO
+etl_sla_alert	4	alert_type	varchar	10	NO
+etl_sla_alert	5	sla_minutos	int	NULL	YES
+etl_sla_alert	6	elapsed_min	int	NULL	YES
+etl_sla_alert	7	alerted_at	datetime	NULL	NO
+etl_stage_type_map	1	stage_type	nvarchar	100	NO
+etl_stage_type_map	2	type_label	nvarchar	100	NO
+etl_stage_type_map	3	type_category	nvarchar	50	YES
+etl_stage_type_map	4	role_hint	nvarchar	50	YES
+etl_teste_execucao	1	id	int	NULL	NO
+etl_teste_execucao	2	tipo_teste	nvarchar	50	NO
+etl_teste_execucao	3	resultado	nvarchar	500	NO
+etl_teste_execucao	4	executado_em	datetime2	NULL	NO
+etl_usuario	1	matricula	varchar	20	NO
+etl_usuario	2	perfil_nome	varchar	30	NO
+etl_usuario	3	primeiro_nome	varchar	100	YES
+etl_usuario	4	ultimo_nome	varchar	100	YES
+etl_usuario	5	email	varchar	200	YES
+etl_usuario	6	avatar_url	varchar	500	YES
+etl_usuario	7	ativo	bit	NULL	NO
+etl_usuario	8	primeiro_login	datetime	NULL	YES
+etl_usuario	9	ultimo_login	datetime	NULL	YES
+etl_usuario	10	criado_em	datetime	NULL	NO
+etl_usuario	11	criado_por	varchar	50	YES
+etl_versao_ferramenta	1	id	int	NULL	NO
+etl_versao_ferramenta	2	versao	nvarchar	20	NO
+etl_versao_ferramenta	3	titulo	nvarchar	200	NO
+etl_versao_ferramenta	4	descricao_md	nvarchar	-1	YES
+etl_versao_ferramenta	5	criado_em	datetime2	NULL	NO
+etl_versao_ferramenta	6	criado_por	nvarchar	100	NO
+
+
+
+table_name	column_name	pk_name
+etl_airflow_role_perfil	role_airflow	PK_etl_airflow_role_perfil
+etl_app_config	config_key	PK__etl_app___BDF6033C636EF799
+etl_blackout	id	PK__etl_blac__3213E83F6F246BB0
+etl_calendario	id	PK__etl_cale__3213E83F79EE0830
+etl_configuracao	chave	PK_etl_configuracao
+etl_ds_job_log	id	PK__etl_ds_j__3213E83FE27B09C4
+etl_factory_log	id	PK__etl_fact__3213E83FC682294B
+etl_failure_ack	id	PK__etl_fail__3213E83FFC2307E6
+etl_job_execution	execution_id	PK_etl_job_execution
+etl_job_execution	job_name	PK_etl_job_execution
+etl_job_execution	task_id	PK_etl_job_execution
+etl_job_lineage	id	PK_etl_job_lineage
+etl_job_type	id	PK_etl_job_type
+etl_object_tag	id	PK_etl_object_tag
+etl_perfil	perfil_nome	PK_etl_perfil
+etl_perfil_permissao	perfil_nome	PK_etl_perfil_permissao
+etl_perfil_permissao	recurso	PK_etl_perfil_permissao
+etl_pipeline	pipeline_name	PK__etl_pipe__D4DE1D123E827665
+etl_pipeline_audit	id	PK_etl_pipeline_audit
+etl_pipeline_job	pipeline_name	PK_etl_pipeline_job
+etl_pipeline_job	job_name	PK_etl_pipeline_job
+etl_pipeline_owner	pipeline_name	PK_etl_pipeline_owner
+etl_pipeline_performance_snapshot	id	PK_perf_snapshot
+etl_project	project_name	PK_etl_project
+etl_schema_version	id	PK_schema_version
+etl_seq_import	id	PK__etl_seq___3213E83F0A8907C1
+etl_seq_import_job	id	PK__etl_seq___3213E83F2A985F40
+etl_seq_import_lineage	id	PK__etl_seq___3213E83F12F1F0E4
+etl_sessao	token_hash	PK_etl_sessao
+etl_sla_alert	id	PK__etl_sla___3213E83F4E989A51
+etl_stage_type_map	stage_type	PK_etl_stage_type_map
+etl_teste_execucao	id	PK_etl_teste_execucao
+etl_usuario	matricula	PK_etl_usuario
+etl_versao_ferramenta	id	PK_etl_versao_ferramenta
+
+
+
+
+table_name	index_name	column_name	is_unique	type_desc
+etl_blackout	IX_etl_blackout_ativo	ativo	0	NONCLUSTERED
+etl_blackout	IX_etl_blackout_ativo	inicio	0	NONCLUSTERED
+etl_blackout	IX_etl_blackout_ativo	fim	0	NONCLUSTERED
+etl_calendario	UQ_etl_calendario	calendario_nome	1	NONCLUSTERED
+etl_calendario	UQ_etl_calendario	data	1	NONCLUSTERED
+etl_ds_job_log	ix_ds_job_log_exec	execution_id	0	NONCLUSTERED
+etl_ds_job_log	ix_ds_job_log_job	job_name	0	NONCLUSTERED
+etl_ds_job_log	ix_ds_job_log_job	created_at	0	NONCLUSTERED
+etl_factory_log	UQ_etl_factory_log_run	dag_run_id	1	NONCLUSTERED
+etl_failure_ack	UX_etl_failure_ack	execution_id	1	NONCLUSTERED
+etl_failure_ack	UX_etl_failure_ack	pipeline	1	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_execution_id_pipeline	status	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_execution_id_pipeline	start_time	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_execution_id_pipeline	end_time	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_execution_id_pipeline	duration_seconds	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_execution_id_pipeline	execution_id	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_execution_id_pipeline	pipeline	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_job_time	job_name	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_job_time	start_time	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_pipeline_status_start	execution_id	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_pipeline_status_start	job_name	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_pipeline_status_start	end_time	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_pipeline_status_start	duration_seconds	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_pipeline_status_start	project	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_pipeline_status_start	task_id	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_pipeline_status_start	pipeline	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_pipeline_status_start	status	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_pipeline_status_start	start_time	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_project_status_start	execution_id	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_project_status_start	pipeline	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_project_status_start	job_name	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_project_status_start	end_time	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_project_status_start	duration_seconds	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_project_status_start	task_id	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_project_status_start	project	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_project_status_start	status	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_project_status_start	start_time	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_status	status_code	0	NONCLUSTERED
+etl_job_execution	IX_etl_job_execution_status	start_time	0	NONCLUSTERED
+etl_job_execution	ux_etl_execution	execution_id	1	NONCLUSTERED
+etl_job_execution	ux_etl_execution	job_name	1	NONCLUSTERED
+etl_job_execution	ux_etl_execution	task_id	1	NONCLUSTERED
+etl_job_type	UQ_etl_job_type_nome	nome	1	NONCLUSTERED
+etl_object_tag	UQ_object_tag	object_key	1	NONCLUSTERED
+etl_object_tag	UQ_object_tag	tag	1	NONCLUSTERED
+etl_pipeline_audit	IX_etl_pipeline_audit_changed_by	changed_by	0	NONCLUSTERED
+etl_pipeline_audit	IX_etl_pipeline_audit_changed_by	changed_at	0	NONCLUSTERED
+etl_pipeline_audit	IX_etl_pipeline_audit_pipeline_name	pipeline_name	0	NONCLUSTERED
+etl_pipeline_audit	IX_etl_pipeline_audit_pipeline_name	changed_at	0	NONCLUSTERED
+etl_pipeline_performance_snapshot	IX_perf_snap_pipeline_alert	pipeline	0	NONCLUSTERED
+etl_pipeline_performance_snapshot	IX_perf_snap_pipeline_alert	alerta_horas	0	NONCLUSTERED
+etl_pipeline_performance_snapshot	IX_perf_snap_pipeline_alert	snapshot_at	0	NONCLUSTERED
+etl_schema_version	UQ_schema_version_name	migration_name	1	NONCLUSTERED
+etl_seq_import	IX_seq_import_status	status	0	NONCLUSTERED
+etl_seq_import	IX_seq_import_status	imported_at	0	NONCLUSTERED
+etl_sessao	IX_etl_sessao_expira	expira_em	0	NONCLUSTERED
+etl_sessao	IX_etl_sessao_matricula	matricula	0	NONCLUSTERED
+etl_sla_alert	UX_etl_sla_alert	execution_id	1	NONCLUSTERED
+etl_sla_alert	UX_etl_sla_alert	pipeline	1	NONCLUSTERED
+etl_sla_alert	UX_etl_sla_alert	alert_type	1	NONCLUSTERED
+etl_versao_ferramenta	IX_etl_versao_ferramenta_criado	criado_em	0	NONCLUSTERED
+
+

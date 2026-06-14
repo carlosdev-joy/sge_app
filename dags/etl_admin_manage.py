@@ -35,9 +35,18 @@ from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 DAG_ID        = 'etl_admin_manage'
 MSSQL_CONN_ID = 'SQL14_DMDB41'
 LOCAL_TZ      = 'America/Sao_Paulo'
-ADMIN_USERS   = {'CVT38571'}  # usuários autorizados
 
 default_args = {'owner': 'airflow', 'depends_on_past': False, 'retries': 0}
+
+
+def _is_admin(hook, matricula):
+    """Permissão de admin vem do banco (RBAC — migration 019)."""
+    rows = hook.get_records(
+        "SELECT 1 FROM dbo.etl_usuario u "
+        "JOIN dbo.etl_perfil_permissao p ON p.perfil_nome = u.perfil_nome "
+        "WHERE u.matricula = %s AND u.ativo = 1 AND p.recurso = 'acao_admin'",
+        parameters=(matricula,))
+    return bool(rows)
 
 
 def admin_manage(**context):
@@ -45,15 +54,15 @@ def admin_manage(**context):
     action       = (conf.get('action') or '').strip()
     requested_by = (conf.get('requested_by') or '').strip().upper()
 
-    # Validação de segurança no backend
-    if requested_by not in ADMIN_USERS:
+    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
+
+    # Validação de segurança no backend (RBAC em dbo.etl_usuario/etl_perfil_permissao)
+    if not requested_by or not _is_admin(hook, requested_by):
         raise PermissionError(
             f"Usuário '{requested_by}' não tem permissão para operações administrativas."
         )
     if not action:
         raise ValueError("Parâmetro 'action' obrigatório.")
-
-    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
 
     # ── config_upsert ────────────────────────────────────────────────────────
     if action == 'config_upsert':
