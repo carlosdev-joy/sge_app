@@ -9,24 +9,38 @@ docker compose build orquestra-api && docker compose up -d --no-deps orquestra-a
 docker compose logs -f orquestra-api
 docker compose restart ui-nginx
 
-# 1. Atualiza a shell de deploy a partir do GitHub (traz o deploy.sh corrigido)
-rm -rf /opt/git/sge_app
-git clone --depth=1 --branch main https://github.com/carlosdev-joy/sge_app.git /opt/git/sge_app
+[root@vmlnxprd083 airflow]# grep -A4 'location /v2/' /opt/airflow/ui/nginx.conf
+        location /v2/ {
+            add_header Cache-Control "no-cache, must-revalidate";
+            try_files $uri $uri/ @v2spa;
+        }
+        location @v2spa {
+[root@vmlnxprd083 airflow]# docker compose restart ui-nginx
+[+] restart 0/1
+ ⠴ Container airflow-ui Restarting                                                                                                                                                                        0.4s
+[root@vmlnxprd083 airflow]# curl -I http://localhost/v2/admin
+HTTP/1.1 404 Not Found
+Server: nginx/1.27.5
+Date: Sun, 14 Jun 2026 06:14:47 GMT
+Content-Type: text/html
+Content-Length: 153
+Connection: keep-alive
 
-# 2. Roda a shell nova (ela faz o resto: clona pra tmp, rsync, recria nginx)
-bash /opt/git/sge_app/scripts/deploy.sh
+[root@vmlnxprd083 airflow]# curl -I http://localhost/v2/admin
+HTTP/1.1 404 Not Found
+Server: nginx/1.27.5
+Date: Sun, 14 Jun 2026 06:14:53 GMT
+Content-Type: text/html
+Content-Length: 153
+Connection: keep-alive
 
-
-
-# 1. Pegar o nginx.conf corrigido do repo
-curl -fsSL https://raw.githubusercontent.com/carlosdev-joy/sge_app/main/ui/nginx.conf \
-  -o /opt/airflow/ui/nginx.conf
-
-# 2. Verificar que ficou certo (deve ter @v2spa)
-grep -A4 'location /v2/' /opt/airflow/ui/nginx.conf
-
-# 3. Restart simples (só recarrega config, não precisa recriar)
-docker compose restart ui-nginx
-
-# 4. Testar
-curl -I http://localhost/v2/admin
+[root@vmlnxprd083 airflow]# docker ps
+CONTAINER ID   IMAGE                       COMMAND                  CREATED         STATUS                PORTS                    NAMES
+769cf2de61ff   nginx:1.27                  "/docker-entrypoint.…"   8 minutes ago   Up 22 seconds         0.0.0.0:80->80/tcp       airflow-ui
+fef1c4247120   airflow-orquestra-api       "uvicorn main:app --…"   9 minutes ago   Up 9 minutes          0.0.0.0:8000->8000/tcp   orquestra-api
+bc11be9cd835   airflow-airflow-webserver   "/usr/bin/dumb-init …"   4 days ago      Up 4 days (healthy)   0.0.0.0:8080->8080/tcp   airflow-airflow-webserver-1
+39aeb30b94d6   airflow-airflow-triggerer   "/usr/bin/dumb-init …"   8 days ago      Up 8 days (healthy)   8080/tcp                 airflow-airflow-triggerer-1
+78d9db61783d   airflow-airflow-scheduler   "/usr/bin/dumb-init …"   8 days ago      Up 8 days (healthy)   8080/tcp                 airflow-airflow-scheduler-1
+71adb627cc1e   airflow-airflow-worker      "/usr/bin/dumb-init …"   8 days ago      Up 8 days (healthy)   8080/tcp                 airflow-airflow-worker-1
+81b212f4d062   postgres:13                 "docker-entrypoint.s…"   8 days ago      Up 8 days (healthy)   5432/tcp                 airflow-postgres-1
+2b34f17711f1   redis:7.2-bookworm          "docker-entrypoint.s…"   8 days ago      Up 8 days (healthy)   6379/tcp                 air
