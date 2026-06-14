@@ -132,7 +132,9 @@ services:
     ports:
       - "${UI_PORT:-80}:80"
     volumes:
-      - ${AIRFLOW_PROJ_DIR:-.}/ui-react/dist:/usr/share/nginx/html
+      # UI legada na raiz; UI React (migração incremental) no sub-path /v2.
+      - ${AIRFLOW_PROJ_DIR:-.}/ui:/usr/share/nginx/html
+      - ${AIRFLOW_PROJ_DIR:-.}/ui-react/dist:/usr/share/nginx/html/v2
       - ${AIRFLOW_PROJ_DIR:-.}/ui/nginx.conf:/etc/nginx/nginx.conf
     restart: always
 

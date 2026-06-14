@@ -92,7 +92,7 @@
         <button id="tab-ds-monitor" class="hd-tab" onclick="switchPage('page-ds-monitor',this);dsMonitorInit()">⬡ <span>DS Monitor</span></button>
         <button id="tab-governanca" class="hd-tab" onclick="switchPage('page-governanca',this)">◈ <span>Governança</span></button>
         <button id="tab-malha" class="hd-tab" onclick="switchPage('page-malha',this);_malhaRaw=null;if($('malha-body'))$('malha-body').dataset.loaded='';loadMalha()">⊞ <span>Malha</span></button>
-        <button id="tab-admin" class="hd-tab hidden" onclick="switchPage('page-admin',this)">⚙ <span>Admin</span></button>
+        <button id="tab-admin" class="hd-tab hidden" onclick="window.location.href='/v2/admin'" title="Abre a nova tela de Administração (React)">⚙ <span>Admin</span></button>
       </nav>
       <div class="hd-right">
         <!-- Badge de falhas (S2) -->

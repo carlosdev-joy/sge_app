@@ -51,15 +51,19 @@ UI_CHANGED=false
 DAGS_CHANGED=false
 SQL_CHANGED=false
 
+UIREACT_CHANGED=false
+
 echo "$CHANGED_FILES" | grep -q "^api/"      && API_CHANGED=true  || true
 echo "$CHANGED_FILES" | grep -q "^ui/"       && UI_CHANGED=true   || true
+echo "$CHANGED_FILES" | grep -q "^ui-react/dist/" && UIREACT_CHANGED=true || true
 echo "$CHANGED_FILES" | grep -q "^dags/"     && DAGS_CHANGED=true || true
 echo "$CHANGED_FILES" | grep -q "^sql/migrations/" && SQL_CHANGED=true || true
 
-echo "      api/        mudou: $API_CHANGED"
-echo "      ui/         mudou: $UI_CHANGED"
-echo "      dags/       mudou: $DAGS_CHANGED"
-echo "      migrations/ mudou: $SQL_CHANGED"
+echo "      api/            mudou: $API_CHANGED"
+echo "      ui/             mudou: $UI_CHANGED"
+echo "      ui-react/dist/  mudou: $UIREACT_CHANGED"
+echo "      dags/           mudou: $DAGS_CHANGED"
+echo "      migrations/     mudou: $SQL_CHANGED"
 echo ""
 
 # ── 3. Rebuild e restart ──────────────────────────────────────
@@ -70,9 +74,13 @@ if [ "$API_CHANGED" = "true" ]; then
   docker compose build orquestra-api
   docker compose up -d --no-deps orquestra-api
   echo "      ✓ orquestra-api reiniciado"
-elif [ "$UI_CHANGED" = "true" ]; then
-  echo "      → UI mudou mas é servida por volume — nginx não precisa rebuild"
-  docker compose restart ui-nginx
+fi
+
+# nginx serve UI legada (ui/) e a UI React (ui-react/dist) por volume.
+# Qualquer mudança em uma das duas exige restart do nginx para revalidar mounts.
+if [ "$UI_CHANGED" = "true" ] || [ "$UIREACT_CHANGED" = "true" ]; then
+  echo "      → UI servida por volume — restart do nginx (sem rebuild)"
+  docker compose up -d --no-deps ui-nginx
   echo "      ✓ ui-nginx reiniciado"
 fi
 
@@ -81,7 +89,8 @@ if [ "$DAGS_CHANGED" = "true" ]; then
   echo "        (nenhum restart necessário)"
 fi
 
-if [ "$API_CHANGED" = "false" ] && [ "$UI_CHANGED" = "false" ] && [ "$DAGS_CHANGED" = "false" ]; then
+if [ "$API_CHANGED" = "false" ] && [ "$UI_CHANGED" = "false" ] \
+   && [ "$UIREACT_CHANGED" = "false" ] && [ "$DAGS_CHANGED" = "false" ]; then
   echo "      Nenhum container precisa de restart."
 fi
 echo ""

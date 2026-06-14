@@ -23,7 +23,7 @@ export default function Login() {
         body: JSON.stringify({ usuario: matricula, senha }),
       })
       setAuth(res.usuario, res.token)
-      navigate('/dashboard')
+      navigate('/admin')
     } catch (err: any) {
       setError(err.message ?? 'Erro ao fazer login')
     } finally {
