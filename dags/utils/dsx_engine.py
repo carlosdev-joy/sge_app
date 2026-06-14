@@ -176,7 +176,7 @@ class DSXEngine:
     def buscar_campo(self, project_name: str, termo: str,
                      exato: bool = False, tipos=None,
                      excluir: bool = False, incluir_bkp: bool = False,
-                     incluir_copy: bool = False) -> dict:
+                     incluir_copy: bool = False, alvo: str = "coluna") -> dict:
         """
         Varre TODOS os jobs do .dsx do projeto e retorna onde o campo aparece,
         com o datatype de cada coluna que casou.
@@ -195,10 +195,19 @@ class DSXEngine:
                       (categoria com bkp/bckp/backup); True: inclui esses jobs.
         incluir_copy — False (padrão): ignora jobs cópia (ex.: CopyOf...);
                        True: inclui esses jobs.
+        alvo — onde procurar o termo:
+               'coluna'  (padrão) — nomes de coluna (aplica filtro de datatype)
+               'tabela'  — nomes de tabela (FROM/JOIN do SQL)
+               'arquivo' — nomes de arquivo/dataset
+               'tabela_arquivo' — tabela ou arquivo
         """
         termo_norm = (termo or "").strip().lower()
         if not termo_norm:
-            return {"erro": "O termo de busca (campo) é obrigatório."}
+            return {"erro": "O termo de busca é obrigatório."}
+
+        alvo = (alvo or "coluna").strip().lower()
+        if alvo not in ("coluna", "tabela", "arquivo", "tabela_arquivo"):
+            alvo = "coluna"
 
         jobs_data = self._load_jobs_cached(project_name)
         if isinstance(jobs_data, dict) and jobs_data.get("erro"):
@@ -236,9 +245,27 @@ class DSXEngine:
             ocorrencias = []
             for stage in jobs_data[job_name].get("stages") or []:
                 cols_detail = stage.get("columns_detail") or []
-                matched = [c for c in cols_detail
-                           if _match_nome(c.get("name")) and _match_tipo(c)]
-                if not matched:
+                matched_columns: list[dict] = []
+                matched_objs: list[str] = []
+
+                if alvo == "coluna":
+                    matched_columns = [c for c in cols_detail
+                                       if _match_nome(c.get("name")) and _match_tipo(c)]
+                    n_match = len(matched_columns)
+                else:
+                    if alvo in ("tabela", "tabela_arquivo"):
+                        for t in (stage.get("sql_expression") or "").split("\n"):
+                            t = t.strip()
+                            if t and _match_nome(t):
+                                matched_objs.append(t)
+                    if alvo in ("arquivo", "tabela_arquivo"):
+                        fp = stage.get("file_path")
+                        if fp and _match_nome(fp):
+                            matched_objs.append(fp)
+                    matched_objs = list(dict.fromkeys(matched_objs))  # dedup preservando ordem
+                    n_match = len(matched_objs)
+
+                if n_match == 0:
                     continue
                 detalhe = (stage.get("sql_expression") or stage.get("file_path") or "")
                 if detalhe:
@@ -251,11 +278,13 @@ class DSXEngine:
                     "stage_type_raw":  stage.get("stage_type_raw"),
                     "database_name":   stage.get("database_name"),
                     "detalhe":         detalhe,
-                    "matched_columns": matched,
+                    "matched_columns": matched_columns,
+                    "matched_objs":    matched_objs,
                     "total_columns":   len(cols_detail),
                 })
             if ocorrencias:
-                total_ocorrencias += sum(len(o["matched_columns"]) for o in ocorrencias)
+                total_ocorrencias += sum(
+                    len(o["matched_columns"]) + len(o["matched_objs"]) for o in ocorrencias)
                 jobs_out.append({"job_name": job_name, "category": category,
                                  "ocorrencias": ocorrencias})
 
@@ -264,6 +293,7 @@ class DSXEngine:
             "project_name":           project_name,
             "dsx_file":               f"{project_name}.dsx",
             "termo":                  termo,
+            "alvo":                   alvo,
             "exato":                  exato,
             "filtro_tipos":           sorted(tipos_set),
             "filtro_excluir":         excluir,

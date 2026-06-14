@@ -130,6 +130,27 @@ def test_is_copy_job():
     assert not DSXEngine._is_copy_job("BiCVP_CoberturasUnificadas_001")
 
 
+def test_busca_por_tabela(engine: DSXEngine):
+    if not _has("BI_CVP"):
+        pytest.skip("BI_CVP.dsx ausente")
+    r = engine.buscar_campo("BI_CVP", "CONTRATO", alvo="tabela")
+    assert r["alvo"] == "tabela"
+    assert r["total_jobs_impactados"] >= 1
+    objs = [o for job in r["jobs"] for oc in job["ocorrencias"] for o in oc["matched_objs"]]
+    assert objs and all("contrato" in o.lower() for o in objs)
+    # na busca por tabela não há colunas casadas
+    assert all(not oc["matched_columns"] for job in r["jobs"] for oc in job["ocorrencias"])
+
+
+def test_busca_por_arquivo(engine: DSXEngine):
+    if not _has("BI_CVP"):
+        pytest.skip("BI_CVP.dsx ausente")
+    r = engine.buscar_campo("BI_CVP", "COBERTURA", alvo="arquivo")
+    assert r["alvo"] == "arquivo"
+    objs = [o for job in r["jobs"] for oc in job["ocorrencias"] for o in oc["matched_objs"]]
+    assert any(o.upper().startswith("DS_") for o in objs)
+
+
 def test_termo_vazio_retorna_erro(engine: DSXEngine):
     r = engine.buscar_campo("seq_geral", "   ")
     assert "erro" in r
