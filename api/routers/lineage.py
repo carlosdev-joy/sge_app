@@ -230,24 +230,32 @@ def list_dsx_files():
 
 
 @router.get("/lineage/field-impact", tags=["lineage"])
-def field_impact(dsx: str, campo: str, exato: bool = False):
+def field_impact(dsx: str, campo: str, exato: bool = False,
+                 tipo: str = "", excluir: bool = False):
     """Impacto por campo: varre um .dsx (escolhido pelo nome exato) e retorna
-    todos os jobs/stages cujas colunas casam com o termo (LIKE por padrão).
+    todos os jobs/stages cujas colunas casam com o termo (LIKE por padrão),
+    com o datatype de cada coluna.
 
     Query params:
-      dsx   — nome exato do arquivo .dsx (com ou sem extensão)
-      campo — termo do campo a procurar (busca substring case-insensitive)
-      exato — quando true, exige igualdade exata do nome da coluna
+      dsx     — nome exato do arquivo .dsx (com ou sem extensão)
+      campo   — termo do campo a procurar (busca substring case-insensitive)
+      exato   — quando true, exige igualdade exata do nome da coluna
+      tipo    — filtro de datatype: nomes separados por vírgula (ex.: VARCHAR,CHAR)
+      excluir — quando true, retorna colunas cujo tipo NÃO está em `tipo`
+                (ex.: tipo=VARCHAR,CHAR & excluir=true → campos que NÃO são texto)
     """
     project = _safe_project_name(dsx)
     termo = (campo or "").strip()
     if not termo:
         raise HTTPException(status_code=400, detail="O parâmetro 'campo' é obrigatório.")
 
+    tipos = [t.strip() for t in (tipo or "").split(",") if t.strip()]
+
     DSXEngine, base_dir = _import_dsx_engine()
     try:
         resultado = DSXEngine(diretorio_base=base_dir).buscar_campo(
-            project_name=project, termo=termo, exato=exato)
+            project_name=project, termo=termo, exato=exato,
+            tipos=tipos, excluir=excluir)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao varrer DSX: {e}")
 
