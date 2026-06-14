@@ -2,6 +2,19 @@
 -- Quando 1, o DataStageOperator chama dsjob -logsum a cada N polls durante
 -- a execução para mostrar progresso dos jobs filhos (SEQUENCE). Default 0.
 -- Ativável por job individualmente via tela de Pipelines, sem regerar a malha.
+--
+-- Inclui ssh_conn_id (migration 012) caso ainda não exista no banco.
+
+IF NOT EXISTS (
+    SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job'
+      AND COLUMN_NAME='ssh_conn_id'
+)
+BEGIN
+    ALTER TABLE dbo.etl_pipeline_job ADD ssh_conn_id VARCHAR(100) NULL;
+    PRINT '[OK] Coluna ssh_conn_id adicionada em dbo.etl_pipeline_job';
+END
+GO
 
 IF NOT EXISTS (
     SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
