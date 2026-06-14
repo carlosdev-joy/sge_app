@@ -1,6 +1,8 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
+  // Tema escuro fixo — sem toggle light/dark.
+  darkMode: false,
   theme: {
     extend: {
       colors: {
@@ -14,6 +16,11 @@ export default {
           error:   '#ef4444',
           text:    '#e2e8f0',
           muted:   '#94a3b8',
+        },
+        cvp: {
+          blue:  '#1A5FA8',
+          blued: '#0D3D6B',
+          mid:   '#0F4C88',
         },
       },
     },
