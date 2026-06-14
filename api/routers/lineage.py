@@ -232,7 +232,8 @@ def list_dsx_files():
 @router.get("/lineage/field-impact", tags=["lineage"])
 def field_impact(dsx: str, campo: str, exato: bool = False,
                  tipo: str = "", excluir: bool = False,
-                 incluir_bkp: bool = False, incluir_copy: bool = False):
+                 incluir_bkp: bool = False, incluir_copy: bool = False,
+                 alvo: str = "coluna"):
     """Impacto por campo: varre um .dsx (escolhido pelo nome exato) e retorna
     todos os jobs/stages cujas colunas casam com o termo (LIKE por padrão),
     com o datatype de cada coluna.
@@ -248,6 +249,7 @@ def field_impact(dsx: str, campo: str, exato: bool = False,
                     por padrão (false) esses jobs são ignorados
       incluir_copy— quando true, inclui jobs cópia (ex.: CopyOf...);
                     por padrão (false) esses jobs são ignorados
+      alvo        — onde procurar: coluna (padrão) | tabela | arquivo | tabela_arquivo
     """
     project = _safe_project_name(dsx)
     termo = (campo or "").strip()
@@ -261,7 +263,7 @@ def field_impact(dsx: str, campo: str, exato: bool = False,
         resultado = DSXEngine(diretorio_base=base_dir).buscar_campo(
             project_name=project, termo=termo, exato=exato,
             tipos=tipos, excluir=excluir,
-            incluir_bkp=incluir_bkp, incluir_copy=incluir_copy)
+            incluir_bkp=incluir_bkp, incluir_copy=incluir_copy, alvo=alvo)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao varrer DSX: {e}")
 

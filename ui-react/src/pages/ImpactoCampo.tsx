@@ -28,6 +28,7 @@ interface Ocorrencia {
   database_name: string | null
   detalhe: string | null
   matched_columns: MatchedColumn[]
+  matched_objs: string[]
   total_columns: number
 }
 interface JobImpact { job_name: string; category?: string; ocorrencias: Ocorrencia[] }
@@ -36,6 +37,7 @@ interface FieldImpactResult {
   project_name: string
   dsx_file: string
   termo: string
+  alvo: string
   exato: boolean
   filtro_tipos: string[]
   filtro_excluir: boolean
@@ -59,6 +61,14 @@ const TIPO_PRESETS: { key: string; label: string; tipo: string; excluir: boolean
   { key: 'num',    label: 'Numéricos (INT/DECIMAL/…)',   tipo: NUM_TYPES,   excluir: false },
   { key: 'txt',    label: 'Apenas texto (VARCHAR/CHAR)', tipo: TEXT_TYPES,  excluir: false },
   { key: 'datas',  label: 'Datas (DATE/TIMESTAMP)',      tipo: 'DATE,TIME,TIMESTAMP', excluir: false },
+]
+
+// ── Alvo da busca ─────────────────────────────────────────────────
+const ALVO_OPTIONS: { key: string; label: string; placeholder: string }[] = [
+  { key: 'coluna',         label: 'Campo / coluna',  placeholder: 'ex.: CNPJ, CPF, cliente…' },
+  { key: 'tabela',         label: 'Tabela',          placeholder: 'ex.: DM_CONTRATO, BI_CONTROLE…' },
+  { key: 'arquivo',        label: 'Arquivo/Dataset', placeholder: 'ex.: DS_COBERTURA, PARCELAS…' },
+  { key: 'tabela_arquivo', label: 'Tabela ou arquivo', placeholder: 'ex.: COBERTURA, CONTRATO…' },
 ]
 
 // ── Categoria/cor do datatype ─────────────────────────────────────
@@ -118,16 +128,24 @@ const selKey = (job: string, stage: string | null, col: string) => `${job}␟${s
 
 // ── CSV ───────────────────────────────────────────────────────────
 function toCsv(r: FieldImpactResult): string {
-  const head = ['dsx', 'job', 'direcao', 'stage', 'stage_type', 'objeto', 'base', 'coluna', 'datatype', 'precision', 'scale', 'nullable', 'detalhe']
   const esc = (v: unknown) => {
     const s = v == null ? '' : String(v)
     return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
-  const lines = [head.join(';')]
-  for (const job of r.jobs) for (const o of job.ocorrencias) for (const c of o.matched_columns) {
-    lines.push([r.dsx_file, job.job_name, DIR_LABEL[(o.direction ?? '').toLowerCase()] ?? o.direction,
-      o.stage_name, o.stage_type_raw, o.object_name, o.database_name,
-      c.name, c.type_name, c.precision, c.scale, c.nullable, o.detalhe].map(esc).join(';'))
+  const dir = (o: Ocorrencia) => DIR_LABEL[(o.direction ?? '').toLowerCase()] ?? o.direction
+  const lines: string[] = []
+  if (r.alvo === 'coluna') {
+    lines.push(['dsx', 'job', 'direcao', 'stage', 'stage_type', 'objeto', 'base', 'coluna', 'datatype', 'precision', 'scale', 'nullable', 'detalhe'].join(';'))
+    for (const job of r.jobs) for (const o of job.ocorrencias) for (const c of o.matched_columns) {
+      lines.push([r.dsx_file, job.job_name, dir(o), o.stage_name, o.stage_type_raw, o.object_name, o.database_name,
+        c.name, c.type_name, c.precision, c.scale, c.nullable, o.detalhe].map(esc).join(';'))
+    }
+  } else {
+    lines.push(['dsx', 'job', 'direcao', 'stage', 'stage_type', 'objeto', 'base', 'match', 'detalhe'].join(';'))
+    for (const job of r.jobs) for (const o of job.ocorrencias) for (const obj of o.matched_objs) {
+      lines.push([r.dsx_file, job.job_name, dir(o), o.stage_name, o.stage_type_raw, o.object_name, o.database_name,
+        obj, o.detalhe].map(esc).join(';'))
+    }
   }
   return lines.join('\n')
 }
@@ -136,6 +154,7 @@ function toCsv(r: FieldImpactResult): string {
 export default function ImpactoCampo() {
   const [dsx, setDsx] = useState('')
   const [campo, setCampo] = useState('')
+  const [alvo, setAlvo] = useState('coluna')
   const [exato, setExato] = useState(false)
   const [incluirBkp, setIncluirBkp] = useState(false)
   const [incluirCopy, setIncluirCopy] = useState(false)
@@ -152,12 +171,12 @@ export default function ImpactoCampo() {
 
   const buscar = async () => {
     if (!dsx) { toast.error('Selecione um arquivo .dsx'); return }
-    if (!campo.trim()) { toast.error('Informe o campo a procurar'); return }
+    if (!campo.trim()) { toast.error('Informe o termo a procurar'); return }
     setLoading(true); setResult(null); setCollapsed({}); setSelected(new Set())
     try {
       const preset = TIPO_PRESETS.find((p) => p.key === tipoKey) ?? TIPO_PRESETS[0]
-      const q = new URLSearchParams({ dsx, campo: campo.trim(), exato: String(exato) })
-      if (preset.tipo) { q.set('tipo', preset.tipo); q.set('excluir', String(preset.excluir)) }
+      const q = new URLSearchParams({ dsx, campo: campo.trim(), exato: String(exato), alvo })
+      if (alvo === 'coluna' && preset.tipo) { q.set('tipo', preset.tipo); q.set('excluir', String(preset.excluir)) }
       if (incluirBkp) q.set('incluir_bkp', 'true')
       if (incluirCopy) q.set('incluir_copy', 'true')
       const r = await apiFetch<FieldImpactResult>(`/lineage/field-impact?${q.toString()}`)
@@ -206,16 +225,18 @@ export default function ImpactoCampo() {
   }
 
   const totalKeys = allKeys().length
+  const isColuna = !result || result.alvo === 'coluna'
+  const alvoLabel = (a: string) => (ALVO_OPTIONS.find((o) => o.key === a) ?? ALVO_OPTIONS[0]).label
 
   return (
     <div className="flex flex-col gap-5">
       <div>
         <h1 className="text-lg font-semibold text-ink flex items-center gap-2">
-          <FileSearch size={20} className="text-[#1A5FA8]" /> Impacto por Campo
+          <FileSearch size={20} className="text-[#1A5FA8]" /> Impacto por Campo / Tabela / Arquivo
         </h1>
         <p className="text-sm text-dim mt-1">
-          Varre um <code>.dsx</code> e mostra quais jobs usam um campo, com o <strong>datatype</strong> de cada coluna.
-          Selecione as colunas e envie para um <strong>plano de ajuste</strong>.
+          Varre um <code>.dsx</code> e mostra em quais jobs aparece um <strong>campo</strong>, <strong>tabela</strong> ou <strong>arquivo</strong>.
+          Na busca por campo, traz o <strong>datatype</strong> e permite enviar para um <strong>plano de ajuste</strong>.
         </p>
       </div>
 
@@ -228,16 +249,24 @@ export default function ImpactoCampo() {
               {(dsxData?.files ?? []).map((f) => <option key={f} value={f}>{f}.dsx</option>)}
             </Select>
           </div>
+          <div className="w-44">
+            <Select label="Buscar por" value={alvo} onChange={(e) => setAlvo(e.target.value)}>
+              {ALVO_OPTIONS.map((a) => <option key={a.key} value={a.key}>{a.label}</option>)}
+            </Select>
+          </div>
           <div className="w-60">
-            <Input label="Campo (ou parte do nome)" placeholder="ex.: CNPJ, CPF, cliente…"
+            <Input label="Termo (ou parte do nome)"
+              placeholder={(ALVO_OPTIONS.find((a) => a.key === alvo) ?? ALVO_OPTIONS[0]).placeholder}
               value={campo} onChange={(e) => setCampo(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') buscar() }} />
           </div>
-          <div className="w-56">
-            <Select label="Datatype" value={tipoKey} onChange={(e) => setTipoKey(e.target.value)}>
-              {TIPO_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
-            </Select>
-          </div>
+          {alvo === 'coluna' && (
+            <div className="w-56">
+              <Select label="Datatype" value={tipoKey} onChange={(e) => setTipoKey(e.target.value)}>
+                {TIPO_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+              </Select>
+            </div>
+          )}
           <label className="flex items-center gap-1.5 text-xs text-dim pb-2 select-none cursor-pointer">
             <input type="checkbox" checked={exato} onChange={(e) => setExato(e.target.checked)} /> Nome exato
           </label>
@@ -261,10 +290,14 @@ export default function ImpactoCampo() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <KpiCard label="Jobs no DSX" value={result.total_jobs_dsx} color="blue" />
             <KpiCard label="Jobs impactados" value={result.total_jobs_impactados} color={result.total_jobs_impactados ? 'red' : 'green'} />
-            <KpiCard label="Colunas (ocorrências)" value={result.total_ocorrencias} color="purple" />
-            <KpiCard label="Filtro de tipo"
-              value={filtroNome(result)}
-              sub={`termo: ${result.termo}${result.exato ? ' (exato)' : ''}`} color="yellow" />
+            <KpiCard label={isColuna ? 'Colunas (ocorrências)' : 'Ocorrências'} value={result.total_ocorrencias} color="purple" />
+            {isColuna ? (
+              <KpiCard label="Filtro de tipo" value={filtroNome(result)}
+                sub={`termo: ${result.termo}${result.exato ? ' (exato)' : ''}`} color="yellow" />
+            ) : (
+              <KpiCard label="Buscar por" value={alvoLabel(result.alvo)}
+                sub={`termo: ${result.termo}${result.exato ? ' (exato)' : ''}`} color="yellow" />
+            )}
           </div>
 
           {(result.jobs_bkp_ignorados > 0 || result.jobs_copy_ignorados > 0) && (
@@ -274,8 +307,8 @@ export default function ImpactoCampo() {
             </p>
           )}
 
-          {/* Barra de seleção */}
-          {result.total_ocorrencias > 0 && (
+          {/* Barra de seleção (só na busca por coluna) */}
+          {isColuna && result.total_ocorrencias > 0 && (
             <div className="flex items-center gap-3 text-sm">
               <span className="text-dim">{selected.size} de {totalKeys} coluna(s) selecionada(s)</span>
               <button className="text-blue-500 hover:underline" onClick={selectAll}>selecionar todas</button>
@@ -288,14 +321,14 @@ export default function ImpactoCampo() {
 
           {result.total_jobs_impactados === 0 ? (
             <Card><p className="text-sm text-dim text-center py-6">
-              Nenhum job de <strong>{result.dsx_file}</strong> tem coluna que contém “{result.termo}”
-              {result.filtro_tipos.length ? ` com o filtro de tipo aplicado` : ''}.
+              Nenhum job de <strong>{result.dsx_file}</strong> com {alvoLabel(result.alvo).toLowerCase()} contendo “{result.termo}”
+              {isColuna && result.filtro_tipos.length ? ` e o filtro de tipo aplicado` : ''}.
             </p></Card>
           ) : (
             <div className="flex flex-col gap-3">
               {result.jobs.map((job) => {
                 const isCollapsed = collapsed[job.job_name]
-                const nCols = job.ocorrencias.reduce((a, o) => a + o.matched_columns.length, 0)
+                const nMatch = job.ocorrencias.reduce((a, o) => a + o.matched_columns.length + o.matched_objs.length, 0)
                 return (
                   <Card key={job.job_name} className="overflow-hidden">
                     <button onClick={() => toggle(job.job_name)}
@@ -305,7 +338,7 @@ export default function ImpactoCampo() {
                         <span className="font-medium text-ink text-sm">{job.job_name}</span>
                         {job.category && <span className="text-[11px] text-dim font-mono">{job.category.replace(/\\\\/g, '\\')}</span>}
                       </span>
-                      <span className="text-xs text-dim ml-auto">{job.ocorrencias.length} stage(s) · {nCols} coluna(s)</span>
+                      <span className="text-xs text-dim ml-auto">{job.ocorrencias.length} stage(s) · {nMatch} {isColuna ? 'coluna(s)' : 'item(ns)'}</span>
                     </button>
                     {!isCollapsed && (
                       <div className="mt-3 overflow-x-auto">
@@ -315,8 +348,8 @@ export default function ImpactoCampo() {
                               <th className="py-2 pr-3 font-medium">Direção</th>
                               <th className="py-2 pr-3 font-medium">Stage</th>
                               <th className="py-2 pr-3 font-medium">Objeto</th>
-                              <th className="py-2 pr-3 font-medium">Tabela / Arquivo</th>
-                              <th className="py-2 font-medium">Colunas · datatype (selecione)</th>
+                              <th className="py-2 pr-3 font-medium">{isColuna ? 'Tabela / Arquivo' : 'Contexto'}</th>
+                              <th className="py-2 font-medium">{isColuna ? 'Colunas · datatype (selecione)' : 'Tabela(s) / Arquivo(s)'}</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -331,7 +364,7 @@ export default function ImpactoCampo() {
                                 <td className="py-2 pr-3 text-dim max-w-[220px] truncate" title={o.detalhe ?? ''}>{o.detalhe || '—'}</td>
                                 <td className="py-2">
                                   <div className="flex flex-wrap gap-1.5">
-                                    {o.matched_columns.map((c) => {
+                                    {isColuna ? o.matched_columns.map((c) => {
                                       const k = selKey(job.job_name, o.stage_name, c.name)
                                       const on = selected.has(k)
                                       return (
@@ -342,7 +375,12 @@ export default function ImpactoCampo() {
                                           <span className="opacity-70 font-semibold">{typeLabel(c)}</span>
                                         </label>
                                       )
-                                    })}
+                                    }) : o.matched_objs.map((obj) => (
+                                      <span key={obj}
+                                        className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-mono bg-edge/60 text-ink border border-edge">
+                                        <HighlightCol name={obj} termo={result.termo} />
+                                      </span>
+                                    ))}
                                   </div>
                                 </td>
                               </tr>
