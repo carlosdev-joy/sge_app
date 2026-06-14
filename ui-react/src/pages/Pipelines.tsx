@@ -470,32 +470,99 @@ function ViewModal({ pipeline: p, onClose }: { pipeline: Pipeline; onClose: () =
   const pill = (v: string, active = false) => (
     <span className={`inline-block px-2 py-0.5 rounded-full text-xs border ${active ? 'bg-green-900/20 text-green-400 border-green-800/40' : 'bg-panel text-dim border-edge'}`}>{v}</span>
   )
-  const row = (label: string, val: React.ReactNode) => (
-    <div className="py-2 border-b border-edge/50 last:border-0">
-      <div className="text-[10px] font-bold uppercase tracking-wider text-dim mb-0.5">{label}</div>
-      <div className="text-sm font-medium text-ink">{val || <span className="text-dim/50 italic text-xs">—</span>}</div>
+  // Célula individual do grid
+  const cell = (label: string, val: React.ReactNode, spanFull = false) => (
+    <div className={`flex flex-col gap-0.5 ${spanFull ? 'col-span-2' : ''}`}>
+      <span className="text-[10px] font-bold uppercase tracking-wider text-dim">{label}</span>
+      <div className="text-sm font-medium text-ink min-h-[1.25rem]">
+        {val || <span className="text-dim/50 italic text-xs">—</span>}
+      </div>
     </div>
   )
   const notifs = [p.envia_msg_inicio && 'Início', p.envia_msg_fim && 'Conclusão', p.envia_msg_erro && 'Erro'].filter(Boolean)
+  const cron = p.schedule_type && p.schedule_type !== 'on_demand'
+    ? buildCron(p.schedule_type, p.schedule_hour ?? 6, p.schedule_minute ?? 0, p.schedule_dow ?? 1, p.schedule_dom ?? 1)
+    : null
+
   return (
-    <Modal open title={p.pipeline_name} onClose={onClose} size="md">
-      <div className="flex flex-col">
-        {row('Projeto',       p.project_name || null)}
-        {row('Domínio',       p.domain || null)}
-        {row('Tags',          p.tags ? <div className="flex flex-wrap gap-1">{p.tags.split(',').map(t => pill(t.trim(), true))}</div> : null)}
-        {row('Status',        <div className="flex gap-2">{pill(p.active ? 'Ativo' : 'Inativo', !!p.active)}{pill(p.dag_criada ? 'DAG ✓' : 'DAG não gerada', !!p.dag_criada)}</div>)}
-        {row('Agendamento',   `${p.scheduled_time || '—'}${p.schedule_type ? ` (${p.schedule_type})` : ''}`)}
-        {row('Data início',   p.dag_start_date || 'Imediato')}
-        {row('Depende de',    p.depends_on ? <div className="flex flex-wrap gap-1">{p.depends_on.split(',').map(d => pill(d.trim()))}</div> : null)}
-        {row('Criticidade',   <span className={`font-semibold ${critColor(p.criticidade)}`}>{p.criticidade}</span>)}
-        {row('Ambiente',      p.ambiente)}
-        {row('SLA',           p.sla_minutos ? `${p.sla_minutos} min` : null)}
-        {row('Retries',       `${p.retries_count ?? 1}x · delay ${p.retry_delay_seconds ?? 300}s`)}
-        {row('Fila exec.',    p.pool_name || 'padrão')}
-        {row('Notificações',  notifs.length ? notifs.join(' · ') : null)}
-        {row('Descrição',     p.descricao ? <span className="text-xs whitespace-pre-wrap">{p.descricao}</span> : null)}
-        {row('Criado em',     p.created_at || null)}
-        {row('Atualizado',    p.updated_at || null)}
+    <Modal open title={p.pipeline_name} onClose={onClose} size="lg">
+      {/* Scroll interno — modal não cresce além da viewport */}
+      <div className="overflow-y-auto max-h-[70vh] pr-1">
+        {/* Seção: Identificação */}
+        <div className="mb-4">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-blue-400 mb-2 border-b border-edge pb-1">Identificação</p>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+            {cell('Projeto',     p.project_name)}
+            {cell('Domínio',     p.domain)}
+            {cell('Ambiente',    p.ambiente)}
+            {cell('Criticidade', <span className={`font-semibold ${critColor(p.criticidade)}`}>{p.criticidade}</span>)}
+            {cell('Status',
+              <div className="flex flex-wrap gap-1.5">
+                {pill(p.active ? 'Ativo' : 'Inativo', !!p.active)}
+                {pill(p.dag_criada ? 'DAG ✓' : 'DAG não gerada', !!p.dag_criada)}
+              </div>
+            )}
+            {cell('Tags',
+              p.tags
+                ? <div className="flex flex-wrap gap-1">{p.tags.split(',').map(t => pill(t.trim(), true))}</div>
+                : null
+            )}
+          </div>
+        </div>
+
+        {/* Seção: Agendamento */}
+        <div className="mb-4">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-blue-400 mb-2 border-b border-edge pb-1">Agendamento</p>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+            {cell('Tipo',          p.schedule_type ? SCHEDULE_LABELS[p.schedule_type] ?? p.schedule_type : null)}
+            {cell('Horário',       p.scheduled_time)}
+            {cell('Expressão CRON', cron)}
+            {cell('Data início',   p.dag_start_date || 'Imediato')}
+            {cell('SLA',           p.sla_minutos ? `${p.sla_minutos} min` : null)}
+            {cell('Depende de',
+              p.depends_on
+                ? <div className="flex flex-wrap gap-1">{p.depends_on.split(',').map(d => pill(d.trim()))}</div>
+                : null
+            )}
+          </div>
+        </div>
+
+        {/* Seção: Execução */}
+        <div className="mb-4">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-blue-400 mb-2 border-b border-edge pb-1">Execução</p>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+            {cell('Runs simultâneas', p.max_active_runs ?? 1)}
+            {cell('Retries',          `${p.retries_count ?? 1}x · delay ${p.retry_delay_seconds ?? 300}s`)}
+            {cell('Fila (pool)',       p.pool_name || 'padrão')}
+            {cell('Notificações',      notifs.length ? notifs.join(' · ') : null)}
+            {cell('Última execução',   p.last_execution)}
+          </div>
+        </div>
+
+        {/* Seção: Metadados */}
+        <div className="mb-4">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-blue-400 mb-2 border-b border-edge pb-1">Metadados</p>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+            {cell('Criado em',  p.created_at)}
+            {cell('Atualizado', p.updated_at)}
+          </div>
+        </div>
+
+        {/* Descrição — full width */}
+        {p.descricao && (
+          <div className="mb-4">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-blue-400 mb-2 border-b border-edge pb-1">Descrição</p>
+            <p className="text-xs text-ink whitespace-pre-wrap leading-relaxed">{p.descricao}</p>
+          </div>
+        )}
+
+        {/* Runbook — full width */}
+        {p.runbook_md && (
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-blue-400 mb-2 border-b border-edge pb-1">Runbook</p>
+            <pre className="text-xs text-dim whitespace-pre-wrap font-mono bg-canvas border border-edge rounded-lg p-3 leading-relaxed">{p.runbook_md}</pre>
+          </div>
+        )}
       </div>
     </Modal>
   )
@@ -821,16 +888,25 @@ function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, onAudit
           ✉
         </span>
       )}
-      <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+      {/* Coluna de ações com largura fixa — botões condicionais ficam invisíveis, não removidos */}
+      <div className="flex items-center gap-0.5 flex-shrink-0 w-[154px] justify-end opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        {/* View — sempre visível */}
         <Button variant="ghost" size="sm" title="Visualizar" aria-label={`Visualizar ${p.pipeline_name}`} onClick={onView}><Eye size={12} /></Button>
-        {!isViewer && <Button variant="ghost" size="sm" title="Editar" aria-label={`Editar ${p.pipeline_name}`} onClick={onEdit}><Edit size={12} /></Button>}
+        {/* Edit — apenas não-viewer */}
+        <span className={isViewer ? 'invisible pointer-events-none' : ''}>
+          <Button variant="ghost" size="sm" title="Editar" aria-label={`Editar ${p.pipeline_name}`} onClick={onEdit}><Edit size={12} /></Button>
+        </span>
+        {/* Lineage — sempre visível */}
         <Button variant="ghost" size="sm" title="Lineage" aria-label={`Ver lineage de ${p.pipeline_name}`} onClick={onLineage}><GitBranch size={12} /></Button>
+        {/* Audit — sempre visível */}
         <Button variant="ghost" size="sm" title="Histórico" aria-label={`Ver histórico de ${p.pipeline_name}`} onClick={onAudit}><History size={12} /></Button>
-        {!isViewer && p.active && (
+        {/* Inativar — apenas não-viewer && ativo */}
+        <span className={isViewer || !p.active ? 'invisible pointer-events-none' : ''}>
           <Button variant="ghost" size="sm" title="Inativar" aria-label={`Inativar ${p.pipeline_name}`} onClick={onInactivate}
             className="text-amber-500/60 hover:text-amber-400"><PowerOff size={12} /></Button>
-        )}
-        {!isViewer && (
+        </span>
+        {/* Gerar/Regenerar DAG — apenas não-viewer */}
+        <span className={isViewer ? 'invisible pointer-events-none' : ''}>
           <Button variant="ghost" size="sm"
             title={p.dag_criada ? 'Regenerar DAG' : 'Gerar DAG'}
             aria-label={p.dag_criada ? `Regenerar DAG de ${p.pipeline_name}` : `Gerar DAG para ${p.pipeline_name}`}
@@ -838,11 +914,12 @@ function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, onAudit
             className={p.dag_criada ? 'text-blue-400/70 hover:text-blue-300' : 'text-dim hover:text-ink'}>
             <Settings size={12} />
           </Button>
-        )}
-        {!isViewer && p.dag_criada ? (
+        </span>
+        {/* Executar — apenas não-viewer && dag_criada */}
+        <span className={isViewer || !p.dag_criada ? 'invisible pointer-events-none' : ''}>
           <Button variant="ghost" size="sm" title="Executar agora" aria-label={`Executar ${p.pipeline_name} agora`} onClick={onExec}
             className="text-green-500/60 hover:text-green-400"><Play size={12} /></Button>
-        ) : null}
+        </span>
       </div>
     </div>
   )
