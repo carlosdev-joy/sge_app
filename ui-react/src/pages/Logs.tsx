@@ -426,6 +426,7 @@ function LogDetailModal({
                 <th className="text-left px-2 py-1.5">Job</th>
                 <th className="text-left px-2 py-1.5">Status</th>
                 <th className="text-left px-2 py-1.5">Início</th>
+                <th className="text-left px-2 py-1.5">Fim</th>
                 <th className="text-left px-2 py-1.5">Duração</th>
                 <th className="text-left px-2 py-1.5">vs Média</th>
                 <th className="text-right px-2 py-1.5">Ações</th>
@@ -438,6 +439,7 @@ function LogDetailModal({
                       <td className="px-2 py-1.5 font-mono text-ink">{j.job_name}</td>
                       <td className="px-2 py-1.5"><Badge value={j.status} /></td>
                       <td className="px-2 py-1.5 text-dim">{fmtDt(j.inicio)}</td>
+                      <td className="px-2 py-1.5 text-dim">{fmtDt(j.fim)}</td>
                       <td className="px-2 py-1.5 text-dim">{durStr(j.duration_seconds)}</td>
                       <td className="px-2 py-1.5">
                         {avg && j.duration_seconds ? devBadge(j.duration_seconds, avg) : <span className="text-dim">—</span>}
