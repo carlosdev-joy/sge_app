@@ -209,7 +209,7 @@ function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose
           pipeline_name:       form.pipeline_name.trim().toUpperCase(),
           project_name:        form.project_name,
           domain:              form.domain.trim().toUpperCase() || 'Geral',
-          tags:                form.tags.trim(),
+          tags:                form.tags.trim().toUpperCase(),
           descricao:           form.descricao.trim() || null,
           scheduled_time:      `${h}:${m}:00`,
           schedule_type:       form.schedule_type,
@@ -314,7 +314,7 @@ function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose
                 onChange={e => f('domain', e.target.value.toUpperCase())} placeholder="ex: COBRANCA" />
             </div>
             <Input label="Tags (separadas por vírgula)" value={form.tags}
-              onChange={e => f('tags', e.target.value)} placeholder="ex: cobranca,diario,prod" />
+              onChange={e => f('tags', e.target.value.toUpperCase())} placeholder="ex: COBRANCA,DIARIO,PROD" />
             <Textarea label="Descrição" value={form.descricao} onChange={e => f('descricao', e.target.value)}
               rows={3} placeholder="Descreva a finalidade deste pipeline…" />
             <label className="flex items-center gap-2 cursor-pointer">
