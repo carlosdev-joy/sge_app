@@ -416,7 +416,7 @@ async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(requi
             IF NOT EXISTS (SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?)
                 INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name, note)
                 VALUES (?, ?, ?, ?, ?)
-        """, (exec_id, pipeline, exec_id, pipeline, user, display_name, note))
+        """, (exec_id, pipeline, user, display_name, note))
         conn.commit()
 
         cur.execute(
@@ -451,153 +451,159 @@ async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(requi
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/execucoes/falhas-summary", tags=["execucoes"])
-def get_falhas_summary(days: int = Query(7, ge=1, le=90)):
-    """Retorna contadores de falhas para os cards de KPI da tela de Logs.
-
-    Retorna: total, sem_ack, com_ack, resolvidas — no período (days).
-    Degrada graciosamente se colunas resolved_* ainda não existem.
-    """
-    try:
-        conn = get_db_conn(); cur = conn.cursor()
-
-        # Garante colunas de resolução (idempotente)
-        for col, ddl in [
-            ("resolved_by",       "NVARCHAR(64)"),
-            ("resolved_at",       "DATETIME"),
-            ("resolution_note",   "NVARCHAR(500)"),
-            ("snow_ticket",       "NVARCHAR(64)"),
-        ]:
-            try:
-                cur.execute(f"""
-                    IF NOT EXISTS (
-                        SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-                        WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_failure_ack'
-                          AND COLUMN_NAME=?
-                    ) ALTER TABLE dbo.etl_failure_ack ADD {col} {ddl} NULL
-                """, (col,))
-                conn.commit()
-            except Exception:
-                try: conn.rollback()
-                except Exception: pass
-
-        cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-
-        # Total falhas no período
-        cur.execute("""
-            SELECT COUNT(DISTINCT a.execution_id)
-            FROM dbo.etl_pipeline_execution a
-            WHERE a.status_geral = 'FAILED' AND a.start_time >= ?
-        """, (cutoff,))
-        row = cur.fetchone()
-        total = int(row[0]) if row else 0
-
-        # Sem ack (não assumidas)
-        cur.execute("""
-            SELECT COUNT(DISTINCT a.execution_id)
-            FROM dbo.etl_pipeline_execution a
-            LEFT JOIN dbo.etl_failure_ack ack
-                   ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
-            WHERE a.status_geral = 'FAILED' AND a.start_time >= ?
-              AND ack.execution_id IS NULL
-        """, (cutoff,))
-        row = cur.fetchone()
-        sem_ack = int(row[0]) if row else 0
-
-        # Com ack mas não resolvidas
-        has_resolved = False
+def _ensure_resolve_columns(conn, cur) -> bool:
+    """Garante colunas de resolução na etl_failure_ack. Retorna True se existem."""
+    _RESOLVE_COLS = [
+        ("resolved_by",     "NVARCHAR(64)"),
+        ("resolved_at",     "DATETIME"),
+        ("resolution_note", "NVARCHAR(500)"),
+        ("snow_ticket",     "NVARCHAR(64)"),
+    ]
+    for col, ddl in _RESOLVE_COLS:
         try:
-            cur.execute("""
-                SELECT COUNT(DISTINCT a.execution_id)
-                FROM dbo.etl_pipeline_execution a
-                INNER JOIN dbo.etl_failure_ack ack
-                        ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
-                WHERE a.status_geral = 'FAILED' AND a.start_time >= ?
-                  AND ack.resolved_at IS NULL
-            """, (cutoff,))
-            row = cur.fetchone()
-            com_ack = int(row[0]) if row else 0
-
-            cur.execute("""
-                SELECT COUNT(DISTINCT a.execution_id)
-                FROM dbo.etl_pipeline_execution a
-                INNER JOIN dbo.etl_failure_ack ack
-                        ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
-                WHERE a.status_geral = 'FAILED' AND a.start_time >= ?
-                  AND ack.resolved_at IS NOT NULL
-            """, (cutoff,))
-            row = cur.fetchone()
-            resolvidas = int(row[0]) if row else 0
-            has_resolved = True
+            cur.execute(
+                "IF NOT EXISTS ("
+                "  SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS"
+                "  WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_failure_ack' AND COLUMN_NAME=?"
+                ") EXEC('ALTER TABLE dbo.etl_failure_ack ADD " + col + " " + ddl + " NULL')",
+                (col,))
+            conn.commit()
         except Exception:
             try: conn.rollback()
             except Exception: pass
-            # Sem coluna resolved_at: considera tudo como com_ack não resolvido
-            cur.execute("""
-                SELECT COUNT(DISTINCT a.execution_id)
-                FROM dbo.etl_pipeline_execution a
-                INNER JOIN dbo.etl_failure_ack ack
-                        ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
-                WHERE a.status_geral = 'FAILED' AND a.start_time >= ?
-            """, (cutoff,))
-            row = cur.fetchone()
-            com_ack = int(row[0]) if row else 0
-            resolvidas = 0
+    # Verifica se resolved_at existe (proxy para todas)
+    try:
+        cur.execute(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_failure_ack' AND COLUMN_NAME='resolved_at'")
+        return bool(cur.fetchone())
+    except Exception:
+        return False
 
+
+def _failure_cte(cutoff: str, filter_pipeline: str | None, filter_project: str | None):
+    """Retorna (cte_sql, params) para agregar etl_job_execution em execuções com FAILED."""
+    where_parts = ["e.start_time >= ?"]
+    params: list = [cutoff]
+    if filter_pipeline:
+        where_parts.append("e.pipeline LIKE ?")
+        params.append(f"%{filter_pipeline}%")
+    if filter_project:
+        where_parts.append("e.project = ?")
+        params.append(filter_project)
+    where_sql = " AND ".join(where_parts)
+
+    cte = f"""
+        WITH agg AS (
+            SELECT
+                e.execution_id, e.project, e.pipeline,
+                MIN(e.start_time)                    AS inicio,
+                MAX(e.end_time)                      AS fim,
+                COALESCE(SUM(e.duration_seconds), 0) AS duracao_total_segundos,
+                COUNT(*)                             AS total_jobs,
+                SUM(CASE WHEN e.status='FAILED'  THEN 1 ELSE 0 END) AS jobs_falha,
+                SUM(CASE WHEN e.status='WARNING' THEN 1 ELSE 0 END) AS jobs_warning
+            FROM dbo.etl_job_execution e
+            WHERE {where_sql}
+            GROUP BY e.execution_id, e.project, e.pipeline
+            HAVING SUM(CASE WHEN e.status='FAILED' THEN 1 ELSE 0 END) > 0
+        )
+    """
+    return cte, params
+
+
+@router.get("/execucoes/falhas-summary", tags=["execucoes"])
+def get_falhas_summary(days: int = Query(7, ge=1, le=90)):
+    """Retorna contadores de falhas para os cards de KPI (total, sem_ack, com_ack, resolvidas)."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        has_resolved = _ensure_resolve_columns(conn, cur)
+        cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        cte, params = _failure_cte(cutoff, None, None)
+
+        if has_resolved:
+            cur.execute(cte + """
+                SELECT
+                    COUNT(DISTINCT a.execution_id) AS total,
+                    COUNT(DISTINCT CASE WHEN ack.execution_id IS NULL
+                          THEN a.execution_id END) AS sem_ack,
+                    COUNT(DISTINCT CASE WHEN ack.execution_id IS NOT NULL
+                          AND ack.resolved_at IS NULL THEN a.execution_id END) AS com_ack,
+                    COUNT(DISTINCT CASE WHEN ack.resolved_at IS NOT NULL
+                          THEN a.execution_id END) AS resolvidas
+                FROM agg a
+                LEFT JOIN dbo.etl_failure_ack ack
+                       ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
+            """, params)
+        else:
+            cur.execute(cte + """
+                SELECT
+                    COUNT(DISTINCT a.execution_id) AS total,
+                    COUNT(DISTINCT CASE WHEN ack.execution_id IS NULL
+                          THEN a.execution_id END) AS sem_ack,
+                    COUNT(DISTINCT CASE WHEN ack.execution_id IS NOT NULL
+                          THEN a.execution_id END) AS com_ack,
+                    0 AS resolvidas
+                FROM agg a
+                LEFT JOIN dbo.etl_failure_ack ack
+                       ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
+            """, params)
+
+        row = cur.fetchone()
         cur.close(); conn.close()
         return {
             "period_days": days,
-            "total": total,
-            "sem_ack": sem_ack,
-            "com_ack": com_ack,
-            "resolvidas": resolvidas,
+            "total":     int(row[0] or 0) if row else 0,
+            "sem_ack":   int(row[1] or 0) if row else 0,
+            "com_ack":   int(row[2] or 0) if row else 0,
+            "resolvidas":int(row[3] or 0) if row else 0,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/execucoes/resolve", tags=["execucoes"])
-async def resolve_failure(body: dict = Body(default={}), user: dict = Depends(require_perm(PERM_EXECUTAR))):
-    """Marca uma falha como resolvida (ou desfaz a resolução com remove=true).
+async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """Marca uma falha como resolvida (ou desfaz com remove=true).
 
-    Body: execution_id, pipeline, resolution_note (opcional), snow_ticket (opcional),
-          remove (bool, desfaz)
+    Body: execution_id, pipeline, resolution_note (opcional), snow_ticket (opcional), remove (bool)
     """
-    exec_id         = (body.get("execution_id") or "").strip()
-    pipeline        = (body.get("pipeline")     or "").strip()
+    exec_id         = (body.get("execution_id")    or "").strip()
+    pipeline        = (body.get("pipeline")         or "").strip()
     resolution_note = (body.get("resolution_note") or "").strip() or None
-    snow_ticket     = (body.get("snow_ticket")  or "").strip() or None
+    snow_ticket     = (body.get("snow_ticket")     or "").strip() or None
     remove          = bool(body.get("remove", False))
-    matricula       = (body.get("user")         or "").strip() or user.get("matricula", "")
-    display_name    = (body.get("display_name") or "").strip() or None
+    matricula       = (body.get("user")            or "").strip() or auth.get("matricula", "")
+    display_name    = (body.get("display_name")    or "").strip() or None
 
     if not exec_id or not pipeline:
         raise HTTPException(status_code=422, detail="execution_id e pipeline são obrigatórios")
 
     try:
         conn = get_db_conn(); cur = conn.cursor()
+        _ensure_resolve_columns(conn, cur)
 
         if remove:
-            cur.execute("""
-                UPDATE dbo.etl_failure_ack
-                SET resolved_by=NULL, resolved_at=NULL, resolution_note=NULL, snow_ticket=NULL
-                WHERE execution_id=? AND pipeline=?
-            """, (exec_id, pipeline))
+            cur.execute(
+                "UPDATE dbo.etl_failure_ack "
+                "SET resolved_by=NULL, resolved_at=NULL, resolution_note=NULL, snow_ticket=NULL "
+                "WHERE execution_id=? AND pipeline=?",
+                (exec_id, pipeline))
             conn.commit(); cur.close(); conn.close()
             return {"ok": True, "action": "unresolved"}
 
-        # Garante que existe ack (cria se não existir)
-        cur.execute("""
-            IF NOT EXISTS (SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?)
-                INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name)
-                VALUES (?, ?, ?, ?)
-        """, (exec_id, pipeline, exec_id, pipeline, matricula, display_name))
+        # Garante ack existe antes de resolver (cria auto-ack se necessário)
+        cur.execute(
+            "IF NOT EXISTS (SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?)"
+            "  INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name)"
+            "  VALUES (?, ?, ?, ?)",
+            (exec_id, pipeline, matricula, display_name))
 
-        cur.execute("""
-            UPDATE dbo.etl_failure_ack
-            SET resolved_by=?, resolved_at=GETDATE(), resolution_note=?, snow_ticket=?
-            WHERE execution_id=? AND pipeline=?
-        """, (matricula, resolution_note, snow_ticket, exec_id, pipeline))
+        cur.execute(
+            "UPDATE dbo.etl_failure_ack "
+            "SET resolved_by=?, resolved_at=GETDATE(), resolution_note=?, snow_ticket=? "
+            "WHERE execution_id=? AND pipeline=?",
+            (matricula, resolution_note, snow_ticket, exec_id, pipeline))
         conn.commit()
 
         cur.execute(
@@ -608,12 +614,11 @@ async def resolve_failure(body: dict = Body(default={}), user: dict = Depends(re
         cur.close(); conn.close()
 
         return {
-            "ok": True,
-            "action": "resolved",
-            "resolved_by": row[0] if row else matricula,
-            "resolved_at": _fmt_dt(row[1]) if row else None,
+            "ok": True, "action": "resolved",
+            "resolved_by":     row[0] if row else matricula,
+            "resolved_at":     _fmt_dt(row[1]) if row else None,
             "resolution_note": row[2] if row else resolution_note,
-            "snow_ticket": row[3] if row else snow_ticket,
+            "snow_ticket":     row[3] if row else snow_ticket,
         }
     except HTTPException:
         raise
@@ -630,108 +635,50 @@ def list_falhas(
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
 ):
-    """Lista execuções com falha no período, com dados de ack e resolução.
-
-    Usado na aba 'Gestão de Falhas'.
-    """
+    """Lista execuções com falha no período com dados de ack e resolução (aba Gestão de Falhas)."""
     try:
         conn = get_db_conn(); cur = conn.cursor()
+        has_resolved = _ensure_resolve_columns(conn, cur)
         cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        cte, params = _failure_cte(cutoff, filter_pipeline, filter_project)
 
-        where = ["a.status_geral = 'FAILED'", "a.start_time >= ?"]
-        params: list = [cutoff]
-
-        if filter_pipeline:
-            where.append("a.pipeline LIKE ?")
-            params.append(f"%{filter_pipeline}%")
-        if filter_project:
-            where.append("a.project = ?")
-            params.append(filter_project)
-
-        has_resolved = False
-        try:
-            cur.execute("""
-                SELECT COUNT(DISTINCT a.execution_id)
-                FROM dbo.etl_pipeline_execution a
-                LEFT JOIN dbo.etl_failure_ack ack
-                       ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
-                WHERE """ + " AND ".join(where), params)
-            cur.fetchone()
-            has_resolved = True
-        except Exception:
-            try: conn.rollback()
-            except Exception: pass
-
-        # status_ack filter
+        # Filtro por situação de ack/resolve — adicionado ao WHERE pós-CTE
+        ack_filter = ""
         if status_ack == "sem_ack":
-            where.append("ack.execution_id IS NULL")
+            ack_filter = "AND ack.execution_id IS NULL"
         elif status_ack == "com_ack":
-            where.append("ack.execution_id IS NOT NULL")
-            if has_resolved:
-                where.append("(ack.resolved_at IS NULL OR ack.resolved_at IS NULL)")
+            ack_filter = "AND ack.execution_id IS NOT NULL AND (ack.resolved_at IS NULL)" if has_resolved \
+                         else "AND ack.execution_id IS NOT NULL"
         elif status_ack == "resolvida":
-            where.append("ack.execution_id IS NOT NULL")
-            if has_resolved:
-                where.append("ack.resolved_at IS NOT NULL")
+            ack_filter = "AND ack.execution_id IS NOT NULL AND ack.resolved_at IS NOT NULL" if has_resolved \
+                         else "AND ack.execution_id IS NOT NULL"
 
-        where_sql = " AND ".join(where)
+        cur.execute(cte + f"""
+            SELECT COUNT(DISTINCT a.execution_id)
+            FROM agg a
+            LEFT JOIN dbo.etl_failure_ack ack
+                   ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
+            WHERE 1=1 {ack_filter}
+        """, params)
+        total_row = cur.fetchone()
+        total = int(total_row[0] or 0) if total_row else 0
 
-        try:
-            if has_resolved:
-                cur.execute(f"""
-                    SELECT COUNT(DISTINCT a.execution_id)
-                    FROM dbo.etl_pipeline_execution a
-                    LEFT JOIN dbo.etl_failure_ack ack
-                           ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
-                    WHERE {where_sql}
-                """, params)
-            else:
-                cur.execute(f"""
-                    SELECT COUNT(DISTINCT a.execution_id)
-                    FROM dbo.etl_pipeline_execution a
-                    LEFT JOIN dbo.etl_failure_ack ack
-                           ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
-                    WHERE {where_sql}
-                """, params)
-            total_row = cur.fetchone()
-            total = int(total_row[0]) if total_row else 0
-        except Exception:
-            try: conn.rollback()
-            except Exception: pass
-            total = 0
+        resolve_sel = ", ack.resolved_by, ack.resolved_at, ack.resolution_note, ack.snow_ticket" \
+                      if has_resolved else ""
 
-        select_cols = """
-            a.execution_id, a.project, a.pipeline, a.start_time, a.end_time,
-            a.duracao_total_segundos, a.total_jobs, a.jobs_falha, a.jobs_warning,
-            ack.ack_by, ack.display_name, ack.ack_at, ack.note
-        """
-        resolve_cols = ""
-        if has_resolved:
-            resolve_cols = ", ack.resolved_by, ack.resolved_at, ack.resolution_note, ack.snow_ticket"
-
-        try:
-            cur.execute(f"""
-                SELECT {select_cols}{resolve_cols}
-                FROM dbo.etl_pipeline_execution a
-                LEFT JOIN dbo.etl_failure_ack ack
-                       ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
-                WHERE {where_sql}
-                ORDER BY a.start_time DESC
-                OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
-            """, params + [offset, limit])
-        except Exception:
-            try: conn.rollback()
-            except Exception: pass
-            cur.execute(f"""
-                SELECT {select_cols}
-                FROM dbo.etl_pipeline_execution a
-                LEFT JOIN dbo.etl_failure_ack ack
-                       ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
-                WHERE {where_sql}
-                ORDER BY a.start_time DESC
-                OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
-            """, params + [offset, limit])
-            has_resolved = False
+        cur.execute(cte + f"""
+            SELECT a.execution_id, a.project, a.pipeline,
+                   a.inicio, a.fim, a.duracao_total_segundos,
+                   a.total_jobs, a.jobs_falha, a.jobs_warning,
+                   ack.ack_by, ack.display_name, ack.ack_at, ack.note
+                   {resolve_sel}
+            FROM agg a
+            LEFT JOIN dbo.etl_failure_ack ack
+                   ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
+            WHERE 1=1 {ack_filter}
+            ORDER BY a.inicio DESC
+            OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+        """, params + [offset, limit])
 
         rows = cur.fetchall()
         cur.close(); conn.close()
@@ -744,12 +691,12 @@ def list_falhas(
                 "duracao_total_segundos": int(r[5] or 0),
                 "total_jobs": int(r[6] or 0), "jobs_falha": int(r[7] or 0),
                 "jobs_warning": int(r[8] or 0),
-                "ack_by": r[9], "display_name": r[10], "ack_at": _fmt_dt(r[11]),
-                "note": r[12],
-                "resolved_by": r[13] if has_resolved else None,
-                "resolved_at": _fmt_dt(r[14]) if has_resolved else None,
+                "ack_by": r[9], "display_name": r[10],
+                "ack_at": _fmt_dt(r[11]), "note": r[12],
+                "resolved_by":     r[13] if has_resolved else None,
+                "resolved_at":     _fmt_dt(r[14]) if has_resolved else None,
                 "resolution_note": r[15] if has_resolved else None,
-                "snow_ticket": r[16] if has_resolved else None,
+                "snow_ticket":     r[16] if has_resolved else None,
             }
             data.append(item)
 

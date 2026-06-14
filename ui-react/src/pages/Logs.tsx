@@ -911,42 +911,62 @@ function ResolveModal({
           </div>
         )}
 
-        <Textarea
-          label="Nota de resolução (opcional)"
-          value={note}
-          onChange={e => setNote(e.target.value)}
-          rows={3}
-          placeholder="Descreva o que foi feito para resolver a falha..."
-        />
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-dim font-medium flex items-center gap-1.5">
-            <Ticket size={11} /> Ticket ServiceNow (opcional)
-          </label>
-          <Input
-            value={ticket}
-            onChange={e => setTicket(e.target.value)}
-            placeholder="INC0012345"
-            className="font-mono"
-          />
-          <p className="text-xs text-dim/60">Futuramente será integrado automaticamente com o ServiceNow.</p>
-        </div>
-
-        <div className="flex gap-2 pt-1 justify-between">
-          {isResolved && (
-            <Button variant="secondary" size="sm" loading={resolveMut.isPending}
-              onClick={() => resolveMut.mutate(true)}>
-              Desfazer resolução
-            </Button>
-          )}
-          <div className="flex gap-2 ml-auto">
-            <Button variant="secondary" size="sm" onClick={onClose}>Cancelar</Button>
-            <Button size="sm" loading={resolveMut.isPending}
-              onClick={() => resolveMut.mutate(false)}>
-              <CheckCircle2 size={13} /> {isResolved ? 'Atualizar' : 'Marcar como Resolvida'}
-            </Button>
+        {isResolved ? (
+          // Modo leitura quando já resolvida — evita edição acidental
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-dim font-medium">Nota de resolução</label>
+              <p className="text-sm text-ink bg-canvas border border-edge rounded-md px-3 py-2 min-h-[60px]">
+                {row.resolution_note ?? <span className="text-dim italic">Sem nota registrada</span>}
+              </p>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-dim font-medium flex items-center gap-1.5">
+                <Ticket size={11} /> Ticket ServiceNow
+              </label>
+              <p className="text-sm font-mono text-blue-400 bg-canvas border border-edge rounded-md px-3 py-2">
+                {row.snow_ticket ?? <span className="text-dim italic font-sans">Não informado</span>}
+              </p>
+            </div>
+            <div className="flex gap-2 pt-1 border-t border-edge justify-between">
+              <Button variant="secondary" size="sm" loading={resolveMut.isPending}
+                onClick={() => resolveMut.mutate(true)}>
+                Desfazer resolução
+              </Button>
+              <Button variant="secondary" size="sm" onClick={onClose}>Fechar</Button>
+            </div>
           </div>
-        </div>
+        ) : (
+          // Modo edição quando ainda não resolvida
+          <div className="flex flex-col gap-3">
+            <Textarea
+              label="Nota de resolução (opcional)"
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              rows={3}
+              placeholder="Descreva o que foi feito para resolver a falha..."
+            />
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-dim font-medium flex items-center gap-1.5">
+                <Ticket size={11} /> Ticket ServiceNow (opcional)
+              </label>
+              <Input
+                value={ticket}
+                onChange={e => setTicket(e.target.value)}
+                placeholder="INC0012345"
+                className="font-mono"
+              />
+              <p className="text-xs text-dim/60">Integração automática com ServiceNow disponível em breve. Registre o ticket para referência.</p>
+            </div>
+            <div className="flex gap-2 pt-1 border-t border-edge justify-end">
+              <Button variant="secondary" size="sm" onClick={onClose}>Cancelar</Button>
+              <Button size="sm" loading={resolveMut.isPending}
+                onClick={() => resolveMut.mutate(false)}>
+                <CheckCircle2 size={13} /> Marcar como Resolvida
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
     </Modal>
   )
@@ -1176,10 +1196,11 @@ function GestaoFalhasTab() {
                       <td className="px-3 py-2 text-right">
                         <div className="flex justify-end gap-1">
                           {!r.ack_by && !isViewer && (
-                            <Button variant="ghost" size="sm" title="Assumir investigação"
+                            <Button variant="secondary" size="sm" title="Assumir investigação"
                               loading={ackMut.isPending}
-                              onClick={() => ackMut.mutate(r)}>
-                              <ShieldAlert size={12} />
+                              onClick={() => ackMut.mutate(r)}
+                              className="border-orange-700/50 text-orange-400 hover:text-orange-300">
+                              <ShieldAlert size={12} /> Assumir
                             </Button>
                           )}
                           {!isViewer && (
