@@ -12,7 +12,9 @@ import { Tabs } from '../components/ui/Tabs'
 import {
   RefreshCw, RotateCcw, CheckSquare, FileText,
   ChevronDown, ChevronUp, Copy, ExternalLink, Search,
+  ShieldCheck, ShieldAlert, ShieldX, AlertTriangle, CheckCircle2, Ticket,
 } from 'lucide-react'
+import { Textarea } from '../components/ui/Input'
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -70,6 +72,38 @@ interface ExecRow {
   ack_by?: string
   display_name?: string
   ack_at?: string
+  resolved_by?: string
+  resolved_at?: string
+  resolution_note?: string
+  snow_ticket?: string
+}
+
+interface FalhaSummary {
+  period_days: number
+  total: number
+  sem_ack: number
+  com_ack: number
+  resolvidas: number
+}
+
+interface FalhaRow {
+  execution_id: string
+  project: string
+  pipeline: string
+  inicio: string
+  fim: string
+  duracao_total_segundos: number
+  total_jobs: number
+  jobs_falha: number
+  jobs_warning: number
+  ack_by?: string
+  display_name?: string
+  ack_at?: string
+  note?: string
+  resolved_by?: string
+  resolved_at?: string
+  resolution_note?: string
+  snow_ticket?: string
 }
 
 interface JobDetailRow {
@@ -820,6 +854,370 @@ function ExecucoesTab() {
   )
 }
 
+// ── Resolve Modal ──────────────────────────────────────────────────────────
+
+function ResolveModal({
+  row, onClose,
+}: { row: FalhaRow; onClose: () => void }) {
+  const qc = useQueryClient()
+  const user = useAuthStore(s => s.user)
+  const [note, setNote] = useState(row.resolution_note ?? '')
+  const [ticket, setTicket] = useState(row.snow_ticket ?? '')
+
+  const resolveMut = useMutation({
+    mutationFn: (remove: boolean) => apiFetch('/execucoes/resolve', {
+      method: 'POST',
+      body: JSON.stringify({
+        execution_id: row.execution_id,
+        pipeline: row.pipeline,
+        user: user?.matricula,
+        display_name: `${user?.primeiro_nome ?? ''} ${user?.ultimo_nome ?? ''}`.trim(),
+        resolution_note: note || null,
+        snow_ticket: ticket || null,
+        remove,
+      }),
+    }),
+    onSuccess: (_, remove) => {
+      toast.success(remove ? 'Resolução desfeita' : 'Falha marcada como resolvida')
+      qc.invalidateQueries({ queryKey: ['falhas'] })
+      qc.invalidateQueries({ queryKey: ['falhas-summary'] })
+      qc.invalidateQueries({ queryKey: ['execucoes'] })
+      onClose()
+    },
+    onError: (e: any) => toast.error(e.message),
+  })
+
+  const isResolved = !!row.resolved_at
+
+  return (
+    <Modal open title={isResolved ? 'Detalhes da Resolução' : 'Marcar como Resolvida'} onClose={onClose} size="md">
+      <div className="flex flex-col gap-4">
+        <div className="bg-canvas border border-edge rounded-lg p-3 text-xs flex flex-col gap-1.5">
+          <div><span className="text-dim">Pipeline:</span> <span className="text-ink font-mono ml-1">{row.pipeline}</span></div>
+          <div><span className="text-dim">Execution ID:</span> <span className="text-blue-400 font-mono ml-1">{row.execution_id}</span></div>
+          {row.ack_by && (
+            <div><span className="text-dim">Assumida por:</span> <span className="text-ink ml-1">{row.display_name ?? row.ack_by}</span> <span className="text-dim">em {fmtDt(row.ack_at)}</span></div>
+          )}
+        </div>
+
+        {isResolved && (
+          <div className="bg-green-900/20 border border-green-800 rounded-lg p-3 text-xs text-green-300 flex flex-col gap-1">
+            <div className="flex items-center gap-1.5 font-medium text-green-400">
+              <CheckCircle2 size={13} /> Resolvida
+            </div>
+            <div>Por: <strong>{row.resolved_by}</strong> em {fmtDt(row.resolved_at)}</div>
+            {row.resolution_note && <div>Nota: {row.resolution_note}</div>}
+            {row.snow_ticket && <div>Ticket: <span className="font-mono">{row.snow_ticket}</span></div>}
+          </div>
+        )}
+
+        <Textarea
+          label="Nota de resolução (opcional)"
+          value={note}
+          onChange={e => setNote(e.target.value)}
+          rows={3}
+          placeholder="Descreva o que foi feito para resolver a falha..."
+        />
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-dim font-medium flex items-center gap-1.5">
+            <Ticket size={11} /> Ticket ServiceNow (opcional)
+          </label>
+          <Input
+            value={ticket}
+            onChange={e => setTicket(e.target.value)}
+            placeholder="INC0012345"
+            className="font-mono"
+          />
+          <p className="text-xs text-dim/60">Futuramente será integrado automaticamente com o ServiceNow.</p>
+        </div>
+
+        <div className="flex gap-2 pt-1 justify-between">
+          {isResolved && (
+            <Button variant="secondary" size="sm" loading={resolveMut.isPending}
+              onClick={() => resolveMut.mutate(true)}>
+              Desfazer resolução
+            </Button>
+          )}
+          <div className="flex gap-2 ml-auto">
+            <Button variant="secondary" size="sm" onClick={onClose}>Cancelar</Button>
+            <Button size="sm" loading={resolveMut.isPending}
+              onClick={() => resolveMut.mutate(false)}>
+              <CheckCircle2 size={13} /> {isResolved ? 'Atualizar' : 'Marcar como Resolvida'}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ── KPI Cards ──────────────────────────────────────────────────────────────
+
+function FalhasKpiCards({ days, onFilter }: { days: number; onFilter?: (f: string) => void }) {
+  const { data, isLoading } = useQuery<FalhaSummary>({
+    queryKey: ['falhas-summary', days],
+    queryFn: () => apiFetch(`/execucoes/falhas-summary?days=${days}`),
+    refetchInterval: 60_000,
+  })
+
+  if (isLoading) return (
+    <div className="grid grid-cols-4 gap-3">
+      {[0,1,2,3].map(i => (
+        <div key={i} className="bg-panel border border-edge rounded-xl p-4 animate-pulse h-24" />
+      ))}
+    </div>
+  )
+
+  const cards = [
+    {
+      label: 'Total de Falhas',
+      value: data?.total ?? 0,
+      icon: AlertTriangle,
+      color: 'text-red-400',
+      bg: 'bg-red-500/10 border-red-800/40',
+      filter: '',
+    },
+    {
+      label: 'Não Assumidas',
+      value: data?.sem_ack ?? 0,
+      icon: ShieldX,
+      color: 'text-orange-400',
+      bg: 'bg-orange-500/10 border-orange-800/40',
+      filter: 'sem_ack',
+    },
+    {
+      label: 'Em Investigação',
+      value: data?.com_ack ?? 0,
+      icon: ShieldAlert,
+      color: 'text-amber-400',
+      bg: 'bg-amber-500/10 border-amber-800/40',
+      filter: 'com_ack',
+    },
+    {
+      label: 'Resolvidas',
+      value: data?.resolvidas ?? 0,
+      icon: ShieldCheck,
+      color: 'text-green-400',
+      bg: 'bg-green-500/10 border-green-800/40',
+      filter: 'resolvida',
+    },
+  ]
+
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      {cards.map(c => {
+        const Icon = c.icon
+        return (
+          <button
+            key={c.label}
+            onClick={() => onFilter?.(c.filter)}
+            className={`bg-panel border ${c.bg} rounded-xl p-4 text-left hover:opacity-90 transition-opacity focus:outline-none focus:ring-2 focus:ring-blue-500/40`}
+          >
+            <div className="flex items-start justify-between mb-2">
+              <span className="text-xs text-dim font-medium">{c.label}</span>
+              <Icon size={16} className={c.color} />
+            </div>
+            <div className={`text-3xl font-bold ${c.color}`}>{c.value}</div>
+            <div className="text-xs text-dim/60 mt-1">últimos {days} dias</div>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Gestão de Falhas Tab ───────────────────────────────────────────────────
+
+function GestaoFalhasTab() {
+  const qc = useQueryClient()
+  const user = useAuthStore(s => s.user)
+  const isViewer = user?.perfil === 'consulta'
+
+  const [days, setDays] = useState(7)
+  const [statusAck, setStatusAck] = useState('')
+  const [filterPipeline, setFilterPipeline] = useState('')
+  const [filterProject, setFilterProject] = useState('')
+  const [page, setPage] = useState(0)
+  const [resolveRow, setResolveRow] = useState<FalhaRow | null>(null)
+  const FLIMIT = 50
+
+  const qs = new URLSearchParams({
+    days: String(days),
+    offset: String(page * FLIMIT),
+    limit: String(FLIMIT),
+  })
+  if (statusAck) qs.set('status_ack', statusAck)
+  if (filterPipeline) qs.set('filter_pipeline', filterPipeline)
+  if (filterProject) qs.set('filter_project', filterProject)
+
+  const { data, isLoading, refetch } = useQuery<{ total: number; data: FalhaRow[] }>({
+    queryKey: ['falhas', days, statusAck, filterPipeline, filterProject, page],
+    queryFn: () => apiFetch(`/execucoes/falhas?${qs}`),
+  })
+
+  const ackMut = useMutation({
+    mutationFn: (r: FalhaRow) => apiFetch('/execucoes/ack', {
+      method: 'POST',
+      body: JSON.stringify({
+        execution_id: r.execution_id,
+        pipeline: r.pipeline,
+        user: user?.matricula,
+        display_name: `${user?.primeiro_nome ?? ''} ${user?.ultimo_nome ?? ''}`.trim(),
+      }),
+    }),
+    onSuccess: () => {
+      toast.success('Falha assumida')
+      qc.invalidateQueries({ queryKey: ['falhas'] })
+      qc.invalidateQueries({ queryKey: ['falhas-summary'] })
+    },
+    onError: (e: any) => toast.error(e.message),
+  })
+
+  const rows = data?.data ?? []
+  const total = data?.total ?? 0
+
+  function statusAckLabel(r: FalhaRow) {
+    if (r.resolved_at) return <span className="inline-flex items-center gap-1 text-xs text-green-400"><CheckCircle2 size={11} /> Resolvida</span>
+    if (r.ack_by) return <span className="inline-flex items-center gap-1 text-xs text-amber-400"><ShieldAlert size={11} /> Em investigação</span>
+    return <span className="inline-flex items-center gap-1 text-xs text-red-400"><ShieldX size={11} /> Não assumida</span>
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* KPI Cards */}
+      <FalhasKpiCards days={days} onFilter={f => { setStatusAck(f); setPage(0) }} />
+
+      {/* Filters */}
+      <div className="bg-panel border border-edge rounded-lg p-4 flex flex-wrap gap-3 items-end">
+        <Select label="Período" value={String(days)}
+          onChange={e => { setDays(Number(e.target.value)); setPage(0) }}
+          className="w-36">
+          <option value="1">Hoje</option>
+          <option value="7">Últimos 7 dias</option>
+          <option value="30">Últimos 30 dias</option>
+          <option value="90">Últimos 90 dias</option>
+        </Select>
+
+        <Select label="Situação" value={statusAck}
+          onChange={e => { setStatusAck(e.target.value); setPage(0) }}
+          className="w-44">
+          <option value="">Todas</option>
+          <option value="sem_ack">Não assumidas</option>
+          <option value="com_ack">Em investigação</option>
+          <option value="resolvida">Resolvidas</option>
+        </Select>
+
+        <Select label="Projeto" value={filterProject}
+          onChange={e => { setFilterProject(e.target.value); setPage(0) }}
+          className="w-44">
+          <option value="">Todos</option>
+          {PROJETOS.map(p => <option key={p}>{p}</option>)}
+        </Select>
+
+        <Input label="Pipeline" value={filterPipeline}
+          onChange={e => setFilterPipeline(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && (setPage(0), refetch())}
+          placeholder="nome do pipeline" className="w-52" />
+
+        <div className="flex gap-2 ml-auto items-end">
+          <Button variant="secondary" size="sm" onClick={() => {
+            setStatusAck(''); setFilterPipeline(''); setFilterProject(''); setPage(0)
+          }}>Limpar</Button>
+          <Button size="sm" onClick={() => { setPage(0); refetch() }}><RefreshCw size={13} /></Button>
+        </div>
+      </div>
+
+      {/* Table */}
+      {isLoading ? <PageSpinner /> : (
+        <div className="bg-panel border border-edge rounded-lg overflow-hidden">
+          <div className="px-4 py-2 border-b border-edge">
+            <span className="text-xs text-dim">{total} falha{total !== 1 ? 's' : ''}</span>
+          </div>
+
+          {rows.length === 0 ? (
+            <p className="text-dim text-sm text-center py-12">Nenhuma falha encontrada no período.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead><tr className="text-dim border-b border-edge bg-canvas">
+                  <th className="px-3 py-2 text-left">Pipeline</th>
+                  <th className="px-3 py-2 text-left">Projeto</th>
+                  <th className="px-3 py-2 text-left">Início</th>
+                  <th className="px-3 py-2 text-left">Situação</th>
+                  <th className="px-3 py-2 text-left">Assumida por</th>
+                  <th className="px-3 py-2 text-left">Resolvida por</th>
+                  <th className="px-3 py-2 text-left">Ticket</th>
+                  <th className="px-3 py-2 text-right">Ações</th>
+                </tr></thead>
+                <tbody>
+                  {rows.map(r => (
+                    <tr key={`${r.execution_id}-${r.pipeline}`}
+                      className={`border-b border-edge/40 hover:bg-edge/20 transition-colors ${r.resolved_at ? 'opacity-70' : ''}`}>
+                      <td className="px-3 py-2 font-mono text-ink font-medium max-w-[220px] truncate" title={r.pipeline}>{r.pipeline}</td>
+                      <td className="px-3 py-2 text-dim">{r.project}</td>
+                      <td className="px-3 py-2 text-dim whitespace-nowrap">{fmtDt(r.inicio)}</td>
+                      <td className="px-3 py-2">{statusAckLabel(r)}</td>
+                      <td className="px-3 py-2 text-dim">
+                        {r.ack_by ? (
+                          <span title={fmtDt(r.ack_at) ?? ''}>{r.display_name ?? r.ack_by}</span>
+                        ) : <span className="text-red-400/60">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-dim">
+                        {r.resolved_by ? (
+                          <span title={`${fmtDt(r.resolved_at)} · ${r.resolution_note ?? ''}`}>{r.resolved_by}</span>
+                        ) : <span className="text-dim/40">—</span>}
+                      </td>
+                      <td className="px-3 py-2">
+                        {r.snow_ticket
+                          ? <span className="font-mono text-blue-400">{r.snow_ticket}</span>
+                          : <span className="text-dim/40">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <div className="flex justify-end gap-1">
+                          {!r.ack_by && !isViewer && (
+                            <Button variant="ghost" size="sm" title="Assumir investigação"
+                              loading={ackMut.isPending}
+                              onClick={() => ackMut.mutate(r)}>
+                              <ShieldAlert size={12} />
+                            </Button>
+                          )}
+                          {!isViewer && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title={r.resolved_at ? 'Ver / editar resolução' : 'Marcar como resolvida'}
+                              onClick={() => setResolveRow(r)}
+                            >
+                              <CheckCircle2 size={12} className={r.resolved_at ? 'text-green-400' : ''} />
+                            </Button>
+                          )}
+                          <Button variant="ghost" size="sm" title="Copiar Execution ID"
+                            onClick={() => copyText(r.execution_id)}>
+                            <Copy size={12} />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="px-4 py-2 flex items-center gap-3 border-t border-edge">
+            <Button variant="ghost" size="sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}>← Anterior</Button>
+            <span className="text-xs text-dim">Página {page + 1} · {Math.min((page + 1) * FLIMIT, total)} de {total}</span>
+            <Button variant="ghost" size="sm" disabled={rows.length < FLIMIT} onClick={() => setPage(p => p + 1)}>Próxima →</Button>
+          </div>
+        </div>
+      )}
+
+      {resolveRow && <ResolveModal row={resolveRow} onClose={() => setResolveRow(null)} />}
+    </div>
+  )
+}
+
 // ── Root ───────────────────────────────────────────────────────────────────
 
 export default function Logs() {
@@ -830,6 +1228,7 @@ export default function Logs() {
       <Tabs
         tabs={[
           { id: 'execucoes', label: '≣ Execuções' },
+          { id: 'gestao', label: '⚠ Gestão de Falhas' },
           { id: 'factory', label: '♻ Regeneração de DAGs' },
         ]}
         active={tab}
@@ -837,6 +1236,7 @@ export default function Logs() {
       />
 
       {tab === 'execucoes' && <ExecucoesTab />}
+      {tab === 'gestao' && <GestaoFalhasTab />}
       {tab === 'factory' && <FactoryRuns />}
     </div>
   )
