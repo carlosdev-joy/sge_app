@@ -122,8 +122,11 @@ function fmtDateTime(iso: string | null) {
 }
 
 function todayBRT() {
-  return new Date(new Date().toLocaleString('en-CA', { timeZone: 'America/Sao_Paulo' }))
-    .toISOString().substring(0, 10)
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date())
+  } catch {
+    return new Date().toISOString().substring(0, 10)
+  }
 }
 
 // ── status badge ───────────────────────────────────────────────────────────

@@ -888,8 +888,8 @@ function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, onAudit
           ✉
         </span>
       )}
-      {/* Coluna de ações com largura fixa — botões condicionais ficam invisíveis, não removidos */}
-      <div className="flex items-center gap-0.5 flex-shrink-0 w-[154px] justify-end opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+      {/* Coluna de ações — separador + botões surgem no hover */}
+      <div className="flex items-center gap-0.5 flex-shrink-0 w-[158px] justify-end opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity border-l border-edge/40 pl-2 ml-1">
         {/* View — sempre visível */}
         <Button variant="ghost" size="sm" title="Visualizar" aria-label={`Visualizar ${p.pipeline_name}`} onClick={onView}><Eye size={12} /></Button>
         {/* Edit — apenas não-viewer */}
@@ -935,10 +935,12 @@ export default function Pipelines() {
   const [nameFilter,    setNameFilter]    = useState('')
   const [projectFilter, setProjectFilter] = useState('')
   const [activeFilter,  setActiveFilter]  = useState('')
+  const [domainFilter,  setDomainFilter]  = useState('')
   const [page, setPage] = useState(0)
   const LIMIT = 50
 
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  // projects expanded by the user — all start collapsed
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   const [viewPipeline,        setViewPipeline]        = useState<Pipeline | undefined>()
   const [editPipeline,        setEditPipeline]        = useState<Pipeline | undefined>()
@@ -976,14 +978,22 @@ export default function Pipelines() {
     ;(data?.data ?? []).forEach(p => {
       const proj = p.project_name || '(sem projeto)'
       const dom  = p.domain       || '(sem domínio)'
+      if (domainFilter && dom.toUpperCase() !== domainFilter.toUpperCase()) return
       if (!t[proj]) t[proj] = {}
       if (!t[proj][dom]) t[proj][dom] = []
       t[proj][dom].push(p)
     })
     return t
-  }, [data])
+  }, [data, domainFilter])
 
   const projNames = useMemo(() => Object.keys(tree).sort(), [tree])
+
+  // all unique domains from current page (for domain filter dropdown)
+  const allDomains = useMemo(() => {
+    const s = new Set<string>()
+    ;(data?.data ?? []).forEach(p => { if (p.domain) s.add(p.domain) })
+    return [...s].sort()
+  }, [data])
 
   // Gerar DAG via factory
   const genDagMut = useMutation({
@@ -1059,6 +1069,11 @@ export default function Pipelines() {
             <option value="">Todos</option>
             {projects.map(p => <option key={p}>{p}</option>)}
           </Select>
+          <Select label="Domínio" value={domainFilter}
+            onChange={e => { setDomainFilter(e.target.value); setPage(0) }} className="w-40">
+            <option value="">Todos</option>
+            {allDomains.map(d => <option key={d}>{d}</option>)}
+          </Select>
           <Select label="Status" value={activeFilter}
             onChange={e => { setActiveFilter(e.target.value); setPage(0) }} className="w-32">
             <option value="">Todos</option>
@@ -1066,7 +1081,7 @@ export default function Pipelines() {
             <option value="0">Inativos</option>
           </Select>
           <div className="flex gap-2 ml-auto items-end">
-            <Button variant="secondary" size="sm" onClick={() => { setNameFilter(''); setProjectFilter(''); setActiveFilter(''); setPage(0) }}>
+            <Button variant="secondary" size="sm" onClick={() => { setNameFilter(''); setProjectFilter(''); setDomainFilter(''); setActiveFilter(''); setPage(0) }}>
               × Limpar
             </Button>
             {!isViewer && (
@@ -1104,24 +1119,24 @@ export default function Pipelines() {
 
       {/* Tree: projeto → domínio → pipelines */}
       {!isLoading && projNames.map(proj => {
-        const isCollapsed = collapsed.has(proj)
-        const domNames    = Object.keys(tree[proj]).sort()
-        const totalProj   = domNames.reduce((s, d) => s + tree[proj][d].length, 0)
-        const activeProj  = domNames.reduce((s, d) => s + tree[proj][d].filter(p => p.active).length, 0)
+        const isExpanded = expanded.has(proj)
+        const domNames   = Object.keys(tree[proj]).sort()
+        const totalProj  = domNames.reduce((s, d) => s + tree[proj][d].length, 0)
+        const activeProj = domNames.reduce((s, d) => s + tree[proj][d].filter(p => p.active).length, 0)
         return (
           <div key={proj} className="bg-panel border border-edge rounded-xl overflow-hidden">
             <button
-              onClick={() => setCollapsed(s => { const n = new Set(s); n.has(proj) ? n.delete(proj) : n.add(proj); return n })}
+              onClick={() => setExpanded(s => { const n = new Set(s); n.has(proj) ? n.delete(proj) : n.add(proj); return n })}
               className="w-full flex items-center gap-2 px-4 py-3 bg-canvas hover:bg-edge/20 transition-colors text-left"
             >
-              {isCollapsed ? <ChevronRight size={15} className="text-dim flex-shrink-0" /> : <ChevronDown size={15} className="text-dim flex-shrink-0" />}
+              {isExpanded ? <ChevronDown size={15} className="text-dim flex-shrink-0" /> : <ChevronRight size={15} className="text-dim flex-shrink-0" />}
               <span className="font-semibold text-ink text-sm">{proj}</span>
               <span className="text-xs text-dim">
                 {totalProj} pipeline{totalProj !== 1 ? 's' : ''} · {activeProj} ativo{activeProj !== 1 ? 's' : ''}
               </span>
             </button>
 
-            {!isCollapsed && domNames.map(dom => (
+            {isExpanded && domNames.map(dom => (
               <div key={dom}>
                 <div className="px-5 py-1 bg-panel/60 border-t border-edge/30">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-dim">{dom}</span>
