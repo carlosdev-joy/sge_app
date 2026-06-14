@@ -91,6 +91,26 @@ def test_busca_exata_nao_casa_substring(engine: DSXEngine):
                 assert c["name"].lower() == "cnpj"
 
 
+def test_ignora_pastas_de_backup_por_padrao(engine: DSXEngine):
+    if not _has("BI_CVP"):
+        pytest.skip("BI_CVP.dsx ausente")
+    # BI_CVP tem 1 job em \\Jobs\\Projetos\\Coberturas\\bckp
+    padrao = engine.buscar_campo("BI_CVP", "cobertura")                    # ignora bkp
+    com_bkp = engine.buscar_campo("BI_CVP", "cobertura", incluir_bkp=True)  # inclui
+    assert padrao["jobs_bkp_ignorados"] >= 1
+    assert com_bkp["jobs_bkp_ignorados"] == 0
+    assert padrao["total_jobs_impactados"] < com_bkp["total_jobs_impactados"]
+    # nenhum job retornado por padrão pode estar em categoria de backup
+    for job in padrao["jobs"]:
+        assert "bkp" not in (job.get("category") or "").lower()
+
+
+def test_is_backup_category():
+    assert DSXEngine._is_backup_category("\\\\Jobs\\\\Projetos\\\\Coberturas\\\\bckp")
+    assert DSXEngine._is_backup_category("\\\\Jobs\\\\BACKUP\\\\X")
+    assert not DSXEngine._is_backup_category("\\\\Jobs\\\\Projetos\\\\Coberturas")
+
+
 def test_termo_vazio_retorna_erro(engine: DSXEngine):
     r = engine.buscar_campo("seq_geral", "   ")
     assert "erro" in r

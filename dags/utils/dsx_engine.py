@@ -94,6 +94,10 @@ _NUMERIC_TYPE_NAMES: frozenset[str] = frozenset({
     "NUMERIC", "FLOAT", "REAL", "DOUBLE", "BIT",
 })
 
+# Padrões de pasta/categoria de backup a ignorar na varredura
+# (substring, case-insensitive). Ex.: "\\Jobs\\Projetos\\Coberturas\\bckp"
+_BACKUP_PATTERNS: tuple[str, ...] = ("backup", "bckp", "bkp", "bkup")
+
 # ── Regex compiladas (seguras — aplicadas em blocos pequenos) ────
 _RE_DSX_ESCAPE  = re.compile(r'\\\(([0-9A-Fa-f]{2})\)')
 _RE_CDATA       = re.compile(r'<!\[CDATA\[(.*?)\]\]>', re.DOTALL)
@@ -167,7 +171,7 @@ class DSXEngine:
     # ── Busca de impacto por campo (varredura do .dsx) ──────────
     def buscar_campo(self, project_name: str, termo: str,
                      exato: bool = False, tipos=None,
-                     excluir: bool = False) -> dict:
+                     excluir: bool = False, incluir_bkp: bool = False) -> dict:
         """
         Varre TODOS os jobs do .dsx do projeto e retorna onde o campo aparece,
         com o datatype de cada coluna que casou.
@@ -181,14 +185,17 @@ class DSXEngine:
           excluir — False: só colunas cujo tipo ESTÁ em `tipos`
                     True:  só colunas cujo tipo NÃO está em `tipos`
           (ex.: tipos=['VARCHAR','CHAR'], excluir=True → todo CNPJ que NÃO é texto)
+
+        incluir_bkp — False (padrão): ignora jobs em pastas de backup
+                      (categoria com bkp/bckp/backup); True: inclui esses jobs.
         """
         termo_norm = (termo or "").strip().lower()
         if not termo_norm:
             return {"erro": "O termo de busca (campo) é obrigatório."}
 
-        jobs_stages = self._load_jobs_cached(project_name)
-        if isinstance(jobs_stages, dict) and jobs_stages.get("erro"):
-            return jobs_stages
+        jobs_data = self._load_jobs_cached(project_name)
+        if isinstance(jobs_data, dict) and jobs_data.get("erro"):
+            return jobs_data
 
         tipos_set = {str(t).strip().upper() for t in (tipos or []) if str(t).strip()}
 
@@ -206,9 +213,17 @@ class DSXEngine:
 
         jobs_out: list[dict] = []
         total_ocorrencias = 0
-        for job_name in sorted(jobs_stages, key=str.lower):
+        jobs_considerados = 0
+        jobs_bkp_ignorados = 0
+        for job_name in sorted(jobs_data, key=str.lower):
+            category = jobs_data[job_name].get("category") or ""
+            if not incluir_bkp and self._is_backup_category(category):
+                jobs_bkp_ignorados += 1
+                continue
+            jobs_considerados += 1
+
             ocorrencias = []
-            for stage in jobs_stages[job_name]:
+            for stage in jobs_data[job_name].get("stages") or []:
                 cols_detail = stage.get("columns_detail") or []
                 matched = [c for c in cols_detail
                            if _match_nome(c.get("name")) and _match_tipo(c)]
@@ -230,7 +245,8 @@ class DSXEngine:
                 })
             if ocorrencias:
                 total_ocorrencias += sum(len(o["matched_columns"]) for o in ocorrencias)
-                jobs_out.append({"job_name": job_name, "ocorrencias": ocorrencias})
+                jobs_out.append({"job_name": job_name, "category": category,
+                                 "ocorrencias": ocorrencias})
 
         return {
             "sucesso":                True,
@@ -240,7 +256,9 @@ class DSXEngine:
             "exato":                  exato,
             "filtro_tipos":           sorted(tipos_set),
             "filtro_excluir":         excluir,
-            "total_jobs_dsx":         len(jobs_stages),
+            "incluir_bkp":            incluir_bkp,
+            "jobs_bkp_ignorados":     jobs_bkp_ignorados,
+            "total_jobs_dsx":         jobs_considerados,
             "total_jobs_impactados":  len(jobs_out),
             "total_ocorrencias":      total_ocorrencias,
             "jobs":                   jobs_out,
@@ -260,9 +278,23 @@ class DSXEngine:
                 yield m.group(1), block
             idx = nxt
 
+    def _job_category(self, block: str) -> str:
+        """Pasta/categoria do job no DataStage (ex.: \\Jobs\\Projetos\\Coberturas)."""
+        m = re.search(r'^\s*Category\s+"([^"]*)"', block, re.MULTILINE)
+        return m.group(1) if m else ""
+
+    @staticmethod
+    def _is_backup_category(category: str) -> bool:
+        """True se a categoria do job aparenta ser pasta de backup (bkp/bckp/backup)."""
+        low = (category or "").lower()
+        return any(p in low for p in _BACKUP_PATTERNS)
+
     # ── Parsing de todos os jobs com cache por mtime ────────────
     def _load_jobs_cached(self, project_name: str):
-        """Lê e parseia todos os jobs do .dsx; cache invalidado pelo mtime."""
+        """Lê e parseia todos os jobs do .dsx; cache invalidado pelo mtime.
+
+        Retorna dict {job_name: {"category": str, "stages": [...]}}.
+        """
         dsx_file = f"{project_name}.dsx"
         path = os.path.join(self.diretorio_base, dsx_file)
         if not os.path.exists(path):
@@ -283,14 +315,16 @@ class DSXEngine:
         except OSError as exc:
             return {"erro": f"Erro ao ler '{dsx_file}': {exc}"}
 
-        jobs_stages: dict[str, list[dict]] = {}
+        jobs_data: dict[str, dict] = {}
         for job_name, block in self._iter_job_blocks(content):
-            jobs_stages[job_name] = self._parse_stages(
-                block, project_name, job_name, dsx_file)
+            jobs_data[job_name] = {
+                "category": self._job_category(block),
+                "stages":   self._parse_stages(block, project_name, job_name, dsx_file),
+            }
 
         with _PARSE_LOCK:
-            _PARSE_CACHE[path] = (mtime, jobs_stages)
-        return jobs_stages
+            _PARSE_CACHE[path] = (mtime, jobs_data)
+        return jobs_data
 
     # ── Extração do bloco do job ────────────────────────────────
     def _extract_job_block(self, content: str, job_name: str) -> Optional[str]:
