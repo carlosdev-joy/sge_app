@@ -11,6 +11,7 @@ import Malha from './pages/Malha'
 import Governanca from './pages/Governanca'
 import ImpactoCampo from './pages/ImpactoCampo'
 import PlanosAjuste from './pages/PlanosAjuste'
+import Logs from './pages/Logs'
 
 // Telas já migradas para React são montadas abaixo. As demais permanecem na UI
 // legada (raiz) — ver src/lib/nav.ts. Mantemos os imports das páginas prontas
@@ -63,6 +64,7 @@ export default function App() {
             <Route path="governanca" element={<Governanca />} />
             <Route path="impacto-campo" element={<ImpactoCampo />} />
             <Route path="planos-ajuste" element={<PlanosAjuste />} />
+            <Route path="logs" element={<Logs />} />
           </Route>
           {/* Telas ainda não migradas caem na raiz (UI legada) */}
           <Route path="*" element={<Navigate to="/admin" replace />} />

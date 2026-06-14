@@ -27,7 +27,7 @@ export const NAV: NavItem[] = [
   { to: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard, legacyHref: '/', migrated: false },
   { to: '/pipelines',  label: 'Pipelines',  icon: Workflow,        legacyHref: '/', migrated: false },
   { to: '/jobs',       label: 'Jobs',       icon: Boxes,           legacyHref: '/', migrated: false },
-  { to: '/logs',       label: 'Logs',       icon: ScrollText,      legacyHref: '/', migrated: false },
+  { to: '/logs',       label: 'Logs',       icon: ScrollText,      legacyHref: '/', migrated: true },
   { to: '/ds-monitor', label: 'DS Monitor', icon: Activity,        legacyHref: '/', migrated: false },
   { to: '/governanca', label: 'Governança', icon: ShieldCheck,     legacyHref: '/', migrated: true },
   { to: '/malha',      label: 'Malha',      icon: Network,         legacyHref: '/', migrated: true },
