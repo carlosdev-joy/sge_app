@@ -8,6 +8,7 @@ import { AppShell } from './components/layout/AppShell'
 import Login from './pages/Login'
 import Admin from './pages/Admin'
 import Malha from './pages/Malha'
+import Governanca from './pages/Governanca'
 import ImpactoCampo from './pages/ImpactoCampo'
 import PlanosAjuste from './pages/PlanosAjuste'
 
@@ -59,6 +60,7 @@ export default function App() {
             <Route index element={<Navigate to="/admin" replace />} />
             <Route path="admin/*" element={<Admin />} />
             <Route path="malha" element={<Malha />} />
+            <Route path="governanca" element={<Governanca />} />
             <Route path="impacto-campo" element={<ImpactoCampo />} />
             <Route path="planos-ajuste" element={<PlanosAjuste />} />
           </Route>
