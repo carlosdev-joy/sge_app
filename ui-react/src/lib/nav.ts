@@ -24,7 +24,7 @@ export interface NavItem {
 }
 
 export const NAV: NavItem[] = [
-  { to: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard, legacyHref: '/', migrated: false },
+  { to: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard, legacyHref: '/', migrated: true },
   { to: '/pipelines',  label: 'Pipelines',  icon: Workflow,        legacyHref: '/', migrated: true },
   { to: '/jobs',       label: 'Jobs',       icon: Boxes,           legacyHref: '/', migrated: true },
   { to: '/logs',       label: 'Logs',       icon: ScrollText,      legacyHref: '/', migrated: true },

@@ -14,6 +14,7 @@ import PlanosAjuste from './pages/PlanosAjuste'
 import Logs from './pages/Logs'
 import Jobs from './pages/Jobs'
 import Pipelines from './pages/Pipelines'
+import Dashboard from './pages/Dashboard'
 
 // Telas já migradas para React são montadas abaixo. As demais permanecem na UI
 // legada (raiz) — ver src/lib/nav.ts. Mantemos os imports das páginas prontas
@@ -60,13 +61,14 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<PrivateRoute><AppShell /></PrivateRoute>}>
-            <Route index element={<Navigate to="/admin" replace />} />
+            <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="admin/*" element={<Admin />} />
             <Route path="malha" element={<Malha />} />
             <Route path="governanca" element={<Governanca />} />
             <Route path="impacto-campo" element={<ImpactoCampo />} />
             <Route path="planos-ajuste" element={<PlanosAjuste />} />
             <Route path="logs" element={<Logs />} />
+            <Route path="dashboard" element={<Dashboard />} />
             <Route path="jobs" element={<Jobs />} />
             <Route path="pipelines" element={<Pipelines />} />
           </Route>
