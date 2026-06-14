@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { Button } from '../components/ui/Button'
 import { PageSpinner } from '../components/ui/Spinner'
@@ -491,7 +491,8 @@ function FileLineageModal({ file, onClose, onGoLineage }: { file: string; onClos
   )
 }
 
-function OwnerModal({ pipeline, user, onClose, onSaved }: { pipeline: string; user: string; onClose: () => void; onSaved: () => void }) {
+function OwnerModal({ pipeline, user, onClose }: { pipeline: string; user: string; onClose: () => void }) {
+  const qc = useQueryClient()
   const [form, setForm] = useState({ owner_name: '', owner_email: '', steward_name: '', steward_email: '' })
   const [saving, setSaving] = useState(false)
   const { data } = useQuery<{ owner_name?: string; owner_email?: string; steward_name?: string; steward_email?: string }>({
@@ -501,8 +502,11 @@ function OwnerModal({ pipeline, user, onClose, onSaved }: { pipeline: string; us
   useEffect(() => { if (data) setForm({ owner_name: data.owner_name ?? '', owner_email: data.owner_email ?? '', steward_name: data.steward_name ?? '', steward_email: data.steward_email ?? '' }) }, [data])
   const save = async () => {
     setSaving(true)
-    try { await cat({ mode: 'save_owner', pipeline_name: pipeline, user, data: form }); onSaved(); onClose() }
-    finally { setSaving(false) }
+    try {
+      await cat({ mode: 'save_owner', pipeline_name: pipeline, user, data: form })
+      qc.invalidateQueries({ queryKey: ['get_owner', pipeline] })
+      onClose()
+    } finally { setSaving(false) }
   }
   const fld = (k: keyof typeof form, label: string) => (
     <label className="flex flex-col gap-1">
@@ -527,6 +531,7 @@ function OwnerModal({ pipeline, user, onClose, onSaved }: { pipeline: string; us
 }
 
 function TagModal({ objectKey, user, onClose }: { objectKey: string; user: string; onClose: () => void }) {
+  const qc = useQueryClient()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [original, setOriginal] = useState<Set<string>>(new Set())
   const [saving, setSaving] = useState(false)
@@ -543,6 +548,8 @@ function TagModal({ objectKey, user, onClose }: { objectKey: string; user: strin
     try {
       for (const t of selected) if (!original.has(t)) await cat({ mode: 'save_tag', object_key: objectKey, tag: t, user, remove: false })
       for (const t of original) if (!selected.has(t)) await cat({ mode: 'save_tag', object_key: objectKey, tag: t, user, remove: true })
+      qc.invalidateQueries({ queryKey: ['get_tags', objectKey] })
+      qc.invalidateQueries({ queryKey: ['asset_detail'] })
       onClose()
     } finally { setSaving(false) }
   }
@@ -731,7 +738,7 @@ function CatalogoTab({ onGoLineage }: { onGoLineage: (pipeline: string) => void 
       {tagKey && <TagModal objectKey={tagKey} user={userName} onClose={() => setTagKey(null)} />}
       {fileLineage && <FileLineageModal file={fileLineage} onClose={() => setFileLineage(null)} onGoLineage={(p) => { setFileLineage(null); onGoLineage(p) }} />}
       {history && <HistoryModal pipeline={history} onClose={() => setHistory(null)} />}
-      {ownerPipe && <OwnerModal pipeline={ownerPipe} user={userName} onClose={() => setOwnerPipe(null)} onSaved={() => {}} />}
+      {ownerPipe && <OwnerModal pipeline={ownerPipe} user={userName} onClose={() => setOwnerPipe(null)} />}
     </div>
   )
 }
@@ -988,7 +995,12 @@ function PipelinesPanel({ canEdit, initial, onCols, onTag, onFileLineage, onHist
 
   const run = (imp: boolean) => {
     setImpacto(imp)
-    if (searchType === 'arquivo') {
+    if (imp) {
+      // Impacto: igual ao legado — sempre tabela, direção origem (quem lê a tabela).
+      if (!objectName.trim()) return
+      setSearchType('tabela')
+      setQuery({ mode: 'search', search_type: 'tabela', object_name: objectName.trim(), direction: 'origem', database_name: database.trim() })
+    } else if (searchType === 'arquivo') {
       if (!fileName.trim()) return
       setQuery({ mode: 'search', search_type: 'arquivo', file_name: fileName.trim(), direction })
     } else {
@@ -997,7 +1009,11 @@ function PipelinesPanel({ canEdit, initial, onCols, onTag, onFileLineage, onHist
     }
   }
 
-  const pipelines = data?.pipelines ?? []
+  // No modo impacto o legado filtra pipelines inativos e recalcula os totais.
+  const rawPipelines = data?.pipelines ?? []
+  const pipelines = impacto ? rawPipelines.filter(p => p.active) : rawPipelines
+  const totalPipelines = impacto ? pipelines.length : (data?.total_pipelines ?? 0)
+  const totalOcorrencias = impacto ? pipelines.reduce((s, p) => s + p.ocorrencias, 0) : (data?.total_ocorrencias ?? 0)
   const leitores = pipelines.filter(p => p.jobs.some(j => j.direction === 'origem')).length
   const gravadores = pipelines.filter(p => p.jobs.some(j => j.direction === 'destino')).length
 
@@ -1047,7 +1063,7 @@ function PipelinesPanel({ canEdit, initial, onCols, onTag, onFileLineage, onHist
       {/* Status */}
       {data && (
         <div className="text-xs text-dim">
-          {impacto ? '⚡ Análise de impacto' : 'Busca'}: "{data.term}" — {data.total_pipelines} pipeline(s) · {data.total_ocorrencias} ocorrência(s)
+          {impacto ? '⚡ Análise de impacto' : 'Busca'}: "{data.term}" — {totalPipelines} pipeline(s) · {totalOcorrencias} ocorrência(s)
         </div>
       )}
 
