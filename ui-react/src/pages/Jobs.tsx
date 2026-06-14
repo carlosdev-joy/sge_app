@@ -1,166 +1,751 @@
-import { useState } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useState, useMemo } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
+import { useAuthStore } from '../store/auth'
 import { Button } from '../components/ui/Button'
-import { Input, Select } from '../components/ui/Input'
+import { Input, Select, Textarea } from '../components/ui/Input'
 import { Modal } from '../components/ui/Modal'
 import { PageSpinner } from '../components/ui/Spinner'
 import { toast } from '../components/ui/Toast'
-import { Badge } from '../components/ui/Badge'
-import type { Job } from '../types'
-import { queryClient } from '../lib/queryClient'
-import { Edit, Trash2, Plus } from 'lucide-react'
-import { useForm } from 'react-hook-form'
+import {
+  Edit, Plus, ClipboardList, Play, Save, X,
+  ChevronUp, ChevronDown, Copy, Network, ArrowUpDown,
+} from 'lucide-react'
 
-const TIPOS = ['python', 'shell', 'sql', 'datastage', 'sensor', 'dummy']
+// ── constants ──────────────────────────────────────────────────────────────
 
-function JobModal({ job, pipeline, onClose }: { job?: Job; pipeline: string; onClose: () => void }) {
-  const { register, handleSubmit, watch, formState: { errors } } = useForm<Omit<Job, 'pipeline_name'>>({
-    defaultValues: job ?? { job_name: '', ordem: 1, tipo: 'python', job_command: '', ativo: true, verbose_log: false }
+const JOB_TYPES = ['datastage', 'shell', 'python', 'storedproc'] as const
+type JobType = typeof JOB_TYPES[number]
+const AIRFLOW_UI = 'https://airflow.caixavidaeprevidencia.intranet'
+
+// ── types ──────────────────────────────────────────────────────────────────
+
+interface Job {
+  pipeline_name: string
+  project_name?: string
+  job_name: string
+  execution_order: number
+  job_type: JobType
+  job_command: string | null
+  active: number
+  ssh_conn_id: string | null
+  verbose_log: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+interface SshConn { conn_id: string; host: string; description: string }
+
+// ── helpers ────────────────────────────────────────────────────────────────
+
+function pipelineToDagId(name: string) {
+  return name.toLowerCase().replace(/[^a-z0-9_]/g, '_')
+}
+
+function copyText(t: string) {
+  navigator.clipboard.writeText(t).then(() => toast.info('Copiado!')).catch(() => toast.error('Erro ao copiar'))
+}
+
+function typeBadgeColor(t: JobType | string) {
+  const m: Record<string, string> = {
+    datastage: 'bg-blue-500/15 text-blue-400 border border-blue-800/40',
+    shell: 'bg-amber-500/15 text-amber-400 border border-amber-800/40',
+    python: 'bg-green-500/15 text-green-400 border border-green-800/40',
+    storedproc: 'bg-purple-500/15 text-purple-400 border border-purple-800/40',
+  }
+  return m[t] ?? 'bg-slate-500/15 text-slate-400 border border-slate-700'
+}
+
+// ── JobFormModal ───────────────────────────────────────────────────────────
+
+interface JobFormData {
+  job_name: string
+  execution_order: number
+  job_type: JobType
+  job_command: string
+  ssh_conn_id: string
+  verbose_log: boolean
+}
+
+function JobFormModal({
+  job, pipeline, onClose,
+}: { job?: Job; pipeline: string; onClose: () => void }) {
+  const qc = useQueryClient()
+  const isEdit = !!job
+
+  const [form, setForm] = useState<JobFormData>({
+    job_name: job?.job_name ?? '',
+    execution_order: job?.execution_order ?? 1,
+    job_type: job?.job_type ?? 'datastage',
+    job_command: job?.job_command ?? '',
+    ssh_conn_id: job?.ssh_conn_id ?? '',
+    verbose_log: job?.verbose_log ?? false,
   })
+  const [err, setErr] = useState<string[]>([])
 
-  const tipoAtual = watch('tipo')
+  const { data: sshData } = useQuery<{ connections: SshConn[] }>({
+    queryKey: ['ssh-connections'],
+    queryFn: () => apiFetch('/airflow/connections/ssh'),
+    staleTime: 60_000,
+  })
+  const sshConns = sshData?.connections ?? []
 
-  const mut = useMutation({
-    mutationFn: (data: any) => apiFetch('/pipelines/jobs/register', {
+  const saveMut = useMutation({
+    mutationFn: () => apiFetch('/pipelines/jobs/register', {
       method: 'POST',
-      body: JSON.stringify({ ...data, pipeline_name: pipeline, operacao: job ? 'upsert' : 'upsert' }),
+      body: JSON.stringify({
+        pipeline_name: pipeline,
+        job_name: form.job_name.trim(),
+        execution_order: form.execution_order,
+        job_type: form.job_type,
+        job_command: form.job_command.trim() || null,
+        ssh_conn_id: form.job_type === 'shell' ? (form.ssh_conn_id || null) : null,
+        verbose_log: form.job_type === 'datastage' ? form.verbose_log : false,
+        require_lineage: false,
+        operacao: 'upsert',
+      }),
     }),
-    onSuccess: () => { toast.success('Job salvo'); queryClient.invalidateQueries({ queryKey: ['jobs'] }); onClose() },
-    onError: (e: any) => toast.error(e.message),
+    onSuccess: () => {
+      toast.success(isEdit ? 'Job atualizado' : 'Job criado')
+      qc.invalidateQueries({ queryKey: ['jobs'] })
+      onClose()
+    },
+    onError: (e: any) => {
+      const detail = e.message
+      try {
+        const parsed = JSON.parse(detail)
+        setErr(parsed.errors ?? [detail])
+      } catch { setErr([detail]) }
+    },
   })
+
+  function validate() {
+    const errs: string[] = []
+    if (!form.job_name.trim()) errs.push('Nome do job é obrigatório')
+    if (!form.execution_order || form.execution_order < 1) errs.push('Ordem deve ser >= 1')
+    if (form.job_type === 'shell' && !form.ssh_conn_id) errs.push('Servidor SSH é obrigatório para jobs shell')
+    setErr(errs)
+    return errs.length === 0
+  }
+
+  function f<K extends keyof JobFormData>(k: K, v: JobFormData[K]) {
+    setForm(prev => ({ ...prev, [k]: v }))
+    setErr([])
+  }
 
   return (
-    <Modal open title={job ? `Editar Job: ${job.job_name}` : 'Novo Job'} onClose={onClose}>
-      <form onSubmit={handleSubmit((d) => mut.mutate(d))} className="flex flex-col gap-4">
-        <Input label="Nome do Job" {...register('job_name', { required: 'Obrigatório' })} error={errors.job_name?.message} />
+    <Modal open title={isEdit ? `Editar Job: ${job!.job_name}` : 'Novo Job'} onClose={onClose} size="md">
+      <div className="flex flex-col gap-4">
+        <div className="text-xs text-dim bg-canvas border border-edge rounded-lg px-3 py-2">
+          Pipeline: <span className="font-mono text-ink">{pipeline}</span>
+        </div>
+
+        <Input
+          label="Nome do Job *"
+          value={form.job_name}
+          onChange={e => f('job_name', e.target.value)}
+          placeholder="ex: BiCvp_BaseCobranca_01_ext_Parcelas"
+          disabled={isEdit}
+          className={isEdit ? 'opacity-60' : ''}
+        />
+
         <div className="grid grid-cols-2 gap-3">
-          <Input label="Ordem" type="number" {...register('ordem', { valueAsNumber: true })} />
-          <Select label="Tipo" {...register('tipo')}>
-            {TIPOS.map(t => <option key={t}>{t}</option>)}
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-dim font-medium">Ordem de execução *</label>
+            <input
+              type="number" min={1}
+              value={form.execution_order}
+              onChange={e => f('execution_order', parseInt(e.target.value) || 1)}
+              className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p className="text-xs text-dim/60">Mesma ordem = execução paralela</p>
+          </div>
+
+          <Select label="Tipo *" value={form.job_type}
+            onChange={e => f('job_type', e.target.value as JobType)}>
+            {JOB_TYPES.map(t => <option key={t}>{t}</option>)}
           </Select>
         </div>
-        <Input label="Comando / Path" {...register('job_command')} placeholder="ex: dags.meu_modulo.run" />
 
-        <div className="flex flex-col gap-2">
-          <label className="flex items-center gap-2 text-sm text-dim">
-            <input type="checkbox" {...register('ativo')} className="accent-blue-500" />
-            Ativo
-          </label>
+        <Input
+          label={form.job_type === 'datastage' ? 'Nome do job DataStage' : form.job_type === 'storedproc' ? 'Procedure (ex: dbo.sp_nome)' : 'Comando / Path'}
+          value={form.job_command}
+          onChange={e => f('job_command', e.target.value)}
+          placeholder={
+            form.job_type === 'datastage' ? 'ex: BiCvp.job_name' :
+            form.job_type === 'shell' ? 'ex: /opt/scripts/run.sh' :
+            form.job_type === 'python' ? 'ex: scripts.modulo.run' :
+            'ex: dbo.sp_procedure'
+          }
+        />
 
-          {tipoAtual === 'datastage' && (
-            <div className="mt-1 rounded-lg border border-edge bg-canvas p-3 flex flex-col gap-1">
-              <label className="flex items-center gap-2 text-sm text-ink cursor-pointer select-none">
-                <input type="checkbox" {...register('verbose_log')} className="accent-amber-400" />
-                <span className="font-medium">Log detalhado durante execução</span>
-              </label>
-              <p className="text-xs text-dim pl-5">
-                Quando ativo, registra o progresso dos jobs filhos a cada 5 minutos enquanto o job roda.
-                Útil para investigar lentidão em jobs do tipo SEQUENCE. Desative após a investigação
-                para reduzir o uso de SSH no servidor DataStage.
-              </p>
-            </div>
-          )}
+        {/* SSH para shell */}
+        {form.job_type === 'shell' && (
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-dim font-medium">Servidor SSH (conexão Airflow) *</label>
+            <select
+              value={form.ssh_conn_id}
+              onChange={e => f('ssh_conn_id', e.target.value)}
+              className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="">Selecione a conexão SSH...</option>
+              {sshConns.map(c => (
+                <option key={c.conn_id} value={c.conn_id}>{c.conn_id} {c.host ? `(${c.host})` : ''}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Log detalhado para datastage */}
+        {form.job_type === 'datastage' && (
+          <div className="bg-amber-900/10 border border-amber-800/40 rounded-lg px-3 py-3">
+            <label className="flex items-start gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.verbose_log}
+                onChange={e => f('verbose_log', e.target.checked)}
+                className="mt-0.5 accent-amber-400"
+              />
+              <div>
+                <span className="text-sm text-ink font-medium">Log detalhado durante execução</span>
+                <p className="text-xs text-dim mt-0.5">
+                  Registra o progresso dos jobs filhos a cada 5 min (jobs SEQUENCE).
+                  Útil para diagnosticar lentidão — desative após a investigação.
+                </p>
+              </div>
+            </label>
+          </div>
+        )}
+
+        {err.length > 0 && (
+          <div className="bg-red-900/20 border border-red-800 rounded-lg p-3">
+            {err.map((e, i) => <p key={i} className="text-xs text-red-400">{e}</p>)}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-1 border-t border-edge">
+          <Button variant="secondary" onClick={onClose}>Cancelar</Button>
+          <Button loading={saveMut.isPending} onClick={() => { if (validate()) saveMut.mutate() }}>
+            <Save size={13} /> {isEdit ? 'Salvar alterações' : 'Criar Job'}
+          </Button>
         </div>
-
-        <div className="flex justify-end gap-2 pt-2">
-          <Button variant="secondary" type="button" onClick={onClose}>Cancelar</Button>
-          <Button type="submit" loading={mut.isPending}>Salvar</Button>
-        </div>
-      </form>
+      </div>
     </Modal>
   )
 }
 
+// ── BulkModal ──────────────────────────────────────────────────────────────
+
+function BulkModal({ pipeline, onClose }: { pipeline: string; onClose: () => void }) {
+  const qc = useQueryClient()
+  const [text, setText] = useState('')
+  const [preview, setPreview] = useState<{ ok: boolean; line: string; parsed?: any }[]>([])
+  const [err, setErr] = useState('')
+
+  function parseLines(raw: string) {
+    return raw.split('\n').map(line => {
+      const l = line.trim()
+      if (!l) return null
+      const parts = l.split(',').map(s => s.trim())
+      const [job_name, ordem, job_type, ...rest] = parts
+      const job_command = rest.join(',').trim() || null
+      const execution_order = parseInt(ordem)
+      if (!job_name) return { ok: false, line: l, error: 'Nome ausente' }
+      if (isNaN(execution_order) || execution_order < 1) return { ok: false, line: l, error: 'Ordem inválida' }
+      if (!JOB_TYPES.includes(job_type as JobType)) return { ok: false, line: l, error: `Tipo inválido: ${job_type}` }
+      return { ok: true, line: l, parsed: { job_name, execution_order, job_type, job_command } }
+    }).filter(Boolean) as { ok: boolean; line: string; parsed?: any }[]
+  }
+
+  function handleChange(v: string) {
+    setText(v)
+    setPreview(parseLines(v))
+    setErr('')
+  }
+
+  const saveMut = useMutation({
+    mutationFn: (jobs: any[]) => apiFetch('/pipelines/jobs/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        pipeline_name: pipeline,
+        require_lineage: false,
+        jobs: jobs.map(j => ({ ...j, verbose_log: false, ssh_conn_id: null, operacao: 'upsert' })),
+      }),
+    }),
+    onSuccess: () => {
+      toast.success('Jobs criados com sucesso')
+      qc.invalidateQueries({ queryKey: ['jobs'] })
+      onClose()
+    },
+    onError: (e: any) => setErr(e.message),
+  })
+
+  const valid = preview.filter(p => p.ok)
+  const invalid = preview.filter(p => !p.ok)
+
+  function submit() {
+    if (invalid.length > 0) { setErr('Corrija os erros antes de salvar'); return }
+    if (valid.length === 0) { setErr('Nenhum job válido para importar'); return }
+    saveMut.mutate(valid.map(p => p.parsed))
+  }
+
+  return (
+    <Modal open title="Colar lista de Jobs" onClose={onClose} size="lg">
+      <div className="flex flex-col gap-4">
+        <div className="bg-canvas border border-edge rounded-lg p-3 text-xs text-dim">
+          <p className="font-medium text-ink mb-1">Formato: <span className="font-mono">nome,ordem,tipo,comando</span></p>
+          <p>Um job por linha. Exemplo:</p>
+          <pre className="mt-1 text-dim/80 font-mono">BiCvp_Extract_01,1,datastage,
+BiCvp_Load_A,2,shell,/opt/scripts/load_a.sh
+BiCvp_Load_B,2,python,scripts.load_b.run</pre>
+        </div>
+
+        <Textarea
+          label={`Pipeline: ${pipeline}`}
+          value={text}
+          onChange={e => handleChange(e.target.value)}
+          rows={8}
+          placeholder="Cole a lista de jobs aqui..."
+          className="font-mono text-xs"
+        />
+
+        {preview.length > 0 && (
+          <div className="border border-edge rounded-lg overflow-hidden">
+            <div className="px-3 py-2 bg-canvas border-b border-edge text-xs text-dim">
+              Pré-visualização: {valid.length} válidos, {invalid.length} com erro
+            </div>
+            <div className="max-h-48 overflow-y-auto">
+              {preview.map((p, i) => (
+                <div key={i} className={`flex items-center gap-2 px-3 py-1.5 text-xs border-b border-edge/40 ${p.ok ? '' : 'bg-red-900/10'}`}>
+                  <span className={p.ok ? 'text-green-400' : 'text-red-400'}>{p.ok ? '✓' : '✗'}</span>
+                  <span className="font-mono text-dim flex-1 truncate">{p.line}</span>
+                  {!p.ok && <span className="text-red-400 shrink-0">{(p as any).error}</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {err && <p className="text-xs text-red-400">{err}</p>}
+
+        <div className="flex justify-end gap-2 border-t border-edge pt-3">
+          <Button variant="secondary" onClick={onClose}>Cancelar</Button>
+          <Button loading={saveMut.isPending} onClick={submit} disabled={valid.length === 0}>
+            <ClipboardList size={13} /> Importar {valid.length} job{valid.length !== 1 ? 's' : ''}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ── Execution diagram ──────────────────────────────────────────────────────
+
+function ExecDiagram({ jobs }: { jobs: Job[] }) {
+  const groups = useMemo(() => {
+    const map = new Map<number, Job[]>()
+    jobs.forEach(j => {
+      const o = j.execution_order
+      if (!map.has(o)) map.set(o, [])
+      map.get(o)!.push(j)
+    })
+    return Array.from(map.entries()).sort((a, b) => a[0] - b[0])
+  }, [jobs])
+
+  if (groups.length === 0) return null
+
+  const typeColor: Record<string, string> = {
+    datastage: 'border-blue-600 bg-blue-900/30 text-blue-300',
+    shell: 'border-amber-600 bg-amber-900/30 text-amber-300',
+    python: 'border-green-600 bg-green-900/30 text-green-300',
+    storedproc: 'border-purple-600 bg-purple-900/30 text-purple-300',
+  }
+
+  return (
+    <div className="bg-canvas border border-edge rounded-xl p-4 overflow-x-auto">
+      <p className="text-xs text-dim font-medium mb-3">Diagrama de execução (ordens → paralelos)</p>
+      <div className="flex items-center gap-0 min-w-max">
+        {groups.map(([order, gjobs], gi) => (
+          <div key={order} className="flex items-center shrink-0">
+            <div className="flex flex-col gap-1.5">
+              {gjobs.map(j => (
+                <div
+                  key={j.job_name}
+                  className={`border rounded-lg px-2.5 py-1.5 text-xs font-mono min-w-[130px] max-w-[200px] ${typeColor[j.job_type] ?? 'border-slate-600 bg-slate-800/30 text-slate-300'}`}
+                  title={`${j.job_name} · Tipo: ${j.job_type}${j.job_command ? ' · ' + j.job_command : ''}`}
+                >
+                  <div className="truncate font-medium">{j.job_name}</div>
+                  <div className="text-[10px] opacity-60 mt-0.5">{j.job_type} · ord. {order}</div>
+                </div>
+              ))}
+            </div>
+            {gi < groups.length - 1 && (
+              <div className="text-edge text-lg mx-2 font-thin">→</div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Main component ─────────────────────────────────────────────────────────
+
+type SortCol = 'job_name' | 'execution_order' | 'job_type' | 'pipeline_name'
+type SortDir = 'asc' | 'desc'
+
 export default function Jobs() {
-  const [pipeline, setPipeline] = useState('')
-  const [jobFilter, setJobFilter] = useState('')
+  const qc = useQueryClient()
+  const user = useAuthStore(s => s.user)
+  const isViewer = user?.perfil === 'consulta'
+
+  // Search state
+  const [pipelineInput, setPipelineInput] = useState('')
+  const [nameFilter, setNameFilter] = useState('')
+  const [typeFilter, setTypeFilter] = useState('')
   const [searched, setSearched] = useState('')
+  const [page, setPage] = useState(0)
+  const LIMIT = 50
+
+  // UI state
+  const [showDiagram, setShowDiagram] = useState(false)
   const [editJob, setEditJob] = useState<Job | undefined>()
   const [showNew, setShowNew] = useState(false)
+  const [showBulk, setShowBulk] = useState(false)
+  const [bannerVisible, setBannerVisible] = useState(true)
 
-  const { data, isLoading } = useQuery<{ jobs: Job[] }>({
-    queryKey: ['jobs', searched],
-    queryFn: () => apiFetch(`/jobs?limit=200&filter_pipeline=${encodeURIComponent(searched)}`),
+  // Sort state
+  const [sortCol, setSortCol] = useState<SortCol>('execution_order')
+  const [sortDir, setSortDir] = useState<SortDir>('asc')
+
+  // Inline order edits
+  const [orderEdits, setOrderEdits] = useState<Record<string, number>>({})
+  const orderDirty = Object.keys(orderEdits).length > 0
+
+  const qs = new URLSearchParams({
+    limit: String(LIMIT), offset: String(page * LIMIT),
+    filter_pipeline: searched,
+  })
+  if (nameFilter) qs.set('filter_job_name', nameFilter)
+  if (typeFilter) qs.set('filter_job_type', typeFilter)
+
+  const { data, isLoading } = useQuery<{ total: number; pages: number; data: Job[] }>({
+    queryKey: ['jobs', searched, nameFilter, typeFilter, page],
+    queryFn: () => apiFetch(`/jobs?${qs}`),
     enabled: !!searched,
   })
 
-  const deleteMut = useMutation({
-    mutationFn: (job: Job) => apiFetch('/pipelines/jobs/register', {
-      method: 'POST',
-      body: JSON.stringify({ job_name: job.job_name, pipeline_name: job.pipeline_name, operacao: 'delete' }),
-    }),
-    onSuccess: () => { toast.success('Job removido'); queryClient.invalidateQueries({ queryKey: ['jobs'] }) },
+  // Sort client-side
+  const jobs = useMemo(() => {
+    const rows = [...(data?.data ?? [])]
+    rows.sort((a, b) => {
+      let av: any = a[sortCol], bv: any = b[sortCol]
+      if (sortCol === 'execution_order') { av = av ?? 999; bv = bv ?? 999 }
+      else { av = String(av ?? '').toLowerCase(); bv = String(bv ?? '').toLowerCase() }
+      return sortDir === 'asc' ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1)
+    })
+    return rows
+  }, [data, sortCol, sortDir])
+
+  function toggleSort(col: SortCol) {
+    if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortCol(col); setSortDir('asc') }
+  }
+
+  function SortBtn({ col, label }: { col: SortCol; label: string }) {
+    const active = sortCol === col
+    return (
+      <button
+        className={`flex items-center gap-1 hover:text-ink transition-colors ${active ? 'text-blue-400' : 'text-dim'}`}
+        onClick={() => toggleSort(col)}
+      >
+        {label}
+        {active
+          ? sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />
+          : <ArrowUpDown size={11} className="opacity-40" />}
+      </button>
+    )
+  }
+
+  // Reorder mutation
+  const reorderMut = useMutation({
+    mutationFn: () => {
+      const jobsPayload = (data?.data ?? []).map(j => ({
+        job_name: j.job_name,
+        execution_order: orderEdits[j.job_name] ?? j.execution_order,
+      }))
+      return apiFetch('/pipelines/jobs/reorder', {
+        method: 'POST',
+        body: JSON.stringify({ pipeline_name: searched, jobs: jobsPayload }),
+      })
+    },
+    onSuccess: () => {
+      toast.success('Ordem salva com sucesso')
+      setOrderEdits({})
+      qc.invalidateQueries({ queryKey: ['jobs'] })
+    },
     onError: (e: any) => toast.error(e.message),
   })
 
-  const jobs = (data?.jobs ?? []).filter(j =>
-    !jobFilter || j.job_name.toLowerCase().includes(jobFilter.toLowerCase())
-  )
+  // Execute pipeline via Airflow
+  const execMut = useMutation({
+    mutationFn: () => {
+      const dagId = pipelineToDagId(searched)
+      const runId = `manual_orq_${Date.now()}`
+      return apiFetch(`/airflow/dags/${encodeURIComponent(dagId)}/dagRuns`, {
+        method: 'POST',
+        body: JSON.stringify({ dag_run_id: runId, conf: {} }),
+      })
+    },
+    onSuccess: (data: any) => {
+      const dagId = pipelineToDagId(searched)
+      toast.success(`Pipeline disparado! (${data?.dag_run_id ?? 'ok'})`)
+      setTimeout(() => window.open(`${AIRFLOW_UI}/dags/${dagId}/grid`, '_blank'), 1200)
+    },
+    onError: (e: any) => {
+      if (e.message?.includes('404')) toast.error('DAG não encontrada. Gere o DAG primeiro.')
+      else if (e.message?.includes('409')) toast.error('Já existe uma execução ativa.')
+      else toast.error(e.message)
+    },
+  })
+
+  function doSearch() {
+    if (!pipelineInput.trim()) { toast.error('Informe o pipeline para buscar jobs.'); return }
+    setSearched(pipelineInput.trim())
+    setPage(0)
+    setOrderEdits({})
+    setShowDiagram(false)
+  }
+
+  function doClear() {
+    setNameFilter(''); setTypeFilter('')
+    setSearched(''); setPipelineInput('')
+    setPage(0); setOrderEdits({})
+  }
+
+  function handleOrderEdit(jobName: string, val: string) {
+    const n = parseInt(val)
+    if (!isNaN(n) && n >= 1) setOrderEdits(prev => ({ ...prev, [jobName]: n }))
+  }
+
+  const total = data?.total ?? 0
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-lg font-bold text-ink">Jobs</h1>
-      <div className="bg-panel border border-edge rounded-lg p-4 flex flex-wrap gap-3 items-end">
-        <Input label="Pipeline *" value={pipeline} onChange={e => setPipeline(e.target.value)} placeholder="nome exato do pipeline" className="w-64" />
-        <Input label="Filtrar job" value={jobFilter} onChange={e => setJobFilter(e.target.value)} placeholder="parte do nome" className="w-44" />
-        <Button onClick={() => { setSearched(pipeline) }} disabled={!pipeline}>Buscar</Button>
-        {searched && <Button variant="secondary" onClick={() => setShowNew(true)}><Plus size={13} /> Novo Job</Button>}
+
+      {/* Info banner */}
+      {bannerVisible && (
+        <div className="bg-blue-900/15 border border-blue-800/40 rounded-xl p-4 flex gap-3">
+          <span className="text-xl shrink-0">⬡</span>
+          <div className="flex-1 text-sm">
+            <strong className="text-ink">O que é um Job?</strong>
+            <ul className="mt-1.5 space-y-1 text-xs text-dim list-disc list-inside">
+              <li>Um <strong className="text-ink">job</strong> é a unidade mínima de trabalho dentro de um pipeline — uma extração, transformação ou carga específica.</li>
+              <li><strong className="text-ink">Tipos:</strong> <code className="font-mono">datastage</code> (IBM DataStage), <code className="font-mono">shell</code> (scripts bash), <code className="font-mono">python</code> (scripts .py) e <code className="font-mono">storedproc</code> (procedures SQL).</li>
+              <li>A <strong className="text-ink">Ordem</strong> define a sequência: jobs com <em>mesma ordem</em> rodam <strong className="text-ink">em paralelo</strong>; ordens distintas rodam em série.</li>
+            </ul>
+          </div>
+          <button onClick={() => setBannerVisible(false)} className="text-dim hover:text-ink shrink-0">
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
+      {/* Filter bar */}
+      <div className="bg-panel border border-edge rounded-xl p-4">
+        <div className="flex flex-wrap gap-3 items-end">
+          <Input
+            label="Pipeline *"
+            value={pipelineInput}
+            onChange={e => setPipelineInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && doSearch()}
+            placeholder="ex: etl_cobranca_diaria"
+            className="w-64"
+          />
+          <Input
+            label="Nome do job"
+            value={nameFilter}
+            onChange={e => setNameFilter(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && doSearch()}
+            placeholder="filtrar por nome..."
+            className="w-48"
+          />
+          <Select label="Tipo" value={typeFilter}
+            onChange={e => setTypeFilter(e.target.value)} className="w-36">
+            <option value="">Todos</option>
+            {JOB_TYPES.map(t => <option key={t}>{t}</option>)}
+          </Select>
+          <div className="flex gap-2 ml-auto items-end">
+            <Button variant="secondary" size="sm" onClick={doClear}>× Limpar</Button>
+            <Button size="sm" onClick={doSearch} disabled={!pipelineInput.trim()}>
+              Buscar jobs
+            </Button>
+          </div>
+        </div>
       </div>
 
+      {/* Empty state before search */}
       {!searched && (
-        <div className="text-center py-12 text-dim text-sm">Informe um pipeline e clique em Buscar</div>
+        <div className="bg-panel border border-edge rounded-xl py-16 flex flex-col items-center gap-2 text-dim">
+          <span className="text-4xl">⬡</span>
+          <p className="text-sm font-medium">Nenhum job carregado</p>
+          <p className="text-xs">Informe o pipeline e clique em Buscar jobs.</p>
+        </div>
       )}
 
       {searched && isLoading && <PageSpinner />}
 
       {searched && !isLoading && (
-        <div className="bg-panel border border-edge rounded-lg overflow-hidden">
-          <div className="px-4 py-2 border-b border-edge text-xs text-dim">{jobs.length} jobs — Pipeline: <span className="text-ink font-mono">{searched}</span></div>
-          <table className="w-full text-sm">
-            <thead><tr className="text-xs text-dim border-b border-edge">
-              <th className="px-4 py-2 text-left">#</th>
-              <th className="px-4 py-2 text-left">Job</th>
-              <th className="px-4 py-2 text-left">Ordem</th>
-              <th className="px-4 py-2 text-left">Tipo</th>
-              <th className="px-4 py-2 text-left">Comando</th>
-              <th className="px-4 py-2 text-left">Status</th>
-              <th className="px-4 py-2 text-left">Log</th>
-              <th className="px-4 py-2 text-right">Ações</th>
-            </tr></thead>
-            <tbody>
-              {jobs.map((j, i) => (
-                <tr key={j.job_name} className="border-b border-edge/50 hover:bg-edge/30">
-                  <td className="px-4 py-2 text-dim text-xs">{i + 1}</td>
-                  <td className="px-4 py-2 text-ink font-mono text-xs">{j.job_name}</td>
-                  <td className="px-4 py-2 text-dim">{j.ordem}</td>
-                  <td className="px-4 py-2"><Badge value={j.tipo} /></td>
-                  <td className="px-4 py-2 text-dim font-mono text-xs max-w-xs truncate">{j.job_command}</td>
-                  <td className="px-4 py-2"><Badge value={j.ativo ? 'ativo' : 'inativo'} /></td>
-                  <td className="px-4 py-2">
-                    {j.tipo === 'datastage' && j.verbose_log
-                      ? <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full" title="Log detalhado ativo — registra progresso dos jobs filhos a cada 5 min">🔍 detalhado</span>
-                      : <span className="text-xs text-dim">—</span>
-                    }
-                  </td>
-                  <td className="px-4 py-2 flex justify-end gap-1.5">
-                    <Button variant="ghost" size="sm" onClick={() => setEditJob(j)}><Edit size={13} /></Button>
-                    <Button variant="ghost" size="sm" onClick={() => { if (confirm(`Remover ${j.job_name}?`)) deleteMut.mutate(j) }}><Trash2 size={13} className="text-red-400" /></Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          {/* Context actions */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-dim flex-1">
+              {total} job{total !== 1 ? 's' : ''} · Pipeline: <span className="font-mono text-ink">{searched}</span>
+            </span>
+            <Button variant="secondary" size="sm" onClick={() => setShowDiagram(d => !d)}>
+              <Network size={13} /> {showDiagram ? 'Ocultar' : 'Ver'} diagrama
+            </Button>
+            {!isViewer && (
+              <>
+                <Button
+                  variant="secondary" size="sm"
+                  disabled={!orderDirty}
+                  loading={reorderMut.isPending}
+                  onClick={() => reorderMut.mutate()}
+                  className={orderDirty ? 'border-blue-600 text-blue-400' : ''}
+                >
+                  <Save size={13} /> Salvar ordem
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => setShowNew(true)}>
+                  <Plus size={13} /> Adicionar job
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => setShowBulk(true)}>
+                  <ClipboardList size={13} /> Colar lista
+                </Button>
+                <Button
+                  variant="secondary" size="sm"
+                  loading={execMut.isPending}
+                  onClick={() => {
+                    if (confirm(`Executar o pipeline "${searched}" agora, fora do agendamento?`))
+                      execMut.mutate()
+                  }}
+                  className="border-green-800/40 text-green-400 hover:text-green-300"
+                >
+                  <Play size={13} /> Executar agora
+                </Button>
+              </>
+            )}
+          </div>
+
+          {/* Execution diagram */}
+          {showDiagram && <ExecDiagram jobs={data?.data ?? []} />}
+
+          {/* Results table */}
+          {jobs.length === 0 ? (
+            <div className="bg-panel border border-edge rounded-xl py-12 flex flex-col items-center gap-2 text-dim">
+              <span className="text-3xl">⬡</span>
+              <p className="text-sm">Nenhum job encontrado para "{searched}"</p>
+            </div>
+          ) : (
+            <div className="bg-panel border border-edge rounded-xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs border-b border-edge bg-canvas">
+                      <th className="px-3 py-2 text-left w-8 text-dim">#</th>
+                      <th className="px-3 py-2 text-left"><SortBtn col="pipeline_name" label="Pipeline" /></th>
+                      <th className="px-3 py-2 text-left"><SortBtn col="job_name" label="Job" /></th>
+                      <th className="px-3 py-2 text-center w-24"><SortBtn col="execution_order" label="Ordem" /></th>
+                      <th className="px-3 py-2 text-left"><SortBtn col="job_type" label="Tipo" /></th>
+                      <th className="px-3 py-2 text-left">Comando</th>
+                      <th className="px-3 py-2 text-left">Log</th>
+                      {!isViewer && <th className="px-3 py-2 text-right">Ações</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {jobs.map((j, i) => {
+                      const currentOrder = orderEdits[j.job_name] ?? j.execution_order
+                      const edited = orderEdits[j.job_name] !== undefined
+                      return (
+                        <tr key={j.job_name} className="border-b border-edge/40 hover:bg-edge/20 transition-colors">
+                          <td className="px-3 py-2 text-dim text-xs">{(page * LIMIT) + i + 1}</td>
+                          <td className="px-3 py-2 text-dim text-xs font-mono truncate max-w-[160px]"
+                            title={j.pipeline_name}>{j.pipeline_name}</td>
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono text-xs text-ink font-medium">{j.job_name}</span>
+                              <button
+                                onClick={() => copyText(j.job_name)}
+                                className="text-dim hover:text-ink opacity-0 group-hover:opacity-100 transition-opacity"
+                                title="Copiar nome"
+                              >
+                                <Copy size={11} />
+                              </button>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            {!isViewer ? (
+                              <input
+                                type="number" min={1}
+                                value={currentOrder}
+                                onChange={e => handleOrderEdit(j.job_name, e.target.value)}
+                                className={`w-16 text-center text-xs rounded border px-1.5 py-0.5 bg-canvas focus:outline-none focus:ring-1 focus:ring-blue-500 ${edited ? 'border-blue-500 text-blue-400' : 'border-edge text-dim'}`}
+                              />
+                            ) : (
+                              <span className="text-dim text-xs">{currentOrder}</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${typeBadgeColor(j.job_type)}`}>
+                              {j.job_type}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-dim text-xs max-w-[220px]">
+                            <div className="truncate" title={j.job_command ?? ''}>
+                              {j.job_command || <span className="text-dim/40">—</span>}
+                              {j.job_type === 'shell' && j.ssh_conn_id && (
+                                <span className="ml-1.5 text-[10px] bg-amber-900/30 text-amber-400 border border-amber-800/40 px-1.5 py-0.5 rounded font-mono">
+                                  {j.ssh_conn_id}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2">
+                            {j.job_type === 'datastage' && j.verbose_log
+                              ? <span className="text-xs text-amber-400 bg-amber-900/20 border border-amber-800/40 px-1.5 py-0.5 rounded" title="Log detalhado ativo — registra progresso dos jobs filhos a cada 5 min">🔍 detalhado</span>
+                              : <span className="text-dim/40 text-xs">—</span>}
+                          </td>
+                          {!isViewer && (
+                            <td className="px-3 py-2 text-right">
+                              <Button variant="ghost" size="sm" title="Editar job" onClick={() => setEditJob(j)}>
+                                <Edit size={13} />
+                              </Button>
+                            </td>
+                          )}
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination */}
+              {(data?.pages ?? 1) > 1 && (
+                <div className="px-4 py-2 flex items-center gap-3 border-t border-edge">
+                  <Button variant="ghost" size="sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}>← Anterior</Button>
+                  <span className="text-xs text-dim">Página {page + 1} de {data?.pages ?? 1} · {total} jobs</span>
+                  <Button variant="ghost" size="sm" disabled={page + 1 >= (data?.pages ?? 1)} onClick={() => setPage(p => p + 1)}>Próxima →</Button>
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
 
-      {(editJob || showNew) && (
-        <JobModal
-          job={editJob}
-          pipeline={searched}
-          onClose={() => { setEditJob(undefined); setShowNew(false) }}
-        />
-      )}
+      {/* Modals */}
+      {showNew && <JobFormModal pipeline={searched} onClose={() => setShowNew(false)} />}
+      {editJob && <JobFormModal job={editJob} pipeline={searched} onClose={() => setEditJob(undefined)} />}
+      {showBulk && <BulkModal pipeline={searched} onClose={() => setShowBulk(false)} />}
     </div>
   )
 }
