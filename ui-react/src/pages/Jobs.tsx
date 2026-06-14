@@ -4,6 +4,7 @@ import { apiFetch } from '../lib/api'
 import { useAuthStore } from '../store/auth'
 import { Button } from '../components/ui/Button'
 import { Input, Select, Textarea } from '../components/ui/Input'
+import { Autocomplete } from '../components/ui/Autocomplete'
 import { Modal } from '../components/ui/Modal'
 import { PageSpinner } from '../components/ui/Spinner'
 import { toast } from '../components/ui/Toast'
@@ -625,18 +626,31 @@ export default function Jobs() {
       {/* Filter bar */}
       <div className="bg-panel border border-edge rounded-xl p-4">
         <div className="flex flex-wrap gap-3 items-end">
-          <Input
+          <Autocomplete
             label="Pipeline *"
             value={pipelineInput}
-            onChange={e => setPipelineInput(e.target.value)}
+            onChange={setPipelineInput}
+            onSelect={v => { setPipelineInput(v); setSearched(v); setPage(0); setOrderEdits({}) }}
+            fetchSuggestions={q =>
+              apiFetch<{ data: { pipeline_name: string }[] }>(`/pipelines?limit=10&filter_name=${encodeURIComponent(q)}`)
+                .then(r => r.data.map(p => p.pipeline_name))
+            }
             onKeyDown={e => e.key === 'Enter' && doSearch()}
             placeholder="ex: etl_cobranca_diaria"
             className="w-64"
           />
-          <Input
+          <Autocomplete
             label="Nome do job"
             value={nameFilter}
-            onChange={e => setNameFilter(e.target.value)}
+            onChange={setNameFilter}
+            onSelect={v => { setNameFilter(v) }}
+            fetchSuggestions={q =>
+              searched
+                ? apiFetch<{ data: { job_name: string }[] }>(
+                    `/jobs?limit=10&filter_pipeline=${encodeURIComponent(searched)}&filter_job_name=${encodeURIComponent(q)}`
+                  ).then(r => r.data.map(j => j.job_name))
+                : Promise.resolve([])
+            }
             onKeyDown={e => e.key === 'Enter' && doSearch()}
             placeholder="filtrar por nome..."
             className="w-48"
