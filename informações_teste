@@ -15,3 +15,18 @@ git clone --depth=1 --branch main https://github.com/carlosdev-joy/sge_app.git /
 
 # 2. Roda a shell nova (ela faz o resto: clona pra tmp, rsync, recria nginx)
 bash /opt/git/sge_app/scripts/deploy.sh
+
+
+
+# 1. Pegar o nginx.conf corrigido do repo
+curl -fsSL https://raw.githubusercontent.com/carlosdev-joy/sge_app/main/ui/nginx.conf \
+  -o /opt/airflow/ui/nginx.conf
+
+# 2. Verificar que ficou certo (deve ter @v2spa)
+grep -A4 'location /v2/' /opt/airflow/ui/nginx.conf
+
+# 3. Restart simples (só recarrega config, não precisa recriar)
+docker compose restart ui-nginx
+
+# 4. Testar
+curl -I http://localhost/v2/admin
