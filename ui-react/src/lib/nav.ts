@@ -11,7 +11,7 @@
 import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, Workflow, Boxes, ScrollText,
-  Activity, ShieldCheck, Network, Settings, FileSearch, ClipboardList,
+  ShieldCheck, Network, Settings, FileSearch, ClipboardList,
 } from 'lucide-react'
 
 export interface NavItem {
@@ -28,7 +28,6 @@ export const NAV: NavItem[] = [
   { to: '/pipelines',  label: 'Pipelines',  icon: Workflow,        legacyHref: '/', migrated: true },
   { to: '/jobs',       label: 'Jobs',       icon: Boxes,           legacyHref: '/', migrated: true },
   { to: '/logs',       label: 'Logs',       icon: ScrollText,      legacyHref: '/', migrated: true },
-  { to: '/ds-monitor', label: 'DS Monitor', icon: Activity,        legacyHref: '/', migrated: false },
   { to: '/governanca', label: 'Governança', icon: ShieldCheck,     legacyHref: '/', migrated: true },
   { to: '/malha',      label: 'Malha',      icon: Network,         legacyHref: '/', migrated: true },
   { to: '/impacto-campo', label: 'Impacto Campo', icon: FileSearch,    legacyHref: '/', migrated: true },

@@ -32,6 +32,7 @@ interface PipelineStatus {
   ultimo_status: string
   ultimo_inicio: string | null
   duracao_segundos: number
+  fila_segundos?: number
   total_jobs: number
   execution_id: string
   criticidade: string
@@ -45,6 +46,7 @@ interface Falha {
   inicio: string | null
   execution_id: string
   log_file: string | null
+  situacao?: string
 }
 
 interface Executando {
@@ -141,8 +143,21 @@ function StatusBadge({ status }: { status: string }) {
   }
   const cls = colors[status] ?? colors['DESCONHECIDO']
   return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${cls}`}>
+    <span className={`inline-flex items-center justify-center w-20 py-0.5 rounded text-[10px] font-bold border ${cls}`}>
       {STATUS_LABEL[status] ?? status}
+    </span>
+  )
+}
+
+function SituacaoBadge({ situacao }: { situacao?: string }) {
+  const s = situacao ?? 'Aguardando'
+  const cls =
+    s === 'Resolvido'  ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 border-green-300 dark:border-green-700' :
+    s === 'Em análise' ? 'bg-blue-100  dark:bg-blue-900/30  text-blue-700  dark:text-blue-300  border-blue-300  dark:border-blue-700' :
+                         'bg-slate-100 dark:bg-slate-800/40 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-600'
+  return (
+    <span className={`inline-flex items-center justify-center w-24 py-0.5 rounded text-[10px] font-bold border ${cls}`}>
+      {s}
     </span>
   )
 }
@@ -365,6 +380,14 @@ export default function Dashboard() {
   const kpis = data?.kpis
   const lastUpdate = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : null
 
+  // Taxa ajustada: considera apenas execuções finalizadas (exclui as em andamento)
+  const adjustedTaxa = useMemo(() => {
+    if (!kpis || !data) return 0
+    const running = data.executando_agora.length
+    const finished = Math.max(0, kpis.total_execucoes - running)
+    return finished > 0 ? (kpis.total_sucesso / finished) * 100 : 100
+  }, [kpis, data])
+
   return (
     <div className="flex flex-col gap-5">
 
@@ -406,10 +429,10 @@ export default function Dashboard() {
             />
             <KpiCard
               label="Sucesso"
-              value={`${kpis.taxa_sucesso_pct.toFixed(1)}%`}
-              sub={`${kpis.total_sucesso} ok`}
+              value={`${adjustedTaxa.toFixed(1)}%`}
+              sub={`${kpis.total_sucesso} ok (finalizados)`}
               icon={<CheckCircle size={16} />}
-              color={kpis.taxa_sucesso_pct >= 95 ? 'green' : kpis.taxa_sucesso_pct >= 80 ? 'yellow' : 'red'}
+              color={adjustedTaxa >= 95 ? 'green' : adjustedTaxa >= 80 ? 'yellow' : 'red'}
             />
             <KpiCard
               label="Falhas"
@@ -508,6 +531,7 @@ export default function Dashboard() {
                       <th className="px-4 py-2 text-left">Job</th>
                       <th className="px-4 py-2 text-left">Hora</th>
                       <th className="px-4 py-2 text-left">Status</th>
+                      <th className="px-4 py-2 text-left">Situação</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -520,6 +544,7 @@ export default function Dashboard() {
                         <td className="px-4 py-2 font-mono text-[11px] text-dim">{f.job_name}</td>
                         <td className="px-4 py-2 text-xs text-dim">{fmtTime(f.inicio)}</td>
                         <td className="px-4 py-2"><StatusBadge status={f.status} /></td>
+                        <td className="px-4 py-2"><SituacaoBadge situacao={f.situacao} /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -570,7 +595,7 @@ export default function Dashboard() {
               <div className="px-4 py-2.5 border-b border-edge">
                 <h3 className="text-sm font-semibold text-ink">
                   Status por pipeline
-                  <span className="text-dim font-normal ml-2 text-xs">({data.pipeline_status.length})</span>
+                  <span className="text-dim font-normal ml-2 text-xs">últimos {Math.min(5, data.pipeline_status.length)} de {data.pipeline_status.length}</span>
                 </h3>
               </div>
               <div className="overflow-x-auto">
@@ -583,11 +608,12 @@ export default function Dashboard() {
                       <th className="px-4 py-2 text-left">Status</th>
                       <th className="px-4 py-2 text-left">Última exec.</th>
                       <th className="px-4 py-2 text-left">Duração</th>
+                      <th className="px-4 py-2 text-left">Fila total</th>
                       <th className="px-4 py-2 text-left">Jobs</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.pipeline_status.map(p => (
+                    {data.pipeline_status.slice(0, 5).map(p => (
                       <tr key={p.pipeline}
                         className="border-b border-edge/40 last:border-0 hover:bg-edge/20 transition-colors cursor-pointer"
                         onClick={() => navigate(`/logs?execution_id=${p.execution_id}`)}>
@@ -596,7 +622,10 @@ export default function Dashboard() {
                         <td className="px-4 py-2"><CritBadge crit={p.criticidade} /></td>
                         <td className="px-4 py-2"><StatusBadge status={p.ultimo_status} /></td>
                         <td className="px-4 py-2 text-xs text-dim">{fmtDateTime(p.ultimo_inicio)}</td>
-                        <td className="px-4 py-2 text-xs text-dim">{fmtSec(p.duracao_segundos)}</td>
+                        <td className="px-4 py-2 text-xs text-dim tabular-nums">{fmtSec(p.duracao_segundos)}</td>
+                        <td className="px-4 py-2 text-xs text-dim tabular-nums">
+                          {p.fila_segundos != null ? fmtSec(p.fila_segundos) : '—'}
+                        </td>
                         <td className="px-4 py-2 text-xs text-dim">{p.total_jobs}</td>
                       </tr>
                     ))}

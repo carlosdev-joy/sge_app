@@ -867,45 +867,45 @@ function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, onAudit
 }) {
   return (
     <div className="flex items-center gap-2 px-4 py-2 border-t border-edge/30 hover:bg-edge/10 transition-colors group">
+      {/* ── Metadados fixos à esquerda (sempre visíveis, mesma largura) ── */}
       <span className={`w-2 h-2 rounded-full flex-shrink-0 ${p.active ? 'bg-green-500' : 'bg-slate-600'}`}
         title={p.active ? 'Ativo' : 'Inativo'} />
+      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border flex-shrink-0 w-[46px] text-center ${p.dag_criada ? 'text-green-400 border-green-800/40 bg-green-900/10' : 'text-dim border-edge bg-canvas'}`}>
+        {p.dag_criada ? 'DAG ✓' : 'DAG —'}
+      </span>
+      <span className="text-[10px] text-dim flex-shrink-0 tabular-nums w-[42px]">
+        {p.scheduled_time ? p.scheduled_time.substring(0, 5) : '—:——'}
+      </span>
+      <span className="text-[10px] flex-shrink-0 w-4 text-center"
+        title={p.envia_msg_inicio || p.envia_msg_fim || p.envia_msg_erro
+          ? ['Início','Conclusão','Erro'].filter((_,i) => [p.envia_msg_inicio,p.envia_msg_fim,p.envia_msg_erro][i]).join(', ')
+          : 'Sem notificações'}>
+        {(p.envia_msg_inicio || p.envia_msg_fim || p.envia_msg_erro) ? '✉' : ''}
+      </span>
+
+      {/* ── Nome do pipeline (ocupa espaço restante) ── */}
       <span className="font-mono text-xs text-ink font-medium flex-1 truncate min-w-0" title={p.pipeline_name}>
         {p.pipeline_name}
       </span>
-      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded flex-shrink-0 hidden sm:inline ${critColor(p.criticidade)}`}
+
+      {/* ── Criticidade ── */}
+      <span className={`text-[9px] font-bold flex-shrink-0 w-10 text-right ${critColor(p.criticidade)}`}
         title={`Criticidade: ${p.criticidade}`}>
         {p.criticidade}
       </span>
-      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border flex-shrink-0 ${p.dag_criada ? 'text-green-400 border-green-800/40 bg-green-900/10' : 'text-dim border-edge bg-canvas'}`}>
-        {p.dag_criada ? 'DAG ✓' : 'DAG —'}
-      </span>
-      {p.scheduled_time && (
-        <span className="text-[10px] text-dim flex-shrink-0 hidden md:block">{p.scheduled_time}</span>
-      )}
-      {(p.envia_msg_inicio || p.envia_msg_fim || p.envia_msg_erro) && (
-        <span className="text-[10px] text-dim flex-shrink-0"
-          title={['Início','Conclusão','Erro'].filter((_,i) => [p.envia_msg_inicio,p.envia_msg_fim,p.envia_msg_erro][i]).join(', ')}>
-          ✉
-        </span>
-      )}
-      {/* Coluna de ações — separador + botões surgem no hover */}
-      <div className="flex items-center gap-0.5 flex-shrink-0 w-[158px] justify-end opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity border-l border-edge/40 pl-2 ml-1">
-        {/* View — sempre visível */}
+
+      {/* ── Ações (aparecem no hover, não empurram o layout) ── */}
+      <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity border-l border-edge/40 pl-2 ml-1">
         <Button variant="ghost" size="sm" title="Visualizar" aria-label={`Visualizar ${p.pipeline_name}`} onClick={onView}><Eye size={12} /></Button>
-        {/* Edit — apenas não-viewer */}
         <span className={isViewer ? 'invisible pointer-events-none' : ''}>
           <Button variant="ghost" size="sm" title="Editar" aria-label={`Editar ${p.pipeline_name}`} onClick={onEdit}><Edit size={12} /></Button>
         </span>
-        {/* Lineage — sempre visível */}
         <Button variant="ghost" size="sm" title="Lineage" aria-label={`Ver lineage de ${p.pipeline_name}`} onClick={onLineage}><GitBranch size={12} /></Button>
-        {/* Audit — sempre visível */}
         <Button variant="ghost" size="sm" title="Histórico" aria-label={`Ver histórico de ${p.pipeline_name}`} onClick={onAudit}><History size={12} /></Button>
-        {/* Inativar — apenas não-viewer && ativo */}
         <span className={isViewer || !p.active ? 'invisible pointer-events-none' : ''}>
           <Button variant="ghost" size="sm" title="Inativar" aria-label={`Inativar ${p.pipeline_name}`} onClick={onInactivate}
             className="text-amber-500/60 hover:text-amber-400"><PowerOff size={12} /></Button>
         </span>
-        {/* Gerar/Regenerar DAG — apenas não-viewer */}
         <span className={isViewer ? 'invisible pointer-events-none' : ''}>
           <Button variant="ghost" size="sm"
             title={p.dag_criada ? 'Regenerar DAG' : 'Gerar DAG'}
@@ -915,7 +915,6 @@ function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, onAudit
             <Settings size={12} />
           </Button>
         </span>
-        {/* Executar — apenas não-viewer && dag_criada */}
         <span className={isViewer || !p.dag_criada ? 'invisible pointer-events-none' : ''}>
           <Button variant="ghost" size="sm" title="Executar agora" aria-label={`Executar ${p.pipeline_name} agora`} onClick={onExec}
             className="text-green-500/60 hover:text-green-400"><Play size={12} /></Button>
@@ -939,8 +938,9 @@ export default function Pipelines() {
   const [page, setPage] = useState(0)
   const LIMIT = 50
 
-  // projects expanded by the user — all start collapsed
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  // projects and domains expanded by the user — all start collapsed
+  const [expanded,     setExpanded]     = useState<Set<string>>(new Set())
+  const [expandedDoms, setExpandedDoms] = useState<Set<string>>(new Set())
 
   const [viewPipeline,        setViewPipeline]        = useState<Pipeline | undefined>()
   const [editPipeline,        setEditPipeline]        = useState<Pipeline | undefined>()
@@ -1136,28 +1136,40 @@ export default function Pipelines() {
               </span>
             </button>
 
-            {isExpanded && domNames.map(dom => (
-              <div key={dom}>
-                <div className="px-5 py-1 bg-panel/60 border-t border-edge/30">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-dim">{dom}</span>
-                  <span className="text-[10px] text-dim/40 ml-2">({tree[proj][dom].length})</span>
+            {isExpanded && domNames.map(dom => {
+              const domKey      = `${proj}::${dom}`
+              const isDomOpen   = expandedDoms.has(domKey)
+              const toggleDom   = () => setExpandedDoms(s => { const n = new Set(s); n.has(domKey) ? n.delete(domKey) : n.add(domKey); return n })
+              const domPipelines = tree[proj][dom]
+              return (
+                <div key={dom}>
+                  <button
+                    onClick={toggleDom}
+                    className="w-full flex items-center gap-2 px-5 py-1.5 bg-panel/60 border-t border-edge/30 hover:bg-edge/10 transition-colors text-left"
+                  >
+                    {isDomOpen
+                      ? <ChevronDown size={11} className="text-dim flex-shrink-0" />
+                      : <ChevronRight size={11} className="text-dim flex-shrink-0" />}
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-dim">{dom}</span>
+                    <span className="text-[10px] text-dim/40 ml-1">({domPipelines.length})</span>
+                  </button>
+                  {isDomOpen && domPipelines.map(p => (
+                    <PipelineRow
+                      key={p.pipeline_name}
+                      pipeline={p}
+                      isViewer={isViewer}
+                      onView={()        => setViewPipeline(p)}
+                      onEdit={()        => setEditPipeline(p)}
+                      onLineage={()     => setLineagePipeline(p)}
+                      onAudit={()       => setAuditPipeline(p)}
+                      onInactivate={()  => setInactivatePipeline(p)}
+                      onGenDag={()      => setGenDagPipeline(p)}
+                      onExec={()        => setExecPipeline(p)}
+                    />
+                  ))}
                 </div>
-                {tree[proj][dom].map(p => (
-                  <PipelineRow
-                    key={p.pipeline_name}
-                    pipeline={p}
-                    isViewer={isViewer}
-                    onView={()        => setViewPipeline(p)}
-                    onEdit={()        => setEditPipeline(p)}
-                    onLineage={()     => setLineagePipeline(p)}
-                    onAudit={()       => setAuditPipeline(p)}
-                    onInactivate={()  => setInactivatePipeline(p)}
-                    onGenDag={()      => setGenDagPipeline(p)}
-                    onExec={()        => setExecPipeline(p)}
-                  />
-                ))}
-              </div>
-            ))}
+              )
+            })}
           </div>
         )
       })}
