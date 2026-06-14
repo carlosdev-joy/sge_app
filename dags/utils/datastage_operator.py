@@ -88,6 +88,7 @@ class DataStageOperator(BaseOperator):
         queue_name: str | None = None,
         verbose_log: bool = False,
         verbose_interval: int = 5,   # chama -logsum a cada N polls (só com verbose_log=True)
+        logsum_max: int = 200,       # nº máx. de entradas no -logsum (limita ao run atual)
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -105,6 +106,7 @@ class DataStageOperator(BaseOperator):
         self.queue_name           = queue_name    # DS Workload Management queue
         self.verbose_log          = verbose_log   # logsum periódico durante execução
         self.verbose_interval     = verbose_interval
+        self.logsum_max           = logsum_max     # limita -logsum ao run atual
 
     # ── entry point ──────────────────────────────────────────────────────────
 
@@ -284,7 +286,10 @@ class DataStageOperator(BaseOperator):
         return self._parse_jobinfo(out)
 
     def _logsum(self) -> str:
-        cmd = f"{self.dshome}/bin/dsjob -logsum {self.project} {self.job_name}"
+        # -max limita às últimas N entradas (o run atual), evitando puxar o
+        # histórico inteiro do job (runs antigos) — isso reduz o tráfego SSH,
+        # o tamanho gravado em etl_ds_job_log e o eco no log do Airflow.
+        cmd = f"{self.dshome}/bin/dsjob -logsum -max {self.logsum_max} {self.project} {self.job_name}"
         _, out, _ = self._exec(cmd, timeout=120)
         return out
 
