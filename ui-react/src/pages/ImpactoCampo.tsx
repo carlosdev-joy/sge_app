@@ -30,7 +30,7 @@ interface Ocorrencia {
   matched_columns: MatchedColumn[]
   total_columns: number
 }
-interface JobImpact { job_name: string; ocorrencias: Ocorrencia[] }
+interface JobImpact { job_name: string; category?: string; ocorrencias: Ocorrencia[] }
 interface FieldImpactResult {
   sucesso: boolean
   project_name: string
@@ -39,6 +39,8 @@ interface FieldImpactResult {
   exato: boolean
   filtro_tipos: string[]
   filtro_excluir: boolean
+  incluir_bkp: boolean
+  jobs_bkp_ignorados: number
   total_jobs_dsx: number
   total_jobs_impactados: number
   total_ocorrencias: number
@@ -122,6 +124,7 @@ export default function ImpactoCampo() {
   const [dsx, setDsx] = useState('')
   const [campo, setCampo] = useState('')
   const [exato, setExato] = useState(false)
+  const [incluirBkp, setIncluirBkp] = useState(false)
   const [tipoKey, setTipoKey] = useState('all')
   const [result, setResult] = useState<FieldImpactResult | null>(null)
   const [loading, setLoading] = useState(false)
@@ -141,6 +144,7 @@ export default function ImpactoCampo() {
       const preset = TIPO_PRESETS.find((p) => p.key === tipoKey) ?? TIPO_PRESETS[0]
       const q = new URLSearchParams({ dsx, campo: campo.trim(), exato: String(exato) })
       if (preset.tipo) { q.set('tipo', preset.tipo); q.set('excluir', String(preset.excluir)) }
+      if (incluirBkp) q.set('incluir_bkp', 'true')
       const r = await apiFetch<FieldImpactResult>(`/lineage/field-impact?${q.toString()}`)
       setResult(r)
       if (r.total_jobs_impactados === 0) toast.info('Nenhum job impactado para esse filtro.')
@@ -222,6 +226,9 @@ export default function ImpactoCampo() {
           <label className="flex items-center gap-1.5 text-xs text-dim pb-2 select-none cursor-pointer">
             <input type="checkbox" checked={exato} onChange={(e) => setExato(e.target.checked)} /> Nome exato
           </label>
+          <label className="flex items-center gap-1.5 text-xs text-dim pb-2 select-none cursor-pointer" title="Por padrão, jobs em pastas bkp/bckp/backup são ignorados">
+            <input type="checkbox" checked={incluirBkp} onChange={(e) => setIncluirBkp(e.target.checked)} /> Incluir pastas de backup
+          </label>
           <Button onClick={buscar} loading={loading} className="mb-0.5"><Search size={14} /> Buscar</Button>
           {result && result.total_ocorrencias > 0 && (
             <Button variant="secondary" onClick={exportCsv} className="mb-0.5"><Download size={14} /> CSV</Button>
@@ -241,6 +248,13 @@ export default function ImpactoCampo() {
               value={result.filtro_tipos.length ? (result.filtro_excluir ? '≠ ' : '= ') + result.filtro_tipos.join('/') : 'nenhum'}
               sub={`termo: ${result.termo}${result.exato ? ' (exato)' : ''}`} color="yellow" />
           </div>
+
+          {result.jobs_bkp_ignorados > 0 && (
+            <p className="text-xs text-dim -mt-1">
+              {result.jobs_bkp_ignorados} job(s) em pastas de backup ignorados.
+              Marque <em>“Incluir pastas de backup”</em> para considerá-los.
+            </p>
+          )}
 
           {/* Barra de seleção */}
           {result.total_ocorrencias > 0 && (
@@ -269,7 +283,10 @@ export default function ImpactoCampo() {
                     <button onClick={() => toggle(job.job_name)}
                       className="flex items-center gap-2 w-full text-left -m-4 mb-0 p-4 hover:bg-edge/30 transition-colors">
                       {isCollapsed ? <ChevronRight size={16} className="text-dim" /> : <ChevronDown size={16} className="text-dim" />}
-                      <span className="font-medium text-ink text-sm">{job.job_name}</span>
+                      <span className="flex flex-col">
+                        <span className="font-medium text-ink text-sm">{job.job_name}</span>
+                        {job.category && <span className="text-[11px] text-dim font-mono">{job.category.replace(/\\\\/g, '\\')}</span>}
+                      </span>
                       <span className="text-xs text-dim ml-auto">{job.ocorrencias.length} stage(s) · {nCols} coluna(s)</span>
                     </button>
                     {!isCollapsed && (
