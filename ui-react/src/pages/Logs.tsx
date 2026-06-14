@@ -40,12 +40,6 @@ function fmtDt(dt?: string | null) {
   } catch { return dt }
 }
 
-function statusColor(s: string) {
-  const m: Record<string, string> = {
-    SUCCESS: 'bg-green-500', FAILED: 'bg-red-500', WARNING: 'bg-amber-500', RUNNING: 'bg-blue-500',
-  }
-  return m[s] ?? 'bg-slate-500'
-}
 
 function devBadge(durSec: number, avg: number) {
   const pct = Math.round(((durSec - avg) / avg) * 100)
@@ -405,16 +399,42 @@ function LogDetailModal({
           </div>
         )}
 
-        {/* Mini pipeline graph */}
-        {jobs.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 py-2">
-            {jobs.map(j => (
-              <div
-                key={j.job_name}
-                title={`${j.job_name}: ${j.status} (${durStr(j.duration_seconds)})`}
-                className={`w-5 h-5 rounded-sm ${statusColor(j.status)} opacity-90 cursor-help`}
-              />
-            ))}
+        {/* Pipeline execution chain */}
+        {jobs.length > 1 && (
+          <div className="border border-edge rounded-lg bg-canvas px-3 py-3 overflow-x-auto">
+            <p className="text-xs text-dim font-medium mb-2">Cadeia de execução</p>
+            <div className="flex items-center gap-0">
+              {[...jobs]
+                .sort((a, b) => String(a.inicio || '').localeCompare(String(b.inicio || '')))
+                .map((j, idx, arr) => {
+                  const dotColor: Record<string, string> = {
+                    SUCCESS: 'bg-green-500 ring-green-500/25',
+                    FAILED: 'bg-red-500 ring-red-500/25',
+                    WARNING: 'bg-amber-500 ring-amber-500/25',
+                    RUNNING: 'bg-blue-500 ring-blue-500/25',
+                  }
+                  const dot = dotColor[j.status] ?? 'bg-slate-500 ring-slate-500/25'
+                  const short = j.job_name.length > 22 ? j.job_name.slice(0, 20) + '…' : j.job_name
+                  return (
+                    <div key={j.job_name} className="flex items-center shrink-0">
+                      <div
+                        className="flex flex-col items-center"
+                        style={{ minWidth: 90 }}
+                        title={`${j.job_name} — ${j.status} (${durStr(j.duration_seconds)})`}
+                      >
+                        <div className={`w-3.5 h-3.5 rounded-full ring-4 ${dot}`} />
+                        <span className="text-[9px] text-dim mt-1 max-w-[88px] truncate text-center leading-tight">
+                          {short}
+                        </span>
+                        <span className="text-[9px] text-dim/60">{durStr(j.duration_seconds)}</span>
+                      </div>
+                      {idx < arr.length - 1 && (
+                        <span className="text-edge text-sm mx-0.5 pb-4 shrink-0">→</span>
+                      )}
+                    </div>
+                  )
+                })}
+            </div>
           </div>
         )}
 
