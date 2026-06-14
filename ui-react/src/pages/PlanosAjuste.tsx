@@ -36,11 +36,12 @@ const STATUS_CLS: Record<string, string> = {
 function Progress({ done, total }: { done: number; total: number }) {
   const pct = total ? Math.round((done / total) * 100) : 0
   return (
-    <div className="flex items-center gap-2 w-40">
+    <div className="flex items-center gap-2 w-52">
       <div className="flex-1 h-2 rounded bg-edge overflow-hidden">
-        <div className="h-full bg-green-500" style={{ width: `${pct}%` }} />
+        <div className="h-full bg-green-500 transition-all" style={{ width: `${pct}%` }} />
       </div>
       <span className="text-xs text-dim whitespace-nowrap">{done}/{total}</span>
+      <span className={`text-xs font-semibold whitespace-nowrap ${pct === 100 && total > 0 ? 'text-green-500' : 'text-ink'}`}>{pct}%</span>
     </div>
   )
 }
