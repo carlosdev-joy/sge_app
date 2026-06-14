@@ -4,7 +4,6 @@ import { useAuthStore } from '../../store/auth'
 import { apiFetch } from '../../lib/api'
 import { NAV } from '../../lib/nav'
 import { getTheme, toggleTheme } from '../../lib/theme'
-import { Logo } from './Logo'
 import { LogOut, User, Sun, Moon } from 'lucide-react'
 
 export function Header() {
@@ -33,7 +32,11 @@ export function Header() {
 
         {/* Logo + brand → voltam ao sistema legado */}
         <a href="/" className="shrink-0 flex items-center gap-2.5" title="Voltar ao sistema">
-          <Logo className="h-9 w-auto" />
+          <img
+            src="https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/mundolc/Vertical_Branco.png"
+            className="h-9 w-auto"
+            alt="Caixa Vida e Previdência"
+          />
           <span className="flex flex-col leading-tight">
             <span className="text-xs font-semibold tracking-widest uppercase opacity-95">ORQUESTRA</span>
             <span className="text-[10px] opacity-60 tracking-wide">Gestão de Pipelines</span>
