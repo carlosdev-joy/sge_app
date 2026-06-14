@@ -30,7 +30,7 @@ function ExecDetail({ execId, onClose }: { execId: string; onClose: () => void }
   return (
     <Modal open title={`Execução ${execId}`} onClose={onClose} size="xl">
       {isLoading ? <PageSpinner /> : (
-        <pre className="text-xs text-[#94a3b8] bg-[#0f1117] rounded p-3 overflow-auto max-h-96">
+        <pre className="text-xs text-dim bg-canvas rounded p-3 overflow-auto max-h-96">
           {JSON.stringify(data, null, 2)}
         </pre>
       )}
@@ -53,18 +53,18 @@ function FactoryRuns() {
   return (
     <div className="flex flex-col gap-2">
       {(data?.runs ?? []).map((r) => (
-        <div key={r.dag_run_id} className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
+        <div key={r.dag_run_id} className="bg-panel border border-edge rounded-lg overflow-hidden">
           <button
-            className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[#2a2d3a]/30 transition-colors"
+            className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-edge/30 transition-colors"
             onClick={() => setExpanded(expanded === r.dag_run_id ? null : r.dag_run_id)}
           >
             <Badge value={r.status} />
-            <span className="text-xs text-[#e2e8f0] font-mono flex-1">{r.dag_run_id}</span>
-            <span className="text-xs text-[#94a3b8]">{r.inicio ? format(parseISO(r.inicio), 'dd/MM HH:mm') : '-'}</span>
+            <span className="text-xs text-ink font-mono flex-1">{r.dag_run_id}</span>
+            <span className="text-xs text-dim">{r.inicio ? format(parseISO(r.inicio), 'dd/MM HH:mm') : '-'}</span>
             {expanded === r.dag_run_id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
           {expanded === r.dag_run_id && log && (
-            <pre className="text-xs text-[#94a3b8] bg-[#0f1117] p-4 overflow-auto max-h-80">{log.log}</pre>
+            <pre className="text-xs text-dim bg-canvas p-4 overflow-auto max-h-80">{log.log}</pre>
           )}
         </div>
       ))}
@@ -118,7 +118,7 @@ export default function Logs() {
       {tab === 'execucoes' && (
         <>
           {/* Filters */}
-          <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4 flex flex-wrap gap-3 items-end">
+          <div className="bg-panel border border-edge rounded-lg p-4 flex flex-wrap gap-3 items-end">
             <Select label="Projeto" value={filters.projeto} onChange={(e) => setFilters(f => ({ ...f, projeto: e.target.value }))} className="w-44">
               <option value="">Todos</option>
               {PROJETOS.filter(Boolean).map(p => <option key={p}>{p}</option>)}
@@ -139,12 +139,12 @@ export default function Logs() {
           </div>
 
           {isLoading ? <PageSpinner /> : (
-            <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
-              <div className="px-4 py-2 border-b border-[#2a2d3a] text-xs text-[#94a3b8]">
+            <div className="bg-panel border border-edge rounded-lg overflow-hidden">
+              <div className="px-4 py-2 border-b border-edge text-xs text-dim">
                 {data?.total ?? 0} resultados
               </div>
               <table className="w-full text-sm">
-                <thead><tr className="text-xs text-[#94a3b8] border-b border-[#2a2d3a]">
+                <thead><tr className="text-xs text-dim border-b border-edge">
                   <th className="px-4 py-2 text-left">Execution ID</th>
                   <th className="px-4 py-2 text-left">Pipeline</th>
                   <th className="px-4 py-2 text-left">Projeto</th>
@@ -155,15 +155,15 @@ export default function Logs() {
                 </tr></thead>
                 <tbody>
                   {(data?.execucoes ?? []).map((e) => (
-                    <tr key={e.execution_id} className="border-b border-[#2a2d3a]/50 hover:bg-[#2a2d3a]/30">
+                    <tr key={e.execution_id} className="border-b border-edge/50 hover:bg-edge/30">
                       <td className="px-4 py-2 font-mono text-xs text-blue-400 cursor-pointer hover:underline" onClick={() => setDetail(e.execution_id)}>
                         {e.execution_id.slice(0, 24)}…
                       </td>
-                      <td className="px-4 py-2 text-[#e2e8f0] text-xs font-mono">{e.pipeline_name}</td>
-                      <td className="px-4 py-2 text-[#94a3b8]">{e.projeto}</td>
+                      <td className="px-4 py-2 text-ink text-xs font-mono">{e.pipeline_name}</td>
+                      <td className="px-4 py-2 text-dim">{e.projeto}</td>
                       <td className="px-4 py-2"><Badge value={e.status} /></td>
-                      <td className="px-4 py-2 text-[#94a3b8]">{durStr(e.duracao_segundos)}</td>
-                      <td className="px-4 py-2 text-[#94a3b8] text-xs">{e.inicio ? format(parseISO(e.inicio), 'dd/MM HH:mm:ss') : '-'}</td>
+                      <td className="px-4 py-2 text-dim">{durStr(e.duracao_segundos)}</td>
+                      <td className="px-4 py-2 text-dim text-xs">{e.inicio ? format(parseISO(e.inicio), 'dd/MM HH:mm:ss') : '-'}</td>
                       <td className="px-4 py-2 text-right flex justify-end gap-1.5">
                         <Button variant="ghost" size="sm" title="Detalhes" onClick={() => setDetail(e.execution_id)}><FileText size={13} /></Button>
                         {e.status === 'FAILED' && <>
@@ -176,9 +176,9 @@ export default function Logs() {
                 </tbody>
               </table>
               {/* Pagination */}
-              <div className="px-4 py-2 flex items-center gap-2 border-t border-[#2a2d3a]">
+              <div className="px-4 py-2 flex items-center gap-2 border-t border-edge">
                 <Button variant="ghost" size="sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}>← Anterior</Button>
-                <span className="text-xs text-[#94a3b8]">Página {page + 1}</span>
+                <span className="text-xs text-dim">Página {page + 1}</span>
                 <Button variant="ghost" size="sm" disabled={(data?.execucoes?.length ?? 0) < LIMIT} onClick={() => setPage(p => p + 1)}>Próxima →</Button>
               </div>
             </div>

@@ -49,16 +49,16 @@ function ConfigTab() {
         <Button variant="secondary" size="sm" onClick={testWebhook}>🔔 Testar Webhook</Button>
       </div>
       {isLoading ? <PageSpinner /> : (
-        <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
+        <div className="bg-panel border border-edge rounded-lg overflow-hidden">
           <table className="w-full text-sm">
-            <thead><tr className="text-xs text-[#94a3b8] border-b border-[#2a2d3a]">
+            <thead><tr className="text-xs text-dim border-b border-edge">
               <th className="px-4 py-2 text-left">Chave</th><th className="px-4 py-2 text-left">Valor</th><th className="px-4 py-2 text-right">Ações</th>
             </tr></thead>
             <tbody>
               {entries.map(([k, v]) => (
-                <tr key={k} className="border-b border-[#2a2d3a]/50 hover:bg-[#2a2d3a]/30">
+                <tr key={k} className="border-b border-edge/50 hover:bg-edge/30">
                   <td className="px-4 py-2 font-mono text-xs text-blue-400">{k}</td>
-                  <td className="px-4 py-2 font-mono text-xs text-[#e2e8f0]">{v}</td>
+                  <td className="px-4 py-2 font-mono text-xs text-ink">{v}</td>
                   <td className="px-4 py-2 flex justify-end gap-1.5">
                     <Button variant="ghost" size="sm" onClick={() => setEditKey(k)}><Edit size={13} /></Button>
                     <Button variant="ghost" size="sm" onClick={() => { if(confirm(`Remover ${k}?`)) deleteMut.mutate(k) }}><Trash2 size={13} className="text-red-400" /></Button>
@@ -69,7 +69,7 @@ function ConfigTab() {
           </table>
         </div>
       )}
-      <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4 flex flex-wrap gap-3 items-end">
+      <div className="bg-panel border border-edge rounded-lg p-4 flex flex-wrap gap-3 items-end">
         <Input label="Chave" value={newKey} onChange={e => setNewKey(e.target.value)} className="w-48" />
         <Input label="Valor" value={newVal} onChange={e => setNewVal(e.target.value)} className="w-48" />
         <Input label="Descrição (opcional)" value={newDesc} onChange={e => setNewDesc(e.target.value)} className="w-56" />
@@ -126,7 +126,7 @@ function RegenDagsTab() {
         </Select>
         <Button onClick={regen} loading={loading} variant="danger">⟳ Regenerar DAGs</Button>
       </div>
-      {log && <pre className="text-xs text-[#94a3b8] bg-[#0f1117] rounded-lg p-4 overflow-auto max-h-64">{log}</pre>}
+      {log && <pre className="text-xs text-dim bg-canvas rounded-lg p-4 overflow-auto max-h-64">{log}</pre>}
     </div>
   )
 }
@@ -157,7 +157,7 @@ function DeletePipelineTab() {
         <Input label="Nome do Pipeline" value={nome} onChange={e => setNome(e.target.value)} className="w-72" placeholder="nome exato" />
         <Button variant="danger" onClick={del} loading={loading} disabled={!nome}>Excluir Pipeline</Button>
       </div>
-      {result && <pre className="text-xs text-[#94a3b8] bg-[#0f1117] rounded-lg p-4 overflow-auto max-h-48">{JSON.stringify(result, null, 2)}</pre>}
+      {result && <pre className="text-xs text-dim bg-canvas rounded-lg p-4 overflow-auto max-h-48">{JSON.stringify(result, null, 2)}</pre>}
     </div>
   )
 }
@@ -192,14 +192,14 @@ function VersoesTab() {
       {isLoading ? <PageSpinner /> : (
         <div className="flex flex-col gap-3">
           {(data?.data ?? []).map((v) => (
-            <div key={v.id} className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4">
+            <div key={v.id} className="bg-panel border border-edge rounded-lg p-4">
               <div className="flex items-center gap-3 mb-2">
                 <span className="text-blue-400 font-bold font-mono">{v.versao}</span>
-                <span className="text-[#e2e8f0] font-medium">{v.titulo}</span>
-                {v.criado_em && <span className="text-xs text-[#94a3b8] ml-auto">{v.criado_em}</span>}
+                <span className="text-ink font-medium">{v.titulo}</span>
+                {v.criado_em && <span className="text-xs text-dim ml-auto">{v.criado_em}</span>}
                 <Button variant="ghost" size="sm" onClick={() => { if(confirm(`Remover versão ${v.versao}?`)) deleteMut.mutate(v.id) }}><Trash2 size={13} className="text-red-400" /></Button>
               </div>
-              {v.descricao_md && <p className="text-sm text-[#94a3b8] whitespace-pre-wrap">{v.descricao_md}</p>}
+              {v.descricao_md && <p className="text-sm text-dim whitespace-pre-wrap">{v.descricao_md}</p>}
             </div>
           ))}
         </div>
@@ -232,16 +232,16 @@ function TiposJobTab() {
   return (
     <div className="flex flex-col gap-4">
       {isLoading ? <PageSpinner /> : (
-        <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
+        <div className="bg-panel border border-edge rounded-lg overflow-hidden">
           <table className="w-full text-sm">
-            <thead><tr className="text-xs text-[#94a3b8] border-b border-[#2a2d3a]">
+            <thead><tr className="text-xs text-dim border-b border-edge">
               <th className="px-4 py-2 text-left">Nome</th><th className="px-4 py-2 text-left">Descrição</th><th className="px-4 py-2 text-left">Lineage</th><th className="px-4 py-2 text-left">Status</th>
             </tr></thead>
             <tbody>
               {(data?.job_types ?? []).map((t) => (
-                <tr key={t.id} className="border-b border-[#2a2d3a]/50">
-                  <td className="px-4 py-2 font-mono text-xs text-[#e2e8f0]">{t.nome}</td>
-                  <td className="px-4 py-2 text-xs text-[#94a3b8]">{t.descricao}</td>
+                <tr key={t.id} className="border-b border-edge/50">
+                  <td className="px-4 py-2 font-mono text-xs text-ink">{t.nome}</td>
+                  <td className="px-4 py-2 text-xs text-dim">{t.descricao}</td>
                   <td className="px-4 py-2"><Badge value={t.lineage_enabled ? 'sim' : 'não'} /></td>
                   <td className="px-4 py-2"><Badge value={t.status ? 'ativo' : 'inativo'} /></td>
                 </tr>
@@ -292,8 +292,8 @@ function AgendamentoTab() {
   return (
     <div className="flex flex-col gap-6">
       {/* Freeze */}
-      <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4">
-        <h3 className="text-sm font-semibold text-[#e2e8f0] mb-3">Congelamento de Ambiente</h3>
+      <div className="bg-panel border border-edge rounded-lg p-4">
+        <h3 className="text-sm font-semibold text-ink mb-3">Congelamento de Ambiente</h3>
         <div className="flex items-center gap-3">
           <Badge value={congelado ? 'error' : 'success'}>{congelado ? '❄ CONGELADO' : '✓ ATIVO'}</Badge>
           {congelado
@@ -303,18 +303,18 @@ function AgendamentoTab() {
       </div>
 
       {/* Calendários */}
-      <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4">
-        <h3 className="text-sm font-semibold text-[#e2e8f0] mb-3">Calendários de Bloqueio</h3>
+      <div className="bg-panel border border-edge rounded-lg p-4">
+        <h3 className="text-sm font-semibold text-ink mb-3">Calendários de Bloqueio</h3>
         <div className="flex flex-col gap-2 mb-4">
           {(cal?.calendarios ?? []).map(c => (
             <div key={c.calendario_nome} className="flex items-center gap-3 text-sm">
               <span className="text-blue-400 font-mono">{c.calendario_nome}</span>
-              <span className="text-[#94a3b8] text-xs">{c.datas} datas</span>
-              {c.proxima && <span className="text-xs text-[#94a3b8]">próxima: {c.proxima}</span>}
+              <span className="text-dim text-xs">{c.datas} datas</span>
+              {c.proxima && <span className="text-xs text-dim">próxima: {c.proxima}</span>}
             </div>
           ))}
         </div>
-        <div className="flex flex-wrap gap-3 items-end border-t border-[#2a2d3a] pt-3">
+        <div className="flex flex-wrap gap-3 items-end border-t border-edge pt-3">
           <Input label="Nome" value={calNome} onChange={e => setCalNome(e.target.value)} className="w-40" />
           <Textarea label="Datas (uma por linha, YYYY-MM-DD)" value={calDatas} onChange={e => setCalDatas(e.target.value)} className="w-48" rows={3} />
           <Input label="Descrição" value={calDesc} onChange={e => setCalDesc(e.target.value)} className="w-48" />
@@ -323,15 +323,15 @@ function AgendamentoTab() {
       </div>
 
       {/* Blackouts */}
-      <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4">
-        <h3 className="text-sm font-semibold text-[#e2e8f0] mb-3">Janelas de Blackout</h3>
+      <div className="bg-panel border border-edge rounded-lg p-4">
+        <h3 className="text-sm font-semibold text-ink mb-3">Janelas de Blackout</h3>
         <div className="flex flex-col gap-2">
           {(bo?.blackouts ?? []).filter(b => b.motivo !== 'FREEZE_GLOBAL').map(b => (
             <div key={b.id} className="flex items-center gap-3 text-sm">
               <Badge value={b.vigente ? 'warning' : b.ativo ? 'info' : 'neutral'}>{b.vigente ? 'vigente' : b.ativo ? 'agendado' : 'encerrado'}</Badge>
-              <span className="text-[#e2e8f0] text-xs">{b.inicio} → {b.fim ?? '...'}</span>
-              {b.escopo && <span className="text-[#94a3b8] text-xs">{b.escopo}</span>}
-              {b.motivo && <span className="text-[#94a3b8] text-xs">{b.motivo}</span>}
+              <span className="text-ink text-xs">{b.inicio} → {b.fim ?? '...'}</span>
+              {b.escopo && <span className="text-dim text-xs">{b.escopo}</span>}
+              {b.motivo && <span className="text-dim text-xs">{b.motivo}</span>}
               {!!b.ativo && (
                 <Button variant="ghost" size="sm" onClick={() => apiFetch(`/agenda/blackouts/${b.id}/encerrar`, { method: 'POST', body: JSON.stringify({}) }).then(() => { toast.success('Encerrado'); queryClient.invalidateQueries({ queryKey: ['blackouts'] }) }).catch((e: any) => toast.error(e.message))}>
                   Encerrar
@@ -340,7 +340,7 @@ function AgendamentoTab() {
             </div>
           ))}
           {(bo?.blackouts ?? []).filter(b => b.motivo !== 'FREEZE_GLOBAL').length === 0 && (
-            <span className="text-xs text-[#94a3b8]">Nenhuma janela de blackout.</span>
+            <span className="text-xs text-dim">Nenhuma janela de blackout.</span>
           )}
         </div>
       </div>
@@ -378,20 +378,20 @@ function UsuariosTab() {
   return (
     <div className="flex flex-col gap-4">
       {isLoading ? <PageSpinner /> : (
-        <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
+        <div className="bg-panel border border-edge rounded-lg overflow-hidden">
           <table className="w-full text-sm">
-            <thead><tr className="text-xs text-[#94a3b8] border-b border-[#2a2d3a]">
+            <thead><tr className="text-xs text-dim border-b border-edge">
               <th className="px-4 py-2 text-left">Matrícula</th><th className="px-4 py-2 text-left">Nome</th><th className="px-4 py-2 text-left">Perfil</th><th className="px-4 py-2 text-left">Email</th><th className="px-4 py-2 text-left">Status</th><th className="px-4 py-2 text-left">Último Login</th><th className="px-4 py-2 text-right">Ações</th>
             </tr></thead>
             <tbody>
               {(data?.usuarios ?? []).map(u => (
-                <tr key={u.matricula} className="border-b border-[#2a2d3a]/50 hover:bg-[#2a2d3a]/30">
+                <tr key={u.matricula} className="border-b border-edge/50 hover:bg-edge/30">
                   <td className="px-4 py-2 font-mono text-xs text-blue-400">{u.matricula}</td>
-                  <td className="px-4 py-2 text-xs text-[#e2e8f0]">{u.primeiro_nome}</td>
+                  <td className="px-4 py-2 text-xs text-ink">{u.primeiro_nome}</td>
                   <td className="px-4 py-2"><Badge value={u.perfil} /></td>
-                  <td className="px-4 py-2 text-xs text-[#94a3b8]">{u.email}</td>
+                  <td className="px-4 py-2 text-xs text-dim">{u.email}</td>
                   <td className="px-4 py-2"><Badge value={u.ativo ? 'ativo' : 'inativo'} /></td>
-                  <td className="px-4 py-2 text-xs text-[#94a3b8]">{u.ultimo_login}</td>
+                  <td className="px-4 py-2 text-xs text-dim">{u.ultimo_login}</td>
                   <td className="px-4 py-2 text-right">
                     <Button variant="ghost" size="sm" onClick={() => { if(confirm(`Remover ${u.matricula}?`)) deleteMut.mutate(u.matricula) }}><Trash2 size={13} className="text-red-400" /></Button>
                   </td>
@@ -401,7 +401,7 @@ function UsuariosTab() {
           </table>
         </div>
       )}
-      <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4 flex flex-wrap gap-3 items-end">
+      <div className="bg-panel border border-edge rounded-lg p-4 flex flex-wrap gap-3 items-end">
         <Input label="Matrícula" value={novoMat} onChange={e => setNovoMat(e.target.value)} className="w-40" placeholder="C123456" />
         <Select label="Perfil" value={novoPerfil} onChange={e => setNovoPerfil(e.target.value)} className="w-40">
           {perfilOpts.map(p => <option key={p.perfil_nome}>{p.perfil_nome}</option>)}
@@ -410,16 +410,16 @@ function UsuariosTab() {
       </div>
 
       {/* Perfis e permissões */}
-      <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4">
-        <h3 className="text-sm font-semibold text-[#e2e8f0] mb-3">Perfis e Permissões</h3>
+      <div className="bg-panel border border-edge rounded-lg p-4">
+        <h3 className="text-sm font-semibold text-ink mb-3">Perfis e Permissões</h3>
         <div className="flex flex-col gap-2">
           {(perfis?.perfis ?? []).map(p => (
             <div key={p.perfil_nome} className="flex items-start gap-3 text-sm">
               <Badge value={p.perfil_nome} />
-              <span className="text-[#94a3b8] text-xs">{p.descricao}</span>
+              <span className="text-dim text-xs">{p.descricao}</span>
               <div className="flex flex-wrap gap-1 ml-auto">
                 {(p.permissoes ?? []).map(rec => (
-                  <span key={rec} className="text-[10px] bg-[#0f1117] border border-[#2a2d3a] rounded px-1.5 py-0.5 text-[#94a3b8] font-mono">{rec}</span>
+                  <span key={rec} className="text-[10px] bg-canvas border border-edge rounded px-1.5 py-0.5 text-dim font-mono">{rec}</span>
                 ))}
               </div>
             </div>
@@ -445,7 +445,7 @@ export default function Admin() {
   const [tab, setTab] = useState('config')
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-lg font-bold text-[#e2e8f0]">⚙ Admin</h1>
+      <h1 className="text-lg font-bold text-ink">⚙ Admin</h1>
       <Tabs tabs={ADMIN_TABS} active={tab} onChange={setTab} size="sm" />
       <div className="mt-2">
         {tab === 'config'   && <ConfigTab />}

@@ -65,7 +65,7 @@ export default function Dashboard() {
     <div className="flex flex-col gap-6">
       {/* Toolbar */}
       <div className="flex items-center gap-3 flex-wrap">
-        <h1 className="text-lg font-bold text-[#e2e8f0] mr-2">Dashboard</h1>
+        <h1 className="text-lg font-bold text-ink mr-2">Dashboard</h1>
         <Select value={projeto} onChange={(e) => setProjeto(e.target.value)} className="w-44">
           {PROJETOS.map((p) => <option key={p}>{p}</option>)}
         </Select>
@@ -73,9 +73,9 @@ export default function Dashboard() {
           type="date"
           value={date}
           onChange={(e) => setDate(e.target.value)}
-          className="bg-[#1a1d27] border border-[#2a2d3a] text-[#e2e8f0] rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+          className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
         />
-        <label className="flex items-center gap-2 text-xs text-[#94a3b8] cursor-pointer">
+        <label className="flex items-center gap-2 text-xs text-dim cursor-pointer">
           <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} className="accent-blue-500" />
           Auto-refresh (1min)
         </label>
@@ -99,20 +99,20 @@ export default function Dashboard() {
 
           {/* Gantt */}
           {gantt?.items && gantt.items.length > 0 && (
-            <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg p-4">
-              <h3 className="text-sm font-semibold text-[#e2e8f0] mb-3">Linha do Tempo</h3>
+            <div className="bg-panel border border-edge rounded-lg p-4">
+              <h3 className="text-sm font-semibold text-ink mb-3">Linha do Tempo</h3>
               <GanttChart items={gantt.items} />
             </div>
           )}
 
           {/* Failures */}
           {data.falhas && data.falhas.length > 0 && (
-            <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
-              <div className="px-4 py-3 border-b border-[#2a2d3a]">
+            <div className="bg-panel border border-edge rounded-lg overflow-hidden">
+              <div className="px-4 py-3 border-b border-edge">
                 <h3 className="text-sm font-semibold text-red-400">Falhas Recentes ({data.falhas.length})</h3>
               </div>
               <table className="w-full text-sm">
-                <thead><tr className="text-xs text-[#94a3b8] border-b border-[#2a2d3a]">
+                <thead><tr className="text-xs text-dim border-b border-edge">
                   <th className="px-4 py-2 text-left">Pipeline</th>
                   <th className="px-4 py-2 text-left">Projeto</th>
                   <th className="px-4 py-2 text-left">Status</th>
@@ -120,11 +120,11 @@ export default function Dashboard() {
                 </tr></thead>
                 <tbody>
                   {data.falhas.slice(0, 10).map((f) => (
-                    <tr key={f.execution_id} className="border-b border-[#2a2d3a]/50 hover:bg-[#2a2d3a]/30">
-                      <td className="px-4 py-2 text-[#e2e8f0] font-mono text-xs">{f.pipeline_name}</td>
-                      <td className="px-4 py-2 text-[#94a3b8]">{f.projeto}</td>
+                    <tr key={f.execution_id} className="border-b border-edge/50 hover:bg-edge/30">
+                      <td className="px-4 py-2 text-ink font-mono text-xs">{f.pipeline_name}</td>
+                      <td className="px-4 py-2 text-dim">{f.projeto}</td>
                       <td className="px-4 py-2"><Badge value={f.status} /></td>
-                      <td className="px-4 py-2 text-[#94a3b8] text-xs">{f.inicio ? format(parseISO(f.inicio), 'HH:mm:ss') : '-'}</td>
+                      <td className="px-4 py-2 text-dim text-xs">{f.inicio ? format(parseISO(f.inicio), 'HH:mm:ss') : '-'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -134,12 +134,12 @@ export default function Dashboard() {
 
           {/* Pipeline Status Table */}
           {data.pipelines && data.pipelines.length > 0 && (
-            <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
-              <div className="px-4 py-3 border-b border-[#2a2d3a]">
-                <h3 className="text-sm font-semibold text-[#e2e8f0]">Status por Pipeline</h3>
+            <div className="bg-panel border border-edge rounded-lg overflow-hidden">
+              <div className="px-4 py-3 border-b border-edge">
+                <h3 className="text-sm font-semibold text-ink">Status por Pipeline</h3>
               </div>
               <table className="w-full text-sm">
-                <thead><tr className="text-xs text-[#94a3b8] border-b border-[#2a2d3a]">
+                <thead><tr className="text-xs text-dim border-b border-edge">
                   <th className="px-4 py-2 text-left">Pipeline</th>
                   <th className="px-4 py-2 text-left">Projeto</th>
                   <th className="px-4 py-2 text-left">Status</th>
@@ -148,12 +148,12 @@ export default function Dashboard() {
                 </tr></thead>
                 <tbody>
                   {data.pipelines.map((p) => (
-                    <tr key={p.pipeline_name} className="border-b border-[#2a2d3a]/50 hover:bg-[#2a2d3a]/30">
-                      <td className="px-4 py-2 text-[#e2e8f0] font-mono text-xs">{p.pipeline_name}</td>
-                      <td className="px-4 py-2 text-[#94a3b8]">{p.projeto}</td>
+                    <tr key={p.pipeline_name} className="border-b border-edge/50 hover:bg-edge/30">
+                      <td className="px-4 py-2 text-ink font-mono text-xs">{p.pipeline_name}</td>
+                      <td className="px-4 py-2 text-dim">{p.projeto}</td>
                       <td className="px-4 py-2"><Badge value={p.status} /></td>
                       <td className="px-4 py-2">{p.criticidade && <Badge value={p.criticidade} />}</td>
-                      <td className="px-4 py-2 text-[#94a3b8] text-xs">{p.ultima_execucao ? format(parseISO(p.ultima_execucao), 'dd/MM HH:mm') : '-'}</td>
+                      <td className="px-4 py-2 text-dim text-xs">{p.ultima_execucao ? format(parseISO(p.ultima_execucao), 'dd/MM HH:mm') : '-'}</td>
                     </tr>
                   ))}
                 </tbody>

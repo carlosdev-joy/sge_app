@@ -17,29 +17,29 @@ const CRIT = ['Todos', 'ALTA', 'MEDIA', 'BAIXA']
 function PipelineCard({ item }: { item: MalhaItem }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
-      <div className="px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-[#2a2d3a]/30" onClick={() => setOpen(o => !o)}>
+    <div className="bg-panel border border-edge rounded-lg overflow-hidden">
+      <div className="px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-edge/30" onClick={() => setOpen(o => !o)}>
         <div className={`w-2 h-2 rounded-full shrink-0 ${item.ativo ? 'bg-green-400' : 'bg-gray-500'}`} />
-        <span className="font-mono text-sm text-[#e2e8f0] flex-1">{item.pipeline_name}</span>
+        <span className="font-mono text-sm text-ink flex-1">{item.pipeline_name}</span>
         {item.criticidade && <Badge value={item.criticidade} />}
-        {item.sla_minutos && <span className="text-xs text-[#94a3b8]">SLA {item.sla_minutos}m</span>}
-        <span className="text-xs text-[#94a3b8]">{item.jobs.length} jobs</span>
-        {item.schedule && <span className="text-xs text-[#94a3b8] font-mono">{item.schedule}</span>}
-        {open ? <ChevronUp size={14} className="text-[#94a3b8]" /> : <ChevronDown size={14} className="text-[#94a3b8]" />}
+        {item.sla_minutos && <span className="text-xs text-dim">SLA {item.sla_minutos}m</span>}
+        <span className="text-xs text-dim">{item.jobs.length} jobs</span>
+        {item.schedule && <span className="text-xs text-dim font-mono">{item.schedule}</span>}
+        {open ? <ChevronUp size={14} className="text-dim" /> : <ChevronDown size={14} className="text-dim" />}
       </div>
       {open && (
-        <div className="px-4 pb-4 pt-1 border-t border-[#2a2d3a]">
+        <div className="px-4 pb-4 pt-1 border-t border-edge">
           <div className="flex flex-wrap gap-2 mt-2">
             {item.jobs.sort((a, b) => a.ordem - b.ordem).map((j) => (
-              <div key={j.job_name} className="flex items-center gap-1.5 bg-[#0f1117] border border-[#2a2d3a] rounded px-2 py-1">
-                <span className="text-xs text-[#94a3b8]">{j.ordem}.</span>
-                <span className="font-mono text-xs text-[#e2e8f0]">{j.job_name}</span>
+              <div key={j.job_name} className="flex items-center gap-1.5 bg-canvas border border-edge rounded px-2 py-1">
+                <span className="text-xs text-dim">{j.ordem}.</span>
+                <span className="font-mono text-xs text-ink">{j.job_name}</span>
                 <Badge value={j.tipo} />
               </div>
             ))}
           </div>
           {item.dependencias && item.dependencias.length > 0 && (
-            <div className="mt-3 text-xs text-[#94a3b8]">
+            <div className="mt-3 text-xs text-dim">
               Depende de: {item.dependencias.map(d => <span key={d} className="font-mono text-blue-400 ml-1">{d}</span>)}
             </div>
           )}
@@ -121,7 +121,7 @@ export default function Malha() {
     <div className="flex flex-col gap-4">
       {/* Toolbar */}
       <div className="flex flex-wrap gap-3 items-end">
-        <h1 className="text-lg font-bold text-[#e2e8f0]">Malha</h1>
+        <h1 className="text-lg font-bold text-ink">Malha</h1>
         <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar pipeline…" className="w-52" />
         <Select value={projeto} onChange={e => setProjeto(e.target.value)} className="w-44">
           {PROJETOS.map(p => <option key={p}>{p}</option>)}
@@ -148,9 +148,9 @@ export default function Malha() {
           { label: 'Filtrados', value: filtered.length },
           { label: 'Projetos', value: byProject.size },
         ].map(s => (
-          <div key={s.label} className="bg-[#1a1d27] border border-[#2a2d3a] rounded px-3 py-1.5 flex items-center gap-2">
-            <span className="text-[#94a3b8] text-xs">{s.label}:</span>
-            <span className="text-[#e2e8f0] font-bold">{s.value}</span>
+          <div key={s.label} className="bg-panel border border-edge rounded px-3 py-1.5 flex items-center gap-2">
+            <span className="text-dim text-xs">{s.label}:</span>
+            <span className="text-ink font-bold">{s.value}</span>
           </div>
         ))}
       </div>
@@ -159,7 +159,7 @@ export default function Malha() {
         <div className="flex flex-col gap-6">
           {Array.from(byProject.entries()).map(([proj, items]) => (
             <div key={proj}>
-              <div className="text-xs font-semibold text-[#94a3b8] uppercase tracking-wider mb-2 flex items-center gap-2">
+              <div className="text-xs font-semibold text-dim uppercase tracking-wider mb-2 flex items-center gap-2">
                 {proj} <span className="text-[#4a4d5a]">({items.length})</span>
               </div>
               <div className="flex flex-col gap-2">
@@ -169,7 +169,7 @@ export default function Malha() {
           ))}
         </div>
       ) : (
-        <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
+        <div className="bg-panel border border-edge rounded-lg overflow-hidden">
           <DiagramView items={filtered} />
         </div>
       )}
