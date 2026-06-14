@@ -34,6 +34,8 @@ Endpoints:
   PUT  /lineage/job                       — substitui lineage de um job
   POST /lineage/extract-dsx               — extrai lineage de arquivo .dsx
   POST /lineage/normalize                 — normaliza lineage legado
+  GET  /lineage/dsx-files                 — lista arquivos .dsx disponíveis
+  GET  /lineage/field-impact              — impacto por campo (varredura de .dsx)
 
   POST /catalogo                          — catálogo de dados (multi-modo)
 

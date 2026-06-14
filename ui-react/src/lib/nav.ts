@@ -11,7 +11,7 @@
 import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, Workflow, Boxes, ScrollText,
-  Activity, ShieldCheck, Network, Settings,
+  Activity, ShieldCheck, Network, Settings, FileSearch,
 } from 'lucide-react'
 
 export interface NavItem {
@@ -31,6 +31,7 @@ export const NAV: NavItem[] = [
   { to: '/ds-monitor', label: 'DS Monitor', icon: Activity,        legacyHref: '/', migrated: false },
   { to: '/governanca', label: 'Governança', icon: ShieldCheck,     legacyHref: '/', migrated: false },
   { to: '/malha',      label: 'Malha',      icon: Network,         legacyHref: '/', migrated: false },
+  { to: '/impacto-campo', label: 'Impacto Campo', icon: FileSearch, legacyHref: '/', migrated: true },
   { to: '/admin',      label: 'Admin',      icon: Settings,        legacyHref: '/', migrated: true, adminOnly: true },
 ]
 

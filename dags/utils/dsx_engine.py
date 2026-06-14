@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from typing import Optional
 
 # ── Variável de ambiente para localização dos arquivos .dsx ──────
@@ -28,6 +29,12 @@ try:
     _DEFAULT_DSX_DIR = Variable.get("DSX_BASE_DIR", default_var=_DEFAULT_DSX_DIR)
 except Exception:
     pass
+
+# ── Cache de parsing por arquivo (chave = path, invalida por mtime) ──
+# Usado pela busca de impacto por campo: evita reparsear o mesmo .dsx a cada
+# consulta. Protegido por lock — seguro sob a API multithread.
+_PARSE_LOCK = threading.Lock()
+_PARSE_CACHE: dict[str, tuple[float, dict[str, list[dict]]]] = {}
 
 # ── De-para: StageType bruto → categoria de direção ──────────────
 _TRANSFORM_TYPES: frozenset[str] = frozenset({
@@ -111,6 +118,138 @@ class DSXEngine:
     # Alias mantido para retrocompatibilidade
     def buscar_linhagem(self, nome_projeto: str, nome_job: str) -> dict:
         return self.extrair(nome_projeto, nome_job)
+
+    # ── Listagem de arquivos .dsx disponíveis ───────────────────
+    def listar_dsx(self) -> list[str]:
+        """Nomes de projeto (arquivo .dsx sem extensão) disponíveis no diretório base."""
+        try:
+            nomes = [f[:-4] for f in os.listdir(self.diretorio_base)
+                     if f.lower().endswith(".dsx")]
+        except OSError:
+            return []
+        return sorted(nomes, key=str.lower)
+
+    # ── Listagem de jobs de um .dsx ─────────────────────────────
+    def listar_jobs(self, project_name: str) -> dict:
+        """Lista todos os jobs (DSJOB) declarados no arquivo .dsx do projeto."""
+        jobs_stages = self._load_jobs_cached(project_name)
+        if isinstance(jobs_stages, dict) and jobs_stages.get("erro"):
+            return jobs_stages
+        return {
+            "sucesso": True,
+            "project_name": project_name,
+            "dsx_file": f"{project_name}.dsx",
+            "jobs": sorted(jobs_stages.keys(), key=str.lower),
+        }
+
+    # ── Busca de impacto por campo (varredura do .dsx) ──────────
+    def buscar_campo(self, project_name: str, termo: str,
+                     exato: bool = False) -> dict:
+        """
+        Varre TODOS os jobs do .dsx do projeto e retorna onde o campo aparece.
+
+        Busca tipo LIKE (substring, case-insensitive) por padrão — útil quando
+        não há padrão de nomenclatura (ex.: 'CNPJ' casa NUM_CNPJ, CPF_CNPJ…).
+        Com exato=True, casa apenas igualdade exata (case-insensitive).
+
+        Retorna jobs agrupados, cada um com as ocorrências por stage e as
+        colunas que casaram (matched_columns).
+        """
+        termo_norm = (termo or "").strip().lower()
+        if not termo_norm:
+            return {"erro": "O termo de busca (campo) é obrigatório."}
+
+        jobs_stages = self._load_jobs_cached(project_name)
+        if isinstance(jobs_stages, dict) and jobs_stages.get("erro"):
+            return jobs_stages
+
+        def _match(col: str) -> bool:
+            c = (col or "").lower()
+            return c == termo_norm if exato else termo_norm in c
+
+        jobs_out: list[dict] = []
+        total_ocorrencias = 0
+        for job_name in sorted(jobs_stages, key=str.lower):
+            ocorrencias = []
+            for stage in jobs_stages[job_name]:
+                matched = [c for c in (stage.get("columns") or []) if _match(c)]
+                if not matched:
+                    continue
+                detalhe = (stage.get("sql_expression") or stage.get("file_path") or "")
+                if detalhe:
+                    detalhe = detalhe.replace("\n", ", ")
+                ocorrencias.append({
+                    "stage_name":      stage.get("stage_name"),
+                    "direction":       stage.get("direction"),
+                    "object_name":     stage.get("object_name"),
+                    "object_type":     stage.get("object_type"),
+                    "stage_type_raw":  stage.get("stage_type_raw"),
+                    "database_name":   stage.get("database_name"),
+                    "detalhe":         detalhe,
+                    "matched_columns": matched,
+                    "total_columns":   len(stage.get("columns") or []),
+                })
+            if ocorrencias:
+                total_ocorrencias += sum(len(o["matched_columns"]) for o in ocorrencias)
+                jobs_out.append({"job_name": job_name, "ocorrencias": ocorrencias})
+
+        return {
+            "sucesso":                True,
+            "project_name":           project_name,
+            "dsx_file":               f"{project_name}.dsx",
+            "termo":                  termo,
+            "exato":                  exato,
+            "total_jobs_dsx":         len(jobs_stages),
+            "total_jobs_impactados":  len(jobs_out),
+            "total_ocorrencias":      total_ocorrencias,
+            "jobs":                   jobs_out,
+        }
+
+    # ── Iteração dos blocos de job (BEGIN DSJOB … próximo) ───────
+    def _iter_job_blocks(self, content: str):
+        """Gera (job_name, job_block) para cada BEGIN DSJOB no conteúdo."""
+        marker = "BEGIN DSJOB"
+        idx = content.find(marker)
+        while idx >= 0:
+            nxt = content.find(marker, idx + len(marker))
+            end = nxt if nxt > 0 else len(content)
+            block = content[idx:end]
+            m = re.search(r'Identifier\s+"([^"]+)"', block)
+            if m:
+                yield m.group(1), block
+            idx = nxt
+
+    # ── Parsing de todos os jobs com cache por mtime ────────────
+    def _load_jobs_cached(self, project_name: str):
+        """Lê e parseia todos os jobs do .dsx; cache invalidado pelo mtime."""
+        dsx_file = f"{project_name}.dsx"
+        path = os.path.join(self.diretorio_base, dsx_file)
+        if not os.path.exists(path):
+            return {"erro": f"Arquivo '{dsx_file}' não encontrado em '{self.diretorio_base}'."}
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError as exc:
+            return {"erro": f"Erro ao acessar '{dsx_file}': {exc}"}
+
+        with _PARSE_LOCK:
+            cached = _PARSE_CACHE.get(path)
+            if cached and cached[0] == mtime:
+                return cached[1]
+
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                content = fh.read()
+        except OSError as exc:
+            return {"erro": f"Erro ao ler '{dsx_file}': {exc}"}
+
+        jobs_stages: dict[str, list[dict]] = {}
+        for job_name, block in self._iter_job_blocks(content):
+            jobs_stages[job_name] = self._parse_stages(
+                block, project_name, job_name, dsx_file)
+
+        with _PARSE_LOCK:
+            _PARSE_CACHE[path] = (mtime, jobs_stages)
+        return jobs_stages
 
     # ── Extração do bloco do job ────────────────────────────────
     def _extract_job_block(self, content: str, job_name: str) -> Optional[str]:
