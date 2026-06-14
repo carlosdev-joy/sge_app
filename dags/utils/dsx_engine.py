@@ -98,6 +98,10 @@ _NUMERIC_TYPE_NAMES: frozenset[str] = frozenset({
 # (substring, case-insensitive). Ex.: "\\Jobs\\Projetos\\Coberturas\\bckp"
 _BACKUP_PATTERNS: tuple[str, ...] = ("backup", "bckp", "bkp", "bkup")
 
+# Jobs "cópia" (duplicatas geradas no DataStage, ex.: CopyOfX) — em geral não
+# usados no dia a dia. Detectado no nome do job ou na pasta (substring, lower).
+_COPY_PATTERNS: tuple[str, ...] = ("copyof", "copy of", "copy_of", "copy-of", "cópia", "copia")
+
 # ── Regex compiladas (seguras — aplicadas em blocos pequenos) ────
 _RE_DSX_ESCAPE  = re.compile(r'\\\(([0-9A-Fa-f]{2})\)')
 _RE_CDATA       = re.compile(r'<!\[CDATA\[(.*?)\]\]>', re.DOTALL)
@@ -171,7 +175,8 @@ class DSXEngine:
     # ── Busca de impacto por campo (varredura do .dsx) ──────────
     def buscar_campo(self, project_name: str, termo: str,
                      exato: bool = False, tipos=None,
-                     excluir: bool = False, incluir_bkp: bool = False) -> dict:
+                     excluir: bool = False, incluir_bkp: bool = False,
+                     incluir_copy: bool = False) -> dict:
         """
         Varre TODOS os jobs do .dsx do projeto e retorna onde o campo aparece,
         com o datatype de cada coluna que casou.
@@ -188,6 +193,8 @@ class DSXEngine:
 
         incluir_bkp — False (padrão): ignora jobs em pastas de backup
                       (categoria com bkp/bckp/backup); True: inclui esses jobs.
+        incluir_copy — False (padrão): ignora jobs cópia (ex.: CopyOf...);
+                       True: inclui esses jobs.
         """
         termo_norm = (termo or "").strip().lower()
         if not termo_norm:
@@ -215,10 +222,14 @@ class DSXEngine:
         total_ocorrencias = 0
         jobs_considerados = 0
         jobs_bkp_ignorados = 0
+        jobs_copy_ignorados = 0
         for job_name in sorted(jobs_data, key=str.lower):
             category = jobs_data[job_name].get("category") or ""
             if not incluir_bkp and self._is_backup_category(category):
                 jobs_bkp_ignorados += 1
+                continue
+            if not incluir_copy and self._is_copy_job(job_name, category):
+                jobs_copy_ignorados += 1
                 continue
             jobs_considerados += 1
 
@@ -257,7 +268,9 @@ class DSXEngine:
             "filtro_tipos":           sorted(tipos_set),
             "filtro_excluir":         excluir,
             "incluir_bkp":            incluir_bkp,
+            "incluir_copy":           incluir_copy,
             "jobs_bkp_ignorados":     jobs_bkp_ignorados,
+            "jobs_copy_ignorados":    jobs_copy_ignorados,
             "total_jobs_dsx":         jobs_considerados,
             "total_jobs_impactados":  len(jobs_out),
             "total_ocorrencias":      total_ocorrencias,
@@ -288,6 +301,13 @@ class DSXEngine:
         """True se a categoria do job aparenta ser pasta de backup (bkp/bckp/backup)."""
         low = (category or "").lower()
         return any(p in low for p in _BACKUP_PATTERNS)
+
+    @staticmethod
+    def _is_copy_job(job_name: str, category: str = "") -> bool:
+        """True se o job aparenta ser uma cópia (ex.: CopyOf...) — nome ou pasta."""
+        name = (job_name or "").lower()
+        cat = (category or "").lower()
+        return any(p in name or p in cat for p in _COPY_PATTERNS)
 
     # ── Parsing de todos os jobs com cache por mtime ────────────
     def _load_jobs_cached(self, project_name: str):
