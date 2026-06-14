@@ -32,14 +32,14 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0f1117] flex items-center justify-center p-4">
+    <div className="min-h-screen bg-canvas flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="text-4xl font-bold text-blue-400 mb-2">⬡</div>
-          <h1 className="text-2xl font-bold text-[#e2e8f0]">ORQUESTRA</h1>
-          <p className="text-[#94a3b8] text-sm mt-1">Pipeline Orchestration Platform</p>
+          <h1 className="text-2xl font-bold text-ink">ORQUESTRA</h1>
+          <p className="text-dim text-sm mt-1">Pipeline Orchestration Platform</p>
         </div>
-        <form onSubmit={handleLogin} className="bg-[#1a1d27] border border-[#2a2d3a] rounded-xl p-6 flex flex-col gap-4">
+        <form onSubmit={handleLogin} className="bg-panel border border-edge rounded-xl p-6 flex flex-col gap-4">
           <Input
             label="Matrícula"
             value={matricula}

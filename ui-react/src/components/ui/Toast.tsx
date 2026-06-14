@@ -28,9 +28,9 @@ export const toast = {
 
 const ICONS = { success: CheckCircle, error: AlertCircle, info: Info }
 const COLORS = {
-  success: 'border-green-700 bg-[#1a1d27]',
-  error:   'border-red-700 bg-[#1a1d27]',
-  info:    'border-blue-700 bg-[#1a1d27]',
+  success: 'border-green-700 bg-panel',
+  error:   'border-red-700 bg-panel',
+  info:    'border-blue-700 bg-panel',
 }
 const ICON_COLORS = { success: 'text-green-400', error: 'text-red-400', info: 'text-blue-400' }
 
@@ -43,8 +43,8 @@ export function ToastContainer() {
         return (
           <div key={t.id} className={`flex items-start gap-3 px-4 py-3 rounded-lg border shadow-xl w-80 ${COLORS[t.type]}`}>
             <Icon size={16} className={`mt-0.5 shrink-0 ${ICON_COLORS[t.type]}`} />
-            <span className="text-sm text-[#e2e8f0] flex-1">{t.message}</span>
-            <button onClick={() => remove(t.id)} className="text-[#94a3b8] hover:text-white shrink-0">
+            <span className="text-sm text-ink flex-1">{t.message}</span>
+            <button onClick={() => remove(t.id)} className="text-dim hover:text-white shrink-0">
               <X size={14} />
             </button>
           </div>

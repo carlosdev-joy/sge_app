@@ -62,19 +62,19 @@ function PipelineWizard({ pipeline, onClose }: { pipeline?: Pipeline; onClose: (
       )
       case 2: return (
         <div className="flex flex-col gap-4">
-          <label className="flex items-center gap-2 text-sm text-[#e2e8f0]">
+          <label className="flex items-center gap-2 text-sm text-ink">
             <input type="checkbox" {...register('ativo')} className="accent-blue-500" />
             Pipeline Ativo
           </label>
-          <label className="flex items-center gap-2 text-sm text-[#94a3b8]">
+          <label className="flex items-center gap-2 text-sm text-dim">
             <input type="checkbox" {...register('notif_inicio')} className="accent-blue-500" />
             Notificação ao Iniciar (Teams)
           </label>
-          <label className="flex items-center gap-2 text-sm text-[#94a3b8]">
+          <label className="flex items-center gap-2 text-sm text-dim">
             <input type="checkbox" {...register('notif_fim')} className="accent-blue-500" />
             Notificação ao Concluir (Teams)
           </label>
-          <label className="flex items-center gap-2 text-sm text-[#94a3b8]">
+          <label className="flex items-center gap-2 text-sm text-dim">
             <input type="checkbox" {...register('notif_erro')} className="accent-blue-500" />
             Notificação de Erro (Teams)
           </label>
@@ -100,12 +100,12 @@ function PipelineWizard({ pipeline, onClose }: { pipeline?: Pipeline; onClose: (
         </div>
       )
       case 4: return (
-        <div className="text-sm text-[#94a3b8]">
+        <div className="text-sm text-dim">
           Jobs serão configurados após salvar o pipeline, na aba <span className="text-blue-400">Jobs</span>.
         </div>
       )
       case 5: return (
-        <div className="text-sm text-[#94a3b8]">
+        <div className="text-sm text-dim">
           Lineage será configurado por job na aba <span className="text-blue-400">Governança</span>.
         </div>
       )
@@ -113,11 +113,11 @@ function PipelineWizard({ pipeline, onClose }: { pipeline?: Pipeline; onClose: (
         const vals = getValues()
         return (
           <div className="flex flex-col gap-3 text-sm">
-            <div className="bg-[#0f1117] rounded-lg p-4 flex flex-col gap-2">
+            <div className="bg-canvas rounded-lg p-4 flex flex-col gap-2">
               {Object.entries(vals).filter(([,v]) => v !== '' && v !== null && v !== undefined).map(([k, v]) => (
                 <div key={k} className="flex gap-3">
-                  <span className="text-[#94a3b8] w-36 shrink-0 text-xs">{k}</span>
-                  <span className="text-[#e2e8f0] text-xs font-mono">{String(v)}</span>
+                  <span className="text-dim w-36 shrink-0 text-xs">{k}</span>
+                  <span className="text-ink text-xs font-mono">{String(v)}</span>
                 </div>
               ))}
             </div>
@@ -134,7 +134,7 @@ function PipelineWizard({ pipeline, onClose }: { pipeline?: Pipeline; onClose: (
       <div className="flex gap-1 mb-6 overflow-x-auto pb-1">
         {STEPS.map((s, i) => (
           <button key={i} onClick={() => setStep(i)}
-            className={`px-2.5 py-1 rounded text-xs font-medium whitespace-nowrap transition-colors ${i === step ? 'bg-blue-600 text-white' : i < step ? 'bg-green-900/50 text-green-400' : 'bg-[#2a2d3a] text-[#94a3b8]'}`}>
+            className={`px-2.5 py-1 rounded text-xs font-medium whitespace-nowrap transition-colors ${i === step ? 'bg-blue-600 text-white' : i < step ? 'bg-green-900/50 text-green-400' : 'bg-edge text-dim'}`}>
             {i + 1}. {s}
           </button>
         ))}
@@ -142,7 +142,7 @@ function PipelineWizard({ pipeline, onClose }: { pipeline?: Pipeline; onClose: (
 
       <div className="min-h-[200px]"><StepContent /></div>
 
-      <div className="flex justify-between mt-6 pt-4 border-t border-[#2a2d3a]">
+      <div className="flex justify-between mt-6 pt-4 border-t border-edge">
         <Button variant="secondary" onClick={() => setStep(s => s - 1)} disabled={step === 0}>
           <ChevronLeft size={13} /> Anterior
         </Button>
@@ -176,7 +176,7 @@ export default function Pipelines() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap gap-3 items-end">
-        <h1 className="text-lg font-bold text-[#e2e8f0]">Pipelines</h1>
+        <h1 className="text-lg font-bold text-ink">Pipelines</h1>
         <Input value={filters.nome} onChange={e => setFilters(f => ({ ...f, nome: e.target.value }))} placeholder="Buscar por nome…" className="w-52" />
         <Select value={filters.projeto} onChange={e => setFilters(f => ({ ...f, projeto: e.target.value }))} className="w-44">
           <option value="">Todos projetos</option>
@@ -190,10 +190,10 @@ export default function Pipelines() {
       </div>
 
       {isLoading ? <PageSpinner /> : (
-        <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg overflow-hidden">
-          <div className="px-4 py-2 border-b border-[#2a2d3a] text-xs text-[#94a3b8]">{data?.total ?? 0} pipelines</div>
+        <div className="bg-panel border border-edge rounded-lg overflow-hidden">
+          <div className="px-4 py-2 border-b border-edge text-xs text-dim">{data?.total ?? 0} pipelines</div>
           <table className="w-full text-sm">
-            <thead><tr className="text-xs text-[#94a3b8] border-b border-[#2a2d3a]">
+            <thead><tr className="text-xs text-dim border-b border-edge">
               <th className="px-4 py-2 text-left">Pipeline</th>
               <th className="px-4 py-2 text-left">Projeto</th>
               <th className="px-4 py-2 text-left">Domínio</th>
@@ -206,15 +206,15 @@ export default function Pipelines() {
             </tr></thead>
             <tbody>
               {(data?.pipelines ?? []).map((p) => (
-                <tr key={p.pipeline_name} className="border-b border-[#2a2d3a]/50 hover:bg-[#2a2d3a]/30">
-                  <td className="px-4 py-2 text-[#e2e8f0] font-mono text-xs">{p.pipeline_name}</td>
-                  <td className="px-4 py-2 text-[#94a3b8]">{p.projeto}</td>
-                  <td className="px-4 py-2 text-[#94a3b8]">{p.dominio}</td>
+                <tr key={p.pipeline_name} className="border-b border-edge/50 hover:bg-edge/30">
+                  <td className="px-4 py-2 text-ink font-mono text-xs">{p.pipeline_name}</td>
+                  <td className="px-4 py-2 text-dim">{p.projeto}</td>
+                  <td className="px-4 py-2 text-dim">{p.dominio}</td>
                   <td className="px-4 py-2">{p.criticidade && <Badge value={p.criticidade} />}</td>
                   <td className="px-4 py-2"><Badge value={p.ativo ? 'ativo' : 'inativo'} /></td>
-                  <td className="px-4 py-2 text-[#94a3b8] font-mono text-xs">{p.schedule}</td>
-                  <td className="px-4 py-2 text-[#94a3b8]">{p.job_count ?? '-'}</td>
-                  <td className="px-4 py-2 text-[#94a3b8]">{p.sla_minutos ? `${p.sla_minutos}m` : '-'}</td>
+                  <td className="px-4 py-2 text-dim font-mono text-xs">{p.schedule}</td>
+                  <td className="px-4 py-2 text-dim">{p.job_count ?? '-'}</td>
+                  <td className="px-4 py-2 text-dim">{p.sla_minutos ? `${p.sla_minutos}m` : '-'}</td>
                   <td className="px-4 py-2 text-right">
                     <Button variant="ghost" size="sm" onClick={() => setEditPipeline(p)}><Edit size={13} /></Button>
                   </td>
@@ -222,9 +222,9 @@ export default function Pipelines() {
               ))}
             </tbody>
           </table>
-          <div className="px-4 py-2 flex items-center gap-2 border-t border-[#2a2d3a]">
+          <div className="px-4 py-2 flex items-center gap-2 border-t border-edge">
             <Button variant="ghost" size="sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}>← Anterior</Button>
-            <span className="text-xs text-[#94a3b8]">Pág. {page + 1}</span>
+            <span className="text-xs text-dim">Pág. {page + 1}</span>
             <Button variant="ghost" size="sm" disabled={(data?.pipelines?.length ?? 0) < LIMIT} onClick={() => setPage(p => p + 1)}>Próxima →</Button>
           </div>
         </div>
