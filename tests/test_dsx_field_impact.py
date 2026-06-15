@@ -151,6 +151,26 @@ def test_busca_por_arquivo(engine: DSXEngine):
     assert any(o.upper().startswith("DS_") for o in objs)
 
 
+def test_listar_pastas(engine: DSXEngine):
+    if not _has("BI_CVP"):
+        pytest.skip("BI_CVP.dsx ausente")
+    r = engine.listar_pastas("BI_CVP")
+    assert r.get("sucesso") is True
+    cats = [p["category"] for p in r["pastas"]]
+    assert any("Coberturas" in c for c in cats)
+    assert all("total_jobs" in p for p in r["pastas"])
+
+
+def test_filtro_por_pasta(engine: DSXEngine):
+    if not _has("BI_CVP"):
+        pytest.skip("BI_CVP.dsx ausente")
+    dentro = engine.buscar_campo("BI_CVP", "cobertura", pasta="Coberturas")
+    fora = engine.buscar_campo("BI_CVP", "cobertura", pasta="__nao_existe__")
+    assert dentro["filtro_pasta"] == "Coberturas"
+    assert dentro["total_jobs_impactados"] >= 1
+    assert fora["total_jobs_impactados"] == 0 and fora["total_jobs_dsx"] == 0
+
+
 def test_termo_vazio_retorna_erro(engine: DSXEngine):
     r = engine.buscar_campo("seq_geral", "   ")
     assert "erro" in r

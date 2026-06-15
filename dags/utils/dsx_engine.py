@@ -172,11 +172,31 @@ class DSXEngine:
             "jobs": sorted(jobs_stages.keys(), key=str.lower),
         }
 
+    # ── Listagem de pastas (categorias) de um .dsx ──────────────
+    def listar_pastas(self, project_name: str) -> dict:
+        """Pastas (Category) distintas do .dsx, com a contagem de jobs em cada."""
+        jobs_data = self._load_jobs_cached(project_name)
+        if isinstance(jobs_data, dict) and jobs_data.get("erro"):
+            return jobs_data
+        counts: dict[str, int] = {}
+        for d in jobs_data.values():
+            cat = d.get("category") or ""
+            counts[cat] = counts.get(cat, 0) + 1
+        pastas = [{"category": c, "total_jobs": n} for c, n in counts.items()]
+        pastas.sort(key=lambda x: x["category"].lower())
+        return {
+            "sucesso": True,
+            "project_name": project_name,
+            "dsx_file": f"{project_name}.dsx",
+            "pastas": pastas,
+        }
+
     # ── Busca de impacto por campo (varredura do .dsx) ──────────
     def buscar_campo(self, project_name: str, termo: str,
                      exato: bool = False, tipos=None,
                      excluir: bool = False, incluir_bkp: bool = False,
-                     incluir_copy: bool = False, alvo: str = "coluna") -> dict:
+                     incluir_copy: bool = False, alvo: str = "coluna",
+                     pasta: str = "") -> dict:
         """
         Varre TODOS os jobs do .dsx do projeto e retorna onde o campo aparece,
         com o datatype de cada coluna que casou.
@@ -209,6 +229,8 @@ class DSXEngine:
         if alvo not in ("coluna", "tabela", "arquivo", "tabela_arquivo"):
             alvo = "coluna"
 
+        pasta_norm = (pasta or "").strip().lower()
+
         jobs_data = self._load_jobs_cached(project_name)
         if isinstance(jobs_data, dict) and jobs_data.get("erro"):
             return jobs_data
@@ -234,6 +256,8 @@ class DSXEngine:
         jobs_copy_ignorados = 0
         for job_name in sorted(jobs_data, key=str.lower):
             category = jobs_data[job_name].get("category") or ""
+            if pasta_norm and pasta_norm not in category.lower():
+                continue  # fora da pasta filtrada — nem entra na contagem
             if not incluir_bkp and self._is_backup_category(category):
                 jobs_bkp_ignorados += 1
                 continue
@@ -294,6 +318,7 @@ class DSXEngine:
             "dsx_file":               f"{project_name}.dsx",
             "termo":                  termo,
             "alvo":                   alvo,
+            "filtro_pasta":           pasta,
             "exato":                  exato,
             "filtro_tipos":           sorted(tipos_set),
             "filtro_excluir":         excluir,
