@@ -1,8 +1,8 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { PageSpinner } from '../components/ui/Spinner'
-import { Download, RefreshCw, LayoutGrid, AlignLeft, Network, X } from 'lucide-react'
+import { Download, RefreshCw, LayoutGrid, AlignLeft, Network, X, GitFork } from 'lucide-react'
 
 // ─── Types matching actual API response ─────────────────────────────────────
 
@@ -246,14 +246,166 @@ function exportCsv(data: ApiPipeline[]) {
   a.click()
 }
 
+// ─── Dependency Graph (U4) ───────────────────────────────────────────────────
+
+const CRIT_NODE_COLORS: Record<string, string> = {
+  CRITICA: '#be123c', ALTA: '#dc2626', MEDIA: '#d97706', BAIXA: '#16a34a',
+}
+
+function DependencyGraph({ items }: { items: ApiPipeline[] }) {
+  const svgRef = useRef<SVGSVGElement>(null)
+
+  // Build adjacency: pipeline → depends_on[]
+  const edges = useMemo(() => {
+    const arr: { from: string; to: string }[] = []
+    for (const p of items) {
+      if (!p.depends_on) continue
+      for (const dep of p.depends_on.split(',').map(s => s.trim()).filter(Boolean)) {
+        arr.push({ from: dep, to: p.pipeline_name })
+      }
+    }
+    return arr
+  }, [items])
+
+  // Only show pipelines that participate in at least one dependency
+  const connectedNames = useMemo(() => {
+    const s = new Set<string>()
+    for (const e of edges) { s.add(e.from); s.add(e.to) }
+    return s
+  }, [edges])
+
+  const connectedItems = items.filter(p => connectedNames.has(p.pipeline_name))
+
+  if (edges.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-center">
+        <GitFork size={40} className="text-dim mb-3" />
+        <p className="font-semibold text-ink">Nenhuma dependência entre pipelines</p>
+        <p className="text-sm text-dim mt-1">Configure dependências no cadastro de pipeline para visualizá-las aqui.</p>
+      </div>
+    )
+  }
+
+  // Simple layered layout: assign topo-sort depth
+  const depth = new Map<string, number>()
+  const inDegree = new Map<string, number>()
+  for (const n of connectedNames) inDegree.set(n, 0)
+  for (const e of edges) inDegree.set(e.to, (inDegree.get(e.to) ?? 0) + 1)
+
+  const queue = [...connectedNames].filter(n => (inDegree.get(n) ?? 0) === 0)
+  for (const n of queue) depth.set(n, 0)
+  while (queue.length) {
+    const cur = queue.shift()!
+    for (const e of edges.filter(e => e.from === cur)) {
+      const d = (depth.get(cur) ?? 0) + 1
+      if (!depth.has(e.to) || (depth.get(e.to) ?? 0) < d) depth.set(e.to, d)
+      if ((inDegree.get(e.to) ?? 0) - 1 === 0) queue.push(e.to)
+      inDegree.set(e.to, (inDegree.get(e.to) ?? 0) - 1)
+    }
+  }
+  // Assign remaining (cycles) depth 0
+  for (const n of connectedNames) if (!depth.has(n)) depth.set(n, 0)
+
+  // Group by depth layer
+  const byLayer = new Map<number, string[]>()
+  for (const [n, d] of depth) {
+    const arr = byLayer.get(d) ?? []
+    arr.push(n)
+    byLayer.set(d, arr)
+  }
+  const layers = [...byLayer.keys()].sort((a, b) => a - b)
+
+  const NODE_W = 180; const NODE_H = 44; const H_GAP = 60; const V_GAP = 20
+  const colX = layers.map((_, i) => i * (NODE_W + H_GAP) + 20)
+  const positions = new Map<string, { x: number; y: number }>()
+  for (const layer of layers) {
+    const col = layers.indexOf(layer)
+    const nodeList = byLayer.get(layer) ?? []
+    nodeList.forEach((name, row) => {
+      positions.set(name, { x: colX[col], y: row * (NODE_H + V_GAP) + 20 })
+    })
+  }
+
+  const maxY = Math.max(...[...positions.values()].map(p => p.y)) + NODE_H + 20
+  const maxX = Math.max(...[...positions.values()].map(p => p.x)) + NODE_W + 20
+
+  return (
+    <div className="overflow-auto bg-canvas rounded border border-edge p-2">
+      <p className="text-[10px] text-dim mb-2 pl-1">
+        {connectedItems.length} pipelines com dependências · {edges.length} ligações
+      </p>
+      <svg ref={svgRef} width={maxX} height={maxY} className="font-sans">
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#94a3b8" />
+          </marker>
+        </defs>
+
+        {/* Edges */}
+        {edges.map((e, i) => {
+          const from = positions.get(e.from)
+          const to   = positions.get(e.to)
+          if (!from || !to) return null
+          const x1 = from.x + NODE_W
+          const y1 = from.y + NODE_H / 2
+          const x2 = to.x
+          const y2 = to.y + NODE_H / 2
+          const mx = (x1 + x2) / 2
+          return (
+            <g key={i}>
+              <path
+                d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`}
+                fill="none" stroke="#94a3b8" strokeWidth="1.5"
+                markerEnd="url(#arrow)"
+              />
+            </g>
+          )
+        })}
+
+        {/* Nodes */}
+        {connectedItems.map(p => {
+          const pos = positions.get(p.pipeline_name)
+          if (!pos) return null
+          const color = CRIT_NODE_COLORS[(p.criticidade ?? '').toUpperCase()] ?? '#64748b'
+          const active = p.active === 1
+          return (
+            <g key={p.pipeline_name}>
+              <rect
+                x={pos.x} y={pos.y}
+                width={NODE_W} height={NODE_H}
+                rx={6}
+                fill={active ? '#1e293b' : '#334155'}
+                stroke={active ? color : '#475569'}
+                strokeWidth={active ? 1.5 : 1}
+                opacity={active ? 1 : 0.6}
+              />
+              <circle cx={pos.x + 10} cy={pos.y + 10} r={4} fill={color} />
+              <text x={pos.x + 20} y={pos.y + 14} fill="#f1f5f9" fontSize="10" fontWeight="600">
+                {p.pipeline_name.length > 20 ? p.pipeline_name.slice(0, 18) + '…' : p.pipeline_name}
+              </text>
+              <text x={pos.x + 10} y={pos.y + 30} fill="#94a3b8" fontSize="9">
+                {p.project_name ?? ''}{p.domain ? ` · ${p.domain}` : ''}
+              </text>
+              {!active && (
+                <text x={pos.x + NODE_W - 10} y={pos.y + 14} fill="#64748b" fontSize="9" textAnchor="end">inativo</text>
+              )}
+            </g>
+          )
+        })}
+      </svg>
+    </div>
+  )
+}
+
 // ─── Main page ───────────────────────────────────────────────────────────────
 
-type ViewMode = 'cards' | 'diagram'
+type ViewMode = 'cards' | 'diagram' | 'graph'
 
 export default function Malha() {
   const [view, setView] = useState<ViewMode>('cards')
   const [search, setSearch] = useState('')
   const [projeto, setProjeto] = useState('')
+  const [dominio, setDominio] = useState('')
   const [crit, setCrit] = useState('')
   const [status, setStatus] = useState('')
   const [bannerOpen, setBannerOpen] = useState(true)
@@ -271,6 +423,11 @@ export default function Malha() {
     return [...s].sort()
   }, [allPipelines])
 
+  const dominios = useMemo(() => {
+    const s = new Set(allPipelines.map(p => p.domain).filter(Boolean))
+    return [...s].sort() as string[]
+  }, [allPipelines])
+
   const filtered = useMemo(() => {
     let items = allPipelines
     if (search) {
@@ -282,11 +439,12 @@ export default function Malha() {
       )
     }
     if (projeto) items = items.filter(p => p.project_name === projeto)
+    if (dominio) items = items.filter(p => p.domain === dominio)
     if (crit) items = items.filter(p => p.criticidade?.toUpperCase() === crit)
     if (status === '1') items = items.filter(p => p.active === 1)
     if (status === '0') items = items.filter(p => p.active === 0)
     return items
-  }, [allPipelines, search, projeto, crit, status])
+  }, [allPipelines, search, projeto, dominio, crit, status])
 
   const byProject = useMemo(() => {
     const map = new Map<string, ApiPipeline[]>()
@@ -339,6 +497,10 @@ export default function Malha() {
           <option value="">Todos os projetos</option>
           {projetos.map(p => <option key={p} value={p}>{p}</option>)}
         </select>
+        <select value={dominio} onChange={e => setDominio(e.target.value)} className={`${inputCls} w-36`}>
+          <option value="">Todos os domínios</option>
+          {dominios.map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
         <select value={crit} onChange={e => setCrit(e.target.value)} className={`${inputCls} w-36`}>
           <option value="">Toda criticidade</option>
           <option value="CRITICA">Crítica</option>
@@ -373,6 +535,17 @@ export default function Malha() {
             }`}
           >
             <AlignLeft size={13} /> Diagrama
+          </button>
+          <button
+            onClick={() => setView('graph')}
+            title="Grafo de dependências entre pipelines"
+            className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-sm font-medium transition-colors ${
+              view === 'graph'
+                ? 'bg-[#1A5FA8] text-white'
+                : 'border border-edge bg-canvas text-dim hover:text-ink hover:bg-edge/40'
+            }`}
+          >
+            <GitFork size={13} /> Grafo dep.
           </button>
           <button
             onClick={() => exportCsv(filtered)}
@@ -435,10 +608,12 @@ export default function Malha() {
             </div>
           ))}
         </div>
-      ) : (
+      ) : view === 'diagram' ? (
         <div className="bg-panel border border-edge rounded-lg overflow-hidden">
           <DiagramView items={filtered} />
         </div>
+      ) : (
+        <DependencyGraph items={filtered} />
       )}
     </div>
   )

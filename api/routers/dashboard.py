@@ -139,7 +139,7 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
             ) fila ON fila.execution_id = r.execution_id
             WHERE rn=1 AND COALESCE(p.ambiente,'PROD')='PROD'
             ORDER BY
-                CASE COALESCE(p.criticidade,'') WHEN 'ALTA' THEN 1 WHEN 'MEDIA' THEN 2 WHEN 'BAIXA' THEN 3 ELSE 4 END,
+                CASE UPPER(COALESCE(p.criticidade,'')) WHEN 'ALTA' THEN 1 WHEN 'MEDIA' THEN 2 WHEN 'BAIXA' THEN 3 ELSE 4 END,
                 CASE r.ultimo_status WHEN 'FAILED' THEN 1 WHEN 'WARNING' THEN 2 WHEN 'RUNNING' THEN 3 ELSE 4 END,
                 r.inicio DESC
         """, [dt_ini, dt_fim] + ([fp] if fp else []))

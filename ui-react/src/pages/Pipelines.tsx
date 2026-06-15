@@ -9,6 +9,7 @@ import { Modal } from '../components/ui/Modal'
 import { PageSpinner } from '../components/ui/Spinner'
 import { InfoBanner } from '../components/ui/InfoBanner'
 import { toast } from '../components/ui/Toast'
+import { useAirflowUrl } from '../lib/config'
 import {
   ChevronRight, ChevronDown, Plus, Edit, Eye, GitBranch,
   History, Play, PowerOff, Settings, Save,
@@ -84,7 +85,6 @@ const SCHEDULE_LABELS: Record<string, string> = {
 const CRITICIDADES   = ['Alta', 'Media', 'Baixa'] as const
 const AMBIENTES      = ['PROD', 'HML', 'DEV'] as const
 const DAG_FACTORY_ID = 'etl_dag_factory'
-const AIRFLOW_UI     = 'https://airflow.caixavidaeprevidencia.intranet'
 
 // Job/Lineage — mesmos tipos e regras da tela de Jobs
 const JOB_TYPES = ['datastage', 'shell', 'python', 'storedproc'] as const
@@ -1947,6 +1947,7 @@ export default function Pipelines() {
   const qc      = useQueryClient()
   const user    = useAuthStore(s => s.user)
   const isViewer = user?.perfil === 'consulta'
+  const airflowUiUrl = useAirflowUrl()
 
   const [nameFilter,    setNameFilter]    = useState('')
   const [projectFilter, setProjectFilter] = useState('')
@@ -2047,7 +2048,7 @@ export default function Pipelines() {
       const dagId = pipelineToDagId(p.pipeline_name)
       setExecPipeline(undefined)
       toast.success(`Pipeline disparado! (${res?.dag_run_id ?? 'ok'})`)
-      window.open(`${AIRFLOW_UI}/dags/${dagId}/grid`, '_blank')
+      window.open(`${airflowUiUrl}/dags/${dagId}/grid`, '_blank')
     },
     onError: (e: unknown) => {
       const msg = e instanceof Error ? e.message : ''

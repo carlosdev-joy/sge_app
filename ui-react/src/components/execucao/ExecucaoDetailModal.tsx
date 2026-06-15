@@ -11,8 +11,7 @@ import { toast } from '../ui/Toast'
 import {
   RotateCcw, CheckSquare, Copy, ExternalLink, Search,
 } from 'lucide-react'
-
-const AIRFLOW_UI = 'https://airflow.caixavidaeprevidencia.intranet'
+import { useAirflowUrl } from '../../lib/config'
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -139,6 +138,8 @@ export function AirflowLogModal({ state, onClose }: { state: AirflowLogState; on
     return order.indexOf(a.state?.toUpperCase()) - order.indexOf(b.state?.toUpperCase())
   })
 
+  const airflowUiUrl = useAirflowUrl()
+
   const fetchLog = useCallback(async (tid: string, tn: number) => {
     setLoading(true); setErr(''); setLogText(null)
     try {
@@ -155,7 +156,7 @@ export function AirflowLogModal({ state, onClose }: { state: AirflowLogState; on
     }
   }, [dagId, dagRunId])
 
-  const airflowLink = `${AIRFLOW_UI}/dags/${dagId}/grid`
+  const airflowLink = `${airflowUiUrl}/dags/${dagId}/grid`
 
   function colorize(text: string) {
     return text.split('\n').map((line, i) => {
@@ -340,6 +341,7 @@ export function LogDetailModal({
 }) {
   const qc = useQueryClient()
   const user = useAuthStore(s => s.user)
+  const airflowUiUrl = useAirflowUrl()
 
   const { data: detailData, isLoading: detailLoading } = useQuery<{ data: JobDetailRow[] }>({
     queryKey: ['exec-detail', row.execution_id, row.pipeline],
@@ -495,7 +497,7 @@ export function LogDetailModal({
 
         {/* Footer actions */}
         <div className="flex gap-2 pt-2 border-t border-edge">
-          <a href={`${AIRFLOW_UI}/dags/${dagId}/grid`} target="_blank" rel="noreferrer">
+          <a href={`${airflowUiUrl}/dags/${dagId}/grid`} target="_blank" rel="noreferrer">
             <Button variant="secondary" size="sm"><ExternalLink size={13} /> Ver no Airflow</Button>
           </a>
           {hasFail && !row.ack_by && user?.perfil !== 'consulta' && (

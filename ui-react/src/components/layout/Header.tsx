@@ -7,6 +7,7 @@ import { getTheme, toggleTheme } from '../../lib/theme'
 import { useAppVersion } from '../../lib/version'
 import { useQuery } from '@tanstack/react-query'
 import { LogOut, Sun, Moon, Shield, Mail, Hash, Building2, ChevronDown, X, Tag } from 'lucide-react'
+import { CommandPalette } from '../ui/CommandPalette'
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -236,8 +237,21 @@ export function Header() {
   const { logout, user } = useAuthStore()
   const appVersion = useAppVersion()
   const [theme, setTheme] = useState(getTheme())
+  const [cmdOpen, setCmdOpen] = useState(false)
   const perms = user?.permissoes ?? []
   const canSee = (n: typeof NAV[number]) => !n.perm || perms.length === 0 || perms.includes(n.perm)
+
+  // Global Ctrl+K / Cmd+K listener
+  useEffect(() => {
+    function handler(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault()
+        setCmdOpen((v) => !v)
+      }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [])
 
   const handleLogout = async () => {
     try { await apiFetch('/auth/logout', { method: 'POST' }) } catch {}
@@ -293,8 +307,15 @@ export function Header() {
           })}
         </nav>
 
-        {/* Direita: tema + avatar */}
+        {/* Direita: ⌘K + tema + avatar */}
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setCmdOpen(true)}
+            className="hidden sm:flex items-center gap-1.5 text-white/60 hover:text-white text-[11px] border border-white/20 hover:border-white/40 rounded px-2 py-0.5 transition-colors"
+            title="Busca global (Ctrl+K)"
+          >
+            <span>⌘K</span>
+          </button>
           <button
             onClick={() => setTheme(toggleTheme())}
             className="text-white/70 hover:text-white transition-colors p-1 rounded hover:bg-white/10"
@@ -307,6 +328,8 @@ export function Header() {
         </div>
 
       </div>
+
+      <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} />
     </header>
   )
 }

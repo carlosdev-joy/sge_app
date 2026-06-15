@@ -37,6 +37,7 @@ DEFAULTS_CONFIG = {
     "pipeline_query_limit":           20,
     "jobs_query_limit":               50,
     "logs_query_limit":               30,
+    "airflow_ui_url":                 "http://localhost:8080",
 }
 INT_CONFIG_KEYS = {
     "dashboard_refresh_interval_sec",

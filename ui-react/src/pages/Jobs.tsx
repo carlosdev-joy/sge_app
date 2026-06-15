@@ -13,12 +13,12 @@ import {
   Edit, Plus, ClipboardList, Play, Save, X, Trash2,
   ChevronUp, ChevronDown, Copy, Network, ArrowUpDown,
 } from 'lucide-react'
+import { useAirflowUrl } from '../lib/config'
 
 // ── constants ──────────────────────────────────────────────────────────────
 
 const JOB_TYPES = ['datastage', 'shell', 'python', 'storedproc'] as const
 type JobType = typeof JOB_TYPES[number]
-const AIRFLOW_UI = 'https://airflow.caixavidaeprevidencia.intranet'
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -468,6 +468,7 @@ export default function Jobs() {
   const qc = useQueryClient()
   const user = useAuthStore(s => s.user)
   const isViewer = user?.perfil === 'consulta'
+  const airflowUiUrl = useAirflowUrl()
 
   // Search state
   const [pipelineInput, setPipelineInput] = useState('')
@@ -590,7 +591,7 @@ export default function Jobs() {
       const dagId = pipelineToDagId(searched)
       toast.success(`Pipeline disparado! (${res?.dag_run_id ?? 'ok'})`)
       qc.invalidateQueries({ queryKey: ['jobs'] })
-      setTimeout(() => window.open(`${AIRFLOW_UI}/dags/${dagId}/grid`, '_blank'), 1200)
+      setTimeout(() => window.open(`${airflowUiUrl}/dags/${dagId}/grid`, '_blank'), 1200)
     },
     onError: (e: any) => {
       const msg = e.message ?? ''

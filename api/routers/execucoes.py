@@ -796,3 +796,131 @@ def get_duracao_media(pipeline: str = Query(...), limit: int = Query(30, ge=5, l
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── SLA Adherence Report (U6) ─────────────────────────────────────────────────
+
+@router.get("/execucoes/sla-report", tags=["execucoes"])
+def sla_report(
+    date_ini: Optional[str] = Query(None, description="Data inicial YYYY-MM-DD (padrão: 30 dias atrás)"),
+    date_fim: Optional[str] = Query(None, description="Data final YYYY-MM-DD (padrão: hoje)"),
+    project:  Optional[str] = Query(None, description="Filtrar por projeto"),
+    limit:    int           = Query(200, ge=1, le=1000),
+    _auth: dict = Depends(get_current_user),
+):
+    """Aderência ao SLA por pipeline no período.
+
+    Para cada pipeline com SLA definido, retorna:
+    - total de execuções concluídas
+    - execuções dentro do SLA
+    - execuções que estouraram o SLA
+    - percentual de aderência
+    - duração média e máxima
+    """
+    from datetime import datetime as _dt
+    try:
+        fim_dt   = _dt.strptime(date_fim, "%Y-%m-%d") if date_fim else _dt.now()
+        ini_dt   = _dt.strptime(date_ini, "%Y-%m-%d") if date_ini else fim_dt - timedelta(days=30)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Data inválida: {e}")
+
+    dt_ini = ini_dt.strftime("%Y-%m-%d 00:00:00")
+    dt_fim = (fim_dt + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+    where_proj = " AND e.project = ? " if project else ""
+
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+
+        # Aggregated execution view: one row per (pipeline, execution_id)
+        cur.execute(f"""
+            WITH runs AS (
+                SELECT e.execution_id, e.pipeline, e.project,
+                    MIN(e.start_time)  AS inicio,
+                    MAX(e.end_time)    AS fim,
+                    SUM(CASE WHEN e.status IN ('SUCCESS','WARNING') THEN 1 ELSE 0 END) AS jobs_ok,
+                    SUM(CASE WHEN e.status = 'FAILED'              THEN 1 ELSE 0 END) AS jobs_fail,
+                    DATEDIFF(SECOND, MIN(e.start_time), MAX(COALESCE(e.end_time, GETDATE()))) AS dur_sec
+                FROM dbo.etl_job_execution e
+                WHERE e.start_time >= ? AND e.start_time < ?
+                  AND e.status IN ('SUCCESS','WARNING','FAILED')
+                  {where_proj}
+                GROUP BY e.execution_id, e.pipeline, e.project
+            ),
+            run_status AS (
+                SELECT execution_id, pipeline, project, inicio, fim, dur_sec,
+                    CASE WHEN jobs_fail > 0 THEN 'FAILED'
+                         WHEN jobs_ok  > 0 THEN 'SUCCESS'
+                         ELSE 'UNKNOWN' END AS status_geral
+                FROM runs
+            )
+            SELECT
+                rs.pipeline,
+                rs.project,
+                p.criticidade,
+                p.sla_minutos,
+                COUNT(*)                                                             AS total_exec,
+                SUM(CASE WHEN rs.status_geral IN ('SUCCESS') THEN 1 ELSE 0 END)     AS exec_sucesso,
+                SUM(CASE WHEN rs.status_geral = 'FAILED' THEN 1 ELSE 0 END)         AS exec_falha,
+                SUM(CASE WHEN p.sla_minutos IS NOT NULL
+                          AND rs.dur_sec > p.sla_minutos * 60 THEN 1 ELSE 0 END)    AS exec_estouro_sla,
+                AVG(CAST(rs.dur_sec AS float))                                       AS avg_dur_sec,
+                MAX(rs.dur_sec)                                                      AS max_dur_sec,
+                MIN(rs.inicio)                                                       AS primeira_exec,
+                MAX(rs.inicio)                                                       AS ultima_exec
+            FROM run_status rs
+            JOIN dbo.etl_pipeline p ON p.pipeline_name = rs.pipeline
+            WHERE COALESCE(p.ambiente, 'PROD') = 'PROD'
+            GROUP BY rs.pipeline, rs.project, p.criticidade, p.sla_minutos
+            ORDER BY
+                CASE UPPER(COALESCE(p.criticidade,'')) WHEN 'ALTA' THEN 1 WHEN 'MEDIA' THEN 2 WHEN 'BAIXA' THEN 3 ELSE 4 END,
+                COUNT(*) DESC
+            OFFSET 0 ROWS FETCH NEXT ? ROWS ONLY
+        """, [dt_ini, dt_fim] + ([project] if project else []) + [limit])
+
+        cols = [d[0] for d in cur.description]
+        rows = []
+        for row in cur.fetchall():
+            r = dict(zip(cols, row))
+            total  = int(r["total_exec"] or 0)
+            sla_m  = r["sla_minutos"]
+            estou  = int(r["exec_estouro_sla"] or 0)
+            sucesso = int(r["exec_sucesso"] or 0)
+            aderencia = round((1 - estou / total) * 100, 1) if total and sla_m else None
+            rows.append({
+                "pipeline":      r["pipeline"],
+                "project":       r["project"],
+                "criticidade":   r["criticidade"] or "Media",
+                "sla_minutos":   sla_m,
+                "total_exec":    total,
+                "exec_sucesso":  sucesso,
+                "exec_falha":    int(r["exec_falha"] or 0),
+                "exec_estouro_sla": estou,
+                "aderencia_sla_pct": aderencia,
+                "avg_dur_minutos": round((r["avg_dur_sec"] or 0) / 60, 1),
+                "max_dur_minutos": round((r["max_dur_sec"] or 0) / 60, 1),
+                "primeira_exec": _fmt_dt(r["primeira_exec"]),
+                "ultima_exec":   _fmt_dt(r["ultima_exec"]),
+            })
+
+        cur.close(); conn.close()
+
+        pipelines_com_sla = sum(1 for r in rows if r["sla_minutos"])
+        aderencia_media = None
+        vals = [r["aderencia_sla_pct"] for r in rows if r["aderencia_sla_pct"] is not None]
+        if vals:
+            aderencia_media = round(sum(vals) / len(vals), 1)
+
+        return {
+            "periodo": {"ini": dt_ini[:10], "fim": dt_fim[:10]},
+            "filtros": {"project": project},
+            "resumo": {
+                "total_pipelines":        len(rows),
+                "pipelines_com_sla":      pipelines_com_sla,
+                "aderencia_media_pct":    aderencia_media,
+            },
+            "data": rows,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
