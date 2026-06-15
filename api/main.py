@@ -35,6 +35,7 @@ Endpoints:
   POST /lineage/extract-dsx               — extrai lineage de arquivo .dsx
   POST /lineage/normalize                 — normaliza lineage legado
   GET  /lineage/dsx-files                 — lista arquivos .dsx disponíveis
+  GET  /lineage/dsx-folders               — lista pastas (Category) de um .dsx
   GET  /lineage/field-impact              — impacto por campo (varredura de .dsx)
 
   GET    /change-plans                    — lista planos de ajuste de campos

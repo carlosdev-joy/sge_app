@@ -38,6 +38,7 @@ interface FieldImpactResult {
   dsx_file: string
   termo: string
   alvo: string
+  filtro_pasta: string
   exato: boolean
   filtro_tipos: string[]
   filtro_excluir: boolean
@@ -126,6 +127,9 @@ function HighlightCol({ name, termo }: { name: string; termo: string }) {
 
 const selKey = (job: string, stage: string | null, col: string) => `${job}␟${stage ?? ''}␟${col}`
 
+// Pasta (Category) do DataStage → forma legível: \\Jobs\\Projetos\\X → Jobs / Projetos / X
+const cleanCat = (c: string) => c.replace(/\\+/g, '/').replace(/^\/+/, '').replace(/\//g, ' / ') || '(sem pasta)'
+
 // ── CSV ───────────────────────────────────────────────────────────
 function toCsv(r: FieldImpactResult): string {
   const esc = (v: unknown) => {
@@ -153,6 +157,7 @@ function toCsv(r: FieldImpactResult): string {
 // ── Página ────────────────────────────────────────────────────────
 export default function ImpactoCampo() {
   const [dsx, setDsx] = useState('')
+  const [pasta, setPasta] = useState('')
   const [campo, setCampo] = useState('')
   const [alvo, setAlvo] = useState('coluna')
   const [exato, setExato] = useState(false)
@@ -169,6 +174,12 @@ export default function ImpactoCampo() {
     queryKey: ['dsx-files'], queryFn: () => apiFetch('/lineage/dsx-files'),
   })
 
+  const { data: foldersData } = useQuery<{ pastas: { category: string; total_jobs: number }[] }>({
+    queryKey: ['dsx-folders', dsx],
+    queryFn: () => apiFetch(`/lineage/dsx-folders?dsx=${encodeURIComponent(dsx)}`),
+    enabled: !!dsx,
+  })
+
   const buscar = async () => {
     if (!dsx) { toast.error('Selecione um arquivo .dsx'); return }
     if (!campo.trim()) { toast.error('Informe o termo a procurar'); return }
@@ -179,6 +190,7 @@ export default function ImpactoCampo() {
       if (alvo === 'coluna' && preset.tipo) { q.set('tipo', preset.tipo); q.set('excluir', String(preset.excluir)) }
       if (incluirBkp) q.set('incluir_bkp', 'true')
       if (incluirCopy) q.set('incluir_copy', 'true')
+      if (pasta) q.set('pasta', pasta)
       const r = await apiFetch<FieldImpactResult>(`/lineage/field-impact?${q.toString()}`)
       setResult(r)
       if (r.total_jobs_impactados === 0) toast.info('Nenhum job impactado para esse filtro.')
@@ -244,9 +256,17 @@ export default function ImpactoCampo() {
       <Card>
         <div className="flex flex-wrap items-end gap-3">
           <div className="w-52">
-            <Select label="Arquivo .dsx" value={dsx} onChange={(e) => setDsx(e.target.value)} disabled={loadingDsx}>
+            <Select label="Arquivo .dsx" value={dsx} onChange={(e) => { setDsx(e.target.value); setPasta('') }} disabled={loadingDsx}>
               <option value="">{loadingDsx ? 'Carregando…' : 'Selecione…'}</option>
               {(dsxData?.files ?? []).map((f) => <option key={f} value={f}>{f}.dsx</option>)}
+            </Select>
+          </div>
+          <div className="w-56">
+            <Select label="Pasta" value={pasta} onChange={(e) => setPasta(e.target.value)} disabled={!dsx}>
+              <option value="">Todas as pastas</option>
+              {(foldersData?.pastas ?? []).map((p) => (
+                <option key={p.category} value={p.category}>{cleanCat(p.category)} ({p.total_jobs})</option>
+              ))}
             </Select>
           </div>
           <div className="w-44">
@@ -300,6 +320,12 @@ export default function ImpactoCampo() {
             )}
           </div>
 
+          {result.filtro_pasta && (
+            <p className="text-xs text-dim -mt-1">
+              Pasta: <span className="font-mono text-ink">{cleanCat(result.filtro_pasta)}</span>
+            </p>
+          )}
+
           {(result.jobs_bkp_ignorados > 0 || result.jobs_copy_ignorados > 0) && (
             <p className="text-xs text-dim -mt-1">
               Ignorados: {result.jobs_bkp_ignorados} em pastas de backup, {result.jobs_copy_ignorados} cópia(s).
@@ -321,7 +347,8 @@ export default function ImpactoCampo() {
 
           {result.total_jobs_impactados === 0 ? (
             <Card><p className="text-sm text-dim text-center py-6">
-              Nenhum job de <strong>{result.dsx_file}</strong> com {alvoLabel(result.alvo).toLowerCase()} contendo “{result.termo}”
+              Nenhum job de <strong>{result.dsx_file}</strong>
+              {result.filtro_pasta ? ` na pasta “${cleanCat(result.filtro_pasta)}”` : ''} com {alvoLabel(result.alvo).toLowerCase()} contendo “{result.termo}”
               {isColuna && result.filtro_tipos.length ? ` e o filtro de tipo aplicado` : ''}.
             </p></Card>
           ) : (
