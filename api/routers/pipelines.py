@@ -135,7 +135,7 @@ def list_pipeline_projects():
 
 
 @router.get("/pipelines/projects/all", tags=["pipelines"])
-def list_all_pipeline_projects():
+def list_all_pipeline_projects(_auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Lista todos os projetos (ativos e inativos) para gerenciamento no admin."""
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -148,9 +148,8 @@ def list_all_pipeline_projects():
 
 
 @router.post("/pipelines/projects", tags=["pipelines"])
-async def upsert_pipeline_project(request: Request):
+def upsert_pipeline_project(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Cria ou atualiza um projeto."""
-    body = await request.json()
     project_name = (body.get("project_name") or "").strip().upper()
     ativo = int(body.get("ativo", 1))
     if not project_name:
@@ -170,7 +169,7 @@ async def upsert_pipeline_project(request: Request):
 
 
 @router.delete("/pipelines/projects/{project_name}", tags=["pipelines"])
-def delete_pipeline_project(project_name: str):
+def delete_pipeline_project(project_name: str, _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Remove um projeto (somente se não houver pipelines vinculados)."""
     try:
         conn = get_db_conn(); cur = conn.cursor()
