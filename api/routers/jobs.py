@@ -299,6 +299,11 @@ async def delete_pipeline_job(
         raise HTTPException(status_code=422, detail="pipeline_name e job_name são obrigatórios")
     try:
         conn = get_db_conn(); cur = conn.cursor()
+        # Remove a lineage associada antes do job (evita órfãos e respeita FK, se existir).
+        cur.execute(
+            "DELETE FROM dbo.etl_job_lineage WHERE pipeline_name = ? AND job_name = ?",
+            (pipeline_name, job_name),
+        )
         cur.execute(
             "DELETE FROM dbo.etl_pipeline_job WHERE pipeline_name = ? AND job_name = ?",
             (pipeline_name, job_name),
@@ -306,6 +311,7 @@ async def delete_pipeline_job(
         rows = cur.rowcount
         if rows == 0:
             conn.rollback()
+            cur.close(); conn.close()
             raise HTTPException(status_code=404, detail=f"Job '{job_name}' não encontrado no pipeline '{pipeline_name}'")
         conn.commit()
         cur.close(); conn.close()
