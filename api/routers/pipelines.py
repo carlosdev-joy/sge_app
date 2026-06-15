@@ -134,6 +134,59 @@ def list_pipeline_projects():
     return {"projects": ["BI_CVP", "BI_VIDA", "BI_PRESTAMISTA", "BI_PREVIDENCIA"]}
 
 
+@router.get("/pipelines/projects/all", tags=["pipelines"])
+def list_all_pipeline_projects():
+    """Lista todos os projetos (ativos e inativos) para gerenciamento no admin."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("SELECT project_name, CAST(ativo AS INT) AS ativo FROM dbo.etl_project ORDER BY project_name")
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+        return {"projects": [{"project_name": r[0], "ativo": bool(r[1])} for r in rows]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/pipelines/projects", tags=["pipelines"])
+async def upsert_pipeline_project(request: Request):
+    """Cria ou atualiza um projeto."""
+    body = await request.json()
+    project_name = (body.get("project_name") or "").strip().upper()
+    ativo = int(body.get("ativo", 1))
+    if not project_name:
+        raise HTTPException(status_code=422, detail="project_name é obrigatório")
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("SELECT COUNT(1) FROM dbo.etl_project WHERE project_name=?", (project_name,))
+        exists = cur.fetchone()[0] > 0
+        if exists:
+            cur.execute("UPDATE dbo.etl_project SET ativo=? WHERE project_name=?", (ativo, project_name))
+        else:
+            cur.execute("INSERT INTO dbo.etl_project (project_name, ativo) VALUES (?, ?)", (project_name, ativo))
+        conn.commit(); cur.close(); conn.close()
+        return {"ok": True, "project_name": project_name, "ativo": bool(ativo)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/pipelines/projects/{project_name}", tags=["pipelines"])
+def delete_pipeline_project(project_name: str):
+    """Remove um projeto (somente se não houver pipelines vinculados)."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("SELECT COUNT(1) FROM dbo.etl_pipeline WHERE project_name=?", (project_name,))
+        count = cur.fetchone()[0]
+        if count > 0:
+            raise HTTPException(status_code=409, detail=f"Projeto possui {count} pipeline(s). Inative-o em vez de excluir.")
+        cur.execute("DELETE FROM dbo.etl_project WHERE project_name=?", (project_name,))
+        conn.commit(); cur.close(); conn.close()
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/pipelines", tags=["pipelines"])
 def list_pipelines(
     offset: int = 0,
