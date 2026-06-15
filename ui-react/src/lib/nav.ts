@@ -11,7 +11,7 @@
 import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, Workflow, Boxes, ScrollText,
-  ShieldCheck, Network, Settings, FileSearch, ClipboardList,
+  ShieldCheck, Network, Settings, FileSearch, ClipboardList, Activity,
 } from 'lucide-react'
 
 export interface NavItem {
@@ -21,18 +21,20 @@ export interface NavItem {
   legacyHref: string  // para onde mandar quando ainda não migrada (UI legada)
   migrated: boolean
   adminOnly?: boolean
+  perm?: string       // recurso RBAC (tela_*) exigido para exibir o item
 }
 
 export const NAV: NavItem[] = [
-  { to: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard, legacyHref: '/', migrated: true },
-  { to: '/pipelines',  label: 'Pipelines',  icon: Workflow,        legacyHref: '/', migrated: true },
-  { to: '/jobs',       label: 'Jobs',       icon: Boxes,           legacyHref: '/', migrated: true },
-  { to: '/logs',       label: 'Logs',       icon: ScrollText,      legacyHref: '/', migrated: true },
-  { to: '/governanca', label: 'Governança', icon: ShieldCheck,     legacyHref: '/', migrated: true },
-  { to: '/malha',      label: 'Malha',      icon: Network,         legacyHref: '/', migrated: true },
-  { to: '/impacto-campo', label: 'Impacto Campo', icon: FileSearch,    legacyHref: '/', migrated: true },
-  { to: '/planos-ajuste', label: 'Planos Ajuste', icon: ClipboardList, legacyHref: '/', migrated: true },
-  { to: '/admin',      label: 'Admin',      icon: Settings,        legacyHref: '/', migrated: true, adminOnly: true },
+  { to: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard, legacyHref: '/', migrated: true, perm: 'tela_dashboard' },
+  { to: '/pipelines',  label: 'Pipelines',  icon: Workflow,        legacyHref: '/', migrated: true, perm: 'tela_pipelines' },
+  { to: '/jobs',       label: 'Jobs',       icon: Boxes,           legacyHref: '/', migrated: true, perm: 'tela_jobs' },
+  { to: '/logs',       label: 'Logs',       icon: ScrollText,      legacyHref: '/', migrated: true, perm: 'tela_logs' },
+  { to: '/ds-monitor', label: 'DS Monitor', icon: Activity,        legacyHref: '/?tab=ds-monitor', migrated: false, perm: 'tela_ds_monitor' },
+  { to: '/governanca', label: 'Governança', icon: ShieldCheck,     legacyHref: '/', migrated: true, perm: 'tela_governanca' },
+  { to: '/malha',      label: 'Malha',      icon: Network,         legacyHref: '/', migrated: true, perm: 'tela_malha' },
+  { to: '/impacto-campo', label: 'Impacto Campo', icon: FileSearch,    legacyHref: '/', migrated: true, perm: 'tela_impacto_campo' },
+  { to: '/planos-ajuste', label: 'Planos Ajuste', icon: ClipboardList, legacyHref: '/', migrated: true, perm: 'tela_plano_ajuste' },
+  { to: '/admin',      label: 'Admin',      icon: Settings,        legacyHref: '/', migrated: true, adminOnly: true, perm: 'tela_admin' },
 ]
 
 // Telas migradas (em React) — usado para montar rotas e decidir fallback.

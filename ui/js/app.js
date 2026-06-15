@@ -95,6 +95,18 @@ async function restoreSession() {
     $('loginScreen').classList.add('hidden');
     $('appScreen').classList.remove('hidden');
     _postLoginInit();
+    // Sessão válida: a UI React (/v2) é a principal. Só permanecemos na UI legada
+    // quando há um deep-link explícito para uma tela ainda não migrada
+    // (ex.: /?tab=ds-monitor). Caso contrário, redireciona para o /v2.
+    const tab = new URLSearchParams(window.location.search).get('tab');
+    const legacyOnly = { 'ds-monitor': 'tab-ds-monitor' };
+    if (tab && legacyOnly[tab]) {
+      const btn = $(legacyOnly[tab]);
+      if (btn) btn.click();
+    } else {
+      window.location.href = '/v2/';
+      return true;
+    }
     return true;
   } catch(e) { return false; }
 }
@@ -4418,6 +4430,10 @@ async function entrar() {
       }).catch(() => {});
     }
     _postLoginInit();
+    // Uma vez logado, o usuário entra direto na UI React (/v2). A UI legada passa
+    // a funcionar apenas como porta de login e para telas ainda não migradas
+    // (ex.: DS Monitor, acessível via /?tab=ds-monitor).
+    window.location.href = '/v2/';
   } catch(e) {
     m.textContent = 'Não foi possível conectar ao servidor. Verifique a rede.';
     m.className = 'msg erro';

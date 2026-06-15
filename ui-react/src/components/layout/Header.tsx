@@ -4,10 +4,9 @@ import { useAuthStore } from '../../store/auth'
 import { apiFetch } from '../../lib/api'
 import { NAV } from '../../lib/nav'
 import { getTheme, toggleTheme } from '../../lib/theme'
+import { useAppVersion } from '../../lib/version'
 import { useQuery } from '@tanstack/react-query'
 import { LogOut, Sun, Moon, Shield, Mail, Hash, Building2, ChevronDown, X, Tag } from 'lucide-react'
-
-const APP_VERSION = '2.1'
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -133,6 +132,7 @@ function ProfileRow({ icon, label, value }: { icon: React.ReactNode; label: stri
 
 function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
   const { user } = useAuthStore()
+  const appVersion = useAppVersion()
   const [open, setOpen]           = useState(false)
   const [showChangelog, setShowChangelog] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -212,7 +212,7 @@ function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
                 className="text-[10px] text-white/40 hover:text-white/70 transition-colors underline underline-offset-2"
                 title="Ver histórico de versões"
               >
-                ORQUESTRA v{APP_VERSION}
+                ORQUESTRA v{appVersion}
               </button>
               <button
                 onClick={() => { setOpen(false); onLogout() }}
@@ -233,8 +233,11 @@ function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
 // ── Header ─────────────────────────────────────────────────────────────────
 
 export function Header() {
-  const { logout, isAdmin } = useAuthStore()
+  const { logout, user } = useAuthStore()
+  const appVersion = useAppVersion()
   const [theme, setTheme] = useState(getTheme())
+  const perms = user?.permissoes ?? []
+  const canSee = (n: typeof NAV[number]) => !n.perm || perms.length === 0 || perms.includes(n.perm)
 
   const handleLogout = async () => {
     try { await apiFetch('/auth/logout', { method: 'POST' }) } catch {}
@@ -266,7 +269,7 @@ export function Header() {
           <span className="flex flex-col leading-tight">
             <span className="flex items-baseline gap-1.5">
               <span className="text-xs font-semibold tracking-widest uppercase opacity-95">ORQUESTRA</span>
-              <span className="text-[9px] opacity-40 font-mono">v{APP_VERSION}</span>
+              <span className="text-[9px] opacity-40 font-mono">v{appVersion}</span>
             </span>
             <span className="text-[10px] opacity-60 tracking-wide">Gestão de Pipelines</span>
           </span>
@@ -275,7 +278,7 @@ export function Header() {
         {/* Nav */}
         <nav className="flex items-center gap-0.5 flex-1 overflow-x-auto ml-2">
           {NAV.map((n) => {
-            if (n.adminOnly && !isAdmin()) return null
+            if (!canSee(n)) return null
             const Icon = n.icon
             const content = (<><Icon size={13} /><span>{n.label}</span></>)
             return n.migrated ? (
