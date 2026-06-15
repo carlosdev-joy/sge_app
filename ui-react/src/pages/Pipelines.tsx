@@ -7,6 +7,7 @@ import { Input, Select, Textarea } from '../components/ui/Input'
 import { Autocomplete } from '../components/ui/Autocomplete'
 import { Modal } from '../components/ui/Modal'
 import { PageSpinner } from '../components/ui/Spinner'
+import { InfoBanner } from '../components/ui/InfoBanner'
 import { toast } from '../components/ui/Toast'
 import {
   ChevronRight, ChevronDown, Plus, Edit, Eye, GitBranch,
@@ -2068,6 +2069,13 @@ export default function Pipelines() {
 
   return (
     <div className="flex flex-col gap-4">
+
+      <InfoBanner icon="≡" storageKey="pipelines">
+        <strong>Pipelines:</strong> são os fluxos de ETL orquestrados no Airflow. Cada pipeline agrupa um conjunto
+        de <strong>jobs</strong> executados em ordem (serial e paralelo), com <strong>agendamento</strong>,
+        notificações, criticidade e dependências entre si. Use <strong>Novo Pipeline</strong> para cadastrar com o
+        assistente passo a passo, ou expanda um projeto/domínio para visualizar, editar, gerar a DAG e executar.
+      </InfoBanner>
 
       {/* Filter bar */}
       <div className="bg-panel border border-edge rounded-xl p-4">
