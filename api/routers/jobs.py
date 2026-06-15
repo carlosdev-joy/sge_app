@@ -253,6 +253,39 @@ async def reorder_pipeline_jobs(body: dict = Body(default={}), _auth: dict = Dep
     return {"ok": True, "pipeline_name": pipeline_name, "jobs_reordered": len(jobs)}
 
 
+@router.get("/pipelines/jobs/{pipeline_name}/{job_name}", tags=["jobs"])
+def get_pipeline_job(
+    pipeline_name: str,
+    job_name: str,
+    _auth: dict = Depends(get_current_user),
+):
+    """Retorna detalhes de um job específico."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            """SELECT j.pipeline_name, j.job_name, CAST(j.execution_order AS INT),
+                      ISNULL(j.job_type,'datastage'), ISNULL(j.job_command,''),
+                      CAST(ISNULL(j.active,1) AS INT), ISNULL(j.ssh_conn_id,''),
+                      CAST(ISNULL(j.verbose_log,0) AS INT)
+               FROM dbo.etl_pipeline_job j
+               WHERE j.pipeline_name=? AND j.job_name=?""",
+            (pipeline_name, job_name),
+        )
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Job '{job_name}' não encontrado no pipeline '{pipeline_name}'")
+        return {
+            "pipeline_name": row[0], "job_name": row[1], "execution_order": row[2],
+            "job_type": row[3], "job_command": row[4] or None, "active": bool(row[5]),
+            "ssh_conn_id": row[6] or None, "verbose_log": bool(row[7]),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
 @router.delete("/pipelines/jobs/{pipeline_name}/{job_name}", tags=["jobs"])
 async def delete_pipeline_job(
     pipeline_name: str,

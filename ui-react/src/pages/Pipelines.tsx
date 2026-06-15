@@ -1293,25 +1293,17 @@ function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose
                       </div>
                       {origens.length === 0 && <p className="text-[10px] text-dim/50 italic">Nenhuma origem</p>}
                       {origens.map(l => (
-                        <div key={l.id} className="flex gap-1 items-start mb-1.5">
-                          <div className="flex flex-col gap-0.5 flex-1">
-                            <input type="text" value={l.object_name}
-                              onChange={e => updateLineage(l.id, 'object_name', e.target.value)}
-                              placeholder="dbo.tabela_origem"
-                              className="bg-panel border border-edge text-ink rounded px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 w-full" />
-                            <div className="flex gap-0.5">
-                              <select value={l.object_type}
-                                onChange={e => updateLineage(l.id, 'object_type', e.target.value)}
-                                className="bg-panel border border-edge text-dim rounded px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-blue-500 w-20">
-                                {OBJECT_TYPES.map(t => <option key={t}>{t}</option>)}
-                              </select>
-                              <input type="text" value={l.database_name}
-                                onChange={e => updateLineage(l.id, 'database_name', e.target.value)}
-                                placeholder="banco/schema"
-                                className="bg-panel border border-edge text-dim rounded px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 flex-1" />
-                            </div>
-                          </div>
-                          <button onClick={() => removeLineageEntry(l.id)} className="text-dim hover:text-red-500 text-[10px] mt-1">✕</button>
+                        <div key={l.id} className="flex gap-1 items-center mb-1">
+                          <select value={l.object_type}
+                            onChange={e => updateLineage(l.id, 'object_type', e.target.value)}
+                            className="bg-panel border border-edge text-dim rounded px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-blue-500 w-16 shrink-0">
+                            {OBJECT_TYPES.map(t => <option key={t}>{t}</option>)}
+                          </select>
+                          <input type="text" value={l.object_name}
+                            onChange={e => updateLineage(l.id, 'object_name', e.target.value)}
+                            placeholder="dbo.tabela_origem"
+                            className="bg-panel border border-edge text-ink rounded px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 flex-1" />
+                          <button onClick={() => removeLineageEntry(l.id)} className="text-dim hover:text-red-500 text-[10px] shrink-0">✕</button>
                         </div>
                       ))}
                     </div>
@@ -1324,25 +1316,17 @@ function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose
                       </div>
                       {destinos.length === 0 && <p className="text-[10px] text-dim/50 italic">Nenhum destino</p>}
                       {destinos.map(l => (
-                        <div key={l.id} className="flex gap-1 items-start mb-1.5">
-                          <div className="flex flex-col gap-0.5 flex-1">
-                            <input type="text" value={l.object_name}
-                              onChange={e => updateLineage(l.id, 'object_name', e.target.value)}
-                              placeholder="dbo.tabela_destino"
-                              className="bg-panel border border-edge text-ink rounded px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 w-full" />
-                            <div className="flex gap-0.5">
-                              <select value={l.object_type}
-                                onChange={e => updateLineage(l.id, 'object_type', e.target.value)}
-                                className="bg-panel border border-edge text-dim rounded px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-blue-500 w-20">
-                                {OBJECT_TYPES.map(t => <option key={t}>{t}</option>)}
-                              </select>
-                              <input type="text" value={l.database_name}
-                                onChange={e => updateLineage(l.id, 'database_name', e.target.value)}
-                                placeholder="banco/schema"
-                                className="bg-panel border border-edge text-dim rounded px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 flex-1" />
-                            </div>
-                          </div>
-                          <button onClick={() => removeLineageEntry(l.id)} className="text-dim hover:text-red-500 text-[10px] mt-1">✕</button>
+                        <div key={l.id} className="flex gap-1 items-center mb-1">
+                          <select value={l.object_type}
+                            onChange={e => updateLineage(l.id, 'object_type', e.target.value)}
+                            className="bg-panel border border-edge text-dim rounded px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-green-500 w-16 shrink-0">
+                            {OBJECT_TYPES.map(t => <option key={t}>{t}</option>)}
+                          </select>
+                          <input type="text" value={l.object_name}
+                            onChange={e => updateLineage(l.id, 'object_name', e.target.value)}
+                            placeholder="dbo.tabela_destino"
+                            className="bg-panel border border-edge text-ink rounded px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-green-500 flex-1" />
+                          <button onClick={() => removeLineageEntry(l.id)} className="text-dim hover:text-red-500 text-[10px] shrink-0">✕</button>
                         </div>
                       ))}
                     </div>
@@ -1365,22 +1349,24 @@ function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose
               <div className="bg-canvas border-b border-edge px-3 py-2">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Identificação</span>
               </div>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-2 p-3 text-xs">
-                <div><span className="text-dim">Nome:</span> <span className="font-mono font-bold text-ink">{form.pipeline_name || '—'}</span></div>
-                <div><span className="text-dim">Projeto:</span> <span className="text-ink">{form.project_name || '—'}</span></div>
-                <div><span className="text-dim">Domínio:</span> <span className="text-ink">{form.domain || '—'}</span></div>
-                <div><span className="text-dim">Ambiente:</span> <span className={`font-medium ${form.ambiente === 'PROD' ? 'text-red-400' : 'text-yellow-400'}`}>{form.ambiente}</span></div>
-                <div><span className="text-dim">Criticidade:</span> <span className={`font-medium ${critColor(form.criticidade)}`}>{form.criticidade}</span></div>
-                <div><span className="text-dim">Status:</span> <span className={form.active ? 'text-green-400' : 'text-dim'}>{form.active ? 'Ativo' : 'Inativo'}</span></div>
-                <div className="col-span-2">
-                  <span className="text-dim">Tags:</span>{' '}
-                  <span className="inline-flex flex-wrap gap-1 ml-1">
-                    {form.tags_list.length ? form.tags_list.map(t => (
-                      <span key={t} className="bg-blue-900/20 text-blue-300 border border-blue-700/40 rounded-full px-2 py-0 text-[10px]">{t}</span>
-                    )) : <span className="text-dim/50 italic">nenhuma</span>}
-                  </span>
+              <div className="p-3 text-xs flex flex-col gap-1.5">
+                <div className="flex flex-wrap gap-x-8 gap-y-1.5">
+                  <div className="min-w-0"><span className="text-dim">Nome: </span><span className="font-mono font-bold text-ink break-all">{form.pipeline_name || '—'}</span></div>
+                  <div><span className="text-dim">Projeto: </span><span className="text-ink">{form.project_name || '—'}</span></div>
+                  <div className="min-w-0"><span className="text-dim">Domínio: </span><span className="text-ink break-all">{form.domain || '—'}</span></div>
+                  <div><span className="text-dim">Ambiente: </span><span className={`font-medium ${form.ambiente === 'PROD' ? 'text-red-400' : 'text-yellow-400'}`}>{form.ambiente}</span></div>
+                  <div><span className="text-dim">Criticidade: </span><span className={`font-medium ${critColor(form.criticidade)}`}>{form.criticidade}</span></div>
+                  <div><span className="text-dim">Status: </span><span className={form.active ? 'text-green-400' : 'text-dim'}>{form.active ? 'Ativo' : 'Inativo'}</span></div>
                 </div>
-                {form.descricao && <div className="col-span-2"><span className="text-dim">Descrição:</span> <span className="text-ink">{form.descricao}</span></div>}
+                {form.tags_list.length > 0 && (
+                  <div className="flex items-center flex-wrap gap-1">
+                    <span className="text-dim mr-1">Tags:</span>
+                    {form.tags_list.map(t => (
+                      <span key={t} className="bg-blue-100 text-blue-700 border border-blue-300 dark:bg-blue-600/25 dark:text-blue-200 dark:border-blue-600/50 rounded-full px-2 py-0.5 text-[10px] font-medium">{t}</span>
+                    ))}
+                  </div>
+                )}
+                {form.descricao && <div className="text-dim/80 break-words"><span className="text-dim">Descrição: </span><span className="text-ink">{form.descricao}</span></div>}
               </div>
             </div>
 
@@ -1428,11 +1414,20 @@ function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose
                 ? <p className="text-xs text-dim/50 italic px-3 py-2">Nenhum job cadastrado</p>
                 : <div className="divide-y divide-edge/40">
                     {jobs.map((j, i) => (
-                      <div key={j.id} className="px-3 py-1.5 text-xs flex items-center gap-3">
-                        <span className="text-[10px] text-blue-400 font-bold w-6">#{i+1}</span>
-                        <span className="font-mono text-ink">{j.job_name || '(sem nome)'}</span>
-                        <span className="text-dim">{j.job_type}</span>
-                        {j.ssh_conn_id && <span className="text-dim/60 font-mono">{j.ssh_conn_id}</span>}
+                      <div key={j.id} className="px-3 py-2 text-xs flex flex-col gap-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-blue-400 font-bold w-6">#{i+1}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${typeBadgeColor(j.job_type)}`}>{j.job_type}</span>
+                          <span className="font-mono font-medium text-ink">{j.job_name || '(sem nome)'}</span>
+                          {j.ssh_conn_id && <span className="text-dim/60 font-mono text-[10px]">SSH: {j.ssh_conn_id}</span>}
+                          {j.verbose_log && <span className="text-[10px] text-amber-400">verbose</span>}
+                        </div>
+                        {j.job_command && (
+                          <div className="pl-8 flex items-center gap-1">
+                            <span className="text-dim text-[10px]">{j.job_type === 'datastage' ? 'Job DataStage:' : 'Comando:'}</span>
+                            <span className="font-mono text-[10px] text-ink/80 break-all">{j.job_command}</span>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
