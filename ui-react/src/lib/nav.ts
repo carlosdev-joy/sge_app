@@ -11,7 +11,7 @@
 import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, Workflow, Boxes, ScrollText,
-  ShieldCheck, Network, Settings, FileSearch, ClipboardList, Activity,
+  ShieldCheck, Network, Settings, FileSearch, ClipboardList,
 } from 'lucide-react'
 
 export interface NavItem {
@@ -29,7 +29,6 @@ export const NAV: NavItem[] = [
   { to: '/pipelines',  label: 'Pipelines',  icon: Workflow,        legacyHref: '/', migrated: true, perm: 'tela_pipelines' },
   { to: '/jobs',       label: 'Jobs',       icon: Boxes,           legacyHref: '/', migrated: true, perm: 'tela_jobs' },
   { to: '/logs',       label: 'Logs',       icon: ScrollText,      legacyHref: '/', migrated: true, perm: 'tela_logs' },
-  { to: '/ds-monitor', label: 'DS Monitor', icon: Activity,        legacyHref: '/?tab=ds-monitor', migrated: false, perm: 'tela_ds_monitor' },
   { to: '/governanca', label: 'Governança', icon: ShieldCheck,     legacyHref: '/', migrated: true, perm: 'tela_governanca' },
   { to: '/malha',      label: 'Malha',      icon: Network,         legacyHref: '/', migrated: true, perm: 'tela_malha' },
   { to: '/impacto-campo', label: 'Impacto Campo', icon: FileSearch,    legacyHref: '/', migrated: true, perm: 'tela_impacto_campo' },

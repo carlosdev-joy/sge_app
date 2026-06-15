@@ -68,7 +68,7 @@ function _applyPermVisibility() {
   const mapa = {
     'tab-dashboard':  'tela_dashboard',  'tab-pipelines': 'tela_pipelines',
     'tab-jobs':       'tela_jobs',       'tab-logs':      'tela_logs',
-    'tab-ds-monitor': 'tela_ds_monitor', 'tab-governanca':'tela_governanca',
+    'tab-governanca': 'tela_governanca',
     'tab-malha':      'tela_malha',      'tab-admin':     'tela_admin',
   };
   Object.entries(mapa).forEach(([id, perm]) => {
@@ -95,18 +95,8 @@ async function restoreSession() {
     $('loginScreen').classList.add('hidden');
     $('appScreen').classList.remove('hidden');
     _postLoginInit();
-    // Sessão válida: a UI React (/v2) é a principal. Só permanecemos na UI legada
-    // quando há um deep-link explícito para uma tela ainda não migrada
-    // (ex.: /?tab=ds-monitor). Caso contrário, redireciona para o /v2.
-    const tab = new URLSearchParams(window.location.search).get('tab');
-    const legacyOnly = { 'ds-monitor': 'tab-ds-monitor' };
-    if (tab && legacyOnly[tab]) {
-      const btn = $(legacyOnly[tab]);
-      if (btn) btn.click();
-    } else {
-      window.location.href = '/v2/';
-      return true;
-    }
+    // Sessão válida: a UI React (/v2) é a principal — redireciona para lá.
+    window.location.href = '/v2/';
     return true;
   } catch(e) { return false; }
 }
@@ -1198,7 +1188,6 @@ const CK_PAGES = [
   { label: '⬡ Ir para Jobs',       act: () => { $('tab-jobs').click(); } },
   { label: '≣ Ir para Logs',       act: () => { $('tab-logs').click(); } },
   { label: '♻ Regenerações de DAG', act: () => { $('tab-logs').click(); setTimeout(() => logsSwitchTab('factory'), 150); } },
-  { label: '⬡ Ir para DS Monitor', act: () => { $('tab-ds-monitor').click(); } },
   { label: '◈ Ir para Governança', act: () => { $('tab-governanca').click(); } },
 ];
 
@@ -3343,7 +3332,7 @@ function _applyAdminVisibility() {
 const RBAC_RECURSOS = [
   ['tela_dashboard',  'Dashboard'],   ['tela_pipelines', 'Pipelines'],
   ['tela_jobs',       'Jobs'],        ['tela_logs',      'Logs'],
-  ['tela_ds_monitor', 'DS Monitor'],  ['tela_governanca','Governança'],
+  ['tela_governanca', 'Governança'],
   ['tela_malha',      'Malha'],       ['tela_admin',     'Admin'],
   ['acao_executar',   'Executar/Rerun/Ack'],
   ['acao_editar',     'Cadastrar/Editar'],
@@ -4430,9 +4419,8 @@ async function entrar() {
       }).catch(() => {});
     }
     _postLoginInit();
-    // Uma vez logado, o usuário entra direto na UI React (/v2). A UI legada passa
-    // a funcionar apenas como porta de login e para telas ainda não migradas
-    // (ex.: DS Monitor, acessível via /?tab=ds-monitor).
+    // Uma vez logado, o usuário entra direto na UI React (/v2). A UI legada
+    // passa a funcionar apenas como porta de login.
     window.location.href = '/v2/';
   } catch(e) {
     m.textContent = 'Não foi possível conectar ao servidor. Verifique a rede.';
