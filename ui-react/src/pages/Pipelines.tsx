@@ -69,10 +69,10 @@ interface LineageJob {
 
 // ── constants ──────────────────────────────────────────────────────────────
 
-const SCHEDULE_TYPES = ['daily', 'weekly', 'monthly', 'hourly', 'biweekly', 'on_demand'] as const
+const SCHEDULE_TYPES = ['daily', 'weekly', 'monthly', 'hourly_n', 'biweekly', 'on_demand', 'custom'] as const
 const SCHEDULE_LABELS: Record<string, string> = {
   daily: 'Diário', weekly: 'Semanal', monthly: 'Mensal',
-  hourly: 'A cada hora', biweekly: 'Quinzenal', on_demand: 'Sob demanda',
+  hourly_n: 'A cada N horas', biweekly: 'Quinzenal', on_demand: 'Sob demanda', custom: 'Personalizado (CRON)',
 }
 const CRITICIDADES   = ['Alta', 'Media', 'Baixa'] as const
 const AMBIENTES      = ['PROD', 'HML', 'DEV'] as const
@@ -85,14 +85,67 @@ function pipelineToDagId(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9_]/g, '_')
 }
 
-function buildCron(type: string, h: number, m: number, dow: number, dom: number) {
+function buildCron(type: string, h: number, m: number, dow: number, dom: number, intervalH = 1, customCron = '') {
   if (type === 'on_demand') return '(sem agendamento automático)'
-  if (type === 'hourly')   return `${m} * * * *`
-  if (type === 'daily')    return `${m} ${h} * * *`
-  if (type === 'weekly')   return `${m} ${h} * * ${dow}`
-  if (type === 'monthly')  return `${m} ${h} ${dom} * *`
-  if (type === 'biweekly') return `${m} ${h} ${dom},${dom + 15} * *`
+  if (type === 'hourly_n')  return `${m} */${Math.max(1, intervalH)} * * *`
+  if (type === 'custom')    return customCron || '(cron inválido)'
+  if (type === 'daily')     return `${m} ${h} * * *`
+  if (type === 'weekly')    return `${m} ${h} * * ${dow}`
+  if (type === 'monthly')   return `${m} ${h} ${dom} * *`
+  if (type === 'biweekly')  return `${m} ${h} ${dom},${dom + 15} * *`
   return `${m} ${h} * * *`
+}
+
+function nextExecutions(cron: string, count = 5): string[] {
+  try {
+    const parts = cron.trim().split(/\s+/)
+    if (parts.length !== 5) return []
+    const [minPart, hourPart] = parts
+    const results: string[] = []
+    const now = new Date()
+    let checked = 0
+    for (let i = 0; i < 1440 * 7 && results.length < count; i++) {
+      const t = new Date(now.getTime() + i * 60_000)
+      const min = t.getMinutes()
+      const hr  = t.getHours()
+      const minOk  = minPart === '*'  ? true : minPart.startsWith('*/') ? min % parseInt(minPart.slice(2)) === 0 : parseInt(minPart) === min
+      const hourOk = hourPart === '*' ? true : hourPart.startsWith('*/') ? hr % parseInt(hourPart.slice(2)) === 0 : parseInt(hourPart) === hr
+      if (minOk && hourOk && (i === 0 ? false : checked++ >= 0)) {
+        const prev = results[results.length - 1]
+        const str  = t.toLocaleString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+        if (str !== prev) results.push(str)
+      }
+    }
+    return results
+  } catch { return [] }
+}
+
+function exportModeloCsv() {
+  const headers = [
+    'pipeline_name','project_name','domain','tags','descricao','criticidade','ambiente',
+    'schedule_type','schedule_hour','schedule_minute','schedule_interval_hours','schedule_custom_cron',
+    'schedule_dow','schedule_dom','dag_start_date','sla_minutos',
+    'max_active_runs','retries_count','retry_delay_seconds','pool_name','depends_on',
+    'envia_msg_inicio','envia_msg_fim','envia_msg_erro',
+    'job_execution_order','job_name','job_type','job_ssh_conn_id','job_description',
+    'lineage_job_name','lineage_direction','lineage_object_name','lineage_object_type','lineage_database',
+  ]
+  const example = [
+    'ETL_EXEMPLO','PROJETO_X','FINANCEIRO','ETL,DIARIO','Pipeline de exemplo','Alta','PROD',
+    'daily','6','0','','','1','1','','60',
+    '1','1','300','','',
+    '1','1','1',
+    '1','STEP_1','PythonOperator','ssh_default','Primeiro job',
+    'STEP_1','origem','dbo.tabela_origem','TABLE','banco_origem',
+  ]
+  const csv = [headers.join(';'), example.join(';')].join('\n')
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' })
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  a.href     = url
+  a.download = 'modelo_pipelines.csv'
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 function critColor(c: string) {
@@ -101,17 +154,37 @@ function critColor(c: string) {
 
 // ── PipelineFormModal ──────────────────────────────────────────────────────
 
+interface JobEntry {
+  id: string
+  job_name: string
+  job_type: string
+  execution_order: number
+  ssh_conn_id: string
+  description: string
+}
+
+interface LineageEntry {
+  id: string
+  job_name: string
+  direction: 'origem' | 'destino'
+  object_name: string
+  object_type: string
+  database_name: string
+}
+
 interface FormState {
   pipeline_name: string
   project_name: string
   domain: string
-  tags: string
+  tags_list: string[]
   descricao: string
   schedule_type: string
   schedule_hour: number
   schedule_minute: number
   schedule_dow: number
   schedule_dom: number
+  schedule_interval_hours: number
+  schedule_custom_cron: string
   active: boolean
   dag_start_date: string
   envia_msg_inicio: boolean
@@ -129,10 +202,11 @@ interface FormState {
 }
 
 const defaultForm = (): FormState => ({
-  pipeline_name: '', project_name: '', domain: '', tags: '', descricao: '',
+  pipeline_name: '', project_name: '', domain: '', tags_list: [], descricao: '',
   schedule_type: 'daily', schedule_hour: 6, schedule_minute: 0,
-  schedule_dow: 1, schedule_dom: 1, active: true,
-  dag_start_date: '', envia_msg_inicio: true, envia_msg_fim: true, envia_msg_erro: true,
+  schedule_dow: 1, schedule_dom: 1, schedule_interval_hours: 2, schedule_custom_cron: '',
+  active: true, dag_start_date: '',
+  envia_msg_inicio: true, envia_msg_fim: true, envia_msg_erro: true,
   criticidade: 'Media', sla_minutos: '', ambiente: 'PROD',
   max_active_runs: 1, retries_count: 1, retry_delay_seconds: 300,
   pool_name: '', depends_on: '', runbook_md: '',
@@ -140,43 +214,133 @@ const defaultForm = (): FormState => ({
 
 function pipelineToForm(p: Pipeline): FormState {
   return {
-    pipeline_name:      p.pipeline_name,
-    project_name:       p.project_name ?? '',
-    domain:             p.domain ?? '',
-    tags:               p.tags ?? '',
-    descricao:          p.descricao ?? '',
-    schedule_type:      p.schedule_type ?? 'daily',
-    schedule_hour:      p.schedule_hour ?? 6,
-    schedule_minute:    p.schedule_minute ?? 0,
-    schedule_dow:       p.schedule_dow ?? 1,
-    schedule_dom:       p.schedule_dom ?? 1,
-    active:             !!p.active,
-    dag_start_date:     p.dag_start_date ?? '',
-    envia_msg_inicio:   !!p.envia_msg_inicio,
-    envia_msg_fim:      !!p.envia_msg_fim,
-    envia_msg_erro:     !!p.envia_msg_erro,
-    criticidade:        p.criticidade ?? 'Media',
-    sla_minutos:        p.sla_minutos != null ? String(p.sla_minutos) : '',
-    ambiente:           p.ambiente ?? 'PROD',
-    max_active_runs:    p.max_active_runs ?? 1,
-    retries_count:      p.retries_count ?? 1,
-    retry_delay_seconds: p.retry_delay_seconds ?? 300,
-    pool_name:          p.pool_name ?? '',
-    depends_on:         p.depends_on ?? '',
-    runbook_md:         p.runbook_md ?? '',
+    pipeline_name:           p.pipeline_name,
+    project_name:            p.project_name ?? '',
+    domain:                  p.domain ?? '',
+    tags_list:               p.tags ? p.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
+    descricao:               p.descricao ?? '',
+    schedule_type:           p.schedule_type ?? 'daily',
+    schedule_hour:           p.schedule_hour ?? 6,
+    schedule_minute:         p.schedule_minute ?? 0,
+    schedule_dow:            p.schedule_dow ?? 1,
+    schedule_dom:            p.schedule_dom ?? 1,
+    schedule_interval_hours: 2,
+    schedule_custom_cron:    '',
+    active:                  !!p.active,
+    dag_start_date:          p.dag_start_date ?? '',
+    envia_msg_inicio:        !!p.envia_msg_inicio,
+    envia_msg_fim:           !!p.envia_msg_fim,
+    envia_msg_erro:          !!p.envia_msg_erro,
+    criticidade:             p.criticidade ?? 'Media',
+    sla_minutos:             p.sla_minutos != null ? String(p.sla_minutos) : '',
+    ambiente:                p.ambiente ?? 'PROD',
+    max_active_runs:         p.max_active_runs ?? 1,
+    retries_count:           p.retries_count ?? 1,
+    retry_delay_seconds:     p.retry_delay_seconds ?? 300,
+    pool_name:               p.pool_name ?? '',
+    depends_on:              p.depends_on ?? '',
+    runbook_md:              p.runbook_md ?? '',
   }
 }
 
-type FormSection = 'basic' | 'schedule' | 'notify' | 'advanced'
+// ── TagsInput ──
+
+function TagsInput({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+  const [input, setInput] = useState('')
+
+  function addTag(raw: string) {
+    const parts = raw.split(/[,;]/).map(s => s.trim().toUpperCase()).filter(Boolean)
+    if (!parts.length) return
+    const next = [...value]
+    parts.forEach(t => { if (!next.includes(t)) next.push(t) })
+    onChange(next)
+    setInput('')
+  }
+
+  function removeTag(t: string) { onChange(value.filter(x => x !== t)) }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="text-xs text-dim font-medium">Tags * <span className="text-dim/50 font-normal">(Enter ou vírgula para adicionar)</span></label>
+      <div className="min-h-[42px] flex flex-wrap gap-1.5 items-center bg-panel border border-edge rounded-md px-2 py-1.5 focus-within:ring-1 focus-within:ring-blue-500">
+        {value.map(t => (
+          <span key={t} className="inline-flex items-center gap-1 bg-blue-600/20 text-blue-300 border border-blue-700/40 rounded-full px-2 py-0.5 text-xs font-medium">
+            {t}
+            <button type="button" onClick={() => removeTag(t)} className="hover:text-red-400 transition-colors leading-none">×</button>
+          </span>
+        ))}
+        <input
+          type="text"
+          value={input}
+          placeholder={value.length === 0 ? 'ex: COBRANCA, DIARIO…' : ''}
+          className="flex-1 min-w-[120px] bg-transparent outline-none text-sm text-ink placeholder:text-dim/50"
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag(input) }
+            if (e.key === 'Backspace' && input === '' && value.length > 0) removeTag(value[value.length - 1])
+          }}
+          onBlur={() => { if (input.trim()) addTag(input) }}
+        />
+      </div>
+    </div>
+  )
+}
+
+// ── Wizard stepper ──
+
+const STEPS = ['Identificação', 'Agendamento', 'Notificações', 'Jobs', 'Lineage', 'Revisão'] as const
+type Step = 0 | 1 | 2 | 3 | 4 | 5
+
+function Stepper({ step, setStep, errors }: { step: Step; setStep: (s: Step) => void; errors: Record<number, string[]> }) {
+  return (
+    <div className="flex items-center gap-0 mb-1">
+      {STEPS.map((label, i) => {
+        const hasErr = (errors[i]?.length ?? 0) > 0
+        const active = i === step
+        const done   = i < step && !hasErr
+        return (
+          <button
+            key={i}
+            type="button"
+            onClick={() => setStep(i as Step)}
+            className="flex items-center gap-0 group"
+          >
+            <div className="flex flex-col items-center">
+              <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold border transition-colors
+                ${hasErr ? 'bg-red-900/30 border-red-700 text-red-400' :
+                  active ? 'bg-blue-600 border-blue-500 text-white' :
+                  done   ? 'bg-green-900/30 border-green-700 text-green-400' :
+                           'bg-canvas border-edge text-dim'}`}>
+                {hasErr ? '!' : done ? '✓' : i + 1}
+              </div>
+              <span className={`text-[9px] mt-0.5 whitespace-nowrap transition-colors
+                ${hasErr ? 'text-red-400' : active ? 'text-blue-300 font-semibold' : 'text-dim'}`}>
+                {label}
+              </span>
+            </div>
+            {i < STEPS.length - 1 && (
+              <div className={`w-6 h-px mt-[-10px] mx-0.5 transition-colors
+                ${i < step ? 'bg-green-700' : 'bg-edge'}`} />
+            )}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── PipelineFormModal (wizard) ──
 
 function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose: () => void }) {
-  const qc    = useQueryClient()
-  const user  = useAuthStore(s => s.user)
+  const qc     = useQueryClient()
+  const user   = useAuthStore(s => s.user)
   const isEdit = !!pipeline
-  const [form, setForm]     = useState<FormState>(pipeline ? pipelineToForm(pipeline) : defaultForm())
-  const [errs, setErrs]     = useState<string[]>([])
-  const [errTabs, setErrTabs] = useState<Set<FormSection>>(new Set())
-  const [section, setSection] = useState<FormSection>('basic')
+
+  const [form,  setForm]  = useState<FormState>(pipeline ? pipelineToForm(pipeline) : defaultForm())
+  const [step,  setStep]  = useState<Step>(0)
+  const [stepErrors, setStepErrors] = useState<Record<number, string[]>>({})
+  const [jobs,  setJobs]  = useState<JobEntry[]>([])
+  const [lineage, setLineage] = useState<LineageEntry[]>([])
 
   const { data: projData } = useQuery<{ projects: string[] }>({
     queryKey: ['pipeline-projects'],
@@ -196,107 +360,175 @@ function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose
 
   function f<K extends keyof FormState>(k: K, v: FormState[K]) {
     setForm(prev => ({ ...prev, [k]: v }))
-    setErrs([])
   }
 
+  const cron = buildCron(
+    form.schedule_type, form.schedule_hour, form.schedule_minute,
+    form.schedule_dow, form.schedule_dom, form.schedule_interval_hours, form.schedule_custom_cron,
+  )
+  const nextTimes = form.schedule_type !== 'on_demand' ? nextExecutions(cron) : []
+
+  // ── Validation per step ──
+  function validateStep(s: number): string[] {
+    if (s === 0) {
+      const e: string[] = []
+      if (!form.pipeline_name.trim()) e.push('Nome do pipeline é obrigatório')
+      if (!form.project_name)         e.push('Projeto é obrigatório')
+      if (!form.domain.trim())        e.push('Domínio é obrigatório')
+      if (form.tags_list.length === 0) e.push('Ao menos uma tag é obrigatória')
+      if (!form.descricao.trim())     e.push('Descrição é obrigatória')
+      return e
+    }
+    if (s === 1) {
+      if (form.schedule_type === 'on_demand' || form.schedule_type === 'custom') return []
+      const e: string[] = []
+      if (form.schedule_type !== 'hourly_n') {
+        if (form.schedule_hour < 0 || form.schedule_hour > 23) e.push('Hora inválida (0–23)')
+        if (form.schedule_minute < 0 || form.schedule_minute > 59) e.push('Minuto inválido (0–59)')
+      } else {
+        if (form.schedule_interval_hours < 1 || form.schedule_interval_hours > 23) e.push('Intervalo deve ser entre 1 e 23 horas')
+      }
+      if ((form.schedule_type === 'weekly' || form.schedule_type === 'biweekly') && (form.schedule_dow < 0 || form.schedule_dow > 6))
+        e.push('Dia da semana inválido (0–6)')
+      if ((form.schedule_type === 'monthly' || form.schedule_type === 'biweekly') && (form.schedule_dom < 1 || form.schedule_dom > 28))
+        e.push('Dia do mês inválido (1–28)')
+      return e
+    }
+    return []
+  }
+
+  function goNext() {
+    const e = validateStep(step)
+    if (e.length) {
+      setStepErrors(prev => ({ ...prev, [step]: e }))
+      return
+    }
+    setStepErrors(prev => ({ ...prev, [step]: [] }))
+    if (step < 5) setStep((step + 1) as Step)
+  }
+
+  function goPrev() { if (step > 0) setStep((step - 1) as Step) }
+
+  // ── Save ──
   const saveMut = useMutation({
     mutationFn: () => {
       const h = String(form.schedule_hour).padStart(2, '0')
       const m = String(form.schedule_minute).padStart(2, '0')
-      return apiFetch('/pipelines/register', {
-        method: 'POST',
-        body: JSON.stringify({
-          pipeline_name:       form.pipeline_name.trim().toUpperCase(),
-          project_name:        form.project_name,
-          domain:              form.domain.trim().toUpperCase() || 'Geral',
-          tags:                form.tags.trim().toUpperCase(),
-          descricao:           form.descricao.trim() || null,
-          scheduled_time:      `${h}:${m}:00`,
-          schedule_type:       form.schedule_type,
-          schedule_hour:       form.schedule_hour,
-          schedule_minute:     form.schedule_minute,
-          schedule_dow:        form.schedule_dow,
-          schedule_dom:        form.schedule_dom,
-          active:              form.active ? 1 : 0,
-          dag_start_date:      form.dag_start_date || null,
-          envia_msg_inicio:    form.envia_msg_inicio ? 1 : 0,
-          envia_msg_fim:       form.envia_msg_fim ? 1 : 0,
-          envia_msg_erro:      form.envia_msg_erro ? 1 : 0,
-          criticidade:         form.criticidade,
-          sla_minutos:         form.sla_minutos ? parseInt(form.sla_minutos) : null,
-          ambiente:            form.ambiente,
-          max_active_runs:     form.max_active_runs,
-          retries_count:       form.retries_count,
-          retry_delay_seconds: form.retry_delay_seconds,
-          pool_name:           form.pool_name.trim() || null,
-          depends_on:          form.depends_on.trim() || null,
-          runbook_md:          form.runbook_md.trim() || null,
-          changed_by:          user?.matricula ?? 'react-ui',
-          dag_criada:          pipeline?.dag_criada ?? 0,
-        }),
-      })
+      const body: Record<string, unknown> = {
+        pipeline_name:       form.pipeline_name.trim().toUpperCase(),
+        project_name:        form.project_name,
+        domain:              form.domain.trim().toUpperCase(),
+        tags:                form.tags_list.join(','),
+        descricao:           form.descricao.trim() || null,
+        scheduled_time:      `${h}:${m}:00`,
+        schedule_type:       form.schedule_type === 'hourly_n' ? 'hourly' : form.schedule_type,
+        schedule_hour:       form.schedule_type === 'hourly_n' ? form.schedule_interval_hours : form.schedule_hour,
+        schedule_minute:     form.schedule_minute,
+        schedule_dow:        form.schedule_dow,
+        schedule_dom:        form.schedule_dom,
+        active:              form.active ? 1 : 0,
+        dag_start_date:      form.dag_start_date || null,
+        envia_msg_inicio:    form.envia_msg_inicio ? 1 : 0,
+        envia_msg_fim:       form.envia_msg_fim ? 1 : 0,
+        envia_msg_erro:      form.envia_msg_erro ? 1 : 0,
+        criticidade:         form.criticidade,
+        sla_minutos:         form.sla_minutos ? parseInt(form.sla_minutos) : null,
+        ambiente:            form.ambiente,
+        max_active_runs:     form.max_active_runs,
+        retries_count:       form.retries_count,
+        retry_delay_seconds: form.retry_delay_seconds,
+        pool_name:           form.pool_name.trim() || null,
+        depends_on:          form.depends_on.trim() || null,
+        runbook_md:          form.runbook_md.trim() || null,
+        changed_by:          user?.matricula ?? 'react-ui',
+        dag_criada:          pipeline?.dag_criada ?? 0,
+        jobs:                jobs.map((j, idx) => ({
+          job_name:        j.job_name.trim(),
+          job_type:        j.job_type,
+          execution_order: idx + 1,
+          ssh_conn_id:     j.ssh_conn_id.trim() || null,
+          description:     j.description.trim() || null,
+        })),
+        lineage: lineage.map(l => ({
+          job_name:      l.job_name,
+          direction:     l.direction,
+          object_name:   l.object_name.trim(),
+          object_type:   l.object_type,
+          database_name: l.database_name.trim() || null,
+        })),
+      }
+      return apiFetch('/pipelines/register', { method: 'POST', body: JSON.stringify(body) })
     },
     onSuccess: (res: any) => {
-      toast.success(isEdit ? 'Pipeline atualizado' : `Pipeline criado · cron: ${res?.cron ?? ''}`)
+      toast.success(isEdit ? 'Pipeline atualizado!' : `Pipeline criado! · cron: ${res?.cron ?? cron}`)
       qc.invalidateQueries({ queryKey: ['pipelines'] })
       onClose()
     },
-    onError: (e: any) => setErrs([e.message]),
+    onError: (e: any) => {
+      setStepErrors(prev => ({ ...prev, 5: [e.message] }))
+    },
   })
 
-  function validate() {
-    const e: string[] = []
-    const badTabs = new Set<FormSection>()
-    if (!form.pipeline_name.trim()) { e.push('Nome do pipeline é obrigatório'); badTabs.add('basic') }
-    if (!form.project_name) { e.push('Projeto é obrigatório'); badTabs.add('basic') }
-    if (form.schedule_type !== 'on_demand') {
-      if (form.schedule_hour < 0 || form.schedule_hour > 23) { e.push('Hora inválida (0–23)'); badTabs.add('schedule') }
-      if (form.schedule_minute < 0 || form.schedule_minute > 59) { e.push('Minuto inválido (0–59)'); badTabs.add('schedule') }
-      if ((form.schedule_type === 'weekly' || form.schedule_type === 'biweekly') && (form.schedule_dow < 0 || form.schedule_dow > 6)) {
-        e.push('Dia da semana inválido (0–6)'); badTabs.add('schedule')
-      }
-      if ((form.schedule_type === 'monthly' || form.schedule_type === 'biweekly') && (form.schedule_dom < 1 || form.schedule_dom > 28)) {
-        e.push('Dia do mês inválido (1–28)'); badTabs.add('schedule')
-      }
-    }
-    setErrs(e)
-    setErrTabs(badTabs)
-    if (badTabs.size > 0 && !badTabs.has(section)) {
-      setSection([...badTabs][0])
-    }
-    return e.length === 0
+  // ── Jobs helpers ──
+  function addJob() {
+    setJobs(prev => [...prev, {
+      id: `j_${Date.now()}`,
+      job_name: '',
+      job_type: 'PythonOperator',
+      execution_order: prev.length + 1,
+      ssh_conn_id: '',
+      description: '',
+    }])
   }
 
-  const tabs: { id: FormSection; label: string }[] = [
-    { id: 'basic',    label: 'Identificação' },
-    { id: 'schedule', label: 'Agendamento' },
-    { id: 'notify',   label: 'Notificações' },
-    { id: 'advanced', label: 'Avançado' },
-  ]
+  function removeJob(id: string) {
+    setJobs(prev => prev.filter(j => j.id !== id))
+    setLineage(prev => prev.filter(l => {
+      const job = jobs.find(j => j.id === id)
+      return !job || l.job_name !== job.job_name
+    }))
+  }
+
+  function updateJob(id: string, field: keyof JobEntry, value: string | number) {
+    setJobs(prev => prev.map(j => j.id === id ? { ...j, [field]: value } : j))
+  }
+
+  // ── Lineage helpers ──
+  function addLineageEntry(job_name: string, direction: 'origem' | 'destino') {
+    setLineage(prev => [...prev, {
+      id: `l_${Date.now()}`,
+      job_name, direction,
+      object_name: '', object_type: 'TABLE', database_name: '',
+    }])
+  }
+
+  function removeLineageEntry(id: string) { setLineage(prev => prev.filter(l => l.id !== id)) }
+
+  function updateLineage(id: string, field: keyof LineageEntry, value: string) {
+    setLineage(prev => prev.map(l => l.id === id ? { ...l, [field]: value } : l))
+  }
+
+  const curStepErrors = stepErrors[step] ?? []
 
   return (
-    <Modal open title={isEdit ? `Editar: ${pipeline!.pipeline_name}` : 'Novo Pipeline'} onClose={onClose} size="lg">
+    <Modal open title={isEdit ? `Editar: ${pipeline!.pipeline_name}` : 'Novo Pipeline'} onClose={onClose} size="xl">
       <div className="flex flex-col gap-4">
 
-        {/* Section tabs */}
-        <div className="flex gap-1 border-b border-edge">
-          {tabs.map(t => (
-            <button
-              key={t.id}
-              onClick={() => setSection(t.id)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-t transition-colors relative ${section === t.id ? 'bg-blue-600/20 text-blue-300 border-b-2 border-blue-500' : 'text-dim hover:text-ink'}`}
-            >
-              {t.label}
-              {errTabs.has(t.id) && (
-                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-red-500" title="Campos inválidos nesta aba" />
-              )}
-            </button>
-          ))}
-        </div>
+        {/* Stepper */}
+        <Stepper step={step} setStep={setStep} errors={stepErrors} />
 
-        {/* ── IDENTIFICAÇÃO ── */}
-        {section === 'basic' && (
-          <div className="flex flex-col gap-3">
+        {/* Error banner */}
+        {curStepErrors.length > 0 && (
+          <div className="bg-red-900/20 border border-red-800 rounded-lg px-3 py-2">
+            {curStepErrors.map((e, i) => (
+              <p key={i} className="text-xs text-red-400">⚠ {e}</p>
+            ))}
+          </div>
+        )}
+
+        {/* ── STEP 0: IDENTIFICAÇÃO ── */}
+        {step === 0 && (
+          <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-1">
             <Input
               label="Nome do pipeline *"
               value={form.pipeline_name}
@@ -305,18 +537,41 @@ function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose
               disabled={isEdit}
               className={`font-mono ${isEdit ? 'opacity-60' : ''}`}
             />
+            {!isEdit && <p className="text-[10px] text-dim -mt-2">Apenas letras, números e _ (será convertido para maiúsculas)</p>}
+
             <div className="grid grid-cols-2 gap-3">
               <Select label="Projeto *" value={form.project_name} onChange={e => f('project_name', e.target.value)}>
                 <option value="">Selecione…</option>
                 {projects.map(p => <option key={p}>{p}</option>)}
               </Select>
-              <Input label="Domínio" value={form.domain}
-                onChange={e => f('domain', e.target.value.toUpperCase())} placeholder="ex: COBRANCA" />
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-dim font-medium">Domínio *</label>
+                <input
+                  type="text"
+                  value={form.domain}
+                  onChange={e => f('domain', e.target.value.toUpperCase())}
+                  placeholder="ex: COBRANCA"
+                  className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
             </div>
-            <Input label="Tags (separadas por vírgula)" value={form.tags}
-              onChange={e => f('tags', e.target.value.toUpperCase())} placeholder="ex: COBRANCA,DIARIO,PROD" />
-            <Textarea label="Descrição" value={form.descricao} onChange={e => f('descricao', e.target.value)}
-              rows={3} placeholder="Descreva a finalidade deste pipeline…" />
+
+            <TagsInput value={form.tags_list} onChange={v => f('tags_list', v)} />
+
+            <Textarea label="Descrição *" value={form.descricao} onChange={e => f('descricao', e.target.value)}
+              rows={3} placeholder="Descreva a finalidade deste pipeline, fonte de dados, consumidores…" />
+
+            <div className="grid grid-cols-3 gap-3">
+              <Select label="Criticidade" value={form.criticidade} onChange={e => f('criticidade', e.target.value)}>
+                {CRITICIDADES.map(c => <option key={c}>{c}</option>)}
+              </Select>
+              <Select label="Ambiente" value={form.ambiente} onChange={e => f('ambiente', e.target.value)}>
+                {AMBIENTES.map(a => <option key={a}>{a}</option>)}
+              </Select>
+              <Input label="SLA (minutos)" type="number" value={form.sla_minutos}
+                onChange={e => f('sla_minutos', e.target.value)} placeholder="ex: 60" />
+            </div>
+
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={form.active} onChange={e => f('active', e.target.checked)} className="accent-blue-500" />
               <span className="text-sm text-ink">Pipeline ativo</span>
@@ -324,34 +579,53 @@ function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose
           </div>
         )}
 
-        {/* ── AGENDAMENTO ── */}
-        {section === 'schedule' && (
-          <div className="flex flex-col gap-3">
-            <Select label="Tipo" value={form.schedule_type} onChange={e => f('schedule_type', e.target.value)}>
+        {/* ── STEP 1: AGENDAMENTO ── */}
+        {step === 1 && (
+          <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-1">
+            <Select label="Tipo de agendamento" value={form.schedule_type} onChange={e => f('schedule_type', e.target.value)}>
               {SCHEDULE_TYPES.map(t => <option key={t} value={t}>{SCHEDULE_LABELS[t]}</option>)}
             </Select>
-            {form.schedule_type !== 'on_demand' && (
+
+            {form.schedule_type === 'hourly_n' && (
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-dim font-medium">A cada quantas horas? (1–23)</label>
+                <input type="number" min={1} max={23} value={form.schedule_interval_hours}
+                  onChange={e => f('schedule_interval_hours', Math.min(23, Math.max(1, parseInt(e.target.value) || 1)))}
+                  className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 w-32" />
+                <p className="text-[10px] text-dim">Ex: 2 = executa às 00:00, 02:00, 04:00, 06:00…</p>
+              </div>
+            )}
+
+            {form.schedule_type === 'custom' && (
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-dim font-medium">Expressão CRON personalizada</label>
+                <input type="text" value={form.schedule_custom_cron}
+                  onChange={e => f('schedule_custom_cron', e.target.value)}
+                  placeholder="ex: 30 6,12,18 * * 1-5"
+                  className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                <p className="text-[10px] text-dim">Formato: minuto hora dia_mês mês dia_semana</p>
+              </div>
+            )}
+
+            {form.schedule_type !== 'on_demand' && form.schedule_type !== 'hourly_n' && form.schedule_type !== 'custom' && (
               <>
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-dim font-medium">Hora (0–23)</label>
-                    <input type="number" min={0} max={23}
-                      value={form.schedule_hour === 0 ? '' : form.schedule_hour}
-                      onChange={e => f('schedule_hour', e.target.value === '' ? 0 : Math.min(23, Math.max(0, parseInt(e.target.value) || 0)))}
+                    <input type="number" min={0} max={23} value={form.schedule_hour}
+                      onChange={e => f('schedule_hour', Math.min(23, Math.max(0, parseInt(e.target.value) || 0)))}
                       className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
                   </div>
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-dim font-medium">Minuto (0–59)</label>
-                    <input type="number" min={0} max={59}
-                      value={form.schedule_minute === 0 ? '' : form.schedule_minute}
-                      onChange={e => f('schedule_minute', e.target.value === '' ? 0 : Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))}
+                    <input type="number" min={0} max={59} value={form.schedule_minute}
+                      onChange={e => f('schedule_minute', Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))}
                       className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
                   </div>
                 </div>
                 {(form.schedule_type === 'weekly' || form.schedule_type === 'biweekly') && (
-                  <Select label="Dia da semana" value={form.schedule_dow}
-                    onChange={e => f('schedule_dow', parseInt(e.target.value))}>
-                    {[['0','Domingo'],['1','Segunda'],['2','Terça'],['3','Quarta'],['4','Quinta'],['5','Sexta'],['6','Sábado']].map(([v, l]) =>
+                  <Select label="Dia da semana" value={form.schedule_dow} onChange={e => f('schedule_dow', parseInt(e.target.value))}>
+                    {[['0','Domingo'],['1','Segunda'],['2','Terça'],['3','Quarta'],['4','Quinta'],['5','Sexta'],['6','Sábado']].map(([v,l]) =>
                       <option key={v} value={v}>{l}</option>)}
                   </Select>
                 )}
@@ -363,101 +637,337 @@ function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; onClose
                       className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
                   </div>
                 )}
-                <Input label="Data de início DAG (opcional)" type="date" value={form.dag_start_date}
-                  onChange={e => f('dag_start_date', e.target.value)} />
               </>
             )}
-            <div className="bg-canvas border border-edge rounded-lg px-3 py-2 text-xs text-dim font-mono">
-              {form.schedule_type === 'on_demand'
-                ? 'Sem agendamento automático — execução apenas manual ou por dependência'
-                : `CRON: ${buildCron(form.schedule_type, form.schedule_hour, form.schedule_minute, form.schedule_dow, form.schedule_dom)}`}
+
+            <Input label="Data de início DAG (opcional)" type="date" value={form.dag_start_date}
+              onChange={e => f('dag_start_date', e.target.value)} />
+
+            {/* CRON preview */}
+            <div className="bg-canvas border border-edge rounded-lg px-3 py-2.5">
+              <p className="text-[10px] text-dim font-bold uppercase tracking-wider mb-1">Expressão gerada</p>
+              <p className="text-xs font-mono text-blue-300">
+                {form.schedule_type === 'on_demand' ? 'Sem agendamento automático' : cron}
+              </p>
+              {nextTimes.length > 0 && (
+                <div className="mt-2 border-t border-edge/50 pt-2">
+                  <p className="text-[10px] text-dim font-medium mb-1">Próximas execuções:</p>
+                  <ul className="flex flex-col gap-0.5">
+                    {nextTimes.map((t, i) => (
+                      <li key={i} className="text-[11px] text-dim flex items-center gap-1.5">
+                        <span className="w-1 h-1 rounded-full bg-green-500 flex-shrink-0" />
+                        {t}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {/* ── NOTIFICAÇÕES ── */}
-        {section === 'notify' && (
-          <div className="flex flex-col gap-3">
-            <p className="text-xs text-dim">Configure quando enviar notificação Teams/e-mail.</p>
-            {([
-              ['envia_msg_inicio', '▶ Início da execução'],
-              ['envia_msg_fim',    '✓ Conclusão bem-sucedida'],
-              ['envia_msg_erro',   '⚠ Falha / erro'],
-            ] as [keyof FormState, string][]).map(([key, label]) => (
-              <label key={key} className="flex items-center gap-2.5 cursor-pointer bg-canvas border border-edge rounded-lg px-3 py-2.5">
-                <input type="checkbox" checked={form[key] as boolean}
-                  onChange={e => f(key, e.target.checked)} className="accent-blue-500" />
-                <span className="text-sm text-ink">{label}</span>
-              </label>
+        {/* ── STEP 2: NOTIFICAÇÕES + AVANÇADO ── */}
+        {step === 2 && (
+          <div className="flex flex-col gap-4 overflow-y-auto max-h-[55vh] pr-1">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-blue-400 mb-2">Notificações Teams / E-mail</p>
+              <div className="flex flex-col gap-2">
+                {([
+                  ['envia_msg_inicio', '▶ Início da execução'],
+                  ['envia_msg_fim',    '✓ Conclusão bem-sucedida'],
+                  ['envia_msg_erro',   '⚠ Falha / erro'],
+                ] as [keyof FormState, string][]).map(([key, label]) => (
+                  <label key={key} className="flex items-center gap-2.5 cursor-pointer bg-canvas border border-edge rounded-lg px-3 py-2.5">
+                    <input type="checkbox" checked={form[key] as boolean}
+                      onChange={e => f(key, e.target.checked)} className="accent-blue-500" />
+                    <span className="text-sm text-ink">{label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-blue-400 mb-2">Configurações Avançadas</p>
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-dim font-medium">Runs simultâneas</label>
+                    <input type="number" min={1} max={10} value={form.max_active_runs}
+                      onChange={e => f('max_active_runs', parseInt(e.target.value) || 1)}
+                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-dim font-medium">Retries</label>
+                    <input type="number" min={0} max={10} value={form.retries_count}
+                      onChange={e => f('retries_count', parseInt(e.target.value) || 0)}
+                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-dim font-medium">Delay retry (s)</label>
+                    <input type="number" min={0} value={form.retry_delay_seconds}
+                      onChange={e => f('retry_delay_seconds', parseInt(e.target.value) || 300)}
+                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                  </div>
+                </div>
+                <Input label="Fila de execução (pool)" value={form.pool_name}
+                  onChange={e => f('pool_name', e.target.value)} placeholder="padrão do Airflow" />
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-dim font-medium">Depende de (pipelines separados por vírgula)</label>
+                  <input list="dep-list-wiz" value={form.depends_on}
+                    onChange={e => f('depends_on', e.target.value)}
+                    placeholder="ex: ETL_BASE_CLIENTES, ETL_CARTEIRA"
+                    className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                  <datalist id="dep-list-wiz">
+                    {otherPipelines.map(n => <option key={n} value={n} />)}
+                  </datalist>
+                </div>
+                <Textarea label="Runbook (Markdown)" value={form.runbook_md}
+                  onChange={e => f('runbook_md', e.target.value)} rows={3}
+                  placeholder="Como monitorar, tratar falhas, contato responsável…" />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── STEP 3: JOBS ── */}
+        {step === 3 && (
+          <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-1">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-dim">Defina os jobs que compõem este pipeline, em ordem de execução.</p>
+              <Button size="sm" onClick={addJob}><Plus size={12} /> Adicionar job</Button>
+            </div>
+            {jobs.length === 0 && (
+              <div className="py-10 flex flex-col items-center gap-2 text-dim border border-dashed border-edge rounded-xl">
+                <span className="text-3xl opacity-30">⚙</span>
+                <p className="text-sm">Nenhum job cadastrado</p>
+                <p className="text-xs">Jobs são opcionais — podem ser adicionados depois.</p>
+              </div>
+            )}
+            {jobs.map((j, idx) => (
+              <div key={j.id} className="border border-edge rounded-xl p-3 flex flex-col gap-2 bg-canvas">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="text-[10px] font-bold text-blue-400 bg-blue-900/20 border border-blue-800/40 rounded-full px-2 py-0.5">#{idx + 1}</span>
+                  <span className="text-xs font-mono text-ink flex-1">{j.job_name || '(sem nome)'}</span>
+                  <button onClick={() => removeJob(j.id)} className="text-dim hover:text-red-400 transition-colors text-xs">✕ remover</button>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-dim font-medium">Nome do Job *</label>
+                    <input type="text" value={j.job_name}
+                      onChange={e => updateJob(j.id, 'job_name', e.target.value)}
+                      placeholder="ex: STEP_EXTRAI_DADOS"
+                      className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-dim font-medium">Tipo</label>
+                    <select value={j.job_type}
+                      onChange={e => updateJob(j.id, 'job_type', e.target.value)}
+                      className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+                      {['PythonOperator','BashOperator','SSHOperator','SqlOperator','DummyOperator','BranchPythonOperator'].map(t => <option key={t}>{t}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-dim font-medium">SSH Connection ID</label>
+                    <input type="text" value={j.ssh_conn_id}
+                      onChange={e => updateJob(j.id, 'ssh_conn_id', e.target.value)}
+                      placeholder="ex: ssh_default"
+                      className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-dim font-medium">Descrição</label>
+                    <input type="text" value={j.description}
+                      onChange={e => updateJob(j.id, 'description', e.target.value)}
+                      placeholder="O que faz este job?"
+                      className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                  </div>
+                </div>
+              </div>
             ))}
           </div>
         )}
 
-        {/* ── AVANÇADO ── */}
-        {section === 'advanced' && (
-          <div className="flex flex-col gap-3">
-            <div className="grid grid-cols-3 gap-3">
-              <Select label="Criticidade" value={form.criticidade} onChange={e => f('criticidade', e.target.value)}>
-                {CRITICIDADES.map(c => <option key={c}>{c}</option>)}
-              </Select>
-              <Select label="Ambiente" value={form.ambiente} onChange={e => f('ambiente', e.target.value)}>
-                {AMBIENTES.map(a => <option key={a}>{a}</option>)}
-              </Select>
-              <Input label="SLA (minutos)" type="number" value={form.sla_minutos}
-                onChange={e => f('sla_minutos', e.target.value)} placeholder="ex: 60" />
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-dim font-medium">Runs simultâneas</label>
-                <input type="number" min={1} max={10} value={form.max_active_runs}
-                  onChange={e => f('max_active_runs', parseInt(e.target.value) || 1)}
-                  className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+        {/* ── STEP 4: LINEAGE ── */}
+        {step === 4 && (
+          <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-1">
+            <p className="text-xs text-dim">Mapeie origens e destinos de dados por job.</p>
+            {jobs.length === 0 && (
+              <div className="py-8 flex flex-col items-center gap-2 text-dim border border-dashed border-edge rounded-xl">
+                <p className="text-sm">Nenhum job cadastrado na etapa anterior.</p>
+                <p className="text-xs">Volte para a aba Jobs e adicione ao menos um job.</p>
               </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-dim font-medium">Retries</label>
-                <input type="number" min={0} max={10} value={form.retries_count}
-                  onChange={e => f('retries_count', parseInt(e.target.value) || 0)}
-                  className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-dim font-medium">Delay retry (s)</label>
-                <input type="number" min={0} value={form.retry_delay_seconds}
-                  onChange={e => f('retry_delay_seconds', parseInt(e.target.value) || 300)}
-                  className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
-              </div>
-            </div>
-            <Input label="Fila de execução (pool)" value={form.pool_name}
-              onChange={e => f('pool_name', e.target.value)} placeholder="padrão do Airflow" />
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-dim font-medium">Depende de (pipelines, separados por vírgula)</label>
-              <input
-                list="dep-list"
-                value={form.depends_on}
-                onChange={e => f('depends_on', e.target.value)}
-                placeholder="ex: ETL_BASE_CLIENTES, ETL_CARTEIRA"
-                className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-              <datalist id="dep-list">
-                {otherPipelines.map(n => <option key={n} value={n} />)}
-              </datalist>
-            </div>
-            <Textarea label="Runbook (Markdown)" value={form.runbook_md}
-              onChange={e => f('runbook_md', e.target.value)} rows={4}
-              placeholder="Documentação operacional: como monitorar, tratar falhas, contato responsável..." />
+            )}
+            {jobs.map(j => {
+              const origens  = lineage.filter(l => l.job_name === j.job_name && l.direction === 'origem')
+              const destinos = lineage.filter(l => l.job_name === j.job_name && l.direction === 'destino')
+              if (!j.job_name.trim()) return null
+              return (
+                <div key={j.id} className="border border-edge rounded-xl overflow-hidden">
+                  <div className="bg-canvas border-b border-edge px-3 py-2 flex items-center gap-2">
+                    <span className="text-[10px] font-bold text-blue-400">#{j.execution_order}</span>
+                    <span className="text-xs font-mono font-bold text-ink">{j.job_name}</span>
+                    <span className="text-[10px] text-dim ml-1">{j.job_type}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-0">
+                    {/* Origens */}
+                    <div className="border-r border-edge p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Origens</span>
+                        <button onClick={() => addLineageEntry(j.job_name, 'origem')}
+                          className="text-[10px] text-blue-400 hover:text-blue-300 border border-blue-800/40 rounded px-1.5 py-0.5">+ adicionar</button>
+                      </div>
+                      {origens.length === 0 && <p className="text-[10px] text-dim/50 italic">Nenhuma origem</p>}
+                      {origens.map(l => (
+                        <div key={l.id} className="flex gap-1 items-start mb-1.5">
+                          <div className="flex flex-col gap-0.5 flex-1">
+                            <input type="text" value={l.object_name}
+                              onChange={e => updateLineage(l.id, 'object_name', e.target.value)}
+                              placeholder="dbo.tabela_origem"
+                              className="bg-panel border border-edge text-ink rounded px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 w-full" />
+                            <input type="text" value={l.database_name}
+                              onChange={e => updateLineage(l.id, 'database_name', e.target.value)}
+                              placeholder="banco/schema"
+                              className="bg-panel border border-edge text-dim rounded px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 w-full" />
+                          </div>
+                          <button onClick={() => removeLineageEntry(l.id)} className="text-dim hover:text-red-400 text-[10px] mt-1">✕</button>
+                        </div>
+                      ))}
+                    </div>
+                    {/* Destinos */}
+                    <div className="p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-green-400">Destinos</span>
+                        <button onClick={() => addLineageEntry(j.job_name, 'destino')}
+                          className="text-[10px] text-green-400 hover:text-green-300 border border-green-800/40 rounded px-1.5 py-0.5">+ adicionar</button>
+                      </div>
+                      {destinos.length === 0 && <p className="text-[10px] text-dim/50 italic">Nenhum destino</p>}
+                      {destinos.map(l => (
+                        <div key={l.id} className="flex gap-1 items-start mb-1.5">
+                          <div className="flex flex-col gap-0.5 flex-1">
+                            <input type="text" value={l.object_name}
+                              onChange={e => updateLineage(l.id, 'object_name', e.target.value)}
+                              placeholder="dbo.tabela_destino"
+                              className="bg-panel border border-edge text-ink rounded px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 w-full" />
+                            <input type="text" value={l.database_name}
+                              onChange={e => updateLineage(l.id, 'database_name', e.target.value)}
+                              placeholder="banco/schema"
+                              className="bg-panel border border-edge text-dim rounded px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 w-full" />
+                          </div>
+                          <button onClick={() => removeLineageEntry(l.id)} className="text-dim hover:text-red-400 text-[10px] mt-1">✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )}
 
-        {errs.length > 0 && (
-          <div className="bg-red-900/20 border border-red-800 rounded-lg p-3">
-            {errs.map((e, i) => <p key={i} className="text-xs text-red-400">{e}</p>)}
+        {/* ── STEP 5: REVISÃO ── */}
+        {step === 5 && (
+          <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-1">
+            <p className="text-xs text-blue-400 bg-blue-900/10 border border-blue-800/30 rounded-lg px-3 py-2">
+              Revise todas as informações antes de salvar. Use o stepper acima para corrigir qualquer etapa.
+            </p>
+
+            {/* Identificação */}
+            <div className="border border-edge rounded-xl overflow-hidden">
+              <div className="bg-canvas border-b border-edge px-3 py-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Identificação</span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-2 p-3 text-xs">
+                <div><span className="text-dim">Nome:</span> <span className="font-mono font-bold text-ink">{form.pipeline_name || '—'}</span></div>
+                <div><span className="text-dim">Projeto:</span> <span className="text-ink">{form.project_name || '—'}</span></div>
+                <div><span className="text-dim">Domínio:</span> <span className="text-ink">{form.domain || '—'}</span></div>
+                <div><span className="text-dim">Ambiente:</span> <span className={`font-medium ${form.ambiente === 'PROD' ? 'text-red-400' : 'text-yellow-400'}`}>{form.ambiente}</span></div>
+                <div><span className="text-dim">Criticidade:</span> <span className={`font-medium ${critColor(form.criticidade)}`}>{form.criticidade}</span></div>
+                <div><span className="text-dim">Status:</span> <span className={form.active ? 'text-green-400' : 'text-dim'}>{form.active ? 'Ativo' : 'Inativo'}</span></div>
+                <div className="col-span-2">
+                  <span className="text-dim">Tags:</span>{' '}
+                  <span className="inline-flex flex-wrap gap-1 ml-1">
+                    {form.tags_list.length ? form.tags_list.map(t => (
+                      <span key={t} className="bg-blue-900/20 text-blue-300 border border-blue-700/40 rounded-full px-2 py-0 text-[10px]">{t}</span>
+                    )) : <span className="text-dim/50 italic">nenhuma</span>}
+                  </span>
+                </div>
+                {form.descricao && <div className="col-span-2"><span className="text-dim">Descrição:</span> <span className="text-ink">{form.descricao}</span></div>}
+              </div>
+            </div>
+
+            {/* Agendamento */}
+            <div className="border border-edge rounded-xl overflow-hidden">
+              <div className="bg-canvas border-b border-edge px-3 py-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Agendamento</span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-2 p-3 text-xs">
+                <div><span className="text-dim">Tipo:</span> <span className="text-ink">{SCHEDULE_LABELS[form.schedule_type] ?? form.schedule_type}</span></div>
+                <div><span className="text-dim">CRON:</span> <span className="font-mono text-blue-300">{cron}</span></div>
+                {form.dag_start_date && <div><span className="text-dim">Início DAG:</span> <span className="text-ink">{form.dag_start_date}</span></div>}
+                {form.sla_minutos && <div><span className="text-dim">SLA:</span> <span className="text-ink">{form.sla_minutos} min</span></div>}
+              </div>
+            </div>
+
+            {/* Jobs */}
+            <div className="border border-edge rounded-xl overflow-hidden">
+              <div className="bg-canvas border-b border-edge px-3 py-2 flex items-center justify-between">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Jobs ({jobs.length})</span>
+              </div>
+              {jobs.length === 0
+                ? <p className="text-xs text-dim/50 italic px-3 py-2">Nenhum job cadastrado</p>
+                : <div className="divide-y divide-edge/40">
+                    {jobs.map((j, i) => (
+                      <div key={j.id} className="px-3 py-1.5 text-xs flex items-center gap-3">
+                        <span className="text-[10px] text-blue-400 font-bold w-6">#{i+1}</span>
+                        <span className="font-mono text-ink">{j.job_name || '(sem nome)'}</span>
+                        <span className="text-dim">{j.job_type}</span>
+                        {j.ssh_conn_id && <span className="text-dim/60 font-mono">{j.ssh_conn_id}</span>}
+                      </div>
+                    ))}
+                  </div>
+              }
+            </div>
+
+            {/* Lineage */}
+            {lineage.length > 0 && (
+              <div className="border border-edge rounded-xl overflow-hidden">
+                <div className="bg-canvas border-b border-edge px-3 py-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Lineage ({lineage.length} entradas)</span>
+                </div>
+                <div className="divide-y divide-edge/40">
+                  {lineage.map(l => (
+                    <div key={l.id} className="px-3 py-1.5 text-xs flex items-center gap-3">
+                      <span className="font-mono text-dim w-28 truncate">{l.job_name}</span>
+                      <span className={`text-[10px] font-bold ${l.direction === 'origem' ? 'text-blue-400' : 'text-green-400'}`}>{l.direction.toUpperCase()}</span>
+                      <span className="font-mono text-ink">{l.object_name || '(vazio)'}</span>
+                      {l.database_name && <span className="text-dim/60">{l.database_name}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {saveMut.isError && (
+              <div className="bg-red-900/20 border border-red-800 rounded-lg px-3 py-2 text-xs text-red-400">
+                Erro ao salvar: {(saveMut.error as any)?.message}
+              </div>
+            )}
           </div>
         )}
 
-        <div className="flex justify-end gap-2 pt-1 border-t border-edge">
-          <Button variant="secondary" onClick={onClose}>Cancelar</Button>
-          <Button loading={saveMut.isPending} onClick={() => { if (validate()) saveMut.mutate() }}>
-            <Save size={13} /> {isEdit ? 'Salvar alterações' : 'Criar pipeline'}
+        {/* Navigation footer */}
+        <div className="flex justify-between items-center pt-1 border-t border-edge">
+          <Button variant="secondary" onClick={step === 0 ? onClose : goPrev}>
+            {step === 0 ? 'Cancelar' : '← Voltar'}
           </Button>
+          <div className="flex gap-2">
+            {step < 5
+              ? <Button onClick={goNext}>Próximo →</Button>
+              : <Button loading={saveMut.isPending} onClick={() => saveMut.mutate()}>
+                  <Save size={13} /> {isEdit ? 'Salvar alterações' : 'Criar pipeline'}
+                </Button>
+            }
+          </div>
         </div>
       </div>
     </Modal>
@@ -1083,6 +1593,9 @@ export default function Pipelines() {
           <div className="flex gap-2 ml-auto items-end">
             <Button variant="secondary" size="sm" onClick={() => { setNameFilter(''); setProjectFilter(''); setDomainFilter(''); setActiveFilter(''); setPage(0) }}>
               × Limpar
+            </Button>
+            <Button variant="secondary" size="sm" onClick={exportModeloCsv} title="Baixar modelo CSV para importação em massa">
+              ↓ Exportar modelo
             </Button>
             {!isViewer && (
               <Button size="sm" onClick={() => setShowNew(true)}>
