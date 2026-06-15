@@ -7,6 +7,7 @@ export interface User {
   ultimo_nome?: string
   perfil: string
   email?: string
+  area?: string
   permissoes?: string[]
 }
 
