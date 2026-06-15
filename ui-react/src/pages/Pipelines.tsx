@@ -98,7 +98,7 @@ const DOW_LABELS: [number, string][] = [
 // ── helpers ────────────────────────────────────────────────────────────────
 
 function pipelineToDagId(name: string) {
-  return name.toLowerCase().replace(/[^a-z0-9_]/g, '_')
+  return name
 }
 
 // Descreve a configuração de agendamento de forma normalizada para preview/payload
@@ -1899,15 +1899,15 @@ function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, onAudit
         {(p.envia_msg_inicio || p.envia_msg_fim || p.envia_msg_erro) ? '✉' : ''}
       </span>
 
+      {/* ── Criticidade (alinhada com os outros badges fixos) ── */}
+      <span className={`text-[9px] font-bold flex-shrink-0 w-10 ${critColor(p.criticidade)}`}
+        title={`Criticidade: ${p.criticidade}`}>
+        {p.criticidade}
+      </span>
+
       {/* ── Nome do pipeline (ocupa espaço restante) ── */}
       <span className="font-mono text-xs text-ink font-medium flex-1 truncate min-w-0" title={p.pipeline_name}>
         {p.pipeline_name}
-      </span>
-
-      {/* ── Criticidade ── */}
-      <span className={`text-[9px] font-bold flex-shrink-0 w-10 text-right ${critColor(p.criticidade)}`}
-        title={`Criticidade: ${p.criticidade}`}>
-        {p.criticidade}
       </span>
 
       {/* ── Ações (aparecem no hover, não empurram o layout) ── */}

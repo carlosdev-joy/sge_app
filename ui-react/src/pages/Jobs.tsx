@@ -41,7 +41,7 @@ interface SshConn { conn_id: string; host: string; description: string }
 // ── helpers ────────────────────────────────────────────────────────────────
 
 function pipelineToDagId(name: string) {
-  return name.toLowerCase().replace(/[^a-z0-9_]/g, '_')
+  return name
 }
 
 function copyText(t: string) {
