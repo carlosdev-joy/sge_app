@@ -110,49 +110,68 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
 
         cur.execute(f"""
             WITH execs AS (
-                SELECT execution_id, project, pipeline,
-                    MIN(start_time) AS inicio,
-                    COALESCE(SUM(duration_seconds), 0) AS duracao_segundos,
+                SELECT e.execution_id, e.project, e.pipeline,
+                    MIN(e.start_time) AS inicio,
+                    COALESCE(SUM(e.duration_seconds), 0) AS duracao_segundos,
                     COUNT(*) AS total_jobs,
                     {status_expr} AS ultimo_status
-                FROM dbo.etl_job_execution
-                WHERE 1=1 {where_proj}
-                GROUP BY execution_id, project, pipeline
+                FROM dbo.etl_job_execution e
+                JOIN dbo.etl_pipeline p ON p.pipeline_name = e.pipeline
+                WHERE e.start_time >= ? AND e.start_time < ?
+                  AND COALESCE(p.ambiente, 'PROD') = 'PROD'
+                  {where_proj_alias}
+                GROUP BY e.execution_id, e.project, e.pipeline
             ),
             ranked AS (
                 SELECT *, ROW_NUMBER() OVER (PARTITION BY pipeline ORDER BY inicio DESC) AS rn FROM execs
             )
-            SELECT TOP 20
+            SELECT TOP 5
                 r.pipeline, r.project, r.ultimo_status, r.inicio, r.duracao_segundos,
-                r.total_jobs, r.execution_id, COALESCE(p.criticidade,'') AS criticidade
+                r.total_jobs, r.execution_id, COALESCE(p.criticidade,'') AS criticidade,
+                COALESCE(fila.fila_total, 0) AS fila_segundos
             FROM ranked r
             LEFT JOIN dbo.etl_pipeline p ON p.pipeline_name = r.pipeline
+            LEFT JOIN (
+                SELECT execution_id, SUM(CAST(queued_seconds AS bigint)) AS fila_total
+                FROM dbo.etl_ds_job_log
+                WHERE queued_seconds IS NOT NULL AND queued_seconds > 0
+                GROUP BY execution_id
+            ) fila ON fila.execution_id = r.execution_id
             WHERE rn=1 AND COALESCE(p.ambiente,'PROD')='PROD'
             ORDER BY
                 CASE COALESCE(p.criticidade,'') WHEN 'ALTA' THEN 1 WHEN 'MEDIA' THEN 2 WHEN 'BAIXA' THEN 3 ELSE 4 END,
                 CASE r.ultimo_status WHEN 'FAILED' THEN 1 WHEN 'WARNING' THEN 2 WHEN 'RUNNING' THEN 3 ELSE 4 END,
                 r.inicio DESC
-        """, [fp] if fp else [])
+        """, [dt_ini, dt_fim] + ([fp] if fp else []))
         pipeline_status = [
             {
                 "pipeline": r[0], "project": r[1], "ultimo_status": r[2],
                 "ultimo_inicio": _fmt_dt(r[3]), "duracao_segundos": int(r[4] or 0),
                 "total_jobs": int(r[5] or 0), "execution_id": r[6], "criticidade": r[7] or "",
+                "fila_segundos": int(r[8] or 0),
             }
             for r in cur.fetchall()
         ]
 
         cur.execute(f"""
             SELECT TOP 5
-                e.pipeline, e.project, e.job_name, e.status, e.start_time, e.execution_id, e.log_file
+                e.pipeline, e.project, e.job_name, e.status, e.start_time, e.execution_id, e.log_file,
+                CASE
+                    WHEN ack.resolved_at IS NOT NULL THEN 'Resolvido'
+                    WHEN ack.id IS NOT NULL          THEN 'Em análise'
+                    ELSE                                  'Aguardando'
+                END AS situacao
             FROM dbo.etl_job_execution e
             JOIN dbo.etl_pipeline p ON p.pipeline_name = e.pipeline
-            WHERE e.status='FAILED' AND COALESCE(p.ambiente,'PROD')='PROD' {where_proj_alias}
+            LEFT JOIN dbo.etl_failure_ack ack ON ack.execution_id = e.execution_id
+            WHERE e.status='FAILED'
+              AND e.start_time >= ? AND e.start_time < ?
+              AND COALESCE(p.ambiente,'PROD')='PROD' {where_proj_alias}
             ORDER BY e.start_time DESC
-        """, [fp] if fp else [])
+        """, [dt_ini, dt_fim] + ([fp] if fp else []))
         ultimas_falhas = [
             {"pipeline": r[0], "project": r[1], "job_name": r[2], "status": r[3],
-             "inicio": _fmt_dt(r[4]), "execution_id": r[5], "log_file": r[6]}
+             "inicio": _fmt_dt(r[4]), "execution_id": r[5], "log_file": r[6], "situacao": r[7]}
             for r in cur.fetchall()
         ]
 

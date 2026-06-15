@@ -374,8 +374,14 @@ export default function Dashboard() {
   })
 
   const handleFalhaDrillDown = useCallback(() => {
-    navigate('/logs?status=FAILED&date=' + date)
-  }, [navigate, date])
+    // Navega para Logs filtrando pelos mesmos execution_ids das 5 falhas exibidas
+    if (data?.ultimas_falhas?.length) {
+      const ids = data.ultimas_falhas.map(f => f.execution_id).filter(Boolean).join(',')
+      navigate(`/logs?execution_ids=${ids}&status=FAILED`)
+    } else {
+      navigate('/logs?status=FAILED&date=' + date)
+    }
+  }, [navigate, data, date])
 
   const kpis = data?.kpis
   const lastUpdate = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : null
