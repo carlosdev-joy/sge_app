@@ -107,6 +107,53 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
         log.warning("[ACK] Falha ao enviar Teams: %s", e)
 
 
+def _merge_fila_por_execucao(cur, conn, data: list[dict]) -> None:
+    """Soma queued_seconds de etl_ds_job_log por execution_id e injeta em
+    data[i]['fila_total_segundos']. Degrada silenciosamente se a tabela/coluna
+    não existir."""
+    exec_ids = list({d["execution_id"] for d in data if d.get("execution_id")})
+    if not exec_ids:
+        return
+    placeholders = ",".join("?" * len(exec_ids))
+    try:
+        cur.execute(f"""
+            SELECT execution_id, SUM(CAST(queued_seconds AS bigint))
+            FROM dbo.etl_ds_job_log
+            WHERE queued_seconds IS NOT NULL AND queued_seconds > 0
+              AND execution_id IN ({placeholders})
+            GROUP BY execution_id
+        """, exec_ids)
+        fila = {row[0]: int(row[1] or 0) for row in cur.fetchall()}
+        for d in data:
+            d["fila_total_segundos"] = fila.get(d["execution_id"], 0)
+    except Exception:
+        try: conn.rollback()
+        except Exception: pass
+
+
+def _merge_fila_por_job(cur, conn, data: list[dict]) -> None:
+    """Soma queued_seconds por (execution_id, job_name) e injeta em
+    data[i]['fila_segundos']. Degrada silenciosamente."""
+    exec_ids = list({d["execution_id"] for d in data if d.get("execution_id")})
+    if not exec_ids:
+        return
+    placeholders = ",".join("?" * len(exec_ids))
+    try:
+        cur.execute(f"""
+            SELECT execution_id, job_name, SUM(CAST(queued_seconds AS bigint))
+            FROM dbo.etl_ds_job_log
+            WHERE queued_seconds IS NOT NULL AND queued_seconds > 0
+              AND execution_id IN ({placeholders})
+            GROUP BY execution_id, job_name
+        """, exec_ids)
+        fila = {(row[0], row[1]): int(row[2] or 0) for row in cur.fetchall()}
+        for d in data:
+            d["fila_segundos"] = fila.get((d["execution_id"], d["job_name"]), 0)
+    except Exception:
+        try: conn.rollback()
+        except Exception: pass
+
+
 @router.get("/execucoes", tags=["execucoes"])
 def list_execucoes(
     offset: int = 0,
@@ -197,9 +244,13 @@ def list_execucoes(
                     "inicio": _fmt_dt(r[5]), "fim": _fmt_dt(r[6]),
                     "duration_seconds": int(r[7] or 0) if r[7] is not None else None,
                     "status_code": r[8], "log_file": r[9], "task_id": r[10],
+                    "fila_segundos": None,
                 }
                 for r in cur.fetchall()
             ]
+            # Tempo de fila por job (etl_ds_job_log) — graceful se tabela não existir
+            if data:
+                _merge_fila_por_job(cur, conn, data)
             cur.close(); conn.close()
             pages = 0 if total == 0 else -(-total // limit)
             return {
@@ -297,9 +348,13 @@ def list_execucoes(
                 "resolved_at": _fmt_dt(r[16]) if has_resolved else None,
                 "resolution_note": r[17] if has_resolved else None,
                 "snow_ticket": r[18] if has_resolved else None,
+                "fila_total_segundos": None,
             }
             for r in cur.fetchall()
         ]
+        # Tempo total de fila por execução (etl_ds_job_log) — graceful
+        if data:
+            _merge_fila_por_execucao(cur, conn, data)
         cur.close(); conn.close()
         pages = 0 if total == 0 else -(-total // limit)
         return {

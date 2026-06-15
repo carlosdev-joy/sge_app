@@ -9,6 +9,10 @@ import {
   RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock,
   Activity, Layers, BarChart2, ChevronRight,
 } from 'lucide-react'
+import {
+  LogDetailModal, AirflowLogModal, DsLogModal,
+  type ExecRow, type AirflowLogState,
+} from '../components/execucao/ExecucaoDetailModal'
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -348,12 +352,33 @@ function RunningRow({ e, onOpen }: { e: Executando; onOpen: () => void }) {
 
 // ── Dashboard principal ────────────────────────────────────────────────────
 
+function pipelineStatusToExecRow(p: PipelineStatus): ExecRow {
+  return {
+    execution_id: p.execution_id,
+    project: p.project,
+    pipeline: p.pipeline,
+    inicio: p.ultimo_inicio ?? '',
+    fim: '',
+    duracao_total_segundos: p.duracao_segundos,
+    total_jobs: p.total_jobs,
+    jobs_ok: 0,
+    jobs_falha: p.ultimo_status === 'FAILED' ? 1 : 0,
+    jobs_warning: p.ultimo_status === 'WARNING' ? 1 : 0,
+    jobs_running: p.ultimo_status === 'RUNNING' ? 1 : 0,
+    status_geral: p.ultimo_status,
+    fila_total_segundos: p.fila_segundos ?? null,
+  }
+}
+
 export default function Dashboard() {
   const navigate = useNavigate()
   const [projeto,      setProjeto]      = useState('Todos')
   const [date,         setDate]         = useState(todayBRT())
   const [autoRefresh,  setAutoRefresh]  = useState(false)
   const [showGantt,    setShowGantt]    = useState(true)
+  const [detail,       setDetail]       = useState<ExecRow | null>(null)
+  const [airflowLog,   setAirflowLog]   = useState<AirflowLogState | null>(null)
+  const [dsLog,        setDsLog]        = useState<{ executionId: string; jobName: string } | null>(null)
 
   const qs = useMemo(() => {
     const p = new URLSearchParams({ date_ref: date })
@@ -374,14 +399,9 @@ export default function Dashboard() {
   })
 
   const handleFalhaDrillDown = useCallback(() => {
-    // Navega para Logs filtrando pelos mesmos execution_ids das 5 falhas exibidas
-    if (data?.ultimas_falhas?.length) {
-      const ids = data.ultimas_falhas.map(f => f.execution_id).filter(Boolean).join(',')
-      navigate(`/logs?execution_ids=${ids}&status=FAILED`)
-    } else {
-      navigate('/logs?status=FAILED&date=' + date)
-    }
-  }, [navigate, data, date])
+    // "Ver todos": Logs filtrado por FALHA na data selecionada
+    navigate(`/logs?status=FAILED&date=${date}`)
+  }, [navigate, date])
 
   const kpis = data?.kpis
   const lastUpdate = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : null
@@ -622,7 +642,7 @@ export default function Dashboard() {
                     {data.pipeline_status.slice(0, 5).map(p => (
                       <tr key={p.pipeline}
                         className="border-b border-edge/40 last:border-0 hover:bg-edge/20 transition-colors cursor-pointer"
-                        onClick={() => navigate(`/logs?execution_id=${p.execution_id}`)}>
+                        onClick={() => setDetail(pipelineStatusToExecRow(p))}>
                         <td className="px-4 py-2 font-mono text-[11px] text-ink font-medium max-w-[200px] truncate" title={p.pipeline}>{p.pipeline}</td>
                         <td className="px-4 py-2 text-xs text-dim">{p.project}</td>
                         <td className="px-4 py-2"><CritBadge crit={p.criticidade} /></td>
@@ -651,6 +671,18 @@ export default function Dashboard() {
           )}
         </>
       )}
+
+      {/* Modais de detalhe de execução (reuso da tela de Logs) */}
+      {detail && (
+        <LogDetailModal
+          row={detail}
+          onClose={() => setDetail(null)}
+          onAirflowLog={s => { setDetail(null); setAirflowLog(s) }}
+          onDsLog={(eid, jn) => { setDetail(null); setDsLog({ executionId: eid, jobName: jn }) }}
+        />
+      )}
+      {airflowLog && <AirflowLogModal state={airflowLog} onClose={() => setAirflowLog(null)} />}
+      {dsLog && <DsLogModal executionId={dsLog.executionId} jobName={dsLog.jobName} onClose={() => setDsLog(null)} />}
     </div>
   )
 }

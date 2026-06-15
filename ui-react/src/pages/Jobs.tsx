@@ -8,6 +8,7 @@ import { Autocomplete } from '../components/ui/Autocomplete'
 import { Modal } from '../components/ui/Modal'
 import { PageSpinner } from '../components/ui/Spinner'
 import { toast } from '../components/ui/Toast'
+import { copyToClipboard } from '../lib/clipboard'
 import {
   Edit, Plus, ClipboardList, Play, Save, X, Trash2,
   ChevronUp, ChevronDown, Copy, Network, ArrowUpDown,
@@ -44,7 +45,7 @@ function pipelineToDagId(name: string) {
 }
 
 function copyText(t: string) {
-  navigator.clipboard.writeText(t).then(() => toast.info('Copiado!')).catch(() => toast.error('Erro ao copiar'))
+  copyToClipboard(t).then(ok => ok ? toast.info('Copiado!') : toast.error('Erro ao copiar'))
 }
 
 function typeBadgeColor(t: JobType | string) {
