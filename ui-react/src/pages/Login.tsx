@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/auth'
 import { apiFetch } from '../lib/api'
+import { Logo } from '../components/layout/Logo'
 
 const LOGO = 'https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/mundolc/Vertical_Branco.png'
 
@@ -59,7 +60,7 @@ export default function Login() {
               className="h-14 w-auto mb-8"
               onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
             />
-            <h1 className="text-[22px] font-medium leading-tight mb-1">ORQUESTRA</h1>
+            <Logo variant="white" iconSize={44} className="mb-2" />
             <p className="text-white/55 text-sm mb-6">
               ORQ · Organizador de Rotinas, Queues e Execução
             </p>
@@ -85,7 +86,7 @@ export default function Login() {
         <div className="flex-1 bg-white dark:bg-neutral-900 p-8 md:p-10 flex flex-col justify-center">
 
           {/* Logo só em mobile */}
-          <div className="flex md:hidden justify-center mb-6">
+          <div className="flex md:hidden flex-col items-center gap-3 mb-6">
             <img
               src={LOGO}
               alt="Caixa Vida e Previdência"
@@ -93,6 +94,7 @@ export default function Login() {
               style={{ filter: 'invert(35%) sepia(80%) saturate(600%) hue-rotate(190deg)' }}
               onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
             />
+            <Logo variant="brand" iconSize={32} />
           </div>
 
           <div className="mb-7">

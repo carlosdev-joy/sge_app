@@ -8,6 +8,7 @@ import { useAppVersion } from '../../lib/version'
 import { useQuery } from '@tanstack/react-query'
 import { LogOut, Sun, Moon, Shield, Mail, Hash, Building2, ChevronDown, X, Tag } from 'lucide-react'
 import { CommandPalette } from '../ui/CommandPalette'
+import { Logo } from './Logo'
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -274,19 +275,15 @@ export function Header() {
       <div className="flex items-center gap-3 px-4 h-[52px]">
 
         {/* Logo + brand + versão */}
-        <a href="/" className="shrink-0 flex items-center gap-2.5" title="Voltar ao sistema">
+        <a href="/" className="shrink-0 flex items-center gap-3" title="Voltar ao sistema">
           <img
             src="https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/mundolc/Vertical_Branco.png"
             className="h-9 w-auto"
             alt="Caixa Vida e Previdência"
           />
-          <span className="flex flex-col leading-tight">
-            <span className="flex items-baseline gap-1.5">
-              <span className="text-xs font-semibold tracking-widest uppercase opacity-95">ORQUESTRA</span>
-              <span className="text-[9px] opacity-40 font-mono">v{appVersion}</span>
-            </span>
-            <span className="text-[10px] opacity-60 tracking-wide">Gestão de Pipelines</span>
-          </span>
+          <Logo variant="white" iconSize={28}>
+            <span className="text-[9px] text-white/40 font-mono">v{appVersion}</span>
+          </Logo>
         </a>
 
         {/* Nav */}
