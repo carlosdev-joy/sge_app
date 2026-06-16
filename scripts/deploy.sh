@@ -30,15 +30,16 @@ echo "[DEPLOY] ✓ ui-react/dist sincronizado"
 rsync -av "$TMP_DIR/config/" "$AIRFLOW_DIR/config/"
 echo "[DEPLOY] ✓ config/ sincronizado"
 
-# ── 3. DAGs ───────────────────────────────────────────────────
+# ── 4. DAGs ───────────────────────────────────────────────────
 rsync -av "$TMP_DIR/dags/" "$AIRFLOW_DIR/dags/"
 chown -R airflow:airflow "$AIRFLOW_DIR/dags/"
 chmod -R 777 "$AIRFLOW_DIR/dags/"
+echo "[DEPLOY] ✓ dags/ sincronizado"
 
-# ── 4. Docker Compose ─────────────────────────────────────────
+# ── 5. Docker Compose ─────────────────────────────────────────
 cp "$TMP_DIR/docker-compose.yaml" "$AIRFLOW_DIR/docker-compose.yaml"
 
-# ── 5. API — rebuild se houve mudança ─────────────────────────
+# ── 6. API — rebuild com wheels locais (sem internet) ─────────
 rsync -av "$TMP_DIR/api/" "$AIRFLOW_DIR/api/"
 
 cd "$AIRFLOW_DIR"
@@ -47,13 +48,13 @@ docker compose build orquestra-api
 docker compose up -d --no-deps orquestra-api
 echo "[DEPLOY] ✓ orquestra-api atualizado"
 
-# ── 6. Nginx — recria para aplicar a definição de volumes do compose ─
+# ── 7. Nginx — recria para aplicar a definição de volumes do compose ─
 # IMPORTANTE: 'docker restart' NÃO aplica novos volumes/portas do compose.
 # --force-recreate garante isso mesmo sem mudança de imagem.
 docker compose up -d --no-deps --force-recreate ui-nginx
 echo "[DEPLOY] ✓ ui-nginx recriado (volumes do compose aplicados)"
 
-# ── 7. Limpeza ────────────────────────────────────────────────
+# ── 8. Limpeza ────────────────────────────────────────────────
 rm -rf "$TMP_DIR"
 
 echo ""
