@@ -50,7 +50,8 @@ rsync -av "$TMP_DIR/config/" "$AIRFLOW_DIR/config/"
 echo "[DEPLOY] ✓ config/ sincronizado"
 
 # ── 5. DAGs ───────────────────────────────────────────────────
-rsync -av "$TMP_DIR/dags/" "$AIRFLOW_DIR/dags/"
+# generated/ é criado em runtime pelo Airflow — nunca sobrescrever
+rsync -av --exclude=generated/ "$TMP_DIR/dags/" "$AIRFLOW_DIR/dags/"
 chown -R airflow:airflow "$AIRFLOW_DIR/dags/"
 chmod -R 777 "$AIRFLOW_DIR/dags/"
 echo "[DEPLOY] ✓ dags/ sincronizado"
