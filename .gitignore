@@ -48,3 +48,10 @@ certs/*.key
 certs/*.pem
 certs/*.p12
 !certs/.gitkeep
+
+## Dados de produção — nunca commitar
+dump_prod*.sql
+prod_info*
+producao_base.*
+schema_prod.sql
+*.rpt

@@ -21,17 +21,14 @@ git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$TMP_DIR"
 COMMIT=$(git -C "$TMP_DIR" log -1 --format="%h %s (%ai)")
 echo "[DEPLOY] Commit: $COMMIT"
 
-# ── 2. UI legada (raiz) + UI React (sub-path /v2) ────────────
-# Sincroniza TODA a UI legada (index.html, js/, css/, nginx.conf). Antes só o
-# nginx.conf era copiado — mudanças em ui/index.html / ui/js não chegavam a prod.
-mkdir -p "$AIRFLOW_DIR/ui"
-rsync -av --delete "$TMP_DIR/ui/" "$AIRFLOW_DIR/ui/"
-echo "[DEPLOY] ✓ ui/ (legado) sincronizado"
-
-# Sincroniza o dist/ do React (build commitado no git) — servido em /v2
+# ── 2. UI React (única interface — servida na raiz /) ─────────
 mkdir -p "$AIRFLOW_DIR/ui-react/dist"
 rsync -av --delete "$TMP_DIR/ui-react/dist/" "$AIRFLOW_DIR/ui-react/dist/"
 echo "[DEPLOY] ✓ ui-react/dist sincronizado"
+
+# ── 3. Config (nginx.conf, webserver_config) ──────────────────
+rsync -av "$TMP_DIR/config/" "$AIRFLOW_DIR/config/"
+echo "[DEPLOY] ✓ config/ sincronizado"
 
 # ── 3. DAGs ───────────────────────────────────────────────────
 rsync -av "$TMP_DIR/dags/" "$AIRFLOW_DIR/dags/"
@@ -52,8 +49,7 @@ echo "[DEPLOY] ✓ orquestra-api atualizado"
 
 # ── 6. Nginx — recria para aplicar a definição de volumes do compose ─
 # IMPORTANTE: 'docker restart' NÃO aplica novos volumes/portas do compose.
-# Como o ui-nginx passou a montar ui/ na raiz + ui-react/dist em /v2, é preciso
-# recriar o container. --force-recreate garante isso mesmo sem mudança de imagem.
+# --force-recreate garante isso mesmo sem mudança de imagem.
 docker compose up -d --no-deps --force-recreate ui-nginx
 echo "[DEPLOY] ✓ ui-nginx recriado (volumes do compose aplicados)"
 
