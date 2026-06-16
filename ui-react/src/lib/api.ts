@@ -1,10 +1,7 @@
-import { readLegacyToken } from '../store/auth'
-
 const BASE = '/orquestra'
 
-// Token do React (login próprio) com fallback para a sessão legada (orq_session).
 function currentToken(): string | null {
-  return localStorage.getItem('orquestra_token') || readLegacyToken()
+  return localStorage.getItem('orquestra_token')
 }
 
 export async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
@@ -19,8 +16,7 @@ export async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> 
   })
   if (res.status === 401) {
     localStorage.removeItem('orquestra_token')
-    // Login centralizado na UI legada (raiz). Volta para lá em vez do /login React.
-    window.location.href = '/'
+    window.location.href = '/login'
     throw new Error('Unauthorized')
   }
   if (!res.ok) {

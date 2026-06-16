@@ -256,7 +256,7 @@ export function Header() {
   const handleLogout = async () => {
     try { await apiFetch('/auth/logout', { method: 'POST' }) } catch {}
     logout()
-    window.location.href = '/'
+    window.location.href = '/login'
   }
 
   const tabClass = (active: boolean) =>
