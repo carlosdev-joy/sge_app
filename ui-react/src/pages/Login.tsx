@@ -50,7 +50,7 @@ export default function Login() {
         {/* ── Painel esquerdo — marca ──────────────────────────────── */}
         <div
           className="hidden md:flex flex-col justify-between p-10 w-[400px] shrink-0 text-white"
-          style={{ background: 'rgba(0,0,0,0.18)' }}
+          style={{ background: 'linear-gradient(135deg, #1A5FA8 0%, #0F4C88 55%, #0D3D6B 100%)' }}
         >
           <div>
             <img
