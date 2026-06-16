@@ -44,10 +44,7 @@ export default function Login() {
   }
 
   return (
-    <div
-      className="min-h-screen flex items-center justify-center p-4"
-      style={{ background: 'linear-gradient(135deg, #1A5FA8 0%, #0F4C88 55%, #0D3D6B 100%)' }}
-    >
+    <div className="min-h-screen flex items-center justify-center p-4 bg-white dark:bg-neutral-950">
       <div className="w-full max-w-3xl rounded-2xl overflow-hidden shadow-2xl flex">
 
         {/* ── Painel esquerdo — marca ──────────────────────────────── */}
