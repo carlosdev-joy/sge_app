@@ -1264,7 +1264,10 @@ function SlaReportTab() {
 interface PbiLayer {
   num: string
   titulo: string
-  desbloqueia: string
+  paraQueServe: React.ReactNode
+  somenteLeitura: React.ReactNode
+  escrita?: React.ReactNode
+  recomendacao: React.ReactNode
   endpoints: string
   exigePremium: boolean
 }
@@ -1273,35 +1276,106 @@ const PBI_LAYERS: PbiLayer[] = [
   {
     num: '1',
     titulo: 'Admin API',
-    desbloqueia: 'Inventário tenant-wide (sem precisar ser membro do workspace), lista de usuários/apps/dataflows, quem é dono de quê.',
+    paraQueServe: (
+      <>
+        Ver <strong>todo o tenant</strong> (~100+ workspaces) sem depender de alguém convidar
+        manualmente o service principal em cada um. Hoje, se um workspace novo é criado e ninguém
+        adiciona o SP como membro, o ORQUESTRA simplesmente não o vê. Com a Admin API, o inventário
+        passa a ser automático: descobre workspaces/datasets/reports/dataflows/apps novos, identifica
+        quem é o dono de cada um e ajuda a achar "órfãos" (sem responsável claro).
+      </>
+    ),
+    somenteLeitura: (
+      <>
+        Listar tudo (workspaces, datasets, reports, dataflows, apps, capacities), ver detalhes de cada
+        item e quem tem acesso a cada dataset/report. <strong>Não</strong> permite mover workspace de
+        capacidade, restaurar workspace excluído nem alterar nada.
+      </>
+    ),
+    escrita: (
+      <>
+        Com <code>Tenant.ReadWrite.All</code> no Azure AD (em vez de <code>Tenant.Read.All</code>),
+        endpoints de escrita da Admin API passam a responder: mover workspaces entre capacidades,
+        restaurar workspace excluído, rotacionar chave de encriptação. Nenhum desses é necessário para
+        o que o ORQUESTRA faz (sustentação/observabilidade).
+      </>
+    ),
+    recomendacao: 'Pedir só leitura (Tenant.Read.All + "read-only admin APIs"). Não há necessidade de escrita.',
     endpoints: 'admin/groups, admin/datasets, admin/reports, admin/dataflows, admin/apps, admin/capacities, admin/datasets/{id}/users, admin/reports/{id}/users',
     exigePremium: false,
   },
   {
     num: '2',
     titulo: 'Activity Events API',
-    desbloqueia: 'Auditoria de uso real: quem abriu/exportou/compartilhou cada relatório, quando, de onde.',
+    paraQueServe: (
+      <>
+        Auditoria de uso real: saber quem abriu, exportou ou compartilhou cada relatório, quando e a
+        partir de onde. Serve para detectar uso indevido, levantar relatórios "zumbis" (sem acesso há
+        meses — candidatos a descontinuar) e responder rapidamente "quem acessou esse dado sensível".
+      </>
+    ),
+    somenteLeitura: 'É a única forma de uso que existe — um log de auditoria não tem operação de escrita.',
+    recomendacao: 'Sempre leitura. Não há decisão a tomar aqui além de habilitar.',
     endpoints: "admin/activityevents?startDateTime=...&endDateTime=...",
     exigePremium: false,
   },
   {
     num: '3',
     titulo: 'Scanner API',
-    desbloqueia: 'Metadados profundos: schema das tabelas, medidas DAX, fórmulas M (Power Query), lineage completo, datasource details.',
+    paraQueServe: (
+      <>
+        Documentar automaticamente a <strong>lógica de negócio</strong> dentro dos modelos: toda
+        fórmula DAX (medidas) e toda transformação M (Power Query) de cada dataset, sem precisar abrir
+        o .pbix manualmente. Permite montar um catálogo de "de onde vem cada métrica" e mapear
+        dependências entre datasets (lineage) — essencial para análise de impacto de mudança.
+      </>
+    ),
+    somenteLeitura: 'A Scanner API só lê metadados — não existe modo de escrita; nunca altera o modelo.',
+    recomendacao: 'Sempre leitura. Não há decisão de escopo a tomar — só depende da capacidade Premium/Fabric existir.',
     endpoints: 'admin/workspaces/getInfo?datasetSchema=true&datasetExpressions=true&lineage=true&datasourceDetails=true (fluxo assíncrono: getInfo → scanStatus/{id} → scanResult/{id})',
     exigePremium: true,
   },
   {
     num: '4',
     titulo: 'XMLA Endpoint',
-    desbloqueia: 'Modelo tabular completo ao vivo (todas as medidas/relacionamentos/partições). Não é REST — protocolo TOM via Tabular Editor/DAX Studio/SSMS. Permite até editar, se Read/Write.',
+    paraQueServe: (
+      <>
+        Conectar ferramentas especializadas (Tabular Editor, DAX Studio, SSMS) direto no modelo do
+        Power BI, como se fosse um banco de dados Analysis Services — visão completa de tabelas,
+        relacionamentos, medidas, partições e diagnóstico de performance, em tempo real. Não é REST, é
+        o protocolo TOM (Tabular Object Model).
+      </>
+    ),
+    somenteLeitura: (
+      <>
+        Modo <strong>"Read Only"</strong>: consultar dados via DAX, ver metadados completos do modelo,
+        diagnosticar performance de medidas (ex.: DAX Studio). Não permite alterar nada no modelo.
+      </>
+    ),
+    escrita: (
+      <>
+        Modo <strong>"Read/Write"</strong>: tudo do Read Only, mais publicar alterações no modelo
+        remotamente (ex.: editar uma medida no Tabular Editor e publicar sem passar pelo Power BI
+        Desktop), gerenciar partições e fazer refresh incremental via XMLA.
+      </>
+    ),
+    recomendacao: 'Pedir "Read Only". O ORQUESTRA é ferramenta de sustentação/observação, não de edição remota de modelos.',
     endpoints: 'powerbi://api.powerbi.com/v1.0/myorg/{workspace}',
     exigePremium: true,
   },
   {
     num: '5',
     titulo: 'Execute Queries REST',
-    desbloqueia: 'Rodar uma consulta DAX ad-hoc via REST e ver o resultado (não a fórmula, mas útil para validar lógica). Opcional/complementar.',
+    paraQueServe: (
+      <>
+        Rodar uma consulta DAX pontual via API para validar se uma medida está calculando certo, sem
+        abrir o relatório no navegador. Também permite testar Row-Level Security simulando um usuário
+        específico (parâmetro <code>impersonatedUserName</code>) — útil para confirmar que a segurança
+        de linha está funcionando como esperado antes de liberar o relatório.
+      </>
+    ),
+    somenteLeitura: 'Por natureza só avalia/lê expressões DAX — nunca grava dados de volta no dataset. Não existe modo de escrita aqui.',
+    recomendacao: 'Seguro habilitar — não há risco de escrita envolvido.',
     endpoints: 'groups/{id}/datasets/{id}/executeQueries',
     exigePremium: true,
   },
@@ -1458,32 +1532,46 @@ function PowerBIAccessGuideTab() {
         </p>
       </div>
 
-      <div className="bg-panel border border-edge rounded-lg overflow-hidden shadow-sm">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-xs text-dim border-b border-edge bg-canvas/50">
-              <th className="px-3 py-2.5 text-left font-semibold w-10">#</th>
-              <th className="px-3 py-2.5 text-left font-semibold w-40">Camada</th>
-              <th className="px-3 py-2.5 text-left font-semibold">O que desbloqueia</th>
-              <th className="px-3 py-2.5 text-left font-semibold w-24">Premium?</th>
-            </tr>
-          </thead>
-          <tbody>
-            {PBI_LAYERS.map((l) => (
-              <tr key={l.num} className="border-b border-edge/50 align-top">
-                <td className="px-3 py-2.5 text-dim">{l.num}</td>
-                <td className="px-3 py-2.5 font-semibold text-ink">{l.titulo}</td>
-                <td className="px-3 py-2.5 text-ink">
-                  <p>{l.desbloqueia}</p>
-                  <p className="text-xs text-dim font-mono mt-1">{l.endpoints}</p>
-                </td>
-                <td className="px-3 py-2.5">
-                  {l.exigePremium ? <Badge value="warning">Sim</Badge> : <Badge value="success">Não</Badge>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="flex flex-col gap-4">
+        {PBI_LAYERS.map((l) => (
+          <div key={l.num} className="bg-panel border border-edge rounded-lg p-4 shadow-sm">
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-sm font-bold text-ink">
+                <span className="text-dim mr-1.5">#{l.num}</span>{l.titulo}
+              </h4>
+              {l.exigePremium ? <Badge value="warning">Requer Premium/PPU/Fabric</Badge> : <Badge value="success">Sem custo de licença</Badge>}
+            </div>
+
+            <div className="mb-3">
+              <p className="text-xs font-semibold text-dim uppercase tracking-wide mb-1">Para que serve</p>
+              <p className="text-sm text-ink leading-relaxed">{l.paraQueServe}</p>
+            </div>
+
+            <div className={`grid gap-3 mb-3 ${l.escrita ? 'sm:grid-cols-2' : ''}`}>
+              <div className="bg-canvas/50 border border-edge rounded-md p-3">
+                <p className="text-xs font-semibold text-dim uppercase tracking-wide mb-1">
+                  <Badge value="success">Somente leitura</Badge> — o que conseguimos fazer
+                </p>
+                <p className="text-sm text-ink leading-relaxed mt-1.5">{l.somenteLeitura}</p>
+              </div>
+              {l.escrita && (
+                <div className="bg-canvas/50 border border-edge rounded-md p-3">
+                  <p className="text-xs font-semibold text-dim uppercase tracking-wide mb-1">
+                    <Badge value="warning">Leitura/Escrita</Badge> — o que mais poderá ser feito
+                  </p>
+                  <p className="text-sm text-ink leading-relaxed mt-1.5">{l.escrita}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="mb-2">
+              <p className="text-xs font-semibold text-dim uppercase tracking-wide mb-1">Recomendação para o chamado</p>
+              <p className="text-sm text-ink leading-relaxed">{l.recomendacao}</p>
+            </div>
+
+            <p className="text-xs text-dim font-mono mt-2 break-all">{l.endpoints}</p>
+          </div>
+        ))}
       </div>
 
       <div>
