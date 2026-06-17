@@ -1,7 +1,9 @@
 """api/routers/pipelines.py — GET /pipelines, POST /pipelines/register, GET /malha."""
 from __future__ import annotations
 
+import json
 import logging
+import re
 from datetime import timezone, timedelta
 from typing import Optional
 
@@ -50,6 +52,61 @@ def _build_cron(schedule_type, hour, minute, dow, dom):
         d = int(dom or 1)
         return f"{m} {h} {d},{d + 15} * *"
     return f"{m} {h} * * *"
+
+
+_TIME_RE = re.compile(r"^(\d{1,2}):(\d{1,2})$")
+
+
+def _validate_dias_horarios_mes(raw):
+    """Valida e normaliza o JSON de dias_horarios_mes (schedule_type 'monthly_days_times').
+
+    Formato esperado: [{"dia": 1, "horarios": ["09:00"]}, ...] — 1 a 5 dias
+    (1-28, sem repetir), cada um com 1 a 5 horários HH:MM (sem repetir no
+    mesmo dia). Retorna a string JSON normalizada (dias e horários
+    ordenados) ou None se raw for vazio.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        raise HTTPException(status_code=422, detail="dias_horarios_mes deve ser um JSON válido")
+    if not isinstance(data, list) or not (1 <= len(data) <= 5):
+        raise HTTPException(status_code=422, detail="dias_horarios_mes deve ter entre 1 e 5 dias")
+    seen_days: set[int] = set()
+    normalized = []
+    for entry in data:
+        if not isinstance(entry, dict) or "dia" not in entry or "horarios" not in entry:
+            raise HTTPException(status_code=422, detail="Cada entrada de dias_horarios_mes precisa de 'dia' e 'horarios'")
+        dia = entry["dia"]
+        if not isinstance(dia, int) or isinstance(dia, bool) or not (1 <= dia <= 28):
+            raise HTTPException(status_code=422, detail=f"Dia do mês inválido: {dia!r} (use 1-28)")
+        if dia in seen_days:
+            raise HTTPException(status_code=422, detail=f"Dia {dia} duplicado em dias_horarios_mes")
+        seen_days.add(dia)
+        horarios = entry["horarios"]
+        if not isinstance(horarios, list) or not (1 <= len(horarios) <= 5):
+            raise HTTPException(status_code=422, detail=f"Dia {dia} deve ter entre 1 e 5 horários")
+        seen_times: set[str] = set()
+        norm_times = []
+        for t in horarios:
+            if not isinstance(t, str):
+                raise HTTPException(status_code=422, detail=f"Horário inválido no dia {dia}: {t!r}")
+            m = _TIME_RE.match(t.strip())
+            if not m:
+                raise HTTPException(status_code=422, detail=f"Horário inválido no dia {dia}: '{t}' (use HH:MM)")
+            hh, mm = int(m.group(1)), int(m.group(2))
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                raise HTTPException(status_code=422, detail=f"Horário fora do intervalo no dia {dia}: '{t}'")
+            norm = f"{hh:02d}:{mm:02d}"
+            if norm in seen_times:
+                raise HTTPException(status_code=422, detail=f"Horário duplicado no dia {dia}: '{norm}'")
+            seen_times.add(norm)
+            norm_times.append(norm)
+        normalized.append({"dia": dia, "horarios": sorted(norm_times)})
+    normalized.sort(key=lambda e: e["dia"])
+    return json.dumps(normalized)
 
 
 def _get_valid_projects(cur):
