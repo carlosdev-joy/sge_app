@@ -108,6 +108,63 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
         log.warning("[ACK] Falha ao enviar Teams: %s", e)
 
 
+def _teams_resolved_card(pipeline: str, exec_id: str, resolved_by: str, display_name: str,
+                          resolved_at: str, resolution_note: str | None, snow_ticket: str | None,
+                          webhook_var: str) -> None:
+    """Posta card no Teams informando que a falha foi resolvida.
+
+    Ordem de resolução do webhook:
+      1. dbo.etl_app_config chave 'teams_webhook_url_resolved' (canal dedicado a resoluções)
+      2. dbo.etl_app_config chave 'teams_webhook_url'          (canal padrão/geral)
+      3. variável de ambiente TEAMS_WEBHOOK_URL_CVP
+    """
+    webhook_url = _get_app_config_value("teams_webhook_url_resolved") \
+        or _get_app_config_value("teams_webhook_url") \
+        or os.getenv(webhook_var, "")
+    if not webhook_url:
+        log.warning("[RESOLVE] webhook do Teams não configurado — cadastre o parâmetro "
+                    "'teams_webhook_url_resolved' em Admin > Configurações. Notificação ignorada.")
+        return
+
+    identity = f"{display_name} ({resolved_by})" if display_name and display_name != resolved_by else resolved_by
+    facts = [
+        {"title": "Pipeline",      "value": pipeline},
+        {"title": "Resolvido por", "value": identity},
+        {"title": "Matrícula",     "value": resolved_by},
+        {"title": "Resolvido em",  "value": resolved_at or "agora"},
+        {"title": "Execution ID",  "value": exec_id},
+    ]
+    if resolution_note:
+        facts.append({"title": "Nota de resolução", "value": resolution_note})
+    if snow_ticket:
+        facts.append({"title": "Ticket ServiceNow", "value": snow_ticket})
+
+    payload = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard", "version": "1.4",
+                "body": [
+                    {"type": "TextBlock",
+                     "text": "✅ Falha resolvida",
+                     "size": "Large", "weight": "Bolder", "wrap": True, "color": "Good"},
+                    {"type": "TextBlock",
+                     "text": f"{identity} marcou a falha no pipeline {pipeline} como resolvida.",
+                     "wrap": True, "spacing": "None", "isSubtle": True},
+                    {"type": "FactSet", "spacing": "Medium", "facts": facts},
+                ],
+            },
+        }],
+    }
+    try:
+        resp = httpx.post(webhook_url, json=payload, timeout=10)
+        log.info("[RESOLVE] Teams status=%s body=%.120s", resp.status_code, resp.text)
+    except Exception as e:
+        log.warning("[RESOLVE] Falha ao enviar Teams: %s", e)
+
+
 def _merge_fila_por_execucao(cur, conn, data: list[dict]) -> None:
     """Soma queued_seconds de etl_ds_job_log por execution_id e injeta em
     data[i]['fila_total_segundos']. Degrada silenciosamente se a tabela/coluna
@@ -650,7 +707,7 @@ def get_falhas_summary(days: int = Query(7, ge=1, le=90)):
 
 @router.post("/execucoes/resolve", tags=["execucoes"])
 async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(require_perm(PERM_EXECUTAR))):
-    """Marca uma falha como resolvida (ou desfaz com remove=true).
+    """Marca uma falha como resolvida (ou desfaz com remove=true) e notifica o Teams.
 
     Body: execution_id, pipeline, resolution_note (opcional), snow_ticket (opcional), remove (bool)
     """
@@ -701,13 +758,33 @@ async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(re
         row = cur.fetchone()
         cur.close(); conn.close()
 
+        resolved_by_db           = row[0] if row else matricula
+        resolved_display_name_db = row[1] if row else display_name
+        resolved_at_db           = _fmt_dt(row[2]) if row else None
+        resolution_note_db       = row[3] if row else resolution_note
+        snow_ticket_db           = row[4] if row else snow_ticket
+
+        # Notificar Teams — _teams_resolved_card faz I/O de rede síncrono; roda
+        # em thread separada para não bloquear o event loop de outras requisições.
+        try:
+            await asyncio.to_thread(
+                _teams_resolved_card,
+                pipeline=pipeline, exec_id=exec_id,
+                resolved_by=resolved_by_db, display_name=resolved_display_name_db or resolved_by_db,
+                resolved_at=resolved_at_db, resolution_note=resolution_note_db,
+                snow_ticket=snow_ticket_db,
+                webhook_var="TEAMS_WEBHOOK_URL_CVP",
+            )
+        except Exception as e:
+            log.warning("[RESOLVE] Teams ignorado: %s", e)
+
         return {
             "ok": True, "action": "resolved",
-            "resolved_by":             row[0] if row else matricula,
-            "resolved_display_name":   row[1] if row else display_name,
-            "resolved_at":             _fmt_dt(row[2]) if row else None,
-            "resolution_note":         row[3] if row else resolution_note,
-            "snow_ticket":             row[4] if row else snow_ticket,
+            "resolved_by":           resolved_by_db,
+            "resolved_display_name": resolved_display_name_db,
+            "resolved_at":           resolved_at_db,
+            "resolution_note":       resolution_note_db,
+            "snow_ticket":           snow_ticket_db,
         }
     except HTTPException:
         raise
