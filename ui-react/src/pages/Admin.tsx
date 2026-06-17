@@ -1265,6 +1265,7 @@ interface PbiLayer {
   num: string
   titulo: string
   paraQueServe: React.ReactNode
+  dependencias: React.ReactNode
   somenteLeitura: React.ReactNode
   escrita?: React.ReactNode
   recomendacao: React.ReactNode
@@ -1283,6 +1284,14 @@ const PBI_LAYERS: PbiLayer[] = [
         adiciona o SP como membro, o ORQUESTRA simplesmente não o vê. Com a Admin API, o inventário
         passa a ser automático: descobre workspaces/datasets/reports/dataflows/apps novos, identifica
         quem é o dono de cada um e ajuda a achar "órfãos" (sem responsável claro).
+      </>
+    ),
+    dependencias: (
+      <>
+        <strong>Pré-requisito único, sem custo:</strong> Fase A do runbook abaixo — (1) consentimento de
+        admin no Azure AD para a permissão <code>Tenant.Read.All</code> e (2) o toggle "Allow service
+        principals to use Power BI APIs" no Admin Portal, com o grupo de segurança do service principal
+        adicionado. Não depende de capacidade Premium — funciona em qualquer licenciamento.
       </>
     ),
     somenteLeitura: (
@@ -1314,6 +1323,13 @@ const PBI_LAYERS: PbiLayer[] = [
         meses — candidatos a descontinuar) e responder rapidamente "quem acessou esse dado sensível".
       </>
     ),
+    dependencias: (
+      <>
+        <strong>Mesmo gate da camada 1 (Fase A)</strong> — usa a mesma permissão{' '}
+        <code>Tenant.Read.All</code> e o mesmo toggle de Admin API liberado para service principals.
+        Não exige nenhuma configuração adicional além da Fase A já feita.
+      </>
+    ),
     somenteLeitura: 'É a única forma de uso que existe — um log de auditoria não tem operação de escrita.',
     recomendacao: 'Sempre leitura. Não há decisão a tomar aqui além de habilitar.',
     endpoints: "admin/activityevents?startDateTime=...&endDateTime=...",
@@ -1330,8 +1346,17 @@ const PBI_LAYERS: PbiLayer[] = [
         dependências entre datasets (lineage) — essencial para análise de impacto de mudança.
       </>
     ),
+    dependencias: (
+      <>
+        <strong>Duas dependências, as duas obrigatórias:</strong> (1) a Fase A já feita — Scanner API é
+        um endpoint <code>admin/*</code>, então usa o <em>mesmo gate</em> da camada 1 (sem ele, dá 401
+        mesmo com Premium ativo); e (2) o workspace que será escaneado precisa estar atribuído a uma
+        capacidade <strong>Premium, PPU ou Fabric</strong> (Capacity Admin verifica/atribui em Workspace
+        → Settings → Premium). Ter só uma das duas não é suficiente — as duas precisam estar prontas.
+      </>
+    ),
     somenteLeitura: 'A Scanner API só lê metadados — não existe modo de escrita; nunca altera o modelo.',
-    recomendacao: 'Sempre leitura. Não há decisão de escopo a tomar — só depende da capacidade Premium/Fabric existir.',
+    recomendacao: 'Sempre leitura. A decisão real de "dá pra usar" depende de checar as duas dependências acima, não só da capacidade.',
     endpoints: 'admin/workspaces/getInfo?datasetSchema=true&datasetExpressions=true&lineage=true&datasourceDetails=true (fluxo assíncrono: getInfo → scanStatus/{id} → scanResult/{id})',
     exigePremium: true,
   },
@@ -1359,6 +1384,16 @@ const PBI_LAYERS: PbiLayer[] = [
         Desktop), gerenciar partições e fazer refresh incremental via XMLA.
       </>
     ),
+    dependencias: (
+      <>
+        <strong>Independente da Fase A</strong> — XMLA não usa endpoints <code>admin/*</code>, então não
+        precisa do gate de Admin API. Mas tem duas dependências próprias, as duas obrigatórias: (1)
+        capacidade <strong>Premium/PPU/Fabric</strong> com o setting "XMLA Endpoint" mudado de "Off" para
+        "Read Only" (ou "Read/Write") pelo Capacity Admin; e (2) o service principal precisa ser{' '}
+        <strong>Member, Contributor ou Admin</strong> de cada workspace que será acessado — Viewer não
+        basta para conectar via XMLA.
+      </>
+    ),
     recomendacao: 'Pedir "Read Only". O ORQUESTRA é ferramenta de sustentação/observação, não de edição remota de modelos.',
     endpoints: 'powerbi://api.powerbi.com/v1.0/myorg/{workspace}',
     exigePremium: true,
@@ -1372,6 +1407,15 @@ const PBI_LAYERS: PbiLayer[] = [
         abrir o relatório no navegador. Também permite testar Row-Level Security simulando um usuário
         específico (parâmetro <code>impersonatedUserName</code>) — útil para confirmar que a segurança
         de linha está funcionando como esperado antes de liberar o relatório.
+      </>
+    ),
+    dependencias: (
+      <>
+        <strong>Independente da Fase A.</strong> Duas dependências próprias, as duas obrigatórias: (1)
+        capacidade <strong>Premium/PPU/Fabric</strong> + tenant setting "Dataset Execute Queries REST
+        API" habilitado pelo Power Platform/Fabric Administrator; e (2) permissão de{' '}
+        <strong>Build</strong> do service principal no dataset específico (mesma exigência da camada 4,
+        mas no nível do dataset em vez do workspace).
       </>
     ),
     somenteLeitura: 'Por natureza só avalia/lê expressões DAX — nunca grava dados de volta no dataset. Não existe modo de escrita aqui.',
@@ -1545,6 +1589,16 @@ function PowerBIAccessGuideTab() {
             <div className="mb-3">
               <p className="text-xs font-semibold text-dim uppercase tracking-wide mb-1">Para que serve</p>
               <p className="text-sm text-ink leading-relaxed">{l.paraQueServe}</p>
+            </div>
+
+            <div className="mb-3 bg-amber-50 border border-amber-200 dark:bg-amber-900/20 dark:border-amber-800 rounded-md p-3 flex gap-2">
+              <AlertTriangle size={16} className="shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+              <div>
+                <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 uppercase tracking-wide mb-1">
+                  Dependências para funcionar
+                </p>
+                <p className="text-sm text-ink leading-relaxed">{l.dependencias}</p>
+              </div>
             </div>
 
             <div className={`grid gap-3 mb-3 ${l.escrita ? 'sm:grid-cols-2' : ''}`}>
