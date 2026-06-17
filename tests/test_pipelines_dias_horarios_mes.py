@@ -5,11 +5,27 @@ Função pura — não depende de banco de dados.
 from __future__ import annotations
 
 import json
+import os
+import sys
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException
 
-from api.routers.pipelines import _validate_dias_horarios_mes
+# api/main.py precisa ser importado antes de qualquer import direto de um
+# router individual (ex: routers.pipelines): devido ao "pythonpath=api" do
+# pytest.ini, importar um router isolado primeiro inicializa a árvore de
+# routers fora da ordem que api.main usa, corrompendo o app real para o
+# resto da sessão de testes (outros testes passam a receber 500). Replica
+# o mock de pyodbc do conftest.py para garantir que esse import funcione
+# mesmo se este arquivo for coletado antes do conftest configurar o ambiente.
+if "pyodbc" not in sys.modules:
+    sys.modules["pyodbc"] = MagicMock()
+os.environ.setdefault("MSSQL_CONN_STR", "__mock__")
+from api.main import app as _app  # noqa: F401
+
+from deps import get_current_user, PERM_EDITAR
+from routers.pipelines import _validate_dias_horarios_mes
 
 
 def test_none_returns_none():
@@ -108,9 +124,6 @@ def test_empty_array_raises_422():
     with pytest.raises(HTTPException) as exc:
         _validate_dias_horarios_mes("[]")
     assert exc.value.status_code == 422
-
-
-from deps import get_current_user, PERM_EDITAR
 
 
 @pytest.fixture
