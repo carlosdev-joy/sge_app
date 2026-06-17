@@ -80,3 +80,29 @@ def test_build_cron_custom_type_unaffected(factory):
     cron, horarios_list, dias_horarios = factory._build_cron(pipeline)
     assert dias_horarios is None
     assert horarios_list == ["09:00", "10:30"]
+
+
+def test_generate_dag_source_includes_dias_horarios_mes_constant(factory):
+    pipeline = _base_pipeline(dias_horarios_mes='[{"dia": 1, "horarios": ["09:00"]}]')
+    source = factory._generate_dag_source(pipeline, [_job()])
+    assert "DIAS_HORARIOS_MES = {1: ['09:00']}" in source
+
+
+def test_generate_dag_source_other_types_have_empty_dias_horarios_mes(factory):
+    pipeline = _base_pipeline(schedule_type="daily", dias_horarios_mes=None)
+    source = factory._generate_dag_source(pipeline, [_job()])
+    assert "DIAS_HORARIOS_MES = None" in source
+
+
+def test_generate_dag_source_check_agenda_validates_dia_e_horario(factory):
+    pipeline = _base_pipeline(dias_horarios_mes='[{"dia": 1, "horarios": ["09:00"]}]')
+    source = factory._generate_dag_source(pipeline, [_job()])
+    assert "DIAS_HORARIOS_MES.get(_dia" in source
+
+
+def test_generate_dag_source_compiles(factory):
+    pipeline = _base_pipeline(dias_horarios_mes=(
+        '[{"dia": 1, "horarios": ["09:00"]}, {"dia": 15, "horarios": ["14:00", "18:00"]}]'
+    ))
+    source = factory._generate_dag_source(pipeline, [_job()])
+    ast.parse(source)  # levanta SyntaxError se o código gerado for inválido
