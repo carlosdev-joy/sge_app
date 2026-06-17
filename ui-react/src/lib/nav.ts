@@ -11,7 +11,7 @@
 import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, Workflow, Boxes, ScrollText,
-  ShieldCheck, Network, Settings, FileSearch, ClipboardList,
+  ShieldCheck, Network, Settings, FileSearch, ClipboardList, BarChart3,
 } from 'lucide-react'
 
 export interface NavItem {
@@ -33,6 +33,7 @@ export const NAV: NavItem[] = [
   { to: '/malha',      label: 'Malha',      icon: Network,         legacyHref: '/', migrated: true, perm: 'tela_malha' },
   { to: '/impacto-campo', label: 'Impacto Campo', icon: FileSearch,    legacyHref: '/', migrated: true, perm: 'tela_impacto_campo' },
   { to: '/planos-ajuste', label: 'Planos Ajuste', icon: ClipboardList, legacyHref: '/', migrated: true, perm: 'tela_plano_ajuste' },
+  { to: '/powerbi',    label: 'Power BI',  icon: BarChart3,       legacyHref: '/', migrated: true, perm: 'tela_powerbi' },
   { to: '/admin',      label: 'Admin',      icon: Settings,        legacyHref: '/', migrated: true, adminOnly: true, perm: 'tela_admin' },
 ]
 
