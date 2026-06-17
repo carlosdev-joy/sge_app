@@ -108,3 +108,54 @@ def test_empty_array_raises_422():
     with pytest.raises(HTTPException) as exc:
         _validate_dias_horarios_mes("[]")
     assert exc.value.status_code == 422
+
+
+from deps import get_current_user, PERM_EDITAR
+
+
+@pytest.fixture
+def auth_override(app):
+    """Substitui get_current_user por um usuário com permissão de edição.
+
+    Necessário porque autenticar via header Bearer real exigiria uma sessão
+    válida em dbo.etl_sessao — aqui sobrescrevemos a dependency diretamente
+    no app, contornando a autenticação para isolar a lógica do endpoint.
+    """
+    app.dependency_overrides[get_current_user] = lambda: {
+        "matricula": "TESTER", "perfil": "admin", "permissoes": [PERM_EDITAR],
+    }
+    yield
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.mark.api
+def test_register_monthly_days_times_requires_dias_horarios_mes(client, auth_override):
+    """schedule_type='monthly_days_times' sem dias_horarios_mes -> 422.
+
+    A validação ocorre antes de qualquer chamada a get_db_conn (ver Step 3),
+    então este teste não precisa mockar o banco.
+    """
+    r = client.post(
+        "/pipelines/register",
+        json={
+            "pipeline_name": "TESTE_MDT", "scheduled_time": "09:00:00",
+            "schedule_type": "monthly_days_times", "project_name": "BI_CVP", "domain": "TESTE",
+        },
+    )
+    assert r.status_code == 422
+    assert "dias_horarios_mes" in r.json()["detail"]
+
+
+@pytest.mark.api
+def test_register_monthly_days_times_invalid_dia_returns_error(client, auth_override):
+    """dias_horarios_mes com dia fora do intervalo -> 422 com mensagem específica."""
+    r = client.post(
+        "/pipelines/register",
+        json={
+            "pipeline_name": "TESTE_MDT", "scheduled_time": "09:00:00",
+            "schedule_type": "monthly_days_times", "project_name": "BI_CVP", "domain": "TESTE",
+            "dias_horarios_mes": '[{"dia": 99, "horarios": ["09:00"]}]',
+        },
+    )
+    assert r.status_code == 422
+    assert "Dia do mês inválido" in r.json()["detail"]

@@ -428,6 +428,10 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
             _hrs.append(f"{hh:02d}:{mm:02d}")
         horarios_especificos = ",".join(sorted(set(_hrs))) or None
     dias_semana = (body.get("dias_semana") or "").strip() or None
+    # Migration 024 — agendamento "Dia + Hora Específico"
+    dias_horarios_mes = _validate_dias_horarios_mes(body.get("dias_horarios_mes"))
+    if schedule_type == "monthly_days_times" and not dias_horarios_mes:
+        raise HTTPException(status_code=422, detail="dias_horarios_mes é obrigatório para schedule_type 'monthly_days_times'")
 
     if pipeline in depends_on_list:
         raise HTTPException(status_code=422, detail="Pipeline não pode depender de si mesmo")
@@ -489,6 +493,14 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
             )
         except Exception:
             pass  # colunas da migration 018 podem não existir ainda — degrada sem erro
+        try:
+            cur.execute(
+                "UPDATE dbo.etl_pipeline SET dias_horarios_mes=?, "
+                "updated_at=GETDATE() WHERE pipeline_name=?",
+                (dias_horarios_mes, pipeline),
+            )
+        except Exception:
+            pass  # coluna da migration 024 pode não existir ainda — degrada sem erro
         new_vals = {
             "active": active, "scheduled_time": horario, "schedule_type": schedule_type,
             "schedule_hour": schedule_hour, "schedule_minute": schedule_minute,
