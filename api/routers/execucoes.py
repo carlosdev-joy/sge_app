@@ -482,7 +482,7 @@ async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(requi
             IF NOT EXISTS (SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?)
                 INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name, note)
                 VALUES (?, ?, ?, ?, ?)
-        """, (exec_id, pipeline, user, display_name, note))
+        """, (exec_id, pipeline, exec_id, pipeline, user, display_name, note))
         conn.commit()
 
         cur.execute(
@@ -680,7 +680,7 @@ async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(re
             "IF NOT EXISTS (SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?)"
             "  INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name)"
             "  VALUES (?, ?, ?, ?)",
-            (exec_id, pipeline, matricula, display_name))
+            (exec_id, pipeline, exec_id, pipeline, matricula, display_name))
 
         cur.execute(
             "UPDATE dbo.etl_failure_ack "
