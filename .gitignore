@@ -42,6 +42,9 @@ config/*.local
 .env.local
 .claude/
 
+## Worktrees de desenvolvimento isolado
+.worktrees/
+
 ## Certificados SSL (chave privada nunca entra no git)
 certs/*.crt
 certs/*.key
