@@ -610,7 +610,7 @@ function GestaoFalhasTab() {
   })
 
   const ackMut = useMutation({
-    mutationFn: (r: FalhaRow) => apiFetch('/execucoes/ack', {
+    mutationFn: (r: FalhaRow) => apiFetch<{ ok: boolean; ack_by?: string; display_name?: string }>('/execucoes/ack', {
       method: 'POST',
       body: JSON.stringify({
         execution_id: r.execution_id,
@@ -619,8 +619,16 @@ function GestaoFalhasTab() {
         display_name: `${user?.primeiro_nome ?? ''} ${user?.ultimo_nome ?? ''}`.trim(),
       }),
     }),
-    onSuccess: () => {
-      toast.success('Falha assumida')
+    onSuccess: (data) => {
+      // Duas pessoas podem clicar "Assumir" quase ao mesmo tempo — o ack é
+      // idempotente no backend, então quem perder a corrida recebe sucesso
+      // com o ack_by de quem chegou primeiro. Avisa em vez de fingir que
+      // este usuário assumiu.
+      if (data.ack_by && data.ack_by !== user?.matricula) {
+        toast.error(`Falha já assumida por ${data.display_name ?? data.ack_by}`)
+      } else {
+        toast.success('Falha assumida')
+      }
       qc.invalidateQueries({ queryKey: ['falhas'] })
       qc.invalidateQueries({ queryKey: ['falhas-summary'] })
     },

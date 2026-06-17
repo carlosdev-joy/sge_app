@@ -1,6 +1,7 @@
 """api/routers/execucoes.py — GET /execucoes, POST /execucoes/rerun, POST /execucoes/ack, GET /execucoes/duracao-media."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timedelta
@@ -460,6 +461,16 @@ async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(requi
     try:
         conn = get_db_conn(); cur = conn.cursor()
         if remove:
+            if _ensure_resolve_columns(conn, cur):
+                cur.execute(
+                    "SELECT resolved_at FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?",
+                    (exec_id, pipeline))
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    cur.close(); conn.close()
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Falha já resolvida — desfaça a resolução antes de remover a assunção")
             cur.execute(
                 "DELETE FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?",
                 (exec_id, pipeline))
@@ -485,9 +496,11 @@ async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(requi
         display_name_db = row[1] if row else display_name
         ack_at_db      = _fmt_dt(row[2]) if row else None
 
-        # Notificar Teams (em background — falha silenciosa para não bloquear o ACK)
+        # Notificar Teams — _teams_ack_card faz I/O de rede síncrono; roda em
+        # thread separada para não bloquear o event loop de outras requisições.
         try:
-            _teams_ack_card(
+            await asyncio.to_thread(
+                _teams_ack_card,
                 pipeline=pipeline, exec_id=exec_id,
                 ack_by=ack_by_db, display_name=display_name_db or ack_by_db,
                 ack_at=ack_at_db, note=note,
@@ -506,8 +519,20 @@ async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(requi
         raise HTTPException(status_code=500, detail=str(e))
 
 
+_resolve_cols_ready = False
+
+
 def _ensure_resolve_columns(conn, cur) -> bool:
-    """Garante colunas de resolução na etl_failure_ack. Retorna True se existem."""
+    """Garante colunas de resolução na etl_failure_ack. Retorna True se existem.
+
+    Cacheia o estado "True" em memória do processo: colunas adicionadas por
+    migration nunca são removidas, então uma vez confirmadas não há motivo
+    para repetir a checagem em toda requisição (evita 5 round-trips extras
+    por chamada em /execucoes/falhas, /falhas-summary e /resolve).
+    """
+    global _resolve_cols_ready
+    if _resolve_cols_ready:
+        return True
     _RESOLVE_COLS = [
         ("resolved_by",     "NVARCHAR(64)"),
         ("resolved_at",     "DATETIME"),
@@ -531,9 +556,12 @@ def _ensure_resolve_columns(conn, cur) -> bool:
         cur.execute(
             "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS "
             "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_failure_ack' AND COLUMN_NAME='resolved_at'")
-        return bool(cur.fetchone())
+        ready = bool(cur.fetchone())
     except Exception:
-        return False
+        ready = False
+    if ready:
+        _resolve_cols_ready = True
+    return ready
 
 
 def _failure_cte(cutoff: str, filter_pipeline: str | None, filter_project: str | None):
