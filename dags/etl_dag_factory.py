@@ -967,6 +967,14 @@ def gerar_dags(**context):
         )
         if cursor.fetchone()[0]:
             sched_cols += ", horarios_especificos, dias_semana"
+        # coluna da migration 024 (dia + hora específico) — degrada se ausente
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' "
+            "AND COLUMN_NAME='dias_horarios_mes'"
+        )
+        if cursor.fetchone()[0]:
+            sched_cols += ", dias_horarios_mes"
         # colunas do builder de agendamento (Fase 3) — degradam se ausentes
         cursor.execute(
             "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
