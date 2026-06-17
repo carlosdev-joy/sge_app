@@ -9,11 +9,11 @@ import { toast } from '../ui/Toast'
 import { Save, Plus } from 'lucide-react'
 import type { Pipeline, LineageJob } from '../../types/pipeline'
 import {
-  SCHEDULE_TYPES, SCHEDULE_LABELS, CRITICIDADES, AMBIENTES,
+  SCHEDULE_TYPES, SCHEDULE_LABELS, CRITICIDADES, AMBIENTES, MAX_MONTH_DAYS,
   JOB_TYPES, OBJECT_TYPES, DOW_LABELS,
-  type WizJobType, type ScheduleConfig,
+  type WizJobType, type ScheduleConfig, type MonthDayEntry,
   hourlyTimes, parseCustomTimes, computeNextRuns, runsPerDay,
-  typeBadgeColor, critColor, buildCron,
+  typeBadgeColor, critColor, buildCron, parseMonthDaysTimes, serializeMonthDaysTimes,
 } from './pipelineUtils'
 
 // ── Sub-types ─────────────────────────────────────────────────────────────────
@@ -53,6 +53,7 @@ interface FormState {
   schedule_end_hour: number
   schedule_custom_times: string
   schedule_weekdays: number[]
+  schedule_month_days: MonthDayEntry[]
   somente_dias_uteis: boolean
   calendario_nome: string
   trigger_por_dependencia: boolean
@@ -77,7 +78,7 @@ const defaultForm = (): FormState => ({
   schedule_type: 'daily', schedule_hour: 6, schedule_minute: 0,
   schedule_dow: 1, schedule_dom: 1, schedule_interval_hours: 2,
   schedule_start_hour: 8, schedule_end_hour: 18,
-  schedule_custom_times: '', schedule_weekdays: [1, 2, 3, 4, 5],
+  schedule_custom_times: '', schedule_weekdays: [1, 2, 3, 4, 5], schedule_month_days: [],
   somente_dias_uteis: false, calendario_nome: '', trigger_por_dependencia: false,
   active: true, dag_start_date: '',
   envia_msg_inicio: true, envia_msg_fim: true, envia_msg_erro: true,
@@ -90,7 +91,8 @@ function pipelineToForm(p: Pipeline): FormState {
   const horarios = (p.horarios_especificos ?? '').trim()
   const diasRaw  = (p.dias_semana ?? '').trim()
   const weekdays = diasRaw ? diasRaw.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n)) : [1, 2, 3, 4, 5]
-  const schedType = horarios ? 'custom' : (p.schedule_type ?? 'daily')
+  const monthDays = parseMonthDaysTimes(p.dias_horarios_mes)
+  const schedType = monthDays.length > 0 ? 'monthly_days_times' : (horarios ? 'custom' : (p.schedule_type ?? 'daily'))
   return {
     ...defaultForm(),
     pipeline_name:           p.pipeline_name,
@@ -105,6 +107,7 @@ function pipelineToForm(p: Pipeline): FormState {
     schedule_dom:            p.schedule_dom ?? 1,
     schedule_custom_times:   horarios,
     schedule_weekdays:       weekdays,
+    schedule_month_days:     monthDays,
     somente_dias_uteis:      !!p.somente_dias_uteis,
     calendario_nome:         p.calendario_nome ?? '',
     trigger_por_dependencia: !!p.trigger_por_dependencia,
@@ -306,8 +309,9 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
     customTimes: form.schedule_custom_times,
     weekdays: form.schedule_weekdays,
     businessDaysOnly: form.somente_dias_uteis,
+    monthDays: form.schedule_month_days.map(e => ({ dia: e.dia, horarios: parseCustomTimes(e.horariosRaw) })),
   }
-  const showBizToggle = !['custom', 'on_demand'].includes(form.schedule_type)
+  const showBizToggle = !['custom', 'on_demand', 'monthly_days_times'].includes(form.schedule_type)
   const nextRuns = useMemo(
     () => computeNextRuns(schedCfg, form.schedule_type === 'biweekly' ? 2 : 5),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -338,6 +342,16 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       } else if (t === 'custom') {
         if (parseCustomTimes(form.schedule_custom_times).length === 0) e.push('Informe ao menos um horário válido (HH:MM)')
         if (form.schedule_weekdays.length === 0) e.push('Selecione ao menos um dia da semana')
+      } else if (t === 'monthly_days_times') {
+        if (form.schedule_month_days.length === 0) e.push('Adicione ao menos um dia do mês')
+        const seenDias = new Set<number>()
+        form.schedule_month_days.forEach(entry => {
+          if (seenDias.has(entry.dia)) e.push(`Dia ${entry.dia} duplicado`)
+          seenDias.add(entry.dia)
+          const times = parseCustomTimes(entry.horariosRaw)
+          if (times.length === 0) e.push(`Dia ${entry.dia}: informe ao menos um horário válido (HH:MM)`)
+          if (times.length > 5) e.push(`Dia ${entry.dia}: no máximo 5 horários`)
+        })
       } else {
         if (form.schedule_hour < 0 || form.schedule_hour > 23) e.push('Hora inválida (0–23)')
         if (form.schedule_minute < 0 || form.schedule_minute > 59) e.push('Minuto inválido (0–59)')
@@ -384,6 +398,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       calendario_nome: form.calendario_nome.trim() || null,
       horarios_especificos: null,
       dias_semana: null,
+      dias_horarios_mes: null,
     }
     if (t === 'hourly_n') {
       return {
@@ -404,6 +419,18 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         schedule_minute: parseInt((parseCustomTimes(form.schedule_custom_times)[0] ?? '06:00').slice(3)),
         horarios_especificos: parseCustomTimes(form.schedule_custom_times).join(','),
         dias_semana: [...form.schedule_weekdays].sort((a, b) => a - b).join(','),
+      }
+    }
+    if (t === 'monthly_days_times') {
+      const serialized = serializeMonthDaysTimes(form.schedule_month_days)
+      const firstTime = schedCfg.monthDays?.find(e => e.horarios.length > 0)?.horarios[0] ?? '06:00'
+      return {
+        ...base,
+        scheduled_time: `${firstTime}:00`,
+        schedule_type: 'monthly_days_times',
+        schedule_hour: parseInt(firstTime.slice(0, 2)),
+        schedule_minute: parseInt(firstTime.slice(3)),
+        dias_horarios_mes: serialized,
       }
     }
     return {
@@ -693,7 +720,58 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
               </div>
             )}
 
-            {!['on_demand', 'hourly_n', 'custom'].includes(form.schedule_type) && (
+            {form.schedule_type === 'monthly_days_times' && (
+              <div className="flex flex-col gap-3">
+                {form.schedule_month_days.map((entry, di) => {
+                  const usedDays = new Set(form.schedule_month_days.map(x => x.dia))
+                  const times = parseCustomTimes(entry.horariosRaw)
+                  return (
+                    <div key={di} className="bg-canvas border border-edge rounded-lg p-3 flex flex-col gap-2">
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs text-dim font-medium shrink-0">Dia do mês</label>
+                        <select value={entry.dia}
+                          onChange={e => {
+                            const dia = parseInt(e.target.value)
+                            f('schedule_month_days', form.schedule_month_days.map((x, i) => i === di ? { ...x, dia } : x))
+                          }}
+                          className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500">
+                          {Array.from({ length: 28 }, (_, i) => i + 1)
+                            .filter(d => d === entry.dia || !usedDays.has(d))
+                            .map(d => <option key={d} value={d}>{d}</option>)}
+                        </select>
+                        <button type="button"
+                          onClick={() => f('schedule_month_days', form.schedule_month_days.filter((_, i) => i !== di))}
+                          className="ml-auto text-xs text-red-400 hover:text-red-300">Remover dia</button>
+                      </div>
+                      <input type="text" value={entry.horariosRaw}
+                        onChange={e => f('schedule_month_days', form.schedule_month_days.map((x, i) =>
+                          i === di ? { ...x, horariosRaw: e.target.value } : x))}
+                        placeholder="ex: 09:00, 14:00, 18:00"
+                        className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                      <p className="text-[10px] text-dim">
+                        {times.length > 0
+                          ? `${times.length} horário${times.length > 1 ? 's' : ''}: ${times.join(', ')}`
+                          : 'Informe ao menos um horário válido (HH:MM)'}
+                      </p>
+                    </div>
+                  )
+                })}
+                {form.schedule_month_days.length < MAX_MONTH_DAYS && (
+                  <button type="button"
+                    onClick={() => {
+                      const used = new Set(form.schedule_month_days.map(x => x.dia))
+                      const nextDia = Array.from({ length: 28 }, (_, i) => i + 1).find(d => !used.has(d)) ?? 1
+                      f('schedule_month_days', [...form.schedule_month_days, { dia: nextDia, horariosRaw: '' }])
+                    }}
+                    className="self-start text-xs text-blue-400 hover:text-blue-300 font-medium border border-edge rounded-md px-3 py-1.5">
+                    + Adicionar dia
+                  </button>
+                )}
+                <p className="text-[10px] text-dim">Até 5 dias do mês, cada um com até 5 horários próprios (ex: dia 1 às 09:00 · dia 15 às 14:00 e 18:00).</p>
+              </div>
+            )}
+
+            {!['on_demand', 'hourly_n', 'custom', 'monthly_days_times'].includes(form.schedule_type) && (
               <>
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex flex-col gap-1">
@@ -1069,6 +1147,14 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                 )}
                 {form.schedule_type === 'custom' && (
                   <div className="col-span-2"><span className="text-dim">Horários:</span> <span className="font-mono text-ink">{parseCustomTimes(form.schedule_custom_times).join(', ') || '—'}</span> <span className="text-dim">· dias:</span> <span className="text-ink">{form.schedule_weekdays.length ? form.schedule_weekdays.slice().sort((a,b)=>a-b).map(d => DOW_LABELS.find(([v])=>v===d)?.[1]).join(', ') : '—'}</span></div>
+                )}
+                {form.schedule_type === 'monthly_days_times' && (
+                  <div className="col-span-2 flex flex-col gap-0.5">
+                    <span className="text-dim">Dias e horários:</span>
+                    {(schedCfg.monthDays?.length ?? 0) > 0 ? schedCfg.monthDays!.map(e => (
+                      <span key={e.dia} className="text-ink font-mono text-[11px]">Dia {e.dia} às {e.horarios.join(', ')}</span>
+                    )) : <span className="text-dim/60 italic text-xs">—</span>}
+                  </div>
                 )}
                 {form.schedule_type === 'weekly' && (
                   <div><span className="text-dim">Quando:</span> <span className="text-ink">{DOW_LABELS.find(([v])=>v===form.schedule_dow)?.[1]} {String(form.schedule_hour).padStart(2,'0')}:{String(form.schedule_minute).padStart(2,'0')}</span></div>
