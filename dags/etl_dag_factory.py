@@ -54,20 +54,55 @@ def _time_to_cron(t):
 def _build_cron(pipeline):
     """Monta o cron a partir do agendamento do pipeline.
 
-    Retorna (cron, horarios) onde horarios é a lista normalizada "HH:MM" quando
-    o pipeline usa horários específicos (None caso contrário). Como um único
-    cron não expressa horários arbitrários (ex: 09:00 e 10:30 geram também
-    09:30 e 10:00), o cron dispara na união minuto×hora e o check_agenda
-    pula as combinações que não estão na lista.
+    Retorna (cron, horarios, dias_horarios_mes):
+      - horarios: lista normalizada "HH:MM" quando o pipeline usa horários
+        específicos (tipo 'custom'), None caso contrário.
+      - dias_horarios_mes: dict {dia_do_mes: ["HH:MM", ...]} quando o tipo é
+        'monthly_days_times', None caso contrário.
+    Como um único cron não expressa horários arbitrários (ex: 09:00 e 10:30
+    geram também 09:30 e 10:00), o cron dispara na união minuto×hora(×dia) e
+    o check_agenda pula as combinações que não estão na lista configurada.
     """
     sched = str(pipeline.get("scheduled_time") or "06:00:00")
     stype = (pipeline.get("schedule_type") or "daily").lower().strip()
     horarios_raw = (pipeline.get("horarios_especificos") or "").strip()
     dias_semana  = (pipeline.get("dias_semana") or "").strip()
+    dias_horarios_raw = (pipeline.get("dias_horarios_mes") or "").strip()
     parts = sched.split(":")
     h = int(parts[0]) if parts[0].isdigit() else 6
     m = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
     dow_expr = dias_semana if dias_semana else "*"
+
+    if stype == "monthly_days_times" and dias_horarios_raw:
+        import json
+        try:
+            entries = json.loads(dias_horarios_raw)
+        except (ValueError, TypeError):
+            entries = []
+        dias_horarios = {}
+        all_days, all_hours, all_mins = set(), set(), set()
+        for entry in entries:
+            try:
+                dia = int(entry["dia"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            times = []
+            for t in entry.get("horarios", []):
+                tp = str(t).split(":")
+                try:
+                    hh, mm = int(tp[0]), int(tp[1]) if len(tp) > 1 else 0
+                except ValueError:
+                    continue
+                times.append(f"{hh:02d}:{mm:02d}")
+                all_hours.add(hh)
+                all_mins.add(mm)
+            if times:
+                dias_horarios[dia] = sorted(times)
+                all_days.add(dia)
+        if dias_horarios:
+            cron = (f"{','.join(map(str, sorted(all_mins)))} {','.join(map(str, sorted(all_hours)))} "
+                    f"{','.join(map(str, sorted(all_days)))} * *")
+            return cron, None, dias_horarios
 
     if horarios_raw:
         times = []
@@ -85,21 +120,21 @@ def _build_cron(pipeline):
             hours = sorted({hh for hh, _ in times})
             cron = (f"{','.join(map(str, mins))} {','.join(map(str, hours))} "
                     f"* * {dow_expr}")
-            return cron, sorted(f"{hh:02d}:{mm:02d}" for hh, mm in times)
+            return cron, sorted(f"{hh:02d}:{mm:02d}" for hh, mm in times), None
 
     if stype == "hourly":
-        return f"{m} * * * *", None
+        return f"{m} * * * *", None, None
     if stype == "weekly":
         dow = pipeline.get("schedule_dow")
-        return f"{m} {h} * * {int(dow) if dow is not None else 1}", None
+        return f"{m} {h} * * {int(dow) if dow is not None else 1}", None, None
     if stype == "monthly":
         dom = pipeline.get("schedule_dom")
-        return f"{m} {h} {int(dom) if dom is not None else 1} * *", None
+        return f"{m} {h} {int(dom) if dom is not None else 1} * *", None, None
     if stype == "biweekly":  # quinzenal: dia D e D+15 de cada mês
         dom = pipeline.get("schedule_dom")
         d = int(dom) if dom is not None else 1
-        return f"{m} {h} {d},{d + 15} * *", None
-    return f"{m} {h} * * {dow_expr}", None
+        return f"{m} {h} {d},{d + 15} * *", None, None
+    return f"{m} {h} * * {dow_expr}", None, None
 
 
 def _ind(code, n=4):
@@ -263,7 +298,7 @@ def _generate_dag_source(pipeline, jobs):
     ds_queue_val = _DS_QUEUE_MAP.get((pipeline.get("criticidade") or "").upper().strip())
     runbook_val  = (pipeline.get("runbook_md") or "").strip() or None
 
-    cron, horarios_list = _build_cron(pipeline)
+    cron, horarios_list, dias_horarios_mes = _build_cron(pipeline)
     base_log    = BASE_LOG_ROOT
     user_tags   = [t.strip() for t in tags_raw.split(",") if t.strip()]
     all_tags    = list(dict.fromkeys([project, domain] + user_tags))
