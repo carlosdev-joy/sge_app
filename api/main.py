@@ -75,6 +75,21 @@ Endpoints:
   GET  /factory/runs/{dag_run_id}/log     — log estruturado de execução da factory
 
   GET  /airflow/connections/ssh           — lista conexões SSH no Airflow
+
+  GET  /powerbi/status                              — diagnóstico de configuração/token/admin API
+  GET  /powerbi/overview                            — workspaces + datasets + status refresh + datasource type
+  GET  /powerbi/workspaces                          — workspaces visíveis ao service principal
+  GET  /powerbi/workspaces/{gid}/datasets           — datasets de um workspace
+  GET  /powerbi/workspaces/{gid}/reports            — reports de um workspace
+  GET  /powerbi/workspaces/{gid}/datasets/{did}                   — detalhe do dataset
+  GET  /powerbi/workspaces/{gid}/datasets/{did}/refreshes         — histórico de refresh
+  GET  /powerbi/workspaces/{gid}/datasets/{did}/refresh-schedule  — agendamento de refresh
+  GET  /powerbi/workspaces/{gid}/datasets/{did}/datasources       — conexões (tipo/servidor)
+  GET  /powerbi/workspaces/{gid}/datasets/{did}/parameters        — parâmetros do dataset
+  GET  /powerbi/workspaces/{gid}/datasets/{did}/users             — usuários com acesso
+  GET  /powerbi/gateways                            — gateways acessíveis
+  GET  /powerbi/gateways/{id}/datasources           — datasources de um gateway
+  GET  /powerbi/capacities                          — capacities acessíveis
 """
 from __future__ import annotations
 
@@ -88,7 +103,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers import (
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
-    datastage, factory, airflow, change_plans
+    datastage, factory, airflow, change_plans, powerbi
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -128,6 +143,6 @@ app.add_middleware(
 for _router_module in [
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
-    datastage, factory, airflow, change_plans,
+    datastage, factory, airflow, change_plans, powerbi,
 ]:
     app.include_router(_router_module.router)

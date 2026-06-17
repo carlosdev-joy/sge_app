@@ -13,6 +13,7 @@ import Logs from './pages/Logs'
 import Jobs from './pages/Jobs'
 import Pipelines from './pages/Pipelines'
 import Dashboard from './pages/Dashboard'
+import PowerBI from './pages/PowerBI'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -37,6 +38,7 @@ export default function App() {
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="jobs" element={<Jobs />} />
             <Route path="pipelines" element={<Pipelines />} />
+            <Route path="powerbi" element={<PowerBI />} />
           </Route>
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
