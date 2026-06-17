@@ -305,7 +305,8 @@ def list_execucoes(
         try:
             cur.execute(agg_cte + """
                 SELECT a.*, ack.ack_by, ack.display_name, ack.ack_at,
-                       ack.resolved_by, ack.resolved_at, ack.resolution_note, ack.snow_ticket
+                       ack.resolved_by, ack.resolved_display_name, ack.resolved_at,
+                       ack.resolution_note, ack.snow_ticket
                 FROM agg a
                 LEFT JOIN dbo.etl_failure_ack ack
                        ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
@@ -346,9 +347,10 @@ def list_execucoes(
                 "display_name": r[13] if has_ack else None,
                 "ack_at": _fmt_dt(r[14]) if has_ack else None,
                 "resolved_by": r[15] if has_resolved else None,
-                "resolved_at": _fmt_dt(r[16]) if has_resolved else None,
-                "resolution_note": r[17] if has_resolved else None,
-                "snow_ticket": r[18] if has_resolved else None,
+                "resolved_display_name": r[16] if has_resolved else None,
+                "resolved_at": _fmt_dt(r[17]) if has_resolved else None,
+                "resolution_note": r[18] if has_resolved else None,
+                "snow_ticket": r[19] if has_resolved else None,
                 "fila_total_segundos": None,
             }
             for r in cur.fetchall()
@@ -534,10 +536,11 @@ def _ensure_resolve_columns(conn, cur) -> bool:
     if _resolve_cols_ready:
         return True
     _RESOLVE_COLS = [
-        ("resolved_by",     "NVARCHAR(64)"),
-        ("resolved_at",     "DATETIME"),
-        ("resolution_note", "NVARCHAR(500)"),
-        ("snow_ticket",     "NVARCHAR(64)"),
+        ("resolved_by",            "NVARCHAR(64)"),
+        ("resolved_display_name",  "NVARCHAR(128)"),
+        ("resolved_at",            "DATETIME"),
+        ("resolution_note",        "NVARCHAR(500)"),
+        ("snow_ticket",            "NVARCHAR(64)"),
     ]
     for col, ddl in _RESOLVE_COLS:
         try:
@@ -669,7 +672,8 @@ async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(re
         if remove:
             cur.execute(
                 "UPDATE dbo.etl_failure_ack "
-                "SET resolved_by=NULL, resolved_at=NULL, resolution_note=NULL, snow_ticket=NULL "
+                "SET resolved_by=NULL, resolved_display_name=NULL, resolved_at=NULL, "
+                "    resolution_note=NULL, snow_ticket=NULL "
                 "WHERE execution_id=? AND pipeline=?",
                 (exec_id, pipeline))
             conn.commit(); cur.close(); conn.close()
@@ -684,13 +688,14 @@ async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(re
 
         cur.execute(
             "UPDATE dbo.etl_failure_ack "
-            "SET resolved_by=?, resolved_at=GETDATE(), resolution_note=?, snow_ticket=? "
+            "SET resolved_by=?, resolved_display_name=?, resolved_at=GETDATE(), "
+            "    resolution_note=?, snow_ticket=? "
             "WHERE execution_id=? AND pipeline=?",
-            (matricula, resolution_note, snow_ticket, exec_id, pipeline))
+            (matricula, display_name, resolution_note, snow_ticket, exec_id, pipeline))
         conn.commit()
 
         cur.execute(
-            "SELECT resolved_by, resolved_at, resolution_note, snow_ticket "
+            "SELECT resolved_by, resolved_display_name, resolved_at, resolution_note, snow_ticket "
             "FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?",
             (exec_id, pipeline))
         row = cur.fetchone()
@@ -698,10 +703,11 @@ async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(re
 
         return {
             "ok": True, "action": "resolved",
-            "resolved_by":     row[0] if row else matricula,
-            "resolved_at":     _fmt_dt(row[1]) if row else None,
-            "resolution_note": row[2] if row else resolution_note,
-            "snow_ticket":     row[3] if row else snow_ticket,
+            "resolved_by":             row[0] if row else matricula,
+            "resolved_display_name":   row[1] if row else display_name,
+            "resolved_at":             _fmt_dt(row[2]) if row else None,
+            "resolution_note":         row[3] if row else resolution_note,
+            "snow_ticket":             row[4] if row else snow_ticket,
         }
     except HTTPException:
         raise
@@ -746,7 +752,8 @@ def list_falhas(
         total_row = cur.fetchone()
         total = int(total_row[0] or 0) if total_row else 0
 
-        resolve_sel = ", ack.resolved_by, ack.resolved_at, ack.resolution_note, ack.snow_ticket" \
+        resolve_sel = ", ack.resolved_by, ack.resolved_display_name, ack.resolved_at, " \
+                      "ack.resolution_note, ack.snow_ticket" \
                       if has_resolved else ""
 
         cur.execute(cte + f"""
@@ -776,10 +783,11 @@ def list_falhas(
                 "jobs_warning": int(r[8] or 0),
                 "ack_by": r[9], "display_name": r[10],
                 "ack_at": _fmt_dt(r[11]), "note": r[12],
-                "resolved_by":     r[13] if has_resolved else None,
-                "resolved_at":     _fmt_dt(r[14]) if has_resolved else None,
-                "resolution_note": r[15] if has_resolved else None,
-                "snow_ticket":     r[16] if has_resolved else None,
+                "resolved_by":           r[13] if has_resolved else None,
+                "resolved_display_name": r[14] if has_resolved else None,
+                "resolved_at":           _fmt_dt(r[15]) if has_resolved else None,
+                "resolution_note":       r[16] if has_resolved else None,
+                "snow_ticket":           r[17] if has_resolved else None,
             }
             data.append(item)
 

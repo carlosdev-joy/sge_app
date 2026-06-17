@@ -64,6 +64,7 @@ export interface ExecRow {
   display_name?: string
   ack_at?: string
   resolved_by?: string
+  resolved_display_name?: string
   resolved_at?: string
   resolution_note?: string
   snow_ticket?: string
