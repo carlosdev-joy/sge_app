@@ -312,6 +312,16 @@ def list_pipelines(
         else:
             sched_cols += ", NULL AS horarios_especificos, NULL AS dias_semana"
 
+        # coluna da migration 024 (dia + hora específico) — degrada para NULL
+        cur.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' AND COLUMN_NAME='dias_horarios_mes'
+        """)
+        if cur.fetchone()[0]:
+            sched_cols += ", dias_horarios_mes"
+        else:
+            sched_cols += ", NULL AS dias_horarios_mes"
+
         data_sql = f"""
             SELECT
                 pipeline_name, project_name, domain, tags,
@@ -351,7 +361,7 @@ def list_pipelines(
             "ambiente", "max_active_runs", "retries_count", "retry_delay_seconds",
             "pool_name", "runbook_md", "calendario_nome", "somente_dias_uteis",
             "trigger_por_dependencia", "horarios_especificos", "dias_semana",
-            "last_execution", "created_at", "updated_at",
+            "dias_horarios_mes", "last_execution", "created_at", "updated_at",
         ]
         data = []
         for row in cur.fetchall():
