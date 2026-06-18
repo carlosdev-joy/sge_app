@@ -559,7 +559,7 @@ export default function Dashboard() {
                   </h3>
                 </div>
                 {data.executando_agora.map(e => (
-                  <RunningRow key={e.execution_id} e={e} onOpen={() => navigate(`/logs?execution_id=${e.execution_id}`)} />
+                  <RunningRow key={e.execution_id} e={e} onOpen={() => navigate(`/logs?execution_id=${e.execution_id}&pipeline=${encodeURIComponent(e.pipeline)}`)} />
                 ))}
               </div>
             )}
@@ -573,7 +573,7 @@ export default function Dashboard() {
                   </h3>
                 </div>
                 {data.alertas_perf.map(a => (
-                  <AlertaRow key={a.execution_id} a={a} onOpen={() => navigate(`/logs?execution_id=${a.execution_id}`)} />
+                  <AlertaRow key={a.execution_id} a={a} onOpen={() => navigate(`/logs?execution_id=${a.execution_id}&pipeline=${encodeURIComponent(a.pipeline)}`)} />
                 ))}
               </div>
             )}
