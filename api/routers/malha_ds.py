@@ -130,6 +130,17 @@ def list_malha(_auth: dict = Depends(get_current_user)):
     } for r in rows]}
 
 
+@router.get("/malha-ds/xml-files", tags=["malha-ds"])
+def list_xml_files(_auth: dict = Depends(get_current_user)):
+    """Lista os exports .xml disponíveis no diretório (para a pessoa escolher)."""
+    try:
+        files = sorted((f[:-4] for f in os.listdir(_XML_BASE_DIR) if f.lower().endswith(".xml")),
+                       key=str.lower)
+    except OSError:
+        files = []
+    return {"base_dir": _XML_BASE_DIR, "files": files}
+
+
 @router.get("/malha-ds/{project}", tags=["malha-ds"])
 def get_malha(project: str, root: str | None = None, _auth: dict = Depends(get_current_user)):
     project = _safe_project(project)
