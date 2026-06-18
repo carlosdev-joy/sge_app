@@ -13,7 +13,7 @@ import { Tabs } from '../components/ui/Tabs'
 import {
   RefreshCw, RotateCcw, CheckSquare, FileText,
   ChevronDown, ChevronUp, Copy,
-  ShieldCheck, ShieldAlert, ShieldX, AlertTriangle, CheckCircle2, Ticket,
+  ShieldCheck, ShieldAlert, ShieldX, AlertTriangle, CheckCircle2, Ticket, Eye,
 } from 'lucide-react'
 import { Textarea } from '../components/ui/Input'
 import {
@@ -53,6 +53,7 @@ interface FalhaRow {
   ack_at?: string
   note?: string
   resolved_by?: string
+  resolved_display_name?: string
   resolved_at?: string
   resolution_note?: string
   snow_ticket?: string
@@ -196,7 +197,7 @@ function ExecucoesTab() {
   }, [])
   const [detail, setDetail] = useState<ExecRow | null>(null)
   const [airflowLog, setAirflowLog] = useState<AirflowLogState | null>(null)
-  const [dsLog, setDsLog] = useState<{ executionId: string; jobName: string } | null>(null)
+  const [dsLog, setDsLog] = useState<{ executionId: string; jobName: string; pipelineName: string } | null>(null)
 
   const buildQs = (f: Filters, pg: number) => {
     const q = new URLSearchParams({ limit: String(LIMIT), offset: String(pg * LIMIT) })
@@ -378,11 +379,11 @@ function ExecucoesTab() {
           row={detail}
           onClose={() => setDetail(null)}
           onAirflowLog={s => { setDetail(null); setAirflowLog(s) }}
-          onDsLog={(eid, jn) => { setDetail(null); setDsLog({ executionId: eid, jobName: jn }) }}
+          onDsLog={(eid, jn, pn) => { setDetail(null); setDsLog({ executionId: eid, jobName: jn, pipelineName: pn }) }}
         />
       )}
       {airflowLog && <AirflowLogModal state={airflowLog} onClose={() => setAirflowLog(null)} />}
-      {dsLog && <DsLogModal executionId={dsLog.executionId} jobName={dsLog.jobName} onClose={() => setDsLog(null)} />}
+      {dsLog && <DsLogModal executionId={dsLog.executionId} jobName={dsLog.jobName} pipelineName={dsLog.pipelineName} onClose={() => setDsLog(null)} />}
     </>
   )
 }
@@ -390,8 +391,8 @@ function ExecucoesTab() {
 // ── Resolve Modal ──────────────────────────────────────────────────────────
 
 function ResolveModal({
-  row, onClose,
-}: { row: FalhaRow; onClose: () => void }) {
+  row, onClose, readOnly = false,
+}: { row: FalhaRow; onClose: () => void; readOnly?: boolean }) {
   const qc = useQueryClient()
   const user = useAuthStore(s => s.user)
   const [note, setNote] = useState(row.resolution_note ?? '')
@@ -438,7 +439,7 @@ function ResolveModal({
             <div className="flex items-center gap-1.5 font-medium text-green-400">
               <CheckCircle2 size={13} /> Resolvida
             </div>
-            <div>Por: <strong>{row.resolved_by}</strong> em {fmtDt(row.resolved_at)}</div>
+            <div>Por: <strong>{row.resolved_display_name ?? row.resolved_by}</strong> em {fmtDt(row.resolved_at)}</div>
             {row.resolution_note && <div>Nota: {row.resolution_note}</div>}
             {row.snow_ticket && <div>Ticket: <span className="font-mono">{row.snow_ticket}</span></div>}
           </div>
@@ -462,11 +463,13 @@ function ResolveModal({
               </p>
             </div>
             <div className="flex gap-2 pt-1 border-t border-edge justify-between">
-              <Button variant="secondary" size="sm" loading={resolveMut.isPending}
-                onClick={() => resolveMut.mutate(true)}>
-                Desfazer resolução
-              </Button>
-              <Button variant="secondary" size="sm" onClick={onClose}>Fechar</Button>
+              {!readOnly && (
+                <Button variant="secondary" size="sm" loading={resolveMut.isPending}
+                  onClick={() => resolveMut.mutate(true)}>
+                  Desfazer resolução
+                </Button>
+              )}
+              <Button variant="secondary" size="sm" onClick={onClose} className={readOnly ? 'ml-auto' : ''}>Fechar</Button>
             </div>
           </div>
         ) : (
@@ -592,7 +595,7 @@ function GestaoFalhasTab() {
   const [filterPipeline, setFilterPipeline] = useState('')
   const [filterProject, setFilterProject] = useState('')
   const [page, setPage] = useState(0)
-  const [resolveRow, setResolveRow] = useState<FalhaRow | null>(null)
+  const [resolveRow, setResolveRow] = useState<{ row: FalhaRow; readOnly: boolean } | null>(null)
   const FLIMIT = 50
 
   const qs = new URLSearchParams({
@@ -610,7 +613,7 @@ function GestaoFalhasTab() {
   })
 
   const ackMut = useMutation({
-    mutationFn: (r: FalhaRow) => apiFetch('/execucoes/ack', {
+    mutationFn: (r: FalhaRow) => apiFetch<{ ok: boolean; ack_by?: string; display_name?: string }>('/execucoes/ack', {
       method: 'POST',
       body: JSON.stringify({
         execution_id: r.execution_id,
@@ -619,8 +622,16 @@ function GestaoFalhasTab() {
         display_name: `${user?.primeiro_nome ?? ''} ${user?.ultimo_nome ?? ''}`.trim(),
       }),
     }),
-    onSuccess: () => {
-      toast.success('Falha assumida')
+    onSuccess: (data) => {
+      // Duas pessoas podem clicar "Assumir" quase ao mesmo tempo — o ack é
+      // idempotente no backend, então quem perder a corrida recebe sucesso
+      // com o ack_by de quem chegou primeiro. Avisa em vez de fingir que
+      // este usuário assumiu.
+      if (data.ack_by && data.ack_by !== user?.matricula) {
+        toast.error(`Falha já assumida por ${data.display_name ?? data.ack_by}`)
+      } else {
+        toast.success('Falha assumida')
+      }
       qc.invalidateQueries({ queryKey: ['falhas'] })
       qc.invalidateQueries({ queryKey: ['falhas-summary'] })
     },
@@ -699,7 +710,9 @@ function GestaoFalhasTab() {
                   <th className="px-3 py-2 text-left">Início</th>
                   <th className="px-3 py-2 text-left">Situação</th>
                   <th className="px-3 py-2 text-left">Assumida por</th>
+                  <th className="px-3 py-2 text-left">Assumida em</th>
                   <th className="px-3 py-2 text-left">Resolvida por</th>
+                  <th className="px-3 py-2 text-left">Resolvida em</th>
                   <th className="px-3 py-2 text-left">Ticket</th>
                   <th className="px-3 py-2 text-right">Ações</th>
                 </tr></thead>
@@ -712,14 +725,18 @@ function GestaoFalhasTab() {
                       <td className="px-3 py-2 text-dim whitespace-nowrap">{fmtDt(r.inicio)}</td>
                       <td className="px-3 py-2">{statusAckLabel(r)}</td>
                       <td className="px-3 py-2 text-dim">
-                        {r.ack_by ? (
-                          <span title={fmtDt(r.ack_at) ?? ''}>{r.display_name ?? r.ack_by}</span>
-                        ) : <span className="text-red-400/60">—</span>}
+                        {r.ack_by ? (r.display_name ?? r.ack_by) : <span className="text-red-400/60">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-dim whitespace-nowrap">
+                        {r.ack_at ? fmtDt(r.ack_at) : <span className="text-dim/40">—</span>}
                       </td>
                       <td className="px-3 py-2 text-dim">
                         {r.resolved_by ? (
-                          <span title={`${fmtDt(r.resolved_at)} · ${r.resolution_note ?? ''}`}>{r.resolved_by}</span>
+                          <span title={r.resolution_note ?? ''}>{r.resolved_display_name ?? r.resolved_by}</span>
                         ) : <span className="text-dim/40">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-dim whitespace-nowrap">
+                        {r.resolved_at ? fmtDt(r.resolved_at) : <span className="text-dim/40">—</span>}
                       </td>
                       <td className="px-3 py-2">
                         {r.snow_ticket
@@ -736,14 +753,23 @@ function GestaoFalhasTab() {
                               <ShieldAlert size={12} /> Assumir
                             </Button>
                           )}
-                          {!isViewer && (
+                          {r.resolved_at ? (
                             <Button
                               variant="ghost"
                               size="sm"
-                              title={r.resolved_at ? 'Ver / editar resolução' : 'Marcar como resolvida'}
-                              onClick={() => setResolveRow(r)}
+                              title="Ver detalhes da resolução"
+                              onClick={() => setResolveRow({ row: r, readOnly: isViewer })}
                             >
-                              <CheckCircle2 size={12} className={r.resolved_at ? 'text-green-400' : ''} />
+                              <Eye size={12} className="text-green-400" /> Detalhes
+                            </Button>
+                          ) : !isViewer && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title="Marcar como resolvida"
+                              onClick={() => setResolveRow({ row: r, readOnly: false })}
+                            >
+                              <CheckCircle2 size={12} />
                             </Button>
                           )}
                           <Button variant="ghost" size="sm" title="Copiar Execution ID"
@@ -767,7 +793,9 @@ function GestaoFalhasTab() {
         </div>
       )}
 
-      {resolveRow && <ResolveModal row={resolveRow} onClose={() => setResolveRow(null)} />}
+      {resolveRow && (
+        <ResolveModal row={resolveRow.row} readOnly={resolveRow.readOnly} onClose={() => setResolveRow(null)} />
+      )}
     </div>
   )
 }

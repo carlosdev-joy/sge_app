@@ -1,8 +1,9 @@
 """
 Testes da busca de impacto por campo (DSXEngine.buscar_campo / listar_jobs).
 
-Varre os arquivos .dsx versionados na raiz do repositório. Pula automaticamente
-se os arquivos não estiverem presentes — não depende de Airflow nem de banco.
+Varre os arquivos .dsx em dsx/ (diretório canônico após limpeza da raiz).
+Pula automaticamente se os arquivos não estiverem presentes — não depende
+de Airflow nem de banco.
 
 Roda como:
     pytest tests/test_dsx_field_impact.py -v
@@ -15,6 +16,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+DSX_DIR = ROOT / "dsx"
 DAGS = ROOT / "dags"
 if str(DAGS) not in sys.path:
     sys.path.insert(0, str(DAGS))
@@ -24,11 +26,11 @@ from utils.dsx_engine import DSXEngine  # noqa: E402
 
 @pytest.fixture(scope="module")
 def engine() -> DSXEngine:
-    return DSXEngine(diretorio_base=str(ROOT))
+    return DSXEngine(diretorio_base=str(DSX_DIR))
 
 
 def _has(project: str) -> bool:
-    return (ROOT / f"{project}.dsx").exists()
+    return (DSX_DIR / f"{project}.dsx").exists()
 
 
 def test_listar_dsx_inclui_arquivos_do_repo(engine: DSXEngine):

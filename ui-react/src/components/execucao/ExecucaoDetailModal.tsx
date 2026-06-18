@@ -64,6 +64,7 @@ export interface ExecRow {
   display_name?: string
   ack_at?: string
   resolved_by?: string
+  resolved_display_name?: string
   resolved_at?: string
   resolution_note?: string
   snow_ticket?: string
@@ -234,11 +235,11 @@ export function AirflowLogModal({ state, onClose }: { state: AirflowLogState; on
 // ── DataStage Log Modal ────────────────────────────────────────────────────
 
 export function DsLogModal({
-  executionId, jobName, onClose,
-}: { executionId: string; jobName: string; onClose: () => void }) {
+  executionId, jobName, pipelineName, onClose,
+}: { executionId: string; jobName: string; pipelineName: string; onClose: () => void }) {
   const { data, isLoading } = useQuery<{ total: number; logs: DsLog[] }>({
-    queryKey: ['ds-log', executionId, jobName],
-    queryFn: () => apiFetch(`/datastage/log?execution_id=${encodeURIComponent(executionId)}&job_name=${encodeURIComponent(jobName)}`),
+    queryKey: ['ds-log', executionId, jobName, pipelineName],
+    queryFn: () => apiFetch(`/datastage/log?execution_id=${encodeURIComponent(executionId)}&job_name=${encodeURIComponent(jobName)}&pipeline_name=${encodeURIComponent(pipelineName)}`),
   })
 
   const log = data?.logs?.[0]
@@ -337,7 +338,7 @@ export function LogDetailModal({
   row: ExecRow
   onClose: () => void
   onAirflowLog: (s: AirflowLogState) => void
-  onDsLog: (executionId: string, jobName: string) => void
+  onDsLog: (executionId: string, jobName: string, pipelineName: string) => void
 }) {
   const qc = useQueryClient()
   const user = useAuthStore(s => s.user)
@@ -476,7 +477,7 @@ export function LogDetailModal({
                           📋
                         </Button>
                         <Button variant="ghost" size="sm" title="Log DataStage"
-                          onClick={() => onDsLog(row.execution_id, j.job_name)}>
+                          onClick={() => onDsLog(row.execution_id, j.job_name, row.pipeline)}>
                           ⬡
                         </Button>
                         {j.status === 'FAILED' && user?.perfil !== 'consulta' && (

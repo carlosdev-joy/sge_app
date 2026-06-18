@@ -30,12 +30,13 @@ export interface Pipeline {
   last_execution: string | null
   created_at: string | null
   updated_at: string | null
-  // scheduling avançado (migrations 017/018) — podem vir ausentes
+  // scheduling avançado (migrations 017/018/024) — podem vir ausentes
   horarios_especificos?: string | null
   dias_semana?: string | null
   somente_dias_uteis?: number | null
   calendario_nome?: string | null
   trigger_por_dependencia?: number | null
+  dias_horarios_mes?: string | null
 }
 
 export interface AuditRow {

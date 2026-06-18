@@ -1,10 +1,12 @@
 // ── constants ──────────────────────────────────────────────────────────────
 
-export const SCHEDULE_TYPES = ['daily', 'weekly', 'monthly', 'biweekly', 'hourly_n', 'custom', 'on_demand'] as const
+export const SCHEDULE_TYPES = ['daily', 'weekly', 'monthly', 'biweekly', 'hourly_n', 'custom', 'monthly_days_times', 'on_demand'] as const
 export const SCHEDULE_LABELS: Record<string, string> = {
   daily: 'Diário', weekly: 'Semanal', monthly: 'Mensal', biweekly: 'Quinzenal',
-  hourly_n: 'A cada N horas', custom: 'Horários específicos', on_demand: 'Sob demanda',
+  hourly_n: 'A cada N horas', custom: 'Horários específicos',
+  monthly_days_times: 'Dia + Hora Específico', on_demand: 'Sob demanda',
 }
+export const MAX_MONTH_DAYS = 5
 export const CRITICIDADES   = ['Alta', 'Media', 'Baixa'] as const
 export const AMBIENTES      = ['PROD', 'HML', 'DEV'] as const
 export const DAG_FACTORY_ID = 'etl_dag_factory'
@@ -38,6 +40,15 @@ export interface ScheduleConfig {
   customTimes: string
   weekdays: number[]      // dias da semana selecionados (custom)
   businessDaysOnly: boolean
+  monthDays?: { dia: number; horarios: string[] }[]  // dias do mês + horários (monthly_days_times)
+}
+
+// Uma entrada de "Dia + Hora Específico" no formulário (horariosRaw é texto
+// livre "HH:MM, HH:MM" — parse/validação via parseCustomTimes, igual ao
+// campo de horários do tipo 'custom')
+export interface MonthDayEntry {
+  dia: number
+  horariosRaw: string
 }
 
 // Gera lista de horários "HH:MM" para o tipo "a cada N horas" dentro da janela [startH, endH]
@@ -66,15 +77,43 @@ export function parseCustomTimes(raw: string): string[] {
   return [...set].sort()
 }
 
+// Serializa os blocos de "Dia + Hora Específico" para o JSON persistido
+// (dias_horarios_mes). Descarta dias sem nenhum horário válido.
+export function serializeMonthDaysTimes(entries: MonthDayEntry[]): string {
+  const days = entries
+    .map(e => ({ dia: e.dia, horarios: parseCustomTimes(e.horariosRaw) }))
+    .filter(e => e.horarios.length > 0)
+    .sort((a, b) => a.dia - b.dia)
+  return JSON.stringify(days)
+}
+
+// Parse do JSON persistido (dias_horarios_mes) de volta para os blocos do formulário
+export function parseMonthDaysTimes(raw: string | null | undefined): MonthDayEntry[] {
+  if (!raw) return []
+  try {
+    const data = JSON.parse(raw)
+    if (!Array.isArray(data)) return []
+    return data
+      .filter((e: any) => e && typeof e.dia === 'number' && Array.isArray(e.horarios))
+      .map((e: any) => ({ dia: e.dia, horariosRaw: e.horarios.join(', ') }))
+  } catch {
+    return []
+  }
+}
+
 // Calcula as próximas N execuções, respeitando dia da semana / dia do mês / janela / dias úteis
 export function computeNextRuns(cfg: ScheduleConfig, count = 5): string[] {
   if (cfg.type === 'on_demand') return []
   const results: Date[] = []
   const now = new Date()
 
-  function timesForDay(): { h: number; m: number }[] {
+  function timesForDay(d: Date): { h: number; m: number }[] {
     if (cfg.type === 'hourly_n') return hourlyTimes(cfg).map(t => ({ h: +t.slice(0, 2), m: +t.slice(3) }))
     if (cfg.type === 'custom')   return parseCustomTimes(cfg.customTimes).map(t => ({ h: +t.slice(0, 2), m: +t.slice(3) }))
+    if (cfg.type === 'monthly_days_times') {
+      const entry = cfg.monthDays?.find(e => e.dia === d.getDate())
+      return entry ? entry.horarios.map(t => ({ h: +t.slice(0, 2), m: +t.slice(3) })) : []
+    }
     return [{ h: cfg.hour, m: cfg.minute }]
   }
 
@@ -88,17 +127,16 @@ export function computeNextRuns(cfg: ScheduleConfig, count = 5): string[] {
       case 'monthly':  return dom === cfg.dom
       case 'biweekly': return dom === cfg.dom || dom === cfg.dom + 15
       case 'custom':   return cfg.weekdays.length === 0 ? true : cfg.weekdays.includes(wd)
+      case 'monthly_days_times': return cfg.monthDays?.some(e => e.dia === dom) ?? false
       default:         return true
     }
   }
-
-  const times = timesForDay()
-  if (times.length === 0) return []
 
   const cur = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   for (let dayOffset = 0; dayOffset < 366 && results.length < count; dayOffset++) {
     const d = new Date(cur.getTime() + dayOffset * 86400_000)
     if (!dayMatches(d)) continue
+    const times = timesForDay(d)
     for (const t of times) {
       const dt = new Date(d.getFullYear(), d.getMonth(), d.getDate(), t.h, t.m, 0)
       if (dt > now) { results.push(dt); if (results.length >= count) break }
@@ -219,5 +257,6 @@ export function buildCron(type: string, h: number, m: number, dow: number, dom: 
   if (t === 'monthly')   return `${m} ${h} ${dom} * *`
   if (t === 'biweekly')  return `${m} ${h} ${dom},${dom + 15} * *`
   if (t === 'custom')    return '(horários específicos)'
+  if (t === 'monthly_days_times') return '(dia + hora específico)'
   return `${m} ${h} * * *`
 }

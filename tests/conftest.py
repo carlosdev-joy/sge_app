@@ -14,10 +14,17 @@ Wheels necessárias (adicionar em api/wheels/ antes do deploy):
 from __future__ import annotations
 
 import os
-from unittest.mock import patch
+import sys
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+
+# pyodbc requer o driver ODBC do SQL Server instalado no sistema.
+# Em ambientes de CI/teste sem o driver, substituímos por um mock para que
+# o módulo possa ser importado. A conexão real nunca é chamada nos testes.
+if "pyodbc" not in sys.modules:
+    sys.modules["pyodbc"] = MagicMock()
 
 
 @pytest.fixture(scope="session")

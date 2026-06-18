@@ -42,9 +42,19 @@ config/*.local
 .env.local
 .claude/
 
+## Worktrees de desenvolvimento isolado
+.worktrees/
+
 ## Certificados SSL (chave privada nunca entra no git)
 certs/*.crt
 certs/*.key
 certs/*.pem
 certs/*.p12
 !certs/.gitkeep
+
+## Dados de produção — nunca commitar
+dump_prod*.sql
+prod_info*
+producao_base.*
+schema_prod.sql
+*.rpt

@@ -49,12 +49,16 @@ INT_CONFIG_KEYS = {
 }
 
 # Chaves que não devem ser expostas no GET /config público (visíveis apenas no Admin)
-SENSITIVE_CONFIG_KEYS = {"teams_webhook_url"}
+SENSITIVE_CONFIG_KEYS = {"teams_webhook_url", "powerbi_client_secret"}
 
 
 def _is_sensitive_config(key: str) -> bool:
-    """Webhooks (teams_webhook_*) e chaves listadas não vazam no /config público."""
-    return key in SENSITIVE_CONFIG_KEYS or key.startswith("teams_webhook")
+    """Webhooks (teams_webhook_*), segredos do Power BI e chaves listadas não vazam no /config público."""
+    return (
+        key in SENSITIVE_CONFIG_KEYS
+        or key.startswith("teams_webhook")
+        or key == "powerbi_client_secret"
+    )
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

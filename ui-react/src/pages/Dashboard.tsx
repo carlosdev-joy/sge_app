@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
@@ -216,8 +216,22 @@ function KpiCard({ label, value, sub, icon, color, onClick, pulse }: KpiProps) {
 
 // ── Gantt chart (SVG simples, sem biblioteca) ──────────────────────────────
 
+function useNowBRT(enabled: boolean) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!enabled) return
+    const id = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(id)
+  }, [enabled])
+  return now
+}
+
 function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string }) {
   const sorted = useMemo(() => [...items].sort((a, b) => (a.inicio ?? '').localeCompare(b.inicio ?? '')), [items])
+
+  const isToday = dateRef === todayBRT()
+  const now = useNowBRT(isToday)
+
   if (sorted.length === 0) return null
 
   const dayStart = new Date(`${dateRef}T00:00:00-03:00`).getTime()
@@ -234,6 +248,17 @@ function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string })
     return Math.max(0.3, e - s)
   }
 
+  const nowPct = isToday ? Math.max(0, Math.min(100, ((now - dayStart) / span) * 100)) : null
+  // Em foco: rodando agora, ou com início dentro de uma janela de ±15min do horário atual
+  const FOCUS_WINDOW_MS = 15 * 60 * 1000
+  function isInFocus(it: GanttItem) {
+    if (!isToday) return false
+    if (it.status === 'RUNNING') return true
+    if (!it.inicio) return false
+    const t = new Date(it.inicio.replace(' ', 'T') + '-03:00').getTime()
+    return Math.abs(t - now) <= FOCUS_WINDOW_MS
+  }
+
   const hourMarks = Array.from({ length: 25 }, (_, i) => i)
 
   return (
@@ -246,34 +271,51 @@ function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string })
               {String(h).padStart(2, '0')}h
             </div>
           ))}
+          {nowPct !== null && (
+            <div className="absolute text-[9px] font-bold text-red-500" style={{ left: `${nowPct}%`, transform: 'translateX(-50%)' }}>
+              agora
+            </div>
+          )}
         </div>
         {/* Rows */}
         <div className="flex flex-col gap-1">
-          {sorted.map(it => (
-            <div key={it.execution_id} className="flex items-center gap-2 group">
-              <div className="w-36 flex-shrink-0 text-[10px] text-dim truncate text-right pr-2" title={it.pipeline}>
-                {it.pipeline}
+          {sorted.map(it => {
+            const focus = isInFocus(it)
+            return (
+              <div
+                key={it.execution_id}
+                className={`flex items-center gap-2 group rounded transition-colors ${
+                  focus ? 'bg-red-50 dark:bg-red-900/15 ring-1 ring-red-300/50 dark:ring-red-700/40' : ''
+                }`}
+              >
+                <div className={`w-36 flex-shrink-0 text-[10px] truncate text-right pr-2 ${focus ? 'text-red-600 dark:text-red-300 font-semibold' : 'text-dim'}`} title={it.pipeline}>
+                  {it.pipeline}
+                </div>
+                <div className="flex-1 relative h-5 bg-edge/20 rounded">
+                  {hourMarks.map(h => (
+                    <div key={h} className="absolute top-0 bottom-0 border-l border-edge/20" style={{ left: `${(h / 24) * 100}%` }} />
+                  ))}
+                  {nowPct !== null && (
+                    <div className="absolute top-0 bottom-0 w-px bg-red-500 z-10 pointer-events-none" style={{ left: `${nowPct}%` }} />
+                  )}
+                  <div
+                    className={`absolute top-0.5 bottom-0.5 rounded ${it.status === 'RUNNING' ? 'animate-pulse' : ''}`}
+                    style={{
+                      left: `${pct(it.inicio)}%`,
+                      width: `${width(it.inicio, it.fim)}%`,
+                      backgroundColor: STATUS_COLOR[it.status] ?? '#6b7280',
+                      opacity: it.status === 'RUNNING' ? 0.9 : 0.75,
+                      boxShadow: focus ? '0 0 0 1px #ef4444' : undefined,
+                    }}
+                    title={`${it.pipeline} · ${it.status} · ${fmtTime(it.inicio)}–${fmtTime(it.fim)}`}
+                  />
+                </div>
+                <div className="w-12 flex-shrink-0">
+                  <StatusBadge status={it.status} />
+                </div>
               </div>
-              <div className="flex-1 relative h-5 bg-edge/20 rounded">
-                {hourMarks.map(h => (
-                  <div key={h} className="absolute top-0 bottom-0 border-l border-edge/20" style={{ left: `${(h / 24) * 100}%` }} />
-                ))}
-                <div
-                  className="absolute top-0.5 bottom-0.5 rounded"
-                  style={{
-                    left: `${pct(it.inicio)}%`,
-                    width: `${width(it.inicio, it.fim)}%`,
-                    backgroundColor: STATUS_COLOR[it.status] ?? '#6b7280',
-                    opacity: it.status === 'RUNNING' ? 0.9 : 0.75,
-                  }}
-                  title={`${it.pipeline} · ${it.status} · ${fmtTime(it.inicio)}–${fmtTime(it.fim)}`}
-                />
-              </div>
-              <div className="w-12 flex-shrink-0">
-                <StatusBadge status={it.status} />
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
     </div>
@@ -376,9 +418,10 @@ export default function Dashboard() {
   const [date,         setDate]         = useState(todayBRT())
   const [autoRefresh,  setAutoRefresh]  = useState(false)
   const [showGantt,    setShowGantt]    = useState(true)
+  const [ganttFilter,  setGanttFilter]  = useState<'all' | 'running'>('all')
   const [detail,       setDetail]       = useState<ExecRow | null>(null)
   const [airflowLog,   setAirflowLog]   = useState<AirflowLogState | null>(null)
-  const [dsLog,        setDsLog]        = useState<{ executionId: string; jobName: string } | null>(null)
+  const [dsLog,        setDsLog]        = useState<{ executionId: string; jobName: string; pipelineName: string } | null>(null)
 
   const qs = useMemo(() => {
     const p = new URLSearchParams({ date_ref: date })
@@ -397,7 +440,7 @@ export default function Dashboard() {
     queryFn: () => apiFetch(`/dashboard/gantt?${qs}`),
     refetchInterval: autoRefresh ? 60_000 : false,
   })
-
+  const ganttRunningCount = ganttData?.data?.filter(it => it.status === 'RUNNING').length ?? 0
   const handleFalhaDrillDown = useCallback(() => {
     // "Ver todos": Logs filtrado por FALHA na data selecionada
     navigate(`/logs?status=FAILED&date=${date}`)
@@ -516,7 +559,7 @@ export default function Dashboard() {
                   </h3>
                 </div>
                 {data.executando_agora.map(e => (
-                  <RunningRow key={e.execution_id} e={e} onOpen={() => navigate(`/logs?execution_id=${e.execution_id}`)} />
+                  <RunningRow key={e.execution_id} e={e} onOpen={() => navigate(`/logs?execution_id=${e.execution_id}&pipeline=${encodeURIComponent(e.pipeline)}`)} />
                 ))}
               </div>
             )}
@@ -530,7 +573,7 @@ export default function Dashboard() {
                   </h3>
                 </div>
                 {data.alertas_perf.map(a => (
-                  <AlertaRow key={a.execution_id} a={a} onOpen={() => navigate(`/logs?execution_id=${a.execution_id}`)} />
+                  <AlertaRow key={a.execution_id} a={a} onOpen={() => navigate(`/logs?execution_id=${a.execution_id}&pipeline=${encodeURIComponent(a.pipeline)}`)} />
                 ))}
               </div>
             )}
@@ -585,9 +628,18 @@ export default function Dashboard() {
               className="w-full px-4 py-2.5 border-b border-edge flex items-center justify-between hover:bg-canvas/50 transition-colors text-left"
               onClick={() => setShowGantt(v => !v)}
             >
-              <h3 className="text-sm font-semibold text-ink">
+              <h3 className="text-sm font-semibold text-ink flex items-center gap-2">
                 Linha do tempo — {date}
-                {ganttData?.data && <span className="text-dim font-normal ml-2 text-xs">({ganttData.data.length} execuções)</span>}
+                {ganttData?.data && <span className="text-dim font-normal text-xs">({ganttData.data.length} execuções)</span>}
+                {ganttRunningCount > 0 && (
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[10px] font-bold">
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-blue-500" />
+                    </span>
+                    {ganttRunningCount} rodando
+                  </span>
+                )}
               </h3>
               <span className="text-dim text-xs">{showGantt ? '▲ ocultar' : '▼ expandir'}</span>
             </button>
@@ -599,16 +651,40 @@ export default function Dashboard() {
                 )}
                 {!ganttLoading && ganttData?.data && ganttData.data.length > 0 && (
                   <>
-                    {/* Legenda status */}
-                    <div className="flex items-center gap-4 mb-3 flex-wrap">
-                      {Object.entries(STATUS_COLOR).slice(0, 4).map(([s, c]) => (
-                        <span key={s} className="flex items-center gap-1 text-[10px] text-dim">
-                          <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: c }} />
-                          {STATUS_LABEL[s]}
-                        </span>
-                      ))}
+                    {/* Legenda status + filtro */}
+                    <div className="flex items-center justify-between gap-4 mb-3 flex-wrap">
+                      <div className="flex items-center gap-4 flex-wrap">
+                        {Object.entries(STATUS_COLOR).slice(0, 4).map(([s, c]) => (
+                          <span key={s} className="flex items-center gap-1 text-[10px] text-dim">
+                            <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: c }} />
+                            {STATUS_LABEL[s]}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-1 text-xs">
+                        <button
+                          className={`px-2.5 py-1 rounded-md transition-colors ${ganttFilter === 'all' ? 'bg-canvas border border-edge font-medium text-ink' : 'text-dim hover:text-ink'}`}
+                          onClick={() => setGanttFilter('all')}
+                        >
+                          Todas ({ganttData.data.length})
+                        </button>
+                        <button
+                          className={`px-2.5 py-1 rounded-md transition-colors ${ganttFilter === 'running' ? 'bg-canvas border border-edge font-medium text-ink' : 'text-dim hover:text-ink'}`}
+                          onClick={() => setGanttFilter('running')}
+                        >
+                          Ativas ({ganttRunningCount})
+                        </button>
+                      </div>
                     </div>
-                    <GanttChart items={ganttData.data} dateRef={date} />
+
+                    {ganttFilter === 'running' && ganttRunningCount === 0 ? (
+                      <div className="text-center py-8 text-dim text-sm">Nenhuma execução ativa neste momento</div>
+                    ) : (
+                      <GanttChart
+                        items={ganttFilter === 'running' ? ganttData.data.filter(it => it.status === 'RUNNING') : ganttData.data}
+                        dateRef={date}
+                      />
+                    )}
                   </>
                 )}
               </div>
@@ -678,11 +754,11 @@ export default function Dashboard() {
           row={detail}
           onClose={() => setDetail(null)}
           onAirflowLog={s => { setDetail(null); setAirflowLog(s) }}
-          onDsLog={(eid, jn) => { setDetail(null); setDsLog({ executionId: eid, jobName: jn }) }}
+          onDsLog={(eid, jn, pn) => { setDetail(null); setDsLog({ executionId: eid, jobName: jn, pipelineName: pn }) }}
         />
       )}
       {airflowLog && <AirflowLogModal state={airflowLog} onClose={() => setAirflowLog(null)} />}
-      {dsLog && <DsLogModal executionId={dsLog.executionId} jobName={dsLog.jobName} onClose={() => setDsLog(null)} />}
+      {dsLog && <DsLogModal executionId={dsLog.executionId} jobName={dsLog.jobName} pipelineName={dsLog.pipelineName} onClose={() => setDsLog(null)} />}
     </div>
   )
 }

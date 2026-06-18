@@ -1,6 +1,7 @@
 """api/routers/execucoes.py — GET /execucoes, POST /execucoes/rerun, POST /execucoes/ack, GET /execucoes/duracao-media."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timedelta
@@ -107,48 +108,115 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
         log.warning("[ACK] Falha ao enviar Teams: %s", e)
 
 
+def _teams_resolved_card(pipeline: str, exec_id: str, resolved_by: str, display_name: str,
+                          resolved_at: str, resolution_note: str | None, snow_ticket: str | None,
+                          webhook_var: str) -> None:
+    """Posta card no Teams informando que a falha foi resolvida.
+
+    Ordem de resolução do webhook:
+      1. dbo.etl_app_config chave 'teams_webhook_url_resolved' (canal dedicado a resoluções)
+      2. dbo.etl_app_config chave 'teams_webhook_url'          (canal padrão/geral)
+      3. variável de ambiente TEAMS_WEBHOOK_URL_CVP
+    """
+    webhook_url = _get_app_config_value("teams_webhook_url_resolved") \
+        or _get_app_config_value("teams_webhook_url") \
+        or os.getenv(webhook_var, "")
+    if not webhook_url:
+        log.warning("[RESOLVE] webhook do Teams não configurado — cadastre o parâmetro "
+                    "'teams_webhook_url_resolved' em Admin > Configurações. Notificação ignorada.")
+        return
+
+    identity = f"{display_name} ({resolved_by})" if display_name and display_name != resolved_by else resolved_by
+    facts = [
+        {"title": "Pipeline",      "value": pipeline},
+        {"title": "Resolvido por", "value": identity},
+        {"title": "Matrícula",     "value": resolved_by},
+        {"title": "Resolvido em",  "value": resolved_at or "agora"},
+        {"title": "Execution ID",  "value": exec_id},
+    ]
+    if resolution_note:
+        facts.append({"title": "Nota de resolução", "value": resolution_note})
+    if snow_ticket:
+        facts.append({"title": "Ticket ServiceNow", "value": snow_ticket})
+
+    payload = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard", "version": "1.4",
+                "body": [
+                    {"type": "TextBlock",
+                     "text": "✅ Falha resolvida",
+                     "size": "Large", "weight": "Bolder", "wrap": True, "color": "Good"},
+                    {"type": "TextBlock",
+                     "text": f"{identity} marcou a falha no pipeline {pipeline} como resolvida.",
+                     "wrap": True, "spacing": "None", "isSubtle": True},
+                    {"type": "FactSet", "spacing": "Medium", "facts": facts},
+                ],
+            },
+        }],
+    }
+    try:
+        resp = httpx.post(webhook_url, json=payload, timeout=10)
+        log.info("[RESOLVE] Teams status=%s body=%.120s", resp.status_code, resp.text)
+    except Exception as e:
+        log.warning("[RESOLVE] Falha ao enviar Teams: %s", e)
+
+
 def _merge_fila_por_execucao(cur, conn, data: list[dict]) -> None:
-    """Soma queued_seconds de etl_ds_job_log por execution_id e injeta em
-    data[i]['fila_total_segundos']. Degrada silenciosamente se a tabela/coluna
-    não existir."""
+    """Soma queued_seconds de etl_ds_job_log por (execution_id, pipeline) e injeta
+    em data[i]['fila_total_segundos']. Degrada silenciosamente se a tabela/coluna
+    não existir.
+
+    Agrupa também por pipeline_name (além de execution_id) porque o
+    execution_id (derivado de ts_nodash) pode colidir entre pipelines
+    diferentes disparados no mesmo timestamp.
+    """
     exec_ids = list({d["execution_id"] for d in data if d.get("execution_id")})
     if not exec_ids:
         return
     placeholders = ",".join("?" * len(exec_ids))
     try:
         cur.execute(f"""
-            SELECT execution_id, SUM(CAST(queued_seconds AS bigint))
+            SELECT execution_id, pipeline_name, SUM(CAST(queued_seconds AS bigint))
             FROM dbo.etl_ds_job_log
             WHERE queued_seconds IS NOT NULL AND queued_seconds > 0
               AND execution_id IN ({placeholders})
-            GROUP BY execution_id
+            GROUP BY execution_id, pipeline_name
         """, exec_ids)
-        fila = {row[0]: int(row[1] or 0) for row in cur.fetchall()}
+        fila = {(row[0], row[1]): int(row[2] or 0) for row in cur.fetchall()}
         for d in data:
-            d["fila_total_segundos"] = fila.get(d["execution_id"], 0)
+            d["fila_total_segundos"] = fila.get((d["execution_id"], d.get("pipeline")), 0)
     except Exception:
         try: conn.rollback()
         except Exception: pass
 
 
 def _merge_fila_por_job(cur, conn, data: list[dict]) -> None:
-    """Soma queued_seconds por (execution_id, job_name) e injeta em
-    data[i]['fila_segundos']. Degrada silenciosamente."""
+    """Soma queued_seconds por (execution_id, pipeline, job_name) e injeta em
+    data[i]['fila_segundos']. Degrada silenciosamente.
+
+    Inclui pipeline_name no agrupamento pelo mesmo motivo descrito em
+    _merge_fila_por_execucao: execution_id isoladamente pode colidir entre
+    pipelines distintos.
+    """
     exec_ids = list({d["execution_id"] for d in data if d.get("execution_id")})
     if not exec_ids:
         return
     placeholders = ",".join("?" * len(exec_ids))
     try:
         cur.execute(f"""
-            SELECT execution_id, job_name, SUM(CAST(queued_seconds AS bigint))
+            SELECT execution_id, pipeline_name, job_name, SUM(CAST(queued_seconds AS bigint))
             FROM dbo.etl_ds_job_log
             WHERE queued_seconds IS NOT NULL AND queued_seconds > 0
               AND execution_id IN ({placeholders})
-            GROUP BY execution_id, job_name
+            GROUP BY execution_id, pipeline_name, job_name
         """, exec_ids)
-        fila = {(row[0], row[1]): int(row[2] or 0) for row in cur.fetchall()}
+        fila = {(row[0], row[1], row[2]): int(row[3] or 0) for row in cur.fetchall()}
         for d in data:
-            d["fila_segundos"] = fila.get((d["execution_id"], d["job_name"]), 0)
+            d["fila_segundos"] = fila.get((d["execution_id"], d.get("pipeline"), d["job_name"]), 0)
     except Exception:
         try: conn.rollback()
         except Exception: pass
@@ -304,7 +372,8 @@ def list_execucoes(
         try:
             cur.execute(agg_cte + """
                 SELECT a.*, ack.ack_by, ack.display_name, ack.ack_at,
-                       ack.resolved_by, ack.resolved_at, ack.resolution_note, ack.snow_ticket
+                       ack.resolved_by, ack.resolved_display_name, ack.resolved_at,
+                       ack.resolution_note, ack.snow_ticket
                 FROM agg a
                 LEFT JOIN dbo.etl_failure_ack ack
                        ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
@@ -345,9 +414,10 @@ def list_execucoes(
                 "display_name": r[13] if has_ack else None,
                 "ack_at": _fmt_dt(r[14]) if has_ack else None,
                 "resolved_by": r[15] if has_resolved else None,
-                "resolved_at": _fmt_dt(r[16]) if has_resolved else None,
-                "resolution_note": r[17] if has_resolved else None,
-                "snow_ticket": r[18] if has_resolved else None,
+                "resolved_display_name": r[16] if has_resolved else None,
+                "resolved_at": _fmt_dt(r[17]) if has_resolved else None,
+                "resolution_note": r[18] if has_resolved else None,
+                "snow_ticket": r[19] if has_resolved else None,
                 "fila_total_segundos": None,
             }
             for r in cur.fetchall()
@@ -460,6 +530,16 @@ async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(requi
     try:
         conn = get_db_conn(); cur = conn.cursor()
         if remove:
+            if _ensure_resolve_columns(conn, cur):
+                cur.execute(
+                    "SELECT resolved_at FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?",
+                    (exec_id, pipeline))
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    cur.close(); conn.close()
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Falha já resolvida — desfaça a resolução antes de remover a assunção")
             cur.execute(
                 "DELETE FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?",
                 (exec_id, pipeline))
@@ -471,7 +551,7 @@ async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(requi
             IF NOT EXISTS (SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?)
                 INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name, note)
                 VALUES (?, ?, ?, ?, ?)
-        """, (exec_id, pipeline, user, display_name, note))
+        """, (exec_id, pipeline, exec_id, pipeline, user, display_name, note))
         conn.commit()
 
         cur.execute(
@@ -485,9 +565,11 @@ async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(requi
         display_name_db = row[1] if row else display_name
         ack_at_db      = _fmt_dt(row[2]) if row else None
 
-        # Notificar Teams (em background — falha silenciosa para não bloquear o ACK)
+        # Notificar Teams — _teams_ack_card faz I/O de rede síncrono; roda em
+        # thread separada para não bloquear o event loop de outras requisições.
         try:
-            _teams_ack_card(
+            await asyncio.to_thread(
+                _teams_ack_card,
                 pipeline=pipeline, exec_id=exec_id,
                 ack_by=ack_by_db, display_name=display_name_db or ack_by_db,
                 ack_at=ack_at_db, note=note,
@@ -506,13 +588,26 @@ async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(requi
         raise HTTPException(status_code=500, detail=str(e))
 
 
+_resolve_cols_ready = False
+
+
 def _ensure_resolve_columns(conn, cur) -> bool:
-    """Garante colunas de resolução na etl_failure_ack. Retorna True se existem."""
+    """Garante colunas de resolução na etl_failure_ack. Retorna True se existem.
+
+    Cacheia o estado "True" em memória do processo: colunas adicionadas por
+    migration nunca são removidas, então uma vez confirmadas não há motivo
+    para repetir a checagem em toda requisição (evita 5 round-trips extras
+    por chamada em /execucoes/falhas, /falhas-summary e /resolve).
+    """
+    global _resolve_cols_ready
+    if _resolve_cols_ready:
+        return True
     _RESOLVE_COLS = [
-        ("resolved_by",     "NVARCHAR(64)"),
-        ("resolved_at",     "DATETIME"),
-        ("resolution_note", "NVARCHAR(500)"),
-        ("snow_ticket",     "NVARCHAR(64)"),
+        ("resolved_by",            "NVARCHAR(64)"),
+        ("resolved_display_name",  "NVARCHAR(128)"),
+        ("resolved_at",            "DATETIME"),
+        ("resolution_note",        "NVARCHAR(500)"),
+        ("snow_ticket",            "NVARCHAR(64)"),
     ]
     for col, ddl in _RESOLVE_COLS:
         try:
@@ -531,9 +626,12 @@ def _ensure_resolve_columns(conn, cur) -> bool:
         cur.execute(
             "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS "
             "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_failure_ack' AND COLUMN_NAME='resolved_at'")
-        return bool(cur.fetchone())
+        ready = bool(cur.fetchone())
     except Exception:
-        return False
+        ready = False
+    if ready:
+        _resolve_cols_ready = True
+    return ready
 
 
 def _failure_cte(cutoff: str, filter_pipeline: str | None, filter_project: str | None):
@@ -619,7 +717,7 @@ def get_falhas_summary(days: int = Query(7, ge=1, le=90)):
 
 @router.post("/execucoes/resolve", tags=["execucoes"])
 async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(require_perm(PERM_EXECUTAR))):
-    """Marca uma falha como resolvida (ou desfaz com remove=true).
+    """Marca uma falha como resolvida (ou desfaz com remove=true) e notifica o Teams.
 
     Body: execution_id, pipeline, resolution_note (opcional), snow_ticket (opcional), remove (bool)
     """
@@ -641,7 +739,8 @@ async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(re
         if remove:
             cur.execute(
                 "UPDATE dbo.etl_failure_ack "
-                "SET resolved_by=NULL, resolved_at=NULL, resolution_note=NULL, snow_ticket=NULL "
+                "SET resolved_by=NULL, resolved_display_name=NULL, resolved_at=NULL, "
+                "    resolution_note=NULL, snow_ticket=NULL "
                 "WHERE execution_id=? AND pipeline=?",
                 (exec_id, pipeline))
             conn.commit(); cur.close(); conn.close()
@@ -652,28 +751,50 @@ async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(re
             "IF NOT EXISTS (SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?)"
             "  INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name)"
             "  VALUES (?, ?, ?, ?)",
-            (exec_id, pipeline, matricula, display_name))
+            (exec_id, pipeline, exec_id, pipeline, matricula, display_name))
 
         cur.execute(
             "UPDATE dbo.etl_failure_ack "
-            "SET resolved_by=?, resolved_at=GETDATE(), resolution_note=?, snow_ticket=? "
+            "SET resolved_by=?, resolved_display_name=?, resolved_at=GETDATE(), "
+            "    resolution_note=?, snow_ticket=? "
             "WHERE execution_id=? AND pipeline=?",
-            (matricula, resolution_note, snow_ticket, exec_id, pipeline))
+            (matricula, display_name, resolution_note, snow_ticket, exec_id, pipeline))
         conn.commit()
 
         cur.execute(
-            "SELECT resolved_by, resolved_at, resolution_note, snow_ticket "
+            "SELECT resolved_by, resolved_display_name, resolved_at, resolution_note, snow_ticket "
             "FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?",
             (exec_id, pipeline))
         row = cur.fetchone()
         cur.close(); conn.close()
 
+        resolved_by_db           = row[0] if row else matricula
+        resolved_display_name_db = row[1] if row else display_name
+        resolved_at_db           = _fmt_dt(row[2]) if row else None
+        resolution_note_db       = row[3] if row else resolution_note
+        snow_ticket_db           = row[4] if row else snow_ticket
+
+        # Notificar Teams — _teams_resolved_card faz I/O de rede síncrono; roda
+        # em thread separada para não bloquear o event loop de outras requisições.
+        try:
+            await asyncio.to_thread(
+                _teams_resolved_card,
+                pipeline=pipeline, exec_id=exec_id,
+                resolved_by=resolved_by_db, display_name=resolved_display_name_db or resolved_by_db,
+                resolved_at=resolved_at_db, resolution_note=resolution_note_db,
+                snow_ticket=snow_ticket_db,
+                webhook_var="TEAMS_WEBHOOK_URL_CVP",
+            )
+        except Exception as e:
+            log.warning("[RESOLVE] Teams ignorado: %s", e)
+
         return {
             "ok": True, "action": "resolved",
-            "resolved_by":     row[0] if row else matricula,
-            "resolved_at":     _fmt_dt(row[1]) if row else None,
-            "resolution_note": row[2] if row else resolution_note,
-            "snow_ticket":     row[3] if row else snow_ticket,
+            "resolved_by":           resolved_by_db,
+            "resolved_display_name": resolved_display_name_db,
+            "resolved_at":           resolved_at_db,
+            "resolution_note":       resolution_note_db,
+            "snow_ticket":           snow_ticket_db,
         }
     except HTTPException:
         raise
@@ -718,7 +839,8 @@ def list_falhas(
         total_row = cur.fetchone()
         total = int(total_row[0] or 0) if total_row else 0
 
-        resolve_sel = ", ack.resolved_by, ack.resolved_at, ack.resolution_note, ack.snow_ticket" \
+        resolve_sel = ", ack.resolved_by, ack.resolved_display_name, ack.resolved_at, " \
+                      "ack.resolution_note, ack.snow_ticket" \
                       if has_resolved else ""
 
         cur.execute(cte + f"""
@@ -748,10 +870,11 @@ def list_falhas(
                 "jobs_warning": int(r[8] or 0),
                 "ack_by": r[9], "display_name": r[10],
                 "ack_at": _fmt_dt(r[11]), "note": r[12],
-                "resolved_by":     r[13] if has_resolved else None,
-                "resolved_at":     _fmt_dt(r[14]) if has_resolved else None,
-                "resolution_note": r[15] if has_resolved else None,
-                "snow_ticket":     r[16] if has_resolved else None,
+                "resolved_by":           r[13] if has_resolved else None,
+                "resolved_display_name": r[14] if has_resolved else None,
+                "resolved_at":           _fmt_dt(r[15]) if has_resolved else None,
+                "resolution_note":       r[16] if has_resolved else None,
+                "snow_ticket":           r[17] if has_resolved else None,
             }
             data.append(item)
 
