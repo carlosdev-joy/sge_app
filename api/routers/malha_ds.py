@@ -174,12 +174,13 @@ def get_malha(project: str, root: str | None = None, _auth: dict = Depends(get_c
         nodes, edges = _read_rows(cur, project)
 
     parsed = M.from_rows(nodes, edges, project=project)
+    trees = [M.build_tree(parsed, root)] if root else M.build_forest(parsed)
     return {
         "malha": {"project": h[0], "server_name": h[1], "ds_version": h[2],
                   "nodes_count": h[3], "edges_count": h[4], "imported_by": h[5],
                   "imported_at": h[6].strftime("%Y-%m-%d %H:%M:%S") if h[6] else None},
         "roots": M.root_sequences(parsed),
-        "tree":  M.build_tree(parsed, root),
+        "trees": trees,
     }
 
 

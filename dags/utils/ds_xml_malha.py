@@ -197,6 +197,18 @@ def build_tree(parsed: dict, root: str | None = None, _seen=None) -> dict:
     return node
 
 
+def build_forest(parsed: dict) -> list[dict]:
+    """Floresta da malha: UMA árvore por sequence-raiz. Sequences com
+    relacionamento (chamadas por outra) ficam aninhadas na sua raiz; as sem
+    relacionamento viram árvore própria — assim um arquivo mapeia o projeto
+    inteiro (várias SEQ independentes lado a lado)."""
+    roots = root_sequences(parsed)
+    if not roots:
+        br = _best_root(parsed)
+        return [build_tree(parsed, br)] if br else []
+    return [build_tree(parsed, r) for r in roots]
+
+
 def monitorable_jobs(parsed: dict, root: str | None = None) -> list[str]:
     """Lista plana e única dos jobs reais (não-sequence, não-rotina) sob a malha.
 

@@ -21,7 +21,7 @@ interface TreeNode {
   name: string; kind: string; children: TreeNode[]
   routines: number; commands: number; invocations?: number; ref?: boolean
 }
-interface MalhaDetail { malha: MalhaHeader; roots: string[]; tree: TreeNode }
+interface MalhaDetail { malha: MalhaHeader; roots: string[]; trees: TreeNode[] }
 
 // ── Badge de tipo de nó ───────────────────────────────────────────
 const KIND_CLS: Record<string, string> = {
@@ -104,8 +104,10 @@ function countTree(node: TreeNode, acc = { seq: 0, job: 0, ext: 0 }) {
 export default function MalhaDS() {
   const [xmlFile, setXmlFile] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
+  const [rootSel, setRootSel] = useState('')   // sequence raiz escolhida (vazio = melhor/automática)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [termo, setTermo] = useState('')
+  const pick = (project: string | null) => { setSelected(project); setRootSel('') }
 
   const { data: xmlData } = useQuery<{ base_dir: string; files: string[] }>({
     queryKey: ['malha-ds-xml'], queryFn: () => apiFetch('/malha-ds/xml-files'),
@@ -113,14 +115,15 @@ export default function MalhaDS() {
   const { data: listData, isLoading: loadingList } = useQuery<{ malhas: MalhaHeader[] }>({
     queryKey: ['malha-ds-list'], queryFn: () => apiFetch('/malha-ds'),
   })
+  const rootQ = rootSel ? `?root=${encodeURIComponent(rootSel)}` : ''
   const { data: detail, isFetching: loadingDetail } = useQuery<MalhaDetail>({
-    queryKey: ['malha-ds', selected],
-    queryFn: () => apiFetch(`/malha-ds/${encodeURIComponent(selected!)}`),
+    queryKey: ['malha-ds', selected, rootSel],
+    queryFn: () => apiFetch(`/malha-ds/${encodeURIComponent(selected!)}${rootQ}`),
     enabled: !!selected,
   })
   const { data: jobsData } = useQuery<{ jobs: string[] }>({
-    queryKey: ['malha-ds-jobs', selected],
-    queryFn: () => apiFetch(`/malha-ds/${encodeURIComponent(selected!)}/jobs`),
+    queryKey: ['malha-ds-jobs', selected, rootSel],
+    queryFn: () => apiFetch(`/malha-ds/${encodeURIComponent(selected!)}/jobs${rootQ}`),
     enabled: !!selected,
   })
   const { data: statusData, refetch: refetchStatus } = useQuery<StatusResp>({
@@ -140,7 +143,7 @@ export default function MalhaDS() {
       queryClient.invalidateQueries({ queryKey: ['malha-ds-list'] })
       queryClient.invalidateQueries({ queryKey: ['malha-ds', r.project] })
       queryClient.invalidateQueries({ queryKey: ['malha-ds-jobs', r.project] })
-      setSelected(r.project)
+      pick(r.project)
     },
     onError: (e: any) => toast.error(e.message),
   })
@@ -150,7 +153,7 @@ export default function MalhaDS() {
     onSuccess: (_r, project) => {
       toast.success(`Malha de ${project} removida`)
       queryClient.invalidateQueries({ queryKey: ['malha-ds-list'] })
-      if (selected === project) setSelected(null)
+      if (selected === project) pick(null)
     },
     onError: (e: any) => toast.error(e.message),
   })
@@ -175,7 +178,7 @@ export default function MalhaDS() {
 
   const toggle = (p: string) => setCollapsed((s) => { const n = new Set(s); n.has(p) ? n.delete(p) : n.add(p); return n })
   const malhas = listData?.malhas ?? []
-  const counts = detail ? countTree(detail.tree) : null
+  const counts = detail ? detail.trees.reduce((a, t) => countTree(t, a), { seq: 0, job: 0, ext: 0 }) : null
 
   return (
     <div className="flex flex-col gap-5">
@@ -224,7 +227,7 @@ export default function MalhaDS() {
               {malhas.map((m) => (
                 <div key={m.project}
                   className={`flex items-center gap-3 px-3 py-2 rounded-lg border transition-colors ${selected === m.project ? 'border-[#1A5FA8] bg-[#1A5FA8]/5' : 'border-edge hover:border-[#1A5FA8]/50'}`}>
-                  <button onClick={() => setSelected(m.project)} className="flex items-center gap-3 text-left flex-1 min-w-0">
+                  <button onClick={() => pick(m.project)} className="flex items-center gap-3 text-left flex-1 min-w-0">
                     <Database size={15} className="text-[#1A5FA8] shrink-0" />
                     <span className="font-medium text-ink">{m.project}</span>
                     <span className="text-xs text-dim flex items-center gap-1"><Server size={11} /> {m.server_name ?? '—'} · DS {m.ds_version ?? '—'}</span>
@@ -270,7 +273,7 @@ export default function MalhaDS() {
                 <span><Server size={11} className="inline" /> {detail.malha.server_name ?? '—'} · DataStage {detail.malha.ds_version ?? '—'}</span>
                 <span>{detail.malha.nodes_count} nós · {detail.malha.edges_count} chamadas</span>
                 <span>Importado: {detail.malha.imported_at ?? '—'} {detail.malha.imported_by ? `por ${detail.malha.imported_by}` : ''}</span>
-                <span>Raiz: <strong className="text-ink">{detail.roots.join(', ') || '—'}</strong></span>
+                <span>Sequences raiz: <strong className="text-ink">{detail.roots.length}</strong> (vendo: {rootSel || `todas (${detail.trees.length})`})</span>
               </div>
 
               {/* Status por job (dsjob -jobinfo) */}
@@ -297,10 +300,27 @@ export default function MalhaDS() {
 
               {/* Árvore (quem chama quem, com executor resolvido) */}
               <div className="border border-edge rounded-lg p-3 overflow-x-auto bg-canvas/40">
-                <div className="flex items-center gap-2 text-xs text-dim mb-2">
-                  <GitBranch size={13} /> Árvore de execução (executor genérico já resolvido para o job real)
+                <div className="flex items-center gap-2 text-xs text-dim mb-2 flex-wrap">
+                  <GitBranch size={13} /> Árvore de execução — {detail.trees.length} sequence(s) raiz
+                  {detail.roots.length > 1 && (
+                    <span className="flex items-center gap-1.5">
+                      · ver:
+                      <select value={rootSel} onChange={(e) => setRootSel(e.target.value)}
+                        className="bg-panel border border-edge rounded px-1.5 py-0.5 text-xs text-ink max-w-[280px]">
+                        <option value="">Todas ({detail.roots.length})</option>
+                        {detail.roots.map((r) => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                    </span>
+                  )}
+                  <span className="ml-auto">executor genérico já resolvido para o job real</span>
                 </div>
-                <TreeRow node={detail.tree} path="root" collapsed={collapsed} toggle={toggle} termo={termo} statusMap={statusMap} />
+                <div className="flex flex-col gap-3">
+                  {detail.trees.map((t, i) => (
+                    <div key={`${t.name}#${i}`} className={i > 0 ? 'border-t border-edge/50 pt-3' : ''}>
+                      <TreeRow node={t} path={`root${i}`} collapsed={collapsed} toggle={toggle} termo={termo} statusMap={statusMap} />
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           )}
