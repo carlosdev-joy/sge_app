@@ -137,6 +137,21 @@ def test_scan_targets_inclui_sequences(tmp_path):
     assert "MasterSeq" in targets and "MasterSeq" not in set(M.monitorable_jobs(p))
 
 
+def test_to_rows_dedup_nomes_case_insensitive(tmp_path):
+    """Nós que diferem só por caixa contam como 1 (igual ao índice único do SQL)."""
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<DSExport>
+   <Header ToolInstanceID="P" ServerVersion="11.7"/>
+   <Job Identifier="jobOrigemFTP"><Record Identifier="ROOT" Type="JobDefn"><Property Name="Name">jobOrigemFTP</Property></Record></Job>
+   <Job Identifier="JobOrigemFTP"><Record Identifier="ROOT" Type="JobDefn"><Property Name="Name">JobOrigemFTP</Property></Record></Job>
+</DSExport>"""
+    f = tmp_path / "dup.xml"
+    f.write_text(xml, encoding="utf-8")
+    rows = M.to_rows(M.parse_file(str(f)))
+    norms = [n["name"].strip().lower() for n in rows["nodes"]]
+    assert norms.count("joborigemftp") == 1   # deduplicado
+
+
 def test_arquivo_inexistente_ou_invalido(tmp_path):
     bad = tmp_path / "x.xml"
     bad.write_text("<NotDSExport/>", encoding="utf-8")
