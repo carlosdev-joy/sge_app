@@ -13,8 +13,9 @@ import { Tabs } from '../components/ui/Tabs'
 import {
   RefreshCw, RotateCcw, CheckSquare, FileText,
   ChevronDown, ChevronUp, Copy,
-  ShieldCheck, ShieldAlert, ShieldX, AlertTriangle, CheckCircle2, Ticket, Eye,
+  ShieldCheck, ShieldAlert, ShieldX, AlertTriangle, CheckCircle2, Ticket, Eye, Share2,
 } from 'lucide-react'
+import { MalhaTreeModal } from '../components/MalhaTreeModal'
 import { Textarea } from '../components/ui/Input'
 import {
   LogDetailModal, AirflowLogModal, DsLogModal,
@@ -57,6 +58,8 @@ interface FalhaRow {
   resolved_at?: string
   resolution_note?: string
   snow_ticket?: string
+  origem?: string      // 'pipeline' | 'malha'
+  job_name?: string    // preenchido quando origem='malha' (job ABORTED órfão)
 }
 
 interface FactoryRun {
@@ -596,6 +599,7 @@ function GestaoFalhasTab() {
   const [filterProject, setFilterProject] = useState('')
   const [page, setPage] = useState(0)
   const [resolveRow, setResolveRow] = useState<{ row: FalhaRow; readOnly: boolean } | null>(null)
+  const [malhaJob, setMalhaJob] = useState<string | null>(null)
   const FLIMIT = 50
 
   const qs = new URLSearchParams({
@@ -720,7 +724,18 @@ function GestaoFalhasTab() {
                   {rows.map(r => (
                     <tr key={`${r.execution_id}-${r.pipeline}`}
                       className={`border-b border-edge/40 hover:bg-edge/20 transition-colors ${r.resolved_at ? 'opacity-70' : ''}`}>
-                      <td className="px-3 py-2 font-mono text-ink font-medium max-w-[220px] truncate" title={r.pipeline}>{r.pipeline}</td>
+                      <td className="px-3 py-2 font-mono text-ink font-medium max-w-[240px]"
+                        title={r.origem === 'malha' ? r.job_name : r.pipeline}>
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate">{r.origem === 'malha' ? r.job_name : r.pipeline}</span>
+                          {r.origem === 'malha' && (
+                            <span title="Falha detectada na varredura da malha (job órfão, fora do tratamento da sequence)"
+                              className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold border bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800">
+                              malha
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-3 py-2 text-dim">{r.project}</td>
                       <td className="px-3 py-2 text-dim whitespace-nowrap">{fmtDt(r.inicio)}</td>
                       <td className="px-3 py-2">{statusAckLabel(r)}</td>
@@ -772,6 +787,13 @@ function GestaoFalhasTab() {
                               <CheckCircle2 size={12} />
                             </Button>
                           )}
+                          {r.origem === 'malha' && r.job_name && (
+                            <Button variant="ghost" size="sm" title="Ver malha (estrutura DataStage)"
+                              onClick={() => setMalhaJob(r.job_name!)}
+                              className="text-[#1A5FA8]">
+                              <Share2 size={12} />
+                            </Button>
+                          )}
                           <Button variant="ghost" size="sm" title="Copiar Execution ID"
                             onClick={() => copyText(r.execution_id)}>
                             <Copy size={12} />
@@ -796,6 +818,7 @@ function GestaoFalhasTab() {
       {resolveRow && (
         <ResolveModal row={resolveRow.row} readOnly={resolveRow.readOnly} onClose={() => setResolveRow(null)} />
       )}
+      {malhaJob && <MalhaTreeModal jobName={malhaJob} open onClose={() => setMalhaJob(null)} />}
     </div>
   )
 }

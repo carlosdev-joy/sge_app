@@ -12,10 +12,11 @@ Disparado via ORQUESTRA (POST /malha-ds/{project}/scan) ou trigger manual:
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pendulum
 from airflow import DAG
@@ -29,6 +30,7 @@ SSH_CONN_ID   = "ssh_lnxprd021"
 MSSQL_CONN_ID = "SQL14_DMDB41"
 DSHOME        = "/opt/IBM/InformationServer/Server/DSEngine"
 LOCAL_TZ      = "America/Sao_Paulo"
+TEAMS_WEBHOOK_VAR = "TEAMS_WEBHOOK_URL_CVP"   # mesmo canal do orquestra_sla_monitor
 
 # Intervalo da varredura automática (minutos) — Variable DS_MALHA_SCAN_MINUTES
 try:
@@ -47,6 +49,89 @@ _STATUS = {
 _JOB_RE = re.compile(r"^[A-Za-z0-9_.]+$")
 
 default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
+
+
+def _malha_exec_id(project: str, job: str, wave) -> str:
+    """ID sintético estável (cabe em VARCHAR(50/100)) p/ dedup e chave do ack/resolve."""
+    h = hashlib.md5(f"{project}|{job}|{wave}".encode("utf-8")).hexdigest()[:16]
+    return f"malha:{h}"
+
+
+def _parse_ds_time(s: str | None):
+    """Converte 'Job Start Time' do dsjob (ex.: 'Thu Jun 18 02:00:01 2026') em datetime."""
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s.strip(), "%a %b %d %H:%M:%S %Y")
+    except Exception:
+        return None
+
+
+def _teams_alert_aborts(project: str, aborts: list[dict]) -> None:
+    """Posta UM card no Teams listando os jobs ABORTED novos do projeto (anti-spam)."""
+    try:
+        from airflow.models import Variable  # noqa: PLC0415
+        webhook = Variable.get(TEAMS_WEBHOOK_VAR)
+    except Exception:
+        print(f"[ALERT] Variable '{TEAMS_WEBHOOK_VAR}' ausente — alerta Teams ignorado.")
+        return
+    import requests  # noqa: PLC0415
+    facts = []
+    for a in aborts[:15]:
+        val = a["job"]
+        if a.get("elapsed"):
+            val += f" · {a['elapsed']}s"
+        if a.get("wave") is not None:
+            val += f" · wave {a['wave']}"
+        facts.append({"title": "Job", "value": val})
+    if len(aborts) > 15:
+        facts.append({"title": "…", "value": f"+{len(aborts) - 15} job(s)"})
+    body = [
+        {"type": "TextBlock", "text": f"🚨 Falha(s) na malha — {project}", "size": "Large",
+         "weight": "Bolder", "wrap": True, "color": "Attention"},
+        {"type": "TextBlock",
+         "text": f"{len(aborts)} job(s) ABORTED detectado(s) na varredura — fora do tratamento da sequence.",
+         "wrap": True, "isSubtle": True, "spacing": "None"},
+        {"type": "FactSet", "spacing": "Medium", "facts": facts},
+        {"type": "TextBlock", "text": "Registrado na Gestão de Falhas (Orquestra) para assunção/resolução.",
+         "wrap": True, "isSubtle": True, "size": "Small"},
+    ]
+    payload = {"type": "message", "attachments": [{
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "content": {"$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard", "version": "1.4", "body": body}}]}
+    try:
+        resp = requests.post(webhook, json=payload, timeout=15)
+        print(f"[ALERT] {project}: Teams status={resp.status_code}")
+    except Exception as e:
+        print(f"[ALERT] {project}: Teams falhou: {e}")
+
+
+def _register_aborts(hook: MsSqlHook, project: str, fields_by_job: dict) -> list[dict]:
+    """Registra jobs ABORTED em etl_ds_malha_falha (dedup por project+job+wave) e
+    devolve a lista dos NOVOS (para alertar uma única vez por run)."""
+    new: list[dict] = []
+    for job, fld in fields_by_job.items():
+        if fld.get("code") != 3:   # 3 = ABORTED
+            continue
+        wave    = fld.get("wave")
+        started = _parse_ds_time(fld.get("start"))
+        elapsed = fld.get("elapsed")
+        exec_id = _malha_exec_id(project, job, wave)
+        exists = hook.get_first(
+            "SELECT 1 FROM dbo.etl_ds_malha_falha "
+            "WHERE project=%s AND job_name=%s AND ISNULL(wave_number,-1)=ISNULL(%s,-1)",
+            parameters=[project, job, wave])
+        if exists:
+            continue
+        hook.run(
+            "INSERT INTO dbo.etl_ds_malha_falha "
+            "(execution_id, project, pipeline, job_name, wave_number, status_code, "
+            " status_label, info, started_at, elapsed_seconds) "
+            "VALUES (%s, %s, %s, %s, %s, 3, 'ABORTED', %s, %s, %s)",
+            parameters=[exec_id, project, project, job, wave, fld.get("info"), started, elapsed])
+        new.append({"job": job, "wave": wave, "elapsed": elapsed, "exec_id": exec_id})
+    return new
 
 
 def _scan_names(project: str) -> list[str]:
@@ -85,7 +170,8 @@ def scan_project(project: str) -> dict:
     remote = (
         f"source {DSHOME}/dsenv >/dev/null 2>&1; "
         f"for j in {joblist}; do echo \"===JOB===$j\"; "
-        f"{DSHOME}/bin/dsjob -jobinfo {project} \"$j\" 2>&1 | grep -iE 'Job Status|Status code|not found|Failed'; done"
+        f"{DSHOME}/bin/dsjob -jobinfo {project} \"$j\" 2>&1 | "
+        f"grep -iE 'Job Status|Status code|Job Start Time|Job Wave Number|Elapsed|Last Run|not found|Failed'; done"
     )
     client = SSHHook(ssh_conn_id=SSH_CONN_ID).get_conn()
     try:
@@ -101,34 +187,58 @@ def scan_project(project: str) -> dict:
     if err.strip():
         print("----- stderr -----"); print(err)
 
-    # Parse: blocos ===JOB===<nome> seguidos da linha "Job Status : ... (n)"
-    results: dict[str, tuple] = {}
+    # Parse: blocos ===JOB===<nome> + linhas status/wave/start/elapsed do dsjob -jobinfo
+    fields_by_job: dict[str, dict] = {}
     cur = None
     for line in out.splitlines():
         if line.startswith("===JOB==="):
             cur = line[len("===JOB==="):].strip()
-            results[cur] = (None, "NOT_RUN", None)
+            fields_by_job[cur] = {"code": None, "label": "NOT_RUN", "info": None,
+                                  "wave": None, "start": None, "elapsed": None}
         elif cur:
+            low = line.lower()
             m = re.search(r"\((\d+)\)", line)
-            if m and ("status" in line.lower()):
+            if m and "status" in low and "interim" not in low:
                 code = int(m.group(1))
-                results[cur] = (code, _STATUS.get(code, str(code)), line.strip()[:480])
-            elif results.get(cur, (None,))[0] is None:
+                fields_by_job[cur]["code"]  = code
+                fields_by_job[cur]["label"] = _STATUS.get(code, str(code))
+                fields_by_job[cur]["info"]  = line.strip()[:480]
+            elif "wave number" in low:
+                wm = re.search(r"(\d+)", line.split(":", 1)[-1])
+                if wm:
+                    fields_by_job[cur]["wave"] = int(wm.group(1))
+            elif "start time" in low:
+                fields_by_job[cur]["start"] = line.split(":", 1)[-1].strip()[:60]
+            elif "elapsed" in low:
+                em = re.search(r"(\d+)", line)
+                if em:
+                    fields_by_job[cur]["elapsed"] = int(em.group(1))
+            elif fields_by_job[cur]["info"] is None:
                 # guarda a 1ª linha não-status (erro/diagnóstico) como info
-                results[cur] = (None, "NOT_RUN", line.strip()[:480])
+                fields_by_job[cur]["info"] = line.strip()[:480]
 
     hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
     hook.run("DELETE FROM dbo.etl_ds_malha_status WHERE project = %s", parameters=[project])
-    for job, (code, label, info) in results.items():
+    for job, fld in fields_by_job.items():
         hook.run(
             "INSERT INTO dbo.etl_ds_malha_status (project, job_name, status_code, status_label, info, scanned_at) "
             "VALUES (%s, %s, %s, %s, %s, GETDATE())",
-            parameters=[project, job, code, label, info])
+            parameters=[project, job, fld["code"], fld["label"], fld["info"]])
 
-    aborted = [j for j, (c, _l, _i) in results.items() if c == 3]
-    warn    = [j for j, (c, _l, _i) in results.items() if c == 2]
-    print(f"[STATUS] {project}: {len(results)} varrido(s). ABORTED: {aborted or '—'} | WARNING: {warn or '—'}")
-    return {"project": project, "scanned": len(results), "aborted": aborted, "warning": warn}
+    # Registra ABORTED na Gestão de Falhas (dedup por run) e alerta no Teams 1x.
+    new_aborts = _register_aborts(hook, project, fields_by_job)
+    if new_aborts:
+        _teams_alert_aborts(project, new_aborts)
+        for a in new_aborts:
+            hook.run("UPDATE dbo.etl_ds_malha_falha SET alerted_at=GETDATE() WHERE execution_id=%s",
+                     parameters=[a["exec_id"]])
+
+    aborted = [j for j, f in fields_by_job.items() if f["code"] == 3]
+    warn    = [j for j, f in fields_by_job.items() if f["code"] == 2]
+    print(f"[STATUS] {project}: {len(fields_by_job)} varrido(s). "
+          f"ABORTED: {aborted or '—'} (novos: {len(new_aborts)}) | WARNING: {warn or '—'}")
+    return {"project": project, "scanned": len(fields_by_job),
+            "aborted": aborted, "warning": warn, "novas_falhas": len(new_aborts)}
 
 
 def _scan(**context):
