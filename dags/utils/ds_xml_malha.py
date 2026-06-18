@@ -220,3 +220,66 @@ def monitorable_jobs(parsed: dict, root: str | None = None) -> list[str]:
     if root:
         walk(root, set())
     return out
+
+
+# ── Persistência: malha ⇆ linhas de banco ───────────────────────────
+def to_rows(parsed: dict) -> dict:
+    """Achata a malha em linhas para gravar no banco (sem dependência de DB).
+
+    Retorna {project, server, version, nodes:[...], edges:[...], roots:[...]}.
+    nodes = jobs/sequences; edges = chamadas (parent → real_target) em ordem.
+    """
+    nodes = []
+    for name, j in parsed.get("jobs", {}).items():
+        nodes.append({
+            "name":        name,
+            "kind":        "executor" if j["is_executor"] else
+                           ("sequence" if j["is_sequence"] else "job"),
+            "is_sequence": bool(j["is_sequence"]),
+            "is_executor": bool(j["is_executor"]),
+            "stage_types": list(j.get("stage_types") or []),
+        })
+    edges = []
+    for parent, j in parsed.get("jobs", {}).items():
+        for i, c in enumerate(j["calls"], start=1):
+            edges.append({
+                "parent":      parent,
+                "seq_order":   i,
+                "activity":    c.get("activity"),
+                "jobname":     c.get("jobname"),
+                "real_target": c.get("real_target"),
+                "kind":        c["kind"],
+            })
+    return {
+        "project": parsed.get("project"), "server": parsed.get("server"),
+        "version": parsed.get("version"), "nodes": nodes, "edges": edges,
+        "roots": root_sequences(parsed),
+    }
+
+
+def from_rows(nodes: list[dict], edges: list[dict], project: str | None = None) -> dict:
+    """Reconstrói a estrutura `parsed` a partir das linhas do banco.
+
+    Permite reusar build_tree/monitorable_jobs lendo do banco (sem reparsear XML).
+    """
+    jobs: dict[str, dict] = {}
+    for n in nodes:
+        jobs[n["name"]] = {
+            "is_sequence": bool(n.get("is_sequence")),
+            "is_executor": bool(n.get("is_executor")),
+            "stage_types": list(n.get("stage_types") or []),
+            "params":      [],
+            "calls":       [],
+        }
+    for e in sorted(edges, key=lambda x: (x.get("parent") or "", x.get("seq_order") or 0)):
+        parent = e.get("parent")
+        if parent not in jobs:
+            continue
+        jobs[parent]["calls"].append({
+            "activity":    e.get("activity"),
+            "jobname":     e.get("jobname"),
+            "real_target": e.get("real_target"),
+            "kind":        e.get("kind"),
+        })
+    return {"sucesso": True, "project": project, "jobs": jobs}
+

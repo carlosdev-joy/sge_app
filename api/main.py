@@ -71,6 +71,12 @@ Endpoints:
   GET  /datastage/log                     — consulta logs DataStage
   GET  /datastage/status                  — status atual de job DataStage
 
+  POST   /malha-ds/import                 — parseia export XML e grava a malha
+  GET    /malha-ds                        — lista projetos com malha importada
+  GET    /malha-ds/{project}              — malha (cabeçalho + árvore + raízes)
+  GET    /malha-ds/{project}/jobs         — jobs reais p/ varredura dsjob -jobinfo
+  DELETE /malha-ds/{project}              — remove a malha do projeto
+
   GET  /factory/runs                      — execuções da etl_dag_factory
   GET  /factory/runs/{dag_run_id}/log     — log estruturado de execução da factory
 
@@ -103,7 +109,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers import (
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
-    datastage, factory, airflow, change_plans, powerbi
+    datastage, factory, airflow, change_plans, powerbi, malha_ds
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -143,6 +149,6 @@ app.add_middleware(
 for _router_module in [
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
-    datastage, factory, airflow, change_plans, powerbi,
+    datastage, factory, airflow, change_plans, powerbi, malha_ds,
 ]:
     app.include_router(_router_module.router)
