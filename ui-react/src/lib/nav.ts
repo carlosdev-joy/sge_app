@@ -34,7 +34,7 @@ export const NAV: NavItem[] = [
   { to: '/impacto-campo', label: 'Impacto Campo', icon: FileSearch,    legacyHref: '/', migrated: true, perm: 'tela_impacto_campo' },
   { to: '/planos-ajuste', label: 'Planos Ajuste', icon: ClipboardList, legacyHref: '/', migrated: true, perm: 'tela_plano_ajuste' },
   { to: '/powerbi',    label: 'Power BI',  icon: BarChart3,       legacyHref: '/', migrated: true, perm: 'tela_powerbi' },
-  { to: '/malha-ds',   label: 'Malha DS',   icon: Share2,          legacyHref: '/', migrated: true },
+  { to: '/malha-ds',   label: 'Malha DS',   icon: Share2,          legacyHref: '/', migrated: true, perm: 'tela_malha_ds' },
   { to: '/admin',      label: 'Admin',      icon: Settings,        legacyHref: '/', migrated: true, adminOnly: true, perm: 'tela_admin' },
 ]
 
