@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { queryClient } from '../lib/queryClient'
@@ -9,7 +9,7 @@ import { Spinner } from '../components/ui/Spinner'
 import { toast } from '../components/ui/Toast'
 import {
   Share2, RefreshCw, Upload, Database, Server, ChevronRight, ChevronDown,
-  GitBranch, FileCode2, Trash2,
+  GitBranch, FileCode2, Trash2, Activity,
 } from 'lucide-react'
 
 // ── Tipos ─────────────────────────────────────────────────────────
@@ -34,10 +34,28 @@ function KindBadge({ k }: { k: string }) {
   return <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${cls}`}>{k}</span>
 }
 
+// ── Status do job (dsjob -jobinfo) ────────────────────────────────
+interface JobStatus { job_name: string; status_code: number | null; status_label: string | null; info: string | null; scanned_at: string | null }
+interface StatusResp { project: string; scanned_at: string | null; summary: Record<string, number>; jobs: JobStatus[] }
+
+const ST_CLS: Record<string, string> = {
+  OK:      'bg-green-100 text-green-700 border-green-300 dark:bg-green-900/40 dark:text-green-300 dark:border-green-800',
+  WARNING: 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-yellow-900/40 dark:text-yellow-300 dark:border-yellow-800',
+  ABORTED: 'bg-red-100 text-red-700 border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800',
+  RUNNING: 'bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800',
+}
+function StatusBadge({ label, info }: { label?: string | null; info?: string | null }) {
+  if (!label) return null
+  const cls = ST_CLS[label] ?? 'bg-slate-100 text-slate-600 border-slate-300 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700'
+  return <span title={info ?? undefined} className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${cls}`}>{label}</span>
+}
+
 // ── Árvore (recursiva, colapsável) ────────────────────────────────
-function TreeRow({ node, path, collapsed, toggle, termo }: {
+function TreeRow({ node, path, collapsed, toggle, termo, statusMap }: {
   node: TreeNode; path: string; collapsed: Set<string>; toggle: (p: string) => void; termo: string
+  statusMap: Record<string, JobStatus>
 }) {
+  const st = statusMap[node.name]
   const hasKids = node.children && node.children.length > 0
   const isOpen = !collapsed.has(path)
   const extras: string[] = []
@@ -54,6 +72,7 @@ function TreeRow({ node, path, collapsed, toggle, termo }: {
         ) : <span className="w-[14px] inline-block" />}
         <KindBadge k={node.kind} />
         <span className={`text-sm font-mono ${hit ? 'bg-yellow-300 text-slate-900 rounded px-1' : 'text-ink'}`}>{node.name}</span>
+        {st && <StatusBadge label={st.status_label} info={st.info} />}
         {node.invocations && node.invocations > 1 && (
           <span className="text-[11px] text-amber-600 dark:text-amber-400 font-semibold">×{node.invocations}</span>
         )}
@@ -64,7 +83,7 @@ function TreeRow({ node, path, collapsed, toggle, termo }: {
         <div className="ml-4 border-l border-edge/60 pl-2">
           {node.children.map((c, i) => (
             <TreeRow key={`${path}/${c.name}#${i}`} node={c} path={`${path}/${c.name}#${i}`}
-              collapsed={collapsed} toggle={toggle} termo={termo} />
+              collapsed={collapsed} toggle={toggle} termo={termo} statusMap={statusMap} />
           ))}
         </div>
       )}
@@ -104,6 +123,11 @@ export default function MalhaDS() {
     queryFn: () => apiFetch(`/malha-ds/${encodeURIComponent(selected!)}/jobs`),
     enabled: !!selected,
   })
+  const { data: statusData, refetch: refetchStatus } = useQuery<StatusResp>({
+    queryKey: ['malha-ds-status', selected],
+    queryFn: () => apiFetch(`/malha-ds/${encodeURIComponent(selected!)}/status`),
+    enabled: !!selected,
+  })
 
   const importMut = useMutation({
     mutationFn: (project: string) =>
@@ -135,6 +159,18 @@ export default function MalhaDS() {
       deleteMut.mutate(project)
     }
   }
+
+  const scanMut = useMutation({
+    mutationFn: () => apiFetch(`/malha-ds/${encodeURIComponent(selected!)}/scan`, { method: 'POST' }),
+    onSuccess: () => { toast.success('Varredura de status disparada — atualiza em alguns segundos'); setTimeout(() => refetchStatus(), 8000) },
+    onError: (e: any) => toast.error(e.message),
+  })
+
+  const statusMap = useMemo(() => {
+    const m: Record<string, JobStatus> = {}
+    for (const j of statusData?.jobs ?? []) m[j.job_name] = j
+    return m
+  }, [statusData])
 
   const toggle = (p: string) => setCollapsed((s) => { const n = new Set(s); n.has(p) ? n.delete(p) : n.add(p); return n })
   const malhas = listData?.malhas ?? []
@@ -236,6 +272,22 @@ export default function MalhaDS() {
                 <span>Raiz: <strong className="text-ink">{detail.roots.join(', ') || '—'}</strong></span>
               </div>
 
+              {/* Status por job (dsjob -jobinfo) */}
+              <div className="flex items-center gap-2 flex-wrap border-t border-edge pt-3">
+                <Button size="sm" loading={scanMut.isPending} onClick={() => scanMut.mutate()}>
+                  <Activity size={13} /> Verificar status
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => refetchStatus()}>
+                  <RefreshCw size={13} /> Atualizar
+                </Button>
+                {statusData?.scanned_at && <span className="text-[11px] text-dim">última varredura: {statusData.scanned_at}</span>}
+                <div className="flex items-center gap-2 ml-auto flex-wrap">
+                  {Object.entries(statusData?.summary ?? {}).map(([k, v]) => (
+                    <span key={k} className="inline-flex items-center gap-1 text-xs text-dim"><StatusBadge label={k} /> {v}</span>
+                  ))}
+                </div>
+              </div>
+
               {/* Busca dentro da árvore */}
               <input
                 className="w-72 bg-panel border border-edge rounded-md px-3 py-1.5 text-sm text-ink placeholder-dim"
@@ -247,7 +299,7 @@ export default function MalhaDS() {
                 <div className="flex items-center gap-2 text-xs text-dim mb-2">
                   <GitBranch size={13} /> Árvore de execução (executor genérico já resolvido para o job real)
                 </div>
-                <TreeRow node={detail.tree} path="root" collapsed={collapsed} toggle={toggle} termo={termo} />
+                <TreeRow node={detail.tree} path="root" collapsed={collapsed} toggle={toggle} termo={termo} statusMap={statusMap} />
               </div>
             </div>
           )}

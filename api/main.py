@@ -75,6 +75,8 @@ Endpoints:
   GET    /malha-ds                        — lista projetos com malha importada
   GET    /malha-ds/{project}              — malha (cabeçalho + árvore + raízes)
   GET    /malha-ds/{project}/jobs         — jobs reais p/ varredura dsjob -jobinfo
+  POST   /malha-ds/{project}/scan         — dispara varredura de status (dsjob -jobinfo)
+  GET    /malha-ds/{project}/status       — snapshot de status por job
   DELETE /malha-ds/{project}              — remove a malha do projeto
 
   GET  /factory/runs                      — execuções da etl_dag_factory
