@@ -252,7 +252,15 @@ def to_rows(parsed: dict) -> dict:
     nodes = jobs/sequences; edges = chamadas (parent → real_target) em ordem.
     """
     nodes = []
+    _seen_norm: set[str] = set()
     for name, j in parsed.get("jobs", {}).items():
+        # Dedup pela mesma regra do índice único do SQL Server (case/trailing-space
+        # insensitive): evita "Cannot insert duplicate key" quando o export tem
+        # nomes que diferem só por caixa (ex.: jobOrigemFTP vs JobOrigemFTP).
+        norm = (name or "").strip().lower()
+        if norm in _seen_norm:
+            continue
+        _seen_norm.add(norm)
         nodes.append({
             "name":        name,
             "kind":        "executor" if j["is_executor"] else
