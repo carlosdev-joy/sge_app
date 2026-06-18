@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
@@ -216,8 +216,22 @@ function KpiCard({ label, value, sub, icon, color, onClick, pulse }: KpiProps) {
 
 // ── Gantt chart (SVG simples, sem biblioteca) ──────────────────────────────
 
+function useNowBRT(enabled: boolean) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!enabled) return
+    const id = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(id)
+  }, [enabled])
+  return now
+}
+
 function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string }) {
   const sorted = useMemo(() => [...items].sort((a, b) => (a.inicio ?? '').localeCompare(b.inicio ?? '')), [items])
+
+  const isToday = dateRef === todayBRT()
+  const now = useNowBRT(isToday)
+
   if (sorted.length === 0) return null
 
   const dayStart = new Date(`${dateRef}T00:00:00-03:00`).getTime()
@@ -234,6 +248,17 @@ function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string })
     return Math.max(0.3, e - s)
   }
 
+  const nowPct = isToday ? Math.max(0, Math.min(100, ((now - dayStart) / span) * 100)) : null
+  // Em foco: rodando agora, ou com início dentro de uma janela de ±15min do horário atual
+  const FOCUS_WINDOW_MS = 15 * 60 * 1000
+  function isInFocus(it: GanttItem) {
+    if (!isToday) return false
+    if (it.status === 'RUNNING') return true
+    if (!it.inicio) return false
+    const t = new Date(it.inicio.replace(' ', 'T') + '-03:00').getTime()
+    return Math.abs(t - now) <= FOCUS_WINDOW_MS
+  }
+
   const hourMarks = Array.from({ length: 25 }, (_, i) => i)
 
   return (
@@ -246,34 +271,51 @@ function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string })
               {String(h).padStart(2, '0')}h
             </div>
           ))}
+          {nowPct !== null && (
+            <div className="absolute text-[9px] font-bold text-red-500" style={{ left: `${nowPct}%`, transform: 'translateX(-50%)' }}>
+              agora
+            </div>
+          )}
         </div>
         {/* Rows */}
         <div className="flex flex-col gap-1">
-          {sorted.map(it => (
-            <div key={it.execution_id} className="flex items-center gap-2 group">
-              <div className="w-36 flex-shrink-0 text-[10px] text-dim truncate text-right pr-2" title={it.pipeline}>
-                {it.pipeline}
+          {sorted.map(it => {
+            const focus = isInFocus(it)
+            return (
+              <div
+                key={it.execution_id}
+                className={`flex items-center gap-2 group rounded transition-colors ${
+                  focus ? 'bg-red-50 dark:bg-red-900/15 ring-1 ring-red-300/50 dark:ring-red-700/40' : ''
+                }`}
+              >
+                <div className={`w-36 flex-shrink-0 text-[10px] truncate text-right pr-2 ${focus ? 'text-red-600 dark:text-red-300 font-semibold' : 'text-dim'}`} title={it.pipeline}>
+                  {it.pipeline}
+                </div>
+                <div className="flex-1 relative h-5 bg-edge/20 rounded">
+                  {hourMarks.map(h => (
+                    <div key={h} className="absolute top-0 bottom-0 border-l border-edge/20" style={{ left: `${(h / 24) * 100}%` }} />
+                  ))}
+                  {nowPct !== null && (
+                    <div className="absolute top-0 bottom-0 w-px bg-red-500 z-10 pointer-events-none" style={{ left: `${nowPct}%` }} />
+                  )}
+                  <div
+                    className={`absolute top-0.5 bottom-0.5 rounded ${it.status === 'RUNNING' ? 'animate-pulse' : ''}`}
+                    style={{
+                      left: `${pct(it.inicio)}%`,
+                      width: `${width(it.inicio, it.fim)}%`,
+                      backgroundColor: STATUS_COLOR[it.status] ?? '#6b7280',
+                      opacity: it.status === 'RUNNING' ? 0.9 : 0.75,
+                      boxShadow: focus ? '0 0 0 1px #ef4444' : undefined,
+                    }}
+                    title={`${it.pipeline} · ${it.status} · ${fmtTime(it.inicio)}–${fmtTime(it.fim)}`}
+                  />
+                </div>
+                <div className="w-12 flex-shrink-0">
+                  <StatusBadge status={it.status} />
+                </div>
               </div>
-              <div className="flex-1 relative h-5 bg-edge/20 rounded">
-                {hourMarks.map(h => (
-                  <div key={h} className="absolute top-0 bottom-0 border-l border-edge/20" style={{ left: `${(h / 24) * 100}%` }} />
-                ))}
-                <div
-                  className="absolute top-0.5 bottom-0.5 rounded"
-                  style={{
-                    left: `${pct(it.inicio)}%`,
-                    width: `${width(it.inicio, it.fim)}%`,
-                    backgroundColor: STATUS_COLOR[it.status] ?? '#6b7280',
-                    opacity: it.status === 'RUNNING' ? 0.9 : 0.75,
-                  }}
-                  title={`${it.pipeline} · ${it.status} · ${fmtTime(it.inicio)}–${fmtTime(it.fim)}`}
-                />
-              </div>
-              <div className="w-12 flex-shrink-0">
-                <StatusBadge status={it.status} />
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
     </div>
