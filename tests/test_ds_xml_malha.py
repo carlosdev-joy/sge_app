@@ -101,6 +101,32 @@ def test_monitoraveis_sao_jobs_reais(tmp_path):
     assert mon == {"JobA", "RealBizJob", "JobB"}   # folhas; sem sequences/executor
 
 
+def test_to_rows_estrutura(tmp_path):
+    p = _parsed(tmp_path)
+    rows = M.to_rows(p)
+    assert rows["project"] == "TESTPROJ"
+    names = {n["name"] for n in rows["nodes"]}
+    assert names == set(p["jobs"])
+    # node executor marcado corretamente
+    kinds = {n["name"]: n["kind"] for n in rows["nodes"]}
+    assert kinds["ExecWrapper"] == "executor" and kinds["MasterSeq"] == "sequence" and kinds["JobA"] == "job"
+    # aresta com real_target resolvido (RealBizJob) existe
+    assert any(e["parent"] == "MasterSeq" and e["real_target"] == "RealBizJob" for e in rows["edges"])
+
+
+def test_roundtrip_rows_preserva_malha(tmp_path):
+    """to_rows → from_rows deve reproduzir a mesma árvore/lista monitorável (sem reparsear)."""
+    p = _parsed(tmp_path)
+    rows = M.to_rows(p)
+    p2 = M.from_rows(rows["nodes"], rows["edges"], project=rows["project"])
+
+    def flat(node):
+        return (node["name"], node["kind"], tuple(flat(c) for c in node.get("children", [])))
+
+    assert flat(M.build_tree(p, "MasterSeq")) == flat(M.build_tree(p2, "MasterSeq"))
+    assert set(M.monitorable_jobs(p, "MasterSeq")) == set(M.monitorable_jobs(p2, "MasterSeq"))
+
+
 def test_arquivo_inexistente_ou_invalido(tmp_path):
     bad = tmp_path / "x.xml"
     bad.write_text("<NotDSExport/>", encoding="utf-8")
