@@ -9,7 +9,7 @@ import { Spinner } from '../components/ui/Spinner'
 import { toast } from '../components/ui/Toast'
 import {
   Share2, RefreshCw, Upload, Database, Server, ChevronRight, ChevronDown,
-  GitBranch, FileCode2,
+  GitBranch, FileCode2, Trash2,
 } from 'lucide-react'
 
 // ── Tipos ─────────────────────────────────────────────────────────
@@ -120,6 +120,22 @@ export default function MalhaDS() {
     onError: (e: any) => toast.error(e.message),
   })
 
+  const deleteMut = useMutation({
+    mutationFn: (project: string) => apiFetch(`/malha-ds/${encodeURIComponent(project)}`, { method: 'DELETE' }),
+    onSuccess: (_r, project) => {
+      toast.success(`Malha de ${project} removida`)
+      queryClient.invalidateQueries({ queryKey: ['malha-ds-list'] })
+      if (selected === project) setSelected(null)
+    },
+    onError: (e: any) => toast.error(e.message),
+  })
+
+  const handleDelete = (project: string) => {
+    if (confirm(`Remover a malha de "${project}" do banco? (não apaga o XML; pode reimportar)`)) {
+      deleteMut.mutate(project)
+    }
+  }
+
   const toggle = (p: string) => setCollapsed((s) => { const n = new Set(s); n.has(p) ? n.delete(p) : n.add(p); return n })
   const malhas = listData?.malhas ?? []
   const counts = detail ? countTree(detail.tree) : null
@@ -169,14 +185,21 @@ export default function MalhaDS() {
           ) : (
             <div className="flex flex-col gap-1.5">
               {malhas.map((m) => (
-                <button key={m.project} onClick={() => setSelected(m.project)}
-                  className={`flex items-center gap-3 text-left px-3 py-2 rounded-lg border transition-colors ${selected === m.project ? 'border-[#1A5FA8] bg-[#1A5FA8]/5' : 'border-edge hover:border-[#1A5FA8]/50'}`}>
-                  <Database size={15} className="text-[#1A5FA8] shrink-0" />
-                  <span className="font-medium text-ink">{m.project}</span>
-                  <span className="text-xs text-dim flex items-center gap-1"><Server size={11} /> {m.server_name ?? '—'} · DS {m.ds_version ?? '—'}</span>
-                  <span className="text-xs text-dim ml-auto">{m.nodes_count} nós · {m.edges_count} chamadas</span>
-                  <span className="text-[11px] text-dim">{m.imported_at} {m.imported_by ? `· ${m.imported_by}` : ''}</span>
-                </button>
+                <div key={m.project}
+                  className={`flex items-center gap-3 px-3 py-2 rounded-lg border transition-colors ${selected === m.project ? 'border-[#1A5FA8] bg-[#1A5FA8]/5' : 'border-edge hover:border-[#1A5FA8]/50'}`}>
+                  <button onClick={() => setSelected(m.project)} className="flex items-center gap-3 text-left flex-1 min-w-0">
+                    <Database size={15} className="text-[#1A5FA8] shrink-0" />
+                    <span className="font-medium text-ink">{m.project}</span>
+                    <span className="text-xs text-dim flex items-center gap-1"><Server size={11} /> {m.server_name ?? '—'} · DS {m.ds_version ?? '—'}</span>
+                    <span className="text-xs text-dim ml-auto">{m.nodes_count} nós · {m.edges_count} chamadas</span>
+                    <span className="text-[11px] text-dim whitespace-nowrap">{m.imported_at} {m.imported_by ? `· ${m.imported_by}` : ''}</span>
+                  </button>
+                  <Button variant="ghost" size="sm" title="Excluir malha"
+                    loading={deleteMut.isPending && deleteMut.variables === m.project}
+                    onClick={() => handleDelete(m.project)}>
+                    <Trash2 size={14} className="text-dim hover:text-red-500" />
+                  </Button>
+                </div>
               ))}
             </div>
           )
