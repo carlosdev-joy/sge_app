@@ -21,8 +21,8 @@ IF OBJECT_ID('dbo.etl_pipeline_job_param', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.etl_pipeline_job_param (
         id            INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_etl_pipeline_job_param PRIMARY KEY,
-        pipeline_name VARCHAR(200)  NOT NULL,
-        job_name      VARCHAR(200)  NOT NULL,
+        pipeline_name NVARCHAR(200) NOT NULL,
+        job_name      NVARCHAR(200) NOT NULL,
         param_name    VARCHAR(128)  NOT NULL,
         param_type    VARCHAR(30)   NOT NULL,
         param_value   NVARCHAR(MAX) NULL,
