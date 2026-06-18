@@ -188,6 +188,37 @@ def get_subtree(job: str, project: str | None = None, _auth: dict = Depends(get_
     return {"found": tree is not None, "job": name, "project": proj, "tree": tree}
 
 
+@router.get("/malha-ds/by-pipeline", tags=["malha-ds"])
+def get_pipeline_malha(pipeline: str, _auth: dict = Depends(get_current_user)):
+    """Resolve a(s) malha(s) de um pipeline. Casa os jobs do pipeline (por NOME)
+    com os nós das malhas importadas — usado para abrir a malha direto dos cards
+    de execução do dashboard, onde só se tem o nome do pipeline.
+
+    Sequences vêm primeiro (raiz natural da árvore), depois pela ordem de execução."""
+    name = (pipeline or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Parâmetro 'pipeline' é obrigatório.")
+    with managed_conn() as (conn, cur):
+        cur.execute(
+            "SELECT j.job_name, n.project, n.is_sequence, CAST(j.execution_order AS INT) "
+            "FROM dbo.etl_pipeline_job j "
+            "JOIN dbo.etl_ds_malha_node n ON n.name = j.job_name "
+            "WHERE j.pipeline_name = ? "
+            "ORDER BY n.is_sequence DESC, j.execution_order, j.job_name",
+            [name])
+        rows = cur.fetchall()
+    seen: set[tuple[str, str]] = set()
+    matches: list[dict] = []
+    for r in rows:
+        key = (r[0], r[1])
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append({"job_name": r[0], "project": r[1],
+                        "is_sequence": bool(r[2]), "execution_order": r[3]})
+    return {"pipeline": name, "matches": matches}
+
+
 @router.get("/malha-ds/{project}", tags=["malha-ds"])
 def get_malha(project: str, root: str | None = None, _auth: dict = Depends(get_current_user)):
     project = _safe_project(project)

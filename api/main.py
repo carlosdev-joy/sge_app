@@ -75,6 +75,7 @@ Endpoints:
   GET    /malha-ds                        — lista projetos com malha importada
   GET    /malha-ds/{project}              — malha (cabeçalho + árvore + raízes)
   GET    /malha-ds/subtree               — árvore de um job por nome (vínculo job↔malha)
+  GET    /malha-ds/by-pipeline           — malha(s) de um pipeline (casa jobs↔malha por nome)
   GET    /malha-ds/{project}/jobs         — jobs reais p/ varredura dsjob -jobinfo
   POST   /malha-ds/{project}/scan         — dispara varredura de status (dsjob -jobinfo)
   GET    /malha-ds/{project}/status       — snapshot de status por job
