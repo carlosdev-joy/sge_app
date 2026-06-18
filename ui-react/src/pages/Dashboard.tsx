@@ -216,6 +216,26 @@ function KpiCard({ label, value, sub, icon, color, onClick, pulse }: KpiProps) {
 
 // ── Gantt chart (SVG simples, sem biblioteca) ──────────────────────────────
 
+function RunningGanttRow({ it, now, onOpen }: { it: GanttItem; now: number; onOpen: () => void }) {
+  const elapsed = it.inicio ? Math.max(0, Math.round((now - new Date(it.inicio.replace(' ', 'T') + '-03:00').getTime()) / 1000)) : 0
+  return (
+    <div
+      className="flex items-center gap-3 px-3 py-2 border-b border-edge/40 last:border-0 hover:bg-blue-50 dark:hover:bg-blue-900/10 transition-colors cursor-pointer"
+      onClick={onOpen}
+    >
+      <span className="relative flex h-2 w-2 flex-shrink-0">
+        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+        <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+      </span>
+      <div className="flex-1 min-w-0">
+        <div className="font-mono text-xs font-medium text-ink truncate">{it.pipeline}</div>
+        <div className="text-[10px] text-dim">{it.project} · iniciou {fmtTime(it.inicio)} · rodando há {fmtSec(elapsed)}</div>
+      </div>
+      <span className="text-dim text-xs flex-shrink-0">→</span>
+    </div>
+  )
+}
+
 function useNowBRT(enabled: boolean) {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -418,6 +438,7 @@ export default function Dashboard() {
   const [date,         setDate]         = useState(todayBRT())
   const [autoRefresh,  setAutoRefresh]  = useState(false)
   const [showGantt,    setShowGantt]    = useState(true)
+  const [ganttFilter,  setGanttFilter]  = useState<'all' | 'running'>('all')
   const [detail,       setDetail]       = useState<ExecRow | null>(null)
   const [airflowLog,   setAirflowLog]   = useState<AirflowLogState | null>(null)
   const [dsLog,        setDsLog]        = useState<{ executionId: string; jobName: string } | null>(null)
@@ -439,6 +460,8 @@ export default function Dashboard() {
     queryFn: () => apiFetch(`/dashboard/gantt?${qs}`),
     refetchInterval: autoRefresh ? 60_000 : false,
   })
+  const ganttRunningCount = ganttData?.data?.filter(it => it.status === 'RUNNING').length ?? 0
+  const ganttNow = useNowBRT(date === todayBRT() && ganttRunningCount > 0)
 
   const handleFalhaDrillDown = useCallback(() => {
     // "Ver todos": Logs filtrado por FALHA na data selecionada
@@ -627,9 +650,18 @@ export default function Dashboard() {
               className="w-full px-4 py-2.5 border-b border-edge flex items-center justify-between hover:bg-canvas/50 transition-colors text-left"
               onClick={() => setShowGantt(v => !v)}
             >
-              <h3 className="text-sm font-semibold text-ink">
+              <h3 className="text-sm font-semibold text-ink flex items-center gap-2">
                 Linha do tempo — {date}
-                {ganttData?.data && <span className="text-dim font-normal ml-2 text-xs">({ganttData.data.length} execuções)</span>}
+                {ganttData?.data && <span className="text-dim font-normal text-xs">({ganttData.data.length} execuções)</span>}
+                {ganttRunningCount > 0 && (
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[10px] font-bold">
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-blue-500" />
+                    </span>
+                    {ganttRunningCount} rodando
+                  </span>
+                )}
               </h3>
               <span className="text-dim text-xs">{showGantt ? '▲ ocultar' : '▼ expandir'}</span>
             </button>
@@ -641,16 +673,56 @@ export default function Dashboard() {
                 )}
                 {!ganttLoading && ganttData?.data && ganttData.data.length > 0 && (
                   <>
-                    {/* Legenda status */}
-                    <div className="flex items-center gap-4 mb-3 flex-wrap">
-                      {Object.entries(STATUS_COLOR).slice(0, 4).map(([s, c]) => (
-                        <span key={s} className="flex items-center gap-1 text-[10px] text-dim">
-                          <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: c }} />
-                          {STATUS_LABEL[s]}
-                        </span>
-                      ))}
+                    {/* Painel fixo — em execução agora */}
+                    <div className="mb-3 border border-blue-200 dark:border-blue-900/50 rounded-lg overflow-hidden">
+                      <div className="px-3 py-1.5 bg-blue-50/50 dark:bg-blue-900/10 text-[11px] font-semibold text-blue-600 dark:text-blue-400">
+                        Em execução agora ({ganttRunningCount})
+                      </div>
+                      {ganttRunningCount === 0 ? (
+                        <div className="px-3 py-3 text-center text-dim text-xs">Nenhuma execução em andamento neste momento</div>
+                      ) : (
+                        <div className="max-h-40 overflow-y-auto">
+                          {ganttData.data.filter(it => it.status === 'RUNNING').map(it => (
+                            <RunningGanttRow key={it.execution_id} it={it} now={ganttNow} onOpen={() => navigate(`/logs?execution_id=${it.execution_id}`)} />
+                          ))}
+                        </div>
+                      )}
                     </div>
-                    <GanttChart items={ganttData.data} dateRef={date} />
+
+                    {/* Legenda status + filtro */}
+                    <div className="flex items-center justify-between gap-4 mb-3 flex-wrap">
+                      <div className="flex items-center gap-4 flex-wrap">
+                        {Object.entries(STATUS_COLOR).slice(0, 4).map(([s, c]) => (
+                          <span key={s} className="flex items-center gap-1 text-[10px] text-dim">
+                            <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: c }} />
+                            {STATUS_LABEL[s]}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-1 text-xs">
+                        <button
+                          className={`px-2.5 py-1 rounded-md transition-colors ${ganttFilter === 'all' ? 'bg-canvas border border-edge font-medium text-ink' : 'text-dim hover:text-ink'}`}
+                          onClick={() => setGanttFilter('all')}
+                        >
+                          Todas ({ganttData.data.length})
+                        </button>
+                        <button
+                          className={`px-2.5 py-1 rounded-md transition-colors ${ganttFilter === 'running' ? 'bg-canvas border border-edge font-medium text-ink' : 'text-dim hover:text-ink'}`}
+                          onClick={() => setGanttFilter('running')}
+                        >
+                          Ativas ({ganttRunningCount})
+                        </button>
+                      </div>
+                    </div>
+
+                    {ganttFilter === 'running' && ganttRunningCount === 0 ? (
+                      <div className="text-center py-8 text-dim text-sm">Nenhuma execução ativa neste momento</div>
+                    ) : (
+                      <GanttChart
+                        items={ganttFilter === 'running' ? ganttData.data.filter(it => it.status === 'RUNNING') : ganttData.data}
+                        dateRef={date}
+                      />
+                    )}
                   </>
                 )}
               </div>
