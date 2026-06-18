@@ -216,26 +216,6 @@ function KpiCard({ label, value, sub, icon, color, onClick, pulse }: KpiProps) {
 
 // ── Gantt chart (SVG simples, sem biblioteca) ──────────────────────────────
 
-function RunningGanttRow({ it, now, onOpen }: { it: GanttItem; now: number; onOpen: () => void }) {
-  const elapsed = it.inicio ? Math.max(0, Math.round((now - new Date(it.inicio.replace(' ', 'T') + '-03:00').getTime()) / 1000)) : 0
-  return (
-    <div
-      className="flex items-center gap-3 px-3 py-2 border-b border-edge/40 last:border-0 hover:bg-blue-50 dark:hover:bg-blue-900/10 transition-colors cursor-pointer"
-      onClick={onOpen}
-    >
-      <span className="relative flex h-2 w-2 flex-shrink-0">
-        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-        <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-      </span>
-      <div className="flex-1 min-w-0">
-        <div className="font-mono text-xs font-medium text-ink truncate">{it.pipeline}</div>
-        <div className="text-[10px] text-dim">{it.project} · iniciou {fmtTime(it.inicio)} · rodando há {fmtSec(elapsed)}</div>
-      </div>
-      <span className="text-dim text-xs flex-shrink-0">→</span>
-    </div>
-  )
-}
-
 function useNowBRT(enabled: boolean) {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -461,8 +441,6 @@ export default function Dashboard() {
     refetchInterval: autoRefresh ? 60_000 : false,
   })
   const ganttRunningCount = ganttData?.data?.filter(it => it.status === 'RUNNING').length ?? 0
-  const ganttNow = useNowBRT(date === todayBRT() && ganttRunningCount > 0)
-
   const handleFalhaDrillDown = useCallback(() => {
     // "Ver todos": Logs filtrado por FALHA na data selecionada
     navigate(`/logs?status=FAILED&date=${date}`)
@@ -673,22 +651,6 @@ export default function Dashboard() {
                 )}
                 {!ganttLoading && ganttData?.data && ganttData.data.length > 0 && (
                   <>
-                    {/* Painel fixo — em execução agora */}
-                    <div className="mb-3 border border-blue-200 dark:border-blue-900/50 rounded-lg overflow-hidden">
-                      <div className="px-3 py-1.5 bg-blue-50/50 dark:bg-blue-900/10 text-[11px] font-semibold text-blue-600 dark:text-blue-400">
-                        Em execução agora ({ganttRunningCount})
-                      </div>
-                      {ganttRunningCount === 0 ? (
-                        <div className="px-3 py-3 text-center text-dim text-xs">Nenhuma execução em andamento neste momento</div>
-                      ) : (
-                        <div className="max-h-40 overflow-y-auto">
-                          {ganttData.data.filter(it => it.status === 'RUNNING').map(it => (
-                            <RunningGanttRow key={it.execution_id} it={it} now={ganttNow} onOpen={() => navigate(`/logs?execution_id=${it.execution_id}`)} />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
                     {/* Legenda status + filtro */}
                     <div className="flex items-center justify-between gap-4 mb-3 flex-wrap">
                       <div className="flex items-center gap-4 flex-wrap">
