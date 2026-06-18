@@ -40,8 +40,9 @@ _JOB_RE = re.compile(r"^[A-Za-z0-9_.]+$")
 default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
 
 
-def _malha_jobs(project: str) -> list[str]:
-    """Lê os jobs monitoráveis da malha persistida (reusa ds_xml_malha, sem reparsear XML)."""
+def _scan_names(project: str) -> list[str]:
+    """Lê os nós da malha a varrer (jobs E sequences) da malha persistida — sem
+    reparsear XML. Inclui sequences porque elas também têm status (ex.: 2/warning)."""
     dags_folder = os.path.dirname(os.path.abspath(__file__))
     if dags_folder not in sys.path:
         sys.path.insert(0, dags_folder)
@@ -60,7 +61,7 @@ def _malha_jobs(project: str) -> list[str]:
     edges = [{"parent": r[0], "seq_order": r[1], "activity": r[2],
               "jobname": r[3], "real_target": r[4], "kind": r[5]} for r in erows]
     parsed = M.from_rows(nodes, edges, project=project)
-    return [j for j in M.monitorable_jobs(parsed) if _JOB_RE.match(j or "")]
+    return [j for j in M.scan_targets(parsed) if _JOB_RE.match(j or "")]
 
 
 def _scan(**context):
@@ -69,24 +70,31 @@ def _scan(**context):
     if not project:
         raise ValueError("project é obrigatório.")
 
-    jobs = _malha_jobs(project)
+    jobs = _scan_names(project)
     if not jobs:
-        print(f"[STATUS] {project}: nenhum job monitorável na malha.")
+        print(f"[STATUS] {project}: nenhum nó (job/sequence) na malha.")
         return {"project": project, "scanned": 0, "aborted": []}
 
-    # Um único round-trip SSH: loop remoto chamando dsjob -jobinfo por job
+    # Um único round-trip SSH: loop remoto chamando dsjob -jobinfo por job/sequence
     joblist = " ".join(f"'{j}'" for j in jobs)
     remote = (
         f"source {DSHOME}/dsenv >/dev/null 2>&1; "
         f"for j in {joblist}; do echo \"===JOB===$j\"; "
-        f"{DSHOME}/bin/dsjob -jobinfo {project} \"$j\" 2>&1 | grep -i 'Job Status'; done"
+        f"{DSHOME}/bin/dsjob -jobinfo {project} \"$j\" 2>&1 | grep -iE 'Job Status|Status code|not found|Failed'; done"
     )
     client = SSHHook(ssh_conn_id=SSH_CONN_ID).get_conn()
     try:
-        _, stdout, _ = client.exec_command(remote, timeout=300)
+        _, stdout, stderr = client.exec_command(remote, timeout=300)
         out = stdout.read().decode("utf-8", "ignore")
+        err = stderr.read().decode("utf-8", "ignore")
     finally:
         client.close()
+
+    print(f"[STATUS] {project}: varrendo {len(jobs)} nó(s).")
+    print("----- saída dsjob (bruta, para diagnóstico) -----")
+    print(out)
+    if err.strip():
+        print("----- stderr -----"); print(err)
 
     # Parse: blocos ===JOB===<nome> seguidos da linha "Job Status : ... (n)"
     results: dict[str, tuple] = {}
@@ -95,11 +103,14 @@ def _scan(**context):
         if line.startswith("===JOB==="):
             cur = line[len("===JOB==="):].strip()
             results[cur] = (None, "NOT_RUN", None)
-        elif cur and "status" in line.lower():
+        elif cur:
             m = re.search(r"\((\d+)\)", line)
-            code = int(m.group(1)) if m else None
-            label = _STATUS.get(code, str(code) if code is not None else "?")
-            results[cur] = (code, label, line.strip()[:480])
+            if m and ("status" in line.lower()):
+                code = int(m.group(1))
+                results[cur] = (code, _STATUS.get(code, str(code)), line.strip()[:480])
+            elif results.get(cur, (None,))[0] is None:
+                # guarda a 1ª linha não-status (erro/diagnóstico) como info
+                results[cur] = (None, "NOT_RUN", line.strip()[:480])
 
     hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
     hook.run("DELETE FROM dbo.etl_ds_malha_status WHERE project = %s", parameters=[project])
@@ -110,8 +121,9 @@ def _scan(**context):
             parameters=[project, job, code, label, info])
 
     aborted = [j for j, (c, _l, _i) in results.items() if c == 3]
-    print(f"[STATUS] {project}: {len(results)} job(s) varrido(s). ABORTED: {aborted or '—'}")
-    return {"project": project, "scanned": len(results), "aborted": aborted}
+    warn    = [j for j, (c, _l, _i) in results.items() if c == 2]
+    print(f"[STATUS] {project}: {len(results)} varrido(s). ABORTED: {aborted or '—'} | WARNING: {warn or '—'}")
+    return {"project": project, "scanned": len(results), "aborted": aborted, "warning": warn}
 
 
 with DAG(

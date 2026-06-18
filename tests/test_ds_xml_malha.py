@@ -127,6 +127,16 @@ def test_roundtrip_rows_preserva_malha(tmp_path):
     assert set(M.monitorable_jobs(p, "MasterSeq")) == set(M.monitorable_jobs(p2, "MasterSeq"))
 
 
+def test_scan_targets_inclui_sequences(tmp_path):
+    p = _parsed(tmp_path)
+    targets = set(M.scan_targets(p))
+    # varredura cobre jobs E sequences (sequences têm status próprio, ex.: warning)
+    assert {"MasterSeq", "SubSeq", "JobA", "JobB", "RealBizJob"} <= targets
+    assert "ExecWrapper" not in targets   # executor resolvido, não entra
+    # difere do monitorável (que é só folha): MasterSeq/SubSeq não são folha
+    assert "MasterSeq" in targets and "MasterSeq" not in set(M.monitorable_jobs(p))
+
+
 def test_arquivo_inexistente_ou_invalido(tmp_path):
     bad = tmp_path / "x.xml"
     bad.write_text("<NotDSExport/>", encoding="utf-8")
