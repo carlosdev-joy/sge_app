@@ -13,19 +13,25 @@ Endpoints:
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 import sys
 
+import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import managed_conn
-from deps import PERM_EDITAR, get_current_user, require_perm
+from deps import (
+    AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
+    PERM_EDITAR, PERM_EXECUTAR, get_current_user, require_perm,
+)
 
 router = APIRouter()
 
 # Diretório dos exports XML (mesmo padrão do DSX; configurável)
 _XML_BASE_DIR = os.environ.get("XML_BASE_DIR") or os.environ.get("DSX_BASE_DIR", "/opt/airflow/dsx")
+_STATUS_DAG = "etl_ds_malha_status"
 
 
 def _quem(user: dict) -> str:
@@ -173,6 +179,40 @@ def get_malha_jobs(project: str, root: str | None = None, _auth: dict = Depends(
         raise HTTPException(status_code=404, detail="Malha não importada para este projeto.")
     parsed = M.from_rows(nodes, edges, project=project)
     return {"project": project, "jobs": M.monitorable_jobs(parsed, root)}
+
+
+@router.post("/malha-ds/{project}/scan", tags=["malha-ds"])
+async def scan_malha(project: str, _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """Dispara a varredura de status (dsjob -jobinfo) dos jobs da malha via Airflow."""
+    project = _safe_project(project)
+    run_id = f"malhastatus_{project}_{_dt.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
+    async with httpx.AsyncClient(base_url=AIRFLOW_URL, auth=(AIRFLOW_USER, AIRFLOW_PASSWORD), timeout=15) as client:
+        r = await client.post(f"/api/v1/dags/{_STATUS_DAG}/dagRuns",
+                              json={"dag_run_id": run_id, "conf": {"project": project}})
+        if r.status_code not in (200, 201):
+            raise HTTPException(status_code=r.status_code,
+                                detail=f"Airflow recusou trigger: {r.text[:300]}")
+    return {"status": "scan_disparado", "dag_run_id": run_id, "project": project}
+
+
+@router.get("/malha-ds/{project}/status", tags=["malha-ds"])
+def get_status(project: str, _auth: dict = Depends(get_current_user)):
+    """Último snapshot de status por job (gravado pela DAG etl_ds_malha_status)."""
+    project = _safe_project(project)
+    with managed_conn() as (conn, cur):
+        cur.execute("SELECT job_name, status_code, status_label, info, scanned_at "
+                    "FROM dbo.etl_ds_malha_status WHERE project = ? ORDER BY job_name", [project])
+        rows = cur.fetchall()
+    jobs = [{
+        "job_name": r[0], "status_code": r[1], "status_label": r[2], "info": r[3],
+        "scanned_at": r[4].strftime("%Y-%m-%d %H:%M:%S") if r[4] else None,
+    } for r in rows]
+    summary: dict[str, int] = {}
+    for j in jobs:
+        k = j["status_label"] or "?"
+        summary[k] = summary.get(k, 0) + 1
+    return {"project": project, "scanned_at": jobs[0]["scanned_at"] if jobs else None,
+            "summary": summary, "jobs": jobs}
 
 
 @router.delete("/malha-ds/{project}", tags=["malha-ds"])
