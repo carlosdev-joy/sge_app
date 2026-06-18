@@ -57,8 +57,15 @@ function buildProblemMap(root: TreeNode | null, statusMap: Record<string, JobSta
   return map
 }
 
-function Row({ node, path, collapsed, toggle, statusMap, problemMap, onlyFlagged }: {
-  node: TreeNode; path: string; collapsed: Set<string>; toggle: (p: string) => void
+/** Todos os caminhos da árvore (mesmo esquema de path do Row) — para expandir tudo. */
+function allPaths(node: TreeNode, path = 'root', acc: string[] = []): string[] {
+  acc.push(path)
+  ;(node.children ?? []).forEach((c, i) => allPaths(c, `${path}/${c.name}#${i}`, acc))
+  return acc
+}
+
+function Row({ node, path, expanded, toggle, statusMap, problemMap, onlyFlagged }: {
+  node: TreeNode; path: string; expanded: Set<string>; toggle: (p: string) => void
   statusMap: Record<string, JobStatus>; problemMap: ProblemMap; onlyFlagged: boolean
 }) {
   const info = problemMap.get(node) ?? { w: 0, f: 0, r: 0 }
@@ -76,7 +83,7 @@ function Row({ node, path, collapsed, toggle, statusMap, problemMap, onlyFlagged
     : allKids
   const hasKids = kids.length > 0
   // Filtrando, mantém os ramos destacados abertos (caminho até o ponto apontado)
-  const isOpen = onlyFlagged ? true : !collapsed.has(path)
+  const isOpen = onlyFlagged ? true : expanded.has(path)
 
   const extras: string[] = []
   if (node.routines) extras.push(`${node.routines} rotina(s)`)
@@ -114,7 +121,7 @@ function Row({ node, path, collapsed, toggle, statusMap, problemMap, onlyFlagged
         <div className="ml-4 border-l border-edge/60 pl-2">
           {kids.map((c, i) => (
             <Row key={`${path}/${c.name}#${i}`} node={c} path={`${path}/${c.name}#${i}`}
-              collapsed={collapsed} toggle={toggle} statusMap={statusMap}
+              expanded={expanded} toggle={toggle} statusMap={statusMap}
               problemMap={problemMap} onlyFlagged={onlyFlagged} />
           ))}
         </div>
@@ -128,9 +135,10 @@ function Row({ node, path, collapsed, toggle, statusMap, problemMap, onlyFlagged
 export function MalhaTreeView({ jobName, project: projectHint, enabled = true }: {
   jobName: string; project?: string; enabled?: boolean
 }) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  // Recolhida por padrão: só o nó-raiz aberto (mostra as segmentações de 1º nível)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set(['root']))
   const [onlyFlagged, setOnlyFlagged] = useState(false)
-  const toggle = (p: string) => setCollapsed((s) => { const n = new Set(s); n.has(p) ? n.delete(p) : n.add(p); return n })
+  const toggle = (p: string) => setExpanded((s) => { const n = new Set(s); n.has(p) ? n.delete(p) : n.add(p); return n })
 
   const { data, isLoading } = useQuery<SubtreeResp>({
     queryKey: ['malha-subtree', jobName, projectHint ?? null],
@@ -170,6 +178,9 @@ export function MalhaTreeView({ jobName, project: projectHint, enabled = true }:
     return { warn: w, fail: f, run: r }
   }, [data, statusMap])
   const hasFlag = warn > 0 || fail > 0 || run > 0
+
+  const paths = useMemo(() => (data?.tree ? allPaths(data.tree) : []), [data])
+  const allExpanded = paths.length > 0 && expanded.size >= paths.length
 
   if (isLoading) return <div className="flex justify-center py-10"><Spinner size={32} /></div>
   if (!data?.found || !data.tree) {
@@ -218,10 +229,20 @@ export function MalhaTreeView({ jobName, project: projectHint, enabled = true }:
             <Filter size={11} /> {onlyFlagged ? 'Mostrando só não-OK' : 'Só não-OK'}
           </button>
         )}
+        {paths.length > 1 && (
+          <button
+            onClick={() => setExpanded(allExpanded ? new Set() : new Set(paths))}
+            title={allExpanded ? 'Recolher todos os ramos' : 'Expandir todos os ramos'}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold border border-edge text-dim hover:text-ink transition-colors"
+          >
+            {allExpanded ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
+            {allExpanded ? 'Recolher tudo' : 'Expandir tudo'}
+          </button>
+        )}
         {status?.scanned_at && <span className="ml-auto">status de {status.scanned_at}</span>}
       </div>
       <div className="border border-edge rounded-lg p-3 overflow-x-auto bg-canvas/40">
-        <Row node={data.tree} path="root" collapsed={collapsed} toggle={toggle}
+        <Row node={data.tree} path="root" expanded={expanded} toggle={toggle}
           statusMap={statusMap} problemMap={problemMap} onlyFlagged={onlyFlagged} />
       </div>
     </div>
