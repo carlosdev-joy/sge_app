@@ -9,7 +9,7 @@ import { Spinner } from '../components/ui/Spinner'
 import { toast } from '../components/ui/Toast'
 import {
   Share2, RefreshCw, Upload, Database, Server, ChevronRight, ChevronDown,
-  GitBranch, FileCode2, Trash2, Activity,
+  GitBranch, FileCode2, Trash2, Activity, Search,
 } from 'lucide-react'
 
 // ── Tipos ─────────────────────────────────────────────────────────
@@ -51,13 +51,13 @@ function StatusBadge({ label, info }: { label?: string | null; info?: string | n
 }
 
 // ── Árvore (recursiva, colapsável) ────────────────────────────────
-function TreeRow({ node, path, collapsed, toggle, termo, statusMap }: {
+function TreeRow({ node, path, collapsed, toggle, termo, statusMap, forceOpen }: {
   node: TreeNode; path: string; collapsed: Set<string>; toggle: (p: string) => void; termo: string
-  statusMap: Record<string, JobStatus>
+  statusMap: Record<string, JobStatus>; forceOpen?: boolean
 }) {
   const st = statusMap[node.name]
   const hasKids = node.children && node.children.length > 0
-  const isOpen = !collapsed.has(path)
+  const isOpen = forceOpen || !collapsed.has(path)
   const extras: string[] = []
   if (node.routines) extras.push(`${node.routines} rotina(s)`)
   if (node.commands) extras.push(`${node.commands} comando(s)`)
@@ -83,7 +83,7 @@ function TreeRow({ node, path, collapsed, toggle, termo, statusMap }: {
         <div className="ml-4 border-l border-edge/60 pl-2">
           {node.children.map((c, i) => (
             <TreeRow key={`${path}/${c.name}#${i}`} node={c} path={`${path}/${c.name}#${i}`}
-              collapsed={collapsed} toggle={toggle} termo={termo} statusMap={statusMap} />
+              collapsed={collapsed} toggle={toggle} termo={termo} statusMap={statusMap} forceOpen={forceOpen} />
           ))}
         </div>
       )}
@@ -98,6 +98,20 @@ function countTree(node: TreeNode, acc = { seq: 0, job: 0, ext: 0 }) {
   else if (node.kind === 'EXTERNO') acc.ext++
   for (const c of node.children || []) countTree(c, acc)
   return acc
+}
+
+// Filtra a árvore: mantém o nó se ele OU algum descendente casa o termo (poda o resto)
+function filterNode(node: TreeNode, termo: string): TreeNode | null {
+  const t = termo.toLowerCase()
+  const kids = (node.children || []).map((c) => filterNode(c, termo)).filter(Boolean) as TreeNode[]
+  if (node.name.toLowerCase().includes(t) || kids.length) return { ...node, children: kids }
+  return null
+}
+function countMatches(node: TreeNode, termo: string): number {
+  const t = termo.toLowerCase()
+  let n = node.name.toLowerCase().includes(t) ? 1 : 0
+  for (const c of node.children || []) n += countMatches(c, termo)
+  return n
 }
 
 // ── Página ────────────────────────────────────────────────────────
@@ -179,6 +193,9 @@ export default function MalhaDS() {
   const toggle = (p: string) => setCollapsed((s) => { const n = new Set(s); n.has(p) ? n.delete(p) : n.add(p); return n })
   const malhas = listData?.malhas ?? []
   const counts = detail ? detail.trees.reduce((a, t) => countTree(t, a), { seq: 0, job: 0, ext: 0 }) : null
+  const term = termo.trim()
+  const shownTrees = detail ? (term ? (detail.trees.map((t) => filterNode(t, term)).filter(Boolean) as TreeNode[]) : detail.trees) : []
+  const matchCount = detail && term ? detail.trees.reduce((a, t) => a + countMatches(t, term), 0) : 0
 
   return (
     <div className="flex flex-col gap-5">
@@ -292,15 +309,9 @@ export default function MalhaDS() {
                 </div>
               </div>
 
-              {/* Busca dentro da árvore */}
-              <input
-                className="w-72 bg-panel border border-edge rounded-md px-3 py-1.5 text-sm text-ink placeholder-dim"
-                placeholder="filtrar job na árvore…" value={termo} onChange={(e) => setTermo(e.target.value)}
-              />
-
               {/* Árvore (quem chama quem, com executor resolvido) */}
               <div className="border border-edge rounded-lg p-3 overflow-x-auto bg-canvas/40">
-                <div className="flex items-center gap-2 text-xs text-dim mb-2 flex-wrap">
+                <div className="flex items-center gap-2 text-xs text-dim mb-3 flex-wrap">
                   <GitBranch size={13} /> Árvore de execução — {detail.trees.length} sequence(s) raiz
                   {detail.roots.length > 1 && (
                     <span className="flex items-center gap-1.5">
@@ -314,13 +325,32 @@ export default function MalhaDS() {
                   )}
                   <span className="ml-auto">executor genérico já resolvido para o job real</span>
                 </div>
-                <div className="flex flex-col gap-3">
-                  {detail.trees.map((t, i) => (
-                    <div key={`${t.name}#${i}`} className={i > 0 ? 'border-t border-edge/50 pt-3' : ''}>
-                      <TreeRow node={t} path={`root${i}`} collapsed={collapsed} toggle={toggle} termo={termo} statusMap={statusMap} />
-                    </div>
-                  ))}
+
+                {/* Busca na árvore: filtra e expande os ramos que casam */}
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="relative">
+                    <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-dim" />
+                    <input
+                      className="w-80 bg-panel border border-edge rounded-md pl-7 pr-3 py-1.5 text-sm text-ink placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      placeholder="buscar job ou sequence na árvore…" value={termo} onChange={(e) => setTermo(e.target.value)}
+                    />
+                  </div>
+                  {term && <span className="text-xs text-dim">{matchCount} resultado(s)</span>}
+                  {termo && <button className="text-xs text-blue-500 hover:underline" onClick={() => setTermo('')}>limpar</button>}
                 </div>
+
+                {shownTrees.length === 0 ? (
+                  <p className="text-sm text-dim py-4 text-center">Nenhum job/sequence com “{termo}”.</p>
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    {shownTrees.map((t, i) => (
+                      <div key={`${t.name}#${i}`} className={i > 0 ? 'border-t border-edge/50 pt-3' : ''}>
+                        <TreeRow node={t} path={`root${i}`} collapsed={collapsed} toggle={toggle}
+                          termo={termo} statusMap={statusMap} forceOpen={!!term} />
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}
