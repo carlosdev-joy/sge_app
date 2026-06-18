@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from datetime import timedelta
 
 import pendulum
 from airflow import DAG
@@ -23,10 +24,18 @@ from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 from airflow.providers.ssh.hooks.ssh import SSHHook
 
 DAG_ID        = "etl_ds_malha_status"
+AUTO_DAG_ID   = "etl_ds_malha_status_auto"
 SSH_CONN_ID   = "ssh_lnxprd021"
 MSSQL_CONN_ID = "SQL14_DMDB41"
 DSHOME        = "/opt/IBM/InformationServer/Server/DSEngine"
 LOCAL_TZ      = "America/Sao_Paulo"
+
+# Intervalo da varredura automática (minutos) — Variable DS_MALHA_SCAN_MINUTES
+try:
+    from airflow.models import Variable
+    _SCAN_MIN = int(Variable.get("DS_MALHA_SCAN_MINUTES", default_var=10))
+except Exception:
+    _SCAN_MIN = 10
 
 # Códigos de status do dsjob -jobinfo ("Job Status : ... (n)")
 _STATUS = {
@@ -64,12 +73,8 @@ def _scan_names(project: str) -> list[str]:
     return [j for j in M.scan_targets(parsed) if _JOB_RE.match(j or "")]
 
 
-def _scan(**context):
-    conf = context["dag_run"].conf or {}
-    project = (conf.get("project") or "").strip()
-    if not project:
-        raise ValueError("project é obrigatório.")
-
+def scan_project(project: str) -> dict:
+    """Varre o status (dsjob -jobinfo) de todos os nós da malha do projeto e grava snapshot."""
     jobs = _scan_names(project)
     if not jobs:
         print(f"[STATUS] {project}: nenhum nó (job/sequence) na malha.")
@@ -126,10 +131,34 @@ def _scan(**context):
     return {"project": project, "scanned": len(results), "aborted": aborted, "warning": warn}
 
 
+def _scan(**context):
+    """Task sob demanda: varre um projeto (conf={'project': ...})."""
+    project = ((context["dag_run"].conf or {}).get("project") or "").strip()
+    if not project:
+        raise ValueError("project é obrigatório.")
+    return scan_project(project)
+
+
+def _scan_all(**context):
+    """Task periódica: varre TODOS os projetos com malha importada."""
+    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
+    projects = [r[0] for r in (hook.get_records("SELECT project FROM dbo.etl_ds_malha") or [])]
+    print(f"[STATUS-AUTO] varrendo {len(projects)} projeto(s): {projects or '—'}")
+    out = {}
+    for p in projects:
+        try:
+            out[p] = scan_project(p)
+        except Exception as e:  # um projeto com problema não derruba os demais
+            print(f"[STATUS-AUTO] erro em {p}: {e}")
+            out[p] = {"erro": str(e)}
+    return out
+
+
+# DAG sob demanda (disparada pela API POST /malha-ds/{project}/scan)
 with DAG(
     dag_id=DAG_ID,
     default_args=default_args,
-    description="Varre status (dsjob -jobinfo) dos jobs da malha e grava snapshot",
+    description="Varre status (dsjob -jobinfo) dos nós da malha de um projeto",
     start_date=pendulum.datetime(2026, 1, 1, tz=LOCAL_TZ),
     schedule=None,
     catchup=False,
@@ -137,3 +166,19 @@ with DAG(
     access_control={"Op": {"can_read", "can_edit"}},
 ) as dag:
     PythonOperator(task_id="scan", python_callable=_scan, do_xcom_push=True)
+
+
+# DAG periódica (varre todos os projetos importados a cada _SCAN_MIN minutos).
+# Comece PAUSADA; despause no Airflow quando quiser ligar o monitoramento contínuo.
+with DAG(
+    dag_id=AUTO_DAG_ID,
+    default_args=default_args,
+    description="Varredura periódica de status da malha (todos os projetos importados)",
+    start_date=pendulum.datetime(2026, 1, 1, tz=LOCAL_TZ),
+    schedule=timedelta(minutes=_SCAN_MIN),
+    catchup=False,
+    max_active_runs=1,
+    tags=["malha-ds", "datastage", "status", "monitor", "auto"],
+    access_control={"Op": {"can_read", "can_edit"}},
+) as dag_auto:
+    PythonOperator(task_id="scan_all", python_callable=_scan_all, do_xcom_push=True)
