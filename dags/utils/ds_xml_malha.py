@@ -65,7 +65,16 @@ def _real_target(rec, jobname: str) -> str:
 
 def parse_file(path: str) -> dict:
     """Lê um <DSExport> e devolve a estrutura de jobs/sequences do projeto."""
-    root = ET.parse(path).getroot()
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError:
+        # Fallback p/ exports com bytes não-UTF8 (DataStage declara UTF-8 mas usa
+        # CP1252). latin-1 mapeia todos os 256 bytes (nunca falha); identificadores
+        # de job/tabela são ASCII, então a estrutura é preservada.
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        text = re.sub(r"^\s*<\?xml[^>]*\?>", "", raw.decode("latin-1"), count=1)
+        root = ET.fromstring(text)
     if root.tag != "DSExport":
         return {"erro": f"Raiz inesperada '{root.tag}' (esperado DSExport)."}
 

@@ -92,7 +92,13 @@ def import_malha(body: dict = Body(default={}), user: dict = Depends(require_per
     if parsed.get("erro"):
         raise HTTPException(status_code=422, detail=parsed["erro"])
 
-    rows = M.to_rows(parsed)
+    try:
+        rows = M.to_rows(parsed)
+    except AttributeError as e:
+        raise HTTPException(status_code=500,
+                            detail=f"ds_xml_malha desatualizado no dags da API (redeploy necessário): {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao montar a malha: {e}")
 
     try:
         with managed_conn() as (conn, cur):
