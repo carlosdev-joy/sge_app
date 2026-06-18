@@ -102,6 +102,10 @@ def import_malha(body: dict = Body(default={}), user: dict = Depends(require_per
 
     try:
         with managed_conn() as (conn, cur):
+            try:
+                cur.fast_executemany = True   # insert em lote (essencial p/ projetos grandes)
+            except Exception:
+                pass
             cur.execute("DELETE FROM dbo.etl_ds_malha_edge WHERE project = ?", [project])
             cur.execute("DELETE FROM dbo.etl_ds_malha_node WHERE project = ?", [project])
             cur.execute("DELETE FROM dbo.etl_ds_malha WHERE project = ?", [project])
