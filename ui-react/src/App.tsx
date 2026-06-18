@@ -14,6 +14,7 @@ import Jobs from './pages/Jobs'
 import Pipelines from './pages/Pipelines'
 import Dashboard from './pages/Dashboard'
 import PowerBI from './pages/PowerBI'
+import MalhaDS from './pages/MalhaDS'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -39,6 +40,7 @@ export default function App() {
             <Route path="jobs" element={<Jobs />} />
             <Route path="pipelines" element={<Pipelines />} />
             <Route path="powerbi" element={<PowerBI />} />
+            <Route path="malha-ds" element={<MalhaDS />} />
           </Route>
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
