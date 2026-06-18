@@ -223,6 +223,19 @@ def monitorable_jobs(parsed: dict, root: str | None = None) -> list[str]:
 
 
 # ── Persistência: malha ⇆ linhas de banco ───────────────────────────
+def scan_targets(parsed: dict) -> list[str]:
+    """Todos os nós da malha que são jobs/sequences do DataStage (para varredura
+    de status): raízes + todos os real_target das chamadas de job. Inclui as
+    próprias sequences (que também têm status). Executores genéricos ficam de
+    fora (já resolvidos para o job real)."""
+    names: set[str] = set(root_sequences(parsed))
+    for j in parsed.get("jobs", {}).values():
+        for c in j["calls"]:
+            if c["kind"] == "JOB" and c.get("real_target"):
+                names.add(c["real_target"])
+    return sorted(names)
+
+
 def to_rows(parsed: dict) -> dict:
     """Achata a malha em linhas para gravar no banco (sem dependência de DB).
 
