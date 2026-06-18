@@ -209,6 +209,17 @@ def build_forest(parsed: dict) -> list[dict]:
     return [build_tree(parsed, r) for r in roots]
 
 
+def find_subtree(parsed: dict, name: str) -> dict | None:
+    """Resolve `name` (case-insensitive) para um nó e devolve a árvore enraizada
+    nele. É o vínculo job↔malha por NOME: o job do pipeline = raiz da árvore.
+    Retorna None se o nome não existir como nó da malha."""
+    norm = (name or "").strip().lower()
+    for k in parsed.get("jobs", {}):
+        if k.strip().lower() == norm:
+            return build_tree(parsed, k)
+    return None
+
+
 def monitorable_jobs(parsed: dict, root: str | None = None) -> list[str]:
     """Lista plana e única dos jobs reais (não-sequence, não-rotina) sob a malha.
 

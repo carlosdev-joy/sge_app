@@ -161,6 +161,33 @@ def list_xml_files(_auth: dict = Depends(get_current_user)):
     return {"base_dir": _XML_BASE_DIR, "files": files}
 
 
+@router.get("/malha-ds/subtree", tags=["malha-ds"])
+def get_subtree(job: str, project: str | None = None, _auth: dict = Depends(get_current_user)):
+    """Vínculo por NOME: dado o nome de um job/sequence, devolve a árvore enraizada
+    nele (procurando nas malhas importadas). Usado para exibir a malha de um job
+    do pipeline no log/diagrama."""
+    name = (job or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Parâmetro 'job' é obrigatório.")
+    M = _malha_mod()
+    with managed_conn() as (conn, cur):
+        if project:
+            project = _safe_project(project)
+            cur.execute("SELECT TOP 1 project FROM dbo.etl_ds_malha_node WHERE project = ? AND name = ?",
+                        [project, name])
+        else:
+            cur.execute("SELECT TOP 1 project FROM dbo.etl_ds_malha_node WHERE name = ? ORDER BY project",
+                        [name])
+        row = cur.fetchone()
+        if not row:
+            return {"found": False, "job": name, "project": None, "tree": None}
+        proj = row[0]
+        nodes, edges = _read_rows(cur, proj)
+    parsed = M.from_rows(nodes, edges, project=proj)
+    tree = M.find_subtree(parsed, name)
+    return {"found": tree is not None, "job": name, "project": proj, "tree": tree}
+
+
 @router.get("/malha-ds/{project}", tags=["malha-ds"])
 def get_malha(project: str, root: str | None = None, _auth: dict = Depends(get_current_user)):
     project = _safe_project(project)
