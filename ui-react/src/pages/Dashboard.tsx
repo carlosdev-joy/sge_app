@@ -421,7 +421,7 @@ export default function Dashboard() {
   const [ganttFilter,  setGanttFilter]  = useState<'all' | 'running'>('all')
   const [detail,       setDetail]       = useState<ExecRow | null>(null)
   const [airflowLog,   setAirflowLog]   = useState<AirflowLogState | null>(null)
-  const [dsLog,        setDsLog]        = useState<{ executionId: string; jobName: string } | null>(null)
+  const [dsLog,        setDsLog]        = useState<{ executionId: string; jobName: string; pipelineName: string } | null>(null)
 
   const qs = useMemo(() => {
     const p = new URLSearchParams({ date_ref: date })
@@ -754,11 +754,11 @@ export default function Dashboard() {
           row={detail}
           onClose={() => setDetail(null)}
           onAirflowLog={s => { setDetail(null); setAirflowLog(s) }}
-          onDsLog={(eid, jn) => { setDetail(null); setDsLog({ executionId: eid, jobName: jn }) }}
+          onDsLog={(eid, jn, pn) => { setDetail(null); setDsLog({ executionId: eid, jobName: jn, pipelineName: pn }) }}
         />
       )}
       {airflowLog && <AirflowLogModal state={airflowLog} onClose={() => setAirflowLog(null)} />}
-      {dsLog && <DsLogModal executionId={dsLog.executionId} jobName={dsLog.jobName} onClose={() => setDsLog(null)} />}
+      {dsLog && <DsLogModal executionId={dsLog.executionId} jobName={dsLog.jobName} pipelineName={dsLog.pipelineName} onClose={() => setDsLog(null)} />}
     </div>
   )
 }

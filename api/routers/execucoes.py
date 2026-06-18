@@ -166,47 +166,57 @@ def _teams_resolved_card(pipeline: str, exec_id: str, resolved_by: str, display_
 
 
 def _merge_fila_por_execucao(cur, conn, data: list[dict]) -> None:
-    """Soma queued_seconds de etl_ds_job_log por execution_id e injeta em
-    data[i]['fila_total_segundos']. Degrada silenciosamente se a tabela/coluna
-    não existir."""
+    """Soma queued_seconds de etl_ds_job_log por (execution_id, pipeline) e injeta
+    em data[i]['fila_total_segundos']. Degrada silenciosamente se a tabela/coluna
+    não existir.
+
+    Agrupa também por pipeline_name (além de execution_id) porque o
+    execution_id (derivado de ts_nodash) pode colidir entre pipelines
+    diferentes disparados no mesmo timestamp.
+    """
     exec_ids = list({d["execution_id"] for d in data if d.get("execution_id")})
     if not exec_ids:
         return
     placeholders = ",".join("?" * len(exec_ids))
     try:
         cur.execute(f"""
-            SELECT execution_id, SUM(CAST(queued_seconds AS bigint))
+            SELECT execution_id, pipeline_name, SUM(CAST(queued_seconds AS bigint))
             FROM dbo.etl_ds_job_log
             WHERE queued_seconds IS NOT NULL AND queued_seconds > 0
               AND execution_id IN ({placeholders})
-            GROUP BY execution_id
+            GROUP BY execution_id, pipeline_name
         """, exec_ids)
-        fila = {row[0]: int(row[1] or 0) for row in cur.fetchall()}
+        fila = {(row[0], row[1]): int(row[2] or 0) for row in cur.fetchall()}
         for d in data:
-            d["fila_total_segundos"] = fila.get(d["execution_id"], 0)
+            d["fila_total_segundos"] = fila.get((d["execution_id"], d.get("pipeline")), 0)
     except Exception:
         try: conn.rollback()
         except Exception: pass
 
 
 def _merge_fila_por_job(cur, conn, data: list[dict]) -> None:
-    """Soma queued_seconds por (execution_id, job_name) e injeta em
-    data[i]['fila_segundos']. Degrada silenciosamente."""
+    """Soma queued_seconds por (execution_id, pipeline, job_name) e injeta em
+    data[i]['fila_segundos']. Degrada silenciosamente.
+
+    Inclui pipeline_name no agrupamento pelo mesmo motivo descrito em
+    _merge_fila_por_execucao: execution_id isoladamente pode colidir entre
+    pipelines distintos.
+    """
     exec_ids = list({d["execution_id"] for d in data if d.get("execution_id")})
     if not exec_ids:
         return
     placeholders = ",".join("?" * len(exec_ids))
     try:
         cur.execute(f"""
-            SELECT execution_id, job_name, SUM(CAST(queued_seconds AS bigint))
+            SELECT execution_id, pipeline_name, job_name, SUM(CAST(queued_seconds AS bigint))
             FROM dbo.etl_ds_job_log
             WHERE queued_seconds IS NOT NULL AND queued_seconds > 0
               AND execution_id IN ({placeholders})
-            GROUP BY execution_id, job_name
+            GROUP BY execution_id, pipeline_name, job_name
         """, exec_ids)
-        fila = {(row[0], row[1]): int(row[2] or 0) for row in cur.fetchall()}
+        fila = {(row[0], row[1], row[2]): int(row[3] or 0) for row in cur.fetchall()}
         for d in data:
-            d["fila_segundos"] = fila.get((d["execution_id"], d["job_name"]), 0)
+            d["fila_segundos"] = fila.get((d["execution_id"], d.get("pipeline"), d["job_name"]), 0)
     except Exception:
         try: conn.rollback()
         except Exception: pass

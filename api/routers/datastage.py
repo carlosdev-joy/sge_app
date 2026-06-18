@@ -75,16 +75,18 @@ async def datastage_monitor_trigger(body: dict = Body(...), _auth: dict = Depend
 
 @router.get("/datastage/log")
 async def datastage_log_query(
+    pipeline_name: str = Query(...),
     job_name:      str = Query(None),
     execution_id:  str = Query(None),
     project:       str = Query(None),
-    pipeline_name: str = Query(None),
     limit:         int = Query(10),
 ):
     """
     Consulta logs detalhados DataStage persistidos em etl_ds_job_log.
 
-    Parâmetros opcionais: job_name, execution_id, project, pipeline_name, limit (default 10)
+    pipeline_name é obrigatório: execution_id por si só pode colidir entre
+    pipelines diferentes disparados no mesmo timestamp (ts_nodash).
+    Demais parâmetros são opcionais: job_name, execution_id, project, limit (default 10)
     """
     try:
         conn   = get_db_conn()
@@ -150,25 +152,36 @@ async def datastage_log_query(
 
 @router.get("/datastage/status")
 async def datastage_job_status(
-    project:  str = Query(...),
-    job_name: str = Query(...),
+    project:       str = Query(...),
+    job_name:      str = Query(...),
+    pipeline_name: str = Query(None),
 ):
     """
     Retorna status atual de um job DataStage diretamente do último log persistido.
     Usado pelo painel de monitor no ORQUESTRA para refresh sem novo trigger.
+
+    pipeline_name é opcional aqui para não quebrar o monitor de trigger
+    (que ainda não conhece o nome do pipeline antes do disparo), mas deve
+    ser informado sempre que disponível para evitar ambiguidade entre
+    pipelines distintos com o mesmo project/job_name.
     """
     try:
         conn   = get_db_conn()
         cursor = conn.cursor()
+        where  = "WHERE project = ? AND job_name = ?"
+        params = [project, job_name]
+        if pipeline_name:
+            where += " AND pipeline_name = ?"
+            params.append(pipeline_name)
         cursor.execute(
-            """
+            f"""
             SELECT TOP 1 status, status_code, wave_number, pid,
                          child_jobs, poll_snapshots, last_polled_at, updated_at
             FROM dbo.etl_ds_job_log
-            WHERE project = ? AND job_name = ?
+            {where}
             ORDER BY created_at DESC
             """,
-            [project, job_name],
+            params,
         )
         row = cursor.fetchone()
         cursor.close(); conn.close()

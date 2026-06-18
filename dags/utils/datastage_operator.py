@@ -165,7 +165,7 @@ class DataStageOperator(BaseOperator):
                 queued_since   = None
                 if queued_seconds > 0:
                     self.log.info("[DS] Tempo em fila: %ds", queued_seconds)
-                    self._persist_queued_seconds(execution_id, queued_seconds)
+                    self._persist_queued_seconds(execution_id, pipeline, queued_seconds)
 
             # Logsum parcial: só com verbose_log=True — opt-in por job/DAG
             if self.verbose_log and sc == self._ST_RUNNING and poll_count % self.verbose_interval == 0:
@@ -377,16 +377,20 @@ class DataStageOperator(BaseOperator):
 
     # ── DB persistence ────────────────────────────────────────────────────────
 
-    def _persist_queued_seconds(self, execution_id: str, queued_seconds: int) -> None:
-        """Grava o tempo de espera em fila do WM DataStage em etl_ds_job_log."""
+    def _persist_queued_seconds(self, execution_id: str, pipeline: str, queued_seconds: int) -> None:
+        """Grava o tempo de espera em fila do WM DataStage em etl_ds_job_log.
+
+        Filtra também por pipeline_name: execution_id (derivado de ts_nodash)
+        pode colidir entre pipelines distintos agendados no mesmo horário.
+        """
         try:
             from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
             hook = MsSqlHook(mssql_conn_id=self.mssql_conn_id)
             hook.run(
                 "UPDATE dbo.etl_ds_job_log "
                 "SET queued_seconds=%s, updated_at=GETDATE() "
-                "WHERE execution_id=%s AND job_name=%s",
-                parameters=(queued_seconds, execution_id, self.job_name),
+                "WHERE execution_id=%s AND pipeline_name=%s AND job_name=%s",
+                parameters=(queued_seconds, execution_id, pipeline, self.job_name),
             )
         except Exception as exc:
             self.log.warning("[DS] Não foi possível gravar queued_seconds: %s", exc)

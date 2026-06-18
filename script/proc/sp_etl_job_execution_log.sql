@@ -55,6 +55,7 @@ IF NOT EXISTS (
     SELECT 1
     FROM dbo.etl_job_execution
     WHERE execution_id = @execution_id
+      AND pipeline = @pipeline
       AND job_name = @job_name
       AND task_id = @task_id
 )
@@ -113,6 +114,7 @@ BEGIN
         updated_at = GETDATE()
 
     WHERE execution_id = @execution_id
+      AND pipeline = @pipeline
       AND job_name = @job_name
       AND task_id = @task_id
 
