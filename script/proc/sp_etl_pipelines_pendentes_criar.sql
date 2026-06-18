@@ -37,13 +37,30 @@ BEGIN
         j.job_name,
         j.execution_order,
         j.job_type,
-        ISNULL(j.job_command, '') AS job_command
+        ISNULL(j.job_command, '')   AS job_command,
+        j.ssh_conn_id,
+        ISNULL(j.verbose_log, 0)    AS verbose_log,
+        j.mssql_conn_id
     FROM dbo.etl_pipeline_job j
     INNER JOIN dbo.etl_pipeline p
         ON p.pipeline_name = j.pipeline_name
     WHERE p.DAG_CRIADA = 0
       AND p.active     = 1
     ORDER BY j.pipeline_name, j.execution_order;
+
+    SELECT
+        jp.pipeline_name,
+        jp.job_name,
+        jp.param_name,
+        jp.param_type,
+        jp.param_value,
+        jp.param_order
+    FROM dbo.etl_pipeline_job_param jp
+    INNER JOIN dbo.etl_pipeline p
+        ON p.pipeline_name = jp.pipeline_name
+    WHERE p.DAG_CRIADA = 0
+      AND p.active     = 1
+    ORDER BY jp.pipeline_name, jp.job_name, jp.param_order;
 
 END
 GO

@@ -143,3 +143,23 @@ async def list_ssh_connections():
     except Exception as e:
         log.warning("Erro ao listar conexões SSH: %s", e)
         return {"connections": []}
+
+
+@router.get("/airflow/connections/mssql")
+async def list_mssql_connections():
+    """Lista conexões MSSQL cadastradas no Airflow (conn_type=mssql)."""
+    try:
+        async with get_airflow_client() as client:
+            r = await client.get("/api/v1/connections?limit=100")
+            if not r.is_success:
+                return {"connections": []}
+            data = r.json()
+            conns = [
+                {"conn_id": c["connection_id"], "host": c.get("host",""), "schema": c.get("schema",""), "description": c.get("description","")}
+                for c in data.get("connections", [])
+                if c.get("conn_type") == "mssql"
+            ]
+            return {"connections": conns}
+    except Exception as e:
+        log.warning("Erro ao listar conexões MSSQL: %s", e)
+        return {"connections": []}
