@@ -31,23 +31,25 @@ const ST_CLS: Record<string, string> = {
 const badgeCls = (m: Record<string, string>, k: string) =>
   m[k] ?? 'bg-slate-100 text-slate-600 border-slate-300 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700'
 
-// Status considerados "problema" (apontados no resumo / filtro)
+// Status "não-OK" (destacados no resumo / filtro): aviso, falha e rodando
 const isWarn = (lbl?: string | null) => (lbl ?? '').toUpperCase() === 'WARNING'
 const isFail = (lbl?: string | null) => { const s = (lbl ?? '').toUpperCase(); return s === 'ABORTED' || s === 'FAILED' }
-const isProblem = (lbl?: string | null) => isWarn(lbl) || isFail(lbl)
+const isRun  = (lbl?: string | null) => (lbl ?? '').toUpperCase() === 'RUNNING'
+const isFlagged = (lbl?: string | null) => isWarn(lbl) || isFail(lbl) || isRun(lbl)
 
-interface ProblemInfo { w: number; f: number }
+interface ProblemInfo { w: number; f: number; r: number }
 type ProblemMap = Map<TreeNode, ProblemInfo>
 
-/** Conta WARNING/FAILED de cada nó + descendentes (uma passada). */
+/** Conta WARNING/FAILED/RUNNING de cada nó + descendentes (uma passada). */
 function buildProblemMap(root: TreeNode | null, statusMap: Record<string, JobStatus>): ProblemMap {
   const map: ProblemMap = new Map()
   const walk = (n: TreeNode): ProblemInfo => {
     const lbl = statusMap[n.name]?.status_label
     let w = isWarn(lbl) ? 1 : 0
     let f = isFail(lbl) ? 1 : 0
-    for (const c of n.children ?? []) { const ci = walk(c); w += ci.w; f += ci.f }
-    const info = { w, f }
+    let r = isRun(lbl) ? 1 : 0
+    for (const c of n.children ?? []) { const ci = walk(c); w += ci.w; f += ci.f; r += ci.r }
+    const info = { w, f, r }
     map.set(n, info)
     return info
   }
@@ -55,25 +57,26 @@ function buildProblemMap(root: TreeNode | null, statusMap: Record<string, JobSta
   return map
 }
 
-function Row({ node, path, collapsed, toggle, statusMap, problemMap, onlyProblems }: {
+function Row({ node, path, collapsed, toggle, statusMap, problemMap, onlyFlagged }: {
   node: TreeNode; path: string; collapsed: Set<string>; toggle: (p: string) => void
-  statusMap: Record<string, JobStatus>; problemMap: ProblemMap; onlyProblems: boolean
+  statusMap: Record<string, JobStatus>; problemMap: ProblemMap; onlyFlagged: boolean
 }) {
-  const info = problemMap.get(node) ?? { w: 0, f: 0 }
-  // No modo "só problema", esconde ramos limpos por completo
-  if (onlyProblems && info.w === 0 && info.f === 0) return null
+  const info = problemMap.get(node) ?? { w: 0, f: 0, r: 0 }
+  const flagged = info.w > 0 || info.f > 0 || info.r > 0
+  // No modo "só não-OK", esconde ramos 100% OK por completo
+  if (onlyFlagged && !flagged) return null
 
   const st = statusMap[node.name]
-  const selfProblem = isProblem(st?.status_label)
-  const branchBelow = !selfProblem && (info.w > 0 || info.f > 0)  // problema em algum descendente
+  const selfFlagged = isFlagged(st?.status_label)
+  const branchBelow = !selfFlagged && flagged  // aviso/falha/rodando em algum descendente
 
   const allKids = node.children ?? []
-  const kids = onlyProblems
-    ? allKids.filter(c => { const ci = problemMap.get(c); return !!ci && (ci.w > 0 || ci.f > 0) })
+  const kids = onlyFlagged
+    ? allKids.filter(c => { const ci = problemMap.get(c); return !!ci && (ci.w > 0 || ci.f > 0 || ci.r > 0) })
     : allKids
   const hasKids = kids.length > 0
-  // Filtrando, mantém os ramos com problema abertos (caminho até o ponto apontado)
-  const isOpen = onlyProblems ? true : !collapsed.has(path)
+  // Filtrando, mantém os ramos destacados abertos (caminho até o ponto apontado)
+  const isOpen = onlyFlagged ? true : !collapsed.has(path)
 
   const extras: string[] = []
   if (node.routines) extras.push(`${node.routines} rotina(s)`)
@@ -93,12 +96,13 @@ function Row({ node, path, collapsed, toggle, statusMap, problemMap, onlyProblem
         )}
         {branchBelow && (
           <span
-            title="Há job(s) com problema neste ramo"
+            title="Há job(s) não-OK neste ramo (aviso, falha ou rodando)"
             className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold border border-edge text-dim"
           >
             ↳
             {info.f > 0 && <span className="text-red-600 dark:text-red-400">{info.f}✗</span>}
             {info.w > 0 && <span className="text-amber-600 dark:text-amber-400">{info.w}⚠</span>}
+            {info.r > 0 && <span className="text-blue-600 dark:text-blue-400">{info.r}▶</span>}
           </span>
         )}
         {node.invocations && node.invocations > 1 && (
@@ -111,7 +115,7 @@ function Row({ node, path, collapsed, toggle, statusMap, problemMap, onlyProblem
           {kids.map((c, i) => (
             <Row key={`${path}/${c.name}#${i}`} node={c} path={`${path}/${c.name}#${i}`}
               collapsed={collapsed} toggle={toggle} statusMap={statusMap}
-              problemMap={problemMap} onlyProblems={onlyProblems} />
+              problemMap={problemMap} onlyFlagged={onlyFlagged} />
           ))}
         </div>
       )}
@@ -125,7 +129,7 @@ export function MalhaTreeView({ jobName, project: projectHint, enabled = true }:
   jobName: string; project?: string; enabled?: boolean
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
-  const [onlyProblems, setOnlyProblems] = useState(false)
+  const [onlyFlagged, setOnlyFlagged] = useState(false)
   const toggle = (p: string) => setCollapsed((s) => { const n = new Set(s); n.has(p) ? n.delete(p) : n.add(p); return n })
 
   const { data, isLoading } = useQuery<SubtreeResp>({
@@ -149,23 +153,23 @@ export function MalhaTreeView({ jobName, project: projectHint, enabled = true }:
     return m
   }, [status])
 
-  // Conta WARNING/FAILED no nó-raiz (jobs distintos) e por subárvore (filtro/marcador)
+  // Conta não-OK no nó-raiz (jobs distintos) e por subárvore (filtro/marcador)
   const problemMap = useMemo(() => buildProblemMap(data?.tree ?? null, statusMap), [data, statusMap])
-  const { warn, fail } = useMemo(() => {
+  const { warn, fail, run } = useMemo(() => {
     const seen = new Set<string>()
-    let w = 0, f = 0
+    let w = 0, f = 0, r = 0
     const walk = (n: TreeNode) => {
       if (!seen.has(n.name)) {
         seen.add(n.name)
         const lbl = statusMap[n.name]?.status_label
-        if (isFail(lbl)) f++; else if (isWarn(lbl)) w++
+        if (isFail(lbl)) f++; else if (isWarn(lbl)) w++; else if (isRun(lbl)) r++
       }
       n.children?.forEach(walk)
     }
     if (data?.tree) walk(data.tree)
-    return { warn: w, fail: f }
+    return { warn: w, fail: f, run: r }
   }, [data, statusMap])
-  const hasProblem = warn > 0 || fail > 0
+  const hasFlag = warn > 0 || fail > 0 || run > 0
 
   if (isLoading) return <div className="flex justify-center py-10"><Spinner size={32} /></div>
   if (!data?.found || !data.tree) {
@@ -180,7 +184,7 @@ export function MalhaTreeView({ jobName, project: projectHint, enabled = true }:
       <div className="flex items-center gap-2 text-xs text-dim flex-wrap">
         <Share2 size={13} className="text-[#1A5FA8]" />
         Projeto: <strong className="text-ink">{data.project}</strong>
-        {/* Resumo de problemas ao lado do projeto */}
+        {/* Resumo de não-OK ao lado do projeto */}
         {fail > 0 && (
           <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border bg-red-100 text-red-700 border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800">
             {fail} ✗ falha{fail > 1 ? 's' : ''}
@@ -191,29 +195,34 @@ export function MalhaTreeView({ jobName, project: projectHint, enabled = true }:
             {warn} ⚠ aviso{warn > 1 ? 's' : ''}
           </span>
         )}
-        {!hasProblem && status?.scanned_at && (
-          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border bg-green-100 text-green-700 border-green-300 dark:bg-green-900/40 dark:text-green-300 dark:border-green-800">
-            sem problemas
+        {run > 0 && (
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800">
+            {run} ▶ rodando
           </span>
         )}
-        {hasProblem && (
+        {!hasFlag && status?.scanned_at && (
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border bg-green-100 text-green-700 border-green-300 dark:bg-green-900/40 dark:text-green-300 dark:border-green-800">
+            tudo OK
+          </span>
+        )}
+        {hasFlag && (
           <button
-            onClick={() => setOnlyProblems(v => !v)}
-            title="Mostra só os ramos que levam a aviso/falha"
+            onClick={() => setOnlyFlagged(v => !v)}
+            title="Mostra só os ramos com aviso, falha ou rodando"
             className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold border transition-colors ${
-              onlyProblems
+              onlyFlagged
                 ? 'bg-[#1A5FA8] text-white border-[#1A5FA8]'
                 : 'border-edge text-dim hover:text-ink'
             }`}
           >
-            <Filter size={11} /> {onlyProblems ? 'Mostrando só problemas' : 'Só com problema'}
+            <Filter size={11} /> {onlyFlagged ? 'Mostrando só não-OK' : 'Só não-OK'}
           </button>
         )}
         {status?.scanned_at && <span className="ml-auto">status de {status.scanned_at}</span>}
       </div>
       <div className="border border-edge rounded-lg p-3 overflow-x-auto bg-canvas/40">
         <Row node={data.tree} path="root" collapsed={collapsed} toggle={toggle}
-          statusMap={statusMap} problemMap={problemMap} onlyProblems={onlyProblems} />
+          statusMap={statusMap} problemMap={problemMap} onlyFlagged={onlyFlagged} />
       </div>
     </div>
   )
