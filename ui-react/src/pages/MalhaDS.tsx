@@ -127,6 +127,7 @@ export default function MalhaDS() {
     queryKey: ['malha-ds-status', selected],
     queryFn: () => apiFetch(`/malha-ds/${encodeURIComponent(selected!)}/status`),
     enabled: !!selected,
+    refetchInterval: 30_000,   // auto-atualiza com a varredura periódica
   })
 
   const importMut = useMutation({
