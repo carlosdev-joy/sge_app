@@ -40,6 +40,14 @@ const isFlagged = (lbl?: string | null) => isWarn(lbl) || isFail(lbl) || isRun(l
 interface ProblemInfo { w: number; f: number; r: number }
 type ProblemMap = Map<TreeNode, ProblemInfo>
 
+// Filtro por situação: f=falha, w=aviso, r=rodando. Vazio = sem filtro.
+type Cat = 'f' | 'w' | 'r'
+const inFilter = (info: ProblemInfo, filter: Set<Cat>) =>
+  filter.size === 0 ||
+  (filter.has('f') && info.f > 0) ||
+  (filter.has('w') && info.w > 0) ||
+  (filter.has('r') && info.r > 0)
+
 /** Conta WARNING/FAILED/RUNNING de cada nó + descendentes (uma passada). */
 function buildProblemMap(root: TreeNode | null, statusMap: Record<string, JobStatus>): ProblemMap {
   const map: ProblemMap = new Map()
@@ -64,26 +72,26 @@ function allPaths(node: TreeNode, path = 'root', acc: string[] = []): string[] {
   return acc
 }
 
-function Row({ node, path, expanded, toggle, statusMap, problemMap, onlyFlagged }: {
+function Row({ node, path, expanded, toggle, statusMap, problemMap, filter }: {
   node: TreeNode; path: string; expanded: Set<string>; toggle: (p: string) => void
-  statusMap: Record<string, JobStatus>; problemMap: ProblemMap; onlyFlagged: boolean
+  statusMap: Record<string, JobStatus>; problemMap: ProblemMap; filter: Set<Cat>
 }) {
   const info = problemMap.get(node) ?? { w: 0, f: 0, r: 0 }
-  const flagged = info.w > 0 || info.f > 0 || info.r > 0
-  // No modo "só não-OK", esconde ramos 100% OK por completo
-  if (onlyFlagged && !flagged) return null
+  const active = filter.size > 0
+  // Filtrando, esconde ramos que não levam à(s) situação(ões) selecionada(s)
+  if (active && !inFilter(info, filter)) return null
 
   const st = statusMap[node.name]
   const selfFlagged = isFlagged(st?.status_label)
-  const branchBelow = !selfFlagged && flagged  // aviso/falha/rodando em algum descendente
+  const branchBelow = !selfFlagged && (info.w > 0 || info.f > 0 || info.r > 0)
 
   const allKids = node.children ?? []
-  const kids = onlyFlagged
-    ? allKids.filter(c => { const ci = problemMap.get(c); return !!ci && (ci.w > 0 || ci.f > 0 || ci.r > 0) })
+  const kids = active
+    ? allKids.filter(c => { const ci = problemMap.get(c); return !!ci && inFilter(ci, filter) })
     : allKids
   const hasKids = kids.length > 0
-  // Filtrando, mantém os ramos destacados abertos (caminho até o ponto apontado)
-  const isOpen = onlyFlagged ? true : expanded.has(path)
+  // Filtrando, mantém o caminho até o ponto apontado aberto
+  const isOpen = active ? true : expanded.has(path)
 
   const extras: string[] = []
   if (node.routines) extras.push(`${node.routines} rotina(s)`)
@@ -122,7 +130,7 @@ function Row({ node, path, expanded, toggle, statusMap, problemMap, onlyFlagged 
           {kids.map((c, i) => (
             <Row key={`${path}/${c.name}#${i}`} node={c} path={`${path}/${c.name}#${i}`}
               expanded={expanded} toggle={toggle} statusMap={statusMap}
-              problemMap={problemMap} onlyFlagged={onlyFlagged} />
+              problemMap={problemMap} filter={filter} />
           ))}
         </div>
       )}
@@ -137,8 +145,9 @@ export function MalhaTreeView({ jobName, project: projectHint, enabled = true }:
 }) {
   // Recolhida por padrão: só o nó-raiz aberto (mostra as segmentações de 1º nível)
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['root']))
-  const [onlyFlagged, setOnlyFlagged] = useState(false)
+  const [filter, setFilter] = useState<Set<Cat>>(new Set())
   const toggle = (p: string) => setExpanded((s) => { const n = new Set(s); n.has(p) ? n.delete(p) : n.add(p); return n })
+  const toggleCat = (c: Cat) => setFilter((s) => { const n = new Set(s); n.has(c) ? n.delete(c) : n.add(c); return n })
 
   const { data, isLoading } = useQuery<SubtreeResp>({
     queryKey: ['malha-subtree', jobName, projectHint ?? null],
@@ -179,6 +188,15 @@ export function MalhaTreeView({ jobName, project: projectHint, enabled = true }:
   }, [data, statusMap])
   const hasFlag = warn > 0 || fail > 0 || run > 0
 
+  // Categorias presentes (têm contagem) e se o filtro cobre todas elas
+  const presentCats = useMemo(() => {
+    const s = new Set<Cat>()
+    if (fail > 0) s.add('f'); if (warn > 0) s.add('w'); if (run > 0) s.add('r')
+    return s
+  }, [fail, warn, run])
+  const allSelected = presentCats.size > 0 && filter.size === presentCats.size &&
+    [...presentCats].every(c => filter.has(c))
+
   const paths = useMemo(() => (data?.tree ? allPaths(data.tree) : []), [data])
   const allExpanded = paths.length > 0 && expanded.size >= paths.length
 
@@ -195,21 +213,33 @@ export function MalhaTreeView({ jobName, project: projectHint, enabled = true }:
       <div className="flex items-center gap-2 text-xs text-dim flex-wrap">
         <Share2 size={13} className="text-[#1A5FA8]" />
         Projeto: <strong className="text-ink">{data.project}</strong>
-        {/* Resumo de não-OK ao lado do projeto */}
+        {/* Resumo de não-OK — clicáveis: filtram só a situação correspondente */}
         {fail > 0 && (
-          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border bg-red-100 text-red-700 border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800">
+          <button
+            onClick={() => toggleCat('f')}
+            title={filter.has('f') ? 'Remover filtro de falhas' : 'Filtrar só falhas'}
+            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border transition-all cursor-pointer bg-red-100 text-red-700 border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800 ${filter.has('f') ? 'ring-2 ring-red-500 dark:ring-red-400' : 'hover:brightness-95'}`}
+          >
             {fail} ✗ falha{fail > 1 ? 's' : ''}
-          </span>
+          </button>
         )}
         {warn > 0 && (
-          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border bg-amber-100 text-amber-800 border-amber-300 dark:bg-yellow-900/40 dark:text-yellow-300 dark:border-yellow-800">
+          <button
+            onClick={() => toggleCat('w')}
+            title={filter.has('w') ? 'Remover filtro de avisos' : 'Filtrar só avisos'}
+            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border transition-all cursor-pointer bg-amber-100 text-amber-800 border-amber-300 dark:bg-yellow-900/40 dark:text-yellow-300 dark:border-yellow-800 ${filter.has('w') ? 'ring-2 ring-amber-500 dark:ring-amber-400' : 'hover:brightness-95'}`}
+          >
             {warn} ⚠ aviso{warn > 1 ? 's' : ''}
-          </span>
+          </button>
         )}
         {run > 0 && (
-          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800">
+          <button
+            onClick={() => toggleCat('r')}
+            title={filter.has('r') ? 'Remover filtro de rodando' : 'Filtrar só rodando'}
+            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border transition-all cursor-pointer bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800 ${filter.has('r') ? 'ring-2 ring-blue-500 dark:ring-blue-400' : 'hover:brightness-95'}`}
+          >
             {run} ▶ rodando
-          </span>
+          </button>
         )}
         {!hasFlag && status?.scanned_at && (
           <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border bg-green-100 text-green-700 border-green-300 dark:bg-green-900/40 dark:text-green-300 dark:border-green-800">
@@ -218,15 +248,24 @@ export function MalhaTreeView({ jobName, project: projectHint, enabled = true }:
         )}
         {hasFlag && (
           <button
-            onClick={() => setOnlyFlagged(v => !v)}
-            title="Mostra só os ramos com aviso, falha ou rodando"
+            onClick={() => setFilter(allSelected ? new Set() : new Set(presentCats))}
+            title="Mostra todos os ramos não-OK (aviso, falha ou rodando)"
             className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold border transition-colors ${
-              onlyFlagged
+              allSelected
                 ? 'bg-[#1A5FA8] text-white border-[#1A5FA8]'
                 : 'border-edge text-dim hover:text-ink'
             }`}
           >
-            <Filter size={11} /> {onlyFlagged ? 'Mostrando só não-OK' : 'Só não-OK'}
+            <Filter size={11} /> {allSelected ? 'Mostrando só não-OK' : 'Só não-OK'}
+          </button>
+        )}
+        {filter.size > 0 && !allSelected && (
+          <button
+            onClick={() => setFilter(new Set())}
+            title="Limpar filtro"
+            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border border-edge text-dim hover:text-ink transition-colors"
+          >
+            × limpar
           </button>
         )}
         {paths.length > 1 && (
@@ -243,7 +282,7 @@ export function MalhaTreeView({ jobName, project: projectHint, enabled = true }:
       </div>
       <div className="border border-edge rounded-lg p-3 overflow-x-auto bg-canvas/40">
         <Row node={data.tree} path="root" expanded={expanded} toggle={toggle}
-          statusMap={statusMap} problemMap={problemMap} onlyFlagged={onlyFlagged} />
+          statusMap={statusMap} problemMap={problemMap} filter={filter} />
       </div>
     </div>
   )
