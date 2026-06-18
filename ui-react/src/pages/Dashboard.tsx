@@ -7,12 +7,13 @@ import { Select } from '../components/ui/Input'
 import { Button } from '../components/ui/Button'
 import {
   RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock,
-  Activity, Layers, BarChart2, ChevronRight,
+  Activity, Layers, BarChart2, ChevronRight, Share2,
 } from 'lucide-react'
 import {
   LogDetailModal, AirflowLogModal, DsLogModal,
   type ExecRow, type AirflowLogState,
 } from '../components/execucao/ExecucaoDetailModal'
+import { PipelineMalhaModal } from '../components/MalhaTreeModal'
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -345,9 +346,23 @@ function ProjBadges({ items }: { items: KpiData['por_projeto'] }) {
   )
 }
 
+// ── Botão "ver malha" (estrutura DataStage do pipeline) ─────────────────────
+
+function MalhaBtn({ onClick, className = '' }: { onClick: () => void; className?: string }) {
+  return (
+    <button
+      onClick={e => { e.stopPropagation(); onClick() }}
+      title="Ver malha (estrutura DataStage)"
+      className={`text-dim hover:text-[#1A5FA8] transition-colors shrink-0 ${className}`}
+    >
+      <Share2 size={13} />
+    </button>
+  )
+}
+
 // ── Alerta de performance ──────────────────────────────────────────────────
 
-function AlertaRow({ a, onOpen }: { a: AlertaPerf; onOpen: () => void }) {
+function AlertaRow({ a, onOpen, onMalha }: { a: AlertaPerf; onOpen: () => void; onMalha: () => void }) {
   const cls = a.alerta_horas >= 12
     ? 'border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20'
     : a.alerta_horas >= 6
@@ -362,6 +377,7 @@ function AlertaRow({ a, onOpen }: { a: AlertaPerf; onOpen: () => void }) {
         <div className="text-[10px] text-dim">{a.project} · início {fmtDateTime(a.inicio)}</div>
       </div>
       <span className="text-xs font-bold text-amber-600 dark:text-amber-400 flex-shrink-0">{fmtSec(a.elapsed_seconds)}</span>
+      <MalhaBtn onClick={onMalha} />
       <ChevronRight size={13} className="text-dim flex-shrink-0" />
     </div>
   )
@@ -369,7 +385,7 @@ function AlertaRow({ a, onOpen }: { a: AlertaPerf; onOpen: () => void }) {
 
 // ── Executando agora row ───────────────────────────────────────────────────
 
-function RunningRow({ e, onOpen }: { e: Executando; onOpen: () => void }) {
+function RunningRow({ e, onOpen, onMalha }: { e: Executando; onOpen: () => void; onMalha: () => void }) {
   const pct = e.total_jobs > 0 ? Math.round((e.jobs_ok / e.total_jobs) * 100) : 0
   return (
     <div className="flex items-center gap-3 px-4 py-2.5 border-b border-edge/40 last:border-0 hover:bg-blue-50 dark:hover:bg-blue-900/10 transition-all cursor-pointer" onClick={onOpen}>
@@ -388,6 +404,7 @@ function RunningRow({ e, onOpen }: { e: Executando; onOpen: () => void }) {
         <div className="text-[10px] text-blue-500 dark:text-blue-400 font-bold">{e.jobs_running} rod.</div>
         <div className="text-[10px] text-dim">{e.jobs_ok}/{e.total_jobs} ok</div>
       </div>
+      <MalhaBtn onClick={onMalha} />
     </div>
   )
 }
@@ -422,6 +439,7 @@ export default function Dashboard() {
   const [detail,       setDetail]       = useState<ExecRow | null>(null)
   const [airflowLog,   setAirflowLog]   = useState<AirflowLogState | null>(null)
   const [dsLog,        setDsLog]        = useState<{ executionId: string; jobName: string; pipelineName: string } | null>(null)
+  const [malhaPipeline, setMalhaPipeline] = useState<string | null>(null)
 
   const qs = useMemo(() => {
     const p = new URLSearchParams({ date_ref: date })
@@ -559,7 +577,9 @@ export default function Dashboard() {
                   </h3>
                 </div>
                 {data.executando_agora.map(e => (
-                  <RunningRow key={e.execution_id} e={e} onOpen={() => navigate(`/logs?execution_id=${e.execution_id}&pipeline=${encodeURIComponent(e.pipeline)}`)} />
+                  <RunningRow key={e.execution_id} e={e}
+                    onOpen={() => navigate(`/logs?execution_id=${e.execution_id}&pipeline=${encodeURIComponent(e.pipeline)}`)}
+                    onMalha={() => setMalhaPipeline(e.pipeline)} />
                 ))}
               </div>
             )}
@@ -573,7 +593,9 @@ export default function Dashboard() {
                   </h3>
                 </div>
                 {data.alertas_perf.map(a => (
-                  <AlertaRow key={a.execution_id} a={a} onOpen={() => navigate(`/logs?execution_id=${a.execution_id}&pipeline=${encodeURIComponent(a.pipeline)}`)} />
+                  <AlertaRow key={a.execution_id} a={a}
+                    onOpen={() => navigate(`/logs?execution_id=${a.execution_id}&pipeline=${encodeURIComponent(a.pipeline)}`)}
+                    onMalha={() => setMalhaPipeline(a.pipeline)} />
                 ))}
               </div>
             )}
@@ -608,7 +630,12 @@ export default function Dashboard() {
                       <tr key={`${f.execution_id}-${i}`}
                         className="border-b border-edge/40 last:border-0 hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors cursor-pointer"
                         onClick={() => navigate(`/logs?execution_id=${f.execution_id}`)}>
-                        <td className="px-4 py-2 font-mono text-[11px] text-ink font-medium">{f.pipeline}</td>
+                        <td className="px-4 py-2 font-mono text-[11px] text-ink font-medium">
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate">{f.pipeline}</span>
+                            <MalhaBtn onClick={() => setMalhaPipeline(f.pipeline)} className="opacity-60 hover:opacity-100" />
+                          </div>
+                        </td>
                         <td className="px-4 py-2 text-xs text-dim">{f.project}</td>
                         <td className="px-4 py-2 font-mono text-[11px] text-dim">{f.job_name}</td>
                         <td className="px-4 py-2 text-xs text-dim">{fmtTime(f.inicio)}</td>
@@ -719,7 +746,12 @@ export default function Dashboard() {
                       <tr key={p.pipeline}
                         className="border-b border-edge/40 last:border-0 hover:bg-edge/20 transition-colors cursor-pointer"
                         onClick={() => setDetail(pipelineStatusToExecRow(p))}>
-                        <td className="px-4 py-2 font-mono text-[11px] text-ink font-medium max-w-[200px] truncate" title={p.pipeline}>{p.pipeline}</td>
+                        <td className="px-4 py-2 font-mono text-[11px] text-ink font-medium max-w-[220px]" title={p.pipeline}>
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate">{p.pipeline}</span>
+                            <MalhaBtn onClick={() => setMalhaPipeline(p.pipeline)} className="opacity-60 hover:opacity-100" />
+                          </div>
+                        </td>
                         <td className="px-4 py-2 text-xs text-dim">{p.project}</td>
                         <td className="px-4 py-2"><CritBadge crit={p.criticidade} /></td>
                         <td className="px-4 py-2"><StatusBadge status={p.ultimo_status} /></td>
@@ -759,6 +791,7 @@ export default function Dashboard() {
       )}
       {airflowLog && <AirflowLogModal state={airflowLog} onClose={() => setAirflowLog(null)} />}
       {dsLog && <DsLogModal executionId={dsLog.executionId} jobName={dsLog.jobName} pipelineName={dsLog.pipelineName} onClose={() => setDsLog(null)} />}
+      {malhaPipeline && <PipelineMalhaModal pipeline={malhaPipeline} open onClose={() => setMalhaPipeline(null)} />}
     </div>
   )
 }

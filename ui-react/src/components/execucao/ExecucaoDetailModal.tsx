@@ -10,8 +10,10 @@ import { PageSpinner } from '../ui/Spinner'
 import { toast } from '../ui/Toast'
 import {
   RotateCcw, CheckSquare, Copy, ExternalLink, Search,
+  ChevronDown, ChevronRight, Share2,
 } from 'lucide-react'
 import { useAirflowUrl } from '../../lib/config'
+import { MalhaTreeView } from '../MalhaTreeModal'
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -237,6 +239,7 @@ export function AirflowLogModal({ state, onClose }: { state: AirflowLogState; on
 export function DsLogModal({
   executionId, jobName, pipelineName, onClose,
 }: { executionId: string; jobName: string; pipelineName: string; onClose: () => void }) {
+  const [showMalha, setShowMalha] = useState(true)
   const { data, isLoading } = useQuery<{ total: number; logs: DsLog[] }>({
     queryKey: ['ds-log', executionId, jobName, pipelineName],
     queryFn: () => apiFetch(`/datastage/log?execution_id=${encodeURIComponent(executionId)}&job_name=${encodeURIComponent(jobName)}&pipeline_name=${encodeURIComponent(pipelineName)}`),
@@ -246,10 +249,12 @@ export function DsLogModal({
 
   return (
     <Modal open title={`Log DataStage — ${jobName}`} onClose={onClose} size="xl">
-      {isLoading ? <PageSpinner /> : !log ? (
-        <p className="text-dim text-sm text-center py-8">Nenhum log encontrado.</p>
-      ) : (
+      {isLoading ? <PageSpinner /> : (
         <div className="flex flex-col gap-4">
+          {!log ? (
+            <p className="text-dim text-sm text-center py-4">Nenhum log de execução encontrado para esta sequence.</p>
+          ) : (
+          <>
           <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
             <div><span className="text-dim">Pipeline:</span> <span className="text-ink">{log.pipeline_name}</span></div>
             <div><span className="text-dim">Projeto:</span> <span className="text-ink">{log.project}</span></div>
@@ -300,6 +305,26 @@ export function DsLogModal({
               </pre>
             </div>
           )}
+          </>
+          )}
+
+          {/* Malha do projeto (estrutura projetada — vínculo por nome do job) */}
+          <div className="border border-edge rounded-lg overflow-hidden">
+            <button
+              onClick={() => setShowMalha(v => !v)}
+              className="w-full flex items-center gap-2 px-3 py-2 bg-canvas/60 hover:bg-canvas text-left"
+            >
+              {showMalha ? <ChevronDown size={14} className="text-dim" /> : <ChevronRight size={14} className="text-dim" />}
+              <Share2 size={13} className="text-[#1A5FA8]" />
+              <span className="text-xs font-medium text-ink">Malha do projeto (estrutura projetada)</span>
+              <span className="text-[10px] text-dim ml-auto">vínculo por nome</span>
+            </button>
+            {showMalha && (
+              <div className="p-3">
+                <MalhaTreeView jobName={jobName} enabled={showMalha} />
+              </div>
+            )}
+          </div>
         </div>
       )}
     </Modal>

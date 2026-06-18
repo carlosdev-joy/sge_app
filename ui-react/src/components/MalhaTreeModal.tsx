@@ -7,11 +7,15 @@ import { ChevronRight, ChevronDown, Share2 } from 'lucide-react'
 
 // Vínculo por NOME: dado o nome do job (do pipeline), mostra a árvore da malha
 // enraizada nele (+ status). Autocontido — não depende da tela Malha DS.
+// MalhaTreeView é o conteúdo reutilizável (sem Modal); MalhaTreeModal e
+// PipelineMalhaModal o embrulham para os diferentes pontos de entrada.
 
 interface TreeNode { name: string; kind: string; children: TreeNode[]; routines: number; commands: number; invocations?: number; ref?: boolean }
 interface JobStatus { job_name: string; status_code: number | null; status_label: string | null; info: string | null }
 interface SubtreeResp { found: boolean; job: string; project: string | null; tree: TreeNode | null }
 interface StatusResp { jobs: JobStatus[]; scanned_at: string | null }
+interface PipeMatch { job_name: string; project: string; is_sequence: boolean; execution_order: number }
+interface PipeResp { pipeline: string; matches: PipeMatch[] }
 
 const KIND_CLS: Record<string, string> = {
   SEQ:     'bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800',
@@ -67,43 +71,106 @@ function Row({ node, path, collapsed, toggle, statusMap }: {
   )
 }
 
-export function MalhaTreeModal({ jobName, open, onClose }: { jobName: string; open: boolean; onClose: () => void }) {
+// ── Conteúdo reutilizável: árvore da malha de UM job (por nome) + status ──────
+
+export function MalhaTreeView({ jobName, project: projectHint, enabled = true }: {
+  jobName: string; project?: string; enabled?: boolean
+}) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const toggle = (p: string) => setCollapsed((s) => { const n = new Set(s); n.has(p) ? n.delete(p) : n.add(p); return n })
 
   const { data, isLoading } = useQuery<SubtreeResp>({
-    queryKey: ['malha-subtree', jobName],
-    queryFn: () => apiFetch(`/malha-ds/subtree?job=${encodeURIComponent(jobName)}`),
-    enabled: open && !!jobName,
+    queryKey: ['malha-subtree', jobName, projectHint ?? null],
+    queryFn: () => apiFetch(
+      `/malha-ds/subtree?job=${encodeURIComponent(jobName)}${projectHint ? `&project=${encodeURIComponent(projectHint)}` : ''}`
+    ),
+    enabled: enabled && !!jobName,
   })
-  const project = data?.project ?? null
+  const project = data?.project ?? projectHint ?? null
   const { data: status } = useQuery<StatusResp>({
     queryKey: ['malha-ds-status', project],
     queryFn: () => apiFetch(`/malha-ds/${encodeURIComponent(project!)}/status`),
-    enabled: open && !!project,
+    enabled: enabled && !!project,
     refetchInterval: 30_000,
   })
   const statusMap: Record<string, JobStatus> = {}
   for (const j of status?.jobs ?? []) statusMap[j.job_name] = j
 
+  if (isLoading) return <div className="flex justify-center py-10"><Spinner size={32} /></div>
+  if (!data?.found || !data.tree) {
+    return (
+      <p className="text-sm text-dim text-center py-8">
+        Malha não encontrada para <strong>{jobName}</strong>. Importe o projeto na tela <strong>Malha DS</strong>.
+      </p>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2 text-xs text-dim">
+        <Share2 size={13} className="text-[#1A5FA8]" />
+        Projeto: <strong className="text-ink">{data.project}</strong>
+        {status?.scanned_at && <span className="ml-auto">status de {status.scanned_at}</span>}
+      </div>
+      <div className="border border-edge rounded-lg p-3 overflow-x-auto bg-canvas/40">
+        <Row node={data.tree} path="root" collapsed={collapsed} toggle={toggle} statusMap={statusMap} />
+      </div>
+    </div>
+  )
+}
+
+// ── Modal por job (usado na tela Jobs e no log da seq) ───────────────────────
+
+export function MalhaTreeModal({ jobName, open, onClose }: { jobName: string; open: boolean; onClose: () => void }) {
   return (
     <Modal open={open} onClose={onClose} title={`Malha — ${jobName}`} size="xl">
+      <MalhaTreeView jobName={jobName} enabled={open} />
+    </Modal>
+  )
+}
+
+// ── Modal por pipeline (usado nos cards de execução do dashboard) ────────────
+
+export function PipelineMalhaModal({ pipeline, open, onClose }: { pipeline: string; open: boolean; onClose: () => void }) {
+  const [sel, setSel] = useState<string>('')
+
+  const { data, isLoading } = useQuery<PipeResp>({
+    queryKey: ['malha-by-pipeline', pipeline],
+    queryFn: () => apiFetch(`/malha-ds/by-pipeline?pipeline=${encodeURIComponent(pipeline)}`),
+    enabled: open && !!pipeline,
+  })
+  const matches = data?.matches ?? []
+  const selected = matches.find(m => m.job_name === sel) ?? matches[0]
+
+  return (
+    <Modal open={open} onClose={onClose} title={`Malha — ${pipeline}`} size="xl">
       {isLoading ? (
         <div className="flex justify-center py-10"><Spinner size={32} /></div>
-      ) : !data?.found || !data.tree ? (
+      ) : matches.length === 0 ? (
         <p className="text-sm text-dim text-center py-8">
-          Malha não encontrada para <strong>{jobName}</strong>. Importe o projeto na tela <strong>Malha DS</strong>.
+          Nenhum job DataStage deste pipeline foi encontrado nas malhas importadas.
+          Importe o projeto na tela <strong>Malha DS</strong>.
         </p>
       ) : (
         <div className="flex flex-col gap-3">
-          <div className="flex items-center gap-2 text-xs text-dim">
-            <Share2 size={13} className="text-[#1A5FA8]" />
-            Projeto: <strong className="text-ink">{data.project}</strong>
-            {status?.scanned_at && <span className="ml-auto">status de {status.scanned_at}</span>}
-          </div>
-          <div className="border border-edge rounded-lg p-3 overflow-x-auto bg-canvas/40">
-            <Row node={data.tree} path="root" collapsed={collapsed} toggle={toggle} statusMap={statusMap} />
-          </div>
+          {matches.length > 1 && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-dim">Job (raiz):</span>
+              <select
+                value={selected?.job_name ?? ''}
+                onChange={e => setSel(e.target.value)}
+                className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono flex-1"
+              >
+                {matches.map(m => (
+                  <option key={m.job_name} value={m.job_name}>
+                    {m.job_name} ({m.project}){m.is_sequence ? ' · sequence' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {selected && (
+            <MalhaTreeView jobName={selected.job_name} project={selected.project} enabled={open} />
+          )}
         </div>
       )}
     </Modal>
