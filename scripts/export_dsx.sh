@@ -25,6 +25,11 @@
 #   DSX_BASE_DIR    destino de publicação           (padrão: /opt/airflow/dsx)
 #   DSHOME          raiz do DataStage p/ achar os bins (opcional)
 #   DS_JOB_PATH     (só istool) caminho do asset     (ex.: /PROJ/Jobs/Cat/JOB)
+#   IS_HOME         raiz do InformationServer        (padrão: /opt/IBM/InformationServer)
+#   ISTOOL_BIN      caminho explícito do istool.sh   (override)
+#
+# Engine 11.7 (sem cliente Windows): use EXPORT_METHOD=istool — o istool.sh fica
+# em $IS_HOME/Clients/istools/cli/istool.sh e gera .isx (não .dsx).
 # =============================================================================
 set -euo pipefail
 
@@ -41,6 +46,9 @@ EXPORT_METHOD=${EXPORT_METHOD:-dsexport}
 DSX_BASE_DIR=${DSX_BASE_DIR:-/opt/airflow/dsx}
 DSHOME=${DSHOME:-}
 DS_JOB_PATH=${DS_JOB_PATH:-}
+# istool (engine 11.7): localização padrão do CLI e overrides
+IS_HOME=${IS_HOME:-/opt/IBM/InformationServer}
+ISTOOL_BIN=${ISTOOL_BIN:-}
 
 # ── Argumentos ──────────────────────────────────────────────────────────────
 PROJETO=${1:-${DS_PROJECT:-}}
@@ -91,7 +99,12 @@ case "$EXPORT_METHOD" in
     cmd=("$BIN" "/D=$DS_DOMAIN" "/H=$DS_HOST" "/U=$DS_USER" "/P=$DS_PASSWORD" "$PROJETO" "$OUT" "/V")
     ;;
   istool)
-    BIN="$(find_bin istool)" || { echo "ERRO: 'istool' não encontrado (engine InfoSphere)."; exit 4; }
+    # Localiza o istool: override > PATH > $DSHOME/bin > caminho padrão do 11.7
+    BIN="${ISTOOL_BIN:-}"
+    [ -z "$BIN" ] && BIN="$(find_bin istool || true)"
+    [ -z "$BIN" ] && BIN="$(find_bin istool.sh || true)"
+    [ -z "$BIN" ] && [ -x "$IS_HOME/Clients/istools/cli/istool.sh" ] && BIN="$IS_HOME/Clients/istools/cli/istool.sh"
+    [ -n "$BIN" ] || { echo "ERRO: 'istool' não encontrado (defina ISTOOL_BIN ou IS_HOME=$IS_HOME)."; exit 4; }
     # istool gera .isx — ajusta a extensão se necessário
     case "$OUT" in *.isx) ;; *) OUT="${OUT%.dsx}.isx"; log "istool gera .isx → saída ajustada para $OUT" ;; esac
     JOBPATH="${DS_JOB_PATH:-/$PROJETO/Jobs/*/$JOB}"
