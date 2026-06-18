@@ -94,30 +94,34 @@ def import_malha(body: dict = Body(default={}), user: dict = Depends(require_per
 
     rows = M.to_rows(parsed)
 
-    with managed_conn() as (conn, cur):
-        cur.execute("DELETE FROM dbo.etl_ds_malha_edge WHERE project = ?", [project])
-        cur.execute("DELETE FROM dbo.etl_ds_malha_node WHERE project = ?", [project])
-        cur.execute("DELETE FROM dbo.etl_ds_malha WHERE project = ?", [project])
+    try:
+        with managed_conn() as (conn, cur):
+            cur.execute("DELETE FROM dbo.etl_ds_malha_edge WHERE project = ?", [project])
+            cur.execute("DELETE FROM dbo.etl_ds_malha_node WHERE project = ?", [project])
+            cur.execute("DELETE FROM dbo.etl_ds_malha WHERE project = ?", [project])
 
-        if rows["nodes"]:
-            cur.executemany(
-                "INSERT INTO dbo.etl_ds_malha_node (project, name, kind, is_sequence, is_executor, stage_types) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                [[project, n["name"], n["kind"], 1 if n["is_sequence"] else 0,
-                  1 if n["is_executor"] else 0, json.dumps(n["stage_types"], ensure_ascii=False)]
-                 for n in rows["nodes"]])
-        if rows["edges"]:
-            cur.executemany(
-                "INSERT INTO dbo.etl_ds_malha_edge (project, parent, seq_order, activity, jobname, real_target, kind) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                [[project, e["parent"], e["seq_order"], e["activity"], e["jobname"], e["real_target"], e["kind"]]
-                 for e in rows["edges"]])
-        cur.execute(
-            "INSERT INTO dbo.etl_ds_malha (project, server_name, ds_version, source_file, "
-            "nodes_count, edges_count, imported_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [project, rows["server"], rows["version"], f"{project}.xml",
-             len(rows["nodes"]), len(rows["edges"]), _quem(user)])
-        conn.commit()
+            if rows["nodes"]:
+                cur.executemany(
+                    "INSERT INTO dbo.etl_ds_malha_node (project, name, kind, is_sequence, is_executor, stage_types) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    [[project, n["name"], n["kind"], 1 if n["is_sequence"] else 0,
+                      1 if n["is_executor"] else 0, json.dumps(n["stage_types"], ensure_ascii=False)]
+                     for n in rows["nodes"]])
+            if rows["edges"]:
+                cur.executemany(
+                    "INSERT INTO dbo.etl_ds_malha_edge (project, parent, seq_order, activity, jobname, real_target, kind) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [[project, e["parent"], e["seq_order"], e["activity"], e["jobname"], e["real_target"], e["kind"]]
+                     for e in rows["edges"]])
+            cur.execute(
+                "INSERT INTO dbo.etl_ds_malha (project, server_name, ds_version, source_file, "
+                "nodes_count, edges_count, imported_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [project, rows["server"], rows["version"], f"{project}.xml",
+                 len(rows["nodes"]), len(rows["edges"]), _quem(user)])
+            conn.commit()
+    except Exception as e:
+        # Surfacing do erro real (ex.: tabelas ausentes → aplicar migration 028)
+        raise HTTPException(status_code=500, detail=f"Erro ao gravar malha no banco: {e}")
 
     return {"sucesso": True, "project": project, "nodes": len(rows["nodes"]),
             "edges": len(rows["edges"]), "roots": rows["roots"]}
