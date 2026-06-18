@@ -13,6 +13,7 @@ Comportamento fail-fast (desde v2.3.0):
 """
 from __future__ import annotations
 import os
+import re
 import ast
 import shlex
 from collections import defaultdict
@@ -152,6 +153,25 @@ _TYPE_ALIAS = {
 }
 
 
+_PROC_NAME_RE  = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
+_PARAM_NAME_RE = re.compile(r"^@?[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _coerce_param_value(p):
+    """Converte o valor fixo (sempre string vinda do banco/UI) para o tipo Python adequado."""
+    val = p.get("param_value")
+    ptype = (p.get("param_type") or "VARCHAR").upper()
+    if val is None:
+        return None
+    if ptype == "INT":
+        return int(val)
+    if ptype == "BIT":
+        return bool(int(val)) if str(val) not in ("True", "False") else val == "True"
+    if ptype == "DECIMAL":
+        return float(val)
+    return str(val)  # VARCHAR, DATE, DATETIME — driver converte a partir de string
+
+
 def _varname(job_name: str) -> str:
     """Converte um nome de job em identificador Python válido (substitui chars inválidos por _)."""
     import re as _re
@@ -206,17 +226,51 @@ def _task_block(job, project, pipeline):
             f')',
         ])
     elif jtype == "storedproc":
-        proc = jcmd or name
-        main = "\n".join([
-            f'def _run_{vname}(**context):',
-            f'    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)',
-            f'    hook.run("EXEC {proc}")',
-            f'',
-            f't_job_{vname} = PythonOperator(',
-            f'    task_id="{name}",',
-            f'    python_callable=_run_{vname},',
-            f')',
-        ])
+        proc_raw = jcmd or name
+        proc = proc_raw if _PROC_NAME_RE.match(proc_raw) else None
+        conn_id  = job.get("mssql_conn_id") or None
+        conn_val = repr(conn_id) if conn_id else "MSSQL_CONN_ID"
+        params = [p for p in (job.get("params") or []) if _PARAM_NAME_RE.match(p.get("param_name") or "")]
+
+        if proc is None:
+            main = "\n".join([
+                f'def _run_{vname}(**context):',
+                f'    raise ValueError("nome de procedure invalido: {proc_raw!r}")',
+                f'',
+                f't_job_{vname} = PythonOperator(',
+                f'    task_id="{name}",',
+                f'    python_callable=_run_{vname},',
+                f')',
+            ])
+        elif params:
+            placeholders = ", ".join(
+                f'{p["param_name"] if p["param_name"].startswith("@") else "@" + p["param_name"]}=?'
+                for p in params
+            )
+            values = [_coerce_param_value(p) for p in params]
+            main = "\n".join([
+                f'def _run_{vname}(**context):',
+                f'    hook = MsSqlHook(mssql_conn_id={conn_val})',
+                # Nomes (proc/parâmetro) já validados como identificadores; valores SEMPRE via
+                # parameters=[...] (bind real do driver) — nunca concatenados na string SQL.
+                f'    hook.run("EXEC {proc} {placeholders}", parameters={values!r})',
+                f'',
+                f't_job_{vname} = PythonOperator(',
+                f'    task_id="{name}",',
+                f'    python_callable=_run_{vname},',
+                f')',
+            ])
+        else:
+            main = "\n".join([
+                f'def _run_{vname}(**context):',
+                f'    hook = MsSqlHook(mssql_conn_id={conn_val})',
+                f'    hook.run("EXEC {proc}")',
+                f'',
+                f't_job_{vname} = PythonOperator(',
+                f'    task_id="{name}",',
+                f'    python_callable=_run_{vname},',
+                f')',
+            ])
     elif jtype == "sql":
         sql_stmt = jcmd or f"SELECT 1 -- job {name}"
         safe_sql = sql_stmt.replace('"', '\\"').replace('\n', ' ')
@@ -932,6 +986,10 @@ def gerar_dags(**context):
     cursor.nextset()
     jobs_rows = cursor.fetchall()
     jobs_cols = [d[0].lower() for d in cursor.description]
+    params_rows, params_cols = [], []
+    if cursor.nextset():
+        params_rows = cursor.fetchall()
+        params_cols = [d[0].lower() for d in cursor.description]
 
     if not pipelines_rows:
         cursor.close(); conn.close()
@@ -943,6 +1001,12 @@ def gerar_dags(**context):
 
     pipelines = [dict(zip(pipeline_cols, row)) for row in pipelines_rows]
     jobs_all  = [dict(zip(jobs_cols, row))     for row in jobs_rows]
+
+    params_by_job = defaultdict(list)
+    for r in [dict(zip(params_cols, row)) for row in params_rows]:
+        params_by_job[(r["pipeline_name"], r["job_name"])].append(r)
+    for j in jobs_all:
+        j["params"] = params_by_job.get((j["pipeline_name"], j["job_name"]), [])
 
     # Supplement with advanced fields (not in SP result set)
     if pipelines:

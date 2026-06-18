@@ -18,6 +18,15 @@ import {
 
 // ── Sub-types ─────────────────────────────────────────────────────────────────
 
+interface JobParamEntry {
+  id: string
+  param_name: string
+  param_type: string
+  param_value: string
+}
+
+const PARAM_TYPES = ['VARCHAR', 'INT', 'DATE', 'DATETIME', 'DECIMAL', 'BIT'] as const
+
 interface JobEntry {
   id: string
   job_name: string
@@ -26,6 +35,8 @@ interface JobEntry {
   execution_order: number
   ssh_conn_id: string
   verbose_log: boolean
+  mssql_conn_id: string
+  params: JobParamEntry[]
 }
 
 interface LineageEntry {
@@ -257,6 +268,13 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   })
   const sshConns = sshData?.connections ?? []
 
+  const { data: mssqlData } = useQuery<{ connections: { conn_id: string; host: string }[] }>({
+    queryKey: ['mssql-connections'],
+    queryFn: () => apiFetch('/airflow/connections/mssql'),
+    staleTime: 300_000,
+  })
+  const mssqlConns = mssqlData?.connections ?? []
+
   const editName = pipeline?.pipeline_name
   const { data: editJobs } = useQuery<{ data: { job_name: string; execution_order: number; job_type: string; job_command: string | null; ssh_conn_id: string | null; verbose_log: boolean }[] }>({
     queryKey: ['wizard-edit-jobs', editName],
@@ -281,7 +299,28 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       execution_order: j.execution_order,
       ssh_conn_id: j.ssh_conn_id ?? '',
       verbose_log: !!j.verbose_log,
+      mssql_conn_id: '',
+      params: [],
     })))
+    const storedprocJobs = rows.filter(j => j.job_type === 'storedproc')
+    Promise.all(storedprocJobs.map(j =>
+      apiFetch<{ mssql_conn_id: string | null; params: { param_name: string; param_type: string; param_value: string | null }[] }>(
+        `/pipelines/jobs/${encodeURIComponent(editName!)}/${encodeURIComponent(j.job_name)}`,
+      ).then(detail => ({ job_name: j.job_name, detail })).catch(() => null),
+    )).then(results => {
+      setJobs(prev => prev.map(je => {
+        const found = results.find(r => r && r.job_name === je.job_name)
+        if (!found) return je
+        return {
+          ...je,
+          mssql_conn_id: found.detail.mssql_conn_id ?? '',
+          params: (found.detail.params ?? []).map((p, ppi) => ({
+            id: `p_${ppi}_${Math.random().toString(36).slice(2, 7)}`,
+            param_name: p.param_name, param_type: p.param_type, param_value: p.param_value ?? '',
+          })),
+        }
+      }))
+    })
     const lin: LineageEntry[] = []
     ;(editLineage?.jobs ?? []).forEach(lj => {
       ;(lj.origens || []).forEach(o => lin.push({
@@ -366,6 +405,18 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       jobs.forEach((j, i) => {
         if (!j.job_name.trim()) e.push(`Job #${i + 1}: nome é obrigatório`)
         if (j.job_type === 'shell' && !j.ssh_conn_id) e.push(`Job "${j.job_name || i + 1}": servidor SSH é obrigatório para tipo shell`)
+        if (j.job_type === 'storedproc') {
+          if (!j.mssql_conn_id) e.push(`Job "${j.job_name || i + 1}": conexão MSSQL é obrigatória para tipo storedproc`)
+          const nomesVistos = new Set<string>()
+          j.params.forEach((p, pi) => {
+            const nome = p.param_name.trim()
+            if (!nome) e.push(`Job "${j.job_name || i + 1}": parâmetro #${pi + 1} sem nome definido`)
+            if (!p.param_type) e.push(`Job "${j.job_name || i + 1}": parâmetro #${pi + 1} sem tipo de dado definido`)
+            const key = nome.replace(/^@/, '').toLowerCase()
+            if (nome && nomesVistos.has(key)) e.push(`Job "${j.job_name || i + 1}": parâmetro "${nome}" duplicado`)
+            nomesVistos.add(key)
+          })
+        }
       })
       const names = jobs.map(j => j.job_name.trim()).filter(Boolean)
       const dups = [...new Set(names.filter((n, i) => names.indexOf(n) !== i))]
@@ -491,6 +542,12 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
             job_command:     j.job_command.trim() || null,
             ssh_conn_id:     j.job_type === 'shell' ? (j.ssh_conn_id || null) : null,
             verbose_log:     j.job_type === 'datastage' ? j.verbose_log : false,
+            mssql_conn_id:   j.job_type === 'storedproc' ? (j.mssql_conn_id || null) : null,
+            params:          j.job_type === 'storedproc'
+              ? j.params.filter(p => p.param_name.trim()).map(p => ({
+                  param_name: p.param_name.trim(), param_type: p.param_type, param_value: p.param_value,
+                }))
+              : [],
             origens:         origens.map(mapObj),
             destinos:        destinos.map(mapObj),
             transformacoes:  [],
@@ -548,6 +605,8 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       execution_order: prev.length + 1,
       ssh_conn_id: '',
       verbose_log: false,
+      mssql_conn_id: '',
+      params: [],
     }])
   }
 
@@ -564,6 +623,32 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       setLineage(prevL => prevL.map(l => l.job_name === oldName ? { ...l, job_name: patch.job_name! } : l))
     }
     setJobs(prev => prev.map(j => j.id === id ? { ...j, ...patch } : j))
+  }
+
+  const [expandedParams, setExpandedParams] = useState<Set<string>>(new Set())
+  function toggleParams(jobId: string) {
+    setExpandedParams(prev => {
+      const next = new Set(prev)
+      if (next.has(jobId)) next.delete(jobId); else next.add(jobId)
+      return next
+    })
+  }
+  function addParam(jobId: string) {
+    setJobs(prev => prev.map(j => j.id !== jobId ? j : {
+      ...j, params: [...j.params, {
+        id: `p_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        param_name: '', param_type: 'VARCHAR', param_value: '',
+      }],
+    }))
+    setExpandedParams(prev => new Set(prev).add(jobId))
+  }
+  function removeParam(jobId: string, paramId: string) {
+    setJobs(prev => prev.map(j => j.id !== jobId ? j : { ...j, params: j.params.filter(p => p.id !== paramId) }))
+  }
+  function updateParam(jobId: string, paramId: string, patch: Partial<JobParamEntry>) {
+    setJobs(prev => prev.map(j => j.id !== jobId ? j : {
+      ...j, params: j.params.map(p => p.id === paramId ? { ...p, ...patch } : p),
+    }))
   }
 
   function addLineageEntry(job_name: string, direction: 'origem' | 'destino') {
@@ -1024,7 +1109,57 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                         <span className="text-xs text-ink">Log detalhado (jobs SEQUENCE)</span>
                       </label>
                     )}
+                    {j.job_type === 'storedproc' && (
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] text-dim font-medium">Conexão MSSQL *</label>
+                        <select value={j.mssql_conn_id}
+                          onChange={e => updateJob(j.id, { mssql_conn_id: e.target.value })}
+                          className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+                          <option value="">Selecione a conexão…</option>
+                          {mssqlConns.map(c => <option key={c.conn_id} value={c.conn_id}>{c.conn_id}{c.host ? ` (${c.host})` : ''}</option>)}
+                        </select>
+                      </div>
+                    )}
                   </div>
+                  {j.job_type === 'storedproc' && (
+                    <div className="flex flex-col gap-1.5 pt-1 border-t border-edge/40">
+                      <button type="button" onClick={() => toggleParams(j.id)}
+                        className="text-[10px] text-dim hover:text-ink flex items-center gap-1.5 self-start">
+                        <span>{expandedParams.has(j.id) ? '▾' : '▸'} Parâmetros (opcional)</span>
+                        {j.params.length > 0 && (
+                          <span className="bg-blue-100 text-blue-700 border border-blue-300 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-800/40 rounded-full px-1.5 py-0 text-[9px] font-bold">
+                            {j.params.length}
+                          </span>
+                        )}
+                      </button>
+                      {expandedParams.has(j.id) && (
+                        <div className="flex flex-col gap-1.5">
+                          {j.params.map(p => (
+                            <div key={p.id} className="grid grid-cols-[1fr_90px_1fr_24px] gap-1.5 items-start">
+                              <input type="text" value={p.param_name}
+                                onChange={e => updateParam(j.id, p.id, { param_name: e.target.value })}
+                                placeholder="@nome_param"
+                                className={`bg-panel border rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 ${!p.param_name.trim() ? 'border-red-500/60' : 'border-edge'}`} />
+                              <select value={p.param_type}
+                                onChange={e => updateParam(j.id, p.id, { param_type: e.target.value })}
+                                className="bg-panel border border-edge text-ink rounded-md px-1.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+                                {PARAM_TYPES.map(t => <option key={t}>{t}</option>)}
+                              </select>
+                              <input type="text" value={p.param_value}
+                                onChange={e => updateParam(j.id, p.id, { param_value: e.target.value })}
+                                placeholder="valor fixo"
+                                className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                              <button type="button" onClick={() => removeParam(j.id, p.id)}
+                                className="text-dim hover:text-red-500 text-xs justify-self-center pt-1">✕</button>
+                            </div>
+                          ))}
+                          <Button size="sm" variant="ghost" onClick={() => addParam(j.id)} className="self-start">
+                            <Plus size={10} /> Adicionar parâmetro
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -1193,11 +1328,20 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                           <span className="font-mono font-medium text-ink">{j.job_name || '(sem nome)'}</span>
                           {j.ssh_conn_id && <span className="text-dim/60 font-mono text-[10px]">SSH: {j.ssh_conn_id}</span>}
                           {j.verbose_log && <span className="text-[10px] text-amber-400">verbose</span>}
+                          {j.job_type === 'storedproc' && j.mssql_conn_id && <span className="text-dim/60 font-mono text-[10px]">MSSQL: {j.mssql_conn_id}</span>}
                         </div>
                         {j.job_command && (
                           <div className="pl-8 flex items-center gap-1">
                             <span className="text-dim text-[10px]">{j.job_type === 'datastage' ? 'Job DataStage:' : 'Comando:'}</span>
                             <span className="font-mono text-[10px] text-ink/80 break-all">{j.job_command}</span>
+                          </div>
+                        )}
+                        {j.job_type === 'storedproc' && j.params.length > 0 && (
+                          <div className="pl-8 flex items-center gap-1 flex-wrap">
+                            <span className="text-dim text-[10px]">Parâmetros:</span>
+                            {j.params.map(p => (
+                              <span key={p.id} className="font-mono text-[10px] text-ink/80">{p.param_name}={p.param_value || '∅'}</span>
+                            ))}
                           </div>
                         )}
                       </div>
