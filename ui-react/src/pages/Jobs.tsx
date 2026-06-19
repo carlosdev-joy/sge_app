@@ -476,6 +476,7 @@ export default function Jobs() {
   const [nameFilter, setNameFilter] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
   const [searched, setSearched] = useState('')
+  const [hasSearched, setHasSearched] = useState(false)
   const [page, setPage] = useState(0)
   const LIMIT = 50
 
@@ -498,17 +499,19 @@ export default function Jobs() {
   const orderDirty = Object.keys(orderEdits).length > 0
   const orderEditCount = Object.keys(orderEdits).length
 
-  const qs = new URLSearchParams({
-    limit: String(LIMIT), offset: String(page * LIMIT),
-    filter_pipeline: searched,
-  })
+  const qs = new URLSearchParams({ limit: String(LIMIT), offset: String(page * LIMIT) })
+  if (searched)   qs.set('filter_pipeline', searched)
   if (nameFilter) qs.set('filter_job_name', nameFilter)
   if (typeFilter) qs.set('filter_job_type', typeFilter)
+
+  // Pipeline é opcional: pode-se buscar por pipeline, por nome do job, por tipo,
+  // ou qualquer combinação. Pelo menos um filtro é exigido.
+  const hasFilter = !!searched || !!nameFilter || !!typeFilter
 
   const { data, isLoading } = useQuery<{ total: number; pages: number; data: Job[] }>({
     queryKey: ['jobs', searched, nameFilter, typeFilter, page],
     queryFn: () => apiFetch(`/jobs?${qs}`),
-    enabled: !!searched,
+    enabled: hasSearched && hasFilter,
   })
 
   // Sort client-side
@@ -604,8 +607,12 @@ export default function Jobs() {
   })
 
   function doSearch() {
-    if (!pipelineInput.trim()) { toast.error('Informe o pipeline para buscar jobs.'); return }
+    if (!pipelineInput.trim() && !nameFilter.trim() && !typeFilter) {
+      toast.error('Informe ao menos um filtro: pipeline, nome do job ou tipo.')
+      return
+    }
     setSearched(pipelineInput.trim())
+    setHasSearched(true)
     setPage(0)
     setOrderEdits({})
     setShowDiagram(false)
@@ -614,6 +621,7 @@ export default function Jobs() {
   function doClear() {
     setNameFilter(''); setTypeFilter('')
     setSearched(''); setPipelineInput('')
+    setHasSearched(false)
     setPage(0); setOrderEdits({})
   }
 
@@ -649,10 +657,10 @@ export default function Jobs() {
       <div className="bg-panel border border-edge rounded-xl p-4">
         <div className="flex flex-wrap gap-3 items-end">
           <Autocomplete
-            label="Pipeline *"
+            label="Pipeline"
             value={pipelineInput}
             onChange={setPipelineInput}
-            onSelect={v => { setPipelineInput(v); setSearched(v); setPage(0); setOrderEdits({}) }}
+            onSelect={v => { setPipelineInput(v); setSearched(v); setHasSearched(true); setPage(0); setOrderEdits({}) }}
             fetchSuggestions={q =>
               apiFetch<{ data: { pipeline_name: string }[] }>(`/pipelines?limit=10&filter_name=${encodeURIComponent(q)}`)
                 .then(r => r.data.map(p => p.pipeline_name))
@@ -667,11 +675,9 @@ export default function Jobs() {
             onChange={setNameFilter}
             onSelect={v => { setNameFilter(v) }}
             fetchSuggestions={q =>
-              searched
-                ? apiFetch<{ data: { job_name: string }[] }>(
-                    `/jobs?limit=10&filter_pipeline=${encodeURIComponent(searched)}&filter_job_name=${encodeURIComponent(q)}`
-                  ).then(r => r.data.map(j => j.job_name))
-                : Promise.resolve([])
+              apiFetch<{ data: { job_name: string }[] }>(
+                `/jobs?limit=10${searched ? `&filter_pipeline=${encodeURIComponent(searched)}` : ''}&filter_job_name=${encodeURIComponent(q)}`
+              ).then(r => r.data.map(j => j.job_name))
             }
             onKeyDown={e => e.key === 'Enter' && doSearch()}
             placeholder="filtrar por nome..."
@@ -684,76 +690,92 @@ export default function Jobs() {
           </Select>
           <div className="flex gap-2 ml-auto items-end">
             <Button variant="secondary" size="sm" onClick={doClear}>× Limpar</Button>
-            <Button size="sm" onClick={doSearch} disabled={!pipelineInput.trim()}>
+            <Button size="sm" onClick={doSearch} disabled={!pipelineInput.trim() && !nameFilter.trim() && !typeFilter}>
               Buscar jobs
             </Button>
           </div>
         </div>
+        {/* Dica de uso — pipeline é opcional */}
+        <div className="mt-3 flex items-start gap-2 text-xs text-dim bg-blue-900/10 border border-blue-800/30 rounded-lg px-3 py-2">
+          <span className="text-blue-400 shrink-0">ℹ</span>
+          <span>
+            O <strong className="text-ink">pipeline é opcional</strong>: você pode filtrar por <strong className="text-ink">nome do job</strong> ou
+            <strong className="text-ink"> tipo</strong> isoladamente (busca em todos os pipelines).
+            Para ver <strong className="text-ink">todos os jobs de um pipeline</strong>, preencha o campo <strong className="text-ink">Pipeline</strong>.
+          </span>
+        </div>
       </div>
 
       {/* Empty state before search */}
-      {!searched && (
+      {!hasSearched && (
         <div className="bg-panel border border-edge rounded-xl py-16 flex flex-col items-center gap-2 text-dim">
           <span className="text-4xl">⬡</span>
           <p className="text-sm font-medium">Nenhum job carregado</p>
-          <p className="text-xs">Informe o pipeline e clique em Buscar jobs.</p>
+          <p className="text-xs">Preencha um pipeline (para ver todos os jobs dele) <strong className="text-ink">ou</strong> filtre por nome/tipo, e clique em Buscar jobs.</p>
         </div>
       )}
 
-      {searched && isLoading && <PageSpinner />}
+      {hasSearched && isLoading && <PageSpinner />}
 
-      {searched && !isLoading && (
+      {hasSearched && !isLoading && (
         <>
           {/* Context actions */}
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-dim flex-1">
-              {total} job{total !== 1 ? 's' : ''} · Pipeline: <span className="font-mono text-ink">{searched}</span>
+              {total} job{total !== 1 ? 's' : ''}
+              {searched
+                ? <> · Pipeline: <span className="font-mono text-ink">{searched}</span></>
+                : <> · <span className="text-ink">todos os pipelines</span>{(nameFilter || typeFilter) ? ' (filtrado)' : ''}</>}
             </span>
-            <Button variant="secondary" size="sm" onClick={() => setShowDiagram(d => !d)}>
-              <Network size={13} /> {showDiagram ? 'Ocultar' : 'Ver'} diagrama
-            </Button>
-            {!isViewer && (
+            {searched && (
               <>
-                <Button
-                  variant="secondary" size="sm"
-                  disabled={!orderDirty}
-                  loading={reorderMut.isPending}
-                  onClick={() => reorderMut.mutate()}
-                  className={orderDirty ? 'border-blue-600 text-blue-400 ring-1 ring-blue-700/50' : ''}
-                >
-                  <Save size={13} /> Salvar ordem
-                  {orderDirty && (
-                    <span className="ml-1 bg-blue-600 text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 leading-none">
-                      {orderEditCount}
-                    </span>
-                  )}
+                <Button variant="secondary" size="sm" onClick={() => setShowDiagram(d => !d)}>
+                  <Network size={13} /> {showDiagram ? 'Ocultar' : 'Ver'} diagrama
                 </Button>
-                <Button variant="secondary" size="sm" onClick={() => setShowNew(true)}>
-                  <Plus size={13} /> Adicionar job
-                </Button>
-                <Button variant="secondary" size="sm" onClick={() => setShowBulk(true)}>
-                  <ClipboardList size={13} /> Colar lista
-                </Button>
-                <Button
-                  variant="secondary" size="sm"
-                  loading={execMut.isPending}
-                  onClick={() => setShowExecConfirm(true)}
-                  className="border-green-800/40 text-green-400 hover:text-green-300"
-                >
-                  <Play size={13} /> Executar agora
-                </Button>
+                {!isViewer && (
+                  <>
+                    <Button
+                      variant="secondary" size="sm"
+                      disabled={!orderDirty}
+                      loading={reorderMut.isPending}
+                      onClick={() => reorderMut.mutate()}
+                      className={orderDirty ? 'border-blue-600 text-blue-400 ring-1 ring-blue-700/50' : ''}
+                    >
+                      <Save size={13} /> Salvar ordem
+                      {orderDirty && (
+                        <span className="ml-1 bg-blue-600 text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 leading-none">
+                          {orderEditCount}
+                        </span>
+                      )}
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={() => setShowNew(true)}>
+                      <Plus size={13} /> Adicionar job
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={() => setShowBulk(true)}>
+                      <ClipboardList size={13} /> Colar lista
+                    </Button>
+                    <Button
+                      variant="secondary" size="sm"
+                      loading={execMut.isPending}
+                      onClick={() => setShowExecConfirm(true)}
+                      className="border-green-800/40 text-green-400 hover:text-green-300"
+                    >
+                      <Play size={13} /> Executar agora
+                    </Button>
+                  </>
+                )}
               </>
             )}
           </div>
 
-          {/* Execution diagram */}
-          {showDiagram && <ExecDiagram jobs={data?.data ?? []} />}
+          {/* Execution diagram (só faz sentido para um pipeline) */}
+          {searched && showDiagram && <ExecDiagram jobs={data?.data ?? []} />}
 
           {/* Results table */}
           {jobs.length === 0 ? (
             <div className="bg-panel border border-edge rounded-xl py-12 flex flex-col items-center gap-2 text-dim">
               <span className="text-3xl">⬡</span>
-              <p className="text-sm">Nenhum job encontrado para "{searched}"</p>
+              <p className="text-sm">Nenhum job encontrado{searched ? ` para "${searched}"` : nameFilter ? ` com nome "${nameFilter}"` : ''}</p>
             </div>
           ) : (
             <div className="bg-panel border border-edge rounded-xl overflow-hidden">
@@ -802,7 +824,7 @@ export default function Jobs() {
                             </div>
                           </td>
                           <td className="px-3 py-2 text-center">
-                            {!isViewer ? (
+                            {!isViewer && searched ? (
                               <input
                                 type="number" min={1}
                                 value={currentOrder}
@@ -872,7 +894,7 @@ export default function Jobs() {
 
       {/* Modals */}
       {showNew && <JobFormModal pipeline={searched} onClose={() => setShowNew(false)} />}
-      {editJob && <JobFormModal job={editJob} pipeline={searched} onClose={() => setEditJob(undefined)} />}
+      {editJob && <JobFormModal job={editJob} pipeline={editJob.pipeline_name || searched} onClose={() => setEditJob(undefined)} />}
       {malhaJob && <MalhaTreeModal jobName={malhaJob} open onClose={() => setMalhaJob(null)} />}
       {showBulk && <BulkModal pipeline={searched} onClose={() => setShowBulk(false)} />}
       {deleteJob && (
