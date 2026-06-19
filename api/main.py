@@ -79,6 +79,7 @@ Endpoints:
   GET    /malha-ds/{project}/jobs         — jobs reais p/ varredura dsjob -jobinfo
   POST   /malha-ds/{project}/scan         — dispara varredura de status (dsjob -jobinfo)
   GET    /malha-ds/{project}/status       — snapshot de status por job
+  GET    /malha-ds/{project}/lineage-preview — preview do lineage do XML × atual (read-only)
   DELETE /malha-ds/{project}              — remove a malha do projeto
 
   GET  /factory/runs                      — execuções da etl_dag_factory

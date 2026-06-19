@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useState, useMemo, useEffect, useCallback, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { Button } from '../components/ui/Button'
@@ -1134,6 +1134,147 @@ function UniversalSearch({ onSearch }: { onSearch: (val: string) => void }) {
 // Página raiz
 // ════════════════════════════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════════════════════════
+// Aba COMPARAR XML × ATUAL (preview do extrator de lineage do XML — sem gravar)
+// ════════════════════════════════════════════════════════════════════════════
+
+interface XmlCol { name?: string; type?: string; nullable?: boolean; key?: boolean; source_column?: string | null }
+interface PrevItem {
+  object_name?: string; object_type?: string; stage_name?: string; stage_type_raw?: string
+  database_name?: string; sql_expression?: string | null; file_path?: string
+  columns?: XmlCol[]; col_lineage?: { col: string; from: string }[]; tables_all?: string[]
+  actions?: Record<string, string>; extraction_method?: string
+}
+interface PrevSide { origens: PrevItem[]; transformacoes: PrevItem[]; destinos: PrevItem[] }
+interface PrevJob { job_name: string; xml: PrevSide; atual: PrevSide }
+interface PrevResp { project: string; jobs: number; resumo: { origens: number; destinos: number; transformacoes: number }; items: PrevJob[] }
+
+const nameSet = (arr?: PrevItem[]) => new Set((arr ?? []).map(i => (i.object_name || '').toLowerCase()).filter(Boolean))
+
+function PrevNode({ item, kind, other, source, onShow }: {
+  item: PrevItem; kind: 'origem' | 'transf' | 'destino'; other: Set<string>; source: 'xml' | 'atual'
+  onShow: (title: string, lines: string[]) => void
+}) {
+  const color = kind === 'origem' ? 'border-green-300 bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-200'
+    : kind === 'destino' ? 'border-amber-300 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200'
+    : 'border-blue-300 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200'
+  const label = item.object_name || item.stage_name || '—'
+  const nm = (item.object_name || '').toLowerCase()
+  const onlyHere = !!nm && !other.has(nm)
+  const sql = (item.sql_expression || '').trim()
+  const cols = item.columns ?? []
+  const cl = item.col_lineage ?? []
+  return (
+    <div className={`border rounded-lg px-2.5 py-1.5 ${color}`}>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="text-xs font-semibold break-all">{label}</span>
+        {onlyHere && (
+          <span className={`text-[9px] font-bold px-1 rounded text-white ${source === 'xml' ? 'bg-green-600' : 'bg-amber-600'}`}>
+            {source === 'xml' ? 'novo no XML' : 'só no atual'}
+          </span>
+        )}
+        {item.extraction_method && <span className="text-[9px] px-1 rounded bg-slate-200 dark:bg-slate-700 text-dim">{item.extraction_method}</span>}
+        {sql && <button onClick={() => onShow('SQL', sql.split('\n'))} className="text-[10px] underline opacity-80 hover:opacity-100">SQL</button>}
+        {cols.length > 0 && <button onClick={() => onShow(`Colunas (${cols.length})`, cols.map(c => `${c.name ?? '?'}${c.type ? ' · ' + c.type : ''}${c.key ? ' · PK' : ''}${c.nullable === false ? ' · NOT NULL' : ''}`))} className="text-[10px] underline opacity-80 hover:opacity-100">{cols.length} col</button>}
+        {cl.length > 0 && <button onClick={() => onShow(`Lineage de coluna (${cl.length})`, cl.map(c => `${c.col}  ←  ${c.from}`))} className="text-[10px] underline text-purple-700 dark:text-purple-300">col-lin</button>}
+      </div>
+      {(item.database_name || item.file_path) && (
+        <div className="text-[10px] opacity-70 mt-0.5">{item.file_path ? `arquivo: ${fileBasename(item.file_path)}` : `db: ${item.database_name}`}</div>
+      )}
+    </div>
+  )
+}
+
+function PrevGroup({ title, n, children }: { title: string; n: number; children: ReactNode }) {
+  return (
+    <div>
+      <div className="text-[10px] font-semibold text-dim uppercase tracking-wide mb-1">{title} ({n})</div>
+      {n === 0 ? <div className="text-[11px] text-dim/50 italic">—</div> : <div className="flex flex-col gap-1">{children}</div>}
+    </div>
+  )
+}
+
+function PrevSideView({ side, counter, source, onShow }: { side: PrevSide; counter: PrevSide; source: 'xml' | 'atual'; onShow: (t: string, l: string[]) => void }) {
+  const oOther = nameSet(counter.origens), dOther = nameSet(counter.destinos), tOther = nameSet(counter.transformacoes)
+  return (
+    <div className="flex flex-col gap-2.5">
+      <PrevGroup title="Origens" n={side.origens.length}>
+        {side.origens.map((it, i) => <PrevNode key={i} item={it} kind="origem" other={oOther} source={source} onShow={onShow} />)}
+      </PrevGroup>
+      <PrevGroup title="Transformações" n={side.transformacoes.length}>
+        {side.transformacoes.map((it, i) => <PrevNode key={i} item={it} kind="transf" other={tOther} source={source} onShow={onShow} />)}
+      </PrevGroup>
+      <PrevGroup title="Destinos" n={side.destinos.length}>
+        {side.destinos.map((it, i) => <PrevNode key={i} item={it} kind="destino" other={dOther} source={source} onShow={onShow} />)}
+      </PrevGroup>
+    </div>
+  )
+}
+
+function XmlPreviewTab() {
+  const [sel, setSel] = useState('')
+  const [loaded, setLoaded] = useState('')
+  const [detail, setDetail] = useState<{ title: string; lines: string[] } | null>(null)
+  const onShow = (title: string, lines: string[]) => setDetail({ title, lines })
+
+  const { data: files } = useQuery<{ files: string[]; base_dir: string }>({
+    queryKey: ['xml-files'], queryFn: () => apiFetch('/malha-ds/xml-files'),
+  })
+  const { data, isLoading, error } = useQuery<PrevResp>({
+    queryKey: ['lineage-preview', loaded],
+    queryFn: () => apiFetch(`/malha-ds/${encodeURIComponent(loaded)}/lineage-preview`),
+    enabled: !!loaded,
+  })
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="bg-blue-50 dark:bg-blue-900/15 border border-blue-200 dark:border-blue-800 rounded-lg p-3 text-xs text-dim">
+        <strong className="text-ink">Preview (somente leitura):</strong> extrai o lineage direto do export XML e
+        compara com o lineage atual (DSX/manual). <strong>Nada é gravado no banco</strong> — serve para validar a
+        qualidade do XML antes de uma eventual carga. Badges: <span className="text-green-700 dark:text-green-300 font-semibold">novo no XML</span> = só o XML traz; <span className="text-amber-700 dark:text-amber-300 font-semibold">só no atual</span> = só existe no lineage gravado.
+      </div>
+      <div className="bg-panel border border-edge rounded-xl p-3 flex flex-wrap items-end gap-2">
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-dim font-medium">Export XML (projeto)</label>
+          <select value={sel} onChange={e => setSel(e.target.value)}
+            className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm min-w-[240px]">
+            <option value="">Selecione…</option>
+            {(files?.files ?? []).map(f => <option key={f} value={f}>{f}</option>)}
+          </select>
+        </div>
+        <Button size="sm" onClick={() => setLoaded(sel)} disabled={!sel}>Comparar</Button>
+        {data && <span className="text-xs text-dim ml-auto">{data.jobs} jobs · {data.resumo.origens} origens · {data.resumo.destinos} destinos · {data.resumo.transformacoes} transf. (XML)</span>}
+      </div>
+
+      {loaded && isLoading && <PageSpinner />}
+      {error && <div className="text-sm text-red-500">{String((error as { message?: string }).message || error)}</div>}
+      {data && data.items.length === 0 && <div className="text-sm text-dim text-center py-8">Nenhum lineage extraído deste export (pode ser export "executável" sem design).</div>}
+
+      {data && data.items.map(job => (
+        <div key={job.job_name} className="bg-panel border border-edge rounded-xl overflow-hidden">
+          <div className="px-4 py-2 border-b border-edge bg-canvas/50 font-mono text-sm text-ink font-medium">{job.job_name}</div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 p-4">
+            <div>
+              <div className="text-xs font-bold text-[#1A5FA8] mb-2">⬡ XML (preview)</div>
+              <PrevSideView side={job.xml} counter={job.atual} source="xml" onShow={onShow} />
+            </div>
+            <div className="lg:border-l lg:border-edge lg:pl-4">
+              <div className="text-xs font-bold text-dim mb-2">Atual (DSX / manual)</div>
+              <PrevSideView side={job.atual} counter={job.xml} source="atual" onShow={onShow} />
+            </div>
+          </div>
+        </div>
+      ))}
+
+      {detail && (
+        <Modal open title={detail.title} onClose={() => setDetail(null)} size="lg">
+          <pre className="text-xs font-mono text-ink whitespace-pre-wrap bg-canvas border border-edge rounded-lg p-3 max-h-[60vh] overflow-auto">{detail.lines.join('\n')}</pre>
+        </Modal>
+      )}
+    </div>
+  )
+}
+
 export default function Governanca() {
   const [tab, setTab] = useState('lineage')
   const [pipeline, setPipeline] = useState('')
@@ -1153,12 +1294,16 @@ export default function Governanca() {
       <Tabs
         active={tab}
         onChange={setTab}
-        tabs={[{ id: 'lineage', label: 'Lineage' }, { id: 'catalogo', label: 'Catálogo de Dados' }]}
+        tabs={[
+          { id: 'lineage', label: 'Lineage' },
+          { id: 'catalogo', label: 'Catálogo de Dados' },
+          { id: 'xmlpreview', label: 'Comparar XML × Atual' },
+        ]}
       />
       <div>
-        {tab === 'lineage'
-          ? <LineageTab pipeline={pipeline} setPipeline={setPipeline} />
-          : <CatalogoTab onGoLineage={goLineage} />}
+        {tab === 'lineage' && <LineageTab pipeline={pipeline} setPipeline={setPipeline} />}
+        {tab === 'catalogo' && <CatalogoTab onGoLineage={goLineage} />}
+        {tab === 'xmlpreview' && <XmlPreviewTab />}
       </div>
     </div>
   )
