@@ -467,13 +467,15 @@ export default function Dashboard() {
   const kpis = data?.kpis
   const lastUpdate = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : null
 
-  // Taxa ajustada: considera apenas execuções finalizadas (exclui as em andamento)
+  // Taxa de sucesso entre as execuções FINALIZADAS (estados terminais).
+  // Não usar executando_agora aqui: ele conta runs de dias anteriores ainda
+  // rodando, que não entram em total_execucoes (filtrado por data) — isso fazia
+  // o denominador < numerador e a taxa estourar (ex.: 200%).
   const adjustedTaxa = useMemo(() => {
-    if (!kpis || !data) return 0
-    const running = data.executando_agora.length
-    const finished = Math.max(0, kpis.total_execucoes - running)
-    return finished > 0 ? (kpis.total_sucesso / finished) * 100 : 100
-  }, [kpis, data])
+    if (!kpis) return 0
+    const finished = kpis.total_sucesso + kpis.total_falha + kpis.total_warning
+    return finished > 0 ? Math.min(100, (kpis.total_sucesso / finished) * 100) : 100
+  }, [kpis])
 
   return (
     <div className="flex flex-col gap-5">
@@ -517,7 +519,7 @@ export default function Dashboard() {
             <KpiCard
               label="Sucesso"
               value={`${adjustedTaxa.toFixed(1)}%`}
-              sub={`${kpis.total_sucesso} ok (finalizados)`}
+              sub={`${kpis.total_sucesso} de ${kpis.total_sucesso + kpis.total_falha + kpis.total_warning} finalizados`}
               icon={<CheckCircle size={16} />}
               color={adjustedTaxa >= 95 ? 'green' : adjustedTaxa >= 80 ? 'yellow' : 'red'}
             />
