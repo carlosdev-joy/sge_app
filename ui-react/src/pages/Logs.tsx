@@ -586,6 +586,51 @@ function FalhasKpiCards({ days, onFilter }: { days: number; onFilter?: (f: strin
   )
 }
 
+// ── Resolução em massa ─────────────────────────────────────────────────────
+
+function BulkResolveModal({ rows, loading, onConfirm, onClose }: {
+  rows: FalhaRow[]; loading: boolean
+  onConfirm: (note: string, ticket: string) => void; onClose: () => void
+}) {
+  const [note, setNote] = useState('')
+  const [ticket, setTicket] = useState('')
+  const pipelines = Array.from(new Set(rows.map(r => r.pipeline)))
+  return (
+    <Modal open title={`Resolver ${rows.length} falha(s) em massa`} onClose={onClose} size="md">
+      <div className="flex flex-col gap-4">
+        <div className="text-xs text-dim bg-amber-900/10 border border-amber-800/30 rounded-lg px-3 py-2">
+          A mesma observação e ticket serão aplicados às <strong className="text-ink">{rows.length}</strong> falha(s)
+          {pipelines.length === 1
+            ? <> do pipeline <span className="font-mono text-ink">{pipelines[0]}</span></>
+            : <> de <strong className="text-ink">{pipelines.length}</strong> pipelines</>}.
+          Falhas ainda não assumidas serão <strong className="text-ink">auto-assumidas em seu nome</strong>.
+        </div>
+        <div className="max-h-32 overflow-auto border border-edge rounded-lg divide-y divide-edge/30">
+          {rows.slice(0, 50).map(r => (
+            <div key={`${r.execution_id}-${r.pipeline}`} className="px-3 py-1.5 text-[11px] flex items-center gap-2">
+              <span className="font-mono text-ink truncate flex-1">{r.origem === 'malha' ? r.job_name : r.pipeline}</span>
+              <span className="text-dim shrink-0">{fmtDt(r.inicio)}</span>
+            </div>
+          ))}
+          {rows.length > 50 && <div className="px-3 py-1.5 text-[11px] text-dim">… e mais {rows.length - 50}</div>}
+        </div>
+        <Textarea label="Observação da resolução (aplicada a todas)" value={note}
+          onChange={e => setNote(e.target.value)} rows={3}
+          placeholder="ex: erros anteriores ao Orquestra — fechados para reexecução de análise" />
+        <Input label="Ticket ServiceNow (opcional)" value={ticket}
+          onChange={e => setTicket(e.target.value)} placeholder="ex: INC0012345" />
+        <div className="flex justify-end gap-2 border-t border-edge pt-3">
+          <Button variant="secondary" onClick={onClose}>Cancelar</Button>
+          <Button loading={loading} onClick={() => onConfirm(note, ticket)}
+            className="border-green-800/40 text-green-400 hover:text-green-300">
+            <CheckCircle2 size={13} /> Resolver {rows.length}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 // ── Gestão de Falhas Tab ───────────────────────────────────────────────────
 
 function GestaoFalhasTab() {
@@ -600,7 +645,14 @@ function GestaoFalhasTab() {
   const [page, setPage] = useState(0)
   const [resolveRow, setResolveRow] = useState<{ row: FalhaRow; readOnly: boolean } | null>(null)
   const [malhaJob, setMalhaJob] = useState<string | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [bulkOpen, setBulkOpen] = useState(false)
   const FLIMIT = 50
+
+  const rowKey = (r: FalhaRow) => `${r.execution_id}|${r.pipeline}`
+
+  // Seleção é limpa quando os filtros/página mudam (evita resolver o que saiu da lista)
+  useEffect(() => { setSelected(new Set()) }, [days, statusAck, filterPipeline, filterProject, page])
 
   const qs = new URLSearchParams({
     days: String(days),
@@ -642,8 +694,36 @@ function GestaoFalhasTab() {
     onError: (e: any) => toast.error(e.message),
   })
 
+  const bulkMut = useMutation({
+    mutationFn: (payload: { items: { execution_id: string; pipeline: string }[]; resolution_note: string; snow_ticket: string }) =>
+      apiFetch<{ ok: boolean; resolved: number }>('/execucoes/resolve-bulk', {
+        method: 'POST',
+        body: JSON.stringify({
+          items: payload.items,
+          resolution_note: payload.resolution_note || null,
+          snow_ticket: payload.snow_ticket || null,
+          user: user?.matricula,
+          display_name: `${user?.primeiro_nome ?? ''} ${user?.ultimo_nome ?? ''}`.trim(),
+        }),
+      }),
+    onSuccess: (res) => {
+      toast.success(`${res?.resolved ?? 0} falha(s) resolvida(s) em massa`)
+      setSelected(new Set()); setBulkOpen(false)
+      qc.invalidateQueries({ queryKey: ['falhas'] })
+      qc.invalidateQueries({ queryKey: ['falhas-summary'] })
+    },
+    onError: (e: any) => toast.error(e.message),
+  })
+
   const rows = data?.data ?? []
   const total = data?.total ?? 0
+
+  // Só falhas ainda NÃO resolvidas são selecionáveis (não sobrescreve resolução existente)
+  const selectable = rows.filter(r => !r.resolved_at)
+  const allSelected = selectable.length > 0 && selectable.every(r => selected.has(rowKey(r)))
+  const toggleRow = (r: FalhaRow) => setSelected(s => { const n = new Set(s); const k = rowKey(r); n.has(k) ? n.delete(k) : n.add(k); return n })
+  const toggleAll = () => setSelected(() => allSelected ? new Set() : new Set(selectable.map(rowKey)))
+  const selectedRows = rows.filter(r => selected.has(rowKey(r)))
 
   function statusAckLabel(r: FalhaRow) {
     if (r.resolved_at) return <span className="inline-flex items-center gap-1 text-xs text-green-400"><CheckCircle2 size={11} /> Resolvida</span>
@@ -699,8 +779,18 @@ function GestaoFalhasTab() {
       {/* Table */}
       {isLoading ? <PageSpinner /> : (
         <div className="bg-panel border border-edge rounded-lg overflow-hidden">
-          <div className="px-4 py-2 border-b border-edge">
+          <div className="px-4 py-2 border-b border-edge flex items-center gap-3">
             <span className="text-xs text-dim">{total} falha{total !== 1 ? 's' : ''}</span>
+            {!isViewer && selected.size > 0 && (
+              <div className="flex items-center gap-2 ml-auto">
+                <span className="text-xs text-dim">{selected.size} selecionada{selected.size !== 1 ? 's' : ''}</span>
+                <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>Limpar seleção</Button>
+                <Button size="sm" onClick={() => setBulkOpen(true)}
+                  className="border-green-800/40 text-green-400 hover:text-green-300">
+                  <CheckCircle2 size={13} /> Resolver {selected.size} em massa
+                </Button>
+              </div>
+            )}
           </div>
 
           {rows.length === 0 ? (
@@ -709,6 +799,13 @@ function GestaoFalhasTab() {
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead><tr className="text-dim border-b border-edge bg-canvas">
+                  {!isViewer && (
+                    <th className="px-3 py-2 text-left w-8">
+                      <input type="checkbox" checked={allSelected} onChange={toggleAll}
+                        disabled={selectable.length === 0} title="Selecionar todas (não resolvidas)"
+                        className="accent-green-500 cursor-pointer" />
+                    </th>
+                  )}
                   <th className="px-3 py-2 text-left">Pipeline</th>
                   <th className="px-3 py-2 text-left">Projeto</th>
                   <th className="px-3 py-2 text-left">Início</th>
@@ -723,7 +820,15 @@ function GestaoFalhasTab() {
                 <tbody>
                   {rows.map(r => (
                     <tr key={`${r.execution_id}-${r.pipeline}`}
-                      className={`border-b border-edge/40 hover:bg-edge/20 transition-colors ${r.resolved_at ? 'opacity-70' : ''}`}>
+                      className={`border-b border-edge/40 hover:bg-edge/20 transition-colors ${r.resolved_at ? 'opacity-70' : ''} ${selected.has(rowKey(r)) ? 'bg-green-900/10' : ''}`}>
+                      {!isViewer && (
+                        <td className="px-3 py-2">
+                          {!r.resolved_at && (
+                            <input type="checkbox" checked={selected.has(rowKey(r))} onChange={() => toggleRow(r)}
+                              className="accent-green-500 cursor-pointer" />
+                          )}
+                        </td>
+                      )}
                       <td className="px-3 py-2 font-mono text-ink font-medium max-w-[240px]"
                         title={r.origem === 'malha' ? r.job_name : r.pipeline}>
                         <div className="flex items-center gap-1.5">
@@ -817,6 +922,17 @@ function GestaoFalhasTab() {
 
       {resolveRow && (
         <ResolveModal row={resolveRow.row} readOnly={resolveRow.readOnly} onClose={() => setResolveRow(null)} />
+      )}
+      {bulkOpen && (
+        <BulkResolveModal
+          rows={selectedRows}
+          loading={bulkMut.isPending}
+          onConfirm={(note, ticket) => bulkMut.mutate({
+            items: selectedRows.map(r => ({ execution_id: r.execution_id, pipeline: r.pipeline })),
+            resolution_note: note, snow_ticket: ticket,
+          })}
+          onClose={() => setBulkOpen(false)}
+        />
       )}
       {malhaJob && <MalhaTreeModal jobName={malhaJob} open onClose={() => setMalhaJob(null)} />}
     </div>
