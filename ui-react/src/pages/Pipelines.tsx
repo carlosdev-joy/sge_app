@@ -29,9 +29,6 @@ export default function Pipelines() {
   const [projectFilter, setProjectFilter] = useState('')
   const [activeFilter,  setActiveFilter]  = useState('')
   const [domainFilter,  setDomainFilter]  = useState('')
-  const [page, setPage] = useState(0)
-  const LIMIT = 50
-
   const [expanded,     setExpanded]     = useState<Set<string>>(new Set())
   const [expandedDoms, setExpandedDoms] = useState<Set<string>>(new Set())
 
@@ -49,14 +46,27 @@ export default function Pipelines() {
     return () => { if (revalidateTimerRef.current) clearTimeout(revalidateTimerRef.current) }
   }, [])
 
-  const qs = new URLSearchParams({ limit: String(LIMIT), offset: String(page * LIMIT) })
-  if (nameFilter)         qs.set('filter_name',    nameFilter)
-  if (projectFilter)      qs.set('filter_project', projectFilter)
-  if (activeFilter !== '') qs.set('filter_active', activeFilter)
-
-  const { data, isLoading } = useQuery<{ total: number; pages: number; data: Pipeline[] }>({
-    queryKey: ['pipelines', nameFilter, projectFilter, activeFilter, page],
-    queryFn: () => apiFetch(`/pipelines?${qs}`),
+  // Carrega TODOS os pipelines do filtro (agrega as páginas do backend, que limita
+  // a 100/req) para as pastas por projeto ficarem completas — sem partir entre
+  // páginas (o que dava a falsa sensação de pipeline excluído).
+  const { data, isLoading } = useQuery<{ total: number; data: Pipeline[] }>({
+    queryKey: ['pipelines', nameFilter, projectFilter, activeFilter],
+    queryFn: async () => {
+      const all: Pipeline[] = []
+      let offset = 0, total = 0
+      do {
+        const qs = new URLSearchParams({ limit: '100', offset: String(offset) })
+        if (nameFilter)          qs.set('filter_name',    nameFilter)
+        if (projectFilter)       qs.set('filter_project', projectFilter)
+        if (activeFilter !== '')  qs.set('filter_active', activeFilter)
+        const r = await apiFetch<{ total: number; data: Pipeline[] }>(`/pipelines?${qs}`)
+        total = r.total
+        all.push(...r.data)
+        offset += 100
+        if (offset > 5000) break  // guarda de segurança
+      } while (all.length < total)
+      return { total, data: all }
+    },
   })
 
   const { data: projData } = useQuery<{ projects: string[] }>({
@@ -137,7 +147,6 @@ export default function Pipelines() {
   )
 
   const total = data?.total ?? 0
-  const pages = data?.pages ?? 1
 
   return (
     <div className="flex flex-col gap-4">
@@ -155,29 +164,29 @@ export default function Pipelines() {
           <Autocomplete
             label="Nome"
             value={nameFilter}
-            onChange={v => { setNameFilter(v); setPage(0) }}
+            onChange={v => setNameFilter(v)}
             fetchSuggestions={fetchPipelineNames}
             placeholder="filtrar por nome…"
             className="w-64"
           />
           <Select label="Projeto" value={projectFilter}
-            onChange={e => { setProjectFilter(e.target.value); setPage(0) }} className="w-40">
+            onChange={e => setProjectFilter(e.target.value)} className="w-40">
             <option value="">Todos</option>
             {projects.map(p => <option key={p}>{p}</option>)}
           </Select>
           <Select label="Domínio" value={domainFilter}
-            onChange={e => { setDomainFilter(e.target.value); setPage(0) }} className="w-40">
+            onChange={e => setDomainFilter(e.target.value)} className="w-40">
             <option value="">Todos</option>
             {allDomains.map(d => <option key={d}>{d}</option>)}
           </Select>
           <Select label="Status" value={activeFilter}
-            onChange={e => { setActiveFilter(e.target.value); setPage(0) }} className="w-32">
+            onChange={e => setActiveFilter(e.target.value)} className="w-32">
             <option value="">Todos</option>
             <option value="1">Ativos</option>
             <option value="0">Inativos</option>
           </Select>
           <div className="flex gap-2 ml-auto items-end">
-            <Button variant="secondary" size="sm" onClick={() => { setNameFilter(''); setProjectFilter(''); setDomainFilter(''); setActiveFilter(''); setPage(0) }}>
+            <Button variant="secondary" size="sm" onClick={() => { setNameFilter(''); setProjectFilter(''); setDomainFilter(''); setActiveFilter('') }}>
               × Limpar
             </Button>
             <Button variant="secondary" size="sm" onClick={exportModeloCsv} title="Baixar modelo CSV para importação em massa">
@@ -192,17 +201,10 @@ export default function Pipelines() {
         </div>
       </div>
 
-      {/* Count + pagination */}
+      {/* Count */}
       {!isLoading && (
         <div className="flex items-center justify-between text-xs text-dim px-1">
-          <span>{total} pipeline{total !== 1 ? 's' : ''}</span>
-          {pages > 1 && (
-            <div className="flex items-center gap-2">
-              <Button variant="ghost" size="sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}>← Anterior</Button>
-              <span>Página {page + 1} de {pages}</span>
-              <Button variant="ghost" size="sm" disabled={page + 1 >= pages} onClick={() => setPage(p => p + 1)}>Próxima →</Button>
-            </div>
-          )}
+          <span>{total} pipeline{total !== 1 ? 's' : ''} em {Object.keys(tree).length} projeto{Object.keys(tree).length !== 1 ? 's' : ''}</span>
         </div>
       )}
 
