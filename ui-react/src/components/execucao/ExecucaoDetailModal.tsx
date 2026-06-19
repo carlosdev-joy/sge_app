@@ -117,6 +117,13 @@ function buildDagRunId(executionId: string): string {
   return executionId
 }
 
+// logical_date do Airflow → ts_nodash (ex.: 2026-06-19T01:58:04+00:00 → 20260619T015804)
+function toNodash(dt?: string | null): string {
+  if (!dt) return ''
+  const m = dt.match(/(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})/)
+  return m ? `${m[1]}${m[2]}${m[3]}T${m[4]}${m[5]}${m[6]}` : ''
+}
+
 export function AirflowLogModal({ state, onClose }: { state: AirflowLogState; onClose: () => void }) {
   const dagId = state.pipeline
   const [taskId, setTaskId] = useState(state.taskId ?? '')
@@ -125,13 +132,25 @@ export function AirflowLogModal({ state, onClose }: { state: AirflowLogState; on
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
 
-  const dagRunId = state.dagRunId ?? buildDagRunId(state.executionId)
+  // Resolve o dag_run_id REAL: runs manuais têm run_id 'manual_orq_...' (não
+  // 'scheduled__...'), então casa pelo logical_date == execution_id (ts_nodash).
+  const { data: runsData } = useQuery<{ dag_runs?: any[] }>({
+    queryKey: ['airflow-dagruns', dagId],
+    queryFn: () => apiFetch(`/airflow/dags/${encodeURIComponent(dagId)}/dagRuns?limit=100`),
+    enabled: !state.dagRunId,
+  })
+  const matchedRun = (runsData?.dag_runs ?? []).find(
+    r => toNodash(r.logical_date ?? r.execution_date) === state.executionId
+  )
+  const runsResolved = !!state.dagRunId || runsData !== undefined
+  const dagRunId = state.dagRunId ?? matchedRun?.dag_run_id ?? buildDagRunId(state.executionId)
 
   const { data: tiData, isLoading: tiLoading } = useQuery({
     queryKey: ['airflow-ti', dagId, dagRunId],
     queryFn: () => apiFetch<{ task_instances: any[] }>(
       `/airflow/dags/${encodeURIComponent(dagId)}/dagRuns/${encodeURIComponent(dagRunId)}/taskInstances`
     ),
+    enabled: runsResolved && !!dagRunId,
   })
 
   const tasks = (tiData?.task_instances ?? []).filter(
