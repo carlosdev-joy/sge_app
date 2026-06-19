@@ -1,25 +1,29 @@
 # Teste de estrutura — validação mínima do host
 
 Página estática (sem dependências) para validar, no novo host
-(`orquestra.caixavidaeprevidencia.intranet`), o mínimo de conectividade **antes**
-de migrar o app inteiro:
+(`orquestra.caixavidaeprevidencia.intranet`), o mínimo de conectividade:
 
 1. o **servidor/nginx** responde neste host (DNS + nginx + `server_name`);
 2. a **API Orquestra** via proxy `/orquestra/` (bate em `/orquestra/health`);
 3. o **Airflow** via proxy `/api/v1/` (bate em `/api/v1/health`).
 
-## Como usar
+## Já vem no deploy (automático)
 
-**Opção A — junto do nginx do app** (copiar para o web root do servidor novo):
+A mesma página é incluída no build do front (`ui-react/public/teste.html` →
+`ui-react/dist/teste.html`), então **depois de subir o app ela já está disponível
+automaticamente** em:
 
-```bash
-# no servidor novo, com o nginx servindo /usr/share/nginx/html
-cp index.html /usr/share/nginx/html/teste.html
-# abrir no navegador:
-#   http://orquestra.caixavidaeprevidencia.intranet/teste.html
+```
+http://orquestra.caixavidaeprevidencia.intranet/teste.html
 ```
 
-**Opção B — nginx avulso só para o teste** (nem precisa do app):
+Sem passo manual — o nginx do app serve o arquivo direto. Use essa URL como
+health-check de conectividade em qualquer host onde o app rodar.
+
+## Uso avulso (antes de o app existir)
+
+Esta pasta (`scripts/teste-estrutura/`) serve para testar a estrutura **antes**
+de subir o app inteiro, com um nginx avulso:
 
 ```bash
 docker run --rm -p 80:80 \
