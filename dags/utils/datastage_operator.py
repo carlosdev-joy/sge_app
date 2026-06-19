@@ -474,13 +474,17 @@ class DataStageOperator(BaseOperator):
             "project":     self.project,
             "job":         self.job_name,
             "status":      "SUCCESS",
-            "status_code": xcom_status_code,
             "ds_status":   ds_label,
             "wave_number": info.get("wave_number"),
             "start_time":  info.get("start_time"),
             "pid":         info.get("pid"),
             "child_jobs":  child_jobs,
             "log_summary": logsum[:3000] if logsum else "",
+            # status_code da SEQUENCE por ÚLTIMO de propósito: o extractor legado
+            # do log_end (json_m[-1]) pega o ÚLTIMO "status_code" do blob; como os
+            # child_jobs também têm "status_code", o da sequence precisa ser o
+            # último a aparecer — senão um filho ABORTED faz o pipeline falhar.
+            "status_code": xcom_status_code,
         }, ensure_ascii=False)
 
 
