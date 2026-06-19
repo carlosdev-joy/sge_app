@@ -912,6 +912,57 @@ async def resolve_failures_bulk(body: dict = Body(default={}), auth: dict = Depe
     return {"ok": True, "resolved": done}
 
 
+@router.post("/execucoes/ack-bulk", tags=["execucoes"])
+async def ack_failures_bulk(body: dict = Body(default={}), auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """Assume VÁRIAS falhas de uma vez (idempotente: NÃO rouba assunção existente).
+
+    Body: items: [{execution_id, pipeline}], note?, user? (matrícula), display_name?.
+    Devolve quantas foram assumidas (acked) e quantas já tinham dono (skipped).
+    """
+    items = body.get("items") or []
+    if not isinstance(items, list) or not items:
+        raise HTTPException(status_code=422, detail="items (lista não vazia) é obrigatório")
+    note         = (body.get("note")         or "").strip() or None
+    matricula    = (body.get("user")         or "").strip() or auth.get("matricula", "")
+    display_name = (body.get("display_name") or "").strip() or None
+    if not matricula:
+        raise HTTPException(status_code=422, detail="user (matrícula) é obrigatório")
+
+    acked = skipped = 0
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        for it in items:
+            eid = (it.get("execution_id") or "").strip()
+            pl  = (it.get("pipeline")     or "").strip()
+            if not eid or not pl:
+                continue
+            cur.execute("SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?", (eid, pl))
+            if cur.fetchone():
+                skipped += 1
+                continue
+            cur.execute(
+                "INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name, note) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (eid, pl, matricula, display_name, note))
+            acked += 1
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if acked:
+        try:
+            await asyncio.to_thread(
+                _teams_ack_card,
+                pipeline=f"{acked} falha(s) — assunção em massa", exec_id="—",
+                ack_by=matricula, display_name=display_name or matricula,
+                ack_at=None, note=note, webhook_var="TEAMS_WEBHOOK_URL_CVP",
+            )
+        except Exception as e:
+            log.warning("[ACK-BULK] Teams ignorado: %s", e)
+
+    return {"ok": True, "acked": acked, "skipped": skipped}
+
+
 @router.get("/execucoes/falhas", tags=["execucoes"])
 def list_falhas(
     days: int = Query(7, ge=1, le=90),
