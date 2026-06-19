@@ -336,14 +336,30 @@ class DataStageOperator(BaseOperator):
         }
 
     def _parse_child_jobs(self, logsum: str) -> list:
-        """Extract child job events from dsjob -logsum output (SEQUENCE jobs)."""
+        """Extrai os jobs filhos do RUN ATUAL de uma SEQUENCE (dsjob -logsum).
+
+        O -logsum retém várias execuções da sequence (auto-purge guarda N entradas,
+        que para sequences pequenas cobrem vários dias). Sem delimitar, o mesmo job
+        filho aparece uma vez por run histórico, com status de datas diferentes
+        misturados — dando a falsa impressão de 'reset → ok → erro em seguida'.
+        Aqui consideramos só os eventos após o ÚLTIMO 'Starting Job' (= run atual).
+        """
+        start_re  = re.compile(r"\bStarting Job\b")
         batch_re  = re.compile(r"BATCH\s+.*?->\s+\(([^)]+)\):\s+Job run requested")
         finish_re = re.compile(r"Job (\S+) has finished,\s*status\s*=\s*(\d+)\s+\(([^)]+)\)")
+
+        # Escopo: descarta runs anteriores (tudo antes do último início de run)
+        lines = logsum.splitlines()
+        last_start = 0
+        for i, line in enumerate(lines):
+            if start_re.search(line):
+                last_start = i
+        lines = lines[last_start:]
 
         tracked: dict = {}
         result:  list = []
 
-        for line in logsum.splitlines():
+        for line in lines:
             m = batch_re.search(line)
             if m:
                 name  = m.group(1)
