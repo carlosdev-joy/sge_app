@@ -715,6 +715,25 @@ function GestaoFalhasTab() {
     onError: (e: any) => toast.error(e.message),
   })
 
+  const bulkAckMut = useMutation({
+    mutationFn: (items: { execution_id: string; pipeline: string }[]) =>
+      apiFetch<{ ok: boolean; acked: number; skipped: number }>('/execucoes/ack-bulk', {
+        method: 'POST',
+        body: JSON.stringify({
+          items,
+          user: user?.matricula,
+          display_name: `${user?.primeiro_nome ?? ''} ${user?.ultimo_nome ?? ''}`.trim(),
+        }),
+      }),
+    onSuccess: (res) => {
+      toast.success(`${res?.acked ?? 0} falha(s) assumida(s)${res?.skipped ? ` · ${res.skipped} já tinham dono` : ''}`)
+      setSelected(new Set())
+      qc.invalidateQueries({ queryKey: ['falhas'] })
+      qc.invalidateQueries({ queryKey: ['falhas-summary'] })
+    },
+    onError: (e: any) => toast.error(e.message),
+  })
+
   const rows = data?.data ?? []
   const total = data?.total ?? 0
 
@@ -724,6 +743,7 @@ function GestaoFalhasTab() {
   const toggleRow = (r: FalhaRow) => setSelected(s => { const n = new Set(s); const k = rowKey(r); n.has(k) ? n.delete(k) : n.add(k); return n })
   const toggleAll = () => setSelected(() => allSelected ? new Set() : new Set(selectable.map(rowKey)))
   const selectedRows = rows.filter(r => selected.has(rowKey(r)))
+  const selectedUnacked = selectedRows.filter(r => !r.ack_by)  // p/ assumir só os sem dono
 
   function statusAckLabel(r: FalhaRow) {
     if (r.resolved_at) return <span className="inline-flex items-center gap-1 text-xs text-green-400"><CheckCircle2 size={11} /> Resolvida</span>
@@ -785,6 +805,14 @@ function GestaoFalhasTab() {
               <div className="flex items-center gap-2 ml-auto">
                 <span className="text-xs text-dim">{selected.size} selecionada{selected.size !== 1 ? 's' : ''}</span>
                 <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>Limpar seleção</Button>
+                <Button variant="secondary" size="sm"
+                  loading={bulkAckMut.isPending}
+                  disabled={selectedUnacked.length === 0}
+                  onClick={() => bulkAckMut.mutate(selectedUnacked.map(r => ({ execution_id: r.execution_id, pipeline: r.pipeline })))}
+                  className="border-orange-700/50 text-orange-400 hover:text-orange-300"
+                  title={selectedUnacked.length === 0 ? 'Todas as selecionadas já têm dono' : 'Assumir as selecionadas sem dono'}>
+                  <ShieldAlert size={13} /> Assumir {selectedUnacked.length} em massa
+                </Button>
                 <Button size="sm" onClick={() => setBulkOpen(true)}
                   className="border-green-800/40 text-green-400 hover:text-green-300">
                   <CheckCircle2 size={13} /> Resolver {selected.size} em massa
