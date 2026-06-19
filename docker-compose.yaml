@@ -152,6 +152,9 @@ services:
       AIRFLOW_USER:     "${AIRFLOW_WWW_USER_USERNAME:-airflow}"
       AIRFLOW_PASSWORD: "${AIRFLOW_WWW_USER_PASSWORD:-airflow}"
       DAGS_FOLDER:      "/opt/airflow/dags"
+      # URL do Airflow para os botões "Ver no Airflow" (abrem no navegador do usuário).
+      # NÃO pode ser localhost. Sobrepõe-se pelo valor em Admin → Configurações (etl_app_config).
+      AIRFLOW_UI_URL:   "${AIRFLOW_UI_URL:-http://vmlnxprd083:8080}"
       MSSQL_CONN_STR:   "${MSSQL_CONN_STR:-}"
       DSX_BASE_DIR:     "/opt/airflow/dsx"
       CORS_ORIGINS:     "${CORS_ORIGINS:-http://orquestra.caixavidaeprevidencia.intranet,http://orquestra.caixavidaeprevidencia.intranet:8090,http://vmlnxprd083,http://vmlnxprd083:8090}"

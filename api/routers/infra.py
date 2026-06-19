@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -37,7 +38,10 @@ DEFAULTS_CONFIG = {
     "pipeline_query_limit":           20,
     "jobs_query_limit":               50,
     "logs_query_limit":               30,
-    "airflow_ui_url":                 "http://localhost:8080",
+    # URL do Airflow para os links "Ver no Airflow" (abrem no NAVEGADOR do usuário).
+    # Default vem da env AIRFLOW_UI_URL (definida no compose); 'localhost' é só último
+    # recurso e NÃO funciona em produção. O valor em etl_app_config (Admin) sobrepõe.
+    "airflow_ui_url":                 os.getenv("AIRFLOW_UI_URL") or "http://localhost:8080",
 }
 INT_CONFIG_KEYS = {
     "dashboard_refresh_interval_sec",
