@@ -4,8 +4,12 @@ etl_ds_malha_status.py — Varredura de status (dsjob -jobinfo) dos jobs da malh
 APARTADO: monitoramento puro, não dispara jobs nem gera DAG. A partir da malha
 persistida (etl_ds_malha*), lê a lista de jobs monitoráveis, roda
 `dsjob -jobinfo` para cada um via SSH (num único round-trip) e grava um snapshot
-em etl_ds_malha_status. Detecta ABORTED mesmo com a SEQ ainda rodando, pegando
-falhas que a SEQ não trata.
+de status de TODOS os nós em etl_ds_malha_status (a malha mostra tudo).
+
+Falha (etl_ds_malha_falha) + alerta Teams ESPELHAM o DataStage: um ABORTED só
+é tratado como falha se a sequence-RAIZ daquele nó também abortou (DataStage
+parou a cadeia). Se a raiz terminou OK/WARNING (tolerou o abort do filho),
+não é erro — não registra nem alerta, igual a task do Airflow que passa.
 
 Disparado via ORQUESTRA (POST /malha-ds/{project}/scan) ou trigger manual:
   { "project": "BI_VIDA" }
@@ -107,12 +111,43 @@ def _teams_alert_aborts(project: str, aborts: list[dict]) -> None:
         print(f"[ALERT] {project}: Teams falhou: {e}")
 
 
-def _register_aborts(hook: MsSqlHook, project: str, fields_by_job: dict) -> list[dict]:
+def _aborted_in_scope(parsed, fields_by_job: dict) -> set[str]:
+    """Espelha o DataStage: um ABORTED só conta como falha se a sequence-RAIZ
+    daquele nó também abortou (o DataStage parou a cadeia). Se a raiz terminou
+    OK/WARNING, ela tolerou/liberou o abort do filho — não é erro, não alerta.
+
+    Devolve o conjunto de nomes "em escopo" (subárvores das raízes abortadas)."""
+    from utils import ds_xml_malha as M  # noqa: PLC0415
+
+    def code(n):
+        f = fields_by_job.get(n)
+        return f.get("code") if f else None
+
+    in_scope: set[str] = set()
+    for root in M.root_sequences(parsed):
+        if code(root) != 3:        # raiz não abortou → DataStage liberou → ignora
+            continue
+        tree = M.build_tree(parsed, root)
+        stack = [tree]
+        while stack:
+            node = stack.pop()
+            in_scope.add(node["name"])
+            for child in node.get("children", []):
+                stack.append(child)
+    return in_scope
+
+
+def _register_aborts(hook: MsSqlHook, project: str, fields_by_job: dict,
+                     in_scope: set[str]) -> list[dict]:
     """Registra jobs ABORTED em etl_ds_malha_falha (dedup por project+job+wave) e
-    devolve a lista dos NOVOS (para alertar uma única vez por run)."""
+    devolve a lista dos NOVOS (para alertar uma única vez por run).
+
+    Só registra nós em escopo (sequence-raiz abortada) — espelha o DataStage."""
     new: list[dict] = []
     for job, fld in fields_by_job.items():
         if fld.get("code") != 3:   # 3 = ABORTED
+            continue
+        if job not in in_scope:    # abort tolerado pela sequence (raiz liberou) → ignora
             continue
         wave    = fld.get("wave")
         started = _parse_ds_time(fld.get("start"))
@@ -134,9 +169,10 @@ def _register_aborts(hook: MsSqlHook, project: str, fields_by_job: dict) -> list
     return new
 
 
-def _scan_names(project: str) -> list[str]:
-    """Lê os nós da malha a varrer (jobs E sequences) da malha persistida — sem
-    reparsear XML. Inclui sequences porque elas também têm status (ex.: 2/warning)."""
+def _load_malha(project: str):
+    """Lê a malha persistida (sem reparsear XML). Devolve (parsed, nomes_a_varrer).
+    Inclui sequences porque elas também têm status (ex.: 2/warning) e são a raiz
+    que decide se um abort é falha real (espelho do DataStage)."""
     dags_folder = os.path.dirname(os.path.abspath(__file__))
     if dags_folder not in sys.path:
         sys.path.insert(0, dags_folder)
@@ -155,12 +191,13 @@ def _scan_names(project: str) -> list[str]:
     edges = [{"parent": r[0], "seq_order": r[1], "activity": r[2],
               "jobname": r[3], "real_target": r[4], "kind": r[5]} for r in erows]
     parsed = M.from_rows(nodes, edges, project=project)
-    return [j for j in M.scan_targets(parsed) if _JOB_RE.match(j or "")]
+    names = [j for j in M.scan_targets(parsed) if _JOB_RE.match(j or "")]
+    return parsed, names
 
 
 def scan_project(project: str) -> dict:
     """Varre o status (dsjob -jobinfo) de todos os nós da malha do projeto e grava snapshot."""
-    jobs = _scan_names(project)
+    parsed, jobs = _load_malha(project)
     if not jobs:
         print(f"[STATUS] {project}: nenhum nó (job/sequence) na malha.")
         return {"project": project, "scanned": 0, "aborted": []}
@@ -225,20 +262,27 @@ def scan_project(project: str) -> dict:
             "VALUES (%s, %s, %s, %s, %s, GETDATE())",
             parameters=[project, job, fld["code"], fld["label"], fld["info"]])
 
-    # Registra ABORTED na Gestão de Falhas (dedup por run) e alerta no Teams 1x.
-    new_aborts = _register_aborts(hook, project, fields_by_job)
+    # Espelha o DataStage: só conta como falha o abort cuja sequence-RAIZ abortou.
+    in_scope = _aborted_in_scope(parsed, fields_by_job)
+
+    # Registra ABORTED (em escopo) na Gestão de Falhas (dedup por run) + alerta 1x.
+    new_aborts = _register_aborts(hook, project, fields_by_job, in_scope)
     if new_aborts:
         _teams_alert_aborts(project, new_aborts)
         for a in new_aborts:
             hook.run("UPDATE dbo.etl_ds_malha_falha SET alerted_at=GETDATE() WHERE execution_id=%s",
                      parameters=[a["exec_id"]])
 
-    aborted = [j for j, f in fields_by_job.items() if f["code"] == 3]
-    warn    = [j for j, f in fields_by_job.items() if f["code"] == 2]
+    aborted   = [j for j, f in fields_by_job.items() if f["code"] == 3]
+    real      = [j for j in aborted if j in in_scope]          # raiz abortou (falha real)
+    tolerated = [j for j in aborted if j not in in_scope]      # sequence liberou (não é erro)
+    warn      = [j for j, f in fields_by_job.items() if f["code"] == 2]
     print(f"[STATUS] {project}: {len(fields_by_job)} varrido(s). "
-          f"ABORTED: {aborted or '—'} (novos: {len(new_aborts)}) | WARNING: {warn or '—'}")
+          f"ABORTED real: {real or '—'} (novos: {len(new_aborts)}) | "
+          f"ABORTED tolerado p/ seq: {tolerated or '—'} | WARNING: {warn or '—'}")
     return {"project": project, "scanned": len(fields_by_job),
-            "aborted": aborted, "warning": warn, "novas_falhas": len(new_aborts)}
+            "aborted": aborted, "aborted_real": real, "aborted_tolerado": tolerated,
+            "warning": warn, "novas_falhas": len(new_aborts)}
 
 
 def _scan(**context):
