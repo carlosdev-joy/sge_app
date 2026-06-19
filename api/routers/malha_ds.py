@@ -60,6 +60,21 @@ def _malha_mod():
         raise HTTPException(status_code=500, detail=f"ds_xml_malha indisponível: {e}")
 
 
+def _lineage_mod():
+    """Importa o extrator de lineage do XML (apartado, em dags/utils)."""
+    dags_folder = os.environ.get("DAGS_FOLDER", "/opt/airflow/dags")
+    if dags_folder not in sys.path:
+        sys.path.insert(0, dags_folder)
+    try:
+        from utils import ds_xml_lineage as LX  # type: ignore
+        return LX
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"ds_xml_lineage indisponível: {e}")
+
+
+_DIR2KEY = {"origem": "origens", "destino": "destinos", "transformacao": "transformacoes"}
+
+
 def _read_rows(cur, project: str):
     cur.execute("SELECT name, kind, is_sequence, is_executor, stage_types "
                 "FROM dbo.etl_ds_malha_node WHERE project = ?", [project])
@@ -286,6 +301,54 @@ def get_status(project: str, _auth: dict = Depends(get_current_user)):
         summary[k] = summary.get(k, 0) + 1
     return {"project": project, "scanned_at": jobs[0]["scanned_at"] if jobs else None,
             "summary": summary, "jobs": jobs}
+
+
+@router.get("/malha-ds/{project}/lineage-preview", tags=["malha-ds"])
+def lineage_preview(project: str, _auth: dict = Depends(get_current_user)):
+    """PREVIEW (somente leitura): extrai o lineage do export XML do projeto e devolve,
+    por job, o lineage do **XML** + o lineage **ATUAL** (etl_job_lineage, DSX/manual)
+    para COMPARAÇÃO na Governança. NÃO grava nada no banco."""
+    project = _safe_project(project)
+    path = os.path.join(_XML_BASE_DIR, f"{project}.xml")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404,
+                            detail=f"Arquivo '{project}.xml' não encontrado em '{_XML_BASE_DIR}'.")
+    LX = _lineage_mod()
+    try:
+        xml_lin = LX.extract_lineage(path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao extrair lineage do XML: {e}")
+
+    jobs = sorted(xml_lin.keys())
+    atual: dict = {}
+    if jobs:
+        with managed_conn() as (conn, cur):
+            try:
+                placeholders = ",".join("?" for _ in jobs)
+                cur.execute(
+                    "SELECT job_name, direction, object_name, object_type, stage_name, "
+                    "stage_type_raw, database_name, sql_expression, file_path, extraction_method "
+                    f"FROM dbo.etl_job_lineage WHERE job_name IN ({placeholders})", jobs)
+                for r in cur.fetchall():
+                    jn = r[0]
+                    key = _DIR2KEY.get((r[1] or "").lower())
+                    if not key:
+                        continue
+                    atual.setdefault(jn, {"origens": [], "destinos": [], "transformacoes": []})
+                    atual[jn][key].append({
+                        "object_name": r[2], "object_type": r[3], "stage_name": r[4],
+                        "stage_type_raw": r[5], "database_name": r[6],
+                        "sql_expression": r[7], "file_path": r[8], "extraction_method": r[9],
+                    })
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass  # etl_job_lineage ausente/vazia → comparação só com XML
+
+    empty = {"origens": [], "destinos": [], "transformacoes": []}
+    items = [{"job_name": jn, "xml": xml_lin[jn], "atual": atual.get(jn, empty)} for jn in jobs]
+    resumo = {k: sum(len(v[k]) for v in xml_lin.values())
+              for k in ("origens", "destinos", "transformacoes")}
+    return {"project": project, "jobs": len(jobs), "resumo": resumo, "items": items}
 
 
 @router.delete("/malha-ds/{project}", tags=["malha-ds"])
