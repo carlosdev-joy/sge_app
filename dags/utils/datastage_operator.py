@@ -42,6 +42,9 @@ from airflow.exceptions import AirflowException
 from airflow.models import BaseOperator
 from airflow.providers.ssh.hooks.ssh import SSHHook
 
+# Nome de job seguro p/ interpolar no comando dsjob remoto (evita injeção shell)
+_SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9_.]+$")
+
 
 class DataStageOperator(BaseOperator):
     """
@@ -207,13 +210,30 @@ class DataStageOperator(BaseOperator):
                     info.get("pid"), "ABORTED", sc, child_jobs, logsum, None,
                 )
 
+                # Causa frequente: o controller não conseguiu rodar um filho porque
+                # ele está em estado inválido (DSRunJob code=-2). Reset do pai não
+                # resolve — é preciso resetar o próprio filho.
+                stuck = self._badstate_children(logsum)
+                cause = ""
+                if stuck:
+                    self.log.warning(
+                        "[DS] Job(s) filho(s) em estado inválido (DSRunJob code=-2): %s", stuck)
+                    cause = ("\nCausa provável: job(s) filho(s) em estado inválido "
+                             "(DSRunJob code=-2 / 'not in the right state'): "
+                             + ", ".join(stuck) + ".")
+
                 if self.attach_only:
                     raise AirflowException(
-                        f"[DS] '{self.project}/{self.job_name}' ABORTED.\n"
+                        f"[DS] '{self.project}/{self.job_name}' ABORTED.{cause}\n"
                         f"Log summary (2 000 chars):\n{logsum[:2000]}"
                     )
 
                 if ds_attempt < self.max_ds_retries:
+                    # Reseta primeiro os filhos travados (o reset do pai não os
+                    # desbloqueia), depois o pai, e tenta de novo.
+                    for child in stuck:
+                        self.log.info("[DS] reset do filho travado '%s' antes do retry", child)
+                        self._reset_job(child)
                     self.log.info("[DS] RESET + retry in %ds …", self.retry_wait)
                     self._reset()
                     time.sleep(self.retry_wait)
@@ -223,7 +243,7 @@ class DataStageOperator(BaseOperator):
 
                 raise AirflowException(
                     f"[DS] '{self.project}/{self.job_name}' ABORTED after "
-                    f"{self.max_ds_retries} attempt(s).\n"
+                    f"{self.max_ds_retries} attempt(s).{cause}\n"
                     f"Log summary (2 000 chars):\n{logsum[:2000]}"
                 )
 
@@ -274,9 +294,17 @@ class DataStageOperator(BaseOperator):
             return 0
 
     def _reset(self) -> None:
-        cmd = f"{self.dshome}/bin/dsjob -run -mode RESET {self.project} {self.job_name}"
+        self._reset_job(self.job_name)
+
+    def _reset_job(self, job_name: str) -> None:
+        """RESET de um job específico (-run -mode RESET) — devolve ao estado
+        'compiled, not running'. Usado no pai e nos filhos travados (code=-2)."""
+        if not _SAFE_JOB_RE.match(job_name or ""):
+            self.log.warning("[DS] nome de job inseguro p/ reset, ignorado: %r", job_name)
+            return
+        cmd = f"{self.dshome}/bin/dsjob -run -mode RESET {self.project} {job_name}"
         rc, out, err = self._exec(cmd, timeout=60)
-        self.log.info("[DS] reset rc=%d | %s", rc, (out + err).strip()[:200])
+        self.log.info("[DS] reset '%s' rc=%d | %s", job_name, rc, (out + err).strip()[:200])
 
     # ── dsjob wrappers ───────────────────────────────────────────────────────
 
@@ -344,17 +372,10 @@ class DataStageOperator(BaseOperator):
         misturados — dando a falsa impressão de 'reset → ok → erro em seguida'.
         Aqui consideramos só os eventos após o ÚLTIMO 'Starting Job' (= run atual).
         """
-        start_re  = re.compile(r"\bStarting Job\b")
         batch_re  = re.compile(r"BATCH\s+.*?->\s+\(([^)]+)\):\s+Job run requested")
         finish_re = re.compile(r"Job (\S+) has finished,\s*status\s*=\s*(\d+)\s+\(([^)]+)\)")
 
-        # Escopo: descarta runs anteriores (tudo antes do último início de run)
-        lines = logsum.splitlines()
-        last_start = 0
-        for i, line in enumerate(lines):
-            if start_re.search(line):
-                last_start = i
-        lines = lines[last_start:]
+        lines = self._current_run_lines(logsum)   # só o run atual
 
         tracked: dict = {}
         result:  list = []
@@ -380,6 +401,38 @@ class DataStageOperator(BaseOperator):
                     result.append({"name": name, "status": text, "status_code": sc})
 
         return result
+
+    def _current_run_lines(self, logsum: str) -> list:
+        """Linhas do -logsum referentes ao RUN ATUAL (após o último 'Starting Job').
+        O -logsum retém várias execuções; sem isso, eventos antigos vazam."""
+        lines = logsum.splitlines()
+        last_start = 0
+        for i, line in enumerate(lines):
+            if re.search(r"\bStarting Job\b", line):
+                last_start = i
+        return lines[last_start:]
+
+    def _badstate_children(self, logsum: str) -> list:
+        """Jobs filhos que o controller não conseguiu rodar por estarem em estado
+        inválido — 'Error calling DSRunJob(<job>), code=-2 [Job is not in the right
+        state [compiled and not running]]'. Esses precisam de RESET individual antes
+        do retry: o reset do pai NÃO os desbloqueia (é a causa do abort recorrente)."""
+        names: list = []
+        seen: set = set()
+        for line in self._current_run_lines(logsum):
+            low = line.lower()
+            if "dsrunjob(" not in low:
+                continue
+            if "code=-2" not in low and "not in the right state" not in low:
+                continue
+            m = re.search(r"DSRunJob\(([^)]+)\)", line)
+            if not m:
+                continue
+            name = m.group(1).strip()
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+        return names
 
     def _log_child_jobs(self, child_jobs: list) -> None:
         if not child_jobs:
