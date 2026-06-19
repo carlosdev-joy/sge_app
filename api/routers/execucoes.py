@@ -855,6 +855,63 @@ async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(re
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/execucoes/resolve-bulk", tags=["execucoes"])
+async def resolve_failures_bulk(body: dict = Body(default={}), auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """Resolve VÁRIAS falhas de uma vez com a MESMA nota/ticket (auto-ack em cada).
+
+    Útil p/ fechar erros históricos em lote (ex.: falhas importadas de antes do
+    Orquestra). Body: items: [{execution_id, pipeline}], resolution_note?,
+    snow_ticket?, user? (matrícula), display_name?.
+    """
+    items = body.get("items") or []
+    if not isinstance(items, list) or not items:
+        raise HTTPException(status_code=422, detail="items (lista não vazia) é obrigatório")
+    resolution_note = (body.get("resolution_note") or "").strip() or None
+    snow_ticket     = (body.get("snow_ticket")     or "").strip() or None
+    matricula       = (body.get("user")            or "").strip() or auth.get("matricula", "")
+    display_name    = (body.get("display_name")    or "").strip() or None
+
+    done = 0
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _ensure_resolve_columns(conn, cur)
+        for it in items:
+            eid = (it.get("execution_id") or "").strip()
+            pl  = (it.get("pipeline")     or "").strip()
+            if not eid or not pl:
+                continue
+            cur.execute(
+                "IF NOT EXISTS (SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?)"
+                "  INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name)"
+                "  VALUES (?, ?, ?, ?)",
+                (eid, pl, eid, pl, matricula, display_name))
+            cur.execute(
+                "UPDATE dbo.etl_failure_ack "
+                "SET resolved_by=?, resolved_display_name=?, resolved_at=GETDATE(), "
+                "    resolution_note=?, snow_ticket=? "
+                "WHERE execution_id=? AND pipeline=?",
+                (matricula, display_name, resolution_note, snow_ticket, eid, pl))
+            done += 1
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # UM card-resumo no Teams (evita spam de N cards ao fechar histórico em lote)
+    if done:
+        try:
+            await asyncio.to_thread(
+                _teams_resolved_card,
+                pipeline=f"{done} falha(s) — resolução em massa", exec_id="—",
+                resolved_by=matricula, display_name=display_name or matricula,
+                resolved_at=None, resolution_note=resolution_note, snow_ticket=snow_ticket,
+                webhook_var="TEAMS_WEBHOOK_URL_CVP",
+            )
+        except Exception as e:
+            log.warning("[RESOLVE-BULK] Teams ignorado: %s", e)
+
+    return {"ok": True, "resolved": done}
+
+
 @router.get("/execucoes/falhas", tags=["execucoes"])
 def list_falhas(
     days: int = Query(7, ge=1, le=90),
