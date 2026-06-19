@@ -264,9 +264,9 @@ function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string })
 
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[600px]">
+      <div className="min-w-[720px]">
         {/* Hour axis */}
-        <div className="flex ml-36 mb-1 relative h-4">
+        <div className="flex ml-36 mr-20 mb-1 relative h-4">
           {hourMarks.map(h => (
             <div key={h} className="absolute text-[9px] text-dim" style={{ left: `${(h / 24) * 100}%` }}>
               {String(h).padStart(2, '0')}h
@@ -285,11 +285,11 @@ function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string })
             return (
               <div
                 key={it.execution_id}
-                className={`flex items-center gap-2 group rounded transition-colors ${
+                className={`flex items-center group rounded transition-colors ${
                   focus ? 'bg-red-50 dark:bg-red-900/15 ring-1 ring-red-300/50 dark:ring-red-700/40' : ''
                 }`}
               >
-                <div className={`w-36 flex-shrink-0 text-[10px] truncate text-right pr-2 ${focus ? 'text-red-600 dark:text-red-300 font-semibold' : 'text-dim'}`} title={it.pipeline}>
+                <div className={`sticky left-0 z-20 w-36 flex-shrink-0 text-[10px] truncate text-right pr-2 ${focus ? 'bg-red-50 dark:bg-red-900/15 text-red-600 dark:text-red-300 font-semibold' : 'bg-panel text-dim'}`} title={it.pipeline}>
                   {it.pipeline}
                 </div>
                 <div className="flex-1 relative h-5 bg-edge/20 rounded">
@@ -311,7 +311,7 @@ function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string })
                     title={`${it.pipeline} · ${it.status} · ${fmtTime(it.inicio)}–${fmtTime(it.fim)}`}
                   />
                 </div>
-                <div className="w-12 flex-shrink-0">
+                <div className={`sticky right-0 z-20 w-20 flex-shrink-0 flex justify-end items-center pl-1 ${focus ? 'bg-red-50 dark:bg-red-900/15' : 'bg-panel'}`}>
                   <StatusBadge status={it.status} />
                 </div>
               </div>
