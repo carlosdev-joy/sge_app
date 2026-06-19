@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { useAuthStore } from '../store/auth'
@@ -471,12 +472,15 @@ export default function Jobs() {
   const isViewer = user?.perfil === 'consulta'
   const airflowUiUrl = useAirflowUrl()
 
-  // Search state
-  const [pipelineInput, setPipelineInput] = useState('')
+  // Search state — pré-carrega o pipeline da URL (?pipeline=...), p/ deep-link
+  // a partir da tela de Pipelines (abre os jobs já filtrados, em nova aba).
+  const [searchParams] = useSearchParams()
+  const initialPipeline = (searchParams.get('pipeline') ?? '').trim()
+  const [pipelineInput, setPipelineInput] = useState(initialPipeline)
   const [nameFilter, setNameFilter] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
-  const [searched, setSearched] = useState('')
-  const [hasSearched, setHasSearched] = useState(false)
+  const [searched, setSearched] = useState(initialPipeline)
+  const [hasSearched, setHasSearched] = useState(!!initialPipeline)
   const [page, setPage] = useState(0)
   const LIMIT = 50
 

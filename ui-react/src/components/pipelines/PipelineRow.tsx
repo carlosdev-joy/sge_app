@@ -1,5 +1,5 @@
 import { Button } from '../ui/Button'
-import { Eye, Edit, GitBranch, History, Play, PowerOff, Settings } from 'lucide-react'
+import { Eye, Edit, GitBranch, History, Play, PowerOff, Settings, Boxes } from 'lucide-react'
 import type { Pipeline } from '../../types/pipeline'
 import { critColor } from './pipelineUtils'
 
@@ -33,6 +33,15 @@ export function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, 
       <span className="font-mono text-xs text-ink font-medium flex-1 truncate min-w-0" title={p.pipeline_name}>
         {p.pipeline_name}
       </span>
+
+      {/* Sempre visível: abre os jobs deste pipeline em nova aba (preserva o filtro daqui) */}
+      <Button variant="secondary" size="sm"
+        title={`Ver jobs de ${p.pipeline_name} em nova aba`}
+        aria-label={`Ver jobs de ${p.pipeline_name} em nova aba`}
+        onClick={() => window.open(`/jobs?pipeline=${encodeURIComponent(p.pipeline_name)}`, '_blank', 'noopener,noreferrer')}
+        className="flex-shrink-0 text-blue-400 hover:text-blue-300 border-blue-800/40">
+        <Boxes size={12} /> Jobs
+      </Button>
 
       <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity border-l border-edge/40 pl-2 ml-1">
         <Button variant="ghost" size="sm" title="Visualizar" aria-label={`Visualizar ${p.pipeline_name}`} onClick={onView}><Eye size={12} /></Button>
