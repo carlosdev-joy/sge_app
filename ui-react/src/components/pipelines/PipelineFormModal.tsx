@@ -245,6 +245,14 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   })
   const projects = projData?.projects ?? []
 
+  // Domínios já existentes — para autocompletar e evitar variações parecidas
+  const { data: domData } = useQuery<{ domains: string[] }>({
+    queryKey: ['pipeline-domains'],
+    queryFn: () => apiFetch('/pipelines/domains'),
+    staleTime: 300_000,
+  })
+  const domains = domData?.domains ?? []
+
   const { data: allPipes } = useQuery<{ data: Pipeline[] }>({
     queryKey: ['pipelines', '', '', '', 0],
     queryFn: () => apiFetch('/pipelines?limit=200'),
@@ -703,11 +711,20 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                 <label className="text-xs text-dim font-medium">Domínio *</label>
                 <input
                   type="text"
+                  list="pipeline-domains"
                   value={form.domain}
                   onChange={e => f('domain', e.target.value.toUpperCase())}
                   placeholder="ex: COBRANCA"
                   className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
+                <datalist id="pipeline-domains">
+                  {domains.map(d => <option key={d} value={d} />)}
+                </datalist>
+                {domains.length > 0 && (
+                  <p className="text-[10px] text-dim/70">
+                    {domains.length} domínio(s) já em uso — selecione um existente para padronizar.
+                  </p>
+                )}
               </div>
             </div>
 

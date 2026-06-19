@@ -191,6 +191,22 @@ def list_pipeline_projects():
     return {"projects": ["BI_CVP", "BI_VIDA", "BI_PRESTAMISTA", "BI_PREVIDENCIA"]}
 
 
+@router.get("/pipelines/domains", tags=["pipelines"])
+def list_pipeline_domains():
+    """Domínios já cadastrados (distintos) — para autocompletar no formulário e
+    evitar variações parecidas na base."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("SELECT DISTINCT domain FROM dbo.etl_pipeline "
+                    "WHERE domain IS NOT NULL AND LTRIM(RTRIM(domain)) <> '' "
+                    "ORDER BY domain")
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+        return {"domains": [r[0] for r in rows]}
+    except Exception:
+        return {"domains": []}
+
+
 @router.get("/pipelines/projects/all", tags=["pipelines"])
 def list_all_pipeline_projects(_auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Lista todos os projetos (ativos e inativos) para gerenciamento no admin."""
