@@ -130,10 +130,10 @@ services:
     image: nginx:1.27
     container_name: airflow-ui
     ports:
-      # 80   = acesso direto pelo nome do host (vmlnxprd083)
-      # 8090 = porta do VIP/domínio (orquestra.caixavidaeprevidencia.intranet → :8090)
-      # Ambas servem o MESMO app (o nginx escuta 80 por dentro do container).
-      - "${UI_PORT:-80}:80"
+      # Publica APENAS na 8090 (porta do VIP/domínio OFICIAL
+      # orquestra.caixavidaeprevidencia.intranet → :8090).
+      # A 80 (acesso direto pelo nome do host) foi removida de propósito, para
+      # existir só o link oficial — evita link "cru" não-oficial circulando.
       - "${UI_PORT_VIP:-8090}:80"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}/ui-react/dist:/usr/share/nginx/html
