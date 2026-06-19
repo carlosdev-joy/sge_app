@@ -3,8 +3,39 @@
 > Pergunta: já que importamos o **export XML** do DataStage para a Malha, dá para
 > usar o mesmo XML para preencher o **lineage** (origens/destinos/transformações,
 > tabelas, SQL, colunas) com **mais dados**, dentro da Governança?
-> Resposta curta: **provavelmente sim e com bom custo-benefício**, mas há **uma
-> premissa a confirmar** com um export real antes de investir.
+> Resposta curta: **SIM — CONFIRMADO (GO)**. Spike rodado num export real
+> (`SeqSsdVidaGeralDiario.xml`, BI_VIDA, DS 11.7) extraiu origens, destinos,
+> transformações, SQL e **lineage em nível de coluna**. Ver "Resultado do spike".
+
+## Resultado do spike (CONFIRMADO em export real)
+Um extrator de prova (ElementTree, ~50 linhas) rodou no export e tirou, por job:
+- **Origem** (link `ODBCOutput`): tabela real (`TDDB00.dbo.TB_CARGA`), DSN (`STG_DES`),
+  SELECT completo (`SqlPrimary`) e as colunas.
+- **Lineage de coluna**: `MAX_NUM_CARGA ← TDDB00.dbo.TB_CARGA.NUM_CARGA` via
+  `SourceColumn`/`ParsedDerivation` por coluna de saída.
+- **Destino** (link `ODBCInput`): tabela (`GE_002_CARGA`) + `SqlInsert/SqlUpdate/SqlDelete`.
+- **Transformação** (`TransformerStage`): a expressão real
+  (`If Link_..._Lookup.IND_SITUACAO_CARGA = 3 And Not(Isnull(...)) Then 1 Else 0`).
+
+Mapeamento confirmado dos elementos:
+| Lineage             | Elemento/Property no XML (confirmado)                                  |
+|---------------------|------------------------------------------------------------------------|
+| stage + conexão     | `Record Type="ODBCStage"` → `Name`, `DSN` (parametrizada), `UserName`  |
+| origem (leitura)    | `Record Type="ODBCOutput"` → `SqlPrimary` (SELECT), `TableNames`, `Columns` |
+| destino (escrita)   | `Record Type="ODBCInput"` → `TableName`, `SqlInsert/SqlUpdate/SqlDelete` |
+| transformação       | `Record Type="TransformerStage"` → `Collection StageVars` → `Expression` |
+| colunas             | `Collection Name="Columns"` → SubRecord: `Name, SqlType, Precision, Scale, Nullable, KeyPosition` |
+| lineage de coluna   | coluna → `SourceColumn` / `ParsedDerivation` (`db.schema.tabela.coluna`) |
+| tabela/database real| coluna → `TableDef` (`ODBC\<DSN>\<db>.<schema>.<tabela>`) + FROM/INTO do SQL |
+| link↔stage          | link `Partner="V0S21|V0S21P1"` → stage `Identifier` antes do `|`        |
+
+Observações do spike (a tratar na implementação):
+- A **tabela física real** sai melhor do `FROM`/`INSERT INTO` do SQL; o `TableDef`
+  guarda a tabela *modelada* (nome de table-def pode diferir do nome físico).
+- DSN/database costuma vir **parametrizado** (`#CONTROLE.ParmDbNameGE#`) — guardar o
+  parâmetro como database_name e/ou resolver via ParameterSet quando possível.
+- Há também `HashedFileStage`/`HashedInput` (arquivos hash) — mapear como origem/destino
+  de arquivo (file_path).
 
 ## 1. Como o lineage é preenchido hoje
 - **Fonte rica — DSX binário** (`dags/utils/dsx_engine.py`, DAG `etl_lineage_extract_dsx.py`):
@@ -32,18 +63,12 @@ esses campos (SQL expansível, colunas, database/arquivo).
   para lineage. O `dsx_engine` já tem a *lógica* de extração (regex de
   `SelectStatement`/`TableName`/colunas) — dá para adaptar ao formato XML.
 
-## 3. A premissa que precisa ser confirmada (bloqueante)
-**O `<DSExport>` que recebemos contém as propriedades de design-time de SQL/tabela/
-coluna por stage?** Isso depende de **como o export foi gerado** no DataStage:
-- Export "com componentes/design" → traz as propriedades dos stages (Select/Write
-  statement, TableName, DataSource, colunas) — **dá para extrair lineage**.
-- Export "executável/runtime" ou enxuto → pode trazer só o esqueleto (o que basta
-  para a malha, mas **não** para lineage de coluna).
-
-> ⚠️ Não há export XML real no repositório (só um fixture sintético de teste), então
-> **não dá para afirmar** os caminhos exatos dos elementos (ex.: onde fica o
-> `SelectStatement` no XML). **Ação primeira**: pegar 1 export real (ex.: `BI_VIDA.xml`)
-> e inspecionar 1 job ODBC/Sequential para mapear os `Property Name=...` reais.
+## 3. Premissa (RESOLVIDA pelo spike)
+A pergunta era: **o `<DSExport>` traz as propriedades de design-time de SQL/tabela/
+coluna por stage?** O spike no export real **confirmou que SIM** (export "com
+design", DS 11.7) — ver "Resultado do spike" acima, com os caminhos exatos.
+Atenção operacional: a riqueza depende de o export ser gerado **com design** (não
+"executável enxuto"); vale padronizar como os exports são tirados.
 
 ## 4. Proposta (se a premissa se confirmar)
 **Opção recomendada — novo extrator XML de lineage**, paralelo ao DSX:
@@ -82,14 +107,19 @@ coluna por stage?** Isso depende de **como o export foi gerado** no DataStage:
   topologia de pins) — validar a qualidade.
 - **Versão do export** varia por servidor — mapear pode exigir tolerância a variações.
 
-## 6. Próximos passos sugeridos (incremental)
-1. **Spike (1–2 dias)**: pegar 1 export real, mapear os `Property` de 2–3 jobs
-   (ODBC origem, Sequential destino, Transformer) e provar que dá para extrair
-   tabela + SQL + colunas. **Decide go/no-go.**
-2. Se **go**: implementar `extract_lineage` no parser XML + DAG/endpoint de carga,
-   com `extraction_method="xml_export"` e estratégia de merge definida.
-3. UI: na Governança, mostrar a **origem do dado** (`extraction_method`) e os
-   **tipos de coluna** (hoje só mostramos os nomes) — ganho direto de "mais dados".
+## 6. Próximos passos (spike concluído — GO)
+1. ~~Spike go/no-go~~ — **FEITO**: confirmado em export real (seção "Resultado do spike").
+2. **Implementar `extract_lineage(parsed)`** no parser XML (ODBCOutput→origem,
+   ODBCInput→destino, TransformerStage→transformação, Hashed*→arquivo), preferindo
+   a tabela física do `FROM`/`INTO` do SQL e anexando `columns_json` + lineage de coluna.
+3. **Carga**: estender o import da malha (`POST /malha-ds/import`) para também gravar
+   lineage via `sp_etl_job_lineage_upsert` com `extraction_method="xml_export"` —
+   um upload, dois produtos.
+4. **Merge de fontes**: não sobrescrever lineage **manual**; entre automáticos definir
+   precedência (sugestão: o mais recente por `extracted_at`, com `extraction_method`
+   visível). Decisão a tomar antes de gravar.
+5. **UI Governança**: mostrar a **origem do dado** (`extraction_method`), os **tipos
+   de coluna** (hoje só nomes) e o **lineage de coluna** (coluna→coluna origem).
 
 ## Referências de código
 - Lineage model: `sql/schema_prod_dev.sql` (`etl_job_lineage`), `script/proc/sp_etl_job_lineage_upsert.sql`.
