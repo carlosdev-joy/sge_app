@@ -70,6 +70,34 @@ def _alvo_blocks(itens: list[str]) -> list[dict]:
     }]
 
 
+def _detalhes_section(detail_facts: list[dict], key: str) -> list[dict]:
+    """Expansor 'Ver mais detalhes' / 'Ver menos' (Action.ToggleVisibility).
+
+    Recebe os fatos secundários (matrícula, execution id, nota, ticket…) e
+    devolve os elementos de body que escondem esses fatos num Container e
+    alternam sua visibilidade por dois ActionSets que trocam de rótulo. Mantém
+    o card enxuto no glance, revelando o detalhe sob demanda — sem backend.
+
+    Retorna [] quando não há nada a esconder (não polui o card com botão vazio).
+    O `key` torna os ids únicos dentro do card (ex.: 'ack' / 'resolve').
+    """
+    detail_facts = [f for f in detail_facts if f.get("value")]
+    if not detail_facts:
+        return []
+    det_id, more_id, less_id = f"det_{key}", f"more_{key}", f"less_{key}"
+    targets = [det_id, more_id, less_id]
+    return [
+        {"type": "Container", "id": det_id, "isVisible": False, "spacing": "Small",
+         "items": [{"type": "FactSet", "facts": detail_facts}]},
+        {"type": "ActionSet", "id": more_id, "spacing": "Small",
+         "actions": [{"type": "Action.ToggleVisibility",
+                      "title": "Ver mais detalhes", "targetElements": targets}]},
+        {"type": "ActionSet", "id": less_id, "isVisible": False, "spacing": "Small",
+         "actions": [{"type": "Action.ToggleVisibility",
+                      "title": "Ver menos", "targetElements": targets}]},
+    ]
+
+
 def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
                     ack_at: str, note: str | None, webhook_var: str,
                     itens: list[str] | None = None) -> None:
@@ -100,6 +128,8 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
          "size": "Large", "weight": "Bolder", "wrap": True, "color": "Accent"},
     ]
 
+    # Fatos primários (visíveis no glance) e secundários (atrás de "Ver mais detalhes").
+    detail_facts: list[dict] = [{"title": "Matrícula", "value": ack_by}]
     if itens:
         total = len([i for i in itens if i])
         body_elements.append(
@@ -109,7 +139,6 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
         body_elements.extend(_alvo_blocks(itens))
         facts = [
             {"title": "Responsável", "value": identity},
-            {"title": "Matrícula",   "value": ack_by},
             {"title": "Assumido em", "value": ack_at or "agora"},
         ]
     else:
@@ -120,16 +149,16 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
         facts = [
             {"title": "Pipeline / Job", "value": pipeline},
             {"title": "Responsável",    "value": identity},
-            {"title": "Matrícula",      "value": ack_by},
             {"title": "Assumido em",    "value": ack_at or "agora"},
         ]
         if exec_id and exec_id != "—":
-            facts.append({"title": "Execution ID", "value": exec_id})
+            detail_facts.append({"title": "Execution ID", "value": exec_id})
 
     if note:
-        facts.append({"title": "Observação", "value": note})
+        detail_facts.append({"title": "Observação", "value": note})
 
     body_elements.append({"type": "FactSet", "spacing": "Medium", "facts": facts})
+    body_elements.extend(_detalhes_section(detail_facts, "ack"))
 
     payload = {
         "type": "message",
@@ -179,6 +208,8 @@ def _teams_resolved_card(pipeline: str, exec_id: str, resolved_by: str, display_
          "size": "Large", "weight": "Bolder", "wrap": True, "color": "Good"},
     ]
 
+    # Fatos primários (visíveis no glance) e secundários (atrás de "Ver mais detalhes").
+    detail_facts: list[dict] = [{"title": "Matrícula", "value": resolved_by}]
     if itens:
         total = len([i for i in itens if i])
         body_elements.append(
@@ -188,7 +219,6 @@ def _teams_resolved_card(pipeline: str, exec_id: str, resolved_by: str, display_
         body_elements.extend(_alvo_blocks(itens))
         facts = [
             {"title": "Resolvido por", "value": identity},
-            {"title": "Matrícula",     "value": resolved_by},
             {"title": "Resolvido em",  "value": resolved_at or "agora"},
         ]
     else:
@@ -199,18 +229,18 @@ def _teams_resolved_card(pipeline: str, exec_id: str, resolved_by: str, display_
         facts = [
             {"title": "Pipeline / Job", "value": pipeline},
             {"title": "Resolvido por",  "value": identity},
-            {"title": "Matrícula",      "value": resolved_by},
             {"title": "Resolvido em",   "value": resolved_at or "agora"},
         ]
         if exec_id and exec_id != "—":
-            facts.append({"title": "Execution ID", "value": exec_id})
+            detail_facts.append({"title": "Execution ID", "value": exec_id})
 
     if resolution_note:
-        facts.append({"title": "Nota de resolução", "value": resolution_note})
+        detail_facts.append({"title": "Nota de resolução", "value": resolution_note})
     if snow_ticket:
-        facts.append({"title": "Ticket ServiceNow", "value": snow_ticket})
+        detail_facts.append({"title": "Ticket ServiceNow", "value": snow_ticket})
 
     body_elements.append({"type": "FactSet", "spacing": "Medium", "facts": facts})
+    body_elements.extend(_detalhes_section(detail_facts, "resolve"))
 
     payload = {
         "type": "message",
