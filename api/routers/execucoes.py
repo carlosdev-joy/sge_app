@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -54,9 +55,30 @@ def _get_app_config_value(key: str) -> str | None:
         return None
 
 
+def _alvo_blocks(itens: list[str]) -> list[dict]:
+    """Monta um Container de TextBlocks, um por alvo distinto (pipeline/job),
+    com contagem (×N) quando o mesmo alvo aparece mais de uma vez. Cada item
+    em seu próprio TextBlock garante quebra de linha correta no Teams."""
+    counts = Counter(lbl for lbl in itens if lbl)
+    return [{
+        "type": "Container", "spacing": "Small",
+        "items": [
+            {"type": "TextBlock", "wrap": True, "spacing": "None",
+             "text": f"• {lbl}" + (f"  (×{n})" if n > 1 else "")}
+            for lbl, n in counts.items()
+        ],
+    }]
+
+
 def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
-                    ack_at: str, note: str | None, webhook_var: str) -> None:
+                    ack_at: str, note: str | None, webhook_var: str,
+                    itens: list[str] | None = None) -> None:
     """Posta card no Teams informando que alguém assumiu a falha.
+
+    `pipeline` é o rótulo exibido (nome do pipeline ou, para falhas de malha,
+    o nome do job). Quando `itens` é fornecido (assunção em massa), o card
+    lista cada alvo assumido — com contagem quando repetido — em vez de exibir
+    um único pipeline/exec_id.
 
     Ordem de resolução do webhook:
       1. dbo.etl_app_config chave 'teams_webhook_url_ack' (canal dedicado a acks)
@@ -72,15 +94,42 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
         return
 
     identity = f"{display_name} ({ack_by})" if display_name and display_name != ack_by else ack_by
-    facts = [
-        {"title": "Pipeline",    "value": pipeline},
-        {"title": "Responsável", "value": identity},
-        {"title": "Matrícula",   "value": ack_by},
-        {"title": "Assumido em", "value": ack_at or "agora"},
-        {"title": "Execution ID","value": exec_id},
+
+    body_elements = [
+        {"type": "TextBlock", "text": "👁 Falha assumida para análise",
+         "size": "Large", "weight": "Bolder", "wrap": True, "color": "Accent"},
     ]
+
+    if itens:
+        total = len([i for i in itens if i])
+        body_elements.append(
+            {"type": "TextBlock",
+             "text": f"{identity} assumiu {total} falha(s) para análise:",
+             "wrap": True, "spacing": "None", "isSubtle": True})
+        body_elements.extend(_alvo_blocks(itens))
+        facts = [
+            {"title": "Responsável", "value": identity},
+            {"title": "Matrícula",   "value": ack_by},
+            {"title": "Assumido em", "value": ack_at or "agora"},
+        ]
+    else:
+        body_elements.append(
+            {"type": "TextBlock",
+             "text": f"{identity} está investigando a falha em {pipeline}.",
+             "wrap": True, "spacing": "None", "isSubtle": True})
+        facts = [
+            {"title": "Pipeline / Job", "value": pipeline},
+            {"title": "Responsável",    "value": identity},
+            {"title": "Matrícula",      "value": ack_by},
+            {"title": "Assumido em",    "value": ack_at or "agora"},
+        ]
+        if exec_id and exec_id != "—":
+            facts.append({"title": "Execution ID", "value": exec_id})
+
     if note:
         facts.append({"title": "Observação", "value": note})
+
+    body_elements.append({"type": "FactSet", "spacing": "Medium", "facts": facts})
 
     payload = {
         "type": "message",
@@ -89,15 +138,7 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
             "content": {
                 "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
                 "type": "AdaptiveCard", "version": "1.4",
-                "body": [
-                    {"type": "TextBlock",
-                     "text": f"👁 Falha assumida para análise",
-                     "size": "Large", "weight": "Bolder", "wrap": True, "color": "Accent"},
-                    {"type": "TextBlock",
-                     "text": f"{identity} está investigando a falha no pipeline {pipeline}.",
-                     "wrap": True, "spacing": "None", "isSubtle": True},
-                    {"type": "FactSet", "spacing": "Medium", "facts": facts},
-                ],
+                "body": body_elements,
             },
         }],
     }
@@ -110,8 +151,13 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
 
 def _teams_resolved_card(pipeline: str, exec_id: str, resolved_by: str, display_name: str,
                           resolved_at: str, resolution_note: str | None, snow_ticket: str | None,
-                          webhook_var: str) -> None:
+                          webhook_var: str, itens: list[str] | None = None) -> None:
     """Posta card no Teams informando que a falha foi resolvida.
+
+    `pipeline` é o rótulo exibido (nome do pipeline ou, para falhas de malha,
+    o nome do job). Quando `itens` é fornecido (resolução em massa), o card
+    lista cada alvo resolvido — com contagem quando repetido — em vez de exibir
+    um único pipeline/exec_id.
 
     Ordem de resolução do webhook:
       1. dbo.etl_app_config chave 'teams_webhook_url_resolved' (canal dedicado a resoluções)
@@ -127,17 +173,44 @@ def _teams_resolved_card(pipeline: str, exec_id: str, resolved_by: str, display_
         return
 
     identity = f"{display_name} ({resolved_by})" if display_name and display_name != resolved_by else resolved_by
-    facts = [
-        {"title": "Pipeline",      "value": pipeline},
-        {"title": "Resolvido por", "value": identity},
-        {"title": "Matrícula",     "value": resolved_by},
-        {"title": "Resolvido em",  "value": resolved_at or "agora"},
-        {"title": "Execution ID",  "value": exec_id},
+
+    body_elements = [
+        {"type": "TextBlock", "text": "✅ Falha resolvida",
+         "size": "Large", "weight": "Bolder", "wrap": True, "color": "Good"},
     ]
+
+    if itens:
+        total = len([i for i in itens if i])
+        body_elements.append(
+            {"type": "TextBlock",
+             "text": f"{identity} marcou {total} falha(s) como resolvida(s):",
+             "wrap": True, "spacing": "None", "isSubtle": True})
+        body_elements.extend(_alvo_blocks(itens))
+        facts = [
+            {"title": "Resolvido por", "value": identity},
+            {"title": "Matrícula",     "value": resolved_by},
+            {"title": "Resolvido em",  "value": resolved_at or "agora"},
+        ]
+    else:
+        body_elements.append(
+            {"type": "TextBlock",
+             "text": f"{identity} marcou a falha em {pipeline} como resolvida.",
+             "wrap": True, "spacing": "None", "isSubtle": True})
+        facts = [
+            {"title": "Pipeline / Job", "value": pipeline},
+            {"title": "Resolvido por",  "value": identity},
+            {"title": "Matrícula",      "value": resolved_by},
+            {"title": "Resolvido em",   "value": resolved_at or "agora"},
+        ]
+        if exec_id and exec_id != "—":
+            facts.append({"title": "Execution ID", "value": exec_id})
+
     if resolution_note:
         facts.append({"title": "Nota de resolução", "value": resolution_note})
     if snow_ticket:
         facts.append({"title": "Ticket ServiceNow", "value": snow_ticket})
+
+    body_elements.append({"type": "FactSet", "spacing": "Medium", "facts": facts})
 
     payload = {
         "type": "message",
@@ -146,15 +219,7 @@ def _teams_resolved_card(pipeline: str, exec_id: str, resolved_by: str, display_
             "content": {
                 "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
                 "type": "AdaptiveCard", "version": "1.4",
-                "body": [
-                    {"type": "TextBlock",
-                     "text": "✅ Falha resolvida",
-                     "size": "Large", "weight": "Bolder", "wrap": True, "color": "Good"},
-                    {"type": "TextBlock",
-                     "text": f"{identity} marcou a falha no pipeline {pipeline} como resolvida.",
-                     "wrap": True, "spacing": "None", "isSubtle": True},
-                    {"type": "FactSet", "spacing": "Medium", "facts": facts},
-                ],
+                "body": body_elements,
             },
         }],
     }
@@ -520,6 +585,9 @@ async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(requi
     user         = (body.get("user")         or "").strip()
     display_name = (body.get("display_name") or "").strip() or None
     note         = (body.get("note")         or "").strip() or None
+    # Rótulo amigável para a notificação (nome do job na malha; pipeline nos demais).
+    # NÃO afeta a chave de persistência — só o texto exibido no Teams.
+    label        = (body.get("label")        or "").strip() or None
     remove       = bool(body.get("remove", False))
 
     if not exec_id or not pipeline:
@@ -570,7 +638,7 @@ async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(requi
         try:
             await asyncio.to_thread(
                 _teams_ack_card,
-                pipeline=pipeline, exec_id=exec_id,
+                pipeline=label or pipeline, exec_id=exec_id,
                 ack_by=ack_by_db, display_name=display_name_db or ack_by_db,
                 ack_at=ack_at_db, note=note,
                 webhook_var="TEAMS_WEBHOOK_URL_CVP",
@@ -781,6 +849,8 @@ async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(re
     remove          = bool(body.get("remove", False))
     matricula       = (body.get("user")            or "").strip() or auth.get("matricula", "")
     display_name    = (body.get("display_name")    or "").strip() or None
+    # Rótulo amigável para a notificação (nome do job na malha; pipeline nos demais).
+    label           = (body.get("label")           or "").strip() or None
 
     if not exec_id or not pipeline:
         raise HTTPException(status_code=422, detail="execution_id e pipeline são obrigatórios")
@@ -832,7 +902,7 @@ async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(re
         try:
             await asyncio.to_thread(
                 _teams_resolved_card,
-                pipeline=pipeline, exec_id=exec_id,
+                pipeline=label or pipeline, exec_id=exec_id,
                 resolved_by=resolved_by_db, display_name=resolved_display_name_db or resolved_by_db,
                 resolved_at=resolved_at_db, resolution_note=resolution_note_db,
                 snow_ticket=snow_ticket_db,
@@ -872,6 +942,7 @@ async def resolve_failures_bulk(body: dict = Body(default={}), auth: dict = Depe
     display_name    = (body.get("display_name")    or "").strip() or None
 
     done = 0
+    alvos: list[str] = []  # rótulos (job da malha / pipeline) das falhas resolvidas
     try:
         conn = get_db_conn(); cur = conn.cursor()
         _ensure_resolve_columns(conn, cur)
@@ -891,20 +962,22 @@ async def resolve_failures_bulk(body: dict = Body(default={}), auth: dict = Depe
                 "    resolution_note=?, snow_ticket=? "
                 "WHERE execution_id=? AND pipeline=?",
                 (matricula, display_name, resolution_note, snow_ticket, eid, pl))
+            alvos.append((it.get("label") or pl).strip())
             done += 1
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    # UM card-resumo no Teams (evita spam de N cards ao fechar histórico em lote)
+    # UM card-resumo no Teams (evita spam de N cards ao fechar histórico em lote),
+    # listando cada pipeline/job resolvido para facilitar a identificação.
     if done:
         try:
             await asyncio.to_thread(
                 _teams_resolved_card,
-                pipeline=f"{done} falha(s) — resolução em massa", exec_id="—",
+                pipeline="", exec_id="—",
                 resolved_by=matricula, display_name=display_name or matricula,
                 resolved_at=None, resolution_note=resolution_note, snow_ticket=snow_ticket,
-                webhook_var="TEAMS_WEBHOOK_URL_CVP",
+                webhook_var="TEAMS_WEBHOOK_URL_CVP", itens=alvos,
             )
         except Exception as e:
             log.warning("[RESOLVE-BULK] Teams ignorado: %s", e)
@@ -929,6 +1002,7 @@ async def ack_failures_bulk(body: dict = Body(default={}), auth: dict = Depends(
         raise HTTPException(status_code=422, detail="user (matrícula) é obrigatório")
 
     acked = skipped = 0
+    alvos: list[str] = []  # rótulos (job da malha / pipeline) das falhas assumidas agora
     try:
         conn = get_db_conn(); cur = conn.cursor()
         for it in items:
@@ -944,6 +1018,7 @@ async def ack_failures_bulk(body: dict = Body(default={}), auth: dict = Depends(
                 "INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name, note) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (eid, pl, matricula, display_name, note))
+            alvos.append((it.get("label") or pl).strip())
             acked += 1
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
@@ -953,9 +1028,9 @@ async def ack_failures_bulk(body: dict = Body(default={}), auth: dict = Depends(
         try:
             await asyncio.to_thread(
                 _teams_ack_card,
-                pipeline=f"{acked} falha(s) — assunção em massa", exec_id="—",
+                pipeline="", exec_id="—",
                 ack_by=matricula, display_name=display_name or matricula,
-                ack_at=None, note=note, webhook_var="TEAMS_WEBHOOK_URL_CVP",
+                ack_at=None, note=note, webhook_var="TEAMS_WEBHOOK_URL_CVP", itens=alvos,
             )
         except Exception as e:
             log.warning("[ACK-BULK] Teams ignorado: %s", e)
