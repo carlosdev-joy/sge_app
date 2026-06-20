@@ -7,10 +7,12 @@ import re
 from datetime import timezone, timedelta
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import get_db_conn
 from deps import (
+    AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
     PERM_EDITAR,
     get_current_user, require_perm,
 )
@@ -21,6 +23,9 @@ router = APIRouter()
 
 LOCAL_TZ = timezone(timedelta(hours=-3))  # America/Sao_Paulo
 
+# dag_id no Airflow == pipeline_name exato; valida antes de interpolar na URL.
+_DAG_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
 
 def _fmt_dt(v):
     if v is None:
@@ -28,6 +33,52 @@ def _fmt_dt(v):
     if hasattr(v, "strftime"):
         return v.strftime("%Y-%m-%d %H:%M:%S")
     return str(v)
+
+
+async def _sync_airflow_pause(dag_id: str, paused: bool) -> dict:
+    """Alinha o estado da DAG no Airflow ao status do pipeline no Orquestra.
+
+    Inativar pipeline (active=0) → pausa a DAG (is_paused=True), tirando-a do
+    agendamento; ativar (active=1) → despausa. Se a DAG ainda não existe no
+    Airflow, nada a fazer. É best-effort: falha de rede/Airflow NÃO aborta o
+    cadastro — o resultado volta no payload para a UI avisar o operador.
+
+    Retorna: {"attempted", "exists", "is_paused", "error"}.
+    """
+    result: dict = {"attempted": True, "exists": None, "is_paused": None, "error": None}
+    if not _DAG_ID_RE.match(dag_id or ""):
+        result.update(attempted=False, error="dag_id inválido")
+        return result
+    try:
+        async with httpx.AsyncClient(
+            base_url=AIRFLOW_URL, auth=(AIRFLOW_USER, AIRFLOW_PASSWORD), timeout=15
+        ) as client:
+            g = await client.get(f"/api/v1/dags/{dag_id}")
+            if g.status_code == 404:
+                result["exists"] = False
+                return result
+            if not g.is_success:
+                result["error"] = f"GET dag retornou {g.status_code}"
+                return result
+            result["exists"] = True
+            p = await client.patch(
+                f"/api/v1/dags/{dag_id}",
+                json={"is_paused": paused},
+                headers={"Content-Type": "application/json"},
+            )
+            if not p.is_success:
+                result["error"] = f"PATCH is_paused {p.status_code}: {p.text[:200]}"
+                return result
+            try:
+                result["is_paused"] = bool(p.json().get("is_paused", paused))
+            except Exception:
+                result["is_paused"] = paused
+            log.info("[PIPELINE] DAG %s is_paused=%s sincronizado no Airflow", dag_id, result["is_paused"])
+            return result
+    except Exception as e:
+        result["error"] = str(e)
+        log.warning("[PIPELINE] sync Airflow dag=%s falhou: %s", dag_id, e)
+        return result
 
 
 # ── Helpers para register_pipeline ───────────────────────────────────────────
@@ -592,8 +643,16 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+    # Espelha o status no Airflow: inativar pausa a DAG, ativar despausa. Só faz
+    # sentido se a DAG já existe (pipeline novo ainda não tem DAG). Best-effort.
+    dag_sync = None
+    if not is_new:
+        dag_sync = await _sync_airflow_pause(pipeline, paused=(active == 0))
+
     return {"ok": True, "pipeline_name": pipeline, "is_new": is_new,
-            "cron": _build_cron(schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom)}
+            "cron": _build_cron(schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom),
+            "dag_sync": dag_sync}
 
 
 @router.get("/malha", tags=["pipelines"])

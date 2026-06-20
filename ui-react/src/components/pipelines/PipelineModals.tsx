@@ -301,7 +301,7 @@ export function InactivateModal({ pipeline, onClose }: { pipeline: Pipeline; onC
   const [motivo, setMotivo] = useState('')
   const motivoOk = motivo.trim().length >= 5
   const mut  = useMutation({
-    mutationFn: () => apiFetch('/pipelines/register', {
+    mutationFn: () => apiFetch<{ dag_sync?: { attempted: boolean; exists: boolean | null; is_paused: boolean | null; error: string | null } | null }>('/pipelines/register', {
       method: 'POST',
       body: JSON.stringify({
         motivo_inativacao:   motivo.trim(),
@@ -334,8 +334,13 @@ export function InactivateModal({ pipeline, onClose }: { pipeline: Pipeline; onC
         changed_by:          user?.matricula ?? 'react-ui',
       }),
     }),
-    onSuccess: () => {
-      toast.success(`Pipeline "${pipeline.pipeline_name}" inativado`)
+    onSuccess: (res) => {
+      const ds = res?.dag_sync
+      const base = `Pipeline "${pipeline.pipeline_name}" inativado`
+      if (ds?.error)              toast.error(`${base}. Atenção: DAG não pausada no Airflow: ${ds.error}`)
+      else if (ds?.exists && ds?.is_paused) toast.success(`${base} · DAG pausada no Airflow`)
+      else if (ds?.exists === false)        toast.success(`${base} (sem DAG no Airflow)`)
+      else                                  toast.success(base)
       qc.invalidateQueries({ queryKey: ['pipelines'] })
       onClose()
     },

@@ -85,6 +85,19 @@ interface FormState {
   motivo_inativacao: string
 }
 
+// Resultado da sincronização da DAG no Airflow ao salvar (vem de /pipelines/register).
+type DagSync = { attempted: boolean; exists: boolean | null; is_paused: boolean | null; error: string | null }
+
+// Mensagem amigável sobre o efeito no Airflow (pausar/despausar a DAG).
+function dagSyncMsg(ds?: DagSync | null): { ok: boolean; msg: string } {
+  if (!ds || ds.attempted === false) return { ok: true, msg: '' }
+  if (ds.error) return { ok: false, msg: `DAG não sincronizada no Airflow: ${ds.error}` }
+  if (ds.exists === false) return { ok: true, msg: 'sem DAG no Airflow' }
+  if (ds.is_paused === true)  return { ok: true, msg: 'DAG pausada no Airflow' }
+  if (ds.is_paused === false) return { ok: true, msg: 'DAG ativada no Airflow' }
+  return { ok: true, msg: '' }
+}
+
 const defaultForm = (): FormState => ({
   pipeline_name: '', project_name: '', domain: '', tags_list: [], descricao: '',
   schedule_type: 'daily', schedule_hour: 6, schedule_minute: 0,
@@ -534,7 +547,8 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         dag_criada:          pipeline?.dag_criada ?? 0,
         ...buildSchedulePayload(),
       }
-      await apiFetch('/pipelines/register', { method: 'POST', body: JSON.stringify(body) })
+      const reg = await apiFetch<{ dag_sync?: DagSync | null }>('/pipelines/register', { method: 'POST', body: JSON.stringify(body) })
+      const dagSync = reg?.dag_sync ?? null
 
       const validJobs = jobs.filter(j => j.job_name.trim())
         .sort((a, b) => a.execution_order - b.execution_order)
@@ -573,12 +587,12 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
             body: JSON.stringify({ pipeline_name: pname, require_lineage: false, jobs: jobsPayload }),
           })
         } catch (e: any) {
-          return { pname, jobsError: e?.message || 'erro ao salvar jobs' }
+          return { pname, jobsError: e?.message || 'erro ao salvar jobs', dagSync }
         }
       }
-      return { pname }
+      return { pname, dagSync }
     },
-    onSuccess: (res: { pname: string; jobsError?: string }) => {
+    onSuccess: (res: { pname: string; jobsError?: string; dagSync?: DagSync | null }) => {
       qc.invalidateQueries({ queryKey: ['pipelines'] })
       qc.invalidateQueries({ queryKey: ['jobs'] })
       if (res.jobsError) {
@@ -586,7 +600,10 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         setStepErrors(prev => ({ ...prev, 5: [`Pipeline salvo, mas os jobs falharam: ${res.jobsError}`] }))
         return
       }
-      toast.success(isEdit ? 'Pipeline atualizado!' : 'Pipeline criado com sucesso!')
+      const dag = dagSyncMsg(res.dagSync)
+      const base = isEdit ? 'Pipeline atualizado!' : 'Pipeline criado com sucesso!'
+      if (!dag.ok) toast.error(`${base} Atenção: ${dag.msg}`)
+      else toast.success(dag.msg ? `${base} · ${dag.msg}` : base)
       onClose()
     },
     onError: (e: any) => {
