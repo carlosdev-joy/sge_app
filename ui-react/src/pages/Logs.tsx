@@ -407,6 +407,7 @@ function ResolveModal({
       body: JSON.stringify({
         execution_id: row.execution_id,
         pipeline: row.pipeline,
+        label: row.origem === 'malha' ? (row.job_name || row.pipeline) : row.pipeline,
         user: user?.matricula,
         display_name: `${user?.primeiro_nome ?? ''} ${user?.ultimo_nome ?? ''}`.trim(),
         resolution_note: note || null,
@@ -650,6 +651,9 @@ function GestaoFalhasTab() {
   const FLIMIT = 50
 
   const rowKey = (r: FalhaRow) => `${r.execution_id}|${r.pipeline}`
+  // Rótulo amigável p/ notificação no Teams: na malha mostramos o nome do job;
+  // nos demais, o nome do pipeline. Espelha o que a tabela exibe na coluna.
+  const falhaLabel = (r: FalhaRow) => (r.origem === 'malha' ? (r.job_name || r.pipeline) : r.pipeline)
 
   // Seleção é limpa quando os filtros/página mudam (evita resolver o que saiu da lista)
   useEffect(() => { setSelected(new Set()) }, [days, statusAck, filterPipeline, filterProject, page])
@@ -674,6 +678,7 @@ function GestaoFalhasTab() {
       body: JSON.stringify({
         execution_id: r.execution_id,
         pipeline: r.pipeline,
+        label: falhaLabel(r),
         user: user?.matricula,
         display_name: `${user?.primeiro_nome ?? ''} ${user?.ultimo_nome ?? ''}`.trim(),
       }),
@@ -695,7 +700,7 @@ function GestaoFalhasTab() {
   })
 
   const bulkMut = useMutation({
-    mutationFn: (payload: { items: { execution_id: string; pipeline: string }[]; resolution_note: string; snow_ticket: string }) =>
+    mutationFn: (payload: { items: { execution_id: string; pipeline: string; label: string }[]; resolution_note: string; snow_ticket: string }) =>
       apiFetch<{ ok: boolean; resolved: number }>('/execucoes/resolve-bulk', {
         method: 'POST',
         body: JSON.stringify({
@@ -716,7 +721,7 @@ function GestaoFalhasTab() {
   })
 
   const bulkAckMut = useMutation({
-    mutationFn: (items: { execution_id: string; pipeline: string }[]) =>
+    mutationFn: (items: { execution_id: string; pipeline: string; label: string }[]) =>
       apiFetch<{ ok: boolean; acked: number; skipped: number }>('/execucoes/ack-bulk', {
         method: 'POST',
         body: JSON.stringify({
@@ -808,7 +813,7 @@ function GestaoFalhasTab() {
                 <Button variant="secondary" size="sm"
                   loading={bulkAckMut.isPending}
                   disabled={selectedUnacked.length === 0}
-                  onClick={() => bulkAckMut.mutate(selectedUnacked.map(r => ({ execution_id: r.execution_id, pipeline: r.pipeline })))}
+                  onClick={() => bulkAckMut.mutate(selectedUnacked.map(r => ({ execution_id: r.execution_id, pipeline: r.pipeline, label: falhaLabel(r) })))}
                   className="border-orange-700/50 text-orange-400 hover:text-orange-300"
                   title={selectedUnacked.length === 0 ? 'Todas as selecionadas já têm dono' : 'Assumir as selecionadas sem dono'}>
                   <ShieldAlert size={13} /> Assumir {selectedUnacked.length} em massa
@@ -956,7 +961,7 @@ function GestaoFalhasTab() {
           rows={selectedRows}
           loading={bulkMut.isPending}
           onConfirm={(note, ticket) => bulkMut.mutate({
-            items: selectedRows.map(r => ({ execution_id: r.execution_id, pipeline: r.pipeline })),
+            items: selectedRows.map(r => ({ execution_id: r.execution_id, pipeline: r.pipeline, label: falhaLabel(r) })),
             resolution_note: note, snow_ticket: ticket,
           })}
           onClose={() => setBulkOpen(false)}
