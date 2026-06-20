@@ -195,6 +195,7 @@ async def lineage_extract_dsx(body: dict = Body(default={}), _auth: dict = Depen
     job_name     = (body.get("job_name") or "").strip()
     if not project_name or not job_name:
         raise HTTPException(status_code=422, detail="project_name e job_name são obrigatórios")
+    project_name = _safe_project_name(project_name)   # barra path traversal (../ etc.)
 
     dags_folder = os.environ.get("DAGS_FOLDER", "/opt/airflow/dags")
     if dags_folder not in sys.path:

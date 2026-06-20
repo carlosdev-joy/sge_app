@@ -164,6 +164,44 @@ Faltam CSP, `X-Frame-Options`/`frame-ancestors`, `X-Content-Type-Options`,
 
 ---
 
+### A8. Endpoints de LEITURA sem autenticação (exposição de dados)
+`api/routers/dashboard.py`, `malha.py`, `pipelines.py` (GET) e prováveis outros
+GET de dados. Os testes `test_dashboard_requires_auth`, `test_malha_requires_auth`,
+`test_pipelines_unauthenticated` **esperam 401 mas recebem 200/500** — ou seja,
+dados de negócio (execuções, pipelines, lineage, malha) são legíveis **sem login**.
+**Correção (acompanhada — alto blast radius):** dependency de auth no nível de
+router para os routers de dados (`include_router(..., dependencies=[Depends(get_current_user)])`),
+**deixando públicos apenas** `/health`, `/config` e `/auth/login`. Validar login +
+acesso autenticado ao vivo antes de subir (uma config errada bloqueia tudo).
+
+---
+
+## Status das correções (esta sessão)
+
+**✅ Corrigido em código (autônomo, já na branch):**
+- C6 — auth nos 5 GET proxy do Airflow + validação de `dag_id`/`order_by` + erro genérico.
+- C5 — removido `/auth/airflow-header`.
+- C4 — `/catalogo`: auth por modo + ator do principal.
+- C2 — monitor central: regex + quoting no `dsjob`.
+- C3 — `_JOB_NAME_RE` no register + `repr()` na factory (job_name/command/sql/url).
+- A3 — factory: `repr()` em python/http/sql.
+- A4 — `_safe_project_name` no `/lineage/extract-dsx`.
+- M2 — quoting de `project`/`job_name` no operador.
+- A5 — CORS fail-closed (sem `*`).
+- A2 (parcial) — `config_list` do admin mascara segredos.
+- M1 (parcial) — `airflow.py` deixa de repassar `r.text`/`str(e)`.
+
+**⏸️ Pendente — fazer ACOMPANHADO no servidor (env/segredo/risco de outage):**
+- C1 — rotacionar a senha do AD + mover p/ env + purgar histórico + LDAP TLS.
+- A1 — remover defaults `airflow/airflow`, exigir env, gerar `FERNET_KEY`.
+- A2 (resto) — criptografar segredos em repouso / secret manager.
+- A6 — rate-limit no login (nginx `limit_req`).
+- A7 — security headers no nginx (+ avaliar CSP sem quebrar inline).
+- A8 — auth nos endpoints de leitura (router-level, testar login ao vivo).
+- M3 — TLS interno + LDAP TLS; M4 — idle timeout de sessão.
+- M1 (resto) — varredura dos demais `detail=str(e)`.
+- B1 — DOMPurify no markdown de versões (dependência de front).
+
 ## Ordem sugerida de correção
 1. **C1** — rotacionar a senha do AD + remover do código/histórico (ação de infra, urgente).
 2. **C4, C6, C5** — fechar os bypasses de auth (gate `/catalogo`, proteger GETs do Airflow, remover `airflow-header`).

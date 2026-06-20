@@ -39,6 +39,9 @@ from airflow.operators.python import PythonOperator
 DAG_ID   = "etl_ds_monitor_centralizado"
 LOCAL_TZ = "America/Sao_Paulo"
 
+# Nome de job/projeto seguro para interpolar no comando dsjob remoto (anti shell-injection)
+_SAFE_DS_RE = re.compile(r"^[A-Za-z0-9_.]+$")
+
 default_args = {
     "owner":           "airflow",
     "depends_on_past": False,
@@ -165,8 +168,14 @@ def monitor_jobs(**context) -> None:
             exec_id = job["execution_id"]
             pipeline = job["pipeline_name"]
 
+            # Anti shell-injection: project/job_name vêm da config de pipeline; só
+            # interpola no comando remoto se forem nomes seguros.
+            if not (_SAFE_DS_RE.match(project or "") and _SAFE_DS_RE.match(jname or "")):
+                print(f"[MONITOR] nome inseguro, pulando: project={project!r} job={jname!r}")
+                continue
+
             try:
-                out  = _exec_ssh(f"{dshome}/bin/dsjob -jobinfo {project} {jname}")
+                out  = _exec_ssh(f"{dshome}/bin/dsjob -jobinfo '{project}' '{jname}'")
                 info = _parse_jobinfo(out)
                 sc   = info["status_code"]
 

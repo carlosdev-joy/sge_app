@@ -4,9 +4,10 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import get_db_conn
+from deps import get_current_user, PERM_EDITAR
 
 log = logging.getLogger("orquestra-api")
 
@@ -342,15 +343,25 @@ def _cat_list_jobs_lineage(cur, pipeline_name):
     return {"pipeline_name": pipeline_name, "jobs": job_list}
 
 
+_CATALOGO_WRITE_MODES = {"save_job_type", "delete_job_type", "save_owner", "save_tag"}
+
+
 @router.post("/catalogo", tags=["catalogo"])
-def catalogo(body: dict = Body(default={})):
+def catalogo(body: dict = Body(default={}), _auth: dict = Depends(get_current_user)):
     """
     Catálogo de dados multi-modo. Substitui etl_catalogo_query.
     Modos: search, ranking, overview, browse, get_owner, save_owner, get_tags, save_tag,
            pipeline_history, file_lineage, list_pipelines, list_projects,
            list_job_types, save_job_type, delete_job_type, list_jobs_lineage, asset_detail
+
+    Auth: exige sessão (qualquer perfil) para leitura; modos de ESCRITA exigem
+    PERM_EDITAR. O autor é derivado do usuário autenticado, nunca do body.
     """
     mode = (body.get("mode") or "search").strip().lower()
+    if mode in _CATALOGO_WRITE_MODES and PERM_EDITAR not in _auth.get("permissoes", []):
+        raise HTTPException(status_code=403,
+                            detail=f"Perfil '{_auth.get('perfil')}' não pode editar o catálogo")
+    actor = _auth.get("matricula") or "?"
     try:
         conn = get_db_conn()
         cur  = conn.cursor()
@@ -374,7 +385,7 @@ def catalogo(body: dict = Body(default={})):
 
         elif mode == "save_job_type":
             data = body.get("data", {})
-            user = body.get("user", "admin")
+            user = actor  # do principal autenticado
             jt_id = data.get("id")
             nome = (data.get("nome") or "").strip()
             if not nome:
@@ -429,7 +440,7 @@ def catalogo(body: dict = Body(default={})):
         elif mode == "save_owner":
             pname = body.get("pipeline_name", "")
             data  = body.get("data", {})
-            user  = body.get("user", "sistema")
+            user  = actor  # do principal autenticado
             cur.execute("""
                 MERGE dbo.etl_pipeline_owner AS tgt
                 USING (SELECT ? AS pipeline_name) AS src ON tgt.pipeline_name=src.pipeline_name
@@ -454,7 +465,7 @@ def catalogo(body: dict = Body(default={})):
         elif mode == "save_tag":
             ok   = body.get("object_key", "")
             tag  = body.get("tag", "")
-            user = body.get("user", "sistema")
+            user = actor  # do principal autenticado
             remove = bool(body.get("remove", False))
             if remove:
                 cur.execute("DELETE FROM dbo.etl_object_tag WHERE object_key=? AND tag=?", [ok, tag])

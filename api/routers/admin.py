@@ -61,7 +61,12 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
 
         if action == "config_list":
             cur.execute("SELECT config_key, config_value FROM dbo.etl_app_config ORDER BY config_key")
-            data = {k: v for k, v in cur.fetchall()}
+            def _mask_secret(key: str, val):
+                k = (key or "").lower()
+                if val and (k.startswith("teams_webhook") or "secret" in k or "password" in k or "token" in k):
+                    return ("•••• " + str(val)[-4:]) if len(str(val)) > 4 else "••••"
+                return val
+            data = {k: _mask_secret(k, v) for k, v in cur.fetchall()}
             cur.close(); conn.close()
             return {"sucesso": True, "config": data}
 

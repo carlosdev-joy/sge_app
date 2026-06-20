@@ -276,7 +276,7 @@ class DataStageOperator(BaseOperator):
             parts += ["-queue", self.queue_name]
         if self.execution_date_param and logical_date:
             parts += ["-param", f"{self.execution_date_param}={logical_date}"]
-        parts += [self.project, self.job_name]
+        parts += [f"'{self.project}'", f"'{self.job_name}'"]
         cmd = " ".join(parts)
 
         rc, out, err = self._exec(cmd, timeout=60)
@@ -315,14 +315,14 @@ class DataStageOperator(BaseOperator):
         if not _SAFE_JOB_RE.match(job_name or ""):
             self.log.warning("[DS] nome de job inseguro p/ reset, ignorado: %r", job_name)
             return
-        cmd = f"{self.dshome}/bin/dsjob -run -mode RESET {self.project} {job_name}"
+        cmd = f"{self.dshome}/bin/dsjob -run -mode RESET '{self.project}' '{job_name}'"
         rc, out, err = self._exec(cmd, timeout=60)
         self.log.info("[DS] reset '%s' rc=%d | %s", job_name, rc, (out + err).strip()[:200])
 
     # ── dsjob wrappers ───────────────────────────────────────────────────────
 
     def _jobinfo(self) -> dict:
-        cmd = f"{self.dshome}/bin/dsjob -jobinfo {self.project} {self.job_name}"
+        cmd = f"{self.dshome}/bin/dsjob -jobinfo '{self.project}' '{self.job_name}'"
         _, out, _ = self._exec(cmd, timeout=30)
         return self._parse_jobinfo(out)
 
@@ -330,7 +330,7 @@ class DataStageOperator(BaseOperator):
         # -max limita às últimas N entradas (o run atual), evitando puxar o
         # histórico inteiro do job (runs antigos) — isso reduz o tráfego SSH,
         # o tamanho gravado em etl_ds_job_log e o eco no log do Airflow.
-        cmd = f"{self.dshome}/bin/dsjob -logsum -max {self.logsum_max} {self.project} {self.job_name}"
+        cmd = f"{self.dshome}/bin/dsjob -logsum -max {self.logsum_max} '{self.project}' '{self.job_name}'"
         _, out, _ = self._exec(cmd, timeout=120)
         return out
 
