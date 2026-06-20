@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
 import { useAuthStore } from '../../store/auth'
@@ -6,7 +6,7 @@ import { Button } from '../ui/Button'
 import { Modal } from '../ui/Modal'
 import { Textarea } from '../ui/Input'
 import { toast } from '../ui/Toast'
-import { ChevronRight, ChevronDown, History, GitBranch, PowerOff, Settings, Play } from 'lucide-react'
+import { ChevronRight, ChevronDown, History, GitBranch, PowerOff, Settings, Play, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react'
 import type { Pipeline, AuditRow, LineageObject, LineageJob } from '../../types/pipeline'
 import { SCHEDULE_LABELS, critColor, buildCron } from './pipelineUtils'
 
@@ -383,28 +383,142 @@ export function InactivateModal({ pipeline, onClose }: { pipeline: Pipeline; onC
 
 // ── GenDagModal ───────────────────────────────────────────────────────────────
 
-export function GenDagModal({ pipeline, onConfirm, onClose, loading }: {
-  pipeline: Pipeline; onConfirm: () => void; onClose: () => void; loading: boolean
-}) {
+type GenPhase = 'confirm' | 'working' | 'done' | 'timeout' | 'error'
+
+export function GenDagModal({ pipeline, onClose }: { pipeline: Pipeline; onClose: () => void }) {
+  const qc = useQueryClient()
+  const [phase, setPhase]         = useState<GenPhase>('confirm')
+  const [statusMsg, setStatusMsg] = useState('')
+  const [errMsg, setErrMsg]       = useState('')
+  const [finalPaused, setFinalPaused] = useState<boolean | null>(null)
+  const cancelled = useRef(false)
+  useEffect(() => () => { cancelled.current = true }, [])
+
+  const sleep = (ms: number) => new Promise(res => setTimeout(res, ms))
+  const enc = encodeURIComponent(pipeline.pipeline_name)
+
+  async function run() {
+    setPhase('working'); setErrMsg('')
+    setStatusMsg('Disparando a geração da DAG (etl_dag_factory)…')
+    try {
+      await apiFetch(`/pipelines/${enc}/gerar-dag`, { method: 'POST' })
+    } catch (e: any) {
+      setErrMsg(e?.message || 'Falha ao disparar a geração'); setPhase('error'); return
+    }
+    setStatusMsg('DAG criada no servidor. Aguardando o Airflow registrá-la na UI…')
+    const MAX = 36   // 36 × 5s = 3 min
+    for (let i = 0; i < MAX; i++) {
+      if (cancelled.current) return
+      await sleep(5000)
+      if (cancelled.current) return
+      let r: any
+      try {
+        r = await apiFetch<{ exists: boolean; is_paused: boolean | null; ready: boolean; error: string | null }>(
+          `/pipelines/${enc}/dag-sync`, { method: 'POST' })
+      } catch { continue }   // erro transitório — segue tentando
+      if (cancelled.current) return
+      if (!r?.exists) { setStatusMsg(`Aguardando o Airflow registrar a DAG… (${i + 1}/${MAX})`); continue }
+      if (r.ready) {
+        qc.invalidateQueries({ queryKey: ['pipelines'] })
+        setFinalPaused(!!r.is_paused); setPhase('done'); return
+      }
+      setStatusMsg(r.error ? `DAG registrada; ajustando estado… (${r.error})` : 'DAG registrada. Ativando…')
+    }
+    qc.invalidateQueries({ queryKey: ['pipelines'] })
+    setPhase('timeout')
+  }
+
   return (
     <Modal open title={pipeline.dag_criada ? 'Regenerar DAG' : 'Gerar DAG'} onClose={onClose} size="sm">
       <div className="flex flex-col gap-4">
-        <p className="text-sm text-dim">
-          {pipeline.dag_criada
-            ? <>Regenerar a DAG de <span className="font-mono text-ink font-medium">{pipeline.pipeline_name}</span>? Isso irá atualizar a DAG no Airflow com as configurações atuais.</>
-            : <>Gerar a DAG para <span className="font-mono text-ink font-medium">{pipeline.pipeline_name}</span> no Airflow via etl_dag_factory?</>}
-        </p>
-        {pipeline.dag_criada ? (
-          <p className="text-xs text-amber-400 bg-amber-900/15 border border-amber-800/40 rounded-lg px-3 py-2">
-            ⚠ A DAG existente será sobrescrita com as configurações atuais do pipeline.
-          </p>
-        ) : null}
-        <div className="flex justify-end gap-2 border-t border-edge pt-3">
-          <Button variant="secondary" onClick={onClose} disabled={loading}>Cancelar</Button>
-          <Button loading={loading} className="border-blue-800/40 text-blue-400" onClick={onConfirm}>
-            <Settings size={13} /> {pipeline.dag_criada ? 'Regenerar' : 'Gerar DAG'}
-          </Button>
-        </div>
+        {phase === 'confirm' && (
+          <>
+            <p className="text-sm text-dim">
+              {pipeline.dag_criada
+                ? <>Regenerar a DAG de <span className="font-mono text-ink font-medium">{pipeline.pipeline_name}</span>? A DAG no Airflow será atualizada com as configurações atuais.</>
+                : <>Gerar a DAG para <span className="font-mono text-ink font-medium">{pipeline.pipeline_name}</span> no Airflow via etl_dag_factory?</>}
+            </p>
+            <p className="text-xs text-dim bg-canvas border border-edge rounded-lg px-3 py-2">
+              O Orquestra dispara a geração, aguarda o Airflow registrar a DAG e a deixa
+              {pipeline.active
+                ? <span className="text-green-400 font-medium"> ativa</span>
+                : <span className="text-amber-400 font-medium"> pausada (pipeline inativo)</span>}
+              {' '}automaticamente. Só é concluída quando estiver disponível no estado correto.
+            </p>
+            {pipeline.dag_criada && (
+              <p className="text-xs text-amber-400 bg-amber-900/15 border border-amber-800/40 rounded-lg px-3 py-2">
+                ⚠ A DAG existente será sobrescrita com as configurações atuais do pipeline.
+              </p>
+            )}
+            <div className="flex justify-end gap-2 border-t border-edge pt-3">
+              <Button variant="secondary" onClick={onClose}>Cancelar</Button>
+              <Button className="border-blue-800/40 text-blue-400" onClick={run}>
+                <Settings size={13} /> {pipeline.dag_criada ? 'Regenerar' : 'Gerar DAG'}
+              </Button>
+            </div>
+          </>
+        )}
+
+        {phase === 'working' && (
+          <div className="flex flex-col gap-3 py-1">
+            <div className="flex items-center gap-2 text-sm text-ink">
+              <Loader2 size={16} className="animate-spin text-blue-400" /> Processando…
+            </div>
+            <p className="text-xs text-dim min-h-[2rem]">{statusMsg}</p>
+            <p className="text-[11px] text-dim">
+              Pode levar de alguns segundos a poucos minutos (tempo do scheduler do Airflow
+              parsear a DAG). Pode fechar — a ativação continua em segundo plano.
+            </p>
+            <div className="flex justify-end border-t border-edge pt-3">
+              <Button variant="secondary" onClick={onClose}>Fechar</Button>
+            </div>
+          </div>
+        )}
+
+        {phase === 'done' && (
+          <div className="flex flex-col gap-3 py-1">
+            <div className="flex items-center gap-2 text-sm text-green-400 font-medium">
+              <CheckCircle2 size={16} /> DAG pronta no Airflow
+            </div>
+            <p className="text-xs text-dim">
+              <span className="font-mono text-ink">{pipeline.pipeline_name}</span> está disponível e{' '}
+              {finalPaused
+                ? <span className="text-amber-400">pausada (pipeline inativo)</span>
+                : <span className="text-green-400">ativa para execução</span>}.
+            </p>
+            <div className="flex justify-end border-t border-edge pt-3">
+              <Button className="border-green-800/40 text-green-400" onClick={onClose}>Concluir</Button>
+            </div>
+          </div>
+        )}
+
+        {phase === 'timeout' && (
+          <div className="flex flex-col gap-3 py-1">
+            <div className="flex items-center gap-2 text-sm text-amber-400 font-medium">
+              <AlertTriangle size={16} /> Ainda registrando
+            </div>
+            <p className="text-xs text-dim">
+              A DAG foi criada no servidor, mas o Airflow ainda não a disponibilizou. A ativação
+              automática continua em segundo plano — recarregue a lista em alguns minutos.
+            </p>
+            <div className="flex justify-end border-t border-edge pt-3">
+              <Button variant="secondary" onClick={onClose}>Fechar</Button>
+            </div>
+          </div>
+        )}
+
+        {phase === 'error' && (
+          <div className="flex flex-col gap-3 py-1">
+            <div className="flex items-center gap-2 text-sm text-red-400 font-medium">
+              <AlertTriangle size={16} /> Erro ao gerar
+            </div>
+            <p className="text-xs text-red-300 break-words">{errMsg}</p>
+            <div className="flex justify-end gap-2 border-t border-edge pt-3">
+              <Button variant="secondary" onClick={onClose}>Fechar</Button>
+              <Button className="border-blue-800/40 text-blue-400" onClick={() => setPhase('confirm')}>Tentar de novo</Button>
+            </div>
+          </div>
+        )}
       </div>
     </Modal>
   )

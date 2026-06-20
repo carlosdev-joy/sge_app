@@ -1,19 +1,21 @@
 """api/routers/pipelines.py — GET /pipelines, POST /pipelines/register, GET /malha."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 from datetime import timezone, timedelta
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 
 from db import get_db_conn
 from deps import (
     AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
-    PERM_EDITAR,
+    PERM_EDITAR, PERM_EXECUTAR,
     get_current_user, require_perm,
 )
 
@@ -25,6 +27,7 @@ LOCAL_TZ = timezone(timedelta(hours=-3))  # America/Sao_Paulo
 
 # dag_id no Airflow == pipeline_name exato; valida antes de interpolar na URL.
 _DAG_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+FACTORY_DAG_ID = "etl_dag_factory"
 
 
 def _fmt_dt(v):
@@ -61,24 +64,62 @@ async def _sync_airflow_pause(dag_id: str, paused: bool) -> dict:
                 result["error"] = f"GET dag retornou {g.status_code}"
                 return result
             result["exists"] = True
-            p = await client.patch(
-                f"/api/v1/dags/{dag_id}",
-                json={"is_paused": paused},
-                headers={"Content-Type": "application/json"},
-            )
-            if not p.is_success:
-                result["error"] = f"PATCH is_paused {p.status_code}: {p.text[:200]}"
-                return result
-            try:
-                result["is_paused"] = bool(p.json().get("is_paused", paused))
-            except Exception:
-                result["is_paused"] = paused
-            log.info("[PIPELINE] DAG %s is_paused=%s sincronizado no Airflow", dag_id, result["is_paused"])
+            cur_paused = bool(g.json().get("is_paused", True))
+            if cur_paused != paused:
+                p = await client.patch(
+                    f"/api/v1/dags/{dag_id}",
+                    json={"is_paused": paused},
+                    headers={"Content-Type": "application/json"},
+                )
+                if not p.is_success:
+                    result["is_paused"] = cur_paused
+                    result["error"] = f"PATCH is_paused {p.status_code}: {p.text[:200]}"
+                    return result
+                try:
+                    cur_paused = bool(p.json().get("is_paused", paused))
+                except Exception:
+                    cur_paused = paused
+                log.info("[PIPELINE] DAG %s is_paused=%s sincronizado no Airflow", dag_id, cur_paused)
+            result["is_paused"] = cur_paused
             return result
     except Exception as e:
         result["error"] = str(e)
         log.warning("[PIPELINE] sync Airflow dag=%s falhou: %s", dag_id, e)
         return result
+
+
+async def _await_and_activate_dag(pipeline_name: str, desired_paused: bool,
+                                  attempts: int = 36, interval_s: int = 5) -> None:
+    """Background: aguarda a DAG aparecer no Airflow (o scheduler leva um tempo
+    para parsear o arquivo recém-gerado) e então alinha o is_paused ao status do
+    pipeline — tipicamente DESPAUSA, pois DAGs nascem pausadas e o usuário criou
+    o pipeline já ativo. Roda fora do request para concluir mesmo se a UI fechar.
+    """
+    if not _DAG_ID_RE.match(pipeline_name or ""):
+        return
+    for _ in range(attempts):
+        await asyncio.sleep(interval_s)
+        try:
+            async with httpx.AsyncClient(
+                base_url=AIRFLOW_URL, auth=(AIRFLOW_USER, AIRFLOW_PASSWORD), timeout=15
+            ) as client:
+                g = await client.get(f"/api/v1/dags/{pipeline_name}")
+                if g.status_code == 404 or not g.is_success:
+                    continue
+                cur_paused = bool(g.json().get("is_paused", True))
+                if cur_paused != desired_paused:
+                    await client.patch(
+                        f"/api/v1/dags/{pipeline_name}",
+                        json={"is_paused": desired_paused},
+                        headers={"Content-Type": "application/json"},
+                    )
+                log.info("[GERAR-DAG] %s disponível no Airflow — is_paused=%s", pipeline_name, desired_paused)
+                return
+        except Exception as e:
+            log.warning("[GERAR-DAG] poll %s: %s", pipeline_name, e)
+            continue
+    log.warning("[GERAR-DAG] %s não apareceu no Airflow no tempo limite (%ds)",
+                pipeline_name, attempts * interval_s)
 
 
 # ── Helpers para register_pipeline ───────────────────────────────────────────
@@ -653,6 +694,72 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
     return {"ok": True, "pipeline_name": pipeline, "is_new": is_new,
             "cron": _build_cron(schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom),
             "dag_sync": dag_sync}
+
+
+def _pipeline_active(pname: str) -> int:
+    """Lê o status active do pipeline (404 se não existe)."""
+    conn = get_db_conn(); cur = conn.cursor()
+    cur.execute("SELECT CAST(active AS INT) FROM dbo.etl_pipeline WHERE pipeline_name=?", (pname,))
+    row = cur.fetchone(); cur.close(); conn.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail="pipeline não encontrado")
+    return int(row[0] or 0)
+
+
+@router.post("/pipelines/{pipeline_name}/gerar-dag", tags=["pipelines"])
+async def gerar_dag(pipeline_name: str, background: BackgroundTasks,
+                    _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """Gera/regenera a DAG do pipeline e garante o estado final correto.
+
+    Dispara a etl_dag_factory (que escreve o arquivo da DAG no servidor) e agenda
+    um watcher em segundo plano que ESPERA a DAG aparecer no Airflow e a ativa
+    automaticamente, espelhando o status do pipeline (DAGs nascem pausadas). Assim
+    o Orquestra só considera a DAG pronta quando ela está disponível e no estado
+    certo — sem ficar "ativa no Orquestra e pausada no Airflow".
+    """
+    pname = (pipeline_name or "").strip()
+    if not _DAG_ID_RE.match(pname):
+        raise HTTPException(status_code=400, detail="pipeline_name inválido")
+    desired_paused = (_pipeline_active(pname) == 0)
+
+    run_id = f"orquestra_ui_{int(time.time() * 1000)}"
+    try:
+        async with httpx.AsyncClient(
+            base_url=AIRFLOW_URL, auth=(AIRFLOW_USER, AIRFLOW_PASSWORD), timeout=20
+        ) as client:
+            r = await client.post(
+                f"/api/v1/dags/{FACTORY_DAG_ID}/dagRuns",
+                json={"dag_run_id": run_id, "conf": {"pipeline_name": pname}},
+                headers={"Content-Type": "application/json"},
+            )
+            if not r.is_success:
+                raise HTTPException(status_code=502,
+                                    detail=f"Falha ao disparar a factory: {r.status_code} {r.text[:200]}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Erro ao disparar a factory: {e}")
+
+    # Watcher em segundo plano: conclui a ativação mesmo se a UI fechar.
+    background.add_task(_await_and_activate_dag, pname, desired_paused)
+    return {"ok": True, "pipeline_name": pname, "dag_run_id": run_id,
+            "desired_active": (not desired_paused)}
+
+
+@router.post("/pipelines/{pipeline_name}/dag-sync", tags=["pipelines"])
+async def pipeline_dag_sync(pipeline_name: str, _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """Reconcilia o is_paused da DAG ao status do pipeline e reporta se já está
+    pronta. Idempotente — usado pela UI como polling após gerar a DAG, e seguro
+    de chamar repetidamente. ready=True quando a DAG existe e está no estado certo.
+    """
+    pname = (pipeline_name or "").strip()
+    if not _DAG_ID_RE.match(pname):
+        raise HTTPException(status_code=400, detail="pipeline_name inválido")
+    desired_paused = (_pipeline_active(pname) == 0)
+    sync = await _sync_airflow_pause(pname, paused=desired_paused)
+    ready = (bool(sync.get("exists")) and sync.get("error") is None
+             and sync.get("is_paused") == desired_paused)
+    return {**sync, "ready": ready, "active_orquestra": (not desired_paused)}
 
 
 @router.get("/malha", tags=["pipelines"])
