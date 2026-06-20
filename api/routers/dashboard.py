@@ -108,10 +108,16 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
             for r in cur.fetchall()
         ]
 
+        # "Status por pipeline": TOP 5 por ATIVIDADE mais recente (início OU fim de
+        # execução). atividade = fim do job mais recente da execução (MAX(end_time))
+        # ou o início quando nada terminou ainda (execução em andamento). Assim um
+        # pipeline que acabou de iniciar/encerrar aparece no topo, alinhado com o
+        # painel "Rodando agora" — sem ser escondido por ordenação de criticidade.
         cur.execute(f"""
             WITH execs AS (
                 SELECT e.execution_id, e.project, e.pipeline,
                     MIN(e.start_time) AS inicio,
+                    MAX(e.end_time)   AS fim,
                     COALESCE(SUM(e.duration_seconds), 0) AS duracao_segundos,
                     COUNT(*) AS total_jobs,
                     {status_expr} AS ultimo_status
@@ -123,7 +129,13 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
                 GROUP BY e.execution_id, e.project, e.pipeline
             ),
             ranked AS (
-                SELECT *, ROW_NUMBER() OVER (PARTITION BY pipeline ORDER BY inicio DESC) AS rn FROM execs
+                SELECT *,
+                    COALESCE(fim, inicio) AS atividade,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY pipeline
+                        ORDER BY COALESCE(fim, inicio) DESC, inicio DESC
+                    ) AS rn
+                FROM execs
             )
             SELECT TOP 5
                 r.pipeline, r.project, r.ultimo_status, r.inicio, r.duracao_segundos,
@@ -138,10 +150,7 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
                 GROUP BY execution_id
             ) fila ON fila.execution_id = r.execution_id
             WHERE rn=1 AND COALESCE(p.ambiente,'PROD')='PROD'
-            ORDER BY
-                CASE UPPER(COALESCE(p.criticidade,'')) WHEN 'ALTA' THEN 1 WHEN 'MEDIA' THEN 2 WHEN 'BAIXA' THEN 3 ELSE 4 END,
-                CASE r.ultimo_status WHEN 'FAILED' THEN 1 WHEN 'WARNING' THEN 2 WHEN 'RUNNING' THEN 3 ELSE 4 END,
-                r.inicio DESC
+            ORDER BY r.atividade DESC
         """, [dt_ini, dt_fim] + ([fp] if fp else []))
         pipeline_status = [
             {

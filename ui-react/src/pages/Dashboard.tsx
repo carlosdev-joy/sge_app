@@ -7,7 +7,7 @@ import { Select } from '../components/ui/Input'
 import { Button } from '../components/ui/Button'
 import {
   RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock,
-  Activity, Layers, BarChart2, ChevronRight, Share2,
+  Activity, Layers, BarChart2, ChevronRight, Share2, FileText,
 } from 'lucide-react'
 import {
   LogDetailModal, AirflowLogModal, DsLogModal,
@@ -360,9 +360,22 @@ function MalhaBtn({ onClick, className = '' }: { onClick: () => void; className?
   )
 }
 
+// Abre o modal de detalhe da execução (cadeia de jobs + logs) sem sair do dashboard.
+function LogBtn({ onClick, className = '' }: { onClick: () => void; className?: string }) {
+  return (
+    <button
+      onClick={e => { e.stopPropagation(); onClick() }}
+      title="Ver execução e logs (sem sair do dashboard)"
+      className={`text-dim hover:text-blue-500 transition-colors shrink-0 ${className}`}
+    >
+      <FileText size={13} />
+    </button>
+  )
+}
+
 // ── Alerta de performance ──────────────────────────────────────────────────
 
-function AlertaRow({ a, onOpen, onMalha }: { a: AlertaPerf; onOpen: () => void; onMalha: () => void }) {
+function AlertaRow({ a, onOpen, onMalha, onDetail }: { a: AlertaPerf; onOpen: () => void; onMalha: () => void; onDetail: () => void }) {
   const cls = a.alerta_horas >= 12
     ? 'border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20'
     : a.alerta_horas >= 6
@@ -377,6 +390,7 @@ function AlertaRow({ a, onOpen, onMalha }: { a: AlertaPerf; onOpen: () => void; 
         <div className="text-[10px] text-dim">{a.project} · início {fmtDateTime(a.inicio)}</div>
       </div>
       <span className="text-xs font-bold text-amber-600 dark:text-amber-400 flex-shrink-0">{fmtSec(a.elapsed_seconds)}</span>
+      <LogBtn onClick={onDetail} />
       <MalhaBtn onClick={onMalha} />
       <ChevronRight size={13} className="text-dim flex-shrink-0" />
     </div>
@@ -385,7 +399,7 @@ function AlertaRow({ a, onOpen, onMalha }: { a: AlertaPerf; onOpen: () => void; 
 
 // ── Executando agora row ───────────────────────────────────────────────────
 
-function RunningRow({ e, onOpen, onMalha }: { e: Executando; onOpen: () => void; onMalha: () => void }) {
+function RunningRow({ e, onOpen, onMalha, onDetail }: { e: Executando; onOpen: () => void; onMalha: () => void; onDetail: () => void }) {
   const pct = e.total_jobs > 0 ? Math.round((e.jobs_ok / e.total_jobs) * 100) : 0
   return (
     <div className="flex items-center gap-3 px-4 py-2.5 border-b border-edge/40 last:border-0 hover:bg-blue-50 dark:hover:bg-blue-900/10 transition-all cursor-pointer" onClick={onOpen}>
@@ -404,12 +418,52 @@ function RunningRow({ e, onOpen, onMalha }: { e: Executando; onOpen: () => void;
         <div className="text-[10px] text-blue-500 dark:text-blue-400 font-bold">{e.jobs_running} rod.</div>
         <div className="text-[10px] text-dim">{e.jobs_ok}/{e.total_jobs} ok</div>
       </div>
+      <LogBtn onClick={onDetail} />
       <MalhaBtn onClick={onMalha} />
     </div>
   )
 }
 
 // ── Dashboard principal ────────────────────────────────────────────────────
+
+// Converte um item de "Rodando agora" / "Alerta de performance" no ExecRow que o
+// modal de detalhe consome. O modal recarrega a cadeia de jobs pelo execution_id,
+// então só os campos de cabeçalho precisam estar preenchidos.
+function executandoToExecRow(e: Executando): ExecRow {
+  return {
+    execution_id: e.execution_id,
+    project: e.project,
+    pipeline: e.pipeline,
+    inicio: e.inicio ?? '',
+    fim: '',
+    duracao_total_segundos: e.elapsed_seconds,
+    total_jobs: e.total_jobs,
+    jobs_ok: e.jobs_ok,
+    jobs_falha: 0,
+    jobs_warning: 0,
+    jobs_running: e.jobs_running,
+    status_geral: 'RUNNING',
+    fila_total_segundos: null,
+  }
+}
+
+function alertaToExecRow(a: AlertaPerf): ExecRow {
+  return {
+    execution_id: a.execution_id,
+    project: a.project,
+    pipeline: a.pipeline,
+    inicio: a.inicio ?? '',
+    fim: '',
+    duracao_total_segundos: a.elapsed_seconds,
+    total_jobs: 0,
+    jobs_ok: 0,
+    jobs_falha: 0,
+    jobs_warning: 0,
+    jobs_running: 0,
+    status_geral: 'RUNNING',
+    fila_total_segundos: null,
+  }
+}
 
 function pipelineStatusToExecRow(p: PipelineStatus): ExecRow {
   return {
@@ -581,6 +635,7 @@ export default function Dashboard() {
                 {data.executando_agora.map(e => (
                   <RunningRow key={e.execution_id} e={e}
                     onOpen={() => navigate(`/logs?execution_id=${e.execution_id}&pipeline=${encodeURIComponent(e.pipeline)}`)}
+                    onDetail={() => setDetail(executandoToExecRow(e))}
                     onMalha={() => setMalhaPipeline(e.pipeline)} />
                 ))}
               </div>
@@ -597,6 +652,7 @@ export default function Dashboard() {
                 {data.alertas_perf.map(a => (
                   <AlertaRow key={a.execution_id} a={a}
                     onOpen={() => navigate(`/logs?execution_id=${a.execution_id}&pipeline=${encodeURIComponent(a.pipeline)}`)}
+                    onDetail={() => setDetail(alertaToExecRow(a))}
                     onMalha={() => setMalhaPipeline(a.pipeline)} />
                 ))}
               </div>
@@ -726,7 +782,7 @@ export default function Dashboard() {
               <div className="px-4 py-2.5 border-b border-edge">
                 <h3 className="text-sm font-semibold text-ink">
                   Status por pipeline
-                  <span className="text-dim font-normal ml-2 text-xs">últimos {Math.min(5, data.pipeline_status.length)} de {data.pipeline_status.length}</span>
+                  <span className="text-dim font-normal ml-2 text-xs">top {Math.min(5, data.pipeline_status.length)} por atividade recente</span>
                 </h3>
               </div>
               <div className="overflow-x-auto">
@@ -767,6 +823,10 @@ export default function Dashboard() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+              <div className="px-4 py-2 border-t border-edge bg-canvas/30 text-[10px] text-dim leading-relaxed">
+                Top 5 pipelines por <span className="text-ink/80 font-medium">atividade mais recente</span> (último início ou fim de execução) no dia selecionado — somente pipelines de produção.
+                Para acompanhar tudo que está em execução neste momento, use o painel <span className="text-ink/80 font-medium">“Rodando agora”</span> no topo.
               </div>
             </div>
           )}
