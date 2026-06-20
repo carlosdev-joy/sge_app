@@ -29,6 +29,9 @@ def _fmt_dt(v):
 VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc"}
 VALID_PARAM_TYPES = {"INT", "VARCHAR", "DATE", "BIT", "DECIMAL", "DATETIME"}
 _PARAM_NAME_RE = __import__("re").compile(r"^@?[A-Za-z_][A-Za-z0-9_]*$")
+# job_name vira literal de string no código da DAG gerada e argumento de shell no
+# dsjob — allowlist bloqueia aspas/;/$/quebra-de-linha (anti code/command injection).
+_JOB_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9_.\- ]+$")
 
 
 async def _list_mssql_conn_ids() -> set[str] | None:
@@ -180,6 +183,8 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
 
             if not j_name or j_order is None:
                 erros.append(f"Item {idx}: job_name e execution_order obrigatórios"); continue
+            if not _JOB_NAME_RE.match(j_name):
+                erros.append(f"Item {idx} ({j_name}): nome de job inválido — use apenas letras, números, _ . - e espaço"); continue
             if j_type not in VALID_JOB_TYPES:
                 erros.append(f"Item {idx} ({j_name}): job_type '{j_type}' inválido"); continue
             if not origens and not transfs and require_lineage:

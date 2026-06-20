@@ -188,9 +188,9 @@ def _task_block(job, project, pipeline):
         verbose_line = f'    verbose_log=True,' if job.get("verbose_log") else ''
         main = "\n".join(filter(None, [
             f't_job_{vname} = DataStageOperator(',
-            f'    task_id="{name}",',
+            f'    task_id={name!r},',
             f'    project=PROJECT_NAME,',
-            f'    job_name="{name}",',
+            f'    job_name={name!r},',
             f'    ssh_conn_id=SSH_CONN_ID,',
             f'    queue_name=DS_QUEUE,',
             verbose_line,
@@ -204,7 +204,7 @@ def _task_block(job, project, pipeline):
         ssh_val = f'"{ssh}"' if ssh else 'SSH_CONN_ID'
         main = "\n".join([
             f't_job_{vname} = SSHOperator(',
-            f'    task_id="{name}",',
+            f'    task_id={name!r},',
             f'    ssh_conn_id={ssh_val},',
             f'    command={cmd_safe},',
             f'    cmd_timeout=None,',
@@ -216,12 +216,12 @@ def _task_block(job, project, pipeline):
         main = "\n".join([
             f'def _run_{vname}(**context):',
             f'    import importlib',
-            f'    mod = importlib.import_module("{mod}")',
+            f'    mod = importlib.import_module({mod!r})',
             f'    if hasattr(mod, "run"): mod.run(**context)',
             f'    elif hasattr(mod, "main"): mod.main()',
             f'',
             f't_job_{vname} = PythonOperator(',
-            f'    task_id="{name}",',
+            f'    task_id={name!r},',
             f'    python_callable=_run_{vname},',
             f')',
         ])
@@ -238,7 +238,7 @@ def _task_block(job, project, pipeline):
                 f'    raise ValueError("nome de procedure invalido: {proc_raw!r}")',
                 f'',
                 f't_job_{vname} = PythonOperator(',
-                f'    task_id="{name}",',
+                f'    task_id={name!r},',
                 f'    python_callable=_run_{vname},',
                 f')',
             ])
@@ -256,7 +256,7 @@ def _task_block(job, project, pipeline):
                 f'    hook.run("EXEC {proc} {placeholders}", parameters={values!r})',
                 f'',
                 f't_job_{vname} = PythonOperator(',
-                f'    task_id="{name}",',
+                f'    task_id={name!r},',
                 f'    python_callable=_run_{vname},',
                 f')',
             ])
@@ -267,20 +267,19 @@ def _task_block(job, project, pipeline):
                 f'    hook.run("EXEC {proc}")',
                 f'',
                 f't_job_{vname} = PythonOperator(',
-                f'    task_id="{name}",',
+                f'    task_id={name!r},',
                 f'    python_callable=_run_{vname},',
                 f')',
             ])
     elif jtype == "sql":
         sql_stmt = jcmd or f"SELECT 1 -- job {name}"
-        safe_sql = sql_stmt.replace('"', '\\"').replace('\n', ' ')
         main = "\n".join([
             f'def _run_{vname}(**context):',
             f'    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)',
-            f'    hook.run("{safe_sql}")',
+            f'    hook.run({sql_stmt!r})',
             f'',
             f't_job_{vname} = PythonOperator(',
-            f'    task_id="{name}",',
+            f'    task_id={name!r},',
             f'    python_callable=_run_{vname},',
             f')',
         ])
@@ -288,35 +287,35 @@ def _task_block(job, project, pipeline):
         url = jcmd or "https://httpbin.org/get"
         main = "\n".join([
             f'def _run_{vname}(**context):',
-            f'    resp = requests.get("{url}", timeout=30)',
+            f'    resp = requests.get({url!r}, timeout=30)',
             f'    resp.raise_for_status()',
             f'    print(f"HTTP {name}: status={{resp.status_code}}")',
             f'',
             f't_job_{vname} = PythonOperator(',
-            f'    task_id="{name}",',
+            f'    task_id={name!r},',
             f'    python_callable=_run_{vname},',
             f')',
         ])
     else:
         main = "\n".join([
             f't_job_{vname} = PythonOperator(',
-            f'    task_id="{name}",',
+            f'    task_id={name!r},',
             f'    python_callable=lambda **kw: print("job_type desconhecido: {jtype}"),',
             f')',
         ])
 
     log_start = "\n".join([
         f't_start_{vname} = PythonOperator(',
-        f'    task_id="log_start_{name}",',
+        f'    task_id={("log_start_" + name)!r},',
         f'    python_callable=log_start,',
-        f'    op_kwargs={{"job_name": "{name}", "task_key": "{name}"}},',
+        f'    op_kwargs={{"job_name": {name!r}, "task_key": {name!r}}},',
         f')',
     ])
     log_end = "\n".join([
         f't_end_{vname} = PythonOperator(',
-        f'    task_id="log_end_{name}",',
+        f'    task_id={("log_end_" + name)!r},',
         f'    python_callable=log_end,',
-        f'    op_kwargs={{"job_name": "{name}", "task_key": "{name}", "upstream_task_id": "{name}"}},',
+        f'    op_kwargs={{"job_name": {name!r}, "task_key": {name!r}, "upstream_task_id": {name!r}}},',
         f'    trigger_rule=TriggerRule.ALL_DONE,',
         f')',
     ])
