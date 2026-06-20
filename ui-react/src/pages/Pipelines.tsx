@@ -1,5 +1,5 @@
-import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState, useMemo, useCallback } from 'react'
+import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { useAuthStore } from '../store/auth'
 import { Button } from '../components/ui/Button'
@@ -11,7 +11,7 @@ import { toast } from '../components/ui/Toast'
 import { useAirflowUrl } from '../lib/config'
 import { ChevronRight, ChevronDown, Plus } from 'lucide-react'
 import type { Pipeline } from '../types/pipeline'
-import { DAG_FACTORY_ID, pipelineToDagId, exportModeloCsv } from '../components/pipelines/pipelineUtils'
+import { pipelineToDagId, exportModeloCsv } from '../components/pipelines/pipelineUtils'
 import { PipelineFormModal } from '../components/pipelines/PipelineFormModal'
 import { PipelineRow } from '../components/pipelines/PipelineRow'
 import {
@@ -20,7 +20,6 @@ import {
 } from '../components/pipelines/PipelineModals'
 
 export default function Pipelines() {
-  const qc      = useQueryClient()
   const user    = useAuthStore(s => s.user)
   const isViewer = user?.perfil === 'consulta'
   const airflowUiUrl = useAirflowUrl()
@@ -40,11 +39,6 @@ export default function Pipelines() {
   const [inactivatePipeline,  setInactivatePipeline]  = useState<Pipeline | undefined>()
   const [execPipeline,        setExecPipeline]        = useState<Pipeline | undefined>()
   const [genDagPipeline,      setGenDagPipeline]      = useState<Pipeline | undefined>()
-  const revalidateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => {
-    return () => { if (revalidateTimerRef.current) clearTimeout(revalidateTimerRef.current) }
-  }, [])
 
   // Carrega TODOS os pipelines do filtro (agrega as páginas do backend, que limita
   // a 100/req) para as pastas por projeto ficarem completas — sem partir entre
@@ -96,26 +90,6 @@ export default function Pipelines() {
     ;(data?.data ?? []).forEach(p => { if (p.domain) s.add(p.domain) })
     return [...s].sort()
   }, [data])
-
-  const genDagMut = useMutation({
-    mutationFn: (p: Pipeline) => {
-      const runId = `orquestra_ui_${Date.now()}`
-      return apiFetch(`/airflow/dags/${DAG_FACTORY_ID}/dagRuns`, {
-        method: 'POST',
-        body: JSON.stringify({ dag_run_id: runId, conf: { pipeline_name: p.pipeline_name } }),
-      })
-    },
-    onSuccess: (_d, p) => {
-      toast.success(`Factory disparada para "${p.pipeline_name}" — aguarde para ver resultado.`)
-      setGenDagPipeline(undefined)
-      if (revalidateTimerRef.current) clearTimeout(revalidateTimerRef.current)
-      revalidateTimerRef.current = setTimeout(() => qc.invalidateQueries({ queryKey: ['pipelines'] }), 10_000)
-    },
-    onError: (e: unknown) => {
-      const msg = e instanceof Error ? e.message : 'Erro inesperado'
-      toast.error(`Erro ao gerar DAG: ${msg}`)
-    },
-  })
 
   const execMut = useMutation({
     mutationFn: (p: Pipeline) => {
@@ -293,9 +267,7 @@ export default function Pipelines() {
       {genDagPipeline     && (
         <GenDagModal
           pipeline={genDagPipeline}
-          loading={genDagMut.isPending}
-          onConfirm={() => genDagMut.mutate(genDagPipeline)}
-          onClose={() => { if (!genDagMut.isPending) setGenDagPipeline(undefined) }}
+          onClose={() => setGenDagPipeline(undefined)}
         />
       )}
     </div>
