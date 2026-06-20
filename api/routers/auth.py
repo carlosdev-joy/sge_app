@@ -109,11 +109,7 @@ async def get_me(user: dict = Depends(get_current_user)):
     return user
 
 
-@router.get("/auth/airflow-header", tags=["auth"])
-async def auth_airflow_header(user: dict = Depends(get_current_user)):
-    """Header Basic da service account para chamadas diretas ao Airflow após
-    restaurar a sessão (F5) — equivale à Variable ORQUESTRA_SYSTEM_AUTH que a
-    UI já lê hoje do Airflow."""
-    header = "Basic " + base64.b64encode(
-        f"{AIRFLOW_USER}:{AIRFLOW_PASSWORD}".encode()).decode()
-    return {"header": header}
+# REMOVIDO (segurança C5): /auth/airflow-header entregava o Basic da service
+# account ao navegador de qualquer usuário logado → bypass do RBAC. O front não
+# usa (fala com o Airflow só pelo proxy server-side da API). Nunca reexpor a
+# credencial de serviço ao cliente.
