@@ -14,6 +14,11 @@ from deps import (
 )
 
 _DAG_ID_RE = re.compile(r'^[a-zA-Z0-9_.\-]+$')
+_ALLOWED_ORDER = {
+    "execution_date", "-execution_date", "start_date", "-start_date",
+    "end_date", "-end_date", "logical_date", "-logical_date",
+    "dag_run_id", "-dag_run_id", "state", "-state",
+}
 
 log = logging.getLogger("orquestra-api")
 
@@ -29,24 +34,30 @@ def get_airflow_client() -> httpx.AsyncClient:
 
 
 @router.get("/airflow/dags/{dag_id}/dagRuns/{dag_run_id}/taskInstances")
-async def list_task_instances(dag_id: str, dag_run_id: str):
+async def list_task_instances(dag_id: str, dag_run_id: str,
+                              _auth: dict = Depends(get_current_user)):
     """Lista task instances de um dag_run — proxy para Airflow REST API."""
+    if not _DAG_ID_RE.match(dag_id):
+        raise HTTPException(status_code=422, detail="dag_id inválido")
     try:
         async with get_airflow_client() as client:
             r = await client.get(f"/api/v1/dags/{dag_id}/dagRuns/{dag_run_id}/taskInstances")
             if not r.is_success:
-                raise HTTPException(status_code=r.status_code, detail=r.text)
+                raise HTTPException(status_code=r.status_code, detail="Erro ao consultar o Airflow")
             return r.json()
     except HTTPException:
         raise
     except Exception as e:
         log.warning("Erro ao listar task instances %s/%s: %s", dag_id, dag_run_id, e)
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail="Erro ao consultar o Airflow")
 
 
 @router.get("/airflow/dags/{dag_id}/dagRuns/{dag_run_id}/taskInstances/{task_id}/logs/{try_number}")
-async def get_task_log(dag_id: str, dag_run_id: str, task_id: str, try_number: int = 1):
+async def get_task_log(dag_id: str, dag_run_id: str, task_id: str, try_number: int = 1,
+                       _auth: dict = Depends(get_current_user)):
     """Retorna log de uma task como texto — proxy para Airflow REST API."""
+    if not _DAG_ID_RE.match(dag_id):
+        raise HTTPException(status_code=422, detail="dag_id inválido")
     try:
         async with get_airflow_client() as client:
             r = await client.get(
@@ -54,29 +65,35 @@ async def get_task_log(dag_id: str, dag_run_id: str, task_id: str, try_number: i
                 headers={"Accept": "text/plain"},
             )
             if not r.is_success:
-                raise HTTPException(status_code=r.status_code, detail=r.text)
+                raise HTTPException(status_code=r.status_code, detail="Erro ao consultar o Airflow")
             return PlainTextResponse(content=r.text)
     except HTTPException:
         raise
     except Exception as e:
         log.warning("Erro ao buscar log %s/%s/%s: %s", dag_id, dag_run_id, task_id, e)
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail="Erro ao consultar o Airflow")
 
 
 @router.get("/airflow/dags/{dag_id}/dagRuns")
-async def list_dag_runs(dag_id: str, limit: int = 50, order_by: str = "-execution_date"):
+async def list_dag_runs(dag_id: str, limit: int = 50, order_by: str = "-execution_date",
+                        _auth: dict = Depends(get_current_user)):
     """Lista dag_runs de um DAG — proxy para Airflow REST API."""
+    if not _DAG_ID_RE.match(dag_id):
+        raise HTTPException(status_code=422, detail="dag_id inválido")
+    if order_by not in _ALLOWED_ORDER:
+        order_by = "-execution_date"
+    limit = min(200, max(1, limit))
     try:
         async with get_airflow_client() as client:
             r = await client.get(f"/api/v1/dags/{dag_id}/dagRuns", params={"limit": limit, "order_by": order_by})
             if not r.is_success:
-                raise HTTPException(status_code=r.status_code, detail=r.text)
+                raise HTTPException(status_code=r.status_code, detail="Erro ao consultar o Airflow")
             return r.json()
     except HTTPException:
         raise
     except Exception as e:
         log.warning("Erro ao listar dagRuns %s: %s", dag_id, e)
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail="Erro ao consultar o Airflow")
 
 
 @router.post("/airflow/dags/{dag_id}/dagRuns")
@@ -126,7 +143,7 @@ async def patch_dag(dag_id: str, body: dict = Body(default={}), _auth: dict = De
 
 
 @router.get("/airflow/connections/ssh")
-async def list_ssh_connections():
+async def list_ssh_connections(_auth: dict = Depends(get_current_user)):
     """Lista conexões SSH cadastradas no Airflow (conn_type=ssh)."""
     try:
         async with get_airflow_client() as client:
@@ -146,7 +163,7 @@ async def list_ssh_connections():
 
 
 @router.get("/airflow/connections/mssql")
-async def list_mssql_connections():
+async def list_mssql_connections(_auth: dict = Depends(get_current_user)):
     """Lista conexões MSSQL cadastradas no Airflow (conn_type=mssql)."""
     try:
         async with get_airflow_client() as client:
