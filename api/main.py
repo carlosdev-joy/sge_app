@@ -120,7 +120,10 @@ from routers import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("orquestra-api")
 
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
+# Fail-closed: sem CORS_ORIGINS, NENHUMA origem cross-site é liberada (o app é
+# same-origin pelo nginx, então funciona normal). Nunca usar "*" com credenciais.
+_cors_env = os.getenv("CORS_ORIGINS", "").strip()
+CORS_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()]
 MSSQL_CONN_STR = os.getenv("MSSQL_CONN_STR", "")
 
 
@@ -128,8 +131,11 @@ MSSQL_CONN_STR = os.getenv("MSSQL_CONN_STR", "")
 async def lifespan(app: FastAPI):
     if not MSSQL_CONN_STR:
         log.warning("MSSQL_CONN_STR não definida — endpoints de banco vão falhar")
-    if CORS_ORIGINS == ["*"]:
-        log.warning("CORS_ORIGINS='*' — recomendado restringir à origem do nginx via env CORS_ORIGINS")
+    if not CORS_ORIGINS:
+        log.warning("CORS_ORIGINS vazio — cross-origin bloqueado (ok p/ same-origin via nginx). "
+                    "Defina CORS_ORIGINS se precisar de origem cross-site.")
+    if "*" in CORS_ORIGINS:
+        log.warning("CORS_ORIGINS contém '*' — inseguro com credenciais; restrinja às origens do app.")
     log.info("ORQUESTRA API v0.3.0 iniciando")
     yield
     log.info("ORQUESTRA API encerrando.")
