@@ -338,6 +338,18 @@ def list_pipelines(
         else:
             sched_cols += ", NULL AS dias_horarios_mes"
 
+        # colunas da migration 031 (motivo de inativação) — degradam para NULL
+        cur.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' AND COLUMN_NAME='motivo_inativacao'
+        """)
+        if cur.fetchone()[0]:
+            inativ_cols = ("motivo_inativacao, inativado_por, "
+                           "CONVERT(VARCHAR(19), inativado_em, 120) AS inativado_em")
+        else:
+            inativ_cols = ("NULL AS motivo_inativacao, NULL AS inativado_por, "
+                           "NULL AS inativado_em")
+
         data_sql = f"""
             SELECT
                 pipeline_name, project_name, domain, tags,
@@ -361,7 +373,7 @@ def list_pipelines(
                 ISNULL(CAST(max_active_runs    AS INT), 1)   AS max_active_runs,
                 ISNULL(CAST(retries_count      AS INT), 1)   AS retries_count,
                 ISNULL(CAST(retry_delay_seconds AS INT), 300) AS retry_delay_seconds,
-                pool_name, {runbook_col}, {sched_cols}, last_execution, created_at, updated_at
+                pool_name, {runbook_col}, {sched_cols}, {inativ_cols}, last_execution, created_at, updated_at
             FROM dbo.etl_pipeline
             {where_sql}
             ORDER BY project_name, domain, pipeline_name
@@ -377,7 +389,8 @@ def list_pipelines(
             "ambiente", "max_active_runs", "retries_count", "retry_delay_seconds",
             "pool_name", "runbook_md", "calendario_nome", "somente_dias_uteis",
             "trigger_por_dependencia", "horarios_especificos", "dias_semana",
-            "dias_horarios_mes", "last_execution", "created_at", "updated_at",
+            "dias_horarios_mes", "motivo_inativacao", "inativado_por", "inativado_em",
+            "last_execution", "created_at", "updated_at",
         ]
         data = []
         for row in cur.fetchall():
@@ -431,6 +444,8 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
     retry_delay_secs = int(body.get("retry_delay_seconds", 300))
     pool_name        = (body.get("pool_name") or "").strip() or None
     runbook_md       = (body.get("runbook_md") or "").strip() or None
+    # Migration 031 — motivo obrigatório ao inativar (por que o fluxo ficou indisponível)
+    motivo_inativacao = (body.get("motivo_inativacao") or "").strip() or None
     # Fase 4 — scheduling avançado
     calendario_nome  = (body.get("calendario_nome") or "").strip() or None
     somente_dias_uteis      = int(body.get("somente_dias_uteis", 0))
@@ -461,6 +476,11 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
 
     if pipeline in depends_on_list:
         raise HTTPException(status_code=422, detail="Pipeline não pode depender de si mesmo")
+
+    if active == 0 and not motivo_inativacao:
+        raise HTTPException(
+            status_code=422,
+            detail="Informe o motivo da inativação (por que o fluxo ficará indisponível).")
 
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -527,6 +547,22 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
             )
         except Exception:
             pass  # coluna da migration 024 pode não existir ainda — degrada sem erro
+        try:
+            # Migration 031 — grava o motivo ao inativar; limpa ao reativar.
+            if active == 0:
+                cur.execute(
+                    "UPDATE dbo.etl_pipeline SET motivo_inativacao=?, inativado_por=?, "
+                    "inativado_em=GETDATE(), updated_at=GETDATE() WHERE pipeline_name=?",
+                    (motivo_inativacao, changed_by, pipeline),
+                )
+            else:
+                cur.execute(
+                    "UPDATE dbo.etl_pipeline SET motivo_inativacao=NULL, inativado_por=NULL, "
+                    "inativado_em=NULL, updated_at=GETDATE() WHERE pipeline_name=?",
+                    (pipeline,),
+                )
+        except Exception:
+            pass  # colunas da migration 031 podem não existir ainda — degrada sem erro
         new_vals = {
             "active": active, "scheduled_time": horario, "schedule_type": schedule_type,
             "schedule_hour": schedule_hour, "schedule_minute": schedule_minute,

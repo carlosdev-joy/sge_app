@@ -82,6 +82,7 @@ interface FormState {
   pool_name: string
   depends_on: string
   runbook_md: string
+  motivo_inativacao: string
 }
 
 const defaultForm = (): FormState => ({
@@ -95,7 +96,7 @@ const defaultForm = (): FormState => ({
   envia_msg_inicio: true, envia_msg_fim: true, envia_msg_erro: true,
   criticidade: 'Media', sla_minutos: '', ambiente: 'PROD',
   max_active_runs: 1, retries_count: 1, retry_delay_seconds: 300,
-  pool_name: '', depends_on: '', runbook_md: '',
+  pool_name: '', depends_on: '', runbook_md: '', motivo_inativacao: '',
 })
 
 function pipelineToForm(p: Pipeline): FormState {
@@ -136,6 +137,7 @@ function pipelineToForm(p: Pipeline): FormState {
     pool_name:               p.pool_name ?? '',
     depends_on:              p.depends_on ?? '',
     runbook_md:              p.runbook_md ?? '',
+    motivo_inativacao:       p.motivo_inativacao ?? '',
   }
 }
 
@@ -374,6 +376,8 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       if (!form.domain.trim())        e.push('Domínio é obrigatório')
       if (form.tags_list.length === 0) e.push('Ao menos uma tag é obrigatória')
       if (!form.descricao.trim())     e.push('Descrição é obrigatória')
+      if (!form.active && form.motivo_inativacao.trim().length < 5)
+        e.push('Motivo da inativação é obrigatório (mín. 5 caracteres)')
       return e
     }
     if (s === 1) {
@@ -511,6 +515,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         tags:                form.tags_list.join(','),
         descricao:           form.descricao.trim() || null,
         active:              form.active ? 1 : 0,
+        motivo_inativacao:   form.active ? null : (form.motivo_inativacao.trim() || null),
         dag_start_date:      form.dag_start_date || null,
         envia_msg_inicio:    form.envia_msg_inicio ? 1 : 0,
         envia_msg_fim:       form.envia_msg_fim ? 1 : 0,
@@ -748,6 +753,22 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
               <input type="checkbox" checked={form.active} onChange={e => f('active', e.target.checked)} className="accent-blue-500" />
               <span className="text-sm text-ink">Pipeline ativo</span>
             </label>
+
+            {!form.active && (
+              <div className="flex flex-col gap-1 bg-amber-900/10 border border-amber-800/40 rounded-lg p-3">
+                <Textarea
+                  label="Motivo da inativação *"
+                  rows={2}
+                  value={form.motivo_inativacao}
+                  onChange={e => f('motivo_inativacao', e.target.value)}
+                  placeholder="Ex.: aguardando correção da origem X / migração em andamento / solicitado pela área Y…"
+                />
+                <span className="text-[11px] text-dim">
+                  Obrigatório ao inativar. Fica visível na lista e nos detalhes do pipeline,
+                  para a equipe saber por que o fluxo está indisponível para execução.
+                </span>
+              </div>
+            )}
           </div>
         )}
 

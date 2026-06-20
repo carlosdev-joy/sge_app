@@ -4,6 +4,7 @@ import { apiFetch } from '../../lib/api'
 import { useAuthStore } from '../../store/auth'
 import { Button } from '../ui/Button'
 import { Modal } from '../ui/Modal'
+import { Textarea } from '../ui/Input'
 import { toast } from '../ui/Toast'
 import { ChevronRight, ChevronDown, History, GitBranch, PowerOff, Settings, Play } from 'lucide-react'
 import type { Pipeline, AuditRow, LineageObject, LineageJob } from '../../types/pipeline'
@@ -31,6 +32,21 @@ export function ViewModal({ pipeline: p, onClose }: { pipeline: Pipeline; onClos
   return (
     <Modal open title={p.pipeline_name} onClose={onClose} size="lg">
       <div className="overflow-y-auto max-h-[70vh] pr-1">
+        {!p.active && (
+          <div className="mb-4 bg-amber-900/15 border border-amber-800/40 rounded-lg px-3 py-2.5">
+            <div className="flex items-center gap-1.5 text-amber-400 font-semibold text-xs mb-1">
+              <PowerOff size={13} /> Pipeline inativo — indisponível para execução
+            </div>
+            <div className="text-sm text-amber-200 whitespace-pre-wrap">
+              {p.motivo_inativacao || <span className="italic text-amber-400/60">Motivo não informado.</span>}
+            </div>
+            {(p.inativado_por || p.inativado_em) && (
+              <div className="text-[10px] text-amber-400/70 mt-1.5">
+                {p.inativado_por ? `por ${p.inativado_por}` : ''}{p.inativado_em ? ` · ${p.inativado_em}` : ''}
+              </div>
+            )}
+          </div>
+        )}
         <div className="mb-4">
           <p className="text-[10px] font-bold uppercase tracking-wider text-blue-400 mb-2 border-b border-edge pb-1">Identificação</p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-3">
@@ -282,10 +298,13 @@ export function LineageModal({ pipeline, onClose }: { pipeline: Pipeline; onClos
 export function InactivateModal({ pipeline, onClose }: { pipeline: Pipeline; onClose: () => void }) {
   const qc   = useQueryClient()
   const user = useAuthStore(s => s.user)
+  const [motivo, setMotivo] = useState('')
+  const motivoOk = motivo.trim().length >= 5
   const mut  = useMutation({
     mutationFn: () => apiFetch('/pipelines/register', {
       method: 'POST',
       body: JSON.stringify({
+        motivo_inativacao:   motivo.trim(),
         pipeline_name:       pipeline.pipeline_name,
         scheduled_time:      pipeline.scheduled_time ?? '00:00:00',
         schedule_type:       pipeline.schedule_type,
@@ -329,10 +348,26 @@ export function InactivateModal({ pipeline, onClose }: { pipeline: Pipeline; onC
           Inativar <span className="font-mono text-ink font-medium">{pipeline.pipeline_name}</span>?
           Pode ser reativado a qualquer momento pela edição.
         </p>
+        <div className="flex flex-col gap-1">
+          <Textarea
+            label="Motivo da inativação *"
+            rows={3}
+            value={motivo}
+            onChange={e => setMotivo(e.target.value)}
+            placeholder="Ex.: aguardando correção da origem X / migração em andamento / solicitado pela área Y…"
+            autoFocus
+          />
+          <span className="text-[11px] text-dim">
+            Obrigatório. Fica visível na lista e nos detalhes do pipeline, para que a equipe saiba
+            por que o fluxo está indisponível para execução.
+          </span>
+        </div>
         <div className="flex justify-end gap-2 border-t border-edge pt-3">
           <Button variant="secondary" onClick={onClose}>Cancelar</Button>
-          <Button loading={mut.isPending} className="border-amber-800/40 text-amber-400"
-            onClick={() => mut.mutate()}>
+          <Button loading={mut.isPending} disabled={!motivoOk}
+            className="border-amber-800/40 text-amber-400 disabled:opacity-40 disabled:cursor-not-allowed"
+            title={motivoOk ? 'Inativar pipeline' : 'Informe o motivo (mín. 5 caracteres)'}
+            onClick={() => { if (motivoOk) mut.mutate() }}>
             <PowerOff size={13} /> Inativar
           </Button>
         </div>

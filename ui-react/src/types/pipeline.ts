@@ -27,6 +27,10 @@ export interface Pipeline {
   retry_delay_seconds: number
   pool_name: string | null
   runbook_md: string | null
+  // motivo de inativação (migration 031) — preenchido quando active=0
+  motivo_inativacao?: string | null
+  inativado_por?: string | null
+  inativado_em?: string | null
   last_execution: string | null
   created_at: string | null
   updated_at: string | null
