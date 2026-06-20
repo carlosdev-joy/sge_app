@@ -11,7 +11,7 @@ export function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, 
   return (
     <div className="flex items-center gap-2 px-4 py-2 border-t border-edge/30 hover:bg-edge/10 transition-colors group">
       <span className={`w-2 h-2 rounded-full flex-shrink-0 ${p.active ? 'bg-green-500' : 'bg-slate-600'}`}
-        title={p.active ? 'Ativo' : 'Inativo'} />
+        title={p.active ? 'Ativo' : (p.motivo_inativacao ? `Inativo — ${p.motivo_inativacao}` : 'Inativo')} />
       <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border flex-shrink-0 w-[46px] text-center ${p.dag_criada ? 'text-green-400 border-green-800/40 bg-green-900/10' : 'text-dim border-edge bg-canvas'}`}>
         {p.dag_criada ? 'DAG ✓' : 'DAG —'}
       </span>
@@ -33,6 +33,19 @@ export function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, 
       <span className="font-mono text-xs text-ink font-medium flex-1 truncate min-w-0" title={p.pipeline_name}>
         {p.pipeline_name}
       </span>
+
+      {/* Inativo: mostra o motivo inline (truncado), para a equipe saber por que o
+          fluxo está indisponível sem precisar abrir os detalhes. */}
+      {!p.active && (
+        <span
+          className="flex items-center gap-1 text-[10px] text-amber-400 bg-amber-900/15 border border-amber-800/40 rounded px-1.5 py-0.5 max-w-[240px] flex-shrink-0"
+          title={p.motivo_inativacao
+            ? `Inativo — ${p.motivo_inativacao}${p.inativado_por ? ` (por ${p.inativado_por})` : ''}${p.inativado_em ? ` em ${p.inativado_em}` : ''}`
+            : 'Inativo (motivo não informado)'}>
+          <PowerOff size={10} className="flex-shrink-0" />
+          <span className="truncate">{p.motivo_inativacao || 'inativo'}</span>
+        </span>
+      )}
 
       {/* Sempre visível: abre os jobs deste pipeline em nova aba (preserva o filtro daqui) */}
       <Button variant="secondary" size="sm"
