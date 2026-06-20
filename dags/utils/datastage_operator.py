@@ -277,14 +277,27 @@ class DataStageOperator(BaseOperator):
         if self.execution_date_param and logical_date:
             parts += ["-param", f"{self.execution_date_param}={logical_date}"]
         parts += [self.project, self.job_name]
+        cmd = " ".join(parts)
 
-        rc, out, err = self._exec(" ".join(parts), timeout=60)
+        rc, out, err = self._exec(cmd, timeout=60)
         combined = (out + " " + err).strip()
         self.log.info("[DS] trigger rc=%d | %s", rc, combined[:300])
 
+        # DSJE_BADSTATE (rc=-2): o job está em estado inválido (não "compiled, not
+        # running") — sobrou TRAVADO de um run anterior (zumbi / abortado sem reset
+        # / lock). RESET + 1 novo disparo auto-recupera; senão a task falharia os
+        # 4 retries do Airflow sempre no mesmo erro.
+        if rc not in (0, 1) and "BADSTATE" in combined.upper():
+            self.log.warning("[DS] disparo recusado (DSJE_BADSTATE) — RESET do job e novo disparo")
+            self._reset_job(self.job_name)
+            time.sleep(self.retry_wait)
+            rc, out, err = self._exec(cmd, timeout=60)
+            combined = (out + " " + err).strip()
+            self.log.info("[DS] trigger (pós-reset) rc=%d | %s", rc, combined[:300])
+
         if rc not in (0, 1):
             raise AirflowException(
-                f"[DS] Failed to trigger '{self.job_name}': rc={rc} | {err[:300]}"
+                f"[DS] Failed to trigger '{self.job_name}': rc={rc} | {combined[:300]}"
             )
 
         info = self._jobinfo()
