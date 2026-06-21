@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
@@ -69,6 +69,7 @@ interface JobFormData {
   job_command: string
   ssh_conn_id: string
   verbose_log: boolean
+  depends_on_jobs: string[]
 }
 
 function JobFormModal({
@@ -84,6 +85,7 @@ function JobFormModal({
     job_command: job?.job_command ?? '',
     ssh_conn_id: job?.ssh_conn_id ?? '',
     verbose_log: job?.verbose_log ?? false,
+    depends_on_jobs: [],
   })
   const [err, setErr] = useState<string[]>([])
 
@@ -93,6 +95,28 @@ function JobFormModal({
     staleTime: 60_000,
   })
   const sshConns = sshData?.connections ?? []
+
+  // Jobs irmãos do mesmo pipeline — candidatos a predecessores ("Depende de").
+  const { data: pipeJobs } = useQuery<{ data: { job_name: string }[] }>({
+    queryKey: ['jobs-of-pipeline', pipeline],
+    queryFn: () => apiFetch(`/jobs?limit=200&filter_pipeline=${encodeURIComponent(pipeline)}`),
+    staleTime: 30_000,
+  })
+  const siblings = (pipeJobs?.data ?? [])
+    .map(j => j.job_name)
+    .filter(n => n && n !== form.job_name.trim())
+
+  // Carrega as dependências atuais do job em edição.
+  useEffect(() => {
+    if (!isEdit || !job) return
+    apiFetch<{ depends_on_jobs?: string | null }>(
+      `/pipelines/jobs/${encodeURIComponent(pipeline)}/${encodeURIComponent(job.job_name)}`)
+      .then(d => setForm(prev => ({
+        ...prev,
+        depends_on_jobs: (d.depends_on_jobs || '').split(',').map(s => s.trim()).filter(Boolean),
+      })))
+      .catch(() => {})
+  }, [isEdit, pipeline, job])
 
   const saveMut = useMutation({
     mutationFn: () => apiFetch('/pipelines/jobs/register', {
@@ -105,6 +129,7 @@ function JobFormModal({
         job_command: form.job_command.trim() || null,
         ssh_conn_id: form.job_type === 'shell' ? (form.ssh_conn_id || null) : null,
         verbose_log: form.job_type === 'datastage' ? form.verbose_log : false,
+        depends_on_jobs: form.depends_on_jobs,
         require_lineage: false,
         operacao: 'upsert',
       }),
@@ -182,6 +207,31 @@ function JobFormModal({
             'ex: dbo.sp_procedure'
           }
         />
+
+        {/* Depende de — predecessores no mesmo pipeline (grafo de dependências) */}
+        {siblings.length > 0 && (
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-dim font-medium">
+              Depende de <span className="text-dim/60">(começa quando estes terminarem com sucesso · vazio = inicia no começo)</span>
+            </label>
+            <div className="flex flex-wrap gap-1.5">
+              {siblings.map(nm => {
+                const sel = form.depends_on_jobs.includes(nm)
+                return (
+                  <button key={nm} type="button"
+                    onClick={() => f('depends_on_jobs', sel
+                      ? form.depends_on_jobs.filter(d => d !== nm)
+                      : [...form.depends_on_jobs, nm])}
+                    className={`px-2.5 py-0.5 rounded-full text-xs border transition-colors ${sel
+                      ? 'bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800'
+                      : 'bg-panel text-dim border-edge hover:bg-edge/40'}`}>
+                    {sel ? '✓ ' : ''}{nm}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
 
         {/* SSH para shell */}
         {form.job_type === 'shell' && (
