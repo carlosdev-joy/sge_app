@@ -31,8 +31,10 @@ PENDENTE_TIMEOUT_S   = int(os.getenv("DAG_PENDENTE_TIMEOUT_S", "900"))  # 15 min
 
 # ── fila (DB síncrono) ──────────────────────────────────────────────────────
 
-def enqueue(pipeline_name: str, desired_paused: bool, matricula: str | None) -> None:
-    """Registra a intenção de ativar/notificar uma DAG recém-gerada (best-effort)."""
+def enqueue(pipeline_name: str, desired_paused: bool, matricula: str | None,
+            dag_run_id: str | None = None) -> None:
+    """Registra a intenção de ativar/notificar uma DAG recém-gerada (best-effort).
+    `dag_run_id` liga o pendente ao run da factory (etl_factory_log)."""
     if not pipeline_name:
         return
     try:
@@ -42,10 +44,11 @@ def enqueue(pipeline_name: str, desired_paused: bool, matricula: str | None) -> 
             "UPDATE dbo.etl_dag_pendente SET status='superseded', atualizado_em=GETDATE() "
             "WHERE pipeline_name=? AND status='pendente'", (pipeline_name,))
         cur.execute(
-            "INSERT INTO dbo.etl_dag_pendente (pipeline_name, desired_paused, matricula) "
-            "VALUES (?, ?, ?)",
+            "INSERT INTO dbo.etl_dag_pendente (pipeline_name, desired_paused, matricula, dag_run_id) "
+            "VALUES (?, ?, ?, ?)",
             (pipeline_name[:200], 1 if desired_paused else 0,
-             (str(matricula)[:64] if matricula else None)))
+             (str(matricula)[:64] if matricula else None),
+             (str(dag_run_id)[:200] if dag_run_id else None)))
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         log.warning("[DAG-RECONCILE] enqueue falhou p/ %s: %s", pipeline_name, e)
@@ -56,10 +59,11 @@ def _fetch_pendentes() -> list[dict]:
         conn = get_db_conn(); cur = conn.cursor()
         cur.execute(
             "SELECT id, pipeline_name, desired_paused, matricula, "
-            "       DATEDIFF(SECOND, criado_em, GETDATE()) "
+            "       DATEDIFF(SECOND, criado_em, GETDATE()), dag_run_id "
             "FROM dbo.etl_dag_pendente WHERE status='pendente' ORDER BY criado_em")
         rows = [{"id": r[0], "pipeline_name": r[1], "desired_paused": bool(r[2]),
-                 "matricula": r[3], "idade_s": int(r[4] or 0)} for r in cur.fetchall()]
+                 "matricula": r[3], "idade_s": int(r[4] or 0), "dag_run_id": r[5]}
+                for r in cur.fetchall()]
         cur.close(); conn.close()
         return rows
     except Exception as e:
@@ -78,6 +82,21 @@ def _set_status(pendente_id: int, status: str) -> None:
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         log.warning("[DAG-RECONCILE] set_status %s=%s: %s", pendente_id, status, e)
+
+
+def _update_factory_log(dag_run_id: str | None, estado: str) -> None:
+    """Vira o registro da factory (GERADA → SUCCESS/TIMEOUT) ao concluir a ativação.
+    Só altera quem está em 'GERADA' — não mexe em SUCCESS/FAILED de outros fluxos."""
+    if not dag_run_id:
+        return
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "UPDATE dbo.etl_factory_log SET estado=?, finalizado_em=GETDATE() "
+            "WHERE dag_run_id=? AND estado='GERADA'", (estado, dag_run_id))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        log.debug("[DAG-RECONCILE] factory_log %s=%s: %s", dag_run_id, estado, e)
 
 
 def _bump(pendente_id: int) -> None:
@@ -101,6 +120,7 @@ def _finalize(row: dict, found: bool) -> None:
              "A DAG foi gerada e já está ativa para execução."),
             "success", "/pipelines")
         _set_status(row["id"], "concluido")
+        _update_factory_log(row.get("dag_run_id"), "SUCCESS")
     elif row["idade_s"] >= PENDENTE_TIMEOUT_S:
         add_notificacao(
             mat, f"DAG de {name} ainda registrando",
@@ -108,6 +128,7 @@ def _finalize(row: dict, found: bool) -> None:
             "Recarregue a lista de pipelines em alguns minutos.",
             "warning", "/pipelines")
         _set_status(row["id"], "timeout")
+        _update_factory_log(row.get("dag_run_id"), "TIMEOUT")
     else:
         _bump(row["id"])
 

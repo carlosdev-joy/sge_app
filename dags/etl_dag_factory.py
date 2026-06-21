@@ -1142,6 +1142,12 @@ def gerar_dags(**context):
     steps_log.append({"tipo": "resumo", "msg": resumo})
 
     estado_final = "FAILED" if erros else "SUCCESS"
+    # Fluxo "Gerar DAG" da UI (conf.aguardar_ativacao): o arquivo foi gerado, mas
+    # a DAG ainda não está ativa no Airflow. Marca GERADA (aguardando ativação);
+    # o reconciliador do ORQUESTRA vira para SUCCESS quando a DAG ficar ativa, ou
+    # TIMEOUT se não aparecer no tempo limite. (Regeneração em massa segue SUCCESS.)
+    if estado_final == "SUCCESS" and pipeline_name and conf.get("aguardar_ativacao"):
+        estado_final = "GERADA"
     _log_upsert(estado_final, len(geradas), len(erros), steps_log, erros)
 
     if geradas:
