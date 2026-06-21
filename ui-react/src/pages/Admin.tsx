@@ -2007,29 +2007,62 @@ function ComunicadosTab() {
   )
 }
 
-const ADMIN_TABS = [
-  { id: 'config', label: 'Configurações' },
-  { id: 'regen', label: 'Regenerar DAGs' },
-  { id: 'delete', label: 'Excluir Pipeline' },
-  { id: 'versoes', label: 'Versões' },
-  { id: 'tipos', label: 'Tipos de Job' },
-  { id: 'agenda', label: 'Agendamento' },
-  { id: 'usuarios', label: 'Usuários & Perfis' },
-  { id: 'comunicados', label: 'Comunicados' },
-  { id: 'projetos', label: 'Projetos' },
-  { id: 'sla', label: 'Relatório SLA' },
-  { id: 'powerbi', label: 'Power BI — Acessos' },
+// Navegação em 2 níveis: grupo (nível 1, sub-abas) → aba (nível 2, pílulas).
+const ADMIN_GROUPS = [
+  { id: 'sistema', label: 'Sistema', tabs: [
+    { id: 'config', label: 'Configurações' },
+    { id: 'tipos', label: 'Tipos de Job' },
+    { id: 'projetos', label: 'Projetos' },
+    { id: 'versoes', label: 'Versões' },
+  ] },
+  { id: 'pipelines', label: 'Pipelines', tabs: [
+    { id: 'regen', label: 'Regenerar DAGs' },
+    { id: 'delete', label: 'Excluir Pipeline' },
+    { id: 'agenda', label: 'Agendamento' },
+  ] },
+  { id: 'acessos', label: 'Acessos & Comunicação', tabs: [
+    { id: 'usuarios', label: 'Usuários & Perfis' },
+    { id: 'comunicados', label: 'Comunicados' },
+    { id: 'powerbi', label: 'Power BI — Acessos' },
+  ] },
+  { id: 'relatorios', label: 'Relatórios', tabs: [
+    { id: 'sla', label: 'Relatório SLA' },
+  ] },
 ]
 
 export default function Admin() {
   const [tab, setTab] = useState('config')
+  const activeGroup = ADMIN_GROUPS.find(g => g.tabs.some(t => t.id === tab)) ?? ADMIN_GROUPS[0]
+
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-4">
       <div>
         <h1 className="text-lg font-bold text-ink">Administração</h1>
         <p className="text-xs text-dim mt-0.5">Gestão do sistema Orquestra</p>
       </div>
-      <Tabs tabs={ADMIN_TABS} active={tab} onChange={setTab} size="sm" />
+
+      {/* Nível 1 — grupos */}
+      <Tabs
+        tabs={ADMIN_GROUPS.map(g => ({ id: g.id, label: g.label }))}
+        active={activeGroup.id}
+        onChange={gid => { const g = ADMIN_GROUPS.find(x => x.id === gid); if (g) setTab(g.tabs[0].id) }}
+        size="md"
+      />
+
+      {/* Nível 2 — abas do grupo (pílulas) */}
+      {activeGroup.tabs.length > 1 && (
+        <div className="flex flex-wrap gap-1">
+          {activeGroup.tabs.map(t => (
+            <button key={t.id} onClick={() => setTab(t.id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                tab === t.id ? 'bg-[#1A5FA8] text-white' : 'bg-edge/40 text-dim hover:text-ink hover:bg-edge/70'
+              }`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div>
         {tab === 'config' && <ConfigTab />}
         {tab === 'regen' && <RegenDagsTab />}
