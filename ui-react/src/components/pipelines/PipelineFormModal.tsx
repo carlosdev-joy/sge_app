@@ -252,6 +252,8 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   const [stepErrors, setStepErrors] = useState<Record<number, string[]>>({})
   const [jobs,  setJobs]  = useState<JobEntry[]>([])
   const [lineage, setLineage] = useState<LineageEntry[]>([])
+  const [confirmClose, setConfirmClose] = useState(false)
+  const [askGenerate, setAskGenerate]   = useState<string | null>(null)
 
   const { data: projData } = useQuery<{ projects: string[] }>({
     queryKey: ['pipeline-projects'],
@@ -604,12 +606,37 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       const base = isEdit ? 'Pipeline atualizado!' : 'Pipeline criado com sucesso!'
       if (!dag.ok) toast.error(`${base} Atenção: ${dag.msg}`)
       else toast.success(dag.msg ? `${base} · ${dag.msg}` : base)
+      // Criação: oferece gerar a DAG agora (1 passo a menos). Edição: fecha.
+      if (!isEdit) { setAskGenerate(res.pname); return }
       onClose()
     },
     onError: (e: any) => {
       setStepErrors(prev => ({ ...prev, 5: [e?.message || 'Erro ao salvar pipeline'] }))
     },
   })
+
+  // Gerar DAG logo após criar — mesmo disparo do botão "Gerar DAG".
+  const genDagMut = useMutation({
+    mutationFn: (pname: string) => apiFetch(`/pipelines/${encodeURIComponent(pname)}/gerar-dag`, { method: 'POST' }),
+    onSuccess: () => {
+      toast.success('Geração da DAG solicitada — o ORQUESTRA avisa quando estiver ativa no Airflow.')
+      setAskGenerate(null); onClose()
+    },
+    onError: (e: any) => {
+      toast.error(e?.message || 'Falha ao solicitar a geração da DAG')
+      setAskGenerate(null); onClose()
+    },
+  })
+
+  // Fechar com confirmação se há conteúdo preenchido (evita perder o trabalho).
+  const hasContent = isEdit
+    ? step > 0
+    : (!!form.pipeline_name?.trim() || jobs.length > 0 || lineage.length > 0 || step > 0)
+  function requestClose() {
+    if (saveMut.isPending || genDagMut.isPending) return
+    if (hasContent) setConfirmClose(true)
+    else onClose()
+  }
 
   function validateAllAndSave() {
     const allErrors: Record<number, string[]> = {}
@@ -698,7 +725,8 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   const curStepErrors = stepErrors[step] ?? []
 
   return (
-    <Modal open title={isEdit ? `Editar: ${pipeline!.pipeline_name}` : 'Novo Pipeline'} onClose={onClose} size="xl">
+    <>
+    <Modal open title={isEdit ? `Editar: ${pipeline!.pipeline_name}` : 'Novo Pipeline'} onClose={requestClose} size="xl">
       <div className="flex flex-col gap-4">
 
         <Stepper step={step} setStep={setStep} errors={stepErrors} />
@@ -1432,7 +1460,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         )}
 
         <div className="flex justify-between items-center pt-1 border-t border-edge">
-          <Button variant="secondary" onClick={step === 0 ? onClose : goPrev}>
+          <Button variant="secondary" onClick={step === 0 ? requestClose : goPrev}>
             {step === 0 ? 'Cancelar' : '← Voltar'}
           </Button>
           <div className="flex gap-2">
@@ -1446,6 +1474,40 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         </div>
       </div>
     </Modal>
+
+    {/* Confirmação ao sair sem finalizar (evita perder dados preenchidos) */}
+    {confirmClose && (
+      <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/60" onClick={() => setConfirmClose(false)} />
+        <div className="relative w-full max-w-sm bg-panel border border-edge rounded-xl shadow-2xl p-5 flex flex-col gap-4">
+          <h3 className="text-base font-semibold text-ink">Sair sem finalizar?</h3>
+          <p className="text-sm text-dim">Você tem informações preenchidas que ainda <strong className="text-ink">não foram salvas</strong>. Se sair agora, vai perder tudo.</p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setConfirmClose(false)}>Continuar editando</Button>
+            <Button variant="danger" onClick={() => { setConfirmClose(false); onClose() }}>Sair sem salvar</Button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Após criar: oferece gerar a DAG agora (mesmo disparo do botão Gerar DAG) */}
+    {askGenerate && (
+      <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/60" />
+        <div className="relative w-full max-w-sm bg-panel border border-edge rounded-xl shadow-2xl p-5 flex flex-col gap-4">
+          <h3 className="text-base font-semibold text-ink">Gerar a DAG agora?</h3>
+          <p className="text-sm text-ink">Pipeline <span className="font-mono font-medium">{askGenerate}</span> criado! Deseja gerar a DAG e enviar ao Airflow agora?</p>
+          <p className="text-xs text-dim">Equivale a clicar em “Gerar DAG”. O ORQUESTRA avisa quando a DAG estiver ativa.</p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" disabled={genDagMut.isPending} onClick={() => { setAskGenerate(null); onClose() }}>Agora não</Button>
+            <Button loading={genDagMut.isPending} onClick={() => genDagMut.mutate(askGenerate)}>
+              <Save size={13} /> Gerar DAG
+            </Button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   )
 }
 
