@@ -10,7 +10,7 @@ from datetime import timezone, timedelta
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import get_db_conn
 from deps import (
@@ -19,6 +19,7 @@ from deps import (
     get_current_user, require_perm,
 )
 from services.notify import add_notificacao
+from services.dag_reconcile import enqueue as enqueue_dag_pendente
 
 log = logging.getLogger("orquestra-api")
 
@@ -87,55 +88,6 @@ async def _sync_airflow_pause(dag_id: str, paused: bool) -> dict:
         result["error"] = str(e)
         log.warning("[PIPELINE] sync Airflow dag=%s falhou: %s", dag_id, e)
         return result
-
-
-async def _await_and_activate_dag(pipeline_name: str, desired_paused: bool,
-                                  matricula: str | None = None,
-                                  attempts: int = 36, interval_s: int = 5) -> None:
-    """Background: aguarda a DAG aparecer no Airflow (o scheduler leva um tempo
-    para parsear o arquivo recém-gerado) e então alinha o is_paused ao status do
-    pipeline — tipicamente DESPAUSA, pois DAGs nascem pausadas e o usuário criou
-    o pipeline já ativo. Roda fora do request para concluir mesmo se a UI fechar.
-    Ao concluir, registra uma notificação para o usuário que disparou a geração.
-    """
-    if not _DAG_ID_RE.match(pipeline_name or ""):
-        return
-    for _ in range(attempts):
-        await asyncio.sleep(interval_s)
-        try:
-            async with httpx.AsyncClient(
-                base_url=AIRFLOW_URL, auth=(AIRFLOW_USER, AIRFLOW_PASSWORD), timeout=15
-            ) as client:
-                g = await client.get(f"/api/v1/dags/{pipeline_name}")
-                if g.status_code == 404 or not g.is_success:
-                    continue
-                cur_paused = bool(g.json().get("is_paused", True))
-                if cur_paused != desired_paused:
-                    await client.patch(
-                        f"/api/v1/dags/{pipeline_name}",
-                        json={"is_paused": desired_paused},
-                        headers={"Content-Type": "application/json"},
-                    )
-                log.info("[GERAR-DAG] %s disponível no Airflow — is_paused=%s", pipeline_name, desired_paused)
-                await asyncio.to_thread(
-                    add_notificacao, matricula,
-                    f"DAG de {pipeline_name} pronta no Airflow",
-                    (f"A DAG foi gerada e está pausada (pipeline inativo)."
-                     if desired_paused else
-                     f"A DAG foi gerada e já está ativa para execução."),
-                    "success", "/pipelines")
-                return
-        except Exception as e:
-            log.warning("[GERAR-DAG] poll %s: %s", pipeline_name, e)
-            continue
-    log.warning("[GERAR-DAG] %s não apareceu no Airflow no tempo limite (%ds)",
-                pipeline_name, attempts * interval_s)
-    await asyncio.to_thread(
-        add_notificacao, matricula,
-        f"DAG de {pipeline_name} ainda registrando",
-        "A DAG foi criada no servidor, mas o Airflow ainda não a disponibilizou. "
-        "Recarregue a lista de pipelines em alguns minutos.",
-        "warning", "/pipelines")
 
 
 # ── Helpers para register_pipeline ───────────────────────────────────────────
@@ -743,15 +695,18 @@ def _pipeline_active(pname: str) -> int:
 
 
 @router.post("/pipelines/{pipeline_name}/gerar-dag", tags=["pipelines"])
-async def gerar_dag(pipeline_name: str, background: BackgroundTasks,
+async def gerar_dag(pipeline_name: str,
                     _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
     """Gera/regenera a DAG do pipeline e garante o estado final correto.
 
-    Dispara a etl_dag_factory (que escreve o arquivo da DAG no servidor) e agenda
-    um watcher em segundo plano que ESPERA a DAG aparecer no Airflow e a ativa
-    automaticamente, espelhando o status do pipeline (DAGs nascem pausadas). Assim
-    o Orquestra só considera a DAG pronta quando ela está disponível e no estado
-    certo — sem ficar "ativa no Orquestra e pausada no Airflow".
+    Dispara a etl_dag_factory (que escreve o arquivo da DAG no servidor) e
+    PERSISTE a intenção de ativação em dbo.etl_dag_pendente. Um reconciliador
+    (loop na API) espera a DAG aparecer no Airflow, a coloca no estado certo
+    (DAGs nascem pausadas) e notifica quem disparou. Como a intenção fica no
+    banco, um restart da API no meio da janela não perde o passo — o loop retoma
+    a fila ao subir. Assim o Orquestra só considera a DAG pronta quando ela está
+    disponível e no estado certo — sem ficar "ativa no Orquestra e pausada no
+    Airflow".
     """
     pname = (pipeline_name or "").strip()
     if not _DAG_ID_RE.match(pname):
@@ -776,9 +731,9 @@ async def gerar_dag(pipeline_name: str, background: BackgroundTasks,
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Erro ao disparar a factory: {e}")
 
-    # Watcher em segundo plano: conclui a ativação mesmo se a UI fechar e
-    # notifica o usuário que disparou a geração ao finalizar.
-    background.add_task(_await_and_activate_dag, pname, desired_paused, _auth.get("matricula"))
+    # Persiste a intenção: o reconciliador (loop na API) conclui a ativação e
+    # notifica ao final — resiliente a restart da API (a intenção fica no banco).
+    await asyncio.to_thread(enqueue_dag_pendente, pname, desired_paused, _auth.get("matricula"))
     return {"ok": True, "pipeline_name": pname, "dag_run_id": run_id,
             "desired_active": (not desired_paused)}
 
