@@ -84,6 +84,7 @@ interface FactoryRunDetail {
 function stepIcon(tipo: string) {
   const m: Record<string, string> = {
     reset: '🔄', gerada: '✅', erro: '❌', iniciando: '▶️', concluido: '🏁', info: 'ℹ️',
+    aguardando: '⏳', ativada: '🟢', timeout: '⚠️',
   }
   return m[tipo] ?? '•'
 }
@@ -140,7 +141,11 @@ function FactoryRuns() {
                   {logData.steps?.map((s, i) => (
                     <div key={i} className="flex items-start gap-2 text-xs">
                       <span className="shrink-0 w-5">{stepIcon(s.tipo)}</span>
-                      <span className={s.tipo === 'erro' ? 'text-red-400' : s.tipo === 'gerada' ? 'text-green-400' : 'text-dim'}>
+                      <span className={
+                        s.tipo === 'erro' || s.tipo === 'timeout' ? 'text-red-600 dark:text-red-400'
+                          : s.tipo === 'gerada' || s.tipo === 'ativada' ? 'text-green-700 dark:text-green-400'
+                          : s.tipo === 'aguardando' ? 'text-amber-700 dark:text-amber-400 font-medium'
+                          : 'text-dim'}>
                         {s.msg}
                       </span>
                     </div>

@@ -1148,6 +1148,10 @@ def gerar_dags(**context):
     # TIMEOUT se não aparecer no tempo limite. (Regeneração em massa segue SUCCESS.)
     if estado_final == "SUCCESS" and pipeline_name and conf.get("aguardar_ativacao"):
         estado_final = "GERADA"
+        steps_log.append({
+            "tipo": "aguardando",
+            "msg": "Aguarde — ativando a DAG no Airflow… O ORQUESTRA confirma e marca como pronta quando estiver ativa.",
+        })
     _log_upsert(estado_final, len(geradas), len(erros), steps_log, erros)
 
     if geradas:

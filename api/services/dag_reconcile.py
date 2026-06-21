@@ -12,6 +12,7 @@ BackgroundTask in-process, que sumia se a API reiniciasse.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -84,16 +85,36 @@ def _set_status(pendente_id: int, status: str) -> None:
         log.warning("[DAG-RECONCILE] set_status %s=%s: %s", pendente_id, status, e)
 
 
-def _update_factory_log(dag_run_id: str | None, estado: str) -> None:
-    """Vira o registro da factory (GERADA → SUCCESS/TIMEOUT) ao concluir a ativação.
-    Só altera quem está em 'GERADA' — não mexe em SUCCESS/FAILED de outros fluxos."""
+def _update_factory_log(dag_run_id: str | None, estado: str,
+                        step_tipo: str | None = None, step_msg: str | None = None) -> None:
+    """Vira o registro da factory (GERADA → SUCCESS/TIMEOUT) ao concluir a ativação
+    e anexa um passo no detalhes_json (linha no log do run). Só altera quem está em
+    'GERADA' — não mexe em SUCCESS/FAILED de outros fluxos."""
     if not dag_run_id:
         return
     try:
         conn = get_db_conn(); cur = conn.cursor()
         cur.execute(
-            "UPDATE dbo.etl_factory_log SET estado=?, finalizado_em=GETDATE() "
-            "WHERE dag_run_id=? AND estado='GERADA'", (estado, dag_run_id))
+            "SELECT detalhes_json FROM dbo.etl_factory_log WHERE dag_run_id=? AND estado='GERADA'",
+            (dag_run_id,))
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close(); return  # já finalizado ou outro fluxo
+        if step_msg:
+            try:
+                d = json.loads(row[0]) if row[0] else {}
+            except Exception:
+                d = {}
+            d.setdefault("erros", d.get("erros", []))
+            d.setdefault("steps", []).append({"tipo": step_tipo or "info", "msg": step_msg})
+            cur.execute(
+                "UPDATE dbo.etl_factory_log SET estado=?, finalizado_em=GETDATE(), detalhes_json=? "
+                "WHERE dag_run_id=? AND estado='GERADA'",
+                (estado, json.dumps(d, ensure_ascii=False), dag_run_id))
+        else:
+            cur.execute(
+                "UPDATE dbo.etl_factory_log SET estado=?, finalizado_em=GETDATE() "
+                "WHERE dag_run_id=? AND estado='GERADA'", (estado, dag_run_id))
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         log.debug("[DAG-RECONCILE] factory_log %s=%s: %s", dag_run_id, estado, e)
@@ -120,7 +141,8 @@ def _finalize(row: dict, found: bool) -> None:
              "A DAG foi gerada e já está ativa para execução."),
             "success", "/pipelines")
         _set_status(row["id"], "concluido")
-        _update_factory_log(row.get("dag_run_id"), "SUCCESS")
+        _update_factory_log(row.get("dag_run_id"), "SUCCESS", "ativada",
+                            "DAG criada e ativada no Airflow — pronta para execução.")
     elif row["idade_s"] >= PENDENTE_TIMEOUT_S:
         add_notificacao(
             mat, f"DAG de {name} ainda registrando",
@@ -128,7 +150,8 @@ def _finalize(row: dict, found: bool) -> None:
             "Recarregue a lista de pipelines em alguns minutos.",
             "warning", "/pipelines")
         _set_status(row["id"], "timeout")
-        _update_factory_log(row.get("dag_run_id"), "TIMEOUT")
+        _update_factory_log(row.get("dag_run_id"), "TIMEOUT", "timeout",
+                            "A DAG foi gerada, mas não ficou ativa no Airflow no tempo limite.")
     else:
         _bump(row["id"])
 
