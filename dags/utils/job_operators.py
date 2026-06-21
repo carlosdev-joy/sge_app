@@ -55,15 +55,18 @@ def _log_resultsets(cur, log):
 class StoredProcOperator(BaseOperator):
     """EXEC de stored procedure com bind de parâmetros e log do retorno/erro."""
 
-    def __init__(self, *, proc, mssql_conn_id, params=None, **kwargs):
+    def __init__(self, *, proc, mssql_conn_id, params=None, database=None, **kwargs):
         super().__init__(**kwargs)
         self.proc = proc
         self.mssql_conn_id = mssql_conn_id
         self.params = params or []
+        self.database = (database or "").strip() or None
 
     def execute(self, context):
         if not self.proc:
             raise ValueError("StoredProcOperator: 'proc' não informado")
+        # Banco-alvo no MESMO servidor → nome de 3 partes: EXEC [banco].schema.proc
+        target = f"[{self.database}].{self.proc}" if self.database else self.proc
         hook = MsSqlHook(mssql_conn_id=self.mssql_conn_id)
         conn = hook.get_conn()
         cur = conn.cursor()
@@ -75,18 +78,18 @@ class StoredProcOperator(BaseOperator):
                     for p in valid
                 )
                 vals = [_coerce(p.get("value"), p.get("type")) for p in valid]
-                sql = f"EXEC {self.proc} {ph}"
+                sql = f"EXEC {target} {ph}"
                 self.log.info("[SQL] %s", sql)
                 cur.execute(sql, vals)
             else:
                 # Sem parâmetros → não envia nenhum parâmetro.
-                self.log.info("[SQL] EXEC %s", self.proc)
-                cur.execute(f"EXEC {self.proc}")
+                self.log.info("[SQL] EXEC %s", target)
+                cur.execute(f"EXEC {target}")
             ssets, total = _log_resultsets(cur, self.log)
             conn.commit()
-            self.log.info("[SQL] proc %s OK (result sets=%d, linhas=%d)", self.proc, ssets, total)
+            self.log.info("[SQL] proc %s OK (result sets=%d, linhas=%d)", target, ssets, total)
         except Exception as e:
-            self.log.error("[SQL][ERRO] %s: %s", self.proc, e)
+            self.log.error("[SQL][ERRO] %s: %s", target, e)
             raise
         finally:
             try:

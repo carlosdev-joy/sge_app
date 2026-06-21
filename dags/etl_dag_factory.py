@@ -243,11 +243,13 @@ def _task_block(job, project, pipeline):
                 {"name": p["param_name"], "type": p.get("param_type"), "value": p.get("param_value")}
                 for p in valid_params
             ]
+            mssql_db = (job.get("mssql_database") or "").strip() or None
             main = "\n".join([
                 f't_job_{vname} = StoredProcOperator(',
                 f'    task_id={name!r},',
                 f'    proc={proc!r},',
                 f'    mssql_conn_id={conn_val},',
+                f'    database={mssql_db!r},',
                 f'    params={params_payload!r},',
                 f')',
             ])
@@ -1041,6 +1043,21 @@ def gerar_dags(**context):
                 j["depends_on_jobs"] = _depmap.get((j["pipeline_name"], j["job_name"]))
     except Exception as _de:
         print(f"[FACTORY] depends_on_jobs supplement ignorado: {_de}")
+
+    # Supplement: banco-alvo por job storedproc (degrada se a coluna não existir — migration 039)
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='dbo' "
+            "AND TABLE_NAME='etl_pipeline_job' AND COLUMN_NAME='mssql_database'")
+        if cursor.fetchone()[0]:
+            cursor.execute(
+                "SELECT pipeline_name, job_name, mssql_database FROM dbo.etl_pipeline_job "
+                "WHERE mssql_database IS NOT NULL")
+            _dbmap = {(r[0], r[1]): r[2] for r in cursor.fetchall()}
+            for j in jobs_all:
+                j["mssql_database"] = _dbmap.get((j["pipeline_name"], j["job_name"]))
+    except Exception as _dbe:
+        print(f"[FACTORY] mssql_database supplement ignorado: {_dbe}")
 
     # Supplement with advanced fields (not in SP result set)
     if pipelines:
