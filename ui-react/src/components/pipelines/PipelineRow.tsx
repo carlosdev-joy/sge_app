@@ -12,7 +12,7 @@ export function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, 
     <div className="flex items-center gap-2 px-4 py-2 border-t border-edge/30 hover:bg-edge/10 transition-colors group">
       <span className={`w-2 h-2 rounded-full flex-shrink-0 ${p.active ? 'bg-green-500' : 'bg-slate-600'}`}
         title={p.active ? 'Ativo' : (p.motivo_inativacao ? `Inativo — ${p.motivo_inativacao}` : 'Inativo')} />
-      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border flex-shrink-0 w-[46px] text-center ${p.dag_criada ? 'text-green-400 border-green-800/40 bg-green-900/10' : 'text-dim border-edge bg-canvas'}`}>
+      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border flex-shrink-0 w-[46px] text-center ${p.dag_criada ? 'text-green-700 border-green-300 bg-green-50 dark:text-green-400 dark:border-green-800/40 dark:bg-green-900/10' : 'text-dim border-edge bg-canvas'}`}>
         {p.dag_criada ? 'DAG ✓' : 'DAG —'}
       </span>
       <span className="text-[10px] text-dim flex-shrink-0 tabular-nums w-[42px]">
@@ -38,7 +38,7 @@ export function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, 
           fluxo está indisponível sem precisar abrir os detalhes. */}
       {!p.active && (
         <span
-          className="flex items-center gap-1 text-[10px] text-amber-400 bg-amber-900/15 border border-amber-800/40 rounded px-1.5 py-0.5 max-w-[240px] flex-shrink-0"
+          className="flex items-center gap-1 text-[10px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800/40 rounded px-1.5 py-0.5 max-w-[240px] flex-shrink-0"
           title={p.motivo_inativacao
             ? `Inativo — ${p.motivo_inativacao}${p.inativado_por ? ` (por ${p.inativado_por})` : ''}${p.inativado_em ? ` em ${p.inativado_em}` : ''}`
             : 'Inativo (motivo não informado)'}>

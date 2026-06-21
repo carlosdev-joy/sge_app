@@ -123,15 +123,22 @@ grep -rnoE "[^:]text-(green|red|amber|blue|purple)-(200|300)" ui-react/src --inc
 
 ---
 
-## 7. Follow-ups de consistência (baixa severidade)
+## 7. Estado atual da varredura
 
-Corrigidos nesta leva os casos **ilegíveis** (texto claro sobre fundo claro):
-`Logs` (caixa Resolvida + lista de erros), `PipelineModals` (pílula ativa, caixa
-de inativo, origens/destinos, erro ao gerar, aviso de execução), `Autocomplete`
-(item ativo), `PowerBI` (erro no banner).
+Toda a UI foi varrida e migrada para o padrão claro+escuro. **Não há mais**
+callouts dark-only (`bg-*-900/*` como classe base) nem texto claro
+(`text-*-200/300`) como classe base — exceto sobre as superfícies fixas escuras
+da seção 4 (visualizador de log e gradiente do header), que são intencionais.
 
-Ainda há callouts **dark-only de contraste médio** (fundo `bg-*-900/10–30` com
-texto `text-*-400`/`text-ink`/`text-dim`) que são legíveis, porém não seguem o
-padrão claro+escuro — em `pages/Jobs.tsx`, `components/pipelines/PipelineFormModal.tsx`
-e `components/pipelines/PipelineRow.tsx`. Migrar para o padrão da seção 2 quando
-tocar nesses arquivos.
+Migrados em duas levas:
+- **Ilegíveis** (texto claro sobre fundo claro): `Logs` (caixa Resolvida + lista
+  de erros), `PipelineModals` (pílula ativa, caixa de inativo, origens/destinos,
+  erro ao gerar, aviso de execução), `Autocomplete` (item ativo), `PowerBI`
+  (erro no banner).
+- **Contraste médio** (fundo `bg-*-900/10–30` com texto `text-*-400`/`ink`/`dim`):
+  `Jobs` (caixa datastage, erros, banners, pílulas de SSH/log detalhado),
+  `PipelineFormModal` (erros de etapa, motivo de inativação, revisão, erro ao
+  salvar), `PipelineRow` (badge DAG, pílula de inativo), `ExecucaoDetailModal`
+  (caixa "Reconhecida"), `Logs` (aviso de massa, realce de linha selecionada).
+
+Manutenção: rode os greps da seção 6 ao revisar PRs para evitar regressões.
