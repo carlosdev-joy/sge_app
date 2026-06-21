@@ -170,6 +170,11 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
     erros = []
     try:
         conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
+            "AND COLUMN_NAME='depends_on_jobs'")
+        _has_dep_col = bool(cur.fetchone()[0])
         for idx, job in enumerate(jobs):
             j_name      = (job.get("job_name") or "").strip()
             j_order     = job.get("execution_order")
@@ -232,6 +237,17 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                         "@pipeline_name=?, @job_name=?, @param_name=?, @param_type=?, @param_value=?, @param_order=?",
                         (pipeline_name, j_name, p_name, p_type, p_value, p_order),
                     )
+                # Dependência por job (opt-in) — grava CSV dos predecessores.
+                if _has_dep_col:
+                    _dep = job.get("depends_on_jobs")
+                    if isinstance(_dep, list):
+                        _dep_str = ",".join(str(d).strip() for d in _dep if str(d).strip())
+                    else:
+                        _dep_str = (str(_dep).strip() if _dep else "")
+                    cur.execute(
+                        "UPDATE dbo.etl_pipeline_job SET depends_on_jobs=? "
+                        "WHERE pipeline_name=? AND job_name=?",
+                        ((_dep_str or None), pipeline_name, j_name))
             except Exception as e:
                 erros.append(f"Item {idx} ({j_name}): erro ao gravar job — {e}"); continue
 
@@ -343,12 +359,22 @@ def get_pipeline_job(
         )
         params = [{"param_name": r[0], "param_type": r[1], "param_value": r[2], "param_order": r[3]}
                    for r in cur.fetchall()]
+        depends_on_jobs = None
+        try:
+            cur.execute(
+                "SELECT depends_on_jobs FROM dbo.etl_pipeline_job "
+                "WHERE pipeline_name=? AND job_name=?", (pipeline_name, job_name))
+            dr = cur.fetchone()
+            depends_on_jobs = (dr[0] if dr else None)
+        except Exception:
+            depends_on_jobs = None  # coluna pode não existir (migration 038)
         cur.close(); conn.close()
         return {
             "pipeline_name": row[0], "job_name": row[1], "execution_order": row[2],
             "job_type": row[3], "job_command": row[4] or None, "active": bool(row[5]),
             "ssh_conn_id": row[6] or None, "verbose_log": bool(row[7]),
             "mssql_conn_id": row[8] or None, "params": params,
+            "depends_on_jobs": depends_on_jobs,
         }
     except HTTPException:
         raise
