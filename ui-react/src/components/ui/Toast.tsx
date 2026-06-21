@@ -43,7 +43,7 @@ export function ToastContainer() {
         return (
           <div key={t.id} className={`flex items-start gap-3 px-4 py-3 rounded-lg border shadow-xl w-80 ${COLORS[t.type]}`}>
             <Icon size={16} className={`mt-0.5 shrink-0 ${ICON_COLORS[t.type]}`} />
-            <span className="text-sm text-ink flex-1">{t.message}</span>
+            <span className="text-sm text-ink flex-1 min-w-0 break-words">{t.message}</span>
             <button onClick={() => remove(t.id)} className="text-dim hover:text-white shrink-0">
               <X size={14} />
             </button>
