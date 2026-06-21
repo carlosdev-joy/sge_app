@@ -383,8 +383,21 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
     setLineage(lin)
   }, [isEdit, editJobs, editLineage])
 
+  // "Dirty" cirúrgico: marca só quando muda algo que AFETA a DAG (não cadastro
+  // puro nem lineage). Usado para perguntar "Regenerar a DAG?" só quando precisa.
+  const dagDirtyRef = useRef(false)
+  const CADASTRO_FIELDS = new Set<string>([
+    'tags_list', 'criticidade', 'descricao', 'runbook_md', 'sla_minutos',
+    'active', 'motivo_inativacao',
+  ])
+  function markDagDirty() {
+    if (isEdit && !populatedRef.current) return  // ignora a carga inicial
+    dagDirtyRef.current = true
+  }
+
   function f<K extends keyof FormState>(k: K, v: FormState[K]) {
     setForm(prev => ({ ...prev, [k]: v }))
+    if (!CADASTRO_FIELDS.has(k as string)) markDagDirty()
   }
 
   const schedCfg: ScheduleConfig = {
@@ -639,8 +652,9 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       const base = isEdit ? 'Pipeline atualizado!' : 'Pipeline criado com sucesso!'
       if (!dag.ok) toast.error(`${base} Atenção: ${dag.msg}`)
       else toast.success(dag.msg ? `${base} · ${dag.msg}` : base)
-      // Criação: oferece gerar a DAG agora (1 passo a menos). Edição: fecha.
-      if (!isEdit) { setAskGenerate(res.pname); return }
+      // Criação: sempre oferece. Edição: só pergunta se houve mudança que afeta
+      // a DAG (não pergunta em consulta nem em alteração só de cadastro/lineage).
+      if (!isEdit || dagDirtyRef.current) { setAskGenerate(res.pname); return }
       onClose()
     },
     onError: (e: any) => {
@@ -699,15 +713,18 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       params: [],
       depends_on_jobs: [],
     }])
+    markDagDirty()
   }
 
   function removeJob(id: string) {
     const job = jobs.find(j => j.id === id)
     setJobs(prev => prev.filter(j => j.id !== id))
     if (job) setLineage(prev => prev.filter(l => l.job_name !== job.job_name))
+    markDagDirty()
   }
 
   function updateJob(id: string, patch: Partial<JobEntry>) {
+    markDagDirty()
     const job = jobs.find(j => j.id === id)
     if (job && patch.job_name !== undefined && patch.job_name !== job.job_name) {
       const oldName = job.job_name
@@ -735,11 +752,14 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       }],
     }))
     setExpandedParams(prev => new Set(prev).add(jobId))
+    markDagDirty()
   }
   function removeParam(jobId: string, paramId: string) {
     setJobs(prev => prev.map(j => j.id !== jobId ? j : { ...j, params: j.params.filter(p => p.id !== paramId) }))
+    markDagDirty()
   }
   function updateParam(jobId: string, paramId: string, patch: Partial<JobParamEntry>) {
+    markDagDirty()
     setJobs(prev => prev.map(j => j.id !== jobId ? j : {
       ...j, params: j.params.map(p => p.id === paramId ? { ...p, ...patch } : p),
     }))
@@ -1557,13 +1577,13 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
         <div className="absolute inset-0 bg-black/60" />
         <div className="relative w-full max-w-sm bg-panel border border-edge rounded-xl shadow-2xl p-5 flex flex-col gap-4">
-          <h3 className="text-base font-semibold text-ink">Gerar a DAG agora?</h3>
-          <p className="text-sm text-ink">Pipeline <span className="font-mono font-medium">{askGenerate}</span> criado! Deseja gerar a DAG e enviar ao Airflow agora?</p>
+          <h3 className="text-base font-semibold text-ink">{isEdit ? 'Regenerar a DAG agora?' : 'Gerar a DAG agora?'}</h3>
+          <p className="text-sm text-ink">Pipeline <span className="font-mono font-medium">{askGenerate}</span> {isEdit ? 'atualizado' : 'criado'}! As mudanças só passam a valer no Airflow após {isEdit ? 'regenerar' : 'gerar'} a DAG. Deseja {isEdit ? 'regenerar' : 'gerar'} agora?</p>
           <p className="text-xs text-dim">Equivale a clicar em “Gerar DAG”. O ORQUESTRA avisa quando a DAG estiver ativa.</p>
           <div className="flex justify-end gap-2">
             <Button variant="secondary" disabled={genDagMut.isPending} onClick={() => { setAskGenerate(null); onClose() }}>Agora não</Button>
             <Button loading={genDagMut.isPending} onClick={() => genDagMut.mutate(askGenerate)}>
-              <Save size={13} /> Gerar DAG
+              <Save size={13} /> {isEdit ? 'Regenerar DAG' : 'Gerar DAG'}
             </Button>
           </div>
         </div>
