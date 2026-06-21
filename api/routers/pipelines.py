@@ -18,6 +18,7 @@ from deps import (
     PERM_EDITAR, PERM_EXECUTAR,
     get_current_user, require_perm,
 )
+from services.notify import add_notificacao
 
 log = logging.getLogger("orquestra-api")
 
@@ -89,11 +90,13 @@ async def _sync_airflow_pause(dag_id: str, paused: bool) -> dict:
 
 
 async def _await_and_activate_dag(pipeline_name: str, desired_paused: bool,
+                                  matricula: str | None = None,
                                   attempts: int = 36, interval_s: int = 5) -> None:
     """Background: aguarda a DAG aparecer no Airflow (o scheduler leva um tempo
     para parsear o arquivo recém-gerado) e então alinha o is_paused ao status do
     pipeline — tipicamente DESPAUSA, pois DAGs nascem pausadas e o usuário criou
     o pipeline já ativo. Roda fora do request para concluir mesmo se a UI fechar.
+    Ao concluir, registra uma notificação para o usuário que disparou a geração.
     """
     if not _DAG_ID_RE.match(pipeline_name or ""):
         return
@@ -114,12 +117,25 @@ async def _await_and_activate_dag(pipeline_name: str, desired_paused: bool,
                         headers={"Content-Type": "application/json"},
                     )
                 log.info("[GERAR-DAG] %s disponível no Airflow — is_paused=%s", pipeline_name, desired_paused)
+                await asyncio.to_thread(
+                    add_notificacao, matricula,
+                    f"DAG de {pipeline_name} pronta no Airflow",
+                    (f"A DAG foi gerada e está pausada (pipeline inativo)."
+                     if desired_paused else
+                     f"A DAG foi gerada e já está ativa para execução."),
+                    "success", "/pipelines")
                 return
         except Exception as e:
             log.warning("[GERAR-DAG] poll %s: %s", pipeline_name, e)
             continue
     log.warning("[GERAR-DAG] %s não apareceu no Airflow no tempo limite (%ds)",
                 pipeline_name, attempts * interval_s)
+    await asyncio.to_thread(
+        add_notificacao, matricula,
+        f"DAG de {pipeline_name} ainda registrando",
+        "A DAG foi criada no servidor, mas o Airflow ainda não a disponibilizou. "
+        "Recarregue a lista de pipelines em alguns minutos.",
+        "warning", "/pipelines")
 
 
 # ── Helpers para register_pipeline ───────────────────────────────────────────
@@ -691,6 +707,26 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
     if not is_new:
         dag_sync = await _sync_airflow_pause(pipeline, paused=(active == 0))
 
+    # Notifica a mudança de status (inativar/ativar) na central do usuário.
+    if not is_new and old_record is not None:
+        try:
+            old_active = int(old_record.get("active") or 0)
+        except (TypeError, ValueError):
+            old_active = 0
+        if old_active != active:
+            dag_paused = (dag_sync or {}).get("is_paused")
+            if active == 0:
+                msg = (f"Motivo: {motivo_inativacao}. " if motivo_inativacao else "")
+                msg += "DAG pausada no Airflow." if dag_paused else ""
+                await asyncio.to_thread(add_notificacao, changed_by,
+                                        f"Pipeline {pipeline} inativado", msg.strip() or None,
+                                        "warning", "/pipelines")
+            else:
+                msg = "DAG reativada no Airflow." if dag_paused is False else None
+                await asyncio.to_thread(add_notificacao, changed_by,
+                                        f"Pipeline {pipeline} ativado", msg,
+                                        "success", "/pipelines")
+
     return {"ok": True, "pipeline_name": pipeline, "is_new": is_new,
             "cron": _build_cron(schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom),
             "dag_sync": dag_sync}
@@ -740,8 +776,9 @@ async def gerar_dag(pipeline_name: str, background: BackgroundTasks,
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Erro ao disparar a factory: {e}")
 
-    # Watcher em segundo plano: conclui a ativação mesmo se a UI fechar.
-    background.add_task(_await_and_activate_dag, pname, desired_paused)
+    # Watcher em segundo plano: conclui a ativação mesmo se a UI fechar e
+    # notifica o usuário que disparou a geração ao finalizar.
+    background.add_task(_await_and_activate_dag, pname, desired_paused, _auth.get("matricula"))
     return {"ok": True, "pipeline_name": pname, "dag_run_id": run_id,
             "desired_active": (not desired_paused)}
 

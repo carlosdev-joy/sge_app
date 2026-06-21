@@ -17,6 +17,7 @@ from deps import (
     PERM_EXECUTAR,
     get_current_user, require_perm,
 )
+from services.notify import add_notificacao
 
 log = logging.getLogger("orquestra-api")
 
@@ -676,6 +677,13 @@ async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(requi
         except Exception as e:
             log.warning("[ACK] Teams ignorado: %s", e)
 
+        try:
+            await asyncio.to_thread(add_notificacao, ack_by_db,
+                                    f"Falha assumida — {label or pipeline}",
+                                    note, "info", "/logs")
+        except Exception:
+            pass
+
         return {"ok": True, "action": "acked",
                 "ack_by": ack_by_db,
                 "display_name": display_name_db or ack_by_db,
@@ -941,6 +949,13 @@ async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(re
         except Exception as e:
             log.warning("[RESOLVE] Teams ignorado: %s", e)
 
+        try:
+            await asyncio.to_thread(add_notificacao, resolved_by_db,
+                                    f"Falha resolvida — {label or pipeline}",
+                                    resolution_note_db, "success", "/logs")
+        except Exception:
+            pass
+
         return {
             "ok": True, "action": "resolved",
             "resolved_by":           resolved_by_db,
@@ -1011,6 +1026,12 @@ async def resolve_failures_bulk(body: dict = Body(default={}), auth: dict = Depe
             )
         except Exception as e:
             log.warning("[RESOLVE-BULK] Teams ignorado: %s", e)
+        try:
+            await asyncio.to_thread(add_notificacao, matricula,
+                                    f"{done} falha(s) resolvidas em massa", None,
+                                    "success", "/logs")
+        except Exception:
+            pass
 
     return {"ok": True, "resolved": done}
 
@@ -1064,6 +1085,12 @@ async def ack_failures_bulk(body: dict = Body(default={}), auth: dict = Depends(
             )
         except Exception as e:
             log.warning("[ACK-BULK] Teams ignorado: %s", e)
+        try:
+            await asyncio.to_thread(add_notificacao, matricula,
+                                    f"{acked} falha(s) assumidas em massa", None,
+                                    "info", "/logs")
+        except Exception:
+            pass
 
     return {"ok": True, "acked": acked, "skipped": skipped}
 
