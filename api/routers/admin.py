@@ -96,6 +96,23 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             conn.commit(); cur.close(); conn.close()
             return {"sucesso": True, "mensagem": f'Parâmetro "{key}" removido.'}
 
+        # ── Diagnóstico: bancos do mesmo servidor (mesma credencial do app) ──
+        elif action == "server_databases":
+            cur.execute("SELECT @@SERVERNAME")
+            row = cur.fetchone()
+            server_name = row[0] if row else None
+            cur.execute(
+                "SELECT d.name, d.state_desc, d.recovery_model_desc, "
+                "       CONVERT(VARCHAR(19), d.create_date, 120), "
+                "       (SELECT CAST(SUM(mf.size) * 8.0 / 1024 AS DECIMAL(18,1)) "
+                "          FROM sys.master_files mf WHERE mf.database_id = d.database_id) "
+                "FROM sys.databases d ORDER BY d.name")
+            dbs = [{"name": r[0], "state": r[1], "recovery": r[2], "create_date": r[3],
+                    "size_mb": (float(r[4]) if r[4] is not None else None)}
+                   for r in cur.fetchall()]
+            cur.close(); conn.close()
+            return {"sucesso": True, "server": server_name, "databases": dbs, "total": len(dbs)}
+
         # ── Gestão de usuários e perfis (RBAC) ─────────────────────────────
         elif action == "user_list":
             cur.execute(
