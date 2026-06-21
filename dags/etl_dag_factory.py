@@ -203,7 +203,7 @@ def _task_block(job, project, pipeline):
         ssh = job.get("ssh_conn_id") or None
         ssh_val = f'"{ssh}"' if ssh else 'SSH_CONN_ID'
         main = "\n".join([
-            f't_job_{vname} = SSHOperator(',
+            f't_job_{vname} = ShellOperator(',
             f'    task_id={name!r},',
             f'    ssh_conn_id={ssh_val},',
             f'    command={cmd_safe},',
@@ -214,15 +214,9 @@ def _task_block(job, project, pipeline):
     elif jtype == "python":
         mod = jcmd or name
         main = "\n".join([
-            f'def _run_{vname}(**context):',
-            f'    import importlib',
-            f'    mod = importlib.import_module({mod!r})',
-            f'    if hasattr(mod, "run"): mod.run(**context)',
-            f'    elif hasattr(mod, "main"): mod.main()',
-            f'',
-            f't_job_{vname} = PythonOperator(',
+            f't_job_{vname} = PythonModuleOperator(',
             f'    task_id={name!r},',
-            f'    python_callable=_run_{vname},',
+            f'    module={mod!r},',
             f')',
         ])
     elif jtype == "storedproc":
@@ -230,7 +224,7 @@ def _task_block(job, project, pipeline):
         proc = proc_raw if _PROC_NAME_RE.match(proc_raw) else None
         conn_id  = job.get("mssql_conn_id") or None
         conn_val = repr(conn_id) if conn_id else "MSSQL_CONN_ID"
-        params = [p for p in (job.get("params") or []) if _PARAM_NAME_RE.match(p.get("param_name") or "")]
+        valid_params = [p for p in (job.get("params") or []) if _PARAM_NAME_RE.match(p.get("param_name") or "")]
 
         if proc is None:
             main = "\n".join([
@@ -243,77 +237,35 @@ def _task_block(job, project, pipeline):
                 f')',
             ])
         else:
-            if params:
-                placeholders = ", ".join(
-                    f'{p["param_name"] if p["param_name"].startswith("@") else "@" + p["param_name"]}=?'
-                    for p in params
-                )
-                values = [_coerce_param_value(p) for p in params]
-                # Nomes (proc/parâmetro) já validados; valores SEMPRE via bind do driver.
-                exec_line = f'cur.execute("EXEC {proc} {placeholders}", {values!r})'
-            else:
-                # Sem parâmetros cadastrados → não envia nenhum parâmetro.
-                exec_line = f'cur.execute("EXEC {proc}")'
-            # Executa pela cursor (não hook.run) para capturar e LOGAR o retorno do
-            # SQL (result sets / linhas afetadas) e o erro real do SQL Server em caso
-            # de falha — assim dá pra saber se executou e diagnosticar.
+            # Apenas CHAMA o StoredProcOperator — o EXEC, o bind de parâmetros e o
+            # log do retorno/erro vivem no operador (mudanças não exigem regenerar).
+            params_payload = [
+                {"name": p["param_name"], "type": p.get("param_type"), "value": p.get("param_value")}
+                for p in valid_params
+            ]
             main = "\n".join([
-                f'def _run_{vname}(**context):',
-                f'    _proc = {proc!r}',
-                f'    hook = MsSqlHook(mssql_conn_id={conn_val})',
-                f'    conn = hook.get_conn(); cur = conn.cursor()',
-                f'    try:',
-                f'        {exec_line}',
-                f'        _ssets = 0; _total = 0',
-                f'        while True:',
-                f'            if cur.description:',
-                f'                _rows = cur.fetchall(); _ssets += 1; _total += len(_rows)',
-                f'                print(f"[SQL] resultado {{_ssets}}: {{len(_rows)}} linha(s)")',
-                f'                for _r in _rows[:50]:',
-                f'                    print(f"[SQL]   {{tuple(_r)}}")',
-                f'            elif cur.rowcount is not None and cur.rowcount >= 0:',
-                f'                print(f"[SQL] linhas afetadas: {{cur.rowcount}}")',
-                f'            if not cur.nextset():',
-                f'                break',
-                f'        conn.commit()',
-                f'        print(f"[SQL] proc {{_proc}} executada com sucesso (result sets={{_ssets}}, linhas={{_total}})")',
-                f'    except Exception as _e:',
-                f'        print(f"[SQL][ERRO] {{_proc}}: {{_e}}")',
-                f'        raise',
-                f'    finally:',
-                f'        try:',
-                f'            cur.close(); conn.close()',
-                f'        except Exception:',
-                f'            pass',
-                f'',
-                f't_job_{vname} = PythonOperator(',
+                f't_job_{vname} = StoredProcOperator(',
                 f'    task_id={name!r},',
-                f'    python_callable=_run_{vname},',
+                f'    proc={proc!r},',
+                f'    mssql_conn_id={conn_val},',
+                f'    params={params_payload!r},',
                 f')',
             ])
     elif jtype == "sql":
         sql_stmt = jcmd or f"SELECT 1 -- job {name}"
         main = "\n".join([
-            f'def _run_{vname}(**context):',
-            f'    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)',
-            f'    hook.run({sql_stmt!r})',
-            f'',
-            f't_job_{vname} = PythonOperator(',
+            f't_job_{vname} = SqlOperator(',
             f'    task_id={name!r},',
-            f'    python_callable=_run_{vname},',
+            f'    sql={sql_stmt!r},',
+            f'    mssql_conn_id=MSSQL_CONN_ID,',
             f')',
         ])
     elif jtype == "http":
         url = jcmd or "https://httpbin.org/get"
         main = "\n".join([
-            f'def _run_{vname}(**context):',
-            f'    resp = requests.get({url!r}, timeout=30)',
-            f'    resp.raise_for_status()',
-            f'    print(f"HTTP {name}: status={{resp.status_code}}")',
-            f'',
-            f't_job_{vname} = PythonOperator(',
+            f't_job_{vname} = HttpCallOperator(',
             f'    task_id={name!r},',
-            f'    python_callable=_run_{vname},',
+            f'    url={url!r},',
             f')',
         ])
     else:
@@ -393,17 +345,28 @@ def _generate_dag_source(pipeline, jobs):
     def _jtypes(jobs):
         return {_TYPE_ALIAS.get(j["job_type"].lower(), j["job_type"].lower()) for j in jobs}
 
-    job_types  = _jtypes(sorted_jobs)
-    ds_needed  = "datastage" in job_types
-    sh_needed  = "shell"     in job_types
+    job_types   = _jtypes(sorted_jobs)
+    ds_needed   = "datastage"  in job_types
+    sh_needed   = "shell"      in job_types
+    sp_needed   = "storedproc" in job_types
+    py_needed   = "python"     in job_types
+    sql_needed  = "sql"        in job_types
+    http_needed = "http"       in job_types
 
     # Seção de imports
     import_lines = ["from airflow import DAG"]
     import_lines.append("from datetime import timedelta")
     if ds_needed:
         import_lines.append("from utils.datastage_operator import DataStageOperator")
-    if sh_needed:
-        import_lines.append("from airflow.providers.ssh.operators.ssh import SSHOperator")
+    # Operadores reutilizáveis (utils/job_operators) — só os tipos presentes.
+    _ops = []
+    if sh_needed:   _ops.append("ShellOperator")
+    if sp_needed:   _ops.append("StoredProcOperator")
+    if sql_needed:  _ops.append("SqlOperator")
+    if py_needed:   _ops.append("PythonModuleOperator")
+    if http_needed: _ops.append("HttpCallOperator")
+    if _ops:
+        import_lines.append("from utils.job_operators import " + ", ".join(_ops))
     import_lines += [
         "from airflow.operators.python import PythonOperator, ShortCircuitOperator",
         "from airflow.operators.empty import EmptyOperator",
