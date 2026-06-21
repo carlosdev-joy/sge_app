@@ -130,11 +130,15 @@ async def _process_one(client: httpx.AsyncClient, row: dict) -> None:
                     json={"is_paused": row["desired_paused"]},
                     headers={"Content-Type": "application/json"})
                 if p.is_success:
-                    found = True
-                    log.info("[DAG-RECONCILE] %s is_paused=%s aplicado", name, row["desired_paused"])
-                # patch falhou → tenta de novo no próximo tick
+                    # Não declara sucesso pelo retorno do PATCH: re-lê o estado real
+                    # no Airflow e só conclui quando is_paused == desejado (ativa).
+                    g2 = await client.get(f"/api/v1/dags/{name}")
+                    if g2.is_success and bool(g2.json().get("is_paused", True)) == row["desired_paused"]:
+                        found = True
+                        log.info("[DAG-RECONCILE] %s confirmada is_paused=%s", name, row["desired_paused"])
+                # patch falhou ou estado ainda não bateu → tenta de novo no próximo tick
             else:
-                found = True  # já no estado desejado
+                found = True  # já no estado desejado, confirmado pelo GET
     except Exception as e:
         log.debug("[DAG-RECONCILE] poll %s: %s", name, e)
         found = False
