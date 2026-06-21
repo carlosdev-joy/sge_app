@@ -395,7 +395,7 @@ export default function PowerBI() {
           <code className="block mt-1 text-[11px] bg-black/20 rounded px-2 py-1">
             powerbi_tenant_id · powerbi_client_id · powerbi_client_secret · powerbi_scope (opcional) · powerbi_token_url (opcional)
           </code>
-          {statusQ.data?.erro && <div className="mt-2 text-red-300">{statusQ.data.erro}</div>}
+          {statusQ.data?.erro && <div className="mt-2 text-red-700 dark:text-red-300">{statusQ.data.erro}</div>}
         </InfoBanner>
       </div>
     )

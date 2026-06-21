@@ -14,7 +14,7 @@ import { SCHEDULE_LABELS, critColor, buildCron } from './pipelineUtils'
 
 export function ViewModal({ pipeline: p, onClose }: { pipeline: Pipeline; onClose: () => void }) {
   const pill = (v: string, active = false) => (
-    <span className={`inline-block px-2 py-0.5 rounded-full text-xs border ${active ? 'bg-green-900/20 text-green-400 border-green-800/40' : 'bg-panel text-dim border-edge'}`}>{v}</span>
+    <span className={`inline-block px-2 py-0.5 rounded-full text-xs border ${active ? 'bg-green-50 text-green-700 border-green-300 dark:bg-green-900/20 dark:text-green-400 dark:border-green-800/40' : 'bg-panel text-dim border-edge'}`}>{v}</span>
   )
   const cell = (label: string, val: React.ReactNode, spanFull = false) => (
     <div className={`flex flex-col gap-0.5 ${spanFull ? 'col-span-2' : ''}`}>
@@ -33,12 +33,12 @@ export function ViewModal({ pipeline: p, onClose }: { pipeline: Pipeline; onClos
     <Modal open title={p.pipeline_name} onClose={onClose} size="lg">
       <div className="overflow-y-auto max-h-[70vh] pr-1">
         {!p.active && (
-          <div className="mb-4 bg-amber-900/15 border border-amber-800/40 rounded-lg px-3 py-2.5">
-            <div className="flex items-center gap-1.5 text-amber-400 font-semibold text-xs mb-1">
+          <div className="mb-4 bg-amber-50 border border-amber-200 dark:bg-amber-900/15 dark:border-amber-800/40 rounded-lg px-3 py-2.5">
+            <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400 font-semibold text-xs mb-1">
               <PowerOff size={13} /> Pipeline inativo — indisponível para execução
             </div>
-            <div className="text-sm text-amber-200 whitespace-pre-wrap">
-              {p.motivo_inativacao || <span className="italic text-amber-400/60">Motivo não informado.</span>}
+            <div className="text-sm text-amber-800 dark:text-amber-200 whitespace-pre-wrap">
+              {p.motivo_inativacao || <span className="italic text-amber-600/70 dark:text-amber-400/60">Motivo não informado.</span>}
             </div>
             {(p.inativado_por || p.inativado_em) && (
               <div className="text-[10px] text-amber-400/70 mt-1.5">
@@ -251,9 +251,9 @@ export function LineageModal({ pipeline, onClose }: { pipeline: Pipeline; onClos
                 <div className="flex flex-col gap-1.5">
                   {origens.length ? origens.map(o => (
                     <div key={o.object_name}
-                      className="border border-blue-800/40 bg-blue-900/10 rounded-lg px-2.5 py-1.5 text-xs"
+                      className="border border-blue-200 bg-blue-50 dark:border-blue-800/40 dark:bg-blue-900/10 rounded-lg px-2.5 py-1.5 text-xs"
                       title={`${o.object_name}${o.database_name ? ' · ' + o.database_name : ''}`}>
-                      <div className="font-mono font-medium text-blue-300 truncate">{o.object_name}</div>
+                      <div className="font-mono font-medium text-blue-700 dark:text-blue-300 truncate">{o.object_name}</div>
                       <div className="text-[10px] text-dim/60">{o.database_name || o.object_type}</div>
                     </div>
                   )) : <span className="text-xs text-dim/50 italic text-center block mt-2">sem origens</span>}
@@ -274,9 +274,9 @@ export function LineageModal({ pipeline, onClose }: { pipeline: Pipeline; onClos
                 <div className="flex flex-col gap-1.5">
                   {destinos.length ? destinos.map(o => (
                     <div key={o.object_name}
-                      className="border border-green-800/40 bg-green-900/10 rounded-lg px-2.5 py-1.5 text-xs"
+                      className="border border-green-200 bg-green-50 dark:border-green-800/40 dark:bg-green-900/10 rounded-lg px-2.5 py-1.5 text-xs"
                       title={`${o.object_name}${o.database_name ? ' · ' + o.database_name : ''}`}>
-                      <div className="font-mono font-medium text-green-300 truncate">{o.object_name}</div>
+                      <div className="font-mono font-medium text-green-700 dark:text-green-300 truncate">{o.object_name}</div>
                       <div className="text-[10px] text-dim/60">{o.database_name || o.object_type}</div>
                     </div>
                   )) : <span className="text-xs text-dim/50 italic text-center block mt-2">sem destinos</span>}
@@ -513,10 +513,10 @@ export function GenDagModal({ pipeline, onClose }: { pipeline: Pipeline; onClose
 
         {phase === 'error' && (
           <div className="flex flex-col gap-3 py-1">
-            <div className="flex items-center gap-2 text-sm text-red-400 font-medium">
+            <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400 font-medium">
               <AlertTriangle size={16} /> Erro ao gerar
             </div>
-            <p className="text-xs text-red-300 break-words">{errMsg}</p>
+            <p className="text-xs text-red-700 dark:text-red-300 break-words">{errMsg}</p>
             <div className="flex justify-end gap-2 border-t border-edge pt-3">
               <Button variant="secondary" onClick={onClose}>Fechar</Button>
               <Button className="border-blue-800/40 text-blue-400" onClick={() => setPhase('confirm')}>Tentar de novo</Button>
@@ -539,7 +539,7 @@ export function ExecModal({ pipeline, onConfirm, onClose, loading }: {
         <p className="text-sm text-dim">
           Disparar <span className="font-mono text-ink font-medium">{pipeline.pipeline_name}</span> agora, fora do agendamento?
         </p>
-        <p className="text-xs text-amber-400 bg-amber-900/15 border border-amber-800/40 rounded-lg px-3 py-2">
+        <p className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800/40 rounded-lg px-3 py-2">
           ⚠ Inicia uma execução imediata no Airflow. Certifique-se que não há execução ativa.
         </p>
         <div className="flex justify-end gap-2 border-t border-edge pt-3">
