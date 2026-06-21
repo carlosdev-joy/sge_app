@@ -207,6 +207,9 @@ function JobFormModal({
             'ex: dbo.sp_procedure'
           }
         />
+        {form.job_type === 'storedproc' && (
+          <p className="text-[11px] text-dim/70 -mt-2">Apenas o <strong>nome</strong> da procedure (ex.: <code>dbo.sp_nome</code>). O sistema adiciona o <code>EXEC</code> e os parâmetros automaticamente — <strong>não</strong> escreva “EXEC”. Sem parâmetros cadastrados, a proc é chamada sem nenhum parâmetro.</p>
+        )}
 
         {/* Depende de — predecessores no mesmo pipeline (grafo de dependências) */}
         {siblings.length > 0 && (
