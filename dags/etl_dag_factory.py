@@ -242,29 +242,49 @@ def _task_block(job, project, pipeline):
                 f'    python_callable=_run_{vname},',
                 f')',
             ])
-        elif params:
-            placeholders = ", ".join(
-                f'{p["param_name"] if p["param_name"].startswith("@") else "@" + p["param_name"]}=?'
-                for p in params
-            )
-            values = [_coerce_param_value(p) for p in params]
-            main = "\n".join([
-                f'def _run_{vname}(**context):',
-                f'    hook = MsSqlHook(mssql_conn_id={conn_val})',
-                # Nomes (proc/parâmetro) já validados como identificadores; valores SEMPRE via
-                # parameters=[...] (bind real do driver) — nunca concatenados na string SQL.
-                f'    hook.run("EXEC {proc} {placeholders}", parameters={values!r})',
-                f'',
-                f't_job_{vname} = PythonOperator(',
-                f'    task_id={name!r},',
-                f'    python_callable=_run_{vname},',
-                f')',
-            ])
         else:
+            if params:
+                placeholders = ", ".join(
+                    f'{p["param_name"] if p["param_name"].startswith("@") else "@" + p["param_name"]}=?'
+                    for p in params
+                )
+                values = [_coerce_param_value(p) for p in params]
+                # Nomes (proc/parâmetro) já validados; valores SEMPRE via bind do driver.
+                exec_line = f'cur.execute("EXEC {proc} {placeholders}", {values!r})'
+            else:
+                # Sem parâmetros cadastrados → não envia nenhum parâmetro.
+                exec_line = f'cur.execute("EXEC {proc}")'
+            # Executa pela cursor (não hook.run) para capturar e LOGAR o retorno do
+            # SQL (result sets / linhas afetadas) e o erro real do SQL Server em caso
+            # de falha — assim dá pra saber se executou e diagnosticar.
             main = "\n".join([
                 f'def _run_{vname}(**context):',
+                f'    _proc = {proc!r}',
                 f'    hook = MsSqlHook(mssql_conn_id={conn_val})',
-                f'    hook.run("EXEC {proc}")',
+                f'    conn = hook.get_conn(); cur = conn.cursor()',
+                f'    try:',
+                f'        {exec_line}',
+                f'        _ssets = 0; _total = 0',
+                f'        while True:',
+                f'            if cur.description:',
+                f'                _rows = cur.fetchall(); _ssets += 1; _total += len(_rows)',
+                f'                print(f"[SQL] resultado {{_ssets}}: {{len(_rows)}} linha(s)")',
+                f'                for _r in _rows[:50]:',
+                f'                    print(f"[SQL]   {{tuple(_r)}}")',
+                f'            elif cur.rowcount is not None and cur.rowcount >= 0:',
+                f'                print(f"[SQL] linhas afetadas: {{cur.rowcount}}")',
+                f'            if not cur.nextset():',
+                f'                break',
+                f'        conn.commit()',
+                f'        print(f"[SQL] proc {{_proc}} executada com sucesso (result sets={{_ssets}}, linhas={{_total}})")',
+                f'    except Exception as _e:',
+                f'        print(f"[SQL][ERRO] {{_proc}}: {{_e}}")',
+                f'        raise',
+                f'    finally:',
+                f'        try:',
+                f'            cur.close(); conn.close()',
+                f'        except Exception:',
+                f'            pass',
                 f'',
                 f't_job_{vname} = PythonOperator(',
                 f'    task_id={name!r},',

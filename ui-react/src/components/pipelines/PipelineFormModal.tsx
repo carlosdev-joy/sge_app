@@ -1230,6 +1230,9 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                         onChange={e => updateJob(j.id, { job_command: e.target.value })}
                         placeholder={cmdPlaceholder}
                         className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                      {j.job_type === 'storedproc' && (
+                        <p className="text-[10px] text-dim/70">Apenas o <strong>nome</strong> da procedure (ex.: <code>dbo.sp_nome</code>). O sistema adiciona o <code>EXEC</code> e os parâmetros — não escreva “EXEC”.</p>
+                      )}
                     </div>
                     {j.job_type === 'shell' && (
                       <div className="flex flex-col gap-1">
