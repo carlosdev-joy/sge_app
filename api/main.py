@@ -104,12 +104,15 @@ Endpoints:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from services.dag_reconcile import reconcile_loop
 
 from routers import (
     auth, infra, pipelines, jobs, execucoes, dashboard,
@@ -138,7 +141,15 @@ async def lifespan(app: FastAPI):
     if "*" in CORS_ORIGINS:
         log.warning("CORS_ORIGINS contém '*' — inseguro com credenciais; restrinja às origens do app.")
     log.info("ORQUESTRA API v0.3.0 iniciando")
+    # Reconciliador do Gerar-DAG: conclui despause/notificação a partir da fila
+    # persistida (etl_dag_pendente), retomando itens deixados por um restart.
+    reconcile_task = asyncio.create_task(reconcile_loop())
     yield
+    reconcile_task.cancel()
+    try:
+        await reconcile_task
+    except asyncio.CancelledError:
+        pass
     log.info("ORQUESTRA API encerrando.")
 
 
