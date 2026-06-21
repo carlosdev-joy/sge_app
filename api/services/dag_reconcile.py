@@ -28,6 +28,7 @@ log = logging.getLogger("orquestra-api")
 _DAG_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 RECONCILE_INTERVAL_S = int(os.getenv("DAG_RECONCILE_INTERVAL_S", "10"))
 PENDENTE_TIMEOUT_S   = int(os.getenv("DAG_PENDENTE_TIMEOUT_S", "900"))  # 15 min
+GERADA_TIMEOUT_S     = int(os.getenv("DAG_GERADA_TIMEOUT_S", str(PENDENTE_TIMEOUT_S)))
 
 
 # ── fila (DB síncrono) ──────────────────────────────────────────────────────
@@ -198,6 +199,64 @@ async def reconcile_once() -> None:
     ) as client:
         for row in rows:
             await _process_one(client, row)
+
+
+def recheck_geradas() -> None:
+    """Revalida (síncrono, best-effort) os runs da factory em 'GERADA' — chamado
+    ao abrir a tela de regeneração. Vira SUCCESS se a DAG já está no estado
+    desejado no Airflow, ou TIMEOUT se passou do tempo limite. Evita 'GERADA'
+    eterno caso o reconciliador não tenha fechado o registro (timeout, restart,
+    pendente sem dag_run_id…)."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT dag_run_id, pipeline_name, detalhes_json, "
+            "       DATEDIFF(SECOND, iniciado_em, GETDATE()) "
+            "FROM dbo.etl_factory_log WHERE estado='GERADA'")
+        rows = cur.fetchall()
+        if not rows:
+            cur.close(); conn.close(); return
+        with httpx.Client(base_url=AIRFLOW_URL, auth=(AIRFLOW_USER, AIRFLOW_PASSWORD), timeout=10) as client:
+            for run_id, pname, detalhes, idade in rows:
+                novo = None
+                step = None
+                if pname and _DAG_ID_RE.match(pname):
+                    desired = None  # active=0 → pausada (True); active=1 → ativa (False)
+                    try:
+                        cur.execute("SELECT active FROM dbo.etl_pipeline WHERE pipeline_name=?", (pname,))
+                        pr = cur.fetchone()
+                        if pr is not None:
+                            desired = (int(pr[0] or 0) == 0)
+                    except Exception:
+                        desired = None
+                    try:
+                        g = client.get(f"/api/v1/dags/{pname}")
+                        if g.is_success:
+                            cur_paused = bool(g.json().get("is_paused", True))
+                            if desired is None or cur_paused == desired:
+                                novo = "SUCCESS"
+                                step = ("ativada", "DAG ativa no Airflow — pronta para execução.")
+                    except Exception as e:
+                        log.debug("[GERADA-RECHECK] poll %s: %s", pname, e)
+                if novo is None and int(idade or 0) >= GERADA_TIMEOUT_S:
+                    novo = "TIMEOUT"
+                    step = ("timeout", "A DAG foi gerada, mas não ficou ativa no Airflow no tempo limite.")
+                if novo:
+                    novo_detalhes = detalhes
+                    if step:
+                        try:
+                            d = json.loads(detalhes) if detalhes else {}
+                        except Exception:
+                            d = {}
+                        d.setdefault("erros", d.get("erros", []))
+                        d.setdefault("steps", []).append({"tipo": step[0], "msg": step[1]})
+                        novo_detalhes = json.dumps(d, ensure_ascii=False)
+                    cur.execute(
+                        "UPDATE dbo.etl_factory_log SET estado=?, finalizado_em=GETDATE(), detalhes_json=? "
+                        "WHERE dag_run_id=? AND estado='GERADA'", (novo, novo_detalhes, run_id))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        log.debug("[GERADA-RECHECK] %s", e)
 
 
 async def reconcile_loop() -> None:
