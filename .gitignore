@@ -40,7 +40,15 @@ config/*.local
 .env.dev
 .env.prod
 .env.local
-.claude/
+
+## Claude Code — versiona skills/agents/comandos do projeto (estrutura que viaja
+## com o repo); ignora apenas estado/config local da máquina.
+.claude/*
+!.claude/skills/
+!.claude/agents/
+!.claude/commands/
+.claude/settings.local.json
+.claude/*.local.json
 
 ## Worktrees de desenvolvimento isolado
 .worktrees/
