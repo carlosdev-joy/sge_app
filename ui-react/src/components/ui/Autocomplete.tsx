@@ -129,7 +129,7 @@ export function Autocomplete({
               onMouseDown={() => select(s)}
               className={`px-3 py-2 text-sm cursor-pointer font-mono transition-colors ${
                 i === active
-                  ? 'bg-blue-600/20 text-blue-300'
+                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-300'
                   : 'text-ink hover:bg-edge/30'
               }`}
             >

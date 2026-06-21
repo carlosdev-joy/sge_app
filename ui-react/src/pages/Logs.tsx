@@ -146,10 +146,10 @@ function FactoryRuns() {
                     </div>
                   ))}
                   {logData.erros_lista?.length > 0 && (
-                    <div className="mt-2 bg-red-900/20 border border-red-800 rounded p-2">
-                      <p className="text-xs text-red-400 font-medium mb-1">Erros:</p>
+                    <div className="mt-2 bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded p-2">
+                      <p className="text-xs text-red-700 dark:text-red-400 font-medium mb-1">Erros:</p>
                       {logData.erros_lista.map((e, i) => (
-                        <p key={i} className="text-xs text-red-300">{e}</p>
+                        <p key={i} className="text-xs text-red-700 dark:text-red-300">{e}</p>
                       ))}
                     </div>
                   )}
@@ -439,8 +439,8 @@ function ResolveModal({
         </div>
 
         {isResolved && (
-          <div className="bg-green-900/20 border border-green-800 rounded-lg p-3 text-xs text-green-300 flex flex-col gap-1">
-            <div className="flex items-center gap-1.5 font-medium text-green-400">
+          <div className="bg-green-50 border border-green-200 text-green-800 dark:bg-green-900/20 dark:border-green-800 dark:text-green-300 rounded-lg p-3 text-xs flex flex-col gap-1">
+            <div className="flex items-center gap-1.5 font-medium text-green-700 dark:text-green-400">
               <CheckCircle2 size={13} /> Resolvida
             </div>
             <div>Por: <strong>{row.resolved_display_name ?? row.resolved_by}</strong> em {fmtDt(row.resolved_at)}</div>
