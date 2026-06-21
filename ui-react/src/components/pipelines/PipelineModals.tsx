@@ -450,7 +450,7 @@ export function GenDagModal({ pipeline, onClose }: { pipeline: Pipeline; onClose
               {' '}automaticamente. Só é concluída quando estiver disponível no estado correto.
             </p>
             {pipeline.dag_criada && (
-              <p className="text-xs text-amber-400 bg-amber-900/15 border border-amber-800/40 rounded-lg px-3 py-2">
+              <p className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800/40 rounded-lg px-3 py-2">
                 ⚠ A DAG existente será sobrescrita com as configurações atuais do pipeline.
               </p>
             )}

@@ -704,9 +704,9 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         <Stepper step={step} setStep={setStep} errors={stepErrors} />
 
         {curStepErrors.length > 0 && (
-          <div className="bg-red-900/20 border border-red-800 rounded-lg px-3 py-2">
+          <div className="bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded-lg px-3 py-2">
             {curStepErrors.map((e, i) => (
-              <p key={i} className="text-xs text-red-400">⚠ {e}</p>
+              <p key={i} className="text-xs text-red-700 dark:text-red-400">⚠ {e}</p>
             ))}
           </div>
         )}
@@ -772,7 +772,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
             </label>
 
             {!form.active && (
-              <div className="flex flex-col gap-1 bg-amber-900/10 border border-amber-800/40 rounded-lg p-3">
+              <div className="flex flex-col gap-1 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800/40 rounded-lg p-3">
                 <Textarea
                   label="Motivo da inativação *"
                   rows={2}
@@ -1297,7 +1297,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         {/* ── STEP 5: REVISÃO ── */}
         {step === 5 && (
           <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-1">
-            <p className="text-xs text-blue-400 bg-blue-900/10 border border-blue-800/30 rounded-lg px-3 py-2">
+            <p className="text-xs text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800/30 rounded-lg px-3 py-2">
               Revise todas as informações antes de salvar. Use o stepper acima para corrigir qualquer etapa.
             </p>
 
@@ -1424,7 +1424,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
             )}
 
             {saveMut.isError && (
-              <div className="bg-red-900/20 border border-red-800 rounded-lg px-3 py-2 text-xs text-red-400">
+              <div className="bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded-lg px-3 py-2 text-xs text-red-700 dark:text-red-400">
                 Erro ao salvar: {(saveMut.error as any)?.message}
               </div>
             )}

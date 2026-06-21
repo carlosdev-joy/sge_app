@@ -599,7 +599,7 @@ function BulkResolveModal({ rows, loading, onConfirm, onClose }: {
   return (
     <Modal open title={`Resolver ${rows.length} falha(s) em massa`} onClose={onClose} size="md">
       <div className="flex flex-col gap-4">
-        <div className="text-xs text-dim bg-amber-900/10 border border-amber-800/30 rounded-lg px-3 py-2">
+        <div className="text-xs text-dim bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800/30 rounded-lg px-3 py-2">
           A mesma observação e ticket serão aplicados às <strong className="text-ink">{rows.length}</strong> falha(s)
           {pipelines.length === 1
             ? <> do pipeline <span className="font-mono text-ink">{pipelines[0]}</span></>
@@ -853,7 +853,7 @@ function GestaoFalhasTab() {
                 <tbody>
                   {rows.map(r => (
                     <tr key={`${r.execution_id}-${r.pipeline}`}
-                      className={`border-b border-edge/40 hover:bg-edge/20 transition-colors ${r.resolved_at ? 'opacity-70' : ''} ${selected.has(rowKey(r)) ? 'bg-green-900/10' : ''}`}>
+                      className={`border-b border-edge/40 hover:bg-edge/20 transition-colors ${r.resolved_at ? 'opacity-70' : ''} ${selected.has(rowKey(r)) ? 'bg-green-50 dark:bg-green-900/10' : ''}`}>
                       {!isViewer && (
                         <td className="px-3 py-2">
                           {!r.resolved_at && (

@@ -202,7 +202,7 @@ function JobFormModal({
 
         {/* Log detalhado para datastage */}
         {form.job_type === 'datastage' && (
-          <div className="bg-amber-900/10 border border-amber-800/40 rounded-lg px-3 py-3">
+          <div className="bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800/40 rounded-lg px-3 py-3">
             <label className="flex items-start gap-2.5 cursor-pointer">
               <input
                 type="checkbox"
@@ -222,8 +222,8 @@ function JobFormModal({
         )}
 
         {err.length > 0 && (
-          <div className="bg-red-900/20 border border-red-800 rounded-lg p-3">
-            {err.map((e, i) => <p key={i} className="text-xs text-red-400">{e}</p>)}
+          <div className="bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded-lg p-3">
+            {err.map((e, i) => <p key={i} className="text-xs text-red-700 dark:text-red-400">{e}</p>)}
           </div>
         )}
 
@@ -322,7 +322,7 @@ BiCvp_Load_B,2,python,scripts.load_b.run</pre>
             </div>
             <div className="max-h-48 overflow-y-auto">
               {preview.map((p, i) => (
-                <div key={i} className={`flex items-center gap-2 px-3 py-1.5 text-xs border-b border-edge/40 ${p.ok ? '' : 'bg-red-900/10'}`}>
+                <div key={i} className={`flex items-center gap-2 px-3 py-1.5 text-xs border-b border-edge/40 ${p.ok ? '' : 'bg-red-50 dark:bg-red-900/10'}`}>
                   <span className={p.ok ? 'text-green-400' : 'text-red-400'}>{p.ok ? '✓' : '✗'}</span>
                   <span className="font-mono text-dim flex-1 truncate">{p.line}</span>
                   {!p.ok && <span className="text-red-400 shrink-0 max-w-[260px] text-right">{p.error}</span>}
@@ -422,7 +422,7 @@ function ExecConfirmModal({ pipeline, onConfirm, onClose }: { pipeline: string; 
         <p className="text-sm text-dim">
           Deseja disparar o pipeline <span className="font-mono text-ink font-medium">{pipeline}</span> agora, fora do agendamento?
         </p>
-        <p className="text-xs text-amber-400 bg-amber-900/15 border border-amber-800/40 rounded-lg px-3 py-2">
+        <p className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800/40 rounded-lg px-3 py-2">
           ⚠ Esta ação inicia uma execução imediata no Airflow. Certifique-se que o pipeline não está em execução.
         </p>
         <div className="flex justify-end gap-2 border-t border-edge pt-3">
@@ -447,7 +447,7 @@ function DeleteConfirmModal({ job, onConfirm, onClose }: { job: Job; onConfirm: 
           <span className="font-mono text-ink font-medium">{job.job_name}</span>{' '}
           do pipeline <span className="font-mono text-ink">{job.pipeline_name}</span>?
         </p>
-        <p className="text-xs text-red-400 bg-red-900/15 border border-red-800/40 rounded-lg px-3 py-2">
+        <p className="text-xs text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/15 border border-red-200 dark:border-red-800/40 rounded-lg px-3 py-2">
           Esta ação remove o job e sua lineage associada. Não pode ser desfeita.
         </p>
         <div className="flex justify-end gap-2 border-t border-edge pt-3">
@@ -641,7 +641,7 @@ export default function Jobs() {
 
       {/* Info banner */}
       {bannerVisible && (
-        <div className="bg-blue-900/15 border border-blue-800/40 rounded-xl p-4 flex gap-3">
+        <div className="bg-blue-50 dark:bg-blue-900/15 border border-blue-200 dark:border-blue-800/40 rounded-xl p-4 flex gap-3">
           <span className="text-xl shrink-0">⬡</span>
           <div className="flex-1 text-sm">
             <strong className="text-ink">O que é um Job?</strong>
@@ -700,7 +700,7 @@ export default function Jobs() {
           </div>
         </div>
         {/* Dica de uso — pipeline é opcional */}
-        <div className="mt-3 flex items-start gap-2 text-xs text-dim bg-blue-900/10 border border-blue-800/30 rounded-lg px-3 py-2">
+        <div className="mt-3 flex items-start gap-2 text-xs text-dim bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800/30 rounded-lg px-3 py-2">
           <span className="text-blue-400 shrink-0">ℹ</span>
           <span>
             O <strong className="text-ink">pipeline é opcional</strong>: você pode filtrar por <strong className="text-ink">nome do job</strong> ou
@@ -848,7 +848,7 @@ export default function Jobs() {
                             <div className="truncate" title={j.job_command ?? ''}>
                               {j.job_command || <span className="text-dim/40">—</span>}
                               {j.job_type === 'shell' && j.ssh_conn_id && (
-                                <span className="ml-1.5 text-[10px] bg-amber-900/30 text-amber-400 border border-amber-800/40 px-1.5 py-0.5 rounded font-mono">
+                                <span className="ml-1.5 text-[10px] bg-amber-100 text-amber-700 border border-amber-300 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800/40 px-1.5 py-0.5 rounded font-mono">
                                   {j.ssh_conn_id}
                                 </span>
                               )}
@@ -856,7 +856,7 @@ export default function Jobs() {
                           </td>
                           <td className="px-3 py-2">
                             {j.job_type === 'datastage' && j.verbose_log
-                              ? <span className="text-xs text-amber-400 bg-amber-900/20 border border-amber-800/40 px-1.5 py-0.5 rounded" title="Log detalhado ativo — registra progresso dos jobs filhos a cada 5 min">🔍 detalhado</span>
+                              ? <span className="text-xs text-amber-700 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800/40 px-1.5 py-0.5 rounded" title="Log detalhado ativo — registra progresso dos jobs filhos a cada 5 min">🔍 detalhado</span>
                               : <span className="text-dim/40 text-xs">—</span>}
                           </td>
                           {!isViewer && (
