@@ -113,12 +113,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.dag_reconcile import reconcile_loop
+from services.monitor_capture import capture_loop as monitor_capture_loop
 
 from routers import (
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
     datastage, factory, airflow, change_plans, powerbi, malha_ds,
-    notificacoes, comunicados, backlog,
+    notificacoes, comunicados, backlog, monitor,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -144,12 +145,15 @@ async def lifespan(app: FastAPI):
     # Reconciliador do Gerar-DAG: conclui despause/notificação a partir da fila
     # persistida (etl_dag_pendente), retomando itens deixados por um restart.
     reconcile_task = asyncio.create_task(reconcile_loop())
+    # Observabilidade de tabelas: captura snapshots periódicos (frescor/volume).
+    monitor_task = asyncio.create_task(monitor_capture_loop())
     yield
-    reconcile_task.cancel()
-    try:
-        await reconcile_task
-    except asyncio.CancelledError:
-        pass
+    for _t in (reconcile_task, monitor_task):
+        _t.cancel()
+        try:
+            await _t
+        except asyncio.CancelledError:
+            pass
     log.info("ORQUESTRA API encerrando.")
 
 
@@ -173,6 +177,6 @@ for _router_module in [
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
     datastage, factory, airflow, change_plans, powerbi, malha_ds,
-    notificacoes, comunicados, backlog,
+    notificacoes, comunicados, backlog, monitor,
 ]:
     app.include_router(_router_module.router)
