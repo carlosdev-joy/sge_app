@@ -79,15 +79,18 @@ def _compiles(code: str) -> bool:
         Path(path + "c").unlink(missing_ok=True)
 
 
-def test_storedproc_sem_parametro_mantem_comportamento_atual():
+def test_storedproc_sem_parametro_chama_operador_sem_params():
+    # Agora o factory só CHAMA o StoredProcOperator (o EXEC/bind/log vivem no
+    # operador). Sem parâmetros cadastrados → params=[] (não envia nenhum).
     job = {"job_name": "j1", "job_type": "storedproc", "job_command": "dbo.sp_teste"}
     code = factory._task_block(job, "proj", {})
-    assert 'EXEC dbo.sp_teste"' in code
-    assert "parameters=" not in code
+    assert "StoredProcOperator(" in code
+    assert "proc='dbo.sp_teste'" in code
+    assert "params=[]" in code
     assert _compiles(code)
 
 
-def test_storedproc_com_parametros_usa_bind_real():
+def test_storedproc_com_parametros_passa_payload_ao_operador():
     job = {
         "job_name": "j2", "job_type": "storedproc", "job_command": "dbo.sp_teste",
         "params": [
@@ -96,8 +99,13 @@ def test_storedproc_com_parametros_usa_bind_real():
         ],
     }
     code = factory._task_block(job, "proj", {})
-    assert "EXEC dbo.sp_teste @p_texto=?, @p_numero=?" in code
-    assert "parameters=['abc', 5]" in code
+    assert "StoredProcOperator(" in code
+    assert "proc='dbo.sp_teste'" in code
+    # payload com nome/tipo/valor — o bind real e a coerção acontecem no operador.
+    assert "'name': '@p_texto'" in code
+    assert "'type': 'VARCHAR'" in code
+    assert "'value': 'abc'" in code
+    assert "'name': 'p_numero'" in code
     assert _compiles(code)
 
 
