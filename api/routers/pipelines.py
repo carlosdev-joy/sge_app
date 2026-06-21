@@ -720,7 +720,7 @@ async def gerar_dag(pipeline_name: str,
         ) as client:
             r = await client.post(
                 f"/api/v1/dags/{FACTORY_DAG_ID}/dagRuns",
-                json={"dag_run_id": run_id, "conf": {"pipeline_name": pname}},
+                json={"dag_run_id": run_id, "conf": {"pipeline_name": pname, "aguardar_ativacao": True}},
                 headers={"Content-Type": "application/json"},
             )
             if not r.is_success:
@@ -733,7 +733,7 @@ async def gerar_dag(pipeline_name: str,
 
     # Persiste a intenção: o reconciliador (loop na API) conclui a ativação e
     # notifica ao final — resiliente a restart da API (a intenção fica no banco).
-    await asyncio.to_thread(enqueue_dag_pendente, pname, desired_paused, _auth.get("matricula"))
+    await asyncio.to_thread(enqueue_dag_pendente, pname, desired_paused, _auth.get("matricula"), run_id)
     return {"ok": True, "pipeline_name": pname, "dag_run_id": run_id,
             "desired_active": (not desired_paused)}
 
