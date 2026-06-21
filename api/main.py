@@ -114,7 +114,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers import (
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
-    datastage, factory, airflow, change_plans, powerbi, malha_ds
+    datastage, factory, airflow, change_plans, powerbi, malha_ds,
+    notificacoes,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -161,5 +162,6 @@ for _router_module in [
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
     datastage, factory, airflow, change_plans, powerbi, malha_ds,
+    notificacoes,
 ]:
     app.include_router(_router_module.router)

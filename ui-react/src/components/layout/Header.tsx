@@ -1,13 +1,14 @@
 import { useState, useRef, useEffect } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../../store/auth'
 import { apiFetch } from '../../lib/api'
 import { NAV } from '../../lib/nav'
 import { getTheme, toggleTheme } from '../../lib/theme'
 import { useAppVersion } from '../../lib/version'
-import { useQuery } from '@tanstack/react-query'
-import { LogOut, Sun, Moon, Shield, Mail, Hash, Building2, ChevronDown, X, Tag } from 'lucide-react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { LogOut, Sun, Moon, Shield, Mail, Hash, Building2, ChevronDown, X, Tag, Bell } from 'lucide-react'
 import { CommandPalette } from '../ui/CommandPalette'
+import { toast } from '../ui/Toast'
 import { Logo } from './Logo'
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -232,6 +233,124 @@ function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
   )
 }
 
+// ── Notifications bell ─────────────────────────────────────────────────────
+
+interface Notif {
+  id: number
+  tipo: 'info' | 'success' | 'warning' | 'error'
+  titulo: string
+  mensagem: string | null
+  link: string | null
+  lida: boolean
+  created_at: string | null
+}
+
+const NOTIF_DOT: Record<string, string> = {
+  success: 'bg-green-500', info: 'bg-blue-500', warning: 'bg-amber-500', error: 'bg-red-500',
+}
+
+function fmtNotifTime(iso: string | null): string {
+  if (!iso || iso.length < 16) return ''
+  return `${iso.substring(8, 10)}/${iso.substring(5, 7)} ${iso.substring(11, 16)}`
+}
+
+function NotificationsBell() {
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const seenRef = useRef<number | null>(null)  // maior id já visto (baseline da 1ª carga)
+
+  const { data } = useQuery<{ data: Notif[]; unread: number }>({
+    queryKey: ['notificacoes'],
+    queryFn: () => apiFetch('/notificacoes?limit=30'),
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+  })
+  const items  = data?.data ?? []
+  const unread = data?.unread ?? 0
+
+  // Toast para notificações novas — sem disparar para as que já existiam na 1ª carga.
+  useEffect(() => {
+    if (!data) return
+    const maxId = items.reduce((m, n) => Math.max(m, n.id), 0)
+    if (seenRef.current === null) { seenRef.current = maxId; return }
+    const novas = items.filter(n => n.id > (seenRef.current ?? 0))
+    if (novas.length) {
+      novas.slice(0, 3).reverse().forEach(n => {
+        const txt = n.titulo + (n.mensagem ? ` — ${n.mensagem}` : '')
+        if (n.tipo === 'error' || n.tipo === 'warning') toast.error(txt)
+        else if (n.tipo === 'success') toast.success(txt)
+        else toast.info(txt)
+      })
+      seenRef.current = maxId
+    }
+  }, [data])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const markRead = useMutation({
+    mutationFn: () => apiFetch('/notificacoes/read', { method: 'POST', body: JSON.stringify({ all: true }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['notificacoes'] }),
+  })
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="relative text-white/70 hover:text-white transition-colors p-1 rounded hover:bg-white/10"
+        title="Notificações" aria-label="Notificações" aria-expanded={open}
+      >
+        <Bell size={16} />
+        {unread > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-1 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">
+            {unread > 9 ? '9+' : unread}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-[calc(100%+6px)] w-80 rounded-xl shadow-2xl border border-edge bg-panel overflow-hidden z-50">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-edge">
+            <span className="text-xs font-semibold text-ink">Notificações</span>
+            {unread > 0 && (
+              <button onClick={() => markRead.mutate()} className="text-[10px] text-blue-400 hover:text-blue-300">
+                Marcar todas como lidas
+              </button>
+            )}
+          </div>
+          <div className="max-h-[60vh] overflow-y-auto">
+            {items.length === 0 && (
+              <div className="px-3 py-8 text-center text-xs text-dim">Nenhuma notificação.</div>
+            )}
+            {items.map(n => (
+              <div
+                key={n.id}
+                onClick={() => { if (n.link) { setOpen(false); navigate(n.link) } }}
+                className={`flex gap-2 px-3 py-2 border-b border-edge/40 last:border-0 transition-colors
+                  ${n.lida ? 'opacity-60' : 'bg-blue-500/5'} ${n.link ? 'cursor-pointer hover:bg-edge/30' : ''}`}
+              >
+                <span className={`mt-1 w-2 h-2 rounded-full shrink-0 ${NOTIF_DOT[n.tipo] ?? 'bg-blue-500'}`} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-medium text-ink">{n.titulo}</div>
+                  {n.mensagem && <div className="text-[11px] text-dim mt-0.5 break-words">{n.mensagem}</div>}
+                  <div className="text-[10px] text-dim/60 mt-0.5">{fmtNotifTime(n.created_at)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Header ─────────────────────────────────────────────────────────────────
 
 export function Header() {
@@ -321,6 +440,7 @@ export function Header() {
           >
             {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
           </button>
+          <NotificationsBell />
           <ProfileDropdown onLogout={handleLogout} />
         </div>
 

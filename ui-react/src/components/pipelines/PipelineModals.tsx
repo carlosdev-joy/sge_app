@@ -420,7 +420,11 @@ export function GenDagModal({ pipeline, onClose }: { pipeline: Pipeline; onClose
       if (!r?.exists) { setStatusMsg(`Aguardando o Airflow registrar a DAG… (${i + 1}/${MAX})`); continue }
       if (r.ready) {
         qc.invalidateQueries({ queryKey: ['pipelines'] })
-        setFinalPaused(!!r.is_paused); setPhase('done'); return
+        setFinalPaused(!!r.is_paused); setPhase('done')
+        toast.success(r.is_paused
+          ? `DAG "${pipeline.pipeline_name}" criada e pausada no Airflow (pipeline inativo).`
+          : `DAG "${pipeline.pipeline_name}" criada e já ativa no Airflow.`)
+        return
       }
       setStatusMsg(r.error ? `DAG registrada; ajustando estado… (${r.error})` : 'DAG registrada. Ativando…')
     }
