@@ -810,28 +810,57 @@ def _generate_dag_source(pipeline, jobs):
         sensors_ref = "[" + ", ".join(sensor_names) + "]"
         dep_lines.append(f"t_check_agenda >> {sensors_ref}")
 
-    # Walk groups — build fan-out/fan-in chains
-    prev_ends: list[str] = []  # ends of the previous group (empty = start of DAG)
-    for g_idx, group in enumerate(job_groups):
-        g_ends = [f"t_end_{_varname(j['job_name'])}" for j in group]
-        # Determine upstream anchor for this group
-        if prev_ends:
-            up = "[" + ", ".join(prev_ends) + "]" if len(prev_ends) > 1 else prev_ends[0]
-        elif sensor_names:
-            up = sensors_ref
-        else:
-            up = "t_check_agenda"
+    # Modo de dependência: EXPLÍCITO (algum job tem depends_on_jobs) ou ONDAS
+    # (execution_order). Opt-in por pipeline — pipelines sem deps explícitas
+    # continuam exatamente como antes.
+    _job_names = {j["job_name"] for j in sorted_jobs}
 
-        for j_idx, j in enumerate(group):
+    def _deps_of(j):
+        raw = (j.get("depends_on_jobs") or "")
+        return [d.strip() for d in str(raw).split(",")
+                if d.strip() and d.strip() in _job_names and d.strip() != j["job_name"]]
+
+    explicit_deps = any(_deps_of(j) for j in sorted_jobs)
+
+    if explicit_deps:
+        root_anchor = sensors_ref if sensor_names else "t_check_agenda"
+        teams_start_done = False
+        for j in sorted_jobs:
             n = _varname(j["job_name"])
-            # Teams start notification only on first job of first group
-            if g_idx == 0 and j_idx == 0 and f_ini:
+            deps = _deps_of(j)
+            if deps:
+                ends = [f"t_end_{_varname(d)}" for d in deps]
+                up = "[" + ", ".join(ends) + "]" if len(ends) > 1 else ends[0]
+            else:
+                up = root_anchor
+            # Notificação de início no primeiro job raiz (sem dependências)
+            if (not deps) and (not teams_start_done) and f_ini:
+                teams_start_done = True
                 chain = f"{up} >> t_start_{n} >> t_teams_start >> t_job_{n} >> t_end_{n}"
             else:
                 chain = f"{up} >> t_start_{n} >> t_job_{n} >> t_end_{n}"
             dep_lines.append(chain)
-
-        prev_ends = g_ends
+        if f_ini and not teams_start_done:
+            dep_lines.append(f"{root_anchor} >> t_teams_start")
+    else:
+        # Modo ondas (comportamento original)
+        prev_ends: list[str] = []  # ends of the previous group (empty = start of DAG)
+        for g_idx, group in enumerate(job_groups):
+            g_ends = [f"t_end_{_varname(j['job_name'])}" for j in group]
+            if prev_ends:
+                up = "[" + ", ".join(prev_ends) + "]" if len(prev_ends) > 1 else prev_ends[0]
+            elif sensor_names:
+                up = sensors_ref
+            else:
+                up = "t_check_agenda"
+            for j_idx, j in enumerate(group):
+                n = _varname(j["job_name"])
+                if g_idx == 0 and j_idx == 0 and f_ini:
+                    chain = f"{up} >> t_start_{n} >> t_teams_start >> t_job_{n} >> t_end_{n}"
+                else:
+                    chain = f"{up} >> t_start_{n} >> t_job_{n} >> t_end_{n}"
+                dep_lines.append(chain)
+            prev_ends = g_ends
 
     end_tasks_ref = "[" + ", ".join(all_ends) + "]"
     dep_lines.append(f"end_tasks = {end_tasks_ref}")
@@ -1014,6 +1043,21 @@ def gerar_dags(**context):
         params_by_job[(r["pipeline_name"], r["job_name"])].append(r)
     for j in jobs_all:
         j["params"] = params_by_job.get((j["pipeline_name"], j["job_name"]), [])
+
+    # Supplement: dependência por job (degrada se a coluna não existir — migration 038)
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='dbo' "
+            "AND TABLE_NAME='etl_pipeline_job' AND COLUMN_NAME='depends_on_jobs'")
+        if cursor.fetchone()[0]:
+            cursor.execute(
+                "SELECT pipeline_name, job_name, depends_on_jobs FROM dbo.etl_pipeline_job "
+                "WHERE depends_on_jobs IS NOT NULL")
+            _depmap = {(r[0], r[1]): r[2] for r in cursor.fetchall()}
+            for j in jobs_all:
+                j["depends_on_jobs"] = _depmap.get((j["pipeline_name"], j["job_name"]))
+    except Exception as _de:
+        print(f"[FACTORY] depends_on_jobs supplement ignorado: {_de}")
 
     # Supplement with advanced fields (not in SP result set)
     if pipelines:

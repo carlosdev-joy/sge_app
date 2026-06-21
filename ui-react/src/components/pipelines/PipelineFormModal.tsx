@@ -37,6 +37,28 @@ interface JobEntry {
   verbose_log: boolean
   mssql_conn_id: string
   params: JobParamEntry[]
+  depends_on_jobs: string[]
+}
+
+// Detecta ciclo no grafo de dependências entre jobs (DFS 3-cores).
+function jobsHaveCycle(jobs: JobEntry[]): boolean {
+  const adj = new Map<string, string[]>()
+  jobs.forEach(j => { const n = j.job_name.trim(); if (n) adj.set(n, (j.depends_on_jobs || []).filter(Boolean)) })
+  const color = new Map<string, number>()  // 0=branco 1=cinza 2=preto
+  adj.forEach((_, n) => color.set(n, 0))
+  let cyclic = false
+  const dfs = (n: string) => {
+    color.set(n, 1)
+    for (const d of adj.get(n) ?? []) {
+      if (!adj.has(d)) continue
+      const c = color.get(d)
+      if (c === 1) { cyclic = true; return }
+      if (c === 0) { dfs(d); if (cyclic) return }
+    }
+    color.set(n, 2)
+  }
+  for (const n of adj.keys()) { if (color.get(n) === 0) dfs(n); if (cyclic) break }
+  return cyclic
 }
 
 interface LineageEntry {
@@ -326,10 +348,10 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       verbose_log: !!j.verbose_log,
       mssql_conn_id: '',
       params: [],
+      depends_on_jobs: [],
     })))
-    const storedprocJobs = rows.filter(j => j.job_type === 'storedproc')
-    Promise.all(storedprocJobs.map(j =>
-      apiFetch<{ mssql_conn_id: string | null; params: { param_name: string; param_type: string; param_value: string | null }[] }>(
+    Promise.all(rows.map(j =>
+      apiFetch<{ mssql_conn_id: string | null; depends_on_jobs?: string | null; params: { param_name: string; param_type: string; param_value: string | null }[] }>(
         `/pipelines/jobs/${encodeURIComponent(editName!)}/${encodeURIComponent(j.job_name)}`,
       ).then(detail => ({ job_name: j.job_name, detail })).catch(() => null),
     )).then(results => {
@@ -343,6 +365,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
             id: `p_${ppi}_${Math.random().toString(36).slice(2, 7)}`,
             param_name: p.param_name, param_type: p.param_type, param_value: p.param_value ?? '',
           })),
+          depends_on_jobs: (found.detail.depends_on_jobs || '').split(',').map(s => s.trim()).filter(Boolean),
         }
       }))
     })
@@ -448,6 +471,15 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       const names = jobs.map(j => j.job_name.trim()).filter(Boolean)
       const dups = [...new Set(names.filter((n, i) => names.indexOf(n) !== i))]
       if (dups.length) e.push(`Jobs com nomes duplicados: ${dups.join(', ')}`)
+      // dependências por job
+      const nameSet = new Set(names)
+      jobs.forEach((j, i) => {
+        (j.depends_on_jobs || []).forEach(d => {
+          if (d === j.job_name.trim()) e.push(`Job "${j.job_name || i + 1}": não pode depender de si mesmo`)
+          else if (!nameSet.has(d)) e.push(`Job "${j.job_name || i + 1}": depende de "${d}" que não existe`)
+        })
+      })
+      if (jobsHaveCycle(jobs)) e.push('Há ciclo de dependências entre os jobs (ex.: A → B → A). Ajuste o "Depende de".')
       return e
     }
     return []
@@ -567,6 +599,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
           return {
             job_name:        j.job_name.trim(),
             execution_order: j.execution_order,
+            depends_on_jobs: (j.depends_on_jobs || []).map(d => d.trim()).filter(Boolean),
             job_type:        j.job_type || 'datastage',
             job_command:     j.job_command.trim() || null,
             ssh_conn_id:     j.job_type === 'shell' ? (j.ssh_conn_id || null) : null,
@@ -664,6 +697,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       verbose_log: false,
       mssql_conn_id: '',
       params: [],
+      depends_on_jobs: [],
     }])
   }
 
@@ -677,7 +711,10 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
     const job = jobs.find(j => j.id === id)
     if (job && patch.job_name !== undefined && patch.job_name !== job.job_name) {
       const oldName = job.job_name
-      setLineage(prevL => prevL.map(l => l.job_name === oldName ? { ...l, job_name: patch.job_name! } : l))
+      const newName = patch.job_name!
+      setLineage(prevL => prevL.map(l => l.job_name === oldName ? { ...l, job_name: newName } : l))
+      // remapeia dependências que apontavam para o nome antigo
+      setJobs(prev => prev.map(j => ({ ...j, depends_on_jobs: (j.depends_on_jobs || []).map(d => d === oldName ? newName : d) })))
     }
     setJobs(prev => prev.map(j => j.id === id ? { ...j, ...patch } : j))
   }
@@ -1117,7 +1154,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
           <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-1">
             <div className="flex items-center justify-between">
               <div className="text-xs text-dim">
-                Defina os jobs em ordem de execução. <span className="text-dim/70">Mesma ordem = execução em paralelo.</span>
+                Defina os jobs. <span className="text-dim/70">Mesma ordem = paralelo. Use “Depende de” para encadear jobs específicos (ex.: 3 só após o 1).</span>
               </div>
               <Button size="sm" onClick={addJob}><Plus size={12} /> Adicionar job</Button>
             </div>
@@ -1204,6 +1241,31 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                       </div>
                     )}
                   </div>
+                  {jobs.length > 1 && (
+                    <div className="flex flex-col gap-1 pt-1 border-t border-edge/40">
+                      <label className="text-[10px] text-dim font-medium">
+                        Depende de <span className="text-dim/60">(começa quando estes terminarem com sucesso · vazio = inicia no começo)</span>
+                      </label>
+                      <div className="flex flex-wrap gap-1">
+                        {jobs.filter(o => o.id !== j.id && o.job_name.trim()).map(o => {
+                          const nm = o.job_name.trim()
+                          const sel = j.depends_on_jobs.includes(nm)
+                          return (
+                            <button key={o.id} type="button"
+                              onClick={() => updateJob(j.id, { depends_on_jobs: sel ? j.depends_on_jobs.filter(d => d !== nm) : [...j.depends_on_jobs, nm] })}
+                              className={`px-2 py-0.5 rounded-full text-[10px] border transition-colors ${sel
+                                ? 'bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800'
+                                : 'bg-panel text-dim border-edge hover:bg-edge/40'}`}>
+                              {sel ? '✓ ' : ''}{nm}
+                            </button>
+                          )
+                        })}
+                        {jobs.filter(o => o.id !== j.id && o.job_name.trim()).length === 0 && (
+                          <span className="text-[10px] text-dim/60">Nomeie os outros jobs para poder depender deles.</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   {j.job_type === 'storedproc' && (
                     <div className="flex flex-col gap-1.5 pt-1 border-t border-edge/40">
                       <button type="button" onClick={() => toggleParams(j.id)}
