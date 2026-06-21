@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from db import get_db_conn
 from deps import get_current_user
+from services.dag_reconcile import recheck_geradas
 
 log = logging.getLogger("orquestra-api")
 
@@ -30,6 +31,12 @@ def _fmt_dt(v):
 @router.get("/factory/runs", tags=["factory"])
 def factory_runs(limit: int = Query(20, le=100)):
     """Últimas execuções da etl_dag_factory lidas de dbo.etl_factory_log."""
+    # Auto-cura: revalida runs em 'GERADA' (vira SUCCESS/TIMEOUT) a cada acesso,
+    # evitando que fiquem 'GERADA' para sempre. Best-effort — nunca quebra a tela.
+    try:
+        recheck_geradas()
+    except Exception as _e:
+        log.debug("[FACTORY] recheck_geradas ignorado: %s", _e)
     try:
         conn = get_db_conn(); cur = conn.cursor()
         cur.execute(
