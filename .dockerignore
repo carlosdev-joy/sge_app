@@ -4,6 +4,7 @@
 # Estrutura de agentes / IA — vive só no repositório, nunca em imagem de produção
 .claude/
 CLAUDE.md
+_CATALOG.md
 
 # Controle de versão e CI
 .git/
