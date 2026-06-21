@@ -1,0 +1,27 @@
+# Contexto de build Docker — mantém artefatos só-de-repo FORA das imagens de produção.
+# (a raiz é o contexto do serviço x-airflow-common `build: .`)
+
+# Estrutura de agentes / IA — vive só no repositório, nunca em imagem de produção
+.claude/
+CLAUDE.md
+_CATALOG.md
+
+# Controle de versão e CI
+.git/
+.github/
+.gitignore
+.dockerignore
+
+# Dev / docs / testes — não precisam ir para a imagem
+docs/
+tests/
+.worktrees/
+.pytest_cache/
+**/__pycache__/
+**/*.pyc
+
+# Front-end: dependências locais (a imagem usa ui-react/dist já buildado)
+ui-react/node_modules/
+
+# Apresentações / binários grandes
+*.pptx
