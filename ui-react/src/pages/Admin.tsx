@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, type ReactNode } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { Button } from '../components/ui/Button'
@@ -12,7 +12,7 @@ import { queryClient } from '../lib/queryClient'
 import { renderMarkdown } from '../lib/markdown'
 import {
   Edit2, Trash2, Plus, AlertTriangle, ChevronDown, ChevronUp, Save, X,
-  CheckCircle2, Eye, Calendar, Download, Megaphone,
+  CheckCircle2, Eye, Calendar, Download, Megaphone, Bold, Italic, Code, List,
 } from 'lucide-react'
 
 const PROJETOS = ['BI_CVP', 'BI_VIDA', 'BI_PREVIDENCIA', 'BI_PRESTAMISTA']
@@ -1686,6 +1686,61 @@ const TIPO_OPTS = [
 
 const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 100) : 0)
 
+const COM_BAR: Record<string, string> = { info: 'bg-blue-600', success: 'bg-green-600', warning: 'bg-amber-600', error: 'bg-red-600' }
+const COM_DOT: Record<string, string> = { info: 'bg-blue-500', success: 'bg-green-500', warning: 'bg-amber-500', error: 'bg-red-500' }
+
+// Botão da barra de formatação Markdown.
+function MdBtn({ onClick, title, children }: { onClick: () => void; title: string; children: ReactNode }) {
+  return (
+    <button type="button" onClick={onClick} title={title}
+      className="px-1.5 py-1 rounded text-dim hover:text-ink hover:bg-edge/60 transition-colors flex items-center justify-center min-w-[26px]">
+      {children}
+    </button>
+  )
+}
+
+// Pré-visualização ao vivo — espelha como o usuário verá (banner ou sininho+toast).
+function ComunicadoPreview({ tipo, titulo, mensagem, formato }: { tipo: string; titulo: string; mensagem: string; formato: string }) {
+  const tituloView = titulo.trim() || 'Título do comunicado'
+  const html = renderMarkdown(mensagem.trim() || 'A prévia da mensagem aparece aqui conforme você escreve.')
+  const bar = COM_BAR[tipo] ?? COM_BAR.info
+  const dot = COM_DOT[tipo] ?? COM_DOT.info
+  const mdClass = 'text-sm text-ink break-words [&_a]:text-blue-400 [&_ul]:list-disc [&_li]:list-disc [&_li]:ml-4 [&_strong]:font-semibold'
+
+  if (formato === 'banner') {
+    return (
+      <div className="rounded-xl border border-edge overflow-hidden shadow-sm">
+        <div className={`px-3 py-2 flex items-center gap-2 text-white ${bar}`}>
+          <Megaphone size={14} className="shrink-0" />
+          <span className="text-xs font-bold truncate">{tituloView}</span>
+        </div>
+        <div className="p-3 bg-panel">
+          <div className={mdClass} dangerouslySetInnerHTML={{ __html: html }} />
+          <div className="mt-3 flex justify-end">
+            <span className="text-[10px] px-2.5 py-1 rounded bg-[#1A5FA8] text-white font-medium">Entendi</span>
+          </div>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="rounded-lg border border-edge bg-panel p-2 flex gap-2">
+        <span className={`mt-1 w-2 h-2 rounded-full shrink-0 ${dot}`} />
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-ink flex items-center gap-1">
+            <Megaphone size={11} className="text-dim shrink-0" />{tituloView}
+          </div>
+          <div className={`mt-0.5 ${mdClass} [&_*]:text-[11px] [&_*]:text-dim`} dangerouslySetInnerHTML={{ __html: html }} />
+        </div>
+      </div>
+      <div className={`text-[11px] text-white rounded px-2 py-1 inline-flex items-center gap-1 w-fit max-w-full ${bar}`}>
+        <span className="truncate">📢 {tituloView}</span>
+      </div>
+    </div>
+  )
+}
+
 function ComunicadoDetail({ id, onClose }: { id: number; onClose: () => void }) {
   const { data, isLoading } = useQuery<{ comunicado: ComunicadoRow & { mensagem: string }; destinatarios: DestinatarioRow[] }>({
     queryKey: ['comunicado-detail', id],
@@ -1741,6 +1796,7 @@ function ComunicadosTab() {
   const [form, setForm] = useState(EMPTY_COM)
   const [userFilter, setUserFilter] = useState('')
   const [detailId, setDetailId] = useState<number | null>(null)
+  const msgRef = useRef<HTMLTextAreaElement>(null)
 
   const { data: listData, isLoading } = useQuery<{ data: ComunicadoRow[] }>({
     queryKey: ['comunicados-admin'],
@@ -1778,6 +1834,24 @@ function ComunicadosTab() {
   const togglePerfil = (p: string) => setForm(f => ({ ...f, perfis: f.perfis.includes(p) ? f.perfis.filter(x => x !== p) : [...f.perfis, p] }))
   const toggleUser = (m: string) => setForm(f => ({ ...f, matriculas: f.matriculas.includes(m) ? f.matriculas.filter(x => x !== m) : [...f.matriculas, m] }))
 
+  // Editor Markdown — envolve a seleção ou prefixa a linha.
+  function applyWrap(before: string, after: string, placeholder: string) {
+    const ta = msgRef.current; if (!ta) return
+    const s = ta.selectionStart ?? 0, e = ta.selectionEnd ?? 0
+    const v = form.mensagem
+    const sel = v.substring(s, e) || placeholder
+    setForm(f => ({ ...f, mensagem: v.substring(0, s) + before + sel + after + v.substring(e) }))
+    requestAnimationFrame(() => { ta.focus(); ta.setSelectionRange(s + before.length, s + before.length + sel.length) })
+  }
+  function applyLinePrefix(prefix: string) {
+    const ta = msgRef.current; if (!ta) return
+    const s = ta.selectionStart ?? 0
+    const v = form.mensagem
+    const ls = v.lastIndexOf('\n', s - 1) + 1
+    setForm(f => ({ ...f, mensagem: v.substring(0, ls) + prefix + v.substring(ls) }))
+    requestAnimationFrame(() => { ta.focus(); ta.setSelectionRange(s + prefix.length, s + prefix.length) })
+  }
+
   const valid = form.titulo.trim() && form.mensagem.trim() &&
     (form.publico_tipo === 'todos' ||
       (form.publico_tipo === 'perfil' && form.perfis.length > 0) ||
@@ -1797,10 +1871,6 @@ function ComunicadosTab() {
         <Input label="Título" value={form.titulo} maxLength={160}
           onChange={e => setForm(f => ({ ...f, titulo: e.target.value }))}
           placeholder="Ex.: Nova política de geração de DAGs" />
-        <Textarea label="Mensagem (suporta Markdown)" value={form.mensagem} rows={4}
-          onChange={e => setForm(f => ({ ...f, mensagem: e.target.value }))}
-          placeholder="Texto do comunicado…" />
-
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Select label="Severidade / cor" value={form.tipo} onChange={e => setForm(f => ({ ...f, tipo: e.target.value }))}>
             {TIPO_OPTS.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
@@ -1818,6 +1888,33 @@ function ComunicadosTab() {
           </div>
           <Input label="Link (opcional)" value={form.link}
             onChange={e => setForm(f => ({ ...f, link: e.target.value }))} placeholder="/pipelines" />
+        </div>
+
+        {/* Editor Markdown + pré-visualização ao vivo */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-dim font-medium">Mensagem (Markdown)</label>
+            <div className="flex flex-wrap items-center gap-0.5 border border-edge border-b-0 rounded-t-md px-1.5 py-1 bg-canvas">
+              <MdBtn onClick={() => applyLinePrefix('# ')}  title="Título grande"><span className="text-[11px] font-bold">H1</span></MdBtn>
+              <MdBtn onClick={() => applyLinePrefix('## ')} title="Título médio"><span className="text-[11px] font-bold">H2</span></MdBtn>
+              <span className="w-px h-4 bg-edge mx-1" />
+              <MdBtn onClick={() => applyWrap('**', '**', 'negrito')} title="Negrito"><Bold size={13} /></MdBtn>
+              <MdBtn onClick={() => applyWrap('*', '*', 'itálico')}   title="Itálico"><Italic size={13} /></MdBtn>
+              <MdBtn onClick={() => applyWrap('`', '`', 'código')}    title="Código"><Code size={13} /></MdBtn>
+              <MdBtn onClick={() => applyLinePrefix('- ')}            title="Lista"><List size={13} /></MdBtn>
+            </div>
+            <textarea ref={msgRef} value={form.mensagem} rows={7}
+              onChange={e => setForm(f => ({ ...f, mensagem: e.target.value }))}
+              placeholder="Texto do comunicado…  Selecione um trecho e use os botões para formatar."
+              className="bg-panel border border-edge rounded-b-md px-3 py-2 text-sm text-ink placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500 resize-y" />
+            <span className="text-[10px] text-dim/60">Dica: **negrito**, *itálico*, `código`, # título, - item de lista.</span>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-dim font-medium">Pré-visualização — como o usuário verá</label>
+            <div className="border border-edge rounded-md p-3 bg-canvas/40 min-h-[160px]">
+              <ComunicadoPreview tipo={form.tipo} titulo={form.titulo} mensagem={form.mensagem} formato={form.formato} />
+            </div>
+          </div>
         </div>
 
         {/* Público-alvo */}
