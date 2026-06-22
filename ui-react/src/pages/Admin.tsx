@@ -9,13 +9,13 @@ import { PageSpinner } from '../components/ui/Spinner'
 import { toast } from '../components/ui/Toast'
 import { Tabs } from '../components/ui/Tabs'
 import { DsRunGraphModal, type DsGraphStatus, type DsGraphNode, type DsRunGraph } from '../components/console/DsRunGraphModal'
-import { dsTimeInfo } from '../lib/dsTime'
+import { dsTimeInfo, dsParseTime } from '../lib/dsTime'
 import { queryClient } from '../lib/queryClient'
 import { renderMarkdown } from '../lib/markdown'
 import {
   Edit2, Trash2, Plus, AlertTriangle, ChevronDown, ChevronUp, Save, X,
   CheckCircle2, Eye, Calendar, Download, Megaphone, Bold, Italic, Code, List, RefreshCw, Database,
-  Terminal, Copy, Network,
+  Terminal, Copy, Network, Crosshair,
 } from 'lucide-react'
 
 const PROJETOS = ['BI_CVP', 'BI_VIDA', 'BI_PREVIDENCIA', 'BI_PRESTAMISTA']
@@ -2755,6 +2755,49 @@ function parseLogdetail(stdout: string): DsLogDetail[] {
   return events
 }
 
+// Monta os runs do diagrama a partir do stdout do logsum (função pura, reusável
+// pelo auto-trace). Junta filhos diretos + jobs vindos de activity de erro.
+function buildGraphRuns(stdout: string, rootJob: string): DsRunGraph[] {
+  const runs = parseLogsum(stdout)
+  const entries = parseLogEntries(stdout)
+  const activityMap = buildActivityJobMap(entries)
+  const errors = entries.filter(e => /FATAL|REJECT|WARNING/i.test(e.type) || DS_ERR_MSG_RE.test(e.message))
+  return runs.map(r => {
+    const m = new Map<string, DsGraphNode>()
+    for (const c of r.children) m.set(c.fullJob, { job: c.fullJob, status: c.code != null ? dsCodeToStatus(c.code) : 'running', label: c.text, time: dsTimeInfo(c.start, c.end), start: c.start, end: c.end })
+    for (const e of errors) {
+      if (r.firstId == null || r.lastId == null || e.id < r.firstId || e.id > r.lastId) continue
+      const explicit = (e.message.match(/\bJob\s+([A-Za-z0-9_.]+)\s+(?:has finished, status|did not finish OK)/i) || [])[1]
+      const act = (e.message.match(/\(@([A-Za-z0-9_.]+)\)/) || [])[1]
+      const job = explicit || (act ? activityMap[act] : undefined)
+      if (!job || job === rootJob) continue
+      const cur = m.get(job)
+      if (!cur || cur.status === 'ok' || cur.status === 'unknown') {
+        m.set(job, { job, status: 'aborted', label: /did not finish OK|status = 3/i.test(e.message) ? 'Abortado' : 'Erro' })
+      }
+    }
+    return { result: r.result, start: r.start, end: r.end, children: [...m.values()] }
+  })
+}
+
+// Índice do run: contém o targetTime; senão (preferAborted) o abortado mais
+// recente; senão o último.
+function pickRunIndex(runs: DsRunGraph[], targetTime: string | null | undefined, preferAborted: boolean): number {
+  const t = targetTime ? dsParseTime(targetTime)?.getTime() : null
+  if (t != null) {
+    let best = -1, bestDelta = Infinity, contained = false
+    runs.forEach((r, i) => {
+      const s = dsParseTime(r.start)?.getTime(); if (s == null) return
+      const e = dsParseTime(r.end)?.getTime()
+      if (s <= t && (e == null || t <= e)) { if (!contained) { contained = true; best = i } }
+      else if (!contained) { const d = Math.abs(s - t); if (d < bestDelta) { bestDelta = d; best = i } }
+    })
+    if (best >= 0) return best
+  }
+  if (preferAborted) for (let i = runs.length - 1; i >= 0; i--) if (runs[i].result === 'aborted') return i
+  return runs.length - 1
+}
+
 function DsConsoleTab() {
   const cfg = useQuery<{ configured: boolean; commands: DsCmd[] }>({
     queryKey: ['ds-console-config'],
@@ -2774,6 +2817,7 @@ function DsConsoleTab() {
   const [showGraph, setShowGraph] = useState(false)
   const [graphTargetTime, setGraphTargetTime] = useState<string | null>(null)
   const [graphPath, setGraphPath] = useState<{ job: string; targetTime: string | null }[]>([])
+  const [tracing, setTracing] = useState(false)
 
   const commands = cfg.data?.commands ?? []
   const current = commands.find(c => c.id === command)
@@ -2825,6 +2869,34 @@ function DsConsoleTab() {
     exec.mutate({ command: cmd, project: project.trim(), job: jobName, ...extra })
   }
 
+  // Auto-trace ("Causa-raiz"): a partir de initialPath, desce sozinho pela cadeia
+  // de jobs abortados (1 logsum por nível) até o job folha, montando o breadcrumb.
+  const autoTrace = async (initialPath: { job: string; targetTime: string | null }[]) => {
+    if (!project.trim() || !configured || initialPath.length === 0 || tracing) return
+    setTracing(true); setShowGraph(true); setCommand('logsum')
+    const path = [...initialPath]
+    let { job: cjob, targetTime: ctt } = path[path.length - 1]
+    setGraphPath([...path]); setGraphTargetTime(ctt)
+    try {
+      for (let depth = 0; depth < 12; depth++) {
+        setJob(cjob)
+        const res = await exec.mutateAsync({ command: 'logsum', project: project.trim(), job: cjob, max_lines: 200 })
+        if (res.exit_code !== 0) break
+        const runs = buildGraphRuns(res.stdout, cjob)
+        const run = runs[pickRunIndex(runs, ctt, true)]
+        // fixa o run analisado neste nível para o diagrama mostrá-lo
+        if (run?.start) { path[path.length - 1] = { job: cjob, targetTime: run.start }; ctt = run.start }
+        setGraphPath([...path]); setGraphTargetTime(path[path.length - 1].targetTime)
+        const ab = run?.children.find(c => c.status === 'aborted')
+        if (!ab) { toast.info(`Causa-raiz: ${cjob} — veja o erro no card "Erros e avisos"`); break }
+        cjob = ab.job; ctt = ab.start ?? null
+        path.push({ job: cjob, targetTime: ctt })
+        setGraphPath([...path]); setGraphTargetTime(ctt)
+      }
+    } catch { /* erro já notificado pela mutation */ }
+    finally { setTracing(false) }
+  }
+
   const projectList = (projetos.data?.projects ?? []).map(p => p.project_name)
   const projectOptions = projectList.length ? projectList : PROJETOS
 
@@ -2864,24 +2936,9 @@ function DsConsoleTab() {
   const groupedErrIds = new Set(errorsByRun.flatMap(g => g.errors.map(e => e.id)))
   const ungroupedErrors = logErrors.filter(e => !groupedErrIds.has(e.id))
 
-  // Diagrama (CTRL-M): por run, junta filhos diretos (status do logsum) + jobs vindos
-  // de activities de erro, para o grafo refletir o run de verdade.
-  const graphRuns: DsRunGraph[] = logsumRuns.map(r => {
-    const m = new Map<string, DsGraphNode>()
-    for (const c of r.children) m.set(c.fullJob, { job: c.fullJob, status: c.code != null ? dsCodeToStatus(c.code) : 'running', label: c.text, time: dsTimeInfo(c.start, c.end), start: c.start, end: c.end })
-    for (const e of logErrors) {
-      if (r.firstId == null || r.lastId == null || e.id < r.firstId || e.id > r.lastId) continue
-      const explicit = (e.message.match(/\bJob\s+([A-Za-z0-9_.]+)\s+(?:has finished, status|did not finish OK)/i) || [])[1]
-      const act = (e.message.match(/\(@([A-Za-z0-9_.]+)\)/) || [])[1]
-      const job = explicit || (act ? activityJobMap[act] : undefined)
-      if (!job || job === result?.job) continue
-      const cur = m.get(job)
-      if (!cur || cur.status === 'ok' || cur.status === 'unknown') {
-        m.set(job, { job, status: 'aborted', label: /did not finish OK|status = 3/i.test(e.message) ? 'Abortado' : 'Erro' })
-      }
-    }
-    return { result: r.result, start: r.start, end: r.end, children: [...m.values()] }
-  })
+  // Diagrama (CTRL-M): runs montados a partir do logsum (função pura reusável).
+  const graphRuns: DsRunGraph[] = (result?.command === 'logsum' && result.exit_code === 0 && result.job)
+    ? buildGraphRuns(result.stdout, result.job) : []
   const hasGraph = graphRuns.some(r => r.children.length > 0)
 
   // Snapshot do diagrama: mantém o último logsum válido para o modal não desmontar
@@ -3086,10 +3143,16 @@ function DsConsoleTab() {
               <div className="flex flex-wrap items-center gap-2 mb-1">
                 <p className="text-xs text-dim">Resumo dos runs (mais recentes primeiro) — {logsumRuns.length} no log. Clique num job para ver o log dele (logsum):</p>
                 {hasGraph && (
-                  <Button size="sm" variant="secondary" className="ml-auto"
-                    onClick={() => { setGraphTargetTime(null); setGraphPath([{ job: result!.job!, targetTime: null }]); setShowGraph(true) }}>
-                    <Network size={14} className="mr-1" /> Ver diagrama
-                  </Button>
+                  <div className="ml-auto flex items-center gap-2">
+                    <Button size="sm" variant="secondary" loading={tracing}
+                      onClick={() => autoTrace([{ job: result!.job!, targetTime: null }])}>
+                      <Crosshair size={14} className="mr-1" /> Causa-raiz (auto)
+                    </Button>
+                    <Button size="sm" variant="secondary"
+                      onClick={() => { setGraphTargetTime(null); setGraphPath([{ job: result!.job!, targetTime: null }]); setShowGraph(true) }}>
+                      <Network size={14} className="mr-1" /> Ver diagrama
+                    </Button>
+                  </div>
                 )}
               </div>
               {logsumRuns.slice().reverse().slice(0, 15).map((r, i) => (
@@ -3188,7 +3251,9 @@ function DsConsoleTab() {
           onClose={() => setShowGraph(false)}
           rootJob={graphData.rootJob}
           graphRuns={graphData.runs}
-          loading={exec.isPending}
+          loading={exec.isPending || tracing}
+          tracing={tracing}
+          onAutoTrace={() => autoTrace(graphPath.length ? graphPath : [{ job: graphData.rootJob, targetTime: graphTargetTime }])}
           targetTime={graphTargetTime}
           path={graphPath.map(p => p.job)}
           onNavigate={(index) => {

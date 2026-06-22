@@ -7,7 +7,7 @@ import '@xyflow/react/dist/style.css'
 import { Modal } from '../ui/Modal'
 import { Select } from '../ui/Input'
 import { dsParseTime, dsFmtDuration } from '../../lib/dsTime'
-import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, Clock, HelpCircle, ArrowRight, ArrowDown, ArrowLeft, ChevronRight, Loader2, Timer } from 'lucide-react'
+import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, Clock, HelpCircle, ArrowRight, ArrowDown, ArrowLeft, ChevronRight, Loader2, Timer, Crosshair } from 'lucide-react'
 
 // Diagrama do run de uma sequence (estilo CTRL-M): a sequence + seus filhos diretos,
 // com o status real daquele run. Clicar num filho faz o drill-down (abre o log dele).
@@ -66,7 +66,7 @@ function JobNode({ data }: NodeProps) {
 const nodeTypes = { job: JobNode }
 
 export function DsRunGraphModal({
-  open, onClose, rootJob, graphRuns, onDrill, loading, targetTime, path, onNavigate,
+  open, onClose, rootJob, graphRuns, onDrill, loading, targetTime, path, onNavigate, onAutoTrace, tracing,
 }: {
   open: boolean
   onClose: () => void
@@ -77,6 +77,8 @@ export function DsRunGraphModal({
   targetTime?: string | null
   path?: string[]
   onNavigate?: (index: number) => void
+  onAutoTrace?: () => void
+  tracing?: boolean
 }) {
   // Default: no drill, casa com o horário de quem chamou (targetTime); ao abrir
   // (sem targetTime), o run MAIS RECENTE.
@@ -211,6 +213,14 @@ export function DsRunGraphModal({
               title="Destaca o job mais demorado deste nível (gargalo)"
               className={`px-2 py-1.5 text-xs rounded-lg border flex items-center gap-1 ${showCritical ? 'bg-violet-600 text-white border-violet-600' : 'bg-panel text-dim border-edge hover:text-ink'}`}>
               <Timer size={13} /> Caminho crítico{showCritical && critical.durMs >= 0 ? ` · ${dsFmtDuration(critical.durMs)}` : ''}
+            </button>
+          )}
+          {/* causa-raiz: desce sozinho pela cadeia de abortados */}
+          {onAutoTrace && (
+            <button onClick={onAutoTrace} disabled={tracing}
+              title="Desce sozinho pela cadeia de jobs abortados até o job folha (causa-raiz)"
+              className={`px-2 py-1.5 text-xs rounded-lg border flex items-center gap-1 ${tracing ? 'bg-panel text-dim border-edge opacity-60' : 'bg-panel text-ink border-edge hover:bg-edge/40'}`}>
+              {tracing ? <Loader2 size={13} className="animate-spin" /> : <Crosshair size={13} />} Causa-raiz
             </button>
           )}
         </div>
