@@ -2361,7 +2361,7 @@ function AddMonitorModal({ onClose }: { onClose: () => void }) {
             <Select label="Criticidade" value={crit} onChange={e => setCrit(e.target.value)}>
               <option value="">—</option><option>Alta</option><option>Media</option><option>Baixa</option>
             </Select>
-            <Input label="SLA de frescor (horas)" type="number" value={sla} onChange={e => setSla(e.target.value)} placeholder="ex.: 24" />
+            <Input label="SLA de atualização (horas)" type="number" value={sla} onChange={e => setSla(e.target.value)} placeholder="ex.: 24" />
           </div>
         )}
 
@@ -2450,7 +2450,7 @@ function MonitoramentoTab() {
           <Database size={16} className="text-[#1A5FA8] dark:text-blue-400" />
           <div>
             <h2 className="text-sm font-bold text-ink">Monitoramento de tabelas</h2>
-            <p className="text-xs text-dim mt-0.5">Frescor (última atualização) e volume por dia das tabelas importantes. Snapshot diário automático + alerta de atraso/queda.</p>
+            <p className="text-xs text-dim mt-0.5">Última atualização e volume por dia das tabelas importantes. Snapshot diário automático + alerta de atraso/queda.</p>
           </div>
         </div>
         <Button onClick={() => setAdd(true)}><Plus size={14} /> Adicionar tabela</Button>
@@ -2466,7 +2466,7 @@ function MonitoramentoTab() {
               <tr className="text-left">
                 <th className="px-3 py-2 font-medium">Tabela</th>
                 <th className="px-3 py-2 font-medium">Crit.</th>
-                <th className="px-3 py-2 font-medium">Frescor</th>
+                <th className="px-3 py-2 font-medium whitespace-nowrap">Última atualização</th>
                 <th className="px-3 py-2 font-medium text-right">Total</th>
                 <th className="px-3 py-2 font-medium text-right">Últ. dia</th>
                 <th className="px-3 py-2 font-medium">Volume (por dia)</th>
