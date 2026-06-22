@@ -2595,6 +2595,9 @@ function DsConsoleTab() {
     ? result.stdout.split('\n').map(s => s.trim()).filter(Boolean)
     : []
 
+  const jobNotFound = !!result && result.exit_code !== 0 &&
+    /failed to open job|-1004/i.test((result.stdout || '') + (result.stderr || ''))
+
   const copy = (t: string) => navigator.clipboard?.writeText(t).then(
     () => toast.info('Copiado!'), () => toast.error('Erro ao copiar'))
 
@@ -2649,6 +2652,15 @@ function DsConsoleTab() {
             <Badge value={result.exit_code === 0 ? 'success' : 'error'}>exit {result.exit_code}</Badge>
             <span>{result.duration_ms} ms</span>
           </div>
+
+          {jobNotFound && (
+            <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-50 border border-amber-200 dark:bg-yellow-900/20 dark:border-yellow-700">
+              <AlertTriangle size={16} className="text-amber-600 dark:text-yellow-400 mt-0.5 shrink-0" />
+              <p className="text-sm text-amber-800 dark:text-yellow-300">
+                Job não encontrado no projeto <strong>{result.project}</strong>. Confira o nome — rode o comando <strong>"Listar jobs do projeto"</strong> para ver os nomes válidos (clique em um job da lista para preencher).
+              </p>
+            </div>
+          )}
 
           {isJobinfo && jobinfoFields.length > 0 && (
             <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm">
