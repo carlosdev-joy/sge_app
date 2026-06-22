@@ -34,9 +34,9 @@ DSJOB_COMMANDS: dict[str, dict] = {
     "jobinfo": {"flag": "-jobinfo", "needs_job": True,  "timeout": 30,  "label": "Status do job"},
     "logsum":  {"flag": "-logsum",  "needs_job": True,  "timeout": 120, "label": "Resumo do log do run"},
     "ljobs":   {"flag": "-ljobs",   "needs_job": False, "timeout": 30,  "label": "Listar jobs do projeto"},
-    "links":   {"flag": "-links",   "needs_job": True,  "timeout": 30,  "label": "Links do job"},
     "lstages": {"flag": "-lstages", "needs_job": True,  "timeout": 30,  "label": "Stages do job"},
     "lparams": {"flag": "-lparams", "needs_job": True,  "timeout": 30,  "label": "Parâmetros do job"},
+    "report":  {"flag": "-report",  "needs_job": True,  "timeout": 60,  "label": "Relatório do job (detalhado)"},
 }
 
 
@@ -83,6 +83,10 @@ def build_dsjob_command(command: str, project: str, job: str | None = None,
     if spec["needs_job"]:
         _validate_name(job, "Job")
         parts.append(shlex.quote(job))  # type: ignore[arg-type]
+
+    # -report exige o tipo de relatório como último argumento (BASIC|DETAIL|XML).
+    if command == "report":
+        parts.append("DETAIL")
 
     return " ".join(parts), spec["timeout"]
 
