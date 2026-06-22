@@ -2541,6 +2541,47 @@ function dsStatusVariant(v: string): string {
   return 'neutral'
 }
 
+// De-para: código de status do job (dsjob -jobinfo "… (N)") → nome claro p/ o usuário.
+const DS_STATUS_MEANINGS: Record<number, string> = {
+  0: 'Em execução',
+  1: 'Concluído com sucesso',
+  2: 'Concluído com avisos',
+  3: 'Abortado (falhou)',
+  11: 'Validado com sucesso',
+  12: 'Validado com avisos',
+  13: 'Validação falhou',
+  21: 'Resetado',
+  96: 'Crash (falha grave)',
+  97: 'Parado pelo operador',
+  98: 'Não compilado / não executável',
+  99: 'Nunca executado',
+}
+
+// De-para: código de retorno do dsjob ("Status code = -N") → explicação.
+const DSJOB_CODE_MEANINGS: Record<number, string> = {
+  [-1]: 'Handle de job inválido',
+  [-2]: 'Job em estado inválido para a operação (ex.: não compilado ou em execução)',
+  [-3]: 'Parâmetro inválido',
+  [-7]: 'Stage desconhecido no job',
+  [-9]: 'Link desconhecido no job',
+  [-10]: 'Job bloqueado por outro processo',
+  [-11]: 'Job foi excluído',
+  [-12]: 'Nome de projeto inválido',
+  [-14]: 'Tempo esgotado (timeout)',
+  [-1001]: 'Fim da lista (não há mais itens)',
+  [-1002]: 'Projeto não encontrado / não foi possível abrir',
+  [-1003]: 'DataStage/engine indisponível',
+  [-1004]: 'Job não encontrado no projeto (falha ao abrir)',
+  [-1005]: 'Memória insuficiente no servidor',
+  [-9999]: 'Erro do dsjob (comando ou sintaxe inválida)',
+}
+
+// Extrai o inteiro entre parênteses do "Job Status" (código de status).
+function dsStatusCode(v: string): number | null {
+  const m = v.match(/\((-?\d+)\)/)
+  return m ? Number(m[1]) : null
+}
+
 function DsConsoleTab() {
   const cfg = useQuery<{ configured: boolean; commands: DsCmd[] }>({
     queryKey: ['ds-console-config'],
@@ -2555,11 +2596,27 @@ function DsConsoleTab() {
   const [command, setCommand] = useState('jobinfo')
   const [job, setJob] = useState('')
   const [maxLines, setMaxLines] = useState('200')
+  const [showCodes, setShowCodes] = useState(false)
 
   const commands = cfg.data?.commands ?? []
   const current = commands.find(c => c.id === command)
   const needsJob = current?.needs_job ?? true
   const configured = cfg.data?.configured ?? false
+
+  // Autocomplete do campo Job: roda `ljobs` do projeto selecionado (best-effort, cacheado).
+  const jobsQuery = useQuery<DsConsoleResult>({
+    queryKey: ['ds-ljobs', project],
+    queryFn: () => apiFetch<DsConsoleResult>('/datastage/console', {
+      method: 'POST',
+      body: JSON.stringify({ command: 'ljobs', project: project.trim() }),
+    }),
+    enabled: configured && !!project.trim(),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  })
+  const jobOptions = (jobsQuery.data?.exit_code === 0)
+    ? jobsQuery.data.stdout.split('\n').map(s => s.trim()).filter(Boolean)
+    : []
 
   const exec = useMutation<DsConsoleResult>({
     mutationFn: () => apiFetch<DsConsoleResult>('/datastage/console', {
@@ -2590,13 +2647,19 @@ function DsConsoleTab() {
     : []
   ).filter((e): e is { label: string; value: string } => !!e && !!e.label)
   const statusField = jobinfoFields.find(f => /^Job Status/i.test(f.label))
+  const statusCode = statusField ? dsStatusCode(statusField.value) : null
+  const statusMeaning = statusCode != null ? DS_STATUS_MEANINGS[statusCode] : undefined
 
   const ljobsList = (result?.command === 'ljobs' && result.exit_code === 0)
     ? result.stdout.split('\n').map(s => s.trim()).filter(Boolean)
     : []
 
-  const jobNotFound = !!result && result.exit_code !== 0 &&
-    /failed to open job|-1004/i.test((result.stdout || '') + (result.stderr || ''))
+  // De-para do código de erro do dsjob ("Status code = -N") quando o comando falha.
+  const errMatch = (result && result.exit_code !== 0)
+    ? ((result.stderr || '') + '\n' + (result.stdout || '')).match(/Status code\s*=\s*(-?\d+)/i)
+    : null
+  const errorCode = errMatch ? Number(errMatch[1]) : null
+  const errorMeaning = errorCode != null ? DSJOB_CODE_MEANINGS[errorCode] : undefined
 
   const copy = (t: string) => navigator.clipboard?.writeText(t).then(
     () => toast.info('Copiado!'), () => toast.error('Erro ao copiar'))
@@ -2632,15 +2695,27 @@ function DsConsoleTab() {
           </Select>
           {needsJob && (
             <Input label="Job" value={job} onChange={e => setJob(e.target.value)}
-              placeholder="ex.: SeqSsdVida7Peps" className="w-64"
+              placeholder="ex.: SeqSsdVida7Peps" className="w-64" list="ds-job-list"
               onKeyDown={e => { if (e.key === 'Enter') run() }} />
           )}
+          <datalist id="ds-job-list">
+            {jobOptions.map(j => <option key={j} value={j} />)}
+          </datalist>
           {command === 'logsum' && (
             <Input label="Máx. linhas" type="number" value={maxLines}
               onChange={e => setMaxLines(e.target.value)} className="w-28" />
           )}
           <Button onClick={run} loading={exec.isPending} disabled={!canRun}>Executar</Button>
         </div>
+        {needsJob && configured && !!project && (
+          <p className="text-[11px] text-dim mt-2">
+            {jobsQuery.isFetching
+              ? 'Carregando jobs do projeto para autocompletar…'
+              : jobOptions.length > 0
+                ? `Comece a digitar no campo Job — ${jobOptions.length} jobs de ${project} disponíveis para autocompletar.`
+                : ''}
+          </p>
+        )}
       </div>
 
       {result && (
@@ -2653,11 +2728,12 @@ function DsConsoleTab() {
             <span>{result.duration_ms} ms</span>
           </div>
 
-          {jobNotFound && (
+          {result.exit_code !== 0 && errorMeaning && (
             <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-50 border border-amber-200 dark:bg-yellow-900/20 dark:border-yellow-700">
               <AlertTriangle size={16} className="text-amber-600 dark:text-yellow-400 mt-0.5 shrink-0" />
               <p className="text-sm text-amber-800 dark:text-yellow-300">
-                Job não encontrado no projeto <strong>{result.project}</strong>. Confira o nome — rode o comando <strong>"Listar jobs do projeto"</strong> para ver os nomes válidos (clique em um job da lista para preencher).
+                <strong>Código {errorCode}:</strong> {errorMeaning}.
+                {errorCode === -1004 && <> Confira o nome do job — use o autocompletar do campo Job ou rode <strong>"Listar jobs do projeto"</strong>.</>}
               </p>
             </div>
           )}
@@ -2665,9 +2741,10 @@ function DsConsoleTab() {
           {isJobinfo && jobinfoFields.length > 0 && (
             <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm">
               {statusField && (
-                <div className="mb-3 flex items-center gap-2">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
                   <span className="text-xs text-dim">Status:</span>
                   <Badge value={dsStatusVariant(statusField.value)}>{statusField.value}</Badge>
+                  {statusMeaning && <span className="text-xs text-ink font-medium">— {statusMeaning}</span>}
                 </div>
               )}
               <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
@@ -2715,6 +2792,34 @@ function DsConsoleTab() {
           )}
         </div>
       )}
+
+      <div className="border-t border-edge pt-3">
+        <button onClick={() => setShowCodes(v => !v)}
+          className="text-xs text-dim hover:text-ink flex items-center gap-1">
+          {showCodes ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          Tabela de códigos de status do job (de-para)
+        </button>
+        {showCodes && (
+          <div className="mt-2 bg-panel border border-edge rounded-lg overflow-hidden max-w-md">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-dim border-b border-edge bg-canvas/50">
+                  <th className="text-left px-3 py-1.5 font-medium w-20">Código</th>
+                  <th className="text-left px-3 py-1.5 font-medium">Significado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(DS_STATUS_MEANINGS).map(([code, meaning]) => (
+                  <tr key={code} className="border-b border-edge/50 last:border-0">
+                    <td className="px-3 py-1 font-mono text-ink">{code}</td>
+                    <td className="px-3 py-1 text-ink">{meaning}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
