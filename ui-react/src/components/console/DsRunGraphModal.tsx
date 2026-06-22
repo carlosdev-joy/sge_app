@@ -6,14 +6,15 @@ import {
 import '@xyflow/react/dist/style.css'
 import { Modal } from '../ui/Modal'
 import { Select } from '../ui/Input'
-import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, Clock, HelpCircle, ArrowRight, ArrowDown, Loader2 } from 'lucide-react'
+import { dsParseTime, dsFmtDuration } from '../../lib/dsTime'
+import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, Clock, HelpCircle, ArrowRight, ArrowDown, Loader2, Timer } from 'lucide-react'
 
 // Diagrama do run de uma sequence (estilo CTRL-M): a sequence + seus filhos diretos,
 // com o status real daquele run. Clicar num filho faz o drill-down (abre o log dele).
 // Os dados vêm do logsum já parseado no console — sem chamada nova ao backend.
 
 export type DsGraphStatus = 'ok' | 'warning' | 'aborted' | 'reset' | 'running' | 'unknown'
-export interface DsGraphNode { job: string; status: DsGraphStatus; label: string; time?: string }
+export interface DsGraphNode { job: string; status: DsGraphStatus; label: string; time?: string; start?: string; end?: string }
 export interface DsRunGraph { result: 'ok' | 'aborted' | 'running' | 'unknown'; start?: string; end?: string; children: DsGraphNode[] }
 
 type Dir = 'LR' | 'TB'
@@ -32,7 +33,10 @@ function statusLabel(s: DsGraphStatus): string {
     : s === 'reset' ? 'Resetado' : s === 'running' ? 'Em execução' : '—'
 }
 
-interface JobNodeData { label: string; status: DsGraphStatus; sub?: string; time?: string; isRoot?: boolean; drillJob?: string; dir?: Dir }
+interface JobNodeData {
+  label: string; status: DsGraphStatus; sub?: string; time?: string
+  isRoot?: boolean; drillJob?: string; targetTime?: string; dir?: Dir; critical?: boolean
+}
 
 function JobNode({ data }: NodeProps) {
   const d = data as unknown as JobNodeData
@@ -42,7 +46,7 @@ function JobNode({ data }: NodeProps) {
   const sourcePos = d.dir === 'TB' ? Position.Bottom : Position.Right
   return (
     <div
-      className={`rounded-lg border px-3 py-2 shadow-sm min-w-[180px] max-w-[260px] ${s.box} ${d.drillJob ? 'cursor-pointer hover:ring-2 hover:ring-[#1A5FA8]' : ''}`}
+      className={`rounded-lg border px-3 py-2 shadow-sm min-w-[180px] max-w-[260px] ${s.box} ${d.critical ? 'ring-2 ring-violet-500' : ''} ${d.drillJob ? 'cursor-pointer hover:ring-2 hover:ring-[#1A5FA8]' : ''}`}
       title={d.drillJob ? `Abrir o log de ${d.label} (drill-down)` : d.label}
     >
       {!d.isRoot && <Handle type="target" position={targetPos} className="!bg-edge !border-edge" />}
@@ -52,6 +56,7 @@ function JobNode({ data }: NodeProps) {
       </div>
       {d.sub && <div className={`text-[10px] mt-0.5 ${s.text}`}>{d.sub}</div>}
       {d.time && <div className="text-[10px] mt-0.5 text-dim font-mono">{d.time}</div>}
+      {d.critical && <div className="text-[10px] mt-0.5 text-violet-600 dark:text-violet-400 font-medium inline-flex items-center gap-0.5"><Timer size={10} /> gargalo</div>}
       <Handle type="source" position={sourcePos} className="!bg-edge !border-edge" />
     </div>
   )
@@ -60,34 +65,58 @@ function JobNode({ data }: NodeProps) {
 const nodeTypes = { job: JobNode }
 
 export function DsRunGraphModal({
-  open, onClose, rootJob, graphRuns, onDrill, loading,
+  open, onClose, rootJob, graphRuns, onDrill, loading, targetTime,
 }: {
   open: boolean
   onClose: () => void
   rootJob: string
   graphRuns: DsRunGraph[]
-  onDrill: (job: string) => void
+  onDrill: (job: string, targetTime?: string) => void
   loading?: boolean
+  targetTime?: string | null
 }) {
-  // Default: run abortado mais recente; senão, o último run.
+  // Default: run que casa com o horário de quem chamou (targetTime); senão o
+  // abortado mais recente; senão o último.
   const defaultIdx = useMemo(() => {
+    const t = targetTime ? dsParseTime(targetTime)?.getTime() : null
+    if (t != null) {
+      let best = -1, bestDelta = Infinity, contained = false
+      graphRuns.forEach((r, i) => {
+        const s = dsParseTime(r.start)?.getTime()
+        if (s == null) return
+        const e = dsParseTime(r.end)?.getTime()
+        if (s <= t && (e == null || t <= e)) { if (!contained) { contained = true; best = i } }
+        else if (!contained) { const dlt = Math.abs(s - t); if (dlt < bestDelta) { bestDelta = dlt; best = i } }
+      })
+      if (best >= 0) return best
+    }
     for (let i = graphRuns.length - 1; i >= 0; i--) if (graphRuns[i].result === 'aborted') return i
     return graphRuns.length - 1
-  }, [graphRuns])
+  }, [graphRuns, targetTime])
+
   const [sel, setSel] = useState<number | null>(null)
   const [dir, setDir] = useState<Dir>('LR')
-  useEffect(() => { setSel(null) }, [rootJob])  // ao drillar, volta pro default do novo job
+  const [showCritical, setShowCritical] = useState(false)
+  useEffect(() => { setSel(null) }, [rootJob, targetTime])  // ao drillar, volta pro default
   const idx = sel ?? defaultIdx
   const g = graphRuns[idx]
+
+  // Gargalo deste nível = filho de maior duração (start→end). -1 se ninguém tem duração.
+  const critical = useMemo(() => {
+    let cidx = -1, durMs = -1
+    g?.children.forEach((c, i) => {
+      const s = dsParseTime(c.start)?.getTime(), e = dsParseTime(c.end)?.getTime()
+      if (s != null && e != null && e - s > durMs) { durMs = e - s; cidx = i }
+    })
+    return { idx: cidx, durMs }
+  }, [g])
 
   const { nodes, edges } = useMemo(() => {
     if (!g) return { nodes: [] as Node[], edges: [] as Edge[] }
     const rootStatus: DsGraphStatus = g.result === 'ok' ? 'ok' : g.result === 'aborted' ? 'aborted'
       : g.result === 'running' ? 'running' : 'unknown'
     const n = g.children.length
-    const rootPos = dir === 'TB'
-      ? { x: Math.max(0, (n - 1) * 140), y: 0 }
-      : { x: 0, y: Math.max(0, (n - 1) * 35) }
+    const rootPos = dir === 'TB' ? { x: Math.max(0, (n - 1) * 140), y: 0 } : { x: 0, y: Math.max(0, (n - 1) * 35) }
     const nodes: Node[] = [{
       id: '__root__', type: 'job', position: rootPos,
       data: { label: rootJob, status: rootStatus, sub: statusLabel(rootStatus), isRoot: true, dir } as unknown as Record<string, unknown>,
@@ -95,24 +124,27 @@ export function DsRunGraphModal({
     const e: Edge[] = []
     g.children.forEach((c, i) => {
       const id = `c${i}`
+      const isCrit = showCritical && i === critical.idx
       const pos = dir === 'TB' ? { x: i * 280, y: 200 } : { x: 360, y: i * 78 }
       nodes.push({
         id, type: 'job', position: pos,
-        data: { label: c.job, status: c.status, sub: c.label || statusLabel(c.status), time: c.time, drillJob: c.job, dir } as unknown as Record<string, unknown>,
+        data: { label: c.job, status: c.status, sub: c.label || statusLabel(c.status), time: c.time, drillJob: c.job, targetTime: c.start, dir, critical: isCrit } as unknown as Record<string, unknown>,
       })
       e.push({
         id: `e${i}`, source: '__root__', target: id,
-        animated: c.status === 'aborted',
-        style: { stroke: c.status === 'aborted' ? '#ef4444' : c.status === 'warning' ? '#f59e0b' : '#94a3b8' },
+        animated: c.status === 'aborted' || isCrit,
+        style: isCrit
+          ? { stroke: '#8b5cf6', strokeWidth: 3 }
+          : { stroke: c.status === 'aborted' ? '#ef4444' : c.status === 'warning' ? '#f59e0b' : '#94a3b8' },
       })
     })
     return { nodes, edges: e }
-  }, [g, rootJob, dir])
+  }, [g, rootJob, dir, showCritical, critical.idx])
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
-    const job = (node.data as unknown as JobNodeData).drillJob
-    if (job) onDrill(job)
-  }, [onDrill])
+    const d = node.data as unknown as JobNodeData
+    if (d.drillJob) onDrill(d.drillJob, d.targetTime || g?.start)
+  }, [onDrill, g])
 
   return (
     <Modal open={open} onClose={onClose} title={`Diagrama do run — ${rootJob}`} size="2xl">
@@ -138,6 +170,14 @@ export function DsRunGraphModal({
               <ArrowDown size={13} /> Vertical
             </button>
           </div>
+          {/* caminho crítico (sob demanda) */}
+          {critical.idx >= 0 && (
+            <button onClick={() => setShowCritical(v => !v)}
+              title="Destaca o job mais demorado deste nível (gargalo)"
+              className={`px-2 py-1.5 text-xs rounded-lg border flex items-center gap-1 ${showCritical ? 'bg-violet-600 text-white border-violet-600' : 'bg-panel text-dim border-edge hover:text-ink'}`}>
+              <Timer size={13} /> Caminho crítico{showCritical && critical.durMs >= 0 ? ` · ${dsFmtDuration(critical.durMs)}` : ''}
+            </button>
+          )}
           {/* legenda */}
           <span className="ml-auto flex flex-wrap items-center gap-2 text-[11px] text-dim">
             <span className="inline-flex items-center gap-1"><CheckCircle2 size={12} className="text-green-600 dark:text-green-400" />Concluído</span>
