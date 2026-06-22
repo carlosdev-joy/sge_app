@@ -2617,7 +2617,7 @@ function parseLogsum(stdout: string): DsLogRun[] {
     }
     if (!cur) continue
     if (/^Finished Job\s/.test(msg)) { cur.result = 'ok'; cur.end = time; continue }
-    if (/Sequence abort requested/i.test(msg)) { cur.result = 'aborted'; cur.end = time; continue }
+    if (/sequence abort requested|aborted due to|fatal error from @/i.test(msg)) { cur.result = 'aborted'; cur.end = time; continue }
     const fin = msg.match(/Job\s+(\S+)\s+has finished, status = (\d+)\s*\(([^)]*)\)/)
     if (fin) {
       cur.children.push({ job: fin[1].replace(/^SeqExecJob\./, ''), fullJob: fin[1], code: Number(fin[2]), text: fin[3] })
@@ -2648,6 +2648,17 @@ function parseLogEntries(stdout: string): { id: number; type: string; time: stri
     entries.push({ id: Number(h[1]), type: h[2], time: h[3], message: msg.join(' ') })
   }
   return entries
+}
+
+// Mensagens que indicam erro mesmo quando o Type é INFO (activity de erro, abort de filho).
+const DS_ERR_MSG_RE = /will execute error activity|erro no job|status = 3 \(|status = '?(aborted|crashed)|did not finish OK/i
+
+// Severidade de uma entrada de log combinando Type + mensagem.
+function dsEntrySeverity(type: string, message: string): string {
+  if (/FATAL|REJECT/i.test(type)) return 'error'
+  if (/WARNING/i.test(type)) return 'warning'
+  if (DS_ERR_MSG_RE.test(message)) return 'warning'
+  return 'info'
 }
 
 // Variante de Badge a partir do "Type" de uma entrada de log (FATAL/WARNING/INFO…).
@@ -2786,7 +2797,7 @@ function DsConsoleTab() {
     ? parseLogsum(result.stdout)
     : []
   const logErrors = (result?.command === 'logsum' && result.exit_code === 0)
-    ? parseLogEntries(result.stdout).filter(e => /FATAL|REJECT|WARNING/i.test(e.type))
+    ? parseLogEntries(result.stdout).filter(e => /FATAL|REJECT|WARNING/i.test(e.type) || DS_ERR_MSG_RE.test(e.message))
     : []
   const logDetailEvents = (result?.command === 'logdetail' && result.exit_code === 0)
     ? parseLogdetail(result.stdout)
@@ -2936,7 +2947,7 @@ function DsConsoleTab() {
               <div className="flex flex-col gap-1.5">
                 {logErrors.slice(-20).reverse().map((e, i) => (
                   <div key={i} className="flex items-start gap-2 text-xs">
-                    <Badge value={/FATAL|REJECT/i.test(e.type) ? 'error' : 'warning'}>{e.type}</Badge>
+                    <Badge value={dsEntrySeverity(e.type, e.message)}>{e.type}</Badge>
                     <button onClick={() => runFor('logdetail', result.job ?? '', { event_id: e.id })}
                       title="Ver detalhe completo (logdetail)"
                       className="font-mono text-blue-700 dark:text-blue-400 hover:underline shrink-0">#{e.id}</button>
