@@ -6,15 +6,17 @@ import {
 import '@xyflow/react/dist/style.css'
 import { Modal } from '../ui/Modal'
 import { Select } from '../ui/Input'
-import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, Clock, HelpCircle } from 'lucide-react'
+import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, Clock, HelpCircle, ArrowRight, ArrowDown, Loader2 } from 'lucide-react'
 
 // Diagrama do run de uma sequence (estilo CTRL-M): a sequence + seus filhos diretos,
 // com o status real daquele run. Clicar num filho faz o drill-down (abre o log dele).
 // Os dados vêm do logsum já parseado no console — sem chamada nova ao backend.
 
 export type DsGraphStatus = 'ok' | 'warning' | 'aborted' | 'reset' | 'running' | 'unknown'
-export interface DsGraphNode { job: string; status: DsGraphStatus; label: string }
+export interface DsGraphNode { job: string; status: DsGraphStatus; label: string; time?: string }
 export interface DsRunGraph { result: 'ok' | 'aborted' | 'running' | 'unknown'; start?: string; end?: string; children: DsGraphNode[] }
+
+type Dir = 'LR' | 'TB'
 
 const STATUS: Record<DsGraphStatus, { Icon: typeof CheckCircle2; box: string; text: string }> = {
   ok:      { Icon: CheckCircle2,  box: 'bg-green-50 border-green-300 dark:bg-green-900/30 dark:border-green-700',   text: 'text-green-700 dark:text-green-300' },
@@ -30,24 +32,27 @@ function statusLabel(s: DsGraphStatus): string {
     : s === 'reset' ? 'Resetado' : s === 'running' ? 'Em execução' : '—'
 }
 
-interface JobNodeData { label: string; status: DsGraphStatus; sub?: string; isRoot?: boolean; drillJob?: string }
+interface JobNodeData { label: string; status: DsGraphStatus; sub?: string; time?: string; isRoot?: boolean; drillJob?: string; dir?: Dir }
 
 function JobNode({ data }: NodeProps) {
   const d = data as unknown as JobNodeData
   const s = STATUS[d.status] ?? STATUS.unknown
   const Icon = s.Icon
+  const targetPos = d.dir === 'TB' ? Position.Top : Position.Left
+  const sourcePos = d.dir === 'TB' ? Position.Bottom : Position.Right
   return (
     <div
       className={`rounded-lg border px-3 py-2 shadow-sm min-w-[180px] max-w-[260px] ${s.box} ${d.drillJob ? 'cursor-pointer hover:ring-2 hover:ring-[#1A5FA8]' : ''}`}
       title={d.drillJob ? `Abrir o log de ${d.label} (drill-down)` : d.label}
     >
-      {!d.isRoot && <Handle type="target" position={Position.Left} className="!bg-edge !border-edge" />}
+      {!d.isRoot && <Handle type="target" position={targetPos} className="!bg-edge !border-edge" />}
       <div className="flex items-center gap-1.5">
         <Icon size={14} className={`${s.text} shrink-0`} />
         <span className="font-mono text-[11px] text-ink break-all leading-tight">{d.label}</span>
       </div>
       {d.sub && <div className={`text-[10px] mt-0.5 ${s.text}`}>{d.sub}</div>}
-      <Handle type="source" position={Position.Right} className="!bg-edge !border-edge" />
+      {d.time && <div className="text-[10px] mt-0.5 text-dim font-mono">{d.time}</div>}
+      <Handle type="source" position={sourcePos} className="!bg-edge !border-edge" />
     </div>
   )
 }
@@ -55,13 +60,14 @@ function JobNode({ data }: NodeProps) {
 const nodeTypes = { job: JobNode }
 
 export function DsRunGraphModal({
-  open, onClose, rootJob, graphRuns, onDrill,
+  open, onClose, rootJob, graphRuns, onDrill, loading,
 }: {
   open: boolean
   onClose: () => void
   rootJob: string
   graphRuns: DsRunGraph[]
   onDrill: (job: string) => void
+  loading?: boolean
 }) {
   // Default: run abortado mais recente; senão, o último run.
   const defaultIdx = useMemo(() => {
@@ -69,6 +75,7 @@ export function DsRunGraphModal({
     return graphRuns.length - 1
   }, [graphRuns])
   const [sel, setSel] = useState<number | null>(null)
+  const [dir, setDir] = useState<Dir>('LR')
   useEffect(() => { setSel(null) }, [rootJob])  // ao drillar, volta pro default do novo job
   const idx = sel ?? defaultIdx
   const g = graphRuns[idx]
@@ -77,17 +84,21 @@ export function DsRunGraphModal({
     if (!g) return { nodes: [] as Node[], edges: [] as Edge[] }
     const rootStatus: DsGraphStatus = g.result === 'ok' ? 'ok' : g.result === 'aborted' ? 'aborted'
       : g.result === 'running' ? 'running' : 'unknown'
-    const n: Node[] = [{
-      id: '__root__', type: 'job',
-      position: { x: 0, y: Math.max(0, (g.children.length - 1) * 35) },
-      data: { label: rootJob, status: rootStatus, sub: statusLabel(rootStatus), isRoot: true } as unknown as Record<string, unknown>,
+    const n = g.children.length
+    const rootPos = dir === 'TB'
+      ? { x: Math.max(0, (n - 1) * 140), y: 0 }
+      : { x: 0, y: Math.max(0, (n - 1) * 35) }
+    const nodes: Node[] = [{
+      id: '__root__', type: 'job', position: rootPos,
+      data: { label: rootJob, status: rootStatus, sub: statusLabel(rootStatus), isRoot: true, dir } as unknown as Record<string, unknown>,
     }]
     const e: Edge[] = []
     g.children.forEach((c, i) => {
       const id = `c${i}`
-      n.push({
-        id, type: 'job', position: { x: 340, y: i * 72 },
-        data: { label: c.job, status: c.status, sub: c.label || statusLabel(c.status), drillJob: c.job } as unknown as Record<string, unknown>,
+      const pos = dir === 'TB' ? { x: i * 280, y: 200 } : { x: 360, y: i * 78 }
+      nodes.push({
+        id, type: 'job', position: pos,
+        data: { label: c.job, status: c.status, sub: c.label || statusLabel(c.status), time: c.time, drillJob: c.job, dir } as unknown as Record<string, unknown>,
       })
       e.push({
         id: `e${i}`, source: '__root__', target: id,
@@ -95,8 +106,8 @@ export function DsRunGraphModal({
         style: { stroke: c.status === 'aborted' ? '#ef4444' : c.status === 'warning' ? '#f59e0b' : '#94a3b8' },
       })
     })
-    return { nodes: n, edges: e }
-  }, [g, rootJob])
+    return { nodes, edges: e }
+  }, [g, rootJob, dir])
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
     const job = (node.data as unknown as JobNodeData).drillJob
@@ -116,6 +127,17 @@ export function DsRunGraphModal({
               </option>
             ))}
           </Select>
+          {/* direção do desenho */}
+          <div className="inline-flex rounded-lg border border-edge overflow-hidden">
+            <button onClick={() => setDir('LR')} title="Esquerda → direita"
+              className={`px-2 py-1.5 text-xs flex items-center gap-1 ${dir === 'LR' ? 'bg-[#1A5FA8] text-white' : 'bg-panel text-dim hover:text-ink'}`}>
+              <ArrowRight size={13} /> Horizontal
+            </button>
+            <button onClick={() => setDir('TB')} title="Cima → baixo"
+              className={`px-2 py-1.5 text-xs flex items-center gap-1 border-l border-edge ${dir === 'TB' ? 'bg-[#1A5FA8] text-white' : 'bg-panel text-dim hover:text-ink'}`}>
+              <ArrowDown size={13} /> Vertical
+            </button>
+          </div>
           {/* legenda */}
           <span className="ml-auto flex flex-wrap items-center gap-2 text-[11px] text-dim">
             <span className="inline-flex items-center gap-1"><CheckCircle2 size={12} className="text-green-600 dark:text-green-400" />Concluído</span>
@@ -128,8 +150,9 @@ export function DsRunGraphModal({
         {g && g.children.length > 0 ? (
           <>
             <p className="text-[11px] text-dim">Clique num job filho para abrir o log dele (drill-down) — os abortados têm a seta vermelha.</p>
-            <div className="rounded-lg border border-edge bg-canvas" style={{ height: '60vh' }}>
+            <div className="relative rounded-lg border border-edge bg-canvas" style={{ height: '60vh' }}>
               <ReactFlow
+                key={dir}
                 nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodeClick={onNodeClick}
                 fitView nodesDraggable={false} nodesConnectable={false} elementsSelectable={false}
                 minZoom={0.2}
@@ -137,6 +160,13 @@ export function DsRunGraphModal({
                 <Background />
                 <Controls showInteractive={false} />
               </ReactFlow>
+              {loading && (
+                <div className="absolute inset-0 z-10 flex items-center justify-center bg-canvas/70 backdrop-blur-[1px]">
+                  <div className="flex items-center gap-2 text-sm text-ink bg-panel border border-edge rounded-lg px-4 py-2 shadow">
+                    <Loader2 size={16} className="animate-spin text-[#1A5FA8]" /> Carregando o log do job…
+                  </div>
+                </div>
+              )}
             </div>
           </>
         ) : (
