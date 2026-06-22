@@ -92,6 +92,8 @@ class DataStageOperator(BaseOperator):
         verbose_log: bool = False,
         verbose_interval: int = 5,   # chama -logsum a cada N polls (só com verbose_log=True)
         logsum_max: int = 200,       # nº máx. de entradas no -logsum (limita ao run atual)
+        mirror_child_abort: bool = True,  # espelha DataStage: filho ABORTED → falha o pai
+        child_check_interval: int = 2,    # a cada N polls checa filhos ABORTED (pai RUNNING)
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -110,6 +112,8 @@ class DataStageOperator(BaseOperator):
         self.verbose_log          = verbose_log   # logsum periódico durante execução
         self.verbose_interval     = verbose_interval
         self.logsum_max           = logsum_max     # limita -logsum ao run atual
+        self.mirror_child_abort   = mirror_child_abort
+        self.child_check_interval = max(1, int(child_check_interval))
 
     # ── entry point ──────────────────────────────────────────────────────────
 
@@ -193,6 +197,32 @@ class DataStageOperator(BaseOperator):
             )
 
             if sc in (self._ST_RUNNING, self._ST_QUEUED):
+                # Espelha o DataStage: se um job filho do run atual ABORTOU enquanto
+                # a SEQUENCE (pai) ainda reporta RUNNING — sequence presa, sem ação —,
+                # propaga o ABORTED na hora: grava ABORTED (ORQUESTRA) e falha a task
+                # (Airflow), em vez de ficar "RUNNING" indefinidamente. Throttle por
+                # child_check_interval para limitar a carga de -logsum.
+                if (self.mirror_child_abort and sc == self._ST_RUNNING
+                        and poll_count % self.child_check_interval == 0):
+                    aborted, children, logsum = self._detect_aborted_children()
+                    if aborted:
+                        self.log.error(
+                            "[DS] Filho(s) ABORTED com o pai ainda RUNNING — "
+                            "espelhando ABORTED (DataStage): %s", ", ".join(aborted))
+                        self._log_child_jobs(children)
+                        self._persist(
+                            execution_id, pipeline,
+                            info.get("wave_number") or wave_num, info.get("pid"),
+                            "ABORTED", self._ST_ABORTED, children, logsum, None,
+                            ds_start_time=info.get("start_time"),
+                            ds_end_time=datetime.utcnow(),
+                        )
+                        raise AirflowException(
+                            f"[DS] '{self.project}/{self.job_name}': job(s) filho(s) "
+                            f"ABORTED com a sequence ainda RUNNING (espelhando "
+                            f"DataStage): {', '.join(aborted)}.\n"
+                            f"Log summary (2 000 chars):\n{(logsum or '')[:2000]}"
+                        )
                 continue
 
             if sc in (self._ST_OK, self._ST_WARNING):
@@ -424,6 +454,25 @@ class DataStageOperator(BaseOperator):
             if re.search(r"\bStarting Job\b", line):
                 last_start = i
         return lines[last_start:]
+
+    def _detect_aborted_children(self):
+        """Durante o RUNNING do pai, busca o -logsum e devolve os filhos do RUN
+        ATUAL que estão ABORTED (status_code=3). Retorna (nomes, children, logsum).
+
+        Best-effort: qualquer erro de SSH/parse devolve ([], [], "") para não
+        derrubar o polling — a próxima iteração tenta de novo. Usa o status mais
+        recente por filho (via _parse_child_jobs), então um filho que abortou mas
+        foi resetado/re-executado com sucesso NÃO é considerado abortado.
+        """
+        try:
+            logsum   = self._logsum()
+            children = self._parse_child_jobs(logsum)
+        except Exception as exc:
+            self.log.debug("[DS] checagem de filho abortado ignorada: %s", exc)
+            return [], [], ""
+        aborted = [c["name"] for c in children
+                   if c.get("status_code") == self._ST_ABORTED]
+        return aborted, children, logsum
 
     def _badstate_children(self, logsum: str) -> list:
         """Jobs filhos que o controller não conseguiu rodar por estarem em estado
