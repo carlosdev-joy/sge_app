@@ -11,7 +11,7 @@ from db import get_db_conn
 from deps import (
     AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
     PERM_EXECUTAR,
-    require_perm, get_admin_user,
+    require_perm, require_ds_console,
 )
 from services.ssh_datastage import (
     DSJOB_COMMANDS, DsConsoleError, run_dsjob, ssh_configured,
@@ -154,7 +154,7 @@ async def datastage_log_query(
 
 
 @router.get("/datastage/console/config")
-async def datastage_console_config(_admin: dict = Depends(get_admin_user)):
+async def datastage_console_config(_auth: dict = Depends(require_ds_console)):
     """
     Metadados para o Console DataStage do Admin: se o SSH está configurado no
     servidor e a lista de comandos read-only disponíveis (id, rótulo, se exige job).
@@ -169,7 +169,7 @@ async def datastage_console_config(_admin: dict = Depends(get_admin_user)):
 
 
 @router.post("/datastage/console")
-async def datastage_console_exec(body: dict = Body(...), user: dict = Depends(get_admin_user)):
+async def datastage_console_exec(body: dict = Body(...), user: dict = Depends(require_ds_console)):
     """
     Console DataStage: executa um subcomando `dsjob` (read-only) no servidor Unix
     via SSH e devolve a saída crua para a UI formatar.
