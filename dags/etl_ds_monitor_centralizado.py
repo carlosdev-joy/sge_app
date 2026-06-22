@@ -101,12 +101,24 @@ def _parse_jobinfo(output: str) -> dict:
     }
 
 
+def _current_run_lines(logsum: str) -> list:
+    """Linhas do -logsum referentes ao RUN ATUAL (após o último 'Starting Job').
+    O -logsum retém várias execuções; sem isso, um ABORTED de run antigo vazaria
+    e marcaria o job como abortado por engano."""
+    lines = logsum.splitlines()
+    last_start = 0
+    for i, line in enumerate(lines):
+        if re.search(r"\bStarting Job\b", line):
+            last_start = i
+    return lines[last_start:]
+
+
 def _parse_child_jobs(logsum: str) -> list:
     batch_re  = re.compile(r"BATCH\s+.*?->\s+\(([^)]+)\):\s+Job run requested")
     finish_re = re.compile(r"Job (\S+) has finished,\s*status\s*=\s*(\d+)\s+\(([^)]+)\)")
     tracked: dict = {}
     result:  list = []
-    for line in logsum.splitlines():
+    for line in _current_run_lines(logsum):
         m = batch_re.search(line)
         if m:
             entry = {"name": m.group(1), "status": "RUNNING", "status_code": None}
@@ -187,14 +199,41 @@ def monitor_jobs(**context) -> None:
                                   info.get("wave_number", 0), info.get("pid", ""),
                                   _status_label(sc), sc, snapshot))
 
-                if sc not in (0, 4):  # não é RUNNING nem QUEUED
+                if sc not in (0, 4):  # terminal no PAI → finaliza
                     finalizados.append({**job, "status_code": sc, "info": info})
+                elif sc == 0:
+                    # Pai RUNNING: espelha o DataStage — se um filho do run atual
+                    # ABORTOU enquanto a sequence segue RUNNING (presa, sem ação),
+                    # trata como ABORTED em vez de manter "RUNNING" indefinidamente.
+                    try:
+                        # -max limita ao run atual (evita puxar histórico); essa
+                        # chamada agora roda para todo job RUNNING a cada ciclo.
+                        run_logsum = _exec_ssh(
+                            f"{dshome}/bin/dsjob -logsum -max 200 {project} {jname}",
+                            timeout=120)
+                        children = _parse_child_jobs(run_logsum)
+                        aborted  = [c for c in children if c.get("status_code") == 3]
+                    except Exception as e:
+                        log.warning("[DS Monitor] logsum(running) %s/%s falhou: %s",
+                                    project, jname, e)
+                        children, aborted, run_logsum = [], [], ""
+                    if aborted:
+                        log.error(
+                            "[DS Monitor] %s/%s: filho(s) ABORTED com pai RUNNING — "
+                            "espelhando ABORTED: %s", project, jname,
+                            ", ".join(c["name"] for c in aborted))
+                        finalizados.append({**job, "status_code": 3, "info": info,
+                                            "logsum": run_logsum, "child_jobs": children})
 
             except Exception as e:
                 log.warning("[DS Monitor] Erro ao consultar %s/%s: %s", project, jname, e)
 
-        # Busca logsum só para os finalizados (fora do loop principal, ainda na mesma SSH)
+        # Busca logsum só para os finalizados (fora do loop principal, ainda na mesma
+        # SSH). Pula os que já têm logsum (jobs reclassificados como ABORTED por filho
+        # com o pai RUNNING já o buscaram acima — evita 2ª chamada -logsum).
         for job in finalizados:
+            if "logsum" in job:
+                continue
             try:
                 logsum     = _exec_ssh(
                     f"{dshome}/bin/dsjob -logsum {job['project']} {job['job_name']}",
@@ -216,8 +255,12 @@ def monitor_jobs(**context) -> None:
 
     mssql_hook = MsSqlHook(mssql_conn_id=mssql_conn_id)
 
-    # Persiste snapshots de jobs ainda RUNNING (via upsert existente)
-    running_snaps = [s for s in snapshots if s[7] in (0, 4)]
+    # Persiste snapshots de jobs ainda RUNNING (via upsert existente). Exclui os
+    # reclassificados como ABORTED (filho abortado com pai RUNNING) — senão
+    # gravaríamos RUNNING e ABORTED para o mesmo job no mesmo ciclo.
+    reclass = {(j["execution_id"], j["job_name"]) for j in finalizados}
+    running_snaps = [s for s in snapshots
+                     if s[7] in (0, 4) and (s[0], s[2]) not in reclass]
     for snap in running_snaps:
         exec_id, pipeline, jname, project, wave, pid, status_label, sc, snapshot = snap
         try:
