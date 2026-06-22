@@ -2595,6 +2595,8 @@ interface DsLogRun {
   start?: string
   end?: string
   result: 'ok' | 'aborted' | 'running' | 'unknown'
+  firstId?: number
+  lastId?: number
   children: { job: string; fullJob: string; code: number; text: string }[]
 }
 
@@ -2605,17 +2607,19 @@ function parseLogsum(stdout: string): DsLogRun[] {
   const runs: DsLogRun[] = []
   let cur: DsLogRun | null = null
   let time = ''
+  let id = 0
   for (const raw of stdout.split('\n')) {
-    const header = raw.match(/^\s*\d+\s+[A-Z]+\s+(\w{3}\s+\w{3}\s+\d{1,2}\s+[\d:]+\s+\d{4})\s*$/)
-    if (header) { time = header[1]; continue }
+    const header = raw.match(/^\s*(\d+)\s+[A-Z]+\s+(\w{3}\s+\w{3}\s+\d{1,2}\s+[\d:]+\s+\d{4})\s*$/)
+    if (header) { id = Number(header[1]); time = header[2]; continue }
     const msg = raw.trim()
     if (!msg) continue
     if (/^Starting Job\s/.test(msg)) {
       if (cur) runs.push(cur)
-      cur = { start: time, result: 'running', children: [] }
+      cur = { start: time, result: 'running', children: [], firstId: id, lastId: id }
       continue
     }
     if (!cur) continue
+    cur.lastId = id
     if (/^Finished Job\s/.test(msg)) { cur.result = 'ok'; cur.end = time; continue }
     if (/sequence abort requested|aborted due to|fatal error from @/i.test(msg)) { cur.result = 'aborted'; cur.end = time; continue }
     const fin = msg.match(/Job\s+(\S+)\s+has finished, status = (\d+)\s*\(([^)]*)\)/)
@@ -2803,6 +2807,13 @@ function DsConsoleTab() {
     ? parseLogdetail(result.stdout)
     : []
 
+  // Agrupa os erros por run (via faixa de event id de cada run) para não misturar dias.
+  const errorsByRun = logsumRuns
+    .map(r => ({ run: r, errors: logErrors.filter(e => r.firstId != null && r.lastId != null && e.id >= r.firstId && e.id <= r.lastId) }))
+    .filter(g => g.errors.length > 0)
+  const groupedErrIds = new Set(errorsByRun.flatMap(g => g.errors.map(e => e.id)))
+  const ungroupedErrors = logErrors.filter(e => !groupedErrIds.has(e.id))
+
   // De-para do código de erro do dsjob ("Status code = -N") quando o comando falha.
   const errMatch = (result && result.exit_code !== 0)
     ? ((result.stderr || '') + '\n' + (result.stdout || '')).match(/Status code\s*=\s*(-?\d+)/i)
@@ -2812,6 +2823,28 @@ function DsConsoleTab() {
 
   const copy = (t: string) => navigator.clipboard?.writeText(t).then(
     () => toast.info('Copiado!'), () => toast.error('Erro ao copiar'))
+
+  // Uma linha do card de erros (id clicável → logdetail; nome do filho → logsum dele).
+  const renderErrRow = (e: { id: number; type: string; time: string; message: string }) => {
+    const child = (e.message.match(/\bJob\s+([A-Za-z0-9_.]+)\s+(?:has finished, status|did not finish OK)/i) || [])[1]
+    return (
+      <div key={e.id} className="flex items-start gap-2 text-xs flex-wrap">
+        <Badge value={dsEntrySeverity(e.type, e.message)}>{e.type}</Badge>
+        <button onClick={() => runFor('logdetail', result?.job ?? '', { event_id: e.id })}
+          title="Ver detalhe completo deste evento (logdetail)"
+          className="font-mono text-blue-700 dark:text-blue-400 hover:underline shrink-0">#{e.id}</button>
+        <span className="text-dim shrink-0 hidden sm:inline">{e.time}</span>
+        <span className="text-ink break-all">{e.message.slice(0, 240)}</span>
+        {child && child !== result?.job && (
+          <button onClick={() => runFor('logsum', child)}
+            title={`Abrir o log de ${child} (logsum) — drill-down até o erro real`}
+            className="inline-flex items-center gap-0.5 font-mono text-[11px] px-1.5 py-0.5 rounded bg-edge/50 text-ink hover:bg-[#1A5FA8] hover:text-white transition-colors shrink-0">
+            → {child}
+          </button>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -2939,33 +2972,29 @@ function DsConsoleTab() {
             </div>
           ))}
 
-          {logErrors.length > 0 && (
-            <div className="bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded-lg p-4">
-              <p className="text-xs text-red-800 dark:text-red-300 mb-2 font-medium">
-                Erros e avisos no log ({logErrors.length}) — clique no <strong>nome do job filho</strong> para abrir o log dele (drill-down), ou no <strong>#id</strong> para o detalhe (logdetail):
+          {(errorsByRun.length > 0 || ungroupedErrors.length > 0) && (
+            <div className="bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded-lg p-4 flex flex-col gap-3">
+              <p className="text-xs text-red-800 dark:text-red-300 font-medium">
+                Erros e avisos <strong>por run</strong> (cada run é independente) — clique no <strong>nome do job filho</strong> para abrir o log dele, ou no <strong>#id</strong> para o detalhe:
               </p>
-              <div className="flex flex-col gap-1.5">
-                {logErrors.slice(-20).reverse().map((e, i) => {
-                  const child = (e.message.match(/\bJob\s+([A-Za-z0-9_.]+)\s+(?:has finished, status|did not finish OK)/i) || [])[1]
-                  return (
-                    <div key={i} className="flex items-start gap-2 text-xs flex-wrap">
-                      <Badge value={dsEntrySeverity(e.type, e.message)}>{e.type}</Badge>
-                      <button onClick={() => runFor('logdetail', result.job ?? '', { event_id: e.id })}
-                        title="Ver detalhe completo deste evento (logdetail)"
-                        className="font-mono text-blue-700 dark:text-blue-400 hover:underline shrink-0">#{e.id}</button>
-                      <span className="text-dim shrink-0 hidden sm:inline">{e.time}</span>
-                      <span className="text-ink break-all">{e.message.slice(0, 240)}</span>
-                      {child && child !== result.job && (
-                        <button onClick={() => runFor('logsum', child)}
-                          title={`Abrir o log de ${child} (logsum) — drill-down até o erro real`}
-                          className="inline-flex items-center gap-0.5 font-mono text-[11px] px-1.5 py-0.5 rounded bg-edge/50 text-ink hover:bg-[#1A5FA8] hover:text-white transition-colors shrink-0">
-                          → {child}
-                        </button>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
+              {errorsByRun.slice().reverse().map((g, gi) => (
+                <div key={gi} className="border border-red-200/70 dark:border-red-800/60 rounded-lg p-2.5">
+                  <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                    <Badge value={g.run.result === 'ok' ? 'success' : g.run.result === 'aborted' ? 'error' : g.run.result === 'running' ? 'info' : 'neutral'}>
+                      {g.run.result === 'ok' ? 'Concluído' : g.run.result === 'aborted' ? 'Abortado' : g.run.result === 'running' ? 'Em execução' : 'Run'}
+                    </Badge>
+                    <span className="text-xs text-ink font-medium">{g.run.start}</span>
+                    {g.run.end && g.run.end !== g.run.start && <span className="text-xs text-dim">→ {g.run.end}</span>}
+                  </div>
+                  <div className="flex flex-col gap-1.5">{g.errors.slice(-12).reverse().map(renderErrRow)}</div>
+                </div>
+              ))}
+              {ungroupedErrors.length > 0 && (
+                <div className="border border-edge/70 rounded-lg p-2.5">
+                  <p className="text-xs text-dim mb-1.5">Histórico anterior (fora dos runs detectados nesta saída)</p>
+                  <div className="flex flex-col gap-1.5">{ungroupedErrors.slice(-12).reverse().map(renderErrRow)}</div>
+                </div>
+              )}
             </div>
           )}
 
