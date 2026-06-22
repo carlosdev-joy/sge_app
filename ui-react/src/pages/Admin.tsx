@@ -1,4 +1,4 @@
-import { useState, useRef, type ReactNode } from 'react'
+import { useState, useRef, useEffect, type ReactNode } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { Button } from '../components/ui/Button'
@@ -2601,7 +2601,31 @@ function dsCodeToStatus(code: number): DsGraphStatus {
   return 'unknown'
 }
 
-interface DsChild { job: string; fullJob: string; code: number | null; text: string }
+const _DS_MONTHS: Record<string, number> = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 }
+// "Mon Jun 22 14:33:26 2026" -> Date
+function dsParseTime(s?: string): Date | null {
+  if (!s) return null
+  const m = s.match(/\w{3}\s+(\w{3})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})/)
+  if (!m || _DS_MONTHS[m[1]] == null) return null
+  return new Date(Number(m[6]), _DS_MONTHS[m[1]], Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]))
+}
+const _hm = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+function dsFmtDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  const h = Math.floor(s / 3600), mi = Math.floor((s % 3600) / 60), se = s % 60
+  if (h) return `${h}h${String(mi).padStart(2, '0')}m`
+  if (mi) return `${mi}m${String(se).padStart(2, '0')}s`
+  return `${se}s`
+}
+// String compacta "14:33 → 17:12 · 2h39m" (ou "início 17:40" se ainda rodando).
+function dsTimeInfo(start?: string, end?: string): string | undefined {
+  const s = dsParseTime(start), e = dsParseTime(end)
+  if (s && e) return `${_hm(s)} → ${_hm(e)} · ${dsFmtDuration(e.getTime() - s.getTime())}`
+  if (s) return `início ${_hm(s)}`
+  return undefined
+}
+
+interface DsChild { job: string; fullJob: string; code: number | null; text: string; start?: string; end?: string }
 interface DsLogRun {
   start?: string
   end?: string
@@ -2622,7 +2646,7 @@ function parseLogsum(stdout: string): DsLogRun[] {
   let time = ''
   let id = 0
   const ensure = (full: string) => {
-    if (map && !map.has(full)) map.set(full, { job: full.replace(/^SeqExecJob\./, ''), fullJob: full, code: null, text: 'Em execução' })
+    if (map && !map.has(full)) map.set(full, { job: full.replace(/^SeqExecJob\./, ''), fullJob: full, code: null, text: 'Em execução', start: time })
   }
   const flush = () => { if (cur && map) { cur.children = [...map.values()]; runs.push(cur) } }
   for (const raw of stdout.split('\n')) {
@@ -2643,7 +2667,8 @@ function parseLogsum(stdout: string): DsLogRun[] {
     // filho terminou com status
     const fin = msg.match(/Job\s+(\S+)\s+has finished, status = (\d+)\s*\(([^)]*)\)/)
     if (fin) {
-      map.set(fin[1], { job: fin[1].replace(/^SeqExecJob\./, ''), fullJob: fin[1], code: Number(fin[2]), text: fin[3] })
+      const ex = map.get(fin[1])
+      map.set(fin[1], { job: fin[1].replace(/^SeqExecJob\./, ''), fullJob: fin[1], code: Number(fin[2]), text: fin[3], start: ex?.start, end: time })
       continue
     }
     // filho disparado:  SeqX -> (JobName): Job run/reset requested
@@ -2863,7 +2888,7 @@ function DsConsoleTab() {
   // de activities de erro, para o grafo refletir o run de verdade.
   const graphRuns: DsRunGraph[] = logsumRuns.map(r => {
     const m = new Map<string, DsGraphNode>()
-    for (const c of r.children) m.set(c.fullJob, { job: c.fullJob, status: c.code != null ? dsCodeToStatus(c.code) : 'running', label: c.text })
+    for (const c of r.children) m.set(c.fullJob, { job: c.fullJob, status: c.code != null ? dsCodeToStatus(c.code) : 'running', label: c.text, time: dsTimeInfo(c.start, c.end) })
     for (const e of logErrors) {
       if (r.firstId == null || r.lastId == null || e.id < r.firstId || e.id > r.lastId) continue
       const explicit = (e.message.match(/\bJob\s+([A-Za-z0-9_.]+)\s+(?:has finished, status|did not finish OK)/i) || [])[1]
@@ -2878,6 +2903,17 @@ function DsConsoleTab() {
     return { result: r.result, start: r.start, end: r.end, children: [...m.values()] }
   })
   const hasGraph = graphRuns.some(r => r.children.length > 0)
+
+  // Snapshot do diagrama: mantém o último logsum válido para o modal não desmontar
+  // durante o drill (enquanto exec.isPending zera o result). Atualiza só em sucesso.
+  const graphRunsRef = useRef(graphRuns)
+  graphRunsRef.current = graphRuns
+  const [graphData, setGraphData] = useState<{ rootJob: string; runs: DsRunGraph[] } | null>(null)
+  useEffect(() => {
+    if (result?.command === 'logsum' && result.exit_code === 0 && result.job) {
+      setGraphData({ rootJob: result.job, runs: graphRunsRef.current })
+    }
+  }, [result])
 
   // De-para do código de erro do dsjob ("Status code = -N") quando o comando falha.
   const errMatch = (result && result.exit_code !== 0)
@@ -3165,12 +3201,13 @@ function DsConsoleTab() {
         )}
       </div>
 
-      {showGraph && result?.job && (
+      {showGraph && graphData && (
         <DsRunGraphModal
           open={showGraph}
           onClose={() => setShowGraph(false)}
-          rootJob={result.job}
-          graphRuns={graphRuns}
+          rootJob={graphData.rootJob}
+          graphRuns={graphData.runs}
+          loading={exec.isPending}
           onDrill={(job) => runFor('logsum', job)}
         />
       )}
