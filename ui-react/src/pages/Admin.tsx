@@ -2582,6 +2582,56 @@ function dsStatusCode(v: string): number | null {
   return m ? Number(m[1]) : null
 }
 
+// Variante de Badge a partir do código numérico de status do job.
+function dsCodeVariant(code: number): string {
+  if (code === 1 || code === 11) return 'success'
+  if (code === 2 || code === 12) return 'warning'
+  if (code === 21) return 'info'
+  if (code === 3 || code === 13 || code === 96 || code === 97 || code === 98) return 'error'
+  return 'neutral'
+}
+
+interface DsLogRun {
+  start?: string
+  end?: string
+  result: 'ok' | 'aborted' | 'running' | 'unknown'
+  children: { job: string; code: number; text: string }[]
+}
+
+// Parser do `dsjob -logsum`: agrupa o log em runs da sequence, com os jobs filhos
+// e seus status. Best-effort, tolerante a variações de formato (header numa linha,
+// mensagem na seguinte).
+function parseLogsum(stdout: string): DsLogRun[] {
+  const runs: DsLogRun[] = []
+  let cur: DsLogRun | null = null
+  let time = ''
+  for (const raw of stdout.split('\n')) {
+    const header = raw.match(/^\s*\d+\s+[A-Z]+\s+(\w{3}\s+\w{3}\s+\d{1,2}\s+[\d:]+\s+\d{4})\s*$/)
+    if (header) { time = header[1]; continue }
+    const msg = raw.trim()
+    if (!msg) continue
+    if (/^Starting Job\s/.test(msg)) {
+      if (cur) runs.push(cur)
+      cur = { start: time, result: 'running', children: [] }
+      continue
+    }
+    if (!cur) continue
+    if (/^Finished Job\s/.test(msg)) { cur.result = 'ok'; cur.end = time; continue }
+    if (/Sequence abort requested/i.test(msg)) { cur.result = 'aborted'; cur.end = time; continue }
+    const fin = msg.match(/Job\s+(\S+)\s+has finished, status = (\d+)\s*\(([^)]*)\)/)
+    if (fin) {
+      cur.children.push({ job: fin[1].replace(/^SeqExecJob\./, ''), code: Number(fin[2]), text: fin[3] })
+      continue
+    }
+    if (/Job under control finished/.test(msg)) {
+      if (!cur.end) cur.end = time
+      runs.push(cur); cur = null
+    }
+  }
+  if (cur) runs.push(cur)
+  return runs
+}
+
 function DsConsoleTab() {
   const cfg = useQuery<{ configured: boolean; commands: DsCmd[] }>({
     queryKey: ['ds-console-config'],
@@ -2652,6 +2702,10 @@ function DsConsoleTab() {
 
   const ljobsList = (result?.command === 'ljobs' && result.exit_code === 0)
     ? result.stdout.split('\n').map(s => s.trim()).filter(Boolean)
+    : []
+
+  const logsumRuns = (result?.command === 'logsum' && result.exit_code === 0)
+    ? parseLogsum(result.stdout)
     : []
 
   // De-para do código de erro do dsjob ("Status code = -N") quando o comando falha.
@@ -2755,6 +2809,34 @@ function DsConsoleTab() {
                   </div>
                 ))}
               </dl>
+            </div>
+          )}
+
+          {logsumRuns.length > 0 && (
+            <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-2">
+              <p className="text-xs text-dim mb-1">Resumo dos runs (mais recentes primeiro) — {logsumRuns.length} no log:</p>
+              {logsumRuns.slice().reverse().slice(0, 15).map((r, i) => (
+                <div key={i} className="border border-edge/60 rounded-lg p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge value={r.result === 'ok' ? 'success' : r.result === 'aborted' ? 'error' : r.result === 'running' ? 'info' : 'neutral'}>
+                      {r.result === 'ok' ? 'Concluído' : r.result === 'aborted' ? 'Abortado' : r.result === 'running' ? 'Em execução' : 'Indefinido'}
+                    </Badge>
+                    <span className="text-xs text-ink font-medium">{r.start}</span>
+                    {r.end && r.end !== r.start && <span className="text-xs text-dim">→ {r.end}</span>}
+                    {r.children.length > 0 && <span className="text-xs text-dim">· {r.children.length} job(s)</span>}
+                  </div>
+                  {r.children.length > 0 && (
+                    <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-2">
+                      {r.children.map((c, j) => (
+                        <span key={j} className="inline-flex items-center gap-1.5">
+                          <span className="font-mono text-[11px] text-ink break-all">{c.job}</span>
+                          <Badge value={dsCodeVariant(c.code)}>{DS_STATUS_MEANINGS[c.code] ?? c.text}</Badge>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           )}
 
