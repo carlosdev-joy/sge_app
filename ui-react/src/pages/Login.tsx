@@ -4,7 +4,14 @@ import { useAuthStore } from '../store/auth'
 import { apiFetch } from '../lib/api'
 import { Logo } from '../components/layout/Logo'
 
-const LOGO = '/images/logo-cvp.svg'
+// Logo oficial servido do volume persistente /branding/ (não versionado, imune
+// ao deploy). Se ainda não foi colocado no servidor, cai no vetor versionado.
+const LOGO          = '/branding/logo-cvp.png'
+const LOGO_FALLBACK = '/images/logo-cvp.svg'
+function logoOnError(e: React.SyntheticEvent<HTMLImageElement>) {
+  const img = e.currentTarget
+  if (!img.dataset.fallback) { img.dataset.fallback = '1'; img.src = LOGO_FALLBACK }
+}
 
 const BULLETS = [
   'Centralize e controle todos os pipelines em um só lugar',
@@ -58,7 +65,7 @@ export default function Login() {
               src={LOGO}
               alt="Caixa Vida e Previdência"
               className="h-14 w-auto mb-8"
-              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+              onError={logoOnError}
             />
             <Logo variant="white" iconSize={44} className="mb-2" />
             <p className="text-white/55 text-sm mb-6">
@@ -92,7 +99,7 @@ export default function Login() {
               alt="Caixa Vida e Previdência"
               className="h-10 w-auto"
               style={{ filter: 'invert(35%) sepia(80%) saturate(600%) hue-rotate(190deg)' }}
-              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+              onError={logoOnError}
             />
             <Logo variant="brand" iconSize={32} />
           </div>

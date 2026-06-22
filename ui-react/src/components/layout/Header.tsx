@@ -533,9 +533,13 @@ export function Header() {
         {/* Logo + brand + versão */}
         <a href="/" className="shrink-0 flex items-center gap-3" title="Voltar ao sistema">
           <img
-            src="/images/logo-cvp.svg"
+            src="/branding/logo-cvp.png"
             className="h-9 w-auto"
             alt="Caixa Vida e Previdência"
+            onError={(e) => {
+              const img = e.currentTarget
+              if (!img.dataset.fallback) { img.dataset.fallback = '1'; img.src = '/images/logo-cvp.svg' }
+            }}
           />
           <Logo variant="white" iconSize={28}>
             <span className="text-[9px] text-white/40 font-mono">v{appVersion}</span>

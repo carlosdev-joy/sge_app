@@ -68,3 +68,10 @@ prod_info*
 producao_base.*
 schema_prod.sql
 *.rpt
+
+## Branding persistente (logo da empresa) — colocado manualmente no servidor,
+## servido pelo nginx em /branding/. Os arquivos de imagem NUNCA entram no git,
+## assim o deploy (git pull) não sobrescreve o que foi posto à mão.
+branding/*
+!branding/.gitkeep
+!branding/README.md
