@@ -43,11 +43,23 @@ def test_comandos_que_exigem_job_falham_sem_job(command):
         build_dsjob_command(command, "BI_VIDA", None)
 
 
-def test_logdetail_inclui_max_e_job_com_invocacao():
+def test_logdetail_usa_event_id_e_full():
     # jobs com invocação (jobname.invocationid) devem passar pela allowlist (têm ponto).
-    cmd, timeout = build_dsjob_command("logdetail", "BI_VIDA", "SeqExecJob.SsdVidaPeps03ExtraiSinistros", max_lines=100)
-    assert cmd == f"{DS_DSHOME}/bin/dsjob -logdetail -max 100 BI_VIDA SeqExecJob.SsdVidaPeps03ExtraiSinistros"
+    cmd, timeout = build_dsjob_command(
+        "logdetail", "BI_VIDA", "SeqExecJob.SsdVidaPeps03ExtraiSinistros", event_id=67960)
+    assert cmd == f"{DS_DSHOME}/bin/dsjob -logdetail -full BI_VIDA SeqExecJob.SsdVidaPeps03ExtraiSinistros 67960"
     assert timeout == 120
+
+
+def test_logdetail_sem_event_id_falha():
+    with pytest.raises(DsConsoleError):
+        build_dsjob_command("logdetail", "BI_VIDA", "SeqExecJob.X")
+
+
+@pytest.mark.parametrize("bad", ["abc", "1;rm", "-1", "1 2"])
+def test_logdetail_event_id_invalido_falha(bad):
+    with pytest.raises(DsConsoleError):
+        build_dsjob_command("logdetail", "BI_VIDA", "SeqExecJob.X", event_id=bad)
 
 
 def test_report_anexa_tipo_detail_no_fim():
