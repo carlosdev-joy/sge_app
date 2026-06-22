@@ -2942,19 +2942,29 @@ function DsConsoleTab() {
           {logErrors.length > 0 && (
             <div className="bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded-lg p-4">
               <p className="text-xs text-red-800 dark:text-red-300 mb-2 font-medium">
-                Erros e avisos no log ({logErrors.length}) — clique no id para ver o detalhe completo (logdetail):
+                Erros e avisos no log ({logErrors.length}) — clique no <strong>nome do job filho</strong> para abrir o log dele (drill-down), ou no <strong>#id</strong> para o detalhe (logdetail):
               </p>
               <div className="flex flex-col gap-1.5">
-                {logErrors.slice(-20).reverse().map((e, i) => (
-                  <div key={i} className="flex items-start gap-2 text-xs">
-                    <Badge value={dsEntrySeverity(e.type, e.message)}>{e.type}</Badge>
-                    <button onClick={() => runFor('logdetail', result.job ?? '', { event_id: e.id })}
-                      title="Ver detalhe completo (logdetail)"
-                      className="font-mono text-blue-700 dark:text-blue-400 hover:underline shrink-0">#{e.id}</button>
-                    <span className="text-dim shrink-0 hidden sm:inline">{e.time}</span>
-                    <span className="text-ink break-all">{e.message.slice(0, 240)}</span>
-                  </div>
-                ))}
+                {logErrors.slice(-20).reverse().map((e, i) => {
+                  const child = (e.message.match(/\bJob\s+([A-Za-z0-9_.]+)\s+(?:has finished, status|did not finish OK)/i) || [])[1]
+                  return (
+                    <div key={i} className="flex items-start gap-2 text-xs flex-wrap">
+                      <Badge value={dsEntrySeverity(e.type, e.message)}>{e.type}</Badge>
+                      <button onClick={() => runFor('logdetail', result.job ?? '', { event_id: e.id })}
+                        title="Ver detalhe completo deste evento (logdetail)"
+                        className="font-mono text-blue-700 dark:text-blue-400 hover:underline shrink-0">#{e.id}</button>
+                      <span className="text-dim shrink-0 hidden sm:inline">{e.time}</span>
+                      <span className="text-ink break-all">{e.message.slice(0, 240)}</span>
+                      {child && child !== result.job && (
+                        <button onClick={() => runFor('logsum', child)}
+                          title={`Abrir o log de ${child} (logsum) — drill-down até o erro real`}
+                          className="inline-flex items-center gap-0.5 font-mono text-[11px] px-1.5 py-0.5 rounded bg-edge/50 text-ink hover:bg-[#1A5FA8] hover:text-white transition-colors shrink-0">
+                          → {child}
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )}
