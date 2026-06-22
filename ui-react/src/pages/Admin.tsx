@@ -2650,6 +2650,51 @@ function parseLogEntries(stdout: string): { id: number; type: string; time: stri
   return entries
 }
 
+// Variante de Badge a partir do "Type" de uma entrada de log (FATAL/WARNING/INFO…).
+function dsTypeVariant(t?: string): string {
+  if (!t) return 'neutral'
+  if (/FATAL|REJECT|ABORT/i.test(t)) return 'error'
+  if (/WARN/i.test(t)) return 'warning'
+  if (/INFO|STARTED|BATCH|RESET/i.test(t)) return 'info'
+  return 'neutral'
+}
+
+interface DsLogDetail {
+  eventId?: string; time?: string; type?: string
+  user?: string; messageId?: string; invocationId?: string
+  message: string
+}
+
+// Parser do `dsjob -logdetail -full`: campos (Event Id/Time/Type/User/Message Id/
+// Invocation Id) + corpo de Message (multilinha). Suporta vários eventos.
+function parseLogdetail(stdout: string): DsLogDetail[] {
+  const keyRe = /^\s*(Event Id|Time|Type|User|Message Id|Invocation Id|Message)\s*:\s?(.*)$/
+  const events: DsLogDetail[] = []
+  let cur: DsLogDetail | null = null
+  let inMessage = false
+  let msg: string[] = []
+  const flush = () => { if (cur) { cur.message = msg.join('\n').trim(); events.push(cur) } }
+  for (const raw of stdout.split('\n')) {
+    const m = raw.match(keyRe)
+    if (m) {
+      const key = m[1], val = m[2]
+      if (key === 'Event Id') { flush(); cur = { message: '' }; msg = []; inMessage = false; cur.eventId = val.trim(); continue }
+      if (!cur) continue
+      if (key === 'Time') cur.time = val.trim()
+      else if (key === 'Type') cur.type = val.trim()
+      else if (key === 'User') cur.user = val.trim()
+      else if (key === 'Message Id') cur.messageId = val.trim()
+      else if (key === 'Invocation Id') cur.invocationId = val.trim()
+      else if (key === 'Message') { inMessage = true; if (val.trim()) msg.push(val.trim()) }
+      if (key !== 'Message') inMessage = false
+      continue
+    }
+    if (cur && inMessage) msg.push(raw.replace(/^\s{0,4}/, ''))
+  }
+  flush()
+  return events
+}
+
 function DsConsoleTab() {
   const cfg = useQuery<{ configured: boolean; commands: DsCmd[] }>({
     queryKey: ['ds-console-config'],
@@ -2742,6 +2787,9 @@ function DsConsoleTab() {
     : []
   const logErrors = (result?.command === 'logsum' && result.exit_code === 0)
     ? parseLogEntries(result.stdout).filter(e => /FATAL|REJECT|WARNING/i.test(e.type))
+    : []
+  const logDetailEvents = (result?.command === 'logdetail' && result.exit_code === 0)
+    ? parseLogdetail(result.stdout)
     : []
 
   // De-para do código de erro do dsjob ("Status code = -N") quando o comando falha.
@@ -2852,6 +2900,33 @@ function DsConsoleTab() {
               </dl>
             </div>
           )}
+
+          {logDetailEvents.map((e, i) => (
+            <div key={i} className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-3">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <Badge value={dsTypeVariant(e.type)}>{e.type || '—'}</Badge>
+                {e.eventId && <span className="text-xs text-dim">Evento <span className="font-mono text-ink">#{e.eventId}</span></span>}
+                {e.time && <span className="text-xs text-dim">{e.time}</span>}
+                {e.user && <span className="text-xs text-dim">por <span className="text-ink">{e.user}</span></span>}
+                {e.messageId && <span className="text-xs text-dim">cód. <span className="font-mono text-ink">{e.messageId}</span></span>}
+              </div>
+              {e.message && (
+                <div className={`rounded-lg p-3 text-sm whitespace-pre-wrap break-words font-mono leading-relaxed ${
+                  /FATAL|REJECT|ABORT/i.test(e.type || '')
+                    ? 'bg-red-50 border border-red-200 text-red-800 dark:bg-red-900/20 dark:border-red-800 dark:text-red-300'
+                    : /WARN/i.test(e.type || '')
+                      ? 'bg-amber-50 border border-amber-200 text-amber-800 dark:bg-yellow-900/20 dark:border-yellow-700 dark:text-yellow-300'
+                      : 'bg-canvas border border-edge text-ink'}`}>
+                  {e.message}
+                </div>
+              )}
+              {/FATAL/i.test(e.type || '') && /previous unrecoverable errors|aborted due to|abort requested/i.test(e.message) && (
+                <p className="text-xs text-dim">
+                  Falha genérica do <strong>coordenador da sequence</strong> — a causa-raiz está num <strong>job filho</strong>. Volte ao <strong>Resumo do log (logsum)</strong> e clique no job filho abortado para ver o erro real.
+                </p>
+              )}
+            </div>
+          ))}
 
           {logErrors.length > 0 && (
             <div className="bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded-lg p-4">
