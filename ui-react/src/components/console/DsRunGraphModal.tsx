@@ -78,8 +78,8 @@ export function DsRunGraphModal({
   path?: string[]
   onNavigate?: (index: number) => void
 }) {
-  // Default: run que casa com o horário de quem chamou (targetTime); senão o
-  // abortado mais recente; senão o último.
+  // Default: no drill, casa com o horário de quem chamou (targetTime); ao abrir
+  // (sem targetTime), o run MAIS RECENTE.
   const defaultIdx = useMemo(() => {
     const t = targetTime ? dsParseTime(targetTime)?.getTime() : null
     if (t != null) {
@@ -93,7 +93,6 @@ export function DsRunGraphModal({
       })
       if (best >= 0) return best
     }
-    for (let i = graphRuns.length - 1; i >= 0; i--) if (graphRuns[i].result === 'aborted') return i
     return graphRuns.length - 1
   }, [graphRuns, targetTime])
 
