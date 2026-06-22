@@ -15,6 +15,7 @@ import Pipelines from './pages/Pipelines'
 import Dashboard from './pages/Dashboard'
 import PowerBI from './pages/PowerBI'
 import MalhaDS from './pages/MalhaDS'
+import DsConsole from './pages/DsConsole'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -41,6 +42,7 @@ export default function App() {
             <Route path="pipelines" element={<Pipelines />} />
             <Route path="powerbi" element={<PowerBI />} />
             <Route path="malha-ds" element={<MalhaDS />} />
+            <Route path="ds-console" element={<DsConsole />} />
           </Route>
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
