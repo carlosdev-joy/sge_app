@@ -199,3 +199,17 @@ async def get_admin_user(user: dict = Depends(get_current_user)) -> dict:
             status_code=403,
             detail=f"Perfil '{user.get('perfil')}' não tem acesso administrativo")
     return user
+
+
+async def require_ds_console(user: dict = Depends(get_current_user)) -> dict:
+    """
+    Dependency do Console DataStage: libera para admin (acao_admin) OU para quem
+    tem o recurso 'tela_ds_console' (configurável por perfil em Admin > Usuários
+    & Perfis). Assim o acesso deixa de ser só de administrador.
+    """
+    perms = user.get("permissoes", [])
+    if PERM_ADMIN in perms or "tela_ds_console" in perms:
+        return user
+    raise HTTPException(
+        status_code=403,
+        detail="Sem acesso ao Console DataStage (recurso 'tela_ds_console').")
