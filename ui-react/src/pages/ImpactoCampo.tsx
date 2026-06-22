@@ -8,7 +8,8 @@ import { Button } from '../components/ui/Button'
 import { Spinner } from '../components/ui/Spinner'
 import { Modal } from '../components/ui/Modal'
 import { toast } from '../components/ui/Toast'
-import { Search, Download, FileSearch, ChevronDown, ChevronRight, ListPlus } from 'lucide-react'
+import { copyToClipboard } from '../lib/clipboard'
+import { Search, Download, FileSearch, ChevronDown, ChevronRight, ListPlus, Copy, Check } from 'lucide-react'
 
 // ── Tipos do retorno de /lineage/field-impact ────────────────────
 interface MatchedColumn {
@@ -122,6 +123,28 @@ function HighlightCol({ name, termo }: { name: string; termo: string }) {
       <mark className="bg-yellow-300 text-slate-900 rounded px-0.5">{name.slice(i, i + termo.length)}</mark>
       {name.slice(i + termo.length)}
     </>
+  )
+}
+
+// Botão de copiar reutilizável: copia `text` e mostra ✓ por ~1,2 s.
+function CopyBtn({ text, title }: { text: string; title: string }) {
+  const [done, setDone] = useState(false)
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={() => {
+        copyToClipboard(text).then((ok) => {
+          if (!ok) { toast.error('Erro ao copiar'); return }
+          setDone(true)
+          setTimeout(() => setDone(false), 1200)
+        })
+      }}
+      className="shrink-0 inline-flex items-center justify-center p-1 rounded text-dim hover:text-ink hover:bg-edge/50 transition-colors"
+    >
+      {done ? <Check size={13} className="text-green-600 dark:text-green-400" /> : <Copy size={13} />}
+    </button>
   )
 }
 
@@ -356,17 +379,22 @@ export default function ImpactoCampo() {
               {result.jobs.map((job) => {
                 const isCollapsed = collapsed[job.job_name]
                 const nMatch = job.ocorrencias.reduce((a, o) => a + o.matched_columns.length + o.matched_objs.length, 0)
+                const cat = job.category ? job.category.replace(/\\\\/g, '\\') : ''
                 return (
                   <Card key={job.job_name} className="overflow-hidden">
-                    <button onClick={() => toggle(job.job_name)}
-                      className="flex items-center gap-2 w-full text-left -m-4 mb-0 p-4 hover:bg-edge/30 transition-colors">
-                      {isCollapsed ? <ChevronRight size={16} className="text-dim" /> : <ChevronDown size={16} className="text-dim" />}
-                      <span className="flex flex-col">
-                        <span className="font-medium text-ink text-sm">{job.job_name}</span>
-                        {job.category && <span className="text-[11px] text-dim font-mono">{job.category.replace(/\\\\/g, '\\')}</span>}
-                      </span>
-                      <span className="text-xs text-dim ml-auto">{job.ocorrencias.length} stage(s) · {nMatch} {isColuna ? 'coluna(s)' : 'item(ns)'}</span>
-                    </button>
+                    <div className="flex items-center gap-1.5 -m-4 mb-0 p-4">
+                      <button onClick={() => toggle(job.job_name)}
+                        className="flex items-center gap-2 min-w-0 text-left -my-1 py-1 pr-1 rounded hover:bg-edge/30 transition-colors">
+                        {isCollapsed ? <ChevronRight size={16} className="text-dim shrink-0" /> : <ChevronDown size={16} className="text-dim shrink-0" />}
+                        <span className="flex flex-col min-w-0">
+                          <span className="font-medium text-ink text-sm truncate">{job.job_name}</span>
+                          {cat && <span className="text-[11px] text-dim font-mono truncate">{cat}</span>}
+                        </span>
+                      </button>
+                      <CopyBtn text={job.job_name} title="Copiar nome do job" />
+                      {cat && <CopyBtn text={cat} title="Copiar diretório" />}
+                      <span className="text-xs text-dim ml-auto shrink-0 pl-2">{job.ocorrencias.length} stage(s) · {nMatch} {isColuna ? 'coluna(s)' : 'item(ns)'}</span>
+                    </div>
                     {!isCollapsed && (
                       <div className="mt-3 overflow-x-auto">
                         <table className="w-full text-sm">
