@@ -2601,48 +2601,66 @@ function dsCodeToStatus(code: number): DsGraphStatus {
   return 'unknown'
 }
 
+interface DsChild { job: string; fullJob: string; code: number | null; text: string }
 interface DsLogRun {
   start?: string
   end?: string
   result: 'ok' | 'aborted' | 'running' | 'unknown'
   firstId?: number
   lastId?: number
-  children: { job: string; fullJob: string; code: number; text: string }[]
+  // code: null = disparado mas ainda não terminou (em execução / aguardando).
+  children: DsChild[]
 }
 
-// Parser do `dsjob -logsum`: agrupa o log em runs da sequence, com os jobs filhos
-// e seus status. Best-effort, tolerante a variações de formato (header numa linha,
-// mensagem na seguinte).
+// Parser do `dsjob -logsum`: agrupa o log em runs da sequence com TODOS os jobs
+// filhos (disparados, aguardando e terminados) e seus status. Os que foram
+// disparados mas não terminaram ficam com code=null (em execução). Best-effort.
 function parseLogsum(stdout: string): DsLogRun[] {
   const runs: DsLogRun[] = []
   let cur: DsLogRun | null = null
+  let map: Map<string, DsChild> | null = null
   let time = ''
   let id = 0
+  const ensure = (full: string) => {
+    if (map && !map.has(full)) map.set(full, { job: full.replace(/^SeqExecJob\./, ''), fullJob: full, code: null, text: 'Em execução' })
+  }
+  const flush = () => { if (cur && map) { cur.children = [...map.values()]; runs.push(cur) } }
   for (const raw of stdout.split('\n')) {
     const header = raw.match(/^\s*(\d+)\s+[A-Z]+\s+(\w{3}\s+\w{3}\s+\d{1,2}\s+[\d:]+\s+\d{4})\s*$/)
     if (header) { id = Number(header[1]); time = header[2]; continue }
     const msg = raw.trim()
     if (!msg) continue
     if (/^Starting Job\s/.test(msg)) {
-      if (cur) runs.push(cur)
+      flush()
       cur = { start: time, result: 'running', children: [], firstId: id, lastId: id }
+      map = new Map()
       continue
     }
-    if (!cur) continue
+    if (!cur || !map) continue
     cur.lastId = id
     if (/^Finished Job\s/.test(msg)) { cur.result = 'ok'; cur.end = time; continue }
     if (/sequence abort requested|aborted due to|fatal error from @/i.test(msg)) { cur.result = 'aborted'; cur.end = time; continue }
+    // filho terminou com status
     const fin = msg.match(/Job\s+(\S+)\s+has finished, status = (\d+)\s*\(([^)]*)\)/)
     if (fin) {
-      cur.children.push({ job: fin[1].replace(/^SeqExecJob\./, ''), fullJob: fin[1], code: Number(fin[2]), text: fin[3] })
+      map.set(fin[1], { job: fin[1].replace(/^SeqExecJob\./, ''), fullJob: fin[1], code: Number(fin[2]), text: fin[3] })
       continue
     }
+    // filho disparado:  SeqX -> (JobName): Job run/reset requested
+    const req = msg.match(/->\s*\(([A-Za-z0-9_.]+)\):\s*Job (?:run|reset) requested/i)
+    if (req) { ensure(req[1]); continue }
+    // aguardando job iniciar
+    const ws = msg.match(/Waiting for job\s+([A-Za-z0-9_.]+)\s+to start/i)
+    if (ws) { ensure(ws[1]); continue }
+    // aguardando A+B+C terminar (quando a linha não vem truncada)
+    const wf = msg.match(/Waiting for job\s+(.+?)\s+to finish/i)
+    if (wf) { for (const j of wf[1].split('+')) { const jn = j.trim(); if (/^[A-Za-z0-9_.]+$/.test(jn)) ensure(jn) } continue }
     if (/Job under control finished/.test(msg)) {
       if (!cur.end) cur.end = time
-      runs.push(cur); cur = null
+      flush(); cur = null; map = null
     }
   }
-  if (cur) runs.push(cur)
+  flush()
   return runs
 }
 
@@ -2845,7 +2863,7 @@ function DsConsoleTab() {
   // de activities de erro, para o grafo refletir o run de verdade.
   const graphRuns: DsRunGraph[] = logsumRuns.map(r => {
     const m = new Map<string, DsGraphNode>()
-    for (const c of r.children) m.set(c.fullJob, { job: c.fullJob, status: dsCodeToStatus(c.code), label: c.text })
+    for (const c of r.children) m.set(c.fullJob, { job: c.fullJob, status: c.code != null ? dsCodeToStatus(c.code) : 'running', label: c.text })
     for (const e of logErrors) {
       if (r.firstId == null || r.lastId == null || e.id < r.firstId || e.id > r.lastId) continue
       const explicit = (e.message.match(/\bJob\s+([A-Za-z0-9_.]+)\s+(?:has finished, status|did not finish OK)/i) || [])[1]
@@ -3074,7 +3092,7 @@ function DsConsoleTab() {
                           title={`Ver o log de ${c.fullJob} (logsum)`}
                           className="inline-flex items-center gap-1.5 hover:opacity-80 transition-opacity">
                           <span className="font-mono text-[11px] text-ink break-all underline decoration-dotted decoration-edge underline-offset-2">{c.job}</span>
-                          <Badge value={dsCodeVariant(c.code)}>{DS_STATUS_MEANINGS[c.code] ?? c.text}</Badge>
+                          <Badge value={c.code != null ? dsCodeVariant(c.code) : 'info'}>{c.code != null ? (DS_STATUS_MEANINGS[c.code] ?? c.text) : 'Em execução'}</Badge>
                         </button>
                       ))}
                     </div>
