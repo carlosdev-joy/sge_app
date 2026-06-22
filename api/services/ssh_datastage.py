@@ -1,0 +1,135 @@
+"""
+api/services/ssh_datastage.py — execução de comandos `dsjob` (read-only) no
+servidor Unix do DataStage via SSH, para o "Console DataStage" do Admin.
+
+Diferente das DAGs (que usam o SSHHook do Airflow), aqui o backend abre uma
+conexão SSH própria (paramiko) por requisição — consulta síncrona e curta, não
+precisa sobreviver a restart. As credenciais vêm de variáveis de ambiente
+(degradação graciosa: se não configuradas, o endpoint avisa em vez de quebrar).
+
+Segurança: project/job são validados por allowlist estrita (`^[A-Za-z0-9_.]+$`,
+mesmo padrão de `dags/utils/datastage_operator.py`) ANTES de qualquer
+interpolação no shell, e só um conjunto fixo de subcomandos read-only é exposto.
+Nunca há comando livre.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import re
+import shlex
+import time
+
+log = logging.getLogger("orquestra-api")
+
+# Caminho do DataStage Engine (mesmo default do operador). Config de servidor,
+# não entrada de usuário — não interpolável por terceiros.
+DS_DSHOME = os.getenv("DS_DSHOME", "/opt/IBM/InformationServer/Server/DSEngine")
+
+# Allowlist anti-injeção (idêntica a _SAFE_JOB_RE do operador).
+_SAFE_RE = re.compile(r"^[A-Za-z0-9_.]+$")
+
+# Subcomandos read-only expostos no console. needs_job=True exige nome do job.
+DSJOB_COMMANDS: dict[str, dict] = {
+    "jobinfo": {"flag": "-jobinfo", "needs_job": True,  "timeout": 30,  "label": "Status do job"},
+    "logsum":  {"flag": "-logsum",  "needs_job": True,  "timeout": 120, "label": "Resumo do log do run"},
+    "ljobs":   {"flag": "-ljobs",   "needs_job": False, "timeout": 30,  "label": "Listar jobs do projeto"},
+    "links":   {"flag": "-links",   "needs_job": True,  "timeout": 30,  "label": "Links do job"},
+    "lstages": {"flag": "-lstages", "needs_job": True,  "timeout": 30,  "label": "Stages do job"},
+    "lparams": {"flag": "-lparams", "needs_job": True,  "timeout": 30,  "label": "Parâmetros do job"},
+}
+
+
+class DsConsoleError(Exception):
+    """Erro de validação/configuração — vira HTTP 422 no endpoint."""
+
+
+def ssh_configured() -> bool:
+    """True se as variáveis mínimas de SSH estão presentes no ambiente."""
+    return bool(os.getenv("DS_SSH_HOST") and os.getenv("DS_SSH_USER"))
+
+
+def _validate_name(value: str | None, field: str) -> str:
+    if not value or not _SAFE_RE.match(value):
+        raise DsConsoleError(
+            f"{field} inválido: use apenas letras, números, '_' e '.' (sem espaços ou símbolos).")
+    return value
+
+
+def build_dsjob_command(command: str, project: str, job: str | None = None,
+                        max_lines: int = 200) -> tuple[str, int]:
+    """
+    Monta o comando `dsjob` (sem o source do dsenv) e devolve (cmd, timeout).
+
+    Função pura, sem SSH — testável isoladamente. Valida project/job por
+    allowlist antes de interpolar. Lança DsConsoleError em entrada inválida.
+    """
+    spec = DSJOB_COMMANDS.get(command)
+    if not spec:
+        raise DsConsoleError(f"Comando não suportado: {command!r}")
+
+    _validate_name(project, "Projeto")
+    parts = [f"{DS_DSHOME}/bin/dsjob", spec["flag"]]
+
+    if command == "logsum":
+        try:
+            n = int(max_lines)
+        except (TypeError, ValueError):
+            n = 200
+        n = max(1, min(n, 2000))  # limita volume
+        parts += ["-max", str(n)]
+
+    parts.append(shlex.quote(project))
+    if spec["needs_job"]:
+        _validate_name(job, "Job")
+        parts.append(shlex.quote(job))  # type: ignore[arg-type]
+
+    return " ".join(parts), spec["timeout"]
+
+
+def run_dsjob(command: str, project: str, job: str | None = None,
+              max_lines: int = 200) -> dict:
+    """
+    Executa o `dsjob` no Unix via SSH e devolve {exit_code, stdout, stderr, duration_ms}.
+
+    Lança DsConsoleError (config/validação) ou Exception (falha de SSH).
+    """
+    if not ssh_configured():
+        raise DsConsoleError(
+            "SSH do DataStage não configurado no servidor. "
+            "Defina DS_SSH_HOST e DS_SSH_USER (e DS_SSH_PASSWORD ou DS_SSH_KEY_FILE) no ambiente da API.")
+
+    dsjob_cmd, timeout = build_dsjob_command(command, project, job, max_lines)
+
+    import paramiko  # import tardio: lib só é necessária em runtime, não nos testes
+
+    host = os.getenv("DS_SSH_HOST")
+    port = int(os.getenv("DS_SSH_PORT", "22"))
+    user = os.getenv("DS_SSH_USER")
+    password = os.getenv("DS_SSH_PASSWORD") or None
+    key_file = os.getenv("DS_SSH_KEY_FILE") or None
+
+    full_cmd = f"source {DS_DSHOME}/dsenv >/dev/null 2>&1; {dsjob_cmd}"
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    t0 = time.time()
+    try:
+        client.connect(
+            hostname=host, port=port, username=user,
+            password=password, key_filename=key_file,
+            timeout=10, banner_timeout=15, auth_timeout=15,
+        )
+        _, stdout, stderr = client.exec_command(full_cmd, timeout=timeout)
+        exit_code = stdout.channel.recv_exit_status()
+        out = stdout.read().decode(errors="replace").strip()
+        err = stderr.read().decode(errors="replace").strip()
+    finally:
+        client.close()
+
+    return {
+        "exit_code": exit_code,
+        "stdout": out[:20000],
+        "stderr": err[:8000],
+        "duration_ms": int((time.time() - t0) * 1000),
+    }

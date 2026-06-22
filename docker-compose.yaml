@@ -162,6 +162,15 @@ services:
       AIRFLOW_UI_URL:   "${AIRFLOW_UI_URL:-https://airflow.caixavidaeprevidencia.intranet}"
       MSSQL_CONN_STR:   "${MSSQL_CONN_STR:-}"
       DSX_BASE_DIR:     "/opt/airflow/dsx"
+      # Console DataStage (Admin): SSH read-only para rodar `dsjob` no Unix.
+      # Defina no .env do host. Sem DS_SSH_HOST/DS_SSH_USER, o console degrada
+      # com aviso "SSH não configurado" (não quebra).
+      DS_SSH_HOST:      "${DS_SSH_HOST:-}"
+      DS_SSH_PORT:      "${DS_SSH_PORT:-22}"
+      DS_SSH_USER:      "${DS_SSH_USER:-}"
+      DS_SSH_PASSWORD:  "${DS_SSH_PASSWORD:-}"
+      DS_SSH_KEY_FILE:  "${DS_SSH_KEY_FILE:-}"
+      DS_DSHOME:        "${DS_DSHOME:-/opt/IBM/InformationServer/Server/DSEngine}"
       CORS_ORIGINS:     "${CORS_ORIGINS:-http://orquestra.caixavidaeprevidencia.intranet,http://orquestra.caixavidaeprevidencia.intranet:8090,http://vmlnxprd083,http://vmlnxprd083:8090}"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags:ro

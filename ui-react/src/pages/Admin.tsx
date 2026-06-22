@@ -13,6 +13,7 @@ import { renderMarkdown } from '../lib/markdown'
 import {
   Edit2, Trash2, Plus, AlertTriangle, ChevronDown, ChevronUp, Save, X,
   CheckCircle2, Eye, Calendar, Download, Megaphone, Bold, Italic, Code, List, RefreshCw, Database,
+  Terminal, Copy,
 } from 'lucide-react'
 
 const PROJETOS = ['BI_CVP', 'BI_VIDA', 'BI_PREVIDENCIA', 'BI_PRESTAMISTA']
@@ -2512,6 +2513,200 @@ function MonitoramentoTab() {
   )
 }
 
+// ── Console DataStage (dsjob via SSH, somente leitura) ──────────────────────
+interface DsCmd { id: string; label: string; needs_job: boolean }
+interface DsConsoleResult {
+  command: string; project: string; job: string | null
+  exit_code: number; stdout: string; stderr: string; duration_ms: number
+}
+
+// Colorização estilo terminal (fundo fixo escuro — exceção da seção 4 de docs/ui-temas-cores.md).
+function dsColorize(text: string) {
+  return text.split('\n').map((line, i) => {
+    const cls = /ERROR|EXCEPTION|CRITICAL|FATAL|ABORT|FAIL/i.test(line) ? 'text-red-400'
+      : /WARNING|WARN/i.test(line) ? 'text-amber-400'
+      : /\bOK\b|SUCCESS|FINISHED/i.test(line) ? 'text-green-400'
+      : /INFO/i.test(line) ? 'text-blue-300'
+      : 'text-gray-300'
+    return <div key={i} className={cls}>{line || ' '}</div>
+  })
+}
+
+// Mapeia o texto do "Job Status" do -jobinfo para uma variante de Badge.
+function dsStatusVariant(v: string): string {
+  if (/ABORT|FAIL|CRASH|STOPPED/i.test(v)) return 'error'
+  if (/WARNING/i.test(v)) return 'warning'
+  if (/RUNNING/i.test(v)) return 'info'
+  if (/\bOK\b|FINISHED|RESET|VALIDATED/i.test(v)) return 'success'
+  return 'neutral'
+}
+
+function DsConsoleTab() {
+  const cfg = useQuery<{ configured: boolean; commands: DsCmd[] }>({
+    queryKey: ['ds-console-config'],
+    queryFn: () => apiFetch('/datastage/console/config'),
+  })
+  const projetos = useQuery<{ projects: { project_name: string; ativo?: boolean | number }[] }>({
+    queryKey: ['admin-projects-all'],
+    queryFn: () => apiFetch('/pipelines/projects/all'),
+  })
+
+  const [project, setProject] = useState('')
+  const [command, setCommand] = useState('jobinfo')
+  const [job, setJob] = useState('')
+  const [maxLines, setMaxLines] = useState('200')
+
+  const commands = cfg.data?.commands ?? []
+  const current = commands.find(c => c.id === command)
+  const needsJob = current?.needs_job ?? true
+  const configured = cfg.data?.configured ?? false
+
+  const exec = useMutation<DsConsoleResult>({
+    mutationFn: () => apiFetch<DsConsoleResult>('/datastage/console', {
+      method: 'POST',
+      body: JSON.stringify({
+        command,
+        project: project.trim(),
+        job: needsJob ? job.trim() : undefined,
+        max_lines: command === 'logsum' ? (Number(maxLines) || 200) : undefined,
+      }),
+    }),
+    onError: (e: any) => toast.error(e.message),
+  })
+
+  const canRun = !!project.trim() && (!needsJob || !!job.trim()) && configured && !exec.isPending
+  const run = () => { if (canRun) exec.mutate() }
+
+  const projectList = (projetos.data?.projects ?? []).map(p => p.project_name)
+  const projectOptions = projectList.length ? projectList : PROJETOS
+
+  const result = exec.data
+  const isJobinfo = result?.command === 'jobinfo' && result.exit_code === 0
+  const jobinfoFields = (isJobinfo && result
+    ? result.stdout.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+        const i = l.indexOf(':')
+        return i === -1 ? null : { label: l.slice(0, i).trim(), value: l.slice(i + 1).trim() }
+      })
+    : []
+  ).filter((e): e is { label: string; value: string } => !!e && !!e.label)
+  const statusField = jobinfoFields.find(f => /^Job Status/i.test(f.label))
+
+  const ljobsList = (result?.command === 'ljobs' && result.exit_code === 0)
+    ? result.stdout.split('\n').map(s => s.trim()).filter(Boolean)
+    : []
+
+  const copy = (t: string) => navigator.clipboard?.writeText(t).then(
+    () => toast.info('Copiado!'), () => toast.error('Erro ao copiar'))
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-start gap-3 p-4 rounded-lg bg-blue-50 border border-blue-200 dark:bg-blue-900/20 dark:border-blue-800">
+        <Terminal size={16} className="text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
+        <div className="text-sm text-blue-800 dark:text-blue-300">
+          Executa comandos <code className="font-mono text-xs">dsjob</code> de <strong>consulta</strong> (somente leitura) no servidor Unix do DataStage via SSH.
+          Ex.: <code className="font-mono text-xs">dsjob -jobinfo BI_VIDA SeqSsdVida7Peps</code>.
+        </div>
+      </div>
+
+      {cfg.isSuccess && !configured && (
+        <div className="flex items-start gap-3 p-4 rounded-lg bg-amber-50 border border-amber-200 dark:bg-yellow-900/20 dark:border-yellow-700">
+          <AlertTriangle size={16} className="text-amber-600 dark:text-yellow-400 mt-0.5 shrink-0" />
+          <div className="text-sm text-amber-800 dark:text-yellow-300">
+            SSH do DataStage não configurado no servidor. Defina <code className="font-mono text-xs">DS_SSH_HOST</code>, <code className="font-mono text-xs">DS_SSH_USER</code> e <code className="font-mono text-xs">DS_SSH_PASSWORD</code> (ou <code className="font-mono text-xs">DS_SSH_KEY_FILE</code>) no ambiente da API e reinicie o container.
+          </div>
+        </div>
+      )}
+
+      <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm">
+        <div className="flex flex-wrap gap-3 items-end">
+          <Select label="Projeto" value={project} onChange={e => setProject(e.target.value)} className="w-48">
+            <option value="">Selecione…</option>
+            {projectOptions.map(p => <option key={p}>{p}</option>)}
+          </Select>
+          <Select label="Comando" value={command} onChange={e => setCommand(e.target.value)} className="w-56">
+            {(commands.length ? commands : [{ id: 'jobinfo', label: 'Status do job', needs_job: true }]).map(c =>
+              <option key={c.id} value={c.id}>{c.label}</option>)}
+          </Select>
+          {needsJob && (
+            <Input label="Job" value={job} onChange={e => setJob(e.target.value)}
+              placeholder="ex.: SeqSsdVida7Peps" className="w-64"
+              onKeyDown={e => { if (e.key === 'Enter') run() }} />
+          )}
+          {command === 'logsum' && (
+            <Input label="Máx. linhas" type="number" value={maxLines}
+              onChange={e => setMaxLines(e.target.value)} className="w-28" />
+          )}
+          <Button onClick={run} loading={exec.isPending} disabled={!canRun}>Executar</Button>
+        </div>
+      </div>
+
+      {result && (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-dim">
+            <code className="font-mono px-2 py-1 rounded bg-edge/40 text-ink">
+              dsjob -{result.command} {result.project}{result.job ? ' ' + result.job : ''}
+            </code>
+            <Badge value={result.exit_code === 0 ? 'success' : 'error'}>exit {result.exit_code}</Badge>
+            <span>{result.duration_ms} ms</span>
+          </div>
+
+          {isJobinfo && jobinfoFields.length > 0 && (
+            <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm">
+              {statusField && (
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="text-xs text-dim">Status:</span>
+                  <Badge value={dsStatusVariant(statusField.value)}>{statusField.value}</Badge>
+                </div>
+              )}
+              <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+                {jobinfoFields.filter(f => !/^Job Status/i.test(f.label)).map((f, i) => (
+                  <div key={i} className="flex justify-between gap-3 border-b border-edge/50 py-1">
+                    <dt className="text-xs text-dim shrink-0">{f.label}</dt>
+                    <dd className="text-xs text-ink font-medium text-right break-all">{f.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          )}
+
+          {ljobsList.length > 0 && (
+            <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm">
+              <p className="text-xs text-dim mb-2">{ljobsList.length} job(s) — clique para inspecionar (jobinfo):</p>
+              <div className="flex flex-wrap gap-1.5">
+                {ljobsList.map(j => (
+                  <button key={j} onClick={() => { setJob(j); setCommand('jobinfo') }}
+                    className="px-2 py-1 rounded text-xs font-mono bg-edge/40 text-ink hover:bg-[#1A5FA8] hover:text-white transition-colors">
+                    {j}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {(result.stdout || result.stderr) && (
+            <div className="relative">
+              <button onClick={() => copy(result.stdout || result.stderr)}
+                className="absolute top-2 right-2 px-2 py-1 rounded text-xs bg-gray-800 text-gray-300 hover:bg-gray-700 flex items-center gap-1 z-10">
+                <Copy size={12} /> Copiar
+              </button>
+              <div className="bg-gray-950 rounded-lg p-4 overflow-auto max-h-[55vh] font-mono text-xs leading-relaxed">
+                {result.stdout ? dsColorize(result.stdout) : null}
+                {result.stderr ? (
+                  <div className="mt-2">{result.stderr.split('\n').map((l, i) => <div key={i} className="text-red-400">{l || ' '}</div>)}</div>
+                ) : null}
+              </div>
+            </div>
+          )}
+
+          {!result.stdout && !result.stderr && (
+            <p className="text-xs text-dim">Comando executado (exit {result.exit_code}) sem saída.</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Navegação em 2 níveis: grupo (nível 1, sub-abas) → aba (nível 2, pílulas).
 const ADMIN_GROUPS = [
   { id: 'sistema', label: 'Sistema', tabs: [
@@ -2522,6 +2717,7 @@ const ADMIN_GROUPS = [
     { id: 'backlog', label: 'Backlog' },
     { id: 'servidor', label: 'Servidor' },
     { id: 'monitor', label: 'Monitoramento' },
+    { id: 'ds_console', label: 'Console DataStage' },
   ] },
   { id: 'pipelines', label: 'Pipelines', tabs: [
     { id: 'regen', label: 'Regenerar DAGs' },
@@ -2576,6 +2772,7 @@ export default function Admin() {
         {tab === 'backlog' && <BacklogTab />}
         {tab === 'servidor' && <ServidorTab />}
         {tab === 'monitor' && <MonitoramentoTab />}
+        {tab === 'ds_console' && <DsConsoleTab />}
         {tab === 'regen' && <RegenDagsTab />}
         {tab === 'delete' && <DeletePipelineTab />}
         {tab === 'versoes' && <VersoesTab />}

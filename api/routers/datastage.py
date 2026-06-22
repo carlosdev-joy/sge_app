@@ -11,7 +11,10 @@ from db import get_db_conn
 from deps import (
     AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
     PERM_EXECUTAR,
-    require_perm,
+    require_perm, get_admin_user,
+)
+from services.ssh_datastage import (
+    DSJOB_COMMANDS, DsConsoleError, run_dsjob, ssh_configured,
 )
 
 log = logging.getLogger("orquestra-api")
@@ -148,6 +151,52 @@ async def datastage_log_query(
     except Exception as e:
         log.exception("Erro ao consultar etl_ds_job_log")
         raise HTTPException(status_code=500, detail=f"Erro ao consultar DS log: {e}")
+
+
+@router.get("/datastage/console/config")
+async def datastage_console_config(_admin: dict = Depends(get_admin_user)):
+    """
+    Metadados para o Console DataStage do Admin: se o SSH está configurado no
+    servidor e a lista de comandos read-only disponíveis (id, rótulo, se exige job).
+    """
+    return {
+        "configured": ssh_configured(),
+        "commands": [
+            {"id": cid, "label": spec["label"], "needs_job": spec["needs_job"]}
+            for cid, spec in DSJOB_COMMANDS.items()
+        ],
+    }
+
+
+@router.post("/datastage/console")
+async def datastage_console_exec(body: dict = Body(...), user: dict = Depends(get_admin_user)):
+    """
+    Console DataStage: executa um subcomando `dsjob` (read-only) no servidor Unix
+    via SSH e devolve a saída crua para a UI formatar.
+
+    Body: { "command": "jobinfo", "project": "BI_VIDA", "job": "SeqSsdVida7Peps", "max_lines": 200 }
+
+    Somente admin (acao_admin). project/job são validados por allowlist estrita
+    e só comandos de consulta são aceitos (sem -run/-reset/-stop).
+    """
+    command   = (body.get("command") or "").strip()
+    project   = (body.get("project") or "").strip()
+    job       = (body.get("job") or "").strip() or None
+    max_lines = body.get("max_lines", 200)
+
+    try:
+        result = run_dsjob(command, project, job, max_lines)
+    except DsConsoleError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        log.exception("Console DataStage: falha ao executar dsjob via SSH")
+        raise HTTPException(status_code=502, detail=f"Falha ao executar dsjob via SSH: {e}")
+
+    log.info(
+        "DS console: user=%s command=%s project=%s job=%s exit=%s",
+        user.get("matricula"), command, project, job, result.get("exit_code"),
+    )
+    return {"command": command, "project": project, "job": job, **result}
 
 
 @router.get("/datastage/status")
