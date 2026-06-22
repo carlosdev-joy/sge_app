@@ -7,7 +7,7 @@ import '@xyflow/react/dist/style.css'
 import { Modal } from '../ui/Modal'
 import { Select } from '../ui/Input'
 import { dsParseTime, dsFmtDuration } from '../../lib/dsTime'
-import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, Clock, HelpCircle, ArrowRight, ArrowDown, Loader2, Timer } from 'lucide-react'
+import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, Clock, HelpCircle, ArrowRight, ArrowDown, ArrowLeft, ChevronRight, Loader2, Timer } from 'lucide-react'
 
 // Diagrama do run de uma sequence (estilo CTRL-M): a sequence + seus filhos diretos,
 // com o status real daquele run. Clicar num filho faz o drill-down (abre o log dele).
@@ -18,6 +18,7 @@ export interface DsGraphNode { job: string; status: DsGraphStatus; label: string
 export interface DsRunGraph { result: 'ok' | 'aborted' | 'running' | 'unknown'; start?: string; end?: string; children: DsGraphNode[] }
 
 type Dir = 'LR' | 'TB'
+const FILTERABLE: DsGraphStatus[] = ['ok', 'warning', 'aborted', 'running']
 
 const STATUS: Record<DsGraphStatus, { Icon: typeof CheckCircle2; box: string; text: string }> = {
   ok:      { Icon: CheckCircle2,  box: 'bg-green-50 border-green-300 dark:bg-green-900/30 dark:border-green-700',   text: 'text-green-700 dark:text-green-300' },
@@ -65,7 +66,7 @@ function JobNode({ data }: NodeProps) {
 const nodeTypes = { job: JobNode }
 
 export function DsRunGraphModal({
-  open, onClose, rootJob, graphRuns, onDrill, loading, targetTime,
+  open, onClose, rootJob, graphRuns, onDrill, loading, targetTime, path, onNavigate,
 }: {
   open: boolean
   onClose: () => void
@@ -74,6 +75,8 @@ export function DsRunGraphModal({
   onDrill: (job: string, targetTime?: string) => void
   loading?: boolean
   targetTime?: string | null
+  path?: string[]
+  onNavigate?: (index: number) => void
 }) {
   // Default: run que casa com o horário de quem chamou (targetTime); senão o
   // abortado mais recente; senão o último.
@@ -97,32 +100,43 @@ export function DsRunGraphModal({
   const [sel, setSel] = useState<number | null>(null)
   const [dir, setDir] = useState<Dir>('LR')
   const [showCritical, setShowCritical] = useState(false)
+  const [filter, setFilter] = useState<Set<DsGraphStatus>>(new Set())
   useEffect(() => { setSel(null) }, [rootJob, targetTime])  // ao drillar, volta pro default
   const idx = sel ?? defaultIdx
   const g = graphRuns[idx]
 
-  // Gargalo deste nível = filho de maior duração (start→end). -1 se ninguém tem duração.
+  const toggleFilter = (s: DsGraphStatus) => setFilter(prev => {
+    const next = new Set(prev); next.has(s) ? next.delete(s) : next.add(s); return next
+  })
+
+  // Filhos visíveis (após filtro de status).
+  const visible = useMemo(
+    () => (g ? g.children.filter(c => filter.size === 0 || filter.has(c.status)) : []),
+    [g, filter],
+  )
+
+  // Gargalo = filho visível de maior duração (start→end). -1 se ninguém tem duração.
   const critical = useMemo(() => {
     let cidx = -1, durMs = -1
-    g?.children.forEach((c, i) => {
+    visible.forEach((c, i) => {
       const s = dsParseTime(c.start)?.getTime(), e = dsParseTime(c.end)?.getTime()
       if (s != null && e != null && e - s > durMs) { durMs = e - s; cidx = i }
     })
     return { idx: cidx, durMs }
-  }, [g])
+  }, [visible])
 
   const { nodes, edges } = useMemo(() => {
     if (!g) return { nodes: [] as Node[], edges: [] as Edge[] }
     const rootStatus: DsGraphStatus = g.result === 'ok' ? 'ok' : g.result === 'aborted' ? 'aborted'
       : g.result === 'running' ? 'running' : 'unknown'
-    const n = g.children.length
+    const n = visible.length
     const rootPos = dir === 'TB' ? { x: Math.max(0, (n - 1) * 140), y: 0 } : { x: 0, y: Math.max(0, (n - 1) * 35) }
     const nodes: Node[] = [{
       id: '__root__', type: 'job', position: rootPos,
       data: { label: rootJob, status: rootStatus, sub: statusLabel(rootStatus), isRoot: true, dir } as unknown as Record<string, unknown>,
     }]
     const e: Edge[] = []
-    g.children.forEach((c, i) => {
+    visible.forEach((c, i) => {
       const id = `c${i}`
       const isCrit = showCritical && i === critical.idx
       const pos = dir === 'TB' ? { x: i * 280, y: 200 } : { x: 360, y: i * 78 }
@@ -133,22 +147,44 @@ export function DsRunGraphModal({
       e.push({
         id: `e${i}`, source: '__root__', target: id,
         animated: c.status === 'aborted' || isCrit,
-        style: isCrit
-          ? { stroke: '#8b5cf6', strokeWidth: 3 }
+        style: isCrit ? { stroke: '#8b5cf6', strokeWidth: 3 }
           : { stroke: c.status === 'aborted' ? '#ef4444' : c.status === 'warning' ? '#f59e0b' : '#94a3b8' },
       })
     })
     return { nodes, edges: e }
-  }, [g, rootJob, dir, showCritical, critical.idx])
+  }, [g, rootJob, dir, showCritical, critical.idx, visible])
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
     const d = node.data as unknown as JobNodeData
     if (d.drillJob) onDrill(d.drillJob, d.targetTime || g?.start)
   }, [onDrill, g])
 
+  const canBack = !!path && path.length > 1
+
   return (
     <Modal open={open} onClose={onClose} title={`Diagrama do run — ${rootJob}`} size="2xl">
       <div className="flex flex-col gap-3">
+        {/* breadcrumb / voltar */}
+        {canBack && (
+          <div className="flex items-center gap-2 flex-wrap text-xs">
+            <button onClick={() => onNavigate?.(path!.length - 2)}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-edge bg-panel text-ink hover:bg-edge/40">
+              <ArrowLeft size={13} /> Voltar
+            </button>
+            <span className="text-dim">|</span>
+            <div className="flex items-center gap-1 flex-wrap">
+              {path!.map((j, i) => (
+                <span key={i} className="inline-flex items-center gap-1">
+                  {i > 0 && <ChevronRight size={12} className="text-dim shrink-0" />}
+                  {i < path!.length - 1
+                    ? <button onClick={() => onNavigate?.(i)} className="font-mono text-blue-700 dark:text-blue-400 hover:underline">{j}</button>
+                    : <span className="font-mono text-ink font-medium">{j}</span>}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-dim">Run:</span>
           <Select value={String(idx)} onChange={ev => setSel(Number(ev.target.value))} className="w-auto">
@@ -178,37 +214,55 @@ export function DsRunGraphModal({
               <Timer size={13} /> Caminho crítico{showCritical && critical.durMs >= 0 ? ` · ${dsFmtDuration(critical.durMs)}` : ''}
             </button>
           )}
-          {/* legenda */}
-          <span className="ml-auto flex flex-wrap items-center gap-2 text-[11px] text-dim">
-            <span className="inline-flex items-center gap-1"><CheckCircle2 size={12} className="text-green-600 dark:text-green-400" />Concluído</span>
-            <span className="inline-flex items-center gap-1"><AlertTriangle size={12} className="text-amber-600 dark:text-yellow-400" />Avisos</span>
-            <span className="inline-flex items-center gap-1"><XCircle size={12} className="text-red-600 dark:text-red-400" />Abortado</span>
-            <span className="inline-flex items-center gap-1"><Clock size={12} className="text-blue-600 dark:text-blue-400" />Em execução</span>
-          </span>
+        </div>
+
+        {/* filtro por status */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-dim">Filtrar:</span>
+          {FILTERABLE.map(st => {
+            const cnt = g ? g.children.filter(c => c.status === st).length : 0
+            const active = filter.has(st)
+            const Icon = STATUS[st].Icon
+            return (
+              <button key={st} onClick={() => toggleFilter(st)} disabled={cnt === 0}
+                className={`px-2 py-1 rounded-lg text-[11px] border inline-flex items-center gap-1 transition-colors
+                  ${cnt === 0 ? 'opacity-40 cursor-default border-edge text-dim' :
+                    active ? 'bg-[#1A5FA8] text-white border-[#1A5FA8]' : 'bg-panel text-ink border-edge hover:bg-edge/40'}`}>
+                <Icon size={11} className={active ? '' : STATUS[st].text} /> {statusLabel(st)} ({cnt})
+              </button>
+            )
+          })}
+          {filter.size > 0 && (
+            <button onClick={() => setFilter(new Set())} className="text-[11px] text-dim hover:text-ink underline ml-1">limpar</button>
+          )}
         </div>
 
         {g && g.children.length > 0 ? (
-          <>
-            <p className="text-[11px] text-dim">Clique num job filho para abrir o log dele (drill-down) — os abortados têm a seta vermelha.</p>
-            <div className="relative rounded-lg border border-edge bg-canvas" style={{ height: '60vh' }}>
-              <ReactFlow
-                key={dir}
-                nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodeClick={onNodeClick}
-                fitView nodesDraggable={false} nodesConnectable={false} elementsSelectable={false}
-                minZoom={0.2}
-              >
-                <Background />
-                <Controls showInteractive={false} />
-              </ReactFlow>
-              {loading && (
-                <div className="absolute inset-0 z-10 flex items-center justify-center bg-canvas/70 backdrop-blur-[1px]">
-                  <div className="flex items-center gap-2 text-sm text-ink bg-panel border border-edge rounded-lg px-4 py-2 shadow">
-                    <Loader2 size={16} className="animate-spin text-[#1A5FA8]" /> Carregando o log do job…
+          visible.length > 0 ? (
+            <>
+              <p className="text-[11px] text-dim">Clique num job filho para abrir o log dele (drill-down) — os abortados têm a seta vermelha.</p>
+              <div className="relative rounded-lg border border-edge bg-canvas" style={{ height: '58vh' }}>
+                <ReactFlow
+                  key={dir}
+                  nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodeClick={onNodeClick}
+                  fitView nodesDraggable={false} nodesConnectable={false} elementsSelectable={false}
+                  minZoom={0.2}
+                >
+                  <Background />
+                  <Controls showInteractive={false} />
+                </ReactFlow>
+                {loading && (
+                  <div className="absolute inset-0 z-10 flex items-center justify-center bg-canvas/70 backdrop-blur-[1px]">
+                    <div className="flex items-center gap-2 text-sm text-ink bg-panel border border-edge rounded-lg px-4 py-2 shadow">
+                      <Loader2 size={16} className="animate-spin text-[#1A5FA8]" /> Carregando o log do job…
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
-          </>
+                )}
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-dim p-4">Nenhum job com o filtro selecionado neste run.</p>
+          )
         ) : (
           <p className="text-sm text-dim p-4">
             Este run não tem jobs filhos detectados — provavelmente é um <strong>job folha</strong>.
