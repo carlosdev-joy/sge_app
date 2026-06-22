@@ -53,7 +53,9 @@ def _stub_airflow():
 _stub_airflow()
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "dags"))
-from utils.datastage_operator import DataStageOperator  # noqa: E402
+from utils.datastage_operator import DataStageOperator, _abort_decision  # noqa: E402
+
+from datetime import datetime, timedelta  # noqa: E402
 
 
 def _op():
@@ -123,3 +125,49 @@ def test_detect_best_effort_em_erro_de_ssh():
         raise RuntimeError("ssh caiu")
     op._logsum = _boom
     assert op._detect_aborted_children() == ([], [], "")
+
+
+# ── carência (_abort_decision) ────────────────────────────────────────────────
+
+NOW = datetime(2026, 6, 22, 12, 0, 0)
+GRACE = 600  # 10 min
+
+
+def test_decision_sem_filho_abortado_nao_propaga():
+    children = [{"name": "A", "status_code": 1}, {"name": "B", "status_code": 1}]
+    propagate, stuck, aborted = _abort_decision(children, None, NOW, GRACE)
+    assert propagate is False and stuck is None and aborted == []
+
+
+def test_decision_filho_abortado_mas_outro_rodando_nao_e_travado():
+    # B ainda em execução (status_code None) → sequence progredindo → relógio zerado.
+    children = [{"name": "A", "status_code": 3}, {"name": "B", "status_code": None}]
+    propagate, stuck, aborted = _abort_decision(children, NOW - timedelta(hours=1), NOW, GRACE)
+    assert propagate is False
+    assert stuck is None            # não travado → zera o relógio
+    assert aborted == ["A"]
+
+
+def test_decision_travado_primeira_vez_inicia_relogio():
+    # Filho abortado e todos finalizados → travado agora; inicia o relógio, não propaga.
+    children = [{"name": "A", "status_code": 3}, {"name": "B", "status_code": 1}]
+    propagate, stuck, aborted = _abort_decision(children, None, NOW, GRACE)
+    assert propagate is False
+    assert stuck == NOW
+    assert aborted == ["A"]
+
+
+def test_decision_travado_dentro_da_carencia_nao_propaga():
+    children = [{"name": "A", "status_code": 3}, {"name": "B", "status_code": 1}]
+    started = NOW - timedelta(seconds=300)   # 5 min < 10 min
+    propagate, stuck, _ = _abort_decision(children, started, NOW, GRACE)
+    assert propagate is False
+    assert stuck == started                  # mantém o relógio
+
+
+def test_decision_travado_apos_carencia_propaga():
+    children = [{"name": "A", "status_code": 3}, {"name": "B", "status_code": 1}]
+    started = NOW - timedelta(seconds=601)   # > 10 min
+    propagate, stuck, aborted = _abort_decision(children, started, NOW, GRACE)
+    assert propagate is True
+    assert aborted == ["A"]

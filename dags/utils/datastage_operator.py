@@ -46,6 +46,33 @@ from airflow.providers.ssh.hooks.ssh import SSHHook
 _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9_.]+$")
 
 
+def _abort_decision(children, stuck_since, now, grace_s):
+    """Decide se o ABORT de um job filho deve ser propagado ao pai (com carência).
+
+    Compartilhada pelo operador (estado em memória) e pelo monitor central
+    (stuck_since persistido em etl_ds_job_log). 'Travado' = há filho ABORTED
+    (status_code=3) E NENHUM filho ainda em execução (todos finalizaram) — ou
+    seja, a sequence parou de progredir, mas o pai segue RUNNING. Só nesse estado
+    o relógio corre; após grace_s segundos travado, propaga.
+
+    Qualquer progresso (um filho voltou a rodar após reset, ou um novo filho
+    iniciou) deixa de ser 'travado' e zera o relógio — evita falso-positivo em
+    sequences que toleram/recuperam a falha de um filho.
+
+    Retorna (propagate: bool, new_stuck_since: datetime|None, aborted: list[str]).
+    """
+    aborted     = [c.get("name") for c in children if c.get("status_code") == 3]
+    any_running = any(c.get("status_code") is None for c in children)
+    travado     = bool(aborted) and not any_running
+    if not travado:
+        return False, None, aborted
+    if stuck_since is None:
+        return False, now, aborted            # entrou em 'travado' agora — inicia o relógio
+    if (now - stuck_since).total_seconds() >= grace_s:
+        return True, stuck_since, aborted     # travado tempo suficiente — propaga
+    return False, stuck_since, aborted        # ainda na carência
+
+
 class DataStageOperator(BaseOperator):
     """
     Triggers (or attaches to) a DataStage job asynchronously over SSH via dsjob CLI
@@ -94,6 +121,7 @@ class DataStageOperator(BaseOperator):
         logsum_max: int = 200,       # nº máx. de entradas no -logsum (limita ao run atual)
         mirror_child_abort: bool = True,  # espelha DataStage: filho ABORTED → falha o pai
         child_check_interval: int = 2,    # a cada N polls checa filhos ABORTED (pai RUNNING)
+        child_abort_grace_s: int = 600,   # carência: só propaga após N s 'travado' (default 10 min)
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -114,6 +142,7 @@ class DataStageOperator(BaseOperator):
         self.logsum_max           = logsum_max     # limita -logsum ao run atual
         self.mirror_child_abort   = mirror_child_abort
         self.child_check_interval = max(1, int(child_check_interval))
+        self.child_abort_grace_s  = max(0, int(child_abort_grace_s))
 
     # ── entry point ──────────────────────────────────────────────────────────
 
@@ -155,6 +184,7 @@ class DataStageOperator(BaseOperator):
         poll_count      = 0
         queued_since: datetime | None = datetime.utcnow()
         queued_seconds: int = 0
+        abort_stuck_since: datetime | None = None   # carência p/ espelhar ABORT de filho
         while True:
             time.sleep(self.poll_interval)
             poll_count += 1
@@ -197,32 +227,43 @@ class DataStageOperator(BaseOperator):
             )
 
             if sc in (self._ST_RUNNING, self._ST_QUEUED):
-                # Espelha o DataStage: se um job filho do run atual ABORTOU enquanto
-                # a SEQUENCE (pai) ainda reporta RUNNING — sequence presa, sem ação —,
-                # propaga o ABORTED na hora: grava ABORTED (ORQUESTRA) e falha a task
-                # (Airflow), em vez de ficar "RUNNING" indefinidamente. Throttle por
-                # child_check_interval para limitar a carga de -logsum.
+                # Espelha o DataStage: se um filho do run atual ABORTOU e a sequence
+                # parou de progredir (nenhum filho rodando) com o pai ainda RUNNING,
+                # propaga o ABORTED APÓS a carência — grava ABORTED (ORQUESTRA) e
+                # falha a task (Airflow), em vez de ficar "RUNNING" indefinidamente.
+                # Throttle por child_check_interval para limitar a carga de -logsum.
                 if (self.mirror_child_abort and sc == self._ST_RUNNING
                         and poll_count % self.child_check_interval == 0):
                     aborted, children, logsum = self._detect_aborted_children()
-                    if aborted:
+                    now = datetime.utcnow()
+                    propagate, abort_stuck_since, _ = _abort_decision(
+                        children, abort_stuck_since, now, self.child_abort_grace_s)
+                    if propagate:
                         self.log.error(
-                            "[DS] Filho(s) ABORTED com o pai ainda RUNNING — "
-                            "espelhando ABORTED (DataStage): %s", ", ".join(aborted))
+                            "[DS] Filho(s) ABORTED e sequence travada >%ds com o pai "
+                            "RUNNING — espelhando ABORTED (DataStage): %s",
+                            self.child_abort_grace_s, ", ".join(aborted))
                         self._log_child_jobs(children)
                         self._persist(
                             execution_id, pipeline,
                             info.get("wave_number") or wave_num, info.get("pid"),
                             "ABORTED", self._ST_ABORTED, children, logsum, None,
                             ds_start_time=info.get("start_time"),
-                            ds_end_time=datetime.utcnow(),
+                            ds_end_time=now,
                         )
                         raise AirflowException(
                             f"[DS] '{self.project}/{self.job_name}': job(s) filho(s) "
-                            f"ABORTED com a sequence ainda RUNNING (espelhando "
-                            f"DataStage): {', '.join(aborted)}.\n"
+                            f"ABORTED e sequence travada (sem progresso) por "
+                            f">{self.child_abort_grace_s}s com o pai RUNNING "
+                            f"(espelhando DataStage): {', '.join(aborted)}.\n"
                             f"Log summary (2 000 chars):\n{(logsum or '')[:2000]}"
                         )
+                    elif aborted and abort_stuck_since is not None:
+                        self.log.warning(
+                            "[DS] Filho(s) ABORTED (%s) — aguardando carência "
+                            "(%ds/%ds) antes de espelhar.", ", ".join(aborted),
+                            int((now - abort_stuck_since).total_seconds()),
+                            self.child_abort_grace_s)
                 continue
 
             if sc in (self._ST_OK, self._ST_WARNING):
