@@ -4,7 +4,7 @@ import { useAuthStore } from '../store/auth'
 import { apiFetch } from '../lib/api'
 import { Logo } from '../components/layout/Logo'
 
-const LOGO = 'https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/mundolc/Vertical_Branco.png'
+const LOGO = '/images/logo-cvp.svg'
 
 const BULLETS = [
   'Centralize e controle todos os pipelines em um só lugar',

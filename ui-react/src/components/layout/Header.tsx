@@ -533,7 +533,7 @@ export function Header() {
         {/* Logo + brand + versão */}
         <a href="/" className="shrink-0 flex items-center gap-3" title="Voltar ao sistema">
           <img
-            src="https://rseofspzecpjtqzcbaol.supabase.co/storage/v1/object/public/mundolc/Vertical_Branco.png"
+            src="/images/logo-cvp.svg"
             className="h-9 w-auto"
             alt="Caixa Vida e Previdência"
           />
