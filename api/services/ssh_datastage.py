@@ -149,8 +149,10 @@ def run_dsjob(command: str, project: str, job: str | None = None,
         client.close()
 
     return {
+        # cap alto: logsum/logdetail podem ter centenas de eventos e o que importa
+        # (abort) costuma estar no FIM — truncar curto cortaria justamente isso.
         "exit_code": exit_code,
-        "stdout": out[:20000],
+        "stdout": out[:200000],
         "stderr": err[:8000],
         "duration_ms": int((time.time() - t0) * 1000),
     }
