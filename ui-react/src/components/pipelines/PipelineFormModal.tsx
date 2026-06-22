@@ -36,6 +36,7 @@ interface JobEntry {
   ssh_conn_id: string
   verbose_log: boolean
   mssql_conn_id: string
+  mssql_database: string
   params: JobParamEntry[]
   depends_on_jobs: string[]
 }
@@ -322,6 +323,15 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   })
   const mssqlConns = mssqlData?.connections ?? []
 
+  // Bancos do mesmo servidor da conexão do ORQUESTRA (seletor de banco-alvo storedproc).
+  const { data: dbData } = useQuery<{ server: string | null; databases: string[] }>({
+    queryKey: ['job-databases'],
+    queryFn: () => apiFetch('/jobs/databases'),
+    staleTime: 300_000,
+  })
+  const dbServer    = dbData?.server ?? null
+  const dbDatabases = dbData?.databases ?? []
+
   const editName = pipeline?.pipeline_name
   const { data: editJobs } = useQuery<{ data: { job_name: string; execution_order: number; job_type: string; job_command: string | null; ssh_conn_id: string | null; verbose_log: boolean }[] }>({
     queryKey: ['wizard-edit-jobs', editName],
@@ -347,11 +357,12 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       ssh_conn_id: j.ssh_conn_id ?? '',
       verbose_log: !!j.verbose_log,
       mssql_conn_id: '',
+      mssql_database: '',
       params: [],
       depends_on_jobs: [],
     })))
     Promise.all(rows.map(j =>
-      apiFetch<{ mssql_conn_id: string | null; depends_on_jobs?: string | null; params: { param_name: string; param_type: string; param_value: string | null }[] }>(
+      apiFetch<{ mssql_conn_id: string | null; mssql_database?: string | null; depends_on_jobs?: string | null; params: { param_name: string; param_type: string; param_value: string | null }[] }>(
         `/pipelines/jobs/${encodeURIComponent(editName!)}/${encodeURIComponent(j.job_name)}`,
       ).then(detail => ({ job_name: j.job_name, detail })).catch(() => null),
     )).then(results => {
@@ -361,6 +372,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         return {
           ...je,
           mssql_conn_id: found.detail.mssql_conn_id ?? '',
+          mssql_database: found.detail.mssql_database ?? '',
           params: (found.detail.params ?? []).map((p, ppi) => ({
             id: `p_${ppi}_${Math.random().toString(36).slice(2, 7)}`,
             param_name: p.param_name, param_type: p.param_type, param_value: p.param_value ?? '',
@@ -618,6 +630,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
             ssh_conn_id:     j.job_type === 'shell' ? (j.ssh_conn_id || null) : null,
             verbose_log:     j.job_type === 'datastage' ? j.verbose_log : false,
             mssql_conn_id:   j.job_type === 'storedproc' ? (j.mssql_conn_id || null) : null,
+            mssql_database:  j.job_type === 'storedproc' ? (j.mssql_database || null) : null,
             params:          j.job_type === 'storedproc'
               ? j.params.filter(p => p.param_name.trim()).map(p => ({
                   param_name: p.param_name.trim(), param_type: p.param_type, param_value: p.param_value,
@@ -710,6 +723,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       ssh_conn_id: '',
       verbose_log: false,
       mssql_conn_id: '',
+      mssql_database: '',
       params: [],
       depends_on_jobs: [],
     }])
@@ -1260,6 +1274,22 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                           className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
                           <option value="">Selecione a conexão…</option>
                           {mssqlConns.map(c => <option key={c.conn_id} value={c.conn_id}>{c.conn_id}{c.host ? ` (${c.host})` : ''}</option>)}
+                        </select>
+                      </div>
+                    )}
+                    {j.job_type === 'storedproc' && (
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] text-dim font-medium">
+                          Servidor / Banco {dbServer && <span className="text-dim/60 font-mono normal-case">({dbServer})</span>}
+                        </label>
+                        <select value={j.mssql_database}
+                          onChange={e => updateJob(j.id, { mssql_database: e.target.value })}
+                          className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+                          <option value="">Banco padrão da conexão</option>
+                          {dbDatabases.map(d => <option key={d} value={d}>{d}</option>)}
+                          {j.mssql_database && !dbDatabases.includes(j.mssql_database) && (
+                            <option value={j.mssql_database}>{j.mssql_database}</option>
+                          )}
                         </select>
                       </div>
                     )}

@@ -109,6 +109,25 @@ def test_storedproc_com_parametros_passa_payload_ao_operador():
     assert _compiles(code)
 
 
+def test_storedproc_sem_banco_passa_database_none():
+    # Sem mssql_database cadastrado → database=None (usa o banco padrão da conexão).
+    job = {"job_name": "j1", "job_type": "storedproc", "job_command": "dbo.sp_teste"}
+    code = factory._task_block(job, "proj", {})
+    assert "StoredProcOperator(" in code
+    assert "database=None" in code
+    assert _compiles(code)
+
+
+def test_storedproc_com_banco_passa_database_no_operador():
+    # Banco-alvo no mesmo servidor → o operador recebe database e faz EXEC [banco].proc.
+    job = {"job_name": "j2", "job_type": "storedproc", "job_command": "dbo.sp_teste",
+           "mssql_database": "DB_VENDAS"}
+    code = factory._task_block(job, "proj", {})
+    assert "StoredProcOperator(" in code
+    assert "database='DB_VENDAS'" in code
+    assert _compiles(code)
+
+
 def test_storedproc_nome_invalido_nao_quebra_geracao():
     job = {"job_name": "j3", "job_type": "storedproc", "job_command": "dbo.sp_teste; DROP TABLE x"}
     code = factory._task_block(job, "proj", {})

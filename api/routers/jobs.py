@@ -32,6 +32,9 @@ _PARAM_NAME_RE = __import__("re").compile(r"^@?[A-Za-z_][A-Za-z0-9_]*$")
 # job_name vira literal de string no código da DAG gerada e argumento de shell no
 # dsjob — allowlist bloqueia aspas/;/$/quebra-de-linha (anti code/command injection).
 _JOB_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9_.\- ]+$")
+# nome de banco-alvo (storedproc, mesmo servidor) — vira nome de 3 partes
+# [banco].schema.proc; allowlist bloqueia ] e demais chars perigosos (anti-injection).
+_DB_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9_.\-$#@ ]+$")
 
 
 async def _list_mssql_conn_ids() -> set[str] | None:
@@ -136,6 +139,31 @@ def list_jobs(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/jobs/databases", tags=["jobs"])
+def list_job_databases(_auth: dict = Depends(require_perm(PERM_EDITAR))):
+    """Bancos disponíveis no MESMO servidor da conexão do ORQUESTRA, para o
+    seletor de banco-alvo dos jobs storedproc (fase 1: 1 servidor).
+
+    Usa a credencial do próprio app (get_db_conn) — não expõe senha. Degrada
+    para lista vazia se a consulta ao catálogo falhar."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("SELECT @@SERVERNAME")
+        srow = cur.fetchone()
+        server_name = srow[0] if srow else None
+        # Apenas bancos ONLINE e acessíveis ao usuário da conexão.
+        cur.execute(
+            "SELECT d.name FROM sys.databases d "
+            "WHERE d.state_desc = 'ONLINE' AND HAS_DBACCESS(d.name) = 1 "
+            "ORDER BY d.name")
+        databases = [r[0] for r in cur.fetchall()]
+        cur.close(); conn.close()
+        return {"server": server_name, "databases": databases}
+    except Exception as e:
+        log.warning("list_job_databases degradou: %s", e)
+        return {"server": None, "databases": []}
+
+
 @router.post("/pipelines/jobs/register", tags=["jobs"])
 async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Registra/atualiza jobs e lineage de um pipeline (etl_pipeline_job_register)."""
@@ -175,12 +203,18 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
             "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
             "AND COLUMN_NAME='depends_on_jobs'")
         _has_dep_col = bool(cur.fetchone()[0])
+        cur.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
+            "AND COLUMN_NAME='mssql_database'")
+        _has_db_col = bool(cur.fetchone()[0])
         for idx, job in enumerate(jobs):
             j_name      = (job.get("job_name") or "").strip()
             j_order     = job.get("execution_order")
             j_type      = (job.get("job_type") or "datastage").lower().strip()
             j_cmd       = job.get("job_command") or None
             j_mssql_cid = (job.get("mssql_conn_id") or "").strip() or None
+            j_mssql_db  = (job.get("mssql_database") or "").strip() or None
             j_params    = job.get("params") or []
             origens     = job.get("origens",  [])
             destinos    = job.get("destinos", [])
@@ -198,6 +232,8 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                 erros.append(f"Item {idx} ({j_name}): ao menos 1 destino é obrigatório"); continue
             if j_mssql_cid and mssql_conn_ids is not None and j_mssql_cid not in mssql_conn_ids:
                 erros.append(f"Item {idx} ({j_name}): conexão MSSQL '{j_mssql_cid}' não encontrada no Airflow"); continue
+            if j_mssql_db and not _DB_NAME_RE.match(j_mssql_db):
+                erros.append(f"Item {idx} ({j_name}): nome de banco '{j_mssql_db}' inválido"); continue
 
             params_validos = []
             if j_type == "storedproc" and j_params:
@@ -248,6 +284,12 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                         "UPDATE dbo.etl_pipeline_job SET depends_on_jobs=? "
                         "WHERE pipeline_name=? AND job_name=?",
                         ((_dep_str or None), pipeline_name, j_name))
+                # Banco-alvo por job storedproc (opt-in) — grava no MESMO servidor.
+                if _has_db_col:
+                    cur.execute(
+                        "UPDATE dbo.etl_pipeline_job SET mssql_database=? "
+                        "WHERE pipeline_name=? AND job_name=?",
+                        ((j_mssql_db if j_type == "storedproc" else None), pipeline_name, j_name))
             except Exception as e:
                 erros.append(f"Item {idx} ({j_name}): erro ao gravar job — {e}"); continue
 
@@ -368,6 +410,15 @@ def get_pipeline_job(
             depends_on_jobs = (dr[0] if dr else None)
         except Exception:
             depends_on_jobs = None  # coluna pode não existir (migration 038)
+        mssql_database = None
+        try:
+            cur.execute(
+                "SELECT mssql_database FROM dbo.etl_pipeline_job "
+                "WHERE pipeline_name=? AND job_name=?", (pipeline_name, job_name))
+            mr = cur.fetchone()
+            mssql_database = (mr[0] if mr else None)
+        except Exception:
+            mssql_database = None  # coluna pode não existir (migration 039)
         cur.close(); conn.close()
         return {
             "pipeline_name": row[0], "job_name": row[1], "execution_order": row[2],
@@ -375,6 +426,7 @@ def get_pipeline_job(
             "ssh_conn_id": row[6] or None, "verbose_log": bool(row[7]),
             "mssql_conn_id": row[8] or None, "params": params,
             "depends_on_jobs": depends_on_jobs,
+            "mssql_database": mssql_database,
         }
     except HTTPException:
         raise

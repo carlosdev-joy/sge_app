@@ -70,6 +70,7 @@ interface JobFormData {
   ssh_conn_id: string
   verbose_log: boolean
   depends_on_jobs: string[]
+  mssql_database: string
 }
 
 function JobFormModal({
@@ -86,6 +87,7 @@ function JobFormModal({
     ssh_conn_id: job?.ssh_conn_id ?? '',
     verbose_log: job?.verbose_log ?? false,
     depends_on_jobs: [],
+    mssql_database: '',
   })
   const [err, setErr] = useState<string[]>([])
 
@@ -95,6 +97,15 @@ function JobFormModal({
     staleTime: 60_000,
   })
   const sshConns = sshData?.connections ?? []
+
+  // Bancos do mesmo servidor da conexão do ORQUESTRA (seletor de banco-alvo storedproc).
+  const { data: dbData } = useQuery<{ server: string | null; databases: string[] }>({
+    queryKey: ['job-databases'],
+    queryFn: () => apiFetch('/jobs/databases'),
+    staleTime: 300_000,
+  })
+  const dbServer    = dbData?.server ?? null
+  const dbDatabases = dbData?.databases ?? []
 
   // Jobs irmãos do mesmo pipeline — candidatos a predecessores ("Depende de").
   const { data: pipeJobs } = useQuery<{ data: { job_name: string }[] }>({
@@ -109,11 +120,12 @@ function JobFormModal({
   // Carrega as dependências atuais do job em edição.
   useEffect(() => {
     if (!isEdit || !job) return
-    apiFetch<{ depends_on_jobs?: string | null }>(
+    apiFetch<{ depends_on_jobs?: string | null; mssql_database?: string | null }>(
       `/pipelines/jobs/${encodeURIComponent(pipeline)}/${encodeURIComponent(job.job_name)}`)
       .then(d => setForm(prev => ({
         ...prev,
         depends_on_jobs: (d.depends_on_jobs || '').split(',').map(s => s.trim()).filter(Boolean),
+        mssql_database: d.mssql_database ?? '',
       })))
       .catch(() => {})
   }, [isEdit, pipeline, job])
@@ -130,6 +142,7 @@ function JobFormModal({
         ssh_conn_id: form.job_type === 'shell' ? (form.ssh_conn_id || null) : null,
         verbose_log: form.job_type === 'datastage' ? form.verbose_log : false,
         depends_on_jobs: form.depends_on_jobs,
+        mssql_database: form.job_type === 'storedproc' ? (form.mssql_database || null) : null,
         require_lineage: false,
         operacao: 'upsert',
       }),
@@ -209,6 +222,27 @@ function JobFormModal({
         />
         {form.job_type === 'storedproc' && (
           <p className="text-[11px] text-dim/70 -mt-2">Apenas o <strong>nome</strong> da procedure (ex.: <code>dbo.sp_nome</code>). O sistema adiciona o <code>EXEC</code> e os parâmetros automaticamente — <strong>não</strong> escreva “EXEC”. Sem parâmetros cadastrados, a proc é chamada sem nenhum parâmetro.</p>
+        )}
+
+        {/* Servidor / banco-alvo da procedure (mesmo servidor da conexão do ORQUESTRA) */}
+        {form.job_type === 'storedproc' && (
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-dim font-medium">
+              Servidor / Banco {dbServer && <span className="text-dim/60 font-mono">({dbServer})</span>}
+            </label>
+            <select
+              value={form.mssql_database}
+              onChange={e => f('mssql_database', e.target.value)}
+              className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="">Banco padrão da conexão</option>
+              {dbDatabases.map(d => <option key={d} value={d}>{d}</option>)}
+              {form.mssql_database && !dbDatabases.includes(form.mssql_database) && (
+                <option value={form.mssql_database}>{form.mssql_database}</option>
+              )}
+            </select>
+            <p className="text-xs text-dim/60">A proc roda no banco escolhido, no mesmo servidor (<code>EXEC [banco].schema.proc</code>). Vazio = banco padrão.</p>
+          </div>
         )}
 
         {/* Depende de — predecessores no mesmo pipeline (grafo de dependências) */}
