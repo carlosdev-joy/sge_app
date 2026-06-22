@@ -8,12 +8,13 @@ import { Modal } from '../components/ui/Modal'
 import { PageSpinner } from '../components/ui/Spinner'
 import { toast } from '../components/ui/Toast'
 import { Tabs } from '../components/ui/Tabs'
+import { DsRunGraphModal, type DsGraphStatus, type DsGraphNode, type DsRunGraph } from '../components/console/DsRunGraphModal'
 import { queryClient } from '../lib/queryClient'
 import { renderMarkdown } from '../lib/markdown'
 import {
   Edit2, Trash2, Plus, AlertTriangle, ChevronDown, ChevronUp, Save, X,
   CheckCircle2, Eye, Calendar, Download, Megaphone, Bold, Italic, Code, List, RefreshCw, Database,
-  Terminal, Copy,
+  Terminal, Copy, Network,
 } from 'lucide-react'
 
 const PROJETOS = ['BI_CVP', 'BI_VIDA', 'BI_PREVIDENCIA', 'BI_PRESTAMISTA']
@@ -2591,6 +2592,15 @@ function dsCodeVariant(code: number): string {
   return 'neutral'
 }
 
+// Código numérico de status do job -> status do diagrama.
+function dsCodeToStatus(code: number): DsGraphStatus {
+  if (code === 1 || code === 11) return 'ok'
+  if (code === 2 || code === 12) return 'warning'
+  if (code === 21) return 'reset'
+  if (code === 3 || code === 13 || code === 96 || code === 97 || code === 98) return 'aborted'
+  return 'unknown'
+}
+
 interface DsLogRun {
   start?: string
   end?: string
@@ -2740,6 +2750,7 @@ function DsConsoleTab() {
   const [maxLines, setMaxLines] = useState('200')
   const [eventId, setEventId] = useState('')
   const [showCodes, setShowCodes] = useState(false)
+  const [showGraph, setShowGraph] = useState(false)
 
   const commands = cfg.data?.commands ?? []
   const current = commands.find(c => c.id === command)
@@ -2829,6 +2840,26 @@ function DsConsoleTab() {
     .filter(g => g.errors.length > 0)
   const groupedErrIds = new Set(errorsByRun.flatMap(g => g.errors.map(e => e.id)))
   const ungroupedErrors = logErrors.filter(e => !groupedErrIds.has(e.id))
+
+  // Diagrama (CTRL-M): por run, junta filhos diretos (status do logsum) + jobs vindos
+  // de activities de erro, para o grafo refletir o run de verdade.
+  const graphRuns: DsRunGraph[] = logsumRuns.map(r => {
+    const m = new Map<string, DsGraphNode>()
+    for (const c of r.children) m.set(c.fullJob, { job: c.fullJob, status: dsCodeToStatus(c.code), label: c.text })
+    for (const e of logErrors) {
+      if (r.firstId == null || r.lastId == null || e.id < r.firstId || e.id > r.lastId) continue
+      const explicit = (e.message.match(/\bJob\s+([A-Za-z0-9_.]+)\s+(?:has finished, status|did not finish OK)/i) || [])[1]
+      const act = (e.message.match(/\(@([A-Za-z0-9_.]+)\)/) || [])[1]
+      const job = explicit || (act ? activityJobMap[act] : undefined)
+      if (!job || job === result?.job) continue
+      const cur = m.get(job)
+      if (!cur || cur.status === 'ok' || cur.status === 'unknown') {
+        m.set(job, { job, status: 'aborted', label: /did not finish OK|status = 3/i.test(e.message) ? 'Abortado' : 'Erro' })
+      }
+    }
+    return { result: r.result, start: r.start, end: r.end, children: [...m.values()] }
+  })
+  const hasGraph = graphRuns.some(r => r.children.length > 0)
 
   // De-para do código de erro do dsjob ("Status code = -N") quando o comando falha.
   const errMatch = (result && result.exit_code !== 0)
@@ -3018,7 +3049,14 @@ function DsConsoleTab() {
 
           {logsumRuns.length > 0 && (
             <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-2">
-              <p className="text-xs text-dim mb-1">Resumo dos runs (mais recentes primeiro) — {logsumRuns.length} no log. Clique num job para ver o log dele (logsum):</p>
+              <div className="flex flex-wrap items-center gap-2 mb-1">
+                <p className="text-xs text-dim">Resumo dos runs (mais recentes primeiro) — {logsumRuns.length} no log. Clique num job para ver o log dele (logsum):</p>
+                {hasGraph && (
+                  <Button size="sm" variant="secondary" className="ml-auto" onClick={() => setShowGraph(true)}>
+                    <Network size={14} className="mr-1" /> Ver diagrama
+                  </Button>
+                )}
+              </div>
               {logsumRuns.slice().reverse().slice(0, 15).map((r, i) => (
                 <div key={i} className="border border-edge/60 rounded-lg p-3">
                   <div className="flex flex-wrap items-center gap-2">
@@ -3108,6 +3146,16 @@ function DsConsoleTab() {
           </div>
         )}
       </div>
+
+      {showGraph && result?.job && (
+        <DsRunGraphModal
+          open={showGraph}
+          onClose={() => setShowGraph(false)}
+          rootJob={result.job}
+          graphRuns={graphRuns}
+          onDrill={(job) => runFor('logsum', job)}
+        />
+      )}
     </div>
   )
 }
