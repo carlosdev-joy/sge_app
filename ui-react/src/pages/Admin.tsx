@@ -2632,6 +2632,24 @@ function parseLogsum(stdout: string): DsLogRun[] {
   return runs
 }
 
+// Lista as entradas do log (id, tipo, hora, mensagem) — usado para destacar erros
+// e oferecer o id de evento ao logdetail.
+function parseLogEntries(stdout: string): { id: number; type: string; time: string; message: string }[] {
+  const lines = stdout.split('\n')
+  const headerRe = /^\s*(\d+)\s+([A-Z]+)\s+(\w{3}\s+\w{3}\s+\d{1,2}\s+[\d:]+\s+\d{4})\s*$/
+  const entries: { id: number; type: string; time: string; message: string }[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const h = lines[i].match(headerRe)
+    if (!h) continue
+    const msg: string[] = []
+    for (let j = i + 1; j < lines.length && !headerRe.test(lines[j]); j++) {
+      if (lines[j].trim()) msg.push(lines[j].trim())
+    }
+    entries.push({ id: Number(h[1]), type: h[2], time: h[3], message: msg.join(' ') })
+  }
+  return entries
+}
+
 function DsConsoleTab() {
   const cfg = useQuery<{ configured: boolean; commands: DsCmd[] }>({
     queryKey: ['ds-console-config'],
@@ -2646,6 +2664,7 @@ function DsConsoleTab() {
   const [command, setCommand] = useState('jobinfo')
   const [job, setJob] = useState('')
   const [maxLines, setMaxLines] = useState('200')
+  const [eventId, setEventId] = useState('')
   const [showCodes, setShowCodes] = useState(false)
 
   const commands = cfg.data?.commands ?? []
@@ -2668,7 +2687,7 @@ function DsConsoleTab() {
     ? jobsQuery.data.stdout.split('\n').map(s => s.trim()).filter(Boolean)
     : []
 
-  const exec = useMutation<DsConsoleResult, Error, { command: string; project: string; job?: string; max_lines?: number }>({
+  const exec = useMutation<DsConsoleResult, Error, { command: string; project: string; job?: string; max_lines?: number; event_id?: number }>({
     mutationFn: (vars) => apiFetch<DsConsoleResult>('/datastage/console', {
       method: 'POST',
       body: JSON.stringify(vars),
@@ -2676,8 +2695,10 @@ function DsConsoleTab() {
     onError: (e: any) => toast.error(e.message),
   })
 
-  const hasMax = command === 'logsum' || command === 'logdetail'
-  const canRun = !!project.trim() && (!needsJob || !!job.trim()) && configured && !exec.isPending
+  const hasMax = command === 'logsum'
+  const isLogdetail = command === 'logdetail'
+  const canRun = !!project.trim() && (!needsJob || !!job.trim())
+    && (!isLogdetail || !!eventId.trim()) && configured && !exec.isPending
   const run = () => {
     if (!canRun) return
     exec.mutate({
@@ -2685,13 +2706,15 @@ function DsConsoleTab() {
       project: project.trim(),
       job: needsJob ? job.trim() : undefined,
       max_lines: hasMax ? (Number(maxLines) || 200) : undefined,
+      event_id: isLogdetail ? (Number(eventId) || undefined) : undefined,
     })
   }
-  // Roda um comando específico imediatamente (cliques nos chips de job / filhos do run).
-  const runFor = (cmd: string, jobName: string, max?: number) => {
+  // Roda um comando específico imediatamente (cliques nos chips de job / filhos / eventos).
+  const runFor = (cmd: string, jobName: string, extra?: { max_lines?: number; event_id?: number }) => {
     if (!project.trim() || !configured) return
     setCommand(cmd); setJob(jobName)
-    exec.mutate({ command: cmd, project: project.trim(), job: jobName, max_lines: max })
+    if (extra?.event_id != null) setEventId(String(extra.event_id))
+    exec.mutate({ command: cmd, project: project.trim(), job: jobName, ...extra })
   }
 
   const projectList = (projetos.data?.projects ?? []).map(p => p.project_name)
@@ -2716,6 +2739,9 @@ function DsConsoleTab() {
 
   const logsumRuns = (result?.command === 'logsum' && result.exit_code === 0)
     ? parseLogsum(result.stdout)
+    : []
+  const logErrors = (result?.command === 'logsum' && result.exit_code === 0)
+    ? parseLogEntries(result.stdout).filter(e => /FATAL|REJECT|WARNING/i.test(e.type))
     : []
 
   // De-para do código de erro do dsjob ("Status code = -N") quando o comando falha.
@@ -2768,6 +2794,11 @@ function DsConsoleTab() {
           {hasMax && (
             <Input label="Máx. linhas" type="number" value={maxLines}
               onChange={e => setMaxLines(e.target.value)} className="w-28" />
+          )}
+          {isLogdetail && (
+            <Input label="Evento (id)" type="number" value={eventId}
+              onChange={e => setEventId(e.target.value)} placeholder="id do logsum" className="w-32"
+              onKeyDown={e => { if (e.key === 'Enter') run() }} />
           )}
           <Button onClick={run} loading={exec.isPending} disabled={!canRun}>Executar</Button>
         </div>
@@ -2822,9 +2853,29 @@ function DsConsoleTab() {
             </div>
           )}
 
+          {logErrors.length > 0 && (
+            <div className="bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded-lg p-4">
+              <p className="text-xs text-red-800 dark:text-red-300 mb-2 font-medium">
+                Erros e avisos no log ({logErrors.length}) — clique no id para ver o detalhe completo (logdetail):
+              </p>
+              <div className="flex flex-col gap-1.5">
+                {logErrors.slice(-20).reverse().map((e, i) => (
+                  <div key={i} className="flex items-start gap-2 text-xs">
+                    <Badge value={/FATAL|REJECT/i.test(e.type) ? 'error' : 'warning'}>{e.type}</Badge>
+                    <button onClick={() => runFor('logdetail', result.job ?? '', { event_id: e.id })}
+                      title="Ver detalhe completo (logdetail)"
+                      className="font-mono text-blue-700 dark:text-blue-400 hover:underline shrink-0">#{e.id}</button>
+                    <span className="text-dim shrink-0 hidden sm:inline">{e.time}</span>
+                    <span className="text-ink break-all">{e.message.slice(0, 240)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {logsumRuns.length > 0 && (
             <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-2">
-              <p className="text-xs text-dim mb-1">Resumo dos runs (mais recentes primeiro) — {logsumRuns.length} no log. Clique num job para ver o detalhe do log (logdetail):</p>
+              <p className="text-xs text-dim mb-1">Resumo dos runs (mais recentes primeiro) — {logsumRuns.length} no log. Clique num job para ver o log dele (logsum):</p>
               {logsumRuns.slice().reverse().slice(0, 15).map((r, i) => (
                 <div key={i} className="border border-edge/60 rounded-lg p-3">
                   <div className="flex flex-wrap items-center gap-2">
@@ -2838,8 +2889,8 @@ function DsConsoleTab() {
                   {r.children.length > 0 && (
                     <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-2">
                       {r.children.map((c, j) => (
-                        <button key={j} onClick={() => runFor('logdetail', c.fullJob, 100)}
-                          title={`Ver detalhe do log de ${c.fullJob} (logdetail)`}
+                        <button key={j} onClick={() => runFor('logsum', c.fullJob)}
+                          title={`Ver o log de ${c.fullJob} (logsum)`}
                           className="inline-flex items-center gap-1.5 hover:opacity-80 transition-opacity">
                           <span className="font-mono text-[11px] text-ink break-all underline decoration-dotted decoration-edge underline-offset-2">{c.job}</span>
                           <Badge value={dsCodeVariant(c.code)}>{DS_STATUS_MEANINGS[c.code] ?? c.text}</Badge>

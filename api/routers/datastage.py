@@ -183,9 +183,10 @@ async def datastage_console_exec(body: dict = Body(...), user: dict = Depends(ge
     project   = (body.get("project") or "").strip()
     job       = (body.get("job") or "").strip() or None
     max_lines = body.get("max_lines", 200)
+    event_id  = body.get("event_id")
 
     try:
-        result = run_dsjob(command, project, job, max_lines)
+        result = run_dsjob(command, project, job, max_lines, event_id)
     except DsConsoleError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:

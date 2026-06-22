@@ -58,7 +58,7 @@ def _validate_name(value: str | None, field: str) -> str:
 
 
 def build_dsjob_command(command: str, project: str, job: str | None = None,
-                        max_lines: int = 200) -> tuple[str, int]:
+                        max_lines: int = 200, event_id=None) -> tuple[str, int]:
     """
     Monta o comando `dsjob` (sem o source do dsenv) e devolve (cmd, timeout).
 
@@ -70,9 +70,25 @@ def build_dsjob_command(command: str, project: str, job: str | None = None,
         raise DsConsoleError(f"Comando não suportado: {command!r}")
 
     _validate_name(project, "Projeto")
+
+    # -logdetail tem assinatura própria: exige o id do evento (pegue no logsum).
+    #   dsjob -logdetail -full <project> <job> <event_id>
+    if command == "logdetail":
+        _validate_name(job, "Job")
+        try:
+            ev = int(event_id)
+        except (TypeError, ValueError):
+            raise DsConsoleError(
+                "Informe o id do evento (número) — pegue no resumo do log (logsum).")
+        if ev < 0:
+            raise DsConsoleError("Id do evento inválido.")
+        cmd = (f"{DS_DSHOME}/bin/dsjob -logdetail -full "
+               f"{shlex.quote(project)} {shlex.quote(job)} {ev}")  # type: ignore[arg-type]
+        return cmd, spec["timeout"]
+
     parts = [f"{DS_DSHOME}/bin/dsjob", spec["flag"]]
 
-    if command in ("logsum", "logdetail"):
+    if command == "logsum":
         try:
             n = int(max_lines)
         except (TypeError, ValueError):
@@ -93,7 +109,7 @@ def build_dsjob_command(command: str, project: str, job: str | None = None,
 
 
 def run_dsjob(command: str, project: str, job: str | None = None,
-              max_lines: int = 200) -> dict:
+              max_lines: int = 200, event_id=None) -> dict:
     """
     Executa o `dsjob` no Unix via SSH e devolve {exit_code, stdout, stderr, duration_ms}.
 
@@ -104,7 +120,7 @@ def run_dsjob(command: str, project: str, job: str | None = None,
             "SSH do DataStage não configurado no servidor. "
             "Defina DS_SSH_HOST e DS_SSH_USER (e DS_SSH_PASSWORD ou DS_SSH_KEY_FILE) no ambiente da API.")
 
-    dsjob_cmd, timeout = build_dsjob_command(command, project, job, max_lines)
+    dsjob_cmd, timeout = build_dsjob_command(command, project, job, max_lines, event_id)
 
     import paramiko  # import tardio: lib só é necessária em runtime, não nos testes
 
