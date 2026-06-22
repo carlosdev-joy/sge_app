@@ -37,10 +37,17 @@ def test_ljobs_nao_exige_job():
     assert cmd == f"{DS_DSHOME}/bin/dsjob -ljobs BI_VIDA"
 
 
-@pytest.mark.parametrize("command", ["jobinfo", "logsum", "report", "lstages", "lparams"])
+@pytest.mark.parametrize("command", ["jobinfo", "logsum", "logdetail", "report", "lstages", "lparams"])
 def test_comandos_que_exigem_job_falham_sem_job(command):
     with pytest.raises(DsConsoleError):
         build_dsjob_command(command, "BI_VIDA", None)
+
+
+def test_logdetail_inclui_max_e_job_com_invocacao():
+    # jobs com invocação (jobname.invocationid) devem passar pela allowlist (têm ponto).
+    cmd, timeout = build_dsjob_command("logdetail", "BI_VIDA", "SeqExecJob.SsdVidaPeps03ExtraiSinistros", max_lines=100)
+    assert cmd == f"{DS_DSHOME}/bin/dsjob -logdetail -max 100 BI_VIDA SeqExecJob.SsdVidaPeps03ExtraiSinistros"
+    assert timeout == 120
 
 
 def test_report_anexa_tipo_detail_no_fim():
@@ -67,7 +74,7 @@ def test_comando_nao_suportado_rejeitado():
 
 
 def test_dsjob_commands_tem_chaves_esperadas():
-    assert set(DSJOB_COMMANDS) == {"jobinfo", "logsum", "ljobs", "lstages", "lparams", "report"}
+    assert set(DSJOB_COMMANDS) == {"jobinfo", "logsum", "logdetail", "ljobs", "lstages", "lparams", "report"}
     for spec in DSJOB_COMMANDS.values():
         assert {"flag", "needs_job", "timeout", "label"} <= set(spec)
 
