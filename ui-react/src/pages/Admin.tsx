@@ -2595,7 +2595,7 @@ interface DsLogRun {
   start?: string
   end?: string
   result: 'ok' | 'aborted' | 'running' | 'unknown'
-  children: { job: string; code: number; text: string }[]
+  children: { job: string; fullJob: string; code: number; text: string }[]
 }
 
 // Parser do `dsjob -logsum`: agrupa o log em runs da sequence, com os jobs filhos
@@ -2620,7 +2620,7 @@ function parseLogsum(stdout: string): DsLogRun[] {
     if (/Sequence abort requested/i.test(msg)) { cur.result = 'aborted'; cur.end = time; continue }
     const fin = msg.match(/Job\s+(\S+)\s+has finished, status = (\d+)\s*\(([^)]*)\)/)
     if (fin) {
-      cur.children.push({ job: fin[1].replace(/^SeqExecJob\./, ''), code: Number(fin[2]), text: fin[3] })
+      cur.children.push({ job: fin[1].replace(/^SeqExecJob\./, ''), fullJob: fin[1], code: Number(fin[2]), text: fin[3] })
       continue
     }
     if (/Job under control finished/.test(msg)) {
@@ -2668,21 +2668,31 @@ function DsConsoleTab() {
     ? jobsQuery.data.stdout.split('\n').map(s => s.trim()).filter(Boolean)
     : []
 
-  const exec = useMutation<DsConsoleResult>({
-    mutationFn: () => apiFetch<DsConsoleResult>('/datastage/console', {
+  const exec = useMutation<DsConsoleResult, Error, { command: string; project: string; job?: string; max_lines?: number }>({
+    mutationFn: (vars) => apiFetch<DsConsoleResult>('/datastage/console', {
       method: 'POST',
-      body: JSON.stringify({
-        command,
-        project: project.trim(),
-        job: needsJob ? job.trim() : undefined,
-        max_lines: command === 'logsum' ? (Number(maxLines) || 200) : undefined,
-      }),
+      body: JSON.stringify(vars),
     }),
     onError: (e: any) => toast.error(e.message),
   })
 
+  const hasMax = command === 'logsum' || command === 'logdetail'
   const canRun = !!project.trim() && (!needsJob || !!job.trim()) && configured && !exec.isPending
-  const run = () => { if (canRun) exec.mutate() }
+  const run = () => {
+    if (!canRun) return
+    exec.mutate({
+      command,
+      project: project.trim(),
+      job: needsJob ? job.trim() : undefined,
+      max_lines: hasMax ? (Number(maxLines) || 200) : undefined,
+    })
+  }
+  // Roda um comando específico imediatamente (cliques nos chips de job / filhos do run).
+  const runFor = (cmd: string, jobName: string, max?: number) => {
+    if (!project.trim() || !configured) return
+    setCommand(cmd); setJob(jobName)
+    exec.mutate({ command: cmd, project: project.trim(), job: jobName, max_lines: max })
+  }
 
   const projectList = (projetos.data?.projects ?? []).map(p => p.project_name)
   const projectOptions = projectList.length ? projectList : PROJETOS
@@ -2755,7 +2765,7 @@ function DsConsoleTab() {
           <datalist id="ds-job-list">
             {jobOptions.map(j => <option key={j} value={j} />)}
           </datalist>
-          {command === 'logsum' && (
+          {hasMax && (
             <Input label="Máx. linhas" type="number" value={maxLines}
               onChange={e => setMaxLines(e.target.value)} className="w-28" />
           )}
@@ -2814,7 +2824,7 @@ function DsConsoleTab() {
 
           {logsumRuns.length > 0 && (
             <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-2">
-              <p className="text-xs text-dim mb-1">Resumo dos runs (mais recentes primeiro) — {logsumRuns.length} no log:</p>
+              <p className="text-xs text-dim mb-1">Resumo dos runs (mais recentes primeiro) — {logsumRuns.length} no log. Clique num job para ver o detalhe do log (logdetail):</p>
               {logsumRuns.slice().reverse().slice(0, 15).map((r, i) => (
                 <div key={i} className="border border-edge/60 rounded-lg p-3">
                   <div className="flex flex-wrap items-center gap-2">
@@ -2828,10 +2838,12 @@ function DsConsoleTab() {
                   {r.children.length > 0 && (
                     <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-2">
                       {r.children.map((c, j) => (
-                        <span key={j} className="inline-flex items-center gap-1.5">
-                          <span className="font-mono text-[11px] text-ink break-all">{c.job}</span>
+                        <button key={j} onClick={() => runFor('logdetail', c.fullJob, 100)}
+                          title={`Ver detalhe do log de ${c.fullJob} (logdetail)`}
+                          className="inline-flex items-center gap-1.5 hover:opacity-80 transition-opacity">
+                          <span className="font-mono text-[11px] text-ink break-all underline decoration-dotted decoration-edge underline-offset-2">{c.job}</span>
                           <Badge value={dsCodeVariant(c.code)}>{DS_STATUS_MEANINGS[c.code] ?? c.text}</Badge>
-                        </span>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -2845,7 +2857,7 @@ function DsConsoleTab() {
               <p className="text-xs text-dim mb-2">{ljobsList.length} job(s) — clique para inspecionar (jobinfo):</p>
               <div className="flex flex-wrap gap-1.5">
                 {ljobsList.map(j => (
-                  <button key={j} onClick={() => { setJob(j); setCommand('jobinfo') }}
+                  <button key={j} onClick={() => runFor('jobinfo', j)}
                     className="px-2 py-1 rounded text-xs font-mono bg-edge/40 text-ink hover:bg-[#1A5FA8] hover:text-white transition-colors">
                     {j}
                   </button>

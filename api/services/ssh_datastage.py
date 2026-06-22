@@ -33,6 +33,7 @@ _SAFE_RE = re.compile(r"^[A-Za-z0-9_.]+$")
 DSJOB_COMMANDS: dict[str, dict] = {
     "jobinfo": {"flag": "-jobinfo", "needs_job": True,  "timeout": 30,  "label": "Status do job"},
     "logsum":  {"flag": "-logsum",  "needs_job": True,  "timeout": 120, "label": "Resumo do log do run"},
+    "logdetail": {"flag": "-logdetail", "needs_job": True, "timeout": 120, "label": "Detalhe do log (erros completos)"},
     "ljobs":   {"flag": "-ljobs",   "needs_job": False, "timeout": 30,  "label": "Listar jobs do projeto"},
     "lstages": {"flag": "-lstages", "needs_job": True,  "timeout": 30,  "label": "Stages do job"},
     "lparams": {"flag": "-lparams", "needs_job": True,  "timeout": 30,  "label": "Parâmetros do job"},
@@ -71,7 +72,7 @@ def build_dsjob_command(command: str, project: str, job: str | None = None,
     _validate_name(project, "Projeto")
     parts = [f"{DS_DSHOME}/bin/dsjob", spec["flag"]]
 
-    if command == "logsum":
+    if command in ("logsum", "logdetail"):
         try:
             n = int(max_lines)
         except (TypeError, ValueError):
