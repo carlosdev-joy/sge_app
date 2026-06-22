@@ -2654,6 +2654,20 @@ function parseLogEntries(stdout: string): { id: number; type: string; time: stri
   return entries
 }
 
+// Mapeia activity da sequence (@ODS_Propostas_U) -> job real (SeqSsdPrs_ODS_Propostas),
+// lendo as linhas "(@activity): Report on job: <job>" e "(@activity): Job <job> ..." do log.
+// Permite resolver o job filho mesmo quando o erro só cita a activity.
+function buildActivityJobMap(entries: { message: string }[]): Record<string, string> {
+  const map: Record<string, string> = {}
+  for (const e of entries) {
+    const r1 = e.message.match(/\(@([A-Za-z0-9_.]+)\):\s*Report on job:\s*([A-Za-z0-9_.]+)/i)
+    if (r1) map[r1[1]] = r1[2]
+    const r2 = e.message.match(/\(@([A-Za-z0-9_.]+)\):\s*Job\s+([A-Za-z0-9_.]+)\s+(?:has finished|did not finish)/i)
+    if (r2) map[r2[1]] = r2[2]
+  }
+  return map
+}
+
 // Mensagens que indicam erro mesmo quando o Type é INFO (activity de erro, abort de filho).
 const DS_ERR_MSG_RE = /will execute error activity|erro no job|status = 3 \(|status = '?(aborted|crashed)|did not finish OK/i
 
@@ -2800,9 +2814,11 @@ function DsConsoleTab() {
   const logsumRuns = (result?.command === 'logsum' && result.exit_code === 0)
     ? parseLogsum(result.stdout)
     : []
-  const logErrors = (result?.command === 'logsum' && result.exit_code === 0)
-    ? parseLogEntries(result.stdout).filter(e => /FATAL|REJECT|WARNING/i.test(e.type) || DS_ERR_MSG_RE.test(e.message))
+  const logAllEntries = (result?.command === 'logsum' && result.exit_code === 0)
+    ? parseLogEntries(result.stdout)
     : []
+  const activityJobMap = buildActivityJobMap(logAllEntries)
+  const logErrors = logAllEntries.filter(e => /FATAL|REJECT|WARNING/i.test(e.type) || DS_ERR_MSG_RE.test(e.message))
   const logDetailEvents = (result?.command === 'logdetail' && result.exit_code === 0)
     ? parseLogdetail(result.stdout)
     : []
@@ -2826,7 +2842,9 @@ function DsConsoleTab() {
 
   // Uma linha do card de erros (id clicável → logdetail; nome do filho → logsum dele).
   const renderErrRow = (e: { id: number; type: string; time: string; message: string }) => {
-    const child = (e.message.match(/\bJob\s+([A-Za-z0-9_.]+)\s+(?:has finished, status|did not finish OK)/i) || [])[1]
+    const explicitChild = (e.message.match(/\bJob\s+([A-Za-z0-9_.]+)\s+(?:has finished, status|did not finish OK)/i) || [])[1]
+    const activity = (e.message.match(/\(@([A-Za-z0-9_.]+)\)/) || [])[1]
+    const child = explicitChild || (activity ? activityJobMap[activity] : undefined)
     return (
       <div key={e.id} className="flex items-start gap-2 text-xs flex-wrap">
         <Badge value={dsEntrySeverity(e.type, e.message)}>{e.type}</Badge>
