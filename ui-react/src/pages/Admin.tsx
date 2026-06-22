@@ -2773,6 +2773,7 @@ function DsConsoleTab() {
   const [showCodes, setShowCodes] = useState(false)
   const [showGraph, setShowGraph] = useState(false)
   const [graphTargetTime, setGraphTargetTime] = useState<string | null>(null)
+  const [graphPath, setGraphPath] = useState<{ job: string; targetTime: string | null }[]>([])
 
   const commands = cfg.data?.commands ?? []
   const current = commands.find(c => c.id === command)
@@ -3085,7 +3086,8 @@ function DsConsoleTab() {
               <div className="flex flex-wrap items-center gap-2 mb-1">
                 <p className="text-xs text-dim">Resumo dos runs (mais recentes primeiro) — {logsumRuns.length} no log. Clique num job para ver o log dele (logsum):</p>
                 {hasGraph && (
-                  <Button size="sm" variant="secondary" className="ml-auto" onClick={() => setShowGraph(true)}>
+                  <Button size="sm" variant="secondary" className="ml-auto"
+                    onClick={() => { setGraphTargetTime(null); setGraphPath([{ job: result!.job!, targetTime: null }]); setShowGraph(true) }}>
                     <Network size={14} className="mr-1" /> Ver diagrama
                   </Button>
                 )}
@@ -3188,7 +3190,19 @@ function DsConsoleTab() {
           graphRuns={graphData.runs}
           loading={exec.isPending}
           targetTime={graphTargetTime}
-          onDrill={(job, targetTime) => { setGraphTargetTime(targetTime ?? null); runFor('logsum', job) }}
+          path={graphPath.map(p => p.job)}
+          onNavigate={(index) => {
+            const target = graphPath[index]
+            if (!target) return
+            setGraphTargetTime(target.targetTime)
+            setGraphPath(graphPath.slice(0, index + 1))
+            runFor('logsum', target.job)
+          }}
+          onDrill={(job, targetTime) => {
+            setGraphTargetTime(targetTime ?? null)
+            setGraphPath(p => [...p, { job, targetTime: targetTime ?? null }])
+            runFor('logsum', job)
+          }}
         />
       )}
     </div>
