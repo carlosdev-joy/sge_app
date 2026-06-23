@@ -1,7 +1,9 @@
 """api/routers/jobs.py — GET /jobs, POST/DELETE /pipelines/jobs, POST /pipelines/jobs/reorder."""
 from __future__ import annotations
 
+import json
 import logging
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -26,15 +28,106 @@ def _fmt_dt(v):
     return str(v)
 
 
-VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc"}
+VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc", "decisao"}
 VALID_PARAM_TYPES = {"INT", "VARCHAR", "DATE", "BIT", "DECIMAL", "DATETIME"}
-_PARAM_NAME_RE = __import__("re").compile(r"^@?[A-Za-z_][A-Za-z0-9_]*$")
+_PARAM_NAME_RE = re.compile(r"^@?[A-Za-z_][A-Za-z0-9_]*$")
 # job_name vira literal de string no código da DAG gerada e argumento de shell no
 # dsjob — allowlist bloqueia aspas/;/$/quebra-de-linha (anti code/command injection).
-_JOB_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9_.\- ]+$")
+_JOB_NAME_RE = re.compile(r"^[A-Za-z0-9_.\- ]+$")
 # nome de banco-alvo (storedproc, mesmo servidor) — vira nome de 3 partes
 # [banco].schema.proc; allowlist bloqueia ] e demais chars perigosos (anti-injection).
-_DB_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9_.\-$#@ ]+$")
+_DB_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-$#@ ]+$")
+
+# ── Nó de Decisão (migration 043) ──────────────────────────────────────────
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_COND_OPERADORES = {"=", "<>", ">", ">=", "<", "<="}
+_COND_DML_RE = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|"
+    r"GRANT|REVOKE|INTO)\b",
+    re.IGNORECASE,
+)
+
+
+def _valid_table_ident(tabela: str) -> bool:
+    """db.schema.tabela: 1–3 partes, cada uma identificador válido (anti-injeção)."""
+    parts = (tabela or "").strip().split(".")
+    if not 1 <= len(parts) <= 3:
+        return False
+    return all(_IDENT_RE.match(p) for p in parts)
+
+
+def _valid_select(sql: str) -> bool:
+    """SQL read-only: começa com SELECT/WITH, sem ';' e sem DML."""
+    s = (sql or "").strip().rstrip(";").strip()
+    if not s or ";" in s:
+        return False
+    head = s.lstrip("(").lstrip().upper()
+    if not (head.startswith("SELECT") or head.startswith("WITH")):
+        return False
+    return not _COND_DML_RE.search(s)
+
+
+def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str]:
+    """Valida a condição de um nó de decisão. Retorna lista de erros (vazia = ok)."""
+    if not isinstance(cond, dict):
+        return ["condição (condition_json) ausente ou inválida"]
+    errs: list[str] = []
+    tipo = str(cond.get("tipo") or "").strip().lower()
+    if tipo not in ("contagem", "query"):
+        errs.append("tipo da condição deve ser 'contagem' ou 'query'")
+    if str(cond.get("operador") or "").strip() not in _COND_OPERADORES:
+        errs.append("operador inválido (use =, <>, >, >=, <, <=)")
+    valor = cond.get("valor")
+    if valor is None or (isinstance(valor, str) and not valor.strip()):
+        errs.append("valor da condição é obrigatório")
+    if tipo == "contagem":
+        if not _valid_table_ident(cond.get("tabela") or ""):
+            errs.append("tabela da condição inválida (use db.schema.tabela)")
+        db = (cond.get("database") or "").strip()
+        if db and not _IDENT_RE.match(db):
+            errs.append("database da condição inválido")
+        if valor is not None and not (
+            isinstance(valor, (int, float)) or str(valor).strip().lstrip("-").isdigit()
+        ):
+            errs.append("valor da condição (contagem) deve ser numérico")
+    elif tipo == "query":
+        if not _valid_select(cond.get("sql") or ""):
+            errs.append("SQL da condição deve ser read-only (SELECT/WITH, sem ';' nem DML)")
+    cid = (cond.get("mssql_conn_id") or "").strip()
+    if cid and mssql_conn_ids is not None and cid not in mssql_conn_ids:
+        errs.append(f"conexão MSSQL '{cid}' da condição não encontrada no Airflow")
+    ramo_v, ramo_f = cond.get("ramo_verdadeiro") or [], cond.get("ramo_falso") or []
+    if not isinstance(ramo_v, list) or not isinstance(ramo_f, list):
+        errs.append("ramos (ramo_verdadeiro/ramo_falso) devem ser listas")
+        return errs
+    if not ramo_v and not ramo_f:
+        errs.append("a decisão precisa de ao menos um job em algum ramo")
+    for ramo_nome, ramo in (("verdadeiro", ramo_v), ("falso", ramo_f)):
+        for m in ramo:
+            mn = str(m).strip()
+            if mn == self_name:
+                errs.append(f"ramo {ramo_nome}: não pode referenciar a própria decisão")
+            elif mn not in known_jobs:
+                errs.append(f"ramo {ramo_nome}: job '{mn}' não existe no pipeline")
+    return errs
+
+
+def _graph_has_cycle(adj: dict[str, set[str]]) -> bool:
+    """DFS com cores — detecta ciclo no grafo dirigido (deps + arestas do branch)."""
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {n: WHITE for n in adj}
+
+    def visit(u: str) -> bool:
+        color[u] = GRAY
+        for v in adj.get(u, ()):  # ignora arestas para fora do conjunto
+            if v not in color:
+                continue
+            if color[v] == GRAY or (color[v] == WHITE and visit(v)):
+                return True
+        color[u] = BLACK
+        return False
+
+    return any(color[n] == WHITE and visit(n) for n in list(adj))
 
 
 async def _list_mssql_conn_ids() -> set[str] | None:
@@ -208,7 +301,30 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
             "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
             "AND COLUMN_NAME='mssql_database'")
         _has_db_col = bool(cur.fetchone()[0])
+        cur.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
+            "AND COLUMN_NAME='condition_json'")
+        _has_cond_col = bool(cur.fetchone()[0])
+
+        # Jobs conhecidos do pipeline (request + já existentes) — usado para
+        # validar os ramos da decisão e detectar ciclos incluindo as arestas
+        # do branch.
+        req_names = {(j.get("job_name") or "").strip() for j in jobs
+                     if (j.get("job_name") or "").strip()}
+        db_names: set[str] = set()
+        try:
+            cur.execute("SELECT job_name FROM dbo.etl_pipeline_job WHERE pipeline_name=?",
+                        (pipeline_name,))
+            db_names = {r[0] for r in cur.fetchall()}
+        except Exception:
+            db_names = set()
+        known_jobs = req_names | db_names
+        # Arestas para o detector de ciclo (apenas nós presentes no request).
+        cycle_adj: dict[str, set[str]] = {n: set() for n in req_names}
+
         for idx, job in enumerate(jobs):
+            cond_json_str = None     # preenchido só p/ jobs de decisão (persiste depois)
             j_name      = (job.get("job_name") or "").strip()
             j_order     = job.get("execution_order")
             j_type      = (job.get("job_type") or "datastage").lower().strip()
@@ -226,14 +342,34 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                 erros.append(f"Item {idx} ({j_name}): nome de job inválido — use apenas letras, números, _ . - e espaço"); continue
             if j_type not in VALID_JOB_TYPES:
                 erros.append(f"Item {idx} ({j_name}): job_type '{j_type}' inválido"); continue
-            if not origens and not transfs and require_lineage:
+            # Nó de Decisão é roteador: não tem lineage (origem/destino).
+            is_decisao = (j_type == "decisao")
+            if not origens and not transfs and require_lineage and not is_decisao:
                 erros.append(f"Item {idx} ({j_name}): ao menos 1 origem é obrigatória"); continue
-            if not destinos and not transfs and require_lineage:
+            if not destinos and not transfs and require_lineage and not is_decisao:
                 erros.append(f"Item {idx} ({j_name}): ao menos 1 destino é obrigatório"); continue
             if j_mssql_cid and mssql_conn_ids is not None and j_mssql_cid not in mssql_conn_ids:
                 erros.append(f"Item {idx} ({j_name}): conexão MSSQL '{j_mssql_cid}' não encontrada no Airflow"); continue
             if j_mssql_db and not _DB_NAME_RE.match(j_mssql_db):
                 erros.append(f"Item {idx} ({j_name}): nome de banco '{j_mssql_db}' inválido"); continue
+
+            # Decisão: valida a condição e registra as arestas do branch p/ ciclo.
+            if is_decisao:
+                raw_cond = job.get("condition")
+                if not isinstance(raw_cond, dict):
+                    rc = job.get("condition_json")
+                    try:
+                        raw_cond = json.loads(rc) if rc else None
+                    except (ValueError, TypeError):
+                        raw_cond = None
+                cond_errs = _validate_condition(raw_cond, known_jobs, j_name, mssql_conn_ids)
+                if cond_errs:
+                    erros.extend(f"Item {idx} ({j_name}): {e}" for e in cond_errs); continue
+                cond_json_str = json.dumps(raw_cond, ensure_ascii=False)
+                for m in (raw_cond.get("ramo_verdadeiro") or []) + (raw_cond.get("ramo_falso") or []):
+                    mn = str(m).strip()
+                    if j_name in cycle_adj and mn in cycle_adj:
+                        cycle_adj[j_name].add(mn)   # decisão → membro do ramo
 
             params_validos = []
             if j_type == "storedproc" and j_params:
@@ -274,12 +410,17 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                         (pipeline_name, j_name, p_name, p_type, p_value, p_order),
                     )
                 # Dependência por job (opt-in) — grava CSV dos predecessores.
+                _dep = job.get("depends_on_jobs")
+                if isinstance(_dep, list):
+                    _dep_list = [str(d).strip() for d in _dep if str(d).strip()]
+                else:
+                    _dep_list = [d.strip() for d in str(_dep or "").split(",") if d.strip()]
+                _dep_str = ",".join(_dep_list)
+                # Arestas predecessor → job para o detector de ciclo.
+                for d in _dep_list:
+                    if d in cycle_adj and j_name in cycle_adj:
+                        cycle_adj[d].add(j_name)
                 if _has_dep_col:
-                    _dep = job.get("depends_on_jobs")
-                    if isinstance(_dep, list):
-                        _dep_str = ",".join(str(d).strip() for d in _dep if str(d).strip())
-                    else:
-                        _dep_str = (str(_dep).strip() if _dep else "")
                     cur.execute(
                         "UPDATE dbo.etl_pipeline_job SET depends_on_jobs=? "
                         "WHERE pipeline_name=? AND job_name=?",
@@ -290,6 +431,12 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                         "UPDATE dbo.etl_pipeline_job SET mssql_database=? "
                         "WHERE pipeline_name=? AND job_name=?",
                         ((j_mssql_db if j_type == "storedproc" else None), pipeline_name, j_name))
+                # Condição do nó de decisão (opt-in) — NULL para os demais tipos.
+                if _has_cond_col:
+                    cur.execute(
+                        "UPDATE dbo.etl_pipeline_job SET condition_json=? "
+                        "WHERE pipeline_name=? AND job_name=?",
+                        (cond_json_str, pipeline_name, j_name))
             except Exception as e:
                 erros.append(f"Item {idx} ({j_name}): erro ao gravar job — {e}"); continue
 
@@ -313,6 +460,11 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                         )
                     except Exception as e:
                         erros.append(f"Item {idx} ({j_name}) {direction} '{obj_name}': {e}")
+
+        # Ciclo no grafo do pipeline (deps + arestas do branch) — só faz sentido
+        # quando o request traz o conjunto de jobs (wizard envia jobs[]).
+        if not erros and jobs_raw and _graph_has_cycle(cycle_adj):
+            erros.append("ciclo detectado entre os jobs (dependências/ramos da decisão)")
 
         if erros:
             conn.rollback()
@@ -419,6 +571,19 @@ def get_pipeline_job(
             mssql_database = (mr[0] if mr else None)
         except Exception:
             mssql_database = None  # coluna pode não existir (migration 039)
+        condition = None
+        try:
+            cur.execute(
+                "SELECT condition_json FROM dbo.etl_pipeline_job "
+                "WHERE pipeline_name=? AND job_name=?", (pipeline_name, job_name))
+            cr = cur.fetchone()
+            if cr and cr[0]:
+                try:
+                    condition = json.loads(cr[0])
+                except (ValueError, TypeError):
+                    condition = None
+        except Exception:
+            condition = None  # coluna pode não existir (migration 043)
         cur.close(); conn.close()
         return {
             "pipeline_name": row[0], "job_name": row[1], "execution_order": row[2],
@@ -427,6 +592,7 @@ def get_pipeline_job(
             "mssql_conn_id": row[8] or None, "params": params,
             "depends_on_jobs": depends_on_jobs,
             "mssql_database": mssql_database,
+            "condition": condition,
         }
     except HTTPException:
         raise
