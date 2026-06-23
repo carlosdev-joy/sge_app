@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useAuthStore } from '../../../store/auth'
 import { useAppVersion } from '../../../lib/version'
+import { canUseShellV2, setShellPref, useShellVariant } from '../../../lib/shell'
 import { LogOut, Shield, Mail, Hash, Building2, ChevronDown } from 'lucide-react'
 import { ChangelogModal } from './ChangelogModal'
 
@@ -23,6 +24,7 @@ function ProfileRow({ icon, label, value }: { icon: React.ReactNode; label: stri
 export function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
   const { user } = useAuthStore()
   const appVersion = useAppVersion()
+  const shellVariant = useShellVariant()
   const [open, setOpen]           = useState(false)
   const [showChangelog, setShowChangelog] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -94,6 +96,27 @@ export function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
                 <ProfileRow icon={<Building2 size={11} />} label="Área" value={user.area} />
               )}
             </div>
+
+            {/* Alternador de interface (só para o grupo beta) */}
+            {canUseShellV2(user) && (
+              <div className="px-4 py-3 border-t border-white/10 flex items-center justify-between gap-2">
+                <span className="text-[11px] text-white/60">Interface</span>
+                <div className="flex items-center gap-0.5 rounded-lg bg-white/10 p-0.5">
+                  {(['classic', 'v2'] as const).map((v) => (
+                    <button
+                      key={v}
+                      onClick={() => setShellPref(v)}
+                      className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors ${
+                        shellVariant === v ? 'bg-white text-[#0F4C88]' : 'text-white/70 hover:text-white'
+                      }`}
+                      title={v === 'classic' ? 'Interface clássica' : 'Nova interface (beta)'}
+                    >
+                      {v === 'classic' ? 'Clássica' : 'Nova'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Footer: versão clicável + sair */}
             <div className="px-4 py-2.5 border-t border-white/10 flex items-center justify-between">
