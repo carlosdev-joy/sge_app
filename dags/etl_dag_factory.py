@@ -178,7 +178,13 @@ def _varname(job_name: str) -> str:
     return _re.sub(r"[^A-Za-z0-9_]", "_", job_name)
 
 
-def _task_block(job, project, pipeline):
+def _alias(job) -> str:
+    """Tipo de job normalizado (aplica _TYPE_ALIAS, lower, strip)."""
+    raw = job["job_type"].lower().strip()
+    return _TYPE_ALIAS.get(raw, raw)
+
+
+def _task_block(job, project, pipeline, branch_reachable=False):
     name  = job["job_name"]
     vname = _varname(name)   # identificador Python seguro
     jtype = _TYPE_ALIAS.get(job["job_type"].lower().strip(), job["job_type"].lower().strip())
@@ -278,23 +284,60 @@ def _task_block(job, project, pipeline):
             f')',
         ])
 
-    log_start = "\n".join([
+    # Jobs alcançáveis a partir de um nó de Decisão: o t_start usa
+    # NONE_FAILED_MIN_ONE_SUCCESS (não é pulado por engano numa junção entre
+    # ramos) e o t_end usa NONE_SKIPPED (propaga o skip do ramo não escolhido,
+    # mas PRESERVA o fail-fast quando o job escolhido falha de verdade).
+    start_rule = (
+        '    trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,'
+        if branch_reachable else None
+    )
+    end_rule = "TriggerRule.NONE_SKIPPED" if branch_reachable else "TriggerRule.ALL_DONE"
+    log_start = "\n".join(filter(None, [
         f't_start_{vname} = PythonOperator(',
         f'    task_id={("log_start_" + name)!r},',
         f'    python_callable=log_start,',
         f'    op_kwargs={{"job_name": {name!r}, "task_key": {name!r}}},',
+        start_rule,
         f')',
-    ])
+    ]))
     log_end = "\n".join([
         f't_end_{vname} = PythonOperator(',
         f'    task_id={("log_end_" + name)!r},',
         f'    python_callable=log_end,',
         f'    op_kwargs={{"job_name": {name!r}, "task_key": {name!r}, "upstream_task_id": {name!r}}},',
-        f'    trigger_rule=TriggerRule.ALL_DONE,',
+        f'    trigger_rule={end_rule},',
         f')',
     ])
 
     return "\n\n".join([log_start, main, log_end])
+
+
+def _decision_block(job, condition, job_names):
+    """Bloco de um nó de Decisão: BranchPythonOperator que avalia a condição
+    (via utils.conditions.eval_condition) e retorna os t_start do ramo escolhido.
+    Não tem t_start/t_end próprios (é um roteador) — fica fora de end_tasks."""
+    name  = job["job_name"]
+    vname = _varname(name)
+    ramo_v = [j for j in (condition.get("ramo_verdadeiro") or []) if j in job_names and j != name]
+    ramo_f = [j for j in (condition.get("ramo_falso") or []) if j in job_names and j != name]
+    v_ids = ["log_start_" + j for j in ramo_v]
+    f_ids = ["log_start_" + j for j in ramo_f]
+    return "\n".join([
+        f'def _decide_{vname}(**context):',
+        f'    cond = {condition!r}',
+        f'    resultado, _valor = eval_condition(cond, MSSQL_CONN_ID)',
+        f'    _ramo = "verdadeiro" if resultado else "falso"',
+        f'    _job = {name!r}',
+        f'    print("[DECISAO " + _job + "] valor=" + str(_valor) + " resultado=" + str(resultado) + " -> ramo " + _ramo)',
+        '    context["ti"].xcom_push(key="decisao", value={"valor": str(_valor), "resultado": bool(resultado), "ramo": _ramo})',
+        f'    return {v_ids!r} if resultado else {f_ids!r}',
+        f'',
+        f't_dec_{vname} = BranchPythonOperator(',
+        f'    task_id={name!r},',
+        f'    python_callable=_decide_{vname},',
+        f')',
+    ])
 
 
 def _generate_dag_source(pipeline, jobs):
@@ -342,7 +385,8 @@ def _generate_dag_source(pipeline, jobs):
     first       = _varname(job_groups[0][0]["job_name"])
     first_name  = job_groups[0][0]["job_name"]
     others      = sorted_jobs[1:]   # kept for jtypes — not used for chaining anymore
-    all_ends    = [f"t_end_{_varname(j['job_name'])}" for j in sorted_jobs]
+    # Nós de Decisão são roteadores (sem t_start/t_end) — fora de end_tasks.
+    all_ends    = [f"t_end_{_varname(j['job_name'])}" for j in sorted_jobs if _alias(j) != "decisao"]
 
     def _jtypes(jobs):
         return {_TYPE_ALIAS.get(j["job_type"].lower(), j["job_type"].lower()) for j in jobs}
@@ -354,6 +398,53 @@ def _generate_dag_source(pipeline, jobs):
     py_needed   = "python"     in job_types
     sql_needed  = "sql"        in job_types
     http_needed = "http"       in job_types
+
+    # ── Nó de Decisão (migration 043) ──────────────────────────────────────
+    # Parse das condições (degrada se condition_json ausente/invalido), mapa de
+    # arestas do branch (job → decisões que o citam num ramo) e o conjunto de
+    # jobs ALCANÇÁVEIS a jusante de qualquer decisão (recebem trigger_rule
+    # tolerante a skip). Tudo derivado da config — sem efeito quando não há
+    # decisão.
+    import json as _json
+    _job_names = {j["job_name"] for j in sorted_jobs}
+
+    def _deps_of(j):
+        raw = (j.get("depends_on_jobs") or "")
+        return [d.strip() for d in str(raw).split(",")
+                if d.strip() and d.strip() in _job_names and d.strip() != j["job_name"]]
+
+    decision_conditions = {}
+    for j in sorted_jobs:
+        if _alias(j) == "decisao":
+            raw = j.get("condition_json")
+            try:
+                decision_conditions[j["job_name"]] = _json.loads(raw) if raw else {}
+            except (ValueError, TypeError):
+                decision_conditions[j["job_name"]] = {}
+    has_decision = bool(decision_conditions)
+
+    branch_parents = defaultdict(list)   # job_name → [nome da(s) decisão(ões)]
+    ramo_members = set()
+    for dname, cond in decision_conditions.items():
+        for ramo_key in ("ramo_verdadeiro", "ramo_falso"):
+            for m in (cond.get(ramo_key) or []):
+                if m in _job_names and m != dname:
+                    ramo_members.add(m)
+                    if dname not in branch_parents[m]:
+                        branch_parents[m].append(dname)
+    # Fecho transitivo a jusante (segue depends_on_jobs a partir dos membros).
+    _children = defaultdict(set)
+    for j in sorted_jobs:
+        for d in _deps_of(j):
+            _children[d].add(j["job_name"])
+    reachable = set()
+    _stack = list(ramo_members)
+    while _stack:
+        x = _stack.pop()
+        if x in reachable:
+            continue
+        reachable.add(x)
+        _stack.extend(_children.get(x, ()))
 
     # Seção de imports
     import_lines = ["from airflow import DAG"]
@@ -369,8 +460,11 @@ def _generate_dag_source(pipeline, jobs):
     if http_needed: _ops.append("HttpCallOperator")
     if _ops:
         import_lines.append("from utils.job_operators import " + ", ".join(_ops))
+    if has_decision:
+        import_lines.append("from utils.conditions import eval_condition")
     import_lines += [
-        "from airflow.operators.python import PythonOperator, ShortCircuitOperator",
+        "from airflow.operators.python import PythonOperator, ShortCircuitOperator"
+        + (", BranchPythonOperator" if has_decision else ""),
         "from airflow.operators.empty import EmptyOperator",
         "from airflow.datasets import Dataset",
         "from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook",
@@ -740,7 +834,12 @@ def _generate_dag_source(pipeline, jobs):
             ')',
         ]))
 
-    job_blocks = [_task_block(j, project, pname) for j in sorted_jobs]
+    job_blocks = []
+    for j in sorted_jobs:
+        if _alias(j) == "decisao":
+            job_blocks.append(_decision_block(j, decision_conditions.get(j["job_name"], {}), _job_names))
+        else:
+            job_blocks.append(_task_block(j, project, pname, branch_reachable=(j["job_name"] in reachable)))
 
     # Fase 4 — check_agenda: blackout/freeze + calendário + dias úteis.
     # ShortCircuitOperator pula TODAS as tasks downstream (inclusive ALL_DONE).
@@ -752,12 +851,14 @@ def _generate_dag_source(pipeline, jobs):
     ])
 
     # Fase 4 — publica Dataset ao final (consumido por pipelines com trigger_por_dependencia)
-    publish_block = "\n".join([
+    publish_block = "\n".join(filter(None, [
         't_publish_dataset = EmptyOperator(',
         '    task_id="publish_dataset",',
         '    outlets=[Dataset(DATASET_URI)],',
+        # Convergência final: tolera ramos pulados (≥1 t_end com sucesso).
+        ('    trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,' if has_decision else None),
         ')',
-    ])
+    ]))
 
     # S4: ExternalTaskSensor — suporte a múltiplas dependências
     dep_list = [d.strip() for d in depends_on.split(",") if d.strip()] if depends_on else []
@@ -795,17 +896,11 @@ def _generate_dag_source(pipeline, jobs):
         sensors_ref = "[" + ", ".join(sensor_names) + "]"
         dep_lines.append(f"t_check_agenda >> {sensors_ref}")
 
-    # Modo de dependência: EXPLÍCITO (algum job tem depends_on_jobs) ou ONDAS
-    # (execution_order). Opt-in por pipeline — pipelines sem deps explícitas
-    # continuam exatamente como antes.
-    _job_names = {j["job_name"] for j in sorted_jobs}
-
-    def _deps_of(j):
-        raw = (j.get("depends_on_jobs") or "")
-        return [d.strip() for d in str(raw).split(",")
-                if d.strip() and d.strip() in _job_names and d.strip() != j["job_name"]]
-
-    explicit_deps = any(_deps_of(j) for j in sorted_jobs)
+    # Modo de dependência: EXPLÍCITO (algum job tem depends_on_jobs OU há um nó
+    # de Decisão) ou ONDAS (execution_order). Opt-in por pipeline — pipelines
+    # sem deps explícitas/decisão continuam exatamente como antes.
+    # (_job_names/_deps_of já definidos acima, junto do parsing das decisões.)
+    explicit_deps = has_decision or any(_deps_of(j) for j in sorted_jobs)
 
     if explicit_deps:
         root_anchor = sensors_ref if sensor_names else "t_check_agenda"
@@ -813,13 +908,23 @@ def _generate_dag_source(pipeline, jobs):
         for j in sorted_jobs:
             n = _varname(j["job_name"])
             deps = _deps_of(j)
-            if deps:
-                ends = [f"t_end_{_varname(d)}" for d in deps]
-                up = "[" + ", ".join(ends) + "]" if len(ends) > 1 else ends[0]
+            ends = [f"t_end_{_varname(d)}" for d in deps]
+            # Nó de Decisão: roteador (BranchPythonOperator). Liga ao upstream e
+            # as arestas Decisão → t_start dos membros saem dos próprios membros
+            # (via branch_parents), garantindo que o branch skip atue direto.
+            if _alias(j) == "decisao":
+                up = ("[" + ", ".join(ends) + "]" if len(ends) > 1 else ends[0]) if ends else root_anchor
+                dep_lines.append(f"{up} >> t_dec_{n}")
+                continue
+            parents = branch_parents.get(j["job_name"], [])
+            ups = ends + [f"t_dec_{_varname(d)}" for d in parents]
+            if ups:
+                up = "[" + ", ".join(ups) + "]" if len(ups) > 1 else ups[0]
             else:
                 up = root_anchor
-            # Notificação de início no primeiro job raiz (sem dependências)
-            if (not deps) and (not teams_start_done) and f_ini:
+            is_root = (not deps) and (not parents)
+            # Notificação de início no primeiro job raiz (sem deps/decisão)
+            if is_root and (not teams_start_done) and f_ini:
                 teams_start_done = True
                 chain = f"{up} >> t_start_{n} >> t_teams_start >> t_job_{n} >> t_end_{n}"
             else:
@@ -1043,6 +1148,21 @@ def gerar_dags(**context):
                 j["depends_on_jobs"] = _depmap.get((j["pipeline_name"], j["job_name"]))
     except Exception as _de:
         print(f"[FACTORY] depends_on_jobs supplement ignorado: {_de}")
+
+    # Supplement: condição do nó de decisão (degrada se a coluna não existir — migration 043)
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='dbo' "
+            "AND TABLE_NAME='etl_pipeline_job' AND COLUMN_NAME='condition_json'")
+        if cursor.fetchone()[0]:
+            cursor.execute(
+                "SELECT pipeline_name, job_name, condition_json FROM dbo.etl_pipeline_job "
+                "WHERE condition_json IS NOT NULL")
+            _condmap = {(r[0], r[1]): r[2] for r in cursor.fetchall()}
+            for j in jobs_all:
+                j["condition_json"] = _condmap.get((j["pipeline_name"], j["job_name"]))
+    except Exception as _ce:
+        print(f"[FACTORY] condition_json supplement ignorado: {_ce}")
 
     # Supplement: banco-alvo por job storedproc (degrada se a coluna não existir — migration 039)
     try:
