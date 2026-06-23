@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { Button } from '../components/ui/Button'
 import { Input, Select } from '../components/ui/Input'
@@ -7,8 +7,9 @@ import { Badge } from '../components/ui/Badge'
 import { toast } from '../components/ui/Toast'
 import { Tabs } from '../components/ui/Tabs'
 import { DsRunGraphModal, type DsGraphStatus, type DsGraphNode, type DsRunGraph } from '../components/console/DsRunGraphModal'
+import { DsSeqFlowGraph, type SeqFlowNode, type SeqFlowEdge } from '../components/console/DsSeqFlowGraph'
 import { dsTimeInfo, dsParseTime } from '../lib/dsTime'
-import { Terminal, Copy, Network, Crosshair, AlertTriangle, ChevronDown, ChevronUp, Layers, SlidersHorizontal, FileText, ListTree } from 'lucide-react'
+import { Terminal, Copy, Network, Crosshair, AlertTriangle, ChevronDown, ChevronUp, Layers, SlidersHorizontal, FileText, ListTree, GitBranch, RefreshCw } from 'lucide-react'
 
 // Lista de projetos usada apenas como fallback se a API não retornar projetos.
 const PROJETOS = ['BI_CVP', 'BI_VIDA', 'BI_PREVIDENCIA', 'BI_PRESTAMISTA']
@@ -347,7 +348,28 @@ function pickRunIndex(runs: DsRunGraph[], targetTime: string | null | undefined,
   return runs.length - 1
 }
 
+// Resposta do endpoint /datastage/seq-flow (fluxo real lido do export XML).
+interface SeqFlowResult {
+  sucesso: boolean
+  project: string
+  job: string
+  nodes: SeqFlowNode[]
+  edges: SeqFlowEdge[]
+  cached: boolean
+  parsed_at?: string
+  source_file?: string
+}
+
+// Formata o parsed_at (ISO) num rótulo amigável pt-BR; cai pro valor cru se não parsear.
+function fmtParsedAt(s?: string): string {
+  if (!s) return ''
+  const d = new Date(s)
+  if (isNaN(d.getTime())) return s
+  return d.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
+}
+
 export default function DsConsole() {
+  const queryClient = useQueryClient()
   const cfg = useQuery<{ configured: boolean; commands: DsCmd[] }>({
     queryKey: ['ds-console-config'],
     queryFn: () => apiFetch('/datastage/console/config'),
@@ -391,6 +413,35 @@ export default function DsConsole() {
   const jobOptions = (jobsQuery.data?.exit_code === 0)
     ? jobsQuery.data.stdout.split('\n').map(s => s.trim()).filter(Boolean)
     : []
+
+  // ── Fluxo real da Sequence (export XML) — aba "Fluxo (XML)" ────────────────
+  // Lido do XML na 1ª vez e cacheado no banco (staleTime infinito). O botão
+  // "Atualizar do XML" refaz a leitura com refresh=true via fetchQuery.
+  const [seqFlowRefreshing, setSeqFlowRefreshing] = useState(false)
+  const seqFlowQuery = useQuery<SeqFlowResult>({
+    queryKey: ['ds-seq-flow', project, job],
+    queryFn: () => apiFetch<SeqFlowResult>(
+      '/datastage/seq-flow?project=' + encodeURIComponent(project.trim()) + '&job=' + encodeURIComponent(job.trim())),
+    enabled: activeTab === 'seqflow' && !!project.trim() && !!job.trim() && configured,
+    retry: false,
+    staleTime: Infinity,
+  })
+  const refreshSeqFlow = async () => {
+    if (!project.trim() || !job.trim() || !configured) return
+    setSeqFlowRefreshing(true)
+    try {
+      await queryClient.fetchQuery<SeqFlowResult>({
+        queryKey: ['ds-seq-flow', project, job],
+        queryFn: () => apiFetch<SeqFlowResult>(
+          '/datastage/seq-flow?project=' + encodeURIComponent(project.trim()) + '&job=' + encodeURIComponent(job.trim()) + '&refresh=true'),
+        staleTime: Infinity,
+      })
+    } catch (e: any) {
+      toast.error(e?.message ?? 'Falha ao reler o XML.')
+    } finally {
+      setSeqFlowRefreshing(false)
+    }
+  }
 
   // ── Consulta única (LOTE) ─────────────────────────────────────────────────
   // O usuário executa UMA vez; disparamos em paralelo jobinfo+logsum+lstages+
@@ -951,6 +1002,7 @@ export default function DsConsole() {
     { id: 'lstages', label: 'Stages' },
     { id: 'lparams', label: 'Parâmetros' },
     { id: 'report', label: 'Relatório' },
+    { id: 'seqflow', label: 'Fluxo (XML)' },
     { id: 'logdetail', label: 'Detalhe do log' },
   ]
 
@@ -1107,7 +1159,63 @@ export default function DsConsole() {
           </>
         )}
 
-        {/* 6. Detalhe do log (logdetail) — sob demanda */}
+        {/* 6. Fluxo (XML) — dependências reais entre as atividades, lidas do export XML */}
+        {activeTab === 'seqflow' && (
+          <>
+            <div className="flex items-start gap-3 p-4 rounded-lg bg-blue-50 border border-blue-200 dark:bg-blue-900/20 dark:border-blue-800">
+              <GitBranch size={16} className="text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
+              <div className="text-sm text-blue-800 dark:text-blue-300">
+                Dependências reais entre atividades (do export XML), idêntico ao desenho da sequence no DataStage. Lido do XML na 1ª vez e cacheado.
+              </div>
+            </div>
+
+            {(!project.trim() || !job.trim()) ? (
+              <p className="text-xs text-dim">Selecione projeto e job.</p>
+            ) : !configured ? (
+              emptyHint
+            ) : seqFlowQuery.isError ? (
+              <div className="flex items-start gap-3 p-4 rounded-lg bg-amber-50 border border-amber-200 dark:bg-yellow-900/20 dark:border-yellow-700">
+                <AlertTriangle size={16} className="text-amber-600 dark:text-yellow-400 mt-0.5 shrink-0" />
+                <div className="flex flex-col gap-2 text-sm text-amber-800 dark:text-yellow-300">
+                  <p>
+                    Não foi possível obter o fluxo: {(seqFlowQuery.error as Error)?.message}. Verifique se o XML do projeto está importado e se o job é uma Sequence.
+                  </p>
+                  <div>
+                    <Button size="sm" variant="secondary" loading={seqFlowRefreshing} onClick={refreshSeqFlow}>
+                      <RefreshCw size={14} className="mr-1" /> Atualizar do XML
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ) : seqFlowQuery.isLoading || seqFlowRefreshing ? (
+              <p className="text-xs text-dim">Lendo o fluxo da sequence…</p>
+            ) : seqFlowQuery.data ? (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button size="sm" variant="secondary" loading={seqFlowRefreshing} onClick={refreshSeqFlow}
+                    title="Relê o fluxo direto do export XML (ignora o cache)">
+                    <RefreshCw size={14} className="mr-1" /> Atualizar do XML
+                  </Button>
+                  <span className="text-xs text-dim">
+                    {seqFlowQuery.data.cached ? 'Do cache' : 'Lido do XML agora'}
+                    {seqFlowQuery.data.parsed_at && <> · {fmtParsedAt(seqFlowQuery.data.parsed_at)}</>}
+                    {seqFlowQuery.data.source_file && <> · <span className="font-mono break-all">{seqFlowQuery.data.source_file}</span></>}
+                  </span>
+                  <span className="ml-auto text-xs text-dim">
+                    {seqFlowQuery.data.nodes.length} atividade(s) · {seqFlowQuery.data.edges.length} dependência(s)
+                  </span>
+                </div>
+                {seqFlowQuery.data.nodes.length > 0 ? (
+                  <DsSeqFlowGraph nodes={seqFlowQuery.data.nodes} edges={seqFlowQuery.data.edges} />
+                ) : (
+                  <p className="text-xs text-dim">Nenhuma atividade encontrada no fluxo desta sequence.</p>
+                )}
+              </>
+            ) : null}
+          </>
+        )}
+
+        {/* 7. Detalhe do log (logdetail) — sob demanda */}
         {activeTab === 'logdetail' && (
           <>
             <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-wrap gap-3 items-end">
