@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../../store/auth'
 import { apiFetch } from '../../lib/api'
-import { NAV } from '../../lib/nav'
+import { useVisibleNav } from '../../lib/nav'
 import { getTheme, toggleTheme } from '../../lib/theme'
 import { useAppVersion } from '../../lib/version'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -491,12 +491,11 @@ function NotificationsBell() {
 // ── Header ─────────────────────────────────────────────────────────────────
 
 export function Header() {
-  const { logout, user } = useAuthStore()
+  const { logout } = useAuthStore()
   const appVersion = useAppVersion()
   const [theme, setTheme] = useState(getTheme())
   const [cmdOpen, setCmdOpen] = useState(false)
-  const perms = user?.permissoes ?? []
-  const canSee = (n: typeof NAV[number]) => !n.perm || perms.length === 0 || perms.includes(n.perm)
+  const { visible } = useVisibleNav()
 
   // Global Ctrl+K / Cmd+K listener
   useEffect(() => {
@@ -548,8 +547,7 @@ export function Header() {
 
         {/* Nav */}
         <nav className="flex items-center gap-0.5 flex-1 overflow-x-auto ml-2">
-          {NAV.map((n) => {
-            if (!canSee(n)) return null
+          {visible.map((n) => {
             const Icon = n.icon
             const content = (<><Icon size={13} /><span>{n.label}</span></>)
             return n.migrated ? (
