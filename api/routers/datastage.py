@@ -16,6 +16,7 @@ from deps import (
 from services.ssh_datastage import (
     DSJOB_COMMANDS, DsConsoleError, run_dsjob, ssh_configured,
 )
+from services.ds_seq_flow import parse_seq_flow
 
 log = logging.getLogger("orquestra-api")
 
@@ -198,6 +199,71 @@ async def datastage_console_exec(body: dict = Body(...), user: dict = Depends(re
         user.get("matricula"), command, project, job, result.get("exit_code"),
     )
     return {"command": command, "project": project, "job": job, **result}
+
+
+@router.get("/datastage/seq-flow")
+async def datastage_seq_flow(
+    project: str = Query(...),
+    job: str = Query(...),
+    refresh: bool = Query(False),
+    user: dict = Depends(require_ds_console),
+):
+    """
+    Fluxo (DAG de dependências) de uma Sequence, extraído do export XML.
+
+    Cacheia em dbo.etl_ds_seq_flow: na 1a vez (ou com refresh=true) parseia o XML
+    e grava; senão lê do banco. Degrada se a tabela não existir (parseia direto).
+    """
+    project = (project or "").strip()
+    job = (job or "").strip()
+    if not project or not job:
+        raise HTTPException(status_code=422, detail="project e job são obrigatórios")
+
+    # 1) tenta cache (se não for refresh)
+    if not refresh:
+        try:
+            conn = get_db_conn(); cur = conn.cursor()
+            cur.execute(
+                "SELECT flow_json, parsed_at, source_file FROM dbo.etl_ds_seq_flow "
+                "WHERE project = ? AND job = ?", [project, job])
+            row = cur.fetchone()
+            cur.close(); conn.close()
+            if row:
+                data = _json.loads(row[0])
+                data["cached"] = True
+                data["parsed_at"] = row[1].isoformat() if hasattr(row[1], "isoformat") else str(row[1])
+                data["source_file"] = row[2]
+                return data
+        except Exception:
+            log.warning("Cache etl_ds_seq_flow indisponível — parseando o XML direto")
+
+    # 2) parseia o XML
+    parsed = parse_seq_flow(project, job)
+    if "erro" in parsed:
+        raise HTTPException(status_code=404, detail=parsed["erro"])
+
+    # 3) grava no cache (best-effort)
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "MERGE dbo.etl_ds_seq_flow AS t "
+            "USING (SELECT ? AS project, ? AS job) AS s "
+            "ON t.project = s.project AND t.job = s.job "
+            "WHEN MATCHED THEN UPDATE SET flow_json=?, nodes_count=?, edges_count=?, "
+            "  source_file=?, parsed_by=?, parsed_at=SYSUTCDATETIME() "
+            "WHEN NOT MATCHED THEN INSERT (project, job, flow_json, nodes_count, edges_count, source_file, parsed_by) "
+            "  VALUES (?,?,?,?,?,?,?);",
+            [project, job,
+             _json.dumps(parsed), len(parsed.get("nodes", [])), len(parsed.get("edges", [])),
+             parsed.get("source_file"), user.get("matricula"),
+             project, job, _json.dumps(parsed), len(parsed.get("nodes", [])),
+             len(parsed.get("edges", [])), parsed.get("source_file"), user.get("matricula")])
+        conn.commit(); cur.close(); conn.close()
+    except Exception:
+        log.warning("Não foi possível gravar o cache de etl_ds_seq_flow (segue sem cache)")
+
+    parsed["cached"] = False
+    return parsed
 
 
 @router.get("/datastage/status")
