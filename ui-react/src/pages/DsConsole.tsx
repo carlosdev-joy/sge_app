@@ -348,6 +348,15 @@ function pickRunIndex(runs: DsRunGraph[], targetTime: string | null | undefined,
   return runs.length - 1
 }
 
+// Executor genérico via invocation id: "SeqExecJob.SeqSsdVida2BaixaDados" roda o
+// job real "SeqSsdVida2BaixaDados". O log do wrapper não tem filhos; para descer
+// mais um nível, o drill usa o nome REAL (após o ponto) quando o prefixo é um
+// executor (contém "Exec"). Demais nomes ficam inalterados.
+function dsRealJob(job: string): string {
+  const m = job.match(/^[A-Za-z0-9_]*Exec[A-Za-z0-9_]*\.(.+)$/)
+  return m ? m[1] : job
+}
+
 // Resposta do endpoint /datastage/seq-flow (fluxo real lido do export XML).
 interface SeqFlowResult {
   sucesso: boolean
@@ -521,9 +530,10 @@ export default function DsConsole() {
   // Atualiza apenas o logsum em foco do diagrama, sem refazer o lote inteiro.
   const runFor = (cmd: string, jobName: string, extra?: { max_lines?: number; event_id?: number }) => {
     if (!project.trim() || !configured) return
-    setJob(jobName)
+    const target = cmd === 'logsum' ? dsRealJob(jobName) : jobName
+    setJob(target)
     if (extra?.event_id != null) setEventId(String(extra.event_id))
-    exec.mutate({ command: cmd, project: project.trim(), job: jobName, ...extra })
+    exec.mutate({ command: cmd, project: project.trim(), job: target, ...extra })
   }
 
   // Auto-trace ("Causa-raiz"): a partir de initialPath, desce sozinho pela cadeia
@@ -546,7 +556,7 @@ export default function DsConsole() {
         setGraphPath([...path]); setGraphTargetTime(path[path.length - 1].targetTime)
         const ab = run?.children.find(c => c.status === 'aborted')
         if (!ab) { toast.info(`Causa-raiz: ${cjob} — veja o erro no card "Erros e avisos"`); break }
-        cjob = ab.job; ctt = ab.start ?? null
+        cjob = dsRealJob(ab.job); ctt = ab.start ?? null
         path.push({ job: cjob, targetTime: ctt })
         setGraphPath([...path]); setGraphTargetTime(ctt)
       }
@@ -681,7 +691,7 @@ export default function DsConsole() {
         <span className="text-dim shrink-0 hidden sm:inline">{e.time}</span>
         <span className="text-ink break-all">{e.message.slice(0, 240)}</span>
         {child && child !== rootJob && (
-          <button onClick={() => { setShowGraph(true); setGraphTargetTime(null); setGraphPath([{ job: rootJob, targetTime: null }]); runFor('logsum', child) }}
+          <button onClick={() => { setShowGraph(true); setGraphTargetTime(null); setGraphPath([{ job: rootJob, targetTime: null }, { job: dsRealJob(child), targetTime: null }]); runFor('logsum', child) }}
             title={`Abrir o log de ${child} no diagrama — drill-down até o erro real`}
             className="inline-flex items-center gap-0.5 font-mono text-[11px] px-1.5 py-0.5 rounded bg-edge/50 text-ink hover:bg-[#1A5FA8] hover:text-white transition-colors shrink-0">
             → {child}
@@ -851,7 +861,7 @@ export default function DsConsole() {
               {open && r.children.length > 0 && (
                 <div className="flex flex-wrap gap-x-3 gap-y-1.5 px-3 pb-3 pt-0.5 border-t border-edge/60">
                   {r.children.map((c, j) => (
-                    <button key={j} onClick={() => { setShowGraph(true); setGraphTargetTime(null); setGraphPath([{ job: rootJob, targetTime: null }]); runFor('logsum', c.fullJob) }}
+                    <button key={j} onClick={() => { setShowGraph(true); setGraphTargetTime(null); setGraphPath([{ job: rootJob, targetTime: null }, { job: dsRealJob(c.fullJob), targetTime: null }]); runFor('logsum', c.fullJob) }}
                       title={`Ver o log de ${c.fullJob} no diagrama`}
                       className="inline-flex items-center gap-1.5 hover:opacity-80 transition-opacity">
                       <span className="font-mono text-[11px] text-ink break-all underline decoration-dotted decoration-edge underline-offset-2">{c.job}</span>
@@ -1259,9 +1269,10 @@ export default function DsConsole() {
             runFor('logsum', target.job)
           }}
           onDrill={(job, targetTime) => {
+            const real = dsRealJob(job)
             setGraphTargetTime(targetTime ?? null)
-            setGraphPath(p => [...p, { job, targetTime: targetTime ?? null }])
-            runFor('logsum', job)
+            setGraphPath(p => [...p, { job: real, targetTime: targetTime ?? null }])
+            runFor('logsum', real)
           }}
         />
       )}
