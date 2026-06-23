@@ -1,17 +1,10 @@
-import { Outlet } from 'react-router-dom'
-import { Header } from './Header'
-import { ToastContainer } from '../ui/Toast'
+import { useShellVariant } from '../../lib/shell'
+import { ClassicAppShell } from './ClassicAppShell'
+import { AppShellV2 } from './AppShellV2'
 
+// Bifurcação clássico vs v2 (beta). A escolha vem da flag `orquestra_shell`
+// gateada por RBAC em `useShellVariant`; App.tsx segue montando só <AppShell/>,
+// então a troca é transparente para as rotas.
 export function AppShell() {
-  return (
-    <div className="flex flex-col h-screen bg-canvas overflow-hidden">
-      <Header />
-      <main className="flex-1 overflow-y-auto">
-        <div className="p-6 max-w-[1600px] mx-auto">
-          <Outlet />
-        </div>
-      </main>
-      <ToastContainer />
-    </div>
-  )
+  return useShellVariant() === 'v2' ? <AppShellV2 /> : <ClassicAppShell />
 }
