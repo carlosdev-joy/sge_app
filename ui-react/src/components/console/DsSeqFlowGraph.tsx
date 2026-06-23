@@ -4,6 +4,8 @@ import {
   type Node, type Edge, type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
+import { Copy } from 'lucide-react'
+import { toast } from '../ui/Toast'
 
 // Diagrama do fluxo REAL de uma Sequence, lido do export XML do DataStage.
 // Mostra as atividades (nós) e as dependências/condições (arestas) — idêntico
@@ -29,8 +31,15 @@ function FlowNode({ data }: NodeProps) {
   const d = data as unknown as FlowNodeData
   const showJob = d.jobname && d.jobname !== d.name
   return (
-    <div className={`bg-panel border rounded-lg px-3 py-2 shadow-sm min-w-[150px] max-w-[240px] ${typeAccent(d.type)}`}>
+    <div className={`relative bg-panel border rounded-lg px-3 py-2 pr-7 shadow-sm min-w-[150px] max-w-[240px] ${typeAccent(d.type)}`}>
       <Handle type="target" position={Position.Left} className="!bg-edge !border-edge" />
+      <button
+        onMouseDown={e => e.stopPropagation()}
+        onClick={e => { e.stopPropagation(); navigator.clipboard?.writeText(d.jobname || d.name).then(() => toast.info('Nome copiado'), () => toast.error('Erro ao copiar')) }}
+        title="Copiar nome do job"
+        className="absolute top-1 right-1 text-dim hover:text-ink opacity-60 hover:opacity-100 nodrag">
+        <Copy size={11} />
+      </button>
       <div className="font-mono text-[11px] text-ink break-all leading-tight">{d.name}</div>
       <div className="text-[10px] text-dim mt-0.5">{d.type}</div>
       {showJob && <div className="font-mono text-[10px] text-dim break-all mt-0.5">→ {d.jobname}</div>}
