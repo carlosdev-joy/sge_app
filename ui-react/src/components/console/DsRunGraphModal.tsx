@@ -7,7 +7,8 @@ import '@xyflow/react/dist/style.css'
 import { Modal } from '../ui/Modal'
 import { Select } from '../ui/Input'
 import { dsParseTime, dsFmtDuration } from '../../lib/dsTime'
-import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, Clock, HelpCircle, ArrowRight, ArrowDown, ArrowLeft, ChevronRight, Loader2, Timer, Crosshair } from 'lucide-react'
+import { CheckCircle2, XCircle, AlertTriangle, RotateCcw, Clock, HelpCircle, ArrowRight, ArrowDown, ArrowLeft, ChevronRight, Loader2, Timer, Crosshair, Copy } from 'lucide-react'
+import { toast } from '../ui/Toast'
 
 // Diagrama do run de uma sequence (estilo CTRL-M): a sequence + seus filhos diretos,
 // com o status real daquele run. Clicar num filho faz o drill-down (abre o log dele).
@@ -165,6 +166,18 @@ export function DsRunGraphModal({
   return (
     <Modal open={open} onClose={onClose} title={`Diagrama do run — ${rootJob}`} size="2xl">
       <div className="flex flex-col gap-3">
+        {/* job atual + copiar */}
+        <div className="flex items-center gap-2 text-xs flex-wrap">
+          <span className="text-dim">Job:</span>
+          <code className="font-mono text-ink break-all">{rootJob}</code>
+          <button
+            onClick={() => navigator.clipboard?.writeText(rootJob).then(
+              () => toast.info('Nome do job copiado'), () => toast.error('Erro ao copiar'))}
+            title="Copiar o nome do job"
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-edge bg-panel text-dim hover:text-ink hover:bg-edge/40">
+            <Copy size={12} /> copiar
+          </button>
+        </div>
         {/* breadcrumb / voltar */}
         {canBack && (
           <div className="flex items-center gap-2 flex-wrap text-xs">
