@@ -490,7 +490,7 @@ function NotificationsBell() {
 
 // ── Header ─────────────────────────────────────────────────────────────────
 
-export function Header() {
+export function Header({ hideNav = false }: { hideNav?: boolean } = {}) {
   const { logout } = useAuthStore()
   const appVersion = useAppVersion()
   const [theme, setTheme] = useState(getTheme())
@@ -545,7 +545,10 @@ export function Header() {
           </Logo>
         </a>
 
-        {/* Nav */}
+        {/* Nav — oculta no shell v2 (a navegação vive na sidebar) */}
+        {hideNav ? (
+          <div className="flex-1" />
+        ) : (
         <nav className="flex items-center gap-0.5 flex-1 overflow-x-auto ml-2">
           {visible.map((n) => {
             const Icon = n.icon
@@ -561,6 +564,7 @@ export function Header() {
             )
           })}
         </nav>
+        )}
 
         {/* Direita: ⌘K + tema + avatar */}
         <div className="flex items-center gap-2 shrink-0">
