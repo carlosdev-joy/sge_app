@@ -8,7 +8,7 @@ import { toast } from '../components/ui/Toast'
 import { Tabs } from '../components/ui/Tabs'
 import { DsRunGraphModal, type DsGraphStatus, type DsGraphNode, type DsRunGraph } from '../components/console/DsRunGraphModal'
 import { dsTimeInfo, dsParseTime } from '../lib/dsTime'
-import { Terminal, Copy, Network, Crosshair, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react'
+import { Terminal, Copy, Network, Crosshair, AlertTriangle, ChevronDown, ChevronUp, Layers, SlidersHorizontal, FileText, ListTree } from 'lucide-react'
 
 // Lista de projetos usada apenas como fallback se a API não retornar projetos.
 const PROJETOS = ['BI_CVP', 'BI_VIDA', 'BI_PREVIDENCIA', 'BI_PRESTAMISTA']
@@ -253,6 +253,57 @@ function parseLogdetail(stdout: string): DsLogDetail[] {
   return events
 }
 
+// Parser do `dsjob -report`: extrai os campos "Chave: valor" / "Chave=valor" da
+// saída de STATUS REPORT, ignorando os separadores de asteriscos.
+function parseReport(stdout: string): { fields: { label: string; value: string }[]; statusCode: number | null } {
+  const fields: { label: string; value: string }[] = []
+  let statusCode: number | null = null
+  for (const raw of stdout.split('\n')) {
+    const line = raw.trim()
+    if (!line || /^\*+$/.test(line)) continue
+    const sc = line.match(/^Status code\s*=\s*(-?\d+)/i)
+    if (sc) { statusCode = Number(sc[1]); continue }
+    // Aceita "Chave: valor" ou "Chave=valor" (campo Job status traz "=").
+    const m = line.match(/^([^:=]+?)\s*[:=]\s*(.+)$/)
+    if (m) { fields.push({ label: m[1].trim(), value: m[2].trim() }); continue }
+    // Linhas sem separador (ex.: "Job has no stages.") viram nota sem rótulo.
+    fields.push({ label: '', value: line })
+  }
+  return { fields, statusCode }
+}
+
+// Variante de Badge para o status do report ("Job status=0 (No error)" / code).
+function dsReportStatusVariant(value: string, code: number | null): string {
+  if (code === 0 || /no error/i.test(value)) return 'success'
+  if (/warning/i.test(value)) return 'warning'
+  if (/error|abort|fail|crash/i.test(value)) return 'error'
+  if (code != null && code !== 0) return 'error'
+  return 'neutral'
+}
+
+// Parser do `dsjob -lparams`: agrupa a lista achatada por conjunto de parâmetros
+// (prefixo antes do primeiro ponto). Linhas sem ponto são o nome do conjunto.
+function parseLparams(stdout: string): { name: string; params: string[] }[] {
+  const groups = new Map<string, string[]>()
+  const order: string[] = []
+  const ensure = (name: string) => {
+    if (!groups.has(name)) { groups.set(name, []); order.push(name) }
+    return groups.get(name)!
+  }
+  for (const raw of stdout.split('\n')) {
+    const line = raw.trim()
+    if (!line) continue
+    if (/^Status code\s*=/i.test(line)) continue
+    const dot = line.indexOf('.')
+    if (dot === -1) { ensure(line); continue }
+    const set = line.slice(0, dot)
+    const param = line.slice(dot + 1)
+    if (param) ensure(set).push(param)
+    else ensure(set)
+  }
+  return order.map(name => ({ name, params: groups.get(name)! }))
+}
+
 // Monta os runs do diagrama a partir do stdout do logsum (função pura, reusável
 // pelo auto-trace). Junta filhos diretos + jobs vindos de activity de erro.
 function buildGraphRuns(stdout: string, rootJob: string): DsRunGraph[] {
@@ -306,7 +357,7 @@ export default function DsConsole() {
     queryFn: () => apiFetch('/pipelines/projects/all'),
   })
 
-  // Aba ativa (cada aba = um comando dsjob; "geral" = jobinfo + logsum juntos).
+  // Aba ativa (cada aba é uma VISÃO do lote único de comandos sobre o mesmo job).
   const [activeTab, setActiveTab] = useState('geral')
 
   // Inputs compartilhados entre abas (projeto + job) — persistem ao trocar de aba.
@@ -321,6 +372,8 @@ export default function DsConsole() {
   const [tracing, setTracing] = useState(false)
   // Grupos de erro expandidos no card "Erros e avisos por run" (índice do grupo).
   const [openErrGroups, setOpenErrGroups] = useState<Set<number>>(new Set([0]))
+  // Runs expandidos no resumo (índice do run; só o mais novo começa aberto).
+  const [openRuns, setOpenRuns] = useState<Set<number>>(new Set([0]))
 
   const configured = cfg.data?.configured ?? false
 
@@ -339,63 +392,82 @@ export default function DsConsole() {
     ? jobsQuery.data.stdout.split('\n').map(s => s.trim()).filter(Boolean)
     : []
 
-  // Mutation de comando único (usado pelas abas que não são "Visão geral" e pelos
-  // drills/cliques que substituem o resultado em foco).
+  // ── Consulta única (LOTE) ─────────────────────────────────────────────────
+  // O usuário executa UMA vez; disparamos em paralelo jobinfo+logsum+lstages+
+  // lparams+report sobre o mesmo project+job. Cada resultado popula `batch`.
+  // logdetail NÃO entra no lote — é sob demanda na aba "Detalhe do log".
+  type BatchKey = 'jobinfo' | 'logsum' | 'lstages' | 'lparams' | 'report'
+  type Batch = Partial<Record<BatchKey, DsConsoleResult>>
+  const [batch, setBatch] = useState<Batch>({})
+  const [batchJob, setBatchJob] = useState<{ project: string; job: string } | null>(null)
+  const [batchLoading, setBatchLoading] = useState(false)
+
+  // Chamada bruta ao endpoint (reusada pelo lote e por cliques pontuais).
+  const callConsole = (vars: { command: string; project: string; job?: string; max_lines?: number; event_id?: number }) =>
+    apiFetch<DsConsoleResult>('/datastage/console', { method: 'POST', body: JSON.stringify(vars) })
+
+  // Mutation de comando único (usada pelo logdetail sob demanda e pelos drills
+  // de logsum no diagrama / cliques que reapontam o logsum em foco).
   const exec = useMutation<DsConsoleResult, Error, { command: string; project: string; job?: string; max_lines?: number; event_id?: number }>({
-    mutationFn: (vars) => apiFetch<DsConsoleResult>('/datastage/console', {
-      method: 'POST',
-      body: JSON.stringify(vars),
-    }),
+    mutationFn: callConsole,
     onError: (e: any) => toast.error(e.message),
   })
 
-  // Resultado do jobinfo na "Visão geral" (mantido separado do logsum para exibir os dois juntos).
-  // O logsum cai no `exec.data` (alimenta diagrama, erros, resumo de runs); o jobinfo fica aqui.
-  const [overviewJobinfo, setOverviewJobinfo] = useState<DsConsoleResult | null>(null)
-  const overviewExec = useMutation<DsConsoleResult, Error, { project: string; job: string }>({
-    mutationFn: (vars) => apiFetch<DsConsoleResult>('/datastage/console', {
-      method: 'POST',
-      body: JSON.stringify({ command: 'jobinfo', project: vars.project, job: vars.job }),
-    }),
-    onSuccess: (jobinfo, vars) => {
-      setOverviewJobinfo(jobinfo)
-      // dispara o logsum em sequência — ele vira o "result" em foco.
-      exec.mutate({ command: 'logsum', project: vars.project, job: vars.job, max_lines: Number(maxLines) || 200 })
-    },
-    onError: (e: any) => toast.error(e.message),
-  })
-
-  const isLogdetail = activeTab === 'logdetail'
-  // "Visão geral" roda logsum por baixo, então oferece o controle de máx. linhas.
-  const hasMax = activeTab === 'geral'
-  // Cada aba mapeia para um comando dsjob (a "Visão geral" combina jobinfo + logsum).
-  const tabNeedsJob = activeTab !== 'ljobs'
-  const tabCommand: Record<string, string> = {
-    logdetail: 'logdetail', lstages: 'lstages', lparams: 'lparams', report: 'report', ljobs: 'ljobs',
+  // Dispara o lote sobre project+job. Promise.allSettled: cada comando popula o
+  // estado conforme responde, sem que a falha de um derrube os outros.
+  const runBatch = async (proj: string, jobName: string) => {
+    setBatchLoading(true)
+    setBatch({})
+    setBatchJob({ project: proj, job: jobName })
+    const ml = Number(maxLines) || 200
+    const cmds: { key: BatchKey; vars: { command: string; project: string; job: string; max_lines?: number } }[] = [
+      { key: 'jobinfo', vars: { command: 'jobinfo', project: proj, job: jobName } },
+      { key: 'logsum', vars: { command: 'logsum', project: proj, job: jobName, max_lines: ml } },
+      { key: 'lstages', vars: { command: 'lstages', project: proj, job: jobName } },
+      { key: 'lparams', vars: { command: 'lparams', project: proj, job: jobName } },
+      { key: 'report', vars: { command: 'report', project: proj, job: jobName } },
+    ]
+    const settled = await Promise.allSettled(
+      cmds.map(async c => {
+        const res = await callConsole(c.vars)
+        setBatch(prev => ({ ...prev, [c.key]: res }))
+        return res
+      }),
+    )
+    if (settled.every(s => s.status === 'rejected')) {
+      const first = settled.find(s => s.status === 'rejected') as PromiseRejectedResult | undefined
+      toast.error(first?.reason?.message ?? 'Falha ao consultar o DataStage.')
+    }
+    setBatchLoading(false)
   }
 
-  const busy = exec.isPending || overviewExec.isPending
-  const canRun = !!project.trim() && (!tabNeedsJob || !!job.trim())
-    && (!isLogdetail || !!eventId.trim()) && configured && !busy
+  const busy = batchLoading
+  const canRun = !!project.trim() && !!job.trim() && configured && !busy
 
-  // Executa o comando da aba atual.
+  // Botão Executar: dispara o LOTE único (todas as abas viram visões dele).
   const run = () => {
     if (!canRun) return
-    if (activeTab === 'geral') {
-      overviewExec.mutate({ project: project.trim(), job: job.trim() })
-      return
-    }
-    const command = tabCommand[activeTab] ?? 'jobinfo'
-    exec.mutate({
-      command,
-      project: project.trim(),
-      job: tabNeedsJob ? job.trim() : undefined,
-      max_lines: command === 'logsum' ? (Number(maxLines) || 200) : undefined,
-      event_id: command === 'logdetail' ? (Number(eventId) || undefined) : undefined,
-    })
+    runBatch(project.trim(), job.trim())
   }
 
-  // Roda um comando específico imediatamente (cliques nos chips de job / filhos / eventos).
+  // Logdetail sob demanda (botão da aba "Detalhe do log").
+  const canRunLogdetail = !!project.trim() && !!job.trim() && !!eventId.trim() && configured && !exec.isPending
+  const runLogdetail = () => {
+    if (!canRunLogdetail) return
+    exec.mutate({ command: 'logdetail', project: project.trim(), job: job.trim(), event_id: Number(eventId) || undefined })
+  }
+
+  // Navega para a aba "Detalhe do log" já com a consulta feita (clique no #id).
+  const openLogdetail = (jobName: string, evId: number) => {
+    if (!project.trim() || !configured) return
+    setJob(jobName)
+    setEventId(String(evId))
+    setActiveTab('logdetail')
+    exec.mutate({ command: 'logdetail', project: project.trim(), job: jobName, event_id: evId })
+  }
+
+  // Roda um logsum específico (drill no diagrama / clique em filho abortado).
+  // Atualiza apenas o logsum em foco do diagrama, sem refazer o lote inteiro.
   const runFor = (cmd: string, jobName: string, extra?: { max_lines?: number; event_id?: number }) => {
     if (!project.trim() || !configured) return
     setJob(jobName)
@@ -434,9 +506,9 @@ export default function DsConsole() {
   const projectList = (projetos.data?.projects ?? []).map(p => p.project_name)
   const projectOptions = projectList.length ? projectList : PROJETOS
 
-  const result = exec.data
-  // Na "Visão geral", o jobinfo vem do estado próprio; nas outras abas, do result em foco.
-  const jobinfoResult = activeTab === 'geral' ? overviewJobinfo : (result?.command === 'jobinfo' ? result : null)
+  // ── Derivações das VISÕES a partir do lote único ──────────────────────────
+  // jobinfo (card de status do job).
+  const jobinfoResult = batch.jobinfo ?? null
   const isJobinfo = jobinfoResult?.exit_code === 0
   const jobinfoFields = (isJobinfo && jobinfoResult
     ? jobinfoResult.stdout.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
@@ -449,20 +521,21 @@ export default function DsConsole() {
   const statusCode = statusField ? dsStatusCode(statusField.value) : null
   const statusMeaning = statusCode != null ? DS_STATUS_MEANINGS[statusCode] : undefined
 
-  const ljobsList = (result?.command === 'ljobs' && result.exit_code === 0)
-    ? result.stdout.split('\n').map(s => s.trim()).filter(Boolean)
-    : []
+  // O diagrama usa o logsum em FOCO: o último drill (exec.data) ou o do lote.
+  const focusLogsum: DsConsoleResult | null =
+    (exec.data?.command === 'logsum' && exec.data.exit_code === 0) ? exec.data
+    : (batch.logsum?.exit_code === 0 ? batch.logsum! : null)
 
-  const logsumRuns = (result?.command === 'logsum' && result.exit_code === 0)
-    ? parseLogsum(result.stdout)
-    : []
-  const logAllEntries = (result?.command === 'logsum' && result.exit_code === 0)
-    ? parseLogEntries(result.stdout)
-    : []
+  // Erros / runs / resumo: sempre a partir do logsum do LOTE (a Visão geral é do
+  // job consultado, não acompanha os drills do diagrama).
+  const logsumResult = batch.logsum ?? null
+  const logsumOk = logsumResult?.exit_code === 0
+  const logsumRuns = (logsumOk && logsumResult) ? parseLogsum(logsumResult.stdout) : []
+  const logAllEntries = (logsumOk && logsumResult) ? parseLogEntries(logsumResult.stdout) : []
   const activityJobMap = buildActivityJobMap(logAllEntries)
   const logErrors = logAllEntries.filter(e => /FATAL|REJECT|WARNING/i.test(e.type) || DS_ERR_MSG_RE.test(e.message))
-  const logDetailEvents = (result?.command === 'logdetail' && result.exit_code === 0)
-    ? parseLogdetail(result.stdout)
+  const logDetailEvents = (exec.data?.command === 'logdetail' && exec.data.exit_code === 0)
+    ? parseLogdetail(exec.data.stdout)
     : []
 
   // Agrupa os erros por run (via faixa de event id de cada run) para não misturar dias.
@@ -471,34 +544,60 @@ export default function DsConsole() {
     .filter(g => g.errors.length > 0)
   const groupedErrIds = new Set(errorsByRun.flatMap(g => g.errors.map(e => e.id)))
   const ungroupedErrors = logErrors.filter(e => !groupedErrIds.has(e.id))
+  // Total de erros/avisos para o badge da aba "Erros e avisos".
+  const errorsTotal = logErrors.length
 
-  // Diagrama (CTRL-M): runs montados a partir do logsum (função pura reusável).
-  const graphRuns: DsRunGraph[] = (result?.command === 'logsum' && result.exit_code === 0 && result.job)
-    ? buildGraphRuns(result.stdout, result.job) : []
+  // Relatório (report) — parse em campos + status.
+  const reportResult = batch.report ?? null
+  const reportOk = reportResult?.exit_code === 0
+  const reportParsed = (reportOk && reportResult) ? parseReport(reportResult.stdout) : null
+  const reportElapsed = reportParsed?.fields.find(f => /elapsed time/i.test(f.label))
+  const reportStatus = reportParsed?.fields.find(f => /^Job status$/i.test(f.label))
+
+  // Parâmetros (lparams) — agrupados por conjunto.
+  const lparamsResult = batch.lparams ?? null
+  const lparamsOk = lparamsResult?.exit_code === 0
+  const lparamGroups = (lparamsOk && lparamsResult) ? parseLparams(lparamsResult.stdout) : []
+
+  // Stages (lstages) — detecta Sequence (<none>/vazio) vs. lista de stages.
+  const lstagesResult = batch.lstages ?? null
+  const lstagesOk = lstagesResult?.exit_code === 0
+  const lstagesLines = (lstagesOk && lstagesResult)
+    ? lstagesResult.stdout.split('\n').map(s => s.trim())
+        .filter(l => l && !/^Status code\s*=/i.test(l) && l.toLowerCase() !== '<none>')
+    : []
+  const lstagesIsSequence = lstagesOk && lstagesLines.length === 0
+
+  // Diagrama (CTRL-M): runs montados a partir do logsum em foco (função pura).
+  const graphRuns: DsRunGraph[] = (focusLogsum && focusLogsum.job)
+    ? buildGraphRuns(focusLogsum.stdout, focusLogsum.job) : []
   const hasGraph = graphRuns.some(r => r.children.length > 0)
 
   // Snapshot do diagrama: mantém o último logsum válido para o modal não desmontar
-  // durante o drill (enquanto exec.isPending zera o result). Atualiza só em sucesso.
+  // durante o drill (enquanto exec.isPending zera o exec.data). Atualiza só em sucesso.
   const graphRunsRef = useRef(graphRuns)
   graphRunsRef.current = graphRuns
   const [graphData, setGraphData] = useState<{ rootJob: string; runs: DsRunGraph[] } | null>(null)
   useEffect(() => {
-    if (result?.command === 'logsum' && result.exit_code === 0 && result.job) {
-      setGraphData({ rootJob: result.job, runs: graphRunsRef.current })
+    if (focusLogsum && focusLogsum.job) {
+      setGraphData({ rootJob: focusLogsum.job, runs: graphRunsRef.current })
     }
-  }, [result])
+  }, [focusLogsum])
 
-  // Sempre que chega um novo logsum, reabre o grupo de erros mais recente.
+  // Sempre que chega um novo logsum do lote, reabre o grupo de erros / run mais recente.
   useEffect(() => {
-    if (result?.command === 'logsum') setOpenErrGroups(new Set([0]))
-  }, [result])
+    setOpenErrGroups(new Set([0]))
+    setOpenRuns(new Set([0]))
+  }, [batch.logsum])
 
-  // De-para do código de erro do dsjob ("Status code = -N") quando o comando falha.
-  const errMatch = (result && result.exit_code !== 0)
-    ? ((result.stderr || '') + '\n' + (result.stdout || '')).match(/Status code\s*=\s*(-?\d+)/i)
-    : null
-  const errorCode = errMatch ? Number(errMatch[1]) : null
-  const errorMeaning = errorCode != null ? DSJOB_CODE_MEANINGS[errorCode] : undefined
+  // De-para do código de erro do dsjob ("Status code = -N") por resultado falho.
+  const errInfo = (r?: DsConsoleResult | null) => {
+    if (!r || r.exit_code === 0) return null
+    const m = ((r.stderr || '') + '\n' + (r.stdout || '')).match(/Status code\s*=\s*(-?\d+)/i)
+    const code = m ? Number(m[1]) : null
+    const meaning = code != null ? DSJOB_CODE_MEANINGS[code] : undefined
+    return meaning != null ? { code, meaning } : null
+  }
 
   const copy = (t: string) => navigator.clipboard?.writeText(t).then(
     () => toast.info('Copiado!'), () => toast.error('Erro ao copiar'))
@@ -509,7 +608,15 @@ export default function DsConsole() {
     return s
   })
 
-  // Uma linha do card de erros (id clicável → logdetail; nome do filho → logsum dele).
+  const toggleRun = (ri: number) => setOpenRuns(prev => {
+    const s = new Set(prev)
+    s.has(ri) ? s.delete(ri) : s.add(ri)
+    return s
+  })
+
+  const rootJob = batchJob?.job ?? ''
+
+  // Uma linha do card de erros (id navega p/ aba logdetail; nome do filho → log dele).
   const renderErrRow = (e: { id: number; type: string; time: string; message: string }) => {
     const explicitChild = (e.message.match(/\bJob\s+([A-Za-z0-9_.]+)\s+(?:has finished, status|did not finish OK)/i) || [])[1]
     const activity = (e.message.match(/\(@([A-Za-z0-9_.]+)\)/) || [])[1]
@@ -517,14 +624,14 @@ export default function DsConsole() {
     return (
       <div key={e.id} className="flex items-start gap-2 text-xs flex-wrap">
         <Badge value={dsEntrySeverity(e.type, e.message)}>{e.type}</Badge>
-        <button onClick={() => runFor('logdetail', result?.job ?? '', { event_id: e.id })}
-          title="Ver detalhe completo deste evento (logdetail)"
+        <button onClick={() => openLogdetail(rootJob, e.id)}
+          title="Abrir o detalhe completo deste evento (aba Detalhe do log)"
           className="font-mono text-blue-700 dark:text-blue-400 hover:underline shrink-0">#{e.id}</button>
         <span className="text-dim shrink-0 hidden sm:inline">{e.time}</span>
         <span className="text-ink break-all">{e.message.slice(0, 240)}</span>
-        {child && child !== result?.job && (
-          <button onClick={() => runFor('logsum', child)}
-            title={`Abrir o log de ${child} (logsum) — drill-down até o erro real`}
+        {child && child !== rootJob && (
+          <button onClick={() => { setShowGraph(true); setGraphTargetTime(null); setGraphPath([{ job: rootJob, targetTime: null }]); runFor('logsum', child) }}
+            title={`Abrir o log de ${child} no diagrama — drill-down até o erro real`}
             className="inline-flex items-center gap-0.5 font-mono text-[11px] px-1.5 py-0.5 rounded bg-edge/50 text-ink hover:bg-[#1A5FA8] hover:text-white transition-colors shrink-0">
             → {child}
           </button>
@@ -546,15 +653,16 @@ export default function DsConsole() {
     </div>
   )
 
-  // Caixa de erro (de-para do "Status code = -N").
+  // Caixa de erro (de-para do "Status code = -N") para um resultado falho.
   const errorBox = (r: DsConsoleResult) => {
-    if (r.exit_code === 0 || !errorMeaning) return null
+    const info = errInfo(r)
+    if (!info) return null
     return (
       <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-50 border border-amber-200 dark:bg-yellow-900/20 dark:border-yellow-700">
         <AlertTriangle size={16} className="text-amber-600 dark:text-yellow-400 mt-0.5 shrink-0" />
         <p className="text-sm text-amber-800 dark:text-yellow-300">
-          <strong>Código {errorCode}:</strong> {errorMeaning}.
-          {errorCode === -1004 && <> Confira o nome do job — use o autocompletar do campo Job ou rode <strong>"Listar jobs"</strong>.</>}
+          <strong>Código {info.code}:</strong> {info.meaning}.
+          {info.code === -1004 && <> Confira o nome do job — use o autocompletar do campo <strong>Job</strong> e execute novamente.</>}
         </p>
       </div>
     )
@@ -654,67 +762,164 @@ export default function DsConsole() {
   }
 
   // Card de resumo dos runs (logsum) + botões de diagrama / causa-raiz.
+  // Cada run é colapsável; só o mais novo (índice 0 já invertido) começa aberto.
   const runsCard = () => {
     if (logsumRuns.length === 0) return null
+    const runs = logsumRuns.slice().reverse().slice(0, 15)
     return (
       <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2 mb-1">
-          <p className="text-xs text-dim">Resumo dos runs (mais recentes primeiro) — {logsumRuns.length} no log. Clique num job para ver o log dele (logsum):</p>
+          <p className="text-xs text-dim">Resumo dos runs (mais recentes primeiro) — {logsumRuns.length} no log. Clique no cabeçalho para expandir; em um job, para abrir o log dele:</p>
           {hasGraph && (
             <div className="ml-auto flex items-center gap-2">
               <Button size="sm" variant="secondary" loading={tracing}
-                onClick={() => autoTrace([{ job: result!.job!, targetTime: null }])}>
+                onClick={() => autoTrace([{ job: rootJob, targetTime: null }])}>
                 <Crosshair size={14} className="mr-1" /> Causa-raiz (auto)
               </Button>
               <Button size="sm" variant="secondary"
-                onClick={() => { setGraphTargetTime(null); setGraphPath([{ job: result!.job!, targetTime: null }]); setShowGraph(true) }}>
+                onClick={() => { setGraphTargetTime(null); setGraphPath([{ job: rootJob, targetTime: null }]); setShowGraph(true) }}>
                 <Network size={14} className="mr-1" /> Ver diagrama
               </Button>
             </div>
           )}
         </div>
-        {logsumRuns.slice().reverse().slice(0, 15).map((r, i) => (
-          <div key={i} className="border border-edge/60 rounded-lg p-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge value={r.result === 'ok' ? 'success' : r.result === 'aborted' ? 'error' : r.result === 'running' ? 'info' : 'neutral'}>
-                {r.result === 'ok' ? 'Concluído' : r.result === 'aborted' ? 'Abortado' : r.result === 'running' ? 'Em execução' : 'Indefinido'}
-              </Badge>
-              <span className="text-xs text-ink font-medium">{r.start}</span>
-              {r.end && r.end !== r.start && <span className="text-xs text-dim">→ {r.end}</span>}
-              {r.children.length > 0 && <span className="text-xs text-dim">· {r.children.length} job(s)</span>}
+        {runs.map((r, i) => {
+          const open = openRuns.has(i)
+          return (
+            <div key={i} className="border border-edge/60 rounded-lg overflow-hidden">
+              <button onClick={() => toggleRun(i)}
+                className="w-full flex flex-wrap items-center gap-2 px-3 py-2 text-left hover:bg-edge/30 transition-colors">
+                {open ? <ChevronUp size={14} className="text-dim shrink-0" /> : <ChevronDown size={14} className="text-dim shrink-0" />}
+                <Badge value={r.result === 'ok' ? 'success' : r.result === 'aborted' ? 'error' : r.result === 'running' ? 'info' : 'neutral'}>
+                  {r.result === 'ok' ? 'Concluído' : r.result === 'aborted' ? 'Abortado' : r.result === 'running' ? 'Em execução' : 'Indefinido'}
+                </Badge>
+                <span className="text-xs text-ink font-medium">{r.start}</span>
+                {r.end && r.end !== r.start && <span className="text-xs text-dim">→ {r.end}</span>}
+                {r.children.length > 0 && <span className="ml-auto text-xs text-dim">{r.children.length} job(s)</span>}
+              </button>
+              {open && r.children.length > 0 && (
+                <div className="flex flex-wrap gap-x-3 gap-y-1.5 px-3 pb-3 pt-0.5 border-t border-edge/60">
+                  {r.children.map((c, j) => (
+                    <button key={j} onClick={() => { setShowGraph(true); setGraphTargetTime(null); setGraphPath([{ job: rootJob, targetTime: null }]); runFor('logsum', c.fullJob) }}
+                      title={`Ver o log de ${c.fullJob} no diagrama`}
+                      className="inline-flex items-center gap-1.5 hover:opacity-80 transition-opacity">
+                      <span className="font-mono text-[11px] text-ink break-all underline decoration-dotted decoration-edge underline-offset-2">{c.job}</span>
+                      <Badge value={c.code != null ? dsCodeVariant(c.code) : 'info'}>{c.code != null ? (DS_STATUS_MEANINGS[c.code] ?? c.text) : 'Em execução'}</Badge>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-            {r.children.length > 0 && (
-              <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-2">
-                {r.children.map((c, j) => (
-                  <button key={j} onClick={() => runFor('logsum', c.fullJob)}
-                    title={`Ver o log de ${c.fullJob} (logsum)`}
-                    className="inline-flex items-center gap-1.5 hover:opacity-80 transition-opacity">
-                    <span className="font-mono text-[11px] text-ink break-all underline decoration-dotted decoration-edge underline-offset-2">{c.job}</span>
-                    <Badge value={c.code != null ? dsCodeVariant(c.code) : 'info'}>{c.code != null ? (DS_STATUS_MEANINGS[c.code] ?? c.text) : 'Em execução'}</Badge>
-                  </button>
-                ))}
-              </div>
-            )}
+          )
+        })}
+      </div>
+    )
+  }
+
+  // Card do Relatório (report) — campos parseados + tempo decorrido em destaque.
+  const reportCard = () => {
+    if (!reportParsed) return null
+    const skip = /^(Job status|Job elapsed time)$/i
+    return (
+      <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <FileText size={16} className="text-blue-600 dark:text-blue-400 shrink-0" />
+          <span className="text-sm font-semibold text-ink">Relatório de status do job</span>
+          {reportStatus && (
+            <Badge value={dsReportStatusVariant(reportStatus.value, reportParsed.statusCode)}>{reportStatus.value}</Badge>
+          )}
+        </div>
+        {reportElapsed && (
+          <div className="flex flex-col items-start gap-0.5 px-4 py-3 rounded-lg bg-blue-50 border border-blue-200 dark:bg-blue-900/20 dark:border-blue-800">
+            <span className="text-xs text-blue-700 dark:text-blue-400">Tempo decorrido</span>
+            <span className="text-2xl font-bold font-mono text-blue-800 dark:text-blue-300">{reportElapsed.value}</span>
           </div>
+        )}
+        <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+          {reportParsed.fields.filter(f => f.label && !skip.test(f.label)).map((f, i) => (
+            <div key={i} className="flex justify-between gap-3 border-b border-edge/50 py-1">
+              <dt className="text-xs text-dim shrink-0">{f.label}</dt>
+              <dd className="text-xs text-ink font-medium text-right break-all">{f.value}</dd>
+            </div>
+          ))}
+        </dl>
+        {reportParsed.fields.filter(f => !f.label).map((f, i) => (
+          <p key={i} className="text-xs text-dim">{f.value}</p>
         ))}
       </div>
     )
   }
 
-  // Lista de jobs (ljobs) — cada job abre jobinfo.
-  const ljobsCard = () => {
-    if (ljobsList.length === 0) return null
+  // Card de Parâmetros (lparams) — agrupado por conjunto de parâmetros.
+  const lparamsCard = () => {
+    if (lparamGroups.length === 0) return null
     return (
-      <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm">
-        <p className="text-xs text-dim mb-2">{ljobsList.length} job(s) — clique para inspecionar (jobinfo) na aba Visão geral:</p>
-        <div className="flex flex-wrap gap-1.5">
-          {ljobsList.map(j => (
-            <button key={j} onClick={() => { setJob(j); setActiveTab('geral'); overviewExec.mutate({ project: project.trim(), job: j }) }}
-              className="px-2 py-1 rounded text-xs font-mono bg-edge/40 text-ink hover:bg-[#1A5FA8] hover:text-white transition-colors">
-              {j}
-            </button>
+      <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <SlidersHorizontal size={16} className="text-blue-600 dark:text-blue-400 shrink-0" />
+          <span className="text-sm font-semibold text-ink">Conjuntos de parâmetros</span>
+          <span className="text-xs text-dim">— {lparamGroups.length} conjunto(s)</span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {lparamGroups.map((g, i) => (
+            <div key={i} className="border border-edge/60 rounded-lg overflow-hidden">
+              <div className="px-3 py-2 bg-canvas/60 border-b border-edge/60 flex items-center gap-2">
+                <Layers size={13} className="text-dim shrink-0" />
+                <span className="text-xs font-mono font-semibold text-ink break-all">{g.name}</span>
+                <span className="ml-auto text-[10px] text-dim">{g.params.length}</span>
+              </div>
+              {g.params.length > 0 ? (
+                <ul className="px-3 py-2 flex flex-col gap-1">
+                  {g.params.map((p, j) => (
+                    <li key={j} className="text-xs font-mono text-ink break-all">{p}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="px-3 py-2 text-xs text-dim italic">Sem parâmetros neste conjunto.</p>
+              )}
+            </div>
           ))}
         </div>
+      </div>
+    )
+  }
+
+  // Card de Stages (lstages) — explica Sequence (<none>) ou lista os stages.
+  const stagesCard = () => {
+    if (lstagesIsSequence) {
+      return (
+        <div className="flex items-start gap-3 p-4 rounded-lg bg-blue-50 border border-blue-200 dark:bg-blue-900/20 dark:border-blue-800">
+          <ListTree size={16} className="text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
+          <div className="flex flex-col gap-2 text-sm text-blue-800 dark:text-blue-300">
+            <p>
+              Este job é uma <strong>Sequence</strong> (sem stages de processamento). O fluxo de execução
+              (atividades e dependências) está na aba <strong>Visão geral</strong> → botão <strong>Ver diagrama</strong>.
+            </p>
+            {hasGraph && (
+              <div>
+                <Button size="sm" variant="secondary"
+                  onClick={() => { setGraphTargetTime(null); setGraphPath([{ job: rootJob, targetTime: null }]); setShowGraph(true) }}>
+                  <Network size={14} className="mr-1" /> Ver diagrama
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+      )
+    }
+    if (lstagesLines.length === 0) return null
+    return (
+      <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <Layers size={16} className="text-blue-600 dark:text-blue-400 shrink-0" />
+          <span className="text-sm font-semibold text-ink">Stages</span>
+          <span className="text-xs text-dim">— {lstagesLines.length}</span>
+        </div>
+        <ul className="flex flex-col divide-y divide-edge/50">
+          {lstagesLines.map((s, i) => (
+            <li key={i} className="py-1.5 text-xs font-mono text-ink break-all">{s}</li>
+          ))}
+        </ul>
       </div>
     )
   }
@@ -742,12 +947,19 @@ export default function DsConsole() {
 
   const TABS = [
     { id: 'geral', label: 'Visão geral' },
-    { id: 'ljobs', label: 'Listar jobs' },
-    { id: 'logdetail', label: 'Detalhe do log' },
+    { id: 'errors', label: 'Erros e avisos', badge: errorsTotal },
     { id: 'lstages', label: 'Stages' },
     { id: 'lparams', label: 'Parâmetros' },
     { id: 'report', label: 'Relatório' },
+    { id: 'logdetail', label: 'Detalhe do log' },
   ]
+
+  // Já executou o lote? (qualquer comando do lote respondeu).
+  const hasBatch = !!batchJob && Object.keys(batch).length > 0
+  // Hint de estado vazio reusável por aba.
+  const emptyHint = (
+    <p className="text-xs text-dim">Selecione projeto e job e clique em <strong>Executar</strong>.</p>
+  )
 
   return (
     <div className="flex flex-col gap-4">
@@ -761,7 +973,7 @@ export default function DsConsole() {
       <div className="flex items-start gap-3 p-4 rounded-lg bg-blue-50 border border-blue-200 dark:bg-blue-900/20 dark:border-blue-800">
         <Terminal size={16} className="text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
         <div className="text-sm text-blue-800 dark:text-blue-300">
-          Selecione o <strong>projeto</strong> e o <strong>job</strong> e use as abas abaixo. Em <strong>Visão geral</strong>, um clique mostra o status do job e o resumo do último run juntos.
+          Informe o <strong>projeto</strong> e o <strong>job</strong> e clique em <strong>Executar</strong> uma única vez: a consulta roda em paralelo (status, log, stages, parâmetros e relatório). As abas abaixo são visões do mesmo resultado.
           Ex.: <code className="font-mono text-xs">dsjob -jobinfo BI_VIDA SeqSsdVida7Peps</code>.
         </div>
       </div>
@@ -775,33 +987,28 @@ export default function DsConsole() {
         </div>
       )}
 
-      {/* Inputs compartilhados — persistem ao trocar de aba */}
+      {/* Consulta única — Projeto + Job + Executar (dispara o lote de comandos) */}
       <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm">
         <div className="flex flex-wrap gap-3 items-end">
           <Select label="Projeto" value={project} onChange={e => setProject(e.target.value)} className="w-48">
             <option value="">Selecione…</option>
             {projectOptions.map(p => <option key={p}>{p}</option>)}
           </Select>
-          {tabNeedsJob && (
-            <Input label="Job" value={job} onChange={e => setJob(e.target.value)}
-              placeholder="ex.: SeqSsdVida7Peps" className="w-64" list="ds-job-list"
-              onKeyDown={e => { if (e.key === 'Enter') run() }} />
-          )}
+          <Input label="Job" value={job} onChange={e => setJob(e.target.value)}
+            placeholder="ex.: SeqSsdVida7Peps" className="w-64" list="ds-job-list"
+            onKeyDown={e => { if (e.key === 'Enter') run() }} />
           <datalist id="ds-job-list">
             {jobOptions.map(j => <option key={j} value={j} />)}
           </datalist>
-          {hasMax && (
-            <Input label="Máx. linhas" type="number" value={maxLines}
-              onChange={e => setMaxLines(e.target.value)} className="w-28" />
-          )}
-          {isLogdetail && (
-            <Input label="Evento (id)" type="number" value={eventId}
-              onChange={e => setEventId(e.target.value)} placeholder="id do logsum" className="w-32"
-              onKeyDown={e => { if (e.key === 'Enter') run() }} />
-          )}
+          <Input label="Máx. linhas (log)" type="number" value={maxLines}
+            onChange={e => setMaxLines(e.target.value)} className="w-32" />
           <Button onClick={run} loading={busy} disabled={!canRun}>Executar</Button>
+          <Button variant="secondary" onClick={() => setShowCodes(v => !v)}
+            title="Tabela de códigos de status do job (de-para)">
+            <ListTree size={14} className="mr-1" /> Códigos de status
+          </Button>
         </div>
-        {tabNeedsJob && configured && !!project && (
+        {configured && !!project && (
           <p className="text-[11px] text-dim mt-2">
             {jobsQuery.isFetching
               ? 'Carregando jobs do projeto para autocompletar…'
@@ -810,66 +1017,8 @@ export default function DsConsole() {
                 : ''}
           </p>
         )}
-      </div>
-
-      {/* Abas por comando */}
-      <Tabs tabs={TABS} active={activeTab} onChange={setActiveTab} size="md" />
-
-      <div className="flex flex-col gap-3">
-        {activeTab === 'geral' && (
-          <>
-            {jobinfoResult && resultHeader(jobinfoResult)}
-            {jobinfoResult && errorBox(jobinfoResult)}
-            {jobinfoCard()}
-            {result?.command === 'logsum' && errorBox(result)}
-            {errorsCard()}
-            {runsCard()}
-            {result?.command === 'logsum' && rawOutput(result)}
-            {!jobinfoResult && !result && (
-              <p className="text-xs text-dim">Selecione projeto e job e clique em <strong>Executar</strong> para ver o status e o resumo do log.</p>
-            )}
-          </>
-        )}
-
-        {activeTab === 'ljobs' && (
-          <>
-            {result?.command === 'ljobs' && resultHeader(result)}
-            {result?.command === 'ljobs' && errorBox(result)}
-            {ljobsCard()}
-            {result?.command === 'ljobs' && !ljobsList.length && rawOutput(result)}
-            {result?.command !== 'ljobs' && <p className="text-xs text-dim">Selecione o projeto e clique em <strong>Executar</strong> para listar os jobs.</p>}
-          </>
-        )}
-
-        {activeTab === 'logdetail' && (
-          <>
-            {result?.command === 'logdetail' && resultHeader(result)}
-            {result?.command === 'logdetail' && errorBox(result)}
-            {logdetailCards()}
-            {result?.command === 'logdetail' && !logDetailEvents.length && rawOutput(result)}
-            {result?.command !== 'logdetail' && <p className="text-xs text-dim">Informe projeto, job e o <strong>id do evento</strong> (visto no logsum) e clique em <strong>Executar</strong>.</p>}
-          </>
-        )}
-
-        {(activeTab === 'lstages' || activeTab === 'lparams' || activeTab === 'report') && (
-          <>
-            {result?.command === tabCommand[activeTab] && resultHeader(result)}
-            {result?.command === tabCommand[activeTab] && errorBox(result)}
-            {result?.command === tabCommand[activeTab] && rawOutput(result)}
-            {result?.command !== tabCommand[activeTab] && <p className="text-xs text-dim">Selecione projeto e job e clique em <strong>Executar</strong>.</p>}
-          </>
-        )}
-      </div>
-
-      {/* Tabela de códigos (de-para) — colapsável no rodapé */}
-      <div className="border-t border-edge pt-3">
-        <button onClick={() => setShowCodes(v => !v)}
-          className="text-xs text-dim hover:text-ink flex items-center gap-1">
-          {showCodes ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          Tabela de códigos de status do job (de-para)
-        </button>
         {showCodes && (
-          <div className="mt-2 bg-panel border border-edge rounded-lg overflow-hidden max-w-md">
+          <div className="mt-3 bg-canvas/40 border border-edge rounded-lg overflow-hidden max-w-md">
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-dim border-b border-edge bg-canvas/50">
@@ -887,6 +1036,99 @@ export default function DsConsole() {
               </tbody>
             </table>
           </div>
+        )}
+      </div>
+
+      {/* Abas — cada uma é uma VISÃO do lote único */}
+      <Tabs tabs={TABS} active={activeTab} onChange={setActiveTab} size="md" />
+
+      <div className="flex flex-col gap-3">
+        {/* 1. Visão geral — status do job (jobinfo) + resumo de runs (logsum) */}
+        {activeTab === 'geral' && (
+          <>
+            {!hasBatch && <p className="text-xs text-dim">Selecione projeto e job e clique em <strong>Executar</strong> para ver o status e o resumo do log.</p>}
+            {jobinfoResult && resultHeader(jobinfoResult)}
+            {jobinfoResult && errorBox(jobinfoResult)}
+            {jobinfoCard()}
+            {logsumResult && errorBox(logsumResult)}
+            {runsCard()}
+            {hasBatch && batch.jobinfo == null && batch.logsum == null && <p className="text-xs text-dim">Consultando…</p>}
+          </>
+        )}
+
+        {/* 2. Erros e avisos por run (do logsum) */}
+        {activeTab === 'errors' && (
+          <>
+            {!hasBatch && emptyHint}
+            {logsumResult && errorBox(logsumResult)}
+            {errorsCard()}
+            {hasBatch && logsumOk && errorsTotal === 0 && (
+              <p className="text-xs text-dim">Nenhum erro ou aviso encontrado no log consultado.</p>
+            )}
+          </>
+        )}
+
+        {/* 3. Stages (lstages) */}
+        {activeTab === 'lstages' && (
+          <>
+            {!hasBatch && emptyHint}
+            {lstagesResult && errorBox(lstagesResult)}
+            {stagesCard()}
+            {hasBatch && batch.lstages == null && <p className="text-xs text-dim">Consultando…</p>}
+          </>
+        )}
+
+        {/* 4. Parâmetros (lparams) */}
+        {activeTab === 'lparams' && (
+          <>
+            {!hasBatch && emptyHint}
+            {lparamsResult && errorBox(lparamsResult)}
+            {lparamsCard()}
+            {hasBatch && lparamsOk && lparamGroups.length === 0 && (
+              <p className="text-xs text-dim">Nenhum conjunto de parâmetros para este job.</p>
+            )}
+            {hasBatch && batch.lparams == null && <p className="text-xs text-dim">Consultando…</p>}
+          </>
+        )}
+
+        {/* 5. Relatório (report) */}
+        {activeTab === 'report' && (
+          <>
+            {!hasBatch && emptyHint}
+            {reportResult && errorBox(reportResult)}
+            {reportCard()}
+            {reportResult && (
+              <details className="bg-panel border border-edge rounded-lg p-3">
+                <summary className="text-xs text-dim cursor-pointer hover:text-ink">Saída crua do relatório</summary>
+                <div className="mt-2">{rawOutput(reportResult)}</div>
+              </details>
+            )}
+            {hasBatch && batch.report == null && <p className="text-xs text-dim">Consultando…</p>}
+          </>
+        )}
+
+        {/* 6. Detalhe do log (logdetail) — sob demanda */}
+        {activeTab === 'logdetail' && (
+          <>
+            <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-wrap gap-3 items-end">
+              <Input label="Evento (id)" type="number" value={eventId}
+                onChange={e => setEventId(e.target.value)} placeholder="id do logsum" className="w-40"
+                onKeyDown={e => { if (e.key === 'Enter') runLogdetail() }} />
+              <Button onClick={runLogdetail} loading={exec.isPending && exec.variables?.command === 'logdetail'} disabled={!canRunLogdetail}>
+                Ver detalhe
+              </Button>
+              <p className="text-[11px] text-dim self-center">
+                Clique num <strong>#id</strong> na aba <strong>Erros e avisos</strong> ou na Visão geral para abrir o detalhe aqui automaticamente.
+              </p>
+            </div>
+            {exec.data?.command === 'logdetail' && resultHeader(exec.data)}
+            {exec.data?.command === 'logdetail' && errorBox(exec.data)}
+            {logdetailCards()}
+            {exec.data?.command === 'logdetail' && !logDetailEvents.length && rawOutput(exec.data)}
+            {exec.data?.command !== 'logdetail' && (
+              <p className="text-xs text-dim">Informe o <strong>id do evento</strong> (visto no log) e clique em <strong>Ver detalhe</strong>.</p>
+            )}
+          </>
         )}
       </div>
 
