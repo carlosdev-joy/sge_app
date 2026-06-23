@@ -12,8 +12,12 @@ export const AMBIENTES      = ['PROD', 'HML', 'DEV'] as const
 export const DAG_FACTORY_ID = 'etl_dag_factory'
 
 // Job/Lineage — mesmos tipos e regras da tela de Jobs
-export const JOB_TYPES = ['datastage', 'shell', 'python', 'storedproc'] as const
+export const JOB_TYPES = ['datastage', 'shell', 'python', 'storedproc', 'decisao'] as const
 export type WizJobType = typeof JOB_TYPES[number]
+export const JOB_TYPE_LABELS: Record<WizJobType, string> = {
+  datastage: 'DataStage', shell: 'Shell', python: 'Python',
+  storedproc: 'Stored Proc', decisao: 'Decisão',
+}
 export const OBJECT_TYPES = ['Tabela', 'View', 'Arquivo', 'Procedure', 'Dataset', 'API'] as const
 
 // Dias da semana — convenção cron (0=Domingo … 6=Sábado)
@@ -243,6 +247,7 @@ export function typeBadgeColor(t: string) {
     shell:      'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-300 dark:border-amber-800/40',
     python:     'bg-green-500/15 text-green-600 dark:text-green-400 border border-green-300 dark:border-green-800/40',
     storedproc: 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-300 dark:border-purple-800/40',
+    decisao:    'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-300 dark:border-amber-800/40',
   }
   return m[t] ?? 'bg-slate-500/15 text-slate-500 border border-slate-300 dark:border-slate-700'
 }

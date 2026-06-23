@@ -10,7 +10,7 @@ import { Save, Plus } from 'lucide-react'
 import type { Pipeline, LineageJob } from '../../types/pipeline'
 import {
   SCHEDULE_TYPES, SCHEDULE_LABELS, CRITICIDADES, AMBIENTES, MAX_MONTH_DAYS,
-  JOB_TYPES, OBJECT_TYPES, DOW_LABELS,
+  JOB_TYPES, JOB_TYPE_LABELS, OBJECT_TYPES, DOW_LABELS,
   type WizJobType, type ScheduleConfig, type MonthDayEntry,
   hourlyTimes, parseCustomTimes, computeNextRuns, runsPerDay,
   typeBadgeColor, critColor, buildCron, parseMonthDaysTimes, serializeMonthDaysTimes,
@@ -26,6 +26,25 @@ interface JobParamEntry {
 }
 
 const PARAM_TYPES = ['VARCHAR', 'INT', 'DATE', 'DATETIME', 'DECIMAL', 'BIT'] as const
+const COND_OPERADORES = ['=', '<>', '>', '>=', '<', '<='] as const
+
+// Condição de um nó de Decisão (job_type='decisao').
+interface ConditionEntry {
+  tipo: 'contagem' | 'query'
+  tabela?: string
+  database?: string
+  sql?: string
+  mssql_conn_id?: string
+  operador: string
+  valor: string
+  ramo_verdadeiro: string[]
+  ramo_falso: string[]
+}
+
+const defaultCondition = (): ConditionEntry => ({
+  tipo: 'contagem', tabela: '', database: '', sql: '', mssql_conn_id: '',
+  operador: '>', valor: '', ramo_verdadeiro: [], ramo_falso: [],
+})
 
 interface JobEntry {
   id: string
@@ -39,12 +58,25 @@ interface JobEntry {
   mssql_database: string
   params: JobParamEntry[]
   depends_on_jobs: string[]
+  condition?: ConditionEntry
 }
 
-// Detecta ciclo no grafo de dependências entre jobs (DFS 3-cores).
+// Detecta ciclo no grafo de dependências entre jobs (DFS 3-cores). Inclui as
+// arestas do branch: um job de ramo "depende" da sua decisão (decisão → membro).
 function jobsHaveCycle(jobs: JobEntry[]): boolean {
   const adj = new Map<string, string[]>()
   jobs.forEach(j => { const n = j.job_name.trim(); if (n) adj.set(n, (j.depends_on_jobs || []).filter(Boolean)) })
+  jobs.forEach(j => {
+    const dn = j.job_name.trim()
+    if (j.job_type !== 'decisao' || !j.condition || !dn) return
+    const membros = [...(j.condition.ramo_verdadeiro || []), ...(j.condition.ramo_falso || [])]
+    membros.forEach(m => {
+      const mn = (m || '').trim()
+      if (!mn) return
+      if (!adj.has(mn)) adj.set(mn, [])
+      adj.get(mn)!.push(dn)   // membro depende da decisão
+    })
+  })
   const color = new Map<string, number>()  // 0=branco 1=cinza 2=preto
   adj.forEach((_, n) => color.set(n, 0))
   let cyclic = false
@@ -362,13 +394,14 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       depends_on_jobs: [],
     })))
     Promise.all(rows.map(j =>
-      apiFetch<{ mssql_conn_id: string | null; mssql_database?: string | null; depends_on_jobs?: string | null; params: { param_name: string; param_type: string; param_value: string | null }[] }>(
+      apiFetch<{ mssql_conn_id: string | null; mssql_database?: string | null; depends_on_jobs?: string | null; condition?: ConditionEntry | null; params: { param_name: string; param_type: string; param_value: string | null }[] }>(
         `/pipelines/jobs/${encodeURIComponent(editName!)}/${encodeURIComponent(j.job_name)}`,
       ).then(detail => ({ job_name: j.job_name, detail })).catch(() => null),
     )).then(results => {
       setJobs(prev => prev.map(je => {
         const found = results.find(r => r && r.job_name === je.job_name)
         if (!found) return je
+        const cond = found.detail.condition
         return {
           ...je,
           mssql_conn_id: found.detail.mssql_conn_id ?? '',
@@ -378,6 +411,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
             param_name: p.param_name, param_type: p.param_type, param_value: p.param_value ?? '',
           })),
           depends_on_jobs: (found.detail.depends_on_jobs || '').split(',').map(s => s.trim()).filter(Boolean),
+          condition: cond ? { ...defaultCondition(), ...cond, valor: cond.valor != null ? String(cond.valor) : '' } : je.condition,
         }
       }))
     })
@@ -491,6 +525,29 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
             if (nome && nomesVistos.has(key)) e.push(`Job "${j.job_name || i + 1}": parâmetro "${nome}" duplicado`)
             nomesVistos.add(key)
           })
+        }
+        if (j.job_type === 'decisao') {
+          const rotulo = `Decisão "${j.job_name || i + 1}"`
+          const c = j.condition
+          if (!c || (c.tipo !== 'contagem' && c.tipo !== 'query')) {
+            e.push(`${rotulo}: defina o tipo da condição (contagem ou query)`)
+          } else {
+            if (c.tipo === 'contagem' && !(c.tabela || '').trim()) e.push(`${rotulo}: informe a tabela (db.schema.tabela)`)
+            if (c.tipo === 'query' && !(c.sql || '').trim()) e.push(`${rotulo}: informe o SQL (somente SELECT)`)
+            if (!c.operador) e.push(`${rotulo}: selecione o operador`)
+            if (!(c.valor ?? '').toString().trim()) e.push(`${rotulo}: informe o valor de comparação`)
+            const todos = jobs.map(x => x.job_name.trim()).filter(Boolean)
+            const setJobs2 = new Set(todos)
+            const v = (c.ramo_verdadeiro || []).map(s => (s || '').trim()).filter(Boolean)
+            const f = (c.ramo_falso || []).map(s => (s || '').trim()).filter(Boolean)
+            if (v.length === 0 && f.length === 0) e.push(`${rotulo}: selecione ao menos um job em algum ramo`)
+            ;[...v, ...f].forEach(m => {
+              if (m === j.job_name.trim()) e.push(`${rotulo}: um ramo não pode referenciar a própria decisão`)
+              else if (!setJobs2.has(m)) e.push(`${rotulo}: ramo referencia "${m}" que não existe`)
+            })
+            const ambos = v.filter(m => f.includes(m))
+            if (ambos.length) e.push(`${rotulo}: job(s) em ambos os ramos: ${ambos.join(', ')}`)
+          }
         }
       })
       const names = jobs.map(j => j.job_name.trim()).filter(Boolean)
@@ -636,6 +693,17 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                   param_name: p.param_name.trim(), param_type: p.param_type, param_value: p.param_value,
                 }))
               : [],
+            condition:       j.job_type === 'decisao' && j.condition ? {
+              tipo: j.condition.tipo,
+              tabela: (j.condition.tabela || '').trim() || undefined,
+              database: (j.condition.database || '').trim() || undefined,
+              sql: (j.condition.sql || '').trim() || undefined,
+              mssql_conn_id: (j.condition.mssql_conn_id || '').trim() || undefined,
+              operador: j.condition.operador,
+              valor: (j.condition.valor ?? '').toString().trim(),
+              ramo_verdadeiro: (j.condition.ramo_verdadeiro || []).map(s => s.trim()).filter(Boolean),
+              ramo_falso: (j.condition.ramo_falso || []).map(s => s.trim()).filter(Boolean),
+            } : null,
             origens:         origens.map(mapObj),
             destinos:        destinos.map(mapObj),
             transformacoes:  [],
@@ -744,10 +812,40 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       const oldName = job.job_name
       const newName = patch.job_name!
       setLineage(prevL => prevL.map(l => l.job_name === oldName ? { ...l, job_name: newName } : l))
-      // remapeia dependências que apontavam para o nome antigo
-      setJobs(prev => prev.map(j => ({ ...j, depends_on_jobs: (j.depends_on_jobs || []).map(d => d === oldName ? newName : d) })))
+      // remapeia dependências e ramos de decisão que apontavam para o nome antigo
+      const remap = (d: string) => d === oldName ? newName : d
+      setJobs(prev => prev.map(j => ({
+        ...j,
+        depends_on_jobs: (j.depends_on_jobs || []).map(remap),
+        condition: j.condition ? {
+          ...j.condition,
+          ramo_verdadeiro: (j.condition.ramo_verdadeiro || []).map(remap),
+          ramo_falso: (j.condition.ramo_falso || []).map(remap),
+        } : j.condition,
+      })))
     }
     setJobs(prev => prev.map(j => j.id === id ? { ...j, ...patch } : j))
+  }
+
+  // Atualiza a condição de um job de decisão (merge sobre a condição atual).
+  function updateCondition(jobId: string, patch: Partial<ConditionEntry>) {
+    markDagDirty()
+    setJobs(prev => prev.map(j => j.id === jobId
+      ? { ...j, condition: { ...(j.condition ?? defaultCondition()), ...patch } }
+      : j))
+  }
+
+  // Adiciona/remove um job de um dos ramos da decisão, garantindo exclusividade
+  // (um job não fica nos dois ramos ao mesmo tempo).
+  function toggleRamo(job: JobEntry, ramo: 'ramo_verdadeiro' | 'ramo_falso', nome: string) {
+    const c = job.condition ?? defaultCondition()
+    const outro = ramo === 'ramo_verdadeiro' ? 'ramo_falso' : 'ramo_verdadeiro'
+    const atual = c[ramo] || []
+    const sel = atual.includes(nome)
+    updateCondition(job.id, {
+      [ramo]: sel ? atual.filter(d => d !== nome) : [...atual, nome],
+      [outro]: (c[outro] || []).filter(d => d !== nome),
+    } as Partial<ConditionEntry>)
   }
 
   const [expandedParams, setExpandedParams] = useState<Set<string>>(new Set())
@@ -1211,7 +1309,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] font-bold text-blue-600 dark:text-blue-300 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-800/40 rounded-full px-2 py-0.5">#{idx + 1}</span>
                     <span className="text-xs font-mono text-ink flex-1 truncate">{j.job_name || '(sem nome)'}</span>
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium ${typeBadgeColor(j.job_type)}`}>{j.job_type}</span>
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium ${typeBadgeColor(j.job_type)}`}>{JOB_TYPE_LABELS[j.job_type] ?? j.job_type}</span>
                     <button onClick={() => removeJob(j.id)} className="text-dim hover:text-red-500 transition-colors text-xs ml-1">✕ remover</button>
                   </div>
                   <div className="grid grid-cols-[1fr_70px_130px] gap-2">
@@ -1231,13 +1329,14 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                     <div className="flex flex-col gap-1">
                       <label className="text-[10px] text-dim font-medium">Tipo</label>
                       <select value={j.job_type}
-                        onChange={e => updateJob(j.id, { job_type: e.target.value as WizJobType })}
+                        onChange={e => { const val = e.target.value as WizJobType; updateJob(j.id, val === 'decisao' && !j.condition ? { job_type: val, condition: defaultCondition() } : { job_type: val }) }}
                         className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
-                        {JOB_TYPES.map(t => <option key={t}>{t}</option>)}
+                        {JOB_TYPES.map(t => <option key={t} value={t}>{JOB_TYPE_LABELS[t]}</option>)}
                       </select>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
+                    {j.job_type !== 'decisao' && (
                     <div className="flex flex-col gap-1">
                       <label className="text-[10px] text-dim font-medium">{cmdLabel}</label>
                       <input type="text" value={j.job_command}
@@ -1248,6 +1347,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                         <p className="text-[10px] text-dim/70">Apenas o <strong>nome</strong> da procedure (ex.: <code>dbo.sp_nome</code>). O sistema adiciona o <code>EXEC</code> e os parâmetros — não escreva “EXEC”.</p>
                       )}
                     </div>
+                    )}
                     {j.job_type === 'shell' && (
                       <div className="flex flex-col gap-1">
                         <label className="text-[10px] text-dim font-medium">Servidor SSH *</label>
@@ -1294,6 +1394,106 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                       </div>
                     )}
                   </div>
+                  {j.job_type === 'decisao' && (
+                    <div className="flex flex-col gap-2 pt-1 border-t border-edge/40">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-300">Condição da decisão</span>
+                        <span className="text-[10px] text-dim/70">— desvia o fluxo conforme o resultado</span>
+                      </div>
+                      <div className="grid grid-cols-[1fr_80px_1fr] gap-2">
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[10px] text-dim font-medium">Tipo</label>
+                          <select value={j.condition?.tipo ?? 'contagem'}
+                            onChange={e => updateCondition(j.id, { tipo: e.target.value as 'contagem' | 'query' })}
+                            className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+                            <option value="contagem">Contagem de registros</option>
+                            <option value="query">Valor de uma query</option>
+                          </select>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[10px] text-dim font-medium">Operador</label>
+                          <select value={j.condition?.operador ?? '>'}
+                            onChange={e => updateCondition(j.id, { operador: e.target.value })}
+                            className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs text-center focus:outline-none focus:ring-1 focus:ring-blue-500">
+                            {COND_OPERADORES.map(op => <option key={op} value={op}>{op}</option>)}
+                          </select>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[10px] text-dim font-medium">Valor</label>
+                          <input type="text" value={j.condition?.valor ?? ''}
+                            onChange={e => updateCondition(j.id, { valor: e.target.value })}
+                            placeholder={j.condition?.tipo === 'query' ? 'ex: 1' : 'ex: 10000'}
+                            className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                        </div>
+                      </div>
+                      {(j.condition?.tipo ?? 'contagem') === 'contagem' ? (
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] text-dim font-medium">Tabela *</label>
+                            <input type="text" value={j.condition?.tabela ?? ''}
+                              onChange={e => updateCondition(j.id, { tabela: e.target.value })}
+                              placeholder="db.schema.tabela"
+                              className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] text-dim font-medium">Banco (opcional)</label>
+                            <input type="text" value={j.condition?.database ?? ''}
+                              onChange={e => updateCondition(j.id, { database: e.target.value })}
+                              placeholder="ex: BI_DW"
+                              className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[10px] text-dim font-medium">SQL (somente SELECT) *</label>
+                          <textarea value={j.condition?.sql ?? ''} rows={2}
+                            onChange={e => updateCondition(j.id, { sql: e.target.value })}
+                            placeholder="ex: SELECT MAX(flag) FROM dbo.Controle WHERE ..."
+                            className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                        </div>
+                      )}
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] text-dim font-medium">Conexão MSSQL (opcional · padrão do projeto)</label>
+                        <select value={j.condition?.mssql_conn_id ?? ''}
+                          onChange={e => updateCondition(j.id, { mssql_conn_id: e.target.value })}
+                          className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+                          <option value="">Conexão padrão</option>
+                          {mssqlConns.map(c => <option key={c.conn_id} value={c.conn_id}>{c.conn_id}{c.host ? ` (${c.host})` : ''}</option>)}
+                        </select>
+                      </div>
+                      {(() => {
+                        const outros = jobs.filter(o => o.id !== j.id && o.job_name.trim())
+                        if (outros.length === 0) return <span className="text-[10px] text-dim/60">Nomeie os outros jobs para montar os ramos.</span>
+                        const ramoPills = (ramo: 'ramo_verdadeiro' | 'ramo_falso', selCls: string) => (
+                          <div className="flex flex-wrap gap-1">
+                            {outros.map(o => {
+                              const nm = o.job_name.trim()
+                              const sel = (j.condition?.[ramo] || []).includes(nm)
+                              return (
+                                <button key={o.id} type="button"
+                                  onClick={() => toggleRamo(j, ramo, nm)}
+                                  className={`px-2 py-0.5 rounded-full text-[10px] border transition-colors ${sel ? selCls : 'bg-panel text-dim border-edge hover:bg-edge/40'}`}>
+                                  {sel ? '✓ ' : ''}{nm}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        )
+                        return (
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[10px] font-medium text-green-700 dark:text-green-400">Se verdadeiro → rodar</label>
+                              {ramoPills('ramo_verdadeiro', 'bg-green-100 text-green-700 border-green-300 dark:bg-green-900/40 dark:text-green-300 dark:border-green-800')}
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[10px] font-medium text-red-700 dark:text-red-400">Se falso → rodar</label>
+                              {ramoPills('ramo_falso', 'bg-red-100 text-red-700 border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800')}
+                            </div>
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  )}
                   {jobs.length > 1 && (
                     <div className="flex flex-col gap-1 pt-1 border-t border-edge/40">
                       <label className="text-[10px] text-dim font-medium">
@@ -1378,6 +1578,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
               const origens  = lineage.filter(l => l.job_name === j.job_name && l.direction === 'origem')
               const destinos = lineage.filter(l => l.job_name === j.job_name && l.direction === 'destino')
               if (!j.job_name.trim()) return null
+              if (j.job_type === 'decisao') return null   // nó de decisão não tem lineage
               return (
                 <div key={j.id} className="border border-edge rounded-xl overflow-hidden">
                   <div className="bg-canvas border-b border-edge px-3 py-2 flex items-center gap-2">
@@ -1522,7 +1723,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                       <div key={j.id} className="px-3 py-2 text-xs flex flex-col gap-0.5">
                         <div className="flex items-center gap-2">
                           <span className="text-[10px] text-blue-400 font-bold w-6">#{i+1}</span>
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${typeBadgeColor(j.job_type)}`}>{j.job_type}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${typeBadgeColor(j.job_type)}`}>{JOB_TYPE_LABELS[j.job_type] ?? j.job_type}</span>
                           <span className="font-mono font-medium text-ink">{j.job_name || '(sem nome)'}</span>
                           {j.ssh_conn_id && <span className="text-dim/60 font-mono text-[10px]">SSH: {j.ssh_conn_id}</span>}
                           {j.verbose_log && <span className="text-[10px] text-amber-400">verbose</span>}
@@ -1540,6 +1741,14 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                             {j.params.map(p => (
                               <span key={p.id} className="font-mono text-[10px] text-ink/80">{p.param_name}={p.param_value || '∅'}</span>
                             ))}
+                          </div>
+                        )}
+                        {j.job_type === 'decisao' && j.condition && (
+                          <div className="pl-8 flex items-center gap-2 flex-wrap text-[10px]">
+                            <span className="text-dim">Se</span>
+                            <span className="font-mono text-ink/80">{j.condition.tipo === 'query' ? '(query)' : (j.condition.tabela || '(tabela)')} {j.condition.operador} {j.condition.valor || '?'}</span>
+                            <span className="text-green-700 dark:text-green-400">→ V: {(j.condition.ramo_verdadeiro || []).join(', ') || '—'}</span>
+                            <span className="text-red-700 dark:text-red-400">→ F: {(j.condition.ramo_falso || []).join(', ') || '—'}</span>
                           </div>
                         )}
                       </div>

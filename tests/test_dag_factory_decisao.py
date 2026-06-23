@@ -1,0 +1,236 @@
+"""
+Testes do nó de Decisão (ramificação condicional) gerado pelo etl_dag_factory.
+
+Mesmo princípio dos demais testes de factory: os módulos do Airflow são stubados
+via sys.modules antes do import — _generate_dag_source é função pura (gera string
+a partir de dicts). Além da DAG gerada, testa também os helpers puros de
+utils/conditions.py (validação anti-injeção e comparação), que não importam
+Airflow no nível de módulo (MsSqlHook é importado lazy dentro de eval_condition).
+"""
+from __future__ import annotations
+
+import ast
+import importlib.util
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+_AIRFLOW_STUBS = [
+    "airflow", "airflow.models", "airflow.operators", "airflow.operators.python",
+    "airflow.providers", "airflow.providers.microsoft", "airflow.providers.microsoft.mssql",
+    "airflow.providers.microsoft.mssql.hooks", "airflow.providers.microsoft.mssql.hooks.mssql",
+    "pendulum",
+]
+for _mod in _AIRFLOW_STUBS:
+    if _mod not in sys.modules:
+        sys.modules[_mod] = MagicMock()
+
+_ROOT = Path(__file__).parent.parent
+
+
+def _load_module(name, relpath):
+    path = _ROOT / relpath
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture(scope="module")
+def factory():
+    return _load_module("etl_dag_factory_dec_test", "dags/etl_dag_factory.py")
+
+
+@pytest.fixture(scope="module")
+def conditions():
+    return _load_module("conditions_test", "dags/utils/conditions.py")
+
+
+def _pipeline(**overrides):
+    base = {
+        "pipeline_name": "PIPE_DECISAO", "project_name": "BI_CVP", "domain": "TESTE",
+        "tags": "ETL", "scheduled_time": "06:00:00",
+        "envia_msg_inicio": 0, "envia_msg_fim": 1, "envia_msg_erro": 1,
+        "ambiente": "PROD", "schedule_type": "daily",
+    }
+    base.update(overrides)
+    return base
+
+
+def _job(name, jtype="python", order=1, depends=None, cond=None, cmd=None):
+    j = {"job_name": name, "job_type": jtype, "job_command": cmd or "pkg.mod",
+         "execution_order": order}
+    if depends is not None:
+        j["depends_on_jobs"] = depends
+    if cond is not None:
+        import json
+        j["condition_json"] = json.dumps(cond)
+    return j
+
+
+def _contagem_cond():
+    return {
+        "tipo": "contagem", "tabela": "dbo.FatoVendas", "operador": ">", "valor": 10000,
+        "ramo_verdadeiro": ["JobB"], "ramo_falso": ["JobC"],
+    }
+
+
+# ───────────────────────────── DAG gerada ──────────────────────────────────
+
+def test_decisao_gera_branch_operator_e_compila(factory):
+    jobs = [
+        _job("JobA", order=1),
+        _job("Decisao", jtype="decisao", order=2, depends="JobA", cond=_contagem_cond()),
+        _job("JobB", order=3, depends=""),
+        _job("JobC", order=4, depends=""),
+    ]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    ast.parse(src)  # SyntaxError se inválido
+    assert "from utils.conditions import eval_condition" in src
+    assert "BranchPythonOperator" in src
+    assert "def _decide_Decisao(" in src
+    assert "t_dec_Decisao = BranchPythonOperator(" in src
+    # branch retorna os t_start (log_start_*) do ramo escolhido
+    assert "return ['log_start_JobB'] if resultado else ['log_start_JobC']" in src
+
+
+def test_decisao_wiring_arestas(factory):
+    jobs = [
+        _job("JobA", order=1),
+        _job("Decisao", jtype="decisao", order=2, depends="JobA", cond=_contagem_cond()),
+        _job("JobB", order=3, depends=""),
+        _job("JobC", order=4, depends=""),
+    ]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    # decisão depende de JobA; membros descem da decisão
+    assert "t_end_JobA >> t_dec_Decisao" in src
+    assert "t_dec_Decisao >> t_start_JobB >> t_job_JobB >> t_end_JobB" in src
+    assert "t_dec_Decisao >> t_start_JobC >> t_job_JobC >> t_end_JobC" in src
+    # a decisão NÃO entra em end_tasks (não tem t_end próprio)
+    assert "t_end_Decisao" not in src
+
+
+def test_pegadinha_trigger_rules(factory):
+    """A pegadinha nº1 do Airflow: junções não podem ser puladas por engano."""
+    jobs = [
+        _job("JobA", order=1),
+        _job("Decisao", jtype="decisao", order=2, depends="JobA", cond=_contagem_cond()),
+        _job("JobB", order=3, depends=""),
+        _job("JobC", order=4, depends=""),
+    ]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    # t_start dos membros alcançáveis: NONE_FAILED_MIN_ONE_SUCCESS
+    assert src.count("trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS") >= 2
+    # t_end dos membros alcançáveis: NONE_SKIPPED (propaga skip, mantém fail-fast)
+    assert "trigger_rule=TriggerRule.NONE_SKIPPED" in src
+    # publish_dataset tolera ramos pulados (trigger_rule dentro do seu bloco)
+    _i = src.index("t_publish_dataset = EmptyOperator(")
+    bloco_pub = src[_i:_i + 220]
+    assert "TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS" in bloco_pub
+
+
+def test_job_fora_do_ramo_inalterado(factory):
+    """JobA não é alcançável a partir da decisão → t_end segue ALL_DONE."""
+    jobs = [
+        _job("JobA", order=1),
+        _job("Decisao", jtype="decisao", order=2, depends="JobA", cond=_contagem_cond()),
+        _job("JobB", order=3, depends=""),
+        _job("JobC", order=4, depends=""),
+    ]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    bloco_a = src.split("t_end_JobA = PythonOperator(")[1].split(")")[0]
+    assert "TriggerRule.ALL_DONE" in bloco_a
+    assert "NONE_SKIPPED" not in bloco_a
+
+
+def test_fecho_transitivo_jusante(factory):
+    """JobD depende de JobB (membro do ramo) → também é alcançável."""
+    cond = _contagem_cond()
+    jobs = [
+        _job("JobA", order=1),
+        _job("Decisao", jtype="decisao", order=2, depends="JobA", cond=cond),
+        _job("JobB", order=3, depends=""),
+        _job("JobC", order=4, depends=""),
+        _job("JobD", order=5, depends="JobB"),
+    ]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    bloco_d = src.split("t_end_JobD = PythonOperator(")[1].split(")")[0]
+    assert "TriggerRule.NONE_SKIPPED" in bloco_d
+
+
+def test_decisao_tipo_query_compila(factory):
+    cond = {
+        "tipo": "query", "sql": "SELECT MAX(flag) FROM dbo.Controle",
+        "operador": "=", "valor": 1,
+        "ramo_verdadeiro": ["JobB"], "ramo_falso": [],
+    }
+    jobs = [
+        _job("JobA", order=1),
+        _job("Decisao", jtype="decisao", order=2, depends="JobA", cond=cond),
+        _job("JobB", order=3, depends=""),
+        _job("JobC", order=4, depends="JobA"),
+    ]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    ast.parse(src)
+    assert "SELECT MAX(flag) FROM dbo.Controle" in src
+    # ramo_falso vazio → retorna lista vazia
+    assert "return ['log_start_JobB'] if resultado else []" in src
+
+
+def test_pipeline_sem_decisao_nao_muda(factory):
+    """Sem decisão: nenhum import/trigger novo (não-regressão)."""
+    jobs = [_job("JobA", order=1), _job("JobB", order=2)]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    ast.parse(src)
+    assert "BranchPythonOperator" not in src
+    assert "from utils.conditions import" not in src
+    assert "NONE_SKIPPED" not in src
+    assert "NONE_FAILED_MIN_ONE_SUCCESS" not in src
+
+
+# ─────────────────────── helpers de conditions.py ──────────────────────────
+
+def test_safe_table_aceita_validas(conditions):
+    assert conditions._safe_table("dbo.FatoVendas") == "[dbo].[FatoVendas]"
+    assert conditions._safe_table("Tabela") == "[Tabela]"
+    assert conditions._safe_table("BI.dbo.X") == "[BI].[dbo].[X]"
+
+
+@pytest.mark.parametrize("ruim", [
+    "dbo.Fato; DROP TABLE x", "dbo.Fato--", "a.b.c.d", "", "dbo.[Fato]",
+    "1tabela", "dbo.Fato Vendas",
+])
+def test_safe_table_rejeita_injecao(conditions, ruim):
+    with pytest.raises(ValueError):
+        conditions._safe_table(ruim)
+
+
+def test_validate_select_aceita(conditions):
+    assert conditions._validate_select("SELECT 1") == "SELECT 1"
+    assert conditions._validate_select("  select count(*) from x ;  ").lower().startswith("select")
+
+
+@pytest.mark.parametrize("ruim", [
+    "DELETE FROM x", "UPDATE x SET a=1", "SELECT 1; DROP TABLE x",
+    "INSERT INTO x VALUES (1)", "EXEC sp_who", "", "DROP TABLE x",
+    "SELECT * INTO y FROM x",
+])
+def test_validate_select_rejeita(conditions, ruim):
+    with pytest.raises(ValueError):
+        conditions._validate_select(ruim)
+
+
+def test_compara_numerico_e_texto(conditions):
+    assert conditions.compara(10001, ">", 10000) is True
+    assert conditions.compara(5, ">", 10) is False
+    assert conditions.compara("1", "=", 1) is True          # numérico coerção
+    assert conditions.compara("ABC", "=", "ABC") is True     # texto
+    assert conditions.compara("ABC", "<>", "XYZ") is True
+    assert conditions.compara(10, "<=", 10) is True
+
+
+def test_compara_operador_invalido(conditions):
+    with pytest.raises(ValueError):
+        conditions.compara(1, "LIKE", 1)

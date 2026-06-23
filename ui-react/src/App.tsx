@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClient } from './lib/queryClient'
 import { useAuthStore } from './store/auth'
+import { MIGRATED } from './lib/nav'
 import { AppShell } from './components/layout/AppShell'
 import Login from './pages/Login'
 import Admin from './pages/Admin'
@@ -23,6 +24,29 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+// Elemento de cada rota migrada, chaveado por `NavItem.to`. É a única coisa que
+// App precisa declarar além do NAV (os componentes têm de ser importados aqui de
+// qualquer forma); o conjunto e a ordem das rotas saem de MIGRATED, sem duplicar
+// a lista de telas. Adicionar uma tela = registrar no nav.ts + mapear aqui.
+const PAGE_ELEMENT: Record<string, React.ReactNode> = {
+  '/dashboard': <Dashboard />,
+  '/pipelines': <Pipelines />,
+  '/jobs': <Jobs />,
+  '/logs': <Logs />,
+  '/governanca': <Governanca />,
+  '/malha': <Malha />,
+  '/impacto-campo': <ImpactoCampo />,
+  '/planos-ajuste': <PlanosAjuste />,
+  '/powerbi': <PowerBI />,
+  '/malha-ds': <MalhaDS />,
+  '/ds-console': <DsConsole />,
+  '/admin': <Admin />,
+}
+
+// Rotas que agrupam navegação interna por estado (abas) e precisam casar
+// subpaths — preserva o comportamento do antigo `admin/*`.
+const WILDCARD_ROUTES = new Set(['/admin'])
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -31,18 +55,12 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<PrivateRoute><AppShell /></PrivateRoute>}>
             <Route index element={<Navigate to="/dashboard" replace />} />
-            <Route path="admin/*" element={<Admin />} />
-            <Route path="malha" element={<Malha />} />
-            <Route path="governanca" element={<Governanca />} />
-            <Route path="impacto-campo" element={<ImpactoCampo />} />
-            <Route path="planos-ajuste" element={<PlanosAjuste />} />
-            <Route path="logs" element={<Logs />} />
-            <Route path="dashboard" element={<Dashboard />} />
-            <Route path="jobs" element={<Jobs />} />
-            <Route path="pipelines" element={<Pipelines />} />
-            <Route path="powerbi" element={<PowerBI />} />
-            <Route path="malha-ds" element={<MalhaDS />} />
-            <Route path="ds-console" element={<DsConsole />} />
+            {MIGRATED.map((n) => {
+              const element = PAGE_ELEMENT[n.to]
+              if (!element) return null
+              const path = n.to.replace(/^\//, '') + (WILDCARD_ROUTES.has(n.to) ? '/*' : '')
+              return <Route key={n.to} path={path} element={element} />
+            })}
           </Route>
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
