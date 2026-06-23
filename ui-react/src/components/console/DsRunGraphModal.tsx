@@ -48,10 +48,17 @@ function JobNode({ data }: NodeProps) {
   const sourcePos = d.dir === 'TB' ? Position.Bottom : Position.Right
   return (
     <div
-      className={`rounded-lg border px-3 py-2 shadow-sm min-w-[180px] max-w-[260px] ${s.box} ${d.critical ? 'ring-2 ring-violet-500' : ''} ${d.drillJob ? 'cursor-pointer hover:ring-2 hover:ring-[#1A5FA8]' : ''}`}
+      className={`relative rounded-lg border px-3 py-2 pr-7 shadow-sm min-w-[180px] max-w-[260px] ${s.box} ${d.critical ? 'ring-2 ring-violet-500' : ''} ${d.drillJob ? 'cursor-pointer hover:ring-2 hover:ring-[#1A5FA8]' : ''}`}
       title={d.drillJob ? `Abrir o log de ${d.label} (drill-down)` : d.label}
     >
       {!d.isRoot && <Handle type="target" position={targetPos} className="!bg-edge !border-edge" />}
+      <button
+        onMouseDown={e => e.stopPropagation()}
+        onClick={e => { e.stopPropagation(); navigator.clipboard?.writeText(d.label).then(() => toast.info('Nome copiado'), () => toast.error('Erro ao copiar')) }}
+        title="Copiar nome do job"
+        className="absolute top-1 right-1 text-dim hover:text-ink opacity-60 hover:opacity-100 nodrag">
+        <Copy size={11} />
+      </button>
       <div className="flex items-center gap-1.5">
         <Icon size={14} className={`${s.text} shrink-0`} />
         <span className="font-mono text-[11px] text-ink break-all leading-tight">{d.label}</span>
