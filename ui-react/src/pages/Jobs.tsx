@@ -19,7 +19,7 @@ import { MalhaTreeModal } from '../components/MalhaTreeModal'
 
 // ── constants ──────────────────────────────────────────────────────────────
 
-const JOB_TYPES = ['datastage', 'shell', 'python', 'storedproc'] as const
+const JOB_TYPES = ['datastage', 'shell', 'python', 'storedproc', 'decisao'] as const
 type JobType = typeof JOB_TYPES[number]
 
 // ── types ──────────────────────────────────────────────────────────────────
