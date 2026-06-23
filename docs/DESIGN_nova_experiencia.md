@@ -181,13 +181,13 @@ validar, e **só então liberar para todos** — como na migração legado → R
    Dois `dist/` convivendo — exatamente o precedente da migração. Mais isolado,
    porém mais pesado de operar.
 
-### Recomendação
-Fazer a **(1)+(2)**: construir o novo shell + editor atrás de uma **flag** ligada
-por **RBAC** a um grupo beta. Time valida com pipelines reais; quando estiver OK,
-**vira o default** (flag passa a ligada para todos) com **reversão trivial**. A
-opção (3) fica documentada como "isolamento total" caso se queira um ambiente
-de fato separado — mas (1)+(2) entregam o "validar antes de liberar" com muito
-menos custo e risco.
+### Decisão (definida)
+**Adotado: (1)+(2) — flag de shell + gate por RBAC.** Construir o novo shell (e
+depois o editor) atrás de uma **flag** ligada por **RBAC** a um grupo beta. Time
+valida com pipelines reais; quando estiver OK, **vira o default** (flag passa a
+ligada para todos) com **reversão trivial**. A opção (3) /v2 fica documentada como
+"isolamento total" caso, mais tarde, se queira um ambiente de fato separado — mas
+(1)+(2) entregam o "validar antes de liberar" com muito menos custo e risco.
 
 **Plano de corte/reversão**: default = clássico → beta liga flag → validação →
 flip do default para v2 → janela de convivência (flag permite voltar) → remoção do
@@ -229,17 +229,35 @@ para pipelines sem decisão).
 
 ---
 
-## 8. Decisões em aberto (para confirmar)
+## 8. Decisões
 
-1. **Conteúdo do header novo**: manter ⌘K + tema + notificações + perfil no header
-   (recomendado), ou mover algo desses para a sidebar?
-2. **Forma da versão paralela**: flag+RBAC no mesmo bundle (recomendado) ou build
-   isolado sob `/v2`?
-3. **Agrupamento/ordem do menu**: validar os 5 grupos propostos (§3.1) com os
-   usuários.
-4. **Ordem de execução**: começar pelo **shell** (ganho transversal e rápido) ou
-   pelo **editor de fluxo** (mais valor, mais esforço)? Recomendação: shell
-   primeiro (S/M, de-risca a navegação e cria o lar do editor), editor em seguida.
+**Definidas:**
+- **Versão paralela** → **flag de shell + gate por RBAC** (mesmo bundle; /v2 fica
+  como alternativa futura de isolamento total). Ver §5.
+- **Ordem de execução** → **shell primeiro**, editor em seguida. Ver §8.1.
+
+**Em aberto (validar com usuários, não bloqueiam o início):**
+- **Conteúdo do header novo**: manter ⌘K + tema + notificações + perfil no header
+  (default proposto), ou mover algo desses para a sidebar?
+- **Agrupamento/ordem do menu**: validar os 5 grupos propostos (§3.1).
+
+### 8.1 Plano de execução — shell primeiro (incrementos)
+
+Construído atrás da flag `orquestra_shell` (default `classic`), visível só ao
+grupo beta (RBAC). Cada incremento é commitável e reversível; `npm run build`
+recompila `dist/` antes de commitar.
+
+| # | Incremento | Entrega | Esforço |
+|---|---|---|---|
+| 1 | **Flag + bifurcação** | `lib/shell.ts` (get/set/toggle no padrão `theme.ts`, `localStorage['orquestra_shell']` + `?shell=`); `AppShell` escolhe clássico vs novo; gate por permissão `tela_*` beta. Novo shell começa como cópia do clássico. | S |
+| 2 | **Registry + `useVisibleNav`** | `nav.ts` ganha `group`; extrai `canSee`/agrupamento num hook compartilhado; `App.tsx` deriva `<Route>`s do `NAV`. | S/M |
+| 3 | **Sidebar colapsável** | barra lateral com grupos, ícone+label; modo colapsado (só ícone + tooltip); estado persistido; tokens semânticos. | M |
+| 4 | **Header fino** | extrai `NotificationsBell`/`ProfileDropdown`/`ChangelogModal`/`CommandPalette` em peças reutilizáveis; header novo só identidade + controles globais. | S/M |
+| 5 | **Responsividade** | drawer off-canvas no mobile; breakpoints estruturais. | S |
+| 6 | **Validação → flip** | grupo beta valida; ao OK, flag vira `v2` por default; janela de convivência; remoção do clássico quando estável. | — |
+
+Sem migration nesta etapa (a flag e o estado da sidebar vivem em `localStorage`;
+o gate beta reusa um recurso `tela_*` existente ou um novo, conforme a §7).
 
 ---
 
