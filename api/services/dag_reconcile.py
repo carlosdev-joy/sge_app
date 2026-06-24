@@ -26,9 +26,66 @@ from services.notify import add_notificacao
 log = logging.getLogger("orquestra-api")
 
 _DAG_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+_IMPORT_ERR_MAX = 12000  # corta o stack_trace (cabe em NVARCHAR(MAX)/JSON sem estourar)
 RECONCILE_INTERVAL_S = int(os.getenv("DAG_RECONCILE_INTERVAL_S", "10"))
 PENDENTE_TIMEOUT_S   = int(os.getenv("DAG_PENDENTE_TIMEOUT_S", "900"))  # 15 min
 GERADA_TIMEOUT_S     = int(os.getenv("DAG_GERADA_TIMEOUT_S", str(PENDENTE_TIMEOUT_S)))
+
+
+# ── import errors do Airflow ────────────────────────────────────────────────
+# A factory valida o .py com ast.parse, mas isso só pega erro de SINTAXE. Erros
+# em tempo de carga (NameError, import quebrado, etc.) só aparecem quando o
+# scheduler do Airflow tenta importar o arquivo: ele mantém a versão antiga da
+# DAG ATIVA, porém com has_import_errors=true. Logo "DAG existe + despausada" não
+# é garantia de DAG executável. Antes de declarar SUCCESS consultamos
+# GET /api/v1/importErrors e, se houver trace p/ {pipeline}.py, tratamos como FALHA.
+
+def _match_import_error(payload: dict | None, pipeline: str) -> str | None:
+    """Extrai do JSON de /api/v1/importErrors o stack_trace do arquivo
+    {pipeline}.py, ou None. Best-effort: qualquer formato inesperado → None.
+    Matching por filename (o Airflow devolve o caminho absoluto do arquivo)."""
+    if not payload or not pipeline:
+        return None
+    try:
+        suf_unix = "/" + pipeline + ".py"
+        suf_win  = "\\" + pipeline + ".py"
+        for ie in (payload.get("import_errors") or []):
+            fn = (ie.get("filename") or "")
+            if fn.endswith(suf_unix) or fn.endswith(suf_win) or fn == pipeline + ".py":
+                trace = ie.get("stack_trace") or ie.get("stacktrace") or ""
+                trace = str(trace).strip()
+                if trace:
+                    return trace[:_IMPORT_ERR_MAX]
+                return "Erro de importação no Airflow (sem stack trace disponível)."
+    except Exception as e:
+        log.debug("[DAG-RECONCILE] parse importErrors p/ %s: %s", pipeline, e)
+    return None
+
+
+async def _import_error_async(client: httpx.AsyncClient, pipeline: str) -> str | None:
+    """Variante async (caminho _process_one). Rede/parse falhou → None."""
+    if not pipeline:
+        return None
+    try:
+        r = await client.get("/api/v1/importErrors", params={"limit": 100})
+        if r.is_success:
+            return _match_import_error(r.json(), pipeline)
+    except Exception as e:
+        log.debug("[DAG-RECONCILE] importErrors async %s: %s", pipeline, e)
+    return None
+
+
+def _import_error_sync(client: httpx.Client, pipeline: str) -> str | None:
+    """Variante síncrona (caminho recheck_geradas). Rede/parse falhou → None."""
+    if not pipeline:
+        return None
+    try:
+        r = client.get("/api/v1/importErrors", params={"limit": 100})
+        if r.is_success:
+            return _match_import_error(r.json(), pipeline)
+    except Exception as e:
+        log.debug("[DAG-RECONCILE] importErrors sync %s: %s", pipeline, e)
+    return None
 
 
 # ── fila (DB síncrono) ──────────────────────────────────────────────────────
@@ -79,7 +136,7 @@ def _set_status(pendente_id: int, status: str) -> None:
         cur.execute(
             "UPDATE dbo.etl_dag_pendente "
             "SET status=?, atualizado_em=GETDATE(), "
-            "    concluido_em=CASE WHEN ? IN ('concluido','timeout') THEN GETDATE() ELSE concluido_em END "
+            "    concluido_em=CASE WHEN ? IN ('concluido','timeout','erro') THEN GETDATE() ELSE concluido_em END "
             "WHERE id=? AND status='pendente'", (status, status, pendente_id))
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
@@ -87,10 +144,16 @@ def _set_status(pendente_id: int, status: str) -> None:
 
 
 def _update_factory_log(dag_run_id: str | None, estado: str,
-                        step_tipo: str | None = None, step_msg: str | None = None) -> None:
-    """Vira o registro da factory (GERADA → SUCCESS/TIMEOUT) ao concluir a ativação
-    e anexa um passo no detalhes_json (linha no log do run). Só altera quem está em
-    'GERADA' — não mexe em SUCCESS/FAILED de outros fluxos."""
+                        step_tipo: str | None = None, step_msg: str | None = None,
+                        trace: str | None = None) -> None:
+    """Vira o registro da factory (GERADA → SUCCESS/TIMEOUT/ERRO) ao concluir a
+    ativação e anexa um passo no detalhes_json (linha no log do run). Só altera
+    quem está em 'GERADA' — não mexe em SUCCESS/FAILED de outros fluxos.
+
+    `trace`: quando presente (import error), grava um step extra
+    {"tipo":"import_error","msg":<stack_trace>}, adiciona o trace à lista `erros`
+    do detalhes_json e incrementa a coluna `erros` (contador), para o
+    /factory/runs sinalizar a falha."""
     if not dag_run_id:
         return
     try:
@@ -101,17 +164,30 @@ def _update_factory_log(dag_run_id: str | None, estado: str,
         row = cur.fetchone()
         if not row:
             cur.close(); conn.close(); return  # já finalizado ou outro fluxo
-        if step_msg:
+        if step_msg or trace:
             try:
                 d = json.loads(row[0]) if row[0] else {}
             except Exception:
                 d = {}
             d.setdefault("erros", d.get("erros", []))
-            d.setdefault("steps", []).append({"tipo": step_tipo or "info", "msg": step_msg})
-            cur.execute(
-                "UPDATE dbo.etl_factory_log SET estado=?, finalizado_em=GETDATE(), detalhes_json=? "
-                "WHERE dag_run_id=? AND estado='GERADA'",
-                (estado, json.dumps(d, ensure_ascii=False), dag_run_id))
+            d.setdefault("steps", [])
+            if step_msg:
+                d["steps"].append({"tipo": step_tipo or "info", "msg": step_msg})
+            if trace:
+                d["steps"].append({"tipo": "import_error", "msg": trace})
+                if trace not in d["erros"]:
+                    d["erros"].append(trace)
+            if trace:
+                cur.execute(
+                    "UPDATE dbo.etl_factory_log "
+                    "SET estado=?, finalizado_em=GETDATE(), detalhes_json=?, erros=erros+1 "
+                    "WHERE dag_run_id=? AND estado='GERADA'",
+                    (estado, json.dumps(d, ensure_ascii=False), dag_run_id))
+            else:
+                cur.execute(
+                    "UPDATE dbo.etl_factory_log SET estado=?, finalizado_em=GETDATE(), detalhes_json=? "
+                    "WHERE dag_run_id=? AND estado='GERADA'",
+                    (estado, json.dumps(d, ensure_ascii=False), dag_run_id))
         else:
             cur.execute(
                 "UPDATE dbo.etl_factory_log SET estado=?, finalizado_em=GETDATE() "
@@ -131,10 +207,25 @@ def _bump(pendente_id: int) -> None:
         pass
 
 
-def _finalize(row: dict, found: bool) -> None:
-    """Grava a notificação + atualiza o status. Rodado em thread (DB síncrono)."""
+def _finalize(row: dict, found: bool, import_trace: str | None = None) -> None:
+    """Grava a notificação + atualiza o status. Rodado em thread (DB síncrono).
+
+    `import_trace`: se presente, a DAG existe no Airflow MAS tem erro de
+    importação — NÃO é sucesso. Registra FALHA (estado ERRO + step import_error +
+    trace) e notifica com severidade 'error'."""
     name = row["pipeline_name"]; mat = row["matricula"]; desired_paused = row["desired_paused"]
-    if found:
+    if found and import_trace:
+        add_notificacao(
+            mat, f"DAG de {name} com erro de importação",
+            "A DAG foi gerada mas o Airflow não conseguiu importá-la — ela NÃO pode "
+            "ser executada. Veja o stack trace na tela de Publicação e corrija o fluxo.",
+            "error", "/publicacao")
+        _set_status(row["id"], "erro")
+        _update_factory_log(row.get("dag_run_id"), "ERRO", "import_error",
+                            "DAG com erro de importação no Airflow — não executável.",
+                            trace=import_trace)
+        log.warning("[DAG-RECONCILE] %s ATIVA porém com import error no Airflow", name)
+    elif found:
         add_notificacao(
             mat, f"DAG de {name} pronta no Airflow",
             ("A DAG foi gerada e está pausada (pipeline inativo)."
@@ -187,7 +278,13 @@ async def _process_one(client: httpx.AsyncClient, row: dict) -> None:
     except Exception as e:
         log.debug("[DAG-RECONCILE] poll %s: %s", name, e)
         found = False
-    await asyncio.to_thread(_finalize, row, found)
+    # Antes de declarar SUCCESS: a DAG pode existir/estar ativa mas com erro de
+    # importação (Airflow mantém a versão antiga ativa + has_import_errors). Nesse
+    # caso o arquivo {name}.py aparece em /api/v1/importErrors — vira FALHA.
+    import_trace = None
+    if found:
+        import_trace = await _import_error_async(client, name)
+    await asyncio.to_thread(_finalize, row, found, import_trace)
 
 
 async def reconcile_once() -> None:
@@ -220,6 +317,7 @@ def recheck_geradas() -> None:
             for run_id, pname, detalhes, idade in rows:
                 novo = None
                 step = None
+                import_trace = None
                 if pname and _DAG_ID_RE.match(pname):
                     desired = None  # active=0 → pausada (True); active=1 → ativa (False)
                     try:
@@ -234,8 +332,15 @@ def recheck_geradas() -> None:
                         if g.is_success:
                             cur_paused = bool(g.json().get("is_paused", True))
                             if desired is None or cur_paused == desired:
-                                novo = "SUCCESS"
-                                step = ("ativada", "DAG ativa no Airflow — pronta para execução.")
+                                # A DAG existe/está ativa — mas pode ter erro de
+                                # importação (Airflow mantém a versão antiga ativa).
+                                # Só é SUCCESS se NÃO houver import error p/ o .py.
+                                import_trace = _import_error_sync(client, pname)
+                                if import_trace:
+                                    novo = "ERRO"
+                                else:
+                                    novo = "SUCCESS"
+                                    step = ("ativada", "DAG ativa no Airflow — pronta para execução.")
                     except Exception as e:
                         log.debug("[GERADA-RECHECK] poll %s: %s", pname, e)
                 if novo is None and int(idade or 0) >= GERADA_TIMEOUT_S:
@@ -243,17 +348,31 @@ def recheck_geradas() -> None:
                     step = ("timeout", "A DAG foi gerada, mas não ficou ativa no Airflow no tempo limite.")
                 if novo:
                     novo_detalhes = detalhes
-                    if step:
+                    bump_erros = False
+                    if step or import_trace:
                         try:
                             d = json.loads(detalhes) if detalhes else {}
                         except Exception:
                             d = {}
                         d.setdefault("erros", d.get("erros", []))
-                        d.setdefault("steps", []).append({"tipo": step[0], "msg": step[1]})
+                        d.setdefault("steps", [])
+                        if step:
+                            d["steps"].append({"tipo": step[0], "msg": step[1]})
+                        if import_trace:
+                            d["steps"].append({"tipo": "import_error", "msg": import_trace})
+                            if import_trace not in d["erros"]:
+                                d["erros"].append(import_trace)
+                            bump_erros = True
                         novo_detalhes = json.dumps(d, ensure_ascii=False)
-                    cur.execute(
-                        "UPDATE dbo.etl_factory_log SET estado=?, finalizado_em=GETDATE(), detalhes_json=? "
-                        "WHERE dag_run_id=? AND estado='GERADA'", (novo, novo_detalhes, run_id))
+                    if bump_erros:
+                        cur.execute(
+                            "UPDATE dbo.etl_factory_log "
+                            "SET estado=?, finalizado_em=GETDATE(), detalhes_json=?, erros=erros+1 "
+                            "WHERE dag_run_id=? AND estado='GERADA'", (novo, novo_detalhes, run_id))
+                    else:
+                        cur.execute(
+                            "UPDATE dbo.etl_factory_log SET estado=?, finalizado_em=GETDATE(), detalhes_json=? "
+                            "WHERE dag_run_id=? AND estado='GERADA'", (novo, novo_detalhes, run_id))
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         log.debug("[GERADA-RECHECK] %s", e)
