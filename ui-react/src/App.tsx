@@ -3,7 +3,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClient } from './lib/queryClient'
 import { useAuthStore } from './store/auth'
 import { MIGRATED } from './lib/nav'
-import { AppShell } from './components/layout/AppShell'
+import { AppShellV2 } from './components/layout/AppShellV2'
 import Login from './pages/Login'
 import Admin from './pages/Admin'
 import Malha from './pages/Malha'
@@ -57,7 +57,7 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
-          <Route path="/" element={<PrivateRoute><AppShell /></PrivateRoute>}>
+          <Route path="/" element={<PrivateRoute><AppShellV2 /></PrivateRoute>}>
             <Route index element={<Navigate to="/dashboard" replace />} />
             {MIGRATED.map((n) => {
               const element = PAGE_ELEMENT[n.to]

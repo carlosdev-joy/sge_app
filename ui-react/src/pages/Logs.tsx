@@ -9,8 +9,6 @@ import { Input, Select } from '../components/ui/Input'
 import { Modal } from '../components/ui/Modal'
 import { PageSpinner } from '../components/ui/Spinner'
 import { toast } from '../components/ui/Toast'
-import { Tabs } from '../components/ui/Tabs'
-import { useShellVariant } from '../lib/shell'
 import {
   RefreshCw, RotateCcw, RefreshCcwDot, CheckSquare, FileText,
   Copy,
@@ -22,7 +20,6 @@ import {
   durStr, fmtDt, copyText,
   type ExecRow, type AirflowLogState,
 } from '../components/execucao/ExecucaoDetailModal'
-import { FactoryRuns } from '../components/factory/FactoryRuns'
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -889,30 +886,11 @@ export function GestaoFalhasTab() {
 // ── Root ───────────────────────────────────────────────────────────────────
 
 export default function Logs() {
-  const shell = useShellVariant()
-  const [searchParams] = useSearchParams()
-  // No v2, a Gestão de Falhas e a Regeneração de DAGs saíram para menus próprios
-  // (/gestao-falhas e /publicacao) e somem das abas. No clássico continuam como
-  // abas — lá são a única porta de entrada.
-  const showGestao = shell !== 'v2'
-  const showFactory = shell !== 'v2'
-  const tabs = [
-    { id: 'execucoes', label: '≣ Execuções' },
-    ...(showGestao ? [{ id: 'gestao', label: '⚠ Gestão de Falhas' }] : []),
-    ...(showFactory ? [{ id: 'factory', label: '♻ Publicação' }] : []),
-  ]
-  const urlTab = searchParams.get('tab')
-  const [tab, setTab] = useState(
-    urlTab && tabs.some((t) => t.id === urlTab) ? urlTab : 'execucoes',
-  )
-
+  // Gestão de Falhas (/gestao-falhas) e Publicação (/publicacao) são páginas/menus
+  // próprios — aqui ficam só as Execuções.
   return (
     <div className="flex flex-col gap-4">
-      <Tabs tabs={tabs} active={tab} onChange={setTab} />
-
-      {tab === 'execucoes' && <ExecucoesTab />}
-      {tab === 'gestao' && showGestao && <GestaoFalhasTab />}
-      {tab === 'factory' && showFactory && <FactoryRuns />}
+      <ExecucoesTab />
     </div>
   )
 }
