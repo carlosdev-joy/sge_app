@@ -715,17 +715,28 @@ def get_pipeline_fluxo(
 
 
 @router.post("/pipelines/{pipeline_name}/fluxo", tags=["jobs"])
-def save_pipeline_fluxo(
+async def save_pipeline_fluxo(
     pipeline_name: str,
     body: dict = Body(default={}),
     _auth: dict = Depends(require_perm(PERM_EDITAR)),
 ):
-    """Persiste dependências e posições dos nós do editor de fluxo.
+    """Persiste o fluxo do editor (Etapa 2) — reconciliação completa.
 
-    UPDATE direcionado: SÓ depends_on_jobs e layout_x/y (NÃO toca job_type,
-    job_command, condition_json, params, lineage ou execution_order). Cada
-    job_name deve pertencer ao pipeline; detecta ciclo (400) reusando
-    _graph_has_cycle. layout_x/y só são gravados se a 048 já rodou."""
+    Para cada nó: nós NOVOS (não existentes) são inseridos via
+    sp_etl_pipeline_job_upsert (job_type/command/order); nós EXISTENTES recebem
+    apenas UPDATE direcionado (NÃO toca job_type/command/order/ssh/mssql/verbose/
+    lineage — campos que o GET /fluxo não devolve). Para TODOS grava, por-coluna:
+    depends_on_jobs, condition_json (ramos+expressão da decisão; NULL p/ os demais)
+    e layout_x/y. Os job_name em `deleted` são removidos (com a lineage). Valida a
+    condição de cada decisão (_validate_condition) e detecta ciclo incluindo as
+    arestas de ramo (_graph_has_cycle). Tudo transacional; degrada por-coluna em
+    ambientes sem 038/043/048.
+
+    Payload:
+      nodes:   [{job_name, job_type, job_command, execution_order,
+                 depends_on_jobs[], condition{...}|null, layout_x, layout_y}]
+      deleted: [job_name, ...]   # opcional — nós removidos no canvas
+    """
     pipeline_name = (pipeline_name or "").strip()
     if not pipeline_name:
         raise HTTPException(status_code=422, detail="pipeline_name é obrigatório")
@@ -733,13 +744,21 @@ def save_pipeline_fluxo(
     nodes = body.get("nodes")
     if not isinstance(nodes, list):
         raise HTTPException(status_code=422, detail="nodes deve ser uma lista")
+    deleted_raw = body.get("deleted")
+    deleted = ({str(d).strip() for d in deleted_raw if str(d).strip()}
+               if isinstance(deleted_raw, list) else set())
+
+    # Conexões MSSQL só importam se houver decisão a validar (evita ida ao Airflow).
+    has_decisao = any(isinstance(n, dict) and (n.get("job_type") or "").lower().strip() == "decisao"
+                      for n in nodes)
+    mssql_conn_ids = await _list_mssql_conn_ids() if has_decisao else None
 
     try:
         conn = get_db_conn(); cur = conn.cursor()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
     try:
-        # Jobs que realmente pertencem ao pipeline (valida ownership).
+        # Jobs que pertencem ao pipeline hoje (ownership / base da reconciliação).
         try:
             cur.execute("SELECT job_name FROM dbo.etl_pipeline_job WHERE pipeline_name=?",
                         (pipeline_name,))
@@ -748,8 +767,7 @@ def save_pipeline_fluxo(
             cur.close(); conn.close()
             raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
 
-        # Colunas opcionais: depends_on_jobs (038) e layout_x/y (048) podem não
-        # existir — monta o SET dinamicamente (não falha em ambientes antigos).
+        # Colunas opcionais (degrada em ambientes sem 038/043/048).
         try:
             cur.execute(
                 "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
@@ -758,30 +776,71 @@ def save_pipeline_fluxo(
         except Exception:
             _cols = set()
         has_deps = "depends_on_jobs" in _cols
+        has_cond = "condition_json" in _cols
         has_layout = "layout_x" in _cols and "layout_y" in _cols
 
-        # Monta o grafo resultante (deps enviadas) — só arestas entre jobs do
-        # pipeline; detecta ciclo antes de gravar.
-        adj: dict[str, set[str]] = {n: set() for n in owned}
-        updates = []  # (job_name, dep_csv|None, layout_x, layout_y)
-        for node in nodes:
+        # Conjunto final de jobs (o canvas envia o estado completo do fluxo) —
+        # base para validar ramos e filtrar dependências.
+        known_jobs = {(n.get("job_name") or "").strip() for n in nodes
+                      if isinstance(n, dict) and (n.get("job_name") or "").strip()}
+
+        # Valida e prepara cada nó; monta o grafo (deps + ramos) para o ciclo.
+        errors: list[str] = []
+        cycle_adj: dict[str, set[str]] = {n: set() for n in known_jobs}
+        prepared = []  # (j_name, is_new, order, type, cmd, ssh, verbose, mssql, dep_csv, cond_json|None, lx, ly)
+        seen: set[str] = set()
+        for idx, node in enumerate(nodes):
             if not isinstance(node, dict):
                 continue
             j_name = (node.get("job_name") or "").strip()
-            if not j_name or j_name not in owned:
-                continue  # ignora jobs que não pertencem ao pipeline
+            if not j_name:
+                errors.append(f"nó #{idx}: job_name é obrigatório"); continue
+            if j_name in seen:
+                errors.append(f"{j_name}: job_name duplicado no fluxo"); continue
+            seen.add(j_name)
+            if not _JOB_NAME_RE.match(j_name):
+                errors.append(f"{j_name}: nome inválido (use letras, números, _ . - e espaço)"); continue
+            j_type = (node.get("job_type") or "datastage").lower().strip()
+            if j_type not in VALID_JOB_TYPES:
+                errors.append(f"{j_name}: job_type '{j_type}' inválido"); continue
+            is_new = j_name not in owned
+
+            j_cmd = node.get("job_command") or None
+            try:
+                j_order = int(node.get("execution_order")) if node.get("execution_order") is not None else 1
+            except (ValueError, TypeError):
+                j_order = 1
+            j_ssh = (node.get("ssh_conn_id") or "").strip() or None
+            j_verbose = 1 if node.get("verbose_log") else 0
+            j_mssql = (node.get("mssql_conn_id") or "").strip() or None
+
+            # Dependências NORMAIS (só entre jobs do fluxo) → arestas predecessor→job.
             dep_raw = node.get("depends_on_jobs")
             if isinstance(dep_raw, list):
                 dep_list = [str(d).strip() for d in dep_raw if str(d).strip()]
             else:
                 dep_list = _parse_dep_csv(dep_raw)
-            # Só mantém arestas para jobs do pipeline (predecessor → job).
-            dep_list = [d for d in dep_list if d in owned]
+            dep_list = [d for d in dep_list if d in known_jobs and d != j_name]
             for d in dep_list:
-                adj[d].add(j_name)
+                cycle_adj[d].add(j_name)
             dep_csv = ",".join(dep_list) or None
-            lx = node.get("layout_x")
-            ly = node.get("layout_y")
+
+            # Condição da decisão — valida e registra as arestas de ramo p/ ciclo.
+            cond_json_str = None
+            if j_type == "decisao":
+                raw_cond = node.get("condition")
+                if not isinstance(raw_cond, dict):
+                    errors.append(f"{j_name}: decisão sem condição (defina quando vai para sim/não)"); continue
+                cond_errs = _validate_condition(raw_cond, known_jobs, j_name, mssql_conn_ids)
+                if cond_errs:
+                    errors.extend(f"{j_name}: {e}" for e in cond_errs); continue
+                cond_json_str = json.dumps(raw_cond, ensure_ascii=False)
+                for m in (raw_cond.get("ramo_verdadeiro") or []) + (raw_cond.get("ramo_falso") or []):
+                    mn = str(m).strip()
+                    if mn in cycle_adj:
+                        cycle_adj[j_name].add(mn)   # decisão → membro do ramo
+
+            lx, ly = node.get("layout_x"), node.get("layout_y")
             try:
                 lx = float(lx) if lx is not None else None
             except (ValueError, TypeError):
@@ -790,29 +849,60 @@ def save_pipeline_fluxo(
                 ly = float(ly) if ly is not None else None
             except (ValueError, TypeError):
                 ly = None
-            updates.append((j_name, dep_csv, lx, ly))
 
-        if _graph_has_cycle(adj):
+            prepared.append((j_name, is_new, j_order, j_type, j_cmd, j_ssh,
+                             j_verbose, j_mssql, dep_csv, cond_json_str, lx, ly))
+
+        if errors:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=422, detail={"errors": errors})
+
+        if _graph_has_cycle(cycle_adj):
             cur.close(); conn.close()
             raise HTTPException(
                 status_code=400,
-                detail="ciclo detectado entre as etapas (dependências)")
+                detail="ciclo detectado entre as etapas (dependências/ramos da decisão)")
 
-        for j_name, dep_csv, lx, ly in updates:
-            sets, vals = [], []
+        # ── Aplica (transacional) ─────────────────────────────────────────────
+        # 1) Remove os jobs marcados (e a lineage) — só os que ainda existem e
+        #    não voltaram no fluxo (proteção contra remoção acidental).
+        removed = 0
+        for d in deleted:
+            if d in owned and d not in known_jobs:
+                cur.execute("DELETE FROM dbo.etl_job_lineage WHERE pipeline_name=? AND job_name=?",
+                            (pipeline_name, d))
+                cur.execute("DELETE FROM dbo.etl_pipeline_job WHERE pipeline_name=? AND job_name=?",
+                            (pipeline_name, d))
+                removed += 1
+
+        # 2) Insere os nós novos; grava deps/condição/posição em TODOS (por-coluna).
+        for (j_name, is_new, j_order, j_type, j_cmd, j_ssh, j_verbose,
+             j_mssql, dep_csv, cond_json_str, lx, ly) in prepared:
+            if is_new:
+                cur.execute(
+                    "EXEC dbo.sp_etl_pipeline_job_upsert "
+                    "@pipeline_name=?, @job_name=?, @execution_order=?, @job_type=?, @job_command=?, "
+                    "@ssh_conn_id=?, @verbose_log=?, @mssql_conn_id=?",
+                    (pipeline_name, j_name, j_order, j_type, j_cmd, j_ssh, j_verbose, j_mssql))
             if has_deps:
-                sets.append("depends_on_jobs=?"); vals.append(dep_csv)
+                cur.execute("UPDATE dbo.etl_pipeline_job SET depends_on_jobs=? "
+                            "WHERE pipeline_name=? AND job_name=?",
+                            (dep_csv, pipeline_name, j_name))
+            # Grava condition_json SÓ em decisão — nunca zera a condição de uma
+            # etapa (o canvas não troca o tipo de um nó existente). Protege contra
+            # um frontend antigo (sem job_type) apagar a condição de uma decisão.
+            if has_cond and j_type == "decisao":
+                cur.execute("UPDATE dbo.etl_pipeline_job SET condition_json=? "
+                            "WHERE pipeline_name=? AND job_name=?",
+                            (cond_json_str, pipeline_name, j_name))
             if has_layout:
-                sets.append("layout_x=?"); sets.append("layout_y=?"); vals += [lx, ly]
-            if not sets:
-                continue  # nada a persistir neste ambiente (colunas ausentes)
-            cur.execute(
-                f"UPDATE dbo.etl_pipeline_job SET {', '.join(sets)} "
-                "WHERE pipeline_name=? AND job_name=?",
-                (*vals, pipeline_name, j_name))
+                cur.execute("UPDATE dbo.etl_pipeline_job SET layout_x=?, layout_y=? "
+                            "WHERE pipeline_name=? AND job_name=?",
+                            (lx, ly, pipeline_name, j_name))
+
         conn.commit()
         cur.close(); conn.close()
-        return {"ok": True, "updated": len(updates)}
+        return {"ok": True, "saved": len(prepared), "deleted": removed}
     except HTTPException:
         try:
             conn.rollback(); cur.close(); conn.close()
