@@ -25,7 +25,7 @@ const RBAC_RECURSOS: [string, string][] = [
   ['tela_governanca', 'Governança'],
   ['tela_malha', 'Malha'], ['tela_admin', 'Admin'],
   ['tela_impacto_campo', 'Impacto Campo'], ['tela_plano_ajuste', 'Plano Ajuste'],
-  ['tela_powerbi', 'Power BI'], ['tela_malha_ds', 'Malha DS'],
+  ['tela_powerbi', 'Power BI'],
   ['tela_ds_console', 'Console DataStage'],
   ['acao_executar', 'Executar/Rerun/Ack'],
   ['acao_editar', 'Cadastrar/Editar'],

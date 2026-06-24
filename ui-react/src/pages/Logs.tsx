@@ -14,9 +14,8 @@ import { useShellVariant } from '../lib/shell'
 import {
   RefreshCw, RotateCcw, CheckSquare, FileText,
   ChevronDown, ChevronUp, Copy,
-  ShieldCheck, ShieldAlert, ShieldX, AlertTriangle, CheckCircle2, Ticket, Eye, Share2,
+  ShieldCheck, ShieldAlert, ShieldX, AlertTriangle, CheckCircle2, Ticket, Eye,
 } from 'lucide-react'
-import { MalhaTreeModal } from '../components/MalhaTreeModal'
 import { Textarea } from '../components/ui/Input'
 import {
   LogDetailModal, AirflowLogModal, DsLogModal,
@@ -59,8 +58,6 @@ interface FalhaRow {
   resolved_at?: string
   resolution_note?: string
   snow_ticket?: string
-  origem?: string      // 'pipeline' | 'malha'
-  job_name?: string    // preenchido quando origem='malha' (job ABORTED órfão)
 }
 
 interface FactoryRun {
@@ -413,7 +410,7 @@ function ResolveModal({
       body: JSON.stringify({
         execution_id: row.execution_id,
         pipeline: row.pipeline,
-        label: row.origem === 'malha' ? (row.job_name || row.pipeline) : row.pipeline,
+        label: row.pipeline,
         user: user?.matricula,
         display_name: `${user?.primeiro_nome ?? ''} ${user?.ultimo_nome ?? ''}`.trim(),
         resolution_note: note || null,
@@ -615,7 +612,7 @@ function BulkResolveModal({ rows, loading, onConfirm, onClose }: {
         <div className="max-h-32 overflow-auto border border-edge rounded-lg divide-y divide-edge/30">
           {rows.slice(0, 50).map(r => (
             <div key={`${r.execution_id}-${r.pipeline}`} className="px-3 py-1.5 text-[11px] flex items-center gap-2">
-              <span className="font-mono text-ink truncate flex-1">{r.origem === 'malha' ? r.job_name : r.pipeline}</span>
+              <span className="font-mono text-ink truncate flex-1">{r.pipeline}</span>
               <span className="text-dim shrink-0">{fmtDt(r.inicio)}</span>
             </div>
           ))}
@@ -647,22 +644,21 @@ export function GestaoFalhasTab() {
 
   const [days, setDays] = useState(7)
   const [statusAck, setStatusAck] = useState('')
+  const [mine, setMine] = useState(false)   // "assumidas por mim" (ack_by = matrícula)
   const [filterPipeline, setFilterPipeline] = useState('')
   const [filterProject, setFilterProject] = useState('')
   const [page, setPage] = useState(0)
   const [resolveRow, setResolveRow] = useState<{ row: FalhaRow; readOnly: boolean } | null>(null)
-  const [malhaJob, setMalhaJob] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bulkOpen, setBulkOpen] = useState(false)
   const FLIMIT = 50
 
   const rowKey = (r: FalhaRow) => `${r.execution_id}|${r.pipeline}`
-  // Rótulo amigável p/ notificação no Teams: na malha mostramos o nome do job;
-  // nos demais, o nome do pipeline. Espelha o que a tabela exibe na coluna.
-  const falhaLabel = (r: FalhaRow) => (r.origem === 'malha' ? (r.job_name || r.pipeline) : r.pipeline)
+  // Rótulo amigável p/ notificação no Teams: o nome do pipeline.
+  const falhaLabel = (r: FalhaRow) => r.pipeline
 
   // Seleção é limpa quando os filtros/página mudam (evita resolver o que saiu da lista)
-  useEffect(() => { setSelected(new Set()) }, [days, statusAck, filterPipeline, filterProject, page])
+  useEffect(() => { setSelected(new Set()) }, [days, statusAck, mine, filterPipeline, filterProject, page])
 
   const qs = new URLSearchParams({
     days: String(days),
@@ -672,9 +668,10 @@ export function GestaoFalhasTab() {
   if (statusAck) qs.set('status_ack', statusAck)
   if (filterPipeline) qs.set('filter_pipeline', filterPipeline)
   if (filterProject) qs.set('filter_project', filterProject)
+  if (mine && user?.matricula) qs.set('ack_by', user.matricula)
 
   const { data, isLoading, refetch } = useQuery<{ total: number; data: FalhaRow[] }>({
-    queryKey: ['falhas', days, statusAck, filterPipeline, filterProject, page],
+    queryKey: ['falhas', days, statusAck, mine, filterPipeline, filterProject, page],
     queryFn: () => apiFetch(`/execucoes/falhas?${qs}`),
   })
 
@@ -787,6 +784,13 @@ export function GestaoFalhasTab() {
           <option value="resolvida">Resolvidas</option>
         </Select>
 
+        <Select label="Responsável" value={mine ? 'mine' : ''}
+          onChange={e => { setMine(e.target.value === 'mine'); setPage(0) }}
+          className="w-48">
+          <option value="">Todos</option>
+          <option value="mine">Assumidas por mim</option>
+        </Select>
+
         <Select label="Projeto" value={filterProject}
           onChange={e => { setFilterProject(e.target.value); setPage(0) }}
           className="w-44">
@@ -801,7 +805,7 @@ export function GestaoFalhasTab() {
 
         <div className="flex gap-2 ml-auto items-end">
           <Button variant="secondary" size="sm" onClick={() => {
-            setStatusAck(''); setFilterPipeline(''); setFilterProject(''); setPage(0)
+            setStatusAck(''); setMine(false); setFilterPipeline(''); setFilterProject(''); setPage(0)
           }}>Limpar</Button>
           <Button size="sm" onClick={() => { setPage(0); refetch() }}><RefreshCw size={13} /></Button>
         </div>
@@ -869,16 +873,8 @@ export function GestaoFalhasTab() {
                         </td>
                       )}
                       <td className="px-3 py-2 font-mono text-ink font-medium max-w-[240px]"
-                        title={r.origem === 'malha' ? r.job_name : r.pipeline}>
-                        <div className="flex items-center gap-1.5">
-                          <span className="truncate">{r.origem === 'malha' ? r.job_name : r.pipeline}</span>
-                          {r.origem === 'malha' && (
-                            <span title="Falha detectada na varredura da malha (job órfão, fora do tratamento da sequence)"
-                              className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold border bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800">
-                              malha
-                            </span>
-                          )}
-                        </div>
+                        title={r.pipeline}>
+                        <span className="truncate block">{r.pipeline}</span>
                       </td>
                       <td className="px-3 py-2 text-dim">{r.project}</td>
                       <td className="px-3 py-2 text-dim whitespace-nowrap">{fmtDt(r.inicio)}</td>
@@ -931,13 +927,6 @@ export function GestaoFalhasTab() {
                               <CheckCircle2 size={12} />
                             </Button>
                           )}
-                          {r.origem === 'malha' && r.job_name && (
-                            <Button variant="ghost" size="sm" title="Ver malha (estrutura DataStage)"
-                              onClick={() => setMalhaJob(r.job_name!)}
-                              className="text-[#1A5FA8]">
-                              <Share2 size={12} />
-                            </Button>
-                          )}
                           <Button variant="ghost" size="sm" title="Copiar Execution ID"
                             onClick={() => copyText(r.execution_id)}>
                             <Copy size={12} />
@@ -973,7 +962,6 @@ export function GestaoFalhasTab() {
           onClose={() => setBulkOpen(false)}
         />
       )}
-      {malhaJob && <MalhaTreeModal jobName={malhaJob} open onClose={() => setMalhaJob(null)} />}
     </div>
   )
 }

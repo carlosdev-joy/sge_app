@@ -13,7 +13,7 @@
 import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, Workflow, Boxes, ScrollText, Bell, ShieldAlert,
-  ShieldCheck, Network, Settings, FileSearch, ClipboardList, BarChart3, Share2, Terminal,
+  ShieldCheck, Network, Settings, FileSearch, ClipboardList, BarChart3, Terminal,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 
@@ -46,7 +46,6 @@ export const NAV: NavItem[] = [
   { to: '/malha',      label: 'Malha',      labelV2: 'Malha de Pipelines',    icon: Network,       group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_malha' },
   { to: '/impacto-campo', label: 'Impacto Campo', labelV2: 'Impacto de Campo', icon: FileSearch,   group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_impacto_campo' },
   { to: '/planos-ajuste', label: 'Planos Ajuste', labelV2: 'Planos de Ajuste', icon: ClipboardList, group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_plano_ajuste' },
-  { to: '/malha-ds',   label: 'Malha DS',   labelV2: 'Estrutura (Malha DS)',  icon: Share2,        group: 'DataStage',  legacyHref: '/', migrated: true, perm: 'tela_malha_ds' },
   { to: '/ds-console', label: 'Console DS', labelV2: 'Console (dsjob)',       icon: Terminal,      group: 'DataStage',  legacyHref: '/', migrated: true, perm: 'tela_ds_console' },
   { to: '/powerbi',    label: 'Power BI',   icon: BarChart3,       group: 'BI',         legacyHref: '/', migrated: true, perm: 'tela_powerbi' },
   { to: '/admin',      label: 'Admin',      icon: Settings,        group: 'Administração', legacyHref: '/', migrated: true, adminOnly: true, perm: 'tela_admin' },

@@ -740,34 +740,11 @@ def _ensure_resolve_columns(conn, cur) -> bool:
     return ready
 
 
-_malha_falha_ready_cache = False
+def _failure_cte(cutoff: str, filter_pipeline: str | None, filter_project: str | None):
+    """Retorna (cte_sql, params) agregando execuções de pipeline com FAILED.
 
-
-def _malha_falha_ready(conn, cur) -> bool:
-    """True se a tabela etl_ds_malha_falha (migration 030) existe. Cacheado."""
-    global _malha_falha_ready_cache
-    if _malha_falha_ready_cache:
-        return True
-    try:
-        cur.execute("SELECT 1 FROM INFORMATION_SCHEMA.TABLES "
-                    "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_ds_malha_falha'")
-        ok = bool(cur.fetchone())
-    except Exception:
-        try: conn.rollback()
-        except Exception: pass
-        ok = False
-    if ok:
-        _malha_falha_ready_cache = True
-    return ok
-
-
-def _failure_cte(cutoff: str, filter_pipeline: str | None, filter_project: str | None,
-                 include_malha: bool = False):
-    """Retorna (cte_sql, params) agregando execuções com FAILED.
-
-    Quando include_malha, faz UNION ALL com as falhas detectadas na varredura da
-    malha (etl_ds_malha_falha) — cada job ABORTED vira uma "execução" de 1 job.
-    Colunas extra `origem` ('pipeline'|'malha') e `job_name` (só na malha)."""
+    Colunas `origem` (sempre 'pipeline') e `job_name` (sempre NULL) são mantidas
+    por compatibilidade de shape da resposta."""
     where_parts = ["e.start_time >= ?"]
     params: list = [cutoff]
     if filter_pipeline:
@@ -777,29 +754,6 @@ def _failure_cte(cutoff: str, filter_pipeline: str | None, filter_project: str |
         where_parts.append("e.project = ?")
         params.append(filter_project)
     where_sql = " AND ".join(where_parts)
-
-    malha_union = ""
-    if include_malha:
-        m_where = ["m.detected_at >= ?"]
-        m_params: list = [cutoff]
-        if filter_pipeline:
-            m_where.append("m.pipeline LIKE ?")
-            m_params.append(f"%{filter_pipeline}%")
-        if filter_project:
-            m_where.append("m.project = ?")
-            m_params.append(filter_project)
-        malha_union = f"""
-            UNION ALL
-            SELECT m.execution_id, m.project, m.pipeline,
-                   COALESCE(m.started_at, m.detected_at) AS inicio,
-                   m.detected_at                          AS fim,
-                   COALESCE(m.elapsed_seconds, 0)         AS duracao_total_segundos,
-                   1 AS total_jobs, 1 AS jobs_falha, 0 AS jobs_warning,
-                   CAST('malha' AS VARCHAR(10)) AS origem, m.job_name AS job_name
-            FROM dbo.etl_ds_malha_falha m
-            WHERE {' AND '.join(m_where)}
-        """
-        params = params + m_params
 
     cte = f"""
         WITH agg AS (
@@ -817,7 +771,6 @@ def _failure_cte(cutoff: str, filter_pipeline: str | None, filter_project: str |
             WHERE {where_sql}
             GROUP BY e.execution_id, e.project, e.pipeline
             HAVING SUM(CASE WHEN e.status='FAILED' THEN 1 ELSE 0 END) > 0
-            {malha_union}
         )
     """
     return cte, params
@@ -829,9 +782,8 @@ def get_falhas_summary(days: int = Query(7, ge=1, le=90)):
     try:
         conn = get_db_conn(); cur = conn.cursor()
         has_resolved = _ensure_resolve_columns(conn, cur)
-        include_malha = _malha_falha_ready(conn, cur)
         cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-        cte, params = _failure_cte(cutoff, None, None, include_malha)
+        cte, params = _failure_cte(cutoff, None, None)
 
         if has_resolved:
             cur.execute(cte + """
@@ -1101,6 +1053,7 @@ def list_falhas(
     status_ack: Optional[str] = Query(None),  # "sem_ack" | "com_ack" | "resolvida"
     filter_pipeline: Optional[str] = None,
     filter_project: Optional[str] = None,
+    ack_by: Optional[str] = Query(None),   # matrícula: filtra "assumidas por mim"
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
 ):
@@ -1108,9 +1061,8 @@ def list_falhas(
     try:
         conn = get_db_conn(); cur = conn.cursor()
         has_resolved = _ensure_resolve_columns(conn, cur)
-        include_malha = _malha_falha_ready(conn, cur)
         cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-        cte, params = _failure_cte(cutoff, filter_pipeline, filter_project, include_malha)
+        cte, params = _failure_cte(cutoff, filter_pipeline, filter_project)
 
         # Filtro por situação de ack/resolve — adicionado ao WHERE pós-CTE
         ack_filter = ""
@@ -1123,13 +1075,19 @@ def list_falhas(
             ack_filter = "AND ack.execution_id IS NOT NULL AND ack.resolved_at IS NOT NULL" if has_resolved \
                          else "AND ack.execution_id IS NOT NULL"
 
+        # Filtro "assumidas por mim" — só falhas com ack do usuário informado.
+        ack_params: list = []
+        if ack_by:
+            ack_filter += " AND ack.ack_by = ?"
+            ack_params.append(ack_by)
+
         cur.execute(cte + f"""
             SELECT COUNT(DISTINCT a.execution_id)
             FROM agg a
             LEFT JOIN dbo.etl_failure_ack ack
                    ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
             WHERE 1=1 {ack_filter}
-        """, params)
+        """, params + ack_params)
         total_row = cur.fetchone()
         total = int(total_row[0] or 0) if total_row else 0
 
@@ -1150,7 +1108,7 @@ def list_falhas(
             WHERE 1=1 {ack_filter}
             ORDER BY a.inicio DESC
             OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
-        """, params + [offset, limit])
+        """, params + ack_params + [offset, limit])
 
         rows = cur.fetchall()
         cur.close(); conn.close()

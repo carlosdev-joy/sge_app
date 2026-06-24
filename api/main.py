@@ -71,16 +71,8 @@ Endpoints:
   GET  /datastage/log                     — consulta logs DataStage
   GET  /datastage/status                  — status atual de job DataStage
 
-  POST   /malha-ds/import                 — parseia export XML e grava a malha
-  GET    /malha-ds                        — lista projetos com malha importada
-  GET    /malha-ds/{project}              — malha (cabeçalho + árvore + raízes)
-  GET    /malha-ds/subtree               — árvore de um job por nome (vínculo job↔malha)
-  GET    /malha-ds/by-pipeline           — malha(s) de um pipeline (casa jobs↔malha por nome)
-  GET    /malha-ds/{project}/jobs         — jobs reais p/ varredura dsjob -jobinfo
-  POST   /malha-ds/{project}/scan         — dispara varredura de status (dsjob -jobinfo)
-  GET    /malha-ds/{project}/status       — snapshot de status por job
+  GET    /malha-ds/xml-files               — lista exports .xml disponíveis (lineage via XML/DSX)
   GET    /malha-ds/{project}/lineage-preview — preview do lineage do XML × atual (read-only)
-  DELETE /malha-ds/{project}              — remove a malha do projeto
 
   GET  /factory/runs                      — execuções da etl_dag_factory
   GET  /factory/runs/{dag_run_id}/log     — log estruturado de execução da factory
@@ -118,7 +110,7 @@ from services.monitor_capture import capture_loop as monitor_capture_loop
 from routers import (
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
-    datastage, factory, airflow, change_plans, powerbi, malha_ds,
+    datastage, factory, airflow, change_plans, powerbi, lineage_xml,
     notificacoes, comunicados, backlog, monitor,
 )
 
@@ -176,7 +168,7 @@ app.add_middleware(
 for _router_module in [
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
-    datastage, factory, airflow, change_plans, powerbi, malha_ds,
+    datastage, factory, airflow, change_plans, powerbi, lineage_xml,
     notificacoes, comunicados, backlog, monitor,
 ]:
     app.include_router(_router_module.router)

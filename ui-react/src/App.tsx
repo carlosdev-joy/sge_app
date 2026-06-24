@@ -15,7 +15,6 @@ import Jobs from './pages/Jobs'
 import Pipelines from './pages/Pipelines'
 import Dashboard from './pages/Dashboard'
 import PowerBI from './pages/PowerBI'
-import MalhaDS from './pages/MalhaDS'
 import DsConsole from './pages/DsConsole'
 import Avisos from './pages/Avisos'
 import GestaoFalhas from './pages/GestaoFalhas'
@@ -42,7 +41,6 @@ const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/impacto-campo': <ImpactoCampo />,
   '/planos-ajuste': <PlanosAjuste />,
   '/powerbi': <PowerBI />,
-  '/malha-ds': <MalhaDS />,
   '/ds-console': <DsConsole />,
   '/admin': <Admin />,
 }

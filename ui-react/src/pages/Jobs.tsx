@@ -12,10 +12,9 @@ import { toast } from '../components/ui/Toast'
 import { copyToClipboard } from '../lib/clipboard'
 import {
   Edit, Plus, ClipboardList, Play, Save, X, Trash2,
-  ChevronUp, ChevronDown, Copy, Network, ArrowUpDown, Share2,
+  ChevronUp, ChevronDown, Copy, Network, ArrowUpDown,
 } from 'lucide-react'
 import { useAirflowUrl } from '../lib/config'
-import { MalhaTreeModal } from '../components/MalhaTreeModal'
 
 // ── constants ──────────────────────────────────────────────────────────────
 
@@ -578,7 +577,6 @@ export default function Jobs() {
   const [showBulk, setShowBulk] = useState(false)
   const [bannerVisible, setBannerVisible] = useState(true)
   const [deleteJob, setDeleteJob] = useState<Job | undefined>()
-  const [malhaJob, setMalhaJob] = useState<string | null>(null)
   const [showExecConfirm, setShowExecConfirm] = useState(false)
 
   // Sort state
@@ -903,15 +901,6 @@ export default function Jobs() {
                               >
                                 <Copy size={11} />
                               </button>
-                              {j.job_type === 'datastage' && (
-                                <button
-                                  onClick={() => setMalhaJob(j.job_name)}
-                                  className="text-dim hover:text-[#1A5FA8] opacity-0 group-hover:opacity-100 transition-opacity"
-                                  title="Ver malha (DataStage)"
-                                >
-                                  <Share2 size={11} />
-                                </button>
-                              )}
                             </div>
                           </td>
                           <td className="px-3 py-2 text-center">
@@ -986,7 +975,6 @@ export default function Jobs() {
       {/* Modals */}
       {showNew && <JobFormModal pipeline={searched} onClose={() => setShowNew(false)} />}
       {editJob && <JobFormModal job={editJob} pipeline={editJob.pipeline_name || searched} onClose={() => setEditJob(undefined)} />}
-      {malhaJob && <MalhaTreeModal jobName={malhaJob} open onClose={() => setMalhaJob(null)} />}
       {showBulk && <BulkModal pipeline={searched} onClose={() => setShowBulk(false)} />}
       {deleteJob && (
         <DeleteConfirmModal
