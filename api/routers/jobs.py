@@ -696,9 +696,16 @@ def get_pipeline_fluxo(
             log.warning("get_pipeline_fluxo degradou (%s): %s", pipeline_name, e)
             cur.close(); conn.close()
             return {"nodes": []}
-        # Parâmetros (storedproc) — uma query agrupada por job (degrada se faltar).
+        # Parâmetros (storedproc) — uma query agrupada por job. Se a TABELA não
+        # existe → params vazio (feature ausente). Se existe mas a query falha
+        # (ex.: timeout transitório), NÃO degrada para [] silenciosamente: deixa
+        # propagar para o handler externo (→ {nodes: []}), senão o save seguinte
+        # faria param_clear e apagaria os parâmetros REAIS de um storedproc.
         params_by_job: dict[str, list] = {}
-        try:
+        cur.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job_param'")
+        if cur.fetchone()[0]:
             cur.execute(
                 "SELECT job_name, param_name, param_type, param_value "
                 "FROM dbo.etl_pipeline_job_param WHERE pipeline_name=? "
@@ -706,8 +713,6 @@ def get_pipeline_fluxo(
             for pr in cur.fetchall():
                 params_by_job.setdefault(pr[0], []).append(
                     {"param_name": pr[1], "param_type": pr[2], "param_value": pr[3]})
-        except Exception:
-            params_by_job = {}
         nodes = []
         for r in rows:
             condition = None
