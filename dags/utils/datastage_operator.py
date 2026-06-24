@@ -349,45 +349,49 @@ class DataStageOperator(BaseOperator):
                                cj.get("name"), exc)
                 cj["rows"] = None
 
-    # Saída do dsjob -report DETAIL varia por versão/stage; o relatório lista os
-    # links com seu nome e a contagem de linhas. Capturamos os links de SAÍDA
-    # (link name + nº de linhas) por padrões tolerantes a rótulos PT/EN.
+    # O `dsjob -report ... DETAIL` (formato server clássico) lista cada stage e
+    # link com a contagem de linhas, ex.:
+    #   Stage: EXT_SEGURADOS_VGAP, 6866540 rows input
+    #   Link: LnkSegurados_VGAP, 6866540 rows
+    # Capturamos essas contagens (+ layouts alternativos por versão). O formato
+    # varia por versão/stage; os padrões são tolerantes (PT/EN).
     _ROWS_OUT_PATTERNS = (
-        # "Link 'X' (Output): Rows = 1234"  /  "Output Link 'X': ... Rows: 1234"
+        # "Link: <nome>, 6866540 rows"
+        re.compile(r"\bLink:\s.*?,\s*([\d,]+)\s+rows\b", re.IGNORECASE),
+        # "Stage: <nome>, 6866540 rows input"  (ou "rows output")
+        re.compile(r"\bStage:\s.*?,\s*([\d,]+)\s+rows\b", re.IGNORECASE),
+        # Layouts alternativos por versão: "Output ... Rows = N" / "Rows = N ... Output"
         re.compile(r"(?:Output|Sa[ií]da).{0,120}?Rows?(?:\s*Processed)?\s*[:=]\s*([\d,]+)", re.IGNORECASE | re.DOTALL),
-        # "Rows = 1234 ... Output"  (ordem invertida em alguns relatórios)
         re.compile(r"Rows?(?:\s*Processed)?\s*[:=]\s*([\d,]+).{0,60}?(?:Output|Sa[ií]da)", re.IGNORECASE | re.DOTALL),
     )
 
     def _parse_output_rows(self, report: str) -> int | None:
-        """Soma as linhas dos links de SAÍDA no `dsjob -report DETAIL`.
+        """MAIOR contagem de linhas (stages/links) no `dsjob -report DETAIL`.
 
-        Devolve None quando o relatório não tem nenhum link de saída identificável
-        (ex.: SEQUENCE, que não tem stages próprios) — sinaliza ao chamador para
-        cair no fallback dos filhos. Devolve 0 quando há link de saída com 0 linhas.
+        Usa o MÁXIMO, não a soma: num fluxo linear (extract → … → load) cada
+        stage/link reporta a MESMA contagem, então somar duplicaria (no relatório
+        do usuário, stage 6866540 + link 6866540 daria 13M). O máximo reflete o
+        volume processado. Para SEQUENCE, `_rows_out` soma o resultado de cada job
+        filho (cada um com seu próprio máximo).
 
-        RISCO: o formato do -report DETAIL muda por VERSÃO do DataStage e por tipo
-        de STAGE; os padrões abaixo são tolerantes (rótulos Output/Saída + Rows/
-        Rows Processed), mas se a versão local usar outro layout o parser não casa
-        e degrada para None (rows_out fica nulo, sem falhar o job)."""
+        Devolve None quando o relatório não tem nenhuma contagem identificável
+        (ex.: SEQUENCE, sem stages próprios) — sinaliza ao chamador para cair no
+        fallback dos filhos.
+
+        RISCO: o formato do -report varia por VERSÃO/stage; os padrões são
+        tolerantes, mas se a versão local usar outro layout o parser não casa e
+        degrada para None (rows_out nulo, sem falhar o job)."""
         if not report:
             return None
-        total = 0
-        matched = False
-        seen_spans: set = set()
+        best: int | None = None
         for pat in self._ROWS_OUT_PATTERNS:
             for m in pat.finditer(report):
-                # Evita contar o mesmo trecho duas vezes via padrões sobrepostos.
-                key = (m.start(1), m.end(1))
-                if key in seen_spans:
-                    continue
-                seen_spans.add(key)
                 try:
-                    total += int(m.group(1).replace(",", ""))
-                    matched = True
+                    val = int(m.group(1).replace(",", ""))
                 except (TypeError, ValueError):
                     continue
-        return total if matched else None
+                best = val if best is None else max(best, val)
+        return best
 
     # ── SSH execution ────────────────────────────────────────────────────────
 
