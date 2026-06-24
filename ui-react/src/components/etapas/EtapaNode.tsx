@@ -1,6 +1,7 @@
-// Node card custom do React Flow para uma etapa do pipeline (mockup).
-// Visual estilo designer de workflow: chip de ícone colorido por tipo, nome em
-// destaque, subtítulo mono com o comando/path e rodapé com badge do tipo + ordem.
+// Node custom do React Flow para uma etapa do pipeline.
+// Visual estilo IBM Cloud Pak / DataStage Designer: tile de ícone colorido por
+// tipo + nome embaixo (até 2 linhas, sem truncar) + tipo/ordem em linha discreta.
+// Os handles ficam na altura do tile do ícone (topo), não no meio do label.
 import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { TYPE_META, type EtapaType } from './types'
@@ -28,52 +29,55 @@ export interface EtapaNodeData {
 const HANDLE_CLS =
   '!h-2.5 !w-2.5 !rounded-full !border-2 !border-panel !bg-slate-400 dark:!bg-slate-500'
 
+// Tile do ícone tem ~44px de altura no topo; os handles ficam no seu centro
+// vertical (top: 22) para as arestas conectarem no ícone, não no label.
+const HANDLE_Y = 22
+
 function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) {
   const meta = TYPE_META[data.type]
   const Icon = meta.icon
 
   return (
-    <div
-      className={[
-        'group w-[148px] rounded-lg border bg-panel shadow-sm transition-shadow',
-        'hover:shadow-md',
-        selected
-          ? 'border-blue-500 ring-2 ring-blue-500'
-          : 'border-edge',
-      ].join(' ')}
-    >
-      <Handle type="target" position={Position.Left} className={HANDLE_CLS} />
+    <div className="group flex w-[128px] flex-col items-center">
+      <Handle
+        type="target"
+        position={Position.Left}
+        className={HANDLE_CLS}
+        style={{ top: HANDLE_Y }}
+      />
 
-      {/* Cabeçalho: chip de ícone + nome */}
-      <div className="flex items-center gap-1.5 px-2 pt-1.5">
-        <span
-          className={`flex h-5 w-5 shrink-0 items-center justify-center rounded ${meta.chip}`}
-        >
-          <Icon size={12} strokeWidth={2.2} />
-        </span>
-        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-ink">
-          {data.name}
-        </span>
+      {/* Tile do ícone — quadrado colorido por tipo, ícone branco centralizado.
+          Anel de seleção aqui (não no container todo). */}
+      <div
+        className={[
+          'flex h-11 w-11 items-center justify-center rounded-xl shadow-sm transition-shadow',
+          meta.chip,
+          'group-hover:shadow-md',
+          selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas' : '',
+        ].join(' ')}
+      >
+        <Icon size={22} strokeWidth={2} />
       </div>
 
-      {/* Subtítulo: comando / path em mono (fallback só na exibição) */}
-      <div className="px-2 pb-1.5 pt-0.5">
-        <p className="truncate font-mono text-[10px] text-dim" title={data.command || '—'}>
-          {data.command || '—'}
-        </p>
-      </div>
+      {/* Nome embaixo — até 2 linhas, sem truncar em 1; quebra palavras longas. */}
+      <p
+        className="mt-1.5 line-clamp-2 break-words text-center text-xs font-semibold leading-tight text-ink"
+        title={data.name}
+      >
+        {data.name}
+      </p>
 
-      {/* Rodapé: badge do tipo + ordem */}
-      <div className="flex items-center justify-between border-t border-edge px-2 py-1">
-        <span
-          className={`rounded px-1 py-0.5 text-[9px] font-semibold ${meta.badge}`}
-        >
-          {meta.label}
-        </span>
-        <span className="font-mono text-[9px] text-dim">#{data.order}</span>
-      </div>
+      {/* Linha de baixo: tipo do componente + ordem (discreto). */}
+      <p className="mt-0.5 text-center text-[10px] leading-tight text-dim">
+        {meta.label} <span className="font-mono">#{data.order}</span>
+      </p>
 
-      <Handle type="source" position={Position.Right} className={HANDLE_CLS} />
+      <Handle
+        type="source"
+        position={Position.Right}
+        className={HANDLE_CLS}
+        style={{ top: HANDLE_Y }}
+      />
     </div>
   )
 }

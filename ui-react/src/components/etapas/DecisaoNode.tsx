@@ -1,6 +1,6 @@
-// Nó de decisão (roteador) em formato de losango. O quadro gira 45° e o conteúdo
-// é contra-rotacionado para ficar legível. Dois source handles rotulados:
-// direita = "sim", baixo = "não". Cor índigo/slate p/ destacar dos cards de etapa.
+// Nó de decisão (roteador). Mesmo visual dos demais nós (tile de ícone + nome
+// embaixo), com acento índigo e ícone de bifurcação. Três handles: entrada à
+// esquerda (target) e duas saídas rotuladas — direita = "sim", baixo = "não".
 import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { GitBranch } from 'lucide-react'
@@ -30,74 +30,80 @@ export interface DecisaoNodeData {
   [key: string]: unknown
 }
 
-const SIZE = 104 // lado do quadrado base (o losango é a diagonal)
-
 const HANDLE_CLS =
   '!h-2.5 !w-2.5 !rounded-full !border-2 !border-panel !bg-indigo-500'
 
+// Tile do ícone tem 44px de altura no topo: o "sim" (direita) fica no centro
+// vertical do tile; o "nao" sai pela base do tile (logo abaixo dos 44px).
+const HANDLE_Y = 22
+const TILE_H = 44
+
 function DecisaoNodeImpl({ data, selected }: NodeProps & { data: DecisaoNodeData }) {
   return (
-    <div
-      className="relative"
-      style={{ width: SIZE, height: SIZE }}
-    >
-      {/* Losango: quadrado rotacionado 45° */}
-      <div
-        className={[
-          'absolute inset-0 rotate-45 rounded-xl border shadow-sm transition-shadow',
-          'bg-indigo-50 border-indigo-300',
-          'dark:bg-indigo-900/30 dark:border-indigo-700',
-          selected ? 'ring-2 ring-blue-500' : '',
-          'hover:shadow-md',
-        ].join(' ')}
-      />
-
-      {/* Conteúdo contra-rotacionado, centralizado */}
-      <div className="absolute inset-0 flex flex-col items-center justify-center px-4 text-center">
-        <GitBranch
-          size={12}
-          strokeWidth={2.2}
-          className="mb-0.5 text-indigo-600 dark:text-indigo-300"
-        />
-        <span className="text-[10px] font-semibold leading-tight text-indigo-800 dark:text-indigo-200">
-          {data.name}
-        </span>
-        <span className="mt-0.5 text-[9px] leading-tight text-indigo-600/90 dark:text-indigo-300/90">
-          {data.label}
-        </span>
-      </div>
-
-      {/* Entrada (esquerda) */}
+    <div className="group relative flex w-[128px] flex-col items-center">
+      {/* Entrada (esquerda) — na altura do tile do ícone */}
       <Handle
         type="target"
         position={Position.Left}
         className={HANDLE_CLS}
-        style={{ left: -5, top: '50%' }}
+        style={{ top: HANDLE_Y }}
       />
 
-      {/* Saída "sim" (direita) */}
-      <Handle
-        id="sim"
-        type="source"
-        position={Position.Right}
-        className={HANDLE_CLS}
-        style={{ right: -5, top: '50%' }}
-      />
-      <span className="pointer-events-none absolute right-[-30px] top-1/2 -translate-y-1/2 rounded bg-green-50 px-1 py-0.5 text-[9px] font-bold text-green-700 dark:bg-green-900/40 dark:text-green-300">
+      {/* Tile do ícone (índigo) — ícone de bifurcação branco; anel no tile. */}
+      <div
+        className={[
+          'relative flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-500 text-white shadow-sm transition-shadow',
+          'group-hover:shadow-md',
+          selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas' : '',
+        ].join(' ')}
+      >
+        <GitBranch size={22} strokeWidth={2} />
+
+        {/* Saída "sim" (direita) — centro vertical do tile */}
+        <Handle
+          id="sim"
+          type="source"
+          position={Position.Right}
+          className={HANDLE_CLS}
+          style={{ right: -5, top: '50%' }}
+        />
+        {/* Saída "não" (baixo) — base do tile */}
+        <Handle
+          id="nao"
+          type="source"
+          position={Position.Bottom}
+          className={HANDLE_CLS}
+          style={{ bottom: -5, left: '50%' }}
+        />
+      </div>
+
+      {/* Rótulos dos ramos junto ao tile (sim à direita, não embaixo). */}
+      <span
+        className="pointer-events-none absolute right-[-26px] rounded bg-green-50 px-1 py-0.5 text-[9px] font-bold text-green-700 dark:bg-green-900/40 dark:text-green-300"
+        style={{ top: HANDLE_Y - 8 }}
+      >
         sim
       </span>
-
-      {/* Saída "não" (baixo) */}
-      <Handle
-        id="nao"
-        type="source"
-        position={Position.Bottom}
-        className={HANDLE_CLS}
-        style={{ bottom: -5, left: '50%' }}
-      />
-      <span className="pointer-events-none absolute bottom-[-22px] left-1/2 -translate-x-1/2 rounded bg-slate-100 px-1 py-0.5 text-[9px] font-bold text-slate-600 dark:bg-slate-700 dark:text-slate-300">
+      <span
+        className="pointer-events-none absolute left-1/2 -translate-x-1/2 rounded bg-slate-100 px-1 py-0.5 text-[9px] font-bold text-slate-600 dark:bg-slate-700 dark:text-slate-300"
+        style={{ top: TILE_H + 4 }}
+      >
         não
       </span>
+
+      {/* Nome embaixo — até 2 linhas, sem truncar (deslocado p/ não colidir
+          com o rótulo "não", que sai da base do tile). */}
+      <p
+        className="mt-5 line-clamp-2 break-words text-center text-xs font-semibold leading-tight text-ink"
+        title={data.name}
+      >
+        {data.name}
+      </p>
+
+      {/* Linha de baixo: tipo + resumo da condição (label). */}
+      <p className="mt-0.5 line-clamp-1 text-center text-[10px] leading-tight text-dim" title={data.label}>
+        Decisão · {data.label}
+      </p>
     </div>
   )
 }
