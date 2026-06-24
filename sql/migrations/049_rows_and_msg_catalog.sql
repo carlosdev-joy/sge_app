@@ -11,7 +11,8 @@ IF COL_LENGTH('dbo.etl_ds_job_log', 'rows_out') IS NULL
     ALTER TABLE dbo.etl_ds_job_log ADD rows_out INT NULL;
 GO
 
--- Upsert com o novo parâmetro @rows_out (opcional → preserva o valor atual).
+-- Upsert = versão 027 (escopo por pipeline_name + ds_start/end_time) + @rows_out.
+-- IMPORTANTE: superset da 027 — NÃO dropar parâmetros/colunas que ela já tratava.
 CREATE OR ALTER PROCEDURE dbo.sp_etl_ds_job_log_upsert
     @execution_id   VARCHAR(50),
     @pipeline_name  VARCHAR(200),
@@ -24,14 +25,16 @@ CREATE OR ALTER PROCEDURE dbo.sp_etl_ds_job_log_upsert
     @child_jobs     NVARCHAR(MAX),
     @log_summary    NVARCHAR(MAX),
     @poll_snapshot  NVARCHAR(MAX),  -- JSON de um snapshot a anexar
-    @rows_out       INT = NULL      -- linhas de saída (opcional; default preserva)
+    @ds_start_time  VARCHAR(50)  = NULL,
+    @ds_end_time    DATETIME     = NULL,
+    @rows_out       INT          = NULL  -- linhas de saída (opcional; default preserva)
 AS
 BEGIN
     SET NOCOUNT ON;
 
     IF EXISTS (
         SELECT 1 FROM dbo.etl_ds_job_log
-        WHERE execution_id = @execution_id AND job_name = @job_name
+        WHERE execution_id = @execution_id AND pipeline_name = @pipeline_name AND job_name = @job_name
     )
     BEGIN
         UPDATE dbo.etl_ds_job_log
@@ -40,8 +43,10 @@ BEGIN
             status_code     = @status_code,
             wave_number     = COALESCE(@wave_number, wave_number),
             pid             = COALESCE(@pid, pid),
-            child_jobs      = CASE WHEN @child_jobs IS NOT NULL AND @child_jobs <> '' THEN @child_jobs ELSE child_jobs END,
-            log_summary     = CASE WHEN @log_summary IS NOT NULL AND @log_summary <> '' THEN @log_summary ELSE log_summary END,
+            child_jobs      = CASE WHEN @child_jobs     IS NOT NULL AND @child_jobs     <> '' THEN @child_jobs     ELSE child_jobs     END,
+            log_summary     = CASE WHEN @log_summary    IS NOT NULL AND @log_summary    <> '' THEN @log_summary    ELSE log_summary    END,
+            ds_start_time   = CASE WHEN @ds_start_time  IS NOT NULL                           THEN @ds_start_time  ELSE ds_start_time  END,
+            ds_end_time     = CASE WHEN @ds_end_time     IS NOT NULL                           THEN @ds_end_time    ELSE ds_end_time    END,
             rows_out        = COALESCE(@rows_out, rows_out),
             poll_snapshots  = CASE
                                 WHEN @poll_snapshot IS NOT NULL AND @poll_snapshot <> ''
@@ -53,16 +58,19 @@ BEGIN
                               END,
             last_polled_at  = GETDATE(),
             updated_at      = GETDATE()
-        WHERE execution_id = @execution_id AND job_name = @job_name;
+        WHERE execution_id = @execution_id AND pipeline_name = @pipeline_name AND job_name = @job_name;
     END
     ELSE
     BEGIN
         INSERT INTO dbo.etl_ds_job_log
             (execution_id, pipeline_name, job_name, project, wave_number, pid,
-             status, status_code, child_jobs, log_summary, rows_out, poll_snapshots, last_polled_at)
+             status, status_code, child_jobs, log_summary,
+             ds_start_time, ds_end_time, rows_out,
+             poll_snapshots, last_polled_at)
         VALUES
             (@execution_id, @pipeline_name, @job_name, @project, @wave_number, @pid,
-             @status, @status_code, @child_jobs, @log_summary, @rows_out,
+             @status, @status_code, @child_jobs, @log_summary,
+             @ds_start_time, @ds_end_time, @rows_out,
              CASE WHEN @poll_snapshot IS NOT NULL THEN '[' + @poll_snapshot + ']' ELSE NULL END,
              GETDATE());
     END

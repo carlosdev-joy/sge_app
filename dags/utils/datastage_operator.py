@@ -277,6 +277,93 @@ class DataStageOperator(BaseOperator):
         _, out, _ = self._exec(cmd, timeout=120)
         return out
 
+    def _report_detail(self, job_name: str) -> str:
+        """`dsjob -report '<project>' '<job>' DETAIL` — relatório com os
+        contadores de linha por link (mesma primitiva read-only do console,
+        api/services/ssh_datastage.py 'report'/DETAIL). Best-effort: devolve
+        string vazia em qualquer falha (o chamador degrada para rows_out=None)."""
+        if not _SAFE_JOB_RE.match(job_name or ""):
+            return ""
+        cmd = f"{self.dshome}/bin/dsjob -report '{self.project}' '{job_name}' DETAIL"
+        try:
+            _, out, _ = self._exec(cmd, timeout=60)
+            return out or ""
+        except Exception as exc:
+            self.log.warning("[DS] -report DETAIL falhou para '%s': %s", job_name, exc)
+            return ""
+
+    # ── contagem de linhas de saída (rows_out) ────────────────────────────────
+
+    def _rows_out(self, info: dict, child_jobs: list) -> int | None:
+        """Linhas de SAÍDA do job (soma dos links de saída). Para SEQUENCE (sem
+        links próprios) soma as linhas dos jobs filhos. Best-effort: devolve None
+        e loga warning se não der pra obter/parsear — NUNCA falha o job por isso."""
+        try:
+            total = self._parse_output_rows(self._report_detail(self.job_name))
+            if total is not None:
+                return total
+            # SEQUENCE: sem links próprios → soma os filhos do RUN ATUAL.
+            child_total = 0
+            got_any = False
+            for cj in child_jobs or []:
+                cname = cj.get("name") if isinstance(cj, dict) else None
+                if not cname:
+                    continue
+                sub = self._parse_output_rows(self._report_detail(cname))
+                if sub is not None:
+                    child_total += sub
+                    got_any = True
+            if got_any:
+                return child_total
+            self.log.warning(
+                "[DS] rows_out indisponível para '%s' (sem links de saída nem filhos com contagem).",
+                self.job_name,
+            )
+            return None
+        except Exception as exc:
+            self.log.warning("[DS] rows_out: falha ao obter/parsear (%s) — seguindo sem.", exc)
+            return None
+
+    # Saída do dsjob -report DETAIL varia por versão/stage; o relatório lista os
+    # links com seu nome e a contagem de linhas. Capturamos os links de SAÍDA
+    # (link name + nº de linhas) por padrões tolerantes a rótulos PT/EN.
+    _ROWS_OUT_PATTERNS = (
+        # "Link 'X' (Output): Rows = 1234"  /  "Output Link 'X': ... Rows: 1234"
+        re.compile(r"(?:Output|Sa[ií]da).{0,120}?Rows?(?:\s*Processed)?\s*[:=]\s*([\d,]+)", re.IGNORECASE | re.DOTALL),
+        # "Rows = 1234 ... Output"  (ordem invertida em alguns relatórios)
+        re.compile(r"Rows?(?:\s*Processed)?\s*[:=]\s*([\d,]+).{0,60}?(?:Output|Sa[ií]da)", re.IGNORECASE | re.DOTALL),
+    )
+
+    def _parse_output_rows(self, report: str) -> int | None:
+        """Soma as linhas dos links de SAÍDA no `dsjob -report DETAIL`.
+
+        Devolve None quando o relatório não tem nenhum link de saída identificável
+        (ex.: SEQUENCE, que não tem stages próprios) — sinaliza ao chamador para
+        cair no fallback dos filhos. Devolve 0 quando há link de saída com 0 linhas.
+
+        RISCO: o formato do -report DETAIL muda por VERSÃO do DataStage e por tipo
+        de STAGE; os padrões abaixo são tolerantes (rótulos Output/Saída + Rows/
+        Rows Processed), mas se a versão local usar outro layout o parser não casa
+        e degrada para None (rows_out fica nulo, sem falhar o job)."""
+        if not report:
+            return None
+        total = 0
+        matched = False
+        seen_spans: set = set()
+        for pat in self._ROWS_OUT_PATTERNS:
+            for m in pat.finditer(report):
+                # Evita contar o mesmo trecho duas vezes via padrões sobrepostos.
+                key = (m.start(1), m.end(1))
+                if key in seen_spans:
+                    continue
+                seen_spans.add(key)
+                try:
+                    total += int(m.group(1).replace(",", ""))
+                    matched = True
+                except (TypeError, ValueError):
+                    continue
+        return total if matched else None
+
     # ── SSH execution ────────────────────────────────────────────────────────
 
     def _exec(self, cmd: str, timeout: int = 120):
@@ -401,32 +488,66 @@ class DataStageOperator(BaseOperator):
     def _persist(
         self, execution_id, pipeline, wave_num, pid, status, status_code,
         child_jobs, log_summary, poll_snapshot,
-        ds_start_time=None, ds_end_time=None,
+        ds_start_time=None, ds_end_time=None, rows_out=None,
     ) -> None:
+        # Assinatura alinhada à migration 049 de sp_etl_ds_job_log_upsert
+        # (@rows_out adicionado; @ds_start_time/@ds_end_time mantidos como
+        # opcionais se o proc deployado ainda os expuser). Tentamos primeiro a
+        # chamada com timing + rows_out; se o proc não tiver esses parâmetros
+        # (versão antiga/nova divergente), caímos para a chamada mínima.
         try:
             from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
             hook = MsSqlHook(mssql_conn_id=self.mssql_conn_id)
+        except Exception as exc:
+            self.log.warning("[DS] Could not persist to etl_ds_job_log: %s", exc)
+            return
+
+        base_params = (
+            execution_id,
+            pipeline,
+            self.job_name,
+            self.project,
+            wave_num,
+            pid or "",
+            status,
+            status_code,
+            json.dumps(child_jobs, ensure_ascii=False) if child_jobs else "",
+            (log_summary or "")[:8000],
+            poll_snapshot or "",
+        )
+        # 1) Tenta a forma completa (timing + rows_out) — proc com ambos os conjuntos.
+        try:
             hook.run(
                 "EXEC dbo.sp_etl_ds_job_log_upsert "
                 "@execution_id=%s, @pipeline_name=%s, @job_name=%s, @project=%s, "
                 "@wave_number=%s, @pid=%s, @status=%s, @status_code=%s, "
                 "@child_jobs=%s, @log_summary=%s, @poll_snapshot=%s, "
-                "@ds_start_time=%s, @ds_end_time=%s",
-                parameters=(
-                    execution_id,
-                    pipeline,
-                    self.job_name,
-                    self.project,
-                    wave_num,
-                    pid or "",
-                    status,
-                    status_code,
-                    json.dumps(child_jobs, ensure_ascii=False) if child_jobs else "",
-                    (log_summary or "")[:8000],
-                    poll_snapshot or "",
-                    ds_start_time or "",
-                    ds_end_time,
-                ),
+                "@ds_start_time=%s, @ds_end_time=%s, @rows_out=%s",
+                parameters=base_params + (ds_start_time or "", ds_end_time, rows_out),
+            )
+            return
+        except Exception as exc:
+            self.log.debug("[DS] upsert com timing+rows_out falhou (%s) — tentando rows_out só.", exc)
+        # 2) Proc da migration 049 (sem timing): execution_id…poll_snapshot + rows_out.
+        try:
+            hook.run(
+                "EXEC dbo.sp_etl_ds_job_log_upsert "
+                "@execution_id=%s, @pipeline_name=%s, @job_name=%s, @project=%s, "
+                "@wave_number=%s, @pid=%s, @status=%s, @status_code=%s, "
+                "@child_jobs=%s, @log_summary=%s, @poll_snapshot=%s, @rows_out=%s",
+                parameters=base_params + (rows_out,),
+            )
+            return
+        except Exception as exc:
+            self.log.debug("[DS] upsert com rows_out falhou (%s) — tentando forma mínima.", exc)
+        # 3) Forma mínima (proc antigo sem rows_out nem timing) — não perde o log.
+        try:
+            hook.run(
+                "EXEC dbo.sp_etl_ds_job_log_upsert "
+                "@execution_id=%s, @pipeline_name=%s, @job_name=%s, @project=%s, "
+                "@wave_number=%s, @pid=%s, @status=%s, @status_code=%s, "
+                "@child_jobs=%s, @log_summary=%s, @poll_snapshot=%s",
+                parameters=base_params,
             )
         except Exception as exc:
             self.log.warning("[DS] Could not persist to etl_ds_job_log: %s", exc)
@@ -446,12 +567,18 @@ class DataStageOperator(BaseOperator):
 
         ds_end_time = datetime.utcnow()
 
+        # Linhas de SAÍDA do job (best-effort; None se indisponível — não falha).
+        rows_out = self._rows_out(info, child_jobs)
+        if rows_out is not None:
+            self.log.info("[DS] rows_out (linhas de saída) = %d", rows_out)
+
         self._persist(
             execution_id, pipeline,
             info.get("wave_number"), info.get("pid"),
             ds_label, status_code, child_jobs, logsum, None,
             ds_start_time=info.get("start_time"),
             ds_end_time=ds_end_time,
+            rows_out=rows_out,
         )
 
         return json.dumps({
@@ -464,6 +591,7 @@ class DataStageOperator(BaseOperator):
             "start_time":  info.get("start_time"),
             "pid":         info.get("pid"),
             "child_jobs":  child_jobs,
+            "rows_out":    rows_out,
             "log_summary": logsum[:3000] if logsum else "",
             # status_code da SEQUENCE por ÚLTIMO de propósito: o extractor legado
             # do log_end (json_m[-1]) pega o ÚLTIMO "status_code" do blob; como os
