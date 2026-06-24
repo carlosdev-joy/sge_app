@@ -677,10 +677,16 @@ def get_pipeline_fluxo(
         sel_cond = "j.condition_json" if "condition_json" in cols else "NULL"
         sel_lx = "j.layout_x" if "layout_x" in cols else "NULL"
         sel_ly = "j.layout_y" if "layout_y" in cols else "NULL"
+        # Campos por tipo (round-trip do painel inline): ssh / verbose / mssql_*.
+        sel_ssh = "j.ssh_conn_id" if "ssh_conn_id" in cols else "NULL"
+        sel_verb = "j.verbose_log" if "verbose_log" in cols else "NULL"
+        sel_mconn = "j.mssql_conn_id" if "mssql_conn_id" in cols else "NULL"
+        sel_mdb = "j.mssql_database" if "mssql_database" in cols else "NULL"
         try:
             cur.execute(
                 "SELECT j.job_name, ISNULL(j.job_type,'datastage'), j.job_command, "
-                f"CAST(j.execution_order AS INT), {sel_deps}, {sel_cond}, {sel_lx}, {sel_ly} "
+                f"CAST(j.execution_order AS INT), {sel_deps}, {sel_cond}, {sel_lx}, {sel_ly}, "
+                f"{sel_ssh}, {sel_verb}, {sel_mconn}, {sel_mdb} "
                 "FROM dbo.etl_pipeline_job j WHERE j.pipeline_name=? "
                 "ORDER BY j.execution_order, j.job_name",
                 (pipeline_name,))
@@ -709,6 +715,10 @@ def get_pipeline_fluxo(
                 "condition": condition,
                 "layout_x": lx,
                 "layout_y": ly,
+                "ssh_conn_id": r[8] or None,
+                "verbose_log": bool(r[9]) if r[9] is not None else False,
+                "mssql_conn_id": r[10] or None,
+                "mssql_database": r[11] or None,
             })
         cur.close(); conn.close()
         return {"nodes": nodes}
@@ -723,17 +733,19 @@ async def save_pipeline_fluxo(
     body: dict = Body(default={}),
     _auth: dict = Depends(require_perm(PERM_EDITAR)),
 ):
-    """Persiste o fluxo do editor (Etapa 2) — reconciliação completa.
+    """Persiste o fluxo do editor — reconciliação completa.
 
-    Para cada nó: nós NOVOS (não existentes) são inseridos via
-    sp_etl_pipeline_job_upsert (job_type/command/order); nós EXISTENTES recebem
-    apenas UPDATE direcionado (NÃO toca job_type/command/order/ssh/mssql/verbose/
-    lineage — campos que o GET /fluxo não devolve). Para TODOS grava, por-coluna:
-    depends_on_jobs, condition_json (ramos+expressão da decisão; NULL p/ os demais)
-    e layout_x/y. Os job_name em `deleted` são removidos (com a lineage). Valida a
+    Para cada nó: NOVOS são inseridos via sp_etl_pipeline_job_upsert (job_type/
+    command/order/ssh/verbose/mssql_conn_id) + mssql_database. EXISTENTES recebem
+    UPDATE direcionado SÓ dos campos cujas CHAVES vieram no payload (job_command,
+    execution_order, ssh_conn_id, verbose_log, mssql_conn_id, mssql_database) —
+    assim um frontend antigo que omite um campo não o zera; job_type, params e
+    lineage do nó existente são preservados. Para TODOS grava, por-coluna:
+    depends_on_jobs, condition_json (ramos+expressão da decisão; só em decisão) e
+    layout_x/y. Os job_name em `deleted` são removidos (com a lineage). Valida a
     condição de cada decisão (_validate_condition) e detecta ciclo incluindo as
     arestas de ramo (_graph_has_cycle). Tudo transacional; degrada por-coluna em
-    ambientes sem 038/043/048.
+    ambientes sem as colunas opcionais.
 
     Payload:
       nodes:   [{job_name, job_type, job_command, execution_order,
@@ -781,6 +793,10 @@ async def save_pipeline_fluxo(
         has_deps = "depends_on_jobs" in _cols
         has_cond = "condition_json" in _cols
         has_layout = "layout_x" in _cols and "layout_y" in _cols
+        has_db = "mssql_database" in _cols
+        has_ssh = "ssh_conn_id" in _cols
+        has_verb = "verbose_log" in _cols
+        has_mconn = "mssql_conn_id" in _cols
 
         # Conjunto final de jobs (o canvas envia o estado completo do fluxo) —
         # base para validar ramos e filtrar dependências.
@@ -790,7 +806,8 @@ async def save_pipeline_fluxo(
         # Valida e prepara cada nó; monta o grafo (deps + ramos) para o ciclo.
         errors: list[str] = []
         cycle_adj: dict[str, set[str]] = {n: set() for n in known_jobs}
-        prepared = []  # (j_name, is_new, order, type, cmd, ssh, verbose, mssql, dep_csv, cond_json|None, lx, ly)
+        prepared = []  # (j_name, is_new, order, type, cmd, ssh, verbose, mssql, mdb, dep_csv, cond_json|None, lx, ly)
+        raw_by_name: dict[str, dict] = {}  # nó cru por nome (checa presença de chave no UPDATE)
         seen: set[str] = set()
         for idx, node in enumerate(nodes):
             if not isinstance(node, dict):
@@ -816,6 +833,8 @@ async def save_pipeline_fluxo(
             j_ssh = (node.get("ssh_conn_id") or "").strip() or None
             j_verbose = 1 if node.get("verbose_log") else 0
             j_mssql = (node.get("mssql_conn_id") or "").strip() or None
+            j_mdb = (node.get("mssql_database") or "").strip() or None
+            raw_by_name[j_name] = node
 
             # Dependências NORMAIS (só entre jobs do fluxo) → arestas predecessor→job.
             dep_raw = node.get("depends_on_jobs")
@@ -854,7 +873,7 @@ async def save_pipeline_fluxo(
                 ly = None
 
             prepared.append((j_name, is_new, j_order, j_type, j_cmd, j_ssh,
-                             j_verbose, j_mssql, dep_csv, cond_json_str, lx, ly))
+                             j_verbose, j_mssql, j_mdb, dep_csv, cond_json_str, lx, ly))
 
         if errors:
             cur.close(); conn.close()
@@ -878,15 +897,44 @@ async def save_pipeline_fluxo(
                             (pipeline_name, d))
                 removed += 1
 
-        # 2) Insere os nós novos; grava deps/condição/posição em TODOS (por-coluna).
+        # 2) Materializa cada nó. NOVO → insere via sp_upsert (type/command/order/
+        #    ssh/verbose/mssql_conn_id) + mssql_database. EXISTENTE → UPDATE
+        #    direcionado SÓ dos campos cujas CHAVES vieram no payload (um frontend
+        #    antigo que não envia um campo não o zera). job_type do existente é
+        #    preservado (o painel não troca o tipo de um nó já salvo). Grava deps/
+        #    condição (só decisão)/posição em TODOS (por-coluna).
         for (j_name, is_new, j_order, j_type, j_cmd, j_ssh, j_verbose,
-             j_mssql, dep_csv, cond_json_str, lx, ly) in prepared:
+             j_mssql, j_mdb, dep_csv, cond_json_str, lx, ly) in prepared:
             if is_new:
                 cur.execute(
                     "EXEC dbo.sp_etl_pipeline_job_upsert "
                     "@pipeline_name=?, @job_name=?, @execution_order=?, @job_type=?, @job_command=?, "
                     "@ssh_conn_id=?, @verbose_log=?, @mssql_conn_id=?",
                     (pipeline_name, j_name, j_order, j_type, j_cmd, j_ssh, j_verbose, j_mssql))
+                if has_db:
+                    cur.execute("UPDATE dbo.etl_pipeline_job SET mssql_database=? "
+                                "WHERE pipeline_name=? AND job_name=?",
+                                (j_mdb, pipeline_name, j_name))
+            else:
+                node = raw_by_name.get(j_name, {})
+                sets, vals = [], []
+                if "job_command" in node:
+                    sets.append("job_command=?"); vals.append(j_cmd)
+                if "execution_order" in node:
+                    sets.append("execution_order=?"); vals.append(j_order)
+                if has_ssh and "ssh_conn_id" in node:
+                    sets.append("ssh_conn_id=?"); vals.append(j_ssh)
+                if has_verb and "verbose_log" in node:
+                    sets.append("verbose_log=?"); vals.append(j_verbose)
+                if has_mconn and "mssql_conn_id" in node:
+                    sets.append("mssql_conn_id=?"); vals.append(j_mssql)
+                if has_db and "mssql_database" in node:
+                    sets.append("mssql_database=?"); vals.append(j_mdb)
+                if sets:
+                    cur.execute(
+                        f"UPDATE dbo.etl_pipeline_job SET {', '.join(sets)} "
+                        "WHERE pipeline_name=? AND job_name=?",
+                        (*vals, pipeline_name, j_name))
             if has_deps:
                 cur.execute("UPDATE dbo.etl_pipeline_job SET depends_on_jobs=? "
                             "WHERE pipeline_name=? AND job_name=?",
