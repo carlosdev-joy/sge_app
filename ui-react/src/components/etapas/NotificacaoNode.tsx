@@ -21,7 +21,7 @@ const HANDLE_CLS =
   '!h-2.5 !w-2.5 !rounded-full !border-2 !border-panel !bg-slate-400 dark:!bg-slate-500'
 
 // Tile do ícone tem ~44px de altura no topo; handles no seu centro vertical.
-const HANDLE_Y = 22
+const HANDLE_Y = 16
 
 function NotificacaoNodeImpl({ data, selected }: NodeProps & { data: NotificacaoNodeData }) {
   return (
@@ -36,24 +36,24 @@ function NotificacaoNodeImpl({ data, selected }: NodeProps & { data: Notificacao
       {/* Tile do ícone (teal) — ícone de sino branco; anel de seleção no tile. */}
       <div
         className={[
-          'flex h-11 w-11 items-center justify-center rounded-xl bg-teal-500 text-white shadow-sm transition-shadow',
+          'flex h-8 w-8 items-center justify-center rounded-xl bg-teal-500 text-white shadow-sm transition-shadow',
           'group-hover:shadow-md',
           selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas' : '',
         ].join(' ')}
       >
-        <BellRing size={22} strokeWidth={2} />
+        <BellRing size={16} strokeWidth={2} />
       </div>
 
       {/* Nome embaixo — até 2 linhas, sem truncar. */}
       <p
-        className="mt-1.5 line-clamp-2 break-words text-center text-xs font-semibold leading-tight text-ink"
+        className="mt-1.5 line-clamp-2 break-words text-center text-[11px] font-semibold leading-tight text-ink"
         title={data.name}
       >
         {data.name}
       </p>
 
       {/* Linha de baixo: resumo curto do destino/modelo (label). */}
-      <p className="mt-0.5 line-clamp-1 text-center text-[10px] leading-tight text-dim" title={data.label}>
+      <p className="mt-0.5 line-clamp-1 text-center text-[9px] leading-tight text-dim" title={data.label}>
         {data.label}
       </p>
 

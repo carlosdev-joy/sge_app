@@ -35,8 +35,8 @@ const HANDLE_CLS =
 
 // Tile do ícone tem 44px de altura no topo: o "sim" (direita) fica no centro
 // vertical do tile; o "nao" sai pela base do tile (logo abaixo dos 44px).
-const HANDLE_Y = 22
-const TILE_H = 44
+const HANDLE_Y = 16
+const TILE_H = 32
 
 function DecisaoNodeImpl({ data, selected }: NodeProps & { data: DecisaoNodeData }) {
   return (
@@ -52,12 +52,12 @@ function DecisaoNodeImpl({ data, selected }: NodeProps & { data: DecisaoNodeData
       {/* Tile do ícone (índigo) — ícone de bifurcação branco; anel no tile. */}
       <div
         className={[
-          'relative flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-500 text-white shadow-sm transition-shadow',
+          'relative flex h-8 w-8 items-center justify-center rounded-xl bg-indigo-500 text-white shadow-sm transition-shadow',
           'group-hover:shadow-md',
           selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas' : '',
         ].join(' ')}
       >
-        <GitBranch size={22} strokeWidth={2} />
+        <GitBranch size={16} strokeWidth={2} />
 
         {/* Saída "sim" (direita) — centro vertical do tile */}
         <Handle
@@ -94,14 +94,14 @@ function DecisaoNodeImpl({ data, selected }: NodeProps & { data: DecisaoNodeData
       {/* Nome embaixo — até 2 linhas, sem truncar (deslocado p/ não colidir
           com o rótulo "não", que sai da base do tile). */}
       <p
-        className="mt-5 line-clamp-2 break-words text-center text-xs font-semibold leading-tight text-ink"
+        className="mt-4 line-clamp-2 break-words text-center text-[11px] font-semibold leading-tight text-ink"
         title={data.name}
       >
         {data.name}
       </p>
 
       {/* Linha de baixo: tipo + resumo da condição (label). */}
-      <p className="mt-0.5 line-clamp-1 text-center text-[10px] leading-tight text-dim" title={data.label}>
+      <p className="mt-0.5 line-clamp-1 text-center text-[9px] leading-tight text-dim" title={data.label}>
         Decisão · {data.label}
       </p>
     </div>

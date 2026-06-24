@@ -31,7 +31,7 @@ const HANDLE_CLS =
 
 // Tile do ícone tem ~44px de altura no topo; os handles ficam no seu centro
 // vertical (top: 22) para as arestas conectarem no ícone, não no label.
-const HANDLE_Y = 22
+const HANDLE_Y = 16
 
 function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) {
   const meta = TYPE_META[data.type]
@@ -50,25 +50,25 @@ function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) 
           Anel de seleção aqui (não no container todo). */}
       <div
         className={[
-          'flex h-11 w-11 items-center justify-center rounded-xl shadow-sm transition-shadow',
+          'flex h-8 w-8 items-center justify-center rounded-xl shadow-sm transition-shadow',
           meta.chip,
           'group-hover:shadow-md',
           selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas' : '',
         ].join(' ')}
       >
-        <Icon size={22} strokeWidth={2} />
+        <Icon size={16} strokeWidth={2} />
       </div>
 
       {/* Nome embaixo — até 2 linhas, sem truncar em 1; quebra palavras longas. */}
       <p
-        className="mt-1.5 line-clamp-2 break-words text-center text-xs font-semibold leading-tight text-ink"
+        className="mt-1.5 line-clamp-2 break-words text-center text-[11px] font-semibold leading-tight text-ink"
         title={data.name}
       >
         {data.name}
       </p>
 
       {/* Linha de baixo: tipo do componente + ordem (discreto). */}
-      <p className="mt-0.5 text-center text-[10px] leading-tight text-dim">
+      <p className="mt-0.5 text-center text-[9px] leading-tight text-dim">
         {meta.label} <span className="font-mono">#{data.order}</span>
       </p>
 
