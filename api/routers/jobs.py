@@ -102,6 +102,9 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
         return errs
     if not ramo_v and not ramo_f:
         errs.append("a decisão precisa de ao menos um job em algum ramo")
+    ambos = {str(m).strip() for m in ramo_v} & {str(m).strip() for m in ramo_f}
+    if ambos:
+        errs.append("job(s) em ambos os ramos (sim e não): " + ", ".join(sorted(ambos)))
     for ramo_nome, ramo in (("verdadeiro", ramo_v), ("falso", ramo_f)):
         for m in ramo:
             mn = str(m).strip()

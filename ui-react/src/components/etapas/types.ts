@@ -80,3 +80,9 @@ export const TYPE_META: Record<EtapaType, TypeMeta> = {
 export const TYPE_ORDER: EtapaType[] = [
   'datastage', 'shell', 'python', 'storedproc', 'sql', 'http',
 ]
+
+// Tipos que o backend aceita CRIAR pela paleta (arrastar-para-criar). `sql`/`http`
+// existem só para exibição de fluxos legados — o backend rejeita criá-los aqui.
+export const CREATABLE_TYPES: EtapaType[] = [
+  'datastage', 'shell', 'python', 'storedproc',
+]

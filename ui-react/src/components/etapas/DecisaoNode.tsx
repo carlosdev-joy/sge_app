@@ -5,9 +5,25 @@ import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { GitBranch } from 'lucide-react'
 
+// Condição de decisão (espelha o ConditionEntry do PipelineFormModal). Guardamos
+// o objeto inteiro no `data` para ecoar no save; `label` é um resumo curto p/ o nó.
+export interface NodeCondition {
+  tipo: 'contagem' | 'query'
+  operador: string
+  valor: string
+  tabela?: string
+  database?: string
+  sql?: string
+  mssql_conn_id?: string
+  ramo_verdadeiro: string[]
+  ramo_falso: string[]
+}
+
 export interface DecisaoNodeData {
   name: string
-  condition: string
+  condition: NodeCondition
+  label: string
+  isNew?: boolean
   [key: string]: unknown
 }
 
@@ -44,7 +60,7 @@ function DecisaoNodeImpl({ data, selected }: NodeProps & { data: DecisaoNodeData
           {data.name}
         </span>
         <span className="mt-0.5 text-[10px] leading-tight text-indigo-600/90 dark:text-indigo-300/90">
-          {data.condition}
+          {data.label}
         </span>
       </div>
 
