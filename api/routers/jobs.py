@@ -634,3 +634,184 @@ async def delete_pipeline_job(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
     return {"ok": True, "pipeline_name": pipeline_name, "job_name": job_name}
+
+
+def _parse_dep_csv(raw) -> list[str]:
+    """CSV de depends_on_jobs → lista (vazio = [])."""
+    return [d.strip() for d in str(raw or "").split(",") if d.strip()]
+
+
+def _has_layout_cols(cur) -> bool:
+    """layout_x/layout_y existem? (migration 048). Degrada para False se faltar."""
+    try:
+        cur.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
+            "AND COLUMN_NAME IN ('layout_x','layout_y')")
+        return int(cur.fetchone()[0]) == 2
+    except Exception:
+        return False
+
+
+@router.get("/pipelines/{pipeline_name}/fluxo", tags=["jobs"])
+def get_pipeline_fluxo(
+    pipeline_name: str,
+    _auth: dict = Depends(get_current_user),
+):
+    """Grafo de etapas para o editor interativo de fluxo (canvas).
+
+    Para cada etapa: dependências (CSV → lista), condição da decisão
+    (condition_json → objeto) e posição salva (layout_x/y). Degrada para
+    {"nodes": []} se a tabela não existir e para layout null se a 048 não
+    rodou."""
+    pipeline_name = (pipeline_name or "").strip()
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+    except Exception as e:
+        log.warning("get_pipeline_fluxo sem conexão: %s", e)
+        return {"nodes": []}
+    try:
+        has_layout = _has_layout_cols(cur)
+        layout_cols = ", j.layout_x, j.layout_y" if has_layout else ", NULL, NULL"
+        try:
+            cur.execute(
+                "SELECT j.job_name, ISNULL(j.job_type,'datastage'), j.job_command, "
+                "CAST(j.execution_order AS INT), j.depends_on_jobs, j.condition_json"
+                + layout_cols +
+                " FROM dbo.etl_pipeline_job j WHERE j.pipeline_name=? "
+                "ORDER BY j.execution_order, j.job_name",
+                (pipeline_name,))
+            rows = cur.fetchall()
+        except Exception as e:
+            # Tabela/coluna ausente → degrada para vazio (ex.: 038/043 não rodaram).
+            log.warning("get_pipeline_fluxo degradou (%s): %s", pipeline_name, e)
+            cur.close(); conn.close()
+            return {"nodes": []}
+        nodes = []
+        for r in rows:
+            condition = None
+            if r[5]:
+                try:
+                    condition = json.loads(r[5])
+                except (ValueError, TypeError):
+                    condition = None
+            lx = float(r[6]) if (has_layout and r[6] is not None) else None
+            ly = float(r[7]) if (has_layout and r[7] is not None) else None
+            nodes.append({
+                "job_name": r[0],
+                "job_type": r[1],
+                "job_command": r[2] or None,
+                "execution_order": r[3],
+                "depends_on_jobs": _parse_dep_csv(r[4]),
+                "condition": condition,
+                "layout_x": lx,
+                "layout_y": ly,
+            })
+        cur.close(); conn.close()
+        return {"nodes": nodes}
+    except Exception as e:
+        log.warning("get_pipeline_fluxo erro inesperado (%s): %s", pipeline_name, e)
+        return {"nodes": []}
+
+
+@router.post("/pipelines/{pipeline_name}/fluxo", tags=["jobs"])
+def save_pipeline_fluxo(
+    pipeline_name: str,
+    body: dict = Body(default={}),
+    _auth: dict = Depends(require_perm(PERM_EDITAR)),
+):
+    """Persiste dependências e posições dos nós do editor de fluxo.
+
+    UPDATE direcionado: SÓ depends_on_jobs e layout_x/y (NÃO toca job_type,
+    job_command, condition_json, params, lineage ou execution_order). Cada
+    job_name deve pertencer ao pipeline; detecta ciclo (400) reusando
+    _graph_has_cycle. layout_x/y só são gravados se a 048 já rodou."""
+    pipeline_name = (pipeline_name or "").strip()
+    if not pipeline_name:
+        raise HTTPException(status_code=422, detail="pipeline_name é obrigatório")
+
+    nodes = body.get("nodes")
+    if not isinstance(nodes, list):
+        raise HTTPException(status_code=422, detail="nodes deve ser uma lista")
+
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    try:
+        # Jobs que realmente pertencem ao pipeline (valida ownership).
+        try:
+            cur.execute("SELECT job_name FROM dbo.etl_pipeline_job WHERE pipeline_name=?",
+                        (pipeline_name,))
+            owned = {r[0] for r in cur.fetchall()}
+        except Exception as e:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+        has_layout = _has_layout_cols(cur)
+
+        # Monta o grafo resultante (deps enviadas) — só arestas entre jobs do
+        # pipeline; detecta ciclo antes de gravar.
+        adj: dict[str, set[str]] = {n: set() for n in owned}
+        updates = []  # (job_name, dep_csv|None, layout_x, layout_y)
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            j_name = (node.get("job_name") or "").strip()
+            if not j_name or j_name not in owned:
+                continue  # ignora jobs que não pertencem ao pipeline
+            dep_raw = node.get("depends_on_jobs")
+            if isinstance(dep_raw, list):
+                dep_list = [str(d).strip() for d in dep_raw if str(d).strip()]
+            else:
+                dep_list = _parse_dep_csv(dep_raw)
+            # Só mantém arestas para jobs do pipeline (predecessor → job).
+            dep_list = [d for d in dep_list if d in owned]
+            for d in dep_list:
+                adj[d].add(j_name)
+            dep_csv = ",".join(dep_list) or None
+            lx = node.get("layout_x")
+            ly = node.get("layout_y")
+            try:
+                lx = float(lx) if lx is not None else None
+            except (ValueError, TypeError):
+                lx = None
+            try:
+                ly = float(ly) if ly is not None else None
+            except (ValueError, TypeError):
+                ly = None
+            updates.append((j_name, dep_csv, lx, ly))
+
+        if _graph_has_cycle(adj):
+            cur.close(); conn.close()
+            raise HTTPException(
+                status_code=400,
+                detail="ciclo detectado entre as etapas (dependências)")
+
+        for j_name, dep_csv, lx, ly in updates:
+            if has_layout:
+                cur.execute(
+                    "UPDATE dbo.etl_pipeline_job "
+                    "SET depends_on_jobs=?, layout_x=?, layout_y=? "
+                    "WHERE pipeline_name=? AND job_name=?",
+                    (dep_csv, lx, ly, pipeline_name, j_name))
+            else:
+                cur.execute(
+                    "UPDATE dbo.etl_pipeline_job SET depends_on_jobs=? "
+                    "WHERE pipeline_name=? AND job_name=?",
+                    (dep_csv, pipeline_name, j_name))
+        conn.commit()
+        cur.close(); conn.close()
+        return {"ok": True, "updated": len(updates)}
+    except HTTPException:
+        try:
+            conn.rollback(); cur.close(); conn.close()
+        except Exception:
+            pass
+        raise
+    except Exception as e:
+        try:
+            conn.rollback(); cur.close(); conn.close()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")

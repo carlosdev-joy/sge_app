@@ -13,8 +13,10 @@ import { copyToClipboard } from '../lib/clipboard'
 import {
   Edit, Plus, ClipboardList, Play, Save, X, Trash2,
   ChevronUp, ChevronDown, Copy, Network, ArrowUpDown,
+  List, Workflow,
 } from 'lucide-react'
 import { useAirflowUrl } from '../lib/config'
+import { FluxoEditor } from '../components/etapas/FluxoEditor'
 
 // ── constants ──────────────────────────────────────────────────────────────
 
@@ -572,6 +574,8 @@ export default function Jobs() {
 
   // UI state
   const [showDiagram, setShowDiagram] = useState(false)
+  // Modo de visualização do pipeline: tabela (Lista) ou canvas (Fluxo).
+  const [viewMode, setViewMode] = useState<'lista' | 'fluxo'>('lista')
   const [editJob, setEditJob] = useState<Job | undefined>()
   const [showNew, setShowNew] = useState(false)
   const [showBulk, setShowBulk] = useState(false)
@@ -705,6 +709,7 @@ export default function Jobs() {
     setPage(0)
     setOrderEdits({})
     setShowDiagram(false)
+    setViewMode('lista')
   }
 
   function doClear() {
@@ -712,6 +717,7 @@ export default function Jobs() {
     setSearched(''); setPipelineInput('')
     setHasSearched(false)
     setPage(0); setOrderEdits({})
+    setViewMode('lista')
   }
 
   function handleOrderEdit(jobName: string, val: string) {
@@ -818,50 +824,85 @@ export default function Jobs() {
             </span>
             {searched && (
               <>
-                <Button variant="secondary" size="sm" onClick={() => setShowDiagram(d => !d)}>
-                  <Network size={13} /> {showDiagram ? 'Ocultar' : 'Ver'} diagrama
-                </Button>
-                {!isViewer && (
+                {/* Toggle Lista / Fluxo — Fluxo é o canvas interativo de etapas. */}
+                <div className="inline-flex items-center rounded-md border border-edge bg-canvas p-0.5">
+                  <button
+                    onClick={() => setViewMode('lista')}
+                    className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors ${
+                      viewMode === 'lista'
+                        ? 'bg-panel text-ink shadow-sm'
+                        : 'text-dim hover:text-ink'
+                    }`}
+                  >
+                    <List size={13} /> Lista
+                  </button>
+                  <button
+                    onClick={() => setViewMode('fluxo')}
+                    className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors ${
+                      viewMode === 'fluxo'
+                        ? 'bg-panel text-ink shadow-sm'
+                        : 'text-dim hover:text-ink'
+                    }`}
+                  >
+                    <Workflow size={13} /> Fluxo
+                  </button>
+                </div>
+                {viewMode === 'lista' && (
                   <>
-                    <Button
-                      variant="secondary" size="sm"
-                      disabled={!orderDirty}
-                      loading={reorderMut.isPending}
-                      onClick={() => reorderMut.mutate()}
-                      className={orderDirty ? 'border-blue-600 text-blue-400 ring-1 ring-blue-700/50' : ''}
-                    >
-                      <Save size={13} /> Salvar ordem
-                      {orderDirty && (
-                        <span className="ml-1 bg-blue-600 text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 leading-none">
-                          {orderEditCount}
-                        </span>
-                      )}
+                    <Button variant="secondary" size="sm" onClick={() => setShowDiagram(d => !d)}>
+                      <Network size={13} /> {showDiagram ? 'Ocultar' : 'Ver'} diagrama
                     </Button>
-                    <Button variant="secondary" size="sm" onClick={() => setShowNew(true)}>
-                      <Plus size={13} /> Adicionar Etapa
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={() => setShowBulk(true)}>
-                      <ClipboardList size={13} /> Colar lista
-                    </Button>
-                    <Button
-                      variant="secondary" size="sm"
-                      loading={execMut.isPending}
-                      onClick={() => setShowExecConfirm(true)}
-                      className="border-green-800/40 text-green-400 hover:text-green-300"
-                    >
-                      <Play size={13} /> Executar agora
-                    </Button>
+                    {!isViewer && (
+                      <>
+                        <Button
+                          variant="secondary" size="sm"
+                          disabled={!orderDirty}
+                          loading={reorderMut.isPending}
+                          onClick={() => reorderMut.mutate()}
+                          className={orderDirty ? 'border-blue-600 text-blue-400 ring-1 ring-blue-700/50' : ''}
+                        >
+                          <Save size={13} /> Salvar ordem
+                          {orderDirty && (
+                            <span className="ml-1 bg-blue-600 text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 leading-none">
+                              {orderEditCount}
+                            </span>
+                          )}
+                        </Button>
+                        <Button variant="secondary" size="sm" onClick={() => setShowNew(true)}>
+                          <Plus size={13} /> Adicionar Etapa
+                        </Button>
+                        <Button variant="secondary" size="sm" onClick={() => setShowBulk(true)}>
+                          <ClipboardList size={13} /> Colar lista
+                        </Button>
+                        <Button
+                          variant="secondary" size="sm"
+                          loading={execMut.isPending}
+                          onClick={() => setShowExecConfirm(true)}
+                          className="border-green-800/40 text-green-400 hover:text-green-300"
+                        >
+                          <Play size={13} /> Executar agora
+                        </Button>
+                      </>
+                    )}
                   </>
                 )}
               </>
             )}
           </div>
 
-          {/* Execution diagram (só faz sentido para um pipeline) */}
-          {searched && showDiagram && <ExecDiagram jobs={data?.data ?? []} />}
+          {/* Modo Fluxo — canvas interativo (só faz sentido p/ um pipeline) */}
+          {searched && viewMode === 'fluxo' && (
+            <div className="h-[calc(100vh-16rem)]">
+              <FluxoEditor pipeline={searched} />
+            </div>
+          )}
 
-          {/* Results table */}
-          {jobs.length === 0 ? (
+          {/* Execution diagram (só faz sentido para um pipeline) */}
+          {searched && viewMode === 'lista' && showDiagram && <ExecDiagram jobs={data?.data ?? []} />}
+
+          {/* Results table (modo Lista) */}
+          {viewMode === 'lista' && (
+          jobs.length === 0 ? (
             <div className="bg-panel border border-edge rounded-xl py-12 flex flex-col items-center gap-2 text-dim">
               <span className="text-3xl">⬡</span>
               <p className="text-sm">Nenhuma etapa encontrada{searched ? ` para "${searched}"` : nameFilter ? ` com nome "${nameFilter}"` : ''}</p>
@@ -968,6 +1009,7 @@ export default function Jobs() {
                 </div>
               )}
             </div>
+          )
           )}
         </>
       )}
