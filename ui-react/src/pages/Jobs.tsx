@@ -17,6 +17,10 @@ import {
 } from 'lucide-react'
 import { useAirflowUrl } from '../lib/config'
 import { FluxoEditor } from '../components/etapas/FluxoEditor'
+import {
+  JobTypeFields, jobTypeFieldsErrors,
+  type JobTypeFieldsValue, type JobParam,
+} from '../components/etapas/JobTypeFields'
 
 // ── constants ──────────────────────────────────────────────────────────────
 
@@ -71,7 +75,9 @@ interface JobFormData {
   ssh_conn_id: string
   verbose_log: boolean
   depends_on_jobs: string[]
+  mssql_conn_id: string
   mssql_database: string
+  params: JobParam[]
 }
 
 function JobFormModal({
@@ -88,7 +94,9 @@ function JobFormModal({
     ssh_conn_id: job?.ssh_conn_id ?? '',
     verbose_log: job?.verbose_log ?? false,
     depends_on_jobs: [],
+    mssql_conn_id: '',
     mssql_database: '',
+    params: [],
   })
   const [err, setErr] = useState<string[]>([])
 
@@ -98,6 +106,14 @@ function JobFormModal({
     staleTime: 60_000,
   })
   const sshConns = sshData?.connections ?? []
+
+  // Conexões MSSQL (Airflow) — alvo das stored procedures.
+  const { data: mssqlData } = useQuery<{ connections: { conn_id: string; host: string }[] }>({
+    queryKey: ['mssql-connections'],
+    queryFn: () => apiFetch('/airflow/connections/mssql'),
+    staleTime: 60_000,
+  })
+  const mssqlConns = mssqlData?.connections ?? []
 
   // Bancos do mesmo servidor da conexão do ORQUESTRA (seletor de banco-alvo storedproc).
   const { data: dbData } = useQuery<{ server: string | null; databases: string[] }>({
@@ -118,15 +134,26 @@ function JobFormModal({
     .map(j => j.job_name)
     .filter(n => n && n !== form.job_name.trim())
 
-  // Carrega as dependências atuais do job em edição.
+  // Carrega as dependências e os campos de storedproc do job em edição.
   useEffect(() => {
     if (!isEdit || !job) return
-    apiFetch<{ depends_on_jobs?: string | null; mssql_database?: string | null }>(
-      `/pipelines/jobs/${encodeURIComponent(pipeline)}/${encodeURIComponent(job.job_name)}`)
+    apiFetch<{
+      depends_on_jobs?: string | null
+      mssql_conn_id?: string | null
+      mssql_database?: string | null
+      params?: { param_name: string; param_type: string; param_value: string | null; param_order?: number }[]
+    }>(`/pipelines/jobs/${encodeURIComponent(pipeline)}/${encodeURIComponent(job.job_name)}`)
       .then(d => setForm(prev => ({
         ...prev,
         depends_on_jobs: (d.depends_on_jobs || '').split(',').map(s => s.trim()).filter(Boolean),
+        mssql_conn_id: d.mssql_conn_id ?? '',
         mssql_database: d.mssql_database ?? '',
+        params: (d.params ?? []).map((p, i) => ({
+          id: `p_${i}_${p.param_name}`,
+          param_name: p.param_name,
+          param_type: p.param_type,
+          param_value: p.param_value ?? '',
+        })),
       })))
       .catch(() => {})
   }, [isEdit, pipeline, job])
@@ -143,7 +170,17 @@ function JobFormModal({
         ssh_conn_id: form.job_type === 'shell' ? (form.ssh_conn_id || null) : null,
         verbose_log: form.job_type === 'datastage' ? form.verbose_log : false,
         depends_on_jobs: form.depends_on_jobs,
+        mssql_conn_id: form.job_type === 'storedproc' ? (form.mssql_conn_id || null) : null,
         mssql_database: form.job_type === 'storedproc' ? (form.mssql_database || null) : null,
+        params: form.job_type === 'storedproc'
+          ? form.params
+              .filter(p => p.param_name.trim())
+              .map(p => ({
+                param_name: p.param_name.trim(),
+                param_type: p.param_type,
+                param_value: p.param_value,
+              }))
+          : [],
         require_lineage: false,
         operacao: 'upsert',
       }),
@@ -166,13 +203,33 @@ function JobFormModal({
     const errs: string[] = []
     if (!form.job_name.trim()) errs.push('Nome da etapa é obrigatório')
     if (!form.execution_order || form.execution_order < 1) errs.push('Ordem deve ser >= 1')
-    if (form.job_type === 'shell' && !form.ssh_conn_id) errs.push('Servidor SSH é obrigatório para jobs shell')
+    // Regras por tipo de etapa vêm da fonte única JobTypeFields (apenas para os
+    // tipos que ela cobre — 'decisao' não é editado por esta tela).
+    if (form.job_type !== 'decisao') {
+      errs.push(...jobTypeFieldsErrors(typeFieldsValue))
+    }
     setErr(errs)
     return errs.length === 0
   }
 
   function f<K extends keyof JobFormData>(k: K, v: JobFormData[K]) {
     setForm(prev => ({ ...prev, [k]: v }))
+    setErr([])
+  }
+
+  // Valor consumido pela fonte única de campos por tipo (JobTypeFields). 'decisao'
+  // não é editado por esta tela; o fallback p/ 'datastage' apenas satisfaz o tipo.
+  const typeFieldsValue: JobTypeFieldsValue = {
+    job_type: form.job_type === 'decisao' ? 'datastage' : form.job_type,
+    job_command: form.job_command,
+    ssh_conn_id: form.ssh_conn_id,
+    verbose_log: form.verbose_log,
+    mssql_conn_id: form.mssql_conn_id,
+    mssql_database: form.mssql_database,
+    params: form.params,
+  }
+  function patchTypeFields(patch: Partial<JobTypeFieldsValue>) {
+    setForm(prev => ({ ...prev, ...patch }))
     setErr([])
   }
 
@@ -210,40 +267,23 @@ function JobFormModal({
           </Select>
         </div>
 
-        <Input
-          label={form.job_type === 'datastage' ? 'Nome do job DataStage' : form.job_type === 'storedproc' ? 'Procedure (ex: dbo.sp_nome)' : 'Comando / Path'}
-          value={form.job_command}
-          onChange={e => f('job_command', e.target.value)}
-          placeholder={
-            form.job_type === 'datastage' ? 'ex: BiCvp.job_name' :
-            form.job_type === 'shell' ? 'ex: /opt/scripts/run.sh' :
-            form.job_type === 'python' ? 'ex: scripts.modulo.run' :
-            'ex: dbo.sp_procedure'
-          }
-        />
-        {form.job_type === 'storedproc' && (
-          <p className="text-[11px] text-dim/70 -mt-2">Apenas o <strong>nome</strong> da procedure (ex.: <code>dbo.sp_nome</code>). O sistema adiciona o <code>EXEC</code> e os parâmetros automaticamente — <strong>não</strong> escreva “EXEC”. Sem parâmetros cadastrados, a proc é chamada sem nenhum parâmetro.</p>
-        )}
-
-        {/* Servidor / banco-alvo da procedure (mesmo servidor da conexão do ORQUESTRA) */}
-        {form.job_type === 'storedproc' && (
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-dim font-medium">
-              Servidor / Banco {dbServer && <span className="text-dim/60 font-mono">({dbServer})</span>}
-            </label>
-            <select
-              value={form.mssql_database}
-              onChange={e => f('mssql_database', e.target.value)}
-              className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              <option value="">Banco padrão da conexão</option>
-              {dbDatabases.map(d => <option key={d} value={d}>{d}</option>)}
-              {form.mssql_database && !dbDatabases.includes(form.mssql_database) && (
-                <option value={form.mssql_database}>{form.mssql_database}</option>
-              )}
-            </select>
-            <p className="text-xs text-dim/60">A proc roda no banco escolhido, no mesmo servidor (<code>EXEC [banco].schema.proc</code>). Vazio = banco padrão.</p>
-          </div>
+        {/* Campos por TIPO de etapa — fonte única (vale na Lista e no Fluxo). */}
+        {form.job_type === 'decisao' ? (
+          <Input
+            label="Comando / Path"
+            value={form.job_command}
+            onChange={e => f('job_command', e.target.value)}
+            placeholder="ex: dbo.sp_procedure"
+          />
+        ) : (
+          <JobTypeFields
+            value={typeFieldsValue}
+            onChange={patchTypeFields}
+            sshConns={sshConns}
+            mssqlConns={mssqlConns}
+            dbServer={dbServer}
+            dbDatabases={dbDatabases}
+          />
         )}
 
         {/* Depende de — predecessores no mesmo pipeline (grafo de dependências) */}
@@ -268,44 +308,6 @@ function JobFormModal({
                 )
               })}
             </div>
-          </div>
-        )}
-
-        {/* SSH para shell */}
-        {form.job_type === 'shell' && (
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-dim font-medium">Servidor SSH (conexão Airflow) *</label>
-            <select
-              value={form.ssh_conn_id}
-              onChange={e => f('ssh_conn_id', e.target.value)}
-              className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              <option value="">Selecione a conexão SSH...</option>
-              {sshConns.map(c => (
-                <option key={c.conn_id} value={c.conn_id}>{c.conn_id} {c.host ? `(${c.host})` : ''}</option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {/* Log detalhado para datastage */}
-        {form.job_type === 'datastage' && (
-          <div className="bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800/40 rounded-lg px-3 py-3">
-            <label className="flex items-start gap-2.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={form.verbose_log}
-                onChange={e => f('verbose_log', e.target.checked)}
-                className="mt-0.5 accent-amber-400"
-              />
-              <div>
-                <span className="text-sm text-ink font-medium">Log detalhado durante execução</span>
-                <p className="text-xs text-dim mt-0.5">
-                  Registra o progresso dos jobs filhos a cada 5 min (jobs SEQUENCE).
-                  Útil para diagnosticar lentidão — desative após a investigação.
-                </p>
-              </div>
-            </label>
           </div>
         )}
 

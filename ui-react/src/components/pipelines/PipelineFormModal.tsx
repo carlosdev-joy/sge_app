@@ -8,6 +8,7 @@ import { Modal } from '../ui/Modal'
 import { toast } from '../ui/Toast'
 import { Save, Plus } from 'lucide-react'
 import type { Pipeline, LineageJob } from '../../types/pipeline'
+import { PARAM_TYPES } from '../etapas/JobTypeFields'
 import {
   SCHEDULE_TYPES, SCHEDULE_LABELS, CRITICIDADES, AMBIENTES, MAX_MONTH_DAYS,
   JOB_TYPES, JOB_TYPE_LABELS, OBJECT_TYPES, DOW_LABELS,
@@ -18,6 +19,8 @@ import {
 
 // ── Sub-types ─────────────────────────────────────────────────────────────────
 
+// Mesma estrutura da fonte única (JobTypeFields.JobParam), mas com `id`
+// obrigatório — o wizard mantém os params em estado e precisa de uma chave estável.
 interface JobParamEntry {
   id: string
   param_name: string
@@ -25,7 +28,7 @@ interface JobParamEntry {
   param_value: string
 }
 
-const PARAM_TYPES = ['VARCHAR', 'INT', 'DATE', 'DATETIME', 'DECIMAL', 'BIT'] as const
+// PARAM_TYPES vem da fonte única em components/etapas/JobTypeFields (mesma lista).
 const COND_OPERADORES = ['=', '<>', '>', '>=', '<', '<='] as const
 
 // Condição de um nó de Decisão (job_type='decisao').
