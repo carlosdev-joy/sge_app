@@ -18,12 +18,13 @@ import {
 import { useAuthStore } from '../store/auth'
 
 // Domínios da navegação, na ordem de exibição (cabeçalho de seção na sidebar).
-export type NavGroup = 'Operação' | 'Governança' | 'Console DataStage' | 'BI' | 'Administração'
-export const NAV_GROUPS: NavGroup[] = ['Operação', 'Governança', 'Console DataStage', 'BI', 'Administração']
+export type NavGroup = 'Operação' | 'Governança' | 'DataStage' | 'BI' | 'Administração'
+export const NAV_GROUPS: NavGroup[] = ['Operação', 'Governança', 'DataStage', 'BI', 'Administração']
 
 export interface NavItem {
   to: string          // rota React (basename /v2 já aplicado pelo router)
-  label: string
+  label: string       // rótulo no shell clássico (e fallback do v2)
+  labelV2?: string    // rótulo só no shell v2; clássico permanece em `label`
   icon: LucideIcon
   group: NavGroup     // domínio para agrupar na sidebar (shell v2)
   legacyHref: string  // para onde mandar quando ainda não migrada (UI legada)
@@ -33,18 +34,18 @@ export interface NavItem {
 }
 
 export const NAV: NavItem[] = [
-  { to: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard, group: 'Operação',         legacyHref: '/', migrated: true, perm: 'tela_dashboard' },
-  { to: '/pipelines',  label: 'Pipelines',  icon: Workflow,        group: 'Operação',         legacyHref: '/', migrated: true, perm: 'tela_pipelines' },
-  { to: '/jobs',       label: 'Jobs',       icon: Boxes,           group: 'Operação',         legacyHref: '/', migrated: true, perm: 'tela_jobs' },
-  { to: '/logs',       label: 'Logs',       icon: ScrollText,      group: 'Operação',         legacyHref: '/', migrated: true, perm: 'tela_logs' },
-  { to: '/governanca', label: 'Governança', icon: ShieldCheck,     group: 'Governança',       legacyHref: '/', migrated: true, perm: 'tela_governanca' },
-  { to: '/malha',      label: 'Malha',      icon: Network,         group: 'Governança',       legacyHref: '/', migrated: true, perm: 'tela_malha' },
-  { to: '/impacto-campo', label: 'Impacto Campo', icon: FileSearch,    group: 'Governança',   legacyHref: '/', migrated: true, perm: 'tela_impacto_campo' },
-  { to: '/planos-ajuste', label: 'Planos Ajuste', icon: ClipboardList, group: 'Governança',   legacyHref: '/', migrated: true, perm: 'tela_plano_ajuste' },
-  { to: '/malha-ds',   label: 'Malha DS',   icon: Share2,          group: 'Console DataStage', legacyHref: '/', migrated: true, perm: 'tela_malha_ds' },
-  { to: '/ds-console', label: 'Console DS',  icon: Terminal,        group: 'Console DataStage', legacyHref: '/', migrated: true, perm: 'tela_ds_console' },
-  { to: '/powerbi',    label: 'Power BI',  icon: BarChart3,       group: 'BI',               legacyHref: '/', migrated: true, perm: 'tela_powerbi' },
-  { to: '/admin',      label: 'Admin',      icon: Settings,        group: 'Administração',    legacyHref: '/', migrated: true, adminOnly: true, perm: 'tela_admin' },
+  { to: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard, group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_dashboard' },
+  { to: '/pipelines',  label: 'Pipelines',  icon: Workflow,        group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_pipelines' },
+  { to: '/jobs',       label: 'Jobs',       labelV2: 'Etapas',                icon: Boxes,         group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_jobs' },
+  { to: '/logs',       label: 'Logs',       icon: ScrollText,      group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_logs' },
+  { to: '/governanca', label: 'Governança', labelV2: 'Catálogo & Lineage',    icon: ShieldCheck,   group: 'Governança', legacyHref: '/', migrated: true, perm: 'tela_governanca' },
+  { to: '/malha',      label: 'Malha',      labelV2: 'Malha de Pipelines',    icon: Network,       group: 'Governança', legacyHref: '/', migrated: true, perm: 'tela_malha' },
+  { to: '/impacto-campo', label: 'Impacto Campo', labelV2: 'Impacto de Campo', icon: FileSearch,   group: 'Governança', legacyHref: '/', migrated: true, perm: 'tela_impacto_campo' },
+  { to: '/planos-ajuste', label: 'Planos Ajuste', labelV2: 'Planos de Ajuste', icon: ClipboardList, group: 'Governança', legacyHref: '/', migrated: true, perm: 'tela_plano_ajuste' },
+  { to: '/malha-ds',   label: 'Malha DS',   labelV2: 'Estrutura (Malha DS)',  icon: Share2,        group: 'DataStage',  legacyHref: '/', migrated: true, perm: 'tela_malha_ds' },
+  { to: '/ds-console', label: 'Console DS', labelV2: 'Console (dsjob)',       icon: Terminal,      group: 'DataStage',  legacyHref: '/', migrated: true, perm: 'tela_ds_console' },
+  { to: '/powerbi',    label: 'Power BI',   icon: BarChart3,       group: 'BI',         legacyHref: '/', migrated: true, perm: 'tela_powerbi' },
+  { to: '/admin',      label: 'Admin',      icon: Settings,        group: 'Administração', legacyHref: '/', migrated: true, adminOnly: true, perm: 'tela_admin' },
 ]
 
 // Telas migradas (em React) — usado para montar rotas (App.tsx) e decidir fallback.
