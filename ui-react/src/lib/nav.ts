@@ -12,7 +12,7 @@
 
 import type { LucideIcon } from 'lucide-react'
 import {
-  LayoutDashboard, Workflow, Boxes, ScrollText,
+  LayoutDashboard, Workflow, Boxes, ScrollText, Bell,
   ShieldCheck, Network, Settings, FileSearch, ClipboardList, BarChart3, Share2, Terminal,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
@@ -32,6 +32,7 @@ export interface NavItem {
   migrated: boolean
   adminOnly?: boolean
   perm?: string       // recurso RBAC (tela_*) exigido para exibir o item
+  v2Only?: boolean    // só aparece no menu do shell v2 (o clássico não exibe)
 }
 
 export const NAV: NavItem[] = [
@@ -39,6 +40,7 @@ export const NAV: NavItem[] = [
   { to: '/pipelines',  label: 'Pipelines',  icon: Workflow,        group: 'Construção', legacyHref: '/', migrated: true, perm: 'tela_pipelines' },
   { to: '/jobs',       label: 'Jobs',       labelV2: 'Etapas',                icon: Boxes,         group: 'Construção', legacyHref: '/', migrated: true, perm: 'tela_jobs' },
   { to: '/logs',       label: 'Logs',       icon: ScrollText,      group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_logs' },
+  { to: '/avisos',     label: 'Avisos',     icon: Bell,            group: 'Operação',   legacyHref: '/', migrated: true, v2Only: true },
   { to: '/governanca', label: 'Governança', labelV2: 'Catálogo & Lineage',    icon: ShieldCheck,   group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_governanca' },
   { to: '/malha',      label: 'Malha',      labelV2: 'Malha de Pipelines',    icon: Network,       group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_malha' },
   { to: '/impacto-campo', label: 'Impacto Campo', labelV2: 'Impacto de Campo', icon: FileSearch,   group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_impacto_campo' },
@@ -65,9 +67,10 @@ export interface NavGroupView {
 export function useVisibleNav(): { visible: NavItem[]; groups: NavGroupView[] } {
   const perms = useAuthStore((s) => s.user?.permissoes) ?? []
   const canSee = (n: NavItem) => !n.perm || perms.length === 0 || perms.includes(n.perm)
-  const visible = NAV.filter(canSee)
+  const all = NAV.filter(canSee)
+  const visible = all.filter((n) => !n.v2Only)   // header clássico (lista plana) não mostra itens v2-only
   const groups = NAV_GROUPS
-    .map((group) => ({ group, items: visible.filter((n) => n.group === group) }))
+    .map((group) => ({ group, items: all.filter((n) => n.group === group) }))
     .filter((g) => g.items.length > 0)
   return { visible, groups }
 }
