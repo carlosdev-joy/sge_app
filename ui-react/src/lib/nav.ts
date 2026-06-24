@@ -12,7 +12,7 @@
 
 import type { LucideIcon } from 'lucide-react'
 import {
-  LayoutDashboard, Workflow, Boxes, ScrollText, Bell,
+  LayoutDashboard, Workflow, Boxes, ScrollText, Bell, ListChecks,
   ShieldCheck, Network, Settings, FileSearch, ClipboardList, BarChart3, Share2, Terminal,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
@@ -37,6 +37,7 @@ export interface NavItem {
 
 export const NAV: NavItem[] = [
   { to: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard, group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_dashboard' },
+  { to: '/operacao-dia', label: 'Operação do dia', icon: ListChecks, group: 'Operação', legacyHref: '/', migrated: true, v2Only: true, perm: 'tela_logs' },
   { to: '/pipelines',  label: 'Pipelines',  icon: Workflow,        group: 'Construção', legacyHref: '/', migrated: true, perm: 'tela_pipelines' },
   { to: '/jobs',       label: 'Jobs',       labelV2: 'Etapas',                icon: Boxes,         group: 'Construção', legacyHref: '/', migrated: true, perm: 'tela_jobs' },
   { to: '/logs',       label: 'Logs',       icon: ScrollText,      group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_logs' },

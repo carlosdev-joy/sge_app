@@ -18,6 +18,7 @@ import PowerBI from './pages/PowerBI'
 import MalhaDS from './pages/MalhaDS'
 import DsConsole from './pages/DsConsole'
 import Avisos from './pages/Avisos'
+import OperacaoDia from './pages/OperacaoDia'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -31,6 +32,7 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
 // a lista de telas. Adicionar uma tela = registrar no nav.ts + mapear aqui.
 const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/dashboard': <Dashboard />,
+  '/operacao-dia': <OperacaoDia />,
   '/pipelines': <Pipelines />,
   '/jobs': <Jobs />,
   '/logs': <Logs />,

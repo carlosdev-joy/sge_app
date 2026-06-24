@@ -980,7 +980,11 @@ function GestaoFalhasTab() {
 // ── Root ───────────────────────────────────────────────────────────────────
 
 export default function Logs() {
-  const [tab, setTab] = useState('execucoes')
+  const [searchParams] = useSearchParams()
+  const urlTab = searchParams.get('tab')
+  const [tab, setTab] = useState(
+    urlTab && ['execucoes', 'gestao', 'factory'].includes(urlTab) ? urlTab : 'execucoes',
+  )
 
   return (
     <div className="flex flex-col gap-4">
