@@ -61,7 +61,8 @@ export function Sidebar({ mobileOpen, onClose }: { mobileOpen: boolean; onClose:
         <nav className="flex-1 overflow-y-auto py-2">
           {groups.map((g, i) => (
             <div key={g.group} className={!compact && i > 0 ? 'mt-3' : ''}>
-              {!compact && (
+              {/* Cabeçalho de seção só para grupos com 2+ itens (evita seção de 1 item) */}
+              {!compact && g.items.length > 1 && (
                 <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-dim">
                   {g.group}
                 </div>
@@ -70,10 +71,11 @@ export function Sidebar({ mobileOpen, onClose }: { mobileOpen: boolean; onClose:
               <ul className="space-y-0.5 px-2">
                 {g.items.map((n) => {
                   const Icon = n.icon
+                  const label = n.labelV2 ?? n.label   // rótulo do v2; cai no clássico se ausente
                   const content = (
                     <>
                       <Icon size={18} className="shrink-0" />
-                      {!compact && <span className="truncate">{n.label}</span>}
+                      {!compact && <span className="truncate">{label}</span>}
                     </>
                   )
                   return (
@@ -81,7 +83,7 @@ export function Sidebar({ mobileOpen, onClose }: { mobileOpen: boolean; onClose:
                       {n.migrated ? (
                         <NavLink
                           to={n.to}
-                          title={compact ? n.label : undefined}
+                          title={compact ? label : undefined}
                           className={({ isActive }) => itemClass(isActive)}
                         >
                           {content}
@@ -89,7 +91,7 @@ export function Sidebar({ mobileOpen, onClose }: { mobileOpen: boolean; onClose:
                       ) : (
                         <a
                           href={n.legacyHref}
-                          title={compact ? n.label : undefined}
+                          title={compact ? label : undefined}
                           className={itemClass(false)}
                         >
                           {content}
