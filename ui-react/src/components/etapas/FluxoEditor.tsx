@@ -33,7 +33,7 @@ import { Modal } from '../ui/Modal'
 import { toast } from '../ui/Toast'
 import {
   Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing,
-  PanelRightClose, ChevronLeft, ChevronRight, MousePointerClick,
+  PanelRightClose, ChevronLeft, ChevronRight, MousePointerClick, Search, X,
 } from 'lucide-react'
 import { EtapaNode, type EtapaNodeData } from './EtapaNode'
 import { DecisaoNode, type DecisaoNodeData, type NodeCondition } from './DecisaoNode'
@@ -184,6 +184,10 @@ const SIM_STYLE = { stroke: '#22c55e' }
 const NAO_STYLE = { stroke: '#94a3b8' }
 const SIM_LABEL_STYLE = { fill: '#15803d', fontSize: 11, fontWeight: 700 }
 const NAO_LABEL_STYLE = { fill: '#64748b', fontSize: 11, fontWeight: 700 }
+// Rótulo discreto das arestas NORMAIS de dependência ("Link_N"): texto minúsculo,
+// neutro, sem fundo próprio — só pra dar o ar de designer (estilo IBM/DataStage).
+const LINK_LABEL_STYLE = { fill: '#94a3b8', fontSize: 9, fontWeight: 500 }
+const LINK_LABEL_BG = { fill: 'transparent' }
 
 function buildNodes(apiNodes: FluxoNode[]): Node[] {
   const auto = autoLayout(apiNodes)
@@ -244,15 +248,22 @@ function buildEdges(apiNodes: FluxoNode[]): Edge[] {
   const isDecisao = new Set(apiNodes.filter(n => n.job_type === 'decisao').map(n => n.job_name))
 
   // Arestas NORMAIS (dep): dep → job, a partir de depends_on_jobs.
+  // Rótulo sutil "Link_N" (N por ordem de criação) — só visual, não afeta o save.
+  let linkSeq = 0
   for (const n of apiNodes) {
     for (const dep of n.depends_on_jobs || []) {
       if (isDecisao.has(dep)) continue   // origem decisão = ramo, não dep
+      linkSeq += 1
       edges.push({
         id: `dep:${dep}->${n.job_name}`,
         source: dep,
         target: n.job_name,
         type: 'smoothstep',
         markerEnd: EDGE_ARROW,
+        label: `Link_${linkSeq}`,
+        labelStyle: LINK_LABEL_STYLE,
+        labelBgStyle: LINK_LABEL_BG,
+        labelShowBg: false,
       })
     }
   }
@@ -311,39 +322,76 @@ function Legenda() {
   )
 }
 
-// ── Paleta arrastar-para-criar (barra vertical compacta, estilo Informatica) ─
+// ── Paleta arrastar-para-criar (estilo IBM Cloud Pak / DataStage Designer) ────
 const DND_MIME = 'application/orquestra-etapa'
 
-// Um item arrastável da paleta: ícone grande no chip + label pequeno embaixo.
-// Quando `collapsed`, mostra só o chip (faixa fininha).
+type IconCmp = React.ComponentType<{ size?: number; strokeWidth?: number }>
+interface PaletaNode { tipo: string; label: string; chip: string; Icon: IconCmp }
+interface PaletaCategoria { titulo: string; nodes: PaletaNode[] }
+
+// Categorias do palette — declarativas pra ficar fácil estender. "Execução"
+// reúne os tipos criáveis (datastage/shell/python/storedproc…); "Fluxo" reúne
+// os nós de controle (decisão e notificação).
+const PALETA_CATEGORIAS: PaletaCategoria[] = [
+  {
+    titulo: 'Execução',
+    nodes: CREATABLE_TYPES.map((t) => ({
+      tipo: t,
+      label: TYPE_META[t].label,
+      chip: TYPE_META[t].chip,
+      Icon: TYPE_META[t].icon,
+    })),
+  },
+  {
+    titulo: 'Fluxo',
+    nodes: [
+      { tipo: 'decisao', label: 'Decisão', chip: 'bg-indigo-500 text-white', Icon: GitBranch },
+      { tipo: 'notificacao', label: 'Notificação', chip: 'bg-teal-500 text-white', Icon: BellRing },
+    ],
+  },
+]
+
+// Normaliza p/ busca acento-insensível (case + diacríticos simples).
+function normalizeBusca(s: string): string {
+  return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+}
+
+// Um item arrastável da paleta. Aberto → linha (chip à esquerda + label à
+// direita), estilo lista do designer. Colapsado → só o chip (faixa fininha).
 function PaletaItem({
   tipo, label, chip, Icon, collapsed,
-}: {
-  tipo: string; label: string; chip: string; Icon: React.ComponentType<{ size?: number; strokeWidth?: number }>; collapsed: boolean
-}) {
+}: PaletaNode & { collapsed: boolean }) {
   const onDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData(DND_MIME, tipo)
     e.dataTransfer.effectAllowed = 'move'
+  }
+  if (collapsed) {
+    return (
+      <div
+        draggable
+        onDragStart={onDragStart}
+        title={`Arrastar para criar — ${label}`}
+        className="group flex cursor-grab items-center justify-center rounded-md border border-edge bg-canvas p-1 text-ink transition-colors hover:bg-edge/40 active:cursor-grabbing"
+      >
+        <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded ${chip}`}>
+          <Icon size={16} strokeWidth={2.2} />
+        </span>
+      </div>
+    )
   }
   return (
     <div
       draggable
       onDragStart={onDragStart}
       title={`Arrastar para criar — ${label}`}
-      className={[
-        'group flex cursor-grab flex-col items-center gap-1 rounded-md border border-edge bg-canvas',
-        'text-ink transition-colors hover:bg-edge/40 active:cursor-grabbing',
-        collapsed ? 'p-1' : 'px-1 py-1.5',
-      ].join(' ')}
+      className="group flex cursor-grab items-center gap-2 rounded-md border border-edge bg-canvas px-2 py-1.5 text-ink transition-colors hover:border-blue-300 hover:bg-edge/40 active:cursor-grabbing dark:hover:border-blue-800"
     >
       <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded ${chip}`}>
         <Icon size={16} strokeWidth={2.2} />
       </span>
-      {!collapsed && (
-        <span className="max-w-full truncate text-[9px] font-medium leading-none text-dim group-hover:text-ink">
-          {label}
-        </span>
-      )}
+      <span className="min-w-0 flex-1 truncate text-[11px] font-medium leading-none text-ink">
+        {label}
+      </span>
     </div>
   )
 }
@@ -351,58 +399,90 @@ function PaletaItem({
 function Paleta({
   open, onToggle,
 }: { open: boolean; onToggle: () => void }) {
+  const [busca, setBusca] = useState('')
+
+  // Filtra os nós por label (case/acento-insensível). Categorias sem itens após
+  // o filtro desaparecem. No modo colapsado a busca não se aplica (sem input).
+  const categorias = useMemo(() => {
+    const q = normalizeBusca(busca.trim())
+    if (!open || !q) return PALETA_CATEGORIAS
+    return PALETA_CATEGORIAS
+      .map((c) => ({ ...c, nodes: c.nodes.filter((n) => normalizeBusca(n.label).includes(q)) }))
+      .filter((c) => c.nodes.length > 0)
+  }, [busca, open])
+
   return (
     <div
       className={[
-        'flex max-h-[calc(100%-1rem)] flex-col overflow-y-auto rounded-lg border border-edge bg-panel/95 shadow-md backdrop-blur',
-        open ? 'w-[72px] p-1.5' : 'w-[40px] p-1',
+        'flex max-h-[calc(100%-1rem)] flex-col overflow-hidden rounded-lg border border-edge bg-panel/95 shadow-md backdrop-blur',
+        open ? 'w-[176px]' : 'w-[40px]',
       ].join(' ')}
     >
-      {/* Cabeçalho com botão de colapsar/expandir */}
+      {/* Cabeçalho com título + botão de colapsar/expandir */}
       <button
         type="button"
         onClick={onToggle}
         title={open ? 'Recolher paleta' : 'Expandir paleta'}
-        className="mb-1 flex items-center justify-center gap-1 rounded-md border border-edge bg-canvas px-1 py-1 text-[9px] font-semibold uppercase tracking-wide text-dim transition-colors hover:bg-edge/40 hover:text-ink"
+        className={[
+          'flex shrink-0 items-center border-b border-edge text-[10px] font-semibold uppercase tracking-wide text-dim transition-colors hover:bg-edge/40 hover:text-ink',
+          open ? 'justify-between px-2.5 py-2' : 'justify-center px-1 py-2',
+        ].join(' ')}
       >
         {open ? (
           <>
             <span>Paleta</span>
-            <ChevronLeft size={11} />
+            <ChevronLeft size={13} />
           </>
         ) : (
-          <ChevronRight size={12} />
+          <ChevronRight size={13} />
         )}
       </button>
 
-      <div className="flex flex-col gap-1.5">
-        {CREATABLE_TYPES.map((t) => {
-          const meta = TYPE_META[t]
-          return (
-            <PaletaItem
-              key={t}
-              tipo={t}
-              label={meta.label}
-              chip={meta.chip}
-              Icon={meta.icon}
-              collapsed={!open}
+      {/* Busca — só no estado aberto */}
+      {open && (
+        <div className="shrink-0 border-b border-edge p-2">
+          <div className="relative">
+            <Search
+              size={13}
+              className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-dim"
             />
-          )
-        })}
-        <PaletaItem
-          tipo="decisao"
-          label="Decisão"
-          chip="bg-indigo-500 text-white"
-          Icon={GitBranch}
-          collapsed={!open}
-        />
-        <PaletaItem
-          tipo="notificacao"
-          label="Notificação"
-          chip="bg-teal-500 text-white"
-          Icon={BellRing}
-          collapsed={!open}
-        />
+            <input
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              placeholder="Buscar nó…"
+              className="w-full rounded-md border border-edge bg-canvas py-1 pl-7 pr-6 text-[11px] text-ink placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            {busca && (
+              <button
+                type="button"
+                onClick={() => setBusca('')}
+                title="Limpar busca"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-dim transition-colors hover:bg-edge/50 hover:text-ink"
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Itens por categoria */}
+      <div className={['flex flex-col gap-2 overflow-y-auto', open ? 'p-2' : 'p-1'].join(' ')}>
+        {open && categorias.length === 0 && (
+          <p className="px-1 py-2 text-center text-[10px] text-dim">Nenhum nó encontrado.</p>
+        )}
+        {categorias.map((cat) => (
+          <div key={cat.titulo} className="flex flex-col gap-1">
+            {open && (
+              <p className="px-0.5 text-[9px] font-semibold uppercase tracking-wide text-dim">
+                {cat.titulo}
+              </p>
+            )}
+            {cat.nodes.map((n) => (
+              <PaletaItem key={n.tipo} {...n} collapsed={!open} />
+            ))}
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -574,6 +654,8 @@ function FluxoEditorInner({ pipeline }: Props) {
       // Aresta NORMAL (dep) — evita duplicadas.
       const exists = edges.some(e => !isBranch(e) && e.source === conn.source && e.target === conn.target)
       if (exists) return
+      // Próximo "Link_N" sequencial = nº de arestas normais já existentes + 1.
+      const linkN = edges.filter(e => !isBranch(e)).length + 1
       setEdges(eds =>
         addEdge(
           {
@@ -582,6 +664,10 @@ function FluxoEditorInner({ pipeline }: Props) {
             target: conn.target!,
             type: 'smoothstep',
             markerEnd: EDGE_ARROW,
+            label: `Link_${linkN}`,
+            labelStyle: LINK_LABEL_STYLE,
+            labelBgStyle: LINK_LABEL_BG,
+            labelShowBg: false,
           },
           eds,
         ),
