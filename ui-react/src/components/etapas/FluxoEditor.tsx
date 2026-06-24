@@ -692,6 +692,19 @@ function FluxoEditorInner({ pipeline }: Props) {
   async function salvar() {
     setSaving(true)
     try {
+      // Guard: nó de notificação exige um canal (grupo). O backend rejeita o
+      // /fluxo inteiro se faltar — avisamos claro (nomeando os nós) antes de
+      // chamar a API, em vez de deixar o save falhar com erro genérico.
+      const notifSemCanal = nodes
+        .filter(n => n.type === 'notificacao')
+        .filter(n => (n.data as { notify?: { grupo_id: number | null } }).notify?.grupo_id == null)
+        .map(n => n.id)
+      if (notifSemCanal.length) {
+        toast.error(`Escolha um canal na notificação: ${notifSemCanal.join(', ')}.`)
+        setSaving(false)
+        return
+      }
+
       const decisoes = new Set(nodes.filter(n => n.type === 'decisao').map(n => n.id))
 
       // depends_on_jobs[N] = origens das arestas NORMAIS que chegam em N
