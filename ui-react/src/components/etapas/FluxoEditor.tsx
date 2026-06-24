@@ -102,6 +102,51 @@ function autoLayout(apiNodes: FluxoNode[]): Record<string, { x: number; y: numbe
   return pos
 }
 
+// Layout sobre o grafo VIVO (nós + arestas atuais), não só os salvos: assim o
+// "Reorganizar" reposiciona TAMBÉM os nós recém-adicionados (ex.: uma notificação
+// que ainda não foi salva). Coluna = execution_order salvo, quando houver; para
+// um nó novo, deriva de (maior coluna dos predecessores no grafo) + 1.
+function liveLayout(
+  nodes: Node[],
+  edges: Edge[],
+  savedOrder: Map<string, number>,
+): Record<string, { x: number; y: number }> {
+  const preds = new Map<string, string[]>()
+  for (const n of nodes) preds.set(n.id, [])
+  for (const e of edges) {
+    if (preds.has(e.target) && preds.has(e.source)) preds.get(e.target)!.push(e.source)
+  }
+  const col = new Map<string, number>()
+  const visiting = new Set<string>()
+  const resolve = (id: string): number => {
+    const cached = col.get(id)
+    if (cached != null) return cached
+    const saved = savedOrder.get(id)
+    if (saved != null) { col.set(id, saved); return saved }
+    if (visiting.has(id)) return 1   // guarda contra ciclo
+    visiting.add(id)
+    let c = 1
+    for (const p of preds.get(id) ?? []) c = Math.max(c, resolve(p) + 1)
+    visiting.delete(id)
+    col.set(id, c)
+    return c
+  }
+  for (const n of nodes) resolve(n.id)
+  const byCol = new Map<number, string[]>()
+  for (const n of nodes) {
+    const c = col.get(n.id) ?? 1
+    if (!byCol.has(c)) byCol.set(c, [])
+    byCol.get(c)!.push(n.id)
+  }
+  const pos: Record<string, { x: number; y: number }> = {}
+  Array.from(byCol.keys()).sort((a, b) => a - b).forEach((c, ci) => {
+    byCol.get(c)!.forEach((id, ri) => {
+      pos[id] = { x: ci * COL_W, y: ri * ROW_H }
+    })
+  })
+  return pos
+}
+
 // Mapeia o job_type da API para um EtapaType conhecido (fallback p/ datastage).
 function toEtapaType(t: string): EtapaType {
   return (TYPE_ORDER as string[]).includes(t) ? (t as EtapaType) : 'datastage'
@@ -698,12 +743,19 @@ function FluxoEditorInner({ pipeline }: Props) {
     [],
   )
 
-  // Re-roda o auto-layout.
+  // Re-roda o auto-layout sobre o grafo VIVO (inclui nós recém-adicionados,
+  // ainda sem execution_order salvo — ex.: notificação recém-conectada).
   const reorganizar = useCallback(() => {
-    const pos = autoLayout(apiNodesRef.current)
-    setNodes(nds => nds.map(n => (pos[n.id] ? { ...n, position: pos[n.id] } : n)))
+    const savedOrder = new Map<string, number>()
+    for (const n of apiNodesRef.current) {
+      if (n.execution_order != null) savedOrder.set(n.job_name, n.execution_order)
+    }
+    setNodes(nds => {
+      const pos = liveLayout(nds, edges, savedOrder)
+      return nds.map(n => (pos[n.id] ? { ...n, position: pos[n.id] } : n))
+    })
     setDirty(true)
-  }, [setNodes])
+  }, [setNodes, edges])
 
   // ── Salvar: materializa o grafo (todos os nós) ────────────────────────────
   async function salvar() {
