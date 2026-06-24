@@ -12,7 +12,7 @@ import { toast } from '../components/ui/Toast'
 import { copyToClipboard } from '../lib/clipboard'
 import {
   Edit, Plus, ClipboardList, Play, Save, X, Trash2,
-  ChevronUp, ChevronDown, Copy, Network, ArrowUpDown,
+  ChevronUp, ChevronDown, Copy, ArrowUpDown,
   List, Workflow,
 } from 'lucide-react'
 import { useAirflowUrl } from '../lib/config'
@@ -437,72 +437,6 @@ BiCvp_Load_B,2,python,scripts.load_b.run</pre>
 
 // ── Execution diagram ──────────────────────────────────────────────────────
 
-function ExecDiagram({ jobs }: { jobs: Job[] }) {
-  const groups = useMemo(() => {
-    const map = new Map<number, Job[]>()
-    jobs.forEach(j => {
-      const o = j.execution_order
-      if (!map.has(o)) map.set(o, [])
-      map.get(o)!.push(j)
-    })
-    return Array.from(map.entries()).sort((a, b) => a[0] - b[0])
-  }, [jobs])
-
-  if (groups.length === 0) return null
-
-  const typeStyle: Record<string, { wrap: string; label: string; dot: string }> = {
-    datastage:  { wrap: 'border-blue-500   bg-blue-50   dark:bg-blue-900/30   text-blue-800   dark:text-blue-200',   label: 'bg-blue-500   text-white', dot: 'bg-blue-500' },
-    shell:      { wrap: 'border-amber-500  bg-amber-50  dark:bg-amber-900/30  text-amber-800  dark:text-amber-200',  label: 'bg-amber-500  text-white', dot: 'bg-amber-500' },
-    python:     { wrap: 'border-green-500  bg-green-50  dark:bg-green-900/30  text-green-800  dark:text-green-200',  label: 'bg-green-500  text-white', dot: 'bg-green-500' },
-    storedproc: { wrap: 'border-purple-500 bg-purple-50 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200', label: 'bg-purple-500 text-white', dot: 'bg-purple-500' },
-  }
-  const fallbackStyle = { wrap: 'border-slate-400 bg-slate-50 dark:bg-slate-800/30 text-slate-700 dark:text-slate-300', label: 'bg-slate-400 text-white', dot: 'bg-slate-400' }
-
-  return (
-    <div className="bg-canvas border border-edge rounded-xl p-4 overflow-x-auto">
-      {/* Legenda */}
-      <div className="flex items-center gap-4 mb-3">
-        <p className="text-xs text-dim font-medium">Diagrama de execução (ordens → paralelos)</p>
-        <div className="flex items-center gap-3 ml-auto">
-          {Object.entries(typeStyle).map(([type, s]) => (
-            <span key={type} className="flex items-center gap-1 text-[10px] text-dim">
-              <span className={`w-2 h-2 rounded-full ${s.dot}`} />
-              {type}
-            </span>
-          ))}
-        </div>
-      </div>
-      <div className="flex items-center gap-0 min-w-max">
-        {groups.map(([order, gjobs], gi) => (
-          <div key={order} className="flex items-center shrink-0">
-            <div className="flex flex-col gap-2">
-              {gjobs.map(j => {
-                const s = typeStyle[j.job_type] ?? fallbackStyle
-                return (
-                  <div
-                    key={j.job_name}
-                    className={`border-2 rounded-lg px-3 py-2 text-xs font-mono min-w-[140px] max-w-[220px] shadow-sm ${s.wrap}`}
-                    title={`${j.job_name} · Tipo: ${j.job_type}${j.job_command ? ' · ' + j.job_command : ''}`}
-                  >
-                    <div className="truncate font-semibold leading-tight">{j.job_name}</div>
-                    <div className="flex items-center gap-1 mt-1">
-                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${s.label}`}>{j.job_type}</span>
-                      <span className="text-[9px] opacity-50">#{order}</span>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-            {gi < groups.length - 1 && (
-              <div className="text-dim text-base mx-3 font-light select-none">→</div>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 // ── Confirmation modal for execute ─────────────────────────────────────────
 
 function ExecConfirmModal({ pipeline, onConfirm, onClose }: { pipeline: string; onConfirm: () => void; onClose: () => void }) {
@@ -575,7 +509,6 @@ export default function Jobs() {
   const LIMIT = 50
 
   // UI state
-  const [showDiagram, setShowDiagram] = useState(false)
   // Modo de visualização do pipeline: tabela (Lista) ou canvas (Fluxo).
   const [viewMode, setViewMode] = useState<'lista' | 'fluxo'>('lista')
   const [editJob, setEditJob] = useState<Job | undefined>()
@@ -706,12 +639,13 @@ export default function Jobs() {
       toast.error('Informe ao menos um filtro: pipeline, nome da etapa ou tipo.')
       return
     }
-    setSearched(pipelineInput.trim())
+    const pipe = pipelineInput.trim()
+    setSearched(pipe)
     setHasSearched(true)
     setPage(0)
     setOrderEdits({})
-    setShowDiagram(false)
-    setViewMode('lista')
+    // Pesquisou por pipeline → abre direto no Fluxo; por nome/tipo → Lista.
+    setViewMode(pipe ? 'fluxo' : 'lista')
   }
 
   function doClear() {
@@ -757,7 +691,7 @@ export default function Jobs() {
             label="Pipeline"
             value={pipelineInput}
             onChange={setPipelineInput}
-            onSelect={v => { setPipelineInput(v); setSearched(v); setHasSearched(true); setPage(0); setOrderEdits({}) }}
+            onSelect={v => { setPipelineInput(v); setSearched(v); setHasSearched(true); setPage(0); setOrderEdits({}); setViewMode('fluxo') }}
             fetchSuggestions={q =>
               apiFetch<{ data: { pipeline_name: string }[] }>(`/pipelines?limit=10&filter_name=${encodeURIComponent(q)}`)
                 .then(r => r.data.map(p => p.pipeline_name))
@@ -851,9 +785,6 @@ export default function Jobs() {
                 </div>
                 {viewMode === 'lista' && (
                   <>
-                    <Button variant="secondary" size="sm" onClick={() => setShowDiagram(d => !d)}>
-                      <Network size={13} /> {showDiagram ? 'Ocultar' : 'Ver'} diagrama
-                    </Button>
                     {!isViewer && (
                       <>
                         <Button
@@ -898,9 +829,6 @@ export default function Jobs() {
               <FluxoEditor pipeline={searched} />
             </div>
           )}
-
-          {/* Execution diagram (só faz sentido para um pipeline) */}
-          {searched && viewMode === 'lista' && showDiagram && <ExecDiagram jobs={data?.data ?? []} />}
 
           {/* Results table (modo Lista) */}
           {viewMode === 'lista' && (
