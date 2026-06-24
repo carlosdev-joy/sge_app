@@ -24,7 +24,7 @@ import {
 
 // ── constants ──────────────────────────────────────────────────────────────
 
-const JOB_TYPES = ['datastage', 'shell', 'python', 'storedproc', 'decisao'] as const
+const JOB_TYPES = ['datastage', 'shell', 'python', 'storedproc', 'decisao', 'notificacao'] as const
 type JobType = typeof JOB_TYPES[number]
 
 // ── types ──────────────────────────────────────────────────────────────────
@@ -44,6 +44,10 @@ interface Job {
 }
 
 interface SshConn { conn_id: string; host: string; description: string }
+
+// Listas para os Selects de notificação (canais e modelos de mensagem).
+interface MsgGrupo { id: number; nome: string; ativo: boolean; has_webhook: boolean }
+interface MsgTemplate { id: number; grupo_id: number; nome: string; titulo: string | null }
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -78,6 +82,10 @@ interface JobFormData {
   mssql_conn_id: string
   mssql_database: string
   params: JobParam[]
+  // Campos da etapa de notificação (job_type === 'notificacao').
+  grupo_id: number | null
+  template_id: number | null
+  notif_mensagem: string
 }
 
 function JobFormModal({
@@ -97,6 +105,9 @@ function JobFormModal({
     mssql_conn_id: '',
     mssql_database: '',
     params: [],
+    grupo_id: null,
+    template_id: null,
+    notif_mensagem: '',
   })
   const [err, setErr] = useState<string[]>([])
 
@@ -134,6 +145,23 @@ function JobFormModal({
     .map(j => j.job_name)
     .filter(n => n && n !== form.job_name.trim())
 
+  // Canais (grupos) e modelos (templates) — alimentam os Selects da etapa de
+  // notificação. Os templates dependem do grupo escolhido (filtra por grupo_id).
+  const { data: gruposData } = useQuery<{ data: MsgGrupo[] }>({
+    queryKey: ['msg-grupos'],
+    queryFn: () => apiFetch('/msg/grupos'),
+    staleTime: 60_000,
+  })
+  const grupos = gruposData?.data ?? []
+
+  const { data: templatesData } = useQuery<{ data: MsgTemplate[] }>({
+    queryKey: ['msg-templates', form.grupo_id],
+    queryFn: () => apiFetch(`/msg/templates?grupo_id=${form.grupo_id}`),
+    enabled: form.grupo_id != null,
+    staleTime: 60_000,
+  })
+  const templates = templatesData?.data ?? []
+
   // Carrega as dependências e os campos de storedproc do job em edição.
   useEffect(() => {
     if (!isEdit || !job) return
@@ -142,19 +170,26 @@ function JobFormModal({
       mssql_conn_id?: string | null
       mssql_database?: string | null
       params?: { param_name: string; param_type: string; param_value: string | null; param_order?: number }[]
+      notify?: { grupo_id: number | null; template_id: number | null; mensagem: string } | null
     }>(`/pipelines/jobs/${encodeURIComponent(pipeline)}/${encodeURIComponent(job.job_name)}`)
-      .then(d => setForm(prev => ({
-        ...prev,
-        depends_on_jobs: (d.depends_on_jobs || '').split(',').map(s => s.trim()).filter(Boolean),
-        mssql_conn_id: d.mssql_conn_id ?? '',
-        mssql_database: d.mssql_database ?? '',
-        params: (d.params ?? []).map((p, i) => ({
-          id: `p_${i}_${p.param_name}`,
-          param_name: p.param_name,
-          param_type: p.param_type,
-          param_value: p.param_value ?? '',
-        })),
-      })))
+      .then(d => {
+        const notify = d.notify ?? { grupo_id: null, template_id: null, mensagem: '' }
+        setForm(prev => ({
+          ...prev,
+          depends_on_jobs: (d.depends_on_jobs || '').split(',').map(s => s.trim()).filter(Boolean),
+          mssql_conn_id: d.mssql_conn_id ?? '',
+          mssql_database: d.mssql_database ?? '',
+          params: (d.params ?? []).map((p, i) => ({
+            id: `p_${i}_${p.param_name}`,
+            param_name: p.param_name,
+            param_type: p.param_type,
+            param_value: p.param_value ?? '',
+          })),
+          grupo_id: notify.grupo_id ?? null,
+          template_id: notify.template_id ?? null,
+          notif_mensagem: notify.mensagem ?? '',
+        }))
+      })
       .catch(() => {})
   }, [isEdit, pipeline, job])
 
@@ -181,6 +216,15 @@ function JobFormModal({
                 param_value: p.param_value,
               }))
           : [],
+        ...(form.job_type === 'notificacao'
+          ? {
+              notify: {
+                grupo_id: form.grupo_id,
+                template_id: form.template_id,
+                mensagem: form.notif_mensagem.trim(),
+              },
+            }
+          : {}),
         require_lineage: false,
         operacao: 'upsert',
       }),
@@ -204,9 +248,14 @@ function JobFormModal({
     if (!form.job_name.trim()) errs.push('Nome da etapa é obrigatório')
     if (!form.execution_order || form.execution_order < 1) errs.push('Ordem deve ser >= 1')
     // Regras por tipo de etapa vêm da fonte única JobTypeFields (apenas para os
-    // tipos que ela cobre — 'decisao' não é editado por esta tela).
-    if (form.job_type !== 'decisao') {
+    // tipos que ela cobre — 'decisao' e 'notificacao' têm campos próprios e não
+    // são validados por ela).
+    if (form.job_type !== 'decisao' && form.job_type !== 'notificacao') {
       errs.push(...jobTypeFieldsErrors(typeFieldsValue))
+    }
+    // Notificação: canal (grupo) é obrigatório; modelo e mensagem são opcionais.
+    if (form.job_type === 'notificacao' && form.grupo_id == null) {
+      errs.push('Escolha um canal (grupo) para a notificação')
     }
     setErr(errs)
     return errs.length === 0
@@ -218,9 +267,10 @@ function JobFormModal({
   }
 
   // Valor consumido pela fonte única de campos por tipo (JobTypeFields). 'decisao'
-  // não é editado por esta tela; o fallback p/ 'datastage' apenas satisfaz o tipo.
+  // e 'notificacao' têm campos próprios e não passam por JobTypeFields; o fallback
+  // p/ 'datastage' apenas satisfaz o tipo (esses ramos não renderizam JobTypeFields).
   const typeFieldsValue: JobTypeFieldsValue = {
-    job_type: form.job_type === 'decisao' ? 'datastage' : form.job_type,
+    job_type: (form.job_type === 'decisao' || form.job_type === 'notificacao') ? 'datastage' : form.job_type,
     job_command: form.job_command,
     ssh_conn_id: form.ssh_conn_id,
     verbose_log: form.verbose_log,
@@ -275,6 +325,56 @@ function JobFormModal({
             onChange={e => f('job_command', e.target.value)}
             placeholder="ex: dbo.sp_procedure"
           />
+        ) : form.job_type === 'notificacao' ? (
+          <div className="flex flex-col gap-3 bg-blue-50 dark:bg-blue-900/15 border border-blue-200 dark:border-blue-800/40 rounded-lg p-3">
+            <Select
+              label="Canal (grupo) *"
+              value={form.grupo_id ?? ''}
+              onChange={e => {
+                // Trocar de grupo zera o modelo (templates são por grupo).
+                const gid = e.target.value ? parseInt(e.target.value) : null
+                setForm(prev => ({ ...prev, grupo_id: gid, template_id: null }))
+                setErr([])
+              }}
+            >
+              <option value="">Selecione um canal…</option>
+              {grupos.map(g => (
+                <option key={g.id} value={g.id}>
+                  {g.nome}{!g.ativo ? ' (inativo)' : ''}
+                </option>
+              ))}
+            </Select>
+
+            <Select
+              label="Modelo (opcional)"
+              value={form.template_id ?? ''}
+              onChange={e => f('template_id', e.target.value ? parseInt(e.target.value) : null)}
+              disabled={form.grupo_id == null}
+            >
+              <option value="">Nenhum (mensagem livre)</option>
+              {templates.map(t => (
+                <option key={t.id} value={t.id}>
+                  {t.nome}{t.titulo ? ` — ${t.titulo}` : ''}
+                </option>
+              ))}
+            </Select>
+
+            <Textarea
+              label="Mensagem (opcional)"
+              value={form.notif_mensagem}
+              onChange={e => f('notif_mensagem', e.target.value)}
+              rows={3}
+              placeholder="Use placeholders: {pipeline} {job} {linhas} {status} {data}"
+            />
+            <p className="text-xs text-dim">
+              Vazio = usa o corpo do modelo. Placeholders disponíveis:{' '}
+              <code className="font-mono text-blue-700 dark:text-blue-300">{'{pipeline}'}</code>{' '}
+              <code className="font-mono text-blue-700 dark:text-blue-300">{'{job}'}</code>{' '}
+              <code className="font-mono text-blue-700 dark:text-blue-300">{'{linhas}'}</code>{' '}
+              <code className="font-mono text-blue-700 dark:text-blue-300">{'{status}'}</code>{' '}
+              <code className="font-mono text-blue-700 dark:text-blue-300">{'{data}'}</code>.
+            </p>
+          </div>
         ) : (
           <JobTypeFields
             value={typeFieldsValue}
