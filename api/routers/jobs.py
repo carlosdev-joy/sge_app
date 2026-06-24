@@ -695,6 +695,19 @@ def get_pipeline_job(
                     condition = None
         except Exception:
             condition = None  # coluna pode não existir (migration 043)
+        notify = None
+        try:
+            cur.execute(
+                "SELECT notify_json FROM dbo.etl_pipeline_job "
+                "WHERE pipeline_name=? AND job_name=?", (pipeline_name, job_name))
+            nr = cur.fetchone()
+            if nr and nr[0]:
+                try:
+                    notify = json.loads(nr[0])
+                except (ValueError, TypeError):
+                    notify = None
+        except Exception:
+            notify = None  # coluna pode não existir (migration 049)
         cur.close(); conn.close()
         return {
             "pipeline_name": row[0], "job_name": row[1], "execution_order": row[2],
@@ -704,6 +717,7 @@ def get_pipeline_job(
             "depends_on_jobs": depends_on_jobs,
             "mssql_database": mssql_database,
             "condition": condition,
+            "notify": notify,
         }
     except HTTPException:
         raise
