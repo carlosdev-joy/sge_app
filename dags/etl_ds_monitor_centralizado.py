@@ -58,27 +58,17 @@ def _var(key: str, default: str) -> str:
 
 
 def _get_running_jobs(mssql_conn_id: str) -> list[dict]:
-    """Retorna todos os jobs com status RUNNING no banco. Inclui stuck_since
-    (carência da migration 040) — degrada para None se a coluna não existir."""
+    """Retorna todos os jobs com status RUNNING no banco."""
     from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
     hook = MsSqlHook(mssql_conn_id=mssql_conn_id)
-    base = ("FROM dbo.etl_ds_job_log WHERE status = 'RUNNING' ORDER BY created_at ASC")
-    try:
-        rows = hook.get_records(
-            "SELECT execution_id, pipeline_name, job_name, project, wave_number, "
-            "pid, stuck_since " + base)
-        has_stuck = True
-    except Exception:
-        rows = hook.get_records(
-            "SELECT execution_id, pipeline_name, job_name, project, wave_number, pid "
-            + base)
-        has_stuck = False
+    rows = hook.get_records(
+        "SELECT execution_id, pipeline_name, job_name, project, wave_number, pid "
+        "FROM dbo.etl_ds_job_log WHERE status = 'RUNNING' ORDER BY created_at ASC")
     return [
         {
             "execution_id":  r[0], "pipeline_name": r[1],
             "job_name":      r[2], "project":       r[3],
             "wave_number":   r[4], "pid":           r[5],
-            "stuck_since":   (r[6] if has_stuck else None),
         }
         for r in (rows or [])
     ]
