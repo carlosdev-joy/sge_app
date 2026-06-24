@@ -18,6 +18,7 @@ import PowerBI from './pages/PowerBI'
 import DsConsole from './pages/DsConsole'
 import Avisos from './pages/Avisos'
 import GestaoFalhas from './pages/GestaoFalhas'
+import Publicacao from './pages/Publicacao'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -34,6 +35,7 @@ const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/gestao-falhas': <GestaoFalhas />,
   '/pipelines': <Pipelines />,
   '/jobs': <Jobs />,
+  '/publicacao': <Publicacao />,
   '/logs': <Logs />,
   '/avisos': <Avisos />,
   '/governanca': <Governanca />,
