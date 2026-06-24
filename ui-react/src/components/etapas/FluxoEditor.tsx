@@ -28,6 +28,7 @@ import '@xyflow/react/dist/style.css'
 import { apiFetch } from '../../lib/api'
 import { Button } from '../ui/Button'
 import { Input, Select, Textarea } from '../ui/Input'
+import { PlaceholderPicker } from '../ui/PlaceholderPicker'
 import { Modal } from '../ui/Modal'
 import { toast } from '../ui/Toast'
 import {
@@ -1504,6 +1505,7 @@ function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDelete }: 
   const isNew = !!d.isNew
   const cfg = d.notify ?? defaultNotify()
   const patch = (p: Partial<NotifyConfig>) => onPatchNotify(node.id, p)
+  const msgRef = useRef<HTMLTextAreaElement>(null)
 
   // Templates do grupo selecionado (Select "Modelo"). Sem grupo → não busca.
   // Degrada para [] se a tabela/endpoint não existir (try/except no backend).
@@ -1593,6 +1595,7 @@ function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDelete }: 
 
           <div className="flex flex-col gap-1">
             <Textarea
+              ref={msgRef}
               label="Mensagem (opcional)"
               value={cfg.mensagem ?? ''}
               rows={4}
@@ -1600,10 +1603,14 @@ function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDelete }: 
               placeholder="ex: Pipeline {pipeline} concluído com status {status}."
               className="text-xs"
             />
-            <p className="text-[10px] text-dim/70">
-              Vazio = usa o corpo do modelo. Placeholders:{' '}
-              <code className="font-mono text-dim">{'{pipeline} {job} {linhas} {status} {data}'}</code>
-            </p>
+            <p className="text-[10px] text-dim/70">Vazio = usa o corpo do modelo.</p>
+            <PlaceholderPicker
+              label="Inserir:"
+              placeholders={['pipeline', 'job', 'linhas', 'status', 'data']}
+              targetRef={msgRef}
+              value={cfg.mensagem ?? ''}
+              onChange={v => patch({ mensagem: v })}
+            />
           </div>
         </div>
       </div>
