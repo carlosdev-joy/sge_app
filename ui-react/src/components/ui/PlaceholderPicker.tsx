@@ -3,8 +3,9 @@ import React from 'react'
 interface PlaceholderPickerProps {
   placeholders: string[]
   // React 19: useRef<T>(null) infere RefObject<T | null>; aceitamos o null para
-  // bater com as três telas que criam useRef<HTMLTextAreaElement>(null).
-  targetRef: React.RefObject<HTMLTextAreaElement | null>
+  // bater com as telas que criam useRef<HTMLTextAreaElement|HTMLInputElement>(null).
+  // selectionStart/End e setSelectionRange existem em textarea E input de texto.
+  targetRef: React.RefObject<HTMLTextAreaElement | HTMLInputElement | null>
   value: string
   onChange: (next: string) => void
   label?: string

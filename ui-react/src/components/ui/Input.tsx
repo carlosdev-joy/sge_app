@@ -5,18 +5,21 @@ interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   error?: string
 }
 
-export function Input({ label, error, className = '', ...rest }: InputProps) {
-  return (
-    <div className="flex flex-col gap-1">
-      {label && <label className="text-xs text-dim font-medium">{label}</label>}
-      <input
-        {...rest}
-        className={`bg-panel border ${error ? 'border-red-500' : 'border-edge'} text-ink rounded-md px-3 py-1.5 text-sm placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500 ${className}`}
-      />
-      {error && <span className="text-xs text-red-400">{error}</span>}
-    </div>
-  )
-}
+export const Input = React.forwardRef<HTMLInputElement, InputProps>(
+  function Input({ label, error, className = '', ...rest }, ref) {
+    return (
+      <div className="flex flex-col gap-1">
+        {label && <label className="text-xs text-dim font-medium">{label}</label>}
+        <input
+          ref={ref}
+          {...rest}
+          className={`bg-panel border ${error ? 'border-red-500' : 'border-edge'} text-ink rounded-md px-3 py-1.5 text-sm placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500 ${className}`}
+        />
+        {error && <span className="text-xs text-red-400">{error}</span>}
+      </div>
+    )
+  }
+)
 
 interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
   label?: string
