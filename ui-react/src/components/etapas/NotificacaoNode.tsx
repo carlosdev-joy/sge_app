@@ -1,7 +1,7 @@
-// Nó de notificação (Teams) do React Flow. Card compacto no estilo de EtapaNode,
-// mas com identidade própria (acento teal + ícone de sino). Um target handle
-// (entrada, à esquerda) e um source handle (saída, à direita) — pode ser ligado
-// por dependência NORMAL ou virar ramo de uma decisão, como uma etapa.
+// Nó de notificação (Teams) do React Flow. Mesmo visual do EtapaNode (tile de
+// ícone + nome embaixo), com identidade própria (acento teal + ícone de sino).
+// Um target handle (entrada, à esquerda) e um source handle (saída, à direita)
+// — pode ser ligado por dependência NORMAL ou virar ramo de uma decisão.
 import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { BellRing } from 'lucide-react'
@@ -20,42 +20,49 @@ export interface NotificacaoNodeData {
 const HANDLE_CLS =
   '!h-2.5 !w-2.5 !rounded-full !border-2 !border-panel !bg-slate-400 dark:!bg-slate-500'
 
+// Tile do ícone tem ~44px de altura no topo; handles no seu centro vertical.
+const HANDLE_Y = 22
+
 function NotificacaoNodeImpl({ data, selected }: NodeProps & { data: NotificacaoNodeData }) {
   return (
-    <div
-      className={[
-        'group w-[148px] rounded-lg border bg-panel shadow-sm transition-shadow',
-        'hover:shadow-md',
-        selected ? 'border-blue-500 ring-2 ring-blue-500' : 'border-edge',
-      ].join(' ')}
-    >
-      <Handle type="target" position={Position.Left} className={HANDLE_CLS} />
+    <div className="group flex w-[128px] flex-col items-center">
+      <Handle
+        type="target"
+        position={Position.Left}
+        className={HANDLE_CLS}
+        style={{ top: HANDLE_Y }}
+      />
 
-      {/* Cabeçalho: chip de ícone (teal) + nome */}
-      <div className="flex items-center gap-1.5 px-2 pt-1.5">
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-teal-500 text-white">
-          <BellRing size={12} strokeWidth={2.2} />
-        </span>
-        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-ink">
-          {data.name}
-        </span>
+      {/* Tile do ícone (teal) — ícone de sino branco; anel de seleção no tile. */}
+      <div
+        className={[
+          'flex h-11 w-11 items-center justify-center rounded-xl bg-teal-500 text-white shadow-sm transition-shadow',
+          'group-hover:shadow-md',
+          selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas' : '',
+        ].join(' ')}
+      >
+        <BellRing size={22} strokeWidth={2} />
       </div>
 
-      {/* Subtítulo: resumo do destino/modelo (label) */}
-      <div className="px-2 pb-1.5 pt-0.5">
-        <p className="truncate text-[10px] text-dim" title={data.label}>
-          {data.label}
-        </p>
-      </div>
+      {/* Nome embaixo — até 2 linhas, sem truncar. */}
+      <p
+        className="mt-1.5 line-clamp-2 break-words text-center text-xs font-semibold leading-tight text-ink"
+        title={data.name}
+      >
+        {data.name}
+      </p>
 
-      {/* Rodapé: badge "Notificação" */}
-      <div className="flex items-center justify-between border-t border-edge px-2 py-1">
-        <span className="rounded px-1 py-0.5 text-[9px] font-semibold bg-teal-50 text-teal-700 border border-teal-200 dark:bg-teal-900/30 dark:text-teal-300 dark:border-teal-800">
-          Notificação
-        </span>
-      </div>
+      {/* Linha de baixo: resumo curto do destino/modelo (label). */}
+      <p className="mt-0.5 line-clamp-1 text-center text-[10px] leading-tight text-dim" title={data.label}>
+        {data.label}
+      </p>
 
-      <Handle type="source" position={Position.Right} className={HANDLE_CLS} />
+      <Handle
+        type="source"
+        position={Position.Right}
+        className={HANDLE_CLS}
+        style={{ top: HANDLE_Y }}
+      />
     </div>
   )
 }
