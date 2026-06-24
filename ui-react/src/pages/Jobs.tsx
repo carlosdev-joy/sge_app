@@ -147,7 +147,7 @@ function JobFormModal({
       }),
     }),
     onSuccess: () => {
-      toast.success(isEdit ? 'Job atualizado' : 'Job criado')
+      toast.success(isEdit ? 'Etapa atualizada' : 'Etapa criada')
       qc.invalidateQueries({ queryKey: ['jobs'] })
       onClose()
     },
@@ -162,7 +162,7 @@ function JobFormModal({
 
   function validate() {
     const errs: string[] = []
-    if (!form.job_name.trim()) errs.push('Nome do job é obrigatório')
+    if (!form.job_name.trim()) errs.push('Nome da etapa é obrigatório')
     if (!form.execution_order || form.execution_order < 1) errs.push('Ordem deve ser >= 1')
     if (form.job_type === 'shell' && !form.ssh_conn_id) errs.push('Servidor SSH é obrigatório para jobs shell')
     setErr(errs)
@@ -175,14 +175,14 @@ function JobFormModal({
   }
 
   return (
-    <Modal open title={isEdit ? `Editar Job: ${job!.job_name}` : 'Novo Job'} onClose={onClose} size="md">
+    <Modal open title={isEdit ? `Editar Etapa: ${job!.job_name}` : 'Nova Etapa'} onClose={onClose} size="md">
       <div className="flex flex-col gap-4">
         <div className="text-xs text-dim bg-canvas border border-edge rounded-lg px-3 py-2">
           Pipeline: <span className="font-mono text-ink">{pipeline}</span>
         </div>
 
         <Input
-          label="Nome do Job *"
+          label="Nome da Etapa *"
           value={form.job_name}
           onChange={e => f('job_name', e.target.value)}
           placeholder="ex: BiCvp_BaseCobranca_01_ext_Parcelas"
@@ -316,7 +316,7 @@ function JobFormModal({
         <div className="flex justify-end gap-2 pt-1 border-t border-edge">
           <Button variant="secondary" onClick={onClose}>Cancelar</Button>
           <Button loading={saveMut.isPending} onClick={() => { if (validate()) saveMut.mutate() }}>
-            <Save size={13} /> {isEdit ? 'Salvar alterações' : 'Criar Job'}
+            <Save size={13} /> {isEdit ? 'Salvar alterações' : 'Criar Etapa'}
           </Button>
         </div>
       </div>
@@ -363,7 +363,7 @@ function BulkModal({ pipeline, onClose }: { pipeline: string; onClose: () => voi
       }),
     }),
     onSuccess: () => {
-      toast.success('Jobs criados com sucesso')
+      toast.success('Etapas criadas com sucesso')
       qc.invalidateQueries({ queryKey: ['jobs'] })
       onClose()
     },
@@ -375,16 +375,16 @@ function BulkModal({ pipeline, onClose }: { pipeline: string; onClose: () => voi
 
   function submit() {
     if (invalid.length > 0) { setErr('Corrija os erros antes de salvar'); return }
-    if (valid.length === 0) { setErr('Nenhum job válido para importar'); return }
+    if (valid.length === 0) { setErr('Nenhuma etapa válida para importar'); return }
     saveMut.mutate(valid.map(p => p.parsed!))
   }
 
   return (
-    <Modal open title="Colar lista de Jobs" onClose={onClose} size="lg">
+    <Modal open title="Colar lista de Etapas" onClose={onClose} size="lg">
       <div className="flex flex-col gap-4">
         <div className="bg-canvas border border-edge rounded-lg p-3 text-xs text-dim">
           <p className="font-medium text-ink mb-1">Formato: <span className="font-mono">nome,ordem,tipo,comando</span></p>
-          <p>Um job por linha. Tipos válidos: <span className="font-mono text-blue-400">datastage</span>, <span className="font-mono text-amber-400">shell</span>, <span className="font-mono text-green-400">python</span>, <span className="font-mono text-purple-400">storedproc</span>.</p>
+          <p>Uma etapa por linha. Tipos válidos: <span className="font-mono text-blue-400">datastage</span>, <span className="font-mono text-amber-400">shell</span>, <span className="font-mono text-green-400">python</span>, <span className="font-mono text-purple-400">storedproc</span>.</p>
           <pre className="mt-2 text-dim/80 font-mono bg-panel/50 rounded p-2">BiCvp_Extract_01,1,datastage,BiCvp.Extract_01
 BiCvp_Load_A,2,shell,/opt/scripts/load_a.sh
 BiCvp_Load_B,2,python,scripts.load_b.run</pre>
@@ -395,7 +395,7 @@ BiCvp_Load_B,2,python,scripts.load_b.run</pre>
           value={text}
           onChange={e => handleChange(e.target.value)}
           rows={8}
-          placeholder="Cole a lista de jobs aqui..."
+          placeholder="Cole a lista de etapas aqui..."
           className="font-mono text-xs"
         />
 
@@ -423,7 +423,7 @@ BiCvp_Load_B,2,python,scripts.load_b.run</pre>
         <div className="flex justify-end gap-2 border-t border-edge pt-3">
           <Button variant="secondary" onClick={onClose}>Cancelar</Button>
           <Button loading={saveMut.isPending} onClick={submit} disabled={valid.length === 0}>
-            <ClipboardList size={13} /> Importar {valid.length} job{valid.length !== 1 ? 's' : ''}
+            <ClipboardList size={13} /> Importar {valid.length} etapa{valid.length !== 1 ? 's' : ''}
           </Button>
         </div>
       </div>
@@ -526,20 +526,20 @@ function ExecConfirmModal({ pipeline, onConfirm, onClose }: { pipeline: string; 
 
 function DeleteConfirmModal({ job, onConfirm, onClose }: { job: Job; onConfirm: () => void; onClose: () => void }) {
   return (
-    <Modal open title="Remover job" onClose={onClose} size="sm">
+    <Modal open title="Remover etapa" onClose={onClose} size="sm">
       <div className="flex flex-col gap-4">
         <p className="text-sm text-dim">
-          Tem certeza que deseja remover o job{' '}
+          Tem certeza que deseja remover a etapa{' '}
           <span className="font-mono text-ink font-medium">{job.job_name}</span>{' '}
           do pipeline <span className="font-mono text-ink">{job.pipeline_name}</span>?
         </p>
         <p className="text-xs text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/15 border border-red-200 dark:border-red-800/40 rounded-lg px-3 py-2">
-          Esta ação remove o job e sua lineage associada. Não pode ser desfeita.
+          Esta ação remove a etapa e sua lineage associada. Não pode ser desfeita.
         </p>
         <div className="flex justify-end gap-2 border-t border-edge pt-3">
           <Button variant="secondary" onClick={onClose}>Cancelar</Button>
           <Button className="border-red-800/40 text-red-400 hover:text-red-300" onClick={() => { onConfirm(); onClose() }}>
-            <Trash2 size={13} /> Remover job
+            <Trash2 size={13} /> Remover etapa
           </Button>
         </div>
       </div>
@@ -665,7 +665,7 @@ export default function Jobs() {
         method: 'DELETE',
       }),
     onSuccess: (_d, job) => {
-      toast.success(`Job "${job.job_name}" removido`)
+      toast.success(`Etapa "${job.job_name}" removida`)
       qc.invalidateQueries({ queryKey: ['jobs'] })
     },
     onError: (e: any) => toast.error(e.message),
@@ -697,7 +697,7 @@ export default function Jobs() {
 
   function doSearch() {
     if (!pipelineInput.trim() && !nameFilter.trim() && !typeFilter) {
-      toast.error('Informe ao menos um filtro: pipeline, nome do job ou tipo.')
+      toast.error('Informe ao menos um filtro: pipeline, nome da etapa ou tipo.')
       return
     }
     setSearched(pipelineInput.trim())
@@ -729,11 +729,11 @@ export default function Jobs() {
         <div className="bg-blue-50 dark:bg-blue-900/15 border border-blue-200 dark:border-blue-800/40 rounded-xl p-4 flex gap-3">
           <span className="text-xl shrink-0">⬡</span>
           <div className="flex-1 text-sm">
-            <strong className="text-ink">O que é um Job?</strong>
+            <strong className="text-ink">O que é uma Etapa?</strong>
             <ul className="mt-1.5 space-y-1 text-xs text-dim list-disc list-inside">
-              <li>Um <strong className="text-ink">job</strong> é a unidade mínima de trabalho dentro de um pipeline — uma extração, transformação ou carga específica.</li>
+              <li>Uma <strong className="text-ink">etapa</strong> é a unidade mínima de trabalho dentro de um pipeline — uma extração, transformação ou carga específica.</li>
               <li><strong className="text-ink">Tipos:</strong> <code className="font-mono">datastage</code> (IBM DataStage), <code className="font-mono">shell</code> (scripts bash), <code className="font-mono">python</code> (scripts .py) e <code className="font-mono">storedproc</code> (procedures SQL).</li>
-              <li>A <strong className="text-ink">Ordem</strong> define a sequência: jobs com <em>mesma ordem</em> rodam <strong className="text-ink">em paralelo</strong>; ordens distintas rodam em série.</li>
+              <li>A <strong className="text-ink">Ordem</strong> define a sequência: etapas com <em>mesma ordem</em> rodam <strong className="text-ink">em paralelo</strong>; ordens distintas rodam em série.</li>
             </ul>
           </div>
           <button onClick={() => setBannerVisible(false)} className="text-dim hover:text-ink shrink-0">
@@ -759,7 +759,7 @@ export default function Jobs() {
             className="w-64"
           />
           <Autocomplete
-            label="Nome do job"
+            label="Nome da etapa"
             value={nameFilter}
             onChange={setNameFilter}
             onSelect={v => { setNameFilter(v) }}
@@ -780,7 +780,7 @@ export default function Jobs() {
           <div className="flex gap-2 ml-auto items-end">
             <Button variant="secondary" size="sm" onClick={doClear}>× Limpar</Button>
             <Button size="sm" onClick={doSearch} disabled={!pipelineInput.trim() && !nameFilter.trim() && !typeFilter}>
-              Buscar jobs
+              Buscar etapas
             </Button>
           </div>
         </div>
@@ -788,9 +788,9 @@ export default function Jobs() {
         <div className="mt-3 flex items-start gap-2 text-xs text-dim bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800/30 rounded-lg px-3 py-2">
           <span className="text-blue-400 shrink-0">ℹ</span>
           <span>
-            O <strong className="text-ink">pipeline é opcional</strong>: você pode filtrar por <strong className="text-ink">nome do job</strong> ou
+            O <strong className="text-ink">pipeline é opcional</strong>: você pode filtrar por <strong className="text-ink">nome da etapa</strong> ou
             <strong className="text-ink"> tipo</strong> isoladamente (busca em todos os pipelines).
-            Para ver <strong className="text-ink">todos os jobs de um pipeline</strong>, preencha o campo <strong className="text-ink">Pipeline</strong>.
+            Para ver <strong className="text-ink">todas as etapas de um pipeline</strong>, preencha o campo <strong className="text-ink">Pipeline</strong>.
           </span>
         </div>
       </div>
@@ -799,8 +799,8 @@ export default function Jobs() {
       {!hasSearched && (
         <div className="bg-panel border border-edge rounded-xl py-16 flex flex-col items-center gap-2 text-dim">
           <span className="text-4xl">⬡</span>
-          <p className="text-sm font-medium">Nenhum job carregado</p>
-          <p className="text-xs">Preencha um pipeline (para ver todos os jobs dele) <strong className="text-ink">ou</strong> filtre por nome/tipo, e clique em Buscar jobs.</p>
+          <p className="text-sm font-medium">Nenhuma etapa carregada</p>
+          <p className="text-xs">Preencha um pipeline (para ver todas as etapas dele) <strong className="text-ink">ou</strong> filtre por nome/tipo, e clique em Buscar etapas.</p>
         </div>
       )}
 
@@ -811,7 +811,7 @@ export default function Jobs() {
           {/* Context actions */}
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-dim flex-1">
-              {total} job{total !== 1 ? 's' : ''}
+              {total} etapa{total !== 1 ? 's' : ''}
               {searched
                 ? <> · Pipeline: <span className="font-mono text-ink">{searched}</span></>
                 : <> · <span className="text-ink">todos os pipelines</span>{(nameFilter || typeFilter) ? ' (filtrado)' : ''}</>}
@@ -838,7 +838,7 @@ export default function Jobs() {
                       )}
                     </Button>
                     <Button variant="secondary" size="sm" onClick={() => setShowNew(true)}>
-                      <Plus size={13} /> Adicionar job
+                      <Plus size={13} /> Adicionar Etapa
                     </Button>
                     <Button variant="secondary" size="sm" onClick={() => setShowBulk(true)}>
                       <ClipboardList size={13} /> Colar lista
@@ -864,7 +864,7 @@ export default function Jobs() {
           {jobs.length === 0 ? (
             <div className="bg-panel border border-edge rounded-xl py-12 flex flex-col items-center gap-2 text-dim">
               <span className="text-3xl">⬡</span>
-              <p className="text-sm">Nenhum job encontrado{searched ? ` para "${searched}"` : nameFilter ? ` com nome "${nameFilter}"` : ''}</p>
+              <p className="text-sm">Nenhuma etapa encontrada{searched ? ` para "${searched}"` : nameFilter ? ` com nome "${nameFilter}"` : ''}</p>
             </div>
           ) : (
             <div className="bg-panel border border-edge rounded-xl overflow-hidden">
@@ -874,7 +874,7 @@ export default function Jobs() {
                     <tr className="text-xs border-b border-edge bg-canvas">
                       <th className="px-3 py-2 text-left w-8 text-dim">#</th>
                       <th className="px-3 py-2 text-left"><SortBtn col="pipeline_name" label="Pipeline" /></th>
-                      <th className="px-3 py-2 text-left"><SortBtn col="job_name" label="Job" /></th>
+                      <th className="px-3 py-2 text-left"><SortBtn col="job_name" label="Etapa" /></th>
                       <th className="px-3 py-2 text-center w-24"><SortBtn col="execution_order" label="Ordem" /></th>
                       <th className="px-3 py-2 text-left"><SortBtn col="job_type" label="Tipo" /></th>
                       <th className="px-3 py-2 text-left">Comando</th>
@@ -938,11 +938,11 @@ export default function Jobs() {
                           {!isViewer && (
                             <td className="px-3 py-2 text-right">
                               <div className="flex items-center justify-end gap-1">
-                                <Button variant="ghost" size="sm" title="Editar job" onClick={() => setEditJob(j)}>
+                                <Button variant="ghost" size="sm" title="Editar etapa" onClick={() => setEditJob(j)}>
                                   <Edit size={13} />
                                 </Button>
                                 <Button
-                                  variant="ghost" size="sm" title="Remover job"
+                                  variant="ghost" size="sm" title="Remover etapa"
                                   loading={deleteMut.isPending && deleteJob?.job_name === j.job_name}
                                   onClick={() => setDeleteJob(j)}
                                   className="text-red-500/60 hover:text-red-400"
@@ -963,7 +963,7 @@ export default function Jobs() {
               {(data?.pages ?? 1) > 1 && (
                 <div className="px-4 py-2 flex items-center gap-3 border-t border-edge">
                   <Button variant="ghost" size="sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}>← Anterior</Button>
-                  <span className="text-xs text-dim">Página {page + 1} de {data?.pages ?? 1} · {total} jobs</span>
+                  <span className="text-xs text-dim">Página {page + 1} de {data?.pages ?? 1} · {total} etapas</span>
                   <Button variant="ghost" size="sm" disabled={page + 1 >= (data?.pages ?? 1)} onClick={() => setPage(p => p + 1)}>Próxima →</Button>
                 </div>
               )}

@@ -773,7 +773,7 @@ export default function Dashboard() {
                       <th className="px-4 py-2 text-left">Última exec.</th>
                       <th className="px-4 py-2 text-left">Duração</th>
                       <th className="px-4 py-2 text-left">Fila total</th>
-                      <th className="px-4 py-2 text-left">Jobs</th>
+                      <th className="px-4 py-2 text-left">Etapas</th>
                     </tr>
                   </thead>
                   <tbody>

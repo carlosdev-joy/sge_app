@@ -77,13 +77,13 @@ function PlanList({ onOpen }: { onOpen: (id: number) => void }) {
           <ClipboardList size={20} className="text-[#1A5FA8]" /> Planos de Ajuste
         </h1>
         <p className="text-sm text-dim mt-1">
-          Acompanhe as alterações de campo planejadas. Crie um plano na tela <strong>Impacto Campo</strong> selecionando colunas.
+          Acompanhe as alterações de campo planejadas. Crie um plano na tela <strong>Impacto de Campo</strong> selecionando colunas.
         </p>
       </div>
 
       {isLoading ? <div className="flex justify-center h-40 items-center"><Spinner size={36} /></div> : (
         planos.length === 0 ? (
-          <Card><p className="text-sm text-dim text-center py-8">Nenhum plano ainda. Vá em <strong>Impacto Campo</strong>, selecione colunas e clique em “Adicionar ao plano”.</p></Card>
+          <Card><p className="text-sm text-dim text-center py-8">Nenhum plano ainda. Vá em <strong>Impacto de Campo</strong>, selecione colunas e clique em “Adicionar ao plano”.</p></Card>
         ) : (
           <div className="flex flex-col gap-2">
             {planos.map((p) => (

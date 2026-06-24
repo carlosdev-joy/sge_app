@@ -219,7 +219,7 @@ function ExecucoesTab() {
                   <th className="px-4 py-2 text-left">Fim</th>
                   <th className="px-4 py-2 text-left">Duração</th>
                   <th className="px-4 py-2 text-left">Fila</th>
-                  <th className="px-4 py-2 text-center">Jobs</th>
+                  <th className="px-4 py-2 text-center">Etapas</th>
                   <th className="px-4 py-2 text-center">Falha/Aviso</th>
                   <th className="px-4 py-2 text-left">Execution ID</th>
                   <th className="px-4 py-2 text-right">Ações</th>
@@ -899,7 +899,7 @@ export default function Logs() {
   const tabs = [
     { id: 'execucoes', label: '≣ Execuções' },
     ...(showGestao ? [{ id: 'gestao', label: '⚠ Gestão de Falhas' }] : []),
-    ...(showFactory ? [{ id: 'factory', label: '♻ Regeneração de DAGs' }] : []),
+    ...(showFactory ? [{ id: 'factory', label: '♻ Publicação' }] : []),
   ]
   const urlTab = searchParams.get('tab')
   const [tab, setTab] = useState(

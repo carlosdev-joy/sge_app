@@ -1283,11 +1283,11 @@ export default function Governanca() {
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-xl font-bold text-ink">Governança</h1>
+      <h1 className="text-xl font-bold text-ink">Catálogo & Lineage</h1>
       <p className="text-sm text-dim -mt-2">Lineage de pipelines e catálogo de dados</p>
       <InfoBanner icon="◈" storageKey="governanca">
-        <strong>Governança de dados:</strong> consulte a <strong>linhagem (lineage)</strong> de cada pipeline — as
-        tabelas, views e arquivos consumidos (origens) e produzidos (destinos) por seus jobs — e navegue pelo{' '}
+        <strong>Catálogo & Lineage:</strong> consulte a <strong>linhagem (lineage)</strong> de cada pipeline — as
+        tabelas, views e arquivos consumidos (origens) e produzidos (destinos) por suas etapas — e navegue pelo{' '}
         <strong>catálogo de dados</strong> para descobrir onde cada objeto é usado, com rastreabilidade de impacto
         entre pipelines.
       </InfoBanner>

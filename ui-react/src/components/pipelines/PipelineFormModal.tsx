@@ -254,7 +254,7 @@ function TagsInput({ value, onChange }: { value: string[]; onChange: (v: string[
 
 // ── Wizard stepper ────────────────────────────────────────────────────────────
 
-const STEPS = ['Identificação', 'Agendamento', 'Notificações', 'Jobs', 'Lineage', 'Revisão'] as const
+const STEPS = ['Identificação', 'Agendamento', 'Notificações', 'Etapas', 'Lineage', 'Revisão'] as const
 type Step = 0 | 1 | 2 | 3 | 4 | 5
 
 function Stepper({ step, setStep, errors }: { step: Step; setStep: (s: Step) => void; errors: Record<number, string[]> }) {
@@ -1286,15 +1286,15 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
           <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-1">
             <div className="flex items-center justify-between">
               <div className="text-xs text-dim">
-                Defina os jobs. <span className="text-dim/70">Mesma ordem = paralelo. Use “Depende de” para encadear jobs específicos (ex.: 3 só após o 1).</span>
+                Defina as etapas. <span className="text-dim/70">Mesma ordem = paralelo. Use “Depende de” para encadear etapas específicas (ex.: 3 só após o 1).</span>
               </div>
-              <Button size="sm" onClick={addJob}><Plus size={12} /> Adicionar job</Button>
+              <Button size="sm" onClick={addJob}><Plus size={12} /> Adicionar Etapa</Button>
             </div>
             {jobs.length === 0 && (
               <div className="py-10 flex flex-col items-center gap-2 text-dim border border-dashed border-edge rounded-xl">
                 <span className="text-3xl opacity-30">⚙</span>
-                <p className="text-sm">Nenhum job cadastrado</p>
-                <p className="text-xs">Jobs são opcionais — podem ser adicionados depois na tela de Jobs.</p>
+                <p className="text-sm">Nenhuma etapa cadastrada</p>
+                <p className="text-xs">Etapas são opcionais — podem ser adicionadas depois na tela de Etapas.</p>
               </div>
             )}
             {jobs.map((j, idx) => {
@@ -1567,11 +1567,11 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         {/* ── STEP 4: LINEAGE ── */}
         {step === 4 && (
           <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-1">
-            <p className="text-xs text-dim">Mapeie origens e destinos de dados por job.</p>
+            <p className="text-xs text-dim">Mapeie origens e destinos de dados por etapa.</p>
             {jobs.length === 0 && (
               <div className="py-8 flex flex-col items-center gap-2 text-dim border border-dashed border-edge rounded-xl">
-                <p className="text-sm">Nenhum job cadastrado na etapa anterior.</p>
-                <p className="text-xs">Volte para a aba Jobs e adicione ao menos um job.</p>
+                <p className="text-sm">Nenhuma etapa cadastrada no passo anterior.</p>
+                <p className="text-xs">Volte para a aba Etapas e adicione ao menos uma etapa.</p>
               </div>
             )}
             {jobs.map(j => {
@@ -1714,7 +1714,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
 
             <div className="border border-edge rounded-xl overflow-hidden">
               <div className="bg-canvas border-b border-edge px-3 py-2 flex items-center justify-between">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Jobs ({jobs.length})</span>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Etapas ({jobs.length})</span>
               </div>
               {jobs.length === 0
                 ? <p className="text-xs text-dim/50 italic px-3 py-2">Nenhum job cadastrado</p>
@@ -1819,13 +1819,13 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
         <div className="absolute inset-0 bg-black/60" />
         <div className="relative w-full max-w-sm bg-panel border border-edge rounded-xl shadow-2xl p-5 flex flex-col gap-4">
-          <h3 className="text-base font-semibold text-ink">{isEdit ? 'Regenerar a DAG agora?' : 'Gerar a DAG agora?'}</h3>
-          <p className="text-sm text-ink">Pipeline <span className="font-mono font-medium">{askGenerate}</span> {isEdit ? 'atualizado' : 'criado'}! As mudanças só passam a valer no Airflow após {isEdit ? 'regenerar' : 'gerar'} a DAG. Deseja {isEdit ? 'regenerar' : 'gerar'} agora?</p>
-          <p className="text-xs text-dim">Equivale a clicar em “Gerar DAG”. O ORQUESTRA avisa quando a DAG estiver ativa.</p>
+          <h3 className="text-base font-semibold text-ink">Publicar a DAG agora?</h3>
+          <p className="text-sm text-ink">Pipeline <span className="font-mono font-medium">{askGenerate}</span> {isEdit ? 'atualizado' : 'criado'}! As mudanças só passam a valer no Airflow após publicar {isEdit ? 'a nova versão da' : 'a'} DAG. Deseja publicar agora?</p>
+          <p className="text-xs text-dim">Equivale a clicar em “Publicar DAG”. O ORQUESTRA avisa quando a DAG estiver ativa.</p>
           <div className="flex justify-end gap-2">
             <Button variant="secondary" disabled={genDagMut.isPending} onClick={() => { setAskGenerate(null); onClose() }}>Agora não</Button>
             <Button loading={genDagMut.isPending} onClick={() => genDagMut.mutate(askGenerate)}>
-              <Save size={13} /> {isEdit ? 'Regenerar DAG' : 'Gerar DAG'}
+              <Save size={13} /> {isEdit ? 'Publicar nova versão' : 'Publicar DAG'}
             </Button>
           </div>
         </div>

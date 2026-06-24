@@ -62,7 +62,7 @@ export function FactoryRuns() {
         <Button variant="secondary" size="sm" onClick={() => refetch()}><RefreshCw size={13} /> Atualizar</Button>
       </div>
       {runs.length === 0 && (
-        <p className="text-dim text-sm text-center py-12">Nenhuma execução da factory encontrada.</p>
+        <p className="text-dim text-sm text-center py-12">Nenhuma publicação encontrada.</p>
       )}
       {runs.map(r => (
         <div key={r.dag_run_id} className="bg-panel border border-edge rounded-lg overflow-hidden">

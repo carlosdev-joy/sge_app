@@ -21,10 +21,10 @@ const PROJETOS = ['BI_CVP', 'BI_VIDA', 'BI_PREVIDENCIA', 'BI_PRESTAMISTA']
 // Recursos RBAC (espelha RBAC_RECURSOS da UI legada).
 const RBAC_RECURSOS: [string, string][] = [
   ['tela_dashboard', 'Dashboard'], ['tela_pipelines', 'Pipelines'],
-  ['tela_jobs', 'Jobs'], ['tela_logs', 'Logs'],
-  ['tela_governanca', 'Governança'],
+  ['tela_jobs', 'Etapas'], ['tela_logs', 'Logs'],
+  ['tela_governanca', 'Catálogo & Lineage'],
   ['tela_malha', 'Malha'], ['tela_admin', 'Admin'],
-  ['tela_impacto_campo', 'Impacto Campo'], ['tela_plano_ajuste', 'Plano Ajuste'],
+  ['tela_impacto_campo', 'Impacto de Campo'], ['tela_plano_ajuste', 'Planos de Ajuste'],
   ['tela_powerbi', 'Power BI'],
   ['tela_ds_console', 'Console DataStage'],
   ['acao_executar', 'Executar/Rerun/Ack'],
@@ -237,9 +237,9 @@ function RegenDagsTab() {
       addLog('✓ ' + (res.mensagem ?? 'Pipelines marcados.'))
       addLog('Passo 2/2 — Disparando etl_dag_factory...')
       const f = await adminPost<any>('factory_trigger', { filter_project: projeto || undefined, force_all: true })
-      addLog('✓ ' + (f.mensagem ?? 'Factory disparada.') + ` (${f.detalhes?.dag_run_id ?? ''})`)
+      addLog('✓ ' + (f.mensagem ?? 'Publicação disparada.') + ` (${f.detalhes?.dag_run_id ?? ''})`)
       addLog('O Airflow detectará as mudanças no próximo scan.')
-      toast.success('DAGs regeneradas com sucesso')
+      toast.success('DAGs publicadas com sucesso')
     } catch (e: any) {
       addLog('ERRO: ' + e.message); toast.error(e.message)
     } finally { setLoading(false) }
@@ -261,7 +261,7 @@ function RegenDagsTab() {
             {PROJETOS.map(p => <option key={p}>{p}</option>)}
           </Select>
           <Button variant="secondary" onClick={doEstimate}>Estimar impacto</Button>
-          <Button variant="danger" onClick={() => setConfirm(true)} loading={loading}>⟳ Regenerar DAGs</Button>
+          <Button variant="danger" onClick={() => setConfirm(true)} loading={loading}>⟳ Publicar DAGs</Button>
         </div>
         {estimate && <p className="text-xs text-dim mt-3">{estimate}</p>}
       </div>
@@ -278,9 +278,9 @@ function RegenDagsTab() {
 
       <ConfirmModal
         open={confirm}
-        title="Regenerar DAGs"
-        message={`Regenerar todos os pipelines${projeto ? ` do projeto ${projeto}` : ''}? Isso reseta os DAGs e dispara a factory no Airflow.`}
-        confirmLabel="Regenerar"
+        title="Publicar DAGs"
+        message={`Publicar nova versão de todos os pipelines${projeto ? ` do projeto ${projeto}` : ''}? Isso reseta os DAGs e dispara a publicação no Airflow.`}
+        confirmLabel="Publicar"
         onConfirm={regen}
         onCancel={() => setConfirm(false)}
       />
@@ -2627,7 +2627,7 @@ const ADMIN_GROUPS = [
     { id: 'fluxo_ds', label: 'Fluxo DS' },
   ] },
   { id: 'pipelines', label: 'Pipelines', tabs: [
-    { id: 'regen', label: 'Regenerar DAGs' },
+    { id: 'regen', label: 'Publicar DAGs' },
     { id: 'delete', label: 'Excluir Pipeline' },
     { id: 'agenda', label: 'Agendamento' },
   ] },
