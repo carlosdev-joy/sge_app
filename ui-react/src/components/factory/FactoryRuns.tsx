@@ -31,7 +31,7 @@ interface FactoryRunDetail {
 function stepIcon(tipo: string) {
   const m: Record<string, string> = {
     reset: '🔄', gerada: '✅', erro: '❌', iniciando: '▶️', concluido: '🏁', info: 'ℹ️',
-    aguardando: '⏳', ativada: '🟢', timeout: '⚠️',
+    aguardando: '⏳', ativada: '🟢', timeout: '⚠️', import_error: '❌',
   }
   return m[tipo] ?? '•'
 }
@@ -88,16 +88,25 @@ export function FactoryRuns() {
               ) : (
                 <div className="flex flex-col gap-1.5">
                   {logData.steps?.map((s, i) => (
-                    <div key={i} className="flex items-start gap-2 text-xs">
-                      <span className="shrink-0 w-5">{stepIcon(s.tipo)}</span>
-                      <span className={
-                        s.tipo === 'erro' || s.tipo === 'timeout' ? 'text-red-600 dark:text-red-400'
-                          : s.tipo === 'gerada' || s.tipo === 'ativada' ? 'text-green-700 dark:text-green-400'
-                          : s.tipo === 'aguardando' ? 'text-amber-700 dark:text-amber-400 font-medium'
-                          : 'text-dim'}>
-                        {s.msg}
-                      </span>
-                    </div>
+                    s.tipo === 'import_error' ? (
+                      <div key={i} className="mt-1 bg-red-50 border border-red-200 text-red-800 dark:bg-red-900/20 dark:border-red-800 dark:text-red-300 rounded p-2.5">
+                        <p className="text-xs font-semibold mb-1.5 text-red-700 dark:text-red-400">
+                          Erro de importação no Airflow — a DAG NÃO pode ser executada. Corrija e gere novamente.
+                        </p>
+                        <pre className="text-xs font-mono whitespace-pre-wrap break-words max-h-64 overflow-auto">{s.msg}</pre>
+                      </div>
+                    ) : (
+                      <div key={i} className="flex items-start gap-2 text-xs">
+                        <span className="shrink-0 w-5">{stepIcon(s.tipo)}</span>
+                        <span className={
+                          s.tipo === 'erro' || s.tipo === 'timeout' ? 'text-red-600 dark:text-red-400'
+                            : s.tipo === 'gerada' || s.tipo === 'ativada' ? 'text-green-700 dark:text-green-400'
+                            : s.tipo === 'aguardando' ? 'text-amber-700 dark:text-amber-400 font-medium'
+                            : 'text-dim'}>
+                          {s.msg}
+                        </span>
+                      </div>
+                    )
                   ))}
                   {logData.erros_lista?.length > 0 && (
                     <div className="mt-2 bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded p-2">
