@@ -1163,10 +1163,20 @@ def _generate_dag_source(pipeline, jobs):
     if explicit_deps:
         root_anchor = sensors_ref if sensor_names else "t_check_agenda"
         teams_start_done = False
+        def _end_ref(d):
+            # Tarefa de conclusão de uma dependência. Nós de notificação e decisão
+            # NÃO têm t_end_ próprio (são especiais): a notificação conclui em
+            # t_notif_<d> e a decisão roteia via t_dec_<d>. Um job que depende
+            # desses deve referenciá-los, não t_end_<d> (que seria NameError).
+            if d in notificacao_nodes:
+                return f"t_notif_{_varname(d)}"
+            if d in decision_conditions:
+                return f"t_dec_{_varname(d)}"
+            return f"t_end_{_varname(d)}"
         for j in sorted_jobs:
             n = _varname(j["job_name"])
             deps = _deps_of(j)
-            ends = [f"t_end_{_varname(d)}" for d in deps]
+            ends = [_end_ref(d) for d in deps]
             # Nó de Decisão: roteador (BranchPythonOperator). Liga ao upstream e
             # as arestas Decisão → t_start dos membros saem dos próprios membros
             # (via branch_parents), garantindo que o branch skip atue direto.
