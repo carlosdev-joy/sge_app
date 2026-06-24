@@ -270,7 +270,9 @@ def get_performance(
                 r["snapshot_at"] = r["snapshot_at"].isoformat()
             rows.append(r)
         cur.close(); conn.close()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    except Exception:
+        # Degrada: a tabela de snapshots ainda não existe (ambiente sem o monitor
+        # de SLA) ou houve erro de leitura — devolve vazio em vez de 500.
+        return {"total": 0, "offset": offset, "limit": limit, "pages": 1, "data": []}
     pages = max(1, -(-total // limit))
     return {"total": total, "offset": offset, "limit": limit, "pages": pages, "data": rows}

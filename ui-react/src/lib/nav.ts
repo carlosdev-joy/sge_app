@@ -8,7 +8,7 @@ import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, Workflow, Blocks, ScrollText, Bell, ShieldAlert,
   Library, Network, Settings, Crosshair, ClipboardList, BarChart3, Terminal,
-  Rocket,
+  Rocket, Gauge,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 
@@ -30,6 +30,7 @@ export const NAV: NavItem[] = [
   { to: '/gestao-falhas', label: 'Gestão de Falhas',   icon: ShieldAlert,     group: 'Operação',           perm: 'tela_logs' },
   { to: '/logs',          label: 'Logs',               icon: ScrollText,      group: 'Operação',           perm: 'tela_logs' },
   { to: '/ds-console',    label: 'Console DataStage',  icon: Terminal,        group: 'Operação',           perm: 'tela_ds_console' },
+  { to: '/performance',   label: 'Performance',        icon: Gauge,           group: 'Operação',           perm: 'tela_performance' },
   { to: '/avisos',        label: 'Avisos',             icon: Bell,            group: 'Operação' },
   { to: '/pipelines',     label: 'Pipelines',          icon: Workflow,        group: 'Construção',         perm: 'tela_pipelines' },
   { to: '/jobs',          label: 'Etapas',             icon: Blocks,          group: 'Construção',         perm: 'tela_jobs' },
