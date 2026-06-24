@@ -10,7 +10,7 @@ import { useMediaQuery } from '../../lib/useMediaQuery'
 //   sempre expandida (labels). Aberto/fechado é controlado pelo AppShellV2.
 // Superfície semântica (bg-panel/border-edge/text-dim); ativo em azul (par claro+escuro).
 export function Sidebar({ mobileOpen, onClose }: { mobileOpen: boolean; onClose: () => void }) {
-  const { groups } = useVisibleNav()
+  const groups = useVisibleNav()
   const [collapsed, toggle] = useSidebarCollapsed()
   const isDesktop = useMediaQuery('(min-width: 768px)')
   const compact = collapsed && isDesktop   // só-ícones só no desktop colapsado
@@ -71,7 +71,7 @@ export function Sidebar({ mobileOpen, onClose }: { mobileOpen: boolean; onClose:
               <ul className="space-y-0.5 px-2">
                 {g.items.map((n) => {
                   const Icon = n.icon
-                  const label = n.labelV2 ?? n.label   // rótulo do v2; cai no clássico se ausente
+                  const label = n.label
                   const content = (
                     <>
                       <Icon size={18} className="shrink-0" />
@@ -80,23 +80,13 @@ export function Sidebar({ mobileOpen, onClose }: { mobileOpen: boolean; onClose:
                   )
                   return (
                     <li key={n.to}>
-                      {n.migrated ? (
-                        <NavLink
-                          to={n.to}
-                          title={compact ? label : undefined}
-                          className={({ isActive }) => itemClass(isActive)}
-                        >
-                          {content}
-                        </NavLink>
-                      ) : (
-                        <a
-                          href={n.legacyHref}
-                          title={compact ? label : undefined}
-                          className={itemClass(false)}
-                        >
-                          {content}
-                        </a>
-                      )}
+                      <NavLink
+                        to={n.to}
+                        title={compact ? label : undefined}
+                        className={({ isActive }) => itemClass(isActive)}
+                      >
+                        {content}
+                      </NavLink>
                     </li>
                   )
                 })}
