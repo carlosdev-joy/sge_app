@@ -234,3 +234,29 @@ def test_compara_numerico_e_texto(conditions):
 def test_compara_operador_invalido(conditions):
     with pytest.raises(ValueError):
         conditions.compara(1, "LIKE", 1)
+
+
+def test_ds_log_first_escopa_por_pipeline(conditions):
+    """A leitura de rows_out/child_jobs deve incluir pipeline_name no WHERE quando
+    disponível — o execution_id (ts_nodash) pode colidir entre pipelines."""
+    cap = {}
+
+    class FakeHook:
+        def get_first(self, sql, parameters=None):
+            cap["sql"] = " ".join(sql.split())
+            cap["params"] = parameters
+            return None
+
+    h = FakeHook()
+    # com execução + pipeline → escopa pelos três
+    conditions._ds_log_first(h, "rows_out", "JobA", "20260624T050000", "PIPE_X")
+    assert "WHERE execution_id=%s AND pipeline_name=%s AND job_name=%s" in cap["sql"]
+    assert cap["params"] == ("20260624T050000", "PIPE_X", "JobA")
+    # sem pipeline (back-compat) → não inclui o escopo
+    conditions._ds_log_first(h, "rows_out", "JobA", "20260624T050000", "")
+    assert "pipeline_name" not in cap["sql"]
+    assert cap["params"] == ("20260624T050000", "JobA")
+    # sem execution_id → melhor esforço só por job_name
+    conditions._ds_log_first(h, "child_jobs", "JobA", None, "PIPE_X")
+    assert cap["params"] == ("JobA",)
+    assert "child_jobs" in cap["sql"]

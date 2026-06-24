@@ -172,7 +172,7 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
                 END AS situacao
             FROM dbo.etl_job_execution e
             JOIN dbo.etl_pipeline p ON p.pipeline_name = e.pipeline
-            LEFT JOIN dbo.etl_failure_ack ack ON ack.execution_id = e.execution_id
+            LEFT JOIN dbo.etl_failure_ack ack ON ack.execution_id = e.execution_id AND ack.pipeline = e.pipeline
             WHERE e.status='FAILED'
               AND e.start_time >= ? AND e.start_time < ?
               AND COALESCE(p.ambiente,'PROD')='PROD' {where_proj_alias}
