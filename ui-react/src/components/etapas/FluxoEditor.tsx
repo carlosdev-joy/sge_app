@@ -111,9 +111,30 @@ function liveLayout(
   edges: Edge[],
   savedOrder: Map<string, number>,
 ): Record<string, { x: number; y: number }> {
+  const realEdges = edges.filter((e) => e && e.source && e.target)
+  const pos: Record<string, { x: number; y: number }> = {}
+
+  // Sem conectores no desenho → não há grafo: cai no layout por execution_order.
+  if (realEdges.length === 0) {
+    const byOrd = new Map<number, string[]>()
+    for (const n of nodes) {
+      const o = savedOrder.get(n.id) ?? 1
+      if (!byOrd.has(o)) byOrd.set(o, [])
+      byOrd.get(o)!.push(n.id)
+    }
+    Array.from(byOrd.keys()).sort((a, b) => a - b).forEach((o, ci) => {
+      byOrd.get(o)!.forEach((id, ri) => { pos[id] = { x: ci * COL_W, y: ri * ROW_H } })
+    })
+    return pos
+  }
+
+  // COM conectores → a COLUNA segue o GRAFO (caminho mais longo a partir das
+  // raízes, pelos conectores do desenho), NÃO o execution_order. Assim um nó
+  // ligado ENTRE dois outros (ex.: notificação) fica inline, na coluna do meio,
+  // em vez de empilhar na coluna de um vizinho.
   const preds = new Map<string, string[]>()
   for (const n of nodes) preds.set(n.id, [])
-  for (const e of edges) {
+  for (const e of realEdges) {
     if (preds.has(e.target) && preds.has(e.source)) preds.get(e.target)!.push(e.source)
   }
   const col = new Map<string, number>()
@@ -121,11 +142,9 @@ function liveLayout(
   const resolve = (id: string): number => {
     const cached = col.get(id)
     if (cached != null) return cached
-    const saved = savedOrder.get(id)
-    if (saved != null) { col.set(id, saved); return saved }
-    if (visiting.has(id)) return 1   // guarda contra ciclo
+    if (visiting.has(id)) return 0   // guarda contra ciclo
     visiting.add(id)
-    let c = 1
+    let c = 0
     for (const p of preds.get(id) ?? []) c = Math.max(c, resolve(p) + 1)
     visiting.delete(id)
     col.set(id, c)
@@ -134,14 +153,19 @@ function liveLayout(
   for (const n of nodes) resolve(n.id)
   const byCol = new Map<number, string[]>()
   for (const n of nodes) {
-    const c = col.get(n.id) ?? 1
+    const c = col.get(n.id) ?? 0
     if (!byCol.has(c)) byCol.set(c, [])
     byCol.get(c)!.push(n.id)
   }
-  const pos: Record<string, { x: number; y: number }> = {}
-  Array.from(byCol.keys()).sort((a, b) => a - b).forEach((c, ci) => {
-    byCol.get(c)!.forEach((id, ri) => {
-      pos[id] = { x: ci * COL_W, y: ri * ROW_H }
+  const cols = Array.from(byCol.keys()).sort((a, b) => a - b)
+  // Centraliza verticalmente cada coluna em torno da linha média — desenho
+  // equilibrado (uma cadeia linear fica numa única linha; ramos saem simétricos).
+  const maxRows = Math.max(1, ...cols.map((c) => byCol.get(c)!.length))
+  cols.forEach((c, ci) => {
+    const ids = byCol.get(c)!
+    const offset = (maxRows - ids.length) / 2
+    ids.forEach((id, ri) => {
+      pos[id] = { x: ci * COL_W, y: (ri + offset) * ROW_H }
     })
   })
   return pos
@@ -183,7 +207,11 @@ const EDGE_ARROW = { type: MarkerType.ArrowClosed, width: 16, height: 16 }
 const SIM_STYLE = { stroke: '#22c55e' }
 const NAO_STYLE = { stroke: '#94a3b8' }
 const SIM_LABEL_STYLE = { fill: '#15803d', fontSize: 11, fontWeight: 700 }
-const NAO_LABEL_STYLE = { fill: '#64748b', fontSize: 11, fontWeight: 700 }
+const NAO_LABEL_STYLE = { fill: '#475569', fontSize: 11, fontWeight: 700 }
+// Pílula de fundo do rótulo do ramo — deixa o "sim"/"não" legível no próprio
+// ramo (substitui a legenda). Cores fixas (badge), legíveis nos dois temas.
+const SIM_LABEL_BG = { fill: '#dcfce7', stroke: '#86efac' }
+const NAO_LABEL_BG = { fill: '#e2e8f0', stroke: '#cbd5e1' }
 // Rótulo discreto das arestas NORMAIS de dependência ("Link_N"): texto minúsculo,
 // neutro, sem fundo próprio — só pra dar o ar de designer (estilo IBM/DataStage).
 const LINK_LABEL_STYLE = { fill: '#94a3b8', fontSize: 9, fontWeight: 500 }
@@ -240,6 +268,10 @@ function branchEdge(decisao: string, ramo: 'sim' | 'nao', alvo: string): Edge {
     style: ramo === 'sim' ? SIM_STYLE : NAO_STYLE,
     label: ramo === 'sim' ? 'sim' : 'não',
     labelStyle: ramo === 'sim' ? SIM_LABEL_STYLE : NAO_LABEL_STYLE,
+    labelShowBg: true,
+    labelBgStyle: ramo === 'sim' ? SIM_LABEL_BG : NAO_LABEL_BG,
+    labelBgPadding: [6, 3] as [number, number],
+    labelBgBorderRadius: 8,
   }
 }
 
@@ -287,39 +319,6 @@ function nextName(prefix: string, taken: Set<string>): string {
   let i = 1
   while (taken.has(`${prefix}_${i}`)) i++
   return `${prefix}_${i}`
-}
-
-// ── Legenda de cores (canto inferior-esquerdo) ──────────────────────────────
-function Legenda() {
-  return (
-    <div className="rounded-lg border border-edge bg-panel/95 p-2.5 shadow-md backdrop-blur">
-      <p className="px-0.5 pb-1.5 text-[10px] font-semibold uppercase tracking-wide text-dim">
-        Legenda
-      </p>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1 px-0.5">
-        {TYPE_ORDER.map((t) => (
-          <span key={t} className="flex items-center gap-1.5 text-[10px] text-dim">
-            <span className={`h-2 w-2 rounded-full ${TYPE_META[t].dot}`} />
-            {TYPE_META[t].label}
-          </span>
-        ))}
-        <span className="flex items-center gap-1.5 text-[10px] text-dim">
-          <span className="h-2 w-2 rotate-45 rounded-[1px] bg-indigo-500" />
-          Decisão
-        </span>
-        <span className="flex items-center gap-1.5 text-[10px] text-dim">
-          <span className="h-2 w-2 rounded-full bg-teal-500" />
-          Notificação
-        </span>
-      </div>
-      <div className="mt-2 border-t border-edge pt-1.5">
-        <span className="flex items-center gap-1.5 text-[10px] text-dim">
-          <span className="h-0.5 w-4 rounded bg-green-500" /> ramo sim
-          <span className="ml-2 h-0.5 w-4 rounded bg-slate-400" /> ramo não
-        </span>
-      </div>
-    </div>
-  )
 }
 
 // ── Paleta arrastar-para-criar (estilo IBM Cloud Pak / DataStage Designer) ────
@@ -1117,10 +1116,6 @@ function FluxoEditorInner({ pipeline }: Props) {
                 <Save size={13} /> Salvar fluxo
               </Button>
             </div>
-          </Panel>
-
-          <Panel position="bottom-left">
-            <Legenda />
           </Panel>
         </ReactFlow>
       </div>
