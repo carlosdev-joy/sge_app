@@ -10,6 +10,7 @@ import { Modal } from '../components/ui/Modal'
 import { PageSpinner } from '../components/ui/Spinner'
 import { toast } from '../components/ui/Toast'
 import { Tabs } from '../components/ui/Tabs'
+import { useShellVariant } from '../lib/shell'
 import {
   RefreshCw, RotateCcw, CheckSquare, FileText,
   ChevronDown, ChevronUp, Copy,
@@ -639,7 +640,7 @@ function BulkResolveModal({ rows, loading, onConfirm, onClose }: {
 
 // ── Gestão de Falhas Tab ───────────────────────────────────────────────────
 
-function GestaoFalhasTab() {
+export function GestaoFalhasTab() {
   const qc = useQueryClient()
   const user = useAuthStore(s => s.user)
   const isViewer = user?.perfil === 'consulta'
@@ -980,26 +981,27 @@ function GestaoFalhasTab() {
 // ── Root ───────────────────────────────────────────────────────────────────
 
 export default function Logs() {
+  const shell = useShellVariant()
   const [searchParams] = useSearchParams()
+  // No v2, a Gestão de Falhas saiu para um menu próprio (/gestao-falhas) e some
+  // das abas. No clássico continua como aba — lá é a única porta de entrada.
+  const showGestao = shell !== 'v2'
+  const tabs = [
+    { id: 'execucoes', label: '≣ Execuções' },
+    ...(showGestao ? [{ id: 'gestao', label: '⚠ Gestão de Falhas' }] : []),
+    { id: 'factory', label: '♻ Regeneração de DAGs' },
+  ]
   const urlTab = searchParams.get('tab')
   const [tab, setTab] = useState(
-    urlTab && ['execucoes', 'gestao', 'factory'].includes(urlTab) ? urlTab : 'execucoes',
+    urlTab && tabs.some((t) => t.id === urlTab) ? urlTab : 'execucoes',
   )
 
   return (
     <div className="flex flex-col gap-4">
-      <Tabs
-        tabs={[
-          { id: 'execucoes', label: '≣ Execuções' },
-          { id: 'gestao', label: '⚠ Gestão de Falhas' },
-          { id: 'factory', label: '♻ Regeneração de DAGs' },
-        ]}
-        active={tab}
-        onChange={setTab}
-      />
+      <Tabs tabs={tabs} active={tab} onChange={setTab} />
 
       {tab === 'execucoes' && <ExecucoesTab />}
-      {tab === 'gestao' && <GestaoFalhasTab />}
+      {tab === 'gestao' && showGestao && <GestaoFalhasTab />}
       {tab === 'factory' && <FactoryRuns />}
     </div>
   )

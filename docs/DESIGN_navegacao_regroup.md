@@ -81,7 +81,7 @@ Gaps de produto a considerar no Nível 2 (validar antes):
 2. ✅ **Nível 1** (PR #101) — renomes via `labelV2` (só v2), fim das colisões, grupos de 1 item sem cabeçalho.
 3. ✅ **Nível 2** (branch `claude/wizardly-knuth-we80cd`, atrás da flag v2):
    - **2A** regroup por tarefa: grupo `Operação` (Dashboard, Logs) vs `Construção` (Pipelines, Etapas); `Governança` → `Governança & Dados`.
-   - **2B** telas novas (flag `v2Only`): **Operação do dia** (fila de falhas não assumidas + KPIs, reusa `/execucoes/falhas`) e **Avisos** (notificações + comunicados, reusa endpoints do sininho).
+   - **2B** itens de menu novos (flag `v2Only`): **Gestão de Falhas** (a aba homônima do Logs promovida a menu próprio — mesmo componente reusado; no v2 a aba some do Logs, no clássico continua) e **Avisos** (notificações + comunicados em página cheia, reusa endpoints do sininho).
 4. ⏳ Validar com admins beta → flip de default.
 
 ## 6. Decisões — resolvidas
@@ -89,5 +89,5 @@ Gaps de produto a considerar no Nível 2 (validar antes):
 - **RBAC**: mantido como em produção — `consulta` sem Logs, Power BI admin-only. Operação do dia herda `tela_logs`. ✅
 - **Profundidade**: foi até o Nível 2 completo. ✅
 
-> Em aberto para o beta: "Operação do dia" deve virar o **destino default** do operador
-> (hoje o index ainda vai pra `/dashboard`)? Decidir após feedback.
+> Em aberto para o beta: **Gestão de Falhas** deve virar o **destino default** do operador
+> no v2 (hoje o index ainda vai pra `/dashboard`)? Decidir após feedback.
