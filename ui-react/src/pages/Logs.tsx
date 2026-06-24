@@ -647,6 +647,7 @@ export function GestaoFalhasTab() {
 
   const [days, setDays] = useState(7)
   const [statusAck, setStatusAck] = useState('')
+  const [mine, setMine] = useState(false)   // "assumidas por mim" (ack_by = matrícula)
   const [filterPipeline, setFilterPipeline] = useState('')
   const [filterProject, setFilterProject] = useState('')
   const [page, setPage] = useState(0)
@@ -662,7 +663,7 @@ export function GestaoFalhasTab() {
   const falhaLabel = (r: FalhaRow) => (r.origem === 'malha' ? (r.job_name || r.pipeline) : r.pipeline)
 
   // Seleção é limpa quando os filtros/página mudam (evita resolver o que saiu da lista)
-  useEffect(() => { setSelected(new Set()) }, [days, statusAck, filterPipeline, filterProject, page])
+  useEffect(() => { setSelected(new Set()) }, [days, statusAck, mine, filterPipeline, filterProject, page])
 
   const qs = new URLSearchParams({
     days: String(days),
@@ -672,9 +673,10 @@ export function GestaoFalhasTab() {
   if (statusAck) qs.set('status_ack', statusAck)
   if (filterPipeline) qs.set('filter_pipeline', filterPipeline)
   if (filterProject) qs.set('filter_project', filterProject)
+  if (mine && user?.matricula) qs.set('ack_by', user.matricula)
 
   const { data, isLoading, refetch } = useQuery<{ total: number; data: FalhaRow[] }>({
-    queryKey: ['falhas', days, statusAck, filterPipeline, filterProject, page],
+    queryKey: ['falhas', days, statusAck, mine, filterPipeline, filterProject, page],
     queryFn: () => apiFetch(`/execucoes/falhas?${qs}`),
   })
 
@@ -787,6 +789,13 @@ export function GestaoFalhasTab() {
           <option value="resolvida">Resolvidas</option>
         </Select>
 
+        <Select label="Responsável" value={mine ? 'mine' : ''}
+          onChange={e => { setMine(e.target.value === 'mine'); setPage(0) }}
+          className="w-48">
+          <option value="">Todos</option>
+          <option value="mine">Assumidas por mim</option>
+        </Select>
+
         <Select label="Projeto" value={filterProject}
           onChange={e => { setFilterProject(e.target.value); setPage(0) }}
           className="w-44">
@@ -801,7 +810,7 @@ export function GestaoFalhasTab() {
 
         <div className="flex gap-2 ml-auto items-end">
           <Button variant="secondary" size="sm" onClick={() => {
-            setStatusAck(''); setFilterPipeline(''); setFilterProject(''); setPage(0)
+            setStatusAck(''); setMine(false); setFilterPipeline(''); setFilterProject(''); setPage(0)
           }}>Limpar</Button>
           <Button size="sm" onClick={() => { setPage(0); refetch() }}><RefreshCw size={13} /></Button>
         </div>

@@ -829,7 +829,7 @@ def get_falhas_summary(days: int = Query(7, ge=1, le=90)):
     try:
         conn = get_db_conn(); cur = conn.cursor()
         has_resolved = _ensure_resolve_columns(conn, cur)
-        include_malha = _malha_falha_ready(conn, cur)
+        include_malha = False  # malha removida da Gestão de Falhas: acks só de execução de pipeline
         cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
         cte, params = _failure_cte(cutoff, None, None, include_malha)
 
@@ -1101,6 +1101,7 @@ def list_falhas(
     status_ack: Optional[str] = Query(None),  # "sem_ack" | "com_ack" | "resolvida"
     filter_pipeline: Optional[str] = None,
     filter_project: Optional[str] = None,
+    ack_by: Optional[str] = Query(None),   # matrícula: filtra "assumidas por mim"
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
 ):
@@ -1108,7 +1109,7 @@ def list_falhas(
     try:
         conn = get_db_conn(); cur = conn.cursor()
         has_resolved = _ensure_resolve_columns(conn, cur)
-        include_malha = _malha_falha_ready(conn, cur)
+        include_malha = False  # malha removida da Gestão de Falhas: acks só de execução de pipeline
         cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
         cte, params = _failure_cte(cutoff, filter_pipeline, filter_project, include_malha)
 
@@ -1123,13 +1124,19 @@ def list_falhas(
             ack_filter = "AND ack.execution_id IS NOT NULL AND ack.resolved_at IS NOT NULL" if has_resolved \
                          else "AND ack.execution_id IS NOT NULL"
 
+        # Filtro "assumidas por mim" — só falhas com ack do usuário informado.
+        ack_params: list = []
+        if ack_by:
+            ack_filter += " AND ack.ack_by = ?"
+            ack_params.append(ack_by)
+
         cur.execute(cte + f"""
             SELECT COUNT(DISTINCT a.execution_id)
             FROM agg a
             LEFT JOIN dbo.etl_failure_ack ack
                    ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
             WHERE 1=1 {ack_filter}
-        """, params)
+        """, params + ack_params)
         total_row = cur.fetchone()
         total = int(total_row[0] or 0) if total_row else 0
 
@@ -1150,7 +1157,7 @@ def list_falhas(
             WHERE 1=1 {ack_filter}
             ORDER BY a.inicio DESC
             OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
-        """, params + [offset, limit])
+        """, params + ack_params + [offset, limit])
 
         rows = cur.fetchall()
         cur.close(); conn.close()
