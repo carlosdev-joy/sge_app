@@ -32,12 +32,13 @@ import { PlaceholderPicker } from '../ui/PlaceholderPicker'
 import { Modal } from '../ui/Modal'
 import { toast } from '../ui/Toast'
 import {
-  Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing,
+  Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing, Database, Play,
   PanelRightClose, ChevronLeft, ChevronRight, MousePointerClick, Search, X,
 } from 'lucide-react'
 import { EtapaNode, type EtapaNodeData } from './EtapaNode'
 import { DecisaoNode, type DecisaoNodeData, type NodeCondition } from './DecisaoNode'
 import { NotificacaoNode, type NotificacaoNodeData } from './NotificacaoNode'
+import { SqlNode, type SqlNodeData } from './SqlNode'
 import { TYPE_META, TYPE_ORDER, CREATABLE_TYPES, type EtapaType } from './types'
 import { COND_OPERADORES, defaultCondition, toNodeCondition, conditionLabel } from './condition'
 import { useColorMode } from './useColorMode'
@@ -45,7 +46,7 @@ import {
   JobTypeFields, type JobTypeFieldsValue, type JobFieldsType, type JobParam,
 } from './JobTypeFields'
 
-const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode }
+const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode }
 
 // ── Tipos do payload da API (/fluxo) ────────────────────────────────────────
 interface Condition {
@@ -59,6 +60,12 @@ interface NotifyConfig {
   template_id: number | null
   mensagem: string
 }
+// Config do nó SQL (round-trip com /fluxo no campo `sql`).
+interface SqlConfig {
+  sql: string
+  mssql_conn_id: string | null
+  database: string | null
+}
 interface FluxoNode {
   job_name: string
   job_type: string
@@ -67,6 +74,7 @@ interface FluxoNode {
   depends_on_jobs: string[]
   condition: Condition | null
   notify: NotifyConfig | null
+  sql: SqlConfig | null
   layout_x: number | null
   layout_y: number | null
   // Campos por tipo (round-trip). O backend usa presença de chave — sempre reenviados.
@@ -202,6 +210,28 @@ function notifyLabel(cfg: NotifyConfig, gruposById?: Map<number, string>): strin
   return `Teams: ${nome ?? `#${cfg.grupo_id}`}`
 }
 
+// ── Nó SQL (consulta que retorna 1 valor, lido por uma Decisão a jusante) ─────
+// Config default de um nó SQL recém-criado.
+function defaultSql(): SqlConfig {
+  return { sql: '', mssql_conn_id: null, database: null }
+}
+
+// Lê a config SQL do payload da API (tolerante a null/parcial).
+function toSqlConfig(raw: SqlConfig | null | undefined): SqlConfig {
+  if (!raw || typeof raw !== 'object') return defaultSql()
+  return {
+    sql: typeof raw.sql === 'string' ? raw.sql : '',
+    mssql_conn_id: raw.mssql_conn_id != null && `${raw.mssql_conn_id}`.trim() ? `${raw.mssql_conn_id}` : null,
+    database: raw.database != null && `${raw.database}`.trim() ? `${raw.database}` : null,
+  }
+}
+
+// Resumo curto p/ o card: "SQL: <banco>" quando há banco, senão "consulta".
+function sqlLabel(cfg: SqlConfig): string {
+  const db = (cfg.database || '').trim()
+  return db ? `SQL: ${db}` : 'consulta'
+}
+
 // ── Construção de nós/arestas a partir do payload ───────────────────────────
 const EDGE_ARROW = { type: MarkerType.ArrowClosed, width: 16, height: 16 }
 const SIM_STYLE = { stroke: '#22c55e' }
@@ -233,6 +263,11 @@ function buildNodes(apiNodes: FluxoNode[]): Node[] {
       const notify = toNotifyConfig(n.notify)
       const data: NotificacaoNodeData = { name: n.job_name, notify, label: notifyLabel(notify) }
       return { id: n.job_name, type: 'notificacao' as const, position, data }
+    }
+    if (n.job_type === 'sql') {
+      const sql = toSqlConfig(n.sql)
+      const data: SqlNodeData = { name: n.job_name, sql, label: sqlLabel(sql) }
+      return { id: n.job_name, type: 'sql' as const, position, data }
     }
     const data: EtapaNodeData = {
       name: n.job_name,
@@ -344,6 +379,7 @@ const PALETA_CATEGORIAS: PaletaCategoria[] = [
   {
     titulo: 'Fluxo',
     nodes: [
+      { tipo: 'sql', label: 'SQL', chip: 'bg-violet-500 text-white', Icon: Database },
       { tipo: 'decisao', label: 'Decisão', chip: 'bg-indigo-500 text-white', Icon: GitBranch },
       { tipo: 'notificacao', label: 'Notificação', chip: 'bg-teal-500 text-white', Icon: BellRing },
     ],
@@ -565,9 +601,15 @@ function FluxoEditorInner({ pipeline }: Props) {
   )
 
   // Jobs (etapas) do pipeline — alimentam o seletor "Job" da condição linhas_job.
-  // Decisões (roteadores) e notificações (não geram linhas) ficam de fora.
+  // Decisões (roteadores), notificações e nós SQL (não geram linhas) ficam de fora.
   const jobNames = useMemo(
-    () => nodes.filter(n => n.type !== 'decisao' && n.type !== 'notificacao').map(n => n.id),
+    () => nodes.filter(n => n.type !== 'decisao' && n.type !== 'notificacao' && n.type !== 'sql').map(n => n.id),
+    [nodes],
+  )
+
+  // Nós SQL do fluxo — alimentam o seletor "Nó SQL" da condição valor_sql.
+  const sqlNodeNames = useMemo(
+    () => nodes.filter(n => n.type === 'sql').map(n => n.id),
     [nodes],
   )
 
@@ -731,6 +773,22 @@ function FluxoEditorInner({ pipeline }: Props) {
         setSelectedId(name)
         return
       }
+      if (tipo === 'sql') {
+        // Nó SQL: cria o nó (defaults) e SELECIONA — o painel edita a query.
+        const name = nextName('SQL', nameSet())
+        const sql = defaultSql()
+        const node: Node = {
+          id: name,
+          type: 'sql',
+          position: { x, y },
+          selected: true,
+          data: { name, sql, label: sqlLabel(sql), isNew: true } as SqlNodeData,
+        }
+        setNodes(nds => [...nds.map(n => n.selected ? { ...n, selected: false } : n), node])
+        setDirty(true)
+        setSelectedId(name)
+        return
+      }
       // Etapa: cria o nó (nome default único + comando vazio) e SELECIONA p/ preencher.
       const t = toEtapaType(tipo)
       const name = nextName('NOVA_ETAPA', nameSet())
@@ -801,6 +859,17 @@ function FluxoEditorInner({ pipeline }: Props) {
       const cur = (n.data as NotificacaoNodeData).notify ?? defaultNotify()
       const next = { ...cur, ...patch }
       return { ...n, data: { ...n.data, notify: next, label: notifyLabel(next, gruposById) } }
+    }))
+    setDirty(true)
+  }
+
+  // Atualiza a config de um nó SQL (merge em data.sql) e o rótulo do nó (banco).
+  function patchSql(nodeId: string, patch: Partial<SqlConfig>) {
+    setNodes(nds => nds.map(n => {
+      if (n.id !== nodeId || n.type !== 'sql') return n
+      const cur = (n.data as SqlNodeData).sql ?? defaultSql()
+      const next = { ...cur, ...patch }
+      return { ...n, data: { ...n.data, sql: next, label: sqlLabel(next) } }
     }))
     setDirty(true)
   }
@@ -882,6 +951,7 @@ function FluxoEditorInner({ pipeline }: Props) {
         const d = n.data as Record<string, unknown>
         const isDecisao = n.type === 'decisao'
         const isNotificacao = n.type === 'notificacao'
+        const isSql = n.type === 'sql'
         let condition: Record<string, unknown> | null = null
         if (isDecisao) {
           const cur = (d.condition as NodeCondition | undefined) ?? defaultCondition()
@@ -895,6 +965,18 @@ function FluxoEditorInner({ pipeline }: Props) {
               valor: (cur.valor ?? '').toString().trim(),
               job_name: (cur.job_name || '').trim(),
               child_job: (cur.child_job || '').trim(),
+              ramo_verdadeiro: ramos.sim,
+              ramo_falso: ramos.nao,
+            }
+          } else if (cur.tipo === 'valor_sql') {
+            // Decisão lê o valor de um nó SQL a montante. Envia source_job +
+            // comparacao (texto|data|numero); omite tabela/sql/banco/conexão.
+            condition = {
+              tipo: cur.tipo,
+              source_job: (cur.source_job || '').trim(),
+              comparacao: cur.comparacao || 'texto',
+              operador: cur.operador,
+              valor: (cur.valor ?? '').toString().trim(),
               ramo_verdadeiro: ramos.sim,
               ramo_falso: ramos.nao,
             }
@@ -912,11 +994,14 @@ function FluxoEditorInner({ pipeline }: Props) {
             }
           }
         }
-        const jobType = isDecisao ? 'decisao' : isNotificacao ? 'notificacao' : ((d.type as string) || 'datastage')
+        const jobType = isDecisao ? 'decisao'
+          : isNotificacao ? 'notificacao'
+          : isSql ? 'sql'
+          : ((d.type as string) || 'datastage')
         const base = {
           job_name: n.id,
           job_type: jobType,
-          job_command: (isDecisao || isNotificacao) ? null : ((d.command as string | null) ?? null),
+          job_command: (isDecisao || isNotificacao || isSql) ? null : ((d.command as string | null) ?? null),
           execution_order: (d.order as number) ?? 1,
           depends_on_jobs: Array.from(depsByTarget.get(n.id) ?? []),
           condition,
@@ -924,6 +1009,19 @@ function FluxoEditorInner({ pipeline }: Props) {
           layout_y: Math.round(n.position.y),
         }
         if (isDecisao) return base
+        if (isSql) {
+          // Nó SQL: emite a chave `sql` (análogo ao `notify`/`condition`); não
+          // envia condition nem campos de etapa. A query roda no banco/conexão.
+          const cur = (d.sql as SqlConfig | undefined) ?? defaultSql()
+          return {
+            ...base,
+            sql: {
+              sql: (cur.sql ?? '').toString(),
+              mssql_conn_id: cur.mssql_conn_id ?? null,
+              database: cur.database ?? null,
+            },
+          }
+        }
         if (isNotificacao) {
           // Notificação: emite a chave `notify` (análogo ao `condition` da decisão);
           // não envia condition nem campos de etapa. grupo_id é obrigatório no backend.
@@ -1004,6 +1102,7 @@ function FluxoEditorInner({ pipeline }: Props) {
     () => (node: Node) => {
       if (node.type === 'decisao') return '#6366f1'
       if (node.type === 'notificacao') return '#14b8a6'
+      if (node.type === 'sql') return '#8b5cf6'
       const t = (node.data as { type?: EtapaType }).type
       return (t && TYPE_META[t]?.hex) || '#94a3b8'
     },
@@ -1126,6 +1225,7 @@ function FluxoEditorInner({ pipeline }: Props) {
           node={selNode}
           ramos={selRamos}
           jobNames={jobNames}
+          sqlNodeNames={sqlNodeNames}
           sshConns={sshConns}
           mssqlConns={mssqlConns}
           dbServer={dbServer}
@@ -1135,6 +1235,7 @@ function FluxoEditorInner({ pipeline }: Props) {
           onPatchData={patchNodeData}
           onPatchCondition={patchCondition}
           onPatchNotify={patchNotify}
+          onPatchSql={patchSql}
           onDelete={id => setDelNodeId(id)}
           onClose={closePanel}
         />
@@ -1218,6 +1319,7 @@ interface PropriedadesPanelProps {
   node: Node | null
   ramos: { sim: string[]; nao: string[] }
   jobNames: string[]
+  sqlNodeNames: string[]
   sshConns: { conn_id: string; host: string }[]
   mssqlConns: { conn_id: string; host: string }[]
   dbServer: string | null
@@ -1227,13 +1329,14 @@ interface PropriedadesPanelProps {
   onPatchData: (nodeId: string, patch: Record<string, unknown>) => void
   onPatchCondition: (nodeId: string, patch: Partial<NodeCondition>) => void
   onPatchNotify: (nodeId: string, patch: Partial<NotifyConfig>) => void
+  onPatchSql: (nodeId: string, patch: Partial<SqlConfig>) => void
   onDelete: (id: string) => void
   onClose: () => void
 }
 
 function PropriedadesPanel({
-  node, ramos, jobNames, sshConns, mssqlConns, dbServer, dbDatabases, grupos,
-  onRename, onPatchData, onPatchCondition, onPatchNotify, onDelete, onClose,
+  node, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, dbServer, dbDatabases, grupos,
+  onRename, onPatchData, onPatchCondition, onPatchNotify, onPatchSql, onDelete, onClose,
 }: PropriedadesPanelProps) {
   return (
     <aside className="flex w-[320px] shrink-0 flex-col overflow-y-auto border-l border-edge bg-panel">
@@ -1257,6 +1360,7 @@ function PropriedadesPanel({
           node={node}
           ramos={ramos}
           jobNames={jobNames}
+          sqlNodeNames={sqlNodeNames}
           mssqlConns={mssqlConns}
           onRename={onRename}
           onPatchCondition={onPatchCondition}
@@ -1269,6 +1373,15 @@ function PropriedadesPanel({
           grupos={grupos}
           onRename={onRename}
           onPatchNotify={onPatchNotify}
+          onDelete={onDelete}
+        />
+      ) : node.type === 'sql' ? (
+        <PainelSql
+          key={node.id}
+          node={node}
+          mssqlConns={mssqlConns}
+          onRename={onRename}
+          onPatchSql={onPatchSql}
           onDelete={onDelete}
         />
       ) : (
@@ -1443,13 +1556,14 @@ interface PainelDecisaoProps {
   node: Node
   ramos: { sim: string[]; nao: string[] }
   jobNames: string[]
+  sqlNodeNames: string[]
   mssqlConns: { conn_id: string; host: string }[]
   onRename: (oldName: string, novo: string) => boolean
   onPatchCondition: (nodeId: string, patch: Partial<NodeCondition>) => void
   onDelete: (id: string) => void
 }
 
-function PainelDecisao({ node, ramos, jobNames, mssqlConns, onRename, onPatchCondition, onDelete }: PainelDecisaoProps) {
+function PainelDecisao({ node, ramos, jobNames, sqlNodeNames, mssqlConns, onRename, onPatchCondition, onDelete }: PainelDecisaoProps) {
   const d = node.data as DecisaoNodeData
   const isNew = !!d.isNew
   const c = d.condition ?? defaultCondition()
@@ -1485,12 +1599,63 @@ function PainelDecisao({ node, ramos, jobNames, mssqlConns, onRename, onPatchCon
               <option value="contagem">Contagem de registros</option>
               <option value="query">Valor de uma query</option>
               <option value="linhas_job">Linhas processadas</option>
+              <option value="valor_sql">Valor de SQL</option>
             </Select>
             <Select label="Oper." value={c.operador} onChange={e => patch({ operador: e.target.value })} className="text-center text-xs">
               {COND_OPERADORES.map(op => <option key={op} value={op}>{op}</option>)}
             </Select>
           </div>
 
+          {c.tipo === 'valor_sql' ? (
+            <>
+              {/* Nó SQL a montante cujo valor será comparado (deriva da lista de nós). */}
+              <div className="flex flex-col gap-1">
+                <Select
+                  label="Nó SQL *"
+                  value={c.source_job ?? ''}
+                  onChange={e => patch({ source_job: e.target.value })}
+                  className="text-xs"
+                >
+                  <option value="">Selecione um nó SQL…</option>
+                  {sqlNodeNames.map(s => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                  {/* Mantém o nó salvo visível mesmo se ele não estiver mais no fluxo */}
+                  {c.source_job && !sqlNodeNames.includes(c.source_job) && (
+                    <option value={c.source_job}>{c.source_job} (fora do fluxo)</option>
+                  )}
+                </Select>
+                {sqlNodeNames.length === 0 && (
+                  <p className="text-[10px] text-dim/70">Crie um nó SQL e ligue-o a esta decisão.</p>
+                )}
+              </div>
+
+              <Select
+                label="Comparar como"
+                value={c.comparacao ?? 'texto'}
+                onChange={e => patch({ comparacao: e.target.value as NonNullable<NodeCondition['comparacao']> })}
+                className="text-xs"
+              >
+                <option value="texto">Texto</option>
+                <option value="data">Data</option>
+                <option value="numero">Número</option>
+              </Select>
+
+              <div className="flex flex-col gap-1">
+                <Input
+                  label="Valor *"
+                  value={c.valor}
+                  onChange={e => patch({ valor: e.target.value })}
+                  placeholder={c.comparacao === 'numero' ? 'ex: 100' : c.comparacao === 'data' ? 'ex: HOJE' : 'ex: OK'}
+                  className="font-mono text-xs"
+                />
+                {c.comparacao === 'data' && (
+                  <p className="text-[10px] text-dim/70">Use <code>HOJE</code> ou <code>AAAA-MM-DD</code>.</p>
+                )}
+              </div>
+            </>
+          ) : (
+          <>
           <Input
             label="Valor *"
             type={c.tipo === 'linhas_job' ? 'number' : 'text'}
@@ -1574,6 +1739,8 @@ function PainelDecisao({ node, ramos, jobNames, mssqlConns, onRename, onPatchCon
                 <option key={cn.conn_id} value={cn.conn_id}>{cn.conn_id}{cn.host ? ` (${cn.host})` : ''}</option>
               ))}
             </Select>
+          )}
+          </>
           )}
         </div>
       </div>
@@ -1758,6 +1925,206 @@ function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDelete }: 
       <div className="mt-auto border-t border-edge pt-3">
         <Button variant="danger" size="sm" className="w-full justify-center" onClick={() => onDelete(node.id)}>
           <Trash2 size={13} /> Excluir notificação
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+// ── Painel de um nó SQL ──────────────────────────────────────────────────────
+// Edita a query (SELECT que retorna 1 valor) + conexão/banco e oferece um
+// Pré-visualizar (POST /jobs/sql-preview) com grid de amostra (≤100 linhas).
+interface PainelSqlProps {
+  node: Node
+  mssqlConns: { conn_id: string; host: string }[]
+  onRename: (oldName: string, novo: string) => boolean
+  onPatchSql: (nodeId: string, patch: Partial<SqlConfig>) => void
+  onDelete: (id: string) => void
+}
+
+interface SqlPreview { columns: string[]; rows: unknown[][]; total: number; truncated: boolean }
+
+function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete }: PainelSqlProps) {
+  const d = node.data as SqlNodeData
+  const isNew = !!d.isNew
+  const cfg = d.sql ?? defaultSql()
+  const patch = (p: Partial<SqlConfig>) => onPatchSql(node.id, p)
+
+  // Host derivado da conexão MSSQL escolhida — necessário p/ databases e preview.
+  const host = useMemo(
+    () => mssqlConns.find(c => c.conn_id === cfg.mssql_conn_id)?.host ?? '',
+    [mssqlConns, cfg.mssql_conn_id],
+  )
+
+  // Bancos do servidor da conexão (enabled só com host) — degrada para [].
+  const { data: dbData } = useQuery<{ server: string | null; databases: string[] }>({
+    queryKey: ['sql-node-databases', host],
+    queryFn: () => apiFetch(`/jobs/databases?host=${encodeURIComponent(host)}`),
+    enabled: !!host,
+    staleTime: 300_000,
+  })
+  const databases = dbData?.databases ?? []
+
+  // Resultado do preview (amostra). Mantido em estado local, abaixo do botão.
+  const [preview, setPreview] = useState<SqlPreview | null>(null)
+  const [previewing, setPreviewing] = useState(false)
+
+  // Troca de conexão: zera o banco (bancos pertencem ao servidor) e o preview.
+  function onConnChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const v = e.target.value
+    patch({ mssql_conn_id: v || null, database: null })
+    setPreview(null)
+  }
+
+  async function previewSql() {
+    if (!host) { toast.error('Selecione uma conexão MSSQL.'); return }
+    if (!cfg.database) { toast.error('Selecione um banco.'); return }
+    if (!(cfg.sql || '').trim()) { toast.error('Escreva o SELECT antes de pré-visualizar.'); return }
+    setPreviewing(true)
+    try {
+      const res = await apiFetch<SqlPreview>('/jobs/sql-preview', {
+        method: 'POST',
+        body: JSON.stringify({ host, database: cfg.database, sql: cfg.sql }),
+      })
+      setPreview(res)
+    } catch (e: any) {
+      toast.error(e?.message || 'Falha ao pré-visualizar a consulta.')
+    } finally {
+      setPreviewing(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-1 flex-col gap-3 p-3">
+      {/* Cabeçalho */}
+      <div className="flex items-center gap-2">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-violet-500 text-white">
+          <Database size={15} strokeWidth={2.2} />
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
+          <p className="text-[10px] text-dim">Consulta SQL</p>
+        </div>
+      </div>
+
+      <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: LE_CONTROLE" onRename={onRename} />
+
+      {/* Config da consulta */}
+      <div className="border-t border-edge pt-2.5">
+        <div className="mb-2 flex items-center gap-1.5">
+          <Database size={12} className="text-violet-600 dark:text-violet-300" />
+          <span className="text-xs font-semibold text-ink">Consulta</span>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-1">
+            <Textarea
+              label="SELECT *"
+              value={cfg.sql ?? ''}
+              rows={4}
+              onChange={e => patch({ sql: e.target.value })}
+              placeholder="ex: SELECT MAX(flag) FROM dbo.Controle WHERE ..."
+              className="font-mono text-xs"
+            />
+            <p className="text-[10px] text-dim/70">Somente SELECT — deve retornar 1 valor.</p>
+          </div>
+
+          <Select
+            label="Conexão MSSQL *"
+            value={cfg.mssql_conn_id ?? ''}
+            onChange={onConnChange}
+            className="text-xs"
+          >
+            <option value="">Selecione a conexão…</option>
+            {mssqlConns.map(cn => (
+              <option key={cn.conn_id} value={cn.conn_id}>{cn.conn_id}{cn.host ? ` (${cn.host})` : ''}</option>
+            ))}
+            {/* Mantém a conexão salva visível mesmo se não estiver mais na lista */}
+            {cfg.mssql_conn_id && !mssqlConns.some(cn => cn.conn_id === cfg.mssql_conn_id) && (
+              <option value={cfg.mssql_conn_id}>{cfg.mssql_conn_id} (fora da lista)</option>
+            )}
+          </Select>
+
+          <div className="flex flex-col gap-1">
+            <Select
+              label="Banco *"
+              value={cfg.database ?? ''}
+              onChange={e => { patch({ database: e.target.value || null }); setPreview(null) }}
+              disabled={!host}
+              className={`text-xs ${!host ? 'opacity-60' : ''}`}
+            >
+              <option value="">{host ? 'Selecione o banco…' : 'Escolha a conexão primeiro'}</option>
+              {databases.map(db => <option key={db} value={db}>{db}</option>)}
+              {/* Mantém o banco salvo visível mesmo se não vier na lista atual */}
+              {cfg.database && !databases.includes(cfg.database) && (
+                <option value={cfg.database}>{cfg.database}</option>
+              )}
+            </Select>
+            {!host && <p className="text-[10px] text-dim/70">Escolha a conexão para listar os bancos.</p>}
+          </div>
+
+          <Button
+            variant="secondary"
+            size="sm"
+            className="self-start"
+            onClick={previewSql}
+            loading={previewing}
+            disabled={!host || !cfg.database || !(cfg.sql || '').trim()}
+          >
+            <Play size={13} /> Pré-visualizar
+          </Button>
+        </div>
+      </div>
+
+      {/* Grid do resultado (amostra ≤ 100 linhas). */}
+      {preview && (
+        <div className="flex flex-col gap-1">
+          <div className="max-h-64 overflow-auto rounded-lg border border-edge bg-panel">
+            <table className="w-full border-collapse text-[10px]">
+              <thead className="sticky top-0 bg-canvas">
+                <tr>
+                  {preview.columns.map((col, i) => (
+                    <th key={i} className="border-b border-edge px-2 py-1 text-left font-semibold text-ink">
+                      {col}
+                    </th>
+                  ))}
+                  {preview.columns.length === 0 && (
+                    <th className="border-b border-edge px-2 py-1 text-left font-semibold text-dim">—</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {preview.rows.map((row, ri) => (
+                  <tr key={ri} className="odd:bg-canvas/40">
+                    {row.map((cell, ci) => (
+                      <td key={ci} className="border-b border-edge px-2 py-1 font-mono text-ink">
+                        {cell == null ? <span className="text-dim/60">null</span> : String(cell)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+                {preview.rows.length === 0 && (
+                  <tr>
+                    <td className="px-2 py-2 text-center text-dim" colSpan={Math.max(1, preview.columns.length)}>
+                      Sem linhas.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[10px] text-dim">
+            {preview.total} linha{preview.total === 1 ? '' : 's'} (máx 100)
+            {preview.truncated && (
+              <span className="ml-1 text-amber-700 dark:text-amber-400">· resultado truncado em 100</span>
+            )}
+          </p>
+        </div>
+      )}
+
+      <div className="mt-auto border-t border-edge pt-3">
+        <Button variant="danger" size="sm" className="w-full justify-center" onClick={() => onDelete(node.id)}>
+          <Trash2 size={13} /> Excluir nó SQL
         </Button>
       </div>
     </div>

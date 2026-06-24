@@ -8,7 +8,7 @@ import { GitBranch } from 'lucide-react'
 // Condição de decisão (espelha o ConditionEntry do PipelineFormModal). Guardamos
 // o objeto inteiro no `data` para ecoar no save; `label` é um resumo curto p/ o nó.
 export interface NodeCondition {
-  tipo: 'contagem' | 'query' | 'linhas_job'
+  tipo: 'contagem' | 'query' | 'linhas_job' | 'valor_sql'
   operador: string
   valor: string
   tabela?: string
@@ -18,6 +18,9 @@ export interface NodeCondition {
   // Específicos do tipo 'linhas_job' (decisão por linhas processadas).
   job_name?: string
   child_job?: string
+  // Específicos do tipo 'valor_sql' (lê o valor de um nó SQL a montante).
+  source_job?: string
+  comparacao?: 'texto' | 'data' | 'numero'
   ramo_verdadeiro: string[]
   ramo_falso: string[]
 }
@@ -30,13 +33,16 @@ export interface DecisaoNodeData {
   [key: string]: unknown
 }
 
-const HANDLE_CLS =
-  '!h-2.5 !w-2.5 !rounded-full !border-2 !border-panel !bg-indigo-500'
+// Bolinhas dos handles, coloridas por papel: entrada índigo, saída "sim" verde,
+// "não" slate. A direção fica clara pela COR (o rótulo sim/não vive na aresta).
+const HANDLE_BASE = '!h-2.5 !w-2.5 !rounded-full !border-2 !border-panel'
+const HANDLE_IN = `${HANDLE_BASE} !bg-indigo-400`
+const HANDLE_SIM = `${HANDLE_BASE} !bg-green-500`
+const HANDLE_NAO = `${HANDLE_BASE} !bg-slate-400`
 
-// Tile do ícone tem 44px de altura no topo: o "sim" (direita) fica no centro
-// vertical do tile; o "nao" sai pela base do tile (logo abaixo dos 44px).
+// Handles na altura do tile do ícone (32px): entrada (esq.) e saída "sim" (dir.)
+// no centro vertical; saída "não" na base do tile.
 const HANDLE_Y = 16
-const TILE_H = 32
 
 function DecisaoNodeImpl({ data, selected }: NodeProps & { data: DecisaoNodeData }) {
   return (
@@ -45,7 +51,7 @@ function DecisaoNodeImpl({ data, selected }: NodeProps & { data: DecisaoNodeData
       <Handle
         type="target"
         position={Position.Left}
-        className={HANDLE_CLS}
+        className={HANDLE_IN}
         style={{ top: HANDLE_Y }}
       />
 
@@ -64,7 +70,7 @@ function DecisaoNodeImpl({ data, selected }: NodeProps & { data: DecisaoNodeData
           id="sim"
           type="source"
           position={Position.Right}
-          className={HANDLE_CLS}
+          className={HANDLE_SIM}
           style={{ right: -5, top: '50%' }}
         />
         {/* Saída "não" (baixo) — base do tile */}
@@ -72,29 +78,15 @@ function DecisaoNodeImpl({ data, selected }: NodeProps & { data: DecisaoNodeData
           id="nao"
           type="source"
           position={Position.Bottom}
-          className={HANDLE_CLS}
+          className={HANDLE_NAO}
           style={{ bottom: -5, left: '50%' }}
         />
       </div>
 
-      {/* Rótulos dos ramos junto ao tile (sim à direita, não embaixo). */}
-      <span
-        className="pointer-events-none absolute right-[-26px] rounded bg-green-50 px-1 py-0.5 text-[9px] font-bold text-green-700 dark:bg-green-900/40 dark:text-green-300"
-        style={{ top: HANDLE_Y - 8 }}
-      >
-        sim
-      </span>
-      <span
-        className="pointer-events-none absolute left-1/2 -translate-x-1/2 rounded bg-slate-100 px-1 py-0.5 text-[9px] font-bold text-slate-600 dark:bg-slate-700 dark:text-slate-300"
-        style={{ top: TILE_H + 4 }}
-      >
-        não
-      </span>
-
-      {/* Nome embaixo — até 2 linhas, sem truncar (deslocado p/ não colidir
-          com o rótulo "não", que sai da base do tile). */}
+      {/* Nome embaixo — sem rótulos sim/não sobre o nó (a aresta já mostra a
+          pílula sim/não; os handles coloridos indicam a direção). */}
       <p
-        className="mt-4 line-clamp-2 break-words text-center text-[11px] font-semibold leading-tight text-ink"
+        className="mt-2 line-clamp-2 break-words text-center text-[11px] font-semibold leading-tight text-ink"
         title={data.name}
       >
         {data.name}

@@ -173,12 +173,12 @@ def compara_tipado(obtido, operador, valor, comparacao) -> bool:
 
 
 def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = None,
-                   pipeline_name: str | None = None):
+                   pipeline_name: str | None = None, ti=None):
     """Avalia a condição do nó de decisão.
 
     Retorna ``(resultado: bool, valor_obtido)``.
     ``cond`` = {tipo, operador, valor, [tabela, database] | [sql] |
-                [job_name (linhas_job)], [mssql_conn_id]}.
+                [job_name (linhas_job)] | [source_job (valor_sql)], [mssql_conn_id]}.
 
     ``execution_id`` identifica a execução ATUAL (ts_nodash da DAG run). É
     obrigatório apenas para ``tipo='linhas_job'`` (lê o rows_out do job a
@@ -187,6 +187,11 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
     Para ``tipo='linhas_job'`` com ``child_job`` preenchido, a decisão usa as
     linhas daquele job FILHO (dentro do SEQUENCE ``job_name``), lidas do JSON
     ``child_jobs`` do registro de etl_ds_job_log; vazio = total (rows_out).
+
+    ``ti`` (TaskInstance) é necessário apenas para ``tipo='valor_sql'``: a decisão
+    lê o XCom publicado pelo nó SQL a montante (``source_job``) e compara — não
+    roda SQL próprio. Os demais tipos ignoram ``ti``. Sem ``ti`` ou sem valor no
+    XCom → log + ``obtido=None`` (degrada para False na comparação tipada).
     """
     from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook  # lazy
 
@@ -194,6 +199,29 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
     tipo = str(cond.get("tipo") or "").strip().lower()
     operador = cond.get("operador") or ">"
     limite = cond.get("valor")
+
+    # valor_sql: NÃO roda SQL — lê o XCom do nó SQL a montante (source_job) e
+    # compara via compara_tipado. Resolvido ANTES de abrir hook/conexão (não
+    # precisa de banco).
+    if tipo == "valor_sql":
+        source_job = str(cond.get("source_job") or "").strip()
+        obtido = None
+        if not source_job:
+            print("[CONDICAO valor_sql] source_job vazio — valor tratado como None (resultado False).")
+        elif ti is None:
+            print(f"[CONDICAO valor_sql] sem TaskInstance (ti) para ler o XCom de "
+                  f"'{source_job}' — valor tratado como None (resultado False).")
+        else:
+            try:
+                obtido = ti.xcom_pull(task_ids=source_job)
+            except Exception as exc:  # noqa: BLE001 — degrada sem derrubar a DAG
+                print(f"[CONDICAO valor_sql] xcom_pull de '{source_job}' falhou ({exc}) — valor None.")
+                obtido = None
+            if obtido is None:
+                print(f"[CONDICAO valor_sql] sem valor no XCom de '{source_job}' "
+                      f"— valor tratado como None (resultado False).")
+        return compara_tipado(obtido, operador, limite, cond.get("comparacao")), obtido
+
     conn_id = (cond.get("mssql_conn_id") or "").strip() or default_conn_id
     hook = MsSqlHook(mssql_conn_id=conn_id)
 

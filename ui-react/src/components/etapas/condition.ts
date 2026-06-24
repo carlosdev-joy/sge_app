@@ -11,6 +11,7 @@ export function defaultCondition(): NodeCondition {
     tipo: 'contagem', operador: '>', valor: '',
     tabela: '', database: '', sql: '', mssql_conn_id: '',
     job_name: '', child_job: '',
+    source_job: '', comparacao: 'texto',
     ramo_verdadeiro: [], ramo_falso: [],
   }
 }
@@ -21,7 +22,12 @@ export function toNodeCondition(raw: Record<string, unknown> | null | undefined)
   const base = defaultCondition()
   if (!raw) return base
   const tipo: NodeCondition['tipo'] =
-    raw.tipo === 'query' ? 'query' : raw.tipo === 'linhas_job' ? 'linhas_job' : 'contagem'
+    raw.tipo === 'query' ? 'query'
+      : raw.tipo === 'linhas_job' ? 'linhas_job'
+      : raw.tipo === 'valor_sql' ? 'valor_sql'
+      : 'contagem'
+  const comparacao: NodeCondition['comparacao'] =
+    raw.comparacao === 'data' ? 'data' : raw.comparacao === 'numero' ? 'numero' : 'texto'
   return {
     ...base,
     ...raw,
@@ -30,6 +36,8 @@ export function toNodeCondition(raw: Record<string, unknown> | null | undefined)
     valor: raw.valor != null ? String(raw.valor) : '',
     job_name: typeof raw.job_name === 'string' ? raw.job_name : '',
     child_job: typeof raw.child_job === 'string' ? raw.child_job : '',
+    source_job: typeof raw.source_job === 'string' ? raw.source_job : '',
+    comparacao,
     ramo_verdadeiro: Array.isArray(raw.ramo_verdadeiro) ? (raw.ramo_verdadeiro as string[]) : [],
     ramo_falso: Array.isArray(raw.ramo_falso) ? (raw.ramo_falso as string[]) : [],
   }
@@ -50,6 +58,10 @@ export function conditionLabel(c: NodeCondition | null | undefined): string {
     const child = (c.child_job || '').trim()
     const alvo = child ? (job ? `${job}›${child}` : child) : (job || '?')
     return `linhas ${alvo} ${op} ${val}`
+  }
+  if (c.tipo === 'valor_sql') {
+    const src = (c.source_job || '').trim() || '?'
+    return `valor de ${src} ${op} ${val}`
   }
   const tab = (c.tabela || '').trim()
   const alvo = tab ? tab.split('.').pop() : 'contagem'

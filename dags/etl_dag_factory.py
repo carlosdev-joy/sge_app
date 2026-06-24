@@ -259,15 +259,6 @@ def _task_block(job, project, pipeline, branch_reachable=False):
                 f'    params={params_payload!r},',
                 f')',
             ])
-    elif jtype == "sql":
-        sql_stmt = jcmd or f"SELECT 1 -- job {name}"
-        main = "\n".join([
-            f't_job_{vname} = SqlOperator(',
-            f'    task_id={name!r},',
-            f'    sql={sql_stmt!r},',
-            f'    mssql_conn_id=MSSQL_CONN_ID,',
-            f')',
-        ])
     elif jtype == "http":
         url = jcmd or "https://httpbin.org/get"
         main = "\n".join([
@@ -334,7 +325,8 @@ def _decision_block(job, condition, job_names, notif_names=None):
         f'def _decide_{vname}(**context):',
         f'    cond = {condition!r}',
         f'    _exec_id = context.get("ts_nodash")',
-        f'    resultado, _valor = eval_condition(cond, MSSQL_CONN_ID, execution_id=_exec_id, pipeline_name=PIPELINE_NAME)',
+        f'    _ti = context.get("ti")',
+        f'    resultado, _valor = eval_condition(cond, MSSQL_CONN_ID, execution_id=_exec_id, pipeline_name=PIPELINE_NAME, ti=_ti)',
         f'    _ramo = "verdadeiro" if resultado else "falso"',
         f'    _job = {name!r}',
         f'    print("[DECISAO " + _job + "] valor=" + str(_valor) + " resultado=" + str(resultado) + " -> ramo " + _ramo)',
@@ -389,6 +381,43 @@ def _notify_block(job, notify_cfg, upstream_jobs, branch_reachable=False):
     ]))
 
 
+def _sql_block(job, sql_cfg, branch_reachable=False):
+    """Bloco de um nó SQL: PythonOperator EXECUTÁVEL que RODA um SELECT e PUBLICA
+    o valor escalar (1ª coluna da 1ª linha) no XCom default da task (task_id =
+    nome do nó). Análogo ao nó de Notificação por NÃO ter t_start/t_end (sem
+    lineage — fica fora de end_tasks), mas, em vez de postar no Teams, devolve o
+    valor para uma Decisão 'valor_sql' a jusante comparar.
+
+    Degrada: o callable retorna None em qualquer erro (helper _resolve_e_roda_sql
+    é best-effort) — não derruba a DAG. Quando alcançável a partir de um branch,
+    usa trigger_rule tolerante a skip (NONE_FAILED_MIN_ONE_SUCCESS)."""
+    name  = job["job_name"]
+    vname = _varname(name)
+    sql       = sql_cfg.get("sql") or ""
+    conn_id   = (sql_cfg.get("mssql_conn_id") or "").strip() or None
+    database  = (sql_cfg.get("database") or "").strip() or None
+    rule = (
+        '    trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,'
+        if branch_reachable else None
+    )
+    return "\n".join(filter(None, [
+        f'def _sql_{vname}(**context):',
+        f'    _job = {name!r}',
+        f'    _sql = {sql!r}',
+        f'    _conn_id = {conn_id!r}',
+        f'    _database = {database!r}',
+        f'    _valor = _resolve_e_roda_sql(_sql, _conn_id, _database, context)',
+        f'    print("[SQL NODE " + _job + "] valor publicado=" + repr(_valor))',
+        f'    return _valor',
+        f'',
+        f't_sql_{vname} = PythonOperator(',
+        f'    task_id={name!r},',
+        f'    python_callable=_sql_{vname},',
+        rule,
+        f')',
+    ]))
+
+
 def _generate_dag_source(pipeline, jobs):
     pname      = pipeline["pipeline_name"]
     project    = pipeline["project_name"]
@@ -434,9 +463,10 @@ def _generate_dag_source(pipeline, jobs):
     first       = _varname(job_groups[0][0]["job_name"])
     first_name  = job_groups[0][0]["job_name"]
     others      = sorted_jobs[1:]   # kept for jtypes — not used for chaining anymore
-    # Nós de Decisão (roteador) e de Notificação (sem lineage) não têm t_start/
-    # t_end próprios — ficam fora de end_tasks.
-    _SPECIAL_NODES = ("decisao", "notificacao")
+    # Nós de Decisão (roteador), de Notificação (sem lineage) e SQL (roda o SELECT
+    # e publica o valor escalar) não têm t_start/t_end próprios — ficam fora de
+    # end_tasks.
+    _SPECIAL_NODES = ("decisao", "notificacao", "sql")
     all_ends    = [f"t_end_{_varname(j['job_name'])}" for j in sorted_jobs if _alias(j) not in _SPECIAL_NODES]
 
     def _jtypes(jobs):
@@ -447,7 +477,8 @@ def _generate_dag_source(pipeline, jobs):
     sh_needed   = "shell"      in job_types
     sp_needed   = "storedproc" in job_types
     py_needed   = "python"     in job_types
-    sql_needed  = "sql"        in job_types
+    # 'sql' agora é nó ESPECIAL (roda SELECT + publica XCom via callable gerado,
+    # que usa MsSqlHook direto) — não usa o SqlOperator de utils.job_operators.
     http_needed = "http"       in job_types
 
     # ── Nó de Decisão (migration 043) ──────────────────────────────────────
@@ -488,6 +519,21 @@ def _generate_dag_source(pipeline, jobs):
                 notificacao_nodes[j["job_name"]] = {}
     has_notificacao = bool(notificacao_nodes)
 
+    # ── Nó SQL (migration 051) ─────────────────────────────────────────────
+    # Parse de sql_json (degrada se ausente/invalido). O nó é executável mas sem
+    # lineage (espelha o roteador de decisão / a notificação): RODA um SELECT e
+    # publica o valor escalar no XCom para uma Decisão 'valor_sql' a jusante.
+    # sql_nodes mapeia job_name → {sql, mssql_conn_id, database}.
+    sql_nodes = {}
+    for j in sorted_jobs:
+        if _alias(j) == "sql":
+            raw = j.get("sql_json")
+            try:
+                sql_nodes[j["job_name"]] = _json.loads(raw) if raw else {}
+            except (ValueError, TypeError):
+                sql_nodes[j["job_name"]] = {}
+    has_sql_node = bool(sql_nodes)
+
     branch_parents = defaultdict(list)   # job_name → [nome da(s) decisão(ões)]
     ramo_members = set()
     for dname, cond in decision_conditions.items():
@@ -520,7 +566,6 @@ def _generate_dag_source(pipeline, jobs):
     _ops = []
     if sh_needed:   _ops.append("ShellOperator")
     if sp_needed:   _ops.append("StoredProcOperator")
-    if sql_needed:  _ops.append("SqlOperator")
     if py_needed:   _ops.append("PythonModuleOperator")
     if http_needed: _ops.append("HttpCallOperator")
     if _ops:
@@ -841,6 +886,26 @@ def _generate_dag_source(pipeline, jobs):
         "    else:",
         "        _teams_post_card(title=titulo_final, subtitle=corpo_final, facts=facts, status=card_status, button=button)",
         "",
+        "def _resolve_e_roda_sql(sql, conn_id, database, context):",
+        "    # Nó SQL: roda o SELECT e devolve o valor ESCALAR (1a coluna da 1a linha),",
+        "    # que vira o XCom default da task (a Decisao 'valor_sql' a jusante o le).",
+        "    # Best-effort: qualquer falha -> log + None (nao derruba a DAG).",
+        "    if not sql:",
+        "        print('[SQL NODE] sql vazio — valor None.')",
+        "        return None",
+        "    try:",
+        "        _cid = (conn_id or '').strip() or MSSQL_CONN_ID",
+        "        hook = MsSqlHook(mssql_conn_id=_cid)",
+        "        _db = (database or '').strip()",
+        "        _stmt = ('USE [' + _db + ']; ' + sql) if _db else sql",
+        "        row = hook.get_first(_stmt)",
+        "        val = row[0] if row else None",
+        "        print('[SQL NODE] conn=' + _cid + ' database=' + repr(_db or None) + ' -> valor=' + repr(val))",
+        "        return val",
+        "    except Exception as _e:",
+        "        print('[SQL NODE] falha ao rodar SELECT (' + str(_e) + ') — valor None.')",
+        "        return None",
+        "",
         "def teams_start(**context):",
         "    execution_id = context['ts_nodash']",
         "    _teams_post_card(",
@@ -1094,6 +1159,10 @@ def _generate_dag_source(pipeline, jobs):
                 j, notificacao_nodes.get(j["job_name"], {}),
                 _notif_upstream.get(j["job_name"], []),
                 branch_reachable=(j["job_name"] in reachable)))
+        elif _alias(j) == "sql":
+            job_blocks.append(_sql_block(
+                j, sql_nodes.get(j["job_name"], {}),
+                branch_reachable=(j["job_name"] in reachable)))
         else:
             job_blocks.append(_task_block(j, project, pname, branch_reachable=(j["job_name"] in reachable)))
 
@@ -1113,7 +1182,7 @@ def _generate_dag_source(pipeline, jobs):
         '    outlets=[Dataset(DATASET_URI)],',
         # Convergência final: tolera ramos pulados (≥1 t_end com sucesso).
         ('    trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,'
-         if (has_decision or has_notificacao) else None),
+         if (has_decision or has_notificacao or has_sql_node) else None),
         ')',
     ]))
 
@@ -1157,21 +1226,25 @@ def _generate_dag_source(pipeline, jobs):
     # de Decisão) ou ONDAS (execution_order). Opt-in por pipeline — pipelines
     # sem deps explícitas/decisão continuam exatamente como antes.
     # (_job_names/_deps_of já definidos acima, junto do parsing das decisões.)
-    explicit_deps = has_decision or has_notificacao or any(_deps_of(j) for j in sorted_jobs)
+    explicit_deps = has_decision or has_notificacao or has_sql_node or any(_deps_of(j) for j in sorted_jobs)
 
     notif_task_refs = []   # t_notif_* a convergir no publish_dataset
+    sql_task_refs = []     # t_sql_* a convergir no publish_dataset
     if explicit_deps:
         root_anchor = sensors_ref if sensor_names else "t_check_agenda"
         teams_start_done = False
         def _end_ref(d):
-            # Tarefa de conclusão de uma dependência. Nós de notificação e decisão
-            # NÃO têm t_end_ próprio (são especiais): a notificação conclui em
-            # t_notif_<d> e a decisão roteia via t_dec_<d>. Um job que depende
-            # desses deve referenciá-los, não t_end_<d> (que seria NameError).
+            # Tarefa de conclusão de uma dependência. Nós de notificação, decisão e
+            # SQL NÃO têm t_end_ próprio (são especiais): a notificação conclui em
+            # t_notif_<d>, a decisão roteia via t_dec_<d> e o nó SQL roda em
+            # t_sql_<d>. Um job que depende desses deve referenciá-los, não
+            # t_end_<d> (que seria NameError no import do Airflow).
             if d in notificacao_nodes:
                 return f"t_notif_{_varname(d)}"
             if d in decision_conditions:
                 return f"t_dec_{_varname(d)}"
+            if d in sql_nodes:
+                return f"t_sql_{_varname(d)}"
             return f"t_end_{_varname(d)}"
         for j in sorted_jobs:
             n = _varname(j["job_name"])
@@ -1193,6 +1266,14 @@ def _generate_dag_source(pipeline, jobs):
             if _alias(j) == "notificacao":
                 dep_lines.append(f"{up} >> t_notif_{n}")
                 notif_task_refs.append(f"t_notif_{n}")
+                continue
+            # Nó SQL: executável, sem t_start/t_end. Liga ao upstream direto ao
+            # t_sql_*; roda o SELECT e publica o valor escalar (XCom) para a
+            # Decisão 'valor_sql' a jusante. Converge no fechamento (como a
+            # notificação) para não ficar pendente do publish_dataset.
+            if _alias(j) == "sql":
+                dep_lines.append(f"{up} >> t_sql_{n}")
+                sql_task_refs.append(f"t_sql_{n}")
                 continue
             is_root = (not deps) and (not parents)
             # Notificação de início no primeiro job raiz (sem deps/decisão)
@@ -1239,6 +1320,15 @@ def _generate_dag_source(pipeline, jobs):
             dep_lines.append(f"{nref} >> t_teams_end")
         if f_err:
             dep_lines.append(f"{nref} >> t_teams_error")
+    # Nós SQL (sem t_end) convergem no fechamento como a notificação — rodam
+    # antes do publish_dataset/cards de fim/erro. (A Decisão a jusante já depende
+    # do t_sql_* via _end_ref, então o valor publicado é lido antes do roteio.)
+    for sref in sql_task_refs:
+        dep_lines.append(f"{sref} >> t_publish_dataset")
+        if f_fim:
+            dep_lines.append(f"{sref} >> t_teams_end")
+        if f_err:
+            dep_lines.append(f"{sref} >> t_teams_error")
 
     with_parts = []
     with_parts.append(_ind(check_block))
@@ -1458,6 +1548,21 @@ def gerar_dags(**context):
                 j["notify_json"] = _notifmap.get((j["pipeline_name"], j["job_name"]))
     except Exception as _ne:
         print(f"[FACTORY] notify_json supplement ignorado: {_ne}")
+
+    # Supplement: config do nó SQL (degrada se a coluna não existir — migration 051)
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='dbo' "
+            "AND TABLE_NAME='etl_pipeline_job' AND COLUMN_NAME='sql_json'")
+        if cursor.fetchone()[0]:
+            cursor.execute(
+                "SELECT pipeline_name, job_name, sql_json FROM dbo.etl_pipeline_job "
+                "WHERE sql_json IS NOT NULL")
+            _sqlmap = {(r[0], r[1]): r[2] for r in cursor.fetchall()}
+            for j in jobs_all:
+                j["sql_json"] = _sqlmap.get((j["pipeline_name"], j["job_name"]))
+    except Exception as _sqe:
+        print(f"[FACTORY] sql_json supplement ignorado: {_sqe}")
 
     # Supplement: banco-alvo por job storedproc (degrada se a coluna não existir — migration 039)
     try:
