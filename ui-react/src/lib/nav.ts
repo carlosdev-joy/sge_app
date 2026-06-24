@@ -12,14 +12,15 @@
 
 import type { LucideIcon } from 'lucide-react'
 import {
-  LayoutDashboard, Workflow, Boxes, ScrollText,
+  LayoutDashboard, Workflow, Boxes, ScrollText, Bell, ShieldAlert,
   ShieldCheck, Network, Settings, FileSearch, ClipboardList, BarChart3, Share2, Terminal,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 
 // Domínios da navegação, na ordem de exibição (cabeçalho de seção na sidebar).
-export type NavGroup = 'Operação' | 'Governança' | 'DataStage' | 'BI' | 'Administração'
-export const NAV_GROUPS: NavGroup[] = ['Operação', 'Governança', 'DataStage', 'BI', 'Administração']
+// Nível 2: "Operação" (monitorar, diário) separada de "Construção" (cadastrar, dev).
+export type NavGroup = 'Operação' | 'Construção' | 'Governança & Dados' | 'DataStage' | 'BI' | 'Administração'
+export const NAV_GROUPS: NavGroup[] = ['Operação', 'Construção', 'Governança & Dados', 'DataStage', 'BI', 'Administração']
 
 export interface NavItem {
   to: string          // rota React (basename /v2 já aplicado pelo router)
@@ -31,17 +32,20 @@ export interface NavItem {
   migrated: boolean
   adminOnly?: boolean
   perm?: string       // recurso RBAC (tela_*) exigido para exibir o item
+  v2Only?: boolean    // só aparece no menu do shell v2 (o clássico não exibe)
 }
 
 export const NAV: NavItem[] = [
   { to: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard, group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_dashboard' },
-  { to: '/pipelines',  label: 'Pipelines',  icon: Workflow,        group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_pipelines' },
-  { to: '/jobs',       label: 'Jobs',       labelV2: 'Etapas',                icon: Boxes,         group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_jobs' },
+  { to: '/gestao-falhas', label: 'Gestão de Falhas', icon: ShieldAlert, group: 'Operação', legacyHref: '/', migrated: true, v2Only: true, perm: 'tela_logs' },
+  { to: '/pipelines',  label: 'Pipelines',  icon: Workflow,        group: 'Construção', legacyHref: '/', migrated: true, perm: 'tela_pipelines' },
+  { to: '/jobs',       label: 'Jobs',       labelV2: 'Etapas',                icon: Boxes,         group: 'Construção', legacyHref: '/', migrated: true, perm: 'tela_jobs' },
   { to: '/logs',       label: 'Logs',       icon: ScrollText,      group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_logs' },
-  { to: '/governanca', label: 'Governança', labelV2: 'Catálogo & Lineage',    icon: ShieldCheck,   group: 'Governança', legacyHref: '/', migrated: true, perm: 'tela_governanca' },
-  { to: '/malha',      label: 'Malha',      labelV2: 'Malha de Pipelines',    icon: Network,       group: 'Governança', legacyHref: '/', migrated: true, perm: 'tela_malha' },
-  { to: '/impacto-campo', label: 'Impacto Campo', labelV2: 'Impacto de Campo', icon: FileSearch,   group: 'Governança', legacyHref: '/', migrated: true, perm: 'tela_impacto_campo' },
-  { to: '/planos-ajuste', label: 'Planos Ajuste', labelV2: 'Planos de Ajuste', icon: ClipboardList, group: 'Governança', legacyHref: '/', migrated: true, perm: 'tela_plano_ajuste' },
+  { to: '/avisos',     label: 'Avisos',     icon: Bell,            group: 'Operação',   legacyHref: '/', migrated: true, v2Only: true },
+  { to: '/governanca', label: 'Governança', labelV2: 'Catálogo & Lineage',    icon: ShieldCheck,   group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_governanca' },
+  { to: '/malha',      label: 'Malha',      labelV2: 'Malha de Pipelines',    icon: Network,       group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_malha' },
+  { to: '/impacto-campo', label: 'Impacto Campo', labelV2: 'Impacto de Campo', icon: FileSearch,   group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_impacto_campo' },
+  { to: '/planos-ajuste', label: 'Planos Ajuste', labelV2: 'Planos de Ajuste', icon: ClipboardList, group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_plano_ajuste' },
   { to: '/malha-ds',   label: 'Malha DS',   labelV2: 'Estrutura (Malha DS)',  icon: Share2,        group: 'DataStage',  legacyHref: '/', migrated: true, perm: 'tela_malha_ds' },
   { to: '/ds-console', label: 'Console DS', labelV2: 'Console (dsjob)',       icon: Terminal,      group: 'DataStage',  legacyHref: '/', migrated: true, perm: 'tela_ds_console' },
   { to: '/powerbi',    label: 'Power BI',   icon: BarChart3,       group: 'BI',         legacyHref: '/', migrated: true, perm: 'tela_powerbi' },
@@ -64,9 +68,10 @@ export interface NavGroupView {
 export function useVisibleNav(): { visible: NavItem[]; groups: NavGroupView[] } {
   const perms = useAuthStore((s) => s.user?.permissoes) ?? []
   const canSee = (n: NavItem) => !n.perm || perms.length === 0 || perms.includes(n.perm)
-  const visible = NAV.filter(canSee)
+  const all = NAV.filter(canSee)
+  const visible = all.filter((n) => !n.v2Only)   // header clássico (lista plana) não mostra itens v2-only
   const groups = NAV_GROUPS
-    .map((group) => ({ group, items: visible.filter((n) => n.group === group) }))
+    .map((group) => ({ group, items: all.filter((n) => n.group === group) }))
     .filter((g) => g.items.length > 0)
   return { visible, groups }
 }
