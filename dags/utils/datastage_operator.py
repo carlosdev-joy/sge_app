@@ -8,7 +8,7 @@ Features:
   - Real-time polling via dsjob -jobinfo (no blocking -wait flag)
   - Full log capture via dsjob -logsum on completion or failure only
   - Child job visibility for SEQUENCE type jobs (BATCH/finish events)
-  - Auto RESET + retry on ABORTED status (up to max_ds_retries)
+  - Espelha fielmente o status do DataStage (sem RESET/retry — nao manipula o job)
   - Optional logical-date parameter for catch-up scheduling correctness
   - DB persistence to etl_ds_job_log via sp_etl_ds_job_log_upsert
   - attach_only mode: monitor an already-running job without triggering
@@ -44,33 +44,6 @@ from airflow.providers.ssh.hooks.ssh import SSHHook
 
 # Nome de job seguro p/ interpolar no comando dsjob remoto (evita injeção shell)
 _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9_.]+$")
-
-
-def _abort_decision(children, stuck_since, now, grace_s):
-    """Decide se o ABORT de um job filho deve ser propagado ao pai (com carência).
-
-    Compartilhada pelo operador (estado em memória) e pelo monitor central
-    (stuck_since persistido em etl_ds_job_log). 'Travado' = há filho ABORTED
-    (status_code=3) E NENHUM filho ainda em execução (todos finalizaram) — ou
-    seja, a sequence parou de progredir, mas o pai segue RUNNING. Só nesse estado
-    o relógio corre; após grace_s segundos travado, propaga.
-
-    Qualquer progresso (um filho voltou a rodar após reset, ou um novo filho
-    iniciou) deixa de ser 'travado' e zera o relógio — evita falso-positivo em
-    sequences que toleram/recuperam a falha de um filho.
-
-    Retorna (propagate: bool, new_stuck_since: datetime|None, aborted: list[str]).
-    """
-    aborted     = [c.get("name") for c in children if c.get("status_code") == 3]
-    any_running = any(c.get("status_code") is None for c in children)
-    travado     = bool(aborted) and not any_running
-    if not travado:
-        return False, None, aborted
-    if stuck_since is None:
-        return False, now, aborted            # entrou em 'travado' agora — inicia o relógio
-    if (now - stuck_since).total_seconds() >= grace_s:
-        return True, stuck_since, aborted     # travado tempo suficiente — propaga
-    return False, stuck_since, aborted        # ainda na carência
 
 
 class DataStageOperator(BaseOperator):
@@ -109,8 +82,6 @@ class DataStageOperator(BaseOperator):
         ssh_conn_id: str = "ssh_lnxprd021",
         dshome: str = "/opt/IBM/InformationServer/Server/DSEngine",
         poll_interval: int = 60,
-        max_ds_retries: int = 3,
-        retry_wait: int = 60,
         execution_date_param: str | None = None,
         attach_only: bool = False,
         mssql_conn_id: str = "SQL14_DMDB41",
@@ -119,9 +90,6 @@ class DataStageOperator(BaseOperator):
         verbose_log: bool = False,
         verbose_interval: int = 5,   # chama -logsum a cada N polls (só com verbose_log=True)
         logsum_max: int = 200,       # nº máx. de entradas no -logsum (limita ao run atual)
-        mirror_child_abort: bool = True,  # espelha DataStage: filho ABORTED → falha o pai
-        child_check_interval: int = 2,    # a cada N polls checa filhos ABORTED (pai RUNNING)
-        child_abort_grace_s: int = 600,   # carência: só propaga após N s 'travado' (default 10 min)
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -130,8 +98,6 @@ class DataStageOperator(BaseOperator):
         self.ssh_conn_id          = ssh_conn_id
         self.dshome               = dshome
         self.poll_interval        = poll_interval
-        self.max_ds_retries       = max_ds_retries
-        self.retry_wait           = retry_wait
         self.execution_date_param = execution_date_param
         self.attach_only          = attach_only
         self.mssql_conn_id        = mssql_conn_id
@@ -140,9 +106,6 @@ class DataStageOperator(BaseOperator):
         self.verbose_log          = verbose_log   # logsum periódico durante execução
         self.verbose_interval     = verbose_interval
         self.logsum_max           = logsum_max     # limita -logsum ao run atual
-        self.mirror_child_abort   = mirror_child_abort
-        self.child_check_interval = max(1, int(child_check_interval))
-        self.child_abort_grace_s  = max(0, int(child_abort_grace_s))
 
     # ── entry point ──────────────────────────────────────────────────────────
 
@@ -180,11 +143,9 @@ class DataStageOperator(BaseOperator):
         # Polling loop — cada iteração faz apenas dsjob -jobinfo (leve).
         # dsjob -logsum (pesado) só é chamado em: estado terminal, ABORTED,
         # ou verbose_log=True (para investigação pontual de jobs específicos).
-        ds_attempt      = 0
         poll_count      = 0
         queued_since: datetime | None = datetime.utcnow()
         queued_seconds: int = 0
-        abort_stuck_since: datetime | None = None   # carência p/ espelhar ABORT de filho
         while True:
             time.sleep(self.poll_interval)
             poll_count += 1
@@ -227,43 +188,8 @@ class DataStageOperator(BaseOperator):
             )
 
             if sc in (self._ST_RUNNING, self._ST_QUEUED):
-                # Espelha o DataStage: se um filho do run atual ABORTOU e a sequence
-                # parou de progredir (nenhum filho rodando) com o pai ainda RUNNING,
-                # propaga o ABORTED APÓS a carência — grava ABORTED (ORQUESTRA) e
-                # falha a task (Airflow), em vez de ficar "RUNNING" indefinidamente.
-                # Throttle por child_check_interval para limitar a carga de -logsum.
-                if (self.mirror_child_abort and sc == self._ST_RUNNING
-                        and poll_count % self.child_check_interval == 0):
-                    aborted, children, logsum = self._detect_aborted_children()
-                    now = datetime.utcnow()
-                    propagate, abort_stuck_since, _ = _abort_decision(
-                        children, abort_stuck_since, now, self.child_abort_grace_s)
-                    if propagate:
-                        self.log.error(
-                            "[DS] Filho(s) ABORTED e sequence travada >%ds com o pai "
-                            "RUNNING — espelhando ABORTED (DataStage): %s",
-                            self.child_abort_grace_s, ", ".join(aborted))
-                        self._log_child_jobs(children)
-                        self._persist(
-                            execution_id, pipeline,
-                            info.get("wave_number") or wave_num, info.get("pid"),
-                            "ABORTED", self._ST_ABORTED, children, logsum, None,
-                            ds_start_time=info.get("start_time"),
-                            ds_end_time=now,
-                        )
-                        raise AirflowException(
-                            f"[DS] '{self.project}/{self.job_name}': job(s) filho(s) "
-                            f"ABORTED e sequence travada (sem progresso) por "
-                            f">{self.child_abort_grace_s}s com o pai RUNNING "
-                            f"(espelhando DataStage): {', '.join(aborted)}.\n"
-                            f"Log summary (2 000 chars):\n{(logsum or '')[:2000]}"
-                        )
-                    elif aborted and abort_stuck_since is not None:
-                        self.log.warning(
-                            "[DS] Filho(s) ABORTED (%s) — aguardando carência "
-                            "(%ds/%ds) antes de espelhar.", ", ".join(aborted),
-                            int((now - abort_stuck_since).total_seconds()),
-                            self.child_abort_grace_s)
+                # Espelho puro: enquanto o DataStage disser RUNNING/QUEUED, seguimos
+                # RUNNING — sem heurística de filho abortado, sem manipular o job.
                 continue
 
             if sc in (self._ST_OK, self._ST_WARNING):
@@ -271,50 +197,19 @@ class DataStageOperator(BaseOperator):
                 return self._finish(execution_id, pipeline, sc, label, info)
 
             if sc == self._ST_ABORTED:
-                ds_attempt += 1
-                self.log.warning("[DS] ABORTED (attempt %d/%d)", ds_attempt, self.max_ds_retries)
-                logsum     = self._logsum()   # logsum sempre em ABORTED para diagnóstico
+                # Espelho puro: o DataStage abortou → reportamos ABORTED (FAILED) e
+                # paramos. Sem RESET, sem retry, sem re-disparo — não manipulamos o job.
+                logsum     = self._logsum()   # logsum para diagnóstico
                 child_jobs = self._parse_child_jobs(logsum)
                 self._log_child_jobs(child_jobs)
                 self._persist(
                     execution_id, pipeline, info.get("wave_number") or wave_num,
                     info.get("pid"), "ABORTED", sc, child_jobs, logsum, None,
+                    ds_start_time=info.get("start_time"),
+                    ds_end_time=datetime.utcnow(),
                 )
-
-                # Causa frequente: o controller não conseguiu rodar um filho porque
-                # ele está em estado inválido (DSRunJob code=-2). Reset do pai não
-                # resolve — é preciso resetar o próprio filho.
-                stuck = self._badstate_children(logsum)
-                cause = ""
-                if stuck:
-                    self.log.warning(
-                        "[DS] Job(s) filho(s) em estado inválido (DSRunJob code=-2): %s", stuck)
-                    cause = ("\nCausa provável: job(s) filho(s) em estado inválido "
-                             "(DSRunJob code=-2 / 'not in the right state'): "
-                             + ", ".join(stuck) + ".")
-
-                if self.attach_only:
-                    raise AirflowException(
-                        f"[DS] '{self.project}/{self.job_name}' ABORTED.{cause}\n"
-                        f"Log summary (2 000 chars):\n{logsum[:2000]}"
-                    )
-
-                if ds_attempt < self.max_ds_retries:
-                    # Reseta primeiro os filhos travados (o reset do pai não os
-                    # desbloqueia), depois o pai, e tenta de novo.
-                    for child in stuck:
-                        self.log.info("[DS] reset do filho travado '%s' antes do retry", child)
-                        self._reset_job(child)
-                    self.log.info("[DS] RESET + retry in %ds …", self.retry_wait)
-                    self._reset()
-                    time.sleep(self.retry_wait)
-                    wave_num = self._trigger_run(logical_date)
-                    ti.xcom_push(key="ds_wave_num", value=wave_num)
-                    continue
-
                 raise AirflowException(
-                    f"[DS] '{self.project}/{self.job_name}' ABORTED after "
-                    f"{self.max_ds_retries} attempt(s).{cause}\n"
+                    f"[DS] '{self.project}/{self.job_name}' ABORTED.\n"
                     f"Log summary (2 000 chars):\n{logsum[:2000]}"
                 )
 
@@ -354,18 +249,8 @@ class DataStageOperator(BaseOperator):
         combined = (out + " " + err).strip()
         self.log.info("[DS] trigger rc=%d | %s", rc, combined[:300])
 
-        # DSJE_BADSTATE (rc=-2): o job está em estado inválido (não "compiled, not
-        # running") — sobrou TRAVADO de um run anterior (zumbi / abortado sem reset
-        # / lock). RESET + 1 novo disparo auto-recupera; senão a task falharia os
-        # 4 retries do Airflow sempre no mesmo erro.
-        if rc not in (0, 1) and "BADSTATE" in combined.upper():
-            self.log.warning("[DS] disparo recusado (DSJE_BADSTATE) — RESET do job e novo disparo")
-            self._reset_job(self.job_name)
-            time.sleep(self.retry_wait)
-            rc, out, err = self._exec(cmd, timeout=60)
-            combined = (out + " " + err).strip()
-            self.log.info("[DS] trigger (pós-reset) rc=%d | %s", rc, combined[:300])
-
+        # Espelho puro: não tentamos RESET no BADSTATE. Se o disparo for recusado
+        # (job travado de um run anterior), reportamos o erro — não manipulamos o job.
         if rc not in (0, 1):
             raise AirflowException(
                 f"[DS] Failed to trigger '{self.job_name}': rc={rc} | {combined[:300]}"
@@ -376,19 +261,6 @@ class DataStageOperator(BaseOperator):
             return int(info.get("wave_number") or 0)
         except (TypeError, ValueError):
             return 0
-
-    def _reset(self) -> None:
-        self._reset_job(self.job_name)
-
-    def _reset_job(self, job_name: str) -> None:
-        """RESET de um job específico (-run -mode RESET) — devolve ao estado
-        'compiled, not running'. Usado no pai e nos filhos travados (code=-2)."""
-        if not _SAFE_JOB_RE.match(job_name or ""):
-            self.log.warning("[DS] nome de job inseguro p/ reset, ignorado: %r", job_name)
-            return
-        cmd = f"{self.dshome}/bin/dsjob -run -mode RESET '{self.project}' '{job_name}'"
-        rc, out, err = self._exec(cmd, timeout=60)
-        self.log.info("[DS] reset '%s' rc=%d | %s", job_name, rc, (out + err).strip()[:200])
 
     # ── dsjob wrappers ───────────────────────────────────────────────────────
 
@@ -496,47 +368,6 @@ class DataStageOperator(BaseOperator):
                 last_start = i
         return lines[last_start:]
 
-    def _detect_aborted_children(self):
-        """Durante o RUNNING do pai, busca o -logsum e devolve os filhos do RUN
-        ATUAL que estão ABORTED (status_code=3). Retorna (nomes, children, logsum).
-
-        Best-effort: qualquer erro de SSH/parse devolve ([], [], "") para não
-        derrubar o polling — a próxima iteração tenta de novo. Usa o status mais
-        recente por filho (via _parse_child_jobs), então um filho que abortou mas
-        foi resetado/re-executado com sucesso NÃO é considerado abortado.
-        """
-        try:
-            logsum   = self._logsum()
-            children = self._parse_child_jobs(logsum)
-        except Exception as exc:
-            self.log.debug("[DS] checagem de filho abortado ignorada: %s", exc)
-            return [], [], ""
-        aborted = [c["name"] for c in children
-                   if c.get("status_code") == self._ST_ABORTED]
-        return aborted, children, logsum
-
-    def _badstate_children(self, logsum: str) -> list:
-        """Jobs filhos que o controller não conseguiu rodar por estarem em estado
-        inválido — 'Error calling DSRunJob(<job>), code=-2 [Job is not in the right
-        state [compiled and not running]]'. Esses precisam de RESET individual antes
-        do retry: o reset do pai NÃO os desbloqueia (é a causa do abort recorrente)."""
-        names: list = []
-        seen: set = set()
-        for line in self._current_run_lines(logsum):
-            low = line.lower()
-            if "dsrunjob(" not in low:
-                continue
-            if "code=-2" not in low and "not in the right state" not in low:
-                continue
-            m = re.search(r"DSRunJob\(([^)]+)\)", line)
-            if not m:
-                continue
-            name = m.group(1).strip()
-            if name and name not in seen:
-                seen.add(name)
-                names.append(name)
-        return names
-
     def _log_child_jobs(self, child_jobs: list) -> None:
         if not child_jobs:
             return
@@ -608,12 +439,10 @@ class DataStageOperator(BaseOperator):
         self.log.info("[DS] %s — %d child job(s)", label, len(child_jobs))
         self._log_child_jobs(child_jobs)
 
-        # Para WARNING: grava o detalhe real no DS log, mas reporta SUCCESS
-        # ao Airflow/factory (job finalizou — só teve avisos, não falhou)
+        # Espelho puro: reporta o status real do DataStage (1=OK, 2=WARNING). O
+        # WARNING é gravado como WARNING e NÃO falha o pipeline (ver _status_from_code).
         ds_label = "Finished with warnings" if label == "WARNING" else label
-        xcom_status_code = 1  # SUCCESS para o factory em ambos OK e WARNING
-        if label not in ("SUCCESS", "WARNING"):
-            xcom_status_code = status_code
+        xcom_status_code = status_code
 
         ds_end_time = datetime.utcnow()
 

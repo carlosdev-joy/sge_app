@@ -12,7 +12,7 @@ import { toast } from '../components/ui/Toast'
 import { Tabs } from '../components/ui/Tabs'
 import { useShellVariant } from '../lib/shell'
 import {
-  RefreshCw, RotateCcw, CheckSquare, FileText,
+  RefreshCw, RotateCcw, RefreshCcwDot, CheckSquare, FileText,
   ChevronDown, ChevronUp, Copy,
   ShieldCheck, ShieldAlert, ShieldX, AlertTriangle, CheckCircle2, Ticket, Eye,
 } from 'lucide-react'
@@ -228,6 +228,23 @@ function ExecucoesTab() {
     onError: (e: any) => toast.error(e.message),
   })
 
+  const reconciliarMut = useMutation({
+    mutationFn: ({ pipeline, execution_id }: { pipeline: string; execution_id: string }) =>
+      apiFetch<{ closed: number; execution_id: string; pipeline: string }>('/execucoes/reconciliar', {
+        method: 'POST',
+        body: JSON.stringify({ execution_id, pipeline }),
+      }),
+    onSuccess: (res) => {
+      if ((res?.closed ?? 0) > 0) {
+        toast.success('Execução reconciliada — status atualizado.')
+        qc.invalidateQueries({ queryKey: ['execucoes'] })
+      } else {
+        toast.info('Nada a reconciliar — o job ainda está em execução no DataStage.')
+      }
+    },
+    onError: (e: any) => toast.error(e.message),
+  })
+
   function applyQuick(hours: number) {
     setFilters(f => ({ ...f, status: 'FAILED', hours_back: hours > 0 ? String(hours) : '', data_ini: '' }))
     setPage(0)
@@ -349,6 +366,14 @@ function ExecucoesTab() {
                           <Button variant="ghost" size="sm" title="Detalhes" onClick={() => setDetail(r)}>
                             <FileText size={13} />
                           </Button>
+                          {r.status_geral === 'RUNNING' && !isViewer && (
+                            <Button variant="ghost" size="sm"
+                              title="Reconciliar status (fechar se já concluído no DataStage)"
+                              loading={reconciliarMut.isPending}
+                              onClick={() => reconciliarMut.mutate({ pipeline: r.pipeline, execution_id: r.execution_id })}>
+                              <RefreshCcwDot size={13} />
+                            </Button>
+                          )}
                           {r.status_geral === 'FAILED' && !isViewer && (
                             <Button variant="ghost" size="sm" title="Reexecutar" loading={rerunMut.isPending}
                               onClick={() => rerunMut.mutate({ pipeline: r.pipeline, execution_id: r.execution_id })}>
