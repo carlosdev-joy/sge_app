@@ -1,13 +1,12 @@
-// Registro central de navegação — fonte única da verdade da migração incremental
-// e, agora, das rotas (App.tsx deriva as <Route>s deste registry) e do
-// agrupamento por domínio (sidebar do shell v2).
+// Registro central de navegação — fonte única da verdade das rotas (App.tsx deriva
+// as <Route>s deste registry) e do agrupamento por domínio (sidebar do shell).
 //
-// `migrated: true`  → a tela já roda em React; o link é interno (React Router) e a
-//                     rota é montada em App.tsx (a partir de MIGRATED).
-// `migrated: false` → a tela ainda vive na UI legada; o link aponta para `/` (raiz),
-//                     devolvendo o usuário ao sistema antigo.
+// `migrated: true`  → a tela roda em React; o link é interno (React Router) e a
+//                     rota é montada em App.tsx (a partir de MIGRATED). Todas as
+//                     telas atuais são React — os campos `migrated`/`legacyHref`
+//                     são resíduo da migração e serão removidos em outra etapa.
 //
-// Para migrar a próxima tela: implemente a página, registre o item aqui (com seu
+// Para adicionar uma tela: implemente a página, registre o item aqui (com seu
 // `group`) e mapeie o elemento em App.tsx. Nada mais precisa mudar no shell.
 
 import type { LucideIcon } from 'lucide-react'
