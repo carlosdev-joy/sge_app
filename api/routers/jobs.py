@@ -641,18 +641,6 @@ def _parse_dep_csv(raw) -> list[str]:
     return [d.strip() for d in str(raw or "").split(",") if d.strip()]
 
 
-def _has_layout_cols(cur) -> bool:
-    """layout_x/layout_y existem? (migration 048). Degrada para False se faltar."""
-    try:
-        cur.execute(
-            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
-            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
-            "AND COLUMN_NAME IN ('layout_x','layout_y')")
-        return int(cur.fetchone()[0]) == 2
-    except Exception:
-        return False
-
-
 @router.get("/pipelines/{pipeline_name}/fluxo", tags=["jobs"])
 def get_pipeline_fluxo(
     pipeline_name: str,
@@ -671,14 +659,26 @@ def get_pipeline_fluxo(
         log.warning("get_pipeline_fluxo sem conexão: %s", e)
         return {"nodes": []}
     try:
-        has_layout = _has_layout_cols(cur)
-        layout_cols = ", j.layout_x, j.layout_y" if has_layout else ", NULL, NULL"
+        # Detecta colunas opcionais (como o GET /jobs faz): depends_on_jobs (mig
+        # 038), condition_json (043) e layout_x/y (048) podem não existir — sem
+        # essa checagem, um SELECT direto falha e um pipeline EXISTENTE aparece
+        # VAZIO no canvas. Para as ausentes, seleciona NULL.
+        try:
+            cur.execute(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job'")
+            cols = {r[0].lower() for r in cur.fetchall()}
+        except Exception:
+            cols = set()
+        sel_deps = "j.depends_on_jobs" if "depends_on_jobs" in cols else "NULL"
+        sel_cond = "j.condition_json" if "condition_json" in cols else "NULL"
+        sel_lx = "j.layout_x" if "layout_x" in cols else "NULL"
+        sel_ly = "j.layout_y" if "layout_y" in cols else "NULL"
         try:
             cur.execute(
                 "SELECT j.job_name, ISNULL(j.job_type,'datastage'), j.job_command, "
-                "CAST(j.execution_order AS INT), j.depends_on_jobs, j.condition_json"
-                + layout_cols +
-                " FROM dbo.etl_pipeline_job j WHERE j.pipeline_name=? "
+                f"CAST(j.execution_order AS INT), {sel_deps}, {sel_cond}, {sel_lx}, {sel_ly} "
+                "FROM dbo.etl_pipeline_job j WHERE j.pipeline_name=? "
                 "ORDER BY j.execution_order, j.job_name",
                 (pipeline_name,))
             rows = cur.fetchall()
@@ -695,8 +695,8 @@ def get_pipeline_fluxo(
                     condition = json.loads(r[5])
                 except (ValueError, TypeError):
                     condition = None
-            lx = float(r[6]) if (has_layout and r[6] is not None) else None
-            ly = float(r[7]) if (has_layout and r[7] is not None) else None
+            lx = float(r[6]) if r[6] is not None else None
+            ly = float(r[7]) if r[7] is not None else None
             nodes.append({
                 "job_name": r[0],
                 "job_type": r[1],
@@ -748,7 +748,17 @@ def save_pipeline_fluxo(
             cur.close(); conn.close()
             raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
 
-        has_layout = _has_layout_cols(cur)
+        # Colunas opcionais: depends_on_jobs (038) e layout_x/y (048) podem não
+        # existir — monta o SET dinamicamente (não falha em ambientes antigos).
+        try:
+            cur.execute(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job'")
+            _cols = {r[0].lower() for r in cur.fetchall()}
+        except Exception:
+            _cols = set()
+        has_deps = "depends_on_jobs" in _cols
+        has_layout = "layout_x" in _cols and "layout_y" in _cols
 
         # Monta o grafo resultante (deps enviadas) — só arestas entre jobs do
         # pipeline; detecta ciclo antes de gravar.
@@ -789,17 +799,17 @@ def save_pipeline_fluxo(
                 detail="ciclo detectado entre as etapas (dependências)")
 
         for j_name, dep_csv, lx, ly in updates:
+            sets, vals = [], []
+            if has_deps:
+                sets.append("depends_on_jobs=?"); vals.append(dep_csv)
             if has_layout:
-                cur.execute(
-                    "UPDATE dbo.etl_pipeline_job "
-                    "SET depends_on_jobs=?, layout_x=?, layout_y=? "
-                    "WHERE pipeline_name=? AND job_name=?",
-                    (dep_csv, lx, ly, pipeline_name, j_name))
-            else:
-                cur.execute(
-                    "UPDATE dbo.etl_pipeline_job SET depends_on_jobs=? "
-                    "WHERE pipeline_name=? AND job_name=?",
-                    (dep_csv, pipeline_name, j_name))
+                sets.append("layout_x=?"); sets.append("layout_y=?"); vals += [lx, ly]
+            if not sets:
+                continue  # nada a persistir neste ambiente (colunas ausentes)
+            cur.execute(
+                f"UPDATE dbo.etl_pipeline_job SET {', '.join(sets)} "
+                "WHERE pipeline_name=? AND job_name=?",
+                (*vals, pipeline_name, j_name))
         conn.commit()
         cur.close(); conn.close()
         return {"ok": True, "updated": len(updates)}
