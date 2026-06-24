@@ -74,7 +74,9 @@ interface FluxoNode {
   depends_on_jobs: string[]
   condition: Condition | null
   notify: NotifyConfig | null
-  sql: SqlConfig | null
+  // Config do nó SQL — chave `sql_node` na API (o backend usa sql_node; o campo
+  // interno do config é `sql`, a query, daí o nome externo distinto).
+  sql_node: SqlConfig | null
   layout_x: number | null
   layout_y: number | null
   // Campos por tipo (round-trip). O backend usa presença de chave — sempre reenviados.
@@ -265,7 +267,7 @@ function buildNodes(apiNodes: FluxoNode[]): Node[] {
       return { id: n.job_name, type: 'notificacao' as const, position, data }
     }
     if (n.job_type === 'sql') {
-      const sql = toSqlConfig(n.sql)
+      const sql = toSqlConfig(n.sql_node)
       const data: SqlNodeData = { name: n.job_name, sql, label: sqlLabel(sql) }
       return { id: n.job_name, type: 'sql' as const, position, data }
     }
@@ -1010,12 +1012,12 @@ function FluxoEditorInner({ pipeline }: Props) {
         }
         if (isDecisao) return base
         if (isSql) {
-          // Nó SQL: emite a chave `sql` (análogo ao `notify`/`condition`); não
+          // Nó SQL: emite a chave `sql_node` (o backend lê/devolve sql_node); não
           // envia condition nem campos de etapa. A query roda no banco/conexão.
           const cur = (d.sql as SqlConfig | undefined) ?? defaultSql()
           return {
             ...base,
-            sql: {
+            sql_node: {
               sql: (cur.sql ?? '').toString(),
               mssql_conn_id: cur.mssql_conn_id ?? null,
               database: cur.database ?? null,
