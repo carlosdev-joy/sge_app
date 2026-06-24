@@ -81,7 +81,8 @@ def compara(obtido, operador, limite) -> bool:
     return a <= b  # "<="
 
 
-def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = None):
+def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = None,
+                   pipeline_name: str | None = None):
     """Avalia a condição do nó de decisão.
 
     Retorna ``(resultado: bool, valor_obtido)``.
@@ -123,42 +124,51 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
         child_job = (cond.get("child_job") or "").strip()
         if child_job:
             obtido = _rows_do_filho(
-                hook, cond.get("job_name") or "", child_job, execution_id)
+                hook, cond.get("job_name") or "", child_job, execution_id, pipeline_name)
         else:
-            obtido = _rows_out_do_job(hook, cond.get("job_name") or "", execution_id)
+            obtido = _rows_out_do_job(hook, cond.get("job_name") or "", execution_id, pipeline_name)
     else:
         raise ValueError(f"tipo de condição desconhecido: {tipo!r}")
 
     return compara(obtido, operador, limite), obtido
 
 
-def _rows_out_do_job(hook, job_name: str, execution_id: str | None) -> int:
+def _ds_log_first(hook, col, job_name, execution_id, pipeline_name):
+    """SELECT TOP 1 <col> de dbo.etl_ds_job_log para ``job_name`` na execução
+    atual, ESCOPADO por pipeline quando disponível — o execution_id (ts_nodash)
+    pode colidir entre pipelines do mesmo horário, então sem o pipeline a leitura
+    poderia pegar o registro de OUTRO pipeline. Sem execution_id: melhor esforço
+    pelo registro mais recente do job. ``col`` é literal fixo (rows_out/child_jobs)."""
+    conds, params = [], []
+    if execution_id:
+        conds.append("execution_id=%s"); params.append(execution_id)
+        if pipeline_name:
+            conds.append("pipeline_name=%s"); params.append(pipeline_name)
+    conds.append("job_name=%s"); params.append(job_name)
+    return hook.get_first(
+        f"SELECT TOP 1 {col} FROM dbo.etl_ds_job_log WHERE "
+        + " AND ".join(conds)
+        + " ORDER BY COALESCE(updated_at, last_polled_at) DESC",
+        parameters=tuple(params),
+    )
+
+
+def _rows_out_do_job(hook, job_name: str, execution_id: str | None,
+                     pipeline_name: str | None = None) -> int:
     """Lê o rows_out mais recente de dbo.etl_ds_job_log para ``job_name`` na
     execução ATUAL (``execution_id``). Sem registro / rows_out NULL → 0 (logado).
 
     Degrada graciosamente: se a tabela/coluna não existir (migration 049 ainda
     não aplicada) ou a leitura falhar, retorna 0 sem quebrar a avaliação."""
     job_name = (job_name or "").strip()
+    pipeline_name = (pipeline_name or "").strip()
     if not job_name:
         print("[CONDICAO linhas_job] job_name vazio — tratando rows_out como 0.")
         return 0
+    if not execution_id:
+        print("[CONDICAO linhas_job] sem execution_id — usando o registro mais recente do job.")
     try:
-        if execution_id:
-            row = hook.get_first(
-                "SELECT TOP 1 rows_out FROM dbo.etl_ds_job_log "
-                "WHERE execution_id=%s AND job_name=%s "
-                "ORDER BY COALESCE(updated_at, last_polled_at) DESC",
-                parameters=(execution_id, job_name),
-            )
-        else:
-            # Sem execution_id: melhor esforço — registro mais recente do job.
-            print("[CONDICAO linhas_job] sem execution_id — usando o registro mais recente do job.")
-            row = hook.get_first(
-                "SELECT TOP 1 rows_out FROM dbo.etl_ds_job_log "
-                "WHERE job_name=%s "
-                "ORDER BY COALESCE(updated_at, last_polled_at) DESC",
-                parameters=(job_name,),
-            )
+        row = _ds_log_first(hook, "rows_out", job_name, execution_id, pipeline_name)
     except Exception as exc:
         print(f"[CONDICAO linhas_job] leitura de etl_ds_job_log falhou ({exc}) — rows_out=0.")
         return 0
@@ -172,7 +182,8 @@ def _rows_out_do_job(hook, job_name: str, execution_id: str | None) -> int:
         return 0
 
 
-def _rows_do_filho(hook, job_name: str, child_job: str, execution_id: str | None) -> int:
+def _rows_do_filho(hook, job_name: str, child_job: str, execution_id: str | None,
+                   pipeline_name: str | None = None) -> int:
     """Lê as linhas de SAÍDA de um job FILHO (``child_job``) dentro do SEQUENCE
     ``job_name``, na execução ATUAL. Faz parse do JSON ``child_jobs`` gravado em
     dbo.etl_ds_job_log pelo operador e usa o campo ``rows`` da entrada cujo
@@ -185,28 +196,17 @@ def _rows_do_filho(hook, job_name: str, child_job: str, execution_id: str | None
 
     job_name = (job_name or "").strip()
     child_job = (child_job or "").strip()
+    pipeline_name = (pipeline_name or "").strip()
     if not job_name:
         print("[CONDICAO linhas_job] job_name vazio — tratando rows do filho como 0.")
         return 0
     if not child_job:
         print("[CONDICAO linhas_job] child_job vazio — tratando rows do filho como 0.")
         return 0
+    if not execution_id:
+        print("[CONDICAO linhas_job] sem execution_id — usando o registro mais recente do job (filho).")
     try:
-        if execution_id:
-            row = hook.get_first(
-                "SELECT TOP 1 child_jobs FROM dbo.etl_ds_job_log "
-                "WHERE execution_id=%s AND job_name=%s "
-                "ORDER BY COALESCE(updated_at, last_polled_at) DESC",
-                parameters=(execution_id, job_name),
-            )
-        else:
-            print("[CONDICAO linhas_job] sem execution_id — usando o registro mais recente do job (filho).")
-            row = hook.get_first(
-                "SELECT TOP 1 child_jobs FROM dbo.etl_ds_job_log "
-                "WHERE job_name=%s "
-                "ORDER BY COALESCE(updated_at, last_polled_at) DESC",
-                parameters=(job_name,),
-            )
+        row = _ds_log_first(hook, "child_jobs", job_name, execution_id, pipeline_name)
     except Exception as exc:
         print(f"[CONDICAO linhas_job] leitura de child_jobs falhou ({exc}) — rows do filho=0.")
         return 0
