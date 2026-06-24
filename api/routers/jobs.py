@@ -1,13 +1,17 @@
 """api/routers/jobs.py — GET /jobs, POST/DELETE /pipelines/jobs, POST /pipelines/jobs/reorder."""
 from __future__ import annotations
 
+import datetime as _dt
+import decimal as _decimal
 import json
 import logging
 import re
 from typing import Optional
 
+import pyodbc
 from fastapi import APIRouter, Body, Depends, HTTPException
 
+import db
 from db import get_db_conn
 from deps import (
     PERM_EDITAR,
@@ -28,7 +32,7 @@ def _fmt_dt(v):
     return str(v)
 
 
-VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc", "decisao", "notificacao"}
+VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc", "decisao", "notificacao", "sql"}
 VALID_PARAM_TYPES = {"INT", "VARCHAR", "DATE", "BIT", "DECIMAL", "DATETIME"}
 _PARAM_NAME_RE = re.compile(r"^@?[A-Za-z_][A-Za-z0-9_]*$")
 # job_name vira literal de string no código da DAG gerada e argumento de shell no
@@ -41,6 +45,7 @@ _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-$#@ ]+$")
 # ── Nó de Decisão (migration 043) ──────────────────────────────────────────
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _COND_OPERADORES = {"=", "<>", ">", ">=", "<", "<="}
+_COND_COMPARACOES = {"texto", "data", "numero"}
 _COND_DML_RE = re.compile(
     r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|"
     r"GRANT|REVOKE|INTO)\b",
@@ -67,14 +72,80 @@ def _valid_select(sql: str) -> bool:
     return not _COND_DML_RE.search(s)
 
 
+def _validate_select_strict(sql: str) -> str:
+    """Mesma validação read-only de ``_valid_select``, mas devolve o SQL limpo e
+    levanta ValueError com mensagem clara (para virar 422). Usado pelo preview."""
+    if not sql or not isinstance(sql, str):
+        raise ValueError("SQL vazio")
+    s = sql.strip().rstrip(";").strip()
+    if not s:
+        raise ValueError("SQL vazio")
+    if ";" in s:
+        raise ValueError("SQL não pode conter ';' (apenas um SELECT)")
+    head = s.lstrip("(").lstrip().upper()
+    if not (head.startswith("SELECT") or head.startswith("WITH")):
+        raise ValueError("SQL precisa começar com SELECT/WITH (read-only)")
+    if _COND_DML_RE.search(s):
+        raise ValueError("SQL contém comando não permitido (read-only)")
+    return s
+
+
+def _validate_sql_node(cfg) -> list[str]:
+    """Valida a config (sql_json) de um nó SQL. Retorna lista de erros (vazia = ok).
+
+    Contrato: {sql:str, mssql_conn_id:str, database:str}. ``sql`` precisa ser
+    read-only (mesma regra do preview/decisão query — SELECT/WITH, sem ';' nem
+    DML). ``mssql_conn_id`` é obrigatório; quando a lista de conexões está
+    disponível (parâmetro injetado pelo chamador), exige que pertença a ela
+    (mesmo padrão do nó storedproc/decisão). ``database`` é opcional, mas se vier
+    deve ser texto."""
+    if not isinstance(cfg, dict):
+        return ["configuração do nó SQL (sql_json) ausente ou inválida"]
+    errs: list[str] = []
+    if not _valid_select(cfg.get("sql") or ""):
+        errs.append("SQL do nó SQL deve ser read-only (SELECT/WITH, sem ';' nem DML)")
+    cid = (cfg.get("mssql_conn_id") or "").strip()
+    if not cid:
+        errs.append("mssql_conn_id do nó SQL é obrigatório")
+    db_val = cfg.get("database")
+    if db_val is not None and not isinstance(db_val, str):
+        errs.append("database do nó SQL deve ser texto")
+    return errs
+
+
+def _validate_sql_node_conn(cfg, mssql_conn_ids) -> list[str]:
+    """``_validate_sql_node`` + checagem de que a conexão existe no Airflow
+    (quando a lista foi resolvida). Separado para o validador puro continuar
+    testável sem ir ao Airflow."""
+    errs = _validate_sql_node(cfg)
+    if isinstance(cfg, dict):
+        cid = (cfg.get("mssql_conn_id") or "").strip()
+        if cid and mssql_conn_ids is not None and cid not in mssql_conn_ids:
+            errs.append(f"conexão MSSQL '{cid}' do nó SQL não encontrada no Airflow")
+    return errs
+
+
+def _normalize_sql_node(cfg: dict) -> dict:
+    """Normaliza sql_json para persistência (sql/mssql_conn_id/database como str).
+
+    Mantém a CHAVE 'sql' presente (presença de chave é o que o round-trip do
+    GET /fluxo / get_pipeline_job usa para devolver o SELECT por nó)."""
+    return {
+        "sql": (cfg.get("sql") if isinstance(cfg.get("sql"), str) else ""),
+        "mssql_conn_id": (cfg.get("mssql_conn_id") or "").strip(),
+        "database": ((cfg.get("database") or "").strip()
+                     if isinstance(cfg.get("database"), str) else ""),
+    }
+
+
 def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str]:
     """Valida a condição de um nó de decisão. Retorna lista de erros (vazia = ok)."""
     if not isinstance(cond, dict):
         return ["condição (condition_json) ausente ou inválida"]
     errs: list[str] = []
     tipo = str(cond.get("tipo") or "").strip().lower()
-    if tipo not in ("contagem", "query", "linhas_job"):
-        errs.append("tipo da condição deve ser 'contagem', 'query' ou 'linhas_job'")
+    if tipo not in ("contagem", "query", "linhas_job", "valor_sql"):
+        errs.append("tipo da condição deve ser 'contagem', 'query', 'linhas_job' ou 'valor_sql'")
     if str(cond.get("operador") or "").strip() not in _COND_OPERADORES:
         errs.append("operador inválido (use =, <>, >, >=, <, <=)")
     valor = cond.get("valor")
@@ -114,6 +185,27 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
     elif tipo == "query":
         if not _valid_select(cond.get("sql") or ""):
             errs.append("SQL da condição deve ser read-only (SELECT/WITH, sem ';' nem DML)")
+    elif tipo == "valor_sql":
+        # Decisão por valor publicado: lê o XCom escalar de um nó SQL a montante
+        # (source_job) e compara via compara_tipado. Não roda SQL aqui — só roteia.
+        sj = str(cond.get("source_job") or "").strip()
+        if not sj:
+            errs.append("source_job da condição (valor_sql) é obrigatório")
+        elif sj == self_name:
+            errs.append("source_job da condição (valor_sql) não pode ser a própria decisão")
+        elif sj not in known_jobs:
+            errs.append(f"source_job '{sj}' da condição (valor_sql) não existe no pipeline")
+        comp = str(cond.get("comparacao") or "").strip().lower()
+        if comp not in _COND_COMPARACOES:
+            errs.append("comparacao da condição (valor_sql) é obrigatória (use 'texto', 'data' ou 'numero')")
+    # comparacao é NOVO e OPCIONAL (ausente = comportamento legado do compara).
+    # Quando presente em query/contagem, validamos o enum {texto,data,numero}.
+    # (valor_sql exige comparacao acima — aqui só revalida o enum, sem duplicar.)
+    if tipo in ("query", "contagem"):
+        comp = cond.get("comparacao")
+        if comp is not None and str(comp).strip():
+            if str(comp).strip().lower() not in _COND_COMPARACOES:
+                errs.append("comparacao inválida (use 'texto', 'data' ou 'numero')")
     cid = (cond.get("mssql_conn_id") or "").strip()
     if cid and mssql_conn_ids is not None and cid not in mssql_conn_ids:
         errs.append(f"conexão MSSQL '{cid}' da condição não encontrada no Airflow")
@@ -223,6 +315,77 @@ async def _list_mssql_conn_ids() -> set[str] | None:
         return None
 
 
+async def _list_mssql_hosts() -> set[str]:
+    """Hosts (campo ``host``) das conexões MSSQL cadastradas no Airflow.
+
+    Allowlist anti-SSRF: o preview / databases por servidor só aceita um host que
+    JÁ esteja cadastrado como conexão MSSQL (mesma fonte de `list_mssql_connections`).
+    Degrada para set() se a chamada falhar (→ qualquer host é recusado, fail-safe)."""
+    try:
+        async with get_airflow_client() as client:
+            r = await client.get("/api/v1/connections?limit=100")
+            if not r.is_success:
+                return set()
+            data = r.json()
+            return {
+                (c.get("host") or "").strip()
+                for c in data.get("connections", [])
+                if c.get("conn_type") == "mssql" and (c.get("host") or "").strip()
+            }
+    except Exception:
+        return set()
+
+
+def _swap_conn_str(host: str, database: str) -> str:
+    """Deriva uma connection string apontando para (host, database) a partir da
+    ``MSSQL_CONN_STR`` do app, preservando DRIVER/UID/PWD/demais pares e trocando
+    apenas SERVER e DATABASE. Levanta ValueError se a base não estiver configurada.
+
+    Parse simples de pares ``CHAVE=VALOR;`` (formato pyodbc). Chaves comparadas
+    case-insensitive; SERVER e DATABASE são sobrescritos (inseridos se ausentes)."""
+    base = (db.MSSQL_CONN_STR or "").strip()
+    if not base:
+        raise ValueError("MSSQL_CONN_STR não configurada")
+    pares: list[tuple[str, str]] = []
+    for chunk in base.split(";"):
+        if not chunk.strip():
+            continue
+        if "=" not in chunk:
+            pares.append((chunk.strip(), ""))
+            continue
+        k, v = chunk.split("=", 1)
+        pares.append((k.strip(), v.strip()))
+    out: list[str] = []
+    viu_server = viu_db = False
+    for k, v in pares:
+        kl = k.lower()
+        if kl in ("server", "address", "addr", "network address"):
+            out.append(f"SERVER={host}"); viu_server = True
+        elif kl in ("database", "initial catalog"):
+            out.append(f"DATABASE={database}"); viu_db = True
+        else:
+            out.append(f"{k}={v}" if v != "" else k)
+    if not viu_server:
+        out.append(f"SERVER={host}")
+    if not viu_db:
+        out.append(f"DATABASE={database}")
+    return ";".join(out) + ";"
+
+
+def _json_safe(v):
+    """Serializa um valor de célula pyodbc para algo JSON-serializável.
+    Datas/datetimes → ISO; Decimal → str; bytes → hex; resto str (None preservado)."""
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, (_dt.datetime, _dt.date, _dt.time)):
+        return v.isoformat()
+    if isinstance(v, _decimal.Decimal):
+        return str(v)
+    if isinstance(v, (bytes, bytearray)):
+        return bytes(v).hex()
+    return str(v)
+
+
 @router.get("/jobs", tags=["jobs"])
 def list_jobs(
     offset: int = 0,
@@ -313,12 +476,47 @@ def list_jobs(
 
 
 @router.get("/jobs/databases", tags=["jobs"])
-def list_job_databases(_auth: dict = Depends(require_perm(PERM_EDITAR))):
-    """Bancos disponíveis no MESMO servidor da conexão do ORQUESTRA, para o
-    seletor de banco-alvo dos jobs storedproc (fase 1: 1 servidor).
+async def list_job_databases(
+    host: Optional[str] = None,
+    _auth: dict = Depends(require_perm(PERM_EDITAR)),
+):
+    """Bancos disponíveis para o seletor de banco-alvo dos jobs.
 
-    Usa a credencial do próprio app (get_db_conn) — não expõe senha. Degrada
-    para lista vazia se a consulta ao catálogo falhar."""
+    Sem ``?host`` (padrão): bancos do MESMO servidor da conexão do ORQUESTRA
+    (credencial do próprio app via get_db_conn — não expõe senha).
+
+    Com ``?host=<host>``: bancos daquele SERVIDOR MSSQL. O host precisa estar
+    cadastrado como conexão MSSQL no Airflow (allowlist anti-SSRF); conecta-se
+    com a credencial do app trocando SERVER no conn str. Host não cadastrado →
+    [] (não conecta em servidor arbitrário).
+
+    Degrada para lista vazia se a consulta ao catálogo falhar."""
+    host = (host or "").strip()
+    if host:
+        allowed = await _list_mssql_hosts()
+        if host not in allowed:
+            log.warning("list_job_databases: host %r não cadastrado — recusado.", host)
+            return {"server": None, "databases": []}
+        # Banco neutro só para abrir a sessão; o catálogo é server-wide.
+        try:
+            conn_str = _swap_conn_str(host, "master")
+        except ValueError as e:
+            log.warning("list_job_databases (host=%s) sem conn str: %s", host, e)
+            return {"server": None, "databases": []}
+        try:
+            conn = pyodbc.connect(conn_str, timeout=5)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT d.name FROM sys.databases d "
+                "WHERE d.state_desc = 'ONLINE' AND HAS_DBACCESS(d.name) = 1 "
+                "ORDER BY d.name")
+            databases = [r[0] for r in cur.fetchall()]
+            cur.close(); conn.close()
+            return {"server": host, "databases": databases}
+        except Exception as e:
+            log.warning("list_job_databases (host=%s) degradou: %s", host, e)
+            return {"server": None, "databases": []}
+    # Sem host: comportamento atual (servidor do app).
     try:
         conn = get_db_conn(); cur = conn.cursor()
         cur.execute("SELECT @@SERVERNAME")
@@ -335,6 +533,82 @@ def list_job_databases(_auth: dict = Depends(require_perm(PERM_EDITAR))):
     except Exception as e:
         log.warning("list_job_databases degradou: %s", e)
         return {"server": None, "databases": []}
+
+
+@router.post("/jobs/sql-preview", tags=["jobs"])
+async def sql_preview(
+    body: dict = Body(default={}),
+    _auth: dict = Depends(get_current_user),
+):
+    """Roda um SELECT read-only do usuário (decisão tipo 'query') e devolve uma
+    amostra de até 100 linhas, para o autor conferir o resultado antes de salvar.
+
+    Body: {host: str, database: str, sql: str}.
+
+    Segurança:
+      - ``sql`` precisa ser read-only (SELECT/WITH, sem ';' nem DML) — 422 senão.
+      - ``host`` precisa estar cadastrado como conexão MSSQL no Airflow (allowlist
+        anti-SSRF) — 400 senão. Conecta com a credencial do app (swap SERVER/
+        DATABASE no conn str), timeout curto.
+
+    Resposta: {columns: [str], rows: [[json-safe]], total: int, truncated: bool}.
+    Erros de conexão/SQL → 400 com mensagem clara (nunca 500 cru)."""
+    host = (body.get("host") or "").strip()
+    database = (body.get("database") or "").strip()
+    sql_raw = body.get("sql") or ""
+
+    if not host:
+        raise HTTPException(status_code=422, detail="host é obrigatório")
+    if not database:
+        raise HTTPException(status_code=422, detail="database é obrigatório")
+    if not _IDENT_RE.match(database):
+        raise HTTPException(status_code=422, detail="database inválido")
+    # Read-only de verdade (mesma validação da condição). 422 se inválido.
+    try:
+        sql = _validate_select_strict(sql_raw)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    allowed = await _list_mssql_hosts()
+    if host not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"host '{host}' não está cadastrado como conexão MSSQL")
+
+    try:
+        conn_str = _swap_conn_str(host, database)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Limita a 100 linhas envolvendo o SELECT do usuário numa subquery.
+    # SELECT TOP 100 * FROM (<sql>) — robusto; se o SELECT do usuário tiver ORDER
+    # BY sem TOP/OFFSET, o SQL Server recusa a subquery, então o erro vira 400
+    # claro (preview com mensagem) em vez de 500.
+    preview_sql = f"SELECT TOP 100 * FROM (\n{sql}\n) AS _prev"
+    try:
+        conn = pyodbc.connect(conn_str, timeout=5)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Falha ao conectar em '{host}': {e}")
+    try:
+        cur = conn.cursor()
+        cur.execute(preview_sql)
+        columns = [d[0] for d in (cur.description or [])]
+        fetched = cur.fetchall()
+        rows = [[_json_safe(v) for v in r] for r in fetched]
+        cur.close(); conn.close()
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=f"Erro ao executar o SELECT: {e}")
+    total = len(rows)
+    return {
+        "columns": columns,
+        "rows": rows,
+        "total": total,
+        "truncated": total >= 100,
+    }
 
 
 @router.post("/pipelines/jobs/register", tags=["jobs"])
@@ -391,6 +665,11 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
             "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
             "AND COLUMN_NAME='notify_json'")
         _has_notify_col = bool(cur.fetchone()[0])
+        cur.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
+            "AND COLUMN_NAME='sql_json'")
+        _has_sql_col = bool(cur.fetchone()[0])
 
         # Jobs conhecidos do pipeline (request + já existentes) — usado para
         # validar os ramos da decisão e detectar ciclos incluindo as arestas
@@ -411,6 +690,7 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
         for idx, job in enumerate(jobs):
             cond_json_str = None     # preenchido só p/ jobs de decisão (persiste depois)
             notify_json_str = None   # preenchido só p/ jobs de notificação (persiste depois)
+            sql_json_str = None      # preenchido só p/ nós SQL (persiste depois)
             j_name      = (job.get("job_name") or "").strip()
             j_order     = job.get("execution_order")
             j_type      = (job.get("job_type") or "datastage").lower().strip()
@@ -428,11 +708,13 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                 erros.append(f"Item {idx} ({j_name}): nome de job inválido — use apenas letras, números, _ . - e espaço"); continue
             if j_type not in VALID_JOB_TYPES:
                 erros.append(f"Item {idx} ({j_name}): job_type '{j_type}' inválido"); continue
-            # Nó de Decisão é roteador e Notificação é efeito colateral: nenhum
-            # dos dois tem lineage (origem/destino) nem comando.
+            # Nó de Decisão é roteador, Notificação é efeito colateral e o nó SQL
+            # roda um SELECT e publica o valor: nenhum dos três tem lineage
+            # (origem/destino) nem comando (o SQL vive em sql_json).
             is_decisao = (j_type == "decisao")
             is_notificacao = (j_type == "notificacao")
-            sem_lineage = is_decisao or is_notificacao
+            is_sql = (j_type == "sql")
+            sem_lineage = is_decisao or is_notificacao or is_sql
             if not origens and not transfs and require_lineage and not sem_lineage:
                 erros.append(f"Item {idx} ({j_name}): ao menos 1 origem é obrigatória"); continue
             if not destinos and not transfs and require_lineage and not sem_lineage:
@@ -475,6 +757,20 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                 if notify_errs:
                     erros.extend(f"Item {idx} ({j_name}): {e}" for e in notify_errs); continue
                 notify_json_str = json.dumps(_normalize_notify(raw_notify), ensure_ascii=False)
+
+            # Nó SQL: valida a config (sql_json) — SELECT read-only + conexão.
+            if is_sql:
+                raw_sql = job.get("sql_node")
+                if not isinstance(raw_sql, dict):
+                    rs = job.get("sql_json")
+                    try:
+                        raw_sql = json.loads(rs) if rs else None
+                    except (ValueError, TypeError):
+                        raw_sql = None
+                sql_errs = _validate_sql_node_conn(raw_sql, mssql_conn_ids)
+                if sql_errs:
+                    erros.extend(f"Item {idx} ({j_name}): {e}" for e in sql_errs); continue
+                sql_json_str = json.dumps(_normalize_sql_node(raw_sql), ensure_ascii=False)
 
             params_validos = []
             if j_type == "storedproc" and j_params:
@@ -548,6 +844,12 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                         "UPDATE dbo.etl_pipeline_job SET notify_json=? "
                         "WHERE pipeline_name=? AND job_name=?",
                         (notify_json_str, pipeline_name, j_name))
+                # Config do nó SQL (opt-in) — NULL para os demais tipos.
+                if _has_sql_col:
+                    cur.execute(
+                        "UPDATE dbo.etl_pipeline_job SET sql_json=? "
+                        "WHERE pipeline_name=? AND job_name=?",
+                        (sql_json_str, pipeline_name, j_name))
             except Exception as e:
                 erros.append(f"Item {idx} ({j_name}): erro ao gravar job — {e}"); continue
 
@@ -708,6 +1010,19 @@ def get_pipeline_job(
                     notify = None
         except Exception:
             notify = None  # coluna pode não existir (migration 049)
+        sql_node = None
+        try:
+            cur.execute(
+                "SELECT sql_json FROM dbo.etl_pipeline_job "
+                "WHERE pipeline_name=? AND job_name=?", (pipeline_name, job_name))
+            sr = cur.fetchone()
+            if sr and sr[0]:
+                try:
+                    sql_node = json.loads(sr[0])
+                except (ValueError, TypeError):
+                    sql_node = None
+        except Exception:
+            sql_node = None  # coluna pode não existir (migration 051)
         cur.close(); conn.close()
         return {
             "pipeline_name": row[0], "job_name": row[1], "execution_order": row[2],
@@ -718,6 +1033,7 @@ def get_pipeline_job(
             "mssql_database": mssql_database,
             "condition": condition,
             "notify": notify,
+            "sql_node": sql_node,
         }
     except HTTPException:
         raise
@@ -798,6 +1114,7 @@ def get_pipeline_fluxo(
         sel_deps = "j.depends_on_jobs" if "depends_on_jobs" in cols else "NULL"
         sel_cond = "j.condition_json" if "condition_json" in cols else "NULL"
         sel_notify = "j.notify_json" if "notify_json" in cols else "NULL"
+        sel_sql = "j.sql_json" if "sql_json" in cols else "NULL"
         sel_lx = "j.layout_x" if "layout_x" in cols else "NULL"
         sel_ly = "j.layout_y" if "layout_y" in cols else "NULL"
         # Campos por tipo (round-trip do painel inline): ssh / verbose / mssql_*.
@@ -809,7 +1126,7 @@ def get_pipeline_fluxo(
             cur.execute(
                 "SELECT j.job_name, ISNULL(j.job_type,'datastage'), j.job_command, "
                 f"CAST(j.execution_order AS INT), {sel_deps}, {sel_cond}, {sel_lx}, {sel_ly}, "
-                f"{sel_ssh}, {sel_verb}, {sel_mconn}, {sel_mdb}, {sel_notify} "
+                f"{sel_ssh}, {sel_verb}, {sel_mconn}, {sel_mdb}, {sel_notify}, {sel_sql} "
                 "FROM dbo.etl_pipeline_job j WHERE j.pipeline_name=? "
                 "ORDER BY j.execution_order, j.job_name",
                 (pipeline_name,))
@@ -850,6 +1167,12 @@ def get_pipeline_fluxo(
                     notify = json.loads(r[12])
                 except (ValueError, TypeError):
                     notify = None
+            sql_node = None
+            if r[13]:
+                try:
+                    sql_node = json.loads(r[13])
+                except (ValueError, TypeError):
+                    sql_node = None
             lx = float(r[6]) if r[6] is not None else None
             ly = float(r[7]) if r[7] is not None else None
             nodes.append({
@@ -860,6 +1183,7 @@ def get_pipeline_fluxo(
                 "depends_on_jobs": _parse_dep_csv(r[4]),
                 "condition": condition,
                 "notify": notify,
+                "sql_node": sql_node,
                 "layout_x": lx,
                 "layout_y": ly,
                 "ssh_conn_id": r[8] or None,
@@ -911,10 +1235,13 @@ async def save_pipeline_fluxo(
     deleted = ({str(d).strip() for d in deleted_raw if str(d).strip()}
                if isinstance(deleted_raw, list) else set())
 
-    # Conexões MSSQL só importam se houver decisão a validar (evita ida ao Airflow).
-    has_decisao = any(isinstance(n, dict) and (n.get("job_type") or "").lower().strip() == "decisao"
-                      for n in nodes)
-    mssql_conn_ids = await _list_mssql_conn_ids() if has_decisao else None
+    # Conexões MSSQL só importam se houver decisão OU nó SQL a validar (a decisão
+    # pode trazer mssql_conn_id; o nó SQL exige um conn_id válido). Evita ida ao
+    # Airflow quando nenhum dos dois está presente.
+    _needs_conn = any(
+        isinstance(n, dict) and (n.get("job_type") or "").lower().strip() in ("decisao", "sql")
+        for n in nodes)
+    mssql_conn_ids = await _list_mssql_conn_ids() if _needs_conn else None
 
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -941,6 +1268,7 @@ async def save_pipeline_fluxo(
         has_deps = "depends_on_jobs" in _cols
         has_cond = "condition_json" in _cols
         has_notify = "notify_json" in _cols
+        has_sql = "sql_json" in _cols
         has_layout = "layout_x" in _cols and "layout_y" in _cols
         has_db = "mssql_database" in _cols
         has_ssh = "ssh_conn_id" in _cols
@@ -955,7 +1283,7 @@ async def save_pipeline_fluxo(
         # Valida e prepara cada nó; monta o grafo (deps + ramos) para o ciclo.
         errors: list[str] = []
         cycle_adj: dict[str, set[str]] = {n: set() for n in known_jobs}
-        prepared = []  # (j_name, is_new, order, type, cmd, ssh, verbose, mssql, mdb, params_present, params, dep_csv, cond_json|None, notify_json|None, lx, ly)
+        prepared = []  # (j_name, is_new, order, type, cmd, ssh, verbose, mssql, mdb, params_present, params, dep_csv, cond_json|None, notify_json|None, sql_json|None, lx, ly)
         raw_by_name: dict[str, dict] = {}  # nó cru por nome (checa presença de chave no UPDATE)
         seen: set[str] = set()
         for idx, node in enumerate(nodes):
@@ -1045,6 +1373,15 @@ async def save_pipeline_fluxo(
                     errors.extend(f"{j_name}: {e}" for e in notify_errs); continue
                 notify_json_str = json.dumps(_normalize_notify(raw_notify), ensure_ascii=False)
 
+            # Nó SQL — valida a config (sql_json); SELECT read-only + conexão.
+            sql_json_str = None
+            if j_type == "sql":
+                raw_sql = node.get("sql_node")
+                sql_errs = _validate_sql_node_conn(raw_sql, mssql_conn_ids)
+                if sql_errs:
+                    errors.extend(f"{j_name}: {e}" for e in sql_errs); continue
+                sql_json_str = json.dumps(_normalize_sql_node(raw_sql), ensure_ascii=False)
+
             lx, ly = node.get("layout_x"), node.get("layout_y")
             try:
                 lx = float(lx) if lx is not None else None
@@ -1057,7 +1394,8 @@ async def save_pipeline_fluxo(
 
             prepared.append((j_name, is_new, j_order, j_type, j_cmd, j_ssh,
                              j_verbose, j_mssql, j_mdb, params_present, j_params,
-                             dep_csv, cond_json_str, notify_json_str, lx, ly))
+                             dep_csv, cond_json_str, notify_json_str, sql_json_str,
+                             lx, ly))
 
         if errors:
             cur.close(); conn.close()
@@ -1089,7 +1427,7 @@ async def save_pipeline_fluxo(
         #    condição (só decisão)/posição em TODOS (por-coluna).
         for (j_name, is_new, j_order, j_type, j_cmd, j_ssh, j_verbose,
              j_mssql, j_mdb, params_present, j_params, dep_csv, cond_json_str,
-             notify_json_str, lx, ly) in prepared:
+             notify_json_str, sql_json_str, lx, ly) in prepared:
             if is_new:
                 cur.execute(
                     "EXEC dbo.sp_etl_pipeline_job_upsert "
@@ -1149,6 +1487,12 @@ async def save_pipeline_fluxo(
                 cur.execute("UPDATE dbo.etl_pipeline_job SET notify_json=? "
                             "WHERE pipeline_name=? AND job_name=?",
                             (notify_json_str, pipeline_name, j_name))
+            # Grava sql_json SÓ em nó SQL — análogo aos demais JSON por-tipo:
+            # nunca zera a config de uma etapa de outro tipo.
+            if has_sql and j_type == "sql":
+                cur.execute("UPDATE dbo.etl_pipeline_job SET sql_json=? "
+                            "WHERE pipeline_name=? AND job_name=?",
+                            (sql_json_str, pipeline_name, j_name))
             if has_layout:
                 cur.execute("UPDATE dbo.etl_pipeline_job SET layout_x=?, layout_y=? "
                             "WHERE pipeline_name=? AND job_name=?",

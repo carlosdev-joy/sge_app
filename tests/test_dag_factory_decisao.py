@@ -236,6 +236,60 @@ def test_compara_operador_invalido(conditions):
         conditions.compara(1, "LIKE", 1)
 
 
+# ─────────────────────────── compara_tipado ────────────────────────────────
+
+def test_compara_tipado_numero(conditions):
+    assert conditions.compara_tipado("10001", ">", "10000", "numero") is True
+    assert conditions.compara_tipado(5, ">", 10, "numero") is False
+    assert conditions.compara_tipado(3.5, "=", "3.5", "numero") is True
+    # Conversão falha → vira 0.0 (não quebra): "abc"=0.0, "0"=0.0 → iguais.
+    assert conditions.compara_tipado("abc", "=", "0", "numero") is True
+
+
+def test_compara_tipado_texto(conditions):
+    assert conditions.compara_tipado("ABC", "=", "ABC", "texto") is True
+    assert conditions.compara_tipado("ABC", "<>", "XYZ", "texto") is True
+    # número comparado como texto: "10" vs "9" são strings ("10" < "9").
+    assert conditions.compara_tipado(10, "<", 9, "texto") is True
+
+
+def test_compara_tipado_data_literal(conditions):
+    import datetime as _d
+    assert conditions.compara_tipado("2026-06-24", "=", "2026-06-24", "data") is True
+    assert conditions.compara_tipado("2026-06-25", ">", "2026-06-24", "data") is True
+    # date/datetime do pyodbc são normalizados a date (ignora hora).
+    assert conditions.compara_tipado(
+        _d.datetime(2026, 6, 24, 13, 0, 0), "=", "2026-06-24", "data") is True
+    assert conditions.compara_tipado(
+        _d.date(2026, 6, 24), "<", "2026-06-25", "data") is True
+
+
+def test_compara_tipado_data_token_hoje(conditions):
+    import datetime as _d
+    hoje = _d.date.today()
+    assert conditions.compara_tipado(hoje, "=", "HOJE", "data") is True
+    assert conditions.compara_tipado(hoje, "=", "hoje", "data") is True
+    assert conditions.compara_tipado(
+        hoje - _d.timedelta(days=1), "<", "HOJE", "data") is True
+
+
+def test_compara_tipado_data_invalida_nao_quebra(conditions):
+    # Valor não parseável → False (logado), nunca exceção.
+    assert conditions.compara_tipado("xx/yy/zzzz", "=", "2026-06-24", "data") is False
+    assert conditions.compara_tipado("2026-06-24", "=", "nao-data", "data") is False
+
+
+def test_compara_tipado_ausente_delega_legado(conditions):
+    # comparacao None/'' → comportamento do compara legado (auto-coerção numérica).
+    assert conditions.compara_tipado("1", "=", 1, None) is True
+    assert conditions.compara_tipado("ABC", "=", "ABC", "") is True
+
+
+def test_compara_tipado_operador_invalido(conditions):
+    with pytest.raises(ValueError):
+        conditions.compara_tipado(1, "LIKE", 1, "numero")
+
+
 def test_ds_log_first_escopa_por_pipeline(conditions):
     """A leitura de rows_out/child_jobs deve incluir pipeline_name no WHERE quando
     disponível — o execution_id (ts_nodash) pode colidir entre pipelines."""
