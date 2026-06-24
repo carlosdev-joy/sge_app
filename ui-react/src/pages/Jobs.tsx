@@ -1,10 +1,11 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { useAuthStore } from '../store/auth'
 import { Button } from '../components/ui/Button'
 import { Input, Select, Textarea } from '../components/ui/Input'
+import { PlaceholderPicker } from '../components/ui/PlaceholderPicker'
 import { Autocomplete } from '../components/ui/Autocomplete'
 import { Modal } from '../components/ui/Modal'
 import { PageSpinner } from '../components/ui/Spinner'
@@ -110,6 +111,7 @@ function JobFormModal({
     notif_mensagem: '',
   })
   const [err, setErr] = useState<string[]>([])
+  const notifMsgRef = useRef<HTMLTextAreaElement>(null)
 
   const { data: sshData } = useQuery<{ connections: SshConn[] }>({
     queryKey: ['ssh-connections'],
@@ -360,20 +362,21 @@ function JobFormModal({
             </Select>
 
             <Textarea
+              ref={notifMsgRef}
               label="Mensagem (opcional)"
               value={form.notif_mensagem}
               onChange={e => f('notif_mensagem', e.target.value)}
               rows={3}
               placeholder="Use placeholders: {pipeline} {job} {linhas} {status} {data}"
             />
-            <p className="text-xs text-dim">
-              Vazio = usa o corpo do modelo. Placeholders disponíveis:{' '}
-              <code className="font-mono text-blue-700 dark:text-blue-300">{'{pipeline}'}</code>{' '}
-              <code className="font-mono text-blue-700 dark:text-blue-300">{'{job}'}</code>{' '}
-              <code className="font-mono text-blue-700 dark:text-blue-300">{'{linhas}'}</code>{' '}
-              <code className="font-mono text-blue-700 dark:text-blue-300">{'{status}'}</code>{' '}
-              <code className="font-mono text-blue-700 dark:text-blue-300">{'{data}'}</code>.
-            </p>
+            <p className="text-xs text-dim">Vazio = usa o corpo do modelo.</p>
+            <PlaceholderPicker
+              label="Inserir:"
+              placeholders={['pipeline', 'job', 'linhas', 'status', 'data']}
+              targetRef={notifMsgRef}
+              value={form.notif_mensagem}
+              onChange={v => f('notif_mensagem', v)}
+            />
           </div>
         ) : (
           <JobTypeFields

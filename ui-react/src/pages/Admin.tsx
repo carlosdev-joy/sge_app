@@ -3,6 +3,7 @@ import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { Button } from '../components/ui/Button'
 import { Input, Select, Textarea } from '../components/ui/Input'
+import { PlaceholderPicker } from '../components/ui/PlaceholderPicker'
 import { Badge } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import { PageSpinner } from '../components/ui/Spinner'
@@ -2706,6 +2707,7 @@ function TemplateFormModal({ template, grupos, onClose }: { template: MsgTemplat
   const [botaoTexto, setBotaoTexto] = useState(template?.botao_texto ?? '')
   const [botaoUrl, setBotaoUrl] = useState(template?.botao_url ?? '')
   const [ativo, setAtivo] = useState(template?.ativo ?? true)
+  const corpoRef = useRef<HTMLTextAreaElement>(null)
 
   const addFact = () => setFacts(f => [...f, { label: '', value: '' }])
   const removeFact = (i: number) => setFacts(f => f.filter((_, idx) => idx !== i))
@@ -2746,11 +2748,15 @@ function TemplateFormModal({ template, grupos, onClose }: { template: MsgTemplat
         <Input label="Título do card" value={titulo} onChange={e => setTitulo(e.target.value)} placeholder="ex.: Pipeline {pipeline} falhou" />
 
         <div className="flex flex-col gap-1">
-          <Textarea label="Corpo *" rows={4} value={corpo} onChange={e => setCorpo(e.target.value)}
+          <Textarea ref={corpoRef} label="Corpo *" rows={4} value={corpo} onChange={e => setCorpo(e.target.value)}
             placeholder="Texto da mensagem. Use os placeholders abaixo." />
-          <span className="text-[10px] text-dim">
-            Placeholders disponíveis: <code className="font-mono text-[10px] text-[#1A5FA8] dark:text-blue-400">{CARD_PLACEHOLDERS}</code>
-          </span>
+          <PlaceholderPicker
+            label="Inserir:"
+            placeholders={CARD_PLACEHOLDERS.replace(/[{}]/g, '').split(' ')}
+            targetRef={corpoRef}
+            value={corpo}
+            onChange={setCorpo}
+          />
         </div>
 
         {/* Editor de fatos: lista dinâmica de pares {label,value} */}
