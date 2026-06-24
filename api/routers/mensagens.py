@@ -12,6 +12,7 @@ degrada para vazio se a tabela não existir (try/except → []).
 """
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
@@ -22,6 +23,50 @@ from deps import PERM_EDITAR, get_current_user, require_perm
 log = logging.getLogger("orquestra-api")
 
 router = APIRouter()
+
+# Colunas do card estruturado (migration 050). Degrada se ausentes.
+_CARD_COLS = ("facts", "cor", "botao_texto", "botao_url")
+
+
+def _has_card_cols(cur) -> bool:
+    """True se as colunas do card estruturado (050) existem em etl_msg_template.
+    Detecta via COL_LENGTH (mesmo guard de coluna usado em routers/datastage.py).
+    Best-effort: qualquer falha → trata como ausente (cai no subconjunto antigo)."""
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_msg_template','facts')")
+        return cur.fetchone()[0] is not None
+    except Exception:
+        return False
+
+
+def _parse_facts(raw):
+    """JSON string (NVARCHAR) → lista de {label,value}. Tolerante: None/inválido → []."""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
+def _facts_to_json(raw):
+    """Body['facts'] → JSON string p/ persistir. Valida que é lista de {label,value}.
+    None/ausente → None. Lista vazia → None (sem FactSet do template)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=422, detail="facts deve ser uma lista de {label,value}")
+    norm = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=422, detail="cada fact deve ser objeto {label,value}")
+        label = (str(item.get("label") or "")).strip()
+        value = str(item.get("value") or "")
+        if not label:
+            continue
+        norm.append({"label": label[:120], "value": value[:1000]})
+    return json.dumps(norm, ensure_ascii=False) if norm else None
 
 
 # ── Grupos (canais/webhooks do Teams) ──────────────────────────────────────
@@ -144,35 +189,72 @@ def remover_grupo(gid: int = Path(...), _auth: dict = Depends(require_perm(PERM_
 
 # ── Templates (mensagens editáveis com placeholders) ───────────────────────
 
+def _row_to_template(r, has_card: bool) -> dict:
+    """Linha do SELECT → dict da API. Quando has_card, anexa facts (parseado),
+    cor e botao_*; senão devolve o subconjunto antigo com defaults vazios."""
+    base = {"id": r[0], "grupo_id": r[1], "nome": r[2], "titulo": r[3],
+            "corpo": r[4], "ativo": bool(r[5]), "created_at": r[6], "updated_at": r[7]}
+    if has_card:
+        base["facts"] = _parse_facts(r[8])
+        base["cor"] = r[9]
+        base["botao_texto"] = r[10]
+        base["botao_url"] = r[11]
+    else:
+        base["facts"] = []
+        base["cor"] = None
+        base["botao_texto"] = None
+        base["botao_url"] = None
+    return base
+
+
 @router.get("/msg/templates", tags=["mensagens"])
 def listar_templates(grupo_id: int | None = Query(None),
                      _user: dict = Depends(get_current_user)):
-    """Lista templates (opcionalmente filtra por grupo_id)."""
+    """Lista templates (opcionalmente filtra por grupo_id). Devolve facts parseado
+    (lista) e cor/botao_* quando a migration 050 está aplicada; degrada ao
+    subconjunto antigo se as colunas do card não existirem."""
     try:
         conn = get_db_conn(); cur = conn.cursor()
+        has_card = _has_card_cols(cur)
+        extra = ", facts, cor, botao_texto, botao_url" if has_card else ""
+        sql = (
+            "SELECT id, grupo_id, nome, titulo, corpo, ativo, "
+            "       CONVERT(VARCHAR(19), created_at, 120), "
+            "       CONVERT(VARCHAR(19), updated_at, 120)" + extra + " "
+            "FROM dbo.etl_msg_template")
         if grupo_id is not None:
-            cur.execute(
-                "SELECT id, grupo_id, nome, titulo, corpo, ativo, "
-                "       CONVERT(VARCHAR(19), created_at, 120), "
-                "       CONVERT(VARCHAR(19), updated_at, 120) "
-                "FROM dbo.etl_msg_template WHERE grupo_id = ? ORDER BY nome",
-                (grupo_id,))
+            cur.execute(sql + " WHERE grupo_id = ? ORDER BY nome", (grupo_id,))
         else:
-            cur.execute(
-                "SELECT id, grupo_id, nome, titulo, corpo, ativo, "
-                "       CONVERT(VARCHAR(19), created_at, 120), "
-                "       CONVERT(VARCHAR(19), updated_at, 120) "
-                "FROM dbo.etl_msg_template ORDER BY nome")
-        data = [
-            {"id": r[0], "grupo_id": r[1], "nome": r[2], "titulo": r[3],
-             "corpo": r[4], "ativo": bool(r[5]), "created_at": r[6], "updated_at": r[7]}
-            for r in cur.fetchall()
-        ]
+            cur.execute(sql + " ORDER BY nome")
+        data = [_row_to_template(r, has_card) for r in cur.fetchall()]
         cur.close(); conn.close()
         return {"data": data}
     except Exception as e:
         log.warning("[MSG] listar_templates falhou (tabela ausente?): %s", e)
         return {"data": []}
+
+
+@router.get("/msg/templates/{tid}", tags=["mensagens"])
+def detalhe_template(tid: int = Path(...), _user: dict = Depends(get_current_user)):
+    """Detalhe de um template, com facts parseado (lista) e cor/botao_* quando a
+    migration 050 está aplicada (subconjunto antigo caso contrário)."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        has_card = _has_card_cols(cur)
+        extra = ", facts, cor, botao_texto, botao_url" if has_card else ""
+        cur.execute(
+            "SELECT id, grupo_id, nome, titulo, corpo, ativo, "
+            "       CONVERT(VARCHAR(19), created_at, 120), "
+            "       CONVERT(VARCHAR(19), updated_at, 120)" + extra + " "
+            "FROM dbo.etl_msg_template WHERE id = ?", (tid,))
+        r = cur.fetchone()
+        cur.close(); conn.close()
+    except Exception as e:
+        log.warning("[MSG] detalhe_template falhou (tabela ausente?): %s", e)
+        raise HTTPException(status_code=404, detail="template não encontrado")
+    if not r:
+        raise HTTPException(status_code=404, detail="template não encontrado")
+    return _row_to_template(r, has_card)
 
 
 def _parse_grupo_id(raw) -> int | None:
@@ -187,7 +269,9 @@ def _parse_grupo_id(raw) -> int | None:
 
 @router.post("/msg/templates", tags=["mensagens"])
 def criar_template(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
-    """Cria um template. nome e corpo são obrigatórios; grupo_id é opcional."""
+    """Cria um template. nome e corpo são obrigatórios; grupo_id é opcional.
+    Os campos do card estruturado (facts/cor/botao_texto/botao_url) só são
+    persistidos quando a migration 050 está aplicada (caso contrário ignorados)."""
     nome = (body.get("nome") or "").strip()
     corpo = (body.get("corpo") or "").strip()
     if not nome or not corpo:
@@ -195,12 +279,26 @@ def criar_template(body: dict = Body(default={}), _auth: dict = Depends(require_
     grupo_id = _parse_grupo_id(body.get("grupo_id"))
     titulo = (body.get("titulo") or "").strip() or None
     ativo = 0 if body.get("ativo") is False else 1
+    facts_json = _facts_to_json(body.get("facts"))  # valida (422 se não-lista)
+    cor = (body.get("cor") or "").strip().lower() or None
+    botao_texto = (body.get("botao_texto") or "").strip() or None
+    botao_url = (body.get("botao_url") or "").strip() or None
     try:
         conn = get_db_conn(); cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO dbo.etl_msg_template (grupo_id, nome, titulo, corpo, ativo) "
-            "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?)",
-            (grupo_id, nome[:120], (titulo[:200] if titulo else None), corpo, ativo))
+        has_card = _has_card_cols(cur)
+        if has_card:
+            cur.execute(
+                "INSERT INTO dbo.etl_msg_template "
+                "(grupo_id, nome, titulo, corpo, ativo, facts, cor, botao_texto, botao_url) "
+                "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (grupo_id, nome[:120], (titulo[:200] if titulo else None), corpo, ativo,
+                 facts_json, (cor[:20] if cor else None),
+                 (botao_texto[:120] if botao_texto else None), botao_url))
+        else:
+            cur.execute(
+                "INSERT INTO dbo.etl_msg_template (grupo_id, nome, titulo, corpo, ativo) "
+                "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?)",
+                (grupo_id, nome[:120], (titulo[:200] if titulo else None), corpo, ativo))
         tid = int(cur.fetchone()[0])
         conn.commit(); cur.close(); conn.close()
         return {"ok": True, "id": tid}
@@ -214,7 +312,9 @@ def criar_template(body: dict = Body(default={}), _auth: dict = Depends(require_
 @router.put("/msg/templates/{tid}", tags=["mensagens"])
 def atualizar_template(tid: int = Path(...), body: dict = Body(default={}),
                        _auth: dict = Depends(require_perm(PERM_EDITAR))):
-    """Atualiza um template. nome e corpo são obrigatórios."""
+    """Atualiza um template. nome e corpo são obrigatórios. Os campos do card
+    estruturado (facts/cor/botao_texto/botao_url) só são gravados quando a
+    migration 050 está aplicada (caso contrário ignorados, sem quebrar)."""
     nome = (body.get("nome") or "").strip()
     corpo = (body.get("corpo") or "").strip()
     if not nome or not corpo:
@@ -222,13 +322,28 @@ def atualizar_template(tid: int = Path(...), body: dict = Body(default={}),
     grupo_id = _parse_grupo_id(body.get("grupo_id"))
     titulo = (body.get("titulo") or "").strip() or None
     ativo = 0 if body.get("ativo") is False else 1
+    facts_json = _facts_to_json(body.get("facts"))  # valida (422 se não-lista)
+    cor = (body.get("cor") or "").strip().lower() or None
+    botao_texto = (body.get("botao_texto") or "").strip() or None
+    botao_url = (body.get("botao_url") or "").strip() or None
     try:
         conn = get_db_conn(); cur = conn.cursor()
-        cur.execute(
-            "UPDATE dbo.etl_msg_template "
-            "SET grupo_id=?, nome=?, titulo=?, corpo=?, ativo=?, updated_at=GETDATE() "
-            "WHERE id=?",
-            (grupo_id, nome[:120], (titulo[:200] if titulo else None), corpo, ativo, tid))
+        has_card = _has_card_cols(cur)
+        if has_card:
+            cur.execute(
+                "UPDATE dbo.etl_msg_template "
+                "SET grupo_id=?, nome=?, titulo=?, corpo=?, ativo=?, "
+                "    facts=?, cor=?, botao_texto=?, botao_url=?, updated_at=GETDATE() "
+                "WHERE id=?",
+                (grupo_id, nome[:120], (titulo[:200] if titulo else None), corpo, ativo,
+                 facts_json, (cor[:20] if cor else None),
+                 (botao_texto[:120] if botao_texto else None), botao_url, tid))
+        else:
+            cur.execute(
+                "UPDATE dbo.etl_msg_template "
+                "SET grupo_id=?, nome=?, titulo=?, corpo=?, ativo=?, updated_at=GETDATE() "
+                "WHERE id=?",
+                (grupo_id, nome[:120], (titulo[:200] if titulo else None), corpo, ativo, tid))
         rows = cur.rowcount
         conn.commit(); cur.close(); conn.close()
     except HTTPException:

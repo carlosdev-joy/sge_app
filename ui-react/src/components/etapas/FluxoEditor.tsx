@@ -31,11 +31,12 @@ import { Input, Select, Textarea } from '../ui/Input'
 import { Modal } from '../ui/Modal'
 import { toast } from '../ui/Toast'
 import {
-  Save, RefreshCw, AlertCircle, GitBranch, Trash2,
+  Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing,
   PanelRightClose, ChevronLeft, ChevronRight, MousePointerClick,
 } from 'lucide-react'
 import { EtapaNode, type EtapaNodeData } from './EtapaNode'
 import { DecisaoNode, type DecisaoNodeData, type NodeCondition } from './DecisaoNode'
+import { NotificacaoNode, type NotificacaoNodeData } from './NotificacaoNode'
 import { TYPE_META, TYPE_ORDER, CREATABLE_TYPES, type EtapaType } from './types'
 import { COND_OPERADORES, defaultCondition, toNodeCondition, conditionLabel } from './condition'
 import { useColorMode } from './useColorMode'
@@ -43,13 +44,19 @@ import {
   JobTypeFields, type JobTypeFieldsValue, type JobFieldsType, type JobParam,
 } from './JobTypeFields'
 
-const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode }
+const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode }
 
 // ── Tipos do payload da API (/fluxo) ────────────────────────────────────────
 interface Condition {
   ramo_verdadeiro?: string[]
   ramo_falso?: string[]
   [k: string]: unknown
+}
+// Config do nó de notificação (round-trip com /fluxo no campo `notify`).
+interface NotifyConfig {
+  grupo_id: number | null
+  template_id: number | null
+  mensagem: string
 }
 interface FluxoNode {
   job_name: string
@@ -58,6 +65,7 @@ interface FluxoNode {
   execution_order: number
   depends_on_jobs: string[]
   condition: Condition | null
+  notify: NotifyConfig | null
   layout_x: number | null
   layout_y: number | null
   // Campos por tipo (round-trip). O backend usa presença de chave — sempre reenviados.
@@ -68,6 +76,10 @@ interface FluxoNode {
   params?: { param_name: string; param_type: string; param_value: string | null; param_order?: number }[]
 }
 interface FluxoResp { nodes: FluxoNode[] }
+
+// Catálogo de mensagens (Teams) — alimentam os Selects do nó de notificação.
+interface MsgGrupo { id: number; nome: string; descricao: string | null; has_webhook?: boolean; ativo?: boolean }
+interface MsgTemplate { id: number; grupo_id: number | null; nome: string; titulo: string | null }
 
 // ── Layout automático em camadas por execution_order ────────────────────────
 const COL_W = 280
@@ -94,6 +106,32 @@ function toEtapaType(t: string): EtapaType {
   return (TYPE_ORDER as string[]).includes(t) ? (t as EtapaType) : 'datastage'
 }
 
+// ── Notificação (Teams) ─────────────────────────────────────────────────────
+// Config default de um nó de notificação recém-criado (grupo a escolher).
+function defaultNotify(): NotifyConfig {
+  return { grupo_id: null, template_id: null, mensagem: '' }
+}
+
+// Lê a config de notificação do payload da API (tolerante a null/parcial).
+function toNotifyConfig(raw: NotifyConfig | null | undefined): NotifyConfig {
+  if (!raw || typeof raw !== 'object') return defaultNotify()
+  const gid = raw.grupo_id
+  const tid = raw.template_id
+  return {
+    grupo_id: typeof gid === 'number' ? gid : (gid != null && `${gid}`.trim() ? Number(gid) : null),
+    template_id: typeof tid === 'number' ? tid : (tid != null && `${tid}`.trim() ? Number(tid) : null),
+    mensagem: typeof raw.mensagem === 'string' ? raw.mensagem : '',
+  }
+}
+
+// Resumo curto p/ o card. Usa o nome do grupo quando disponível (gruposById),
+// senão "Teams: #<id>"; sem grupo escolhido mostra "notificação".
+function notifyLabel(cfg: NotifyConfig, gruposById?: Map<number, string>): string {
+  if (cfg.grupo_id == null) return 'notificação'
+  const nome = gruposById?.get(cfg.grupo_id)
+  return `Teams: ${nome ?? `#${cfg.grupo_id}`}`
+}
+
 // ── Construção de nós/arestas a partir do payload ───────────────────────────
 const EDGE_ARROW = { type: MarkerType.ArrowClosed, width: 16, height: 16 }
 const SIM_STYLE = { stroke: '#22c55e' }
@@ -112,6 +150,11 @@ function buildNodes(apiNodes: FluxoNode[]): Node[] {
       const cond = toNodeCondition(n.condition)
       const data: DecisaoNodeData = { name: n.job_name, condition: cond, label: conditionLabel(cond) }
       return { id: n.job_name, type: 'decisao' as const, position, data }
+    }
+    if (n.job_type === 'notificacao') {
+      const notify = toNotifyConfig(n.notify)
+      const data: NotificacaoNodeData = { name: n.job_name, notify, label: notifyLabel(notify) }
+      return { id: n.job_name, type: 'notificacao' as const, position, data }
     }
     const data: EtapaNodeData = {
       name: n.job_name,
@@ -206,6 +249,10 @@ function Legenda() {
         <span className="flex items-center gap-1.5 text-[10px] text-dim">
           <span className="h-2 w-2 rotate-45 rounded-[1px] bg-indigo-500" />
           Decisão
+        </span>
+        <span className="flex items-center gap-1.5 text-[10px] text-dim">
+          <span className="h-2 w-2 rounded-full bg-teal-500" />
+          Notificação
         </span>
       </div>
       <div className="mt-2 border-t border-edge pt-1.5">
@@ -303,6 +350,13 @@ function Paleta({
           Icon={GitBranch}
           collapsed={!open}
         />
+        <PaletaItem
+          tipo="notificacao"
+          label="Notificação"
+          chip="bg-teal-500 text-white"
+          Icon={BellRing}
+          collapsed={!open}
+        />
       </div>
     </div>
   )
@@ -367,15 +421,28 @@ function FluxoEditorInner({ pipeline }: Props) {
   const dbServer = dbData?.server ?? null
   const dbDatabases = dbData?.databases ?? []
 
+  // Grupos (canais Teams) p/ o nó de notificação — Select do painel e rótulo do card.
+  // Degrada para [] se a tabela/endpoint não existir (try/except no backend).
+  const { data: gruposData } = useQuery<{ data: MsgGrupo[] }>({
+    queryKey: ['msg-grupos'],
+    queryFn: () => apiFetch('/msg/grupos'),
+    staleTime: 300_000,
+  })
+  const grupos = gruposData?.data ?? []
+  const gruposById = useMemo(
+    () => new Map(grupos.map(g => [g.id, g.nome] as const)),
+    [grupos],
+  )
+
   const decisaoSet = useMemo(
     () => new Set(nodes.filter(n => n.type === 'decisao').map(n => n.id)),
     [nodes],
   )
 
   // Jobs (etapas) do pipeline — alimentam o seletor "Job" da condição linhas_job.
-  // Decisões são roteadores (não geram linhas), por isso ficam de fora.
+  // Decisões (roteadores) e notificações (não geram linhas) ficam de fora.
   const jobNames = useMemo(
-    () => nodes.filter(n => n.type !== 'decisao').map(n => n.id),
+    () => nodes.filter(n => n.type !== 'decisao' && n.type !== 'notificacao').map(n => n.id),
     [nodes],
   )
 
@@ -537,7 +604,7 @@ function FluxoEditorInner({ pipeline }: Props) {
       setDirty(true)
       setSelectedId(name)
     },
-    [rf, nameSet, maxOrder, setNodes],
+    [rf, nameSet, maxOrder, setNodes, gruposById],
   )
 
   // Atualiza o `data` de um nó (etapa) — usado pelo painel à direita ao vivo.
@@ -580,6 +647,17 @@ function FluxoEditorInner({ pipeline }: Props) {
     setDirty(true)
   }
 
+  // Atualiza a config de uma notificação (merge) e o rótulo do nó (nome do grupo).
+  function patchNotify(nodeId: string, patch: Partial<NotifyConfig>) {
+    setNodes(nds => nds.map(n => {
+      if (n.id !== nodeId || n.type !== 'notificacao') return n
+      const cur = (n.data as NotificacaoNodeData).notify ?? defaultNotify()
+      const next = { ...cur, ...patch }
+      return { ...n, data: { ...n.data, notify: next, label: notifyLabel(next, gruposById) } }
+    }))
+    setDirty(true)
+  }
+
   // ── Excluir nó (confirmação) ──────────────────────────────────────────────
   function excluirNo(id: string) {
     if (existingRef.current.has(id)) deletedRef.current.add(id)
@@ -614,6 +692,19 @@ function FluxoEditorInner({ pipeline }: Props) {
   async function salvar() {
     setSaving(true)
     try {
+      // Guard: nó de notificação exige um canal (grupo). O backend rejeita o
+      // /fluxo inteiro se faltar — avisamos claro (nomeando os nós) antes de
+      // chamar a API, em vez de deixar o save falhar com erro genérico.
+      const notifSemCanal = nodes
+        .filter(n => n.type === 'notificacao')
+        .filter(n => (n.data as { notify?: { grupo_id: number | null } }).notify?.grupo_id == null)
+        .map(n => n.id)
+      if (notifSemCanal.length) {
+        toast.error(`Escolha um canal na notificação: ${notifSemCanal.join(', ')}.`)
+        setSaving(false)
+        return
+      }
+
       const decisoes = new Set(nodes.filter(n => n.type === 'decisao').map(n => n.id))
 
       // depends_on_jobs[N] = origens das arestas NORMAIS que chegam em N
@@ -636,6 +727,7 @@ function FluxoEditorInner({ pipeline }: Props) {
       const payloadNodes = nodes.map(n => {
         const d = n.data as Record<string, unknown>
         const isDecisao = n.type === 'decisao'
+        const isNotificacao = n.type === 'notificacao'
         let condition: Record<string, unknown> | null = null
         if (isDecisao) {
           const cur = (d.condition as NodeCondition | undefined) ?? defaultCondition()
@@ -666,10 +758,11 @@ function FluxoEditorInner({ pipeline }: Props) {
             }
           }
         }
+        const jobType = isDecisao ? 'decisao' : isNotificacao ? 'notificacao' : ((d.type as string) || 'datastage')
         const base = {
           job_name: n.id,
-          job_type: isDecisao ? 'decisao' : ((d.type as string) || 'datastage'),
-          job_command: isDecisao ? null : ((d.command as string | null) ?? null),
+          job_type: jobType,
+          job_command: (isDecisao || isNotificacao) ? null : ((d.command as string | null) ?? null),
           execution_order: (d.order as number) ?? 1,
           depends_on_jobs: Array.from(depsByTarget.get(n.id) ?? []),
           condition,
@@ -677,6 +770,19 @@ function FluxoEditorInner({ pipeline }: Props) {
           layout_y: Math.round(n.position.y),
         }
         if (isDecisao) return base
+        if (isNotificacao) {
+          // Notificação: emite a chave `notify` (análogo ao `condition` da decisão);
+          // não envia condition nem campos de etapa. grupo_id é obrigatório no backend.
+          const cur = (d.notify as NotifyConfig | undefined) ?? defaultNotify()
+          return {
+            ...base,
+            notify: {
+              grupo_id: cur.grupo_id,
+              template_id: cur.template_id ?? null,
+              mensagem: (cur.mensagem ?? '').toString(),
+            },
+          }
+        }
         // Etapa: inclui SEMPRE os campos por tipo (round-trip — presença de chave
         // no backend; ausência não zera). Lidos do `data` do nó.
         const rawParams = (d.params as JobParam[] | undefined) ?? []
@@ -743,6 +849,7 @@ function FluxoEditorInner({ pipeline }: Props) {
   const miniMapColor = useMemo(
     () => (node: Node) => {
       if (node.type === 'decisao') return '#6366f1'
+      if (node.type === 'notificacao') return '#14b8a6'
       const t = (node.data as { type?: EtapaType }).type
       return (t && TYPE_META[t]?.hex) || '#94a3b8'
     },
@@ -873,9 +980,11 @@ function FluxoEditorInner({ pipeline }: Props) {
           mssqlConns={mssqlConns}
           dbServer={dbServer}
           dbDatabases={dbDatabases}
+          grupos={grupos}
           onRename={renomearNovo}
           onPatchData={patchNodeData}
           onPatchCondition={patchCondition}
+          onPatchNotify={patchNotify}
           onDelete={id => setDelNodeId(id)}
           onClose={closePanel}
         />
@@ -963,16 +1072,18 @@ interface PropriedadesPanelProps {
   mssqlConns: { conn_id: string; host: string }[]
   dbServer: string | null
   dbDatabases: string[]
+  grupos: MsgGrupo[]
   onRename: (oldName: string, novo: string) => boolean
   onPatchData: (nodeId: string, patch: Record<string, unknown>) => void
   onPatchCondition: (nodeId: string, patch: Partial<NodeCondition>) => void
+  onPatchNotify: (nodeId: string, patch: Partial<NotifyConfig>) => void
   onDelete: (id: string) => void
   onClose: () => void
 }
 
 function PropriedadesPanel({
-  node, ramos, jobNames, sshConns, mssqlConns, dbServer, dbDatabases,
-  onRename, onPatchData, onPatchCondition, onDelete, onClose,
+  node, ramos, jobNames, sshConns, mssqlConns, dbServer, dbDatabases, grupos,
+  onRename, onPatchData, onPatchCondition, onPatchNotify, onDelete, onClose,
 }: PropriedadesPanelProps) {
   return (
     <aside className="flex w-[320px] shrink-0 flex-col overflow-y-auto border-l border-edge bg-panel">
@@ -999,6 +1110,15 @@ function PropriedadesPanel({
           mssqlConns={mssqlConns}
           onRename={onRename}
           onPatchCondition={onPatchCondition}
+          onDelete={onDelete}
+        />
+      ) : node.type === 'notificacao' ? (
+        <PainelNotificacao
+          key={node.id}
+          node={node}
+          grupos={grupos}
+          onRename={onRename}
+          onPatchNotify={onPatchNotify}
           onDelete={onDelete}
         />
       ) : (
@@ -1348,6 +1468,140 @@ function PainelDecisao({ node, ramos, jobNames, mssqlConns, onRename, onPatchCon
       <div className="mt-auto border-t border-edge pt-3">
         <Button variant="danger" size="sm" className="w-full justify-center" onClick={() => onDelete(node.id)}>
           <Trash2 size={13} /> Excluir decisão
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+// ── Painel de uma NOTIFICAÇÃO (Teams) ────────────────────────────────────────
+interface PainelNotificacaoProps {
+  node: Node
+  grupos: MsgGrupo[]
+  onRename: (oldName: string, novo: string) => boolean
+  onPatchNotify: (nodeId: string, patch: Partial<NotifyConfig>) => void
+  onDelete: (id: string) => void
+}
+
+function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDelete }: PainelNotificacaoProps) {
+  const d = node.data as NotificacaoNodeData
+  const isNew = !!d.isNew
+  const cfg = d.notify ?? defaultNotify()
+  const patch = (p: Partial<NotifyConfig>) => onPatchNotify(node.id, p)
+
+  // Templates do grupo selecionado (Select "Modelo"). Sem grupo → não busca.
+  // Degrada para [] se a tabela/endpoint não existir (try/except no backend).
+  const { data: tplData } = useQuery<{ data: MsgTemplate[] }>({
+    queryKey: ['msg-templates', cfg.grupo_id],
+    queryFn: () => apiFetch(`/msg/templates?grupo_id=${cfg.grupo_id}`),
+    enabled: cfg.grupo_id != null,
+    staleTime: 300_000,
+  })
+  const templates = tplData?.data ?? []
+
+  // Troca de grupo: zera o modelo (templates pertencem ao grupo).
+  function onGrupoChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const v = e.target.value
+    patch({ grupo_id: v ? Number(v) : null, template_id: null })
+  }
+
+  return (
+    <div className="flex flex-1 flex-col gap-3 p-3">
+      {/* Cabeçalho */}
+      <div className="flex items-center gap-2">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-teal-500 text-white">
+          <BellRing size={15} strokeWidth={2.2} />
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
+          <p className="text-[10px] text-dim">Notificação (Teams)</p>
+        </div>
+      </div>
+
+      <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: AVISA_TIME" onRename={onRename} />
+
+      {/* Config da notificação */}
+      <div className="border-t border-edge pt-2.5">
+        <div className="mb-2 flex items-center gap-1.5">
+          <BellRing size={12} className="text-teal-600 dark:text-teal-300" />
+          <span className="text-xs font-semibold text-ink">Mensagem do Teams</span>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-1">
+            <Select
+              label="Grupo (canal) *"
+              value={cfg.grupo_id != null ? String(cfg.grupo_id) : ''}
+              onChange={onGrupoChange}
+              className="text-xs"
+            >
+              <option value="">Selecione um canal…</option>
+              {grupos.map(g => (
+                <option key={g.id} value={g.id}>{g.nome}</option>
+              ))}
+              {/* Mantém o grupo salvo visível mesmo se ele não estiver mais na lista */}
+              {cfg.grupo_id != null && !grupos.some(g => g.id === cfg.grupo_id) && (
+                <option value={cfg.grupo_id}>#{cfg.grupo_id} (fora da lista)</option>
+              )}
+            </Select>
+            {grupos.length === 0 && (
+              <p className="text-[10px] text-dim/70">
+                Nenhum canal cadastrado — crie um em Mensagens (Teams) antes de notificar.
+              </p>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <Select
+              label="Modelo (opcional)"
+              value={cfg.template_id != null ? String(cfg.template_id) : ''}
+              onChange={e => patch({ template_id: e.target.value ? Number(e.target.value) : null })}
+              disabled={cfg.grupo_id == null}
+              className={`text-xs ${cfg.grupo_id == null ? 'opacity-60' : ''}`}
+            >
+              <option value="">Nenhum (mensagem livre)</option>
+              {templates.map(t => (
+                <option key={t.id} value={t.id}>{t.nome}</option>
+              ))}
+              {/* Mantém o modelo salvo visível mesmo se ele não estiver na lista atual */}
+              {cfg.template_id != null && !templates.some(t => t.id === cfg.template_id) && (
+                <option value={cfg.template_id}>#{cfg.template_id} (fora da lista)</option>
+              )}
+            </Select>
+            {cfg.grupo_id == null
+              ? <p className="text-[10px] text-dim/70">Escolha um canal para listar os modelos.</p>
+              : templates.length === 0 && (
+                <p className="text-[10px] text-dim/70">Nenhum modelo neste canal — use a mensagem abaixo.</p>
+              )}
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <Textarea
+              label="Mensagem (opcional)"
+              value={cfg.mensagem ?? ''}
+              rows={4}
+              onChange={e => patch({ mensagem: e.target.value })}
+              placeholder="ex: Pipeline {pipeline} concluído com status {status}."
+              className="text-xs"
+            />
+            <p className="text-[10px] text-dim/70">
+              Vazio = usa o corpo do modelo. Placeholders:{' '}
+              <code className="font-mono text-dim">{'{pipeline} {job} {linhas} {status} {data}'}</code>
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Aviso quando falta o canal (grupo_id obrigatório no save). */}
+      {cfg.grupo_id == null && (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+          Selecione um canal (grupo) antes de salvar o fluxo.
+        </p>
+      )}
+
+      <div className="mt-auto border-t border-edge pt-3">
+        <Button variant="danger" size="sm" className="w-full justify-center" onClick={() => onDelete(node.id)}>
+          <Trash2 size={13} /> Excluir notificação
         </Button>
       </div>
     </div>
