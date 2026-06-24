@@ -584,6 +584,22 @@ function FluxoEditorInner({ pipeline }: Props) {
         setSelectedId(name)
         return
       }
+      if (tipo === 'notificacao') {
+        // Notificação Teams: cria o nó (defaults) e SELECIONA — o painel edita.
+        const name = nextName('NOTIFICACAO', nameSet())
+        const notify = defaultNotify()
+        const node: Node = {
+          id: name,
+          type: 'notificacao',
+          position: { x, y },
+          selected: true,
+          data: { name, notify, label: notifyLabel(notify, gruposById), isNew: true } as NotificacaoNodeData,
+        }
+        setNodes(nds => [...nds.map(n => n.selected ? { ...n, selected: false } : n), node])
+        setDirty(true)
+        setSelectedId(name)
+        return
+      }
       // Etapa: cria o nó (nome default único + comando vazio) e SELECIONA p/ preencher.
       const t = toEtapaType(tipo)
       const name = nextName('NOVA_ETAPA', nameSet())
