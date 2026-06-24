@@ -585,12 +585,19 @@ async def sql_preview(
     # BY sem TOP/OFFSET, o SQL Server recusa a subquery, então o erro vira 400
     # claro (preview com mensagem) em vez de 500.
     preview_sql = f"SELECT TOP 100 * FROM (\n{sql}\n) AS _prev"
+    _PREVIEW_TIMEOUT_S = 15
     try:
         conn = pyodbc.connect(conn_str, timeout=5)
+        # Timeout de EXECUÇÃO (não só de conexão): o driver cancela a query no
+        # servidor se passar disso — evita deixar um SELECT pesado pendurado.
+        conn.timeout = _PREVIEW_TIMEOUT_S
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Falha ao conectar em '{host}': {e}")
     try:
         cur = conn.cursor()
+        # Leitura sem tomar/esperar lock (preview é descartável; dirty read ok) —
+        # não bloqueia gravações nem fica preso esperando lock de outra sessão.
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
         cur.execute(preview_sql)
         columns = [d[0] for d in (cur.description or [])]
         fetched = cur.fetchall()
@@ -601,6 +608,13 @@ async def sql_preview(
             conn.close()
         except Exception:
             pass
+        msg = str(e)
+        if "timeout" in msg.lower() or "HYT00" in msg or "HYT01" in msg:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"A consulta excedeu o tempo limite de {_PREVIEW_TIMEOUT_S}s na "
+                        "pré-visualização e foi cancelada no servidor. Refine o SELECT "
+                        "(filtros, menos colunas) para conferir a amostra."))
         raise HTTPException(status_code=400, detail=f"Erro ao executar o SELECT: {e}")
     total = len(rows)
     return {
