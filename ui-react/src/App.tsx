@@ -20,6 +20,7 @@ import Avisos from './pages/Avisos'
 import GestaoFalhas from './pages/GestaoFalhas'
 import Publicacao from './pages/Publicacao'
 import Performance from './pages/Performance'
+import EtapasMockup from './pages/EtapasMockup'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -61,6 +62,8 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<PrivateRoute><AppShellV2 /></PrivateRoute>}>
             <Route index element={<Navigate to="/dashboard" replace />} />
+            {/* Rota escondida (fora do NAV/menu): mockup visual do editor de Etapas. */}
+            <Route path="etapas-mockup" element={<EtapasMockup />} />
             {NAV.map((n) => {
               const element = PAGE_ELEMENT[n.to]
               if (!element) return null
