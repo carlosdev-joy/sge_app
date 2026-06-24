@@ -27,7 +27,7 @@ interface ResultItem {
   id: string
   label: string
   sub: string
-  group: 'Pipelines' | 'Jobs' | 'Catálogo'
+  group: 'Pipelines' | 'Etapas' | 'Catálogo'
   href: string
 }
 
@@ -111,7 +111,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         id: `job-${j.pipeline_name}-${j.job_name}`,
         label: j.job_name,
         sub: j.pipeline_name + (j.job_type ? ` · ${j.job_type}` : ''),
-        group: 'Jobs',
+        group: 'Etapas',
         href: `/jobs`,
       })
     }
@@ -158,10 +158,10 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   if (!open) return null
 
-  const groupOrder: ResultItem['group'][] = ['Pipelines', 'Jobs', 'Catálogo']
+  const groupOrder: ResultItem['group'][] = ['Pipelines', 'Etapas', 'Catálogo']
   const groupIcons: Record<ResultItem['group'], React.ReactNode> = {
     Pipelines: <GitBranch size={12} />,
-    Jobs: <Briefcase size={12} />,
+    Etapas: <Briefcase size={12} />,
     Catálogo: <Database size={12} />,
   }
 

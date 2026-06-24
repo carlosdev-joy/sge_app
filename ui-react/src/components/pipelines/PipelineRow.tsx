@@ -49,11 +49,11 @@ export function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, 
 
       {/* Sempre visível: abre os jobs deste pipeline em nova aba (preserva o filtro daqui) */}
       <Button variant="secondary" size="sm"
-        title={`Ver jobs de ${p.pipeline_name} em nova aba`}
-        aria-label={`Ver jobs de ${p.pipeline_name} em nova aba`}
+        title={`Ver etapas de ${p.pipeline_name} em nova aba`}
+        aria-label={`Ver etapas de ${p.pipeline_name} em nova aba`}
         onClick={() => window.open(`/jobs?pipeline=${encodeURIComponent(p.pipeline_name)}`, '_blank', 'noopener,noreferrer')}
         className="flex-shrink-0 text-blue-400 hover:text-blue-300 border-blue-800/40">
-        <Boxes size={12} /> Jobs
+        <Boxes size={12} /> Etapas
       </Button>
 
       <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity border-l border-edge/40 pl-2 ml-1">
@@ -69,8 +69,8 @@ export function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, 
         </span>
         <span className={isViewer ? 'invisible pointer-events-none' : ''}>
           <Button variant="ghost" size="sm"
-            title={p.dag_criada ? 'Regenerar DAG' : 'Gerar DAG'}
-            aria-label={p.dag_criada ? `Regenerar DAG de ${p.pipeline_name}` : `Gerar DAG para ${p.pipeline_name}`}
+            title={p.dag_criada ? 'Publicar nova versão' : 'Publicar DAG'}
+            aria-label={p.dag_criada ? `Publicar nova versão da DAG de ${p.pipeline_name}` : `Publicar DAG de ${p.pipeline_name}`}
             onClick={onGenDag}
             className={p.dag_criada ? 'text-blue-400/70 hover:text-blue-300' : 'text-dim hover:text-ink'}>
             <Settings size={12} />

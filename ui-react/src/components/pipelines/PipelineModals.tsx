@@ -285,7 +285,7 @@ export function LineageModal({ pipeline, onClose }: { pipeline: Pipeline; onClos
             </div>
           </div>
           <p className="text-xs text-dim/60 text-center border-t border-edge pt-2 mt-1">
-            Visualização consolidada — para detalhe por job, use Governança › Lineage.
+            Visualização consolidada — para detalhe por etapa, use Catálogo & Lineage › Lineage.
           </p>
         </>
       )}
@@ -433,14 +433,14 @@ export function GenDagModal({ pipeline, onClose }: { pipeline: Pipeline; onClose
   }
 
   return (
-    <Modal open title={pipeline.dag_criada ? 'Regenerar DAG' : 'Gerar DAG'} onClose={onClose} size="sm">
+    <Modal open title={pipeline.dag_criada ? 'Publicar nova versão' : 'Publicar DAG'} onClose={onClose} size="sm">
       <div className="flex flex-col gap-4">
         {phase === 'confirm' && (
           <>
             <p className="text-sm text-dim">
               {pipeline.dag_criada
-                ? <>Regenerar a DAG de <span className="font-mono text-ink font-medium">{pipeline.pipeline_name}</span>? A DAG no Airflow será atualizada com as configurações atuais.</>
-                : <>Gerar a DAG para <span className="font-mono text-ink font-medium">{pipeline.pipeline_name}</span> no Airflow via etl_dag_factory?</>}
+                ? <>Publicar uma nova versão da DAG de <span className="font-mono text-ink font-medium">{pipeline.pipeline_name}</span>? A DAG no Airflow será atualizada com as configurações atuais.</>
+                : <>Publicar a DAG de <span className="font-mono text-ink font-medium">{pipeline.pipeline_name}</span> no Airflow via etl_dag_factory?</>}
             </p>
             <p className="text-xs text-dim bg-canvas border border-edge rounded-lg px-3 py-2">
               O Orquestra dispara a geração, aguarda o Airflow registrar a DAG e a deixa
@@ -457,7 +457,7 @@ export function GenDagModal({ pipeline, onClose }: { pipeline: Pipeline; onClose
             <div className="flex justify-end gap-2 border-t border-edge pt-3">
               <Button variant="secondary" onClick={onClose}>Cancelar</Button>
               <Button className="border-blue-800/40 text-blue-400" onClick={run}>
-                <Settings size={13} /> {pipeline.dag_criada ? 'Regenerar' : 'Gerar DAG'}
+                <Settings size={13} /> {pipeline.dag_criada ? 'Publicar nova versão' : 'Publicar DAG'}
               </Button>
             </div>
           </>

@@ -267,7 +267,7 @@ export default function ImpactoCampo() {
     <div className="flex flex-col gap-5">
       <div>
         <h1 className="text-lg font-semibold text-ink flex items-center gap-2">
-          <FileSearch size={20} className="text-[#1A5FA8]" /> Impacto por Campo / Tabela / Arquivo
+          <FileSearch size={20} className="text-[#1A5FA8]" /> Impacto de Campo
         </h1>
         <p className="text-sm text-dim mt-1">
           Varre um <code>.dsx</code> e mostra em quais jobs aparece um <strong>campo</strong>, <strong>tabela</strong> ou <strong>arquivo</strong>.
