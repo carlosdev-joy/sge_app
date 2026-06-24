@@ -12,8 +12,8 @@
 
 import type { LucideIcon } from 'lucide-react'
 import {
-  LayoutDashboard, Workflow, Boxes, ScrollText, Bell, ShieldAlert,
-  ShieldCheck, Network, Settings, FileSearch, ClipboardList, BarChart3, Terminal,
+  LayoutDashboard, Workflow, Blocks, ScrollText, Bell, ShieldAlert,
+  Library, Network, Settings, Crosshair, ClipboardList, BarChart3, Terminal,
   Rocket,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
@@ -40,14 +40,14 @@ export const NAV: NavItem[] = [
   { to: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard, group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_dashboard' },
   { to: '/gestao-falhas', label: 'Gestão de Falhas', icon: ShieldAlert, group: 'Operação', legacyHref: '/', migrated: true, v2Only: true, perm: 'tela_logs' },
   { to: '/pipelines',  label: 'Pipelines',  icon: Workflow,        group: 'Construção', legacyHref: '/', migrated: true, perm: 'tela_pipelines' },
-  { to: '/jobs',       label: 'Jobs',       labelV2: 'Etapas',                icon: Boxes,         group: 'Construção', legacyHref: '/', migrated: true, perm: 'tela_jobs' },
+  { to: '/jobs',       label: 'Jobs',       labelV2: 'Etapas',                icon: Blocks,        group: 'Construção', legacyHref: '/', migrated: true, perm: 'tela_jobs' },
   { to: '/publicacao', label: 'Publicação', icon: Rocket,          group: 'Construção', legacyHref: '/', migrated: true, v2Only: true, perm: 'tela_logs' },
   { to: '/logs',       label: 'Logs',       icon: ScrollText,      group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_logs' },
   { to: '/ds-console', label: 'Console DS', labelV2: 'Console DataStage',     icon: Terminal,      group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_ds_console' },
   { to: '/avisos',     label: 'Avisos',     icon: Bell,            group: 'Operação',   legacyHref: '/', migrated: true, v2Only: true },
-  { to: '/governanca', label: 'Governança', labelV2: 'Catálogo & Lineage',    icon: ShieldCheck,   group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_governanca' },
+  { to: '/governanca', label: 'Governança', labelV2: 'Catálogo & Lineage',    icon: Library,       group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_governanca' },
   { to: '/malha',      label: 'Malha',      labelV2: 'Malha de Pipelines',    icon: Network,       group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_malha' },
-  { to: '/impacto-campo', label: 'Impacto Campo', labelV2: 'Impacto de Campo', icon: FileSearch,   group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_impacto_campo' },
+  { to: '/impacto-campo', label: 'Impacto Campo', labelV2: 'Impacto de Campo', icon: Crosshair,    group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_impacto_campo' },
   { to: '/planos-ajuste', label: 'Planos Ajuste', labelV2: 'Planos de Ajuste', icon: ClipboardList, group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_plano_ajuste' },
   { to: '/powerbi',    label: 'Power BI',   icon: BarChart3,       group: 'BI',         legacyHref: '/', migrated: true, perm: 'tela_powerbi' },
   { to: '/admin',      label: 'Admin',      icon: Settings,        group: 'Administração', legacyHref: '/', migrated: true, adminOnly: true, perm: 'tela_admin' },
