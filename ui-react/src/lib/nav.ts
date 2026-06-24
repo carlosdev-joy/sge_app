@@ -14,6 +14,7 @@ import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, Workflow, Boxes, ScrollText, Bell, ShieldAlert,
   ShieldCheck, Network, Settings, FileSearch, ClipboardList, BarChart3, Terminal,
+  Rocket,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 
@@ -40,6 +41,7 @@ export const NAV: NavItem[] = [
   { to: '/gestao-falhas', label: 'Gestão de Falhas', icon: ShieldAlert, group: 'Operação', legacyHref: '/', migrated: true, v2Only: true, perm: 'tela_logs' },
   { to: '/pipelines',  label: 'Pipelines',  icon: Workflow,        group: 'Construção', legacyHref: '/', migrated: true, perm: 'tela_pipelines' },
   { to: '/jobs',       label: 'Jobs',       labelV2: 'Etapas',                icon: Boxes,         group: 'Construção', legacyHref: '/', migrated: true, perm: 'tela_jobs' },
+  { to: '/publicacao', label: 'Publicação', icon: Rocket,          group: 'Construção', legacyHref: '/', migrated: true, v2Only: true, perm: 'tela_logs' },
   { to: '/logs',       label: 'Logs',       icon: ScrollText,      group: 'Operação',   legacyHref: '/', migrated: true, perm: 'tela_logs' },
   { to: '/avisos',     label: 'Avisos',     icon: Bell,            group: 'Operação',   legacyHref: '/', migrated: true, v2Only: true },
   { to: '/governanca', label: 'Governança', labelV2: 'Catálogo & Lineage',    icon: ShieldCheck,   group: 'Governança & Dados', legacyHref: '/', migrated: true, perm: 'tela_governanca' },
