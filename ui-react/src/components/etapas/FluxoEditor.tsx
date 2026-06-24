@@ -392,6 +392,15 @@ function FluxoEditorInner({ pipeline }: Props) {
     setDirty(false)
   }, [data, setNodes, setEdges])
 
+  // Enquadra o fluxo ao abrir / trocar de pipeline (foco direto no conteúdo).
+  const fittedPipeRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!data || data.nodes.length === 0 || fittedPipeRef.current === pipeline) return
+    fittedPipeRef.current = pipeline
+    const t = setTimeout(() => rf.fitView({ padding: 0.2, duration: 250 }), 90)
+    return () => clearTimeout(t)
+  }, [data, pipeline, rf])
+
   // Todos os nomes em uso (no canvas) — para gerar nomes default únicos.
   const nameSet = useCallback(() => new Set(nodes.map(n => n.id)), [nodes])
   const maxOrder = useCallback(() => {
@@ -724,6 +733,12 @@ function FluxoEditorInner({ pipeline }: Props) {
     setSelectedId(node.id)
   }, [])
 
+  // Fecha o painel de propriedades (desseleciona o nó) — botão "recolher".
+  const closePanel = useCallback(() => {
+    setNodes(nds => nds.map(n => (n.selected ? { ...n, selected: false } : n)))
+    setSelectedId(null)
+  }, [setNodes])
+
   // Ramos da decisão SELECIONADA (derivados das arestas de ramo) — read-only no painel.
   const selRamos = useMemo(() => {
     const sim: string[] = []; const nao: string[] = []
@@ -827,19 +842,22 @@ function FluxoEditorInner({ pipeline }: Props) {
         </ReactFlow>
       </div>
 
-      {/* Painel de propriedades INLINE (à direita) — edita o nó selecionado ao vivo */}
-      <PropriedadesPanel
-        node={selNode}
-        ramos={selRamos}
-        sshConns={sshConns}
-        mssqlConns={mssqlConns}
-        dbServer={dbServer}
-        dbDatabases={dbDatabases}
-        onRename={renomearNovo}
-        onPatchData={patchNodeData}
-        onPatchCondition={patchCondition}
-        onDelete={id => setDelNodeId(id)}
-      />
+      {/* Painel de propriedades INLINE (à direita) — só quando há nó selecionado */}
+      {selNode && (
+        <PropriedadesPanel
+          node={selNode}
+          ramos={selRamos}
+          sshConns={sshConns}
+          mssqlConns={mssqlConns}
+          dbServer={dbServer}
+          dbDatabases={dbDatabases}
+          onRename={renomearNovo}
+          onPatchData={patchNodeData}
+          onPatchCondition={patchCondition}
+          onDelete={id => setDelNodeId(id)}
+          onClose={closePanel}
+        />
+      )}
 
       {/* Confirmação de exclusão de nó */}
       <Modal
@@ -926,17 +944,24 @@ interface PropriedadesPanelProps {
   onPatchData: (nodeId: string, patch: Record<string, unknown>) => void
   onPatchCondition: (nodeId: string, patch: Partial<NodeCondition>) => void
   onDelete: (id: string) => void
+  onClose: () => void
 }
 
 function PropriedadesPanel({
   node, ramos, sshConns, mssqlConns, dbServer, dbDatabases,
-  onRename, onPatchData, onPatchCondition, onDelete,
+  onRename, onPatchData, onPatchCondition, onDelete, onClose,
 }: PropriedadesPanelProps) {
   return (
     <aside className="flex w-[320px] shrink-0 flex-col overflow-y-auto border-l border-edge bg-panel">
-      {/* Cabeçalho do painel */}
+      {/* Cabeçalho do painel — o botão recolhe (desseleciona o nó) */}
       <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-edge bg-panel/95 px-3 py-2.5 backdrop-blur">
-        <PanelRightClose size={14} className="text-dim" />
+        <button
+          onClick={onClose}
+          title="Fechar / recolher propriedades"
+          className="flex items-center justify-center rounded p-0.5 text-dim transition-colors hover:bg-edge/40 hover:text-ink"
+        >
+          <PanelRightClose size={15} />
+        </button>
         <span className="text-xs font-semibold uppercase tracking-wide text-dim">Propriedades</span>
       </div>
 
