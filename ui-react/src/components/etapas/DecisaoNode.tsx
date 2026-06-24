@@ -27,7 +27,7 @@ export interface DecisaoNodeData {
   [key: string]: unknown
 }
 
-const SIZE = 132 // lado do quadrado base (o losango é a diagonal)
+const SIZE = 104 // lado do quadrado base (o losango é a diagonal)
 
 const HANDLE_CLS =
   '!h-2.5 !w-2.5 !rounded-full !border-2 !border-panel !bg-indigo-500'
@@ -50,16 +50,16 @@ function DecisaoNodeImpl({ data, selected }: NodeProps & { data: DecisaoNodeData
       />
 
       {/* Conteúdo contra-rotacionado, centralizado */}
-      <div className="absolute inset-0 flex flex-col items-center justify-center px-5 text-center">
+      <div className="absolute inset-0 flex flex-col items-center justify-center px-4 text-center">
         <GitBranch
-          size={15}
+          size={12}
           strokeWidth={2.2}
-          className="mb-1 text-indigo-600 dark:text-indigo-300"
+          className="mb-0.5 text-indigo-600 dark:text-indigo-300"
         />
-        <span className="text-[11px] font-semibold leading-tight text-indigo-800 dark:text-indigo-200">
+        <span className="text-[10px] font-semibold leading-tight text-indigo-800 dark:text-indigo-200">
           {data.name}
         </span>
-        <span className="mt-0.5 text-[10px] leading-tight text-indigo-600/90 dark:text-indigo-300/90">
+        <span className="mt-0.5 text-[9px] leading-tight text-indigo-600/90 dark:text-indigo-300/90">
           {data.label}
         </span>
       </div>

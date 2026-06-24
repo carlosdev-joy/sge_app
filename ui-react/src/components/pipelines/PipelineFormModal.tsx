@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
 import { useAuthStore } from '../../store/auth'
@@ -6,102 +6,20 @@ import { Button } from '../ui/Button'
 import { Input, Select, Textarea } from '../ui/Input'
 import { Modal } from '../ui/Modal'
 import { toast } from '../ui/Toast'
-import { Save, Plus } from 'lucide-react'
-import type { Pipeline, LineageJob } from '../../types/pipeline'
+import { Save } from 'lucide-react'
+import type { Pipeline } from '../../types/pipeline'
 import {
   SCHEDULE_TYPES, SCHEDULE_LABELS, CRITICIDADES, AMBIENTES, MAX_MONTH_DAYS,
-  JOB_TYPES, JOB_TYPE_LABELS, OBJECT_TYPES, DOW_LABELS,
-  type WizJobType, type ScheduleConfig, type MonthDayEntry,
+  DOW_LABELS,
+  type ScheduleConfig, type MonthDayEntry,
   hourlyTimes, parseCustomTimes, computeNextRuns, runsPerDay,
-  typeBadgeColor, critColor, buildCron, parseMonthDaysTimes, serializeMonthDaysTimes,
+  critColor, buildCron, parseMonthDaysTimes, serializeMonthDaysTimes,
 } from './pipelineUtils'
 
 // ── Sub-types ─────────────────────────────────────────────────────────────────
 
-interface JobParamEntry {
-  id: string
-  param_name: string
-  param_type: string
-  param_value: string
-}
-
-const PARAM_TYPES = ['VARCHAR', 'INT', 'DATE', 'DATETIME', 'DECIMAL', 'BIT'] as const
-const COND_OPERADORES = ['=', '<>', '>', '>=', '<', '<='] as const
-
-// Condição de um nó de Decisão (job_type='decisao').
-interface ConditionEntry {
-  tipo: 'contagem' | 'query'
-  tabela?: string
-  database?: string
-  sql?: string
-  mssql_conn_id?: string
-  operador: string
-  valor: string
-  ramo_verdadeiro: string[]
-  ramo_falso: string[]
-}
-
-const defaultCondition = (): ConditionEntry => ({
-  tipo: 'contagem', tabela: '', database: '', sql: '', mssql_conn_id: '',
-  operador: '>', valor: '', ramo_verdadeiro: [], ramo_falso: [],
-})
-
-interface JobEntry {
-  id: string
-  job_name: string
-  job_type: WizJobType
-  job_command: string
-  execution_order: number
-  ssh_conn_id: string
-  verbose_log: boolean
-  mssql_conn_id: string
-  mssql_database: string
-  params: JobParamEntry[]
-  depends_on_jobs: string[]
-  condition?: ConditionEntry
-}
-
-// Detecta ciclo no grafo de dependências entre jobs (DFS 3-cores). Inclui as
-// arestas do branch: um job de ramo "depende" da sua decisão (decisão → membro).
-function jobsHaveCycle(jobs: JobEntry[]): boolean {
-  const adj = new Map<string, string[]>()
-  jobs.forEach(j => { const n = j.job_name.trim(); if (n) adj.set(n, (j.depends_on_jobs || []).filter(Boolean)) })
-  jobs.forEach(j => {
-    const dn = j.job_name.trim()
-    if (j.job_type !== 'decisao' || !j.condition || !dn) return
-    const membros = [...(j.condition.ramo_verdadeiro || []), ...(j.condition.ramo_falso || [])]
-    membros.forEach(m => {
-      const mn = (m || '').trim()
-      if (!mn) return
-      if (!adj.has(mn)) adj.set(mn, [])
-      adj.get(mn)!.push(dn)   // membro depende da decisão
-    })
-  })
-  const color = new Map<string, number>()  // 0=branco 1=cinza 2=preto
-  adj.forEach((_, n) => color.set(n, 0))
-  let cyclic = false
-  const dfs = (n: string) => {
-    color.set(n, 1)
-    for (const d of adj.get(n) ?? []) {
-      if (!adj.has(d)) continue
-      const c = color.get(d)
-      if (c === 1) { cyclic = true; return }
-      if (c === 0) { dfs(d); if (cyclic) return }
-    }
-    color.set(n, 2)
-  }
-  for (const n of adj.keys()) { if (color.get(n) === 0) dfs(n); if (cyclic) break }
-  return cyclic
-}
-
-interface LineageEntry {
-  id: string
-  job_name: string
-  direction: 'origem' | 'destino'
-  object_name: string
-  object_type: string
-  database_name: string
-}
+// O wizard cuida apenas dos METADADOS do pipeline. As etapas (jobs), decisões e
+// lineage são gerenciados na tela de Etapas (Lista + Fluxo).
 
 interface FormState {
   pipeline_name: string
@@ -254,8 +172,8 @@ function TagsInput({ value, onChange }: { value: string[]; onChange: (v: string[
 
 // ── Wizard stepper ────────────────────────────────────────────────────────────
 
-const STEPS = ['Identificação', 'Agendamento', 'Notificações', 'Etapas', 'Lineage', 'Revisão'] as const
-type Step = 0 | 1 | 2 | 3 | 4 | 5
+const STEPS = ['Identificação', 'Agendamento', 'Notificações', 'Revisão'] as const
+type Step = 0 | 1 | 2 | 3
 
 function Stepper({ step, setStep, errors }: { step: Step; setStep: (s: Step) => void; errors: Record<number, string[]> }) {
   return (
@@ -305,8 +223,6 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   const [form,  setForm]  = useState<FormState>(pipeline ? pipelineToForm(pipeline) : defaultForm())
   const [step,  setStep]  = useState<Step>(0)
   const [stepErrors, setStepErrors] = useState<Record<number, string[]>>({})
-  const [jobs,  setJobs]  = useState<JobEntry[]>([])
-  const [lineage, setLineage] = useState<LineageEntry[]>([])
   const [confirmClose, setConfirmClose] = useState(false)
   const [askGenerate, setAskGenerate]   = useState<string | null>(null)
 
@@ -341,103 +257,14 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   })
   const calendarios = calData?.calendarios ?? []
 
-  const { data: sshData } = useQuery<{ connections: { conn_id: string; host: string }[] }>({
-    queryKey: ['ssh-connections'],
-    queryFn: () => apiFetch('/airflow/connections/ssh'),
-    staleTime: 300_000,
-  })
-  const sshConns = sshData?.connections ?? []
-
-  const { data: mssqlData } = useQuery<{ connections: { conn_id: string; host: string }[] }>({
-    queryKey: ['mssql-connections'],
-    queryFn: () => apiFetch('/airflow/connections/mssql'),
-    staleTime: 300_000,
-  })
-  const mssqlConns = mssqlData?.connections ?? []
-
-  // Bancos do mesmo servidor da conexão do ORQUESTRA (seletor de banco-alvo storedproc).
-  const { data: dbData } = useQuery<{ server: string | null; databases: string[] }>({
-    queryKey: ['job-databases'],
-    queryFn: () => apiFetch('/jobs/databases'),
-    staleTime: 300_000,
-  })
-  const dbServer    = dbData?.server ?? null
-  const dbDatabases = dbData?.databases ?? []
-
-  const editName = pipeline?.pipeline_name
-  const { data: editJobs } = useQuery<{ data: { job_name: string; execution_order: number; job_type: string; job_command: string | null; ssh_conn_id: string | null; verbose_log: boolean }[] }>({
-    queryKey: ['wizard-edit-jobs', editName],
-    queryFn: () => apiFetch(`/jobs?limit=200&filter_pipeline=${encodeURIComponent(editName!)}`),
-    enabled: isEdit && !!editName,
-  })
-  const { data: editLineage } = useQuery<{ jobs: LineageJob[] }>({
-    queryKey: ['wizard-edit-lineage', editName],
-    queryFn: () => apiFetch(`/lineage?pipeline_name=${encodeURIComponent(editName!)}`),
-    enabled: isEdit && !!editName,
-  })
-  const populatedRef = useRef(false)
-  useEffect(() => {
-    if (!isEdit || populatedRef.current || !editJobs) return
-    populatedRef.current = true
-    const rows = [...(editJobs.data ?? [])].sort((a, b) => a.execution_order - b.execution_order)
-    setJobs(rows.map((j, i) => ({
-      id: `j_${i}_${Math.random().toString(36).slice(2, 7)}`,
-      job_name: j.job_name,
-      job_type: (JOB_TYPES.includes(j.job_type as WizJobType) ? j.job_type : 'datastage') as WizJobType,
-      job_command: j.job_command ?? '',
-      execution_order: j.execution_order,
-      ssh_conn_id: j.ssh_conn_id ?? '',
-      verbose_log: !!j.verbose_log,
-      mssql_conn_id: '',
-      mssql_database: '',
-      params: [],
-      depends_on_jobs: [],
-    })))
-    Promise.all(rows.map(j =>
-      apiFetch<{ mssql_conn_id: string | null; mssql_database?: string | null; depends_on_jobs?: string | null; condition?: ConditionEntry | null; params: { param_name: string; param_type: string; param_value: string | null }[] }>(
-        `/pipelines/jobs/${encodeURIComponent(editName!)}/${encodeURIComponent(j.job_name)}`,
-      ).then(detail => ({ job_name: j.job_name, detail })).catch(() => null),
-    )).then(results => {
-      setJobs(prev => prev.map(je => {
-        const found = results.find(r => r && r.job_name === je.job_name)
-        if (!found) return je
-        const cond = found.detail.condition
-        return {
-          ...je,
-          mssql_conn_id: found.detail.mssql_conn_id ?? '',
-          mssql_database: found.detail.mssql_database ?? '',
-          params: (found.detail.params ?? []).map((p, ppi) => ({
-            id: `p_${ppi}_${Math.random().toString(36).slice(2, 7)}`,
-            param_name: p.param_name, param_type: p.param_type, param_value: p.param_value ?? '',
-          })),
-          depends_on_jobs: (found.detail.depends_on_jobs || '').split(',').map(s => s.trim()).filter(Boolean),
-          condition: cond ? { ...defaultCondition(), ...cond, valor: cond.valor != null ? String(cond.valor) : '' } : je.condition,
-        }
-      }))
-    })
-    const lin: LineageEntry[] = []
-    ;(editLineage?.jobs ?? []).forEach(lj => {
-      ;(lj.origens || []).forEach(o => lin.push({
-        id: `l_${Math.random().toString(36).slice(2, 8)}`, job_name: lj.job_name, direction: 'origem',
-        object_name: o.object_name, object_type: o.object_type || 'Tabela', database_name: o.database_name ?? '',
-      }))
-      ;(lj.destinos || []).forEach(o => lin.push({
-        id: `l_${Math.random().toString(36).slice(2, 8)}`, job_name: lj.job_name, direction: 'destino',
-        object_name: o.object_name, object_type: o.object_type || 'Tabela', database_name: o.database_name ?? '',
-      }))
-    })
-    setLineage(lin)
-  }, [isEdit, editJobs, editLineage])
-
   // "Dirty" cirúrgico: marca só quando muda algo que AFETA a DAG (não cadastro
-  // puro nem lineage). Usado para perguntar "Regenerar a DAG?" só quando precisa.
+  // puro). Usado para perguntar "Regenerar a DAG?" só quando precisa.
   const dagDirtyRef = useRef(false)
   const CADASTRO_FIELDS = new Set<string>([
     'tags_list', 'criticidade', 'descricao', 'runbook_md', 'sla_minutos',
     'active', 'motivo_inativacao',
   ])
   function markDagDirty() {
-    if (isEdit && !populatedRef.current) return  // ignora a carga inicial
     dagDirtyRef.current = true
   }
 
@@ -509,61 +336,6 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       }
       return e
     }
-    if (s === 3) {
-      const e: string[] = []
-      jobs.forEach((j, i) => {
-        if (!j.job_name.trim()) e.push(`Job #${i + 1}: nome é obrigatório`)
-        if (j.job_type === 'shell' && !j.ssh_conn_id) e.push(`Job "${j.job_name || i + 1}": servidor SSH é obrigatório para tipo shell`)
-        if (j.job_type === 'storedproc') {
-          if (!j.mssql_conn_id) e.push(`Job "${j.job_name || i + 1}": conexão MSSQL é obrigatória para tipo storedproc`)
-          const nomesVistos = new Set<string>()
-          j.params.forEach((p, pi) => {
-            const nome = p.param_name.trim()
-            if (!nome) e.push(`Job "${j.job_name || i + 1}": parâmetro #${pi + 1} sem nome definido`)
-            if (!p.param_type) e.push(`Job "${j.job_name || i + 1}": parâmetro #${pi + 1} sem tipo de dado definido`)
-            const key = nome.replace(/^@/, '').toLowerCase()
-            if (nome && nomesVistos.has(key)) e.push(`Job "${j.job_name || i + 1}": parâmetro "${nome}" duplicado`)
-            nomesVistos.add(key)
-          })
-        }
-        if (j.job_type === 'decisao') {
-          const rotulo = `Decisão "${j.job_name || i + 1}"`
-          const c = j.condition
-          if (!c || (c.tipo !== 'contagem' && c.tipo !== 'query')) {
-            e.push(`${rotulo}: defina o tipo da condição (contagem ou query)`)
-          } else {
-            if (c.tipo === 'contagem' && !(c.tabela || '').trim()) e.push(`${rotulo}: informe a tabela (db.schema.tabela)`)
-            if (c.tipo === 'query' && !(c.sql || '').trim()) e.push(`${rotulo}: informe o SQL (somente SELECT)`)
-            if (!c.operador) e.push(`${rotulo}: selecione o operador`)
-            if (!(c.valor ?? '').toString().trim()) e.push(`${rotulo}: informe o valor de comparação`)
-            const todos = jobs.map(x => x.job_name.trim()).filter(Boolean)
-            const setJobs2 = new Set(todos)
-            const v = (c.ramo_verdadeiro || []).map(s => (s || '').trim()).filter(Boolean)
-            const f = (c.ramo_falso || []).map(s => (s || '').trim()).filter(Boolean)
-            if (v.length === 0 && f.length === 0) e.push(`${rotulo}: selecione ao menos um job em algum ramo`)
-            ;[...v, ...f].forEach(m => {
-              if (m === j.job_name.trim()) e.push(`${rotulo}: um ramo não pode referenciar a própria decisão`)
-              else if (!setJobs2.has(m)) e.push(`${rotulo}: ramo referencia "${m}" que não existe`)
-            })
-            const ambos = v.filter(m => f.includes(m))
-            if (ambos.length) e.push(`${rotulo}: job(s) em ambos os ramos: ${ambos.join(', ')}`)
-          }
-        }
-      })
-      const names = jobs.map(j => j.job_name.trim()).filter(Boolean)
-      const dups = [...new Set(names.filter((n, i) => names.indexOf(n) !== i))]
-      if (dups.length) e.push(`Jobs com nomes duplicados: ${dups.join(', ')}`)
-      // dependências por job
-      const nameSet = new Set(names)
-      jobs.forEach((j, i) => {
-        (j.depends_on_jobs || []).forEach(d => {
-          if (d === j.job_name.trim()) e.push(`Job "${j.job_name || i + 1}": não pode depender de si mesmo`)
-          else if (!nameSet.has(d)) e.push(`Job "${j.job_name || i + 1}": depende de "${d}" que não existe`)
-        })
-      })
-      if (jobsHaveCycle(jobs)) e.push('Há ciclo de dependências entre os jobs (ex.: A → B → A). Ajuste o "Depende de".')
-      return e
-    }
     return []
   }
 
@@ -574,7 +346,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       return
     }
     setStepErrors(prev => ({ ...prev, [step]: [] }))
-    if (step < 5) setStep((step + 1) as Step)
+    if (step < 3) setStep((step + 1) as Step)
   }
 
   function goPrev() { if (step > 0) setStep((step - 1) as Step) }
@@ -665,81 +437,21 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       }
       const reg = await apiFetch<{ dag_sync?: DagSync | null }>('/pipelines/register', { method: 'POST', body: JSON.stringify(body) })
       const dagSync = reg?.dag_sync ?? null
-
-      const validJobs = jobs.filter(j => j.job_name.trim())
-        .sort((a, b) => a.execution_order - b.execution_order)
-      if (validJobs.length > 0) {
-        const jobsPayload = validJobs.map(j => {
-          const origens  = lineage.filter(l => l.job_name === j.job_name && l.direction === 'origem' && l.object_name.trim())
-          const destinos = lineage.filter(l => l.job_name === j.job_name && l.direction === 'destino' && l.object_name.trim())
-          const mapObj = (l: LineageEntry) => ({
-            object_name:   l.object_name.trim(),
-            object_type:   l.object_type || 'Tabela',
-            database_name: l.database_name.trim() || null,
-            extraction_method: 'manual',
-          })
-          return {
-            job_name:        j.job_name.trim(),
-            execution_order: j.execution_order,
-            depends_on_jobs: (j.depends_on_jobs || []).map(d => d.trim()).filter(Boolean),
-            job_type:        j.job_type || 'datastage',
-            job_command:     j.job_command.trim() || null,
-            ssh_conn_id:     j.job_type === 'shell' ? (j.ssh_conn_id || null) : null,
-            verbose_log:     j.job_type === 'datastage' ? j.verbose_log : false,
-            mssql_conn_id:   j.job_type === 'storedproc' ? (j.mssql_conn_id || null) : null,
-            mssql_database:  j.job_type === 'storedproc' ? (j.mssql_database || null) : null,
-            params:          j.job_type === 'storedproc'
-              ? j.params.filter(p => p.param_name.trim()).map(p => ({
-                  param_name: p.param_name.trim(), param_type: p.param_type, param_value: p.param_value,
-                }))
-              : [],
-            condition:       j.job_type === 'decisao' && j.condition ? {
-              tipo: j.condition.tipo,
-              tabela: (j.condition.tabela || '').trim() || undefined,
-              database: (j.condition.database || '').trim() || undefined,
-              sql: (j.condition.sql || '').trim() || undefined,
-              mssql_conn_id: (j.condition.mssql_conn_id || '').trim() || undefined,
-              operador: j.condition.operador,
-              valor: (j.condition.valor ?? '').toString().trim(),
-              ramo_verdadeiro: (j.condition.ramo_verdadeiro || []).map(s => s.trim()).filter(Boolean),
-              ramo_falso: (j.condition.ramo_falso || []).map(s => s.trim()).filter(Boolean),
-            } : null,
-            origens:         origens.map(mapObj),
-            destinos:        destinos.map(mapObj),
-            transformacoes:  [],
-            operacao:        'upsert',
-          }
-        })
-        try {
-          await apiFetch('/pipelines/jobs/register', {
-            method: 'POST',
-            body: JSON.stringify({ pipeline_name: pname, require_lineage: false, jobs: jobsPayload }),
-          })
-        } catch (e: any) {
-          return { pname, jobsError: e?.message || 'erro ao salvar jobs', dagSync }
-        }
-      }
       return { pname, dagSync }
     },
-    onSuccess: (res: { pname: string; jobsError?: string; dagSync?: DagSync | null }) => {
+    onSuccess: (res: { pname: string; dagSync?: DagSync | null }) => {
       qc.invalidateQueries({ queryKey: ['pipelines'] })
-      qc.invalidateQueries({ queryKey: ['jobs'] })
-      if (res.jobsError) {
-        toast.error(`Pipeline salvo, mas os jobs falharam: ${res.jobsError}. Edite o pipeline para reenviar.`)
-        setStepErrors(prev => ({ ...prev, 5: [`Pipeline salvo, mas os jobs falharam: ${res.jobsError}`] }))
-        return
-      }
       const dag = dagSyncMsg(res.dagSync)
       const base = isEdit ? 'Pipeline atualizado!' : 'Pipeline criado com sucesso!'
       if (!dag.ok) toast.error(`${base} Atenção: ${dag.msg}`)
       else toast.success(dag.msg ? `${base} · ${dag.msg}` : base)
       // Criação: sempre oferece. Edição: só pergunta se houve mudança que afeta
-      // a DAG (não pergunta em consulta nem em alteração só de cadastro/lineage).
+      // a DAG (não pergunta em consulta nem em alteração só de cadastro).
       if (!isEdit || dagDirtyRef.current) { setAskGenerate(res.pname); return }
       onClose()
     },
     onError: (e: any) => {
-      setStepErrors(prev => ({ ...prev, 5: [e?.message || 'Erro ao salvar pipeline'] }))
+      setStepErrors(prev => ({ ...prev, 3: [e?.message || 'Erro ao salvar pipeline'] }))
     },
   })
 
@@ -759,7 +471,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   // Fechar com confirmação se há conteúdo preenchido (evita perder o trabalho).
   const hasContent = isEdit
     ? step > 0
-    : (!!form.pipeline_name?.trim() || jobs.length > 0 || lineage.length > 0 || step > 0)
+    : (!!form.pipeline_name?.trim() || step > 0)
   function requestClose() {
     if (saveMut.isPending || genDagMut.isPending) return
     if (hasContent) setConfirmClose(true)
@@ -769,7 +481,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   function validateAllAndSave() {
     const allErrors: Record<number, string[]> = {}
     let firstBad = -1
-    for (const s of [0, 1, 3]) {
+    for (const s of [0, 1]) {
       const e = validateStep(s)
       if (e.length) { allErrors[s] = e; if (firstBad < 0) firstBad = s }
     }
@@ -779,116 +491,6 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       return
     }
     saveMut.mutate()
-  }
-
-  function addJob() {
-    setJobs(prev => [...prev, {
-      id: `j_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      job_name: '',
-      job_type: 'datastage',
-      job_command: '',
-      execution_order: prev.length + 1,
-      ssh_conn_id: '',
-      verbose_log: false,
-      mssql_conn_id: '',
-      mssql_database: '',
-      params: [],
-      depends_on_jobs: [],
-    }])
-    markDagDirty()
-  }
-
-  function removeJob(id: string) {
-    const job = jobs.find(j => j.id === id)
-    setJobs(prev => prev.filter(j => j.id !== id))
-    if (job) setLineage(prev => prev.filter(l => l.job_name !== job.job_name))
-    markDagDirty()
-  }
-
-  function updateJob(id: string, patch: Partial<JobEntry>) {
-    markDagDirty()
-    const job = jobs.find(j => j.id === id)
-    if (job && patch.job_name !== undefined && patch.job_name !== job.job_name) {
-      const oldName = job.job_name
-      const newName = patch.job_name!
-      setLineage(prevL => prevL.map(l => l.job_name === oldName ? { ...l, job_name: newName } : l))
-      // remapeia dependências e ramos de decisão que apontavam para o nome antigo
-      const remap = (d: string) => d === oldName ? newName : d
-      setJobs(prev => prev.map(j => ({
-        ...j,
-        depends_on_jobs: (j.depends_on_jobs || []).map(remap),
-        condition: j.condition ? {
-          ...j.condition,
-          ramo_verdadeiro: (j.condition.ramo_verdadeiro || []).map(remap),
-          ramo_falso: (j.condition.ramo_falso || []).map(remap),
-        } : j.condition,
-      })))
-    }
-    setJobs(prev => prev.map(j => j.id === id ? { ...j, ...patch } : j))
-  }
-
-  // Atualiza a condição de um job de decisão (merge sobre a condição atual).
-  function updateCondition(jobId: string, patch: Partial<ConditionEntry>) {
-    markDagDirty()
-    setJobs(prev => prev.map(j => j.id === jobId
-      ? { ...j, condition: { ...(j.condition ?? defaultCondition()), ...patch } }
-      : j))
-  }
-
-  // Adiciona/remove um job de um dos ramos da decisão, garantindo exclusividade
-  // (um job não fica nos dois ramos ao mesmo tempo).
-  function toggleRamo(job: JobEntry, ramo: 'ramo_verdadeiro' | 'ramo_falso', nome: string) {
-    const c = job.condition ?? defaultCondition()
-    const outro = ramo === 'ramo_verdadeiro' ? 'ramo_falso' : 'ramo_verdadeiro'
-    const atual = c[ramo] || []
-    const sel = atual.includes(nome)
-    updateCondition(job.id, {
-      [ramo]: sel ? atual.filter(d => d !== nome) : [...atual, nome],
-      [outro]: (c[outro] || []).filter(d => d !== nome),
-    } as Partial<ConditionEntry>)
-  }
-
-  const [expandedParams, setExpandedParams] = useState<Set<string>>(new Set())
-  function toggleParams(jobId: string) {
-    setExpandedParams(prev => {
-      const next = new Set(prev)
-      if (next.has(jobId)) next.delete(jobId); else next.add(jobId)
-      return next
-    })
-  }
-  function addParam(jobId: string) {
-    setJobs(prev => prev.map(j => j.id !== jobId ? j : {
-      ...j, params: [...j.params, {
-        id: `p_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        param_name: '', param_type: 'VARCHAR', param_value: '',
-      }],
-    }))
-    setExpandedParams(prev => new Set(prev).add(jobId))
-    markDagDirty()
-  }
-  function removeParam(jobId: string, paramId: string) {
-    setJobs(prev => prev.map(j => j.id !== jobId ? j : { ...j, params: j.params.filter(p => p.id !== paramId) }))
-    markDagDirty()
-  }
-  function updateParam(jobId: string, paramId: string, patch: Partial<JobParamEntry>) {
-    markDagDirty()
-    setJobs(prev => prev.map(j => j.id !== jobId ? j : {
-      ...j, params: j.params.map(p => p.id === paramId ? { ...p, ...patch } : p),
-    }))
-  }
-
-  function addLineageEntry(job_name: string, direction: 'origem' | 'destino') {
-    setLineage(prev => [...prev, {
-      id: `l_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      job_name, direction,
-      object_name: '', object_type: 'Tabela', database_name: '',
-    }])
-  }
-
-  function removeLineageEntry(id: string) { setLineage(prev => prev.filter(l => l.id !== id)) }
-
-  function updateLineage(id: string, field: keyof LineageEntry, value: string) {
-    setLineage(prev => prev.map(l => l.id === id ? { ...l, [field]: value } : l))
   }
 
   const curStepErrors = stepErrors[step] ?? []
@@ -1281,365 +883,8 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
           </div>
         )}
 
-        {/* ── STEP 3: JOBS ── */}
+        {/* ── STEP 3: REVISÃO ── */}
         {step === 3 && (
-          <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-1">
-            <div className="flex items-center justify-between">
-              <div className="text-xs text-dim">
-                Defina as etapas. <span className="text-dim/70">Mesma ordem = paralelo. Use “Depende de” para encadear etapas específicas (ex.: 3 só após o 1).</span>
-              </div>
-              <Button size="sm" onClick={addJob}><Plus size={12} /> Adicionar Etapa</Button>
-            </div>
-            {jobs.length === 0 && (
-              <div className="py-10 flex flex-col items-center gap-2 text-dim border border-dashed border-edge rounded-xl">
-                <span className="text-3xl opacity-30">⚙</span>
-                <p className="text-sm">Nenhuma etapa cadastrada</p>
-                <p className="text-xs">Etapas são opcionais — podem ser adicionadas depois na tela de Etapas.</p>
-              </div>
-            )}
-            {jobs.map((j, idx) => {
-              const cmdLabel = j.job_type === 'datastage' ? 'Nome do job DataStage'
-                : j.job_type === 'storedproc' ? 'Procedure (ex: dbo.sp_nome)'
-                : j.job_type === 'python' ? 'Módulo / Path' : 'Comando / Path'
-              const cmdPlaceholder = j.job_type === 'datastage' ? 'ex: BiCvp.job_name'
-                : j.job_type === 'shell' ? 'ex: /opt/scripts/run.sh'
-                : j.job_type === 'python' ? 'ex: scripts.modulo.run' : 'ex: dbo.sp_procedure'
-              return (
-                <div key={j.id} className="border border-edge rounded-xl p-3 flex flex-col gap-2 bg-canvas">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-bold text-blue-600 dark:text-blue-300 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-800/40 rounded-full px-2 py-0.5">#{idx + 1}</span>
-                    <span className="text-xs font-mono text-ink flex-1 truncate">{j.job_name || '(sem nome)'}</span>
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium ${typeBadgeColor(j.job_type)}`}>{JOB_TYPE_LABELS[j.job_type] ?? j.job_type}</span>
-                    <button onClick={() => removeJob(j.id)} className="text-dim hover:text-red-500 transition-colors text-xs ml-1">✕ remover</button>
-                  </div>
-                  <div className="grid grid-cols-[1fr_70px_130px] gap-2">
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] text-dim font-medium">Nome do Job *</label>
-                      <input type="text" value={j.job_name}
-                        onChange={e => updateJob(j.id, { job_name: e.target.value })}
-                        placeholder="ex: BiCvp_Extrai_01"
-                        className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] text-dim font-medium">Ordem</label>
-                      <input type="number" min={1} value={j.execution_order}
-                        onChange={e => updateJob(j.id, { execution_order: parseInt(e.target.value) || 1 })}
-                        className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs text-center focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] text-dim font-medium">Tipo</label>
-                      <select value={j.job_type}
-                        onChange={e => { const val = e.target.value as WizJobType; updateJob(j.id, val === 'decisao' && !j.condition ? { job_type: val, condition: defaultCondition() } : { job_type: val }) }}
-                        className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
-                        {JOB_TYPES.map(t => <option key={t} value={t}>{JOB_TYPE_LABELS[t]}</option>)}
-                      </select>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {j.job_type !== 'decisao' && (
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] text-dim font-medium">{cmdLabel}</label>
-                      <input type="text" value={j.job_command}
-                        onChange={e => updateJob(j.id, { job_command: e.target.value })}
-                        placeholder={cmdPlaceholder}
-                        className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                      {j.job_type === 'storedproc' && (
-                        <p className="text-[10px] text-dim/70">Apenas o <strong>nome</strong> da procedure (ex.: <code>dbo.sp_nome</code>). O sistema adiciona o <code>EXEC</code> e os parâmetros — não escreva “EXEC”.</p>
-                      )}
-                    </div>
-                    )}
-                    {j.job_type === 'shell' && (
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[10px] text-dim font-medium">Servidor SSH *</label>
-                        <select value={j.ssh_conn_id}
-                          onChange={e => updateJob(j.id, { ssh_conn_id: e.target.value })}
-                          className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
-                          <option value="">Selecione a conexão…</option>
-                          {sshConns.map(c => <option key={c.conn_id} value={c.conn_id}>{c.conn_id}{c.host ? ` (${c.host})` : ''}</option>)}
-                        </select>
-                      </div>
-                    )}
-                    {j.job_type === 'datastage' && (
-                      <label className="flex items-center gap-2 cursor-pointer self-end pb-1">
-                        <input type="checkbox" checked={j.verbose_log}
-                          onChange={e => updateJob(j.id, { verbose_log: e.target.checked })} className="accent-amber-500" />
-                        <span className="text-xs text-ink">Log detalhado (jobs SEQUENCE)</span>
-                      </label>
-                    )}
-                    {j.job_type === 'storedproc' && (
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[10px] text-dim font-medium">Conexão MSSQL *</label>
-                        <select value={j.mssql_conn_id}
-                          onChange={e => updateJob(j.id, { mssql_conn_id: e.target.value })}
-                          className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
-                          <option value="">Selecione a conexão…</option>
-                          {mssqlConns.map(c => <option key={c.conn_id} value={c.conn_id}>{c.conn_id}{c.host ? ` (${c.host})` : ''}</option>)}
-                        </select>
-                      </div>
-                    )}
-                    {j.job_type === 'storedproc' && (
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[10px] text-dim font-medium">
-                          Servidor / Banco {dbServer && <span className="text-dim/60 font-mono normal-case">({dbServer})</span>}
-                        </label>
-                        <select value={j.mssql_database}
-                          onChange={e => updateJob(j.id, { mssql_database: e.target.value })}
-                          className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
-                          <option value="">Banco padrão da conexão</option>
-                          {dbDatabases.map(d => <option key={d} value={d}>{d}</option>)}
-                          {j.mssql_database && !dbDatabases.includes(j.mssql_database) && (
-                            <option value={j.mssql_database}>{j.mssql_database}</option>
-                          )}
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                  {j.job_type === 'decisao' && (
-                    <div className="flex flex-col gap-2 pt-1 border-t border-edge/40">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-300">Condição da decisão</span>
-                        <span className="text-[10px] text-dim/70">— desvia o fluxo conforme o resultado</span>
-                      </div>
-                      <div className="grid grid-cols-[1fr_80px_1fr] gap-2">
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[10px] text-dim font-medium">Tipo</label>
-                          <select value={j.condition?.tipo ?? 'contagem'}
-                            onChange={e => updateCondition(j.id, { tipo: e.target.value as 'contagem' | 'query' })}
-                            className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
-                            <option value="contagem">Contagem de registros</option>
-                            <option value="query">Valor de uma query</option>
-                          </select>
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[10px] text-dim font-medium">Operador</label>
-                          <select value={j.condition?.operador ?? '>'}
-                            onChange={e => updateCondition(j.id, { operador: e.target.value })}
-                            className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs text-center focus:outline-none focus:ring-1 focus:ring-blue-500">
-                            {COND_OPERADORES.map(op => <option key={op} value={op}>{op}</option>)}
-                          </select>
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[10px] text-dim font-medium">Valor</label>
-                          <input type="text" value={j.condition?.valor ?? ''}
-                            onChange={e => updateCondition(j.id, { valor: e.target.value })}
-                            placeholder={j.condition?.tipo === 'query' ? 'ex: 1' : 'ex: 10000'}
-                            className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                        </div>
-                      </div>
-                      {(j.condition?.tipo ?? 'contagem') === 'contagem' ? (
-                        <div className="grid grid-cols-2 gap-2">
-                          <div className="flex flex-col gap-1">
-                            <label className="text-[10px] text-dim font-medium">Tabela *</label>
-                            <input type="text" value={j.condition?.tabela ?? ''}
-                              onChange={e => updateCondition(j.id, { tabela: e.target.value })}
-                              placeholder="db.schema.tabela"
-                              className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <label className="text-[10px] text-dim font-medium">Banco (opcional)</label>
-                            <input type="text" value={j.condition?.database ?? ''}
-                              onChange={e => updateCondition(j.id, { database: e.target.value })}
-                              placeholder="ex: BI_DW"
-                              className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col gap-1">
-                          <label className="text-[10px] text-dim font-medium">SQL (somente SELECT) *</label>
-                          <textarea value={j.condition?.sql ?? ''} rows={2}
-                            onChange={e => updateCondition(j.id, { sql: e.target.value })}
-                            placeholder="ex: SELECT MAX(flag) FROM dbo.Controle WHERE ..."
-                            className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                        </div>
-                      )}
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[10px] text-dim font-medium">Conexão MSSQL (opcional · padrão do projeto)</label>
-                        <select value={j.condition?.mssql_conn_id ?? ''}
-                          onChange={e => updateCondition(j.id, { mssql_conn_id: e.target.value })}
-                          className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
-                          <option value="">Conexão padrão</option>
-                          {mssqlConns.map(c => <option key={c.conn_id} value={c.conn_id}>{c.conn_id}{c.host ? ` (${c.host})` : ''}</option>)}
-                        </select>
-                      </div>
-                      {(() => {
-                        const outros = jobs.filter(o => o.id !== j.id && o.job_name.trim())
-                        if (outros.length === 0) return <span className="text-[10px] text-dim/60">Nomeie os outros jobs para montar os ramos.</span>
-                        const ramoPills = (ramo: 'ramo_verdadeiro' | 'ramo_falso', selCls: string) => (
-                          <div className="flex flex-wrap gap-1">
-                            {outros.map(o => {
-                              const nm = o.job_name.trim()
-                              const sel = (j.condition?.[ramo] || []).includes(nm)
-                              return (
-                                <button key={o.id} type="button"
-                                  onClick={() => toggleRamo(j, ramo, nm)}
-                                  className={`px-2 py-0.5 rounded-full text-[10px] border transition-colors ${sel ? selCls : 'bg-panel text-dim border-edge hover:bg-edge/40'}`}>
-                                  {sel ? '✓ ' : ''}{nm}
-                                </button>
-                              )
-                            })}
-                          </div>
-                        )
-                        return (
-                          <div className="grid grid-cols-2 gap-3">
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[10px] font-medium text-green-700 dark:text-green-400">Se verdadeiro → rodar</label>
-                              {ramoPills('ramo_verdadeiro', 'bg-green-100 text-green-700 border-green-300 dark:bg-green-900/40 dark:text-green-300 dark:border-green-800')}
-                            </div>
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[10px] font-medium text-red-700 dark:text-red-400">Se falso → rodar</label>
-                              {ramoPills('ramo_falso', 'bg-red-100 text-red-700 border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800')}
-                            </div>
-                          </div>
-                        )
-                      })()}
-                    </div>
-                  )}
-                  {jobs.length > 1 && (
-                    <div className="flex flex-col gap-1 pt-1 border-t border-edge/40">
-                      <label className="text-[10px] text-dim font-medium">
-                        Depende de <span className="text-dim/60">(começa quando estes terminarem com sucesso · vazio = inicia no começo)</span>
-                      </label>
-                      <div className="flex flex-wrap gap-1">
-                        {jobs.filter(o => o.id !== j.id && o.job_name.trim()).map(o => {
-                          const nm = o.job_name.trim()
-                          const sel = j.depends_on_jobs.includes(nm)
-                          return (
-                            <button key={o.id} type="button"
-                              onClick={() => updateJob(j.id, { depends_on_jobs: sel ? j.depends_on_jobs.filter(d => d !== nm) : [...j.depends_on_jobs, nm] })}
-                              className={`px-2 py-0.5 rounded-full text-[10px] border transition-colors ${sel
-                                ? 'bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800'
-                                : 'bg-panel text-dim border-edge hover:bg-edge/40'}`}>
-                              {sel ? '✓ ' : ''}{nm}
-                            </button>
-                          )
-                        })}
-                        {jobs.filter(o => o.id !== j.id && o.job_name.trim()).length === 0 && (
-                          <span className="text-[10px] text-dim/60">Nomeie os outros jobs para poder depender deles.</span>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  {j.job_type === 'storedproc' && (
-                    <div className="flex flex-col gap-1.5 pt-1 border-t border-edge/40">
-                      <button type="button" onClick={() => toggleParams(j.id)}
-                        className="text-[10px] text-dim hover:text-ink flex items-center gap-1.5 self-start">
-                        <span>{expandedParams.has(j.id) ? '▾' : '▸'} Parâmetros (opcional)</span>
-                        {j.params.length > 0 && (
-                          <span className="bg-blue-100 text-blue-700 border border-blue-300 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-800/40 rounded-full px-1.5 py-0 text-[9px] font-bold">
-                            {j.params.length}
-                          </span>
-                        )}
-                      </button>
-                      {expandedParams.has(j.id) && (
-                        <div className="flex flex-col gap-1.5">
-                          {j.params.map(p => (
-                            <div key={p.id} className="grid grid-cols-[1fr_90px_1fr_24px] gap-1.5 items-start">
-                              <input type="text" value={p.param_name}
-                                onChange={e => updateParam(j.id, p.id, { param_name: e.target.value })}
-                                placeholder="@nome_param"
-                                className={`bg-panel border rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 ${!p.param_name.trim() ? 'border-red-500/60' : 'border-edge'}`} />
-                              <select value={p.param_type}
-                                onChange={e => updateParam(j.id, p.id, { param_type: e.target.value })}
-                                className="bg-panel border border-edge text-ink rounded-md px-1.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
-                                {PARAM_TYPES.map(t => <option key={t}>{t}</option>)}
-                              </select>
-                              <input type="text" value={p.param_value}
-                                onChange={e => updateParam(j.id, p.id, { param_value: e.target.value })}
-                                placeholder="valor fixo"
-                                className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                              <button type="button" onClick={() => removeParam(j.id, p.id)}
-                                className="text-dim hover:text-red-500 text-xs justify-self-center pt-1">✕</button>
-                            </div>
-                          ))}
-                          <Button size="sm" variant="ghost" onClick={() => addParam(j.id)} className="self-start">
-                            <Plus size={10} /> Adicionar parâmetro
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
-
-        {/* ── STEP 4: LINEAGE ── */}
-        {step === 4 && (
-          <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-1">
-            <p className="text-xs text-dim">Mapeie origens e destinos de dados por etapa.</p>
-            {jobs.length === 0 && (
-              <div className="py-8 flex flex-col items-center gap-2 text-dim border border-dashed border-edge rounded-xl">
-                <p className="text-sm">Nenhuma etapa cadastrada no passo anterior.</p>
-                <p className="text-xs">Volte para a aba Etapas e adicione ao menos uma etapa.</p>
-              </div>
-            )}
-            {jobs.map(j => {
-              const origens  = lineage.filter(l => l.job_name === j.job_name && l.direction === 'origem')
-              const destinos = lineage.filter(l => l.job_name === j.job_name && l.direction === 'destino')
-              if (!j.job_name.trim()) return null
-              if (j.job_type === 'decisao') return null   // nó de decisão não tem lineage
-              return (
-                <div key={j.id} className="border border-edge rounded-xl overflow-hidden">
-                  <div className="bg-canvas border-b border-edge px-3 py-2 flex items-center gap-2">
-                    <span className="text-[10px] font-bold text-blue-400">#{j.execution_order}</span>
-                    <span className="text-xs font-mono font-bold text-ink">{j.job_name}</span>
-                    <span className="text-[10px] text-dim ml-1">{j.job_type}</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-0">
-                    <div className="border-r border-edge p-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Origens</span>
-                        <button onClick={() => addLineageEntry(j.job_name, 'origem')}
-                          className="text-[10px] text-blue-400 hover:text-blue-300 border border-blue-800/40 rounded px-1.5 py-0.5">+ adicionar</button>
-                      </div>
-                      {origens.length === 0 && <p className="text-[10px] text-dim/50 italic">Nenhuma origem</p>}
-                      {origens.map(l => (
-                        <div key={l.id} className="flex gap-1 items-center mb-1">
-                          <select value={l.object_type}
-                            onChange={e => updateLineage(l.id, 'object_type', e.target.value)}
-                            className="bg-panel border border-edge text-dim rounded px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-blue-500 w-16 shrink-0">
-                            {OBJECT_TYPES.map(t => <option key={t}>{t}</option>)}
-                          </select>
-                          <input type="text" value={l.object_name}
-                            onChange={e => updateLineage(l.id, 'object_name', e.target.value)}
-                            placeholder="dbo.tabela_origem"
-                            className="bg-panel border border-edge text-ink rounded px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 flex-1" />
-                          <button onClick={() => removeLineageEntry(l.id)} className="text-dim hover:text-red-500 text-[10px] shrink-0">✕</button>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="p-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-green-400">Destinos</span>
-                        <button onClick={() => addLineageEntry(j.job_name, 'destino')}
-                          className="text-[10px] text-green-400 hover:text-green-300 border border-green-800/40 rounded px-1.5 py-0.5">+ adicionar</button>
-                      </div>
-                      {destinos.length === 0 && <p className="text-[10px] text-dim/50 italic">Nenhum destino</p>}
-                      {destinos.map(l => (
-                        <div key={l.id} className="flex gap-1 items-center mb-1">
-                          <select value={l.object_type}
-                            onChange={e => updateLineage(l.id, 'object_type', e.target.value)}
-                            className="bg-panel border border-edge text-dim rounded px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-green-500 w-16 shrink-0">
-                            {OBJECT_TYPES.map(t => <option key={t}>{t}</option>)}
-                          </select>
-                          <input type="text" value={l.object_name}
-                            onChange={e => updateLineage(l.id, 'object_name', e.target.value)}
-                            placeholder="dbo.tabela_destino"
-                            className="bg-panel border border-edge text-ink rounded px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-green-500 flex-1" />
-                          <button onClick={() => removeLineageEntry(l.id)} className="text-dim hover:text-red-500 text-[10px] shrink-0">✕</button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-
-        {/* ── STEP 5: REVISÃO ── */}
-        {step === 5 && (
           <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-1">
             <p className="text-xs text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800/30 rounded-lg px-3 py-2">
               Revise todas as informações antes de salvar. Use o stepper acima para corrigir qualquer etapa.
@@ -1712,68 +957,9 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
               </div>
             </div>
 
-            <div className="border border-edge rounded-xl overflow-hidden">
-              <div className="bg-canvas border-b border-edge px-3 py-2 flex items-center justify-between">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Etapas ({jobs.length})</span>
-              </div>
-              {jobs.length === 0
-                ? <p className="text-xs text-dim/50 italic px-3 py-2">Nenhum job cadastrado</p>
-                : <div className="divide-y divide-edge/40">
-                    {jobs.map((j, i) => (
-                      <div key={j.id} className="px-3 py-2 text-xs flex flex-col gap-0.5">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] text-blue-400 font-bold w-6">#{i+1}</span>
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${typeBadgeColor(j.job_type)}`}>{JOB_TYPE_LABELS[j.job_type] ?? j.job_type}</span>
-                          <span className="font-mono font-medium text-ink">{j.job_name || '(sem nome)'}</span>
-                          {j.ssh_conn_id && <span className="text-dim/60 font-mono text-[10px]">SSH: {j.ssh_conn_id}</span>}
-                          {j.verbose_log && <span className="text-[10px] text-amber-400">verbose</span>}
-                          {j.job_type === 'storedproc' && j.mssql_conn_id && <span className="text-dim/60 font-mono text-[10px]">MSSQL: {j.mssql_conn_id}</span>}
-                        </div>
-                        {j.job_command && (
-                          <div className="pl-8 flex items-center gap-1">
-                            <span className="text-dim text-[10px]">{j.job_type === 'datastage' ? 'Job DataStage:' : 'Comando:'}</span>
-                            <span className="font-mono text-[10px] text-ink/80 break-all">{j.job_command}</span>
-                          </div>
-                        )}
-                        {j.job_type === 'storedproc' && j.params.length > 0 && (
-                          <div className="pl-8 flex items-center gap-1 flex-wrap">
-                            <span className="text-dim text-[10px]">Parâmetros:</span>
-                            {j.params.map(p => (
-                              <span key={p.id} className="font-mono text-[10px] text-ink/80">{p.param_name}={p.param_value || '∅'}</span>
-                            ))}
-                          </div>
-                        )}
-                        {j.job_type === 'decisao' && j.condition && (
-                          <div className="pl-8 flex items-center gap-2 flex-wrap text-[10px]">
-                            <span className="text-dim">Se</span>
-                            <span className="font-mono text-ink/80">{j.condition.tipo === 'query' ? '(query)' : (j.condition.tabela || '(tabela)')} {j.condition.operador} {j.condition.valor || '?'}</span>
-                            <span className="text-green-700 dark:text-green-400">→ V: {(j.condition.ramo_verdadeiro || []).join(', ') || '—'}</span>
-                            <span className="text-red-700 dark:text-red-400">→ F: {(j.condition.ramo_falso || []).join(', ') || '—'}</span>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-              }
+            <div className="bg-blue-50 border border-blue-200 text-blue-800 dark:bg-blue-900/20 dark:border-blue-800 dark:text-blue-300 rounded-lg px-3 py-2 text-xs">
+              As etapas deste pipeline (jobs, decisões e lineage) são gerenciadas na tela <strong>Etapas</strong> (Lista + Fluxo), não neste cadastro.
             </div>
-
-            {lineage.length > 0 && (
-              <div className="border border-edge rounded-xl overflow-hidden">
-                <div className="bg-canvas border-b border-edge px-3 py-2">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Lineage ({lineage.length} entradas)</span>
-                </div>
-                <div className="divide-y divide-edge/40">
-                  {lineage.map(l => (
-                    <div key={l.id} className="px-3 py-1.5 text-xs flex items-center gap-3">
-                      <span className="font-mono text-dim w-28 truncate">{l.job_name}</span>
-                      <span className={`text-[10px] font-bold ${l.direction === 'origem' ? 'text-blue-400' : 'text-green-400'}`}>{l.direction.toUpperCase()}</span>
-                      <span className="font-mono text-ink">{l.object_name || '(vazio)'}</span>
-                      {l.database_name && <span className="text-dim/60">{l.database_name}</span>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
 
             {saveMut.isError && (
               <div className="bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded-lg px-3 py-2 text-xs text-red-700 dark:text-red-400">
@@ -1788,7 +974,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
             {step === 0 ? 'Cancelar' : '← Voltar'}
           </Button>
           <div className="flex gap-2">
-            {step < 5
+            {step < 3
               ? <Button onClick={goNext}>Próximo →</Button>
               : <Button loading={saveMut.isPending} onClick={validateAllAndSave}>
                   <Save size={13} /> {isEdit ? 'Salvar alterações' : 'Criar pipeline'}

@@ -4,6 +4,7 @@
 import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { TYPE_META, type EtapaType } from './types'
+import type { JobParam } from './JobTypeFields'
 
 export interface EtapaNodeData {
   name: string
@@ -11,6 +12,13 @@ export interface EtapaNodeData {
   // Comando CRU (nullable) ecoado para o save. Na exibição usamos `command || '—'`.
   command: string | null
   order: number
+  // Campos por tipo (round-trip com /fluxo) — lidos do GET e reenviados no save.
+  // Editados ao vivo pelo painel lateral via JobTypeFields.
+  ssh_conn_id?: string | null
+  verbose_log?: boolean
+  mssql_conn_id?: string | null
+  mssql_database?: string | null
+  params?: JobParam[]
   // Marca nós criados localmente (ainda não salvos) — nome/comando editáveis.
   isNew?: boolean
   [key: string]: unknown
@@ -27,7 +35,7 @@ function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) 
   return (
     <div
       className={[
-        'group w-[190px] rounded-lg border bg-panel shadow-sm transition-shadow',
+        'group w-[148px] rounded-lg border bg-panel shadow-sm transition-shadow',
         'hover:shadow-md',
         selected
           ? 'border-blue-500 ring-2 ring-blue-500'
@@ -37,32 +45,32 @@ function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) 
       <Handle type="target" position={Position.Left} className={HANDLE_CLS} />
 
       {/* Cabeçalho: chip de ícone + nome */}
-      <div className="flex items-center gap-2 px-3 pt-2.5">
+      <div className="flex items-center gap-1.5 px-2 pt-1.5">
         <span
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${meta.chip}`}
+          className={`flex h-5 w-5 shrink-0 items-center justify-center rounded ${meta.chip}`}
         >
-          <Icon size={15} strokeWidth={2.2} />
+          <Icon size={12} strokeWidth={2.2} />
         </span>
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-ink">
           {data.name}
         </span>
       </div>
 
       {/* Subtítulo: comando / path em mono (fallback só na exibição) */}
-      <div className="px-3 pb-2 pt-1">
-        <p className="truncate font-mono text-xs text-dim" title={data.command || '—'}>
+      <div className="px-2 pb-1.5 pt-0.5">
+        <p className="truncate font-mono text-[10px] text-dim" title={data.command || '—'}>
           {data.command || '—'}
         </p>
       </div>
 
       {/* Rodapé: badge do tipo + ordem */}
-      <div className="flex items-center justify-between border-t border-edge px-3 py-1.5">
+      <div className="flex items-center justify-between border-t border-edge px-2 py-1">
         <span
-          className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${meta.badge}`}
+          className={`rounded px-1 py-0.5 text-[9px] font-semibold ${meta.badge}`}
         >
           {meta.label}
         </span>
-        <span className="font-mono text-[10px] text-dim">#{data.order}</span>
+        <span className="font-mono text-[9px] text-dim">#{data.order}</span>
       </div>
 
       <Handle type="source" position={Position.Right} className={HANDLE_CLS} />
