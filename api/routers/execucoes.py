@@ -604,6 +604,51 @@ async def rerun_from_task(body: dict = Body(default={}), _auth: dict = Depends(r
         }
 
 
+@router.post("/execucoes/reconciliar", tags=["execucoes"])
+async def reconciliar_execucao(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """Fecha uma execução presa em RUNNING usando o status REAL do DataStage.
+
+    Espelho puro: cruza com o etl_ds_job_log (mantido vivo pelo monitor central via
+    dsjob) e só fecha se o job já terminou lá (1=SUCCESS, 2=WARNING, 3=FAILED). Se o
+    job ainda estiver rodando no DataStage, não toca (closed=0). Remédio manual,
+    on-demand, para a execução órfã — equivalente ao loop do monitor. Idempotente.
+
+    Body: execution_id, pipeline.
+    """
+    execution_id = (body.get("execution_id") or "").strip()
+    pipeline = (body.get("pipeline") or "").strip()
+    if not execution_id or not pipeline:
+        raise HTTPException(status_code=400, detail="execution_id e pipeline são obrigatórios")
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE e SET
+                e.status = CASE l.status_code WHEN 1 THEN 'SUCCESS' WHEN 2 THEN 'WARNING'
+                                              WHEN 3 THEN 'FAILED' ELSE e.status END,
+                e.end_time = COALESCE(l.updated_at, GETDATE()),
+                e.duration_seconds = DATEDIFF(SECOND, e.start_time, COALESCE(l.updated_at, GETDATE())),
+                e.updated_at = GETDATE()
+            FROM dbo.etl_job_execution e
+            JOIN dbo.etl_ds_job_log l
+              ON l.execution_id = e.execution_id AND l.pipeline_name = e.pipeline
+             AND l.job_name = e.job_name
+            WHERE e.execution_id = ? AND e.pipeline = ?
+              AND e.status = 'RUNNING' AND e.end_time IS NULL
+              AND l.status_code IN (1, 2, 3)
+            """,
+            (execution_id, pipeline),
+        )
+        closed = max(0, cur.rowcount if cur.rowcount is not None else 0)
+        conn.commit()
+        cur.close(); conn.close()
+        return {"closed": closed, "execution_id": execution_id, "pipeline": pipeline}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/execucoes/ack", tags=["execucoes"])
 async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
     """Acknowledge de falha — operador assume o incidente e notifica o Teams.

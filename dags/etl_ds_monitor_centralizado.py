@@ -58,27 +58,17 @@ def _var(key: str, default: str) -> str:
 
 
 def _get_running_jobs(mssql_conn_id: str) -> list[dict]:
-    """Retorna todos os jobs com status RUNNING no banco. Inclui stuck_since
-    (carência da migration 040) — degrada para None se a coluna não existir."""
+    """Retorna todos os jobs com status RUNNING no banco."""
     from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
     hook = MsSqlHook(mssql_conn_id=mssql_conn_id)
-    base = ("FROM dbo.etl_ds_job_log WHERE status = 'RUNNING' ORDER BY created_at ASC")
-    try:
-        rows = hook.get_records(
-            "SELECT execution_id, pipeline_name, job_name, project, wave_number, "
-            "pid, stuck_since " + base)
-        has_stuck = True
-    except Exception:
-        rows = hook.get_records(
-            "SELECT execution_id, pipeline_name, job_name, project, wave_number, pid "
-            + base)
-        has_stuck = False
+    rows = hook.get_records(
+        "SELECT execution_id, pipeline_name, job_name, project, wave_number, pid "
+        "FROM dbo.etl_ds_job_log WHERE status = 'RUNNING' ORDER BY created_at ASC")
     return [
         {
             "execution_id":  r[0], "pipeline_name": r[1],
             "job_name":      r[2], "project":       r[3],
             "wave_number":   r[4], "pid":           r[5],
-            "stuck_since":   (r[6] if has_stuck else None),
         }
         for r in (rows or [])
     ]
@@ -146,6 +136,45 @@ def _status_label(sc: int) -> str:
     return {0: "RUNNING", 1: "SUCCESS", 2: "WARNING", 3: "ABORTED", 4: "QUEUED"}.get(sc, "UNKNOWN")
 
 
+def _close_orphan_executions(mssql_conn_id: str, log) -> None:
+    """Fecha execuções presas em RUNNING cujo job já terminou no DataStage.
+
+    Espelho puro do estado real: cruza etl_job_execution (RUNNING, sem end_time,
+    início antigo) com o etl_ds_job_log já finalizado e grava o status real
+    (1=SUCCESS, 2=WARNING, 3=FAILED). Resolve a execução órfã — quando o operador
+    morre (worker/heartbeat) antes do log_end fechar a linha, deixando-a RUNNING
+    para sempre embora o job DataStage tenha concluído.
+
+    Idempotente e best-effort: só toca linhas RUNNING/end_time NULL e degrada se a
+    tabela não existir. O grace (default 10 min) evita corrida com o log_end normal.
+    """
+    from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
+    try:
+        grace = max(1, int(_var("EXEC_ORPHAN_GRACE_MINUTES", "10")))
+    except (TypeError, ValueError):
+        grace = 10
+    sql = (
+        "UPDATE e SET "
+        "  e.status = CASE l.status_code WHEN 1 THEN 'SUCCESS' WHEN 2 THEN 'WARNING' "
+        "                                WHEN 3 THEN 'FAILED' ELSE e.status END, "
+        "  e.end_time = COALESCE(l.updated_at, GETDATE()), "
+        "  e.duration_seconds = DATEDIFF(SECOND, e.start_time, COALESCE(l.updated_at, GETDATE())), "
+        "  e.updated_at = GETDATE() "
+        "FROM dbo.etl_job_execution e "
+        "JOIN dbo.etl_ds_job_log l "
+        "  ON l.execution_id = e.execution_id AND l.pipeline_name = e.pipeline "
+        " AND l.job_name = e.job_name "
+        "WHERE e.status = 'RUNNING' AND e.end_time IS NULL "
+        f"  AND e.start_time < DATEADD(MINUTE, -{grace}, GETDATE()) "
+        "  AND l.status_code IN (1, 2, 3)"
+    )
+    try:
+        MsSqlHook(mssql_conn_id=mssql_conn_id).run(sql)
+        log.info("[DS Monitor] Reconciliação de execuções órfãs (RUNNING preso) aplicada.")
+    except Exception as e:
+        log.warning("[DS Monitor] Reconciliação de órfãs ignorada (ok se tabela ausente): %s", e)
+
+
 # ── tarefa principal ──────────────────────────────────────────────────────────
 
 def monitor_jobs(**context) -> None:
@@ -156,16 +185,10 @@ def monitor_jobs(**context) -> None:
     ssh_conn_id   = _var("DS_MONITOR_SSH_CONN_ID",   "ssh_lnxprd021")
     dshome        = _var("DS_MONITOR_DSHOME",
                          "/opt/IBM/InformationServer/Server/DSEngine")
-    try:
-        grace_s = max(0, int(_var("DS_ABORT_GRACE_SECONDS", "600")))
-    except (TypeError, ValueError):
-        grace_s = 600
-    # Decisão de carência compartilhada com o operador (fonte única).
-    from utils.datastage_operator import _abort_decision
-
     jobs = _get_running_jobs(mssql_conn_id)
     if not jobs:
         log.info("[DS Monitor] Nenhum job RUNNING no momento.")
+        _close_orphan_executions(mssql_conn_id, log)   # reconcilia órfãs mesmo sem RUNNING
         return
 
     log.info("[DS Monitor] %d job(s) RUNNING — abrindo SSH...", len(jobs))
@@ -178,7 +201,6 @@ def monitor_jobs(**context) -> None:
 
     snapshots:  list[tuple] = []   # (execution_id, job_name, snapshot_json)
     finalizados: list[dict] = []   # jobs que terminaram neste ciclo
-    stuck_updates: list[tuple] = []  # (exec_id, pipeline, job_name, stuck_since|None)
     ts_now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def _exec_ssh(cmd: str, timeout: int = 30) -> str:
@@ -213,39 +235,8 @@ def monitor_jobs(**context) -> None:
                                   info.get("wave_number", 0), info.get("pid", ""),
                                   _status_label(sc), sc, snapshot))
 
-                if sc not in (0, 4):  # terminal no PAI → finaliza
+                if sc not in (0, 4):  # terminal no PAI → finaliza (espelho puro)
                     finalizados.append({**job, "status_code": sc, "info": info})
-                elif sc == 0:
-                    # Pai RUNNING: espelha o DataStage — se um filho do run atual
-                    # ABORTOU e a sequence parou de progredir (nenhum filho rodando),
-                    # propaga ABORTED APÓS a carência. Progresso zera o relógio
-                    # (stuck_since). Persistido no banco (monitor é stateless).
-                    try:
-                        # -max limita ao run atual (evita puxar histórico); essa
-                        # chamada agora roda para todo job RUNNING a cada ciclo.
-                        run_logsum = _exec_ssh(
-                            f"{dshome}/bin/dsjob -logsum -max 200 {project} {jname}",
-                            timeout=120)
-                        children = _parse_child_jobs(run_logsum)
-                    except Exception as e:
-                        log.warning("[DS Monitor] logsum(running) %s/%s falhou: %s",
-                                    project, jname, e)
-                        children, run_logsum = [], ""
-                    now = datetime.utcnow()
-                    propagate, new_stuck, aborted = _abort_decision(
-                        children, job.get("stuck_since"), now, grace_s)
-                    stuck_updates.append((exec_id, pipeline, jname, new_stuck))
-                    if propagate:
-                        log.error(
-                            "[DS Monitor] %s/%s: filho(s) ABORTED e sequence travada "
-                            ">%ds com pai RUNNING — espelhando ABORTED: %s",
-                            project, jname, grace_s, ", ".join(aborted))
-                        finalizados.append({**job, "status_code": 3, "info": info,
-                                            "logsum": run_logsum, "child_jobs": children})
-                    elif aborted:
-                        log.warning(
-                            "[DS Monitor] %s/%s: filho(s) ABORTED (%s) — aguardando "
-                            "carência antes de espelhar.", project, jname, ", ".join(aborted))
 
             except Exception as e:
                 log.warning("[DS Monitor] Erro ao consultar %s/%s: %s", project, jname, e)
@@ -277,12 +268,8 @@ def monitor_jobs(**context) -> None:
 
     mssql_hook = MsSqlHook(mssql_conn_id=mssql_conn_id)
 
-    # Persiste snapshots de jobs ainda RUNNING (via upsert existente). Exclui os
-    # reclassificados como ABORTED (filho abortado com pai RUNNING) — senão
-    # gravaríamos RUNNING e ABORTED para o mesmo job no mesmo ciclo.
-    reclass = {(j["execution_id"], j["job_name"]) for j in finalizados}
-    running_snaps = [s for s in snapshots
-                     if s[7] in (0, 4) and (s[0], s[2]) not in reclass]
+    # Persiste snapshots de jobs ainda RUNNING/QUEUED (via upsert existente).
+    running_snaps = [s for s in snapshots if s[7] in (0, 4)]
     for snap in running_snaps:
         exec_id, pipeline, jname, project, wave, pid, status_label, sc, snapshot = snap
         try:
@@ -296,19 +283,6 @@ def monitor_jobs(**context) -> None:
             )
         except Exception as e:
             log.warning("[DS Monitor] Erro ao persistir snapshot de %s: %s", jname, e)
-
-    # Persiste o relógio de carência (stuck_since) dos jobs RUNNING. Best-effort:
-    # se a coluna não existir (migration 040 não aplicada) degrada — o operador
-    # continua cobrindo via estado em memória.
-    for exec_id, pipeline, jname, new_stuck in stuck_updates:
-        try:
-            mssql_hook.run(
-                "UPDATE dbo.etl_ds_job_log SET stuck_since=%s "
-                "WHERE execution_id=%s AND pipeline_name=%s AND job_name=%s",
-                parameters=(new_stuck, exec_id, pipeline, jname),
-            )
-        except Exception as e:
-            log.warning("[DS Monitor] stuck_since de %s não persistido (ok se 040 ausente): %s", jname, e)
 
     # Persiste estado final dos jobs finalizados
     for job in finalizados:
@@ -336,6 +310,9 @@ def monitor_jobs(**context) -> None:
                      job["project"], job["job_name"], label)
         except Exception as e:
             log.warning("[DS Monitor] Erro ao persistir final de %s: %s", job["job_name"], e)
+
+    # Fecha execuções presas em RUNNING cujo job já terminou no DataStage (órfãs).
+    _close_orphan_executions(mssql_conn_id, log)
 
     log.info(
         "[DS Monitor] Ciclo concluído — %d jobs verificados, %d finalizados neste ciclo.",
