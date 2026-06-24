@@ -12,9 +12,11 @@ Segurança (mesmo perfil do tipo de job 'sql' já existente):
 from __future__ import annotations
 
 import re
+from datetime import date, datetime
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _OPERADORES = {"=", "==", "<>", "!=", ">", ">=", "<", "<="}
+_COMPARACOES = {"texto", "data", "numero"}
 _DML_RE = re.compile(
     r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|"
     r"GRANT|REVOKE|INTO)\b",
@@ -81,6 +83,95 @@ def compara(obtido, operador, limite) -> bool:
     return a <= b  # "<="
 
 
+def _aplica_operador(a, b, operador) -> bool:
+    """Aplica ``a <operador> b`` com valores já normalizados (números ou datas).
+    ``operador`` já validado (∈ _OPERADORES)."""
+    if operador in ("=", "=="):
+        return a == b
+    if operador in ("<>", "!="):
+        return a != b
+    if operador == ">":
+        return a > b
+    if operador == ">=":
+        return a >= b
+    if operador == "<":
+        return a < b
+    return a <= b  # "<="
+
+
+def _to_date(v):
+    """Normaliza ``v`` para ``datetime.date`` (nível de dia, ignora hora).
+
+    Aceita date/datetime (pyodbc devolve assim) ou string. Token ``HOJE`` (case-
+    insensitive, com strip) → ``date.today()``. String tenta ``YYYY-MM-DD`` (e o
+    prefixo de um ISO datetime ``YYYY-MM-DD HH:MM:SS`` / ``…THH:MM:SS``). Não
+    parseável → None (o chamador loga e devolve False)."""
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    s = str(v).strip()
+    if not s:
+        return None
+    if s.upper() == "HOJE":
+        return date.today()
+    # Pega só a parte da data de um possível datetime (espaço ou 'T' como separador).
+    head = re.split(r"[ T]", s, 1)[0]
+    try:
+        return datetime.strptime(head, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def compara_tipado(obtido, operador, valor, comparacao) -> bool:
+    """Compara ``obtido <operador> valor`` honrando o tipo ``comparacao``.
+
+    ``comparacao`` ∈ {'numero','data','texto'} ou None/''/desconhecido (delega ao
+    ``compara`` legado — auto-coerção numérica/textual, retrocompatível).
+
+      - 'numero': converte ambos p/ float; falha de conversão vira 0.0 (não quebra).
+      - 'data'  : resolve ambos p/ ``date`` (date-level). ``valor`` pode ser o
+                  token ``HOJE``/``hoje`` (→ hoje) ou ``YYYY-MM-DD``. Qualquer lado
+                  não parseável → log + False (não levanta).
+      - 'texto' : compara como string (str de ambos).
+
+    NUNCA levanta por erro de parse — só ``operador`` inválido (via _aplica/compara)
+    pode levantar, e isso é checado antes. Erro inesperado → log + False."""
+    comp = str(comparacao or "").strip().lower()
+    if comp not in _COMPARACOES:
+        return compara(obtido, operador, valor)
+    operador = str(operador or "").strip()
+    if operador not in _OPERADORES:
+        raise ValueError(f"operador inválido: {operador!r}")
+    try:
+        if comp == "numero":
+            a = _coerce_num(obtido)
+            b = _coerce_num(valor)
+            a = 0.0 if a is None else a
+            b = 0.0 if b is None else b
+            return _aplica_operador(a, b, operador)
+        if comp == "data":
+            a = _to_date(obtido)
+            b = _to_date(valor)
+            if a is None or b is None:
+                print(f"[CONDICAO data] não foi possível resolver data "
+                      f"(obtido={obtido!r}→{a!r}, valor={valor!r}→{b!r}) — resultado False.")
+                return False
+            return _aplica_operador(a, b, operador)
+        # 'texto'
+        a = "" if obtido is None else str(obtido)
+        b = "" if valor is None else str(valor)
+        return _aplica_operador(a, b, operador)
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — degrada sem derrubar a DAG
+        print(f"[CONDICAO {comp}] erro ao comparar "
+              f"(obtido={obtido!r}, valor={valor!r}, op={operador!r}): {exc} — resultado False.")
+        return False
+
+
 def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = None,
                    pipeline_name: str | None = None):
     """Avalia a condição do nó de decisão.
@@ -130,6 +221,11 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
     else:
         raise ValueError(f"tipo de condição desconhecido: {tipo!r}")
 
+    # query/contagem: comparação tipada quando 'comparacao' vier no contrato
+    # (ausente = compara legado, retrocompatível). linhas_job é sempre numérico
+    # (rows_out) → usa o compara legado.
+    if tipo in ("query", "contagem"):
+        return compara_tipado(obtido, operador, limite, cond.get("comparacao")), obtido
     return compara(obtido, operador, limite), obtido
 
 

@@ -1,13 +1,17 @@
 """api/routers/jobs.py — GET /jobs, POST/DELETE /pipelines/jobs, POST /pipelines/jobs/reorder."""
 from __future__ import annotations
 
+import datetime as _dt
+import decimal as _decimal
 import json
 import logging
 import re
 from typing import Optional
 
+import pyodbc
 from fastapi import APIRouter, Body, Depends, HTTPException
 
+import db
 from db import get_db_conn
 from deps import (
     PERM_EDITAR,
@@ -41,6 +45,7 @@ _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-$#@ ]+$")
 # ── Nó de Decisão (migration 043) ──────────────────────────────────────────
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _COND_OPERADORES = {"=", "<>", ">", ">=", "<", "<="}
+_COND_COMPARACOES = {"texto", "data", "numero"}
 _COND_DML_RE = re.compile(
     r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|"
     r"GRANT|REVOKE|INTO)\b",
@@ -65,6 +70,24 @@ def _valid_select(sql: str) -> bool:
     if not (head.startswith("SELECT") or head.startswith("WITH")):
         return False
     return not _COND_DML_RE.search(s)
+
+
+def _validate_select_strict(sql: str) -> str:
+    """Mesma validação read-only de ``_valid_select``, mas devolve o SQL limpo e
+    levanta ValueError com mensagem clara (para virar 422). Usado pelo preview."""
+    if not sql or not isinstance(sql, str):
+        raise ValueError("SQL vazio")
+    s = sql.strip().rstrip(";").strip()
+    if not s:
+        raise ValueError("SQL vazio")
+    if ";" in s:
+        raise ValueError("SQL não pode conter ';' (apenas um SELECT)")
+    head = s.lstrip("(").lstrip().upper()
+    if not (head.startswith("SELECT") or head.startswith("WITH")):
+        raise ValueError("SQL precisa começar com SELECT/WITH (read-only)")
+    if _COND_DML_RE.search(s):
+        raise ValueError("SQL contém comando não permitido (read-only)")
+    return s
 
 
 def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str]:
@@ -114,6 +137,13 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
     elif tipo == "query":
         if not _valid_select(cond.get("sql") or ""):
             errs.append("SQL da condição deve ser read-only (SELECT/WITH, sem ';' nem DML)")
+    # comparacao é NOVO e OPCIONAL (ausente = comportamento legado do compara).
+    # Quando presente em query/contagem, validamos o enum {texto,data,numero}.
+    if tipo in ("query", "contagem"):
+        comp = cond.get("comparacao")
+        if comp is not None and str(comp).strip():
+            if str(comp).strip().lower() not in _COND_COMPARACOES:
+                errs.append("comparacao inválida (use 'texto', 'data' ou 'numero')")
     cid = (cond.get("mssql_conn_id") or "").strip()
     if cid and mssql_conn_ids is not None and cid not in mssql_conn_ids:
         errs.append(f"conexão MSSQL '{cid}' da condição não encontrada no Airflow")
@@ -223,6 +253,77 @@ async def _list_mssql_conn_ids() -> set[str] | None:
         return None
 
 
+async def _list_mssql_hosts() -> set[str]:
+    """Hosts (campo ``host``) das conexões MSSQL cadastradas no Airflow.
+
+    Allowlist anti-SSRF: o preview / databases por servidor só aceita um host que
+    JÁ esteja cadastrado como conexão MSSQL (mesma fonte de `list_mssql_connections`).
+    Degrada para set() se a chamada falhar (→ qualquer host é recusado, fail-safe)."""
+    try:
+        async with get_airflow_client() as client:
+            r = await client.get("/api/v1/connections?limit=100")
+            if not r.is_success:
+                return set()
+            data = r.json()
+            return {
+                (c.get("host") or "").strip()
+                for c in data.get("connections", [])
+                if c.get("conn_type") == "mssql" and (c.get("host") or "").strip()
+            }
+    except Exception:
+        return set()
+
+
+def _swap_conn_str(host: str, database: str) -> str:
+    """Deriva uma connection string apontando para (host, database) a partir da
+    ``MSSQL_CONN_STR`` do app, preservando DRIVER/UID/PWD/demais pares e trocando
+    apenas SERVER e DATABASE. Levanta ValueError se a base não estiver configurada.
+
+    Parse simples de pares ``CHAVE=VALOR;`` (formato pyodbc). Chaves comparadas
+    case-insensitive; SERVER e DATABASE são sobrescritos (inseridos se ausentes)."""
+    base = (db.MSSQL_CONN_STR or "").strip()
+    if not base:
+        raise ValueError("MSSQL_CONN_STR não configurada")
+    pares: list[tuple[str, str]] = []
+    for chunk in base.split(";"):
+        if not chunk.strip():
+            continue
+        if "=" not in chunk:
+            pares.append((chunk.strip(), ""))
+            continue
+        k, v = chunk.split("=", 1)
+        pares.append((k.strip(), v.strip()))
+    out: list[str] = []
+    viu_server = viu_db = False
+    for k, v in pares:
+        kl = k.lower()
+        if kl in ("server", "address", "addr", "network address"):
+            out.append(f"SERVER={host}"); viu_server = True
+        elif kl in ("database", "initial catalog"):
+            out.append(f"DATABASE={database}"); viu_db = True
+        else:
+            out.append(f"{k}={v}" if v != "" else k)
+    if not viu_server:
+        out.append(f"SERVER={host}")
+    if not viu_db:
+        out.append(f"DATABASE={database}")
+    return ";".join(out) + ";"
+
+
+def _json_safe(v):
+    """Serializa um valor de célula pyodbc para algo JSON-serializável.
+    Datas/datetimes → ISO; Decimal → str; bytes → hex; resto str (None preservado)."""
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, (_dt.datetime, _dt.date, _dt.time)):
+        return v.isoformat()
+    if isinstance(v, _decimal.Decimal):
+        return str(v)
+    if isinstance(v, (bytes, bytearray)):
+        return bytes(v).hex()
+    return str(v)
+
+
 @router.get("/jobs", tags=["jobs"])
 def list_jobs(
     offset: int = 0,
@@ -313,12 +414,47 @@ def list_jobs(
 
 
 @router.get("/jobs/databases", tags=["jobs"])
-def list_job_databases(_auth: dict = Depends(require_perm(PERM_EDITAR))):
-    """Bancos disponíveis no MESMO servidor da conexão do ORQUESTRA, para o
-    seletor de banco-alvo dos jobs storedproc (fase 1: 1 servidor).
+async def list_job_databases(
+    host: Optional[str] = None,
+    _auth: dict = Depends(require_perm(PERM_EDITAR)),
+):
+    """Bancos disponíveis para o seletor de banco-alvo dos jobs.
 
-    Usa a credencial do próprio app (get_db_conn) — não expõe senha. Degrada
-    para lista vazia se a consulta ao catálogo falhar."""
+    Sem ``?host`` (padrão): bancos do MESMO servidor da conexão do ORQUESTRA
+    (credencial do próprio app via get_db_conn — não expõe senha).
+
+    Com ``?host=<host>``: bancos daquele SERVIDOR MSSQL. O host precisa estar
+    cadastrado como conexão MSSQL no Airflow (allowlist anti-SSRF); conecta-se
+    com a credencial do app trocando SERVER no conn str. Host não cadastrado →
+    [] (não conecta em servidor arbitrário).
+
+    Degrada para lista vazia se a consulta ao catálogo falhar."""
+    host = (host or "").strip()
+    if host:
+        allowed = await _list_mssql_hosts()
+        if host not in allowed:
+            log.warning("list_job_databases: host %r não cadastrado — recusado.", host)
+            return {"server": None, "databases": []}
+        # Banco neutro só para abrir a sessão; o catálogo é server-wide.
+        try:
+            conn_str = _swap_conn_str(host, "master")
+        except ValueError as e:
+            log.warning("list_job_databases (host=%s) sem conn str: %s", host, e)
+            return {"server": None, "databases": []}
+        try:
+            conn = pyodbc.connect(conn_str, timeout=5)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT d.name FROM sys.databases d "
+                "WHERE d.state_desc = 'ONLINE' AND HAS_DBACCESS(d.name) = 1 "
+                "ORDER BY d.name")
+            databases = [r[0] for r in cur.fetchall()]
+            cur.close(); conn.close()
+            return {"server": host, "databases": databases}
+        except Exception as e:
+            log.warning("list_job_databases (host=%s) degradou: %s", host, e)
+            return {"server": None, "databases": []}
+    # Sem host: comportamento atual (servidor do app).
     try:
         conn = get_db_conn(); cur = conn.cursor()
         cur.execute("SELECT @@SERVERNAME")
@@ -335,6 +471,82 @@ def list_job_databases(_auth: dict = Depends(require_perm(PERM_EDITAR))):
     except Exception as e:
         log.warning("list_job_databases degradou: %s", e)
         return {"server": None, "databases": []}
+
+
+@router.post("/jobs/sql-preview", tags=["jobs"])
+async def sql_preview(
+    body: dict = Body(default={}),
+    _auth: dict = Depends(get_current_user),
+):
+    """Roda um SELECT read-only do usuário (decisão tipo 'query') e devolve uma
+    amostra de até 100 linhas, para o autor conferir o resultado antes de salvar.
+
+    Body: {host: str, database: str, sql: str}.
+
+    Segurança:
+      - ``sql`` precisa ser read-only (SELECT/WITH, sem ';' nem DML) — 422 senão.
+      - ``host`` precisa estar cadastrado como conexão MSSQL no Airflow (allowlist
+        anti-SSRF) — 400 senão. Conecta com a credencial do app (swap SERVER/
+        DATABASE no conn str), timeout curto.
+
+    Resposta: {columns: [str], rows: [[json-safe]], total: int, truncated: bool}.
+    Erros de conexão/SQL → 400 com mensagem clara (nunca 500 cru)."""
+    host = (body.get("host") or "").strip()
+    database = (body.get("database") or "").strip()
+    sql_raw = body.get("sql") or ""
+
+    if not host:
+        raise HTTPException(status_code=422, detail="host é obrigatório")
+    if not database:
+        raise HTTPException(status_code=422, detail="database é obrigatório")
+    if not _IDENT_RE.match(database):
+        raise HTTPException(status_code=422, detail="database inválido")
+    # Read-only de verdade (mesma validação da condição). 422 se inválido.
+    try:
+        sql = _validate_select_strict(sql_raw)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    allowed = await _list_mssql_hosts()
+    if host not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"host '{host}' não está cadastrado como conexão MSSQL")
+
+    try:
+        conn_str = _swap_conn_str(host, database)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Limita a 100 linhas envolvendo o SELECT do usuário numa subquery.
+    # SELECT TOP 100 * FROM (<sql>) — robusto; se o SELECT do usuário tiver ORDER
+    # BY sem TOP/OFFSET, o SQL Server recusa a subquery, então o erro vira 400
+    # claro (preview com mensagem) em vez de 500.
+    preview_sql = f"SELECT TOP 100 * FROM (\n{sql}\n) AS _prev"
+    try:
+        conn = pyodbc.connect(conn_str, timeout=5)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Falha ao conectar em '{host}': {e}")
+    try:
+        cur = conn.cursor()
+        cur.execute(preview_sql)
+        columns = [d[0] for d in (cur.description or [])]
+        fetched = cur.fetchall()
+        rows = [[_json_safe(v) for v in r] for r in fetched]
+        cur.close(); conn.close()
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=f"Erro ao executar o SELECT: {e}")
+    total = len(rows)
+    return {
+        "columns": columns,
+        "rows": rows,
+        "total": total,
+        "truncated": total >= 100,
+    }
 
 
 @router.post("/pipelines/jobs/register", tags=["jobs"])
