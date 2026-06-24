@@ -19,6 +19,7 @@ import DsConsole from './pages/DsConsole'
 import Avisos from './pages/Avisos'
 import GestaoFalhas from './pages/GestaoFalhas'
 import Publicacao from './pages/Publicacao'
+import Performance from './pages/Performance'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -44,6 +45,7 @@ const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/planos-ajuste': <PlanosAjuste />,
   '/powerbi': <PowerBI />,
   '/ds-console': <DsConsole />,
+  '/performance': <Performance />,
   '/admin': <Admin />,
 }
 
