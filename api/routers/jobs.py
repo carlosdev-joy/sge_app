@@ -696,6 +696,18 @@ def get_pipeline_fluxo(
             log.warning("get_pipeline_fluxo degradou (%s): %s", pipeline_name, e)
             cur.close(); conn.close()
             return {"nodes": []}
+        # Parâmetros (storedproc) — uma query agrupada por job (degrada se faltar).
+        params_by_job: dict[str, list] = {}
+        try:
+            cur.execute(
+                "SELECT job_name, param_name, param_type, param_value "
+                "FROM dbo.etl_pipeline_job_param WHERE pipeline_name=? "
+                "ORDER BY job_name, param_order", (pipeline_name,))
+            for pr in cur.fetchall():
+                params_by_job.setdefault(pr[0], []).append(
+                    {"param_name": pr[1], "param_type": pr[2], "param_value": pr[3]})
+        except Exception:
+            params_by_job = {}
         nodes = []
         for r in rows:
             condition = None
@@ -719,6 +731,7 @@ def get_pipeline_fluxo(
                 "verbose_log": bool(r[9]) if r[9] is not None else False,
                 "mssql_conn_id": r[10] or None,
                 "mssql_database": r[11] or None,
+                "params": params_by_job.get(r[0], []),
             })
         cur.close(); conn.close()
         return {"nodes": nodes}
@@ -836,6 +849,29 @@ async def save_pipeline_fluxo(
             j_mdb = (node.get("mssql_database") or "").strip() or None
             raw_by_name[j_name] = node
 
+            # Params (storedproc): valida e prepara; só serão gravados se a CHAVE
+            # 'params' veio no payload (protege os params de um storedproc existente).
+            params_present = "params" in node
+            j_params = []
+            if j_type == "storedproc" and isinstance(node.get("params"), list):
+                vistos_p: set[str] = set()
+                for pi, p in enumerate(node["params"]):
+                    if not isinstance(p, dict):
+                        continue
+                    p_name = (p.get("param_name") or "").strip()
+                    if not p_name:
+                        continue  # linha de param vazia → ignora
+                    p_type = (p.get("param_type") or "").strip().upper()
+                    if not _PARAM_NAME_RE.match(p_name):
+                        errors.append(f"{j_name}: parâmetro '{p_name}' inválido"); continue
+                    if p_type not in VALID_PARAM_TYPES:
+                        errors.append(f"{j_name}: parâmetro '{p_name}' com tipo inválido"); continue
+                    key = p_name.lstrip("@").lower()
+                    if key in vistos_p:
+                        errors.append(f"{j_name}: parâmetro '{p_name}' duplicado"); continue
+                    vistos_p.add(key)
+                    j_params.append((p_name, p_type, p.get("param_value"), pi))
+
             # Dependências NORMAIS (só entre jobs do fluxo) → arestas predecessor→job.
             dep_raw = node.get("depends_on_jobs")
             if isinstance(dep_raw, list):
@@ -873,7 +909,8 @@ async def save_pipeline_fluxo(
                 ly = None
 
             prepared.append((j_name, is_new, j_order, j_type, j_cmd, j_ssh,
-                             j_verbose, j_mssql, j_mdb, dep_csv, cond_json_str, lx, ly))
+                             j_verbose, j_mssql, j_mdb, params_present, j_params,
+                             dep_csv, cond_json_str, lx, ly))
 
         if errors:
             cur.close(); conn.close()
@@ -904,7 +941,7 @@ async def save_pipeline_fluxo(
         #    preservado (o painel não troca o tipo de um nó já salvo). Grava deps/
         #    condição (só decisão)/posição em TODOS (por-coluna).
         for (j_name, is_new, j_order, j_type, j_cmd, j_ssh, j_verbose,
-             j_mssql, j_mdb, dep_csv, cond_json_str, lx, ly) in prepared:
+             j_mssql, j_mdb, params_present, j_params, dep_csv, cond_json_str, lx, ly) in prepared:
             if is_new:
                 cur.execute(
                     "EXEC dbo.sp_etl_pipeline_job_upsert "
@@ -935,6 +972,17 @@ async def save_pipeline_fluxo(
                         f"UPDATE dbo.etl_pipeline_job SET {', '.join(sets)} "
                         "WHERE pipeline_name=? AND job_name=?",
                         (*vals, pipeline_name, j_name))
+            # Params (storedproc): só toca se a chave 'params' veio no payload
+            # (um frontend que não envia params não apaga os existentes).
+            if params_present and j_type == "storedproc":
+                cur.execute("EXEC dbo.sp_etl_pipeline_job_param_clear "
+                            "@pipeline_name=?, @job_name=?", (pipeline_name, j_name))
+                for p_name, p_type, p_value, p_order in j_params:
+                    cur.execute(
+                        "EXEC dbo.sp_etl_pipeline_job_param_insert "
+                        "@pipeline_name=?, @job_name=?, @param_name=?, @param_type=?, "
+                        "@param_value=?, @param_order=?",
+                        (pipeline_name, j_name, p_name, p_type, p_value, p_order))
             if has_deps:
                 cur.execute("UPDATE dbo.etl_pipeline_job SET depends_on_jobs=? "
                             "WHERE pipeline_name=? AND job_name=?",
