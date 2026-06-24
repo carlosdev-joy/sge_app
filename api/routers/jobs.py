@@ -90,6 +90,13 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
             errs.append("job_name da condição (linhas_job) não pode ser a própria decisão")
         elif jn not in known_jobs:
             errs.append(f"job_name '{jn}' da condição (linhas_job) não existe no pipeline")
+        # child_job é OPCIONAL: quando preenchido, a decisão usa as linhas daquele
+        # job FILHO (de runtime, dentro do SEQUENCE job_name) em vez do total. Não
+        # precisa existir em known_jobs — é um filho do DataStage, não um job do
+        # pipeline. Só validamos o tipo (string).
+        cj = cond.get("child_job")
+        if cj is not None and not isinstance(cj, str):
+            errs.append("child_job da condição (linhas_job) deve ser texto")
         if valor is not None and not (
             isinstance(valor, (int, float)) or str(valor).strip().lstrip("-").isdigit()
         ):
@@ -127,6 +134,25 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
             elif mn not in known_jobs:
                 errs.append(f"ramo {ramo_nome}: job '{mn}' não existe no pipeline")
     return errs
+
+
+def _normalize_condition(cond: dict) -> dict:
+    """Normaliza a condição antes de persistir em condition_json.
+
+    Salvamos o dict INTEIRO (não fazemos cherry-pick de campos), então qualquer
+    chave do contrato sobrevive ao round-trip (GET /fluxo / get_pipeline_job leem
+    o JSON inteiro de volta). Para ``linhas_job`` garantimos explicitamente que
+    ``job_name`` e ``child_job`` fiquem presentes e limpos (string), pois são as
+    chaves que dirigem a decisão por linhas (total vs. por job filho). ``child_job``
+    vazio/ausente = usa o total (rows_out); preenchido = linhas daquele filho."""
+    if not isinstance(cond, dict):
+        return cond
+    out = dict(cond)
+    tipo = str(out.get("tipo") or "").strip().lower()
+    if tipo == "linhas_job":
+        out["job_name"] = str(out.get("job_name") or "").strip()
+        out["child_job"] = str(out.get("child_job") or "").strip()
+    return out
 
 
 def _validate_notify(cfg) -> list[str]:
@@ -428,7 +454,9 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                 cond_errs = _validate_condition(raw_cond, known_jobs, j_name, mssql_conn_ids)
                 if cond_errs:
                     erros.extend(f"Item {idx} ({j_name}): {e}" for e in cond_errs); continue
-                cond_json_str = json.dumps(raw_cond, ensure_ascii=False)
+                # Persiste o dict INTEIRO (job_name + child_job inclusos p/ linhas_job)
+                # — round-trip garantido no GET /fluxo / get_pipeline_job.
+                cond_json_str = json.dumps(_normalize_condition(raw_cond), ensure_ascii=False)
                 for m in (raw_cond.get("ramo_verdadeiro") or []) + (raw_cond.get("ramo_falso") or []):
                     mn = str(m).strip()
                     if j_name in cycle_adj and mn in cycle_adj:
@@ -986,7 +1014,9 @@ async def save_pipeline_fluxo(
                 cond_errs = _validate_condition(raw_cond, known_jobs, j_name, mssql_conn_ids)
                 if cond_errs:
                     errors.extend(f"{j_name}: {e}" for e in cond_errs); continue
-                cond_json_str = json.dumps(raw_cond, ensure_ascii=False)
+                # Persiste o dict INTEIRO (job_name + child_job inclusos p/ linhas_job)
+                # — round-trip garantido no GET /fluxo / get_pipeline_job.
+                cond_json_str = json.dumps(_normalize_condition(raw_cond), ensure_ascii=False)
                 for m in (raw_cond.get("ramo_verdadeiro") or []) + (raw_cond.get("ramo_falso") or []):
                     mn = str(m).strip()
                     if mn in cycle_adj:

@@ -297,19 +297,28 @@ class DataStageOperator(BaseOperator):
     def _rows_out(self, info: dict, child_jobs: list) -> int | None:
         """Linhas de SAÍDA do job (soma dos links de saída). Para SEQUENCE (sem
         links próprios) soma as linhas dos jobs filhos. Best-effort: devolve None
-        e loga warning se não der pra obter/parsear — NUNCA falha o job por isso."""
+        e loga warning se não der pra obter/parsear — NUNCA falha o job por isso.
+
+        Efeito colateral (best-effort): enriquece cada entrada de ``child_jobs``
+        com a chave ``rows`` (int|None) = linhas de SAÍDA daquele filho, obtidas
+        do MESMO -report DETAIL usado para somar (sem chamadas SSH extras). Isso
+        habilita a decisão por linhas POR FILHO (conditions.linhas_job/child_job).
+        Falha aqui nunca falha o job — ``rows`` fica ausente/None."""
         try:
+            # Sempre enriquece os filhos com `rows` (mesmo que o job tenha links
+            # próprios) — a granularidade por filho é independente do total.
+            self._annotate_child_rows(child_jobs)
             total = self._parse_output_rows(self._report_detail(self.job_name))
             if total is not None:
                 return total
             # SEQUENCE: sem links próprios → soma os filhos do RUN ATUAL.
+            # Reusa o `rows` já anotado em cada filho (sem novo -report DETAIL).
             child_total = 0
             got_any = False
             for cj in child_jobs or []:
-                cname = cj.get("name") if isinstance(cj, dict) else None
-                if not cname:
+                if not isinstance(cj, dict):
                     continue
-                sub = self._parse_output_rows(self._report_detail(cname))
+                sub = cj.get("rows")
                 if sub is not None:
                     child_total += sub
                     got_any = True
@@ -323,6 +332,22 @@ class DataStageOperator(BaseOperator):
         except Exception as exc:
             self.log.warning("[DS] rows_out: falha ao obter/parsear (%s) — seguindo sem.", exc)
             return None
+
+    def _annotate_child_rows(self, child_jobs: list) -> None:
+        """Anexa a cada filho a chave ``rows`` (int|None) com as linhas de SAÍDA
+        daquele filho (uma chamada -report DETAIL por filho — a MESMA que o
+        fallback de SEQUENCE já precisaria). Best-effort por filho: qualquer falha
+        deixa ``rows=None`` para aquele filho e segue — NUNCA propaga erro."""
+        for cj in child_jobs or []:
+            if not isinstance(cj, dict):
+                continue
+            try:
+                cname = cj.get("name")
+                cj["rows"] = self._parse_output_rows(self._report_detail(cname)) if cname else None
+            except Exception as exc:
+                self.log.debug("[DS] rows por filho indisponível para '%s': %s",
+                               cj.get("name"), exc)
+                cj["rows"] = None
 
     # Saída do dsjob -report DETAIL varia por versão/stage; o relatório lista os
     # links com seu nome e a contagem de linhas. Capturamos os links de SAÍDA

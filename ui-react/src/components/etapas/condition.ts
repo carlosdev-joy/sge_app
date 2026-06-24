@@ -10,6 +10,7 @@ export function defaultCondition(): NodeCondition {
   return {
     tipo: 'contagem', operador: '>', valor: '',
     tabela: '', database: '', sql: '', mssql_conn_id: '',
+    job_name: '', child_job: '',
     ramo_verdadeiro: [], ramo_falso: [],
   }
 }
@@ -19,12 +20,16 @@ export function defaultCondition(): NodeCondition {
 export function toNodeCondition(raw: Record<string, unknown> | null | undefined): NodeCondition {
   const base = defaultCondition()
   if (!raw) return base
+  const tipo: NodeCondition['tipo'] =
+    raw.tipo === 'query' ? 'query' : raw.tipo === 'linhas_job' ? 'linhas_job' : 'contagem'
   return {
     ...base,
     ...raw,
-    tipo: (raw.tipo === 'query' ? 'query' : 'contagem'),
+    tipo,
     operador: typeof raw.operador === 'string' && raw.operador ? raw.operador : base.operador,
     valor: raw.valor != null ? String(raw.valor) : '',
+    job_name: typeof raw.job_name === 'string' ? raw.job_name : '',
+    child_job: typeof raw.child_job === 'string' ? raw.child_job : '',
     ramo_verdadeiro: Array.isArray(raw.ramo_verdadeiro) ? (raw.ramo_verdadeiro as string[]) : [],
     ramo_falso: Array.isArray(raw.ramo_falso) ? (raw.ramo_falso as string[]) : [],
   }
@@ -39,6 +44,12 @@ export function conditionLabel(c: NodeCondition | null | undefined): string {
     const sql = (c.sql || '').replace(/\s+/g, ' ').trim()
     const trecho = sql ? (sql.length > 24 ? sql.slice(0, 24) + '…' : sql) : 'query'
     return `${trecho} ${op} ${val}`
+  }
+  if (c.tipo === 'linhas_job') {
+    const job = (c.job_name || '').trim()
+    const child = (c.child_job || '').trim()
+    const alvo = child ? (job ? `${job}›${child}` : child) : (job || '?')
+    return `linhas ${alvo} ${op} ${val}`
   }
   const tab = (c.tabela || '').trim()
   const alvo = tab ? tab.split('.').pop() : 'contagem'

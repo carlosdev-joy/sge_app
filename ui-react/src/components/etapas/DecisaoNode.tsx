@@ -8,13 +8,16 @@ import { GitBranch } from 'lucide-react'
 // Condição de decisão (espelha o ConditionEntry do PipelineFormModal). Guardamos
 // o objeto inteiro no `data` para ecoar no save; `label` é um resumo curto p/ o nó.
 export interface NodeCondition {
-  tipo: 'contagem' | 'query'
+  tipo: 'contagem' | 'query' | 'linhas_job'
   operador: string
   valor: string
   tabela?: string
   database?: string
   sql?: string
   mssql_conn_id?: string
+  // Específicos do tipo 'linhas_job' (decisão por linhas processadas).
+  job_name?: string
+  child_job?: string
   ramo_verdadeiro: string[]
   ramo_falso: string[]
 }
