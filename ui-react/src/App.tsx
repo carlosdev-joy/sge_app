@@ -2,7 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClient } from './lib/queryClient'
 import { useAuthStore } from './store/auth'
-import { MIGRATED } from './lib/nav'
+import { NAV } from './lib/nav'
 import { AppShellV2 } from './components/layout/AppShellV2'
 import Login from './pages/Login'
 import Admin from './pages/Admin'
@@ -26,10 +26,10 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
-// Elemento de cada rota migrada, chaveado por `NavItem.to`. É a única coisa que
-// App precisa declarar além do NAV (os componentes têm de ser importados aqui de
-// qualquer forma); o conjunto e a ordem das rotas saem de MIGRATED, sem duplicar
-// a lista de telas. Adicionar uma tela = registrar no nav.ts + mapear aqui.
+// Elemento de cada rota, chaveado por `NavItem.to`. É a única coisa que App
+// precisa declarar além do NAV (os componentes têm de ser importados aqui de
+// qualquer forma); o conjunto e a ordem das rotas saem de NAV, sem duplicar a
+// lista de telas. Adicionar uma tela = registrar no nav.ts + mapear aqui.
 const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/dashboard': <Dashboard />,
   '/gestao-falhas': <GestaoFalhas />,
@@ -59,7 +59,7 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<PrivateRoute><AppShellV2 /></PrivateRoute>}>
             <Route index element={<Navigate to="/dashboard" replace />} />
-            {MIGRATED.map((n) => {
+            {NAV.map((n) => {
               const element = PAGE_ELEMENT[n.to]
               if (!element) return null
               const path = n.to.replace(/^\//, '') + (WILDCARD_ROUTES.has(n.to) ? '/*' : '')
