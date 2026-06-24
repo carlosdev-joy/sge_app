@@ -2708,6 +2708,10 @@ function TemplateFormModal({ template, grupos, onClose }: { template: MsgTemplat
   const [botaoUrl, setBotaoUrl] = useState(template?.botao_url ?? '')
   const [ativo, setAtivo] = useState(template?.ativo ?? true)
   const corpoRef = useRef<HTMLTextAreaElement>(null)
+  const tituloRef = useRef<HTMLInputElement>(null)
+  const factValueRefs = useRef<(HTMLInputElement | null)[]>([])
+  const [activeFactIdx, setActiveFactIdx] = useState(0)
+  const CARD_PH_LIST = CARD_PLACEHOLDERS.replace(/[{}]/g, '').split(' ')
 
   const addFact = () => setFacts(f => [...f, { label: '', value: '' }])
   const removeFact = (i: number) => setFacts(f => f.filter((_, idx) => idx !== i))
@@ -2745,7 +2749,10 @@ function TemplateFormModal({ template, grupos, onClose }: { template: MsgTemplat
           </Select>
         </div>
 
-        <Input label="Título do card" value={titulo} onChange={e => setTitulo(e.target.value)} placeholder="ex.: Pipeline {pipeline} falhou" />
+        <div className="flex flex-col gap-1">
+          <Input ref={tituloRef} label="Título do card" value={titulo} onChange={e => setTitulo(e.target.value)} placeholder="ex.: Pipeline {pipeline} falhou" />
+          <PlaceholderPicker label="Inserir:" placeholders={CARD_PH_LIST} targetRef={tituloRef} value={titulo} onChange={setTitulo} />
+        </div>
 
         <div className="flex flex-col gap-1">
           <Textarea ref={corpoRef} label="Corpo *" rows={4} value={corpo} onChange={e => setCorpo(e.target.value)}
@@ -2772,11 +2779,20 @@ function TemplateFormModal({ template, grupos, onClose }: { template: MsgTemplat
             {facts.map((f, i) => (
               <div key={i} className="flex items-end gap-2">
                 <Input label={i === 0 ? 'Rótulo' : undefined} value={f.label} onChange={e => setFact(i, 'label', e.target.value)} placeholder="ex.: Linhas" className="w-40" />
-                <Input label={i === 0 ? 'Valor' : undefined} value={f.value} onChange={e => setFact(i, 'value', e.target.value)} placeholder="ex.: {linhas}" className="flex-1" />
+                <Input label={i === 0 ? 'Valor' : undefined} ref={el => { factValueRefs.current[i] = el }} onFocus={() => setActiveFactIdx(i)} value={f.value} onChange={e => setFact(i, 'value', e.target.value)} placeholder="ex.: {linhas}" className="flex-1" />
                 <button onClick={() => removeFact(i)} className="text-slate-400 hover:text-red-500 dark:hover:text-red-400 p-1.5 rounded mb-0.5" title="Remover fato"><Trash2 size={14} /></button>
               </div>
             ))}
           </div>
+          {facts.length > 0 && (
+            <PlaceholderPicker
+              label="Inserir no valor do fato em foco:"
+              placeholders={CARD_PH_LIST}
+              targetRef={{ current: factValueRefs.current[activeFactIdx] ?? null }}
+              value={facts[activeFactIdx]?.value ?? ''}
+              onChange={v => setFact(activeFactIdx, 'value', v)}
+            />
+          )}
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
