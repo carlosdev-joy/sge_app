@@ -30,12 +30,18 @@ import { Button } from '../ui/Button'
 import { Input, Select, Textarea } from '../ui/Input'
 import { Modal } from '../ui/Modal'
 import { toast } from '../ui/Toast'
-import { Save, RefreshCw, AlertCircle, GitBranch, Trash2 } from 'lucide-react'
+import {
+  Save, RefreshCw, AlertCircle, GitBranch, Trash2,
+  PanelRightClose, ChevronLeft, ChevronRight, MousePointerClick,
+} from 'lucide-react'
 import { EtapaNode, type EtapaNodeData } from './EtapaNode'
 import { DecisaoNode, type DecisaoNodeData, type NodeCondition } from './DecisaoNode'
 import { TYPE_META, TYPE_ORDER, CREATABLE_TYPES, type EtapaType } from './types'
 import { COND_OPERADORES, defaultCondition, toNodeCondition, conditionLabel } from './condition'
 import { useColorMode } from './useColorMode'
+import {
+  JobTypeFields, type JobTypeFieldsValue, type JobFieldsType, type JobParam,
+} from './JobTypeFields'
 
 const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode }
 
@@ -54,6 +60,12 @@ interface FluxoNode {
   condition: Condition | null
   layout_x: number | null
   layout_y: number | null
+  // Campos por tipo (round-trip). O backend usa presença de chave — sempre reenviados.
+  ssh_conn_id?: string | null
+  verbose_log?: boolean
+  mssql_conn_id?: string | null
+  mssql_database?: string | null
+  params?: { param_name: string; param_type: string; param_value: string | null; param_order?: number }[]
 }
 interface FluxoResp { nodes: FluxoNode[] }
 
@@ -106,6 +118,17 @@ function buildNodes(apiNodes: FluxoNode[]): Node[] {
       type: toEtapaType(n.job_type),
       command: n.job_command ?? null,   // CRU (nullable) — fallback só na exibição
       order: n.execution_order,
+      // Campos por tipo (round-trip): preservados no data e reenviados no save.
+      ssh_conn_id: n.ssh_conn_id ?? null,
+      verbose_log: !!n.verbose_log,
+      mssql_conn_id: n.mssql_conn_id ?? null,
+      mssql_database: n.mssql_database ?? null,
+      params: (n.params ?? []).map((p, i) => ({
+        id: `p_${i}_${p.param_name}`,
+        param_name: p.param_name,
+        param_type: p.param_type,
+        param_value: p.param_value ?? '',
+      })),
     }
     return { id: n.job_name, type: 'etapa' as const, position, data }
   })
@@ -195,52 +218,91 @@ function Legenda() {
   )
 }
 
-// ── Paleta arrastar-para-criar (lateral esquerda, topo) ─────────────────────
+// ── Paleta arrastar-para-criar (barra vertical compacta, estilo Informatica) ─
 const DND_MIME = 'application/orquestra-etapa'
 
-function Paleta() {
-  const onDragStart = (e: React.DragEvent, tipo: string) => {
+// Um item arrastável da paleta: ícone grande no chip + label pequeno embaixo.
+// Quando `collapsed`, mostra só o chip (faixa fininha).
+function PaletaItem({
+  tipo, label, chip, Icon, collapsed,
+}: {
+  tipo: string; label: string; chip: string; Icon: React.ComponentType<{ size?: number; strokeWidth?: number }>; collapsed: boolean
+}) {
+  const onDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData(DND_MIME, tipo)
     e.dataTransfer.effectAllowed = 'move'
   }
   return (
-    <div className="w-[164px] rounded-lg border border-edge bg-panel/95 p-2 shadow-md backdrop-blur">
-      <p className="px-0.5 pb-1.5 text-[10px] font-semibold uppercase tracking-wide text-dim">
-        Adicionar etapa
-      </p>
-      <p className="px-0.5 pb-2 text-[10px] leading-tight text-dim/70">
-        Arraste para o canvas.
-      </p>
+    <div
+      draggable
+      onDragStart={onDragStart}
+      title={`Arrastar para criar — ${label}`}
+      className={[
+        'group flex cursor-grab flex-col items-center gap-1 rounded-md border border-edge bg-canvas',
+        'text-ink transition-colors hover:bg-edge/40 active:cursor-grabbing',
+        collapsed ? 'p-1' : 'px-1 py-1.5',
+      ].join(' ')}
+    >
+      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded ${chip}`}>
+        <Icon size={16} strokeWidth={2.2} />
+      </span>
+      {!collapsed && (
+        <span className="max-w-full truncate text-[9px] font-medium leading-none text-dim group-hover:text-ink">
+          {label}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function Paleta({
+  open, onToggle,
+}: { open: boolean; onToggle: () => void }) {
+  return (
+    <div
+      className={[
+        'flex max-h-[calc(100%-1rem)] flex-col overflow-y-auto rounded-lg border border-edge bg-panel/95 shadow-md backdrop-blur',
+        open ? 'w-[72px] p-1.5' : 'w-[40px] p-1',
+      ].join(' ')}
+    >
+      {/* Cabeçalho com botão de colapsar/expandir */}
+      <button
+        type="button"
+        onClick={onToggle}
+        title={open ? 'Recolher paleta' : 'Expandir paleta'}
+        className="mb-1 flex items-center justify-center gap-1 rounded-md border border-edge bg-canvas px-1 py-1 text-[9px] font-semibold uppercase tracking-wide text-dim transition-colors hover:bg-edge/40 hover:text-ink"
+      >
+        {open ? (
+          <>
+            <span>Paleta</span>
+            <ChevronLeft size={11} />
+          </>
+        ) : (
+          <ChevronRight size={12} />
+        )}
+      </button>
+
       <div className="flex flex-col gap-1.5">
         {CREATABLE_TYPES.map((t) => {
           const meta = TYPE_META[t]
-          const Icon = meta.icon
           return (
-            <div
+            <PaletaItem
               key={t}
-              draggable
-              onDragStart={(e) => onDragStart(e, t)}
-              className="flex cursor-grab items-center gap-2 rounded-md border border-edge bg-canvas px-2 py-1.5 text-xs text-ink transition-colors hover:bg-edge/40 active:cursor-grabbing"
-              title={`Arrastar para criar uma etapa ${meta.label}`}
-            >
-              <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded ${meta.chip}`}>
-                <Icon size={13} strokeWidth={2.2} />
-              </span>
-              <span className="truncate font-medium">{meta.label}</span>
-            </div>
+              tipo={t}
+              label={meta.label}
+              chip={meta.chip}
+              Icon={meta.icon}
+              collapsed={!open}
+            />
           )
         })}
-        <div
-          draggable
-          onDragStart={(e) => onDragStart(e, 'decisao')}
-          className="flex cursor-grab items-center gap-2 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-xs text-indigo-800 transition-colors hover:bg-indigo-100 active:cursor-grabbing dark:border-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-200 dark:hover:bg-indigo-900/50"
-          title="Arrastar para criar uma decisão"
-        >
-          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-indigo-500 text-white">
-            <GitBranch size={13} strokeWidth={2.2} />
-          </span>
-          <span className="truncate font-medium">Decisão</span>
-        </div>
+        <PaletaItem
+          tipo="decisao"
+          label="Decisão"
+          chip="bg-indigo-500 text-white"
+          Icon={GitBranch}
+          collapsed={!open}
+        />
       </div>
     </div>
   )
@@ -270,6 +332,8 @@ function FluxoEditorInner({ pipeline }: Props) {
   const [saving, setSaving] = useState(false)
   const [showPublish, setShowPublish] = useState(false)
   const [publishing, setPublishing] = useState(false)
+  // Paleta colapsável (estado local).
+  const [paletaOpen, setPaletaOpen] = useState(true)
 
   // Conjunto acumulado de job_names existentes removidos no canvas.
   const deletedRef = useRef<Set<string>>(new Set())
@@ -278,7 +342,7 @@ function FluxoEditorInner({ pipeline }: Props) {
   // Guarda os nós da API para o re-layout.
   const apiNodesRef = useRef<FluxoNode[]>([])
 
-  // Conexões MSSQL p/ o seletor do editor de condição (igual ao PipelineFormModal).
+  // Conexões MSSQL p/ o editor de condição e p/ etapas storedproc (JobTypeFields).
   const { data: mssqlData } = useQuery<{ connections: { conn_id: string; host: string }[] }>({
     queryKey: ['mssql-connections'],
     queryFn: () => apiFetch('/airflow/connections/mssql'),
@@ -286,15 +350,30 @@ function FluxoEditorInner({ pipeline }: Props) {
   })
   const mssqlConns = mssqlData?.connections ?? []
 
+  // Conexões SSH p/ etapas shell (JobTypeFields).
+  const { data: sshData } = useQuery<{ connections: { conn_id: string; host: string }[] }>({
+    queryKey: ['ssh-connections'],
+    queryFn: () => apiFetch('/airflow/connections/ssh'),
+    staleTime: 300_000,
+  })
+  const sshConns = sshData?.connections ?? []
+
+  // Bancos do mesmo servidor (seletor de banco-alvo de storedproc no JobTypeFields).
+  const { data: dbData } = useQuery<{ server: string | null; databases: string[] }>({
+    queryKey: ['job-databases'],
+    queryFn: () => apiFetch('/jobs/databases'),
+    staleTime: 300_000,
+  })
+  const dbServer = dbData?.server ?? null
+  const dbDatabases = dbData?.databases ?? []
+
   const decisaoSet = useMemo(
     () => new Set(nodes.filter(n => n.type === 'decisao').map(n => n.id)),
     [nodes],
   )
 
-  // ── Drawer de condição / modal de nova etapa ──────────────────────────────
-  // `editId` != null → o modal edita um nó NOVO já no canvas (renomeia/atualiza).
-  const [condNodeId, setCondNodeId] = useState<string | null>(null)
-  const [novaEtapa, setNovaEtapa] = useState<{ editId?: string; tipo: EtapaType; name: string; command: string; x: number; y: number } | null>(null)
+  // ── Seleção (edita o nó selecionado AO VIVO no painel à direita) ───────────
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [delNodeId, setDelNodeId] = useState<string | null>(null)
 
   const { data, isLoading, isError, error } = useQuery<FluxoResp>({
@@ -324,11 +403,17 @@ function FluxoEditorInner({ pipeline }: Props) {
     return m
   }, [nodes])
 
-  // Mover/selecionar nó → marca dirty quando muda posição.
+  // Mover/selecionar nó → marca dirty quando muda posição; sincroniza seleção.
   const onNodesChange = useCallback(
     (changes: NodeChange<Node>[]) => {
       setNodes(nds => applyNodeChanges(changes, nds))
       if (changes.some(c => c.type === 'position' && c.dragging === false)) setDirty(true)
+      // Mantém `selectedId` em sincronia com o React Flow (clique no canvas/nó).
+      for (const c of changes) {
+        if (c.type !== 'select') continue
+        if (c.selected) setSelectedId(c.id)
+        else setSelectedId(prev => (prev === c.id ? null : prev))
+      }
     },
     [setNodes],
   )
@@ -401,60 +486,48 @@ function FluxoEditorInner({ pipeline }: Props) {
       const x = Math.round(position.x)
       const y = Math.round(position.y)
       if (tipo === 'decisao') {
-        // Decisão: cria já o nó (defaults) e abre o drawer para editar nome/condição.
+        // Decisão: cria o nó (defaults) e SELECIONA — o painel à direita já edita.
         const name = nextName('DECISAO', nameSet())
         const cond = defaultCondition()
         const node: Node = {
           id: name,
           type: 'decisao',
           position: { x, y },
+          selected: true,
           data: { name, condition: cond, label: conditionLabel(cond), isNew: true } as DecisaoNodeData,
         }
-        setNodes(nds => [...nds, node])
+        setNodes(nds => [...nds.map(n => n.selected ? { ...n, selected: false } : n), node])
         setDirty(true)
-        setCondNodeId(name)
+        setSelectedId(name)
         return
       }
-      // Etapa: abre o modal "Nova etapa" pedindo nome + comando.
+      // Etapa: cria o nó (nome default único + comando vazio) e SELECIONA p/ preencher.
       const t = toEtapaType(tipo)
-      setNovaEtapa({ tipo: t, name: nextName('NOVA_ETAPA', nameSet()), command: '', x, y })
+      const name = nextName('NOVA_ETAPA', nameSet())
+      const data: EtapaNodeData = {
+        name,
+        type: t,
+        command: null,
+        order: maxOrder() + 1,
+        ssh_conn_id: '',
+        verbose_log: false,
+        mssql_conn_id: '',
+        mssql_database: '',
+        params: [],
+        isNew: true,
+      }
+      const node: Node = { id: name, type: 'etapa', position: { x, y }, selected: true, data }
+      setNodes(nds => [...nds.map(n => n.selected ? { ...n, selected: false } : n), node])
+      setDirty(true)
+      setSelectedId(name)
     },
-    [rf, nameSet, setNodes],
+    [rf, nameSet, maxOrder, setNodes],
   )
 
-  // Confirma a criação/edição de uma etapa nova (a partir do modal).
-  function confirmarNovaEtapa() {
-    if (!novaEtapa) return
-    const name = novaEtapa.name.trim()
-    if (!name) { toast.error('Informe um nome para a etapa.'); return }
-    if (!NAME_RE.test(name)) { toast.error('Nome inválido — use apenas letras, números, espaço, _ . -'); return }
-    const editId = novaEtapa.editId
-    const command = novaEtapa.command.trim() || null
-
-    // Edição de um nó NOVO já no canvas: renomeia (se mudou) + atualiza comando.
-    if (editId) {
-      if (name !== editId) {
-        if (!renomearNovo(editId, name)) return
-      }
-      setNodes(nds => nds.map(n => n.id === name ? { ...n, data: { ...n.data, command } } : n))
-      setDirty(true)
-      setNovaEtapa(null)
-      return
-    }
-
-    // Criação de etapa nova.
-    if (nameSet().has(name)) { toast.error('Já existe um nó com esse nome.'); return }
-    const data: EtapaNodeData = {
-      name,
-      type: novaEtapa.tipo,
-      command,
-      order: maxOrder() + 1,
-      isNew: true,
-    }
-    const node: Node = { id: name, type: 'etapa', position: { x: novaEtapa.x, y: novaEtapa.y }, data }
-    setNodes(nds => [...nds, node])
+  // Atualiza o `data` de um nó (etapa) — usado pelo painel à direita ao vivo.
+  function patchNodeData(nodeId: string, patch: Record<string, unknown>) {
+    setNodes(nds => nds.map(n => n.id === nodeId ? { ...n, data: { ...n.data, ...patch } } : n))
     setDirty(true)
-    setNovaEtapa(null)
   }
 
   // Renomeia um nó NOVO (ainda não salvo): atualiza id, arestas e ramos.
@@ -475,6 +548,7 @@ function FluxoEditorInner({ pipeline }: Props) {
       if (ne !== e) ne = { ...ne, id: ne.id.replace(oldName, name) }
       return ne
     }))
+    setSelectedId(prev => (prev === oldName ? name : prev))
     setDirty(true)
     return true
   }
@@ -497,7 +571,7 @@ function FluxoEditorInner({ pipeline }: Props) {
     setNodes(nds => nds.filter(n => n.id !== id))
     setDirty(true)
     setDelNodeId(null)
-    if (condNodeId === id) setCondNodeId(null)
+    setSelectedId(prev => (prev === id ? null : prev))
   }
 
   // Intercepta o delete nativo (tecla Delete/Backspace) para confirmar antes de
@@ -562,7 +636,7 @@ function FluxoEditorInner({ pipeline }: Props) {
             ramo_falso: ramos.nao,
           }
         }
-        return {
+        const base = {
           job_name: n.id,
           job_type: isDecisao ? 'decisao' : ((d.type as string) || 'datastage'),
           job_command: isDecisao ? null : ((d.command as string | null) ?? null),
@@ -571,6 +645,24 @@ function FluxoEditorInner({ pipeline }: Props) {
           condition,
           layout_x: Math.round(n.position.x),
           layout_y: Math.round(n.position.y),
+        }
+        if (isDecisao) return base
+        // Etapa: inclui SEMPRE os campos por tipo (round-trip — presença de chave
+        // no backend; ausência não zera). Lidos do `data` do nó.
+        const rawParams = (d.params as JobParam[] | undefined) ?? []
+        return {
+          ...base,
+          ssh_conn_id: (d.ssh_conn_id as string | null) ?? null,
+          verbose_log: !!d.verbose_log,
+          mssql_conn_id: (d.mssql_conn_id as string | null) ?? null,
+          mssql_database: (d.mssql_database as string | null) ?? null,
+          params: rawParams
+            .filter(p => (p.param_name ?? '').trim())
+            .map(p => ({
+              param_name: p.param_name.trim(),
+              param_type: p.param_type,
+              param_value: p.param_value,
+            })),
         }
       })
 
@@ -627,26 +719,21 @@ function FluxoEditorInner({ pipeline }: Props) {
     [],
   )
 
-  // Abrir drawer/modal ao dar duplo-clique num nó.
-  const onNodeDoubleClick = useCallback((_: React.MouseEvent, node: Node) => {
-    if (node.type === 'decisao') { setCondNodeId(node.id); return }
-    // Etapa NOVA (ainda não salva): permite editar nome/comando.
-    const d = node.data as EtapaNodeData
-    if (d.isNew) {
-      setNovaEtapa({ editId: node.id, tipo: d.type, name: node.id, command: d.command ?? '', x: Math.round(node.position.x), y: Math.round(node.position.y) })
-    }
+  // Duplo-clique apenas garante a seleção (o painel à direita já edita ao vivo).
+  const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
+    setSelectedId(node.id)
   }, [])
 
-  // Ramos atuais da decisão aberta no drawer (derivados das arestas de ramo).
-  const condRamos = useMemo(() => {
-    if (!condNodeId) return { sim: [] as string[], nao: [] as string[] }
+  // Ramos da decisão SELECIONADA (derivados das arestas de ramo) — read-only no painel.
+  const selRamos = useMemo(() => {
     const sim: string[] = []; const nao: string[] = []
+    if (!selectedId) return { sim, nao }
     for (const e of edges) {
-      if (!isBranch(e) || e.source !== condNodeId) continue
+      if (!isBranch(e) || e.source !== selectedId) continue
       ;(edgeRamo(e) === 'nao' ? nao : sim).push(e.target)
     }
     return { sim, nao }
-  }, [edges, condNodeId])
+  }, [edges, selectedId])
 
   if (isLoading) {
     return (
@@ -665,156 +752,94 @@ function FluxoEditorInner({ pipeline }: Props) {
     )
   }
 
-  const selectedId = nodes.find(n => n.selected)?.id ?? null
-  const condNode = condNodeId ? nodes.find(n => n.id === condNodeId) : null
-  const condData = condNode ? (condNode.data as DecisaoNodeData) : null
+  const selNode = selectedId ? nodes.find(n => n.id === selectedId) ?? null : null
 
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-xl border border-edge bg-canvas" ref={wrapperRef}>
-      {nodes.length === 0 && (
-        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 text-dim">
-          <span className="text-3xl">⬡</span>
-          <p className="text-sm font-medium">Nenhuma etapa neste pipeline</p>
-          <p className="text-xs">Arraste um tipo da paleta (à esquerda) para criar a primeira etapa.</p>
-        </div>
-      )}
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        onBeforeDelete={handleBeforeDelete}
-        onNodeDoubleClick={onNodeDoubleClick}
-        onDrop={onDrop}
-        onDragOver={onDragOver}
-        colorMode={colorMode}
-        fitView
-        fitViewOptions={{ padding: 0.25 }}
-        proOptions={{ hideAttribution: true }}
-        defaultEdgeOptions={{ type: 'smoothstep' }}
-        deleteKeyCode={['Delete', 'Backspace']}
-      >
-        <Background gap={18} size={1} />
-        <Controls />
-        <MiniMap
-          pannable
-          zoomable
-          nodeColor={miniMapColor}
-          nodeStrokeWidth={2}
-          className="!bg-panel"
-        />
-
-        {/* Paleta arrastar-para-criar (esquerda) */}
-        <Panel position="top-left">
-          <Paleta />
-        </Panel>
-
-        {/* Barra de ações (topo direita) */}
-        <Panel position="top-right">
-          <div className="flex items-center gap-2 rounded-lg border border-edge bg-panel/95 px-2.5 py-2 shadow-md backdrop-blur">
-            {dirty && (
-              <span className="flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
-                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                alterações não salvas
-              </span>
-            )}
-            {selectedId && (
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={() => setDelNodeId(selectedId)}
-                title="Excluir o nó selecionado"
-              >
-                <Trash2 size={13} /> Excluir
-              </Button>
-            )}
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={reorganizar}
-              title="Recoloca os nós em camadas por ordem"
-            >
-              <RefreshCw size={13} /> Reorganizar
-            </Button>
-            <Button size="sm" onClick={salvar} loading={saving} disabled={!dirty}>
-              <Save size={13} /> Salvar fluxo
-            </Button>
-          </div>
-        </Panel>
-
-        <Panel position="bottom-left">
-          <Legenda />
-        </Panel>
-      </ReactFlow>
-
-      {/* Modal: nova etapa (nome + comando + tipo) */}
-      <Modal
-        open={!!novaEtapa}
-        onClose={() => setNovaEtapa(null)}
-        title={novaEtapa?.editId ? 'Editar etapa' : 'Nova etapa'}
-        size="md"
-      >
-        {novaEtapa && (
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-2">
-              <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${TYPE_META[novaEtapa.tipo].chip}`}>
-                {(() => { const Icon = TYPE_META[novaEtapa.tipo].icon; return <Icon size={15} strokeWidth={2.2} /> })()}
-              </span>
-              <span className="text-sm font-medium text-ink">{TYPE_META[novaEtapa.tipo].label}</span>
-            </div>
-            <Input
-              label="Nome da etapa *"
-              value={novaEtapa.name}
-              onChange={e => setNovaEtapa(s => s ? { ...s, name: e.target.value } : s)}
-              placeholder="ex: CARGA_CLIENTES"
-              className="font-mono"
-            />
-            <p className="-mt-2 text-[10px] text-dim">Letras, números, espaço, _ . - </p>
-            <Textarea
-              label="Comando / path (opcional)"
-              value={novaEtapa.command}
-              rows={2}
-              onChange={e => setNovaEtapa(s => s ? { ...s, command: e.target.value } : s)}
-              placeholder="ex: caminho do job, script, proc…"
-              className="font-mono text-xs"
-            />
-            <div className="flex justify-end gap-2 border-t border-edge pt-3">
-              <Button variant="secondary" onClick={() => setNovaEtapa(null)}>Cancelar</Button>
-              <Button onClick={confirmarNovaEtapa}>
-                {novaEtapa.editId ? 'Aplicar' : 'Criar etapa'}
-              </Button>
-            </div>
+    <div className="flex h-full w-full overflow-hidden rounded-xl border border-edge bg-canvas">
+      {/* Canvas (ocupa o resto; o painel à direita encolhe o canvas, não sobrepõe) */}
+      <div className="relative min-w-0 flex-1" ref={wrapperRef}>
+        {nodes.length === 0 && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 text-dim">
+            <span className="text-3xl">⬡</span>
+            <p className="text-sm font-medium">Nenhuma etapa neste pipeline</p>
+            <p className="text-xs">Arraste um tipo da paleta (à esquerda) para criar a primeira etapa.</p>
           </div>
         )}
-      </Modal>
-
-      {/* Drawer/modal: editar condição da decisão */}
-      <Modal
-        open={!!condNode}
-        onClose={() => setCondNodeId(null)}
-        title="Condição da decisão"
-        size="lg"
-      >
-        {condNode && condData && (
-          <DecisaoForm
-            nodeId={condNode.id}
-            name={condData.name}
-            isNew={!!condData.isNew}
-            condition={condData.condition}
-            ramos={condRamos}
-            mssqlConns={mssqlConns}
-            onRename={novo => {
-              const ok = renomearNovo(condNode.id, novo)
-              if (ok && novo.trim() && novo.trim() !== condNode.id) setCondNodeId(novo.trim())
-              return ok
-            }}
-            onPatch={patch => patchCondition(condNode.id, patch)}
-            onClose={() => setCondNodeId(null)}
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onBeforeDelete={handleBeforeDelete}
+          onNodeClick={onNodeClick}
+          onDrop={onDrop}
+          onDragOver={onDragOver}
+          colorMode={colorMode}
+          fitView
+          fitViewOptions={{ padding: 0.25 }}
+          proOptions={{ hideAttribution: true }}
+          defaultEdgeOptions={{ type: 'smoothstep' }}
+          deleteKeyCode={['Delete', 'Backspace']}
+        >
+          <Background gap={18} size={1} />
+          <Controls />
+          <MiniMap
+            pannable
+            zoomable
+            nodeColor={miniMapColor}
+            nodeStrokeWidth={2}
+            className="!bg-panel"
           />
-        )}
-      </Modal>
+
+          {/* Paleta arrastar-para-criar (barra vertical fina, esquerda) */}
+          <Panel position="top-left">
+            <Paleta open={paletaOpen} onToggle={() => setPaletaOpen(o => !o)} />
+          </Panel>
+
+          {/* Barra de ações (topo direita) */}
+          <Panel position="top-right">
+            <div className="flex items-center gap-2 rounded-lg border border-edge bg-panel/95 px-2.5 py-2 shadow-md backdrop-blur">
+              {dirty && (
+                <span className="flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                  alterações não salvas
+                </span>
+              )}
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={reorganizar}
+                title="Recoloca os nós em camadas por ordem"
+              >
+                <RefreshCw size={13} /> Reorganizar
+              </Button>
+              <Button size="sm" onClick={salvar} loading={saving} disabled={!dirty}>
+                <Save size={13} /> Salvar fluxo
+              </Button>
+            </div>
+          </Panel>
+
+          <Panel position="bottom-left">
+            <Legenda />
+          </Panel>
+        </ReactFlow>
+      </div>
+
+      {/* Painel de propriedades INLINE (à direita) — edita o nó selecionado ao vivo */}
+      <PropriedadesPanel
+        node={selNode}
+        ramos={selRamos}
+        sshConns={sshConns}
+        mssqlConns={mssqlConns}
+        dbServer={dbServer}
+        dbDatabases={dbDatabases}
+        onRename={renomearNovo}
+        onPatchData={patchNodeData}
+        onPatchCondition={patchCondition}
+        onDelete={id => setDelNodeId(id)}
+      />
 
       {/* Confirmação de exclusão de nó */}
       <Modal
@@ -886,114 +911,320 @@ function extractValidationErrors(e: any): string[] {
   return out
 }
 
-// ── Editor de condição (espelha o bloco de decisão do PipelineFormModal) ─────
-interface DecisaoFormProps {
-  nodeId: string
-  name: string
-  isNew: boolean
-  condition: NodeCondition
+// ─────────────────────────────────────────────────────────────────────────────
+// Painel de propriedades INLINE (à direita) — edita o nó selecionado ao vivo.
+// Substitui os antigos modais "Nova etapa" e "Condição da decisão".
+// ─────────────────────────────────────────────────────────────────────────────
+interface PropriedadesPanelProps {
+  node: Node | null
   ramos: { sim: string[]; nao: string[] }
+  sshConns: { conn_id: string; host: string }[]
   mssqlConns: { conn_id: string; host: string }[]
-  onRename: (novo: string) => boolean
-  onPatch: (patch: Partial<NodeCondition>) => void
-  onClose: () => void
+  dbServer: string | null
+  dbDatabases: string[]
+  onRename: (oldName: string, novo: string) => boolean
+  onPatchData: (nodeId: string, patch: Record<string, unknown>) => void
+  onPatchCondition: (nodeId: string, patch: Partial<NodeCondition>) => void
+  onDelete: (id: string) => void
 }
 
-function DecisaoForm({ nodeId, name, isNew, condition, ramos, mssqlConns, onRename, onPatch, onClose }: DecisaoFormProps) {
-  const [nameDraft, setNameDraft] = useState(name)
-  useEffect(() => { setNameDraft(name) }, [nodeId, name])
-  const c = condition
+function PropriedadesPanel({
+  node, ramos, sshConns, mssqlConns, dbServer, dbDatabases,
+  onRename, onPatchData, onPatchCondition, onDelete,
+}: PropriedadesPanelProps) {
+  return (
+    <aside className="flex w-[320px] shrink-0 flex-col overflow-y-auto border-l border-edge bg-panel">
+      {/* Cabeçalho do painel */}
+      <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-edge bg-panel/95 px-3 py-2.5 backdrop-blur">
+        <PanelRightClose size={14} className="text-dim" />
+        <span className="text-xs font-semibold uppercase tracking-wide text-dim">Propriedades</span>
+      </div>
 
-  function commitName() {
+      {!node ? (
+        <PainelVazio />
+      ) : node.type === 'decisao' ? (
+        <PainelDecisao
+          key={node.id}
+          node={node}
+          ramos={ramos}
+          mssqlConns={mssqlConns}
+          onRename={onRename}
+          onPatchCondition={onPatchCondition}
+          onDelete={onDelete}
+        />
+      ) : (
+        <PainelEtapa
+          key={node.id}
+          node={node}
+          sshConns={sshConns}
+          mssqlConns={mssqlConns}
+          dbServer={dbServer}
+          dbDatabases={dbDatabases}
+          onRename={onRename}
+          onPatchData={onPatchData}
+          onDelete={onDelete}
+        />
+      )}
+    </aside>
+  )
+}
+
+// Estado-guia quando nada está selecionado.
+function PainelVazio() {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 px-5 py-10 text-center">
+      <MousePointerClick size={26} className="text-dim/60" />
+      <p className="text-sm font-medium text-ink">Selecione um nó para editar suas propriedades</p>
+      <p className="text-xs leading-relaxed text-dim">
+        Clique em uma etapa ou decisão no canvas. Para criar um novo nó,
+        <strong className="text-ink"> arraste </strong> um tipo da paleta (à esquerda) para o canvas.
+      </p>
+    </div>
+  )
+}
+
+// Campo de nome reutilizado pelos dois painéis: editável só se `isNew`.
+function NomeField({
+  id, name, isNew, placeholder, onRename,
+}: { id: string; name: string; isNew: boolean; placeholder: string; onRename: (oldName: string, novo: string) => boolean }) {
+  const [draft, setDraft] = useState(name)
+  useEffect(() => { setDraft(name) }, [id, name])
+
+  function commit() {
     if (!isNew) return
-    if (nameDraft.trim() === name) return
-    if (!onRename(nameDraft)) setNameDraft(name)
+    if (draft.trim() === name) return
+    if (!onRename(id, draft)) setDraft(name)
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* Nome (editável só para decisão nova) */}
+    <div className="flex flex-col gap-1">
       <Input
-        label={isNew ? 'Nome da decisão *' : 'Nome da decisão'}
-        value={nameDraft}
+        label={isNew ? 'Nome *' : 'Nome'}
+        value={draft}
         disabled={!isNew}
-        onChange={e => setNameDraft(e.target.value)}
-        onBlur={commitName}
-        onKeyDown={e => { if (e.key === 'Enter') commitName() }}
-        placeholder="ex: DECISAO_VOLUME"
-        className={`font-mono ${!isNew ? 'opacity-60' : ''}`}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+        placeholder={placeholder}
+        className={`font-mono text-xs ${!isNew ? 'opacity-60' : ''}`}
       />
-      {!isNew && <p className="-mt-2 text-[10px] text-dim">O nome de um nó já salvo não é editável aqui.</p>}
+      {!isNew
+        ? <p className="text-[10px] text-dim/70">O nome de um nó já salvo não é editável aqui.</p>
+        : <p className="text-[10px] text-dim/70">Letras, números, espaço, _ . -</p>}
+    </div>
+  )
+}
 
-      <div className="flex items-center gap-1.5">
-        <GitBranch size={13} className="text-indigo-600 dark:text-indigo-300" />
-        <span className="text-xs font-semibold text-ink">Expressão da condição</span>
-        <span className="text-[11px] text-dim">— desvia o fluxo conforme o resultado</span>
+// ── Painel de uma ETAPA ──────────────────────────────────────────────────────
+interface PainelEtapaProps {
+  node: Node
+  sshConns: { conn_id: string; host: string }[]
+  mssqlConns: { conn_id: string; host: string }[]
+  dbServer: string | null
+  dbDatabases: string[]
+  onRename: (oldName: string, novo: string) => boolean
+  onPatchData: (nodeId: string, patch: Record<string, unknown>) => void
+  onDelete: (id: string) => void
+}
+
+function PainelEtapa({ node, sshConns, mssqlConns, dbServer, dbDatabases, onRename, onPatchData, onDelete }: PainelEtapaProps) {
+  const d = node.data as EtapaNodeData
+  const isNew = !!d.isNew
+  const meta = TYPE_META[d.type]
+  const Icon = meta.icon
+
+  // Valor consumido pela fonte única de campos por tipo (JobTypeFields).
+  const typeValue: JobTypeFieldsValue = {
+    job_type: d.type as JobFieldsType,
+    job_command: d.command ?? '',
+    ssh_conn_id: d.ssh_conn_id ?? '',
+    verbose_log: !!d.verbose_log,
+    mssql_conn_id: d.mssql_conn_id ?? '',
+    mssql_database: d.mssql_database ?? '',
+    params: (d.params as JobParam[] | undefined) ?? [],
+  }
+
+  // Patch do JobTypeFields → mapeia job_command de volta p/ `command` (nullável).
+  function patchType(patch: Partial<JobTypeFieldsValue>) {
+    const out: Record<string, unknown> = { ...patch }
+    if ('job_command' in patch) {
+      out.command = (patch.job_command ?? '') === '' ? null : patch.job_command
+      delete out.job_command
+    }
+    if ('job_type' in patch) delete out.job_type   // tipo só muda na criação
+    onPatchData(node.id, out)
+  }
+
+  return (
+    <div className="flex flex-1 flex-col gap-3 p-3">
+      {/* Cabeçalho: chip do tipo */}
+      <div className="flex items-center gap-2">
+        <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${meta.chip}`}>
+          <Icon size={15} strokeWidth={2.2} />
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
+          <p className="text-[10px] text-dim">{meta.label}</p>
+        </div>
       </div>
 
-      <div className="grid grid-cols-[1fr_90px_1fr] gap-2">
-        <Select label="Tipo" value={c.tipo} onChange={e => onPatch({ tipo: e.target.value as 'contagem' | 'query' })}>
-          <option value="contagem">Contagem de registros</option>
-          <option value="query">Valor de uma query</option>
-        </Select>
-        <Select label="Operador" value={c.operador} onChange={e => onPatch({ operador: e.target.value })} className="text-center">
-          {COND_OPERADORES.map(op => <option key={op} value={op}>{op}</option>)}
-        </Select>
-        <Input
-          label="Valor *"
-          value={c.valor}
-          onChange={e => onPatch({ valor: e.target.value })}
-          placeholder={c.tipo === 'query' ? 'ex: 1' : 'ex: 10000'}
-          className="font-mono"
-        />
-      </div>
+      <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: CARGA_CLIENTES" onRename={onRename} />
 
-      {c.tipo === 'contagem' ? (
-        <div className="grid grid-cols-2 gap-2">
-          <Input
-            label="Tabela * (db.schema.tabela)"
-            value={c.tabela ?? ''}
-            onChange={e => onPatch({ tabela: e.target.value })}
-            placeholder="db.schema.tabela"
-            className="font-mono"
-          />
-          <Input
-            label="Banco (opcional)"
-            value={c.database ?? ''}
-            onChange={e => onPatch({ database: e.target.value })}
-            placeholder="ex: BI_DW"
-            className="font-mono"
+      {/* Tipo (editável só na criação) e Ordem */}
+      <div className="grid grid-cols-2 gap-2">
+        <Select
+          label="Tipo"
+          value={d.type}
+          disabled={!isNew}
+          onChange={e => onPatchData(node.id, { type: e.target.value as EtapaType })}
+          className={`text-xs ${!isNew ? 'opacity-60' : ''}`}
+        >
+          {CREATABLE_TYPES.map(t => <option key={t} value={t}>{TYPE_META[t].label}</option>)}
+        </Select>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-dim">Ordem</label>
+          <input
+            type="number"
+            min={1}
+            value={d.order ?? ''}
+            onChange={e => {
+              const n = parseInt(e.target.value)
+              onPatchData(node.id, { order: Number.isFinite(n) && n >= 1 ? n : 1 })
+            }}
+            className="rounded-md border border-edge bg-panel px-2 py-1 text-xs text-ink focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
         </div>
-      ) : (
-        <Textarea
-          label="SQL (somente SELECT) *"
-          value={c.sql ?? ''}
-          rows={3}
-          onChange={e => onPatch({ sql: e.target.value })}
-          placeholder="ex: SELECT MAX(flag) FROM dbo.Controle WHERE ..."
-          className="font-mono text-xs"
-        />
-      )}
+      </div>
+      {!isNew && <p className="-mt-1.5 text-[10px] text-dim/70">O tipo de um nó já salvo não é editável.</p>}
 
-      <Select
-        label="Conexão MSSQL (opcional · padrão do projeto)"
-        value={c.mssql_conn_id ?? ''}
-        onChange={e => onPatch({ mssql_conn_id: e.target.value })}
-      >
-        <option value="">Conexão padrão</option>
-        {mssqlConns.map(cn => (
-          <option key={cn.conn_id} value={cn.conn_id}>{cn.conn_id}{cn.host ? ` (${cn.host})` : ''}</option>
-        ))}
-      </Select>
+      <div className="border-t border-edge pt-2.5">
+        {/* Campos por TIPO — fonte única (vale na Lista e no Fluxo), modo compacto */}
+        <JobTypeFields
+          value={typeValue}
+          onChange={patchType}
+          sshConns={sshConns}
+          mssqlConns={mssqlConns}
+          dbServer={dbServer}
+          dbDatabases={dbDatabases}
+          compact
+        />
+      </div>
+
+      <div className="mt-auto border-t border-edge pt-3">
+        <Button variant="danger" size="sm" className="w-full justify-center" onClick={() => onDelete(node.id)}>
+          <Trash2 size={13} /> Excluir etapa
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+// ── Painel de uma DECISÃO ────────────────────────────────────────────────────
+interface PainelDecisaoProps {
+  node: Node
+  ramos: { sim: string[]; nao: string[] }
+  mssqlConns: { conn_id: string; host: string }[]
+  onRename: (oldName: string, novo: string) => boolean
+  onPatchCondition: (nodeId: string, patch: Partial<NodeCondition>) => void
+  onDelete: (id: string) => void
+}
+
+function PainelDecisao({ node, ramos, mssqlConns, onRename, onPatchCondition, onDelete }: PainelDecisaoProps) {
+  const d = node.data as DecisaoNodeData
+  const isNew = !!d.isNew
+  const c = d.condition ?? defaultCondition()
+  const patch = (p: Partial<NodeCondition>) => onPatchCondition(node.id, p)
+
+  return (
+    <div className="flex flex-1 flex-col gap-3 p-3">
+      {/* Cabeçalho */}
+      <div className="flex items-center gap-2">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-indigo-500 text-white">
+          <GitBranch size={15} strokeWidth={2.2} />
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
+          <p className="text-[10px] text-dim">Decisão (roteador)</p>
+        </div>
+      </div>
+
+      <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: DECISAO_VOLUME" onRename={onRename} />
+
+      {/* Editor de condição compacto (mesma lógica do DecisaoForm) */}
+      <div className="border-t border-edge pt-2.5">
+        <div className="mb-2 flex items-center gap-1.5">
+          <GitBranch size={12} className="text-indigo-600 dark:text-indigo-300" />
+          <span className="text-xs font-semibold text-ink">Expressão da condição</span>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <div className="grid grid-cols-[1fr_64px] gap-2">
+            <Select label="Tipo" value={c.tipo} onChange={e => patch({ tipo: e.target.value as 'contagem' | 'query' })} className="text-xs">
+              <option value="contagem">Contagem de registros</option>
+              <option value="query">Valor de uma query</option>
+            </Select>
+            <Select label="Oper." value={c.operador} onChange={e => patch({ operador: e.target.value })} className="text-center text-xs">
+              {COND_OPERADORES.map(op => <option key={op} value={op}>{op}</option>)}
+            </Select>
+          </div>
+
+          <Input
+            label="Valor *"
+            value={c.valor}
+            onChange={e => patch({ valor: e.target.value })}
+            placeholder={c.tipo === 'query' ? 'ex: 1' : 'ex: 10000'}
+            className="font-mono text-xs"
+          />
+
+          {c.tipo === 'contagem' ? (
+            <>
+              <Input
+                label="Tabela * (db.schema.tabela)"
+                value={c.tabela ?? ''}
+                onChange={e => patch({ tabela: e.target.value })}
+                placeholder="db.schema.tabela"
+                className="font-mono text-xs"
+              />
+              <Input
+                label="Banco (opcional)"
+                value={c.database ?? ''}
+                onChange={e => patch({ database: e.target.value })}
+                placeholder="ex: BI_DW"
+                className="font-mono text-xs"
+              />
+            </>
+          ) : (
+            <Textarea
+              label="SQL (somente SELECT) *"
+              value={c.sql ?? ''}
+              rows={3}
+              onChange={e => patch({ sql: e.target.value })}
+              placeholder="ex: SELECT MAX(flag) FROM dbo.Controle WHERE ..."
+              className="font-mono text-xs"
+            />
+          )}
+
+          <Select
+            label="Conexão MSSQL (opcional)"
+            value={c.mssql_conn_id ?? ''}
+            onChange={e => patch({ mssql_conn_id: e.target.value })}
+            className="text-xs"
+          >
+            <option value="">Conexão padrão</option>
+            {mssqlConns.map(cn => (
+              <option key={cn.conn_id} value={cn.conn_id}>{cn.conn_id}{cn.host ? ` (${cn.host})` : ''}</option>
+            ))}
+          </Select>
+        </div>
+      </div>
 
       {/* Ramos atuais (derivados das arestas) — read-only */}
-      <div className="rounded-lg border border-edge bg-canvas p-3">
-        <p className="mb-2 text-[11px] text-dim">
-          Os ramos são definidos arrastando as arestas <b>sim</b> (direita) e <b>não</b> (baixo)
+      <div className="rounded-lg border border-edge bg-canvas p-2.5">
+        <p className="mb-2 text-[10px] leading-relaxed text-dim">
+          Os ramos são definidos arrastando os handles <b>sim</b> (direita) e <b>não</b> (baixo)
           da decisão até as etapas, direto no canvas.
         </p>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-2">
           <div className="flex flex-col gap-1">
             <span className="text-[10px] font-medium text-green-700 dark:text-green-400">Se verdadeiro → rodar</span>
             <div className="flex flex-wrap gap-1">
@@ -1019,13 +1250,15 @@ function DecisaoForm({ nodeId, name, isNew, condition, ramos, mssqlConns, onRena
         </div>
         {ramos.sim.length === 0 && ramos.nao.length === 0 && (
           <p className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
-            Ligue ao menos um job em algum ramo (arrastando as arestas) antes de salvar.
+            Ligue ao menos um job em algum ramo (arrastando) antes de salvar.
           </p>
         )}
       </div>
 
-      <div className="flex justify-end gap-2 border-t border-edge pt-3">
-        <Button onClick={onClose}>Concluir</Button>
+      <div className="mt-auto border-t border-edge pt-3">
+        <Button variant="danger" size="sm" className="w-full justify-center" onClick={() => onDelete(node.id)}>
+          <Trash2 size={13} /> Excluir decisão
+        </Button>
       </div>
     </div>
   )
