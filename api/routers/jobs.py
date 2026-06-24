@@ -28,7 +28,7 @@ def _fmt_dt(v):
     return str(v)
 
 
-VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc", "decisao"}
+VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc", "decisao", "notificacao"}
 VALID_PARAM_TYPES = {"INT", "VARCHAR", "DATE", "BIT", "DECIMAL", "DATETIME"}
 _PARAM_NAME_RE = re.compile(r"^@?[A-Za-z_][A-Za-z0-9_]*$")
 # job_name vira literal de string no código da DAG gerada e argumento de shell no
@@ -73,14 +73,28 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
         return ["condição (condition_json) ausente ou inválida"]
     errs: list[str] = []
     tipo = str(cond.get("tipo") or "").strip().lower()
-    if tipo not in ("contagem", "query"):
-        errs.append("tipo da condição deve ser 'contagem' ou 'query'")
+    if tipo not in ("contagem", "query", "linhas_job"):
+        errs.append("tipo da condição deve ser 'contagem', 'query' ou 'linhas_job'")
     if str(cond.get("operador") or "").strip() not in _COND_OPERADORES:
         errs.append("operador inválido (use =, <>, >, >=, <, <=)")
     valor = cond.get("valor")
     if valor is None or (isinstance(valor, str) and not valor.strip()):
         errs.append("valor da condição é obrigatório")
-    if tipo == "contagem":
+    if tipo == "linhas_job":
+        # Decisão por linhas processadas: compara rows_out de um job a montante
+        # (lido por execução de etl_ds_job_log) contra um limiar numérico.
+        jn = str(cond.get("job_name") or "").strip()
+        if not jn:
+            errs.append("job_name da condição (linhas_job) é obrigatório")
+        elif jn == self_name:
+            errs.append("job_name da condição (linhas_job) não pode ser a própria decisão")
+        elif jn not in known_jobs:
+            errs.append(f"job_name '{jn}' da condição (linhas_job) não existe no pipeline")
+        if valor is not None and not (
+            isinstance(valor, (int, float)) or str(valor).strip().lstrip("-").isdigit()
+        ):
+            errs.append("valor da condição (linhas_job) deve ser numérico")
+    elif tipo == "contagem":
         if not _valid_table_ident(cond.get("tabela") or ""):
             errs.append("tabela da condição inválida (use db.schema.tabela)")
         db = (cond.get("database") or "").strip()
@@ -113,6 +127,43 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
             elif mn not in known_jobs:
                 errs.append(f"ramo {ramo_nome}: job '{mn}' não existe no pipeline")
     return errs
+
+
+def _validate_notify(cfg) -> list[str]:
+    """Valida a config (notify_json) de um nó de notificação. Lista de erros (vazia = ok).
+
+    Contrato: {grupo_id:int, template_id:int|null, mensagem:str}. grupo_id é
+    obrigatório; template_id é opcional (canal/mensagem do catálogo); mensagem é
+    override opcional (se vazio, o runtime usa o corpo do template)."""
+    if not isinstance(cfg, dict):
+        return ["configuração de notificação (notify_json) ausente ou inválida"]
+    errs: list[str] = []
+    gid = cfg.get("grupo_id")
+    if gid is None or (isinstance(gid, str) and not str(gid).strip()):
+        errs.append("grupo_id da notificação é obrigatório")
+    elif not (isinstance(gid, int) and not isinstance(gid, bool)) and not str(gid).strip().isdigit():
+        errs.append("grupo_id da notificação deve ser inteiro")
+    tid = cfg.get("template_id")
+    if tid is not None and not (isinstance(tid, str) and not str(tid).strip()):
+        if not (isinstance(tid, int) and not isinstance(tid, bool)) and not str(tid).strip().isdigit():
+            errs.append("template_id da notificação deve ser inteiro ou nulo")
+    msg = cfg.get("mensagem")
+    if msg is not None and not isinstance(msg, str):
+        errs.append("mensagem da notificação deve ser texto")
+    return errs
+
+
+def _normalize_notify(cfg: dict) -> dict:
+    """Normaliza notify_json para persistência (grupo_id/template_id int, mensagem str)."""
+    gid = cfg.get("grupo_id")
+    tid = cfg.get("template_id")
+    msg = cfg.get("mensagem")
+    return {
+        "grupo_id": int(gid),
+        "template_id": (None if tid is None or (isinstance(tid, str) and not str(tid).strip())
+                        else int(tid)),
+        "mensagem": (msg if isinstance(msg, str) else ""),
+    }
 
 
 def _graph_has_cycle(adj: dict[str, set[str]]) -> bool:
@@ -309,6 +360,11 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
             "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
             "AND COLUMN_NAME='condition_json'")
         _has_cond_col = bool(cur.fetchone()[0])
+        cur.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
+            "AND COLUMN_NAME='notify_json'")
+        _has_notify_col = bool(cur.fetchone()[0])
 
         # Jobs conhecidos do pipeline (request + já existentes) — usado para
         # validar os ramos da decisão e detectar ciclos incluindo as arestas
@@ -328,6 +384,7 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
 
         for idx, job in enumerate(jobs):
             cond_json_str = None     # preenchido só p/ jobs de decisão (persiste depois)
+            notify_json_str = None   # preenchido só p/ jobs de notificação (persiste depois)
             j_name      = (job.get("job_name") or "").strip()
             j_order     = job.get("execution_order")
             j_type      = (job.get("job_type") or "datastage").lower().strip()
@@ -345,11 +402,14 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                 erros.append(f"Item {idx} ({j_name}): nome de job inválido — use apenas letras, números, _ . - e espaço"); continue
             if j_type not in VALID_JOB_TYPES:
                 erros.append(f"Item {idx} ({j_name}): job_type '{j_type}' inválido"); continue
-            # Nó de Decisão é roteador: não tem lineage (origem/destino).
+            # Nó de Decisão é roteador e Notificação é efeito colateral: nenhum
+            # dos dois tem lineage (origem/destino) nem comando.
             is_decisao = (j_type == "decisao")
-            if not origens and not transfs and require_lineage and not is_decisao:
+            is_notificacao = (j_type == "notificacao")
+            sem_lineage = is_decisao or is_notificacao
+            if not origens and not transfs and require_lineage and not sem_lineage:
                 erros.append(f"Item {idx} ({j_name}): ao menos 1 origem é obrigatória"); continue
-            if not destinos and not transfs and require_lineage and not is_decisao:
+            if not destinos and not transfs and require_lineage and not sem_lineage:
                 erros.append(f"Item {idx} ({j_name}): ao menos 1 destino é obrigatório"); continue
             if j_mssql_cid and mssql_conn_ids is not None and j_mssql_cid not in mssql_conn_ids:
                 erros.append(f"Item {idx} ({j_name}): conexão MSSQL '{j_mssql_cid}' não encontrada no Airflow"); continue
@@ -373,6 +433,20 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                     mn = str(m).strip()
                     if j_name in cycle_adj and mn in cycle_adj:
                         cycle_adj[j_name].add(mn)   # decisão → membro do ramo
+
+            # Notificação: valida a config (notify_json) — grupo_id obrigatório.
+            if is_notificacao:
+                raw_notify = job.get("notify")
+                if not isinstance(raw_notify, dict):
+                    rn = job.get("notify_json")
+                    try:
+                        raw_notify = json.loads(rn) if rn else None
+                    except (ValueError, TypeError):
+                        raw_notify = None
+                notify_errs = _validate_notify(raw_notify)
+                if notify_errs:
+                    erros.extend(f"Item {idx} ({j_name}): {e}" for e in notify_errs); continue
+                notify_json_str = json.dumps(_normalize_notify(raw_notify), ensure_ascii=False)
 
             params_validos = []
             if j_type == "storedproc" and j_params:
@@ -440,6 +514,12 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                         "UPDATE dbo.etl_pipeline_job SET condition_json=? "
                         "WHERE pipeline_name=? AND job_name=?",
                         (cond_json_str, pipeline_name, j_name))
+                # Config do nó de notificação (opt-in) — NULL para os demais tipos.
+                if _has_notify_col:
+                    cur.execute(
+                        "UPDATE dbo.etl_pipeline_job SET notify_json=? "
+                        "WHERE pipeline_name=? AND job_name=?",
+                        (notify_json_str, pipeline_name, j_name))
             except Exception as e:
                 erros.append(f"Item {idx} ({j_name}): erro ao gravar job — {e}"); continue
 
@@ -675,6 +755,7 @@ def get_pipeline_fluxo(
             cols = set()
         sel_deps = "j.depends_on_jobs" if "depends_on_jobs" in cols else "NULL"
         sel_cond = "j.condition_json" if "condition_json" in cols else "NULL"
+        sel_notify = "j.notify_json" if "notify_json" in cols else "NULL"
         sel_lx = "j.layout_x" if "layout_x" in cols else "NULL"
         sel_ly = "j.layout_y" if "layout_y" in cols else "NULL"
         # Campos por tipo (round-trip do painel inline): ssh / verbose / mssql_*.
@@ -686,7 +767,7 @@ def get_pipeline_fluxo(
             cur.execute(
                 "SELECT j.job_name, ISNULL(j.job_type,'datastage'), j.job_command, "
                 f"CAST(j.execution_order AS INT), {sel_deps}, {sel_cond}, {sel_lx}, {sel_ly}, "
-                f"{sel_ssh}, {sel_verb}, {sel_mconn}, {sel_mdb} "
+                f"{sel_ssh}, {sel_verb}, {sel_mconn}, {sel_mdb}, {sel_notify} "
                 "FROM dbo.etl_pipeline_job j WHERE j.pipeline_name=? "
                 "ORDER BY j.execution_order, j.job_name",
                 (pipeline_name,))
@@ -721,6 +802,12 @@ def get_pipeline_fluxo(
                     condition = json.loads(r[5])
                 except (ValueError, TypeError):
                     condition = None
+            notify = None
+            if r[12]:
+                try:
+                    notify = json.loads(r[12])
+                except (ValueError, TypeError):
+                    notify = None
             lx = float(r[6]) if r[6] is not None else None
             ly = float(r[7]) if r[7] is not None else None
             nodes.append({
@@ -730,6 +817,7 @@ def get_pipeline_fluxo(
                 "execution_order": r[3],
                 "depends_on_jobs": _parse_dep_csv(r[4]),
                 "condition": condition,
+                "notify": notify,
                 "layout_x": lx,
                 "layout_y": ly,
                 "ssh_conn_id": r[8] or None,
@@ -810,6 +898,7 @@ async def save_pipeline_fluxo(
             _cols = set()
         has_deps = "depends_on_jobs" in _cols
         has_cond = "condition_json" in _cols
+        has_notify = "notify_json" in _cols
         has_layout = "layout_x" in _cols and "layout_y" in _cols
         has_db = "mssql_database" in _cols
         has_ssh = "ssh_conn_id" in _cols
@@ -824,7 +913,7 @@ async def save_pipeline_fluxo(
         # Valida e prepara cada nó; monta o grafo (deps + ramos) para o ciclo.
         errors: list[str] = []
         cycle_adj: dict[str, set[str]] = {n: set() for n in known_jobs}
-        prepared = []  # (j_name, is_new, order, type, cmd, ssh, verbose, mssql, mdb, dep_csv, cond_json|None, lx, ly)
+        prepared = []  # (j_name, is_new, order, type, cmd, ssh, verbose, mssql, mdb, params_present, params, dep_csv, cond_json|None, notify_json|None, lx, ly)
         raw_by_name: dict[str, dict] = {}  # nó cru por nome (checa presença de chave no UPDATE)
         seen: set[str] = set()
         for idx, node in enumerate(nodes):
@@ -903,6 +992,15 @@ async def save_pipeline_fluxo(
                     if mn in cycle_adj:
                         cycle_adj[j_name].add(mn)   # decisão → membro do ramo
 
+            # Notificação — valida a config (notify_json); grupo_id obrigatório.
+            notify_json_str = None
+            if j_type == "notificacao":
+                raw_notify = node.get("notify")
+                notify_errs = _validate_notify(raw_notify)
+                if notify_errs:
+                    errors.extend(f"{j_name}: {e}" for e in notify_errs); continue
+                notify_json_str = json.dumps(_normalize_notify(raw_notify), ensure_ascii=False)
+
             lx, ly = node.get("layout_x"), node.get("layout_y")
             try:
                 lx = float(lx) if lx is not None else None
@@ -915,7 +1013,7 @@ async def save_pipeline_fluxo(
 
             prepared.append((j_name, is_new, j_order, j_type, j_cmd, j_ssh,
                              j_verbose, j_mssql, j_mdb, params_present, j_params,
-                             dep_csv, cond_json_str, lx, ly))
+                             dep_csv, cond_json_str, notify_json_str, lx, ly))
 
         if errors:
             cur.close(); conn.close()
@@ -946,7 +1044,8 @@ async def save_pipeline_fluxo(
         #    preservado (o painel não troca o tipo de um nó já salvo). Grava deps/
         #    condição (só decisão)/posição em TODOS (por-coluna).
         for (j_name, is_new, j_order, j_type, j_cmd, j_ssh, j_verbose,
-             j_mssql, j_mdb, params_present, j_params, dep_csv, cond_json_str, lx, ly) in prepared:
+             j_mssql, j_mdb, params_present, j_params, dep_csv, cond_json_str,
+             notify_json_str, lx, ly) in prepared:
             if is_new:
                 cur.execute(
                     "EXEC dbo.sp_etl_pipeline_job_upsert "
@@ -999,6 +1098,13 @@ async def save_pipeline_fluxo(
                 cur.execute("UPDATE dbo.etl_pipeline_job SET condition_json=? "
                             "WHERE pipeline_name=? AND job_name=?",
                             (cond_json_str, pipeline_name, j_name))
+            # Grava notify_json SÓ em notificação — análogo ao condition_json:
+            # nunca zera a config de uma etapa de outro tipo (o canvas não troca o
+            # tipo de um nó existente).
+            if has_notify and j_type == "notificacao":
+                cur.execute("UPDATE dbo.etl_pipeline_job SET notify_json=? "
+                            "WHERE pipeline_name=? AND job_name=?",
+                            (notify_json_str, pipeline_name, j_name))
             if has_layout:
                 cur.execute("UPDATE dbo.etl_pipeline_job SET layout_x=?, layout_y=? "
                             "WHERE pipeline_name=? AND job_name=?",

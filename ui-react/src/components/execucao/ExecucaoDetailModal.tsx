@@ -37,6 +37,12 @@ export function copyText(t: string) {
   copyToClipboard(t).then(ok => ok ? toast.info('Copiado!') : toast.error('Erro ao copiar'))
 }
 
+// Formata inteiro com separador de milhar pt-BR (ex.: 1234567 → "1.234.567")
+export function fmtNum(n?: number | null) {
+  if (n == null) return '—'
+  return n.toLocaleString('pt-BR')
+}
+
 function devBadge(durSec: number, avg: number) {
   const pct = Math.round(((durSec - avg) / avg) * 100)
   if (Math.abs(pct) < 10) return null
@@ -96,6 +102,7 @@ interface DsLog {
   ds_start_time: string
   ds_end_time: string
   queued_seconds: number
+  rows_out?: number | null
   created_at: string
   updated_at: string
 }
@@ -280,6 +287,9 @@ export function DsLogModal({
             <div><span className="text-dim">Fim DS:</span> <span className="text-ink text-xs">{log.ds_end_time}</span></div>
             <div><span className="text-dim">Wave:</span> <span>{log.wave_number}</span></div>
             <div><span className="text-dim">PID:</span> <span className="font-mono text-xs">{log.pid}</span></div>
+            {log.rows_out != null && (
+              <div><span className="text-dim">Linhas (saída):</span> <span className="font-mono text-ink">{fmtNum(log.rows_out)}</span></div>
+            )}
             {log.queued_seconds > 0 && (
               <div><span className="text-dim">Fila:</span> <span className="text-amber-400 text-xs">{durStr(log.queued_seconds)} em fila</span></div>
             )}

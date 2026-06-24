@@ -81,11 +81,16 @@ def compara(obtido, operador, limite) -> bool:
     return a <= b  # "<="
 
 
-def eval_condition(cond: dict, default_conn_id: str):
+def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = None):
     """Avalia a condição do nó de decisão.
 
     Retorna ``(resultado: bool, valor_obtido)``.
-    ``cond`` = {tipo, operador, valor, [tabela, database] | [sql], [mssql_conn_id]}.
+    ``cond`` = {tipo, operador, valor, [tabela, database] | [sql] |
+                [job_name (linhas_job)], [mssql_conn_id]}.
+
+    ``execution_id`` identifica a execução ATUAL (ts_nodash da DAG run). É
+    obrigatório apenas para ``tipo='linhas_job'`` (lê o rows_out do job a
+    montante na MESMA execução em dbo.etl_ds_job_log). Os outros tipos o ignoram.
     """
     from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook  # lazy
 
@@ -110,7 +115,49 @@ def eval_condition(cond: dict, default_conn_id: str):
         sql = _validate_select(cond.get("sql") or "")
         row = hook.get_first(sql)
         obtido = row[0] if row else None
+    elif tipo == "linhas_job":
+        obtido = _rows_out_do_job(hook, cond.get("job_name") or "", execution_id)
     else:
         raise ValueError(f"tipo de condição desconhecido: {tipo!r}")
 
     return compara(obtido, operador, limite), obtido
+
+
+def _rows_out_do_job(hook, job_name: str, execution_id: str | None) -> int:
+    """Lê o rows_out mais recente de dbo.etl_ds_job_log para ``job_name`` na
+    execução ATUAL (``execution_id``). Sem registro / rows_out NULL → 0 (logado).
+
+    Degrada graciosamente: se a tabela/coluna não existir (migration 049 ainda
+    não aplicada) ou a leitura falhar, retorna 0 sem quebrar a avaliação."""
+    job_name = (job_name or "").strip()
+    if not job_name:
+        print("[CONDICAO linhas_job] job_name vazio — tratando rows_out como 0.")
+        return 0
+    try:
+        if execution_id:
+            row = hook.get_first(
+                "SELECT TOP 1 rows_out FROM dbo.etl_ds_job_log "
+                "WHERE execution_id=%s AND job_name=%s "
+                "ORDER BY COALESCE(updated_at, last_polled_at) DESC",
+                parameters=(execution_id, job_name),
+            )
+        else:
+            # Sem execution_id: melhor esforço — registro mais recente do job.
+            print("[CONDICAO linhas_job] sem execution_id — usando o registro mais recente do job.")
+            row = hook.get_first(
+                "SELECT TOP 1 rows_out FROM dbo.etl_ds_job_log "
+                "WHERE job_name=%s "
+                "ORDER BY COALESCE(updated_at, last_polled_at) DESC",
+                parameters=(job_name,),
+            )
+    except Exception as exc:
+        print(f"[CONDICAO linhas_job] leitura de etl_ds_job_log falhou ({exc}) — rows_out=0.")
+        return 0
+    if not row or row[0] is None:
+        print(f"[CONDICAO linhas_job] sem rows_out para job '{job_name}' "
+              f"(execution_id={execution_id!r}) — tratando como 0.")
+        return 0
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return 0

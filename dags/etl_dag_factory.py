@@ -313,20 +313,28 @@ def _task_block(job, project, pipeline, branch_reachable=False):
     return "\n\n".join([log_start, main, log_end])
 
 
-def _decision_block(job, condition, job_names):
+def _decision_block(job, condition, job_names, notif_names=None):
     """Bloco de um nó de Decisão: BranchPythonOperator que avalia a condição
     (via utils.conditions.eval_condition) e retorna os t_start do ramo escolhido.
-    Não tem t_start/t_end próprios (é um roteador) — fica fora de end_tasks."""
+    Não tem t_start/t_end próprios (é um roteador) — fica fora de end_tasks.
+
+    Membros que são nós de Notificação não têm log_start_* (rodam direto via
+    t_notif_*, task_id = próprio nome); para esses, a branch devolve o próprio
+    task_id do nó em vez de log_start_<nome>."""
+    notif_names = notif_names or set()
     name  = job["job_name"]
     vname = _varname(name)
     ramo_v = [j for j in (condition.get("ramo_verdadeiro") or []) if j in job_names and j != name]
     ramo_f = [j for j in (condition.get("ramo_falso") or []) if j in job_names and j != name]
-    v_ids = ["log_start_" + j for j in ramo_v]
-    f_ids = ["log_start_" + j for j in ramo_f]
+    # Notificação: o branch aponta para o próprio task_id (t_notif_* usa task_id=nome);
+    # demais membros entram pelo log_start_<nome>.
+    v_ids = [(j if j in notif_names else "log_start_" + j) for j in ramo_v]
+    f_ids = [(j if j in notif_names else "log_start_" + j) for j in ramo_f]
     return "\n".join([
         f'def _decide_{vname}(**context):',
         f'    cond = {condition!r}',
-        f'    resultado, _valor = eval_condition(cond, MSSQL_CONN_ID)',
+        f'    _exec_id = context.get("ts_nodash")',
+        f'    resultado, _valor = eval_condition(cond, MSSQL_CONN_ID, execution_id=_exec_id)',
         f'    _ramo = "verdadeiro" if resultado else "falso"',
         f'    _job = {name!r}',
         f'    print("[DECISAO " + _job + "] valor=" + str(_valor) + " resultado=" + str(resultado) + " -> ramo " + _ramo)',
@@ -338,6 +346,47 @@ def _decision_block(job, condition, job_names):
         f'    python_callable=_decide_{vname},',
         f')',
     ])
+
+
+def _notify_block(job, notify_cfg, upstream_jobs, branch_reachable=False):
+    """Bloco de um nó de Notificação (Teams): PythonOperator EXECUTÁVEL.
+
+    Espelha o nó de Decisão por NÃO ter t_start/t_end (sem lineage em
+    etl_job_execution — fica fora de end_tasks), mas, diferente do roteador,
+    ELE RODA: lê notify_json (grupo_id/template_id/mensagem), resolve o webhook
+    do grupo em etl_msg_grupo e o texto (mensagem inline; se vazia, o corpo do
+    etl_msg_template), interpola {pipeline} {job} {linhas} {status} {data} e
+    chama _teams_post_card.
+
+    É tipicamente o ramo_falso de uma decisão — usa trigger_rule tolerante a skip
+    (NONE_FAILED_MIN_ONE_SUCCESS) quando alcançável a partir de um branch."""
+    name  = job["job_name"]
+    vname = _varname(name)
+    grupo_id    = notify_cfg.get("grupo_id")
+    template_id = notify_cfg.get("template_id")
+    mensagem    = notify_cfg.get("mensagem") or ""
+    # Jobs a montante (no run) cujo rows_out alimenta {linhas}.
+    up_names = list(upstream_jobs or [])
+    rule = (
+        '    trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,'
+        if branch_reachable else None
+    )
+    return "\n".join(filter(None, [
+        f'def _notify_{vname}(**context):',
+        f'    _job = {name!r}',
+        f'    _grupo_id = {grupo_id!r}',
+        f'    _template_id = {template_id!r}',
+        f'    _mensagem = {mensagem!r}',
+        f'    _up_jobs = {up_names!r}',
+        f'    _exec_id = context.get("ts_nodash")',
+        f'    _resolve_e_envia_notificacao(_job, _grupo_id, _template_id, _mensagem, _up_jobs, _exec_id, context)',
+        f'',
+        f't_notif_{vname} = PythonOperator(',
+        f'    task_id={name!r},',
+        f'    python_callable=_notify_{vname},',
+        rule,
+        f')',
+    ]))
 
 
 def _generate_dag_source(pipeline, jobs):
@@ -385,8 +434,10 @@ def _generate_dag_source(pipeline, jobs):
     first       = _varname(job_groups[0][0]["job_name"])
     first_name  = job_groups[0][0]["job_name"]
     others      = sorted_jobs[1:]   # kept for jtypes — not used for chaining anymore
-    # Nós de Decisão são roteadores (sem t_start/t_end) — fora de end_tasks.
-    all_ends    = [f"t_end_{_varname(j['job_name'])}" for j in sorted_jobs if _alias(j) != "decisao"]
+    # Nós de Decisão (roteador) e de Notificação (sem lineage) não têm t_start/
+    # t_end próprios — ficam fora de end_tasks.
+    _SPECIAL_NODES = ("decisao", "notificacao")
+    all_ends    = [f"t_end_{_varname(j['job_name'])}" for j in sorted_jobs if _alias(j) not in _SPECIAL_NODES]
 
     def _jtypes(jobs):
         return {_TYPE_ALIAS.get(j["job_type"].lower(), j["job_type"].lower()) for j in jobs}
@@ -422,6 +473,20 @@ def _generate_dag_source(pipeline, jobs):
             except (ValueError, TypeError):
                 decision_conditions[j["job_name"]] = {}
     has_decision = bool(decision_conditions)
+
+    # ── Nó de Notificação (migration 049) ──────────────────────────────────
+    # Parse de notify_json (degrada se ausente/invalido). O nó é executável mas
+    # sem lineage (espelha o roteador de decisão). notificacao_nodes mapeia
+    # job_name → {grupo_id, template_id, mensagem}.
+    notificacao_nodes = {}
+    for j in sorted_jobs:
+        if _alias(j) == "notificacao":
+            raw = j.get("notify_json")
+            try:
+                notificacao_nodes[j["job_name"]] = _json.loads(raw) if raw else {}
+            except (ValueError, TypeError):
+                notificacao_nodes[j["job_name"]] = {}
+    has_notificacao = bool(notificacao_nodes)
 
     branch_parents = defaultdict(list)   # job_name → [nome da(s) decisão(ões)]
     ramo_members = set()
@@ -604,6 +669,127 @@ def _generate_dag_source(pipeline, jobs):
         "    if h: return f'{h}h {m}min {sec}s'",
         "    if m: return f'{m}min {sec}s'",
         "    return f'{sec}s'",
+        "",
+        "def _notif_resolve_linhas(up_jobs, execution_id, context):",
+        "    # {linhas} = rows_out do(s) job(s) a montante. 1º tenta o XCom do run",
+        "    # (DataStageOperator empurra 'rows_out' no JSON); fallback: etl_ds_job_log",
+        "    # da execução atual. Degrada para '' se nada disponível.",
+        "    total = 0; achou = False",
+        "    ti = context.get('ti') if context else None",
+        "    for jn in (up_jobs or []):",
+        "        val = None",
+        "        if ti is not None:",
+        "            try:",
+        "                _x = ti.xcom_pull(task_ids=jn)",
+        "                if _x:",
+        "                    _o = json.loads(_x) if isinstance(_x, str) else _x",
+        "                    if isinstance(_o, dict) and _o.get('rows_out') is not None:",
+        "                        val = int(_o['rows_out'])",
+        "            except Exception:",
+        "                val = None",
+        "        if val is None and execution_id:",
+        "            try:",
+        "                hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "                _r = hook.get_first(",
+        '                    "SELECT TOP 1 rows_out FROM dbo.etl_ds_job_log "',
+        '                    "WHERE execution_id=%s AND job_name=%s "',
+        '                    "ORDER BY COALESCE(updated_at, last_polled_at) DESC",',
+        "                    parameters=(execution_id, jn),",
+        "                )",
+        "                if _r and _r[0] is not None:",
+        "                    val = int(_r[0])",
+        "            except Exception as _e:",
+        "                print(f'[NOTIF] rows_out de {jn} indisponivel: {_e}')",
+        "                val = None",
+        "        if val is not None:",
+        "            total += val; achou = True",
+        "    return str(total) if achou else ''",
+        "",
+        "def _notif_status_geral(execution_id):",
+        "    # Status agregado do pipeline na execução (mesma regra do teams_end).",
+        "    try:",
+        "        hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "        row = hook.get_first(",
+        '            "SELECT CASE WHEN SUM(CASE WHEN status=\'FAILED\' THEN 1 ELSE 0 END)>0 THEN \'FAILED\' "',
+        '            "     WHEN SUM(CASE WHEN status=\'WARNING\' THEN 1 ELSE 0 END)>0 THEN \'WARNING\' "',
+        '            "     WHEN SUM(CASE WHEN status=\'SUCCESS\' THEN 1 ELSE 0 END)>0 THEN \'SUCCESS\' "',
+        '            "     ELSE \'INFO\' END "',
+        '            "FROM dbo.etl_job_execution WHERE execution_id=%s AND pipeline=%s",',
+        "            parameters=(execution_id, PIPELINE_NAME),",
+        "        )",
+        "        return row[0] if row and row[0] else 'INFO'",
+        "    except Exception:",
+        "        return 'INFO'",
+        "",
+        "def _notif_interpola(texto, mapa):",
+        "    # Substitui placeholders {pipeline} {job} {linhas} {status} {data} de forma",
+        "    # tolerante (placeholder desconhecido fica intacto — não quebra).",
+        "    out = texto or ''",
+        "    for k, v in mapa.items():",
+        "        out = out.replace('{' + k + '}', str(v) if v is not None else '')",
+        "    return out",
+        "",
+        "def _resolve_e_envia_notificacao(job, grupo_id, template_id, mensagem, up_jobs, execution_id, context):",
+        "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "    # 1) Webhook do grupo (canal Teams). Sem webhook → cai no Variable padrão.",
+        "    webhook = None; titulo = None",
+        "    try:",
+        "        if grupo_id is not None:",
+        "            g = hook.get_first(",
+        '                "SELECT webhook_url FROM dbo.etl_msg_grupo WHERE id=%s AND ativo=1",',
+        "                parameters=(grupo_id,),",
+        "            )",
+        "            if g and g[0]:",
+        "                webhook = g[0]",
+        "    except Exception as _e:",
+        "        print(f'[NOTIF] grupo {grupo_id} indisponivel: {_e}')",
+        "    # 2) Texto: mensagem inline; se vazia, o corpo do template.",
+        "    corpo = (mensagem or '').strip()",
+        "    if not corpo and template_id is not None:",
+        "        try:",
+        "            t = hook.get_first(",
+        '                "SELECT titulo, corpo FROM dbo.etl_msg_template WHERE id=%s AND ativo=1",',
+        "                parameters=(template_id,),",
+        "            )",
+        "            if t:",
+        "                titulo = t[0]; corpo = t[1] or ''",
+        "        except Exception as _e:",
+        "            print(f'[NOTIF] template {template_id} indisponivel: {_e}')",
+        "    # 3) Placeholders.",
+        "    linhas = _notif_resolve_linhas(up_jobs, execution_id, context)",
+        "    status_geral = _notif_status_geral(execution_id)",
+        "    mapa = {",
+        "        'pipeline': PIPELINE_NAME, 'job': job, 'linhas': linhas,",
+        "        'status': status_geral, 'data': _now_str(),",
+        "    }",
+        "    corpo_final  = _notif_interpola(corpo, mapa)",
+        "    titulo_final = _notif_interpola(titulo or 'Notificação', mapa)",
+        "    facts = [",
+        "        _fact('Pipeline', PIPELINE_NAME),",
+        "        _fact('Execução', execution_id),",
+        "    ]",
+        "    if linhas != '':",
+        "        facts.append(_fact('Linhas', linhas))",
+        "    print(f'[NOTIF] {job}: grupo={grupo_id} template={template_id} linhas={linhas!r} status={status_geral}')",
+        "    # Webhook específico do grupo: posta direto; senão usa _teams_post_card",
+        "    # (Variable padrão do projeto). Mantém o mesmo card adaptativo.",
+        "    if webhook:",
+        "        try:",
+        '            payload = {"type": "message", "attachments": [{',
+        '                "contentType": "application/vnd.microsoft.card.adaptive",',
+        '                "content": {"$schema": "http://adaptivecards.io/schemas/adaptive-card.json",',
+        '                            "type": "AdaptiveCard", "version": "1.4",',
+        '                            "body": [',
+        '                                {"type": "TextBlock", "text": titulo_final, "size": "Large", "weight": "Bolder", "wrap": True},',
+        '                                {"type": "TextBlock", "text": corpo_final, "wrap": True},',
+        '                                {"type": "FactSet", "facts": facts},',
+        "                            ]}}]}",
+        "            resp = requests.post(webhook, json=payload, timeout=15)",
+        "            print(f'[NOTIF] webhook do grupo status={resp.status_code}')",
+        "        except Exception as _e:",
+        "            print(f'[NOTIF] falha ao postar no webhook do grupo: {_e}')",
+        "    else:",
+        "        _teams_post_card(title=titulo_final, subtitle=corpo_final, facts=facts, status=status_geral)",
         "",
         "def teams_start(**context):",
         "    execution_id = context['ts_nodash']",
@@ -834,10 +1020,30 @@ def _generate_dag_source(pipeline, jobs):
             ')',
         ]))
 
+    # Jobs a montante de cada nó de notificação, usados para resolver {linhas}:
+    # os deps diretos do nó + os deps da(s) decisão(ões) que o citam num ramo
+    # (quando é ramo_falso de uma 'linhas_job', o rows_out avaliado é o do job
+    # do qual a decisão depende). Mantém só nomes de jobs conhecidos.
+    _deps_by_job = {j["job_name"]: _deps_of(j) for j in sorted_jobs}
+    _notif_upstream = {}
+    for nname in notificacao_nodes:
+        ups = list(_deps_by_job.get(nname, []))
+        for dname in branch_parents.get(nname, []):
+            ups += _deps_by_job.get(dname, [])
+        # dedup preservando ordem
+        _notif_upstream[nname] = list(dict.fromkeys(ups))
+
+    _notif_set = set(notificacao_nodes)
     job_blocks = []
     for j in sorted_jobs:
         if _alias(j) == "decisao":
-            job_blocks.append(_decision_block(j, decision_conditions.get(j["job_name"], {}), _job_names))
+            job_blocks.append(_decision_block(
+                j, decision_conditions.get(j["job_name"], {}), _job_names, _notif_set))
+        elif _alias(j) == "notificacao":
+            job_blocks.append(_notify_block(
+                j, notificacao_nodes.get(j["job_name"], {}),
+                _notif_upstream.get(j["job_name"], []),
+                branch_reachable=(j["job_name"] in reachable)))
         else:
             job_blocks.append(_task_block(j, project, pname, branch_reachable=(j["job_name"] in reachable)))
 
@@ -856,7 +1062,8 @@ def _generate_dag_source(pipeline, jobs):
         '    task_id="publish_dataset",',
         '    outlets=[Dataset(DATASET_URI)],',
         # Convergência final: tolera ramos pulados (≥1 t_end com sucesso).
-        ('    trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,' if has_decision else None),
+        ('    trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,'
+         if (has_decision or has_notificacao) else None),
         ')',
     ]))
 
@@ -900,8 +1107,9 @@ def _generate_dag_source(pipeline, jobs):
     # de Decisão) ou ONDAS (execution_order). Opt-in por pipeline — pipelines
     # sem deps explícitas/decisão continuam exatamente como antes.
     # (_job_names/_deps_of já definidos acima, junto do parsing das decisões.)
-    explicit_deps = has_decision or any(_deps_of(j) for j in sorted_jobs)
+    explicit_deps = has_decision or has_notificacao or any(_deps_of(j) for j in sorted_jobs)
 
+    notif_task_refs = []   # t_notif_* a convergir no publish_dataset
     if explicit_deps:
         root_anchor = sensors_ref if sensor_names else "t_check_agenda"
         teams_start_done = False
@@ -918,10 +1126,14 @@ def _generate_dag_source(pipeline, jobs):
                 continue
             parents = branch_parents.get(j["job_name"], [])
             ups = ends + [f"t_dec_{_varname(d)}" for d in parents]
-            if ups:
-                up = "[" + ", ".join(ups) + "]" if len(ups) > 1 else ups[0]
-            else:
-                up = root_anchor
+            up = ("[" + ", ".join(ups) + "]" if len(ups) > 1 else ups[0]) if ups else root_anchor
+            # Nó de Notificação: executável, sem t_start/t_end. Liga ao upstream
+            # (deps + decisões que o citam num ramo) direto ao t_notif_*; como é
+            # tipicamente ramo_falso, o skip do ramo oposto chega via t_dec_*.
+            if _alias(j) == "notificacao":
+                dep_lines.append(f"{up} >> t_notif_{n}")
+                notif_task_refs.append(f"t_notif_{n}")
+                continue
             is_root = (not deps) and (not parents)
             # Notificação de início no primeiro job raiz (sem deps/decisão)
             if is_root and (not teams_start_done) and f_ini:
@@ -959,6 +1171,14 @@ def _generate_dag_source(pipeline, jobs):
         dep_lines.append(f"{end_tasks_ref} >> t_teams_end")
     if f_err:
         dep_lines.append(f"{end_tasks_ref} >> t_teams_error")
+    # Nós de notificação (sem t_end) convergem no fechamento: rodam antes do
+    # publish_dataset e dos cards de fim/erro, e toleram skip (ramo oposto).
+    for nref in notif_task_refs:
+        dep_lines.append(f"{nref} >> t_publish_dataset")
+        if f_fim:
+            dep_lines.append(f"{nref} >> t_teams_end")
+        if f_err:
+            dep_lines.append(f"{nref} >> t_teams_error")
 
     with_parts = []
     with_parts.append(_ind(check_block))
@@ -1163,6 +1383,21 @@ def gerar_dags(**context):
                 j["condition_json"] = _condmap.get((j["pipeline_name"], j["job_name"]))
     except Exception as _ce:
         print(f"[FACTORY] condition_json supplement ignorado: {_ce}")
+
+    # Supplement: config do nó de notificação (degrada se a coluna não existir — migration 049)
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='dbo' "
+            "AND TABLE_NAME='etl_pipeline_job' AND COLUMN_NAME='notify_json'")
+        if cursor.fetchone()[0]:
+            cursor.execute(
+                "SELECT pipeline_name, job_name, notify_json FROM dbo.etl_pipeline_job "
+                "WHERE notify_json IS NOT NULL")
+            _notifmap = {(r[0], r[1]): r[2] for r in cursor.fetchall()}
+            for j in jobs_all:
+                j["notify_json"] = _notifmap.get((j["pipeline_name"], j["job_name"]))
+    except Exception as _ne:
+        print(f"[FACTORY] notify_json supplement ignorado: {_ne}")
 
     # Supplement: banco-alvo por job storedproc (degrada se a coluna não existir — migration 039)
     try:

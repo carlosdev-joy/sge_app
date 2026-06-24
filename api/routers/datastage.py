@@ -116,6 +116,15 @@ async def datastage_log_query(
             "log_summary, poll_snapshots, last_polled_at, created_at, updated_at, "
             "ds_start_time, ds_end_time"
         )
+        # rows_out (migration 049) — inclui na projeção só se a coluna existir.
+        try:
+            cursor.execute("SELECT COL_LENGTH('dbo.etl_ds_job_log','rows_out')")
+            if cursor.fetchone()[0] is not None:
+                base_cols = base_cols + ", rows_out"
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+            cursor = conn.cursor()
         try:
             cursor.execute(
                 f"SELECT TOP (?) {base_cols}, queued_seconds "
