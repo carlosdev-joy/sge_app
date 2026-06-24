@@ -76,13 +76,18 @@ Gaps de produto a considerar no Nível 2 (validar antes):
 - Home de **"operação do dia / falhas a tratar"** (o `ack` já existe em Logs; falta a fila).
 - **Avisos** como item de menu (hoje notificações/comunicados só no sino, sem histórico navegável).
 
-## 5. Sequência sugerida
-1. ✅ **Migration 044** — perms órfãs + limpeza do `tela_ds_monitor` (feito).
-2. **Nível 1** no v2 (decisão de escopo §3 primeiro) — renomes + fim das colisões + grupos de 1 item.
-3. **Nível 2** atrás da flag — regroup por JTBD + (se aprovado) home de operação e item de Avisos.
-4. Validar com admins beta → flip de default.
+## 5. Sequência — estado atual
+1. ✅ **Migration 044** — perms órfãs + limpeza do `tela_ds_monitor` (PR #101, na `main`).
+2. ✅ **Nível 1** (PR #101) — renomes via `labelV2` (só v2), fim das colisões, grupos de 1 item sem cabeçalho.
+3. ✅ **Nível 2** (branch `claude/wizardly-knuth-we80cd`, atrás da flag v2):
+   - **2A** regroup por tarefa: grupo `Operação` (Dashboard, Logs) vs `Construção` (Pipelines, Etapas); `Governança` → `Governança & Dados`.
+   - **2B** telas novas (flag `v2Only`): **Operação do dia** (fila de falhas não assumidas + KPIs, reusa `/execucoes/falhas`) e **Avisos** (notificações + comunicados, reusa endpoints do sininho).
+4. ⏳ Validar com admins beta → flip de default.
 
-## 6. Decisões em aberto
-- Escopo dos renomes: global ou só v2? (§3)
-- consulta deve ou não ver Logs? Power BI sai do admin-only? (§1)
-- Vamos até o Nível 2 (regroup + home de operação + Avisos) ou paramos no Nível 1?
+## 6. Decisões — resolvidas
+- **Escopo dos renomes**: só v2, via campo `labelV2` (e `v2Only` para telas novas). Clássico inalterado. ✅
+- **RBAC**: mantido como em produção — `consulta` sem Logs, Power BI admin-only. Operação do dia herda `tela_logs`. ✅
+- **Profundidade**: foi até o Nível 2 completo. ✅
+
+> Em aberto para o beta: "Operação do dia" deve virar o **destino default** do operador
+> (hoje o index ainda vai pra `/dashboard`)? Decidir após feedback.
