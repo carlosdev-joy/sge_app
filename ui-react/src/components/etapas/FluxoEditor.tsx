@@ -372,6 +372,13 @@ function FluxoEditorInner({ pipeline }: Props) {
     [nodes],
   )
 
+  // Jobs (etapas) do pipeline — alimentam o seletor "Job" da condição linhas_job.
+  // Decisões são roteadores (não geram linhas), por isso ficam de fora.
+  const jobNames = useMemo(
+    () => nodes.filter(n => n.type !== 'decisao').map(n => n.id),
+    [nodes],
+  )
+
   // ── Seleção (edita o nó selecionado AO VIVO no painel à direita) ───────────
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [delNodeId, setDelNodeId] = useState<string | null>(null)
@@ -633,16 +640,30 @@ function FluxoEditorInner({ pipeline }: Props) {
         if (isDecisao) {
           const cur = (d.condition as NodeCondition | undefined) ?? defaultCondition()
           const ramos = ramosByDecisao.get(n.id) ?? { sim: [], nao: [] }
-          condition = {
-            tipo: cur.tipo,
-            operador: cur.operador,
-            valor: (cur.valor ?? '').toString().trim(),
-            tabela: (cur.tabela || '').trim() || undefined,
-            database: (cur.database || '').trim() || undefined,
-            sql: (cur.sql || '').trim() || undefined,
-            mssql_conn_id: (cur.mssql_conn_id || '').trim() || undefined,
-            ramo_verdadeiro: ramos.sim,
-            ramo_falso: ramos.nao,
+          if (cur.tipo === 'linhas_job') {
+            // Decisão por linhas processadas: usa job a montante (e job filho
+            // opcional). Omite os campos de tabela/sql/banco/conexão.
+            condition = {
+              tipo: cur.tipo,
+              operador: cur.operador,
+              valor: (cur.valor ?? '').toString().trim(),
+              job_name: (cur.job_name || '').trim(),
+              child_job: (cur.child_job || '').trim(),
+              ramo_verdadeiro: ramos.sim,
+              ramo_falso: ramos.nao,
+            }
+          } else {
+            condition = {
+              tipo: cur.tipo,
+              operador: cur.operador,
+              valor: (cur.valor ?? '').toString().trim(),
+              tabela: (cur.tabela || '').trim() || undefined,
+              database: (cur.database || '').trim() || undefined,
+              sql: (cur.sql || '').trim() || undefined,
+              mssql_conn_id: (cur.mssql_conn_id || '').trim() || undefined,
+              ramo_verdadeiro: ramos.sim,
+              ramo_falso: ramos.nao,
+            }
           }
         }
         const base = {
@@ -847,6 +868,7 @@ function FluxoEditorInner({ pipeline }: Props) {
         <PropriedadesPanel
           node={selNode}
           ramos={selRamos}
+          jobNames={jobNames}
           sshConns={sshConns}
           mssqlConns={mssqlConns}
           dbServer={dbServer}
@@ -936,6 +958,7 @@ function extractValidationErrors(e: any): string[] {
 interface PropriedadesPanelProps {
   node: Node | null
   ramos: { sim: string[]; nao: string[] }
+  jobNames: string[]
   sshConns: { conn_id: string; host: string }[]
   mssqlConns: { conn_id: string; host: string }[]
   dbServer: string | null
@@ -948,7 +971,7 @@ interface PropriedadesPanelProps {
 }
 
 function PropriedadesPanel({
-  node, ramos, sshConns, mssqlConns, dbServer, dbDatabases,
+  node, ramos, jobNames, sshConns, mssqlConns, dbServer, dbDatabases,
   onRename, onPatchData, onPatchCondition, onDelete, onClose,
 }: PropriedadesPanelProps) {
   return (
@@ -972,6 +995,7 @@ function PropriedadesPanel({
           key={node.id}
           node={node}
           ramos={ramos}
+          jobNames={jobNames}
           mssqlConns={mssqlConns}
           onRename={onRename}
           onPatchCondition={onPatchCondition}
@@ -1148,17 +1172,20 @@ function PainelEtapa({ node, sshConns, mssqlConns, dbServer, dbDatabases, onRena
 interface PainelDecisaoProps {
   node: Node
   ramos: { sim: string[]; nao: string[] }
+  jobNames: string[]
   mssqlConns: { conn_id: string; host: string }[]
   onRename: (oldName: string, novo: string) => boolean
   onPatchCondition: (nodeId: string, patch: Partial<NodeCondition>) => void
   onDelete: (id: string) => void
 }
 
-function PainelDecisao({ node, ramos, mssqlConns, onRename, onPatchCondition, onDelete }: PainelDecisaoProps) {
+function PainelDecisao({ node, ramos, jobNames, mssqlConns, onRename, onPatchCondition, onDelete }: PainelDecisaoProps) {
   const d = node.data as DecisaoNodeData
   const isNew = !!d.isNew
   const c = d.condition ?? defaultCondition()
   const patch = (p: Partial<NodeCondition>) => onPatchCondition(node.id, p)
+  // Jobs disponíveis para a condição "linhas processadas" (exclui a própria decisão).
+  const jobsDisponiveis = jobNames.filter(j => j !== node.id)
 
   return (
     <div className="flex flex-1 flex-col gap-3 p-3">
@@ -1184,9 +1211,10 @@ function PainelDecisao({ node, ramos, mssqlConns, onRename, onPatchCondition, on
 
         <div className="flex flex-col gap-2">
           <div className="grid grid-cols-[1fr_64px] gap-2">
-            <Select label="Tipo" value={c.tipo} onChange={e => patch({ tipo: e.target.value as 'contagem' | 'query' })} className="text-xs">
+            <Select label="Tipo" value={c.tipo} onChange={e => patch({ tipo: e.target.value as NodeCondition['tipo'] })} className="text-xs">
               <option value="contagem">Contagem de registros</option>
               <option value="query">Valor de uma query</option>
+              <option value="linhas_job">Linhas processadas</option>
             </Select>
             <Select label="Oper." value={c.operador} onChange={e => patch({ operador: e.target.value })} className="text-center text-xs">
               {COND_OPERADORES.map(op => <option key={op} value={op}>{op}</option>)}
@@ -1195,13 +1223,47 @@ function PainelDecisao({ node, ramos, mssqlConns, onRename, onPatchCondition, on
 
           <Input
             label="Valor *"
+            type={c.tipo === 'linhas_job' ? 'number' : 'text'}
             value={c.valor}
             onChange={e => patch({ valor: e.target.value })}
             placeholder={c.tipo === 'query' ? 'ex: 1' : 'ex: 10000'}
             className="font-mono text-xs"
           />
 
-          {c.tipo === 'contagem' ? (
+          {c.tipo === 'linhas_job' ? (
+            <>
+              <div className="flex flex-col gap-1">
+                <Select
+                  label="Job *"
+                  value={c.job_name ?? ''}
+                  onChange={e => patch({ job_name: e.target.value })}
+                  className="text-xs"
+                >
+                  <option value="">Selecione um job…</option>
+                  {jobsDisponiveis.map(j => (
+                    <option key={j} value={j}>{j}</option>
+                  ))}
+                  {/* Mantém o valor salvo visível mesmo se o job não estiver mais no fluxo */}
+                  {c.job_name && !jobsDisponiveis.includes(c.job_name) && (
+                    <option value={c.job_name}>{c.job_name} (fora do fluxo)</option>
+                  )}
+                </Select>
+                {jobsDisponiveis.length === 0 && (
+                  <p className="text-[10px] text-dim/70">Crie ao menos uma etapa para escolher o job.</p>
+                )}
+              </div>
+              <div className="flex flex-col gap-1">
+                <Input
+                  label="Job filho (opcional)"
+                  value={c.child_job ?? ''}
+                  onChange={e => patch({ child_job: e.target.value })}
+                  placeholder="ex: JB_CARGA_DETALHE"
+                  className="font-mono text-xs"
+                />
+                <p className="text-[10px] text-dim/70">Vazio = usa o total do job.</p>
+              </div>
+            </>
+          ) : c.tipo === 'contagem' ? (
             <>
               <Input
                 label="Tabela * (db.schema.tabela)"
@@ -1229,17 +1291,20 @@ function PainelDecisao({ node, ramos, mssqlConns, onRename, onPatchCondition, on
             />
           )}
 
-          <Select
-            label="Conexão MSSQL (opcional)"
-            value={c.mssql_conn_id ?? ''}
-            onChange={e => patch({ mssql_conn_id: e.target.value })}
-            className="text-xs"
-          >
-            <option value="">Conexão padrão</option>
-            {mssqlConns.map(cn => (
-              <option key={cn.conn_id} value={cn.conn_id}>{cn.conn_id}{cn.host ? ` (${cn.host})` : ''}</option>
-            ))}
-          </Select>
+          {/* Conexão MSSQL não se aplica à decisão por linhas processadas. */}
+          {c.tipo !== 'linhas_job' && (
+            <Select
+              label="Conexão MSSQL (opcional)"
+              value={c.mssql_conn_id ?? ''}
+              onChange={e => patch({ mssql_conn_id: e.target.value })}
+              className="text-xs"
+            >
+              <option value="">Conexão padrão</option>
+              {mssqlConns.map(cn => (
+                <option key={cn.conn_id} value={cn.conn_id}>{cn.conn_id}{cn.host ? ` (${cn.host})` : ''}</option>
+              ))}
+            </Select>
+          )}
         </div>
       </div>
 

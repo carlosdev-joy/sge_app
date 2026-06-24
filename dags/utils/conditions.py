@@ -91,6 +91,10 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
     ``execution_id`` identifica a execução ATUAL (ts_nodash da DAG run). É
     obrigatório apenas para ``tipo='linhas_job'`` (lê o rows_out do job a
     montante na MESMA execução em dbo.etl_ds_job_log). Os outros tipos o ignoram.
+
+    Para ``tipo='linhas_job'`` com ``child_job`` preenchido, a decisão usa as
+    linhas daquele job FILHO (dentro do SEQUENCE ``job_name``), lidas do JSON
+    ``child_jobs`` do registro de etl_ds_job_log; vazio = total (rows_out).
     """
     from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook  # lazy
 
@@ -116,7 +120,12 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
         row = hook.get_first(sql)
         obtido = row[0] if row else None
     elif tipo == "linhas_job":
-        obtido = _rows_out_do_job(hook, cond.get("job_name") or "", execution_id)
+        child_job = (cond.get("child_job") or "").strip()
+        if child_job:
+            obtido = _rows_do_filho(
+                hook, cond.get("job_name") or "", child_job, execution_id)
+        else:
+            obtido = _rows_out_do_job(hook, cond.get("job_name") or "", execution_id)
     else:
         raise ValueError(f"tipo de condição desconhecido: {tipo!r}")
 
@@ -161,3 +170,69 @@ def _rows_out_do_job(hook, job_name: str, execution_id: str | None) -> int:
         return int(row[0])
     except (TypeError, ValueError):
         return 0
+
+
+def _rows_do_filho(hook, job_name: str, child_job: str, execution_id: str | None) -> int:
+    """Lê as linhas de SAÍDA de um job FILHO (``child_job``) dentro do SEQUENCE
+    ``job_name``, na execução ATUAL. Faz parse do JSON ``child_jobs`` gravado em
+    dbo.etl_ds_job_log pelo operador e usa o campo ``rows`` da entrada cujo
+    ``name == child_job``.
+
+    Degrada graciosamente (mesmo espírito de ``_rows_out_do_job``): sem registro,
+    JSON ausente/ inválido, filho não encontrado, ``rows`` None, ou tabela/coluna
+    inexistente → 0 (logado). Mantém o fallback de ``execution_id`` ausente."""
+    import json as _json
+
+    job_name = (job_name or "").strip()
+    child_job = (child_job or "").strip()
+    if not job_name:
+        print("[CONDICAO linhas_job] job_name vazio — tratando rows do filho como 0.")
+        return 0
+    if not child_job:
+        print("[CONDICAO linhas_job] child_job vazio — tratando rows do filho como 0.")
+        return 0
+    try:
+        if execution_id:
+            row = hook.get_first(
+                "SELECT TOP 1 child_jobs FROM dbo.etl_ds_job_log "
+                "WHERE execution_id=%s AND job_name=%s "
+                "ORDER BY COALESCE(updated_at, last_polled_at) DESC",
+                parameters=(execution_id, job_name),
+            )
+        else:
+            print("[CONDICAO linhas_job] sem execution_id — usando o registro mais recente do job (filho).")
+            row = hook.get_first(
+                "SELECT TOP 1 child_jobs FROM dbo.etl_ds_job_log "
+                "WHERE job_name=%s "
+                "ORDER BY COALESCE(updated_at, last_polled_at) DESC",
+                parameters=(job_name,),
+            )
+    except Exception as exc:
+        print(f"[CONDICAO linhas_job] leitura de child_jobs falhou ({exc}) — rows do filho=0.")
+        return 0
+    if not row or not row[0]:
+        print(f"[CONDICAO linhas_job] sem child_jobs para job '{job_name}' "
+              f"(execution_id={execution_id!r}) — rows do filho '{child_job}'=0.")
+        return 0
+    try:
+        children = _json.loads(row[0])
+    except (ValueError, TypeError) as exc:
+        print(f"[CONDICAO linhas_job] child_jobs JSON inválido ({exc}) — rows do filho=0.")
+        return 0
+    if not isinstance(children, list):
+        print("[CONDICAO linhas_job] child_jobs não é lista — rows do filho=0.")
+        return 0
+    for cj in children:
+        if isinstance(cj, dict) and str(cj.get("name") or "").strip() == child_job:
+            rows = cj.get("rows")
+            if rows is None:
+                print(f"[CONDICAO linhas_job] filho '{child_job}' sem 'rows' "
+                      f"(job '{job_name}') — tratando como 0.")
+                return 0
+            try:
+                return int(rows)
+            except (TypeError, ValueError):
+                return 0
+    print(f"[CONDICAO linhas_job] filho '{child_job}' não encontrado em child_jobs "
+          f"do job '{job_name}' — tratando como 0.")
+    return 0
