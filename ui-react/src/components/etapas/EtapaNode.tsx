@@ -8,8 +8,11 @@ import { TYPE_META, type EtapaType } from './types'
 export interface EtapaNodeData {
   name: string
   type: EtapaType
-  command: string
+  // Comando CRU (nullable) ecoado para o save. Na exibição usamos `command || '—'`.
+  command: string | null
   order: number
+  // Marca nós criados localmente (ainda não salvos) — nome/comando editáveis.
+  isNew?: boolean
   [key: string]: unknown
 }
 
@@ -45,10 +48,10 @@ function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) 
         </span>
       </div>
 
-      {/* Subtítulo: comando / path em mono */}
+      {/* Subtítulo: comando / path em mono (fallback só na exibição) */}
       <div className="px-3 pb-2 pt-1">
-        <p className="truncate font-mono text-xs text-dim" title={data.command}>
-          {data.command}
+        <p className="truncate font-mono text-xs text-dim" title={data.command || '—'}>
+          {data.command || '—'}
         </p>
       </div>
 

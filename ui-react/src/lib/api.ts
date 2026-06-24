@@ -21,7 +21,14 @@ export async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> 
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.detail ?? `${res.status} ${res.statusText}`)
+    const detail = body?.detail
+    // Mensagem legível: usa `detail` quando string, senão status. Anexa `status`
+    // e `detail` (cru) ao erro para o chamador introspectar (ex.: 422 estruturado).
+    const msg = typeof detail === 'string' ? detail : `${res.status} ${res.statusText}`
+    const err = new Error(msg) as Error & { status?: number; detail?: unknown }
+    err.status = res.status
+    err.detail = detail
+    throw err
   }
   return res.json()
 }
