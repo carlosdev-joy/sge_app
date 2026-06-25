@@ -386,6 +386,195 @@ def _json_safe(v):
     return str(v)
 
 
+# ── Decisão SQL: comparação tipada ──────────────────────────────────────────
+# Réplica FIEL de dags/utils/conditions.py (compara/_coerce_num/_aplica_operador/
+# _to_date/compara_tipado). A API só tem `api/` no pythonpath (pytest pythonpath=api),
+# então não importa de `dags/`. MANTER EM SINCRONIA com conditions.compara_tipado:
+# qualquer mudança na lógica de comparação lá deve ser refletida aqui (e vice-versa).
+_CMP_OPERADORES = {"=", "==", "<>", "!=", ">", ">=", "<", "<="}
+
+
+def _cmp_coerce_num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cmp_compara(obtido, operador, limite) -> bool:
+    """Compara ``valor_obtido <operador> valor_limite``. Numérico quando ambos
+    convertem para número; senão, comparação textual."""
+    operador = str(operador or "").strip()
+    if operador not in _CMP_OPERADORES:
+        raise ValueError(f"operador inválido: {operador!r}")
+    a, b = _cmp_coerce_num(obtido), _cmp_coerce_num(limite)
+    if a is None or b is None:
+        a = "" if obtido is None else str(obtido)
+        b = "" if limite is None else str(limite)
+    if operador in ("=", "=="):
+        return a == b
+    if operador in ("<>", "!="):
+        return a != b
+    if operador == ">":
+        return a > b
+    if operador == ">=":
+        return a >= b
+    if operador == "<":
+        return a < b
+    return a <= b  # "<="
+
+
+def _cmp_aplica_operador(a, b, operador) -> bool:
+    """Aplica ``a <operador> b`` com valores já normalizados (operador já validado)."""
+    if operador in ("=", "=="):
+        return a == b
+    if operador in ("<>", "!="):
+        return a != b
+    if operador == ">":
+        return a > b
+    if operador == ">=":
+        return a >= b
+    if operador == "<":
+        return a < b
+    return a <= b  # "<="
+
+
+def _cmp_to_date(v):
+    """Normaliza ``v`` para ``date`` (nível de dia). Aceita date/datetime/string;
+    token ``HOJE`` → hoje; string tenta ``YYYY-MM-DD`` (prefixo de ISO datetime).
+    Não parseável → None."""
+    if v is None:
+        return None
+    if isinstance(v, _dt.datetime):
+        return v.date()
+    if isinstance(v, _dt.date):
+        return v
+    s = str(v).strip()
+    if not s:
+        return None
+    if s.upper() == "HOJE":
+        return _dt.date.today()
+    head = re.split(r"[ T]", s, 1)[0]
+    try:
+        return _dt.datetime.strptime(head, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def _compara_tipado(obtido, operador, valor, comparacao) -> bool:
+    """Compara ``obtido <operador> valor`` honrando o tipo ``comparacao``
+    ∈ {'numero','data','texto'} (ou desconhecido → delega ao compara legado).
+
+    NUNCA levanta por erro de parse — só ``operador`` inválido pode levantar.
+    Réplica fiel de conditions.compara_tipado (ver nota acima)."""
+    comp = str(comparacao or "").strip().lower()
+    if comp not in _COND_COMPARACOES:
+        return _cmp_compara(obtido, operador, valor)
+    operador = str(operador or "").strip()
+    if operador not in _CMP_OPERADORES:
+        raise ValueError(f"operador inválido: {operador!r}")
+    try:
+        if comp == "numero":
+            a = _cmp_coerce_num(obtido)
+            b = _cmp_coerce_num(valor)
+            a = 0.0 if a is None else a
+            b = 0.0 if b is None else b
+            return _cmp_aplica_operador(a, b, operador)
+        if comp == "data":
+            a = _cmp_to_date(obtido)
+            b = _cmp_to_date(valor)
+            if a is None or b is None:
+                log.info("[decisao-simular data] não foi possível resolver data "
+                         "(obtido=%r→%r, valor=%r→%r) — resultado False.", obtido, a, valor, b)
+                return False
+            return _cmp_aplica_operador(a, b, operador)
+        # 'texto'
+        a = "" if obtido is None else str(obtido)
+        b = "" if valor is None else str(valor)
+        return _cmp_aplica_operador(a, b, operador)
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — degrada sem levantar
+        log.info("[decisao-simular %s] erro ao comparar (obtido=%r, valor=%r, op=%r): %s "
+                 "— resultado False.", comp, obtido, valor, operador, exc)
+        return False
+
+
+# ── Config de fluxo: timeout do preview SQL (etl_app_config) ─────────────────
+_PREVIEW_TIMEOUT_DEFAULT = 15
+_PREVIEW_TIMEOUT_MIN = 1
+_PREVIEW_TIMEOUT_MAX = 120
+_PREVIEW_TIMEOUT_KEY = "sql_preview_timeout_s"
+
+
+def _clamp_preview_timeout(v: int) -> int:
+    return max(_PREVIEW_TIMEOUT_MIN, min(_PREVIEW_TIMEOUT_MAX, int(v)))
+
+
+def _get_preview_timeout_s() -> int:
+    """Lê o timeout (s) do preview SQL de dbo.etl_app_config (key sql_preview_timeout_s),
+    com fallback 15 e clamp 1..120. Degrada para o default se a tabela faltar/erro."""
+    try:
+        from routers.admin import _get_app_config_value
+        raw = _get_app_config_value(_PREVIEW_TIMEOUT_KEY)
+        if raw is None:
+            return _PREVIEW_TIMEOUT_DEFAULT
+        return _clamp_preview_timeout(int(str(raw).strip()))
+    except (ValueError, TypeError):
+        return _PREVIEW_TIMEOUT_DEFAULT
+    except Exception as e:  # noqa: BLE001 — degrada para o default
+        log.warning("leitura de %s falhou: %s — usando default %ss.",
+                    _PREVIEW_TIMEOUT_KEY, e, _PREVIEW_TIMEOUT_DEFAULT)
+        return _PREVIEW_TIMEOUT_DEFAULT
+
+
+@router.get("/jobs/flow-config", tags=["jobs"])
+def get_flow_config(_auth: dict = Depends(get_current_user)):
+    """Config de fluxo (parâmetros operacionais do editor de pipelines).
+
+    Hoje: {sql_preview_timeout_s: int} — timeout (s) do preview/simulação SQL,
+    lido de dbo.etl_app_config (default 15, clamp 1..120). Degrada para o default."""
+    return {"sql_preview_timeout_s": _get_preview_timeout_s()}
+
+
+@router.put("/jobs/flow-config", tags=["jobs"])
+def put_flow_config(
+    body: dict = Body(default={}),
+    _auth: dict = Depends(require_perm(PERM_EDITAR)),
+):
+    """Atualiza a config de fluxo. Body: {sql_preview_timeout_s: int} (clamp 1..120).
+
+    Persiste em dbo.etl_app_config (MERGE, mesmo padrão de admin config_upsert).
+    Degrada com erro claro (400) se a tabela não existir — nunca 500 cru."""
+    raw = body.get("sql_preview_timeout_s")
+    if raw is None:
+        raise HTTPException(status_code=422, detail="sql_preview_timeout_s é obrigatório")
+    try:
+        val = _clamp_preview_timeout(int(raw))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="sql_preview_timeout_s deve ser inteiro")
+    requested_by = (_auth.get("matricula") or "").strip() or None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "MERGE dbo.etl_app_config AS t "
+            "USING (SELECT ? AS k, ? AS v, ? AS d) AS s ON t.config_key = s.k "
+            "WHEN MATCHED THEN UPDATE SET config_value=?, descricao=COALESCE(?,t.descricao), "
+            "  updated_by=?, updated_at=GETDATE() "
+            "WHEN NOT MATCHED THEN INSERT (config_key,config_value,descricao,updated_by,updated_at) "
+            "  VALUES (s.k, s.v, s.d, ?, GETDATE());",
+            [_PREVIEW_TIMEOUT_KEY, str(val), "Timeout (s) do preview/simulação SQL",
+             str(val), "Timeout (s) do preview/simulação SQL", requested_by, requested_by],
+        )
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:  # noqa: BLE001 — sem 500 cru
+        log.warning("put_flow_config falhou ao salvar %s: %s", _PREVIEW_TIMEOUT_KEY, e)
+        raise HTTPException(
+            status_code=400,
+            detail="Não foi possível salvar a configuração de fluxo (etl_app_config indisponível).")
+    return {"sql_preview_timeout_s": val}
+
+
 @router.get("/jobs", tags=["jobs"])
 def list_jobs(
     offset: int = 0,
@@ -585,7 +774,8 @@ async def sql_preview(
     # BY sem TOP/OFFSET, o SQL Server recusa a subquery, então o erro vira 400
     # claro (preview com mensagem) em vez de 500.
     preview_sql = f"SELECT TOP 100 * FROM (\n{sql}\n) AS _prev"
-    _PREVIEW_TIMEOUT_S = 15
+    # Timeout de execução agora vem da config de fluxo (etl_app_config), não fixo.
+    _PREVIEW_TIMEOUT_S = _get_preview_timeout_s()
     try:
         conn = pyodbc.connect(conn_str, timeout=5)
         # Timeout de EXECUÇÃO (não só de conexão): o driver cancela a query no
@@ -622,6 +812,114 @@ async def sql_preview(
         "rows": rows,
         "total": total,
         "truncated": total >= 100,
+    }
+
+
+def _open_swapped_conn(host: str, database: str, timeout_s: int):
+    """Abre uma conexão pyodbc para (host, database) com a credencial do app
+    (swap SERVER/DATABASE), isolation READ UNCOMMITTED e ``timeout_s`` de execução.
+    Levanta HTTPException(400) com mensagem clara em falha de conn str/conexão.
+    Mesmo perfil de conexão do /jobs/sql-preview."""
+    try:
+        conn_str = _swap_conn_str(host, database)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        conn = pyodbc.connect(conn_str, timeout=5)
+        conn.timeout = timeout_s
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Falha ao conectar em '{host}': {e}")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+        return conn, cur
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=f"Falha ao iniciar a sessão em '{host}': {e}")
+
+
+@router.post("/jobs/decisao-simular", tags=["jobs"])
+async def decisao_simular(
+    body: dict = Body(default={}),
+    _auth: dict = Depends(get_current_user),
+):
+    """Simula a decisão de um nó SQL: roda o SELECT do usuário, pega o escalar
+    (primeira coluna da primeira linha) e aplica a comparação tipada — devolve para
+    qual ramo (sim/nao) a execução iria, sem salvar nada.
+
+    Body: {host, database, sql, comparacao, operador, valor}.
+
+    Segurança (mesma do /jobs/sql-preview):
+      - ``sql`` read-only (SELECT/WITH, sem ';' nem DML) — 422 senão.
+      - ``host`` cadastrado como conexão MSSQL no Airflow (allowlist anti-SSRF) — 400 senão.
+      - ``database`` identificador válido. ``comparacao`` ∈ {texto,data,numero},
+        ``operador`` válido. Timeout de execução vem da config de fluxo.
+
+    Resposta: {valor_obtido: str|null, resultado: bool, ramo: 'sim'|'nao'}.
+    Erros de conexão/SQL/timeout → 400 com mensagem clara (nunca 500 cru)."""
+    host = (body.get("host") or "").strip()
+    database = (body.get("database") or "").strip()
+    sql_raw = body.get("sql") or ""
+    comparacao = str(body.get("comparacao") or "").strip().lower()
+    operador = str(body.get("operador") or "").strip()
+    valor = body.get("valor")
+
+    if not host:
+        raise HTTPException(status_code=422, detail="host é obrigatório")
+    if not database:
+        raise HTTPException(status_code=422, detail="database é obrigatório")
+    if not _IDENT_RE.match(database):
+        raise HTTPException(status_code=422, detail="database inválido")
+    try:
+        sql = _validate_select_strict(sql_raw)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if comparacao not in _COND_COMPARACOES:
+        raise HTTPException(status_code=422, detail="comparacao deve ser 'texto', 'data' ou 'numero'")
+    if operador not in _COND_OPERADORES:
+        raise HTTPException(status_code=422, detail="operador inválido (use =, <>, >, >=, <, <=)")
+
+    allowed = await _list_mssql_hosts()
+    if host not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"host '{host}' não está cadastrado como conexão MSSQL")
+
+    timeout_s = _get_preview_timeout_s()
+    conn, cur = _open_swapped_conn(host, database, timeout_s)
+    try:
+        cur.execute(sql)
+        row = cur.fetchone()
+        cur.close(); conn.close()
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        msg = str(e)
+        if "timeout" in msg.lower() or "HYT00" in msg or "HYT01" in msg:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"A consulta excedeu o tempo limite de {timeout_s}s na simulação "
+                        "e foi cancelada no servidor. Refine o SELECT (filtros, menos "
+                        "colunas) para simular a decisão."))
+        raise HTTPException(status_code=400, detail=f"Erro ao executar o SELECT: {e}")
+
+    obtido = row[0] if row else None
+    try:
+        resultado = _compara_tipado(obtido, operador, valor, comparacao)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    # Contrato: valor_obtido é str|null (None quando vazio). _json_safe normaliza
+    # datas/decimais/bytes; o str() final fixa o tipo da resposta como string.
+    safe = _json_safe(obtido)
+    return {
+        "valor_obtido": None if safe is None else str(safe),
+        "resultado": resultado,
+        "ramo": "sim" if resultado else "nao",
     }
 
 
