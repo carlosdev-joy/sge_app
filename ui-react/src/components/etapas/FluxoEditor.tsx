@@ -1105,9 +1105,17 @@ function FluxoEditorInner({ pipeline }: Props) {
         toast.error('Ciclo detectado no fluxo — ajuste as dependências.')
       } else if (status === 422) {
         // Erros de validação do backend: detail.errors[] — não trava o canvas,
-        // mantém `dirty` para o usuário corrigir.
+        // mantém `dirty` para o usuário corrigir. Deixa CLARO que NÃO foi salvo e
+        // mostra os erros (loga todos no console p/ diagnóstico).
         const errs = extractValidationErrors(e)
-        toast.error(errs.length ? `Validação: ${errs.slice(0, 3).join(' · ')}` : 'Fluxo inválido — verifique as decisões.')
+        if (errs.length) {
+          console.warn('[fluxo] NÃO foi salvo — erros de validação:', errs)
+          const shown = errs.slice(0, 5).join(' · ')
+          const extra = errs.length > 5 ? ` (+${errs.length - 5} — veja o console)` : ''
+          toast.error(`NÃO salvo (${errs.length} erro${errs.length > 1 ? 's' : ''}): ${shown}${extra}`)
+        } else {
+          toast.error('NÃO salvo — fluxo inválido. Verifique as decisões/nós.')
+        }
       } else {
         toast.error(msg || 'Erro ao salvar o fluxo.')
       }
