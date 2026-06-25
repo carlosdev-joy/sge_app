@@ -1089,6 +1089,13 @@ function FluxoEditorInner({ pipeline }: Props) {
         nodes: payloadNodes,
         deleted: Array.from(deletedRef.current),
       }
+      // DIAGNÓSTICO (temporário): o que está sendo enviado para cada decisão.
+      try {
+        const decs = payloadNodes
+          .filter((n: any) => n.job_type === 'decisao')
+          .map((n: any) => ({ job_name: n.job_name, condition: n.condition }))
+        console.log('[fluxo][DIAG] decisões enviadas:', JSON.stringify(decs, null, 2))
+      } catch { /* noop */ }
       await apiFetch(`/pipelines/${encodeURIComponent(pipeline)}/fluxo`, {
         method: 'POST',
         body: JSON.stringify(payload),
