@@ -15,7 +15,7 @@ import { DsSeqFlowGraph } from '../components/console/DsSeqFlowGraph'
 import {
   Edit2, Trash2, Plus, AlertTriangle, ChevronDown, ChevronUp, Save, X,
   CheckCircle2, Eye, Calendar, Download, Megaphone, Bold, Italic, Code, List, RefreshCw, Database,
-  Bell, MessageSquare,
+  Bell, MessageSquare, Workflow,
 } from 'lucide-react'
 
 const PROJETOS = ['BI_CVP', 'BI_VIDA', 'BI_PREVIDENCIA', 'BI_PRESTAMISTA']
@@ -2823,6 +2823,76 @@ function TemplateFormModal({ template, grupos, onClose }: { template: MsgTemplat
   )
 }
 
+// ── Configurações de fluxo ──────────────────────────────────────
+// Parâmetros do motor de fluxo (decisões/SQL). Hoje só o timeout de
+// preview/simulação de SQL — GET/PUT /jobs/flow-config (degrada se a
+// tabela/endpoint não existir: backend devolve o default).
+function FlowConfigSection() {
+  const [timeout, setTimeoutVal] = useState('')
+
+  const { data, isLoading } = useQuery<{ sql_preview_timeout_s: number }>({
+    queryKey: ['flow-config'],
+    queryFn: () => apiFetch('/jobs/flow-config'),
+  })
+
+  // Sincroniza o input com o valor carregado (sem sobrescrever edição em curso
+  // após salvar: ao trocar `data` o input reflete o servidor).
+  const carregado = data?.sql_preview_timeout_s
+  const valorInput = timeout !== '' ? timeout : (carregado != null ? String(carregado) : '')
+
+  const saveMut = useMutation({
+    mutationFn: (sql_preview_timeout_s: number) =>
+      apiFetch('/jobs/flow-config', { method: 'PUT', body: JSON.stringify({ sql_preview_timeout_s }) }),
+    onSuccess: () => {
+      toast.success('Configurações de fluxo salvas')
+      queryClient.invalidateQueries({ queryKey: ['flow-config'] })
+      setTimeoutVal('')
+    },
+    onError: (e: any) => toast.error(e?.message || 'Falha ao salvar configurações de fluxo'),
+  })
+
+  const n = parseInt(valorInput, 10)
+  const valido = Number.isFinite(n) && n >= 1 && n <= 120
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <Workflow size={16} className="text-[#1A5FA8] dark:text-blue-400" />
+        <h2 className="text-sm font-bold text-ink">Configurações de fluxo</h2>
+      </div>
+
+      <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm">
+        {isLoading ? <PageSpinner /> : (
+          <div className="flex flex-wrap gap-3 items-end">
+            <div className="flex flex-col gap-1">
+              <Input
+                label="Timeout de preview/simulação (s)"
+                type="number"
+                min={1}
+                max={120}
+                value={valorInput}
+                onChange={e => setTimeoutVal(e.target.value)}
+                className="w-56"
+                error={valorInput !== '' && !valido ? 'Use um valor entre 1 e 120' : undefined}
+              />
+              <p className="text-[11px] text-dim">
+                Tempo máximo que um preview/simulação de SQL roda antes de ser cancelado no servidor.
+              </p>
+            </div>
+            <Button
+              onClick={() => saveMut.mutate(n)}
+              loading={saveMut.isPending}
+              disabled={!valido}
+            >
+              <Save size={13} /> Salvar
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function NotificacoesTab() {
   const [grupoForm, setGrupoForm] = useState<{ open: boolean; grupo: MsgGrupoRow | null }>({ open: false, grupo: null })
   const [delGrupo, setDelGrupo] = useState<MsgGrupoRow | null>(null)
@@ -2951,6 +3021,9 @@ function NotificacoesTab() {
           </div>
         )}
       </div>
+
+      {/* Seção 3 — Configurações de fluxo */}
+      <FlowConfigSection />
 
       {grupoForm.open && <GrupoFormModal grupo={grupoForm.grupo} onClose={() => setGrupoForm({ open: false, grupo: null })} />}
       {tplForm.open && <TemplateFormModal template={tplForm.template} grupos={grupos} onClose={() => setTplForm({ open: false, template: null })} />}

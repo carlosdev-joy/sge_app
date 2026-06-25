@@ -913,6 +913,35 @@ function FluxoEditorInner({ pipeline }: Props) {
     setDirty(true)
   }, [setNodes, edges])
 
+  // ── Destaque animado do caminho de uma decisão (botão "Simular") ──────────
+  // Marca as arestas de ramo (decisaoId + ramo) como `animated` com um traço
+  // verde grosso por ~5s e reverte ao estilo original. NÃO altera dados nem
+  // marca `dirty` (highlight puramente visual). Guarda o timer p/ limpar.
+  const simTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const simularDecisao = useCallback((decisaoId: string, ramo: 'sim' | 'nao') => {
+    // Estilo original das arestas de ramo (recomposto na reversão, sem rebuild).
+    const baseStyle = ramo === 'sim' ? SIM_STYLE : NAO_STYLE
+    const isAlvo = (e: Edge) => isBranch(e) && e.source === decisaoId && edgeRamo(e) === ramo
+
+    if (simTimerRef.current) { clearTimeout(simTimerRef.current); simTimerRef.current = null }
+
+    setEdges(eds => eds.map(e =>
+      isAlvo(e)
+        ? { ...e, animated: true, style: { stroke: '#22c55e', strokeWidth: 3 } }
+        : e,
+    ))
+
+    simTimerRef.current = setTimeout(() => {
+      setEdges(eds => eds.map(e =>
+        isAlvo(e) ? { ...e, animated: false, style: baseStyle } : e,
+      ))
+      simTimerRef.current = null
+    }, 5000)
+  }, [setEdges])
+
+  // Limpa o timer do highlight ao desmontar (evita setEdges após unmount).
+  useEffect(() => () => { if (simTimerRef.current) clearTimeout(simTimerRef.current) }, [])
+
   // ── Salvar: materializa o grafo (todos os nós) ────────────────────────────
   async function salvar() {
     setSaving(true)
@@ -1225,6 +1254,7 @@ function FluxoEditorInner({ pipeline }: Props) {
       {selNode && (
         <PropriedadesPanel
           node={selNode}
+          nodes={nodes}
           ramos={selRamos}
           jobNames={jobNames}
           sqlNodeNames={sqlNodeNames}
@@ -1238,6 +1268,7 @@ function FluxoEditorInner({ pipeline }: Props) {
           onPatchCondition={patchCondition}
           onPatchNotify={patchNotify}
           onPatchSql={patchSql}
+          onSimular={simularDecisao}
           onDelete={id => setDelNodeId(id)}
           onClose={closePanel}
         />
@@ -1319,6 +1350,7 @@ function extractValidationErrors(e: any): string[] {
 // ─────────────────────────────────────────────────────────────────────────────
 interface PropriedadesPanelProps {
   node: Node | null
+  nodes: Node[]
   ramos: { sim: string[]; nao: string[] }
   jobNames: string[]
   sqlNodeNames: string[]
@@ -1332,13 +1364,14 @@ interface PropriedadesPanelProps {
   onPatchCondition: (nodeId: string, patch: Partial<NodeCondition>) => void
   onPatchNotify: (nodeId: string, patch: Partial<NotifyConfig>) => void
   onPatchSql: (nodeId: string, patch: Partial<SqlConfig>) => void
+  onSimular: (decisaoId: string, ramo: 'sim' | 'nao') => void
   onDelete: (id: string) => void
   onClose: () => void
 }
 
 function PropriedadesPanel({
-  node, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, dbServer, dbDatabases, grupos,
-  onRename, onPatchData, onPatchCondition, onPatchNotify, onPatchSql, onDelete, onClose,
+  node, nodes, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, dbServer, dbDatabases, grupos,
+  onRename, onPatchData, onPatchCondition, onPatchNotify, onPatchSql, onSimular, onDelete, onClose,
 }: PropriedadesPanelProps) {
   return (
     <aside className="flex w-[320px] shrink-0 flex-col overflow-y-auto border-l border-edge bg-panel">
@@ -1360,12 +1393,14 @@ function PropriedadesPanel({
         <PainelDecisao
           key={node.id}
           node={node}
+          nodes={nodes}
           ramos={ramos}
           jobNames={jobNames}
           sqlNodeNames={sqlNodeNames}
           mssqlConns={mssqlConns}
           onRename={onRename}
           onPatchCondition={onPatchCondition}
+          onSimular={onSimular}
           onDelete={onDelete}
         />
       ) : node.type === 'notificacao' ? (
@@ -1556,22 +1591,74 @@ function PainelEtapa({ node, sshConns, mssqlConns, dbServer, dbDatabases, onRena
 // ── Painel de uma DECISÃO ────────────────────────────────────────────────────
 interface PainelDecisaoProps {
   node: Node
+  nodes: Node[]
   ramos: { sim: string[]; nao: string[] }
   jobNames: string[]
   sqlNodeNames: string[]
   mssqlConns: { conn_id: string; host: string }[]
   onRename: (oldName: string, novo: string) => boolean
   onPatchCondition: (nodeId: string, patch: Partial<NodeCondition>) => void
+  onSimular: (decisaoId: string, ramo: 'sim' | 'nao') => void
   onDelete: (id: string) => void
 }
 
-function PainelDecisao({ node, ramos, jobNames, sqlNodeNames, mssqlConns, onRename, onPatchCondition, onDelete }: PainelDecisaoProps) {
+// Resultado de uma simulação da decisão SQL (POST /jobs/decisao-simular).
+interface SimResult { valor_obtido: string | null; resultado: boolean; ramo: 'sim' | 'nao' }
+
+function PainelDecisao({ node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns, onRename, onPatchCondition, onSimular, onDelete }: PainelDecisaoProps) {
   const d = node.data as DecisaoNodeData
   const isNew = !!d.isNew
   const c = d.condition ?? defaultCondition()
   const patch = (p: Partial<NodeCondition>) => onPatchCondition(node.id, p)
   // Jobs disponíveis para a condição "linhas processadas" (exclui a própria decisão).
   const jobsDisponiveis = jobNames.filter(j => j !== node.id)
+
+  // ── Simulação (decisão por valor de SQL) ──────────────────────────────────
+  const [simulando, setSimulando] = useState(false)
+  const [simResult, setSimResult] = useState<SimResult | null>(null)
+  // Limpa o resultado ao trocar de nó/condição (key remonta, mas reforça ao editar).
+  useEffect(() => { setSimResult(null) }, [node.id])
+
+  async function simular() {
+    // Resolve o nó SQL de origem (source_job) e sua config (sql/conexão/banco).
+    const sourceJob = (c.source_job || '').trim()
+    if (!sourceJob) { toast.error('Selecione o nó SQL de origem antes de simular.'); return }
+    const sqlNode = nodes.find(n => n.id === sourceJob && n.type === 'sql')
+    if (!sqlNode) { toast.error(`Nó SQL "${sourceJob}" não encontrado no fluxo — ligue-o a esta decisão.`); return }
+    const sqlCfg = (sqlNode.data as SqlNodeData).sql ?? defaultSql()
+    if (!(sqlCfg.sql || '').trim()) { toast.error(`O nó SQL "${sourceJob}" não tem consulta — escreva o SELECT.`); return }
+    if (!sqlCfg.mssql_conn_id) { toast.error(`O nó SQL "${sourceJob}" não tem conexão MSSQL definida.`); return }
+    const host = mssqlConns.find(cn => cn.conn_id === sqlCfg.mssql_conn_id)?.host
+    if (!host) { toast.error(`Conexão "${sqlCfg.mssql_conn_id}" não encontrada — verifique a conexão MSSQL.`); return }
+
+    setSimulando(true)
+    setSimResult(null)
+    try {
+      const res = await apiFetch<SimResult>('/jobs/decisao-simular', {
+        method: 'POST',
+        body: JSON.stringify({
+          host,
+          database: sqlCfg.database,
+          sql: sqlCfg.sql,
+          comparacao: c.comparacao || 'texto',
+          operador: c.operador,
+          valor: (c.valor ?? '').toString(),
+        }),
+      })
+      setSimResult(res)
+      // Destaque animado do ramo escolhido — avisa se o ramo ainda não tem aresta.
+      const temAresta = res.ramo === 'sim' ? ramos.sim.length > 0 : ramos.nao.length > 0
+      if (!temAresta) {
+        toast.info(`Conecte o ramo ${res.ramo === 'sim' ? 'SIM' : 'NÃO'} para ver o caminho destacado.`)
+      } else {
+        onSimular(node.id, res.ramo)
+      }
+    } catch (e: any) {
+      toast.error(e?.message || 'Falha ao simular a decisão.')
+    } finally {
+      setSimulando(false)
+    }
+  }
 
   return (
     <div className="flex flex-1 flex-col gap-3 p-3">
@@ -1653,6 +1740,43 @@ function PainelDecisao({ node, ramos, jobNames, sqlNodeNames, mssqlConns, onRena
                 />
                 {c.comparacao === 'data' && (
                   <p className="text-[10px] text-dim/70">Use <code>HOJE</code> ou <code>AAAA-MM-DD</code>.</p>
+                )}
+              </div>
+
+              {/* Simular: roda o SQL de origem e avalia a condição AO VIVO; o ramo
+                  escolhido fica destacado (animado) no canvas por alguns segundos. */}
+              <div className="flex flex-col gap-2 border-t border-edge pt-2.5">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="self-start"
+                  onClick={simular}
+                  loading={simulando}
+                  disabled={!c.source_job || !(c.valor ?? '').toString().trim()}
+                >
+                  <Play size={13} /> Simular
+                </Button>
+                {simResult && (
+                  <div className="rounded-lg border border-edge bg-canvas p-2.5">
+                    <p className="text-[11px] text-dim">
+                      Valor obtido:{' '}
+                      <span className="font-mono text-ink">
+                        {simResult.valor_obtido == null ? <span className="text-dim/70">null</span> : simResult.valor_obtido}
+                      </span>
+                    </p>
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                      <span className="text-[11px] text-dim">ramo:</span>
+                      {simResult.ramo === 'sim' ? (
+                        <span className="rounded-full border border-green-300 bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:border-green-800 dark:bg-green-900/40 dark:text-green-300">
+                          SIM
+                        </span>
+                      ) : (
+                        <span className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-700 dark:text-slate-300">
+                          NÃO
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
             </>
