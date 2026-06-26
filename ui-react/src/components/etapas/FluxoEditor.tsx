@@ -558,6 +558,12 @@ function FluxoEditorInner({ pipeline }: Props) {
   const existingRef = useRef<Set<string>>(new Set())
   // Guarda os nós da API para o re-layout.
   const apiNodesRef = useRef<FluxoNode[]>([])
+  // `dirty` espelhado em ref — o efeito de (re)inicialização lê o valor ATUAL sem
+  // recriar/relistar `dirty` nas deps (evitaria o guard de clobber).
+  const dirtyRef = useRef(false)
+  // Último pipeline cujo canvas já foi inicializado a partir do GET. Troca de
+  // pipeline SEMPRE recarrega; refetch do MESMO pipeline NÃO sobrescreve edições.
+  const loadedPipeRef = useRef<string | null>(null)
 
   // Conexões MSSQL p/ o editor de condição e p/ etapas storedproc (JobTypeFields).
   const { data: mssqlData } = useQuery<{ connections: { conn_id: string; host: string }[] }>({
@@ -623,17 +629,36 @@ function FluxoEditorInner({ pipeline }: Props) {
     queryKey: ['fluxo', pipeline],
     queryFn: () => apiFetch(`/pipelines/${encodeURIComponent(pipeline)}/fluxo`),
     enabled: !!pipeline,
+    // O canvas é a fonte da verdade enquanto editado. Um refetch em background
+    // (foco de janela / reconexão / staleness) NÃO pode acontecer e sobrescrever
+    // o trabalho não salvo — `data` só muda na 1ª carga e no invalidate pós-save.
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    staleTime: Infinity,
   })
+
+  // Mantém o espelho de `dirty` para o guard de (re)inicialização ler o valor atual.
+  useEffect(() => { dirtyRef.current = dirty }, [dirty])
 
   useEffect(() => {
     if (!data) return
+    // (Re)inicializa o canvas a partir do GET SOMENTE quando seguro:
+    //  • troca de pipeline → sempre recarrega (estamos saindo do anterior);
+    //  • mesmo pipeline → só recarrega se NÃO houver edição pendente (`dirty`).
+    // Assim um refetch/invalidate (ex.: resync pós-save, quando `dirty` já é false)
+    // ressincroniza, mas NUNCA apaga as alterações não salvas do usuário (era o
+    // bug: o refetch revertia a decisão para o estado salvo antigo, perdendo a
+    // condição valor_sql e colando os dois ramos no "sim").
+    const isNewPipeline = loadedPipeRef.current !== pipeline
+    if (!isNewPipeline && dirtyRef.current) return
+    loadedPipeRef.current = pipeline
     apiNodesRef.current = data.nodes
     existingRef.current = new Set(data.nodes.map(n => n.job_name))
     deletedRef.current = new Set()
     setNodes(buildNodes(data.nodes))
     setEdges(buildEdges(data.nodes))
     setDirty(false)
-  }, [data, setNodes, setEdges])
+  }, [data, pipeline, setNodes, setEdges])
 
   // Enquadra o fluxo ao abrir / trocar de pipeline (foco direto no conteúdo).
   const fittedPipeRef = useRef<string | null>(null)
@@ -1089,13 +1114,6 @@ function FluxoEditorInner({ pipeline }: Props) {
         nodes: payloadNodes,
         deleted: Array.from(deletedRef.current),
       }
-      // DIAGNÓSTICO (temporário): o que está sendo enviado para cada decisão.
-      try {
-        const decs = payloadNodes
-          .filter((n: any) => n.job_type === 'decisao')
-          .map((n: any) => ({ job_name: n.job_name, condition: n.condition }))
-        console.log('[fluxo][DIAG] decisões enviadas:', JSON.stringify(decs, null, 2))
-      } catch { /* noop */ }
       await apiFetch(`/pipelines/${encodeURIComponent(pipeline)}/fluxo`, {
         method: 'POST',
         body: JSON.stringify(payload),
