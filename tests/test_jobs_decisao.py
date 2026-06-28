@@ -143,3 +143,51 @@ def test_ciclo_branch_volta_para_dependencia(J):
     # JobB depende de JobA; a Decisao (após JobB) ramifica p/ JobA → ciclo
     adj = {"JobA": {"JobB"}, "JobB": {"Decisao"}, "Decisao": {"JobA"}}
     assert J._graph_has_cycle(adj) is True
+
+
+# ───────── _single_job_from_body (cadastro de etapa única via /register) ──────
+# Regressão: o caminho de job ÚNICO escolhia um conjunto fixo de chaves e
+# DESCARTAVA condition/notify/sql_node (e deps/banco). Resultado: registrar uma
+# decisão/notificação/SQL pela "Nova Etapa" caía em "<config> ausente" → 422.
+
+def _body(job_type, **extra):
+    b = {"pipeline_name": "P", "job_name": "ETAPA_X", "execution_order": 1,
+         "job_type": job_type, "job_command": "ds.job", "require_lineage": False}
+    b.update(extra)
+    return b
+
+
+def test_single_job_repassa_notify(J):
+    notify = {"grupo_id": 1, "template_id": None, "mensagem": "oi"}
+    j = J._single_job_from_body(_body("notificacao", notify=notify))
+    assert j["notify"] == notify
+    assert J._validate_notify(j.get("notify")) == []
+
+
+def test_single_job_repassa_sql_node(J):
+    sql_node = {"sql": "SELECT 1", "mssql_conn_id": "mssql_default", "database": "DB"}
+    j = J._single_job_from_body(_body("sql", sql_node=sql_node))
+    assert j["sql_node"] == sql_node
+    assert J._validate_sql_node_conn(j.get("sql_node"), {"mssql_default"}) == []
+
+
+def test_single_job_repassa_condition(J):
+    cond = {"tipo": "contagem", "tabela": "dbo.T", "operador": ">", "valor": 1,
+            "ramo_verdadeiro": ["JobB"], "ramo_falso": ["JobC"]}
+    j = J._single_job_from_body(_body("decisao", condition=cond))
+    assert j["condition"] == cond
+    assert J._validate_condition(j.get("condition"), _JOBS, "ETAPA_X", None) == []
+
+
+def test_single_job_repassa_deps_e_banco(J):
+    j = J._single_job_from_body(
+        _body("storedproc", depends_on_jobs=["JobA", "JobB"], mssql_database="BI_DW"))
+    assert j["depends_on_jobs"] == ["JobA", "JobB"]
+    assert j["mssql_database"] == "BI_DW"
+
+
+def test_single_job_datastage_sem_config_especial(J):
+    # datastage continua sem condition/notify/sql (None) — não regride o caminho comum.
+    j = J._single_job_from_body(_body("datastage"))
+    assert j["condition"] is None and j["notify"] is None and j["sql_node"] is None
+    assert j["job_type"] == "datastage"

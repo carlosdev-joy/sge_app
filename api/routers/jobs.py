@@ -138,6 +138,35 @@ def _normalize_sql_node(cfg: dict) -> dict:
     }
 
 
+def _single_job_from_body(body: dict) -> dict:
+    """Monta o job único do POST /pipelines/jobs/register a partir do corpo plano
+    (quando NÃO vem ``jobs[]``). Repassa TODAS as chaves que a "Nova Etapa" envia
+    — em especial as configs por-tipo dos nós especiais (``condition``/``notify``/
+    ``sql_node``) e ``depends_on_jobs``/``mssql_database``. Sem esse repasse, a
+    decisão/notificação/SQL caía em "<config> ausente" e o cadastro inteiro dava
+    422 (o caminho ``jobs[]`` não tinha o bug porque repassa o dict cru)."""
+    return {
+        "job_name": body.get("job_name"),
+        "execution_order": int(body.get("execution_order")),
+        "job_type": body.get("job_type", "datastage"),
+        "job_command": body.get("job_command"),
+        "ssh_conn_id": body.get("ssh_conn_id"),
+        "verbose_log": body.get("verbose_log", False),
+        "mssql_conn_id": body.get("mssql_conn_id"),
+        "mssql_database": body.get("mssql_database"),
+        "depends_on_jobs": body.get("depends_on_jobs"),
+        "params": body.get("params", []),
+        "condition": body.get("condition"),
+        "condition_json": body.get("condition_json"),
+        "notify": body.get("notify"),
+        "notify_json": body.get("notify_json"),
+        "sql_node": body.get("sql_node"),
+        "sql_json": body.get("sql_json"),
+        "origens": body.get("origens", []),
+        "destinos": body.get("destinos", []),
+    }
+
+
 def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str]:
     """Valida a condição de um nó de decisão. Retorna lista de erros (vazia = ok)."""
     if not isinstance(cond, dict):
@@ -942,15 +971,7 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
         order    = body.get("execution_order")
         if not job_name or order is None:
             raise HTTPException(status_code=422, detail="Informe jobs[] ou job_name+execution_order")
-        jobs = [{"job_name": job_name, "execution_order": int(order),
-                 "job_type": body.get("job_type", "datastage"),
-                 "job_command": body.get("job_command"),
-                 "ssh_conn_id": body.get("ssh_conn_id"),
-                 "verbose_log": body.get("verbose_log", False),
-                 "mssql_conn_id": body.get("mssql_conn_id"),
-                 "params": body.get("params", []),
-                 "origens": body.get("origens", []),
-                 "destinos": body.get("destinos", [])}]
+        jobs = [_single_job_from_body(body)]
 
     mssql_conn_ids = await _list_mssql_conn_ids()
 
