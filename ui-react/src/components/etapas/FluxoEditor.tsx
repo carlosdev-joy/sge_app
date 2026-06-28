@@ -1003,6 +1003,44 @@ function FluxoEditorInner({ pipeline }: Props) {
         depsByTarget.get(e.target)!.add(e.source)
       }
 
+      // execution_order DERIVADA da topologia do desenho (deps normais + ramos da
+      // decisão), não de números soltos: profundidade do nó no grafo (raiz = 1).
+      // Assim a Lista reflete a sequência desenhada (SQL → decisão → notificações)
+      // em vez de colar tudo em "ordem 1" — que, no fallback por ondas, rodaria em
+      // paralelo. Nós SEM nenhuma aresta preservam a ordem atual (não mexe em
+      // pipelines puramente por ondas, que não têm conectores).
+      const adj = new Map<string, string[]>()
+      const indeg = new Map<string, number>()
+      const hasEdge = new Set<string>()
+      for (const n of nodes) indeg.set(n.id, 0)
+      for (const e of edges) {
+        // Decisão só conduz sequência pelos ramos; aresta normal saindo dela (não
+        // deveria existir) é ignorada, igual ao parsing de deps acima.
+        if (decisoes.has(e.source) && !isBranch(e)) continue
+        hasEdge.add(e.source); hasEdge.add(e.target)
+        if (!adj.has(e.source)) adj.set(e.source, [])
+        adj.get(e.source)!.push(e.target)
+        indeg.set(e.target, (indeg.get(e.target) ?? 0) + 1)
+      }
+      // Caminho mais longo (profundidade) via Kahn — DAG garantida (o backend
+      // recusa ciclos; nós em ciclo eventual ficam em profundidade 0).
+      const depth = new Map<string, number>()
+      for (const n of nodes) depth.set(n.id, 0)
+      const indegW = new Map(indeg)
+      const fila = nodes.filter(n => (indegW.get(n.id) ?? 0) === 0).map(n => n.id)
+      while (fila.length) {
+        const u = fila.shift()!
+        const du = depth.get(u) ?? 0
+        for (const v of adj.get(u) ?? []) {
+          if (du + 1 > (depth.get(v) ?? 0)) depth.set(v, du + 1)
+          const restante = (indegW.get(v) ?? 0) - 1
+          indegW.set(v, restante)
+          if (restante === 0) fila.push(v)
+        }
+      }
+      const orderOf = (id: string, fallback: number) =>
+        hasEdge.has(id) ? (depth.get(id) ?? 0) + 1 : fallback
+
       const payloadNodes = nodes.map(n => {
         const d = n.data as Record<string, unknown>
         const isDecisao = n.type === 'decisao'
@@ -1058,7 +1096,7 @@ function FluxoEditorInner({ pipeline }: Props) {
           job_name: n.id,
           job_type: jobType,
           job_command: (isDecisao || isNotificacao || isSql) ? null : ((d.command as string | null) ?? null),
-          execution_order: (d.order as number) ?? 1,
+          execution_order: orderOf(n.id, (d.order as number) ?? 1),
           depends_on_jobs: Array.from(depsByTarget.get(n.id) ?? []),
           condition,
           layout_x: Math.round(n.position.x),
