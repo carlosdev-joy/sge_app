@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -188,6 +189,54 @@ def test_pipeline_sem_decisao_nao_muda(factory):
     assert "from utils.conditions import" not in src
     assert "NONE_SKIPPED" not in src
     assert "NONE_FAILED_MIN_ONE_SUCCESS" not in src
+
+
+# ──────── integridade do roteamento (fail-loud na publicação) ────────────────
+
+def _notif_job(name, order=3):
+    return {"job_name": name, "job_type": "notificacao", "execution_order": order,
+            "notify_json": json.dumps({"grupo_id": 1, "template_id": None, "mensagem": name})}
+
+
+def test_decisao_sem_ramos_recusa_publicacao(factory):
+    """Decisão sem nenhum ramo ligado → geração FALHA com mensagem clara (em vez
+    de gerar DAG que não roteia)."""
+    cond = {"tipo": "contagem", "tabela": "dbo.X", "operador": ">", "valor": 1,
+            "ramo_verdadeiro": [], "ramo_falso": []}
+    jobs = [_job("JobA", order=1),
+            _job("Decisao", jtype="decisao", order=2, depends="JobA", cond=cond)]
+    with pytest.raises(ValueError) as exc:
+        factory._generate_dag_source(_pipeline(), jobs)
+    assert "sem ramos" in str(exc.value)
+
+
+def test_notificacao_orfa_com_decisao_recusa(factory):
+    """Bug real: a notificação do ramo 'não' perde o link e fica órfã. Com decisão
+    no pipeline, a geração FALHA — senão ela vira raiz e dispara em TODO run
+    (os dois cards). Mensagem nomeia o nó solto."""
+    cond = {"tipo": "contagem", "tabela": "dbo.X", "operador": ">", "valor": 1,
+            "ramo_verdadeiro": ["RES_SIM"], "ramo_falso": []}  # RES_NAO ficou solto
+    jobs = [_job("JobA", order=1),
+            _job("Decisao", jtype="decisao", order=2, depends="JobA", cond=cond),
+            _notif_job("RES_SIM"), _notif_job("RES_NAO")]
+    with pytest.raises(ValueError) as exc:
+        factory._generate_dag_source(_pipeline(), jobs)
+    assert "RES_NAO" in str(exc.value) and "solto" in str(exc.value)
+
+
+def test_decisao_com_notificacoes_nos_dois_ramos_ok(factory):
+    """Fluxo correto: uma notificação por ramo → gera normal; o branch escolhe um
+    e o Airflow pula o outro (skip_all_except)."""
+    cond = {"tipo": "contagem", "tabela": "dbo.X", "operador": ">", "valor": 1,
+            "ramo_verdadeiro": ["RES_SIM"], "ramo_falso": ["RES_NAO"]}
+    jobs = [_job("JobA", order=1),
+            _job("Decisao", jtype="decisao", order=2, depends="JobA", cond=cond),
+            _notif_job("RES_SIM"), _notif_job("RES_NAO")]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    ast.parse(src)
+    assert "t_dec_Decisao >> t_notif_RES_SIM" in src
+    assert "t_dec_Decisao >> t_notif_RES_NAO" in src
+    assert "return ['RES_SIM'] if resultado else ['RES_NAO']" in src
 
 
 # ─────────────────────── helpers de conditions.py ──────────────────────────

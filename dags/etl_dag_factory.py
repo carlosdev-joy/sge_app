@@ -557,6 +557,34 @@ def _generate_dag_source(pipeline, jobs):
         reachable.add(x)
         _stack.extend(_children.get(x, ()))
 
+    # ── Integridade do roteamento (fail-loud na publicação) ─────────────────
+    # Uma DAG com decisão só roteia corretamente se: (a) cada decisão tem ao
+    # menos um ramo (sim/não) ligado a uma etapa; e (b) num pipeline COM decisão,
+    # nenhuma notificação/SQL fica ÓRFÃ (sem dep e sem ramo). Um nó órfão vira
+    # RAIZ e dispara em TODO run (ex.: a notificação do ramo "não" mandando card
+    # toda execução), e uma decisão sem ramos não encaminha para lugar nenhum.
+    # Em vez de gerar uma DAG silenciosamente quebrada (tudo em paralelo),
+    # RECUSAMOS a geração com mensagem clara — o publish falha dizendo o que ligar
+    # (o gerar_dags captura e mostra no status). Falha alta > card fantasma.
+    _deps_by_name = {j["job_name"]: _deps_of(j) for j in sorted_jobs}
+    _routing_errs = []
+    for dname, cond in decision_conditions.items():
+        rv = [m for m in (cond.get("ramo_verdadeiro") or []) if m in _job_names and m != dname]
+        rf = [m for m in (cond.get("ramo_falso") or []) if m in _job_names and m != dname]
+        if not rv and not rf:
+            _routing_errs.append(
+                f"a decisão '{dname}' está sem ramos ligados — conecte as setas "
+                f"'sim'/'não' a etapas e salve o fluxo antes de publicar")
+    if has_decision:
+        for nname in list(notificacao_nodes) + list(sql_nodes):
+            if not _deps_by_name.get(nname) and not branch_parents.get(nname):
+                tipo = "a notificação" if nname in notificacao_nodes else "o nó SQL"
+                _routing_errs.append(
+                    f"{tipo} '{nname}' está solto (sem ligação) — conecte a um ramo "
+                    f"da decisão (sim/não) ou a um job a montante e salve o fluxo")
+    if _routing_errs:
+        raise ValueError("fluxo inválido para publicação: " + "; ".join(_routing_errs))
+
     # Seção de imports
     import_lines = ["from airflow import DAG"]
     import_lines.append("from datetime import timedelta")
