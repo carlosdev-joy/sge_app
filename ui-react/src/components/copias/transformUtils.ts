@@ -252,6 +252,7 @@ export const ENGINE_SERVER_SIDE = 'server_side_insert'
 // Rótulos amigáveis dos engines (valores gravados pela DAG etl_copy_exec).
 export const ENGINE_LABELS: Record<string, string> = {
   server_side_insert:      'server-side (mesmo servidor)',
+  bcp_native:              'bcp nativo',
   pymssql_bulk_copy:       'bulk (TDS)',
   pyodbc_fast_executemany: 'fast_executemany (ODBC)',
   pymssql_executemany:     'linha a linha (lento)',
