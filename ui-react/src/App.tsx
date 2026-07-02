@@ -21,6 +21,7 @@ import GestaoFalhas from './pages/GestaoFalhas'
 import Publicacao from './pages/Publicacao'
 import Performance from './pages/Performance'
 import CopiaDados from './pages/CopiaDados'
+import Inventario from './pages/Inventario'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -45,6 +46,7 @@ const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/impacto-campo': <ImpactoCampo />,
   '/planos-ajuste': <PlanosAjuste />,
   '/copia-dados': <CopiaDados />,
+  '/inventario': <Inventario />,
   '/powerbi': <PowerBI />,
   '/ds-console': <DsConsole />,
   '/performance': <Performance />,
