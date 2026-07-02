@@ -15,6 +15,11 @@ tabelas entre servidores SQL Server com alta performance:
                                (a DAG etl_copy_exec detecta e decide);
   - montar_insert_select(...) → instrução INSERT...SELECT do engine
                                server-side (função PURA, testável);
+  - faixas_hex(...)          → fronteiras lexicográficas de partição TEXTO
+                               hexadecimal (ex.: PK CHAR(32) de hash MD5) por
+                               prefixo hex de 2 caracteres (função PURA,
+                               testável) — usada pela etl_copy_exec quando
+                               MIN/MAX da coluna de partição são strings hex;
   - open_src_conn(...)       → conexão pymssql de LEITURA/controle (autocommit);
   - open_dst_conn(...)       → conexão de ESCRITA (pymssql ou pyodbc conforme engine);
   - prepare_bulk_target(...) → resolve o ALVO de escrita UMA vez por execução:
@@ -96,6 +101,79 @@ def montar_insert_select(dst_db, dst_schema, dst_table, dst_columns,
     if where_faixa:
         sql += f" WHERE {where_faixa}"
     return sql
+
+
+def faixas_hex(vmin, vmax, streams):
+    """Fronteiras de partição TEXTO hexadecimal (modo HEX da etl_copy_exec).
+
+    Divide o intervalo lexicográfico ``[vmin, vmax]`` (strings que casam com
+    ``^[0-9A-Fa-f]+$`` — ex.: PK ``CHAR(32)`` de hash MD5) em até ``streams``
+    faixas por prefixo hexadecimal de **2 caracteres**, no espaço de buckets
+    entre o prefixo de MIN e o de MAX. Retorna ``[(ini, fim, ultima), ...]``:
+
+      - faixas SEMIABERTAS ``[ini, fim)`` — a ÚLTIMA fechada ``[ini, fim]``
+        (mesma convenção das faixas numéricas/data);
+      - a comparação é LEXICOGRÁFICA (``col >= 'ini' AND col < 'fim'``) —
+        vira range seek em índice/PK da coluna (sargável);
+      - ``ini`` da primeira faixa = prefixo de 2 chars do PRÓPRIO ``vmin``
+        (caixa do dado real; prefixo <= vmin lexicograficamente, cobre o MIN);
+        ``fim`` da última = ``vmax`` REAL (fechada — cobre o MAX inteiro);
+      - fronteiras intermediárias são sintéticas, geradas na caixa
+        PREDOMINANTE entre as letras de MIN/MAX (empate ou sem letras →
+        minúscula). Sob collation case-insensitive — o padrão do SQL Server —
+        a caixa das fronteiras é indiferente; dados de caixa MISTA sob
+        collation case-sensitive não são suportados (assumimos CI, o comum);
+      - ``streams`` maior que o nº de buckets do intervalo → fronteiras
+        deduplicadas (menos faixas); ``streams <= 1`` ou ``vmin == vmax`` →
+        faixa única fechada ``[(vmin, vmax, True)]``.
+
+    Todas as fronteiras cabem em NVARCHAR(100) quando os valores da coluna
+    cabem (prefixos têm 2 chars; extremos são os valores reais).
+    Função PURA (sem I/O) — o chamador detecta se MIN/MAX são hex e passa os
+    valores já sem espaços à direita (padding de CHAR).
+    """
+    vmin = (vmin or "").strip()
+    vmax = (vmax or "").strip()
+    if not vmin or not vmax:
+        raise ValueError("faixas_hex exige vmin e vmax não vazios")
+    streams = max(1, int(streams or 1))
+    if streams == 1 or vmin == vmax:
+        return [(vmin, vmax, True)]
+
+    def _bucket(s):
+        # Bucket (piso) do prefixo hex de 2 chars que CONTÉM a string ``s``:
+        # com 2+ chars é o próprio prefixo; com 1 char ('a') a string fica
+        # ANTES de 'a0' e depois de '9f' → bucket 0x9f (clamp em 0).
+        s = s.lower()
+        if len(s) >= 2:
+            return int(s[:2], 16)
+        return max(0, int(s, 16) * 16 - 1)
+
+    p_min, p_max = _bucket(vmin), _bucket(vmax)
+    if p_max <= p_min:
+        # mesmo prefixo de 2 chars (ou entrada fora de ordem) → faixa única
+        return [(vmin, vmax, True)]
+
+    letras = [ch for ch in (vmin + vmax) if ch.isalpha()]
+    maiusculas = sum(1 for ch in letras if ch.isupper())
+    caixa_alta = maiusculas > (len(letras) - maiusculas)
+
+    def _hex2(b):
+        h = format(b, "02x")
+        return h.upper() if caixa_alta else h
+
+    span = p_max - p_min + 1
+    internos = sorted({p_min + (span * i) // streams
+                       for i in range(1, streams)})
+    internos = [b for b in internos if p_min < b <= p_max]
+
+    inis = [vmin[:2]] + [_hex2(b) for b in internos]
+    faixas = []
+    for i, ini in enumerate(inis):
+        ultima = i == len(inis) - 1
+        fim = vmax if ultima else inis[i + 1]
+        faixas.append((ini, fim, ultima))
+    return faixas
 
 
 def _conn_params(airflow_conn):

@@ -62,6 +62,10 @@ _CACHE_TTL_HORAS = 24
 # Tipos elegíveis para sugestão de coluna de partição (PK numérica/data —
 # mesmos tipos que a DAG sabe dividir em faixas; numeric = sinônimo de decimal).
 _PARTICAO_TIPOS = {"int", "bigint", "decimal", "numeric", "date", "datetime"}
+# Tipos TEXTO que a DAG também sabe dividir (fallback quando não há PK
+# numérica/data): MIN/MAX hexadecimais (ex.: PK CHAR(32) de hash MD5) viram
+# faixas lexicográficas sargáveis; demais textos, faixas por hash calculado.
+_PARTICAO_TIPOS_TEXTO = {"char", "varchar", "nchar", "nvarchar"}
 
 
 def _fmt_dt(v):
@@ -422,11 +426,20 @@ async def introspect_tables(conn_id: str = "", database: str = "",
 
 
 def _particao_sugerida(columns: list[dict]):
-    """Primeira coluna PK de tipo int/bigint/decimal/date/datetime (ou None)."""
+    """Primeira coluna PK de tipo int/bigint/decimal/date/datetime; sem
+    nenhuma, cai para a primeira PK de TEXTO (char/varchar/nchar/nvarchar —
+    a DAG divide por faixas hex quando MIN/MAX são hexadecimais, senão por
+    hash calculado). None quando não há PK elegível."""
+    pk_texto = None
     for c in columns:
-        if c.get("is_pk") and str(c.get("type") or "").lower() in _PARTICAO_TIPOS:
+        if not c.get("is_pk"):
+            continue
+        tipo = str(c.get("type") or "").lower()
+        if tipo in _PARTICAO_TIPOS:
             return c["name"]
-    return None
+        if pk_texto is None and tipo in _PARTICAO_TIPOS_TEXTO:
+            pk_texto = c["name"]
+    return pk_texto
 
 
 @router.get("/copias/introspect/columns", tags=["copias"])

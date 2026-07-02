@@ -97,6 +97,11 @@ export const CAST_TIPOS_SUGERIDOS = [
 // Tipos de coluna que a DAG sabe dividir em faixas (coluna de partição).
 export const PARTICAO_TIPOS = new Set(['int', 'bigint', 'decimal', 'numeric', 'date', 'datetime'])
 
+// Tipos TEXTO também elegíveis a partição: valores hexadecimais (ex.: PK de
+// hash MD5) viram faixas lexicográficas sargáveis; demais textos usam faixas
+// por hash calculado (ABS(CHECKSUM) % N — cada stream varre filtrando).
+export const PARTICAO_TIPOS_TEXTO = new Set(['char', 'varchar', 'nchar', 'nvarchar'])
+
 /** Transform recém-criado ao trocar o tipo no Select (com defaults úteis). */
 export function novoTransform(tipo: TransformTipo): Transform {
   switch (tipo) {
@@ -286,9 +291,13 @@ export function fmtEta(s?: number | null): string {
   return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
 }
 
-/** Descrição do intervalo de uma faixa (stream) para a tabela de progresso. */
+/** Descrição do intervalo de uma faixa (stream) para a tabela de progresso.
+ *  Partição texto: faixas hex aparecem como intervalo normal ("00 → 20");
+ *  faixas por hash calculado vêm marcadas com valor_ini='#HASH' e
+ *  valor_fim='i/N' pela DAG → exibidas como "hash i/N". */
 export function faixaIntervalo(r: ExecRange): string {
   if (r.range_index === -1) return 'valores nulos (IS NULL)'
+  if (r.valor_ini === '#HASH') return `hash ${r.valor_fim ?? '—'}`
   if (r.valor_ini == null && r.valor_fim == null) return 'faixa única (sem partição)'
   return `${r.valor_ini ?? '—'} → ${r.valor_fim ?? '—'}`
 }

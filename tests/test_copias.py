@@ -23,6 +23,7 @@ os.environ.setdefault("MSSQL_CONN_STR", "__mock__")
 from api.main import app as _app  # noqa: F401  (ordem de import — ver test_pipelines_*)
 
 from deps import PERM_EDITAR, PERM_EXECUTAR, get_current_user
+from routers.copias import _particao_sugerida
 from services.copy_sql import (
     compile_job, compile_transform, quote_ident, quote_literal,
     validate_sql_expr, validate_src_query,
@@ -432,6 +433,57 @@ def test_post_copias_aceita_particao_pelo_nome_de_destino(client, auth_operador)
             particao_coluna="NOME"))
     assert r.status_code == 200
     assert r.json()["id"] == 10
+
+
+# ═══════════ partição TEXTO (particao_sugerida + validação do save) ══════════
+
+def _col(name, type_, is_pk=False):
+    """Coluna no formato do introspect/columns (só os campos relevantes)."""
+    return {"name": name, "type": type_, "max_length": 0, "precision": 0,
+            "scale": 0, "is_nullable": False, "is_identity": False,
+            "is_pk": is_pk}
+
+
+def test_particao_sugerida_prefere_pk_numerica_ou_data():
+    """Havendo PK numérica/data, ela ganha da PK texto — mesmo vindo depois."""
+    cols = [_col("cod_check_sum", "char", is_pk=True),
+            _col("id", "bigint", is_pk=True),
+            _col("nome", "varchar")]
+    assert _particao_sugerida(cols) == "id"
+    cols = [_col("dt_mov", "datetime", is_pk=True), _col("hash", "char", is_pk=True)]
+    assert _particao_sugerida(cols) == "dt_mov"
+
+
+def test_particao_sugerida_cai_para_pk_texto_sem_numerica():
+    """CASO REAL: PK cod_check_sum CHAR(32) (hash MD5 hex) — sem PK
+    numérica/data, a sugestão cai para a primeira PK de texto
+    (char/varchar/nchar/nvarchar)."""
+    cols = [_col("nome", "varchar"),  # texto NÃO-PK: nunca sugerida
+            _col("cod_check_sum", "char", is_pk=True),
+            _col("outra_pk_txt", "nvarchar", is_pk=True)]
+    assert _particao_sugerida(cols) == "cod_check_sum"
+
+
+def test_particao_sugerida_none_sem_pk_elegivel():
+    assert _particao_sugerida([_col("blob", "varbinary", is_pk=True),
+                               _col("id", "int")]) is None
+    assert _particao_sugerida([]) is None
+
+
+def test_post_copias_aceita_particao_coluna_texto(client, auth_operador):
+    """A validação de particao_coluna é por PERTENCIMENTO às colunas de
+    destino (o modo hex/hash é decidido pela DAG em runtime) — coluna CHAR
+    de hash continua aceita normalmente no save."""
+    cur = _mock_cursor()
+    cur.fetchone.side_effect = [None, (30,)]  # nome livre → INSERT OUTPUT id
+    with patch("routers.copias.get_db_conn", return_value=_mock_conn(cur)):
+        r = client.post("/copias", json=_body_copia(
+            colunas=[{"origem": "cod_check_sum", "destino": "cod_check_sum",
+                      "transform": None},
+                     {"origem": "valor", "destino": "valor", "transform": None}],
+            particao_coluna="cod_check_sum"))
+    assert r.status_code == 200
+    assert r.json()["id"] == 30
 
 
 def test_post_copias_422_origem_igual_destino(client, auth_operador):

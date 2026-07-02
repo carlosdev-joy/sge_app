@@ -27,7 +27,13 @@ Fluxo:
   4. rows_total via count_sql na origem;
   5. Divide em faixas pela coluna de partição (int/bigint/decimal por
      aritmética; date/datetime por dias) — semiabertas [a, b), última fechada;
-     faixa extra IS NULL (range_index=-1) se a coluna admitir NULL.
+     coluna TEXTO (MIN/MAX chegam como str): se MIN e MAX forem hexadecimais
+     (ex.: PK CHAR(32) de hash MD5) → modo HEX, faixas LEXICOGRÁFICAS
+     sargáveis por prefixo hex de 2 chars (bulk_copy.faixas_hex); senão →
+     modo HASH, faixas ABS(CHECKSUM(col)) % N = i (NÃO sargável — cada
+     stream varre a origem filtrando; aviso no log), registradas como
+     valor_ini='#HASH', valor_fim='i/N'. Faixa extra IS NULL
+     (range_index=-1) se a coluna admitir NULL — vale nos DOIS modos.
      Sem partição → faixa única. Persistidas em dbo.etl_copy_exec_range;
   6. ThreadPoolExecutor (uma task só, IO-bound — pymssql solta o GIL): cada
      faixa lê por streaming (fetchmany) e grava por bulk_write, com progresso
@@ -45,6 +51,7 @@ senha é logada, retornada em XCom ou gravada em tabela.
 from __future__ import annotations
 
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
@@ -226,7 +233,8 @@ def _calcular_faixas(vmin, vmax, streams):
     ÚLTIMA fechada [a, b]. Retorna lista de pares (ini, fim).
 
     Tipos suportados: int/bigint (aritmética inteira), decimal (Decimal) e
-    date/datetime (divisão por dias). Tipo não suportado → faixa única.
+    date/datetime (divisão por dias). Coluna TEXTO (str) é tratada ANTES,
+    em _faixas_texto (modos HEX/HASH). Tipo não suportado → faixa única.
     """
     if vmin is None or vmax is None:
         return []
@@ -255,6 +263,46 @@ def _calcular_faixas(vmin, vmax, streams):
     if len(uniq) < 2:
         return [(vmin, vmax)]
     return [(uniq[i], uniq[i + 1]) for i in range(len(uniq) - 1)]
+
+
+# MIN/MAX inteiramente hexadecimais → modo HEX (faixas lexicográficas)
+_HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
+
+
+def _faixas_texto(vmin, vmax, streams):
+    """Faixas de uma coluna de partição TEXTO (MIN/MAX chegam como str do
+    pymssql — char/varchar/nchar/nvarchar). Retorna a lista de dicts de
+    faixa (sem a faixa IS NULL, que o chamador acrescenta nos dois modos).
+
+    - Modo HEX: MIN e MAX casam com ^[0-9A-Fa-f]+$ (ex.: PK CHAR(32) de hash
+      MD5) → faixas LEXICOGRÁFICAS por prefixo hexadecimal de 2 chars
+      (bulk_copy.faixas_hex, função pura) — semiabertas, última fechada no
+      MAX real; comparação vira range seek em índice/PK (sargável).
+    - Modo HASH (fallback genérico): texto NÃO-hex → faixas
+      ABS(CHECKSUM(col)) % N = i (i = 0..N-1), com o par (i, N) guardado em
+      faixa['hash'] e registradas como valor_ini='#HASH', valor_fim='i/N'.
+      NÃO é sargável — cada stream varre a origem filtrando (aviso no log).
+
+    Espaços à direita (padding de CHAR) são ignorados na detecção e nas
+    fronteiras — o SQL Server também os ignora na comparação de strings."""
+    vmin_s = (vmin or "").rstrip()
+    vmax_s = (vmax or "").rstrip()
+    if vmin_s and vmax_s and _HEX_RE.match(vmin_s) and _HEX_RE.match(vmax_s):
+        pares = bulk_copy.faixas_hex(vmin_s, vmax_s, streams)
+        print(f"[COPY] Partição texto em modo HEX: {len(pares)} faixa(s) "
+              "lexicográficas por prefixo hexadecimal (sargável)")
+        return [{"range_index": i, "ini": a, "fim": b, "ultima": ultima,
+                 "is_null": False, "unica": False}
+                for i, (a, b, ultima) in enumerate(pares)]
+    n = max(1, int(streams or 1))
+    print(f"[COPY] Aviso: partição texto NÃO-hexadecimal — modo HASH "
+          f"(ABS(CHECKSUM) % {n}): as faixas NÃO são sargáveis e cada "
+          "stream varre a origem filtrando. Prefira uma coluna numérica, "
+          "de data ou de hash hexadecimal para range seek.")
+    return [{"range_index": i, "ini": "#HASH", "fim": f"{i}/{n}",
+             "ultima": False, "is_null": False, "unica": False,
+             "hash": (i, n)}
+            for i in range(n)]
 
 
 def _particao_admite_null(src, job) -> bool:
@@ -317,8 +365,12 @@ def _montar_faixas(hook, src, job, exec_id, streams):
     para o pymssql, sem formatação % (nenhum escape de '%' necessário aqui).
 
     Retorna a lista de faixas com os valores TIPADOS em memória (int/Decimal/
-    date/datetime) para o WHERE parametrizado — valor_ini/valor_fim no banco
-    são apenas a representação em texto para a UI."""
+    date/datetime; str no modo HEX de partição texto) para o WHERE
+    parametrizado — valor_ini/valor_fim no banco são apenas a representação
+    em texto para a UI. MIN/MAX string (pymssql devolve str para colunas
+    char/varchar/nchar/nvarchar) → _faixas_texto decide entre HEX (faixas
+    lexicográficas sargáveis) e HASH (ABS(CHECKSUM) % N, marcadas com
+    valor_ini='#HASH' e o par (i, N) em faixa['hash'])."""
     part = (job["particao_coluna"] or "").strip()
     faixas = []
     if part:
@@ -333,11 +385,14 @@ def _montar_faixas(hook, src, job, exec_id, streams):
             cur.close()
         print(f"[COPY] Partição [{part}]: MIN={vmin} MAX={vmax}")
 
-        pares = _calcular_faixas(vmin, vmax, streams)
-        for i, (a, b) in enumerate(pares):
-            faixas.append({"range_index": i, "ini": a, "fim": b,
-                           "ultima": i == len(pares) - 1,
-                           "is_null": False, "unica": False})
+        if isinstance(vmin, str) or isinstance(vmax, str):
+            faixas = _faixas_texto(vmin, vmax, streams)
+        else:
+            pares = _calcular_faixas(vmin, vmax, streams)
+            for i, (a, b) in enumerate(pares):
+                faixas.append({"range_index": i, "ini": a, "fim": b,
+                               "ultima": i == len(pares) - 1,
+                               "is_null": False, "unica": False})
         if _particao_admite_null(src, job):
             faixas.append({"range_index": -1, "ini": None, "fim": None,
                            "ultima": False, "is_null": True, "unica": False})
@@ -375,8 +430,15 @@ def _sql_da_faixa(job, faixa):
 
     Quando há parâmetros (%s), o pymssql aplica formatação estilo % no SQL —
     qualquer ``%`` literal do select_sql (ex.: LIKE na query do usuário)
-    precisa virar ``%%`` (o replace abaixo cobre os dois modos).
-    Nas execuções SEM parâmetros o SQL vai cru (sem formatação)."""
+    precisa virar ``%%`` (o replace abaixo). Nas execuções SEM parâmetros
+    (faixa única, IS NULL e modo HASH) o SQL vai cru, sem formatação — o
+    ``%`` do módulo do hash NÃO precisa (nem pode) ser escapado.
+
+    Faixas por intervalo (numéricas/data e modo HEX de texto) vão SEMPRE
+    parametrizadas — as fronteiras (inclusive strings) nunca são concatenadas
+    no SQL. No modo HASH o WHERE usa só inteiros construídos internamente
+    (i, N em faixa['hash']) + IS NOT NULL, que mantém os NULLs exclusivos da
+    faixa IS NULL (range_index=-1), como nas comparações por intervalo."""
     part_q = (bulk_copy.quote_ident(job["particao_coluna"])
               if job["particao_coluna"] else None)
     if faixa.get("unica"):
@@ -384,6 +446,11 @@ def _sql_da_faixa(job, faixa):
     if faixa.get("is_null"):
         return (f"SELECT * FROM ({job['select_sql']}) AS src "
                 f"WHERE {part_q} IS NULL"), None
+    if faixa.get("hash"):
+        i, n = faixa["hash"]
+        return (f"SELECT * FROM ({job['select_sql']}) AS src "
+                f"WHERE {part_q} IS NOT NULL "
+                f"AND ABS(CHECKSUM({part_q})) % {int(n)} = {int(i)}"), None
     escaped = job["select_sql"].replace("%", "%%")
     op_fim = "<=" if faixa.get("ultima") else "<"
     sql = (f"SELECT * FROM ({escaped}) AS src "
@@ -399,13 +466,21 @@ def _insert_da_faixa(job, faixa, dst_columns):
     MESMA lógica/escapes do _sql_da_faixa: quando a faixa vai parametrizada
     (%s), o pymssql aplica formatação estilo % no SQL inteiro — qualquer
     ``%`` literal do select_sql precisa virar ``%%``; sem parâmetros
-    (faixa única / IS NULL) o SQL segue cru."""
+    (faixa única / IS NULL / modo HASH) o SQL segue cru — o ``%`` do módulo
+    do hash fica literal, sem escape. Fronteiras de intervalo (inclusive as
+    strings do modo HEX) vão SEMPRE como parâmetros."""
     part_q = (bulk_copy.quote_ident(job["particao_coluna"])
               if job["particao_coluna"] else None)
     if faixa.get("unica"):
         select_sql, where, params = job["select_sql"], None, None
     elif faixa.get("is_null"):
         select_sql, where, params = job["select_sql"], f"{part_q} IS NULL", None
+    elif faixa.get("hash"):
+        i, n = faixa["hash"]
+        select_sql = job["select_sql"]  # sem parâmetros → SQL cru, sem escape
+        where = (f"{part_q} IS NOT NULL "
+                 f"AND ABS(CHECKSUM({part_q})) % {int(n)} = {int(i)}")
+        params = None
     else:
         select_sql = job["select_sql"].replace("%", "%%")
         op_fim = "<=" if faixa.get("ultima") else "<"
@@ -768,6 +843,7 @@ def executar_copia(**context):
         for f in faixas:
             rotulo = ("IS NULL" if f["is_null"]
                       else "única" if f["unica"]
+                      else f"hash {f['fim']}" if f.get("hash")
                       else f"{f['ini']} → {f['fim']}"
                            + (" (fechada)" if f["ultima"] else ""))
             print(f"  #{f['range_index']}: {rotulo}")
