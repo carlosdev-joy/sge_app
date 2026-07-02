@@ -14,7 +14,10 @@ Fluxo:
      próprio SQL Server — nada trafega pelo worker; probe de viabilidade
      best-effort na conexão de origem, com fallback para streaming); senão
      resolve o engine de escrita streaming
-     (pymssql bulk_copy → pyodbc fast_executemany → pymssql executemany);
+     (bcp nativo → pymssql bulk_copy → pyodbc fast_executemany →
+     pymssql executemany); com bcp_native, um PROBE de conexão/TLS nas duas
+     pontas decide antes das faixas — falhou → cai para o streaming pymssql
+     NA EXECUÇÃO INTEIRA (engine gravado atualizado), sem exec presa;
   3. Prepara o destino: criar_tabela (via script_create_table, se não existir;
      no MODO QUERY — job com src_query — via script_create_table_from_query,
      que usa sp_describe_first_result_set na origem)
@@ -40,6 +43,11 @@ Fluxo:
      incremental atômico best-effort e checagem de cancelamento a cada 5 lotes;
      no engine server-side cada faixa vira UMA instrução INSERT...SELECT
      executada na conexão de origem (progresso e cancelamento por FAIXA);
+     no engine bcp_native cada faixa vira um PIPE de processos
+     ``bcp queryout → bcp in`` (formato nativo, C nas duas pontas) — as
+     fronteiras vão INLINE como literais seguros (bulk_copy.sql_literal, o
+     bcp não tem parâmetros), o progresso sai das linhas "rows sent" do
+     escritor e o cancelamento termina os DOIS processos;
   7. Finaliza (concluido | erro | cancelado), notifica o solicitante em
      dbo.etl_notificacao (best-effort) e, se houve erro, falha a task
      (AirflowException) APÓS persistir tudo.
@@ -459,6 +467,34 @@ def _sql_da_faixa(job, faixa):
     return sql, (faixa["ini"], faixa["fim"])
 
 
+def _sql_da_faixa_bcp(job, faixa):
+    """SELECT da faixa para o engine bcp_native — MESMA lógica do
+    _sql_da_faixa, com duas diferenças obrigatórias:
+
+      - o bcp NÃO tem parâmetros: as fronteiras de intervalo vão INLINE como
+        literais T-SQL SEGUROS (bulk_copy.sql_literal — aspas duplicadas,
+        ISO para datas, str para números, caractere de controle rejeitado);
+      - AQUI NÃO existe a formatação % do pymssql: o select_sql segue CRU
+        (nenhum escape ``%`` → ``%%``) — o SQL vai inteiro no argv do bcp.
+    """
+    part_q = (bulk_copy.quote_ident(job["particao_coluna"])
+              if job["particao_coluna"] else None)
+    if faixa.get("unica"):
+        return f"SELECT * FROM ({job['select_sql']}) AS src"
+    if faixa.get("is_null"):
+        return (f"SELECT * FROM ({job['select_sql']}) AS src "
+                f"WHERE {part_q} IS NULL")
+    if faixa.get("hash"):
+        i, n = faixa["hash"]
+        return (f"SELECT * FROM ({job['select_sql']}) AS src "
+                f"WHERE {part_q} IS NOT NULL "
+                f"AND ABS(CHECKSUM({part_q})) % {int(n)} = {int(i)}")
+    op_fim = "<=" if faixa.get("ultima") else "<"
+    return (f"SELECT * FROM ({job['select_sql']}) AS src "
+            f"WHERE {part_q} >= {bulk_copy.sql_literal(faixa['ini'])} "
+            f"AND {part_q} {op_fim} {bulk_copy.sql_literal(faixa['fim'])}")
+
+
 def _insert_da_faixa(job, faixa, dst_columns):
     """INSERT...SELECT de UMA faixa do engine server-side (montado por
     bulk_copy.montar_insert_select — destino em 3 partes, WITH (TABLOCK) e
@@ -520,7 +556,10 @@ def _copiar_faixa(faixa, job, exec_id, alvo, src_air, dst_air):
 
     ``alvo`` = contexto de bulk_copy.prepare_bulk_target (engine efetivo,
     table_fqn, colunas e column_ids), resolvido UMA vez na task principal —
-    no engine server-side, contexto mínimo {"engine", "columns"}.
+    no engine server-side, contexto mínimo {"engine", "columns"}; no engine
+    bcp_native, ``alvo["bcp"]`` traz {"path", "flags"} do binário e a cópia
+    da faixa é delegada a bulk_copy.copiar_faixa_bcp (pipe de processos,
+    sem conexões pymssql de dados — só a de progresso).
 
     Engine server_side_insert: a faixa vira UMA instrução INSERT...SELECT
     executada DENTRO do SQL Server, numa única conexão pymssql na ORIGEM
@@ -584,6 +623,37 @@ def _copiar_faixa(faixa, job, exec_id, alvo, src_air, dst_air):
             resultado["status"] = "concluido"
             print(f"[COPY] Faixa {faixa['range_index']}: concluido "
                   f"({copiadas} linha(s), server-side)")
+            return resultado
+
+        if alvo["engine"] == bulk_copy.ENGINE_BCP:
+            # ── bcp nativo: pipe `bcp queryout → bcp in` (C nas 2 pontas) ──
+            # Fronteiras INLINE (o bcp não tem parâmetros); progresso por
+            # linha "rows sent" do escritor; cancelamento termina o par;
+            # o "N rows copied." final reconcilia o total da faixa.
+            sql = _sql_da_faixa_bcp(job, faixa)
+
+            def _on_lote(n):
+                _exec_prog(prog,
+                           "UPDATE dbo.etl_copy_exec_range "
+                           "SET rows_copied = rows_copied + %s WHERE id = %s",
+                           (n, faixa["id"]))
+                _exec_prog(prog,
+                           "UPDATE dbo.etl_copy_exec "
+                           "SET rows_copied = rows_copied + %s WHERE id = %s",
+                           (n, exec_id))
+
+            r = bulk_copy.copiar_faixa_bcp(
+                alvo["bcp"], sql,
+                src_air, job["src_database"],
+                dst_air, job["dst_database"],
+                job["dst_schema"], job["dst_table"], job["batch_size"],
+                on_lote=_on_lote,
+                deve_cancelar=lambda: _status_exec(prog, exec_id) == "cancelando")
+            resultado["rows"]     = r["rows"]
+            resultado["status"]   = r["status"]
+            resultado["erro_msg"] = r.get("erro_msg")
+            print(f"[COPY] Faixa {faixa['range_index']}: {r['status']} "
+                  f"({r['rows']} linha(s), bcp nativo)")
             return resultado
 
         src = bulk_copy.open_src_conn(src_air, job["src_database"])
@@ -786,6 +856,17 @@ def executar_copia(**context):
                   "server-side (INSERT...SELECT no próprio SQL Server)")
         else:
             engine = bulk_copy.resolve_engine()
+            if engine == bulk_copy.ENGINE_BCP:
+                # Probe de conexão/TLS do bcp nas DUAS pontas ANTES das
+                # faixas: falha sistemática (binário quebrado, login, TLS/
+                # certificado) → cai para o streaming pymssql NA EXECUÇÃO
+                # INTEIRA, sem deixar a exec presa.
+                motivo = bulk_copy.probe_bcp(
+                    src_air, job["src_database"], dst_air, job["dst_database"])
+                if motivo:
+                    engine = bulk_copy.resolve_engine(incluir_bcp=False)
+                    print(f"[COPY] Aviso: engine bcp_native inviável — "
+                          f"{motivo} — usando {engine} na execução inteira.")
         print(f"[COPY] engine={engine}")
         hook.run("UPDATE dbo.etl_copy_exec SET engine=%s WHERE id = %s",
                  parameters=(engine, exec_id))
