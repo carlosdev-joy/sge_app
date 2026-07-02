@@ -10,7 +10,7 @@ import { PageSpinner } from '../ui/Spinner'
 import { Eye } from 'lucide-react'
 import {
   type CopiaJob, type ExecHistorico,
-  STATUS_BADGE, STATUS_LABELS, fmtDuracao, fmtRows,
+  STATUS_BADGE, STATUS_LABELS, engineLabel, fmtDuracao, fmtRows,
 } from './transformUtils'
 
 interface HistResp { total: number; offset: number; limit: number; data: ExecHistorico[] }
@@ -78,7 +78,10 @@ export function CopiaHistoricoModal({ copia, onClose, onVerExec }: {
                           )}
                         </td>
                         <td className="px-3 py-2 text-xs text-dim whitespace-nowrap">{fmtDuracao(e.duracao_s)}</td>
-                        <td className="px-3 py-2 text-xs text-dim font-mono">{e.engine ?? '—'}</td>
+                        <td className="px-3 py-2 text-xs text-dim whitespace-nowrap"
+                          title={e.engine ?? undefined}>
+                          {engineLabel(e.engine)}
+                        </td>
                         <td className="px-3 py-2 text-xs text-dim font-mono">{e.matricula ?? '—'}</td>
                         <td className="px-3 py-2">
                           <button
