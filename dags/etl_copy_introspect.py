@@ -57,6 +57,10 @@ _TIPOS_PARTICAO = {
     "int", "bigint", "decimal", "numeric",
     "date", "datetime", "datetime2", "smalldatetime",
 }
+# Fallback quando não há PK numérica/data: PK de TEXTO — a etl_copy_exec
+# divide por faixas hex (MIN/MAX hexadecimais, ex. PK CHAR(32) de hash MD5)
+# ou por hash calculado (ABS(CHECKSUM) % N, não sargável).
+_TIPOS_PARTICAO_TEXTO = {"char", "varchar", "nchar", "nvarchar"}
 
 
 def _json_safe(v):
@@ -148,11 +152,17 @@ def _columns(conn, schema, table) -> dict:
         raise ValueError(f"Tabela {fqn} não encontrada (ou sem colunas visíveis).")
 
     particao = None
+    pk_texto = None
     for c in colunas:
-        if c["is_pk"] and (c["type"] or "").lower() in _TIPOS_PARTICAO:
+        if not c["is_pk"]:
+            continue
+        tipo = (c["type"] or "").lower()
+        if tipo in _TIPOS_PARTICAO:
             particao = c["name"]
             break
-    return {"columns": colunas, "particao_sugerida": particao}
+        if pk_texto is None and tipo in _TIPOS_PARTICAO_TEXTO:
+            pk_texto = c["name"]
+    return {"columns": colunas, "particao_sugerida": particao or pk_texto}
 
 
 def _preview(conn, select_sql) -> dict:

@@ -26,7 +26,7 @@ import {
   type ColumnsResp, type CopiaDetalhe, type DatabasesResp, type PreviewResp,
   type QueryColuna, type QueryColumnsResp,
   type TablesResp, type Transform, type TransformTipo,
-  CAST_TIPOS_SUGERIDOS, PARTICAO_TIPOS, TRANSFORM_OPTIONS,
+  CAST_TIPOS_SUGERIDOS, PARTICAO_TIPOS, PARTICAO_TIPOS_TEXTO, TRANSFORM_OPTIONS,
   fmtRows, novoTransform, transformResumo,
 } from './transformUtils'
 
@@ -626,9 +626,13 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
 
   // Colunas elegíveis para partição: somente as INCLUÍDAS, pelo nome de
   // DESTINO (alias do select compilado — a DAG aplica as faixas sobre ele).
+  // Tipos numéricos/data + TEXTO (char/varchar/nchar/nvarchar — a DAG divide
+  // por faixas hex quando os valores são hexadecimais, senão por hash).
   const colunasParticao = useMemo(() => {
     const incluidas = rows.filter(r => r.incluir && r.destino.trim())
-    const elegiveis = incluidas.filter(r => PARTICAO_TIPOS.has(r.tipo.toLowerCase()))
+    const elegiveis = incluidas.filter(r =>
+      PARTICAO_TIPOS.has(r.tipo.toLowerCase()) ||
+      PARTICAO_TIPOS_TEXTO.has(r.tipo.toLowerCase()))
     if (form.particao_coluna &&
         !elegiveis.some(r => r.destino.trim() === form.particao_coluna)) {
       const extra = incluidas.find(r => r.destino.trim() === form.particao_coluna)
@@ -1312,14 +1316,20 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
                     ))
                   : colunasParticao.map(r => (
                       <option key={r.origem} value={r.destino.trim()}>
-                        {r.destino.trim()} ({r.tipo}){colsQ.data?.particao_sugerida === r.origem ? ' — sugerida' : ''}
+                        {r.destino.trim()} ({r.tipo}{PARTICAO_TIPOS_TEXTO.has(r.tipo.toLowerCase()) ? ' — texto' : ''}){colsQ.data?.particao_sugerida === r.origem ? ' — sugerida' : ''}
                       </option>
                     ))}
               </Select>
               <p className="text-[10px] text-dim">
                 {usarQuery
-                  ? 'Colunas detectadas da query (pelo alias). Use uma coluna numérica (int/bigint/decimal) ou de data (date/datetime) — outros tipos caem para faixa única. Sem partição, a cópia usa 1 stream.'
-                  : 'Apenas colunas incluídas (pelo nome de destino) de tipo numérico (int/bigint/decimal) ou de data (date/datetime) podem ser divididas em faixas. Sem partição, a cópia usa 1 stream.'}
+                  ? 'Colunas detectadas da query (pelo alias). Use uma coluna numérica (int/bigint/decimal), de data (date/datetime) ou de texto — outros tipos caem para faixa única. Sem partição, a cópia usa 1 stream.'
+                  : 'Colunas incluídas (pelo nome de destino) de tipo numérico (int/bigint/decimal), de data (date/datetime) ou de texto (char/varchar/nchar/nvarchar) podem ser divididas em faixas. Sem partição, a cópia usa 1 stream.'}
+              </p>
+              <p className="text-[10px] text-dim">
+                Coluna de texto: valores hexadecimais (ex.: PK de hash MD5)
+                viram faixas por prefixo hex, rápidas como as numéricas;
+                outros textos usam faixas por hash calculado — cada stream
+                varre a origem filtrando (mais lento).
               </p>
             </div>
 
