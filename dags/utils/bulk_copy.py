@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+from datetime import date, datetime
 
 import pymssql
 
@@ -285,6 +286,25 @@ def prepare_bulk_target(dst_conn, dst_schema, dst_table, dst_columns, engine) ->
     return target
 
 
+def _dates_para_datetime(rows):
+    """O bcp do pymssql rejeita ``datetime.date`` puro (colunas DATE chegam
+    assim do cursor): *"value can only be a datetime.datetime"*. Converte para
+    ``datetime`` à meia-noite — o servidor converte de volta para DATE na
+    carga. Só copia as linhas que precisam; lote sem datas volta intacto."""
+    convertidas = None
+    for i, row in enumerate(rows):
+        # type() exato: datetime é subclasse de date e já é aceito pelo bcp
+        if any(type(v) is date for v in row):
+            if convertidas is None:
+                convertidas = list(rows[:i])
+            convertidas.append(tuple(
+                datetime(v.year, v.month, v.day) if type(v) is date else v
+                for v in row))
+        elif convertidas is not None:
+            convertidas.append(row)
+    return convertidas if convertidas is not None else rows
+
+
 def bulk_write(dst_conn, target, rows, batch_size) -> int:
     """Grava UM lote de linhas no destino. Retorna o nº de linhas gravadas.
 
@@ -306,6 +326,7 @@ def bulk_write(dst_conn, target, rows, batch_size) -> int:
         kwargs = _bulk_copy_kwargs(dst_conn, batch_size)
         if target.get("column_ids"):
             kwargs["column_ids"] = target["column_ids"]
+        rows = _dates_para_datetime(rows)
         try:
             dst_conn.bulk_copy(table_fqn, rows, **kwargs)
         except TypeError:
