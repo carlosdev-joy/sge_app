@@ -8,16 +8,22 @@ Disparada pela API do ORQUESTRA (POST /copias/{id}/executar) com:
 
 Fluxo:
   1. Carrega execução + job (dbo.etl_copy_exec JOIN dbo.etl_copy_job);
-  2. status='executando'; resolve o engine de escrita
+  2. status='executando'; escolhe o engine: se origem e destino resolvem para
+     o MESMO servidor (host:port das Airflow Connections, case-insensitive)
+     → engine server_side_insert (INSERT...SELECT cross-database DENTRO do
+     próprio SQL Server — nada trafega pelo worker; probe de viabilidade
+     best-effort na conexão de origem, com fallback para streaming); senão
+     resolve o engine de escrita streaming
      (pymssql bulk_copy → pyodbc fast_executemany → pymssql executemany);
   3. Prepara o destino: criar_tabela (via script_create_table, se não existir;
      no MODO QUERY — job com src_query — via script_create_table_from_query,
      que usa sp_describe_first_result_set na origem)
-     e truncar_antes (TRUNCATE com fallback DELETE); resolve o ALVO de escrita
-     UMA vez (bulk_copy.prepare_bulk_target: ordinais/column_ids das colunas
-     de destino via sys.columns; sem suporte a column_ids no pymssql e ordem
-     física divergente → cai para engine por nome, atualizando o engine
-     registrado);
+     e truncar_antes (TRUNCATE com fallback DELETE); no fluxo STREAMING,
+     resolve o ALVO de escrita UMA vez (bulk_copy.prepare_bulk_target:
+     ordinais/column_ids das colunas de destino via sys.columns; sem suporte
+     a column_ids no pymssql e ordem física divergente → cai para engine por
+     nome, atualizando o engine registrado) — no engine server-side
+     prepare_bulk_target e charset NÃO se aplicam (nada trafega pelo cliente);
   4. rows_total via count_sql na origem;
   5. Divide em faixas pela coluna de partição (int/bigint/decimal por
      aritmética; date/datetime por dias) — semiabertas [a, b), última fechada;
@@ -26,6 +32,8 @@ Fluxo:
   6. ThreadPoolExecutor (uma task só, IO-bound — pymssql solta o GIL): cada
      faixa lê por streaming (fetchmany) e grava por bulk_write, com progresso
      incremental atômico best-effort e checagem de cancelamento a cada 5 lotes;
+     no engine server-side cada faixa vira UMA instrução INSERT...SELECT
+     executada na conexão de origem (progresso e cancelamento por FAIXA);
   7. Finaliza (concluido | erro | cancelado), notifica o solicitante em
      dbo.etl_notificacao (best-effort) e, se houve erro, falha a task
      (AirflowException) APÓS persistir tudo.
@@ -167,6 +175,34 @@ def _preparar_destino(src, dst_ctl, job):
                 print(f"[COPY] DELETE FROM {fqn} OK")
     finally:
         cur.close()
+
+
+def _probe_server_side(src, job):
+    """Probe de viabilidade do engine server-side (best-effort, ANTES de
+    preparar o destino): a conexão de ORIGEM — que é onde o select_sql roda,
+    inclusive no modo query — precisa enxergar a tabela de destino
+    cross-database no mesmo servidor (``OBJECT_ID`` em 3 partes).
+
+    Retorna None quando viável; senão uma string com o MOTIVO (o chamador
+    loga o warning e cai para o fluxo streaming). Exceção: se OBJECT_ID vier
+    NULL mas criar_tabela=1, considera viável — a tabela pode simplesmente
+    ainda não existir (será criada por _preparar_destino antes da carga)."""
+    fqn3 = (f"{bulk_copy.quote_ident(job['dst_database'])}."
+            f"{bulk_copy.quote_ident(job['dst_schema'])}."
+            f"{bulk_copy.quote_ident(job['dst_table'])}")
+    try:
+        cur = src.cursor()
+        try:
+            cur.execute("SELECT OBJECT_ID(%s, 'U')", (fqn3,))
+            existe = cur.fetchone()[0] is not None
+        finally:
+            cur.close()
+    except Exception as e:
+        return f"probe do destino {fqn3} falhou na conexão de origem: {e}"
+    if existe or job["criar_tabela"]:
+        return None
+    return (f"OBJECT_ID({fqn3}) retornou NULL na conexão de origem "
+            "(sem permissão cross-database ou tabela inexistente)")
 
 
 def _contar_origem(src, job) -> int:
@@ -355,6 +391,32 @@ def _sql_da_faixa(job, faixa):
     return sql, (faixa["ini"], faixa["fim"])
 
 
+def _insert_da_faixa(job, faixa, dst_columns):
+    """INSERT...SELECT de UMA faixa do engine server-side (montado por
+    bulk_copy.montar_insert_select — destino em 3 partes, WITH (TABLOCK) e
+    lista explícita de colunas na ordem do SELECT compilado).
+
+    MESMA lógica/escapes do _sql_da_faixa: quando a faixa vai parametrizada
+    (%s), o pymssql aplica formatação estilo % no SQL inteiro — qualquer
+    ``%`` literal do select_sql precisa virar ``%%``; sem parâmetros
+    (faixa única / IS NULL) o SQL segue cru."""
+    part_q = (bulk_copy.quote_ident(job["particao_coluna"])
+              if job["particao_coluna"] else None)
+    if faixa.get("unica"):
+        select_sql, where, params = job["select_sql"], None, None
+    elif faixa.get("is_null"):
+        select_sql, where, params = job["select_sql"], f"{part_q} IS NULL", None
+    else:
+        select_sql = job["select_sql"].replace("%", "%%")
+        op_fim = "<=" if faixa.get("ultima") else "<"
+        where = f"{part_q} >= %s AND {part_q} {op_fim} %s"
+        params = (faixa["ini"], faixa["fim"])
+    sql = bulk_copy.montar_insert_select(
+        job["dst_database"], job["dst_schema"], job["dst_table"],
+        dst_columns, select_sql, where_faixa=where)
+    return sql, params
+
+
 def _exec_prog(prog, sql, params):
     """UPDATE de progresso best-effort (nunca derruba a cópia)."""
     try:
@@ -381,7 +443,16 @@ def _copiar_faixa(faixa, job, exec_id, alvo, src_air, dst_air):
     """Copia UMA faixa, com conexões PRÓPRIAS de origem, destino e progresso.
 
     ``alvo`` = contexto de bulk_copy.prepare_bulk_target (engine efetivo,
-    table_fqn, colunas e column_ids), resolvido UMA vez na task principal.
+    table_fqn, colunas e column_ids), resolvido UMA vez na task principal —
+    no engine server-side, contexto mínimo {"engine", "columns"}.
+
+    Engine server_side_insert: a faixa vira UMA instrução INSERT...SELECT
+    executada DENTRO do SQL Server, numa única conexão pymssql na ORIGEM
+    (autocommit; query_timeout=0 — a instrução pode rodar dezenas de
+    minutos). Nada trafega pelo worker; o progresso é UMA atualização ao
+    final da faixa (cursor.rowcount) e o CANCELAMENTO tem granularidade de
+    FAIXA: o status 'cancelando' é checado antes de iniciar cada faixa —
+    uma instrução já em andamento NÃO é interrompida.
 
     Retorna {"range_id", "range_index", "status", "rows", "erro_msg"} — nunca
     levanta exceção (o desfecho vai no dicionário e é persistido na faixa)."""
@@ -400,6 +471,44 @@ def _copiar_faixa(faixa, job, exec_id, alvo, src_air, dst_air):
                    "UPDATE dbo.etl_copy_exec_range "
                    "SET status='executando', iniciado_em=GETDATE() WHERE id=%s",
                    (faixa["id"],))
+
+        if alvo["engine"] == bulk_copy.ENGINE_SERVER_SIDE:
+            # ── Server-side: INSERT...SELECT dentro do SQL Server ──────────
+            # Conexão ÚNICA na ORIGEM (o select_sql roda no database de
+            # origem; o destino vai qualificado em 3 partes). query_timeout=0
+            # garante que a instrução longa não é morta por timeout.
+            src = bulk_copy.open_src_conn(src_air, job["src_database"],
+                                          query_timeout=0)
+            sql, params = _insert_da_faixa(job, faixa, alvo["columns"])
+            cur = src.cursor()
+            try:
+                if params:
+                    cur.execute(sql, params)
+                else:
+                    cur.execute(sql)
+                # rowcount do cursor: o pymssql preenche para INSERT (um
+                # SELECT @@ROWCOUNT separado perderia o valor no autocommit).
+                copiadas = int(cur.rowcount if cur.rowcount is not None else -1)
+            finally:
+                cur.close()
+            if copiadas < 0:
+                print(f"[COPY] Faixa {faixa['range_index']}: rowcount "
+                      "indisponível após o INSERT...SELECT — registrando 0.")
+                copiadas = 0
+            # UMA atualização de progresso por faixa (não há lotes no cliente)
+            _exec_prog(prog,
+                       "UPDATE dbo.etl_copy_exec_range "
+                       "SET rows_copied = rows_copied + %s WHERE id = %s",
+                       (copiadas, faixa["id"]))
+            _exec_prog(prog,
+                       "UPDATE dbo.etl_copy_exec "
+                       "SET rows_copied = rows_copied + %s WHERE id = %s",
+                       (copiadas, exec_id))
+            resultado["rows"]   = copiadas
+            resultado["status"] = "concluido"
+            print(f"[COPY] Faixa {faixa['range_index']}: concluido "
+                  f"({copiadas} linha(s), server-side)")
+            return resultado
 
         src = bulk_copy.open_src_conn(src_air, job["src_database"])
         dst = bulk_copy.open_dst_conn(dst_air, job["dst_database"], alvo["engine"],
@@ -551,14 +660,14 @@ def executar_copia(**context):
             "dst_columns_json) — salve a cópia novamente pela tela.")
 
     t0 = time.monotonic()
-    engine  = bulk_copy.resolve_engine()
     streams = max(1, min(8, int(job["streams"] or 4)))
-    print(f"[COPY] engine={engine} streams={streams} batch_size={job['batch_size']}")
+    print(f"[COPY] streams={streams} batch_size={job['batch_size']}")
     hook.run(
         "UPDATE dbo.etl_copy_exec SET status='executando', iniciado_em=GETDATE(), "
-        "streams=%s, engine=%s WHERE id = %s",
-        parameters=(streams, engine, exec_id))
+        "streams=%s WHERE id = %s",
+        parameters=(streams, exec_id))
 
+    engine = None
     status_final = "erro"
     erro_msg = None
     rows_total = None
@@ -591,25 +700,58 @@ def executar_copia(**context):
                 f"{job['src_database']}.{job['src_schema']}.{job['src_table']}) "
                 "— cópia abortada para não sobrescrever/truncar a própria origem.")
 
+        # Engine: origem e destino no MESMO servidor (host:port das duas
+        # connections, case-insensitive) → server-side, a cópia NÃO trafega
+        # pelo worker; senão o melhor engine de escrita streaming disponível.
+        if (_norm(src_air.host) == _norm(dst_air.host)
+                and int(src_air.port or 1433) == int(dst_air.port or 1433)):
+            engine = bulk_copy.ENGINE_SERVER_SIDE
+            print("[COPY] Origem e destino no mesmo servidor — engine "
+                  "server-side (INSERT...SELECT no próprio SQL Server)")
+        else:
+            engine = bulk_copy.resolve_engine()
+        print(f"[COPY] engine={engine}")
+        hook.run("UPDATE dbo.etl_copy_exec SET engine=%s WHERE id = %s",
+                 parameters=(engine, exec_id))
+
         src     = bulk_copy.open_src_conn(src_air, job["src_database"])
         dst_ctl = bulk_copy.open_src_conn(dst_air, job["dst_database"])
         try:
+            if engine == bulk_copy.ENGINE_SERVER_SIDE:
+                # Probe de viabilidade (best-effort): a conexão de origem
+                # precisa enxergar o destino cross-database; senão cai para
+                # o fluxo streaming normal, atualizando o engine gravado.
+                motivo = _probe_server_side(src, job)
+                if motivo:
+                    engine = bulk_copy.resolve_engine()
+                    print(f"[COPY] Aviso: engine server-side inviável — "
+                          f"{motivo} — caindo para o fluxo streaming "
+                          f"(engine={engine}).")
+                    hook.run("UPDATE dbo.etl_copy_exec SET engine=%s WHERE id = %s",
+                             parameters=(engine, exec_id))
             _preparar_destino(src, dst_ctl, job)
-            # Alvo de escrita resolvido UMA vez por execução (ordinais/
-            # column_ids do bulk_copy, charset do codepage do destino;
-            # fallback por nome se necessário)
-            alvo = bulk_copy.prepare_bulk_target(
-                dst_ctl, job["dst_schema"], job["dst_table"],
-                json.loads(job["dst_columns_json"]), engine,
-                charset_override=bulk_copy.charset_da_conexao(dst_air))
-            if alvo.get("charset"):
-                print(f"[COPY] charset da carga bulk: {alvo['charset']}")
-            if alvo["engine"] != engine:
-                print(f"[COPY] Engine ajustado {engine} → {alvo['engine']}: "
-                      f"{alvo['motivo_fallback']}")
-                engine = alvo["engine"]
-                hook.run("UPDATE dbo.etl_copy_exec SET engine=%s WHERE id = %s",
-                         parameters=(engine, exec_id))
+            if engine == bulk_copy.ENGINE_SERVER_SIDE:
+                # Server-side: prepare_bulk_target e charset NÃO se aplicam
+                # (nada trafega pelo cliente) — alvo mínimo com as colunas
+                # do INSERT na ordem do SELECT compilado.
+                alvo = {"engine": engine,
+                        "columns": json.loads(job["dst_columns_json"])}
+            else:
+                # Alvo de escrita resolvido UMA vez por execução (ordinais/
+                # column_ids do bulk_copy, charset do codepage do destino;
+                # fallback por nome se necessário)
+                alvo = bulk_copy.prepare_bulk_target(
+                    dst_ctl, job["dst_schema"], job["dst_table"],
+                    json.loads(job["dst_columns_json"]), engine,
+                    charset_override=bulk_copy.charset_da_conexao(dst_air))
+                if alvo.get("charset"):
+                    print(f"[COPY] charset da carga bulk: {alvo['charset']}")
+                if alvo["engine"] != engine:
+                    print(f"[COPY] Engine ajustado {engine} → {alvo['engine']}: "
+                          f"{alvo['motivo_fallback']}")
+                    engine = alvo["engine"]
+                    hook.run("UPDATE dbo.etl_copy_exec SET engine=%s WHERE id = %s",
+                             parameters=(engine, exec_id))
             rows_total = _contar_origem(src, job)
             hook.run("UPDATE dbo.etl_copy_exec SET rows_total = %s WHERE id = %s",
                      parameters=(rows_total, exec_id))

@@ -14,8 +14,8 @@ import { toast } from '../ui/Toast'
 import { AlertTriangle, XCircle } from 'lucide-react'
 import {
   type ExecProgresso,
-  EXEC_ATIVA, STATUS_BADGE, STATUS_LABELS,
-  faixaIntervalo, fmtDuracao, fmtEta, fmtRows,
+  ENGINE_SERVER_SIDE, EXEC_ATIVA, STATUS_BADGE, STATUS_LABELS,
+  engineLabel, faixaIntervalo, fmtDuracao, fmtEta, fmtRows,
 } from './transformUtils'
 
 // Duração decorrida (iniciado_em → concluido_em ou agora), em segundos.
@@ -92,6 +92,14 @@ export function CopiaProgressoModal({ execId, onClose }: {
     ? Math.min(100, (data.rows_copied / Math.max(1, data.rows_total)) * 100)
     : null
   const dur = data ? duracaoSegundos(data) : null
+  // Server-side sem partição (faixa única): o INSERT...SELECT roda inteiro
+  // dentro do servidor — não há progresso incremental para mostrar.
+  const serverSideFaixaUnica = !!data
+    && data.engine === ENGINE_SERVER_SIDE
+    && data.ranges.length === 1
+    && data.ranges[0].range_index === 0
+    && data.ranges[0].valor_ini == null
+    && data.ranges[0].valor_fim == null
 
   return (
     <>
@@ -154,9 +162,19 @@ export function CopiaProgressoModal({ execId, onClose }: {
             </div>
             <div className="bg-canvas border border-edge rounded-lg px-3 py-2">
               <p className="text-[10px] text-dim uppercase tracking-wider">Engine</p>
-              <p className="text-sm text-ink font-medium font-mono">{data.engine ?? '—'}</p>
+              <p className="text-sm text-ink font-medium" title={data.engine ?? undefined}>
+                {engineLabel(data.engine)}
+              </p>
             </div>
           </div>
+
+          {/* Hint do engine server-side sem partição: a instrução única roda
+              dentro do servidor e o rowcount só sai quando ela termina. */}
+          {serverSideFaixaUnica && ativa && (
+            <p className="text-[11px] text-dim">
+              execução dentro do servidor — o total copiado aparece ao final da faixa
+            </p>
+          )}
 
           {/* Erro */}
           {data.erro_msg && (

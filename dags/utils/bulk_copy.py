@@ -3,10 +3,18 @@
 Helpers usados pelas DAGs etl_copy_exec e etl_copy_introspect para copiar
 tabelas entre servidores SQL Server com alta performance:
 
-  - resolve_engine()         → melhor engine de escrita disponível, nesta ordem:
+  - resolve_engine()         → melhor engine de escrita STREAMING disponível,
+                               nesta ordem:
                                pymssql Connection.bulk_copy (TDS bulk load)
                                → pyodbc + fast_executemany (se driver ODBC presente)
                                → pymssql executemany (último recurso, com warning);
+  - ENGINE_SERVER_SIDE       → engine "server_side_insert": quando origem e
+                               destino resolvem para o MESMO servidor, a cópia
+                               NÃO trafega pelo worker — vira INSERT...SELECT
+                               cross-database DENTRO do próprio SQL Server
+                               (a DAG etl_copy_exec detecta e decide);
+  - montar_insert_select(...) → instrução INSERT...SELECT do engine
+                               server-side (função PURA, testável);
   - open_src_conn(...)       → conexão pymssql de LEITURA/controle (autocommit);
   - open_dst_conn(...)       → conexão de ESCRITA (pymssql ou pyodbc conforme engine);
   - prepare_bulk_target(...) → resolve o ALVO de escrita UMA vez por execução:
@@ -40,6 +48,9 @@ log = logging.getLogger(__name__)
 ENGINE_BULK_COPY   = "pymssql_bulk_copy"
 ENGINE_PYODBC_FAST = "pyodbc_fast_executemany"
 ENGINE_EXECUTEMANY = "pymssql_executemany"
+# Origem e destino no MESMO servidor: INSERT...SELECT dentro do SQL Server
+# (cross-database, sem linked server) — nada trafega pelo worker.
+ENGINE_SERVER_SIDE = "server_side_insert"
 
 # Tipos numéricos da origem que viram VARCHAR(n) quando a coluna recebe
 # transformação pad_fixo/pad_condicional (zeros à esquerda produzem texto).
@@ -52,6 +63,39 @@ _TIPOS_NUMERICOS = {
 def quote_ident(nome) -> str:
     """Identificador T-SQL SEMPRE entre [colchetes], com escape ``]`` → ``]]``."""
     return "[" + str(nome).replace("]", "]]") + "]"
+
+
+def montar_insert_select(dst_db, dst_schema, dst_table, dst_columns,
+                         select_sql, where_faixa=None) -> str:
+    """Instrução do engine server-side (``ENGINE_SERVER_SIDE``): o
+    ``INSERT INTO ... SELECT ...`` roda DENTRO do SQL Server (cross-database,
+    sem linked server) — nada trafega pelo worker.
+
+      - destino SEMPRE em 3 partes ``[db].[schema].[tabela]`` (a conexão fica
+        no database de ORIGEM, para o ``select_sql`` — modo tabela E modo
+        query — funcionar sem requalificação);
+      - ``WITH (TABLOCK)`` para habilitar carga com minimal logging;
+      - lista de colunas EXPLÍCITA = ``dst_columns`` (ordem do SELECT
+        compilado) — nunca INSERT sem lista de colunas;
+      - ``where_faixa`` (opcional) restringe à faixa de partição; o CHAMADOR
+        monta a condição (mesma lógica do streaming) e cuida do escape
+        ``%`` → ``%%`` do ``select_sql`` quando a instrução for parametrizada
+        no pymssql.
+
+    Função PURA (sem I/O) — identificadores via ``quote_ident``.
+    """
+    if not dst_columns:
+        raise ValueError(
+            "montar_insert_select exige a lista de colunas de destino "
+            "(dst_columns vazio)")
+    fqn = (f"{quote_ident(dst_db)}.{quote_ident(dst_schema)}."
+           f"{quote_ident(dst_table)}")
+    cols = ", ".join(quote_ident(c) for c in dst_columns)
+    sql = (f"INSERT INTO {fqn} WITH (TABLOCK) ({cols}) "
+           f"SELECT * FROM ({select_sql}) AS src")
+    if where_faixa:
+        sql += f" WHERE {where_faixa}"
+    return sql
 
 
 def _conn_params(airflow_conn):
@@ -112,12 +156,17 @@ def charset_da_conexao(airflow_conn):
         return None
 
 
-def open_src_conn(airflow_conn, database):
+def open_src_conn(airflow_conn, database, query_timeout=0):
     """Conexão pymssql de LEITURA/controle (autocommit=True).
 
     Usada para: streaming de leitura na origem (cursor + fetchmany, sem manter
-    transação aberta), COUNT/MIN/MAX e também DDL/TRUNCATE no destino
-    (conexão de controle da DAG de execução).
+    transação aberta), COUNT/MIN/MAX, DDL/TRUNCATE no destino (conexão de
+    controle da DAG de execução) e o INSERT...SELECT do engine server-side.
+
+    ``query_timeout`` → parâmetro ``timeout`` do pymssql (segundos por
+    instrução). O default do pymssql já é 0 (SEM limite) — explicitamos para
+    garantir que instruções longas (ex.: INSERT...SELECT server-side de
+    dezenas de minutos) nunca sejam mortas por timeout de query.
     """
     host, port, login, password = _conn_params(airflow_conn)
     charset = charset_da_conexao(airflow_conn) or "UTF-8"
@@ -126,6 +175,7 @@ def open_src_conn(airflow_conn, database):
     return pymssql.connect(
         server=host, port=str(port), user=login, password=password,
         database=database, autocommit=True, login_timeout=30,
+        timeout=int(query_timeout or 0),
         charset=charset, appname="orquestra-copia-dados",
     )
 
