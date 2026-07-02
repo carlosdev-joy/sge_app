@@ -226,19 +226,24 @@ def _cache_store(conn_id: str, database: str, payload_tipo: str, objeto: str,
         log.warning("copias: gravação do cache etl_copy_catalogo falhou: %s", e)
 
 
+_ACOES_SEM_CACHE = ("preview", "query_columns")  # resultado depende da query
+
+
 async def _introspect_via_dag(acao: str, conn_id: str, database: str = "",
                               schema: str = "", table: str = "",
                               select_sql: str | None = None,
+                              src_query: str | None = None,
                               timeout_s: int = 90) -> tuple[dict, str]:
     """RPC de introspecção pela DAG etl_copy_introspect (worker conecta com a
     credencial da connection via BaseHook — a API nunca vê senha).
 
-    1. Cache etl_copy_catalogo (< 24h) → retorna direto ("cache"), exceto preview.
+    1. Cache etl_copy_catalogo (< 24h) → retorna direto ("cache"), exceto
+       preview/query_columns (dependem da query enviada).
     2. POST dagRun com conf; poll a cada 2s até success/failed (timeout → 504);
        lê o XCom return_value da task 'introspect'; grava cache (MERGE).
     Retorna (payload, via)."""
     objeto = f"{schema}.{table}" if acao == "columns" else ""
-    if acao != "preview":
+    if acao not in _ACOES_SEM_CACHE:
         cached = _cache_lookup(conn_id, database, acao, objeto)
         if cached is not None:
             return cached, "cache"
@@ -252,6 +257,8 @@ async def _introspect_via_dag(acao: str, conn_id: str, database: str = "",
         conf["table"] = table
     if select_sql:
         conf["select_sql"] = select_sql
+    if src_query:
+        conf["src_query"] = src_query
     run_id = f"introspect_{acao}_{_dt.datetime.now().strftime('%Y%m%dT%H%M%S%f')}"
 
     try:
@@ -308,7 +315,7 @@ async def _introspect_via_dag(acao: str, conn_id: str, database: str = "",
     if not isinstance(payload, dict):
         raise HTTPException(status_code=502,
                             detail="Resposta inesperada da introspecção (XCom inválido)")
-    if acao != "preview":
+    if acao not in _ACOES_SEM_CACHE:
         _cache_store(conn_id, database, acao, objeto, payload)
     return payload, "airflow"
 
@@ -486,32 +493,102 @@ async def introspect_columns(conn_id: str = "", database: str = "",
             "via": via}
 
 
+def _tipo_basico_pyodbc(type_code):
+    """Nome legível do tipo de uma coluna do cursor.description do pyodbc
+    (type_code é a classe Python — str/int/Decimal/datetime/...)."""
+    if type_code is None:
+        return None
+    return getattr(type_code, "__name__", None) or str(type_code)
+
+
+@router.post("/copias/introspect/query-columns", tags=["copias"])
+async def introspect_query_columns(body: dict = Body(default={}),
+                                   _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    """Colunas do result set de uma query livre (MODO QUERY do wizard).
+
+    Body: {src_conn_id, src_database, src_query}. Valida a query
+    (validate_src_query → 422) e roda SELECT TOP 0 * FROM (<query>) AS _q
+    pelo caminho rápido (cursor.description dá nome + tipo básico); se a
+    CONEXÃO direta falhar, cai para o RPC via DAG (acao=query_columns).
+    Erro de execução da query → 422 com a mensagem do SQL Server (útil para
+    o usuário corrigir a query)."""
+    src_conn_id = (body.get("src_conn_id") or "").strip()
+    src_database = (body.get("src_database") or "").strip()
+    if not src_conn_id or not src_database:
+        raise HTTPException(status_code=422,
+                            detail="src_conn_id e src_database são obrigatórios")
+    try:
+        src_query = copy_sql.validate_src_query(body.get("src_query"))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    server = await _server_da_conexao(src_conn_id)
+    timeout_s = _get_preview_timeout_s()
+    conn = None
+    try:
+        conn, cur = _open_swapped_conn(server, src_database, timeout_s)
+    except HTTPException as e:
+        log.info("copias: query-columns direto falhou ao conectar (%s) — "
+                 "fallback DAG", e.detail)
+    if conn is not None:
+        try:
+            cur.execute(f"SELECT TOP 0 * FROM (\n{src_query}\n) AS _q")
+            columns = [{"name": d[0], "type": _tipo_basico_pyodbc(d[1])}
+                       for d in (cur.description or [])]
+            cur.close(); conn.close()
+            return {"columns": columns, "via": "direto"}
+        except Exception as e:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            # Query alcançou o servidor e falhou lá — mensagem do SQL Server
+            # ajuda o usuário a corrigir (não é caso de fallback via DAG).
+            raise HTTPException(status_code=422,
+                                detail=f"A query falhou na origem: {e}")
+    payload, via = await _introspect_via_dag(
+        "query_columns", src_conn_id, src_database,
+        src_query=src_query, timeout_s=90)
+    return {"columns": payload.get("columns", []), "via": via}
+
+
 @router.post("/copias/preview", tags=["copias"])
 async def copias_preview(body: dict = Body(default={}),
                          _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Amostra de 50 linhas do SELECT transformado (passo Colunas do wizard).
 
-    Body: {src_conn_id, src_database, src_schema, src_table, src_filtro, colunas}.
-    Compila com copy_sql (422 se inválido) e roda
+    Body: {src_conn_id, src_database, src_schema, src_table, src_filtro,
+    colunas, src_query}. Compila com copy_sql (422 se inválido) e roda
     SELECT TOP 50 * FROM (<select_sql>) AS _prev pelo caminho rápido; em falha
-    de conexão/execução cai para o RPC via DAG (acao=preview)."""
+    de conexão/execução cai para o RPC via DAG (acao=preview).
+
+    MODO QUERY (src_query presente): ignora schema/tabela/filtro/colunas e a
+    amostra roda sobre a própria query (validada por validate_src_query)."""
     src_conn_id = (body.get("src_conn_id") or "").strip()
     src_database = (body.get("src_database") or "").strip()
     src_schema = (body.get("src_schema") or "dbo").strip() or "dbo"
     src_table = (body.get("src_table") or "").strip()
+    src_query = (body.get("src_query") or "").strip()
     if not src_conn_id:
         raise HTTPException(status_code=422, detail="src_conn_id é obrigatório")
-    try:
-        comp = copy_sql.compile_job({
-            "src_database": src_database, "src_schema": src_schema,
-            "src_table": src_table, "src_filtro": body.get("src_filtro"),
-            "colunas": body.get("colunas"),
-        })
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    if src_query:
+        try:
+            select_sql = copy_sql.validate_src_query(src_query)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+    else:
+        try:
+            comp = copy_sql.compile_job({
+                "src_database": src_database, "src_schema": src_schema,
+                "src_table": src_table, "src_filtro": body.get("src_filtro"),
+                "colunas": body.get("colunas"),
+            })
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        select_sql = comp["select_sql"]
 
     server = await _server_da_conexao(src_conn_id)
-    preview_sql = f"SELECT TOP 50 * FROM (\n{comp['select_sql']}\n) AS _prev"
+    preview_sql = f"SELECT TOP 50 * FROM (\n{select_sql}\n) AS _prev"
     timeout_s = _get_preview_timeout_s()
     try:
         conn, cur = _open_swapped_conn(server, src_database, timeout_s)
@@ -532,7 +609,7 @@ async def copias_preview(body: dict = Body(default={}),
         log.info("copias: preview direto falhou (%s) — fallback DAG", e.detail)
     payload, via = await _introspect_via_dag(
         "preview", src_conn_id, src_database, src_schema, src_table,
-        select_sql=comp["select_sql"], timeout_s=90)
+        select_sql=select_sql, timeout_s=90)
     return {"columns": payload.get("columns", []),
             "rows": payload.get("rows", []), "via": via}
 
@@ -663,22 +740,32 @@ async def cancelar_exec(exec_id: int,
 
 @router.get("/copias", tags=["copias"])
 def list_copias(_auth: dict = Depends(get_current_user)):
-    """Lista as cópias salvas (ativas) com a última execução de cada uma.
+    """Lista as cópias salvas (ativas) com a última execução de cada uma —
+    ``usa_query`` indica o modo query (fonte = src_query, migration 053).
     Degrada para lista vazia se as tabelas da migration 052 não existirem."""
+    sql_base = (
+        "SELECT j.id, j.nome, j.src_conn_id, j.src_database, j.src_schema, "
+        "       j.src_table, j.dst_conn_id, j.dst_database, j.dst_schema, "
+        "       j.dst_table, j.criar_tabela, j.truncar_antes, j.particao_coluna, "
+        "       j.streams, j.batch_size, j.criado_por, j.criado_em, "
+        "       j.atualizado_em, "
+        "       e.id, e.status, e.rows_copied, e.rows_total, e.criado_em{extra} "
+        "FROM dbo.etl_copy_job j "
+        "OUTER APPLY (SELECT TOP 1 id, status, rows_copied, rows_total, criado_em "
+        "             FROM dbo.etl_copy_exec WHERE copy_job_id = j.id "
+        "             ORDER BY id DESC) e "
+        "WHERE j.ativo = 1 ORDER BY j.nome")
     try:
         conn = get_db_conn(); cur = conn.cursor()
-        cur.execute(
-            "SELECT j.id, j.nome, j.src_conn_id, j.src_database, j.src_schema, "
-            "       j.src_table, j.dst_conn_id, j.dst_database, j.dst_schema, "
-            "       j.dst_table, j.criar_tabela, j.truncar_antes, j.particao_coluna, "
-            "       j.streams, j.batch_size, j.criado_por, j.criado_em, "
-            "       j.atualizado_em, "
-            "       e.id, e.status, e.rows_copied, e.rows_total, e.criado_em "
-            "FROM dbo.etl_copy_job j "
-            "OUTER APPLY (SELECT TOP 1 id, status, rows_copied, rows_total, criado_em "
-            "             FROM dbo.etl_copy_exec WHERE copy_job_id = j.id "
-            "             ORDER BY id DESC) e "
-            "WHERE j.ativo = 1 ORDER BY j.nome")
+        try:
+            cur.execute(sql_base.format(
+                extra=", CASE WHEN j.src_query IS NOT NULL "
+                      "AND LEN(j.src_query) > 0 THEN 1 ELSE 0 END"))
+        except Exception as e:
+            # Ambiente sem a 053: refaz sem a coluna (usa_query = False)
+            log.warning("list_copias: coluna src_query indisponível "
+                        "(migration 053 aplicada?): %s", e)
+            cur.execute(sql_base.format(extra=""))
         data = []
         for r in cur.fetchall():
             ultima = None
@@ -696,6 +783,7 @@ def list_copias(_auth: dict = Depends(get_current_user)):
                 "particao_coluna": r[12], "streams": int(r[13] or 0),
                 "batch_size": int(r[14] or 0), "criado_por": r[15],
                 "criado_em": _fmt_dt(r[16]), "atualizado_em": _fmt_dt(r[17]),
+                "usa_query": bool(r[23]) if len(r) > 23 else False,
                 "ultima_exec": ultima,
             })
         cur.close(); conn.close()
@@ -709,7 +797,12 @@ def list_copias(_auth: dict = Depends(get_current_user)):
 def save_copia(body: dict = Body(default={}),
                _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Cria ou atualiza (body com ``id``) uma cópia. Valida tudo, compila as
-    transformações com copy_sql e persiste select_sql/count_sql/dst_columns_json."""
+    transformações com copy_sql e persiste select_sql/count_sql/dst_columns_json.
+
+    MODO QUERY (``src_query`` presente): a fonte é a query livre — src_table
+    pode vir vazio, o filtro do wizard é zerado, transforms devem ser nulos
+    (compile_job valida) e a checagem estática origem==destino de TABELA é
+    pulada (não dá para saber as tabelas lidas pela query — a DAG loga aviso)."""
     copia_id = body.get("id")
     nome = (body.get("nome") or "").strip()
     src_conn_id = (body.get("src_conn_id") or "").strip()
@@ -721,10 +814,14 @@ def save_copia(body: dict = Body(default={}),
     src_table = (body.get("src_table") or "").strip()
     dst_table = (body.get("dst_table") or "").strip()
     src_filtro = (body.get("src_filtro") or "").strip() or None
+    src_query = (body.get("src_query") or "").strip() or None
     particao_coluna = (body.get("particao_coluna") or "").strip() or None
     criar_tabela = bool(body.get("criar_tabela", False))
     truncar_antes = bool(body.get("truncar_antes", False))
     colunas = body.get("colunas")
+
+    if src_query:
+        src_filtro = None  # modo query: o filtro do wizard é ignorado/zerado
 
     if not nome:
         raise HTTPException(status_code=422, detail="nome é obrigatório")
@@ -735,17 +832,23 @@ def save_copia(body: dict = Body(default={}),
             raise HTTPException(status_code=422, detail=f"{rotulo} é obrigatório")
         if not _CONN_ID_RE.match(cid):
             raise HTTPException(status_code=422, detail=f"{rotulo} inválido")
-    for rotulo, valor in (("src_database", src_database), ("src_schema", src_schema),
-                          ("src_table", src_table), ("dst_database", dst_database),
-                          ("dst_schema", dst_schema), ("dst_table", dst_table)):
+    campos_ident = [("src_database", src_database), ("src_schema", src_schema),
+                    ("dst_database", dst_database), ("dst_schema", dst_schema),
+                    ("dst_table", dst_table)]
+    if not src_query:  # modo query: src_table pode vir vazio (não é usado no SQL)
+        campos_ident.insert(2, ("src_table", src_table))
+    for rotulo, valor in campos_ident:
         if not valor:
             raise HTTPException(status_code=422, detail=f"{rotulo} é obrigatório")
         if not _valid_ident(valor):
             raise HTTPException(status_code=422, detail=f"{rotulo} inválido")
     if particao_coluna and not _valid_ident(particao_coluna):
         raise HTTPException(status_code=422, detail="particao_coluna inválida")
-    if _origem_igual_destino(src_conn_id, src_database, src_schema, src_table,
-                             dst_conn_id, dst_database, dst_schema, dst_table):
+    # Origem == destino: no modo query não dá para comparar tabelas
+    # estaticamente — a guarda fica por conta do aviso na UI e do log da DAG.
+    if not src_query and _origem_igual_destino(
+            src_conn_id, src_database, src_schema, src_table,
+            dst_conn_id, dst_database, dst_schema, dst_table):
         raise HTTPException(status_code=422, detail=_MSG_ORIGEM_DESTINO_IGUAIS)
     try:
         streams = int(body.get("streams", 4))
@@ -763,7 +866,8 @@ def save_copia(body: dict = Body(default={}),
     try:
         comp = copy_sql.compile_job({
             "src_database": src_database, "src_schema": src_schema,
-            "src_table": src_table, "src_filtro": src_filtro, "colunas": colunas,
+            "src_table": src_table, "src_filtro": src_filtro,
+            "src_query": src_query, "colunas": colunas,
         })
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -800,37 +904,68 @@ def save_copia(body: dict = Body(default={}),
             raise HTTPException(status_code=422,
                                 detail=f"já existe uma cópia ativa com o nome '{nome}'")
 
+        # Persistência com a coluna src_query (migration 053). Degradação
+        # graciosa (padrão do repo): se o UPDATE/INSERT com a coluna falhar e a
+        # cópia NÃO usa query, refaz sem a coluna; se usa query, erro claro.
+        _MSG_SEM_053 = ("Não foi possível salvar a cópia com query SQL como "
+                        "fonte — a coluna src_query não existe (aplique a "
+                        "migration 053)")
         if copia_id is not None:
             cur.execute("SELECT id FROM dbo.etl_copy_job WHERE id = ?", (int(copia_id),))
             if not cur.fetchone():
                 cur.close(); conn.close()
                 raise HTTPException(status_code=404, detail="Cópia não encontrada")
-            cur.execute(
-                "UPDATE dbo.etl_copy_job SET nome=?, src_conn_id=?, src_database=?, "
-                "src_schema=?, src_table=?, src_filtro=?, dst_conn_id=?, dst_database=?, "
-                "dst_schema=?, dst_table=?, criar_tabela=?, truncar_antes=?, "
-                "particao_coluna=?, streams=?, batch_size=?, colunas_json=?, "
-                "select_sql=?, count_sql=?, dst_columns_json=?, ativo=1, "
-                "atualizado_por=?, atualizado_em=GETDATE() WHERE id=?",
-                (nome, src_conn_id, src_database, src_schema, src_table, src_filtro,
-                 dst_conn_id, dst_database, dst_schema, dst_table,
-                 int(criar_tabela), int(truncar_antes), particao_coluna, streams,
-                 batch_size, colunas_json, comp["select_sql"], comp["count_sql"],
-                 dst_columns_json, matricula, int(copia_id)))
+            upd_ini = ("UPDATE dbo.etl_copy_job SET nome=?, src_conn_id=?, "
+                       "src_database=?, src_schema=?, src_table=?, src_filtro=?, ")
+            upd_fim = ("dst_conn_id=?, dst_database=?, "
+                       "dst_schema=?, dst_table=?, criar_tabela=?, truncar_antes=?, "
+                       "particao_coluna=?, streams=?, batch_size=?, colunas_json=?, "
+                       "select_sql=?, count_sql=?, dst_columns_json=?, ativo=1, "
+                       "atualizado_por=?, atualizado_em=GETDATE() WHERE id=?")
+            params_ini = (nome, src_conn_id, src_database, src_schema, src_table,
+                          src_filtro)
+            params_fim = (dst_conn_id, dst_database, dst_schema, dst_table,
+                          int(criar_tabela), int(truncar_antes), particao_coluna,
+                          streams, batch_size, colunas_json, comp["select_sql"],
+                          comp["count_sql"], dst_columns_json, matricula,
+                          int(copia_id))
+            try:
+                cur.execute(upd_ini + "src_query=?, " + upd_fim,
+                            params_ini + (src_query,) + params_fim)
+            except Exception as e:
+                if src_query is not None:
+                    log.warning("save_copia: coluna src_query indisponível? %s", e)
+                    cur.close(); conn.close()
+                    raise HTTPException(status_code=400, detail=_MSG_SEM_053)
+                cur.execute(upd_ini + upd_fim, params_ini + params_fim)
             novo_id = int(copia_id)
         else:
-            cur.execute(
-                "INSERT INTO dbo.etl_copy_job (nome, src_conn_id, src_database, "
-                "src_schema, src_table, src_filtro, dst_conn_id, dst_database, "
-                "dst_schema, dst_table, criar_tabela, truncar_antes, particao_coluna, "
-                "streams, batch_size, colunas_json, select_sql, count_sql, "
-                "dst_columns_json, criado_por) OUTPUT INSERTED.id "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (nome, src_conn_id, src_database, src_schema, src_table, src_filtro,
-                 dst_conn_id, dst_database, dst_schema, dst_table,
-                 int(criar_tabela), int(truncar_antes), particao_coluna, streams,
-                 batch_size, colunas_json, comp["select_sql"], comp["count_sql"],
-                 dst_columns_json, matricula))
+            ins_cols = ("nome, src_conn_id, src_database, src_schema, src_table, "
+                        "src_filtro, dst_conn_id, dst_database, dst_schema, "
+                        "dst_table, criar_tabela, truncar_antes, particao_coluna, "
+                        "streams, batch_size, colunas_json, select_sql, count_sql, "
+                        "dst_columns_json, criado_por")
+            params = (nome, src_conn_id, src_database, src_schema, src_table,
+                      src_filtro, dst_conn_id, dst_database, dst_schema, dst_table,
+                      int(criar_tabela), int(truncar_antes), particao_coluna,
+                      streams, batch_size, colunas_json, comp["select_sql"],
+                      comp["count_sql"], dst_columns_json, matricula)
+            try:
+                cur.execute(
+                    f"INSERT INTO dbo.etl_copy_job ({ins_cols}, src_query) "
+                    "OUTPUT INSERTED.id "
+                    f"VALUES ({', '.join(['?'] * (len(params) + 1))})",
+                    params + (src_query,))
+            except Exception as e:
+                if src_query is not None:
+                    log.warning("save_copia: coluna src_query indisponível? %s", e)
+                    cur.close(); conn.close()
+                    raise HTTPException(status_code=400, detail=_MSG_SEM_053)
+                cur.execute(
+                    f"INSERT INTO dbo.etl_copy_job ({ins_cols}) "
+                    "OUTPUT INSERTED.id "
+                    f"VALUES ({', '.join(['?'] * len(params))})",
+                    params)
             novo_id = int(cur.fetchone()[0])
         conn.commit(); cur.close(); conn.close()
     except HTTPException:
@@ -846,7 +981,8 @@ def save_copia(body: dict = Body(default={}),
 
 @router.get("/copias/{copia_id}", tags=["copias"])
 def get_copia(copia_id: int, _auth: dict = Depends(get_current_user)):
-    """Detalhe completo de uma cópia (inclui colunas_json parseado)."""
+    """Detalhe completo de uma cópia (inclui colunas_json parseado e
+    src_query — lida com degradação graciosa em ambiente sem a 053)."""
     try:
         conn = get_db_conn(); cur = conn.cursor()
         cur.execute(
@@ -857,6 +993,18 @@ def get_copia(copia_id: int, _auth: dict = Depends(get_current_user)):
             "       criado_por, criado_em, atualizado_por, atualizado_em "
             "FROM dbo.etl_copy_job WHERE id = ?", (copia_id,))
         r = cur.fetchone()
+        # src_query (migration 053) em consulta separada: ambiente sem a
+        # coluna degrada para None sem perder o restante do detalhe.
+        src_query = None
+        if r:
+            try:
+                cur.execute("SELECT src_query FROM dbo.etl_copy_job WHERE id = ?",
+                            (copia_id,))
+                row_q = cur.fetchone()
+                src_query = row_q[0] if row_q else None
+            except Exception as e:
+                log.warning("get_copia: coluna src_query indisponível "
+                            "(migration 053 aplicada?): %s", e)
         cur.close(); conn.close()
     except Exception as e:
         log.warning("get_copia degradou: %s", e)
@@ -875,6 +1023,7 @@ def get_copia(copia_id: int, _auth: dict = Depends(get_current_user)):
     return {
         "id": int(r[0]), "nome": r[1], "src_conn_id": r[2], "src_database": r[3],
         "src_schema": r[4], "src_table": r[5], "src_filtro": r[6],
+        "src_query": src_query,
         "dst_conn_id": r[7], "dst_database": r[8], "dst_schema": r[9],
         "dst_table": r[10], "criar_tabela": bool(r[11]), "truncar_antes": bool(r[12]),
         "particao_coluna": r[13], "streams": int(r[14] or 0),
@@ -955,14 +1104,21 @@ async def executar_copia(copia_id: int,
     (guarda atômica: INSERT ... SELECT ... WHERE NOT EXISTS) ou se a DAG
     estiver pausada no Airflow; 422 se origem e destino forem a mesma tabela."""
     matricula = (_auth.get("matricula") or "").strip() or None
+    sql_job = ("SELECT id, nome, src_conn_id, src_database, src_schema, "
+               "       src_table, dst_conn_id, dst_database, dst_schema, "
+               "       dst_table{extra} "
+               "FROM dbo.etl_copy_job WHERE id = ? AND ativo = 1")
     try:
         conn = get_db_conn(); cur = conn.cursor()
-        cur.execute("SELECT id, nome, src_conn_id, src_database, src_schema, "
-                    "       src_table, dst_conn_id, dst_database, dst_schema, "
-                    "       dst_table "
-                    "FROM dbo.etl_copy_job WHERE id = ? AND ativo = 1",
-                    (copia_id,))
-        job = cur.fetchone()
+        try:
+            cur.execute(sql_job.format(extra=", src_query"), (copia_id,))
+            job = cur.fetchone()
+        except Exception as e:
+            # Ambiente sem a migration 053: refaz sem a coluna src_query
+            log.warning("executar_copia: coluna src_query indisponível "
+                        "(migration 053 aplicada?): %s", e)
+            cur.execute(sql_job.format(extra=""), (copia_id,))
+            job = cur.fetchone()
         cur.close(); conn.close()
     except Exception as e:
         log.warning("executar_copia falhou ao carregar a cópia: %s", e)
@@ -971,8 +1127,11 @@ async def executar_copia(copia_id: int,
             detail="Não foi possível carregar a cópia (tabelas da migration 052 ausentes?)")
     if not job:
         raise HTTPException(status_code=404, detail="Cópia não encontrada")
-    if _origem_igual_destino(job[2], job[3], job[4], job[5],
-                             job[6], job[7], job[8], job[9]):
+    # Modo query: não dá para comparar tabelas estaticamente (a DAG loga o
+    # aviso; a guarda por host da DAG também é pulada nesse modo).
+    usa_query = len(job) > 10 and bool((job[10] or "").strip())
+    if not usa_query and _origem_igual_destino(job[2], job[3], job[4], job[5],
+                                               job[6], job[7], job[8], job[9]):
         raise HTTPException(status_code=422, detail=_MSG_ORIGEM_DESTINO_IGUAIS)
 
     # DAG pausada não consome o dagRun (fica 'pendente' para sempre) — avisa

@@ -17,7 +17,10 @@ tabelas entre servidores SQL Server com alta performance:
                                para engine por NOME se a ordem física divergir;
   - bulk_write(...)          → grava UM lote de linhas no destino;
   - script_create_table(...) → DDL do destino a partir de sys.columns/sys.types
-                               da ORIGEM (heap, sem IDENTITY, nullability preservada).
+                               da ORIGEM (heap, sem IDENTITY, nullability preservada);
+  - script_create_table_from_query(...) → DDL do destino a partir do result set
+                               de uma query livre (sp_describe_first_result_set
+                               na origem — MODO QUERY da Cópia de Dados).
 
 Credenciais SEMPRE via Airflow Connection — o chamador resolve com
 ``BaseHook.get_connection(conn_id)`` e passa o objeto Connection pronto.
@@ -533,6 +536,60 @@ def script_create_table(src_conn, src_db, src_schema, src_table,
 
         nulabilidade = "NULL" if info["is_nullable"] else "NOT NULL"
         defs.append(f"    {quote_ident(nome)} {tipo_sql} {nulabilidade}")
+
+    fqn_destino = f"{quote_ident(dst_schema)}.{quote_ident(dst_table)}"
+    return f"CREATE TABLE {fqn_destino} (\n" + ",\n".join(defs) + "\n)"
+
+
+def script_create_table_from_query(src_conn, src_query, dst_schema, dst_table) -> str:
+    """DDL ``CREATE TABLE`` do destino a partir do RESULT SET de uma query
+    livre (MODO QUERY da Cópia de Dados), via ``sp_describe_first_result_set``
+    na ORIGEM: cada coluna sai com name + system_type_name + is_nullable.
+    Heap, sem índices/constraints e sem IDENTITY (mesmo espírito do
+    ``script_create_table``).
+
+    Erros do sp_describe (query dinâmica, tipos CLR, coluna sem nome...) →
+    ValueError com mensagem clara sugerindo criar a tabela manualmente.
+    ``src_conn`` deve ser pymssql (%s).
+    """
+    cur = src_conn.cursor()
+    try:
+        try:
+            cur.execute("EXEC sp_describe_first_result_set @tsql = %s",
+                        (src_query,))
+            rows = cur.fetchall()
+        except Exception as e:
+            raise ValueError(
+                "Não foi possível descrever o resultado da query na origem "
+                f"(sp_describe_first_result_set): {e} — crie a tabela de "
+                "destino manualmente e desmarque 'Criar nova tabela'.")
+    finally:
+        cur.close()
+
+    # Colunas do result set do sp_describe_first_result_set (posições fixas):
+    # r[0]=is_hidden, r[1]=column_ordinal, r[2]=name, r[3]=is_nullable,
+    # r[4]=system_type_id, r[5]=system_type_name
+    defs = []
+    for r in rows:
+        if r[0]:  # is_hidden
+            continue
+        nome, is_nullable, tipo_sql = r[2], bool(r[3]), r[5]
+        if not nome:
+            raise ValueError(
+                f"A query tem coluna sem nome (posição {r[1]}) — dê um alias "
+                "a todas as colunas (ex.: expressao AS nome_coluna).")
+        if not tipo_sql:
+            raise ValueError(
+                f"Não foi possível resolver o tipo da coluna '{nome}' "
+                "(tipo CLR/alias?) — crie a tabela de destino manualmente "
+                "e desmarque 'Criar nova tabela'.")
+        nulabilidade = "NULL" if is_nullable else "NOT NULL"
+        defs.append(f"    {quote_ident(nome)} {tipo_sql} {nulabilidade}")
+
+    if not defs:
+        raise ValueError(
+            "sp_describe_first_result_set não retornou colunas para a query "
+            "— crie a tabela de destino manualmente e desmarque 'Criar nova tabela'.")
 
     fqn_destino = f"{quote_ident(dst_schema)}.{quote_ident(dst_table)}"
     return f"CREATE TABLE {fqn_destino} (\n" + ",\n".join(defs) + "\n)"

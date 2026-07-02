@@ -26,11 +26,15 @@ export interface ColunaInfo {
   is_pk: boolean
 }
 
+// Coluna detectada do result set de uma query livre (modo query do wizard).
+export interface QueryColuna { name: string; type: string | null }
+
 // via: 'direto' (credencial do app) | 'cache' | 'airflow' (RPC pela DAG — lento)
 export interface DatabasesResp { databases: string[]; via: string }
 export interface TablesResp { tables: TabelaInfo[]; via: string }
 export interface ColumnsResp { columns: ColunaInfo[]; particao_sugerida: string | null; via: string }
 export interface PreviewResp { columns: string[]; rows: unknown[][]; via: string }
+export interface QueryColumnsResp { columns: QueryColuna[]; via: string }
 
 // ── Transformações (formato colunas_json do backend) ─────────────────────────
 
@@ -146,12 +150,16 @@ export interface CopiaJob {
   criado_por?: string | null
   criado_em?: string | null
   atualizado_em?: string | null
+  // Modo query (migration 053): fonte da cópia é uma query SQL livre.
+  usa_query?: boolean
   ultima_exec: UltimaExec | null
 }
 
 // GET /copias/{id} — detalhe (colunas_json parseado em `colunas`)
 export interface CopiaDetalhe extends Omit<CopiaJob, 'ultima_exec'> {
   src_filtro: string | null
+  // Query SQL livre como fonte (modo query) — null no modo tabela.
+  src_query: string | null
   colunas: ColunaMapeada[]
   select_sql: string | null
   count_sql: string | null

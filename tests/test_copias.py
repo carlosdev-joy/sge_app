@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -24,7 +24,8 @@ from api.main import app as _app  # noqa: F401  (ordem de import — ver test_pi
 
 from deps import PERM_EDITAR, PERM_EXECUTAR, get_current_user
 from services.copy_sql import (
-    compile_job, compile_transform, quote_ident, quote_literal, validate_sql_expr,
+    compile_job, compile_transform, quote_ident, quote_literal,
+    validate_sql_expr, validate_src_query,
 )
 
 
@@ -183,6 +184,109 @@ def test_compile_job_aceita_colunas_json_inteiro():
     out = compile_job(_job_base(colunas={"colunas": [
         {"origem": "id", "destino": "id", "transform": None}]}))
     assert out["dst_columns"] == ["id"]
+
+
+# ═════════════════ transform "sql" — alias final removido ═══════════════════
+
+_EXPR_CASE_COM_ALIAS = """CASE
+    WHEN COD_TIPO_PESSOA = 'F'
+        THEN RIGHT(REPLICATE('0', 11) + CAST(NUM_CPF_CNPJ AS VARCHAR(20)), 11)
+    ELSE
+        RIGHT(REPLICATE('0', 14) + CAST(NUM_CPF_CNPJ AS VARCHAR(20)), 14)
+END AS NUM_CPF_CNPJ"""
+
+
+def test_sql_livre_remove_alias_final_colado_pelo_usuario():
+    """Expressão colada com alias final ("... END AS NUM_CPF_CNPJ") valida,
+    perde o alias e compila com UM único AS [destino] (sem alias duplo)."""
+    out = compile_transform("NUM_CPF_CNPJ",
+                            {"tipo": "sql", "expressao": _EXPR_CASE_COM_ALIAS})
+    assert out.rstrip().endswith("END")
+    assert "AS NUM_CPF_CNPJ" not in out           # alias final removido
+    # os CAST(... AS VARCHAR(20)) internos permanecem intactos
+    assert out.count("CAST(NUM_CPF_CNPJ AS VARCHAR(20))") == 2
+
+    sel = compile_job(_job_base(colunas=[
+        {"origem": "NUM_CPF_CNPJ", "destino": "NUM_CPF_CNPJ",
+         "transform": {"tipo": "sql", "expressao": _EXPR_CASE_COM_ALIAS}},
+    ]))["select_sql"]
+    assert sel.count("AS [NUM_CPF_CNPJ]") == 1    # só o alias do compilador
+    assert "AS NUM_CPF_CNPJ " not in sel          # nenhum alias cru sobrando
+
+
+def test_sql_livre_alias_final_com_colchetes_e_case_insensitive():
+    assert compile_transform("c", {"tipo": "sql",
+                                   "expressao": "LTRIM([x]) as [Coluna_1]"}) \
+        == "LTRIM([x])"
+    # expressão que TERMINA em CAST(... AS VARCHAR(20)) não é afetada
+    assert compile_transform("c", {"tipo": "sql",
+                                   "expressao": "CAST(x AS VARCHAR(20))"}) \
+        == "CAST(x AS VARCHAR(20))"
+
+
+# ═════════════════════ validate_src_query (modo query) ══════════════════════
+
+def test_validate_src_query_aceita_select_e_with():
+    assert validate_src_query("SELECT 1 AS a") == "SELECT 1 AS a"
+    assert validate_src_query("  select x from dbo.t  ") == "select x from dbo.t"
+    assert validate_src_query(
+        "WITH c AS (SELECT 1 AS a) SELECT * FROM c").startswith("WITH")
+    assert validate_src_query("with c as (select 1 as a) select * from c")
+
+
+@pytest.mark.parametrize("ruim", [
+    None,
+    "",
+    "   ",
+    "UPDATE t SET x = 1",                     # não começa com SELECT/WITH
+    "DELETE FROM t",
+    "EXEC xp_cmdshell 'dir'",
+    "SELECTED colunas FROM t",                # prefixo com \b (não é SELECT)
+    "SELECT 1; SELECT 2",                     # ';'
+    "SELECT 1 -- comentario",                 # comentário --
+    "SELECT /* cmt */ 1",                     # comentário /*
+    "SELECT 1 UNION SELECT senha INTO y",     # INTO
+    "SELECT 1 EXEC('x')",                     # EXEC no meio
+    "SELECT " + "A" * 20001,                  # tamanho máximo
+])
+def test_validate_src_query_rejeita(ruim):
+    with pytest.raises(ValueError):
+        validate_src_query(ruim)
+
+
+def test_compile_job_modo_query():
+    """src_query presente: select_sql = query crua; count_sql envolve em
+    subquery; dst_columns = colunas informadas; src_filtro é ignorado e
+    src_table pode vir vazio."""
+    q = "SELECT id, UPPER(nome) AS nome FROM dbo.clientes WHERE ativo = 1"
+    out = compile_job({
+        "src_database": "DB_A", "src_table": "",
+        "src_query": q, "src_filtro": "sera_ignorado = 1",
+        "colunas": [{"origem": "id", "destino": "id", "transform": None},
+                    {"origem": "nome", "destino": "nome", "transform": None}],
+    })
+    assert out["select_sql"] == q
+    assert out["count_sql"] == f"SELECT COUNT_BIG(*) FROM (\n{q}\n) AS _q"
+    assert out["dst_columns"] == ["id", "nome"]
+    assert "sera_ignorado" not in out["count_sql"]
+
+
+def test_compile_job_modo_query_rejeita_transform():
+    with pytest.raises(ValueError):
+        compile_job(_job_base(
+            src_query="SELECT id FROM dbo.clientes",
+            colunas=[{"origem": "id", "destino": "id",
+                      "transform": {"tipo": "trim"}}]))
+
+
+def test_compile_job_modo_query_valida_a_query():
+    with pytest.raises(ValueError):
+        compile_job(_job_base(src_query="DELETE FROM x"))
+    with pytest.raises(ValueError):        # destino duplicado no modo query
+        compile_job(_job_base(
+            src_query="SELECT 1 AS a, 2 AS A",
+            colunas=[{"origem": "a", "destino": "a", "transform": None},
+                     {"origem": "A", "destino": "A", "transform": None}]))
 
 
 # ═════════════════════════ router /copias ═══════════════════════════════════
@@ -579,3 +683,208 @@ def test_copias_sem_auth_401(client):
     assert client.get("/copias").status_code == 401
     assert client.post("/copias", json={}).status_code == 401
     assert client.post("/copias/1/executar").status_code == 401
+    assert client.post("/copias/introspect/query-columns", json={}).status_code == 401
+
+
+# ═════════════════════ modo query (src_query como fonte) ════════════════════
+
+_QUERY_OK = "SELECT id, nome FROM dbo.clientes"
+
+
+def test_post_copias_modo_query_persiste_e_zera_filtro(client, auth_operador):
+    """Save no modo query: compila count_sql envolvido, zera o filtro do
+    wizard, aceita src_table vazio e persiste src_query na coluna nova."""
+    cur = _mock_cursor()
+    cur.fetchone.side_effect = [None, (20,)]  # nome livre → INSERT OUTPUT id
+    with patch("routers.copias.get_db_conn", return_value=_mock_conn(cur)):
+        r = client.post("/copias", json=_body_copia(
+            src_table="", src_query=_QUERY_OK, src_filtro="sera_ignorado = 1",
+            colunas=[{"origem": "id", "destino": "id", "transform": None},
+                     {"origem": "nome", "destino": "nome", "transform": None}]))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == 20
+    assert body["select_sql"] == _QUERY_OK
+    assert body["count_sql"] == f"SELECT COUNT_BIG(*) FROM (\n{_QUERY_OK}\n) AS _q"
+    assert body["dst_columns"] == ["id", "nome"]
+    inserts = [c for c in cur.execute.call_args_list
+               if c.args and "INSERT INTO dbo.etl_copy_job" in str(c.args[0])]
+    assert len(inserts) == 1
+    sql, params = str(inserts[0].args[0]), inserts[0].args[1]
+    assert "src_query" in sql, "INSERT deve incluir a coluna src_query"
+    assert _QUERY_OK in params, "a query deve ser persistida"
+    assert params[4] == "", "src_table vazio é persistido como string vazia"
+    assert params[5] is None, "src_filtro deve ser zerado no modo query"
+
+
+def test_post_copias_modo_query_422_com_transform(client, auth_operador):
+    """Transform preenchido junto com src_query → erro de validação."""
+    r = client.post("/copias", json=_body_copia(
+        src_query=_QUERY_OK,
+        colunas=[{"origem": "id", "destino": "id",
+                  "transform": {"tipo": "trim"}}]))
+    assert r.status_code == 422
+    assert "modo query" in r.json()["detail"]
+
+
+def test_post_copias_modo_query_422_query_invalida(client, auth_operador):
+    r = client.post("/copias", json=_body_copia(src_query="DELETE FROM x"))
+    assert r.status_code == 422
+    assert "src_query" in r.json()["detail"]
+
+
+def test_post_copias_modo_query_pula_checagem_origem_igual_destino(client, auth_operador):
+    """No modo query a comparação estática de tabela origem==destino é PULADA
+    (não dá para saber as tabelas da query) — no modo tabela ela continua."""
+    cur = _mock_cursor()
+    cur.fetchone.side_effect = [None, (21,)]
+    with patch("routers.copias.get_db_conn", return_value=_mock_conn(cur)):
+        r = client.post("/copias", json=_body_copia(
+            src_query=_QUERY_OK,
+            dst_conn_id="SQL_ORIGEM", dst_database="DB_A",
+            dst_schema="dbo", dst_table="Clientes",  # "igual" à origem tabular
+            colunas=[{"origem": "id", "destino": "id", "transform": None}]))
+    assert r.status_code == 200
+    assert r.json()["id"] == 21
+
+
+def test_executar_modo_query_pula_checagem_origem_igual_destino(client, auth_operador):
+    """Job com src_query (11ª coluna do SELECT) executa mesmo com os campos
+    de tabela iguais — a comparação estática é pulada no modo query."""
+    cur = _mock_cursor()
+    job = _job_row(dst_conn_id="SQL_ORIGEM", dst_database="DB_A",
+                   dst_schema="dbo", dst_table="Clientes") + (_QUERY_OK,)
+    cur.fetchone.side_effect = [job, (88,)]
+    fake = _FakeAirflowClient(post_resp=_FakeResp(200, {}))
+    with patch("routers.copias.get_db_conn", return_value=_mock_conn(cur)), \
+         patch("routers.copias.get_airflow_client", return_value=fake):
+        r = client.post("/copias/1/executar")
+    assert r.status_code == 200
+    assert r.json()["exec_id"] == 88
+
+
+def test_preview_modo_query_422_query_invalida(client, auth_operador):
+    r = client.post("/copias/preview", json={
+        "src_conn_id": "SQL_ORIGEM", "src_database": "DB_A",
+        "src_query": "UPDATE t SET x = 1"})
+    assert r.status_code == 422
+    assert "src_query" in r.json()["detail"]
+
+
+def test_preview_modo_query_roda_a_query_no_caminho_rapido(client, auth_operador):
+    """Preview com src_query ignora schema/tabela/filtro/colunas e roda
+    SELECT TOP 50 * FROM (<query>) AS _prev."""
+    cur = _mock_cursor()
+    cur.description = [("id", int), ("nome", str)]
+    cur.fetchall.return_value = [(1, "ana")]
+    conn = _mock_conn(cur)
+    with patch("routers.copias._server_da_conexao",
+               new=AsyncMock(return_value="host,1433")), \
+         patch("routers.copias._open_swapped_conn", return_value=(conn, cur)):
+        r = client.post("/copias/preview", json={
+            "src_conn_id": "SQL_ORIGEM", "src_database": "DB_A",
+            "src_query": _QUERY_OK, "src_filtro": "sera_ignorado = 1",
+            "src_table": "outra_tabela"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["via"] == "direto"
+    assert body["columns"] == ["id", "nome"]
+    assert body["rows"] == [[1, "ana"]]
+    sql = str(cur.execute.call_args_list[-1].args[0])
+    assert sql.startswith("SELECT TOP 50 * FROM (")
+    assert _QUERY_OK in sql
+    assert "sera_ignorado" not in sql
+    assert "outra_tabela" not in sql
+
+
+def test_query_columns_422_query_invalida(client, auth_operador):
+    """Query que não passa na validação → 422 antes de tocar o servidor."""
+    r = client.post("/copias/introspect/query-columns", json={
+        "src_conn_id": "SQL_ORIGEM", "src_database": "DB_A",
+        "src_query": "UPDATE t SET x = 1"})
+    assert r.status_code == 422
+    assert "src_query" in r.json()["detail"]
+
+    r = client.post("/copias/introspect/query-columns", json={
+        "src_conn_id": "SQL_ORIGEM", "src_database": "DB_A",
+        "src_query": "SELECT 1; DROP TABLE x"})
+    assert r.status_code == 422
+
+
+def test_query_columns_422_sem_conn_ou_database(client, auth_operador):
+    r = client.post("/copias/introspect/query-columns",
+                    json={"src_query": _QUERY_OK})
+    assert r.status_code == 422
+
+
+def test_query_columns_detecta_colunas_no_caminho_rapido(client, auth_operador):
+    cur = _mock_cursor()
+    cur.description = [("id", int), ("nome", str)]
+    conn = _mock_conn(cur)
+    with patch("routers.copias._server_da_conexao",
+               new=AsyncMock(return_value="host,1433")), \
+         patch("routers.copias._open_swapped_conn", return_value=(conn, cur)):
+        r = client.post("/copias/introspect/query-columns", json={
+            "src_conn_id": "SQL_ORIGEM", "src_database": "DB_A",
+            "src_query": _QUERY_OK})
+    assert r.status_code == 200
+    assert r.json() == {"columns": [{"name": "id", "type": "int"},
+                                    {"name": "nome", "type": "str"}],
+                        "via": "direto"}
+    sql = str(cur.execute.call_args_list[-1].args[0])
+    assert sql.startswith("SELECT TOP 0 * FROM (")
+    assert _QUERY_OK in sql
+
+
+def test_query_columns_422_com_erro_do_sql_server(client, auth_operador):
+    """Erro na execução (query alcançou o servidor) → 422 com a mensagem do
+    SQL Server, para o usuário corrigir a query."""
+    cur = _mock_cursor()
+    cur.execute.side_effect = Exception("Invalid object name 'dbo.nao_existe'")
+    conn = _mock_conn(cur)
+    with patch("routers.copias._server_da_conexao",
+               new=AsyncMock(return_value="host,1433")), \
+         patch("routers.copias._open_swapped_conn", return_value=(conn, cur)):
+        r = client.post("/copias/introspect/query-columns", json={
+            "src_conn_id": "SQL_ORIGEM", "src_database": "DB_A",
+            "src_query": _QUERY_OK})
+    assert r.status_code == 422
+    assert "Invalid object name" in r.json()["detail"]
+
+
+def _detalhe_row():
+    """Linha completa de dbo.etl_copy_job como o SELECT do GET /copias/{id}
+    devolve (25 colunas, na ordem do endpoint)."""
+    return (7, "Copia Query", "SQL_ORIGEM", "DB_A", "dbo", "", None,
+            "SQL_DESTINO", "DB_B", "dbo", "Clientes", 0, 0, None, 4, 50000,
+            '{"colunas": [{"origem": "id", "destino": "id", "transform": null}]}',
+            _QUERY_OK, f"SELECT COUNT_BIG(*) FROM (\n{_QUERY_OK}\n) AS _q",
+            '["id"]', 1, "TESTER", None, None, None)
+
+
+def test_get_copia_retorna_src_query(client, auth_operador):
+    cur = _mock_cursor()
+    cur.fetchone.side_effect = [_detalhe_row(), (_QUERY_OK,)]
+    with patch("routers.copias.get_db_conn", return_value=_mock_conn(cur)):
+        r = client.get("/copias/7")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["src_query"] == _QUERY_OK
+    assert body["src_table"] == ""
+
+
+def test_get_copia_degrada_sem_coluna_src_query(client, auth_operador):
+    """Ambiente sem a migration 053: a leitura de src_query falha e o detalhe
+    volta com src_query=None (sem 500)."""
+    cur = _mock_cursor()
+    cur.fetchone.side_effect = [_detalhe_row()]
+
+    def _exec(sql, *a, **k):
+        if "SELECT src_query" in str(sql):
+            raise Exception("Invalid column name 'src_query'")
+
+    cur.execute.side_effect = _exec
+    with patch("routers.copias.get_db_conn", return_value=_mock_conn(cur)):
+        r = client.get("/copias/7")
+    assert r.status_code == 200
+    assert r.json()["src_query"] is None
