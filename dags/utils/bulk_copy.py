@@ -99,6 +99,16 @@ def resolve_engine() -> str:
     return ENGINE_EXECUTEMANY
 
 
+def charset_da_conexao(airflow_conn):
+    """Charset configurado no extra JSON da Airflow Connection (chave
+    ``charset``, ex.: ``{"charset": "CP1252"}``) — override manual por
+    servidor. None quando não configurado."""
+    try:
+        return (airflow_conn.extra_dejson or {}).get("charset") or None
+    except Exception:
+        return None
+
+
 def open_src_conn(airflow_conn, database):
     """Conexão pymssql de LEITURA/controle (autocommit=True).
 
@@ -107,22 +117,30 @@ def open_src_conn(airflow_conn, database):
     (conexão de controle da DAG de execução).
     """
     host, port, login, password = _conn_params(airflow_conn)
-    log.info("[COPY] Conectando (leitura/controle) em %s:%s/%s como %s",
-             host, port, database, login)
+    charset = charset_da_conexao(airflow_conn) or "UTF-8"
+    log.info("[COPY] Conectando (leitura/controle) em %s:%s/%s como %s (charset %s)",
+             host, port, database, login, charset)
     return pymssql.connect(
         server=host, port=str(port), user=login, password=password,
         database=database, autocommit=True, login_timeout=30,
-        appname="orquestra-copia-dados",
+        charset=charset, appname="orquestra-copia-dados",
     )
 
 
-def open_dst_conn(airflow_conn, database, engine=ENGINE_EXECUTEMANY):
+def open_dst_conn(airflow_conn, database, engine=ENGINE_EXECUTEMANY, charset=None):
     """Conexão de ESCRITA no destino (autocommit=False; commit por lote é
     responsabilidade do bulk_write). pyodbc quando engine=fast_executemany;
-    pymssql nos demais casos."""
+    pymssql nos demais casos.
+
+    ``charset`` importa no caminho BCP: os bytes de texto entram CRUS na
+    coluna — o charset do cliente precisa casar com o codepage das colunas
+    char/varchar do destino (resolvido por prepare_bulk_target e propagado
+    em ``target['charset']``). Precedência: parâmetro > extra da connection
+    > UTF-8."""
     host, port, login, password = _conn_params(airflow_conn)
-    log.info("[COPY] Conectando (escrita/%s) em %s:%s/%s como %s",
-             engine, host, port, database, login)
+    charset = charset or charset_da_conexao(airflow_conn) or "UTF-8"
+    log.info("[COPY] Conectando (escrita/%s) em %s:%s/%s como %s (charset %s)",
+             engine, host, port, database, login, charset)
     if engine == ENGINE_PYODBC_FAST:
         import pyodbc
         driver = _melhor_driver_odbc()
@@ -138,7 +156,7 @@ def open_dst_conn(airflow_conn, database, engine=ENGINE_EXECUTEMANY):
     return pymssql.connect(
         server=host, port=str(port), user=login, password=password,
         database=database, autocommit=False, login_timeout=30,
-        appname="orquestra-copia-dados",
+        charset=charset, appname="orquestra-copia-dados",
     )
 
 
@@ -189,7 +207,42 @@ def _colunas_fisicas_destino(dst_conn, dst_schema, dst_table):
         cur.close()
 
 
-def prepare_bulk_target(dst_conn, dst_schema, dst_table, dst_columns, engine) -> dict:
+def _codepage_destino(dst_conn, dst_schema, dst_table, dst_columns):
+    """Codepage (nome iconv, ex. ``CP1252``) das colunas char/varchar/text
+    COPIADAS no destino, via COLLATIONPROPERTY. None = manter UTF-8 (sem
+    colunas char na cópia, collation UTF-8/65001, ou codepages mistos).
+
+    Motivo: no BCP os bytes de texto entram crus na coluna — sem casar o
+    charset do cliente com o codepage do destino, acentuação vira mojibake
+    ("ç" → "Ã§"). NVARCHAR não depende disso (convertido para UCS-2)."""
+    fqn = f"{quote_ident(dst_schema)}.{quote_ident(dst_table)}"
+    cur = dst_conn.cursor()
+    try:
+        cur.execute(
+            "SELECT c.name, CONVERT(INT, COLLATIONPROPERTY(c.collation_name, 'CodePage')) "
+            "FROM sys.columns c JOIN sys.types t ON t.user_type_id = c.user_type_id "
+            "WHERE c.object_id = OBJECT_ID(%s) "
+            "AND t.name IN ('char', 'varchar', 'text') "
+            "AND c.collation_name IS NOT NULL",
+            (fqn,),
+        )
+        copiadas = {str(c).lower() for c in dst_columns}
+        codepages = {int(cp) for nome, cp in cur.fetchall()
+                     if cp and str(nome).lower() in copiadas}
+    finally:
+        cur.close()
+    codepages.discard(65001)  # collation UTF-8 nativa: cliente UTF-8 já casa
+    if len(codepages) == 1:
+        return f"CP{codepages.pop()}"
+    if len(codepages) > 1:
+        log.warning("[COPY] Codepages mistos nas colunas de destino (%s) — "
+                    "mantendo UTF-8; se houver mojibake, configure "
+                    "{\"charset\": ...} no extra da connection", sorted(codepages))
+    return None
+
+
+def prepare_bulk_target(dst_conn, dst_schema, dst_table, dst_columns, engine,
+                        charset_override=None) -> dict:
     """Resolve o ALVO de escrita UMA vez por execução (nunca por lote).
 
     Retorna o contexto consumido por ``bulk_write``::
@@ -219,7 +272,7 @@ def prepare_bulk_target(dst_conn, dst_schema, dst_table, dst_columns, engine) ->
     table_fqn = f"{quote_ident(dst_schema)}.{quote_ident(dst_table)}"
     target = {"engine": engine, "table_fqn": table_fqn,
               "columns": list(dst_columns), "column_ids": None,
-              "motivo_fallback": None}
+              "charset": charset_override, "motivo_fallback": None}
     if engine != ENGINE_BULK_COPY:
         return target
 
@@ -258,6 +311,13 @@ def prepare_bulk_target(dst_conn, dst_schema, dst_table, dst_columns, engine) ->
         raise ValueError(
             f"Coluna(s) de destino inexistente(s) em {table_fqn}: "
             f"{', '.join(faltantes)} — ajuste o mapeamento ou a tabela de destino")
+
+    if not target["charset"]:
+        target["charset"] = _codepage_destino(
+            dst_conn, dst_schema, dst_table, dst_columns)
+        if target["charset"]:
+            log.info("[COPY] Charset da carga bulk ajustado ao codepage do "
+                     "destino: %s", target["charset"])
 
     params = _bulk_copy_params(dst_conn)
     if params is not None and "column_ids" in params:
@@ -337,6 +397,13 @@ def bulk_write(dst_conn, target, rows, batch_size) -> int:
             # Assinatura divergente entre versões do pymssql — forma mínima.
             # Segura aqui: prepare_bulk_target garantiu ordem física idêntica.
             dst_conn.bulk_copy(table_fqn, rows)
+        except UnicodeEncodeError as e:
+            charset = target.get("charset") or "UTF-8"
+            raise ValueError(
+                f"Texto da origem não representável no charset da carga "
+                f"({charset}): {e} — configure {{\"charset\": \"...\"}} no "
+                "extra da connection de destino ou use NVARCHAR no destino"
+            ) from e
         dst_conn.commit()
         return len(rows)
 
