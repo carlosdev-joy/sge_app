@@ -157,6 +157,16 @@ else
   echo "      Nenhuma migration nova."
 fi
 
+# ── Checagem: chave das senhas de dbo.etl_conexao (migration 054) ─────
+# Sem a chave, a tela Conexões de Dados e a resolução de conexões nas DAGs
+# de cópia falham com mensagem clara. Mesmo valor para api e Airflow.
+if ! grep -q "^ORQUESTRA_CONN_KEY=" "$REPO_DIR/.env" 2>/dev/null; then
+  echo ""
+  echo "  ⚠ ORQUESTRA_CONN_KEY ausente no $REPO_DIR/.env — gere e adicione:"
+  echo "    python3 -c \"from cryptography.fernet import Fernet; print('ORQUESTRA_CONN_KEY=' + Fernet.generate_key().decode())\" >> $REPO_DIR/.env"
+  echo "    (depois recrie orquestra-api e os containers do Airflow para carregar a variável)"
+fi
+
 # ── Status final ──────────────────────────────────────────────
 echo ""
 echo "============================================="

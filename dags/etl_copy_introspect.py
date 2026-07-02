@@ -28,7 +28,8 @@ Saída XCom no MESMO formato dos endpoints /copias/introspect/* (a API repassa):
   query_columns → {"columns": [{"name", "type"}]} (SELECT TOP 0 da query;
                    tipo básico do cursor.description, JSON-safe)
 
-Credenciais SÓ via BaseHook.get_connection (nenhuma senha em log ou XCom).
+Credenciais via utils.conn_resolver.get_conexao (dbo.etl_conexao primeiro,
+fallback Airflow/BaseHook). Nenhuma senha em log ou XCom.
 Erros → raise (a API traduz dagRun failed em 502 com mensagem clara).
 """
 from __future__ import annotations
@@ -39,10 +40,9 @@ import decimal as _decimal
 import pendulum
 import pymssql
 from airflow import DAG
-from airflow.hooks.base import BaseHook
 from airflow.operators.python import PythonOperator
 
-from utils import bulk_copy
+from utils import bulk_copy, conn_resolver
 
 DAG_ID   = "etl_copy_introspect"
 LOCAL_TZ = "America/Sao_Paulo"
@@ -233,7 +233,7 @@ def introspect(**context):
     if acao == "query_columns" and not src_query:
         raise ValueError("Parâmetro 'src_query' é obrigatório para acao=query_columns.")
 
-    airflow_conn = BaseHook.get_connection(conn_id)
+    airflow_conn = conn_resolver.get_conexao(conn_id)
     banco = "master" if acao == "databases" else (database or "master")
     print(f"[INTROSPECT] acao={acao} conn_id={conn_id} database={banco}"
           + (f" tabela={schema}.{table}" if acao == "columns" else ""))

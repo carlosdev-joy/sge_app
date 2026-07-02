@@ -5,9 +5,18 @@ tabelas entre servidores SQL Server com alta performance:
 
   - resolve_engine()         → melhor engine de escrita STREAMING disponível,
                                nesta ordem:
-                               pymssql Connection.bulk_copy (TDS bulk load)
+                               bcp nativo (mssql-tools18, pipe queryout→in)
+                               → pymssql Connection.bulk_copy (TDS bulk load)
                                → pyodbc + fast_executemany (se driver ODBC presente)
                                → pymssql executemany (último recurso, com warning);
+  - ENGINE_BCP               → engine "bcp_native": leitor ``bcp queryout``
+                               e escritor ``bcp in`` conectados por PIPE
+                               (formato NATIVO, sem arquivo em disco) — C nas
+                               duas pontas; helpers: preparar_bcp(),
+                               probe_bcp(), copiar_faixa_bcp() e as funções
+                               PURAS sql_literal(), redigir_cmd(),
+                               montar_cmd_bcp_queryout/in() e
+                               parse_progresso_bcp();
   - ENGINE_SERVER_SIDE       → engine "server_side_insert": quando origem e
                                destino resolvem para o MESMO servidor, a cópia
                                NÃO trafega pelo worker — vira INSERT...SELECT
@@ -43,13 +52,21 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
+import re
+import shutil
+import subprocess
+import threading
+from collections import deque
 from datetime import date, datetime
+from decimal import Decimal
 
 import pymssql
 
 log = logging.getLogger(__name__)
 
 # Engines de escrita (valor gravado em dbo.etl_copy_exec.engine)
+ENGINE_BCP         = "bcp_native"
 ENGINE_BULK_COPY   = "pymssql_bulk_copy"
 ENGINE_PYODBC_FAST = "pyodbc_fast_executemany"
 ENGINE_EXECUTEMANY = "pymssql_executemany"
@@ -198,13 +215,22 @@ def _melhor_driver_odbc():
     return sorted(drivers)[-1] if drivers else None
 
 
-def resolve_engine() -> str:
+def resolve_engine(incluir_bcp: bool = True) -> str:
     """Detecta o melhor engine de escrita disponível no worker.
 
+    0. bcp nativo (mssql-tools18) — pipe ``queryout → in`` em formato NATIVO,
+       C nas duas pontas (10–50× o streaming Python por stream);
+       ``incluir_bcp=False`` pula esta etapa — usado nos fallbacks de runtime
+       (probe de conexão/TLS falhou ou mapeamento posicional inseguro);
     1. pymssql Connection.bulk_copy (pymssql>=2.2 — protocolo TDS bulk load);
     2. pyodbc + fast_executemany (só se houver algum 'ODBC Driver' instalado);
     3. pymssql executemany (último recurso — INSERT linha a linha, lento).
     """
+    if incluir_bcp:
+        caminho = bcp_disponivel()
+        if caminho:
+            log.info("[COPY] Engine de escrita: %s (%s)", ENGINE_BCP, caminho)
+            return ENGINE_BCP
     conn_cls = getattr(pymssql, "Connection", None)
     if conn_cls is not None and callable(getattr(conn_cls, "bulk_copy", None)):
         log.info("[COPY] Engine de escrita: %s", ENGINE_BULK_COPY)
@@ -222,6 +248,398 @@ def resolve_engine() -> str:
         "Considere atualizar o pymssql para >= 2.2.", ENGINE_EXECUTEMANY,
     )
     return ENGINE_EXECUTEMANY
+
+
+# ---------------------------------------------------------------------------
+# Engine bcp_native — utilitário nativo bcp (mssql-tools18)
+# ---------------------------------------------------------------------------
+
+# Caminho padrão do bcp instalado pelo pacote mssql-tools18 (ver Dockerfiles).
+_BCP_PATH_PADRAO = "/opt/mssql-tools18/bin/bcp"
+
+# Linhas do stdout do ``bcp in`` com -b (progresso por lote e total final):
+#   "50000 rows sent to SQL Server. Total sent: 150000"
+#   "1234567 rows copied."
+_BCP_LOTE_RE  = re.compile(
+    r"^\s*(\d+)\s+rows sent to SQL Server\.\s*Total sent:\s*(\d+)")
+_BCP_TOTAL_RE = re.compile(r"^\s*(\d+)\s+rows copied\b")
+
+# Flags anunciadas no usage do bcp: tokens "[-x ..." (ex.: "[-u trust ...]").
+_BCP_FLAG_RE = re.compile(r"\[\s*(-[A-Za-z])(?=[\s\]\[])")
+
+# Caracteres de CONTROLE proibidos em literais de fronteira (sql_literal).
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def bcp_disponivel():
+    """Caminho do utilitário nativo ``bcp`` no worker (PATH ou o caminho
+    padrão do mssql-tools18) — None quando ausente."""
+    caminho = shutil.which("bcp")
+    if caminho:
+        return caminho
+    if os.access(_BCP_PATH_PADRAO, os.X_OK):
+        return _BCP_PATH_PADRAO
+    return None
+
+
+def bcp_flags_suportadas(usage_text) -> set:
+    """Flags de linha de comando anunciadas no usage do bcp (função PURA —
+    o chamador roda ``bcp`` sem argumentos e passa stdout+stderr).
+
+    Decidimos por INSPEÇÃO do próprio binário (a doc e os binários divergem
+    entre versões/SO):
+      - ``-u`` (trust server certificate, bcp >= 18): os mssql-tools 18
+        exigem criptografia E validação de certificado por padrão — sem
+        ``-u``, servidor com certificado self-signed recusa a conexão (é o
+        equivalente do TrustServerCertificate=yes do caminho pyodbc);
+      - ``-h`` (load hints, ex.: TABLOCK): a doc oficial marca como
+        Windows-only — só passamos se o usage do binário anunciar.
+    """
+    return set(_BCP_FLAG_RE.findall(usage_text or ""))
+
+
+def preparar_bcp():
+    """Contexto do engine bcp no worker: ``{"path", "flags"}`` — None quando
+    o binário não existe. As flags saem do usage do próprio binário (rodado
+    sem argumentos; exit != 0 é esperado)."""
+    caminho = bcp_disponivel()
+    if not caminho:
+        return None
+    usage = ""
+    try:
+        proc = subprocess.run([caminho], capture_output=True, text=True,
+                              errors="replace", timeout=15)
+        usage = (proc.stdout or "") + (proc.stderr or "")
+    except Exception as e:
+        log.warning("[COPY] bcp presente mas não foi possível ler o usage "
+                    "(flags -u/-h desabilitadas): %s", e)
+    return {"path": caminho, "flags": bcp_flags_suportadas(usage)}
+
+
+def redigir_cmd(args):
+    """Lista de argumentos com a senha REDIGIDA para log (função PURA):
+    o valor após ``-P`` (ou colado, ``-Psenha``) vira ``****``. NENHUM
+    comando bcp pode ser logado sem passar por aqui."""
+    red, oculta = [], False
+    for a in args:
+        a = str(a)
+        if oculta:
+            red.append("****")
+            oculta = False
+        elif a == "-P":
+            red.append(a)
+            oculta = True
+        elif a.startswith("-P") and len(a) > 2:
+            red.append("-P****")
+        else:
+            red.append(a)
+    return red
+
+
+def _redigir_texto(texto, senhas):
+    """Redige as senhas em texto livre (o stderr do bcp não ecoa a senha,
+    mas redigimos por segurança antes de logar/persistir mensagens)."""
+    texto = str(texto or "")
+    for s in senhas:
+        if s:
+            texto = texto.replace(str(s), "****")
+    return texto
+
+
+def sql_literal(v) -> str:
+    """Valor de fronteira de faixa → literal T-SQL SEGURO para inline no
+    SELECT do engine bcp_native (o bcp NÃO tem parâmetros — mesmo estilo do
+    ``quote_literal`` do copy_sql da API). Função PURA.
+
+      - str  → aspas simples DUPLICADAS; prefixo ``N'...'`` apenas quando há
+        caractere não-ASCII (N'' contra coluna VARCHAR pode custar a
+        sargabilidade do range seek; fronteiras hex são sempre ASCII);
+        caracteres de CONTROLE (< 0x20 e 0x7f) são REJEITADOS (ValueError) —
+        fronteira de partição nunca deveria contê-los;
+      - datetime → ISO 8601 com 'T' (independe de idioma/DATEFORMAT); fração
+        reduzida a 3 dígitos quando for milissegundo exato (compatível com
+        DATETIME); date → 'YYYY-MM-DD';
+      - bool → 1/0; int/float/Decimal → str();
+      - None → NULL (defensivo; a faixa IS NULL não usa literal);
+      - outros tipos → str() entre aspas (mesma regra de controle/escape).
+    """
+    if v is None:
+        return "NULL"
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if isinstance(v, (int, float, Decimal)):
+        return str(v)
+    if isinstance(v, datetime):
+        txt = v.isoformat()
+        if v.microsecond and v.microsecond % 1000 == 0:
+            txt = txt[:-3]  # .123000 → .123 (aceito por DATETIME)
+        return f"'{txt}'"
+    if isinstance(v, date):
+        return f"'{v.isoformat()}'"
+    s = str(v)
+    if _CTRL_RE.search(s):
+        raise ValueError(
+            "Fronteira de faixa contém caractere de controle — literal "
+            "rejeitado por segurança no engine bcp_native")
+    esc = s.replace("'", "''")
+    prefixo = "N" if any(ord(ch) > 127 for ch in s) else ""
+    return f"{prefixo}'{esc}'"
+
+
+def montar_cmd_bcp_queryout(bcp_path, select_sql, host, port, database,
+                            user, password, datafile="/dev/stdout",
+                            trust_cert=True):
+    """Comando (lista argv, SEM shell) do LEITOR ``bcp <query> queryout``:
+    formato NATIVO (``-n``, tipos binários — o desvio de codepage do caminho
+    pymssql NÃO se aplica; nunca -c/-w) e ``-k`` (keep nulls). O ``datafile``
+    é a ponta de escrita do pipe (``/dev/fd/N``) — NUNCA ``/dev/stdout``
+    em produção, pois as MENSAGENS do bcp também saem no stdout e
+    corromperiam o fluxo de dados. Função PURA (não executa nada)."""
+    cmd = [str(bcp_path), str(select_sql), "queryout", str(datafile),
+           "-S", f"{host},{int(port or 1433)}", "-d", str(database),
+           "-U", str(user), "-P", str(password or ""), "-n", "-k"]
+    if trust_cert:
+        cmd.append("-u")
+    return cmd
+
+
+def montar_cmd_bcp_in(bcp_path, dst_schema, dst_table, host, port, database,
+                      user, password, batch_size, datafile="/dev/stdin",
+                      trust_cert=True, tablock=False):
+    """Comando (lista argv, SEM shell) do ESCRITOR ``bcp <tabela> in``:
+    formato nativo + keep nulls, ``-b`` (lote → progresso por linha no
+    stdout), ``-m 0`` (para no primeiro erro de conversão) e, quando o
+    binário suportar, ``-h TABLOCK`` (minimal logging). A tabela vai em DUAS
+    partes ``[schema].[tabela]`` + ``-d`` — a doc do bcp PROÍBE nome em 3
+    partes junto com ``-d`` (database duas vezes). Função PURA."""
+    tabela = f"{quote_ident(dst_schema)}.{quote_ident(dst_table)}"
+    cmd = [str(bcp_path), tabela, "in", str(datafile),
+           "-S", f"{host},{int(port or 1433)}", "-d", str(database),
+           "-U", str(user), "-P", str(password or ""), "-n", "-k",
+           "-b", str(int(batch_size)), "-m", "0"]
+    if trust_cert:
+        cmd.append("-u")
+    if tablock:
+        cmd += ["-h", "TABLOCK"]
+    return cmd
+
+
+def parse_progresso_bcp(linha):
+    """Interpreta UMA linha do stdout do ``bcp in`` (função PURA):
+    ``("lote", total_acumulado)`` para as linhas de progresso por lote
+    ("N rows sent to SQL Server. Total sent: M"), ``("total", n)`` para o
+    resumo final ("N rows copied." — valor de RECONCILIAÇÃO da faixa) e
+    None para as demais linhas (banner, clock time...)."""
+    m = _BCP_LOTE_RE.match(linha or "")
+    if m:
+        return ("lote", int(m.group(2)))
+    m = _BCP_TOTAL_RE.match(linha or "")
+    if m:
+        return ("total", int(m.group(1)))
+    return None
+
+
+def probe_bcp(src_air, src_db, dst_air, dst_db):
+    """Probe de viabilidade do engine bcp_native — roda ANTES das faixas:
+    um ``SELECT 1`` queryout para /dev/null em CADA servidor valida binário,
+    login e TLS nas duas pontas em segundos. Retorna None quando viável;
+    senão o MOTIVO (stderr truncado e com senha redigida) — o chamador loga
+    claro e cai para o streaming pymssql NA EXECUÇÃO INTEIRA (atualizando o
+    engine gravado), sem deixar a exec presa em falhas sistemáticas."""
+    ctx = preparar_bcp()
+    if ctx is None:
+        return "binário bcp não encontrado no worker"
+    trust = "-u" in ctx["flags"]
+    for rotulo, air, db in (("origem", src_air, src_db),
+                            ("destino", dst_air, dst_db)):
+        host, port, user, senha = _conn_params(air)
+        cmd = montar_cmd_bcp_queryout(ctx["path"], "SELECT 1", host, port,
+                                      db, user, senha, datafile="/dev/null",
+                                      trust_cert=trust)
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  errors="replace", timeout=90)
+        except Exception as e:
+            return f"probe bcp na {rotulo} ({host}:{port}/{db}) falhou: {e}"
+        if proc.returncode != 0:
+            err = _redigir_texto(
+                (proc.stderr or proc.stdout or "").strip(), (senha,))[:400]
+            return (f"probe bcp na {rotulo} ({host}:{port}/{db}) falhou "
+                    f"(exit {proc.returncode}): {err}")
+    return None
+
+
+def _drenar_stream(stream, destino):
+    """Drena um stream de texto de subprocesso para um deque LIMITADO
+    (thread daemon) — evita deadlock por buffer de pipe cheio enquanto o
+    loop principal lê o progresso do escritor."""
+    try:
+        for linha in stream:
+            destino.append(linha.rstrip("\n"))
+    except Exception:
+        pass
+
+
+def copiar_faixa_bcp(bcp_ctx, select_sql, src_air, src_db, dst_air, dst_db,
+                     dst_schema, dst_table, batch_size,
+                     on_lote=None, deve_cancelar=None) -> dict:
+    """Copia UMA faixa com o utilitário nativo bcp: leitor ``queryout``
+    (formato NATIVO) conectado por PIPE anônimo ao escritor ``in`` — nada
+    toca disco e o C roda nas duas pontas.
+
+    Plumbing: o datafile do leitor é ``/dev/fd/N`` (ponta de escrita de um
+    ``os.pipe()``, herdada via ``pass_fds``) e o do escritor é
+    ``/dev/stdin`` — assim as MENSAGENS de cada bcp ficam no stdout normal,
+    separadas do fluxo de dados. Sem ``shell=True`` (argv em lista).
+
+    Progresso: cada linha "N rows sent ... Total sent: M" do escritor vira
+    ``on_lote(delta)`` (best-effort) e uma checagem de ``deve_cancelar()``
+    (True → ``terminate()`` nos DOIS processos, faixa 'cancelado'). A
+    granularidade depende do flush do stdout do bcp — best-effort, como o
+    progresso incremental atual. O "N rows copied." final do escritor é o
+    total de RECONCILIAÇÃO da faixa.
+
+    Falha (exit != 0 em qualquer ponta): stderr/stdout capturados (senha
+    redigida, truncado em 4000) → {"status": "erro"}; o PAR do pipe é morto
+    (leitor terminado se o escritor falhou; leitor que morre gera EOF/EPIPE
+    no escritor naturalmente). Sem timeout próprio (faixas longas) — o teto
+    é o execution_timeout da task (6h).
+
+    Trade-off ACEITO do v1: a senha vai em ``-P`` no argv dos processos bcp
+    — ela NUNCA aparece em log (redigir_cmd) nem em mensagem persistida
+    (_redigir_texto), mas fica visível no process list DENTRO do container
+    do worker enquanto o bcp roda (container mono-serviço, não interativo).
+
+    Retorna {"status": concluido|cancelado|erro, "rows": int,
+    "erro_msg": str|None} — nunca levanta exceção.
+    """
+    host_s, port_s, user_s, senha_s = _conn_params(src_air)
+    host_d, port_d, user_d, senha_d = _conn_params(dst_air)
+    flags = bcp_ctx.get("flags") or set()
+    trust = "-u" in flags
+    tablock = "-h" in flags
+
+    status, rows, erro_msg = "erro", 0, None
+    total_lote, total_final = 0, None
+    cancelada = False
+    saida_leitor = deque(maxlen=400)
+    err_escritor = ""
+
+    r_fd, w_fd = os.pipe()
+    leitor = escritor = None
+    try:
+        cmd_leitor = montar_cmd_bcp_queryout(
+            bcp_ctx["path"], select_sql, host_s, port_s, src_db,
+            user_s, senha_s, datafile=f"/dev/fd/{w_fd}", trust_cert=trust)
+        cmd_escritor = montar_cmd_bcp_in(
+            bcp_ctx["path"], dst_schema, dst_table, host_d, port_d, dst_db,
+            user_d, senha_d, batch_size, datafile="/dev/stdin",
+            trust_cert=trust, tablock=tablock)
+        log.info("[COPY][bcp] leitor:   %s", " ".join(redigir_cmd(cmd_leitor)))
+        log.info("[COPY][bcp] escritor: %s", " ".join(redigir_cmd(cmd_escritor)))
+
+        leitor = subprocess.Popen(
+            cmd_leitor, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            pass_fds=(w_fd,), text=True, errors="replace")
+        os.close(w_fd)
+        w_fd = -1
+        escritor = subprocess.Popen(
+            cmd_escritor, stdin=r_fd, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, errors="replace")
+        os.close(r_fd)
+        r_fd = -1
+
+        t_leitor = threading.Thread(
+            target=_drenar_stream, args=(leitor.stdout, saida_leitor),
+            daemon=True)
+        t_leitor.start()
+
+        for linha in escritor.stdout:
+            evento = parse_progresso_bcp(linha)
+            if not evento:
+                continue
+            tipo, n = evento
+            if tipo == "total":
+                total_final = n
+                continue
+            delta = n - total_lote
+            total_lote = n
+            if delta > 0 and on_lote is not None:
+                try:
+                    on_lote(delta)
+                except Exception as e:
+                    log.warning("[COPY][bcp] progresso falhou (segue): %s", e)
+            if deve_cancelar is not None and deve_cancelar():
+                cancelada = True
+                for p in (leitor, escritor):
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
+                break
+
+        try:
+            _, err_escritor = escritor.communicate(
+                timeout=120 if cancelada else None)
+        except Exception:
+            try:
+                escritor.kill()
+                _, err_escritor = escritor.communicate(timeout=30)
+            except Exception:
+                pass
+        # Escritor morreu com erro → mata o par (leitor pode estar no meio
+        # de uma query longa e só notaria o EPIPE na primeira escrita).
+        if escritor.returncode not in (0, None) and leitor.poll() is None:
+            try:
+                leitor.terminate()
+            except Exception:
+                pass
+        try:
+            leitor.wait(timeout=120 if (cancelada or escritor.returncode)
+                        else None)
+        except Exception:
+            try:
+                leitor.kill()
+                leitor.wait(timeout=30)
+            except Exception:
+                pass
+        t_leitor.join(timeout=10)
+
+        rc_l, rc_e = leitor.returncode, escritor.returncode
+        if cancelada:
+            status, rows = "cancelado", total_lote
+        elif rc_l == 0 and rc_e == 0:
+            status = "concluido"
+            rows = total_final if total_final is not None else total_lote
+        else:
+            partes = []
+            if rc_e not in (0, None):
+                cauda = "\n".join(
+                    (err_escritor or "").strip().splitlines()[-8:])
+                partes.append(f"bcp in exit {rc_e}: {cauda}")
+            if rc_l not in (0, None):
+                cauda = "\n".join(list(saida_leitor)[-8:])
+                partes.append(f"bcp queryout exit {rc_l}: {cauda}")
+            erro_msg = _redigir_texto(
+                " | ".join(partes) or "bcp falhou sem mensagem de erro",
+                (senha_s, senha_d))[:4000]
+            rows = total_lote
+    except Exception as e:
+        erro_msg = _redigir_texto(str(e), (senha_s, senha_d))[:4000]
+        for p in (leitor, escritor):
+            try:
+                if p is not None and p.poll() is None:
+                    p.kill()
+            except Exception:
+                pass
+    finally:
+        for fd in (r_fd, w_fd):
+            try:
+                if fd >= 0:
+                    os.close(fd)
+            except Exception:
+                pass
+    return {"status": status, "rows": int(rows or 0), "erro_msg": erro_msg}
 
 
 def charset_da_conexao(airflow_conn):
@@ -383,8 +801,23 @@ def prepare_bulk_target(dst_conn, dst_schema, dst_table, dst_columns, engine,
     O pymssql ``bulk_copy`` mapeia os valores POSICIONALMENTE contra as
     colunas físicas 1..N do destino quando ``column_ids=None`` — destino com
     ordem física diferente, coluna extra (IDENTITY/auditoria) ou cópia de
-    subconjunto embaralharia dados SILENCIOSAMENTE. Por isso, para
-    ENGINE_BULK_COPY:
+    subconjunto embaralharia dados SILENCIOSAMENTE.
+
+    O ``bcp ... in`` SEM format file tem o MESMO perigo (mapeamento
+    posicional contra todas as colunas físicas do destino). Política do
+    ENGINE_BCP (v1 NUNCA gera format file — complexidade/risco):
+
+      - o engine bcp_native só se mantém quando as colunas físicas 1..N do
+        destino coincidirem EXATAMENTE com ``dst_columns`` (mesma checagem
+        case-insensitive do pymssql posicional) E o binário bcp continuar
+        disponível — nesse caso ``target["bcp"]`` recebe o contexto
+        {"path", "flags"} e ``charset`` fica None (formato NATIVO: tipos
+        binários, o codepage não se aplica);
+      - caso contrário, cai para o próximo engine streaming
+        (``resolve_engine(incluir_bcp=False)`` — normalmente
+        pymssql_bulk_copy, que tem column_ids), logando o motivo.
+
+    Para ENGINE_BULK_COPY:
 
       - resolve os ordinais BCP densos (ROW_NUMBER sobre column_id) das
         colunas de destino em sys.columns do banco de DESTINO e valida que
@@ -404,6 +837,36 @@ def prepare_bulk_target(dst_conn, dst_schema, dst_table, dst_columns, engine,
     target = {"engine": engine, "table_fqn": table_fqn,
               "columns": list(dst_columns), "column_ids": None,
               "charset": charset_override, "motivo_fallback": None}
+
+    if engine == ENGINE_BCP:
+        fisicas = _colunas_fisicas_destino(dst_conn, dst_schema, dst_table)
+        if not fisicas:
+            raise ValueError(
+                f"Tabela de destino {table_fqn} não encontrada ao resolver "
+                "as colunas do engine bcp_native")
+        nomes_fisicos = [nome for nome, _ in fisicas]
+        bcp_ctx = preparar_bcp()
+        if bcp_ctx is not None and [n.lower() for n in nomes_fisicos] \
+                == [str(c).lower() for c in dst_columns]:
+            target["bcp"] = bcp_ctx
+            target["charset"] = None  # formato nativo: codepage não se aplica
+            log.info("[COPY] bcp_native mantido: colunas físicas 1..N do "
+                     "destino coincidem exatamente com dst_columns")
+            return target
+        if bcp_ctx is None:
+            motivo = "binário bcp indisponível no worker"
+        else:
+            motivo = (
+                "bcp in sem format file mapeia POSICIONALMENTE contra as "
+                f"colunas físicas do destino {nomes_fisicos}, que não "
+                f"coincidem com as colunas da cópia {list(dst_columns)} "
+                "(format file fica fora do v1)")
+        engine = resolve_engine(incluir_bcp=False)
+        log.warning("[COPY] %s — caindo para o engine %s", motivo, engine)
+        target["engine"] = engine
+        target["motivo_fallback"] = motivo
+        # segue no fluxo do engine escolhido (column_ids/charset abaixo)
+
     if engine != ENGINE_BULK_COPY:
         return target
 
@@ -512,6 +975,12 @@ def bulk_write(dst_conn, target, rows, batch_size) -> int:
     engine    = target["engine"]
     table_fqn = target["table_fqn"]
     columns   = target["columns"]
+
+    if engine == ENGINE_BCP:
+        # O engine bcp copia por PIPE de processos (copiar_faixa_bcp), não
+        # por lotes em memória — chegar aqui é bug do chamador.
+        raise ValueError(
+            "bulk_write não atende o engine bcp_native — use copiar_faixa_bcp")
 
     if engine == ENGINE_BULK_COPY:
         kwargs = _bulk_copy_kwargs(dst_conn, batch_size)

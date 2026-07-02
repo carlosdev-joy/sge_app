@@ -3051,10 +3051,12 @@ function NotificacoesTab() {
 }
 
 
-// ── Conexões de Dados (Airflow Connections mssql via POST /admin) ─────────
-// CRUD + teste das connections usadas pela Cópia de Dados e pelos nós SQL.
-// As credenciais ficam no Airflow (Fernet) — a API só faz proxy da REST API
-// e NUNCA devolve a senha (edição com senha em branco mantém a atual).
+// ── Conexões de Dados (dbo.etl_conexao via POST /admin) ───────────────────
+// CRUD + teste das conexões usadas pela Cópia de Dados e pelos nós SQL.
+// As credenciais vivem no ORQUESTRA (senha cifrada com Fernet — migration
+// 054); a API NUNCA devolve a senha (edição com senha em branco mantém a
+// atual). origem 'airflow' = conexão legada ainda não migrada (só leitura
+// no Airflow) — o botão "Migrar do Airflow" traz todas com senha, via worker.
 interface ConnRow {
   conn_id: string
   host: string
@@ -3063,6 +3065,7 @@ interface ConnRow {
   login: string
   description: string
   extra_charset: string | null
+  origem: 'orquestra' | 'airflow'
 }
 
 const CHARSET_PADRAO = ['UTF-8', 'CP1252', 'CP850']
@@ -3110,8 +3113,11 @@ function ConnFormModal({ conn, onClose }: { conn: ConnRow | null; onClose: () =>
     finally { setTestando(false) }
   }
 
+  // Conexão legada do Airflow: salvar CRIA o registro no Orquestra, então a
+  // senha é obrigatória (ou use "Migrar do Airflow" para trazer sem redigitar).
+  const criaNoOrquestra = !isEdit || conn?.origem === 'airflow'
   const podeTestar = !!host.trim() && !!login.trim() && !!password
-  const podeSalvar = !!connId.trim() && !!host.trim() && !!login.trim() && (isEdit || !!password)
+  const podeSalvar = !!connId.trim() && !!host.trim() && !!login.trim() && (!criaNoOrquestra || !!password)
 
   return (
     <Modal open onClose={onClose} title={isEdit ? `Editar conexão — ${conn!.conn_id}` : 'Nova conexão'} size="lg">
@@ -3129,9 +3135,9 @@ function ConnFormModal({ conn, onClose }: { conn: ConnRow | null; onClose: () =>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Input label="Usuário *" value={login} onChange={e => setLogin(e.target.value)} placeholder="login do SQL Server" />
-          <Input label={isEdit ? 'Senha' : 'Senha *'} type="password" value={password}
+          <Input label={criaNoOrquestra ? 'Senha *' : 'Senha'} type="password" value={password}
             onChange={e => setPassword(e.target.value)} autoComplete="new-password"
-            placeholder={isEdit ? 'deixe em branco para manter a atual' : '••••••••'} />
+            placeholder={criaNoOrquestra ? '••••••••' : 'deixe em branco para manter a atual'} />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Select label="Charset (extra da connection)" value={charsetSel} onChange={e => setCharsetSel(e.target.value)}>
@@ -3145,7 +3151,9 @@ function ConnFormModal({ conn, onClose }: { conn: ConnRow | null; onClose: () =>
           )}
         </div>
         <p className="text-[11px] text-dim">
-          A senha é enviada ao Airflow e armazenada criptografada (Fernet) — o Orquestra não a guarda nem a exibe.
+          {conn?.origem === 'airflow'
+            ? 'Conexão legada do Airflow — ao salvar (com senha) ela passa a viver no Orquestra. Para trazer sem redigitar a senha, use "Migrar do Airflow" na listagem.'
+            : 'A senha é armazenada no Orquestra criptografada (Fernet) e nunca é exibida.'}
         </p>
         <div className="flex items-center justify-between border-t border-edge pt-3">
           <Button variant="secondary" size="sm" onClick={testarForm} loading={testando} disabled={!podeTestar}
@@ -3181,11 +3189,19 @@ function ConexoesTab() {
     onError: (e: any) => toast.error(e?.message || 'Falha ao excluir a connection'),
   })
 
-  // Teste da connection SALVA (conn_id): caminho rápido e, se preciso,
-  // fallback pela DAG de introspecção com a credencial real (via Airflow).
+  // Migra as connections mssql do Airflow para o Orquestra COM senha — roda
+  // no worker (DAG etl_admin_manage), a senha não trafega pela API/navegador.
+  const migrarMut = useMutation({
+    mutationFn: () => adminPost<{ mensagem?: string }>('conn_migrate'),
+    onSuccess: d => { toast.success(d?.mensagem ?? 'Migração concluída'); queryClient.invalidateQueries({ queryKey: ['admin-conexoes'] }) },
+    onError: (e: any) => toast.error(e?.message || 'Falha na migração das conexões'),
+  })
+
+  // Teste da conexão SALVA (conn_id): com a credencial cadastrada no
+  // Orquestra; conexão legada cai no caminho antigo via Airflow (~30s).
   const testarSalva = async (conn_id: string) => {
     setTestandoId(conn_id)
-    toast.info(`Testando "${conn_id}" — pode levar ~30s se o teste cair no caminho via Airflow…`)
+    toast.info(`Testando "${conn_id}"…`)
     try {
       const d = await adminPost<{ ok: boolean; mensagem: string; via?: string }>('conn_test', { conn_id })
       if (d.ok) toast.success(d.mensagem)
@@ -3195,19 +3211,30 @@ function ConexoesTab() {
   }
 
   const conns = data?.connections ?? []
+  const pendentesAirflow = conns.filter(c => c.origem === 'airflow').length
 
   return (
     <div className="flex flex-col gap-4">
-      <InfoBanner storageKey="admin_conexoes">
-        As credenciais são armazenadas no Airflow (criptografadas). Esta tela gerencia as
-        connections mssql usadas pela Cópia de Dados e pelos jobs.
+      <InfoBanner storageKey="admin_conexoes_v2">
+        As credenciais são armazenadas no Orquestra (senha criptografada). Esta tela gerencia as
+        conexões mssql usadas pela Cópia de Dados e pelos jobs. Conexões marcadas como
+        “Airflow” são legadas — use “Migrar do Airflow” para trazê-las com a senha.
       </InfoBanner>
 
       <div className="flex items-center justify-between">
         <p className="text-sm text-dim">
-          Connections do Airflow com tipo <span className="font-mono text-xs">mssql</span>.
+          Conexões <span className="font-mono text-xs">mssql</span> do Orquestra
+          {pendentesAirflow > 0 && <> — {pendentesAirflow} pendente(s) de migração do Airflow</>}.
         </p>
-        <Button size="sm" onClick={() => setForm({ open: true, conn: null })}><Plus size={13} /> Nova conexão</Button>
+        <div className="flex gap-2">
+          {pendentesAirflow > 0 && (
+            <Button size="sm" variant="secondary" onClick={() => migrarMut.mutate()} loading={migrarMut.isPending}
+              title="Importa as connections mssql do Airflow (com senha) para o Orquestra — roda no worker, pode levar ~1 min">
+              <RefreshCw size={13} /> Migrar do Airflow
+            </Button>
+          )}
+          <Button size="sm" onClick={() => setForm({ open: true, conn: null })}><Plus size={13} /> Nova conexão</Button>
+        </div>
       </div>
 
       {isLoading ? <PageSpinner /> : isError ? (
@@ -3223,6 +3250,7 @@ function ConexoesTab() {
                 <th className="px-4 py-2.5 text-left font-semibold">Host:porta</th>
                 <th className="px-4 py-2.5 text-left font-semibold">Descrição</th>
                 <th className="px-4 py-2.5 text-left font-semibold">Charset</th>
+                <th className="px-4 py-2.5 text-left font-semibold">Origem</th>
                 <th className="px-4 py-2.5 w-28"></th>
               </tr>
             </thead>
@@ -3233,6 +3261,11 @@ function ConexoesTab() {
                   <td className="px-4 py-2 font-mono text-xs text-ink">{c.host}{c.port != null ? `:${c.port}` : ''}</td>
                   <td className="px-4 py-2 text-xs text-dim">{c.description || '—'}</td>
                   <td className="px-4 py-2">{c.extra_charset ? <Badge>{c.extra_charset}</Badge> : <span className="text-xs text-dim">—</span>}</td>
+                  <td className="px-4 py-2">
+                    {c.origem === 'orquestra'
+                      ? <span className="text-[11px] font-medium px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">Orquestra</span>
+                      : <span className="text-[11px] font-medium px-2 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" title="Conexão legada — ainda no Airflow; use Migrar do Airflow">Airflow</span>}
+                  </td>
                   <td className="px-4 py-2">
                     <div className="flex items-center gap-1 justify-end">
                       <button onClick={() => setForm({ open: true, conn: c })}
@@ -3253,7 +3286,7 @@ function ConexoesTab() {
                 </tr>
               ))}
               {conns.length === 0 && (
-                <tr><td colSpan={5} className="px-4 py-6 text-center text-xs text-dim">Nenhuma connection mssql cadastrada no Airflow.</td></tr>
+                <tr><td colSpan={6} className="px-4 py-6 text-center text-xs text-dim">Nenhuma conexão mssql cadastrada.</td></tr>
               )}
             </tbody>
           </table>
@@ -3265,7 +3298,7 @@ function ConexoesTab() {
       <ConfirmModal
         open={!!delConn}
         title="Excluir conexão"
-        message={`Excluir a connection "${delConn}" do Airflow? Se estiver em uso por uma Cópia de Dados ou por um job, a exclusão será recusada.`}
+        message={`Excluir a conexão "${delConn}"? Se estiver em uso por uma Cópia de Dados ou por um job, a exclusão será recusada.`}
         danger confirmLabel="Excluir"
         onConfirm={() => delConn && delMut.mutate(delConn)}
         onCancel={() => setDelConn(null)}

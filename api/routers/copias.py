@@ -105,12 +105,33 @@ _MSG_ORIGEM_DESTINO_IGUAIS = (
 
 # ── Resolução de connection no Airflow (host/port) + allowlist ──────────────
 
+def _conexao_da_tabela(conn_id: str) -> dict | None:
+    """host/port de dbo.etl_conexao (fonte da verdade — migration 054), SEM a
+    senha. None se ausente; degrada para None se a tabela não existir."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("SELECT host, port FROM dbo.etl_conexao WHERE conn_id = ?",
+                    (conn_id,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if row and (row[0] or "").strip():
+            return {"host": row[0].strip(), "port": row[1], "schema": ""}
+    except Exception as e:
+        log.warning("copias: leitura de etl_conexao falhou (%s) — "
+                    "fallback Airflow", e)
+    return None
+
+
 async def _resolver_conexao(conn_id: str) -> dict:
-    """Resolve host/port/schema de uma connection MSSQL via Airflow REST
-    (GET /api/v1/connections/{conn_id} — a senha NÃO vem na resposta).
-    Levanta HTTPException clara se não existir/não for mssql/Airflow fora."""
+    """Resolve host/port/schema de uma conexão MSSQL: dbo.etl_conexao
+    primeiro (Orquestra); fallback Airflow REST para conexões ainda não
+    migradas (GET /api/v1/connections/{conn_id} — a senha NÃO vem na
+    resposta). Levanta HTTPException clara se não existir/não for mssql."""
     if not _CONN_ID_RE.match(conn_id or ""):
         raise HTTPException(status_code=422, detail="conn_id inválido")
+    local = _conexao_da_tabela(conn_id)
+    if local is not None:
+        return local
     try:
         async with get_airflow_client() as client:
             r = await client.get(f"/api/v1/connections/{conn_id}")

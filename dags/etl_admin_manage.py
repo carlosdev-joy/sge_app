@@ -6,9 +6,12 @@ DAG administrativa — operações restritas ao usuário admin.
 Gerencia:
   1. etl_app_config  — UPSERT / DELETE de parâmetros
   2. etl_pipeline    — DELETE cascade via sp_etl_pipeline_delete
+  3. etl_conexao     — conn_migrate: importa as Airflow Connections mssql
+                       (com senha, cifrada com ORQUESTRA_CONN_KEY)
 
 Entrada via conf:
-  action         : 'config_upsert' | 'config_delete' | 'pipeline_delete'
+  action         : 'config_upsert' | 'config_delete' | 'pipeline_delete' |
+                   'dag_file_delete' | 'regenerate_all_dags' | 'conn_migrate'
   requested_by   : str   — matrícula (validada no backend também)
 
   Para config_upsert:
@@ -198,6 +201,71 @@ def admin_manage(**context):
             'mensagem': f'{n} pipeline(s) marcados para regeneração.',
             'instrucao': 'Dispare etl_dag_factory com force_all=true para regenerar as DAGs.',
             'detalhes': {'pipelines_marcados': n, 'filter_project': filter_project or '(todos)'},
+        }
+
+    # ── conn_migrate ─────────────────────────────────────────────────────────
+    # Migra as Airflow Connections mssql para dbo.etl_conexao (migration 054),
+    # cifrando a senha com a ORQUESTRA_CONN_KEY (Fernet — a mesma chave do
+    # orquestra-api). Roda AQUI porque só o worker enxerga a senha em texto
+    # (metadados do Airflow via ORM); a API nunca vê a senha. Conexões que já
+    # existem em dbo.etl_conexao são preservadas (não sobrescreve edições).
+    elif action == 'conn_migrate':
+        import os
+        from airflow import settings
+        from airflow.models.connection import Connection
+        from cryptography.fernet import Fernet
+
+        key = (os.getenv('ORQUESTRA_CONN_KEY') or '').strip()
+        if not key:
+            raise ValueError(
+                "ORQUESTRA_CONN_KEY não configurada nos containers do Airflow — "
+                "defina no .env/compose o MESMO valor do orquestra-api.")
+        fernet = Fernet(key.encode())
+
+        session = settings.Session()
+        try:
+            airflow_conns = (session.query(Connection)
+                             .filter(Connection.conn_type == 'mssql').all())
+            # Materializa os campos DENTRO da sessão (password decifra via ORM)
+            candidatas = [{'conn_id': c.conn_id, 'host': c.host, 'port': c.port,
+                           'login': c.login, 'password': c.password,
+                           'description': c.description, 'extra': c.extra}
+                          for c in airflow_conns]
+        finally:
+            session.close()
+
+        migradas, ja_existiam, sem_dados = [], [], []
+        for c in candidatas:
+            if hook.get_records("SELECT 1 FROM dbo.etl_conexao WHERE conn_id = %s",
+                                parameters=(c['conn_id'],)):
+                ja_existiam.append(c['conn_id'])
+                continue
+            if not (c['host'] and c['login'] and c['password']):
+                sem_dados.append(c['conn_id'])
+                continue
+            senha_enc = fernet.encrypt(c['password'].encode('utf-8')).decode('ascii')
+            hook.run(
+                "INSERT INTO dbo.etl_conexao "
+                "  (conn_id, conn_type, host, port, login, senha_enc, "
+                "   descricao, extra_json, origem, criado_por) "
+                "VALUES (%s, 'mssql', %s, %s, %s, %s, %s, %s, 'migrada_airflow', %s)",
+                parameters=(c['conn_id'], c['host'], c['port'], c['login'],
+                            senha_enc, c['description'] or None,
+                            c['extra'] or None, requested_by))
+            migradas.append(c['conn_id'])
+
+        print(f"[ADMIN] conn_migrate: migradas={migradas} "
+              f"ja_existiam={ja_existiam} sem_dados={sem_dados} (by {requested_by})")
+        partes = [f"{len(migradas)} conexão(ões) migrada(s)"]
+        if ja_existiam:
+            partes.append(f"{len(ja_existiam)} já existia(m) no Orquestra")
+        if sem_dados:
+            partes.append(f"{len(sem_dados)} sem host/login/senha (ignorada(s))")
+        return {
+            'sucesso': True,
+            'mensagem': "Migração concluída: " + "; ".join(partes) + ".",
+            'detalhes': {'migradas': migradas, 'ja_existiam': ja_existiam,
+                         'sem_dados': sem_dados},
         }
 
     else:
