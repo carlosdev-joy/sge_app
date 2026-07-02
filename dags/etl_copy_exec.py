@@ -1,0 +1,658 @@
+"""
+etl_copy_exec.py
+================
+DAG genérica de execução do módulo Cópia de Dados (tela /copia-dados).
+
+Disparada pela API do ORQUESTRA (POST /copias/{id}/executar) com:
+  {"exec_id": <id em dbo.etl_copy_exec>}
+
+Fluxo:
+  1. Carrega execução + job (dbo.etl_copy_exec JOIN dbo.etl_copy_job);
+  2. status='executando'; resolve o engine de escrita
+     (pymssql bulk_copy → pyodbc fast_executemany → pymssql executemany);
+  3. Prepara o destino: criar_tabela (via script_create_table, se não existir)
+     e truncar_antes (TRUNCATE com fallback DELETE); resolve o ALVO de escrita
+     UMA vez (bulk_copy.prepare_bulk_target: ordinais/column_ids das colunas
+     de destino via sys.columns; sem suporte a column_ids no pymssql e ordem
+     física divergente → cai para engine por nome, atualizando o engine
+     registrado);
+  4. rows_total via count_sql na origem;
+  5. Divide em faixas pela coluna de partição (int/bigint/decimal por
+     aritmética; date/datetime por dias) — semiabertas [a, b), última fechada;
+     faixa extra IS NULL (range_index=-1) se a coluna admitir NULL.
+     Sem partição → faixa única. Persistidas em dbo.etl_copy_exec_range;
+  6. ThreadPoolExecutor (uma task só, IO-bound — pymssql solta o GIL): cada
+     faixa lê por streaming (fetchmany) e grava por bulk_write, com progresso
+     incremental atômico best-effort e checagem de cancelamento a cada 5 lotes;
+  7. Finaliza (concluido | erro | cancelado), notifica o solicitante em
+     dbo.etl_notificacao (best-effort) e, se houve erro, falha a task
+     (AirflowException) APÓS persistir tudo.
+
+Estado/progresso ficam no banco do ORQUESTRA — a UI acompanha por polling.
+Credenciais de origem/destino SÓ via Airflow Connections (BaseHook); nenhuma
+senha é logada, retornada em XCom ou gravada em tabela.
+"""
+from __future__ import annotations
+
+import json
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+
+import pendulum
+from airflow import DAG
+from airflow.exceptions import AirflowException
+from airflow.hooks.base import BaseHook
+from airflow.operators.python import PythonOperator
+from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
+
+from utils import bulk_copy
+
+DAG_ID        = "etl_copy_exec"
+MSSQL_CONN_ID = "SQL14_DMDB41"
+LOCAL_TZ      = "America/Sao_Paulo"
+
+# Checagem de cancelamento (etl_copy_exec.status='cancelando') a cada N lotes
+CHECK_CANCEL_A_CADA_LOTES = 5
+
+default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
+
+
+def _hook() -> MsSqlHook:
+    """Hook do banco do ORQUESTRA (estado/progresso/notificação)."""
+    return MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
+
+
+# ---------------------------------------------------------------------------
+# Carga da execução + job
+# ---------------------------------------------------------------------------
+
+_CAMPOS = [
+    "exec_pk", "exec_status", "matricula",
+    "job_id", "nome", "src_conn_id", "src_database", "src_schema", "src_table",
+    "dst_conn_id", "dst_database", "dst_schema", "dst_table",
+    "criar_tabela", "truncar_antes", "particao_coluna",
+    "streams", "batch_size", "select_sql", "count_sql",
+    "dst_columns_json", "colunas_json",
+]
+
+
+def _carregar_execucao(hook, exec_id):
+    row = hook.get_first(
+        """
+        SELECT e.id, e.status, e.matricula,
+               j.id, j.nome, j.src_conn_id, j.src_database, j.src_schema, j.src_table,
+               j.dst_conn_id, j.dst_database, j.dst_schema, j.dst_table,
+               j.criar_tabela, j.truncar_antes, j.particao_coluna,
+               j.streams, j.batch_size, j.select_sql, j.count_sql,
+               j.dst_columns_json, j.colunas_json
+        FROM dbo.etl_copy_exec e
+        JOIN dbo.etl_copy_job j ON j.id = e.copy_job_id
+        WHERE e.id = %s
+        """,
+        parameters=(exec_id,),
+    )
+    if not row:
+        return None
+    d = dict(zip(_CAMPOS, row))
+    d["criar_tabela"]  = bool(d["criar_tabela"])
+    d["truncar_antes"] = bool(d["truncar_antes"])
+    d["batch_size"]    = max(1000, min(200000, int(d["batch_size"] or 50000)))
+    return d
+
+
+# ---------------------------------------------------------------------------
+# Preparação do destino / contagem
+# ---------------------------------------------------------------------------
+
+def _fqn_destino(job) -> str:
+    return (f"{bulk_copy.quote_ident(job['dst_schema'])}."
+            f"{bulk_copy.quote_ident(job['dst_table'])}")
+
+
+def _preparar_destino(src, dst_ctl, job):
+    """criar_tabela (se não existir) e truncar_antes no destino (conexão de
+    controle pymssql autocommit)."""
+    fqn = _fqn_destino(job)
+    cur = dst_ctl.cursor()
+    try:
+        cur.execute("SELECT OBJECT_ID(%s, 'U')", (fqn,))
+        existe = cur.fetchone()[0] is not None
+        if not existe:
+            if not job["criar_tabela"]:
+                raise ValueError(
+                    f"Tabela de destino {fqn} não existe e criar_tabela=0 — "
+                    "crie a tabela ou marque 'Criar nova tabela' no job.")
+            dst_cols = json.loads(job["dst_columns_json"])
+            colunas  = (json.loads(job["colunas_json"] or "{}") or {}).get("colunas") or []
+            ddl = bulk_copy.script_create_table(
+                src, job["src_database"], job["src_schema"], job["src_table"],
+                dst_cols, colunas,
+                dst_schema=job["dst_schema"], dst_table=job["dst_table"])
+            print(f"[COPY] Criando tabela de destino:\n{ddl}")
+            cur.execute(ddl)
+        elif job["criar_tabela"]:
+            print(f"[COPY] Tabela {fqn} já existe — criação ignorada.")
+
+        if job["truncar_antes"]:
+            try:
+                cur.execute(f"TRUNCATE TABLE {fqn}")
+                print(f"[COPY] TRUNCATE TABLE {fqn} OK")
+            except Exception as e:
+                # Sem permissão de TRUNCATE (ou FK) → DELETE (mais lento)
+                print(f"[COPY] TRUNCATE falhou ({e}) — usando DELETE (mais lento).")
+                cur.execute(f"DELETE FROM {fqn}")
+                print(f"[COPY] DELETE FROM {fqn} OK")
+    finally:
+        cur.close()
+
+
+def _contar_origem(src, job) -> int:
+    cur = src.cursor()
+    try:
+        cur.execute(job["count_sql"])
+        return int(cur.fetchone()[0] or 0)
+    finally:
+        cur.close()
+
+
+# ---------------------------------------------------------------------------
+# Cálculo das faixas
+# ---------------------------------------------------------------------------
+
+def _calcular_faixas(vmin, vmax, streams):
+    """Divide [vmin, vmax] em até ``streams`` faixas semiabertas [a, b) — a
+    ÚLTIMA fechada [a, b]. Retorna lista de pares (ini, fim).
+
+    Tipos suportados: int/bigint (aritmética inteira), decimal (Decimal) e
+    date/datetime (divisão por dias). Tipo não suportado → faixa única.
+    """
+    if vmin is None or vmax is None:
+        return []
+    if streams <= 1 or vmin == vmax:
+        return [(vmin, vmax)]
+
+    if isinstance(vmin, (datetime, date)):
+        dias = (vmax - vmin).days
+        if dias <= 0:
+            return [(vmin, vmax)]
+        bounds = [vmin + timedelta(days=(dias * i) // streams)
+                  for i in range(streams + 1)]
+    elif isinstance(vmin, bool):
+        return [(vmin, vmax)]
+    elif isinstance(vmin, int):
+        span = vmax - vmin
+        bounds = [vmin + (span * i) // streams for i in range(streams + 1)]
+    elif isinstance(vmin, Decimal):
+        span = Decimal(vmax) - vmin
+        bounds = [vmin + (span * i) / streams for i in range(streams + 1)]
+    else:
+        return [(vmin, vmax)]
+
+    bounds[0], bounds[-1] = vmin, vmax
+    uniq = sorted(set(bounds))
+    if len(uniq) < 2:
+        return [(vmin, vmax)]
+    return [(uniq[i], uniq[i + 1]) for i in range(len(uniq) - 1)]
+
+
+def _particao_admite_null(src, job) -> bool:
+    """True se a coluna de partição admitir NULL na ORIGEM (sys.columns).
+
+    Quando a coluna do SELECT é transformada (alias sem coluna física 1:1),
+    cai para um EXISTS na própria subquery compilada. Best-effort: em qualquer
+    erro assume False (sem faixa IS NULL)."""
+    part = job["particao_coluna"]
+    origem = None
+    try:
+        colunas = (json.loads(job["colunas_json"] or "{}") or {}).get("colunas") or []
+        for c in colunas:
+            if (c.get("destino") or c.get("origem")) == part and not c.get("transform"):
+                origem = c.get("origem")
+                break
+    except Exception:
+        origem = None
+
+    cur = src.cursor()
+    try:
+        if origem:
+            qdb = bulk_copy.quote_ident(job["src_database"])
+            fqn = (f"{qdb}.{bulk_copy.quote_ident(job['src_schema'])}."
+                   f"{bulk_copy.quote_ident(job['src_table'])}")
+            cur.execute(
+                f"SELECT c.is_nullable FROM {qdb}.sys.columns c "
+                f"WHERE c.object_id = OBJECT_ID(%s) AND c.name = %s",
+                (fqn, origem),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                return bool(row[0])
+        # Fallback: existe alguma linha com a partição NULL no SELECT compilado?
+        cur.execute(
+            f"SELECT CASE WHEN EXISTS (SELECT 1 FROM ({job['select_sql']}) AS src "
+            f"WHERE {bulk_copy.quote_ident(part)} IS NULL) THEN 1 ELSE 0 END"
+        )
+        row = cur.fetchone()
+        return bool(row and row[0])
+    except Exception as e:
+        print(f"[COPY] Aviso: não foi possível checar NULL da partição: {e}")
+        return False
+    finally:
+        cur.close()
+
+
+def _str100(v):
+    """Valor de fronteira → NVARCHAR(100) legível (str; None preservado)."""
+    return None if v is None else str(v)[:100]
+
+
+def _montar_faixas(hook, src, job, exec_id, streams):
+    """Calcula e persiste as faixas em dbo.etl_copy_exec_range.
+
+    Retorna a lista de faixas com os valores TIPADOS em memória (int/Decimal/
+    date/datetime) para o WHERE parametrizado — valor_ini/valor_fim no banco
+    são apenas a representação em texto para a UI."""
+    part = (job["particao_coluna"] or "").strip()
+    faixas = []
+    if part:
+        part_q = bulk_copy.quote_ident(part)
+        cur = src.cursor()
+        try:
+            cur.execute(
+                f"SELECT MIN({part_q}), MAX({part_q}) "
+                f"FROM ({job['select_sql']}) AS src")
+            vmin, vmax = cur.fetchone()
+        finally:
+            cur.close()
+        print(f"[COPY] Partição [{part}]: MIN={vmin} MAX={vmax}")
+
+        pares = _calcular_faixas(vmin, vmax, streams)
+        for i, (a, b) in enumerate(pares):
+            faixas.append({"range_index": i, "ini": a, "fim": b,
+                           "ultima": i == len(pares) - 1,
+                           "is_null": False, "unica": False})
+        if _particao_admite_null(src, job):
+            faixas.append({"range_index": -1, "ini": None, "fim": None,
+                           "ultima": False, "is_null": True, "unica": False})
+        if not faixas:
+            # Origem vazia (MIN/MAX NULL e sem NULLs) → faixa única
+            faixas.append({"range_index": 0, "ini": None, "fim": None,
+                           "ultima": True, "is_null": False, "unica": True})
+    else:
+        faixas.append({"range_index": 0, "ini": None, "fim": None,
+                       "ultima": True, "is_null": False, "unica": True})
+
+    for f in faixas:
+        hook.run(
+            "INSERT INTO dbo.etl_copy_exec_range "
+            "(exec_id, range_index, valor_ini, valor_fim, status) "
+            "VALUES (%s, %s, %s, %s, 'pendente')",
+            parameters=(exec_id, f["range_index"],
+                        _str100(f["ini"]), _str100(f["fim"])),
+        )
+    ids = {r[0]: r[1] for r in hook.get_records(
+        "SELECT range_index, id FROM dbo.etl_copy_exec_range WHERE exec_id = %s",
+        parameters=(exec_id,))}
+    for f in faixas:
+        f["id"] = ids.get(f["range_index"])
+    return faixas
+
+
+# ---------------------------------------------------------------------------
+# Worker de faixa (roda em thread — conexões PRÓPRIAS)
+# ---------------------------------------------------------------------------
+
+def _sql_da_faixa(job, faixa):
+    """SELECT da faixa: subquery sobre o select_sql compilado pela API.
+
+    Quando há parâmetros (%s), o pymssql aplica formatação estilo % no SQL —
+    qualquer ``%`` literal do select_sql (ex.: LIKE) precisa virar ``%%``.
+    Nas execuções SEM parâmetros o SQL vai cru (sem formatação)."""
+    part_q = (bulk_copy.quote_ident(job["particao_coluna"])
+              if job["particao_coluna"] else None)
+    if faixa.get("unica"):
+        return f"SELECT * FROM ({job['select_sql']}) AS src", None
+    if faixa.get("is_null"):
+        return (f"SELECT * FROM ({job['select_sql']}) AS src "
+                f"WHERE {part_q} IS NULL"), None
+    escaped = job["select_sql"].replace("%", "%%")
+    op_fim = "<=" if faixa.get("ultima") else "<"
+    sql = (f"SELECT * FROM ({escaped}) AS src "
+           f"WHERE {part_q} >= %s AND {part_q} {op_fim} %s")
+    return sql, (faixa["ini"], faixa["fim"])
+
+
+def _exec_prog(prog, sql, params):
+    """UPDATE de progresso best-effort (nunca derruba a cópia)."""
+    try:
+        cur = prog.cursor()
+        cur.execute(sql, params)
+        cur.close()
+    except Exception as e:
+        print(f"[COPY] Aviso: update de progresso falhou: {e}")
+
+
+def _status_exec(prog, exec_id):
+    """Status atual da execução (para checar 'cancelando'). None em erro."""
+    try:
+        cur = prog.cursor()
+        cur.execute("SELECT status FROM dbo.etl_copy_exec WHERE id = %s", (exec_id,))
+        row = cur.fetchone()
+        cur.close()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def _copiar_faixa(faixa, job, exec_id, alvo, src_air, dst_air):
+    """Copia UMA faixa, com conexões PRÓPRIAS de origem, destino e progresso.
+
+    ``alvo`` = contexto de bulk_copy.prepare_bulk_target (engine efetivo,
+    table_fqn, colunas e column_ids), resolvido UMA vez na task principal.
+
+    Retorna {"range_id", "range_index", "status", "rows", "erro_msg"} — nunca
+    levanta exceção (o desfecho vai no dicionário e é persistido na faixa)."""
+    resultado = {"range_id": faixa["id"], "range_index": faixa["range_index"],
+                 "status": "erro", "rows": 0, "erro_msg": None}
+    prog = src = dst = None
+    try:
+        prog = _hook().get_conn()
+        prog.autocommit(True)  # incrementos atômicos, sem transação pendurada
+
+        if _status_exec(prog, exec_id) == "cancelando":
+            resultado["status"] = "cancelado"
+            return resultado
+
+        _exec_prog(prog,
+                   "UPDATE dbo.etl_copy_exec_range "
+                   "SET status='executando', iniciado_em=GETDATE() WHERE id=%s",
+                   (faixa["id"],))
+
+        src = bulk_copy.open_src_conn(src_air, job["src_database"])
+        dst = bulk_copy.open_dst_conn(dst_air, job["dst_database"], alvo["engine"])
+
+        sql, params = _sql_da_faixa(job, faixa)
+
+        cur = src.cursor()
+        try:
+            if params:
+                cur.execute(sql, params)
+            else:
+                cur.execute(sql)
+
+            lotes = copiadas = 0
+            cancelada = False
+            while True:
+                rows = cur.fetchmany(job["batch_size"])
+                if not rows:
+                    break
+                n = bulk_copy.bulk_write(dst, alvo, rows, job["batch_size"])
+                copiadas += n
+                lotes += 1
+                # Progresso incremental atômico (best-effort)
+                _exec_prog(prog,
+                           "UPDATE dbo.etl_copy_exec_range "
+                           "SET rows_copied = rows_copied + %s WHERE id = %s",
+                           (n, faixa["id"]))
+                _exec_prog(prog,
+                           "UPDATE dbo.etl_copy_exec "
+                           "SET rows_copied = rows_copied + %s WHERE id = %s",
+                           (n, exec_id))
+                if lotes % CHECK_CANCEL_A_CADA_LOTES == 0 \
+                        and _status_exec(prog, exec_id) == "cancelando":
+                    print(f"[COPY] Faixa {faixa['range_index']}: cancelamento "
+                          f"solicitado — abortando após {copiadas} linha(s).")
+                    cancelada = True
+                    break
+        finally:
+            cur.close()
+
+        resultado["rows"]   = copiadas
+        resultado["status"] = "cancelado" if cancelada else "concluido"
+        print(f"[COPY] Faixa {faixa['range_index']}: {resultado['status']} "
+              f"({copiadas} linha(s), {lotes} lote(s))")
+    except Exception as e:
+        resultado["erro_msg"] = str(e)[:4000]
+        print(f"[COPY] Faixa {faixa['range_index']} ERRO: {e}")
+    finally:
+        for c in (src, dst):
+            try:
+                if c is not None:
+                    c.close()
+            except Exception:
+                pass
+        # Desfecho da faixa (rows absoluto reconcilia os incrementos best-effort)
+        try:
+            if prog is not None:
+                _exec_prog(prog,
+                           "UPDATE dbo.etl_copy_exec_range "
+                           "SET status=%s, rows_copied=%s, erro_msg=%s, "
+                           "concluido_em=GETDATE() WHERE id=%s",
+                           (resultado["status"], resultado["rows"],
+                            resultado["erro_msg"], faixa["id"]))
+        finally:
+            try:
+                if prog is not None:
+                    prog.close()
+            except Exception:
+                pass
+    return resultado
+
+
+# ---------------------------------------------------------------------------
+# Finalização / notificação
+# ---------------------------------------------------------------------------
+
+def _fmt_int(n) -> str:
+    """Inteiro com separador de milhar pt-BR (1.234.567)."""
+    return f"{int(n or 0):,}".replace(",", ".")
+
+
+def _fmt_duracao(seg) -> str:
+    seg = int(seg or 0)
+    if seg >= 3600:
+        return f"{seg // 3600}h {(seg % 3600) // 60}m {seg % 60}s"
+    if seg >= 60:
+        return f"{seg // 60}m {seg % 60}s"
+    return f"{seg}s"
+
+
+def _notificar(hook, job, status, rows, duracao_s, erro_msg):
+    """INSERT best-effort em dbo.etl_notificacao para o solicitante."""
+    matricula = job.get("matricula")
+    if not matricula:
+        return
+    if status == "concluido":
+        tipo, titulo = "success", "Cópia concluída"
+        mensagem = f"{job['nome']}: {_fmt_int(rows)} linhas em {_fmt_duracao(duracao_s)}"
+    elif status == "erro":
+        tipo, titulo = "error", "Cópia falhou"
+        mensagem = f"{job['nome']}: {erro_msg or 'erro na cópia'}"
+    else:
+        return  # cancelamento foi ação do próprio usuário — sem notificação
+    try:
+        hook.run(
+            "INSERT INTO dbo.etl_notificacao (matricula, tipo, titulo, mensagem, link) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            parameters=(str(matricula)[:64], tipo, titulo[:160],
+                        mensagem[:800], "/copia-dados"),
+        )
+    except Exception as e:
+        print(f"[COPY] Aviso: não foi possível notificar {matricula}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Task principal
+# ---------------------------------------------------------------------------
+
+def executar_copia(**context):
+    conf = context["dag_run"].conf or {}
+    exec_id = conf.get("exec_id")
+    if not exec_id:
+        raise ValueError(
+            "Parâmetro 'exec_id' obrigatório no conf. Exemplo: {\"exec_id\": 123}")
+    exec_id = int(exec_id)
+
+    hook = _hook()
+    job = _carregar_execucao(hook, exec_id)
+    if job is None:
+        raise ValueError(f"Execução {exec_id} não encontrada em dbo.etl_copy_exec")
+
+    print(f"[COPY] exec_id={exec_id} job='{job['nome']}' "
+          f"{job['src_conn_id']}:{job['src_database']}.{job['src_schema']}.{job['src_table']}"
+          f" → {job['dst_conn_id']}:{job['dst_database']}.{job['dst_schema']}.{job['dst_table']}")
+
+    if job["exec_status"] == "cancelando":
+        hook.run(
+            "UPDATE dbo.etl_copy_exec SET status='cancelado', concluido_em=GETDATE() "
+            "WHERE id = %s", parameters=(exec_id,))
+        print("[COPY] Execução já estava 'cancelando' — finalizada como 'cancelado'.")
+        return {"exec_id": exec_id, "status": "cancelado", "rows_copied": 0}
+
+    if not job["select_sql"] or not job["count_sql"] or not job["dst_columns_json"]:
+        raise ValueError(
+            f"Job {job['job_id']} sem SQL compilado (select_sql/count_sql/"
+            "dst_columns_json) — salve a cópia novamente pela tela.")
+
+    t0 = time.monotonic()
+    engine  = bulk_copy.resolve_engine()
+    streams = max(1, min(8, int(job["streams"] or 4)))
+    print(f"[COPY] engine={engine} streams={streams} batch_size={job['batch_size']}")
+    hook.run(
+        "UPDATE dbo.etl_copy_exec SET status='executando', iniciado_em=GETDATE(), "
+        "streams=%s, engine=%s WHERE id = %s",
+        parameters=(streams, engine, exec_id))
+
+    status_final = "erro"
+    erro_msg = None
+    rows_total = None
+    resultados = []
+    try:
+        src_air = BaseHook.get_connection(job["src_conn_id"])
+        dst_air = BaseHook.get_connection(job["dst_conn_id"])
+
+        # Guarda de última linha (defesa em profundidade além da API/UI):
+        # compara pelo HOST RESOLVIDO das connections — pega inclusive dois
+        # conn_ids diferentes apontando para o mesmo servidor. Com
+        # truncar_antes, origem == destino destruiria a tabela de origem.
+        def _norm(v):
+            return str(v or "").strip().lower()
+        if (
+            _norm(src_air.host) == _norm(dst_air.host)
+            and (src_air.port or 1433) == (dst_air.port or 1433)
+            and _norm(job["src_database"]) == _norm(job["dst_database"])
+            and _norm(job["src_schema"]) == _norm(job["dst_schema"])
+            and _norm(job["src_table"]) == _norm(job["dst_table"])
+        ):
+            raise AirflowException(
+                "Origem e destino resolvem para a MESMA tabela no mesmo "
+                f"servidor ({src_air.host}:{src_air.port or 1433} / "
+                f"{job['src_database']}.{job['src_schema']}.{job['src_table']}) "
+                "— cópia abortada para não sobrescrever/truncar a própria origem.")
+
+        src     = bulk_copy.open_src_conn(src_air, job["src_database"])
+        dst_ctl = bulk_copy.open_src_conn(dst_air, job["dst_database"])
+        try:
+            _preparar_destino(src, dst_ctl, job)
+            # Alvo de escrita resolvido UMA vez por execução (ordinais/
+            # column_ids do bulk_copy; fallback por nome se necessário)
+            alvo = bulk_copy.prepare_bulk_target(
+                dst_ctl, job["dst_schema"], job["dst_table"],
+                json.loads(job["dst_columns_json"]), engine)
+            if alvo["engine"] != engine:
+                print(f"[COPY] Engine ajustado {engine} → {alvo['engine']}: "
+                      f"{alvo['motivo_fallback']}")
+                engine = alvo["engine"]
+                hook.run("UPDATE dbo.etl_copy_exec SET engine=%s WHERE id = %s",
+                         parameters=(engine, exec_id))
+            rows_total = _contar_origem(src, job)
+            hook.run("UPDATE dbo.etl_copy_exec SET rows_total = %s WHERE id = %s",
+                     parameters=(rows_total, exec_id))
+            print(f"[COPY] rows_total={_fmt_int(rows_total)}")
+            faixas = _montar_faixas(hook, src, job, exec_id, streams)
+        finally:
+            for c in (src, dst_ctl):
+                try:
+                    c.close()
+                except Exception:
+                    pass
+
+        print(f"[COPY] {len(faixas)} faixa(s):")
+        for f in faixas:
+            rotulo = ("IS NULL" if f["is_null"]
+                      else "única" if f["unica"]
+                      else f"{f['ini']} → {f['fim']}"
+                           + (" (fechada)" if f["ultima"] else ""))
+            print(f"  #{f['range_index']}: {rotulo}")
+
+        with ThreadPoolExecutor(max_workers=min(streams, len(faixas))) as pool:
+            futuros = [pool.submit(_copiar_faixa, f, job, exec_id, alvo,
+                                   src_air, dst_air) for f in faixas]
+            for fut in as_completed(futuros):
+                try:
+                    resultados.append(fut.result())
+                except Exception as e:  # defensivo — o worker já captura tudo
+                    resultados.append({"range_index": None, "status": "erro",
+                                       "rows": 0, "erro_msg": str(e)[:4000]})
+
+        erros    = [r for r in resultados if r["status"] == "erro"]
+        cancels  = [r for r in resultados if r["status"] == "cancelado"]
+        if erros:
+            status_final = "erro"
+            erro_msg = erros[0].get("erro_msg") or "erro na cópia"
+        elif cancels:
+            status_final = "cancelado"
+        else:
+            status_final = "concluido"
+    except Exception as e:
+        status_final = "erro"
+        erro_msg = str(e)[:4000]
+        print(f"[COPY][ERRO] {e}")
+
+    rows_copiadas = sum(int(r.get("rows") or 0) for r in resultados)
+    duracao_s = int(time.monotonic() - t0)
+
+    # Finalização — persiste SEMPRE, antes de qualquer raise
+    try:
+        hook.run(
+            "UPDATE dbo.etl_copy_exec SET status=%s, rows_copied=%s, erro_msg=%s, "
+            "concluido_em=GETDATE() WHERE id = %s",
+            parameters=(status_final, rows_copiadas, erro_msg, exec_id))
+    except Exception as e:
+        print(f"[COPY] Aviso: falha ao gravar finalização da execução: {e}")
+
+    _notificar(hook, job, status_final, rows_copiadas, duracao_s, erro_msg)
+
+    print(f"[COPY] Finalizado: status={status_final} "
+          f"rows={_fmt_int(rows_copiadas)} em {_fmt_duracao(duracao_s)}")
+
+    if status_final == "erro":
+        raise AirflowException(f"Cópia '{job['nome']}' falhou: {erro_msg}")
+
+    return {
+        "exec_id": exec_id, "copy_job_id": job["job_id"], "nome": job["nome"],
+        "status": status_final, "engine": engine, "streams": streams,
+        "rows_total": rows_total, "rows_copied": rows_copiadas,
+        "duracao_s": duracao_s,
+        "faixas": [{"range_index": r.get("range_index"), "status": r["status"],
+                    "rows": int(r.get("rows") or 0)} for r in resultados],
+    }
+
+
+with DAG(
+    dag_id=DAG_ID,
+    default_args=default_args,
+    description="Cópia de Dados — executa uma cópia registrada (conf: {\"exec_id\": N})",
+    start_date=pendulum.datetime(2024, 1, 1, tz=LOCAL_TZ),
+    schedule=None,
+    catchup=False,
+    tags=["etl", "copy"],
+) as dag:
+
+    PythonOperator(
+        task_id="executar_copia",
+        python_callable=executar_copia,
+        do_xcom_push=True,
+        execution_timeout=timedelta(hours=6),
+    )

@@ -79,6 +79,20 @@ Endpoints:
 
   GET  /airflow/connections/ssh           — lista conexões SSH no Airflow
 
+  GET  /copias/conexoes                   — connections MSSQL do Airflow (Cópia de Dados)
+  GET  /copias/introspect/databases       — bancos de uma connection (direto/cache/airflow)
+  GET  /copias/introspect/tables          — tabelas + nº de linhas de um banco
+  GET  /copias/introspect/columns         — colunas de uma tabela + partição sugerida
+  POST /copias/preview                    — amostra (TOP 50) do SELECT transformado
+  GET  /copias                            — lista cópias salvas (com última execução)
+  POST /copias                            — cria/atualiza cópia (compila transformações)
+  GET  /copias/{id}                       — detalhe completo da cópia
+  DELETE /copias/{id}                     — soft delete da cópia
+  POST /copias/{id}/executar              — dispara a DAG etl_copy_exec
+  GET  /copias/{id}/execucoes             — histórico de execuções da cópia
+  GET  /copias/exec/{exec_id}             — progresso de uma execução (polling)
+  POST /copias/exec/{exec_id}/cancelar    — pede cancelamento da execução
+
   GET  /powerbi/status                              — diagnóstico de configuração/token/admin API
   GET  /powerbi/overview                            — workspaces + datasets + status refresh + datasource type
   GET  /powerbi/workspaces                          — workspaces visíveis ao service principal
@@ -111,7 +125,7 @@ from routers import (
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
     datastage, factory, airflow, change_plans, powerbi, lineage_xml,
-    notificacoes, comunicados, backlog, monitor, mensagens,
+    notificacoes, comunicados, backlog, monitor, mensagens, copias,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -169,6 +183,6 @@ for _router_module in [
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
     datastage, factory, airflow, change_plans, powerbi, lineage_xml,
-    notificacoes, comunicados, backlog, monitor, mensagens,
+    notificacoes, comunicados, backlog, monitor, mensagens, copias,
 ]:
     app.include_router(_router_module.router)

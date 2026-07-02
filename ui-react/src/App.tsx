@@ -20,6 +20,7 @@ import Avisos from './pages/Avisos'
 import GestaoFalhas from './pages/GestaoFalhas'
 import Publicacao from './pages/Publicacao'
 import Performance from './pages/Performance'
+import CopiaDados from './pages/CopiaDados'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -43,6 +44,7 @@ const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/malha': <Malha />,
   '/impacto-campo': <ImpactoCampo />,
   '/planos-ajuste': <PlanosAjuste />,
+  '/copia-dados': <CopiaDados />,
   '/powerbi': <PowerBI />,
   '/ds-console': <DsConsole />,
   '/performance': <Performance />,
