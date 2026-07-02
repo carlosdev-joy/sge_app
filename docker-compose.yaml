@@ -72,6 +72,11 @@ x-airflow-common:
     AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
 
     AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW__CORE__FERNET_KEY:-}'
+    # Chave (Fernet) das senhas de dbo.etl_conexao — o worker decifra ao
+    # resolver conexões (dags/utils/conn_resolver.py). PRECISA ser a mesma
+    # do orquestra-api. Gere com:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    ORQUESTRA_CONN_KEY: '${ORQUESTRA_CONN_KEY:-}'
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
@@ -161,6 +166,9 @@ services:
       # Sobrepõe-se pelo valor em Admin → Configurações (etl_app_config).
       AIRFLOW_UI_URL:   "${AIRFLOW_UI_URL:-https://airflow.caixavidaeprevidencia.intranet}"
       MSSQL_CONN_STR:   "${MSSQL_CONN_STR:-}"
+      # Chave (Fernet) das senhas de dbo.etl_conexao (services/conn_crypto.py)
+      # — a MESMA dos containers do Airflow (x-airflow-common acima).
+      ORQUESTRA_CONN_KEY: "${ORQUESTRA_CONN_KEY:-}"
       DSX_BASE_DIR:     "/opt/airflow/dsx"
       # Console DataStage (Admin): SSH read-only para rodar `dsjob` no Unix.
       # Defina no .env do host. Sem DS_SSH_HOST/DS_SSH_USER, o console degrada

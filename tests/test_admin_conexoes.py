@@ -1,6 +1,11 @@
 """
 Testes das actions de Conexões de Dados do POST /admin (api/routers/admin.py):
-conn_list / conn_upsert / conn_delete / conn_test.
+conn_list / conn_upsert / conn_delete / conn_test / conn_migrate.
+
+A fonte da verdade agora é dbo.etl_conexao (migration 054) — senha cifrada com
+Fernet (services/conn_crypto, chave ORQUESTRA_CONN_KEY). O Airflow aparece só
+como fallback de leitura/exclusão para conexões legadas e como executor da
+migração (DAG etl_admin_manage).
 
 Padrão de test_copias.py: TestClient do conftest, get_db_conn/get_airflow_client
 mockados em routers.admin e autenticação sobrescrita via dependency_overrides.
@@ -23,8 +28,18 @@ if "pyodbc" not in sys.modules:
 os.environ.setdefault("MSSQL_CONN_STR", "__mock__")
 from api.main import app as _app  # noqa: F401  (ordem de import — ver test_copias.py)
 
+from cryptography.fernet import Fernet
 from deps import PERM_ADMIN, get_current_user
 from fastapi import HTTPException
+from services.conn_crypto import decrypt_password, encrypt_password
+
+# Chave Fernet REAL para os testes — encrypt/decrypt rodam de verdade.
+_KEY = Fernet.generate_key().decode()
+
+
+@pytest.fixture(autouse=True)
+def conn_key(monkeypatch):
+    monkeypatch.setenv("ORQUESTRA_CONN_KEY", _KEY)
 
 
 # ── stubs ────────────────────────────────────────────────────────────────────
@@ -33,6 +48,8 @@ def _mock_cursor():
     cur = MagicMock()
     cur.description = []
     cur.fetchall.return_value = []
+    cur.fetchone.return_value = None
+    cur.rowcount = 0
     return cur
 
 
@@ -113,10 +130,36 @@ def _admin_post(client, fake_airflow, body, cur=None):
         return client.post("/admin", json=body)
 
 
+# ── crypto (services/conn_crypto) ────────────────────────────────────────────
+
+def test_crypto_roundtrip():
+    token = encrypt_password("s3nh@!ç")
+    assert token != "s3nh@!ç"
+    assert decrypt_password(token) == "s3nh@!ç"
+
+
+def test_crypto_sem_chave_500(monkeypatch):
+    monkeypatch.delenv("ORQUESTRA_CONN_KEY", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        encrypt_password("x")
+    assert exc.value.status_code == 500
+    assert "ORQUESTRA_CONN_KEY" in exc.value.detail
+
+
+def test_crypto_chave_errada_500():
+    token = encrypt_password("segredo")
+    os.environ["ORQUESTRA_CONN_KEY"] = Fernet.generate_key().decode()
+    with pytest.raises(HTTPException) as exc:
+        decrypt_password(token)
+    assert exc.value.status_code == 500
+    assert "não corresponde" in exc.value.detail
+
+
 # ── auth ─────────────────────────────────────────────────────────────────────
 
 def test_conn_actions_exigem_admin(client, auth_sem_admin):
-    for action in ("conn_list", "conn_upsert", "conn_delete", "conn_test"):
+    for action in ("conn_list", "conn_upsert", "conn_delete", "conn_test",
+                   "conn_migrate"):
         r = client.post("/admin", json={"action": action})
         assert r.status_code == 403, action
 
@@ -127,62 +170,69 @@ def test_conn_actions_sem_auth_401(client):
 
 # ── conn_list ────────────────────────────────────────────────────────────────
 
-def test_conn_list_filtra_mssql_e_extrai_charset(client, auth_admin):
+def test_conn_list_le_da_tabela_e_marca_origem(client, auth_admin):
+    cur = _mock_cursor()
+    cur.fetchall.return_value = [
+        ("MSSQL_A", "srv-a", 1450, "sa", "origem BI",
+         json.dumps({"charset": "CP1252"}), "orquestra"),
+        ("MSSQL_B", "srv-b", None, "app", None, None, "migrada_airflow"),
+    ]
+    fake = _FakeAirflowClient(lambda m, u, kw: _FakeResp(200, {"connections": []}))
+    r = _admin_post(client, fake, {"action": "conn_list"}, cur=cur)
+    assert r.status_code == 200
+    conns = r.json()["connections"]
+    assert [c["conn_id"] for c in conns] == ["MSSQL_A", "MSSQL_B"]
+    assert conns[0]["extra_charset"] == "CP1252"
+    assert conns[0]["origem"] == "orquestra"
+    assert conns[1]["origem"] == "orquestra"  # migrada = já vive no Orquestra
+    assert "senha" not in r.text and "password" not in r.text
+
+
+def test_conn_list_mescla_airflow_pendentes_sem_duplicar(client, auth_admin):
+    cur = _mock_cursor()
+    cur.fetchall.return_value = [
+        ("MSSQL_A", "srv-a", 1450, "sa", None, None, "orquestra"),
+    ]
     payload = {"connections": [
         {"connection_id": "MSSQL_A", "conn_type": "mssql", "host": "srv-a",
-         "port": 1450, "schema": "dbo", "login": "sa", "description": "origem",
-         "extra": json.dumps({"charset": "CP1252", "outra_chave": 1})},
+         "extra": ""},  # já migrada → não duplica
+        {"connection_id": "MSSQL_LEGADA", "conn_type": "mssql", "host": "srv-x",
+         "extra": json.dumps({"charset": "CP850"})},
         {"connection_id": "SSH_B", "conn_type": "ssh", "host": "srv-b"},
-        {"connection_id": "MSSQL_C", "conn_type": "mssql", "host": "srv-c",
-         "extra": ""},
-        {"connection_id": "HTTP_D", "conn_type": "http", "host": "srv-d"},
     ]}
     fake = _FakeAirflowClient(lambda m, u, kw: _FakeResp(200, payload))
-    r = _admin_post(client, fake, {"action": "conn_list"})
+    r = _admin_post(client, fake, {"action": "conn_list"}, cur=cur)
     assert r.status_code == 200
-    conns = r.json()["connections"]
-    assert [c["conn_id"] for c in conns] == ["MSSQL_A", "MSSQL_C"]
-    assert conns[0] == {"conn_id": "MSSQL_A", "host": "srv-a", "port": 1450,
-                        "schema": "dbo", "login": "sa", "description": "origem",
-                        "extra_charset": "CP1252"}
-    assert conns[1]["extra_charset"] is None
-    # nunca devolve password (a API do Airflow nem envia)
-    assert "password" not in r.text
-    assert fake.calls[0][:2] == ("GET", "/api/v1/connections?limit=100")
+    conns = {c["conn_id"]: c for c in r.json()["connections"]}
+    assert set(conns) == {"MSSQL_A", "MSSQL_LEGADA"}
+    assert conns["MSSQL_A"]["origem"] == "orquestra"
+    assert conns["MSSQL_LEGADA"]["origem"] == "airflow"
+    assert conns["MSSQL_LEGADA"]["extra_charset"] == "CP850"
 
 
-def test_conn_list_busca_detalhe_quando_lista_omite_extra(client, auth_admin):
-    """Airflow 2.x não devolve 'extra' no endpoint de LISTA (campo sensível,
-    só no GET por id) — o conn_list busca o detalhe para extrair o charset."""
-    lista = {"connections": [
-        {"connection_id": "MSSQL_A", "conn_type": "mssql", "host": "srv-a"},
-        {"connection_id": "MSSQL_B", "conn_type": "mssql", "host": "srv-b"},
-    ]}
-
-    def _handler(method, url, kw):
-        if url == "/api/v1/connections?limit=100":
-            return _FakeResp(200, lista)
-        if url == "/api/v1/connections/MSSQL_A":
-            return _FakeResp(200, {"connection_id": "MSSQL_A",
-                                   "conn_type": "mssql", "host": "srv-a",
-                                   "extra": json.dumps({"charset": "CP850"})})
-        return _FakeResp(500)  # detalhe de MSSQL_B falha → charset None
-
-    fake = _FakeAirflowClient(_handler)
-    r = _admin_post(client, fake, {"action": "conn_list"})
-    assert r.status_code == 200
-    conns = r.json()["connections"]
-    assert conns[0]["extra_charset"] == "CP850"
-    assert conns[1]["extra_charset"] is None
-    urls = [u for m, u, _ in fake.calls if m == "GET"]
-    assert "/api/v1/connections/MSSQL_A" in urls
-    assert "/api/v1/connections/MSSQL_B" in urls
-
-
-def test_conn_list_airflow_fora_502(client, auth_admin):
+def test_conn_list_airflow_fora_nao_derruba_a_listagem(client, auth_admin):
+    cur = _mock_cursor()
+    cur.fetchall.return_value = [
+        ("MSSQL_A", "srv-a", None, "sa", None, None, "orquestra"),
+    ]
     fake = _FakeAirflowClient(lambda m, u, kw: _FakeResp(500))
-    r = _admin_post(client, fake, {"action": "conn_list"})
-    assert r.status_code == 502
+    r = _admin_post(client, fake, {"action": "conn_list"}, cur=cur)
+    assert r.status_code == 200
+    assert [c["conn_id"] for c in r.json()["connections"]] == ["MSSQL_A"]
+
+
+def test_conn_list_tabela_ausente_degrada_para_airflow(client, auth_admin):
+    cur = _mock_cursor()
+    cur.execute.side_effect = Exception("Invalid object name 'dbo.etl_conexao'")
+    payload = {"connections": [
+        {"connection_id": "MSSQL_X", "conn_type": "mssql", "host": "srv-x",
+         "extra": ""}]}
+    fake = _FakeAirflowClient(lambda m, u, kw: _FakeResp(200, payload))
+    r = _admin_post(client, fake, {"action": "conn_list"}, cur=cur)
+    assert r.status_code == 200
+    conns = r.json()["connections"]
+    assert [c["conn_id"] for c in conns] == ["MSSQL_X"]
+    assert conns[0]["origem"] == "airflow"
 
 
 # ── conn_upsert — validações ────────────────────────────────────────────────
@@ -212,138 +262,123 @@ def test_conn_upsert_422_porta_invalida(client, auth_admin, porta):
     assert r.status_code == 422
 
 
-# ── conn_upsert — criação (GET 404 → POST) ───────────────────────────────────
+# ── conn_upsert — criação (INSERT em dbo.etl_conexao) ────────────────────────
 
-def _handler_inexistente(method, url, kw):
-    if method == "GET":
-        return _FakeResp(404)
-    return _FakeResp(200, {})
-
-
-def test_conn_upsert_cria_via_post_quando_nao_existe(client, auth_admin):
-    fake = _FakeAirflowClient(_handler_inexistente)
-    r = _admin_post(client, fake, {
+def test_conn_upsert_cria_com_senha_cifrada(client, auth_admin):
+    cur = _mock_cursor()  # fetchone → None = não existe → INSERT
+    r = _admin_post(client, _FakeAirflowClient(), {
         "action": "conn_upsert", "conn_id": "NOVA_CONN", "host": "srv1",
         "login": "sa", "password": "s3nh@!", "description": "Origem BI",
-        "charset": "CP1252"})
+        "charset": "CP1252"}, cur=cur)
     assert r.status_code == 200
     assert r.json()["sucesso"] is True and r.json()["criada"] is True
     assert "s3nh@!" not in r.text  # resposta nunca ecoa a senha
-    posts = [c for c in fake.calls if c[0] == "POST"]
-    assert len(posts) == 1
-    assert posts[0][1] == "/api/v1/connections"
-    payload = posts[0][2]["json"]
-    assert payload == {"connection_id": "NOVA_CONN", "conn_type": "mssql",
-                       "host": "srv1", "port": 1433, "login": "sa",
-                       "password": "s3nh@!", "description": "Origem BI",
-                       "extra": json.dumps({"charset": "CP1252"})}
+    inserts = [c for c in cur.execute.call_args_list
+               if "INSERT INTO dbo.etl_conexao" in str(c.args[0])]
+    assert len(inserts) == 1
+    params = inserts[0].args[1]
+    conn_id, host, port, login, senha_enc, desc, extra, criado_por = params
+    assert (conn_id, host, port, login) == ("NOVA_CONN", "srv1", 1433, "sa")
+    assert desc == "Origem BI" and criado_por == "ADMIN1"
+    assert json.loads(extra) == {"charset": "CP1252"}
+    assert senha_enc != "s3nh@!"                       # nunca texto puro
+    assert decrypt_password(senha_enc) == "s3nh@!"     # e decifra com a chave
 
 
 def test_conn_upsert_criacao_exige_login_e_password(client, auth_admin):
-    r = _admin_post(client, _FakeAirflowClient(_handler_inexistente), {
+    r = _admin_post(client, _FakeAirflowClient(), {
         "action": "conn_upsert", "conn_id": "NOVA", "host": "srv1", "login": "sa"})
     assert r.status_code == 422
     assert "password" in r.json()["detail"]
-    r = _admin_post(client, _FakeAirflowClient(_handler_inexistente), {
+    r = _admin_post(client, _FakeAirflowClient(), {
         "action": "conn_upsert", "conn_id": "NOVA", "host": "srv1", "password": "x"})
     assert r.status_code == 422
     assert "login" in r.json()["detail"]
 
 
-def test_conn_upsert_criacao_sem_charset_nao_manda_extra(client, auth_admin):
-    fake = _FakeAirflowClient(_handler_inexistente)
-    r = _admin_post(client, fake, {
+def test_conn_upsert_criacao_sem_charset_extra_null(client, auth_admin):
+    cur = _mock_cursor()
+    r = _admin_post(client, _FakeAirflowClient(), {
         "action": "conn_upsert", "conn_id": "NOVA", "host": "srv1",
-        "login": "sa", "password": "x"})
+        "login": "sa", "password": "x"}, cur=cur)
     assert r.status_code == 200
-    payload = [c for c in fake.calls if c[0] == "POST"][0][2]["json"]
-    assert "extra" not in payload
-    assert payload["port"] == 1433  # default
+    params = [c for c in cur.execute.call_args_list
+              if "INSERT INTO dbo.etl_conexao" in str(c.args[0])][0].args[1]
+    assert params[2] == 1433   # port default
+    assert params[6] is None   # extra_json
 
 
-# ── conn_upsert — atualização (PATCH + update_mask) ──────────────────────────
+# ── conn_upsert — atualização (UPDATE só com o que veio) ─────────────────────
 
-_ATUAL = {"connection_id": "CONN_X", "conn_type": "mssql", "host": "srv-old",
-          "port": 1433, "login": "sa_old", "description": "antiga",
-          "extra": json.dumps({"charset": "CP850", "chave_livre": "fica"})}
+_EXTRA_ATUAL = json.dumps({"charset": "CP850", "chave_livre": "fica"})
 
 
-def _handler_existente(method, url, kw):
-    if method == "GET":
-        return _FakeResp(200, _ATUAL)
-    return _FakeResp(200, {})
+def _cur_existente():
+    cur = _mock_cursor()
+    cur.fetchone.return_value = (_EXTRA_ATUAL,)
+    return cur
 
 
-def test_conn_upsert_atualiza_via_patch_com_update_mask(client, auth_admin):
-    fake = _FakeAirflowClient(_handler_existente)
-    r = _admin_post(client, fake, {
+def _update_call(cur):
+    ups = [c for c in cur.execute.call_args_list
+           if "UPDATE dbo.etl_conexao" in str(c.args[0])]
+    assert len(ups) == 1
+    return str(ups[0].args[0]), list(ups[0].args[1])
+
+
+def test_conn_upsert_atualiza_so_o_que_veio(client, auth_admin):
+    cur = _cur_existente()
+    r = _admin_post(client, _FakeAirflowClient(), {
         "action": "conn_upsert", "conn_id": "CONN_X", "host": "srv-novo",
         "port": 1450, "login": "sa_novo", "description": "nova",
-        "charset": "UTF-8"})   # SEM password → mantém a atual
+        "charset": "UTF-8"}, cur=cur)   # SEM password → mantém a atual
     assert r.status_code == 200
-    body = r.json()
-    assert body["criada"] is False
-    patches = [c for c in fake.calls if c[0] == "PATCH"]
-    assert len(patches) == 1
-    assert patches[0][1] == "/api/v1/connections/CONN_X"
-    mask = patches[0][2]["params"]["update_mask"].split(",")
-    payload = patches[0][2]["json"]
-    # senha ausente = FORA do update_mask e do payload (mantém a do Airflow)
-    assert "password" not in mask and "password" not in payload
-    assert set(mask) == {"host", "port", "login", "description", "extra"}
-    assert payload["host"] == "srv-novo" and payload["port"] == 1450
-    assert payload["login"] == "sa_novo" and payload["description"] == "nova"
+    assert r.json()["criada"] is False
+    sql, params = _update_call(cur)
+    assert "senha_enc" not in sql       # senha ausente = intocada
+    assert "host = ?" in sql and "port = ?" in sql
+    assert "login = ?" in sql and "descricao = ?" in sql
+    assert "extra_json = ?" in sql
     # merge do extra: charset trocado E chave alheia preservada
-    assert json.loads(payload["extra"]) == {"charset": "UTF-8",
-                                            "chave_livre": "fica"}
+    extra_novo = [p for p in params if isinstance(p, str) and "chave_livre" in p][0]
+    assert json.loads(extra_novo) == {"charset": "UTF-8", "chave_livre": "fica"}
 
 
-def test_conn_upsert_com_password_entra_no_mask(client, auth_admin):
-    fake = _FakeAirflowClient(_handler_existente)
-    r = _admin_post(client, fake, {
+def test_conn_upsert_com_password_recifra(client, auth_admin):
+    cur = _cur_existente()
+    r = _admin_post(client, _FakeAirflowClient(), {
         "action": "conn_upsert", "conn_id": "CONN_X", "host": "srv-old",
-        "login": "sa_old", "password": "NovaSenha1"})
+        "login": "sa_old", "password": "NovaSenha1"}, cur=cur)
     assert r.status_code == 200
     assert "NovaSenha1" not in r.text
-    patches = [c for c in fake.calls if c[0] == "PATCH"]
-    mask = patches[0][2]["params"]["update_mask"].split(",")
-    assert "password" in mask
-    assert patches[0][2]["json"]["password"] == "NovaSenha1"
-    # port/description/charset não enviados → fora do mask
-    assert "port" not in mask and "description" not in mask and "extra" not in mask
+    sql, params = _update_call(cur)
+    assert "senha_enc = ?" in sql
+    assert "port = ?" not in sql and "descricao" not in sql
+    token = [p for p in params
+             if isinstance(p, str) and p.startswith("gAAAA")][0]
+    assert decrypt_password(token) == "NovaSenha1"
 
 
-def test_conn_upsert_charset_igual_nao_inclui_extra_no_mask(client, auth_admin):
-    fake = _FakeAirflowClient(_handler_existente)
-    r = _admin_post(client, fake, {
+def test_conn_upsert_charset_igual_nao_toca_extra(client, auth_admin):
+    cur = _cur_existente()
+    r = _admin_post(client, _FakeAirflowClient(), {
         "action": "conn_upsert", "conn_id": "CONN_X", "host": "srv-old",
-        "login": "sa_old", "charset": "CP850"})  # igual ao atual
+        "login": "sa_old", "charset": "CP850"}, cur=cur)  # igual ao atual
     assert r.status_code == 200
-    mask = [c for c in fake.calls if c[0] == "PATCH"][0][2]["params"]["update_mask"]
-    assert "extra" not in mask.split(",")
+    sql, _ = _update_call(cur)
+    assert "extra_json" not in sql
 
 
 def test_conn_upsert_charset_vazio_remove_a_chave_preservando_extra(client, auth_admin):
-    fake = _FakeAirflowClient(_handler_existente)
-    r = _admin_post(client, fake, {
+    cur = _cur_existente()
+    r = _admin_post(client, _FakeAirflowClient(), {
         "action": "conn_upsert", "conn_id": "CONN_X", "host": "srv-old",
-        "login": "sa_old", "charset": ""})
+        "login": "sa_old", "charset": ""}, cur=cur)
     assert r.status_code == 200
-    patch_call = [c for c in fake.calls if c[0] == "PATCH"][0]
-    assert "extra" in patch_call[2]["params"]["update_mask"].split(",")
-    assert json.loads(patch_call[2]["json"]["extra"]) == {"chave_livre": "fica"}
-
-
-def test_conn_upsert_409_se_existente_nao_for_mssql(client, auth_admin):
-    atual_ssh = {"connection_id": "CONN_X", "conn_type": "ssh", "host": "h"}
-    fake = _FakeAirflowClient(
-        lambda m, u, kw: _FakeResp(200, atual_ssh) if m == "GET" else _FakeResp(200))
-    r = _admin_post(client, fake, {
-        "action": "conn_upsert", "conn_id": "CONN_X", "host": "srv",
-        "login": "sa"})
-    assert r.status_code == 409
-    assert "ssh" in r.json()["detail"]
-    assert not [c for c in fake.calls if c[0] in ("PATCH", "POST")]
+    sql, params = _update_call(cur)
+    assert "extra_json = ?" in sql
+    extra_novo = [p for p in params if isinstance(p, str) and "chave_livre" in p][0]
+    assert json.loads(extra_novo) == {"chave_livre": "fica"}
 
 
 # ── conn_delete ──────────────────────────────────────────────────────────────
@@ -363,32 +398,33 @@ def test_conn_delete_409_quando_referenciada(client, auth_admin):
     assert fake.calls == []  # não chega a chamar o Airflow
 
 
-def test_conn_delete_livre_chama_delete_do_airflow(client, auth_admin):
+def test_conn_delete_remove_da_tabela_sem_tocar_airflow(client, auth_admin):
     cur = _mock_cursor()
     cur.fetchall.side_effect = [[], []]
+    cur.rowcount = 1
+    fake = _FakeAirflowClient()
+    r = _admin_post(client, fake, {"action": "conn_delete", "conn_id": "CONN_X"},
+                    cur=cur)
+    assert r.status_code == 200
+    assert "Orquestra" in r.json()["mensagem"]
+    assert fake.calls == []
+
+
+def test_conn_delete_legada_cai_no_airflow(client, auth_admin):
+    cur = _mock_cursor()
+    cur.fetchall.side_effect = [[], []]
+    cur.rowcount = 0   # não estava em dbo.etl_conexao
     fake = _FakeAirflowClient(lambda m, u, kw: _FakeResp(204))
     r = _admin_post(client, fake, {"action": "conn_delete", "conn_id": "CONN_X"},
                     cur=cur)
     assert r.status_code == 200
-    assert r.json()["sucesso"] is True
     assert fake.calls == [("DELETE", "/api/v1/connections/CONN_X", {})]
 
 
-def test_conn_delete_degrada_sem_tabelas_e_exclui(client, auth_admin):
-    """Tabelas de referência ausentes (migrations não aplicadas) → a guarda é
-    ignorada graciosamente e a exclusão segue."""
-    cur = _mock_cursor()
-    cur.execute.side_effect = Exception("Invalid object name 'dbo.etl_copy_job'")
-    fake = _FakeAirflowClient(lambda m, u, kw: _FakeResp(200))
-    r = _admin_post(client, fake, {"action": "conn_delete", "conn_id": "CONN_X"},
-                    cur=cur)
-    assert r.status_code == 200
-    assert [c[0] for c in fake.calls] == ["DELETE"]
-
-
-def test_conn_delete_404_inexistente_no_airflow(client, auth_admin):
+def test_conn_delete_404_inexistente_em_ambos(client, auth_admin):
     cur = _mock_cursor()
     cur.fetchall.side_effect = [[], []]
+    cur.rowcount = 0
     fake = _FakeAirflowClient(lambda m, u, kw: _FakeResp(404))
     r = _admin_post(client, fake, {"action": "conn_delete", "conn_id": "SUMIU"},
                     cur=cur)
@@ -456,11 +492,48 @@ def test_conn_test_direto_422_sem_host_ou_login(client, auth_admin):
     assert r.status_code == 422
 
 
-# ── conn_test — modo (b): connection salva (reuso do caminho de copias) ──────
+# ── conn_test — modo (b): conexão salva ──────────────────────────────────────
 
-def test_conn_test_salva_caminho_direto(client, auth_admin):
-    with patch("routers.admin.get_db_conn",
-               return_value=_mock_conn(_mock_cursor())), \
+def test_conn_test_salva_no_orquestra_testa_com_credencial_real(client, auth_admin):
+    cur = _mock_cursor()
+    cur.fetchone.return_value = ("srv1", 1450, "sa", encrypt_password("Secr3ta"))
+    with patch("routers.admin.pyodbc") as fake_pyodbc, \
+         patch("routers.admin.get_db_conn", return_value=_mock_conn(cur)):
+        fake_pyodbc.drivers.return_value = ["ODBC Driver 18 for SQL Server"]
+        cx = MagicMock()
+        c2 = cx.cursor.return_value
+        c2.fetchone.return_value = (4,)
+        fake_pyodbc.connect.return_value = cx
+        r = client.post("/admin", json={"action": "conn_test",
+                                        "conn_id": "CONN_X"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["via"] == "orquestra"
+    assert "4 banco(s)" in body["mensagem"]
+    assert "Secr3ta" not in r.text
+    conn_str = fake_pyodbc.connect.call_args.args[0]
+    assert "SERVER=srv1,1450" in conn_str and "PWD={Secr3ta}" in conn_str
+
+
+def test_conn_test_salva_falha_sem_ecoar_senha(client, auth_admin):
+    cur = _mock_cursor()
+    cur.fetchone.return_value = ("srv1", None, "sa", encrypt_password("Secr3ta"))
+    with patch("routers.admin.pyodbc") as fake_pyodbc, \
+         patch("routers.admin.get_db_conn", return_value=_mock_conn(cur)):
+        fake_pyodbc.drivers.return_value = ["ODBC Driver 18 for SQL Server"]
+        fake_pyodbc.connect.side_effect = Exception("Login failed (PWD=Secr3ta)")
+        r = client.post("/admin", json={"action": "conn_test",
+                                        "conn_id": "CONN_X"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False and body["via"] == "orquestra"
+    assert "Secr3ta" not in r.text
+    assert "••••" in body["mensagem"]
+
+
+def test_conn_test_legada_cai_no_caminho_airflow(client, auth_admin):
+    cur = _mock_cursor()   # fetchone → None = não está em dbo.etl_conexao
+    with patch("routers.admin.get_db_conn", return_value=_mock_conn(cur)), \
          patch("routers.admin._server_da_conexao",
                new=AsyncMock(return_value="srv1,1433")), \
          patch("routers.admin._consulta_direta",
@@ -473,9 +546,9 @@ def test_conn_test_salva_caminho_direto(client, auth_admin):
     assert "2 banco(s)" in body["mensagem"]
 
 
-def test_conn_test_salva_fallback_dag(client, auth_admin):
-    with patch("routers.admin.get_db_conn",
-               return_value=_mock_conn(_mock_cursor())), \
+def test_conn_test_legada_fallback_dag(client, auth_admin):
+    cur = _mock_cursor()
+    with patch("routers.admin.get_db_conn", return_value=_mock_conn(cur)), \
          patch("routers.admin._server_da_conexao",
                new=AsyncMock(return_value="srv1,1433")), \
          patch("routers.admin._consulta_direta",
@@ -491,21 +564,53 @@ def test_conn_test_salva_fallback_dag(client, auth_admin):
     assert "3 banco(s)" in body["mensagem"]
 
 
-def test_conn_test_salva_falha_total_ok_false(client, auth_admin):
-    with patch("routers.admin.get_db_conn",
-               return_value=_mock_conn(_mock_cursor())), \
-         patch("routers.admin._server_da_conexao",
-               new=AsyncMock(side_effect=HTTPException(
-                   status_code=404,
-                   detail="connection 'CONN_X' não encontrada no Airflow"))):
-        r = client.post("/admin", json={"action": "conn_test",
-                                        "conn_id": "CONN_X"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] is False
-    assert "não encontrada" in body["mensagem"]
-
-
 def test_conn_test_422_sem_senha_e_sem_conn_id(client, auth_admin):
     r = _admin_post(client, _FakeAirflowClient(), {"action": "conn_test"})
     assert r.status_code == 422
+
+
+# ── conn_migrate — dispara a DAG etl_admin_manage e lê o resultado ───────────
+
+def _handler_migrate(estado="success", xcom=None):
+    resultado = xcom if xcom is not None else {
+        "sucesso": True, "mensagem": "Migração concluída: 2 conexão(ões) migrada(s).",
+        "detalhes": {"migradas": ["A", "B"], "ja_existiam": [], "sem_dados": []}}
+
+    def _handler(method, url, kw):
+        if method == "POST" and url.endswith("/dags/etl_admin_manage/dagRuns"):
+            return _FakeResp(200, {})
+        if "/xcomEntries/return_value" in url:
+            return _FakeResp(200, {"value": json.dumps(resultado)})
+        if "/dagRuns/conn_migrate_" in url:
+            return _FakeResp(200, {"state": estado})
+        return _FakeResp(404)
+    return _handler
+
+
+def test_conn_migrate_dispara_dag_e_devolve_resumo(client, auth_admin):
+    fake = _FakeAirflowClient(_handler_migrate())
+    with patch("routers.admin.asyncio.sleep", new=AsyncMock()):
+        r = _admin_post(client, fake, {"action": "conn_migrate"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["sucesso"] is True
+    assert "2 conexão(ões)" in body["mensagem"]
+    post = [c for c in fake.calls if c[0] == "POST"][0]
+    assert post[2]["json"]["conf"] == {"action": "conn_migrate",
+                                       "requested_by": "ADMIN1"}
+
+
+def test_conn_migrate_dag_failed_502(client, auth_admin):
+    fake = _FakeAirflowClient(_handler_migrate(estado="failed"))
+    with patch("routers.admin.asyncio.sleep", new=AsyncMock()):
+        r = _admin_post(client, fake, {"action": "conn_migrate"})
+    assert r.status_code == 502
+    assert "etl_admin_manage" in r.json()["detail"] \
+        or "admin_manage" in r.json()["detail"]
+
+
+def test_conn_migrate_airflow_recusa_502(client, auth_admin):
+    fake = _FakeAirflowClient(lambda m, u, kw: _FakeResp(409))
+    with patch("routers.admin.asyncio.sleep", new=AsyncMock()):
+        r = _admin_post(client, fake, {"action": "conn_migrate"})
+    assert r.status_code == 502

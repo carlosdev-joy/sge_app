@@ -45,8 +45,10 @@ Fluxo:
      (AirflowException) APÓS persistir tudo.
 
 Estado/progresso ficam no banco do ORQUESTRA — a UI acompanha por polling.
-Credenciais de origem/destino SÓ via Airflow Connections (BaseHook); nenhuma
-senha é logada, retornada em XCom ou gravada em tabela.
+Credenciais de origem/destino resolvidas por utils.conn_resolver.get_conexao
+(dbo.etl_conexao primeiro — senha cifrada com ORQUESTRA_CONN_KEY —, fallback
+Airflow Connections/BaseHook para conexões não migradas); nenhuma senha é
+logada, retornada em XCom ou gravada em tabela.
 """
 from __future__ import annotations
 
@@ -60,11 +62,10 @@ from decimal import Decimal
 import pendulum
 from airflow import DAG
 from airflow.exceptions import AirflowException
-from airflow.hooks.base import BaseHook
 from airflow.operators.python import PythonOperator
 from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 
-from utils import bulk_copy
+from utils import bulk_copy, conn_resolver
 
 DAG_ID        = "etl_copy_exec"
 MSSQL_CONN_ID = "SQL14_DMDB41"
@@ -748,8 +749,8 @@ def executar_copia(**context):
     rows_total = None
     resultados = []
     try:
-        src_air = BaseHook.get_connection(job["src_conn_id"])
-        dst_air = BaseHook.get_connection(job["dst_conn_id"])
+        src_air = conn_resolver.get_conexao(job["src_conn_id"])
+        dst_air = conn_resolver.get_conexao(job["dst_conn_id"])
 
         # Guarda de última linha (defesa em profundidade além da API/UI):
         # compara pelo HOST RESOLVIDO das connections — pega inclusive dois
