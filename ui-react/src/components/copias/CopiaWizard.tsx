@@ -534,9 +534,12 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
     onSuccess: d => {
       setPreview(d)
       if (d.via === 'airflow') setViaAirflow(true)
+      // A amostra renderiza abaixo da tabela de colunas — garante que fique visível
+      setTimeout(() => previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50)
     },
     onError: (e: any) => toast.error(e?.message || 'Falha ao gerar a amostra'),
   })
+  const previewRef = useRef<HTMLDivElement>(null)
 
   // ── Validação por passo ───────────────────────────────────────────────────
 
@@ -718,7 +721,7 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
 
         {/* ── PASSO 1: ORIGEM ── */}
         {step === 0 && (
-          <div className="flex flex-col gap-3 overflow-y-auto max-h-[60vh] pr-1">
+          <div className="flex flex-col gap-3">
             {connLoading
               ? <IntrospectStatus carregando rotulo="conexões" viaAirflow={viaAirflow} />
               : (
@@ -794,7 +797,7 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
 
         {/* ── PASSO 2: DESTINO ── */}
         {step === 1 && (
-          <div className="flex flex-col gap-3 overflow-y-auto max-h-[60vh] pr-1">
+          <div className="flex flex-col gap-3">
             <Select label="Conexão de destino (Airflow) *" value={form.dst_conn_id}
               onChange={e => setForm(prev => ({
                 ...prev, dst_conn_id: e.target.value, dst_database: '',
@@ -894,7 +897,7 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
 
         {/* ── PASSO 3: COLUNAS & TRANSFORMAÇÕES ── */}
         {step === 2 && (
-          <div className="flex flex-col gap-3 overflow-y-auto max-h-[60vh] pr-1">
+          <div className="flex flex-col gap-3">
             {(colsQ.isLoading || colsQ.isError) && (
               <IntrospectStatus carregando={colsQ.isLoading}
                 erro={(colsQ.error as any)?.message} rotulo="colunas" viaAirflow={viaAirflow} />
@@ -933,7 +936,7 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
                   </div>
                 </div>
 
-                <div className="border border-edge rounded-lg overflow-hidden">
+                <div className="border border-edge rounded-lg overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="text-xs text-dim border-b border-edge bg-canvas/50">
@@ -999,7 +1002,7 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
                 </div>
 
                 {preview && (
-                  <div className="border border-edge rounded-lg overflow-hidden">
+                  <div ref={previewRef} className="border border-edge rounded-lg overflow-hidden">
                     <div className="px-3 py-1.5 border-b border-edge bg-canvas/50 flex items-center justify-between">
                       <span className="text-[11px] text-dim">
                         Amostra transformada — {preview.rows.length} linha{preview.rows.length !== 1 ? 's' : ''} (máx. 50)
@@ -1042,7 +1045,7 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
 
         {/* ── PASSO 4: PERFORMANCE ── */}
         {step === 3 && (
-          <div className="flex flex-col gap-3 overflow-y-auto max-h-[60vh] pr-1">
+          <div className="flex flex-col gap-3">
             <div className="flex flex-col gap-1">
               <Select label="Coluna de partição (paraleliza a leitura em faixas)"
                 value={form.particao_coluna}
@@ -1086,7 +1089,7 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
 
         {/* ── PASSO 5: REVISÃO ── */}
         {step === 4 && (
-          <div className="flex flex-col gap-3 overflow-y-auto max-h-[60vh] pr-1">
+          <div className="flex flex-col gap-3">
             <Input label="Nome da cópia *" value={form.nome}
               onChange={e => f('nome', e.target.value)}
               placeholder="ex: Clientes DMDB41 → DW" maxLength={200} />

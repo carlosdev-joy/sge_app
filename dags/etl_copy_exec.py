@@ -370,7 +370,8 @@ def _copiar_faixa(faixa, job, exec_id, alvo, src_air, dst_air):
                    (faixa["id"],))
 
         src = bulk_copy.open_src_conn(src_air, job["src_database"])
-        dst = bulk_copy.open_dst_conn(dst_air, job["dst_database"], alvo["engine"])
+        dst = bulk_copy.open_dst_conn(dst_air, job["dst_database"], alvo["engine"],
+                                      charset=alvo.get("charset"))
 
         sql, params = _sql_da_faixa(job, faixa)
 
@@ -556,10 +557,14 @@ def executar_copia(**context):
         try:
             _preparar_destino(src, dst_ctl, job)
             # Alvo de escrita resolvido UMA vez por execução (ordinais/
-            # column_ids do bulk_copy; fallback por nome se necessário)
+            # column_ids do bulk_copy, charset do codepage do destino;
+            # fallback por nome se necessário)
             alvo = bulk_copy.prepare_bulk_target(
                 dst_ctl, job["dst_schema"], job["dst_table"],
-                json.loads(job["dst_columns_json"]), engine)
+                json.loads(job["dst_columns_json"]), engine,
+                charset_override=bulk_copy.charset_da_conexao(dst_air))
+            if alvo.get("charset"):
+                print(f"[COPY] charset da carga bulk: {alvo['charset']}")
             if alvo["engine"] != engine:
                 print(f"[COPY] Engine ajustado {engine} → {alvo['engine']}: "
                       f"{alvo['motivo_fallback']}")
