@@ -316,24 +316,33 @@ async def _list_mssql_conn_ids() -> set[str] | None:
 
 
 async def _list_mssql_hosts() -> set[str]:
-    """Hosts (campo ``host``) das conexões MSSQL cadastradas no Airflow.
+    """Hosts (campo ``host``) das conexões MSSQL cadastradas — união de
+    dbo.etl_conexao (fonte da verdade, migration 054) com as Airflow
+    Connections legadas ainda não migradas.
 
     Allowlist anti-SSRF: o preview / databases por servidor só aceita um host que
-    JÁ esteja cadastrado como conexão MSSQL (mesma fonte de `list_mssql_connections`).
-    Degrada para set() se a chamada falhar (→ qualquer host é recusado, fail-safe)."""
+    JÁ esteja cadastrado como conexão MSSQL. Cada fonte degrada para vazio de
+    forma independente (ambas fora → set() → qualquer host é recusado, fail-safe)."""
+    hosts: set[str] = set()
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("SELECT host FROM dbo.etl_conexao")
+        hosts |= {(r[0] or "").strip() for r in cur.fetchall() if (r[0] or "").strip()}
+        cur.close(); conn.close()
+    except Exception:
+        pass
     try:
         async with get_airflow_client() as client:
             r = await client.get("/api/v1/connections?limit=100")
-            if not r.is_success:
-                return set()
-            data = r.json()
-            return {
-                (c.get("host") or "").strip()
-                for c in data.get("connections", [])
-                if c.get("conn_type") == "mssql" and (c.get("host") or "").strip()
-            }
+            if r.is_success:
+                hosts |= {
+                    (c.get("host") or "").strip()
+                    for c in r.json().get("connections", [])
+                    if c.get("conn_type") == "mssql" and (c.get("host") or "").strip()
+                }
     except Exception:
-        return set()
+        pass
+    return hosts
 
 
 def _swap_conn_str(host: str, database: str) -> str:
