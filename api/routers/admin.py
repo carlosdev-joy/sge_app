@@ -1,10 +1,13 @@
 """api/routers/admin.py — POST /admin, POST /admin/freeze, POST /admin/test-webhook."""
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 
 import httpx
+import pyodbc
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import get_db_conn
@@ -13,12 +16,79 @@ from deps import (
     AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
     get_current_user, get_admin_user,
 )
+from routers.airflow import get_airflow_client
+# Reuso do caminho de introspecção do módulo Cópia de Dados (conn_test modo
+# conn_id salvo): resolução host/porta + allowlist, consulta direta com a
+# credencial do app e fallback RPC pela DAG (credencial real via BaseHook).
+from routers.copias import _consulta_direta, _introspect_via_dag, _server_da_conexao
 
 log = logging.getLogger("orquestra-api")
 
 router = APIRouter()
 
 FREEZE_MOTIVO = "Congelamento manual do ambiente"
+
+# ── Conexões de Dados (Airflow Connections mssql) ────────────────────────────
+# conn_id restrito (sem ponto — mais rígido que o de copias) e host sem
+# ';'/'{'/'}' (anti-injeção em connection string ODBC). host\instância é aceito.
+_CONN_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,100}$")
+_HOST_RE = re.compile(r"^[A-Za-z0-9_.\-\\]{1,200}$")
+
+
+def _sem_senha(texto, *segredos) -> str:
+    """Remove qualquer ocorrência dos segredos de um texto de erro/resposta."""
+    out = str(texto or "")
+    for s in segredos:
+        if s:
+            out = out.replace(str(s), "••••")
+    return out
+
+
+def _odbc_quote(v: str) -> str:
+    """Valor entre chaves para connection string ODBC ('}' duplicado) — evita
+    que senha/login/database com ';' injete pares na conn string."""
+    return "{" + str(v).replace("}", "}}") + "}"
+
+
+def _melhor_driver_odbc() -> str:
+    """Melhor 'ODBC Driver N for SQL Server' instalado no container da API.
+    Crédito: réplica mínima de dags/utils/bulk_copy._melhor_driver_odbc —
+    ordem lexicográfica funciona para 'ODBC Driver 11/13/17/18'."""
+    try:
+        drivers = sorted(d for d in pyodbc.drivers() if "ODBC Driver" in d)
+        if drivers:
+            return drivers[-1]
+    except Exception:
+        pass
+    return "ODBC Driver 18 for SQL Server"
+
+
+def _porta_valida(port_raw) -> int:
+    """Valida a porta (int 1..65535); ausente/vazia → 1433 (padrão MSSQL)."""
+    if port_raw in (None, ""):
+        return 1433
+    try:
+        port = int(str(port_raw).strip())
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="port deve ser um número inteiro")
+    if not 1 <= port <= 65535:
+        raise HTTPException(status_code=422, detail="port deve estar entre 1 e 65535")
+    return port
+
+
+def _extra_dict(extra) -> dict:
+    """Extra JSON de uma connection do Airflow como dict (tolerante: extra
+    vazio/inválido/não-objeto → {})."""
+    try:
+        if isinstance(extra, dict):
+            return extra
+        if isinstance(extra, str) and extra.strip():
+            val = json.loads(extra)
+            if isinstance(val, dict):
+                return val
+    except Exception:
+        pass
+    return {}
 
 
 def _fmt_dt(v):
@@ -402,6 +472,275 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             cur.execute("DELETE FROM dbo.etl_airflow_role_perfil WHERE role_airflow = ?", [role])
             conn.commit(); cur.close(); conn.close()
             return {"sucesso": True, "mensagem": f"Mapeamento '{role}' removido."}
+
+        # ── Conexões de Dados: gestão das Airflow Connections mssql ───────────
+        # As credenciais CONTINUAM no Airflow (Fernet) — o Orquestra só faz o
+        # CRUD/teste via proxy da REST API. A senha NUNCA aparece em resposta,
+        # log ou mensagem de erro (a API do Airflow nem a devolve no GET).
+        elif action == "conn_list":
+            cur.close(); conn.close()
+            conns: list[dict] = []
+            try:
+                async with get_airflow_client() as client:
+                    r = await client.get("/api/v1/connections?limit=100")
+                    if not r.is_success:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=(f"Airflow respondeu HTTP {r.status_code} "
+                                    "ao listar connections"))
+                    for c in r.json().get("connections", []):
+                        if (c.get("conn_type") or "").lower() != "mssql":
+                            continue
+                        extra = c.get("extra")
+                        if "extra" not in c:
+                            # Airflow 2.x NÃO devolve 'extra' na lista (campo
+                            # sensível — só no GET por id): busca o detalhe da
+                            # connection para extrair o charset. Best-effort.
+                            try:
+                                rd = await client.get(
+                                    f"/api/v1/connections/{c.get('connection_id')}")
+                                if rd.is_success:
+                                    extra = rd.json().get("extra")
+                            except Exception as e:
+                                log.warning("conn_list: detalhe de '%s' falhou: %s",
+                                            c.get("connection_id"), e)
+                        conns.append(
+                            {"conn_id": c.get("connection_id"),
+                             "host": c.get("host") or "",
+                             "port": c.get("port"),
+                             "schema": c.get("schema") or "",
+                             "login": c.get("login") or "",
+                             "description": c.get("description") or "",
+                             "extra_charset": _extra_dict(extra).get("charset") or None})
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=502,
+                                    detail=f"Erro ao consultar o Airflow: {e}")
+            return {"sucesso": True, "connections": conns}
+
+        elif action == "conn_upsert":
+            cur.close(); conn.close()
+            conn_id     = (body.get("conn_id") or "").strip()
+            host        = (body.get("host") or "").strip()
+            login       = (body.get("login") or "").strip()
+            password    = body.get("password") or ""   # nunca logar/ecoar
+            description = (body.get("description") or "").strip()
+            charset     = (body.get("charset") or "").strip()
+            if not _CONN_ID_RE.match(conn_id):
+                raise HTTPException(
+                    status_code=422,
+                    detail="conn_id inválido — use letras, números, '_' ou '-' (máx. 100)")
+            if not host:
+                raise HTTPException(status_code=422, detail="host é obrigatório")
+            if not _HOST_RE.match(host):
+                raise HTTPException(
+                    status_code=422,
+                    detail="host inválido — use letras, números, '.', '-', '_' ou '\\'")
+            port = _porta_valida(body.get("port"))
+            try:
+                async with get_airflow_client() as client:
+                    rg = await client.get(f"/api/v1/connections/{conn_id}")
+                    if rg.status_code == 404:
+                        # ── criação (POST) ─────────────────────────────────
+                        if not login:
+                            raise HTTPException(status_code=422,
+                                                detail="login é obrigatório ao criar")
+                        if not password:
+                            raise HTTPException(status_code=422,
+                                                detail="password é obrigatório ao criar")
+                        payload = {"connection_id": conn_id, "conn_type": "mssql",
+                                   "host": host, "port": port, "login": login,
+                                   "password": password}
+                        if description:
+                            payload["description"] = description
+                        if charset:
+                            payload["extra"] = json.dumps({"charset": charset})
+                        rc = await client.post("/api/v1/connections", json=payload)
+                        if not rc.is_success:
+                            raise HTTPException(
+                                status_code=502,
+                                detail=("Airflow recusou a criação "
+                                        f"(HTTP {rc.status_code}): "
+                                        f"{_sem_senha(rc.text, password)[:300]}"))
+                        log.info("conn_upsert: connection '%s' criada por %s",
+                                 conn_id, requested_by)
+                        return {"sucesso": True, "criada": True,
+                                "mensagem": f"Connection '{conn_id}' criada no Airflow."}
+                    if not rg.is_success:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=("Erro ao consultar a connection no Airflow "
+                                    f"(HTTP {rg.status_code})"))
+                    atual = rg.json()
+                    if (atual.get("conn_type") or "").lower() != "mssql":
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(f"connection '{conn_id}' já existe com tipo "
+                                    f"'{atual.get('conn_type')}' — gerencie pela UI do Airflow"))
+                    # ── atualização (PATCH) — update_mask só com o que veio ─
+                    campos: dict = {"host": host}
+                    mask = ["host"]
+                    if "port" in body:
+                        campos["port"] = port; mask.append("port")
+                    if login:
+                        campos["login"] = login; mask.append("login")
+                    if "description" in body:
+                        campos["description"] = description; mask.append("description")
+                    if password:  # em branco/ausente = mantém a atual (fora do mask)
+                        campos["password"] = password; mask.append("password")
+                    if "charset" in body:
+                        extra_atual = _extra_dict(atual.get("extra"))
+                        extra_novo = dict(extra_atual)
+                        if charset:
+                            extra_novo["charset"] = charset
+                        else:  # charset vazio remove a chave, preservando as demais
+                            extra_novo.pop("charset", None)
+                        if extra_novo != extra_atual:
+                            campos["extra"] = json.dumps(extra_novo)
+                            mask.append("extra")
+                    payload = {"connection_id": conn_id, "conn_type": "mssql", **campos}
+                    rp = await client.patch(
+                        f"/api/v1/connections/{conn_id}",
+                        params={"update_mask": ",".join(mask)},
+                        json=payload)
+                    if not rp.is_success:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=("Airflow recusou a atualização "
+                                    f"(HTTP {rp.status_code}): "
+                                    f"{_sem_senha(rp.text, password)[:300]}"))
+                    log.info("conn_upsert: connection '%s' atualizada por %s (mask=%s)",
+                             conn_id, requested_by, ",".join(mask))
+                    return {"sucesso": True, "criada": False, "update_mask": mask,
+                            "mensagem": f"Connection '{conn_id}' atualizada no Airflow."}
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Erro ao comunicar com o Airflow: {_sem_senha(e, password)}")
+
+        elif action == "conn_delete":
+            conn_id = (body.get("conn_id") or "").strip()
+            if not _CONN_ID_RE.match(conn_id):
+                raise HTTPException(status_code=422, detail="conn_id inválido")
+            # GUARDA: recusa excluir connection referenciada por Cópias de
+            # Dados ativas ou por jobs de pipeline (nó SQL). Degrada
+            # graciosamente se as tabelas não existirem neste ambiente.
+            refs: list[str] = []
+            try:
+                cur.execute(
+                    "SELECT nome FROM dbo.etl_copy_job "
+                    "WHERE ativo = 1 AND (src_conn_id = ? OR dst_conn_id = ?)",
+                    (conn_id, conn_id))
+                refs += [f'Cópia de Dados "{r[0]}"' for r in cur.fetchall()]
+            except Exception as e:
+                log.warning("conn_delete: checagem etl_copy_job falhou (%s) — ignorando", e)
+            try:
+                cur.execute(
+                    "SELECT pipeline_name, job_name FROM dbo.etl_pipeline_job "
+                    "WHERE mssql_conn_id = ?", (conn_id,))
+                refs += [f'job "{r[1]}" do pipeline "{r[0]}"' for r in cur.fetchall()]
+            except Exception as e:
+                log.warning("conn_delete: checagem etl_pipeline_job falhou (%s) — ignorando", e)
+            cur.close(); conn.close()
+            if refs:
+                extras = f" (+{len(refs) - 10} outra(s))" if len(refs) > 10 else ""
+                raise HTTPException(
+                    status_code=409,
+                    detail=(f"A connection '{conn_id}' está em uso e não pode ser "
+                            f"excluída: {'; '.join(refs[:10])}{extras}"))
+            try:
+                async with get_airflow_client() as client:
+                    rd = await client.delete(f"/api/v1/connections/{conn_id}")
+            except Exception as e:
+                raise HTTPException(status_code=502,
+                                    detail=f"Erro ao comunicar com o Airflow: {e}")
+            if rd.status_code == 404:
+                raise HTTPException(status_code=404,
+                                    detail=f"connection '{conn_id}' não encontrada no Airflow")
+            if not rd.is_success:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Airflow recusou a exclusão (HTTP {rd.status_code})")
+            log.info("conn_delete: connection '%s' removida por %s", conn_id, requested_by)
+            return {"sucesso": True,
+                    "mensagem": f"Connection '{conn_id}' removida do Airflow."}
+
+        elif action == "conn_test":
+            cur.close(); conn.close()
+            password = body.get("password") or ""
+            if password:
+                # ── modo (a): senha em mãos — conexão DIRETA da API (pyodbc,
+                # mesmo perfil msodbcsql18 de _open_swapped_conn/jobs.py), com
+                # a conn string montada só com os dados do form (NUNCA reusa a
+                # credencial do app). timeout 5s + SELECT 1.
+                host  = (body.get("host") or "").strip()
+                login = (body.get("login") or "").strip()
+                database = (body.get("database") or "").strip() or "master"
+                if not host or not _HOST_RE.match(host):
+                    raise HTTPException(status_code=422,
+                                        detail="host é obrigatório (e sem caracteres especiais)")
+                if not login:
+                    raise HTTPException(status_code=422, detail="login é obrigatório")
+                port = _porta_valida(body.get("port"))
+                conn_str = (
+                    f"DRIVER={{{_melhor_driver_odbc()}}};SERVER={host},{port};"
+                    f"DATABASE={_odbc_quote(database)};UID={_odbc_quote(login)};"
+                    f"PWD={_odbc_quote(password)};TrustServerCertificate=yes"
+                )
+                try:
+                    cx = pyodbc.connect(conn_str, timeout=5)
+                    try:
+                        c2 = cx.cursor()
+                        c2.execute("SELECT 1")
+                        c2.fetchone()
+                        c2.close()
+                    finally:
+                        cx.close()
+                except Exception as e:
+                    return {"ok": False,
+                            "mensagem": (f"Falha na conexão com '{host},{port}': "
+                                         f"{_sem_senha(e, password)[:400]}")}
+                return {"ok": True,
+                        "mensagem": (f"Conexão OK — SELECT 1 executado em "
+                                     f"{host},{port} (banco '{database}').")}
+
+            # ── modo (b): sem senha — testa a connection SALVA de ponta a
+            # ponta reaproveitando o caminho de introspecção databases de
+            # copias: caminho rápido (credencial do app) e fallback DAG
+            # (credencial real da connection via BaseHook no worker).
+            conn_id = (body.get("conn_id") or "").strip()
+            if not conn_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="informe conn_id (teste da connection salva) ou host+login+password (teste direto)")
+            try:
+                server = await _server_da_conexao(conn_id)
+            except HTTPException as e:
+                return {"ok": False, "via": "airflow-rest",
+                        "mensagem": f"Falha ao resolver a connection '{conn_id}': {e.detail}"}
+            try:
+                rows = _consulta_direta(
+                    server, "master",
+                    "SELECT d.name FROM sys.databases d "
+                    "WHERE d.state_desc = 'ONLINE' AND HAS_DBACCESS(d.name) = 1")
+                return {"ok": True, "via": "direto",
+                        "mensagem": (f"Conexão OK — servidor '{server}' respondeu "
+                                     f"({len(rows)} banco(s) acessíveis).")}
+            except HTTPException as e:
+                log.info("conn_test: caminho direto falhou (%s) — fallback DAG", e.detail)
+            try:
+                payload, via = await _introspect_via_dag("databases", conn_id, timeout_s=60)
+                dbs = payload.get("databases", [])
+                obs = " (resultado do cache de introspecção, < 24h)" if via == "cache" else ""
+                return {"ok": True, "via": via,
+                        "mensagem": (f"Conexão OK via Airflow — {len(dbs)} banco(s) "
+                                     f"listados com a credencial da connection.{obs}")}
+            except HTTPException as e:
+                return {"ok": False, "via": "airflow",
+                        "mensagem": f"Teste da connection '{conn_id}' falhou: {e.detail}"}
 
         else:
             raise HTTPException(status_code=422, detail=f"Action desconhecida: '{action}'")
