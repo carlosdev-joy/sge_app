@@ -6,6 +6,11 @@ em ``select_sql``/``count_sql`` T-SQL prontos, persistidos em
 SQL compilado (não recompila) e o envolve em subquery para aplicar a faixa
 de partição: ``SELECT * FROM (<select_sql>) AS src WHERE [part] >= ? AND ...``.
 
+MODO QUERY (``src_query`` presente): a fonte é uma query SQL livre validada
+por ``validate_src_query`` — transformações e filtro do wizard são ignorados
+e ``select_sql`` passa a ser a própria query (a subquery da DAG continua
+funcionando igual).
+
 Segurança (anti-injeção):
   - Identificadores SEMPRE entre ``[colchetes]`` com escape ``]`` → ``]]`` e
     validados por allowlist de caracteres (rejeita fora do padrão).
@@ -35,6 +40,13 @@ _CAST_TIPO_RE = re.compile(
     r"|NVARCHAR\(\d{1,4}\))$"
 )
 
+# Alias final colado pelo usuário na expressão livre ("... AS NUM_CPF_CNPJ").
+# O compile_job já acrescenta "AS [destino]" — o alias vindo na expressão é
+# removido para não gerar alias duplo (SQL inválido). O identificador do alias
+# não admite parênteses, então "CAST(x AS VARCHAR(20))" NÃO casa (termina em ')').
+_ALIAS_FINAL_RE = re.compile(
+    r"\s+AS\s+(\[?[A-Za-z_][A-Za-z0-9_]*\]?)\s*$", re.IGNORECASE)
+
 # Palavras-chave proibidas em expressão livre/filtro (mesmo conjunto do
 # _COND_DML_RE de api/routers/jobs.py — read-only de verdade).
 _EXPR_PROIBIDO_RE = re.compile(
@@ -44,6 +56,9 @@ _EXPR_PROIBIDO_RE = re.compile(
 )
 
 _EXPR_MAX_CHARS = 2000
+
+# Tamanho máximo da query livre usada como FONTE da cópia (src_query).
+_SRC_QUERY_MAX_CHARS = 20000
 
 # Tamanho máximo do pad: o pad usa CAST(... AS VARCHAR(50)) como base, então
 # um preenchimento acima de 50 seria truncado silenciosamente — rejeitamos.
@@ -99,6 +114,32 @@ def validate_sql_expr(expr, rotulo: str = "expressão SQL") -> str:
     m = _EXPR_PROIBIDO_RE.search(s)
     if m:
         raise ValueError(f"{rotulo} contém comando não permitido ({m.group(1).upper()})")
+    return s
+
+
+def validate_src_query(q) -> str:
+    """Valida a query SQL livre usada como FONTE da cópia (modo query).
+
+    Read-only, mesma família de guarda de ``validate_sql_expr``: precisa
+    começar com SELECT ou WITH (case-insensitive), sem ``;``, sem comentários
+    (``--``, ``/*``), sem palavras-chave de escrita/execução (INSERT/UPDATE/
+    DELETE/MERGE/DROP/ALTER/CREATE/TRUNCATE/EXEC/EXECUTE/GRANT/REVOKE/INTO),
+    tamanho máximo de 20000 chars. Devolve a query limpa (strip)."""
+    if not q or not isinstance(q, str) or not q.strip():
+        raise ValueError("src_query vazia")
+    s = q.strip()
+    if len(s) > _SRC_QUERY_MAX_CHARS:
+        raise ValueError(
+            f"src_query excede o tamanho máximo de {_SRC_QUERY_MAX_CHARS} caracteres")
+    if not re.match(r"^(SELECT|WITH)\b", s, re.IGNORECASE):
+        raise ValueError("src_query deve começar com SELECT ou WITH")
+    if ";" in s:
+        raise ValueError("src_query não pode conter ';'")
+    if "--" in s or "/*" in s or "*/" in s:
+        raise ValueError("src_query não pode conter comentários ('--' ou '/*')")
+    m = _EXPR_PROIBIDO_RE.search(s)
+    if m:
+        raise ValueError(f"src_query contém comando não permitido ({m.group(1).upper()})")
     return s
 
 
@@ -179,23 +220,34 @@ def compile_transform(origem: str, transform) -> str:
                 "DATE, DATETIME, FLOAT, BIT)")
         return f"CAST({col} AS {tipo_sql})"
 
-    # tipo == "sql" — expressão livre validada (read-only)
+    # tipo == "sql" — expressão livre validada (read-only). Alias final
+    # ("... END AS NUM_CPF_CNPJ") é removido: o compile_job já põe AS [destino].
     expressao = validate_sql_expr(transform.get("expressao"),
                                   f"expressão SQL da coluna '{origem}'")
-    return expressao
+    return _ALIAS_FINAL_RE.sub("", expressao).rstrip()
 
 
 def compile_job(job: dict) -> dict:
     """Compila um job de cópia para SQL pronto.
 
     Entrada (dict): src_database, src_schema (default 'dbo'), src_table,
-    src_filtro (opcional) e colunas — lista [{origem, destino, transform}].
+    src_filtro (opcional), src_query (opcional — MODO QUERY) e colunas —
+    lista [{origem, destino, transform}].
 
     Saída: {"select_sql", "count_sql", "dst_columns"} onde
       select_sql = SELECT <expr> AS [dst], ... FROM [db].[schema].[tabela]
                    WITH (NOLOCK) [WHERE (<filtro>)]   (SEM ORDER BY)
       count_sql  = SELECT COUNT_BIG(*) FROM ... (mesmo FROM/WHERE)
       dst_columns = nomes de destino na ordem do SELECT.
+
+    MODO QUERY (src_query presente): a fonte da cópia é a própria query
+    (validada por ``validate_src_query``) — transformações e filtro do wizard
+    NÃO se aplicam (transform de qualquer coluna deve ser nulo; src_filtro é
+    ignorado). Saída:
+      select_sql = a query crua validada
+      count_sql  = SELECT COUNT_BIG(*) FROM (\\n<query>\\n) AS _q
+      dst_columns = nomes das colunas informadas (detectadas pela UI via
+                    /copias/introspect/query-columns).
 
     Levanta ValueError (→ 422 nos endpoints) para qualquer entrada inválida."""
     if not isinstance(job, dict):
@@ -204,9 +256,10 @@ def compile_job(job: dict) -> dict:
     src_database = (job.get("src_database") or "").strip()
     src_schema = (job.get("src_schema") or "dbo").strip() or "dbo"
     src_table = (job.get("src_table") or "").strip()
+    src_query = (job.get("src_query") or "").strip()
     if not src_database:
         raise ValueError("src_database é obrigatório")
-    if not src_table:
+    if not src_table and not src_query:
         raise ValueError("src_table é obrigatório")
 
     colunas = job.get("colunas")
@@ -214,6 +267,9 @@ def compile_job(job: dict) -> dict:
         colunas = colunas.get("colunas")
     if not isinstance(colunas, list) or not colunas:
         raise ValueError("colunas (lista não vazia) é obrigatório")
+
+    if src_query:
+        return _compile_job_query(src_query, colunas)
 
     exprs: list[str] = []
     dst_columns: list[str] = []
@@ -246,3 +302,35 @@ def compile_job(job: dict) -> dict:
     select_sql = "SELECT " + ", ".join(exprs) + " " + from_sql + where_sql
     count_sql = "SELECT COUNT_BIG(*) " + from_sql + where_sql
     return {"select_sql": select_sql, "count_sql": count_sql, "dst_columns": dst_columns}
+
+
+def _compile_job_query(src_query: str, colunas: list) -> dict:
+    """Compila o MODO QUERY: select_sql = query crua validada; count_sql
+    envolve a query em subquery; dst_columns = nomes das colunas informadas
+    (a UI detecta via /copias/introspect/query-columns e envia com
+    origem=destino=nome e transform nulo). Transform preenchido → erro."""
+    src_query = validate_src_query(src_query)
+
+    dst_columns: list[str] = []
+    vistos: set[str] = set()
+    for i, c in enumerate(colunas):
+        if not isinstance(c, dict):
+            raise ValueError(f"coluna #{i + 1} inválida (esperado objeto)")
+        if c.get("transform") is not None:
+            nome = (c.get("destino") or c.get("origem") or f"#{i + 1}")
+            raise ValueError(
+                f"coluna '{nome}': transformações não são permitidas no modo "
+                "query — trate os dados na própria query (src_query)")
+        destino = (c.get("destino") or c.get("origem") or "").strip()
+        if not destino:
+            raise ValueError(f"coluna #{i + 1}: nome da coluna é obrigatório")
+        quote_ident(destino)  # valida o identificador (allowlist)
+        chave = destino.lower()
+        if chave in vistos:
+            raise ValueError(f"coluna de destino duplicada: '{destino}'")
+        vistos.add(chave)
+        dst_columns.append(destino)
+
+    count_sql = f"SELECT COUNT_BIG(*) FROM (\n{src_query}\n) AS _q"
+    return {"select_sql": src_query, "count_sql": count_sql,
+            "dst_columns": dst_columns}

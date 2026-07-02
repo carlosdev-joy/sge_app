@@ -167,7 +167,12 @@ export default function CopiaDados() {
                         </td>
                         <td className="px-4 py-2.5">
                           <span className="block text-[11px] text-dim">{c.src_conn_id} · {c.src_database}</span>
-                          <span className="font-mono text-xs text-ink">{c.src_schema}.{c.src_table}</span>
+                          {c.usa_query ? (
+                            <span className="font-mono text-xs text-blue-700 dark:text-blue-400"
+                              title="A fonte desta cópia é uma query SQL livre">query SQL</span>
+                          ) : (
+                            <span className="font-mono text-xs text-ink">{c.src_schema}.{c.src_table}</span>
+                          )}
                         </td>
                         <td className="px-4 py-2.5">
                           <span className="block text-[11px] text-dim">{c.dst_conn_id} · {c.dst_database}</span>

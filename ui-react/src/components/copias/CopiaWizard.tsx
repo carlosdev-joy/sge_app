@@ -5,7 +5,13 @@
 // Passos: 1 Origem · 2 Destino · 3 Colunas & Transformações · 4 Performance
 // · 5 Revisão. Introspecção via GET /copias/introspect/* (com hint quando a
 // consulta cai para o caminho lento via Airflow).
-import { useState, useEffect, useRef, useMemo } from 'react'
+//
+// MODO QUERY: no passo Origem, "Usar query SQL como fonte" troca o seletor de
+// tabela + filtro por um textarea com a query. As colunas são detectadas via
+// POST /copias/introspect/query-columns (obrigatório validar antes de
+// avançar); transformações e filtro do wizard são ignorados — a query é a
+// fonte da execução (alias = nome da coluna no destino).
+import { useState, useEffect, useRef, useMemo, type RefObject } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
 import { useAuthStore } from '../../store/auth'
@@ -14,10 +20,11 @@ import { Input, Select } from '../ui/Input'
 import { Modal } from '../ui/Modal'
 import { Spinner } from '../ui/Spinner'
 import { toast } from '../ui/Toast'
-import { AlertTriangle, Eye, Play, Plus, Save, Search, X } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Eye, Info, Play, Plus, Save, Search, X } from 'lucide-react'
 import {
   type CasoPad, type ColunaInfo, type ColunaMapeada, type Conexao,
   type ColumnsResp, type CopiaDetalhe, type DatabasesResp, type PreviewResp,
+  type QueryColuna, type QueryColumnsResp,
   type TablesResp, type Transform, type TransformTipo,
   CAST_TIPOS_SUGERIDOS, PARTICAO_TIPOS, TRANSFORM_OPTIONS,
   fmtRows, novoTransform, transformResumo,
@@ -32,6 +39,8 @@ interface FormState {
   src_schema: string
   src_table: string
   src_filtro: string
+  usar_query: boolean   // modo query: fonte = src_query (ignora tabela/filtro/transforms)
+  src_query: string
   dst_conn_id: string
   dst_database: string
   dst_schema: string
@@ -55,6 +64,7 @@ interface LinhaColuna {
 const defaultForm = (): FormState => ({
   nome: '',
   src_conn_id: '', src_database: '', src_schema: 'dbo', src_table: '', src_filtro: '',
+  usar_query: false, src_query: '',
   dst_conn_id: '', dst_database: '', dst_schema: 'dbo', dst_table: '',
   criar_tabela: false, truncar_antes: false,
   particao_coluna: '', streams: 4, batch_size: 50000,
@@ -66,6 +76,7 @@ function copiaToForm(c: CopiaDetalhe): FormState {
     src_conn_id: c.src_conn_id, src_database: c.src_database,
     src_schema: c.src_schema || 'dbo', src_table: c.src_table,
     src_filtro: c.src_filtro ?? '',
+    usar_query: !!c.src_query?.trim(), src_query: c.src_query ?? '',
     dst_conn_id: c.dst_conn_id, dst_database: c.dst_database,
     dst_schema: c.dst_schema || 'dbo', dst_table: c.dst_table,
     criar_tabela: c.criar_tabela, truncar_antes: c.truncar_antes,
@@ -322,18 +333,66 @@ function TransformEditor({ transform, colunas, onChange }: {
     return (
       <div className="flex flex-col gap-1 bg-canvas border border-edge rounded-lg p-2.5">
         <label className="text-xs text-dim font-medium">Expressão T-SQL (somente leitura)</label>
-        <input value={t.expressao ?? ''}
+        <textarea rows={5} value={t.expressao ?? ''}
           onChange={e => onChange({ ...t, expressao: e.target.value })}
-          placeholder="ex: UPPER(LTRIM(RTRIM([nome])))"
-          className="w-full bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500" />
+          placeholder={"ex: CASE\n  WHEN tipo = 'F' THEN RIGHT('00000000000' + [cpf], 11)\n  ELSE [cpf]\nEND"}
+          spellCheck={false}
+          className="w-full bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs font-mono placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500 resize-y" />
         <p className="text-[10px] text-dim">
-          Sem ponto e vírgula, comentários ou comandos DML/DDL — validado no servidor.
+          Sem ponto e vírgula, comentários ou comandos DML/DDL — validado no
+          servidor. Um alias final ("… AS nome") é removido automaticamente.
         </p>
       </div>
     )
   }
 
   return null // trim / upper / lower — sem parâmetros
+}
+
+// ── Amostra (preview) — usada no passo Colunas dos dois modos ─────────────────
+
+function PreviewTable({ preview, onClear, innerRef }: {
+  preview: PreviewResp
+  onClear: () => void
+  innerRef: RefObject<HTMLDivElement | null>
+}) {
+  return (
+    <div ref={innerRef} className="border border-edge rounded-lg overflow-hidden">
+      <div className="px-3 py-1.5 border-b border-edge bg-canvas/50 flex items-center justify-between">
+        <span className="text-[11px] text-dim">
+          Amostra transformada — {preview.rows.length} linha{preview.rows.length !== 1 ? 's' : ''} (máx. 50)
+        </span>
+        <button type="button" onClick={onClear}
+          className="text-dim hover:text-ink transition-colors"><X size={13} /></button>
+      </div>
+      <div className="overflow-auto max-h-64">
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 bg-canvas">
+            <tr className="text-[10px] text-dim border-b border-edge">
+              {preview.columns.map(c => (
+                <th key={c} className="px-2 py-1.5 text-left font-semibold whitespace-nowrap font-mono">{c}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {preview.rows.map((linha, i) => (
+              <tr key={i} className="border-b border-edge/40">
+                {linha.map((v, j) => (
+                  <td key={j} className="px-2 py-1 font-mono whitespace-nowrap text-ink">
+                    {v == null ? <span className="text-dim italic">NULL</span> : String(v)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {preview.rows.length === 0 && (
+              <tr><td colSpan={Math.max(1, preview.columns.length)}
+                className="px-3 py-4 text-center text-dim">Nenhuma linha na origem.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
 }
 
 // ── Wizard ────────────────────────────────────────────────────────────────────
@@ -361,6 +420,21 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
   // Fica true assim que QUALQUER introspecção responder via 'airflow' —
   // passa a avisar nos loadings seguintes que a consulta pode levar ~30s.
   const [viaAirflow, setViaAirflow] = useState(false)
+
+  // MODO QUERY — colunas detectadas do result set (query-columns) e a query
+  // para a qual elas valem (editar a query invalida e exige nova validação).
+  // Ao editar uma cópia salva com src_query, as colunas do registro valem
+  // para a query salva — sem exigir revalidação para salvar outras alterações.
+  const [queryCols, setQueryCols] = useState<QueryColuna[]>(
+    copia?.src_query?.trim()
+      ? copia.colunas.map(c => ({ name: c.destino || c.origem, type: null }))
+      : [])
+  const [colsValidadasPara, setColsValidadasPara] = useState<string>(
+    copia?.src_query?.trim() ?? '')
+
+  const usarQuery = form.usar_query
+  const queryValidada = usarQuery && queryCols.length > 0 &&
+    !!form.src_query.trim() && form.src_query.trim() === colsValidadasPara.trim()
 
   function f<K extends keyof FormState>(k: K, v: FormState[K]) {
     setForm(prev => ({ ...prev, [k]: v }))
@@ -390,7 +464,7 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
   const srcTablesQ = useQuery<TablesResp>({
     queryKey: ['copias-tables', form.src_conn_id, form.src_database],
     queryFn: () => apiFetch(`/copias/introspect/tables?conn_id=${encodeURIComponent(form.src_conn_id)}&database=${encodeURIComponent(form.src_database)}`),
-    enabled: !!form.src_conn_id && !!form.src_database,
+    enabled: !!form.src_conn_id && !!form.src_database && !form.usar_query,
     staleTime: 300_000,
   })
   const dstTablesQ = useQuery<TablesResp>({
@@ -406,7 +480,8 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
       `&database=${encodeURIComponent(form.src_database)}` +
       `&schema=${encodeURIComponent(form.src_schema)}` +
       `&table=${encodeURIComponent(form.src_table)}`),
-    enabled: !!form.src_conn_id && !!form.src_database && !!form.src_table,
+    enabled: !!form.src_conn_id && !!form.src_database && !!form.src_table
+      && !form.usar_query,
     staleTime: 300_000,
   })
   const colunas = useMemo(() => colsQ.data?.columns ?? [], [colsQ.data])
@@ -469,14 +544,63 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
   }, [colsQ.isError, origemSalva, rows.length])
 
   // Troca de origem: limpa NA HORA o que depende da introspecção antiga
-  // (colunas, partição e amostra), sem esperar a nova resposta chegar.
+  // (colunas, partição, amostra e colunas detectadas da query), sem esperar
+  // a nova resposta chegar.
   function resetOrigem(patch: Partial<FormState>) {
     initKeyRef.current = ''
     setRows([])
     setRowsDesatualizadas(false)
     setPreview(null)
+    setQueryCols([])
+    setColsValidadasPara('')
     setForm(prev => ({ ...prev, ...patch, particao_coluna: '' }))
   }
+
+  // Liga/desliga o modo query: escondemos tabela+filtro (query) ou o
+  // textarea (tabela) e limpamos o estado que não vale mais no outro modo.
+  function toggleUsarQuery(ativo: boolean) {
+    setPreview(null)
+    if (ativo) {
+      initKeyRef.current = ''
+      setRows([])
+      setRowsDesatualizadas(false)
+      setForm(prev => ({
+        ...prev, usar_query: true,
+        src_table: '', src_schema: 'dbo', src_filtro: '', particao_coluna: '',
+      }))
+    } else {
+      setQueryCols([])
+      setColsValidadasPara('')
+      setForm(prev => ({
+        ...prev, usar_query: false, src_query: '', particao_coluna: '',
+      }))
+    }
+  }
+
+  // MODO QUERY: valida a query no servidor e detecta as colunas do result set
+  // (POST /copias/introspect/query-columns — obrigatório antes de avançar).
+  const queryColsMut = useMutation({
+    mutationFn: () => apiFetch<QueryColumnsResp>('/copias/introspect/query-columns', {
+      method: 'POST',
+      body: JSON.stringify({
+        src_conn_id: form.src_conn_id,
+        src_database: form.src_database,
+        src_query: form.src_query.trim(),
+      }),
+    }),
+    onSuccess: d => {
+      if (d.via === 'airflow') setViaAirflow(true)
+      if (!d.columns.length) {
+        toast.error('A query não retornou colunas — confira o SELECT')
+        return
+      }
+      setQueryCols(d.columns)
+      setColsValidadasPara(form.src_query.trim())
+      setPreview(null)
+      toast.success(`Query válida — ${d.columns.length} coluna${d.columns.length !== 1 ? 's' : ''} detectada${d.columns.length !== 1 ? 's' : ''}`)
+    },
+    onError: (e: any) => toast.error(e?.message || 'Falha ao validar a query'),
+  })
 
   function setRow(i: number, patch: Partial<LinhaColuna>) {
     // particao_coluna referencia o nome de DESTINO de uma coluna incluída:
@@ -491,10 +615,14 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
     setPreview(null)
   }
 
+  // No modo query: origem = destino = nome detectado, transform sempre nulo
+  // (o backend rejeita transform com src_query — a query já trata os dados).
   const colunasPayload = (): ColunaMapeada[] =>
-    rows.filter(r => r.incluir).map(r => ({
-      origem: r.origem, destino: r.destino.trim(), transform: r.transform,
-    }))
+    usarQuery
+      ? queryCols.map(c => ({ origem: c.name, destino: c.name, transform: null }))
+      : rows.filter(r => r.incluir).map(r => ({
+          origem: r.origem, destino: r.destino.trim(), transform: r.transform,
+        }))
 
   // Colunas elegíveis para partição: somente as INCLUÍDAS, pelo nome de
   // DESTINO (alias do select compilado — a DAG aplica as faixas sobre ele).
@@ -510,19 +638,31 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
   }, [rows, form.particao_coluna])
 
   // Reseta a partição quando a coluna escolhida deixa de estar incluída
-  // (renomeações são acompanhadas em setRow).
+  // (renomeações são acompanhadas em setRow). No modo query, quando ela sai
+  // das colunas detectadas (lista vazia = validação pendente → preserva).
   useEffect(() => {
-    if (!form.particao_coluna || rows.length === 0) return
+    if (!form.particao_coluna) return
+    if (usarQuery) {
+      if (queryCols.length > 0 && !queryCols.some(c => c.name === form.particao_coluna))
+        setForm(prev => ({ ...prev, particao_coluna: '' }))
+      return
+    }
+    if (rows.length === 0) return
     if (!rows.some(r => r.incluir && r.destino.trim() === form.particao_coluna))
       setForm(prev => ({ ...prev, particao_coluna: '' }))
-  }, [rows, form.particao_coluna])
+  }, [rows, queryCols, usarQuery, form.particao_coluna])
 
   // ── Preview (amostra transformada) ────────────────────────────────────────
 
   const previewMut = useMutation({
     mutationFn: () => apiFetch<PreviewResp>('/copias/preview', {
       method: 'POST',
-      body: JSON.stringify({
+      body: JSON.stringify(usarQuery ? {
+        // Modo query: a amostra roda sobre a própria query (sem tabela/filtro)
+        src_conn_id: form.src_conn_id,
+        src_database: form.src_database,
+        src_query: form.src_query.trim(),
+      } : {
         src_conn_id: form.src_conn_id,
         src_database: form.src_database,
         src_schema: form.src_schema,
@@ -548,12 +688,19 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
     if (s === 0) {
       if (!form.src_conn_id) e.push('Selecione a conexão de origem')
       if (!form.src_database) e.push('Selecione o banco de origem')
-      if (!form.src_table) e.push('Selecione a tabela de origem')
-      // Não avança ao passo Colunas sem a introspecção da origem resolvida
-      // (no modo edição resiliente as linhas vêm de colunas_json e liberam).
-      if (form.src_table && rows.length === 0) {
-        if (colsQ.isFetching) e.push('Aguarde a leitura das colunas da origem para avançar')
-        else if (colsQ.isError) e.push('Falha ao ler as colunas da origem — revise a conexão/tabela antes de avançar')
+      if (usarQuery) {
+        // Modo query: só avança com a query validada (colunas detectadas)
+        if (!form.src_query.trim()) e.push('Informe a query SQL de origem')
+        else if (queryColsMut.isPending) e.push('Aguarde a validação da query para avançar')
+        else if (!queryValidada) e.push('Valide a query e detecte as colunas antes de avançar')
+      } else {
+        if (!form.src_table) e.push('Selecione a tabela de origem')
+        // Não avança ao passo Colunas sem a introspecção da origem resolvida
+        // (no modo edição resiliente as linhas vêm de colunas_json e liberam).
+        if (form.src_table && rows.length === 0) {
+          if (colsQ.isFetching) e.push('Aguarde a leitura das colunas da origem para avançar')
+          else if (colsQ.isError) e.push('Falha ao ler as colunas da origem — revise a conexão/tabela antes de avançar')
+        }
       }
     }
     if (s === 1) {
@@ -563,7 +710,10 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
         e.push(form.criar_tabela ? 'Informe o nome da nova tabela' : 'Selecione a tabela de destino')
       }
       if (!form.dst_schema.trim()) e.push('Informe o schema de destino')
+      // Modo query: não dá para comparar tabelas estaticamente (a checagem
+      // vira o aviso de truncar + o log da DAG).
       const mesmaTabela =
+        !usarQuery &&
         !!form.src_conn_id &&
         form.src_conn_id.trim().toLowerCase() === form.dst_conn_id.trim().toLowerCase() &&
         !!form.dst_database &&
@@ -575,7 +725,11 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
         e.push('O destino não pode ser igual à origem (mesma conexão, banco, schema e tabela): ' +
           'a cópia gravaria sobre a própria fonte — e com "Truncar destino" os dados de origem seriam apagados antes da leitura')
     }
-    if (s === 2) {
+    if (s === 2 && usarQuery) {
+      if (queryCols.length === 0)
+        e.push('Valide a query no passo Origem para detectar as colunas')
+    }
+    if (s === 2 && !usarQuery) {
       const incluidas = rows.filter(r => r.incluir)
       if (incluidas.length === 0) e.push('Inclua ao menos uma coluna')
       incluidas.forEach(r => {
@@ -632,8 +786,10 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
         src_conn_id: form.src_conn_id,
         src_database: form.src_database,
         src_schema: form.src_schema.trim() || 'dbo',
-        src_table: form.src_table,
-        src_filtro: form.src_filtro.trim() || null,
+        src_table: usarQuery ? '' : form.src_table,
+        // Modo query: filtro do wizard não se aplica (a query é a fonte)
+        src_filtro: usarQuery ? null : (form.src_filtro.trim() || null),
+        src_query: usarQuery ? form.src_query.trim() : null,
         dst_conn_id: form.dst_conn_id,
         dst_database: form.dst_database,
         dst_schema: form.dst_schema.trim() || 'dbo',
@@ -763,6 +919,62 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
             )}
 
             {form.src_database && (
+              <label className="flex items-center gap-2 cursor-pointer bg-canvas border border-edge rounded-lg px-3 py-2">
+                <input type="checkbox" checked={form.usar_query}
+                  onChange={e => toggleUsarQuery(e.target.checked)}
+                  className="accent-blue-500" />
+                <span className="text-sm text-ink">Usar query SQL como fonte</span>
+              </label>
+            )}
+
+            {form.src_database && usarQuery && (
+              <div className="flex flex-col gap-2">
+                <div className="flex items-start gap-2 p-3 rounded-lg bg-blue-50 border border-blue-200 dark:bg-blue-900/20 dark:border-blue-800">
+                  <Info size={16} className="text-blue-700 dark:text-blue-400 shrink-0 mt-0.5" />
+                  <p className="text-xs text-blue-800 dark:text-blue-300">
+                    No modo query, as transformações e o filtro do wizard são
+                    ignorados — trate os dados na própria query (alias = nome
+                    da coluna no destino).
+                  </p>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-dim font-medium">Query SQL de origem *</label>
+                  <textarea rows={10} value={form.src_query}
+                    onChange={e => { f('src_query', e.target.value); setPreview(null) }}
+                    placeholder={'SELECT c.id, c.nome, UPPER(c.uf) AS uf\nFROM dbo.clientes c\nWHERE c.ativo = 1'}
+                    spellCheck={false}
+                    className="w-full bg-panel border border-edge text-ink rounded-md px-3 py-2 text-xs font-mono placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500 resize-y" />
+                  <p className="text-[10px] text-dim">
+                    Somente SELECT/WITH, sem ponto e vírgula nem comentários — validada no servidor.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <Button variant="secondary" size="sm" loading={queryColsMut.isPending}
+                    disabled={!form.src_query.trim()}
+                    onClick={() => queryColsMut.mutate()}>
+                    <Search size={13} /> Validar query e detectar colunas
+                  </Button>
+                  {queryColsMut.isPending && viaAirflow && (
+                    <span className="text-[11px] text-amber-700 dark:text-amber-400">
+                      consultando via Airflow (pode levar ~30s)
+                    </span>
+                  )}
+                  {queryValidada && !queryColsMut.isPending && (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-green-700 dark:text-green-400">
+                      <CheckCircle2 size={12} />
+                      {queryCols.length} coluna{queryCols.length !== 1 ? 's' : ''} detectada{queryCols.length !== 1 ? 's' : ''}
+                    </span>
+                  )}
+                  {!queryValidada && !queryColsMut.isPending && !!form.src_query.trim() && !!colsValidadasPara && (
+                    <span className="text-[11px] text-amber-700 dark:text-amber-400">
+                      Query alterada — valide novamente para atualizar as colunas.
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {form.src_database && !usarQuery && (
               srcTablesQ.isLoading || srcTablesQ.isError
                 ? <IntrospectStatus carregando={srcTablesQ.isLoading}
                     erro={(srcTablesQ.error as any)?.message} rotulo="tabelas" viaAirflow={viaAirflow} />
@@ -780,7 +992,7 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
                 )
             )}
 
-            {form.src_table && (
+            {!usarQuery && form.src_table && (
               <div className="flex flex-col gap-1">
                 <Input label="Filtro opcional (WHERE, sem a palavra WHERE)"
                   value={form.src_filtro}
@@ -892,11 +1104,85 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
                 </p>
               </div>
             )}
+            {form.truncar_antes && usarQuery && (
+              <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 dark:bg-amber-900/15 dark:border-amber-800/40">
+                <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  Modo query + truncar: garanta que a query <strong>não leia a
+                  tabela de destino</strong> — o truncate acontece antes da
+                  leitura e apagaria a própria fonte dos dados.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── PASSO 3: COLUNAS — MODO QUERY (somente leitura) ── */}
+        {step === 2 && usarQuery && (
+          <div className="flex flex-col gap-3">
+            <div className="flex items-start gap-2 p-3 rounded-lg bg-blue-50 border border-blue-200 dark:bg-blue-900/20 dark:border-blue-800">
+              <Info size={16} className="text-blue-700 dark:text-blue-400 shrink-0 mt-0.5" />
+              <p className="text-xs text-blue-800 dark:text-blue-300">
+                Colunas detectadas do result set da query — no modo query não há
+                seleção, renomeação nem transformação por coluna: trate os dados
+                na própria query (alias = nome da coluna no destino).
+              </p>
+            </div>
+
+            {queryCols.length === 0 ? (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                Nenhuma coluna detectada — volte ao passo Origem e valide a query.
+              </p>
+            ) : (
+              <>
+                <span className="text-xs text-dim">
+                  {queryCols.length} coluna{queryCols.length !== 1 ? 's' : ''} detectada{queryCols.length !== 1 ? 's' : ''}
+                </span>
+                <div className="border border-edge rounded-lg overflow-hidden">
+                  <div className="max-h-64 overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-canvas">
+                        <tr className="text-xs text-dim border-b border-edge">
+                          <th className="px-3 py-2 text-left font-semibold">Coluna</th>
+                          <th className="px-3 py-2 text-left font-semibold">Tipo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {queryCols.map(c => (
+                          <tr key={c.name} className="border-b border-edge/50">
+                            <td className="px-3 py-1.5 font-mono text-xs text-ink">{c.name}</td>
+                            <td className="px-3 py-1.5 text-xs text-dim">{c.type || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <Button variant="secondary" size="sm" loading={previewMut.isPending}
+                    disabled={!queryValidada}
+                    onClick={() => previewMut.mutate()}>
+                    <Eye size={13} /> Visualizar amostra
+                  </Button>
+                  {previewMut.isPending && viaAirflow && (
+                    <span className="text-[11px] text-amber-700 dark:text-amber-400">
+                      consultando via Airflow (pode levar ~30s)
+                    </span>
+                  )}
+                </div>
+
+                {preview && (
+                  <PreviewTable preview={preview}
+                    onClear={() => setPreview(null)} innerRef={previewRef} />
+                )}
+              </>
+            )}
           </div>
         )}
 
         {/* ── PASSO 3: COLUNAS & TRANSFORMAÇÕES ── */}
-        {step === 2 && (
+        {step === 2 && !usarQuery && (
           <div className="flex flex-col gap-3">
             {(colsQ.isLoading || colsQ.isError) && (
               <IntrospectStatus carregando={colsQ.isLoading}
@@ -1002,41 +1288,8 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
                 </div>
 
                 {preview && (
-                  <div ref={previewRef} className="border border-edge rounded-lg overflow-hidden">
-                    <div className="px-3 py-1.5 border-b border-edge bg-canvas/50 flex items-center justify-between">
-                      <span className="text-[11px] text-dim">
-                        Amostra transformada — {preview.rows.length} linha{preview.rows.length !== 1 ? 's' : ''} (máx. 50)
-                      </span>
-                      <button type="button" onClick={() => setPreview(null)}
-                        className="text-dim hover:text-ink transition-colors"><X size={13} /></button>
-                    </div>
-                    <div className="overflow-auto max-h-64">
-                      <table className="w-full text-xs">
-                        <thead className="sticky top-0 bg-canvas">
-                          <tr className="text-[10px] text-dim border-b border-edge">
-                            {preview.columns.map(c => (
-                              <th key={c} className="px-2 py-1.5 text-left font-semibold whitespace-nowrap font-mono">{c}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {preview.rows.map((linha, i) => (
-                            <tr key={i} className="border-b border-edge/40">
-                              {linha.map((v, j) => (
-                                <td key={j} className="px-2 py-1 font-mono whitespace-nowrap text-ink">
-                                  {v == null ? <span className="text-dim italic">NULL</span> : String(v)}
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
-                          {preview.rows.length === 0 && (
-                            <tr><td colSpan={Math.max(1, preview.columns.length)}
-                              className="px-3 py-4 text-center text-dim">Nenhuma linha na origem.</td></tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
+                  <PreviewTable preview={preview}
+                    onClear={() => setPreview(null)} innerRef={previewRef} />
                 )}
               </>
             )}
@@ -1051,16 +1304,22 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
                 value={form.particao_coluna}
                 onChange={e => f('particao_coluna', e.target.value)}>
                 <option value="">Nenhuma (1 stream)</option>
-                {colunasParticao.map(r => (
-                  <option key={r.origem} value={r.destino.trim()}>
-                    {r.destino.trim()} ({r.tipo}){colsQ.data?.particao_sugerida === r.origem ? ' — sugerida' : ''}
-                  </option>
-                ))}
+                {usarQuery
+                  ? queryCols.map(c => (
+                      <option key={c.name} value={c.name}>
+                        {c.name}{c.type ? ` (${c.type})` : ''}
+                      </option>
+                    ))
+                  : colunasParticao.map(r => (
+                      <option key={r.origem} value={r.destino.trim()}>
+                        {r.destino.trim()} ({r.tipo}){colsQ.data?.particao_sugerida === r.origem ? ' — sugerida' : ''}
+                      </option>
+                    ))}
               </Select>
               <p className="text-[10px] text-dim">
-                Apenas colunas incluídas (pelo nome de destino) de tipo numérico
-                (int/bigint/decimal) ou de data (date/datetime) podem ser divididas
-                em faixas. Sem partição, a cópia usa 1 stream.
+                {usarQuery
+                  ? 'Colunas detectadas da query (pelo alias). Use uma coluna numérica (int/bigint/decimal) ou de data (date/datetime) — outros tipos caem para faixa única. Sem partição, a cópia usa 1 stream.'
+                  : 'Apenas colunas incluídas (pelo nome de destino) de tipo numérico (int/bigint/decimal) ou de data (date/datetime) podem ser divididas em faixas. Sem partição, a cópia usa 1 stream.'}
               </p>
             </div>
 
@@ -1102,10 +1361,17 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
                 <div>
                   <span className="text-dim">Origem: </span>
                   <span className="font-mono text-ink">
-                    {form.src_conn_id} · {form.src_database}.{form.src_schema}.{form.src_table}
+                    {form.src_conn_id} · {usarQuery
+                      ? `${form.src_database} · query SQL`
+                      : `${form.src_database}.${form.src_schema}.${form.src_table}`}
                   </span>
                 </div>
-                {form.src_filtro.trim() && (
+                {usarQuery && (
+                  <pre className="bg-canvas border border-edge rounded-md p-2 text-[10px] font-mono text-ink whitespace-pre-wrap max-h-32 overflow-auto">
+                    {form.src_query.trim()}
+                  </pre>
+                )}
+                {!usarQuery && form.src_filtro.trim() && (
                   <div>
                     <span className="text-dim">Filtro: </span>
                     <span className="font-mono text-ink">WHERE {form.src_filtro.trim()}</span>
@@ -1123,6 +1389,7 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
                 {form.truncar_antes && (
                   <div className="text-red-700 dark:text-red-400 font-medium">
                     ⚠ O destino será truncado antes de cada execução.
+                    {usarQuery && ' Garanta que a query não leia a tabela de destino.'}
                   </div>
                 )}
               </div>
@@ -1136,11 +1403,15 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
                 <div>
                   <span className="text-dim">Colunas: </span>
                   <span className="text-ink">
-                    {incluidas.length} incluída{incluidas.length !== 1 ? 's' : ''}
-                    {transformadas.length > 0 && ` · ${transformadas.length} com transformação`}
+                    {usarQuery
+                      ? `${queryCols.length} detectada${queryCols.length !== 1 ? 's' : ''} da query (transformações e filtro do wizard ignorados)`
+                      : <>
+                          {incluidas.length} incluída{incluidas.length !== 1 ? 's' : ''}
+                          {transformadas.length > 0 && ` · ${transformadas.length} com transformação`}
+                        </>}
                   </span>
                 </div>
-                {transformadas.length > 0 && (
+                {!usarQuery && transformadas.length > 0 && (
                   <ul className="flex flex-col gap-0.5 pl-1">
                     {transformadas.map(r => (
                       <li key={r.origem} className="text-ink">

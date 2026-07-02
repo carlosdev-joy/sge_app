@@ -9,21 +9,24 @@ credencial do próprio app) falha — a API faz o poll do dagRun e lê o XCom
 
 conf:
   {
-    "acao":       "databases" | "tables" | "columns" | "preview",
+    "acao":       "databases" | "tables" | "columns" | "preview" | "query_columns",
     "conn_id":    "<Airflow Connection mssql>",    (obrigatório)
-    "database":   "<banco>",                       (tables/columns/preview)
+    "database":   "<banco>",                       (tables/columns/preview/query_columns)
     "schema":     "<schema>",                      (columns; default 'dbo')
     "table":      "<tabela>",                      (columns)
     "select_sql": "<SELECT compilado pela API>"    (preview)
+    "src_query":  "<query livre validada pela API>" (query_columns)
   }
 
 Saída XCom no MESMO formato dos endpoints /copias/introspect/* (a API repassa):
-  databases → {"databases": ["db1", ...]}
-  tables    → {"tables": [{"schema", "name", "rows"}]}
-  columns   → {"columns": [{"name","type","max_length","precision","scale",
-                            "is_nullable","is_identity","is_pk"}],
-               "particao_sugerida": str | null}
-  preview   → {"columns": [...], "rows": [[...]]} (datas/decimal como str)
+  databases     → {"databases": ["db1", ...]}
+  tables        → {"tables": [{"schema", "name", "rows"}]}
+  columns       → {"columns": [{"name","type","max_length","precision","scale",
+                                "is_nullable","is_identity","is_pk"}],
+                   "particao_sugerida": str | null}
+  preview       → {"columns": [...], "rows": [[...]]} (datas/decimal como str)
+  query_columns → {"columns": [{"name", "type"}]} (SELECT TOP 0 da query;
+                   tipo básico do cursor.description, JSON-safe)
 
 Credenciais SÓ via BaseHook.get_connection (nenhuma senha em log ou XCom).
 Erros → raise (a API traduz dagRun failed em 502 com mensagem clara).
@@ -34,6 +37,7 @@ import datetime as _dt
 import decimal as _decimal
 
 import pendulum
+import pymssql
 from airflow import DAG
 from airflow.hooks.base import BaseHook
 from airflow.operators.python import PythonOperator
@@ -45,7 +49,7 @@ LOCAL_TZ = "America/Sao_Paulo"
 
 default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
 
-_ACOES = {"databases", "tables", "columns", "preview"}
+_ACOES = {"databases", "tables", "columns", "preview", "query_columns"}
 
 # Tipos elegíveis para a partição sugerida — os que o motor de faixas da
 # etl_copy_exec sabe dividir (aritmética int/decimal ou divisão por dias).
@@ -163,6 +167,32 @@ def _preview(conn, select_sql) -> dict:
         cur.close()
 
 
+def _tipo_basico(type_code):
+    """Nome legível do type_code do cursor.description do pymssql (constantes
+    DB-API STRING/NUMBER/DATETIME/DECIMAL/BINARY). JSON-safe (str ou None)."""
+    if type_code is None:
+        return None
+    for nome in ("STRING", "NUMBER", "DATETIME", "DECIMAL", "BINARY"):
+        t = getattr(pymssql, nome, None)
+        if t is not None and type_code == t:
+            return nome.lower()
+    return str(type_code)
+
+
+def _query_columns(conn, src_query) -> dict:
+    """Colunas do result set de uma query livre (MODO QUERY do wizard):
+    SELECT TOP 0 * FROM (<query>) AS _q — nomes/tipos via cursor.description.
+    A query já foi validada (read-only) pela API antes do dispatch."""
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT TOP 0 * FROM (\n{src_query}\n) AS _q")
+        columns = [{"name": d[0], "type": _tipo_basico(d[1])}
+                   for d in (cur.description or [])]
+        return {"columns": columns}
+    finally:
+        cur.close()
+
+
 # ---------------------------------------------------------------------------
 # Task principal
 # ---------------------------------------------------------------------------
@@ -182,13 +212,16 @@ def introspect(**context):
     schema     = (conf.get("schema") or "dbo").strip()
     table      = (conf.get("table") or "").strip()
     select_sql = (conf.get("select_sql") or "").strip()
+    src_query  = (conf.get("src_query") or "").strip()
 
-    if acao in ("tables", "columns") and not database:
+    if acao in ("tables", "columns", "query_columns") and not database:
         raise ValueError(f"Parâmetro 'database' é obrigatório para acao={acao}.")
     if acao == "columns" and not table:
         raise ValueError("Parâmetro 'table' é obrigatório para acao=columns.")
     if acao == "preview" and not select_sql:
         raise ValueError("Parâmetro 'select_sql' é obrigatório para acao=preview.")
+    if acao == "query_columns" and not src_query:
+        raise ValueError("Parâmetro 'src_query' é obrigatório para acao=query_columns.")
 
     airflow_conn = BaseHook.get_connection(conn_id)
     banco = "master" if acao == "databases" else (database or "master")
@@ -207,6 +240,9 @@ def introspect(**context):
             payload = _columns(conn, schema, table)
             print(f"[INTROSPECT] {len(payload['columns'])} coluna(s); "
                   f"particao_sugerida={payload['particao_sugerida']}")
+        elif acao == "query_columns":
+            payload = _query_columns(conn, src_query)
+            print(f"[INTROSPECT] query_columns: {len(payload['columns'])} coluna(s).")
         else:  # preview
             payload = _preview(conn, select_sql)
             print(f"[INTROSPECT] preview: {len(payload['rows'])} linha(s), "

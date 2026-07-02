@@ -10,7 +10,9 @@ Fluxo:
   1. Carrega execução + job (dbo.etl_copy_exec JOIN dbo.etl_copy_job);
   2. status='executando'; resolve o engine de escrita
      (pymssql bulk_copy → pyodbc fast_executemany → pymssql executemany);
-  3. Prepara o destino: criar_tabela (via script_create_table, se não existir)
+  3. Prepara o destino: criar_tabela (via script_create_table, se não existir;
+     no MODO QUERY — job com src_query — via script_create_table_from_query,
+     que usa sp_describe_first_result_set na origem)
      e truncar_antes (TRUNCATE com fallback DELETE); resolve o ALVO de escrita
      UMA vez (bulk_copy.prepare_bulk_target: ordinais/column_ids das colunas
      de destino via sys.columns; sem suporte a column_ids no pymssql e ordem
@@ -75,27 +77,40 @@ _CAMPOS = [
     "criar_tabela", "truncar_antes", "particao_coluna",
     "streams", "batch_size", "select_sql", "count_sql",
     "dst_columns_json", "colunas_json",
+    "src_query",  # migration 053 (modo query) — pode não existir; ver abaixo
 ]
 
-
-def _carregar_execucao(hook, exec_id):
-    row = hook.get_first(
-        """
+_SQL_CARREGAR = """
         SELECT e.id, e.status, e.matricula,
                j.id, j.nome, j.src_conn_id, j.src_database, j.src_schema, j.src_table,
                j.dst_conn_id, j.dst_database, j.dst_schema, j.dst_table,
                j.criar_tabela, j.truncar_antes, j.particao_coluna,
                j.streams, j.batch_size, j.select_sql, j.count_sql,
-               j.dst_columns_json, j.colunas_json
+               j.dst_columns_json, j.colunas_json{extra}
         FROM dbo.etl_copy_exec e
         JOIN dbo.etl_copy_job j ON j.id = e.copy_job_id
         WHERE e.id = %s
-        """,
-        parameters=(exec_id,),
-    )
+        """
+
+
+def _carregar_execucao(hook, exec_id):
+    # Degradação graciosa (padrão do repo): tenta com a coluna src_query
+    # (migration 053) e, se ela não existir no ambiente, refaz sem.
+    try:
+        row = hook.get_first(_SQL_CARREGAR.format(extra=", j.src_query"),
+                             parameters=(exec_id,))
+        campos = _CAMPOS
+    except Exception as e:
+        print(f"[COPY] Aviso: coluna src_query indisponível "
+              f"(migration 053 aplicada?): {e} — carregando sem ela.")
+        row = hook.get_first(_SQL_CARREGAR.format(extra=""),
+                             parameters=(exec_id,))
+        campos = _CAMPOS[:-1]
     if not row:
         return None
-    d = dict(zip(_CAMPOS, row))
+    d = dict(zip(campos, row))
+    d.setdefault("src_query", None)
+    d["src_query"]     = (d["src_query"] or "").strip() or None
     d["criar_tabela"]  = bool(d["criar_tabela"])
     d["truncar_antes"] = bool(d["truncar_antes"])
     d["batch_size"]    = max(1000, min(200000, int(d["batch_size"] or 50000)))
@@ -113,7 +128,8 @@ def _fqn_destino(job) -> str:
 
 def _preparar_destino(src, dst_ctl, job):
     """criar_tabela (se não existir) e truncar_antes no destino (conexão de
-    controle pymssql autocommit)."""
+    controle pymssql autocommit). MODO QUERY: o DDL sai do result set da
+    própria query (sp_describe_first_result_set na origem)."""
     fqn = _fqn_destino(job)
     cur = dst_ctl.cursor()
     try:
@@ -124,12 +140,17 @@ def _preparar_destino(src, dst_ctl, job):
                 raise ValueError(
                     f"Tabela de destino {fqn} não existe e criar_tabela=0 — "
                     "crie a tabela ou marque 'Criar nova tabela' no job.")
-            dst_cols = json.loads(job["dst_columns_json"])
-            colunas  = (json.loads(job["colunas_json"] or "{}") or {}).get("colunas") or []
-            ddl = bulk_copy.script_create_table(
-                src, job["src_database"], job["src_schema"], job["src_table"],
-                dst_cols, colunas,
-                dst_schema=job["dst_schema"], dst_table=job["dst_table"])
+            if job.get("src_query"):
+                ddl = bulk_copy.script_create_table_from_query(
+                    src, job["src_query"],
+                    dst_schema=job["dst_schema"], dst_table=job["dst_table"])
+            else:
+                dst_cols = json.loads(job["dst_columns_json"])
+                colunas  = (json.loads(job["colunas_json"] or "{}") or {}).get("colunas") or []
+                ddl = bulk_copy.script_create_table(
+                    src, job["src_database"], job["src_schema"], job["src_table"],
+                    dst_cols, colunas,
+                    dst_schema=job["dst_schema"], dst_table=job["dst_table"])
             print(f"[COPY] Criando tabela de destino:\n{ddl}")
             cur.execute(ddl)
         elif job["criar_tabela"]:
@@ -149,6 +170,9 @@ def _preparar_destino(src, dst_ctl, job):
 
 
 def _contar_origem(src, job) -> int:
+    """rows_total via count_sql compilado pela API (sem parâmetros — o SQL
+    vai cru para o pymssql, então '%' literal não precisa de escape). No modo
+    query o count_sql já envolve a src_query em subquery (_q)."""
     cur = src.cursor()
     try:
         cur.execute(job["count_sql"])
@@ -200,19 +224,21 @@ def _calcular_faixas(vmin, vmax, streams):
 def _particao_admite_null(src, job) -> bool:
     """True se a coluna de partição admitir NULL na ORIGEM (sys.columns).
 
-    Quando a coluna do SELECT é transformada (alias sem coluna física 1:1),
-    cai para um EXISTS na própria subquery compilada. Best-effort: em qualquer
-    erro assume False (sem faixa IS NULL)."""
+    Quando a coluna do SELECT é transformada (alias sem coluna física 1:1)
+    — ou no MODO QUERY, em que não há tabela de origem 1:1 — cai para um
+    EXISTS na própria subquery compilada. Best-effort: em qualquer erro
+    assume False (sem faixa IS NULL)."""
     part = job["particao_coluna"]
     origem = None
-    try:
-        colunas = (json.loads(job["colunas_json"] or "{}") or {}).get("colunas") or []
-        for c in colunas:
-            if (c.get("destino") or c.get("origem")) == part and not c.get("transform"):
-                origem = c.get("origem")
-                break
-    except Exception:
-        origem = None
+    if not job.get("src_query"):
+        try:
+            colunas = (json.loads(job["colunas_json"] or "{}") or {}).get("colunas") or []
+            for c in colunas:
+                if (c.get("destino") or c.get("origem")) == part and not c.get("transform"):
+                    origem = c.get("origem")
+                    break
+        except Exception:
+            origem = None
 
     cur = src.cursor()
     try:
@@ -249,6 +275,10 @@ def _str100(v):
 
 def _montar_faixas(hook, src, job, exec_id, streams):
     """Calcula e persiste as faixas em dbo.etl_copy_exec_range.
+
+    O MIN/MAX roda sobre a subquery do select_sql compilado (funciona igual
+    no modo tabela e no MODO QUERY) e vai SEM parâmetros — o SQL segue cru
+    para o pymssql, sem formatação % (nenhum escape de '%' necessário aqui).
 
     Retorna a lista de faixas com os valores TIPADOS em memória (int/Decimal/
     date/datetime) para o WHERE parametrizado — valor_ini/valor_fim no banco
@@ -304,10 +334,12 @@ def _montar_faixas(hook, src, job, exec_id, streams):
 # ---------------------------------------------------------------------------
 
 def _sql_da_faixa(job, faixa):
-    """SELECT da faixa: subquery sobre o select_sql compilado pela API.
+    """SELECT da faixa: subquery sobre o select_sql compilado pela API —
+    no MODO QUERY o select_sql é a própria src_query e o envelope é o mesmo.
 
     Quando há parâmetros (%s), o pymssql aplica formatação estilo % no SQL —
-    qualquer ``%`` literal do select_sql (ex.: LIKE) precisa virar ``%%``.
+    qualquer ``%`` literal do select_sql (ex.: LIKE na query do usuário)
+    precisa virar ``%%`` (o replace abaixo cobre os dois modos).
     Nas execuções SEM parâmetros o SQL vai cru (sem formatação)."""
     part_q = (bulk_copy.quote_ident(job["particao_coluna"])
               if job["particao_coluna"] else None)
@@ -500,8 +532,10 @@ def executar_copia(**context):
     if job is None:
         raise ValueError(f"Execução {exec_id} não encontrada em dbo.etl_copy_exec")
 
+    origem_rotulo = (f"{job['src_database']} (query SQL)" if job.get("src_query")
+                     else f"{job['src_database']}.{job['src_schema']}.{job['src_table']}")
     print(f"[COPY] exec_id={exec_id} job='{job['nome']}' "
-          f"{job['src_conn_id']}:{job['src_database']}.{job['src_schema']}.{job['src_table']}"
+          f"{job['src_conn_id']}:{origem_rotulo}"
           f" → {job['dst_conn_id']}:{job['dst_database']}.{job['dst_schema']}.{job['dst_table']}")
 
     if job["exec_status"] == "cancelando":
@@ -537,9 +571,14 @@ def executar_copia(**context):
         # compara pelo HOST RESOLVIDO das connections — pega inclusive dois
         # conn_ids diferentes apontando para o mesmo servidor. Com
         # truncar_antes, origem == destino destruiria a tabela de origem.
+        # MODO QUERY: não dá para saber estaticamente as tabelas lidas pela
+        # query — a comparação é PULADA (fica só o aviso no log).
         def _norm(v):
             return str(v or "").strip().lower()
-        if (
+        if job.get("src_query"):
+            print("[COPY] Aviso: fonte é query — garanta que ela não lê a "
+                  "tabela de destino se usar truncar.")
+        elif (
             _norm(src_air.host) == _norm(dst_air.host)
             and (src_air.port or 1433) == (dst_air.port or 1433)
             and _norm(job["src_database"]) == _norm(job["dst_database"])
