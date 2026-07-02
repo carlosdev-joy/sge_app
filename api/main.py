@@ -93,6 +93,13 @@ Endpoints:
   GET  /copias/exec/{exec_id}             — progresso de uma execução (polling)
   POST /copias/exec/{exec_id}/cancelar    — pede cancelamento da execução
 
+  GET    /inventario/endpoints              — inventário de consumidores (endpoints + objetos)
+  POST   /inventario/endpoints              — cria/atualiza endpoint do inventário
+  DELETE /inventario/endpoints/{id}         — soft delete do endpoint
+  POST   /inventario/endpoints/{id}/objetos — adiciona objeto consumido (view/proc/tabela)
+  PATCH  /inventario/objetos/{id}           — atualiza status de validação/observação
+  DELETE /inventario/objetos/{id}           — remove objeto do inventário
+
   GET  /powerbi/status                              — diagnóstico de configuração/token/admin API
   GET  /powerbi/overview                            — workspaces + datasets + status refresh + datasource type
   GET  /powerbi/workspaces                          — workspaces visíveis ao service principal
@@ -126,6 +133,7 @@ from routers import (
     lineage, catalogo, sync, admin, agenda, sequence,
     datastage, factory, airflow, change_plans, powerbi, lineage_xml,
     notificacoes, comunicados, backlog, monitor, mensagens, copias,
+    inventario,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -184,5 +192,6 @@ for _router_module in [
     lineage, catalogo, sync, admin, agenda, sequence,
     datastage, factory, airflow, change_plans, powerbi, lineage_xml,
     notificacoes, comunicados, backlog, monitor, mensagens, copias,
+    inventario,
 ]:
     app.include_router(_router_module.router)
