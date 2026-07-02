@@ -8,7 +8,7 @@ import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, Workflow, Blocks, ScrollText, Bell, ShieldAlert,
   Library, Network, Settings, Crosshair, ClipboardList, BarChart3, Terminal,
-  Rocket, Gauge,
+  Rocket, Gauge, Copy,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 
@@ -39,6 +39,7 @@ export const NAV: NavItem[] = [
   { to: '/malha',         label: 'Malha de Pipelines', icon: Network,         group: 'Governança & Dados', perm: 'tela_malha' },
   { to: '/impacto-campo', label: 'Impacto de Campo',   icon: Crosshair,       group: 'Governança & Dados', perm: 'tela_impacto_campo' },
   { to: '/planos-ajuste', label: 'Planos de Ajuste',   icon: ClipboardList,   group: 'Governança & Dados', perm: 'tela_plano_ajuste' },
+  { to: '/copia-dados',   label: 'Cópia de Dados',     icon: Copy,            group: 'Governança & Dados', perm: 'tela_copia_dados' },
   { to: '/powerbi',       label: 'Power BI',           icon: BarChart3,       group: 'BI',                 perm: 'tela_powerbi' },
   { to: '/admin',         label: 'Admin',              icon: Settings,        group: 'Administração',      perm: 'tela_admin' },
 ]

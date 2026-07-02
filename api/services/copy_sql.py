@@ -1,0 +1,248 @@
+"""api/services/copy_sql.py — compilador de transformações da Cópia de Dados.
+
+Converte o mapeamento ``colunas_json`` (fonte da verdade editada no wizard)
+em ``select_sql``/``count_sql`` T-SQL prontos, persistidos em
+``dbo.etl_copy_job`` no MOMENTO DO SALVAMENTO. A DAG ``etl_copy_exec`` usa o
+SQL compilado (não recompila) e o envolve em subquery para aplicar a faixa
+de partição: ``SELECT * FROM (<select_sql>) AS src WHERE [part] >= ? AND ...``.
+
+Segurança (anti-injeção):
+  - Identificadores SEMPRE entre ``[colchetes]`` com escape ``]`` → ``]]`` e
+    validados por allowlist de caracteres (rejeita fora do padrão).
+  - Literais de string com aspas simples duplicadas (``'`` → ``''``).
+  - Tipos de CAST validados por allowlist (regex, p/s/n numéricos).
+  - Expressão livre (transform ``sql``) e ``src_filtro`` passam por validação
+    read-only: sem ``;``, sem comentários (``--``, ``/*``), sem palavras-chave
+    DML/DDL/EXEC — mesmo espírito de ``_validate_select_strict`` em
+    api/routers/jobs.py. Nenhum valor de usuário é concatenado sem escape.
+
+Funções puras (sem I/O) — levantam ``ValueError`` com mensagem clara em
+pt-BR, que os endpoints traduzem em HTTP 422.
+"""
+from __future__ import annotations
+
+import re
+
+# Allowlist de caracteres para identificadores (colunas/schemas/tabelas/bancos).
+# Colchetes, aspas e ';' ficam de fora — o escape ']' → ']]' é defesa extra.
+_IDENT_RE = re.compile(r"^[A-Za-z0-9_ \-\.\$#@áéíóúãõçÁÉÍÓÚÃÕÇ]{1,128}$")
+
+# Allowlist de tipos do transform 'cast' (p/s/n estritamente numéricos).
+_CAST_TIPO_RE = re.compile(
+    r"^(INT|BIGINT|DATE|DATETIME|FLOAT|BIT"
+    r"|DECIMAL\(\d{1,2},\d{1,2}\)"
+    r"|VARCHAR\(\d{1,4}\)"
+    r"|NVARCHAR\(\d{1,4}\))$"
+)
+
+# Palavras-chave proibidas em expressão livre/filtro (mesmo conjunto do
+# _COND_DML_RE de api/routers/jobs.py — read-only de verdade).
+_EXPR_PROIBIDO_RE = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|"
+    r"GRANT|REVOKE|INTO)\b",
+    re.IGNORECASE,
+)
+
+_EXPR_MAX_CHARS = 2000
+
+# Tamanho máximo do pad: o pad usa CAST(... AS VARCHAR(50)) como base, então
+# um preenchimento acima de 50 seria truncado silenciosamente — rejeitamos.
+_PAD_TAMANHO_MAX = 50
+
+TIPOS_TRANSFORM = {
+    "pad_condicional", "pad_fixo", "trim", "upper", "lower",
+    "substring", "cast", "sql",
+}
+
+
+def quote_ident(nome) -> str:
+    """Valida e devolve o identificador entre colchetes, com ']' escapado."""
+    if not isinstance(nome, str) or not _IDENT_RE.match(nome):
+        raise ValueError(f"identificador inválido: {nome!r}")
+    return "[" + nome.replace("]", "]]") + "]"
+
+
+def quote_literal(valor) -> str:
+    """Escapa um valor como literal T-SQL (aspas simples duplicadas)."""
+    if valor is None:
+        raise ValueError("valor de literal não pode ser nulo")
+    return "'" + str(valor).replace("'", "''") + "'"
+
+
+def _int_positivo(valor, campo: str, minimo: int = 1, maximo: int = 8000) -> int:
+    """Converte para int validando faixa (bool não conta como int)."""
+    if isinstance(valor, bool) or not isinstance(valor, (int, str)):
+        raise ValueError(f"{campo} deve ser inteiro")
+    try:
+        n = int(str(valor).strip())
+    except (ValueError, TypeError):
+        raise ValueError(f"{campo} deve ser inteiro")
+    if not minimo <= n <= maximo:
+        raise ValueError(f"{campo} deve estar entre {minimo} e {maximo}")
+    return n
+
+
+def validate_sql_expr(expr, rotulo: str = "expressão SQL") -> str:
+    """Valida uma expressão T-SQL livre (transform 'sql' / src_filtro).
+
+    Read-only: sem ';', sem comentários ('--', '/*'), sem DML/DDL/EXEC,
+    tamanho máximo de 2000 chars. Devolve a expressão limpa (strip)."""
+    if not expr or not isinstance(expr, str) or not expr.strip():
+        raise ValueError(f"{rotulo} vazia")
+    s = expr.strip()
+    if len(s) > _EXPR_MAX_CHARS:
+        raise ValueError(f"{rotulo} excede o tamanho máximo de {_EXPR_MAX_CHARS} caracteres")
+    if ";" in s:
+        raise ValueError(f"{rotulo} não pode conter ';'")
+    if "--" in s or "/*" in s or "*/" in s:
+        raise ValueError(f"{rotulo} não pode conter comentários ('--' ou '/*')")
+    m = _EXPR_PROIBIDO_RE.search(s)
+    if m:
+        raise ValueError(f"{rotulo} contém comando não permitido ({m.group(1).upper()})")
+    return s
+
+
+def _pad_expr(col_quoted: str, tamanho: int) -> str:
+    """RIGHT(REPLICATE('0', n) + LTRIM(RTRIM(CAST([col] AS VARCHAR(50)))), n)."""
+    return (f"RIGHT(REPLICATE('0', {tamanho}) + "
+            f"LTRIM(RTRIM(CAST({col_quoted} AS VARCHAR(50)))), {tamanho})")
+
+
+def compile_transform(origem: str, transform) -> str:
+    """Compila a transformação de UMA coluna para uma expressão T-SQL.
+
+    ``transform`` é o dict do colunas_json (ou None = coluna sem transformação).
+    Levanta ValueError com mensagem clara em qualquer entrada inválida."""
+    col = quote_ident(origem)
+    if transform is None:
+        return col
+    if not isinstance(transform, dict):
+        raise ValueError(f"transform da coluna '{origem}' deve ser objeto ou nulo")
+    tipo = str(transform.get("tipo") or "").strip().lower()
+    if tipo not in TIPOS_TRANSFORM:
+        raise ValueError(
+            f"transform da coluna '{origem}': tipo '{tipo}' inválido "
+            f"(use {', '.join(sorted(TIPOS_TRANSFORM))})")
+
+    if tipo == "trim":
+        return f"LTRIM(RTRIM({col}))"
+    if tipo == "upper":
+        return f"UPPER({col})"
+    if tipo == "lower":
+        return f"LOWER({col})"
+
+    if tipo == "pad_fixo":
+        tamanho = _int_positivo(transform.get("tamanho"),
+                                f"tamanho do pad_fixo da coluna '{origem}'",
+                                1, _PAD_TAMANHO_MAX)
+        return _pad_expr(col, tamanho)
+
+    if tipo == "pad_condicional":
+        campo = transform.get("campo_condicao")
+        if not campo:
+            raise ValueError(
+                f"pad_condicional da coluna '{origem}': campo_condicao é obrigatório")
+        campo_q = quote_ident(campo)
+        casos = transform.get("casos")
+        if not isinstance(casos, list) or not casos:
+            raise ValueError(
+                f"pad_condicional da coluna '{origem}': casos (lista não vazia) é obrigatório")
+        partes = ["CASE"]
+        for i, caso in enumerate(casos):
+            if not isinstance(caso, dict) or caso.get("valor") is None:
+                raise ValueError(
+                    f"pad_condicional da coluna '{origem}': caso #{i + 1} sem 'valor'")
+            tamanho = _int_positivo(caso.get("tamanho"),
+                                    f"tamanho do caso #{i + 1} do pad_condicional "
+                                    f"da coluna '{origem}'",
+                                    1, _PAD_TAMANHO_MAX)
+            partes.append(
+                f"WHEN {campo_q} = {quote_literal(caso['valor'])} "
+                f"THEN {_pad_expr(col, tamanho)}")
+        partes.append(f"ELSE {col} END")
+        return " ".join(partes)
+
+    if tipo == "substring":
+        inicio = _int_positivo(transform.get("inicio"),
+                               f"inicio do substring da coluna '{origem}'", 1, 8000)
+        tamanho = _int_positivo(transform.get("tamanho"),
+                                f"tamanho do substring da coluna '{origem}'", 1, 8000)
+        return f"SUBSTRING({col}, {inicio}, {tamanho})"
+
+    if tipo == "cast":
+        tipo_sql = str(transform.get("tipo_sql") or "").strip().upper()
+        tipo_sql = re.sub(r"\s+", "", tipo_sql)  # normaliza 'DECIMAL(10, 2)'
+        if not _CAST_TIPO_RE.match(tipo_sql):
+            raise ValueError(
+                f"cast da coluna '{origem}': tipo '{transform.get('tipo_sql')}' fora da "
+                "allowlist (INT, BIGINT, DECIMAL(p,s), VARCHAR(n), NVARCHAR(n), "
+                "DATE, DATETIME, FLOAT, BIT)")
+        return f"CAST({col} AS {tipo_sql})"
+
+    # tipo == "sql" — expressão livre validada (read-only)
+    expressao = validate_sql_expr(transform.get("expressao"),
+                                  f"expressão SQL da coluna '{origem}'")
+    return expressao
+
+
+def compile_job(job: dict) -> dict:
+    """Compila um job de cópia para SQL pronto.
+
+    Entrada (dict): src_database, src_schema (default 'dbo'), src_table,
+    src_filtro (opcional) e colunas — lista [{origem, destino, transform}].
+
+    Saída: {"select_sql", "count_sql", "dst_columns"} onde
+      select_sql = SELECT <expr> AS [dst], ... FROM [db].[schema].[tabela]
+                   WITH (NOLOCK) [WHERE (<filtro>)]   (SEM ORDER BY)
+      count_sql  = SELECT COUNT_BIG(*) FROM ... (mesmo FROM/WHERE)
+      dst_columns = nomes de destino na ordem do SELECT.
+
+    Levanta ValueError (→ 422 nos endpoints) para qualquer entrada inválida."""
+    if not isinstance(job, dict):
+        raise ValueError("definição da cópia inválida")
+
+    src_database = (job.get("src_database") or "").strip()
+    src_schema = (job.get("src_schema") or "dbo").strip() or "dbo"
+    src_table = (job.get("src_table") or "").strip()
+    if not src_database:
+        raise ValueError("src_database é obrigatório")
+    if not src_table:
+        raise ValueError("src_table é obrigatório")
+
+    colunas = job.get("colunas")
+    if isinstance(colunas, dict):  # aceita o próprio colunas_json {"colunas": [...]}
+        colunas = colunas.get("colunas")
+    if not isinstance(colunas, list) or not colunas:
+        raise ValueError("colunas (lista não vazia) é obrigatório")
+
+    exprs: list[str] = []
+    dst_columns: list[str] = []
+    vistos: set[str] = set()
+    for i, c in enumerate(colunas):
+        if not isinstance(c, dict):
+            raise ValueError(f"coluna #{i + 1} inválida (esperado objeto)")
+        origem = (c.get("origem") or "").strip()
+        if not origem:
+            raise ValueError(f"coluna #{i + 1}: origem é obrigatória")
+        destino = (c.get("destino") or "").strip() or origem
+        destino_q = quote_ident(destino)
+        chave = destino.lower()
+        if chave in vistos:
+            raise ValueError(f"coluna de destino duplicada: '{destino}'")
+        vistos.add(chave)
+        expr = compile_transform(origem, c.get("transform"))
+        exprs.append(f"{expr} AS {destino_q}")
+        dst_columns.append(destino)
+
+    from_sql = (f"FROM {quote_ident(src_database)}.{quote_ident(src_schema)}."
+                f"{quote_ident(src_table)} WITH (NOLOCK)")
+
+    where_sql = ""
+    filtro = (job.get("src_filtro") or "").strip()
+    if filtro:
+        filtro = validate_sql_expr(filtro, "src_filtro")
+        where_sql = f" WHERE ({filtro})"
+
+    select_sql = "SELECT " + ", ".join(exprs) + " " + from_sql + where_sql
+    count_sql = "SELECT COUNT_BIG(*) " + from_sql + where_sql
+    return {"select_sql": select_sql, "count_sql": count_sql, "dst_columns": dst_columns}

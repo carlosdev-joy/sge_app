@@ -30,6 +30,7 @@ const RBAC_RECURSOS: [string, string][] = [
   ['tela_powerbi', 'Power BI'],
   ['tela_ds_console', 'Console DataStage'],
   ['tela_performance', 'Performance'],
+  ['tela_copia_dados', 'Cópia de Dados'],
   ['acao_executar', 'Executar/Rerun/Ack'],
   ['acao_editar', 'Cadastrar/Editar'],
   ['acao_admin', 'Administração'],
