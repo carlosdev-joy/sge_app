@@ -5,24 +5,17 @@ USER root
 COPY wheels /wheels
 RUN chown -R airflow:0 /wheels
 
-# Utilitários nativos do SQL Server via repo apt da Microsoft (mesmo padrão
-# do api/Dockerfile, que prova que o ambiente de build alcança o repositório):
+# Utilitários nativos do SQL Server — pacotes .deb VENDORADOS em docker/debs
+# (build 100% offline, sem acesso a repositório externo — mesmo padrão dos
+# wheels Python; fontes e instruções de atualização em docker/debs/README.md):
 #   - mssql-tools18 (bcp) → habilita o engine `bcp_native` do módulo Cópia de
 #     Dados (dags/utils/bulk_copy.py): pipe `bcp queryout → bcp in` entre
 #     servidores, C nas duas pontas — ordens de grandeza acima do streaming
 #     Python por stream;
 #   - msodbcsql18 → dependência do bcp e TAMBÉM habilita o fallback
 #     pyodbc_fast_executemany (o driver ODBC 18 passa a existir no worker).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl gnupg2 unixodbc-dev \
-    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
-       | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] \
-       https://packages.microsoft.com/debian/12/prod bookworm main" \
-       > /etc/apt/sources.list.d/mssql-release.list \
-    && apt-get update \
-    && ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18 \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+COPY docker/debs/*.deb /tmp/debs/
+RUN ACCEPT_EULA=Y dpkg -i /tmp/debs/*.deb && rm -rf /tmp/debs
 ENV PATH="$PATH:/opt/mssql-tools18/bin"
 
 # Instala como usuário airflow (Airflow não permite pip como root)
