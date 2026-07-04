@@ -50,6 +50,7 @@ interface FormState {
   particao_coluna: string
   streams: number
   batch_size: number
+  src_top: string          // limite de linhas (TOP) — '' = sem limite
 }
 
 // Linha do passo Colunas: mapeamento origem→destino + transformação + incluir.
@@ -68,6 +69,7 @@ const defaultForm = (): FormState => ({
   dst_conn_id: '', dst_database: '', dst_schema: 'dbo', dst_table: '',
   criar_tabela: false, truncar_antes: false,
   particao_coluna: '', streams: 4, batch_size: 50000,
+  src_top: '',
 })
 
 function copiaToForm(c: CopiaDetalhe): FormState {
@@ -82,6 +84,7 @@ function copiaToForm(c: CopiaDetalhe): FormState {
     criar_tabela: c.criar_tabela, truncar_antes: c.truncar_antes,
     particao_coluna: c.particao_coluna ?? '',
     streams: c.streams || 4, batch_size: c.batch_size || 50000,
+    src_top: c.src_top ? String(c.src_top) : '',
   }
 }
 
@@ -765,6 +768,11 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
     if (s === 3) {
       if (form.streams < 1 || form.streams > 8) e.push('Streams deve estar entre 1 e 8')
       if (form.batch_size < 1000 || form.batch_size > 200000) e.push('Batch size fora da faixa permitida')
+      if (form.src_top.trim()) {
+        const n = Number(form.src_top.trim())
+        if (!Number.isInteger(n) || n < 1 || n > 1_000_000_000)
+          e.push('Limite de linhas (TOP) deve ser um inteiro entre 1 e 1.000.000.000')
+      }
     }
     if (s === 4) {
       if (!form.nome.trim()) e.push('Nome da cópia é obrigatório')
@@ -803,6 +811,9 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
         particao_coluna: form.particao_coluna || null,
         streams: form.streams,
         batch_size: form.batch_size,
+        // TOP embutido na query final da carga; modo query: TOP na própria query
+        src_top: usarQuery || !form.src_top.trim()
+          ? null : parseInt(form.src_top.trim(), 10),
         colunas: colunasPayload(),
       }
       const salvo = await apiFetch<{ id: number }>('/copias', {
@@ -1353,6 +1364,25 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
                 Sem coluna de partição a cópia roda com 1 stream — o valor acima é ignorado.
               </p>
             )}
+
+            {!usarQuery ? (
+              <div>
+                <Input label="Limitar linhas (TOP) — opcional"
+                  value={form.src_top} placeholder="ex.: 1000 (vazio = todas)"
+                  inputMode="numeric"
+                  onChange={e => f('src_top', e.target.value.replace(/\D/g, ''))} />
+                <p className="mt-1 text-[11px] text-dim">
+                  Carga de teste: o TOP entra na query final — a cópia busca no
+                  máximo esse nº de linhas. Bom para validar o mapeamento e as
+                  transformações antes da carga completa. Sem ORDER BY, as
+                  linhas retornadas não são determinísticas.
+                </p>
+              </div>
+            ) : (
+              <p className="text-[11px] text-dim">
+                Modo query: para limitar linhas, use TOP na própria query.
+              </p>
+            )}
           </div>
         )}
 
@@ -1443,6 +1473,14 @@ export function CopiaWizard({ copia, onClose, onExecutado }: {
                   </span>
                   <span className="text-dim"> · Batch: </span>
                   <span className="text-ink">{fmtRows(form.batch_size)} linhas</span>
+                  {!usarQuery && form.src_top.trim() && (
+                    <>
+                      <span className="text-dim"> · TOP: </span>
+                      <span className="text-ink">
+                        {fmtRows(parseInt(form.src_top, 10))} linhas (carga de teste)
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
             </div>

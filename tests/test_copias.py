@@ -1023,3 +1023,77 @@ def test_consulta_direta_falha_da_nativa_vira_400_para_fallback_dag():
     assert exc.value.status_code == 400        # chamador decide o fallback DAG
     assert "SQL69" in exc.value.detail
     swapped.assert_not_called()
+
+
+# ═════════ src_top — TOP (N) embutido na query FINAL da carga (migration 056) ═════════
+
+def test_compile_job_src_top_entra_no_select_e_no_count():
+    from services.copy_sql import compile_job
+    comp = compile_job({
+        "src_database": "DB_A", "src_table": "Clientes", "src_top": 1000,
+        "src_filtro": "ativo = 1",
+        "colunas": [{"origem": "id", "destino": "id", "transform": None}],
+    })
+    assert comp["select_sql"].startswith("SELECT TOP (1000) ")
+    assert "WHERE (ativo = 1)" in comp["select_sql"]
+    # count limitado: rows_total/ETA refletem a carga real
+    assert comp["count_sql"].startswith(
+        "SELECT COUNT_BIG(*) FROM (SELECT TOP (1000) 1 AS um ")
+    assert comp["count_sql"].rstrip().endswith(") AS _t")
+
+
+def test_compile_job_sem_src_top_nao_muda_nada():
+    from services.copy_sql import compile_job
+    base = {"src_database": "DB_A", "src_table": "T",
+            "colunas": [{"origem": "id", "destino": "id", "transform": None}]}
+    sem = compile_job(dict(base))
+    com_none = compile_job(dict(base, src_top=None))
+    com_zero = compile_job(dict(base, src_top=0))
+    assert sem == com_none == com_zero
+    assert "TOP" not in sem["select_sql"]
+
+
+@pytest.mark.parametrize("ruim", ["abc", -1, 0.5, 1_000_000_001, [10]])
+def test_compile_job_src_top_invalido_rejeitado(ruim):
+    from services.copy_sql import compile_job
+    with pytest.raises(ValueError):
+        compile_job({
+            "src_database": "DB_A", "src_table": "T", "src_top": ruim,
+            "colunas": [{"origem": "id", "destino": "id", "transform": None}],
+        })
+
+
+def test_post_copias_src_top_persiste_e_compila(client, auth_operador):
+    cur = _mock_cursor()
+    cur.fetchone.side_effect = [None, (44,)]  # nome livre → INSERT OUTPUT id
+    with patch("routers.copias.get_db_conn", return_value=_mock_conn(cur)):
+        r = client.post("/copias", json=_body_copia(src_top=5000))
+    assert r.status_code == 200
+    assert r.json()["select_sql"].startswith("SELECT TOP (5000) ")
+    # UPDATE separado da coluna src_top (padrão de degradação da 053/056)
+    upd = [c for c in cur.execute.call_args_list
+           if c.args and "SET src_top = ?" in str(c.args[0])]
+    assert len(upd) == 1 and upd[0].args[1] == (5000, 44)
+
+
+def test_post_copias_src_top_422_invalido(client, auth_operador):
+    r = client.post("/copias", json=_body_copia(src_top="mil"))
+    assert r.status_code == 422
+    assert "src_top" in r.json()["detail"]
+
+
+def test_post_copias_modo_query_zera_src_top(client, auth_operador):
+    """No modo query o TOP é do usuário (na própria query) — src_top é
+    ignorado e a persistência grava NULL."""
+    cur = _mock_cursor()
+    cur.fetchone.side_effect = [None, (45,)]
+    with patch("routers.copias.get_db_conn", return_value=_mock_conn(cur)):
+        r = client.post("/copias", json=_body_copia(
+            src_top=99,
+            src_query="SELECT id FROM dbo.T",
+            colunas=[{"origem": "id", "destino": "id", "transform": None}]))
+    assert r.status_code == 200
+    assert "TOP" not in r.json()["select_sql"].upper().replace("SELECT ID", "")
+    upd = [c for c in cur.execute.call_args_list
+           if c.args and "SET src_top = ?" in str(c.args[0])]
+    assert len(upd) == 1 and upd[0].args[1] == (None, 45)

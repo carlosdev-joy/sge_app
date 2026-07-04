@@ -231,14 +231,25 @@ def compile_job(job: dict) -> dict:
     """Compila um job de cópia para SQL pronto.
 
     Entrada (dict): src_database, src_schema (default 'dbo'), src_table,
-    src_filtro (opcional), src_query (opcional — MODO QUERY) e colunas —
+    src_filtro (opcional), src_top (opcional — limite de linhas da CARGA),
+    src_query (opcional — MODO QUERY) e colunas —
     lista [{origem, destino, transform}].
 
     Saída: {"select_sql", "count_sql", "dst_columns"} onde
-      select_sql = SELECT <expr> AS [dst], ... FROM [db].[schema].[tabela]
-                   WITH (NOLOCK) [WHERE (<filtro>)]   (SEM ORDER BY)
-      count_sql  = SELECT COUNT_BIG(*) FROM ... (mesmo FROM/WHERE)
+      select_sql = SELECT [TOP (N) ]<expr> AS [dst], ... FROM
+                   [db].[schema].[tabela] WITH (NOLOCK) [WHERE (<filtro>)]
+                   (SEM ORDER BY)
+      count_sql  = SELECT COUNT_BIG(*) FROM ... (mesmo FROM/WHERE; com
+                   src_top, envolve um SELECT TOP (N) para o rows_total
+                   refletir o limite real da carga)
       dst_columns = nomes de destino na ordem do SELECT.
+
+    src_top (int 1..1_000_000_000): o TOP vai EMBUTIDO no select_sql
+    compilado — é a query final da carga (todos os engines a envolvem em
+    subquery), não um limite só de preview. Uso típico: rodar o mapeamento/
+    transformações com uma amostra antes da carga completa. Sem ORDER BY, as
+    N linhas não são determinísticas — adequado para teste, não para corte
+    exato. No MODO QUERY é ignorado (aplique TOP na própria query).
 
     MODO QUERY (src_query presente): a fonte da cópia é a própria query
     (validada por ``validate_src_query``) — transformações e filtro do wizard
@@ -268,7 +279,19 @@ def compile_job(job: dict) -> dict:
     if not isinstance(colunas, list) or not colunas:
         raise ValueError("colunas (lista não vazia) é obrigatório")
 
+    src_top = job.get("src_top")
+    if src_top in (None, "", 0):
+        src_top = None
+    else:
+        try:
+            src_top = int(src_top)
+        except (TypeError, ValueError):
+            raise ValueError("src_top deve ser um inteiro positivo")
+        if not 1 <= src_top <= 1_000_000_000:
+            raise ValueError("src_top deve estar entre 1 e 1.000.000.000")
+
     if src_query:
+        # MODO QUERY: a query é a fonte — TOP, se quiser, vai nela mesma
         return _compile_job_query(src_query, colunas)
 
     exprs: list[str] = []
@@ -299,8 +322,14 @@ def compile_job(job: dict) -> dict:
         filtro = validate_sql_expr(filtro, "src_filtro")
         where_sql = f" WHERE ({filtro})"
 
-    select_sql = "SELECT " + ", ".join(exprs) + " " + from_sql + where_sql
-    count_sql = "SELECT COUNT_BIG(*) " + from_sql + where_sql
+    top_sql = f"TOP ({src_top}) " if src_top else ""
+    select_sql = "SELECT " + top_sql + ", ".join(exprs) + " " + from_sql + where_sql
+    if src_top:
+        # count limitado ao TOP — rows_total/ETA refletem a carga real
+        count_sql = (f"SELECT COUNT_BIG(*) FROM (SELECT TOP ({src_top}) 1 AS um "
+                     + from_sql + where_sql + ") AS _t")
+    else:
+        count_sql = "SELECT COUNT_BIG(*) " + from_sql + where_sql
     return {"select_sql": select_sql, "count_sql": count_sql, "dst_columns": dst_columns}
 
 

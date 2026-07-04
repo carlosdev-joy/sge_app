@@ -918,6 +918,24 @@ def save_copia(body: dict = Body(default={}),
     dst_table = (body.get("dst_table") or "").strip()
     src_filtro = (body.get("src_filtro") or "").strip() or None
     src_query = (body.get("src_query") or "").strip() or None
+
+    # src_top (migration 056): limite de linhas EMBUTIDO na query final da
+    # carga (select_sql/count_sql compilados) — teste de mapeamento com
+    # amostra. No modo query é ignorado (TOP na própria query).
+    src_top = body.get("src_top")
+    if src_top in (None, "", 0):
+        src_top = None
+    else:
+        try:
+            src_top = int(src_top)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422,
+                                detail="src_top deve ser um inteiro positivo")
+        if not 1 <= src_top <= 1_000_000_000:
+            raise HTTPException(status_code=422,
+                                detail="src_top deve estar entre 1 e 1.000.000.000")
+    if src_query:
+        src_top = None
     particao_coluna = (body.get("particao_coluna") or "").strip() or None
     criar_tabela = bool(body.get("criar_tabela", False))
     truncar_antes = bool(body.get("truncar_antes", False))
@@ -970,6 +988,7 @@ def save_copia(body: dict = Body(default={}),
         comp = copy_sql.compile_job({
             "src_database": src_database, "src_schema": src_schema,
             "src_table": src_table, "src_filtro": src_filtro,
+            "src_top": src_top,
             "src_query": src_query, "colunas": colunas,
         })
     except ValueError as e:
@@ -1070,6 +1089,22 @@ def save_copia(body: dict = Body(default={}),
                     f"VALUES ({', '.join(['?'] * len(params))})",
                     params)
             novo_id = int(cur.fetchone()[0])
+
+        # src_top (migration 056) em UPDATE separado — degradação graciosa
+        # (mesmo padrão do src_query): a coluna existe para a UI reabrir o
+        # wizard com o valor; o TOP efetivo JÁ está embutido no select_sql
+        # compilado acima. Sem a coluna e sem TOP pedido → segue; com TOP
+        # pedido → erro claro (a mesma transação desfaz o INSERT/UPDATE).
+        try:
+            cur.execute("UPDATE dbo.etl_copy_job SET src_top = ? WHERE id = ?",
+                        (src_top, novo_id))
+        except Exception as e:
+            if src_top is not None:
+                log.warning("save_copia: coluna src_top indisponível? %s", e)
+                cur.close(); conn.close()
+                raise HTTPException(status_code=400, detail=(
+                    "Não foi possível salvar o limite de linhas (TOP) — a "
+                    "coluna src_top não existe (aplique a migration 056)"))
         conn.commit(); cur.close(); conn.close()
     except HTTPException:
         raise
@@ -1108,6 +1143,18 @@ def get_copia(copia_id: int, _auth: dict = Depends(get_current_user)):
             except Exception as e:
                 log.warning("get_copia: coluna src_query indisponível "
                             "(migration 053 aplicada?): %s", e)
+        # src_top (migration 056) — mesmo padrão de degradação do src_query
+        src_top = None
+        if r:
+            try:
+                cur.execute("SELECT src_top FROM dbo.etl_copy_job WHERE id = ?",
+                            (copia_id,))
+                row_t = cur.fetchone()
+                src_top = (int(row_t[0]) if row_t and row_t[0] is not None
+                           else None)
+            except Exception as e:
+                log.warning("get_copia: coluna src_top indisponível "
+                            "(migration 056 aplicada?): %s", e)
         cur.close(); conn.close()
     except Exception as e:
         log.warning("get_copia degradou: %s", e)
@@ -1126,7 +1173,7 @@ def get_copia(copia_id: int, _auth: dict = Depends(get_current_user)):
     return {
         "id": int(r[0]), "nome": r[1], "src_conn_id": r[2], "src_database": r[3],
         "src_schema": r[4], "src_table": r[5], "src_filtro": r[6],
-        "src_query": src_query,
+        "src_query": src_query, "src_top": src_top,
         "dst_conn_id": r[7], "dst_database": r[8], "dst_schema": r[9],
         "dst_table": r[10], "criar_tabela": bool(r[11]), "truncar_antes": bool(r[12]),
         "particao_coluna": r[13], "streams": int(r[14] or 0),
