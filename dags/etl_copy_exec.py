@@ -590,6 +590,31 @@ def _status_exec(prog, exec_id):
         return None
 
 
+def _classificar_desfecho(resultados, rows_total):
+    """Desfecho da execução a partir dos desfechos das faixas (função PURA):
+    ``(status_final, erro_msg)``.
+
+    erro > cancelado > concluído — e um "concluído" com ZERO linha copiada
+    tendo ``rows_total > 0`` vira ERRO: nenhuma faixa falhou, mas nenhum
+    dado fluiu (defesa em profundidade além da reconciliação por faixa do
+    bcp — incidente 2026-07-04: pipe bcp saiu 0 nas duas pontas com 0 linha
+    gravada e 1M na origem). Origem legitimamente vazia (rows_total 0/None)
+    segue concluída."""
+    erros = [r for r in resultados if r["status"] == "erro"]
+    cancels = [r for r in resultados if r["status"] == "cancelado"]
+    if erros:
+        return "erro", (erros[0].get("erro_msg") or "erro na cópia")
+    if cancels:
+        return "cancelado", None
+    copiadas = sum(int(r.get("rows") or 0) for r in resultados)
+    if (rows_total or 0) > 0 and copiadas == 0:
+        return "erro", (
+            f"nenhuma linha copiada apesar de rows_total={rows_total} — "
+            "todas as faixas 'concluíram' com 0 linha; verifique o log do "
+            "engine desta execução")
+    return "concluido", None
+
+
 def _workers_efetivos(engine, streams, n_faixas):
     """Concorrência efetiva do pool de faixas (função PURA).
 
@@ -1185,15 +1210,7 @@ def executar_copia(**context):
             if vigia is not None:
                 vigia.join(timeout=CANCEL_POLL_SEG + 5)
 
-        erros    = [r for r in resultados if r["status"] == "erro"]
-        cancels  = [r for r in resultados if r["status"] == "cancelado"]
-        if erros:
-            status_final = "erro"
-            erro_msg = erros[0].get("erro_msg") or "erro na cópia"
-        elif cancels:
-            status_final = "cancelado"
-        else:
-            status_final = "concluido"
+        status_final, erro_msg = _classificar_desfecho(resultados, rows_total)
     except Exception as e:
         status_final = "erro"
         erro_msg = str(e)[:4000]
