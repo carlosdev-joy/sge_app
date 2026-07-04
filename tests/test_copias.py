@@ -940,3 +940,28 @@ def test_get_copia_degrada_sem_coluna_src_query(client, auth_operador):
         r = client.get("/copias/7")
     assert r.status_code == 200
     assert r.json()["src_query"] is None
+
+
+# ═════════ _parse_xcom_value (leitura do XCom via REST — incidente 2026-07-04) ═════════
+
+def test_parse_xcom_value_aceita_repr_python_json_e_dict():
+    from routers.copias import _parse_xcom_value as p
+    # repr Python com aspas simples — é o que a REST API do Airflow devolve
+    # (str() do dict retornado pela task); caso REAL do incidente
+    assert p("{'databases': ['DBBUCC', 'master', 'msdb', 'tempdb']}") == \
+        {"databases": ["DBBUCC", "master", "msdb", "tempdb"]}
+    # JSON legítimo
+    assert p('{"tables": [{"schema": "dbo", "name": "T", "rows": 10}]}') == \
+        {"tables": [{"schema": "dbo", "name": "T", "rows": 10}]}
+    # dict nativo passa direto
+    assert p({"a": 1}) == {"a": 1}
+
+
+def test_parse_xcom_value_rejeita_ilegiveis_sem_executar_nada():
+    from routers.copias import _parse_xcom_value as p
+    assert p(None) is None
+    assert p("") is None and p("   ") is None
+    assert p("[1, 2]") is None             # literal válido, mas não-dict
+    assert p("'so uma string'") is None    # idem
+    assert p("__import__('os')") is None   # NÃO é literal → rejeitado, nunca executado
+    assert p("{lixo") is None
