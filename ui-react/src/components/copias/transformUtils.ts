@@ -165,6 +165,8 @@ export interface CopiaDetalhe extends Omit<CopiaJob, 'ultima_exec'> {
   src_filtro: string | null
   // Query SQL livre como fonte (modo query) — null no modo tabela.
   src_query: string | null
+  // Limite de linhas (TOP) embutido na query final da carga — null = todas.
+  src_top?: number | null
   colunas: ColunaMapeada[]
   select_sql: string | null
   count_sql: string | null
