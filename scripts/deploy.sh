@@ -59,6 +59,15 @@ echo "[DEPLOY] ✓ dags/ sincronizado"
 # ── 6. Docker Compose ─────────────────────────────────────────
 cp "$TMP_DIR/docker-compose.yaml" "$AIRFLOW_DIR/docker-compose.yaml"
 
+# ── 6b. Insumos do build da imagem Airflow ────────────────────
+# O rebuild da imagem (bcp/ODBC do módulo Cópia de Dados) é 100% offline e
+# precisa, NO SERVIDOR, do Dockerfile da raiz e dos .deb vendorados em
+# docker/debs. O build em si continua manual/raro (exige janela sem jobs);
+# aqui só garantimos que os arquivos existam quando ele for feito.
+cp "$TMP_DIR/Dockerfile" "$AIRFLOW_DIR/Dockerfile"
+rsync -av "$TMP_DIR/docker/" "$AIRFLOW_DIR/docker/"
+echo "[DEPLOY] ✓ Dockerfile + docker/ (debs) sincronizados"
+
 # ── 7. API — rebuild com wheels locais (sem internet) ─────────
 rsync -av "$TMP_DIR/api/" "$AIRFLOW_DIR/api/"
 
