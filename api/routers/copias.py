@@ -25,6 +25,7 @@ graciosamente se as tabelas da migration 052 ainda não existirem.
 """
 from __future__ import annotations
 
+import ast
 import asyncio
 import datetime as _dt
 import json
@@ -254,6 +255,30 @@ def _cache_store(conn_id: str, database: str, payload_tipo: str, objeto: str,
 _ACOES_SEM_CACHE = ("preview", "query_columns")  # resultado depende da query
 
 
+def _parse_xcom_value(valor):
+    """Payload (dict) do XCom lido pela REST API do Airflow — None se ilegível.
+
+    A REST API devolve o value STRINGIFICADO: um dict retornado pela task vira
+    ``str(dict)`` — repr Python com aspas SIMPLES (``{'databases': [...]}``,
+    não é JSON; incidente 2026-07-04, primeira conexão a exercitar o ramo via
+    DAG). Aceita, nesta ordem: dict nativo, JSON e repr Python via
+    ``ast.literal_eval`` (só literais — seguro, nunca executa código)."""
+    if isinstance(valor, dict):
+        return valor
+    if not isinstance(valor, str) or not valor.strip():
+        return None
+    try:
+        out = json.loads(valor)
+        return out if isinstance(out, dict) else None
+    except (ValueError, TypeError):
+        pass
+    try:
+        out = ast.literal_eval(valor)
+        return out if isinstance(out, dict) else None
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return None
+
+
 async def _introspect_via_dag(acao: str, conn_id: str, database: str = "",
                               schema: str = "", table: str = "",
                               select_sql: str | None = None,
@@ -333,10 +358,7 @@ async def _introspect_via_dag(acao: str, conn_id: str, database: str = "",
         raise HTTPException(status_code=502,
                             detail=f"Erro na introspecção via Airflow: {e}")
 
-    try:
-        payload = json.loads(valor) if isinstance(valor, str) else valor
-    except (ValueError, TypeError):
-        payload = None
+    payload = _parse_xcom_value(valor)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=502,
                             detail="Resposta inesperada da introspecção (XCom inválido)")
