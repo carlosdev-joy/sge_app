@@ -859,10 +859,10 @@ def _copiar_faixa(faixa, job, exec_id, alvo, src_air, dst_air, spids=None):
             return resultado
 
         if alvo["engine"] == bulk_copy.ENGINE_BCP:
-            # ── bcp nativo: pipe `bcp queryout → bcp in` (C nas 2 pontas) ──
+            # ── bcp nativo: queryout → arquivo de staging → bcp in ──
             # Fronteiras INLINE (o bcp não tem parâmetros); progresso por
-            # linha "rows sent" do escritor; cancelamento termina o par;
-            # o "N rows copied." final reconcilia o total da faixa.
+            # linha "rows sent" do escritor; cancelamento nas duas fases;
+            # o "N rows copied." do leitor reconcilia com o do escritor.
             sql = _sql_da_faixa_bcp(job, faixa)
 
             def _on_lote(n):
@@ -881,7 +881,8 @@ def _copiar_faixa(faixa, job, exec_id, alvo, src_air, dst_air, spids=None):
                 dst_air, job["dst_database"],
                 job["dst_schema"], job["dst_table"], job["batch_size"],
                 on_lote=_on_lote,
-                deve_cancelar=lambda: _status_exec(prog, exec_id) == "cancelando")
+                deve_cancelar=lambda: _status_exec(prog, exec_id) == "cancelando",
+                dst_columns=alvo.get("columns"))
             resultado["rows"]     = r["rows"]
             resultado["status"]   = r["status"]
             resultado["erro_msg"] = r.get("erro_msg")

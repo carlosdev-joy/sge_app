@@ -410,7 +410,7 @@ def montar_cmd_bcp_queryout(bcp_path, select_sql, host, port, database,
 
 def montar_cmd_bcp_in(bcp_path, dst_schema, dst_table, host, port, database,
                       user, password, batch_size, datafile,
-                      trust_cert=True, tablock=False):
+                      trust_cert=True, tablock=False, errfile=None):
     """Comando (lista argv, SEM shell) do ESCRITOR ``bcp <tabela> in``:
     formato nativo + keep nulls, ``-b`` (lote → progresso por linha no
     stdout), ``-m 1`` (aborta com exit != 0 no PRIMEIRO erro de linha —
@@ -418,14 +418,19 @@ def montar_cmd_bcp_in(bcp_path, dst_schema, dst_table, host, port, database,
     "para no primeiro erro"; comprovado empiricamente no 18.6.2.1, parte do
     incidente 2026-07-04) e, quando o binário suportar, ``-h TABLOCK``
     (minimal logging). O ``datafile`` é o MESMO arquivo de staging do
-    queryout (nunca pipe/FIFO). A tabela vai em DUAS partes
-    ``[schema].[tabela]`` + ``-d`` — a doc do bcp PROÍBE nome em 3 partes
-    junto com ``-d`` (database duas vezes). Função PURA."""
+    queryout (nunca pipe/FIFO). ``errfile`` → ``-e``: o bcp grava ali a
+    linha REJEITADA em texto tab-separado com cabeçalho
+    '#@ Row N, Column M: <erro> @#' (linha/coluna/valor exatos — mesmo na
+    carga nativa). A tabela vai em DUAS partes ``[schema].[tabela]`` +
+    ``-d`` — a doc do bcp PROÍBE nome em 3 partes junto com ``-d``
+    (database duas vezes). Função PURA."""
     tabela = f"{quote_ident(dst_schema)}.{quote_ident(dst_table)}"
     cmd = [str(bcp_path), tabela, "in", str(datafile),
            "-S", f"{host},{int(port or 1433)}", "-d", str(database),
            "-U", str(user), "-P", str(password or ""), "-n", "-k",
            "-b", str(int(batch_size)), "-m", "1"]
+    if errfile:
+        cmd += ["-e", str(errfile)]
     if trust_cert:
         cmd.append("-u")
     if tablock:
@@ -463,6 +468,29 @@ def total_nas_mensagens(linhas):
     return total
 
 
+# "Column N" nos cabeçalhos do arquivo -e do bcp (p/ traduzir em nome).
+_ERRFILE_COL_RE = re.compile(r"(Column\s+(\d+))")
+
+
+def resumo_errfile(texto, dst_columns=None, limite=1000):
+    """Trecho legível do arquivo ``-e`` do bcp (função PURA): os cabeçalhos
+    '#@ Row N, Column M: <erro> @#' seguidos da PRÓPRIA linha rejeitada —
+    o bcp grava a linha em texto tab-separado mesmo na carga nativa, o que
+    aponta a linha, a coluna (ordinal no DESTINO) e o valor exatos que
+    falharam. Com ``dst_columns`` (nomes na ordem do destino) o ordinal
+    ganha o nome: 'Column 2 (num_cpf_cnpj)'. Vazio → ''."""
+    linhas = [l.strip() for l in (texto or "").splitlines() if l.strip()]
+    trecho = " | ".join(linhas)
+    if dst_columns:
+        def _nome(m):
+            i = int(m.group(2))
+            if 1 <= i <= len(dst_columns):
+                return f"{m.group(1)} ({dst_columns[i - 1]})"
+            return m.group(1)
+        trecho = _ERRFILE_COL_RE.sub(_nome, trecho)
+    return trecho[:limite]
+
+
 def probe_bcp(src_air, src_db, dst_air, dst_db):
     """Probe de viabilidade do engine bcp_native — roda ANTES das faixas:
     um ``SELECT 1`` queryout para /dev/null em CADA servidor valida binário,
@@ -495,7 +523,8 @@ def probe_bcp(src_air, src_db, dst_air, dst_db):
 
 def copiar_faixa_bcp(bcp_ctx, select_sql, src_air, src_db, dst_air, dst_db,
                      dst_schema, dst_table, batch_size,
-                     on_lote=None, deve_cancelar=None) -> dict:
+                     on_lote=None, deve_cancelar=None,
+                     dst_columns=None) -> dict:
     """Copia UMA faixa com o utilitário nativo bcp em DUAS fases, via
     ARQUIVO de staging em disco: ``bcp queryout`` exporta a faixa (formato
     NATIVO) para o arquivo e ``bcp in`` o importa no destino.
@@ -524,8 +553,11 @@ def copiar_faixa_bcp(bcp_ctx, select_sql, src_air, src_db, dst_air, dst_db,
     Falha (exit != 0 em qualquer ponta): a cauda do STDOUT do processo entra
     na erro_msg (os erros de linha do bcp saem no stdout, não no stderr) +
     stderr do escritor (senha redigida, truncado em 4000) →
-    {"status": "erro"}. Sem timeout próprio (faixas longas) — o teto é o
-    execution_timeout da task (6h).
+    {"status": "erro"}. O escritor roda com ``-e`` (arquivo de erro ao lado
+    do staging): a linha REJEITADA entra na erro_msg em texto legível, com
+    linha/coluna/valor — ``dst_columns`` (nomes na ordem do destino) traduz
+    o ordinal 'Column N' no nome da coluna. Sem timeout próprio (faixas
+    longas) — o teto é o execution_timeout da task (6h).
 
     Trade-off ACEITO do v1: a senha vai em ``-P`` no argv dos processos bcp
     — ela NUNCA aparece em log (redigir_cmd) nem em mensagem persistida
@@ -565,6 +597,7 @@ def copiar_faixa_bcp(bcp_ctx, select_sql, src_air, src_db, dst_air, dst_db,
     fd, staging = tempfile.mkstemp(prefix="orq_copy_bcp_", suffix=".dat",
                                    dir=tmp_dir)
     os.close(fd)
+    errfile = staging + ".err"
     leitor = escritor = None
     try:
         # ---------- fase 1: EXPORT (queryout → arquivo de staging) ----------
@@ -612,7 +645,7 @@ def copiar_faixa_bcp(bcp_ctx, select_sql, src_air, src_db, dst_air, dst_db,
             cmd_escritor = montar_cmd_bcp_in(
                 bcp_ctx["path"], dst_schema, dst_table, host_d, port_d,
                 dst_db, user_d, senha_d, batch_size, datafile=staging,
-                trust_cert=trust, tablock=tablock)
+                trust_cert=trust, tablock=tablock, errfile=errfile)
             log.info("[COPY][bcp] escritor: %s",
                      " ".join(redigir_cmd(cmd_escritor)))
             escritor = subprocess.Popen(
@@ -681,6 +714,16 @@ def copiar_faixa_bcp(bcp_ctx, select_sql, src_air, src_db, dst_air, dst_db,
                     (err_escritor or "").strip().splitlines()[-4:])
                 if cauda_err:
                     partes.append(f"stderr: {cauda_err}")
+                # Arquivo -e do bcp: a linha REJEITADA (texto tab-separado,
+                # latin-1 cobre o CP1252 dos servidores) com linha/coluna/
+                # valor — é o diagnóstico que aponta a coluna estourada.
+                try:
+                    with open(errfile, encoding="latin-1") as f:
+                        trecho = resumo_errfile(f.read(65536), dst_columns)
+                except Exception:
+                    trecho = ""
+                if trecho:
+                    partes.append(f"linha rejeitada (-e): {trecho}")
                 erro_msg = _redigir_texto(
                     " | ".join(partes), (senha_s, senha_d))[:4000]
                 rows = total_lote
@@ -693,10 +736,11 @@ def copiar_faixa_bcp(bcp_ctx, select_sql, src_air, src_db, dst_air, dst_db,
             except Exception:
                 pass
     finally:
-        try:
-            os.unlink(staging)
-        except Exception:
-            pass
+        for arq in (staging, errfile):
+            try:
+                os.unlink(arq)
+            except Exception:
+                pass
     return {"status": status, "rows": int(rows or 0), "erro_msg": erro_msg}
 
 

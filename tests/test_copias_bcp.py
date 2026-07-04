@@ -186,6 +186,12 @@ def test_montar_cmd_bcp_in_bem_formado(bc):
     cmd2 = bc["montar_cmd_bcp_in"]("bcp", "dbo", "T", "h", 1433, "d", "u",
                                    "p", 1000, "/tmp/stg.dat", tablock=False)
     assert "-h" not in cmd2
+    # -e (arquivo com a linha rejeitada) só entra quando errfile é passado
+    assert "-e" not in cmd2
+    cmd3 = bc["montar_cmd_bcp_in"]("bcp", "dbo", "T", "h", 1433, "d", "u",
+                                   "p", 1000, "/tmp/stg.dat",
+                                   errfile="/tmp/stg.dat.err")
+    assert cmd3[cmd3.index("-e") + 1] == "/tmp/stg.dat.err"
 
 
 def test_bcp_flags_suportadas_extrai_do_usage(bc):
