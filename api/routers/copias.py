@@ -50,6 +50,7 @@ from routers.jobs import (
     _open_swapped_conn,
 )
 from services import copy_sql
+from services.conn_native import abrir_conexao_nativa
 
 log = logging.getLogger("orquestra-api")
 
@@ -368,11 +369,25 @@ async def _introspect_via_dag(acao: str, conn_id: str, database: str = "",
 
 
 def _consulta_direta(server: str, database: str, sql: str, params=(),
-                     timeout_s: int = 15):
-    """Caminho rápido: roda um SELECT de catálogo com a credencial do APP
-    (_open_swapped_conn). Levanta HTTPException(400) em falha (o chamador
-    decide se cai para o RPC via DAG)."""
-    conn, cur = _open_swapped_conn(server, database, timeout_s)
+                     timeout_s: int = 15, conn_id: str = ""):
+    """Caminho rápido: roda um SELECT de catálogo DIRETO da API.
+
+    Com ``conn_id`` de conexão NATIVA (dbo.etl_conexao), usa a credencial da
+    PRÓPRIA conexão — a mesma das cargas: enxerga os mesmos objetos e o
+    resultado é sempre FRESCO (sem o cache de 24h do RPC, que escondia
+    tabelas recém-criadas). Sem conn_id (ou conexão legada), credencial do
+    APP (_open_swapped_conn). Levanta HTTPException(400) em falha (o
+    chamador decide se cai para o RPC via DAG)."""
+    conn = cur = None
+    if conn_id:
+        try:
+            par = abrir_conexao_nativa(conn_id, database, timeout_s)
+            if par is not None:
+                conn, cur = par
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    if conn is None:
+        conn, cur = _open_swapped_conn(server, database, timeout_s)
     try:
         cur.execute(sql, params) if params else cur.execute(sql)
         rows = cur.fetchall()
@@ -445,7 +460,7 @@ async def introspect_databases(conn_id: str = "",
             server, "master",
             "SELECT d.name FROM sys.databases d "
             "WHERE d.state_desc = 'ONLINE' AND HAS_DBACCESS(d.name) = 1 "
-            "ORDER BY d.name")
+            "ORDER BY d.name", conn_id=conn_id)
         return {"databases": [r[0] for r in rows], "via": "direto"}
     except HTTPException as e:
         log.info("copias: introspect databases direto falhou (%s) — fallback DAG",
@@ -474,7 +489,7 @@ async def introspect_tables(conn_id: str = "", database: str = "",
             "JOIN sys.partitions p ON p.object_id = t.object_id "
             "  AND p.index_id IN (0, 1) "
             "GROUP BY s.name, t.name "
-            "ORDER BY s.name, t.name")
+            "ORDER BY s.name, t.name", conn_id=conn_id)
         tables = [{"schema": r[0], "name": r[1], "rows": int(r[2] or 0)} for r in rows]
         return {"tables": tables, "via": "direto"}
     except HTTPException as e:
@@ -535,7 +550,7 @@ async def introspect_columns(conn_id: str = "", database: str = "",
             ") pk ON pk.object_id = c.object_id AND pk.column_id = c.column_id "
             "WHERE c.object_id = OBJECT_ID(?) "
             "ORDER BY c.column_id",
-            (objeto,))
+            (objeto,), conn_id=conn_id)
         columns = [
             {"name": r[0], "type": r[1], "max_length": int(r[2] or 0),
              "precision": int(r[3] or 0), "scale": int(r[4] or 0),
@@ -595,12 +610,20 @@ async def introspect_query_columns(body: dict = Body(default={}),
 
     server = await _server_da_conexao(src_conn_id)
     timeout_s = _get_preview_timeout_s()
-    conn = None
+    conn = cur = None
     try:
-        conn, cur = _open_swapped_conn(server, src_database, timeout_s)
-    except HTTPException as e:
-        log.info("copias: query-columns direto falhou ao conectar (%s) — "
-                 "fallback DAG", e.detail)
+        par = abrir_conexao_nativa(src_conn_id, src_database, timeout_s)
+        if par is not None:
+            conn, cur = par
+    except RuntimeError as e:
+        log.info("copias: query-columns com credencial da conexão falhou (%s) "
+                 "— tentando credencial do app", e)
+    if conn is None:
+        try:
+            conn, cur = _open_swapped_conn(server, src_database, timeout_s)
+        except HTTPException as e:
+            log.info("copias: query-columns direto falhou ao conectar (%s) — "
+                     "fallback DAG", e.detail)
     if conn is not None:
         try:
             cur.execute(f"SELECT TOP 0 * FROM (\n{src_query}\n) AS _q")
@@ -661,8 +684,17 @@ async def copias_preview(body: dict = Body(default={}),
     server = await _server_da_conexao(src_conn_id)
     preview_sql = f"SELECT TOP 50 * FROM (\n{select_sql}\n) AS _prev"
     timeout_s = _get_preview_timeout_s()
+    conn = cur = None
     try:
-        conn, cur = _open_swapped_conn(server, src_database, timeout_s)
+        par = abrir_conexao_nativa(src_conn_id, src_database, timeout_s)
+        if par is not None:
+            conn, cur = par
+    except RuntimeError as e:
+        log.info("copias: preview com credencial da conexão falhou (%s) — "
+                 "tentando credencial do app", e)
+    try:
+        if conn is None:
+            conn, cur = _open_swapped_conn(server, src_database, timeout_s)
         try:
             cur.execute(preview_sql)
             columns = [d[0] for d in (cur.description or [])]
