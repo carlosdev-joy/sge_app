@@ -439,6 +439,21 @@ def parse_progresso_bcp(linha):
     return None
 
 
+def total_nas_mensagens(linhas):
+    """Total final ("N rows copied.") nas mensagens de UM processo bcp —
+    None se a linha de resumo não apareceu (função PURA). O ``bcp queryout``
+    (leitor) imprime o MESMO resumo do ``bcp in``: é o que permite
+    RECONCILIAR exportado × gravado no pipe — bcp pode sair com exit 0 sem
+    ter movido linha nenhuma (incidente 2026-07-04: faixa 'concluída' com 0
+    linha e 1M na origem), então exit code sozinho NÃO é prova de sucesso."""
+    total = None
+    for linha in (linhas or ()):
+        ev = parse_progresso_bcp(linha)
+        if ev and ev[0] == "total":
+            total = ev[1]
+    return total
+
+
 def probe_bcp(src_air, src_db, dst_air, dst_db):
     """Probe de viabilidade do engine bcp_native — roda ANTES das faixas:
     um ``SELECT 1`` queryout para /dev/null em CADA servidor valida binário,
@@ -498,6 +513,10 @@ def copiar_faixa_bcp(bcp_ctx, select_sql, src_air, src_db, dst_air, dst_db,
     granularidade depende do flush do stdout do bcp — best-effort, como o
     progresso incremental atual. O "N rows copied." final do escritor é o
     total de RECONCILIAÇÃO da faixa.
+
+    Sucesso exige, ALÉM do exit 0 nas duas pontas, a RECONCILIAÇÃO dos
+    totais: o "N rows copied." do LEITOR (queryout) tem que bater com o do
+    escritor — bcp pode sair 0 sem ter movido nada (incidente 2026-07-04).
 
     Falha (exit != 0 em qualquer ponta): stderr/stdout capturados (senha
     redigida, truncado em 4000) → {"status": "erro"}; o PAR do pipe é morto
@@ -609,8 +628,33 @@ def copiar_faixa_bcp(bcp_ctx, select_sql, src_air, src_db, dst_air, dst_db,
         if cancelada:
             status, rows = "cancelado", total_lote
         elif rc_l == 0 and rc_e == 0:
-            status = "concluido"
             rows = total_final if total_final is not None else total_lote
+            # RECONCILIAÇÃO leitor × escritor: exit 0 dos dois bcp NÃO prova
+            # que os dados fluíram (incidente 2026-07-04: ambos saíram 0 e o
+            # escritor gravou 0 linha com 1M na origem). O total exportado
+            # pelo leitor ("N rows copied." do queryout) tem que bater com o
+            # gravado pelo escritor — divergência (ou resumo ausente) é ERRO,
+            # com a cauda das mensagens dos DOIS processos para diagnóstico.
+            leitor_total = total_nas_mensagens(saida_leitor)
+            log.info("[COPY][bcp] reconciliação: leitor exportou %s, "
+                     "escritor gravou %s | cauda do leitor: %s",
+                     leitor_total, rows,
+                     _redigir_texto(" | ".join(list(saida_leitor)[-4:]),
+                                    (senha_s, senha_d)))
+            if leitor_total == rows:
+                status = "concluido"
+            else:
+                status = "erro"
+                cauda_l = " | ".join(list(saida_leitor)[-8:])
+                cauda_e = " | ".join(
+                    (err_escritor or "").strip().splitlines()[-4:])
+                erro_msg = _redigir_texto(
+                    "bcp terminou sem código de erro, mas os totais divergem: "
+                    f"leitor exportou {leitor_total if leitor_total is not None else 'resumo ausente'} "
+                    f"e o escritor gravou {rows} linha(s). "
+                    f"Mensagens do leitor: {cauda_l or '(vazio)'}"
+                    + (f" | Mensagens do escritor: {cauda_e}" if cauda_e else ""),
+                    (senha_s, senha_d))[:4000]
         else:
             partes = []
             if rc_e not in (0, None):
