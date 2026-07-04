@@ -47,10 +47,10 @@ _BULK_COPY = _RAIZ / "dags" / "utils" / "bulk_copy.py"
 _COPY_EXEC = _RAIZ / "dags" / "etl_copy_exec.py"
 
 _NOMES_BULK = {
-    "_BCP_LOTE_RE", "_BCP_TOTAL_RE",
+    "_BCP_LOTE_RE", "_BCP_TOTAL_RE", "_ERRFILE_COL_RE",
     "quote_ident", "redigir_cmd", "_redigir_texto",
     "montar_cmd_bcp_queryout", "montar_cmd_bcp_in",
-    "parse_progresso_bcp", "total_nas_mensagens",
+    "parse_progresso_bcp", "total_nas_mensagens", "resumo_errfile",
     "_conn_params", "copiar_faixa_bcp",
 }
 
@@ -155,12 +155,17 @@ else:  # "in"
     if n:
         print(f"{n} rows sent to SQL Server. Total sent: {n}")
     print(f"{n} rows copied.")
+    conteudo_err = os.environ.get("FAKE_BCP_ESCRITOR_ERRFILE")
+    if conteudo_err and "-e" in sys.argv:
+        with open(sys.argv[sys.argv.index("-e") + 1], "w") as f:
+            f.write(conteudo_err)
     sys.exit(int(os.environ.get("FAKE_BCP_ESCRITOR_EXIT", "0")))
 """
 
 _ENVS_FAKE = ("FAKE_BCP_LEITOR_LINHAS", "FAKE_BCP_LEITOR_SEM_RESUMO",
               "FAKE_BCP_LEITOR_EXIT", "FAKE_BCP_ESCRITOR_LINHAS",
-              "FAKE_BCP_ESCRITOR_EXIT", "FAKE_BCP_TRACE")
+              "FAKE_BCP_ESCRITOR_EXIT", "FAKE_BCP_ESCRITOR_ERRFILE",
+              "FAKE_BCP_TRACE")
 
 
 @pytest.fixture()
@@ -186,7 +191,7 @@ def faixa_bcp(bc, tmp_path, monkeypatch):
         r = bc["copiar_faixa_bcp"](
             {"path": str(fake), "flags": {"-u"}}, "SELECT * FROM t",
             conn, "SRC_DB", conn, "DST_DB", "dbo", "destino", 50000,
-            on_lote=deltas.append)
+            on_lote=deltas.append, dst_columns=["n", "txt"])
         return r, deltas
 
     run.staging_dir = stg_dir
@@ -259,6 +264,21 @@ def test_faixa_bcp_staging_em_copy_bcp_tmpdir(faixa_bcp, tmp_path):
     assert arquivos.pop().startswith(str(faixa_bcp.staging_dir))
 
 
+def test_faixa_bcp_errfile_aponta_coluna_e_valor(faixa_bcp):
+    # Erro de linha (ex.: truncation): a linha REJEITADA do arquivo -e entra
+    # na erro_msg com o ordinal traduzido para o NOME da coluna do destino.
+    err = ("#@ Row 3777, Column 2: String data, right truncation @#\n"
+           "3777\tVALOR_COMPRIDO_DEMAIS\n")
+    r, _ = faixa_bcp(FAKE_BCP_LEITOR_LINHAS=5, FAKE_BCP_ESCRITOR_EXIT=1,
+                     FAKE_BCP_ESCRITOR_ERRFILE=err)
+    assert r["status"] == "erro"
+    assert "linha rejeitada (-e):" in r["erro_msg"]
+    assert "Column 2 (txt)" in r["erro_msg"]
+    assert "VALOR_COMPRIDO_DEMAIS" in r["erro_msg"]
+    # e o .err também não fica para trás
+    assert list(faixa_bcp.staging_dir.iterdir()) == []
+
+
 def test_faixa_bcp_staging_sempre_removido(faixa_bcp):
     # sucesso, divergência e exit != 0: o staging NUNCA fica para trás
     r, _ = faixa_bcp(FAKE_BCP_LEITOR_LINHAS=5)
@@ -270,6 +290,30 @@ def test_faixa_bcp_staging_sempre_removido(faixa_bcp):
     r, _ = faixa_bcp(FAKE_BCP_LEITOR_LINHAS=5, FAKE_BCP_LEITOR_EXIT=1)
     assert r["status"] == "erro"
     assert list(faixa_bcp.staging_dir.iterdir()) == []
+
+
+# ═══════════════════ resumo_errfile (arquivo -e do bcp) ═════════════════════
+
+_ERRFILE = ("#@ Row 3777, Column 2: String data, right truncation @#\n"
+            "3777\tVALOR_QUE_ESTOUROU\n")
+
+
+def test_resumo_errfile_junta_e_traduz_coluna(bc):
+    r = bc["resumo_errfile"](_ERRFILE, ["n", "num_cpf_cnpj"])
+    assert r == ("#@ Row 3777, Column 2 (num_cpf_cnpj): String data, "
+                 "right truncation @# | 3777\tVALOR_QUE_ESTOUROU")
+
+
+def test_resumo_errfile_sem_colunas_mantem_ordinal(bc):
+    assert "Column 2:" in bc["resumo_errfile"](_ERRFILE)
+    # ordinal fora do range da lista → mantém sem nome
+    assert "Column 2:" in bc["resumo_errfile"](_ERRFILE, ["so_uma"])
+
+
+def test_resumo_errfile_vazio_e_limite(bc):
+    assert bc["resumo_errfile"]("") == ""
+    assert bc["resumo_errfile"](None) == ""
+    assert len(bc["resumo_errfile"]("x" * 5000, limite=100)) == 100
 
 
 # ═══════════ _classificar_desfecho — defesa no nível da execução ════════════
