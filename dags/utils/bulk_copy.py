@@ -1135,6 +1135,20 @@ def bulk_write(dst_conn, target, rows, batch_size) -> int:
     return len(rows)
 
 
+# Nome de collation válido (identificador simples do catálogo) — guarda
+# contra qualquer valor inesperado ir parar no DDL.
+_COLLATION_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def _collate_sql(collation) -> str:
+    """Cláusula `` COLLATE <nome>`` para o DDL (função PURA) — '' quando a
+    coluna não tem collation (tipos não-texto) ou o nome não passa na
+    guarda de identificador."""
+    if collation and _COLLATION_RE.match(str(collation)):
+        return f" COLLATE {collation}"
+    return ""
+
+
 def _render_sql_type(info) -> str:
     """Renderiza o tipo T-SQL a partir do catálogo (sys.columns/sys.types)."""
     tipo       = (info["tipo"] or "").lower()
@@ -1160,8 +1174,9 @@ def script_create_table(src_conn, src_db, src_schema, src_table,
                         dst_schema="dbo", dst_table=None) -> str:
     """DDL ``CREATE TABLE`` do destino a partir do catálogo da ORIGEM.
 
-    Regras (spec Cópia de Dados):
-      - tipos preservados (sys.columns/sys.types da origem);
+    Regras (spec Cópia de Dados — réplica FIEL da estrutura da origem):
+      - tipos, tamanhos, nulabilidade e COLLATION preservados
+        (sys.columns/sys.types da origem);
       - colunas com pad_condicional/pad_fixo viram
         VARCHAR(max(tamanhos do pad, largura ORIGINAL da coluna texto)) —
         o pad produz strings de exatamente n chars, então NUNCA pode nascer
@@ -1181,7 +1196,8 @@ def script_create_table(src_conn, src_db, src_schema, src_table,
     cur = src_conn.cursor()
     try:
         cur.execute(
-            f"SELECT c.name, t.name, c.max_length, c.precision, c.scale, c.is_nullable "
+            f"SELECT c.name, t.name, c.max_length, c.precision, c.scale, "
+            f"c.is_nullable, c.collation_name "
             f"FROM {qdb}.sys.columns c "
             f"JOIN {qdb}.sys.types t ON t.user_type_id = c.user_type_id "
             f"WHERE c.object_id = OBJECT_ID(%s) "
@@ -1192,7 +1208,7 @@ def script_create_table(src_conn, src_db, src_schema, src_table,
             row[0]: {
                 "tipo": row[1], "max_length": row[2],
                 "precision": row[3], "scale": row[4],
-                "is_nullable": bool(row[5]),
+                "is_nullable": bool(row[5]), "collation": row[6],
             }
             for row in cur.fetchall()
         }
@@ -1250,8 +1266,13 @@ def script_create_table(src_conn, src_db, src_schema, src_table,
             n = max((t for t in tamanhos if t > 0), default=50)
             tipo_sql = f"VARCHAR({n})"
 
+        # COLLATION da origem preservada (fidelidade 100% da réplica; sem
+        # ela a coluna nasce com a collation default do BANCO de destino e
+        # a carga nativa pode sofrer conversão de codepage).
+        colacao = _collate_sql(info.get("collation"))
         nulabilidade = "NULL" if info["is_nullable"] else "NOT NULL"
-        defs.append(f"    {quote_ident(nome)} {tipo_sql} {nulabilidade}")
+        defs.append(
+            f"    {quote_ident(nome)} {tipo_sql}{colacao} {nulabilidade}")
 
     fqn_destino = f"{quote_ident(dst_schema)}.{quote_ident(dst_table)}"
     return f"CREATE TABLE {fqn_destino} (\n" + ",\n".join(defs) + "\n)"
@@ -1284,12 +1305,13 @@ def script_create_table_from_query(src_conn, src_query, dst_schema, dst_table) -
 
     # Colunas do result set do sp_describe_first_result_set (posições fixas):
     # r[0]=is_hidden, r[1]=column_ordinal, r[2]=name, r[3]=is_nullable,
-    # r[4]=system_type_id, r[5]=system_type_name
+    # r[4]=system_type_id, r[5]=system_type_name, ... r[9]=collation_name
     defs = []
     for r in rows:
         if r[0]:  # is_hidden
             continue
         nome, is_nullable, tipo_sql = r[2], bool(r[3]), r[5]
+        colacao = _collate_sql(r[9] if len(r) > 9 else None)
         if not nome:
             raise ValueError(
                 f"A query tem coluna sem nome (posição {r[1]}) — dê um alias "
@@ -1300,7 +1322,7 @@ def script_create_table_from_query(src_conn, src_query, dst_schema, dst_table) -
                 "(tipo CLR/alias?) — crie a tabela de destino manualmente "
                 "e desmarque 'Criar nova tabela'.")
         nulabilidade = "NULL" if is_nullable else "NOT NULL"
-        defs.append(f"    {quote_ident(nome)} {tipo_sql} {nulabilidade}")
+        defs.append(f"    {quote_ident(nome)} {tipo_sql}{colacao} {nulabilidade}")
 
     if not defs:
         raise ValueError(
