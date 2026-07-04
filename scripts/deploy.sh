@@ -83,6 +83,55 @@ echo "[DEPLOY] ✓ orquestra-api atualizado"
 docker compose up -d --no-deps --force-recreate ui-nginx
 echo "[DEPLOY] ✓ ui-nginx recriado (volumes do compose aplicados)"
 
+# ── 8b. Imagem/containers do Airflow (OPCIONAL — pergunta) ────
+# Recriar webserver/scheduler/worker/triggerer INTERROMPE jobs em execução,
+# então NUNCA é automático: o padrão é NÃO (Enter, ou execução sem terminal),
+# e o deploy segue tocando só api/nginx, como sempre. Responda 's' apenas em
+# janela sem jobs — necessário para aplicar imagem nova (bcp/ODBC) ou env
+# nova nos containers (ex.: ORQUESTRA_CONN_KEY do .env).
+RESP_AIRFLOW="n"
+if [ -t 0 ]; then
+    read -r -p "[DEPLOY] Rebuildar a imagem do Airflow e RECRIAR os containers agora? (interrompe jobs em execucao) [s/N] " RESP_AIRFLOW || RESP_AIRFLOW="n"
+fi
+case "$RESP_AIRFLOW" in
+    [sS]*)
+        cd "$AIRFLOW_DIR"
+        if docker image inspect apache/airflow:2.11.2 >/dev/null 2>&1; then
+            # Base oficial presente no host → build canônico do Dockerfile da
+            # raiz. Builder clássico: o servidor NÃO alcança o Docker Hub e o
+            # BuildKit tenta resolver a base no registry mesmo com ela local.
+            echo "[DEPLOY] Base apache/airflow local — build canônico (offline)..."
+            DOCKER_BUILDKIT=0 COMPOSE_BAKE=false docker compose build \
+                airflow-webserver airflow-scheduler airflow-worker \
+                airflow-triggerer airflow-init
+        else
+            # Base ausente (prunada) e sem acesso ao Docker Hub → imagem
+            # DERIVADA da atual + .deb vendorados (docker/debs) — 100% offline.
+            # Quando a base voltar ao host (docker load), o ramo acima assume.
+            echo "[DEPLOY] Base apache/airflow ausente — build derivado da imagem local..."
+            cat > "$AIRFLOW_DIR/Dockerfile.hotfix" <<'DOCKEREOF'
+FROM airflow-airflow-worker
+USER root
+COPY debs/*.deb /tmp/debs/
+RUN ACCEPT_EULA=Y dpkg -i /tmp/debs/*.deb && rm -rf /tmp/debs
+ENV PATH="$PATH:/opt/mssql-tools18/bin"
+USER airflow
+DOCKEREOF
+            DOCKER_BUILDKIT=0 docker build -f "$AIRFLOW_DIR/Dockerfile.hotfix" \
+                -t airflow-hotfix "$AIRFLOW_DIR/docker"
+            for t in webserver scheduler worker triggerer init; do
+                docker tag airflow-hotfix "airflow-airflow-$t"
+            done
+        fi
+        docker compose up -d --force-recreate --no-build \
+            airflow-webserver airflow-scheduler airflow-worker airflow-triggerer
+        echo "[DEPLOY] ✓ Containers do Airflow recriados com a imagem nova"
+        ;;
+    *)
+        echo "[DEPLOY] Containers do Airflow NÃO tocados (padrão seguro)."
+        ;;
+esac
+
 # ── 9. Limpeza ────────────────────────────────────────────────
 rm -rf "$TMP_DIR"
 
