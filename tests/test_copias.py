@@ -965,3 +965,61 @@ def test_parse_xcom_value_rejeita_ilegiveis_sem_executar_nada():
     assert p("'so uma string'") is None    # idem
     assert p("__import__('os')") is None   # NÃO é literal → rejeitado, nunca executado
     assert p("{lixo") is None
+
+
+# ═════════ _consulta_direta — credencial NATIVA primeiro (caminho rápido) ═════════
+
+def _cx_com_rows(rows):
+    cur = MagicMock()
+    cur.fetchall.return_value = rows
+    conn = MagicMock()
+    conn.cursor.return_value = cur
+    return conn, cur
+
+
+def test_consulta_direta_usa_credencial_nativa_primeiro():
+    from routers.copias import _consulta_direta
+    conn, cur = _cx_com_rows([("DBBUCC",), ("master",)])
+    with patch("routers.copias.abrir_conexao_nativa",
+               return_value=(conn, cur)) as nativa, \
+         patch("routers.copias._open_swapped_conn") as swapped:
+        rows = _consulta_direta("SQL69,1478", "master", "SELECT 1",
+                                conn_id="SQL69")
+    assert [r[0] for r in rows] == ["DBBUCC", "master"]
+    nativa.assert_called_once_with("SQL69", "master", 15)
+    swapped.assert_not_called()               # app credential nem tentada
+
+
+def test_consulta_direta_conexao_legada_cai_para_credencial_do_app():
+    from routers.copias import _consulta_direta
+    conn, cur = _cx_com_rows([("X",)])
+    with patch("routers.copias.abrir_conexao_nativa", return_value=None), \
+         patch("routers.copias._open_swapped_conn",
+               return_value=(conn, cur)) as swapped:
+        rows = _consulta_direta("SQL14", "master", "SELECT 1",
+                                conn_id="SQL_LEGADA")
+    assert rows == [("X",)]
+    swapped.assert_called_once()
+
+
+def test_consulta_direta_sem_conn_id_nao_consulta_a_nativa():
+    from routers.copias import _consulta_direta
+    conn, cur = _cx_com_rows([])
+    with patch("routers.copias.abrir_conexao_nativa") as nativa, \
+         patch("routers.copias._open_swapped_conn", return_value=(conn, cur)):
+        _consulta_direta("SQL14", "master", "SELECT 1")
+    nativa.assert_not_called()
+
+
+def test_consulta_direta_falha_da_nativa_vira_400_para_fallback_dag():
+    from fastapi import HTTPException
+    from routers.copias import _consulta_direta
+    with patch("routers.copias.abrir_conexao_nativa",
+               side_effect=RuntimeError("conexão 'SQL69' falhou")), \
+         patch("routers.copias._open_swapped_conn") as swapped:
+        with pytest.raises(HTTPException) as exc:
+            _consulta_direta("SQL69,1478", "master", "SELECT 1",
+                             conn_id="SQL69")
+    assert exc.value.status_code == 400        # chamador decide o fallback DAG
+    assert "SQL69" in exc.value.detail
+    swapped.assert_not_called()
