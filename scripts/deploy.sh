@@ -40,24 +40,95 @@ if [ -z "$_DEPLOY_UPDATED" ] && ! cmp -s "$TMP_DIR/scripts/deploy.sh" "$SELF"; t
     exec bash "$SELF"
 fi
 
+# ═════════════════════════════════════════════════════════════
+# REGRAS DE PROPRIEDADE (nunca mudar sem revisar com o time):
+#   - PERTENCEM AO SERVIDOR e o deploy NUNCA toca: dsx/, branding/,
+#     logs/ e dags/generated/ (criado em runtime pelo Airflow).
+#   - AUTOMÁTICO (sempre): ui-react/dist, api/ (+ rebuild orquestra-api),
+#     ui-nginx (recreate) e a CÓPIA dos insumos de build (Dockerfile,
+#     docker/debs — só arquivos, nenhuma ação de container).
+#   - SÓ COM CONFIRMAÇÃO (mostra o que mudaria; Enter = não):
+#     dags/, config/ (com backup) e docker-compose.yaml (com backup).
+#   - Containers do Airflow: só na etapa 8b, também com pergunta.
+# ═════════════════════════════════════════════════════════════
+
+# Pergunta padrão-NÃO. Sem terminal (cron/pipe) responde não: um deploy não
+# interativo nunca sobrescreve dags/config silenciosamente.
+_confirmar() {  # $1 = pergunta
+    local resp="n"
+    if [ -t 0 ]; then
+        read -r -p "$1 [s/N] " resp || resp="n"
+    fi
+    case "$resp" in [sS]*) return 0 ;; *) return 1 ;; esac
+}
+
+# Lista os arquivos que MUDARIAM (novos ou alterados) sem aplicar nada.
+# --checksum: compara por CONTEÚDO — o clone é fresco e toda data/mtime muda,
+# então sem isso a lista traria o repositório inteiro em todo deploy.
+# Sem --delete: o que existe só no servidor nunca aparece nem é removido.
+_mudancas() {  # $1 = origem/  $2 = destino/  $3.. = flags extras (ex.: --exclude)
+    local src="$1" dst="$2"; shift 2
+    mkdir -p "$dst"
+    rsync -ac --dry-run --itemize-changes "$@" "$src" "$dst" \
+        | awk '$1 ~ /^[<>]f/ {print "    " $2}'
+}
+
 # ── 3. UI React (única interface — servida na raiz /) ─────────
 mkdir -p "$AIRFLOW_DIR/ui-react/dist"
 rsync -av --delete "$TMP_DIR/ui-react/dist/" "$AIRFLOW_DIR/ui-react/dist/"
 echo "[DEPLOY] ✓ ui-react/dist sincronizado"
 
-# ── 4. Config (nginx.conf, webserver_config) ──────────────────
-rsync -av "$TMP_DIR/config/" "$AIRFLOW_DIR/config/"
-echo "[DEPLOY] ✓ config/ sincronizado"
+# ── 4. Config (nginx.conf, webserver_config) — SÓ COM CONFIRMAÇÃO ─
+# config/ pode ter ajustes feitos direto no servidor — nunca sobrescrever
+# às cegas. Mostra o que mudaria e pergunta; ao aplicar, faz backup de
+# config/ inteiro em config.bak.<timestamp>.
+MUD_CONFIG=$(_mudancas "$TMP_DIR/config/" "$AIRFLOW_DIR/config/")
+if [ -z "$MUD_CONFIG" ]; then
+    echo "[DEPLOY] config/ sem mudanças."
+else
+    echo "[DEPLOY] config/ — arquivos que MUDARIAM:"
+    echo "$MUD_CONFIG"
+    if _confirmar "[DEPLOY] Aplicar as mudancas de config/ acima? (pode sobrescrever ajustes feitos no servidor; backup automatico)"; then
+        BAK="$AIRFLOW_DIR/config.bak.$(date +%Y%m%d-%H%M%S)"
+        cp -a "$AIRFLOW_DIR/config" "$BAK"
+        rsync -avc "$TMP_DIR/config/" "$AIRFLOW_DIR/config/"
+        echo "[DEPLOY] ✓ config/ sincronizado (backup em $BAK)"
+    else
+        echo "[DEPLOY] config/ mantido como está."
+    fi
+fi
 
-# ── 5. DAGs ───────────────────────────────────────────────────
-# generated/ é criado em runtime pelo Airflow — nunca sobrescrever
-rsync -av --exclude=generated/ "$TMP_DIR/dags/" "$AIRFLOW_DIR/dags/"
-chown -R airflow:airflow "$AIRFLOW_DIR/dags/"
-chmod -R 777 "$AIRFLOW_DIR/dags/"
-echo "[DEPLOY] ✓ dags/ sincronizado"
+# ── 5. DAGs — SÓ COM CONFIRMAÇÃO ──────────────────────────────
+# generated/ é criado em runtime pelo Airflow — NUNCA sobrescrever (regra
+# de sempre, mantida aqui e na listagem). Sem --delete: o que existe só no
+# servidor fica intocado. dsx/, branding/ e logs/ NÃO passam por aqui.
+MUD_DAGS=$(_mudancas "$TMP_DIR/dags/" "$AIRFLOW_DIR/dags/" --exclude=generated/)
+if [ -z "$MUD_DAGS" ]; then
+    echo "[DEPLOY] dags/ sem mudanças."
+else
+    echo "[DEPLOY] dags/ — arquivos que MUDARIAM (generated/ preservado):"
+    echo "$MUD_DAGS"
+    if _confirmar "[DEPLOY] Aplicar as mudancas de dags/ acima? (o scheduler/worker recarrega pelo volume nas proximas execucoes)"; then
+        rsync -avc --exclude=generated/ "$TMP_DIR/dags/" "$AIRFLOW_DIR/dags/"
+        chown -R airflow:airflow "$AIRFLOW_DIR/dags/"
+        chmod -R 777 "$AIRFLOW_DIR/dags/"
+        echo "[DEPLOY] ✓ dags/ sincronizado"
+    else
+        echo "[DEPLOY] dags/ mantido como está."
+    fi
+fi
 
-# ── 6. Docker Compose ─────────────────────────────────────────
-cp "$TMP_DIR/docker-compose.yaml" "$AIRFLOW_DIR/docker-compose.yaml"
+# ── 6. Docker Compose — SÓ COM CONFIRMAÇÃO se divergir ────────
+if cmp -s "$TMP_DIR/docker-compose.yaml" "$AIRFLOW_DIR/docker-compose.yaml"; then
+    echo "[DEPLOY] docker-compose.yaml sem mudanças."
+elif _confirmar "[DEPLOY] docker-compose.yaml mudou no repo. Sobrescrever o do servidor? (backup automatico)"; then
+    cp -a "$AIRFLOW_DIR/docker-compose.yaml" \
+          "$AIRFLOW_DIR/docker-compose.yaml.bak.$(date +%Y%m%d-%H%M%S)"
+    cp "$TMP_DIR/docker-compose.yaml" "$AIRFLOW_DIR/docker-compose.yaml"
+    echo "[DEPLOY] ✓ docker-compose.yaml atualizado"
+else
+    echo "[DEPLOY] docker-compose.yaml mantido como está."
+fi
 
 # ── 6b. Insumos do build da imagem Airflow ────────────────────
 # O rebuild da imagem (bcp/ODBC do módulo Cópia de Dados) é 100% offline e
