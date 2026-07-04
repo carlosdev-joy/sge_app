@@ -1162,8 +1162,11 @@ def script_create_table(src_conn, src_db, src_schema, src_table,
 
     Regras (spec Cópia de Dados):
       - tipos preservados (sys.columns/sys.types da origem);
-      - colunas com pad_condicional/pad_fixo viram VARCHAR(max(tamanhos))
-        quando o tipo original é numérico;
+      - colunas com pad_condicional/pad_fixo viram
+        VARCHAR(max(tamanhos do pad, largura ORIGINAL da coluna texto)) —
+        o pad produz strings de exatamente n chars, então NUNCA pode nascer
+        mais estreita que o maior caso (origem numérica usa só os tamanhos;
+        origem (n)varchar(max) fica como está);
       - IDENTITY NÃO é preservada; nullability preservada;
       - SEM índices/constraints — heap (a carga bulk agradece).
 
@@ -1217,8 +1220,17 @@ def script_create_table(src_conn, src_db, src_schema, src_table,
         tipo_sql  = _render_sql_type(info)
         transform = mapa.get("transform") or {}
         ttipo     = (transform.get("tipo") or "").lower()
+        # Pad produz strings de EXATAMENTE n chars — a coluna do destino
+        # precisa de VARCHAR(max(tamanhos do pad, largura ORIGINAL)) para
+        # QUALQUER tipo de origem. A regra antiga só alargava origem
+        # NUMÉRICA: origem VARCHAR(11) com pad_condicional de 14 (CNPJ)
+        # nascia varchar(11) e a carga estourava "String data, right
+        # truncation" (incidente 2026-07-04, DM_Clientes_contratos).
+        # Origem (n)varchar(max) fica como está — já comporta o pad.
+        tipo_orig = (info["tipo"] or "").lower()
         if ttipo in ("pad_fixo", "pad_condicional") \
-                and (info["tipo"] or "").lower() in _TIPOS_NUMERICOS:
+                and not (tipo_orig not in _TIPOS_NUMERICOS
+                         and int(info["max_length"] or 0) < 0):
             tamanhos = []
             try:
                 if transform.get("tamanho"):
@@ -1230,6 +1242,11 @@ def script_create_table(src_conn, src_db, src_schema, src_table,
                     tamanhos.append(int(caso.get("tamanho") or 0))
                 except (TypeError, ValueError):
                     pass
+            if tipo_orig not in _TIPOS_NUMERICOS:
+                largura = int(info["max_length"] or 0)
+                if tipo_orig in ("nchar", "nvarchar"):
+                    largura //= 2  # max_length de N* é em BYTES
+                tamanhos.append(largura)
             n = max((t for t in tamanhos if t > 0), default=50)
             tipo_sql = f"VARCHAR({n})"
 
