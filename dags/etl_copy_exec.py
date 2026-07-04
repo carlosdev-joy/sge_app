@@ -32,7 +32,11 @@ Fluxo:
      aritmética; date/datetime por dias) — semiabertas [a, b), última fechada;
      coluna TEXTO (MIN/MAX chegam como str): se MIN e MAX forem hexadecimais
      (ex.: PK CHAR(32) de hash MD5) → modo HEX, faixas LEXICOGRÁFICAS
-     sargáveis por prefixo hex de 2 chars (bulk_copy.faixas_hex); senão →
+     sargáveis por prefixo hex de 2 chars (bulk_copy.faixas_hex) — as
+     fronteiras TEXTO vão INLINE como literais varchar seguros
+     (bulk_copy.sql_literal): parametrizadas, o pymssql interpola str como
+     N'...' e a precedência de tipos converte a COLUNA char/varchar →
+     predicado NÃO-sargável, full scan por faixa (incidente 2026-07-03); senão →
      modo HASH, faixas ABS(CHECKSUM(col)) % N = i (NÃO sargável — cada
      stream varre a origem filtrando; aviso no log), registradas como
      valor_ini='#HASH', valor_fim='i/N'. Faixa extra IS NULL
@@ -42,7 +46,16 @@ Fluxo:
      faixa lê por streaming (fetchmany) e grava por bulk_write, com progresso
      incremental atômico best-effort e checagem de cancelamento a cada 5 lotes;
      no engine server-side cada faixa vira UMA instrução INSERT...SELECT
-     executada na conexão de origem (progresso e cancelamento por FAIXA);
+     executada na conexão de origem, e as faixas rodam SEQUENCIALMENTE
+     (_workers_efetivos → 1): INSERT...SELECT WITH (TABLOCK) concorrentes na
+     MESMA tabela destino só se bloqueiam/deadlockam (lock X de tabela) — e
+     faixas curtas em série também evitam que firewall/rede derrube a conexão
+     ociosa de uma instrução única muito longa (incidente 2026-07-03). O
+     cancelamento server-side é REAL: cada faixa registra o @@SPID da sessão
+     (_RegistroSpids) e uma thread vigia (_vigiar_cancelamento) mata (KILL,
+     best-effort) as sessões em andamento quando o status vira 'cancelando';
+     se a CONEXÃO morre com a instrução em curso (rede/KILL — _conexao_morta),
+     a sessão órfã é finalizada no servidor para não deixar locks pendurados;
      no engine bcp_native cada faixa vira um PIPE de processos
      ``bcp queryout → bcp in`` (formato nativo, C nas duas pontas) — as
      fronteiras vão INLINE como literais seguros (bulk_copy.sql_literal, o
@@ -62,6 +75,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
@@ -81,6 +95,12 @@ LOCAL_TZ      = "America/Sao_Paulo"
 
 # Checagem de cancelamento (etl_copy_exec.status='cancelando') a cada N lotes
 CHECK_CANCEL_A_CADA_LOTES = 5
+
+# Engine server-side: intervalo (s) da thread vigia que confere 'cancelando'
+# e mata (KILL) as sessões das faixas em andamento — um INSERT...SELECT em
+# curso não responde a cancelamento cooperativo (incidente 2026-07-03:
+# cancelar deixava a sessão rodando por horas segurando locks no destino).
+CANCEL_POLL_SEG = 10
 
 default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
 
@@ -374,8 +394,9 @@ def _montar_faixas(hook, src, job, exec_id, streams):
     para o pymssql, sem formatação % (nenhum escape de '%' necessário aqui).
 
     Retorna a lista de faixas com os valores TIPADOS em memória (int/Decimal/
-    date/datetime; str no modo HEX de partição texto) para o WHERE
-    parametrizado — valor_ini/valor_fim no banco são apenas a representação
+    date/datetime; str no modo HEX de partição texto) para o WHERE da faixa
+    (numéricas/data parametrizadas; TEXTO inline como literal sargável) —
+    valor_ini/valor_fim no banco são apenas a representação
     em texto para a UI. MIN/MAX string (pymssql devolve str para colunas
     char/varchar/nchar/nvarchar) → _faixas_texto decide entre HEX (faixas
     lexicográficas sargáveis) e HASH (ABS(CHECKSUM) % N, marcadas com
@@ -443,9 +464,13 @@ def _sql_da_faixa(job, faixa):
     (faixa única, IS NULL e modo HASH) o SQL vai cru, sem formatação — o
     ``%`` do módulo do hash NÃO precisa (nem pode) ser escapado.
 
-    Faixas por intervalo (numéricas/data e modo HEX de texto) vão SEMPRE
-    parametrizadas — as fronteiras (inclusive strings) nunca são concatenadas
-    no SQL. No modo HASH o WHERE usa só inteiros construídos internamente
+    Faixas por intervalo NUMÉRICAS/DATA vão parametrizadas (o pymssql formata
+    números e datas em literais sargáveis). Fronteiras TEXTO (modo HEX) vão
+    INLINE como literais varchar seguros (bulk_copy.sql_literal, o mesmo do
+    bcp): parametrizadas, o pymssql interpola str como N'...' (NVARCHAR) e a
+    precedência de tipos converte a COLUNA char/varchar — o predicado deixa
+    de ser sargável e cada faixa vira full scan (incidente 2026-07-03).
+    No modo HASH o WHERE usa só inteiros construídos internamente
     (i, N em faixa['hash']) + IS NOT NULL, que mantém os NULLs exclusivos da
     faixa IS NULL (range_index=-1), como nas comparações por intervalo."""
     part_q = (bulk_copy.quote_ident(job["particao_coluna"])
@@ -460,8 +485,13 @@ def _sql_da_faixa(job, faixa):
         return (f"SELECT * FROM ({job['select_sql']}) AS src "
                 f"WHERE {part_q} IS NOT NULL "
                 f"AND ABS(CHECKSUM({part_q})) % {int(n)} = {int(i)}"), None
-    escaped = job["select_sql"].replace("%", "%%")
     op_fim = "<=" if faixa.get("ultima") else "<"
+    if isinstance(faixa["ini"], str) or isinstance(faixa["fim"], str):
+        # Fronteiras TEXTO inline (sem parâmetros) → SQL cru, sem escape de %
+        return (f"SELECT * FROM ({job['select_sql']}) AS src "
+                f"WHERE {part_q} >= {bulk_copy.sql_literal(faixa['ini'])} "
+                f"AND {part_q} {op_fim} {bulk_copy.sql_literal(faixa['fim'])}"), None
+    escaped = job["select_sql"].replace("%", "%%")
     sql = (f"SELECT * FROM ({escaped}) AS src "
            f"WHERE {part_q} >= %s AND {part_q} {op_fim} %s")
     return sql, (faixa["ini"], faixa["fim"])
@@ -503,9 +533,12 @@ def _insert_da_faixa(job, faixa, dst_columns):
     MESMA lógica/escapes do _sql_da_faixa: quando a faixa vai parametrizada
     (%s), o pymssql aplica formatação estilo % no SQL inteiro — qualquer
     ``%`` literal do select_sql precisa virar ``%%``; sem parâmetros
-    (faixa única / IS NULL / modo HASH) o SQL segue cru — o ``%`` do módulo
-    do hash fica literal, sem escape. Fronteiras de intervalo (inclusive as
-    strings do modo HEX) vão SEMPRE como parâmetros."""
+    (faixa única / IS NULL / modo HASH / fronteiras TEXTO inline) o SQL segue
+    cru — o ``%`` do módulo do hash fica literal, sem escape. Fronteiras
+    NUMÉRICAS/DATA vão como parâmetros; fronteiras TEXTO (modo HEX) vão
+    INLINE como literais varchar seguros (bulk_copy.sql_literal) — via
+    parâmetro o pymssql interpolaria N'...' e o predicado perderia a
+    sargabilidade na coluna char/varchar (incidente 2026-07-03)."""
     part_q = (bulk_copy.quote_ident(job["particao_coluna"])
               if job["particao_coluna"] else None)
     if faixa.get("unica"):
@@ -517,6 +550,12 @@ def _insert_da_faixa(job, faixa, dst_columns):
         select_sql = job["select_sql"]  # sem parâmetros → SQL cru, sem escape
         where = (f"{part_q} IS NOT NULL "
                  f"AND ABS(CHECKSUM({part_q})) % {int(n)} = {int(i)}")
+        params = None
+    elif isinstance(faixa["ini"], str) or isinstance(faixa["fim"], str):
+        select_sql = job["select_sql"]  # sem parâmetros → SQL cru, sem escape
+        op_fim = "<=" if faixa.get("ultima") else "<"
+        where = (f"{part_q} >= {bulk_copy.sql_literal(faixa['ini'])} "
+                 f"AND {part_q} {op_fim} {bulk_copy.sql_literal(faixa['fim'])}")
         params = None
     else:
         select_sql = job["select_sql"].replace("%", "%%")
@@ -551,7 +590,140 @@ def _status_exec(prog, exec_id):
         return None
 
 
-def _copiar_faixa(faixa, job, exec_id, alvo, src_air, dst_air):
+def _workers_efetivos(engine, streams, n_faixas):
+    """Concorrência efetiva do pool de faixas (função PURA).
+
+    Engine server-side → SEMPRE 1: cada faixa é um INSERT...SELECT
+    WITH (TABLOCK) na MESMA tabela destino — TABLOCK pega lock exclusivo de
+    tabela, então N sessões concorrentes só se bloqueiam entre si
+    (serialização + deadlock 1205, incidente 2026-07-03). Sequencial mantém
+    o minimal logging do TABLOCK e, com faixas sargáveis, cada instrução é
+    curta — o que também evita a queda da conexão ociosa por firewall/rede
+    em instruções únicas muito longas. Demais engines (streaming/bcp): as
+    faixas paralelizam de verdade → min(streams, n_faixas)."""
+    if engine == bulk_copy.ENGINE_SERVER_SIDE:
+        return 1
+    return max(1, min(int(streams or 1), int(n_faixas or 1)))
+
+
+# Assinaturas (substring, caixa baixa) de erro pymssql/DB-Lib de CONEXÃO morta
+# — rede caiu ou a sessão sofreu KILL. Erros SQL comuns (constraint, deadlock
+# 1205 etc.) chegam com a conexão VIVA e não casam com nenhuma delas.
+_SINAIS_CONEXAO_MORTA = (
+    "dbprocess is dead",            # DB-Lib 20047
+    "connection is closed",
+    "connection reset",
+    "read from the server failed",  # DB-Lib 20004
+    "write to the server failed",   # DB-Lib 20006
+    "adaptive server connection timed out",
+    "severed the connection",       # KILL: o servidor encerrou a conexão
+)
+
+
+def _conexao_morta(exc) -> bool:
+    """True se a exceção indicar que a CONEXÃO com o SQL Server morreu com a
+    instrução em curso (rede/firewall derrubou o TCP ou a sessão sofreu KILL).
+    Nesses casos a sessão pode ficar ÓRFÃ no servidor segurando locks — o
+    chamador dispara a limpeza best-effort. Função PURA (casa por substring;
+    o pymssql embute o texto DB-Lib na mensagem da exceção)."""
+    txt = str(exc).lower()
+    return any(s in txt for s in _SINAIS_CONEXAO_MORTA)
+
+
+class _RegistroSpids:
+    """Registro thread-safe faixa→@@SPID das sessões server-side ATIVAS.
+
+    Cada faixa registra o SPID da sua conexão antes do INSERT...SELECT e
+    remove ao terminar; a thread vigia (_vigiar_cancelamento) lê os ativos
+    para matar as sessões quando a execução vira 'cancelando'."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._spids = {}
+
+    def registrar(self, range_id, spid):
+        with self._lock:
+            self._spids[range_id] = int(spid)
+
+    def remover(self, range_id):
+        with self._lock:
+            self._spids.pop(range_id, None)
+
+    def ativos(self) -> dict:
+        with self._lock:
+            return dict(self._spids)
+
+
+def _matar_spids(air_conn, database, spids):
+    """KILL best-effort das sessões dadas no servidor da connection.
+
+    Abre uma conexão de CONTROLE própria (a conexão da faixa está ocupada ou
+    morta). Cada KILL roda isolado — sessão já finalizada ou login sem
+    permissão (KILL exige ALTER ANY CONNECTION) viram aviso no log com
+    orientação, nunca exceção para o chamador."""
+    conn = None
+    try:
+        conn = bulk_copy.open_src_conn(air_conn, database, query_timeout=30)
+        cur = conn.cursor()
+        for spid in sorted({int(s) for s in spids}):
+            try:
+                cur.execute(f"KILL {spid}")
+                print(f"[COPY] KILL {spid} enviado (sessão da faixa finalizada "
+                      "no servidor).")
+            except Exception as e:
+                print(f"[COPY] Aviso: KILL {spid} falhou ({e}) — se a sessão "
+                      "seguir ativa, finalize-a manualmente (sys.dm_exec_sessions "
+                      "WHERE program_name='orquestra-copia-dados'; KILL exige "
+                      "ALTER ANY CONNECTION).")
+        cur.close()
+    except Exception as e:
+        print(f"[COPY] Aviso: não foi possível conectar para o KILL: {e}")
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+
+
+def _vigiar_cancelamento(exec_id, src_air, src_database, spids, stop_evt):
+    """Thread vigia do engine server-side: a cada CANCEL_POLL_SEG confere o
+    status da execução e, em 'cancelando', mata (KILL best-effort) as sessões
+    das faixas em andamento no servidor de ORIGEM — um INSERT...SELECT em
+    curso não responde a cancelamento cooperativo; sem o KILL, cancelar
+    deixava a instrução rodando por horas segurando locks no destino
+    (incidente 2026-07-03). Segue vigiando até stop_evt: faixas novas não
+    iniciam (o worker checa o status antes de cada faixa) e um KILL repetido
+    em sessão já morta é só aviso no log."""
+    prog = None
+    try:
+        prog = _hook().get_conn()
+        prog.autocommit(True)
+    except Exception as e:
+        print(f"[COPY] Aviso: vigia de cancelamento sem conexão de progresso "
+              f"({e}) — cancelamento volta à granularidade de faixa.")
+        return
+    try:
+        while not stop_evt.wait(CANCEL_POLL_SEG):
+            try:
+                if _status_exec(prog, exec_id) != "cancelando":
+                    continue
+                ativos = spids.ativos()
+                if ativos:
+                    print(f"[COPY] Cancelamento solicitado — matando "
+                          f"{len(ativos)} sessão(ões) server-side: "
+                          f"SPID {sorted(ativos.values())}")
+                    _matar_spids(src_air, src_database, ativos.values())
+            except Exception as e:
+                print(f"[COPY] Aviso: vigia de cancelamento: {e}")
+    finally:
+        try:
+            prog.close()
+        except Exception:
+            pass
+
+
+def _copiar_faixa(faixa, job, exec_id, alvo, src_air, dst_air, spids=None):
     """Copia UMA faixa, com conexões PRÓPRIAS de origem, destino e progresso.
 
     ``alvo`` = contexto de bulk_copy.prepare_bulk_target (engine efetivo,
@@ -565,9 +737,13 @@ def _copiar_faixa(faixa, job, exec_id, alvo, src_air, dst_air):
     executada DENTRO do SQL Server, numa única conexão pymssql na ORIGEM
     (autocommit; query_timeout=0 — a instrução pode rodar dezenas de
     minutos). Nada trafega pelo worker; o progresso é UMA atualização ao
-    final da faixa (cursor.rowcount) e o CANCELAMENTO tem granularidade de
-    FAIXA: o status 'cancelando' é checado antes de iniciar cada faixa —
-    uma instrução já em andamento NÃO é interrompida.
+    final da faixa (cursor.rowcount). CANCELAMENTO: além do check de status
+    antes de cada faixa, o @@SPID da sessão é registrado em ``spids``
+    (_RegistroSpids) e a thread vigia mata a sessão em andamento quando a
+    execução vira 'cancelando' — o erro resultante é reclassificado como
+    'cancelado' no handler. Se a CONEXÃO morrer com a instrução em curso
+    (rede/firewall/KILL — _conexao_morta), a sessão órfã é finalizada no
+    servidor (KILL best-effort) para não deixar locks pendurados no destino.
 
     Retorna {"range_id", "range_index", "status", "rows", "erro_msg"} — nunca
     levanta exceção (o desfecho vai no dicionário e é persistido na faixa)."""
@@ -596,15 +772,47 @@ def _copiar_faixa(faixa, job, exec_id, alvo, src_air, dst_air):
                                           query_timeout=0)
             sql, params = _insert_da_faixa(job, faixa, alvo["columns"])
             cur = src.cursor()
+            spid = None
             try:
-                if params:
-                    cur.execute(sql, params)
-                else:
-                    cur.execute(sql)
+                try:
+                    # @@SPID da sessão ANTES do INSERT: é o que permite ao
+                    # vigia matar a instrução no cancelamento e a este worker
+                    # limpar a sessão órfã se a conexão morrer.
+                    cur.execute("SELECT @@SPID")
+                    row = cur.fetchone()
+                    spid = int(row[0]) if row else None
+                    if spids is not None and spid:
+                        spids.registrar(faixa["id"], spid)
+                except Exception as e:
+                    print(f"[COPY] Aviso: sem @@SPID da faixa "
+                          f"{faixa['range_index']} ({e}) — cancelamento desta "
+                          "faixa volta à granularidade de faixa.")
+                try:
+                    if params:
+                        cur.execute(sql, params)
+                    else:
+                        cur.execute(sql)
+                except Exception as e:
+                    if spid and _conexao_morta(e):
+                        # Conexão caiu com o INSERT em curso (rede/firewall
+                        # derruba TCP ocioso de instrução longa, ou KILL do
+                        # cancelamento): a sessão pode ter ficado órfã no
+                        # servidor segurando locks no destino — finaliza.
+                        _matar_spids(src_air, job["src_database"], [spid])
+                        raise RuntimeError(
+                            f"{e} — a conexão caiu durante o INSERT...SELECT "
+                            "da faixa (instruções server-side longas podem ser "
+                            "derrubadas por timeout de rede/firewall); a sessão "
+                            f"SPID {spid} foi finalizada no servidor "
+                            "(best-effort) para não deixar locks pendurados."
+                        ) from e
+                    raise
                 # rowcount do cursor: o pymssql preenche para INSERT (um
                 # SELECT @@ROWCOUNT separado perderia o valor no autocommit).
                 copiadas = int(cur.rowcount if cur.rowcount is not None else -1)
             finally:
+                if spids is not None:
+                    spids.remover(faixa["id"])
                 cur.close()
             if copiadas < 0:
                 print(f"[COPY] Faixa {faixa['range_index']}: rowcount "
@@ -703,6 +911,17 @@ def _copiar_faixa(faixa, job, exec_id, alvo, src_air, dst_air):
     except Exception as e:
         resultado["erro_msg"] = str(e)[:4000]
         print(f"[COPY] Faixa {faixa['range_index']} ERRO: {e}")
+        # Sessão morta pelo KILL do cancelamento chega aqui como exceção de
+        # conexão — se a execução está 'cancelando', o desfecho da faixa é
+        # 'cancelado' (ação do usuário), não 'erro'.
+        try:
+            if prog is not None and _status_exec(prog, exec_id) == "cancelando":
+                resultado["status"] = "cancelado"
+                resultado["erro_msg"] = None
+                print(f"[COPY] Faixa {faixa['range_index']}: erro durante "
+                      "cancelamento — registrada como cancelada.")
+        except Exception:
+            pass
     finally:
         for c in (src, dst):
             try:
@@ -930,15 +1149,41 @@ def executar_copia(**context):
                            + (" (fechada)" if f["ultima"] else ""))
             print(f"  #{f['range_index']}: {rotulo}")
 
-        with ThreadPoolExecutor(max_workers=min(streams, len(faixas))) as pool:
-            futuros = [pool.submit(_copiar_faixa, f, job, exec_id, alvo,
-                                   src_air, dst_air) for f in faixas]
-            for fut in as_completed(futuros):
-                try:
-                    resultados.append(fut.result())
-                except Exception as e:  # defensivo — o worker já captura tudo
-                    resultados.append({"range_index": None, "status": "erro",
-                                       "rows": 0, "erro_msg": str(e)[:4000]})
+        workers = _workers_efetivos(engine, streams, len(faixas))
+        if workers < min(streams, len(faixas)):
+            print("[COPY] Engine server-side: faixas executadas "
+                  "SEQUENCIALMENTE (INSERT...SELECT WITH (TABLOCK) "
+                  "concorrentes na mesma tabela destino se bloqueiam/"
+                  "deadlockam; em série, cada instrução é curta e o TABLOCK "
+                  "mantém o minimal logging).")
+
+        # Vigia de cancelamento (só server-side): mata as sessões das faixas
+        # em andamento quando o status vira 'cancelando' — os demais engines
+        # já cancelam cooperativamente por lote/linha.
+        spids = _RegistroSpids()
+        vigia_stop = threading.Event()
+        vigia = None
+        if engine == bulk_copy.ENGINE_SERVER_SIDE:
+            vigia = threading.Thread(
+                target=_vigiar_cancelamento,
+                args=(exec_id, src_air, job["src_database"], spids, vigia_stop),
+                daemon=True, name=f"copy-cancel-{exec_id}")
+            vigia.start()
+
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futuros = [pool.submit(_copiar_faixa, f, job, exec_id, alvo,
+                                       src_air, dst_air, spids) for f in faixas]
+                for fut in as_completed(futuros):
+                    try:
+                        resultados.append(fut.result())
+                    except Exception as e:  # defensivo — o worker já captura tudo
+                        resultados.append({"range_index": None, "status": "erro",
+                                           "rows": 0, "erro_msg": str(e)[:4000]})
+        finally:
+            vigia_stop.set()
+            if vigia is not None:
+                vigia.join(timeout=CANCEL_POLL_SEG + 5)
 
         erros    = [r for r in resultados if r["status"] == "erro"]
         cancels  = [r for r in resultados if r["status"] == "cancelado"]
