@@ -5,14 +5,17 @@ tabelas entre servidores SQL Server com alta performance:
 
   - resolve_engine()         → melhor engine de escrita STREAMING disponível,
                                nesta ordem:
-                               bcp nativo (mssql-tools18, pipe queryout→in)
+                               bcp nativo (mssql-tools18, staging em disco)
                                → pymssql Connection.bulk_copy (TDS bulk load)
                                → pyodbc + fast_executemany (se driver ODBC presente)
                                → pymssql executemany (último recurso, com warning);
-  - ENGINE_BCP               → engine "bcp_native": leitor ``bcp queryout``
-                               e escritor ``bcp in`` conectados por PIPE
-                               (formato NATIVO, sem arquivo em disco) — C nas
-                               duas pontas; helpers: preparar_bcp(),
+  - ENGINE_BCP               → engine "bcp_native": ``bcp queryout`` exporta
+                               a faixa (formato NATIVO) para um ARQUIVO de
+                               staging em disco e ``bcp in`` o importa —
+                               NUNCA pipe/FIFO (o bcp in desalinha o stream
+                               nativo em leituras não-seekáveis e perde
+                               linhas em SILÊNCIO — incidente 2026-07-04);
+                               helpers: preparar_bcp(),
                                probe_bcp(), copiar_faixa_bcp() e as funções
                                PURAS sql_literal(), redigir_cmd(),
                                montar_cmd_bcp_queryout/in() e
@@ -56,7 +59,7 @@ import os
 import re
 import shutil
 import subprocess
-import threading
+import tempfile
 from collections import deque
 from datetime import date, datetime
 from decimal import Decimal
@@ -218,8 +221,9 @@ def _melhor_driver_odbc():
 def resolve_engine(incluir_bcp: bool = True) -> str:
     """Detecta o melhor engine de escrita disponível no worker.
 
-    0. bcp nativo (mssql-tools18) — pipe ``queryout → in`` em formato NATIVO,
-       C nas duas pontas (10–50× o streaming Python por stream);
+    0. bcp nativo (mssql-tools18) — ``queryout`` → arquivo de staging →
+       ``in``, formato NATIVO, C nas duas pontas (10–50× o streaming Python
+       por stream; custo: a faixa toca disco no worker);
        ``incluir_bcp=False`` pula esta etapa — usado nos fallbacks de runtime
        (probe de conexão/TLS falhou ou mapeamento posicional inseguro);
     1. pymssql Connection.bulk_copy (pymssql>=2.2 — protocolo TDS bulk load);
@@ -392,9 +396,10 @@ def montar_cmd_bcp_queryout(bcp_path, select_sql, host, port, database,
     """Comando (lista argv, SEM shell) do LEITOR ``bcp <query> queryout``:
     formato NATIVO (``-n``, tipos binários — o desvio de codepage do caminho
     pymssql NÃO se aplica; nunca -c/-w) e ``-k`` (keep nulls). O ``datafile``
-    é a ponta de escrita do pipe (``/dev/fd/N``) — NUNCA ``/dev/stdout``
-    em produção, pois as MENSAGENS do bcp também saem no stdout e
-    corromperiam o fluxo de dados. Função PURA (não executa nada)."""
+    é o ARQUIVO de staging em disco (ou /dev/null no probe) — NUNCA um
+    pipe/FIFO: o ``bcp in`` da outra ponta desalinha o formato nativo em
+    leituras não-seekáveis e perde linhas em silêncio (incidente
+    2026-07-04). Função PURA (não executa nada)."""
     cmd = [str(bcp_path), str(select_sql), "queryout", str(datafile),
            "-S", f"{host},{int(port or 1433)}", "-d", str(database),
            "-U", str(user), "-P", str(password or ""), "-n", "-k"]
@@ -404,19 +409,23 @@ def montar_cmd_bcp_queryout(bcp_path, select_sql, host, port, database,
 
 
 def montar_cmd_bcp_in(bcp_path, dst_schema, dst_table, host, port, database,
-                      user, password, batch_size, datafile="/dev/stdin",
+                      user, password, batch_size, datafile,
                       trust_cert=True, tablock=False):
     """Comando (lista argv, SEM shell) do ESCRITOR ``bcp <tabela> in``:
     formato nativo + keep nulls, ``-b`` (lote → progresso por linha no
-    stdout), ``-m 0`` (para no primeiro erro de conversão) e, quando o
-    binário suportar, ``-h TABLOCK`` (minimal logging). A tabela vai em DUAS
-    partes ``[schema].[tabela]`` + ``-d`` — a doc do bcp PROÍBE nome em 3
-    partes junto com ``-d`` (database duas vezes). Função PURA."""
+    stdout), ``-m 1`` (aborta com exit != 0 no PRIMEIRO erro de linha —
+    ATENÇÃO: ``-m 0`` significa erros ILIMITADOS tolerados com exit 0, NÃO
+    "para no primeiro erro"; comprovado empiricamente no 18.6.2.1, parte do
+    incidente 2026-07-04) e, quando o binário suportar, ``-h TABLOCK``
+    (minimal logging). O ``datafile`` é o MESMO arquivo de staging do
+    queryout (nunca pipe/FIFO). A tabela vai em DUAS partes
+    ``[schema].[tabela]`` + ``-d`` — a doc do bcp PROÍBE nome em 3 partes
+    junto com ``-d`` (database duas vezes). Função PURA."""
     tabela = f"{quote_ident(dst_schema)}.{quote_ident(dst_table)}"
     cmd = [str(bcp_path), tabela, "in", str(datafile),
            "-S", f"{host},{int(port or 1433)}", "-d", str(database),
            "-U", str(user), "-P", str(password or ""), "-n", "-k",
-           "-b", str(int(batch_size)), "-m", "0"]
+           "-b", str(int(batch_size)), "-m", "1"]
     if trust_cert:
         cmd.append("-u")
     if tablock:
@@ -484,45 +493,39 @@ def probe_bcp(src_air, src_db, dst_air, dst_db):
     return None
 
 
-def _drenar_stream(stream, destino):
-    """Drena um stream de texto de subprocesso para um deque LIMITADO
-    (thread daemon) — evita deadlock por buffer de pipe cheio enquanto o
-    loop principal lê o progresso do escritor."""
-    try:
-        for linha in stream:
-            destino.append(linha.rstrip("\n"))
-    except Exception:
-        pass
-
-
 def copiar_faixa_bcp(bcp_ctx, select_sql, src_air, src_db, dst_air, dst_db,
                      dst_schema, dst_table, batch_size,
                      on_lote=None, deve_cancelar=None) -> dict:
-    """Copia UMA faixa com o utilitário nativo bcp: leitor ``queryout``
-    (formato NATIVO) conectado por PIPE anônimo ao escritor ``in`` — nada
-    toca disco e o C roda nas duas pontas.
+    """Copia UMA faixa com o utilitário nativo bcp em DUAS fases, via
+    ARQUIVO de staging em disco: ``bcp queryout`` exporta a faixa (formato
+    NATIVO) para o arquivo e ``bcp in`` o importa no destino.
 
-    Plumbing: o datafile do leitor é ``/dev/fd/N`` (ponta de escrita de um
-    ``os.pipe()``, herdada via ``pass_fds``) e o do escritor é
-    ``/dev/stdin`` — assim as MENSAGENS de cada bcp ficam no stdout normal,
-    separadas do fluxo de dados. Sem ``shell=True`` (argv em lista).
+    Por que arquivo e NUNCA pipe/FIFO (incidente 2026-07-04): em stream
+    não-seekável o ``bcp in`` faz leituras curtas e desalinha o formato
+    nativo — linhas são descartadas/corrompidas em SILÊNCIO e o processo
+    ainda sai com exit 0 (reproduzido com mssql-tools 18.6.2.1: via pipe,
+    11.818 de 200.000 linhas chegaram; via arquivo, 200.000/200.000). Custo
+    aceito: a faixa toca disco no worker — o diretório vem de
+    ``COPY_BCP_TMPDIR`` (default: tmp do sistema), o espaço livre é logado
+    antes do export e o arquivo é SEMPRE removido no ``finally``. Partição
+    em N faixas divide o staging em N arquivos menores (um por faixa em
+    andamento).
 
-    Progresso: cada linha "N rows sent ... Total sent: M" do escritor vira
-    ``on_lote(delta)`` (best-effort) e uma checagem de ``deve_cancelar()``
-    (True → ``terminate()`` nos DOIS processos, faixa 'cancelado'). A
-    granularidade depende do flush do stdout do bcp — best-effort, como o
-    progresso incremental atual. O "N rows copied." final do escritor é o
-    total de RECONCILIAÇÃO da faixa.
+    Progresso/cancelamento: na fase de EXPORT cada linha de progresso do
+    leitor checa ``deve_cancelar()`` (True → terminate, faixa 'cancelado');
+    na fase de IMPORT cada linha "N rows sent ... Total sent: M" do escritor
+    vira ``on_lote(delta)`` (best-effort) além da checagem de cancelamento.
+    A granularidade depende do flush do stdout do bcp.
 
     Sucesso exige, ALÉM do exit 0 nas duas pontas, a RECONCILIAÇÃO dos
     totais: o "N rows copied." do LEITOR (queryout) tem que bater com o do
     escritor — bcp pode sair 0 sem ter movido nada (incidente 2026-07-04).
 
-    Falha (exit != 0 em qualquer ponta): stderr/stdout capturados (senha
-    redigida, truncado em 4000) → {"status": "erro"}; o PAR do pipe é morto
-    (leitor terminado se o escritor falhou; leitor que morre gera EOF/EPIPE
-    no escritor naturalmente). Sem timeout próprio (faixas longas) — o teto
-    é o execution_timeout da task (6h).
+    Falha (exit != 0 em qualquer ponta): a cauda do STDOUT do processo entra
+    na erro_msg (os erros de linha do bcp saem no stdout, não no stderr) +
+    stderr do escritor (senha redigida, truncado em 4000) →
+    {"status": "erro"}. Sem timeout próprio (faixas longas) — o teto é o
+    execution_timeout da task (6h).
 
     Trade-off ACEITO do v1: a senha vai em ``-P`` no argv dos processos bcp
     — ela NUNCA aparece em log (redigir_cmd) nem em mensagem persistida
@@ -542,132 +545,145 @@ def copiar_faixa_bcp(bcp_ctx, select_sql, src_air, src_db, dst_air, dst_db,
     total_lote, total_final = 0, None
     cancelada = False
     saida_leitor = deque(maxlen=400)
+    saida_escritor = deque(maxlen=400)
     err_escritor = ""
 
-    r_fd, w_fd = os.pipe()
+    def _cauda(linhas, n=8):
+        return " | ".join(list(linhas)[-n:])
+
+    def _esperar(proc, curto):
+        try:
+            proc.wait(timeout=120 if curto else None)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=30)
+            except Exception:
+                pass
+
+    tmp_dir = os.environ.get("COPY_BCP_TMPDIR") or None
+    fd, staging = tempfile.mkstemp(prefix="orq_copy_bcp_", suffix=".dat",
+                                   dir=tmp_dir)
+    os.close(fd)
     leitor = escritor = None
     try:
+        # ---------- fase 1: EXPORT (queryout → arquivo de staging) ----------
         cmd_leitor = montar_cmd_bcp_queryout(
             bcp_ctx["path"], select_sql, host_s, port_s, src_db,
-            user_s, senha_s, datafile=f"/dev/fd/{w_fd}", trust_cert=trust)
-        cmd_escritor = montar_cmd_bcp_in(
-            bcp_ctx["path"], dst_schema, dst_table, host_d, port_d, dst_db,
-            user_d, senha_d, batch_size, datafile="/dev/stdin",
-            trust_cert=trust, tablock=tablock)
+            user_s, senha_s, datafile=staging, trust_cert=trust)
         log.info("[COPY][bcp] leitor:   %s", " ".join(redigir_cmd(cmd_leitor)))
-        log.info("[COPY][bcp] escritor: %s", " ".join(redigir_cmd(cmd_escritor)))
+        try:
+            livre_gb = shutil.disk_usage(os.path.dirname(staging)).free / 1e9
+            log.info("[COPY][bcp] staging: %s (%.1f GB livres no diretório)",
+                     staging, livre_gb)
+        except Exception:
+            pass
 
         leitor = subprocess.Popen(
             cmd_leitor, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            pass_fds=(w_fd,), text=True, errors="replace")
-        os.close(w_fd)
-        w_fd = -1
-        escritor = subprocess.Popen(
-            cmd_escritor, stdin=r_fd, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, errors="replace")
-        os.close(r_fd)
-        r_fd = -1
-
-        t_leitor = threading.Thread(
-            target=_drenar_stream, args=(leitor.stdout, saida_leitor),
-            daemon=True)
-        t_leitor.start()
-
-        for linha in escritor.stdout:
-            evento = parse_progresso_bcp(linha)
-            if not evento:
-                continue
-            tipo, n = evento
-            if tipo == "total":
-                total_final = n
-                continue
-            delta = n - total_lote
-            total_lote = n
-            if delta > 0 and on_lote is not None:
-                try:
-                    on_lote(delta)
-                except Exception as e:
-                    log.warning("[COPY][bcp] progresso falhou (segue): %s", e)
+            text=True, errors="replace")
+        for linha in leitor.stdout:
+            saida_leitor.append(linha.rstrip("\n"))
             if deve_cancelar is not None and deve_cancelar():
                 cancelada = True
-                for p in (leitor, escritor):
+                try:
+                    leitor.terminate()
+                except Exception:
+                    pass
+                break
+        _esperar(leitor, cancelada)
+
+        if cancelada:
+            status, rows = "cancelado", 0
+        elif leitor.returncode != 0:
+            erro_msg = _redigir_texto(
+                f"bcp queryout exit {leitor.returncode}: "
+                f"{_cauda(saida_leitor)}", (senha_s, senha_d))[:4000]
+        else:
+            leitor_total = total_nas_mensagens(saida_leitor)
+            try:
+                tam_mb = os.path.getsize(staging) / 1e6
+            except Exception:
+                tam_mb = float("nan")
+            log.info("[COPY][bcp] export: %s linha(s), %.1f MB em staging",
+                     leitor_total, tam_mb)
+
+            # ---------- fase 2: IMPORT (arquivo de staging → bcp in) --------
+            cmd_escritor = montar_cmd_bcp_in(
+                bcp_ctx["path"], dst_schema, dst_table, host_d, port_d,
+                dst_db, user_d, senha_d, batch_size, datafile=staging,
+                trust_cert=trust, tablock=tablock)
+            log.info("[COPY][bcp] escritor: %s",
+                     " ".join(redigir_cmd(cmd_escritor)))
+            escritor = subprocess.Popen(
+                cmd_escritor, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, errors="replace")
+            for linha in escritor.stdout:
+                saida_escritor.append(linha.rstrip("\n"))
+                evento = parse_progresso_bcp(linha)
+                if evento:
+                    tipo, n = evento
+                    if tipo == "total":
+                        total_final = n
+                        continue
+                    delta = n - total_lote
+                    total_lote = n
+                    if delta > 0 and on_lote is not None:
+                        try:
+                            on_lote(delta)
+                        except Exception as e:
+                            log.warning("[COPY][bcp] progresso falhou "
+                                        "(segue): %s", e)
+                if deve_cancelar is not None and deve_cancelar():
+                    cancelada = True
                     try:
-                        p.terminate()
+                        escritor.terminate()
                     except Exception:
                         pass
-                break
+                    break
+            try:
+                _, err_escritor = escritor.communicate(
+                    timeout=120 if cancelada else None)
+            except Exception:
+                try:
+                    escritor.kill()
+                    _, err_escritor = escritor.communicate(timeout=30)
+                except Exception:
+                    pass
 
-        try:
-            _, err_escritor = escritor.communicate(
-                timeout=120 if cancelada else None)
-        except Exception:
-            try:
-                escritor.kill()
-                _, err_escritor = escritor.communicate(timeout=30)
-            except Exception:
-                pass
-        # Escritor morreu com erro → mata o par (leitor pode estar no meio
-        # de uma query longa e só notaria o EPIPE na primeira escrita).
-        if escritor.returncode not in (0, None) and leitor.poll() is None:
-            try:
-                leitor.terminate()
-            except Exception:
-                pass
-        try:
-            leitor.wait(timeout=120 if (cancelada or escritor.returncode)
-                        else None)
-        except Exception:
-            try:
-                leitor.kill()
-                leitor.wait(timeout=30)
-            except Exception:
-                pass
-        t_leitor.join(timeout=10)
-
-        rc_l, rc_e = leitor.returncode, escritor.returncode
-        if cancelada:
-            status, rows = "cancelado", total_lote
-        elif rc_l == 0 and rc_e == 0:
-            rows = total_final if total_final is not None else total_lote
-            # RECONCILIAÇÃO leitor × escritor: exit 0 dos dois bcp NÃO prova
-            # que os dados fluíram (incidente 2026-07-04: ambos saíram 0 e o
-            # escritor gravou 0 linha com 1M na origem). O total exportado
-            # pelo leitor ("N rows copied." do queryout) tem que bater com o
-            # gravado pelo escritor — divergência (ou resumo ausente) é ERRO,
-            # com a cauda das mensagens dos DOIS processos para diagnóstico.
-            leitor_total = total_nas_mensagens(saida_leitor)
-            log.info("[COPY][bcp] reconciliação: leitor exportou %s, "
-                     "escritor gravou %s | cauda do leitor: %s",
-                     leitor_total, rows,
-                     _redigir_texto(" | ".join(list(saida_leitor)[-4:]),
-                                    (senha_s, senha_d)))
-            if leitor_total == rows:
-                status = "concluido"
+            if cancelada:
+                status, rows = "cancelado", total_lote
+            elif escritor.returncode == 0:
+                rows = total_final if total_final is not None else total_lote
+                # RECONCILIAÇÃO leitor × escritor: exit 0 dos dois bcp NÃO
+                # prova que os dados fluíram (incidente 2026-07-04: pipe
+                # desalinhado + -m 0 = perda silenciosa com exit 0). O total
+                # exportado pelo leitor tem que bater com o gravado pelo
+                # escritor — divergência (ou resumo ausente) é ERRO, com a
+                # cauda das mensagens dos DOIS processos para diagnóstico.
+                log.info("[COPY][bcp] reconciliação: leitor exportou %s, "
+                         "escritor gravou %s", leitor_total, rows)
+                if leitor_total == rows:
+                    status = "concluido"
+                else:
+                    erro_msg = _redigir_texto(
+                        "bcp terminou sem código de erro, mas os totais "
+                        "divergem: leitor exportou "
+                        f"{leitor_total if leitor_total is not None else 'resumo ausente'} "
+                        f"e o escritor gravou {rows} linha(s). "
+                        f"Mensagens do leitor: {_cauda(saida_leitor) or '(vazio)'} | "
+                        f"Mensagens do escritor: {_cauda(saida_escritor) or '(vazio)'}",
+                        (senha_s, senha_d))[:4000]
             else:
-                status = "erro"
-                cauda_l = " | ".join(list(saida_leitor)[-8:])
-                cauda_e = " | ".join(
+                partes = [f"bcp in exit {escritor.returncode}: "
+                          f"{_cauda(saida_escritor)}"]
+                cauda_err = " | ".join(
                     (err_escritor or "").strip().splitlines()[-4:])
+                if cauda_err:
+                    partes.append(f"stderr: {cauda_err}")
                 erro_msg = _redigir_texto(
-                    "bcp terminou sem código de erro, mas os totais divergem: "
-                    f"leitor exportou {leitor_total if leitor_total is not None else 'resumo ausente'} "
-                    f"e o escritor gravou {rows} linha(s). "
-                    f"Mensagens do leitor: {cauda_l or '(vazio)'}"
-                    + (f" | Mensagens do escritor: {cauda_e}" if cauda_e else ""),
-                    (senha_s, senha_d))[:4000]
-        else:
-            partes = []
-            if rc_e not in (0, None):
-                cauda = "\n".join(
-                    (err_escritor or "").strip().splitlines()[-8:])
-                partes.append(f"bcp in exit {rc_e}: {cauda}")
-            if rc_l not in (0, None):
-                cauda = "\n".join(list(saida_leitor)[-8:])
-                partes.append(f"bcp queryout exit {rc_l}: {cauda}")
-            erro_msg = _redigir_texto(
-                " | ".join(partes) or "bcp falhou sem mensagem de erro",
-                (senha_s, senha_d))[:4000]
-            rows = total_lote
+                    " | ".join(partes), (senha_s, senha_d))[:4000]
+                rows = total_lote
     except Exception as e:
         erro_msg = _redigir_texto(str(e), (senha_s, senha_d))[:4000]
         for p in (leitor, escritor):
@@ -677,12 +693,10 @@ def copiar_faixa_bcp(bcp_ctx, select_sql, src_air, src_db, dst_air, dst_db,
             except Exception:
                 pass
     finally:
-        for fd in (r_fd, w_fd):
-            try:
-                if fd >= 0:
-                    os.close(fd)
-            except Exception:
-                pass
+        try:
+            os.unlink(staging)
+        except Exception:
+            pass
     return {"status": status, "rows": int(rows or 0), "erro_msg": erro_msg}
 
 

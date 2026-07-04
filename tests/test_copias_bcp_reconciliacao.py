@@ -9,6 +9,10 @@ processos bcp saíram com exit 0 sem mover dado nenhum):
     escritor — exit 0 nas duas pontas NÃO basta; o total exportado pelo
     queryout tem que bater com o gravado pelo ``bcp in`` (divergência ou
     resumo ausente → faixa 'erro' com as caudas das mensagens);
+  - CAUSA RAIZ (correção via arquivo de STAGING): o bcp in desalinha o
+    formato nativo em pipe/FIFO (leituras curtas) e perde linhas em silêncio
+    — o engine agora exporta para arquivo em disco (COPY_BCP_TMPDIR),
+    importa do MESMO arquivo e o remove SEMPRE no finally;
   - _classificar_desfecho: defesa em profundidade no nível da EXECUÇÃO —
     nenhuma faixa falhou mas ZERO linha fluiu com rows_total > 0 → 'erro'
     (origem legitimamente vazia segue 'concluido').
@@ -16,8 +20,9 @@ processos bcp saíram com exit 0 sem mover dado nenhum):
 Mesmo harness do test_copias_bcp.py: os módulos das DAGs importam
 pymssql/airflow (indisponíveis aqui), então as funções são EXTRAÍDAS por AST
 e compiladas num namespace controlado. O teste de integração roda o
-copiar_faixa_bcp REAL (os.pipe + subprocess) contra um script que imita o
-protocolo de mensagens do bcp — valida também o plumbing /dev/fd/N.
+copiar_faixa_bcp REAL (subprocess + arquivo de staging) contra um script que
+imita o protocolo de mensagens do bcp — valida também que o staging é sempre
+removido e que COPY_BCP_TMPDIR é honrado.
 """
 from __future__ import annotations
 
@@ -25,9 +30,10 @@ import ast
 import logging
 import os
 import re
+import shutil
 import stat
 import subprocess
-import threading
+import tempfile
 import types
 from collections import deque
 from datetime import date, datetime
@@ -45,7 +51,7 @@ _NOMES_BULK = {
     "quote_ident", "redigir_cmd", "_redigir_texto",
     "montar_cmd_bcp_queryout", "montar_cmd_bcp_in",
     "parse_progresso_bcp", "total_nas_mensagens",
-    "_conn_params", "_drenar_stream", "copiar_faixa_bcp",
+    "_conn_params", "copiar_faixa_bcp",
 }
 
 _NOMES_EXEC = {"_classificar_desfecho"}
@@ -71,7 +77,7 @@ def _extrair(path: Path, nomes: set, ns_extra: dict | None = None) -> dict:
     faltando = nomes - achados
     assert not faltando, f"símbolos não encontrados em {path.name}: {faltando}"
     ns = {"re": re, "os": os, "subprocess": subprocess,
-          "threading": threading, "deque": deque,
+          "shutil": shutil, "tempfile": tempfile, "deque": deque,
           "date": date, "datetime": datetime, "Decimal": Decimal,
           "log": logging.getLogger("test_copias_bcp_reconciliacao")}
     ns.update(ns_extra or {})
@@ -119,8 +125,8 @@ def test_total_nas_mensagens_ausente_eh_none(bc):
 # ══════════════ copiar_faixa_bcp — integração com bcp FALSO ═════════════════
 #
 # O script abaixo imita o PROTOCOLO do bcp real: o leitor ("queryout") grava
-# 1 byte por "linha" no datafile (/dev/fd/N do pipe) e imprime o resumo
-# "N rows copied."; o escritor ("in") lê o stdin até EOF e imprime progresso
+# 1 byte por "linha" no ARQUIVO de staging e imprime o resumo "N rows
+# copied."; o escritor ("in") lê o MESMO arquivo e imprime progresso
 # ("N rows sent to SQL Server. Total sent: N") + resumo. Env vars controlam
 # quantas linhas cada ponta REPORTA — é o que permite simular o incidente
 # (dados não fluem mas ambos saem 0).
@@ -129,6 +135,10 @@ _FAKE_BCP = """#!/usr/bin/env python3
 import os, sys
 
 modo, datafile = sys.argv[2], sys.argv[3]
+tr = os.environ.get("FAKE_BCP_TRACE")
+if tr:
+    with open(tr, "a") as t:
+        t.write(f"{modo} {datafile}\\n")
 if modo == "queryout":
     n = int(os.environ.get("FAKE_BCP_LEITOR_LINHAS", "0"))
     with open(datafile, "wb") as f:
@@ -138,7 +148,8 @@ if modo == "queryout":
     print("Clock Time (ms.) Total     : 1")
     sys.exit(int(os.environ.get("FAKE_BCP_LEITOR_EXIT", "0")))
 else:  # "in"
-    lidas = len(sys.stdin.buffer.read())
+    with open(datafile, "rb") as f:
+        lidas = len(f.read())
     rep = os.environ.get("FAKE_BCP_ESCRITOR_LINHAS")
     n = int(rep) if rep is not None else lidas
     if n:
@@ -149,22 +160,26 @@ else:  # "in"
 
 _ENVS_FAKE = ("FAKE_BCP_LEITOR_LINHAS", "FAKE_BCP_LEITOR_SEM_RESUMO",
               "FAKE_BCP_LEITOR_EXIT", "FAKE_BCP_ESCRITOR_LINHAS",
-              "FAKE_BCP_ESCRITOR_EXIT")
+              "FAKE_BCP_ESCRITOR_EXIT", "FAKE_BCP_TRACE")
 
 
 @pytest.fixture()
 def faixa_bcp(bc, tmp_path, monkeypatch):
     """Executor de UMA faixa contra o bcp falso: ``run(**envs)`` → resultado
-    de copiar_faixa_bcp + lista de deltas do on_lote."""
+    de copiar_faixa_bcp + lista de deltas do on_lote. O staging vai para um
+    diretório DEDICADO (COPY_BCP_TMPDIR) — os testes de limpeza olham nele."""
     fake = tmp_path / "bcp"
     fake.write_text(_FAKE_BCP, encoding="utf-8")
     fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    stg_dir = tmp_path / "staging"
+    stg_dir.mkdir()
     conn = types.SimpleNamespace(host="srv", port=1433,
                                  login="usr", password="s3nh4!")
 
     def run(**envs):
         for e in _ENVS_FAKE:
             monkeypatch.delenv(e, raising=False)
+        monkeypatch.setenv("COPY_BCP_TMPDIR", str(stg_dir))
         for e, v in envs.items():
             monkeypatch.setenv(e, str(v))
         deltas = []
@@ -174,6 +189,7 @@ def faixa_bcp(bc, tmp_path, monkeypatch):
             on_lote=deltas.append)
         return r, deltas
 
+    run.staging_dir = stg_dir
     return run
 
 
@@ -224,6 +240,36 @@ def test_faixa_bcp_exit_nao_zero_segue_erro(faixa_bcp):
     r, _ = faixa_bcp(FAKE_BCP_LEITOR_LINHAS=5, FAKE_BCP_LEITOR_EXIT=1)
     assert r["status"] == "erro"
     assert "bcp queryout exit 1" in r["erro_msg"]
+    r, _ = faixa_bcp(FAKE_BCP_LEITOR_LINHAS=5, FAKE_BCP_ESCRITOR_EXIT=1)
+    assert r["status"] == "erro"
+    assert "bcp in exit 1" in r["erro_msg"]
+
+
+def test_faixa_bcp_staging_em_copy_bcp_tmpdir(faixa_bcp, tmp_path):
+    # O arquivo de staging tem que sair do COPY_BCP_TMPDIR e ser o MESMO
+    # nas duas fases (queryout grava, in lê) — nunca pipe/FIFO/dev.
+    trace = tmp_path / "trace.txt"
+    r, _ = faixa_bcp(FAKE_BCP_LEITOR_LINHAS=3, FAKE_BCP_TRACE=str(trace))
+    assert r["status"] == "concluido"
+    linhas = trace.read_text().splitlines()
+    modos = [l.split()[0] for l in linhas]
+    arquivos = {l.split()[1] for l in linhas}
+    assert modos == ["queryout", "in"]          # export ANTES do import
+    assert len(arquivos) == 1                   # mesmo arquivo nas 2 fases
+    assert arquivos.pop().startswith(str(faixa_bcp.staging_dir))
+
+
+def test_faixa_bcp_staging_sempre_removido(faixa_bcp):
+    # sucesso, divergência e exit != 0: o staging NUNCA fica para trás
+    r, _ = faixa_bcp(FAKE_BCP_LEITOR_LINHAS=5)
+    assert r["status"] == "concluido"
+    assert list(faixa_bcp.staging_dir.iterdir()) == []
+    r, _ = faixa_bcp(FAKE_BCP_LEITOR_LINHAS=5, FAKE_BCP_ESCRITOR_LINHAS=0)
+    assert r["status"] == "erro"
+    assert list(faixa_bcp.staging_dir.iterdir()) == []
+    r, _ = faixa_bcp(FAKE_BCP_LEITOR_LINHAS=5, FAKE_BCP_LEITOR_EXIT=1)
+    assert r["status"] == "erro"
+    assert list(faixa_bcp.staging_dir.iterdir()) == []
 
 
 # ═══════════ _classificar_desfecho — defesa no nível da execução ════════════

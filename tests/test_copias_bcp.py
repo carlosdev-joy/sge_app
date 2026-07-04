@@ -95,9 +95,10 @@ def test_redigir_cmd_nos_comandos_montados(bc):
     """Nenhum comando montado pode conter a senha após a redação."""
     out = bc["montar_cmd_bcp_queryout"](
         "/opt/mssql-tools18/bin/bcp", "SELECT 1", "h", 1433, "db", "u",
-        "Xy'z9!", datafile="/dev/fd/7")
+        "Xy'z9!", datafile="/tmp/stg.dat")
     inn = bc["montar_cmd_bcp_in"](
-        "bcp", "dbo", "T", "h", 1433, "db", "u", "Xy'z9!", 50000)
+        "bcp", "dbo", "T", "h", 1433, "db", "u", "Xy'z9!", 50000,
+        "/tmp/stg.dat")
     for cmd in (out, inn):
         assert "Xy'z9!" in cmd                       # senha vai no argv
         assert "Xy'z9!" not in " ".join(bc["redigir_cmd"](cmd))
@@ -170,18 +171,20 @@ def test_montar_cmd_bcp_queryout_bem_formado(bc):
 def test_montar_cmd_bcp_in_bem_formado(bc):
     cmd = bc["montar_cmd_bcp_in"](
         "bcp", "dbo", "Minha]Tabela", "srv02", 1433, "DB_B", "usr", "pw",
-        75000, trust_cert=True, tablock=True)
+        75000, "/tmp/stg.dat", trust_cert=True, tablock=True)
     assert cmd[1] == "[dbo].[Minha]]Tabela]"   # 2 partes + quote_ident
-    assert cmd[2:4] == ["in", "/dev/stdin"]
+    assert cmd[2:4] == ["in", "/tmp/stg.dat"]  # arquivo de staging, não pipe
     assert cmd[cmd.index("-b") + 1] == "75000"
-    assert cmd[cmd.index("-m") + 1] == "0"     # para no primeiro erro
+    # -m 1 = aborta no PRIMEIRO erro com exit != 0 (-m 0 = erros ILIMITADOS
+    # tolerados com exit 0 — parte do incidente 2026-07-04)
+    assert cmd[cmd.index("-m") + 1] == "1"
     assert cmd[cmd.index("-d") + 1] == "DB_B"  # -d + 2 partes (nunca 3 + -d)
     assert "-n" in cmd and "-k" in cmd and "-u" in cmd
     i = cmd.index("-h")
     assert cmd[i + 1] == "TABLOCK"
     # sem suporte a -h (doc: hints são Windows-only) o hint não é passado
     cmd2 = bc["montar_cmd_bcp_in"]("bcp", "dbo", "T", "h", 1433, "d", "u",
-                                   "p", 1000, tablock=False)
+                                   "p", 1000, "/tmp/stg.dat", tablock=False)
     assert "-h" not in cmd2
 
 
