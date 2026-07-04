@@ -26,7 +26,7 @@ _RAIZ = Path(__file__).parent.parent
 _BULK_COPY = _RAIZ / "dags" / "utils" / "bulk_copy.py"
 
 _NOMES = {"quote_ident", "_TIPOS_NUMERICOS", "_render_sql_type",
-          "script_create_table"}
+          "_COLLATION_RE", "_collate_sql", "script_create_table"}
 
 
 def _extrair(path: Path, nomes: set) -> dict:
@@ -60,7 +60,7 @@ def bc():
 
 class _CursorStub:
     """Cursor pymssql fingido: devolve as linhas do sys.columns da origem
-    (name, tipo, max_length, precision, scale, is_nullable)."""
+    (name, tipo, max_length, precision, scale, is_nullable, collation)."""
 
     def __init__(self, linhas):
         self._linhas = linhas
@@ -97,7 +97,7 @@ def _ddl(bc, linhas, dst_columns, transforms):
 def test_pad_sobre_origem_varchar_alarga_para_o_maior_caso(bc):
     # Incidente 2026-07-04: origem varchar(11) + pad_condicional 14 (CNPJ)
     # nascia varchar(11) → truncation na carga. Agora: VARCHAR(14).
-    ddl = _ddl(bc, [("num_cpf_cnpj", "varchar", 11, 0, 0, True)],
+    ddl = _ddl(bc, [("num_cpf_cnpj", "varchar", 11, 0, 0, True, None)],
                ["num_cpf_cnpj"],
                [{"origem": "num_cpf_cnpj", "transform": _PAD_CNPJ}])
     assert "[num_cpf_cnpj] VARCHAR(14) NULL" in ddl
@@ -106,7 +106,7 @@ def test_pad_sobre_origem_varchar_alarga_para_o_maior_caso(bc):
 def test_pad_menor_que_a_origem_nao_encolhe(bc):
     # pad de 5 sobre varchar(30): valores sem pad continuam passando — a
     # largura NUNCA encolhe abaixo da original.
-    ddl = _ddl(bc, [("codigo", "varchar", 30, 0, 0, False)], ["codigo"],
+    ddl = _ddl(bc, [("codigo", "varchar", 30, 0, 0, False, None)], ["codigo"],
                [{"origem": "codigo",
                  "transform": {"tipo": "pad_fixo", "tamanho": 5}}])
     assert "[codigo] VARCHAR(30) NOT NULL" in ddl
@@ -114,29 +114,59 @@ def test_pad_menor_que_a_origem_nao_encolhe(bc):
 
 def test_pad_sobre_nvarchar_usa_largura_em_chars(bc):
     # max_length de N* é em BYTES (2×chars): nvarchar(12) = 24 bytes.
-    ddl = _ddl(bc, [("doc", "nvarchar", 24, 0, 0, True)], ["doc"],
+    ddl = _ddl(bc, [("doc", "nvarchar", 24, 0, 0, True, None)], ["doc"],
                [{"origem": "doc",
                  "transform": {"tipo": "pad_fixo", "tamanho": 11}}])
     assert "[doc] VARCHAR(12) NULL" in ddl
 
 
 def test_pad_sobre_numerico_mantem_regra_original(bc):
-    ddl = _ddl(bc, [("cpf", "bigint", 8, 19, 0, True)], ["cpf"],
+    ddl = _ddl(bc, [("cpf", "bigint", 8, 19, 0, True, None)], ["cpf"],
                [{"origem": "cpf", "transform": _PAD_CNPJ}])
     assert "[cpf] VARCHAR(14) NULL" in ddl
 
 
 def test_pad_sobre_varchar_max_mantem_o_tipo(bc):
     # (n)varchar(max) (max_length = -1) já comporta o pad — fica como está.
-    ddl = _ddl(bc, [("obs", "varchar", -1, 0, 0, True)], ["obs"],
+    ddl = _ddl(bc, [("obs", "varchar", -1, 0, 0, True, None)], ["obs"],
                [{"origem": "obs",
                  "transform": {"tipo": "pad_fixo", "tamanho": 14}}])
     assert "[obs] VARCHAR(MAX) NULL" in ddl
 
 
 def test_sem_transform_preserva_tipo_original(bc):
-    ddl = _ddl(bc, [("nome", "varchar", 80, 0, 0, True),
-                    ("idade", "int", 4, 10, 0, False)],
+    ddl = _ddl(bc, [("nome", "varchar", 80, 0, 0, True, None),
+                    ("idade", "int", 4, 10, 0, False, None)],
                ["nome", "idade"], [])
     assert "[nome] VARCHAR(80) NULL" in ddl
     assert "[idade] INT NOT NULL" in ddl
+
+
+def test_collation_da_origem_preservada(bc):
+    # Réplica FIEL: coluna texto nasce com a COLLATION da origem (sem isso
+    # ela ganha a collation default do BANCO de destino).
+    ddl = _ddl(bc, [("nome", "varchar", 80, 0, 0, True,
+                     "SQL_Latin1_General_CP1_CI_AS"),
+                    ("idade", "int", 4, 10, 0, False, None)],
+               ["nome", "idade"], [])
+    assert ("[nome] VARCHAR(80) COLLATE SQL_Latin1_General_CP1_CI_AS NULL"
+            in ddl)
+    assert "[idade] INT NOT NULL" in ddl          # sem COLLATE em não-texto
+
+
+def test_collation_mantida_na_coluna_alargada_pelo_pad(bc):
+    ddl = _ddl(bc, [("num_cpf_cnpj", "varchar", 11, 0, 0, True,
+                     "Latin1_General_CI_AI")],
+               ["num_cpf_cnpj"],
+               [{"origem": "num_cpf_cnpj", "transform": _PAD_CNPJ}])
+    assert ("[num_cpf_cnpj] VARCHAR(14) COLLATE Latin1_General_CI_AI NULL"
+            in ddl)
+
+
+def test_collate_sql_guarda_de_identificador(bc):
+    assert bc["_collate_sql"]("Latin1_General_BIN2") == \
+        " COLLATE Latin1_General_BIN2"
+    assert bc["_collate_sql"](None) == ""
+    assert bc["_collate_sql"]("") == ""
+    # nome fora do padrão de identificador nunca vai para o DDL
+    assert bc["_collate_sql"]("x; DROP TABLE t") == ""
