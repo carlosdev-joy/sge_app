@@ -303,16 +303,30 @@ def _graph_has_cycle(adj: dict[str, set[str]]) -> bool:
 
 
 async def _list_mssql_conn_ids() -> set[str] | None:
-    """Conexões MSSQL cadastradas no Airflow. None se a chamada falhar (não bloqueia o save)."""
+    """conn_ids MSSQL cadastrados — UNIÃO de dbo.etl_conexao (fonte da
+    verdade, migration 054) com as Airflow Connections legadas. None se
+    QUALQUER fonte falhar (não bloqueia o save — validação best-effort:
+    uma conexão nativa não pode ser recusada só porque a tabela ou o
+    Airflow estavam indisponíveis no momento)."""
+    ids: set[str] = set()
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("SELECT conn_id FROM dbo.etl_conexao WHERE conn_type = 'mssql'")
+        ids |= {(r[0] or "").strip() for r in cur.fetchall() if (r[0] or "").strip()}
+        cur.close(); conn.close()
+    except Exception:
+        return None
     try:
         async with get_airflow_client() as client:
             r = await client.get("/api/v1/connections?limit=100")
             if not r.is_success:
                 return None
             data = r.json()
-            return {c["connection_id"] for c in data.get("connections", []) if c.get("conn_type") == "mssql"}
+            ids |= {c["connection_id"] for c in data.get("connections", [])
+                    if c.get("conn_type") == "mssql"}
     except Exception:
         return None
+    return ids
 
 
 async def _list_mssql_hosts() -> set[str]:

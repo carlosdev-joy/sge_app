@@ -8,6 +8,7 @@ import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Path
 from fastapi.responses import PlainTextResponse
 
+from db import get_db_conn
 from deps import (
     AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
     get_current_user, require_perm, PERM_EXECUTAR,
@@ -164,19 +165,35 @@ async def list_ssh_connections(_auth: dict = Depends(get_current_user)):
 
 @router.get("/airflow/connections/mssql")
 async def list_mssql_connections(_auth: dict = Depends(get_current_user)):
-    """Lista conexões MSSQL cadastradas no Airflow (conn_type=mssql)."""
+    """Lista conexões MSSQL — UNIÃO de dbo.etl_conexao (fonte da verdade,
+    migration 054) com as cadastradas no Airflow (legadas). Alimenta os
+    selects do nó SQL/decisão (Jobs e FluxoEditor). Cada fonte degrada para
+    vazio de forma independente; conn_id repetido fica com o Orquestra."""
+    conns: dict[str, dict] = {}
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("SELECT conn_id, host, descricao FROM dbo.etl_conexao "
+                    "WHERE conn_type = 'mssql'")
+        for row in cur.fetchall():
+            cid = (row[0] or "").strip()
+            if cid:
+                conns[cid] = {"conn_id": cid, "host": (row[1] or "").strip(),
+                              "schema": "", "description": row[2] or ""}
+        cur.close(); conn.close()
+    except Exception as e:
+        log.warning("Leitura de etl_conexao falhou (%s) — listando só as "
+                    "connections do Airflow", e)
     try:
         async with get_airflow_client() as client:
             r = await client.get("/api/v1/connections?limit=100")
-            if not r.is_success:
-                return {"connections": []}
-            data = r.json()
-            conns = [
-                {"conn_id": c["connection_id"], "host": c.get("host",""), "schema": c.get("schema",""), "description": c.get("description","")}
-                for c in data.get("connections", [])
-                if c.get("conn_type") == "mssql"
-            ]
-            return {"connections": conns}
+            if r.is_success:
+                for c in r.json().get("connections", []):
+                    cid = c.get("connection_id")
+                    if c.get("conn_type") == "mssql" and cid and cid not in conns:
+                        conns[cid] = {"conn_id": cid, "host": c.get("host", ""),
+                                      "schema": c.get("schema", ""),
+                                      "description": c.get("description", "")}
     except Exception as e:
-        log.warning("Erro ao listar conexões MSSQL: %s", e)
-        return {"connections": []}
+        log.warning("Erro ao listar conexões MSSQL do Airflow: %s", e)
+    return {"connections": sorted(conns.values(),
+                                  key=lambda c: c["conn_id"].lower())}

@@ -369,26 +369,41 @@ def _consulta_direta(server: str, database: str, sql: str, params=(),
 
 @router.get("/copias/conexoes", tags=["copias"])
 async def list_conexoes(_auth: dict = Depends(get_current_user)):
-    """Connections MSSQL do Airflow para os selects de origem/destino
-    (mesmo padrão de routers/airflow.py GET /airflow/connections/mssql,
-    acrescentando a porta). Degrada para lista vazia."""
+    """Connections MSSQL para os selects de origem/destino do wizard — UNIÃO
+    de dbo.etl_conexao (fonte da verdade — migration 054) com as Airflow
+    Connections legadas ainda não migradas (mesmo padrão de _list_mssql_hosts
+    e do conn_list do Admin). Cada fonte degrada para vazio de forma
+    independente; conn_id repetido fica com o registro do Orquestra."""
+    conns: dict[str, dict] = {}
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("SELECT conn_id, host, port, descricao FROM dbo.etl_conexao "
+                    "WHERE conn_type = 'mssql'")
+        for r in cur.fetchall():
+            cid = (r[0] or "").strip()
+            if cid:
+                conns[cid] = {"conn_id": cid, "host": (r[1] or "").strip(),
+                              "port": r[2], "schema": "",
+                              "description": r[3] or ""}
+        cur.close(); conn.close()
+    except Exception as e:
+        log.warning("copias: leitura de etl_conexao falhou (%s) — listando "
+                    "só as connections do Airflow", e)
     try:
         async with get_airflow_client() as client:
             r = await client.get("/api/v1/connections?limit=100")
-            if not r.is_success:
-                return {"connections": []}
-            data = r.json()
-            conns = [
-                {"conn_id": c["connection_id"], "host": c.get("host", ""),
-                 "port": c.get("port"), "schema": c.get("schema", ""),
-                 "description": c.get("description", "")}
-                for c in data.get("connections", [])
-                if c.get("conn_type") == "mssql"
-            ]
-            return {"connections": conns}
+            if r.is_success:
+                for c in r.json().get("connections", []):
+                    cid = c.get("connection_id")
+                    if c.get("conn_type") == "mssql" and cid and cid not in conns:
+                        conns[cid] = {"conn_id": cid, "host": c.get("host", ""),
+                                      "port": c.get("port"),
+                                      "schema": c.get("schema", ""),
+                                      "description": c.get("description", "")}
     except Exception as e:
-        log.warning("copias: erro ao listar conexões MSSQL: %s", e)
-        return {"connections": []}
+        log.warning("copias: erro ao listar conexões MSSQL do Airflow: %s", e)
+    return {"connections": sorted(conns.values(),
+                                  key=lambda c: c["conn_id"].lower())}
 
 
 @router.get("/copias/introspect/databases", tags=["copias"])
