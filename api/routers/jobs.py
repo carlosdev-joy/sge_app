@@ -38,6 +38,11 @@ _PARAM_NAME_RE = re.compile(r"^@?[A-Za-z_][A-Za-z0-9_]*$")
 # job_name vira literal de string no código da DAG gerada e argumento de shell no
 # dsjob — allowlist bloqueia aspas/;/$/quebra-de-linha (anti code/command injection).
 _JOB_NAME_RE = re.compile(r"^[A-Za-z0-9_.\- ]+$")
+# job_name também vira task_id no Airflow, que rejeita ESPAÇO (validate_key
+# ^[\w.-]+$) — um nome com espaço publica DAG que quebra no import. Jobs NOVOS
+# usam o estrito; os já salvos com espaço são tolerados (grandfather) para não
+# travar o re-save de fluxos legados.
+_JOB_NAME_STRICT_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 # nome de banco-alvo (storedproc, mesmo servidor) — vira nome de 3 partes
 # [banco].schema.proc; allowlist bloqueia ] e demais chars perigosos (anti-injection).
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-$#@ ]+$")
@@ -1040,7 +1045,10 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
             if not j_name or j_order is None:
                 erros.append(f"Item {idx}: job_name e execution_order obrigatórios"); continue
             if not _JOB_NAME_RE.match(j_name):
-                erros.append(f"Item {idx} ({j_name}): nome de job inválido — use apenas letras, números, _ . - e espaço"); continue
+                erros.append(f"Item {idx} ({j_name}): nome de job inválido — use apenas letras, números, _ . -"); continue
+            if j_name not in db_names and not _JOB_NAME_STRICT_RE.match(j_name):
+                erros.append(f"Item {idx} ({j_name}): nome de job novo não pode ter espaço "
+                             "(vira task_id no Airflow, que o rejeita no import da DAG)"); continue
             if j_type not in VALID_JOB_TYPES:
                 erros.append(f"Item {idx} ({j_name}): job_type '{j_type}' inválido"); continue
             # Nó de Decisão é roteador, Notificação é efeito colateral e o nó SQL
@@ -1631,11 +1639,14 @@ async def save_pipeline_fluxo(
                 errors.append(f"{j_name}: job_name duplicado no fluxo"); continue
             seen.add(j_name)
             if not _JOB_NAME_RE.match(j_name):
-                errors.append(f"{j_name}: nome inválido (use letras, números, _ . - e espaço)"); continue
+                errors.append(f"{j_name}: nome inválido (use letras, números, _ . -)"); continue
             j_type = (node.get("job_type") or "datastage").lower().strip()
             if j_type not in VALID_JOB_TYPES:
                 errors.append(f"{j_name}: job_type '{j_type}' inválido"); continue
             is_new = j_name not in owned
+            if is_new and not _JOB_NAME_STRICT_RE.match(j_name):
+                errors.append(f"{j_name}: nome de nó novo não pode ter espaço "
+                              "(vira task_id no Airflow, que o rejeita no import da DAG)"); continue
 
             j_cmd = node.get("job_command") or None
             try:

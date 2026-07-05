@@ -372,7 +372,9 @@ function criaCiclo(edges: Edge[], source: string, target: string): boolean {
   return false
 }
 
-const NAME_RE = /^[A-Za-z0-9_.\- ]+$/
+// SEM espaço: job_name vira task_id no Airflow, que rejeita espaço no import
+// da DAG (nós legados com espaço seguem funcionando; só a criação é estrita).
+const NAME_RE = /^[A-Za-z0-9_.\-]+$/
 
 // Próximo nome livre seguindo um prefixo (NOVA_ETAPA_1, DECISAO_2, …).
 function nextName(prefix: string, taken: Set<string>): string {
@@ -861,7 +863,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     const name = novo.trim()
     if (name === oldName) return true
     if (!name) { toast.error('Informe um nome.'); return false }
-    if (!NAME_RE.test(name)) { toast.error('Nome inválido — use apenas letras, números, espaço, _ . -'); return false }
+    if (!NAME_RE.test(name)) { toast.error('Nome inválido — use apenas letras, números, _ . - (sem espaço)'); return false }
     if (nameSet().has(name)) { toast.error('Já existe um nó com esse nome.'); return false }
     // Troca id + nome (data) e remapeia arestas.
     setNodes(nds => nds.map(n => n.id === oldName
@@ -1556,7 +1558,7 @@ function NomeField({
       />
       {!isNew
         ? <p className="text-[10px] text-dim/70">O nome de um nó já salvo não é editável aqui.</p>
-        : <p className="text-[10px] text-dim/70">Letras, números, espaço, _ . -</p>}
+        : <p className="text-[10px] text-dim/70">Letras, números, _ . - (sem espaço)</p>}
     </div>
   )
 }
