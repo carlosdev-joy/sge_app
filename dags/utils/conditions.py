@@ -260,23 +260,25 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
         return compara_tipado(obtido, operador, limite, cond.get("comparacao"), fail_loud), obtido
 
     conn_id = (cond.get("mssql_conn_id") or "").strip() or default_conn_id
-    hook = MsSqlHook(mssql_conn_id=conn_id)
 
     if tipo == "contagem":
         tabela = _safe_table(cond.get("tabela") or "")
         database = (cond.get("database") or "").strip()
-        sql = f"SELECT COUNT_BIG(*) FROM {tabela}"
-        if database:
-            if not _IDENT_RE.match(database):
-                raise ValueError(f"database inválido: {database!r}")
-            sql = f"USE [{database}]; {sql}"
-        row = hook.get_first(sql)
+        if database and not _IDENT_RE.match(database):
+            raise ValueError(f"database inválido: {database!r}")
+        row = _select_first_nativo(conn_id, f"SELECT COUNT_BIG(*) FROM {tabela}", database)
         obtido = int(row[0]) if row and row[0] is not None else 0
     elif tipo == "query":
         sql = _validate_select(cond.get("sql") or "")
-        row = hook.get_first(sql)
+        database = (cond.get("database") or "").strip()
+        if database and not _IDENT_RE.match(database):
+            raise ValueError(f"database inválido: {database!r}")
+        row = _select_first_nativo(conn_id, sql, database)
         obtido = row[0] if row else None
     elif tipo == "linhas_job":
+        # Telemetria (etl_ds_job_log) vive no banco do PRÓPRIO Orquestra — segue
+        # na conexão de infraestrutura do Airflow, não na conexão de dados.
+        hook = MsSqlHook(mssql_conn_id=default_conn_id)
         child_job = (cond.get("child_job") or "").strip()
         if child_job:
             obtido = _rows_do_filho(
@@ -294,6 +296,25 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
     if tipo in ("query", "contagem"):
         return compara_tipado(obtido, operador, limite, cond.get("comparacao"), fail_loud), obtido
     return compara(obtido, operador, limite), obtido
+
+
+def _select_first_nativo(conn_id: str, sql: str, database: str | None = None):
+    """1ª linha do SELECT via conexão resolvida pelo ORQUESTRA (dbo.etl_conexao
+    primeiro, Airflow Connection como fallback) — mesma resolução da Cópia de
+    Dados. Substitui o MsSqlHook direto, que ignorava as conexões nativas e
+    rodava a decisão/nó SQL com a credencial antiga do Airflow."""
+    from utils.conn_resolver import abrir_conexao_mssql  # lazy (custo Airflow)
+
+    conn = abrir_conexao_mssql(conn_id, database=database or None, autocommit=True)
+    try:
+        cur = conn.cursor()
+        cur.execute(sql)
+        return cur.fetchone()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _ds_log_first(hook, col, job_name, execution_id, pipeline_name):

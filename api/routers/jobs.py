@@ -13,6 +13,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 import db
 from db import get_db_conn
+from services.conn_native import abrir_conexao_nativa
 from deps import (
     PERM_EDITAR,
     get_current_user, require_perm,
@@ -214,6 +215,9 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
     elif tipo == "query":
         if not _valid_select(cond.get("sql") or ""):
             errs.append("SQL da condição deve ser read-only (SELECT/WITH, sem ';' nem DML)")
+        db = (cond.get("database") or "").strip()
+        if db and not _IDENT_RE.match(db):
+            errs.append("database da condição inválido")
     elif tipo == "valor_sql":
         # Decisão por valor publicado: lê o XCom escalar de um nó SQL a montante
         # (source_job) e compara via compara_tipado. Não roda SQL aqui — só roteia.
@@ -727,9 +731,14 @@ def list_jobs(
 @router.get("/jobs/databases", tags=["jobs"])
 async def list_job_databases(
     host: Optional[str] = None,
+    conn_id: Optional[str] = None,
     _auth: dict = Depends(require_perm(PERM_EDITAR)),
 ):
     """Bancos disponíveis para o seletor de banco-alvo dos jobs.
+
+    Com ``?conn_id=`` NATIVO (dbo.etl_conexao): lista com a credencial da
+    PRÓPRIA conexão — enxerga os mesmos bancos que o runtime vai enxergar.
+    conn_id não nativo cai no caminho por host (abaixo).
 
     Sem ``?host`` (padrão): bancos do MESMO servidor da conexão do ORQUESTRA
     (credencial do próprio app via get_db_conn — não expõe senha).
@@ -741,6 +750,34 @@ async def list_job_databases(
 
     Degrada para lista vazia se a consulta ao catálogo falhar."""
     host = (host or "").strip()
+    conn_id = (conn_id or "").strip()
+    if conn_id:
+        try:
+            par = abrir_conexao_nativa(conn_id, "master", timeout_s=5)
+        except RuntimeError as e:
+            log.warning("list_job_databases (conn_id=%s) degradou: %s", conn_id, e)
+            return {"server": None, "databases": []}
+        if par is not None:
+            cx, cur = par
+            try:
+                cur.execute("SELECT @@SERVERNAME")
+                srow = cur.fetchone()
+                cur.execute(
+                    "SELECT d.name FROM sys.databases d "
+                    "WHERE d.state_desc = 'ONLINE' AND HAS_DBACCESS(d.name) = 1 "
+                    "ORDER BY d.name")
+                databases = [r[0] for r in cur.fetchall()]
+                cur.close(); cx.close()
+                return {"server": (srow[0] if srow else host or conn_id),
+                        "databases": databases}
+            except Exception as e:
+                try:
+                    cx.close()
+                except Exception:
+                    pass
+                log.warning("list_job_databases (conn_id=%s) degradou: %s", conn_id, e)
+                return {"server": None, "databases": []}
+        # conn_id não é nativo → segue para o caminho legado por host.
     if host:
         allowed = await _list_mssql_hosts()
         if host not in allowed:
@@ -792,22 +829,21 @@ async def sql_preview(
     """Roda um SELECT read-only do usuário (decisão tipo 'query') e devolve uma
     amostra de até 100 linhas, para o autor conferir o resultado antes de salvar.
 
-    Body: {host: str, database: str, sql: str}.
+    Body: {mssql_conn_id?: str, host?: str, database: str, sql: str}.
 
     Segurança:
       - ``sql`` precisa ser read-only (SELECT/WITH, sem ';' nem DML) — 422 senão.
-      - ``host`` precisa estar cadastrado como conexão MSSQL no Airflow (allowlist
-        anti-SSRF) — 400 senão. Conecta com a credencial do app (swap SERVER/
-        DATABASE no conn str), timeout curto.
+      - ``mssql_conn_id`` NATIVO (dbo.etl_conexao) conecta com a credencial da
+        própria conexão — a MESMA que o runtime usa. Senão, cai no legado:
+        ``host`` na allowlist anti-SSRF + credencial do app (swap SERVER/DATABASE).
 
     Resposta: {columns: [str], rows: [[json-safe]], total: int, truncated: bool}.
     Erros de conexão/SQL → 400 com mensagem clara (nunca 500 cru)."""
+    conn_id = (body.get("mssql_conn_id") or "").strip()
     host = (body.get("host") or "").strip()
     database = (body.get("database") or "").strip()
     sql_raw = body.get("sql") or ""
 
-    if not host:
-        raise HTTPException(status_code=422, detail="host é obrigatório")
     if not database:
         raise HTTPException(status_code=422, detail="database é obrigatório")
     if not _IDENT_RE.match(database):
@@ -818,17 +854,6 @@ async def sql_preview(
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    allowed = await _list_mssql_hosts()
-    if host not in allowed:
-        raise HTTPException(
-            status_code=400,
-            detail=f"host '{host}' não está cadastrado como conexão MSSQL")
-
-    try:
-        conn_str = _swap_conn_str(host, database)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
     # Limita a 100 linhas envolvendo o SELECT do usuário numa subquery.
     # SELECT TOP 100 * FROM (<sql>) — robusto; se o SELECT do usuário tiver ORDER
     # BY sem TOP/OFFSET, o SQL Server recusa a subquery, então o erro vira 400
@@ -836,13 +861,10 @@ async def sql_preview(
     preview_sql = f"SELECT TOP 100 * FROM (\n{sql}\n) AS _prev"
     # Timeout de execução agora vem da config de fluxo (etl_app_config), não fixo.
     _PREVIEW_TIMEOUT_S = _get_preview_timeout_s()
-    try:
-        conn = pyodbc.connect(conn_str, timeout=5)
-        # Timeout de EXECUÇÃO (não só de conexão): o driver cancela a query no
-        # servidor se passar disso — evita deixar um SELECT pesado pendurado.
-        conn.timeout = _PREVIEW_TIMEOUT_S
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Falha ao conectar em '{host}': {e}")
+    conn = await _abrir_conexao_edicao(conn_id, host, database)
+    # Timeout de EXECUÇÃO (não só de conexão): o driver cancela a query no
+    # servidor se passar disso — evita deixar um SELECT pesado pendurado.
+    conn.timeout = _PREVIEW_TIMEOUT_S
     try:
         cur = conn.cursor()
         # Leitura sem tomar/esperar lock (preview é descartável; dirty read ok) —
@@ -873,6 +895,46 @@ async def sql_preview(
         "total": total,
         "truncated": total >= 100,
     }
+
+
+async def _abrir_conexao_edicao(conn_id: str, host: str, database: str,
+                                connect_timeout_s: int = 5):
+    """Conexão pyodbc para os endpoints de edição do fluxo (preview/simulação).
+
+    Com ``conn_id`` NATIVO (dbo.etl_conexao) conecta com a credencial da PRÓPRIA
+    conexão — o mesmo que o runtime usa agora (conn_resolver). ``conn_id`` não
+    nativo/vazio cai no caminho legado: ``host`` na allowlist + credencial do
+    app com SERVER/DATABASE trocados. Levanta HTTPException 400/422 clara."""
+    conn_id = (conn_id or "").strip()
+    if conn_id:
+        try:
+            par = abrir_conexao_nativa(conn_id, database, timeout_s=connect_timeout_s)
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if par is not None:
+            cx, cur0 = par
+            try:
+                cur0.close()
+            except Exception:
+                pass
+            return cx
+    host = (host or "").strip()
+    if not host:
+        raise HTTPException(status_code=422,
+                            detail="host é obrigatório quando a conexão não é nativa")
+    allowed = await _list_mssql_hosts()
+    if host not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"host '{host}' não está cadastrado como conexão MSSQL")
+    try:
+        conn_str = _swap_conn_str(host, database)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        return pyodbc.connect(conn_str, timeout=connect_timeout_s)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Falha ao conectar em '{host}': {e}")
 
 
 def _open_swapped_conn(host: str, database: str, timeout_s: int):
@@ -910,16 +972,18 @@ async def decisao_simular(
     (primeira coluna da primeira linha) e aplica a comparação tipada — devolve para
     qual ramo (sim/nao) a execução iria, sem salvar nada.
 
-    Body: {host, database, sql, comparacao, operador, valor}.
+    Body: {mssql_conn_id?, host?, database, sql, comparacao, operador, valor}.
 
     Segurança (mesma do /jobs/sql-preview):
       - ``sql`` read-only (SELECT/WITH, sem ';' nem DML) — 422 senão.
-      - ``host`` cadastrado como conexão MSSQL no Airflow (allowlist anti-SSRF) — 400 senão.
+      - ``mssql_conn_id`` NATIVO conecta com a credencial da própria conexão (a
+        mesma do runtime); senão, ``host`` na allowlist + credencial do app.
       - ``database`` identificador válido. ``comparacao`` ∈ {texto,data,numero},
         ``operador`` válido. Timeout de execução vem da config de fluxo.
 
     Resposta: {valor_obtido: str|null, resultado: bool, ramo: 'sim'|'nao'}.
     Erros de conexão/SQL/timeout → 400 com mensagem clara (nunca 500 cru)."""
+    conn_id = (body.get("mssql_conn_id") or "").strip()
     host = (body.get("host") or "").strip()
     database = (body.get("database") or "").strip()
     sql_raw = body.get("sql") or ""
@@ -927,8 +991,6 @@ async def decisao_simular(
     operador = str(body.get("operador") or "").strip()
     valor = body.get("valor")
 
-    if not host:
-        raise HTTPException(status_code=422, detail="host é obrigatório")
     if not database:
         raise HTTPException(status_code=422, detail="database é obrigatório")
     if not _IDENT_RE.match(database):
@@ -942,14 +1004,18 @@ async def decisao_simular(
     if operador not in _COND_OPERADORES:
         raise HTTPException(status_code=422, detail="operador inválido (use =, <>, >, >=, <, <=)")
 
-    allowed = await _list_mssql_hosts()
-    if host not in allowed:
-        raise HTTPException(
-            status_code=400,
-            detail=f"host '{host}' não está cadastrado como conexão MSSQL")
-
     timeout_s = _get_preview_timeout_s()
-    conn, cur = _open_swapped_conn(host, database, timeout_s)
+    conn = await _abrir_conexao_edicao(conn_id, host, database)
+    conn.timeout = timeout_s
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=f"Falha ao iniciar a sessão: {e}")
     try:
         cur.execute(sql)
         row = cur.fetchone()

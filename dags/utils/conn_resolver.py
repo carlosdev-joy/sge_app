@@ -116,3 +116,52 @@ def get_conexao(conn_id: str):
         password=_decrypt(senha_enc),
         extra=extra_json or None,
     )
+
+
+def schema_da_conexao(cx):
+    """Database default da conexão: ``schema`` (Airflow Connection) ou a chave
+    ``database`` do extra JSON (nativa). None quando não configurado."""
+    db = getattr(cx, "schema", None)
+    if db and str(db).strip():
+        return str(db).strip()
+    try:
+        return (cx.extra_dejson or {}).get("database") or None
+    except Exception:
+        return None
+
+
+def abrir_conexao_mssql(conn_id: str, database: str | None = None,
+                        timeout: int = 0, autocommit: bool = False,
+                        appname: str = "orquestra-fluxo"):
+    """Conexão **pymssql** resolvida pelo Orquestra: dbo.etl_conexao PRIMEIRO
+    (login/senha nativos), Airflow Connection como fallback — a MESMA regra da
+    Cópia de Dados, agora para os componentes SQL do fluxo (nó SQL, decisão,
+    storedproc).
+
+    Database do connect (precedência): ``database`` explícito > schema/extra da
+    conexão resolvida > schema da Airflow Connection HOMÔNIMA (ambiente híbrido:
+    a nativa migrada não guarda database, mas as DAGs legadas assumiam o schema
+    da conn do Airflow) > default do login.
+    """
+    import pymssql  # dependência do MsSqlHook — sempre presente no worker
+
+    cx = get_conexao(conn_id)
+    db = (database or "").strip() or schema_da_conexao(cx)
+    if not db and isinstance(cx, ConexaoOrquestra):
+        try:
+            db = (BaseHook.get_connection(conn_id).schema or "").strip() or None
+        except Exception:
+            db = None
+    try:
+        charset = (cx.extra_dejson or {}).get("charset") or None
+    except Exception:
+        charset = None
+    kw = dict(
+        server=cx.host, port=str(int(cx.port or 1433)),
+        user=cx.login, password=cx.password,
+        login_timeout=30, timeout=int(timeout or 0),
+        charset=charset or "UTF-8", appname=appname, autocommit=autocommit,
+    )
+    if db:
+        kw["database"] = db
+    return pymssql.connect(**kw)

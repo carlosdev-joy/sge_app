@@ -67,8 +67,10 @@ class StoredProcOperator(BaseOperator):
             raise ValueError("StoredProcOperator: 'proc' não informado")
         # Banco-alvo no MESMO servidor → nome de 3 partes: EXEC [banco].schema.proc
         target = f"[{self.database}].{self.proc}" if self.database else self.proc
-        hook = MsSqlHook(mssql_conn_id=self.mssql_conn_id)
-        conn = hook.get_conn()
+        # Conexão resolvida pelo Orquestra (dbo.etl_conexao primeiro, Airflow
+        # como fallback) — antes o MsSqlHook ignorava as conexões nativas.
+        from utils.conn_resolver import abrir_conexao_mssql  # lazy
+        conn = abrir_conexao_mssql(self.mssql_conn_id, appname="orquestra-storedproc")
         cur = conn.cursor()
         try:
             valid = [p for p in self.params if (p.get("name") or "").strip()]
@@ -107,8 +109,8 @@ class SqlOperator(BaseOperator):
         self.mssql_conn_id = mssql_conn_id
 
     def execute(self, context):
-        hook = MsSqlHook(mssql_conn_id=self.mssql_conn_id)
-        conn = hook.get_conn()
+        from utils.conn_resolver import abrir_conexao_mssql  # lazy
+        conn = abrir_conexao_mssql(self.mssql_conn_id, appname="orquestra-sql")
         cur = conn.cursor()
         try:
             self.log.info("[SQL] %s", self.sql)
