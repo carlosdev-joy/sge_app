@@ -335,3 +335,26 @@ def test_decisao_sem_on_error_nao_inventa_chave(factory):
             _job("JobB", order=3), _job("JobC", order=3)]
     src = factory._generate_dag_source(_pipeline(), jobs)
     assert "'on_error'" not in src
+
+
+# ───────────────────── SKIPPED de 1ª classe (flow_close) ────────────────────
+
+def test_pipeline_com_decisao_gera_flow_close(factory):
+    """Com decisão, a DAG ganha t_flow_close (ALL_DONE) que registra SKIPPED
+    para jobs pulados pelo ramo não escolhido — antes sumiam do Logs."""
+    jobs = [_job("JobA"), _job("Decisao", jtype="decisao", order=2, cond=_contagem_cond()),
+            _job("JobB", order=3), _job("JobC", order=3)]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    assert "def _flow_close(**context):" in src
+    assert 't_flow_close = PythonOperator(' in src
+    assert '"SKIPPED"' in src or "'SKIPPED'" in src
+    # FLOW_JOBS só tem os executáveis (a decisão fica de fora)
+    assert "FLOW_JOBS     = ['JobA', 'JobB', 'JobC']" in src
+    # fecha antes do card de fim (o teams_end enxerga os SKIPPED gravados)
+    assert "t_flow_close >> t_teams_end" in src
+
+
+def test_pipeline_sem_decisao_nao_gera_flow_close(factory):
+    jobs = [_job("JobA"), _job("JobB", order=2)]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    assert "t_flow_close" not in src

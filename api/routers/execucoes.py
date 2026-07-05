@@ -400,6 +400,7 @@ def list_execucoes(
             WHEN SUM(CASE WHEN status='WARNING' THEN 1 ELSE 0 END) > 0 THEN 'WARNING'
             WHEN SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) > 0 THEN 'RUNNING'
             WHEN SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) > 0 THEN 'SUCCESS'
+            WHEN SUM(CASE WHEN status='SKIPPED' THEN 1 ELSE 0 END) > 0 THEN 'SKIPPED'
             ELSE 'DESCONHECIDO'
         END
     """
@@ -483,6 +484,7 @@ def list_execucoes(
                     SUM(CASE WHEN status='FAILED'  THEN 1 ELSE 0 END) AS jobs_falha,
                     SUM(CASE WHEN status='WARNING' THEN 1 ELSE 0 END) AS jobs_warning,
                     SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) AS jobs_running,
+                    SUM(CASE WHEN status='SKIPPED' THEN 1 ELSE 0 END) AS jobs_skipped,
                     {status_expr} AS status_geral
                 FROM dbo.etl_job_execution
                 {where_sql}
@@ -534,15 +536,16 @@ def list_execucoes(
                 "duracao_wall_segundos": int(r[6] or 0),
                 "total_jobs": int(r[7] or 0), "jobs_ok": int(r[8] or 0),
                 "jobs_falha": int(r[9] or 0), "jobs_warning": int(r[10] or 0),
-                "jobs_running": int(r[11] or 0), "status_geral": r[12],
-                "ack_by": r[13] if has_ack else None,
-                "display_name": r[14] if has_ack else None,
-                "ack_at": _fmt_dt(r[15]) if has_ack else None,
-                "resolved_by": r[16] if has_resolved else None,
-                "resolved_display_name": r[17] if has_resolved else None,
-                "resolved_at": _fmt_dt(r[18]) if has_resolved else None,
-                "resolution_note": r[19] if has_resolved else None,
-                "snow_ticket": r[20] if has_resolved else None,
+                "jobs_running": int(r[11] or 0), "jobs_skipped": int(r[12] or 0),
+                "status_geral": r[13],
+                "ack_by": r[14] if has_ack else None,
+                "display_name": r[15] if has_ack else None,
+                "ack_at": _fmt_dt(r[16]) if has_ack else None,
+                "resolved_by": r[17] if has_resolved else None,
+                "resolved_display_name": r[18] if has_resolved else None,
+                "resolved_at": _fmt_dt(r[19]) if has_resolved else None,
+                "resolution_note": r[20] if has_resolved else None,
+                "snow_ticket": r[21] if has_resolved else None,
                 "fila_total_segundos": None,
             }
             for r in cur.fetchall()

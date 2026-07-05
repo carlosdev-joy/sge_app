@@ -100,11 +100,12 @@ const PROJETOS = ['Todos', 'BI_CVP', 'BI_VIDA', 'BI_PREVIDENCIA', 'BI_PRESTAMIST
 const STATUS_COLOR: Record<string, string> = {
   SUCCESS: '#22c55e', FAILED: '#ef4444', WARNING: '#f59e0b',
   RUNNING: '#3b82f6', PENDING: '#6b7280', DESCONHECIDO: '#6b7280',
+  SKIPPED: '#94a3b8',
 }
 
 const STATUS_LABEL: Record<string, string> = {
   SUCCESS: 'Sucesso', FAILED: 'Falha', WARNING: 'Aviso',
-  RUNNING: 'Rodando', PENDING: 'Aguardando',
+  RUNNING: 'Rodando', PENDING: 'Aguardando', SKIPPED: 'Pulada',
 }
 
 function fmtSec(s: number) {
@@ -144,6 +145,7 @@ function StatusBadge({ status }: { status: string }) {
     WARNING:     'bg-amber-100  dark:bg-amber-900/30  text-amber-700  dark:text-amber-300  border-amber-300  dark:border-amber-700',
     RUNNING:     'bg-blue-100   dark:bg-blue-900/30   text-blue-700   dark:text-blue-300   border-blue-300   dark:border-blue-700',
     DESCONHECIDO:'bg-slate-100  dark:bg-slate-800/40  text-slate-600  dark:text-slate-400  border-slate-300  dark:border-slate-600',
+    SKIPPED:     'bg-slate-100  dark:bg-slate-800/40  text-slate-600  dark:text-slate-400  border-slate-300  dark:border-slate-600',
   }
   const cls = colors[status] ?? colors['DESCONHECIDO']
   return (

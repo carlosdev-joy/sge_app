@@ -31,6 +31,7 @@ def _status_expr_sql() -> str:
             WHEN SUM(CASE WHEN status = 'WARNING' THEN 1 ELSE 0 END) > 0 THEN 'WARNING'
             WHEN SUM(CASE WHEN status = 'RUNNING' THEN 1 ELSE 0 END) > 0 THEN 'RUNNING'
             WHEN SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) > 0 THEN 'SUCCESS'
+            WHEN SUM(CASE WHEN status = 'SKIPPED' THEN 1 ELSE 0 END) > 0 THEN 'SKIPPED'
             ELSE 'DESCONHECIDO'
         END
     """

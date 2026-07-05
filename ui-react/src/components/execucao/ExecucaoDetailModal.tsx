@@ -67,6 +67,7 @@ export interface ExecRow {
   jobs_falha: number
   jobs_warning: number
   jobs_running: number
+  jobs_skipped?: number
   status_geral: string
   fila_total_segundos?: number | null
   ack_by?: string
