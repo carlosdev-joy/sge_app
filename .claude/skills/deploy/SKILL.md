@@ -14,10 +14,15 @@ description: >
 - Backup do banco antes de migrations.
 
 ## Aplicar
-1. **Migrations primeiro**: `deploy_prod.sh` detecta mudanças em `sql/migrations/` e aplica as
-   pendentes via `sql/migrate.py` (idempotentes, rastreadas). Confira com `migrate.py --status`.
-2. **App**: `bash scripts/deploy_prod.sh` (ou `deploy.sh`) — sincroniza `ui-react/dist`, config,
-   dags, api; rebuild `orquestra-api` e recria `ui-nginx` com `--no-deps`.
+1. **App**: `bash /opt/git/deploy.sh` (fluxo real de produção) — clona a main, sincroniza
+   `ui-react/dist`, api (rebuild `orquestra-api`), recria `ui-nginx` com `--no-deps`;
+   config/dags/compose só com confirmação.
+2. **Migrations**: a etapa 6c do `deploy.sh` detecta pendências e PERGUNTA antes de aplicar
+   (roda `sql/migrate.py` dentro do container `orquestra-api` — idempotentes, rastreadas em
+   `dbo.etl_schema_version`). Responda **s** quando o PR incluir `sql/migrations/`; sem tela,
+   a pergunta assume NÃO e o deploy avisa como aplicar manualmente. Confira com
+   `migrate.py --status`. Sintoma de migration esquecida: tela nova não aparece no menu
+   (permissão `tela_*` inexistente no banco).
 
 ## Riscos (importante)
 - O deploy padrão é cirúrgico e **não recria** postgres/scheduler/worker — não reproduz a queda

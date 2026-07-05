@@ -48,7 +48,8 @@ fi
 #     ui-nginx (recreate) e a CÓPIA dos insumos de build (Dockerfile,
 #     docker/debs — só arquivos, nenhuma ação de container).
 #   - SÓ COM CONFIRMAÇÃO (mostra o que mudaria; Enter = não):
-#     dags/, config/ (com backup) e docker-compose.yaml (com backup).
+#     dags/, config/ (com backup), docker-compose.yaml (com backup) e
+#     migrations SQL (etapa 6c — migrate.py dentro do container da API).
 #   - Containers do Airflow: só na etapa 8b, também com pergunta.
 # ═════════════════════════════════════════════════════════════
 
@@ -138,6 +139,42 @@ fi
 cp "$TMP_DIR/Dockerfile" "$AIRFLOW_DIR/Dockerfile"
 rsync -av "$TMP_DIR/docker/" "$AIRFLOW_DIR/docker/"
 echo "[DEPLOY] ✓ Dockerfile + docker/ (debs) sincronizados"
+
+# ── 6c. Migrations SQL — SÓ COM CONFIRMAÇÃO ───────────────────
+# Antes do rebuild da API (tela/permissão nova depende da migration; o resto
+# degrada graciosamente se ela vier depois). Roda o migrate.py DENTRO do
+# container orquestra-api atual: ele já tem python + pyodbc + MSSQL_CONN_STR,
+# e o host não precisa de driver ODBC. Idempotentes, rastreadas em
+# dbo.etl_schema_version. A cópia em /tmp do container morre no rebuild da
+# etapa 7 — nada fica para trás. Falha ao APLICAR aborta o deploy (set -e):
+# a API antiga continua no ar, estado consistente.
+cd "$AIRFLOW_DIR"
+API_CID=$(docker compose ps -q orquestra-api 2>/dev/null || true)
+MIG_CMD="docker compose cp $TMP_DIR/sql orquestra-api:/tmp/deploy_sql && docker compose exec orquestra-api python /tmp/deploy_sql/migrate.py"
+if [ -z "$API_CID" ]; then
+    echo "[DEPLOY] AVISO: orquestra-api não está de pé — migrations NÃO verificadas."
+    echo "         Aplique depois com: cd $AIRFLOW_DIR && $MIG_CMD"
+else
+    docker compose exec -T orquestra-api rm -rf /tmp/deploy_sql 2>/dev/null || true
+    docker compose cp "$TMP_DIR/sql" orquestra-api:/tmp/deploy_sql >/dev/null
+    MIG_DRY=$(docker compose exec -T orquestra-api python /tmp/deploy_sql/migrate.py --dry-run 2>&1 || true)
+    if echo "$MIG_DRY" | grep -q "Nenhuma migration pendente"; then
+        echo "[DEPLOY] Migrations SQL: nenhuma pendente."
+    elif echo "$MIG_DRY" | grep -q "DRY-RUN"; then
+        echo "[DEPLOY] Migrations SQL PENDENTES:"
+        echo "$MIG_DRY" | sed 's/^/    /'
+        if _confirmar "[DEPLOY] Aplicar as migrations acima agora? (idempotentes; recomendado backup do banco)"; then
+            docker compose exec -T orquestra-api python /tmp/deploy_sql/migrate.py
+            echo "[DEPLOY] ✓ Migrations aplicadas"
+        else
+            echo "[DEPLOY] AVISO: migrations NÃO aplicadas — telas/permissões novas podem não aparecer."
+            echo "         Aplique depois com: cd $AIRFLOW_DIR && $MIG_CMD"
+        fi
+    else
+        echo "[DEPLOY] AVISO: não foi possível verificar migrations (segue sem aplicar):"
+        echo "$MIG_DRY" | sed 's/^/    /'
+    fi
+fi
 
 # ── 7. API — rebuild com wheels locais (sem internet) ─────────
 rsync -av "$TMP_DIR/api/" "$AIRFLOW_DIR/api/"
