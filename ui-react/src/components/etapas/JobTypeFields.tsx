@@ -23,7 +23,7 @@ export interface JobParam {
   param_value: string
 }
 
-export type JobFieldsType = 'datastage' | 'shell' | 'python' | 'storedproc'
+export type JobFieldsType = 'datastage' | 'shell' | 'python' | 'storedproc' | 'http'
 
 export interface JobTypeFieldsValue {
   job_type: JobFieldsType
@@ -53,6 +53,7 @@ export function jobCommandLabel(t: JobFieldsType): string {
   return t === 'datastage' ? 'Nome do job DataStage'
     : t === 'storedproc' ? 'Procedure (ex: dbo.sp_nome)'
     : t === 'python' ? 'Módulo / Path'
+    : t === 'http' ? 'URL (http/https)'
     : 'Comando / Path'
 }
 
@@ -60,8 +61,13 @@ export function jobCommandPlaceholder(t: JobFieldsType): string {
   return t === 'datastage' ? 'ex: BiCvp.job_name'
     : t === 'shell' ? 'ex: /opt/scripts/run.sh'
     : t === 'python' ? 'ex: scripts.modulo.run'
+    : t === 'http' ? 'ex: https://servidor/api/disparo'
     : 'ex: dbo.sp_procedure'
 }
+
+// URL aceita para etapas http — espelha o allowlist do backend (_valid_http_url):
+// http(s)://, sem espaço/aspas (o comando vira argumento do HttpCallOperator).
+export const HTTP_URL_RE = /^https?:\/\/[^\s'"]+$/i
 
 // ── Validação unificada (espelha as regras do wizard) ────────────────────────
 // Retorna a lista de mensagens de erro (vazia = válido). Não valida nome/ordem,
@@ -70,6 +76,9 @@ export function jobTypeFieldsErrors(v: JobTypeFieldsValue): string[] {
   const errs: string[] = []
   if (v.job_type === 'shell' && !v.ssh_conn_id) {
     errs.push('Servidor SSH é obrigatório para etapas shell')
+  }
+  if (v.job_type === 'http' && !HTTP_URL_RE.test((v.job_command ?? '').trim())) {
+    errs.push('Etapa http exige uma URL http(s) válida no campo URL')
   }
   if (v.job_type === 'storedproc') {
     if (!v.mssql_conn_id) errs.push('Conexão MSSQL é obrigatória para etapas storedproc')

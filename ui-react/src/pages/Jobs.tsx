@@ -25,7 +25,7 @@ import {
 
 // ── constants ──────────────────────────────────────────────────────────────
 
-const JOB_TYPES = ['datastage', 'shell', 'python', 'storedproc', 'decisao', 'notificacao'] as const
+const JOB_TYPES = ['datastage', 'shell', 'python', 'storedproc', 'http', 'decisao', 'notificacao'] as const
 type JobType = typeof JOB_TYPES[number]
 
 // ── types ──────────────────────────────────────────────────────────────────

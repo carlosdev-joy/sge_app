@@ -32,7 +32,7 @@ def _fmt_dt(v):
     return str(v)
 
 
-VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc", "decisao", "notificacao", "sql"}
+VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc", "http", "decisao", "notificacao", "sql"}
 VALID_PARAM_TYPES = {"INT", "VARCHAR", "DATE", "BIT", "DECIMAL", "DATETIME"}
 _PARAM_NAME_RE = re.compile(r"^@?[A-Za-z_][A-Za-z0-9_]*$")
 # job_name vira literal de string no código da DAG gerada e argumento de shell no
@@ -46,6 +46,13 @@ _JOB_NAME_STRICT_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 # nome de banco-alvo (storedproc, mesmo servidor) — vira nome de 3 partes
 # [banco].schema.proc; allowlist bloqueia ] e demais chars perigosos (anti-injection).
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-$#@ ]+$")
+# URL de etapa http: allowlist http(s)://, sem espaço/aspas — vira argumento do
+# HttpCallOperator no código gerado (bloqueia file://, interpolação e injeção).
+_HTTP_URL_RE = re.compile(r"^https?://[^\s'\"]+$", re.IGNORECASE)
+
+
+def _valid_http_url(url: str) -> bool:
+    return bool(_HTTP_URL_RE.match((url or "").strip()))
 
 # ── Nó de Decisão (migration 043) ──────────────────────────────────────────
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1089,6 +1096,9 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                 erros.append(f"Item {idx} ({j_name}): conexão MSSQL '{j_mssql_cid}' não encontrada no Airflow"); continue
             if j_mssql_db and not _DB_NAME_RE.match(j_mssql_db):
                 erros.append(f"Item {idx} ({j_name}): nome de banco '{j_mssql_db}' inválido"); continue
+            if j_type == "http" and not _valid_http_url(j_cmd or ""):
+                erros.append(f"Item {idx} ({j_name}): etapa http exige job_command com "
+                             "URL http(s) válida (sem espaço/aspas)"); continue
 
             # Decisão: valida a condição e registra as arestas do branch p/ ciclo.
             if is_decisao:
@@ -1672,6 +1682,9 @@ async def save_pipeline_fluxo(
                               "(vira task_id no Airflow, que o rejeita no import da DAG)"); continue
 
             j_cmd = node.get("job_command") or None
+            if j_type == "http" and not _valid_http_url(j_cmd or ""):
+                errors.append(f"{j_name}: etapa http exige job_command com "
+                              "URL http(s) válida (sem espaço/aspas)"); continue
             try:
                 j_order = int(node.get("execution_order")) if node.get("execution_order") is not None else 1
             except (ValueError, TypeError):

@@ -260,7 +260,12 @@ def _task_block(job, project, pipeline, branch_reachable=False):
                 f')',
             ])
     elif jtype == "http":
-        url = jcmd or "https://httpbin.org/get"
+        # Fail-loud na geração (precedente 0625b16): sem URL, recusa publicar —
+        # o default antigo (httpbin.org) chamaria um endpoint EXTERNO em produção.
+        url = (jcmd or "").strip()
+        if not url:
+            raise ValueError(
+                f"job http '{name}' sem URL (job_command) — preencha a URL e republique")
         main = "\n".join([
             f't_job_{vname} = HttpCallOperator(',
             f'    task_id={name!r},',
