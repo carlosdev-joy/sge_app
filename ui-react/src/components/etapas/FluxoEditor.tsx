@@ -349,6 +349,29 @@ function buildEdges(apiNodes: FluxoNode[]): Edge[] {
 const isBranch = (e: Edge) => !!(e.data as { branch?: boolean } | undefined)?.branch
 const edgeRamo = (e: Edge) => (e.data as { ramo?: 'sim' | 'nao' } | undefined)?.ramo
 
+// Conectar source→target criaria um ciclo? Anda pelos SUCESSORES de `target`
+// (arestas normais E de ramo — ambas são ordem de execução) procurando `source`.
+// Espelho client-side do _graph_has_cycle do backend: feedback na hora da
+// conexão, em vez de só no 400 do save (o backend segue como autoridade).
+function criaCiclo(edges: Edge[], source: string, target: string): boolean {
+  if (source === target) return true
+  const succ = new Map<string, string[]>()
+  for (const e of edges) {
+    if (!succ.has(e.source)) succ.set(e.source, [])
+    succ.get(e.source)!.push(e.target)
+  }
+  const stack = [target]
+  const seen = new Set<string>()
+  while (stack.length) {
+    const cur = stack.pop()!
+    if (cur === source) return true
+    if (seen.has(cur)) continue
+    seen.add(cur)
+    for (const nxt of succ.get(cur) ?? []) stack.push(nxt)
+  }
+  return false
+}
+
 const NAME_RE = /^[A-Za-z0-9_.\- ]+$/
 
 // Próximo nome livre seguindo um prefixo (NOVA_ETAPA_1, DECISAO_2, …).
@@ -527,18 +550,21 @@ function Paleta({
 
 interface Props {
   pipeline: string
+  // Somente leitura (perfil consulta): esconde paleta/ações e bloqueia edição.
+  // A autoridade continua sendo a API (PERM_EDITAR no POST /fluxo).
+  readOnly?: boolean
 }
 
 // Wrapper com o provider (necessário p/ useReactFlow/screenToFlowPosition).
-export function FluxoEditor({ pipeline }: Props) {
+export function FluxoEditor({ pipeline, readOnly = false }: Props) {
   return (
     <ReactFlowProvider>
-      <FluxoEditorInner pipeline={pipeline} />
+      <FluxoEditorInner pipeline={pipeline} readOnly={readOnly} />
     </ReactFlowProvider>
   )
 }
 
-function FluxoEditorInner({ pipeline }: Props) {
+function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   const qc = useQueryClient()
   const colorMode = useColorMode()
   const rf = useReactFlow()
@@ -617,7 +643,8 @@ function FluxoEditorInner({ pipeline }: Props) {
 
   // ── Seleção (edita o nó selecionado AO VIVO no painel à direita) ───────────
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [delNodeId, setDelNodeId] = useState<string | null>(null)
+  // Nós aguardando confirmação de exclusão (multi-seleção + Delete traz vários).
+  const [delNodeIds, setDelNodeIds] = useState<string[] | null>(null)
 
   const { data, isLoading, isError, error } = useQuery<FluxoResp>({
     queryKey: ['fluxo', pipeline],
@@ -674,7 +701,15 @@ function FluxoEditorInner({ pipeline }: Props) {
   // origem é decisão (handle sim/não). Exclusividade do ramo por decisão.
   const onConnect = useCallback(
     (conn: Connection) => {
+      if (readOnly) return
       if (!conn.source || !conn.target) return
+
+      // Bloqueia na hora a conexão que fecharia um ciclo (dep OU ramo) —
+      // o mesmo grafo que o backend valida no save.
+      if (criaCiclo(edges, conn.source, conn.target)) {
+        toast.error('Essa conexão criaria um ciclo no fluxo — ajuste as dependências.')
+        return
+      }
 
       // A partir de uma decisão → cria/refaz a aresta de ramo.
       if (decisaoSet.has(conn.source)) {
@@ -717,7 +752,7 @@ function FluxoEditorInner({ pipeline }: Props) {
       )
       setDirty(true)
     },
-    [edges, decisaoSet, setEdges],
+    [edges, decisaoSet, setEdges, readOnly],
   )
 
   // Deletar arestas — todas deletáveis agora (inclusive ramos).
@@ -738,6 +773,7 @@ function FluxoEditorInner({ pipeline }: Props) {
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault()
+      if (readOnly) return
       const tipo = e.dataTransfer.getData(DND_MIME)
       if (!tipo) return
       const position = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
@@ -811,7 +847,7 @@ function FluxoEditorInner({ pipeline }: Props) {
       setDirty(true)
       setSelectedId(name)
     },
-    [rf, nameSet, maxOrder, setNodes, gruposById],
+    [rf, nameSet, maxOrder, setNodes, gruposById, readOnly],
   )
 
   // Atualiza o `data` de um nó (etapa) — usado pelo painel à direita ao vivo.
@@ -876,27 +912,32 @@ function FluxoEditorInner({ pipeline }: Props) {
     setDirty(true)
   }
 
-  // ── Excluir nó (confirmação) ──────────────────────────────────────────────
-  function excluirNo(id: string) {
-    if (existingRef.current.has(id)) deletedRef.current.add(id)
-    setEdges(eds => eds.filter(e => e.source !== id && e.target !== id))
-    setNodes(nds => nds.filter(n => n.id !== id))
+  // ── Excluir nós (confirmação) — aceita a multi-seleção inteira ─────────────
+  function excluirNos(ids: string[]) {
+    const alvo = new Set(ids)
+    for (const id of ids) {
+      if (existingRef.current.has(id)) deletedRef.current.add(id)
+    }
+    setEdges(eds => eds.filter(e => !alvo.has(e.source) && !alvo.has(e.target)))
+    setNodes(nds => nds.filter(n => !alvo.has(n.id)))
     setDirty(true)
-    setDelNodeId(null)
-    setSelectedId(prev => (prev === id ? null : prev))
+    setDelNodeIds(null)
+    setSelectedId(prev => (prev && alvo.has(prev) ? null : prev))
   }
 
   // Intercepta o delete nativo (tecla Delete/Backspace) para confirmar antes de
-  // remover um nó. Deleção de arestas (toDel.nodes vazio) segue direto.
+  // remover nós — TODOS os selecionados, não só o primeiro. Deleção de arestas
+  // (toDel.nodes vazio) segue direto.
   const handleBeforeDelete = useCallback(
     async ({ nodes: toDel }: { nodes: Node[]; edges: Edge[] }) => {
+      if (readOnly) return false
       if (toDel.length > 0) {
-        setDelNodeId(toDel[0].id)
+        setDelNodeIds(toDel.map(n => n.id))
         return false   // cancela o delete nativo; nossa confirmação cuida
       }
       return true
     },
-    [],
+    [readOnly],
   )
 
   // Re-roda o auto-layout sobre o grafo VIVO (inclui nós recém-adicionados,
@@ -1089,13 +1130,6 @@ function FluxoEditorInner({ pipeline }: Props) {
         nodes: payloadNodes,
         deleted: Array.from(deletedRef.current),
       }
-      // DIAGNÓSTICO (temporário): o que está sendo enviado para cada decisão.
-      try {
-        const decs = payloadNodes
-          .filter((n: any) => n.job_type === 'decisao')
-          .map((n: any) => ({ job_name: n.job_name, condition: n.condition }))
-        console.log('[fluxo][DIAG] decisões enviadas:', JSON.stringify(decs, null, 2))
-      } catch { /* noop */ }
       await apiFetch(`/pipelines/${encodeURIComponent(pipeline)}/fluxo`, {
         method: 'POST',
         body: JSON.stringify(payload),
@@ -1204,7 +1238,9 @@ function FluxoEditorInner({ pipeline }: Props) {
           <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 text-dim">
             <span className="text-3xl">⬡</span>
             <p className="text-sm font-medium">Nenhuma etapa neste pipeline</p>
-            <p className="text-xs">Arraste um tipo da paleta (à esquerda) para criar a primeira etapa.</p>
+            {!readOnly && (
+              <p className="text-xs">Arraste um tipo da paleta (à esquerda) para criar a primeira etapa.</p>
+            )}
           </div>
         )}
         <ReactFlow
@@ -1223,7 +1259,10 @@ function FluxoEditorInner({ pipeline }: Props) {
           fitViewOptions={{ padding: 0.25 }}
           proOptions={{ hideAttribution: true }}
           defaultEdgeOptions={{ type: 'smoothstep' }}
-          deleteKeyCode={['Delete', 'Backspace']}
+          nodesDraggable={!readOnly}
+          nodesConnectable={!readOnly}
+          edgesFocusable={!readOnly}
+          deleteKeyCode={readOnly ? null : ['Delete', 'Backspace']}
         >
           <Background gap={18} size={1} />
           <Controls />
@@ -1236,31 +1275,39 @@ function FluxoEditorInner({ pipeline }: Props) {
           />
 
           {/* Paleta arrastar-para-criar (barra vertical fina, esquerda) */}
-          <Panel position="top-left">
-            <Paleta open={paletaOpen} onToggle={() => setPaletaOpen(o => !o)} />
-          </Panel>
+          {!readOnly && (
+            <Panel position="top-left">
+              <Paleta open={paletaOpen} onToggle={() => setPaletaOpen(o => !o)} />
+            </Panel>
+          )}
 
-          {/* Barra de ações (topo direita) */}
+          {/* Barra de ações (topo direita) — no modo leitura vira só um selo */}
           <Panel position="top-right">
-            <div className="flex items-center gap-2 rounded-lg border border-edge bg-panel/95 px-2.5 py-2 shadow-md backdrop-blur">
-              {dirty && (
-                <span className="flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
-                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                  alterações não salvas
-                </span>
-              )}
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={reorganizar}
-                title="Recoloca os nós em camadas por ordem"
-              >
-                <RefreshCw size={13} /> Reorganizar
-              </Button>
-              <Button size="sm" onClick={salvar} loading={saving} disabled={!dirty}>
-                <Save size={13} /> Salvar fluxo
-              </Button>
-            </div>
+            {readOnly ? (
+              <span className="flex items-center gap-1.5 rounded-lg border border-edge bg-panel/95 px-2.5 py-1.5 text-[11px] font-semibold text-dim shadow-md backdrop-blur">
+                <MousePointerClick size={12} /> somente leitura
+              </span>
+            ) : (
+              <div className="flex items-center gap-2 rounded-lg border border-edge bg-panel/95 px-2.5 py-2 shadow-md backdrop-blur">
+                {dirty && (
+                  <span className="flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                    alterações não salvas
+                  </span>
+                )}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={reorganizar}
+                  title="Recoloca os nós em camadas por ordem"
+                >
+                  <RefreshCw size={13} /> Reorganizar
+                </Button>
+                <Button size="sm" onClick={salvar} loading={saving} disabled={!dirty}>
+                  <Save size={13} /> Salvar fluxo
+                </Button>
+              </div>
+            )}
           </Panel>
         </ReactFlow>
       </div>
@@ -1278,38 +1325,46 @@ function FluxoEditorInner({ pipeline }: Props) {
           dbServer={dbServer}
           dbDatabases={dbDatabases}
           grupos={grupos}
+          readOnly={readOnly}
           onRename={renomearNovo}
           onPatchData={patchNodeData}
           onPatchCondition={patchCondition}
           onPatchNotify={patchNotify}
           onPatchSql={patchSql}
           onSimular={simularDecisao}
-          onDelete={id => setDelNodeId(id)}
+          onDelete={id => setDelNodeIds([id])}
           onClose={closePanel}
         />
       )}
 
-      {/* Confirmação de exclusão de nó */}
+      {/* Confirmação de exclusão de nó(s) — lista TODOS os selecionados */}
       <Modal
-        open={!!delNodeId}
-        onClose={() => setDelNodeId(null)}
-        title="Excluir nó"
+        open={!!delNodeIds?.length}
+        onClose={() => setDelNodeIds(null)}
+        title={delNodeIds && delNodeIds.length > 1 ? `Excluir ${delNodeIds.length} nós` : 'Excluir nó'}
         size="sm"
       >
         <div className="flex flex-col gap-4">
           <p className="text-sm text-dim">
             Remover{' '}
-            <span className="font-mono font-medium text-ink">{delNodeId}</span>{' '}
-            do fluxo? As dependências e ramos ligados a ele também serão desligados.
+            {(delNodeIds ?? []).map((id, i) => (
+              <span key={id}>
+                {i > 0 && ', '}
+                <span className="font-mono font-medium text-ink">{id}</span>
+              </span>
+            ))}{' '}
+            do fluxo? As dependências e ramos ligados também serão desligados.
           </p>
-          {delNodeId && existingRef.current.has(delNodeId) && (
+          {(delNodeIds ?? []).some(id => existingRef.current.has(id)) && (
             <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
-              Este nó já existe no pipeline — será excluído ao salvar o fluxo.
+              {delNodeIds && delNodeIds.length > 1
+                ? 'Nós que já existem no pipeline serão excluídos ao salvar o fluxo.'
+                : 'Este nó já existe no pipeline — será excluído ao salvar o fluxo.'}
             </p>
           )}
           <div className="flex justify-end gap-2 border-t border-edge pt-3">
-            <Button variant="secondary" onClick={() => setDelNodeId(null)}>Cancelar</Button>
-            <Button variant="danger" onClick={() => delNodeId && excluirNo(delNodeId)}>
+            <Button variant="secondary" onClick={() => setDelNodeIds(null)}>Cancelar</Button>
+            <Button variant="danger" onClick={() => delNodeIds?.length && excluirNos(delNodeIds)}>
               <Trash2 size={14} /> Excluir
             </Button>
           </div>
@@ -1374,6 +1429,7 @@ interface PropriedadesPanelProps {
   dbServer: string | null
   dbDatabases: string[]
   grupos: MsgGrupo[]
+  readOnly: boolean
   onRename: (oldName: string, novo: string) => boolean
   onPatchData: (nodeId: string, patch: Record<string, unknown>) => void
   onPatchCondition: (nodeId: string, patch: Partial<NodeCondition>) => void
@@ -1386,7 +1442,7 @@ interface PropriedadesPanelProps {
 
 function PropriedadesPanel({
   node, nodes, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, dbServer, dbDatabases, grupos,
-  onRename, onPatchData, onPatchCondition, onPatchNotify, onPatchSql, onSimular, onDelete, onClose,
+  readOnly, onRename, onPatchData, onPatchCondition, onPatchNotify, onPatchSql, onSimular, onDelete, onClose,
 }: PropriedadesPanelProps) {
   return (
     <aside className="flex w-[320px] shrink-0 flex-col overflow-y-auto border-l border-edge bg-panel">
@@ -1399,9 +1455,14 @@ function PropriedadesPanel({
         >
           <PanelRightClose size={15} />
         </button>
-        <span className="text-xs font-semibold uppercase tracking-wide text-dim">Propriedades</span>
+        <span className="text-xs font-semibold uppercase tracking-wide text-dim">
+          Propriedades{readOnly ? ' (leitura)' : ''}
+        </span>
       </div>
 
+      {/* No modo leitura o fieldset desabilita TODOS os campos/botões do painel
+          de uma vez (inclui Excluir/Simular) — o layout não muda. */}
+      <fieldset disabled={readOnly} className="flex min-h-0 flex-1 flex-col">
       {!node ? (
         <PainelVazio />
       ) : node.type === 'decisao' ? (
@@ -1449,6 +1510,7 @@ function PropriedadesPanel({
           onDelete={onDelete}
         />
       )}
+      </fieldset>
     </aside>
   )
 }

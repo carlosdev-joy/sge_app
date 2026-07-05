@@ -5,9 +5,9 @@ import { Button } from '../ui/Button'
 // FONTE ÚNICA de campos por TIPO de etapa (datastage | shell | python | storedproc).
 //
 // Este componente concentra TODA a regra de "quais campos cada tipo de etapa
-// tem" e como validá-los. É reusado pela Lista (JobFormModal em Jobs.tsx) e,
-// futuramente, pelo painel lateral do Fluxo (FluxoEditor). Qualquer campo novo
-// adicionado num tipo aqui vale automaticamente nas duas telas.
+// tem" e como validá-los. É reusado pela Lista (JobFormModal em Jobs.tsx) e
+// pelo painel lateral do Fluxo (PainelEtapa no FluxoEditor). Qualquer campo
+// novo adicionado num tipo aqui vale automaticamente nas duas telas.
 //
 // NÃO renderiza job_name / ordem / tipo / "depende de" — isso fica no consumidor.
 // A decisão (job_type='decisao') também NÃO entra aqui: é tratada no Fluxo.

@@ -926,10 +926,11 @@ export default function Jobs() {
             )}
           </div>
 
-          {/* Modo Fluxo — canvas interativo (só faz sentido p/ um pipeline) */}
+          {/* Modo Fluxo — canvas interativo (só faz sentido p/ um pipeline).
+              Perfil consulta abre em somente leitura (paleta/salvar escondidos). */}
           {searched && viewMode === 'fluxo' && (
             <div className="h-[calc(100vh-16rem)]">
-              <FluxoEditor pipeline={searched} />
+              <FluxoEditor pipeline={searched} readOnly={isViewer} />
             </div>
           )}
 
