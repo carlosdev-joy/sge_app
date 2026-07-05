@@ -143,3 +143,39 @@ def test_ciclo_branch_volta_para_dependencia(J):
     # JobB depende de JobA; a Decisao (após JobB) ramifica p/ JobA → ciclo
     adj = {"JobA": {"JobB"}, "JobB": {"Decisao"}, "Decisao": {"JobA"}}
     assert J._graph_has_cycle(adj) is True
+
+
+# ───────────────────────── on_error (fail-loud) ─────────────────────────────
+
+def test_condicao_on_error_valores_validos(J):
+    assert J._validate_condition(_cond_contagem(on_error="falhar"), _JOBS, "Decisao", None) == []
+    assert J._validate_condition(_cond_contagem(on_error="ramo_falso"), _JOBS, "Decisao", None) == []
+
+
+def test_condicao_on_error_invalido(J):
+    errs = J._validate_condition(_cond_contagem(on_error="ignorar"), _JOBS, "Decisao", None)
+    assert any("on_error" in e for e in errs)
+
+
+def test_normalize_condition_carimba_falhar_por_default(J):
+    """Save sem on_error (fluxo legado/UI antiga) → carimba 'falhar' (fail-loud)."""
+    out = J._normalize_condition(_cond_contagem())
+    assert out["on_error"] == "falhar"
+
+
+def test_normalize_condition_preserva_ramo_falso_explicito(J):
+    out = J._normalize_condition(_cond_contagem(on_error="ramo_falso"))
+    assert out["on_error"] == "ramo_falso"
+
+
+def test_validate_sql_node_on_error_invalido(J):
+    errs = J._validate_sql_node(
+        {"sql": "SELECT 1", "mssql_conn_id": "X", "on_error": "explodir"})
+    assert any("on_error" in e for e in errs)
+
+
+def test_normalize_sql_node_carimba_falhar_por_default(J):
+    out = J._normalize_sql_node({"sql": "SELECT 1", "mssql_conn_id": "X"})
+    assert out["on_error"] == "falhar"
+    out2 = J._normalize_sql_node({"sql": "SELECT 1", "mssql_conn_id": "X", "on_error": "nulo"})
+    assert out2["on_error"] == "nulo"

@@ -51,6 +51,13 @@ _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-$#@ ]+$")
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _COND_OPERADORES = {"=", "<>", ">", ">=", "<", "<="}
 _COND_COMPARACOES = {"texto", "data", "numero"}
+# on_error: o que fazer quando a AVALIAÇÃO da condição/consulta falha.
+# Decisão: 'falhar' (task falha alto) | 'ramo_falso' (degrada, legado).
+# Nó SQL:  'falhar' | 'nulo' (publica None, legado). O normalize carimba
+# 'falhar' como default nos SAVES novos — fluxos antigos (JSON sem a chave)
+# mantêm o comportamento legado até serem re-salvos e republicados.
+_COND_ON_ERROR = {"falhar", "ramo_falso"}
+_SQL_ON_ERROR = {"falhar", "nulo"}
 _COND_DML_RE = re.compile(
     r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|"
     r"GRANT|REVOKE|INTO)\b",
@@ -115,6 +122,10 @@ def _validate_sql_node(cfg) -> list[str]:
     db_val = cfg.get("database")
     if db_val is not None and not isinstance(db_val, str):
         errs.append("database do nó SQL deve ser texto")
+    oe = cfg.get("on_error")
+    if oe is not None and str(oe).strip():
+        if str(oe).strip().lower() not in _SQL_ON_ERROR:
+            errs.append("on_error do nó SQL inválido (use 'falhar' ou 'nulo')")
     return errs
 
 
@@ -134,12 +145,16 @@ def _normalize_sql_node(cfg: dict) -> dict:
     """Normaliza sql_json para persistência (sql/mssql_conn_id/database como str).
 
     Mantém a CHAVE 'sql' presente (presença de chave é o que o round-trip do
-    GET /fluxo / get_pipeline_job usa para devolver o SELECT por nó)."""
+    GET /fluxo / get_pipeline_job usa para devolver o SELECT por nó). Carimba
+    on_error (default 'falhar' — fail-loud) nos saves novos; 'nulo' preserva o
+    degrade legado para quem escolher explicitamente."""
+    oe = str(cfg.get("on_error") or "").strip().lower()
     return {
         "sql": (cfg.get("sql") if isinstance(cfg.get("sql"), str) else ""),
         "mssql_conn_id": (cfg.get("mssql_conn_id") or "").strip(),
         "database": ((cfg.get("database") or "").strip()
                      if isinstance(cfg.get("database"), str) else ""),
+        "on_error": oe if oe in _SQL_ON_ERROR else "falhar",
     }
 
 
@@ -214,6 +229,10 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
     cid = (cond.get("mssql_conn_id") or "").strip()
     if cid and mssql_conn_ids is not None and cid not in mssql_conn_ids:
         errs.append(f"conexão MSSQL '{cid}' da condição não encontrada no Airflow")
+    oe = cond.get("on_error")
+    if oe is not None and str(oe).strip():
+        if str(oe).strip().lower() not in _COND_ON_ERROR:
+            errs.append("on_error da condição inválido (use 'falhar' ou 'ramo_falso')")
     ramo_v, ramo_f = cond.get("ramo_verdadeiro") or [], cond.get("ramo_falso") or []
     if not isinstance(ramo_v, list) or not isinstance(ramo_f, list):
         errs.append("ramos (ramo_verdadeiro/ramo_falso) devem ser listas")
@@ -249,6 +268,10 @@ def _normalize_condition(cond: dict) -> dict:
     if tipo == "linhas_job":
         out["job_name"] = str(out.get("job_name") or "").strip()
         out["child_job"] = str(out.get("child_job") or "").strip()
+    # Carimba on_error no save: default 'falhar' (fail-loud) para decisões salvas
+    # a partir de agora; quem quiser o degrade legado escolhe 'ramo_falso' na UI.
+    oe = str(out.get("on_error") or "").strip().lower()
+    out["on_error"] = oe if oe in _COND_ON_ERROR else "falhar"
     return out
 
 

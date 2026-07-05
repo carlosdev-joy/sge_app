@@ -65,6 +65,9 @@ interface SqlConfig {
   sql: string
   mssql_conn_id: string | null
   database: string | null
+  // O que fazer se a consulta falhar: 'falhar' (task falha alto — default dos
+  // saves novos) | 'nulo' (publica None em silêncio, comportamento legado).
+  on_error: 'falhar' | 'nulo'
 }
 interface FluxoNode {
   job_name: string
@@ -215,7 +218,7 @@ function notifyLabel(cfg: NotifyConfig, gruposById?: Map<number, string>): strin
 // ── Nó SQL (consulta que retorna 1 valor, lido por uma Decisão a jusante) ─────
 // Config default de um nó SQL recém-criado.
 function defaultSql(): SqlConfig {
-  return { sql: '', mssql_conn_id: null, database: null }
+  return { sql: '', mssql_conn_id: null, database: null, on_error: 'falhar' }
 }
 
 // Lê a config SQL do payload da API (tolerante a null/parcial).
@@ -225,6 +228,9 @@ function toSqlConfig(raw: SqlConfig | null | undefined): SqlConfig {
     sql: typeof raw.sql === 'string' ? raw.sql : '',
     mssql_conn_id: raw.mssql_conn_id != null && `${raw.mssql_conn_id}`.trim() ? `${raw.mssql_conn_id}` : null,
     database: raw.database != null && `${raw.database}`.trim() ? `${raw.database}` : null,
+    // Sem on_error salvo (nó legado) exibe 'falhar' — default carimbado no
+    // próximo save; 'nulo' é a escolha explícita de manter o degrade legado.
+    on_error: raw.on_error === 'nulo' ? 'nulo' : 'falhar',
   }
 }
 
@@ -1030,6 +1036,9 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
         if (isDecisao) {
           const cur = (d.condition as NodeCondition | undefined) ?? defaultCondition()
           const ramos = ramosByDecisao.get(n.id) ?? { sim: [], nao: [] }
+          // on_error explícito em todos os tipos — round-trip do que o painel
+          // exibe (o backend valida/carimba de novo no save).
+          const onError = cur.on_error === 'ramo_falso' ? 'ramo_falso' : 'falhar'
           if (cur.tipo === 'linhas_job') {
             // Decisão por linhas processadas: usa job a montante (e job filho
             // opcional). Omite os campos de tabela/sql/banco/conexão.
@@ -1039,6 +1048,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
               valor: (cur.valor ?? '').toString().trim(),
               job_name: (cur.job_name || '').trim(),
               child_job: (cur.child_job || '').trim(),
+              on_error: onError,
               ramo_verdadeiro: ramos.sim,
               ramo_falso: ramos.nao,
             }
@@ -1051,6 +1061,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
               comparacao: cur.comparacao || 'texto',
               operador: cur.operador,
               valor: (cur.valor ?? '').toString().trim(),
+              on_error: onError,
               ramo_verdadeiro: ramos.sim,
               ramo_falso: ramos.nao,
             }
@@ -1063,6 +1074,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
               database: (cur.database || '').trim() || undefined,
               sql: (cur.sql || '').trim() || undefined,
               mssql_conn_id: (cur.mssql_conn_id || '').trim() || undefined,
+              on_error: onError,
               ramo_verdadeiro: ramos.sim,
               ramo_falso: ramos.nao,
             }
@@ -1093,6 +1105,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
               sql: (cur.sql ?? '').toString(),
               mssql_conn_id: cur.mssql_conn_id ?? null,
               database: cur.database ?? null,
+              on_error: cur.on_error === 'nulo' ? 'nulo' : 'falhar',
             },
           }
         }
@@ -1947,6 +1960,24 @@ function PainelDecisao({ node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns,
           )}
           </>
           )}
+
+          {/* Fail-loud: o que fazer se a AVALIAÇÃO da condição der erro. */}
+          <div className="flex flex-col gap-1">
+            <Select
+              label="Se a avaliação falhar"
+              value={c.on_error === 'ramo_falso' ? 'ramo_falso' : 'falhar'}
+              onChange={e => patch({ on_error: e.target.value === 'ramo_falso' ? 'ramo_falso' : 'falhar' })}
+              className="text-xs"
+            >
+              <option value="falhar">Falhar a execução (recomendado)</option>
+              <option value="ramo_falso">Seguir pelo ramo NÃO (legado)</option>
+            </Select>
+            {c.on_error === 'ramo_falso' && (
+              <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                Erro na avaliação roteia o ramo NÃO em silêncio — o pipeline não acusa a falha.
+              </p>
+            )}
+          </div>
         </div>
       </div>
 
@@ -2266,6 +2297,24 @@ function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete }: PainelS
               )}
             </Select>
             {!host && <p className="text-[10px] text-dim/70">Escolha a conexão para listar os bancos.</p>}
+          </div>
+
+          {/* Fail-loud: o que fazer se a consulta der erro no runtime. */}
+          <div className="flex flex-col gap-1">
+            <Select
+              label="Se a consulta falhar"
+              value={cfg.on_error === 'nulo' ? 'nulo' : 'falhar'}
+              onChange={e => patch({ on_error: e.target.value === 'nulo' ? 'nulo' : 'falhar' })}
+              className="text-xs"
+            >
+              <option value="falhar">Falhar a execução (recomendado)</option>
+              <option value="nulo">Publicar nulo e seguir (legado)</option>
+            </Select>
+            {cfg.on_error === 'nulo' && (
+              <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                Erro no SELECT publica nulo em silêncio — uma decisão a jusante pode rotear o ramo errado.
+              </p>
+            )}
           </div>
 
           <Button

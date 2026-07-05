@@ -257,3 +257,58 @@ def test_eval_valor_sql_nao_abre_hook(conditions, monkeypatch):
         "SQL14_DMDB41", ti=ti)
     assert resultado is True
     assert valor == "7"
+
+
+# ───────────────────────── on_error (fail-loud) ─────────────────────────────
+
+def test_sql_node_on_error_falhar_vai_para_o_codigo_gerado(factory):
+    jobs = [_job("JobA"),
+            _job("NoSQL", jtype="sql", order=2, depends="JobA",
+                 sql={**_SQL_CFG, "on_error": "falhar"})]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    ast.parse(src)
+    _exec_source(src)
+    assert "on_error='falhar'" in src
+
+
+def test_sql_node_sem_on_error_gera_legado_nulo(factory):
+    """sql_json antigo (sem a chave) → DAG regenerada mantém o degrade legado."""
+    jobs = [_job("JobA"),
+            _job("NoSQL", jtype="sql", order=2, depends="JobA", sql=_SQL_CFG)]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    assert "on_error='nulo'" in src
+
+
+def test_eval_valor_sql_on_error_falhar_sem_ti_levanta(conditions):
+    with pytest.raises(ValueError):
+        conditions.eval_condition(
+            _cond_valor_sql(on_error="falhar"), "SQL14_DMDB41", ti=None)
+
+
+def test_eval_valor_sql_on_error_falhar_xcom_ausente_levanta(conditions):
+    ti = _FakeTI({})   # xcom_pull devolve None (nó SQL falhou/publicou NULL)
+    with pytest.raises(ValueError):
+        conditions.eval_condition(
+            _cond_valor_sql(on_error="falhar"), "SQL14_DMDB41", ti=ti)
+
+
+def test_eval_valor_sql_on_error_falhar_com_valor_segue_normal(conditions):
+    ti = _FakeTI({"NoSQL": 42})
+    resultado, valor = conditions.eval_condition(
+        _cond_valor_sql(on_error="falhar"), "SQL14_DMDB41", ti=ti)
+    assert resultado is True
+    assert valor == 42
+
+
+def test_compara_tipado_numero_invalido_legado_degrada(conditions):
+    assert conditions.compara_tipado("abc", ">", 10, "numero") is False
+
+
+def test_compara_tipado_numero_invalido_fail_loud_levanta(conditions):
+    with pytest.raises(ValueError):
+        conditions.compara_tipado("abc", ">", 10, "numero", fail_loud=True)
+
+
+def test_compara_tipado_data_invalida_fail_loud_levanta(conditions):
+    with pytest.raises(ValueError):
+        conditions.compara_tipado("nao-e-data", "=", "HOJE", "data", fail_loud=True)

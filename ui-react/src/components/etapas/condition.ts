@@ -12,6 +12,7 @@ export function defaultCondition(): NodeCondition {
     tabela: '', database: '', sql: '', mssql_conn_id: '',
     job_name: '', child_job: '',
     source_job: '', comparacao: 'texto',
+    on_error: 'falhar',
     ramo_verdadeiro: [], ramo_falso: [],
   }
 }
@@ -38,6 +39,10 @@ export function toNodeCondition(raw: Record<string, unknown> | null | undefined)
     child_job: typeof raw.child_job === 'string' ? raw.child_job : '',
     source_job: typeof raw.source_job === 'string' ? raw.source_job : '',
     comparacao,
+    // Sem on_error salvo (condição legada) exibe 'falhar' — é o default que o
+    // backend carimba no próximo save; quem quiser manter o degrade legado
+    // escolhe 'ramo_falso' explicitamente no painel.
+    on_error: raw.on_error === 'ramo_falso' ? 'ramo_falso' : 'falhar',
     ramo_verdadeiro: Array.isArray(raw.ramo_verdadeiro) ? (raw.ramo_verdadeiro as string[]) : [],
     ramo_falso: Array.isArray(raw.ramo_falso) ? (raw.ramo_falso as string[]) : [],
   }

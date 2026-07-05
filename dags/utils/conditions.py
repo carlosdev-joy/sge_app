@@ -125,7 +125,7 @@ def _to_date(v):
         return None
 
 
-def compara_tipado(obtido, operador, valor, comparacao) -> bool:
+def compara_tipado(obtido, operador, valor, comparacao, fail_loud: bool = False) -> bool:
     """Compara ``obtido <operador> valor`` honrando o tipo ``comparacao``.
 
     ``comparacao`` ∈ {'numero','data','texto'} ou None/''/desconhecido (delega ao
@@ -137,8 +137,12 @@ def compara_tipado(obtido, operador, valor, comparacao) -> bool:
                   não parseável → log + False (não levanta).
       - 'texto' : compara como string (str de ambos).
 
-    NUNCA levanta por erro de parse — só ``operador`` inválido (via _aplica/compara)
-    pode levantar, e isso é checado antes. Erro inesperado → log + False."""
+    Por padrão NUNCA levanta por erro de parse — só ``operador`` inválido (via
+    _aplica/compara), checado antes. Erro inesperado → log + False.
+
+    ``fail_loud=True`` (condição com ``on_error='falhar'``): valor que não pode
+    ser resolvido para o tipo declarado LEVANTA ValueError em vez de degradar —
+    a decisão falha alto no Airflow, em vez de rotear o ramo errado em silêncio."""
     comp = str(comparacao or "").strip().lower()
     if comp not in _COMPARACOES:
         return compara(obtido, operador, valor)
@@ -149,6 +153,10 @@ def compara_tipado(obtido, operador, valor, comparacao) -> bool:
         if comp == "numero":
             a = _coerce_num(obtido)
             b = _coerce_num(valor)
+            if fail_loud and (a is None or b is None):
+                raise ValueError(
+                    f"comparação 'numero' não resolveu valor "
+                    f"(obtido={obtido!r}, valor={valor!r}) — on_error=falhar")
             a = 0.0 if a is None else a
             b = 0.0 if b is None else b
             return _aplica_operador(a, b, operador)
@@ -156,6 +164,10 @@ def compara_tipado(obtido, operador, valor, comparacao) -> bool:
             a = _to_date(obtido)
             b = _to_date(valor)
             if a is None or b is None:
+                if fail_loud:
+                    raise ValueError(
+                        f"comparação 'data' não resolveu data "
+                        f"(obtido={obtido!r}, valor={valor!r}) — on_error=falhar")
                 print(f"[CONDICAO data] não foi possível resolver data "
                       f"(obtido={obtido!r}→{a!r}, valor={valor!r}→{b!r}) — resultado False.")
                 return False
@@ -167,6 +179,10 @@ def compara_tipado(obtido, operador, valor, comparacao) -> bool:
     except ValueError:
         raise
     except Exception as exc:  # noqa: BLE001 — degrada sem derrubar a DAG
+        if fail_loud:
+            raise ValueError(
+                f"erro ao comparar (obtido={obtido!r}, valor={valor!r}, "
+                f"op={operador!r}): {exc} — on_error=falhar") from exc
         print(f"[CONDICAO {comp}] erro ao comparar "
               f"(obtido={obtido!r}, valor={valor!r}, op={operador!r}): {exc} — resultado False.")
         return False
@@ -192,6 +208,12 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
     lê o XCom publicado pelo nó SQL a montante (``source_job``) e compara — não
     roda SQL próprio. Os demais tipos ignoram ``ti``. Sem ``ti`` ou sem valor no
     XCom → log + ``obtido=None`` (degrada para False na comparação tipada).
+
+    ``cond['on_error']='falhar'`` (default carimbado pela API nos fluxos salvos a
+    partir de agora): qualquer degradação silenciosa acima vira ValueError — a
+    decisão FALHA no Airflow (fail-fast + card no Teams) em vez de rotear o ramo
+    'não' com um erro escondido no log. Ausente/'ramo_falso' = comportamento
+    legado (fluxos antigos não mudam até serem re-salvos e republicados).
     """
     from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook  # lazy
 
@@ -199,6 +221,7 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
     tipo = str(cond.get("tipo") or "").strip().lower()
     operador = cond.get("operador") or ">"
     limite = cond.get("valor")
+    fail_loud = str(cond.get("on_error") or "").strip().lower() == "falhar"
 
     # valor_sql: NÃO roda SQL — lê o XCom do nó SQL a montante (source_job) e
     # compara via compara_tipado. Resolvido ANTES de abrir hook/conexão (não
@@ -207,20 +230,34 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
         source_job = str(cond.get("source_job") or "").strip()
         obtido = None
         if not source_job:
+            if fail_loud:
+                raise ValueError("[CONDICAO valor_sql] source_job vazio — on_error=falhar")
             print("[CONDICAO valor_sql] source_job vazio — valor tratado como None (resultado False).")
         elif ti is None:
+            if fail_loud:
+                raise ValueError(
+                    f"[CONDICAO valor_sql] sem TaskInstance para ler o XCom de "
+                    f"'{source_job}' — on_error=falhar")
             print(f"[CONDICAO valor_sql] sem TaskInstance (ti) para ler o XCom de "
                   f"'{source_job}' — valor tratado como None (resultado False).")
         else:
             try:
                 obtido = ti.xcom_pull(task_ids=source_job)
             except Exception as exc:  # noqa: BLE001 — degrada sem derrubar a DAG
+                if fail_loud:
+                    raise ValueError(
+                        f"[CONDICAO valor_sql] xcom_pull de '{source_job}' falhou: "
+                        f"{exc} — on_error=falhar") from exc
                 print(f"[CONDICAO valor_sql] xcom_pull de '{source_job}' falhou ({exc}) — valor None.")
                 obtido = None
             if obtido is None:
+                if fail_loud:
+                    raise ValueError(
+                        f"[CONDICAO valor_sql] sem valor no XCom de '{source_job}' "
+                        f"(nó SQL falhou/publicou NULL) — on_error=falhar")
                 print(f"[CONDICAO valor_sql] sem valor no XCom de '{source_job}' "
                       f"— valor tratado como None (resultado False).")
-        return compara_tipado(obtido, operador, limite, cond.get("comparacao")), obtido
+        return compara_tipado(obtido, operador, limite, cond.get("comparacao"), fail_loud), obtido
 
     conn_id = (cond.get("mssql_conn_id") or "").strip() or default_conn_id
     hook = MsSqlHook(mssql_conn_id=conn_id)
@@ -243,9 +280,11 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
         child_job = (cond.get("child_job") or "").strip()
         if child_job:
             obtido = _rows_do_filho(
-                hook, cond.get("job_name") or "", child_job, execution_id, pipeline_name)
+                hook, cond.get("job_name") or "", child_job, execution_id, pipeline_name,
+                fail_loud=fail_loud)
         else:
-            obtido = _rows_out_do_job(hook, cond.get("job_name") or "", execution_id, pipeline_name)
+            obtido = _rows_out_do_job(hook, cond.get("job_name") or "", execution_id,
+                                      pipeline_name, fail_loud=fail_loud)
     else:
         raise ValueError(f"tipo de condição desconhecido: {tipo!r}")
 
@@ -253,7 +292,7 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
     # (ausente = compara legado, retrocompatível). linhas_job é sempre numérico
     # (rows_out) → usa o compara legado.
     if tipo in ("query", "contagem"):
-        return compara_tipado(obtido, operador, limite, cond.get("comparacao")), obtido
+        return compara_tipado(obtido, operador, limite, cond.get("comparacao"), fail_loud), obtido
     return compara(obtido, operador, limite), obtido
 
 
@@ -277,37 +316,44 @@ def _ds_log_first(hook, col, job_name, execution_id, pipeline_name):
     )
 
 
+def _linhas_degrade(msg: str, fail_loud: bool) -> int:
+    """Degradação padrão da decisão por linhas: log + 0. Com ``on_error='falhar'``
+    (fail_loud), LEVANTA em vez de degradar — a decisão falha alto no Airflow."""
+    if fail_loud:
+        raise ValueError(f"[CONDICAO linhas_job] {msg} — on_error=falhar")
+    print(f"[CONDICAO linhas_job] {msg} — tratando como 0.")
+    return 0
+
+
 def _rows_out_do_job(hook, job_name: str, execution_id: str | None,
-                     pipeline_name: str | None = None) -> int:
+                     pipeline_name: str | None = None, fail_loud: bool = False) -> int:
     """Lê o rows_out mais recente de dbo.etl_ds_job_log para ``job_name`` na
     execução ATUAL (``execution_id``). Sem registro / rows_out NULL → 0 (logado).
 
     Degrada graciosamente: se a tabela/coluna não existir (migration 049 ainda
-    não aplicada) ou a leitura falhar, retorna 0 sem quebrar a avaliação."""
+    não aplicada) ou a leitura falhar, retorna 0 sem quebrar a avaliação.
+    ``fail_loud=True`` → cada degradação vira ValueError (ver _linhas_degrade)."""
     job_name = (job_name or "").strip()
     pipeline_name = (pipeline_name or "").strip()
     if not job_name:
-        print("[CONDICAO linhas_job] job_name vazio — tratando rows_out como 0.")
-        return 0
+        return _linhas_degrade("job_name vazio", fail_loud)
     if not execution_id:
         print("[CONDICAO linhas_job] sem execution_id — usando o registro mais recente do job.")
     try:
         row = _ds_log_first(hook, "rows_out", job_name, execution_id, pipeline_name)
     except Exception as exc:
-        print(f"[CONDICAO linhas_job] leitura de etl_ds_job_log falhou ({exc}) — rows_out=0.")
-        return 0
+        return _linhas_degrade(f"leitura de etl_ds_job_log falhou ({exc})", fail_loud)
     if not row or row[0] is None:
-        print(f"[CONDICAO linhas_job] sem rows_out para job '{job_name}' "
-              f"(execution_id={execution_id!r}) — tratando como 0.")
-        return 0
+        return _linhas_degrade(
+            f"sem rows_out para job '{job_name}' (execution_id={execution_id!r})", fail_loud)
     try:
         return int(row[0])
     except (TypeError, ValueError):
-        return 0
+        return _linhas_degrade(f"rows_out não numérico ({row[0]!r})", fail_loud)
 
 
 def _rows_do_filho(hook, job_name: str, child_job: str, execution_id: str | None,
-                   pipeline_name: str | None = None) -> int:
+                   pipeline_name: str | None = None, fail_loud: bool = False) -> int:
     """Lê as linhas de SAÍDA de um job FILHO (``child_job``) dentro do SEQUENCE
     ``job_name``, na execução ATUAL. Faz parse do JSON ``child_jobs`` gravado em
     dbo.etl_ds_job_log pelo operador e usa o campo ``rows`` da entrada cujo
@@ -315,48 +361,43 @@ def _rows_do_filho(hook, job_name: str, child_job: str, execution_id: str | None
 
     Degrada graciosamente (mesmo espírito de ``_rows_out_do_job``): sem registro,
     JSON ausente/ inválido, filho não encontrado, ``rows`` None, ou tabela/coluna
-    inexistente → 0 (logado). Mantém o fallback de ``execution_id`` ausente."""
+    inexistente → 0 (logado). Mantém o fallback de ``execution_id`` ausente.
+    ``fail_loud=True`` → cada degradação vira ValueError (ver _linhas_degrade)."""
     import json as _json
 
     job_name = (job_name or "").strip()
     child_job = (child_job or "").strip()
     pipeline_name = (pipeline_name or "").strip()
     if not job_name:
-        print("[CONDICAO linhas_job] job_name vazio — tratando rows do filho como 0.")
-        return 0
+        return _linhas_degrade("job_name vazio (filho)", fail_loud)
     if not child_job:
-        print("[CONDICAO linhas_job] child_job vazio — tratando rows do filho como 0.")
-        return 0
+        return _linhas_degrade("child_job vazio", fail_loud)
     if not execution_id:
         print("[CONDICAO linhas_job] sem execution_id — usando o registro mais recente do job (filho).")
     try:
         row = _ds_log_first(hook, "child_jobs", job_name, execution_id, pipeline_name)
     except Exception as exc:
-        print(f"[CONDICAO linhas_job] leitura de child_jobs falhou ({exc}) — rows do filho=0.")
-        return 0
+        return _linhas_degrade(f"leitura de child_jobs falhou ({exc})", fail_loud)
     if not row or not row[0]:
-        print(f"[CONDICAO linhas_job] sem child_jobs para job '{job_name}' "
-              f"(execution_id={execution_id!r}) — rows do filho '{child_job}'=0.")
-        return 0
+        return _linhas_degrade(
+            f"sem child_jobs para job '{job_name}' (execution_id={execution_id!r}, "
+            f"filho '{child_job}')", fail_loud)
     try:
         children = _json.loads(row[0])
     except (ValueError, TypeError) as exc:
-        print(f"[CONDICAO linhas_job] child_jobs JSON inválido ({exc}) — rows do filho=0.")
-        return 0
+        return _linhas_degrade(f"child_jobs JSON inválido ({exc})", fail_loud)
     if not isinstance(children, list):
-        print("[CONDICAO linhas_job] child_jobs não é lista — rows do filho=0.")
-        return 0
+        return _linhas_degrade("child_jobs não é lista", fail_loud)
     for cj in children:
         if isinstance(cj, dict) and str(cj.get("name") or "").strip() == child_job:
             rows = cj.get("rows")
             if rows is None:
-                print(f"[CONDICAO linhas_job] filho '{child_job}' sem 'rows' "
-                      f"(job '{job_name}') — tratando como 0.")
-                return 0
+                return _linhas_degrade(
+                    f"filho '{child_job}' sem 'rows' (job '{job_name}')", fail_loud)
             try:
                 return int(rows)
             except (TypeError, ValueError):
-                return 0
-    print(f"[CONDICAO linhas_job] filho '{child_job}' não encontrado em child_jobs "
-          f"do job '{job_name}' — tratando como 0.")
-    return 0
+                return _linhas_degrade(
+                    f"rows do filho '{child_job}' não numérico ({rows!r})", fail_loud)
+    return _linhas_degrade(
+        f"filho '{child_job}' não encontrado em child_jobs do job '{job_name}'", fail_loud)
