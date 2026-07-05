@@ -131,7 +131,7 @@ if [ "$SQL_CHANGED" = "true" ]; then
         echo ""
         echo "  Ou via sqlcmd (arquivos novos detectados):"
         git diff --name-only "$BEFORE" "$AFTER" | grep "^sql/migrations/" | while read f; do
-          echo "    sqlcmd -S <SERVIDOR> -d <BANCO> -i $REPO_DIR/$f"
+          echo "    sqlcmd -b -I -S <SERVIDOR> -d <BANCO> -i $REPO_DIR/$f"
         done
       fi
     else
@@ -148,7 +148,7 @@ if [ "$SQL_CHANGED" = "true" ]; then
     echo ""
     echo "  Opção 2 — sqlcmd por arquivo:"
     git diff --name-only "$BEFORE" "$AFTER" | grep "^sql/migrations/" | while read f; do
-      echo "    sqlcmd -S <SERVIDOR> -d <BANCO> -i $REPO_DIR/$f"
+      echo "    sqlcmd -b -I -S <SERVIDOR> -d <BANCO> -i $REPO_DIR/$f"
     done
     echo ""
   fi

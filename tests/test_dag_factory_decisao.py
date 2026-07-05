@@ -358,3 +358,87 @@ def test_pipeline_sem_decisao_nao_gera_flow_close(factory):
     jobs = [_job("JobA"), _job("JobB", order=2)]
     src = factory._generate_dag_source(_pipeline(), jobs)
     assert "t_flow_close" not in src
+
+
+# ─────────────── flow_close: import real + fiação com nós especiais ──────────
+
+def _exec_source(src):
+    """Importa DE FATO a DAG gerada — pega NameError de tempo de carga (o que o
+    Airflow faria ao importar o .py). Stuba ``utils.*`` e os módulos extras do
+    Airflow (fora da lista deste arquivo) SÓ durante o exec."""
+    import sys as _sys
+    from unittest.mock import MagicMock as _MM
+    extra_mods = (
+        "utils", "utils.datastage_operator", "utils.conditions", "utils.job_operators",
+        "airflow.operators.empty", "airflow.datasets", "airflow.utils",
+        "airflow.utils.trigger_rule", "airflow.utils.state", "requests",
+    )
+    saved = {m: _sys.modules.get(m) for m in extra_mods}
+    try:
+        for m in extra_mods:
+            _sys.modules[m] = _MM()
+        exec(compile(src, "<dag>", "exec"), {})
+    finally:
+        for m, prev in saved.items():
+            if prev is None:
+                _sys.modules.pop(m, None)
+            else:
+                _sys.modules[m] = prev
+
+
+def test_flow_close_compila_executa_e_liga_nos_especiais(factory):
+    """Cenário completo: decisão + notificação + nó SQL. A fonte gerada precisa
+    IMPORTAR (exec) e o flow_close tem de convergir ends + nós especiais e
+    fechar antes do teams_end."""
+    import ast as _ast
+    import json as _json
+    notify = {"grupo_id": 1, "template_id": None, "mensagem": "oi"}
+    sqlcfg = {"sql": "SELECT 1", "mssql_conn_id": "CX", "database": "BI"}
+    jobs = [
+        _job("JobA"),
+        {"job_name": "NoSQL", "job_type": "sql", "job_command": None,
+         "execution_order": 2, "depends_on_jobs": "JobA",
+         "sql_json": _json.dumps(sqlcfg)},
+        _job("Decisao", jtype="decisao", order=3,
+             cond={"tipo": "valor_sql", "source_job": "NoSQL", "comparacao": "numero",
+                   "operador": ">", "valor": 0,
+                   "ramo_verdadeiro": ["JobB"], "ramo_falso": ["AVISA"]}),
+        _job("JobB", order=4),
+        {"job_name": "AVISA", "job_type": "notificacao", "job_command": None,
+         "execution_order": 4, "notify_json": _json.dumps(notify)},
+    ]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    _ast.parse(src)
+    _exec_source(src)
+    assert "t_flow_close = PythonOperator(" in src
+    # converge ends E nós especiais; fecha antes do card de fim
+    assert ">> t_flow_close" in src
+    assert "t_notif_AVISA >> t_flow_close" in src
+    assert "t_sql_NoSQL >> t_flow_close" in src
+    assert "t_flow_close >> t_teams_end" in src
+    # FLOW_JOBS exclui decisão/notificação/sql
+    assert "FLOW_JOBS     = ['JobA', 'JobB']" in src
+
+
+def test_flow_close_sem_teams_end_compila(factory):
+    """envia_msg_fim=0: flow_close existe sem a aresta para teams_end e a
+    fonte continua importável (sem NameError de t_teams_end)."""
+    import ast as _ast
+    jobs = [_job("JobA"), _job("Decisao", jtype="decisao", order=2, cond=_contagem_cond()),
+            _job("JobB", order=3), _job("JobC", order=3)]
+    src = factory._generate_dag_source(_pipeline(envia_msg_fim=0), jobs)
+    _ast.parse(src)
+    _exec_source(src)
+    assert "t_flow_close = PythonOperator(" in src
+    assert "t_flow_close >> t_teams_end" not in src
+
+
+# ─────────────── wall-clock nos cards gerados (regressão) ────────────────────
+
+def test_teams_end_usa_relogio_de_parede(factory):
+    """teams_end/teams_error medem DATEDIFF(MIN(start), MAX(end)) — a SOMA de
+    duration_seconds inflava pipelines com jobs paralelos."""
+    jobs = [_job("JobA"), _job("JobB", order=2)]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    assert src.count("DATEDIFF(SECOND, MIN(start_time), MAX(COALESCE(end_time, GETDATE())))") >= 2
+    assert "COALESCE(SUM(duration_seconds)" not in src

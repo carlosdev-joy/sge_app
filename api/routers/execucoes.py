@@ -639,9 +639,12 @@ async def rerun_from_task(body: dict = Body(default={}), _auth: dict = Depends(r
 
 
 async def _estados_task_instances(dag_id: str, exec_id: str) -> dict:
-    """task_id → state (lower) das task instances do dag_run cuja logical date
-    (ts_nodash) casa EXATAMENTE com ``exec_id``. {} em qualquer falha ou quando
-    não há match exato — melhor não reconciliar do que fechar pelo run errado."""
+    """task_id → {state, end_date} das task instances do dag_run cuja logical
+    date (ts_nodash) casa EXATAMENTE com ``exec_id``. {} em qualquer falha ou
+    sem match exato — melhor não reconciliar do que fechar pelo run errado.
+
+    Pagina os taskInstances (o Airflow capa o limit por página em 100) — um
+    fluxo de 40 etapas gera 120+ tasks com o trio de telemetria."""
     try:
         async with get_airflow_client() as client:
             r = await client.get(f"/api/v1/dags/{dag_id}/dagRuns",
@@ -655,20 +658,44 @@ async def _estados_task_instances(dag_id: str, exec_id: str) -> dict:
             logical = run.get("logical_date") or run.get("execution_date") or ""
             if _iso_to_ts_nodash(logical) != exec_id:
                 return {}
-            r2 = await client.get(
-                f"/api/v1/dags/{dag_id}/dagRuns/{run['dag_run_id']}/taskInstances",
-                params={"limit": 200})
-            if not r2.is_success:
-                return {}
             out: dict = {}
-            for ti in r2.json().get("task_instances", []):
-                st = (ti.get("state") or "").lower()
-                if st and ti.get("task_id"):
-                    out[ti["task_id"]] = st
+            offset = 0
+            while True:
+                r2 = await client.get(
+                    f"/api/v1/dags/{dag_id}/dagRuns/{run['dag_run_id']}/taskInstances",
+                    params={"limit": 100, "offset": offset})
+                if not r2.is_success:
+                    return out if offset else {}
+                payload = r2.json()
+                tis = payload.get("task_instances", [])
+                for ti in tis:
+                    st = (ti.get("state") or "").lower()
+                    if st and ti.get("task_id"):
+                        out[ti["task_id"]] = {"state": st,
+                                              "end_date": ti.get("end_date")}
+                offset += len(tis)
+                if not tis or offset >= int(payload.get("total_entries") or 0):
+                    break
             return out
     except Exception as e:
         log.warning("reconciliar: leitura de task instances falhou (%s)", e)
         return {}
+
+
+def _end_date_local(iso) -> str | None:
+    """end_date ISO (UTC) do Airflow → 'YYYY-MM-DD HH:MM:SS' no fuso local do
+    banco (America/Sao_Paulo) — o resto da telemetria usa GETDATE() local."""
+    if not iso:
+        return None
+    try:
+        from datetime import timezone
+        from zoneinfo import ZoneInfo
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
 
 
 @router.post("/execucoes/reconciliar", tags=["execucoes"])
@@ -724,16 +751,24 @@ async def reconciliar_execucao(body: dict = Body(default={}), _auth: dict = Depe
             _TERMINAL = {"success": "SUCCESS", "failed": "FAILED",
                          "upstream_failed": "FAILED", "skipped": "SKIPPED"}
             for job_name, task_id in presos:
-                novo = _TERMINAL.get(estados.get(task_id) or estados.get(job_name) or "")
+                ti = estados.get(task_id) or estados.get(job_name) or {}
+                novo = _TERMINAL.get(ti.get("state") or "")
                 if not novo:
                     continue
+                # end_time REAL da task (Airflow, convertido p/ hora local) —
+                # GETDATE() só como fallback; reconciliação tardia com o "agora"
+                # inflaria a duração e contaminaria o P90 do SLA preditivo.
+                fim_local = _end_date_local(ti.get("end_date"))
                 cur.execute(
-                    "UPDATE dbo.etl_job_execution SET status=?, end_time=GETDATE(), "
-                    "duration_seconds=DATEDIFF(SECOND, start_time, GETDATE()), "
+                    "UPDATE dbo.etl_job_execution SET status=?, "
+                    "end_time=COALESCE(?, GETDATE()), "
+                    "duration_seconds=CASE WHEN ?='SKIPPED' THEN 0 ELSE "
+                    "DATEDIFF(SECOND, start_time, COALESCE(?, GETDATE())) END, "
                     "updated_at=GETDATE() "
                     "WHERE execution_id=? AND pipeline=? AND job_name=? AND task_id=? "
                     "AND status='RUNNING' AND end_time IS NULL",
-                    (novo, execution_id, pipeline, job_name, task_id))
+                    (novo, fim_local, novo, fim_local,
+                     execution_id, pipeline, job_name, task_id))
                 closed_af += max(0, cur.rowcount or 0)
 
         conn.commit()
@@ -931,13 +966,13 @@ def get_falhas_summary(days: int = Query(7, ge=1, le=90)):
         if has_resolved:
             cur.execute(cte + """
                 SELECT
-                    COUNT(DISTINCT a.execution_id + '|' + a.pipeline) AS total,
+                    COUNT(DISTINCT a.execution_id + '|' + ISNULL(a.pipeline, '')) AS total,
                     COUNT(DISTINCT CASE WHEN ack.execution_id IS NULL
-                          THEN a.execution_id + '|' + a.pipeline END) AS sem_ack,
+                          THEN a.execution_id + '|' + ISNULL(a.pipeline, '') END) AS sem_ack,
                     COUNT(DISTINCT CASE WHEN ack.execution_id IS NOT NULL
-                          AND ack.resolved_at IS NULL THEN a.execution_id + '|' + a.pipeline END) AS com_ack,
+                          AND ack.resolved_at IS NULL THEN a.execution_id + '|' + ISNULL(a.pipeline, '') END) AS com_ack,
                     COUNT(DISTINCT CASE WHEN ack.resolved_at IS NOT NULL
-                          THEN a.execution_id + '|' + a.pipeline END) AS resolvidas
+                          THEN a.execution_id + '|' + ISNULL(a.pipeline, '') END) AS resolvidas
                 FROM agg a
                 LEFT JOIN dbo.etl_failure_ack ack
                        ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
@@ -945,11 +980,11 @@ def get_falhas_summary(days: int = Query(7, ge=1, le=90)):
         else:
             cur.execute(cte + """
                 SELECT
-                    COUNT(DISTINCT a.execution_id + '|' + a.pipeline) AS total,
+                    COUNT(DISTINCT a.execution_id + '|' + ISNULL(a.pipeline, '')) AS total,
                     COUNT(DISTINCT CASE WHEN ack.execution_id IS NULL
-                          THEN a.execution_id + '|' + a.pipeline END) AS sem_ack,
+                          THEN a.execution_id + '|' + ISNULL(a.pipeline, '') END) AS sem_ack,
                     COUNT(DISTINCT CASE WHEN ack.execution_id IS NOT NULL
-                          THEN a.execution_id + '|' + a.pipeline END) AS com_ack,
+                          THEN a.execution_id + '|' + ISNULL(a.pipeline, '') END) AS com_ack,
                     0 AS resolvidas
                 FROM agg a
                 LEFT JOIN dbo.etl_failure_ack ack
@@ -1225,7 +1260,7 @@ def list_falhas(
             ack_params.append(ack_by)
 
         cur.execute(cte + f"""
-            SELECT COUNT(DISTINCT a.execution_id + '|' + a.pipeline)
+            SELECT COUNT(DISTINCT a.execution_id + '|' + ISNULL(a.pipeline, ''))
             FROM agg a
             LEFT JOIN dbo.etl_failure_ack ack
                    ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline

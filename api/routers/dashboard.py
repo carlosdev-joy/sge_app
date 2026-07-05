@@ -79,7 +79,8 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
                 SUM(CASE WHEN status_geral='SUCCESS' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN status_geral='FAILED'  THEN 1 ELSE 0 END),
                 SUM(CASE WHEN status_geral='WARNING' THEN 1 ELSE 0 END),
-                CAST(AVG(CAST(duracao_total_segundos AS float)) AS int)
+                CAST(AVG(CAST(duracao_total_segundos AS float)) AS int),
+                SUM(CASE WHEN status_geral='SKIPPED' THEN 1 ELSE 0 END)
             FROM execs
         """, [dt_ini, dt_fim] + ([fp] if fp else []))
         row = cur.fetchone()
@@ -88,7 +89,11 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
         total_falha   = int(row[2] or 0) if row else 0
         total_warning = int(row[3] or 0) if row else 0
         duracao_media = int(row[4] or 0) if row else 0
-        taxa = round(total_sucesso * 100.0 / total_exec, 1) if total_exec else 0.0
+        total_skipped = int(row[5] or 0) if row else 0
+        # Execução 100% pulada (decisão) não é sucesso nem falha — fora da taxa
+        # (mesma regra do relatório diário).
+        base_taxa = total_exec - total_skipped
+        taxa = round(total_sucesso * 100.0 / base_taxa, 1) if base_taxa else 0.0
 
         cur.execute(f"""
             WITH execs AS (

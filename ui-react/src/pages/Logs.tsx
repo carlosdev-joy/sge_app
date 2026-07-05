@@ -24,7 +24,7 @@ import {
 // ── helpers ────────────────────────────────────────────────────────────────
 
 const PROJETOS = ['BI_CVP', 'BI_VIDA', 'BI_PREVIDENCIA', 'BI_PRESTAMISTA']
-const STATUS_OPTS = ['SUCCESS', 'FAILED', 'WARNING', 'RUNNING']
+const STATUS_OPTS = ['SUCCESS', 'FAILED', 'WARNING', 'RUNNING', 'SKIPPED']
 const LIMIT = 30
 
 // ── types ──────────────────────────────────────────────────────────────────
