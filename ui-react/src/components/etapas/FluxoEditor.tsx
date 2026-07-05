@@ -1747,6 +1747,9 @@ function PainelDecisao({ node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns,
       const res = await apiFetch<SimResult>('/jobs/decisao-simular', {
         method: 'POST',
         body: JSON.stringify({
+          // mssql_conn_id primeiro (credencial nativa, a mesma do runtime);
+          // host segue como fallback para conexões só do Airflow.
+          mssql_conn_id: sqlCfg.mssql_conn_id,
           host,
           database: sqlCfg.database,
           sql: sqlCfg.sql,
@@ -1952,14 +1955,28 @@ function PainelDecisao({ node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns,
               />
             </>
           ) : (
-            <Textarea
-              label="SQL (somente SELECT) *"
-              value={c.sql ?? ''}
-              rows={3}
-              onChange={e => patch({ sql: e.target.value })}
-              placeholder="ex: SELECT MAX(flag) FROM dbo.Controle WHERE ..."
-              className="font-mono text-xs"
-            />
+            <>
+              <Textarea
+                label="SQL (somente SELECT) *"
+                value={c.sql ?? ''}
+                rows={3}
+                onChange={e => patch({ sql: e.target.value })}
+                placeholder="ex: SELECT MAX(flag) FROM dbo.Controle WHERE ..."
+                className="font-mono text-xs"
+              />
+              <div className="flex flex-col gap-1">
+                <Input
+                  label="Banco (opcional)"
+                  value={c.database ?? ''}
+                  onChange={e => patch({ database: e.target.value })}
+                  placeholder="ex: BI_DW"
+                  className="font-mono text-xs"
+                />
+                <p className="text-[10px] text-dim/70">
+                  Vazio = banco default da conexão. Preencha se o SELECT usa nomes sem banco.
+                </p>
+              </div>
+            </>
           )}
 
           {/* Conexão MSSQL não se aplica à decisão por linhas processadas. */}
@@ -2216,11 +2233,14 @@ function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete }: PainelS
     [mssqlConns, cfg.mssql_conn_id],
   )
 
-  // Bancos do servidor da conexão (enabled só com host) — degrada para [].
+  // Bancos da conexão (enabled com conexão escolhida) — degrada para [].
+  // conn_id primeiro: o backend lista com a credencial NATIVA da conexão
+  // (dbo.etl_conexao) quando houver; host fica como fallback legado.
   const { data: dbData } = useQuery<{ server: string | null; databases: string[] }>({
-    queryKey: ['sql-node-databases', host],
-    queryFn: () => apiFetch(`/jobs/databases?host=${encodeURIComponent(host)}`),
-    enabled: !!host,
+    queryKey: ['sql-node-databases', cfg.mssql_conn_id, host],
+    queryFn: () => apiFetch(
+      `/jobs/databases?conn_id=${encodeURIComponent(cfg.mssql_conn_id ?? '')}&host=${encodeURIComponent(host)}`),
+    enabled: !!cfg.mssql_conn_id || !!host,
     staleTime: 300_000,
   })
   const databases = dbData?.databases ?? []
@@ -2244,7 +2264,11 @@ function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete }: PainelS
     try {
       const res = await apiFetch<SqlPreview>('/jobs/sql-preview', {
         method: 'POST',
-        body: JSON.stringify({ host, database: cfg.database, sql: cfg.sql }),
+        // mssql_conn_id primeiro (credencial nativa, a mesma do runtime);
+        // host segue como fallback para conexões só do Airflow.
+        body: JSON.stringify({
+          mssql_conn_id: cfg.mssql_conn_id, host, database: cfg.database, sql: cfg.sql,
+        }),
       })
       setPreview(res)
     } catch (e: any) {
