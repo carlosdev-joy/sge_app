@@ -32,6 +32,8 @@ const RBAC_RECURSOS: [string, string][] = [
   ['tela_ds_console', 'Console DataStage'],
   ['tela_performance', 'Performance'],
   ['tela_copia_dados', 'Cópia de Dados'],
+  ['tela_inventario', 'Inventário de Consumidores'],
+  ['tela_finalizacao', 'Finalizar Pipeline'],
   ['acao_executar', 'Executar/Rerun/Ack'],
   ['acao_editar', 'Cadastrar/Editar'],
   ['acao_admin', 'Administração'],

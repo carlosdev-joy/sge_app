@@ -22,6 +22,7 @@ import Publicacao from './pages/Publicacao'
 import Performance from './pages/Performance'
 import CopiaDados from './pages/CopiaDados'
 import Inventario from './pages/Inventario'
+import Finalizacao from './pages/Finalizacao'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -50,6 +51,7 @@ const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/powerbi': <PowerBI />,
   '/ds-console': <DsConsole />,
   '/performance': <Performance />,
+  '/finalizacao': <Finalizacao />,
   '/admin': <Admin />,
 }
 
