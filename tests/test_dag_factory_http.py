@@ -82,9 +82,12 @@ def _exec_source(src):
 # ───────────────────────────── DAG gerada ──────────────────────────────────
 
 def test_http_compila_e_importa_com_trio_de_telemetria(factory):
+    # JobB a jusante do http: garante que t_end_CHAMA_API existe e é referenciado
+    # (a classe de NameError que o _exec_source pega no import da DAG).
     jobs = [_job("JobA"),
             _job("CHAMA_API", jtype="http", order=2,
-                 cmd="https://servidor.interno/api/disparo", depends="JobA")]
+                 cmd="https://servidor.interno/api/disparo", depends="JobA"),
+            _job("JobB", order=3, depends="CHAMA_API")]
     src = factory._generate_dag_source(_pipeline(), jobs)
     ast.parse(src)
     _exec_source(src)
@@ -94,6 +97,8 @@ def test_http_compila_e_importa_com_trio_de_telemetria(factory):
     assert "t_start_CHAMA_API" in src
     assert "t_job_CHAMA_API" in src
     assert "t_end_CHAMA_API" in src
+    # e o default antigo (httpbin.org) não existe mais em lugar nenhum
+    assert "httpbin.org" not in src
 
 
 def test_http_sem_url_recusa_publicar(factory):
@@ -102,9 +107,6 @@ def test_http_sem_url_recusa_publicar(factory):
     jobs = [_job("CHAMA_API", jtype="http", cmd=None)]
     with pytest.raises(ValueError, match="sem URL"):
         factory._generate_dag_source(_pipeline(), jobs)
-    src_ok_de_outro = factory._generate_dag_source(
-        _pipeline(), [_job("JobA")])
-    assert "httpbin.org" not in src_ok_de_outro
 
 
 # ───────────────────── validação de URL no backend ─────────────────────────

@@ -51,8 +51,10 @@ _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-$#@ ]+$")
 _HTTP_URL_RE = re.compile(r"^https?://[^\s'\"]+$", re.IGNORECASE)
 
 
-def _valid_http_url(url: str) -> bool:
-    return bool(_HTTP_URL_RE.match((url or "").strip()))
+def _valid_http_url(url) -> bool:
+    # Tolerante a tipo: job_command não-string (ex.: número no JSON) vira 422 de
+    # validação nos call sites, não 500 de .strip() inexistente.
+    return isinstance(url, str) and bool(_HTTP_URL_RE.match(url.strip()))
 
 # ── Nó de Decisão (migration 043) ──────────────────────────────────────────
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1046,13 +1048,14 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
         # do branch.
         req_names = {(j.get("job_name") or "").strip() for j in jobs
                      if (j.get("job_name") or "").strip()}
-        db_names: set[str] = set()
-        try:
-            cur.execute("SELECT job_name FROM dbo.etl_pipeline_job WHERE pipeline_name=?",
-                        (pipeline_name,))
-            db_names = {r[0] for r in cur.fetchall()}
-        except Exception:
-            db_names = set()
+        # SEM degrade: db_names é a base do grandfather de nomes legados com
+        # espaço — se este SELECT degradasse para set() num erro transitório, o
+        # re-save de um job legado seria rejeitado com mensagem enganosa de
+        # validação. Falha aqui propaga ao handler externo (500 'Erro DB'),
+        # igual ao mesmo SELECT no POST /fluxo.
+        cur.execute("SELECT job_name FROM dbo.etl_pipeline_job WHERE pipeline_name=?",
+                    (pipeline_name,))
+        db_names: set[str] = {r[0] for r in cur.fetchall()}
         known_jobs = req_names | db_names
         # Arestas para o detector de ciclo (apenas nós presentes no request).
         cycle_adj: dict[str, set[str]] = {n: set() for n in req_names}

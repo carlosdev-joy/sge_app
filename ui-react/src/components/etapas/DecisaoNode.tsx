@@ -24,6 +24,10 @@ export interface NodeCondition {
   // O que fazer se a AVALIAÇÃO falhar: 'falhar' (task falha alto — default dos
   // saves novos) | 'ramo_falso' (degrada em silêncio, comportamento legado).
   on_error?: 'falhar' | 'ramo_falso'
+  // Derivado (NÃO persiste): true quando o JSON salvo não tem on_error — a DAG
+  // publicada ainda degrada em silêncio; o 'falhar' exibido só vale após
+  // salvar + republicar. Alimenta o aviso no painel.
+  on_error_legado?: boolean
   ramo_verdadeiro: string[]
   ramo_falso: string[]
 }

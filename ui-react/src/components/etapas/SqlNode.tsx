@@ -18,6 +18,8 @@ export interface SqlNodeData {
     mssql_conn_id: string | null
     database: string | null
     on_error: 'falhar' | 'nulo'
+    // Derivado (não persiste): JSON salvo sem on_error — ver FluxoEditor.
+    on_error_legado?: boolean
   }
   label: string
   isNew?: boolean

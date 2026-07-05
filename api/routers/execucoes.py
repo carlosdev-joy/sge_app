@@ -43,6 +43,21 @@ def _iso_to_ts_nodash(iso: str) -> str:
     return (iso or "")[:19].replace("-", "").replace(":", "")
 
 
+def _escolhe_dag_run(runs: list, exec_id: str) -> dict:
+    """Escolhe o dag_run a limpar no rerun: casa a logical date (ts_nodash) com o
+    execution_id da execução clicada; sem match, mantém o fallback legado (1º run
+    terminado da lista, ordenada por -execution_date; senão o mais recente)."""
+    if exec_id:
+        for run in runs:
+            logical = run.get("logical_date") or run.get("execution_date") or ""
+            if _iso_to_ts_nodash(logical) == exec_id:
+                return run
+    for run in runs:
+        if run.get("state") in ("failed", "success"):
+            return run
+    return runs[0]
+
+
 def get_airflow_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=AIRFLOW_URL,
@@ -578,21 +593,14 @@ async def rerun_from_task(body: dict = Body(default={}), _auth: dict = Depends(r
             # clicada — sem isso, com runs paralelos/antigos o clear limpava o run
             # ERRADO (pegava o 1º terminado da lista). Sem match, mantém o
             # comportamento antigo como fallback.
-            chosen = None
-            if exec_id:
-                for run in runs:
-                    logical = run.get("logical_date") or run.get("execution_date") or ""
-                    if _iso_to_ts_nodash(logical) == exec_id:
-                        chosen = run; break
-            if chosen is None:
-                for run in runs:
-                    if run.get("state") in ("failed", "success"):
-                        chosen = run; break
-            dag_run_id = (chosen or runs[0])["dag_run_id"]
+            dag_run_id = _escolhe_dag_run(runs, exec_id)["dag_run_id"]
 
-        # 2. Limpar a task e downstream via clearTaskInstances
+        # 2. Limpar a task e downstream via clearTaskInstances — SEMPRE com o
+        # dag_run_id: sem ele o Airflow limpa a task em TODOS os dag_runs da DAG
+        # (e reset_dag_runs re-enfileira todos) — reprocessamento em massa.
         clear_body = {
             "dry_run": False,
+            "dag_run_id": dag_run_id,
             "task_ids": [task_id],
             "include_downstream": True,
             "include_future": False,

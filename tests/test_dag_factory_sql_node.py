@@ -312,3 +312,53 @@ def test_compara_tipado_numero_invalido_fail_loud_levanta(conditions):
 def test_compara_tipado_data_invalida_fail_loud_levanta(conditions):
     with pytest.raises(ValueError):
         conditions.compara_tipado("nao-e-data", "=", "HOJE", "data", fail_loud=True)
+
+
+# ─────────────── linhas_job: degradação legada × fail-loud ───────────────────
+
+class _FakeHook:
+    """MsSqlHook mínimo: get_first devolve a linha configurada (ou levanta)."""
+    def __init__(self, row=None, erro=None):
+        self._row = row
+        self._erro = erro
+
+    def get_first(self, *a, **kw):
+        if self._erro:
+            raise self._erro
+        return self._row
+
+
+def test_rows_out_do_job_le_valor(conditions):
+    hook = _FakeHook(row=(1234,))
+    assert conditions._rows_out_do_job(hook, "JobA", "exec1", "PIPE") == 1234
+
+
+def test_rows_out_do_job_erro_legado_degrada_para_zero(conditions):
+    hook = _FakeHook(erro=RuntimeError("tabela não existe"))
+    assert conditions._rows_out_do_job(hook, "JobA", "exec1", "PIPE") == 0
+
+
+def test_rows_out_do_job_erro_fail_loud_levanta(conditions):
+    hook = _FakeHook(erro=RuntimeError("tabela não existe"))
+    with pytest.raises(ValueError):
+        conditions._rows_out_do_job(hook, "JobA", "exec1", "PIPE", fail_loud=True)
+
+
+def test_rows_out_do_job_sem_registro_fail_loud_levanta(conditions):
+    hook = _FakeHook(row=None)
+    with pytest.raises(ValueError):
+        conditions._rows_out_do_job(hook, "JobA", "exec1", "PIPE", fail_loud=True)
+
+
+def test_rows_do_filho_le_rows_do_filho(conditions):
+    import json as _json
+    hook = _FakeHook(row=(_json.dumps([{"name": "FILHO", "rows": 77}]),))
+    assert conditions._rows_do_filho(hook, "SEQ", "FILHO", "exec1", "PIPE") == 77
+
+
+def test_rows_do_filho_ausente_legado_zero_fail_loud_levanta(conditions):
+    import json as _json
+    hook = _FakeHook(row=(_json.dumps([{"name": "OUTRO", "rows": 5}]),))
+    assert conditions._rows_do_filho(hook, "SEQ", "FILHO", "exec1", "PIPE") == 0
+    with pytest.raises(ValueError):
+        conditions._rows_do_filho(hook, "SEQ", "FILHO", "exec1", "PIPE", fail_loud=True)

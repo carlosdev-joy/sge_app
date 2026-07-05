@@ -41,8 +41,10 @@ export function toNodeCondition(raw: Record<string, unknown> | null | undefined)
     comparacao,
     // Sem on_error salvo (condição legada) exibe 'falhar' — é o default que o
     // backend carimba no próximo save; quem quiser manter o degrade legado
-    // escolhe 'ramo_falso' explicitamente no painel.
+    // escolhe 'ramo_falso' explicitamente no painel. on_error_legado marca o
+    // gap: a DAG publicada ainda degrada até salvar + republicar.
     on_error: raw.on_error === 'ramo_falso' ? 'ramo_falso' : 'falhar',
+    on_error_legado: raw.on_error == null,
     ramo_verdadeiro: Array.isArray(raw.ramo_verdadeiro) ? (raw.ramo_verdadeiro as string[]) : [],
     ramo_falso: Array.isArray(raw.ramo_falso) ? (raw.ramo_falso as string[]) : [],
   }

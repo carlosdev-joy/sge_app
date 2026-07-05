@@ -179,3 +179,19 @@ def test_normalize_sql_node_carimba_falhar_por_default(J):
     assert out["on_error"] == "falhar"
     out2 = J._normalize_sql_node({"sql": "SELECT 1", "mssql_conn_id": "X", "on_error": "nulo"})
     assert out2["on_error"] == "nulo"
+
+
+# ─────────────── grandfather de nomes legados com espaço ────────────────────
+
+@pytest.mark.parametrize("nome", ["Job Legado", "CARGA CLIENTES 2"])
+def test_nome_com_espaco_passa_no_legado_e_reprova_no_estrito(J, nome):
+    """_JOB_NAME_RE (legado) tolera espaço; _JOB_NAME_STRICT_RE (jobs NOVOS) não —
+    espaço vira task_id inválido no Airflow e quebrava o import da DAG."""
+    assert J._JOB_NAME_RE.match(nome)
+    assert J._JOB_NAME_STRICT_RE.match(nome) is None
+
+
+@pytest.mark.parametrize("nome", ["Job_Novo-1.x", "CARGA_CLIENTES", "a.b-c_9"])
+def test_nome_sem_espaco_passa_nos_dois(J, nome):
+    assert J._JOB_NAME_RE.match(nome)
+    assert J._JOB_NAME_STRICT_RE.match(nome)

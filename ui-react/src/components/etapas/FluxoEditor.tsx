@@ -68,6 +68,9 @@ interface SqlConfig {
   // O que fazer se a consulta falhar: 'falhar' (task falha alto — default dos
   // saves novos) | 'nulo' (publica None em silêncio, comportamento legado).
   on_error: 'falhar' | 'nulo'
+  // Derivado (NÃO persiste): JSON salvo sem on_error — DAG publicada ainda
+  // degrada em silêncio até salvar + republicar. Alimenta o aviso no painel.
+  on_error_legado?: boolean
 }
 interface FluxoNode {
   job_name: string
@@ -231,6 +234,7 @@ function toSqlConfig(raw: SqlConfig | null | undefined): SqlConfig {
     // Sem on_error salvo (nó legado) exibe 'falhar' — default carimbado no
     // próximo save; 'nulo' é a escolha explícita de manter o degrade legado.
     on_error: raw.on_error === 'nulo' ? 'nulo' : 'falhar',
+    on_error_legado: raw.on_error == null,
   }
 }
 
@@ -653,6 +657,9 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   // Nós aguardando confirmação de exclusão (multi-seleção + Delete traz vários).
   const [delNodeIds, setDelNodeIds] = useState<string[] | null>(null)
+  // Arestas AVULSAS selecionadas junto (Ctrl+clique) que não tocam os nós a
+  // excluir — também caem na confirmação, senão sobreviveriam em silêncio.
+  const [delEdgeIds, setDelEdgeIds] = useState<string[]>([])
 
   const { data, isLoading, isError, error } = useQuery<FluxoResp>({
     queryKey: ['fluxo', pipeline],
@@ -923,24 +930,32 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   // ── Excluir nós (confirmação) — aceita a multi-seleção inteira ─────────────
   function excluirNos(ids: string[]) {
     const alvo = new Set(ids)
+    const edgesAvulsas = new Set(delEdgeIds)
     for (const id of ids) {
       if (existingRef.current.has(id)) deletedRef.current.add(id)
     }
-    setEdges(eds => eds.filter(e => !alvo.has(e.source) && !alvo.has(e.target)))
+    setEdges(eds => eds.filter(e =>
+      !alvo.has(e.source) && !alvo.has(e.target) && !edgesAvulsas.has(e.id)))
     setNodes(nds => nds.filter(n => !alvo.has(n.id)))
     setDirty(true)
     setDelNodeIds(null)
+    setDelEdgeIds([])
     setSelectedId(prev => (prev && alvo.has(prev) ? null : prev))
   }
 
   // Intercepta o delete nativo (tecla Delete/Backspace) para confirmar antes de
-  // remover nós — TODOS os selecionados, não só o primeiro. Deleção de arestas
-  // (toDel.nodes vazio) segue direto.
+  // remover nós — TODOS os selecionados, não só o primeiro. Guarda também as
+  // arestas avulsas da seleção (não adjacentes aos nós), que o cancelamento do
+  // delete nativo deixaria vivas. Deleção só de arestas segue direto.
   const handleBeforeDelete = useCallback(
-    async ({ nodes: toDel }: { nodes: Node[]; edges: Edge[] }) => {
+    async ({ nodes: toDel, edges: toDelEdges }: { nodes: Node[]; edges: Edge[] }) => {
       if (readOnly) return false
       if (toDel.length > 0) {
+        const ids = new Set(toDel.map(n => n.id))
         setDelNodeIds(toDel.map(n => n.id))
+        setDelEdgeIds(toDelEdges
+          .filter(e => !ids.has(e.source) && !ids.has(e.target))
+          .map(e => e.id))
         return false   // cancela o delete nativo; nossa confirmação cuida
       }
       return true
@@ -1355,7 +1370,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
       {/* Confirmação de exclusão de nó(s) — lista TODOS os selecionados */}
       <Modal
         open={!!delNodeIds?.length}
-        onClose={() => setDelNodeIds(null)}
+        onClose={() => { setDelNodeIds(null); setDelEdgeIds([]) }}
         title={delNodeIds && delNodeIds.length > 1 ? `Excluir ${delNodeIds.length} nós` : 'Excluir nó'}
         size="sm"
       >
@@ -1369,6 +1384,9 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
               </span>
             ))}{' '}
             do fluxo? As dependências e ramos ligados também serão desligados.
+            {delEdgeIds.length > 0 && (
+              <span> {delEdgeIds.length} conexão(ões) selecionada(s) também serão removidas.</span>
+            )}
           </p>
           {(delNodeIds ?? []).some(id => existingRef.current.has(id)) && (
             <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
@@ -1378,7 +1396,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
             </p>
           )}
           <div className="flex justify-end gap-2 border-t border-edge pt-3">
-            <Button variant="secondary" onClick={() => setDelNodeIds(null)}>Cancelar</Button>
+            <Button variant="secondary" onClick={() => { setDelNodeIds(null); setDelEdgeIds([]) }}>Cancelar</Button>
             <Button variant="danger" onClick={() => delNodeIds?.length && excluirNos(delNodeIds)}>
               <Trash2 size={14} /> Excluir
             </Button>
@@ -1977,6 +1995,12 @@ function PainelDecisao({ node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns,
                 Erro na avaliação roteia o ramo NÃO em silêncio — o pipeline não acusa a falha.
               </p>
             )}
+            {c.on_error !== 'ramo_falso' && c.on_error_legado && (
+              <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                Nó legado: a DAG publicada ainda degrada em silêncio — o "falhar"
+                passa a valer após salvar o fluxo e republicar.
+              </p>
+            )}
           </div>
         </div>
       </div>
@@ -2313,6 +2337,12 @@ function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete }: PainelS
             {cfg.on_error === 'nulo' && (
               <p className="text-[10px] text-amber-700 dark:text-amber-400">
                 Erro no SELECT publica nulo em silêncio — uma decisão a jusante pode rotear o ramo errado.
+              </p>
+            )}
+            {cfg.on_error !== 'nulo' && cfg.on_error_legado && (
+              <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                Nó legado: a DAG publicada ainda degrada em silêncio — o "falhar"
+                passa a valer após salvar o fluxo e republicar.
               </p>
             )}
           </div>
