@@ -314,3 +314,24 @@ def test_ds_log_first_escopa_por_pipeline(conditions):
     conditions._ds_log_first(h, "child_jobs", "JobA", None, "PIPE_X")
     assert cap["params"] == ("JobA",)
     assert "child_jobs" in cap["sql"]
+
+
+# ───────────────────────── on_error (fail-loud) ─────────────────────────────
+
+def test_decisao_on_error_falhar_vai_para_o_codigo_gerado(factory):
+    """O condition_json inteiro (incl. on_error) é embutido no _decide_* gerado
+    — é assim que eval_condition sabe que deve falhar alto."""
+    cond = {**_contagem_cond(), "on_error": "falhar"}
+    jobs = [_job("JobA"), _job("Decisao", jtype="decisao", order=2, cond=cond),
+            _job("JobB", order=3), _job("JobC", order=3)]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    assert "'on_error': 'falhar'" in src
+
+
+def test_decisao_sem_on_error_nao_inventa_chave(factory):
+    """condition_json legado (sem on_error) → DAG regenerada NÃO ganha a chave
+    (comportamento degrade preservado até o re-save carimbar)."""
+    jobs = [_job("JobA"), _job("Decisao", jtype="decisao", order=2, cond=_contagem_cond()),
+            _job("JobB", order=3), _job("JobC", order=3)]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    assert "'on_error'" not in src

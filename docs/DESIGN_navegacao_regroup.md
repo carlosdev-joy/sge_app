@@ -68,6 +68,12 @@ Dois níveis, para você escolher a profundidade.
 ### Nível 2 — regroup por tarefa (aposta, só no v2 atrás da flag)
 - **Operação** (diário, todas as personas): Dashboard, Logs.
 - **Construção** (dev): Pipelines, Etapas. *(o editor de fluxo futuro entra como toggle grafo↔lista AQUI, não como item novo.)*
+  - **REVISADO (2026-07-05)**: o editor amadureceu de mockup a caminho primário de
+    construção (PRs #113–#139) e ganhou também o item **Fluxos** (`/fluxos`) no
+    grupo Construção — tela dedicada com biblioteca + canvas em tela cheia e
+    deep-link `?pipeline=`. O toggle da tela Etapas NÃO morre (dual-view mantido);
+    a rota nova renderiza o MESMO componente `FluxoEditor`, sem fork, e reusa a
+    permissão `tela_jobs` (sem migration de RBAC).
 - **Governança & Dados**: Catálogo & Lineage, Malha de Pipelines, Impacto de Campo, Planos de Ajuste.
 - **DataStage**: Estrutura (Malha DS), Console (dsjob).
 - **Rodapé** (sem cabeçalho): Power BI, Admin.

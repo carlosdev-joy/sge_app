@@ -260,7 +260,12 @@ def _task_block(job, project, pipeline, branch_reachable=False):
                 f')',
             ])
     elif jtype == "http":
-        url = jcmd or "https://httpbin.org/get"
+        # Fail-loud na geração (precedente 0625b16): sem URL, recusa publicar —
+        # o default antigo (httpbin.org) chamaria um endpoint EXTERNO em produção.
+        url = (jcmd or "").strip()
+        if not url:
+            raise ValueError(
+                f"job http '{name}' sem URL (job_command) — preencha a URL e republique")
         main = "\n".join([
             f't_job_{vname} = HttpCallOperator(',
             f'    task_id={name!r},',
@@ -388,14 +393,17 @@ def _sql_block(job, sql_cfg, branch_reachable=False):
     lineage — fica fora de end_tasks), mas, em vez de postar no Teams, devolve o
     valor para uma Decisão 'valor_sql' a jusante comparar.
 
-    Degrada: o callable retorna None em qualquer erro (helper _resolve_e_roda_sql
-    é best-effort) — não derruba a DAG. Quando alcançável a partir de um branch,
-    usa trigger_rule tolerante a skip (NONE_FAILED_MIN_ONE_SUCCESS)."""
+    on_error do sql_json dirige a falha: 'falhar' (default carimbado pela API
+    nos fluxos re-salvos) → erro no SELECT LEVANTA e a task falha alto;
+    'nulo'/ausente (legado) → log + None (não derruba a DAG, mas pode rotear a
+    decisão a jusante para o ramo errado em silêncio). Quando alcançável a
+    partir de um branch, usa trigger_rule tolerante a skip."""
     name  = job["job_name"]
     vname = _varname(name)
     sql       = sql_cfg.get("sql") or ""
     conn_id   = (sql_cfg.get("mssql_conn_id") or "").strip() or None
     database  = (sql_cfg.get("database") or "").strip() or None
+    on_error  = (str(sql_cfg.get("on_error") or "").strip().lower() or "nulo")
     rule = (
         '    trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,'
         if branch_reachable else None
@@ -406,7 +414,7 @@ def _sql_block(job, sql_cfg, branch_reachable=False):
         f'    _sql = {sql!r}',
         f'    _conn_id = {conn_id!r}',
         f'    _database = {database!r}',
-        f'    _valor = _resolve_e_roda_sql(_sql, _conn_id, _database, context)',
+        f'    _valor = _resolve_e_roda_sql(_sql, _conn_id, _database, context, on_error={on_error!r})',
         f'    print("[SQL NODE " + _job + "] valor publicado=" + repr(_valor))',
         f'    return _valor',
         f'',
@@ -886,11 +894,15 @@ def _generate_dag_source(pipeline, jobs):
         "    else:",
         "        _teams_post_card(title=titulo_final, subtitle=corpo_final, facts=facts, status=card_status, button=button)",
         "",
-        "def _resolve_e_roda_sql(sql, conn_id, database, context):",
+        "def _resolve_e_roda_sql(sql, conn_id, database, context, on_error='nulo'):",
         "    # Nó SQL: roda o SELECT e devolve o valor ESCALAR (1a coluna da 1a linha),",
         "    # que vira o XCom default da task (a Decisao 'valor_sql' a jusante o le).",
-        "    # Best-effort: qualquer falha -> log + None (nao derruba a DAG).",
+        "    # on_error='falhar' -> erro LEVANTA (task falha alto, fail-fast do run);",
+        "    # 'nulo'/ausente (legado) -> log + None (nao derruba a DAG).",
+        "    _falha_alto = str(on_error or '').strip().lower() == 'falhar'",
         "    if not sql:",
+        "        if _falha_alto:",
+        "            raise ValueError('[SQL NODE] sql vazio — on_error=falhar')",
         "        print('[SQL NODE] sql vazio — valor None.')",
         "        return None",
         "    try:",
@@ -903,6 +915,8 @@ def _generate_dag_source(pipeline, jobs):
         "        print('[SQL NODE] conn=' + _cid + ' database=' + repr(_db or None) + ' -> valor=' + repr(val))",
         "        return val",
         "    except Exception as _e:",
+        "        if _falha_alto:",
+        "            raise",
         "        print('[SQL NODE] falha ao rodar SELECT (' + str(_e) + ') — valor None.')",
         "        return None",
         "",

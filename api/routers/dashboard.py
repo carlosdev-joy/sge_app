@@ -144,11 +144,16 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
             FROM ranked r
             LEFT JOIN dbo.etl_pipeline p ON p.pipeline_name = r.pipeline
             LEFT JOIN (
-                SELECT execution_id, SUM(CAST(queued_seconds AS bigint)) AS fila_total
+                -- Escopo por pipeline TAMBÉM: execution_id (ts_nodash) colide entre
+                -- pipelines agendadas no mesmo tick (migration 027) — sem o
+                -- pipeline_name a fila somaria a espera de outra pipeline.
+                SELECT execution_id, pipeline_name,
+                       SUM(CAST(queued_seconds AS bigint)) AS fila_total
                 FROM dbo.etl_ds_job_log
                 WHERE queued_seconds IS NOT NULL AND queued_seconds > 0
-                GROUP BY execution_id
+                GROUP BY execution_id, pipeline_name
             ) fila ON fila.execution_id = r.execution_id
+                  AND fila.pipeline_name = r.pipeline
             WHERE rn=1 AND COALESCE(p.ambiente,'PROD')='PROD'
             ORDER BY r.atividade DESC
         """, [dt_ini, dt_fim] + ([fp] if fp else []))

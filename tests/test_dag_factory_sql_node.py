@@ -257,3 +257,108 @@ def test_eval_valor_sql_nao_abre_hook(conditions, monkeypatch):
         "SQL14_DMDB41", ti=ti)
     assert resultado is True
     assert valor == "7"
+
+
+# ───────────────────────── on_error (fail-loud) ─────────────────────────────
+
+def test_sql_node_on_error_falhar_vai_para_o_codigo_gerado(factory):
+    jobs = [_job("JobA"),
+            _job("NoSQL", jtype="sql", order=2, depends="JobA",
+                 sql={**_SQL_CFG, "on_error": "falhar"})]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    ast.parse(src)
+    _exec_source(src)
+    assert "on_error='falhar'" in src
+
+
+def test_sql_node_sem_on_error_gera_legado_nulo(factory):
+    """sql_json antigo (sem a chave) → DAG regenerada mantém o degrade legado."""
+    jobs = [_job("JobA"),
+            _job("NoSQL", jtype="sql", order=2, depends="JobA", sql=_SQL_CFG)]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    assert "on_error='nulo'" in src
+
+
+def test_eval_valor_sql_on_error_falhar_sem_ti_levanta(conditions):
+    with pytest.raises(ValueError):
+        conditions.eval_condition(
+            _cond_valor_sql(on_error="falhar"), "SQL14_DMDB41", ti=None)
+
+
+def test_eval_valor_sql_on_error_falhar_xcom_ausente_levanta(conditions):
+    ti = _FakeTI({})   # xcom_pull devolve None (nó SQL falhou/publicou NULL)
+    with pytest.raises(ValueError):
+        conditions.eval_condition(
+            _cond_valor_sql(on_error="falhar"), "SQL14_DMDB41", ti=ti)
+
+
+def test_eval_valor_sql_on_error_falhar_com_valor_segue_normal(conditions):
+    ti = _FakeTI({"NoSQL": 42})
+    resultado, valor = conditions.eval_condition(
+        _cond_valor_sql(on_error="falhar"), "SQL14_DMDB41", ti=ti)
+    assert resultado is True
+    assert valor == 42
+
+
+def test_compara_tipado_numero_invalido_legado_degrada(conditions):
+    assert conditions.compara_tipado("abc", ">", 10, "numero") is False
+
+
+def test_compara_tipado_numero_invalido_fail_loud_levanta(conditions):
+    with pytest.raises(ValueError):
+        conditions.compara_tipado("abc", ">", 10, "numero", fail_loud=True)
+
+
+def test_compara_tipado_data_invalida_fail_loud_levanta(conditions):
+    with pytest.raises(ValueError):
+        conditions.compara_tipado("nao-e-data", "=", "HOJE", "data", fail_loud=True)
+
+
+# ─────────────── linhas_job: degradação legada × fail-loud ───────────────────
+
+class _FakeHook:
+    """MsSqlHook mínimo: get_first devolve a linha configurada (ou levanta)."""
+    def __init__(self, row=None, erro=None):
+        self._row = row
+        self._erro = erro
+
+    def get_first(self, *a, **kw):
+        if self._erro:
+            raise self._erro
+        return self._row
+
+
+def test_rows_out_do_job_le_valor(conditions):
+    hook = _FakeHook(row=(1234,))
+    assert conditions._rows_out_do_job(hook, "JobA", "exec1", "PIPE") == 1234
+
+
+def test_rows_out_do_job_erro_legado_degrada_para_zero(conditions):
+    hook = _FakeHook(erro=RuntimeError("tabela não existe"))
+    assert conditions._rows_out_do_job(hook, "JobA", "exec1", "PIPE") == 0
+
+
+def test_rows_out_do_job_erro_fail_loud_levanta(conditions):
+    hook = _FakeHook(erro=RuntimeError("tabela não existe"))
+    with pytest.raises(ValueError):
+        conditions._rows_out_do_job(hook, "JobA", "exec1", "PIPE", fail_loud=True)
+
+
+def test_rows_out_do_job_sem_registro_fail_loud_levanta(conditions):
+    hook = _FakeHook(row=None)
+    with pytest.raises(ValueError):
+        conditions._rows_out_do_job(hook, "JobA", "exec1", "PIPE", fail_loud=True)
+
+
+def test_rows_do_filho_le_rows_do_filho(conditions):
+    import json as _json
+    hook = _FakeHook(row=(_json.dumps([{"name": "FILHO", "rows": 77}]),))
+    assert conditions._rows_do_filho(hook, "SEQ", "FILHO", "exec1", "PIPE") == 77
+
+
+def test_rows_do_filho_ausente_legado_zero_fail_loud_levanta(conditions):
+    import json as _json
+    hook = _FakeHook(row=(_json.dumps([{"name": "OUTRO", "rows": 5}]),))
+    assert conditions._rows_do_filho(hook, "SEQ", "FILHO", "exec1", "PIPE") == 0
+    with pytest.raises(ValueError):
+        conditions._rows_do_filho(hook, "SEQ", "FILHO", "exec1", "PIPE", fail_loud=True)

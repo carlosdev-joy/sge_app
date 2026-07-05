@@ -25,7 +25,7 @@ import {
 
 // ── constants ──────────────────────────────────────────────────────────────
 
-const JOB_TYPES = ['datastage', 'shell', 'python', 'storedproc', 'decisao', 'notificacao'] as const
+const JOB_TYPES = ['datastage', 'shell', 'python', 'storedproc', 'http', 'decisao', 'notificacao'] as const
 type JobType = typeof JOB_TYPES[number]
 
 // ── types ──────────────────────────────────────────────────────────────────
@@ -66,6 +66,7 @@ function typeBadgeColor(t: JobType | string) {
     shell: 'bg-amber-500/15 text-amber-400 border border-amber-800/40',
     python: 'bg-green-500/15 text-green-400 border border-green-800/40',
     storedproc: 'bg-purple-500/15 text-purple-400 border border-purple-800/40',
+    http: 'bg-orange-500/15 text-orange-400 border border-orange-800/40',
   }
   return m[t] ?? 'bg-slate-500/15 text-slate-400 border border-slate-700'
 }
@@ -926,10 +927,21 @@ export default function Jobs() {
             )}
           </div>
 
-          {/* Modo Fluxo — canvas interativo (só faz sentido p/ um pipeline) */}
+          {/* Modo Fluxo — canvas interativo (só faz sentido p/ um pipeline).
+              Perfil consulta abre em somente leitura (paleta/salvar escondidos). */}
           {searched && viewMode === 'fluxo' && (
-            <div className="h-[calc(100vh-16rem)]">
-              <FluxoEditor pipeline={searched} />
+            <div className="flex flex-col gap-1.5">
+              <a
+                href={`/fluxos?pipeline=${encodeURIComponent(searched)}`}
+                target="_blank" rel="noopener noreferrer"
+                className="self-end text-xs text-blue-500 hover:text-blue-400 hover:underline"
+                title="Abrir este fluxo na tela dedicada (canvas em tela cheia)"
+              >
+                Abrir em tela cheia ↗
+              </a>
+              <div className="h-[calc(100vh-16rem)]">
+                <FluxoEditor pipeline={searched} readOnly={isViewer} />
+              </div>
             </div>
           )}
 

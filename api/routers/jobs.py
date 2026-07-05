@@ -32,20 +32,41 @@ def _fmt_dt(v):
     return str(v)
 
 
-VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc", "decisao", "notificacao", "sql"}
+VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc", "http", "decisao", "notificacao", "sql"}
 VALID_PARAM_TYPES = {"INT", "VARCHAR", "DATE", "BIT", "DECIMAL", "DATETIME"}
 _PARAM_NAME_RE = re.compile(r"^@?[A-Za-z_][A-Za-z0-9_]*$")
 # job_name vira literal de string no código da DAG gerada e argumento de shell no
 # dsjob — allowlist bloqueia aspas/;/$/quebra-de-linha (anti code/command injection).
 _JOB_NAME_RE = re.compile(r"^[A-Za-z0-9_.\- ]+$")
+# job_name também vira task_id no Airflow, que rejeita ESPAÇO (validate_key
+# ^[\w.-]+$) — um nome com espaço publica DAG que quebra no import. Jobs NOVOS
+# usam o estrito; os já salvos com espaço são tolerados (grandfather) para não
+# travar o re-save de fluxos legados.
+_JOB_NAME_STRICT_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 # nome de banco-alvo (storedproc, mesmo servidor) — vira nome de 3 partes
 # [banco].schema.proc; allowlist bloqueia ] e demais chars perigosos (anti-injection).
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-$#@ ]+$")
+# URL de etapa http: allowlist http(s)://, sem espaço/aspas — vira argumento do
+# HttpCallOperator no código gerado (bloqueia file://, interpolação e injeção).
+_HTTP_URL_RE = re.compile(r"^https?://[^\s'\"]+$", re.IGNORECASE)
+
+
+def _valid_http_url(url) -> bool:
+    # Tolerante a tipo: job_command não-string (ex.: número no JSON) vira 422 de
+    # validação nos call sites, não 500 de .strip() inexistente.
+    return isinstance(url, str) and bool(_HTTP_URL_RE.match(url.strip()))
 
 # ── Nó de Decisão (migration 043) ──────────────────────────────────────────
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _COND_OPERADORES = {"=", "<>", ">", ">=", "<", "<="}
 _COND_COMPARACOES = {"texto", "data", "numero"}
+# on_error: o que fazer quando a AVALIAÇÃO da condição/consulta falha.
+# Decisão: 'falhar' (task falha alto) | 'ramo_falso' (degrada, legado).
+# Nó SQL:  'falhar' | 'nulo' (publica None, legado). O normalize carimba
+# 'falhar' como default nos SAVES novos — fluxos antigos (JSON sem a chave)
+# mantêm o comportamento legado até serem re-salvos e republicados.
+_COND_ON_ERROR = {"falhar", "ramo_falso"}
+_SQL_ON_ERROR = {"falhar", "nulo"}
 _COND_DML_RE = re.compile(
     r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|"
     r"GRANT|REVOKE|INTO)\b",
@@ -110,6 +131,10 @@ def _validate_sql_node(cfg) -> list[str]:
     db_val = cfg.get("database")
     if db_val is not None and not isinstance(db_val, str):
         errs.append("database do nó SQL deve ser texto")
+    oe = cfg.get("on_error")
+    if oe is not None and str(oe).strip():
+        if str(oe).strip().lower() not in _SQL_ON_ERROR:
+            errs.append("on_error do nó SQL inválido (use 'falhar' ou 'nulo')")
     return errs
 
 
@@ -129,12 +154,16 @@ def _normalize_sql_node(cfg: dict) -> dict:
     """Normaliza sql_json para persistência (sql/mssql_conn_id/database como str).
 
     Mantém a CHAVE 'sql' presente (presença de chave é o que o round-trip do
-    GET /fluxo / get_pipeline_job usa para devolver o SELECT por nó)."""
+    GET /fluxo / get_pipeline_job usa para devolver o SELECT por nó). Carimba
+    on_error (default 'falhar' — fail-loud) nos saves novos; 'nulo' preserva o
+    degrade legado para quem escolher explicitamente."""
+    oe = str(cfg.get("on_error") or "").strip().lower()
     return {
         "sql": (cfg.get("sql") if isinstance(cfg.get("sql"), str) else ""),
         "mssql_conn_id": (cfg.get("mssql_conn_id") or "").strip(),
         "database": ((cfg.get("database") or "").strip()
                      if isinstance(cfg.get("database"), str) else ""),
+        "on_error": oe if oe in _SQL_ON_ERROR else "falhar",
     }
 
 
@@ -209,6 +238,10 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
     cid = (cond.get("mssql_conn_id") or "").strip()
     if cid and mssql_conn_ids is not None and cid not in mssql_conn_ids:
         errs.append(f"conexão MSSQL '{cid}' da condição não encontrada no Airflow")
+    oe = cond.get("on_error")
+    if oe is not None and str(oe).strip():
+        if str(oe).strip().lower() not in _COND_ON_ERROR:
+            errs.append("on_error da condição inválido (use 'falhar' ou 'ramo_falso')")
     ramo_v, ramo_f = cond.get("ramo_verdadeiro") or [], cond.get("ramo_falso") or []
     if not isinstance(ramo_v, list) or not isinstance(ramo_f, list):
         errs.append("ramos (ramo_verdadeiro/ramo_falso) devem ser listas")
@@ -244,6 +277,10 @@ def _normalize_condition(cond: dict) -> dict:
     if tipo == "linhas_job":
         out["job_name"] = str(out.get("job_name") or "").strip()
         out["child_job"] = str(out.get("child_job") or "").strip()
+    # Carimba on_error no save: default 'falhar' (fail-loud) para decisões salvas
+    # a partir de agora; quem quiser o degrade legado escolhe 'ramo_falso' na UI.
+    oe = str(out.get("on_error") or "").strip().lower()
+    out["on_error"] = oe if oe in _COND_ON_ERROR else "falhar"
     return out
 
 
@@ -1011,13 +1048,14 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
         # do branch.
         req_names = {(j.get("job_name") or "").strip() for j in jobs
                      if (j.get("job_name") or "").strip()}
-        db_names: set[str] = set()
-        try:
-            cur.execute("SELECT job_name FROM dbo.etl_pipeline_job WHERE pipeline_name=?",
-                        (pipeline_name,))
-            db_names = {r[0] for r in cur.fetchall()}
-        except Exception:
-            db_names = set()
+        # SEM degrade: db_names é a base do grandfather de nomes legados com
+        # espaço — se este SELECT degradasse para set() num erro transitório, o
+        # re-save de um job legado seria rejeitado com mensagem enganosa de
+        # validação. Falha aqui propaga ao handler externo (500 'Erro DB'),
+        # igual ao mesmo SELECT no POST /fluxo.
+        cur.execute("SELECT job_name FROM dbo.etl_pipeline_job WHERE pipeline_name=?",
+                    (pipeline_name,))
+        db_names: set[str] = {r[0] for r in cur.fetchall()}
         known_jobs = req_names | db_names
         # Arestas para o detector de ciclo (apenas nós presentes no request).
         cycle_adj: dict[str, set[str]] = {n: set() for n in req_names}
@@ -1040,7 +1078,10 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
             if not j_name or j_order is None:
                 erros.append(f"Item {idx}: job_name e execution_order obrigatórios"); continue
             if not _JOB_NAME_RE.match(j_name):
-                erros.append(f"Item {idx} ({j_name}): nome de job inválido — use apenas letras, números, _ . - e espaço"); continue
+                erros.append(f"Item {idx} ({j_name}): nome de job inválido — use apenas letras, números, _ . -"); continue
+            if j_name not in db_names and not _JOB_NAME_STRICT_RE.match(j_name):
+                erros.append(f"Item {idx} ({j_name}): nome de job novo não pode ter espaço "
+                             "(vira task_id no Airflow, que o rejeita no import da DAG)"); continue
             if j_type not in VALID_JOB_TYPES:
                 erros.append(f"Item {idx} ({j_name}): job_type '{j_type}' inválido"); continue
             # Nó de Decisão é roteador, Notificação é efeito colateral e o nó SQL
@@ -1058,6 +1099,9 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                 erros.append(f"Item {idx} ({j_name}): conexão MSSQL '{j_mssql_cid}' não encontrada no Airflow"); continue
             if j_mssql_db and not _DB_NAME_RE.match(j_mssql_db):
                 erros.append(f"Item {idx} ({j_name}): nome de banco '{j_mssql_db}' inválido"); continue
+            if j_type == "http" and not _valid_http_url(j_cmd or ""):
+                erros.append(f"Item {idx} ({j_name}): etapa http exige job_command com "
+                             "URL http(s) válida (sem espaço/aspas)"); continue
 
             # Decisão: valida a condição e registra as arestas do branch p/ ciclo.
             if is_decisao:
@@ -1631,13 +1675,19 @@ async def save_pipeline_fluxo(
                 errors.append(f"{j_name}: job_name duplicado no fluxo"); continue
             seen.add(j_name)
             if not _JOB_NAME_RE.match(j_name):
-                errors.append(f"{j_name}: nome inválido (use letras, números, _ . - e espaço)"); continue
+                errors.append(f"{j_name}: nome inválido (use letras, números, _ . -)"); continue
             j_type = (node.get("job_type") or "datastage").lower().strip()
             if j_type not in VALID_JOB_TYPES:
                 errors.append(f"{j_name}: job_type '{j_type}' inválido"); continue
             is_new = j_name not in owned
+            if is_new and not _JOB_NAME_STRICT_RE.match(j_name):
+                errors.append(f"{j_name}: nome de nó novo não pode ter espaço "
+                              "(vira task_id no Airflow, que o rejeita no import da DAG)"); continue
 
             j_cmd = node.get("job_command") or None
+            if j_type == "http" and not _valid_http_url(j_cmd or ""):
+                errors.append(f"{j_name}: etapa http exige job_command com "
+                              "URL http(s) válida (sem espaço/aspas)"); continue
             try:
                 j_order = int(node.get("execution_order")) if node.get("execution_order") is not None else 1
             except (ValueError, TypeError):

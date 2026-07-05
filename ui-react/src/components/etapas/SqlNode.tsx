@@ -9,9 +9,18 @@ import { Database } from 'lucide-react'
 
 // Config do nó (round-trip com /fluxo no campo `sql`). Guardamos o objeto inteiro
 // no `data` para ecoar no save; `label` é um resumo curto p/ o card.
+// on_error: 'falhar' (task falha alto — default dos saves novos) | 'nulo'
+// (publica None em silêncio, comportamento legado).
 export interface SqlNodeData {
   name: string
-  sql: { sql: string; mssql_conn_id: string | null; database: string | null }
+  sql: {
+    sql: string
+    mssql_conn_id: string | null
+    database: string | null
+    on_error: 'falhar' | 'nulo'
+    // Derivado (não persiste): JSON salvo sem on_error — ver FluxoEditor.
+    on_error_legado?: boolean
+  }
   label: string
   isNew?: boolean
   [k: string]: unknown

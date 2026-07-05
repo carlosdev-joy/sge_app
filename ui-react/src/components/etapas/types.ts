@@ -81,8 +81,8 @@ export const TYPE_ORDER: EtapaType[] = [
   'datastage', 'shell', 'python', 'storedproc', 'sql', 'http',
 ]
 
-// Tipos que o backend aceita CRIAR pela paleta (arrastar-para-criar). `sql`/`http`
-// existem só para exibição de fluxos legados — o backend rejeita criá-los aqui.
+// Tipos que o backend aceita CRIAR pela paleta (arrastar-para-criar). `sql` é
+// criável pela categoria "Fluxo" da paleta (nó especial, não entra aqui).
 export const CREATABLE_TYPES: EtapaType[] = [
-  'datastage', 'shell', 'python', 'storedproc',
+  'datastage', 'shell', 'python', 'storedproc', 'http',
 ]
