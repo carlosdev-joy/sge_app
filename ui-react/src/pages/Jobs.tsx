@@ -929,8 +929,18 @@ export default function Jobs() {
           {/* Modo Fluxo — canvas interativo (só faz sentido p/ um pipeline).
               Perfil consulta abre em somente leitura (paleta/salvar escondidos). */}
           {searched && viewMode === 'fluxo' && (
-            <div className="h-[calc(100vh-16rem)]">
-              <FluxoEditor pipeline={searched} readOnly={isViewer} />
+            <div className="flex flex-col gap-1.5">
+              <a
+                href={`/fluxos?pipeline=${encodeURIComponent(searched)}`}
+                target="_blank" rel="noopener noreferrer"
+                className="self-end text-xs text-blue-500 hover:text-blue-400 hover:underline"
+                title="Abrir este fluxo na tela dedicada (canvas em tela cheia)"
+              >
+                Abrir em tela cheia ↗
+              </a>
+              <div className="h-[calc(100vh-16rem)]">
+                <FluxoEditor pipeline={searched} readOnly={isViewer} />
+              </div>
             </div>
           )}
 

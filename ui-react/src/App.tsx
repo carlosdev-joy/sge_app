@@ -23,6 +23,7 @@ import Performance from './pages/Performance'
 import CopiaDados from './pages/CopiaDados'
 import Inventario from './pages/Inventario'
 import Finalizacao from './pages/Finalizacao'
+import Fluxos from './pages/Fluxos'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -39,6 +40,7 @@ const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/gestao-falhas': <GestaoFalhas />,
   '/pipelines': <Pipelines />,
   '/jobs': <Jobs />,
+  '/fluxos': <Fluxos />,
   '/publicacao': <Publicacao />,
   '/logs': <Logs />,
   '/avisos': <Avisos />,
