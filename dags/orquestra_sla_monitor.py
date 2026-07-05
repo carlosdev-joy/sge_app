@@ -82,12 +82,15 @@ def _p90_duracao_minutos(hook):
         rows = hook.get_records("""
             WITH execs AS (
                 SELECT execution_id, pipeline,
-                       SUM(duration_seconds) / 60.0 AS total_min,
+                       -- Relógio de parede (não a SOMA): com jobs em paralelo a
+                       -- soma excede o SLA e gerava alerta preditivo FALSO em
+                       -- toda execução saudável de pipeline paralelo.
+                       DATEDIFF(SECOND, MIN(start_time), MAX(end_time)) / 60.0 AS total_min,
                        ROW_NUMBER() OVER (PARTITION BY pipeline
                                           ORDER BY MIN(start_time) DESC) AS rn
                 FROM dbo.etl_job_execution
                 WHERE status IN ('SUCCESS', 'WARNING')
-                  AND duration_seconds IS NOT NULL
+                  AND end_time IS NOT NULL
                 GROUP BY execution_id, pipeline
             )
             SELECT pipeline, total_min FROM execs WHERE rn <= 30

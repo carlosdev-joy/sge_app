@@ -24,7 +24,7 @@ import {
 // ── helpers ────────────────────────────────────────────────────────────────
 
 const PROJETOS = ['BI_CVP', 'BI_VIDA', 'BI_PREVIDENCIA', 'BI_PRESTAMISTA']
-const STATUS_OPTS = ['SUCCESS', 'FAILED', 'WARNING', 'RUNNING']
+const STATUS_OPTS = ['SUCCESS', 'FAILED', 'WARNING', 'RUNNING', 'SKIPPED']
 const LIMIT = 30
 
 // ── types ──────────────────────────────────────────────────────────────────
@@ -234,7 +234,10 @@ function ExecucoesTab() {
                       </td>
                       <td className="px-4 py-2 text-dim text-xs whitespace-nowrap">{fmtDt(r.inicio)}</td>
                       <td className="px-4 py-2 text-dim text-xs whitespace-nowrap">{fmtDt(r.fim)}</td>
-                      <td className="px-4 py-2 text-dim text-xs">{durStr(r.duracao_total_segundos)}</td>
+                      <td className="px-4 py-2 text-dim text-xs"
+                          title={`Processamento somado dos jobs: ${durStr(r.duracao_total_segundos)}`}>
+                        {durStr(r.duracao_wall_segundos ?? r.duracao_total_segundos)}
+                      </td>
                       <td className="px-4 py-2 text-xs">
                         {r.fila_total_segundos ? <span className="text-amber-400">{durStr(r.fila_total_segundos)}</span> : <span className="text-dim">—</span>}
                       </td>

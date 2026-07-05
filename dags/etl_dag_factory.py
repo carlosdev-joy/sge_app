@@ -617,6 +617,9 @@ def _generate_dag_source(pipeline, jobs):
         f'DATASET_URI   = "orq://pipeline/{pname}"',
         f'default_args  = {{"owner": "airflow", "depends_on_past": False, "retries": {retries_val}, "retry_delay": timedelta(seconds={retry_delay_val})}}',
         f'JOBS          = {repr([j["job_name"] for j in sorted_jobs])}',
+        # Jobs EXECUTÁVEIS (com trio de telemetria) — base do registro de SKIPPED
+        # do flow_close; nós especiais (decisão/notificação/sql) ficam de fora.
+        f'FLOW_JOBS     = {repr([j["job_name"] for j in sorted_jobs if _alias(j) not in _SPECIAL_NODES])}',
     ]
     if depends_on:
         consts_lines.append(f'DEPENDS_ON_DAG_ID = "{depends_on}"')
@@ -772,6 +775,7 @@ def _generate_dag_source(pipeline, jobs):
         '            "SELECT CASE WHEN SUM(CASE WHEN status=\'FAILED\' THEN 1 ELSE 0 END)>0 THEN \'FAILED\' "',
         '            "     WHEN SUM(CASE WHEN status=\'WARNING\' THEN 1 ELSE 0 END)>0 THEN \'WARNING\' "',
         '            "     WHEN SUM(CASE WHEN status=\'SUCCESS\' THEN 1 ELSE 0 END)>0 THEN \'SUCCESS\' "',
+        '            "     WHEN SUM(CASE WHEN status=\'SKIPPED\' THEN 1 ELSE 0 END)>0 THEN \'SKIPPED\' "',
         '            "     ELSE \'INFO\' END "',
         '            "FROM dbo.etl_job_execution WHERE execution_id=%s AND pipeline=%s",',
         "            parameters=(execution_id, PIPELINE_NAME),",
@@ -928,6 +932,31 @@ def _generate_dag_source(pipeline, jobs):
         "        print('[SQL NODE] falha ao rodar SELECT (' + str(_e) + ') — valor None.')",
         "        return None",
         "",
+        "def _flow_close(**context):",
+        "    # SKIPPED de 1a classe: registra na telemetria os jobs PULADOS POR",
+        "    # DECISAO nesta execucao (state='skipped'). Job que nao rodou por",
+        "    # FALHA a montante (upstream_failed) segue SEM linha — semantica",
+        "    # diferente (precisa reprocessar), nao pode virar SKIPPED.",
+        "    execution_id = context['ts_nodash']",
+        "    dr = context.get('dag_run')",
+        "    if dr is None:",
+        "        return",
+        "    try:",
+        "        estados = {ti.task_id: str(ti.state) for ti in dr.get_task_instances()}",
+        "    except Exception as e:",
+        "        print(f'[FLOW CLOSE] get_task_instances falhou ({e}) — sem registro de SKIPPED.')",
+        "        return",
+        "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "    agora = _now_str()",
+        "    for job in FLOW_JOBS:",
+        "        if estados.get(job) != 'skipped':",
+        "            continue",
+        "        try:",
+        "            _exec_telemetry(hook, execution_id, job, job, 'SKIPPED', agora, agora, 0, None)",
+        "            print(f'[FLOW CLOSE] SKIPPED registrado para {job}.')",
+        "        except Exception as e:",
+        "            print(f'[FLOW CLOSE] falha ao registrar SKIPPED de {job}: {e}')",
+        "",
         "def teams_start(**context):",
         "    execution_id = context['ts_nodash']",
         "    _teams_post_card(",
@@ -947,10 +976,13 @@ def _generate_dag_source(pipeline, jobs):
         "    execution_id = context['ts_nodash']",
         "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
         "    row = hook.get_first(",
-        '        "SELECT pipeline, MIN(start_time), MAX(end_time), COALESCE(SUM(duration_seconds),0), "',
+        # Duração = relógio de parede (a SOMA inflava pipelines com jobs paralelos).
+        '        "SELECT pipeline, MIN(start_time), MAX(end_time), "',
+        '        "DATEDIFF(SECOND, MIN(start_time), MAX(COALESCE(end_time, GETDATE()))), "',
         '        "CASE WHEN SUM(CASE WHEN status=\'FAILED\' THEN 1 ELSE 0 END)>0 THEN \'FAILED\' "',
         '        "     WHEN SUM(CASE WHEN status=\'WARNING\' THEN 1 ELSE 0 END)>0 THEN \'WARNING\' "',
         '        "     WHEN SUM(CASE WHEN status=\'SUCCESS\' THEN 1 ELSE 0 END)>0 THEN \'SUCCESS\' "',
+        '        "     WHEN SUM(CASE WHEN status=\'SKIPPED\' THEN 1 ELSE 0 END)>0 THEN \'SKIPPED\' "',
         '        "     ELSE \'FAILED\' END "',
         '        "FROM dbo.etl_job_execution WHERE execution_id=%s AND pipeline=%s GROUP BY pipeline",',
         "        parameters=(execution_id, PIPELINE_NAME),",
@@ -964,11 +996,12 @@ def _generate_dag_source(pipeline, jobs):
         "        )",
         "        return",
         "    pipeline, inicio, fim, dur_seg, status_geral = row",
-        '    titles = {"SUCCESS": "Execução concluída com sucesso", "WARNING": "Execução concluída com avisos", "FAILED": "Execução finalizada com falha"}',
+        '    titles = {"SUCCESS": "Execução concluída com sucesso", "WARNING": "Execução concluída com avisos", "FAILED": "Execução finalizada com falha", "SKIPPED": "Execução pulada"}',
         '    subtitles = {',
         '        "SUCCESS": f"O pipeline {pipeline} foi executado e finalizado sem erros.",',
         '        "WARNING": f"O pipeline {pipeline} foi concluído, mas registrou avisos durante a execução.",',
         '        "FAILED":  f"O pipeline {pipeline} foi encerrado com falha. Verifique os jobs com erro.",',
+        '        "SKIPPED": f"Todos os jobs do pipeline {pipeline} foram pulados pela decisão nesta execução.",',
         "    }",
         "    _teams_post_card(",
         "        title=titles.get(status_geral, 'Execução finalizada'),",
@@ -990,7 +1023,8 @@ def _generate_dag_source(pipeline, jobs):
         "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
         "    # Resumo do pipeline (mesma query do teams_end)",
         "    row = hook.get_first(",
-        '        "SELECT pipeline, MIN(start_time), MAX(end_time), COALESCE(SUM(duration_seconds),0) "',
+        '        "SELECT pipeline, MIN(start_time), MAX(end_time), "',
+        '        "DATEDIFF(SECOND, MIN(start_time), MAX(COALESCE(end_time, GETDATE()))) "',
         '        "FROM dbo.etl_job_execution WHERE execution_id=%s AND pipeline=%s GROUP BY pipeline",',
         "        parameters=(execution_id, PIPELINE_NAME),",
         "    )",
@@ -1154,6 +1188,16 @@ def _generate_dag_source(pipeline, jobs):
             '    task_id="teams_error",',
             '    python_callable=teams_error,',
             '    trigger_rule=TriggerRule.ONE_FAILED,',
+            ')',
+        ]))
+    # flow_close: só em pipelines com Decisão (única origem de skip por ramo).
+    # ALL_DONE — roda no fechamento do run e registra SKIPPED de 1ª classe.
+    if has_decision:
+        teams_tasks.append("\n".join([
+            't_flow_close = PythonOperator(',
+            '    task_id="flow_close",',
+            '    python_callable=_flow_close,',
+            '    trigger_rule=TriggerRule.ALL_DONE,',
             ')',
         ]))
 
@@ -1351,6 +1395,16 @@ def _generate_dag_source(pipeline, jobs):
             dep_lines.append(f"{sref} >> t_teams_end")
         if f_err:
             dep_lines.append(f"{sref} >> t_teams_error")
+    # flow_close fecha DEPOIS de tudo (ends + nós especiais) e ANTES do card de
+    # fim — assim o teams_end já enxerga as linhas SKIPPED que ele gravou.
+    if has_decision:
+        dep_lines.append(f"{end_tasks_ref} >> t_flow_close")
+        for nref in notif_task_refs:
+            dep_lines.append(f"{nref} >> t_flow_close")
+        for sref in sql_task_refs:
+            dep_lines.append(f"{sref} >> t_flow_close")
+        if f_fim:
+            dep_lines.append("t_flow_close >> t_teams_end")
 
     with_parts = []
     with_parts.append(_ind(check_block))

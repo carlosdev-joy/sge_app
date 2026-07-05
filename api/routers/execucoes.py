@@ -400,6 +400,7 @@ def list_execucoes(
             WHEN SUM(CASE WHEN status='WARNING' THEN 1 ELSE 0 END) > 0 THEN 'WARNING'
             WHEN SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) > 0 THEN 'RUNNING'
             WHEN SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) > 0 THEN 'SUCCESS'
+            WHEN SUM(CASE WHEN status='SKIPPED' THEN 1 ELSE 0 END) > 0 THEN 'SKIPPED'
             ELSE 'DESCONHECIDO'
         END
     """
@@ -474,11 +475,16 @@ def list_execucoes(
                     MIN(start_time)                    AS inicio,
                     MAX(end_time)                      AS fim,
                     COALESCE(SUM(duration_seconds), 0) AS duracao_total_segundos,
+                    -- Relógio de parede: com jobs em PARALELO a soma acima excede o
+                    -- tempo real da execução; RUNNING usa GETDATE() como fim.
+                    DATEDIFF(SECOND, MIN(start_time),
+                             MAX(COALESCE(end_time, GETDATE()))) AS duracao_wall_segundos,
                     COUNT(*)                           AS total_jobs,
                     SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) AS jobs_ok,
                     SUM(CASE WHEN status='FAILED'  THEN 1 ELSE 0 END) AS jobs_falha,
                     SUM(CASE WHEN status='WARNING' THEN 1 ELSE 0 END) AS jobs_warning,
                     SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) AS jobs_running,
+                    SUM(CASE WHEN status='SKIPPED' THEN 1 ELSE 0 END) AS jobs_skipped,
                     {status_expr} AS status_geral
                 FROM dbo.etl_job_execution
                 {where_sql}
@@ -527,17 +533,19 @@ def list_execucoes(
                 "execution_id": r[0], "project": r[1], "pipeline": r[2],
                 "inicio": _fmt_dt(r[3]), "fim": _fmt_dt(r[4]),
                 "duracao_total_segundos": int(r[5] or 0),
-                "total_jobs": int(r[6] or 0), "jobs_ok": int(r[7] or 0),
-                "jobs_falha": int(r[8] or 0), "jobs_warning": int(r[9] or 0),
-                "jobs_running": int(r[10] or 0), "status_geral": r[11],
-                "ack_by": r[12] if has_ack else None,
-                "display_name": r[13] if has_ack else None,
-                "ack_at": _fmt_dt(r[14]) if has_ack else None,
-                "resolved_by": r[15] if has_resolved else None,
-                "resolved_display_name": r[16] if has_resolved else None,
-                "resolved_at": _fmt_dt(r[17]) if has_resolved else None,
-                "resolution_note": r[18] if has_resolved else None,
-                "snow_ticket": r[19] if has_resolved else None,
+                "duracao_wall_segundos": int(r[6] or 0),
+                "total_jobs": int(r[7] or 0), "jobs_ok": int(r[8] or 0),
+                "jobs_falha": int(r[9] or 0), "jobs_warning": int(r[10] or 0),
+                "jobs_running": int(r[11] or 0), "jobs_skipped": int(r[12] or 0),
+                "status_geral": r[13],
+                "ack_by": r[14] if has_ack else None,
+                "display_name": r[15] if has_ack else None,
+                "ack_at": _fmt_dt(r[16]) if has_ack else None,
+                "resolved_by": r[17] if has_resolved else None,
+                "resolved_display_name": r[18] if has_resolved else None,
+                "resolved_at": _fmt_dt(r[19]) if has_resolved else None,
+                "resolution_note": r[20] if has_resolved else None,
+                "snow_ticket": r[21] if has_resolved else None,
                 "fila_total_segundos": None,
             }
             for r in cur.fetchall()
@@ -630,16 +638,80 @@ async def rerun_from_task(body: dict = Body(default={}), _auth: dict = Depends(r
         }
 
 
+async def _estados_task_instances(dag_id: str, exec_id: str) -> dict:
+    """task_id → {state, end_date} das task instances do dag_run cuja logical
+    date (ts_nodash) casa EXATAMENTE com ``exec_id``. {} em qualquer falha ou
+    sem match exato — melhor não reconciliar do que fechar pelo run errado.
+
+    Pagina os taskInstances (o Airflow capa o limit por página em 100) — um
+    fluxo de 40 etapas gera 120+ tasks com o trio de telemetria."""
+    try:
+        async with get_airflow_client() as client:
+            r = await client.get(f"/api/v1/dags/{dag_id}/dagRuns",
+                                 params={"limit": 50, "order_by": "-execution_date"})
+            if not r.is_success:
+                return {}
+            runs = r.json().get("dag_runs", [])
+            if not runs:
+                return {}
+            run = _escolhe_dag_run(runs, exec_id)
+            logical = run.get("logical_date") or run.get("execution_date") or ""
+            if _iso_to_ts_nodash(logical) != exec_id:
+                return {}
+            out: dict = {}
+            offset = 0
+            while True:
+                r2 = await client.get(
+                    f"/api/v1/dags/{dag_id}/dagRuns/{run['dag_run_id']}/taskInstances",
+                    params={"limit": 100, "offset": offset})
+                if not r2.is_success:
+                    return out if offset else {}
+                payload = r2.json()
+                tis = payload.get("task_instances", [])
+                for ti in tis:
+                    st = (ti.get("state") or "").lower()
+                    if st and ti.get("task_id"):
+                        out[ti["task_id"]] = {"state": st,
+                                              "end_date": ti.get("end_date")}
+                offset += len(tis)
+                if not tis or offset >= int(payload.get("total_entries") or 0):
+                    break
+            return out
+    except Exception as e:
+        log.warning("reconciliar: leitura de task instances falhou (%s)", e)
+        return {}
+
+
+def _end_date_local(iso) -> str | None:
+    """end_date ISO (UTC) do Airflow → 'YYYY-MM-DD HH:MM:SS' no fuso local do
+    banco (America/Sao_Paulo) — o resto da telemetria usa GETDATE() local."""
+    if not iso:
+        return None
+    try:
+        from datetime import timezone
+        from zoneinfo import ZoneInfo
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
 @router.post("/execucoes/reconciliar", tags=["execucoes"])
 async def reconciliar_execucao(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
-    """Fecha uma execução presa em RUNNING usando o status REAL do DataStage.
+    """Fecha uma execução presa em RUNNING usando o status REAL da fonte.
 
-    Espelho puro: cruza com o etl_ds_job_log (mantido vivo pelo monitor central via
-    dsjob) e só fecha se o job já terminou lá (1=SUCCESS, 2=WARNING, 3=FAILED). Se o
-    job ainda estiver rodando no DataStage, não toca (closed=0). Remédio manual,
-    on-demand, para a execução órfã — equivalente ao loop do monitor. Idempotente.
+    Espelho puro, em dois passos:
+      1. DataStage: cruza com o etl_ds_job_log (monitor central via dsjob) e
+         fecha o que já terminou lá (1=SUCCESS, 2=WARNING, 3=FAILED).
+      2. Airflow REST (genérico — shell/python/storedproc/http e DS cujo log
+         também travou): consulta o estado das task instances do dag_run casado
+         pela logical date e fecha o que o Airflow já deu por terminado
+         (success/failed/upstream_failed/skipped). Task ainda RUNNING não é
+         tocada — para forçar, use a tela Finalizar Pipeline.
 
-    Body: execution_id, pipeline.
+    Remédio manual, on-demand e idempotente. Body: execution_id, pipeline.
     """
     execution_id = (body.get("execution_id") or "").strip()
     pipeline = (body.get("pipeline") or "").strip()
@@ -665,10 +737,45 @@ async def reconciliar_execucao(body: dict = Body(default={}), _auth: dict = Depe
             """,
             (execution_id, pipeline),
         )
-        closed = max(0, cur.rowcount if cur.rowcount is not None else 0)
+        closed_ds = max(0, cur.rowcount if cur.rowcount is not None else 0)
+
+        # Passo 2 — genérico via Airflow REST, para o que sobrou em RUNNING.
+        closed_af = 0
+        cur.execute(
+            "SELECT job_name, task_id FROM dbo.etl_job_execution "
+            "WHERE execution_id=? AND pipeline=? AND status='RUNNING' AND end_time IS NULL",
+            (execution_id, pipeline))
+        presos = cur.fetchall()
+        if presos:
+            estados = await _estados_task_instances(pipeline, execution_id)
+            _TERMINAL = {"success": "SUCCESS", "failed": "FAILED",
+                         "upstream_failed": "FAILED", "skipped": "SKIPPED"}
+            for job_name, task_id in presos:
+                ti = estados.get(task_id) or estados.get(job_name) or {}
+                novo = _TERMINAL.get(ti.get("state") or "")
+                if not novo:
+                    continue
+                # end_time REAL da task (Airflow, convertido p/ hora local) —
+                # GETDATE() só como fallback; reconciliação tardia com o "agora"
+                # inflaria a duração e contaminaria o P90 do SLA preditivo.
+                fim_local = _end_date_local(ti.get("end_date"))
+                cur.execute(
+                    "UPDATE dbo.etl_job_execution SET status=?, "
+                    "end_time=COALESCE(?, GETDATE()), "
+                    "duration_seconds=CASE WHEN ?='SKIPPED' THEN 0 ELSE "
+                    "DATEDIFF(SECOND, start_time, COALESCE(?, GETDATE())) END, "
+                    "updated_at=GETDATE() "
+                    "WHERE execution_id=? AND pipeline=? AND job_name=? AND task_id=? "
+                    "AND status='RUNNING' AND end_time IS NULL",
+                    (novo, fim_local, novo, fim_local,
+                     execution_id, pipeline, job_name, task_id))
+                closed_af += max(0, cur.rowcount or 0)
+
         conn.commit()
         cur.close(); conn.close()
-        return {"closed": closed, "execution_id": execution_id, "pipeline": pipeline}
+        return {"closed": closed_ds + closed_af, "closed_datastage": closed_ds,
+                "closed_airflow": closed_af,
+                "execution_id": execution_id, "pipeline": pipeline}
     except HTTPException:
         raise
     except Exception as e:
@@ -859,13 +966,13 @@ def get_falhas_summary(days: int = Query(7, ge=1, le=90)):
         if has_resolved:
             cur.execute(cte + """
                 SELECT
-                    COUNT(DISTINCT a.execution_id) AS total,
+                    COUNT(DISTINCT a.execution_id + '|' + ISNULL(a.pipeline, '')) AS total,
                     COUNT(DISTINCT CASE WHEN ack.execution_id IS NULL
-                          THEN a.execution_id END) AS sem_ack,
+                          THEN a.execution_id + '|' + ISNULL(a.pipeline, '') END) AS sem_ack,
                     COUNT(DISTINCT CASE WHEN ack.execution_id IS NOT NULL
-                          AND ack.resolved_at IS NULL THEN a.execution_id END) AS com_ack,
+                          AND ack.resolved_at IS NULL THEN a.execution_id + '|' + ISNULL(a.pipeline, '') END) AS com_ack,
                     COUNT(DISTINCT CASE WHEN ack.resolved_at IS NOT NULL
-                          THEN a.execution_id END) AS resolvidas
+                          THEN a.execution_id + '|' + ISNULL(a.pipeline, '') END) AS resolvidas
                 FROM agg a
                 LEFT JOIN dbo.etl_failure_ack ack
                        ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
@@ -873,11 +980,11 @@ def get_falhas_summary(days: int = Query(7, ge=1, le=90)):
         else:
             cur.execute(cte + """
                 SELECT
-                    COUNT(DISTINCT a.execution_id) AS total,
+                    COUNT(DISTINCT a.execution_id + '|' + ISNULL(a.pipeline, '')) AS total,
                     COUNT(DISTINCT CASE WHEN ack.execution_id IS NULL
-                          THEN a.execution_id END) AS sem_ack,
+                          THEN a.execution_id + '|' + ISNULL(a.pipeline, '') END) AS sem_ack,
                     COUNT(DISTINCT CASE WHEN ack.execution_id IS NOT NULL
-                          THEN a.execution_id END) AS com_ack,
+                          THEN a.execution_id + '|' + ISNULL(a.pipeline, '') END) AS com_ack,
                     0 AS resolvidas
                 FROM agg a
                 LEFT JOIN dbo.etl_failure_ack ack
@@ -1153,7 +1260,7 @@ def list_falhas(
             ack_params.append(ack_by)
 
         cur.execute(cte + f"""
-            SELECT COUNT(DISTINCT a.execution_id)
+            SELECT COUNT(DISTINCT a.execution_id + '|' + ISNULL(a.pipeline, ''))
             FROM agg a
             LEFT JOIN dbo.etl_failure_ack ack
                    ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
