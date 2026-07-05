@@ -163,6 +163,13 @@ else
     elif echo "$MIG_DRY" | grep -q "DRY-RUN"; then
         echo "[DEPLOY] Migrations SQL PENDENTES:"
         echo "$MIG_DRY" | sed 's/^/    /'
+        MIG_QTD=$(echo "$MIG_DRY" | grep -c "DRY-RUN\]" || true)
+        if [ "${MIG_QTD:-0}" -gt 5 ]; then
+            echo "[DEPLOY] ATENÇÃO: ${MIG_QTD} pendentes num banco que já funciona costuma ser"
+            echo "         DRIFT do etl_schema_version (schema aplicado por fora do migrate.py)."
+            echo "         Nesse caso, em vez de aplicar, registre-as com:"
+            echo "         docker compose exec orquestra-api python /tmp/deploy_sql/migrate.py --baseline"
+        fi
         if _confirmar "[DEPLOY] Aplicar as migrations acima agora? (idempotentes; recomendado backup do banco)"; then
             docker compose exec -T orquestra-api python /tmp/deploy_sql/migrate.py
             echo "[DEPLOY] ✓ Migrations aplicadas"

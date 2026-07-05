@@ -23,6 +23,11 @@ description: >
    a pergunta assume NÃO e o deploy avisa como aplicar manualmente. Confira com
    `migrate.py --status`. Sintoma de migration esquecida: tela nova não aparece no menu
    (permissão `tela_*` inexistente no banco).
+3. **Drift do etl_schema_version**: dezenas de "pendentes" num banco que já funciona =
+   schema aplicado por fora do migrate.py (deploy_full/manual). NÃO reaplique — registre
+   com `migrate.py --baseline` (pede confirmação; `--ate NNN` limita; `--yes` pula o
+   prompt). Caso real 2026-07-05: 37 pendentes em prod e a 025 estourou sintaxe ao
+   reaplicar (literais adjacentes, corrigida).
 
 ## Riscos (importante)
 - O deploy padrão é cirúrgico e **não recria** postgres/scheduler/worker — não reproduz a queda
