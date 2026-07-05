@@ -46,7 +46,8 @@ def gerar_relatorio(**context):
     row = hook.get_first("""
         WITH execs AS (
             SELECT e.execution_id, e.pipeline,
-                COALESCE(SUM(e.duration_seconds), 0) AS dur,
+                DATEDIFF(SECOND, MIN(e.start_time),
+                         MAX(COALESCE(e.end_time, GETDATE()))) AS dur,
                 CASE
                     WHEN SUM(CASE WHEN e.status='FAILED'  THEN 1 ELSE 0 END) > 0 THEN 'FAILED'
                     WHEN SUM(CASE WHEN e.status='WARNING' THEN 1 ELSE 0 END) > 0 THEN 'WARNING'
@@ -90,7 +91,10 @@ def gerar_relatorio(**context):
     slow_rows = hook.get_records("""
         SELECT TOP 5 pipeline, MAX(dur) AS max_dur
         FROM (
-            SELECT e.pipeline, e.execution_id, COALESCE(SUM(e.duration_seconds),0) AS dur
+            -- Relógio de parede: a SOMA inflava pipelines com jobs paralelos.
+            SELECT e.pipeline, e.execution_id,
+                   DATEDIFF(SECOND, MIN(e.start_time),
+                            MAX(COALESCE(e.end_time, GETDATE()))) AS dur
             FROM dbo.etl_job_execution e
             WHERE e.start_time >= DATEADD(HOUR, -24, GETDATE())
             GROUP BY e.pipeline, e.execution_id

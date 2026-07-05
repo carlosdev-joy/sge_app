@@ -63,7 +63,9 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
         cur.execute(f"""
             WITH execs AS (
                 SELECT execution_id, project, pipeline,
-                    COALESCE(SUM(duration_seconds), 0) AS duracao_total_segundos,
+                    -- Relógio de parede (não a SOMA): jobs paralelos inflavam a média.
+                    DATEDIFF(SECOND, MIN(e.start_time),
+                             MAX(COALESCE(e.end_time, GETDATE()))) AS duracao_total_segundos,
                     {status_expr} AS status_geral
                 FROM dbo.etl_job_execution e
                 JOIN dbo.etl_pipeline p ON p.pipeline_name = e.pipeline
@@ -118,7 +120,9 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
                 SELECT e.execution_id, e.project, e.pipeline,
                     MIN(e.start_time) AS inicio,
                     MAX(e.end_time)   AS fim,
-                    COALESCE(SUM(e.duration_seconds), 0) AS duracao_segundos,
+                    -- Relógio de parede (não a SOMA — jobs paralelos inflavam).
+                    DATEDIFF(SECOND, MIN(e.start_time),
+                             MAX(COALESCE(e.end_time, GETDATE()))) AS duracao_segundos,
                     COUNT(*) AS total_jobs,
                     {status_expr} AS ultimo_status
                 FROM dbo.etl_job_execution e

@@ -59,6 +59,9 @@ export interface ExecRow {
   inicio: string
   fim: string
   duracao_total_segundos: number
+  // Relógio de parede (início→fim). A soma acima conta cada job — com
+  // paralelismo ela excede o tempo real; a coluna Duração usa esta.
+  duracao_wall_segundos?: number
   total_jobs: number
   jobs_ok: number
   jobs_falha: number
