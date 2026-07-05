@@ -638,16 +638,53 @@ async def rerun_from_task(body: dict = Body(default={}), _auth: dict = Depends(r
         }
 
 
+async def _estados_task_instances(dag_id: str, exec_id: str) -> dict:
+    """task_id → state (lower) das task instances do dag_run cuja logical date
+    (ts_nodash) casa EXATAMENTE com ``exec_id``. {} em qualquer falha ou quando
+    não há match exato — melhor não reconciliar do que fechar pelo run errado."""
+    try:
+        async with get_airflow_client() as client:
+            r = await client.get(f"/api/v1/dags/{dag_id}/dagRuns",
+                                 params={"limit": 50, "order_by": "-execution_date"})
+            if not r.is_success:
+                return {}
+            runs = r.json().get("dag_runs", [])
+            if not runs:
+                return {}
+            run = _escolhe_dag_run(runs, exec_id)
+            logical = run.get("logical_date") or run.get("execution_date") or ""
+            if _iso_to_ts_nodash(logical) != exec_id:
+                return {}
+            r2 = await client.get(
+                f"/api/v1/dags/{dag_id}/dagRuns/{run['dag_run_id']}/taskInstances",
+                params={"limit": 200})
+            if not r2.is_success:
+                return {}
+            out: dict = {}
+            for ti in r2.json().get("task_instances", []):
+                st = (ti.get("state") or "").lower()
+                if st and ti.get("task_id"):
+                    out[ti["task_id"]] = st
+            return out
+    except Exception as e:
+        log.warning("reconciliar: leitura de task instances falhou (%s)", e)
+        return {}
+
+
 @router.post("/execucoes/reconciliar", tags=["execucoes"])
 async def reconciliar_execucao(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
-    """Fecha uma execução presa em RUNNING usando o status REAL do DataStage.
+    """Fecha uma execução presa em RUNNING usando o status REAL da fonte.
 
-    Espelho puro: cruza com o etl_ds_job_log (mantido vivo pelo monitor central via
-    dsjob) e só fecha se o job já terminou lá (1=SUCCESS, 2=WARNING, 3=FAILED). Se o
-    job ainda estiver rodando no DataStage, não toca (closed=0). Remédio manual,
-    on-demand, para a execução órfã — equivalente ao loop do monitor. Idempotente.
+    Espelho puro, em dois passos:
+      1. DataStage: cruza com o etl_ds_job_log (monitor central via dsjob) e
+         fecha o que já terminou lá (1=SUCCESS, 2=WARNING, 3=FAILED).
+      2. Airflow REST (genérico — shell/python/storedproc/http e DS cujo log
+         também travou): consulta o estado das task instances do dag_run casado
+         pela logical date e fecha o que o Airflow já deu por terminado
+         (success/failed/upstream_failed/skipped). Task ainda RUNNING não é
+         tocada — para forçar, use a tela Finalizar Pipeline.
 
-    Body: execution_id, pipeline.
+    Remédio manual, on-demand e idempotente. Body: execution_id, pipeline.
     """
     execution_id = (body.get("execution_id") or "").strip()
     pipeline = (body.get("pipeline") or "").strip()
@@ -673,10 +710,37 @@ async def reconciliar_execucao(body: dict = Body(default={}), _auth: dict = Depe
             """,
             (execution_id, pipeline),
         )
-        closed = max(0, cur.rowcount if cur.rowcount is not None else 0)
+        closed_ds = max(0, cur.rowcount if cur.rowcount is not None else 0)
+
+        # Passo 2 — genérico via Airflow REST, para o que sobrou em RUNNING.
+        closed_af = 0
+        cur.execute(
+            "SELECT job_name, task_id FROM dbo.etl_job_execution "
+            "WHERE execution_id=? AND pipeline=? AND status='RUNNING' AND end_time IS NULL",
+            (execution_id, pipeline))
+        presos = cur.fetchall()
+        if presos:
+            estados = await _estados_task_instances(pipeline, execution_id)
+            _TERMINAL = {"success": "SUCCESS", "failed": "FAILED",
+                         "upstream_failed": "FAILED", "skipped": "SKIPPED"}
+            for job_name, task_id in presos:
+                novo = _TERMINAL.get(estados.get(task_id) or estados.get(job_name) or "")
+                if not novo:
+                    continue
+                cur.execute(
+                    "UPDATE dbo.etl_job_execution SET status=?, end_time=GETDATE(), "
+                    "duration_seconds=DATEDIFF(SECOND, start_time, GETDATE()), "
+                    "updated_at=GETDATE() "
+                    "WHERE execution_id=? AND pipeline=? AND job_name=? AND task_id=? "
+                    "AND status='RUNNING' AND end_time IS NULL",
+                    (novo, execution_id, pipeline, job_name, task_id))
+                closed_af += max(0, cur.rowcount or 0)
+
         conn.commit()
         cur.close(); conn.close()
-        return {"closed": closed, "execution_id": execution_id, "pipeline": pipeline}
+        return {"closed": closed_ds + closed_af, "closed_datastage": closed_ds,
+                "closed_airflow": closed_af,
+                "execution_id": execution_id, "pipeline": pipeline}
     except HTTPException:
         raise
     except Exception as e:
@@ -867,13 +931,13 @@ def get_falhas_summary(days: int = Query(7, ge=1, le=90)):
         if has_resolved:
             cur.execute(cte + """
                 SELECT
-                    COUNT(DISTINCT a.execution_id) AS total,
+                    COUNT(DISTINCT a.execution_id + '|' + a.pipeline) AS total,
                     COUNT(DISTINCT CASE WHEN ack.execution_id IS NULL
-                          THEN a.execution_id END) AS sem_ack,
+                          THEN a.execution_id + '|' + a.pipeline END) AS sem_ack,
                     COUNT(DISTINCT CASE WHEN ack.execution_id IS NOT NULL
-                          AND ack.resolved_at IS NULL THEN a.execution_id END) AS com_ack,
+                          AND ack.resolved_at IS NULL THEN a.execution_id + '|' + a.pipeline END) AS com_ack,
                     COUNT(DISTINCT CASE WHEN ack.resolved_at IS NOT NULL
-                          THEN a.execution_id END) AS resolvidas
+                          THEN a.execution_id + '|' + a.pipeline END) AS resolvidas
                 FROM agg a
                 LEFT JOIN dbo.etl_failure_ack ack
                        ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
@@ -881,11 +945,11 @@ def get_falhas_summary(days: int = Query(7, ge=1, le=90)):
         else:
             cur.execute(cte + """
                 SELECT
-                    COUNT(DISTINCT a.execution_id) AS total,
+                    COUNT(DISTINCT a.execution_id + '|' + a.pipeline) AS total,
                     COUNT(DISTINCT CASE WHEN ack.execution_id IS NULL
-                          THEN a.execution_id END) AS sem_ack,
+                          THEN a.execution_id + '|' + a.pipeline END) AS sem_ack,
                     COUNT(DISTINCT CASE WHEN ack.execution_id IS NOT NULL
-                          THEN a.execution_id END) AS com_ack,
+                          THEN a.execution_id + '|' + a.pipeline END) AS com_ack,
                     0 AS resolvidas
                 FROM agg a
                 LEFT JOIN dbo.etl_failure_ack ack
@@ -1161,7 +1225,7 @@ def list_falhas(
             ack_params.append(ack_by)
 
         cur.execute(cte + f"""
-            SELECT COUNT(DISTINCT a.execution_id)
+            SELECT COUNT(DISTINCT a.execution_id + '|' + a.pipeline)
             FROM agg a
             LEFT JOIN dbo.etl_failure_ack ack
                    ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
