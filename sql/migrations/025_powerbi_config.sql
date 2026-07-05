@@ -33,9 +33,10 @@ GO
 IF NOT EXISTS (SELECT 1 FROM dbo.etl_app_config WHERE config_key = 'powerbi_scope')
 BEGIN
     INSERT INTO dbo.etl_app_config (config_key, config_value, descricao)
+    -- literal ÚNICO: T-SQL não concatena literais adjacentes (estilo Python) —
+    -- quebrava o migrate.py com "Incorrect syntax near" (QUOTED_IDENTIFIER ON).
     VALUES ('powerbi_scope', '',
-            'Scope OAuth do Power BI. Opcional — se vazio, usa o default '
-            '"https://analysis.windows.net/powerbi/api/.default".');
+            'Scope OAuth do Power BI. Opcional — se vazio, usa o default "https://analysis.windows.net/powerbi/api/.default".');
 END
 GO
 
@@ -43,7 +44,6 @@ IF NOT EXISTS (SELECT 1 FROM dbo.etl_app_config WHERE config_key = 'powerbi_toke
 BEGIN
     INSERT INTO dbo.etl_app_config (config_key, config_value, descricao)
     VALUES ('powerbi_token_url', '',
-            'URL do endpoint de token OAuth. Opcional — se vazio, é derivada de '
-            'powerbi_tenant_id (https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token).');
+            'URL do endpoint de token OAuth. Opcional — se vazio, é derivada de powerbi_tenant_id (https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token).');
 END
 GO

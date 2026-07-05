@@ -7,6 +7,13 @@ Uso:
     python sql/migrate.py --dry-run          # mostra o que seria aplicado
     python sql/migrate.py --status           # lista estado de todas as migrations
     python sql/migrate.py --conn "DSN=..."   # substitui MSSQL_CONN_STR
+    python sql/migrate.py --baseline         # registra pendentes como APLICADAS sem executar
+    python sql/migrate.py --baseline --ate 57  # baseline só até a migration NNN
+
+--baseline existe para ambientes cujo schema foi aplicado por OUTRO meio
+(deploy_full.sql/manual) e o dbo.etl_schema_version ficou para trás — sintoma:
+dezenas de migrations "pendentes" num banco que já tem tudo. Registra sem
+executar; pede confirmação (--yes para pular).
 
 Sem dependências além de pyodbc (já instalado na API) e stdlib Python 3.10+.
 Funciona 100% offline — não requer internet nem npm.
@@ -129,6 +136,45 @@ def cmd_status(conn_str: str) -> None:
     print(f"Total: {len(migrations)} migrations | {len(applied)} aplicadas | {len(pending)} pendentes")
 
 
+def cmd_baseline(conn_str: str, ate: int | None = None, assume_yes: bool = False) -> None:
+    """Registra migrations pendentes como APLICADAS sem executar nada.
+
+    Para reconciliar o dbo.etl_schema_version com um banco cujo schema já foi
+    aplicado por outro meio. NÃO usa em banco vazio — ali o caminho é aplicar."""
+    conn = _conn(conn_str)
+    cur  = conn.cursor()
+    _ensure_schema_version_table(cur)
+    conn.commit()
+    applied    = _applied_set(cur)
+    pending    = [p for p in list_migrations() if _migration_name(p) not in applied]
+    if ate is not None:
+        pending = [p for p in pending if _sort_key(p) <= ate]
+    if not pending:
+        print("Nada a registrar — baseline em dia.")
+        cur.close(); conn.close()
+        return
+    print(f"BASELINE: registrar {len(pending)} migration(s) como APLICADAS sem executar:")
+    for p in pending:
+        print(f"  → {_migration_name(p)}")
+    print("\nUse APENAS se o schema dessas migrations JÁ existe no banco "
+          "(aplicado por deploy_full/manual). Em banco novo, rode sem --baseline.")
+    if not assume_yes:
+        resp = input("Confirmar baseline? [s/N] ").strip().lower()
+        if resp not in ("s", "sim"):
+            print("Abortado — nada registrado.")
+            cur.close(); conn.close()
+            return
+    for p in pending:
+        cur.execute(
+            "INSERT INTO dbo.etl_schema_version (migration_name, applied_by, checksum) "
+            "VALUES (?, ?, ?)",
+            [_migration_name(p), "baseline", _file_checksum(p)],
+        )
+    conn.commit()
+    cur.close(); conn.close()
+    print(f"\nConcluído: {len(pending)} migration(s) registradas via baseline.")
+
+
 def cmd_migrate(conn_str: str, dry_run: bool = False) -> None:
     conn = _conn(conn_str)
     cur  = conn.cursor()
@@ -173,12 +219,20 @@ def main() -> None:
                         help="Mostra o que seria aplicado sem executar")
     parser.add_argument("--status",   action="store_true",
                         help="Lista o estado de todas as migrations")
+    parser.add_argument("--baseline", action="store_true",
+                        help="Registra pendentes como aplicadas SEM executar (schema pré-existente)")
+    parser.add_argument("--ate",      type=int, default=None, metavar="NNN",
+                        help="Com --baseline: só até a migration de prefixo NNN")
+    parser.add_argument("--yes",      action="store_true",
+                        help="Com --baseline: pula a confirmação interativa")
     parser.add_argument("--conn",     default=CONN_STR,
                         help="Connection string pyodbc (padrão: MSSQL_CONN_STR)")
     args = parser.parse_args()
 
     if args.status:
         cmd_status(args.conn)
+    elif args.baseline:
+        cmd_baseline(args.conn, ate=args.ate, assume_yes=args.yes)
     else:
         cmd_migrate(args.conn, dry_run=args.dry_run)
 
