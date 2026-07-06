@@ -215,13 +215,61 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
     'não' com um erro escondido no log. Ausente/'ramo_falso' = comportamento
     legado (fluxos antigos não mudam até serem re-salvos e republicados).
     """
-    from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook  # lazy
-
     cond = cond or {}
     tipo = str(cond.get("tipo") or "").strip().lower()
     operador = cond.get("operador") or ">"
     limite = cond.get("valor")
     fail_loud = str(cond.get("on_error") or "").strip().lower() == "falhar"
+    obtido = _obter_valor(cond, default_conn_id, execution_id, pipeline_name, ti, fail_loud)
+
+    # query/contagem/valor_sql: comparação tipada quando 'comparacao' vier no
+    # contrato (ausente = compara legado, retrocompatível). linhas_job é sempre
+    # numérico (rows_out) → usa o compara legado.
+    if tipo in ("valor_sql", "query", "contagem"):
+        return compara_tipado(obtido, operador, limite, cond.get("comparacao"), fail_loud), obtido
+    return compara(obtido, operador, limite), obtido
+
+
+def eval_switch(cond: dict, default_conn_id: str, execution_id: str | None = None,
+                pipeline_name: str | None = None, ti=None):
+    """Avalia uma decisão SWITCH (N-way). Retorna ``(caso: str, valor_obtido)``.
+
+    O valor é obtido UMA vez (mesmas fontes da decisão binária: contagem/query/
+    linhas_job/valor_sql) e testado contra os ``casos`` NA ORDEM da lista — o
+    primeiro caso cujo ``valor_obtido <operador> valor`` for verdadeiro vence e
+    seu ``nome`` é retornado. Nenhum caso casou → ``'senao'`` (ramo padrão).
+
+    ``on_error='falhar'`` (default carimbado pela API): erro na obtenção ou na
+    comparação derruba a task (fail-loud). ``on_error='senao'``: degrada — o
+    valor vira None/0 e, como nenhum caso casa, a execução segue pelo senão.
+    """
+    cond = cond or {}
+    tipo = str(cond.get("tipo") or "").strip().lower()
+    fail_loud = str(cond.get("on_error") or "").strip().lower() == "falhar"
+    comparacao = cond.get("comparacao")
+    obtido = _obter_valor(cond, default_conn_id, execution_id, pipeline_name, ti, fail_loud)
+    for caso in (cond.get("casos") or []):
+        if not isinstance(caso, dict):
+            continue
+        operador = str(caso.get("operador") or "").strip() or ">"
+        limite = caso.get("valor")
+        if tipo == "linhas_job":
+            casou = compara(obtido, operador, limite)
+        else:
+            casou = compara_tipado(obtido, operador, limite, comparacao, fail_loud)
+        if casou:
+            return (str(caso.get("nome") or "").strip() or "senao"), obtido
+    return "senao", obtido
+
+
+def _obter_valor(cond: dict, default_conn_id: str, execution_id, pipeline_name,
+                 ti, fail_loud: bool):
+    """Obtém o valor de runtime da condição (SEM comparar) — compartilhado por
+    ``eval_condition`` (binária) e ``eval_switch`` (N-way). Toda a semântica de
+    degradação/fail-loud da obtenção vive aqui."""
+    from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook  # lazy
+
+    tipo = str(cond.get("tipo") or "").strip().lower()
 
     # valor_sql: NÃO roda SQL — lê o XCom do nó SQL a montante (source_job) e
     # compara via compara_tipado. Resolvido ANTES de abrir hook/conexão (não
@@ -257,7 +305,7 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
                         f"(nó SQL falhou/publicou NULL) — on_error=falhar")
                 print(f"[CONDICAO valor_sql] sem valor no XCom de '{source_job}' "
                       f"— valor tratado como None (resultado False).")
-        return compara_tipado(obtido, operador, limite, cond.get("comparacao"), fail_loud), obtido
+        return obtido
 
     conn_id = (cond.get("mssql_conn_id") or "").strip() or default_conn_id
 
@@ -267,35 +315,26 @@ def eval_condition(cond: dict, default_conn_id: str, execution_id: str | None = 
         if database and not _IDENT_RE.match(database):
             raise ValueError(f"database inválido: {database!r}")
         row = _select_first_nativo(conn_id, f"SELECT COUNT_BIG(*) FROM {tabela}", database)
-        obtido = int(row[0]) if row and row[0] is not None else 0
-    elif tipo == "query":
+        return int(row[0]) if row and row[0] is not None else 0
+    if tipo == "query":
         sql = _validate_select(cond.get("sql") or "")
         database = (cond.get("database") or "").strip()
         if database and not _IDENT_RE.match(database):
             raise ValueError(f"database inválido: {database!r}")
         row = _select_first_nativo(conn_id, sql, database)
-        obtido = row[0] if row else None
-    elif tipo == "linhas_job":
+        return row[0] if row else None
+    if tipo == "linhas_job":
         # Telemetria (etl_ds_job_log) vive no banco do PRÓPRIO Orquestra — segue
         # na conexão de infraestrutura do Airflow, não na conexão de dados.
         hook = MsSqlHook(mssql_conn_id=default_conn_id)
         child_job = (cond.get("child_job") or "").strip()
         if child_job:
-            obtido = _rows_do_filho(
+            return _rows_do_filho(
                 hook, cond.get("job_name") or "", child_job, execution_id, pipeline_name,
                 fail_loud=fail_loud)
-        else:
-            obtido = _rows_out_do_job(hook, cond.get("job_name") or "", execution_id,
-                                      pipeline_name, fail_loud=fail_loud)
-    else:
-        raise ValueError(f"tipo de condição desconhecido: {tipo!r}")
-
-    # query/contagem: comparação tipada quando 'comparacao' vier no contrato
-    # (ausente = compara legado, retrocompatível). linhas_job é sempre numérico
-    # (rows_out) → usa o compara legado.
-    if tipo in ("query", "contagem"):
-        return compara_tipado(obtido, operador, limite, cond.get("comparacao"), fail_loud), obtido
-    return compara(obtido, operador, limite), obtido
+        return _rows_out_do_job(hook, cond.get("job_name") or "", execution_id,
+                                pipeline_name, fail_loud=fail_loud)
+    raise ValueError(f"tipo de condição desconhecido: {tipo!r}")
 
 
 def _select_first_nativo(conn_id: str, sql: str, database: str | None = None):

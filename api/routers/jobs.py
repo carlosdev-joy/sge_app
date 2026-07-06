@@ -13,6 +13,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 import db
 from db import get_db_conn
+from services.notify import add_notificacao
 from services.conn_native import abrir_conexao_nativa
 from deps import (
     PERM_EDITAR,
@@ -67,6 +68,10 @@ _COND_COMPARACOES = {"texto", "data", "numero"}
 # 'falhar' como default nos SAVES novos — fluxos antigos (JSON sem a chave)
 # mantêm o comportamento legado até serem re-salvos e republicados.
 _COND_ON_ERROR = {"falhar", "ramo_falso"}
+# Decisão SWITCH (N-way, presença de 'casos'): 'falhar' | 'senao' (degrada para
+# o ramo padrão). 'ramo_falso' não existe no switch.
+_COND_ON_ERROR_SWITCH = {"falhar", "senao"}
+_COND_MAX_CASOS = 10
 _SQL_ON_ERROR = {"falhar", "nulo"}
 _COND_DML_RE = re.compile(
     r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|"
@@ -169,17 +174,25 @@ def _normalize_sql_node(cfg: dict) -> dict:
 
 
 def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str]:
-    """Valida a condição de um nó de decisão. Retorna lista de erros (vazia = ok)."""
+    """Valida a condição de um nó de decisão. Retorna lista de erros (vazia = ok).
+
+    Dois modos, discriminados pela presença da chave ``casos``:
+      - BINÁRIA (legado): operador/valor no topo + ramo_verdadeiro/ramo_falso.
+      - SWITCH (N-way): ``casos`` = lista ordenada de {nome, operador, valor,
+        ramo:[jobs]} + ``ramo_senao`` (padrão; pode ser vazio = encerra). O
+        operador/valor do topo é ignorado — cada caso tem o seu."""
     if not isinstance(cond, dict):
         return ["condição (condition_json) ausente ou inválida"]
     errs: list[str] = []
+    is_switch = "casos" in cond
     tipo = str(cond.get("tipo") or "").strip().lower()
     if tipo not in ("contagem", "query", "linhas_job", "valor_sql"):
         errs.append("tipo da condição deve ser 'contagem', 'query', 'linhas_job' ou 'valor_sql'")
-    if str(cond.get("operador") or "").strip() not in _COND_OPERADORES:
-        errs.append("operador inválido (use =, <>, >, >=, <, <=)")
+    if not is_switch:
+        if str(cond.get("operador") or "").strip() not in _COND_OPERADORES:
+            errs.append("operador inválido (use =, <>, >, >=, <, <=)")
     valor = cond.get("valor")
-    if valor is None or (isinstance(valor, str) and not valor.strip()):
+    if not is_switch and (valor is None or (isinstance(valor, str) and not valor.strip())):
         errs.append("valor da condição é obrigatório")
     if tipo == "linhas_job":
         # Decisão por linhas processadas: compara rows_out de um job a montante
@@ -198,7 +211,7 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
         cj = cond.get("child_job")
         if cj is not None and not isinstance(cj, str):
             errs.append("child_job da condição (linhas_job) deve ser texto")
-        if valor is not None and not (
+        if not is_switch and valor is not None and not (
             isinstance(valor, (int, float)) or str(valor).strip().lstrip("-").isdigit()
         ):
             errs.append("valor da condição (linhas_job) deve ser numérico")
@@ -208,7 +221,7 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
         db = (cond.get("database") or "").strip()
         if db and not _IDENT_RE.match(db):
             errs.append("database da condição inválido")
-        if valor is not None and not (
+        if not is_switch and valor is not None and not (
             isinstance(valor, (int, float)) or str(valor).strip().lstrip("-").isdigit()
         ):
             errs.append("valor da condição (contagem) deve ser numérico")
@@ -244,8 +257,15 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
         errs.append(f"conexão MSSQL '{cid}' da condição não encontrada no Airflow")
     oe = cond.get("on_error")
     if oe is not None and str(oe).strip():
-        if str(oe).strip().lower() not in _COND_ON_ERROR:
-            errs.append("on_error da condição inválido (use 'falhar' ou 'ramo_falso')")
+        _allowed = _COND_ON_ERROR_SWITCH if is_switch else _COND_ON_ERROR
+        if str(oe).strip().lower() not in _allowed:
+            errs.append("on_error da condição inválido (use 'falhar' ou "
+                        + ("'senao')" if is_switch else "'ramo_falso')"))
+    if is_switch:
+        if (cond.get("ramo_verdadeiro") or []) or (cond.get("ramo_falso") or []):
+            errs.append("decisão switch (casos) não pode ter ramo_verdadeiro/ramo_falso")
+        errs.extend(_validate_casos(cond, known_jobs, self_name, tipo))
+        return errs
     ramo_v, ramo_f = cond.get("ramo_verdadeiro") or [], cond.get("ramo_falso") or []
     if not isinstance(ramo_v, list) or not isinstance(ramo_f, list):
         errs.append("ramos (ramo_verdadeiro/ramo_falso) devem ser listas")
@@ -265,6 +285,131 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
     return errs
 
 
+def _validate_casos(cond, known_jobs, self_name, tipo) -> list[str]:
+    """Valida os casos de uma decisão SWITCH. A ordem da lista é a ordem de
+    avaliação (primeiro que casar vence). Um job pode pertencer a no máximo UM
+    ramo (entre todos os casos e o senão) — mesma exclusividade da binária."""
+    casos = cond.get("casos")
+    if not isinstance(casos, list) or not casos:
+        return ["casos da decisão switch deve ser uma lista com ao menos um caso"]
+    if len(casos) > _COND_MAX_CASOS:
+        return [f"decisão switch aceita no máximo {_COND_MAX_CASOS} casos"]
+    ramo_senao = cond.get("ramo_senao")
+    if ramo_senao is not None and not isinstance(ramo_senao, list):
+        return ["ramo_senao deve ser uma lista"]
+    errs: list[str] = []
+    nomes: set[str] = set()
+    dono: dict[str, str] = {}   # membro → rótulo do ramo onde já apareceu
+    total_membros = 0
+
+    def _checa_membros(ramo, rotulo):
+        nonlocal total_membros
+        for m in ramo or []:
+            mn = str(m).strip()
+            if not mn:
+                continue
+            total_membros += 1
+            if mn == self_name:
+                errs.append(f"{rotulo}: não pode referenciar a própria decisão")
+            elif mn not in known_jobs:
+                errs.append(f"{rotulo}: job '{mn}' não existe no pipeline")
+            elif mn in dono:
+                errs.append(f"job '{mn}' em mais de um ramo ({dono[mn]} e {rotulo})")
+            else:
+                dono[mn] = rotulo
+
+    for i, caso in enumerate(casos, start=1):
+        rot = f"caso {i}"
+        if not isinstance(caso, dict):
+            errs.append(f"{rot}: inválido (esperado objeto com nome/operador/valor/ramo)")
+            continue
+        nome = str(caso.get("nome") or "").strip()
+        if not nome:
+            errs.append(f"{rot}: nome é obrigatório")
+        elif len(nome) > 40:
+            errs.append(f"{rot}: nome muito longo (máx. 40 caracteres)")
+        elif nome.lower() == "senao":
+            errs.append(f"{rot}: nome 'senao' é reservado (é o ramo padrão)")
+        elif nome.lower() in nomes:
+            errs.append(f"{rot}: nome '{nome}' repetido")
+        if nome:
+            nomes.add(nome.lower())
+            rot = f"caso '{nome}'"
+        if str(caso.get("operador") or "").strip() not in _COND_OPERADORES:
+            errs.append(f"{rot}: operador inválido (use =, <>, >, >=, <, <=)")
+        cvalor = caso.get("valor")
+        if cvalor is None or (isinstance(cvalor, str) and not cvalor.strip()):
+            errs.append(f"{rot}: valor é obrigatório")
+        elif tipo in ("contagem", "linhas_job") and not (
+            isinstance(cvalor, (int, float)) or str(cvalor).strip().lstrip("-").isdigit()
+        ):
+            errs.append(f"{rot}: valor deve ser numérico")
+        ramo = caso.get("ramo")
+        if ramo is not None and not isinstance(ramo, list):
+            errs.append(f"{rot}: ramo deve ser uma lista")
+            continue
+        _checa_membros(ramo, rot)
+    _checa_membros(ramo_senao, "ramo senão")
+    if total_membros == 0:
+        errs.append("a decisão precisa de ao menos um job em algum ramo")
+    return errs
+
+
+def _condition_branch_members(cond) -> list[str]:
+    """Todos os jobs referenciados como MEMBROS DE RAMO na condição — binária
+    (ramo_verdadeiro/ramo_falso) ou switch (casos[].ramo + ramo_senao). Usado
+    para montar as arestas decisão→membro do grafo de ciclo."""
+    if not isinstance(cond, dict):
+        return []
+    membros = list(cond.get("ramo_verdadeiro") or []) + list(cond.get("ramo_falso") or [])
+    if isinstance(cond.get("casos"), list):
+        for caso in cond["casos"]:
+            if isinstance(caso, dict):
+                membros += list(caso.get("ramo") or [])
+    membros += list(cond.get("ramo_senao") or [])
+    return [str(m).strip() for m in membros if str(m).strip()]
+
+
+# ── Rename transacional de job (onda 3) — helpers puros ─────────────────────
+
+def _rename_in_dep_csv(dep_csv, antigo: str, novo: str):
+    """Troca ``antigo`` por ``novo`` num CSV de depends_on_jobs. Retorna o CSV
+    novo, ou None quando nada mudou (evita UPDATE desnecessário)."""
+    if not dep_csv:
+        return None
+    parts = [p.strip() for p in str(dep_csv).split(",") if p.strip()]
+    if antigo not in parts:
+        return None
+    return ",".join(novo if p == antigo else p for p in parts)
+
+
+def _rename_in_condition(cond, antigo: str, novo: str) -> bool:
+    """Troca referências a ``antigo`` dentro de um condition_json JÁ
+    deserializado (muta in place): ramos binários, casos[].ramo, ramo_senao,
+    ``job_name`` (linhas_job) e ``source_job`` (valor_sql). NÃO toca
+    ``child_job`` — é nome de job-filho do DataStage, não do Orquestra.
+    Retorna True se algo mudou."""
+    if not isinstance(cond, dict):
+        return False
+    mudou = False
+    for key in ("ramo_verdadeiro", "ramo_falso", "ramo_senao"):
+        ramo = cond.get(key)
+        if isinstance(ramo, list) and antigo in ramo:
+            cond[key] = [novo if m == antigo else m for m in ramo]
+            mudou = True
+    if isinstance(cond.get("casos"), list):
+        for caso in cond["casos"]:
+            if (isinstance(caso, dict) and isinstance(caso.get("ramo"), list)
+                    and antigo in caso["ramo"]):
+                caso["ramo"] = [novo if m == antigo else m for m in caso["ramo"]]
+                mudou = True
+    for key in ("job_name", "source_job"):
+        if cond.get(key) == antigo:
+            cond[key] = novo
+            mudou = True
+    return mudou
+
+
 def _normalize_condition(cond: dict) -> dict:
     """Normaliza a condição antes de persistir em condition_json.
 
@@ -281,6 +426,22 @@ def _normalize_condition(cond: dict) -> dict:
     if tipo == "linhas_job":
         out["job_name"] = str(out.get("job_name") or "").strip()
         out["child_job"] = str(out.get("child_job") or "").strip()
+    if "casos" in out and isinstance(out.get("casos"), list):
+        # SWITCH: normaliza casos (nome/operador limpos, ramo sem vazios) e
+        # remove os ramos binários (a validação já garantiu que vieram vazios).
+        out["casos"] = [{
+            "nome": str(c.get("nome") or "").strip(),
+            "operador": str(c.get("operador") or "").strip(),
+            "valor": c.get("valor"),
+            "ramo": [str(m).strip() for m in (c.get("ramo") or []) if str(m).strip()],
+        } for c in out["casos"] if isinstance(c, dict)]
+        out["ramo_senao"] = [str(m).strip() for m in (out.get("ramo_senao") or [])
+                             if str(m).strip()]
+        out.pop("ramo_verdadeiro", None)
+        out.pop("ramo_falso", None)
+        oe = str(out.get("on_error") or "").strip().lower()
+        out["on_error"] = oe if oe in _COND_ON_ERROR_SWITCH else "falhar"
+        return out
     # Carimba on_error no save: default 'falhar' (fail-loud) para decisões salvas
     # a partir de agora; quem quiser o degrade legado escolhe 'ramo_falso' na UI.
     oe = str(out.get("on_error") or "").strip().lower()
@@ -973,6 +1134,9 @@ async def decisao_simular(
     qual ramo (sim/nao) a execução iria, sem salvar nada.
 
     Body: {mssql_conn_id?, host?, database, sql, comparacao, operador, valor}.
+    SWITCH (N-way): envie ``casos`` = [{nome, operador, valor}] no lugar de
+    operador/valor — o escalar é testado contra os casos NA ORDEM e a resposta
+    vira {valor_obtido, caso} ('senao' quando nenhum casa).
 
     Segurança (mesma do /jobs/sql-preview):
       - ``sql`` read-only (SELECT/WITH, sem ';' nem DML) — 422 senão.
@@ -1001,7 +1165,20 @@ async def decisao_simular(
         raise HTTPException(status_code=422, detail=str(e))
     if comparacao not in _COND_COMPARACOES:
         raise HTTPException(status_code=422, detail="comparacao deve ser 'texto', 'data' ou 'numero'")
-    if operador not in _COND_OPERADORES:
+    casos = body.get("casos")
+    if casos is not None:
+        if not isinstance(casos, list) or not casos or len(casos) > _COND_MAX_CASOS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"casos deve ser uma lista com 1 a {_COND_MAX_CASOS} itens")
+        for i, c in enumerate(casos, start=1):
+            if not isinstance(c, dict) or str(c.get("operador") or "").strip() not in _COND_OPERADORES:
+                raise HTTPException(status_code=422,
+                                    detail=f"caso {i}: operador inválido (use =, <>, >, >=, <, <=)")
+            cv = c.get("valor")
+            if cv is None or (isinstance(cv, str) and not cv.strip()):
+                raise HTTPException(status_code=422, detail=f"caso {i}: valor é obrigatório")
+    elif operador not in _COND_OPERADORES:
         raise HTTPException(status_code=422, detail="operador inválido (use =, <>, >, >=, <, <=)")
 
     timeout_s = _get_preview_timeout_s()
@@ -1035,17 +1212,233 @@ async def decisao_simular(
         raise HTTPException(status_code=400, detail=f"Erro ao executar o SELECT: {e}")
 
     obtido = row[0] if row else None
+    # Contrato: valor_obtido é str|null (None quando vazio). _json_safe normaliza
+    # datas/decimais/bytes; o str() final fixa o tipo da resposta como string.
+    safe = _json_safe(obtido)
+    if casos is not None:
+        # SWITCH: primeiro caso que casar vence (mesma ordem do runtime).
+        caso_nome = "senao"
+        try:
+            for c in casos:
+                if _compara_tipado(obtido, str(c.get("operador") or "").strip(),
+                                   c.get("valor"), comparacao):
+                    caso_nome = str(c.get("nome") or "").strip() or "senao"
+                    break
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        return {
+            "valor_obtido": None if safe is None else str(safe),
+            "caso": caso_nome,
+        }
     try:
         resultado = _compara_tipado(obtido, operador, valor, comparacao)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    # Contrato: valor_obtido é str|null (None quando vazio). _json_safe normaliza
-    # datas/decimais/bytes; o str() final fixa o tipo da resposta como string.
-    safe = _json_safe(obtido)
     return {
         "valor_obtido": None if safe is None else str(safe),
         "resultado": resultado,
         "ramo": "sim" if resultado else "nao",
+    }
+
+
+@router.post("/pipelines/jobs/{pipeline_name}/{job_name}/rename", tags=["jobs"])
+async def rename_pipeline_job(
+    pipeline_name: str,
+    job_name: str,
+    body: dict = Body(default={}),
+    user: dict = Depends(require_perm(PERM_EDITAR)),
+):
+    """Renomeia um job do pipeline atualizando TODAS as referências por nome em
+    UMA transação (rename transacional — onda 3). Body: {novo_nome}.
+
+    O que é atualizado junto com a linha do job:
+      - etl_pipeline_job_param (a FK não tem ON UPDATE CASCADE → estratégia
+        cópia: INSERT da linha com o nome novo, UPDATE dos params, DELETE da
+        linha antiga — o ON DELETE CASCADE não encontra mais filhos);
+      - depends_on_jobs (CSV) e condition_json dos IRMÃOS (ramos binários,
+        casos do switch, ramo_senao, linhas_job.job_name, valor_sql.source_job
+        — child_job fica: é nome de job-filho do DataStage);
+      - etl_job_lineage;
+      - HISTÓRICO: etl_job_execution (job_name + task_id, que é o próprio nome)
+        e etl_ds_job_log — as telas de logs/KPIs juntam por nome, então
+        reescrever mantém a continuidade das séries.
+
+    Fora do escopo (por decisão): etl_seq_import_job (staging histórico de
+    imports de Sequence — o casamento por nome só acontece no approve) e a DAG
+    publicada — o task_id deriva do nome, então é preciso REPUBLICAR a DAG
+    (o aviso volta na resposta; rerun/reconciliação usam o task_id).
+
+    Guardas: nome novo válido (sem espaço — vira task_id), único no pipeline,
+    e NENHUMA execução RUNNING do pipeline (rename no meio de um run confunde
+    o monitor e o reconciliador)."""
+    pipe = (pipeline_name or "").strip()
+    antigo = (job_name or "").strip()
+    novo = str(body.get("novo_nome") or "").strip()
+    if not pipe or not antigo:
+        raise HTTPException(status_code=422, detail="pipeline e job são obrigatórios")
+    if not novo:
+        raise HTTPException(status_code=422, detail="novo_nome é obrigatório")
+    if novo == antigo:
+        raise HTTPException(status_code=422, detail="o novo nome é igual ao atual")
+    if not _JOB_NAME_STRICT_RE.match(novo):
+        raise HTTPException(
+            status_code=422,
+            detail="nome inválido — use apenas letras, números, _ . - (sem espaço; vira task_id no Airflow)")
+
+    conn = get_db_conn()
+    cur = conn.cursor()
+
+    def _tem_tabela(nome: str) -> bool:
+        cur.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME=?", (nome,))
+        return bool(cur.fetchone()[0])
+
+    def _tem_coluna(tabela: str, coluna: str) -> bool:
+        cur.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME=? AND COLUMN_NAME=?",
+            (tabela, coluna))
+        return bool(cur.fetchone()[0])
+
+    try:
+        cur.execute(
+            "SELECT COUNT(*) FROM dbo.etl_pipeline_job WHERE pipeline_name=? AND job_name=?",
+            (pipe, antigo))
+        if not cur.fetchone()[0]:
+            raise HTTPException(status_code=404, detail=f"job '{antigo}' não existe no pipeline '{pipe}'")
+        cur.execute(
+            "SELECT COUNT(*) FROM dbo.etl_pipeline_job WHERE pipeline_name=? AND job_name=?",
+            (pipe, novo))
+        if cur.fetchone()[0]:
+            raise HTTPException(status_code=422, detail=f"já existe um job '{novo}' no pipeline")
+
+        # A coluna 'pipeline' entrou na 027 (NULLable) — instalações antigas
+        # degradam sem o guard/reescrita do histórico, como o resto do arquivo.
+        tem_execucao = (_tem_tabela("etl_job_execution")
+                        and _tem_coluna("etl_job_execution", "pipeline"))
+        if tem_execucao:
+            cur.execute(
+                "SELECT COUNT(*) FROM dbo.etl_job_execution "
+                "WHERE pipeline=? AND status='RUNNING' AND end_time IS NULL", (pipe,))
+            if cur.fetchone()[0]:
+                raise HTTPException(
+                    status_code=409,
+                    detail="o pipeline tem execução em andamento — aguarde (ou use a "
+                           "Finalização) antes de renomear")
+
+        # 1) A própria linha (estratégia cópia — ver docstring). Colunas
+        # dinâmicas: as duas shapes de produção divergem (PK composta vs id
+        # IDENTITY + UNIQUE); sys.columns exclui identity/computed.
+        cur.execute(
+            "SELECT c.name FROM sys.columns c "
+            "WHERE c.object_id=OBJECT_ID('dbo.etl_pipeline_job') "
+            "AND c.is_identity=0 AND c.is_computed=0 ORDER BY c.column_id")
+        cols = [r[0] for r in cur.fetchall()]
+        if "job_name" not in cols:
+            raise HTTPException(status_code=500, detail="schema inesperado em etl_pipeline_job")
+        col_list = ", ".join(f"[{c}]" for c in cols)
+        sel_list = ", ".join("?" if c == "job_name" else f"[{c}]" for c in cols)
+        cur.execute(
+            f"INSERT INTO dbo.etl_pipeline_job ({col_list}) "
+            f"SELECT {sel_list} FROM dbo.etl_pipeline_job WHERE pipeline_name=? AND job_name=?",
+            (novo, pipe, antigo))
+        if _tem_tabela("etl_pipeline_job_param"):
+            cur.execute(
+                "UPDATE dbo.etl_pipeline_job_param SET job_name=? "
+                "WHERE pipeline_name=? AND job_name=?", (novo, pipe, antigo))
+        cur.execute(
+            "DELETE FROM dbo.etl_pipeline_job WHERE pipeline_name=? AND job_name=?",
+            (pipe, antigo))
+
+        # 2) Irmãos: depends_on_jobs (CSV) e condition_json.
+        if _tem_coluna("etl_pipeline_job", "depends_on_jobs"):
+            cur.execute(
+                "SELECT job_name, depends_on_jobs FROM dbo.etl_pipeline_job "
+                "WHERE pipeline_name=? AND depends_on_jobs IS NOT NULL", (pipe,))
+            for jn, dep in cur.fetchall():
+                novo_csv = _rename_in_dep_csv(dep, antigo, novo)
+                if novo_csv is not None:
+                    cur.execute(
+                        "UPDATE dbo.etl_pipeline_job SET depends_on_jobs=? "
+                        "WHERE pipeline_name=? AND job_name=?", (novo_csv, pipe, jn))
+        if _tem_coluna("etl_pipeline_job", "condition_json"):
+            cur.execute(
+                "SELECT job_name, condition_json FROM dbo.etl_pipeline_job "
+                "WHERE pipeline_name=? AND condition_json IS NOT NULL", (pipe,))
+            for jn, cj in cur.fetchall():
+                try:
+                    cond = json.loads(cj) if cj else None
+                except (ValueError, TypeError):
+                    continue
+                if _rename_in_condition(cond, antigo, novo):
+                    cur.execute(
+                        "UPDATE dbo.etl_pipeline_job SET condition_json=? "
+                        "WHERE pipeline_name=? AND job_name=?",
+                        (json.dumps(cond, ensure_ascii=False), pipe, jn))
+
+        # 3) Lineage (vínculo por nome, sem FK).
+        if _tem_tabela("etl_job_lineage"):
+            cur.execute(
+                "UPDATE dbo.etl_job_lineage SET job_name=? "
+                "WHERE pipeline_name=? AND job_name=?", (novo, pipe, antigo))
+
+        # 4) Histórico — job_name e task_id (task_id = nome do job em todas as
+        # linhas; o CASE preserva variantes inesperadas).
+        hist_exec = hist_ds = 0
+        if tem_execucao:
+            cur.execute(
+                "UPDATE dbo.etl_job_execution SET job_name=?, "
+                "task_id=CASE WHEN task_id=? THEN ? ELSE task_id END "
+                "WHERE pipeline=? AND job_name=?",
+                (novo, antigo, novo, pipe, antigo))
+            hist_exec = max(0, cur.rowcount or 0)
+        if _tem_tabela("etl_ds_job_log") and _tem_coluna("etl_ds_job_log", "pipeline_name"):
+            cur.execute(
+                "UPDATE dbo.etl_ds_job_log SET job_name=? "
+                "WHERE pipeline_name=? AND job_name=?", (novo, pipe, antigo))
+            hist_ds = max(0, cur.rowcount or 0)
+
+        # Auditoria (quem/quando) — mesma trilha da finalização manual.
+        if _tem_tabela("etl_pipeline_audit"):
+            cur.execute(
+                "INSERT INTO dbo.etl_pipeline_audit "
+                "(pipeline_name, changed_by, field_name, old_value, new_value, changed_at) "
+                "VALUES (?, ?, 'job_rename', ?, ?, GETDATE())",
+                (pipe, str(user.get("matricula") or "?"), antigo, novo))
+
+        conn.commit()
+        cur.close(); conn.close()
+    except HTTPException:
+        try:
+            conn.rollback(); conn.close()
+        except Exception:
+            pass
+        raise
+    except Exception as e:
+        try:
+            conn.rollback(); conn.close()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Falha ao renomear: {e}")
+
+    add_notificacao(
+        user.get("matricula"),
+        f"Job renomeado em {pipe}",
+        f"'{antigo}' → '{novo}' — dependências, condições, lineage e histórico "
+        f"({hist_exec} execução(ões), {hist_ds} log(s) DS) atualizados. "
+        "Republique a DAG para o novo task_id valer no Airflow.",
+        tipo="info", link=f"/fluxos?pipeline={pipe}",
+    )
+    return {
+        "ok": True,
+        "de": antigo,
+        "para": novo,
+        "historico": {"execucoes": hist_exec, "ds_logs": hist_ds},
+        "avisos": [
+            "Republique a DAG do pipeline — o task_id no Airflow deriva do nome "
+            "(rerun e reconciliação usam o task_id).",
+        ],
     }
 
 
@@ -1184,8 +1577,7 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                 # Persiste o dict INTEIRO (job_name + child_job inclusos p/ linhas_job)
                 # — round-trip garantido no GET /fluxo / get_pipeline_job.
                 cond_json_str = json.dumps(_normalize_condition(raw_cond), ensure_ascii=False)
-                for m in (raw_cond.get("ramo_verdadeiro") or []) + (raw_cond.get("ramo_falso") or []):
-                    mn = str(m).strip()
+                for mn in _condition_branch_members(raw_cond):
                     if j_name in cycle_adj and mn in cycle_adj:
                         cycle_adj[j_name].add(mn)   # decisão → membro do ramo
 
@@ -1810,8 +2202,7 @@ async def save_pipeline_fluxo(
                 # Persiste o dict INTEIRO (job_name + child_job inclusos p/ linhas_job)
                 # — round-trip garantido no GET /fluxo / get_pipeline_job.
                 cond_json_str = json.dumps(_normalize_condition(raw_cond), ensure_ascii=False)
-                for m in (raw_cond.get("ramo_verdadeiro") or []) + (raw_cond.get("ramo_falso") or []):
-                    mn = str(m).strip()
+                for mn in _condition_branch_members(raw_cond):
                     if mn in cycle_adj:
                         cycle_adj[j_name].add(mn)   # decisão → membro do ramo
 
