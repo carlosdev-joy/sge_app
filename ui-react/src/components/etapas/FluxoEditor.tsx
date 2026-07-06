@@ -687,8 +687,17 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     enabled: !!pipeline,
   })
 
+  // Espelho do dirty p/ o guard do rebuild (ref: fora das deps de propósito —
+  // dirty mudar não pode disparar rebuild com data velha).
+  const dirtyRef = useRef(false)
+  useEffect(() => { dirtyRef.current = dirty }, [dirty])
+
   useEffect(() => {
     if (!data) return
+    // Nunca reconstruir por cima de edições NÃO salvas: um refetch (foco na
+    // janela, staleTime vencido, rename) descartaria o trabalho em silêncio.
+    // O rebuild volta a valer no próximo data após salvar (dirty=false).
+    if (dirtyRef.current) return
     apiNodesRef.current = data.nodes
     existingRef.current = new Set(data.nodes.map(n => n.job_name))
     deletedRef.current = new Set()
@@ -919,7 +928,15 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
       let ne = e
       if (e.source === oldName) ne = { ...ne, source: name }
       if (e.target === oldName) ne = { ...ne, target: name }
-      if (ne !== e) ne = { ...ne, id: ne.id.replace(oldName, name) }
+      // Id recomposto das partes (replace por substring casaria prefixos).
+      if (ne !== e) {
+        ne = {
+          ...ne,
+          id: isBranch(ne)
+            ? `ramo:${ne.source}:${edgeRamo(ne) ?? 'sim'}:${ne.target}`
+            : `dep:${ne.source}->${ne.target}`,
+        }
+      }
       return ne
     }))
     setSelectedId(prev => (prev === oldName ? name : prev))
@@ -941,6 +958,10 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     if (!name) { toast.error('Informe um nome.'); return false }
     if (!NAME_RE.test(name)) { toast.error('Nome inválido — use apenas letras, números, _ . - (sem espaço)'); return false }
     if (nameSet().has(name)) { toast.error('Já existe um nó com esse nome.'); return false }
+    if (deletedRef.current.has(name)) {
+      toast.error(`"${name}" pertence a um job excluído ainda não salvo — salve o fluxo antes de reusar o nome.`)
+      return false
+    }
     setRenamePedido({ de: oldName, para: name })
     return false   // o input volta ao nome atual até o usuário confirmar
   }
@@ -965,22 +986,70 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
       let ne = e
       if (e.source === oldName) ne = { ...ne, source: name }
       if (e.target === oldName) ne = { ...ne, target: name }
-      if (ne !== e) ne = { ...ne, id: ne.id.replace(oldName, name) }
+      // Id recomposto das partes (replace por substring casaria prefixos: o
+      // "JOB" de "JOB_2" — id dessincronizado e risco de key duplicada).
+      if (ne !== e) {
+        ne = {
+          ...ne,
+          id: isBranch(ne)
+            ? `ramo:${ne.source}:${edgeRamo(ne) ?? 'sim'}:${ne.target}`
+            : `dep:${ne.source}->${ne.target}`,
+        }
+      }
       return ne
     }))
     existingRef.current.delete(oldName)
     existingRef.current.add(name)
+    // Mantém o snapshot da API coerente (reorganizar usa a ordem salva por nome).
+    apiNodesRef.current = apiNodesRef.current.map(n =>
+      n.job_name === oldName ? { ...n, job_name: name } : n)
     setSelectedId(prev => (prev === oldName ? name : prev))
+  }
+
+  // Reescreve as referências ao nome dentro do CACHE do TanStack (['fluxo']):
+  // sem isso o cache diverge do servidor após o rename e o próximo refetch
+  // (foco/staleTime) reconstruiria o canvas com dados velhos.
+  function renomearNoCache(de: string, para: string) {
+    qc.setQueryData<FluxoResp>(['fluxo', pipeline], old => {
+      if (!old) return old
+      return {
+        nodes: old.nodes.map(n => {
+          let cond = n.condition
+          if (cond) {
+            cond = JSON.parse(JSON.stringify(cond)) as Condition
+            for (const k of ['ramo_verdadeiro', 'ramo_falso', 'ramo_senao'] as const) {
+              const lista = cond[k]
+              if (Array.isArray(lista)) cond[k] = lista.map(m => (m === de ? para : m))
+            }
+            if (Array.isArray(cond.casos)) {
+              cond.casos = cond.casos.map(cs => ({
+                ...cs, ramo: (cs.ramo ?? []).map(m => (m === de ? para : m)),
+              }))
+            }
+            if (cond.source_job === de) cond.source_job = para
+            if (cond.job_name === de) cond.job_name = para
+          }
+          return {
+            ...n,
+            job_name: n.job_name === de ? para : n.job_name,
+            depends_on_jobs: (n.depends_on_jobs ?? []).map(m => (m === de ? para : m)),
+            condition: cond,
+          }
+        }),
+      }
+    })
   }
 
   async function confirmarRename() {
     if (!renamePedido) return
+    if (saving) { toast.error('Aguarde o salvamento em andamento terminar.'); return }
     setRenameLoading(true)
     try {
       const res = await apiFetch<{ avisos?: string[] }>(
         `/pipelines/jobs/${encodeURIComponent(pipeline)}/${encodeURIComponent(renamePedido.de)}/rename`,
         { method: 'POST', body: JSON.stringify({ novo_nome: renamePedido.para }) },
       )
+      renomearNoCache(renamePedido.de, renamePedido.para)
       aplicarRenameLocal(renamePedido.de, renamePedido.para)
       toast.success(`Job renomeado para ${renamePedido.para}.`)
       for (const aviso of res?.avisos ?? []) toast.info(aviso)
@@ -1077,18 +1146,19 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     })
   }
 
-  function atualizarCaso(nodeId: string, idx: number, patch: Partial<CasoSwitch>) {
+  function atualizarCaso(nodeId: string, idx: number, patch: Partial<CasoSwitch>): boolean {
     const cur = getCondDecisao(nodeId)
-    if (!cur || !Array.isArray(cur.casos)) return
+    if (!cur || !Array.isArray(cur.casos)) return false
     const antigo = cur.casos[idx]
-    if (!antigo) return
+    if (!antigo) return false
     if (patch.nome != null) {
       const nome = patch.nome.trim()
-      if (!nome) { toast.error('Informe o nome do caso.'); return }
-      if (nome.length > 40) { toast.error('Nome do caso muito longo (máx. 40).'); return }
-      if (nome.toLowerCase() === 'senao') { toast.error("'senao' é reservado (é o ramo padrão)."); return }
-      if (cur.casos.some((c, i) => i !== idx && c.nome === nome)) {
-        toast.error('Já existe um caso com esse nome.'); return
+      if (!nome) { toast.error('Informe o nome do caso.'); return false }
+      if (nome.length > 40) { toast.error('Nome do caso muito longo (máx. 40).'); return false }
+      if (nome.toLowerCase() === 'senao') { toast.error("'senao' é reservado (é o ramo padrão)."); return false }
+      // Case-insensitive — mesma regra do backend (evita 422 tardio no save).
+      if (cur.casos.some((c, i) => i !== idx && c.nome.toLowerCase() === nome.toLowerCase())) {
+        toast.error('Já existe um caso com esse nome.'); return false
       }
       patch = { ...patch, nome }
     }
@@ -1097,6 +1167,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     if (patch.nome != null && patch.nome !== antigo.nome) {
       sincronizarArestasCasos(nodeId, casos, { de: antigo.nome, para: patch.nome })
     }
+    return true
   }
 
   function removerCaso(nodeId: string, idx: number) {
@@ -1263,6 +1334,18 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
         depsByTarget.get(e.target)!.add(e.source)
       }
 
+      // Guard: decisão sem NENHUM membro de ramo (o backend rejeitaria o fluxo
+      // inteiro com 422) — mesmo padrão do guard da notificação sem canal.
+      const decisaoSemRamo = [...decisoes].filter(id => {
+        const porRamo = ramosByDecisao.get(id)
+        return !porRamo || [...porRamo.values()].every(lista => lista.length === 0)
+      })
+      if (decisaoSemRamo.length) {
+        toast.error(`Ligue ao menos um job em algum ramo da decisão: ${decisaoSemRamo.join(', ')}.`)
+        setSaving(false)
+        return
+      }
+
       const payloadNodes = nodes.map(n => {
         const d = n.data as Record<string, unknown>
         const isDecisao = n.type === 'decisao'
@@ -1414,6 +1497,12 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
       toast.success('Fluxo salvo com sucesso.')
       setDirty(false)
       deletedRef.current = new Set()
+      // Marca tudo como persistido JÁ (sem esperar o refetch): se o refetch
+      // atrasar/falhar, um nó recém-salvo com isNew=true iria pro caminho de
+      // rename local (sem transação) e duplicaria o job no próximo save.
+      existingRef.current = new Set(payloadNodes.map(p => p.job_name))
+      setNodes(nds => nds.map(n =>
+        (n.data as { isNew?: boolean }).isNew ? { ...n, data: { ...n.data, isNew: false } } : n))
       qc.invalidateQueries({ queryKey: ['fluxo', pipeline] })
       setShowPublish(true)
     } catch (e: any) {
@@ -1745,7 +1834,8 @@ function extractValidationErrors(e: any): string[] {
 interface CasoOps {
   onAlternarModo: (nodeId: string, paraSwitch: boolean) => void
   onAddCaso: (nodeId: string) => void
-  onUpdateCaso: (nodeId: string, idx: number, patch: Partial<CasoSwitch>) => void
+  // Retorna false quando a validação rejeitou (o input de nome reverte o draft).
+  onUpdateCaso: (nodeId: string, idx: number, patch: Partial<CasoSwitch>) => boolean
   onRemoveCaso: (nodeId: string, idx: number) => void
   onMoveCaso: (nodeId: string, idx: number, delta: -1 | 1) => void
 }
@@ -1896,6 +1986,29 @@ function NomeField({
         ? <p className="text-[10px] text-dim/70">Renomear um nó salvo atualiza dependências, condições e histórico — e pede confirmação.</p>
         : <p className="text-[10px] text-dim/70">Letras, números, _ . - (sem espaço)</p>}
     </div>
+  )
+}
+
+// Nome de um CASO do switch: draft local com commit no blur/Enter — validar por
+// keystroke tornaria certos nomes impossíveis de digitar (ex.: um nome que passa
+// por um prefixo de caso existente, ou limpar o campo para redigitar).
+function CasoNomeInput({
+  nome, placeholder, onCommit,
+}: { nome: string; placeholder: string; onCommit: (novo: string) => boolean }) {
+  const [draft, setDraft] = useState(nome)
+  useEffect(() => { setDraft(nome) }, [nome])
+  return (
+    <Input
+      value={draft}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={() => {
+        if (draft.trim() === nome) { setDraft(nome); return }
+        if (!onCommit(draft)) setDraft(nome)
+      }}
+      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+      placeholder={placeholder}
+      className="font-mono text-[11px]"
+    />
   )
 }
 
@@ -2377,11 +2490,10 @@ function PainelDecisao({
                       style={{ background: casoCor(i) }}
                       title={`cor do handle/aresta do caso ${i + 1}`}
                     />
-                    <Input
-                      value={cs.nome}
-                      onChange={e => onUpdateCaso(node.id, i, { nome: e.target.value })}
+                    <CasoNomeInput
+                      nome={cs.nome}
                       placeholder={`caso_${i + 1}`}
-                      className="font-mono text-[11px]"
+                      onCommit={novo => onUpdateCaso(node.id, i, { nome: novo })}
                     />
                     <Select
                       value={cs.operador}

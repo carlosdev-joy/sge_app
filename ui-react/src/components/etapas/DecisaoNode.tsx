@@ -72,10 +72,6 @@ const HANDLE_IN = `${HANDLE_BASE} !bg-indigo-400`
 const HANDLE_SIM = `${HANDLE_BASE} !bg-green-500`
 const HANDLE_NAO = `${HANDLE_BASE} !bg-slate-400`
 
-// Handles na altura do tile do ícone (32px): entrada (esq.) e saída "sim" (dir.)
-// no centro vertical; saída "não" na base do tile.
-const HANDLE_Y = 16
-
 function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNodeData }) {
   const casos = data.condition?.casos
   const isSwitch = Array.isArray(casos)
@@ -92,12 +88,12 @@ function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNode
 
   return (
     <div className="group relative flex w-[128px] flex-col items-center">
-      {/* Entrada (esquerda) — na altura do tile do ícone */}
+      {/* Entrada (esquerda) — centro vertical do tile (que cresce no switch) */}
       <Handle
         type="target"
         position={Position.Left}
         className={HANDLE_IN}
-        style={{ top: HANDLE_Y }}
+        style={{ top: tileH / 2 }}
       />
 
       {/* Tile do ícone (índigo) — ícone de bifurcação branco; anel no tile. */}
