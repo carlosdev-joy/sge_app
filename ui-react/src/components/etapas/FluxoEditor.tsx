@@ -33,10 +33,11 @@ import { Modal } from '../ui/Modal'
 import { toast } from '../ui/Toast'
 import {
   Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing, Database, Play,
-  PanelRightClose, ChevronLeft, ChevronRight, MousePointerClick, Search, X,
+  PanelRightClose, ChevronLeft, ChevronRight, ChevronUp, ChevronDown,
+  MousePointerClick, Plus, Search, X,
 } from 'lucide-react'
 import { EtapaNode, type EtapaNodeData } from './EtapaNode'
-import { DecisaoNode, type DecisaoNodeData, type NodeCondition } from './DecisaoNode'
+import { DecisaoNode, casoCor, type CasoSwitch, type DecisaoNodeData, type NodeCondition } from './DecisaoNode'
 import { NotificacaoNode, type NotificacaoNodeData } from './NotificacaoNode'
 import { SqlNode, type SqlNodeData } from './SqlNode'
 import { TYPE_META, TYPE_ORDER, CREATABLE_TYPES, type EtapaType } from './types'
@@ -52,6 +53,9 @@ const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: Notific
 interface Condition {
   ramo_verdadeiro?: string[]
   ramo_falso?: string[]
+  // SWITCH (N-way): presença de `casos` muda o modo (ramos binários vazios).
+  casos?: { nome?: string; operador?: string; valor?: unknown; ramo?: string[] }[]
+  ramo_senao?: string[]
   [k: string]: unknown
 }
 // Config do nó de notificação (round-trip com /fluxo no campo `notify`).
@@ -302,21 +306,28 @@ function buildNodes(apiNodes: FluxoNode[]): Node[] {
   })
 }
 
-// Aresta de ramo (sim/não) a partir de uma decisão.
-function branchEdge(decisao: string, ramo: 'sim' | 'nao', alvo: string): Edge {
+// Aresta de ramo a partir de uma decisão. `ramo` identifica a saída: 'sim'/'nao'
+// (binária), 'senao' (padrão do switch) ou o NOME do caso (switch — passe
+// `casoIdx` para colorir a aresta com a mesma cor do handle do caso).
+function branchEdge(decisao: string, ramo: string, alvo: string, casoIdx?: number): Edge {
+  const isCaso = casoIdx != null
+  const cor = isCaso ? casoCor(casoIdx) : undefined
+  const labelText = ramo === 'sim' ? 'sim' : ramo === 'nao' ? 'não' : ramo === 'senao' ? 'senão' : ramo
   return {
     id: `ramo:${decisao}:${ramo}:${alvo}`,
     source: decisao,
-    sourceHandle: ramo,
+    sourceHandle: isCaso ? `caso:${ramo}` : ramo,
     target: alvo,
     type: 'smoothstep',
     markerEnd: EDGE_ARROW,
-    data: { branch: true, ramo },
-    style: ramo === 'sim' ? SIM_STYLE : NAO_STYLE,
-    label: ramo === 'sim' ? 'sim' : 'não',
-    labelStyle: ramo === 'sim' ? SIM_LABEL_STYLE : NAO_LABEL_STYLE,
+    data: { branch: true, ramo, ...(isCaso ? { casoIdx } : {}) },
+    style: isCaso ? { stroke: cor } : ramo === 'sim' ? SIM_STYLE : NAO_STYLE,
+    label: labelText,
+    labelStyle: isCaso
+      ? { fill: cor, fontSize: 11, fontWeight: 700 }
+      : ramo === 'sim' ? SIM_LABEL_STYLE : NAO_LABEL_STYLE,
     labelShowBg: true,
-    labelBgStyle: ramo === 'sim' ? SIM_LABEL_BG : NAO_LABEL_BG,
+    labelBgStyle: isCaso ? { fill: '#f8fafc', stroke: '#cbd5e1' } : ramo === 'sim' ? SIM_LABEL_BG : NAO_LABEL_BG,
     labelBgPadding: [6, 3] as [number, number],
     labelBgBorderRadius: 8,
   }
@@ -350,6 +361,15 @@ function buildEdges(apiNodes: FluxoNode[]): Edge[] {
   // Arestas de RAMO de decisão (editáveis na Etapa 2): D → membros.
   for (const d of apiNodes) {
     if (d.job_type !== 'decisao' || !d.condition) continue
+    const casos = Array.isArray(d.condition.casos) ? d.condition.casos : null
+    if (casos) {
+      // SWITCH: uma cor/handle por caso + o senão (padrão) por baixo.
+      casos.forEach((c, i) => {
+        for (const m of c?.ramo || []) edges.push(branchEdge(d.job_name, String(c?.nome || ''), m, i))
+      })
+      for (const m of d.condition.ramo_senao || []) edges.push(branchEdge(d.job_name, 'senao', m))
+      continue
+    }
     for (const m of d.condition.ramo_verdadeiro || []) edges.push(branchEdge(d.job_name, 'sim', m))
     for (const m of d.condition.ramo_falso || []) edges.push(branchEdge(d.job_name, 'nao', m))
   }
@@ -357,7 +377,7 @@ function buildEdges(apiNodes: FluxoNode[]): Edge[] {
 }
 
 const isBranch = (e: Edge) => !!(e.data as { branch?: boolean } | undefined)?.branch
-const edgeRamo = (e: Edge) => (e.data as { ramo?: 'sim' | 'nao' } | undefined)?.ramo
+const edgeRamo = (e: Edge) => (e.data as { ramo?: string } | undefined)?.ramo
 
 // Conectar source→target criaria um ciclo? Anda pelos SUCESSORES de `target`
 // (arestas normais E de ramo — ambas são ordem de execução) procurando `source`.
@@ -728,17 +748,30 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
 
       // A partir de uma decisão → cria/refaz a aresta de ramo.
       if (decisaoSet.has(conn.source)) {
-        const ramo = (conn.sourceHandle === 'nao' ? 'nao' : 'sim') as 'sim' | 'nao'
         if (conn.target === conn.source) {
           toast.error('Uma decisão não pode ramificar para si mesma.')
           return
+        }
+        // Resolve a saída pelo handle: 'sim'/'nao' (binária), 'senao' (padrão do
+        // switch) ou 'caso:<nome>' (switch — casoIdx dá a cor da aresta).
+        const h = conn.sourceHandle || ''
+        let ramo: string = h === 'nao' || h === 'senao' ? h : 'sim'
+        let casoIdx: number | undefined
+        if (h.startsWith('caso:')) {
+          const nome = h.slice('caso:'.length)
+          const nd = nodes.find(n => n.id === conn.source)
+          const casos = (nd?.data as DecisaoNodeData | undefined)?.condition?.casos
+          const idx = (casos ?? []).findIndex(c => c.nome === nome)
+          if (idx < 0) return
+          ramo = nome
+          casoIdx = idx
         }
         setEdges(eds => {
           // Remove qualquer aresta de ramo DESTA decisão para ESTE alvo (exclusividade).
           const kept = eds.filter(e =>
             !(isBranch(e) && e.source === conn.source && e.target === conn.target),
           )
-          return [...kept, branchEdge(conn.source!, ramo, conn.target!)]
+          return [...kept, branchEdge(conn.source!, ramo, conn.target!, casoIdx)]
         })
         setDirty(true)
         return
@@ -767,7 +800,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
       )
       setDirty(true)
     },
-    [edges, decisaoSet, setEdges, readOnly],
+    [edges, nodes, decisaoSet, setEdges, readOnly],
   )
 
   // Deletar arestas — todas deletáveis agora (inclusive ramos).
@@ -905,6 +938,122 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     setDirty(true)
   }
 
+  // ── SWITCH (N-way): operações sobre os casos — mantêm a condição E as
+  // arestas em sincronia (o NOME do caso é a chave da aresta; o índice, a cor).
+  function getCondDecisao(nodeId: string): NodeCondition | null {
+    const n = nodes.find(x => x.id === nodeId && x.type === 'decisao')
+    return n ? (((n.data as DecisaoNodeData).condition) ?? defaultCondition()) : null
+  }
+
+  // Reconstrói as arestas de caso desta decisão a partir da lista nova (rename,
+  // remoção e reordenação mudam chave e/ou cor); arestas 'senao' ficam como estão.
+  function sincronizarArestasCasos(nodeId: string, casos: CasoSwitch[], renome?: { de: string; para: string }) {
+    setEdges(eds => eds.flatMap(e => {
+      if (!(isBranch(e) && e.source === nodeId)) return [e]
+      let ramo = edgeRamo(e) ?? ''
+      if (ramo === 'senao') return [e]
+      if (renome && ramo === renome.de) ramo = renome.para
+      const idx = casos.findIndex(c => c.nome === ramo)
+      if (idx < 0) return []   // caso removido → a aresta cai junto
+      return [branchEdge(nodeId, ramo, e.target, idx)]
+    }))
+  }
+
+  function alternarModoDecisao(nodeId: string, paraSwitch: boolean) {
+    const cur = getCondDecisao(nodeId)
+    if (!cur || paraSwitch === Array.isArray(cur.casos)) return
+    if (paraSwitch) {
+      // Binária → switch: a condição vira o 1º caso; sim → caso_1, não → senão.
+      const casos: CasoSwitch[] = [{ nome: 'caso_1', operador: cur.operador || '>', valor: cur.valor ?? '', ramo: [] }]
+      setEdges(eds => eds.map(e => {
+        if (!(isBranch(e) && e.source === nodeId)) return e
+        const ramo = edgeRamo(e)
+        if (ramo === 'sim') return branchEdge(nodeId, 'caso_1', e.target, 0)
+        if (ramo === 'nao') return branchEdge(nodeId, 'senao', e.target)
+        return e
+      }))
+      patchCondition(nodeId, {
+        casos, ramo_senao: [],
+        on_error: cur.on_error === 'ramo_falso' ? 'senao' : 'falhar',
+      })
+      return
+    }
+    // Switch → binária: só com no máximo 1 caso (senão a conversão perderia ramos).
+    const casos = cur.casos ?? []
+    if (casos.length > 1) {
+      toast.error('Para voltar ao modo binário, deixe no máximo 1 caso.')
+      return
+    }
+    const nome0 = casos[0]?.nome
+    setEdges(eds => eds.map(e => {
+      if (!(isBranch(e) && e.source === nodeId)) return e
+      const ramo = edgeRamo(e)
+      if (nome0 && ramo === nome0) return branchEdge(nodeId, 'sim', e.target)
+      if (ramo === 'senao') return branchEdge(nodeId, 'nao', e.target)
+      return e
+    }))
+    patchCondition(nodeId, {
+      casos: undefined, ramo_senao: undefined,
+      operador: casos[0]?.operador || cur.operador || '>',
+      valor: casos[0]?.valor ?? cur.valor ?? '',
+      on_error: cur.on_error === 'senao' ? 'ramo_falso' : 'falhar',
+    })
+  }
+
+  function adicionarCaso(nodeId: string) {
+    const cur = getCondDecisao(nodeId)
+    if (!cur || !Array.isArray(cur.casos)) return
+    if (cur.casos.length >= 10) { toast.error('Máximo de 10 casos por decisão.'); return }
+    const usados = new Set(cur.casos.map(c => c.nome))
+    let seq = cur.casos.length + 1
+    while (usados.has(`caso_${seq}`)) seq += 1
+    patchCondition(nodeId, {
+      casos: [...cur.casos, { nome: `caso_${seq}`, operador: '=', valor: '', ramo: [] }],
+    })
+  }
+
+  function atualizarCaso(nodeId: string, idx: number, patch: Partial<CasoSwitch>) {
+    const cur = getCondDecisao(nodeId)
+    if (!cur || !Array.isArray(cur.casos)) return
+    const antigo = cur.casos[idx]
+    if (!antigo) return
+    if (patch.nome != null) {
+      const nome = patch.nome.trim()
+      if (!nome) { toast.error('Informe o nome do caso.'); return }
+      if (nome.length > 40) { toast.error('Nome do caso muito longo (máx. 40).'); return }
+      if (nome.toLowerCase() === 'senao') { toast.error("'senao' é reservado (é o ramo padrão)."); return }
+      if (cur.casos.some((c, i) => i !== idx && c.nome === nome)) {
+        toast.error('Já existe um caso com esse nome.'); return
+      }
+      patch = { ...patch, nome }
+    }
+    const casos = cur.casos.map((c, i) => (i === idx ? { ...c, ...patch } : c))
+    patchCondition(nodeId, { casos })
+    if (patch.nome != null && patch.nome !== antigo.nome) {
+      sincronizarArestasCasos(nodeId, casos, { de: antigo.nome, para: patch.nome })
+    }
+  }
+
+  function removerCaso(nodeId: string, idx: number) {
+    const cur = getCondDecisao(nodeId)
+    if (!cur || !Array.isArray(cur.casos)) return
+    if (cur.casos.length <= 1) { toast.error('A decisão switch precisa de ao menos um caso.'); return }
+    const casos = cur.casos.filter((_, i) => i !== idx)
+    patchCondition(nodeId, { casos })
+    sincronizarArestasCasos(nodeId, casos)
+  }
+
+  function moverCaso(nodeId: string, idx: number, delta: -1 | 1) {
+    const cur = getCondDecisao(nodeId)
+    if (!cur || !Array.isArray(cur.casos)) return
+    const j = idx + delta
+    if (j < 0 || j >= cur.casos.length) return
+    const casos = [...cur.casos]
+    ;[casos[idx], casos[j]] = [casos[j], casos[idx]]
+    patchCondition(nodeId, { casos })
+    sincronizarArestasCasos(nodeId, casos)
+  }
+
   // Atualiza a config de uma notificação (merge) e o rótulo do nó (nome do grupo).
   function patchNotify(nodeId: string, patch: Partial<NotifyConfig>) {
     setNodes(nds => nds.map(n => {
@@ -982,9 +1131,14 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   // verde grosso por ~5s e reverte ao estilo original. NÃO altera dados nem
   // marca `dirty` (highlight puramente visual). Guarda o timer p/ limpar.
   const simTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const simularDecisao = useCallback((decisaoId: string, ramo: 'sim' | 'nao') => {
-    // Estilo original das arestas de ramo (recomposto na reversão, sem rebuild).
-    const baseStyle = ramo === 'sim' ? SIM_STYLE : NAO_STYLE
+  const simularDecisao = useCallback((decisaoId: string, ramo: string) => {
+    // Estilo original de uma aresta de ramo (recomposto na reversão, sem rebuild):
+    // caso do switch usa a cor do índice; sim verde; não/senão slate.
+    const estiloRamo = (e: Edge) => {
+      const d = e.data as { ramo?: string; casoIdx?: number } | undefined
+      if (d?.casoIdx != null) return { stroke: casoCor(d.casoIdx) }
+      return d?.ramo === 'sim' ? SIM_STYLE : NAO_STYLE
+    }
     const isAlvo = (e: Edge) => isBranch(e) && e.source === decisaoId && edgeRamo(e) === ramo
 
     if (simTimerRef.current) { clearTimeout(simTimerRef.current); simTimerRef.current = null }
@@ -997,7 +1151,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
 
     simTimerRef.current = setTimeout(() => {
       setEdges(eds => eds.map(e =>
-        isAlvo(e) ? { ...e, animated: false, style: baseStyle } : e,
+        isAlvo(e) ? { ...e, animated: false, style: estiloRamo(e) } : e,
       ))
       simTimerRef.current = null
     }, 5000)
@@ -1028,13 +1182,15 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
       // depends_on_jobs[N] = origens das arestas NORMAIS que chegam em N
       // (exclui arestas de ramo e arestas cuja origem é decisão).
       const depsByTarget = new Map<string, Set<string>>()
-      // ramos por decisão (sim/não) a partir das arestas de ramo.
-      const ramosByDecisao = new Map<string, { sim: string[]; nao: string[] }>()
+      // ramos por decisão a partir das arestas de ramo — chave é o nome da
+      // saída: 'sim'/'nao' (binária), 'senao' ou o nome do caso (switch).
+      const ramosByDecisao = new Map<string, Map<string, string[]>>()
       for (const e of edges) {
         if (isBranch(e)) {
           const ramo = edgeRamo(e) ?? 'sim'
-          if (!ramosByDecisao.has(e.source)) ramosByDecisao.set(e.source, { sim: [], nao: [] })
-          ramosByDecisao.get(e.source)![ramo].push(e.target)
+          if (!ramosByDecisao.has(e.source)) ramosByDecisao.set(e.source, new Map())
+          const porRamo = ramosByDecisao.get(e.source)!
+          porRamo.set(ramo, [...(porRamo.get(ramo) ?? []), e.target])
           continue
         }
         if (decisoes.has(e.source)) continue
@@ -1050,11 +1206,37 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
         let condition: Record<string, unknown> | null = null
         if (isDecisao) {
           const cur = (d.condition as NodeCondition | undefined) ?? defaultCondition()
-          const ramos = ramosByDecisao.get(n.id) ?? { sim: [], nao: [] }
+          const ramosMap = ramosByDecisao.get(n.id) ?? new Map<string, string[]>()
+          const ramos = { sim: ramosMap.get('sim') ?? [], nao: ramosMap.get('nao') ?? [] }
           // on_error explícito em todos os tipos — round-trip do que o painel
           // exibe (o backend valida/carimba de novo no save).
           const onError = cur.on_error === 'ramo_falso' ? 'ramo_falso' : 'falhar'
-          if (cur.tipo === 'linhas_job') {
+          if (Array.isArray(cur.casos)) {
+            // SWITCH: casos na ordem do painel (ordem = prioridade de avaliação);
+            // o ramo de cada caso e o senão vêm das arestas do canvas.
+            const fonte = cur.tipo === 'linhas_job'
+              ? { job_name: (cur.job_name || '').trim(), child_job: (cur.child_job || '').trim() }
+              : cur.tipo === 'valor_sql'
+                ? { source_job: (cur.source_job || '').trim(), comparacao: cur.comparacao || 'texto' }
+                : {
+                    tabela: (cur.tabela || '').trim() || undefined,
+                    database: (cur.database || '').trim() || undefined,
+                    sql: (cur.sql || '').trim() || undefined,
+                    mssql_conn_id: (cur.mssql_conn_id || '').trim() || undefined,
+                  }
+            condition = {
+              tipo: cur.tipo,
+              ...fonte,
+              casos: cur.casos.map(c => ({
+                nome: (c.nome || '').trim(),
+                operador: c.operador,
+                valor: (c.valor ?? '').toString().trim(),
+                ramo: ramosMap.get(c.nome) ?? [],
+              })),
+              ramo_senao: ramosMap.get('senao') ?? [],
+              on_error: cur.on_error === 'senao' ? 'senao' : 'falhar',
+            }
+          } else if (cur.tipo === 'linhas_job') {
             // Decisão por linhas processadas: usa job a montante (e job filho
             // opcional). Omite os campos de tabela/sql/banco/conexão.
             condition = {
@@ -1230,15 +1412,18 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     setSelectedId(null)
   }, [setNodes])
 
-  // Ramos da decisão SELECIONADA (derivados das arestas de ramo) — read-only no painel.
+  // Ramos da decisão SELECIONADA (derivados das arestas de ramo) — read-only no
+  // painel. Chave = nome da saída: 'sim'/'nao' (binária), 'senao' ou nome do caso.
   const selRamos = useMemo(() => {
-    const sim: string[] = []; const nao: string[] = []
-    if (!selectedId) return { sim, nao }
+    const porRamo: Record<string, string[]> = {}
+    if (!selectedId) return porRamo
     for (const e of edges) {
       if (!isBranch(e) || e.source !== selectedId) continue
-      ;(edgeRamo(e) === 'nao' ? nao : sim).push(e.target)
+      const r = edgeRamo(e) ?? 'sim'
+      if (!porRamo[r]) porRamo[r] = []
+      porRamo[r].push(e.target)
     }
-    return { sim, nao }
+    return porRamo
   }, [edges, selectedId])
 
   if (isLoading) {
@@ -1364,6 +1549,11 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
           onSimular={simularDecisao}
           onDelete={id => setDelNodeIds([id])}
           onClose={closePanel}
+          onAlternarModo={alternarModoDecisao}
+          onAddCaso={adicionarCaso}
+          onUpdateCaso={atualizarCaso}
+          onRemoveCaso={removerCaso}
+          onMoveCaso={moverCaso}
         />
       )}
 
@@ -1451,10 +1641,20 @@ function extractValidationErrors(e: any): string[] {
 // Painel de propriedades INLINE (à direita) — edita o nó selecionado ao vivo.
 // Substitui os antigos modais "Nova etapa" e "Condição da decisão".
 // ─────────────────────────────────────────────────────────────────────────────
-interface PropriedadesPanelProps {
+// Operações de caso do SWITCH expostas ao painel (implementadas no editor,
+// porque mexem nas ARESTAS além da condição).
+interface CasoOps {
+  onAlternarModo: (nodeId: string, paraSwitch: boolean) => void
+  onAddCaso: (nodeId: string) => void
+  onUpdateCaso: (nodeId: string, idx: number, patch: Partial<CasoSwitch>) => void
+  onRemoveCaso: (nodeId: string, idx: number) => void
+  onMoveCaso: (nodeId: string, idx: number, delta: -1 | 1) => void
+}
+
+interface PropriedadesPanelProps extends CasoOps {
   node: Node | null
   nodes: Node[]
-  ramos: { sim: string[]; nao: string[] }
+  ramos: Record<string, string[]>
   jobNames: string[]
   sqlNodeNames: string[]
   sshConns: { conn_id: string; host: string }[]
@@ -1468,7 +1668,7 @@ interface PropriedadesPanelProps {
   onPatchCondition: (nodeId: string, patch: Partial<NodeCondition>) => void
   onPatchNotify: (nodeId: string, patch: Partial<NotifyConfig>) => void
   onPatchSql: (nodeId: string, patch: Partial<SqlConfig>) => void
-  onSimular: (decisaoId: string, ramo: 'sim' | 'nao') => void
+  onSimular: (decisaoId: string, ramo: string) => void
   onDelete: (id: string) => void
   onClose: () => void
 }
@@ -1476,6 +1676,7 @@ interface PropriedadesPanelProps {
 function PropriedadesPanel({
   node, nodes, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, dbServer, dbDatabases, grupos,
   readOnly, onRename, onPatchData, onPatchCondition, onPatchNotify, onPatchSql, onSimular, onDelete, onClose,
+  onAlternarModo, onAddCaso, onUpdateCaso, onRemoveCaso, onMoveCaso,
 }: PropriedadesPanelProps) {
   return (
     <aside className="flex w-[320px] shrink-0 flex-col overflow-y-auto border-l border-edge bg-panel">
@@ -1511,6 +1712,11 @@ function PropriedadesPanel({
           onPatchCondition={onPatchCondition}
           onSimular={onSimular}
           onDelete={onDelete}
+          onAlternarModo={onAlternarModo}
+          onAddCaso={onAddCaso}
+          onUpdateCaso={onUpdateCaso}
+          onRemoveCaso={onRemoveCaso}
+          onMoveCaso={onMoveCaso}
         />
       ) : node.type === 'notificacao' ? (
         <PainelNotificacao
@@ -1699,27 +1905,34 @@ function PainelEtapa({ node, sshConns, mssqlConns, dbServer, dbDatabases, onRena
 }
 
 // ── Painel de uma DECISÃO ────────────────────────────────────────────────────
-interface PainelDecisaoProps {
+interface PainelDecisaoProps extends CasoOps {
   node: Node
   nodes: Node[]
-  ramos: { sim: string[]; nao: string[] }
+  ramos: Record<string, string[]>
   jobNames: string[]
   sqlNodeNames: string[]
   mssqlConns: { conn_id: string; host: string }[]
   onRename: (oldName: string, novo: string) => boolean
   onPatchCondition: (nodeId: string, patch: Partial<NodeCondition>) => void
-  onSimular: (decisaoId: string, ramo: 'sim' | 'nao') => void
+  onSimular: (decisaoId: string, ramo: string) => void
   onDelete: (id: string) => void
 }
 
 // Resultado de uma simulação da decisão SQL (POST /jobs/decisao-simular).
-interface SimResult { valor_obtido: string | null; resultado: boolean; ramo: 'sim' | 'nao' }
+// Binária devolve resultado/ramo; switch devolve `caso` (nome ou 'senao').
+interface SimResult { valor_obtido: string | null; resultado?: boolean; ramo?: 'sim' | 'nao'; caso?: string }
 
-function PainelDecisao({ node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns, onRename, onPatchCondition, onSimular, onDelete }: PainelDecisaoProps) {
+function PainelDecisao({
+  node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns, onRename, onPatchCondition, onSimular, onDelete,
+  onAlternarModo, onAddCaso, onUpdateCaso, onRemoveCaso, onMoveCaso,
+}: PainelDecisaoProps) {
   const d = node.data as DecisaoNodeData
   const isNew = !!d.isNew
   const c = d.condition ?? defaultCondition()
   const patch = (p: Partial<NodeCondition>) => onPatchCondition(node.id, p)
+  const isSwitch = Array.isArray(c.casos)
+  const casos = c.casos ?? []
+  const ramosDe = (k: string) => ramos[k] ?? []
   // Jobs disponíveis para a condição "linhas processadas" (exclui a própria decisão).
   const jobsDisponiveis = jobNames.filter(j => j !== node.id)
 
@@ -1754,17 +1967,20 @@ function PainelDecisao({ node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns,
           database: sqlCfg.database,
           sql: sqlCfg.sql,
           comparacao: c.comparacao || 'texto',
-          operador: c.operador,
-          valor: (c.valor ?? '').toString(),
+          ...(isSwitch
+            ? { casos: casos.map(cs => ({ nome: cs.nome, operador: cs.operador, valor: (cs.valor ?? '').toString() })) }
+            : { operador: c.operador, valor: (c.valor ?? '').toString() }),
         }),
       })
       setSimResult(res)
-      // Destaque animado do ramo escolhido — avisa se o ramo ainda não tem aresta.
-      const temAresta = res.ramo === 'sim' ? ramos.sim.length > 0 : ramos.nao.length > 0
-      if (!temAresta) {
-        toast.info(`Conecte o ramo ${res.ramo === 'sim' ? 'SIM' : 'NÃO'} para ver o caminho destacado.`)
+      // Destaque animado do ramo/caso escolhido — avisa se ainda não tem aresta.
+      const escolhido = isSwitch ? (res.caso || 'senao') : (res.ramo === 'sim' ? 'sim' : 'nao')
+      const rotulo = escolhido === 'sim' ? 'SIM' : escolhido === 'nao' ? 'NÃO'
+        : escolhido === 'senao' ? 'SENÃO' : `"${escolhido}"`
+      if (ramosDe(escolhido).length === 0) {
+        toast.info(`Conecte o ramo ${rotulo} para ver o caminho destacado.`)
       } else {
-        onSimular(node.id, res.ramo)
+        onSimular(node.id, escolhido)
       }
     } catch (e: any) {
       toast.error(e?.message || 'Falha ao simular a decisão.')
@@ -1796,16 +2012,41 @@ function PainelDecisao({ node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns,
         </div>
 
         <div className="flex flex-col gap-2">
-          <div className="grid grid-cols-[1fr_64px] gap-2">
+          {/* Modo dos ramos: binário (sim/não) ou switch (N casos). A conversão
+              remapeia as arestas (sim→caso_1, não→senão e vice-versa). */}
+          <div className="flex items-center justify-between rounded-lg border border-edge bg-canvas px-2.5 py-1.5">
+            <span className="text-[11px] font-medium text-ink">Ramos</span>
+            <div className="flex overflow-hidden rounded-md border border-edge text-[10px] font-semibold">
+              <button
+                type="button"
+                className={!isSwitch ? 'bg-indigo-500 px-2 py-0.5 text-white' : 'bg-panel px-2 py-0.5 text-dim hover:text-ink'}
+                onClick={() => onAlternarModo(node.id, false)}
+              >
+                Binário
+              </button>
+              <button
+                type="button"
+                className={isSwitch ? 'bg-indigo-500 px-2 py-0.5 text-white' : 'bg-panel px-2 py-0.5 text-dim hover:text-ink'}
+                onClick={() => onAlternarModo(node.id, true)}
+              >
+                Switch
+              </button>
+            </div>
+          </div>
+
+          <div className={isSwitch ? 'flex flex-col' : 'grid grid-cols-[1fr_64px] gap-2'}>
             <Select label="Tipo" value={c.tipo} onChange={e => patch({ tipo: e.target.value as NodeCondition['tipo'] })} className="text-xs">
               <option value="contagem">Contagem de registros</option>
               <option value="query">Valor de uma query</option>
               <option value="linhas_job">Linhas processadas</option>
               <option value="valor_sql">Valor de SQL</option>
             </Select>
-            <Select label="Oper." value={c.operador} onChange={e => patch({ operador: e.target.value })} className="text-center text-xs">
-              {COND_OPERADORES.map(op => <option key={op} value={op}>{op}</option>)}
-            </Select>
+            {/* No switch cada caso tem o próprio operador/valor. */}
+            {!isSwitch && (
+              <Select label="Oper." value={c.operador} onChange={e => patch({ operador: e.target.value })} className="text-center text-xs">
+                {COND_OPERADORES.map(op => <option key={op} value={op}>{op}</option>)}
+              </Select>
+            )}
           </div>
 
           {c.tipo === 'valor_sql' ? (
@@ -1843,18 +2084,20 @@ function PainelDecisao({ node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns,
                 <option value="numero">Número</option>
               </Select>
 
-              <div className="flex flex-col gap-1">
-                <Input
-                  label="Valor *"
-                  value={c.valor}
-                  onChange={e => patch({ valor: e.target.value })}
-                  placeholder={c.comparacao === 'numero' ? 'ex: 100' : c.comparacao === 'data' ? 'ex: HOJE' : 'ex: OK'}
-                  className="font-mono text-xs"
-                />
-                {c.comparacao === 'data' && (
-                  <p className="text-[10px] text-dim/70">Use <code>HOJE</code> ou <code>AAAA-MM-DD</code>.</p>
-                )}
-              </div>
+              {!isSwitch && (
+                <div className="flex flex-col gap-1">
+                  <Input
+                    label="Valor *"
+                    value={c.valor}
+                    onChange={e => patch({ valor: e.target.value })}
+                    placeholder={c.comparacao === 'numero' ? 'ex: 100' : c.comparacao === 'data' ? 'ex: HOJE' : 'ex: OK'}
+                    className="font-mono text-xs"
+                  />
+                  {c.comparacao === 'data' && (
+                    <p className="text-[10px] text-dim/70">Use <code>HOJE</code> ou <code>AAAA-MM-DD</code>.</p>
+                  )}
+                </div>
+              )}
 
               {/* Simular: roda o SQL de origem e avalia a condição AO VIVO; o ramo
                   escolhido fica destacado (animado) no canvas por alguns segundos. */}
@@ -1865,7 +2108,9 @@ function PainelDecisao({ node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns,
                   className="self-start"
                   onClick={simular}
                   loading={simulando}
-                  disabled={!c.source_job || !(c.valor ?? '').toString().trim()}
+                  disabled={!c.source_job || (isSwitch
+                    ? casos.length === 0 || casos.some(cs => !(cs.valor ?? '').toString().trim())
+                    : !(c.valor ?? '').toString().trim())}
                 >
                   <Play size={13} /> Simular
                 </Button>
@@ -1878,8 +2123,21 @@ function PainelDecisao({ node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns,
                       </span>
                     </p>
                     <div className="mt-1.5 flex items-center gap-1.5">
-                      <span className="text-[11px] text-dim">ramo:</span>
-                      {simResult.ramo === 'sim' ? (
+                      <span className="text-[11px] text-dim">{isSwitch ? 'caso:' : 'ramo:'}</span>
+                      {isSwitch ? (
+                        simResult.caso && simResult.caso !== 'senao' ? (
+                          <span
+                            className="rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+                            style={{ borderColor: casoCor(Math.max(0, casos.findIndex(cs => cs.nome === simResult.caso))), color: casoCor(Math.max(0, casos.findIndex(cs => cs.nome === simResult.caso))) }}
+                          >
+                            {simResult.caso}
+                          </span>
+                        ) : (
+                          <span className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-700 dark:text-slate-300">
+                            SENÃO
+                          </span>
+                        )
+                      ) : simResult.ramo === 'sim' ? (
                         <span className="rounded-full border border-green-300 bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:border-green-800 dark:bg-green-900/40 dark:text-green-300">
                           SIM
                         </span>
@@ -1895,14 +2153,16 @@ function PainelDecisao({ node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns,
             </>
           ) : (
           <>
-          <Input
-            label="Valor *"
-            type={c.tipo === 'linhas_job' ? 'number' : 'text'}
-            value={c.valor}
-            onChange={e => patch({ valor: e.target.value })}
-            placeholder={c.tipo === 'query' ? 'ex: 1' : 'ex: 10000'}
-            className="font-mono text-xs"
-          />
+          {!isSwitch && (
+            <Input
+              label="Valor *"
+              type={c.tipo === 'linhas_job' ? 'number' : 'text'}
+              value={c.valor}
+              onChange={e => patch({ valor: e.target.value })}
+              placeholder={c.tipo === 'query' ? 'ex: 1' : 'ex: 10000'}
+              className="font-mono text-xs"
+            />
+          )}
 
           {c.tipo === 'linhas_job' ? (
             <>
@@ -1996,23 +2256,107 @@ function PainelDecisao({ node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns,
           </>
           )}
 
+          {/* SWITCH: editor dos casos — a ORDEM é a prioridade de avaliação
+              (primeiro que casar vence); os ramos são ligados pelas arestas. */}
+          {isSwitch && (
+            <div className="flex flex-col gap-1.5 border-t border-edge pt-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-ink">Casos (avaliados em ordem)</span>
+                <button
+                  type="button"
+                  className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-semibold text-indigo-600 hover:bg-edge/40 dark:text-indigo-300"
+                  onClick={() => onAddCaso(node.id)}
+                >
+                  <Plus size={11} /> caso
+                </button>
+              </div>
+              {casos.map((cs, i) => (
+                <div key={i} className="flex flex-col gap-1 rounded-lg border border-edge bg-canvas p-1.5">
+                  <div className="grid grid-cols-[8px_1fr_52px_1fr] items-center gap-1.5">
+                    <span
+                      className="h-2 w-2 rounded-full"
+                      style={{ background: casoCor(i) }}
+                      title={`cor do handle/aresta do caso ${i + 1}`}
+                    />
+                    <Input
+                      value={cs.nome}
+                      onChange={e => onUpdateCaso(node.id, i, { nome: e.target.value })}
+                      placeholder={`caso_${i + 1}`}
+                      className="font-mono text-[11px]"
+                    />
+                    <Select
+                      value={cs.operador}
+                      onChange={e => onUpdateCaso(node.id, i, { operador: e.target.value })}
+                      className="text-center text-[11px]"
+                    >
+                      {COND_OPERADORES.map(op => <option key={op} value={op}>{op}</option>)}
+                    </Select>
+                    <Input
+                      value={cs.valor}
+                      onChange={e => onUpdateCaso(node.id, i, { valor: e.target.value })}
+                      placeholder="valor"
+                      className="font-mono text-[11px]"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="flex min-w-0 flex-wrap items-center gap-1">
+                      {ramosDe(cs.nome).length === 0
+                        ? <span className="text-[10px] text-dim/70">sem ramo — arraste do handle desta cor</span>
+                        : ramosDe(cs.nome).map(m => (
+                            <span key={m} className="rounded-full border border-edge bg-panel px-1.5 py-0.5 text-[10px] font-medium text-ink">{m}</span>
+                          ))}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-0.5 text-dim">
+                      <button type="button" title="Subir (avalia antes)" className="rounded p-0.5 hover:bg-edge/40 hover:text-ink disabled:opacity-30" disabled={i === 0} onClick={() => onMoveCaso(node.id, i, -1)}>
+                        <ChevronUp size={12} />
+                      </button>
+                      <button type="button" title="Descer (avalia depois)" className="rounded p-0.5 hover:bg-edge/40 hover:text-ink disabled:opacity-30" disabled={i === casos.length - 1} onClick={() => onMoveCaso(node.id, i, 1)}>
+                        <ChevronDown size={12} />
+                      </button>
+                      <button type="button" title="Remover caso" className="rounded p-0.5 hover:bg-edge/40 hover:text-red-500" onClick={() => onRemoveCaso(node.id, i)}>
+                        <X size={12} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Fail-loud: o que fazer se a AVALIAÇÃO da condição der erro. */}
           <div className="flex flex-col gap-1">
-            <Select
-              label="Se a avaliação falhar"
-              value={c.on_error === 'ramo_falso' ? 'ramo_falso' : 'falhar'}
-              onChange={e => patch({ on_error: e.target.value === 'ramo_falso' ? 'ramo_falso' : 'falhar' })}
-              className="text-xs"
-            >
-              <option value="falhar">Falhar a execução (recomendado)</option>
-              <option value="ramo_falso">Seguir pelo ramo NÃO (legado)</option>
-            </Select>
-            {c.on_error === 'ramo_falso' && (
+            {isSwitch ? (
+              <Select
+                label="Se a avaliação falhar"
+                value={c.on_error === 'senao' ? 'senao' : 'falhar'}
+                onChange={e => patch({ on_error: e.target.value === 'senao' ? 'senao' : 'falhar' })}
+                className="text-xs"
+              >
+                <option value="falhar">Falhar a execução (recomendado)</option>
+                <option value="senao">Seguir pelo ramo SENÃO</option>
+              </Select>
+            ) : (
+              <Select
+                label="Se a avaliação falhar"
+                value={c.on_error === 'ramo_falso' ? 'ramo_falso' : 'falhar'}
+                onChange={e => patch({ on_error: e.target.value === 'ramo_falso' ? 'ramo_falso' : 'falhar' })}
+                className="text-xs"
+              >
+                <option value="falhar">Falhar a execução (recomendado)</option>
+                <option value="ramo_falso">Seguir pelo ramo NÃO (legado)</option>
+              </Select>
+            )}
+            {isSwitch && c.on_error === 'senao' && (
+              <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                Erro na avaliação roteia o SENÃO em silêncio — o pipeline não acusa a falha.
+              </p>
+            )}
+            {!isSwitch && c.on_error === 'ramo_falso' && (
               <p className="text-[10px] text-amber-700 dark:text-amber-400">
                 Erro na avaliação roteia o ramo NÃO em silêncio — o pipeline não acusa a falha.
               </p>
             )}
-            {c.on_error !== 'ramo_falso' && c.on_error_legado && (
+            {!isSwitch && c.on_error !== 'ramo_falso' && c.on_error_legado && (
               <p className="text-[10px] text-amber-700 dark:text-amber-400">
                 Nó legado: a DAG publicada ainda degrada em silêncio — o "falhar"
                 passa a valer após salvar o fluxo e republicar.
@@ -2025,34 +2369,55 @@ function PainelDecisao({ node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns,
       {/* Ramos atuais (derivados das arestas) — read-only */}
       <div className="rounded-lg border border-edge bg-canvas p-2.5">
         <p className="mb-2 text-[10px] leading-relaxed text-dim">
-          Os ramos são definidos arrastando os handles <b>sim</b> (direita) e <b>não</b> (baixo)
-          da decisão até as etapas, direto no canvas.
+          {isSwitch ? (
+            <>Os ramos são definidos arrastando os handles <b>coloridos</b> (um por caso,
+            à direita) e o <b>senão</b> (baixo) da decisão até as etapas, direto no canvas.</>
+          ) : (
+            <>Os ramos são definidos arrastando os handles <b>sim</b> (direita) e <b>não</b> (baixo)
+            da decisão até as etapas, direto no canvas.</>
+          )}
         </p>
         <div className="flex flex-col gap-2">
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] font-medium text-green-700 dark:text-green-400">Se verdadeiro → rodar</span>
-            <div className="flex flex-wrap gap-1">
-              {ramos.sim.length === 0 && <span className="text-[10px] text-dim/70">nenhum</span>}
-              {ramos.sim.map(m => (
-                <span key={m} className="rounded-full border border-green-300 bg-green-100 px-2 py-0.5 text-[10px] font-medium text-green-700 dark:border-green-800 dark:bg-green-900/40 dark:text-green-300">
-                  {m}
-                </span>
-              ))}
+          {isSwitch ? (
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] font-medium text-slate-600 dark:text-slate-300">Senão (nenhum caso casou) → rodar</span>
+              <div className="flex flex-wrap gap-1">
+                {ramosDe('senao').length === 0 && <span className="text-[10px] text-dim/70">nenhum (encerra o fluxo)</span>}
+                {ramosDe('senao').map(m => (
+                  <span key={m} className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-700 dark:text-slate-300">
+                    {m}
+                  </span>
+                ))}
+              </div>
             </div>
-          </div>
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] font-medium text-slate-600 dark:text-slate-300">Se falso → rodar</span>
-            <div className="flex flex-wrap gap-1">
-              {ramos.nao.length === 0 && <span className="text-[10px] text-dim/70">nenhum</span>}
-              {ramos.nao.map(m => (
-                <span key={m} className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-700 dark:text-slate-300">
-                  {m}
-                </span>
-              ))}
-            </div>
-          </div>
+          ) : (
+            <>
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] font-medium text-green-700 dark:text-green-400">Se verdadeiro → rodar</span>
+                <div className="flex flex-wrap gap-1">
+                  {ramosDe('sim').length === 0 && <span className="text-[10px] text-dim/70">nenhum</span>}
+                  {ramosDe('sim').map(m => (
+                    <span key={m} className="rounded-full border border-green-300 bg-green-100 px-2 py-0.5 text-[10px] font-medium text-green-700 dark:border-green-800 dark:bg-green-900/40 dark:text-green-300">
+                      {m}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] font-medium text-slate-600 dark:text-slate-300">Se falso → rodar</span>
+                <div className="flex flex-wrap gap-1">
+                  {ramosDe('nao').length === 0 && <span className="text-[10px] text-dim/70">nenhum</span>}
+                  {ramosDe('nao').map(m => (
+                    <span key={m} className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-700 dark:text-slate-300">
+                      {m}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
         </div>
-        {ramos.sim.length === 0 && ramos.nao.length === 0 && (
+        {Object.values(ramos).every(lista => lista.length === 0) && (
           <p className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
             Ligue ao menos um job em algum ramo (arrastando) antes de salvar.
           </p>

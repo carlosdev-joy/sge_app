@@ -1,9 +1,20 @@
 // Nó de decisão (roteador). Mesmo visual dos demais nós (tile de ícone + nome
-// embaixo), com acento índigo e ícone de bifurcação. Três handles: entrada à
+// embaixo), com acento índigo e ícone de bifurcação. BINÁRIA: entrada à
 // esquerda (target) e duas saídas rotuladas — direita = "sim", baixo = "não".
-import { memo } from 'react'
-import { Handle, Position, type NodeProps } from '@xyflow/react'
+// SWITCH (N-way, condition.casos): uma saída à direita POR CASO (cor da paleta,
+// tooltip = nome do caso) + saída "senão" na base.
+import { memo, useEffect } from 'react'
+import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
 import { GitBranch } from 'lucide-react'
+
+// Um caso do SWITCH: primeiro (na ordem da lista) cujo valor_obtido <operador>
+// valor casar vence; `ramo` são os jobs de destino (derivado das arestas no save).
+export interface CasoSwitch {
+  nome: string
+  operador: string
+  valor: string
+  ramo: string[]
+}
 
 // Condição de decisão (espelha o ConditionEntry do PipelineFormModal). Guardamos
 // o objeto inteiro no `data` para ecoar no save; `label` é um resumo curto p/ o nó.
@@ -22,15 +33,29 @@ export interface NodeCondition {
   source_job?: string
   comparacao?: 'texto' | 'data' | 'numero'
   // O que fazer se a AVALIAÇÃO falhar: 'falhar' (task falha alto — default dos
-  // saves novos) | 'ramo_falso' (degrada em silêncio, comportamento legado).
-  on_error?: 'falhar' | 'ramo_falso'
+  // saves novos) | 'ramo_falso' (degrada em silêncio, binária legada) |
+  // 'senao' (switch: degrada para o ramo padrão).
+  on_error?: 'falhar' | 'ramo_falso' | 'senao'
   // Derivado (NÃO persiste): true quando o JSON salvo não tem on_error — a DAG
   // publicada ainda degrada em silêncio; o 'falhar' exibido só vale após
   // salvar + republicar. Alimenta o aviso no painel.
   on_error_legado?: boolean
   ramo_verdadeiro: string[]
   ramo_falso: string[]
+  // SWITCH (N-way): presença de `casos` muda o modo. operador/valor do topo
+  // são ignorados (cada caso tem os seus); ramos binários ficam vazios.
+  casos?: CasoSwitch[]
+  ramo_senao?: string[]
 }
+
+// Paleta das saídas de caso (switch) — handle e aresta usam o mesmo índice.
+// 10 cores = _COND_MAX_CASOS do backend.
+export const CASO_CORES = [
+  '#10b981', '#0ea5e9', '#f59e0b', '#d946ef', '#f43f5e',
+  '#14b8a6', '#84cc16', '#06b6d4', '#8b5cf6', '#f97316',
+] as const
+
+export const casoCor = (idx: number) => CASO_CORES[idx % CASO_CORES.length]
 
 export interface DecisaoNodeData {
   name: string
@@ -51,7 +76,20 @@ const HANDLE_NAO = `${HANDLE_BASE} !bg-slate-400`
 // no centro vertical; saída "não" na base do tile.
 const HANDLE_Y = 16
 
-function DecisaoNodeImpl({ data, selected }: NodeProps & { data: DecisaoNodeData }) {
+function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNodeData }) {
+  const casos = data.condition?.casos
+  const isSwitch = Array.isArray(casos)
+  // Handles mudam com os casos (quantidade/nome) — o React Flow precisa
+  // remedir o nó para reancorar as arestas.
+  const updateNodeInternals = useUpdateNodeInternals()
+  const handleKey = isSwitch ? casos.map((c) => c.nome).join('|') : 'bin'
+  useEffect(() => {
+    updateNodeInternals(id)
+  }, [id, handleKey, updateNodeInternals])
+
+  // Tile cresce com o nº de casos para os handles não se sobreporem.
+  const tileH = isSwitch ? Math.max(32, casos.length * 14 + 6) : 32
+
   return (
     <div className="group relative flex w-[128px] flex-col items-center">
       {/* Entrada (esquerda) — na altura do tile do ícone */}
@@ -65,29 +103,62 @@ function DecisaoNodeImpl({ data, selected }: NodeProps & { data: DecisaoNodeData
       {/* Tile do ícone (índigo) — ícone de bifurcação branco; anel no tile. */}
       <div
         className={[
-          'relative flex h-8 w-8 items-center justify-center rounded-xl bg-indigo-500 text-white shadow-sm transition-shadow',
+          'relative flex w-8 items-center justify-center rounded-xl bg-indigo-500 text-white shadow-sm transition-shadow',
           'group-hover:shadow-md',
           selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas' : '',
         ].join(' ')}
+        style={{ height: tileH }}
       >
         <GitBranch size={16} strokeWidth={2} />
 
-        {/* Saída "sim" (direita) — centro vertical do tile */}
-        <Handle
-          id="sim"
-          type="source"
-          position={Position.Right}
-          className={HANDLE_SIM}
-          style={{ right: -5, top: '50%' }}
-        />
-        {/* Saída "não" (baixo) — base do tile */}
-        <Handle
-          id="nao"
-          type="source"
-          position={Position.Bottom}
-          className={HANDLE_NAO}
-          style={{ bottom: -5, left: '50%' }}
-        />
+        {isSwitch ? (
+          <>
+            {/* SWITCH: uma saída à direita por caso, na ordem de avaliação. */}
+            {casos.map((c, i) => (
+              <Handle
+                key={`caso:${c.nome}`}
+                id={`caso:${c.nome}`}
+                type="source"
+                position={Position.Right}
+                className={HANDLE_BASE}
+                title={c.nome || `caso ${i + 1}`}
+                style={{
+                  right: -5,
+                  top: `${((i + 1) * 100) / (casos.length + 1)}%`,
+                  background: casoCor(i),
+                }}
+              />
+            ))}
+            {/* Saída "senão" (baixo) — ramo padrão */}
+            <Handle
+              id="senao"
+              type="source"
+              position={Position.Bottom}
+              className={HANDLE_NAO}
+              title="senão (nenhum caso casou)"
+              style={{ bottom: -5, left: '50%' }}
+            />
+          </>
+        ) : (
+          <>
+            {/* Saída "sim" (direita) — centro vertical do tile */}
+            <Handle
+              id="sim"
+              type="source"
+              position={Position.Right}
+              className={HANDLE_SIM}
+              style={{ right: -5, top: '50%' }}
+            />
+            {/* Saída "não" (baixo) — base do tile */}
+            <Handle
+              id="nao"
+              type="source"
+              position={Position.Bottom}
+              className={HANDLE_NAO}
+              style={{ bottom: -5, left: '50%' }}
+            />
+          </>
+        )}
       </div>
 
       {/* Nome embaixo — sem rótulos sim/não sobre o nó (a aresta já mostra a

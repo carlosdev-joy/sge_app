@@ -67,6 +67,10 @@ _COND_COMPARACOES = {"texto", "data", "numero"}
 # 'falhar' como default nos SAVES novos — fluxos antigos (JSON sem a chave)
 # mantêm o comportamento legado até serem re-salvos e republicados.
 _COND_ON_ERROR = {"falhar", "ramo_falso"}
+# Decisão SWITCH (N-way, presença de 'casos'): 'falhar' | 'senao' (degrada para
+# o ramo padrão). 'ramo_falso' não existe no switch.
+_COND_ON_ERROR_SWITCH = {"falhar", "senao"}
+_COND_MAX_CASOS = 10
 _SQL_ON_ERROR = {"falhar", "nulo"}
 _COND_DML_RE = re.compile(
     r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|"
@@ -169,17 +173,25 @@ def _normalize_sql_node(cfg: dict) -> dict:
 
 
 def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str]:
-    """Valida a condição de um nó de decisão. Retorna lista de erros (vazia = ok)."""
+    """Valida a condição de um nó de decisão. Retorna lista de erros (vazia = ok).
+
+    Dois modos, discriminados pela presença da chave ``casos``:
+      - BINÁRIA (legado): operador/valor no topo + ramo_verdadeiro/ramo_falso.
+      - SWITCH (N-way): ``casos`` = lista ordenada de {nome, operador, valor,
+        ramo:[jobs]} + ``ramo_senao`` (padrão; pode ser vazio = encerra). O
+        operador/valor do topo é ignorado — cada caso tem o seu."""
     if not isinstance(cond, dict):
         return ["condição (condition_json) ausente ou inválida"]
     errs: list[str] = []
+    is_switch = "casos" in cond
     tipo = str(cond.get("tipo") or "").strip().lower()
     if tipo not in ("contagem", "query", "linhas_job", "valor_sql"):
         errs.append("tipo da condição deve ser 'contagem', 'query', 'linhas_job' ou 'valor_sql'")
-    if str(cond.get("operador") or "").strip() not in _COND_OPERADORES:
-        errs.append("operador inválido (use =, <>, >, >=, <, <=)")
+    if not is_switch:
+        if str(cond.get("operador") or "").strip() not in _COND_OPERADORES:
+            errs.append("operador inválido (use =, <>, >, >=, <, <=)")
     valor = cond.get("valor")
-    if valor is None or (isinstance(valor, str) and not valor.strip()):
+    if not is_switch and (valor is None or (isinstance(valor, str) and not valor.strip())):
         errs.append("valor da condição é obrigatório")
     if tipo == "linhas_job":
         # Decisão por linhas processadas: compara rows_out de um job a montante
@@ -198,7 +210,7 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
         cj = cond.get("child_job")
         if cj is not None and not isinstance(cj, str):
             errs.append("child_job da condição (linhas_job) deve ser texto")
-        if valor is not None and not (
+        if not is_switch and valor is not None and not (
             isinstance(valor, (int, float)) or str(valor).strip().lstrip("-").isdigit()
         ):
             errs.append("valor da condição (linhas_job) deve ser numérico")
@@ -208,7 +220,7 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
         db = (cond.get("database") or "").strip()
         if db and not _IDENT_RE.match(db):
             errs.append("database da condição inválido")
-        if valor is not None and not (
+        if not is_switch and valor is not None and not (
             isinstance(valor, (int, float)) or str(valor).strip().lstrip("-").isdigit()
         ):
             errs.append("valor da condição (contagem) deve ser numérico")
@@ -244,8 +256,15 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
         errs.append(f"conexão MSSQL '{cid}' da condição não encontrada no Airflow")
     oe = cond.get("on_error")
     if oe is not None and str(oe).strip():
-        if str(oe).strip().lower() not in _COND_ON_ERROR:
-            errs.append("on_error da condição inválido (use 'falhar' ou 'ramo_falso')")
+        _allowed = _COND_ON_ERROR_SWITCH if is_switch else _COND_ON_ERROR
+        if str(oe).strip().lower() not in _allowed:
+            errs.append("on_error da condição inválido (use 'falhar' ou "
+                        + ("'senao')" if is_switch else "'ramo_falso')"))
+    if is_switch:
+        if (cond.get("ramo_verdadeiro") or []) or (cond.get("ramo_falso") or []):
+            errs.append("decisão switch (casos) não pode ter ramo_verdadeiro/ramo_falso")
+        errs.extend(_validate_casos(cond, known_jobs, self_name, tipo))
+        return errs
     ramo_v, ramo_f = cond.get("ramo_verdadeiro") or [], cond.get("ramo_falso") or []
     if not isinstance(ramo_v, list) or not isinstance(ramo_f, list):
         errs.append("ramos (ramo_verdadeiro/ramo_falso) devem ser listas")
@@ -265,6 +284,91 @@ def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str
     return errs
 
 
+def _validate_casos(cond, known_jobs, self_name, tipo) -> list[str]:
+    """Valida os casos de uma decisão SWITCH. A ordem da lista é a ordem de
+    avaliação (primeiro que casar vence). Um job pode pertencer a no máximo UM
+    ramo (entre todos os casos e o senão) — mesma exclusividade da binária."""
+    casos = cond.get("casos")
+    if not isinstance(casos, list) or not casos:
+        return ["casos da decisão switch deve ser uma lista com ao menos um caso"]
+    if len(casos) > _COND_MAX_CASOS:
+        return [f"decisão switch aceita no máximo {_COND_MAX_CASOS} casos"]
+    ramo_senao = cond.get("ramo_senao")
+    if ramo_senao is not None and not isinstance(ramo_senao, list):
+        return ["ramo_senao deve ser uma lista"]
+    errs: list[str] = []
+    nomes: set[str] = set()
+    dono: dict[str, str] = {}   # membro → rótulo do ramo onde já apareceu
+    total_membros = 0
+
+    def _checa_membros(ramo, rotulo):
+        nonlocal total_membros
+        for m in ramo or []:
+            mn = str(m).strip()
+            if not mn:
+                continue
+            total_membros += 1
+            if mn == self_name:
+                errs.append(f"{rotulo}: não pode referenciar a própria decisão")
+            elif mn not in known_jobs:
+                errs.append(f"{rotulo}: job '{mn}' não existe no pipeline")
+            elif mn in dono:
+                errs.append(f"job '{mn}' em mais de um ramo ({dono[mn]} e {rotulo})")
+            else:
+                dono[mn] = rotulo
+
+    for i, caso in enumerate(casos, start=1):
+        rot = f"caso {i}"
+        if not isinstance(caso, dict):
+            errs.append(f"{rot}: inválido (esperado objeto com nome/operador/valor/ramo)")
+            continue
+        nome = str(caso.get("nome") or "").strip()
+        if not nome:
+            errs.append(f"{rot}: nome é obrigatório")
+        elif len(nome) > 40:
+            errs.append(f"{rot}: nome muito longo (máx. 40 caracteres)")
+        elif nome.lower() == "senao":
+            errs.append(f"{rot}: nome 'senao' é reservado (é o ramo padrão)")
+        elif nome.lower() in nomes:
+            errs.append(f"{rot}: nome '{nome}' repetido")
+        if nome:
+            nomes.add(nome.lower())
+            rot = f"caso '{nome}'"
+        if str(caso.get("operador") or "").strip() not in _COND_OPERADORES:
+            errs.append(f"{rot}: operador inválido (use =, <>, >, >=, <, <=)")
+        cvalor = caso.get("valor")
+        if cvalor is None or (isinstance(cvalor, str) and not cvalor.strip()):
+            errs.append(f"{rot}: valor é obrigatório")
+        elif tipo in ("contagem", "linhas_job") and not (
+            isinstance(cvalor, (int, float)) or str(cvalor).strip().lstrip("-").isdigit()
+        ):
+            errs.append(f"{rot}: valor deve ser numérico")
+        ramo = caso.get("ramo")
+        if ramo is not None and not isinstance(ramo, list):
+            errs.append(f"{rot}: ramo deve ser uma lista")
+            continue
+        _checa_membros(ramo, rot)
+    _checa_membros(ramo_senao, "ramo senão")
+    if total_membros == 0:
+        errs.append("a decisão precisa de ao menos um job em algum ramo")
+    return errs
+
+
+def _condition_branch_members(cond) -> list[str]:
+    """Todos os jobs referenciados como MEMBROS DE RAMO na condição — binária
+    (ramo_verdadeiro/ramo_falso) ou switch (casos[].ramo + ramo_senao). Usado
+    para montar as arestas decisão→membro do grafo de ciclo."""
+    if not isinstance(cond, dict):
+        return []
+    membros = list(cond.get("ramo_verdadeiro") or []) + list(cond.get("ramo_falso") or [])
+    if isinstance(cond.get("casos"), list):
+        for caso in cond["casos"]:
+            if isinstance(caso, dict):
+                membros += list(caso.get("ramo") or [])
+    membros += list(cond.get("ramo_senao") or [])
+    return [str(m).strip() for m in membros if str(m).strip()]
+
+
 def _normalize_condition(cond: dict) -> dict:
     """Normaliza a condição antes de persistir em condition_json.
 
@@ -281,6 +385,22 @@ def _normalize_condition(cond: dict) -> dict:
     if tipo == "linhas_job":
         out["job_name"] = str(out.get("job_name") or "").strip()
         out["child_job"] = str(out.get("child_job") or "").strip()
+    if "casos" in out and isinstance(out.get("casos"), list):
+        # SWITCH: normaliza casos (nome/operador limpos, ramo sem vazios) e
+        # remove os ramos binários (a validação já garantiu que vieram vazios).
+        out["casos"] = [{
+            "nome": str(c.get("nome") or "").strip(),
+            "operador": str(c.get("operador") or "").strip(),
+            "valor": c.get("valor"),
+            "ramo": [str(m).strip() for m in (c.get("ramo") or []) if str(m).strip()],
+        } for c in out["casos"] if isinstance(c, dict)]
+        out["ramo_senao"] = [str(m).strip() for m in (out.get("ramo_senao") or [])
+                             if str(m).strip()]
+        out.pop("ramo_verdadeiro", None)
+        out.pop("ramo_falso", None)
+        oe = str(out.get("on_error") or "").strip().lower()
+        out["on_error"] = oe if oe in _COND_ON_ERROR_SWITCH else "falhar"
+        return out
     # Carimba on_error no save: default 'falhar' (fail-loud) para decisões salvas
     # a partir de agora; quem quiser o degrade legado escolhe 'ramo_falso' na UI.
     oe = str(out.get("on_error") or "").strip().lower()
@@ -973,6 +1093,9 @@ async def decisao_simular(
     qual ramo (sim/nao) a execução iria, sem salvar nada.
 
     Body: {mssql_conn_id?, host?, database, sql, comparacao, operador, valor}.
+    SWITCH (N-way): envie ``casos`` = [{nome, operador, valor}] no lugar de
+    operador/valor — o escalar é testado contra os casos NA ORDEM e a resposta
+    vira {valor_obtido, caso} ('senao' quando nenhum casa).
 
     Segurança (mesma do /jobs/sql-preview):
       - ``sql`` read-only (SELECT/WITH, sem ';' nem DML) — 422 senão.
@@ -1001,7 +1124,20 @@ async def decisao_simular(
         raise HTTPException(status_code=422, detail=str(e))
     if comparacao not in _COND_COMPARACOES:
         raise HTTPException(status_code=422, detail="comparacao deve ser 'texto', 'data' ou 'numero'")
-    if operador not in _COND_OPERADORES:
+    casos = body.get("casos")
+    if casos is not None:
+        if not isinstance(casos, list) or not casos or len(casos) > _COND_MAX_CASOS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"casos deve ser uma lista com 1 a {_COND_MAX_CASOS} itens")
+        for i, c in enumerate(casos, start=1):
+            if not isinstance(c, dict) or str(c.get("operador") or "").strip() not in _COND_OPERADORES:
+                raise HTTPException(status_code=422,
+                                    detail=f"caso {i}: operador inválido (use =, <>, >, >=, <, <=)")
+            cv = c.get("valor")
+            if cv is None or (isinstance(cv, str) and not cv.strip()):
+                raise HTTPException(status_code=422, detail=f"caso {i}: valor é obrigatório")
+    elif operador not in _COND_OPERADORES:
         raise HTTPException(status_code=422, detail="operador inválido (use =, <>, >, >=, <, <=)")
 
     timeout_s = _get_preview_timeout_s()
@@ -1035,13 +1171,28 @@ async def decisao_simular(
         raise HTTPException(status_code=400, detail=f"Erro ao executar o SELECT: {e}")
 
     obtido = row[0] if row else None
+    # Contrato: valor_obtido é str|null (None quando vazio). _json_safe normaliza
+    # datas/decimais/bytes; o str() final fixa o tipo da resposta como string.
+    safe = _json_safe(obtido)
+    if casos is not None:
+        # SWITCH: primeiro caso que casar vence (mesma ordem do runtime).
+        caso_nome = "senao"
+        try:
+            for c in casos:
+                if _compara_tipado(obtido, str(c.get("operador") or "").strip(),
+                                   c.get("valor"), comparacao):
+                    caso_nome = str(c.get("nome") or "").strip() or "senao"
+                    break
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        return {
+            "valor_obtido": None if safe is None else str(safe),
+            "caso": caso_nome,
+        }
     try:
         resultado = _compara_tipado(obtido, operador, valor, comparacao)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    # Contrato: valor_obtido é str|null (None quando vazio). _json_safe normaliza
-    # datas/decimais/bytes; o str() final fixa o tipo da resposta como string.
-    safe = _json_safe(obtido)
     return {
         "valor_obtido": None if safe is None else str(safe),
         "resultado": resultado,
@@ -1184,8 +1335,7 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                 # Persiste o dict INTEIRO (job_name + child_job inclusos p/ linhas_job)
                 # — round-trip garantido no GET /fluxo / get_pipeline_job.
                 cond_json_str = json.dumps(_normalize_condition(raw_cond), ensure_ascii=False)
-                for m in (raw_cond.get("ramo_verdadeiro") or []) + (raw_cond.get("ramo_falso") or []):
-                    mn = str(m).strip()
+                for mn in _condition_branch_members(raw_cond):
                     if j_name in cycle_adj and mn in cycle_adj:
                         cycle_adj[j_name].add(mn)   # decisão → membro do ramo
 
@@ -1810,8 +1960,7 @@ async def save_pipeline_fluxo(
                 # Persiste o dict INTEIRO (job_name + child_job inclusos p/ linhas_job)
                 # — round-trip garantido no GET /fluxo / get_pipeline_job.
                 cond_json_str = json.dumps(_normalize_condition(raw_cond), ensure_ascii=False)
-                for m in (raw_cond.get("ramo_verdadeiro") or []) + (raw_cond.get("ramo_falso") or []):
-                    mn = str(m).strip()
+                for mn in _condition_branch_members(raw_cond):
                     if mn in cycle_adj:
                         cycle_adj[j_name].add(mn)   # decisão → membro do ramo
 

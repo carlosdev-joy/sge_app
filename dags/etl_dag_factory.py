@@ -316,10 +316,43 @@ def _decision_block(job, condition, job_names, notif_names=None):
 
     Membros que são nós de Notificação não têm log_start_* (rodam direto via
     t_notif_*, task_id = próprio nome); para esses, a branch devolve o próprio
-    task_id do nó em vez de log_start_<nome>."""
+    task_id do nó em vez de log_start_<nome>.
+
+    SWITCH (N-way): quando a condição tem ``casos``, o branch avalia via
+    eval_switch (primeiro caso que casar vence; nenhum → 'senao') e roteia pelo
+    mapa nome-do-caso → t_start dos membros. Condições sem ``casos`` seguem o
+    caminho binário INALTERADO (DAG byte-idêntica para fluxos existentes)."""
     notif_names = notif_names or set()
     name  = job["job_name"]
     vname = _varname(name)
+    casos = condition.get("casos") if isinstance(condition.get("casos"), list) else None
+    if casos:
+        def _ids(membros):
+            ms = [j for j in (membros or []) if j in job_names and j != name]
+            return [(j if j in notif_names else "log_start_" + j) for j in ms]
+        ramos_ids = {}
+        for c in casos:
+            cnome = str(c.get("nome") or "").strip() if isinstance(c, dict) else ""
+            if cnome:
+                ramos_ids[cnome] = _ids(c.get("ramo"))
+        ramos_ids["senao"] = _ids(condition.get("ramo_senao"))
+        return "\n".join([
+            f'def _decide_{vname}(**context):',
+            f'    cond = {condition!r}',
+            f'    _exec_id = context.get("ts_nodash")',
+            f'    _ti = context.get("ti")',
+            f'    _caso, _valor = eval_switch(cond, MSSQL_CONN_ID, execution_id=_exec_id, pipeline_name=PIPELINE_NAME, ti=_ti)',
+            f'    _job = {name!r}',
+            f'    print("[DECISAO " + _job + "] valor=" + str(_valor) + " -> caso " + _caso)',
+            '    context["ti"].xcom_push(key="decisao", value={"valor": str(_valor), "caso": _caso})',
+            f'    _ramos = {ramos_ids!r}',
+            f'    return _ramos.get(_caso, [])',
+            f'',
+            f't_dec_{vname} = BranchPythonOperator(',
+            f'    task_id={name!r},',
+            f'    python_callable=_decide_{vname},',
+            f')',
+        ])
     ramo_v = [j for j in (condition.get("ramo_verdadeiro") or []) if j in job_names and j != name]
     ramo_f = [j for j in (condition.get("ramo_falso") or []) if j in job_names and j != name]
     # Notificação: o branch aponta para o próprio task_id (t_notif_* usa task_id=nome);
@@ -545,12 +578,19 @@ def _generate_dag_source(pipeline, jobs):
     branch_parents = defaultdict(list)   # job_name → [nome da(s) decisão(ões)]
     ramo_members = set()
     for dname, cond in decision_conditions.items():
-        for ramo_key in ("ramo_verdadeiro", "ramo_falso"):
-            for m in (cond.get(ramo_key) or []):
-                if m in _job_names and m != dname:
-                    ramo_members.add(m)
-                    if dname not in branch_parents[m]:
-                        branch_parents[m].append(dname)
+        # Binária (ramo_verdadeiro/ramo_falso) e switch (casos[].ramo + ramo_senao)
+        # — a ordem preserva a emissão binária existente (DAG byte-idêntica).
+        _membros = list(cond.get("ramo_verdadeiro") or []) + list(cond.get("ramo_falso") or [])
+        if isinstance(cond.get("casos"), list):
+            for _caso in cond["casos"]:
+                if isinstance(_caso, dict):
+                    _membros += list(_caso.get("ramo") or [])
+        _membros += list(cond.get("ramo_senao") or [])
+        for m in _membros:
+            if m in _job_names and m != dname:
+                ramo_members.add(m)
+                if dname not in branch_parents[m]:
+                    branch_parents[m].append(dname)
     # Fecho transitivo a jusante (segue depends_on_jobs a partir dos membros).
     _children = defaultdict(set)
     for j in sorted_jobs:
@@ -579,7 +619,12 @@ def _generate_dag_source(pipeline, jobs):
     if _ops:
         import_lines.append("from utils.job_operators import " + ", ".join(_ops))
     if has_decision:
-        import_lines.append("from utils.conditions import eval_condition")
+        # eval_switch só entra quando alguma decisão é N-way (casos) — pipelines
+        # binários mantêm a linha de import (e a DAG) byte-idêntica.
+        _has_switch = any(isinstance(c, dict) and c.get("casos")
+                          for c in decision_conditions.values())
+        import_lines.append("from utils.conditions import eval_condition"
+                            + (", eval_switch" if _has_switch else ""))
     import_lines += [
         "from airflow.operators.python import PythonOperator, ShortCircuitOperator"
         + (", BranchPythonOperator" if has_decision else ""),
