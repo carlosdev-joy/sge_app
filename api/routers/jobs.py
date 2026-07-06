@@ -1313,7 +1313,10 @@ async def rename_pipeline_job(
         if cur.fetchone()[0]:
             raise HTTPException(status_code=422, detail=f"já existe um job '{novo}' no pipeline")
 
-        tem_execucao = _tem_tabela("etl_job_execution")
+        # A coluna 'pipeline' entrou na 027 (NULLable) — instalações antigas
+        # degradam sem o guard/reescrita do histórico, como o resto do arquivo.
+        tem_execucao = (_tem_tabela("etl_job_execution")
+                        and _tem_coluna("etl_job_execution", "pipeline"))
         if tem_execucao:
             cur.execute(
                 "SELECT COUNT(*) FROM dbo.etl_job_execution "
@@ -1390,7 +1393,7 @@ async def rename_pipeline_job(
                 "WHERE pipeline=? AND job_name=?",
                 (novo, antigo, novo, pipe, antigo))
             hist_exec = max(0, cur.rowcount or 0)
-        if _tem_tabela("etl_ds_job_log"):
+        if _tem_tabela("etl_ds_job_log") and _tem_coluna("etl_ds_job_log", "pipeline_name"):
             cur.execute(
                 "UPDATE dbo.etl_ds_job_log SET job_name=? "
                 "WHERE pipeline_name=? AND job_name=?", (novo, pipe, antigo))
