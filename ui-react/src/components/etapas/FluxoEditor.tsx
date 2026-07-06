@@ -927,6 +927,71 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     return true
   }
 
+  // ── Rename TRANSACIONAL (nó já salvo): confirmação → API → remap local ─────
+  const [renamePedido, setRenamePedido] = useState<{ de: string; para: string } | null>(null)
+  const [renameLoading, setRenameLoading] = useState(false)
+
+  // Roteia o commit do NomeField: nó novo renomeia só localmente; nó salvo abre
+  // a confirmação do rename transacional (backend atualiza TODAS as referências).
+  function renomear(oldName: string, novo: string): boolean {
+    const n = nodes.find(x => x.id === oldName)
+    if ((n?.data as { isNew?: boolean } | undefined)?.isNew) return renomearNovo(oldName, novo)
+    const name = novo.trim()
+    if (name === oldName) return true
+    if (!name) { toast.error('Informe um nome.'); return false }
+    if (!NAME_RE.test(name)) { toast.error('Nome inválido — use apenas letras, números, _ . - (sem espaço)'); return false }
+    if (nameSet().has(name)) { toast.error('Já existe um nó com esse nome.'); return false }
+    setRenamePedido({ de: oldName, para: name })
+    return false   // o input volta ao nome atual até o usuário confirmar
+  }
+
+  // Espelha o rename no estado local: id do nó, arestas e as condições de
+  // OUTRAS decisões que citam o nome (source_job/job_name — os ramos são
+  // derivados das arestas no save, então o remap das arestas já os cobre).
+  function aplicarRenameLocal(oldName: string, name: string) {
+    setNodes(nds => nds.map(n => {
+      if (n.id === oldName) return { ...n, id: name, data: { ...n.data, name } }
+      if (n.type !== 'decisao') return n
+      const cond = (n.data as DecisaoNodeData).condition
+      if (!cond || (cond.source_job !== oldName && cond.job_name !== oldName)) return n
+      const next = {
+        ...cond,
+        source_job: cond.source_job === oldName ? name : cond.source_job,
+        job_name: cond.job_name === oldName ? name : cond.job_name,
+      }
+      return { ...n, data: { ...n.data, condition: next, label: conditionLabel(next) } }
+    }))
+    setEdges(eds => eds.map(e => {
+      let ne = e
+      if (e.source === oldName) ne = { ...ne, source: name }
+      if (e.target === oldName) ne = { ...ne, target: name }
+      if (ne !== e) ne = { ...ne, id: ne.id.replace(oldName, name) }
+      return ne
+    }))
+    existingRef.current.delete(oldName)
+    existingRef.current.add(name)
+    setSelectedId(prev => (prev === oldName ? name : prev))
+  }
+
+  async function confirmarRename() {
+    if (!renamePedido) return
+    setRenameLoading(true)
+    try {
+      const res = await apiFetch<{ avisos?: string[] }>(
+        `/pipelines/jobs/${encodeURIComponent(pipeline)}/${encodeURIComponent(renamePedido.de)}/rename`,
+        { method: 'POST', body: JSON.stringify({ novo_nome: renamePedido.para }) },
+      )
+      aplicarRenameLocal(renamePedido.de, renamePedido.para)
+      toast.success(`Job renomeado para ${renamePedido.para}.`)
+      for (const aviso of res?.avisos ?? []) toast.info(aviso)
+      setRenamePedido(null)
+    } catch (e: any) {
+      toast.error(e?.message || 'Falha ao renomear o job.')
+    } finally {
+      setRenameLoading(false)
+    }
+  }
+
   // Atualiza a condição de uma decisão (merge) e o rótulo do nó.
   function patchCondition(nodeId: string, patch: Partial<NodeCondition>) {
     setNodes(nds => nds.map(n => {
@@ -1541,7 +1606,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
           dbDatabases={dbDatabases}
           grupos={grupos}
           readOnly={readOnly}
-          onRename={renomearNovo}
+          onRename={renomear}
           onPatchData={patchNodeData}
           onPatchCondition={patchCondition}
           onPatchNotify={patchNotify}
@@ -1617,6 +1682,40 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
             </Button>
             <Button onClick={publicar} loading={publishing}>
               Publicar nova versão
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal: confirmação do rename TRANSACIONAL de um nó já salvo */}
+      <Modal
+        open={!!renamePedido}
+        onClose={() => setRenamePedido(null)}
+        title="Renomear job"
+        size="sm"
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-dim">
+            Renomear{' '}
+            <span className="font-mono font-medium text-ink">{renamePedido?.de}</span>
+            {' '}para{' '}
+            <span className="font-mono font-medium text-ink">{renamePedido?.para}</span>?
+          </p>
+          <p className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-800/40 dark:bg-blue-900/15 dark:text-blue-300">
+            O rename é transacional: dependências, condições (ramos/decisões),
+            lineage e o histórico de execuções são atualizados juntos.
+          </p>
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+            Depois, <b>republique a DAG</b> — o task_id no Airflow deriva do nome
+            (rerun e reconciliação usam o task_id). Pipelines com execução em
+            andamento não podem ser renomeados.
+          </p>
+          <div className="flex justify-end gap-2 border-t border-edge pt-3">
+            <Button variant="secondary" onClick={() => setRenamePedido(null)}>
+              Cancelar
+            </Button>
+            <Button onClick={confirmarRename} loading={renameLoading}>
+              Renomear
             </Button>
           </div>
         </div>
@@ -1776,8 +1875,9 @@ function NomeField({
   useEffect(() => { setDraft(name) }, [id, name])
 
   function commit() {
-    if (!isNew) return
     if (draft.trim() === name) return
+    // Nó salvo: onRename abre a confirmação do rename TRANSACIONAL (o input
+    // volta ao nome atual; muda de verdade só depois do OK + sucesso da API).
     if (!onRename(id, draft)) setDraft(name)
   }
 
@@ -1786,15 +1886,14 @@ function NomeField({
       <Input
         label={isNew ? 'Nome *' : 'Nome'}
         value={draft}
-        disabled={!isNew}
         onChange={e => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
         placeholder={placeholder}
-        className={`font-mono text-xs ${!isNew ? 'opacity-60' : ''}`}
+        className="font-mono text-xs"
       />
       {!isNew
-        ? <p className="text-[10px] text-dim/70">O nome de um nó já salvo não é editável aqui.</p>
+        ? <p className="text-[10px] text-dim/70">Renomear um nó salvo atualiza dependências, condições e histórico — e pede confirmação.</p>
         : <p className="text-[10px] text-dim/70">Letras, números, _ . - (sem espaço)</p>}
     </div>
   )
