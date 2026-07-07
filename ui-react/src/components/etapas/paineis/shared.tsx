@@ -46,8 +46,8 @@ export function NomeField({
         className="font-mono text-xs"
       />
       {!isNew
-        ? <p className="text-[10px] text-dim/70">Renomear um nó salvo atualiza dependências, condições e histórico — e pede confirmação.</p>
-        : <p className="text-[10px] text-dim/70">Letras, números, _ . - (sem espaço)</p>}
+        ? <p className="text-[11px] text-dim/70">Renomear um nó salvo atualiza dependências, condições e histórico — e pede confirmação.</p>
+        : <p className="text-[11px] text-dim/70">Letras, números, _ . - (sem espaço)</p>}
     </div>
   )
 }
@@ -70,7 +70,7 @@ export function CasoNomeInput({
       }}
       onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
       placeholder={placeholder}
-      className="font-mono text-[11px]"
+      className="w-full font-mono text-xs"
     />
   )
 }

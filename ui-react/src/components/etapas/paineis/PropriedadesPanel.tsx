@@ -43,9 +43,9 @@ export function PropriedadesPanel({
 }: PropriedadesPanelProps) {
   return (
     // No modo leitura o fieldset desabilita TODOS os campos/botões do painel
-    // de uma vez (inclui Excluir/Simular) — o layout não muda. A largura é
-    // limitada (max-w-3xl) até a fase 4 trazer os layouts largos por painel.
-    <fieldset disabled={readOnly} className="flex min-h-0 w-full max-w-3xl flex-1 flex-col">
+    // de uma vez (inclui Excluir/Simular) — o layout não muda. Fase 4: cada
+    // painel gerencia a própria largura (layouts em 2 colunas no dock largo).
+    <fieldset disabled={readOnly} className="flex min-h-0 w-full flex-1 flex-col">
       {!node ? (
         <PainelVazio />
       ) : node.type === 'decisao' ? (

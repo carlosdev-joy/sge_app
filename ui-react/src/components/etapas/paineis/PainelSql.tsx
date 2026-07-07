@@ -1,6 +1,8 @@
 // ── Painel de um nó SQL ──────────────────────────────────────────────────────
 // Edita a query (SELECT que retorna 1 valor) + conexão/banco e oferece um
 // Pré-visualizar (POST /jobs/sql-preview) com grid de amostra (≤100 linhas).
+// Fase 4 do redesign: layout LARGO para o dock inferior — 2 colunas no lg+
+// (esquerda = SELECT grande + conexão/banco/on_error; direita = preview).
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Node } from '@xyflow/react'
@@ -47,7 +49,7 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete }: 
   })
   const databases = dbData?.databases ?? []
 
-  // Resultado do preview (amostra). Mantido em estado local, abaixo do botão.
+  // Resultado do preview (amostra). Mantido em estado local, na coluna direita.
   const [preview, setPreview] = useState<SqlPreview | null>(null)
   const [previewing, setPreviewing] = useState(false)
 
@@ -81,33 +83,38 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete }: 
   }
 
   return (
-    <div className="flex flex-1 flex-col gap-3 p-3">
-      {/* Cabeçalho */}
-      <div className="flex items-center gap-2">
+    <div className="flex flex-1 flex-col">
+      {/* Cabeçalho do painel — o Excluir mora no topo direito (mesmo padrão
+          nos 4 painéis). */}
+      <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-violet-500 text-white">
           <Database size={15} strokeWidth={2.2} />
         </span>
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
-          <p className="text-[10px] text-dim">Consulta SQL</p>
+          <p className="text-[11px] text-dim">Consulta SQL</p>
         </div>
+        <Button variant="danger" size="sm" className="ml-auto shrink-0" onClick={() => onDelete(node.id)}>
+          <Trash2 size={13} /> Excluir nó SQL
+        </Button>
       </div>
 
-      <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: LE_CONTROLE" onRename={onRename} />
+      {/* 2 colunas no lg+: esquerda = consulta; direita = pré-visualização. */}
+      <div className="grid gap-4 p-4 lg:grid-cols-2">
+        {/* ── Coluna esquerda: SELECT + conexão/banco/on_error ────────────── */}
+        <div className="flex min-w-0 flex-col gap-2">
+          <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: LE_CONTROLE" onRename={onRename} />
 
-      {/* Config da consulta */}
-      <div className="border-t border-edge pt-2.5">
-        <div className="mb-2 flex items-center gap-1.5">
-          <Database size={12} className="text-violet-600 dark:text-violet-300" />
-          <span className="text-xs font-semibold text-ink">Consulta</span>
-        </div>
+          <div className="mt-1 flex items-center gap-1.5">
+            <Database size={12} className="text-violet-600 dark:text-violet-300" />
+            <span className="text-xs font-semibold text-ink">Consulta</span>
+          </div>
 
-        <div className="flex flex-col gap-2">
           <div className="flex flex-col gap-1">
             <Textarea
               label="SELECT *"
               value={cfg.sql ?? ''}
-              rows={4}
+              rows={10}
               onChange={e => patch({ sql: e.target.value })}
               placeholder="ex: SELECT MAX(flag) FROM dbo.Controle WHERE ..."
               className="font-mono text-xs"
@@ -172,7 +179,10 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete }: 
               </p>
             )}
           </div>
+        </div>
 
+        {/* ── Coluna direita: pré-visualização (amostra ≤ 100 linhas) ─────── */}
+        <div className="flex min-w-0 flex-col gap-2 lg:border-l lg:border-edge lg:pl-4">
           <Button
             variant="secondary"
             size="sm"
@@ -183,59 +193,58 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete }: 
           >
             <Play size={13} /> Pré-visualizar
           </Button>
-        </div>
-      </div>
 
-      {/* Grid do resultado (amostra ≤ 100 linhas). */}
-      {preview && (
-        <div className="flex flex-col gap-1">
-          <div className="max-h-64 overflow-auto rounded-lg border border-edge bg-panel">
-            <table className="w-full border-collapse text-[10px]">
-              <thead className="sticky top-0 bg-canvas">
-                <tr>
-                  {preview.columns.map((col, i) => (
-                    <th key={i} className="border-b border-edge px-2 py-1 text-left font-semibold text-ink">
-                      {col}
-                    </th>
-                  ))}
-                  {preview.columns.length === 0 && (
-                    <th className="border-b border-edge px-2 py-1 text-left font-semibold text-dim">—</th>
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {preview.rows.map((row, ri) => (
-                  <tr key={ri} className="odd:bg-canvas/40">
-                    {row.map((cell, ci) => (
-                      <td key={ci} className="border-b border-edge px-2 py-1 font-mono text-ink">
-                        {cell == null ? <span className="text-dim/60">null</span> : String(cell)}
-                      </td>
+          {preview ? (
+            <div className="flex min-h-0 flex-col gap-1">
+              <div className="max-h-80 overflow-auto rounded-lg border border-edge bg-panel">
+                <table className="w-full border-collapse text-[10px]">
+                  <thead className="sticky top-0 bg-canvas">
+                    <tr>
+                      {preview.columns.map((col, i) => (
+                        <th key={i} className="border-b border-edge px-2 py-1 text-left font-semibold text-ink">
+                          {col}
+                        </th>
+                      ))}
+                      {preview.columns.length === 0 && (
+                        <th className="border-b border-edge px-2 py-1 text-left font-semibold text-dim">—</th>
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.rows.map((row, ri) => (
+                      <tr key={ri} className="odd:bg-canvas/40">
+                        {row.map((cell, ci) => (
+                          <td key={ci} className="border-b border-edge px-2 py-1 font-mono text-ink">
+                            {cell == null ? <span className="text-dim/60">null</span> : String(cell)}
+                          </td>
+                        ))}
+                      </tr>
                     ))}
-                  </tr>
-                ))}
-                {preview.rows.length === 0 && (
-                  <tr>
-                    <td className="px-2 py-2 text-center text-dim" colSpan={Math.max(1, preview.columns.length)}>
-                      Sem linhas.
-                    </td>
-                  </tr>
+                    {preview.rows.length === 0 && (
+                      <tr>
+                        <td className="px-2 py-2 text-center text-dim" colSpan={Math.max(1, preview.columns.length)}>
+                          Sem linhas.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-[10px] text-dim">
+                {preview.total} linha{preview.total === 1 ? '' : 's'} (máx 100)
+                {preview.truncated && (
+                  <span className="ml-1 text-amber-700 dark:text-amber-400">· resultado truncado em 100</span>
                 )}
-              </tbody>
-            </table>
-          </div>
-          <p className="text-[10px] text-dim">
-            {preview.total} linha{preview.total === 1 ? '' : 's'} (máx 100)
-            {preview.truncated && (
-              <span className="ml-1 text-amber-700 dark:text-amber-400">· resultado truncado em 100</span>
-            )}
-          </p>
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-1 items-center justify-center rounded-lg border border-dashed border-edge px-4 py-6">
+              <p className="text-center text-[11px] text-dim/80">
+                A amostra do resultado (≤100 linhas) aparece aqui após pré-visualizar.
+              </p>
+            </div>
+          )}
         </div>
-      )}
-
-      <div className="mt-auto border-t border-edge pt-3">
-        <Button variant="danger" size="sm" className="w-full justify-center" onClick={() => onDelete(node.id)}>
-          <Trash2 size={13} /> Excluir nó SQL
-        </Button>
       </div>
     </div>
   )

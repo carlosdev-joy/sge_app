@@ -1,4 +1,6 @@
 // ── Painel de uma NOTIFICAÇÃO (Teams) ────────────────────────────────────────
+// Fase 4 do redesign: layout LARGO para o dock inferior — 2 colunas no lg+
+// (esquerda = identidade + canal/modelo; direita = mensagem + placeholders).
 import { useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Node } from '@xyflow/react'
@@ -43,28 +45,28 @@ export function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDel
   }
 
   return (
-    <div className="flex flex-1 flex-col gap-3 p-3">
-      {/* Cabeçalho */}
-      <div className="flex items-center gap-2">
+    <div className="flex flex-1 flex-col">
+      {/* Cabeçalho do painel — o Excluir mora no topo direito (mesmo padrão
+          nos 4 painéis). */}
+      <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-teal-500 text-white">
           <BellRing size={15} strokeWidth={2.2} />
         </span>
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
-          <p className="text-[10px] text-dim">Notificação (Teams)</p>
+          <p className="text-[11px] text-dim">Notificação (Teams)</p>
         </div>
+        <Button variant="danger" size="sm" className="ml-auto shrink-0" onClick={() => onDelete(node.id)}>
+          <Trash2 size={13} /> Excluir notificação
+        </Button>
       </div>
 
-      <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: AVISA_TIME" onRename={onRename} />
+      {/* 2 colunas no lg+: esquerda = identidade + canal/modelo; direita = mensagem. */}
+      <div className="grid gap-4 p-4 lg:grid-cols-2">
+        {/* ── Coluna esquerda: identidade + canal/modelo ──────────────────── */}
+        <div className="flex min-w-0 flex-col gap-2">
+          <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: AVISA_TIME" onRename={onRename} />
 
-      {/* Config da notificação */}
-      <div className="border-t border-edge pt-2.5">
-        <div className="mb-2 flex items-center gap-1.5">
-          <BellRing size={12} className="text-teal-600 dark:text-teal-300" />
-          <span className="text-xs font-semibold text-ink">Mensagem do Teams</span>
-        </div>
-
-        <div className="flex flex-col gap-2">
           <div className="flex flex-col gap-1">
             <Select
               label="Grupo (canal) *"
@@ -112,12 +114,27 @@ export function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDel
               )}
           </div>
 
+          {/* Aviso quando falta o canal (grupo_id obrigatório no save). */}
+          {cfg.grupo_id == null && (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+              Selecione um canal (grupo) antes de salvar o fluxo.
+            </p>
+          )}
+        </div>
+
+        {/* ── Coluna direita: mensagem (corpo livre + placeholders) ───────── */}
+        <div className="flex min-w-0 flex-col gap-2 lg:border-l lg:border-edge lg:pl-4">
+          <div className="flex items-center gap-1.5">
+            <BellRing size={12} className="text-teal-600 dark:text-teal-300" />
+            <span className="text-xs font-semibold text-ink">Mensagem do Teams</span>
+          </div>
+
           <div className="flex flex-col gap-1">
             <Textarea
               ref={msgRef}
               label="Mensagem (opcional)"
               value={cfg.mensagem ?? ''}
-              rows={4}
+              rows={7}
               onChange={e => patch({ mensagem: e.target.value })}
               placeholder="ex: Pipeline {pipeline} concluído com status {status}."
               className="text-xs"
@@ -132,19 +149,6 @@ export function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDel
             />
           </div>
         </div>
-      </div>
-
-      {/* Aviso quando falta o canal (grupo_id obrigatório no save). */}
-      {cfg.grupo_id == null && (
-        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
-          Selecione um canal (grupo) antes de salvar o fluxo.
-        </p>
-      )}
-
-      <div className="mt-auto border-t border-edge pt-3">
-        <Button variant="danger" size="sm" className="w-full justify-center" onClick={() => onDelete(node.id)}>
-          <Trash2 size={13} /> Excluir notificação
-        </Button>
       </div>
     </div>
   )
