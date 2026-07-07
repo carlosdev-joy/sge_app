@@ -1,9 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Painel de propriedades INLINE (à direita) — edita o nó selecionado ao vivo.
-// Substitui os antigos modais "Nova etapa" e "Condição da decisão".
+// CONTEÚDO do painel de propriedades — edita o nó selecionado ao vivo.
+// Desde a fase 3 do redesign é renderizado dentro do DOCK INFERIOR do
+// FluxoEditor (que fornece o chrome: header com resumo do nó, botões de
+// colapsar/maximizar/fechar e a alça de redimensionar). Este componente cuida
+// só do formulário por tipo de nó.
 // ─────────────────────────────────────────────────────────────────────────────
 import type { Node } from '@xyflow/react'
-import { PanelRightClose, MousePointerClick } from 'lucide-react'
+import { MousePointerClick } from 'lucide-react'
 import type { NodeCondition } from '../DecisaoNode'
 import type { NotifyConfig, SqlConfig, MsgGrupo } from '../fluxoTypes'
 import type { CasoOps } from './shared'
@@ -31,33 +34,18 @@ interface PropriedadesPanelProps extends CasoOps {
   onPatchSql: (nodeId: string, patch: Partial<SqlConfig>) => void
   onSimular: (decisaoId: string, ramo: string) => void
   onDelete: (id: string) => void
-  onClose: () => void
 }
 
 export function PropriedadesPanel({
   node, nodes, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, dbServer, dbDatabases, grupos,
-  readOnly, onRename, onPatchData, onPatchCondition, onPatchNotify, onPatchSql, onSimular, onDelete, onClose,
+  readOnly, onRename, onPatchData, onPatchCondition, onPatchNotify, onPatchSql, onSimular, onDelete,
   onAlternarModo, onAddCaso, onUpdateCaso, onRemoveCaso, onMoveCaso,
 }: PropriedadesPanelProps) {
   return (
-    <aside className="flex w-[320px] shrink-0 flex-col overflow-y-auto border-l border-edge bg-panel">
-      {/* Cabeçalho do painel — o botão recolhe (desseleciona o nó) */}
-      <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-edge bg-panel/95 px-3 py-2.5 backdrop-blur">
-        <button
-          onClick={onClose}
-          title="Fechar / recolher propriedades"
-          className="flex items-center justify-center rounded p-0.5 text-dim transition-colors hover:bg-edge/40 hover:text-ink"
-        >
-          <PanelRightClose size={15} />
-        </button>
-        <span className="text-xs font-semibold uppercase tracking-wide text-dim">
-          Propriedades{readOnly ? ' (leitura)' : ''}
-        </span>
-      </div>
-
-      {/* No modo leitura o fieldset desabilita TODOS os campos/botões do painel
-          de uma vez (inclui Excluir/Simular) — o layout não muda. */}
-      <fieldset disabled={readOnly} className="flex min-h-0 flex-1 flex-col">
+    // No modo leitura o fieldset desabilita TODOS os campos/botões do painel
+    // de uma vez (inclui Excluir/Simular) — o layout não muda. A largura é
+    // limitada (max-w-3xl) até a fase 4 trazer os layouts largos por painel.
+    <fieldset disabled={readOnly} className="flex min-h-0 w-full max-w-3xl flex-1 flex-col">
       {!node ? (
         <PainelVazio />
       ) : node.type === 'decisao' ? (
@@ -110,15 +98,12 @@ export function PropriedadesPanel({
           onDelete={onDelete}
         />
       )}
-      </fieldset>
-    </aside>
+    </fieldset>
   )
 }
 
-// Estado-guia quando nada está selecionado.
-// NOTA: hoje o editor só monta o painel com um nó selecionado (node nunca é
-// null na prática) — mantido exportado de propósito: vira o estado vazio do
-// dock inferior na fase 3 do redesign.
+// Estado-guia quando nada está selecionado (usado no branch node=null e
+// disponível para o estado vazio do dock).
 export function PainelVazio() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 px-5 py-10 text-center">

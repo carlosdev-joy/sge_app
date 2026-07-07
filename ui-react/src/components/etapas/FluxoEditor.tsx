@@ -31,7 +31,8 @@ import { Modal } from '../ui/Modal'
 import { toast } from '../ui/Toast'
 import {
   Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing, Database,
-  ChevronLeft, ChevronRight, MousePointerClick, Search, X,
+  ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Maximize2, Minimize2,
+  MousePointerClick, Search, X,
 } from 'lucide-react'
 import { EtapaNode, type EtapaNodeData } from './EtapaNode'
 import { DecisaoNode, casoCor, type CasoSwitch, type DecisaoNodeData, type NodeCondition } from './DecisaoNode'
@@ -48,6 +49,13 @@ import {
 import { PropriedadesPanel } from './paineis/PropriedadesPanel'
 
 const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode }
+
+// ── Dock inferior de propriedades (fase 3 do redesign) ──────────────────────
+type DockEstado = 'colapsado' | 'aberto' | 'max'
+const DOCK_LS_ESTADO = 'orq.fluxo.dock.estado'
+const DOCK_LS_ALTURA = 'orq.fluxo.dock.altura'
+const DOCK_MIN_H = 180
+const DOCK_MAX_H = 560
 
 // ── Tipos do payload da API (/fluxo) ────────────────────────────────────────
 // (Condition/NotifyConfig/SqlConfig e o catálogo MsgGrupo/MsgTemplate moram em
@@ -526,6 +534,48 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [showPublish, setShowPublish] = useState(false)
+
+  // ── Dock inferior de propriedades (fase 3 do redesign) ────────────────────
+  // 3 estados (padrão Informatica/ADF): 'colapsado' (barra 36px c/ resumo),
+  // 'aberto' (altura arrastável) e 'max' (~70% = modo focado). Preferências
+  // persistidas por usuário em localStorage.
+  const [dockEstado, setDockEstado] = useState<DockEstado>(() => {
+    try {
+      const v = localStorage.getItem(DOCK_LS_ESTADO)
+      return v === 'colapsado' || v === 'max' ? v : 'aberto'
+    } catch { return 'aberto' }
+  })
+  const [dockAltura, setDockAltura] = useState<number>(() => {
+    try {
+      const v = parseInt(localStorage.getItem(DOCK_LS_ALTURA) || '', 10)
+      return Number.isFinite(v) ? Math.min(Math.max(v, DOCK_MIN_H), DOCK_MAX_H) : 280
+    } catch { return 280 }
+  })
+  useEffect(() => {
+    try { localStorage.setItem(DOCK_LS_ESTADO, dockEstado) } catch { /* sem storage */ }
+  }, [dockEstado])
+  useEffect(() => {
+    try { localStorage.setItem(DOCK_LS_ALTURA, String(dockAltura)) } catch { /* sem storage */ }
+  }, [dockAltura])
+
+  // Alça de redimensionar: pointer events na borda superior do dock.
+  const dockDragRef = useRef<{ startY: number; startH: number } | null>(null)
+  const iniciarDragDock = useCallback((e: React.PointerEvent) => {
+    e.preventDefault()
+    dockDragRef.current = { startY: e.clientY, startH: dockAltura }
+    const onMove = (ev: PointerEvent) => {
+      const d = dockDragRef.current
+      if (!d) return
+      setDockAltura(Math.min(Math.max(d.startH + (d.startY - ev.clientY), DOCK_MIN_H), DOCK_MAX_H))
+    }
+    const onUp = () => {
+      dockDragRef.current = null
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }, [dockAltura])
   const [publishing, setPublishing] = useState(false)
   // Paleta colapsável (estado local).
   const [paletaOpen, setPaletaOpen] = useState(true)
@@ -1500,9 +1550,16 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     [],
   )
 
-  // Duplo-clique apenas garante a seleção (o painel à direita já edita ao vivo).
+  // Clique seleciona (e reabre o dock se estiver colapsado — padrão Informatica:
+  // selecionar um nó é intenção de editar). Duplo-clique = abrir MAXIMIZADO
+  // (modo focado, padrão DataStage/n8n).
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     setSelectedId(node.id)
+    setDockEstado(e => (e === 'colapsado' ? 'aberto' : e))
+  }, [])
+  const onNodeDouble = useCallback((_: React.MouseEvent, node: Node) => {
+    setSelectedId(node.id)
+    setDockEstado('max')
   }, [])
 
   // Fecha o painel de propriedades (desseleciona o nó) — botão "recolher".
@@ -1563,9 +1620,10 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   const selNode = selectedId ? nodes.find(n => n.id === selectedId) ?? null : null
 
   return (
-    <div className="flex h-full w-full overflow-hidden rounded-xl border border-edge bg-canvas">
-      {/* Canvas (ocupa o resto; o painel à direita encolhe o canvas, não sobrepõe) */}
-      <div className="relative min-w-0 flex-1" ref={wrapperRef}>
+    <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-edge bg-canvas">
+      {/* Canvas com a LARGURA TOTAL (fase 3: as propriedades moram no dock
+          inferior — o canvas não é mais espremido lateralmente) */}
+      <div className="relative min-h-0 min-w-0 flex-1" ref={wrapperRef}>
         {nodes.length === 0 && (
           <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 text-dim">
             <span className="text-3xl">⬡</span>
@@ -1584,7 +1642,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
           onConnect={onConnect}
           onBeforeDelete={handleBeforeDelete}
           onNodeClick={onNodeClick}
-          onNodeDoubleClick={onNodeClick}
+          onNodeDoubleClick={onNodeDouble}
           onDrop={onDrop}
           onDragOver={onDragOver}
           colorMode={colorMode}
@@ -1645,35 +1703,141 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
         </ReactFlow>
       </div>
 
-      {/* Painel de propriedades INLINE (à direita) — só quando há nó selecionado */}
-      {selNode && (
-        <PropriedadesPanel
-          node={selNode}
-          nodes={nodes}
-          ramos={selRamos}
-          jobNames={jobNames}
-          sqlNodeNames={sqlNodeNames}
-          sshConns={sshConns}
-          mssqlConns={mssqlConns}
-          dbServer={dbServer}
-          dbDatabases={dbDatabases}
-          grupos={grupos}
-          readOnly={readOnly}
-          onRename={renomear}
-          onPatchData={patchNodeData}
-          onPatchCondition={patchCondition}
-          onPatchNotify={patchNotify}
-          onPatchSql={patchSql}
-          onSimular={simularDecisao}
-          onDelete={id => setDelNodeIds([id])}
-          onClose={closePanel}
-          onAlternarModo={alternarModoDecisao}
-          onAddCaso={adicionarCaso}
-          onUpdateCaso={atualizarCaso}
-          onRemoveCaso={removerCaso}
-          onMoveCaso={moverCaso}
-        />
-      )}
+      {/* Dock inferior de propriedades (fase 3) — 3 estados: colapsado (36px
+          com o resumo do nó), aberto (altura arrastável) e max (modo focado).
+          Sem seleção vira uma barra-guia fina — nunca some (padrão do
+          benchmark Informatica/ADF). */}
+      <div
+        className={[
+          'relative flex shrink-0 flex-col border-t border-edge bg-panel',
+          selNode && dockEstado === 'max' ? 'h-[70%]' : '',
+          selNode && dockEstado === 'aberto' ? 'max-h-[60%]' : '',
+        ].join(' ')}
+        style={selNode && dockEstado === 'aberto' ? { height: dockAltura } : undefined}
+      >
+        {selNode && dockEstado === 'aberto' && (
+          <div
+            onPointerDown={iniciarDragDock}
+            title="Arraste para redimensionar"
+            className="absolute -top-1 left-0 right-0 z-10 h-2.5 cursor-row-resize"
+          />
+        )}
+
+        {/* Header do dock: resumo do nó selecionado + controles de estado */}
+        <div className="flex h-9 shrink-0 items-center gap-2 border-b border-edge px-3">
+          {selNode ? (
+            <>
+              <span
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ background: miniMapColor(selNode) }}
+              />
+              <span className="truncate font-mono text-xs font-semibold text-ink">{selNode.id}</span>
+              <span className="shrink-0 text-[11px] text-dim">
+                · {selNode.type === 'decisao' ? 'Decisão'
+                  : selNode.type === 'notificacao' ? 'Notificação'
+                  : selNode.type === 'sql' ? 'Consulta SQL'
+                  : (TYPE_META as Record<string, { label: string }>)[
+                      String((selNode.data as { type?: string }).type ?? '')
+                    ]?.label ?? 'Etapa'}
+              </span>
+              {!!(selNode.data as { label?: string }).label && (
+                <span className="hidden truncate text-[11px] text-dim/80 sm:inline">
+                  · {(selNode.data as { label?: string }).label}
+                </span>
+              )}
+              {readOnly && (
+                <span className="shrink-0 rounded-full border border-edge px-2 py-0.5 text-[10px] font-semibold text-dim">
+                  somente leitura
+                </span>
+              )}
+              <div className="ml-auto flex shrink-0 items-center gap-0.5 text-dim">
+                {dockEstado !== 'max' ? (
+                  <button
+                    onClick={() => setDockEstado('max')}
+                    title="Maximizar (modo focado) — duplo-clique no nó também abre assim"
+                    className="rounded p-1 hover:bg-edge/40 hover:text-ink"
+                  >
+                    <Maximize2 size={13} />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setDockEstado('aberto')}
+                    title="Restaurar tamanho"
+                    className="rounded p-1 hover:bg-edge/40 hover:text-ink"
+                  >
+                    <Minimize2 size={13} />
+                  </button>
+                )}
+                {dockEstado === 'colapsado' ? (
+                  <button
+                    onClick={() => setDockEstado('aberto')}
+                    title="Expandir propriedades"
+                    className="rounded p-1 hover:bg-edge/40 hover:text-ink"
+                  >
+                    <ChevronUp size={14} />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setDockEstado('colapsado')}
+                    title="Recolher para a barra (o resumo do nó permanece)"
+                    className="rounded p-1 hover:bg-edge/40 hover:text-ink"
+                  >
+                    <ChevronDown size={14} />
+                  </button>
+                )}
+                <button
+                  onClick={closePanel}
+                  title="Fechar propriedades (Esc)"
+                  className="rounded p-1 hover:bg-edge/40 hover:text-ink"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <MousePointerClick size={13} className="shrink-0 text-dim/70" />
+              <span className="truncate text-[11px] text-dim">
+                Selecione um nó no canvas para editar as propriedades — duplo-clique abre maximizado.
+              </span>
+              <span className="ml-auto hidden shrink-0 font-mono text-[11px] text-dim/70 md:inline">
+                {pipeline}
+              </span>
+            </>
+          )}
+        </div>
+
+        {/* Conteúdo do painel (só quando aberto/max) */}
+        {selNode && dockEstado !== 'colapsado' && (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <PropriedadesPanel
+              node={selNode}
+              nodes={nodes}
+              ramos={selRamos}
+              jobNames={jobNames}
+              sqlNodeNames={sqlNodeNames}
+              sshConns={sshConns}
+              mssqlConns={mssqlConns}
+              dbServer={dbServer}
+              dbDatabases={dbDatabases}
+              grupos={grupos}
+              readOnly={readOnly}
+              onRename={renomear}
+              onPatchData={patchNodeData}
+              onPatchCondition={patchCondition}
+              onPatchNotify={patchNotify}
+              onPatchSql={patchSql}
+              onSimular={simularDecisao}
+              onDelete={id => setDelNodeIds([id])}
+              onAlternarModo={alternarModoDecisao}
+              onAddCaso={adicionarCaso}
+              onUpdateCaso={atualizarCaso}
+              onRemoveCaso={removerCaso}
+              onMoveCaso={moverCaso}
+            />
+          </div>
+        )}
+      </div>
 
       {/* Confirmação de exclusão de nó(s) — lista TODOS os selecionados */}
       <Modal
