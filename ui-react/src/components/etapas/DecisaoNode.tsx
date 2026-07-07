@@ -108,10 +108,17 @@ function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNode
         className={[
           'relative flex w-8 items-center justify-center rounded-xl bg-indigo-500 text-white shadow-sm transition-shadow',
           'group-hover:shadow-md',
-          selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas' : '',
+          selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas'
+            : (data as { pendente?: boolean }).pendente ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-canvas' : '',
         ].join(' ')}
         style={{ height: tileH }}
       >
+        {!!(data as { pendente?: boolean }).pendente && (
+          <span
+            className="absolute -left-1.5 -top-1.5 z-10 h-2.5 w-2.5 rounded-full border-2 border-panel bg-amber-400"
+            title="Campos pendentes — selecione o nó para ver"
+          />
+        )}
         <GitBranch size={16} strokeWidth={2} />
 
         {isSwitch ? (

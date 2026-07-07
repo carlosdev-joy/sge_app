@@ -1595,6 +1595,71 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     return () => document.removeEventListener('keydown', onKey)
   }, [selectedId, temModalAberto, closePanel])
 
+  // ── Pendências por nó (validação leve, AO VIVO) — padrão ADF: o grafo
+  // sinaliza o que falta configurar sem precisar abrir nó por nó. A régua é a
+  // MESMA dos guards do salvar() (nada novo — só antecipado visualmente).
+  const pendenciasPorNo = useMemo(() => {
+    const nRamos = new Map<string, number>()
+    for (const e of edges) {
+      if (isBranch(e)) nRamos.set(e.source, (nRamos.get(e.source) ?? 0) + 1)
+    }
+    const out = new Map<string, string[]>()
+    for (const n of nodes) {
+      const errs: string[] = []
+      if (n.type === 'etapa') {
+        const d = n.data as Record<string, unknown>
+        errs.push(...jobTypeFieldsErrors({
+          job_type: d.type as JobFieldsType,
+          job_command: (d.command as string | null) ?? '',
+          ssh_conn_id: (d.ssh_conn_id as string | null) ?? '',
+          verbose_log: !!d.verbose_log,
+          mssql_conn_id: (d.mssql_conn_id as string | null) ?? '',
+          mssql_database: (d.mssql_database as string | null) ?? '',
+          params: (d.params as JobParam[] | undefined) ?? [],
+        }))
+      } else if (n.type === 'decisao') {
+        if (!nRamos.get(n.id)) errs.push('nenhum ramo ligado (arraste das saídas)')
+        const c = (n.data as DecisaoNodeData).condition
+        if (c) {
+          if (Array.isArray(c.casos)) {
+            if (c.casos.some(cs => !cs.nome.trim() || !(cs.valor ?? '').toString().trim())) {
+              errs.push('caso sem nome ou sem valor')
+            }
+          } else if (!(c.valor ?? '').toString().trim()) {
+            errs.push('valor da condição vazio')
+          }
+          if (c.tipo === 'contagem' && !(c.tabela || '').trim()) errs.push('tabela da contagem vazia')
+          if (c.tipo === 'query' && !(c.sql || '').trim()) errs.push('SQL da condição vazio')
+          if (c.tipo === 'valor_sql' && !(c.source_job || '').trim()) errs.push('nó SQL de origem não definido')
+          if (c.tipo === 'linhas_job' && !(c.job_name || '').trim()) errs.push('job de origem não definido')
+        }
+      } else if (n.type === 'notificacao') {
+        if ((n.data as NotificacaoNodeData).notify?.grupo_id == null) errs.push('sem canal (grupo de mensagem)')
+      } else if (n.type === 'sql') {
+        const s = (n.data as SqlNodeData).sql
+        if (!(s?.sql || '').trim()) errs.push('SELECT vazio')
+        if (!(s?.mssql_conn_id || '').trim()) errs.push('sem conexão MSSQL')
+      }
+      if (errs.length) out.set(n.id, errs)
+    }
+    return out
+  }, [nodes, edges])
+
+  // Espelha a pendência no data do nó (o canvas desenha anel/ponto âmbar).
+  // No-op quando nada mudou (retorna o MESMO array — não re-renderiza em loop).
+  useEffect(() => {
+    setNodes(nds => {
+      let mudou = false
+      const out = nds.map(n => {
+        const tem = pendenciasPorNo.has(n.id)
+        if (tem === !!(n.data as { pendente?: boolean }).pendente) return n
+        mudou = true
+        return { ...n, data: { ...n.data, pendente: tem } }
+      })
+      return mudou ? out : nds
+    })
+  }, [pendenciasPorNo, setNodes])
+
   // Ramos da decisão SELECIONADA (derivados das arestas de ramo) — read-only no
   // painel. Chave = nome da saída: 'sim'/'nao' (binária), 'senao' ou nome do caso.
   const selRamos = useMemo(() => {
@@ -1757,6 +1822,17 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
                   somente leitura
                 </span>
               )}
+              {(() => {
+                const pend = pendenciasPorNo.get(selNode.id)
+                return pend?.length ? (
+                  <span
+                    title={pend.join('\n')}
+                    className="shrink-0 cursor-help rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                  >
+                    {pend.length} pendência{pend.length > 1 ? 's' : ''}
+                  </span>
+                ) : null
+              })()}
               <div className="ml-auto flex shrink-0 items-center gap-0.5 text-dim">
                 {dockEstado !== 'max' ? (
                   <button
