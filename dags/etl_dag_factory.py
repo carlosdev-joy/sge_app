@@ -220,13 +220,42 @@ def _task_block(job, project, pipeline, branch_reachable=False):
             f')',
         ])
     elif jtype == "python":
-        mod = jcmd or name
-        main = "\n".join([
-            f't_job_{vname} = PythonModuleOperator(',
-            f'    task_id={name!r},',
-            f'    module={mod!r},',
-            f')',
-        ])
+        pyc = job.get("_python_cfg")
+        if pyc:
+            # Nó Python v2 (modos arquivo/código): roda via SSH no servidor do
+            # ssh_conn_id do job. Literais via repr; quoting de shell é feito
+            # em RUNTIME pelo operador (shlex.quote).
+            ssh = job.get("ssh_conn_id") or None
+            ssh_val = f'"{ssh}"' if ssh else 'SSH_CONN_ID'
+            linhas = [
+                f't_job_{vname} = PythonScriptOperator(',
+                f'    task_id={name!r},',
+                f'    ssh_conn_id={ssh_val},',
+                f'    modo={str(pyc.get("modo"))!r},',
+            ]
+            if pyc.get("modo") == "arquivo":
+                linhas.append(f'    script_path={str(pyc.get("script_path") or "")!r},')
+            else:
+                linhas.append(f'    destino_dir={str(pyc.get("destino_dir") or "")!r},')
+                linhas.append(f'    arquivo={str(pyc.get("arquivo") or "")!r},')
+                linhas.append(f'    codigo={str(pyc.get("codigo") or "")!r},')
+            interp = str(pyc.get("interpretador") or "").strip()
+            if interp and interp != "python3":
+                linhas.append(f'    interpretador={interp!r},')
+            linhas += [
+                f'    cmd_timeout=None,',
+                f'    do_xcom_push=True,',
+                f')',
+            ]
+            main = "\n".join(linhas)
+        else:
+            mod = jcmd or name
+            main = "\n".join([
+                f't_job_{vname} = PythonModuleOperator(',
+                f'    task_id={name!r},',
+                f'    module={mod!r},',
+                f')',
+            ])
     elif jtype == "storedproc":
         proc_raw = jcmd or name
         proc = proc_raw if _PROC_NAME_RE.match(proc_raw) else None
@@ -519,7 +548,6 @@ def _generate_dag_source(pipeline, jobs):
     ds_needed   = "datastage"  in job_types
     sh_needed   = "shell"      in job_types
     sp_needed   = "storedproc" in job_types
-    py_needed   = "python"     in job_types
     # 'sql' agora é nó ESPECIAL (roda SELECT + publica XCom via callable gerado,
     # que usa MsSqlHook direto) — não usa o SqlOperator de utils.job_operators.
     http_needed = "http"       in job_types
@@ -532,6 +560,24 @@ def _generate_dag_source(pipeline, jobs):
     # decisão.
     import json as _json
     _job_names = {j["job_name"] for j in sorted_jobs}
+
+    # ── Nó Python v2 (migration 059) — parse do python_json ────────────────
+    # modo 'arquivo'/'codigo' roda via SSH (PythonScriptOperator); ausente ou
+    # inválido = modo legado 'modulo' (PythonModuleOperator no worker) — jobs
+    # antigos geram código BYTE-IDÊNTICO.
+    for _j in sorted_jobs:
+        if _TYPE_ALIAS.get(_j["job_type"].lower(), _j["job_type"].lower()) == "python":
+            _raw_py = _j.get("python_json")
+            try:
+                _cfg_py = _json.loads(_raw_py) if _raw_py else None
+            except (ValueError, TypeError):
+                _cfg_py = None
+            _j["_python_cfg"] = (_cfg_py if isinstance(_cfg_py, dict)
+                                 and _cfg_py.get("modo") in ("arquivo", "codigo") else None)
+    pyscript_needed = any(j.get("_python_cfg") for j in sorted_jobs)
+    pymodulo_needed = any(
+        _TYPE_ALIAS.get(j["job_type"].lower(), j["job_type"].lower()) == "python"
+        and not j.get("_python_cfg") for j in sorted_jobs)
 
     def _deps_of(j):
         raw = (j.get("depends_on_jobs") or "")
@@ -616,7 +662,8 @@ def _generate_dag_source(pipeline, jobs):
     _ops = []
     if sh_needed:   _ops.append("ShellOperator")
     if sp_needed:   _ops.append("StoredProcOperator")
-    if py_needed:   _ops.append("PythonModuleOperator")
+    if pymodulo_needed: _ops.append("PythonModuleOperator")
+    if pyscript_needed: _ops.append("PythonScriptOperator")
     if http_needed: _ops.append("HttpCallOperator")
     if _ops:
         import_lines.append("from utils.job_operators import " + ", ".join(_ops))
@@ -1686,6 +1733,21 @@ def gerar_dags(**context):
                 j["sql_json"] = _sqlmap.get((j["pipeline_name"], j["job_name"]))
     except Exception as _sqe:
         print(f"[FACTORY] sql_json supplement ignorado: {_sqe}")
+
+    # Supplement: nó Python v2 (degrada se a coluna não existir — migration 059)
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='dbo' "
+            "AND TABLE_NAME='etl_pipeline_job' AND COLUMN_NAME='python_json'")
+        if cursor.fetchone()[0]:
+            cursor.execute(
+                "SELECT pipeline_name, job_name, python_json FROM dbo.etl_pipeline_job "
+                "WHERE python_json IS NOT NULL")
+            _pymap = {(r[0], r[1]): r[2] for r in cursor.fetchall()}
+            for j in jobs_all:
+                j["python_json"] = _pymap.get((j["pipeline_name"], j["job_name"]))
+    except Exception as _pye:
+        print(f"[FACTORY] python_json supplement ignorado: {_pye}")
 
     # Supplement: banco-alvo por job storedproc (degrada se a coluna não existir — migration 039)
     try:

@@ -173,6 +173,71 @@ def _normalize_sql_node(cfg: dict) -> dict:
     }
 
 
+# ── Nó Python v2 (migration 059) ────────────────────────────────────────────
+# python_json: {"modo": "arquivo"|"codigo", ...}. NULL = modo legado 'modulo'
+# (job_command importado no worker). Modos novos rodam VIA SSH no servidor do
+# ssh_conn_id do job — caminhos com régua estreita (absolutos, sem espaço nem
+# aspas): viram argumento de comando no servidor (o runtime ainda faz
+# shlex.quote, mas a régua evita sustos).
+_PY_PATH_RE = re.compile(r"^/[^\s'\"]+\.py$")
+_PY_DIR_RE = re.compile(r"^/[^\s'\"]+$")
+_PY_ARQ_RE = re.compile(r"^[A-Za-z0-9._\-]+\.py$")
+_PY_INTERP_RE = re.compile(r"^[A-Za-z0-9._/\-]+$")
+
+
+def _validate_python_node(cfg, ssh_conn_id) -> list[str]:
+    """Valida a config (python_json) do nó Python v2. None = legado (ok).
+    Retorna lista de erros (vazia = ok). Modos novos exigem o Servidor SSH do
+    próprio job (é nele que o script roda)."""
+    if cfg is None:
+        return []
+    if not isinstance(cfg, dict):
+        return ["configuração do nó Python (python_json) inválida"]
+    errs: list[str] = []
+    modo = str(cfg.get("modo") or "").strip().lower()
+    if modo not in ("arquivo", "codigo"):
+        return ["modo do nó Python inválido (use 'arquivo' ou 'codigo')"]
+    if not (ssh_conn_id or "").strip():
+        errs.append("Servidor SSH é obrigatório para o nó Python em modo "
+                    + ("'script no servidor'" if modo == "arquivo" else "'código embutido'"))
+    if modo == "arquivo":
+        sp = str(cfg.get("script_path") or "").strip()
+        if not _PY_PATH_RE.match(sp):
+            errs.append("caminho do script inválido — absoluto, terminando em .py, "
+                        "sem espaço/aspas (ex.: /opt/scripts/carga.py)")
+    else:
+        dd = str(cfg.get("destino_dir") or "").strip()
+        if not _PY_DIR_RE.match(dd):
+            errs.append("diretório de destino inválido — absoluto, sem espaço/aspas "
+                        "(ex.: /opt/scripts)")
+        arq = str(cfg.get("arquivo") or "").strip()
+        if not _PY_ARQ_RE.match(arq):
+            errs.append("nome do arquivo inválido — letras/números/._- terminando em .py")
+        if not str(cfg.get("codigo") or "").strip():
+            errs.append("código Python vazio — cole o script no painel")
+    interp = str(cfg.get("interpretador") or "").strip()
+    if interp and not _PY_INTERP_RE.match(interp):
+        errs.append("interpretador inválido (ex.: python3, /usr/bin/python3.11)")
+    return errs
+
+
+def _normalize_python_node(cfg: dict) -> dict:
+    """Normaliza python_json p/ persistência — só as chaves do modo escolhido
+    (trocar de modo não arrasta lixo do outro; a UI segrega os drafts)."""
+    modo = str(cfg.get("modo") or "").strip().lower()
+    out: dict = {"modo": modo}
+    interp = str(cfg.get("interpretador") or "").strip()
+    if interp:
+        out["interpretador"] = interp
+    if modo == "arquivo":
+        out["script_path"] = str(cfg.get("script_path") or "").strip()
+    else:
+        out["destino_dir"] = (str(cfg.get("destino_dir") or "").strip().rstrip("/") or "/")
+        out["arquivo"] = str(cfg.get("arquivo") or "").strip()
+        out["codigo"] = cfg.get("codigo") if isinstance(cfg.get("codigo"), str) else ""
+    return out
+
+
 def _validate_condition(cond, known_jobs, self_name, mssql_conn_ids) -> list[str]:
     """Valida a condição de um nó de decisão. Retorna lista de erros (vazia = ok).
 
@@ -1501,6 +1566,11 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
             "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
             "AND COLUMN_NAME='sql_json'")
         _has_sql_col = bool(cur.fetchone()[0])
+        cur.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
+            "AND COLUMN_NAME='python_json'")
+        _has_python_col = bool(cur.fetchone()[0])
 
         # Jobs conhecidos do pipeline (request + já existentes) — usado para
         # validar os ramos da decisão e detectar ciclos incluindo as arestas
@@ -1523,6 +1593,7 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
             cond_json_str = None     # preenchido só p/ jobs de decisão (persiste depois)
             notify_json_str = None   # preenchido só p/ jobs de notificação (persiste depois)
             sql_json_str = None      # preenchido só p/ nós SQL (persiste depois)
+            python_json_str = None   # preenchido só p/ python v2 (persiste depois)
             j_name      = (job.get("job_name") or "").strip()
             j_order     = job.get("execution_order")
             j_type      = (job.get("job_type") or "datastage").lower().strip()
@@ -1609,6 +1680,21 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                     erros.extend(f"Item {idx} ({j_name}): {e}" for e in sql_errs); continue
                 sql_json_str = json.dumps(_normalize_sql_node(raw_sql), ensure_ascii=False)
 
+            # Nó Python v2 — valida a config (python_json); None = legado 'modulo'.
+            if j_type == "python":
+                raw_py = job.get("python")
+                if not isinstance(raw_py, dict):
+                    rp = job.get("python_json")
+                    try:
+                        raw_py = json.loads(rp) if rp else None
+                    except (ValueError, TypeError):
+                        raw_py = None
+                py_errs = _validate_python_node(raw_py, job.get("ssh_conn_id"))
+                if py_errs:
+                    erros.extend(f"Item {idx} ({j_name}): {e}" for e in py_errs); continue
+                if raw_py is not None:
+                    python_json_str = json.dumps(_normalize_python_node(raw_py), ensure_ascii=False)
+
             params_validos = []
             if j_type == "storedproc" and j_params:
                 nomes_vistos = set()
@@ -1687,6 +1773,12 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                         "UPDATE dbo.etl_pipeline_job SET sql_json=? "
                         "WHERE pipeline_name=? AND job_name=?",
                         (sql_json_str, pipeline_name, j_name))
+                # Nó Python v2 (opt-in) — NULL = legado 'modulo' (e limpa ao voltar).
+                if _has_python_col:
+                    cur.execute(
+                        "UPDATE dbo.etl_pipeline_job SET python_json=? "
+                        "WHERE pipeline_name=? AND job_name=?",
+                        (python_json_str, pipeline_name, j_name))
             except Exception as e:
                 erros.append(f"Item {idx} ({j_name}): erro ao gravar job — {e}"); continue
 
@@ -1860,6 +1952,19 @@ def get_pipeline_job(
                     sql_node = None
         except Exception:
             sql_node = None  # coluna pode não existir (migration 051)
+        python_node = None
+        try:
+            cur.execute(
+                "SELECT python_json FROM dbo.etl_pipeline_job "
+                "WHERE pipeline_name=? AND job_name=?", (pipeline_name, job_name))
+            pr = cur.fetchone()
+            if pr and pr[0]:
+                try:
+                    python_node = json.loads(pr[0])
+                except (ValueError, TypeError):
+                    python_node = None
+        except Exception:
+            python_node = None  # coluna pode não existir (migration 059)
         cur.close(); conn.close()
         return {
             "pipeline_name": row[0], "job_name": row[1], "execution_order": row[2],
@@ -1871,6 +1976,7 @@ def get_pipeline_job(
             "condition": condition,
             "notify": notify,
             "sql_node": sql_node,
+            "python": python_node,
         }
     except HTTPException:
         raise
@@ -1952,6 +2058,7 @@ def get_pipeline_fluxo(
         sel_cond = "j.condition_json" if "condition_json" in cols else "NULL"
         sel_notify = "j.notify_json" if "notify_json" in cols else "NULL"
         sel_sql = "j.sql_json" if "sql_json" in cols else "NULL"
+        sel_python = "j.python_json" if "python_json" in cols else "NULL"
         sel_lx = "j.layout_x" if "layout_x" in cols else "NULL"
         sel_ly = "j.layout_y" if "layout_y" in cols else "NULL"
         # Campos por tipo (round-trip do painel inline): ssh / verbose / mssql_*.
@@ -1963,7 +2070,8 @@ def get_pipeline_fluxo(
             cur.execute(
                 "SELECT j.job_name, ISNULL(j.job_type,'datastage'), j.job_command, "
                 f"CAST(j.execution_order AS INT), {sel_deps}, {sel_cond}, {sel_lx}, {sel_ly}, "
-                f"{sel_ssh}, {sel_verb}, {sel_mconn}, {sel_mdb}, {sel_notify}, {sel_sql} "
+                f"{sel_ssh}, {sel_verb}, {sel_mconn}, {sel_mdb}, {sel_notify}, {sel_sql}, "
+                f"{sel_python} "
                 "FROM dbo.etl_pipeline_job j WHERE j.pipeline_name=? "
                 "ORDER BY j.execution_order, j.job_name",
                 (pipeline_name,))
@@ -2010,6 +2118,12 @@ def get_pipeline_fluxo(
                     sql_node = json.loads(r[13])
                 except (ValueError, TypeError):
                     sql_node = None
+            python_node = None
+            if r[14]:
+                try:
+                    python_node = json.loads(r[14])
+                except (ValueError, TypeError):
+                    python_node = None
             lx = float(r[6]) if r[6] is not None else None
             ly = float(r[7]) if r[7] is not None else None
             nodes.append({
@@ -2021,6 +2135,7 @@ def get_pipeline_fluxo(
                 "condition": condition,
                 "notify": notify,
                 "sql_node": sql_node,
+                "python": python_node,
                 "layout_x": lx,
                 "layout_y": ly,
                 "ssh_conn_id": r[8] or None,
@@ -2106,6 +2221,7 @@ async def save_pipeline_fluxo(
         has_cond = "condition_json" in _cols
         has_notify = "notify_json" in _cols
         has_sql = "sql_json" in _cols
+        has_python = "python_json" in _cols
         has_layout = "layout_x" in _cols and "layout_y" in _cols
         has_db = "mssql_database" in _cols
         has_ssh = "ssh_conn_id" in _cols
@@ -2224,6 +2340,18 @@ async def save_pipeline_fluxo(
                     errors.extend(f"{j_name}: {e}" for e in sql_errs); continue
                 sql_json_str = json.dumps(_normalize_sql_node(raw_sql), ensure_ascii=False)
 
+            # Nó Python v2 — valida a config (python_json); None = legado 'modulo'.
+            python_json_str = None
+            if j_type == "python":
+                raw_py = node.get("python")
+                if raw_py is not None and not isinstance(raw_py, dict):
+                    errors.append(f"{j_name}: configuração do nó Python inválida"); continue
+                py_errs = _validate_python_node(raw_py, j_ssh)
+                if py_errs:
+                    errors.extend(f"{j_name}: {e}" for e in py_errs); continue
+                if raw_py is not None:
+                    python_json_str = json.dumps(_normalize_python_node(raw_py), ensure_ascii=False)
+
             lx, ly = node.get("layout_x"), node.get("layout_y")
             try:
                 lx = float(lx) if lx is not None else None
@@ -2237,7 +2365,7 @@ async def save_pipeline_fluxo(
             prepared.append((j_name, is_new, j_order, j_type, j_cmd, j_ssh,
                              j_verbose, j_mssql, j_mdb, params_present, j_params,
                              dep_csv, cond_json_str, notify_json_str, sql_json_str,
-                             lx, ly))
+                             python_json_str, lx, ly))
 
         if errors:
             cur.close(); conn.close()
@@ -2269,7 +2397,7 @@ async def save_pipeline_fluxo(
         #    condição (só decisão)/posição em TODOS (por-coluna).
         for (j_name, is_new, j_order, j_type, j_cmd, j_ssh, j_verbose,
              j_mssql, j_mdb, params_present, j_params, dep_csv, cond_json_str,
-             notify_json_str, sql_json_str, lx, ly) in prepared:
+             notify_json_str, sql_json_str, python_json_str, lx, ly) in prepared:
             if is_new:
                 cur.execute(
                     "EXEC dbo.sp_etl_pipeline_job_upsert "
@@ -2335,6 +2463,13 @@ async def save_pipeline_fluxo(
                 cur.execute("UPDATE dbo.etl_pipeline_job SET sql_json=? "
                             "WHERE pipeline_name=? AND job_name=?",
                             (sql_json_str, pipeline_name, j_name))
+            # Grava python_json SÓ em job python — só quando a chave 'python'
+            # veio no payload (frontend antigo não zera a config nova); enviar
+            # python=null volta explicitamente ao modo legado 'modulo'.
+            if has_python and j_type == "python" and "python" in raw_by_name.get(j_name, {}):
+                cur.execute("UPDATE dbo.etl_pipeline_job SET python_json=? "
+                            "WHERE pipeline_name=? AND job_name=?",
+                            (python_json_str, pipeline_name, j_name))
             if has_layout:
                 cur.execute("UPDATE dbo.etl_pipeline_job SET layout_x=?, layout_y=? "
                             "WHERE pipeline_name=? AND job_name=?",
