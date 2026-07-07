@@ -167,6 +167,14 @@ class HttpCallOperator(BaseOperator):
 
 
 class ShellOperator(SSHOperator):
-    """Job shell do ORQUESTRA — ponto central para evoluir o comportamento dos
-    jobs shell (hoje, comportamento idêntico ao SSHOperator)."""
-    pass
+    """Job shell do ORQUESTRA — SSH no servidor do ``ssh_conn_id`` e executa o
+    comando lá.
+
+    ``template_ext`` VAZIO de propósito: o SSHOperator herda ``('.sh',)`` e o
+    Jinja do Airflow trata QUALQUER campo templated terminando em .sh como
+    CAMINHO de arquivo de template a carregar do disco — um comando legítimo
+    como ``cd /x && ./script.sh`` morria com TemplateNotFound no render
+    (incidente SHELL_LIMPA_FS_DATASTAGE, 2026-07-07). O comando do usuário é
+    sempre string inline; macros Jinja ``{{ ds }}`` continuam funcionando
+    (``template_fields`` fica intacto)."""
+    template_ext = ()
