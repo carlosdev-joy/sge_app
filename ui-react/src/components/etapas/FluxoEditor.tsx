@@ -44,7 +44,8 @@ import { TYPE_META, TYPE_ORDER, CREATABLE_TYPES, type EtapaType } from './types'
 import { COND_OPERADORES, defaultCondition, toNodeCondition, conditionLabel } from './condition'
 import { useColorMode } from './useColorMode'
 import {
-  JobTypeFields, type JobTypeFieldsValue, type JobFieldsType, type JobParam,
+  JobTypeFields, jobTypeFieldsErrors,
+  type JobTypeFieldsValue, type JobFieldsType, type JobParam,
 } from './JobTypeFields'
 
 const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode }
@@ -1346,6 +1347,31 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
         return
       }
 
+      // Guard: campos por tipo das ETAPAS (mesma régua do modal da Lista —
+      // jobTypeFieldsErrors) — falha ANTES do 422 e nomeia o nó com problema.
+      const etapaErros: string[] = []
+      for (const n of nodes) {
+        if (n.type !== 'etapa') continue
+        const d = n.data as Record<string, unknown>
+        const errs = jobTypeFieldsErrors({
+          job_type: d.type as JobFieldsType,
+          job_command: (d.command as string | null) ?? '',
+          ssh_conn_id: (d.ssh_conn_id as string | null) ?? '',
+          verbose_log: !!d.verbose_log,
+          mssql_conn_id: (d.mssql_conn_id as string | null) ?? '',
+          mssql_database: (d.mssql_database as string | null) ?? '',
+          params: (d.params as JobParam[] | undefined) ?? [],
+        })
+        etapaErros.push(...errs.map(e => `${n.id}: ${e}`))
+      }
+      if (etapaErros.length) {
+        const shown = etapaErros.slice(0, 4).join(' · ')
+        const extra = etapaErros.length > 4 ? ` (+${etapaErros.length - 4})` : ''
+        toast.error(`Corrija antes de salvar — ${shown}${extra}`)
+        setSaving(false)
+        return
+      }
+
       const payloadNodes = nodes.map(n => {
         const d = n.data as Record<string, unknown>
         const isDecisao = n.type === 'decisao'
@@ -1566,6 +1592,24 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     setSelectedId(null)
   }, [setNodes])
 
+  // Esc fecha o painel (padrão unânime do benchmark: DataStage/n8n/NiFi). Num
+  // input, o 1º Esc só tira o foco; com um modal aberto, quem trata é o Modal.
+  const temModalAberto = !!(delNodeIds?.length) || !!renamePedido || showPublish
+  useEffect(() => {
+    if (!selectedId || temModalAberto) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      const t = e.target as HTMLElement | null
+      if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) {
+        (t as HTMLInputElement).blur()
+        return
+      }
+      closePanel()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [selectedId, temModalAberto, closePanel])
+
   // Ramos da decisão SELECIONADA (derivados das arestas de ramo) — read-only no
   // painel. Chave = nome da saída: 'sim'/'nao' (binária), 'senao' ou nome do caso.
   const selRamos = useMemo(() => {
@@ -1621,6 +1665,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
           onConnect={onConnect}
           onBeforeDelete={handleBeforeDelete}
           onNodeClick={onNodeClick}
+          onNodeDoubleClick={onNodeClick}
           onDrop={onDrop}
           onDragOver={onDragOver}
           colorMode={colorMode}
@@ -2052,6 +2097,10 @@ function PainelEtapa({ node, sshConns, mssqlConns, dbServer, dbDatabases, onRena
     onPatchData(node.id, out)
   }
 
+  // Validação AO VIVO (mesma régua do modal da Lista e do guard do salvar) —
+  // o usuário vê a pendência no painel em vez de descobrir num toast de 422.
+  const typeErrors = jobTypeFieldsErrors(typeValue)
+
   return (
     <div className="flex flex-1 flex-col gap-3 p-3">
       {/* Cabeçalho: chip do tipo */}
@@ -2095,6 +2144,13 @@ function PainelEtapa({ node, sshConns, mssqlConns, dbServer, dbDatabases, onRena
       {!isNew && <p className="-mt-1.5 text-[10px] text-dim/70">O tipo de um nó já salvo não é editável.</p>}
 
       <div className="border-t border-edge pt-2.5">
+        {typeErrors.length > 0 && (
+          <div className="mb-2 flex flex-col gap-0.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 dark:border-amber-800 dark:bg-amber-900/20">
+            {typeErrors.map(e => (
+              <p key={e} className="text-[11px] leading-snug text-amber-800 dark:text-amber-300">{e}</p>
+            ))}
+          </div>
+        )}
         {/* Campos por TIPO — fonte única (vale na Lista e no Fluxo), modo compacto */}
         <JobTypeFields
           value={typeValue}
