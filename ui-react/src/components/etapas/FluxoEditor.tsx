@@ -47,6 +47,7 @@ import {
   defaultNotify, toNotifyConfig, notifyLabel, defaultSql, toSqlConfig, sqlLabel,
 } from './fluxoTypes'
 import { PropriedadesPanel } from './paineis/PropriedadesPanel'
+import { PainelPipeline, type ContagemNos } from './paineis/PainelPipeline'
 
 const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode }
 
@@ -651,6 +652,19 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     () => nodes.filter(n => n.type === 'sql').map(n => n.id),
     [nodes],
   )
+
+  // Contagem de nós por tipo (grafo VIVO, inclui não salvos) — exibida no
+  // painel do PIPELINE quando nada está selecionado no dock.
+  const contagemNos = useMemo<ContagemNos>(() => {
+    const c: ContagemNos = { etapas: 0, decisoes: 0, sql: 0, notificacoes: 0 }
+    for (const n of nodes) {
+      if (n.type === 'decisao') c.decisoes += 1
+      else if (n.type === 'sql') c.sql += 1
+      else if (n.type === 'notificacao') c.notificacoes += 1
+      else c.etapas += 1
+    }
+    return c
+  }, [nodes])
 
   // ── Seleção (edita o nó selecionado AO VIVO no painel à direita) ───────────
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -1743,6 +1757,13 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
 
   const selNode = selectedId ? nodes.find(n => n.id === selectedId) ?? null : null
 
+  // Sem seleção o dock também respeita os estados (padrão Informatica — "o
+  // painel nunca é inútil"): colapsado mantém a barra fina; senão mostra as
+  // propriedades do PIPELINE. 'max' sem seleção rebaixa para 'aberto' (o modo
+  // focado é para editar um nó; o resumo do pipeline não pede a tela inteira).
+  const dockColapsado = dockEstado === 'colapsado'
+  const dockRedimensionavel = selNode ? dockEstado === 'aberto' : !dockColapsado
+
   return (
     <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-edge bg-canvas">
       {/* Linha principal: paleta FIXA à esquerda (recolhível) + canvas.
@@ -1827,17 +1848,18 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
 
       {/* Dock inferior de propriedades (fase 3) — 3 estados: colapsado (36px
           com o resumo do nó), aberto (altura arrastável) e max (modo focado).
-          Sem seleção vira uma barra-guia fina — nunca some (padrão do
-          benchmark Informatica/ADF). */}
+          Sem seleção o dock NÃO some nem vira só uma dica: mostra as
+          propriedades do pipeline (padrão do benchmark Informatica/ADF —
+          "o painel nunca é inútil"), colapsável na mesma barra fina. */}
       <div
         className={[
           'relative flex shrink-0 flex-col border-t border-edge bg-panel',
           selNode && dockEstado === 'max' ? 'h-[70%]' : '',
-          selNode && dockEstado === 'aberto' ? 'max-h-[60%]' : '',
+          dockRedimensionavel ? 'max-h-[60%]' : '',
         ].join(' ')}
-        style={selNode && dockEstado === 'aberto' ? { height: dockAltura } : undefined}
+        style={dockRedimensionavel ? { height: dockAltura } : undefined}
       >
-        {selNode && dockEstado === 'aberto' && (
+        {dockRedimensionavel && (
           <div
             onPointerDown={iniciarDragDock}
             title="Arraste para redimensionar"
@@ -1965,18 +1987,49 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
             </>
           ) : (
             <>
-              <MousePointerClick size={13} className="shrink-0 text-dim/70" />
-              <span className="truncate text-[11px] text-dim">
-                Selecione um nó no canvas para editar as propriedades — duplo-clique abre maximizado.
-              </span>
-              <span className="ml-auto hidden shrink-0 font-mono text-[11px] text-dim/70 md:inline">
-                {pipeline}
-              </span>
+              {/* Sem seleção: o dock apresenta o PIPELINE (mesmos controles de
+                  colapsar/expandir; sem X — o painel do pipeline não "fecha"). */}
+              <GitBranch size={13} className="shrink-0 text-[#1A5FA8]" />
+              <span className="truncate font-mono text-xs font-semibold text-ink">{pipeline}</span>
+              <span className="shrink-0 text-[11px] text-dim">· Pipeline</span>
+              {dockColapsado && (
+                <span className="hidden min-w-0 items-center gap-1.5 truncate text-[11px] text-dim/80 sm:flex">
+                  <MousePointerClick size={12} className="shrink-0 text-dim/60" />
+                  <span className="truncate">
+                    Selecione um nó para editar — duplo-clique abre maximizado.
+                  </span>
+                </span>
+              )}
+              <div className="ml-auto flex shrink-0 items-center gap-0.5 text-dim">
+                {dockColapsado ? (
+                  <button
+                    onClick={() => setDockEstado('aberto')}
+                    title="Expandir propriedades do pipeline"
+                    className="rounded p-1 hover:bg-edge/40 hover:text-ink"
+                  >
+                    <ChevronUp size={14} />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setDockEstado('colapsado')}
+                    title="Recolher para a barra"
+                    className="rounded p-1 hover:bg-edge/40 hover:text-ink"
+                  >
+                    <ChevronDown size={14} />
+                  </button>
+                )}
+              </div>
             </>
           )}
         </div>
 
-        {/* Conteúdo do painel (só quando aberto/max) */}
+        {/* Conteúdo do painel (só quando aberto/max). Sem seleção mostra as
+            propriedades do PIPELINE (read-only) — o dock nunca fica inútil. */}
+        {!selNode && !dockColapsado && (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <PainelPipeline pipeline={pipeline} contagem={contagemNos} readOnly={readOnly} />
+          </div>
+        )}
         {selNode && dockEstado !== 'colapsado' && (
           <div className="min-h-0 flex-1 overflow-y-auto">
             <PropriedadesPanel
