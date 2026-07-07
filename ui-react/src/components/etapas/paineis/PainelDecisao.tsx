@@ -1,4 +1,8 @@
 // ── Painel de uma DECISÃO ────────────────────────────────────────────────────
+// Fase 4 do redesign: layout LARGO para o dock inferior — 2 colunas no lg+
+// (esquerda = fonte da condição; direita = ramos). No modo switch os casos
+// viram uma TABELA (uma linha por caso, senão no rodapé), padrão dos routers
+// de Informatica/DataStage. Abaixo de lg colapsa para 1 coluna.
 import { useEffect, useState } from 'react'
 import type { Node } from '@xyflow/react'
 import { GitBranch, Play, Trash2, Plus, ChevronUp, ChevronDown, X } from 'lucide-react'
@@ -92,34 +96,47 @@ export function PainelDecisao({
     }
   }
 
+  // Pílula de um alvo de ramo (job ligado por aresta).
+  const pill = (m: string) => (
+    <span key={m} className="rounded-full border border-edge bg-panel px-1.5 py-0.5 text-[11px] font-medium text-ink">{m}</span>
+  )
+  const pillSlate = (m: string) => (
+    <span key={m} className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-700 dark:text-slate-300">{m}</span>
+  )
+
   return (
-    <div className="flex flex-1 flex-col gap-3 p-3">
-      {/* Cabeçalho */}
-      <div className="flex items-center gap-2">
+    <div className="flex flex-1 flex-col">
+      {/* Cabeçalho do painel — o Excluir mora no topo direito (mesmo padrão
+          nos 4 painéis; o mt-auto da era do aside não funciona no dock largo). */}
+      <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-indigo-500 text-white">
           <GitBranch size={15} strokeWidth={2.2} />
         </span>
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
-          <p className="text-[10px] text-dim">Decisão (roteador)</p>
+          <p className="text-[11px] text-dim">Decisão (roteador)</p>
         </div>
+        <Button variant="danger" size="sm" className="ml-auto shrink-0" onClick={() => onDelete(node.id)}>
+          <Trash2 size={13} /> Excluir decisão
+        </Button>
       </div>
 
-      <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: DECISAO_VOLUME" onRename={onRename} />
+      {/* 2 colunas no lg+: esquerda = fonte da condição; direita = ramos. */}
+      <div className="grid gap-4 p-4 lg:grid-cols-[minmax(320px,420px)_1fr]">
+        {/* ── Coluna esquerda: fonte da condição ─────────────────────────── */}
+        <div className="flex min-w-0 flex-col gap-2">
+          <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: DECISAO_VOLUME" onRename={onRename} />
 
-      {/* Editor de condição compacto (mesma lógica do DecisaoForm) */}
-      <div className="border-t border-edge pt-2.5">
-        <div className="mb-2 flex items-center gap-1.5">
-          <GitBranch size={12} className="text-indigo-600 dark:text-indigo-300" />
-          <span className="text-xs font-semibold text-ink">Expressão da condição</span>
-        </div>
+          <div className="mt-1 flex items-center gap-1.5">
+            <GitBranch size={12} className="text-indigo-600 dark:text-indigo-300" />
+            <span className="text-xs font-semibold text-ink">Expressão da condição</span>
+          </div>
 
-        <div className="flex flex-col gap-2">
           {/* Modo dos ramos: binário (sim/não) ou switch (N casos). A conversão
               remapeia as arestas (sim→caso_1, não→senão e vice-versa). */}
           <div className="flex items-center justify-between rounded-lg border border-edge bg-canvas px-2.5 py-1.5">
             <span className="text-[11px] font-medium text-ink">Ramos</span>
-            <div className="flex overflow-hidden rounded-md border border-edge text-[10px] font-semibold">
+            <div className="flex overflow-hidden rounded-md border border-edge text-[11px] font-semibold">
               <button
                 type="button"
                 className={!isSwitch ? 'bg-indigo-500 px-2 py-0.5 text-white' : 'bg-panel px-2 py-0.5 text-dim hover:text-ink'}
@@ -172,7 +189,7 @@ export function PainelDecisao({
                   )}
                 </Select>
                 {sqlNodeNames.length === 0 && (
-                  <p className="text-[10px] text-dim/70">Crie um nó SQL e ligue-o a esta decisão.</p>
+                  <p className="text-[11px] text-dim/70">Crie um nó SQL e ligue-o a esta decisão.</p>
                 )}
               </div>
 
@@ -197,62 +214,10 @@ export function PainelDecisao({
                     className="font-mono text-xs"
                   />
                   {c.comparacao === 'data' && (
-                    <p className="text-[10px] text-dim/70">Use <code>HOJE</code> ou <code>AAAA-MM-DD</code>.</p>
+                    <p className="text-[11px] text-dim/70">Use <code>HOJE</code> ou <code>AAAA-MM-DD</code>.</p>
                   )}
                 </div>
               )}
-
-              {/* Simular: roda o SQL de origem e avalia a condição AO VIVO; o ramo
-                  escolhido fica destacado (animado) no canvas por alguns segundos. */}
-              <div className="flex flex-col gap-2 border-t border-edge pt-2.5">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="self-start"
-                  onClick={simular}
-                  loading={simulando}
-                  disabled={!c.source_job || (isSwitch
-                    ? casos.length === 0 || casos.some(cs => !(cs.valor ?? '').toString().trim())
-                    : !(c.valor ?? '').toString().trim())}
-                >
-                  <Play size={13} /> Simular
-                </Button>
-                {simResult && (
-                  <div className="rounded-lg border border-edge bg-canvas p-2.5">
-                    <p className="text-[11px] text-dim">
-                      Valor obtido:{' '}
-                      <span className="font-mono text-ink">
-                        {simResult.valor_obtido == null ? <span className="text-dim/70">null</span> : simResult.valor_obtido}
-                      </span>
-                    </p>
-                    <div className="mt-1.5 flex items-center gap-1.5">
-                      <span className="text-[11px] text-dim">{isSwitch ? 'caso:' : 'ramo:'}</span>
-                      {isSwitch ? (
-                        simResult.caso && simResult.caso !== 'senao' ? (
-                          <span
-                            className="rounded-full border px-2 py-0.5 text-[10px] font-semibold"
-                            style={{ borderColor: casoCor(Math.max(0, casos.findIndex(cs => cs.nome === simResult.caso))), color: casoCor(Math.max(0, casos.findIndex(cs => cs.nome === simResult.caso))) }}
-                          >
-                            {simResult.caso}
-                          </span>
-                        ) : (
-                          <span className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-700 dark:text-slate-300">
-                            SENÃO
-                          </span>
-                        )
-                      ) : simResult.ramo === 'sim' ? (
-                        <span className="rounded-full border border-green-300 bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:border-green-800 dark:bg-green-900/40 dark:text-green-300">
-                          SIM
-                        </span>
-                      ) : (
-                        <span className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-700 dark:text-slate-300">
-                          NÃO
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
             </>
           ) : (
           <>
@@ -286,7 +251,7 @@ export function PainelDecisao({
                   )}
                 </Select>
                 {jobsDisponiveis.length === 0 && (
-                  <p className="text-[10px] text-dim/70">Crie ao menos uma etapa para escolher o job.</p>
+                  <p className="text-[11px] text-dim/70">Crie ao menos uma etapa para escolher o job.</p>
                 )}
               </div>
               <div className="flex flex-col gap-1">
@@ -297,7 +262,7 @@ export function PainelDecisao({
                   placeholder="ex: JB_CARGA_DETALHE"
                   className="font-mono text-xs"
                 />
-                <p className="text-[10px] text-dim/70">Vazio = usa o total do job.</p>
+                <p className="text-[11px] text-dim/70">Vazio = usa o total do job.</p>
               </div>
             </>
           ) : c.tipo === 'contagem' ? (
@@ -335,7 +300,7 @@ export function PainelDecisao({
                   placeholder="ex: BI_DW"
                   className="font-mono text-xs"
                 />
-                <p className="text-[10px] text-dim/70">
+                <p className="text-[11px] text-dim/70">
                   Vazio = banco default da conexão. Preencha se o SELECT usa nomes sem banco.
                 </p>
               </div>
@@ -357,72 +322,6 @@ export function PainelDecisao({
             </Select>
           )}
           </>
-          )}
-
-          {/* SWITCH: editor dos casos — a ORDEM é a prioridade de avaliação
-              (primeiro que casar vence); os ramos são ligados pelas arestas. */}
-          {isSwitch && (
-            <div className="flex flex-col gap-1.5 border-t border-edge pt-2.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-ink">Casos (avaliados em ordem)</span>
-                <button
-                  type="button"
-                  className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-semibold text-indigo-600 hover:bg-edge/40 dark:text-indigo-300"
-                  onClick={() => onAddCaso(node.id)}
-                >
-                  <Plus size={11} /> caso
-                </button>
-              </div>
-              {casos.map((cs, i) => (
-                <div key={i} className="flex flex-col gap-1 rounded-lg border border-edge bg-canvas p-1.5">
-                  <div className="grid grid-cols-[8px_1fr_52px_1fr] items-center gap-1.5">
-                    <span
-                      className="h-2 w-2 rounded-full"
-                      style={{ background: casoCor(i) }}
-                      title={`cor do handle/aresta do caso ${i + 1}`}
-                    />
-                    <CasoNomeInput
-                      nome={cs.nome}
-                      placeholder={`caso_${i + 1}`}
-                      onCommit={novo => onUpdateCaso(node.id, i, { nome: novo })}
-                    />
-                    <Select
-                      value={cs.operador}
-                      onChange={e => onUpdateCaso(node.id, i, { operador: e.target.value })}
-                      className="text-center text-[11px]"
-                    >
-                      {COND_OPERADORES.map(op => <option key={op} value={op}>{op}</option>)}
-                    </Select>
-                    <Input
-                      value={cs.valor}
-                      onChange={e => onUpdateCaso(node.id, i, { valor: e.target.value })}
-                      placeholder="valor"
-                      className="font-mono text-[11px]"
-                    />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex min-w-0 flex-wrap items-center gap-1">
-                      {ramosDe(cs.nome).length === 0
-                        ? <span className="text-[10px] text-dim/70">sem ramo — arraste do handle desta cor</span>
-                        : ramosDe(cs.nome).map(m => (
-                            <span key={m} className="rounded-full border border-edge bg-panel px-1.5 py-0.5 text-[10px] font-medium text-ink">{m}</span>
-                          ))}
-                    </div>
-                    <div className="flex shrink-0 items-center gap-0.5 text-dim">
-                      <button type="button" title="Subir (avalia antes)" className="rounded p-0.5 hover:bg-edge/40 hover:text-ink disabled:opacity-30" disabled={i === 0} onClick={() => onMoveCaso(node.id, i, -1)}>
-                        <ChevronUp size={12} />
-                      </button>
-                      <button type="button" title="Descer (avalia depois)" className="rounded p-0.5 hover:bg-edge/40 hover:text-ink disabled:opacity-30" disabled={i === casos.length - 1} onClick={() => onMoveCaso(node.id, i, 1)}>
-                        <ChevronDown size={12} />
-                      </button>
-                      <button type="button" title="Remover caso" className="rounded p-0.5 hover:bg-edge/40 hover:text-red-500" onClick={() => onRemoveCaso(node.id, i)}>
-                        <X size={12} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
           )}
 
           {/* Fail-loud: o que fazer se a AVALIAÇÃO da condição der erro. */}
@@ -449,87 +348,235 @@ export function PainelDecisao({
               </Select>
             )}
             {isSwitch && c.on_error === 'senao' && (
-              <p className="text-[10px] text-amber-700 dark:text-amber-400">
+              <p className="text-[11px] text-amber-700 dark:text-amber-400">
                 Erro na avaliação roteia o SENÃO em silêncio — o pipeline não acusa a falha.
               </p>
             )}
             {!isSwitch && c.on_error === 'ramo_falso' && (
-              <p className="text-[10px] text-amber-700 dark:text-amber-400">
+              <p className="text-[11px] text-amber-700 dark:text-amber-400">
                 Erro na avaliação roteia o ramo NÃO em silêncio — o pipeline não acusa a falha.
               </p>
             )}
             {!isSwitch && c.on_error !== 'ramo_falso' && c.on_error_legado && (
-              <p className="text-[10px] text-amber-700 dark:text-amber-400">
+              <p className="text-[11px] text-amber-700 dark:text-amber-400">
                 Nó legado: a DAG publicada ainda degrada em silêncio — o "falhar"
                 passa a valer após salvar o fluxo e republicar.
               </p>
             )}
           </div>
-        </div>
-      </div>
 
-      {/* Ramos atuais (derivados das arestas) — read-only */}
-      <div className="rounded-lg border border-edge bg-canvas p-2.5">
-        <p className="mb-2 text-[10px] leading-relaxed text-dim">
-          {isSwitch ? (
-            <>Os ramos são definidos arrastando os handles <b>coloridos</b> (um por caso,
-            à direita) e o <b>senão</b> (baixo) da decisão até as etapas, direto no canvas.</>
-          ) : (
-            <>Os ramos são definidos arrastando os handles <b>sim</b> (direita) e <b>não</b> (baixo)
-            da decisão até as etapas, direto no canvas.</>
-          )}
-        </p>
-        <div className="flex flex-col gap-2">
-          {isSwitch ? (
-            <div className="flex flex-col gap-1">
-              <span className="text-[10px] font-medium text-slate-600 dark:text-slate-300">Senão (nenhum caso casou) → rodar</span>
-              <div className="flex flex-wrap gap-1">
-                {ramosDe('senao').length === 0 && <span className="text-[10px] text-dim/70">nenhum (encerra o fluxo)</span>}
-                {ramosDe('senao').map(m => (
-                  <span key={m} className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-700 dark:text-slate-300">
-                    {m}
-                  </span>
-                ))}
-              </div>
+          {/* Simular: roda o SQL de origem e avalia a condição AO VIVO; o ramo
+              escolhido fica destacado (animado) no canvas por alguns segundos.
+              O resultado aparece AO LADO do botão (layout largo do dock). */}
+          {c.tipo === 'valor_sql' && (
+            <div className="flex flex-wrap items-center gap-2 border-t border-edge pt-2.5">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={simular}
+                loading={simulando}
+                disabled={!c.source_job || (isSwitch
+                  ? casos.length === 0 || casos.some(cs => !(cs.valor ?? '').toString().trim())
+                  : !(c.valor ?? '').toString().trim())}
+              >
+                <Play size={13} /> Simular
+              </Button>
+              {simResult && (
+                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-edge bg-canvas px-2.5 py-1.5">
+                  <p className="text-[11px] text-dim">
+                    Valor obtido:{' '}
+                    <span className="font-mono text-ink">
+                      {simResult.valor_obtido == null ? <span className="text-dim/70">null</span> : simResult.valor_obtido}
+                    </span>
+                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-dim">{isSwitch ? 'caso:' : 'ramo:'}</span>
+                    {isSwitch ? (
+                      simResult.caso && simResult.caso !== 'senao' ? (
+                        <span
+                          className="rounded-full border px-2 py-0.5 text-[11px] font-semibold"
+                          style={{ borderColor: casoCor(Math.max(0, casos.findIndex(cs => cs.nome === simResult.caso))), color: casoCor(Math.max(0, casos.findIndex(cs => cs.nome === simResult.caso))) }}
+                        >
+                          {simResult.caso}
+                        </span>
+                      ) : (
+                        <span className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-700 dark:text-slate-300">
+                          SENÃO
+                        </span>
+                      )
+                    ) : simResult.ramo === 'sim' ? (
+                      <span className="rounded-full border border-green-300 bg-green-100 px-2 py-0.5 text-[11px] font-semibold text-green-700 dark:border-green-800 dark:bg-green-900/40 dark:text-green-300">
+                        SIM
+                      </span>
+                    ) : (
+                      <span className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-700 dark:text-slate-300">
+                        NÃO
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
+          )}
+        </div>
+
+        {/* ── Coluna direita: ramos ───────────────────────────────────────── */}
+        <div className="flex min-w-0 flex-col gap-2 lg:border-l lg:border-edge lg:pl-4">
+          {isSwitch ? (
+            <>
+              {/* SWITCH: tabela dos casos — a ORDEM é a prioridade de avaliação
+                  (primeiro que casar vence); os ramos são ligados pelas arestas. */}
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-ink">Casos (avaliados em ordem)</span>
+                <button
+                  type="button"
+                  className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] font-semibold text-indigo-600 hover:bg-edge/40 dark:text-indigo-300"
+                  onClick={() => onAddCaso(node.id)}
+                >
+                  <Plus size={11} /> caso
+                </button>
+              </div>
+              <div className="overflow-x-auto rounded-lg border border-edge bg-canvas">
+                <table className="w-full min-w-[560px] border-collapse">
+                  <thead>
+                    <tr className="border-b border-edge text-left text-[11px] font-medium text-dim">
+                      <th className="w-7 px-2 py-1.5 font-medium" aria-label="cor do handle" />
+                      <th className="w-8 px-1 py-1.5 font-medium">nº</th>
+                      <th className="px-1 py-1.5 font-medium">Nome</th>
+                      <th className="w-[76px] px-1 py-1.5 font-medium">Operador</th>
+                      <th className="px-1 py-1.5 font-medium">Valor</th>
+                      <th className="px-2 py-1.5 font-medium">Ramo →</th>
+                      <th className="w-[76px] px-2 py-1.5 font-medium" aria-label="ações" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {casos.map((cs, i) => (
+                      <tr key={i} className="border-b border-edge align-middle">
+                        <td className="px-2 py-1.5">
+                          <span
+                            className="block h-2.5 w-2.5 rounded-full"
+                            style={{ background: casoCor(i) }}
+                            title={`cor do handle/aresta do caso ${i + 1}`}
+                          />
+                        </td>
+                        <td className="px-1 py-1.5 font-mono text-[11px] text-dim">{i + 1}</td>
+                        <td className="min-w-[140px] px-1 py-1.5">
+                          <CasoNomeInput
+                            nome={cs.nome}
+                            placeholder={`caso_${i + 1}`}
+                            onCommit={novo => onUpdateCaso(node.id, i, { nome: novo })}
+                          />
+                        </td>
+                        <td className="px-1 py-1.5">
+                          <Select
+                            value={cs.operador}
+                            onChange={e => onUpdateCaso(node.id, i, { operador: e.target.value })}
+                            className="w-full px-1.5 text-center text-xs"
+                          >
+                            {COND_OPERADORES.map(op => <option key={op} value={op}>{op}</option>)}
+                          </Select>
+                        </td>
+                        <td className="min-w-[110px] px-1 py-1.5">
+                          <Input
+                            value={cs.valor}
+                            onChange={e => onUpdateCaso(node.id, i, { valor: e.target.value })}
+                            placeholder="valor"
+                            className="w-full font-mono text-xs"
+                          />
+                        </td>
+                        <td className="min-w-[150px] px-2 py-1.5">
+                          <div className="flex flex-wrap items-center gap-1">
+                            {ramosDe(cs.nome).length === 0
+                              ? <span className="text-[11px] text-dim/70">arraste do handle desta cor</span>
+                              : ramosDe(cs.nome).map(pill)}
+                          </div>
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <div className="flex items-center justify-end gap-0.5 text-dim">
+                            <button type="button" title="Subir (avalia antes)" className="rounded p-0.5 hover:bg-edge/40 hover:text-ink disabled:opacity-30" disabled={i === 0} onClick={() => onMoveCaso(node.id, i, -1)}>
+                              <ChevronUp size={12} />
+                            </button>
+                            <button type="button" title="Descer (avalia depois)" className="rounded p-0.5 hover:bg-edge/40 hover:text-ink disabled:opacity-30" disabled={i === casos.length - 1} onClick={() => onMoveCaso(node.id, i, 1)}>
+                              <ChevronDown size={12} />
+                            </button>
+                            <button type="button" title="Remover caso" className="rounded p-0.5 hover:bg-edge/40 hover:text-red-500" onClick={() => onRemoveCaso(node.id, i)}>
+                              <X size={12} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {casos.length === 0 && (
+                      <tr className="border-b border-edge">
+                        <td colSpan={7} className="px-3 py-3 text-center text-[11px] text-dim">
+                          Nenhum caso — adicione com “+ caso”.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                  <tfoot>
+                    {/* Senão (nenhum caso casou) — rodapé fixo da tabela. */}
+                    <tr className="bg-panel/60">
+                      <td className="px-2 py-2">
+                        <span className="block h-2.5 w-2.5 rounded-full bg-slate-400 dark:bg-slate-500" title="cor do handle/aresta do senão" />
+                      </td>
+                      <td className="px-1 py-2" />
+                      <td className="px-1 py-2 text-xs font-medium text-slate-600 dark:text-slate-300">senão</td>
+                      <td colSpan={2} className="px-1 py-2 text-[11px] text-dim">nenhum caso casou</td>
+                      <td className="px-2 py-2">
+                        <div className="flex flex-wrap items-center gap-1">
+                          {ramosDe('senao').length === 0
+                            ? <span className="text-[11px] text-dim/70">nenhum (encerra o fluxo)</span>
+                            : ramosDe('senao').map(pillSlate)}
+                        </div>
+                      </td>
+                      <td className="px-2 py-2" />
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+              <p className="text-[11px] leading-relaxed text-dim">
+                Os ramos são definidos arrastando os handles <b>coloridos</b> (um por caso,
+                à direita) e o <b>senão</b> (baixo) da decisão até as etapas, direto no canvas.
+              </p>
+            </>
           ) : (
             <>
-              <div className="flex flex-col gap-1">
-                <span className="text-[10px] font-medium text-green-700 dark:text-green-400">Se verdadeiro → rodar</span>
-                <div className="flex flex-wrap gap-1">
-                  {ramosDe('sim').length === 0 && <span className="text-[10px] text-dim/70">nenhum</span>}
-                  {ramosDe('sim').map(m => (
-                    <span key={m} className="rounded-full border border-green-300 bg-green-100 px-2 py-0.5 text-[10px] font-medium text-green-700 dark:border-green-800 dark:bg-green-900/40 dark:text-green-300">
-                      {m}
-                    </span>
-                  ))}
+              {/* BINÁRIO: os dois blocos de pílulas (derivados das arestas) — read-only. */}
+              <span className="text-xs font-semibold text-ink">Ramos</span>
+              <p className="text-[11px] leading-relaxed text-dim">
+                Os ramos são definidos arrastando os handles <b>sim</b> (direita) e <b>não</b> (baixo)
+                da decisão até as etapas, direto no canvas.
+              </p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-lg border border-edge bg-canvas p-3">
+                  <span className="text-[11px] font-medium text-green-700 dark:text-green-400">Se verdadeiro → rodar</span>
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {ramosDe('sim').length === 0 && <span className="text-[11px] text-dim/70">nenhum</span>}
+                    {ramosDe('sim').map(m => (
+                      <span key={m} className="rounded-full border border-green-300 bg-green-100 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:border-green-800 dark:bg-green-900/40 dark:text-green-300">
+                        {m}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-              </div>
-              <div className="flex flex-col gap-1">
-                <span className="text-[10px] font-medium text-slate-600 dark:text-slate-300">Se falso → rodar</span>
-                <div className="flex flex-wrap gap-1">
-                  {ramosDe('nao').length === 0 && <span className="text-[10px] text-dim/70">nenhum</span>}
-                  {ramosDe('nao').map(m => (
-                    <span key={m} className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-700 dark:text-slate-300">
-                      {m}
-                    </span>
-                  ))}
+                <div className="rounded-lg border border-edge bg-canvas p-3">
+                  <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300">Se falso → rodar</span>
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {ramosDe('nao').length === 0 && <span className="text-[11px] text-dim/70">nenhum</span>}
+                    {ramosDe('nao').map(pillSlate)}
+                  </div>
                 </div>
               </div>
             </>
           )}
-        </div>
-        {Object.values(ramos).every(lista => lista.length === 0) && (
-          <p className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
-            Ligue ao menos um job em algum ramo (arrastando) antes de salvar.
-          </p>
-        )}
-      </div>
 
-      <div className="mt-auto border-t border-edge pt-3">
-        <Button variant="danger" size="sm" className="w-full justify-center" onClick={() => onDelete(node.id)}>
-          <Trash2 size={13} /> Excluir decisão
-        </Button>
+          {Object.values(ramos).every(lista => lista.length === 0) && (
+            <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+              Ligue ao menos um job em algum ramo (arrastando) antes de salvar.
+            </p>
+          )}
+        </div>
       </div>
     </div>
   )
