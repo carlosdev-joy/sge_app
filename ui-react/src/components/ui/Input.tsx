@@ -1,15 +1,30 @@
 import React from 'react'
+import { Hint } from './Hint'
+
+// Label do campo com "?" de ajuda contextual opcional (prop `hint`).
+// Sem hint renderiza o <label> puro — layout idêntico ao original.
+function FieldLabel({ label, hint }: { label?: string; hint?: string }) {
+  if (!label) return null
+  if (!hint) return <label className="text-xs text-dim font-medium">{label}</label>
+  return (
+    <span className="flex items-center gap-1">
+      <label className="text-xs text-dim font-medium">{label}</label>
+      <Hint texto={hint} />
+    </span>
+  )
+}
 
 interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label?: string
   error?: string
+  hint?: string
 }
 
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(
-  function Input({ label, error, className = '', ...rest }, ref) {
+  function Input({ label, error, hint, className = '', ...rest }, ref) {
     return (
       <div className="flex flex-col gap-1">
-        {label && <label className="text-xs text-dim font-medium">{label}</label>}
+        <FieldLabel label={label} hint={hint} />
         <input
           ref={ref}
           {...rest}
@@ -24,12 +39,13 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
 interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
   label?: string
   error?: string
+  hint?: string
 }
 
-export function Select({ label, error, className = '', children, ...rest }: SelectProps) {
+export function Select({ label, error, hint, className = '', children, ...rest }: SelectProps) {
   return (
     <div className="flex flex-col gap-1">
-      {label && <label className="text-xs text-dim font-medium">{label}</label>}
+      <FieldLabel label={label} hint={hint} />
       <select
         {...rest}
         className={`bg-panel border ${error ? 'border-red-500' : 'border-edge'} text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${className}`}
@@ -43,11 +59,11 @@ export function Select({ label, error, className = '', children, ...rest }: Sele
 
 export const Textarea = React.forwardRef<
   HTMLTextAreaElement,
-  React.TextareaHTMLAttributes<HTMLTextAreaElement> & { label?: string; error?: string }
->(function Textarea({ label, error, className = '', ...rest }, ref) {
+  React.TextareaHTMLAttributes<HTMLTextAreaElement> & { label?: string; error?: string; hint?: string }
+>(function Textarea({ label, error, hint, className = '', ...rest }, ref) {
   return (
     <div className="flex flex-col gap-1">
-      {label && <label className="text-xs text-dim font-medium">{label}</label>}
+      <FieldLabel label={label} hint={hint} />
       <textarea
         ref={ref}
         {...rest}

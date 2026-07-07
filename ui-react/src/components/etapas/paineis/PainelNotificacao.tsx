@@ -70,6 +70,7 @@ export function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDel
           <div className="flex flex-col gap-1">
             <Select
               label="Grupo (canal) *"
+              hint={'Canal do Teams cadastrado na tela Mensagens.\nSem webhook configurado no grupo, nada é enviado.'}
               value={cfg.grupo_id != null ? String(cfg.grupo_id) : ''}
               onChange={onGrupoChange}
               className="text-xs"
@@ -93,6 +94,7 @@ export function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDel
           <div className="flex flex-col gap-1">
             <Select
               label="Modelo (opcional)"
+              hint={'Opcional: com a mensagem ao lado vazia, o corpo do modelo é enviado.\nMensagem preenchida tem prioridade sobre o modelo.'}
               value={cfg.template_id != null ? String(cfg.template_id) : ''}
               onChange={e => patch({ template_id: e.target.value ? Number(e.target.value) : null })}
               disabled={cfg.grupo_id == null}
@@ -133,6 +135,7 @@ export function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDel
             <Textarea
               ref={msgRef}
               label="Mensagem (opcional)"
+              hint={'Aceita os placeholders do seletor abaixo — ex.: {pipeline}, {status} — trocados no envio.\nVazio = usa o corpo do modelo escolhido.'}
               value={cfg.mensagem ?? ''}
               rows={7}
               onChange={e => patch({ mensagem: e.target.value })}

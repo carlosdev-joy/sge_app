@@ -8,6 +8,7 @@ import type { Node } from '@xyflow/react'
 import { GitBranch, Maximize2, Play, Trash2, Plus, ChevronUp, ChevronDown, X } from 'lucide-react'
 import { apiFetch } from '../../../lib/api'
 import { Button } from '../../ui/Button'
+import { Hint } from '../../ui/Hint'
 import { Input, Select, Textarea } from '../../ui/Input'
 import { toast } from '../../ui/Toast'
 import { casoCor, type DecisaoNodeData, type NodeCondition } from '../DecisaoNode'
@@ -160,7 +161,13 @@ export function PainelDecisao({
           </div>
 
           <div className={isSwitch ? 'flex flex-col' : 'grid grid-cols-[1fr_64px] gap-2'}>
-            <Select label="Tipo" value={c.tipo} onChange={e => patch({ tipo: e.target.value as NodeCondition['tipo'] })} className="text-xs">
+            <Select
+              label="Tipo"
+              hint={'O que a decisão lê:\nContagem = COUNT(*) da tabela informada.\nValor de uma query = 1º valor do SELECT (1ª coluna da 1ª linha).\nLinhas processadas = rows_out do job na MESMA execução do pipeline.\nValor de SQL = valor publicado por um nó SQL a montante.'}
+              value={c.tipo}
+              onChange={e => patch({ tipo: e.target.value as NodeCondition['tipo'] })}
+              className="text-xs"
+            >
               <option value="contagem">Contagem de registros</option>
               <option value="query">Valor de uma query</option>
               <option value="linhas_job">Linhas processadas</option>
@@ -200,6 +207,7 @@ export function PainelDecisao({
 
               <Select
                 label="Comparar como"
+                hint={'Tipo usado na comparação: número, data ou texto.\nData aceita HOJE ou AAAA-MM-DD (nível de dia).'}
                 value={c.comparacao ?? 'texto'}
                 onChange={e => patch({ comparacao: e.target.value as NonNullable<NodeCondition['comparacao']> })}
                 className="text-xs"
@@ -262,6 +270,7 @@ export function PainelDecisao({
               <div className="flex flex-col gap-1">
                 <Input
                   label="Job filho (opcional)"
+                  hint={'Job de runtime DENTRO do SEQUENCE selecionado acima — não é um job do pipeline.\nPreenchido, a decisão usa as linhas desse filho; vazio = total do job.'}
                   value={c.child_job ?? ''}
                   onChange={e => patch({ child_job: e.target.value })}
                   placeholder="ex: JB_CARGA_DETALHE"
@@ -346,6 +355,7 @@ export function PainelDecisao({
             {isSwitch ? (
               <Select
                 label="Se a avaliação falhar"
+                hint={'Falhar (recomendado): a execução para e o erro fica visível.\nSeguir pelo SENÃO roteia em silêncio — o pipeline não acusa a falha.'}
                 value={c.on_error === 'senao' ? 'senao' : 'falhar'}
                 onChange={e => patch({ on_error: e.target.value === 'senao' ? 'senao' : 'falhar' })}
                 className="text-xs"
@@ -356,6 +366,7 @@ export function PainelDecisao({
             ) : (
               <Select
                 label="Se a avaliação falhar"
+                hint={'Falhar (recomendado): a execução para e o erro fica visível.\nSeguir pelo ramo NÃO roteia em silêncio — o pipeline não acusa a falha.'}
                 value={c.on_error === 'ramo_falso' ? 'ramo_falso' : 'falhar'}
                 onChange={e => patch({ on_error: e.target.value === 'ramo_falso' ? 'ramo_falso' : 'falhar' })}
                 className="text-xs"
@@ -444,7 +455,10 @@ export function PainelDecisao({
               {/* SWITCH: tabela dos casos — a ORDEM é a prioridade de avaliação
                   (primeiro que casar vence); os ramos são ligados pelas arestas. */}
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-ink">Casos (avaliados em ordem)</span>
+                <span className="flex items-center gap-1 text-xs font-semibold text-ink">
+                  Casos (avaliados em ordem)
+                  <Hint texto={'Avaliados de cima para baixo: o PRIMEIRO caso que casar vence.\nNenhum casou → segue pelo senão. Use ▲▼ para mudar a prioridade.'} />
+                </span>
                 <button
                   type="button"
                   className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] font-semibold text-indigo-600 hover:bg-edge/40 dark:text-indigo-300"
