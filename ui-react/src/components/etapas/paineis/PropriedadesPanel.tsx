@@ -23,8 +23,6 @@ interface PropriedadesPanelProps extends CasoOps {
   sqlNodeNames: string[]
   sshConns: { conn_id: string; host: string }[]
   mssqlConns: { conn_id: string; host: string }[]
-  dbServer: string | null
-  dbDatabases: string[]
   grupos: MsgGrupo[]
   readOnly: boolean
   onRename: (oldName: string, novo: string) => boolean
@@ -42,7 +40,7 @@ interface PropriedadesPanelProps extends CasoOps {
 }
 
 export function PropriedadesPanel({
-  node, nodes, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, dbServer, dbDatabases, grupos,
+  node, nodes, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, grupos,
   readOnly, onRename, onPatchData, onPatchCondition, onPatchNotify, onPatchSql, onSimular, onDelete,
   onMaximizar, onHoverRamo,
   onAlternarModo, onAddCaso, onUpdateCaso, onRemoveCaso, onMoveCaso,
@@ -100,8 +98,6 @@ export function PropriedadesPanel({
           node={node}
           sshConns={sshConns}
           mssqlConns={mssqlConns}
-          dbServer={dbServer}
-          dbDatabases={dbDatabases}
           onRename={onRename}
           onPatchData={onPatchData}
           onDelete={onDelete}

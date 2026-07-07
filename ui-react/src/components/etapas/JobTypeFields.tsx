@@ -1,4 +1,6 @@
+import { useQuery } from '@tanstack/react-query'
 import { Maximize2, Plus } from 'lucide-react'
+import { apiFetch } from '../../lib/api'
 import { Button } from '../ui/Button'
 import { Hint } from '../ui/Hint'
 import { Input, Select, Textarea } from '../ui/Input'
@@ -102,8 +104,6 @@ export interface JobTypeFieldsProps {
   onChange: (patch: Partial<JobTypeFieldsValue>) => void
   sshConns: ConnOpt[]
   mssqlConns: ConnOpt[]
-  dbServer: string | null
-  dbDatabases: string[]
   compact?: boolean   // layout denso p/ o painel lateral do Fluxo (fontes/spacing menores)
   // Maximiza o dock (modo focado) — usado pelo editor de código do nó python.
   onMaximizar?: () => void
@@ -272,9 +272,25 @@ export function JobParamsEditor({ params, onChange, compact }: JobParamsEditorPr
 // ── Componente principal ─────────────────────────────────────────────────────
 
 export function JobTypeFields({
-  value, onChange, sshConns, mssqlConns, dbServer, dbDatabases, compact, onMaximizar,
+  value, onChange, sshConns, mssqlConns, compact, onMaximizar,
 }: JobTypeFieldsProps) {
   const { job_type } = value
+
+  // Bancos do SERVIDOR DA CONEXÃO SELECIONADA (regra de 100% do Orquestra —
+  // mesma do nó SQL): conn_id primeiro (credencial NATIVA da conexão, enxerga
+  // os mesmos bancos do runtime); host fica como fallback legado. Sem conexão
+  // escolhida, não há como saber o servidor → lista vazia + select desabilitado.
+  const dbHost = mssqlConns.find(c => c.conn_id === value.mssql_conn_id)?.host ?? ''
+  const { data: dbData } = useQuery<{ server: string | null; databases: string[] }>({
+    queryKey: ['job-databases', value.mssql_conn_id, dbHost],
+    queryFn: () => apiFetch(
+      `/jobs/databases?conn_id=${encodeURIComponent(value.mssql_conn_id ?? '')}`
+      + `&host=${encodeURIComponent(dbHost)}`),
+    enabled: job_type === 'storedproc' && (!!value.mssql_conn_id || !!dbHost),
+    staleTime: 300_000,
+  })
+  const dbServer = dbData?.server ?? null
+  const dbDatabases = dbData?.databases ?? []
 
   // Densidade: o painel do Fluxo é estreito → fontes/paddings menores.
   const labelCls = `${compact ? 'text-[10px]' : 'text-xs'} text-dim font-medium`
@@ -370,7 +386,11 @@ export function JobTypeFields({
           </label>
           <select
             value={value.mssql_conn_id}
-            onChange={e => onChange({ mssql_conn_id: e.target.value })}
+            onChange={e => {
+              // Banco pertence ao SERVIDOR: trocar de conexão zera o banco-alvo
+              // (a lista é recarregada para o servidor novo).
+              onChange({ mssql_conn_id: e.target.value, mssql_database: '' })
+            }}
             className={fieldCls}
           >
             <option value="">Selecione a conexão...</option>
@@ -381,19 +401,23 @@ export function JobTypeFields({
         </div>
       )}
 
-      {/* storedproc → servidor / banco-alvo (opcional, mesmo servidor) */}
+      {/* storedproc → banco-alvo (opcional) — lista dos bancos da CONEXÃO
+          selecionada (não mais o servidor fixo do app). */}
       {job_type === 'storedproc' && (
         <div className="flex flex-col gap-1">
           <label className={`${labelCls} flex items-center gap-1`}>
             Servidor / Banco {dbServer && <span className="text-dim/60 font-mono normal-case">({dbServer})</span>}
-            <Hint texto={'Banco-alvo da proc, no MESMO servidor da conexão (vira EXEC [banco].schema.proc).\nVazio = banco padrão da conexão.'} />
+            <Hint texto={'Banco-alvo da proc, no MESMO servidor da conexão (vira EXEC [banco].schema.proc).\nVazio = banco padrão da conexão. A lista acompanha a conexão selecionada.'} />
           </label>
           <select
             value={value.mssql_database}
             onChange={e => onChange({ mssql_database: e.target.value })}
-            className={fieldCls}
+            disabled={!value.mssql_conn_id && !dbHost}
+            className={`${fieldCls} ${!value.mssql_conn_id && !dbHost ? 'opacity-60' : ''}`}
           >
-            <option value="">Banco padrão da conexão</option>
+            <option value="">
+              {value.mssql_conn_id || dbHost ? 'Banco padrão da conexão' : 'Escolha a conexão primeiro'}
+            </option>
             {dbDatabases.map(d => <option key={d} value={d}>{d}</option>)}
             {value.mssql_database && !dbDatabases.includes(value.mssql_database) && (
               <option value={value.mssql_database}>{value.mssql_database}</option>
