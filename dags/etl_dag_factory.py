@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import re
 import ast
-import shlex
 from collections import defaultdict
 from datetime import timedelta
 import pendulum
@@ -204,15 +203,18 @@ def _task_block(job, project, pipeline, branch_reachable=False):
         ]))
     elif jtype == "shell":
         cmd = jcmd or "echo 'comando nao configurado'"
-        # shlex.quote garante que o comando não escape das aspas no código gerado
-        cmd_safe = shlex.quote(cmd)
+        # repr() embute o comando como LITERAL Python válido no código gerado.
+        # O shlex.quote usado antes devolvia o comando SEM aspas quando ele não
+        # tinha caractere especial (ex.: /opt/scripts/run.sh, ls) — a DAG
+        # quebrava no import (SyntaxError/NameError). O comando roda VIA SSH no
+        # servidor do ssh_conn_id do job (fallback: SSH_CONN_ID do pipeline).
         ssh = job.get("ssh_conn_id") or None
         ssh_val = f'"{ssh}"' if ssh else 'SSH_CONN_ID'
         main = "\n".join([
             f't_job_{vname} = ShellOperator(',
             f'    task_id={name!r},',
             f'    ssh_conn_id={ssh_val},',
-            f'    command={cmd_safe},',
+            f'    command={cmd!r},',
             f'    cmd_timeout=None,',
             f'    do_xcom_push=True,',
             f')',
