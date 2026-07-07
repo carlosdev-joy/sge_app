@@ -54,6 +54,7 @@ const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: Notific
 type DockEstado = 'colapsado' | 'aberto' | 'max'
 const DOCK_LS_ESTADO = 'orq.fluxo.dock.estado'
 const DOCK_LS_ALTURA = 'orq.fluxo.dock.altura'
+const PALETA_LS_ESTADO = 'orq.fluxo.paleta.estado'
 const DOCK_MIN_H = 180
 const DOCK_MAX_H = 560
 
@@ -432,10 +433,12 @@ function Paleta({
   }, [busca, open])
 
   return (
+    // Coluna FIXA à esquerda do canvas (padrão DataStage/ADF — não sobrepõe o
+    // grafo). Recolhida vira um trilho de ícones arrastáveis; estado persiste.
     <div
       className={[
-        'flex max-h-[calc(100%-1rem)] flex-col overflow-hidden rounded-lg border border-edge bg-panel/95 shadow-md backdrop-blur',
-        open ? 'w-[176px]' : 'w-[40px]',
+        'flex h-full shrink-0 flex-col overflow-hidden border-r border-edge bg-panel',
+        open ? 'w-[176px]' : 'w-[44px]',
       ].join(' ')}
     >
       {/* Cabeçalho com título + botão de colapsar/expandir */}
@@ -578,7 +581,13 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   }, [dockAltura])
   const [publishing, setPublishing] = useState(false)
   // Paleta colapsável (estado local).
-  const [paletaOpen, setPaletaOpen] = useState(true)
+  // Paleta como coluna fixa (recolhível a trilho de ícones) — persiste como o dock.
+  const [paletaOpen, setPaletaOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem(PALETA_LS_ESTADO) !== 'recolhida' } catch { return true }
+  })
+  useEffect(() => {
+    try { localStorage.setItem(PALETA_LS_ESTADO, paletaOpen ? 'aberta' : 'recolhida') } catch { /* sem storage */ }
+  }, [paletaOpen])
 
   // Conjunto acumulado de job_names existentes removidos no canvas.
   const deletedRef = useRef<Set<string>>(new Set())
@@ -1621,9 +1630,13 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-edge bg-canvas">
-      {/* Canvas com a LARGURA TOTAL (fase 3: as propriedades moram no dock
-          inferior — o canvas não é mais espremido lateralmente) */}
-      <div className="relative min-h-0 min-w-0 flex-1" ref={wrapperRef}>
+      {/* Linha principal: paleta FIXA à esquerda (recolhível) + canvas.
+          As propriedades moram no dock inferior (fase 3) — nada sobrepõe o grafo. */}
+      <div className="flex min-h-0 flex-1">
+        {!readOnly && (
+          <Paleta open={paletaOpen} onToggle={() => setPaletaOpen(o => !o)} />
+        )}
+        <div className="relative min-h-0 min-w-0 flex-1" ref={wrapperRef}>
         {nodes.length === 0 && (
           <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 text-dim">
             <span className="text-3xl">⬡</span>
@@ -1665,13 +1678,6 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
             className="!bg-panel"
           />
 
-          {/* Paleta arrastar-para-criar (barra vertical fina, esquerda) */}
-          {!readOnly && (
-            <Panel position="top-left">
-              <Paleta open={paletaOpen} onToggle={() => setPaletaOpen(o => !o)} />
-            </Panel>
-          )}
-
           {/* Barra de ações (topo direita) — no modo leitura vira só um selo */}
           <Panel position="top-right">
             {readOnly ? (
@@ -1701,6 +1707,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
             )}
           </Panel>
         </ReactFlow>
+        </div>
       </div>
 
       {/* Dock inferior de propriedades (fase 3) — 3 estados: colapsado (36px
