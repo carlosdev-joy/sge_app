@@ -32,7 +32,7 @@ import { toast } from '../ui/Toast'
 import {
   Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing, Database,
   ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Maximize2, Minimize2,
-  MousePointerClick, Search, X,
+  MousePointerClick, Pencil, Search, X,
 } from 'lucide-react'
 import { EtapaNode, type EtapaNodeData } from './EtapaNode'
 import { DecisaoNode, casoCor, type CasoSwitch, type DecisaoNodeData, type NodeCondition } from './DecisaoNode'
@@ -654,6 +654,12 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
 
   // ── Seleção (edita o nó selecionado AO VIVO no painel à direita) ───────────
   const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  // Rename inline pelo header do dock (lápis — padrão IBM). Esc cancela sem
+  // commitar (flag em ref: o blur dispara depois do Esc e não pode salvar).
+  const [headerDraft, setHeaderDraft] = useState<string | null>(null)
+  const headerCancelRef = useRef(false)
+  useEffect(() => { setHeaderDraft(null) }, [selectedId])
   // Nós aguardando confirmação de exclusão (multi-seleção + Delete traz vários).
   const [delNodeIds, setDelNodeIds] = useState<string[] | null>(null)
   // Arestas AVULSAS selecionadas junto (Ctrl+clique) que não tocam os nós a
@@ -1577,23 +1583,53 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     setSelectedId(null)
   }, [setNodes])
 
-  // Esc fecha o painel (padrão unânime do benchmark: DataStage/n8n/NiFi). Num
-  // input, o 1º Esc só tira o foco; com um modal aberto, quem trata é o Modal.
+  // Teclado (padrões do benchmark — n8n/DataStage/ADF):
+  //  Esc         fecha o painel (num input, o 1º Esc só tira o foco)
+  //  Enter       abre o dock do nó selecionado (colapsado→aberto; senão →max)
+  //  ←/→         navega entre nós SÓ no modo focado (max) — fora dele as setas
+  //              continuam sendo o nudge de posição do React Flow
+  //  Ctrl+Enter  salva o fluxo
+  // Com um modal aberto, quem trata teclado é o Modal.
   const temModalAberto = !!(delNodeIds?.length) || !!renamePedido || showPublish
   useEffect(() => {
-    if (!selectedId || temModalAberto) return
+    if (temModalAberto) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
       const t = e.target as HTMLElement | null
-      if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) {
-        (t as HTMLInputElement).blur()
+      const emInput = !!t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        if (!readOnly && dirty && !saving) {
+          e.preventDefault()
+          void salvar()
+        }
         return
       }
-      closePanel()
+      if (e.key === 'Escape') {
+        if (emInput) { (t as HTMLInputElement).blur(); return }
+        if (selectedId) closePanel()
+        return
+      }
+      if (emInput || !selectedId) return
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        setDockEstado(s => (s === 'colapsado' ? 'aberto' : 'max'))
+        return
+      }
+      if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && dockEstado === 'max') {
+        const ordenados = [...nodes].sort(
+          (a, b) => a.position.x - b.position.x || a.position.y - b.position.y)
+        const i = ordenados.findIndex(n => n.id === selectedId)
+        if (i < 0) return
+        const alvo = ordenados[i + (e.key === 'ArrowRight' ? 1 : -1)]
+        if (!alvo) return
+        e.preventDefault()
+        setSelectedId(alvo.id)
+        setNodes(nds => nds.map(n =>
+          n.selected !== (n.id === alvo.id) ? { ...n, selected: n.id === alvo.id } : n))
+      }
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [selectedId, temModalAberto, closePanel])
+  }, [selectedId, temModalAberto, closePanel, dockEstado, nodes, dirty, saving, readOnly, setNodes, salvar])
 
   // ── Pendências por nó (validação leve, AO VIVO) — padrão ADF: o grafo
   // sinaliza o que falta configurar sem precisar abrir nó por nó. A régua é a
@@ -1644,6 +1680,20 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     }
     return out
   }, [nodes, edges])
+
+  // Hover numa linha de caso do painel → destaca a(s) aresta(s) daquele ramo
+  // no canvas (fecha o ciclo painel↔grafo sem depender só da cor do handle).
+  const [hoverRamo, setHoverRamo] = useState<{ no: string; ramo: string } | null>(null)
+  const onHoverRamo = useCallback((no: string, ramo: string | null) => {
+    setHoverRamo(ramo == null ? null : { no, ramo })
+  }, [])
+  const edgesRender = useMemo(() => {
+    if (!hoverRamo) return edges
+    return edges.map(e =>
+      isBranch(e) && e.source === hoverRamo.no && edgeRamo(e) === hoverRamo.ramo
+        ? { ...e, animated: true, style: { ...(e.style ?? {}), strokeWidth: 3 } }
+        : e)
+  }, [edges, hoverRamo])
 
   // Espelha a pendência no data do nó (o canvas desenha anel/ponto âmbar).
   // No-op quando nada mudou (retorna o MESMO array — não re-renderiza em loop).
@@ -1713,7 +1763,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
         )}
         <ReactFlow
           nodes={nodes}
-          edges={edges}
+          edges={edgesRender}
           nodeTypes={nodeTypes}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
@@ -1803,7 +1853,43 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
                 className="h-2.5 w-2.5 shrink-0 rounded-full"
                 style={{ background: miniMapColor(selNode) }}
               />
-              <span className="truncate font-mono text-xs font-semibold text-ink">{selNode.id}</span>
+              {headerDraft == null ? (
+                <>
+                  <span className="truncate font-mono text-xs font-semibold text-ink">{selNode.id}</span>
+                  {!readOnly && (
+                    <button
+                      onClick={() => setHeaderDraft(selNode.id)}
+                      title="Renomear job"
+                      className="shrink-0 rounded p-0.5 text-dim hover:bg-edge/40 hover:text-ink"
+                    >
+                      <Pencil size={11} />
+                    </button>
+                  )}
+                </>
+              ) : (
+                <input
+                  autoFocus
+                  value={headerDraft}
+                  onChange={e => setHeaderDraft(e.target.value)}
+                  onBlur={() => {
+                    if (headerCancelRef.current) {
+                      headerCancelRef.current = false
+                    } else if (headerDraft.trim() && headerDraft.trim() !== selNode.id) {
+                      renomear(selNode.id, headerDraft)
+                    }
+                    setHeaderDraft(null)
+                  }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                    if (e.key === 'Escape') {
+                      e.stopPropagation()
+                      headerCancelRef.current = true
+                      ;(e.target as HTMLInputElement).blur()
+                    }
+                  }}
+                  className="w-56 shrink-0 rounded border border-edge bg-canvas px-1.5 py-0.5 font-mono text-xs text-ink focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              )}
               <span className="shrink-0 text-[11px] text-dim">
                 · {selNode.type === 'decisao' ? 'Decisão'
                   : selNode.type === 'notificacao' ? 'Notificação'
@@ -1912,6 +1998,8 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
               onPatchSql={patchSql}
               onSimular={simularDecisao}
               onDelete={id => setDelNodeIds([id])}
+              onMaximizar={() => setDockEstado('max')}
+              onHoverRamo={onHoverRamo}
               onAlternarModo={alternarModoDecisao}
               onAddCaso={adicionarCaso}
               onUpdateCaso={atualizarCaso}

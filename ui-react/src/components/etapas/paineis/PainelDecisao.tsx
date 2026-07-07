@@ -5,7 +5,7 @@
 // de Informatica/DataStage. Abaixo de lg colapsa para 1 coluna.
 import { useEffect, useState } from 'react'
 import type { Node } from '@xyflow/react'
-import { GitBranch, Play, Trash2, Plus, ChevronUp, ChevronDown, X } from 'lucide-react'
+import { GitBranch, Maximize2, Play, Trash2, Plus, ChevronUp, ChevronDown, X } from 'lucide-react'
 import { apiFetch } from '../../../lib/api'
 import { Button } from '../../ui/Button'
 import { Input, Select, Textarea } from '../../ui/Input'
@@ -27,10 +27,15 @@ export interface PainelDecisaoProps extends CasoOps {
   onPatchCondition: (nodeId: string, patch: Partial<NodeCondition>) => void
   onSimular: (decisaoId: string, ramo: string) => void
   onDelete: (id: string) => void
+  // Maximiza o dock (modo focado) — p/ editar SQL longo da condição.
+  onMaximizar?: () => void
+  // Hover numa linha de caso → o editor destaca a aresta daquele ramo no canvas.
+  onHoverRamo?: (nodeId: string, ramo: string | null) => void
 }
 
 export function PainelDecisao({
   node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns, onRename, onPatchCondition, onSimular, onDelete,
+  onMaximizar, onHoverRamo,
   onAlternarModo, onAddCaso, onUpdateCaso, onRemoveCaso, onMoveCaso,
 }: PainelDecisaoProps) {
   const d = node.data as DecisaoNodeData
@@ -284,14 +289,26 @@ export function PainelDecisao({
             </>
           ) : (
             <>
-              <Textarea
-                label="SQL (somente SELECT) *"
-                value={c.sql ?? ''}
-                rows={3}
-                onChange={e => patch({ sql: e.target.value })}
-                placeholder="ex: SELECT MAX(flag) FROM dbo.Controle WHERE ..."
-                className="font-mono text-xs"
-              />
+              <div className="flex flex-col gap-1">
+                {onMaximizar && (
+                  <button
+                    type="button"
+                    onClick={onMaximizar}
+                    title="Ampliar o painel (modo focado) para editar o SELECT"
+                    className="flex items-center gap-1 self-end rounded px-1.5 py-0.5 text-[10px] font-semibold text-dim hover:bg-edge/40 hover:text-ink"
+                  >
+                    <Maximize2 size={11} /> ampliar
+                  </button>
+                )}
+                <Textarea
+                  label="SQL (somente SELECT) *"
+                  value={c.sql ?? ''}
+                  rows={5}
+                  onChange={e => patch({ sql: e.target.value })}
+                  placeholder="ex: SELECT MAX(flag) FROM dbo.Controle WHERE ..."
+                  className="font-mono text-xs"
+                />
+              </div>
               <div className="flex flex-col gap-1">
                 <Input
                   label="Banco (opcional)"
@@ -451,7 +468,12 @@ export function PainelDecisao({
                   </thead>
                   <tbody>
                     {casos.map((cs, i) => (
-                      <tr key={i} className="border-b border-edge align-middle">
+                      <tr
+                        key={i}
+                        className="border-b border-edge align-middle hover:bg-edge/20"
+                        onMouseEnter={() => onHoverRamo?.(node.id, cs.nome)}
+                        onMouseLeave={() => onHoverRamo?.(node.id, null)}
+                      >
                         <td className="px-2 py-1.5">
                           <span
                             className="block h-2.5 w-2.5 rounded-full"
@@ -516,7 +538,11 @@ export function PainelDecisao({
                   </tbody>
                   <tfoot>
                     {/* Senão (nenhum caso casou) — rodapé fixo da tabela. */}
-                    <tr className="bg-panel/60">
+                    <tr
+                      className="bg-panel/60 hover:bg-edge/20"
+                      onMouseEnter={() => onHoverRamo?.(node.id, 'senao')}
+                      onMouseLeave={() => onHoverRamo?.(node.id, null)}
+                    >
                       <td className="px-2 py-2">
                         <span className="block h-2.5 w-2.5 rounded-full bg-slate-400 dark:bg-slate-500" title="cor do handle/aresta do senão" />
                       </td>

@@ -6,7 +6,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Node } from '@xyflow/react'
-import { Database, Play, Trash2 } from 'lucide-react'
+import { Database, Maximize2, Play, Trash2 } from 'lucide-react'
 import { apiFetch } from '../../../lib/api'
 import { Button } from '../../ui/Button'
 import { Select, Textarea } from '../../ui/Input'
@@ -21,11 +21,13 @@ export interface PainelSqlProps {
   onRename: (oldName: string, novo: string) => boolean
   onPatchSql: (nodeId: string, patch: Partial<SqlConfig>) => void
   onDelete: (id: string) => void
+  // Maximiza o dock (modo focado) — o "tearsheet barato" p/ editar SQL longo.
+  onMaximizar?: () => void
 }
 
 interface SqlPreview { columns: string[]; rows: unknown[][]; total: number; truncated: boolean }
 
-export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete }: PainelSqlProps) {
+export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, onMaximizar }: PainelSqlProps) {
   const d = node.data as SqlNodeData
   const isNew = !!d.isNew
   const cfg = d.sql ?? defaultSql()
@@ -108,6 +110,16 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete }: 
           <div className="mt-1 flex items-center gap-1.5">
             <Database size={12} className="text-violet-600 dark:text-violet-300" />
             <span className="text-xs font-semibold text-ink">Consulta</span>
+            {onMaximizar && (
+              <button
+                type="button"
+                onClick={onMaximizar}
+                title="Ampliar o painel (modo focado) para editar o SELECT"
+                className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold text-dim hover:bg-edge/40 hover:text-ink"
+              >
+                <Maximize2 size={11} /> ampliar
+              </button>
+            )}
           </div>
 
           <div className="flex flex-col gap-1">
