@@ -34,11 +34,16 @@ interface PropriedadesPanelProps extends CasoOps {
   onPatchSql: (nodeId: string, patch: Partial<SqlConfig>) => void
   onSimular: (decisaoId: string, ramo: string) => void
   onDelete: (id: string) => void
+  // Maximiza o dock (modo focado) — repassado aos painéis com editor de SQL.
+  onMaximizar?: () => void
+  // Hover numa linha de caso → destaca a aresta do ramo no canvas.
+  onHoverRamo?: (nodeId: string, ramo: string | null) => void
 }
 
 export function PropriedadesPanel({
   node, nodes, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, dbServer, dbDatabases, grupos,
   readOnly, onRename, onPatchData, onPatchCondition, onPatchNotify, onPatchSql, onSimular, onDelete,
+  onMaximizar, onHoverRamo,
   onAlternarModo, onAddCaso, onUpdateCaso, onRemoveCaso, onMoveCaso,
 }: PropriedadesPanelProps) {
   return (
@@ -61,6 +66,8 @@ export function PropriedadesPanel({
           onPatchCondition={onPatchCondition}
           onSimular={onSimular}
           onDelete={onDelete}
+          onMaximizar={onMaximizar}
+          onHoverRamo={onHoverRamo}
           onAlternarModo={onAlternarModo}
           onAddCaso={onAddCaso}
           onUpdateCaso={onUpdateCaso}
@@ -84,6 +91,7 @@ export function PropriedadesPanel({
           onRename={onRename}
           onPatchSql={onPatchSql}
           onDelete={onDelete}
+          onMaximizar={onMaximizar}
         />
       ) : (
         <PainelEtapa
