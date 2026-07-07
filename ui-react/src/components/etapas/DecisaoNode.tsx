@@ -66,11 +66,18 @@ export interface DecisaoNodeData {
 }
 
 // Bolinhas dos handles, coloridas por papel: entrada índigo, saída "sim" verde,
-// "não" slate. A direção fica clara pela COR (o rótulo sim/não vive na aresta).
-const HANDLE_BASE = '!h-2.5 !w-2.5 !rounded-full !border-2 !border-panel'
+// "não" slate. A direção fica clara pela COR; com o nó SELECIONADO, cada saída
+// ganha um rótulo flutuante (fase 5 — descoberta dos handles do switch).
+// 14px de alvo (era 10px — pequeno demais para arrastar com precisão).
+const HANDLE_BASE = '!h-3.5 !w-3.5 !rounded-full !border-2 !border-panel'
 const HANDLE_IN = `${HANDLE_BASE} !bg-indigo-400`
 const HANDLE_SIM = `${HANDLE_BASE} !bg-green-500`
 const HANDLE_NAO = `${HANDLE_BASE} !bg-slate-400`
+
+// Rótulo flutuante de uma saída (visível com o nó selecionado).
+const SAIDA_LABEL =
+  'pointer-events-none absolute z-10 whitespace-nowrap rounded border border-edge ' +
+  'bg-panel px-1.5 py-0.5 text-[10px] font-semibold shadow-sm'
 
 function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNodeData }) {
   const casos = data.condition?.casos
@@ -83,8 +90,8 @@ function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNode
     updateNodeInternals(id)
   }, [id, handleKey, updateNodeInternals])
 
-  // Tile cresce com o nº de casos para os handles não se sobreporem.
-  const tileH = isSwitch ? Math.max(32, casos.length * 14 + 6) : 32
+  // Tile cresce com o nº de casos para os handles (14px) não se sobreporem.
+  const tileH = isSwitch ? Math.max(32, casos.length * 20 + 8) : 32
 
   return (
     <div className="group relative flex w-[128px] flex-col items-center">
@@ -119,11 +126,27 @@ function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNode
                 className={HANDLE_BASE}
                 title={c.nome || `caso ${i + 1}`}
                 style={{
-                  right: -5,
+                  right: -6,
                   top: `${((i + 1) * 100) / (casos.length + 1)}%`,
                   background: casoCor(i),
                 }}
               />
+            ))}
+            {/* Rótulos das saídas — visíveis com o nó selecionado (descoberta:
+                casar cor de handle com caso deixava daltônicos sem canal). */}
+            {selected && casos.map((c, i) => (
+              <span
+                key={`lbl:${c.nome}`}
+                className={SAIDA_LABEL}
+                style={{
+                  left: 'calc(100% + 10px)',
+                  top: `${((i + 1) * 100) / (casos.length + 1)}%`,
+                  transform: 'translateY(-50%)',
+                  color: casoCor(i),
+                }}
+              >
+                {c.nome || `caso ${i + 1}`}
+              </span>
             ))}
             {/* Saída "senão" (baixo) — ramo padrão */}
             <Handle
@@ -132,8 +155,17 @@ function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNode
               position={Position.Bottom}
               className={HANDLE_NAO}
               title="senão (nenhum caso casou)"
-              style={{ bottom: -5, left: '50%' }}
+              style={{ bottom: -6, left: '50%' }}
             />
+            {selected && (
+              /* na lateral, alinhado à borda de baixo — embaixo colidiria com o nome */
+              <span
+                className={`${SAIDA_LABEL} text-slate-500 dark:text-slate-300`}
+                style={{ top: 'calc(100% + 8px)', left: 'calc(100% + 10px)', transform: 'translateY(-50%)' }}
+              >
+                ↓ senão
+              </span>
+            )}
           </>
         ) : (
           <>
@@ -143,7 +175,7 @@ function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNode
               type="source"
               position={Position.Right}
               className={HANDLE_SIM}
-              style={{ right: -5, top: '50%' }}
+              style={{ right: -6, top: '50%' }}
             />
             {/* Saída "não" (baixo) — base do tile */}
             <Handle
@@ -151,8 +183,24 @@ function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNode
               type="source"
               position={Position.Bottom}
               className={HANDLE_NAO}
-              style={{ bottom: -5, left: '50%' }}
+              style={{ bottom: -6, left: '50%' }}
             />
+            {selected && (
+              <>
+                <span
+                  className={`${SAIDA_LABEL} text-green-600 dark:text-green-400`}
+                  style={{ left: 'calc(100% + 10px)', top: '50%', transform: 'translateY(-50%)' }}
+                >
+                  sim
+                </span>
+                <span
+                  className={`${SAIDA_LABEL} text-slate-500 dark:text-slate-300`}
+                  style={{ top: 'calc(100% + 8px)', left: 'calc(100% + 10px)', transform: 'translateY(-50%)' }}
+                >
+                  ↓ não
+                </span>
+              </>
+            )}
           </>
         )}
       </div>
