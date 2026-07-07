@@ -50,12 +50,20 @@ function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) 
           Anel de seleção aqui (não no container todo). */}
       <div
         className={[
-          'flex h-8 w-8 items-center justify-center rounded-xl shadow-sm transition-shadow',
+          'relative flex h-8 w-8 items-center justify-center rounded-xl shadow-sm transition-shadow',
           meta.chip,
           'group-hover:shadow-md',
-          selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas' : '',
+          selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas'
+            : (data as { pendente?: boolean }).pendente ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-canvas' : '',
         ].join(' ')}
       >
+        {/* Ponto âmbar = validação com pendência (derivado no editor) */}
+        {!!(data as { pendente?: boolean }).pendente && (
+          <span
+            className="absolute -right-1.5 -top-1.5 z-10 h-2.5 w-2.5 rounded-full border-2 border-panel bg-amber-400"
+            title="Campos pendentes — selecione o nó para ver"
+          />
+        )}
         <Icon size={16} strokeWidth={2} />
       </div>
 
