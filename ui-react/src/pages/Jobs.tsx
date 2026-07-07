@@ -19,8 +19,8 @@ import {
 import { useAirflowUrl } from '../lib/config'
 import { FluxoEditor } from '../components/etapas/FluxoEditor'
 import {
-  JobTypeFields, jobTypeFieldsErrors,
-  type JobTypeFieldsValue, type JobParam,
+  JobTypeFields, jobTypeFieldsErrors, defaultPythonDraft, pythonFromApi, pythonToApi,
+  type JobTypeFieldsValue, type JobParam, type PythonDraft, type PythonNodeApi,
 } from '../components/etapas/JobTypeFields'
 
 // ── constants ──────────────────────────────────────────────────────────────
@@ -84,6 +84,8 @@ interface JobFormData {
   mssql_conn_id: string
   mssql_database: string
   params: JobParam[]
+  // Nó python v2 — draft local com TODOS os modos (o payload envia só o ativo).
+  python: PythonDraft
   // Campos da etapa de notificação (job_type === 'notificacao').
   grupo_id: number | null
   template_id: number | null
@@ -107,6 +109,9 @@ function JobFormModal({
     mssql_conn_id: '',
     mssql_database: '',
     params: [],
+    // Nó NOVO → python v2 default 'arquivo'; job existente → 'modulo' até o
+    // GET do job devolver o `python` salvo (carregado no useEffect abaixo).
+    python: defaultPythonDraft(job ? 'modulo' : 'arquivo'),
     grupo_id: null,
     template_id: null,
     notif_mensagem: '',
@@ -174,6 +179,7 @@ function JobFormModal({
       mssql_database?: string | null
       params?: { param_name: string; param_type: string; param_value: string | null; param_order?: number }[]
       notify?: { grupo_id: number | null; template_id: number | null; mensagem: string } | null
+      python?: PythonNodeApi | null
     }>(`/pipelines/jobs/${encodeURIComponent(pipeline)}/${encodeURIComponent(job.job_name)}`)
       .then(d => {
         const notify = d.notify ?? { grupo_id: null, template_id: null, mensagem: '' }
@@ -188,6 +194,8 @@ function JobFormModal({
             param_type: p.param_type,
             param_value: p.param_value ?? '',
           })),
+          // python v2: null/ausente = legado 'modulo' (pré-seleciona o modo certo).
+          python: pythonFromApi(d.python),
           grupo_id: notify.grupo_id ?? null,
           template_id: notify.template_id ?? null,
           notif_mensagem: notify.mensagem ?? '',
@@ -205,7 +213,11 @@ function JobFormModal({
         execution_order: form.execution_order,
         job_type: form.job_type,
         job_command: form.job_command.trim() || null,
-        ssh_conn_id: form.job_type === 'shell' ? (form.ssh_conn_id || null) : null,
+        // SSH: obrigatório em shell e nos modos novos do python (é nele que o
+        // script roda); nos demais tipos/modos vai null.
+        ssh_conn_id: (form.job_type === 'shell'
+          || (form.job_type === 'python' && form.python.modo !== 'modulo'))
+          ? (form.ssh_conn_id || null) : null,
         verbose_log: form.job_type === 'datastage' ? form.verbose_log : false,
         depends_on_jobs: form.depends_on_jobs,
         mssql_conn_id: form.job_type === 'storedproc' ? (form.mssql_conn_id || null) : null,
@@ -228,6 +240,9 @@ function JobFormModal({
               },
             }
           : {}),
+        // Nó python: a chave `python` vai SEMPRE (mesmo null) — 'modulo' envia
+        // null e volta ao legado (limpa o python_json no backend).
+        ...(form.job_type === 'python' ? { python: pythonToApi(form.python) } : {}),
         require_lineage: false,
         operacao: 'upsert',
       }),
@@ -280,6 +295,7 @@ function JobFormModal({
     mssql_conn_id: form.mssql_conn_id,
     mssql_database: form.mssql_database,
     params: form.params,
+    python: form.python,
   }
   function patchTypeFields(patch: Partial<JobTypeFieldsValue>) {
     setForm(prev => ({ ...prev, ...patch }))

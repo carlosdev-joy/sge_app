@@ -1,6 +1,7 @@
-import { Plus } from 'lucide-react'
+import { Maximize2, Plus } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Hint } from '../ui/Hint'
+import { Input, Select, Textarea } from '../ui/Input'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FONTE ÚNICA de campos por TIPO de etapa (datastage | shell | python | storedproc).
@@ -26,6 +27,62 @@ export interface JobParam {
 
 export type JobFieldsType = 'datastage' | 'shell' | 'python' | 'storedproc' | 'http'
 
+// ── Nó Python v2 — modo de execução ─────────────────────────────────────────
+// 'arquivo' (script já existente no servidor) e 'codigo' (código embutido,
+// publicado no servidor a cada execução) rodam VIA SSH no Servidor SSH do job;
+// 'modulo' é o modo LEGADO (job_command importado dentro do worker do Airflow).
+export type PythonModo = 'arquivo' | 'codigo' | 'modulo'
+
+// Draft LOCAL do nó python: guarda TODOS os campos de TODOS os modos — trocar
+// de modo não perde o que foi digitado nem vaza valor entre campos. O payload
+// envia apenas o modo ativo (pythonToApi); 'modulo' vira `python: null`.
+export interface PythonDraft {
+  modo: PythonModo
+  script_path: string
+  destino_dir: string
+  arquivo: string
+  codigo: string
+  interpretador: string
+}
+
+// Formato da API (campo `python` do nó) — null/ausente = modo legado 'modulo'.
+export interface PythonNodeApi {
+  modo: 'arquivo' | 'codigo'
+  script_path?: string
+  destino_dir?: string
+  arquivo?: string
+  codigo?: string
+  interpretador?: string
+}
+
+export function defaultPythonDraft(modo: PythonModo): PythonDraft {
+  return { modo, script_path: '', destino_dir: '', arquivo: '', codigo: '', interpretador: '' }
+}
+
+// GET → draft: null/ausente = legado 'modulo' (pré-seleciona o modo certo).
+export function pythonFromApi(p: PythonNodeApi | null | undefined): PythonDraft {
+  if (!p || (p.modo !== 'arquivo' && p.modo !== 'codigo')) return defaultPythonDraft('modulo')
+  return {
+    modo: p.modo,
+    script_path: p.script_path ?? '',
+    destino_dir: p.destino_dir ?? '',
+    arquivo: p.arquivo ?? '',
+    codigo: p.codigo ?? '',
+    interpretador: p.interpretador ?? '',
+  }
+}
+
+// Draft → payload: SÓ os campos do modo ativo (o backend normaliza de novo);
+// 'modulo' = null. Em nós python a chave `python` deve ir SEMPRE no payload
+// (mesmo null) — é a presença da chave que permite voltar ao legado.
+export function pythonToApi(d: PythonDraft | undefined): PythonNodeApi | null {
+  if (!d || d.modo === 'modulo') return null
+  const interp = d.interpretador.trim()
+  const opt = interp ? { interpretador: interp } : {}
+  if (d.modo === 'arquivo') return { modo: 'arquivo', script_path: d.script_path.trim(), ...opt }
+  return { modo: 'codigo', destino_dir: d.destino_dir.trim(), arquivo: d.arquivo.trim(), codigo: d.codigo, ...opt }
+}
+
 export interface JobTypeFieldsValue {
   job_type: JobFieldsType
   job_command: string
@@ -34,6 +91,8 @@ export interface JobTypeFieldsValue {
   mssql_conn_id: string
   mssql_database: string
   params: JobParam[]
+  // Nó python v2 — draft local (todos os modos). Ausente = legado 'modulo'.
+  python?: PythonDraft
 }
 
 export interface ConnOpt { conn_id: string; host?: string }
@@ -46,6 +105,8 @@ export interface JobTypeFieldsProps {
   dbServer: string | null
   dbDatabases: string[]
   compact?: boolean   // layout denso p/ o painel lateral do Fluxo (fontes/spacing menores)
+  // Maximiza o dock (modo focado) — usado pelo editor de código do nó python.
+  onMaximizar?: () => void
 }
 
 // ── Label / placeholder do campo de comando, por tipo ────────────────────────
@@ -70,6 +131,15 @@ export function jobCommandPlaceholder(t: JobFieldsType): string {
 // http(s)://, sem espaço/aspas (o comando vira argumento do HttpCallOperator).
 export const HTTP_URL_RE = /^https?:\/\/[^\s'"]+$/i
 
+// Réguas do nó python v2 — espelham o backend (_PY_*_RE em api/routers/jobs.py):
+// caminhos absolutos sem espaço/aspas (viram argumento de comando via SSH).
+export const PY_SCRIPT_PATH_RE = /^\/[^\s'"]+\.py$/
+export const PY_DIR_RE = /^\/[^\s'"]+$/
+export const PY_ARQUIVO_RE = /^[A-Za-z0-9._-]+\.py$/
+export const PY_INTERP_RE = /^[A-Za-z0-9._/-]+$/
+// Módulo importável (modo legado): segmentos com pontos, sem path/extensão.
+export const PY_MODULO_RE = /^[A-Za-z_]\w*(\.\w+)*$/
+
 // ── Validação unificada (espelha as regras do wizard) ────────────────────────
 // Retorna a lista de mensagens de erro (vazia = válido). Não valida nome/ordem,
 // que pertencem ao consumidor.
@@ -80,6 +150,40 @@ export function jobTypeFieldsErrors(v: JobTypeFieldsValue): string[] {
   }
   if (v.job_type === 'http' && !HTTP_URL_RE.test((v.job_command ?? '').trim())) {
     errs.push('Etapa http exige uma URL http(s) válida no campo URL')
+  }
+  if (v.job_type === 'python') {
+    // Nó python v2 — mesma régua do backend (_validate_python_node). Draft
+    // ausente = legado 'modulo' (nó antigo sem python_json).
+    const py = v.python ?? defaultPythonDraft('modulo')
+    if (py.modo === 'modulo') {
+      const cmd = (v.job_command ?? '').trim()
+      if (!cmd) errs.push('Módulo Python é obrigatório no modo legado (ex.: scripts.modulo.run)')
+      else if (!PY_MODULO_RE.test(cmd)) {
+        errs.push('Módulo Python inválido — caminho importável, com pontos (ex.: scripts.modulo.run)')
+      }
+    } else {
+      if (!v.ssh_conn_id) {
+        errs.push('Servidor SSH é obrigatório para o nó Python em modo '
+          + (py.modo === 'arquivo' ? "'Script no servidor'" : "'Código embutido'"))
+      }
+      if (py.modo === 'arquivo') {
+        if (!PY_SCRIPT_PATH_RE.test(py.script_path.trim())) {
+          errs.push('Caminho do script inválido — absoluto, terminando em .py, sem espaço/aspas (ex.: /opt/scripts/carga.py)')
+        }
+      } else {
+        if (!PY_DIR_RE.test(py.destino_dir.trim())) {
+          errs.push('Diretório de destino inválido — absoluto, sem espaço/aspas (ex.: /opt/scripts)')
+        }
+        if (!PY_ARQUIVO_RE.test(py.arquivo.trim())) {
+          errs.push('Nome do arquivo inválido — letras/números/._- terminando em .py')
+        }
+        if (!py.codigo.trim()) errs.push('Código Python vazio — cole o script no painel')
+      }
+      const interp = py.interpretador.trim()
+      if (interp && !PY_INTERP_RE.test(interp)) {
+        errs.push('Interpretador inválido (ex.: python3, /usr/bin/python3.11)')
+      }
+    }
   }
   if (v.job_type === 'storedproc') {
     if (!v.mssql_conn_id) errs.push('Conexão MSSQL é obrigatória para etapas storedproc')
@@ -168,7 +272,7 @@ export function JobParamsEditor({ params, onChange, compact }: JobParamsEditorPr
 // ── Componente principal ─────────────────────────────────────────────────────
 
 export function JobTypeFields({
-  value, onChange, sshConns, mssqlConns, dbServer, dbDatabases, compact,
+  value, onChange, sshConns, mssqlConns, dbServer, dbDatabases, compact, onMaximizar,
 }: JobTypeFieldsProps) {
   const { job_type } = value
 
@@ -180,7 +284,18 @@ export function JobTypeFields({
 
   return (
     <div className={`flex flex-col ${gap}`}>
-      {/* Comando / nome / procedure — label e placeholder por tipo */}
+      {/* python (v2) → seção própria: Modo de execução + campos por modo
+          (substitui o campo genérico de comando; o módulo legado mora dentro). */}
+      {job_type === 'python' ? (
+        <PythonExecFields
+          value={value}
+          onChange={onChange}
+          sshConns={sshConns}
+          onMaximizar={onMaximizar}
+          noteCls={noteCls}
+        />
+      ) : (
+      /* Comando / nome / procedure — label e placeholder por tipo */
       <div className="flex flex-col gap-1">
         <label className={`${labelCls} flex items-center gap-1`}>
           {jobCommandLabel(job_type)}
@@ -203,6 +318,7 @@ export function JobTypeFields({
           </p>
         )}
       </div>
+      )}
 
       {/* shell → conexão SSH (obrigatória) */}
       {job_type === 'shell' && (
@@ -306,5 +422,161 @@ export function JobTypeFields({
         </div>
       )}
     </div>
+  )
+}
+
+// ── Nó python — Modo de execução + campos por modo (v2) ─────────────────────
+// Um único nó python com 3 modos. Os drafts são SEGREGADOS por modo: o objeto
+// `python` guarda todos os campos e a troca de modo não apaga nem vaza nada
+// entre campos; o payload envia só o modo ativo (pythonToApi). O módulo legado
+// continua sendo o job_command (fora do objeto python — python: null no save).
+function PythonExecFields({ value, onChange, sshConns, onMaximizar, noteCls }: {
+  value: JobTypeFieldsValue
+  onChange: (patch: Partial<JobTypeFieldsValue>) => void
+  sshConns: ConnOpt[]
+  onMaximizar?: () => void
+  noteCls: string
+}) {
+  const py = value.python ?? defaultPythonDraft('modulo')
+  const patchPy = (p: Partial<PythonDraft>) => onChange({ python: { ...py, ...p } })
+
+  // Servidor SSH do job — o MESMO campo do modo shell (ssh_conn_id do job);
+  // obrigatório nos modos novos (é nele que o script roda).
+  const sshSelect = (
+    <Select
+      label="Servidor SSH (conexão Airflow) *"
+      hint={'Obrigatório nos modos "Script no servidor" e "Código embutido":\no script roda via SSH neste servidor. As conexões são cadastradas no Airflow.'}
+      value={value.ssh_conn_id}
+      onChange={e => onChange({ ssh_conn_id: e.target.value })}
+    >
+      <option value="">Selecione a conexão SSH...</option>
+      {sshConns.map(c => (
+        <option key={c.conn_id} value={c.conn_id}>{c.conn_id}{c.host ? ` (${c.host})` : ''}</option>
+      ))}
+      {/* Mantém a conexão salva visível mesmo se não estiver mais na lista */}
+      {value.ssh_conn_id && !sshConns.some(c => c.conn_id === value.ssh_conn_id) && (
+        <option value={value.ssh_conn_id}>{value.ssh_conn_id} (fora da lista)</option>
+      )}
+    </Select>
+  )
+
+  const interpInput = (
+    <Input
+      label="Interpretador (opcional)"
+      hint={'Binário Python usado no servidor (vazio = python3).\nAceita caminho absoluto (ex.: /usr/bin/python3.11).'}
+      value={py.interpretador}
+      onChange={e => patchPy({ interpretador: e.target.value })}
+      placeholder="python3"
+      className="font-mono"
+    />
+  )
+
+  return (
+    <>
+      {/* Modo de execução — PRIMEIRO campo da seção do tipo (full-width). */}
+      <div className="flex flex-col gap-1">
+        <Select
+          label="Modo de execução"
+          value={py.modo}
+          onChange={e => patchPy({ modo: e.target.value as PythonModo })}
+        >
+          <option value="arquivo">Script no servidor</option>
+          <option value="codigo">Código embutido</option>
+          <option value="modulo">Módulo no worker (legado)</option>
+        </Select>
+        <p className={noteCls}>
+          {py.modo === 'modulo'
+            ? 'Roda dentro do worker do Airflow — não usa SSH.'
+            : 'Roda via SSH no servidor selecionado.'}
+        </p>
+      </div>
+
+      {/* modulo (legado) → módulo importável no worker (= job_command) */}
+      {py.modo === 'modulo' && (
+        <>
+          <Input
+            label="Módulo Python *"
+            hint={'Módulo importável no ambiente do worker do Airflow (ex.: scripts.carga.run).\nNão roda via SSH.'}
+            value={value.job_command}
+            onChange={e => onChange({ job_command: e.target.value })}
+            placeholder="scripts.modulo.run"
+            className="font-mono"
+          />
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800/40 dark:bg-amber-900/20 dark:text-amber-300">
+            Modo mantido por compatibilidade. Para scripts novos, prefira “Script no servidor”.
+          </p>
+        </>
+      )}
+
+      {/* arquivo → col1: Servidor SSH · col2: caminho do script + interpretador */}
+      {py.modo === 'arquivo' && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="flex min-w-0 flex-col gap-3">{sshSelect}</div>
+          <div className="flex min-w-0 flex-col gap-3">
+            <Input
+              label="Caminho do script (.py) *"
+              hint={'Caminho absoluto do script já existente no servidor (ex.: /opt/scripts/carga.py).\nExecutado via SSH; exit ≠ 0 falha a etapa.'}
+              value={py.script_path}
+              onChange={e => patchPy({ script_path: e.target.value })}
+              placeholder="/opt/scripts/carga.py"
+              className="font-mono"
+            />
+            {interpInput}
+          </div>
+        </div>
+      )}
+
+      {/* codigo → col1: Servidor SSH + destino · col2: arquivo + interpretador;
+          o código é SEMPRE full-width, abaixo do grid. */}
+      {py.modo === 'codigo' && (
+        <>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="flex min-w-0 flex-col gap-3">
+              {sshSelect}
+              <Input
+                label="Diretório de destino *"
+                hint={'Diretório no servidor onde o arquivo será publicado (criado se não existir).\nO arquivo é sobrescrito a cada execução.'}
+                value={py.destino_dir}
+                onChange={e => patchPy({ destino_dir: e.target.value })}
+                placeholder="/opt/scripts"
+                className="font-mono"
+              />
+            </div>
+            <div className="flex min-w-0 flex-col gap-3">
+              <Input
+                label="Nome do arquivo (.py) *"
+                hint={'Nome do arquivo publicado no diretório de destino.\nLetras/números/._- terminando em .py (ex.: carga.py).'}
+                value={py.arquivo}
+                onChange={e => patchPy({ arquivo: e.target.value })}
+                placeholder="carga.py"
+                className="font-mono"
+              />
+              {interpInput}
+            </div>
+          </div>
+          <div className="relative flex flex-col gap-1">
+            {onMaximizar && (
+              <button
+                type="button"
+                onClick={onMaximizar}
+                title="Ampliar o painel (modo focado) para editar o código"
+                className="absolute right-0 top-0 z-10 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold text-dim hover:bg-edge/40 hover:text-ink"
+              >
+                <Maximize2 size={11} /> ampliar
+              </button>
+            )}
+            <Textarea
+              label="Código Python *"
+              hint={'Salvo como <diretório>/<arquivo> e executado via SSH.\nSem versionamento — para scripts grandes prefira Git + "Script no servidor".'}
+              value={py.codigo}
+              onChange={e => patchPy({ codigo: e.target.value })}
+              rows={12}
+              placeholder={'# cole aqui o script Python\nimport sys\nprint("carga ok")'}
+              className="font-mono text-xs"
+            />
+          </div>
+        </>
+      )}
+    </>
   )
 }

@@ -41,7 +41,10 @@ import { SqlNode, type SqlNodeData } from './SqlNode'
 import { TYPE_META, TYPE_ORDER, CREATABLE_TYPES, type EtapaType } from './types'
 import { defaultCondition, toNodeCondition, conditionLabel } from './condition'
 import { useColorMode } from './useColorMode'
-import { jobTypeFieldsErrors, type JobFieldsType, type JobParam } from './JobTypeFields'
+import {
+  jobTypeFieldsErrors, defaultPythonDraft, pythonFromApi, pythonToApi,
+  type JobFieldsType, type JobParam, type PythonDraft, type PythonNodeApi,
+} from './JobTypeFields'
 import {
   type Condition, type NotifyConfig, type SqlConfig, type MsgGrupo,
   defaultNotify, toNotifyConfig, notifyLabel, defaultSql, toSqlConfig, sqlLabel,
@@ -81,6 +84,8 @@ interface FluxoNode {
   mssql_conn_id?: string | null
   mssql_database?: string | null
   params?: { param_name: string; param_type: string; param_value: string | null; param_order?: number }[]
+  // Nó python v2 (chave `python` da API) — null/ausente = modo legado 'modulo'.
+  python?: PythonNodeApi | null
 }
 interface FluxoResp { nodes: FluxoNode[] }
 
@@ -178,6 +183,17 @@ function toEtapaType(t: string): EtapaType {
   return (TYPE_ORDER as string[]).includes(t) ? (t as EtapaType) : 'datastage'
 }
 
+// Subtítulo derivado do nó no canvas (data.sublabel). Nó python informa o MODO
+// de execução — e o servidor SSH nos modos remotos; demais tipos: undefined
+// (o EtapaNode volta ao label do tipo). Recalculado em buildNodes e a cada
+// patchNodeData (o painel edita modo/ssh ao vivo).
+function etapaSublabel(d: EtapaNodeData): string | undefined {
+  if (d.type !== 'python') return undefined
+  const modo = d.python?.modo ?? 'modulo'
+  if (modo === 'modulo') return 'módulo (worker)'
+  return `${modo === 'arquivo' ? 'script' : 'código'} @ ${d.ssh_conn_id || '—'}`
+}
+
 // ── Construção de nós/arestas a partir do payload ───────────────────────────
 const EDGE_ARROW = { type: MarkerType.ArrowClosed, width: 16, height: 16 }
 const SIM_STYLE = { stroke: '#22c55e' }
@@ -231,7 +247,11 @@ function buildNodes(apiNodes: FluxoNode[]): Node[] {
         param_type: p.param_type,
         param_value: p.param_value ?? '',
       })),
+      // Nó python v2: draft local a partir da API (null/ausente = 'modulo' —
+      // nó existente sem python pré-seleciona o modo legado).
+      python: pythonFromApi(n.python),
     }
+    data.sublabel = etapaSublabel(data)
     return { id: n.job_name, type: 'etapa' as const, position, data }
   })
 }
@@ -896,8 +916,12 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
         mssql_conn_id: '',
         mssql_database: '',
         params: [],
+        // Nó NOVO: python v2 default 'arquivo' (Script no servidor) — só vale
+        // quando o tipo é/virar python; os demais tipos ignoram o draft.
+        python: defaultPythonDraft('arquivo'),
         isNew: true,
       }
+      data.sublabel = etapaSublabel(data)
       const node: Node = { id: name, type: 'etapa', position: { x, y }, selected: true, data }
       setNodes(nds => [...nds.map(n => n.selected ? { ...n, selected: false } : n), node])
       setDirty(true)
@@ -907,8 +931,14 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   )
 
   // Atualiza o `data` de um nó (etapa) — usado pelo painel à direita ao vivo.
+  // Recalcula o sublabel derivado (modo do nó python muda o subtítulo no canvas).
   function patchNodeData(nodeId: string, patch: Record<string, unknown>) {
-    setNodes(nds => nds.map(n => n.id === nodeId ? { ...n, data: { ...n.data, ...patch } } : n))
+    setNodes(nds => nds.map(n => {
+      if (n.id !== nodeId) return n
+      const data = { ...n.data, ...patch }
+      if (n.type === 'etapa') data.sublabel = etapaSublabel(data as EtapaNodeData)
+      return { ...n, data }
+    }))
     setDirty(true)
   }
 
@@ -1359,6 +1389,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
           mssql_conn_id: (d.mssql_conn_id as string | null) ?? '',
           mssql_database: (d.mssql_database as string | null) ?? '',
           params: (d.params as JobParam[] | undefined) ?? [],
+          python: d.python as PythonDraft | undefined,
         })
         etapaErros.push(...errs.map(e => `${n.id}: ${e}`))
       }
@@ -1507,6 +1538,12 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
               param_type: p.param_type,
               param_value: p.param_value,
             })),
+          // Nó python: a chave `python` vai SEMPRE (mesmo null) — é a presença
+          // da chave que permite voltar ao legado ('modulo' → python: null
+          // limpa o python_json no backend). Envia só o modo ativo do draft.
+          ...(jobType === 'python'
+            ? { python: pythonToApi(d.python as PythonDraft | undefined) }
+            : {}),
         }
       })
 
@@ -1666,6 +1703,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
           mssql_conn_id: (d.mssql_conn_id as string | null) ?? '',
           mssql_database: (d.mssql_database as string | null) ?? '',
           params: (d.params as JobParam[] | undefined) ?? [],
+          python: d.python as PythonDraft | undefined,
         }))
       } else if (n.type === 'decisao') {
         if (!nRamos.get(n.id)) errs.push('nenhum ramo ligado (arraste das saídas)')

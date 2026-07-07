@@ -5,7 +5,7 @@
 import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { TYPE_META, type EtapaType } from './types'
-import type { JobParam } from './JobTypeFields'
+import type { JobParam, PythonDraft } from './JobTypeFields'
 
 export interface EtapaNodeData {
   name: string
@@ -20,6 +20,12 @@ export interface EtapaNodeData {
   mssql_conn_id?: string | null
   mssql_database?: string | null
   params?: JobParam[]
+  // Nó python v2 — draft local do modo de execução (todos os campos; o save
+  // envia só o modo ativo). Ausente/modo 'modulo' = legado (python: null).
+  python?: PythonDraft
+  // Subtítulo derivado (calculado no FluxoEditor — etapaSublabel): para python
+  // indica o modo ("script @ ssh" / "código @ ssh" / "módulo (worker)").
+  sublabel?: string
   // Marca nós criados localmente (ainda não salvos) — nome/comando editáveis.
   isNew?: boolean
   [key: string]: unknown
@@ -75,9 +81,10 @@ function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) 
         {data.name}
       </p>
 
-      {/* Linha de baixo: tipo do componente + ordem (discreto). */}
+      {/* Linha de baixo: subtítulo (quando derivado — ex.: modo do nó python)
+          ou o label do tipo + ordem (discreto). */}
       <p className="mt-0.5 text-center text-[9px] leading-tight text-dim">
-        {meta.label} <span className="font-mono">#{data.order}</span>
+        {data.sublabel ?? meta.label} <span className="font-mono">#{data.order}</span>
       </p>
 
       <Handle

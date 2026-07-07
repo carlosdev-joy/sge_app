@@ -166,6 +166,75 @@ class HttpCallOperator(BaseOperator):
         return resp.status_code
 
 
+class PythonScriptOperator(SSHOperator):
+    """Job python do ORQUESTRA em SERVIDOR REMOTO (nó Python v2, migration 059).
+
+    Dois modos — ambos executam via SSH no servidor do ``ssh_conn_id``:
+      - ``modo='arquivo'``: roda um script .py que JÁ existe no servidor
+        (``<interpretador> <script_path>``).
+      - ``modo='codigo'``: PUBLICA o código do usuário no servidor via SFTP
+        (``mkdir -p`` + escrita de ``<destino_dir>/<arquivo>``) e então executa
+        (``cd <destino_dir> && <interpretador> <arquivo>``). O arquivo é
+        sobrescrito a cada execução — a fonte da verdade é o Orquestra.
+
+    O modo legado 'modulo' NÃO passa por aqui (segue no PythonModuleOperator,
+    dentro do worker). ``template_ext=()`` pela mesma razão do ShellOperator:
+    caminho terminando em .sh/.py não pode virar arquivo de template Jinja.
+    Aspas/espacos nos caminhos são tratados com shlex.quote em RUNTIME (aqui),
+    não na geração do código."""
+    template_ext = ()
+
+    def __init__(self, *, modo, script_path=None, destino_dir=None, arquivo=None,
+                 codigo=None, interpretador=None, **kwargs):
+        import shlex
+        interp = (interpretador or "python3").strip() or "python3"
+        if modo == "codigo":
+            command = (f"cd {shlex.quote(destino_dir or '')} && "
+                       f"{interp} {shlex.quote(arquivo or '')}")
+        else:
+            command = f"{interp} {shlex.quote(script_path or '')}"
+        super().__init__(command=command, **kwargs)
+        self.modo = modo
+        self.script_path = script_path
+        self.destino_dir = destino_dir
+        self.arquivo = arquivo
+        self.codigo = codigo
+        self.interpretador = interp
+
+    def execute(self, context):
+        if self.modo == "codigo":
+            self._publicar_arquivo()
+        return super().execute(context)
+
+    def _publicar_arquivo(self):
+        """Publica o código no servidor (mkdir -p + SFTP). Falha ALTO em
+        qualquer degrau — publicar pela metade e executar seria pior."""
+        import posixpath
+        import shlex
+        from airflow.providers.ssh.hooks.ssh import SSHHook  # lazy (worker)
+
+        remoto = posixpath.join(self.destino_dir or "", self.arquivo or "")
+        dados = (self.codigo or "").encode("utf-8")
+        self.log.info("[PY] publicando %s (%d bytes) via SFTP em %s",
+                      remoto, len(dados), self.ssh_conn_id)
+        hook = SSHHook(ssh_conn_id=self.ssh_conn_id)
+        with hook.get_conn() as client:
+            _, out, err = client.exec_command(
+                f"mkdir -p {shlex.quote(self.destino_dir or '')}")
+            rc = out.channel.recv_exit_status()
+            if rc != 0:
+                detalhe = err.read().decode(errors="replace")[:400]
+                raise RuntimeError(
+                    f"mkdir -p {self.destino_dir!r} falhou (rc={rc}): {detalhe}")
+            sftp = client.open_sftp()
+            try:
+                with sftp.open(remoto, "wb") as fh:
+                    fh.write(dados)
+            finally:
+                sftp.close()
+        self.log.info("[PY] publicado — executando: %s", self.command)
+
+
 class ShellOperator(SSHOperator):
     """Job shell do ORQUESTRA — SSH no servidor do ``ssh_conn_id`` e executa o
     comando lá.
