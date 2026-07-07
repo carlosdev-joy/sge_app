@@ -23,9 +23,11 @@ export interface PainelEtapaProps {
   onRename: (oldName: string, novo: string) => boolean
   onPatchData: (nodeId: string, patch: Record<string, unknown>) => void
   onDelete: (id: string) => void
+  // Maximiza o dock (modo focado) — o editor de código do nó python usa.
+  onMaximizar?: () => void
 }
 
-export function PainelEtapa({ node, sshConns, mssqlConns, dbServer, dbDatabases, onRename, onPatchData, onDelete }: PainelEtapaProps) {
+export function PainelEtapa({ node, sshConns, mssqlConns, dbServer, dbDatabases, onRename, onPatchData, onDelete, onMaximizar }: PainelEtapaProps) {
   const d = node.data as EtapaNodeData
   const isNew = !!d.isNew
   const meta = TYPE_META[d.type]
@@ -40,6 +42,7 @@ export function PainelEtapa({ node, sshConns, mssqlConns, dbServer, dbDatabases,
     mssql_conn_id: d.mssql_conn_id ?? '',
     mssql_database: d.mssql_database ?? '',
     params: (d.params as JobParam[] | undefined) ?? [],
+    python: d.python,
   }
 
   // Patch do JobTypeFields → mapeia job_command de volta p/ `command` (nullável).
@@ -125,6 +128,7 @@ export function PainelEtapa({ node, sshConns, mssqlConns, dbServer, dbDatabases,
             mssqlConns={mssqlConns}
             dbServer={dbServer}
             dbDatabases={dbDatabases}
+            onMaximizar={onMaximizar}
           />
         </div>
       </div>
