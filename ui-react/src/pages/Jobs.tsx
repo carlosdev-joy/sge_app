@@ -134,14 +134,8 @@ function JobFormModal({
   })
   const mssqlConns = mssqlData?.connections ?? []
 
-  // Bancos do mesmo servidor da conexão do ORQUESTRA (seletor de banco-alvo storedproc).
-  const { data: dbData } = useQuery<{ server: string | null; databases: string[] }>({
-    queryKey: ['job-databases'],
-    queryFn: () => apiFetch('/jobs/databases'),
-    staleTime: 300_000,
-  })
-  const dbServer    = dbData?.server ?? null
-  const dbDatabases = dbData?.databases ?? []
+  // Bancos do storedproc: o JobTypeFields busca sozinho, POR CONEXÃO
+  // selecionada (regra de 100% do Orquestra) — a query global fixa saiu daqui.
 
   // Jobs irmãos do mesmo pipeline — candidatos a predecessores ("Depende de").
   const { data: pipeJobs } = useQuery<{ data: { job_name: string }[] }>({
@@ -401,8 +395,6 @@ function JobFormModal({
             onChange={patchTypeFields}
             sshConns={sshConns}
             mssqlConns={mssqlConns}
-            dbServer={dbServer}
-            dbDatabases={dbDatabases}
           />
         )}
 

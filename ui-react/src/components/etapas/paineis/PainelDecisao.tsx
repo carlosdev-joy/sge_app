@@ -4,6 +4,7 @@
 // viram uma TABELA (uma linha por caso, senão no rodapé), padrão dos routers
 // de Informatica/DataStage. Abaixo de lg colapsa para 1 coluna.
 import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import type { Node } from '@xyflow/react'
 import { GitBranch, Maximize2, Play, Trash2, Plus, ChevronUp, ChevronDown, X } from 'lucide-react'
 import { apiFetch } from '../../../lib/api'
@@ -32,6 +33,49 @@ export interface PainelDecisaoProps extends CasoOps {
   onMaximizar?: () => void
   // Hover numa linha de caso → o editor destaca a aresta daquele ramo no canvas.
   onHoverRamo?: (nodeId: string, ramo: string | null) => void
+}
+
+// Banco da condição (contagem/query): com uma CONEXÃO selecionada, vira select
+// com os bancos DAQUELE servidor (credencial nativa — mesma regra do resto do
+// Orquestra; cache compartilhado com o storedproc via queryKey 'job-databases').
+// Com "Conexão padrão" o servidor não é conhecido aqui → campo livre.
+function BancoCondicao({ connId, host, value, onChange }: {
+  connId: string
+  host: string
+  value: string
+  onChange: (v: string) => void
+}) {
+  const { data } = useQuery<{ server: string | null; databases: string[] }>({
+    queryKey: ['job-databases', connId, host],
+    queryFn: () => apiFetch(
+      `/jobs/databases?conn_id=${encodeURIComponent(connId)}&host=${encodeURIComponent(host)}`),
+    enabled: !!connId || !!host,
+    staleTime: 300_000,
+  })
+  const dbs = data?.databases ?? []
+  if (!connId && !host) {
+    return (
+      <Input
+        label="Banco (opcional)"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder="ex: BI_DW"
+        className="font-mono text-xs"
+      />
+    )
+  }
+  return (
+    <Select
+      label="Banco (opcional)"
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      className="text-xs"
+    >
+      <option value="">Banco padrão da conexão</option>
+      {dbs.map(d => <option key={d} value={d}>{d}</option>)}
+      {value && !dbs.includes(value) && <option value={value}>{value}</option>}
+    </Select>
+  )
 }
 
 export function PainelDecisao({
@@ -101,6 +145,9 @@ export function PainelDecisao({
       setSimulando(false)
     }
   }
+
+  // Banco da condição segue a CONEXÃO selecionada (regra de 100% do Orquestra).
+  const condHost = mssqlConns.find(cn => cn.conn_id === (c.mssql_conn_id ?? ''))?.host ?? ''
 
   // Pílula de um alvo de ramo (job ligado por aresta).
   const pill = (m: string) => (
@@ -288,12 +335,11 @@ export function PainelDecisao({
                 placeholder="db.schema.tabela"
                 className="font-mono text-xs"
               />
-              <Input
-                label="Banco (opcional)"
+              <BancoCondicao
+                connId={c.mssql_conn_id ?? ''}
+                host={condHost}
                 value={c.database ?? ''}
-                onChange={e => patch({ database: e.target.value })}
-                placeholder="ex: BI_DW"
-                className="font-mono text-xs"
+                onChange={v => patch({ database: v })}
               />
             </>
           ) : (
@@ -319,12 +365,11 @@ export function PainelDecisao({
                 />
               </div>
               <div className="flex flex-col gap-1">
-                <Input
-                  label="Banco (opcional)"
+                <BancoCondicao
+                  connId={c.mssql_conn_id ?? ''}
+                  host={condHost}
                   value={c.database ?? ''}
-                  onChange={e => patch({ database: e.target.value })}
-                  placeholder="ex: BI_DW"
-                  className="font-mono text-xs"
+                  onChange={v => patch({ database: v })}
                 />
                 <p className="text-[11px] text-dim/70">
                   Vazio = banco default da conexão. Preencha se o SELECT usa nomes sem banco.
@@ -338,7 +383,7 @@ export function PainelDecisao({
             <Select
               label="Conexão MSSQL (opcional)"
               value={c.mssql_conn_id ?? ''}
-              onChange={e => patch({ mssql_conn_id: e.target.value })}
+              onChange={e => patch({ mssql_conn_id: e.target.value, database: '' })}
               className="text-xs"
             >
               <option value="">Conexão padrão</option>

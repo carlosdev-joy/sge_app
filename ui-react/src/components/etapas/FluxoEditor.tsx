@@ -633,14 +633,8 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   })
   const sshConns = sshData?.connections ?? []
 
-  // Bancos do mesmo servidor (seletor de banco-alvo de storedproc no JobTypeFields).
-  const { data: dbData } = useQuery<{ server: string | null; databases: string[] }>({
-    queryKey: ['job-databases'],
-    queryFn: () => apiFetch('/jobs/databases'),
-    staleTime: 300_000,
-  })
-  const dbServer = dbData?.server ?? null
-  const dbDatabases = dbData?.databases ?? []
+  // Bancos do storedproc: o JobTypeFields busca sozinho, POR CONEXÃO
+  // selecionada (regra de 100% do Orquestra) — a query global fixa saiu daqui.
 
   // Grupos (canais Teams) p/ o nó de notificação — Select do painel e rótulo do card.
   // Degrada para [] se a tabela/endpoint não existir (try/except no backend).
@@ -2078,8 +2072,6 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
               sqlNodeNames={sqlNodeNames}
               sshConns={sshConns}
               mssqlConns={mssqlConns}
-              dbServer={dbServer}
-              dbDatabases={dbDatabases}
               grupos={grupos}
               readOnly={readOnly}
               onRename={renomear}

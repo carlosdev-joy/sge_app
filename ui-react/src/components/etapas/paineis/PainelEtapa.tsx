@@ -18,8 +18,6 @@ export interface PainelEtapaProps {
   node: Node
   sshConns: { conn_id: string; host: string }[]
   mssqlConns: { conn_id: string; host: string }[]
-  dbServer: string | null
-  dbDatabases: string[]
   onRename: (oldName: string, novo: string) => boolean
   onPatchData: (nodeId: string, patch: Record<string, unknown>) => void
   onDelete: (id: string) => void
@@ -27,7 +25,7 @@ export interface PainelEtapaProps {
   onMaximizar?: () => void
 }
 
-export function PainelEtapa({ node, sshConns, mssqlConns, dbServer, dbDatabases, onRename, onPatchData, onDelete, onMaximizar }: PainelEtapaProps) {
+export function PainelEtapa({ node, sshConns, mssqlConns, onRename, onPatchData, onDelete, onMaximizar }: PainelEtapaProps) {
   const d = node.data as EtapaNodeData
   const isNew = !!d.isNew
   const meta = TYPE_META[d.type]
@@ -126,8 +124,6 @@ export function PainelEtapa({ node, sshConns, mssqlConns, dbServer, dbDatabases,
             onChange={patchType}
             sshConns={sshConns}
             mssqlConns={mssqlConns}
-            dbServer={dbServer}
-            dbDatabases={dbDatabases}
             onMaximizar={onMaximizar}
           />
         </div>
