@@ -1,5 +1,6 @@
 import { Plus } from 'lucide-react'
 import { Button } from '../ui/Button'
+import { Hint } from '../ui/Hint'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FONTE ÚNICA de campos por TIPO de etapa (datastage | shell | python | storedproc).
@@ -181,7 +182,12 @@ export function JobTypeFields({
     <div className={`flex flex-col ${gap}`}>
       {/* Comando / nome / procedure — label e placeholder por tipo */}
       <div className="flex flex-col gap-1">
-        <label className={labelCls}>{jobCommandLabel(job_type)}</label>
+        <label className={`${labelCls} flex items-center gap-1`}>
+          {jobCommandLabel(job_type)}
+          {job_type === 'http' && (
+            <Hint texto={'Aceita apenas http:// ou https://, sem espaços nem aspas.\nA URL é chamada no runtime pelo HttpCallOperator (allowlist do backend).'} />
+          )}
+        </label>
         <input
           type="text"
           value={value.job_command}
@@ -201,7 +207,10 @@ export function JobTypeFields({
       {/* shell → conexão SSH (obrigatória) */}
       {job_type === 'shell' && (
         <div className="flex flex-col gap-1">
-          <label className={labelCls}>Servidor SSH (conexão Airflow) *</label>
+          <label className={`${labelCls} flex items-center gap-1`}>
+            Servidor SSH (conexão Airflow) *
+            <Hint texto={'Obrigatório para etapas shell: o comando/script roda via SSH neste servidor.\nAs conexões SSH são cadastradas no Airflow.'} />
+          </label>
           <select
             value={value.ssh_conn_id}
             onChange={e => onChange({ ssh_conn_id: e.target.value })}
@@ -239,7 +248,10 @@ export function JobTypeFields({
       {/* storedproc → conexão MSSQL (obrigatória) */}
       {job_type === 'storedproc' && (
         <div className="flex flex-col gap-1">
-          <label className={labelCls}>Conexão MSSQL *</label>
+          <label className={`${labelCls} flex items-center gap-1`}>
+            Conexão MSSQL *
+            <Hint texto={'Obrigatória para storedproc: a proc roda neste servidor, com a credencial da conexão.'} />
+          </label>
           <select
             value={value.mssql_conn_id}
             onChange={e => onChange({ mssql_conn_id: e.target.value })}
@@ -256,8 +268,9 @@ export function JobTypeFields({
       {/* storedproc → servidor / banco-alvo (opcional, mesmo servidor) */}
       {job_type === 'storedproc' && (
         <div className="flex flex-col gap-1">
-          <label className={labelCls}>
+          <label className={`${labelCls} flex items-center gap-1`}>
             Servidor / Banco {dbServer && <span className="text-dim/60 font-mono normal-case">({dbServer})</span>}
+            <Hint texto={'Banco-alvo da proc, no MESMO servidor da conexão (vira EXEC [banco].schema.proc).\nVazio = banco padrão da conexão.'} />
           </label>
           <select
             value={value.mssql_database}
@@ -270,9 +283,6 @@ export function JobTypeFields({
               <option value={value.mssql_database}>{value.mssql_database}</option>
             )}
           </select>
-          <p className={`${compact ? 'text-[10px]' : 'text-xs'} text-dim/60`}>
-            A proc roda no banco escolhido, no mesmo servidor (<code>EXEC [banco].schema.proc</code>). Vazio = banco padrão.
-          </p>
         </div>
       )}
 
@@ -281,6 +291,7 @@ export function JobTypeFields({
         <div className="flex flex-col gap-1.5">
           <label className={`${labelCls} flex items-center gap-1.5`}>
             Parâmetros (opcional)
+            <Hint texto={'Nome com ou sem @ (o @ é opcional) — sem nomes duplicados.\nTipos aceitos: VARCHAR, INT, DATE, DATETIME, DECIMAL e BIT.\nO valor fixo é passado à proc em cada execução.'} />
             {value.params.length > 0 && (
               <span className="bg-blue-100 text-blue-700 border border-blue-300 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-800/40 rounded-full px-1.5 py-0 text-[9px] font-bold">
                 {value.params.length}

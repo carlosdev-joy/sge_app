@@ -125,13 +125,13 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
           <div className="flex flex-col gap-1">
             <Textarea
               label="SELECT *"
+              hint={'Somente leitura: comece com SELECT/WITH — sem \';\' nem DML.\nO nó publica 1 valor: a 1ª coluna da 1ª linha do resultado.'}
               value={cfg.sql ?? ''}
               rows={10}
               onChange={e => patch({ sql: e.target.value })}
               placeholder="ex: SELECT MAX(flag) FROM dbo.Controle WHERE ..."
               className="font-mono text-xs"
             />
-            <p className="text-[10px] text-dim/70">Somente SELECT — deve retornar 1 valor.</p>
           </div>
 
           <Select
@@ -153,6 +153,7 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
           <div className="flex flex-col gap-1">
             <Select
               label="Banco *"
+              hint={'Banco onde o SELECT roda, no servidor da conexão.\nVazio = banco default da conexão — preencha se o SELECT usa nomes sem banco.'}
               value={cfg.database ?? ''}
               onChange={e => { patch({ database: e.target.value || null }); setPreview(null) }}
               disabled={!host}
@@ -172,6 +173,7 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
           <div className="flex flex-col gap-1">
             <Select
               label="Se a consulta falhar"
+              hint={'Falhar (recomendado): a execução para e o erro fica visível.\nPublicar nulo segue em silêncio — uma decisão a jusante pode rotear o ramo errado.'}
               value={cfg.on_error === 'nulo' ? 'nulo' : 'falhar'}
               onChange={e => patch({ on_error: e.target.value === 'nulo' ? 'nulo' : 'falhar' })}
               className="text-xs"
