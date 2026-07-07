@@ -1,0 +1,126 @@
+// ── Painel de uma ETAPA ──────────────────────────────────────────────────────
+import type { Node } from '@xyflow/react'
+import { Trash2 } from 'lucide-react'
+import { Button } from '../../ui/Button'
+import { Select } from '../../ui/Input'
+import type { EtapaNodeData } from '../EtapaNode'
+import { TYPE_META, CREATABLE_TYPES, type EtapaType } from '../types'
+import {
+  JobTypeFields, jobTypeFieldsErrors,
+  type JobTypeFieldsValue, type JobFieldsType, type JobParam,
+} from '../JobTypeFields'
+import { NomeField } from './shared'
+
+export interface PainelEtapaProps {
+  node: Node
+  sshConns: { conn_id: string; host: string }[]
+  mssqlConns: { conn_id: string; host: string }[]
+  dbServer: string | null
+  dbDatabases: string[]
+  onRename: (oldName: string, novo: string) => boolean
+  onPatchData: (nodeId: string, patch: Record<string, unknown>) => void
+  onDelete: (id: string) => void
+}
+
+export function PainelEtapa({ node, sshConns, mssqlConns, dbServer, dbDatabases, onRename, onPatchData, onDelete }: PainelEtapaProps) {
+  const d = node.data as EtapaNodeData
+  const isNew = !!d.isNew
+  const meta = TYPE_META[d.type]
+  const Icon = meta.icon
+
+  // Valor consumido pela fonte única de campos por tipo (JobTypeFields).
+  const typeValue: JobTypeFieldsValue = {
+    job_type: d.type as JobFieldsType,
+    job_command: d.command ?? '',
+    ssh_conn_id: d.ssh_conn_id ?? '',
+    verbose_log: !!d.verbose_log,
+    mssql_conn_id: d.mssql_conn_id ?? '',
+    mssql_database: d.mssql_database ?? '',
+    params: (d.params as JobParam[] | undefined) ?? [],
+  }
+
+  // Patch do JobTypeFields → mapeia job_command de volta p/ `command` (nullável).
+  function patchType(patch: Partial<JobTypeFieldsValue>) {
+    const out: Record<string, unknown> = { ...patch }
+    if ('job_command' in patch) {
+      out.command = (patch.job_command ?? '') === '' ? null : patch.job_command
+      delete out.job_command
+    }
+    if ('job_type' in patch) delete out.job_type   // tipo só muda na criação
+    onPatchData(node.id, out)
+  }
+
+  // Validação AO VIVO (mesma régua do modal da Lista e do guard do salvar) —
+  // o usuário vê a pendência no painel em vez de descobrir num toast de 422.
+  const typeErrors = jobTypeFieldsErrors(typeValue)
+
+  return (
+    <div className="flex flex-1 flex-col gap-3 p-3">
+      {/* Cabeçalho: chip do tipo */}
+      <div className="flex items-center gap-2">
+        <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${meta.chip}`}>
+          <Icon size={15} strokeWidth={2.2} />
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
+          <p className="text-[10px] text-dim">{meta.label}</p>
+        </div>
+      </div>
+
+      <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: CARGA_CLIENTES" onRename={onRename} />
+
+      {/* Tipo (editável só na criação) e Ordem */}
+      <div className="grid grid-cols-2 gap-2">
+        <Select
+          label="Tipo"
+          value={d.type}
+          disabled={!isNew}
+          onChange={e => onPatchData(node.id, { type: e.target.value as EtapaType })}
+          className={`text-xs ${!isNew ? 'opacity-60' : ''}`}
+        >
+          {CREATABLE_TYPES.map(t => <option key={t} value={t}>{TYPE_META[t].label}</option>)}
+        </Select>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-dim">Ordem</label>
+          <input
+            type="number"
+            min={1}
+            value={d.order ?? ''}
+            onChange={e => {
+              const n = parseInt(e.target.value)
+              onPatchData(node.id, { order: Number.isFinite(n) && n >= 1 ? n : 1 })
+            }}
+            className="rounded-md border border-edge bg-panel px-2 py-1 text-xs text-ink focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
+      </div>
+      {!isNew && <p className="-mt-1.5 text-[10px] text-dim/70">O tipo de um nó já salvo não é editável.</p>}
+
+      <div className="border-t border-edge pt-2.5">
+        {typeErrors.length > 0 && (
+          <div className="mb-2 flex flex-col gap-0.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 dark:border-amber-800 dark:bg-amber-900/20">
+            {typeErrors.map(e => (
+              <p key={e} className="text-[11px] leading-snug text-amber-800 dark:text-amber-300">{e}</p>
+            ))}
+          </div>
+        )}
+        {/* Campos por TIPO — fonte única (vale na Lista e no Fluxo), modo compacto */}
+        <JobTypeFields
+          value={typeValue}
+          onChange={patchType}
+          sshConns={sshConns}
+          mssqlConns={mssqlConns}
+          dbServer={dbServer}
+          dbDatabases={dbDatabases}
+          compact
+        />
+      </div>
+
+      <div className="mt-auto border-t border-edge pt-3">
+        <Button variant="danger" size="sm" className="w-full justify-center" onClick={() => onDelete(node.id)}>
+          <Trash2 size={13} /> Excluir etapa
+        </Button>
+      </div>
+    </div>
+  )
+}
