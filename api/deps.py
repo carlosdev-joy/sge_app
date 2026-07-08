@@ -36,7 +36,8 @@ _AUTH_TTL_MINUTES = 5
 # ── Helpers de usuário ─────────────────────────────────────────────────────────
 
 def carregar_usuario(cur, matricula: str) -> dict:
-    """Lê usuário + perfil + permissões. Retorna defaults se não cadastrado."""
+    """Lê usuário + perfil + permissões (perfil ∪ overrides por usuário).
+    Retorna defaults se não cadastrado."""
     cur.execute(
         "SELECT u.matricula, u.perfil_nome, u.primeiro_nome, u.ultimo_nome, u.email, u.ativo "
         "FROM dbo.etl_usuario u WHERE u.matricula = ?", [matricula])
@@ -51,7 +52,17 @@ def carregar_usuario(cur, matricula: str) -> dict:
                 "primeiro_nome": None, "ultimo_nome": None, "email": None}
     cur.execute(
         "SELECT recurso FROM dbo.etl_perfil_permissao WHERE perfil_nome = ?", [info["perfil"]])
-    info["permissoes"] = sorted(r[0] for r in cur.fetchall())
+    perms = {r[0] for r in cur.fetchall()}
+    extras: set[str] = set()
+    try:
+        cur.execute(
+            "SELECT recurso FROM dbo.etl_usuario_permissao WHERE matricula = ?",
+            [info["matricula"]])
+        extras = {r[0] for r in cur.fetchall()}
+    except Exception:
+        pass  # tabela só existe a partir da migration 060
+    info["permissoes"] = sorted(perms | extras)
+    info["permissoes_extra"] = sorted(extras)
     return info
 
 
