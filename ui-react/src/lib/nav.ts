@@ -55,12 +55,25 @@ export interface NavGroupView {
   items: NavItem[]
 }
 
-// Filtra o NAV por RBAC (`canSee`) e agrupa por domínio, removendo seções vazias.
-// Item sem `perm`, ou usuário sem lista de permissões, é sempre visível.
+// Regra de visibilidade RBAC — compartilhada entre a sidebar (useVisibleNav),
+// o guard de rota (RequirePerm no App.tsx) e o redirect pós-login. Recurso sem
+// exigência, ou usuário sem lista de permissões, é sempre visível; a proteção
+// de dados continua sendo o 403 do backend.
+export const canAccess = (perm: string | undefined, perms: string[]) =>
+  !perm || perms.length === 0 || perms.includes(perm)
+
+// Primeira tela visível na ordem do NAV — destino pós-login e fallback quando
+// uma rota é negada (ex.: usuário só-Caixa Seguro não cai em /dashboard).
+// /avisos não exige permissão, então sempre existe destino.
+export function firstVisiblePath(perms: string[] | null | undefined): string {
+  const p = perms ?? []
+  return NAV.find((n) => canAccess(n.perm, p))?.to ?? '/avisos'
+}
+
+// Filtra o NAV por RBAC (`canAccess`) e agrupa por domínio, removendo seções vazias.
 export function useVisibleNav(): NavGroupView[] {
   const perms = useAuthStore((s) => s.user?.permissoes) ?? []
-  const canSee = (n: NavItem) => !n.perm || perms.length === 0 || perms.includes(n.perm)
-  const all = NAV.filter(canSee)
+  const all = NAV.filter((n) => canAccess(n.perm, perms))
   return NAV_GROUPS
     .map((group) => ({ group, items: all.filter((n) => n.group === group) }))
     .filter((g) => g.items.length > 0)

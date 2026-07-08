@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/auth'
 import { apiFetch } from '../lib/api'
+import { firstVisiblePath } from '../lib/nav'
 import { Logo } from '../components/layout/Logo'
 
 // Logo oficial servido do volume persistente /branding/ (não versionado, imune
@@ -43,7 +44,7 @@ export default function Login() {
         body: JSON.stringify({ usuario: matricula, senha }),
       })
       setAuth(res.usuario, res.token)
-      navigate('/dashboard')
+      navigate(firstVisiblePath(res.usuario?.permissoes))
     } catch (err: any) {
       setError(err.message ?? 'Erro ao fazer login')
     } finally {

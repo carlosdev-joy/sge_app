@@ -2,7 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClient } from './lib/queryClient'
 import { useAuthStore } from './store/auth'
-import { NAV } from './lib/nav'
+import { NAV, canAccess, firstVisiblePath } from './lib/nav'
 import { AppShellV2 } from './components/layout/AppShellV2'
 import Login from './pages/Login'
 import Admin from './pages/Admin'
@@ -28,6 +28,21 @@ import Fluxos from './pages/Fluxos'
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
   if (!token) return <Navigate to="/login" replace />
+  return <>{children}</>
+}
+
+// Destino padrão ("/", catch-all e rota negada): 1ª tela visível pelo RBAC.
+function HomeRedirect() {
+  const perms = useAuthStore((s) => s.user?.permissoes)
+  return <Navigate to={firstVisiblePath(perms)} replace />
+}
+
+// Guard de rota: espelha a visibilidade do menu (canAccess). URL digitada de
+// tela sem permissão redireciona para a 1ª tela visível; a proteção de dados
+// continua sendo o 403 do backend.
+function RequirePerm({ perm, children }: { perm?: string; children: React.ReactNode }) {
+  const perms = useAuthStore((s) => s.user?.permissoes) ?? []
+  if (!canAccess(perm, perms)) return <HomeRedirect />
   return <>{children}</>
 }
 
@@ -68,15 +83,15 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<PrivateRoute><AppShellV2 /></PrivateRoute>}>
-            <Route index element={<Navigate to="/dashboard" replace />} />
+            <Route index element={<HomeRedirect />} />
             {NAV.map((n) => {
               const element = PAGE_ELEMENT[n.to]
               if (!element) return null
               const path = n.to.replace(/^\//, '') + (WILDCARD_ROUTES.has(n.to) ? '/*' : '')
-              return <Route key={n.to} path={path} element={element} />
+              return <Route key={n.to} path={path} element={<RequirePerm perm={n.perm}>{element}</RequirePerm>} />
             })}
           </Route>
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<HomeRedirect />} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>
