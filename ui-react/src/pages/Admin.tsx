@@ -15,7 +15,7 @@ import { DsSeqFlowGraph } from '../components/console/DsSeqFlowGraph'
 import {
   Edit2, Trash2, Plus, AlertTriangle, ChevronDown, ChevronUp, Save, X,
   CheckCircle2, Eye, Calendar, Download, Megaphone, Bold, Italic, Code, List, RefreshCw, Database,
-  Bell, MessageSquare, Workflow, Zap,
+  Bell, MessageSquare, Workflow, Zap, KeyRound,
 } from 'lucide-react'
 import { InfoBanner } from '../components/ui/InfoBanner'
 
@@ -34,6 +34,8 @@ const RBAC_RECURSOS: [string, string][] = [
   ['tela_copia_dados', 'Cópia de Dados'],
   ['tela_inventario', 'Inventário de Consumidores'],
   ['tela_finalizacao', 'Finalizar Pipeline'],
+  ['tela_caixa_seguro', 'Caixa Seguro'],
+  ['caixa_seguro_operacional', 'Caixa Seguro — Operacional'],
   ['acao_executar', 'Executar/Rerun/Ack'],
   ['acao_editar', 'Cadastrar/Editar'],
   ['acao_admin', 'Administração'],
@@ -798,6 +800,9 @@ interface RoleMapRow { role_airflow: string; perfil_nome: string; ordem_priorida
 function UsuariosTab() {
   const [userForm, setUserForm] = useState({ matricula: '', perfil: 'consulta' })
   const [deleteUser, setDeleteUser] = useState<string | null>(null)
+  // permissões extras por usuário (além do perfil)
+  const [permUser, setPermUser] = useState<UsuarioRow | null>(null)
+  const [permDraft, setPermDraft] = useState<Set<string>>(new Set())
   // perfis: estado local de permissões editáveis por perfil
   const [permEdits, setPermEdits] = useState<Record<string, Set<string>>>({})
   const [newPerfil, setNewPerfil] = useState({ nome: '', descricao: '' })
@@ -809,6 +814,7 @@ function UsuariosTab() {
   const { data, isLoading } = useQuery<{ usuarios: UsuarioRow[] }>({ queryKey: ['admin-usuarios'], queryFn: () => adminPost('user_list') })
   const { data: perfis } = useQuery<{ perfis: PerfilRow[] }>({ queryKey: ['admin-perfis'], queryFn: () => adminPost('perfil_list') })
   const { data: roleMap } = useQuery<{ dados: RoleMapRow[] }>({ queryKey: ['admin-rolemap'], queryFn: () => adminPost('role_map_list') })
+  const { data: userPerms } = useQuery<{ permissoes: Record<string, string[]> }>({ queryKey: ['admin-user-perms'], queryFn: () => adminPost('user_perm_list') })
 
   const userUpsert = useMutation({
     mutationFn: (p: { matricula: string; perfil: string }) => adminPost('user_upsert', { ...p, ativo: true }),
@@ -840,6 +846,11 @@ function UsuariosTab() {
     onSuccess: () => { toast.success('Mapeamento removido'); queryClient.invalidateQueries({ queryKey: ['admin-rolemap'] }); setDeleteRm(null) },
     onError: (e: any) => toast.error(e.message),
   })
+  const userPermSet = useMutation({
+    mutationFn: (p: { matricula: string; permissoes: string[] }) => adminPost('user_perm_set', p),
+    onSuccess: (_, v) => { toast.success(`Permissões extras de ${v.matricula} salvas (sessões do usuário renovadas)`); queryClient.invalidateQueries({ queryKey: ['admin-user-perms'] }); setPermUser(null) },
+    onError: (e: any) => toast.error(e.message),
+  })
 
   const perfilOpts = perfis?.perfis ?? []
   const perfilNames = perfilOpts.length ? perfilOpts.map(p => p.perfil_nome) : ['admin', 'operador', 'consulta']
@@ -868,6 +879,7 @@ function UsuariosTab() {
                   <th className="px-4 py-2.5 text-left font-semibold">Matrícula</th>
                   <th className="px-4 py-2.5 text-left font-semibold">Nome</th>
                   <th className="px-4 py-2.5 text-left font-semibold">Perfil</th>
+                  <th className="px-4 py-2.5 text-left font-semibold">Extras</th>
                   <th className="px-4 py-2.5 text-left font-semibold">Último Login</th>
                   <th className="px-4 py-2.5 text-left font-semibold">Ativo</th>
                   <th className="px-4 py-2.5 w-20"></th>
@@ -879,17 +891,23 @@ function UsuariosTab() {
                     <td className="px-4 py-2.5 font-mono text-xs font-medium text-[#1A5FA8] dark:text-blue-400">{u.matricula}</td>
                     <td className="px-4 py-2.5 text-xs text-ink">{[u.primeiro_nome, u.ultimo_nome].filter(Boolean).join(' ') || '—'}</td>
                     <td className="px-4 py-2.5"><Badge value={u.perfil} /></td>
+                    <td className="px-4 py-2.5 text-xs text-dim">
+                      {(userPerms?.permissoes?.[u.matricula]?.length ?? 0) > 0
+                        ? <span className="font-medium text-[#1A5FA8] dark:text-blue-400">+{userPerms!.permissoes[u.matricula].length}</span>
+                        : '—'}
+                    </td>
                     <td className="px-4 py-2.5 text-xs text-dim">{u.ultimo_login ?? '—'}</td>
                     <td className="px-4 py-2.5 text-xs">{u.ativo ? '✓' : <span className="text-red-500">✕</span>}</td>
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-1 justify-end">
+                        <button onClick={() => { setPermUser(u); setPermDraft(new Set(userPerms?.permissoes?.[u.matricula] ?? [])) }} className="text-slate-400 hover:text-[#1A5FA8] dark:hover:text-blue-400 p-1 rounded" title="Permissões extras"><KeyRound size={13} /></button>
                         <button onClick={() => setUserForm({ matricula: u.matricula, perfil: u.perfil })} className="text-slate-400 hover:text-[#1A5FA8] dark:hover:text-blue-400 p-1 rounded" title="Editar"><Edit2 size={13} /></button>
                         <button onClick={() => setDeleteUser(u.matricula)} className="text-slate-400 hover:text-red-500 dark:hover:text-red-400 p-1 rounded" title="Remover"><Trash2 size={13} /></button>
                       </div>
                     </td>
                   </tr>
                 ))}
-                {usuarios.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-xs text-dim">Nenhum usuário — entram automaticamente no 1º login.</td></tr>}
+                {usuarios.length === 0 && <tr><td colSpan={7} className="px-4 py-6 text-center text-xs text-dim">Nenhum usuário — entram automaticamente no 1º login.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -991,6 +1009,47 @@ function UsuariosTab() {
         </div>
       </div>
 
+      {permUser && (() => {
+        const doPerfil = new Set(perfilOpts.find(p => p.perfil_nome === permUser.perfil)?.permissoes ?? [])
+        return (
+          <Modal open onClose={() => setPermUser(null)} title={`Permissões extras — ${permUser.matricula}`} size="sm">
+            <div className="flex flex-col gap-4">
+              <p className="text-xs text-dim">
+                Recursos concedidos <strong>além</strong> do perfil <Badge value={permUser.perfil} />.
+                Os já herdados do perfil aparecem marcados e travados.
+              </p>
+              <div className="flex flex-col gap-1.5 max-h-80 overflow-y-auto">
+                {RBAC_RECURSOS.map(([rec, lbl]) => {
+                  const herdado = doPerfil.has(rec)
+                  return (
+                    <label key={rec} className={`flex items-center gap-2 text-xs ${herdado ? 'text-dim' : 'text-ink cursor-pointer'}`}>
+                      <input
+                        type="checkbox"
+                        disabled={herdado}
+                        checked={herdado || permDraft.has(rec)}
+                        onChange={() => setPermDraft(prev => {
+                          const n = new Set(prev)
+                          n.has(rec) ? n.delete(rec) : n.add(rec)
+                          return n
+                        })}
+                      />
+                      {lbl}
+                      {herdado && <span className="text-[10px] text-dim">(do perfil)</span>}
+                    </label>
+                  )
+                })}
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="secondary" size="sm" onClick={() => setPermUser(null)}>Cancelar</Button>
+                <Button size="sm" loading={userPermSet.isPending}
+                  onClick={() => userPermSet.mutate({ matricula: permUser.matricula, permissoes: Array.from(permDraft) })}>
+                  <Save size={11} /> Salvar
+                </Button>
+              </div>
+            </div>
+          </Modal>
+        )
+      })()}
       <ConfirmModal open={!!deleteUser} title="Remover Usuário" message={`Remover "${deleteUser}"? Volta ao perfil "consulta" se logar novamente.`} danger confirmLabel="Remover" onConfirm={() => deleteUser && userDelete.mutate(deleteUser)} onCancel={() => setDeleteUser(null)} />
       <ConfirmModal open={!!deletePerfil} title="Excluir Perfil" message={`Excluir o perfil "${deletePerfil}"? Só é possível se nenhum usuário o utiliza.`} danger confirmLabel="Excluir" onConfirm={() => deletePerfil && perfilDelete.mutate(deletePerfil)} onCancel={() => setDeletePerfil(null)} />
       <ConfirmModal open={!!deleteRm} title="Remover Mapeamento" message={`Remover o mapeamento do role "${deleteRm}"?`} danger confirmLabel="Remover" onConfirm={() => deleteRm && rmDelete.mutate(deleteRm)} onCancel={() => setDeleteRm(null)} />

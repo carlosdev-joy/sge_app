@@ -236,6 +236,46 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             conn.commit(); cur.close(); conn.close()
             return {"sucesso": True, "mensagem": f"Usuário {mat} removido." if n else f"Usuário {mat} não encontrado."}
 
+        # ── Permissões extras por usuário (etl_usuario_permissao, migration 060) ──
+        elif action == "user_perm_list":
+            try:
+                cur.execute(
+                    "SELECT matricula, recurso FROM dbo.etl_usuario_permissao "
+                    "ORDER BY matricula, recurso")
+                rows = cur.fetchall()
+            except Exception:
+                rows = []  # tabela ainda não existe (pré-060)
+            data: dict = {}
+            for mat, rec in rows:
+                data.setdefault(mat, []).append(rec)
+            cur.close(); conn.close()
+            return {"sucesso": True, "permissoes": data}
+
+        elif action == "user_perm_set":
+            mat = (body.get("matricula") or "").strip().upper()
+            permissoes = body.get("permissoes")
+            if not mat:
+                raise HTTPException(status_code=422, detail="matricula obrigatória")
+            if not isinstance(permissoes, list):
+                raise HTTPException(status_code=422, detail="permissoes deve ser uma lista")
+            cur.execute("SELECT 1 FROM dbo.etl_usuario WHERE matricula = ?", [mat])
+            if not cur.fetchone():
+                raise HTTPException(status_code=422,
+                                    detail=f"Usuário {mat} não cadastrado (adicione-o antes)")
+            cur.execute("DELETE FROM dbo.etl_usuario_permissao WHERE matricula = ?", [mat])
+            recursos = sorted({str(r).strip() for r in permissoes if str(r).strip()})
+            for rec in recursos:
+                cur.execute(
+                    "INSERT INTO dbo.etl_usuario_permissao (matricula, recurso, criado_por) "
+                    "VALUES (?, ?, ?)", [mat, rec, requested_by])
+            # permissões mudaram → invalida sessões para forçar recarga
+            cur.execute("DELETE FROM dbo.etl_sessao WHERE matricula = ? AND matricula <> ?",
+                        [mat, requested_by])
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True,
+                    "mensagem": f"Permissões extras de {mat} atualizadas "
+                                f"({len(recursos)} recurso(s))."}
+
         elif action == "perfil_list":
             cur.execute("SELECT perfil_nome, descricao FROM dbo.etl_perfil ORDER BY perfil_nome")
             perfis = [{"perfil_nome": r[0], "descricao": r[1]} for r in cur.fetchall()]
