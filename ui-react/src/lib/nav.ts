@@ -8,14 +8,14 @@ import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, Workflow, Blocks, ScrollText, Bell, ShieldAlert,
   Library, Network, Settings, Crosshair, ClipboardList, BarChart3, Terminal,
-  Rocket, Gauge, Copy, Cable, OctagonX, GitBranch,
+  Rocket, Gauge, Copy, Cable, OctagonX, GitBranch, ShieldCheck,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 
 // Domínios da navegação, na ordem de exibição (cabeçalho de seção na sidebar).
 // "Operação" (monitorar, diário) separada de "Construção" (cadastrar, dev).
-export type NavGroup = 'Operação' | 'Construção' | 'Governança & Dados' | 'BI' | 'Administração'
-export const NAV_GROUPS: NavGroup[] = ['Operação', 'Construção', 'Governança & Dados', 'BI', 'Administração']
+export type NavGroup = 'Operação' | 'Construção' | 'Governança & Dados' | 'BI' | 'Caixa Seguro' | 'Administração'
+export const NAV_GROUPS: NavGroup[] = ['Operação', 'Construção', 'Governança & Dados', 'BI', 'Caixa Seguro', 'Administração']
 
 export interface NavItem {
   to: string          // rota React
@@ -46,6 +46,9 @@ export const NAV: NavItem[] = [
   { to: '/copia-dados',   label: 'Cópia de Dados',     icon: Copy,            group: 'Governança & Dados', perm: 'tela_copia_dados' },
   { to: '/inventario',    label: 'Inventário de Consumidores', icon: Cable,   group: 'Governança & Dados', perm: 'tela_inventario' },
   { to: '/powerbi',       label: 'Power BI',           icon: BarChart3,       group: 'BI',                 perm: 'tela_powerbi' },
+  // Seção portada da POC Lovable (src/caixa) — navegação interna própria
+  // (MenuButton) sob a rota curinga /caixa-seguro/*.
+  { to: '/caixa-seguro',  label: 'Busca & Vendas',     icon: ShieldCheck,     group: 'Caixa Seguro',       perm: 'tela_caixa_seguro' },
   { to: '/admin',         label: 'Admin',              icon: Settings,        group: 'Administração',      perm: 'tela_admin' },
 ]
 

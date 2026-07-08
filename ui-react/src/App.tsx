@@ -24,6 +24,7 @@ import CopiaDados from './pages/CopiaDados'
 import Inventario from './pages/Inventario'
 import Finalizacao from './pages/Finalizacao'
 import Fluxos from './pages/Fluxos'
+import CaixaSeguroApp from './caixa/CaixaSeguroApp'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -69,12 +70,13 @@ const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/ds-console': <DsConsole />,
   '/performance': <Performance />,
   '/finalizacao': <Finalizacao />,
+  '/caixa-seguro': <CaixaSeguroApp />,
   '/admin': <Admin />,
 }
 
 // Rotas que agrupam navegação interna por estado (abas) e precisam casar
 // subpaths — preserva o comportamento do antigo `admin/*`.
-const WILDCARD_ROUTES = new Set(['/admin'])
+const WILDCARD_ROUTES = new Set(['/admin', '/caixa-seguro'])
 
 export default function App() {
   return (
