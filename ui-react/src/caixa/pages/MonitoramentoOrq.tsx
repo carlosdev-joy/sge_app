@@ -7,10 +7,10 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, PieChart, Pie, Cell,
 } from "recharts";
-import { Download, AlertTriangle, ArrowLeft, LayoutDashboard } from "lucide-react";
+import { Download, AlertTriangle, ArrowLeft, ArrowRight, LayoutDashboard } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Tabs } from "../../components/ui/Tabs";
@@ -106,6 +106,53 @@ const comparativoBar = [
   { tipo: "Prestamista", Emissões: 1300, Declínios: 92 },
 ];
 
+// Propostas pendentes por motivo (por produto) — count + vencidas (>8 dias)
+const pendingByReason: Record<Produto, { reason: string; count: number; overdue: number }[]> = {
+  vida: [
+    { reason: "Aguardando DPS", count: 28, overdue: 12 },
+    { reason: "Aguardando Documentos", count: 43, overdue: 8 },
+    { reason: "Em Análise", count: 35, overdue: 3 },
+    { reason: "Validação Cadastral", count: 21, overdue: 5 },
+  ],
+  previdencia: [
+    { reason: "Propostas fora da conformidade", count: 45, overdue: 18 },
+    { reason: "Pendências de Curatela/Procuração e a Rogo", count: 38, overdue: 12 },
+    { reason: "Aguardando Documentos", count: 32, overdue: 8 },
+    { reason: "Em Análise", count: 27, overdue: 5 },
+  ],
+  prestamista: [
+    { reason: "Aguardando DPS", count: 35, overdue: 15 },
+    { reason: "Aguardando Documentos", count: 48, overdue: 10 },
+    { reason: "Em Análise", count: 38, overdue: 6 },
+    { reason: "Validação Cadastral", count: 24, overdue: 4 },
+  ],
+};
+
+const sensitizationData = [
+  { month: "Jan", count: 12 }, { month: "Fev", count: 18 }, { month: "Mar", count: 15 },
+  { month: "Abr", count: 22 }, { month: "Mai", count: 19 },
+];
+
+// Portabilidade (só Previdência, como na POC)
+const portabilidadeStatus = [
+  { status: "Pendente", quantidade: 45, valor: 2350000 },
+  { status: "Concluída", quantidade: 128, valor: 6890000 },
+  { status: "Recusada", quantidade: 23, valor: 1180000 },
+];
+const bancosOrigem = [
+  { name: "Brasilprev", value: 58 }, { name: "Itaú", value: 42 },
+  { name: "Zurich Santander", value: 35 }, { name: "Outros", value: 61 },
+];
+const BANCOS = ["#1A5FA8", "#F26B00", "#10b981", "#94a3b8"];
+const motivosRecusa = [
+  { motivo: "Documentação Incompleta", count: 8 }, { motivo: "Prazo Vencido", count: 6 },
+  { motivo: "Dados Divergentes", count: 5 }, { motivo: "Cancelamento Cliente", count: 4 },
+];
+const conformidade500k = [
+  { proposta: "Proposta 8047413032437-2", valor: 650000, cliente: "MARCOS VINÍCIUS ALMEIDA", dias: 15 },
+  { proposta: "Proposta 8047413032438-3", valor: 820000, cliente: "JULIANA COSTA PEREIRA", dias: 18 },
+];
+
 export default function MonitoramentoOrq() {
   const navigate = useNavigate();
   const [produto, setProduto] = useState<Produto>("vida");
@@ -115,6 +162,9 @@ export default function MonitoramentoOrq() {
   const exportar = () => {
     toast.success("Relatório Excel gerado com sucesso.");
   };
+
+  const pending = pendingByReason[produto];
+  const pendingMax = Math.max(...pending.map((p) => p.count));
 
   return (
     <div className="min-h-full bg-canvas font-sans text-ink">
@@ -295,6 +345,177 @@ export default function MonitoramentoOrq() {
             </ResponsiveContainer>
           </Card>
         </div>
+
+        {/* Propostas Pendentes por Motivo */}
+        <Card
+          title="Propostas Pendentes por Motivo"
+          action={
+            <Button variant="secondary" size="sm" onClick={() => toast.success("Relatório de Propostas Pendentes exportado.")}>
+              <Download size={13} /> Exportar
+            </Button>
+          }
+        >
+          <div className="flex flex-col gap-3">
+            {pending.map((item) => (
+              <div key={item.reason} className="bg-canvas border border-edge rounded-lg p-4">
+                <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+                  <span className="text-sm font-medium text-ink">{item.reason}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium border border-edge text-dim">{item.count} total</span>
+                    {item.overdue > 0 && (
+                      <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-red-100 text-red-700 border border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800">
+                        <AlertTriangle size={11} /> {item.overdue} &gt;8 dias
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="w-full bg-edge/60 rounded-full h-2 overflow-hidden">
+                  <div className="bg-[#1A5FA8] h-2 rounded-full transition-all" style={{ width: `${(item.count / pendingMax) * 100}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        {/* Propostas Pendentes de Sensibilização */}
+        <Card title="Propostas Pendentes de Sensibilização">
+          <ResponsiveContainer width="100%" height={280}>
+            <LineChart data={sensitizationData}>
+              <CartesianGrid strokeDasharray="3 3" stroke={AXIS} strokeOpacity={0.2} />
+              <XAxis dataKey="month" tick={{ fill: AXIS, fontSize: 12 }} stroke={AXIS} />
+              <YAxis tick={{ fill: AXIS, fontSize: 12 }} stroke={AXIS} />
+              <Tooltip contentStyle={tooltipStyle} />
+              <Line type="monotone" dataKey="count" name="Pendentes" stroke={EMISSOES} strokeWidth={2} dot={{ fill: EMISSOES, r: 4 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </Card>
+
+        {/* Portabilidade — só Previdência (como na POC) */}
+        {produto === "previdencia" && (
+          <>
+            <Card title="Acompanhamento de Portabilidade">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div>
+                  <h4 className="text-sm font-semibold text-ink mb-3">Solicitações por status</h4>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={portabilidadeStatus}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={AXIS} strokeOpacity={0.2} />
+                      <XAxis dataKey="status" tick={{ fill: AXIS, fontSize: 12 }} stroke={AXIS} />
+                      <YAxis allowDecimals={false} tick={{ fill: AXIS, fontSize: 12 }} stroke={AXIS} />
+                      <Tooltip contentStyle={tooltipStyle} cursor={{ fill: AXIS, fillOpacity: 0.08 }} />
+                      <Bar dataKey="quantidade" name="Solicitações" fill={EMISSOES} radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold text-ink mb-3">Valor por status (R$)</h4>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={portabilidadeStatus}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={AXIS} strokeOpacity={0.2} />
+                      <XAxis dataKey="status" tick={{ fill: AXIS, fontSize: 12 }} stroke={AXIS} />
+                      <YAxis tick={{ fill: AXIS, fontSize: 12 }} stroke={AXIS} tickFormatter={(v) => `R$ ${(Number(v) / 1e6).toFixed(1)}M`} />
+                      <Tooltip contentStyle={tooltipStyle} cursor={{ fill: AXIS, fillOpacity: 0.08 }} formatter={(value) => `R$ ${(Number(value) / 1000).toLocaleString("pt-BR")} mil`} />
+                      <Bar dataKey="valor" name="Valor" fill="#10b981" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold text-ink mb-3">Principais Bancos de Origem</h4>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <PieChart>
+                      <Pie
+                        data={bancosOrigem} cx="50%" cy="50%" outerRadius={90}
+                        dataKey="value" labelLine={false}
+                        label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
+                      >
+                        {bancosOrigem.map((_, i) => <Cell key={i} fill={BANCOS[i % BANCOS.length]} />)}
+                      </Pie>
+                      <Tooltip contentStyle={tooltipStyle} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold text-ink mb-3">Principais Motivos de Recusa</h4>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={motivosRecusa} layout="vertical" margin={{ left: 40 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={AXIS} strokeOpacity={0.2} />
+                      <XAxis type="number" tick={{ fill: AXIS, fontSize: 12 }} stroke={AXIS} />
+                      <YAxis type="category" dataKey="motivo" width={140} tick={{ fill: AXIS, fontSize: 11 }} stroke={AXIS} />
+                      <Tooltip contentStyle={tooltipStyle} cursor={{ fill: AXIS, fillOpacity: 0.08 }} />
+                      <Bar dataKey="count" name="Quantidade" fill={DECLINIOS} radius={[0, 4, 4, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </Card>
+
+            <Card
+              title="Detalhamento de Portabilidades"
+              action={
+                <Button variant="secondary" size="sm" onClick={() => navigate("/caixa-seguro/portabilidades")}>
+                  Ver todas <ArrowRight size={13} />
+                </Button>
+              }
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="bg-canvas border border-edge rounded-lg p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-dim">Total de Solicitações</span>
+                    <span className="text-2xl font-bold text-ink tabular-nums">196</span>
+                  </div>
+                  <div className="text-xs text-dim mt-1">Todas as portabilidades</div>
+                </div>
+                <div className="rounded-lg p-4 border border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-900/20">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-amber-700 dark:text-amber-300">Pendentes &gt; 8 dias</span>
+                    <span className="text-2xl font-bold text-amber-700 dark:text-amber-300 tabular-nums">12</span>
+                  </div>
+                  <div className="text-xs text-amber-600/90 dark:text-amber-400/90 mt-1">Requer atenção urgente</div>
+                </div>
+              </div>
+            </Card>
+
+            <Card
+              title="Pendências Fora da Conformidade > R$ 500k"
+              action={
+                <Button variant="secondary" size="sm" onClick={() => navigate("/caixa-seguro/acompanhamento/pending_documentation")}>
+                  Ver detalhamento <ArrowRight size={13} />
+                </Button>
+              }
+            >
+              <div className="rounded-lg p-4 mb-4 border border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-900/20">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-semibold text-red-700 dark:text-red-300">Total de Propostas</span>
+                  <span className="text-2xl font-bold text-red-700 dark:text-red-300 tabular-nums">2</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-red-600/90 dark:text-red-400/90">Valor Total</span>
+                  <span className="text-lg font-bold text-red-600 dark:text-red-300 tabular-nums">R$ 1.470.000,00</span>
+                </div>
+              </div>
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={conformidade500k} layout="vertical" margin={{ left: 40 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={AXIS} strokeOpacity={0.2} />
+                  <XAxis type="number" tick={{ fill: AXIS, fontSize: 12 }} stroke={AXIS} tickFormatter={(v) => `R$ ${(Number(v) / 1000).toFixed(0)}k`} />
+                  <YAxis type="category" dataKey="proposta" width={180} tick={{ fill: AXIS, fontSize: 11 }} stroke={AXIS} />
+                  <Tooltip contentStyle={tooltipStyle} cursor={{ fill: AXIS, fillOpacity: 0.08 }} formatter={(value) => brl(Number(value))} />
+                  <Bar dataKey="valor" name="Valor" fill="#ef4444" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+                {conformidade500k.map((c) => (
+                  <div key={c.proposta} className="bg-canvas border border-edge rounded-lg p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-dim">{c.proposta}</span>
+                      <span className="text-sm font-bold text-ink tabular-nums">{brl(c.valor)}</span>
+                    </div>
+                    <div className="text-xs text-dim mt-1">{c.cliente} — {c.dias} dias pendente</div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </>
+        )}
 
         <p className="text-xs text-dim">Total emitido no período: <span className="font-semibold text-ink">{brl(8_540_120)}</span> · dados ilustrativos (mock).</p>
       </div>
