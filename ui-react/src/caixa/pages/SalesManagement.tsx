@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useProfile } from "../contexts/ProfileContext";
-import Header from "../components/Header";
 import MenuButton from "../components/MenuButton";
 import ProposalWorkflowSheet from "../components/ProposalWorkflowSheet";
 import DateFilters from "../components/DateFilters";
@@ -326,7 +325,6 @@ const SalesManagement = () => {
         <div className="absolute top-3/4 left-0 w-full h-px bg-gradient-to-r from-transparent via-[hsl(211,100%,50%)] to-transparent animate-pulse" style={{ animationDelay: '2s' }} />
       </div>
 
-      <Header />
       
       <main className="container mx-auto px-6 py-8 max-w-7xl relative z-10">
         <div className="mb-6 flex items-center justify-between flex-wrap gap-4">

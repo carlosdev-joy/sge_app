@@ -36,6 +36,8 @@ export function HeaderV2({ onMenuClick }: { onMenuClick?: () => void } = {}) {
         <div className="flex-1" />
         <HeaderControls />
       </div>
+      {/* filete laranja institucional CAIXA */}
+      <div className="h-1 bg-gradient-to-r from-[#F26B00] via-[#FF9D4D] to-[#F26B00]" />
     </header>
   )
 }

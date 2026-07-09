@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import Header from "../components/Header";
 import MenuButton from "../components/MenuButton";
 import ProposalWorkflowSheet from "../components/ProposalWorkflowSheet";
 import ProposalCard from "../components/ProposalCard";
@@ -532,7 +531,6 @@ const ProposalTracking = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      <Header />
       
       <main className="container mx-auto px-6 py-8 max-w-7xl">
         <div className="mb-6 flex items-center gap-4">
