@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
+import { Dialog, DialogContent,
+  DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { Input } from "./ui/input";
@@ -126,7 +127,8 @@ const SensitizationDialog = ({ open, onOpenChange }: SensitizationDialogProps) =
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="max-w-5xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="text-2xl">💬 Movimentos de Sensibilização</DialogTitle>
+            <DialogTitle className="text-2xl">Movimentos de Sensibilização</DialogTitle>
+          <DialogDescription className="sr-only">Movimentos de sensibilização das propostas em monitoramento.</DialogDescription>
           </DialogHeader>
 
           {/* Search Field */}

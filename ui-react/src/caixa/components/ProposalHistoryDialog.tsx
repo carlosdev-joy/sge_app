@@ -1,6 +1,7 @@
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
@@ -101,6 +102,7 @@ const ProposalHistoryDialog = ({
             <Clock className="h-5 w-5" />
             Histórico da Proposta {proposalNumber}
           </DialogTitle>
+          <DialogDescription className="sr-only">Linha do tempo de eventos da proposta.</DialogDescription>
         </DialogHeader>
 
         <ScrollArea className="h-[500px] pr-4">

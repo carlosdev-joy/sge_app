@@ -3,6 +3,7 @@ import { FileText } from "lucide-react";
 import {
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
   SheetTrigger,
@@ -262,6 +263,7 @@ const ProposalWorkflowSheet = () => {
       <SheetContent side="right" className="w-full sm:max-w-2xl">
         <SheetHeader>
           <SheetTitle>Workflow de Propostas</SheetTitle>
+          <SheetDescription className="sr-only">Visão geral das propostas por status, com filtro e ações rápidas.</SheetDescription>
         </SheetHeader>
 
         <div className="mt-6">

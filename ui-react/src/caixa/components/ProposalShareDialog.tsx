@@ -1,6 +1,7 @@
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
@@ -70,6 +71,7 @@ const ProposalShareDialog = ({
             <Share2 className="h-5 w-5" />
             Compartilhar Proposta
           </DialogTitle>
+          <DialogDescription className="sr-only">Envie os dados da proposta por e-mail ou WhatsApp.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">

@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
@@ -61,6 +62,7 @@ const SendOptionsDialog = ({ title, description, open, onOpenChange, clientEmail
           <DialogTitle className="text-xl font-bold text-primary text-center">
             {title}
           </DialogTitle>
+          <DialogDescription className="sr-only">Escolha o canal de envio.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-6">

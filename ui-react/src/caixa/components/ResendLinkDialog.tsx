@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
@@ -68,6 +69,7 @@ const ResendLinkDialog = ({ proposal, open, onOpenChange }: ResendLinkDialogProp
           <DialogTitle className="text-xl font-bold text-primary text-center">
             Reenviar Link de Assinatura
           </DialogTitle>
+          <DialogDescription className="sr-only">Reenvie ao cliente o link de assinatura da proposta.</DialogDescription>
         </DialogHeader>
 
         {dialogState === "selection" && (

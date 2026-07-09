@@ -71,7 +71,7 @@ const SalesManagement = () => {
       const pendingProposalsCount = 8; // Mock data
       if (pendingProposalsCount > 0) {
         toast({
-          title: "⚠️ Propostas com Atenção Urgente",
+          title: "Propostas com Atenção Urgente",
           description: `${pendingProposalsCount} proposta(s) pendente(s) há mais de 10 dias.`,
           variant: "destructive",
         });

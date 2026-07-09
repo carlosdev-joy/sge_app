@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
@@ -96,6 +97,7 @@ const PaymentOptionsDialog = ({ proposal, open, onOpenChange }: PaymentOptionsDi
           <DialogTitle className="text-xl font-bold text-primary text-center">
             Alterar forma de pagamento
           </DialogTitle>
+          <DialogDescription className="sr-only">Escolha a nova forma de pagamento da proposta.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-6">
