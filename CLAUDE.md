@@ -52,9 +52,31 @@ monitoramento e operação pela equipe. Backend **FastAPI + SQL Server (MSSQL)**
 - `pytest` (raiz; `pythonpath=api`, pyodbc é stubbado). Baseline: ~84 passam; há 5 falhas
   pré-existentes de auth em leitura — não são regressão.
 
-## Skills e subagents
-- Skills em `.claude/skills/` (`/nova-migration`, `/deploy`, `/revisao-pr`).
-- Subagents em `.claude/agents/` (`orquestra-backend`, `-frontend`, `-datastage`, `-deploy`, `-reviewer`).
+## Roteamento automático de skills e subagents
+O assistente principal É o roteador: antes de executar qualquer pedido, classifique a
+intenção nesta tabela e **invoque a skill/subagent correspondente sem esperar o usuário
+pedir pelo nome**. As skills carregam a memória de bugs já resolvidos — pular o roteamento
+é reintroduzir erro que já pagamos para aprender.
+
+| Intenção do pedido | Ação automática |
+|---|---|
+| Bug, erro, "não funciona/não grava", disparo duplicado, print/vídeo de falha | `/diagnostico` PRIMEIRO (casos já resolvidos), depois agent do domínio |
+| Criar/alterar tabela, coluna, schema | `/nova-migration` |
+| Novo tipo de nó no canvas/fluxo (tipo decisão/notificação/SQL) | `/novo-no-fluxo` — OBRIGATÓRIA, 9 pontos de integração |
+| Nova tela, página, componente, aba de UI | `/nova-tela` + agent `orquestra-frontend` |
+| Endpoint/serviço novo ou alterado em `api/` | agent `orquestra-backend` + `/seguranca-review` antes do commit |
+| Mudança em `dags/`, operador DataStage, waves, heartbeat, logs de execução | agent `orquestra-datastage` |
+| Deploy, subir p/ produção, aplicar migrations | `/deploy` + agent `orquestra-deploy` p/ avaliar risco |
+| Fechar versão, changelog, documentar release | `/release-notes` |
+| Anotar ideia/tarefa/backlog | `/backlog` |
+| Antes de QUALQUER commit | `/revisao-pr`; mudou `api/`/`dags/`/nginx → também `/seguranca-review`; auditoria final → agent `orquestra-reviewer` |
+
+Regras do roteador:
+- Pedido ambíguo entre domínios → se for problema, comece pelo `/diagnostico`; senão pergunte.
+- Ao resolver incidente NOVO, registre o caso em `.claude/skills/diagnostico/SKILL.md`
+  (é a memória do time — evita rediagnosticar o que já passamos).
+- Skills em `.claude/skills/`; subagents em `.claude/agents/` (`orquestra-backend`,
+  `-frontend`, `-datastage`, `-deploy`, `-reviewer`).
 
 ## Mais contexto (sob demanda)
 @docs/ui-temas-cores.md
