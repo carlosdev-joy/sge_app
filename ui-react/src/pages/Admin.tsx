@@ -3391,11 +3391,96 @@ const ADMIN_GROUPS = [
     { id: 'comunicados', label: 'Comunicados' },
     { id: 'notificacoes', label: 'Notificações' },
     { id: 'powerbi', label: 'Power BI — Acessos' },
+    { id: 'caixa-ia', label: 'Caixa Seguro IA' },
   ] },
   { id: 'relatorios', label: 'Relatórios', tabs: [
     { id: 'sla', label: 'Relatório SLA' },
   ] },
 ]
+
+// ── Caixa Seguro IA (assistentes Diego/Lari/Léo) ─────────────────
+interface CaixaIAConfig { enabled: boolean; provider: string; model: string; base_url: string; api_key_set: boolean }
+function CaixaIATab() {
+  const { data, isLoading, isError, error } = useQuery<{ config: CaixaIAConfig }>({ queryKey: ['admin-caixa-ia'], queryFn: () => adminPost('caixa_ia_get') })
+  if (isLoading) return <PageSpinner />
+  if (isError || !data) return (
+    <p className="text-sm text-red-600 dark:text-red-400">
+      Falha ao carregar a configuração dos assistentes: {error?.message}
+    </p>
+  )
+  return <CaixaIAForm cfg={data.config} />
+}
+
+// Componente separado para o form nascer já inicializado da config carregada
+// (edições do usuário sobrevivem ao refetch; só api_key é limpa após salvar).
+function CaixaIAForm({ cfg }: { cfg: CaixaIAConfig }) {
+  const [form, setForm] = useState(() => ({ enabled: cfg.enabled, provider: cfg.provider, model: cfg.model, base_url: cfg.base_url, api_key: '' }))
+
+  const salvar = useMutation({
+    mutationFn: (f: typeof form) =>
+      adminPost('caixa_ia_set', { enabled: f.enabled, provider: f.provider, model: f.model, base_url: f.base_url, ...(f.api_key.trim() ? { api_key: f.api_key.trim() } : {}) }),
+    onSuccess: () => {
+      toast.success('Configuração salva')
+      queryClient.invalidateQueries({ queryKey: ['admin-caixa-ia'] })
+      // visibilidade dos assistentes na sessão atual (src/caixa/lib/config.ts)
+      queryClient.invalidateQueries({ queryKey: ['caixa-ia-status'] })
+      setForm(f => ({ ...f, api_key: '' }))
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+  const testar = useMutation({
+    mutationFn: () => adminPost<{ mensagem: string }>('caixa_ia_test'),
+    onSuccess: r => toast.success(r.mensagem ?? 'Provedor respondeu'),
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const isOpenAI = form.provider === 'openai_compat'
+
+  return (
+    <div className="flex flex-col gap-4 max-w-2xl">
+      <InfoBanner>
+        Assistentes IA da seção Caixa Seguro (Diego, Lari e Léo). Desativados, eles não aparecem
+        para os usuários. Para ativar é obrigatório configurar a chave de API do provedor —
+        a chave é armazenada cifrada (mesmo mecanismo das Conexões de Dados) e nunca é reexibida.
+      </InfoBanner>
+
+      <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-4">
+        <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
+          <input type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} />
+          Assistentes IA ativos
+        </label>
+
+        <div className="flex flex-wrap gap-3 items-end">
+          <Select label="Provedor" value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })} className="w-56">
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="openai_compat">OpenAI-compatível</option>
+          </Select>
+          <Input label="Modelo" value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} className="w-64"
+            placeholder={isOpenAI ? 'ex: gpt-4o-mini' : 'padrão: claude-opus-4-8'} />
+        </div>
+
+        {isOpenAI && (
+          <Input label="Base URL" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })}
+            placeholder="ex: https://api.openai.com/v1" className="w-full" />
+        )}
+
+        <Input label="Chave de API" type="password" value={form.api_key} autoComplete="new-password"
+          onChange={e => setForm({ ...form, api_key: e.target.value })} className="w-full"
+          placeholder={cfg.api_key_set ? '•••• chave salva — preencha só para trocar' : isOpenAI ? 'sk-…' : 'sk-ant-…'} />
+
+        <div className="flex gap-2 justify-end">
+          <Button variant="secondary" size="sm" onClick={() => testar.mutate()} loading={testar.isPending}
+            disabled={!cfg.api_key_set} title={!cfg.api_key_set ? 'Salve a chave antes de testar' : 'Testa a chave SALVA (salve antes se acabou de trocá-la)'}>
+            <Zap size={13} /> Testar conexão
+          </Button>
+          <Button size="sm" onClick={() => salvar.mutate(form)} loading={salvar.isPending}>
+            <Save size={13} /> Salvar
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export default function Admin() {
   const [tab, setTab] = useState('config')
@@ -3448,6 +3533,7 @@ export default function Admin() {
         {tab === 'projetos' && <ProjetosTab />}
         {tab === 'sla' && <SlaReportTab />}
         {tab === 'powerbi' && <PowerBIAccessGuideTab />}
+        {tab === 'caixa-ia' && <CaixaIATab />}
       </div>
     </div>
   )

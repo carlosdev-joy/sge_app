@@ -5,7 +5,7 @@ import { Card } from "./ui/card";
 import { Send, X, History, FileDown } from "lucide-react";
 import TypingIndicator from "./TypingIndicator";
 import { apiFetch } from "../../lib/api";
-import { ASSISTENTES_IA_ATIVOS, CHAT_ENDPOINT } from "../lib/config";
+import { useAssistentesIA, CHAT_ENDPOINT, type ConversaHistorico } from "../lib/config";
 import { toast } from "sonner";
 import jsPDF from "jspdf";
 import lariAvatar from "../assets/lari-avatar.png";
@@ -60,9 +60,12 @@ const LariAssistantInner = ({ suggestedQuestions = defaultQuestions, pageContext
   };
 
   const loadConversationHistory = async () => {
-    // Histórico local desabilitado na F3 — na F4 passa a ler do log do
-    // backend (etl_caixa_chat_log) no lugar do Supabase da POC.
-    setConversationHistory([]);
+    try {
+      const data = await apiFetch<{ conversas: ConversaHistorico[] }>(`${CHAT_ENDPOINT("lari")}/historico`);
+      setConversationHistory(data.conversas ?? []);
+    } catch (error) {
+      console.error("Error loading history:", error);
+    }
   };
 
   const getContextData = () => {
@@ -333,8 +336,10 @@ const LariAssistantInner = ({ suggestedQuestions = defaultQuestions, pageContext
   );
 };
 
-// Oculto enquanto os assistentes IA não estão ativos (a F4 liga via config).
-const LariAssistant = (props: LariAssistantProps) =>
-  ASSISTENTES_IA_ATIVOS ? <LariAssistantInner {...props} /> : null;
+// Visível só quando os assistentes estão ativos (Admin > Caixa Seguro IA).
+const LariAssistant = (props: LariAssistantProps) => {
+  const ativos = useAssistentesIA();
+  return ativos ? <LariAssistantInner {...props} /> : null;
+};
 
 export default LariAssistant;

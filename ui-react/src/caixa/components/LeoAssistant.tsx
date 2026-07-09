@@ -8,7 +8,7 @@ import TypingIndicator from "./TypingIndicator";
 import leoAvatar from "../assets/leo-avatar.png";
 import { useToast } from "../hooks/use-toast";
 import { apiFetch } from "../../lib/api";
-import { ASSISTENTES_IA_ATIVOS, CHAT_ENDPOINT } from "../lib/config";
+import { useAssistentesIA, CHAT_ENDPOINT, type ConversaHistorico } from "../lib/config";
 import jsPDF from "jspdf";
 
 interface Message {
@@ -60,9 +60,12 @@ const LeoAssistantInner = ({ suggestedQuestions = defaultQuestions }: LeoAssista
   }, [showHistory]);
 
   const loadConversationHistory = async () => {
-    // Histórico local desabilitado na F3 — na F4 passa a ler do log do
-    // backend (etl_caixa_chat_log) no lugar do Supabase da POC.
-    setConversationHistory([]);
+    try {
+      const data = await apiFetch<{ conversas: ConversaHistorico[] }>(`${CHAT_ENDPOINT("leo")}/historico`);
+      setConversationHistory(data.conversas ?? []);
+    } catch (error) {
+      console.error("Error loading history:", error);
+    }
   };
 
   const saveConversation = async (_userMessage: string, _aiResponse: string) => {
@@ -427,8 +430,10 @@ const LeoAssistantInner = ({ suggestedQuestions = defaultQuestions }: LeoAssista
   );
 };
 
-// Oculto enquanto os assistentes IA não estão ativos (a F4 liga via config).
-const LeoAssistant = (props: LeoAssistantProps) =>
-  ASSISTENTES_IA_ATIVOS ? <LeoAssistantInner {...props} /> : null;
+// Visível só quando os assistentes estão ativos (Admin > Caixa Seguro IA).
+const LeoAssistant = (props: LeoAssistantProps) => {
+  const ativos = useAssistentesIA();
+  return ativos ? <LeoAssistantInner {...props} /> : null;
+};
 
 export default LeoAssistant;

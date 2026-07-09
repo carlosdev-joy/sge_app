@@ -137,7 +137,8 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             cur.execute("SELECT config_key, config_value FROM dbo.etl_app_config ORDER BY config_key")
             def _mask_secret(key: str, val):
                 k = (key or "").lower()
-                if val and (k.startswith("teams_webhook") or "secret" in k or "password" in k or "token" in k):
+                if val and (k.startswith("teams_webhook") or k.startswith("caixa_ia_api_key")
+                            or "secret" in k or "password" in k or "token" in k):
                     return ("•••• " + str(val)[-4:]) if len(str(val)) > 4 else "••••"
                 return val
             data = {k: _mask_secret(k, v) for k, v in cur.fetchall()}
@@ -235,6 +236,84 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             n = cur.rowcount
             conn.commit(); cur.close(); conn.close()
             return {"sucesso": True, "mensagem": f"Usuário {mat} removido." if n else f"Usuário {mat} não encontrado."}
+
+        # ── Assistentes IA do Caixa Seguro (config caixa_ia_* em etl_app_config) ──
+        elif action == "caixa_ia_get":
+            from services import caixa_ia
+            cfg = caixa_ia.load_config(cur)
+            cur.close(); conn.close()
+            return {"sucesso": True, "config": {
+                "enabled": cfg["enabled"], "provider": cfg["provider"],
+                "model": cfg["model"], "base_url": cfg["base_url"],
+                "api_key_set": bool(cfg["api_key_enc"]),
+            }}
+
+        elif action == "caixa_ia_set":
+            from services import caixa_ia
+            from services.conn_crypto import encrypt_password as _enc
+            enabled  = "1" if body.get("enabled") else "0"
+            provider = (body.get("provider") or "anthropic").strip()
+            if provider not in caixa_ia.PROVIDERS:
+                raise HTTPException(status_code=422,
+                                    detail=f"provider deve ser um de {caixa_ia.PROVIDERS}")
+            model    = (body.get("model") or "").strip()
+            if len(model) > 100:
+                raise HTTPException(status_code=422,
+                                    detail="model excede 100 caracteres "
+                                           "(limite da coluna modelo do log de conversas)")
+            base_url = (body.get("base_url") or "").strip().rstrip("/")
+            if base_url and not base_url.lower().startswith(("http://", "https://")):
+                raise HTTPException(status_code=422, detail="base_url deve ser http(s)")
+            api_key  = body.get("api_key")  # None = manter a atual; "" ignora
+            if body.get("enabled") and provider == "openai_compat" and not base_url:
+                raise HTTPException(status_code=422,
+                                    detail="base_url é obrigatória no provedor OpenAI-compatível")
+
+            valores = {caixa_ia.K_ENABLED: enabled, caixa_ia.K_PROVIDER: provider,
+                       caixa_ia.K_MODEL: model, caixa_ia.K_BASE_URL: base_url}
+            if isinstance(api_key, str) and api_key.strip():
+                token = _enc(api_key.strip())
+                if len(token) > 1000:  # etl_app_config.config_value é VARCHAR(1000)
+                    raise HTTPException(status_code=422,
+                                        detail="Chave de API longa demais — o valor "
+                                               "cifrado excede os 1000 caracteres de "
+                                               "etl_app_config.config_value")
+                valores[caixa_ia.K_API_KEY] = token
+            elif body.get("clear_api_key"):
+                valores[caixa_ia.K_API_KEY] = ""
+            for k, v in valores.items():
+                cur.execute(
+                    "MERGE dbo.etl_app_config AS t "
+                    "USING (SELECT ? AS k) AS s ON t.config_key = s.k "
+                    "WHEN MATCHED THEN UPDATE SET config_value=?, updated_by=?, updated_at=GETDATE() "
+                    "WHEN NOT MATCHED THEN INSERT (config_key, config_value, descricao, updated_by, updated_at) "
+                    "  VALUES (s.k, ?, 'Assistentes IA do Caixa Seguro', ?, GETDATE());",
+                    [k, v, requested_by, v, requested_by])
+            # exige chave configurada para ligar
+            if enabled == "1":
+                cfg = caixa_ia.load_config(cur)
+                if not cfg["api_key_enc"]:
+                    conn.rollback(); cur.close(); conn.close()
+                    raise HTTPException(status_code=422,
+                                        detail="Informe a chave de API antes de ativar os assistentes")
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True, "mensagem": "Configuração dos assistentes IA salva."}
+
+        elif action == "caixa_ia_test":
+            from services import caixa_ia
+            cfg = caixa_ia.load_config(cur)
+            cur.close(); conn.close()
+            if not cfg["api_key_enc"]:
+                raise HTTPException(status_code=422, detail="Configure a chave de API antes de testar")
+            inicio = time.monotonic()
+            resposta, modelo = await caixa_ia.chat(
+                cfg,
+                "Você é um verificador de conectividade. Responda APENAS a palavra OK.",
+                "Teste de conexão do ORQUESTRA — responda OK.")
+            ms = int((time.monotonic() - inicio) * 1000)
+            return {"sucesso": True,
+                    "mensagem": f"Provedor respondeu em {ms} ms (modelo {modelo}).",
+                    "detalhes": {"resposta": resposta[:200], "duracao_ms": ms}}
 
         # ── Permissões extras por usuário (etl_usuario_permissao, migration 060) ──
         elif action == "user_perm_list":
