@@ -17,6 +17,7 @@ import { Tabs } from "../../components/ui/Tabs";
 import { Select } from "../../components/ui/Input";
 import { Modal } from "../../components/ui/Modal";
 import { toast } from "../../components/ui/Toast";
+import ChatAssistantOrq from "../components/ChatAssistantOrq";
 import lariAvatar from "../assets/lari-avatar.png";
 import diegoAvatar from "../assets/diego-avatar.png";
 import leoAvatar from "../assets/leo-avatar.png";
@@ -571,6 +572,11 @@ export default function MonitoramentoOrq() {
           )}
         </Modal>
       </div>
+
+      {/* FAB de chat do assistente conforme o produto (gate useAssistentesIA) */}
+      {produto === "vida" && <ChatAssistantOrq assistente="diego" nome="Diego" avatar={diegoAvatar} pageContext="Seguro de Vida - Gestão Comercial" />}
+      {produto === "previdencia" && <ChatAssistantOrq assistente="leo" nome="Léo" avatar={leoAvatar} pageContext="Previdência - Gestão Comercial" />}
+      {produto === "prestamista" && <ChatAssistantOrq assistente="lari" nome="Lari" avatar={lariAvatar} pageContext="Prestamista - Gestão Comercial" />}
     </div>
   );
 }
