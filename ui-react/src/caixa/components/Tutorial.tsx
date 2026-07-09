@@ -214,21 +214,27 @@ const Tutorial = () => {
   // Posições do balão em relação ao avatar
   const getBalloonPosition = () => {
     const offset = 180; // distância do avatar
+    const W = 320;      // maxWidth do balão
+    const H = 340;      // altura assumida p/ o clamp (o conteúdo rola se passar)
+    // Mantém o balão dentro da viewport (margem de 16px) — sem isso, no passo
+    // com avatar central + balão "top" ele subia acima da tela e cortava.
+    const clampX = (v: string) => `clamp(16px, ${v}, calc(100% - 16px - ${W}px))`;
+    const clampY = (v: string) => `clamp(16px, ${v}, calc(100% - 16px - ${H}px))`;
     const baseStyle: React.CSSProperties = {
-      position: "absolute",
-      maxWidth: "320px",
+      position: "fixed",
+      maxWidth: `${W}px`,
       zIndex: 1001,
     };
 
     switch (step.balloonPosition) {
       case "right":
-        return { ...baseStyle, left: `calc(${step.avatarPosition.x} + ${offset}px)`, top: step.avatarPosition.y };
+        return { ...baseStyle, left: clampX(`calc(${step.avatarPosition.x} + ${offset}px)`), top: clampY(step.avatarPosition.y) };
       case "left":
-        return { ...baseStyle, right: `calc(100% - ${step.avatarPosition.x} + ${offset}px)`, top: step.avatarPosition.y };
+        return { ...baseStyle, right: clampX(`calc(100% - ${step.avatarPosition.x} + ${offset}px)`), top: clampY(step.avatarPosition.y) };
       case "top":
-        return { ...baseStyle, left: step.avatarPosition.x, bottom: `calc(100% - ${step.avatarPosition.y} + ${offset}px)`, transform: "translateX(-50%)" };
+        return { ...baseStyle, left: step.avatarPosition.x, bottom: clampY(`calc(100% - ${step.avatarPosition.y} + ${offset}px)`), transform: "translateX(-50%)" };
       case "bottom":
-        return { ...baseStyle, left: step.avatarPosition.x, top: `calc(${step.avatarPosition.y} + ${offset}px)`, transform: "translateX(-50%)" };
+        return { ...baseStyle, left: step.avatarPosition.x, top: clampY(`calc(${step.avatarPosition.y} + ${offset}px)`), transform: "translateX(-50%)" };
     }
   };
 
@@ -272,84 +278,92 @@ const Tutorial = () => {
         </div>
       </div>
 
-      {/* Balão de Fala */}
-      <div
-        className="animate-[balloonPop_0.5s_ease-out_0.3s_both]"
-        style={getBalloonPosition()}
-      >
-        <div className="bg-background rounded-2xl shadow-2xl p-6 border-2 border-primary/30 relative">
-          {/* Triângulo do balão */}
-          <div
-            className={`absolute w-0 h-0 border-8 ${
-              step.balloonPosition === "right"
-                ? "border-r-background border-t-transparent border-b-transparent border-l-transparent -left-4 top-8"
-                : step.balloonPosition === "left"
-                ? "border-l-background border-t-transparent border-b-transparent border-r-transparent -right-4 top-8"
-                : step.balloonPosition === "top"
-                ? "border-t-background border-l-transparent border-r-transparent border-b-transparent -bottom-4 left-1/2 -translate-x-1/2"
-                : "border-b-background border-l-transparent border-r-transparent border-t-transparent -top-4 left-1/2 -translate-x-1/2"
-            }`}
-          />
+      {/* Balão de Fala — o div externo faz o posicionamento (fixed + clamp +
+          translateX-50% nos casos top/bottom); a animação de "pop" (scale) fica
+          num filho, senão o transform da animação (fill:both) sobrescreveria o
+          translateX de posicionamento e o balão top/bottom ficaria descentrado. */}
+      <div style={getBalloonPosition()}>
+        <div className="animate-[balloonPop_0.5s_ease-out_0.3s_both]">
+          {/* Card SEM overflow — o triângulo (fora do padding box) não pode ser
+              clipado; o scroll de conteúdo alto fica no wrapper interno abaixo. */}
+          <div className="bg-background rounded-2xl shadow-2xl p-6 border-2 border-primary/30 relative">
+            {/* Triângulo do balão */}
+            <div
+              className={`absolute w-0 h-0 border-8 ${
+                step.balloonPosition === "right"
+                  ? "border-r-background border-t-transparent border-b-transparent border-l-transparent -left-4 top-8"
+                  : step.balloonPosition === "left"
+                  ? "border-l-background border-t-transparent border-b-transparent border-r-transparent -right-4 top-8"
+                  : step.balloonPosition === "top"
+                  ? "border-t-background border-l-transparent border-r-transparent border-b-transparent -bottom-4 left-1/2 -translate-x-1/2"
+                  : "border-b-background border-l-transparent border-r-transparent border-t-transparent -top-4 left-1/2 -translate-x-1/2"
+              }`}
+            />
 
-          {/* Close Button */}
-          <button
-            onClick={handleClose}
-            className="absolute top-2 right-2 text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <X className="h-5 w-5" />
-          </button>
-
-          {/* Conteúdo */}
-          <div className="mb-4">
-            <h3 className="font-bold text-xl text-primary mb-3 flex items-center gap-2">
-              {step.avatarName}
-              <span className="text-sm">💬</span>
-            </h3>
-            <p className="text-foreground leading-relaxed">{step.message}</p>
-          </div>
-
-          {/* Progress */}
-          <div className="mb-4">
-            <div className="flex gap-1">
-              {tutorialSteps.map((_, index) => (
-                <div
-                  key={index}
-                  className={`h-1.5 flex-1 rounded-full transition-all duration-300 ${
-                    index <= currentStep ? "bg-primary scale-110" : "bg-muted"
-                  }`}
-                />
-              ))}
-            </div>
-            <p className="text-xs text-muted-foreground mt-2 text-center font-medium">
-              Passo {currentStep + 1} de {tutorialSteps.length}
-            </p>
-          </div>
-
-          {/* Actions */}
-          <div className="flex justify-between items-center gap-2">
-            <Button
-              variant="ghost"
-              onClick={handleSkip}
-              className="text-muted-foreground hover:text-foreground"
+            {/* Close Button */}
+            <button
+              onClick={handleClose}
+              className="absolute top-2 right-2 text-muted-foreground hover:text-foreground transition-colors z-10"
             >
-              Pular Tutorial
-            </Button>
-            <div className="flex gap-2">
-              {currentStep > 0 && (
-                <Button variant="outline" onClick={handlePrevious} size="icon">
-                  <ArrowLeft className="h-4 w-4" />
+              <X className="h-5 w-5" />
+            </button>
+
+            {/* Wrapper rolável — só o conteúdo rola em telas baixas; o card e o
+                triângulo ficam fora dele e nunca são cortados. */}
+            <div className="max-h-[calc(100vh-140px)] overflow-y-auto">
+              {/* Conteúdo */}
+              <div className="mb-4">
+                <h3 className="font-bold text-xl text-primary mb-3 flex items-center gap-2">
+                  {step.avatarName}
+                  <span className="text-sm">💬</span>
+                </h3>
+                <p className="text-foreground leading-relaxed">{step.message}</p>
+              </div>
+
+              {/* Progress */}
+              <div className="mb-4">
+                <div className="flex gap-1">
+                  {tutorialSteps.map((_, index) => (
+                    <div
+                      key={index}
+                      className={`h-1.5 flex-1 rounded-full transition-all duration-300 ${
+                        index <= currentStep ? "bg-primary scale-110" : "bg-muted"
+                      }`}
+                    />
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground mt-2 text-center font-medium">
+                  Passo {currentStep + 1} de {tutorialSteps.length}
+                </p>
+              </div>
+
+              {/* Actions */}
+              <div className="flex justify-between items-center gap-2">
+                <Button
+                  variant="ghost"
+                  onClick={handleSkip}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  Pular Tutorial
                 </Button>
-              )}
-              <Button onClick={handleNext} className="gap-2">
-                {currentStep === tutorialSteps.length - 1 ? (
-                  "Finalizar 🎉"
-                ) : (
-                  <>
-                    Próximo
-                    <ArrowRight className="h-4 w-4" />
-                  </>
-                )}
-              </Button>
+                <div className="flex gap-2">
+                  {currentStep > 0 && (
+                    <Button variant="outline" onClick={handlePrevious} size="icon">
+                      <ArrowLeft className="h-4 w-4" />
+                    </Button>
+                  )}
+                  <Button onClick={handleNext} className="gap-2">
+                    {currentStep === tutorialSteps.length - 1 ? (
+                      "Finalizar 🎉"
+                    ) : (
+                      <>
+                        Próximo
+                        <ArrowRight className="h-4 w-4" />
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

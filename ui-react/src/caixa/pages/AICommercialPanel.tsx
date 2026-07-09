@@ -630,10 +630,6 @@ const AICommercialPanel = () => {
           </Card>
         )}
 
-        {/* Footer */}
-        <footer className="mt-12 text-center text-white/70 text-sm pb-8">
-          <p>Powered by IA Operacional CAIXA</p>
-        </footer>
       </main>
 
     </div>

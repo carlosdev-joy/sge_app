@@ -66,6 +66,13 @@ export default {
           mid:   '#0F4C88',
         },
       },
+      // Gradientes do tema CAIXA (vars escopadas em .caixa-theme/theme.css).
+      // Sem estes, bg-gradient-primary não resolvia e os botões que o usam
+      // (Localizar PDF, Compartilhar no painel de IA…) ficavam brancos.
+      backgroundImage: {
+        'gradient-primary': 'var(--gradient-primary)',
+        'gradient-dark': 'var(--gradient-dark)',
+      },
     },
   },
   // tailwindcss-animate: utilitários animate-in/out usados pelos shadcn de src/caixa.
