@@ -1,4 +1,3 @@
-import Header from "../components/Header";
 import MenuButton from "../components/MenuButton";
 import ProposalWorkflowSheet from "../components/ProposalWorkflowSheet";
 import SearchProposals from "../components/SearchProposals";
@@ -14,7 +13,6 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      <Header />
       
       <main className="container mx-auto px-6 py-8 max-w-7xl">
         <div className="mb-6 flex items-center justify-between flex-wrap gap-4">

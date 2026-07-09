@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import Header from "../components/Header";
 import MenuButton from "../components/MenuButton";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -335,7 +334,6 @@ const PortabilityTracking = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[hsl(211,70%,15%)] via-[hsl(211,60%,20%)] to-[hsl(211,50%,25%)]">
-      <Header />
       
       <div className="container mx-auto px-4 py-6">
         <div className="flex items-center gap-4 mb-6">
