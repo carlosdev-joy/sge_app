@@ -7,3 +7,7 @@ paramiko==3.5.0
 # Fernet das senhas de dbo.etl_conexao (services/conn_crypto.py) — já vinha
 # como dependência do paramiko; pin explícito porque agora é uso direto.
 cryptography==49.0.0
+# SDK oficial da Anthropic — assistentes IA do Caixa Seguro
+# (services/caixa_ia.py, provedor 'anthropic'; import tardio, só exigido
+# quando esse provedor está configurado).
+anthropic==0.116.0

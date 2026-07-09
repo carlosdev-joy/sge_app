@@ -133,7 +133,7 @@ from routers import (
     lineage, catalogo, sync, admin, agenda, sequence,
     datastage, factory, airflow, change_plans, powerbi, lineage_xml,
     notificacoes, comunicados, backlog, monitor, mensagens, copias,
-    inventario, finalizacao,
+    inventario, finalizacao, caixa_chat,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -192,6 +192,6 @@ for _router_module in [
     lineage, catalogo, sync, admin, agenda, sequence,
     datastage, factory, airflow, change_plans, powerbi, lineage_xml,
     notificacoes, comunicados, backlog, monitor, mensagens, copias,
-    inventario, finalizacao,
+    inventario, finalizacao, caixa_chat,
 ]:
     app.include_router(_router_module.router)
