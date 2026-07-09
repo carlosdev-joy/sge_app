@@ -11,6 +11,7 @@ import LariAssistant from "../components/LariAssistant";
 import ProductTour from "../components/ProductTour";
 import { NPSDialog } from "../components/NPSDialog";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -315,8 +316,20 @@ const SalesManagement = () => {
     }, 600);
   };
 
+  // Portabilidade por status — quantidade e valor têm escalas muito diferentes
+  // (dezenas vs milhões), por isso são plotados em dois gráficos separados.
+  const portabilidadeStatus = [
+    { status: "Pendente", quantidade: 45, valor: 2350000 },
+    { status: "Concluída", quantidade: 128, valor: 6890000 },
+    { status: "Recusada", quantidade: 23, valor: 1180000 },
+  ];
+
+  // overflow-clip (não -hidden) no wrapper: recorta as decorações de fundo
+  // igual, mas NÃO cria scroll-container — senão capturaria o position:sticky
+  // da toolbar de filtros (que deve ancorar no <main> do shell) e ela não
+  // grudaria ao rolar.
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[hsl(211,100%,15%)] via-[hsl(211,100%,25%)] to-[hsl(211,100%,35%)] relative overflow-hidden">
+    <div className="min-h-screen bg-gradient-to-br from-[hsl(211,100%,15%)] via-[hsl(211,100%,25%)] to-[hsl(211,100%,35%)] relative overflow-clip">
       {productType === "previdencia" && <LeoAssistant />}
       {/* Animated background lines */}
       <div className="absolute inset-0 opacity-5 pointer-events-none">
@@ -357,7 +370,10 @@ const SalesManagement = () => {
           </Button>
         </div>
 
-        <DateFilters 
+        {/* Toolbar fixa: filtros de data + produto grudam no topo ao rolar a
+            lista longa de KPIs/gráficos (backdrop navy p/ o conteúdo não vazar). */}
+        <div className="sticky top-0 z-30 -mx-6 px-6 py-3 mt-2 bg-[hsl(211,100%,16%)]/85 backdrop-blur-md border-b border-white/10 rounded-b-xl">
+        <DateFilters
           selectedDay={selectedDay}
           selectedMonth={selectedMonth}
           selectedYear={selectedYear}
@@ -367,7 +383,7 @@ const SalesManagement = () => {
         />
 
         {/* Product Type Navigation */}
-        <div className="mt-6 mb-4 flex gap-3 justify-center items-center flex-wrap">
+        <div className="mt-3 flex gap-3 justify-center items-center flex-wrap">
           <Button
             onClick={() => handleProductTypeChange("vida")}
             variant={productType === "vida" ? "default" : "outline"}
@@ -406,16 +422,7 @@ const SalesManagement = () => {
             🎯 Tour do Produto
           </Button>
         </div>
-
-        {/* Loading Overlay */}
-        {isLoadingTransition && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-8 flex flex-col items-center gap-4">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[hsl(211,100%,25%)]"></div>
-              <p className="text-[hsl(211,100%,25%)] font-semibold">Carregando dados...</p>
-            </div>
-          </div>
-        )}
+        </div>
 
         {/* Agency and Region Filters (Operational Profile Only) */}
         {profile === "operational" && (
@@ -448,7 +455,19 @@ const SalesManagement = () => {
           </div>
         )}
 
-        {/* Status Cards */}
+        {/* Status Cards — skeletons durante a troca de produto (isLoadingTransition),
+            no lugar do antigo modal-spinner bloqueante. */}
+        {isLoadingTransition ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mb-8 mt-8">
+            {Array.from({ length: statusData.length }).map((_, i) => (
+              <div key={i} className="rounded-xl border border-white/10 bg-white/5 p-6">
+                <Skeleton className="h-4 w-2/3 mx-auto mb-4" />
+                <Skeleton className="h-14 w-1/2 mx-auto mb-2" />
+                <Skeleton className="h-4 w-1/3 mx-auto" />
+              </div>
+            ))}
+          </div>
+        ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mb-8 mt-8">
           {statusData.map((item, index) => (
             <Card
@@ -494,6 +513,7 @@ const SalesManagement = () => {
             </Card>
           ))}
         </div>
+        )}
 
         {/* Status Help Dialog */}
         {activeStatusHelp && statusHelpInfo[activeStatusHelp] && (
@@ -1029,35 +1049,47 @@ const SalesManagement = () => {
                 </CardHeader>
                 <CardContent>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* Status das Solicitações */}
+                  {/* Solicitações por status (quantidade) — separado do valor:
+                      antes os dois dividiam o mesmo eixo Y e as barras de
+                      quantidade (dezenas) sumiam contra o valor (milhões). */}
                   <div>
-                    <h3 className="text-white font-semibold mb-4">Status das Solicitações</h3>
+                    <h3 className="text-white font-semibold mb-4">Solicitações por status</h3>
                     <ResponsiveContainer width="100%" height={300}>
-                      <BarChart data={[
-                        { status: "Pendente", quantidade: 45, valor: 2350000 },
-                        { status: "Concluída", quantidade: 128, valor: 6890000 },
-                        { status: "Recusada", quantidade: 23, valor: 1180000 }
-                      ]}>
+                      <BarChart data={portabilidadeStatus}>
                         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
                         <XAxis dataKey="status" stroke="white" />
-                        <YAxis stroke="white" />
-                        <Tooltip 
-                          contentStyle={{ 
-                            backgroundColor: "rgba(255,255,255,0.95)", 
+                        <YAxis stroke="white" allowDecimals={false} />
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: "rgba(255,255,255,0.95)",
                             border: "1px solid rgba(255,255,255,0.3)",
                             borderRadius: "8px",
                             color: "hsl(211,100%,25%)"
                           }}
-                          formatter={(value, name) => {
-                            if (name === "valor") {
-                              return `R$ ${(Number(value) / 1000).toFixed(0)}k`;
-                            }
-                            return value;
-                          }}
                         />
-                        <Legend wrapperStyle={{ color: "white" }} />
-                        <Bar dataKey="quantidade" name="Quantidade" fill="#3E96D1" />
-                        <Bar dataKey="valor" name="Valor (R$)" fill="hsl(142,76%,36%)" />
+                        <Bar dataKey="quantidade" name="Solicitações" fill="#3E96D1" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* Valor por status (R$) — eixo próprio em milhões */}
+                  <div>
+                    <h3 className="text-white font-semibold mb-4">Valor por status (R$)</h3>
+                    <ResponsiveContainer width="100%" height={300}>
+                      <BarChart data={portabilidadeStatus}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                        <XAxis dataKey="status" stroke="white" />
+                        <YAxis stroke="white" tickFormatter={(v) => `R$ ${(Number(v) / 1e6).toFixed(1)}M`} />
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: "rgba(255,255,255,0.95)",
+                            border: "1px solid rgba(255,255,255,0.3)",
+                            borderRadius: "8px",
+                            color: "hsl(211,100%,25%)"
+                          }}
+                          formatter={(value) => `R$ ${(Number(value) / 1000).toLocaleString("pt-BR")} mil`}
+                        />
+                        <Bar dataKey="valor" name="Valor" fill="hsl(142,76%,36%)" radius={[4, 4, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
