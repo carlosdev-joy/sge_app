@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
@@ -81,6 +82,7 @@ const RefundManagementDialog = ({ proposal, open, onOpenChange, onStatusChange }
           <DialogTitle className="text-xl font-bold text-primary text-center">
             Gerenciamento de Devolução
           </DialogTitle>
+          <DialogDescription className="sr-only">Consulte e gerencie a devolução de valores da proposta.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-6">

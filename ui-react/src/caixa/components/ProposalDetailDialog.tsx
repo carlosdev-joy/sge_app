@@ -1,6 +1,7 @@
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
@@ -81,6 +82,7 @@ const ProposalDetailDialog = ({ proposal, open, onOpenChange }: ProposalDetailDi
             <DialogTitle className="text-2xl font-bold text-caixa-orange">
               Resumo do seguro
             </DialogTitle>
+          <DialogDescription className="sr-only">Detalhes completos da proposta selecionada.</DialogDescription>
           </DialogHeader>
 
           <div className="space-y-6">

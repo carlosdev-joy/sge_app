@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
+import { Dialog, DialogContent,
+  DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 import { Label } from "./ui/label";
@@ -50,8 +51,9 @@ export const NPSDialog = ({ open, onOpenChange }: NPSDialogProps) => {
       <DialogContent className="sm:max-w-[500px] bg-white">
         <DialogHeader>
           <DialogTitle className="text-2xl text-center text-[hsl(211,100%,25%)]">
-            📊 Pesquisa de Satisfação
+            Pesquisa de Satisfação
           </DialogTitle>
+          <DialogDescription className="sr-only">Avalie sua experiência respondendo à pesquisa de satisfação.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-6 py-4">

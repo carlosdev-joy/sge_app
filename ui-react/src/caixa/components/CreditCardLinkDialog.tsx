@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
@@ -60,6 +61,7 @@ const CreditCardLinkDialog = ({ proposal, open, onOpenChange }: CreditCardLinkDi
           <DialogTitle className="text-xl font-bold text-primary text-center">
             Gerar Link de Pagamento - Cartão de Crédito
           </DialogTitle>
+          <DialogDescription className="sr-only">Gere e envie ao cliente o link de pagamento por cartão de crédito.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-6">

@@ -1,4 +1,5 @@
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
+import { Dialog, DialogContent,
+  DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { Badge } from "./ui/badge";
 import { CheckCircle, Clock, XCircle } from "lucide-react";
@@ -75,6 +76,7 @@ const SensitizationHistoryDialog = ({ open, onOpenChange, proposalNumber, insure
       <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-2xl">Histórico de Sensibilização</DialogTitle>
+          <DialogDescription className="sr-only">Histórico de contatos de sensibilização da proposta.</DialogDescription>
           <div className="text-sm text-muted-foreground mt-2">
             <p><strong>Proposta:</strong> {proposalNumber}</p>
             <p><strong>Segurado:</strong> {insuredName}</p>

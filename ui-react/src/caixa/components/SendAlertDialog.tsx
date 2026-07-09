@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
@@ -69,6 +70,7 @@ const SendAlertDialog = ({ proposals, open, onOpenChange }: SendAlertDialogProps
           <DialogTitle className="text-xl font-bold text-primary text-center">
             Enviar Alertas por E-mail
           </DialogTitle>
+          <DialogDescription className="sr-only">Dispare alertas por e-mail para os responsáveis.</DialogDescription>
         </DialogHeader>
 
         {!isLoading && !isSuccess && (

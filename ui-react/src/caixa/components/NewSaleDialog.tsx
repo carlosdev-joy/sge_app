@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
@@ -54,6 +55,7 @@ const NewSaleDialog = ({ open, onOpenChange, receiptNumber, insuredName, prefill
           <DialogTitle className="text-xl font-bold text-primary text-center">
             Realizar Nova Venda
           </DialogTitle>
+          <DialogDescription className="sr-only">Preencha os dados para iniciar uma nova venda de seguro.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
