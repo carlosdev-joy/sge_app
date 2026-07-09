@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useProfile } from "../contexts/ProfileContext";
 import MenuButton from "../components/MenuButton";
 import ProposalWorkflowSheet from "../components/ProposalWorkflowSheet";
@@ -361,13 +361,22 @@ const SalesManagement = () => {
             <p className="text-white/80">Painel Individual de Desempenho e Efetividade</p>
             <div className="mt-3 h-1 w-28 rounded-full bg-gradient-to-r from-[#F26B00] to-[#FFB380]" />
           </div>
-          <Button
-            onClick={handleExportReport}
-            className="bg-white/20 hover:bg-white/30 text-white border border-white/30"
-          >
-            <Download className="h-4 w-4 mr-2" />
-            Exportar Relatório Excel
-          </Button>
+          <div className="flex items-center gap-2">
+            {/* Piloto A/B — abre a mesma tela no visual nativo do Orquestra */}
+            <Link
+              to="/caixa-seguro/acompanhamento-orq"
+              className="inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium text-white/90 border border-white/30 hover:bg-white/10 transition-colors"
+            >
+              Ver versão Orquestra (piloto)
+            </Link>
+            <Button
+              onClick={handleExportReport}
+              className="bg-white/20 hover:bg-white/30 text-white border border-white/30"
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Exportar Relatório Excel
+            </Button>
+          </div>
         </div>
 
         {/* Toolbar fixa: filtros de data + produto grudam no topo ao rolar a
