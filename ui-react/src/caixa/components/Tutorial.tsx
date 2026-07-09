@@ -214,21 +214,27 @@ const Tutorial = () => {
   // Posições do balão em relação ao avatar
   const getBalloonPosition = () => {
     const offset = 180; // distância do avatar
+    const W = 320;      // maxWidth do balão
+    const H = 340;      // altura assumida p/ o clamp (o conteúdo rola se passar)
+    // Mantém o balão dentro da viewport (margem de 16px) — sem isso, no passo
+    // com avatar central + balão "top" ele subia acima da tela e cortava.
+    const clampX = (v: string) => `clamp(16px, ${v}, calc(100% - 16px - ${W}px))`;
+    const clampY = (v: string) => `clamp(16px, ${v}, calc(100% - 16px - ${H}px))`;
     const baseStyle: React.CSSProperties = {
-      position: "absolute",
-      maxWidth: "320px",
+      position: "fixed",
+      maxWidth: `${W}px`,
       zIndex: 1001,
     };
 
     switch (step.balloonPosition) {
       case "right":
-        return { ...baseStyle, left: `calc(${step.avatarPosition.x} + ${offset}px)`, top: step.avatarPosition.y };
+        return { ...baseStyle, left: clampX(`calc(${step.avatarPosition.x} + ${offset}px)`), top: clampY(step.avatarPosition.y) };
       case "left":
-        return { ...baseStyle, right: `calc(100% - ${step.avatarPosition.x} + ${offset}px)`, top: step.avatarPosition.y };
+        return { ...baseStyle, right: clampX(`calc(100% - ${step.avatarPosition.x} + ${offset}px)`), top: clampY(step.avatarPosition.y) };
       case "top":
-        return { ...baseStyle, left: step.avatarPosition.x, bottom: `calc(100% - ${step.avatarPosition.y} + ${offset}px)`, transform: "translateX(-50%)" };
+        return { ...baseStyle, left: step.avatarPosition.x, bottom: clampY(`calc(100% - ${step.avatarPosition.y} + ${offset}px)`), transform: "translateX(-50%)" };
       case "bottom":
-        return { ...baseStyle, left: step.avatarPosition.x, top: `calc(${step.avatarPosition.y} + ${offset}px)`, transform: "translateX(-50%)" };
+        return { ...baseStyle, left: step.avatarPosition.x, top: clampY(`calc(${step.avatarPosition.y} + ${offset}px)`), transform: "translateX(-50%)" };
     }
   };
 
@@ -277,7 +283,7 @@ const Tutorial = () => {
         className="animate-[balloonPop_0.5s_ease-out_0.3s_both]"
         style={getBalloonPosition()}
       >
-        <div className="bg-background rounded-2xl shadow-2xl p-6 border-2 border-primary/30 relative">
+        <div className="bg-background rounded-2xl shadow-2xl p-6 border-2 border-primary/30 relative max-h-[calc(100vh-32px)] overflow-y-auto">
           {/* Triângulo do balão */}
           <div
             className={`absolute w-0 h-0 border-8 ${
