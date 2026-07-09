@@ -10,12 +10,16 @@ import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, PieChart, Pie, Cell,
 } from "recharts";
-import { Download, AlertTriangle, ArrowLeft, ArrowRight, LayoutDashboard } from "lucide-react";
+import { Download, AlertTriangle, ArrowLeft, ArrowRight, HelpCircle, LayoutDashboard } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Tabs } from "../../components/ui/Tabs";
 import { Select } from "../../components/ui/Input";
+import { Modal } from "../../components/ui/Modal";
 import { toast } from "../../components/ui/Toast";
+import lariAvatar from "../assets/lari-avatar.png";
+import diegoAvatar from "../assets/diego-avatar.png";
+import leoAvatar from "../assets/leo-avatar.png";
 
 type Produto = "vida" | "previdencia" | "prestamista";
 
@@ -153,6 +157,16 @@ const conformidade500k = [
   { proposta: "Proposta 8047413032438-3", valor: 820000, cliente: "JULIANA COSTA PEREIRA", dias: 18 },
 ];
 
+// Informativos por status — o "?" no card abre o balão do assistente (mesmos
+// textos/assistentes da POC). Só os status com entrada aqui exibem o "?".
+const statusHelpInfo: Record<string, { avatar: string; avatarName: string; message: string }> = {
+  pending_signature: { avatar: lariAvatar, avatarName: "Lari", message: "Este status corresponde a propostas que estão pendentes de assinatura. Você pode utilizar o botão 'Enviar Link' para enviar ao cliente o link para assinatura da proposta via e-mail, WhatsApp ou SMS!" },
+  awaiting_payment: { avatar: diegoAvatar, avatarName: "Diego", message: "Estas são propostas já assinadas que aguardam o pagamento. Você pode gerenciar as opções de pagamento e enviar lembretes ao cliente através do botão 'Gerenciar Pagamento'." },
+  pending_documentation: { avatar: lariAvatar, avatarName: "Lari", message: "Propostas com pendências documentais precisam de documentos adicionais. Use o botão 'Upload de Documentos' para enviar os arquivos necessários e dar andamento à proposta." },
+  pending_dps: { avatar: leoAvatar, avatarName: "Léo", message: "Pendência de DPS (Declaração Pessoal de Saúde) significa que o cliente precisa preencher informações de saúde. Clique em 'Enviar Link DPS' para enviar o formulário ao segurado." },
+  refund_pending: { avatar: diegoAvatar, avatarName: "Diego", message: "Estas são propostas que foram declinadas pela seguradora. Você pode gerenciar o reembolso através do botão 'Gerenciar Reembolso' ou criar uma nova venda revisando as informações." },
+};
+
 export default function MonitoramentoOrq() {
   const navigate = useNavigate();
   const [produto, setProduto] = useState<Produto>("vida");
@@ -165,6 +179,8 @@ export default function MonitoramentoOrq() {
 
   const pending = pendingByReason[produto];
   const pendingMax = Math.max(...pending.map((p) => p.count));
+  const [activeHelp, setActiveHelp] = useState<string | null>(null);
+  const help = activeHelp ? statusHelpInfo[activeHelp] : null;
 
   return (
     <div className="min-h-full bg-canvas font-sans text-ink">
@@ -230,15 +246,27 @@ export default function MonitoramentoOrq() {
         {/* KPI cards — planos, neutros, clicáveis (borda de acento por categoria) */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {statusData.map((s) => (
-            <button
-              key={s.status}
-              onClick={() => navigate(`/caixa-seguro/acompanhamento/${s.status}`)}
-              className={`text-left bg-panel border border-edge ${s.accent} border-l-4 rounded-lg p-4 shadow-sm hover:shadow-md hover:border-blue-400 transition-all`}
-            >
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-dim leading-tight min-h-[2.2em]">{s.title}</div>
-              <div className={`text-3xl font-bold tabular-nums mt-1 ${s.text}`}>{s.count}</div>
-              <div className="text-xs text-dim mt-0.5">{s.value}</div>
-            </button>
+            <div key={s.status} className="relative">
+              <button
+                onClick={() => navigate(`/caixa-seguro/acompanhamento/${s.status}`)}
+                className={`w-full text-left bg-panel border border-edge ${s.accent} border-l-4 rounded-lg p-4 shadow-sm hover:shadow-md hover:border-blue-400 transition-all`}
+              >
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-dim leading-tight min-h-[2.2em] pr-6">{s.title}</div>
+                <div className={`text-3xl font-bold tabular-nums mt-1 ${s.text}`}>{s.count}</div>
+                <div className="text-xs text-dim mt-0.5">{s.value}</div>
+              </button>
+              {statusHelpInfo[s.status] && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setActiveHelp(s.status); }}
+                  className="absolute top-2 right-2 text-dim hover:text-[#1A5FA8] transition-colors"
+                  title="O que é este status?"
+                  aria-label={`Ajuda sobre ${s.title}`}
+                >
+                  <HelpCircle size={16} />
+                </button>
+              )}
+            </div>
           ))}
         </div>
 
@@ -518,6 +546,30 @@ export default function MonitoramentoOrq() {
         )}
 
         <p className="text-xs text-dim">Total emitido no período: <span className="font-semibold text-ink">{brl(8_540_120)}</span> · dados ilustrativos (mock).</p>
+
+        {/* Informativo do status — balão do assistente no Modal nativo do Orquestra */}
+        <Modal open={!!activeHelp} onClose={() => setActiveHelp(null)} title="Sobre este status" size="lg">
+          {help && (
+            <div className="flex items-start gap-5">
+              <img
+                src={help.avatar}
+                alt={help.avatarName}
+                className="w-24 h-24 rounded-full border-4 border-[#1A5FA8] shadow object-cover shrink-0 animate-bounce"
+                style={{ animationDuration: "2s" }}
+              />
+              <div className="flex-1 min-w-0">
+                <div className="relative bg-[#1A5FA8] text-white rounded-2xl p-5 shadow">
+                  <div className="absolute -left-2 top-6 w-0 h-0 border-t-8 border-t-transparent border-b-8 border-b-transparent border-r-8 border-r-[#1A5FA8]" />
+                  <p className="text-xs font-semibold opacity-90 mb-1">{help.avatarName}</p>
+                  <p className="text-sm leading-relaxed">{help.message}</p>
+                </div>
+                <div className="mt-4 flex justify-end">
+                  <Button variant="primary" size="sm" onClick={() => setActiveHelp(null)}>Entendi!</Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </Modal>
       </div>
     </div>
   );
