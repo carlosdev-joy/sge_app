@@ -94,6 +94,18 @@ const PRODUTOS: { id: Produto; label: string }[] = [
   { id: "prestamista", label: "Prestamista" },
 ];
 
+// Comparativo de performance entre produtos (mesmos números da POC)
+const comparativo = [
+  { tipo: "Seguro de Vida", emissoes: "1.399", aprovacao: "94.7%", ticket: "R$ 5.420", portabilidades: null as number | null },
+  { tipo: "Previdência", emissoes: "1.045", aprovacao: "95.8%", ticket: "R$ 8.750", portabilidades: 196 },
+  { tipo: "Prestamista", emissoes: "1.300", aprovacao: "93.3%", ticket: "R$ 3.850", portabilidades: null as number | null },
+];
+const comparativoBar = [
+  { tipo: "Vida", Emissões: 1399, Declínios: 74 },
+  { tipo: "Previdência", Emissões: 1045, Declínios: 46 },
+  { tipo: "Prestamista", Emissões: 1300, Declínios: 92 },
+];
+
 export default function MonitoramentoOrq() {
   const navigate = useNavigate();
   const [produto, setProduto] = useState<Produto>("vida");
@@ -179,6 +191,48 @@ export default function MonitoramentoOrq() {
             </button>
           ))}
         </div>
+
+        {/* Comparativo de performance entre produtos */}
+        <Card title="Comparativo de Performance entre Produtos">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-5">
+            {comparativo.map((p) => (
+              <div key={p.tipo} className="bg-canvas border border-edge rounded-lg p-4">
+                <h4 className="text-sm font-semibold text-ink mb-3">{p.tipo}</h4>
+                <div className="flex flex-col gap-2">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-dim">Total Emissões</span>
+                    <span className="font-bold text-ink tabular-nums">{p.emissoes}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-dim">Taxa Aprovação</span>
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">{p.aprovacao}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-dim">Ticket Médio</span>
+                    <span className="font-bold text-ink tabular-nums">{p.ticket}</span>
+                  </div>
+                  {p.portabilidades != null && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-dim">Portabilidades</span>
+                      <span className="font-bold text-blue-500 dark:text-blue-400 tabular-nums">{p.portabilidades}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          <ResponsiveContainer width="100%" height={280}>
+            <BarChart data={comparativoBar}>
+              <CartesianGrid strokeDasharray="3 3" stroke={AXIS} strokeOpacity={0.2} />
+              <XAxis dataKey="tipo" tick={{ fill: AXIS, fontSize: 12 }} stroke={AXIS} />
+              <YAxis tick={{ fill: AXIS, fontSize: 12 }} stroke={AXIS} />
+              <Tooltip contentStyle={tooltipStyle} cursor={{ fill: AXIS, fillOpacity: 0.08 }} />
+              <Legend wrapperStyle={{ color: AXIS, fontSize: 12 }} />
+              <Bar dataKey="Emissões" fill={EMISSOES} radius={[4, 4, 0, 0]} />
+              <Bar dataKey="Declínios" fill={DECLINIOS} radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
 
         {/* Gráficos */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
