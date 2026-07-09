@@ -254,7 +254,7 @@ const ProposalWorkflowSheet = () => {
   return (
     <Sheet>
       <SheetTrigger asChild>
-        <button className="flex items-center gap-2 text-[#005CA9] hover:text-[#0073CF] transition-colors py-3 px-4 hover:bg-accent/50 rounded-lg">
+        <button className="flex items-center gap-2 text-primary bg-white border border-primary/20 shadow-sm hover:shadow-md hover:border-primary/40 hover:bg-primary/5 transition-all py-2.5 px-4 rounded-lg">
           <FileText className="h-6 w-6" />
           <span className="font-semibold">Workflow</span>
         </button>
@@ -270,12 +270,12 @@ const ProposalWorkflowSheet = () => {
             {getStatusCounts().map((item) => (
               <Card
                 key={item.status}
-                className={`${getStatusBadgeColor(item.status)} border-none cursor-pointer transition-all hover:scale-105`}
+                className={`${getStatusBadgeColor(item.status)} border border-white/10 rounded-lg cursor-pointer transition-all hover:-translate-y-0.5 hover:shadow-lg`}
                 onClick={() => setSelectedStatus(item.status)}
               >
                 <CardContent className="p-3 text-white text-center">
-                  <div className="text-xs font-medium mb-1">{item.label}</div>
-                  <div className="text-2xl font-bold">{item.count}</div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-white/90 mb-1 leading-tight">{item.label}</div>
+                  <div className="text-2xl font-bold tracking-tight">{item.count}</div>
                 </CardContent>
               </Card>
             ))}

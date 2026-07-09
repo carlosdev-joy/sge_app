@@ -98,7 +98,7 @@ const SearchProposals = () => {
         <h2 className="text-xl font-semibold text-primary">Pesquisar Propostas</h2>
       </div>
 
-      <div className="border-2 border-dashed border-primary rounded-lg p-6 bg-white">
+      <div className="border border-primary/20 rounded-xl p-6 bg-white shadow-sm">
         <Label className="text-primary font-semibold mb-4 block">
           Como deseja realizar a busca?
         </Label>
