@@ -348,6 +348,7 @@ const SalesManagement = () => {
               Monitoramento Tático de Emissão
             </h1>
             <p className="text-white/80">Painel Individual de Desempenho e Efetividade</p>
+            <div className="mt-3 h-1 w-28 rounded-full bg-gradient-to-r from-[#F26B00] to-[#FFB380]" />
           </div>
           <Button
             onClick={handleExportReport}
@@ -454,14 +455,14 @@ const SalesManagement = () => {
           {statusData.map((item, index) => (
             <Card
               key={item.status}
-              className={`${item.bgColor} ${item.hoverColor} ${item.glowColor} border-none cursor-pointer transition-all hover:scale-105 animate-slide-in-bottom`}
+              className={`group ${item.bgColor} ${item.hoverColor} ${item.glowColor} border border-white/10 rounded-xl cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl animate-slide-in-bottom`}
               style={{ animationDelay: `${index * 0.1}s` }}
               onClick={() => handleCardClick(item.status)}
             >
-              <CardContent className="p-8 text-white relative overflow-hidden">
-                <div className="absolute top-0 right-0 w-24 h-24 bg-white/10 rounded-full blur-2xl -mr-8 -mt-8" />
-                <div className="flex items-center justify-center gap-2 mb-4 relative z-10">
-                  <h3 className="text-xl font-semibold text-center">{item.title}</h3>
+              <CardContent className="p-6 text-white relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-28 h-28 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10 transition-transform duration-500 group-hover:scale-125" />
+                <div className="flex items-center justify-center gap-2 mb-3 relative z-10">
+                  <h3 className="text-sm font-semibold uppercase tracking-wider text-white/90 text-center">{item.title}</h3>
                   {statusHelpInfo[item.status] && (
                     <button
                       onClick={(e) => {
@@ -474,8 +475,9 @@ const SalesManagement = () => {
                     </button>
                   )}
                 </div>
-                <div className="text-7xl font-bold text-center mb-2 relative z-10">{item.count}</div>
-                <p className="text-center text-lg opacity-90 relative z-10">{item.value}</p>
+                <div className="text-6xl font-bold tracking-tight text-center mb-1 relative z-10 drop-shadow-sm">{item.count}</div>
+                <p className="text-center text-base font-medium text-white/85 relative z-10">{item.value}</p>
+                <div className="absolute inset-x-0 bottom-0 h-1 bg-gradient-to-r from-transparent via-white/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
                 {item.status === "sensitization_monitoring" && (
                   <Button
                     variant="outline"
@@ -562,7 +564,7 @@ const SalesManagement = () => {
         {/* Comparison Dashboard - Show FIRST for all product types */}
         <Card className="bg-white/10 backdrop-blur-md border-white/20 shadow-[0_8px_32px_rgba(0,0,0,0.2)] mb-8">
           <CardHeader>
-            <CardTitle className="text-white">📊 Comparativo de Performance entre Produtos</CardTitle>
+            <CardTitle className="text-white">Comparativo de Performance entre Produtos</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
@@ -640,8 +642,8 @@ const SalesManagement = () => {
                   }}
                 />
                 <Legend wrapperStyle={{ color: "white" }} />
-                <Bar dataKey="emissoes" name="Emissões" fill="#4ade80" radius={[8, 8, 0, 0]} />
-                <Bar dataKey="declínios" name="Declínios" fill="#f87171" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="emissoes" name="Emissões" fill="#3E96D1" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="declínios" name="Declínios" fill="#DB6A1E" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -652,7 +654,7 @@ const SalesManagement = () => {
         <Card className="bg-white/10 backdrop-blur-md border-white/20 shadow-[0_8px_32px_rgba(0,0,0,0.2)] mb-8">
           <CardHeader>
             <div className="flex items-center justify-between flex-wrap gap-4">
-              <CardTitle className="text-white">📋 Status de Seguros</CardTitle>
+              <CardTitle className="text-white">Status de Seguros</CardTitle>
               <div className="flex items-center gap-3">
                 <DateFilters 
                   selectedDay={selectedDay}
@@ -684,7 +686,7 @@ const SalesManagement = () => {
                     labelLine={false}
                     label={({ name, percentage }: any) => `${name}: ${percentage}%`}
                     outerRadius={100}
-                    fill="#8884d8"
+                    fill="#3E96D1"
                     dataKey="value"
                   >
                     {insuranceStatusData.map((entry, index) => (
@@ -724,7 +726,7 @@ const SalesManagement = () => {
         <Card className="bg-white/10 backdrop-blur-md border-white/20 shadow-[0_8px_32px_rgba(0,0,0,0.2)] mb-8">
           <CardHeader>
             <div className="flex items-center justify-between flex-wrap gap-4">
-              <CardTitle className="text-white">📉 Motivos de Declínio</CardTitle>
+              <CardTitle className="text-white">Motivos de Declínio</CardTitle>
               <div className="flex items-center gap-3">
                 <DateFilters 
                   selectedDay={selectedDay}
@@ -759,7 +761,7 @@ const SalesManagement = () => {
                     color: "hsl(211,100%,25%)"
                   }}
                 />
-                <Bar dataKey="count" fill="hsl(211,80%,60%)" radius={[0, 8, 8, 0]} />
+                <Bar dataKey="count" fill="#3E96D1" radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -769,7 +771,7 @@ const SalesManagement = () => {
         <Card className="bg-white/10 backdrop-blur-md border-white/20 shadow-[0_8px_32px_rgba(0,0,0,0.2)] mb-8">
           <CardHeader>
             <div className="flex items-center justify-between flex-wrap gap-4">
-              <CardTitle className="text-white">⏳ Propostas Pendentes por Motivo</CardTitle>
+              <CardTitle className="text-white">Propostas Pendentes por Motivo</CardTitle>
               <Button
                 onClick={() => toast({ title: "Exportando...", description: "Relatório analítico de Propostas Pendentes está sendo exportado." })}
                 size="sm"
@@ -814,7 +816,7 @@ const SalesManagement = () => {
         <Card className="bg-white/10 backdrop-blur-md border-white/20 shadow-[0_8px_32px_rgba(0,0,0,0.2)] mb-8">
           <CardHeader>
             <div className="flex items-center justify-between flex-wrap gap-4">
-              <CardTitle className="text-white">💬 Propostas Pendentes de Sensibilização</CardTitle>
+              <CardTitle className="text-white">Propostas Pendentes de Sensibilização</CardTitle>
               <div className="flex items-center gap-3">
                 <DateFilters 
                   selectedDay={selectedDay}
@@ -865,7 +867,7 @@ const SalesManagement = () => {
         <Card className="bg-white/10 backdrop-blur-md border-white/20 shadow-[0_8px_32px_rgba(0,0,0,0.2)] mb-8">
           <CardHeader>
             <div className="flex items-center justify-between flex-wrap gap-4">
-              <CardTitle className="text-white">📊 Resultado Geral - Emissões vs Declínios</CardTitle>
+              <CardTitle className="text-white">Resultado Geral - Emissões vs Declínios</CardTitle>
               <div className="flex items-center gap-3">
                 <DateFilters 
                   selectedMonth={selectedMonth}
@@ -918,8 +920,8 @@ const SalesManagement = () => {
                   }}
                 />
                 <Legend wrapperStyle={{ color: "white" }} />
-                <Bar dataKey="emissoesCount" name="Emissões" fill="hsl(211,80%,60%)" radius={[8, 8, 0, 0]} />
-                <Bar dataKey="decliniosCount" name="Declínios" fill="hsl(0,70%,60%)" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="emissoesCount" name="Emissões" fill="#3E96D1" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="decliniosCount" name="Declínios" fill="#DB6A1E" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -929,7 +931,7 @@ const SalesManagement = () => {
         <Card className="bg-white/10 backdrop-blur-md border-white/20 shadow-[0_8px_32px_rgba(0,0,0,0.2)] mb-8">
           <CardHeader>
             <div className="flex items-center justify-between flex-wrap gap-4">
-              <CardTitle className="text-white">📈 Emissões e Declínios por Produto</CardTitle>
+              <CardTitle className="text-white">Emissões e Declínios por Produto</CardTitle>
               <div className="flex items-center gap-3">
                 <DateFilters 
                   selectedDay={selectedDay}
@@ -965,8 +967,8 @@ const SalesManagement = () => {
                   }}
                 />
                 <Legend wrapperStyle={{ color: "white" }} />
-                <Bar dataKey="emissoes" name="Emissões" fill="hsl(211,80%,60%)" radius={[8, 8, 0, 0]} />
-                <Bar dataKey="declínios" name="Declínios" fill="hsl(0,70%,60%)" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="emissoes" name="Emissões" fill="#3E96D1" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="declínios" name="Declínios" fill="#DB6A1E" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -980,7 +982,7 @@ const SalesManagement = () => {
               <Card className="bg-white/10 backdrop-blur-md border-white/20 shadow-[0_8px_32px_rgba(0,0,0,0.2)]">
                 <CardHeader>
                   <div className="flex items-center justify-between flex-wrap gap-4">
-                    <CardTitle className="text-white">🔄 Acompanhamento de Portabilidade</CardTitle>
+                    <CardTitle className="text-white">Acompanhamento de Portabilidade</CardTitle>
                     <div className="flex items-center gap-3">
                       <div className="flex items-center gap-2">
                         <input
@@ -1056,7 +1058,7 @@ const SalesManagement = () => {
                           }}
                         />
                         <Legend wrapperStyle={{ color: "white" }} />
-                        <Bar dataKey="quantidade" name="Quantidade" fill="hsl(211,80%,60%)" />
+                        <Bar dataKey="quantidade" name="Quantidade" fill="#3E96D1" />
                         <Bar dataKey="valor" name="Valor (R$)" fill="hsl(142,76%,36%)" />
                       </BarChart>
                     </ResponsiveContainer>
@@ -1079,7 +1081,7 @@ const SalesManagement = () => {
                           labelLine={false}
                           label={({ name, percent }: any) => `${name} ${(percent * 100).toFixed(0)}%`}
                           outerRadius={100}
-                          fill="#8884d8"
+                          fill="#3E96D1"
                           dataKey="value"
                         >
                           {[
@@ -1125,7 +1127,7 @@ const SalesManagement = () => {
                           color: "hsl(211,100%,25%)"
                         }}
                       />
-                      <Bar dataKey="count" name="Quantidade" fill="hsl(0,84%,60%)" radius={[0, 8, 8, 0]} />
+                      <Bar dataKey="count" name="Quantidade" fill="hsl(0,84%,60%)" radius={[0, 4, 4, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -1138,8 +1140,7 @@ const SalesManagement = () => {
                 onClick={() => navigate("/caixa-seguro/portabilidades")}
               >
                 <CardHeader>
-                  <CardTitle className="text-white flex items-center justify-between">
-                    📋 Detalhamento de Portabilidades
+                  <CardTitle className="text-white flex items-center justify-between">Detalhamento de Portabilidades
                     <ArrowRight className="h-5 w-5" />
                   </CardTitle>
                 </CardHeader>
@@ -1217,7 +1218,7 @@ const SalesManagement = () => {
                         }}
                         formatter={(value) => `R$ ${Number(value).toLocaleString('pt-BR')}`}
                       />
-                      <Bar dataKey="valor" name="Valor" fill="hsl(0,84%,60%)" radius={[0, 8, 8, 0]} />
+                      <Bar dataKey="valor" name="Valor" fill="hsl(0,84%,60%)" radius={[0, 4, 4, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
 

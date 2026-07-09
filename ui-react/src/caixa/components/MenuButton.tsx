@@ -14,7 +14,7 @@ const MenuButton = () => {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button className="flex items-center gap-2 text-[#005CA9] hover:text-[#0073CF] transition-colors py-3 px-4 hover:bg-accent/50 rounded-lg">
+        <button className="flex items-center gap-2 text-primary bg-white border border-primary/20 shadow-sm hover:shadow-md hover:border-primary/40 hover:bg-primary/5 transition-all py-2.5 px-4 rounded-lg">
           <Menu className="h-6 w-6" />
           <span className="font-semibold">Menu</span>
         </button>
