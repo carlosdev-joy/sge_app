@@ -70,10 +70,10 @@
 }
 
 /* Equivalente ao `body` da POC, aplicado só à seção.
- * :where() zera a especificidade: um utilitário bg-*/text-* no MESMO elemento
- * sempre vence. Sem isso, o overlay portalado de Sheet/Dialog (que carrega
- * .caixa-theme) pintava hsl(var(--background)) branco POR CIMA do bg-black/60
- * e a tela de fundo "sumia" ao abrir o Workflow. */
+ * :where() zera a especificidade: um utilitário de bg ou texto no MESMO
+ * elemento sempre vence. Sem isso, o overlay portalado de Sheet/Dialog (que
+ * carrega .caixa-theme) pintava hsl(var(--background)) branco POR CIMA do
+ * bg-black/60 e a tela de fundo "sumia" ao abrir o Workflow. */
 :where(.caixa-theme) {
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
