@@ -29,6 +29,7 @@ import MonitoramentoOrq from './caixa/pages/MonitoramentoOrq'
 import IndexOrq from './caixa/pages/IndexOrq'
 import PortabilidadesOrq from './caixa/pages/PortabilidadesOrq'
 import PainelIAOrq from './caixa/pages/PainelIAOrq'
+import AcompanhamentoOrq from './caixa/pages/AcompanhamentoOrq'
 import { ProfileProvider } from './caixa/contexts/ProfileContext'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -128,6 +129,18 @@ export default function App() {
               element={
                 <RequirePerm perm="tela_caixa_seguro">
                   <ProfileProvider><PortabilidadesOrq /></ProfileProvider>
+                </RequirePerm>
+              }
+            />
+            {/* Acompanhamento por status nativo — F6 em rota PARALELA (não
+                promovida): a oficial segue sendo acompanhamento/:status no
+                splat (ProposalTracking shadcn) até a F9. Os botões de ação
+                ficam desabilitados até as F7/F8 entregarem os diálogos. */}
+            <Route
+              path="caixa-seguro/acompanhamento-orq/:status"
+              element={
+                <RequirePerm perm="tela_caixa_seguro">
+                  <ProfileProvider><AcompanhamentoOrq /></ProfileProvider>
                 </RequirePerm>
               }
             />
