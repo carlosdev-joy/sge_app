@@ -42,12 +42,22 @@ export function Modal({ open, onClose, title, children, size = 'md' }: ModalProp
     // sentinela de focusin cobre o que o trap de Tab por primeiro/último não
     // pega (ex.: radio group sr-only tem UM tab-stop no primeiro rádio — o
     // Tab sai dali sem nunca passar pelo "último focável").
-    const previouslyFocused = document.activeElement as HTMLElement | null
-    panelRef.current?.focus()
+    // Se um filho do modal já tem foco (input autoFocus: o react-dom foca no
+    // commit, ANTES deste efeito), não roubar — e não "devolver" o foco ao
+    // fechar, que capturaria o próprio input desmontado (Admin/Governança/
+    // Pipelines usam autoFocus; achado da revisão da F7).
+    const active = document.activeElement as HTMLElement | null
+    const focoJaDentro = !!(panelRef.current && active && panelRef.current.contains(active))
+    const previouslyFocused = focoJaDentro ? null : active
+    if (!focoJaDentro) panelRef.current?.focus()
     const onFocusIn = (e: FocusEvent) => {
       if (modalStack[modalStack.length - 1] !== id) return // só o modal do topo prende
       const root = panelRef.current
-      if (root && e.target instanceof Node && !root.contains(e.target)) root.focus()
+      if (!root || !(e.target instanceof HTMLElement) || root.contains(e.target)) return
+      // Overlays legítimos ACIMA do modal (ex.: CommandPalette via Ctrl+K)
+      // se marcam com data-modal-exempt e ficam fora do trap.
+      if (e.target.closest('[data-modal-exempt]')) return
+      root.focus()
     }
     document.addEventListener('focusin', onFocusIn)
     return () => {

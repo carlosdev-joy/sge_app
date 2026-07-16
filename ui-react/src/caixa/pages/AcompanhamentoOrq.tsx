@@ -152,7 +152,10 @@ export default function AcompanhamentoOrq() {
   const [paymentSubStatusFilter, setPaymentSubStatusFilter] = useState<PaymentSubStatus>("all");
   const [ajudaAberta, setAjudaAberta] = useState(false);
   const [alertasAberto, setAlertasAberto] = useState(false);
-  const [dpsPaginaAberto, setDpsPaginaAberto] = useState(false);
+  // Proposta pinada no CLIQUE (como o antigo fazia via setSelectedProposal) —
+  // derivar filteredProposals[0] ao vivo trocava a proposta do diálogo aberto
+  // se a lista mudasse por trás (achado da revisão).
+  const [dpsProposta, setDpsProposta] = useState<Proposal | null>(null);
 
   // Derivado direto da URL (a tela antiga sincronizava via useEffect+state,
   // mas o único gatilho é o próprio :status — sem efeito é equivalente).
@@ -238,7 +241,7 @@ export default function AcompanhamentoOrq() {
             </Button>
           )}
           {selectedStatus === "pending_dps" && filteredProposals.length > 0 && (
-            <Button variant="primary" size="md" onClick={() => setDpsPaginaAberto(true)}>
+            <Button variant="primary" size="md" onClick={() => setDpsProposta(filteredProposals[0])}>
               <ExternalLink className="h-4 w-4" />
               Enviar Link DPS
             </Button>
@@ -433,12 +436,12 @@ export default function AcompanhamentoOrq() {
 
       {/* Diálogos de envio (F7) */}
       <SendAlertDialogOrq proposals={alertProposals} open={alertasAberto} onClose={() => setAlertasAberto(false)} />
-      {filteredProposals.length > 0 && (
+      {dpsProposta && (
         <DPSLinkDialogOrq
-          proposalNumber={filteredProposals[0].number}
-          insuredName={filteredProposals[0].insuredName}
-          open={dpsPaginaAberto}
-          onClose={() => setDpsPaginaAberto(false)}
+          proposalNumber={dpsProposta.number}
+          insuredName={dpsProposta.insuredName}
+          open
+          onClose={() => setDpsProposta(null)}
         />
       )}
 
