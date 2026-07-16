@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClient } from './lib/queryClient'
 import { useAuthStore } from './store/auth'
@@ -36,6 +36,12 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
   if (!token) return <Navigate to="/login" replace />
   return <>{children}</>
+}
+
+// Redirect da rota paralela das F6–F8 preservando o :status.
+function RedirectAcompanhamentoStatus() {
+  const { status } = useParams<{ status: string }>()
+  return <Navigate to={`/caixa-seguro/acompanhamento/${status}`} replace />
 }
 
 // Destino padrão ("/", catch-all e rota negada): 1ª tela visível pelo RBAC.
@@ -132,18 +138,19 @@ export default function App() {
                 </RequirePerm>
               }
             />
-            {/* Acompanhamento por status nativo — F6 em rota PARALELA (não
-                promovida): a oficial segue sendo acompanhamento/:status no
-                splat (ProposalTracking shadcn) até a F9. Os botões de ação
-                ficam desabilitados até as F7/F8 entregarem os diálogos. */}
+            {/* Acompanhamento por status nativo — tela oficial desde a F9 da
+                migração (nasceu como rota paralela na F6; diálogos nas F7/F8).
+                Rota estática+param vence o splat no ranking do router. */}
             <Route
-              path="caixa-seguro/acompanhamento-orq/:status"
+              path="caixa-seguro/acompanhamento/:status"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
                   <ProfileProvider><AcompanhamentoOrq /></ProfileProvider>
                 </RequirePerm>
               }
             />
+            {/* Rota paralela das F6–F8 — redirect permanente para a oficial. */}
+            <Route path="caixa-seguro/acompanhamento-orq/:status" element={<RedirectAcompanhamentoStatus />} />
             {/* Painel de IA Operacional no visual NATIVO — tela oficial desde
                 a F5 da migração (docs/spec-caixa-ds-nativo.md). */}
             <Route

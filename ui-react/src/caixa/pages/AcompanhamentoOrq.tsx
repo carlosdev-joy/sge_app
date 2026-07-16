@@ -1,13 +1,10 @@
-// "Acompanhamento por status" no DS nativo — F6 da migração
-// (docs/spec-caixa-ds-nativo.md), em ROTA PARALELA
-// /caixa-seguro/acompanhamento-orq/:status. A tela oficial continua sendo o
-// ProposalTracking shadcn até a F9 promover esta. Entrega da F6 = tela base
-// (banner por status, filtros de sub-status, lista com os 4 formatos) +
-// CONSULTA (ProposalCardOrq → detalhe/timeline/histórico portados na F3) +
-// balão de ajuda do status em Modal nativo + FABs por status via
-// ChatAssistantOrq. Os botões de AÇÃO (alertas, upload, DPS, pagamento,
-// devolução, nova venda, sensibilização) ficam desabilitados — são as F7/F8.
-// Dados mock idênticos aos da tela original.
+// "Acompanhamento por status" no DS nativo — tela OFICIAL de
+// /caixa-seguro/acompanhamento/:status desde a F9 da migração
+// (docs/spec-caixa-ds-nativo.md); substituiu o ProposalTracking shadcn.
+// Nasceu como rota paralela na F6 (tela base + consulta), ganhou os diálogos
+// de envio na F7 e as ações/workflow na F8. Banner por status, filtros de
+// sub-status, lista com os 4 formatos, balão de ajuda em Modal nativo e FABs
+// por status via ChatAssistantOrq. Dados mock idênticos aos da tela original.
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, Mail, DollarSign, PlusCircle, History, ExternalLink, HelpCircle } from "lucide-react";
