@@ -23,6 +23,28 @@ export class ErrorBoundary extends React.Component<Props, State> {
     console.error('ErrorBoundary capturou:', error, info.componentStack)
   }
 
+  // Voltar: navega ANTES de limpar o erro — limpar primeiro remontava a rota
+  // quebrada na mesma URL (setState é flushed síncrono; a traversal do back é
+  // assíncrona) e o painel reaparecia (achado da revisão). Só remonta a árvore
+  // quando o popstate confirma a mudança de URL; histórico vazio (deep link)
+  // cai para a home com reload limpo.
+  private aoVoltar = () => {
+    let navegou = false
+    const aoPopstate = () => {
+      navegou = true
+      window.removeEventListener('popstate', aoPopstate)
+      this.setState({ error: null })
+    }
+    window.addEventListener('popstate', aoPopstate)
+    window.history.back()
+    window.setTimeout(() => {
+      if (!navegou) {
+        window.removeEventListener('popstate', aoPopstate)
+        window.location.href = '/'
+      }
+    }, 400)
+  }
+
   render() {
     if (!this.state.error) return this.props.children
     return (
@@ -35,7 +57,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
           </p>
           <div className="flex justify-center gap-3">
             <button
-              onClick={() => { this.setState({ error: null }); window.history.back() }}
+              onClick={this.aoVoltar}
               className="px-3.5 py-1.5 text-sm rounded-md font-medium bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 shadow-sm dark:bg-edge dark:hover:bg-edge/70 dark:text-ink dark:border-edge transition-colors"
             >
               Voltar
