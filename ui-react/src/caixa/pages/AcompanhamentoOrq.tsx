@@ -50,7 +50,7 @@ interface Proposal extends ProposalTrackingOrq {
   daysInPending?: number;
 }
 
-// Mesmo mock da tela original (17 propostas).
+// Mesmo mock da tela original (19 propostas).
 const mockProposals: Proposal[] = [
   { id: "1", number: "8047413032422-7", insuredName: "DIEBSON BITENCOURT DA SILVA", date: "17/10/2025", status: "pending_signature", value: "R$ 5.624,75", indicatorId: "0000122795-B", agency: "474", cpf: "025.359.088-03", product: "Vida Multipremiado Total", phone: "(11) 98765-4321", email: "diebson@email.com", daysInPending: 5 },
   { id: "2", number: "8047413032423-8", insuredName: "MARIA OLIVEIRA SANTOS", date: "18/10/2025", status: "pending_signature", value: "R$ 3.200,00", indicatorId: "0000122796-C", agency: "474", cpf: "123.456.789-00", product: "Vida Mulher", phone: "(11) 91234-5678", email: "maria@email.com", daysInPending: 3 },
@@ -152,8 +152,10 @@ export default function AcompanhamentoOrq() {
 
   // Derivado direto da URL (a tela antiga sincronizava via useEffect+state,
   // mas o único gatilho é o próprio :status — sem efeito é equivalente).
+  // Object.hasOwn, NÃO o operador `in`: ":status=__proto__/toString" casaria
+  // chave herdada do prototype e derrubava o render (achado da revisão).
   const selectedStatus: ProposalStatus | "all" =
-    status && status in STATUS_LABELS && status !== "all" ? (status as ProposalStatus) : "all";
+    status && Object.hasOwn(STATUS_LABELS, status) && status !== "all" ? (status as ProposalStatus) : "all";
 
   let filteredProposals = selectedStatus === "all"
     ? mockProposals
