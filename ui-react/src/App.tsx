@@ -27,6 +27,7 @@ import Fluxos from './pages/Fluxos'
 import CaixaSeguroApp from './caixa/CaixaSeguroApp'
 import MonitoramentoOrq from './caixa/pages/MonitoramentoOrq'
 import IndexOrq from './caixa/pages/IndexOrq'
+import PortabilidadesOrq from './caixa/pages/PortabilidadesOrq'
 import { ProfileProvider } from './caixa/contexts/ProfileContext'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -118,6 +119,17 @@ export default function App() {
             />
             {/* Rota do antigo piloto A/B — redirect permanente para a oficial. */}
             <Route path="caixa-seguro/acompanhamento-orq" element={<Navigate to="/caixa-seguro/acompanhamento" replace />} />
+            {/* Portabilidades no visual NATIVO — tela oficial desde a F4 da
+                migração (docs/spec-caixa-ds-nativo.md). Mesmo padrão: rota
+                estática vence o splat, fora do wrapper .caixa-theme. */}
+            <Route
+              path="caixa-seguro/portabilidades"
+              element={
+                <RequirePerm perm="tela_caixa_seguro">
+                  <ProfileProvider><PortabilidadesOrq /></ProfileProvider>
+                </RequirePerm>
+              }
+            />
             {NAV.map((n) => {
               const element = PAGE_ELEMENT[n.to]
               if (!element) return null
