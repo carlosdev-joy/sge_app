@@ -3,6 +3,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClient } from './lib/queryClient'
 import { useAuthStore } from './store/auth'
 import { NAV, canAccess, firstVisiblePath } from './lib/nav'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { AppShellV2 } from './components/layout/AppShellV2'
 import Login from './pages/Login'
 import Admin from './pages/Admin'
@@ -24,18 +25,23 @@ import CopiaDados from './pages/CopiaDados'
 import Inventario from './pages/Inventario'
 import Finalizacao from './pages/Finalizacao'
 import Fluxos from './pages/Fluxos'
-import CaixaSeguroApp from './caixa/CaixaSeguroApp'
-import MonitoramentoOrq from './caixa/pages/MonitoramentoOrq'
-import IndexOrq from './caixa/pages/IndexOrq'
-import PortabilidadesOrq from './caixa/pages/PortabilidadesOrq'
-import PainelIAOrq from './caixa/pages/PainelIAOrq'
-import AcompanhamentoOrq from './caixa/pages/AcompanhamentoOrq'
+import Monitoramento from './caixa/pages/Monitoramento'
+import Index from './caixa/pages/Index'
+import Portabilidades from './caixa/pages/Portabilidades'
+import PainelIA from './caixa/pages/PainelIA'
+import Acompanhamento from './caixa/pages/Acompanhamento'
 import { ProfileProvider } from './caixa/contexts/ProfileContext'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
   if (!token) return <Navigate to="/login" replace />
   return <>{children}</>
+}
+
+// Subpath desconhecido de /caixa-seguro/* → home da seção. Herdeiro do splat
+// do CaixaSeguroApp, aposentado na F10 junto com o tema shadcn.
+function CaixaSeguroFallback() {
+  return <Navigate to="/caixa-seguro" replace />
 }
 
 // Redirect da rota paralela das F6–F8 preservando o :status.
@@ -82,7 +88,7 @@ const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/ds-console': <DsConsole />,
   '/performance': <Performance />,
   '/finalizacao': <Finalizacao />,
-  '/caixa-seguro': <CaixaSeguroApp />,
+  '/caixa-seguro': <CaixaSeguroFallback />,
   '/admin': <Admin />,
 }
 
@@ -93,35 +99,34 @@ const WILDCARD_ROUTES = new Set(['/admin', '/caixa-seguro'])
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <Routes>
+      <ErrorBoundary>
+        <BrowserRouter>
+          <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<PrivateRoute><AppShellV2 /></PrivateRoute>}>
             <Route index element={<HomeRedirect />} />
             {/* Home "Consulta de Propostas" no visual NATIVO do Orquestra —
                 tela oficial desde a F3 da migração (docs/spec-caixa-ds-nativo.md).
                 Rota estática exata: vence o splat caixa-seguro/* no ranking do
-                router e fica FORA do CaixaSeguroApp/.caixa-theme. */}
+                router; tema shadcn aposentado na F10. */}
             <Route
               path="caixa-seguro"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><IndexOrq /></ProfileProvider>
+                  <ProfileProvider><Index /></ProfileProvider>
                 </RequirePerm>
               }
             />
             {/* Monitoramento Tático no visual NATIVO do Orquestra — tela oficial
                 desde a F2 da migração (docs/spec-caixa-ds-nativo.md). Rota mais
                 específica que o splat caixa-seguro/* (vence no ranking do router)
-                e FORA do CaixaSeguroApp, logo sem o wrapper .caixa-theme — usa
-                tokens canvas/panel/ink puros, claro+escuro. Mesmo RBAC; o
-                ProfileProvider (perfil operacional/funcionário) vem na rota
-                porque a tela não passa mais pelo CaixaSeguroApp. */}
+                com tokens canvas/panel/ink puros, claro+escuro. Mesmo RBAC; o
+                ProfileProvider (perfil operacional/funcionário) vem na rota. */}
             <Route
               path="caixa-seguro/acompanhamento"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><MonitoramentoOrq /></ProfileProvider>
+                  <ProfileProvider><Monitoramento /></ProfileProvider>
                 </RequirePerm>
               }
             />
@@ -129,12 +134,12 @@ export default function App() {
             <Route path="caixa-seguro/acompanhamento-orq" element={<Navigate to="/caixa-seguro/acompanhamento" replace />} />
             {/* Portabilidades no visual NATIVO — tela oficial desde a F4 da
                 migração (docs/spec-caixa-ds-nativo.md). Mesmo padrão: rota
-                estática vence o splat, fora do wrapper .caixa-theme. */}
+                estática vence o splat. */}
             <Route
               path="caixa-seguro/portabilidades"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><PortabilidadesOrq /></ProfileProvider>
+                  <ProfileProvider><Portabilidades /></ProfileProvider>
                 </RequirePerm>
               }
             />
@@ -145,7 +150,7 @@ export default function App() {
               path="caixa-seguro/acompanhamento/:status"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><AcompanhamentoOrq /></ProfileProvider>
+                  <ProfileProvider><Acompanhamento /></ProfileProvider>
                 </RequirePerm>
               }
             />
@@ -157,7 +162,7 @@ export default function App() {
               path="caixa-seguro/ia-operacional"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><PainelIAOrq /></ProfileProvider>
+                  <ProfileProvider><PainelIA /></ProfileProvider>
                 </RequirePerm>
               }
             />
@@ -170,7 +175,8 @@ export default function App() {
           </Route>
           <Route path="*" element={<HomeRedirect />} />
         </Routes>
-      </BrowserRouter>
+        </BrowserRouter>
+      </ErrorBoundary>
     </QueryClientProvider>
   )
 }
