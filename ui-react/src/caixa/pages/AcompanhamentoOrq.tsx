@@ -20,6 +20,12 @@ import ChatAssistantOrq from "../components/ChatAssistantOrq";
 import MenuButtonOrq from "../components/MenuButtonOrq";
 import SendAlertDialogOrq from "../components/SendAlertDialogOrq";
 import DPSLinkDialogOrq from "../components/DPSLinkDialogOrq";
+import DocumentUploadDialogOrq from "../components/DocumentUploadDialogOrq";
+import PaymentOptionsDialogOrq from "../components/PaymentOptionsDialogOrq";
+import RefundManagementDialogOrq from "../components/RefundManagementDialogOrq";
+import NewSaleDialogOrq from "../components/NewSaleDialogOrq";
+import SensitizationHistoryDialogOrq from "../components/SensitizationHistoryDialogOrq";
+import ProposalWorkflowSheetOrq from "../components/ProposalWorkflowSheetOrq";
 import lariAvatar from "../assets/lari-avatar.png";
 import diegoAvatar from "../assets/diego-avatar.png";
 import leoAvatar from "../assets/leo-avatar.png";
@@ -125,8 +131,6 @@ const DOC_SUB_LABELS: Record<string, string> = {
   procuration_curatela: "Pendências relacionadas a Procuração/Curatela e A Rogo",
 };
 
-const TITULO_FASE = "Ação portada nas fases F7/F8 da migração (rota paralela)";
-
 function CampoPainel({ rotulo, valor, tom = "normal", className = "" }: { rotulo: string; valor: React.ReactNode; tom?: "normal" | "azul" | "laranja" | "vermelho" | "verde"; className?: string }) {
   const cores: Record<string, string> = {
     normal: "text-ink",
@@ -152,10 +156,18 @@ export default function AcompanhamentoOrq() {
   const [paymentSubStatusFilter, setPaymentSubStatusFilter] = useState<PaymentSubStatus>("all");
   const [ajudaAberta, setAjudaAberta] = useState(false);
   const [alertasAberto, setAlertasAberto] = useState(false);
-  // Proposta pinada no CLIQUE (como o antigo fazia via setSelectedProposal) —
-  // derivar filteredProposals[0] ao vivo trocava a proposta do diálogo aberto
-  // se a lista mudasse por trás (achado da revisão).
+  // Propostas pinadas no CLIQUE (como o antigo fazia via setSelectedProposal) —
+  // derivar da lista ao vivo trocava a proposta do diálogo aberto se a lista
+  // mudasse por trás (achado da revisão da F7).
   const [dpsProposta, setDpsProposta] = useState<Proposal | null>(null);
+  const [paymentProposta, setPaymentProposta] = useState<Proposal | null>(null);
+  const [uploadProposta, setUploadProposta] = useState<Proposal | null>(null);
+  const [historicoProposta, setHistoricoProposta] = useState<Proposal | null>(null);
+  const [refundProposta, setRefundProposta] = useState<Proposal | null>(null);
+  const [novaVendaProposta, setNovaVendaProposta] = useState<Proposal | null>(null);
+  // Upload de página: o antigo abria SEM proposta selecionada (dialog com
+  // proposta vazia) — quirk preservado.
+  const [uploadPaginaAberto, setUploadPaginaAberto] = useState(false);
 
   // Derivado direto da URL (a tela antiga sincronizava via useEffect+state,
   // mas o único gatilho é o próprio :status — sem efeito é equivalente).
@@ -205,6 +217,7 @@ export default function AcompanhamentoOrq() {
             Voltar
           </Button>
           <MenuButtonOrq />
+          <ProposalWorkflowSheetOrq />
         </div>
 
         {/* Banner do status */}
@@ -235,7 +248,12 @@ export default function AcompanhamentoOrq() {
             Enviar Alertas ({filteredProposals.length})
           </Button>
           {selectedStatus === "pending_documentation" && (
-            <Button variant="secondary" size="md" disabled title={TITULO_FASE}>
+            <Button
+              variant="primary"
+              size="md"
+              onClick={() => setUploadPaginaAberto(true)}
+              disabled={filteredProposals.length === 0}
+            >
               <ExternalLink className="h-4 w-4" />
               Upload de Documentos
             </Button>
@@ -324,7 +342,7 @@ export default function AcompanhamentoOrq() {
                       {proposal.daysInPending && <CampoPainel rotulo="Dias Pendente:" valor={`${proposal.daysInPending} dias`} tom="laranja" />}
                     </div>
                     <div className="flex gap-2 pt-4 border-t border-edge">
-                      <Button variant="secondary" size="sm" disabled title={TITULO_FASE}>
+                      <Button variant="primary" size="sm" onClick={() => setPaymentProposta(proposal)}>
                         Alterar forma de pagamento
                       </Button>
                     </div>
@@ -350,11 +368,11 @@ export default function AcompanhamentoOrq() {
                       {proposal.daysInPending && <CampoPainel rotulo="Dias Pendente:" valor={`${proposal.daysInPending} dias`} tom="vermelho" />}
                     </div>
                     <div className="flex gap-2 pt-4 border-t border-edge flex-wrap">
-                      <Button variant="secondary" size="sm" disabled title={TITULO_FASE}>
+                      <Button variant="primary" size="sm" onClick={() => setUploadProposta(proposal)}>
                         <ExternalLink className="h-4 w-4" />
                         Upload de Documentos
                       </Button>
-                      <Button variant="secondary" size="sm" disabled title={TITULO_FASE}>
+                      <Button variant="secondary" size="sm" onClick={() => setHistoricoProposta(proposal)}>
                         <History className="h-4 w-4" />
                         Histórico de Sensibilização
                       </Button>
@@ -390,11 +408,11 @@ export default function AcompanhamentoOrq() {
                     </div>
                     {proposal.status === "refund_pending" && proposal.refundSubStatus === "pending" && (
                       <div className="flex gap-2 pt-4 border-t border-edge flex-wrap">
-                        <Button variant="secondary" size="sm" disabled title={TITULO_FASE}>
+                        <Button variant="primary" size="sm" onClick={() => setRefundProposta(proposal)}>
                           <DollarSign className="h-4 w-4" />
                           Gerenciar Devolução
                         </Button>
-                        <Button variant="secondary" size="sm" disabled title={TITULO_FASE}>
+                        <Button variant="secondary" size="sm" onClick={() => setNovaVendaProposta(proposal)}>
                           <PlusCircle className="h-4 w-4" />
                           Nova Venda
                         </Button>
@@ -442,6 +460,72 @@ export default function AcompanhamentoOrq() {
           insuredName={dpsProposta.insuredName}
           open
           onClose={() => setDpsProposta(null)}
+        />
+      )}
+
+      {/* Diálogos de ação (F8) */}
+      <DocumentUploadDialogOrq
+        open={uploadPaginaAberto}
+        onClose={() => setUploadPaginaAberto(false)}
+        proposalNumber=""
+        insuredName=""
+      />
+      {uploadProposta && (
+        <DocumentUploadDialogOrq
+          open
+          onClose={() => setUploadProposta(null)}
+          proposalNumber={uploadProposta.number}
+          insuredName={uploadProposta.insuredName}
+        />
+      )}
+      {historicoProposta && (
+        <SensitizationHistoryDialogOrq
+          open
+          onClose={() => setHistoricoProposta(null)}
+          proposalNumber={historicoProposta.number}
+          insuredName={historicoProposta.insuredName}
+        />
+      )}
+      {paymentProposta && (
+        <PaymentOptionsDialogOrq
+          proposal={{
+            number: paymentProposta.number,
+            insuredName: paymentProposta.insuredName,
+            value: paymentProposta.value || "R$ 0,00",
+            email: paymentProposta.email || "",
+            phone: paymentProposta.phone || "",
+            paymentMethod:
+              paymentProposta.paymentMethod === "Crédito em Conta"
+                ? "credit"
+                : paymentProposta.paymentMethod === "Débito em Conta"
+                ? "debit"
+                : "boleto",
+          }}
+          open
+          onClose={() => setPaymentProposta(null)}
+        />
+      )}
+      {refundProposta && (
+        <RefundManagementDialogOrq
+          proposal={{
+            number: refundProposta.number,
+            insuredName: refundProposta.insuredName,
+            cpf: refundProposta.cpf,
+            value: refundProposta.value,
+            policy: refundProposta.policy || refundProposta.number,
+            product: refundProposta.product,
+          }}
+          open
+          onClose={() => setRefundProposta(null)}
+        />
+      )}
+      {novaVendaProposta && (
+        <NewSaleDialogOrq
+          open
+          onClose={() => setNovaVendaProposta(null)}
+          receiptNumber={novaVendaProposta.receiptNumber || novaVendaProposta.number}
+          insuredName={novaVendaProposta.insuredName}
+          prefillValue={novaVendaProposta.value}
         />
       )}
 

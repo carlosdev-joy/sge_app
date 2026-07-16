@@ -9,6 +9,7 @@ import { Search, RotateCcw, Users, User } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { useProfile } from "../contexts/ProfileContext";
 import MenuButtonOrq from "../components/MenuButtonOrq";
+import ProposalWorkflowSheetOrq from "../components/ProposalWorkflowSheetOrq";
 import SearchProposalsOrq from "../components/SearchProposalsOrq";
 import TutorialOrq from "../components/TutorialOrq";
 import ChatAssistantOrq from "../components/ChatAssistantOrq";
@@ -45,6 +46,7 @@ export default function IndexOrq() {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <MenuButtonOrq />
+            <ProposalWorkflowSheetOrq />
             {/* Reabre o tutorial na hora — sem o reload da versão antiga. */}
             <Button variant="secondary" size="md" onClick={() => setTutorialAberto(true)}>
               <RotateCcw size={14} />

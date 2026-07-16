@@ -1,10 +1,10 @@
 // Busca de propostas da home no DS nativo — porte do SearchProposals shadcn
-// (mesmos modos, mock e resultado). O card "Workflow" (InlineWorkflow) que a
-// versão antiga embutia fica FORA por decisão de escopo da F3: o fluxo
-// operacional inteiro é reescrito nas F6–F8 (docs/spec-caixa-ds-nativo.md).
+// (mesmos modos, mock e resultado). Desde a F8 o card "Workflow"
+// (InlineWorkflowOrq) voltou à home, na mesma posição da versão antiga.
 // A classe .search-section marca a área destacada pelo TutorialOrq.
 import { useState } from "react";
 import { Search, Edit } from "lucide-react";
+import InlineWorkflowOrq from "./InlineWorkflowOrq";
 import { Button } from "../../components/ui/Button";
 import { Input } from "../../components/ui/Input";
 import { RadioGroup, RadioItem } from "../../components/ui/RadioGroup";
@@ -115,6 +115,9 @@ export default function SearchProposalsOrq() {
           </p>
         </div>
       )}
+
+      {/* Workflow inline (mesma posição da tela antiga) */}
+      <InlineWorkflowOrq />
 
       {selectedMode === "proposta" && (
         <div className="space-y-2">
