@@ -26,6 +26,7 @@ import Finalizacao from './pages/Finalizacao'
 import Fluxos from './pages/Fluxos'
 import CaixaSeguroApp from './caixa/CaixaSeguroApp'
 import MonitoramentoOrq from './caixa/pages/MonitoramentoOrq'
+import { ProfileProvider } from './caixa/contexts/ProfileContext'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -87,14 +88,23 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<PrivateRoute><AppShellV2 /></PrivateRoute>}>
             <Route index element={<HomeRedirect />} />
-            {/* Piloto A/B — Monitoramento Tático no visual NATIVO do Orquestra.
-                Rota mais específica que o splat caixa-seguro/* (vence no ranking
-                do router) e FORA do CaixaSeguroApp, logo sem o wrapper .caixa-theme
-                — usa tokens canvas/panel/ink puros, claro+escuro. Mesmo RBAC. */}
+            {/* Monitoramento Tático no visual NATIVO do Orquestra — tela oficial
+                desde a F2 da migração (docs/spec-caixa-ds-nativo.md). Rota mais
+                específica que o splat caixa-seguro/* (vence no ranking do router)
+                e FORA do CaixaSeguroApp, logo sem o wrapper .caixa-theme — usa
+                tokens canvas/panel/ink puros, claro+escuro. Mesmo RBAC; o
+                ProfileProvider (perfil operacional/funcionário) vem na rota
+                porque a tela não passa mais pelo CaixaSeguroApp. */}
             <Route
-              path="caixa-seguro/acompanhamento-orq"
-              element={<RequirePerm perm="tela_caixa_seguro"><MonitoramentoOrq /></RequirePerm>}
+              path="caixa-seguro/acompanhamento"
+              element={
+                <RequirePerm perm="tela_caixa_seguro">
+                  <ProfileProvider><MonitoramentoOrq /></ProfileProvider>
+                </RequirePerm>
+              }
             />
+            {/* Rota do antigo piloto A/B — redirect permanente para a oficial. */}
+            <Route path="caixa-seguro/acompanhamento-orq" element={<Navigate to="/caixa-seguro/acompanhamento" replace />} />
             {NAV.map((n) => {
               const element = PAGE_ELEMENT[n.to]
               if (!element) return null

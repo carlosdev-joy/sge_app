@@ -1,7 +1,9 @@
 // FAB de chat dos assistentes (Diego/Lari/Léo) no visual NATIVO do Orquestra —
-// usado só pelo piloto /caixa-seguro/acompanhamento-orq (que roda FORA do
-// .caixa-theme). Mesmo backend da POC (POST /caixa/chat/{assistente} + /historico,
-// gate useAssistentesIA), mas UI com tokens panel/edge/ink e Button do Orquestra.
+// usado pelas telas nativas da seção (fora do .caixa-theme), hoje o
+// /caixa-seguro/acompanhamento; substitui os assistentes shadcn conforme as
+// telas migram (F9 da spec caixa-ds-nativo). Mesmo backend da POC
+// (POST /caixa/chat/{assistente} + /historico, gate useAssistentesIA), mas UI
+// com tokens panel/edge/ink e Button do Orquestra.
 import { useState, useEffect, useRef } from "react";
 import { X, Send, Download, History } from "lucide-react";
 import jsPDF from "jspdf";

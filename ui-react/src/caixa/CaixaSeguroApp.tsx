@@ -6,7 +6,6 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { ProfileProvider } from "./contexts/ProfileContext";
 import { Toaster } from "./components/ui/toaster";
 import Index from "./pages/Index";
-import SalesManagement from "./pages/SalesManagement";
 import ProposalTracking from "./pages/ProposalTracking";
 import PortabilityTracking from "./pages/PortabilityTracking";
 import AICommercialPanel from "./pages/AICommercialPanel";
@@ -18,7 +17,8 @@ export default function CaixaSeguroApp() {
       <ProfileProvider>
         <Routes>
           <Route index element={<Index />} />
-          <Route path="acompanhamento" element={<SalesManagement />} />
+          {/* "acompanhamento" (sem :status) é a tela nativa MonitoramentoOrq,
+              registrada FORA deste wrapper no App.tsx (F2 da migração). */}
           <Route path="acompanhamento/:status" element={<ProposalTracking />} />
           <Route path="portabilidades" element={<PortabilityTracking />} />
           <Route path="ia-operacional" element={<AICommercialPanel />} />

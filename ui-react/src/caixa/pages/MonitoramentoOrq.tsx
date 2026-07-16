@@ -1,16 +1,15 @@
-// PILOTO A/B — "Monitoramento Tático de Emissão" reconstruído no visual NATIVO
-// do Orquestra (tokens canvas/panel/edge/ink, claro+escuro, componentes de
-// components/ui/*) em vez do navy/glass da POC. Rota /caixa-seguro/acompanhamento-orq,
-// lado a lado com a original (/caixa-seguro/acompanhamento) para comparação.
-// Dados mock, iguais aos da tela original. Assistentes IA ficam fora do piloto
-// (ortogonais à comparação de visual).
+// "Monitoramento Tático de Emissão" no visual NATIVO do Orquestra (tokens
+// canvas/panel/edge/ink, claro+escuro) — tela OFICIAL de /caixa-seguro/acompanhamento
+// desde a F2 da migração (docs/spec-caixa-ds-nativo.md); nasceu como piloto A/B
+// (PRs #194–#197) e substituiu o SalesManagement navy/glass. Dados mock, iguais
+// aos da tela original. Requer ProfileProvider (aplicado na rota, App.tsx).
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, PieChart, Pie, Cell,
 } from "recharts";
-import { Download, AlertTriangle, ArrowLeft, ArrowRight, HelpCircle, LayoutDashboard } from "lucide-react";
+import { Download, AlertTriangle, ArrowRight, HelpCircle, LayoutDashboard } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Tabs } from "../../components/ui/Tabs";
@@ -18,6 +17,10 @@ import { Select } from "../../components/ui/Input";
 import { Modal } from "../../components/ui/Modal";
 import { toast } from "../../components/ui/Toast";
 import ChatAssistantOrq from "../components/ChatAssistantOrq";
+import MenuButtonOrq from "../components/MenuButtonOrq";
+import ProductTourOrq from "../components/ProductTourOrq";
+import { Skeleton } from "../../components/ui/Skeleton";
+import { useProfile } from "../contexts/ProfileContext";
 import lariAvatar from "../assets/lari-avatar.png";
 import diegoAvatar from "../assets/diego-avatar.png";
 import leoAvatar from "../assets/leo-avatar.png";
@@ -170,9 +173,25 @@ const statusHelpInfo: Record<string, { avatar: string; avatarName: string; messa
 
 export default function MonitoramentoOrq() {
   const navigate = useNavigate();
+  const { profile } = useProfile();
   const [produto, setProduto] = useState<Produto>("vida");
   const [ano, setAno] = useState(String(new Date().getFullYear()));
   const [mes, setMes] = useState("all");
+  const [carregandoTroca, setCarregandoTroca] = useState(false);
+  const [mostrarTour, setMostrarTour] = useState(false);
+  const [agencia, setAgencia] = useState("all");
+  const [regiao, setRegiao] = useState("all");
+
+  // Troca de produto com skeletons nos KPIs (mesmo comportamento da tela
+  // original, que simulava 600ms de transição).
+  const trocarProduto = (novo: Produto) => {
+    if (novo === produto || carregandoTroca) return;
+    setCarregandoTroca(true);
+    setTimeout(() => {
+      setProduto(novo);
+      setCarregandoTroca(false);
+    }, 600);
+  };
 
   const exportar = () => {
     toast.success("Relatório Excel gerado com sucesso.");
@@ -196,21 +215,14 @@ export default function MonitoramentoOrq() {
             <p className="text-sm text-dim mt-0.5">Painel individual de desempenho e efetividade</p>
           </div>
           <div className="flex items-center gap-2">
-            <Link
-              to="/caixa-seguro/acompanhamento"
-              className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium text-dim border border-edge hover:text-ink hover:bg-edge/40 transition-colors"
-            >
-              <ArrowLeft size={13} /> Ver versão atual (navy)
-            </Link>
+            <MenuButtonOrq />
+            <Button variant="secondary" size="md" onClick={() => setMostrarTour(true)}>
+              🎯 Tour do Produto
+            </Button>
             <Button variant="primary" size="md" onClick={exportar}>
               <Download size={14} /> Exportar Excel
             </Button>
           </div>
-        </div>
-
-        {/* Faixa do piloto */}
-        <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-xs text-blue-800 dark:border-blue-900 dark:bg-blue-900/20 dark:text-blue-300">
-          Piloto A/B — visual nativo do Orquestra (tokens canvas/panel/ink, claro + escuro). Compare com <span className="font-semibold">/acompanhamento</span> (navy/glass da POC).
         </div>
 
         {/* Alerta de pendências urgentes (callout inline, no lugar do toast) */}
@@ -228,7 +240,7 @@ export default function MonitoramentoOrq() {
             <Tabs
               tabs={PRODUTOS}
               active={produto}
-              onChange={(id) => setProduto(id as Produto)}
+              onChange={(id) => trocarProduto(id as Produto)}
             />
           </div>
           <div className="flex items-end gap-3">
@@ -244,7 +256,38 @@ export default function MonitoramentoOrq() {
           </div>
         </div>
 
-        {/* KPI cards — planos, neutros, clicáveis (borda de acento por categoria) */}
+        {/* Filtros de agência/região — só perfil operacional (paridade com a
+            tela original; valores mock, como lá) */}
+        {profile === "operational" && (
+          <div className="flex flex-wrap items-end gap-3">
+            <Select label="Agência" value={agencia} onChange={(e) => setAgencia(e.target.value)} className="w-48">
+              <option value="all">Todas as agências</option>
+              {["474", "475", "476"].map((a) => <option key={a} value={a}>Agência {a}</option>)}
+            </Select>
+            <Select label="Região" value={regiao} onChange={(e) => setRegiao(e.target.value)} className="w-48">
+              <option value="all">Todas as regiões</option>
+              <option value="norte">Norte</option>
+              <option value="nordeste">Nordeste</option>
+              <option value="centro-oeste">Centro-Oeste</option>
+              <option value="sudeste">Sudeste</option>
+              <option value="sul">Sul</option>
+            </Select>
+          </div>
+        )}
+
+        {/* KPI cards — planos, neutros, clicáveis (borda de acento por categoria);
+            skeletons durante a troca de produto */}
+        {carregandoTroca ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {statusData.map((s) => (
+              <div key={s.status} className="bg-panel border border-edge rounded-lg p-4">
+                <Skeleton className="h-4 w-2/3 mb-3" />
+                <Skeleton className="h-9 w-1/2 mb-2" />
+                <Skeleton className="h-3 w-1/3" />
+              </div>
+            ))}
+          </div>
+        ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {statusData.map((s) => (
             <div key={s.status} className="relative">
@@ -270,6 +313,7 @@ export default function MonitoramentoOrq() {
             </div>
           ))}
         </div>
+        )}
 
         {/* Comparativo de performance entre produtos */}
         <Card title="Comparativo de Performance entre Produtos">
@@ -572,6 +616,9 @@ export default function MonitoramentoOrq() {
           )}
         </Modal>
       </div>
+
+      {/* Tour do produto (nativo) */}
+      {mostrarTour && <ProductTourOrq productType={produto} onClose={() => setMostrarTour(false)} />}
 
       {/* FAB de chat do assistente conforme o produto (gate useAssistentesIA) */}
       {produto === "vida" && <ChatAssistantOrq assistente="diego" nome="Diego" avatar={diegoAvatar} pageContext="Seguro de Vida - Gestão Comercial" />}
