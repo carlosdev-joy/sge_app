@@ -24,6 +24,7 @@ import {
   TableCell,
 } from "../../components/ui/Table";
 import MenuButtonOrq from "../components/MenuButtonOrq";
+import ProposalWorkflowSheetOrq from "../components/ProposalWorkflowSheetOrq";
 
 // ── Tema dos gráficos (mesmo padrão do MonitoramentoOrq) ────────────────────
 const AXIS = "#94a3b8"; // slate-400: legível no claro e no escuro
@@ -190,7 +191,7 @@ export default function PainelIAOrq() {
     return sortedWords.map(([word, count], index) => {
       const isNegative = negativeTerms.includes(word);
       const ratio = (count - minCount) / (maxCount - minCount || 1);
-      let sizeClass = "text-sm";
+      let sizeClass: string;
       if (ratio >= 0.8) sizeClass = "text-3xl font-bold";
       else if (ratio >= 0.6) sizeClass = "text-2xl font-bold";
       else if (ratio >= 0.4) sizeClass = "text-xl font-semibold";
@@ -239,7 +240,10 @@ export default function PainelIAOrq() {
             </h1>
             <p className="text-sm text-dim mt-0.5">Análise Inteligente de Dados e Insights</p>
           </div>
-          <MenuButtonOrq />
+          <div className="flex items-center gap-2">
+            <MenuButtonOrq />
+            <ProposalWorkflowSheetOrq />
+          </div>
         </div>
 
         {/* Pesquisa de Satisfação NPS */}

@@ -1,16 +1,18 @@
 // Card de proposta no DS nativo — porte do ProposalCard shadcn (mesma grade
 // de campos e mesmos botões condicionais por status). Usado pela
-// AcompanhamentoOrq (F6, rota paralela). O clique no card abre o
-// ProposalDetailDialogOrq (consulta, portado na F3). Desde a F7, "Enviar
-// Link" e "Enviar Link DPS" abrem os diálogos nativos; os botões de AÇÃO
-// restantes (Upload, Devolução, Nova Venda, Histórico de Sensibilização)
-// ficam DESABILITADOS até a F8; a rota oficial segue shadcn até a F9.
+// AcompanhamentoOrq. O clique no card abre o ProposalDetailDialogOrq (F3);
+// desde a F8 todos os botões de ação estão ligados aos diálogos nativos
+// (Enviar Link/DPS da F7; Histórico, Upload, Devolução e Nova Venda da F8).
 import { useState } from "react";
 import { Send, Upload, DollarSign, PlusCircle, ExternalLink, History } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import ProposalDetailDialogOrq, { type ProposalOrq } from "./ProposalDetailDialogOrq";
 import ResendLinkDialogOrq from "./ResendLinkDialogOrq";
 import DPSLinkDialogOrq from "./DPSLinkDialogOrq";
+import DocumentUploadDialogOrq from "./DocumentUploadDialogOrq";
+import RefundManagementDialogOrq from "./RefundManagementDialogOrq";
+import NewSaleDialogOrq from "./NewSaleDialogOrq";
+import SensitizationHistoryDialogOrq from "./SensitizationHistoryDialogOrq";
 
 export interface ProposalTrackingOrq extends ProposalOrq {
   refundSubStatus?: string;
@@ -21,12 +23,14 @@ interface ProposalCardOrqProps {
   proposal: ProposalTrackingOrq;
 }
 
-const TITULO_FASE = "Ação portada na fase F8 da migração (rota paralela)";
-
 export default function ProposalCardOrq({ proposal }: ProposalCardOrqProps) {
   const [isDetailDialogOpen, setIsDetailDialogOpen] = useState(false);
   const [isResendDialogOpen, setIsResendDialogOpen] = useState(false);
   const [isDPSDialogOpen, setIsDPSDialogOpen] = useState(false);
+  const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false);
+  const [isRefundDialogOpen, setIsRefundDialogOpen] = useState(false);
+  const [isNewSaleDialogOpen, setIsNewSaleDialogOpen] = useState(false);
+  const [isSensitizationHistoryOpen, setIsSensitizationHistoryOpen] = useState(false);
 
   const campos: { rotulo: string; valor: string; destaque?: boolean }[] = [
     { rotulo: "Número da Proposta", valor: proposal.number, destaque: true },
@@ -64,7 +68,7 @@ export default function ProposalCardOrq({ proposal }: ProposalCardOrqProps) {
           </div>
 
           <div className="flex gap-2 shrink-0 flex-wrap" onClick={(e) => e.stopPropagation()}>
-            <Button variant="secondary" size="sm" disabled title={TITULO_FASE}>
+            <Button variant="secondary" size="sm" onClick={() => setIsSensitizationHistoryOpen(true)}>
               <History className="h-4 w-4" />
               Histórico
             </Button>
@@ -77,7 +81,7 @@ export default function ProposalCardOrq({ proposal }: ProposalCardOrqProps) {
             )}
 
             {proposal.status === "pending_documentation" && (
-              <Button variant="secondary" size="sm" disabled title={TITULO_FASE}>
+              <Button variant="danger" size="sm" onClick={() => setIsUploadDialogOpen(true)}>
                 <Upload className="h-4 w-4" />
                 Upload
               </Button>
@@ -93,11 +97,11 @@ export default function ProposalCardOrq({ proposal }: ProposalCardOrqProps) {
             {(proposal.status === "declined" || proposal.status === "refund_pending") &&
               proposal.refundSubStatus === "pending" && (
                 <>
-                  <Button variant="secondary" size="sm" disabled title={TITULO_FASE}>
+                  <Button variant="primary" size="sm" onClick={() => setIsRefundDialogOpen(true)}>
                     <DollarSign className="h-4 w-4" />
                     Gerenciar Devolução
                   </Button>
-                  <Button variant="secondary" size="sm" disabled title={TITULO_FASE}>
+                  <Button variant="secondary" size="sm" onClick={() => setIsNewSaleDialogOpen(true)}>
                     <PlusCircle className="h-4 w-4" />
                     Nova Venda
                   </Button>
@@ -131,6 +135,40 @@ export default function ProposalCardOrq({ proposal }: ProposalCardOrqProps) {
         insuredName={proposal.insuredName}
         open={isDPSDialogOpen}
         onClose={() => setIsDPSDialogOpen(false)}
+      />
+
+      <DocumentUploadDialogOrq
+        open={isUploadDialogOpen}
+        onClose={() => setIsUploadDialogOpen(false)}
+        proposalNumber={proposal.number}
+        insuredName={proposal.insuredName}
+      />
+
+      <RefundManagementDialogOrq
+        proposal={{
+          number: proposal.number,
+          insuredName: proposal.insuredName,
+          cpf: proposal.cpf,
+          value: proposal.value,
+          policy: proposal.number,
+          product: proposal.product,
+        }}
+        open={isRefundDialogOpen}
+        onClose={() => setIsRefundDialogOpen(false)}
+      />
+
+      <NewSaleDialogOrq
+        open={isNewSaleDialogOpen}
+        onClose={() => setIsNewSaleDialogOpen(false)}
+        receiptNumber={proposal.receiptNumber || proposal.number}
+        insuredName={proposal.insuredName}
+      />
+
+      <SensitizationHistoryDialogOrq
+        open={isSensitizationHistoryOpen}
+        onClose={() => setIsSensitizationHistoryOpen(false)}
+        proposalNumber={proposal.number}
+        insuredName={proposal.insuredName}
       />
     </>
   );
