@@ -5,7 +5,6 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { ProfileProvider } from "./contexts/ProfileContext";
 import { Toaster } from "./components/ui/toaster";
-import Index from "./pages/Index";
 import ProposalTracking from "./pages/ProposalTracking";
 import PortabilityTracking from "./pages/PortabilityTracking";
 import AICommercialPanel from "./pages/AICommercialPanel";
@@ -16,7 +15,9 @@ export default function CaixaSeguroApp() {
     <div className="caixa-theme min-h-full">
       <ProfileProvider>
         <Routes>
-          <Route index element={<Index />} />
+          {/* A home (index) é a tela nativa IndexOrq, registrada FORA deste
+              wrapper no App.tsx (F3 da migração) — a rota estática exata
+              /caixa-seguro vence este splat, então não há index aqui. */}
           {/* "acompanhamento" (sem :status) é a tela nativa MonitoramentoOrq,
               registrada FORA deste wrapper no App.tsx (F2 da migração). */}
           <Route path="acompanhamento/:status" element={<ProposalTracking />} />

@@ -1,3 +1,8 @@
+// ATENÇÃO (F3 da migração DS nativo, 2026-07-16): este componente ficou SEM
+// consumidor — o único era o SearchProposals shadcn da home antiga, apagado na
+// promoção da IndexOrq. Mantido de propósito como FONTE do porte nativo do
+// workflow (F6–F8 de docs/spec-caixa-ds-nativo.md); apagar quando a versão
+// nativa nascer.
 import { useState } from "react";
 import { ChevronDown, ChevronUp, Send, Loader2 } from "lucide-react";
 import { Button } from "./ui/button";
