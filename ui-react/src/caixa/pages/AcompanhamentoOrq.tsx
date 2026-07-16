@@ -18,6 +18,8 @@ import ProposalCardOrq, { type ProposalTrackingOrq } from "../components/Proposa
 import ProposalTimelineOrq from "../components/ProposalTimelineOrq";
 import ChatAssistantOrq from "../components/ChatAssistantOrq";
 import MenuButtonOrq from "../components/MenuButtonOrq";
+import SendAlertDialogOrq from "../components/SendAlertDialogOrq";
+import DPSLinkDialogOrq from "../components/DPSLinkDialogOrq";
 import lariAvatar from "../assets/lari-avatar.png";
 import diegoAvatar from "../assets/diego-avatar.png";
 import leoAvatar from "../assets/leo-avatar.png";
@@ -149,6 +151,8 @@ export default function AcompanhamentoOrq() {
   const [refundSubStatusFilter, setRefundSubStatusFilter] = useState<RefundSubStatus>("all");
   const [paymentSubStatusFilter, setPaymentSubStatusFilter] = useState<PaymentSubStatus>("all");
   const [ajudaAberta, setAjudaAberta] = useState(false);
+  const [alertasAberto, setAlertasAberto] = useState(false);
+  const [dpsPaginaAberto, setDpsPaginaAberto] = useState(false);
 
   // Derivado direto da URL (a tela antiga sincronizava via useEffect+state,
   // mas o único gatilho é o próprio :status — sem efeito é equivalente).
@@ -179,6 +183,15 @@ export default function AcompanhamentoOrq() {
 
   const ajuda = statusHelpInfo[selectedStatus as string];
 
+  // Payload do diálogo de alertas (mesmo shape da tela original).
+  const alertProposals = filteredProposals.map((p) => ({
+    id: p.id,
+    number: p.number,
+    insuredName: p.insuredName,
+    broker: p.broker || "Não informado",
+    agency: p.agency,
+  }));
+
   return (
     <div className="min-h-full bg-canvas font-sans text-ink">
       <div className="p-6 max-w-[1200px] mx-auto flex flex-col gap-5">
@@ -207,9 +220,14 @@ export default function AcompanhamentoOrq() {
           </div>
         </div>
 
-        {/* Botões de ação da tela (F7/F8 — desabilitados na rota paralela) */}
+        {/* Botões de ação da tela (envio = F7 ativo; Upload = F8 desabilitado) */}
         <div className="flex gap-3 flex-wrap">
-          <Button variant="secondary" size="md" disabled title={TITULO_FASE}>
+          <Button
+            variant="primary"
+            size="md"
+            onClick={() => setAlertasAberto(true)}
+            disabled={filteredProposals.length === 0}
+          >
             <Mail className="h-4 w-4" />
             Enviar Alertas ({filteredProposals.length})
           </Button>
@@ -220,7 +238,7 @@ export default function AcompanhamentoOrq() {
             </Button>
           )}
           {selectedStatus === "pending_dps" && filteredProposals.length > 0 && (
-            <Button variant="secondary" size="md" disabled title={TITULO_FASE}>
+            <Button variant="primary" size="md" onClick={() => setDpsPaginaAberto(true)}>
               <ExternalLink className="h-4 w-4" />
               Enviar Link DPS
             </Button>
@@ -412,6 +430,17 @@ export default function AcompanhamentoOrq() {
           </div>
         )}
       </Modal>
+
+      {/* Diálogos de envio (F7) */}
+      <SendAlertDialogOrq proposals={alertProposals} open={alertasAberto} onClose={() => setAlertasAberto(false)} />
+      {filteredProposals.length > 0 && (
+        <DPSLinkDialogOrq
+          proposalNumber={filteredProposals[0].number}
+          insuredName={filteredProposals[0].insuredName}
+          open={dpsPaginaAberto}
+          onClose={() => setDpsPaginaAberto(false)}
+        />
+      )}
 
       {/* FABs contextuais por status (gate useAssistentesIA nos componentes) */}
       {(status === "pending_signature" || status === "pending_documentation") && (

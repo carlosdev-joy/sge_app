@@ -1,14 +1,16 @@
 // Card de proposta no DS nativo — porte do ProposalCard shadcn (mesma grade
 // de campos e mesmos botões condicionais por status). Usado pela
 // AcompanhamentoOrq (F6, rota paralela). O clique no card abre o
-// ProposalDetailDialogOrq (consulta, portado na F3). Os botões de AÇÃO
-// (Enviar Link, Upload, DPS, Devolução, Nova Venda, Histórico de
-// Sensibilização) ficam DESABILITADOS nesta fase — os diálogos deles são as
-// F7/F8 da spec; a rota oficial continua sendo a tela shadcn até a F9.
+// ProposalDetailDialogOrq (consulta, portado na F3). Desde a F7, "Enviar
+// Link" e "Enviar Link DPS" abrem os diálogos nativos; os botões de AÇÃO
+// restantes (Upload, Devolução, Nova Venda, Histórico de Sensibilização)
+// ficam DESABILITADOS até a F8; a rota oficial segue shadcn até a F9.
 import { useState } from "react";
 import { Send, Upload, DollarSign, PlusCircle, ExternalLink, History } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import ProposalDetailDialogOrq, { type ProposalOrq } from "./ProposalDetailDialogOrq";
+import ResendLinkDialogOrq from "./ResendLinkDialogOrq";
+import DPSLinkDialogOrq from "./DPSLinkDialogOrq";
 
 export interface ProposalTrackingOrq extends ProposalOrq {
   refundSubStatus?: string;
@@ -19,10 +21,12 @@ interface ProposalCardOrqProps {
   proposal: ProposalTrackingOrq;
 }
 
-const TITULO_FASE = "Ação portada nas fases F7/F8 da migração (rota paralela)";
+const TITULO_FASE = "Ação portada na fase F8 da migração (rota paralela)";
 
 export default function ProposalCardOrq({ proposal }: ProposalCardOrqProps) {
   const [isDetailDialogOpen, setIsDetailDialogOpen] = useState(false);
+  const [isResendDialogOpen, setIsResendDialogOpen] = useState(false);
+  const [isDPSDialogOpen, setIsDPSDialogOpen] = useState(false);
 
   const campos: { rotulo: string; valor: string; destaque?: boolean }[] = [
     { rotulo: "Número da Proposta", valor: proposal.number, destaque: true },
@@ -66,7 +70,7 @@ export default function ProposalCardOrq({ proposal }: ProposalCardOrqProps) {
             </Button>
 
             {proposal.status === "pending_signature" && (
-              <Button variant="secondary" size="sm" disabled title={TITULO_FASE}>
+              <Button variant="primary" size="sm" onClick={() => setIsResendDialogOpen(true)}>
                 <Send className="h-4 w-4" />
                 Enviar Link
               </Button>
@@ -80,7 +84,7 @@ export default function ProposalCardOrq({ proposal }: ProposalCardOrqProps) {
             )}
 
             {proposal.status === "pending_dps" && (
-              <Button variant="secondary" size="sm" disabled title={TITULO_FASE}>
+              <Button variant="primary" size="sm" onClick={() => setIsDPSDialogOpen(true)}>
                 <ExternalLink className="h-4 w-4" />
                 Enviar Link DPS
               </Button>
@@ -107,6 +111,26 @@ export default function ProposalCardOrq({ proposal }: ProposalCardOrqProps) {
         proposal={proposal}
         open={isDetailDialogOpen}
         onClose={() => setIsDetailDialogOpen(false)}
+      />
+
+      <ResendLinkDialogOrq
+        proposal={{
+          number: proposal.number,
+          insuredName: proposal.insuredName,
+          cpf: proposal.cpf,
+          value: proposal.value,
+          email: proposal.email,
+          phone: proposal.phone,
+        }}
+        open={isResendDialogOpen}
+        onClose={() => setIsResendDialogOpen(false)}
+      />
+
+      <DPSLinkDialogOrq
+        proposalNumber={proposal.number}
+        insuredName={proposal.insuredName}
+        open={isDPSDialogOpen}
+        onClose={() => setIsDPSDialogOpen(false)}
       />
     </>
   );
