@@ -132,7 +132,13 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   // Keyboard navigation
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === 'Escape') { onClose(); return }
+      if (e.key === 'Escape') {
+        // Não deixa o Esc vazar para o listener de documento do Modal — com
+        // um modal aberto atrás da palette, fecharia os dois de uma vez.
+        e.stopPropagation()
+        onClose()
+        return
+      }
       if (e.key === 'ArrowDown') {
         e.preventDefault()
         setCursor((c) => Math.min(c + 1, items.length - 1))
@@ -169,6 +175,9 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   return (
     <div
+      // data-modal-exempt: overlay legítimo acima do Modal nativo — o
+      // sentinela de foco do Modal ignora alvos aqui dentro (ver Modal.tsx).
+      data-modal-exempt
       className="fixed inset-0 z-[9999] flex items-start justify-center pt-[10vh] p-4"
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
