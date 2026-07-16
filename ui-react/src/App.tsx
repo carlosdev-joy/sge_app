@@ -26,6 +26,7 @@ import Finalizacao from './pages/Finalizacao'
 import Fluxos from './pages/Fluxos'
 import CaixaSeguroApp from './caixa/CaixaSeguroApp'
 import MonitoramentoOrq from './caixa/pages/MonitoramentoOrq'
+import IndexOrq from './caixa/pages/IndexOrq'
 import { ProfileProvider } from './caixa/contexts/ProfileContext'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -88,6 +89,18 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<PrivateRoute><AppShellV2 /></PrivateRoute>}>
             <Route index element={<HomeRedirect />} />
+            {/* Home "Consulta de Propostas" no visual NATIVO do Orquestra —
+                tela oficial desde a F3 da migração (docs/spec-caixa-ds-nativo.md).
+                Rota estática exata: vence o splat caixa-seguro/* no ranking do
+                router e fica FORA do CaixaSeguroApp/.caixa-theme. */}
+            <Route
+              path="caixa-seguro"
+              element={
+                <RequirePerm perm="tela_caixa_seguro">
+                  <ProfileProvider><IndexOrq /></ProfileProvider>
+                </RequirePerm>
+              }
+            />
             {/* Monitoramento Tático no visual NATIVO do Orquestra — tela oficial
                 desde a F2 da migração (docs/spec-caixa-ds-nativo.md). Rota mais
                 específica que o splat caixa-seguro/* (vence no ranking do router)
