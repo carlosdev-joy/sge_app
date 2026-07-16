@@ -28,6 +28,7 @@ import CaixaSeguroApp from './caixa/CaixaSeguroApp'
 import MonitoramentoOrq from './caixa/pages/MonitoramentoOrq'
 import IndexOrq from './caixa/pages/IndexOrq'
 import PortabilidadesOrq from './caixa/pages/PortabilidadesOrq'
+import PainelIAOrq from './caixa/pages/PainelIAOrq'
 import { ProfileProvider } from './caixa/contexts/ProfileContext'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -127,6 +128,16 @@ export default function App() {
               element={
                 <RequirePerm perm="tela_caixa_seguro">
                   <ProfileProvider><PortabilidadesOrq /></ProfileProvider>
+                </RequirePerm>
+              }
+            />
+            {/* Painel de IA Operacional no visual NATIVO — tela oficial desde
+                a F5 da migração (docs/spec-caixa-ds-nativo.md). */}
+            <Route
+              path="caixa-seguro/ia-operacional"
+              element={
+                <RequirePerm perm="tela_caixa_seguro">
+                  <ProfileProvider><PainelIAOrq /></ProfileProvider>
                 </RequirePerm>
               }
             />
