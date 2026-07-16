@@ -46,8 +46,8 @@ export const NAV: NavItem[] = [
   { to: '/copia-dados',   label: 'Cópia de Dados',     icon: Copy,            group: 'Governança & Dados', perm: 'tela_copia_dados' },
   { to: '/inventario',    label: 'Inventário de Consumidores', icon: Cable,   group: 'Governança & Dados', perm: 'tela_inventario' },
   { to: '/powerbi',       label: 'Power BI',           icon: BarChart3,       group: 'BI',                 perm: 'tela_powerbi' },
-  // Seção portada da POC Lovable (src/caixa) — navegação interna própria
-  // (MenuButton) sob a rota curinga /caixa-seguro/*.
+  // Seção Caixa Seguro (src/caixa) — telas nativas em rotas próprias no
+  // App.tsx (F9 da migração); navegação interna pelo MenuButtonOrq.
   { to: '/caixa-seguro',  label: 'Busca & Vendas',     icon: ShieldCheck,     group: 'Caixa Seguro',       perm: 'tela_caixa_seguro' },
   { to: '/admin',         label: 'Admin',              icon: Settings,        group: 'Administração',      perm: 'tela_admin' },
 ]
