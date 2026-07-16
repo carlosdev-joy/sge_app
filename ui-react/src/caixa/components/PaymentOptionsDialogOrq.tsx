@@ -4,7 +4,7 @@
 // dados bancários — o toast fala em "crédito em conta", quirk do mock
 // original preservado) e cartão de crédito (CreditCardLinkDialogOrq da F7).
 // SendOptions e CreditCard montados como IRMÃOS do Modal pai (pilha/trap).
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { FileText, QrCode, CreditCard, Send } from "lucide-react";
 import { Modal } from "../../components/ui/Modal";
 import { Button } from "../../components/ui/Button";
@@ -43,9 +43,17 @@ export default function PaymentOptionsDialogOrq({ proposal, open, onClose }: Pay
     operation: "",
     account: "",
   });
+  const boletoTimer = useRef<number | null>(null);
 
-  // Todo caminho de fechar passa aqui e zera o fluxo.
+  // Todo caminho de fechar passa aqui, zera o fluxo e CANCELA o timer do
+  // boleto — sem isso, fechar durante o loading fazia o "Enviar Boleto"
+  // (irmão do Modal) abrir sozinho 2s depois (achado da revisão; no shadcn
+  // o filho desmontava junto com o DialogContent).
   const handleClose = () => {
+    if (boletoTimer.current !== null) {
+      clearTimeout(boletoTimer.current);
+      boletoTimer.current = null;
+    }
     setSelectedOption("");
     setIsLoading(false);
     setShowQRCode(false);
@@ -58,7 +66,8 @@ export default function PaymentOptionsDialogOrq({ proposal, open, onClose }: Pay
 
   const handleGenerateBoleto = () => {
     setIsLoading(true);
-    setTimeout(() => {
+    boletoTimer.current = window.setTimeout(() => {
+      boletoTimer.current = null;
       setIsLoading(false);
       toast.success(`Boleto gerado com sucesso: boleto_${proposal.insuredName.replace(/\s+/g, "_")}.pdf`);
       setSendOptionsType("boleto");

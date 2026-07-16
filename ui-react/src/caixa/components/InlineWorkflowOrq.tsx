@@ -3,7 +3,7 @@
 // alerta em lote e lista de propostas com ação por status — incluindo o
 // movimento de Emissão (sensitization_monitoring → emission_sent, estado
 // local). Todos os diálogos são os nativos das F3/F7/F8. Mock idêntico ao
-// original (16 propostas).
+// original (17 propostas).
 import { useState } from "react";
 import { ChevronDown, ChevronUp, Send } from "lucide-react";
 import { Button } from "../../components/ui/Button";
@@ -32,7 +32,7 @@ interface WorkflowProposal extends ProposalOrq {
   policy?: string;
 }
 
-// Mesmo mock do InlineWorkflow original (16 propostas).
+// Mesmo mock do InlineWorkflow original (17 propostas).
 const mockWorkflowProposals: WorkflowProposal[] = [
   { id: "1", number: "80316460327404", insuredName: "Maria Silva", status: "pending_signature", value: "R$ 2.200,00", product: "Perda de Renda", region: "Sul", ageRange: "45-60", broker: "Mariana", daysInPending: 5, date: "23/10/2025", indicatorId: "106562-2", agency: "316", cpf: "397.750.878-48", phone: "(11) 98765-4321", email: "maria@example.com" },
   { id: "2", number: "80316460327405", insuredName: "João Santos", status: "approved", value: "R$ 1.800,00", product: "Vida Multipremiado", region: "Sudeste", ageRange: "30-40", broker: "João", daysInPending: 0, date: "22/10/2025", indicatorId: "106563-3", agency: "315", cpf: "123.456.789-00", phone: "(11) 98765-4322", email: "joao@example.com" },

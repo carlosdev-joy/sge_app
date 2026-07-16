@@ -3,7 +3,7 @@
 // copiar → enviar via canais); o SendOptionsDialogOrq é montado como IRMÃO
 // (fora do Modal pai) para a pilha de modais e o trap de Tab não conflitarem.
 // Consumidor chega na F8 (fluxo de pagamento) — sem montagem até lá.
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Copy, Check, Mail } from "lucide-react";
 import { Modal } from "../../components/ui/Modal";
 import { Button } from "../../components/ui/Button";
@@ -28,11 +28,16 @@ export default function CreditCardLinkDialogOrq({ proposal, open, onClose }: Cre
   const [showSendOptions, setShowSendOptions] = useState(false);
 
   const generatedLink = `https://pagamento.seguradora.com.br/cc/${proposal.number}`;
+  const gerarTimer = useRef<number | null>(null);
 
-  // Todo caminho de fechar (Esc/backdrop/X e os botões) passa aqui e zera o
-  // fluxo (o antigo só zerava no clique em Fechar/Cancelar — Esc deixava o
-  // estado para trás).
+  // Todo caminho de fechar (Esc/backdrop/X e os botões) passa aqui, zera o
+  // fluxo e cancela o timer de geração (o antigo só zerava no clique em
+  // Fechar/Cancelar — Esc deixava o estado para trás).
   const handleClose = () => {
+    if (gerarTimer.current !== null) {
+      clearTimeout(gerarTimer.current);
+      gerarTimer.current = null;
+    }
     setIsGenerating(false);
     setLinkGenerated(false);
     setCopied(false);
@@ -42,7 +47,8 @@ export default function CreditCardLinkDialogOrq({ proposal, open, onClose }: Cre
 
   const handleGenerateLink = () => {
     setIsGenerating(true);
-    setTimeout(() => {
+    gerarTimer.current = window.setTimeout(() => {
+      gerarTimer.current = null;
       setIsGenerating(false);
       setLinkGenerated(true);
       toast.success("O link de pagamento por cartão de crédito foi criado.");
