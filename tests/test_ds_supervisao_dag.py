@@ -246,3 +246,121 @@ def test_expurgo_usa_a_retencao_configurada(retencao):
     _sql, params = cur.sqls[0]
     corte = params[0]
     assert (date.today() - corte).days == retencao
+
+
+# ── Notificação ao Teams (F4) ───────────────────────────────────────────────
+
+def _linha_pendente(eid=1, tipo="ABORTOU", webhook="https://webhook/SEGREDO", canal="Homologação"):
+    # Espelha o SELECT de _notificar_pendentes.
+    return (eid, tipo, "2026-07-27", "detalhe", "mensagem pronta",
+            "BI_CVP", "SeqVida", "Carga de vida", "02:00:00", "03:00:00",
+            webhook, canal)
+
+
+class CursorFila(CursorFalso):
+    """Cursor cujo fetchall devolve a fila de pendentes uma única vez."""
+
+    def __init__(self, pendentes, rowcount=1):
+        super().__init__(rowcount=rowcount)
+        self._pendentes = list(pendentes)
+
+    def fetchall(self):
+        fila, self._pendentes = self._pendentes, []
+        return fila
+
+
+def _patch_envio(monkeypatch, ok=True, motivo="HTTP 200"):
+    chamadas = []
+
+    def _fake(webhook, card, timeout=15):
+        chamadas.append((webhook, card))
+        return ok, motivo
+
+    import utils.ds_teams as ds_teams
+    monkeypatch.setattr(ds_teams, "enviar_card", _fake)
+    return chamadas
+
+
+def test_envio_bem_sucedido_marca_notificado_em(monkeypatch):
+    chamadas = _patch_envio(monkeypatch, ok=True)
+    cur = CursorFila([_linha_pendente()])
+    enviados = DAG_MOD._notificar_pendentes(cur, MagicMock())
+
+    assert enviados == 1
+    assert len(chamadas) == 1
+    updates = [s for s, _ in cur.sqls if s.startswith("UPDATE dbo.etl_ds_supervisao_evento")]
+    assert len(updates) == 1
+    assert "notificado_em = GETDATE()" in updates[0]
+
+
+def test_falha_de_envio_nao_marca_notificado_em(monkeypatch):
+    # É o que garante o reenvio no ciclo seguinte.
+    _patch_envio(monkeypatch, ok=False, motivo="webhook respondeu HTTP 500")
+    cur = CursorFila([_linha_pendente()])
+    enviados = DAG_MOD._notificar_pendentes(cur, MagicMock())
+
+    assert enviados == 0
+    assert not any(s.startswith("UPDATE") for s, _ in cur.sqls)
+
+
+def test_motivo_da_falha_vai_ao_log_sem_a_url(monkeypatch):
+    _patch_envio(monkeypatch, ok=False, motivo="webhook respondeu HTTP 500")
+    log = MagicMock()
+    DAG_MOD._notificar_pendentes(CursorFila([_linha_pendente()]), log)
+
+    registrado = " ".join(str(c) for c in log.warning.call_args_list)
+    assert "SEGREDO" not in registrado
+    assert "Homologação" in registrado          # o canal é citado pelo NOME
+
+
+def test_sem_pendentes_nao_chama_o_webhook(monkeypatch):
+    chamadas = _patch_envio(monkeypatch)
+    assert DAG_MOD._notificar_pendentes(CursorFila([]), MagicMock()) == 0
+    assert chamadas == []
+
+
+def test_query_de_pendentes_filtra_canal_ativo_e_nao_notificado(monkeypatch):
+    _patch_envio(monkeypatch)
+    cur = CursorFila([])
+    DAG_MOD._notificar_pendentes(cur, MagicMock(), limite=10, janela_dias=3)
+    sql, params = cur.sqls[0]
+
+    assert "e.notificado_em IS NULL" in sql
+    assert "g.ativo = 1" in sql
+    assert "webhook_url IS NOT NULL" in sql
+    assert params == (10, 3)                   # limite do lote e janela de dias
+
+
+def test_lote_cheio_e_registrado_em_vez_de_truncar_calado(monkeypatch):
+    _patch_envio(monkeypatch)
+    log = MagicMock()
+    pendentes = [_linha_pendente(eid=i) for i in range(3)]
+    DAG_MOD._notificar_pendentes(CursorFila(pendentes), log, limite=3)
+
+    registrado = " ".join(str(c) for c in log.info.call_args_list)
+    assert "próximo ciclo" in registrado
+
+
+def test_erro_ao_listar_pendentes_nao_derruba_o_ciclo(monkeypatch):
+    _patch_envio(monkeypatch)
+
+    class CursorQuebrado(CursorFalso):
+        def execute(self, sql, params=()):
+            raise RuntimeError("timeout no banco")
+
+    assert DAG_MOD._notificar_pendentes(CursorQuebrado(), MagicMock()) == 0
+
+
+def test_falha_ao_gravar_notificado_em_nao_interrompe_o_lote(monkeypatch):
+    _patch_envio(monkeypatch, ok=True)
+
+    class CursorUpdateQuebrado(CursorFila):
+        def execute(self, sql, params=()):
+            super().execute(sql, params)
+            if sql.strip().upper().startswith("UPDATE"):
+                raise RuntimeError("deadlock")
+
+    cur = CursorUpdateQuebrado([_linha_pendente(eid=1), _linha_pendente(eid=2)])
+    # Enviou os dois; nenhum marcado — o próximo ciclo reenvia (duplicar é
+    # ruim, perder é pior) e o log guarda o rastro.
+    assert DAG_MOD._notificar_pendentes(cur, MagicMock()) == 0

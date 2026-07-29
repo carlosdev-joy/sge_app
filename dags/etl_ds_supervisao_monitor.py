@@ -244,6 +244,80 @@ def _gravar_eventos(cur, job: JobSupervisionado, eventos, log,
     return novos
 
 
+def _notificar_pendentes(cur, log, limite: int = 50, janela_dias: int = 2) -> int:
+    """Envia ao Teams os eventos ainda não notificados. Devolve quantos saíram.
+
+    Só entram eventos de jobs com canal ATIVO e webhook preenchido — sem canal,
+    o alerta vive apenas no painel, que é o comportamento cadastrado.
+
+    `janela_dias` limita a fila ao passado recente: sem isso, consertar um
+    webhook quebrado despejaria semanas de alertas velhos no canal de uma vez.
+    `limite` corta o lote por ciclo; o que sobrar sai no ciclo seguinte e é
+    registrado no log — corte silencioso passaria a impressão de que tudo saiu.
+
+    Falha de envio NÃO marca notificado_em: o próximo ciclo tenta de novo.
+    """
+    from utils.ds_teams import enviar_card, montar_card
+
+    try:
+        cur.execute(
+            "SELECT TOP (?) e.id, e.tipo, CONVERT(VARCHAR(10), e.data_ref, 23), "
+            "       e.detalhe, e.mensagem, "
+            "       s.project, s.job_name, s.descricao, "
+            "       CONVERT(VARCHAR(8), s.janela_inicio, 108), "
+            "       CONVERT(VARCHAR(8), s.janela_fim, 108), "
+            "       g.webhook_url, g.nome "
+            "FROM dbo.etl_ds_supervisao_evento e "
+            "JOIN dbo.etl_ds_supervisao_job s ON s.id = e.supervisao_id "
+            "JOIN dbo.etl_msg_grupo g ON g.id = s.grupo_id AND g.ativo = 1 "
+            "WHERE e.notificado_em IS NULL "
+            "  AND e.detectado_em >= DATEADD(day, -?, GETDATE()) "
+            "  AND g.webhook_url IS NOT NULL AND LTRIM(RTRIM(g.webhook_url)) <> '' "
+            "ORDER BY e.detectado_em",
+            (limite, janela_dias))
+        pendentes = cur.fetchall()
+    except Exception as e:
+        log.warning("[DS Superv] não foi possível listar eventos pendentes: %s", e)
+        return 0
+
+    if not pendentes:
+        return 0
+
+    enviados = 0
+    for r in pendentes:
+        evento = {
+            "id": r[0], "tipo": r[1], "data_ref": r[2], "detalhe": r[3],
+            "mensagem": r[4], "project": r[5], "job_name": r[6], "descricao": r[7],
+            "janela_inicio": r[8], "janela_fim": r[9],
+        }
+        webhook, canal = r[10], r[11]
+        ok, motivo = enviar_card(webhook, montar_card(evento))
+
+        if not ok:
+            # Sem marcar: o ciclo seguinte tenta de novo. O motivo nunca traz a URL.
+            log.warning("[DS Superv] evento %s (%s.%s) não foi ao canal '%s': %s",
+                        evento["tipo"], evento["project"], evento["job_name"], canal, motivo)
+            continue
+
+        try:
+            cur.execute(
+                "UPDATE dbo.etl_ds_supervisao_evento "
+                "SET notificado_em = GETDATE() WHERE id = ?", (evento["id"],))
+            enviados += 1
+            log.info("[DS Superv] %s de %s.%s enviado ao canal '%s' (%s)",
+                     evento["tipo"], evento["project"], evento["job_name"], canal, motivo)
+        except Exception as e:
+            # Enviou mas não marcou: o próximo ciclo reenvia. Duplicar um card é
+            # ruim, mas menos grave que perder o alerta — e o log deixa o rastro.
+            log.warning("[DS Superv] card enviado mas notificado_em não gravou (id=%s): %s",
+                        evento["id"], e)
+
+    if len(pendentes) == limite:
+        log.info("[DS Superv] lote de notificação cheio (%d) — o restante sai no próximo ciclo.",
+                 limite)
+    return enviados
+
+
 def _expurgar(cur, dias: int, log) -> None:
     corte = (datetime.now() - timedelta(days=dias)).date()
     for tabela in ("etl_ds_supervisao_run", "etl_ds_supervisao_evento"):
@@ -352,6 +426,13 @@ def coletar(**context) -> dict:
             total_eventos += _gravar_eventos(cur, job, avaliar(job, runs, agora), log,
                                              runs=runs, mensagens=msgs, agora=agora)
 
+        # Envio ao Teams: acontece DEPOIS de toda a detecção do ciclo, para o
+        # lote sair de uma vez e na ordem em que os problemas apareceram.
+        notificados = _notificar_pendentes(
+            cur, log,
+            limite=_var_int("DS_SUPERVISAO_LOTE_NOTIFICACAO", 50),
+            janela_dias=_var_int("DS_SUPERVISAO_JANELA_NOTIFICACAO_DIAS", 2))
+
         # Expurgo uma vez por dia, na primeira passagem depois das 03h.
         intervalo = _var_int("DS_SUPERVISAO_INTERVAL_MINUTES", 15)
         if agora.hour == 3 and agora.minute < intervalo:
@@ -365,9 +446,10 @@ def coletar(**context) -> dict:
         cur.close(); conn.close()
 
     log.info("[DS Superv] ciclo concluído: %d job(s), %d run(s), %d evento(s) novo(s), "
-             "%d falha(s) de leitura.", len(jobs), total_runs, total_eventos, com_falha)
-    return {"jobs": len(jobs), "runs": total_runs,
-            "eventos": total_eventos, "falhas": com_falha}
+             "%d notificado(s), %d falha(s) de leitura.",
+             len(jobs), total_runs, total_eventos, notificados, com_falha)
+    return {"jobs": len(jobs), "runs": total_runs, "eventos": total_eventos,
+            "notificados": notificados, "falhas": com_falha}
 
 
 _INTERVALO = _var_int("DS_SUPERVISAO_INTERVAL_MINUTES", 15)
