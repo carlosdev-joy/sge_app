@@ -405,6 +405,49 @@ m) Cadastrar um job com vigência **amanhã** e confirmar que nada é avaliado n
 n) Depois de validado em homologação, trocar o canal do job para o **grupo
    oficial** e confirmar que o próximo alerta chega lá.
 
+## 7.1 Ajustes após o primeiro uso da tela (2026-07-29)
+
+Cinco correções pedidas depois de mexer no cadastro real. Entram na
+**migration 063** e na PR de ajustes:
+
+1. **Projeto vira lista fechada.** Digitar o nome errado só apareceria como
+   falha de estrutura depois do primeiro ciclo da coleta — tarde e confuso. A
+   lista vem de `etl_project` (mesma origem que o console já usa), com queda
+   para a lista fixa quando o usuário não tem permissão de leitura de projetos.
+2. **Ajuda dos campos passa a ser visível.** O `hint` do design system é um
+   popover `absolute` que abre para cima; dentro do Modal, cujo corpo tem
+   `overflow-y-auto`, ele é **clipado pelo contêiner de scroll** e some nos
+   campos do topo (clipping por overflow ignora z-index). Foi criada a prop
+   `ajuda` em `Input`/`Select`/`Textarea`: texto pequeno, sempre visível abaixo
+   do campo, ligado por `aria-describedby`.
+   *Achado relacionado, fora do escopo desta entrega:* os painéis do editor de
+   fluxos (`PainelNotificacao`, `PainelSql`, `PainelDecisao`) usam `hint` dentro
+   do dock com `overflow-y-auto` e sofrem do mesmo corte.
+3. **Uma mensagem por tipo de alerta.** Um job liga até quatro alertas
+   diferentes e uma frase única não explica os quatro casos. Cada tipo
+   (`ABORTOU`, `NAO_EXECUTOU`, `ATRASO`, `ESTRUTURA`, `SITUACAO_INICIAL`) ganha
+   texto próprio em `etl_ds_supervisao_mensagem`; em branco, vale o padrão do
+   sistema.
+4. **Variáveis de contexto nas mensagens.** O texto aceita `{job}`, `{projeto}`,
+   `{data}`, `{janela_inicio}`, `{janela_fim}`, `{tolerancia}`, `{limite}`,
+   `{dias}`, `{inicio}`, `{fim}`, `{duracao}`, `{situacao}`, `{descricao}` e
+   `{tipo}` — o exemplo do pedido ("o job atrasou hoje, pois não executou
+   dentro da janela X, a tolerância é de Y") sai direto disso. A mensagem é
+   renderizada **na detecção**, quando o contexto do dia existe, e guardada
+   pronta em `etl_ds_supervisao_evento.mensagem`; o envio da F4 só entrega.
+   Variável inexistente é recusada no salvamento, e não na hora do envio.
+5. **Descrição obrigatória** — é o rótulo que dá contexto ao alerta no painel e
+   no card.
+
+O `template_id` sai do modelo: a mensagem por tipo substitui integralmente o
+template único do catálogo, que nunca chegou a ser usado no envio. O `grupo_id`
+permanece — ele diz *para onde* enviar, o que a mensagem não substitui.
+
+**Nota de duplicação consciente:** o catálogo de variáveis existe em dois
+lugares — `dags/utils/ds_mensagens.py` (interpola) e `api/routers/ds_supervisao.py`
+(mostra na tela) — porque API e Airflow rodam em containers separados e não
+compartilham código. A paridade é travada por teste em `tests/test_ds_mensagens.py`.
+
 ## 8. Decisões fechadas (2026-07-29)
 
 1. **Canal de homologação**: já existe um grupo em `etl_msg_grupo` dedicado a

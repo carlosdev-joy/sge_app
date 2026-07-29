@@ -1253,7 +1253,9 @@ export default function DsConsole() {
         )}
 
         {/* 8. Supervisão — cadastro dos jobs acompanhados automaticamente */}
-        {activeTab === 'supervisao' && <SupervisaoTab project={project} job={job} />}
+        {activeTab === 'supervisao' && (
+          <SupervisaoTab project={project} job={job} projetos={projectOptions} />
+        )}
       </div>
 
       {showGraph && graphData && (

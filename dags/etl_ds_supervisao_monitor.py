@@ -95,7 +95,7 @@ def _carregar_jobs(hook) -> list[JobSupervisionado]:
     linhas = hook.get_records(
         "SELECT id, project, job_name, janela_inicio, janela_fim, tolerancia_min, "
         "       dias_semana, vigencia_inicio, max_linhas, alerta_abortou, "
-        "       alerta_nao_executou, alerta_atraso, alerta_estrutura "
+        "       alerta_nao_executou, alerta_atraso, alerta_estrutura, descricao "
         "FROM dbo.etl_ds_supervisao_job WHERE ativo = 1 "
         "ORDER BY project, job_name")
     jobs: list[JobSupervisionado] = []
@@ -106,8 +106,25 @@ def _carregar_jobs(hook) -> list[JobSupervisionado]:
             dias_semana=r[6], vigencia_inicio=r[7], max_linhas=int(r[8] or 200),
             alerta_abortou=bool(r[9]), alerta_nao_executou=bool(r[10]),
             alerta_atraso=bool(r[11]), alerta_estrutura=bool(r[12]),
+            descricao=(r[13] if len(r) > 13 else "") or "",
         ))
     return jobs
+
+
+def _carregar_mensagens(hook) -> dict[int, dict[str, str]]:
+    """Mensagens configuradas por (job, tipo). Ausente → padrão de ds_mensagens.
+
+    Degrada para vazio se a migration 063 ainda não foi aplicada: sem mensagem
+    cadastrada o alerta continua saindo com o texto padrão."""
+    try:
+        linhas = hook.get_records(
+            "SELECT supervisao_id, tipo, mensagem FROM dbo.etl_ds_supervisao_mensagem")
+    except Exception:
+        return {}
+    por_job: dict[int, dict[str, str]] = {}
+    for r in (linhas or []):
+        por_job.setdefault(int(r[0]), {})[r[1]] = r[2]
+    return por_job
 
 
 # ── Gravação ────────────────────────────────────────────────────────────────
@@ -173,12 +190,20 @@ def _rodou_pelo_orquestra(cur, job: JobSupervisionado, data_ref) -> bool:
         return False
 
 
-def _gravar_eventos(cur, job: JobSupervisionado, eventos, log) -> int:
+def _gravar_eventos(cur, job: JobSupervisionado, eventos, log,
+                    runs=None, mensagens=None, agora=None) -> int:
     """INSERT ... WHERE NOT EXISTS sobre a chave do índice único.
 
     Sem exceção de chave duplicada e sem card repetido: o ciclo seguinte que
-    reencontrar o mesmo problema simplesmente não insere nada."""
+    reencontrar o mesmo problema simplesmente não insere nada.
+
+    A mensagem do alerta é renderizada AQUI, com o contexto do dia em mãos, e
+    guardada pronta no evento — o envio (F4) só entrega o texto já montado."""
+    from utils.ds_mensagens import montar_mensagem
     from utils.ds_supervisao_regras import NAO_EXECUTOU
+
+    runs = runs or []
+    agora = agora or datetime.now()
 
     novos = 0
     for ev in eventos:
@@ -187,14 +212,27 @@ def _gravar_eventos(cur, job: JobSupervisionado, eventos, log) -> int:
                      "tem execução no dia (log do DataStage provavelmente rotacionou)",
                      job.rotulo, ev.data_ref)
             continue
+
+        # Run que originou o alerta (o abort específico), quando houver.
+        origem = next((r for r in runs if r.inicio == ev.run_inicio), None) if ev.run_inicio else None
+        try:
+            mensagem = montar_mensagem(job, ev.tipo, ev.data_ref, runs, agora,
+                                       mensagens=mensagens, run=origem)[:2000]
+        except Exception as e:
+            # Texto do usuário não pode impedir o registro do alerta.
+            log.warning("[DS Superv] falha ao montar mensagem de %s (%s): %s",
+                        job.rotulo, ev.tipo, e)
+            mensagem = ev.detalhe
+
         try:
             cur.execute(
                 "INSERT INTO dbo.etl_ds_supervisao_evento "
-                "(supervisao_id, data_ref, tipo, chave_ocorrencia, detalhe, run_inicio) "
-                "SELECT ?, ?, ?, ?, ?, ? "
+                "(supervisao_id, data_ref, tipo, chave_ocorrencia, detalhe, run_inicio, mensagem) "
+                "SELECT ?, ?, ?, ?, ?, ?, ? "
                 "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_ds_supervisao_evento "
                 "  WHERE supervisao_id = ? AND data_ref = ? AND tipo = ? AND chave_ocorrencia = ?)",
-                (job.id, ev.data_ref, ev.tipo, ev.chave_ocorrencia, ev.detalhe, ev.run_inicio,
+                (job.id, ev.data_ref, ev.tipo, ev.chave_ocorrencia, ev.detalhe,
+                 ev.run_inicio, mensagem,
                  job.id, ev.data_ref, ev.tipo, ev.chave_ocorrencia))
             if cur.rowcount:
                 novos += 1
@@ -243,6 +281,8 @@ def coletar(**context) -> dict:
     if not jobs:
         log.info("[DS Superv] nenhum job supervisionado ativo.")
         return {"jobs": 0, "runs": 0, "eventos": 0}
+
+    mensagens = _carregar_mensagens(hook)
 
     log.info("[DS Superv] %d job(s) supervisionado(s) — abrindo SSH...", len(jobs))
 
@@ -294,11 +334,14 @@ def coletar(**context) -> dict:
         for job in jobs:
             saida, erro = saidas.get(job.id, ("", "job não consultado neste ciclo"))
 
+            msgs = mensagens.get(job.id, {})
+
             if erro:
                 com_falha += 1
                 if job.alerta_estrutura:
                     total_eventos += _gravar_eventos(
-                        cur, job, [evento_estrutura(job, agora.date(), erro)], log)
+                        cur, job, [evento_estrutura(job, agora.date(), erro)], log,
+                        runs=[], mensagens=msgs, agora=agora)
                 else:
                     log.info("[DS Superv] %s: falha de estrutura silenciada por configuração (%s)",
                              job.rotulo, erro)
@@ -306,7 +349,8 @@ def coletar(**context) -> dict:
 
             runs = runs_desde(parse_logsum(saida), limite_log)
             total_runs += _gravar_runs(cur, job.id, runs, job, log)
-            total_eventos += _gravar_eventos(cur, job, avaliar(job, runs, agora), log)
+            total_eventos += _gravar_eventos(cur, job, avaliar(job, runs, agora), log,
+                                             runs=runs, mensagens=msgs, agora=agora)
 
         # Expurgo uma vez por dia, na primeira passagem depois das 03h.
         intervalo = _var_int("DS_SUPERVISAO_INTERVAL_MINUTES", 15)
