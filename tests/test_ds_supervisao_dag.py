@@ -88,6 +88,37 @@ def test_allowlist_do_comando_remoto_e_a_mesma_do_console():
         assert DAG_MOD._SAFE_DS_RE.match(perigoso) is None
 
 
+def test_nenhuma_query_da_dag_usa_placeholder_do_pyodbc():
+    """Varredura do fonte: `?` em literal SQL não chega ao servidor.
+
+    Complementa o guard do CursorFalso: pega também as queries que nenhum teste
+    exercita ainda (e que só falhariam em produção, como WARNING silencioso)."""
+    import inspect
+    import re
+
+    fonte = inspect.getsource(DAG_MOD)
+    suspeitas = []
+    for numero, linha in enumerate(fonte.split("\n"), start=1):
+        if '"' not in linha:
+            continue
+        if not re.search(r"\b(SELECT|INSERT|UPDATE|DELETE|WHERE|VALUES|SET|EXISTS|TOP|DATEADD)\b", linha):
+            continue
+        # Placeholder posicional do pyodbc em contexto de SQL.
+        if re.search(r"[\s(,=<>]\?[\s),]|\(\?\)|,\?", linha):
+            suspeitas.append(f"{numero}: {linha.strip()}")
+
+    assert not suspeitas, (
+        "SQL da DAG com placeholder '?' (pyodbc). O MsSqlHook usa pymssql → '%s':\n"
+        + "\n".join(suspeitas))
+
+
+def test_o_guard_do_cursor_realmente_pega_o_dialeto_errado():
+    # Meta-teste: se o guard parar de funcionar, o teste acima fica sozinho.
+    cur = CursorFalso()
+    with pytest.raises(AssertionError, match="pymssql"):
+        cur.execute("UPDATE x SET a = ? WHERE id = ?", (1, 2))
+
+
 def test_var_int_le_o_valor_configurado(monkeypatch):
     monkeypatch.setattr(DAG_MOD.Variable, "get", lambda *a, **k: "5")
     assert DAG_MOD._var_int("DS_SUPERVISAO_INTERVAL_MINUTES", 15) == 5
@@ -110,7 +141,17 @@ def test_var_cai_no_default_quando_a_variable_nao_existe(monkeypatch):
 # ── Gravação de eventos ─────────────────────────────────────────────────────
 
 class CursorFalso:
-    """Cursor mínimo: guarda os SQL executados e simula rowcount."""
+    """Cursor mínimo: guarda os SQL executados e simula rowcount.
+
+    REJEITA placeholder `?`, como o servidor faz. O MsSqlHook do Airflow usa
+    **pymssql**, cujo paramstyle é `%s`; `?` é do **pyodbc**, que é o que a API
+    FastAPI usa. Escrever `?` aqui produz, em produção,
+    "Incorrect syntax near '?'" (DB-Lib 20018) — e como todo o acesso a banco
+    desta DAG é envolto em try/except para não derrubar o ciclo, o erro só
+    aparece como WARNING no log, com zero linha gravada. Foi exatamente o que
+    aconteceu no primeiro deploy: a única defesa possível é o cursor de teste
+    falar o mesmo dialeto do servidor.
+    """
 
     def __init__(self, rowcount: int = 1, fetch=None):
         self.sqls: list[tuple[str, tuple]] = []
@@ -118,6 +159,10 @@ class CursorFalso:
         self._fetch = fetch
 
     def execute(self, sql, params=()):
+        if "?" in sql:
+            raise AssertionError(
+                "SQL da DAG com placeholder '?' (dialeto pyodbc). "
+                "O MsSqlHook usa pymssql: use '%s'.\nSQL: " + " ".join(sql.split()))
         self.sqls.append((" ".join(sql.split()), tuple(params)))
 
     def fetchone(self):
