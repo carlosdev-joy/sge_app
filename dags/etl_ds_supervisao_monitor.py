@@ -175,16 +175,16 @@ def _gravar_runs(cur, supervisao_id: int, runs, job: JobSupervisionado, log) -> 
         try:
             cur.execute(
                 "UPDATE dbo.etl_ds_supervisao_run SET "
-                "  run_fim = ?, duracao_seg = ?, resultado = ?, jobs_filhos = ?, "
-                "  data_ref = ?, coletado_em = GETDATE() "
-                "WHERE supervisao_id = ? AND run_inicio = ?",
+                "  run_fim = %s, duracao_seg = %s, resultado = %s, jobs_filhos = %s, "
+                "  data_ref = %s, coletado_em = GETDATE() "
+                "WHERE supervisao_id = %s AND run_inicio = %s",
                 (run.fim, run.duracao_seg, run.resultado, run.jobs_filhos,
                  data_ref, supervisao_id, run.inicio))
             if cur.rowcount == 0:
                 cur.execute(
                     "INSERT INTO dbo.etl_ds_supervisao_run "
                     "(supervisao_id, data_ref, run_inicio, run_fim, duracao_seg, "
-                    " resultado, jobs_filhos) VALUES (?,?,?,?,?,?,?)",
+                    " resultado, jobs_filhos) VALUES (%s,%s,%s,%s,%s,%s,%s)",
                     (supervisao_id, data_ref, run.inicio, run.fim,
                      run.duracao_seg, run.resultado, run.jobs_filhos))
             gravados += 1
@@ -250,15 +250,15 @@ def _gravar_filhos_e_aprender(cur, job: JobSupervisionado, runs, log) -> int:
         for nome, codigo in run.filhos.items():
             try:
                 cur.execute(
-                    "UPDATE dbo.etl_ds_supervisao_run_filho SET status_code = ?, "
-                    "  data_ref = ?, coletado_em = GETDATE() "
-                    "WHERE supervisao_id = ? AND run_inicio = ? AND job_filho = ?",
+                    "UPDATE dbo.etl_ds_supervisao_run_filho SET status_code = %s, "
+                    "  data_ref = %s, coletado_em = GETDATE() "
+                    "WHERE supervisao_id = %s AND run_inicio = %s AND job_filho = %s",
                     (codigo, data_ref, job.id, run.inicio, nome))
                 if cur.rowcount == 0:
                     cur.execute(
                         "INSERT INTO dbo.etl_ds_supervisao_run_filho "
                         "(supervisao_id, run_inicio, job_filho, status_code, data_ref) "
-                        "VALUES (?,?,?,?,?)",
+                        "VALUES (%s,%s,%s,%s,%s)",
                         (job.id, run.inicio, nome, codigo, data_ref))
             except Exception as e:
                 log.warning("[DS Superv] falha ao gravar filho %s de %s: %s", nome, job.rotulo, e)
@@ -272,7 +272,7 @@ def _gravar_filhos_e_aprender(cur, job: JobSupervisionado, runs, log) -> int:
         try:
             cur.execute(
                 "SELECT COUNT(*) FROM dbo.etl_ds_supervisao_run "
-                "WHERE supervisao_id = ? AND run_inicio = ? AND aprendido = 1",
+                "WHERE supervisao_id = %s AND run_inicio = %s AND aprendido = 1",
                 (job.id, run.inicio))
             if (cur.fetchone() or [0])[0]:
                 continue
@@ -281,18 +281,18 @@ def _gravar_filhos_e_aprender(cur, job: JobSupervisionado, runs, log) -> int:
                     "UPDATE dbo.etl_ds_supervisao_estrutura "
                     "SET execucoes_com_sucesso = execucoes_com_sucesso + 1, "
                     "    ultima_vez = GETDATE() "
-                    "WHERE supervisao_id = ? AND job_filho = ?", (job.id, nome))
+                    "WHERE supervisao_id = %s AND job_filho = %s", (job.id, nome))
                 if cur.rowcount == 0:
                     cur.execute(
                         "INSERT INTO dbo.etl_ds_supervisao_estrutura "
-                        "(supervisao_id, job_filho, execucoes_com_sucesso) VALUES (?,?,1)",
+                        "(supervisao_id, job_filho, execucoes_com_sucesso) VALUES (%s,%s,1)",
                         (job.id, nome))
             cur.execute(
                 "UPDATE dbo.etl_ds_supervisao_job "
-                "SET execucoes_aprendidas = execucoes_aprendidas + 1 WHERE id = ?", (job.id,))
+                "SET execucoes_aprendidas = execucoes_aprendidas + 1 WHERE id = %s", (job.id,))
             cur.execute(
                 "UPDATE dbo.etl_ds_supervisao_run SET aprendido = 1 "
-                "WHERE supervisao_id = ? AND run_inicio = ?", (job.id, run.inicio))
+                "WHERE supervisao_id = %s AND run_inicio = %s", (job.id, run.inicio))
             aprendidas += 1
             log.info("[DS Superv] estrutura de %s aprendida com %d job(s) do run de %s",
                      job.rotulo, len(nomes), run.inicio)
@@ -313,8 +313,8 @@ def _rodou_pelo_orquestra(cur, job: JobSupervisionado, data_ref) -> bool:
     try:
         cur.execute(
             "SELECT TOP 1 1 FROM dbo.etl_ds_job_log "
-            "WHERE job_name = ? AND project = ? "
-            "  AND created_at >= ? AND created_at < ?",
+            "WHERE job_name = %s AND project = %s "
+            "  AND created_at >= %s AND created_at < %s",
             (job.job_name, job.project, inicio_dia, inicio_dia + timedelta(days=1)))
         return cur.fetchone() is not None
     except Exception:
@@ -360,9 +360,9 @@ def _gravar_eventos(cur, job: JobSupervisionado, eventos, log,
             cur.execute(
                 "INSERT INTO dbo.etl_ds_supervisao_evento "
                 "(supervisao_id, data_ref, tipo, chave_ocorrencia, detalhe, run_inicio, mensagem) "
-                "SELECT ?, ?, ?, ?, ?, ?, ? "
+                "SELECT %s, %s, %s, %s, %s, %s, %s "
                 "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_ds_supervisao_evento "
-                "  WHERE supervisao_id = ? AND data_ref = ? AND tipo = ? AND chave_ocorrencia = ?)",
+                "  WHERE supervisao_id = %s AND data_ref = %s AND tipo = %s AND chave_ocorrencia = %s)",
                 (job.id, ev.data_ref, ev.tipo, ev.chave_ocorrencia, ev.detalhe,
                  ev.run_inicio, mensagem,
                  job.id, ev.data_ref, ev.tipo, ev.chave_ocorrencia))
@@ -393,7 +393,7 @@ def _notificar_pendentes(cur, log, limite: int = 50, janela_dias: int = 2) -> in
 
     try:
         cur.execute(
-            "SELECT TOP (?) e.id, e.tipo, CONVERT(VARCHAR(10), e.data_ref, 23), "
+            "SELECT TOP (%s) e.id, e.tipo, CONVERT(VARCHAR(10), e.data_ref, 23), "
             "       e.detalhe, e.mensagem, "
             "       s.project, s.job_name, s.descricao, "
             "       CONVERT(VARCHAR(8), s.janela_inicio, 108), "
@@ -403,7 +403,7 @@ def _notificar_pendentes(cur, log, limite: int = 50, janela_dias: int = 2) -> in
             "JOIN dbo.etl_ds_supervisao_job s ON s.id = e.supervisao_id "
             "JOIN dbo.etl_msg_grupo g ON g.id = s.grupo_id AND g.ativo = 1 "
             "WHERE e.notificado_em IS NULL "
-            "  AND e.detectado_em >= DATEADD(day, -?, GETDATE()) "
+            "  AND e.detectado_em >= DATEADD(day, -%s, GETDATE()) "
             "  AND g.webhook_url IS NOT NULL AND LTRIM(RTRIM(g.webhook_url)) <> '' "
             "ORDER BY e.detectado_em",
             (limite, janela_dias))
@@ -434,7 +434,7 @@ def _notificar_pendentes(cur, log, limite: int = 50, janela_dias: int = 2) -> in
         try:
             cur.execute(
                 "UPDATE dbo.etl_ds_supervisao_evento "
-                "SET notificado_em = GETDATE() WHERE id = ?", (evento["id"],))
+                "SET notificado_em = GETDATE() WHERE id = %s", (evento["id"],))
             enviados += 1
             log.info("[DS Superv] %s de %s.%s enviado ao canal '%s' (%s)",
                      evento["tipo"], evento["project"], evento["job_name"], canal, motivo)
@@ -454,7 +454,7 @@ def _expurgar(cur, dias: int, log) -> None:
     corte = (datetime.now() - timedelta(days=dias)).date()
     for tabela in ("etl_ds_supervisao_run", "etl_ds_supervisao_evento"):
         try:
-            cur.execute(f"DELETE FROM dbo.{tabela} WHERE data_ref < ?", (corte,))
+            cur.execute(f"DELETE FROM dbo.{tabela} WHERE data_ref < %s", (corte,))
             if cur.rowcount:
                 log.info("[DS Superv] expurgo: %d linha(s) de %s antes de %s",
                          cur.rowcount, tabela, corte)

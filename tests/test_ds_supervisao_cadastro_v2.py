@@ -125,6 +125,31 @@ def test_mensagem_nova_cai_no_insert_depois_do_update_vazio():
     assert "INSERT INTO dbo.etl_ds_supervisao_mensagem" in cur.sqls[1][0]
 
 
+def test_api_usa_placeholder_do_pyodbc_e_nao_o_do_pymssql():
+    """O dialeto da API é o OPOSTO do da DAG — e isso é correto.
+
+    A API fala com o banco por **pyodbc** (`?`); a DAG, pelo MsSqlHook do
+    Airflow, que usa **pymssql** (`%s`). Trocar aqui por simetria com a DAG
+    quebraria a API. Este teste existe para que a correção de um lado não
+    "conserte" o outro por engano.
+    """
+    import inspect
+    import re
+
+    from routers import ds_supervisao
+
+    fonte = inspect.getsource(ds_supervisao)
+    # Placeholder do pymssql em contexto de SQL não deve aparecer aqui.
+    suspeitas = [
+        linha.strip() for linha in fonte.split("\n")
+        if '"' in linha
+        and re.search(r"\b(WHERE|VALUES|SET|AND)\b", linha)
+        and re.search(r"=\s*%s|VALUES\s*\(%s|,\s*%s", linha)
+    ]
+    assert not suspeitas, (
+        "Router usando '%s' (pymssql). A API é pyodbc → use '?':\n" + "\n".join(suspeitas))
+
+
 def test_template_id_saiu_do_contrato():
     # A mensagem por tipo substituiu o template único do catálogo (migration 063).
     import inspect

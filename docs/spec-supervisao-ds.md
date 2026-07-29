@@ -519,6 +519,35 @@ Ampliar é acrescentar o código em `CODIGOS_DE_FALHA` — o dado já está no b
 
 `{total_filhos}`, `{filhos_falharam}`, `{filhos_ausentes}`, `{filhos_ok}`.
 
+## 7.3 Lição do primeiro deploy: dois dialetos de placeholder
+
+O primeiro ciclo em produção gravou **zero** linhas, com dezenas de
+`Incorrect syntax near '?'` (DB-Lib 20018) no log — e a task terminou **verde**.
+
+**Causa:** as queries da DAG foram escritas com `?`, o placeholder do **pyodbc**.
+O `MsSqlHook` do Airflow usa **pymssql**, cujo paramstyle é `%s`. A API FastAPI
+usa pyodbc e está correta com `?` — os dois lados do projeto falam dialetos
+diferentes, e isso é normal.
+
+**Por que passou pelos testes:** os cursores falsos aceitavam qualquer string
+como SQL. Testar gravação com um dublê que não fala o dialeto do servidor não
+testa gravação — testa que o código chama `execute`.
+
+**Por que passou pelo deploy:** todo acesso a banco da coleta é envolto em
+`try/except` para um job problemático não derrubar o ciclo. Essa mesma proteção
+transformou um erro estrutural em WARNING silencioso: DAG verde, log cheio de
+avisos, banco vazio.
+
+**Defesas adicionadas:**
+
+1. O `CursorFalso` dos testes **rejeita** `?`, como o servidor faz.
+2. Um teste varre o fonte da DAG procurando `?` em literal SQL — pega também as
+   queries que nenhum teste exercita.
+3. Um teste espelho garante que a **API** continue com `?`: a correção de um
+   lado não pode "consertar" o outro por engano.
+
+**Regra para quem mexer aqui:** `dags/` → `%s`. `api/` → `?`.
+
 ## 8. Decisões fechadas (2026-07-29)
 
 1. **Canal de homologação**: já existe um grupo em `etl_msg_grupo` dedicado a
