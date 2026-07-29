@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
 import { PageSpinner } from '../components/ui/Spinner'
+import { SupervisaoCard } from '../components/dashboard/SupervisaoCard'
 import { Select } from '../components/ui/Input'
 import { Button } from '../components/ui/Button'
 import {
@@ -817,6 +818,12 @@ export default function Dashboard() {
           )}
         </>
       )}
+
+      {/* ── Supervisão DataStage ──
+          Fora do bloco acima de propósito: o painel de supervisão não depende
+          do carregamento dos KPIs. Dia sem execução nenhuma no Orquestra ainda
+          precisa mostrar que um job DataStage supervisionado não rodou. */}
+      <SupervisaoCard date={date} />
 
       {/* Modais de detalhe de execução (reuso da tela de Logs) */}
       {detail && (
