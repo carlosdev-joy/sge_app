@@ -8,6 +8,7 @@ import { toast } from '../components/ui/Toast'
 import { Tabs } from '../components/ui/Tabs'
 import { DsRunGraphModal, type DsGraphStatus, type DsGraphNode, type DsRunGraph } from '../components/console/DsRunGraphModal'
 import { DsSeqFlowGraph, type SeqFlowNode, type SeqFlowEdge } from '../components/console/DsSeqFlowGraph'
+import { SupervisaoTab } from '../components/console/SupervisaoTab'
 import { dsTimeInfo, dsParseTime } from '../lib/dsTime'
 import { Terminal, Copy, Network, Crosshair, AlertTriangle, ChevronDown, ChevronUp, Layers, SlidersHorizontal, FileText, ListTree, GitBranch, RefreshCw } from 'lucide-react'
 
@@ -1014,6 +1015,8 @@ export default function DsConsole() {
     { id: 'report', label: 'Relatório' },
     { id: 'seqflow', label: 'Fluxo (XML)' },
     { id: 'logdetail', label: 'Detalhe do log' },
+    // Cadastro, não visão do lote: independe do projeto/job executados.
+    { id: 'supervisao', label: 'Supervisão' },
   ]
 
   // Já executou o lote? (qualquer comando do lote respondeu).
@@ -1248,6 +1251,9 @@ export default function DsConsole() {
             )}
           </>
         )}
+
+        {/* 8. Supervisão — cadastro dos jobs acompanhados automaticamente */}
+        {activeTab === 'supervisao' && <SupervisaoTab project={project} job={job} />}
       </div>
 
       {showGraph && graphData && (
