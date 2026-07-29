@@ -1,6 +1,7 @@
 # Spec: Supervisão de Jobs DataStage — Orquestra
 
-Data: 2026-07-29 · Status: rascunho (aguardando aprovação)
+Data: 2026-07-29 · Status: **F1–F4 implementadas e mergeadas na main**
+(PRs #208–#212), aguardando deploy. Migrations 062 e 063 pendentes de aplicar.
 
 ## 1. Visão
 
@@ -355,6 +356,20 @@ O **cadastro nunca é expurgado**.
 - **Validação:** `pytest` + teste manual com webhook de canal de homologação.
 - Revisão adversarial + `/security-review` (segredo em log).
   PR: `feat: alerta de supervisão DataStage no Teams`.
+
+**Decisões tomadas na implementação da F4:**
+
+- O envio roda **depois** de toda a detecção do ciclo, para o lote sair de uma
+  vez e na ordem em que os problemas apareceram.
+- **Janela de reenvio de 2 dias** (`DS_SUPERVISAO_JANELA_NOTIFICACAO_DIAS`): sem
+  ela, consertar um webhook quebrado despejaria semanas de alertas velhos no
+  canal de uma só vez.
+- **Lote de 50 por ciclo** (`DS_SUPERVISAO_LOTE_NOTIFICACAO`), com o corte
+  registrado no log — truncar em silêncio passaria a impressão de que tudo saiu.
+- Card enviado mas `notificado_em` não gravado: o ciclo seguinte reenvia.
+  Duplicar um card é ruim, perder o alerta é pior — e o log guarda o rastro.
+- `SITUACAO_INICIAL` sai em verde (`Good`), visualmente distinto dos alertas: se
+  saísse vermelho, a operação aprenderia a ignorar a cor.
 
 ## 6. Riscos e mitigações
 
