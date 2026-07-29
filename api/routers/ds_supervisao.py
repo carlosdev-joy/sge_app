@@ -24,10 +24,10 @@ import logging
 import re
 from datetime import date, datetime
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
 
 from db import get_db_conn
-from deps import require_ds_console
+from deps import get_current_user, require_ds_console
 
 log = logging.getLogger("orquestra-api")
 
@@ -322,6 +322,151 @@ def editar(sid: int = Path(...), body: dict = Body(default={}),
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cur.close(); conn.close()
+
+
+# ── Painel do dashboard ─────────────────────────────────────────────────────
+
+# Estado do dia, do pior para o melhor. A ordem É a regra de precedência: um job
+# que abortou e depois não foi verificado aparece como "sem verificação", porque
+# é isso que precisa de ação primeiro.
+_PRECEDENCIA = [
+    "sem_verificacao",   # ESTRUTURA — nem deu para ler o job
+    "abortado",          # ABORTOU
+    "nao_executou",      # NAO_EXECUTOU — o dia fechou sem run
+    "atrasado",          # ATRASO — passou a janela, dia ainda aberto
+    "executando",
+    "ok",
+    "sem_registro",      # nada coletado (DAG parada? dia futuro?)
+]
+
+_EVENTO_PARA_ESTADO = {
+    "ESTRUTURA":    "sem_verificacao",
+    "ABORTOU":      "abortado",
+    "NAO_EXECUTOU": "nao_executou",
+    "ATRASO":       "atrasado",
+}
+
+_RUN_PARA_ESTADO = {
+    "aborted": "abortado",
+    "running": "executando",
+    "ok":      "ok",
+}
+
+ESTADOS_COM_ALERTA = {"sem_verificacao", "abortado", "nao_executou", "atrasado"}
+
+
+def _pior(estados: list[str]) -> str:
+    for estado in _PRECEDENCIA:
+        if estado in estados:
+            return estado
+    return "sem_registro"
+
+
+@router.get("/dashboard/supervisao", tags=["ds-supervisao"])
+def painel(date_ref: str | None = Query(None), _user: dict = Depends(get_current_user)):
+    """Situação dos jobs supervisionados em uma data — leitura para o dashboard.
+
+    Lê SÓ do banco: nenhuma chamada SSH acontece aqui. O estado de cada job é
+    DERIVADO dos eventos que a DAG já gravou, nunca reclassificado — ter a regra
+    escrita em dois lugares (DAG e API) é garantia de divergência.
+
+    Jobs inativos aparecem quando têm histórico na data: quem tira um job da
+    supervisão hoje ainda precisa enxergar os dias em que ele era supervisionado.
+    """
+    dr = (date_ref or "").strip() or date.today().isoformat()
+    try:
+        dia = datetime.strptime(dr[:10], "%Y-%m-%d").date()
+    except ValueError:
+        # Mesmo contrato de erro de /dashboard (routers/dashboard.py).
+        raise HTTPException(status_code=400, detail=f"date_ref inválido: '{dr}' — use AAAA-MM-DD")
+
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+    except Exception as e:
+        log.warning("[DS SUPERV] painel sem banco: %s", e)
+        return {"date_ref": dia.isoformat(), "data": [], "resumo": {"total": 0, "com_alerta": 0}}
+
+    try:
+        cur.execute(
+            "SELECT s.id, s.project, s.job_name, "
+            "       CONVERT(VARCHAR(8), s.janela_inicio, 108), "
+            "       CONVERT(VARCHAR(8), s.janela_fim, 108), "
+            "       s.dias_semana, s.ativo, CONVERT(VARCHAR(10), s.vigencia_inicio, 23) "
+            "FROM dbo.etl_ds_supervisao_job s "
+            "WHERE s.ativo = 1 "
+            "   OR EXISTS (SELECT 1 FROM dbo.etl_ds_supervisao_run r "
+            "              WHERE r.supervisao_id = s.id AND r.data_ref = ?) "
+            "   OR EXISTS (SELECT 1 FROM dbo.etl_ds_supervisao_evento e "
+            "              WHERE e.supervisao_id = s.id AND e.data_ref = ?) "
+            "ORDER BY s.project, s.job_name", (dia, dia))
+        jobs = cur.fetchall()
+
+        cur.execute(
+            "SELECT supervisao_id, CONVERT(VARCHAR(19), run_inicio, 120), "
+            "       CONVERT(VARCHAR(19), run_fim, 120), duracao_seg, resultado, jobs_filhos "
+            "FROM dbo.etl_ds_supervisao_run WHERE data_ref = ? ORDER BY run_inicio", (dia,))
+        runs_por_job: dict[int, list[dict]] = {}
+        for r in cur.fetchall():
+            runs_por_job.setdefault(int(r[0]), []).append({
+                "inicio": r[1], "fim": r[2], "duracao_seg": r[3],
+                "resultado": r[4], "jobs_filhos": r[5],
+            })
+
+        cur.execute(
+            "SELECT supervisao_id, tipo, detalhe, "
+            "       CONVERT(VARCHAR(19), detectado_em, 120), "
+            "       CONVERT(VARCHAR(19), notificado_em, 120) "
+            "FROM dbo.etl_ds_supervisao_evento WHERE data_ref = ? "
+            "ORDER BY detectado_em", (dia,))
+        eventos_por_job: dict[int, list[dict]] = {}
+        for r in cur.fetchall():
+            eventos_por_job.setdefault(int(r[0]), []).append({
+                "tipo": r[1], "detalhe": r[2],
+                "detectado_em": r[3], "notificado_em": r[4],
+            })
+    except Exception as e:
+        # Migration 062 pendente ou banco fora: painel vazio em vez de erro na
+        # tela inteira do dashboard.
+        log.warning("[DS SUPERV] painel indisponível (migration 062 aplicada?): %s", e)
+        return {"date_ref": dia.isoformat(), "data": [], "resumo": {"total": 0, "com_alerta": 0}}
+    finally:
+        try:
+            cur.close(); conn.close()
+        except Exception:
+            pass
+
+    dados = []
+    for j in jobs:
+        sid = int(j[0])
+        runs = runs_por_job.get(sid, [])
+        eventos = eventos_por_job.get(sid, [])
+
+        estados = [_EVENTO_PARA_ESTADO[e["tipo"]] for e in eventos
+                   if e["tipo"] in _EVENTO_PARA_ESTADO]
+        estados += [_RUN_PARA_ESTADO[r["resultado"]] for r in runs
+                    if r["resultado"] in _RUN_PARA_ESTADO]
+        estado = _pior(estados)
+
+        try:
+            dias = {int(d) for d in (j[5] or "").split(",") if d.strip().isdigit()}
+        except ValueError:
+            dias = set()
+
+        dados.append({
+            "id": sid, "project": j[1], "job_name": j[2],
+            "janela_inicio": j[3], "janela_fim": j[4],
+            "dias_semana": j[5], "ativo": bool(j[6]), "vigencia_inicio": j[7],
+            # previsto=False → o job não roda nesse dia da semana; a tela mostra
+            # "não previsto" em vez de sugerir que faltou executar.
+            "previsto": dia.isoweekday() in dias,
+            "estado": estado,
+            "runs": runs,
+            "eventos": eventos,
+        })
+
+    com_alerta = sum(1 for d in dados if d["estado"] in ESTADOS_COM_ALERTA)
+    return {"date_ref": dia.isoformat(), "data": dados,
+            "resumo": {"total": len(dados), "com_alerta": com_alerta}}
 
 
 @router.delete("/admin/ds/supervisao/{sid}", tags=["ds-supervisao"])
