@@ -16,7 +16,9 @@ Regras que valem a pena conhecer antes de mexer:
   • Recadastrar um job inativo REATIVA o registro existente (mesmo
     supervisao_id, logo o histórico anterior continua ligado a ele) com a
     vigência nova — em vez de estourar a chave única (project, job_name).
-  • O webhook do canal nunca trafega aqui: guarda-se só grupo_id/template_id.
+  • O webhook do canal nunca trafega aqui: guarda-se só o grupo_id.
+  • Cada tipo de alerta tem mensagem própria (migration 063): um job liga até
+    quatro alertas e uma frase única não explica os quatro casos.
 """
 from __future__ import annotations
 
@@ -38,6 +40,34 @@ _SAFE_RE = re.compile(r"^[A-Za-z0-9_.]+$")
 _HORA_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)(:([0-5]\d))?$")
 
 _CAMPOS_ALERTA = ("alerta_abortou", "alerta_nao_executou", "alerta_atraso", "alerta_estrutura")
+
+# Tipos que aceitam mensagem própria — espelham o CHECK da migration 063.
+TIPOS_MENSAGEM = ("ABORTOU", "NAO_EXECUTOU", "ATRASO", "ESTRUTURA", "SITUACAO_INICIAL")
+
+# Variáveis que o usuário pode usar no texto do alerta.
+#
+# ESPELHO de dags/utils/ds_mensagens.py:VARIAVEIS — a API não importa de dags/
+# (containers separados), então o catálogo vive nos dois lugares e a paridade é
+# travada por teste (tests/test_ds_mensagens.py). Mexeu aqui, mexa lá.
+VARIAVEIS_MENSAGEM: list[tuple[str, str, str]] = [
+    ("projeto",       "Projeto do DataStage",                      "BI_CVP"),
+    ("job",           "Nome do job / sequence",                    "SeqSsdVida7Peps"),
+    ("descricao",     "Descrição cadastrada do job",               "Carga diária de vida"),
+    ("tipo",          "Tipo do alerta",                            "ATRASO"),
+    ("data",          "Dia a que o alerta se refere",              "2026-07-29"),
+    ("janela_inicio", "Início da janela esperada",                 "02:00"),
+    ("janela_fim",    "Fim da janela esperada",                    "03:00"),
+    ("tolerancia",    "Tolerância configurada, em minutos",        "15"),
+    ("limite",        "Horário limite (fim da janela + tolerância)", "03:15"),
+    ("dias",          "Dias da semana supervisionados",            "seg, ter, qua, qui, sex"),
+    ("inicio",        "Início da execução observada",              "02:10"),
+    ("fim",           "Término da execução observada",             "02:50"),
+    ("duracao",       "Duração da execução observada",             "40 min"),
+    ("situacao",      "Frase automática com a situação do dia",    "não iniciou até 03:15"),
+]
+
+_NOMES_VARIAVEIS = {v[0] for v in VARIAVEIS_MENSAGEM}
+_PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 
 
 # ── Validação de entrada ────────────────────────────────────────────────────
@@ -101,7 +131,7 @@ def _data(valor, campo: str) -> str:
 
 
 def _ref_opcional(cur, valor, tabela: str, campo: str):
-    """Valida grupo_id/template_id: existe e está ativo. Vazio → None.
+    """Valida grupo_id: existe e está ativo. Vazio → None.
 
     Degrada para None se a tabela do catálogo de mensagens não existir — o
     cadastro do job não pode ficar refém dela (mesmo espírito do try/except de
@@ -131,6 +161,75 @@ def _bit(body: dict, campo: str, default: int = 1) -> int:
     return 1 if body.get(campo) else 0
 
 
+def _descricao_obrigatoria(valor) -> str:
+    """Descrição é obrigatória desde a 063 — é o rótulo que dá contexto ao alerta."""
+    texto = (valor or "").strip()
+    if not texto:
+        raise HTTPException(
+            status_code=422,
+            detail="Informe a descrição do job — ela identifica o alerta no painel e no Teams.")
+    return texto[:400]
+
+
+def _validar_mensagens(bruto) -> dict[str, str]:
+    """Valida {tipo: texto} do body. Texto vazio = volta ao padrão do sistema.
+
+    Variável desconhecida é recusada: salvar '{tolerancia_min}' achando que
+    funciona só se descobre quando o card chega ao canal com o texto cru."""
+    if bruto is None:
+        return {}
+    if not isinstance(bruto, dict):
+        raise HTTPException(status_code=422, detail="mensagens deve ser um objeto {tipo: texto}")
+
+    limpo: dict[str, str] = {}
+    for tipo, texto in bruto.items():
+        if tipo not in TIPOS_MENSAGEM:
+            raise HTTPException(status_code=422, detail=f"Tipo de mensagem desconhecido: {tipo}")
+        conteudo = (texto or "").strip()
+        if not conteudo:
+            limpo[tipo] = ""          # marca para remover e voltar ao padrão
+            continue
+        desconhecidas = sorted({m for m in _PLACEHOLDER_RE.findall(conteudo)
+                                if m not in _NOMES_VARIAVEIS})
+        if desconhecidas:
+            raise HTTPException(
+                status_code=422,
+                detail=(f"Variável inexistente na mensagem de {tipo}: "
+                        f"{', '.join('{' + d + '}' for d in desconhecidas)}"))
+        limpo[tipo] = conteudo[:2000]
+    return limpo
+
+
+def _salvar_mensagens(cur, sid: int, mensagens: dict[str, str]) -> None:
+    """Upsert das mensagens; texto vazio remove a linha (volta ao padrão)."""
+    for tipo, texto in mensagens.items():
+        if not texto:
+            cur.execute(
+                "DELETE FROM dbo.etl_ds_supervisao_mensagem "
+                "WHERE supervisao_id = ? AND tipo = ?", (sid, tipo))
+            continue
+        cur.execute(
+            "UPDATE dbo.etl_ds_supervisao_mensagem SET mensagem = ?, updated_at = GETDATE() "
+            "WHERE supervisao_id = ? AND tipo = ?", (texto, sid, tipo))
+        if cur.rowcount == 0:
+            cur.execute(
+                "INSERT INTO dbo.etl_ds_supervisao_mensagem (supervisao_id, tipo, mensagem) "
+                "VALUES (?, ?, ?)", (sid, tipo, texto))
+
+
+def _ler_mensagens(cur) -> dict[int, dict[str, str]]:
+    """Mensagens de todos os jobs. Degrada para vazio sem a migration 063."""
+    try:
+        cur.execute("SELECT supervisao_id, tipo, mensagem FROM dbo.etl_ds_supervisao_mensagem")
+        por_job: dict[int, dict[str, str]] = {}
+        for r in cur.fetchall():
+            por_job.setdefault(int(r[0]), {})[r[1]] = r[2]
+        return por_job
+    except Exception as e:
+        log.warning("[DS SUPERV] mensagens indisponíveis (migration 063 aplicada?): %s", e)
+        return {}
+
+
 # ── Leitura ─────────────────────────────────────────────────────────────────
 
 _SELECT_LISTA = """
@@ -139,15 +238,14 @@ _SELECT_LISTA = """
            CONVERT(VARCHAR(8), s.janela_fim, 108),
            s.tolerancia_min, s.dias_semana,
            CONVERT(VARCHAR(10), s.vigencia_inicio, 23),
-           s.max_linhas, s.grupo_id, s.template_id,
+           s.max_linhas, s.grupo_id,
            s.alerta_abortou, s.alerta_nao_executou, s.alerta_atraso, s.alerta_estrutura,
            s.ativo, s.created_by,
            CONVERT(VARCHAR(19), s.created_at, 120),
            CONVERT(VARCHAR(19), s.updated_at, 120),
-           g.nome, t.nome
+           g.nome
     FROM dbo.etl_ds_supervisao_job s
-    LEFT JOIN dbo.etl_msg_grupo    g ON g.id = s.grupo_id
-    LEFT JOIN dbo.etl_msg_template t ON t.id = s.template_id
+    LEFT JOIN dbo.etl_msg_grupo g ON g.id = s.grupo_id
 """
 
 
@@ -157,12 +255,26 @@ def _row_to_dict(r) -> dict:
         "janela_inicio": r[4], "janela_fim": r[5],
         "tolerancia_min": r[6], "dias_semana": r[7],
         "vigencia_inicio": r[8], "max_linhas": r[9],
-        "grupo_id": r[10], "template_id": r[11],
-        "alerta_abortou": bool(r[12]), "alerta_nao_executou": bool(r[13]),
-        "alerta_atraso": bool(r[14]), "alerta_estrutura": bool(r[15]),
-        "ativo": bool(r[16]), "created_by": r[17],
-        "created_at": r[18], "updated_at": r[19],
-        "grupo_nome": r[20], "template_nome": r[21],
+        "grupo_id": r[10],
+        "alerta_abortou": bool(r[11]), "alerta_nao_executou": bool(r[12]),
+        "alerta_atraso": bool(r[13]), "alerta_estrutura": bool(r[14]),
+        "ativo": bool(r[15]), "created_by": r[16],
+        "created_at": r[17], "updated_at": r[18],
+        "grupo_nome": r[19],
+        "mensagens": {},          # preenchido em listar()
+    }
+
+
+@router.get("/admin/ds/supervisao/variaveis", tags=["ds-supervisao"])
+def variaveis(_auth: dict = Depends(require_ds_console)):
+    """Variáveis disponíveis nas mensagens de alerta, para a tela de cadastro.
+
+    Fonte única do que a tela oferece; a interpolação em si acontece na coleta
+    (dags/utils/ds_mensagens.py), cujo catálogo é espelho deste."""
+    return {
+        "tipos": list(TIPOS_MENSAGEM),
+        "variaveis": [{"nome": n, "descricao": d, "exemplo": e}
+                      for n, d, e in VARIAVEIS_MENSAGEM],
     }
 
 
@@ -176,6 +288,9 @@ def listar(_auth: dict = Depends(require_ds_console)):
         conn = get_db_conn(); cur = conn.cursor()
         cur.execute(_SELECT_LISTA + " ORDER BY s.ativo DESC, s.project, s.job_name")
         data = [_row_to_dict(r) for r in cur.fetchall()]
+        mensagens = _ler_mensagens(cur)
+        for item in data:
+            item["mensagens"] = mensagens.get(item["id"], {})
         cur.close(); conn.close()
         return {"data": data}
     except Exception as e:
@@ -200,12 +315,12 @@ def criar(body: dict = Body(default={}), user: dict = Depends(require_ds_console
     vig     = _data(body.get("vigencia_inicio"), "Início da vigência")
     tol     = _inteiro(body.get("tolerancia_min"), "Tolerância", 0, 1440, 0)
     maxl    = _inteiro(body.get("max_linhas"), "Limite de linhas do log", 1, 2000, 200)
-    desc    = (body.get("descricao") or "").strip()[:400] or None
+    desc    = _descricao_obrigatoria(body.get("descricao"))
+    msgs    = _validar_mensagens(body.get("mensagens"))
 
     conn = get_db_conn(); cur = conn.cursor()
     try:
-        grupo    = _ref_opcional(cur, body.get("grupo_id"), "etl_msg_grupo", "Canal do Teams")
-        template = _ref_opcional(cur, body.get("template_id"), "etl_msg_template", "Template")
+        grupo = _ref_opcional(cur, body.get("grupo_id"), "etl_msg_grupo", "Canal do Teams")
 
         cur.execute(
             "SELECT id, ativo FROM dbo.etl_ds_supervisao_job WHERE project = ? AND job_name = ?",
@@ -217,7 +332,7 @@ def criar(body: dict = Body(default={}), user: dict = Depends(require_ds_console
                 status_code=409,
                 detail=f"{project}.{job} já está supervisionado.")
 
-        campos = (ini, fim, tol, dias, vig, maxl, grupo, template,
+        campos = (ini, fim, tol, dias, vig, maxl, grupo,
                   _bit(body, "alerta_abortou"), _bit(body, "alerta_nao_executou"),
                   _bit(body, "alerta_atraso"), _bit(body, "alerta_estrutura"), desc)
 
@@ -226,10 +341,11 @@ def criar(body: dict = Body(default={}), user: dict = Depends(require_ds_console
             cur.execute(
                 "UPDATE dbo.etl_ds_supervisao_job SET "
                 "  janela_inicio = ?, janela_fim = ?, tolerancia_min = ?, dias_semana = ?, "
-                "  vigencia_inicio = ?, max_linhas = ?, grupo_id = ?, template_id = ?, "
+                "  vigencia_inicio = ?, max_linhas = ?, grupo_id = ?, "
                 "  alerta_abortou = ?, alerta_nao_executou = ?, alerta_atraso = ?, "
                 "  alerta_estrutura = ?, descricao = ?, ativo = 1, updated_at = GETDATE() "
                 "WHERE id = ?", campos + (existente[0],))
+            _salvar_mensagens(cur, int(existente[0]), msgs)
             conn.commit()
             log.info("DS superv: %s reativou %s.%s (id=%s)", user.get("matricula"), project, job, existente[0])
             return {"ok": True, "id": int(existente[0]), "reativado": True}
@@ -237,11 +353,12 @@ def criar(body: dict = Body(default={}), user: dict = Depends(require_ds_console
         cur.execute(
             "INSERT INTO dbo.etl_ds_supervisao_job "
             "(project, job_name, janela_inicio, janela_fim, tolerancia_min, dias_semana, "
-            " vigencia_inicio, max_linhas, grupo_id, template_id, alerta_abortou, "
+            " vigencia_inicio, max_linhas, grupo_id, alerta_abortou, "
             " alerta_nao_executou, alerta_atraso, alerta_estrutura, descricao, created_by) "
-            "OUTPUT INSERTED.id VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "OUTPUT INSERTED.id VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (project, job) + campos + (user.get("matricula"),))
         nid = int(cur.fetchone()[0])
+        _salvar_mensagens(cur, nid, msgs)
         conn.commit()
         log.info("DS superv: %s cadastrou %s.%s (id=%s)", user.get("matricula"), project, job, nid)
         return {"ok": True, "id": nid, "reativado": False}
@@ -289,25 +406,29 @@ def editar(sid: int = Path(...), body: dict = Body(default={}),
         if "max_linhas" in body:
             setc("max_linhas", _inteiro(body.get("max_linhas"), "Limite de linhas do log", 1, 2000, 200))
         if "descricao" in body:
-            setc("descricao", (body.get("descricao") or "").strip()[:400] or None)
+            setc("descricao", _descricao_obrigatoria(body.get("descricao")))
         if "grupo_id" in body:
             setc("grupo_id", _ref_opcional(cur, body.get("grupo_id"), "etl_msg_grupo", "Canal do Teams"))
-        if "template_id" in body:
-            setc("template_id", _ref_opcional(cur, body.get("template_id"), "etl_msg_template", "Template"))
         for campo in _CAMPOS_ALERTA:
             if campo in body:
                 setc(campo, _bit(body, campo))
         if "ativo" in body:
             setc("ativo", _bit(body, "ativo"))
 
-        if not campos:
+        msgs = _validar_mensagens(body.get("mensagens")) if "mensagens" in body else {}
+
+        if not campos and not msgs:
             return {"ok": True}
 
-        campos.append("updated_at = GETDATE()")
-        cur.execute(
-            f"UPDATE dbo.etl_ds_supervisao_job SET {', '.join(campos)} WHERE id = ?",
-            params + [sid])
-        n = cur.rowcount
+        n = 1
+        if campos:
+            campos.append("updated_at = GETDATE()")
+            cur.execute(
+                f"UPDATE dbo.etl_ds_supervisao_job SET {', '.join(campos)} WHERE id = ?",
+                params + [sid])
+            n = cur.rowcount
+        if msgs:
+            _salvar_mensagens(cur, sid, msgs)
         conn.commit()
         if not n:
             raise HTTPException(status_code=404, detail="Job supervisionado não encontrado.")

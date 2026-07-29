@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
 import { Button } from '../ui/Button'
-import { Input, Select } from '../ui/Input'
+import { Input, Select, Textarea } from '../ui/Input'
 import { Badge } from '../ui/Badge'
 import { Modal } from '../ui/Modal'
 import { Switch } from '../ui/Switch'
@@ -12,14 +12,17 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '.
 import { Plus, Pencil, Trash2, ShieldCheck } from 'lucide-react'
 
 // ── Cadastro dos jobs supervisionados (aba do Console DataStage) ────────────
-// A coleta (DAG), o painel do dashboard e o card do Teams são as fases
-// seguintes da spec docs/spec-supervisao-ds.md — aqui é só o cadastro.
+// A coleta (DAG), o painel do dashboard e o card do Teams são as outras fases
+// da spec docs/spec-supervisao-ds.md — aqui é só o cadastro.
+//
+// A ajuda dos campos usa a prop `ajuda` (texto visível abaixo do campo), NÃO o
+// `hint`: o hint é um popover absolute que o `overflow-y-auto` do Modal corta.
 
 export interface SupervisaoJob {
   id: number
   project: string
   job_name: string
-  descricao: string | null
+  descricao: string
   janela_inicio: string      // HH:MM:SS
   janela_fim: string         // HH:MM:SS
   tolerancia_min: number
@@ -27,7 +30,6 @@ export interface SupervisaoJob {
   vigencia_inicio: string    // AAAA-MM-DD
   max_linhas: number
   grupo_id: number | null
-  template_id: number | null
   alerta_abortou: boolean
   alerta_nao_executou: boolean
   alerta_atraso: boolean
@@ -37,11 +39,11 @@ export interface SupervisaoJob {
   created_at: string
   updated_at: string
   grupo_nome: string | null
-  template_nome: string | null
+  mensagens: Record<string, string>
 }
 
 interface MsgGrupo { id: number; nome: string; ativo: boolean; has_webhook: boolean }
-interface MsgTemplate { id: number; nome: string; ativo: boolean }
+interface Variavel { nome: string; descricao: string; exemplo: string }
 
 const DIAS = [
   { v: '1', label: 'Seg' }, { v: '2', label: 'Ter' }, { v: '3', label: 'Qua' },
@@ -49,12 +51,32 @@ const DIAS = [
   { v: '7', label: 'Dom' },
 ]
 
+// Cada tipo de alerta tem seu próprio card de mensagem: um job liga até quatro
+// alertas diferentes e uma frase única não explica os quatro casos.
 const ALERTAS = [
-  { campo: 'alerta_abortou',      label: 'Job abortou',          hint: 'Run encontrado na janela, mas terminou abortado.' },
-  { campo: 'alerta_nao_executou', label: 'Não executou',         hint: 'Nenhum run no dia previsto.' },
-  { campo: 'alerta_atraso',       label: 'Iniciou com atraso',   hint: 'Passou o fim da janela + tolerância sem iniciar.' },
-  { campo: 'alerta_estrutura',    label: 'Falha de estrutura',   hint: 'O dsjob não conseguiu ler o job (projeto/job inexistente, SSH fora).' },
+  {
+    tipo: 'ABORTOU', campo: 'alerta_abortou', label: 'Job abortou',
+    ajuda: 'Existe execução na janela, mas ela terminou abortada.',
+    exemplo: '🚨 {job} ({projeto}) abortou em {data}. Início {inicio}, parada {fim}.',
+  },
+  {
+    tipo: 'NAO_EXECUTOU', campo: 'alerta_nao_executou', label: 'Não executou',
+    ajuda: 'O dia fechou sem nenhuma execução do job.',
+    exemplo: '🚨 {job} não executou em {data}. Janela esperada: {janela_inicio}–{janela_fim}.',
+  },
+  {
+    tipo: 'ATRASO', campo: 'alerta_atraso', label: 'Iniciou com atraso',
+    ajuda: 'Passou o fim da janela mais a tolerância e o job ainda não tinha iniciado.',
+    exemplo: '⏰ {job} não iniciou até {limite}. Janela {janela_inicio}–{janela_fim}, tolerância de {tolerancia} min.',
+  },
+  {
+    tipo: 'ESTRUTURA', campo: 'alerta_estrutura', label: 'Falha de estrutura',
+    ajuda: 'Não foi possível nem ler o job: projeto ou job inexistente, renomeado, ou servidor fora.',
+    exemplo: '⚠️ Não foi possível verificar {job} ({projeto}) em {data}. {situacao}',
+  },
 ] as const
+
+const TIPO_INICIAL = 'SITUACAO_INICIAL'
 
 function hoje(): string {
   const d = new Date()
@@ -87,11 +109,11 @@ interface FormState {
   vigencia_inicio: string
   max_linhas: string
   grupo_id: string
-  template_id: string
   alerta_abortou: boolean
   alerta_nao_executou: boolean
   alerta_atraso: boolean
   alerta_estrutura: boolean
+  mensagens: Record<string, string>
 }
 
 function formVazio(project: string, job: string): FormState {
@@ -99,8 +121,9 @@ function formVazio(project: string, job: string): FormState {
     project, job_name: job, descricao: '',
     janela_inicio: '02:00', janela_fim: '03:00', tolerancia_min: '0',
     dias: ['1', '2', '3', '4', '5'], vigencia_inicio: hoje(), max_linhas: '200',
-    grupo_id: '', template_id: '',
+    grupo_id: '',
     alerta_abortou: true, alerta_nao_executou: true, alerta_atraso: true, alerta_estrutura: true,
+    mensagens: {},
   }
 }
 
@@ -112,18 +135,23 @@ function formDeJob(j: SupervisaoJob): FormState {
     dias: (j.dias_semana || '').split(',').map(s => s.trim()).filter(Boolean),
     vigencia_inicio: j.vigencia_inicio, max_linhas: String(j.max_linhas),
     grupo_id: j.grupo_id ? String(j.grupo_id) : '',
-    template_id: j.template_id ? String(j.template_id) : '',
     alerta_abortou: j.alerta_abortou, alerta_nao_executou: j.alerta_nao_executou,
     alerta_atraso: j.alerta_atraso, alerta_estrutura: j.alerta_estrutura,
+    mensagens: { ...(j.mensagens ?? {}) },
   }
 }
 
-export function SupervisaoTab({ project, job }: { project: string; job: string }) {
+export function SupervisaoTab({ project, job, projetos }: {
+  project: string
+  job: string
+  projetos: string[]
+}) {
   const queryClient = useQueryClient()
   const [editando, setEditando] = useState<SupervisaoJob | null>(null)
   const [criando, setCriando] = useState(false)
   const [removendo, setRemovendo] = useState<SupervisaoJob | null>(null)
   const [form, setForm] = useState<FormState>(() => formVazio('', ''))
+  const areas = useRef<Record<string, HTMLTextAreaElement | null>>({})
 
   const lista = useQuery<{ data: SupervisaoJob[] }>({
     queryKey: ['ds-supervisao'],
@@ -133,13 +161,12 @@ export function SupervisaoTab({ project, job }: { project: string; job: string }
     queryKey: ['msg-grupos'],
     queryFn: () => apiFetch('/msg/grupos'),
   })
-  const templates = useQuery<{ data: MsgTemplate[] }>({
-    queryKey: ['msg-templates'],
-    queryFn: () => apiFetch('/msg/templates'),
+  const vars = useQuery<{ tipos: string[]; variaveis: Variavel[] }>({
+    queryKey: ['ds-supervisao-variaveis'],
+    queryFn: () => apiFetch('/admin/ds/supervisao/variaveis'),
   })
 
   const invalidar = () => queryClient.invalidateQueries({ queryKey: ['ds-supervisao'] })
-
   const fecharForm = () => { setCriando(false); setEditando(null) }
 
   const salvar = useMutation({
@@ -188,8 +215,29 @@ export function SupervisaoTab({ project, job }: { project: string; job: string }
     dias: f.dias.includes(v) ? f.dias.filter(d => d !== v) : [...f.dias, v],
   }))
 
+  const setMensagem = (tipo: string, texto: string) =>
+    setForm(f => ({ ...f, mensagens: { ...f.mensagens, [tipo]: texto } }))
+
+  /** Insere {variavel} na posição do cursor da mensagem daquele tipo. */
+  const inserirVariavel = (tipo: string, nome: string) => {
+    const area = areas.current[tipo]
+    const atual = form.mensagens[tipo] ?? ''
+    const token = `{${nome}}`
+    if (!area) { setMensagem(tipo, atual + token); return }
+    const ini = area.selectionStart ?? atual.length
+    const fim = area.selectionEnd ?? atual.length
+    const novo = atual.slice(0, ini) + token + atual.slice(fim)
+    setMensagem(tipo, novo)
+    // Devolve o foco com o cursor depois do token inserido.
+    requestAnimationFrame(() => {
+      area.focus()
+      area.setSelectionRange(ini + token.length, ini + token.length)
+    })
+  }
+
   const submeter = () => {
     if (!form.dias.length) { toast.error('Selecione ao menos um dia da semana.'); return }
+    if (!form.descricao.trim()) { toast.error('Informe a descrição do job.'); return }
     const payload: Record<string, unknown> = {
       descricao: form.descricao,
       janela_inicio: form.janela_inicio,
@@ -199,11 +247,11 @@ export function SupervisaoTab({ project, job }: { project: string; job: string }
       vigencia_inicio: form.vigencia_inicio,
       max_linhas: form.max_linhas,
       grupo_id: form.grupo_id === '' ? null : form.grupo_id,
-      template_id: form.template_id === '' ? null : form.template_id,
       alerta_abortou: form.alerta_abortou,
       alerta_nao_executou: form.alerta_nao_executou,
       alerta_atraso: form.alerta_atraso,
       alerta_estrutura: form.alerta_estrutura,
+      mensagens: form.mensagens,
     }
     // project/job_name são imutáveis na edição: o histórico é ligado a eles.
     if (!editando) { payload.project = form.project; payload.job_name = form.job_name }
@@ -212,8 +260,37 @@ export function SupervisaoTab({ project, job }: { project: string; job: string }
 
   const jobs = lista.data?.data ?? []
   const gruposAtivos = (grupos.data?.data ?? []).filter(g => g.ativo)
-  const templatesAtivos = (templates.data?.data ?? []).filter(t => t.ativo)
+  const variaveis = vars.data?.variaveis ?? []
   const formAberto = criando || !!editando
+
+  // Bloco de mensagem reusado pelos cards de alerta e pelo de situação inicial.
+  const cardMensagem = (tipo: string, exemplo: string) => (
+    <>
+      <Textarea
+        ref={el => { areas.current[tipo] = el }}
+        rows={3}
+        value={form.mensagens[tipo] ?? ''}
+        onChange={e => setMensagem(tipo, e.target.value)}
+        placeholder={exemplo}
+        ajuda="Deixe em branco para usar o texto padrão do sistema."
+      />
+      {variaveis.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-1.5">
+          {variaveis.map(v => (
+            <button
+              key={v.nome}
+              type="button"
+              onClick={() => inserirVariavel(tipo, v.nome)}
+              title={`${v.descricao} — ex.: ${v.exemplo}`}
+              className="px-1.5 py-0.5 rounded border border-edge bg-canvas text-[10px] font-mono text-dim hover:text-ink hover:border-blue-500 transition-colors"
+            >
+              {'{' + v.nome + '}'}
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  )
 
   return (
     <div className="flex flex-col gap-3">
@@ -301,61 +378,77 @@ export function SupervisaoTab({ project, job }: { project: string; job: string }
       </div>
 
       {/* Formulário — criar ou editar */}
-      <Modal open={formAberto} onClose={fecharForm} size="lg"
+      <Modal open={formAberto} onClose={fecharForm} size="xl"
         title={editando ? `Supervisão de ${editando.project}.${editando.job_name}` : 'Supervisionar job'}>
-        <div className="flex flex-col gap-3">
-          {!editando && (
+        <div className="flex flex-col gap-4">
+
+          <section className="flex flex-col gap-3">
+            {!editando && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Lista fechada: digitar o projeto errado só apareceria como
+                    falha de estrutura depois do primeiro ciclo da coleta. */}
+                <Select label="Projeto" value={form.project}
+                  onChange={e => setForm(f => ({ ...f, project: e.target.value }))}
+                  ajuda="Projetos cadastrados no Orquestra.">
+                  <option value="">Selecione…</option>
+                  {projetos.map(p => <option key={p} value={p}>{p}</option>)}
+                </Select>
+                <Input label="Job (sequence)" value={form.job_name}
+                  onChange={e => setForm(f => ({ ...f, job_name: e.target.value }))}
+                  ajuda="Exatamente como no console: letras, números, '_' e '.'" />
+              </div>
+            )}
+
+            <Input label="Descrição" value={form.descricao} required
+              onChange={e => setForm(f => ({ ...f, descricao: e.target.value }))}
+              ajuda="Obrigatória. Identifica o job no painel e nos alertas — ex.: “Carga diária de vida”." />
+          </section>
+
+          <section className="flex flex-col gap-3 border-t border-edge pt-3">
+            <h3 className="text-xs font-semibold text-ink">Quando o job deve rodar</h3>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <Input label="Deve iniciar a partir de" type="time" value={form.janela_inicio}
+                onChange={e => setForm(f => ({ ...f, janela_inicio: e.target.value }))}
+                ajuda="Começo da janela esperada." />
+              <Input label="Até" type="time" value={form.janela_fim}
+                onChange={e => setForm(f => ({ ...f, janela_fim: e.target.value }))}
+                ajuda="Fim da janela. Se for menor que o início, a janela atravessa a meia-noite." />
+              <Input label="Tolerância (min)" type="number" min={0} max={1440}
+                value={form.tolerancia_min}
+                onChange={e => setForm(f => ({ ...f, tolerancia_min: e.target.value }))}
+                ajuda="Espera adicional após o fim da janela antes de acusar atraso." />
+            </div>
+
+            <div>
+              <p className="text-xs text-dim font-medium mb-1.5">Dias em que o job deve rodar</p>
+              <div className="flex flex-wrap gap-3">
+                {DIAS.map(d => (
+                  <Checkbox key={d.v} label={d.label} checked={form.dias.includes(d.v)}
+                    onChange={() => alternarDia(d.v)} />
+                ))}
+              </div>
+              <p className="text-[11px] leading-snug text-dim mt-1">
+                Fora desses dias nada é avaliado — nem atraso, nem “não executou”.
+              </p>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Input label="Projeto" value={form.project} autoFocus
-                onChange={e => setForm(f => ({ ...f, project: e.target.value }))}
-                hint="Letras, números, '_' e '.'" />
-              <Input label="Job (sequence)" value={form.job_name}
-                onChange={e => setForm(f => ({ ...f, job_name: e.target.value }))}
-                hint="Mesmo nome usado no console" />
+              <Input label="Monitorar a partir de" type="date" value={form.vigencia_inicio}
+                onChange={e => setForm(f => ({ ...f, vigencia_inicio: e.target.value }))}
+                ajuda="Nada anterior a esta data é avaliado. No primeiro ciclo você recebe a situação do dia para validar a configuração." />
+              <Input label="Linhas do log a ler" type="number" min={1} max={2000}
+                value={form.max_linhas}
+                onChange={e => setForm(f => ({ ...f, max_linhas: e.target.value }))}
+                ajuda="Parâmetro -max do logsum (1 a 2000). Job com log verboso precisa de mais linhas para cobrir o dia." />
             </div>
-          )}
+          </section>
 
-          <Input label="Descrição (opcional)" value={form.descricao}
-            onChange={e => setForm(f => ({ ...f, descricao: e.target.value }))} />
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <Input label="Deve iniciar a partir de" type="time" value={form.janela_inicio}
-              onChange={e => setForm(f => ({ ...f, janela_inicio: e.target.value }))} />
-            <Input label="Até" type="time" value={form.janela_fim}
-              onChange={e => setForm(f => ({ ...f, janela_fim: e.target.value }))} />
-            <Input label="Tolerância (min)" type="number" min={0} max={1440}
-              value={form.tolerancia_min}
-              onChange={e => setForm(f => ({ ...f, tolerancia_min: e.target.value }))}
-              hint="Espera após o fim da janela" />
-          </div>
-
-          <div>
-            <p className="text-xs font-medium text-ink mb-1.5">Dias em que o job deve rodar</p>
-            <div className="flex flex-wrap gap-3">
-              {DIAS.map(d => (
-                <Checkbox key={d.v} label={d.label} checked={form.dias.includes(d.v)}
-                  onChange={() => alternarDia(d.v)} />
-              ))}
-            </div>
-            <p className="text-[11px] text-dim mt-1">
-              Fora desses dias nada é avaliado — nem atraso, nem “não executou”.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input label="Monitorar a partir de" type="date" value={form.vigencia_inicio}
-              onChange={e => setForm(f => ({ ...f, vigencia_inicio: e.target.value }))}
-              hint="Nada antes desta data é avaliado" />
-            <Input label="Linhas do log a ler" type="number" min={1} max={2000}
-              value={form.max_linhas}
-              onChange={e => setForm(f => ({ ...f, max_linhas: e.target.value }))}
-              hint="'-max' do logsum (1 a 2000). Job verboso pede mais." />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <section className="flex flex-col gap-3 border-t border-edge pt-3">
+            <h3 className="text-xs font-semibold text-ink">Para onde avisar</h3>
             <Select label="Canal do Teams" value={form.grupo_id}
               onChange={e => setForm(f => ({ ...f, grupo_id: e.target.value }))}
-              hint="Comece pelo canal de homologação">
+              ajuda="Comece pelo canal de homologação; depois troque para o oficial. Sem canal, o alerta aparece só no painel.">
               <option value="">Sem canal (só no painel)</option>
               {gruposAtivos.map(g => (
                 <option key={g.id} value={g.id}>
@@ -363,25 +456,39 @@ export function SupervisaoTab({ project, job }: { project: string; job: string }
                 </option>
               ))}
             </Select>
-            <Select label="Template da mensagem" value={form.template_id}
-              onChange={e => setForm(f => ({ ...f, template_id: e.target.value }))}
-              hint="Vazio usa o card padrão do alerta">
-              <option value="">Card padrão</option>
-              {templatesAtivos.map(t => <option key={t.id} value={t.id}>{t.nome}</option>)}
-            </Select>
-          </div>
+          </section>
 
-          <div>
-            <p className="text-xs font-medium text-ink mb-1.5">Quando avisar</p>
-            <div className="flex flex-col gap-2">
-              {ALERTAS.map(a => (
-                <Switch key={a.campo} label={a.label} hint={a.hint} checked={form[a.campo]}
+          <section className="flex flex-col gap-3 border-t border-edge pt-3">
+            <h3 className="text-xs font-semibold text-ink">Alertas e mensagens</h3>
+            <p className="text-[11px] leading-snug text-dim -mt-1">
+              Cada situação tem sua própria mensagem. Clique numa variável para inseri-la no
+              texto — ela é trocada pelo valor real quando o alerta é enviado.
+            </p>
+
+            {ALERTAS.map(a => (
+              <div key={a.tipo} className="border border-edge rounded-lg p-3 flex flex-col gap-2">
+                <Switch label={a.label} checked={form[a.campo]}
                   onChange={e => setForm(f => ({ ...f, [a.campo]: e.target.checked }))} />
-              ))}
-            </div>
-          </div>
+                <p className="text-[11px] leading-snug text-dim">{a.ajuda}</p>
+                {form[a.campo] && cardMensagem(a.tipo, a.exemplo)}
+              </div>
+            ))}
 
-          <div className="flex justify-end gap-2 pt-1">
+            <div className="border border-edge rounded-lg p-3 flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium text-ink">Início do monitoramento</span>
+                <Badge value="info">sempre enviado</Badge>
+              </div>
+              <p className="text-[11px] leading-snug text-dim">
+                Enviado uma vez, quando a vigência começa, com a situação do dia — mesmo
+                quando está tudo certo. É o aviso que confirma se a configuração ficou correta.
+              </p>
+              {cardMensagem(TIPO_INICIAL,
+                '✅ Monitoramento iniciado para {job} ({projeto}). Janela {janela_inicio}–{janela_fim}. {situacao}')}
+            </div>
+          </section>
+
+          <div className="flex justify-end gap-2 pt-1 border-t border-edge">
             <Button variant="secondary" onClick={fecharForm}>Cancelar</Button>
             <Button onClick={submeter} loading={salvar.isPending}>
               {editando ? 'Salvar' : 'Supervisionar'}

@@ -16,25 +16,42 @@ function FieldLabel({ label, hint, htmlFor }: { label?: string; hint?: string; h
   )
 }
 
+// Ajuda SEMPRE VISÍVEL abaixo do campo (prop `ajuda`), alternativa ao `hint`.
+//
+// Por que existe: o `hint` é um popover `absolute` que abre para CIMA
+// (Hint.tsx). Dentro de um Modal — cujo corpo tem `overflow-y-auto` — ele é
+// clipado pelo contêiner de scroll e simplesmente não aparece nos campos do
+// topo. Clipping por overflow ignora z-index, então subir o z não resolve.
+// Em formulário dentro de modal, use `ajuda`; o `hint` continua válido em
+// tela cheia, onde não há contêiner de scroll cortando.
+function FieldHelp({ ajuda, id }: { ajuda?: string; id?: string }) {
+  if (!ajuda) return null
+  return <span id={id} className="text-[11px] leading-snug text-dim">{ajuda}</span>
+}
+
 interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label?: string
   error?: string
   hint?: string
+  ajuda?: string
 }
 
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(
-  function Input({ label, error, hint, className = '', id, ...rest }, ref) {
+  function Input({ label, error, hint, ajuda, className = '', id, ...rest }, ref) {
     const autoId = useId()
     const fieldId = id ?? (label ? autoId : undefined)
+    const ajudaId = ajuda && fieldId ? `${fieldId}-ajuda` : undefined
     return (
       <div className="flex flex-col gap-1">
         <FieldLabel label={label} hint={hint} htmlFor={fieldId} />
         <input
           ref={ref}
           id={fieldId}
+          aria-describedby={ajudaId}
           {...rest}
           className={`bg-panel border ${error ? 'border-red-500' : 'border-edge'} text-ink rounded-md px-3 py-1.5 text-sm placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500 ${className}`}
         />
+        <FieldHelp ajuda={ajuda} id={ajudaId} />
         {error && <span className="text-xs text-red-400">{error}</span>}
       </div>
     )
@@ -45,21 +62,25 @@ interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
   label?: string
   error?: string
   hint?: string
+  ajuda?: string
 }
 
-export function Select({ label, error, hint, className = '', id, children, ...rest }: SelectProps) {
+export function Select({ label, error, hint, ajuda, className = '', id, children, ...rest }: SelectProps) {
   const autoId = useId()
   const fieldId = id ?? (label ? autoId : undefined)
+  const ajudaId = ajuda && fieldId ? `${fieldId}-ajuda` : undefined
   return (
     <div className="flex flex-col gap-1">
       <FieldLabel label={label} hint={hint} htmlFor={fieldId} />
       <select
         id={fieldId}
+        aria-describedby={ajudaId}
         {...rest}
         className={`bg-panel border ${error ? 'border-red-500' : 'border-edge'} text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${className}`}
       >
         {children}
       </select>
+      <FieldHelp ajuda={ajuda} id={ajudaId} />
       {error && <span className="text-xs text-red-400">{error}</span>}
     </div>
   )
@@ -67,19 +88,24 @@ export function Select({ label, error, hint, className = '', id, children, ...re
 
 export const Textarea = React.forwardRef<
   HTMLTextAreaElement,
-  React.TextareaHTMLAttributes<HTMLTextAreaElement> & { label?: string; error?: string; hint?: string }
->(function Textarea({ label, error, hint, className = '', id, ...rest }, ref) {
+  React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
+    label?: string; error?: string; hint?: string; ajuda?: string
+  }
+>(function Textarea({ label, error, hint, ajuda, className = '', id, ...rest }, ref) {
   const autoId = useId()
   const fieldId = id ?? (label ? autoId : undefined)
+  const ajudaId = ajuda && fieldId ? `${fieldId}-ajuda` : undefined
   return (
     <div className="flex flex-col gap-1">
       <FieldLabel label={label} hint={hint} htmlFor={fieldId} />
       <textarea
         ref={ref}
         id={fieldId}
+        aria-describedby={ajudaId}
         {...rest}
         className={`bg-panel border ${error ? 'border-red-500' : 'border-edge'} text-ink rounded-md px-3 py-1.5 text-sm placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500 resize-y ${className}`}
       />
+      <FieldHelp ajuda={ajuda} id={ajudaId} />
       {error && <span className="text-xs text-red-400">{error}</span>}
     </div>
   )

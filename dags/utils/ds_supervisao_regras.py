@@ -47,6 +47,8 @@ class JobSupervisionado:
     dias_semana: str
     vigencia_inicio: date
     max_linhas: int = 200
+    # Obrigatória desde a migration 063: é o rótulo que dá contexto ao alerta.
+    descricao: str = ""
     alerta_abortou: bool = True
     alerta_nao_executou: bool = True
     alerta_atraso: bool = True
