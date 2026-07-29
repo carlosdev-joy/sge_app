@@ -10,13 +10,18 @@ O QUE FAZ, a cada ciclo:
   3. Segmenta a saída em runs (utils/ds_logsum) e guarda os dos últimos 7 dias
      em dbo.etl_ds_supervisao_run — início e término de cada execução, que é a
      base histórica para sugerir SLA no futuro.
-  4. Classifica o dia (utils/ds_supervisao_regras) e grava os eventos em
-     dbo.etl_ds_supervisao_evento: ABORTOU, NAO_EXECUTOU, ATRASO, ESTRUTURA e o
-     SITUACAO_INICIAL da entrada em vigência.
-  5. Uma vez por dia, na janela das 03h, expurga o que passou de 1 ano.
+  4. Grava o status de CADA job filho e aprende, das execuções que deram certo
+     de verdade, quais jobs rodam abaixo do supervisionado (utils/ds_estrutura).
+  5. Classifica o dia (utils/ds_supervisao_regras) e grava os eventos em
+     dbo.etl_ds_supervisao_evento: ABORTOU, NAO_EXECUTOU, ATRASO, ESTRUTURA,
+     SITUACAO_INICIAL, SUCESSO_FALSO e FILHO_AUSENTE.
+  6. Envia ao Teams os eventos ainda não notificados (utils/ds_teams).
+  7. Uma vez por dia, na janela das 03h, expurga o que passou de 1 ano.
 
-O QUE NÃO FAZ: enviar ao Teams. O envio é a F4 — os eventos ficam com
-`notificado_em` nulo esperando por ela. O painel do dashboard é a F3.
+SUCESSO FALSO: o DataStage dá a sequence como "Finished OK" mesmo quando um job
+filho abortou — caso real de produção que passava despercebido. Por isso o
+veredito daqui não é o do DataStage: sucesso REAL exige que nenhum filho tenha
+abortado.
 
 IDEMPOTÊNCIA: rodar o mesmo ciclo duas vezes não duplica nada. Runs fazem upsert
 pela chave (supervisao_id, run_inicio); eventos entram com INSERT ... WHERE NOT
@@ -33,6 +38,8 @@ CONFIGURAÇÃO (Variables do Airflow, todas com default):
   DS_MONITOR_MSSQL_CONN_ID        (default: SQL14_DMDB41)
   DS_MONITOR_DSHOME               (default: /opt/IBM/InformationServer/Server/DSEngine)
   DS_SUPERVISAO_RETENCAO_DIAS     (default: 365)
+  DS_SUPERVISAO_LOTE_NOTIFICACAO  (default: 50)   — cards por ciclo
+  DS_SUPERVISAO_JANELA_NOTIFICACAO_DIAS (default: 2) — idade máxima p/ reenvio
 """
 from __future__ import annotations
 
@@ -91,13 +98,27 @@ def _var_int(chave: str, default: int) -> int:
 
 # ── Leitura do cadastro ─────────────────────────────────────────────────────
 
+_COLUNAS_JOB = (
+    "id, project, job_name, janela_inicio, janela_fim, tolerancia_min, "
+    "dias_semana, vigencia_inicio, max_linhas, alerta_abortou, "
+    "alerta_nao_executou, alerta_atraso, alerta_estrutura, descricao")
+
+
 def _carregar_jobs(hook) -> list[JobSupervisionado]:
-    linhas = hook.get_records(
-        "SELECT id, project, job_name, janela_inicio, janela_fim, tolerancia_min, "
-        "       dias_semana, vigencia_inicio, max_linhas, alerta_abortou, "
-        "       alerta_nao_executou, alerta_atraso, alerta_estrutura, descricao "
-        "FROM dbo.etl_ds_supervisao_job WHERE ativo = 1 "
-        "ORDER BY project, job_name")
+    """Cadastro ativo. Cai para o SELECT sem as colunas da 064 se ela não foi
+    aplicada — subir a DAG antes da migration não pode cegar a supervisão
+    inteira, só a parte que depende das colunas novas."""
+    com_dependencia = True
+    try:
+        linhas = hook.get_records(
+            f"SELECT {_COLUNAS_JOB}, alerta_sucesso_falso, alerta_filho_ausente "
+            "FROM dbo.etl_ds_supervisao_job WHERE ativo = 1 ORDER BY project, job_name")
+    except Exception:
+        com_dependencia = False
+        linhas = hook.get_records(
+            f"SELECT {_COLUNAS_JOB} FROM dbo.etl_ds_supervisao_job WHERE ativo = 1 "
+            "ORDER BY project, job_name")
+
     jobs: list[JobSupervisionado] = []
     for r in (linhas or []):
         jobs.append(JobSupervisionado(
@@ -107,6 +128,8 @@ def _carregar_jobs(hook) -> list[JobSupervisionado]:
             alerta_abortou=bool(r[9]), alerta_nao_executou=bool(r[10]),
             alerta_atraso=bool(r[11]), alerta_estrutura=bool(r[12]),
             descricao=(r[13] if len(r) > 13 else "") or "",
+            alerta_sucesso_falso=bool(r[14]) if com_dependencia else False,
+            alerta_filho_ausente=bool(r[15]) if com_dependencia else False,
         ))
     return jobs
 
@@ -171,6 +194,114 @@ def _gravar_runs(cur, supervisao_id: int, runs, job: JobSupervisionado, log) -> 
     return gravados
 
 
+def _carregar_estruturas(hook) -> dict[int, "object"]:
+    """Estrutura aprendida (jobs filhos esperados) por job supervisionado.
+
+    Degrada para vazio sem a migration 064: a análise de dependência some, mas
+    a supervisão básica continua funcionando."""
+    from utils.ds_estrutura import Estrutura, FilhoEsperado
+
+    try:
+        totais = hook.get_records(
+            "SELECT id, execucoes_aprendidas FROM dbo.etl_ds_supervisao_job WHERE ativo = 1")
+        filhos = hook.get_records(
+            "SELECT supervisao_id, job_filho, execucoes_com_sucesso "
+            "FROM dbo.etl_ds_supervisao_estrutura")
+    except Exception:
+        return {}
+
+    estruturas: dict[int, Estrutura] = {
+        int(r[0]): Estrutura(execucoes_aprendidas=int(r[1] or 0)) for r in (totais or [])
+    }
+    for r in (filhos or []):
+        sid = int(r[0])
+        if sid not in estruturas:
+            estruturas[sid] = Estrutura()
+        estruturas[sid].filhos.append(FilhoEsperado(job_filho=r[1],
+                                                    execucoes_com_sucesso=int(r[2] or 0)))
+    return estruturas
+
+
+def _gravar_filhos_e_aprender(cur, job: JobSupervisionado, runs, log) -> int:
+    """Grava o status de cada job filho e alimenta a estrutura esperada.
+
+    Guarda TODOS os códigos (inclusive crash e parado, que hoje não geram
+    alerta): o que vira card é decisão do código, e ter o dado no banco permite
+    mudar isso sem perder histórico.
+
+    Só execução com sucesso REAL ensina a estrutura — aprender de um dia em que
+    algo abortou gravaria a falha como se fosse o fluxo normal."""
+    from utils.ds_estrutura import aprender
+
+    from utils.ds_supervisao_regras import janela_do_dia
+
+    aprendidas = 0
+    for run in runs:
+        if run.inicio is None or not run.filhos:
+            continue
+
+        data_ref = run.inicio.date()
+        for candidata in (run.inicio.date(), run.inicio.date() - timedelta(days=1)):
+            ini, _f, _l = janela_do_dia(job, candidata)
+            if ini <= run.inicio < ini + timedelta(days=1):
+                data_ref = candidata
+                break
+
+        for nome, codigo in run.filhos.items():
+            try:
+                cur.execute(
+                    "UPDATE dbo.etl_ds_supervisao_run_filho SET status_code = ?, "
+                    "  data_ref = ?, coletado_em = GETDATE() "
+                    "WHERE supervisao_id = ? AND run_inicio = ? AND job_filho = ?",
+                    (codigo, data_ref, job.id, run.inicio, nome))
+                if cur.rowcount == 0:
+                    cur.execute(
+                        "INSERT INTO dbo.etl_ds_supervisao_run_filho "
+                        "(supervisao_id, run_inicio, job_filho, status_code, data_ref) "
+                        "VALUES (?,?,?,?,?)",
+                        (job.id, run.inicio, nome, codigo, data_ref))
+            except Exception as e:
+                log.warning("[DS Superv] falha ao gravar filho %s de %s: %s", nome, job.rotulo, e)
+
+        deve_aprender, nomes = aprender(run)
+        if not deve_aprender:
+            continue
+
+        # Marca de aprendizado: só conta uma vez por run (o UPDATE de
+        # ultima_vez é o que impede recontar o mesmo run em ciclos seguintes).
+        try:
+            cur.execute(
+                "SELECT COUNT(*) FROM dbo.etl_ds_supervisao_run "
+                "WHERE supervisao_id = ? AND run_inicio = ? AND aprendido = 1",
+                (job.id, run.inicio))
+            if (cur.fetchone() or [0])[0]:
+                continue
+            for nome in nomes:
+                cur.execute(
+                    "UPDATE dbo.etl_ds_supervisao_estrutura "
+                    "SET execucoes_com_sucesso = execucoes_com_sucesso + 1, "
+                    "    ultima_vez = GETDATE() "
+                    "WHERE supervisao_id = ? AND job_filho = ?", (job.id, nome))
+                if cur.rowcount == 0:
+                    cur.execute(
+                        "INSERT INTO dbo.etl_ds_supervisao_estrutura "
+                        "(supervisao_id, job_filho, execucoes_com_sucesso) VALUES (?,?,1)",
+                        (job.id, nome))
+            cur.execute(
+                "UPDATE dbo.etl_ds_supervisao_job "
+                "SET execucoes_aprendidas = execucoes_aprendidas + 1 WHERE id = ?", (job.id,))
+            cur.execute(
+                "UPDATE dbo.etl_ds_supervisao_run SET aprendido = 1 "
+                "WHERE supervisao_id = ? AND run_inicio = ?", (job.id, run.inicio))
+            aprendidas += 1
+            log.info("[DS Superv] estrutura de %s aprendida com %d job(s) do run de %s",
+                     job.rotulo, len(nomes), run.inicio)
+        except Exception as e:
+            log.warning("[DS Superv] não foi possível aprender a estrutura de %s: %s",
+                        job.rotulo, e)
+    return aprendidas
+
+
 def _rodou_pelo_orquestra(cur, job: JobSupervisionado, data_ref) -> bool:
     """O job rodou naquele dia segundo a telemetria do próprio Orquestra?
 
@@ -191,7 +322,7 @@ def _rodou_pelo_orquestra(cur, job: JobSupervisionado, data_ref) -> bool:
 
 
 def _gravar_eventos(cur, job: JobSupervisionado, eventos, log,
-                    runs=None, mensagens=None, agora=None) -> int:
+                    runs=None, mensagens=None, agora=None, estrutura=None) -> int:
     """INSERT ... WHERE NOT EXISTS sobre a chave do índice único.
 
     Sem exceção de chave duplicada e sem card repetido: o ciclo seguinte que
@@ -217,7 +348,8 @@ def _gravar_eventos(cur, job: JobSupervisionado, eventos, log,
         origem = next((r for r in runs if r.inicio == ev.run_inicio), None) if ev.run_inicio else None
         try:
             mensagem = montar_mensagem(job, ev.tipo, ev.data_ref, runs, agora,
-                                       mensagens=mensagens, run=origem)[:2000]
+                                       mensagens=mensagens, run=origem,
+                                       estrutura=estrutura)[:2000]
         except Exception as e:
             # Texto do usuário não pode impedir o registro do alerta.
             log.warning("[DS Superv] falha ao montar mensagem de %s (%s): %s",
@@ -356,7 +488,8 @@ def coletar(**context) -> dict:
         log.info("[DS Superv] nenhum job supervisionado ativo.")
         return {"jobs": 0, "runs": 0, "eventos": 0}
 
-    mensagens = _carregar_mensagens(hook)
+    mensagens  = _carregar_mensagens(hook)
+    estruturas = _carregar_estruturas(hook)
 
     log.info("[DS Superv] %d job(s) supervisionado(s) — abrindo SSH...", len(jobs))
 
@@ -400,7 +533,7 @@ def coletar(**context) -> dict:
 
     # ── persistência ────────────────────────────────────────────────────────
     limite_log = agora - timedelta(days=DIAS_DE_LOG)
-    total_runs = total_eventos = com_falha = 0
+    total_runs = total_eventos = com_falha = total_aprendidas = 0
 
     conn = hook.get_conn()
     cur  = conn.cursor()
@@ -423,8 +556,15 @@ def coletar(**context) -> dict:
 
             runs = runs_desde(parse_logsum(saida), limite_log)
             total_runs += _gravar_runs(cur, job.id, runs, job, log)
-            total_eventos += _gravar_eventos(cur, job, avaliar(job, runs, agora), log,
-                                             runs=runs, mensagens=msgs, agora=agora)
+
+            # Jobs ABAIXO do supervisionado: grava o status de cada um e
+            # aprende a estrutura das execuções que deram certo de verdade.
+            estrutura = estruturas.get(job.id)
+            total_aprendidas += _gravar_filhos_e_aprender(cur, job, runs, log)
+
+            total_eventos += _gravar_eventos(
+                cur, job, avaliar(job, runs, agora, estrutura), log,
+                runs=runs, mensagens=msgs, agora=agora, estrutura=estrutura)
 
         # Envio ao Teams: acontece DEPOIS de toda a detecção do ciclo, para o
         # lote sair de uma vez e na ordem em que os problemas apareceram.
@@ -446,10 +586,11 @@ def coletar(**context) -> dict:
         cur.close(); conn.close()
 
     log.info("[DS Superv] ciclo concluído: %d job(s), %d run(s), %d evento(s) novo(s), "
-             "%d notificado(s), %d falha(s) de leitura.",
-             len(jobs), total_runs, total_eventos, notificados, com_falha)
+             "%d notificado(s), %d estrutura(s) aprendida(s), %d falha(s) de leitura.",
+             len(jobs), total_runs, total_eventos, notificados, total_aprendidas, com_falha)
     return {"jobs": len(jobs), "runs": total_runs, "eventos": total_eventos,
-            "notificados": notificados, "falhas": com_falha}
+            "notificados": notificados, "aprendidas": total_aprendidas,
+            "falhas": com_falha}
 
 
 _INTERVALO = _var_int("DS_SUPERVISAO_INTERVAL_MINUTES", 15)

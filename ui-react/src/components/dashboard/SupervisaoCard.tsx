@@ -24,6 +24,14 @@ interface SupervisaoEvento {
   notificado_em: string | null
 }
 
+interface SupervisaoFilho {
+  run_inicio: string
+  job_filho: string
+  status_code: number
+  status: string
+  falhou: boolean
+}
+
 interface SupervisaoItem {
   id: number
   project: string
@@ -37,6 +45,7 @@ interface SupervisaoItem {
   estado: string
   runs: SupervisaoRun[]
   eventos: SupervisaoEvento[]
+  filhos: SupervisaoFilho[]
 }
 
 interface SupervisaoResposta {
@@ -50,14 +59,19 @@ interface SupervisaoResposta {
 const ESTADO: Record<string, { label: string; badge: string }> = {
   sem_verificacao: { label: 'Sem verificação', badge: 'warning' },
   abortado:        { label: 'Abortou',         badge: 'error' },
+  // O DataStage reportou sucesso, mas um job abaixo abortou. O rótulo diz isso
+  // com todas as letras: "concluído" aqui seria repetir a mentira da ferramenta.
+  sucesso_falso:   { label: 'Falhou abaixo',   badge: 'error' },
   nao_executou:    { label: 'Não executou',    badge: 'error' },
+  filho_ausente:   { label: 'Fluxo incompleto', badge: 'warning' },
   atrasado:        { label: 'Atrasado',        badge: 'warning' },
   executando:      { label: 'Em execução',     badge: 'info' },
   ok:              { label: 'Concluído',       badge: 'success' },
   sem_registro:    { label: 'Sem registro',    badge: 'neutral' },
 }
 
-const COM_ALERTA = new Set(['sem_verificacao', 'abortado', 'nao_executou', 'atrasado'])
+const COM_ALERTA = new Set(['sem_verificacao', 'abortado', 'sucesso_falso',
+  'nao_executou', 'filho_ausente', 'atrasado'])
 
 // Cada evento é colorido pelo PRÓPRIO tipo, não pelo estado agregado do job:
 // num dia com ATRASO e depois ABORTOU, os dois apareceriam vermelhos se
@@ -68,6 +82,8 @@ const EVENTO: Record<string, { label: string; badge: string }> = {
   ATRASO:           { label: 'Atrasado',               badge: 'warning' },
   ESTRUTURA:        { label: 'Sem verificação',        badge: 'warning' },
   SITUACAO_INICIAL: { label: 'Início do monitoramento', badge: 'info' },
+  SUCESSO_FALSO:    { label: 'Falhou abaixo',           badge: 'error' },
+  FILHO_AUSENTE:    { label: 'Fluxo incompleto',        badge: 'warning' },
 }
 
 /** '2026-07-29 02:10:15' → '02:10' */
@@ -216,6 +232,33 @@ export function SupervisaoCard({ date }: { date: string }) {
                       <p className="text-[11px] text-dim mt-1">
                         Nenhuma execução registrada neste dia.
                       </p>
+                    )}
+
+                    {/* Jobs ABAIXO do supervisionado — é aqui que se vê o abort
+                        que o DataStage não propaga para a sequence. */}
+                    {item.filhos.length > 0 && (
+                      <div className="mt-2">
+                        <p className="text-[11px] text-dim mb-1">
+                          Jobs do fluxo ({item.filhos.filter(f => f.falhou).length} com falha
+                          de {item.filhos.length}):
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {item.filhos.map((f, i) => (
+                            <span
+                              key={i}
+                              title={`${f.job_filho} — ${f.status} (execução de ${hora(f.run_inicio)})`}
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] ${
+                                f.falhou
+                                  ? 'border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300'
+                                  : 'border-edge bg-canvas text-dim'
+                              }`}
+                            >
+                              <span className="font-mono">{f.job_filho}</span>
+                              <span>· {f.status}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}

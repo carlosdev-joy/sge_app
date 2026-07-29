@@ -463,6 +463,62 @@ lugares — `dags/utils/ds_mensagens.py` (interpola) e `api/routers/ds_supervisa
 (mostra na tela) — porque API e Airflow rodam em containers separados e não
 compartilham código. A paridade é travada por teste em `tests/test_ds_mensagens.py`.
 
+## 7.2 F5 — Análise de dependência dos jobs filhos (2026-07-29)
+
+**O problema, observado em produção:** uma sequence supervisionada termina com
+`Finished OK` mesmo tendo um job filho **abortado**. O DataStage não propaga a
+falha do filho para o pai, então o acompanhamento diário dá o dia como bom e o
+abort passa despercebido. A supervisão, do jeito que estava, repetiria a mentira
+da ferramenta.
+
+**A solução:** aprender quais jobs rodam abaixo do supervisionado e conferir
+cada execução contra essa lista. **Sucesso real = a sequence terminou OK *e*
+nenhum filho abortou.**
+
+### Como a estrutura é aprendida
+
+Só execuções com **sucesso real** ensinam — aprender de um dia em que algo
+abortou gravaria a falha como se fosse o fluxo normal. Cada filho guarda em
+quantas dessas execuções apareceu (`etl_ds_supervisao_estrutura`), e o cadastro
+guarda o total aprendido (`execucoes_aprendidas`). A razão entre os dois é a
+**frequência**.
+
+Duas defesas contra alarme falso:
+
+- **Frequência mínima de 80%** — job condicional (que roda só no dia 1º, ou só
+  quando há arquivo) não vira falso "faltou job".
+- **Amostra mínima de 3 execuções** — antes disso a estrutura ainda está se
+  formando, e cobrar ausência seria alarme sobre um mapa incompleto.
+
+Um run só é contabilizado **uma vez** no aprendizado (coluna `aprendido` em
+`etl_ds_supervisao_run`): sem isso, cada ciclo de 15 min recontaria o mesmo run
+e a frequência ficaria inflada em poucas horas.
+
+### Dois tipos de evento novos
+
+| Tipo | Quando |
+|---|---|
+| `SUCESSO_FALSO` | A sequence disse OK, mas um job abaixo abortou |
+| `FILHO_AUSENTE` | Um job que quase sempre roda não apareceu na execução |
+
+`SUCESSO_FALSO` **não** é gerado quando a própria sequence abortou — aí já
+existe o `ABORTOU`, e dois alertas para o mesmo problema seriam ruído.
+
+No painel, `sucesso_falso` entra na precedência **acima** de "não executou" e o
+dia **não fica verde** — é exatamente o que o DataStage esconde hoje. O rótulo
+na tela é "Falhou abaixo": chamar de "concluído" seria repetir a mentira.
+
+### O que conta como falha do filho
+
+Por decisão do usuário, **apenas abortado (3)**. Crash (96), parado pelo
+operador (97) e validação falhou (13) são **gravados** em
+`etl_ds_supervisao_run_filho` e aparecem no painel, mas não geram card.
+Ampliar é acrescentar o código em `CODIGOS_DE_FALHA` — o dado já está no banco.
+
+### Variáveis novas nas mensagens
+
+`{total_filhos}`, `{filhos_falharam}`, `{filhos_ausentes}`, `{filhos_ok}`.
+
 ## 8. Decisões fechadas (2026-07-29)
 
 1. **Canal de homologação**: já existe um grupo em `etl_msg_grupo` dedicado a

@@ -267,6 +267,84 @@ def test_evento_estrutura_trunca_motivo_gigante():
 
 # ── Descrição legível ───────────────────────────────────────────────────────
 
+# ── Análise de dependência integrada ao dia (F5) ────────────────────────────
+
+def _com_filhos(inicio, filhos, resultado=OK):
+    r = run(inicio, inicio.replace(hour=inicio.hour + 1), resultado=resultado)
+    r.filhos = dict(filhos)
+    r.filhos_abortados = [n for n, c in filhos.items() if c == 3]
+    r.jobs_filhos = len(filhos)
+    return r
+
+
+def _estrutura_madura(filhos: dict[str, int], execucoes: int = 10):
+    from utils.ds_estrutura import Estrutura, FilhoEsperado
+    return Estrutura(execucoes_aprendidas=execucoes,
+                     filhos=[FilhoEsperado(n, c) for n, c in filhos.items()])
+
+
+def test_sequence_ok_com_filho_abortado_gera_sucesso_falso():
+    # O caso de produção: o DataStage deu "concluído" e escondeu o abort.
+    from utils.ds_supervisao_regras import SUCESSO_FALSO
+
+    r = _com_filhos(datetime(2026, 7, 27, 2, 10), {"CargaA": 1, "CargaB": 3})
+    eventos = avaliar_dia(job(), SEGUNDA, [r], datetime(2026, 7, 27, 8, 0))
+
+    assert [e.tipo for e in eventos] == [SUCESSO_FALSO]
+    assert "CargaB" in eventos[0].detalhe
+    assert eventos[0].run_inicio == r.inicio
+
+
+def test_sequence_abortada_nao_vira_sucesso_falso():
+    # Já é falha declarada — dois alertas para o mesmo problema seria ruído.
+    from utils.ds_supervisao_regras import SUCESSO_FALSO
+
+    r = _com_filhos(datetime(2026, 7, 27, 2, 10), {"CargaB": 3}, resultado=ABORTADO)
+    tipos = [e.tipo for e in avaliar_dia(job(), SEGUNDA, [r], datetime(2026, 7, 27, 8, 0))]
+    assert tipos == [ABORTOU]
+    assert SUCESSO_FALSO not in tipos
+
+
+def test_execucao_boa_de_verdade_nao_gera_evento():
+    r = _com_filhos(datetime(2026, 7, 27, 2, 10), {"CargaA": 1, "CargaB": 2})
+    estrutura = _estrutura_madura({"CargaA": 10, "CargaB": 10})
+    assert avaliar_dia(job(), SEGUNDA, [r], datetime(2026, 7, 27, 8, 0), estrutura) == []
+
+
+def test_job_do_fluxo_que_nao_rodou_gera_filho_ausente():
+    from utils.ds_supervisao_regras import FILHO_AUSENTE
+
+    r = _com_filhos(datetime(2026, 7, 27, 2, 10), {"CargaA": 1})
+    estrutura = _estrutura_madura({"CargaA": 10, "CargaB": 10})
+    eventos = avaliar_dia(job(), SEGUNDA, [r], datetime(2026, 7, 27, 8, 0), estrutura)
+
+    assert [e.tipo for e in eventos] == [FILHO_AUSENTE]
+    assert "CargaB" in eventos[0].detalhe
+
+
+def test_sem_estrutura_aprendida_nao_cobra_ausencia():
+    r = _com_filhos(datetime(2026, 7, 27, 2, 10), {"CargaA": 1})
+    assert avaliar_dia(job(), SEGUNDA, [r], datetime(2026, 7, 27, 8, 0), None) == []
+
+
+def test_flags_de_dependencia_desligadas_silenciam():
+    r = _com_filhos(datetime(2026, 7, 27, 2, 10), {"CargaA": 1, "CargaB": 3})
+    estrutura = _estrutura_madura({"CargaA": 10, "CargaB": 10, "CargaC": 10})
+
+    assert avaliar_dia(job(alerta_sucesso_falso=False, alerta_filho_ausente=False),
+                       SEGUNDA, [r], datetime(2026, 7, 27, 8, 0), estrutura) == []
+
+
+def test_sucesso_falso_e_ausencia_podem_coexistir():
+    from utils.ds_supervisao_regras import FILHO_AUSENTE, SUCESSO_FALSO
+
+    r = _com_filhos(datetime(2026, 7, 27, 2, 10), {"CargaA": 1, "CargaB": 3})
+    estrutura = _estrutura_madura({"CargaA": 10, "CargaB": 10, "CargaC": 10})
+    tipos = {e.tipo for e in avaliar_dia(job(), SEGUNDA, [r],
+                                         datetime(2026, 7, 27, 8, 0), estrutura)}
+    assert tipos == {SUCESSO_FALSO, FILHO_AUSENTE}
+
+
 def test_descrever_dia_cobre_os_cenarios():
     j = job()
     agora = datetime(2026, 7, 27, 8, 0)

@@ -31,6 +31,10 @@ NAO_EXECUTOU     = "NAO_EXECUTOU"
 ATRASO           = "ATRASO"
 ESTRUTURA        = "ESTRUTURA"
 SITUACAO_INICIAL = "SITUACAO_INICIAL"
+# Análise de dependência (migration 064): o DataStage dá a sequence como OK
+# mesmo com filho abortado — estes dois tipos é que revelam isso.
+SUCESSO_FALSO    = "SUCESSO_FALSO"
+FILHO_AUSENTE    = "FILHO_AUSENTE"
 
 _NOMES_DIA = {1: "seg", 2: "ter", 3: "qua", 4: "qui", 5: "sex", 6: "sáb", 7: "dom"}
 
@@ -53,6 +57,8 @@ class JobSupervisionado:
     alerta_nao_executou: bool = True
     alerta_atraso: bool = True
     alerta_estrutura: bool = True
+    alerta_sucesso_falso: bool = True
+    alerta_filho_ausente: bool = True
 
     @property
     def rotulo(self) -> str:
@@ -175,27 +181,33 @@ def descrever_dia(job: JobSupervisionado, data_ref: date,
 
 # ── Classificação ───────────────────────────────────────────────────────────
 
-def avaliar_dia(job: JobSupervisionado, data_ref: date,
-                runs: list[DsRun], agora: datetime) -> list[EventoDetectado]:
-    """Eventos de alerta de UM dia. Não inclui o card de situação inicial."""
+def avaliar_dia(job: JobSupervisionado, data_ref: date, runs: list[DsRun],
+                agora: datetime, estrutura=None) -> list[EventoDetectado]:
+    """Eventos de alerta de UM dia. Não inclui o card de situação inicial.
+
+    `estrutura` (utils.ds_estrutura.Estrutura) liga a análise de dependência:
+    sem ela, só o resultado da própria sequence é avaliado."""
     eventos: list[EventoDetectado] = []
     inicio, fim, limite = janela_do_dia(job, data_ref)
     do_dia = runs_do_dia(job, data_ref, runs)
 
     if do_dia:
-        if job.alerta_abortou:
-            for run in do_dia:
-                if run.resultado != ABORTADO:
-                    continue
+        for run in do_dia:
+            chave = run.inicio.strftime("%Y-%m-%d %H:%M:%S") if run.inicio else ""
+
+            if run.resultado == ABORTADO and job.alerta_abortou:
                 filhos = (f" Jobs abortados: {', '.join(run.filhos_abortados)}."
                           if run.filhos_abortados else "")
                 eventos.append(EventoDetectado(
                     tipo=ABORTOU, data_ref=data_ref,
                     # Dois abortos no mesmo dia são ocorrências distintas.
-                    chave_ocorrencia=run.inicio.strftime("%Y-%m-%d %H:%M:%S") if run.inicio else "",
+                    chave_ocorrencia=chave,
                     detalhe=(f"{job.rotulo} abortou: iniciou {_hm(run.inicio)}, "
                              f"parou {_hm(run.fim)}.{filhos}"),
                     run_inicio=run.inicio))
+                continue      # já é falha declarada; não vira "sucesso falso"
+
+            eventos.extend(_avaliar_dependencia(job, data_ref, run, chave, estrutura))
         return eventos
 
     # Nenhum run no dia.
@@ -215,6 +227,39 @@ def avaliar_dia(job: JobSupervisionado, data_ref: date,
             tipo=ATRASO, data_ref=data_ref,
             detalhe=(f"{job.rotulo} não iniciou até {_hm(limite)} "
                      f"(janela {_hm(inicio)}–{_hm(fim)}).")))
+    return eventos
+
+
+def _avaliar_dependencia(job: JobSupervisionado, data_ref: date, run: DsRun,
+                         chave: str, estrutura) -> list[EventoDetectado]:
+    """Confere os jobs ABAIXO do supervisionado numa execução que não abortou.
+
+    É o coração do problema relatado em produção: a sequence diz "Finished OK"
+    e um filho abortado fica escondido. Aqui esse caso vira alerta próprio —
+    SUCESSO_FALSO — em vez de passar como dia bom."""
+    from utils.ds_estrutura import Estrutura, filhos_ausentes, filhos_que_falharam
+
+    eventos: list[EventoDetectado] = []
+    if run.resultado != OK:
+        return eventos                      # em execução / indefinido: nada a concluir
+
+    falharam = filhos_que_falharam(run)
+    if falharam and job.alerta_sucesso_falso:
+        eventos.append(EventoDetectado(
+            tipo=SUCESSO_FALSO, data_ref=data_ref, chave_ocorrencia=chave,
+            detalhe=(f"{job.rotulo} terminou como concluído em {_hm(run.inicio)}, "
+                     f"mas {len(falharam)} job(s) abaixo dele abortaram: "
+                     f"{', '.join(falharam)}."),
+            run_inicio=run.inicio))
+
+    if estrutura is not None and job.alerta_filho_ausente:
+        ausentes = filhos_ausentes(run, estrutura if isinstance(estrutura, Estrutura) else Estrutura())
+        if ausentes:
+            eventos.append(EventoDetectado(
+                tipo=FILHO_AUSENTE, data_ref=data_ref, chave_ocorrencia=chave,
+                detalhe=(f"{job.rotulo} rodou sem {len(ausentes)} job(s) que costumam "
+                         f"fazer parte do fluxo: {', '.join(ausentes)}."),
+                run_inicio=run.inicio))
     return eventos
 
 
@@ -244,13 +289,13 @@ def evento_estrutura(job: JobSupervisionado, data_ref: date, motivo: str) -> Eve
         detalhe=f"Não foi possível verificar {job.rotulo}: {motivo}"[:1000])
 
 
-def avaliar(job: JobSupervisionado, runs: list[DsRun],
-            agora: datetime) -> list[EventoDetectado]:
+def avaliar(job: JobSupervisionado, runs: list[DsRun], agora: datetime,
+            estrutura=None) -> list[EventoDetectado]:
     """Todos os eventos que este ciclo deve gravar para o job."""
     eventos: list[EventoDetectado] = []
     inicial = evento_situacao_inicial(job, runs, agora)
     if inicial:
         eventos.append(inicial)
     for data_ref in datas_candidatas(job, agora):
-        eventos.extend(avaliar_dia(job, data_ref, runs, agora))
+        eventos.extend(avaliar_dia(job, data_ref, runs, agora, estrutura))
     return eventos

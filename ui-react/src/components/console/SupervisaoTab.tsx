@@ -34,6 +34,8 @@ export interface SupervisaoJob {
   alerta_nao_executou: boolean
   alerta_atraso: boolean
   alerta_estrutura: boolean
+  alerta_sucesso_falso: boolean
+  alerta_filho_ausente: boolean
   ativo: boolean
   created_by: string | null
   created_at: string
@@ -74,6 +76,16 @@ const ALERTAS = [
     ajuda: 'Não foi possível nem ler o job: projeto ou job inexistente, renomeado, ou servidor fora.',
     exemplo: '⚠️ Não foi possível verificar {job} ({projeto}) em {data}. {situacao}',
   },
+  {
+    tipo: 'SUCESSO_FALSO', campo: 'alerta_sucesso_falso', label: 'Sucesso falso (job abaixo abortou)',
+    ajuda: 'A sequence terminou como concluída, mas um job abaixo dela abortou. O DataStage não propaga essa falha para cima — é o caso que passava despercebido no acompanhamento diário.',
+    exemplo: '🚨 {job} foi reportado como CONCLUÍDO em {data}, mas abortaram: {filhos_falharam}.',
+  },
+  {
+    tipo: 'FILHO_AUSENTE', campo: 'alerta_filho_ausente', label: 'Job do fluxo não executou',
+    ajuda: 'Um job que costuma fazer parte do fluxo não apareceu nesta execução. A lista esperada é aprendida das execuções bem-sucedidas.',
+    exemplo: '⚠️ {job} rodou em {data} sem os jobs: {filhos_ausentes}.',
+  },
 ] as const
 
 const TIPO_INICIAL = 'SITUACAO_INICIAL'
@@ -113,6 +125,8 @@ interface FormState {
   alerta_nao_executou: boolean
   alerta_atraso: boolean
   alerta_estrutura: boolean
+  alerta_sucesso_falso: boolean
+  alerta_filho_ausente: boolean
   mensagens: Record<string, string>
 }
 
@@ -123,6 +137,7 @@ function formVazio(project: string, job: string): FormState {
     dias: ['1', '2', '3', '4', '5'], vigencia_inicio: hoje(), max_linhas: '200',
     grupo_id: '',
     alerta_abortou: true, alerta_nao_executou: true, alerta_atraso: true, alerta_estrutura: true,
+    alerta_sucesso_falso: true, alerta_filho_ausente: true,
     mensagens: {},
   }
 }
@@ -137,6 +152,8 @@ function formDeJob(j: SupervisaoJob): FormState {
     grupo_id: j.grupo_id ? String(j.grupo_id) : '',
     alerta_abortou: j.alerta_abortou, alerta_nao_executou: j.alerta_nao_executou,
     alerta_atraso: j.alerta_atraso, alerta_estrutura: j.alerta_estrutura,
+    alerta_sucesso_falso: j.alerta_sucesso_falso ?? true,
+    alerta_filho_ausente: j.alerta_filho_ausente ?? true,
     mensagens: { ...(j.mensagens ?? {}) },
   }
 }
@@ -251,6 +268,8 @@ export function SupervisaoTab({ project, job, projetos }: {
       alerta_nao_executou: form.alerta_nao_executou,
       alerta_atraso: form.alerta_atraso,
       alerta_estrutura: form.alerta_estrutura,
+      alerta_sucesso_falso: form.alerta_sucesso_falso,
+      alerta_filho_ausente: form.alerta_filho_ausente,
       mensagens: form.mensagens,
     }
     // project/job_name são imutáveis na edição: o histórico é ligado a eles.

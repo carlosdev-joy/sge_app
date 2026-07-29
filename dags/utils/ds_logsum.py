@@ -79,6 +79,12 @@ class DsRun:
     inicio_texto: str = ""
     fim_texto: str = ""
     filhos_abortados: list[str] = field(default_factory=list)
+    # nome do job filho → código de status do DataStage
+    #   1 = concluído, 2 = com avisos, 3 = ABORTADO, 96 = crash,
+    #   97 = parado, 13 = validação falhou, -1 = disparado sem status no log.
+    # É esta lista que permite descobrir o "sucesso falso": a sequence termina
+    # OK enquanto um filho abortou, e o DataStage não propaga isso para cima.
+    filhos: dict[str, int] = field(default_factory=dict)
 
     @property
     def duracao_seg(self) -> int | None:
@@ -129,6 +135,7 @@ def parse_logsum(stdout: str) -> list[DsRun]:
         nonlocal atual, filhos
         if atual is not None and filhos is not None:
             atual.jobs_filhos = len(filhos)
+            atual.filhos = dict(filhos)
             atual.filhos_abortados = [n for n, code in filhos.items() if code == 3]
             runs.append(atual)
         atual = None
