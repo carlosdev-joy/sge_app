@@ -38,8 +38,12 @@ from utils.ds_mensagens import (  # noqa: E402
     montar_mensagem, variaveis_desconhecidas,
 )
 from utils.ds_supervisao_regras import (  # noqa: E402
-    ABORTOU, ATRASO, ESTRUTURA, NAO_EXECUTOU, SITUACAO_INICIAL, JobSupervisionado,
+    ABORTOU, ATRASO, ESTRUTURA, FILHO_AUSENTE, NAO_EXECUTOU, SITUACAO_INICIAL,
+    SUCESSO_FALSO, JobSupervisionado,
 )
+
+TODOS_OS_TIPOS = {ABORTOU, NAO_EXECUTOU, ATRASO, ESTRUTURA, SITUACAO_INICIAL,
+                  SUCESSO_FALSO, FILHO_AUSENTE}
 
 SEGUNDA = date(2026, 7, 27)
 
@@ -72,11 +76,11 @@ def test_tipos_de_mensagem_batem_com_os_tipos_de_evento():
     from routers.ds_supervisao import TIPOS_MENSAGEM
 
     assert set(TIPOS_MENSAGEM) == set(MENSAGENS_PADRAO)
-    assert set(TIPOS_MENSAGEM) == {ABORTOU, NAO_EXECUTOU, ATRASO, ESTRUTURA, SITUACAO_INICIAL}
+    assert set(TIPOS_MENSAGEM) == TODOS_OS_TIPOS
 
 
 def test_todo_tipo_de_alerta_tem_mensagem_padrao():
-    for tipo in (ABORTOU, NAO_EXECUTOU, ATRASO, ESTRUTURA, SITUACAO_INICIAL):
+    for tipo in TODOS_OS_TIPOS:
         assert MENSAGENS_PADRAO[tipo].strip()
 
 

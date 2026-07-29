@@ -39,10 +39,12 @@ router = APIRouter()
 _SAFE_RE = re.compile(r"^[A-Za-z0-9_.]+$")
 _HORA_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)(:([0-5]\d))?$")
 
-_CAMPOS_ALERTA = ("alerta_abortou", "alerta_nao_executou", "alerta_atraso", "alerta_estrutura")
+_CAMPOS_ALERTA = ("alerta_abortou", "alerta_nao_executou", "alerta_atraso", "alerta_estrutura",
+                  "alerta_sucesso_falso", "alerta_filho_ausente")
 
 # Tipos que aceitam mensagem própria — espelham o CHECK da migration 063.
-TIPOS_MENSAGEM = ("ABORTOU", "NAO_EXECUTOU", "ATRASO", "ESTRUTURA", "SITUACAO_INICIAL")
+TIPOS_MENSAGEM = ("ABORTOU", "NAO_EXECUTOU", "ATRASO", "ESTRUTURA", "SITUACAO_INICIAL",
+                  "SUCESSO_FALSO", "FILHO_AUSENTE")
 
 # Variáveis que o usuário pode usar no texto do alerta.
 #
@@ -64,6 +66,10 @@ VARIAVEIS_MENSAGEM: list[tuple[str, str, str]] = [
     ("fim",           "Término da execução observada",             "02:50"),
     ("duracao",       "Duração da execução observada",             "40 min"),
     ("situacao",      "Frase automática com a situação do dia",    "não iniciou até 03:15"),
+    ("total_filhos",     "Quantos jobs rodaram abaixo do supervisionado", "12"),
+    ("filhos_falharam",  "Jobs abaixo que abortaram",                 "CargaVida, CargaPrev"),
+    ("filhos_ausentes",  "Jobs esperados que não rodaram",            "CargaMensal"),
+    ("filhos_ok",        "Jobs abaixo que concluíram",                "CargaA, CargaB"),
 ]
 
 _NOMES_VARIAVEIS = {v[0] for v in VARIAVEIS_MENSAGEM}
@@ -453,7 +459,9 @@ def editar(sid: int = Path(...), body: dict = Body(default={}),
 _PRECEDENCIA = [
     "sem_verificacao",   # ESTRUTURA — nem deu para ler o job
     "abortado",          # ABORTOU
+    "sucesso_falso",     # SUCESSO_FALSO — sequence disse OK, mas um filho abortou
     "nao_executou",      # NAO_EXECUTOU — o dia fechou sem run
+    "filho_ausente",     # FILHO_AUSENTE — rodou sem um job que sempre roda
     "atrasado",          # ATRASO — passou a janela, dia ainda aberto
     "executando",
     "ok",
@@ -461,10 +469,12 @@ _PRECEDENCIA = [
 ]
 
 _EVENTO_PARA_ESTADO = {
-    "ESTRUTURA":    "sem_verificacao",
-    "ABORTOU":      "abortado",
-    "NAO_EXECUTOU": "nao_executou",
-    "ATRASO":       "atrasado",
+    "ESTRUTURA":     "sem_verificacao",
+    "ABORTOU":       "abortado",
+    "SUCESSO_FALSO": "sucesso_falso",
+    "NAO_EXECUTOU":  "nao_executou",
+    "FILHO_AUSENTE": "filho_ausente",
+    "ATRASO":        "atrasado",
 }
 
 _RUN_PARA_ESTADO = {
@@ -473,7 +483,10 @@ _RUN_PARA_ESTADO = {
     "ok":      "ok",
 }
 
-ESTADOS_COM_ALERTA = {"sem_verificacao", "abortado", "nao_executou", "atrasado"}
+# sucesso_falso entra aqui de propósito: é o caso em que o DataStage diz OK e o
+# dia NÃO pode aparecer como bom — foi o que motivou a análise de dependência.
+ESTADOS_COM_ALERTA = {"sem_verificacao", "abortado", "sucesso_falso",
+                      "nao_executou", "filho_ausente", "atrasado"}
 
 
 def _pior(estados: list[str]) -> str:
@@ -481,6 +494,40 @@ def _pior(estados: list[str]) -> str:
         if estado in estados:
             return estado
     return "sem_registro"
+
+
+# Códigos de status do DataStage para job filho, traduzidos para a tela.
+_STATUS_FILHO = {
+    1: "concluído", 2: "com avisos", 3: "ABORTADO", 13: "validação falhou",
+    96: "crash", 97: "parado", 0: "em execução", -1: "sem status no log",
+}
+# Só o abort gera alerta hoje (decisão do usuário); os demais aparecem no painel.
+_CODIGO_ABORTADO = 3
+
+
+def _ler_filhos(cur, dia) -> dict[int, list[dict]]:
+    """Status de cada job filho no dia, agrupado por job supervisionado.
+
+    Degrada para vazio sem a migration 064 — o painel perde o detalhe de
+    dependência, mas continua mostrando o resto."""
+    try:
+        cur.execute(
+            "SELECT supervisao_id, CONVERT(VARCHAR(19), run_inicio, 120), "
+            "       job_filho, status_code "
+            "FROM dbo.etl_ds_supervisao_run_filho WHERE data_ref = ? "
+            "ORDER BY run_inicio, job_filho", (dia,))
+        por_job: dict[int, list[dict]] = {}
+        for r in cur.fetchall():
+            codigo = int(r[3])
+            por_job.setdefault(int(r[0]), []).append({
+                "run_inicio": r[1], "job_filho": r[2], "status_code": codigo,
+                "status": _STATUS_FILHO.get(codigo, f"código {codigo}"),
+                "falhou": codigo == _CODIGO_ABORTADO,
+            })
+        return por_job
+    except Exception as e:
+        log.warning("[DS SUPERV] filhos indisponíveis (migration 064 aplicada?): %s", e)
+        return {}
 
 
 @router.get("/dashboard/supervisao", tags=["ds-supervisao"])
@@ -545,6 +592,10 @@ def painel(date_ref: str | None = Query(None), _user: dict = Depends(get_current
                 "tipo": r[1], "detalhe": r[2],
                 "detectado_em": r[3], "notificado_em": r[4],
             })
+
+        # Jobs ABAIXO do supervisionado: é o detalhe que mostra de onde veio o
+        # veredito quando a sequence diz OK e um filho abortou.
+        filhos_por_job = _ler_filhos(cur, dia)
     except Exception as e:
         # Migration 062 pendente ou banco fora: painel vazio em vez de erro na
         # tela inteira do dashboard.
@@ -583,6 +634,7 @@ def painel(date_ref: str | None = Query(None), _user: dict = Depends(get_current
             "estado": estado,
             "runs": runs,
             "eventos": eventos,
+            "filhos": filhos_por_job.get(sid, []),
         })
 
     com_alerta = sum(1 for d in dados if d["estado"] in ESTADOS_COM_ALERTA)
