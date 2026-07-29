@@ -1,0 +1,248 @@
+"""
+Carga da DAG etl_ds_supervisao_monitor com Airflow stubado.
+
+Airflow não está instalado no ambiente de teste (as DAGs rodam no servidor), mas
+o erro mais caro dessa fase é justamente o de *import time*: uma DAG que não
+carrega no scheduler não aparece na lista e a supervisão fica muda sem ninguém
+perceber. Este teste exercita o módulo inteiro — imports, leitura de Variables e
+montagem do objeto DAG — com stubs, para esse erro aparecer aqui e não em
+produção.
+
+Também cobre a gravação de eventos com cursor falso: o INSERT ... WHERE NOT
+EXISTS é o que garante 1 card por ocorrência, e a conferência contra
+etl_ds_job_log é o que evita falso NAO_EXECUTOU quando o log rotaciona.
+"""
+from __future__ import annotations
+
+import importlib.util
+import sys
+from datetime import date, datetime, time
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+_ROOT = Path(__file__).parent.parent
+_DAGS = _ROOT / "dags"
+if str(_DAGS) not in sys.path:
+    sys.path.insert(0, str(_DAGS))
+
+_STUBS = [
+    "airflow", "airflow.models", "airflow.operators", "airflow.operators.python",
+    "airflow.providers", "airflow.providers.ssh", "airflow.providers.ssh.hooks",
+    "airflow.providers.ssh.hooks.ssh",
+    "airflow.providers.microsoft", "airflow.providers.microsoft.mssql",
+    "airflow.providers.microsoft.mssql.hooks", "airflow.providers.microsoft.mssql.hooks.mssql",
+    "pendulum",
+]
+for _m in _STUBS:
+    sys.modules.setdefault(_m, MagicMock())
+
+# `with DAG(...) as dag:` exige um context manager de verdade.
+sys.modules["airflow"].DAG = MagicMock()
+sys.modules["airflow"].DAG.return_value.__enter__ = lambda self: self
+sys.modules["airflow"].DAG.return_value.__exit__ = lambda self, *a: False
+
+
+def _carregar_dag():
+    spec = importlib.util.spec_from_file_location(
+        "etl_ds_supervisao_monitor_test", _DAGS / "etl_ds_supervisao_monitor.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+DAG_MOD = _carregar_dag()
+
+from utils.ds_supervisao_regras import (  # noqa: E402
+    ATRASO, NAO_EXECUTOU, JobSupervisionado, EventoDetectado,
+)
+
+
+def _job(**kw) -> JobSupervisionado:
+    base = dict(id=7, project="BI_CVP", job_name="SeqSsdVida7Peps",
+                janela_inicio=time(2, 0), janela_fim=time(3, 0), tolerancia_min=0,
+                dias_semana="1,2,3,4,5", vigencia_inicio=date(2026, 7, 1))
+    base.update(kw)
+    return JobSupervisionado(**base)
+
+
+# ── Carga do módulo ─────────────────────────────────────────────────────────
+
+def test_dag_carrega_sem_erro():
+    assert DAG_MOD.DAG_ID == "etl_ds_supervisao_monitor"
+
+
+def test_dag_usa_fuso_de_sao_paulo():
+    assert DAG_MOD.LOCAL_TZ == "America/Sao_Paulo"
+
+
+def test_janela_de_log_e_de_sete_dias():
+    assert DAG_MOD.DIAS_DE_LOG == 7
+
+
+def test_allowlist_do_comando_remoto_e_a_mesma_do_console():
+    assert DAG_MOD._SAFE_DS_RE.match("BI_CVP") is not None
+    assert DAG_MOD._SAFE_DS_RE.match("Seq.Job_1") is not None
+    for perigoso in ("com espaço", "job;rm -rf /", "job$(id)", "job|cat", "job&&ls"):
+        assert DAG_MOD._SAFE_DS_RE.match(perigoso) is None
+
+
+def test_var_int_le_o_valor_configurado(monkeypatch):
+    monkeypatch.setattr(DAG_MOD.Variable, "get", lambda *a, **k: "5")
+    assert DAG_MOD._var_int("DS_SUPERVISAO_INTERVAL_MINUTES", 15) == 5
+
+
+def test_var_int_cai_no_default_em_valor_nao_numerico(monkeypatch):
+    # Variable configurada errado no Airflow não pode derrubar a DAG na carga.
+    monkeypatch.setattr(DAG_MOD.Variable, "get", lambda *a, **k: "a cada 15 min")
+    assert DAG_MOD._var_int("DS_SUPERVISAO_INTERVAL_MINUTES", 15) == 15
+
+
+def test_var_cai_no_default_quando_a_variable_nao_existe(monkeypatch):
+    def _explode(*a, **k):
+        raise KeyError("Variable DS_MONITOR_SSH_CONN_ID does not exist")
+
+    monkeypatch.setattr(DAG_MOD.Variable, "get", _explode)
+    assert DAG_MOD._var("DS_MONITOR_SSH_CONN_ID", "ssh_lnxprd021") == "ssh_lnxprd021"
+
+
+# ── Gravação de eventos ─────────────────────────────────────────────────────
+
+class CursorFalso:
+    """Cursor mínimo: guarda os SQL executados e simula rowcount."""
+
+    def __init__(self, rowcount: int = 1, fetch=None):
+        self.sqls: list[tuple[str, tuple]] = []
+        self.rowcount = rowcount
+        self._fetch = fetch
+
+    def execute(self, sql, params=()):
+        self.sqls.append((" ".join(sql.split()), tuple(params)))
+
+    def fetchone(self):
+        return self._fetch
+
+
+def test_evento_novo_e_inserido_com_guarda_de_duplicidade():
+    cur = CursorFalso(rowcount=1)
+    ev = EventoDetectado(tipo=ATRASO, data_ref=date(2026, 7, 27), detalhe="atrasou")
+    novos = DAG_MOD._gravar_eventos(cur, _job(), [ev], MagicMock())
+
+    assert novos == 1
+    sql, _params = cur.sqls[0]
+    # É o WHERE NOT EXISTS que substitui o tratamento de chave duplicada.
+    assert "INSERT INTO dbo.etl_ds_supervisao_evento" in sql
+    assert "WHERE NOT EXISTS" in sql
+
+
+def test_evento_repetido_nao_conta_como_novo():
+    # rowcount 0 = o WHERE NOT EXISTS barrou: o mesmo problema já estava gravado.
+    cur = CursorFalso(rowcount=0)
+    ev = EventoDetectado(tipo=ATRASO, data_ref=date(2026, 7, 27), detalhe="atrasou")
+    assert DAG_MOD._gravar_eventos(cur, _job(), [ev], MagicMock()) == 0
+
+
+def test_nao_executou_e_descartado_se_o_orquestra_registrou_execucao():
+    # etl_ds_job_log tem linha do dia → o log do DataStage rotacionou, o job rodou.
+    cur = CursorFalso(rowcount=1, fetch=(1,))
+    ev = EventoDetectado(tipo=NAO_EXECUTOU, data_ref=date(2026, 7, 27), detalhe="não rodou")
+    assert DAG_MOD._gravar_eventos(cur, _job(), [ev], MagicMock()) == 0
+    assert all("INSERT" not in sql for sql, _ in cur.sqls)
+
+
+def test_nao_executou_e_gravado_quando_nao_ha_registro_no_orquestra():
+    cur = CursorFalso(rowcount=1, fetch=None)
+    ev = EventoDetectado(tipo=NAO_EXECUTOU, data_ref=date(2026, 7, 27), detalhe="não rodou")
+    assert DAG_MOD._gravar_eventos(cur, _job(), [ev], MagicMock()) == 1
+
+
+def test_falha_ao_gravar_um_evento_nao_derruba_os_outros():
+    class CursorQuebrado(CursorFalso):
+        def execute(self, sql, params=()):
+            super().execute(sql, params)
+            if "atrasou" in str(params):
+                raise RuntimeError("deadlock")
+
+    cur = CursorQuebrado(rowcount=1)
+    eventos = [
+        EventoDetectado(tipo=ATRASO, data_ref=date(2026, 7, 27), detalhe="atrasou"),
+        EventoDetectado(tipo=ATRASO, data_ref=date(2026, 7, 26), detalhe="outro"),
+    ]
+    assert DAG_MOD._gravar_eventos(cur, _job(), eventos, MagicMock()) == 1
+
+
+# ── Conferência contra a telemetria do Orquestra ────────────────────────────
+
+def test_rodou_pelo_orquestra_degrada_para_falso_em_erro():
+    class CursorExplode(CursorFalso):
+        def execute(self, sql, params=()):
+            raise RuntimeError("tabela ausente")
+
+    # Deixar de avisar é pior que avisar demais: na dúvida, o alerta segue.
+    assert DAG_MOD._rodou_pelo_orquestra(CursorExplode(), _job(), date(2026, 7, 27)) is False
+
+
+# ── Gravação de runs ────────────────────────────────────────────────────────
+
+def test_run_existente_faz_update_e_nao_duplica():
+    from utils.ds_logsum import OK, DsRun
+
+    cur = CursorFalso(rowcount=1)          # UPDATE encontrou linha
+    r = DsRun(inicio=datetime(2026, 7, 27, 2, 10), fim=datetime(2026, 7, 27, 2, 50),
+              resultado=OK, jobs_filhos=2)
+    assert DAG_MOD._gravar_runs(cur, 7, [r], _job(), MagicMock()) == 1
+    assert len(cur.sqls) == 1
+    assert cur.sqls[0][0].startswith("UPDATE dbo.etl_ds_supervisao_run")
+
+
+def test_run_novo_cai_no_insert_depois_do_update_vazio():
+    from utils.ds_logsum import OK, DsRun
+
+    cur = CursorFalso(rowcount=0)          # UPDATE não achou nada
+    r = DsRun(inicio=datetime(2026, 7, 27, 2, 10), fim=datetime(2026, 7, 27, 2, 50),
+              resultado=OK, jobs_filhos=2)
+    DAG_MOD._gravar_runs(cur, 7, [r], _job(), MagicMock())
+    assert len(cur.sqls) == 2
+    assert "INSERT INTO dbo.etl_ds_supervisao_run" in cur.sqls[1][0]
+
+
+def test_run_de_madrugada_e_gravado_no_dia_da_janela():
+    from utils.ds_logsum import OK, DsRun
+
+    cur = CursorFalso(rowcount=1)
+    j = _job(janela_inicio=time(23, 0), janela_fim=time(1, 0))
+    r = DsRun(inicio=datetime(2026, 7, 28, 0, 30), fim=datetime(2026, 7, 28, 0, 50),
+              resultado=OK, jobs_filhos=1)
+    DAG_MOD._gravar_runs(cur, 7, [r], j, MagicMock())
+    _sql, params = cur.sqls[0]
+    # data_ref do UPDATE é a segunda (27), dia em que a janela começou.
+    assert date(2026, 7, 27) in params
+
+
+def test_run_sem_hora_e_ignorado():
+    from utils.ds_logsum import DsRun
+
+    cur = CursorFalso(rowcount=1)
+    assert DAG_MOD._gravar_runs(cur, 7, [DsRun(inicio=None)], _job(), MagicMock()) == 0
+    assert cur.sqls == []
+
+
+# ── Expurgo ─────────────────────────────────────────────────────────────────
+
+def test_expurgo_apaga_run_e_evento_mas_nao_o_cadastro():
+    cur = CursorFalso(rowcount=3)
+    DAG_MOD._expurgar(cur, 365, MagicMock())
+    tabelas = [sql for sql, _ in cur.sqls]
+    assert any("etl_ds_supervisao_run" in s for s in tabelas)
+    assert any("etl_ds_supervisao_evento" in s for s in tabelas)
+    assert not any("etl_ds_supervisao_job" in s for s in tabelas)
+
+
+@pytest.mark.parametrize("retencao", [90, 365])
+def test_expurgo_usa_a_retencao_configurada(retencao):
+    cur = CursorFalso(rowcount=0)
+    DAG_MOD._expurgar(cur, retencao, MagicMock())
+    _sql, params = cur.sqls[0]
+    corte = params[0]
+    assert (date.today() - corte).days == retencao
