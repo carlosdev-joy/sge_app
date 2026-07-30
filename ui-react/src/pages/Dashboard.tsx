@@ -300,7 +300,10 @@ function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string })
       <div className="min-w-[720px]">
         {/* Hour axis — fica preso no topo: rolando as linhas, a referência de
             hora tem de continuar visível, senão a barra perde sentido. */}
-        <div className="sticky top-0 z-30 bg-panel flex ml-36 mr-20 mb-1 pb-0.5 relative h-4">
+        {/* `sticky` sem `relative`: as duas são utilities de position e
+            competiriam pela mesma propriedade — e o sticky já cria o contexto
+            de posicionamento de que as marcas `absolute` de hora precisam. */}
+        <div className="sticky top-0 z-30 bg-panel flex ml-36 mr-20 mb-1 pb-0.5 h-4">
           {hourMarks.map(h => (
             <div key={h} className="absolute text-[9px] text-dim" style={{ left: `${(h / 24) * 100}%` }}>
               {String(h).padStart(2, '0')}h

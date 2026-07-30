@@ -3,7 +3,8 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { apiFetch } from '../../lib/api'
 import { Badge } from '../ui/Badge'
-import { ChevronDown, ChevronUp, ShieldCheck } from 'lucide-react'
+import { ChevronDown, ChevronUp, Network, ShieldCheck } from 'lucide-react'
+import { SupervisaoArvoreModal } from './SupervisaoArvoreModal'
 
 // ── Supervisão DataStage no dashboard (F3) ──────────────────────────────────
 // Lê só do banco (nenhum SSH no carregamento) e segue a data escolhida na
@@ -32,6 +33,10 @@ interface SupervisaoFilho {
   falhou: boolean
   nivel: number
   job_pai: string | null
+  // Vindos da migration 066; nulos no histórico anterior a ela.
+  inicio?: string | null
+  fim?: string | null
+  duracao_seg?: number | null
 }
 
 interface SupervisaoItem {
@@ -89,13 +94,13 @@ const EVENTO: Record<string, { label: string; badge: string }> = {
 }
 
 /** '2026-07-29 02:10:15' → '02:10' */
-function hora(iso: string | null): string {
+function hora(iso: string | null | undefined): string {
   if (!iso) return '—'
   const parte = iso.split(' ')[1] ?? iso.split('T')[1]
   return parte ? parte.slice(0, 5) : '—'
 }
 
-function duracao(seg: number | null): string {
+function duracao(seg: number | null | undefined): string {
   if (seg == null) return ''
   const h = Math.floor(seg / 3600)
   const m = Math.floor((seg % 3600) / 60)
@@ -108,6 +113,9 @@ function hhmm(valor: string): string {
 
 export function SupervisaoCard({ date }: { date: string }) {
   const [aberto, setAberto] = useState<number | null>(null)
+  // Job cujo diagrama está aberto. Independente do expandir/recolher: o
+  // diagrama pode ser visto desde a estrutura inicial, não só quando há erro.
+  const [diagrama, setDiagrama] = useState<SupervisaoItem | null>(null)
 
   const { data, isLoading, isError } = useQuery<SupervisaoResposta>({
     queryKey: ['dashboard-supervisao', date],
@@ -164,30 +172,45 @@ export function SupervisaoCard({ date }: { date: string }) {
             const ultimo = item.runs[item.runs.length - 1]
             return (
               <li key={item.id} className={alerta ? 'bg-red-50/40 dark:bg-red-900/10' : ''}>
-                <button
-                  onClick={() => setAberto(expandido ? null : item.id)}
-                  aria-expanded={expandido}
-                  className="w-full flex flex-wrap items-center gap-2 px-4 py-2.5 text-left hover:bg-edge/30 transition-colors"
-                >
-                  {expandido
-                    ? <ChevronUp size={14} className="text-dim shrink-0" />
-                    : <ChevronDown size={14} className="text-dim shrink-0" />}
-                  <span className="font-mono text-[11px] text-ink break-all">
-                    {item.project}.{item.job_name}
-                  </span>
-                  {!item.ativo && <Badge value="inativo">fora da supervisão</Badge>}
-                  {!item.previsto
-                    ? <Badge value="neutral">não previsto neste dia</Badge>
-                    : <Badge value={estado.badge}>{estado.label}</Badge>}
-                  <span className="text-[11px] text-dim">
-                    janela {hhmm(item.janela_inicio)}–{hhmm(item.janela_fim)}
-                  </span>
+                {/* A linha NÃO é um <button> só: o "Ver diagrama" fica ao lado
+                    do nome do job, e button dentro de button é DOM inválido —
+                    o clique no interno vazaria para o toggle. Então o toggle é
+                    um botão que ocupa a área do nome, e o diagrama é outro. */}
+                <div className="w-full flex flex-wrap items-center gap-2 px-4 py-2.5">
+                  <button
+                    onClick={() => setAberto(expandido ? null : item.id)}
+                    aria-expanded={expandido}
+                    className="flex flex-wrap items-center gap-2 text-left flex-1 min-w-0 -mx-2 px-2 py-1 rounded hover:bg-edge/30 transition-colors"
+                  >
+                    {expandido
+                      ? <ChevronUp size={14} className="text-dim shrink-0" />
+                      : <ChevronDown size={14} className="text-dim shrink-0" />}
+                    <span className="font-mono text-[11px] text-ink break-all">
+                      {item.project}.{item.job_name}
+                    </span>
+                    {!item.ativo && <Badge value="inativo">fora da supervisão</Badge>}
+                    {!item.previsto
+                      ? <Badge value="neutral">não previsto neste dia</Badge>
+                      : <Badge value={estado.badge}>{estado.label}</Badge>}
+                    <span className="text-[11px] text-dim">
+                      janela {hhmm(item.janela_inicio)}–{hhmm(item.janela_fim)}
+                    </span>
+                  </button>
+                  {/* Sempre visível, com ou sem falha: o diagrama é a forma de
+                      conferir a estrutura do fluxo, não só de achar o erro. */}
+                  <button
+                    onClick={() => setDiagrama(item)}
+                    title={`Ver o fluxo de ${item.job_name} em diagrama, com os níveis abaixo dele`}
+                    className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-edge bg-panel text-[11px] text-dim hover:text-ink hover:bg-edge/40 transition-colors"
+                  >
+                    <Network size={12} /> Ver diagrama
+                  </button>
                   {ultimo && (
-                    <span className="ml-auto text-[11px] text-dim">
+                    <span className="text-[11px] text-dim shrink-0">
                       {hora(ultimo.inicio)} → {hora(ultimo.fim)} {duracao(ultimo.duracao_seg)}
                     </span>
                   )}
-                </button>
+                </div>
 
                 {expandido && (
                   <div className="px-4 pb-3 pt-0.5 flex flex-col gap-2 border-t border-edge/60">
@@ -259,7 +282,14 @@ export function SupervisaoCard({ date }: { date: string }) {
                                 {item.filhos.filter(f => (f.nivel ?? 1) === nivel).map((f, i) => (
                                   <span
                                     key={i}
-                                    title={`${f.job_filho} — ${f.status}${f.job_pai ? ` (disparado por ${f.job_pai})` : ''} · execução de ${hora(f.run_inicio)}`}
+                                    title={[
+                                      `${f.job_filho} — ${f.status}`,
+                                      f.job_pai ? `disparado por ${f.job_pai}` : '',
+                                      f.inicio || f.fim
+                                        ? `${hora(f.inicio)} → ${hora(f.fim)}${f.duracao_seg != null ? ` (${duracao(f.duracao_seg)})` : ''}`
+                                        : '',
+                                      `execução de ${hora(f.run_inicio)}`,
+                                    ].filter(Boolean).join(' · ')}
                                     className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] ${
                                       f.falhou
                                         ? 'border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300'
@@ -268,6 +298,9 @@ export function SupervisaoCard({ date }: { date: string }) {
                                   >
                                     <span className="font-mono">{f.job_filho}</span>
                                     <span>· {f.status}</span>
+                                    {f.duracao_seg != null && (
+                                      <span className="opacity-70">· {duracao(f.duracao_seg)}</span>
+                                    )}
                                   </span>
                                 ))}
                               </div>
@@ -282,6 +315,16 @@ export function SupervisaoCard({ date }: { date: string }) {
             )
           })}
         </ul>
+      )}
+
+      {diagrama && (
+        <SupervisaoArvoreModal
+          open
+          onClose={() => setDiagrama(null)}
+          rootJob={`${diagrama.project}.${diagrama.job_name}`}
+          filhos={diagrama.filhos}
+          runs={diagrama.runs}
+        />
       )}
     </div>
   )
