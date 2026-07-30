@@ -20,8 +20,14 @@ O QUE FAZ, a cada ciclo:
 
 SUCESSO FALSO: o DataStage dá a sequence como "Finished OK" mesmo quando um job
 filho abortou — caso real de produção que passava despercebido. Por isso o
-veredito daqui não é o do DataStage: sucesso REAL exige que nenhum filho tenha
-abortado.
+veredito daqui não é o do DataStage: sucesso REAL exige que nenhum job da árvore
+tenha abortado.
+
+E o problema é RECURSIVO: uma sequence intermediária também reporta OK e esconde
+o nível de baixo (visto em produção: CargaDiaria → Dim → DimSocios →
+DimSocios_01_ext abortado, três níveis abaixo). Daí a varredura em LARGURA de
+até DS_SUPERVISAO_PROFUNDIDADE níveis: nenhum job do nível 1 aparecia falhado,
+então seguir só a cadeia de aborts não encontraria nada.
 
 IDEMPOTÊNCIA: rodar o mesmo ciclo duas vezes não duplica nada. Runs fazem upsert
 pela chave (supervisao_id, run_inicio); eventos entram com INSERT ... WHERE NOT
@@ -40,6 +46,9 @@ CONFIGURAÇÃO (Variables do Airflow, todas com default):
   DS_SUPERVISAO_RETENCAO_DIAS     (default: 365)
   DS_SUPERVISAO_LOTE_NOTIFICACAO  (default: 50)   — cards por ciclo
   DS_SUPERVISAO_JANELA_NOTIFICACAO_DIAS (default: 2) — idade máxima p/ reenvio
+  DS_SUPERVISAO_PROFUNDIDADE      (default: 4)   — níveis abaixo do job
+  DS_SUPERVISAO_TETO_EXPANSAO     (default: 80)  — chamadas SSH da expansão/ciclo
+  DS_SUPERVISAO_TEMPO_EXPANSAO_SEG (default: 420) — tempo da expansão/ciclo
 """
 from __future__ import annotations
 
@@ -194,6 +203,105 @@ def _gravar_runs(cur, supervisao_id: int, runs, job: JobSupervisionado, log) -> 
     return gravados
 
 
+def _expandir_arvore(exec_logsum, job: JobSupervisionado, run, log,
+                     profundidade_max: int, orcamento) -> tuple[dict, int]:
+    """Desce nos jobs abaixo do supervisionado, em LARGURA, até N níveis.
+
+    Por que em largura e não seguindo a cadeia de aborts (como faz o botão
+    "Causa-raiz" do console): no caso real observado, TODOS os filhos do nível 1
+    aparecem concluídos — `Dim` diz OK, `DimSocios` diz OK, e o abort está em
+    `DimSocios_01_ext`, no nível 3. Seguir só quem falhou não encontraria nada.
+
+    `orcamento` é um objeto com `.pode()` e `.gastar()`: a expansão para quando o
+    tempo ou a cota de chamadas do ciclo acaba, e o run fica NÃO expandido para
+    o próximo ciclo continuar. Sem esse freio, um job com dezenas de sequences
+    aninhadas seguraria o ciclo de 15 min indefinidamente.
+
+    Devolve ({nome: (status, nivel, pai)}, chamadas_usadas).
+    """
+    from utils.ds_logsum import nome_real, parse_logsum, run_da_execucao
+
+    arvore: dict[str, tuple[int, int, str]] = {}
+    for nome, status in (run.filhos or {}).items():
+        arvore[nome] = (status, 1, job.job_name)
+
+    # Fila de largura: (nome do job a expandir, nível dele)
+    fila = [(nome, 1) for nome in (run.filhos or {})]
+    chamadas = 0
+    completo = True
+
+    while fila:
+        nome, nivel = fila.pop(0)
+        if nivel >= profundidade_max:
+            continue
+        if not orcamento.pode():
+            completo = False
+            log.info("[DS Superv] expansão de %s pausada no nível %d (orçamento do ciclo) "
+                     "— continua no próximo ciclo.", job.rotulo, nivel)
+            break
+
+        alvo = nome_real(nome)
+        if not _SAFE_DS_RE.match(alvo):
+            continue
+
+        orcamento.gastar()
+        chamadas += 1
+        saida, erro = exec_logsum(alvo, job.max_linhas)
+        if erro or not saida.strip():
+            # Job simples (não-sequence) ou sem log: não tem o que descer.
+            continue
+
+        filho_run = run_da_execucao(parse_logsum(saida), run.inicio, run.fim)
+        if filho_run is None or not filho_run.filhos:
+            continue
+
+        for neto, status in filho_run.filhos.items():
+            if neto in arvore:
+                continue          # já visto (evita laço e retrabalho)
+            arvore[neto] = (status, nivel + 1, alvo)
+            fila.append((neto, nivel + 1))
+
+    return arvore, (chamadas if completo else -chamadas)
+
+
+class _Orcamento:
+    """Freio do ciclo: teto de chamadas SSH e de tempo para a expansão profunda.
+
+    Existe porque a expansão é o único trecho cujo custo não dá para prever pelo
+    cadastro — depende de quantas sequences aninhadas o fluxo tem de verdade."""
+
+    def __init__(self, teto_chamadas: int, teto_segundos: int):
+        import time
+        self._restam = max(0, teto_chamadas)
+        self._fim = time.monotonic() + max(1, teto_segundos)
+        self._time = time
+
+    def pode(self) -> bool:
+        return self._restam > 0 and self._time.monotonic() < self._fim
+
+    def gastar(self) -> None:
+        self._restam -= 1
+
+
+def _carregar_expandidos(hook) -> dict[int, set]:
+    """Runs cuja árvore profunda já foi lida, por job supervisionado.
+
+    A expansão custa uma chamada SSH por sequence aninhada; o run de ontem não
+    muda mais, então relê-lo a cada 15 min só pressionaria o servidor. Lido
+    ANTES de abrir o SSH, porque a decisão de expandir acontece com a conexão
+    já aberta."""
+    try:
+        linhas = hook.get_records(
+            "SELECT supervisao_id, run_inicio FROM dbo.etl_ds_supervisao_run "
+            "WHERE expandido = 1")
+    except Exception:
+        return {}
+    por_job: dict[int, set] = {}
+    for r in (linhas or []):
+        por_job.setdefault(int(r[0]), set()).add(r[1])
+    return por_job
+
+
 def _carregar_estruturas(hook) -> dict[int, "object"]:
     """Estrutura aprendida (jobs filhos esperados) por job supervisionado.
 
@@ -222,8 +330,12 @@ def _carregar_estruturas(hook) -> dict[int, "object"]:
     return estruturas
 
 
-def _gravar_filhos_e_aprender(cur, job: JobSupervisionado, runs, log) -> int:
-    """Grava o status de cada job filho e alimenta a estrutura esperada.
+def _gravar_filhos_e_aprender(cur, job: JobSupervisionado, runs, log, arvores=None) -> int:
+    """Grava o status de cada job ABAIXO do supervisionado e alimenta a estrutura.
+
+    Grava a árvore INTEIRA (níveis 1..N) com o nível e o pai de cada job: sem
+    isso, uma sequence intermediária "Finished OK" continuaria escondendo o
+    abort de um neto, que é o caso real observado em produção.
 
     Guarda TODOS os códigos (inclusive crash e parado, que hoje não geram
     alerta): o que vira card é decisão do código, e ter o dado no banco permite
@@ -235,9 +347,20 @@ def _gravar_filhos_e_aprender(cur, job: JobSupervisionado, runs, log) -> int:
 
     from utils.ds_supervisao_regras import janela_do_dia
 
+    arvores = arvores or {}
     aprendidas = 0
     for run in runs:
-        if run.inicio is None or not run.filhos:
+        if run.inicio is None:
+            continue
+
+        # Árvore completa quando a expansão rodou; senão, só o primeiro nível.
+        dados_arvore = arvores.get((job.id, run.inicio))
+        if dados_arvore:
+            arvore, completa = dados_arvore
+        else:
+            arvore = {n: (c, 1, job.job_name) for n, c in (run.filhos or {}).items()}
+            completa = False
+        if not arvore:
             continue
 
         data_ref = run.inicio.date()
@@ -247,21 +370,32 @@ def _gravar_filhos_e_aprender(cur, job: JobSupervisionado, runs, log) -> int:
                 data_ref = candidata
                 break
 
-        for nome, codigo in run.filhos.items():
+        for nome, (codigo, nivel, pai) in arvore.items():
             try:
                 cur.execute(
                     "UPDATE dbo.etl_ds_supervisao_run_filho SET status_code = %s, "
-                    "  data_ref = %s, coletado_em = GETDATE() "
+                    "  data_ref = %s, nivel = %s, job_pai = %s, coletado_em = GETDATE() "
                     "WHERE supervisao_id = %s AND run_inicio = %s AND job_filho = %s",
-                    (codigo, data_ref, job.id, run.inicio, nome))
+                    (codigo, data_ref, nivel, pai, job.id, run.inicio, nome))
                 if cur.rowcount == 0:
                     cur.execute(
                         "INSERT INTO dbo.etl_ds_supervisao_run_filho "
-                        "(supervisao_id, run_inicio, job_filho, status_code, data_ref) "
-                        "VALUES (%s,%s,%s,%s,%s)",
-                        (job.id, run.inicio, nome, codigo, data_ref))
+                        "(supervisao_id, run_inicio, job_filho, status_code, data_ref, "
+                        " nivel, job_pai) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                        (job.id, run.inicio, nome, codigo, data_ref, nivel, pai))
             except Exception as e:
                 log.warning("[DS Superv] falha ao gravar filho %s de %s: %s", nome, job.rotulo, e)
+
+        # Marca o run como expandido só quando a varredura foi até o fim: se o
+        # orçamento do ciclo cortou no meio, o próximo ciclo retoma de onde parou.
+        if completa:
+            try:
+                cur.execute(
+                    "UPDATE dbo.etl_ds_supervisao_run SET expandido = 1 "
+                    "WHERE supervisao_id = %s AND run_inicio = %s", (job.id, run.inicio))
+            except Exception as e:
+                log.warning("[DS Superv] não foi possível marcar run %s como expandido: %s",
+                            run.inicio, e)
 
         deve_aprender, nomes = aprender(run)
         if not deve_aprender:
@@ -490,12 +624,21 @@ def coletar(**context) -> dict:
 
     mensagens  = _carregar_mensagens(hook)
     estruturas = _carregar_estruturas(hook)
+    expandidos = _carregar_expandidos(hook)
+
+    profundidade = max(1, _var_int("DS_SUPERVISAO_PROFUNDIDADE", 4))
+    orcamento = _Orcamento(_var_int("DS_SUPERVISAO_TETO_EXPANSAO", 80),
+                           _var_int("DS_SUPERVISAO_TEMPO_EXPANSAO_SEG", 420))
+
+    limite_log_pre = agora - timedelta(days=DIAS_DE_LOG)
 
     log.info("[DS Superv] %d job(s) supervisionado(s) — abrindo SSH...", len(jobs))
 
     from airflow.providers.ssh.hooks.ssh import SSHHook
 
     saidas: dict[int, tuple[str, str]] = {}   # supervisao_id → (stdout, erro)
+    # (supervisao_id, run_inicio) → ({nome: (status, nivel, pai)}, expansao_completa)
+    arvores: dict[tuple, tuple[dict, bool]] = {}
     try:
         client = SSHHook(ssh_conn_id=ssh_conn_id).get_conn()
     except Exception as e:
@@ -527,6 +670,42 @@ def coletar(**context) -> dict:
                         saidas[job.id] = (saida, "")
                 except Exception as e:
                     saidas[job.id] = ("", f"falha ao executar dsjob: {e}"[:400])
+                    continue
+
+                # Expansão profunda: desce nos níveis abaixo do supervisionado.
+                # Só para runs ainda NÃO expandidos e já terminados — run em
+                # andamento seria reexpandido a cada ciclo sem ganho.
+                if not saidas[job.id][1]:
+                    def _logsum_de(alvo: str, maxl_alvo: int, _job=job) -> tuple[str, str]:
+                        c = (f"source {dshome}/dsenv && {dshome}/bin/dsjob -logsum "
+                             f"-max {max(1, min(int(maxl_alvo or 200), 2000))} "
+                             f"{_job.project} {alvo}")
+                        try:
+                            _i, out, err = client.exec_command(c, timeout=90)
+                            cod = out.channel.recv_exit_status()
+                            texto = out.read().decode(errors="replace")
+                            detalhe = err.read().decode(errors="replace").strip()
+                            if cod != 0:
+                                return "", f"dsjob retornou {cod}: {detalhe or 'sem detalhe'}"
+                            return texto, ""
+                        except Exception as exc:
+                            return "", f"falha ao executar dsjob: {exc}"
+
+                    ja_expandidos = expandidos.get(job.id, set())
+                    for r in runs_desde(parse_logsum(saidas[job.id][0]), limite_log_pre):
+                        if r.inicio is None or r.inicio in ja_expandidos:
+                            continue
+                        if r.resultado == "running":
+                            continue          # ainda mudando: expande quando terminar
+                        if not orcamento.pode():
+                            break
+                        arvore, usadas = _expandir_arvore(
+                            _logsum_de, job, r, log, profundidade, orcamento)
+                        arvores[(job.id, r.inicio)] = (arvore, usadas >= 0)
+                        log.info("[DS Superv] %s: árvore do run %s lida com %d job(s) "
+                                 "em até %d nível(is), %d chamada(s) SSH%s",
+                                 job.rotulo, r.inicio, len(arvore), profundidade,
+                                 abs(usadas), "" if usadas >= 0 else " (incompleta)")
         finally:
             client.close()
             log.info("[DS Superv] conexão SSH encerrada.")
@@ -555,12 +734,21 @@ def coletar(**context) -> dict:
                 continue
 
             runs = runs_desde(parse_logsum(saida), limite_log)
+
+            # Liga a árvore expandida ao run correspondente: é ela que faz o
+            # veredito olhar todos os níveis, não só os filhos diretos.
+            for r in runs:
+                dados = arvores.get((job.id, r.inicio))
+                if dados:
+                    r.descendentes = dados[0]
+
             total_runs += _gravar_runs(cur, job.id, runs, job, log)
 
             # Jobs ABAIXO do supervisionado: grava o status de cada um e
             # aprende a estrutura das execuções que deram certo de verdade.
             estrutura = estruturas.get(job.id)
-            total_aprendidas += _gravar_filhos_e_aprender(cur, job, runs, log)
+            total_aprendidas += _gravar_filhos_e_aprender(
+                cur, job, runs, log, arvores=arvores)
 
             total_eventos += _gravar_eventos(
                 cur, job, avaliar(job, runs, agora, estrutura), log,

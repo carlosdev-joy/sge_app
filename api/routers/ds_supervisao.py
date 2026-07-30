@@ -511,18 +511,31 @@ def _ler_filhos(cur, dia) -> dict[int, list[dict]]:
     Degrada para vazio sem a migration 064 — o painel perde o detalhe de
     dependência, mas continua mostrando o resto."""
     try:
-        cur.execute(
-            "SELECT supervisao_id, CONVERT(VARCHAR(19), run_inicio, 120), "
-            "       job_filho, status_code "
-            "FROM dbo.etl_ds_supervisao_run_filho WHERE data_ref = ? "
-            "ORDER BY run_inicio, job_filho", (dia,))
+        # nivel/job_pai só existem a partir da 065 — o fallback mantém o painel
+        # vivo se o deploy do front chegar antes da migration.
+        try:
+            cur.execute(
+                "SELECT supervisao_id, CONVERT(VARCHAR(19), run_inicio, 120), "
+                "       job_filho, status_code, nivel, job_pai "
+                "FROM dbo.etl_ds_supervisao_run_filho WHERE data_ref = ? "
+                "ORDER BY run_inicio, nivel, job_filho", (dia,))
+            linhas = [(r[0], r[1], r[2], r[3], int(r[4] or 1), r[5]) for r in cur.fetchall()]
+        except Exception:
+            cur.execute(
+                "SELECT supervisao_id, CONVERT(VARCHAR(19), run_inicio, 120), "
+                "       job_filho, status_code "
+                "FROM dbo.etl_ds_supervisao_run_filho WHERE data_ref = ? "
+                "ORDER BY run_inicio, job_filho", (dia,))
+            linhas = [(r[0], r[1], r[2], r[3], 1, None) for r in cur.fetchall()]
+
         por_job: dict[int, list[dict]] = {}
-        for r in cur.fetchall():
-            codigo = int(r[3])
-            por_job.setdefault(int(r[0]), []).append({
-                "run_inicio": r[1], "job_filho": r[2], "status_code": codigo,
+        for sid, run_inicio, nome, codigo_bruto, nivel, pai in linhas:
+            codigo = int(codigo_bruto)
+            por_job.setdefault(int(sid), []).append({
+                "run_inicio": run_inicio, "job_filho": nome, "status_code": codigo,
                 "status": _STATUS_FILHO.get(codigo, f"código {codigo}"),
                 "falhou": codigo == _CODIGO_ABORTADO,
+                "nivel": nivel, "job_pai": pai,
             })
         return por_job
     except Exception as e:
