@@ -5,13 +5,15 @@
 // cross-página nunca funcionaram; o Monitoramento tem tour próprio
 // (ProductTour) desde a F2. O último passo aponta o Menu para o usuário
 // seguir sozinho. Visibilidade é controlada pelo pai (Index).
-// PRESERVADO o clamp do balão à viewport (fix do PR #192) — não regredir.
-import { useEffect, useState } from "react";
+// O posicionamento do balão vive em lib/tutorialLayout (medido, com desvio
+// automático) — sucessor do clamp do PR #192, que assumia altura fixa.
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { X, ArrowRight, ArrowLeft, Hand } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import diegoAvatar from "../assets/diego-avatar.png";
 import lariAvatar from "../assets/lari-avatar.png";
 import leoAvatar from "../assets/leo-avatar.png";
+import { calcularLayout } from "../lib/tutorialLayout";
 
 interface TutorialStep {
   avatar: string;
@@ -92,41 +94,72 @@ export default function Tutorial({ onFechar }: TutorialProps) {
     if (currentStep > 0) setCurrentStep(currentStep - 1);
   };
 
-  // Posições do balão em relação ao avatar — clamp mantém o balão dentro da
-  // viewport (margem de 16px); sem isso, avatar central + balão "top" subia
-  // acima da tela e cortava (bug corrigido no PR #192).
-  const getBalloonPosition = () => {
-    const offset = 180; // distância do avatar
-    const W = 320; // maxWidth do balão
-    const H = 340; // altura assumida p/ o clamp (o conteúdo rola se passar)
-    const clampX = (v: string) => `clamp(16px, ${v}, calc(100% - 16px - ${W}px))`;
-    const clampY = (v: string) => `clamp(16px, ${v}, calc(100% - 16px - ${H}px))`;
-    const baseStyle: React.CSSProperties = {
-      position: "fixed",
-      maxWidth: `${W}px`,
-      zIndex: 1001,
-    };
+  // ── Posicionamento do balão ────────────────────────────────────────────
+  // O clamp em CSS puro do PR #192 mantinha o balão dentro da viewport, mas
+  // com uma altura ASSUMIDA (340px) e sem saber onde o avatar estava. No passo
+  // 1 o avatar fica no centro da tela e o balão vai "top": quando não há 340px
+  // livres acima do centro, o clamp empurrava o balão para baixo, em cima da
+  // Lari — e como o balão tem z-index maior, ela sumia atrás dele.
+  //
+  // Agora o balão é MEDIDO e a posição é calculada em pixels, testando o lado
+  // preferido, depois o oposto, depois os demais: fica no primeiro que couber
+  // na tela sem encostar no avatar.
+  const balaoRef = useRef<HTMLDivElement>(null);
+  const [tamanho, setTamanho] = useState({ width: 320, height: 280 });
+  const [viewport, setViewport] = useState(() => ({
+    width: typeof window === "undefined" ? 1280 : window.innerWidth,
+    height: typeof window === "undefined" ? 800 : window.innerHeight,
+  }));
 
-    switch (step.balloonPosition) {
-      case "right":
-        return { ...baseStyle, left: clampX(`calc(${step.avatarPosition.x} + ${offset}px)`), top: clampY(step.avatarPosition.y) };
-      case "left":
-        return { ...baseStyle, right: clampX(`calc(100% - ${step.avatarPosition.x} + ${offset}px)`), top: clampY(step.avatarPosition.y) };
-      case "top":
-        return { ...baseStyle, left: step.avatarPosition.x, bottom: clampY(`calc(100% - ${step.avatarPosition.y} + ${offset}px)`), transform: "translateX(-50%)" };
-      case "bottom":
-        return { ...baseStyle, left: step.avatarPosition.x, top: clampY(`calc(${step.avatarPosition.y} + ${offset}px)`), transform: "translateX(-50%)" };
-    }
+  useLayoutEffect(() => {
+    const medir = () => {
+      const el = balaoRef.current;
+      if (el) {
+        const r = el.getBoundingClientRect();
+        // Só atualiza em mudança real: setState incondicional aqui giraria em
+        // laço, porque o próprio tamanho é entrada do cálculo.
+        setTamanho((t) =>
+          Math.abs(t.width - r.width) > 1 || Math.abs(t.height - r.height) > 1
+            ? { width: r.width, height: r.height }
+            : t,
+        );
+      }
+      setViewport((v) =>
+        v.width !== window.innerWidth || v.height !== window.innerHeight
+          ? { width: window.innerWidth, height: window.innerHeight }
+          : v,
+      );
+    };
+    medir();
+    window.addEventListener("resize", medir);
+    return () => window.removeEventListener("resize", medir);
+  }, [currentStep]);
+
+  const layout = useMemo(
+    () => calcularLayout(step, tamanho, viewport),
+    [step, tamanho, viewport],
+  );
+
+  const balloonStyle: React.CSSProperties = {
+    position: "fixed",
+    left: layout.balao.left,
+    top: layout.balao.top,
+    maxWidth: 320,
+    zIndex: 1001,
   };
 
+  // O triângulo aponta para o lado EFETIVO, não para o preferido — senão, num
+  // passo que desviou, a seta apontaria para o vazio.
   const triangleClass =
-    step.balloonPosition === "right"
+    layout.lado === "right"
       ? "border-r-panel border-t-transparent border-b-transparent border-l-transparent -left-4 top-8"
-      : step.balloonPosition === "left"
+      : layout.lado === "left"
       ? "border-l-panel border-t-transparent border-b-transparent border-r-transparent -right-4 top-8"
-      : step.balloonPosition === "top"
+      : layout.lado === "top"
       ? "border-t-panel border-l-transparent border-r-transparent border-b-transparent -bottom-4 left-1/2 -translate-x-1/2"
-      : "border-b-panel border-l-transparent border-r-transparent border-t-transparent -top-4 left-1/2 -translate-x-1/2";
+      : layout.lado === "bottom"
+      ? "border-b-panel border-l-transparent border-r-transparent border-t-transparent -top-4 left-1/2 -translate-x-1/2"
+      : "hidden";
 
   return (
     <>
@@ -137,8 +170,10 @@ export default function Tutorial({ onFechar }: TutorialProps) {
       <div
         className="fixed z-[1000] transition-all duration-700 ease-out animate-[tutAvatarBounce_0.8s_ease-out]"
         style={{
-          left: step.avatarPosition.x,
-          top: step.avatarPosition.y,
+          // Em pixels, vindo do mesmo cálculo que posiciona o balão: os dois
+          // precisam concordar sobre onde cada um está para nunca se cobrirem.
+          left: layout.avatar.x,
+          top: layout.avatar.y,
           transform: "translate(-50%, -50%)",
         }}
       >
@@ -167,11 +202,12 @@ export default function Tutorial({ onFechar }: TutorialProps) {
         </div>
       </div>
 
-      {/* Balão de fala — o div externo posiciona (fixed + clamp + translateX
-          nos casos top/bottom); a animação de "pop" (scale) fica num filho,
-          senão o transform da animação (fill:both) sobrescreveria o translateX
-          e o balão top/bottom ficaria descentrado. */}
-      <div style={getBalloonPosition()}>
+      {/* Balão de fala — o div externo posiciona (fixed, em pixels já
+          calculados); a animação de "pop" (scale) fica num filho, senão o
+          transform da animação (fill:both) brigaria com o posicionamento.
+          Sem `transform` no externo também porque a medição usa
+          getBoundingClientRect, que enxerga o elemento JÁ transformado. */}
+      <div ref={balaoRef} style={balloonStyle}>
         <div className="animate-[tutBalloonPop_0.5s_ease-out_0.3s_both]">
           {/* Card SEM overflow — o triângulo (fora do padding box) não pode ser
               clipado; o scroll de conteúdo alto fica no wrapper interno. */}
