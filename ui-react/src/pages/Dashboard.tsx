@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react'
+import { Fragment, useState, useMemo, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
@@ -229,11 +229,47 @@ function useNowBRT(enabled: boolean) {
   return now
 }
 
-function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string }) {
-  const sorted = useMemo(() => [...items].sort((a, b) => (a.inicio ?? '').localeCompare(b.inicio ?? '')), [items])
+// Em foco: rodando agora, ou com início dentro de uma janela de ±15min do horário atual
+const FOCUS_WINDOW_MS = 15 * 60 * 1000
 
+function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string }) {
   const isToday = dateRef === todayBRT()
   const now = useNowBRT(isToday)
+
+  function isInFocus(it: GanttItem) {
+    if (!isToday) return false
+    if (it.status === 'RUNNING') return true
+    if (!it.inicio) return false
+    const t = new Date(it.inicio.replace(' ', 'T') + '-03:00').getTime()
+    return Math.abs(t - now) <= FOCUS_WINDOW_MS
+  }
+
+  // Prioridade de linha: o que está acontecendo agora fica no topo.
+  // 2 = rodando · 1 = começou perto do horário atual · 0 = histórico do dia.
+  function prioridade(it: GanttItem) {
+    if (!isToday) return 0
+    if (it.status === 'RUNNING') return 2
+    return isInFocus(it) ? 1 : 0
+  }
+
+  // No dia de HOJE a lista acompanha o relógio: rodando e recém-iniciadas no
+  // topo, o resto descendo do mais recente para o mais antigo — quem começou
+  // 05:20 vai para o fundo, e o usuário rola para trás para revê-lo. Em data
+  // passada não existe "agora": aí a ordem cronológica é a que faz sentido.
+  const sorted = useMemo(() => {
+    const arr = [...items]
+    if (!isToday) {
+      return arr.sort((a, b) => (a.inicio ?? '').localeCompare(b.inicio ?? ''))
+    }
+    return arr.sort((a, b) =>
+      prioridade(b) - prioridade(a) || (b.inicio ?? '').localeCompare(a.inicio ?? ''))
+    // `now` entra de propósito: a cada tique a janela de foco anda e a ordem
+    // se refaz — é isso que dá a sensação de linha do tempo andando.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, isToday, now])
+
+  // Onde termina o bloco "acontecendo agora" — marca o divisor para o histórico.
+  const ativas = isToday ? sorted.filter(it => prioridade(it) > 0).length : 0
 
   if (sorted.length === 0) return null
 
@@ -252,23 +288,22 @@ function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string })
   }
 
   const nowPct = isToday ? Math.max(0, Math.min(100, ((now - dayStart) / span) * 100)) : null
-  // Em foco: rodando agora, ou com início dentro de uma janela de ±15min do horário atual
-  const FOCUS_WINDOW_MS = 15 * 60 * 1000
-  function isInFocus(it: GanttItem) {
-    if (!isToday) return false
-    if (it.status === 'RUNNING') return true
-    if (!it.inicio) return false
-    const t = new Date(it.inicio.replace(' ', 'T') + '-03:00').getTime()
-    return Math.abs(t - now) <= FOCUS_WINDOW_MS
-  }
 
   const hourMarks = Array.from({ length: 25 }, (_, i) => i)
 
   return (
-    <div className="overflow-x-auto">
+    // Rola nos DOIS eixos no mesmo contêiner: é ele o scroll container do
+    // `sticky` das colunas de nome/status (à esquerda/direita) e do eixo de
+    // horas (no topo). `auto` e não `hidden` de propósito — overflow-hidden
+    // mataria o sticky.
+    <div className="overflow-auto max-h-[26rem]">
       <div className="min-w-[720px]">
-        {/* Hour axis */}
-        <div className="flex ml-36 mr-20 mb-1 relative h-4">
+        {/* Hour axis — fica preso no topo: rolando as linhas, a referência de
+            hora tem de continuar visível, senão a barra perde sentido. */}
+        {/* `sticky` sem `relative`: as duas são utilities de position e
+            competiriam pela mesma propriedade — e o sticky já cria o contexto
+            de posicionamento de que as marcas `absolute` de hora precisam. */}
+        <div className="sticky top-0 z-30 bg-panel flex ml-36 mr-20 mb-1 pb-0.5 h-4">
           {hourMarks.map(h => (
             <div key={h} className="absolute text-[9px] text-dim" style={{ left: `${(h / 24) * 100}%` }}>
               {String(h).padStart(2, '0')}h
@@ -282,11 +317,22 @@ function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string })
         </div>
         {/* Rows */}
         <div className="flex flex-col gap-1">
-          {sorted.map(it => {
+          {sorted.map((it, i) => {
             const focus = isInFocus(it)
+            // Divisor entre "acontecendo agora" e o histórico do dia: sem ele o
+            // salto de 14:30 para 09:40 na linha seguinte parece desordem.
+            const divisor = isToday && ativas > 0 && i === ativas
             return (
+              <Fragment key={it.execution_id}>
+              {divisor && (
+                <div className="flex items-center gap-2 pt-1 pb-0.5" aria-hidden="true">
+                  <span className="sticky left-0 w-36 flex-shrink-0 bg-panel text-right pr-2 text-[9px] text-dim uppercase tracking-wide">
+                    antes disso
+                  </span>
+                  <span className="flex-1 border-t border-dashed border-edge" />
+                </div>
+              )}
               <div
-                key={it.execution_id}
                 className={`flex items-center group rounded transition-colors ${
                   focus ? 'bg-red-50 dark:bg-red-900/15 ring-1 ring-red-300/50 dark:ring-red-700/40' : ''
                 }`}
@@ -317,6 +363,7 @@ function GanttChart({ items, dateRef }: { items: GanttItem[]; dateRef: string })
                   <StatusBadge status={it.status} />
                 </div>
               </div>
+              </Fragment>
             )
           })}
         </div>
@@ -602,7 +649,23 @@ export default function Dashboard() {
           {kpis.por_projeto?.length > 0 && (
             <ProjBadges items={kpis.por_projeto} />
           )}
+        </>
+      )}
 
+      {/* ── Supervisão DataStage ──
+          Posição: logo abaixo dos contadores e ACIMA de "Rodando agora" /
+          "Alertas de performance" — são os processos críticos da empresa, e a
+          primeira pergunta ao abrir o dashboard é o que está acontecendo com
+          eles.
+
+          Fica FORA do bloco condicional dos KPIs de propósito (é por isso que o
+          bloco é cortado aqui e reaberto abaixo): o painel não depende do
+          carregamento dos KPIs. Dia sem execução nenhuma no Orquestra ainda
+          precisa mostrar que um job DataStage supervisionado não rodou. */}
+      <SupervisaoCard date={date} />
+
+      {!isLoading && data && kpis && (
+        <>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
 
             {/* ── Rodando agora ── */}
@@ -818,12 +881,6 @@ export default function Dashboard() {
           )}
         </>
       )}
-
-      {/* ── Supervisão DataStage ──
-          Fora do bloco acima de propósito: o painel de supervisão não depende
-          do carregamento dos KPIs. Dia sem execução nenhuma no Orquestra ainda
-          precisa mostrar que um job DataStage supervisionado não rodou. */}
-      <SupervisaoCard date={date} />
 
       {/* Modais de detalhe de execução (reuso da tela de Logs) */}
       {detail && (

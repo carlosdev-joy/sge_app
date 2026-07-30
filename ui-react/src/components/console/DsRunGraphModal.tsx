@@ -21,7 +21,10 @@ export interface DsRunGraph { result: 'ok' | 'aborted' | 'running' | 'unknown'; 
 type Dir = 'LR' | 'TB'
 const FILTERABLE: DsGraphStatus[] = ['ok', 'warning', 'aborted', 'running']
 
-const STATUS: Record<DsGraphStatus, { Icon: typeof CheckCircle2; box: string; text: string }> = {
+// Exportado para o diagrama da Supervisão DataStage (dashboard) desenhar com o
+// MESMO vocabulário visual: cor, ícone e rótulo de status vindo de um lugar só.
+// Duplicar isso faria os dois diagramas divergirem no primeiro ajuste de cor.
+export const STATUS: Record<DsGraphStatus, { Icon: typeof CheckCircle2; box: string; text: string }> = {
   ok:      { Icon: CheckCircle2,  box: 'bg-green-50 border-green-300 dark:bg-green-900/30 dark:border-green-700',   text: 'text-green-700 dark:text-green-300' },
   warning: { Icon: AlertTriangle, box: 'bg-amber-50 border-amber-300 dark:bg-yellow-900/30 dark:border-yellow-700', text: 'text-amber-700 dark:text-yellow-300' },
   aborted: { Icon: XCircle,       box: 'bg-red-50 border-red-300 dark:bg-red-900/30 dark:border-red-700',           text: 'text-red-700 dark:text-red-300' },
@@ -30,17 +33,17 @@ const STATUS: Record<DsGraphStatus, { Icon: typeof CheckCircle2; box: string; te
   unknown: { Icon: HelpCircle,    box: 'bg-slate-50 border-slate-300 dark:bg-gray-800 dark:border-gray-700',        text: 'text-slate-600 dark:text-gray-300' },
 }
 
-function statusLabel(s: DsGraphStatus): string {
+export function statusLabel(s: DsGraphStatus): string {
   return s === 'ok' ? 'Concluído' : s === 'warning' ? 'Avisos' : s === 'aborted' ? 'Abortado'
     : s === 'reset' ? 'Resetado' : s === 'running' ? 'Em execução' : '—'
 }
 
-interface JobNodeData {
+export interface JobNodeData {
   label: string; status: DsGraphStatus; sub?: string; time?: string
   isRoot?: boolean; drillJob?: string; targetTime?: string; dir?: Dir; critical?: boolean
 }
 
-function JobNode({ data }: NodeProps) {
+export function JobNode({ data }: NodeProps) {
   const d = data as unknown as JobNodeData
   const s = STATUS[d.status] ?? STATUS.unknown
   const Icon = s.Icon

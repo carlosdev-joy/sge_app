@@ -85,12 +85,25 @@ class DsRun:
     # É esta lista que permite descobrir o "sucesso falso": a sequence termina
     # OK enquanto um filho abortou, e o DataStage não propaga isso para cima.
     filhos: dict[str, int] = field(default_factory=dict)
+    # nome do job filho → (início, fim) observados NESTE run.
+    # Campo ADITIVO de propósito: `filhos` continua sendo a fonte única do
+    # status, e todo o veredito (sucesso_real, aprender, filhos_ausentes) segue
+    # lendo só ele. Assim o horário entra sem mexer em nada que decide alerta.
+    # Qualquer ponta pode ser None: o log dá início sem fim para o job que ainda
+    # roda, e não dá nenhum dos dois para o filho que só apareceu num
+    # "Waiting for job X to finish".
+    filhos_horario: dict[str, tuple[datetime | None, datetime | None]] = field(default_factory=dict)
     # Árvore COMPLETA de descendentes (níveis 1..N) quando a expansão profunda
-    # roda: nome → (status, nível, job pai). O DataStage esconde o abort em
-    # cascata — uma sequence intermediária aparece "Finished OK" mesmo com um
-    # neto abortado —, então o veredito precisa olhar todos os níveis, não só o
-    # primeiro. Vazio = expansão não executada; aí vale `filhos`.
-    descendentes: dict[str, tuple[int, int, str]] = field(default_factory=dict)
+    # roda: nome → (status, nível, job pai[, início, fim]). O DataStage esconde
+    # o abort em cascata — uma sequence intermediária aparece "Finished OK"
+    # mesmo com um neto abortado —, então o veredito precisa olhar todos os
+    # níveis, não só o primeiro. Vazio = expansão não executada; aí vale
+    # `filhos`.
+    #
+    # As duas últimas posições (início e fim) são OPCIONAIS: quem lê índice
+    # tolera a tupla de 3 que a versão anterior gravava — só o status (0) e o
+    # nível (1) são posições garantidas.
+    descendentes: dict[str, tuple] = field(default_factory=dict)
 
     @property
     def duracao_seg(self) -> int | None:
@@ -129,23 +142,41 @@ def parse_logsum(stdout: str) -> list[DsRun]:
     runs: list[DsRun] = []
     atual: DsRun | None = None
     filhos: dict[str, int] | None = None   # nome → código de status (-1 = sem status)
+    # nome → [início, fim]. O início é a hora do PRIMEIRO evento que cita o
+    # filho (o "Job run requested"), o fim é a hora do "has finished".
+    horarios: dict[str, list] | None = None
     hora_texto = ""
     hora: datetime | None = None
     evento_id = 0
 
+    def marcar_inicio(nome: str) -> None:
+        """Primeiro evento do filho vence: o log cita o mesmo job várias vezes
+        (requested → waiting to start → waiting to finish) e o que interessa é
+        quando ele entrou em cena."""
+        if horarios is None:
+            return
+        h = horarios.setdefault(nome, [None, None])
+        if h[0] is None:
+            h[0] = hora
+
     def registrar_filho(nome: str) -> None:
         if filhos is not None and nome not in filhos:
             filhos[nome] = -1
+        marcar_inicio(nome)
 
     def fechar() -> None:
-        nonlocal atual, filhos
+        nonlocal atual, filhos, horarios
         if atual is not None and filhos is not None:
             atual.jobs_filhos = len(filhos)
             atual.filhos = dict(filhos)
             atual.filhos_abortados = [n for n, code in filhos.items() if code == 3]
+            atual.filhos_horario = {
+                n: (h[0], h[1]) for n, h in (horarios or {}).items() if n in filhos
+            }
             runs.append(atual)
         atual = None
         filhos = None
+        horarios = None
 
     for linha in (stdout or "").split("\n"):
         cabecalho = _HEADER_RE.match(linha)
@@ -164,6 +195,7 @@ def parse_logsum(stdout: str) -> list[DsRun]:
             atual = DsRun(inicio=hora, inicio_texto=hora_texto,
                           primeiro_evento=evento_id, ultimo_evento=evento_id)
             filhos = {}
+            horarios = {}
             continue
 
         if atual is None or filhos is None:
@@ -185,7 +217,12 @@ def parse_logsum(stdout: str) -> list[DsRun]:
 
         fim_filho = _FILHO_FIM_RE.search(msg)
         if fim_filho:
-            filhos[fim_filho.group(1)] = int(fim_filho.group(2))
+            nome_filho = fim_filho.group(1)
+            filhos[nome_filho] = int(fim_filho.group(2))
+            # Um filho pode aparecer PRIMEIRO aqui, quando o "requested" ficou
+            # fora do `-max` — daí o setdefault: registra o fim mesmo sem início.
+            if horarios is not None:
+                horarios.setdefault(nome_filho, [None, None])[1] = hora
             continue
 
         req = _FILHO_REQ_RE.search(msg)

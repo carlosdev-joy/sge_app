@@ -217,13 +217,18 @@ def _expandir_arvore(exec_logsum, job: JobSupervisionado, run, log,
     o próximo ciclo continuar. Sem esse freio, um job com dezenas de sequences
     aninhadas seguraria o ciclo de 15 min indefinidamente.
 
-    Devolve ({nome: (status, nivel, pai)}, chamadas_usadas).
+    Devolve ({nome: (status, nivel, pai, inicio, fim)}, chamadas_usadas).
     """
     from utils.ds_logsum import nome_real, parse_logsum, run_da_execucao
 
-    arvore: dict[str, tuple[int, int, str]] = {}
+    def horas_de(r, nome):
+        """(início, fim) do filho naquele run — (None, None) se o log não deu."""
+        return (r.filhos_horario or {}).get(nome, (None, None))
+
+    arvore: dict[str, tuple] = {}
     for nome, status in (run.filhos or {}).items():
-        arvore[nome] = (status, 1, job.job_name)
+        ini_f, fim_f = horas_de(run, nome)
+        arvore[nome] = (status, 1, job.job_name, ini_f, fim_f)
 
     # Fila de largura: (nome do job a expandir, nível dele)
     fila = [(nome, 1) for nome in (run.filhos or {})]
@@ -258,7 +263,8 @@ def _expandir_arvore(exec_logsum, job: JobSupervisionado, run, log,
         for neto, status in filho_run.filhos.items():
             if neto in arvore:
                 continue          # já visto (evita laço e retrabalho)
-            arvore[neto] = (status, nivel + 1, alvo)
+            ini_n, fim_n = horas_de(filho_run, neto)
+            arvore[neto] = (status, nivel + 1, alvo, ini_n, fim_n)
             fila.append((neto, nivel + 1))
 
     return arvore, (chamadas if completo else -chamadas)
@@ -302,6 +308,24 @@ def _carregar_expandidos(hook) -> dict[int, set]:
     return por_job
 
 
+def _tem_colunas_horario(hook) -> bool:
+    """A migration 066 já rodou? Decide o formato do upsert dos filhos.
+
+    Testado ANTES de abrir a transação, de propósito: descobrir a coluna
+    faltando por erro de SQL no meio do laço deixaria a transação em estado
+    duvidoso e faria o `except` de cada linha engolir TODOS os filhos — o
+    painel voltaria a não mostrar árvore nenhuma num deploy que levou `dags/`
+    sem a migration."""
+    try:
+        linhas = hook.get_records(
+            "SELECT COUNT(*) FROM sys.columns "
+            "WHERE object_id = OBJECT_ID('dbo.etl_ds_supervisao_run_filho') "
+            "  AND name IN ('inicio', 'fim')")
+        return int((linhas or [[0]])[0][0]) >= 2
+    except Exception:
+        return False
+
+
 def _carregar_estruturas(hook) -> dict[int, "object"]:
     """Estrutura aprendida (jobs filhos esperados) por job supervisionado.
 
@@ -330,7 +354,8 @@ def _carregar_estruturas(hook) -> dict[int, "object"]:
     return estruturas
 
 
-def _gravar_filhos_e_aprender(cur, job: JobSupervisionado, runs, log, arvores=None) -> int:
+def _gravar_filhos_e_aprender(cur, job: JobSupervisionado, runs, log, arvores=None,
+                              com_horario: bool = True) -> int:
     """Grava o status de cada job ABAIXO do supervisionado e alimenta a estrutura.
 
     Grava a árvore INTEIRA (níveis 1..N) com o nível e o pai de cada job: sem
@@ -358,7 +383,9 @@ def _gravar_filhos_e_aprender(cur, job: JobSupervisionado, runs, log, arvores=No
         if dados_arvore:
             arvore, completa = dados_arvore
         else:
-            arvore = {n: (c, 1, job.job_name) for n, c in (run.filhos or {}).items()}
+            horas = run.filhos_horario or {}
+            arvore = {n: (c, 1, job.job_name, *horas.get(n, (None, None)))
+                      for n, c in (run.filhos or {}).items()}
             completa = False
         if not arvore:
             continue
@@ -370,19 +397,46 @@ def _gravar_filhos_e_aprender(cur, job: JobSupervisionado, runs, log, arvores=No
                 data_ref = candidata
                 break
 
-        for nome, (codigo, nivel, pai) in arvore.items():
+        for nome, dados in arvore.items():
+            # Desempacotamento TOLERANTE: a árvore gravada antes da 066 tem 3
+            # posições (status, nível, pai) e a atual tem 5. Ler por índice
+            # aceita as duas — desempacotar em 5 quebraria com o histórico.
+            codigo, nivel, pai = dados[0], dados[1], dados[2]
+            ini_f = dados[3] if len(dados) > 3 else None
+            fim_f = dados[4] if len(dados) > 4 else None
             try:
-                cur.execute(
-                    "UPDATE dbo.etl_ds_supervisao_run_filho SET status_code = %s, "
-                    "  data_ref = %s, nivel = %s, job_pai = %s, coletado_em = GETDATE() "
-                    "WHERE supervisao_id = %s AND run_inicio = %s AND job_filho = %s",
-                    (codigo, data_ref, nivel, pai, job.id, run.inicio, nome))
-                if cur.rowcount == 0:
+                if com_horario:
                     cur.execute(
-                        "INSERT INTO dbo.etl_ds_supervisao_run_filho "
-                        "(supervisao_id, run_inicio, job_filho, status_code, data_ref, "
-                        " nivel, job_pai) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                        (job.id, run.inicio, nome, codigo, data_ref, nivel, pai))
+                        "UPDATE dbo.etl_ds_supervisao_run_filho SET status_code = %s, "
+                        "  data_ref = %s, nivel = %s, job_pai = %s, "
+                        # COALESCE: um ciclo que releia o run com o log já
+                        # truncado não pode APAGAR o horário que um ciclo
+                        # anterior capturou.
+                        "  inicio = COALESCE(%s, inicio), fim = COALESCE(%s, fim), "
+                        "  coletado_em = GETDATE() "
+                        "WHERE supervisao_id = %s AND run_inicio = %s AND job_filho = %s",
+                        (codigo, data_ref, nivel, pai, ini_f, fim_f,
+                         job.id, run.inicio, nome))
+                else:
+                    cur.execute(
+                        "UPDATE dbo.etl_ds_supervisao_run_filho SET status_code = %s, "
+                        "  data_ref = %s, nivel = %s, job_pai = %s, coletado_em = GETDATE() "
+                        "WHERE supervisao_id = %s AND run_inicio = %s AND job_filho = %s",
+                        (codigo, data_ref, nivel, pai, job.id, run.inicio, nome))
+                if cur.rowcount == 0:
+                    if com_horario:
+                        cur.execute(
+                            "INSERT INTO dbo.etl_ds_supervisao_run_filho "
+                            "(supervisao_id, run_inicio, job_filho, status_code, data_ref, "
+                            " nivel, job_pai, inicio, fim) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                            (job.id, run.inicio, nome, codigo, data_ref, nivel, pai,
+                             ini_f, fim_f))
+                    else:
+                        cur.execute(
+                            "INSERT INTO dbo.etl_ds_supervisao_run_filho "
+                            "(supervisao_id, run_inicio, job_filho, status_code, data_ref, "
+                            " nivel, job_pai) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                            (job.id, run.inicio, nome, codigo, data_ref, nivel, pai))
             except Exception as e:
                 log.warning("[DS Superv] falha ao gravar filho %s de %s: %s", nome, job.rotulo, e)
 
@@ -625,6 +679,10 @@ def coletar(**context) -> dict:
     mensagens  = _carregar_mensagens(hook)
     estruturas = _carregar_estruturas(hook)
     expandidos = _carregar_expandidos(hook)
+    com_horario = _tem_colunas_horario(hook)
+    if not com_horario:
+        log.info("[DS Superv] migration 066 pendente: a arvore sera gravada sem "
+                 "horario por job (o resto da coleta segue igual).")
 
     profundidade = max(1, _var_int("DS_SUPERVISAO_PROFUNDIDADE", 4))
     orcamento = _Orcamento(_var_int("DS_SUPERVISAO_TETO_EXPANSAO", 80),
@@ -748,7 +806,7 @@ def coletar(**context) -> dict:
             # aprende a estrutura das execuções que deram certo de verdade.
             estrutura = estruturas.get(job.id)
             total_aprendidas += _gravar_filhos_e_aprender(
-                cur, job, runs, log, arvores=arvores)
+                cur, job, runs, log, arvores=arvores, com_horario=com_horario)
 
             total_eventos += _gravar_eventos(
                 cur, job, avaliar(job, runs, agora, estrutura), log,
