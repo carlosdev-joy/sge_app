@@ -519,6 +519,54 @@ Ampliar é acrescentar o código em `CODIGOS_DE_FALHA` — o dado já está no b
 
 `{total_filhos}`, `{filhos_falharam}`, `{filhos_ausentes}`, `{filhos_ok}`.
 
+## 7.4 F6 — Varredura dos níveis abaixo (migration 065)
+
+**O caso, visto no painel em 2026-07-29** — o primeiro dia com dado real:
+
+```
+BI_PRESTAMISTA.SeqSsdPrs_CargaDiaria ...... "Concluído"   (supervisionado)
+  └── SeqSsdPrs_Dim ....................... "concluído"    nível 1, já lido
+        └── SeqSsdPrs_DimSocios ........... "Concluído"    nível 2, invisível
+              └── SsdPrs_DimSocios_01_ext .. ABORTED       nível 3, invisível
+```
+
+O "sucesso falso" é **recursivo**: cada sequence intermediária reporta OK e
+esconde o nível de baixo. A F5 olhava só os filhos diretos, então o dia inteiro
+saía como bom — o mesmo furo, um nível mais fundo.
+
+**A varredura tem de ser em LARGURA.** Repare que nenhum job do nível 1 aparece
+falhado: `Dim` diz OK, `DimSocios` diz OK. Descer apenas pela cadeia de aborts,
+como faz o botão "Causa-raiz" do console, **não encontraria nada**. É preciso
+descer em todos os filhos.
+
+### Desenho
+
+- **4 níveis** por padrão (`DS_SUPERVISAO_PROFUNDIDADE`) — o caso real está no 3.
+- **Uma vez por execução**: cada run é expandido uma única vez
+  (`etl_ds_supervisao_run.expandido`). O run de ontem não muda mais; relê-lo a
+  cada 15 min só pressionaria o servidor.
+- **Orçamento de ciclo**: teto de chamadas SSH (`DS_SUPERVISAO_TETO_EXPANSAO`,
+  80) **e** de tempo (`DS_SUPERVISAO_TEMPO_EXPANSAO_SEG`, 420). O que estourar
+  primeiro pausa a varredura, o run **não** é marcado como expandido e o ciclo
+  seguinte retoma. É o único trecho cujo custo não dá para prever pelo cadastro:
+  depende de quantas sequences aninhadas o fluxo tem de verdade.
+- **Run correto do filho**: um job filho tem um run por dia no próprio log. A
+  escolha é pelo run que começou dentro da execução do pai — sem esse recorte, o
+  abort de ontem contaminaria o veredito de hoje.
+- **Proteção contra laço**: job já visto não é reexpandido; sequence que se
+  referencia não trava a DAG.
+- `etl_ds_supervisao_run_filho` ganha `nivel` e `job_pai`; o painel mostra a
+  árvore indentada por nível, com os abortados em vermelho.
+
+### Por que a migration zera o aprendizado
+
+A estrutura aprendida com um nível só está incompleta por construção. Se ela
+continuasse valendo, todo job de nível 2+ seria reportado como `FILHO_AUSENTE`
+ao aparecer — ausente de uma lista que nunca o continha. A 065 zera
+`etl_ds_supervisao_estrutura`, `execucoes_aprendidas` e `aprendido`, e a próxima
+execução bem-sucedida reaprende a árvore inteira. Custo: a contagem de amostra
+mínima recomeça.
+
 ## 7.3 Lição do primeiro deploy: dois dialetos de placeholder
 
 O primeiro ciclo em produção gravou **zero** linhas, com dezenas de

@@ -30,6 +30,8 @@ interface SupervisaoFilho {
   status_code: number
   status: string
   falhou: boolean
+  nivel: number
+  job_pai: string | null
 }
 
 interface SupervisaoItem {
@@ -236,30 +238,44 @@ export function SupervisaoCard({ date }: { date: string }) {
 
                     {/* Jobs ABAIXO do supervisionado — é aqui que se vê o abort
                         que o DataStage não propaga para a sequence. */}
-                    {item.filhos.length > 0 && (
-                      <div className="mt-2">
-                        <p className="text-[11px] text-dim mb-1">
-                          Jobs do fluxo ({item.filhos.filter(f => f.falhou).length} com falha
-                          de {item.filhos.length}):
-                        </p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {item.filhos.map((f, i) => (
-                            <span
-                              key={i}
-                              title={`${f.job_filho} — ${f.status} (execução de ${hora(f.run_inicio)})`}
-                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] ${
-                                f.falhou
-                                  ? 'border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300'
-                                  : 'border-edge bg-canvas text-dim'
-                              }`}
-                            >
-                              <span className="font-mono">{f.job_filho}</span>
-                              <span>· {f.status}</span>
-                            </span>
+                    {item.filhos.length > 0 && (() => {
+                      // Agrupa por nível: é a hierarquia que revela o abort que
+                      // as sequences intermediárias reportam como "concluído".
+                      const niveis = [...new Set(item.filhos.map(f => f.nivel ?? 1))].sort()
+                      const comFalha = item.filhos.filter(f => f.falhou)
+                      return (
+                        <div className="mt-2">
+                          <p className="text-[11px] text-dim mb-1">
+                            Jobs do fluxo ({comFalha.length} com falha de {item.filhos.length},
+                            em {niveis.length} nível{niveis.length > 1 ? 'is' : ''}):
+                          </p>
+                          {niveis.map(nivel => (
+                            <div key={nivel} className="mb-1.5" style={{ marginLeft: (nivel - 1) * 14 }}>
+                              <p className="text-[10px] text-dim mb-0.5">
+                                nível {nivel}
+                                {nivel > 1 && <span className="opacity-70"> — abaixo de outra sequence</span>}
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {item.filhos.filter(f => (f.nivel ?? 1) === nivel).map((f, i) => (
+                                  <span
+                                    key={i}
+                                    title={`${f.job_filho} — ${f.status}${f.job_pai ? ` (disparado por ${f.job_pai})` : ''} · execução de ${hora(f.run_inicio)}`}
+                                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] ${
+                                      f.falhou
+                                        ? 'border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300'
+                                        : 'border-edge bg-canvas text-dim'
+                                    }`}
+                                  >
+                                    <span className="font-mono">{f.job_filho}</span>
+                                    <span>· {f.status}</span>
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
                           ))}
                         </div>
-                      </div>
-                    )}
+                      )
+                    })()}
                   </div>
                 )}
               </li>

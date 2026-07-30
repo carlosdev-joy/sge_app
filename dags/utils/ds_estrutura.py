@@ -84,9 +84,22 @@ class Estrutura:
                       if f.execucoes_com_sucesso / self.execucoes_aprendidas >= FREQUENCIA_MINIMA)
 
 
+def jobs_da_arvore(run: DsRun) -> dict[str, int]:
+    """Todos os jobs sob o supervisionado, de qualquer nível, → status.
+
+    Usa a árvore expandida quando ela existe; sem expansão, só o primeiro nível.
+    É esta função que decide o alcance do veredito: enquanto olhávamos apenas
+    `filhos`, uma sequence intermediária "Finished OK" escondia o abort de um
+    neto — o caso real observado em produção
+    (CargaDiaria → Dim → DimSocios → DimSocios_01_ext abortado)."""
+    if run.descendentes:
+        return {nome: dados[0] for nome, dados in run.descendentes.items()}
+    return dict(run.filhos or {})
+
+
 def filhos_que_falharam(run: DsRun) -> list[str]:
-    """Filhos com código de falha nesta execução."""
-    return sorted(nome for nome, code in (run.filhos or {}).items()
+    """Jobs com código de falha nesta execução, em QUALQUER nível."""
+    return sorted(nome for nome, code in jobs_da_arvore(run).items()
                   if code in CODIGOS_DE_FALHA)
 
 
@@ -101,28 +114,33 @@ def sucesso_real(run: DsRun) -> bool:
 def filhos_ausentes(run: DsRun, estrutura: Estrutura) -> list[str]:
     """Jobs que a estrutura espera e que não apareceram nesta execução.
 
-    Só considera os filhos frequentes o bastante (e só depois da amostra
+    Só considera os jobs frequentes o bastante (e só depois da amostra
     mínima), para ramo condicional não virar alarme diário."""
-    presentes = set((run.filhos or {}).keys())
+    presentes = set(jobs_da_arvore(run).keys())
     return [nome for nome in estrutura.sempre_presentes() if nome not in presentes]
 
 
 def aprender(run: DsRun) -> tuple[bool, list[str]]:
-    """Esta execução deve alimentar a estrutura? Se sim, com quais filhos.
+    """Esta execução deve alimentar a estrutura? Se sim, com quais jobs.
+
+    Aprende a árvore INTEIRA (todos os níveis), não só os filhos diretos: é a
+    lista completa de dependências que o usuário precisa para fechar a análise.
 
     Só execução com sucesso REAL ensina: aprender de um dia em que algo abortou
     gravaria a falha como se fosse o normal do fluxo."""
-    if not sucesso_real(run) or not run.filhos:
+    arvore = jobs_da_arvore(run)
+    if not sucesso_real(run) or not arvore:
         return False, []
-    return True, sorted(run.filhos.keys())
+    return True, sorted(arvore.keys())
 
 
 def resumo_dependencia(run: DsRun, estrutura: Estrutura) -> dict:
     """Visão consolidada da execução, para o painel e para as mensagens."""
+    arvore = jobs_da_arvore(run)
     falharam = filhos_que_falharam(run)
     ausentes = filhos_ausentes(run, estrutura)
-    total = len(run.filhos or {})
-    ok = sorted(nome for nome, code in (run.filhos or {}).items()
+    total = len(arvore)
+    ok = sorted(nome for nome, code in arvore.items()
                 if code in (SUCESSO, COM_AVISOS))
     return {
         "total_filhos": total,
@@ -132,4 +150,7 @@ def resumo_dependencia(run: DsRun, estrutura: Estrutura) -> dict:
         # O veredito que o DataStage não dá.
         "sucesso_real": run.resultado == OK and not falharam and not ausentes,
         "sequence_disse_ok": run.resultado == OK,
+        # Quantos níveis a análise conseguiu enxergar nesta execução.
+        "niveis_lidos": (max((d[1] for d in run.descendentes.values()), default=0)
+                         if run.descendentes else (1 if run.filhos else 0)),
     }

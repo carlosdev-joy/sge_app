@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Cabeçalho do evento: "  12345 STARTED  Mon Jul 27 02:10:15 2026"
 _HEADER_RE = re.compile(
@@ -85,6 +85,12 @@ class DsRun:
     # É esta lista que permite descobrir o "sucesso falso": a sequence termina
     # OK enquanto um filho abortou, e o DataStage não propaga isso para cima.
     filhos: dict[str, int] = field(default_factory=dict)
+    # Árvore COMPLETA de descendentes (níveis 1..N) quando a expansão profunda
+    # roda: nome → (status, nível, job pai). O DataStage esconde o abort em
+    # cascata — uma sequence intermediária aparece "Finished OK" mesmo com um
+    # neto abortado —, então o veredito precisa olhar todos os níveis, não só o
+    # primeiro. Vazio = expansão não executada; aí vale `filhos`.
+    descendentes: dict[str, tuple[int, int, str]] = field(default_factory=dict)
 
     @property
     def duracao_seg(self) -> int | None:
@@ -210,6 +216,43 @@ def parse_logsum(stdout: str) -> list[DsRun]:
 
     fechar()
     return runs
+
+
+_EXEC_PREFIXO_RE = re.compile(r"^[A-Za-z0-9_]*Exec[A-Za-z0-9_]*\.(.+)$")
+
+
+def nome_real(job: str) -> str:
+    """'SeqExecJob.CargaVida' → 'CargaVida'.
+
+    O logsum cita o filho pelo nome da activity da sequence, com prefixo do tipo
+    `<algo>Exec<algo>.`; para pedir o log DELE é preciso o nome real do job.
+    Porte de `dsRealJob` do Console DataStage (DsConsole.tsx)."""
+    m = _EXEC_PREFIXO_RE.match(job or "")
+    return m.group(1) if m else (job or "")
+
+
+def run_da_execucao(runs: list[DsRun], inicio_pai: datetime | None,
+                    fim_pai: datetime | None) -> DsRun | None:
+    """Escolhe, entre os runs de um job filho, o que pertence à execução do pai.
+
+    Um job filho tem vários runs no próprio log (um por dia). O que interessa é
+    o que começou dentro da execução do pai — sem esse recorte, o abort de
+    ontem seria atribuído ao run de hoje.
+
+    Sem hora do pai, devolve o mais recente: melhor um palpite explícito que
+    ignorar a hierarquia inteira."""
+    candidatos = [r for r in runs if r.inicio is not None]
+    if not candidatos:
+        return None
+    if inicio_pai is None:
+        return candidatos[-1]
+
+    # Folga de 1 min para trás: o filho pode ser disparado no mesmo segundo em
+    # que o pai começa, e relógios de log arredondam.
+    limite_inferior = inicio_pai - timedelta(minutes=1)
+    limite_superior = (fim_pai or inicio_pai + timedelta(days=1)) + timedelta(minutes=1)
+    dentro = [r for r in candidatos if limite_inferior <= r.inicio <= limite_superior]
+    return dentro[-1] if dentro else None
 
 
 def runs_desde(runs: list[DsRun], limite: datetime) -> list[DsRun]:
