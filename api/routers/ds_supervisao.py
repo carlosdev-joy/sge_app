@@ -505,37 +505,67 @@ _STATUS_FILHO = {
 _CODIGO_ABORTADO = 3
 
 
+def _duracao_seg(inicio: str | None, fim: str | None) -> int | None:
+    """Segundos entre dois '2026-07-29 06:12:03' — None se falta alguma ponta.
+
+    None e não 0: "durou zero" é uma afirmação, "não sei" é outra. O diagrama
+    mostra '—' para a segunda."""
+    if not inicio or not fim:
+        return None
+    try:
+        ini = datetime.strptime(inicio[:19], "%Y-%m-%d %H:%M:%S")
+        f = datetime.strptime(fim[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    return max(0, int((f - ini).total_seconds()))
+
+
 def _ler_filhos(cur, dia) -> dict[int, list[dict]]:
     """Status de cada job filho no dia, agrupado por job supervisionado.
 
     Degrada para vazio sem a migration 064 — o painel perde o detalhe de
     dependência, mas continua mostrando o resto."""
     try:
-        # nivel/job_pai só existem a partir da 065 — o fallback mantém o painel
-        # vivo se o deploy do front chegar antes da migration.
-        try:
-            cur.execute(
-                "SELECT supervisao_id, CONVERT(VARCHAR(19), run_inicio, 120), "
-                "       job_filho, status_code, nivel, job_pai "
-                "FROM dbo.etl_ds_supervisao_run_filho WHERE data_ref = ? "
-                "ORDER BY run_inicio, nivel, job_filho", (dia,))
-            linhas = [(r[0], r[1], r[2], r[3], int(r[4] or 1), r[5]) for r in cur.fetchall()]
-        except Exception:
-            cur.execute(
-                "SELECT supervisao_id, CONVERT(VARCHAR(19), run_inicio, 120), "
-                "       job_filho, status_code "
-                "FROM dbo.etl_ds_supervisao_run_filho WHERE data_ref = ? "
-                "ORDER BY run_inicio, job_filho", (dia,))
-            linhas = [(r[0], r[1], r[2], r[3], 1, None) for r in cur.fetchall()]
+        # Degradação em degraus, do schema mais novo para o mais antigo:
+        # inicio/fim vêm da 066, nivel/job_pai da 065. O painel tem de continuar
+        # de pé quando o front chega antes da migration — foi o que aconteceu no
+        # deploy da 065.
+        linhas = []
+        for colunas, tem_horario, tem_nivel in (
+            ("nivel, job_pai, CONVERT(VARCHAR(19), inicio, 120), "
+             "CONVERT(VARCHAR(19), fim, 120)", True, True),
+            ("nivel, job_pai", False, True),
+            ("", False, False),
+        ):
+            try:
+                cur.execute(
+                    "SELECT supervisao_id, CONVERT(VARCHAR(19), run_inicio, 120), "
+                    f"       job_filho, status_code{', ' + colunas if colunas else ''} "
+                    "FROM dbo.etl_ds_supervisao_run_filho WHERE data_ref = ? "
+                    f"ORDER BY run_inicio, {'nivel, ' if tem_nivel else ''}job_filho", (dia,))
+                linhas = [(
+                    r[0], r[1], r[2], r[3],
+                    int(r[4] or 1) if tem_nivel else 1,
+                    r[5] if tem_nivel else None,
+                    r[6] if tem_horario else None,
+                    r[7] if tem_horario else None,
+                ) for r in cur.fetchall()]
+                break
+            except Exception:
+                continue
 
         por_job: dict[int, list[dict]] = {}
-        for sid, run_inicio, nome, codigo_bruto, nivel, pai in linhas:
+        for sid, run_inicio, nome, codigo_bruto, nivel, pai, ini_f, fim_f in linhas:
             codigo = int(codigo_bruto)
             por_job.setdefault(int(sid), []).append({
                 "run_inicio": run_inicio, "job_filho": nome, "status_code": codigo,
                 "status": _STATUS_FILHO.get(codigo, f"código {codigo}"),
                 "falhou": codigo == _CODIGO_ABORTADO,
                 "nivel": nivel, "job_pai": pai,
+                # Podem ser nulos: log sem o par de eventos, job ainda rodando,
+                # ou coleta anterior à 066. A tela mostra "—", nunca zero.
+                "inicio": ini_f, "fim": fim_f,
+                "duracao_seg": _duracao_seg(ini_f, fim_f),
             })
         return por_job
     except Exception as e:

@@ -19,6 +19,7 @@ Dois pontos que estes testes travam:
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -160,7 +161,7 @@ def test_expansao_encontra_o_abort_tres_niveis_abaixo():
         _exec_logsum, _job(), run, MagicMock(), 4, _orcamento())
 
     assert "SsdPrs_DimSocios_01_ext" in arvore, "o abort do nível 3 não foi encontrado"
-    status, nivel, pai = arvore["SsdPrs_DimSocios_01_ext"]
+    status, nivel, pai = arvore["SsdPrs_DimSocios_01_ext"][:3]
     assert status == 3              # ABORTED
     assert nivel == 3
     assert pai == "SeqSsdPrs_DimSocios"
@@ -172,13 +173,91 @@ def test_arvore_traz_todos_os_niveis_com_pai_correto():
     arvore, _ = DAG_MOD._expandir_arvore(
         _exec_logsum, _job(), run, MagicMock(), 4, _orcamento())
 
+    # Só as três primeiras posições: início e fim ficam no teste de horário.
     esperado = {
         "SeqSsdPrs_Dim":            (1, 1, "SeqSsdPrs_CargaDiaria"),
         "SeqSsdPrs_Arq":            (1, 1, "SeqSsdPrs_CargaDiaria"),
         "SeqSsdPrs_DimSocios":      (1, 2, "SeqSsdPrs_Dim"),
         "SsdPrs_DimSocios_01_ext":  (3, 3, "SeqSsdPrs_DimSocios"),
     }
-    assert arvore == esperado
+    assert {n: d[:3] for n, d in arvore.items()} == esperado
+
+
+# ── Horário por job da árvore (migration 066) ───────────────────────────────
+
+def test_arvore_traz_horario_de_cada_nivel():
+    """O diagrama precisa de QUANDO, não só de quem falhou."""
+    from datetime import datetime
+
+    run = parse_logsum(LOG_CARGA_DIARIA)[0]
+    arvore, _ = DAG_MOD._expandir_arvore(
+        _exec_logsum, _job(), run, MagicMock(), 4, _orcamento())
+
+    # Nível 1: pedido às 05:20:01, terminou às 12:00 (LOG_CARGA_DIARIA).
+    assert arvore["SeqSsdPrs_Dim"][3] == datetime(2026, 7, 29, 5, 20, 1)
+    assert arvore["SeqSsdPrs_Dim"][4] == datetime(2026, 7, 29, 12, 0, 0)
+
+    # Nível 3: o abort — 05:20:10 → 06:50, lido do log do PAI dele.
+    ini, fim = arvore["SsdPrs_DimSocios_01_ext"][3:5]
+    assert (ini, fim) == (datetime(2026, 7, 29, 5, 20, 10),
+                          datetime(2026, 7, 29, 6, 50, 0))
+
+
+def test_horario_ausente_fica_nulo_e_nao_zero():
+    """Filho citado só no 'Waiting ... to finish' não tem par de eventos.
+
+    Nulo e não zero: duração zero afirmaria que o job foi instantâneo."""
+    log = (
+        "   9001 STARTED       Wed Jul 29 05:00:00 2026\n"
+        "Starting Job SeqX.\n"
+        "   9002 INFO          Wed Jul 29 05:00:05 2026\n"
+        "SeqX..JobControl (@C): Waiting for job JobSemStatus to finish\n"
+        "   9003 STARTED       Wed Jul 29 05:10:00 2026\n"
+        "Finished Job SeqX.\n"
+    )
+    run = parse_logsum(log)[0]
+    assert run.filhos == {"JobSemStatus": -1}
+    # O "waiting" dá um início aproximado, mas nunca um fim.
+    assert run.filhos_horario["JobSemStatus"][1] is None
+
+
+def test_desempacotamento_tolera_arvore_antiga_de_tres_posicoes():
+    """Árvore gravada antes da 066 tem 3 posições — não pode explodir a gravação.
+
+    É o caminho real de um deploy que levou `dags/` novo com histórico velho."""
+    cur = MagicMock()
+    cur.rowcount = 1
+    run = parse_logsum(LOG_CARGA_DIARIA)[0]
+    job = _job()
+    # Formato ANTIGO: sem início/fim.
+    arvores = {(job.id, run.inicio): ({"SeqSsdPrs_Dim": (1, 1, "SeqSsdPrs_CargaDiaria")}, True)}
+
+    DAG_MOD._gravar_filhos_e_aprender(cur, job, [run], MagicMock(), arvores=arvores)
+
+    gravou_filho = any(
+        "etl_ds_supervisao_run_filho" in str(c.args[0]) for c in cur.execute.call_args_list)
+    assert gravou_filho, "a tupla de 3 posições impediu a gravação do filho"
+
+
+def test_sem_migration_066_grava_sem_as_colunas_de_horario():
+    """com_horario=False: o upsert não pode citar inicio/fim.
+
+    Um deploy que leva `dags/` sem a migration continuaria gravando a árvore —
+    citar coluna inexistente faria o except engolir TODOS os filhos."""
+    cur = MagicMock()
+    cur.rowcount = 1
+    run = parse_logsum(LOG_CARGA_DIARIA)[0]
+
+    DAG_MOD._gravar_filhos_e_aprender(
+        cur, _job(), [run], MagicMock(), arvores=None, com_horario=False)
+
+    sqls = [str(c.args[0]) for c in cur.execute.call_args_list
+            if "etl_ds_supervisao_run_filho" in str(c.args[0])]
+    assert sqls, "nenhum filho foi gravado"
+    # \b não quebra em `run_inicio` (o _ é caractere de palavra), então isto
+    # acusa a coluna `inicio` sozinha sem confundi-la com `run_inicio`.
+    assert not any(re.search(r"\b(inicio|fim)\b", s) or "COALESCE" in s for s in sqls), \
+        "citou coluna de horário sem a migration 066 aplicada"
 
 
 def test_veredito_com_arvore_desmente_o_datastage():
