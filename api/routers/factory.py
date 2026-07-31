@@ -182,6 +182,18 @@ def factory_preview(
         ]
         pipeline = dict(zip(cols, row))
 
+        # F6: a pré-visualização tem de mostrar a MESMA dependência que a DAG
+        # vai receber, e a fonte da verdade é a tabela (067). Sem ela, mantém o
+        # CSV que veio da consulta acima.
+        try:
+            cur.execute(
+                "SELECT depende_de FROM dbo.etl_pipeline_dependencia "
+                "WHERE pipeline_name = ? AND tipo = 'PIPELINE' ORDER BY depende_de",
+                (pipeline_name,))
+            pipeline["depends_on"] = ",".join(str(r[0]) for r in cur.fetchall()) or None
+        except Exception as e:
+            log.warning("[FACTORY] preview sem a tabela de dependências (%s) — usando o CSV.", e)
+
         cur.execute(
             """SELECT job_name, execution_order, job_type, job_command, ssh_conn_id, verbose_log
                FROM dbo.etl_pipeline_job WHERE pipeline_name = ?
