@@ -102,7 +102,15 @@ AUDIT_FIELDS = {
 
 
 def _build_cron(schedule_type, hour, minute, dow, dom):
+    """Cron do pipeline, ou None quando ele é sob demanda.
+
+    None significa "sem gatilho automático" e é o que o gerador transforma em
+    `schedule=None` — DAG ativa no Airflow, disparável só pelo botão Executar.
+    Sem este caso, 'on_demand' caía no fallback do fim e virava um cron diário
+    com o horário padrão do formulário.
+    """
     st = (schedule_type or "daily").strip().lower()
+    if st == "on_demand": return None
     h, m = int(hour or 0), int(minute or 0)
     if st == "hourly":   return f"{m} * * * *"
     if st == "daily":    return f"{m} {h} * * *"

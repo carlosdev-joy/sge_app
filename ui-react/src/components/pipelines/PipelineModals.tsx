@@ -72,7 +72,9 @@ export function ViewModal({ pipeline: p, onClose }: { pipeline: Pipeline; onClos
           <p className="text-[10px] font-bold uppercase tracking-wider text-blue-400 mb-2 border-b border-edge pb-1">Agendamento</p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-3">
             {cell('Tipo',          p.schedule_type ? SCHEDULE_LABELS[p.schedule_type] ?? p.schedule_type : null)}
-            {cell('Horário',       p.scheduled_time)}
+            {/* Sob demanda não tem horário nem cron: o valor gravado é só o
+                default do formulário e prometeria uma execução que não existe. */}
+            {cell('Horário',       p.schedule_type === 'on_demand' ? '—' : p.scheduled_time)}
             {cell('Expressão CRON', cron)}
             {cell('Data início',   p.dag_start_date || 'Imediato')}
             {cell('SLA',           p.sla_minutos ? `${p.sla_minutos} min` : null)}

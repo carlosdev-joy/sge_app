@@ -18,7 +18,13 @@ router = APIRouter()
 
 
 def _build_cron(schedule_type, hour, minute, dow, dom):
+    """Cron do rascunho importado, ou None quando é sob demanda.
+
+    Mesma regra de api/routers/pipelines.py: 'on_demand' não tem cron, e o
+    gerador transforma isso em `schedule=None` (DAG ativa, só manual).
+    """
     st = (schedule_type or "daily").strip().lower()
+    if st == "on_demand": return None
     h, m = int(hour or 0), int(minute or 0)
     if st == "hourly":   return f"{m} * * * *"
     if st == "daily":    return f"{m} {h} * * *"

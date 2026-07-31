@@ -73,6 +73,15 @@ def _build_cron(pipeline):
     m = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
     dow_expr = dias_semana if dias_semana else "*"
 
+    # Sob demanda: sem agendamento. Cron None vira `schedule=None` na DAG — que
+    # no Airflow é uma DAG ATIVA e visível, disparável só manualmente.
+    #
+    # Sem este caso, 'on_demand' caía no fallback do fim da função e virava
+    # "{m} {h} * * *" com o horário PADRÃO do formulário (06:00): o pipeline que
+    # o usuário pediu manual nascia rodando todo dia às 6h.
+    if stype == "on_demand":
+        return None, None, None
+
     if stype == "monthly_days_times" and dias_horarios_raw:
         import json
         try:
@@ -1525,6 +1534,10 @@ def _generate_dag_source(pipeline, jobs):
         deps_orig = [d.strip() for d in depends_on.split(",") if d.strip()]
         ds_items = ", ".join(f'Dataset("orq://pipeline/{d}")' for d in deps_orig)
         schedule_line = f"    schedule=[{ds_items}],  # dispara quando as dependências publicarem"
+    elif cron is None:
+        # Sob demanda. `schedule=None` mantém a DAG ATIVA no Airflow, listada e
+        # disparável pelo botão Executar — ela só não tem gatilho automático.
+        schedule_line = "    schedule=None,  # sob demanda: só execução manual"
     else:
         schedule_line = f'    schedule="{cron}",'
 
