@@ -180,22 +180,97 @@ def _get_valid_projects(cur):
     return {"BI_CVP", "BI_VIDA", "BI_PRESTAMISTA", "BI_PREVIDENCIA"}
 
 
+def _dependencias_de(cur, pipeline_name):
+    """Predecessores diretos de um pipeline.
+
+    Lê da tabela (migration 067) e cai no CSV `depends_on` enquanto ela não
+    existir — deploy que leva a API antes da migration continua validando pelo
+    caminho antigo em vez de aceitar tudo.
+    """
+    try:
+        cur.execute(
+            "SELECT depende_de FROM dbo.etl_pipeline_dependencia "
+            "WHERE pipeline_name = ? AND tipo = 'PIPELINE'", (pipeline_name,))
+        return [str(r[0]).strip() for r in cur.fetchall() if r[0]]
+    except Exception:
+        cur.execute("SELECT depends_on FROM dbo.etl_pipeline WHERE pipeline_name = ?", (pipeline_name,))
+        row = cur.fetchone()
+        raw = (str(row[0]).strip() if row and row[0] else "")
+        return [d.strip() for d in raw.split(",") if d.strip()]
+
+
 def _check_circular(cur, pipeline_name, depends_on_list):
+    """Recusa dependência que fecha ciclo, olhando TODOS os caminhos.
+
+    A versão anterior seguia apenas a PRIMEIRA dependência de cada nó
+    (`raw.split(",")[0]`), então um ciclo que passasse pela segunda em diante
+    passava batido: com A dependendo de 'X,B' e B de A, gravar B→A era aceito.
+    Um ciclo travaria as duas pontas para sempre — nenhuma jamais libera a outra.
+
+    Agora é uma busca em largura sobre o grafo inteiro, a partir de cada
+    predecessor proposto. `visitados` é global à busca (e não por caminho):
+    grafo em diamante convergiria de novo no mesmo nó e o custo explodiria à toa.
+    """
     for dep in depends_on_list:
         if not dep:
             continue
-        visited, current, hops = set(), dep, 0
-        while current and hops < 50:
-            if current == pipeline_name:
-                raise ValueError(f"Dependência circular: '{pipeline_name}' → '{dep}'")
-            if current in visited:
+        visitados, fila = set(), [dep]
+        while fila:
+            atual = fila.pop(0)
+            if atual == pipeline_name:
+                raise ValueError(
+                    f"Dependência circular: '{pipeline_name}' → '{dep}' fecha um ciclo "
+                    f"(o caminho volta para '{pipeline_name}')")
+            if atual in visitados:
+                continue
+            visitados.add(atual)
+            # Teto de segurança: malha grande não pode transformar um POST de
+            # cadastro em varredura sem fim.
+            if len(visitados) > 500:
                 break
-            visited.add(current)
-            cur.execute("SELECT depends_on FROM dbo.etl_pipeline WHERE pipeline_name = ?", (current,))
-            row = cur.fetchone()
-            raw = (str(row[0]).strip() if row and row[0] else None)
-            current = raw.split(",")[0].strip() if raw else None
-            hops += 1
+            fila.extend(_dependencias_de(cur, atual))
+
+
+def _validar_existencia(cur, depends_on_list):
+    """Todos os predecessores precisam existir. Devolve os que não existem.
+
+    Sem isto, um nome digitado errado era aceito e virava espera infinita em
+    produção: no modo sensor o pipeline falhava só depois de 1h; no modo Dataset
+    ele nunca disparava e ninguém era avisado. A FK da migration 067 fecha a
+    porta no banco; esta função existe para o usuário receber 422 com o nome
+    errado em vez de um erro de constraint.
+    """
+    faltando = []
+    for dep in depends_on_list:
+        if not dep:
+            continue
+        cur.execute("SELECT 1 FROM dbo.etl_pipeline WHERE pipeline_name = ?", (dep,))
+        if not cur.fetchone():
+            faltando.append(dep)
+    return faltando
+
+
+def _gravar_dependencias(cur, pipeline_name, depends_on_list, usuario=None):
+    """Sincroniza etl_pipeline_dependencia com a lista informada (replace-all).
+
+    Degrada em silêncio se a migration 067 ainda não rodou: nesse caso o CSV
+    `depends_on` — que continua sendo escrito em espelho até a F6 — segue como
+    única fonte, e o cadastro não quebra num deploy parcial.
+    """
+    try:
+        cur.execute(
+            "DELETE FROM dbo.etl_pipeline_dependencia "
+            "WHERE pipeline_name = ? AND tipo = 'PIPELINE'", (pipeline_name,))
+        for dep in depends_on_list:
+            if dep:
+                cur.execute(
+                    "INSERT INTO dbo.etl_pipeline_dependencia "
+                    "(pipeline_name, depende_de, tipo, criado_por) VALUES (?,?, 'PIPELINE', ?)",
+                    (pipeline_name, dep, (usuario or "")[:100] or None))
+        return True
+    except Exception as e:
+        log.warning("[PIPELINE] dependências não gravadas na tabela (migration 067 aplicada?): %s", e)
+        return False
 
 
 def _read_pipeline_record(cur, pipeline_name):
@@ -547,6 +622,14 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
         valid_projects = _get_valid_projects(cur)
         if project not in valid_projects:
             raise HTTPException(status_code=422, detail=f"project_name inválido: '{project}'")
+        # Existência ANTES do ciclo: um nome inexistente não tem grafo para
+        # percorrer, e o erro útil é "esse pipeline não existe", não "ciclo".
+        faltando = _validar_existencia(cur, depends_on_list)
+        if faltando:
+            raise HTTPException(
+                status_code=422,
+                detail="Pipeline inexistente em 'depende de': "
+                       + ", ".join(f"'{n}'" for n in faltando))
         _check_circular(cur, pipeline, depends_on_list)
         old_record = _read_pipeline_record(cur, pipeline)
         is_new = old_record is None
@@ -566,6 +649,9 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
             "WHERE pipeline_name=?",
             (depends_on, dag_start_date, pipeline),
         )
+        # A tabela é a fonte da verdade a partir da 067; o CSV acima segue como
+        # espelho até a F6, porque Malha.tsx e o gerador de DAGs ainda leem dele.
+        _gravar_dependencias(cur, pipeline, depends_on_list, _auth.get("matricula") if isinstance(_auth, dict) else None)
         try:
             cur.execute(
                 "UPDATE dbo.etl_pipeline SET descricao=?, criticidade=?, sla_minutos=?, ambiente=?, "
