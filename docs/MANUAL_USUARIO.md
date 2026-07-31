@@ -88,7 +88,9 @@ Aba **Pipelines → + Novo pipeline**. O wizard tem etapas:
    - **Diário** (hora:minuto), **Semanal** (dias da semana), **Mensal** (dia do mês), **De hora em hora**;
    - **Quinzenal**: escolha um dia de 1 a 15 — roda no dia D e no dia D+15 de cada mês;
    - **Horários específicos**: lista de horários exatos (ex.: 09:00, 10:30, 13:00...) + dias da semana (ex.: seg–sex). Ideal para cargas intradiárias;
-   - Opções: **somente dias úteis**, **calendário** (feriados), **trigger por dependência** (dispara quando o pipeline antecessor termina).
+   - Opções: **somente dias úteis**, **calendário** (feriados) e **dependência de
+     outros pipelines** (§3.4) — esta última substitui o horário: o pipeline
+     passa a ser disparado quando os antecessores concluem.
 4. **Execução**: retries, retry delay, max active runs, pool.
 5. **Jobs**: adicione os jobs com **ordem de execução**. Jobs com a **mesma ordem executam em paralelo**; a ordem seguinte só inicia quando todos da anterior terminam. Na edição, os jobs já cadastrados são carregados automaticamente. Remover uma linha aqui **não exclui** o job do banco — exclusão definitiva só na tela Jobs.
 6. **Lineage** (opcional aqui; obrigatório se cadastrar pela tela Jobs).
@@ -104,7 +106,43 @@ Aba **Pipelines → + Novo pipeline**. O wizard tem etapas:
 Aba Pipelines → **Importar sequence**: faça upload do `.dsx`, revise o rascunho gerado (pipeline + jobs + ordem), ajuste e aprove. O ORQUESTRA cria tudo de uma vez.
 
 ### 3.4 Dependência entre pipelines
-Marque **trigger por dependência** e informe o pipeline antecessor: o ORQUESTRA usa Datasets do Airflow — quando o antecessor conclui com sucesso, o dependente dispara automaticamente.
+
+No passo **Agendamento** do cadastro, clique em **Escolher** ao lado de "Depende
+de outros pipelines". A escolha é feita numa lista com busca por nome e filtro
+por projeto — não se digita o nome. Um pipeline **inativo** escolhido como
+dependência aparece com aviso: enquanto ele seguir assim, o dependente nunca vai
+ser liberado.
+
+**Com dependência, o horário deixa de valer.** O pipeline não tem mais
+agendamento próprio: ele é disparado assim que a **última** dependência conclui
+com sucesso — em segundos, não no próximo horário cheio. Se ele depende de dois
+pipelines, o primeiro a terminar não dispara nada; quem dispara é o que fecha a
+conta.
+
+Dois campos opcionais aparecem junto:
+
+- **Não iniciar antes de** — liberou às 07:10 mas o processo não deve começar
+  antes das 08:00? Ele espera.
+- **Avisar se não liberar até** — passou desse horário sem liberar, sai um
+  alerta no Teams. **O pipeline não falha**: fica pendente, aguardando.
+
+#### Data de referência (o dia de processamento)
+
+Cada execução carrega uma **data de referência** — o dia de negócio a que ela
+pertence, que não é necessariamente a data do relógio. Ela é o que permite dizer
+que duas execuções são "a mesma corrida": um pipeline só é liberado quando todas
+as suas dependências concluíram **na mesma data de referência**. Sucesso de
+ontem não libera a corrida de hoje.
+
+Por padrão a data de referência é a data do calendário. Para processos que
+atravessam a meia-noite, informe a **virada do dia** em Configurações Avançadas:
+com virada às 20:00, o que roda 31/07 às 23:30 e o que roda 01/08 às 00:40
+pertencem ambos ao dia **01/08** — e portanto conversam entre si.
+
+Quem é disparado por dependência **herda** a data de referência de quem o
+disparou; não recalcula. Se um antecessor concluiu com uma data diferente, sai
+um alerta de **data de referência divergente**, em vez de o dependente ficar
+parado sem explicação.
 
 ---
 

@@ -1801,6 +1801,27 @@ def _generate_dag_source(pipeline, jobs):
     return "\n".join(parts)
 
 
+def _dependencias_da_tabela(cursor):
+    """{pipeline: 'A,B'} de etl_pipeline_dependencia — fonte da verdade (067).
+
+    Devolve None (e não {}) quando a tabela não existe: um dicionário vazio
+    seria indistinguível de "nenhum pipeline tem dependência" e apagaria as
+    dependências de TODAS as DAGs num deploy que levasse `dags/` sem a
+    migration. None faz o chamador preservar o que a proc trouxe.
+    """
+    try:
+        cursor.execute(
+            "SELECT pipeline_name, depende_de FROM dbo.etl_pipeline_dependencia "
+            "WHERE tipo = 'PIPELINE' ORDER BY pipeline_name, depende_de")
+        por_pipeline = defaultdict(list)
+        for nome, dep in cursor.fetchall():
+            por_pipeline[str(nome)].append(str(dep))
+        return {nome: ",".join(deps) for nome, deps in por_pipeline.items()}
+    except Exception as e:
+        print(f"[FACTORY] dependencias da tabela indisponiveis ({e}) — usando o depends_on da proc.")
+        return None
+
+
 def gerar_dags(**context):
     import json as _json
     hook        = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
@@ -1904,6 +1925,16 @@ def gerar_dags(**context):
 
     pipelines = [dict(zip(pipeline_cols, row)) for row in pipelines_rows]
     jobs_all  = [dict(zip(jobs_cols, row))     for row in jobs_rows]
+
+    # F6: a dependência que vai para a DAG vem da TABELA, não do CSV.
+    # A stored procedure devolve o depends_on de etl_pipeline (mantido em
+    # espelho); sobrescrever aqui evita mexer na proc — que é usada em outros
+    # pontos — e faz a geração seguir a mesma fonte da verdade que o cadastro,
+    # a guardiã e o disparo. Sem a migration 067 o valor da proc é preservado.
+    _deps = _dependencias_da_tabela(cursor)
+    if _deps is not None:
+        for _p in pipelines:
+            _p["depends_on"] = _deps.get(_p["pipeline_name"]) or None
 
     params_by_job = defaultdict(list)
     for r in [dict(zip(params_cols, row)) for row in params_rows]:

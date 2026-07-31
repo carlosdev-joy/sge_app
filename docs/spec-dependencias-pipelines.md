@@ -1,5 +1,5 @@
 # Spec: Dependências entre pipelines (modelo Control-M) — Orquestra
-Data: 2026-07-31 · Status: **aprovada** (decisões do §8 fechadas em 2026-07-31) · em execução (F1)
+Data: 2026-07-31 · Status: **F1–F6 implementadas** (decisões do §8 fechadas em 2026-07-31) · AGUARDANDO DEPLOY
 
 ## 1. Visão
 
@@ -309,11 +309,18 @@ que hoje falham em silêncio. O CSV continua sendo escrito durante a transição
 - **Validação:** tsc + eslint (baseline) + build com `dist/` commitada; tokens
   `canvas/panel/edge/ink` nos dois temas. PR: `feat: cadastro e visão de dependências`.
 
-### F6 — Aposentar o legado + smoke
-- **Entregável:** uma fonte da verdade só, documentação e smoke.
-- **Inclui:** parar de escrever o CSV `depends_on` (leitura passa a ser sempre da
-  tabela); atualizar `docs/MANUAL_USUARIO.md` com o conceito de data de
-  referência; smoke do §7.
+### F6 — Aposentar o legado + smoke ✔ entregue
+- **Entregável:** a tabela é a fonte da verdade também na geração das DAGs, e o
+  manual explica data de referência.
+- **Inclui:** `etl_dag_factory` e o preview da API passam a ler
+  `etl_pipeline_dependencia` (com fallback ao CSV); `docs/MANUAL_USUARIO.md`
+  §3.4 reescrito; smoke do §7.
+- **AJUSTE DE ESCOPO (2026-07-31):** a spec previa *parar de escrever* o CSV
+  `depends_on`. Isso NÃO foi feito, de propósito. O CSV continua sendo escrito
+  em espelho porque é o **fallback** de que o factory depende num deploy que
+  leve `dags/` sem a migration 067 — e nada disto está em produção ainda.
+  Derrubar o espelho antes do primeiro deploy validado trocaria uma dívida
+  barata por um risco caro. Ver §10.
 - **Validação:** suíte completa + smoke manual. PR: `chore: dependência só pela tabela`.
 
 ## 6. Riscos e mitigações
@@ -354,6 +361,22 @@ f) Conferir que a DAG gerada de um pipeline dependente **não** tem
   configurado por quem conhece a janela de negócio. **Não** herda `sla_minutos`:
   são coisas diferentes (SLA é duração da execução; o limite é o horário até o
   qual a liberação faz sentido).
+
+## 10. Pendências desta spec (depois do deploy validado)
+
+Duas dívidas conscientes, ambas seguras de carregar e caras de antecipar:
+
+1. **Remover a escrita em espelho do CSV `etl_pipeline.depends_on`** e, depois,
+   a própria coluna. Hoje ela é o fallback do `etl_dag_factory` e do preview
+   quando a migration 067 não está aplicada. Só faz sentido remover quando a
+   067 estiver aplicada em produção **e** as DAGs regeradas — antes disso, o
+   fallback é o que impede um deploy parcial de gerar DAGs sem dependência
+   nenhuma.
+2. **`trigger_por_dependencia`** já saiu da tela (F5) e não decide mais nada
+   (F3), mas a coluna segue no banco. Some junto com o CSV, na mesma migration.
+
+Sequência sugerida: deploy → smoke §7 → uma execução real de ponta a ponta →
+migration de limpeza removendo as duas colunas.
 
 ## 9. Backlog garantido (feature futura)
 **Dependência job → job entre pipelines diferentes.** Decisão do usuário em
