@@ -41,10 +41,6 @@ export interface Pipeline {
   calendario_nome?: string | null
   trigger_por_dependencia?: number | null
   dias_horarios_mes?: string | null
-  // janela e virada do dia (migration 067) — 'HH:MM' ou null
-  hora_virada?: string | null
-  nao_iniciar_antes?: string | null
-  hora_limite_dependencia?: string | null
 }
 
 export interface AuditRow {

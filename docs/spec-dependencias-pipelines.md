@@ -1,5 +1,29 @@
 # Spec: Dependências entre pipelines (modelo Control-M) — Orquestra
-Data: 2026-07-31 · Status: **F1–F6 implementadas** (decisões do §8 fechadas em 2026-07-31) · AGUARDANDO DEPLOY
+Data: 2026-07-31 · Status: ⛔ **REVERTIDA a partir da F2. Só a F1 sobrevive.**
+
+> **Por que esta spec foi revertida.** As seis fases foram implementadas e
+> reprovadas em DUAS revisões adversariais independentes. A primeira encontrou
+> 21 defeitos; as cinco correções fecharam 14 deles e **introduziram ~15 novos**,
+> um dos quais fazia **todo pipeline que falha aparecer VERDE no Airflow** —
+> afetando 100% dos pipelines, com ou sem dependência.
+>
+> A causa não foi descuido pontual: comportamento distribuído (trigger rules do
+> Airflow, corridas entre tasks, estado compartilhado em banco) **não é
+> verificável por leitura de código**, e não havia ambiente onde executá-lo. Os
+> 1053 testes passavam em todas as rodadas.
+>
+> **O que sobrevive (F1):** migration 067, detecção de ciclo por BFS, FK de
+> existência do predecessor e `dags/utils/data_referencia.py`. Isso fecha os
+> defeitos 3 e 4 do QA original sem tocar em execução nenhuma.
+>
+> **O que voltou:** o `ExternalTaskSensor`, com os defeitos 1, 2 e 5 do QA —
+> conhecidos, documentados no §3, e contornáveis pelo modo Dataset.
+>
+> **Para retomar:** a parte de execução (F2–F6) precisa de um ambiente com
+> Airflow e SQL Server onde os cenários possam ser EXECUTADOS, não deduzidos. O
+> `docker-compose.dev.yaml` do repo é o ponto de partida. Os 21 + 15 defeitos
+> estão descritos nos relatórios das duas revisões e valem como suíte de
+> aceitação do que for refeito.
 
 ## 1. Visão
 
