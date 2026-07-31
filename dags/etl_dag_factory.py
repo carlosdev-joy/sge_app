@@ -512,7 +512,11 @@ def _generate_dag_source(pipeline, jobs):
     # Fase 4 — scheduling avançado
     calendario_val      = (pipeline.get("calendario_nome") or "").strip() or None
     dias_uteis_val      = bool(pipeline.get("somente_dias_uteis") or 0)
-    trigger_dep_val     = bool(pipeline.get("trigger_por_dependencia") or 0)
+    # OBSOLETO desde a F3 da spec de dependências: ter dependência JÁ implica
+    # ser disparado por ela (schedule=None). O campo continua no banco e é lido
+    # aqui só para não quebrar quem o envia; a F5 o tira da tela e a F6 do
+    # modelo. Não usar em decisão nova.
+    trigger_dep_val     = bool(pipeline.get("trigger_por_dependencia") or 0)  # noqa: F841
     _DS_QUEUE_MAP = {"ALTA": "HighPriorityJobs", "CRITICA": "HighPriorityJobs",
                      "MEDIA": "MediumPriorityJobs", "BAIXA": "LowPriorityJobs"}
     ds_queue_val = _DS_QUEUE_MAP.get((pipeline.get("criticidade") or "").upper().strip())
@@ -824,6 +828,87 @@ def _generate_dag_source(pipeline, jobs):
         "",
         "def registrar_fim(**context):",
         "    _registrar_execucao('SUCESSO', context)",
+        "",
+        # ── F3: disparo imediato de quem depende deste pipeline ─────────────
+        "def disparar_dependentes(**context):",
+        "    \"\"\"Libera quem espera por este pipeline, agora que ele terminou bem.",
+        "",
+        "    Só dispara quem tem TODAS as dependências concluídas com sucesso na",
+        "    MESMA data de referência: com dois predecessores, o primeiro a",
+        "    terminar não dispara nada — quem completa a condição é o último.",
+        "",
+        "    Nunca derruba o pipeline: ele já fez o trabalho dele. Dependente que",
+        "    não subir aqui é pego pela guardiã (F4).\"\"\"",
+        "    from utils.dependencias import (avaliar_liberacao, config_do_dependente,",
+        "                                    dentro_da_janela, dependentes_de,",
+        "                                    status_dos_predecessores)",
+        "    try:",
+        "        _dref = _data_referencia(context)",
+        "        _hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "        _filhos = dependentes_de(_hook, PIPELINE_NAME)",
+        "        if not _filhos:",
+        "            return",
+        "        _agora = pendulum.now(LOCAL_TZ)",
+        "        for _filho in _filhos:",
+        "            _cfg = config_do_dependente(_hook, _filho)",
+        "            if not _cfg['ativo']:",
+        "                print(f'[DEP] {_filho}: inativo — nao disparado.')",
+        "                continue",
+        "            _status = status_dos_predecessores(_hook, _filho, _dref)",
+        "            _ok, _pendentes = avaliar_liberacao(_status)",
+        "            if not _ok:",
+        "                print(f'[DEP] {_filho}: aguardando {_pendentes} (data ref {_dref}).')",
+        "                continue",
+        "            if not dentro_da_janela(_cfg['nao_iniciar_antes'], _agora):",
+        "                # Liberado, mas cedo demais. A guardiã dispara na hora certa.",
+        "                print(f\"[DEP] {_filho}: liberado, aguardando janela de \"",
+        "                      f\"{_cfg['nao_iniciar_antes']} (data ref {_dref}).\")",
+        "                continue",
+        "            _disparar_dag(_filho, _dref)",
+        "    except Exception as e:",
+        "        print(f'[DEP] Aviso: disparo de dependentes falhou ({e}) — a guardia cobre.')",
+        "",
+        "def _disparar_dag(nome_filho, data_referencia):",
+        "    \"\"\"Coloca o dependente em execução, herdando a data de referência.",
+        "",
+        "    A marca AGUARDANDO_DEPENDENCIA é o que evita disparo em dobro quando",
+        "    a guardiã passa no mesmo instante: quem consegue mudar a linha para",
+        "    EXECUTANDO é quem dispara. Sem esse aperto, dois caminhos poderiam",
+        "    subir a mesma corrida duas vezes.\"\"\"",
+        "    _hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "    _conn = _hook.get_conn(); _cur = _conn.cursor()",
+        "    try:",
+        "        _cur.execute(",
+        '            "UPDATE dbo.etl_pipeline_execucao SET status=\'EXECUTANDO\', "',
+        '            "  disparado_por=%s, atualizado_em=GETDATE() "',
+        '            "WHERE pipeline_name=%s AND data_referencia=%s "',
+        '            "  AND status=\'AGUARDANDO_DEPENDENCIA\'",',
+        "            (PIPELINE_NAME, nome_filho, data_referencia))",
+        "        _tomou = _cur.rowcount",
+        "        if _tomou == 0:",
+        "            _cur.execute(",
+        '                "SELECT COUNT(*) FROM dbo.etl_pipeline_execucao "',
+        '                "WHERE pipeline_name=%s AND data_referencia=%s",',
+        "                (nome_filho, data_referencia))",
+        "            if (_cur.fetchone() or [0])[0]:",
+        "                _conn.commit()",
+        "                print(f'[DEP] {nome_filho}: ja existe corrida em {data_referencia} — nao redisparado.')",
+        "                return",
+        "            _cur.execute(",
+        '                "INSERT INTO dbo.etl_pipeline_execucao "',
+        '                "(pipeline_name, data_referencia, status, disparado_por) "',
+        '                "VALUES (%s,%s,\'EXECUTANDO\',%s)",',
+        "                (nome_filho, data_referencia, PIPELINE_NAME))",
+        "        _conn.commit()",
+        "    finally:",
+        "        _cur.close(); _conn.close()",
+        "    from airflow.api.client.local_client import Client",
+        "    Client(None, None).trigger_dag(",
+        "        dag_id=nome_filho,",
+        "        run_id=f'dep__{PIPELINE_NAME}__{data_referencia}',",
+        "        conf={'data_referencia': str(data_referencia), 'disparado_por': PIPELINE_NAME},",
+        "    )",
+        "    print(f'[DEP] {nome_filho} DISPARADO (data ref {data_referencia}).')",
         "",
         "def registrar_falha(**context):",
         "    \"\"\"Task com ONE_FAILED: qualquer job que falhe reprova a corrida.",
@@ -1479,6 +1564,13 @@ def _generate_dag_source(pipeline, jobs):
         '    python_callable=registrar_falha,',
         '    trigger_rule=TriggerRule.ONE_FAILED,',
         ')',
+        '',
+        '# Libera quem depende deste pipeline. Depois do registrar_fim: só uma',
+        '# corrida marcada SUCESSO pode satisfazer a condição de alguém.',
+        't_disparar_dependentes = PythonOperator(',
+        '    task_id="disparar_dependentes",',
+        '    python_callable=disparar_dependentes,',
+        ')',
     ]))
 
     # Fase 4 — publica Dataset ao final (consumido por pipelines com trigger_por_dependencia)
@@ -1492,32 +1584,18 @@ def _generate_dag_source(pipeline, jobs):
         ')',
     ]))
 
-    # S4: ExternalTaskSensor — suporte a múltiplas dependências
+    # F3 da spec de dependências: o ExternalTaskSensor SAIU.
+    #
+    # Ele exigia que pai e filho tivessem o MESMO logical_date — ou seja, o mesmo
+    # horário de agendamento — e desistia depois de 1h fixa. Na prática só
+    # funcionava na configuração que ninguém faz (pai e filho no mesmo horário) e
+    # reprovava qualquer pai que durasse mais de uma hora.
+    #
+    # Agora o pipeline dependente não tem agenda própria: é DISPARADO por quem
+    # ele espera, assim que a última dependência conclui na mesma data de
+    # referência. Sem sensor, sem polling, sem janela perdida.
     dep_list = [d.strip() for d in depends_on.split(",") if d.strip()] if depends_on else []
-    # Em modo trigger_por_dependencia o schedule já é dirigido pelos Datasets
-    # dos pipelines dos quais depende — sensores são desnecessários.
-    use_dataset_schedule = trigger_dep_val and bool(dep_list)
-    if use_dataset_schedule:
-        dep_list = []
-    sensor_block = ""
-    sensor_names = []
-    if dep_list:
-        if "from airflow.sensors.external_task import ExternalTaskSensor" not in import_lines:
-            import_lines.append("from airflow.sensors.external_task import ExternalTaskSensor")
-        sensor_parts = []
-        for dep in dep_list:
-            sname = f"t_sensor_{dep}"
-            sensor_names.append(sname)
-            sensor_parts.append("\n".join([
-                f'{sname} = ExternalTaskSensor(',
-                f'    task_id="wait_{dep}",',
-                f'    external_dag_id="{dep}",',
-                f'    mode="reschedule",',
-                f'    timeout=3600,',
-                f'    poke_interval=60,',
-                f')',
-            ]))
-        sensor_block = "\n\n".join(sensor_parts)
+    tem_dependencia = bool(dep_list)
     # Rebuild imports_str after potential append
     imports_str = "\n".join(import_lines)
 
@@ -1528,10 +1606,6 @@ def _generate_dag_source(pipeline, jobs):
     # primeiro job, e uma falha logo no início já encontra a linha para marcar.
     dep_lines.append("t_check_agenda >> t_exec_inicio")
 
-    # anchor: registrar_inicio → (sensors or first group)
-    if sensor_names:
-        sensors_ref = "[" + ", ".join(sensor_names) + "]"
-        dep_lines.append(f"t_exec_inicio >> {sensors_ref}")
 
     # Modo de dependência: EXPLÍCITO (algum job tem depends_on_jobs OU há um nó
     # de Decisão) ou ONDAS (execution_order). Opt-in por pipeline — pipelines
@@ -1542,7 +1616,7 @@ def _generate_dag_source(pipeline, jobs):
     notif_task_refs = []   # t_notif_* a convergir no publish_dataset
     sql_task_refs = []     # t_sql_* a convergir no publish_dataset
     if explicit_deps:
-        root_anchor = sensors_ref if sensor_names else "t_exec_inicio"
+        root_anchor = "t_exec_inicio"
         teams_start_done = False
         def _end_ref(d):
             # Tarefa de conclusão de uma dependência. Nós de notificação, decisão e
@@ -1603,8 +1677,6 @@ def _generate_dag_source(pipeline, jobs):
             g_ends = [f"t_end_{_varname(j['job_name'])}" for j in group]
             if prev_ends:
                 up = "[" + ", ".join(prev_ends) + "]" if len(prev_ends) > 1 else prev_ends[0]
-            elif sensor_names:
-                up = sensors_ref
             else:
                 up = "t_exec_inicio"
             for j_idx, j in enumerate(group):
@@ -1654,7 +1726,7 @@ def _generate_dag_source(pipeline, jobs):
     # SUCESSO é gravado depois do publish_dataset — que já é o ponto de
     # convergência de tudo (ends, notificações e nós SQL). Pendurar aqui evita
     # repetir a lista de convergência e garante que nenhum ramo ficou de fora.
-    dep_lines.append("t_publish_dataset >> t_exec_fim")
+    dep_lines.append("t_publish_dataset >> t_exec_fim >> t_disparar_dependentes")
     # A task de FALHA pendura nos MESMOS fins de ramo do teams_error: ONE_FAILED
     # só dispara olhando os upstreams diretos, então pendurá-la apenas no
     # publish_dataset a deixaria cega para o ramo que falhou.
@@ -1668,8 +1740,6 @@ def _generate_dag_source(pipeline, jobs):
     with_parts.append(_ind(check_block))
     with_parts.append(_ind(exec_fim_block))
     with_parts.append(_ind(publish_block))
-    if sensor_block:
-        with_parts.append(_ind(sensor_block))
     for t in teams_tasks:
         with_parts.append(_ind(t))
     for b in job_blocks:
@@ -1686,10 +1756,12 @@ def _generate_dag_source(pipeline, jobs):
     else:
         sd_y, sd_m, sd_d = 2026, 1, 1
 
-    if use_dataset_schedule:
-        deps_orig = [d.strip() for d in depends_on.split(",") if d.strip()]
-        ds_items = ", ".join(f'Dataset("orq://pipeline/{d}")' for d in deps_orig)
-        schedule_line = f"    schedule=[{ds_items}],  # dispara quando as dependências publicarem"
+    if tem_dependencia:
+        # Pipeline com dependência NÃO tem agenda própria: quem o coloca em
+        # execução é o predecessor (t_disparar_dependentes) ou a guardiã (F4).
+        # Manter um cron aqui recriaria o problema que a F3 resolve — a corrida
+        # começaria no horário do relógio, não quando o insumo ficou pronto.
+        schedule_line = (f'    schedule=None,  # disparado por dependência: {", ".join(dep_list)}')
     else:
         schedule_line = f'    schedule="{cron}",'
 
