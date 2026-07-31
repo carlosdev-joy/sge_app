@@ -490,6 +490,25 @@ def _sql_block(job, sql_cfg, branch_reachable=False):
     ]))
 
 
+def _restricao_dia(pipeline):
+    """Restrição de DIA que o cron carregava, para quem vai ficar sem cron.
+
+    Um pipeline `monthly` com `schedule_dom=5` tinha a regra "só dia 5" embutida
+    no cron `0 7 5 * *`. Ao virar `schedule=None` (disparo por dependência), essa
+    regra desaparecia e o pipeline passava a rodar em todo dia em que o
+    predecessor concluísse — fechamento mensal executando 30x/mês.
+
+    Devolve None para os tipos que não restringem dia (daily, hourly, custom,
+    monthly_days_times — este último já é checado por DIAS_HORARIOS_MES).
+    """
+    stype = (pipeline.get("schedule_type") or "daily").lower().strip()
+    if stype == "weekly":
+        return {"tipo": "weekly", "dow": int(pipeline.get("schedule_dow") or 1)}
+    if stype in ("monthly", "biweekly"):
+        return {"tipo": stype, "dom": int(pipeline.get("schedule_dom") or 1)}
+    return None
+
+
 def _generate_dag_source(pipeline, jobs):
     pname      = pipeline["pipeline_name"]
     project    = pipeline["project_name"]
@@ -497,6 +516,10 @@ def _generate_dag_source(pipeline, jobs):
     tags_raw   = pipeline["tags"]
     sched      = pipeline["scheduled_time"]
     depends_on = (pipeline.get("depends_on") or "").strip() or None
+    # Definido aqui (e não junto do wiring) porque as CONSTANTES do arquivo
+    # gerado precisam saber se este pipeline perde o cron.
+    dep_list = [d.strip() for d in depends_on.split(",") if d.strip()] if depends_on else []
+    tem_dependencia = bool(dep_list)
     is_prd  = (pipeline.get("ambiente") or "PROD").upper() == "PROD"
     f_ini   = bool(pipeline["envia_msg_inicio"]) and is_prd
     f_fim   = bool(pipeline["envia_msg_fim"])    and is_prd
@@ -715,6 +738,12 @@ def _generate_dag_source(pipeline, jobs):
         f'HORARIOS_ESPECIFICOS = {repr(horarios_list)}',
         f'DIAS_HORARIOS_MES = {repr(dias_horarios_mes)}',
         f'DATASET_URI   = "orq://pipeline/{pname}"',
+        # Restrição de DIA para pipeline disparado por dependência. Só é
+        # preenchida quando o pipeline perde o cron (schedule=None): a restrição
+        # morava no próprio cron ("0 7 5 * *" = dia 5), e trocá-lo por None a
+        # apagava — o fechamento mensal passava a rodar todo dia que o
+        # predecessor concluísse. Pipeline com cron não precisa (o cron já filtra).
+        f'RESTRICAO_DIA = {repr(_restricao_dia(pipeline) if tem_dependencia else None)}',
         f'default_args  = {{"owner": "airflow", "depends_on_past": False, "retries": {retries_val}, "retry_delay": timedelta(seconds={retry_delay_val})}}',
         f'JOBS          = {repr([j["job_name"] for j in sorted_jobs])}',
         # Jobs EXECUTÁVEIS (com trio de telemetria) — base do registro de SKIPPED
@@ -1397,21 +1426,45 @@ def _generate_dag_source(pipeline, jobs):
         "            \"execucao interrompida. Corrija o erro antes de reprocessar.\"",
         "        )",
         "",
+        "def _disparo_por_evento(context):",
+        "    \"\"\"Esta corrida veio de uma dependência (push do predecessor ou guardiã)?",
+        "",
+        "    Distinção que faltava e que causou os dois piores defeitos da revisão:",
+        "    as regras de RELÓGIO abaixo só fazem sentido quando quem disparou foi o",
+        "    cron. Num disparo por dependência o instante é o do término do",
+        "    predecessor — que nunca coincide com a lista de horários, e fazia o",
+        "    dependente ser PULADO em 100% das vezes.\"\"\"",
+        "    _rid = str(context.get('run_id', ''))",
+        "    return _rid.startswith('dep__') or _rid.startswith('guardia__')",
+        "",
         "def _check_agenda_regras(**context):",
-        "    \"\"\"Fase 4 — blackout/freeze, dias úteis e calendário de feriados.",
+        "    \"\"\"Este pipeline deve executar ESTA corrida?",
+        "",
+        "    Duas famílias de regra, que antes estavam misturadas:",
+        "",
+        "    • RELÓGIO (quando disparar) — horários específicos e dia+hora do mês.",
+        "      Existem para filtrar os disparos do cron, que acontece na união",
+        "      minuto×hora. Não se aplicam a disparo manual nem por dependência.",
+        "",
+        "    • DIA DE PROCESSAMENTO (se deve rodar hoje) — dia da semana, dia do",
+        "      mês, dias úteis e calendário. Valem SEMPRE, e são avaliadas contra a",
+        "      DATA DE REFERÊNCIA, não contra o relógio: um pipeline de sexta que",
+        "      só termina de ser liberado no sábado pertence à sexta.",
+        "",
         "    Retorna False (ShortCircuit) para pular a execução inteira.\"\"\"",
-        "    # Horários específicos: o cron dispara na união minuto×hora;",
-        "    # só executa se o horário agendado estiver na lista configurada.",
-        "    if HORARIOS_ESPECIFICOS and not str(context.get('run_id', '')).startswith('manual'):",
+        "    _por_evento = _disparo_por_evento(context)",
+        "    _manual = str(context.get('run_id', '')).startswith('manual')",
+        "    _dref = _data_referencia(context)",
+        "",
+        "    # ── Regras de RELÓGIO ───────────────────────────────────────────",
+        "    if HORARIOS_ESPECIFICOS and not _manual and not _por_evento:",
         "        _die = context.get('data_interval_end') or context.get('logical_date')",
         "        if _die is not None:",
         "            _hhmm = _die.in_timezone(LOCAL_TZ).strftime('%H:%M')",
         "            if _hhmm not in HORARIOS_ESPECIFICOS:",
         "                print(f\"[AGENDA] {_hhmm} fora dos horarios configurados {HORARIOS_ESPECIFICOS} — execucao pulada.\")",
         "                return False",
-        "    # Dia + hora específico: o cron dispara na união dia×minuto×hora;",
-        "    # só executa se (dia, horario) atual estiver configurado para aquele dia.",
-        "    if DIAS_HORARIOS_MES and not str(context.get('run_id', '')).startswith('manual'):",
+        "    if DIAS_HORARIOS_MES and not _manual and not _por_evento:",
         "        _die = context.get('data_interval_end') or context.get('logical_date')",
         "        if _die is not None:",
         "            _local = _die.in_timezone(LOCAL_TZ)",
@@ -1420,6 +1473,26 @@ def _generate_dag_source(pipeline, jobs):
         "            if _hhmm not in DIAS_HORARIOS_MES.get(_dia, []):",
         "                print(f\"[AGENDA] dia {_dia} as {_hhmm} fora da configuracao {DIAS_HORARIOS_MES} — execucao pulada.\")",
         "                return False",
+        "",
+        "    # ── Regras de DIA DE PROCESSAMENTO ──────────────────────────────",
+        "    # RESTRICAO_DIA existe só em pipeline SEM cron (disparado por",
+        "    # dependência): a restrição de dia morava no próprio cron, e ao trocá-lo",
+        "    # por schedule=None ela evaporava — um fechamento mensal do dia 5 passava",
+        "    # a rodar TODO dia em que o predecessor concluísse.",
+        "    if RESTRICAO_DIA:",
+        "        _tipo = RESTRICAO_DIA.get('tipo')",
+        "        if _tipo == 'weekly':",
+        "            _dow_ok = (_dref.isoweekday() % 7) == int(RESTRICAO_DIA.get('dow') or 0) % 7",
+        "            if not _dow_ok:",
+        "                print(f\"[AGENDA] {_dref} nao e o dia da semana configurado ({RESTRICAO_DIA}) — execucao pulada.\")",
+        "                return False",
+        "        elif _tipo in ('monthly', 'biweekly'):",
+        "            _dom = int(RESTRICAO_DIA.get('dom') or 1)",
+        "            _dias = [_dom] if _tipo == 'monthly' else [_dom, _dom + 15]",
+        "            if _dref.day not in _dias:",
+        "                print(f\"[AGENDA] dia {_dref.day} nao esta em {_dias} (config {RESTRICAO_DIA}) — execucao pulada.\")",
+        "                return False",
+        "",
         "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
         "    try:",
         "        row = hook.get_first(",
@@ -1429,22 +1502,27 @@ def _generate_dag_source(pipeline, jobs):
         "            parameters=(PROJECT_NAME, PIPELINE_NAME),",
         "        )",
         "        if row:",
+        "            # Blackout é uma JANELA DE RELÓGIO (freeze operacional agora),",
+        "            # então continua comparando com GETDATE() de propósito.",
         "            print(f\"[AGENDA] Blackout vigente: {row[0]} — execucao pulada.\")",
         "            return False",
         "    except Exception as e:",
         "        print(f\"[AGENDA] Aviso: verificacao de blackout falhou ({e}) — seguindo.\")",
-        "    if SOMENTE_DIAS_UTEIS and pendulum.now(LOCAL_TZ).weekday() >= 5:",
-        "        print(\"[AGENDA] Fim de semana e pipeline e somente dias uteis — execucao pulada.\")",
+        "    # Dias úteis e calendário passam a olhar a DATA DE REFERÊNCIA. Com o",
+        "    # relógio, a corrida de sexta que atravessava a meia-noite era pulada no",
+        "    # sábado — justamente o caso que a data de referência existe para tratar.",
+        "    if SOMENTE_DIAS_UTEIS and _dref.weekday() >= 5:",
+        "        print(f\"[AGENDA] Data de referencia {_dref} e fim de semana e o pipeline e somente dias uteis — execucao pulada.\")",
         "        return False",
         "    if CALENDARIO_NOME:",
         "        try:",
         "            row = hook.get_first(",
         '                "SELECT TOP 1 ISNULL(descricao, \'\') FROM dbo.etl_calendario "',
-        '                "WHERE calendario_nome=%s AND data=CAST(GETDATE() AS DATE)",',
-        "                parameters=(CALENDARIO_NOME,),",
+        '                "WHERE calendario_nome=%s AND data=%s",',
+        "                parameters=(CALENDARIO_NOME, _dref),",
         "            )",
         "            if row is not None:",
-        "                print(f\"[AGENDA] Data bloqueada no calendario {CALENDARIO_NOME} ({row[0]}) — execucao pulada.\")",
+        "                print(f\"[AGENDA] Data de referencia {_dref} bloqueada no calendario {CALENDARIO_NOME} ({row[0]}) — execucao pulada.\")",
         "                return False",
         "        except Exception as e:",
         "            print(f\"[AGENDA] Aviso: verificacao de calendario falhou ({e}) — seguindo.\")",
@@ -1584,6 +1662,8 @@ def _generate_dag_source(pipeline, jobs):
         ')',
     ]))
 
+    # (dep_list / tem_dependencia já definidos no topo — as constantes do
+    # arquivo gerado dependem deles.)
     # F3 da spec de dependências: o ExternalTaskSensor SAIU.
     #
     # Ele exigia que pai e filho tivessem o MESMO logical_date — ou seja, o mesmo
@@ -1594,8 +1674,6 @@ def _generate_dag_source(pipeline, jobs):
     # Agora o pipeline dependente não tem agenda própria: é DISPARADO por quem
     # ele espera, assim que a última dependência conclui na mesma data de
     # referência. Sem sensor, sem polling, sem janela perdida.
-    dep_list = [d.strip() for d in depends_on.split(",") if d.strip()] if depends_on else []
-    tem_dependencia = bool(dep_list)
     # Rebuild imports_str after potential append
     imports_str = "\n".join(import_lines)
 

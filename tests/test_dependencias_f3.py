@@ -185,7 +185,12 @@ def test_pipeline_sem_dependencia_mantem_o_cron(factory):
     src = _src(factory)
     ast.parse(src)
     assert 'schedule="0 7 * * *"' in src
-    assert "schedule=None" not in src
+    # Olha a LINHA de schedule do `with DAG`, não a string solta: comentários do
+    # gerador citam `schedule=None` ao explicar a restrição de dia, e procurar a
+    # substring no arquivo inteiro dava falso positivo.
+    linhas_schedule = [l.strip() for l in src.splitlines()
+                       if l.strip().startswith("schedule=")]
+    assert linhas_schedule == ['schedule="0 7 * * *",']
 
 
 def test_disparo_pendura_depois_do_sucesso(factory):
