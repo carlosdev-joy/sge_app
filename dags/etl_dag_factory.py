@@ -490,25 +490,6 @@ def _sql_block(job, sql_cfg, branch_reachable=False):
     ]))
 
 
-def _restricao_dia(pipeline):
-    """Restrição de DIA que o cron carregava, para quem vai ficar sem cron.
-
-    Um pipeline `monthly` com `schedule_dom=5` tinha a regra "só dia 5" embutida
-    no cron `0 7 5 * *`. Ao virar `schedule=None` (disparo por dependência), essa
-    regra desaparecia e o pipeline passava a rodar em todo dia em que o
-    predecessor concluísse — fechamento mensal executando 30x/mês.
-
-    Devolve None para os tipos que não restringem dia (daily, hourly, custom,
-    monthly_days_times — este último já é checado por DIAS_HORARIOS_MES).
-    """
-    stype = (pipeline.get("schedule_type") or "daily").lower().strip()
-    if stype == "weekly":
-        return {"tipo": "weekly", "dow": int(pipeline.get("schedule_dow") or 1)}
-    if stype in ("monthly", "biweekly"):
-        return {"tipo": stype, "dom": int(pipeline.get("schedule_dom") or 1)}
-    return None
-
-
 def _generate_dag_source(pipeline, jobs):
     pname      = pipeline["pipeline_name"]
     project    = pipeline["project_name"]
@@ -516,10 +497,6 @@ def _generate_dag_source(pipeline, jobs):
     tags_raw   = pipeline["tags"]
     sched      = pipeline["scheduled_time"]
     depends_on = (pipeline.get("depends_on") or "").strip() or None
-    # Definido aqui (e não junto do wiring) porque as CONSTANTES do arquivo
-    # gerado precisam saber se este pipeline perde o cron.
-    dep_list = [d.strip() for d in depends_on.split(",") if d.strip()] if depends_on else []
-    tem_dependencia = bool(dep_list)
     is_prd  = (pipeline.get("ambiente") or "PROD").upper() == "PROD"
     f_ini   = bool(pipeline["envia_msg_inicio"]) and is_prd
     f_fim   = bool(pipeline["envia_msg_fim"])    and is_prd
@@ -535,11 +512,7 @@ def _generate_dag_source(pipeline, jobs):
     # Fase 4 — scheduling avançado
     calendario_val      = (pipeline.get("calendario_nome") or "").strip() or None
     dias_uteis_val      = bool(pipeline.get("somente_dias_uteis") or 0)
-    # OBSOLETO desde a F3 da spec de dependências: ter dependência JÁ implica
-    # ser disparado por ela (schedule=None). O campo continua no banco e é lido
-    # aqui só para não quebrar quem o envia; a F5 o tira da tela e a F6 do
-    # modelo. Não usar em decisão nova.
-    trigger_dep_val     = bool(pipeline.get("trigger_por_dependencia") or 0)  # noqa: F841
+    trigger_dep_val     = bool(pipeline.get("trigger_por_dependencia") or 0)
     _DS_QUEUE_MAP = {"ALTA": "HighPriorityJobs", "CRITICA": "HighPriorityJobs",
                      "MEDIA": "MediumPriorityJobs", "BAIXA": "LowPriorityJobs"}
     ds_queue_val = _DS_QUEUE_MAP.get((pipeline.get("criticidade") or "").upper().strip())
@@ -682,9 +655,7 @@ def _generate_dag_source(pipeline, jobs):
 
     # Seção de imports
     import_lines = ["from airflow import DAG"]
-    # `datetime` (além de timedelta) é usado pelo registro de execução do
-    # pipeline — ver _registrar_execucao nos helpers.
-    import_lines.append("from datetime import datetime, timedelta")
+    import_lines.append("from datetime import timedelta")
     if ds_needed:
         import_lines.append("from utils.datastage_operator import DataStageOperator")
     # Operadores reutilizáveis (utils/job_operators) — só os tipos presentes.
@@ -738,12 +709,6 @@ def _generate_dag_source(pipeline, jobs):
         f'HORARIOS_ESPECIFICOS = {repr(horarios_list)}',
         f'DIAS_HORARIOS_MES = {repr(dias_horarios_mes)}',
         f'DATASET_URI   = "orq://pipeline/{pname}"',
-        # Restrição de DIA para pipeline disparado por dependência. Só é
-        # preenchida quando o pipeline perde o cron (schedule=None): a restrição
-        # morava no próprio cron ("0 7 5 * *" = dia 5), e trocá-lo por None a
-        # apagava — o fechamento mensal passava a rodar todo dia que o
-        # predecessor concluísse. Pipeline com cron não precisa (o cron já filtra).
-        f'RESTRICAO_DIA = {repr(_restricao_dia(pipeline) if tem_dependencia else None)}',
         f'default_args  = {{"owner": "airflow", "depends_on_past": False, "retries": {retries_val}, "retry_delay": timedelta(seconds={retry_delay_val})}}',
         f'JOBS          = {repr([j["job_name"] for j in sorted_jobs])}',
         # Jobs EXECUTÁVEIS (com trio de telemetria) — base do registro de SKIPPED
@@ -760,271 +725,6 @@ def _generate_dag_source(pipeline, jobs):
     helpers_lines = [
         "def _now_str():",
         "    return pendulum.now(LOCAL_TZ).to_datetime_string()",
-        "",
-        # ── F2 da spec de dependências: execução no nível PIPELINE ──────────
-        # Até aqui só existia etl_job_execution (por JOB). Sem uma execução de
-        # pipeline carimbada com a data de referência, não há como responder "o
-        # predecessor concluiu na mesma corrida?" — que é a pergunta que libera
-        # um dependente (F3).
-        "def _momento_logico(context):",
-        "    \"\"\"Instante que define a data de referência.",
-        "",
-        "    Usa o horário AGENDADO (data_interval_end/logical_date), não o",
-        "    relógio: um atraso de fila que empurrasse a execução para depois da",
-        "    meia-noite mudaria a data de referência e quebraria a dependência —",
-        "    justamente o que a data de referência existe para evitar. Mesma",
-        "    fonte que o check_agenda já usa.\"\"\"",
-        "    _m = context.get('data_interval_end') or context.get('logical_date')",
-        "    if _m is None:",
-        "        return pendulum.now(LOCAL_TZ)",
-        "    try:",
-        "        return _m.in_timezone(LOCAL_TZ)",
-        "    except Exception:",
-        "        return _m",
-        "",
-        "def _data_referencia(context):",
-        "    \"\"\"Data de referência (ODATE) desta execução.",
-        "",
-        "    Precedência: herança > cálculo. Quem é disparado por dependência",
-        "    recebe a data do predecessor em conf e NÃO recalcula — é isso que",
-        "    mantém a corrida coerente quando ela atravessa a meia-noite.\"\"\"",
-        "    from utils.data_referencia import calcular",
-        "    _conf = (context.get('dag_run').conf or {}) if context.get('dag_run') else {}",
-        "    _herdada = _conf.get('data_referencia')",
-        "    if _herdada:",
-        "        try:",
-        "            return pendulum.parse(str(_herdada)).date()",
-        "        except Exception:",
-        "            print(f'[EXEC] data_referencia herdada invalida: {_herdada!r} — recalculando.')",
-        "    _virada = None",
-        "    try:",
-        "        _hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
-        "        _row = _hook.get_first(",
-        '            "SELECT COALESCE(CONVERT(VARCHAR(8), p.hora_virada, 108), c.config_value) "',
-        '            "FROM dbo.etl_pipeline p "',
-        '            "LEFT JOIN dbo.etl_app_config c ON c.config_key = \'dependencia_hora_virada\' "',
-        '            "WHERE p.pipeline_name = %s",',
-        "            parameters=(PIPELINE_NAME,))",
-        "        _virada = _row[0] if _row else None",
-        "    except Exception as e:",
-        "        # Sem a migration 067 a coluna não existe: cai na virada padrão,",
-        "        # que devolve a data do calendário (comportamento de sempre).",
-        "        print(f'[EXEC] virada indisponivel ({e}) — usando padrao 00:00.')",
-        "    _dt = _momento_logico(context)",
-        "    return calcular(datetime(_dt.year, _dt.month, _dt.day, _dt.hour, _dt.minute, _dt.second), _virada)",
-        "",
-        "def _registrar_execucao(status, context, motivo=None, apenas_se_executando=False):",
-        "    \"\"\"Upsert da execução do pipeline. NUNCA derruba o pipeline.",
-        "",
-        "    Três caminhos, nesta ordem:",
-        "      1. atualiza a linha DESTA execução (mesmo execution_id);",
-        "      2. ADOTA a linha reservada pelo push/guardiã — que foi criada antes",
-        "         da DAG existir e por isso tem execution_id NULL. Sem esta adoção",
-        "         a reserva ficava órfã em EXECUTANDO para sempre e a corrida",
-        "         ganhava duas linhas;",
-        "      3. cria a linha, quando a corrida veio por agenda.",
-        "",
-        "    `apenas_se_executando` protege estados terminais: PULADO (gravado pelo",
-        "    check_agenda) e FALHA não podem ser sobrescritos por um SUCESSO de",
-        "    fechamento que rodou com ALL_DONE.",
-        "",
-        "    Degrada com log se a 067 não foi aplicada: o registro é observabilidade",
-        "    e insumo da liberação, não pode derrubar uma carga que rodou bem.\"\"\"",
-        "    _exec_id = context.get('ts_nodash')",
-        "    try:",
-        "        _dref = _data_referencia(context)",
-        "        _disparado = 'agenda'",
-        "        _conf = (context.get('dag_run').conf or {}) if context.get('dag_run') else {}",
-        "        if _conf.get('disparado_por'):",
-        "            _disparado = str(_conf['disparado_por'])[:200]",
-        "        elif str(context.get('run_id', '')).startswith('manual'):",
-        "            _disparado = 'manual'",
-        "        _extra = \" AND status = 'EXECUTANDO'\" if apenas_se_executando else ''",
-        "        _hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
-        "        _conn = _hook.get_conn(); _cur = _conn.cursor()",
-        "        try:",
-        "            _set = (\"SET status=%s, \"",
-        "                    \"  fim = CASE WHEN %s IN ('SUCESSO','FALHA','PULADO') THEN GETDATE() ELSE fim END, \"",
-        "                    \"  motivo=COALESCE(%s, motivo), atualizado_em=GETDATE() \")",
-        "            _cur.execute(",
-        '                "UPDATE dbo.etl_pipeline_execucao " + _set +',
-        '                "WHERE pipeline_name=%s AND data_referencia=%s AND execution_id=%s" + _extra,',
-        "                (status, status, motivo, PIPELINE_NAME, _dref, _exec_id))",
-        "            if _cur.rowcount == 0:",
-        "                # Adoção da reserva: carimba o execution_id na linha que o",
-        "                # push/guardiã criou, em vez de abrir uma segunda.",
-        "                _cur.execute(",
-        '                    "UPDATE dbo.etl_pipeline_execucao SET execution_id=%s, " +',
-        "                    _set.replace('SET ', '', 1) +",
-        '                    "WHERE pipeline_name=%s AND data_referencia=%s AND execution_id IS NULL" + _extra,',
-        "                    (_exec_id, status, status, motivo, PIPELINE_NAME, _dref))",
-        "                if _cur.rowcount:",
-        "                    print(f'[EXEC] {PIPELINE_NAME}: reserva de {_dref} adotada por {_exec_id}.')",
-        "            if _cur.rowcount == 0 and not apenas_se_executando:",
-        "                _cur.execute(",
-        '                    "INSERT INTO dbo.etl_pipeline_execucao "',
-        '                    "(pipeline_name, data_referencia, execution_id, status, inicio, fim, "',
-        '                    " disparado_por, motivo) VALUES (%s,%s,%s,%s, "',
-        # `inicio` só para quem realmente começou: PULADO com inicio preenchido
-        # ficava "mais recente" que o SUCESSO da mesma data e escondia o sucesso
-        # de um pipeline que roda várias vezes ao dia.
-        '                    " CASE WHEN %s = \'PULADO\' THEN NULL ELSE %s END, "',
-        '                    " CASE WHEN %s IN (\'SUCESSO\',\'FALHA\',\'PULADO\') THEN GETDATE() ELSE NULL END, %s,%s)",',
-        "                    (PIPELINE_NAME, _dref, _exec_id, status,",
-        "                     status, datetime.now(), status, _disparado, motivo))",
-        "            elif _cur.rowcount == 0:",
-        "                print(f'[EXEC] {PIPELINE_NAME}: {status} ignorado — a corrida de {_dref} nao esta mais EXECUTANDO.')",
-        "            _conn.commit()",
-        "        finally:",
-        "            _cur.close(); _conn.close()",
-        "        print(f'[EXEC] {PIPELINE_NAME} {status} — data de referencia {_dref}')",
-        "    except Exception as e:",
-        "        print(f'[EXEC] Aviso: execucao nao registrada (migration 067 aplicada?): {e}')",
-        "",
-        "def registrar_inicio(**context):",
-        "    _registrar_execucao('EXECUTANDO', context)",
-        "",
-        "def registrar_fim(**context):",
-        "    \"\"\"Fecha a corrida como SUCESSO — só se ela ainda estiver EXECUTANDO.",
-        "",
-        "    Roda com ALL_DONE porque havia um caminho em que a corrida ficava",
-        "    presa: decisão na raiz com um ramo vazio deixa o publish_dataset",
-        "    pulado, e a regra condicional anterior pulava o fechamento junto —",
-        "    a linha ficava EXECUTANDO para sempre, sem ninguém alertar.",
-        "",
-        "    Com ALL_DONE a task sempre roda, e a guarda de estado é que decide:",
-        "    corrida PULADA pelo check_agenda ou já marcada FALHA não vira SUCESSO.\"\"\"",
-        "    _registrar_execucao('SUCESSO', context, apenas_se_executando=True)",
-        "",
-        # ── F3: disparo imediato de quem depende deste pipeline ─────────────
-        "def disparar_dependentes(**context):",
-        "    \"\"\"Libera quem espera por este pipeline, agora que ele terminou bem.",
-        "",
-        "    Só dispara quem tem TODAS as dependências concluídas com sucesso na",
-        "    MESMA data de referência: com dois predecessores, o primeiro a",
-        "    terminar não dispara nada — quem completa a condição é o último.",
-        "",
-        "    Nunca derruba o pipeline: ele já fez o trabalho dele. Dependente que",
-        "    não subir aqui é pego pela guardiã (F4).\"\"\"",
-        "    from utils.dependencias import (avaliar_liberacao, config_do_dependente,",
-        "                                    dentro_da_janela, dependentes_de,",
-        "                                    status_dos_predecessores)",
-        "    try:",
-        "        _dref = _data_referencia(context)",
-        "        _hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
-        "        # A task roda com ALL_DONE (o fechamento também), então quem decide",
-        "        # é o estado REAL da corrida: só um SUCESSO satisfaz a condição de",
-        "        # alguém. Sem esta guarda, um pipeline PULADO ou que falhou liberaria",
-        "        # os dependentes.",
-        "        _meu = _hook.get_first(",
-        '            "SELECT TOP 1 status FROM dbo.etl_pipeline_execucao "',
-        '            "WHERE pipeline_name=%s AND data_referencia=%s "',
-        '            "ORDER BY COALESCE(inicio, criado_em) DESC, id DESC",',
-        "            parameters=(PIPELINE_NAME, _dref))",
-        "        if _meu and str(_meu[0]) != 'SUCESSO':",
-        "            print(f'[DEP] {PIPELINE_NAME} terminou como {_meu[0]} — dependentes nao liberados.')",
-        "            return",
-        "        _filhos = dependentes_de(_hook, PIPELINE_NAME)",
-        "        if not _filhos:",
-        "            return",
-        "        _agora = pendulum.now(LOCAL_TZ)",
-        "    except Exception as e:",
-        "        print(f'[DEP] Aviso: avaliacao de dependentes falhou ({e}) — a guardia cobre.')",
-        "        return",
-        "    for _filho in _filhos:",
-        "        # try DENTRO do laço: um dependente problemático não pode cancelar",
-        "        # a avaliação dos outros — antes, o primeiro erro abortava todos.",
-        "        try:",
-        "            _cfg = config_do_dependente(_hook, _filho)",
-        "            if not _cfg['ativo']:",
-        "                print(f'[DEP] {_filho}: inativo — nao disparado.')",
-        "                continue",
-        "            _status = status_dos_predecessores(_hook, _filho, _dref)",
-        "            _ok, _pendentes = avaliar_liberacao(_status)",
-        "            if not _ok:",
-        "                print(f'[DEP] {_filho}: aguardando {_pendentes} (data ref {_dref}).')",
-        "                continue",
-        "            if not dentro_da_janela(_cfg['nao_iniciar_antes'], _agora):",
-        "                # Liberado, mas cedo demais. A guardiã dispara na hora certa.",
-        "                print(f\"[DEP] {_filho}: liberado, aguardando janela de \"",
-        "                      f\"{_cfg['nao_iniciar_antes']} (data ref {_dref}).\")",
-        "                continue",
-        "            _disparar_dag(_filho, _dref)",
-        "        except Exception as e:",
-        "            print(f'[DEP] Aviso: {_filho} nao disparado ({e}) — a guardia cobre.')",
-        "",
-        "def _disparar_dag(nome_filho, data_referencia):",
-        "    \"\"\"Coloca o dependente em execução, herdando a data de referência.",
-        "",
-        "    A marca AGUARDANDO_DEPENDENCIA é o que evita disparo em dobro quando",
-        "    a guardiã passa no mesmo instante: quem consegue mudar a linha para",
-        "    EXECUTANDO é quem dispara. Sem esse aperto, dois caminhos poderiam",
-        "    subir a mesma corrida duas vezes.\"\"\"",
-        "    _hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
-        "    _conn = _hook.get_conn(); _cur = _conn.cursor()",
-        "    try:",
-        "        _cur.execute(",
-        '            "UPDATE dbo.etl_pipeline_execucao SET status=\'EXECUTANDO\', "',
-        '            "  disparado_por=%s, atualizado_em=GETDATE() "',
-        '            "WHERE pipeline_name=%s AND data_referencia=%s "',
-        '            "  AND status=\'AGUARDANDO_DEPENDENCIA\'",',
-        "            (PIPELINE_NAME, nome_filho, data_referencia))",
-        "        _tomou = _cur.rowcount",
-        "        if _tomou == 0:",
-        "            _cur.execute(",
-        '                "SELECT COUNT(*) FROM dbo.etl_pipeline_execucao "',
-        '                "WHERE pipeline_name=%s AND data_referencia=%s",',
-        "                (nome_filho, data_referencia))",
-        "            if (_cur.fetchone() or [0])[0]:",
-        "                _conn.commit()",
-        "                print(f'[DEP] {nome_filho}: ja existe corrida em {data_referencia} — nao redisparado.')",
-        "                return",
-        "            _cur.execute(",
-        '                "INSERT INTO dbo.etl_pipeline_execucao "',
-        '                "(pipeline_name, data_referencia, status, disparado_por) "',
-        '                "VALUES (%s,%s,\'EXECUTANDO\',%s)",',
-        "                (nome_filho, data_referencia, PIPELINE_NAME))",
-        "        _conn.commit()",
-        "    finally:",
-        "        _cur.close(); _conn.close()",
-        "    try:",
-        "        from airflow.api.client.local_client import Client",
-        "        Client(None, None).trigger_dag(",
-        "            dag_id=nome_filho,",
-        "            run_id=f'dep__{PIPELINE_NAME}__{data_referencia}',",
-        "            conf={'data_referencia': str(data_referencia), 'disparado_por': PIPELINE_NAME},",
-        "        )",
-        "    except Exception as e:",
-        "        # DEVOLVE a reserva. O EXECUTANDO foi commitado antes do trigger",
-        "        # para impedir disparo duplo; se o trigger falha (DAG ainda não",
-        "        # serializada, worker morto), sem esta reversão a corrida ficava",
-        "        # presa em EXECUTANDO — a guardiã só age sobre",
-        "        # AGUARDANDO_DEPENDENCIA e nunca mais tentava, nem alertava.",
-        "        _c2 = _hook.get_conn(); _cur2 = _c2.cursor()",
-        "        try:",
-        "            _cur2.execute(",
-        '                "UPDATE dbo.etl_pipeline_execucao "',
-        '                "SET status=\'AGUARDANDO_DEPENDENCIA\', motivo=%s, atualizado_em=GETDATE() "',
-        '                "WHERE pipeline_name=%s AND data_referencia=%s "',
-        # execution_id IS NULL: só a RESERVA volta atrás. Se a corrida real já
-        # adotou a linha, ela está rodando e não pode ser revertida.
-        '                "  AND status=\'EXECUTANDO\' AND execution_id IS NULL",',
-        "                (f'trigger falhou: {type(e).__name__}'[:500], nome_filho, data_referencia))",
-        "            _c2.commit()",
-        "        finally:",
-        "            _cur2.close(); _c2.close()",
-        "        print(f'[DEP] {nome_filho}: trigger falhou ({e}) — reserva devolvida para a guardia.')",
-        "        raise",
-        "    print(f'[DEP] {nome_filho} DISPARADO (data ref {data_referencia}).')",
-        "",
-        "def registrar_falha(**context):",
-        "    \"\"\"Task com ONE_FAILED: qualquer job que falhe reprova a corrida.",
-        "",
-        "    Task e não on_failure_callback em default_args porque as constantes",
-        "    são emitidas ANTES dos helpers no arquivo gerado — referenciar a",
-        "    função ali daria NameError no import da DAG. Também segue o padrão",
-        "    que o teams_error já usa neste gerador.\"\"\"",
-        "    _registrar_execucao('FALHA', context, motivo='job do pipeline falhou')",
         "",
         "def _build_log_file(job_name, execution_id):",
         '    return f"{BASE_LOG_DIR}/{PROJECT_NAME}/{job_name}/{job_name}_{execution_id}.log"',
@@ -1504,45 +1204,21 @@ def _generate_dag_source(pipeline, jobs):
         "            \"execucao interrompida. Corrija o erro antes de reprocessar.\"",
         "        )",
         "",
-        "def _disparo_por_evento(context):",
-        "    \"\"\"Esta corrida veio de uma dependência (push do predecessor ou guardiã)?",
-        "",
-        "    Distinção que faltava e que causou os dois piores defeitos da revisão:",
-        "    as regras de RELÓGIO abaixo só fazem sentido quando quem disparou foi o",
-        "    cron. Num disparo por dependência o instante é o do término do",
-        "    predecessor — que nunca coincide com a lista de horários, e fazia o",
-        "    dependente ser PULADO em 100% das vezes.\"\"\"",
-        "    _rid = str(context.get('run_id', ''))",
-        "    return _rid.startswith('dep__') or _rid.startswith('guardia__')",
-        "",
-        "def _check_agenda_regras(**context):",
-        "    \"\"\"Este pipeline deve executar ESTA corrida?",
-        "",
-        "    Duas famílias de regra, que antes estavam misturadas:",
-        "",
-        "    • RELÓGIO (quando disparar) — horários específicos e dia+hora do mês.",
-        "      Existem para filtrar os disparos do cron, que acontece na união",
-        "      minuto×hora. Não se aplicam a disparo manual nem por dependência.",
-        "",
-        "    • DIA DE PROCESSAMENTO (se deve rodar hoje) — dia da semana, dia do",
-        "      mês, dias úteis e calendário. Valem SEMPRE, e são avaliadas contra a",
-        "      DATA DE REFERÊNCIA, não contra o relógio: um pipeline de sexta que",
-        "      só termina de ser liberado no sábado pertence à sexta.",
-        "",
+        "def check_agenda(**context):",
+        "    \"\"\"Fase 4 — blackout/freeze, dias úteis e calendário de feriados.",
         "    Retorna False (ShortCircuit) para pular a execução inteira.\"\"\"",
-        "    _por_evento = _disparo_por_evento(context)",
-        "    _manual = str(context.get('run_id', '')).startswith('manual')",
-        "    _dref = _data_referencia(context)",
-        "",
-        "    # ── Regras de RELÓGIO ───────────────────────────────────────────",
-        "    if HORARIOS_ESPECIFICOS and not _manual and not _por_evento:",
+        "    # Horários específicos: o cron dispara na união minuto×hora;",
+        "    # só executa se o horário agendado estiver na lista configurada.",
+        "    if HORARIOS_ESPECIFICOS and not str(context.get('run_id', '')).startswith('manual'):",
         "        _die = context.get('data_interval_end') or context.get('logical_date')",
         "        if _die is not None:",
         "            _hhmm = _die.in_timezone(LOCAL_TZ).strftime('%H:%M')",
         "            if _hhmm not in HORARIOS_ESPECIFICOS:",
         "                print(f\"[AGENDA] {_hhmm} fora dos horarios configurados {HORARIOS_ESPECIFICOS} — execucao pulada.\")",
         "                return False",
-        "    if DIAS_HORARIOS_MES and not _manual and not _por_evento:",
+        "    # Dia + hora específico: o cron dispara na união dia×minuto×hora;",
+        "    # só executa se (dia, horario) atual estiver configurado para aquele dia.",
+        "    if DIAS_HORARIOS_MES and not str(context.get('run_id', '')).startswith('manual'):",
         "        _die = context.get('data_interval_end') or context.get('logical_date')",
         "        if _die is not None:",
         "            _local = _die.in_timezone(LOCAL_TZ)",
@@ -1551,26 +1227,6 @@ def _generate_dag_source(pipeline, jobs):
         "            if _hhmm not in DIAS_HORARIOS_MES.get(_dia, []):",
         "                print(f\"[AGENDA] dia {_dia} as {_hhmm} fora da configuracao {DIAS_HORARIOS_MES} — execucao pulada.\")",
         "                return False",
-        "",
-        "    # ── Regras de DIA DE PROCESSAMENTO ──────────────────────────────",
-        "    # RESTRICAO_DIA existe só em pipeline SEM cron (disparado por",
-        "    # dependência): a restrição de dia morava no próprio cron, e ao trocá-lo",
-        "    # por schedule=None ela evaporava — um fechamento mensal do dia 5 passava",
-        "    # a rodar TODO dia em que o predecessor concluísse.",
-        "    if RESTRICAO_DIA:",
-        "        _tipo = RESTRICAO_DIA.get('tipo')",
-        "        if _tipo == 'weekly':",
-        "            _dow_ok = (_dref.isoweekday() % 7) == int(RESTRICAO_DIA.get('dow') or 0) % 7",
-        "            if not _dow_ok:",
-        "                print(f\"[AGENDA] {_dref} nao e o dia da semana configurado ({RESTRICAO_DIA}) — execucao pulada.\")",
-        "                return False",
-        "        elif _tipo in ('monthly', 'biweekly'):",
-        "            _dom = int(RESTRICAO_DIA.get('dom') or 1)",
-        "            _dias = [_dom] if _tipo == 'monthly' else [_dom, _dom + 15]",
-        "            if _dref.day not in _dias:",
-        "                print(f\"[AGENDA] dia {_dref.day} nao esta em {_dias} (config {RESTRICAO_DIA}) — execucao pulada.\")",
-        "                return False",
-        "",
         "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
         "    try:",
         "        row = hook.get_first(",
@@ -1580,41 +1236,26 @@ def _generate_dag_source(pipeline, jobs):
         "            parameters=(PROJECT_NAME, PIPELINE_NAME),",
         "        )",
         "        if row:",
-        "            # Blackout é uma JANELA DE RELÓGIO (freeze operacional agora),",
-        "            # então continua comparando com GETDATE() de propósito.",
         "            print(f\"[AGENDA] Blackout vigente: {row[0]} — execucao pulada.\")",
         "            return False",
         "    except Exception as e:",
         "        print(f\"[AGENDA] Aviso: verificacao de blackout falhou ({e}) — seguindo.\")",
-        "    # Dias úteis e calendário passam a olhar a DATA DE REFERÊNCIA. Com o",
-        "    # relógio, a corrida de sexta que atravessava a meia-noite era pulada no",
-        "    # sábado — justamente o caso que a data de referência existe para tratar.",
-        "    if SOMENTE_DIAS_UTEIS and _dref.weekday() >= 5:",
-        "        print(f\"[AGENDA] Data de referencia {_dref} e fim de semana e o pipeline e somente dias uteis — execucao pulada.\")",
+        "    if SOMENTE_DIAS_UTEIS and pendulum.now(LOCAL_TZ).weekday() >= 5:",
+        "        print(\"[AGENDA] Fim de semana e pipeline e somente dias uteis — execucao pulada.\")",
         "        return False",
         "    if CALENDARIO_NOME:",
         "        try:",
         "            row = hook.get_first(",
         '                "SELECT TOP 1 ISNULL(descricao, \'\') FROM dbo.etl_calendario "',
-        '                "WHERE calendario_nome=%s AND data=%s",',
-        "                parameters=(CALENDARIO_NOME, _dref),",
+        '                "WHERE calendario_nome=%s AND data=CAST(GETDATE() AS DATE)",',
+        "                parameters=(CALENDARIO_NOME,),",
         "            )",
         "            if row is not None:",
-        "                print(f\"[AGENDA] Data de referencia {_dref} bloqueada no calendario {CALENDARIO_NOME} ({row[0]}) — execucao pulada.\")",
+        "                print(f\"[AGENDA] Data bloqueada no calendario {CALENDARIO_NOME} ({row[0]}) — execucao pulada.\")",
         "                return False",
         "        except Exception as e:",
         "            print(f\"[AGENDA] Aviso: verificacao de calendario falhou ({e}) — seguindo.\")",
         "    return True",
-        "",
-        # Envolve as regras em vez de instrumentar cada `return False`: são cinco
-        # caminhos de saída (horários, dia+hora, blackout, dia útil, calendário)
-        # e esquecer um deixaria a corrida sem registro nenhum — indistinguível
-        # de "nunca foi ordenada", que é o que a guardiã da F4 vai procurar.
-        "def check_agenda(**context):",
-        "    _ok = _check_agenda_regras(**context)",
-        "    if not _ok:",
-        "        _registrar_execucao('PULADO', context, motivo='fora da agenda (blackout/dia util/calendario/horario)')",
-        "    return _ok",
     ]
     helpers_str = "\n".join(helpers_lines)
 
@@ -1692,45 +1333,7 @@ def _generate_dag_source(pipeline, jobs):
         '    task_id="check_agenda",',
         '    python_callable=check_agenda,',
         ')',
-        '',
-        '# Execução do pipeline carimbada com a data de referência (ODATE).',
-        '# Fica DEPOIS do check_agenda: corrida pulada é registrada como PULADO',
-        '# pelo próprio check, não como EXECUTANDO que nunca termina.',
-        't_exec_inicio = PythonOperator(',
-        '    task_id="registrar_inicio",',
-        '    python_callable=registrar_inicio,',
-        ')',
     ])
-
-    # Fechamento: só marca SUCESSO se nada falhou. ALL_SUCCESS não serve quando o
-    # pipeline tem ramos que podem ser pulados por decisão — aí a convergência
-    # legítima traz tasks SKIPPED.
-    exec_fim_block = "\n".join(filter(None, [
-        't_exec_fim = PythonOperator(',
-        '    task_id="registrar_fim",',
-        '    python_callable=registrar_fim,',
-        # ALL_DONE: com ramo pulado o publish_dataset fica SKIPPED e o
-        # fechamento condicional anterior era pulado junto, deixando a corrida
-        # presa em EXECUTANDO. A guarda de estado dentro da função é quem impede
-        # um PULADO/FALHA de virar SUCESSO.
-        '    trigger_rule=TriggerRule.ALL_DONE,',
-        ')',
-        '',
-        '# FALHA da corrida. ONE_FAILED (mesmo padrão do teams_error): basta um',
-        '# job reprovar para o pipeline não liberar quem depende dele (F3).',
-        't_exec_falha = PythonOperator(',
-        '    task_id="registrar_falha",',
-        '    python_callable=registrar_falha,',
-        '    trigger_rule=TriggerRule.ONE_FAILED,',
-        ')',
-        '',
-        '# Libera quem depende deste pipeline. Depois do registrar_fim: só uma',
-        '# corrida marcada SUCESSO pode satisfazer a condição de alguém.',
-        't_disparar_dependentes = PythonOperator(',
-        '    task_id="disparar_dependentes",',
-        '    python_callable=disparar_dependentes,',
-        ')',
-    ]))
 
     # Fase 4 — publica Dataset ao final (consumido por pipelines com trigger_por_dependencia)
     publish_block = "\n".join(filter(None, [
@@ -1743,28 +1346,41 @@ def _generate_dag_source(pipeline, jobs):
         ')',
     ]))
 
-    # (dep_list / tem_dependencia já definidos no topo — as constantes do
-    # arquivo gerado dependem deles.)
-    # F3 da spec de dependências: o ExternalTaskSensor SAIU.
-    #
-    # Ele exigia que pai e filho tivessem o MESMO logical_date — ou seja, o mesmo
-    # horário de agendamento — e desistia depois de 1h fixa. Na prática só
-    # funcionava na configuração que ninguém faz (pai e filho no mesmo horário) e
-    # reprovava qualquer pai que durasse mais de uma hora.
-    #
-    # Agora o pipeline dependente não tem agenda própria: é DISPARADO por quem
-    # ele espera, assim que a última dependência conclui na mesma data de
-    # referência. Sem sensor, sem polling, sem janela perdida.
+    # S4: ExternalTaskSensor — suporte a múltiplas dependências
+    dep_list = [d.strip() for d in depends_on.split(",") if d.strip()] if depends_on else []
+    # Em modo trigger_por_dependencia o schedule já é dirigido pelos Datasets
+    # dos pipelines dos quais depende — sensores são desnecessários.
+    use_dataset_schedule = trigger_dep_val and bool(dep_list)
+    if use_dataset_schedule:
+        dep_list = []
+    sensor_block = ""
+    sensor_names = []
+    if dep_list:
+        if "from airflow.sensors.external_task import ExternalTaskSensor" not in import_lines:
+            import_lines.append("from airflow.sensors.external_task import ExternalTaskSensor")
+        sensor_parts = []
+        for dep in dep_list:
+            sname = f"t_sensor_{dep}"
+            sensor_names.append(sname)
+            sensor_parts.append("\n".join([
+                f'{sname} = ExternalTaskSensor(',
+                f'    task_id="wait_{dep}",',
+                f'    external_dag_id="{dep}",',
+                f'    mode="reschedule",',
+                f'    timeout=3600,',
+                f'    poke_interval=60,',
+                f')',
+            ]))
+        sensor_block = "\n\n".join(sensor_parts)
     # Rebuild imports_str after potential append
     imports_str = "\n".join(import_lines)
 
     dep_lines = []
 
-    # O registro da execução entra logo depois do check_agenda e passa a ser a
-    # raiz de tudo que vem abaixo: assim a corrida existe no banco ANTES do
-    # primeiro job, e uma falha logo no início já encontra a linha para marcar.
-    dep_lines.append("t_check_agenda >> t_exec_inicio")
-
+    # anchor: check_agenda → (sensors or first group)
+    if sensor_names:
+        sensors_ref = "[" + ", ".join(sensor_names) + "]"
+        dep_lines.append(f"t_check_agenda >> {sensors_ref}")
 
     # Modo de dependência: EXPLÍCITO (algum job tem depends_on_jobs OU há um nó
     # de Decisão) ou ONDAS (execution_order). Opt-in por pipeline — pipelines
@@ -1775,7 +1391,7 @@ def _generate_dag_source(pipeline, jobs):
     notif_task_refs = []   # t_notif_* a convergir no publish_dataset
     sql_task_refs = []     # t_sql_* a convergir no publish_dataset
     if explicit_deps:
-        root_anchor = "t_exec_inicio"
+        root_anchor = sensors_ref if sensor_names else "t_check_agenda"
         teams_start_done = False
         def _end_ref(d):
             # Tarefa de conclusão de uma dependência. Nós de notificação, decisão e
@@ -1836,8 +1452,10 @@ def _generate_dag_source(pipeline, jobs):
             g_ends = [f"t_end_{_varname(j['job_name'])}" for j in group]
             if prev_ends:
                 up = "[" + ", ".join(prev_ends) + "]" if len(prev_ends) > 1 else prev_ends[0]
+            elif sensor_names:
+                up = sensors_ref
             else:
-                up = "t_exec_inicio"
+                up = "t_check_agenda"
             for j_idx, j in enumerate(group):
                 n = _varname(j["job_name"])
                 if g_idx == 0 and j_idx == 0 and f_ini:
@@ -1882,23 +1500,11 @@ def _generate_dag_source(pipeline, jobs):
         if f_fim:
             dep_lines.append("t_flow_close >> t_teams_end")
 
-    # SUCESSO é gravado depois do publish_dataset — que já é o ponto de
-    # convergência de tudo (ends, notificações e nós SQL). Pendurar aqui evita
-    # repetir a lista de convergência e garante que nenhum ramo ficou de fora.
-    dep_lines.append("t_publish_dataset >> t_exec_fim >> t_disparar_dependentes")
-    # A task de FALHA pendura nos MESMOS fins de ramo do teams_error: ONE_FAILED
-    # só dispara olhando os upstreams diretos, então pendurá-la apenas no
-    # publish_dataset a deixaria cega para o ramo que falhou.
-    dep_lines.append(f"{end_tasks_ref} >> t_exec_falha")
-    for nref in notif_task_refs:
-        dep_lines.append(f"{nref} >> t_exec_falha")
-    for sref in sql_task_refs:
-        dep_lines.append(f"{sref} >> t_exec_falha")
-
     with_parts = []
     with_parts.append(_ind(check_block))
-    with_parts.append(_ind(exec_fim_block))
     with_parts.append(_ind(publish_block))
+    if sensor_block:
+        with_parts.append(_ind(sensor_block))
     for t in teams_tasks:
         with_parts.append(_ind(t))
     for b in job_blocks:
@@ -1915,12 +1521,10 @@ def _generate_dag_source(pipeline, jobs):
     else:
         sd_y, sd_m, sd_d = 2026, 1, 1
 
-    if tem_dependencia:
-        # Pipeline com dependência NÃO tem agenda própria: quem o coloca em
-        # execução é o predecessor (t_disparar_dependentes) ou a guardiã (F4).
-        # Manter um cron aqui recriaria o problema que a F3 resolve — a corrida
-        # começaria no horário do relógio, não quando o insumo ficou pronto.
-        schedule_line = (f'    schedule=None,  # disparado por dependência: {", ".join(dep_list)}')
+    if use_dataset_schedule:
+        deps_orig = [d.strip() for d in depends_on.split(",") if d.strip()]
+        ds_items = ", ".join(f'Dataset("orq://pipeline/{d}")' for d in deps_orig)
+        schedule_line = f"    schedule=[{ds_items}],  # dispara quando as dependências publicarem"
     else:
         schedule_line = f'    schedule="{cron}",'
 
@@ -1958,27 +1562,6 @@ def _generate_dag_source(pipeline, jobs):
         dag_block,
     ]
     return "\n".join(parts)
-
-
-def _dependencias_da_tabela(cursor):
-    """{pipeline: 'A,B'} de etl_pipeline_dependencia — fonte da verdade (067).
-
-    Devolve None (e não {}) quando a tabela não existe: um dicionário vazio
-    seria indistinguível de "nenhum pipeline tem dependência" e apagaria as
-    dependências de TODAS as DAGs num deploy que levasse `dags/` sem a
-    migration. None faz o chamador preservar o que a proc trouxe.
-    """
-    try:
-        cursor.execute(
-            "SELECT pipeline_name, depende_de FROM dbo.etl_pipeline_dependencia "
-            "WHERE tipo = 'PIPELINE' ORDER BY pipeline_name, depende_de")
-        por_pipeline = defaultdict(list)
-        for nome, dep in cursor.fetchall():
-            por_pipeline[str(nome)].append(str(dep))
-        return {nome: ",".join(deps) for nome, deps in por_pipeline.items()}
-    except Exception as e:
-        print(f"[FACTORY] dependencias da tabela indisponiveis ({e}) — usando o depends_on da proc.")
-        return None
 
 
 def gerar_dags(**context):
@@ -2084,16 +1667,6 @@ def gerar_dags(**context):
 
     pipelines = [dict(zip(pipeline_cols, row)) for row in pipelines_rows]
     jobs_all  = [dict(zip(jobs_cols, row))     for row in jobs_rows]
-
-    # F6: a dependência que vai para a DAG vem da TABELA, não do CSV.
-    # A stored procedure devolve o depends_on de etl_pipeline (mantido em
-    # espelho); sobrescrever aqui evita mexer na proc — que é usada em outros
-    # pontos — e faz a geração seguir a mesma fonte da verdade que o cadastro,
-    # a guardiã e o disparo. Sem a migration 067 o valor da proc é preservado.
-    _deps = _dependencias_da_tabela(cursor)
-    if _deps is not None:
-        for _p in pipelines:
-            _p["depends_on"] = _deps.get(_p["pipeline_name"]) or None
 
     params_by_job = defaultdict(list)
     for r in [dict(zip(params_cols, row)) for row in params_rows]:

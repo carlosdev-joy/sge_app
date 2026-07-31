@@ -6,11 +6,11 @@ import json
 import logging
 import re
 import time
-from datetime import date, datetime, timezone, timedelta
+from datetime import date, timezone, timedelta
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import get_db_conn
 from deps import (
@@ -178,28 +178,6 @@ def _get_valid_projects(cur):
     except Exception:
         pass
     return {"BI_CVP", "BI_VIDA", "BI_PRESTAMISTA", "BI_PREVIDENCIA"}
-
-
-def _hora_ou_nulo(valor):
-    """'08:00' → '08:00:00' para o SQL Server; vazio/inválido → None.
-
-    Silencia valor inválido em vez de recusar o cadastro inteiro: os três campos
-    de horário são opcionais e um lixo digitado num deles não pode impedir de
-    salvar o resto do pipeline.
-    """
-    texto = str(valor or "").strip()
-    if not texto:
-        return None
-    partes = texto.split(":")
-    if len(partes) < 2:
-        return None
-    try:
-        h, m = int(partes[0]), int(partes[1])
-    except ValueError:
-        return None
-    if not (0 <= h <= 23 and 0 <= m <= 59):
-        return None
-    return f"{h:02d}:{m:02d}:00"
 
 
 def _dependencias_de(cur, pipeline_name):
@@ -546,21 +524,6 @@ def list_pipelines(
             inativ_cols = ("NULL AS motivo_inativacao, NULL AS inativado_por, "
                            "NULL AS inativado_em")
 
-        # colunas da migration 067 (janela e virada) — degradam para NULL.
-        # Sem devolvê-las, o formulário carregava os três campos VAZIOS e todo
-        # save os zerava no banco: a virada some, a corrida que atravessa a
-        # meia-noite se parte em dois dias e o dependente nunca libera.
-        cur.execute("""
-            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' AND COLUMN_NAME='hora_virada'
-        """)
-        if cur.fetchone()[0]:
-            janela_cols = ("CONVERT(VARCHAR(5), hora_virada, 108) AS hora_virada, "
-                           "CONVERT(VARCHAR(5), nao_iniciar_antes, 108) AS nao_iniciar_antes, "
-                           "CONVERT(VARCHAR(5), hora_limite_dependencia, 108) AS hora_limite_dependencia")
-        else:
-            janela_cols = ("NULL AS hora_virada, NULL AS nao_iniciar_antes, "
-                           "NULL AS hora_limite_dependencia")
 
         data_sql = f"""
             SELECT
@@ -585,8 +548,7 @@ def list_pipelines(
                 ISNULL(CAST(max_active_runs    AS INT), 1)   AS max_active_runs,
                 ISNULL(CAST(retries_count      AS INT), 1)   AS retries_count,
                 ISNULL(CAST(retry_delay_seconds AS INT), 300) AS retry_delay_seconds,
-                pool_name, {runbook_col}, {sched_cols}, {inativ_cols}, {janela_cols},
-                last_execution, created_at, updated_at
+                pool_name, {runbook_col}, {sched_cols}, {inativ_cols}, last_execution, created_at, updated_at
             FROM dbo.etl_pipeline
             {where_sql}
             ORDER BY project_name, domain, pipeline_name
@@ -603,7 +565,6 @@ def list_pipelines(
             "pool_name", "runbook_md", "calendario_nome", "somente_dias_uteis",
             "trigger_por_dependencia", "horarios_especificos", "dias_semana",
             "dias_horarios_mes", "motivo_inativacao", "inativado_por", "inativado_em",
-            "hora_virada", "nao_iniciar_antes", "hora_limite_dependencia",
             "last_execution", "created_at", "updated_at",
         ]
         data = []
@@ -665,11 +626,6 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
     motivo_inativacao = (body.get("motivo_inativacao") or "").strip() or None
     # Fase 4 — scheduling avançado
     calendario_nome  = (body.get("calendario_nome") or "").strip() or None
-    # Migration 067 — janela e virada do dia. Em branco vira NULL: "sem regra" é
-    # diferente de "regra às 00:00".
-    hora_virada             = _hora_ou_nulo(body.get("hora_virada"))
-    nao_iniciar_antes       = _hora_ou_nulo(body.get("nao_iniciar_antes"))
-    hora_limite_dependencia = _hora_ou_nulo(body.get("hora_limite_dependencia"))
     somente_dias_uteis      = int(body.get("somente_dias_uteis", 0))
     trigger_por_dependencia = int(body.get("trigger_por_dependencia", 0))
     # Migration 018 — horários múltiplos
@@ -764,27 +720,6 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
             )
         except Exception:
             pass  # colunas da migration 017 podem não existir ainda — degrada sem erro
-        # Janela e virada (migration 067). Só grava o que veio NO BODY.
-        #
-        # Antes o UPDATE era incondicional, e como o GET não devolvia as três
-        # colunas, o formulário mandava null e TODO save as zerava. Pior: o
-        # diálogo de inativar monta um body próprio, sem esses campos — mesmo
-        # depois de o GET passar a devolvê-los, aquele caminho continuaria
-        # apagando. Ausente no body = não mexe.
-        _janela = [(c, v) for c, v in (("hora_virada", hora_virada),
-                                       ("nao_iniciar_antes", nao_iniciar_antes),
-                                       ("hora_limite_dependencia", hora_limite_dependencia))
-                   if c in body]
-        if _janela:
-            try:
-                cur.execute(
-                    "UPDATE dbo.etl_pipeline SET "
-                    + ", ".join(f"{c}=?" for c, _ in _janela)
-                    + ", updated_at=GETDATE() WHERE pipeline_name=?",
-                    tuple(v for _, v in _janela) + (pipeline,),
-                )
-            except Exception:
-                pass  # migration 067 pendente — degrada sem erro
         try:
             cur.execute(
                 "UPDATE dbo.etl_pipeline SET horarios_especificos=?, dias_semana=?, "
@@ -936,82 +871,6 @@ async def gerar_dag(pipeline_name: str,
     await asyncio.to_thread(enqueue_dag_pendente, pname, desired_paused, _auth.get("matricula"), run_id)
     return {"ok": True, "pipeline_name": pname, "dag_run_id": run_id,
             "desired_active": (not desired_paused)}
-
-
-@router.get("/pipelines/dependencias/estado", tags=["pipelines"])
-def estado_dependencias(date_ref: str | None = Query(None),
-                        _auth: dict = Depends(get_current_user)):
-    """Como está a malha de dependências numa data de referência.
-
-    Responde a pergunta que hoje só existe no banco: por que aquele pipeline
-    ainda não rodou. Devolve, por dependente, o status da corrida e QUAIS
-    predecessores estão pendentes — "aguardando dependência" sem dizer de quem
-    manda o operador abrir o SQL.
-
-    Degrada para lista vazia sem a migration 067: a tela some, o resto do
-    Malha continua.
-    """
-    dr = (date_ref or "").strip() or date.today().isoformat()
-    try:
-        dia = datetime.strptime(dr[:10], "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"date_ref inválido: '{dr}' — use AAAA-MM-DD")
-
-    try:
-        conn = get_db_conn(); cur = conn.cursor()
-    except Exception as e:
-        log.warning("[DEP] estado sem banco: %s", e)
-        return {"date_ref": dia.isoformat(), "data": []}
-
-    try:
-        cur.execute(
-            "SELECT d.pipeline_name, d.depende_de, "
-            "       (SELECT TOP 1 e.status FROM dbo.etl_pipeline_execucao e "
-            "         WHERE e.pipeline_name = d.depende_de AND e.data_referencia = ? "
-            "         ORDER BY COALESCE(e.inicio, e.criado_em) DESC, e.id DESC), "
-            "       (SELECT TOP 1 x.status FROM dbo.etl_pipeline_execucao x "
-            "         WHERE x.pipeline_name = d.pipeline_name AND x.data_referencia = ? "
-            "         ORDER BY COALESCE(x.inicio, x.criado_em) DESC, x.id DESC) "
-            "FROM dbo.etl_pipeline_dependencia d "
-            "JOIN dbo.etl_pipeline p ON p.pipeline_name = d.pipeline_name "
-            "WHERE d.tipo = 'PIPELINE' AND p.active = 1 "
-            "ORDER BY d.pipeline_name, d.depende_de", (dia, dia))
-        linhas = cur.fetchall()
-
-        cur.execute(
-            "SELECT pipeline_name, tipo, detalhe FROM dbo.etl_dependencia_evento "
-            "WHERE data_referencia = ?", (dia,))
-        eventos = {}
-        for r in cur.fetchall():
-            eventos.setdefault(str(r[0]), []).append({"tipo": r[1], "detalhe": r[2]})
-    except Exception as e:
-        log.warning("[DEP] estado indisponível (migration 067 aplicada?): %s", e)
-        return {"date_ref": dia.isoformat(), "data": []}
-    finally:
-        try:
-            cur.close(); conn.close()
-        except Exception:
-            pass
-
-    por_pipeline: dict = {}
-    for nome, predecessor, status_pred, status_proprio in linhas:
-        item = por_pipeline.setdefault(str(nome), {
-            "pipeline_name": str(nome), "status": status_proprio,
-            "predecessores": [], "pendentes": [],
-        })
-        item["predecessores"].append({"nome": str(predecessor), "status": status_pred})
-        if status_pred != "SUCESSO":
-            item["pendentes"].append(str(predecessor))
-
-    dados = []
-    for item in por_pipeline.values():
-        item["eventos"] = eventos.get(item["pipeline_name"], [])
-        # Liberado = nenhum pendente. Espelha utils/dependencias.avaliar_liberacao,
-        # mas aqui é só leitura: a decisão de disparar continua sendo da DAG.
-        item["liberado"] = not item["pendentes"]
-        dados.append(item)
-
-    return {"date_ref": dia.isoformat(), "data": dados}
 
 
 @router.post("/pipelines/{pipeline_name}/dag-sync", tags=["pipelines"])
