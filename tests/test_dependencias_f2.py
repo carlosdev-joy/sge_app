@@ -108,7 +108,13 @@ def test_falha_pendura_nos_fins_de_ramo_com_one_failed(factory):
 
 
 def test_pipeline_com_decisao_tolera_ramo_pulado_no_sucesso(factory):
-    """Convergência com ramos pulados: ALL_SUCCESS marcaria FALHA sem falha."""
+    """Convergência com ramos pulados não pode impedir o fechamento.
+
+    A regra mudou na correção B: era NONE_FAILED_MIN_ONE_SUCCESS, que ainda
+    ficava SKIPPED quando TODOS os upstreams eram pulados (decisão na raiz com
+    ramo vazio) e deixava a corrida presa em EXECUTANDO. Agora é ALL_DONE, com
+    guarda de estado dentro da função — ver test_dependencias_estado_corrida.py.
+    """
     import json
     jobs = [
         {"job_name": "A", "job_type": "python", "job_command": "m", "execution_order": 1},
@@ -125,7 +131,7 @@ def test_pipeline_com_decisao_tolera_ramo_pulado_no_sucesso(factory):
     src = factory._generate_dag_source(_pipeline(pipeline_name="PIPE_DEC"), jobs)
     ast.parse(src)
     bloco = src[src.index("t_exec_fim = PythonOperator("):]
-    assert "NONE_FAILED_MIN_ONE_SUCCESS" in bloco[:300]
+    assert "TriggerRule.ALL_DONE" in bloco[:300]
 
 
 # ──────────────────────────── Data de referência ───────────────────────────

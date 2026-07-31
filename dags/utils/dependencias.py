@@ -142,21 +142,35 @@ def detectar_divergencia(status_na_data: dict, datas_por_predecessor: dict) -> l
 
 
 def status_dos_predecessores(hook, pipeline_name: str, data_referencia) -> dict:
-    """nome do predecessor → status da execução MAIS RECENTE naquela data.
+    """nome do predecessor → status que vale para a liberação, naquela data.
 
-    Mais recente e não "existe alguma com sucesso": um pipeline com horários
-    específicos roda várias vezes no dia, e o que vale é como ele terminou por
-    último. Predecessor sem execução na data vira None — que é diferente de
-    falha, e a mensagem de alerta distingue os dois.
+    **Um SUCESSO na data vale, mesmo que não seja a execução mais recente.**
+    É a semântica da condição OUT do Control-M: uma vez que o job terminou bem e
+    produziu o insumo, a condição existe — execuções posteriores não a desfazem.
+
+    A versão anterior olhava só a execução mais recente, e isso quebrava de um
+    jeito difícil de enxergar: um pipeline com horários 08:30 e 09:00 recebe
+    disparos de cron às 08:00 e 09:30 que o próprio check_agenda descarta como
+    PULADO. Esse PULADO era o "mais recente" e escondia o SUCESSO das 09:00 —
+    o dependente ficava esperando para sempre um predecessor que rodou duas
+    vezes com sucesso.
+
+    Sem SUCESSO na data, devolve o status mais recente (ou None se não houve
+    execução nenhuma): é o que a mensagem de pendência mostra ao operador, e
+    "falhou" precisa ser distinguível de "nem rodou".
     """
     linhas = hook.get_records(
         "SELECT d.depende_de, "
-        "       (SELECT TOP 1 e.status FROM dbo.etl_pipeline_execucao e "
-        "         WHERE e.pipeline_name = d.depende_de AND e.data_referencia = %s "
-        "         ORDER BY COALESCE(e.inicio, e.criado_em) DESC, e.id DESC) "
+        "       CASE WHEN EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao s "
+        "                          WHERE s.pipeline_name = d.depende_de "
+        "                            AND s.data_referencia = %s AND s.status = 'SUCESSO') "
+        "            THEN 'SUCESSO' "
+        "            ELSE (SELECT TOP 1 e.status FROM dbo.etl_pipeline_execucao e "
+        "                   WHERE e.pipeline_name = d.depende_de AND e.data_referencia = %s "
+        "                   ORDER BY COALESCE(e.inicio, e.criado_em) DESC, e.id DESC) END "
         "FROM dbo.etl_pipeline_dependencia d "
         "WHERE d.pipeline_name = %s AND d.tipo = 'PIPELINE'",
-        parameters=(data_referencia, pipeline_name))
+        parameters=(data_referencia, data_referencia, pipeline_name))
     return {str(r[0]): (str(r[1]) if r[1] is not None else None) for r in (linhas or [])}
 
 

@@ -266,7 +266,9 @@ def test_um_pipeline_com_erro_nao_para_a_varredura(guardia, monkeypatch):
     """
     class HookQueFalhaNoRuim(FakeHook):
         def get_records(self, sql, parameters=None):
-            if "d.depende_de" in sql and parameters and parameters[1] == "RUIM":
+            # O pipeline é o ÚLTIMO parâmetro: desde a correção B a data entra
+            # duas vezes antes dele (EXISTS de sucesso na data + TOP 1).
+            if "d.depende_de" in sql and parameters and parameters[-1] == "RUIM":
                 raise RuntimeError("timeout na consulta do RUIM")
             return super().get_records(sql, parameters)
 
