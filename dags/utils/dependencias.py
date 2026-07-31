@@ -87,6 +87,60 @@ def _parse_hora(texto: str):
     return None
 
 
+# ── Regras da guardiã (F4) — puras ─────────────────────────────────────────
+
+# Estados em que a corrida ainda não saiu do lugar: é sobre eles que a janela
+# estoura. EXECUTANDO e SUCESSO já saíram; FALHA é problema do pipeline, não da
+# dependência, e tem alerta próprio.
+ESTADOS_PARADOS = frozenset({"AGUARDANDO_DEPENDENCIA", None})
+
+
+def passou_do_limite(hora_limite, agora) -> bool:
+    """Já passou do horário até o qual a liberação fazia sentido?
+
+    Sem limite configurado, nunca estoura — o deadline é opt-in por decisão do
+    usuário (spec §8), porque só quem conhece a janela de negócio sabe informá-lo.
+    """
+    if hora_limite is None:
+        return False
+    limite = hora_limite
+    if not isinstance(limite, time):
+        limite = _parse_hora(str(limite))
+        if limite is None:
+            return False
+    atual = agora if isinstance(agora, time) else agora.time()
+    return atual >= limite
+
+
+def precisa_alertar_janela(hora_limite, agora, status_atual) -> bool:
+    """Estourou a janela com a corrida ainda parada?
+
+    Note que status None (corrida nem ordenada) TAMBÉM alerta: é o caso em que
+    nenhum predecessor rodou o dia inteiro — exatamente o silêncio que o defeito
+    5 do QA produzia.
+    """
+    return passou_do_limite(hora_limite, agora) and status_atual in ESTADOS_PARADOS
+
+
+def detectar_divergencia(status_na_data: dict, datas_por_predecessor: dict) -> list:
+    """Predecessores que concluíram, mas em OUTRA data de referência.
+
+    É o alerta que o usuário pediu: em vez de o dependente simplesmente nunca
+    liberar, dizer que o insumo existe — só que carimbado com outro dia.
+
+    Devolve [(predecessor, data_encontrada)], ordenado, só para quem está
+    pendente na data corrente.
+    """
+    divergentes = []
+    for nome, status in sorted(status_na_data.items()):
+        if status in ESTADOS_QUE_LIBERAM:
+            continue
+        outra = datas_por_predecessor.get(nome)
+        if outra:
+            divergentes.append((nome, outra))
+    return divergentes
+
+
 def status_dos_predecessores(hook, pipeline_name: str, data_referencia) -> dict:
     """nome do predecessor → status da execução MAIS RECENTE naquela data.
 
