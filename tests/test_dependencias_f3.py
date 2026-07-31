@@ -138,7 +138,9 @@ def test_status_consulta_amarrada_a_data_de_referencia(dep):
     assert resultado == {"PAI_A": "SUCESSO", "PAI_B": None}
     sql, kwargs = hook.get_records.call_args[0][0], hook.get_records.call_args[1]
     assert "data_referencia = %s" in sql
-    assert kwargs["parameters"] == (date(2026, 8, 1), "FILHO")
+    # A data entra DUAS vezes desde a correção B: no EXISTS que procura sucesso
+    # na data e no TOP 1 que devolve o status mais recente quando não houve.
+    assert kwargs["parameters"] == (date(2026, 8, 1), date(2026, 8, 1), "FILHO")
 
 
 def test_status_usa_a_execucao_mais_recente(dep):
