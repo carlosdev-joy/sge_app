@@ -272,27 +272,66 @@ def _validar_existencia(cur, depends_on_list):
     return faltando
 
 
+def _rollback_silencioso(conn):
+    """Desfaz a transação sem mascarar o erro original que levou até aqui."""
+    if conn is None:
+        return
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def deduplicar(nomes):
+    """Remove repetidos preservando a ordem, ignorando caixa.
+
+    A collation do SQL Server é case-insensitive, então 'A,a' viola o índice
+    único tanto quanto 'A,A'. Um `depends_on` legado com nome repetido — o campo
+    era texto livre antes — fazia o INSERT estourar no meio do replace-all: o
+    DELETE já tinha passado, o pipeline perdia dependências REAIS e passava a
+    ser disparado sem esperá-las, com HTTP 200.
+    """
+    vistos, saida = set(), []
+    for nome in nomes:
+        chave = (nome or "").strip().casefold()
+        if chave and chave not in vistos:
+            vistos.add(chave)
+            saida.append(nome.strip())
+    return saida
+
+
 def _gravar_dependencias(cur, pipeline_name, depends_on_list, usuario=None):
     """Sincroniza etl_pipeline_dependencia com a lista informada (replace-all).
 
-    Degrada em silêncio se a migration 067 ainda não rodou: nesse caso o CSV
-    `depends_on` — que continua sendo escrito em espelho até a F6 — segue como
-    única fonte, e o cadastro não quebra num deploy parcial.
+    Duas falhas são tratadas de formas OPOSTAS de propósito:
+
+    • tabela inexistente (migration 067 pendente) → degrada com log. O DELETE é
+      a primeira instrução e falha antes de apagar qualquer coisa, então o CSV
+      espelho segue como fonte e o cadastro não quebra num deploy parcial.
+
+    • falha DEPOIS do DELETE → PROPAGA. Engolir aqui commitava o DELETE com os
+      INSERTs pela metade: o pipeline ficava sem dependência na tabela — que é a
+      fonte da verdade da geração — e voltava a rodar por cron, sozinho, com a
+      tela mostrando 200.
     """
     try:
         cur.execute(
             "DELETE FROM dbo.etl_pipeline_dependencia "
             "WHERE pipeline_name = ? AND tipo = 'PIPELINE'", (pipeline_name,))
-        for dep in depends_on_list:
-            if dep:
-                cur.execute(
-                    "INSERT INTO dbo.etl_pipeline_dependencia "
-                    "(pipeline_name, depende_de, tipo, criado_por) VALUES (?,?, 'PIPELINE', ?)",
-                    (pipeline_name, dep, (usuario or "")[:100] or None))
-        return True
     except Exception as e:
         log.warning("[PIPELINE] dependências não gravadas na tabela (migration 067 aplicada?): %s", e)
         return False
+
+    for dep in deduplicar(depends_on_list):
+        cur.execute(
+            "INSERT INTO dbo.etl_pipeline_dependencia "
+            "(pipeline_name, depende_de, tipo, criado_por) VALUES (?,?, 'PIPELINE', ?)",
+            (pipeline_name, dep, (usuario or "")[:100] or None))
+    return True
 
 
 def _read_pipeline_record(cur, pipeline_name):
@@ -507,6 +546,22 @@ def list_pipelines(
             inativ_cols = ("NULL AS motivo_inativacao, NULL AS inativado_por, "
                            "NULL AS inativado_em")
 
+        # colunas da migration 067 (janela e virada) — degradam para NULL.
+        # Sem devolvê-las, o formulário carregava os três campos VAZIOS e todo
+        # save os zerava no banco: a virada some, a corrida que atravessa a
+        # meia-noite se parte em dois dias e o dependente nunca libera.
+        cur.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' AND COLUMN_NAME='hora_virada'
+        """)
+        if cur.fetchone()[0]:
+            janela_cols = ("CONVERT(VARCHAR(5), hora_virada, 108) AS hora_virada, "
+                           "CONVERT(VARCHAR(5), nao_iniciar_antes, 108) AS nao_iniciar_antes, "
+                           "CONVERT(VARCHAR(5), hora_limite_dependencia, 108) AS hora_limite_dependencia")
+        else:
+            janela_cols = ("NULL AS hora_virada, NULL AS nao_iniciar_antes, "
+                           "NULL AS hora_limite_dependencia")
+
         data_sql = f"""
             SELECT
                 pipeline_name, project_name, domain, tags,
@@ -530,7 +585,8 @@ def list_pipelines(
                 ISNULL(CAST(max_active_runs    AS INT), 1)   AS max_active_runs,
                 ISNULL(CAST(retries_count      AS INT), 1)   AS retries_count,
                 ISNULL(CAST(retry_delay_seconds AS INT), 300) AS retry_delay_seconds,
-                pool_name, {runbook_col}, {sched_cols}, {inativ_cols}, last_execution, created_at, updated_at
+                pool_name, {runbook_col}, {sched_cols}, {inativ_cols}, {janela_cols},
+                last_execution, created_at, updated_at
             FROM dbo.etl_pipeline
             {where_sql}
             ORDER BY project_name, domain, pipeline_name
@@ -547,6 +603,7 @@ def list_pipelines(
             "pool_name", "runbook_md", "calendario_nome", "somente_dias_uteis",
             "trigger_por_dependencia", "horarios_especificos", "dias_semana",
             "dias_horarios_mes", "motivo_inativacao", "inativado_por", "inativado_em",
+            "hora_virada", "nao_iniciar_antes", "hora_limite_dependencia",
             "last_execution", "created_at", "updated_at",
         ]
         data = []
@@ -583,7 +640,10 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
     domain           = body.get("domain", "Geral")
     tags             = body.get("tags", "")
     depends_on_raw   = (body.get("depends_on") or "").strip()
-    depends_on_list  = [d.strip() for d in depends_on_raw.split(",") if d.strip()]
+    # Deduplica ANTES de tudo: o CSV espelho e a tabela precisam contar a mesma
+    # história, e um nome repetido (o campo era texto livre) viola o índice
+    # único da tabela.
+    depends_on_list  = deduplicar(d for d in depends_on_raw.split(",") if d.strip())
     depends_on       = ",".join(depends_on_list) or None
     changed_by       = (body.get("changed_by") or "system").strip()
     dag_start_date   = (body.get("dag_start_date") or "").strip() or None
@@ -704,17 +764,27 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
             )
         except Exception:
             pass  # colunas da migration 017 podem não existir ainda — degrada sem erro
-        try:
-            # Janela e virada (migration 067). Vazio vira NULL: em branco
-            # significa "sem regra", e gravar '00:00' criaria uma janela que o
-            # usuário não pediu.
-            cur.execute(
-                "UPDATE dbo.etl_pipeline SET hora_virada=?, nao_iniciar_antes=?, "
-                "hora_limite_dependencia=?, updated_at=GETDATE() WHERE pipeline_name=?",
-                (hora_virada, nao_iniciar_antes, hora_limite_dependencia, pipeline),
-            )
-        except Exception:
-            pass  # migration 067 pendente — degrada sem erro
+        # Janela e virada (migration 067). Só grava o que veio NO BODY.
+        #
+        # Antes o UPDATE era incondicional, e como o GET não devolvia as três
+        # colunas, o formulário mandava null e TODO save as zerava. Pior: o
+        # diálogo de inativar monta um body próprio, sem esses campos — mesmo
+        # depois de o GET passar a devolvê-los, aquele caminho continuaria
+        # apagando. Ausente no body = não mexe.
+        _janela = [(c, v) for c, v in (("hora_virada", hora_virada),
+                                       ("nao_iniciar_antes", nao_iniciar_antes),
+                                       ("hora_limite_dependencia", hora_limite_dependencia))
+                   if c in body]
+        if _janela:
+            try:
+                cur.execute(
+                    "UPDATE dbo.etl_pipeline SET "
+                    + ", ".join(f"{c}=?" for c, _ in _janela)
+                    + ", updated_at=GETDATE() WHERE pipeline_name=?",
+                    tuple(v for _, v in _janela) + (pipeline,),
+                )
+            except Exception:
+                pass  # migration 067 pendente — degrada sem erro
         try:
             cur.execute(
                 "UPDATE dbo.etl_pipeline SET horarios_especificos=?, dias_semana=?, "
@@ -771,10 +841,16 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
         conn.commit()
         cur.close(); conn.close()
     except HTTPException:
+        _rollback_silencioso(locals().get("conn"))
         raise
     except ValueError as e:
+        _rollback_silencioso(locals().get("conn"))
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
+        # Rollback EXPLÍCITO: o replace-all de dependências faz DELETE + INSERTs
+        # na mesma transação, e uma falha no meio não pode deixar o pipeline com
+        # a tabela vazia — ele voltaria a rodar por cron, sem esperar ninguém.
+        _rollback_silencioso(locals().get("conn"))
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
 
     # Espelha o status no Airflow: inativar pausa a DAG, ativar despausa. Só faz

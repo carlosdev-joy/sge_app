@@ -127,9 +127,12 @@ function pipelineToForm(p: Pipeline): FormState {
     retry_delay_seconds:     p.retry_delay_seconds ?? 300,
     pool_name:               p.pool_name ?? '',
     depends_on:              p.depends_on ?? '',
-    hora_virada:             (p as unknown as Record<string, string>).hora_virada ?? '',
-    nao_iniciar_antes:       (p as unknown as Record<string, string>).nao_iniciar_antes ?? '',
-    hora_limite_dependencia: (p as unknown as Record<string, string>).hora_limite_dependencia ?? '',
+    // Sem cast: o tipo passou a declarar os campos e o GET a devolvê-los. Era o
+    // `as unknown as Record<string,string>` que escondia do tsc que a chave não
+    // existia no payload — o form carregava vazio e todo save zerava o banco.
+    hora_virada:             p.hora_virada ?? '',
+    nao_iniciar_antes:       p.nao_iniciar_antes ?? '',
+    hora_limite_dependencia: p.hora_limite_dependencia ?? '',
     runbook_md:              p.runbook_md ?? '',
     motivo_inativacao:       p.motivo_inativacao ?? '',
   }
