@@ -118,7 +118,12 @@ function JobChain({ jobs }: { jobs: ApiJob[] }) {
 function PipelineCard({ item }: { item: ApiPipeline }) {
   const [open, setOpen] = useState(false)
   const deps = item.depends_on ? item.depends_on.split(',').map(s => s.trim()).filter(Boolean) : []
-  const schedule = item.scheduled_time ?? item.schedule_type ?? null
+  // Sob demanda não tem horário: mostrar o `scheduled_time` gravado (que é
+  // só o default do formulário) faria o card prometer uma execução diária
+  // que não existe.
+  const schedule = item.schedule_type === 'on_demand'
+    ? 'sob demanda'
+    : (item.scheduled_time ?? item.schedule_type ?? null)
 
   return (
     <div className="bg-panel border border-edge rounded-lg overflow-hidden hover:shadow-md hover:border-[#1A5FA8]/40 transition-all">
@@ -175,7 +180,12 @@ function DiagramView({ items }: { items: ApiPipeline[] }) {
     <div className="flex flex-col divide-y divide-edge">
       {items.map((item) => {
         const deps = item.depends_on ? item.depends_on.split(',').map(s => s.trim()).filter(Boolean) : []
-        const schedule = item.scheduled_time ?? item.schedule_type ?? null
+        // Sob demanda não tem horário: mostrar o `scheduled_time` gravado (que é
+  // só o default do formulário) faria o card prometer uma execução diária
+  // que não existe.
+  const schedule = item.schedule_type === 'on_demand'
+    ? 'sob demanda'
+    : (item.scheduled_time ?? item.schedule_type ?? null)
         return (
           <div key={item.pipeline_name} className="flex gap-4 py-3 px-4 hover:bg-canvas transition-colors">
             <div className="w-48 shrink-0">
