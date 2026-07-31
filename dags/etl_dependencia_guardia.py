@@ -16,12 +16,21 @@ para as quatro coisas que o push, sozinho, não cobre:
   4. **Data de referência divergente.** O predecessor concluiu, mas carimbado
      com outro dia — em vez de nunca liberar em silêncio, diz isso.
 
-Sobre o item 1: a ordenação é PREGUIÇOSA — a linha nasce quando algum
-predecessor já tem execução na data. Prever "quem deveria rodar hoje" exigiria
+Sobre o item 1: a ordenação é PREGUIÇOSA — a linha nasce quando a corrida do dia
+COMEÇOU DE FATO em algum predecessor. Prever "quem deveria rodar hoje" exigiria
 reimplementar as regras de agenda que já vivem no check_agenda da DAG gerada
 (blackout, dias úteis, calendário, horários específicos), e duas cópias da mesma
-regra divergem. O caso do predecessor PULADO continua coberto: pular também
-grava execução (F2).
+regra divergem.
+
+Predecessor PULADO não conta como corrida iniciada: o dia não é previsto para a
+cadeia, e ordenar aí criava uma linha AGUARDANDO que nunca resolvia — mais um
+JANELA_ESTOUROU todo fim de semana.
+
+Sobre as DATAS examinadas: a guardiã não olha só a data calculada pela virada do
+dependente. A corrida é carimbada com a virada do PREDECESSOR, e configurar a
+virada só no pai — o uso recomendado, porque é ele quem atravessa a meia-noite —
+deixava a rede de segurança cega justamente na corrida que ela existe para
+cobrir. Ver `_datas_em_aberto`.
 """
 from __future__ import annotations
 
@@ -84,27 +93,66 @@ def _execucao_na_data(hook, pipeline_name, data_referencia):
     return str(linha[0]) if linha else None
 
 
-def _datas_recentes_com_sucesso(hook, pipeline_name, data_referencia, dias=3):
-    """Datas de referência PRÓXIMAS em que o predecessor concluiu bem.
+def _carimbou_outra_data(hook, pipeline_name, data_referencia, horas=24):
+    """O predecessor RODOU HÁ POUCO e carimbou uma data de referência diferente?
 
-    Alimenta o alerta de divergência: sem isto, "não liberou" e "liberou com
-    outro carimbo de dia" seriam indistinguíveis para quem lê o painel.
+    Esta é a pergunta certa. A versão anterior perguntava "existe sucesso em
+    ±3 dias com outra data?", que é o estado NORMAL de qualquer malha: às 00:05,
+    o predecessor ainda não rodou hoje e o sucesso de ontem está lá — então
+    todo dependente ganhava um card de divergência todo dia, e o canal virava
+    ruído.
+
+    Divergência de verdade é: a execução ACONTECEU (relógio recente) e saiu com
+    outro carimbo — sinal de virada configurada só num lado da dependência.
     """
     linhas = hook.get_records(
         "SELECT DISTINCT CONVERT(VARCHAR(10), data_referencia, 23) "
         "FROM dbo.etl_pipeline_execucao "
         "WHERE pipeline_name = %s AND status = 'SUCESSO' "
         "  AND data_referencia <> %s "
-        "  AND data_referencia BETWEEN DATEADD(day, -%s, %s) AND DATEADD(day, %s, %s)",
-        parameters=(pipeline_name, data_referencia, dias, data_referencia,
-                    dias, data_referencia))
+        "  AND COALESCE(inicio, criado_em) >= DATEADD(hour, -%s, GETDATE())",
+        parameters=(pipeline_name, data_referencia, horas))
     return [str(r[0]) for r in (linhas or [])]
+
+
+def _datas_em_aberto(hook, pipeline_name, data_calculada, horas=48):
+    """Datas de referência que a guardiã precisa examinar para este dependente.
+
+    Não basta a data calculada pela virada DELE: a corrida é carimbada com a
+    virada do PREDECESSOR. Configurar `hora_virada` só no pai — que é o uso
+    recomendado, porque é ele quem atravessa a meia-noite — fazia a guardiã
+    olhar um dia que ninguém carimbou, e a rede de segurança ficava cega
+    justamente na corrida que ela existe para cobrir.
+
+    Devolve a data calculada mais as datas que os predecessores realmente
+    usaram nas últimas horas.
+    """
+    datas = {data_calculada}
+    try:
+        linhas = hook.get_records(
+            "SELECT DISTINCT e.data_referencia "
+            "FROM dbo.etl_pipeline_execucao e "
+            "JOIN dbo.etl_pipeline_dependencia d ON d.depende_de = e.pipeline_name "
+            "WHERE d.pipeline_name = %s AND d.tipo = 'PIPELINE' "
+            "  AND COALESCE(e.inicio, e.criado_em) >= DATEADD(hour, -%s, GETDATE())",
+            parameters=(pipeline_name, horas))
+        for r in (linhas or []):
+            if r[0] is not None:
+                datas.add(r[0])
+    except Exception:
+        pass          # sem a tabela, sobra a data calculada — comportamento antigo
+    return sorted(datas)
 
 
 # ── Escrita ────────────────────────────────────────────────────────────────
 
-def _ordenar(hook, pipeline_name, data_referencia, log):
-    """Cria a corrida do dia em AGUARDANDO_DEPENDENCIA."""
+def _ordenar(hook, pipeline_name, data_referencia, log) -> bool:
+    """Cria a corrida do dia em AGUARDANDO_DEPENDENCIA. True se criou.
+
+    O retorno importa: assumir que ordenou depois de uma violação de índice
+    fazia o ciclo seguir com estado errado — tentava disparar uma linha que já
+    estava EXECUTANDO e podia gravar um JANELA_ESTOUROU falso.
+    """
     conn = hook.get_conn(); cur = conn.cursor()
     try:
         cur.execute(
@@ -114,11 +162,13 @@ def _ordenar(hook, pipeline_name, data_referencia, log):
             (pipeline_name, data_referencia))
         conn.commit()
         log.info("[GUARDIA] %s ordenado para %s", pipeline_name, data_referencia)
+        return True
     except Exception as e:
         # Índice único: o push do predecessor pode ter criado a linha no mesmo
         # instante. Não é erro — é a corrida acontecendo.
         conn.rollback()
         log.info("[GUARDIA] %s ja ordenado em %s (%s)", pipeline_name, data_referencia, e)
+        return False
     finally:
         cur.close(); conn.close()
 
@@ -288,13 +338,88 @@ def _notificar_pendentes(hook, log, limite=50):
 
 # ── Ciclo ──────────────────────────────────────────────────────────────────
 
+# Estados que provam que a corrida do dia COMEÇOU em algum predecessor.
+# PULADO fica de fora de propósito: um predecessor pulado (fim de semana,
+# blackout, calendário) não significa que o dia é previsto para a cadeia —
+# ordenar aí criava uma linha AGUARDANDO que nunca resolvia, e ainda gerava
+# JANELA_ESTOUROU todo sábado.
+_ESTADOS_DE_CORRIDA_VIVA = frozenset({"EXECUTANDO", "SUCESSO", "FALHA",
+                                      "AGUARDANDO_DEPENDENCIA", "NAO_LIBEROU"})
+
+
+def _tratar_corrida(hook, p, data_ref, agora, log):
+    """As quatro responsabilidades da guardiã para UMA data de referência.
+
+    Devolve (ordenados, disparados, eventos) para o resumo do ciclo.
+    """
+    from utils.dependencias import (avaliar_liberacao, dentro_da_janela,
+                                    detectar_divergencia, precisa_alertar_janela,
+                                    status_dos_predecessores)
+
+    ordenados = disparados = eventos = 0
+    status_preds = status_dos_predecessores(hook, p["nome"], data_ref)
+    if not status_preds:
+        return (0, 0, 0)
+
+    atual = _execucao_na_data(hook, p["nome"], data_ref)
+
+    # 1. Ordenar (preguiçoso): a corrida do dia começou de fato em algum
+    #    predecessor e este dependente ainda não tem linha.
+    if atual is None and any(s in _ESTADOS_DE_CORRIDA_VIVA
+                             for s in status_preds.values()):
+        if _ordenar(hook, p["nome"], data_ref, log):
+            atual = "AGUARDANDO_DEPENDENCIA"
+            ordenados = 1
+        else:
+            # Alguém ordenou no mesmo instante — relê em vez de supor.
+            atual = _execucao_na_data(hook, p["nome"], data_ref)
+
+    # 2. Rede de segurança do push.
+    liberado, pendentes = avaliar_liberacao(status_preds)
+    if atual == "AGUARDANDO_DEPENDENCIA":
+        if liberado and dentro_da_janela(p["nao_iniciar_antes"], agora):
+            if _disparar(hook, p["nome"], data_ref, log):
+                return (ordenados, 1, 0)
+
+    # 3. Janela estourada — alerta, e o pipeline segue PENDENTE.
+    if precisa_alertar_janela(p["hora_limite"], agora, atual):
+        if not pendentes:
+            # Liberado e ainda parado: o disparo não aconteceu (trigger falho,
+            # DAG ausente). Dizer "nenhum predecessor executou" aqui seria o
+            # oposto da verdade — todos executaram.
+            motivo = "liberado, mas o disparo nao aconteceu"
+        elif all(s is None for s in status_preds.values()):
+            # Nenhum predecessor tem execução na data: a cadeia inteira parou
+            # antes de começar (pai inativado, DAG pausada, dia não previsto).
+            motivo = "nenhum predecessor executou"
+        else:
+            motivo = f"aguardando {', '.join(pendentes)}"
+        detalhe = f"Não liberou até {p['hora_limite']}: {motivo} (data de referência {data_ref})."
+        eventos += _gravar_evento(hook, p["nome"], data_ref,
+                                  "JANELA_ESTOUROU", detalhe, log)
+
+    # 4. Data de referência divergente — só quando o predecessor REALMENTE
+    #    rodou há pouco e carimbou outro dia.
+    if atual in ("AGUARDANDO_DEPENDENCIA", None) and pendentes:
+        datas = {}
+        for nome in pendentes:
+            outras = _carimbou_outra_data(hook, nome, data_ref)
+            if outras:
+                datas[nome] = ", ".join(sorted(outras))
+        divergentes = detectar_divergencia(status_preds, datas)
+        if divergentes:
+            detalhe = "; ".join(
+                f"{nome} concluiu em {quando}, não em {data_ref}"
+                for nome, quando in divergentes)
+            eventos += _gravar_evento(hook, p["nome"], data_ref,
+                                      "DATA_DIVERGENTE", detalhe, log)
+    return (ordenados, disparados, eventos)
+
+
 def guardar(**context):
     import logging
 
     from utils.data_referencia import calcular, parse_virada
-    from utils.dependencias import (avaliar_liberacao, dentro_da_janela,
-                                    detectar_divergencia, precisa_alertar_janela,
-                                    status_dos_predecessores)
 
     log = logging.getLogger("airflow.task")
     hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
@@ -318,55 +443,10 @@ def guardar(**context):
     for p in dependentes:
         try:
             virada = parse_virada(p["hora_virada"] or virada_padrao)
-            data_ref = calcular(momento, virada)
-            status_preds = status_dos_predecessores(hook, p["nome"], data_ref)
-            if not status_preds:
-                continue
-
-            atual = _execucao_na_data(hook, p["nome"], data_ref)
-
-            # 1. Ordenar (preguiçoso): a corrida do dia começou em algum
-            #    predecessor e este ainda não tem linha.
-            if atual is None and any(s is not None for s in status_preds.values()):
-                _ordenar(hook, p["nome"], data_ref, log)
-                atual = "AGUARDANDO_DEPENDENCIA"
-                ordenados += 1
-
-            # 2. Rede de segurança do push.
-            if atual == "AGUARDANDO_DEPENDENCIA":
-                liberado, pendentes = avaliar_liberacao(status_preds)
-                if liberado and dentro_da_janela(p["nao_iniciar_antes"], agora):
-                    if _disparar(hook, p["nome"], data_ref, log):
-                        disparados += 1
-                        continue
-
-            # 3. Janela estourada — alerta, e o pipeline segue PENDENTE.
-            if precisa_alertar_janela(p["hora_limite"], agora, atual):
-                _, pendentes = avaliar_liberacao(status_preds)
-                detalhe = (
-                    f"Não liberou até {p['hora_limite']}: "
-                    f"{', '.join(pendentes) if pendentes else 'nenhum predecessor executou'} "
-                    f"(data de referência {data_ref})."
-                )
-                eventos += _gravar_evento(hook, p["nome"], data_ref,
-                                          "JANELA_ESTOUROU", detalhe, log)
-
-            # 4. Data de referência divergente.
-            if atual in ("AGUARDANDO_DEPENDENCIA", None):
-                datas = {}
-                for nome, status in status_preds.items():
-                    if status == "SUCESSO":
-                        continue
-                    outras = _datas_recentes_com_sucesso(hook, nome, data_ref)
-                    if outras:
-                        datas[nome] = ", ".join(sorted(outras))
-                divergentes = detectar_divergencia(status_preds, datas)
-                if divergentes:
-                    detalhe = "; ".join(
-                        f"{nome} concluiu em {quando}, não em {data_ref}"
-                        for nome, quando in divergentes)
-                    eventos += _gravar_evento(hook, p["nome"], data_ref,
-                                              "DATA_DIVERGENTE", detalhe, log)
+            data_calculada = calcular(momento, virada)
+            for data_ref in _datas_em_aberto(hook, p["nome"], data_calculada):
+                r = _tratar_corrida(hook, p, data_ref, agora, log)
+                ordenados += r[0]; disparados += r[1]; eventos += r[2]
         except Exception as e:
             # Um pipeline problemático não pode parar a varredura dos outros.
             log.warning("[GUARDIA] %s: erro no ciclo (%s)", p["nome"], e)
@@ -381,7 +461,9 @@ def guardar(**context):
             "disparados": disparados, "eventos": eventos, "notificados": notificados}
 
 
-_INTERVALO = _var_int("DEPENDENCIA_GUARDIA_INTERVAL_MINUTES", 5)
+# max(1, min(59, ...)): "0" ou "60" na Variable geram um campo de minutos
+# invalido e a guardia inteira deixa de ser importada pelo Airflow.
+_INTERVALO = max(1, min(59, _var_int("DEPENDENCIA_GUARDIA_INTERVAL_MINUTES", 5)))
 
 with DAG(
     dag_id=DAG_ID,

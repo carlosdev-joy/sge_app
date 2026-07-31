@@ -131,13 +131,19 @@ class FakeHook:
         self.escritas = []
 
     def get_records(self, sql, parameters=None):
-        if "etl_pipeline_dependencia d ON" in sql:
+        # A ordem importa: várias queries citam `d.depende_de`, então as mais
+        # específicas vêm primeiro.
+        if "etl_pipeline_dependencia d ON d.pipeline_name" in sql:
             return [(d["nome"], d.get("hora_virada"), d.get("nao_iniciar_antes"),
                      d.get("hora_limite")) for d in self.dependentes]
-        if "d.depende_de" in sql:
-            return [(k, v) for k, v in self.status_preds.items()]
+        if "DISTINCT e.data_referencia" in sql:
+            # _datas_em_aberto: sem execução recente dos predecessores, sobra a
+            # data calculada.
+            return []
         if "DISTINCT CONVERT(VARCHAR(10), data_referencia" in sql:
             return [(d,) for d in self.datas_outras]
+        if "d.depende_de" in sql:
+            return [(k, v) for k, v in self.status_preds.items()]
         if "etl_dependencia_evento WHERE notificado_em" in sql:
             return []
         return []
