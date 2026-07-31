@@ -113,9 +113,50 @@ function JobChain({ jobs }: { jobs: ApiJob[] }) {
   )
 }
 
+// ─── Estado da malha de dependências (F5/E) ──────────────────────────────────
+// Responde, no próprio card, POR QUE um pipeline ainda não rodou. Antes o
+// endpoint existia e ninguém o consumia: "aguardando dependência" só era
+// visível por SQL.
+export interface EstadoDependencia {
+  pipeline_name: string
+  status: string | null
+  predecessores: { nome: string; status: string | null }[]
+  pendentes: string[]
+  liberado: boolean
+  eventos: { tipo: string; detalhe: string | null }[]
+}
+
+const ROTULO_ESTADO: Record<string, { texto: string; cor: string }> = {
+  AGUARDANDO_DEPENDENCIA: { texto: 'aguardando dependência', cor: 'text-amber-600 dark:text-amber-400' },
+  EXECUTANDO:   { texto: 'em execução',   cor: 'text-blue-600 dark:text-blue-400' },
+  SUCESSO:      { texto: 'concluído',     cor: 'text-emerald-600 dark:text-emerald-400' },
+  FALHA:        { texto: 'falhou',        cor: 'text-red-600 dark:text-red-400' },
+  PULADO:       { texto: 'não previsto hoje', cor: 'text-dim' },
+}
+
+function EstadoDependenciaLinha({ estado }: { estado: EstadoDependencia }) {
+  const rotulo = estado.status ? ROTULO_ESTADO[estado.status] : null
+  const alerta = estado.eventos.length > 0
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+      {rotulo && <span className={`font-medium ${rotulo.cor}`}>● {rotulo.texto}</span>}
+      {!estado.liberado && estado.pendentes.length > 0 && (
+        <span className="text-dim">
+          esperando <span className="font-mono text-ink">{estado.pendentes.join(', ')}</span>
+        </span>
+      )}
+      {alerta && (
+        <span className="text-red-600 dark:text-red-400" title={estado.eventos.map(e => e.detalhe).join(' · ')}>
+          ⚠ {estado.eventos.map(e => e.tipo === 'JANELA_ESTOUROU' ? 'não liberou na janela' : 'data de referência divergente').join(' · ')}
+        </span>
+      )}
+    </div>
+  )
+}
+
 // ─── Pipeline card ───────────────────────────────────────────────────────────
 
-function PipelineCard({ item }: { item: ApiPipeline }) {
+function PipelineCard({ item, estado }: { item: ApiPipeline; estado?: EstadoDependencia }) {
   const [open, setOpen] = useState(false)
   const deps = item.depends_on ? item.depends_on.split(',').map(s => s.trim()).filter(Boolean) : []
   const schedule = item.scheduled_time ?? item.schedule_type ?? null
@@ -144,6 +185,7 @@ function PipelineCard({ item }: { item: ApiPipeline }) {
             </span>
           )}
         </div>
+        {estado && <EstadoDependenciaLinha estado={estado} />}
         {item.descricao && (
           <p className="text-[11px] text-dim mt-1 line-clamp-2">{item.descricao}</p>
         )}
@@ -416,6 +458,21 @@ export default function Malha() {
     staleTime: 60_000,
   })
 
+  // Estado da malha de dependências do dia. Falha aqui não pode derrubar a
+  // tela: sem a migration 067 o endpoint devolve vazio e os cards ficam como
+  // antes.
+  const { data: depData } = useQuery<{ date_ref: string; data: EstadoDependencia[] }>({
+    queryKey: ['malha-dependencias'],
+    queryFn: () => apiFetch('/pipelines/dependencias/estado'),
+    staleTime: 30_000,
+    retry: false,
+  })
+  const estadoPorPipeline = useMemo(() => {
+    const m = new Map<string, EstadoDependencia>()
+    for (const e of depData?.data ?? []) m.set(e.pipeline_name, e)
+    return m
+  }, [depData])
+
   const allPipelines = data?.data ?? []
 
   const projetos = useMemo(() => {
@@ -603,7 +660,10 @@ export default function Malha() {
                 📁 {proj} <span className="font-normal">({items.length})</span>
               </div>
               <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
-                {items.map(it => <PipelineCard key={it.pipeline_name} item={it} />)}
+                {items.map(it => (
+                  <PipelineCard key={it.pipeline_name} item={it}
+                    estado={estadoPorPipeline.get(it.pipeline_name)} />
+                ))}
               </div>
             </div>
           ))}
