@@ -655,7 +655,9 @@ def _generate_dag_source(pipeline, jobs):
 
     # Seção de imports
     import_lines = ["from airflow import DAG"]
-    import_lines.append("from datetime import timedelta")
+    # `datetime` (além de timedelta) é usado pelo registro de execução do
+    # pipeline — ver _registrar_execucao nos helpers.
+    import_lines.append("from datetime import datetime, timedelta")
     if ds_needed:
         import_lines.append("from utils.datastage_operator import DataStageOperator")
     # Operadores reutilizáveis (utils/job_operators) — só os tipos presentes.
@@ -725,6 +727,112 @@ def _generate_dag_source(pipeline, jobs):
     helpers_lines = [
         "def _now_str():",
         "    return pendulum.now(LOCAL_TZ).to_datetime_string()",
+        "",
+        # ── F2 da spec de dependências: execução no nível PIPELINE ──────────
+        # Até aqui só existia etl_job_execution (por JOB). Sem uma execução de
+        # pipeline carimbada com a data de referência, não há como responder "o
+        # predecessor concluiu na mesma corrida?" — que é a pergunta que libera
+        # um dependente (F3).
+        "def _momento_logico(context):",
+        "    \"\"\"Instante que define a data de referência.",
+        "",
+        "    Usa o horário AGENDADO (data_interval_end/logical_date), não o",
+        "    relógio: um atraso de fila que empurrasse a execução para depois da",
+        "    meia-noite mudaria a data de referência e quebraria a dependência —",
+        "    justamente o que a data de referência existe para evitar. Mesma",
+        "    fonte que o check_agenda já usa.\"\"\"",
+        "    _m = context.get('data_interval_end') or context.get('logical_date')",
+        "    if _m is None:",
+        "        return pendulum.now(LOCAL_TZ)",
+        "    try:",
+        "        return _m.in_timezone(LOCAL_TZ)",
+        "    except Exception:",
+        "        return _m",
+        "",
+        "def _data_referencia(context):",
+        "    \"\"\"Data de referência (ODATE) desta execução.",
+        "",
+        "    Precedência: herança > cálculo. Quem é disparado por dependência",
+        "    recebe a data do predecessor em conf e NÃO recalcula — é isso que",
+        "    mantém a corrida coerente quando ela atravessa a meia-noite.\"\"\"",
+        "    from utils.data_referencia import calcular",
+        "    _conf = (context.get('dag_run').conf or {}) if context.get('dag_run') else {}",
+        "    _herdada = _conf.get('data_referencia')",
+        "    if _herdada:",
+        "        try:",
+        "            return pendulum.parse(str(_herdada)).date()",
+        "        except Exception:",
+        "            print(f'[EXEC] data_referencia herdada invalida: {_herdada!r} — recalculando.')",
+        "    _virada = None",
+        "    try:",
+        "        _hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "        _row = _hook.get_first(",
+        '            "SELECT COALESCE(CONVERT(VARCHAR(8), p.hora_virada, 108), c.config_value) "',
+        '            "FROM dbo.etl_pipeline p "',
+        '            "LEFT JOIN dbo.etl_app_config c ON c.config_key = \'dependencia_hora_virada\' "',
+        '            "WHERE p.pipeline_name = %s",',
+        "            parameters=(PIPELINE_NAME,))",
+        "        _virada = _row[0] if _row else None",
+        "    except Exception as e:",
+        "        # Sem a migration 067 a coluna não existe: cai na virada padrão,",
+        "        # que devolve a data do calendário (comportamento de sempre).",
+        "        print(f'[EXEC] virada indisponivel ({e}) — usando padrao 00:00.')",
+        "    _dt = _momento_logico(context)",
+        "    return calcular(datetime(_dt.year, _dt.month, _dt.day, _dt.hour, _dt.minute, _dt.second), _virada)",
+        "",
+        "def _registrar_execucao(status, context, motivo=None):",
+        "    \"\"\"Upsert da execução do pipeline. NUNCA derruba o pipeline.",
+        "",
+        "    Degrada com log se a 067 não foi aplicada (deploy que leva dags/ sem",
+        "    a migration): o registro é observabilidade e insumo da F3, não pode",
+        "    ser motivo de falha de uma carga que rodou bem.\"\"\"",
+        "    _exec_id = context.get('ts_nodash')",
+        "    try:",
+        "        _dref = _data_referencia(context)",
+        "        _disparado = 'agenda'",
+        "        _conf = (context.get('dag_run').conf or {}) if context.get('dag_run') else {}",
+        "        if _conf.get('disparado_por'):",
+        "            _disparado = str(_conf['disparado_por'])[:200]",
+        "        elif str(context.get('run_id', '')).startswith('manual'):",
+        "            _disparado = 'manual'",
+        "        _hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "        _conn = _hook.get_conn(); _cur = _conn.cursor()",
+        "        try:",
+        "            _cur.execute(",
+        '                "UPDATE dbo.etl_pipeline_execucao SET status=%s, "',
+        '                "  fim = CASE WHEN %s IN (\'SUCESSO\',\'FALHA\',\'PULADO\') THEN GETDATE() ELSE fim END, "',
+        '                "  motivo=COALESCE(%s, motivo), atualizado_em=GETDATE() "',
+        '                "WHERE pipeline_name=%s AND data_referencia=%s AND execution_id=%s",',
+        "                (status, status, motivo, PIPELINE_NAME, _dref, _exec_id))",
+        "            if _cur.rowcount == 0:",
+        "                _cur.execute(",
+        '                    "INSERT INTO dbo.etl_pipeline_execucao "',
+        '                    "(pipeline_name, data_referencia, execution_id, status, inicio, fim, "',
+        '                    " disparado_por, motivo) VALUES (%s,%s,%s,%s,%s, "',
+        '                    " CASE WHEN %s IN (\'SUCESSO\',\'FALHA\',\'PULADO\') THEN GETDATE() ELSE NULL END, %s,%s)",',
+        "                    (PIPELINE_NAME, _dref, _exec_id, status, datetime.now(),",
+        "                     status, _disparado, motivo))",
+        "            _conn.commit()",
+        "        finally:",
+        "            _cur.close(); _conn.close()",
+        "        print(f'[EXEC] {PIPELINE_NAME} {status} — data de referencia {_dref}')",
+        "    except Exception as e:",
+        "        print(f'[EXEC] Aviso: execucao nao registrada (migration 067 aplicada?): {e}')",
+        "",
+        "def registrar_inicio(**context):",
+        "    _registrar_execucao('EXECUTANDO', context)",
+        "",
+        "def registrar_fim(**context):",
+        "    _registrar_execucao('SUCESSO', context)",
+        "",
+        "def registrar_falha(**context):",
+        "    \"\"\"Task com ONE_FAILED: qualquer job que falhe reprova a corrida.",
+        "",
+        "    Task e não on_failure_callback em default_args porque as constantes",
+        "    são emitidas ANTES dos helpers no arquivo gerado — referenciar a",
+        "    função ali daria NameError no import da DAG. Também segue o padrão",
+        "    que o teams_error já usa neste gerador.\"\"\"",
+        "    _registrar_execucao('FALHA', context, motivo='job do pipeline falhou')",
         "",
         "def _build_log_file(job_name, execution_id):",
         '    return f"{BASE_LOG_DIR}/{PROJECT_NAME}/{job_name}/{job_name}_{execution_id}.log"',
@@ -1204,7 +1312,7 @@ def _generate_dag_source(pipeline, jobs):
         "            \"execucao interrompida. Corrija o erro antes de reprocessar.\"",
         "        )",
         "",
-        "def check_agenda(**context):",
+        "def _check_agenda_regras(**context):",
         "    \"\"\"Fase 4 — blackout/freeze, dias úteis e calendário de feriados.",
         "    Retorna False (ShortCircuit) para pular a execução inteira.\"\"\"",
         "    # Horários específicos: o cron dispara na união minuto×hora;",
@@ -1256,6 +1364,16 @@ def _generate_dag_source(pipeline, jobs):
         "        except Exception as e:",
         "            print(f\"[AGENDA] Aviso: verificacao de calendario falhou ({e}) — seguindo.\")",
         "    return True",
+        "",
+        # Envolve as regras em vez de instrumentar cada `return False`: são cinco
+        # caminhos de saída (horários, dia+hora, blackout, dia útil, calendário)
+        # e esquecer um deixaria a corrida sem registro nenhum — indistinguível
+        # de "nunca foi ordenada", que é o que a guardiã da F4 vai procurar.
+        "def check_agenda(**context):",
+        "    _ok = _check_agenda_regras(**context)",
+        "    if not _ok:",
+        "        _registrar_execucao('PULADO', context, motivo='fora da agenda (blackout/dia util/calendario/horario)')",
+        "    return _ok",
     ]
     helpers_str = "\n".join(helpers_lines)
 
@@ -1333,7 +1451,35 @@ def _generate_dag_source(pipeline, jobs):
         '    task_id="check_agenda",',
         '    python_callable=check_agenda,',
         ')',
+        '',
+        '# Execução do pipeline carimbada com a data de referência (ODATE).',
+        '# Fica DEPOIS do check_agenda: corrida pulada é registrada como PULADO',
+        '# pelo próprio check, não como EXECUTANDO que nunca termina.',
+        't_exec_inicio = PythonOperator(',
+        '    task_id="registrar_inicio",',
+        '    python_callable=registrar_inicio,',
+        ')',
     ])
+
+    # Fechamento: só marca SUCESSO se nada falhou. ALL_SUCCESS não serve quando o
+    # pipeline tem ramos que podem ser pulados por decisão — aí a convergência
+    # legítima traz tasks SKIPPED.
+    exec_fim_block = "\n".join(filter(None, [
+        't_exec_fim = PythonOperator(',
+        '    task_id="registrar_fim",',
+        '    python_callable=registrar_fim,',
+        ('    trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,'
+         if (has_decision or has_notificacao or has_sql_node) else None),
+        ')',
+        '',
+        '# FALHA da corrida. ONE_FAILED (mesmo padrão do teams_error): basta um',
+        '# job reprovar para o pipeline não liberar quem depende dele (F3).',
+        't_exec_falha = PythonOperator(',
+        '    task_id="registrar_falha",',
+        '    python_callable=registrar_falha,',
+        '    trigger_rule=TriggerRule.ONE_FAILED,',
+        ')',
+    ]))
 
     # Fase 4 — publica Dataset ao final (consumido por pipelines com trigger_por_dependencia)
     publish_block = "\n".join(filter(None, [
@@ -1377,10 +1523,15 @@ def _generate_dag_source(pipeline, jobs):
 
     dep_lines = []
 
-    # anchor: check_agenda → (sensors or first group)
+    # O registro da execução entra logo depois do check_agenda e passa a ser a
+    # raiz de tudo que vem abaixo: assim a corrida existe no banco ANTES do
+    # primeiro job, e uma falha logo no início já encontra a linha para marcar.
+    dep_lines.append("t_check_agenda >> t_exec_inicio")
+
+    # anchor: registrar_inicio → (sensors or first group)
     if sensor_names:
         sensors_ref = "[" + ", ".join(sensor_names) + "]"
-        dep_lines.append(f"t_check_agenda >> {sensors_ref}")
+        dep_lines.append(f"t_exec_inicio >> {sensors_ref}")
 
     # Modo de dependência: EXPLÍCITO (algum job tem depends_on_jobs OU há um nó
     # de Decisão) ou ONDAS (execution_order). Opt-in por pipeline — pipelines
@@ -1391,7 +1542,7 @@ def _generate_dag_source(pipeline, jobs):
     notif_task_refs = []   # t_notif_* a convergir no publish_dataset
     sql_task_refs = []     # t_sql_* a convergir no publish_dataset
     if explicit_deps:
-        root_anchor = sensors_ref if sensor_names else "t_check_agenda"
+        root_anchor = sensors_ref if sensor_names else "t_exec_inicio"
         teams_start_done = False
         def _end_ref(d):
             # Tarefa de conclusão de uma dependência. Nós de notificação, decisão e
@@ -1455,7 +1606,7 @@ def _generate_dag_source(pipeline, jobs):
             elif sensor_names:
                 up = sensors_ref
             else:
-                up = "t_check_agenda"
+                up = "t_exec_inicio"
             for j_idx, j in enumerate(group):
                 n = _varname(j["job_name"])
                 if g_idx == 0 and j_idx == 0 and f_ini:
@@ -1500,8 +1651,22 @@ def _generate_dag_source(pipeline, jobs):
         if f_fim:
             dep_lines.append("t_flow_close >> t_teams_end")
 
+    # SUCESSO é gravado depois do publish_dataset — que já é o ponto de
+    # convergência de tudo (ends, notificações e nós SQL). Pendurar aqui evita
+    # repetir a lista de convergência e garante que nenhum ramo ficou de fora.
+    dep_lines.append("t_publish_dataset >> t_exec_fim")
+    # A task de FALHA pendura nos MESMOS fins de ramo do teams_error: ONE_FAILED
+    # só dispara olhando os upstreams diretos, então pendurá-la apenas no
+    # publish_dataset a deixaria cega para o ramo que falhou.
+    dep_lines.append(f"{end_tasks_ref} >> t_exec_falha")
+    for nref in notif_task_refs:
+        dep_lines.append(f"{nref} >> t_exec_falha")
+    for sref in sql_task_refs:
+        dep_lines.append(f"{sref} >> t_exec_falha")
+
     with_parts = []
     with_parts.append(_ind(check_block))
+    with_parts.append(_ind(exec_fim_block))
     with_parts.append(_ind(publish_block))
     if sensor_block:
         with_parts.append(_ind(sensor_block))
