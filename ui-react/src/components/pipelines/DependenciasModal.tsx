@@ -16,6 +16,11 @@ import type { Pipeline } from '../../types/pipeline'
 //   • se o pipeline está INATIVO — depender de um inativo é uma armadilha, o
 //     dependente nunca vai liberar.
 
+// Teto da consulta que alimenta a lista (ver PipelineFormModal). Atingi-lo
+// significa que existe pipeline fora da fatia — e, sem campo de texto livre,
+// ele seria impossível de escolher. Melhor dizer isso do que esconder.
+const TETO_LISTA = 2000
+
 export function DependenciasModal({
   open, onClose, pipelineAtual, selecionadas, pipelines, onConfirmar,
 }: {
@@ -75,6 +80,16 @@ export function DependenciasModal({
                 </button>
               </span>
             ))}
+          </div>
+        )}
+
+        {pipelines.length >= TETO_LISTA && (
+          <div className="flex items-start gap-2 rounded-lg border border-amber-300 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/15 px-3 py-2">
+            <AlertTriangle size={14} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+            <p className="text-[11px] text-amber-800 dark:text-amber-300">
+              A lista mostra os primeiros {TETO_LISTA} pipelines. Se o que você procura
+              não aparecer, refine a busca por projeto — pode estar fora desta fatia.
+            </p>
           </div>
         )}
 

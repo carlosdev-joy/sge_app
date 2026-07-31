@@ -253,6 +253,12 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       nao_iniciar_antes: nomes.length ? prev.nao_iniciar_antes : '',
       hora_limite_dependencia: nomes.length ? prev.hora_limite_dependencia : '',
     }))
+    // Dependência decide o `schedule` da DAG (com ela, schedule=None). Sem esta
+    // marca o modal não oferecia republicar: o cadastro mudava e a DAG no
+    // Airflow continuava com o cron antigo, rodando por horário E sendo
+    // disparada pelo predecessor. `markDagDirty` só era chamado dentro de `f()`,
+    // e aqui o estado é alterado direto.
+    markDagDirty()
   }
 
   const { data: projData } = useQuery<{ projects: string[] }>({
@@ -270,9 +276,13 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   })
   const domains = domData?.domains ?? []
 
-  const { data: allPipes } = useQuery<{ data: Pipeline[] }>({
-    queryKey: ['pipelines', '', '', '', 0],
-    queryFn: () => apiFetch('/pipelines?limit=200'),
+  // limit alto de propósito: a escolha de dependências deixou de ter campo de
+  // texto livre, então um pipeline fora desta fatia ficaria IMPOSSÍVEL de
+  // escolher — o datalist antigo era só sugestão, dava para digitar o nome.
+  // O modal avisa se o teto for atingido.
+  const { data: allPipes } = useQuery<{ data: Pipeline[]; total?: number }>({
+    queryKey: ['pipelines', 'todos-para-dependencia'],
+    queryFn: () => apiFetch('/pipelines?limit=2000'),
     staleTime: 60_000,
   })
   // A lista completa vai inteira para o DependenciasModal — ele precisa do
@@ -1103,14 +1113,20 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       </div>
     )}
 
-    <DependenciasModal
-      open={depModalAberto}
-      onClose={() => setDepModalAberto(false)}
-      pipelineAtual={form.pipeline_name}
-      selecionadas={depsSelecionadas}
-      pipelines={allPipes?.data ?? []}
-      onConfirmar={aplicarDeps}
-    />
+    {/* Montado só quando aberto. Renderizar sempre deixava o `useState` interno
+        preso no valor do PRIMEIRO mount: "Cancelar" não descartava a seleção, e
+        uma dependência removida pelo X do chip voltava na próxima confirmação.
+        O `Modal` esconde o painel com `open`, mas não desmonta este componente. */}
+    {depModalAberto && (
+      <DependenciasModal
+        open
+        onClose={() => setDepModalAberto(false)}
+        pipelineAtual={form.pipeline_name}
+        selecionadas={depsSelecionadas}
+        pipelines={allPipes?.data ?? []}
+        onConfirmar={aplicarDeps}
+      />
+    )}
 
     {/* Após criar: oferece gerar a DAG agora (mesmo disparo do botão Gerar DAG) */}
     {askGenerate && (
