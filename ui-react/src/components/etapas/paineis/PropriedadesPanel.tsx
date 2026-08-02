@@ -8,12 +8,13 @@
 import type { Node } from '@xyflow/react'
 import { MousePointerClick } from 'lucide-react'
 import type { NodeCondition } from '../DecisaoNode'
-import type { NotifyConfig, SqlConfig, MsgGrupo } from '../fluxoTypes'
+import type { NotifyConfig, SqlConfig, AguardeConfig, MsgGrupo } from '../fluxoTypes'
 import type { CasoOps } from './shared'
 import { PainelEtapa } from './PainelEtapa'
 import { PainelDecisao } from './PainelDecisao'
 import { PainelNotificacao } from './PainelNotificacao'
 import { PainelSql } from './PainelSql'
+import { PainelAguarde } from './PainelAguarde'
 
 interface PropriedadesPanelProps extends CasoOps {
   node: Node | null
@@ -30,6 +31,12 @@ interface PropriedadesPanelProps extends CasoOps {
   onPatchCondition: (nodeId: string, patch: Partial<NodeCondition>) => void
   onPatchNotify: (nodeId: string, patch: Partial<NotifyConfig>) => void
   onPatchSql: (nodeId: string, patch: Partial<SqlConfig>) => void
+  onPatchAguarde: (nodeId: string, patch: Partial<AguardeConfig>) => void
+  // Quantas etapas chegam no Aguarde selecionado, e quais pontas soltas a ação
+  // "prender" ligaria nele. Derivados das arestas pelo editor.
+  aguardeEntradas: number
+  aguardePontasSoltas: string[]
+  onPrenderPontasSoltas: (nodeId: string) => void
   onSimular: (decisaoId: string, ramo: string) => void
   onDelete: (id: string) => void
   // Maximiza o dock (modo focado) — repassado aos painéis com editor de SQL
@@ -42,6 +49,7 @@ interface PropriedadesPanelProps extends CasoOps {
 export function PropriedadesPanel({
   node, nodes, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, grupos,
   readOnly, onRename, onPatchData, onPatchCondition, onPatchNotify, onPatchSql, onSimular, onDelete,
+  onPatchAguarde, aguardeEntradas, aguardePontasSoltas, onPrenderPontasSoltas,
   onMaximizar, onHoverRamo,
   onAlternarModo, onAddCaso, onUpdateCaso, onRemoveCaso, onMoveCaso,
 }: PropriedadesPanelProps) {
@@ -80,6 +88,17 @@ export function PropriedadesPanel({
           grupos={grupos}
           onRename={onRename}
           onPatchNotify={onPatchNotify}
+          onDelete={onDelete}
+        />
+      ) : node.type === 'aguarde' ? (
+        <PainelAguarde
+          key={node.id}
+          node={node}
+          entradas={aguardeEntradas}
+          pontasSoltas={aguardePontasSoltas}
+          onRename={onRename}
+          onPatchAguarde={onPatchAguarde}
+          onPrenderPontasSoltas={onPrenderPontasSoltas}
           onDelete={onDelete}
         />
       ) : node.type === 'sql' ? (

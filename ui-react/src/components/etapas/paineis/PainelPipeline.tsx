@@ -17,6 +17,7 @@ export interface ContagemNos {
   decisoes: number
   sql: number
   notificacoes: number
+  aguardes: number
 }
 
 export interface PainelPipelineProps {
@@ -83,7 +84,8 @@ export function PainelPipeline({ pipeline, contagem, readOnly = false }: PainelP
     ?? null
 
   const ativo = meta ? !!meta.active : null
-  const totalNos = contagem.etapas + contagem.decisoes + contagem.sql + contagem.notificacoes
+  const totalNos = contagem.etapas + contagem.decisoes + contagem.sql
+    + contagem.notificacoes + contagem.aguardes
 
   return (
     <div className="flex flex-1 flex-col">
@@ -157,6 +159,7 @@ export function PainelPipeline({ pipeline, contagem, readOnly = false }: PainelP
                   {' · '}<strong>{contagem.decisoes}</strong> decis{contagem.decisoes !== 1 ? 'ões' : 'ão'}
                   {' · '}<strong>{contagem.sql}</strong> SQL
                   {' · '}<strong>{contagem.notificacoes}</strong> notificaç{contagem.notificacoes !== 1 ? 'ões' : 'ão'}
+                  {' · '}<strong>{contagem.aguardes}</strong> aguarde{contagem.aguardes !== 1 ? 's' : ''}
                 </>
               )}
             </p>
