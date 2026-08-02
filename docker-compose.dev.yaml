@@ -6,9 +6,9 @@
 #   docker compose -f docker-compose.yaml -f docker-compose.dev.yaml --env-file .env.dev up -d
 #
 # Portas:
-#   :8081  → UI (Nginx)
+#   :8090  → UI (Nginx) — via UI_PORT_VIP do compose base (UI_PORT não é lido)
 #   :8082  → Airflow webserver
-#   :1433  → SQL Server dev
+#   :1433  → SQL Server dev (loopback)
 
 # Build dev — usa Dockerfile.dev (instala via PyPI, sem wheels offline)
 x-dev-build:
@@ -36,7 +36,7 @@ services:
       MSSQL_SA_PASSWORD: "${DEV_MSSQL_SA_PASSWORD:-Orquestra@Dev2024}"
       MSSQL_PID: "Developer"
     ports:
-      - "1433:1433"
+      - "127.0.0.1:1433:1433"  # loopback: Docker publica fora do UFW; nada externo precisa do SQL
     volumes:
       - sqlserver-dev-data:/var/opt/mssql
     healthcheck:
@@ -52,7 +52,7 @@ services:
     volumes:
       - postgres-db-volume-dev:/var/lib/postgresql/data
 
-  # ── UI na porta 8081 — UI_PORT=8081 no .env.dev ───────────────────────────
+  # ── UI: publica na porta de UI_PORT_VIP (default 8090) do compose base ────
   ui-nginx: {}
 
   # ── Airflow — todos usam Dockerfile.dev e variáveis de dev ─────────────────

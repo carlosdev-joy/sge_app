@@ -75,3 +75,4 @@ schema_prod.sql
 branding/*
 !branding/.gitkeep
 !branding/README.md
+logs/
