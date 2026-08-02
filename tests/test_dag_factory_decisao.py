@@ -126,7 +126,9 @@ def test_pegadinha_trigger_rules(factory):
     # t_end dos membros alcançáveis: NONE_SKIPPED (propaga skip, mantém fail-fast)
     assert "trigger_rule=TriggerRule.NONE_SKIPPED" in src
     # publish_dataset tolera ramos pulados (trigger_rule dentro do seu bloco)
-    _i = src.index("t_publish_dataset = EmptyOperator(")
+    # F2: o publish virou PythonOperator (grava SUCESSO) mantendo task_id,
+    # trigger rule e outlets — o assert segue sobre o bloco novo.
+    _i = src.index("t_publish_dataset = PythonOperator(")
     bloco_pub = src[_i:_i + 220]
     assert "TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS" in bloco_pub
 
