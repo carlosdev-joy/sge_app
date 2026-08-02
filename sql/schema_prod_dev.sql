@@ -163,7 +163,12 @@ CREATE TABLE dbo.etl_pipeline (
     somente_dias_uteis       BIT           NOT NULL  DEFAULT 0,
     trigger_por_dependencia  BIT           NOT NULL  DEFAULT 0,
     horarios_especificos     VARCHAR(500)  NULL,
-    dias_semana              VARCHAR(30)   NULL
+    dias_semana              VARCHAR(30)   NULL,
+    -- Drift achado na validação da F5 (2026-08-02): produção TEM esta coluna
+    -- (o GET /factory/preview a seleciona direto de etl_pipeline e o factory lê
+    -- pipeline.get("ssh_conn_id") como conexão default dos jobs), mas ela não
+    -- estava neste dump — no dev o preview quebrava com "Invalid column name".
+    ssh_conn_id              VARCHAR(100)  NULL
 );
 GO
 

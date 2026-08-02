@@ -1,5 +1,5 @@
 # Spec: Dependências entre pipelines (modelo Control-M) — Orquestra
-Data: 2026-07-31 · Status: ⛔ **REVERTIDA a partir da F2. Só a F1 sobrevive.**
+Data: 2026-07-31 · Status: ✅ **Retomada F2–F6 COMPLETA NO CÓDIGO (PRs #243–#248, 2026-08-02) — pendente o deploy de produção (ordem no preâmbulo; dívidas §10).**
 
 > **Por que esta spec foi revertida.** As seis fases foram implementadas e
 > reprovadas em DUAS revisões adversariais independentes. A primeira encontrou
@@ -30,6 +30,34 @@ Data: 2026-07-31 · Status: ⛔ **REVERTIDA a partir da F2. Só a F1 sobrevive.*
 > Airflow completo (webserver :8082, scheduler, worker, triggerer) e API :8000 /
 > UI :8090. Runbook, credenciais e armadilhas do bootstrap em
 > `docs/ambiente-dev.md`. A pré-condição da retomada está satisfeita.
+>
+> ✅ **RETOMADA F2–F6 COMPLETA NO CÓDIGO (2026-08-02):** PRs **#243** (F2 —
+> registro de execução por data de referência), **#244** (fix do kwarg
+> reservado `params` no StoredProcOperator), **#245** (F3 — liberação por
+> condição e disparo push), **#246** (F4 — guardiã, janela e alertas),
+> **#247** (F5 — cadastro e visão de dependências) e **#248** (F6 — este
+> fecho: manual, smoke §7, factory zerando a pendência de publicação), todas
+> mergeadas em 2026-08-02, com os cenários **EXECUTADOS** no ambiente dev
+> (suíte `docs/retomada-aceitacao.md`; harness `docs/retomada-harness-dev.md`).
+>
+> **Pendente: o deploy de produção**, nesta ordem consolidada:
+> 1. migrations **067/070–073** na etapa 6c do `deploy.sh`;
+> 2. deploy de `dags/` (factory nova, guardiã, utils);
+> 3. **ANTES do force_all**, rodar a consulta de dimensionamento do CSV órfão
+>    (pipelines ativos com `depends_on` preenchido, por `schedule_type`) e
+>    tratar os órfãos — `sql/migrate.py` descarta PRINT (D40), o relatório não
+>    chega sozinho;
+> 4. **regenerar as DAGs** (`force_all`) — sem isso NADA muda: o `deploy.sh`
+>    exclui `generated/`;
+> 5. conferir `SELECT GETDATE()` no SQL Server (a data de referência nasce do
+>    relógio DELE) e só então **despausar `etl_dependencia_guardia`**;
+> 6. **TZ do container da API** (pré-requisito da F9, que vai no MESMO deploy):
+>    o `deploy.sh` PERGUNTA antes de sobrescrever o `docker-compose.yaml` —
+>    responder "s" para levar o `TZ: America/Sao_Paulo` da API, recriar o
+>    container e conferir `docker exec orquestra-api date` → `-03` (sem isso,
+>    o ODATE default da visão de execução nasce no dia seguinte entre 21h e
+>    meia-noite de Brasília — achado da revisão da F9);
+> 7. smoke §7 em produção, começando por um PAR de pipelines de teste.
 
 ## 1. Visão
 
@@ -512,27 +540,29 @@ Decisões de 2026-08-02 (inclusão da Malha):
 
 ## 10. Pendências desta spec (depois do deploy validado)
 
-Duas dívidas conscientes (1–2, seguras de carregar e caras de antecipar) e
-dois fios soltos do ambiente dev (3–4, a resolver ANTES da retomada da F2):
+Atualizado em 2026-08-02 (F6): as dívidas 1–2 **continuam aguardando o deploy
+validado** — a F6 manteve o espelho de propósito (ajuste de escopo do §5-F6);
+os fios soltos 3–4 do ambiente dev foram tratados na retomada:
 
 1. **Remover a escrita em espelho do CSV `etl_pipeline.depends_on`** e, depois,
    a própria coluna. Hoje ela é o fallback do `etl_dag_factory` e do preview
    quando a migration 067 não está aplicada. Só faz sentido remover quando a
    067 estiver aplicada em produção **e** as DAGs regeradas — antes disso, o
    fallback é o que impede um deploy parcial de gerar DAGs sem dependência
-   nenhuma.
+   nenhuma. **Segue de pé após a F6, de propósito.**
 2. **`trigger_por_dependencia`** já saiu da tela (F5) e não decide mais nada
    (F3), mas a coluna segue no banco. Some junto com o CSV, na mesma migration.
 
-3. **FIO SOLTO descoberto em 2026-08-02 (confirmar no ambiente dev antes da
-   F2):** a `sp_etl_pipelines_pendentes_criar` VERSIONADA no repo (migration
-   026) **não devolve `depends_on`**, e o supplement de colunas avançadas do
-   gerador também não o seleciona — pelo código do repo, `pipeline["depends_on"]`
-   chega `None` no gerador, e o `ExternalTaskSensor`/modo Dataset só sairiam se
-   a SP do banco de produção divergir do repo. **CONFIRMADO no dev em 2026-08-02** (EXEC da SP: o
-   1º result set não traz depends_on mesmo com dependência gravada). A F6
-   precisa cobrir a SP (ou o supplement) explicitamente.
-4. **Bootstrap de banco virgem tem 3 armadilhas conhecidas** (encontradas ao
+3. ~~FIO SOLTO: a `sp_etl_pipelines_pendentes_criar` não devolve
+   `depends_on`~~ — **FECHADO (F3/F6, D37):** o gerador não depende mais da SP
+   para dependências. O supplement `_dependencias_da_tabela` lê
+   `etl_pipeline_dependencia` (067) diretamente, com o contrato None×{} (D36),
+   e o `depends_on` do CSV entrou no SELECT de colunas avançadas só como
+   **denunciante**: sem a 067, dependência no CSV faz a geração recusar
+   ruidosamente em vez de regredir a cron em silêncio. Confirmado por EXECUÇÃO
+   no dev (smoke §7f da F6): DAG de dependente gerada com dependência gravada
+   SÓ na tabela sai com `schedule=None` e sem `ExternalTaskSensor`.
+4. **Bootstrap de banco virgem tem armadilhas conhecidas** (encontradas ao
    montar o dev): `deploy_full.sql` referencia colunas de migrations posteriores
    nas SPs da Seção 2 (converge na 2ª passada, mas deveria ser corrigido) e
    está defasado do schema real (migrate para na 012 por falta de
@@ -541,7 +571,10 @@ dois fios soltos do ambiente dev (3–4, a resolver ANTES da retomada da F2):
    `schema_prod_dev.sql` tenta `DROP VIEW` sem checar o tipo — a ordem dos
    passos importa; `sqlcmd` (tools18) aborta o deploy_full com "Invalid cursor
    state" — usar o runner pyodbc do runbook. Detalhes e a sequência que
-   funciona em `docs/ambiente-dev.md`.
+   funciona em `docs/ambiente-dev.md`. **Resolvido na F6:** o drift
+   `etl_pipeline.ssh_conn_id` (produção tem, o dump não tinha — quebrava o
+   `GET /factory/preview` no dev, achado da validação da F5) entrou na
+   definição de `sql/schema_prod_dev.sql`.
 
 Sequência sugerida: deploy → smoke §7 → uma execução real de ponta a ponta →
 migration de limpeza removendo as duas colunas.

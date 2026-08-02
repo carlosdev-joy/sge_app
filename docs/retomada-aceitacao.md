@@ -2,6 +2,45 @@
 
 Data: 2026-08-02 · Base: `main 5c85655` · Spec: `docs/spec-dependencias-pipelines.md` · Ambiente: dev desta VPS (Airflow :8082, API :8000, UI :8090, banco `orquestra_dev` — runbook `docs/ambiente-dev.md`)
 
+> ## ✅ RETOMADA CONCLUÍDA NO CÓDIGO em 2026-08-02 — itens restantes são de deploy/produção
+>
+> F2–F6 mergeadas (PRs #243–#248, todas de 2026-08-02). O **smoke §7 oficial da
+> spec foi EXECUTADO no dev na F6** (marcas "(smoke§7 2026-08-02 F6)"), com
+> evidência dupla (Airflow + banco), harness padrão e limpeza §7 completa:
+> **a)** C←A,B pela porta do modal, texto livre → 422 citando o nome ·
+> **b)** ciclo → 422 com mensagem clara · **c)** B (o segundo) concluiu 21:53:58
+> e C iniciou 21:54:03 (**5 s**), mesma data de referência, `disparado_por=B` ·
+> **d)** hora-limite vencida sem B → `JANELA_ESTOUROU` ("aguardando:
+> HARNESS_PIPE_B") e C **AGUARDANDO_DEPENDENCIA**, nunca FALHA · **e)** virada
+> 20:00, 23:30 simulado por conf (registrado: relógio real 18:5x) → pai carimba
+> o dia seguinte e o filho **herda** a mesma data via conf do push ·
+> **f)** dependente sem `ExternalTaskSensor`, `schedule=None` ("Never, external
+> triggers only"), importErrors 0. E o ajuste F6 do factory foi provado VIVO:
+> pendência de publicação ligada pela API (21:56:10) → regeneração fora da API →
+> `dag_config_pendente_em = NULL`.
+>
+> **O que resta em [ ] e SÓ produção (ou gesto humano na tela) fecha:**
+> - o **smoke §7 EM PRODUÇÃO** — o portão final, na ordem consolidada dos
+>   lembretes "Fora da suíte" (e do preâmbulo da spec): 067/070–073 na 6c →
+>   `dags/` → consulta de CSV órfão ANTES → `force_all` → conferir `GETDATE()` →
+>   despausar a guardiã → smokes;
+> - **D31** — comportamento de desmontagem do modal: gesto de UI, smoke humano;
+> - **D54** — invariante PERMANENTE de processo (a matriz de folhas foi
+>   executada na retomada — D53/D55 —, mas o item não "fecha": re-prova a cada
+>   mudança de `trigger_rule`);
+> - **D57** — a fiação está no unitário e a falha real gravou FALHA (D53); o
+>   cenário completo "falha em cada ramo de decisão" fica para produção.
+>
+> Os demais [ ] são de **teste unitário com cobertura JÁ presente na suíte**
+> (nomes conferidos um a um na F6, suíte verde): D08, D10, D11, D15
+> (`test_predicado_sem_ordenacao_nem_criado_em`), D21
+> (`test_liberado_excecao_nao_vira_pode_disparar`), D23
+> (`test_d23_d16_trigger_que_levanta_devolve_e_o_pai_segue`), D27 (parcial —
+> dedup/canonização em `test_depends_on_presente_replace_all_com_dedup_e_canonizacao`),
+> D46 (parcial — 2 das 3 mensagens nomeadas), D47, D48 (idempotência da
+> ordenação), D51 (`test_um_pipeline_quebrado_nao_cancela_os_demais`), D52 e
+> D59. O fechamento formal fica com as fases donas; **nenhum bloqueia o deploy**.
+
 > ## ⛔ REGRA DE MERGE
 > **Nenhuma fase mergeia sem os itens dela marcados como EXECUÇÃO terem sido EXECUTADOS no ambiente dev** — DAG rodando de verdade, efeito observado no Airflow (estado do DagRun, das tasks) **e** no banco (`etl_pipeline_execucao`, `etl_dependencia_evento`). Teste que compila a string da DAG ou verifica a ausência de um INSERT **não conta** como execução: foi exatamente esse método que deixou 1053 testes verdes com um defeito catastrófico na main (PR #229).
 
@@ -60,14 +99,14 @@ Data: 2026-08-02 · Base: `main 5c85655` · Spec: `docs/spec-dependencias-pipeli
 - [x] (V-dev 2026-08-02 F5 — publicação REAL no dev: editar agendamento e dependência ligou `dag_config_pendente=1` nas duas portas; gerar-dag + reconciliador zeraram; .py regerado com `schedule=None` de dependente) **D30** (F5 · EXECUÇÃO no dev) — Mudar dependência marca a DAG como suja e oferece publicar (`markDagDirty`): sem isso a DAG segue com o cron antigo e roda por horário E por evento. Conferir no dev que a DAG regerada mudou de schedule. [E1]
 - [ ] **D31** (F5 · EXECUÇÃO no dev) — O modal desmonta ao fechar (montado só quando aberto): "Cancelar" descarta a seleção e um chip removido não ressuscita na próxima confirmação. [E2]
 - [x] (V-dev 2026-08-02 F5 — API/contrato: `/estado` e `/malhas/{m}/execucao` com `faltantes` e degradação sem 067 provadas vivas; o RENDER do painel/tooltip conferido só por bundle — gesto visual fica p/ o smoke humano) **D32** (F5 · EXECUÇÃO no dev) — "Aguardando dependência" tem consumidor: o card da Malha/dashboard mostra o estado e **quais** predecessores faltam ("esperando PIPE_B, PIPE_C"); o dashboard distingue "aguardando dependência" de "não executou". Sem a 067 a tela degrada sem quebrar. [E4 · aceite F5]
-- [ ] **D33** (F5 · EXECUÇÃO no dev) — Impossível salvar dependência por texto livre; o modal explica por que um pipeline não pode ser escolhido (ciclo/ele mesmo) e avisa quando o escolhido está INATIVO (dependente de inativo nunca libera). [aceite F5 · smoke §7a/§7b]
+- [x] (smoke§7 2026-08-02 F6 — a/b pela PORTA do modal, `POST /dependencias`: texto livre → 422 citando o nome; ciclo → 422 "Dependência circular … fecha um ciclo"; a explicação/aviso de inativo no RENDER conferida por leitura — o gesto visual fica p/ o smoke humano) **D33** (F5 · EXECUÇÃO no dev) — Impossível salvar dependência por texto livre; o modal explica por que um pipeline não pode ser escolhido (ciclo/ele mesmo) e avisa quando o escolhido está INATIVO (dependente de inativo nunca libera). [aceite F5 · smoke §7a/§7b]
 - [x] (V-dev 2026-08-02 F5 — banco provado vivo no V6: remover a última dependência + register com `""` → NULL nos dois e `hora_virada` permanece; o "só aparecem com dependência" é do form — smoke humano) **D34** (F5 · teste unitário + EXECUÇÃO no dev) — Janela e hora-limite só aparecem com dependência e são LIMPOS ao remover a última — sem configuração órfã no banco. [F5 PR #222]
 - [x] (V-dev 2026-08-02 F5 — vivo: `20:00`→`20:00:00`; `""`→NULL; `99:99`/`07:x0`→NULL com 2 `avisos` no payload e cadastro aceito) **D35** (F5 · teste unitário) — Normalização `HH:MM`→`HH:MM:SS`; vazio vira NULL ("sem regra" ≠ "regra às 00:00", que geraria alerta diário); hora inválida vira NULL sem recusar o cadastro inteiro. [F5 PR #222]
-- [ ] **D36** (F6 · teste unitário) — `_dependencias_da_tabela` devolve **`None`** quando a tabela não existe (chamador preserva o que a proc trouxe) e **`{}`** quando existe e está vazia (sobrescreve): deploy de `dags/` sem a 067 NÃO apaga a dependência de todas as DAGs. [F6 PR #223]
-- [ ] **D37** (F6 · EXECUÇÃO no dev) — Fio solto §10.3 CONFIRMADO no dev: a `sp_etl_pipelines_pendentes_criar` NÃO devolve `depends_on` — a F6 cobre a SP (ou o supplement de colunas) explicitamente, e a DAG gerada no dev reflete dependência gravada SÓ na tabela. [§10.3]
-- [ ] **D38** (F6 · teste unitário + EXECUÇÃO no dev) — Dependência vinda da tabela vira `schedule=None` na DAG gerada; pipeline sem dependência mantém o cron intacto (comparar as duas DAGs geradas no dev). [F6 PR #223 · correção A]
-- [ ] **D39** (F6 · leitura) — `MANUAL_USUARIO.md` §3.4 atualizado: escolher da lista, o horário deixa de valer, janela/limite e data de referência com o exemplo da virada 20:00. [F6 PR #223]
-- [ ] **D40** (F6 · leitura + teste unitário) — `sql/migrate.py` DESCARTA `PRINT` (`cur.messages` nunca é lido): relatório de órfãos do `depends_on` precisa chegar ao operador por outra via; e um `depends_on` órfão NÃO pode fazer o pipeline sair de `schedule=None` e voltar a rodar sozinho no cron, em silêncio. [gotcha infra 1ª execução]
+- [x] (unitário entregue na F3, conferido 2026-08-02 F6 — `test_dag_factory_dependencias_f3.py::test_contrato_none_x_dict_do_supplement`) **D36** (F6 · teste unitário) — `_dependencias_da_tabela` devolve **`None`** quando a tabela não existe (chamador preserva o que a proc trouxe) e **`{}`** quando existe e está vazia (sobrescreve): deploy de `dags/` sem a 067 NÃO apaga a dependência de todas as DAGs. [F6 PR #223]
+- [x] (smoke§7 2026-08-02 F6 — EXECUÇÃO estrita: dependência inserida SÓ na tabela, `depends_on` NULL; a factory gerou HARNESS_PIPE_Q com o `schedule=None` do RAMO DEPENDENTE ("o gatilho e o disparo dos predecessores", não o "sob demanda") e 0 sensor — a SP não precisou mudar, o supplement da 067 é a fonte) **D37** (F6 · EXECUÇÃO no dev) — Fio solto §10.3 CONFIRMADO no dev: a `sp_etl_pipelines_pendentes_criar` NÃO devolve `depends_on` — a F6 cobre a SP (ou o supplement de colunas) explicitamente, e a DAG gerada no dev reflete dependência gravada SÓ na tabela. [§10.3]
+- [x] (smoke§7 2026-08-02 F6 — dependentes C/F/Q gerados com `schedule=None` e 0 `ExternalTaskSensor`, importErrors 0; o "cron intacto" fica no unitário byte-a-byte da F3 (`test_folhas_byte_identicas_a_f2`, `test_sem_067_sem_csv_compila_no_cron`) — a regra do harness PROÍBE cadastrar cron no dev) **D38** (F6 · teste unitário + EXECUÇÃO no dev) — Dependência vinda da tabela vira `schedule=None` na DAG gerada; pipeline sem dependência mantém o cron intacto (comparar as duas DAGs geradas no dev). [F6 PR #223 · correção A]
+- [x] (leitura 2026-08-02 F6 — §3.4 reescrito em linguagem de operador: as duas portas de cadastro, hora não vale × DIA continua valendo, janela/hora-limite, ODATE com o exemplo da virada 20:00, os 4 eventos da guardiã e onde vê-los, reprocesso — Clear empurra a cadeia / NAO_LIBEROU exige trigger com data —, badge "publicação pendente") **D39** (F6 · leitura) — `MANUAL_USUARIO.md` §3.4 atualizado: escolher da lista, o horário deixa de valer, janela/limite e data de referência com o exemplo da virada 20:00. [F6 PR #223]
+- [x] (2026-08-02 F6 — a metade de código no unitário da F3: órfão/sem-067 → recusa RUIDOSA da geração, nunca regressão a cron em silêncio (`test_sem_067_com_csv_recusa_ruidosamente`, `test_tabela_vazia_com_csv_e_orfao_e_recusa`); a metade operacional virou passo da ordem de deploy no preâmbulo da spec — consulta de órfãos ANTES do force_all, porque `migrate.py` descarta PRINT) **D40** (F6 · leitura + teste unitário) — `sql/migrate.py` DESCARTA `PRINT` (`cur.messages` nunca é lido): relatório de órfãos do `depends_on` precisa chegar ao operador por outra via; e um `depends_on` órfão NÃO pode fazer o pipeline sair de `schedule=None` e voltar a rodar sozinho no cron, em silêncio. [gotcha infra 1ª execução]
 
 ## D — Guardiã (premissas alinhadas com a execução)
 

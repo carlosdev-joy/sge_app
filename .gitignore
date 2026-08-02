@@ -76,3 +76,8 @@ branding/*
 !branding/.gitkeep
 !branding/README.md
 logs/
+
+## DAGs geradas pela etl_dag_factory (produção e dev/harness): artefato de
+## runtime, nunca entram no git — o deploy.sh já as exclui do rsync, e o
+## harness da retomada (docs/retomada-harness-dev.md §8) exigia esta linha.
+dags/generated/
