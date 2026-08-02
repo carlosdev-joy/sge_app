@@ -184,3 +184,48 @@ def test_gravar_dependencias_degrada_sem_a_migration(pipes):
     cur = MagicMock()
     cur.execute.side_effect = RuntimeError("Invalid object name")
     assert pipes._gravar_dependencias(cur, "C", ["A"], None) is False
+
+
+# ── canonização de grafia na gravação (achado da revisão da F8) ─────────────
+
+class _CurCanon:
+    """Dublê mínimo: responde a canonização e registra os INSERTs."""
+
+    def __init__(self, oficiais):
+        self.oficiais = {o.casefold(): o for o in oficiais}
+        self.inserts = []
+        self._res = []
+
+    def execute(self, sql, params=()):
+        s = " ".join(str(sql).split())
+        if s.startswith("SELECT pipeline_name FROM dbo.etl_pipeline"):
+            of = self.oficiais.get(str(params[0]).casefold())
+            self._res = [(of,)] if of else []
+        elif "INSERT INTO dbo.etl_pipeline_dependencia" in s:
+            self.inserts.append(tuple(params))
+            self._res = []
+        else:
+            self._res = []
+
+    def fetchone(self):
+        return self._res[0] if self._res else None
+
+    def fetchall(self):
+        return self._res
+
+
+def test_gravar_dependencias_canoniza_grafia(pipes):
+    """Gravar 'como digitado' criava linha com caixa divergente — invisível no
+    diagrama da malha (F8) até a migration 071 limpar. A gravação passa a usar
+    a grafia registrada em etl_pipeline."""
+    cur = _CurCanon(["PIPE_X"])
+    assert pipes._gravar_dependencias(cur, "C", ["pipe_x"], "u1") is True
+    assert cur.inserts and cur.inserts[0][1] == "PIPE_X"
+
+
+def test_gravar_dependencias_dep_inexistente_mantem_como_veio(pipes):
+    """Fallback: nome sem registro (validação de existência roda ANTES em
+    produção) não pode virar None nem sumir — segue como veio."""
+    cur = _CurCanon([])
+    assert pipes._gravar_dependencias(cur, "C", ["FANTASMA"], None) is True
+    assert cur.inserts and cur.inserts[0][1] == "FANTASMA"

@@ -20,10 +20,13 @@ Endpoints:
 
   GET    /malhas                          — lista malhas (agrupadoras) com agregados
   POST   /malhas                          — cria malha
-  GET    /malhas/{name}                   — detalhe da malha + membros
+  GET    /malhas/{name}                   — detalhe da malha + membros + arestas
   PATCH  /malhas/{name}                   — descricao/ativo/renomear malha
   POST   /malhas/{name}/pipelines         — adiciona pipeline à malha (idempotente)
   DELETE /malhas/{name}/pipelines/{pipe}  — remove pipeline da malha
+  PUT    /malhas/{name}/layout            — persiste posições dos nós do diagrama
+  POST   /dependencias                    — cria dependência real (etl_pipeline_dependencia)
+  DELETE /dependencias                    — remove dependência real (com espelho CSV)
 
   GET  /jobs                              — lista jobs de pipeline
   POST /pipelines/jobs/register           — registra/atualiza jobs e lineage

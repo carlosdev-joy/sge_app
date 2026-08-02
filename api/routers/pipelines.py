@@ -313,10 +313,17 @@ def _gravar_dependencias(cur, pipeline_name, depends_on_list, usuario=None):
         return False
 
     for dep in deduplicar(depends_on_list):
+        # Canoniza a grafia pela registrada em etl_pipeline (mesma regra da
+        # PR #236): gravar "como digitado" criava linha com caixa divergente,
+        # que o diagrama da malha não consegue exibir e a 071 teve que limpar.
+        cur.execute("SELECT pipeline_name FROM dbo.etl_pipeline WHERE pipeline_name = ?",
+                    (dep,))
+        row = cur.fetchone()
+        dep_oficial = (row[0] or "").strip() if row else dep
         cur.execute(
             "INSERT INTO dbo.etl_pipeline_dependencia "
             "(pipeline_name, depende_de, tipo, criado_por) VALUES (?,?, 'PIPELINE', ?)",
-            (pipeline_name, dep, (usuario or "")[:100] or None))
+            (pipeline_name, dep_oficial, (usuario or "")[:100] or None))
     return True
 
 
