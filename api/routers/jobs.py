@@ -1583,6 +1583,18 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
     erros = []
     try:
         conn = get_db_conn(); cur = conn.cursor()
+        # Canoniza a grafia pelo REGISTRO em etl_pipeline (a colação CI casa
+        # qualquer grafia; o retorno é a oficial). Incidente 2026-08-01: etapas
+        # gravadas em CamelCase num pipeline registrado em MAIÚSCULAS somem na
+        # dag_factory (dicts Python case-sensitive) → "pipeline sem nenhuma
+        # etapa". Fica AQUI, antes do try/except por-item que engole erro: falha
+        # de banco vira 500 alto, nunca canonização muda. Pipeline ainda não
+        # registrado mantém a grafia do request (comportamento atual do wizard).
+        cur.execute("SELECT pipeline_name FROM dbo.etl_pipeline WHERE pipeline_name=?",
+                    (pipeline_name,))
+        _row_oficial = cur.fetchone()
+        if _row_oficial and (_row_oficial[0] or "").strip():
+            pipeline_name = _row_oficial[0].strip()
         cur.execute(
             "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
             "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
@@ -2314,6 +2326,22 @@ async def save_pipeline_fluxo(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
     try:
+        # Canoniza a grafia pelo REGISTRO em etl_pipeline (a colação CI casa
+        # qualquer grafia; o retorno é a oficial) ANTES de qualquer gravação —
+        # incidente 2026-08-01: etapas em grafia divergente do registro somem na
+        # dag_factory (dicts Python case-sensitive) → "pipeline sem nenhuma
+        # etapa". Falha aqui propaga como 500 alto (não há except que engole).
+        # Pipeline não registrado mantém a grafia da URL (comportamento atual).
+        try:
+            cur.execute("SELECT pipeline_name FROM dbo.etl_pipeline WHERE pipeline_name=?",
+                        (pipeline_name,))
+            _row_oficial = cur.fetchone()
+        except Exception as e:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+        if _row_oficial and (_row_oficial[0] or "").strip():
+            pipeline_name = _row_oficial[0].strip()
+
         # Jobs que pertencem ao pipeline hoje (ownership / base da reconciliação).
         try:
             cur.execute("SELECT job_name FROM dbo.etl_pipeline_job WHERE pipeline_name=?",

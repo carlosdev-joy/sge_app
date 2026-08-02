@@ -221,6 +221,31 @@ async def sequence_approve(body: dict = Body(default={}), _auth: dict = Depends(
             params.append(import_id)
             cur.execute(f"UPDATE dbo.etl_seq_import SET {', '.join(parts)} WHERE id = ?", params)
 
+        # Canoniza a grafia ANTES da aprovação: a sp_etl_seq_import_approve grava
+        # jobs/lineage com COALESCE(pipeline_name_override, seq_name). Se o
+        # pipeline JÁ existe com outra grafia, o upsert (colação CI) atualiza a
+        # linha registrada, mas os jobs nasceriam com a grafia do import — foi a
+        # origem do incidente 2026-08-01 (etapas CamelCase num pipeline
+        # MAIÚSCULO → dag_factory case-sensitive → "pipeline sem nenhuma
+        # etapa"). Grava a grafia REGISTRADA como override para a SP usá-la.
+        cur.execute(
+            "SELECT COALESCE(pipeline_name_override, seq_name) FROM dbo.etl_seq_import WHERE id = ?",
+            (import_id,)
+        )
+        nome_resolvido = (cur.fetchone() or [None])[0]
+        if nome_resolvido:
+            cur.execute(
+                "SELECT pipeline_name FROM dbo.etl_pipeline WHERE pipeline_name = ?",
+                (nome_resolvido,)
+            )
+            row_oficial = cur.fetchone()
+            grafia_oficial = (row_oficial[0] or "").strip() if row_oficial else ""
+            if grafia_oficial and grafia_oficial != nome_resolvido:
+                cur.execute(
+                    "UPDATE dbo.etl_seq_import SET pipeline_name_override = ? WHERE id = ?",
+                    (grafia_oficial, import_id)
+                )
+
         cur.execute("EXEC dbo.sp_etl_seq_import_approve ?, ?", (import_id, reviewed_by))
 
         active           = int(body.get("active",           1))
