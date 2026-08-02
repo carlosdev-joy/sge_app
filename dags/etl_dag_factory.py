@@ -459,6 +459,47 @@ def _notify_block(job, notify_cfg, upstream_jobs, branch_reachable=False):
     ]))
 
 
+_AGUARDE_POLITICAS = ("todas_sucesso", "todas_terminarem")
+
+
+def _wait_block(job, aguarde_cfg, branch_reachable=False):
+    """Bloco de um nó Aguarde: ponto de encontro entre pernas paralelas.
+
+    EmptyOperator sem t_start/t_end (como os demais nós especiais — fica fora de
+    end_tasks): não roda nada, não tem lineage. O que ele faz é inteiramente
+    decidido pela trigger rule, derivada da política gravada em aguarde_json:
+
+      todas_sucesso (default) → só libera o que vem depois se TODAS as pernas
+        ligadas a ele tiverem sucesso. Alcançável a partir de um branch, usa a
+        variante tolerante a skip, senão o ramo não escolhido (que chega
+        SKIPPED) travaria a junção para sempre.
+      todas_terminarem → libera assim que todas terminarem, com sucesso ou
+        falha. É o caso da limpeza de arquivos compartilhados pelas pernas.
+
+    A segunda política NÃO esconde a falha do pipeline: cada perna continua com
+    o seu t_end em end_tasks e ligado ao fechamento, e é ele quem decide o
+    estado do DagRun. Ver o teste-âncora em tests/test_dag_factory_aguarde.py.
+    """
+    name  = job["job_name"]
+    vname = _varname(name)
+    politica = (str((aguarde_cfg or {}).get("politica") or "").strip().lower()
+                or "todas_sucesso")
+    if politica not in _AGUARDE_POLITICAS:
+        politica = "todas_sucesso"
+    if politica == "todas_terminarem":
+        rule = "TriggerRule.ALL_DONE"
+    elif branch_reachable:
+        rule = "TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS"
+    else:
+        rule = "TriggerRule.ALL_SUCCESS"
+    return "\n".join([
+        f't_wait_{vname} = EmptyOperator(',
+        f'    task_id={name!r},',
+        f'    trigger_rule={rule},',
+        f')',
+    ])
+
+
 def _sql_block(job, sql_cfg, branch_reachable=False):
     """Bloco de um nó SQL: PythonOperator EXECUTÁVEL que RODA um SELECT e PUBLICA
     o valor escalar (1ª coluna da 1ª linha) no XCom default da task (task_id =
@@ -547,7 +588,7 @@ def _generate_dag_source(pipeline, jobs):
     # Nós de Decisão (roteador), de Notificação (sem lineage) e SQL (roda o SELECT
     # e publica o valor escalar) não têm t_start/t_end próprios — ficam fora de
     # end_tasks.
-    _SPECIAL_NODES = ("decisao", "notificacao", "sql")
+    _SPECIAL_NODES = ("decisao", "notificacao", "sql", "aguarde")
     all_ends    = [f"t_end_{_varname(j['job_name'])}" for j in sorted_jobs if _alias(j) not in _SPECIAL_NODES]
 
     def _jtypes(jobs):
@@ -631,6 +672,20 @@ def _generate_dag_source(pipeline, jobs):
             except (ValueError, TypeError):
                 sql_nodes[j["job_name"]] = {}
     has_sql_node = bool(sql_nodes)
+
+    # ── Nó Aguarde (migration 068) ─────────────────────────────────────────
+    # Parse de aguarde_json (degrada se ausente/inválido → política default no
+    # _wait_block). Ponto de encontro entre pernas paralelas: não roda nada,
+    # não tem lineage. aguarde_nodes mapeia job_name → {politica}.
+    aguarde_nodes = {}
+    for j in sorted_jobs:
+        if _alias(j) == "aguarde":
+            raw = j.get("aguarde_json")
+            try:
+                aguarde_nodes[j["job_name"]] = _json.loads(raw) if raw else {}
+            except (ValueError, TypeError):
+                aguarde_nodes[j["job_name"]] = {}
+    has_aguarde = bool(aguarde_nodes)
 
     branch_parents = defaultdict(list)   # job_name → [nome da(s) decisão(ões)]
     ramo_members = set()
@@ -1332,6 +1387,10 @@ def _generate_dag_source(pipeline, jobs):
             job_blocks.append(_sql_block(
                 j, sql_nodes.get(j["job_name"], {}),
                 branch_reachable=(j["job_name"] in reachable)))
+        elif _alias(j) == "aguarde":
+            job_blocks.append(_wait_block(
+                j, aguarde_nodes.get(j["job_name"], {}),
+                branch_reachable=(j["job_name"] in reachable)))
         else:
             job_blocks.append(_task_block(j, project, pname, branch_reachable=(j["job_name"] in reachable)))
 
@@ -1395,10 +1454,12 @@ def _generate_dag_source(pipeline, jobs):
     # de Decisão) ou ONDAS (execution_order). Opt-in por pipeline — pipelines
     # sem deps explícitas/decisão continuam exatamente como antes.
     # (_job_names/_deps_of já definidos acima, junto do parsing das decisões.)
-    explicit_deps = has_decision or has_notificacao or has_sql_node or any(_deps_of(j) for j in sorted_jobs)
+    explicit_deps = (has_decision or has_notificacao or has_sql_node or has_aguarde
+                     or any(_deps_of(j) for j in sorted_jobs))
 
     notif_task_refs = []   # t_notif_* a convergir no publish_dataset
     sql_task_refs = []     # t_sql_* a convergir no publish_dataset
+    wait_task_refs = []    # t_wait_* a convergir no publish_dataset
     if explicit_deps:
         root_anchor = sensors_ref if sensor_names else "t_check_agenda"
         teams_start_done = False
@@ -1414,6 +1475,8 @@ def _generate_dag_source(pipeline, jobs):
                 return f"t_dec_{_varname(d)}"
             if d in sql_nodes:
                 return f"t_sql_{_varname(d)}"
+            if d in aguarde_nodes:
+                return f"t_wait_{_varname(d)}"
             return f"t_end_{_varname(d)}"
         for j in sorted_jobs:
             n = _varname(j["job_name"])
@@ -1443,6 +1506,14 @@ def _generate_dag_source(pipeline, jobs):
             if _alias(j) == "sql":
                 dep_lines.append(f"{up} >> t_sql_{n}")
                 sql_task_refs.append(f"t_sql_{n}")
+                continue
+            # Nó Aguarde: ponto de encontro, sem t_start/t_end. Liga ao upstream
+            # (as pernas que ele espera) direto no t_wait_*; quem vem depois
+            # dele o referencia via _end_ref. Converge no fechamento como a
+            # notificação, para não ficar pendente quando é a ponta do fluxo.
+            if _alias(j) == "aguarde":
+                dep_lines.append(f"{up} >> t_wait_{n}")
+                wait_task_refs.append(f"t_wait_{n}")
                 continue
             is_root = (not deps) and (not parents)
             # Notificação de início no primeiro job raiz (sem deps/decisão)
@@ -1498,6 +1569,16 @@ def _generate_dag_source(pipeline, jobs):
             dep_lines.append(f"{sref} >> t_teams_end")
         if f_err:
             dep_lines.append(f"{sref} >> t_teams_error")
+    # Nós Aguarde (sem t_end) convergem no fechamento como a notificação. Isso
+    # é o que impede um Aguarde na ponta do fluxo de ficar pendurado fora do
+    # grafo de fechamento — e é INDEPENDENTE das arestas de end_tasks, que
+    # seguem intactas e continuam decidindo o estado do DagRun.
+    for wref in wait_task_refs:
+        dep_lines.append(f"{wref} >> t_publish_dataset")
+        if f_fim:
+            dep_lines.append(f"{wref} >> t_teams_end")
+        if f_err:
+            dep_lines.append(f"{wref} >> t_teams_error")
     # flow_close fecha DEPOIS de tudo (ends + nós especiais) e ANTES do card de
     # fim — assim o teams_end já enxerga as linhas SKIPPED que ele gravou.
     if has_decision:
@@ -1506,6 +1587,8 @@ def _generate_dag_source(pipeline, jobs):
             dep_lines.append(f"{nref} >> t_flow_close")
         for sref in sql_task_refs:
             dep_lines.append(f"{sref} >> t_flow_close")
+        for wref in wait_task_refs:
+            dep_lines.append(f"{wref} >> t_flow_close")
         if f_fim:
             dep_lines.append("t_flow_close >> t_teams_end")
 
@@ -1761,6 +1844,22 @@ def gerar_dags(**context):
                 j["python_json"] = _pymap.get((j["pipeline_name"], j["job_name"]))
     except Exception as _pye:
         print(f"[FACTORY] python_json supplement ignorado: {_pye}")
+
+    # Supplement: política do nó Aguarde (degrada se a coluna não existir —
+    # migration 068). Sem ela, o _wait_block cai na política conservadora.
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='dbo' "
+            "AND TABLE_NAME='etl_pipeline_job' AND COLUMN_NAME='aguarde_json'")
+        if cursor.fetchone()[0]:
+            cursor.execute(
+                "SELECT pipeline_name, job_name, aguarde_json FROM dbo.etl_pipeline_job "
+                "WHERE aguarde_json IS NOT NULL")
+            _agmap = {(r[0], r[1]): r[2] for r in cursor.fetchall()}
+            for j in jobs_all:
+                j["aguarde_json"] = _agmap.get((j["pipeline_name"], j["job_name"]))
+    except Exception as _age:
+        print(f"[FACTORY] aguarde_json supplement ignorado: {_age}")
 
     # Supplement: banco-alvo por job storedproc (degrada se a coluna não existir — migration 039)
     try:
