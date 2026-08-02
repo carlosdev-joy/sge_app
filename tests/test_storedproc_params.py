@@ -11,6 +11,7 @@ são stubados antes do import de dags/etl_dag_factory.py.
 """
 from __future__ import annotations
 
+import re
 import sys
 import types
 import py_compile
@@ -81,12 +82,12 @@ def _compiles(code: str) -> bool:
 
 def test_storedproc_sem_parametro_chama_operador_sem_params():
     # Agora o factory só CHAMA o StoredProcOperator (o EXEC/bind/log vivem no
-    # operador). Sem parâmetros cadastrados → params=[] (não envia nenhum).
+    # operador). Sem parâmetros cadastrados → proc_params=[] (não envia nenhum).
     job = {"job_name": "j1", "job_type": "storedproc", "job_command": "dbo.sp_teste"}
     code = factory._task_block(job, "proj", {})
     assert "StoredProcOperator(" in code
     assert "proc='dbo.sp_teste'" in code
-    assert "params=[]" in code
+    assert "proc_params=[]" in code
     assert _compiles(code)
 
 
@@ -106,6 +107,26 @@ def test_storedproc_com_parametros_passa_payload_ao_operador():
     assert "'type': 'VARCHAR'" in code
     assert "'value': 'abc'" in code
     assert "'name': 'p_numero'" in code
+    assert _compiles(code)
+
+
+def test_storedproc_com_parametros_nunca_emite_kwarg_reservado_params():
+    """O teste que teria pego o bug do harness (§11-2): 'params' é kwarg
+    RESERVADO do BaseOperator do Airflow — exige mapping. Job storedproc COM
+    parâmetros fixos emitia ``params=[...]`` (lista) e a DAG gerada nem
+    importava (``TypeError: params must be a mapping``). O kwarg do operador
+    é ``proc_params``; ``params=`` cru não pode aparecer na emissão."""
+    job = {
+        "job_name": "j_param", "job_type": "storedproc", "job_command": "dbo.sp_teste",
+        "params": [
+            {"param_name": "@origem", "param_type": "VARCHAR", "param_value": "spfix"},
+        ],
+    }
+    code = factory._task_block(job, "proj", {})
+    assert "proc_params=[{" in code
+    assert "'name': '@origem'" in code
+    # nenhum 'params=' que não seja o proc_params (lookbehind cobre o prefixo)
+    assert re.search(r"(?<!proc_)params\s*=", code) is None
     assert _compiles(code)
 
 

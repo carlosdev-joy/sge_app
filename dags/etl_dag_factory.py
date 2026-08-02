@@ -305,6 +305,8 @@ def _task_block(job, project, pipeline, branch_reachable=False):
         else:
             # Apenas CHAMA o StoredProcOperator — o EXEC, o bind de parâmetros e o
             # log do retorno/erro vivem no operador (mudanças não exigem regenerar).
+            # ⚠️ O kwarg é proc_params: 'params' é reservado do BaseOperator
+            # (lista → TypeError no import; conf não-vazia sobrescreve self.params).
             params_payload = [
                 {"name": p["param_name"], "type": p.get("param_type"), "value": p.get("param_value")}
                 for p in valid_params
@@ -316,7 +318,7 @@ def _task_block(job, project, pipeline, branch_reachable=False):
                 f'    proc={proc!r},',
                 f'    mssql_conn_id={conn_val},',
                 f'    database={mssql_db!r},',
-                f'    params={params_payload!r},',
+                f'    proc_params={params_payload!r},',
                 f')',
             ])
     elif jtype == "http":

@@ -13,7 +13,12 @@ from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 from airflow.providers.ssh.operators.ssh import SSHOperator
 
 _INT_TYPES   = {"INT", "BIGINT", "SMALLINT", "TINYINT"}
-_FLOAT_TYPES = {"DECIMAL", "NUMERIC", "FLOAT", "MONEY", "REAL"}
+# DECIMAL/NUMERIC/MONEY são exatos: coagir via float() perdia precisão em
+# SILÊNCIO acima de ~15 dígitos (task verde, valor errado na proc — achado da
+# revisão adversarial). decimal.Decimal preserva o literal; o pymssql o binda
+# como decimal nativamente. FLOAT/REAL são aproximados por definição — float().
+_EXACT_TYPES = {"DECIMAL", "NUMERIC", "MONEY"}
+_FLOAT_TYPES = {"FLOAT", "REAL"}
 
 
 def _coerce(value, ptype):
@@ -24,6 +29,12 @@ def _coerce(value, ptype):
     try:
         if ptype in _INT_TYPES:
             return int(value)
+        if ptype in _EXACT_TYPES:
+            import decimal
+            try:
+                return decimal.Decimal(str(value).strip())
+            except decimal.InvalidOperation:
+                return value    # mesmo fallback dos demais: SQL falha ALTO
         if ptype in _FLOAT_TYPES:
             return float(value)
         if ptype == "BIT":
@@ -53,13 +64,23 @@ def _log_resultsets(cur, log):
 
 
 class StoredProcOperator(BaseOperator):
-    """EXEC de stored procedure com bind de parâmetros e log do retorno/erro."""
+    """EXEC de stored procedure com bind de parâmetros e log do retorno/erro.
 
-    def __init__(self, *, proc, mssql_conn_id, params=None, database=None, **kwargs):
+    ⚠️ Os parâmetros da proc chegam em ``proc_params`` — NUNCA ``params``, que é
+    kwarg RESERVADO do BaseOperator do Airflow, com dois modos de quebrar:
+      1. no import: ``params`` exige mapping — a lista de dicts da factory dava
+         ``TypeError: params must be a mapping`` e a DAG nem importava;
+      2. em runtime: em run com ``dag_run.conf`` não-vazia o Airflow SOBRESCREVE
+         ``self.params`` com os params mesclados da conf (dict de strings) —
+         iterar isso dava ``AttributeError: 'str' object has no attribute 'get'``
+         em TODO job storedproc disparado com conf (ex.: dependentes da F3).
+    """
+
+    def __init__(self, *, proc, mssql_conn_id, proc_params=None, database=None, **kwargs):
         super().__init__(**kwargs)
         self.proc = proc
         self.mssql_conn_id = mssql_conn_id
-        self.params = params or []
+        self.proc_params = proc_params or []
         self.database = (database or "").strip() or None
 
     def execute(self, context):
@@ -73,13 +94,15 @@ class StoredProcOperator(BaseOperator):
         conn = abrir_conexao_mssql(self.mssql_conn_id, appname="orquestra-storedproc")
         cur = conn.cursor()
         try:
-            valid = [p for p in self.params if (p.get("name") or "").strip()]
+            valid = [p for p in self.proc_params if (p.get("name") or "").strip()]
             if valid:
+                # Placeholder %s + tupla: a conexão é pymssql (conn_resolver) —
+                # '?' é do pyodbc da api/ e daria "Incorrect syntax near '?'".
                 ph = ", ".join(
-                    (str(p["name"]) if str(p["name"]).startswith("@") else "@" + str(p["name"])) + "=?"
+                    (str(p["name"]) if str(p["name"]).startswith("@") else "@" + str(p["name"])) + "=%s"
                     for p in valid
                 )
-                vals = [_coerce(p.get("value"), p.get("type")) for p in valid]
+                vals = tuple(_coerce(p.get("value"), p.get("type")) for p in valid)
                 sql = f"EXEC {target} {ph}"
                 self.log.info("[SQL] %s", sql)
                 cur.execute(sql, vals)
