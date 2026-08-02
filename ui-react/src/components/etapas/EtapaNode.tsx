@@ -4,7 +4,8 @@
 // Os handles ficam na altura do tile do ícone (topo), não no meio do label.
 import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { TYPE_META, type EtapaType } from './types'
+import { Database } from 'lucide-react'
+import { TYPE_META, type TypeMeta, type EtapaType } from './types'
 import type { JobParam, PythonDraft } from './JobTypeFields'
 
 export interface EtapaNodeData {
@@ -32,16 +33,30 @@ export interface EtapaNodeData {
 }
 
 // Bolinha discreta dos handles — neutra e coerente nos dois temas.
+// 14px de alvo (padrão de precisão que a Decisão já adota).
 const HANDLE_CLS =
-  '!h-2.5 !w-2.5 !rounded-full !border-2 !border-panel !bg-slate-400 dark:!bg-slate-500'
+  '!h-3.5 !w-3.5 !rounded-full !border-2 !border-panel !bg-slate-400 dark:!bg-slate-500'
 
-// Tile do ícone tem ~44px de altura no topo; os handles ficam no seu centro
-// vertical (top: 22) para as arestas conectarem no ícone, não no label.
+// Tile do ícone tem 32px de altura no topo; os handles ficam no seu centro
+// vertical (top: 16) para as arestas conectarem no ícone, não no label.
 const HANDLE_Y = 16
 
+// Fallback p/ tipo fora do TYPE_META (API nova/registro antigo): um tipo
+// desconhecido não pode derrubar o canvas inteiro — degrada p/ chip slate
+// neutro com o próprio nome do tipo como rótulo.
+const META_FALLBACK: TypeMeta = {
+  label: '',
+  icon: Database,
+  chip: 'bg-slate-500 text-white',
+  badge: 'bg-slate-50 text-slate-700 border border-slate-200 dark:bg-slate-900/30 dark:text-slate-300 dark:border-slate-800',
+  dot: 'bg-slate-500',
+  hex: '#64748b',
+}
+
 function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) {
-  const meta = TYPE_META[data.type]
+  const meta = TYPE_META[data.type] ?? { ...META_FALLBACK, label: data.type }
   const Icon = meta.icon
+  const pendente = !!(data as { pendente?: boolean }).pendente
 
   return (
     <div className="group flex w-[128px] flex-col items-center">
@@ -59,12 +74,18 @@ function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) 
           'relative flex h-8 w-8 items-center justify-center rounded-xl shadow-sm transition-shadow',
           meta.chip,
           'group-hover:shadow-md',
+          // Anel sutil no hover do tema escuro — sombra não lê sobre canvas
+          // escuro; condicionado p/ não competir com os anéis de seleção/pendência.
+          !selected && !pendente ? 'dark:group-hover:ring-1 dark:group-hover:ring-slate-500/60' : '',
+          // Tracejado = nó recém-arrastado, ainda não salvo (sem sinal, não dava
+          // pra distinguir o que já existe do que ainda é rascunho).
+          data.isNew && !selected ? 'outline-dashed outline-1 outline-offset-2 outline-blue-400/70' : '',
           selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas'
-            : (data as { pendente?: boolean }).pendente ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-canvas' : '',
+            : pendente ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-canvas' : '',
         ].join(' ')}
       >
         {/* Ponto âmbar = validação com pendência (derivado no editor) */}
-        {!!(data as { pendente?: boolean }).pendente && (
+        {pendente && (
           <span
             className="absolute -right-1.5 -top-1.5 z-10 h-2.5 w-2.5 rounded-full border-2 border-panel bg-amber-400"
             title="Campos pendentes — selecione o nó para ver"

@@ -3,7 +3,7 @@
 // pela POLÍTICA. Por isso o painel é essencialmente uma escolha entre duas
 // opções, escritas em linguagem de operador e com a consequência explícita.
 import type { Node } from '@xyflow/react'
-import { GitMerge, Trash2, Link2 } from 'lucide-react'
+import { Hourglass, Trash2, Link2 } from 'lucide-react'
 import { Button } from '../../ui/Button'
 import type { AguardeNodeData } from '../AguardeNode'
 import { defaultAguarde, type AguardeConfig } from '../fluxoTypes'
@@ -48,8 +48,9 @@ export function PainelAguarde({
       {/* Cabeçalho do painel — o Excluir mora no topo direito (mesmo padrão
           nos painéis irmãos). */}
       <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-amber-500 text-white">
-          <GitMerge size={15} strokeWidth={2.2} />
+        {/* amber-600: o glifo branco precisa de 3:1 (WCAG 1.4.11) — como no nó. */}
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-amber-600 text-white">
+          <Hourglass size={15} strokeWidth={2.2} />
         </span>
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-ink">{d.name}</p>

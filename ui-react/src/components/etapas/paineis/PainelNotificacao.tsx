@@ -49,7 +49,8 @@ export function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDel
       {/* Cabeçalho do painel — o Excluir mora no topo direito (mesmo padrão
           nos 4 painéis). */}
       <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-teal-500 text-white">
+        {/* teal-600: o glifo branco precisa de 3:1 (WCAG 1.4.11) — como no nó. */}
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-teal-600 text-white">
           <BellRing size={15} strokeWidth={2.2} />
         </span>
         <div className="min-w-0">
