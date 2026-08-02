@@ -1,11 +1,13 @@
 // Nó de decisão (roteador). Mesmo visual dos demais nós (tile de ícone + nome
-// embaixo), com acento índigo e ícone de bifurcação. BINÁRIA: entrada à
+// embaixo), com acento índigo e ícone de bifurcação (Split, não GitBranch:
+// GitBranch é dev-cêntrico — remete a branch de git — e colidia com o chip do
+// Pipeline no dock, que segue com GitBranch). BINÁRIA: entrada à
 // esquerda (target) e duas saídas rotuladas — direita = "sim", baixo = "não".
 // SWITCH (N-way, condition.casos): uma saída à direita POR CASO (cor da paleta,
 // tooltip = nome do caso) + saída "senão" na base.
 import { memo, useEffect } from 'react'
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
-import { GitBranch } from 'lucide-react'
+import { Split } from 'lucide-react'
 
 // Um caso do SWITCH: primeiro (na ordem da lista) cujo valor_obtido <operador>
 // valor casar vence; `ramo` são os jobs de destino (derivado das arestas no save).
@@ -82,6 +84,7 @@ const SAIDA_LABEL =
 function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNodeData }) {
   const casos = data.condition?.casos
   const isSwitch = Array.isArray(casos)
+  const pendente = !!(data as { pendente?: boolean }).pendente
   // Handles mudam com os casos (quantidade/nome) — o React Flow precisa
   // remedir o nó para reancorar as arestas.
   const updateNodeInternals = useUpdateNodeInternals()
@@ -108,18 +111,26 @@ function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNode
         className={[
           'relative flex w-8 items-center justify-center rounded-xl bg-indigo-500 text-white shadow-sm transition-shadow',
           'group-hover:shadow-md',
+          // Anel sutil no hover do tema escuro — sombra não lê sobre canvas
+          // escuro; condicionado p/ não competir com os anéis de seleção/pendência.
+          !selected && !pendente ? 'dark:group-hover:ring-1 dark:group-hover:ring-slate-500/60' : '',
+          // Tracejado = nó recém-arrastado, ainda não salvo (sem sinal, não dava
+          // pra distinguir o que já existe do que ainda é rascunho).
+          data.isNew && !selected ? 'outline-dashed outline-1 outline-offset-2 outline-blue-400/70' : '',
           selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas'
-            : (data as { pendente?: boolean }).pendente ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-canvas' : '',
+            : pendente ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-canvas' : '',
         ].join(' ')}
         style={{ height: tileH }}
       >
-        {!!(data as { pendente?: boolean }).pendente && (
+        {/* Ponto à ESQUERDA (não à direita como nos irmãos): a borda direita é
+            dos handles de caso do switch — o ponto colidiria com eles. */}
+        {pendente && (
           <span
             className="absolute -left-1.5 -top-1.5 z-10 h-2.5 w-2.5 rounded-full border-2 border-panel bg-amber-400"
             title="Campos pendentes — selecione o nó para ver"
           />
         )}
-        <GitBranch size={16} strokeWidth={2} />
+        <Split size={16} strokeWidth={2} />
 
         {isSwitch ? (
           <>
@@ -213,9 +224,10 @@ function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNode
       </div>
 
       {/* Nome embaixo — sem rótulos sim/não sobre o nó (a aresta já mostra a
-          pílula sim/não; os handles coloridos indicam a direção). */}
+          pílula sim/não; os handles coloridos indicam a direção). mt-1.5 como
+          nos irmãos, para a linha de base do nome alinhar entre nós vizinhos. */}
       <p
-        className="mt-2 line-clamp-2 break-words text-center text-[11px] font-semibold leading-tight text-ink"
+        className="mt-1.5 line-clamp-2 break-words text-center text-[11px] font-semibold leading-tight text-ink"
         title={data.name}
       >
         {data.name}

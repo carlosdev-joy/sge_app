@@ -6,7 +6,8 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Node } from '@xyflow/react'
-import { Database, Maximize2, Play, Trash2 } from 'lucide-react'
+// Table2, não Database: mesmo glifo do nó/paleta (Database ficou p/ o DataStage).
+import { Table2, Maximize2, Play, Trash2 } from 'lucide-react'
 import { apiFetch } from '../../../lib/api'
 import { Button } from '../../ui/Button'
 import { Select, Textarea } from '../../ui/Input'
@@ -90,7 +91,7 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
           nos 4 painéis). */}
       <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-violet-500 text-white">
-          <Database size={15} strokeWidth={2.2} />
+          <Table2 size={15} strokeWidth={2.2} />
         </span>
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
@@ -108,7 +109,7 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
           <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: LE_CONTROLE" onRename={onRename} />
 
           <div className="mt-1 flex items-center gap-1.5">
-            <Database size={12} className="text-violet-600 dark:text-violet-300" />
+            <Table2 size={12} className="text-violet-600 dark:text-violet-300" />
             <span className="text-xs font-semibold text-ink">Consulta</span>
             {onMaximizar && (
               <button

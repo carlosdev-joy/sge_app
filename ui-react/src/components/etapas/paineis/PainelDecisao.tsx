@@ -6,7 +6,8 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Node } from '@xyflow/react'
-import { GitBranch, Maximize2, Play, Trash2, Plus, ChevronUp, ChevronDown, X } from 'lucide-react'
+// Split, não GitBranch: mesmo glifo do nó/paleta (GitBranch ficou p/ o pipeline).
+import { Split, Maximize2, Play, Trash2, Plus, ChevronUp, ChevronDown, X } from 'lucide-react'
 import { apiFetch } from '../../../lib/api'
 import { Button } from '../../ui/Button'
 import { Hint } from '../../ui/Hint'
@@ -163,7 +164,7 @@ export function PainelDecisao({
           nos 4 painéis; o mt-auto da era do aside não funciona no dock largo). */}
       <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-indigo-500 text-white">
-          <GitBranch size={15} strokeWidth={2.2} />
+          <Split size={15} strokeWidth={2.2} />
         </span>
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
@@ -181,7 +182,7 @@ export function PainelDecisao({
           <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: DECISAO_VOLUME" onRename={onRename} />
 
           <div className="mt-1 flex items-center gap-1.5">
-            <GitBranch size={12} className="text-indigo-600 dark:text-indigo-300" />
+            <Split size={12} className="text-indigo-600 dark:text-indigo-300" />
             <span className="text-xs font-semibold text-ink">Expressão da condição</span>
           </div>
 

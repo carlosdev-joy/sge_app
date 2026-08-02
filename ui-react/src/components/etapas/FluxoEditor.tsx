@@ -30,7 +30,7 @@ import { Button } from '../ui/Button'
 import { Modal } from '../ui/Modal'
 import { toast } from '../ui/Toast'
 import {
-  Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing, Database, GitMerge,
+  Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing, Table2, Split, Hourglass,
   ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Maximize2, Minimize2,
   MousePointerClick, Pencil, Search, X,
 } from 'lucide-react'
@@ -411,10 +411,17 @@ const PALETA_CATEGORIAS: PaletaCategoria[] = [
   {
     titulo: 'Fluxo',
     nodes: [
-      { tipo: 'sql', label: 'SQL', chip: 'bg-violet-500 text-white', Icon: Database },
-      { tipo: 'decisao', label: 'Decisão', chip: 'bg-indigo-500 text-white', Icon: GitBranch },
-      { tipo: 'notificacao', label: 'Notificação', chip: 'bg-teal-500 text-white', Icon: BellRing },
-      { tipo: 'aguarde', label: 'Aguarde', chip: 'bg-amber-500 text-white', Icon: GitMerge },
+      // Table2, não Database: Database já serve o DataStage — cada "banco" com
+      // seu glifo, o operador não depende só da cor pra distinguir.
+      { tipo: 'sql', label: 'SQL', chip: 'bg-violet-500 text-white', Icon: Table2 },
+      // Split, não GitBranch: GitBranch é dev-cêntrico e colidia com o chip do
+      // PIPELINE no dock (que segue com GitBranch, desfazendo o papel duplo).
+      { tipo: 'decisao', label: 'Decisão', chip: 'bg-indigo-500 text-white', Icon: Split },
+      // Chips em -600: o glifo branco precisa de 3:1 sobre o fundo (WCAG 1.4.11).
+      { tipo: 'notificacao', label: 'Notificação', chip: 'bg-teal-600 text-white', Icon: BellRing },
+      // Hourglass, não GitMerge: o ícone precisa aderir ao NOME "Aguarde" e ser
+      // o mesmo que o operador reencontra no medalhão do nó dentro do canvas.
+      { tipo: 'aguarde', label: 'Aguarde', chip: 'bg-amber-600 text-white', Icon: Hourglass },
     ],
   },
 ]
@@ -1691,9 +1698,10 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   const miniMapColor = useMemo(
     () => (node: Node) => {
       if (node.type === 'decisao') return '#6366f1'
-      if (node.type === 'notificacao') return '#14b8a6'
+      // teal/amber-600 — acompanham os chips (contraste 3:1, WCAG 1.4.11).
+      if (node.type === 'notificacao') return '#0d9488'
       if (node.type === 'sql') return '#8b5cf6'
-      if (node.type === 'aguarde') return '#f59e0b'
+      if (node.type === 'aguarde') return '#d97706'
       const t = (node.data as { type?: EtapaType }).type
       return (t && TYPE_META[t]?.hex) || '#94a3b8'
     },
@@ -1954,7 +1962,6 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
             pannable
             zoomable
             nodeColor={miniMapColor}
-            nodeStrokeWidth={2}
             className="!bg-panel"
           />
 

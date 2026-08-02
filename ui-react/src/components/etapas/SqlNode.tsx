@@ -1,11 +1,13 @@
 // Nó SQL do React Flow. Mesmo visual do EtapaNode/NotificacaoNode (tile de ícone
-// + nome embaixo), com identidade própria (acento violet + ícone de banco). Roda
+// + nome embaixo), com identidade própria (acento violet + ícone de tabela —
+// Table2, não Database: Database já serve o DataStage e desambiguar os "bancos"
+// pelo glifo poupa o operador de depender só da cor). Roda
 // uma query que retorna 1 valor; tipicamente liga numa Decisão a jusante, que lê
 // esse valor (condição `valor_sql`). Um target handle (entrada, à esquerda) e um
 // source handle (saída, à direita) — na altura do tile do ícone.
 import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { Database } from 'lucide-react'
+import { Table2 } from 'lucide-react'
 
 // Config do nó (round-trip com /fluxo no campo `sql`). Guardamos o objeto inteiro
 // no `data` para ecoar no save; `label` é um resumo curto p/ o card.
@@ -27,13 +29,15 @@ export interface SqlNodeData {
 }
 
 // Bolinha discreta dos handles — mesma do EtapaNode, neutra nos dois temas.
+// 14px de alvo (padrão de precisão que a Decisão já adota).
 const HANDLE_CLS =
-  '!h-2.5 !w-2.5 !rounded-full !border-2 !border-panel !bg-slate-400 dark:!bg-slate-500'
+  '!h-3.5 !w-3.5 !rounded-full !border-2 !border-panel !bg-slate-400 dark:!bg-slate-500'
 
 // Tile do ícone tem ~32px de altura no topo; handles no seu centro vertical.
 const HANDLE_Y = 16
 
 function SqlNodeImpl({ data, selected }: NodeProps & { data: SqlNodeData }) {
+  const pendente = !!(data as { pendente?: boolean }).pendente
   return (
     <div className="group flex w-[128px] flex-col items-center">
       <Handle
@@ -43,22 +47,28 @@ function SqlNodeImpl({ data, selected }: NodeProps & { data: SqlNodeData }) {
         style={{ top: HANDLE_Y }}
       />
 
-      {/* Tile do ícone (violet) — ícone de banco branco; anel de seleção no tile. */}
+      {/* Tile do ícone (violet) — ícone de tabela branco; anel de seleção no tile. */}
       <div
         className={[
           'relative flex h-8 w-8 items-center justify-center rounded-xl bg-violet-500 text-white shadow-sm transition-shadow',
           'group-hover:shadow-md',
+          // Anel sutil no hover do tema escuro — sombra não lê sobre canvas
+          // escuro; condicionado p/ não competir com os anéis de seleção/pendência.
+          !selected && !pendente ? 'dark:group-hover:ring-1 dark:group-hover:ring-slate-500/60' : '',
+          // Tracejado = nó recém-arrastado, ainda não salvo (sem sinal, não dava
+          // pra distinguir o que já existe do que ainda é rascunho).
+          data.isNew && !selected ? 'outline-dashed outline-1 outline-offset-2 outline-blue-400/70' : '',
           selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas'
-            : (data as { pendente?: boolean }).pendente ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-canvas' : '',
+            : pendente ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-canvas' : '',
         ].join(' ')}
       >
-        {!!(data as { pendente?: boolean }).pendente && (
+        {pendente && (
           <span
             className="absolute -right-1.5 -top-1.5 z-10 h-2.5 w-2.5 rounded-full border-2 border-panel bg-amber-400"
             title="Campos pendentes — selecione o nó para ver"
           />
         )}
-        <Database size={16} strokeWidth={2} />
+        <Table2 size={16} strokeWidth={2} />
       </div>
 
       {/* Nome embaixo — até 2 linhas, sem truncar. */}
