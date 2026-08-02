@@ -34,7 +34,7 @@ def _fmt_dt(v):
     return str(v)
 
 
-VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc", "http", "decisao", "notificacao", "sql"}
+VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc", "http", "decisao", "notificacao", "sql", "aguarde"}
 VALID_PARAM_TYPES = {"INT", "VARCHAR", "DATE", "BIT", "DECIMAL", "DATETIME"}
 _PARAM_NAME_RE = re.compile(r"^@?[A-Za-z_][A-Za-z0-9_]*$")
 # job_name vira literal de string no código da DAG gerada e argumento de shell no
@@ -549,6 +549,48 @@ def _normalize_notify(cfg: dict) -> dict:
                         else int(tid)),
         "mensagem": (msg if isinstance(msg, str) else ""),
     }
+
+
+# ── Nó Aguarde (migration 068) ──────────────────────────────────────────────
+# Ponto de encontro entre pernas paralelas: segura o fluxo até que todas as
+# etapas ligadas a ele terminem. aguarde_json: {"politica": ...}.
+#   todas_sucesso    (default) — só libera se todas as pernas derem certo
+#   todas_terminarem           — libera quando todas terminarem, mesmo com falha
+# A segunda existe para o caso da limpeza de arquivos compartilhados pelas
+# pernas. Ela NÃO esconde a falha: o t_end de cada perna continua ligado ao
+# fechamento do pipeline, então o DagRun segue vermelho.
+_AGUARDE_POLITICAS = ("todas_sucesso", "todas_terminarem")
+
+
+def _validate_aguarde(cfg) -> list[str]:
+    """Valida a config (aguarde_json) de um nó Aguarde. Lista de erros (vazia = ok).
+
+    Contrato: {politica: str}. Config ausente é ACEITA (degrada para o default
+    conservador em _normalize_aguarde) — só uma política fora do domínio é erro,
+    para não aceitar em silêncio um valor que o motor não sabe traduzir em
+    trigger rule."""
+    if cfg is None:
+        return []
+    if not isinstance(cfg, dict):
+        return ["configuração do nó Aguarde (aguarde_json) inválida"]
+    pol = cfg.get("politica")
+    if pol is not None and str(pol).strip():
+        if str(pol).strip().lower() not in _AGUARDE_POLITICAS:
+            return ["política do nó Aguarde inválida "
+                    "(use 'todas_sucesso' ou 'todas_terminarem')"]
+    return []
+
+
+def _normalize_aguarde(cfg) -> dict:
+    """Normaliza aguarde_json para persistência. Ausente/inválido → 'todas_sucesso'.
+
+    Mantém a CHAVE 'politica' sempre presente: é ela que o round-trip do
+    GET /fluxo devolve ao painel, e é dela que o dag_factory deriva a trigger
+    rule do nó."""
+    pol = ""
+    if isinstance(cfg, dict):
+        pol = str(cfg.get("politica") or "").strip().lower()
+    return {"politica": pol if pol in _AGUARDE_POLITICAS else "todas_sucesso"}
 
 
 def _graph_has_cycle(adj: dict[str, set[str]]) -> bool:
@@ -1571,6 +1613,11 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
             "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
             "AND COLUMN_NAME='python_json'")
         _has_python_col = bool(cur.fetchone()[0])
+        cur.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
+            "AND COLUMN_NAME='aguarde_json'")
+        _has_aguarde_col = bool(cur.fetchone()[0])
 
         # Jobs conhecidos do pipeline (request + já existentes) — usado para
         # validar os ramos da decisão e detectar ciclos incluindo as arestas
@@ -1594,6 +1641,7 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
             notify_json_str = None   # preenchido só p/ jobs de notificação (persiste depois)
             sql_json_str = None      # preenchido só p/ nós SQL (persiste depois)
             python_json_str = None   # preenchido só p/ python v2 (persiste depois)
+            aguarde_json_str = None  # preenchido só p/ nós Aguarde (persiste depois)
             j_name      = (job.get("job_name") or "").strip()
             j_order     = job.get("execution_order")
             j_type      = (job.get("job_type") or "datastage").lower().strip()
@@ -1620,7 +1668,10 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
             is_decisao = (j_type == "decisao")
             is_notificacao = (j_type == "notificacao")
             is_sql = (j_type == "sql")
-            sem_lineage = is_decisao or is_notificacao or is_sql
+            # O Aguarde é um ponto de encontro: não roda nada, logo não tem
+            # lineage nem comando (a política vive em aguarde_json).
+            is_aguarde = (j_type == "aguarde")
+            sem_lineage = is_decisao or is_notificacao or is_sql or is_aguarde
             if not origens and not transfs and require_lineage and not sem_lineage:
                 erros.append(f"Item {idx} ({j_name}): ao menos 1 origem é obrigatória"); continue
             if not destinos and not transfs and require_lineage and not sem_lineage:
@@ -1679,6 +1730,30 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                 if sql_errs:
                     erros.extend(f"Item {idx} ({j_name}): {e}" for e in sql_errs); continue
                 sql_json_str = json.dumps(_normalize_sql_node(raw_sql), ensure_ascii=False)
+
+            # Nó Aguarde: valida a política e exige ao menos um predecessor — um
+            # Aguarde sem entrada nunca teria o que esperar e ficaria órfão no
+            # grafo, segurando o que vem depois dele sem critério.
+            if is_aguarde:
+                raw_aguarde = job.get("aguarde")
+                if not isinstance(raw_aguarde, dict):
+                    ra = job.get("aguarde_json")
+                    try:
+                        raw_aguarde = json.loads(ra) if ra else None
+                    except (ValueError, TypeError):
+                        raw_aguarde = None
+                aguarde_errs = _validate_aguarde(raw_aguarde)
+                _dep_ag = job.get("depends_on_jobs")
+                _dep_ag_list = ([str(d).strip() for d in _dep_ag if str(d).strip()]
+                                if isinstance(_dep_ag, list)
+                                else [d.strip() for d in str(_dep_ag or "").split(",") if d.strip()])
+                if not _dep_ag_list:
+                    aguarde_errs.append(
+                        "o Aguarde precisa de ao menos uma etapa ligada a ele "
+                        "(sem entrada, ele não tem o que esperar)")
+                if aguarde_errs:
+                    erros.extend(f"Item {idx} ({j_name}): {e}" for e in aguarde_errs); continue
+                aguarde_json_str = json.dumps(_normalize_aguarde(raw_aguarde), ensure_ascii=False)
 
             # Nó Python v2 — valida a config (python_json); None = legado 'modulo'.
             if j_type == "python":
@@ -1779,6 +1854,12 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                         "UPDATE dbo.etl_pipeline_job SET python_json=? "
                         "WHERE pipeline_name=? AND job_name=?",
                         (python_json_str, pipeline_name, j_name))
+                # Política do nó Aguarde (opt-in) — NULL para os demais tipos.
+                if _has_aguarde_col:
+                    cur.execute(
+                        "UPDATE dbo.etl_pipeline_job SET aguarde_json=? "
+                        "WHERE pipeline_name=? AND job_name=?",
+                        (aguarde_json_str, pipeline_name, j_name))
             except Exception as e:
                 erros.append(f"Item {idx} ({j_name}): erro ao gravar job — {e}"); continue
 
@@ -1965,6 +2046,24 @@ def get_pipeline_job(
                     python_node = None
         except Exception:
             python_node = None  # coluna pode não existir (migration 059)
+        aguarde_node = None
+        if (row[3] or "").lower().strip() == "aguarde":
+            _raw_ag = None
+            try:
+                cur.execute(
+                    "SELECT aguarde_json FROM dbo.etl_pipeline_job "
+                    "WHERE pipeline_name=? AND job_name=?", (pipeline_name, job_name))
+                ar = cur.fetchone()
+                if ar and ar[0]:
+                    try:
+                        _raw_ag = json.loads(ar[0])
+                    except (ValueError, TypeError):
+                        _raw_ag = None
+            except Exception:
+                _raw_ag = None  # coluna pode não existir (migration 068)
+            # Mesma normalização do GET /fluxo: sem a 068 (ou com JSON inválido)
+            # o painel recebe a política default em vez de vazio.
+            aguarde_node = _normalize_aguarde(_raw_ag)
         cur.close(); conn.close()
         return {
             "pipeline_name": row[0], "job_name": row[1], "execution_order": row[2],
@@ -1977,6 +2076,7 @@ def get_pipeline_job(
             "notify": notify,
             "sql_node": sql_node,
             "python": python_node,
+            "aguarde": aguarde_node,
         }
     except HTTPException:
         raise
@@ -2059,6 +2159,7 @@ def get_pipeline_fluxo(
         sel_notify = "j.notify_json" if "notify_json" in cols else "NULL"
         sel_sql = "j.sql_json" if "sql_json" in cols else "NULL"
         sel_python = "j.python_json" if "python_json" in cols else "NULL"
+        sel_aguarde = "j.aguarde_json" if "aguarde_json" in cols else "NULL"
         sel_lx = "j.layout_x" if "layout_x" in cols else "NULL"
         sel_ly = "j.layout_y" if "layout_y" in cols else "NULL"
         # Campos por tipo (round-trip do painel inline): ssh / verbose / mssql_*.
@@ -2071,7 +2172,7 @@ def get_pipeline_fluxo(
                 "SELECT j.job_name, ISNULL(j.job_type,'datastage'), j.job_command, "
                 f"CAST(j.execution_order AS INT), {sel_deps}, {sel_cond}, {sel_lx}, {sel_ly}, "
                 f"{sel_ssh}, {sel_verb}, {sel_mconn}, {sel_mdb}, {sel_notify}, {sel_sql}, "
-                f"{sel_python} "
+                f"{sel_python}, {sel_aguarde} "
                 "FROM dbo.etl_pipeline_job j WHERE j.pipeline_name=? "
                 "ORDER BY j.execution_order, j.job_name",
                 (pipeline_name,))
@@ -2124,6 +2225,18 @@ def get_pipeline_fluxo(
                     python_node = json.loads(r[14])
                 except (ValueError, TypeError):
                     python_node = None
+            # Aguarde: normaliza na LEITURA também. Linha gravada antes da 068,
+            # ou com JSON corrompido, volta ao painel como a política default em
+            # vez de vir vazia — assim o que a tela mostra é o que o motor faz.
+            aguarde_node = None
+            if r[1] == "aguarde":
+                _raw_ag = None
+                if r[15]:
+                    try:
+                        _raw_ag = json.loads(r[15])
+                    except (ValueError, TypeError):
+                        _raw_ag = None
+                aguarde_node = _normalize_aguarde(_raw_ag)
             lx = float(r[6]) if r[6] is not None else None
             ly = float(r[7]) if r[7] is not None else None
             nodes.append({
@@ -2136,6 +2249,7 @@ def get_pipeline_fluxo(
                 "notify": notify,
                 "sql_node": sql_node,
                 "python": python_node,
+                "aguarde": aguarde_node,
                 "layout_x": lx,
                 "layout_y": ly,
                 "ssh_conn_id": r[8] or None,
@@ -2222,6 +2336,7 @@ async def save_pipeline_fluxo(
         has_notify = "notify_json" in _cols
         has_sql = "sql_json" in _cols
         has_python = "python_json" in _cols
+        has_aguarde = "aguarde_json" in _cols
         has_layout = "layout_x" in _cols and "layout_y" in _cols
         has_db = "mssql_database" in _cols
         has_ssh = "ssh_conn_id" in _cols
@@ -2236,7 +2351,7 @@ async def save_pipeline_fluxo(
         # Valida e prepara cada nó; monta o grafo (deps + ramos) para o ciclo.
         errors: list[str] = []
         cycle_adj: dict[str, set[str]] = {n: set() for n in known_jobs}
-        prepared = []  # (j_name, is_new, order, type, cmd, ssh, verbose, mssql, mdb, params_present, params, dep_csv, cond_json|None, notify_json|None, sql_json|None, lx, ly)
+        prepared = []  # (j_name, is_new, order, type, cmd, ssh, verbose, mssql, mdb, params_present, params, dep_csv, cond_json|None, notify_json|None, sql_json|None, python_json|None, aguarde_json|None, lx, ly)
         raw_by_name: dict[str, dict] = {}  # nó cru por nome (checa presença de chave no UPDATE)
         seen: set[str] = set()
         for idx, node in enumerate(nodes):
@@ -2352,6 +2467,22 @@ async def save_pipeline_fluxo(
                 if raw_py is not None:
                     python_json_str = json.dumps(_normalize_python_node(raw_py), ensure_ascii=False)
 
+            # Nó Aguarde — valida a política e exige ao menos uma etapa ligada a
+            # ele. dep_list já está filtrado pelos jobs do fluxo, então esta
+            # checagem rejeita também o Aguarde cujas entradas apontam só para
+            # nós que não existem mais.
+            aguarde_json_str = None
+            if j_type == "aguarde":
+                raw_aguarde = node.get("aguarde")
+                aguarde_errs = _validate_aguarde(raw_aguarde)
+                if not dep_list:
+                    aguarde_errs.append(
+                        "o Aguarde precisa de ao menos uma etapa ligada a ele "
+                        "(sem entrada, ele não tem o que esperar)")
+                if aguarde_errs:
+                    errors.extend(f"{j_name}: {e}" for e in aguarde_errs); continue
+                aguarde_json_str = json.dumps(_normalize_aguarde(raw_aguarde), ensure_ascii=False)
+
             lx, ly = node.get("layout_x"), node.get("layout_y")
             try:
                 lx = float(lx) if lx is not None else None
@@ -2365,7 +2496,7 @@ async def save_pipeline_fluxo(
             prepared.append((j_name, is_new, j_order, j_type, j_cmd, j_ssh,
                              j_verbose, j_mssql, j_mdb, params_present, j_params,
                              dep_csv, cond_json_str, notify_json_str, sql_json_str,
-                             python_json_str, lx, ly))
+                             python_json_str, aguarde_json_str, lx, ly))
 
         if errors:
             cur.close(); conn.close()
@@ -2397,7 +2528,8 @@ async def save_pipeline_fluxo(
         #    condição (só decisão)/posição em TODOS (por-coluna).
         for (j_name, is_new, j_order, j_type, j_cmd, j_ssh, j_verbose,
              j_mssql, j_mdb, params_present, j_params, dep_csv, cond_json_str,
-             notify_json_str, sql_json_str, python_json_str, lx, ly) in prepared:
+             notify_json_str, sql_json_str, python_json_str, aguarde_json_str,
+             lx, ly) in prepared:
             if is_new:
                 cur.execute(
                     "EXEC dbo.sp_etl_pipeline_job_upsert "
@@ -2470,6 +2602,15 @@ async def save_pipeline_fluxo(
                 cur.execute("UPDATE dbo.etl_pipeline_job SET python_json=? "
                             "WHERE pipeline_name=? AND job_name=?",
                             (python_json_str, pipeline_name, j_name))
+            # Grava aguarde_json SÓ em nó Aguarde — análogo aos demais JSON
+            # por-tipo: nunca zera a config de uma etapa de outro tipo. Grava
+            # incondicionalmente no Aguarde (não só quando a chave veio): a
+            # normalização já garante uma política válida, então um frontend
+            # antigo salva o default em vez de deixar a coluna nula.
+            if has_aguarde and j_type == "aguarde":
+                cur.execute("UPDATE dbo.etl_pipeline_job SET aguarde_json=? "
+                            "WHERE pipeline_name=? AND job_name=?",
+                            (aguarde_json_str, pipeline_name, j_name))
             if has_layout:
                 cur.execute("UPDATE dbo.etl_pipeline_job SET layout_x=?, layout_y=? "
                             "WHERE pipeline_name=? AND job_name=?",
