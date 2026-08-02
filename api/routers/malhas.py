@@ -10,6 +10,7 @@ Endpoints:
   GET    /malhas                                   — lista com agregados por malha
   POST   /malhas                                   — cria malha
   GET    /malhas/{malha_name}                      — detalhe + membros + arestas (F8)
+  GET    /malhas/{malha_name}/execucao             — status + eventos por data (F9)
   PATCH  /malhas/{malha_name}                      — descricao / ativo / renomear
   POST   /malhas/{malha_name}/pipelines            — adiciona membro (idempotente)
   DELETE /malhas/{malha_name}/pipelines/{pipeline_name} — remove membro
@@ -32,11 +33,15 @@ nos endpoints de dependência: leitura degrada ("arestas": []), escrita dá 503.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import get_db_conn
 from deps import PERM_EDITAR, get_current_user, require_perm
+# Port do ODATE para a árvore da API (o canônico é dags/utils/data_referencia.py;
+# paridade garantida por teste — ver o docstring do módulo).
+from services import data_referencia as dref
 # Helpers da F1 — fonte ÚNICA das validações de dependência (não reimplementar:
 # a mensagem de ciclo do servidor é ESPELHADA no cliente pelo MalhaEditor, e
 # duas implementações divergiriam). Sem ciclo de import: pipelines.py não
@@ -124,6 +129,44 @@ def _exigir_tabela_067(cur, conn):
     if not _tabela_067(cur):
         _fechar_silencioso(conn)
         raise HTTPException(status_code=503, detail=_MSG_SEM_067)
+
+
+def _tabelas_067_execucao(cur) -> bool:
+    """True se etl_pipeline_execucao E etl_dependencia_evento (migration 067)
+    existem. Mesma regra das outras checagens: uma consulta por request, para a
+    visão de execução (F9) degradar num deploy parcial em vez de estourar
+    'Invalid object name' — a malha continua abrindo, sem status."""
+    try:
+        cur.execute(
+            "SELECT OBJECT_ID('dbo.etl_pipeline_execucao', 'U'), "
+            "OBJECT_ID('dbo.etl_dependencia_evento', 'U')"
+        )
+        row = cur.fetchone()
+        return bool(row and row[0] is not None and row[1] is not None)
+    except Exception as e:
+        log.warning("[MALHA] checagem das tabelas de execução da migration 067 falhou: %s", e)
+        return False
+
+
+def _virada_global(cur):
+    """Valor CRU de etl_app_config['dependencia_hora_virada'] (a hora de virada
+    GLOBAL do ODATE — mesma chave que dags/ lê), ou None se ausente/ilegível.
+    O parse tolerante fica em services.data_referencia: config quebrado degrada
+    para a virada padrão 00:00, nunca impede a malha de abrir."""
+    try:
+        cur.execute(
+            "SELECT config_value FROM dbo.etl_app_config WHERE config_key = ?",
+            ("dependencia_hora_virada",))
+        row = cur.fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        log.warning("[MALHA] leitura de dependencia_hora_virada falhou: %s", e)
+        return None
+
+
+def _agora() -> datetime:
+    """Relógio do servidor, isolado para os testes congelarem o tempo."""
+    return datetime.now()
 
 
 def _malha_oficial(cur, malha_name):
@@ -372,6 +415,132 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
         malha["qtd_ativos"] = sum(m["active"] for m in membros)
         malha["criticidade"] = criticidade_agregada(m["criticidade"] for m in membros)
         return malha
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+@router.get("/malhas/{malha_name}/execucao", tags=["malhas"])
+def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
+                       _auth: dict = Depends(get_current_user)):
+    """Visão de execução da malha numa data de referência (F9, spec §4b).
+
+    Devolve, APENAS para pipelines MEMBROS da malha, a execução MAIS RECENTE de
+    cada um na data (regra do §6 risco 6: pipeline com horários específicos
+    roda N vezes ao dia — vale a última) e os eventos da guardiã
+    (etl_dependencia_evento) da mesma data, do mais novo para o mais antigo.
+
+    Sem `data_referencia` na query, usa o ODATE corrente calculado com a hora
+    de virada GLOBAL de etl_app_config — mesma semântica de
+    dags/utils/data_referencia.py (port com teste de paridade).
+
+    Produção PRÉ-retomada (F2–F4): as tabelas da 067 existem mas NADA as
+    alimenta — a resposta é o estado vazio HONESTO (arrays vazios), nunca tela
+    quebrada nem promessa falsa. Deploy parcial SEM a 067: arrays vazios +
+    migration_067_pendente, e a malha continua abrindo.
+    """
+    # Valida a data ANTES de abrir conexão: 422 de formato não gasta banco.
+    data_ref = None
+    if data_referencia is not None and str(data_referencia).strip() != "":
+        try:
+            data_ref = datetime.strptime(str(data_referencia).strip(), "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"data_referencia inválida: '{data_referencia}' "
+                       "(use o formato YYYY-MM-DD)")
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabelas(cur, conn)
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        if data_ref is None:
+            # ODATE corrente: virada GLOBAL (a mesma chave que dags/ lê) sobre o
+            # relógio do servidor. Config ausente/ruim degrada para 00:00.
+            data_ref = dref.calcular(_agora(), _virada_global(cur))
+
+        # Membros da malha (JOIN garante que pipeline excluído some, como no
+        # detalhe) — mapa casefold → grafia OFICIAL, a mesma canonização das
+        # arestas da F8: linha de execução legada com caixa divergente não pode
+        # sumir do colorido dos nós por causa de dict case-sensitive.
+        cur.execute(
+            "SELECT p.pipeline_name FROM dbo.etl_malha_pipeline mp "
+            "JOIN dbo.etl_pipeline p ON p.pipeline_name = mp.pipeline_name "
+            "WHERE mp.malha_name = ?",
+            (malha,))
+        membro_oficial = {str(r[0]).strip().casefold(): str(r[0]).strip()
+                          for r in cur.fetchall()}
+
+        resposta = {
+            "data_referencia": data_ref.strftime("%Y-%m-%d"),
+            "execucoes": [],
+            "eventos": [],
+        }
+        if not _tabelas_067_execucao(cur):
+            log.warning("[MALHA] migration 067 ausente — visão de execução da "
+                        "malha '%s' degradada para vazio", malha)
+            resposta["migration_067_pendente"] = True
+            cur.close(); conn.close()
+            return resposta
+
+        # Execuções do dia num SELECT só (filtro de membros em Python, como nos
+        # agregados da listagem); por pipeline vence a MAIS RECENTE: maior
+        # inicio, desempate por execution_id. Status vai CRU — a legenda da
+        # tela fala o mesmo domínio da tabela (AGUARDANDO_DEPENDENCIA |
+        # EXECUTANDO | SUCESSO | FALHA | PULADO | NAO_LIBEROU).
+        cur.execute(
+            "SELECT pipeline_name, status, inicio, fim, disparado_por, motivo, "
+            "execution_id FROM dbo.etl_pipeline_execucao "
+            "WHERE data_referencia = ?",
+            (data_ref,))
+        mais_recente: dict[str, tuple] = {}
+        for r in cur.fetchall():
+            oficial = membro_oficial.get(str(r[0] or "").strip().casefold())
+            if oficial is None:
+                continue        # execução de quem não é membro não aparece
+            # inicio NULL (linha AGUARDANDO_DEPENDENCIA ainda sem start) perde
+            # de qualquer linha com inicio; entre iguais decide o execution_id.
+            chave = (r[2] is not None, r[2], str(r[6] or ""))
+            atual = mais_recente.get(oficial)
+            if atual is None or chave > atual[0]:
+                mais_recente[oficial] = (chave, r)
+        for oficial in sorted(mais_recente):
+            _, r = mais_recente[oficial]
+            resposta["execucoes"].append({
+                "pipeline_name": oficial,
+                "status": r[1],
+                "inicio": _fmt_dt(r[2]),
+                "fim": _fmt_dt(r[3]),
+                "disparado_por": r[4],
+                "motivo": r[5],
+            })
+
+        # Eventos da guardiã da MESMA data, só de membros, mais novo primeiro.
+        cur.execute(
+            "SELECT pipeline_name, tipo, detectado_em, detalhe "
+            "FROM dbo.etl_dependencia_evento WHERE data_referencia = ?",
+            (data_ref,))
+        eventos = []
+        for r in cur.fetchall():
+            oficial = membro_oficial.get(str(r[0] or "").strip().casefold())
+            if oficial is None:
+                continue
+            eventos.append({
+                "pipeline_name": oficial,
+                "tipo": r[1],
+                "criado_em": _fmt_dt(r[2]),
+                "mensagem": r[3],
+            })
+        eventos.sort(key=lambda e: (e["criado_em"] or "", e["pipeline_name"]),
+                     reverse=True)
+        resposta["eventos"] = eventos
+
+        cur.close(); conn.close()
+        return resposta
     except HTTPException:
         raise
     except Exception as e:
