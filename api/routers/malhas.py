@@ -9,15 +9,25 @@ montagem é a F8.
 Endpoints:
   GET    /malhas                                   — lista com agregados por malha
   POST   /malhas                                   — cria malha
-  GET    /malhas/{malha_name}                      — detalhe + membros
+  GET    /malhas/{malha_name}                      — detalhe + membros + arestas (F8)
   PATCH  /malhas/{malha_name}                      — descricao / ativo / renomear
   POST   /malhas/{malha_name}/pipelines            — adiciona membro (idempotente)
   DELETE /malhas/{malha_name}/pipelines/{pipeline_name} — remove membro
+  PUT    /malhas/{malha_name}/layout               — persiste posições dos nós (F8)
+  POST   /dependencias                             — cria dependência REAL (F8)
+  DELETE /dependencias                             — remove dependência REAL (F8)
+
+F8: desenhar uma aresta no MalhaEditor É cadastrar a dependência GLOBAL em
+etl_pipeline_dependencia (migration 067) — a mesma tabela da F1, com as MESMAS
+validações (existência + ciclo BFS, importadas de routers.pipelines, nunca
+reimplementadas). A aresta não tem escopo por malha: se dois pipelines aparecem
+em duas malhas, a dependência aparece nas duas, porque é real nas duas.
 
 Degradação em deploy parcial (API nova + migration 070 ainda não aplicada):
 cada endpoint checa UMA vez se as tabelas existem; leitura da lista degrada
 para vazio com log, e escrita devolve 503 com instrução clara em pt-BR —
-nunca um 500 cru com stack trace na tela.
+nunca um 500 cru com stack trace na tela. Mesma regra para a migration 067
+nos endpoints de dependência: leitura degrada ("arestas": []), escrita dá 503.
 """
 from __future__ import annotations
 
@@ -27,6 +37,11 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import get_db_conn
 from deps import PERM_EDITAR, get_current_user, require_perm
+# Helpers da F1 — fonte ÚNICA das validações de dependência (não reimplementar:
+# a mensagem de ciclo do servidor é ESPELHADA no cliente pelo MalhaEditor, e
+# duas implementações divergiriam). Sem ciclo de import: pipelines.py não
+# importa malhas — mesmo padrão de admin.py/copias.py importando de routers.X.
+from routers.pipelines import _check_circular, _validar_existencia, deduplicar
 
 log = logging.getLogger("orquestra-api")
 
@@ -35,6 +50,11 @@ router = APIRouter()
 _MSG_SEM_MIGRATION = (
     "Recurso de malhas indisponível: a migration 070 (etl_malha/"
     "etl_malha_pipeline) ainda não foi aplicada neste banco."
+)
+
+_MSG_SEM_067 = (
+    "Cadastro de dependências indisponível: a migration 067 "
+    "(etl_pipeline_dependencia) ainda não foi aplicada neste banco."
 )
 
 # Ordem de severidade da criticidade (mesmo domínio do CritBadge da tela Malha;
@@ -87,6 +107,25 @@ def _exigir_tabelas(cur, conn):
         raise HTTPException(status_code=503, detail=_MSG_SEM_MIGRATION)
 
 
+def _tabela_067(cur) -> bool:
+    """True se etl_pipeline_dependencia (migration 067) existe. Mesma regra da
+    checagem da 070: uma consulta por request, para o deploy parcial degradar
+    em vez de estourar 'Invalid object name'."""
+    try:
+        cur.execute("SELECT OBJECT_ID('dbo.etl_pipeline_dependencia', 'U')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None)
+    except Exception as e:
+        log.warning("[MALHA] checagem da tabela da migration 067 falhou: %s", e)
+        return False
+
+
+def _exigir_tabela_067(cur, conn):
+    if not _tabela_067(cur):
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=503, detail=_MSG_SEM_067)
+
+
 def _malha_oficial(cur, malha_name):
     """Grafia registrada da malha (a colação CI casa qualquer caixa; o retorno
     é a oficial) ou None se não existe."""
@@ -106,6 +145,36 @@ def _pipeline_oficial(cur, pipeline_name):
                 (pipeline_name,))
     row = cur.fetchone()
     return (row[0] or "").strip() if row else None
+
+
+def _espelho_csv(cur, pipeline, depende_de, acao):
+    """Sincroniza o CSV etl_pipeline.depends_on do DEPENDENTE com a tabela 067,
+    na MESMA transação da escrita (regra da F6 da spec: o CSV é o fallback do
+    etl_dag_factory e do preview até a retomada — divergir aqui recriaria o
+    defeito que a F1 fechou, a tela contando uma história e a DAG outra).
+
+    acao: 'add' acrescenta se ausente; 'remove' tira se presente — sempre por
+    comparação case-insensitive (a colação do banco é CI) e sem duplicar
+    (deduplicar da F1). Devolve True se o CSV mudou."""
+    cur.execute("SELECT depends_on FROM dbo.etl_pipeline WHERE pipeline_name = ?",
+                (pipeline,))
+    row = cur.fetchone()
+    raw = str(row[0]).strip() if row and row[0] else ""
+    lista = deduplicar(d for d in raw.split(",") if d.strip())
+    chave = (depende_de or "").casefold()
+    if acao == "add":
+        if any(d.casefold() == chave for d in lista):
+            return False
+        lista.append(depende_de)
+    else:
+        nova = [d for d in lista if d.casefold() != chave]
+        if len(nova) == len(lista):
+            return False
+        lista = nova
+    cur.execute(
+        "UPDATE dbo.etl_pipeline SET depends_on = ?, updated_at = GETDATE() "
+        "WHERE pipeline_name = ?", (",".join(lista) or None, pipeline))
+    return True
 
 
 def criticidade_agregada(criticidades):
@@ -268,8 +337,37 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
             }
             for r in cur.fetchall()
         ]
+        # Arestas (F8): dependências GLOBAIS da 067 em que AMBAS as pontas são
+        # membros desta malha — a mesma dependência aparece em toda malha que
+        # contenha os dois pipelines (aceite da F8: a aresta é real nas duas).
+        # Filtro em Python sobre um SELECT só, como nos agregados da listagem.
+        # Deploy parcial (067 pendente): a malha ainda abre, com "arestas": [] —
+        # migration_067_pendente é o sinal para o front avisar e travar a edição.
+        arestas = []
+        if _tabela_067(cur):
+            # Mapa casefold → grafia OFICIAL (a dos nós do diagrama). Linhas
+            # legadas da 067 podem carregar grafia divergente (o register da F1
+            # gravava como digitado e a 069 não normalizou esta tabela — a 071
+            # normaliza); sem canonizar aqui, o React Flow descarta a aresta em
+            # silêncio (id não casa com nó) e ela some do desenho.
+            membro_oficial = {m["pipeline_name"].casefold(): m["pipeline_name"]
+                              for m in membros}
+            cur.execute(
+                "SELECT pipeline_name, depende_de FROM dbo.etl_pipeline_dependencia "
+                "WHERE tipo = 'PIPELINE'")
+            for dep_pipe, dep_de in cur.fetchall():
+                a = membro_oficial.get(str(dep_pipe or "").strip().casefold())
+                b = membro_oficial.get(str(dep_de or "").strip().casefold())
+                if a and b:
+                    arestas.append({"pipeline_name": a, "depende_de": b})
+            arestas.sort(key=lambda x: (x["pipeline_name"], x["depende_de"]))
+        else:
+            log.warning("[MALHA] migration 067 ausente — malha '%s' aberta sem arestas",
+                        malha["malha_name"])
+            malha["migration_067_pendente"] = True
         cur.close(); conn.close()
         malha["membros"] = membros
+        malha["arestas"] = arestas
         malha["qtd_pipelines"] = len(membros)
         malha["qtd_ativos"] = sum(m["active"] for m in membros)
         malha["criticidade"] = criticidade_agregada(m["criticidade"] for m in membros)
@@ -439,6 +537,176 @@ def remove_membro(malha_name: str, pipeline_name: str,
                 detail=f"'{pipeline_name}' não é membro da malha '{malha}'")
         conn.commit(); cur.close(); conn.close()
         return {"ok": True, "malha_name": malha}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+@router.put("/malhas/{malha_name}/layout", tags=["malhas"])
+def salvar_layout(malha_name: str, body: dict = Body(default={}),
+                  _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    """Persiste a posição dos nós do diagrama (F8) em etl_malha_pipeline.
+
+    Só MEMBROS da malha são atualizados: posição de não-membro é ignorada e
+    contada fora de 'atualizados' (o UPDATE não afeta linha) — o front pode
+    ter um nó recém-removido da malha no estado local, e isso não é erro.
+    Tudo na MESMA transação: um salvar não pode deixar metade do layout novo."""
+    posicoes = body.get("posicoes")
+    if not isinstance(posicoes, list):
+        raise HTTPException(status_code=422, detail="posicoes deve ser uma lista")
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabelas(cur, conn)
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        atualizados = 0
+        ignorados = 0
+        for pos in posicoes:
+            nome = (pos.get("pipeline_name") or "").strip() if isinstance(pos, dict) else ""
+            x = pos.get("layout_x") if isinstance(pos, dict) else None
+            y = pos.get("layout_y") if isinstance(pos, dict) else None
+            # bool é subclasse de int em Python: true/false no JSON passaria
+            # como número e viraria 1.0/0.0 no banco em silêncio.
+            if (not nome
+                    or not isinstance(x, (int, float)) or isinstance(x, bool)
+                    or not isinstance(y, (int, float)) or isinstance(y, bool)):
+                _fechar_silencioso(conn)
+                raise HTTPException(
+                    status_code=422,
+                    detail="Cada posição precisa de pipeline_name, layout_x e "
+                           "layout_y numéricos")
+            cur.execute(
+                "UPDATE dbo.etl_malha_pipeline SET layout_x = ?, layout_y = ? "
+                "WHERE malha_name = ? AND pipeline_name = ?",
+                (float(x), float(y), malha, nome))
+            if (cur.rowcount or 0) > 0:
+                atualizados += 1
+            else:
+                ignorados += 1
+        conn.commit(); cur.close(); conn.close()
+        return {"ok": True, "atualizados": atualizados, "ignorados": ignorados}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+# ── Dependências (F8) — a aresta do diagrama é a dependência REAL da F1 ──────
+
+@router.post("/dependencias", tags=["malhas"])
+def add_dependencia(body: dict = Body(default={}),
+                    _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    """Cria UMA dependência em etl_pipeline_dependencia (tipo PIPELINE).
+
+    É a porta de gravação do MalhaEditor: desenhar a aresta chama aqui, com as
+    MESMAS validações do cadastro da F1 (existência e ciclo BFS, importadas de
+    routers.pipelines) e a MESMA mensagem de ciclo — o cliente espelha o texto.
+
+    Idempotente: aresta que já existe devolve ja_existia=True sem revalidar
+    ciclo (ela foi validada quando nasceu; reprovar um re-salvar quebraria o
+    aceite 'salvar sem mudanças é no-op'). Nos dois casos o espelho CSV
+    etl_pipeline.depends_on do dependente é reconciliado na mesma transação."""
+    nome_dep = (body.get("pipeline_name") or "").strip()
+    nome_pred = (body.get("depende_de") or "").strip()
+    if not nome_dep or not nome_pred:
+        raise HTTPException(status_code=422,
+                            detail="pipeline_name e depende_de são obrigatórios")
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabela_067(cur, conn)
+        # Canoniza as DUAS grafias pela registrada (regra da PR #236): a tabela
+        # e o CSV têm de contar a mesma história que os dicts case-sensitive
+        # do Python leem depois.
+        pipeline = _pipeline_oficial(cur, nome_dep)
+        if pipeline is None:
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=422,
+                                detail=f"Pipeline inexistente: '{nome_dep}'")
+        faltando = _validar_existencia(cur, [nome_pred])
+        if faltando:
+            _fechar_silencioso(conn)
+            # Mesmo texto do cadastro da F1 (register_pipeline) de propósito.
+            raise HTTPException(
+                status_code=422,
+                detail="Pipeline inexistente em 'depende de': "
+                       + ", ".join(f"'{n}'" for n in faltando))
+        depende_de = _pipeline_oficial(cur, nome_pred)
+        if pipeline.casefold() == depende_de.casefold():
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=422,
+                                detail="Pipeline não pode depender de si mesmo")
+
+        cur.execute(
+            "SELECT 1 FROM dbo.etl_pipeline_dependencia "
+            "WHERE pipeline_name = ? AND depende_de = ? AND tipo = 'PIPELINE'",
+            (pipeline, depende_de))
+        ja_existia = cur.fetchone() is not None
+        if not ja_existia:
+            # BFS da F1 sobre TODAS as dependências — ValueError vira 422 com a
+            # mensagem do servidor (o aceite exige cliente e servidor iguais).
+            _check_circular(cur, pipeline, [depende_de])
+            criado_por = None
+            if isinstance(_auth, dict):
+                criado_por = (str(_auth.get("matricula") or "").strip() or None)
+            cur.execute(
+                "INSERT INTO dbo.etl_pipeline_dependencia "
+                "(pipeline_name, depende_de, tipo, criado_por) VALUES (?, ?, 'PIPELINE', ?)",
+                (pipeline, depende_de, (criado_por or "")[:100] or None))
+        mudou_csv = _espelho_csv(cur, pipeline, depende_de, "add")
+        if not ja_existia or mudou_csv:
+            conn.commit()
+        cur.close(); conn.close()
+        return {"ok": True, "ja_existia": ja_existia}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        # _check_circular sinaliza ciclo por ValueError — mesma tradução da F1.
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+@router.delete("/dependencias", tags=["malhas"])
+def remove_dependencia(body: dict = Body(default={}),
+                       _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    """Remove UMA dependência REAL (tabela 067 + espelho CSV, mesma transação).
+
+    A confirmação explícita ('isto apaga a dependência real, não só o desenho' —
+    §4b da spec) é responsabilidade do MalhaEditor ANTES de chamar aqui: a API
+    executa, quem avisa é a tela."""
+    nome_dep = (body.get("pipeline_name") or "").strip()
+    nome_pred = (body.get("depende_de") or "").strip()
+    if not nome_dep or not nome_pred:
+        raise HTTPException(status_code=422,
+                            detail="pipeline_name e depende_de são obrigatórios")
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabela_067(cur, conn)
+        # A colação CI do banco casa qualquer caixa no DELETE; o espelho CSV
+        # também remove por casefold — canonização aqui seria redundante.
+        cur.execute(
+            "DELETE FROM dbo.etl_pipeline_dependencia "
+            "WHERE pipeline_name = ? AND depende_de = ? AND tipo = 'PIPELINE'",
+            (nome_dep, nome_pred))
+        if (cur.rowcount or 0) == 0:
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=404,
+                detail=f"Dependência não encontrada: '{nome_dep}' depende de '{nome_pred}'")
+        _espelho_csv(cur, nome_dep, nome_pred, "remove")
+        conn.commit(); cur.close(); conn.close()
+        return {"ok": True}
     except HTTPException:
         raise
     except Exception as e:

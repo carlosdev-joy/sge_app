@@ -1,12 +1,16 @@
 import { useState, useMemo, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
+import { useAuthStore } from '../store/auth'
 import { PageSpinner } from '../components/ui/Spinner'
 import { Button } from '../components/ui/Button'
 import { Modal } from '../components/ui/Modal'
 import { Input, Textarea } from '../components/ui/Input'
 import { Autocomplete } from '../components/ui/Autocomplete'
 import { toast } from '../components/ui/Toast'
+import { CritBadge } from '../components/malhas/CritBadge'
+import { MalhaEditor } from '../components/malhas/MalhaEditor'
 import {
   Download, RefreshCw, LayoutGrid, AlignLeft, Network, X, GitFork,
   Plus, Edit, Users, Power, Trash2, AlertTriangle, Boxes,
@@ -53,21 +57,8 @@ const JOB_COLORS: Record<string, string> = {
 const jobColor = (type: string) => JOB_COLORS[type?.toLowerCase()] ?? '#64748b'
 
 // ─── Criticality badge ───────────────────────────────────────────────────────
-
-const CRIT_STYLES: Record<string, string> = {
-  CRITICA: 'bg-pink-100 text-pink-800 border border-pink-200 dark:bg-pink-900/40 dark:text-pink-300 dark:border-pink-800',
-  ALTA:    'bg-red-100 text-red-700 border border-red-200 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800',
-  MEDIA:   'bg-amber-100 text-amber-700 border border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',
-  BAIXA:   'bg-green-100 text-green-700 border border-green-200 dark:bg-green-900/40 dark:text-green-300 dark:border-green-800',
-}
-function CritBadge({ crit }: { crit: string }) {
-  const upper = crit?.toUpperCase() ?? 'MEDIA'
-  return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase ${CRIT_STYLES[upper] ?? CRIT_STYLES['MEDIA']}`}>
-      {upper}
-    </span>
-  )
-}
+// (CritBadge migrou para components/malhas/CritBadge.tsx na F8 — compartilhado
+// com o nó do MalhaEditor.)
 
 // ─── Job chain visualization ─────────────────────────────────────────────────
 
@@ -678,8 +669,9 @@ function formataData(iso: string | null): string | null {
 
 // ─── Card de malha (mesma linguagem do PipelineCard) ─────────────────────────
 
-function MalhaCard({ malha, onMembros, onRenomear, onToggle }: {
+function MalhaCard({ malha, onAbrir, onMembros, onRenomear, onToggle }: {
   malha: ApiMalha
+  onAbrir: () => void
   onMembros: () => void
   onRenomear: () => void
   onToggle: () => void
@@ -706,6 +698,9 @@ function MalhaCard({ malha, onMembros, onRenomear, onToggle }: {
         {criado && <span>📅 criada em {criado}</span>}
       </div>
       <div className="flex flex-wrap gap-1.5 pt-2 border-t border-edge mt-auto">
+        <Button size="sm" onClick={onAbrir} title="Abrir o diagrama de montagem — desenhar uma aresta cadastra a dependência real">
+          <Network size={12} /> Abrir diagrama
+        </Button>
         <Button variant="secondary" size="sm" onClick={onMembros} title="Ver e editar os pipelines desta malha">
           <Users size={12} /> Membros
         </Button>
@@ -957,7 +952,7 @@ function MembrosModal({ malhaName, onClose }: { malhaName: string; onClose: () =
 
 // ─── Visão Malhas (lista) ────────────────────────────────────────────────────
 
-function MalhasView() {
+function MalhasView({ onAbrir }: { onAbrir: (malha: string) => void }) {
   const [showCriar, setShowCriar] = useState(false)
   const [renomear, setRenomear] = useState<ApiMalha | null>(null)
   const [membrosDe, setMembrosDe] = useState<string | null>(null)
@@ -1066,6 +1061,7 @@ function MalhasView() {
             <MalhaCard
               key={m.malha_name}
               malha={m}
+              onAbrir={() => onAbrir(m.malha_name)}
               onMembros={() => setMembrosDe(m.malha_name)}
               onRenomear={() => setRenomear(m)}
               onToggle={() => alternar(m)}
@@ -1091,12 +1087,19 @@ function MalhasView() {
 
 // ─── Main page ───────────────────────────────────────────────────────────────
 // Default = Malhas (F7). O inventário legado fica no toggle "Catálogo" até
-// migrar para Catálogo & Lineage (/governanca) na F9.
+// migrar para Catálogo & Lineage (/governanca) na F9. Com `?malha=` na URL a
+// página vira o diagrama de montagem em tela cheia (F8) — mesmo padrão de
+// deep-link da tela Fluxos (?pipeline=).
 
 type PageMode = 'malhas' | 'catalogo'
 
 export default function Malha() {
   const [mode, setMode] = useState<PageMode>('malhas')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const malhaAberta = (searchParams.get('malha') ?? '').trim()
+  const [membrosAberto, setMembrosAberto] = useState(false)
+  const user = useAuthStore(s => s.user)
+  const isViewer = user?.perfil === 'consulta'
 
   const tabCls = (active: boolean) =>
     `inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-sm font-medium transition-colors ${
@@ -1104,6 +1107,40 @@ export default function Malha() {
         ? 'bg-[#1A5FA8] text-white'
         : 'border border-edge bg-canvas text-dim hover:text-ink hover:bg-edge/40'
     }`
+
+  // ── Diagrama de montagem em tela cheia (F8) ────────────────────────────────
+  if (malhaAberta) {
+    return (
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="flex items-center gap-2 text-lg font-semibold text-ink">
+            <Boxes size={20} className="text-[#1A5FA8]" /> Malha
+            <span className="font-mono text-base text-dim">· {malhaAberta}</span>
+          </h1>
+          <div className="ml-auto flex items-center gap-2">
+            {!isViewer && (
+              <Button
+                variant="secondary" size="sm"
+                onClick={() => setMembrosAberto(true)}
+                title="Ver e remover os pipelines membros desta malha"
+              >
+                <Users size={13} /> Membros
+              </Button>
+            )}
+            <Button variant="secondary" size="sm" onClick={() => setSearchParams({})} title="Voltar à lista de malhas">
+              <X size={13} /> Voltar
+            </Button>
+          </div>
+        </div>
+        <div className="h-[calc(100vh-11rem)]">
+          <MalhaEditor malha={malhaAberta} readOnly={isViewer} />
+        </div>
+        {membrosAberto && (
+          <MembrosModal malhaName={malhaAberta} onClose={() => setMembrosAberto(false)} />
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -1131,7 +1168,9 @@ export default function Malha() {
         </div>
       </div>
 
-      {mode === 'malhas' ? <MalhasView /> : <CatalogoView />}
+      {mode === 'malhas'
+        ? <MalhasView onAbrir={n => setSearchParams({ malha: n })} />
+        : <CatalogoView />}
     </div>
   )
 }
