@@ -76,7 +76,16 @@ A regressão do `apenas_se_executando` (plantonista corrige, dá Clear, DAG verd
 - Clear preserva o `run_id` → o rerun bate na **mesma linha** (chave `pipeline + data_ref + run_id`); a `data_referencia` recomputada é idêntica porque vem do momento lógico, não do relógio.
 - Clear do job falhado limpa também o downstream: `t_reg_falha` é reavaliado (agora sem upstream failed → SKIPPED, não regrava FALHA) e `t_publish_dataset` roda no fim → UPDATE da mesma linha para `SUCESSO`. Ordem garantida pelo grafo, não por guarda de estado.
 - Clear do run inteiro: `check_agenda` reescreve `EXECUTANDO` (reseta `inicio`, `fim=NULL`) e o ciclo se repete.
-- Transições indevidas que a guarda antiga tentava impedir são impossíveis por estrutura: SUCESSO-sobre-PULADO não ocorre porque o ShortCircuit pula TODO o downstream (inclusive ALL_DONE — comportamento documentado no próprio factory); SUCESSO-e-FALHA no mesmo attempt são mutuamente exclusivos (`ONE_FAILED` × folha de sucesso).
+- Transições indevidas: SUCESSO-sobre-PULADO não ocorre por estrutura (o
+  ShortCircuit pula TODO o downstream); SUCESSO-e-FALHA no mesmo attempt são
+  mutuamente exclusivos (`ONE_FAILED` × folha de sucesso). **A direção inversa
+  exige guarda** (achado da revisão adversarial): Clear de um run SUCESSO num
+  dia em que uma regra "de relógio" bloqueia (fim de semana/blackout/calendário
+  usam o relógio de parede, não o momento lógico) reexecuta o check_agenda, que
+  decide PULADO — o upsert regravaria a MESMA linha. Guarda no writer: o
+  UPDATE de PULADO leva `AND status NOT IN ('SUCESSO', 'FALHA')`, e o caminho
+  de INSERT confere existência antes (linha terminal existente → log e retorno,
+  nunca rebaixa nem duplica).
 - Limitação documentada: mudar `hora_virada` entre a falha e o Clear muda a data recomputada → linha FALHA órfã na data antiga + linha nova. Aceito; é a F4 (`DATA_DIVERGENTE`) que enxerga isso.
 
 **Defeitos evitados:** a regressão nº2 da 2ª revisão (rerun verde que não vira SUCESSO); e o motivo original da guarda deixa de existir sem reintroduzir o ALL_DONE na folha.

@@ -264,7 +264,9 @@ def test_ancora_publish_nao_vira_all_done(factory):
     """O publish_dataset não pode herdar a tolerância do Aguarde: ele é FOLHA,
     e uma regra tolerante ali é o que pinta de verde um pipeline falho."""
     src = factory._generate_dag_source(_pipeline(), _duas_pernas("todas_terminarem"))
-    bloco = src[src.index("t_publish_dataset = EmptyOperator("):]
+    # F2: o publish virou PythonOperator (grava SUCESSO) mantendo task_id,
+    # trigger rule e outlets — a âncora segue valendo sobre o bloco novo.
+    bloco = src[src.index("t_publish_dataset = PythonOperator("):]
     bloco = bloco[:bloco.index(")")]
     assert "ALL_DONE" not in bloco
 
