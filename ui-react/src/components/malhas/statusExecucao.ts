@@ -10,6 +10,9 @@ export interface ExecucaoPipeline {
   fim: string | null
   disparado_por: string | null
   motivo: string | null
+  // F5 (D32) — aditivo, só em AGUARDANDO_DEPENDENCIA/NAO_LIBEROU: de QUEM a
+  // corrida espera, pelo MESMO predicado do motor (port em api/services).
+  faltantes?: string[]
 }
 
 export interface EventoGuardia {

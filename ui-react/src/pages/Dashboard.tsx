@@ -14,6 +14,7 @@ import {
   LogDetailModal, AirflowLogModal, DsLogModal,
   type ExecRow, type AirflowLogState,
 } from '../components/execucao/ExecucaoDetailModal'
+import type { DependenciasEstadoApi } from '../types/pipeline'
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -457,6 +458,68 @@ function RunningRow({ e, onOpen, onDetail }: { e: Executando; onOpen: () => void
   )
 }
 
+// ── Aguardando dependência (F5, D32) ───────────────────────────────────────
+// O dashboard deriva status de etl_job_execution (nível job) — pipeline
+// aguardando dependência não tem job nenhum e era indistinguível de "não
+// executou". Este painel consome GET /pipelines/dependencias/estado, cujo
+// liberado/faltantes vêm do MESMO predicado do motor (port em api/services/
+// dependencias — D29). Ele SOME quando não há dependentes cadastrados ou sem a
+// migration 067 (degrada sem quebrar); malha em dia mostra "nenhum aguardando"
+// — distinção explícita, não ausência. A tela-lar do estado segue sendo a
+// Malha (Decisão 5): aqui é só o resumo com motivo e link.
+
+function AguardandoDependenciaCard() {
+  const navigate = useNavigate()
+  const { data } = useQuery<DependenciasEstadoApi>({
+    queryKey: ['deps-estado-dashboard'],
+    queryFn: () => apiFetch('/pipelines/dependencias/estado'),
+    refetchInterval: 60_000,
+  })
+  if (!data || data.migration_067_pendente || data.data.length === 0) return null
+  const aguardando = data.data.filter(d =>
+    (d.corrida != null
+      && (d.corrida.status === 'AGUARDANDO_DEPENDENCIA' || d.corrida.status === 'NAO_LIBEROU'))
+    || (d.corrida == null && d.faltantes.length > 0))
+  return (
+    <div className="bg-panel border border-amber-200 dark:border-amber-900/50 rounded-xl overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-edge flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+          <Clock size={14} /> Aguardando dependência ({aguardando.length})
+        </h3>
+        <span className="text-[10px] text-dim">data ref {data.data_referencia}</span>
+      </div>
+      {aguardando.length === 0 ? (
+        <p className="px-4 py-3 text-xs text-dim">
+          Nenhum pipeline aguardando dependência nesta data — os dependentes estão em dia.
+        </p>
+      ) : aguardando.map(d => (
+        <div
+          key={d.pipeline_name}
+          className="flex items-center gap-3 px-4 py-2.5 border-b border-edge/40 last:border-0 hover:bg-amber-50 dark:hover:bg-amber-900/10 transition-colors cursor-pointer"
+          onClick={() => navigate('/malha')}
+          title="Abrir a Malha (acompanhe pela visão Execução)"
+        >
+          <div className="flex-1 min-w-0">
+            <div className="font-mono text-xs font-medium text-ink truncate">{d.pipeline_name}</div>
+            <div className="text-[10px] text-dim truncate">
+              {d.faltantes.length > 0
+                ? `esperando ${d.faltantes.join(', ')}`
+                : 'liberado — aguardando o disparo (janela)'}
+              {' · '}data ref {data.data_referencia}
+            </div>
+          </div>
+          {d.corrida?.status === 'NAO_LIBEROU' && (
+            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border text-purple-700 border-purple-300 bg-purple-50 dark:text-purple-300 dark:border-purple-700 dark:bg-purple-900/30 flex-shrink-0">
+              não liberou
+            </span>
+          )}
+          <ChevronRight size={13} className="text-dim flex-shrink-0" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ── Dashboard principal ────────────────────────────────────────────────────
 
 // Converte um item de "Rodando agora" / "Alerta de performance" no ExecRow que o
@@ -663,6 +726,13 @@ export default function Dashboard() {
           carregamento dos KPIs. Dia sem execução nenhuma no Orquestra ainda
           precisa mostrar que um job DataStage supervisionado não rodou. */}
       <SupervisaoCard date={date} />
+
+      {/* ── Aguardando dependência (F5/D32) ──
+          Como o SupervisaoCard, fica FORA do bloco condicional dos KPIs: um
+          dia sem execução nenhuma ainda precisa mostrar quem está esperando
+          predecessor. O painel usa o ODATE corrente (virada global), não a
+          data selecionada acima — e some sem dependentes ou sem a 067. */}
+      <AguardandoDependenciaCard />
 
       {!isLoading && data && kpis && (
         <>

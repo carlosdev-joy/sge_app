@@ -49,6 +49,9 @@ import {
   STATUS_EXECUCAO, ORDEM_LEGENDA, estiloEvento,
   type ExecucaoPipeline, type MalhaExecucaoApi,
 } from './statusExecucao'
+// Mensagens de recusa ESPELHADAS do servidor — módulo compartilhado com o
+// DependenciasModal da F5: cliente e servidor com o MESMO texto, num lugar só.
+import { msgCiclo, MSG_SELF, msgRepublicar } from './mensagensDependencia'
 
 const nodeTypes = { malhaPipeline: MalhaPipelineNode }
 
@@ -79,17 +82,6 @@ interface MalhaDetalheApi {
   migration_067_pendente?: boolean
 }
 
-// ── Mensagens espelhadas do servidor ────────────────────────────────────────
-// Texto IDÊNTICO ao de _check_circular em api/routers/pipelines.py — aceite da
-// F8: a aresta que criaria ciclo é recusada no cliente E no servidor com a
-// MESMA mensagem. `pipeline` = dependente (alvo da seta); `dependeDe` = origem.
-function msgCiclo(pipeline: string, dependeDe: string): string {
-  return `Dependência circular: '${pipeline}' → '${dependeDe}' fecha um ciclo ` +
-    `(o caminho volta para '${pipeline}')`
-}
-// Mesmo texto do 422 de auto-dependência do cadastro (register_pipeline).
-const MSG_SELF = 'Pipeline não pode depender de si mesmo'
-
 // ── Helpers da visão de execução (F9) ───────────────────────────────────────
 // Soma dias a um 'YYYY-MM-DD' em UTC puro — sem passar por fuso local (Date
 // com string ISO curta interpreta UTC; misturar com métodos locais deslocaria
@@ -108,6 +100,8 @@ function horaCurta(iso: string | null): string | null {
 }
 
 // Tooltip do nó com o resumo da execução (o card em si não muda — F9).
+// F5 (D32): corrida aguardando anexa "aguardando: P1, P2" — os faltantes vêm
+// do MESMO predicado do motor (port em api/services/dependencias.py).
 function tituloExecucao(e: ExecucaoPipeline): string {
   const partes = [e.status]
   const ini = horaCurta(e.inicio)
@@ -115,7 +109,10 @@ function tituloExecucao(e: ExecucaoPipeline): string {
   if (ini) partes.push(`início ${ini}`)
   if (fim) partes.push(`fim ${fim}`)
   if (e.disparado_por) partes.push(`disparado por ${e.disparado_por}`)
-  const linha = partes.join(' · ')
+  let linha = partes.join(' · ')
+  if (e.faltantes && e.faltantes.length > 0) {
+    linha += `\naguardando: ${e.faltantes.join(', ')}`
+  }
   return e.motivo ? `${linha}\n${e.motivo}` : linha
 }
 
@@ -307,7 +304,7 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   // ── Criar dependência (conectar) ──────────────────────────────────────────
   const criarDep = useMutation({
     mutationFn: (body: { pipeline_name: string; depende_de: string }) =>
-      apiFetch<{ ok: boolean; ja_existia: boolean }>('/dependencias', {
+      apiFetch<{ ok: boolean; ja_existia: boolean; dag_config_pendente?: boolean }>('/dependencias', {
         method: 'POST',
         body: JSON.stringify(body),
       }),
@@ -319,9 +316,13 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
       toast.success(r.ja_existia
         ? 'Essa dependência já existia — nada foi alterado.'
         : `Dependência criada: ${body.depende_de} → ${body.pipeline_name}`)
+      // Decisão 6/D30: a DAG do DEPENDENTE ficou para trás (o schedule dela
+      // muda) — o servidor persistiu a pendência; aqui só se avisa o gesto.
+      if (r.dag_config_pendente) toast.info(msgRepublicar(body.pipeline_name))
       // Invalida TODAS as consultas de malha: a dependência é global e aparece
       // em qualquer malha que contenha as duas pontas (aceite da F8).
       qc.invalidateQueries({ queryKey: ['malha'] })
+      qc.invalidateQueries({ queryKey: ['pipelines'] })   // badge "publicação pendente"
     },
     // 422 (ciclo/inexistente/self) e 503 (migration 067) chegam como detail
     // pt-BR — o servidor é a autoridade; o toast mostra o texto dele.
@@ -379,12 +380,14 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
     if (!delEdges || delEdges.length === 0) return
     setExcluindo(true)
     let removidas = 0
+    const republicar = new Set<string>()
     for (const e of delEdges) {
       try {
-        await apiFetch<{ ok: boolean }>('/dependencias', {
+        const r = await apiFetch<{ ok: boolean; dag_config_pendente?: boolean }>('/dependencias', {
           method: 'DELETE',
           body: JSON.stringify({ pipeline_name: e.target, depende_de: e.source }),
         })
+        if (r.dag_config_pendente && e.target) republicar.add(e.target)
         removidas += 1
         setEdges(eds => eds.filter(x => x.id !== e.id))
       } catch (err) {
@@ -405,7 +408,11 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
       toast.success(removidas === 1
         ? 'Dependência excluída — ela saiu de todas as malhas.'
         : `${removidas} dependências excluídas — elas saíram de todas as malhas.`)
+      // Decisão 6/D30: remover dependência também muda o schedule da DAG do
+      // dependente — o servidor ligou a pendência; o toast aponta o gesto.
+      republicar.forEach(nome => toast.info(msgRepublicar(nome)))
       qc.invalidateQueries({ queryKey: ['malha'] })
+      qc.invalidateQueries({ queryKey: ['pipelines'] })   // badge "publicação pendente"
     }
   }
 

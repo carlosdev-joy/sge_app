@@ -41,6 +41,54 @@ export interface Pipeline {
   calendario_nome?: string | null
   trigger_por_dependencia?: number | null
   dias_horarios_mes?: string | null
+  // Janela e virada (migration 067) — SEM cast: foi um `as unknown as Record`
+  // que escondeu do tsc o round-trip quebrado destes três campos (D26).
+  // 'HH:MM' ou null; null também quando a 067 não foi aplicada (degradação).
+  hora_virada: string | null
+  nao_iniciar_antes: string | null
+  hora_limite_dependencia: string | null
+  // Pendência de publicação da DAG (migration 073, D30) — 1 quando a DAG no
+  // Airflow roda uma configuração anterior à do cadastro; null sem a 073.
+  dag_config_pendente?: number | null
+}
+
+// ── GET /pipelines/dependencias/estado (F5) ────────────────────────────────
+// O painel fala o predicado do MOTOR (port de dags/utils/dependencias.py):
+// `liberado`/`faltantes` decidem a mensagem; `predecessores` é só exibição.
+
+export interface DependenciaPredecessor {
+  nome: string
+  status: string | null          // última execução na data (exibição)
+  sucesso_na_data: boolean       // do predicado EXISTS — nunca do "mais recente"
+}
+
+export interface DependenciaCorrida {
+  status: string
+  execution_id: string | null
+  inicio: string | null
+  fim: string | null
+  disparado_por: string | null
+  motivo: string | null
+}
+
+export interface DependenciaEstadoItem {
+  pipeline_name: string
+  liberado: boolean
+  faltantes: string[]
+  predecessores: DependenciaPredecessor[]
+  corrida: DependenciaCorrida | null
+  janela: {
+    hora_virada: string | null
+    nao_iniciar_antes: string | null
+    hora_limite_dependencia: string | null
+  }
+  eventos: { tipo: string; detalhe: string | null; detectado_em: string | null }[]
+}
+
+export interface DependenciasEstadoApi {
+  data_referencia: string
+  data: DependenciaEstadoItem[]
+  migration_067_pendente?: boolean
 }
 
 export interface AuditRow {
