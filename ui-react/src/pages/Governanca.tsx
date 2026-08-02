@@ -6,6 +6,7 @@ import { PageSpinner } from '../components/ui/Spinner'
 import { Modal } from '../components/ui/Modal'
 import { Tabs } from '../components/ui/Tabs'
 import { InfoBanner } from '../components/ui/InfoBanner'
+import { CatalogoPipelines } from '../components/malhas/CatalogoPipelines'
 import { useAuthStore } from '../store/auth'
 import {
   Search, Download, ChevronDown, ChevronUp, ArrowRight, History,
@@ -1297,12 +1298,16 @@ export default function Governanca() {
         tabs={[
           { id: 'lineage', label: 'Lineage' },
           { id: 'catalogo', label: 'Catálogo de Dados' },
+          // Inventário realocado da tela Malha na F9 (spec §8): a consulta
+          // continua acessível a quem não constrói malhas.
+          { id: 'catalogo-pipelines', label: 'Catálogo de Pipelines' },
           { id: 'xmlpreview', label: 'Comparar XML × Atual' },
         ]}
       />
       <div>
         {tab === 'lineage' && <LineageTab pipeline={pipeline} setPipeline={setPipeline} />}
         {tab === 'catalogo' && <CatalogoTab onGoLineage={goLineage} />}
+        {tab === 'catalogo-pipelines' && <CatalogoPipelines />}
         {tab === 'xmlpreview' && <XmlPreviewTab />}
       </div>
     </div>

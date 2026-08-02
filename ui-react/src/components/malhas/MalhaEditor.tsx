@@ -6,6 +6,12 @@
 // em TODAS as malhas (daí a confirmação explícita). O layout dos nós persiste
 // por malha em etl_malha_pipeline (PUT /malhas/{name}/layout) — botão "Salvar
 // posições" habilita só quando alguma posição mudou (salvar sem mudança é no-op).
+// F9: toggle Montagem | Execução. No modo Execução a malha abre numa DATA DE
+// REFERÊNCIA (default = ODATE corrente calculado no servidor pela virada
+// global), colore os nós pelo status de etl_pipeline_execucao (polling 30s),
+// lista os eventos da guardiã (etl_dependencia_evento) e TRAVA a edição —
+// reusa o mesmo mecanismo do readOnly da F8. Em produção, antes da retomada
+// F2–F4, nada alimenta essas tabelas: a visão mostra o estado vazio HONESTO.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -33,11 +39,16 @@ import { toast } from '../ui/Toast'
 import { Autocomplete } from '../ui/Autocomplete'
 import { PageSpinner } from '../ui/Spinner'
 import {
-  AlertCircle, AlertTriangle, Link2, MousePointerClick, Plus, RefreshCw, Save, Trash2,
+  Activity, AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Info, Link2,
+  MousePointerClick, Plus, RefreshCw, Save, ShieldAlert, Trash2, Wrench,
 } from 'lucide-react'
 import { useColorMode } from '../etapas/useColorMode'
 import { liveLayout, criaCiclo } from '../etapas/layoutGrafo'
 import { MalhaPipelineNode, type MalhaPipelineNodeData } from './MalhaPipelineNode'
+import {
+  STATUS_EXECUCAO, ORDEM_LEGENDA, estiloEvento,
+  type ExecucaoPipeline, type MalhaExecucaoApi,
+} from './statusExecucao'
 
 const nodeTypes = { malhaPipeline: MalhaPipelineNode }
 
@@ -78,6 +89,35 @@ function msgCiclo(pipeline: string, dependeDe: string): string {
 }
 // Mesmo texto do 422 de auto-dependência do cadastro (register_pipeline).
 const MSG_SELF = 'Pipeline não pode depender de si mesmo'
+
+// ── Helpers da visão de execução (F9) ───────────────────────────────────────
+// Soma dias a um 'YYYY-MM-DD' em UTC puro — sem passar por fuso local (Date
+// com string ISO curta interpreta UTC; misturar com métodos locais deslocaria
+// o dia em fusos negativos como o de Brasília).
+function somaDia(iso: string, delta: number): string {
+  const [a, m, d] = iso.split('-').map(Number)
+  return new Date(Date.UTC(a, m - 1, d + delta)).toISOString().slice(0, 10)
+}
+
+function horaCurta(iso: string | null): string | null {
+  if (!iso) return null
+  const d = new Date(iso)
+  return isNaN(d.getTime())
+    ? iso
+    : d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+}
+
+// Tooltip do nó com o resumo da execução (o card em si não muda — F9).
+function tituloExecucao(e: ExecucaoPipeline): string {
+  const partes = [e.status]
+  const ini = horaCurta(e.inicio)
+  const fim = horaCurta(e.fim)
+  if (ini) partes.push(`início ${ini}`)
+  if (fim) partes.push(`fim ${fim}`)
+  if (e.disparado_por) partes.push(`disparado por ${e.disparado_por}`)
+  const linha = partes.join(' · ')
+  return e.motivo ? `${linha}\n${e.motivo}` : linha
+}
 
 // ── Construção de nós/arestas ───────────────────────────────────────────────
 const EDGE_ARROW = { type: MarkerType.ArrowClosed, width: 16, height: 16 }
@@ -136,12 +176,44 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   const [excluindo, setExcluindo] = useState(false)
   // Busca da paleta (adicionar membro).
   const [busca, setBusca] = useState('')
+  // F9: Montagem (default, editável) | Execução (leitura da data de referência).
+  const [modo, setModo] = useState<'montagem' | 'execucao'>('montagem')
+  // Data de referência pedida. null = sem query — o SERVIDOR devolve o ODATE
+  // corrente (virada global de etl_app_config), e é ele que aparece no input.
+  const [dataRef, setDataRef] = useState<string | null>(null)
 
   const { data, isLoading, isError, error } = useQuery<MalhaDetalheApi>({
     queryKey: ['malha', malha],
     queryFn: () => apiFetch(`/malhas/${encodeURIComponent(malha)}`),
     enabled: !!malha,
   })
+
+  // ── Visão de execução (F9): status + eventos da data de referência ────────
+  const emExecucao = modo === 'execucao'
+  const execQuery = useQuery<MalhaExecucaoApi>({
+    queryKey: ['malha-execucao', malha, dataRef],
+    queryFn: () => apiFetch(
+      `/malhas/${encodeURIComponent(malha)}/execucao` +
+      (dataRef ? `?data_referencia=${encodeURIComponent(dataRef)}` : '')),
+    enabled: !!malha && emExecucao,
+    refetchInterval: 30_000,   // leitura de painel: acompanha o dia rodando
+  })
+  const execData = execQuery.data
+  // A data exibida/navegada: a pedida ou a que o servidor calculou (ODATE).
+  const dataExibida = dataRef ?? execData?.data_referencia ?? ''
+  // Execução MAIS RECENTE por pipeline (o endpoint já entrega uma por membro —
+  // regra do §6 risco 6 da spec).
+  const execPorPipeline = useMemo(() => {
+    const map = new Map<string, ExecucaoPipeline>()
+    for (const e of execData?.execucoes ?? []) map.set(e.pipeline_name, e)
+    return map
+  }, [execData])
+  const eventos = useMemo(
+    () => [...(execData?.eventos ?? [])]
+      .sort((a, b) => b.criado_em.localeCompare(a.criado_em)),
+    [execData])
+  // Edição travada na visão de execução — MESMO mecanismo do readOnly da F8.
+  const travado = readOnly || emExecucao
 
   // Deploy parcial: migration 067 ausente (flag da API) ou API anterior à F8
   // (sem a chave `arestas`) — o diagrama abre só com os nós e avisa (nunca um
@@ -181,20 +253,28 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   // (Re)constrói nós/arestas a partir do grafo derivado. O rebuild PRESERVA a
   // posição atual de nó que já está no canvas (as arestas são persistidas na
   // hora, então todo refetch é seguro; só a posição é estado local até o
-  // "Salvar posições").
+  // "Salvar posições"). Na visão de execução (F9) o mesmo rebuild anexa o
+  // status da data como CAMADA no data do nó — membro sem linha em
+  // etl_pipeline_execucao fica sem camada (exec: null), nunca com cor inventada.
   useEffect(() => {
     if (!grafo) return
     const atuais = new Map(nodesRef.current.map(n => [n.id, n.position]))
-    setNodes(grafo.membros.map(m => ({
-      id: m.pipeline_name,
-      type: 'malhaPipeline' as const,
-      position: atuais.get(m.pipeline_name)
-        ?? grafo.baseline.get(m.pipeline_name)
-        ?? { x: 0, y: 0 },
-      data: nodeData(m),
-    })))
+    setNodes(grafo.membros.map(m => {
+      const exec = emExecucao ? execPorPipeline.get(m.pipeline_name) : undefined
+      return {
+        id: m.pipeline_name,
+        type: 'malhaPipeline' as const,
+        position: atuais.get(m.pipeline_name)
+          ?? grafo.baseline.get(m.pipeline_name)
+          ?? { x: 0, y: 0 },
+        data: {
+          ...nodeData(m),
+          exec: exec ? { status: exec.status, titulo: tituloExecucao(exec) } : null,
+        },
+      }
+    }))
     setEdges(grafo.novasEdges)
-  }, [grafo, setNodes, setEdges])
+  }, [grafo, setNodes, setEdges, emExecucao, execPorPipeline])
 
   // dirty = alguma posição difere do baseline do servidor (arredondado — é o
   // que o PUT envia). Mover um nó e devolvê-lo ao lugar volta a desabilitar o
@@ -250,7 +330,7 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
 
   const onConnect = useCallback(
     (conn: Connection) => {
-      if (readOnly || depsIndisponiveis) return
+      if (travado || depsIndisponiveis) return
       const origem = conn.source   // depende_de
       const alvo = conn.target     // pipeline_name (o dependente)
       if (!origem || !alvo) return
@@ -271,7 +351,7 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
       }
       criarDep.mutate({ pipeline_name: alvo, depende_de: origem })
     },
-    [readOnly, depsIndisponiveis, criarDep],
+    [travado, depsIndisponiveis, criarDep],
   )
 
   // ── Excluir dependência (Delete/botão + confirmação) ──────────────────────
@@ -279,7 +359,7 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   // (e excluir uma aresta é outra coisa — apaga a dependência REAL).
   const handleBeforeDelete = useCallback(
     async ({ nodes: toDel, edges: toDelEdges }: { nodes: Node[]; edges: Edge[] }) => {
-      if (readOnly) return false
+      if (travado) return false
       if (toDel.length > 0) {
         toast.info('Para retirar um pipeline da malha use o modal Membros — aqui o Delete só remove dependências (arestas).')
         return false
@@ -290,7 +370,7 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
       }
       return true
     },
-    [readOnly],
+    [travado],
   )
 
   const selEdges = useMemo(() => edges.filter(e => e.selected), [edges])
@@ -396,9 +476,77 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
     )
   }
 
+  const modoBtnCls = (ativo: boolean) =>
+    `inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+      ativo
+        ? 'bg-[#1A5FA8] text-white'
+        : 'border border-edge bg-canvas text-dim hover:text-ink hover:bg-edge/40'
+    }`
+  const navBtnCls =
+    'inline-flex items-center px-1.5 py-1 rounded-md text-xs border border-edge bg-canvas ' +
+    'text-dim hover:text-ink hover:bg-edge/40 transition-colors disabled:opacity-40 disabled:pointer-events-none'
+
   return (
     <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-edge bg-canvas">
-      {depsIndisponiveis && (
+      {/* Barra superior (F9): Montagem | Execução + seletor de data de referência. */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-edge bg-panel px-3 py-2">
+        <div className="flex gap-1">
+          <button
+            onClick={() => setModo('montagem')}
+            title="Montar a malha: membros, dependências e layout"
+            className={modoBtnCls(!emExecucao)}
+          >
+            <Wrench size={12} /> Montagem
+          </button>
+          <button
+            onClick={() => setModo('execucao')}
+            title="Ver a execução da malha numa data de referência (edição travada)"
+            className={modoBtnCls(emExecucao)}
+          >
+            <Activity size={12} /> Execução
+          </button>
+        </div>
+        {emExecucao && (
+          <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] text-dim">Data de referência</span>
+            <button
+              onClick={() => setDataRef(somaDia(dataExibida, -1))}
+              disabled={!dataExibida}
+              title="Dia anterior"
+              className={navBtnCls}
+            >
+              <ChevronLeft size={13} />
+            </button>
+            <input
+              type="date"
+              value={dataExibida}
+              onChange={e => setDataRef(e.target.value || null)}
+              className="rounded-md border border-edge bg-canvas px-2 py-1 text-xs text-ink focus:outline-none focus:ring-2 focus:ring-[#1A5FA8]/40"
+            />
+            <button
+              onClick={() => setDataRef(somaDia(dataExibida, 1))}
+              disabled={!dataExibida}
+              title="Dia seguinte"
+              className={navBtnCls}
+            >
+              <ChevronRight size={13} />
+            </button>
+            <button
+              onClick={() => setDataRef(null)}
+              disabled={dataRef === null}
+              title="Voltar à data de referência corrente (ODATE, calculado pela virada global)"
+              className={`${navBtnCls} px-2`}
+            >
+              hoje
+            </button>
+            {execQuery.isFetching && (
+              <RefreshCw size={12} className="animate-spin text-dim" />
+            )}
+          </div>
+        )}
+      </div>
+
+      {(depsIndisponiveis || (emExecucao && execData?.migration_067_pendente === true)) && (
         <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400">
           <AlertTriangle size={14} className="shrink-0" />
           <span>
@@ -409,10 +557,67 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
         </div>
       )}
 
+      {/* F9: estados honestos da visão de execução. Antes da retomada F2–F4
+          nada grava em etl_pipeline_execucao — o vazio é esperado e dito. */}
+      {emExecucao && execQuery.isError && (
+        <div className="flex items-center gap-2 border-b border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
+          <AlertCircle size={14} className="shrink-0" />
+          <span>
+            Não foi possível carregar a execução desta data:{' '}
+            {(execQuery.error as Error)?.message ?? 'erro desconhecido'}
+          </span>
+        </div>
+      )}
+      {emExecucao && execData && !execData.migration_067_pendente
+        && execData.execucoes.length === 0 && (
+        <div className="flex items-center gap-2 border-b border-blue-200 bg-blue-50 px-3 py-2 text-[12px] text-blue-800 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
+          <Info size={14} className="shrink-0" />
+          <span>
+            Sem execuções registradas nesta data — o registro chega com a
+            retomada das dependências (F2).
+          </span>
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1">
+        {/* Painel lateral de eventos da guardiã (F9) — só na visão de execução. */}
+        {emExecucao && (
+          <div className="flex w-64 shrink-0 flex-col border-r border-edge bg-panel">
+            <div className="flex items-center gap-1.5 border-b border-edge px-3 py-2">
+              <ShieldAlert size={13} className="shrink-0 text-dim" />
+              <span className="text-xs font-semibold uppercase tracking-wider text-dim">
+                Eventos da guardiã
+              </span>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-2">
+              {eventos.length === 0 ? (
+                <p className="px-1 py-4 text-center text-[11px] leading-relaxed text-dim">
+                  Nenhum evento da guardiã nesta data.
+                </p>
+              ) : eventos.map((ev, i) => (
+                <div key={`${ev.pipeline_name}-${ev.criado_em}-${i}`}
+                  className="rounded-md border border-edge bg-canvas px-2 py-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`rounded border px-1 py-px text-[9px] font-bold ${estiloEvento(ev.tipo)}`}>
+                      {ev.tipo}
+                    </span>
+                    <span className="ml-auto text-[10px] text-dim">{horaCurta(ev.criado_em)}</span>
+                  </div>
+                  <div className="mt-0.5 truncate font-mono text-[10px] text-ink" title={ev.pipeline_name}>
+                    {ev.pipeline_name}
+                  </div>
+                  {ev.mensagem && (
+                    <p className="mt-0.5 text-[10px] leading-snug text-dim">{ev.mensagem}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Paleta lateral: ADICIONAR membro (a remoção continua no modal
             Membros da F7 — sem duplicar o caminho). */}
-        {!readOnly && (
+        {!readOnly && !emExecucao && (
           <div className="flex w-60 shrink-0 flex-col gap-2 border-r border-edge bg-panel p-3">
             <span className="text-xs font-semibold uppercase tracking-wider text-dim">
               Adicionar pipeline
@@ -457,7 +662,7 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 text-dim">
               <span className="text-3xl">⬡</span>
               <p className="text-sm font-medium">Nenhum pipeline nesta malha</p>
-              {!readOnly && (
+              {!readOnly && !emExecucao && (
                 <p className="text-xs">Adicione o primeiro pela busca à esquerda.</p>
               )}
             </div>
@@ -475,18 +680,22 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             fitViewOptions={{ padding: 0.25 }}
             proOptions={{ hideAttribution: true }}
             defaultEdgeOptions={{ type: 'smoothstep' }}
-            nodesDraggable={!readOnly}
-            nodesConnectable={!readOnly && !depsIndisponiveis}
-            edgesFocusable={!readOnly}
-            deleteKeyCode={readOnly ? null : ['Delete', 'Backspace']}
+            nodesDraggable={!travado}
+            nodesConnectable={!travado && !depsIndisponiveis}
+            edgesFocusable={!travado}
+            deleteKeyCode={travado ? null : ['Delete', 'Backspace']}
           >
             <Background gap={18} size={1} />
             <Controls />
             <MiniMap pannable zoomable nodeColor={miniMapColor} className="!bg-panel" />
 
-            {/* Barra de ações (topo direita) — selo no modo leitura. */}
+            {/* Barra de ações (topo direita) — selo nos modos de leitura. */}
             <Panel position="top-right">
-              {readOnly ? (
+              {emExecucao ? (
+                <span className="flex items-center gap-1.5 rounded-lg border border-edge bg-panel/95 px-2.5 py-1.5 text-[11px] font-semibold text-dim shadow-md backdrop-blur">
+                  <Activity size={12} /> visão de execução — edição travada
+                </span>
+              ) : readOnly ? (
                 <span className="flex items-center gap-1.5 rounded-lg border border-edge bg-panel/95 px-2.5 py-1.5 text-[11px] font-semibold text-dim shadow-md backdrop-blur">
                   <MousePointerClick size={12} /> somente leitura
                 </span>
@@ -533,6 +742,25 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
           </ReactFlow>
         </div>
       </div>
+
+      {/* Legenda fixa da visão de execução (F9) — os seis status do contrato. */}
+      {emExecucao && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-edge bg-panel px-3 py-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-dim">Legenda</span>
+          {ORDEM_LEGENDA.map(s => {
+            const e = STATUS_EXECUCAO[s]
+            return (
+              <span key={s} className="flex items-center gap-1 text-[10px] text-dim">
+                <span className={`h-2 w-2 rounded-full ${e.dot} ${e.animado ? 'animate-pulse' : ''}`} />
+                {e.rotulo}
+              </span>
+            )
+          })}
+          <span className="ml-auto text-[10px] text-dim">
+            nó sem anel = sem execução registrada na data
+          </span>
+        </div>
+      )}
 
       {/* Confirmação de exclusão de aresta — §4b: a dependência é GLOBAL. */}
       <Modal

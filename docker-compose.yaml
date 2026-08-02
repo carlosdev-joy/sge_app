@@ -169,6 +169,12 @@ services:
       # Chave (Fernet) das senhas de dbo.etl_conexao (services/conn_crypto.py)
       # — a MESMA dos containers do Airflow (x-airflow-common acima).
       ORQUESTRA_CONN_KEY: "${ORQUESTRA_CONN_KEY:-}"
+      # Mesmo fuso dos containers do Airflow: sem isto a API calcula o ODATE
+      # corrente (visão de execução da malha, F9) em UTC e, entre 21:00 e
+      # 23:59 de Brasília, a data de referência default nasceria no dia
+      # SEGUINTE — e divergiria do ODATE que as DAGs gravam (achado da
+      # revisão adversarial da F9).
+      TZ: "America/Sao_Paulo"
       DSX_BASE_DIR:     "/opt/airflow/dsx"
       # Console DataStage (Admin): SSH read-only para rodar `dsjob` no Unix.
       # Defina no .env do host. Sem DS_SSH_HOST/DS_SSH_USER, o console degrada
