@@ -30,6 +30,14 @@ export interface SqlConfig {
   on_error_legado?: boolean
 }
 
+// Config do nó Aguarde (round-trip com /fluxo no campo `aguarde`).
+export interface AguardeConfig {
+  // 'todas_sucesso'    → só libera se todas as etapas ligadas derem certo
+  // 'todas_terminarem' → libera quando todas terminarem, mesmo com falha
+  //                      (caso da limpeza de arquivos compartilhados)
+  politica: 'todas_sucesso' | 'todas_terminarem'
+}
+
 // Catálogo de mensagens (Teams) — alimentam os Selects do nó de notificação.
 export interface MsgGrupo { id: number; nome: string; descricao: string | null; has_webhook?: boolean; ativo?: boolean }
 export interface MsgTemplate { id: number; grupo_id: number | null; nome: string; titulo: string | null }
@@ -84,4 +92,58 @@ export function toSqlConfig(raw: SqlConfig | null | undefined): SqlConfig {
 export function sqlLabel(cfg: SqlConfig): string {
   const db = (cfg.database || '').trim()
   return db ? `SQL: ${db}` : 'consulta'
+}
+
+// ── Nó Aguarde (ponto de encontro entre pernas paralelas) ────────────────────
+// Config default de um Aguarde recém-criado: o conservador. Ninguém herda
+// "segue mesmo com falha" sem escolher.
+export function defaultAguarde(): AguardeConfig {
+  return { politica: 'todas_sucesso' }
+}
+
+// Lê a config do Aguarde do payload da API (tolerante a null/parcial). Espelha
+// a normalização do backend: qualquer valor fora do domínio vira o default.
+export function toAguardeConfig(raw: AguardeConfig | null | undefined): AguardeConfig {
+  if (!raw || typeof raw !== 'object') return defaultAguarde()
+  return {
+    politica: raw.politica === 'todas_terminarem' ? 'todas_terminarem' : 'todas_sucesso',
+  }
+}
+
+// Resumo curto p/ o card — a política precisa ser legível sem abrir o painel.
+export function aguardeLabel(cfg: AguardeConfig): string {
+  return cfg.politica === 'todas_terminarem' ? 'mesmo com falha' : 'todas com sucesso'
+}
+
+// Pontas soltas do fluxo que a ação "prender" ligaria num Aguarde: nós SEM
+// nenhuma aresta de saída (normal ou de ramo — uma decisão só tem saídas de
+// ramo e NÃO é ponta solta), que não sejam o próprio Aguarde, não estejam já
+// ligados nele, e não estejam a jusante dele — ligar um descendente de volta
+// fecharia um ciclo.
+//
+// Função PURA sobre (id, arestas) para poder ser testada sem React Flow.
+export function pontasSoltas(
+  aguardeId: string,
+  nodeIds: string[],
+  arestas: { source: string; target: string }[],
+): string[] {
+  const temSaida = new Set(arestas.map(e => e.source))
+  const filhos = new Map<string, string[]>()
+  for (const e of arestas) {
+    filhos.set(e.source, [...(filhos.get(e.source) ?? []), e.target])
+  }
+  // Descendentes do Aguarde (BFS).
+  const jusante = new Set<string>()
+  const fila = [aguardeId]
+  while (fila.length) {
+    const cur = fila.shift() as string
+    for (const f of filhos.get(cur) ?? []) {
+      if (jusante.has(f)) continue
+      jusante.add(f)
+      fila.push(f)
+    }
+  }
+  const jaLigados = new Set(arestas.filter(e => e.target === aguardeId).map(e => e.source))
+  return nodeIds.filter(id =>
+    id !== aguardeId && !jusante.has(id) && !jaLigados.has(id) && !temSaida.has(id))
 }

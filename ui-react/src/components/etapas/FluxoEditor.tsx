@@ -30,7 +30,7 @@ import { Button } from '../ui/Button'
 import { Modal } from '../ui/Modal'
 import { toast } from '../ui/Toast'
 import {
-  Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing, Database,
+  Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing, Database, GitMerge,
   ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Maximize2, Minimize2,
   MousePointerClick, Pencil, Search, X,
 } from 'lucide-react'
@@ -38,6 +38,7 @@ import { EtapaNode, type EtapaNodeData } from './EtapaNode'
 import { DecisaoNode, casoCor, type CasoSwitch, type DecisaoNodeData, type NodeCondition } from './DecisaoNode'
 import { NotificacaoNode, type NotificacaoNodeData } from './NotificacaoNode'
 import { SqlNode, type SqlNodeData } from './SqlNode'
+import { AguardeNode, type AguardeNodeData } from './AguardeNode'
 import { TYPE_META, TYPE_ORDER, CREATABLE_TYPES, type EtapaType } from './types'
 import { defaultCondition, toNodeCondition, conditionLabel } from './condition'
 import { useColorMode } from './useColorMode'
@@ -46,13 +47,14 @@ import {
   type JobFieldsType, type JobParam, type PythonDraft, type PythonNodeApi,
 } from './JobTypeFields'
 import {
-  type Condition, type NotifyConfig, type SqlConfig, type MsgGrupo,
+  type Condition, type NotifyConfig, type SqlConfig, type AguardeConfig, type MsgGrupo,
   defaultNotify, toNotifyConfig, notifyLabel, defaultSql, toSqlConfig, sqlLabel,
+  defaultAguarde, toAguardeConfig, aguardeLabel, pontasSoltas,
 } from './fluxoTypes'
 import { PropriedadesPanel } from './paineis/PropriedadesPanel'
 import { PainelPipeline, type ContagemNos } from './paineis/PainelPipeline'
 
-const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode }
+const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode, aguarde: AguardeNode }
 
 // ── Dock inferior de propriedades (fase 3 do redesign) ──────────────────────
 type DockEstado = 'colapsado' | 'aberto' | 'max'
@@ -76,6 +78,8 @@ interface FluxoNode {
   // Config do nó SQL — chave `sql_node` na API (o backend usa sql_node; o campo
   // interno do config é `sql`, a query, daí o nome externo distinto).
   sql_node: SqlConfig | null
+  // Config do nó Aguarde — chave `aguarde` na API.
+  aguarde?: AguardeConfig | null
   layout_x: number | null
   layout_y: number | null
   // Campos por tipo (round-trip). O backend usa presença de chave — sempre reenviados.
@@ -231,6 +235,11 @@ function buildNodes(apiNodes: FluxoNode[]): Node[] {
       const data: SqlNodeData = { name: n.job_name, sql, label: sqlLabel(sql) }
       return { id: n.job_name, type: 'sql' as const, position, data }
     }
+    if (n.job_type === 'aguarde') {
+      const aguarde = toAguardeConfig(n.aguarde)
+      const data: AguardeNodeData = { name: n.job_name, aguarde, label: aguardeLabel(aguarde) }
+      return { id: n.job_name, type: 'aguarde' as const, position, data }
+    }
     const data: EtapaNodeData = {
       name: n.job_name,
       type: toEtapaType(n.job_type),
@@ -254,6 +263,22 @@ function buildNodes(apiNodes: FluxoNode[]): Node[] {
     data.sublabel = etapaSublabel(data)
     return { id: n.job_name, type: 'etapa' as const, position, data }
   })
+}
+
+// Aresta NORMAL de dependência (predecessor → job). `linkN` é só o rótulo
+// discreto "Link_N" — o grafo é definido por source/target.
+function depEdge(source: string, target: string, linkN: number): Edge {
+  return {
+    id: `dep:${source}->${target}`,
+    source,
+    target,
+    type: 'smoothstep',
+    markerEnd: EDGE_ARROW,
+    label: `Link_${linkN}`,
+    labelStyle: LINK_LABEL_STYLE,
+    labelBgStyle: LINK_LABEL_BG,
+    labelShowBg: false,
+  }
 }
 
 // Aresta de ramo a partir de uma decisão. `ramo` identifica a saída: 'sim'/'nao'
@@ -389,6 +414,7 @@ const PALETA_CATEGORIAS: PaletaCategoria[] = [
       { tipo: 'sql', label: 'SQL', chip: 'bg-violet-500 text-white', Icon: Database },
       { tipo: 'decisao', label: 'Decisão', chip: 'bg-indigo-500 text-white', Icon: GitBranch },
       { tipo: 'notificacao', label: 'Notificação', chip: 'bg-teal-500 text-white', Icon: BellRing },
+      { tipo: 'aguarde', label: 'Aguarde', chip: 'bg-amber-500 text-white', Icon: GitMerge },
     ],
   },
 ]
@@ -657,7 +683,8 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   // Jobs (etapas) do pipeline — alimentam o seletor "Job" da condição linhas_job.
   // Decisões (roteadores), notificações e nós SQL (não geram linhas) ficam de fora.
   const jobNames = useMemo(
-    () => nodes.filter(n => n.type !== 'decisao' && n.type !== 'notificacao' && n.type !== 'sql').map(n => n.id),
+    () => nodes.filter(n => n.type !== 'decisao' && n.type !== 'notificacao'
+      && n.type !== 'sql' && n.type !== 'aguarde').map(n => n.id),
     [nodes],
   )
 
@@ -670,11 +697,12 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   // Contagem de nós por tipo (grafo VIVO, inclui não salvos) — exibida no
   // painel do PIPELINE quando nada está selecionado no dock.
   const contagemNos = useMemo<ContagemNos>(() => {
-    const c: ContagemNos = { etapas: 0, decisoes: 0, sql: 0, notificacoes: 0 }
+    const c: ContagemNos = { etapas: 0, decisoes: 0, sql: 0, notificacoes: 0, aguardes: 0 }
     for (const n of nodes) {
       if (n.type === 'decisao') c.decisoes += 1
       else if (n.type === 'sql') c.sql += 1
       else if (n.type === 'notificacao') c.notificacoes += 1
+      else if (n.type === 'aguarde') c.aguardes += 1
       else c.etapas += 1
     }
     return c
@@ -804,22 +832,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
       if (exists) return
       // Próximo "Link_N" sequencial = nº de arestas normais já existentes + 1.
       const linkN = edges.filter(e => !isBranch(e)).length + 1
-      setEdges(eds =>
-        addEdge(
-          {
-            id: `dep:${conn.source}->${conn.target}`,
-            source: conn.source!,
-            target: conn.target!,
-            type: 'smoothstep',
-            markerEnd: EDGE_ARROW,
-            label: `Link_${linkN}`,
-            labelStyle: LINK_LABEL_STYLE,
-            labelBgStyle: LINK_LABEL_BG,
-            labelShowBg: false,
-          },
-          eds,
-        ),
-      )
+      setEdges(eds => addEdge(depEdge(conn.source!, conn.target!, linkN), eds))
       setDirty(true)
     },
     [edges, nodes, decisaoSet, setEdges, readOnly],
@@ -891,6 +904,23 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
           position: { x, y },
           selected: true,
           data: { name, sql, label: sqlLabel(sql), isNew: true } as SqlNodeData,
+        }
+        setNodes(nds => [...nds.map(n => n.selected ? { ...n, selected: false } : n), node])
+        setDirty(true)
+        setSelectedId(name)
+        return
+      }
+      if (tipo === 'aguarde') {
+        // Aguarde: cria o nó (política conservadora) e SELECIONA — o painel
+        // mostra a contagem de entradas e o atalho de prender as pontas soltas.
+        const name = nextName('AGUARDE', nameSet())
+        const aguarde = defaultAguarde()
+        const node: Node = {
+          id: name,
+          type: 'aguarde',
+          position: { x, y },
+          selected: true,
+          data: { name, aguarde, label: aguardeLabel(aguarde), isNew: true } as AguardeNodeData,
         }
         setNodes(nds => [...nds.map(n => n.selected ? { ...n, selected: false } : n), node])
         setDirty(true)
@@ -1235,6 +1265,39 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     setDirty(true)
   }
 
+  // Atualiza a política de um nó Aguarde (merge) e o rótulo do nó.
+  function patchAguarde(nodeId: string, patch: Partial<AguardeConfig>) {
+    setNodes(nds => nds.map(n => {
+      if (n.id !== nodeId || n.type !== 'aguarde') return n
+      const cur = (n.data as AguardeNodeData).aguarde ?? defaultAguarde()
+      const next = { ...cur, ...patch }
+      return { ...n, data: { ...n.data, aguarde: next, label: aguardeLabel(next) } }
+    }))
+    setDirty(true)
+  }
+
+  // Pontas soltas que a ação "prender" ligaria neste Aguarde (lógica pura em
+  // fluxoTypes — testável sem React Flow).
+  const pontasSoltasDe = useCallback(
+    (aguardeId: string): string[] => pontasSoltas(aguardeId, nodes.map(n => n.id), edges),
+    [edges, nodes],
+  )
+
+  // Liga ao Aguarde todas as pontas soltas de uma vez. As arestas ficam
+  // DESENHADAS no canvas — a barreira não vira dependência invisível.
+  function prenderPontasSoltas(aguardeId: string) {
+    const soltas = pontasSoltasDe(aguardeId)
+    if (!soltas.length) return
+    setEdges(eds => {
+      const base = eds.filter(e => !isBranch(e)).length
+      return [...eds, ...soltas.map((src, i) => depEdge(src, aguardeId, base + i + 1))]
+    })
+    setDirty(true)
+    toast.success(soltas.length === 1
+      ? `1 etapa ligada em ${aguardeId}.`
+      : `${soltas.length} etapas ligadas em ${aguardeId}.`)
+  }
+
   // ── Excluir nós (confirmação) — aceita a multi-seleção inteira ─────────────
   function excluirNos(ids: string[]) {
     const alvo = new Set(ids)
@@ -1369,6 +1432,18 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
         return
       }
 
+      // Guard: Aguarde sem NENHUMA entrada. O backend rejeita com 422 — avisamos
+      // antes, nomeando o nó (mesmo padrão do guard da notificação sem canal).
+      const aguardes = nodes.filter(n => n.type === 'aguarde')
+      const aguardeSemEntrada = aguardes
+        .filter(n => !(depsByTarget.get(n.id)?.size))
+        .map(n => n.id)
+      if (aguardeSemEntrada.length) {
+        toast.error(`Ligue ao menos uma etapa no Aguarde: ${aguardeSemEntrada.join(', ')}.`)
+        setSaving(false)
+        return
+      }
+
       // Guard: campos por tipo das ETAPAS (mesma régua do modal da Lista —
       // jobTypeFieldsErrors) — falha ANTES do 422 e nomeia o nó com problema.
       const etapaErros: string[] = []
@@ -1400,6 +1475,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
         const isDecisao = n.type === 'decisao'
         const isNotificacao = n.type === 'notificacao'
         const isSql = n.type === 'sql'
+        const isAguarde = n.type === 'aguarde'
         let condition: Record<string, unknown> | null = null
         if (isDecisao) {
           const cur = (d.condition as NodeCondition | undefined) ?? defaultCondition()
@@ -1477,11 +1553,13 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
         const jobType = isDecisao ? 'decisao'
           : isNotificacao ? 'notificacao'
           : isSql ? 'sql'
+          : isAguarde ? 'aguarde'
           : ((d.type as string) || 'datastage')
         const base = {
           job_name: n.id,
           job_type: jobType,
-          job_command: (isDecisao || isNotificacao || isSql) ? null : ((d.command as string | null) ?? null),
+          job_command: (isDecisao || isNotificacao || isSql || isAguarde)
+            ? null : ((d.command as string | null) ?? null),
           execution_order: (d.order as number) ?? 1,
           depends_on_jobs: Array.from(depsByTarget.get(n.id) ?? []),
           condition,
@@ -1500,6 +1578,17 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
               mssql_conn_id: cur.mssql_conn_id ?? null,
               database: cur.database ?? null,
               on_error: cur.on_error === 'nulo' ? 'nulo' : 'falhar',
+            },
+          }
+        }
+        if (isAguarde) {
+          // Aguarde: emite a chave `aguarde` (análogo ao `notify`/`sql_node`).
+          // Não envia condition nem campos de etapa — o nó não roda nada.
+          const cur = (d.aguarde as AguardeConfig | undefined) ?? defaultAguarde()
+          return {
+            ...base,
+            aguarde: {
+              politica: cur.politica === 'todas_terminarem' ? 'todas_terminarem' : 'todas_sucesso',
             },
           }
         }
@@ -1604,6 +1693,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
       if (node.type === 'decisao') return '#6366f1'
       if (node.type === 'notificacao') return '#14b8a6'
       if (node.type === 'sql') return '#8b5cf6'
+      if (node.type === 'aguarde') return '#f59e0b'
       const t = (node.data as { type?: EtapaType }).type
       return (t && TYPE_META[t]?.hex) || '#94a3b8'
     },
@@ -1721,6 +1811,15 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
         const s = (n.data as SqlNodeData).sql
         if (!(s?.sql || '').trim()) errs.push('SELECT vazio')
         if (!(s?.mssql_conn_id || '').trim()) errs.push('sem conexão MSSQL')
+      } else if (n.type === 'aguarde') {
+        // Avisos (o bloqueio de "sem entrada" mora no guard do save): um ponto
+        // de encontro com uma perna só não junta nada, e sem saída não segura
+        // ninguém — os dois casos são erro de montagem, não de config.
+        const entradas = edges.filter(e => !isBranch(e) && e.target === n.id).length
+        const saidas = edges.filter(e => e.target !== n.id && e.source === n.id).length
+        if (entradas === 0) errs.push('nenhuma etapa ligada na entrada')
+        else if (entradas === 1) errs.push('só uma etapa ligada (um encontro precisa de duas ou mais)')
+        if (saidas === 0) errs.push('nada ligado na saída — ele não segura nenhuma etapa')
       }
       if (errs.length) out.set(n.id, errs)
     }
@@ -1755,6 +1854,19 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
       return mudou ? out : nds
     })
   }, [pendenciasPorNo, setNodes])
+
+  // Entradas do AGUARDE selecionado (arestas normais que chegam nele) e as
+  // pontas soltas que a ação "prender" ligaria — derivados das arestas, para o
+  // painel não precisar conhecer o grafo.
+  const selAguardeEntradas = useMemo(() => {
+    if (!selectedId) return 0
+    return edges.filter(e => !isBranch(e) && e.target === selectedId).length
+  }, [edges, selectedId])
+  const selAguardePontasSoltas = useMemo(() => {
+    const sel = nodes.find(n => n.id === selectedId)
+    if (!sel || sel.type !== 'aguarde') return []
+    return pontasSoltasDe(sel.id)
+  }, [nodes, selectedId, pontasSoltasDe])
 
   // Ramos da decisão SELECIONADA (derivados das arestas de ramo) — read-only no
   // painel. Chave = nome da saída: 'sim'/'nao' (binária), 'senao' ou nome do caso.
@@ -1948,6 +2060,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
                 · {selNode.type === 'decisao' ? 'Decisão'
                   : selNode.type === 'notificacao' ? 'Notificação'
                   : selNode.type === 'sql' ? 'Consulta SQL'
+                  : selNode.type === 'aguarde' ? 'Aguarde'
                   : (TYPE_META as Record<string, { label: string }>)[
                       String((selNode.data as { type?: string }).type ?? '')
                     ]?.label ?? 'Etapa'}
@@ -2079,6 +2192,10 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
               onPatchCondition={patchCondition}
               onPatchNotify={patchNotify}
               onPatchSql={patchSql}
+              onPatchAguarde={patchAguarde}
+              aguardeEntradas={selAguardeEntradas}
+              aguardePontasSoltas={selAguardePontasSoltas}
+              onPrenderPontasSoltas={prenderPontasSoltas}
               onSimular={simularDecisao}
               onDelete={id => setDelNodeIds([id])}
               onMaximizar={() => setDockEstado('max')}
