@@ -854,7 +854,16 @@ async def gerar_dag(pipeline_name: str,
     pname = (pipeline_name or "").strip()
     if not _DAG_ID_RE.match(pname):
         raise HTTPException(status_code=400, detail="pipeline_name inválido")
-    desired_paused = (_pipeline_active(pname) == 0)
+    ativo = _pipeline_active(pname)  # 404 se não existe; NULL → 0 (CAST + or 0)
+    # A sp_etl_pipelines_pendentes_criar filtra active=1: pipeline inativo (0 ou
+    # NULL, que também não casa active=1) nunca entra no lote e o run da factory
+    # terminaria "vazio", sem explicação — enquanto a UI prometia "DAG pausada
+    # (pipeline inativo)". Recusa ANTES de disparar, com o motivo claro.
+    if ativo == 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Pipeline inativo não entra na geração de DAGs — ative-o antes de publicar.")
+    desired_paused = (ativo == 0)
 
     run_id = f"orquestra_ui_{int(time.time() * 1000)}"
     try:

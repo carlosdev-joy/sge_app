@@ -186,6 +186,19 @@ def _varname(job_name: str) -> str:
     return _re.sub(r"[^A-Za-z0-9_]", "_", job_name)
 
 
+def _chave_ci(nome) -> str:
+    """Chave de junção case-insensitive — espelha a colação CI do SQL Server.
+
+    Os nomes cruzam TABELAS diferentes (etl_pipeline × etl_pipeline_job) e o
+    banco os considera iguais ignorando caixa e espaço à direita; os dicts do
+    Python, não. Sem esta normalização, um pipeline cadastrado em MAIÚSCULAS
+    com etapas importadas do .dsx em CamelCase "perde" todas as etapas na
+    factory (incidente SEQSSDVIDA6SINISTRO, 2026-08-01) e o run inteiro falha
+    com "pipeline sem nenhuma etapa".
+    """
+    return (nome or "").strip().upper()
+
+
 def _alias(job) -> str:
     """Tipo de job normalizado (aplica _TYPE_ALIAS, lower, strip)."""
     raw = job["job_type"].lower().strip()
@@ -610,6 +623,12 @@ def _generate_dag_source(pipeline, jobs):
     # decisão.
     import json as _json
     _job_names = {j["job_name"] for j in sorted_jobs}
+    # Espelho case-insensitive dos nomes: depends_on_jobs guarda TEXTO livre e o
+    # banco (colação CI) aceita 'joba' apontando para 'JobA'. Como _varname NÃO
+    # normaliza caixa, gerar as referências com a grafia da DEPENDÊNCIA
+    # produziria t_end_joba — NameError no import do Airflow mesmo com a etapa
+    # existindo. Por isso toda dep é resolvida para a grafia REAL da etapa.
+    _job_real_ci = {_chave_ci(j["job_name"]): j["job_name"] for j in sorted_jobs}
 
     # ── Nó Python v2 (migration 059) — parse do python_json ────────────────
     # modo 'arquivo'/'codigo' roda via SSH (PythonScriptOperator); ausente ou
@@ -631,8 +650,31 @@ def _generate_dag_source(pipeline, jobs):
 
     def _deps_of(j):
         raw = (j.get("depends_on_jobs") or "")
-        return [d.strip() for d in str(raw).split(",")
-                if d.strip() and d.strip() in _job_names and d.strip() != j["job_name"]]
+        deps = []
+        for d in str(raw).split(","):
+            d = d.strip()
+            if not d or _chave_ci(d) == _chave_ci(j["job_name"]):
+                continue   # vazio ou auto-referência: ignorada, como sempre foi
+            real = _job_real_ci.get(_chave_ci(d))
+            if real is None:
+                # Antes a dep fantasma era DESCARTADA em silêncio: a etapa
+                # virava raiz e rodava sem esperar ninguém — ou, pior, uma
+                # referência t_end_<dep> órfã só explodia como NameError no
+                # import do Airflow, longe de quem cadastrou. Falhar AQUI
+                # transforma isso num erro claro da geração, com o culpado.
+                raise ValueError(
+                    f"pipeline '{pname}': a etapa '{j['job_name']}' depende de "
+                    f"'{d}', que não existe neste pipeline — corrija ou remova "
+                    f"a dependência")
+            deps.append(real)
+        return deps
+
+    # Valida TODAS as dependências já aqui, antes de qualquer fiação: _deps_of
+    # levanta ValueError na primeira dep fantasma. O passo é redundante com os
+    # usos abaixo hoje, mas garante o erro cedo e claro mesmo que a fiação seja
+    # refatorada e deixe de percorrer todos os jobs.
+    for _j in sorted_jobs:
+        _deps_of(_j)
 
     decision_conditions = {}
     for j in sorted_jobs:
@@ -1755,6 +1797,18 @@ def gerar_dags(**context):
 
     if not pipelines_rows:
         cursor.close(); conn.close()
+        if pipeline_name:
+            # Run disparado para um pipeline específico que NÃO entrou no lote:
+            # inexistente, inativo (a SP filtra active=1) ou corrida entre o
+            # clique e a execução. SUCCESS aqui seria um verde mentiroso — o
+            # operador pediu uma DAG que não foi gerada (achado da revisão
+            # adversarial desta correção).
+            msg = (f"{pipeline_name}: pipeline solicitado não entrou na geração — "
+                   "inexistente, inativo ou sem pendência no momento da execução")
+            print(f"[FACTORY] {msg}")
+            steps_log.append({"tipo": "erro", "msg": msg})
+            _log_upsert("FAILED", 0, 1, steps_log, [msg])
+            raise _ErrosPorPipeline(msg)
         msg = "Nenhum pipeline pendente encontrado — nada foi regenerado"
         print(f"[FACTORY] {msg}")
         steps_log.append({"tipo": "vazio", "msg": msg})
@@ -1764,11 +1818,16 @@ def gerar_dags(**context):
     pipelines = [dict(zip(pipeline_cols, row)) for row in pipelines_rows]
     jobs_all  = [dict(zip(jobs_cols, row))     for row in jobs_rows]
 
+    # Chave CI também aqui: params vêm de etl_pipeline_job_param e as etapas de
+    # etl_pipeline_job — tabelas DIFERENTES, mesmo padrão cross-table do
+    # incidente da grafia. Com a chave crua, um job 'Pipe' com params gravados
+    # como 'PIPE' geraria a DAG chamando a procedure SEM os parâmetros fixos,
+    # em silêncio (achado da revisão adversarial desta correção).
     params_by_job = defaultdict(list)
     for r in [dict(zip(params_cols, row)) for row in params_rows]:
-        params_by_job[(r["pipeline_name"], r["job_name"])].append(r)
+        params_by_job[(_chave_ci(r["pipeline_name"]), _chave_ci(r["job_name"]))].append(r)
     for j in jobs_all:
-        j["params"] = params_by_job.get((j["pipeline_name"], j["job_name"]), [])
+        j["params"] = params_by_job.get((_chave_ci(j["pipeline_name"]), _chave_ci(j["job_name"])), [])
 
     # Supplement: dependência por job (degrada se a coluna não existir — migration 038)
     try:
@@ -1930,26 +1989,63 @@ def gerar_dags(**context):
 
     cursor.close(); conn.close()
 
+    # Agrupamento com chave normalizada (_chave_ci): pipelines vêm de
+    # etl_pipeline e etapas de etl_pipeline_job, e a colação CI do banco junta
+    # 'SEQSSDVIDA6SINISTRO' com 'SeqSsdVida6Sinistro' — o dict Python, não.
+    # Agrupar pelo nome cru fazia o pipeline "perder" as etapas quando a grafia
+    # divergia (cadastro na tela × import .dsx) e o run falhava inteiro.
     jobs_by_pipeline = defaultdict(list)
     for j in jobs_all:
-        jobs_by_pipeline[j["pipeline_name"]].append(j)
+        jobs_by_pipeline[_chave_ci(j["pipeline_name"])].append(j)
 
     geradas, erros = [], []
+
+    # Isolamento de pendências de terceiros: a sp_etl_pipelines_pendentes_criar
+    # é GLOBAL — devolve TODOS os pendentes (dag_criada=0 AND active=1), não só
+    # o pipeline do clique. Um pendente quebrado nunca sai desse conjunto (a
+    # geração dele falha e o dag_criada segue 0), então qualquer defeito dele
+    # reprovaria TODO run futuro — inclusive o clique num pipeline saudável.
+    # Em run de pipeline específico, problema de TERCEIRO vira step 'aviso' e o
+    # loop segue; problema do pipeline SOLICITADO — e qualquer problema em run
+    # global/force_all — continua erro de primeira classe, preservando a
+    # intenção da PR #234 (falha visível, nunca silêncio).
+    _alvo_ci = _chave_ci(pipeline_name) if pipeline_name else None
+    _SUFIXO_TERCEIRO = " — pendência de outro pipeline, ignorada nesta execução"
+
+    def _pendencia_de_terceiro(pname_do_loop):
+        return _alvo_ci is not None and _chave_ci(pname_do_loop) != _alvo_ci
+
+    # O alvo entrou no lote? A SP filtra active=1 e dag_criada=0: entre o clique
+    # e a execução o pipeline pode ter sido inativado/excluído, ou o conf de um
+    # trigger manual pode ter vindo com nome errado. Sem esta checagem, o run
+    # demoveria tudo a 'aviso' e fecharia SUCCESS com "0 geradas" — sem uma
+    # linha sequer mencionando o pipeline pedido.
+    if _alvo_ci is not None and not any(
+            _chave_ci(p["pipeline_name"]) == _alvo_ci for p in pipelines):
+        msg = (f"{pipeline_name}: pipeline solicitado não entrou na geração — "
+               "inexistente, inativo ou sem pendência no momento da execução")
+        print(f"[FACTORY] {msg}")
+        erros.append(msg)
+        steps_log.append({"tipo": "erro", "msg": msg})
 
     for pipeline in pipelines:
         pname   = pipeline["pipeline_name"]
         project = pipeline["project_name"]
         domain  = pipeline["domain"]
-        jobs    = jobs_by_pipeline.get(pname, [])
+        jobs    = jobs_by_pipeline.get(_chave_ci(pname), [])
 
         if not jobs:
             # Antes isto era só um print: o pipeline sumia da geração sem
             # aparecer na tela, e quem pediu a DAG ficava esperando um arquivo
-            # que nunca viria. Agora é erro de primeira classe, com a causa.
+            # que nunca viria. Agora é erro de primeira classe, com a causa —
+            # exceto quando é pendência de OUTRO pipeline num run específico.
             msg = f"{pname}: pipeline sem nenhuma etapa — nada a gerar"
             print(f"[FACTORY] {msg}")
-            erros.append(msg)
-            steps_log.append({"tipo": "erro", "msg": msg})
+            if _pendencia_de_terceiro(pname):
+                steps_log.append({"tipo": "aviso", "msg": msg + _SUFIXO_TERCEIRO})
+            else:
+                erros.append(msg)
+                steps_log.append({"tipo": "erro", "msg": msg})
             continue
 
         dest_dir  = os.path.join(output_root, "generated", project, domain)
@@ -1961,22 +2057,33 @@ def gerar_dags(**context):
             os.makedirs(dest_dir, exist_ok=True)
         except Exception as e:
             msg = f"{pname}: erro ao criar a pasta de destino {dest_dir} — {e}"
-            erros.append(msg)
-            steps_log.append({"tipo": "erro", "msg": msg})
+            if _pendencia_de_terceiro(pname):
+                steps_log.append({"tipo": "aviso", "msg": msg + _SUFIXO_TERCEIRO})
+            else:
+                erros.append(msg)
+                steps_log.append({"tipo": "erro", "msg": msg})
             continue
 
         try:
             source = _generate_dag_source(pipeline, jobs)
         except Exception as e:
-            erros.append(f"{pname}: erro ao gerar — {e}")
-            steps_log.append({"tipo": "erro", "msg": f"Erro ao gerar '{pname}': {e}"})
+            if _pendencia_de_terceiro(pname):
+                steps_log.append({"tipo": "aviso",
+                                  "msg": f"Erro ao gerar '{pname}': {e}" + _SUFIXO_TERCEIRO})
+            else:
+                erros.append(f"{pname}: erro ao gerar — {e}")
+                steps_log.append({"tipo": "erro", "msg": f"Erro ao gerar '{pname}': {e}"})
             continue
 
         try:
             ast.parse(source)
         except SyntaxError as e:
-            erros.append(f"{pname}: sintaxe invalida — linha {e.lineno}: {e.msg}")
+            msg = f"{pname}: sintaxe invalida — linha {e.lineno}: {e.msg}"
             print(f"[FACTORY] SINTAXE INVALIDA {pname}: linha {e.lineno} — {e.msg}")
+            if _pendencia_de_terceiro(pname):
+                steps_log.append({"tipo": "aviso", "msg": msg + _SUFIXO_TERCEIRO})
+            else:
+                erros.append(msg)
             continue
 
         try:
@@ -1986,8 +2093,12 @@ def gerar_dags(**context):
             print(f"[FACTORY] OK -> {dest_file}")
             steps_log.append({"tipo": "gerada", "msg": msg})
         except Exception as e:
-            erros.append(f"{pname}: erro ao salvar — {e}")
-            steps_log.append({"tipo": "erro", "msg": f"Erro ao gravar arquivo de '{pname}': {e}"})
+            if _pendencia_de_terceiro(pname):
+                steps_log.append({"tipo": "aviso",
+                                  "msg": f"Erro ao gravar arquivo de '{pname}': {e}" + _SUFIXO_TERCEIRO})
+            else:
+                erros.append(f"{pname}: erro ao salvar — {e}")
+                steps_log.append({"tipo": "erro", "msg": f"Erro ao gravar arquivo de '{pname}': {e}"})
             continue
 
         try:
@@ -2007,8 +2118,12 @@ def gerar_dags(**context):
             print(f"[FACTORY] dag_criada=1 -> '{pname}'")
             steps_log.append({"tipo": "banco", "msg": f"Pipeline '{pname}' marcado como criado no cadastro"})
         except Exception as e:
-            erros.append(f"{pname}: dag gerada mas erro ao atualizar banco — {e}")
-            steps_log.append({"tipo": "erro", "msg": f"Erro ao atualizar cadastro de '{pname}': {e}"})
+            if _pendencia_de_terceiro(pname):
+                steps_log.append({"tipo": "aviso",
+                                  "msg": f"Erro ao atualizar cadastro de '{pname}': {e}" + _SUFIXO_TERCEIRO})
+            else:
+                erros.append(f"{pname}: dag gerada mas erro ao atualizar banco — {e}")
+                steps_log.append({"tipo": "erro", "msg": f"Erro ao atualizar cadastro de '{pname}': {e}"})
 
         geradas.append(pname)
 
