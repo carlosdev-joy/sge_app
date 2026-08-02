@@ -529,8 +529,9 @@ dois fios soltos do ambiente dev (3–4, a resolver ANTES da retomada da F2):
    026) **não devolve `depends_on`**, e o supplement de colunas avançadas do
    gerador também não o seleciona — pelo código do repo, `pipeline["depends_on"]`
    chega `None` no gerador, e o `ExternalTaskSensor`/modo Dataset só sairiam se
-   a SP do banco de produção divergir do repo. Reproduzir no dev; a F6 precisa
-   cobrir a SP (ou o supplement) explicitamente.
+   a SP do banco de produção divergir do repo. **CONFIRMADO no dev em 2026-08-02** (EXEC da SP: o
+   1º result set não traz depends_on mesmo com dependência gravada). A F6
+   precisa cobrir a SP (ou o supplement) explicitamente.
 4. **Bootstrap de banco virgem tem 3 armadilhas conhecidas** (encontradas ao
    montar o dev): `deploy_full.sql` referencia colunas de migrations posteriores
    nas SPs da Seção 2 (converge na 2ª passada, mas deveria ser corrigido) e
