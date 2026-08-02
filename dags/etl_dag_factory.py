@@ -1844,17 +1844,33 @@ def gerar_dags(**context):
         jobs    = jobs_by_pipeline.get(pname, [])
 
         if not jobs:
-            print(f"[FACTORY] AVISO: '{pname}' sem jobs — ignorado.")
+            # Antes isto era só um print: o pipeline sumia da geração sem
+            # aparecer na tela, e quem pediu a DAG ficava esperando um arquivo
+            # que nunca viria. Agora é erro de primeira classe, com a causa.
+            msg = f"{pname}: pipeline sem nenhuma etapa — nada a gerar"
+            print(f"[FACTORY] {msg}")
+            erros.append(msg)
+            steps_log.append({"tipo": "erro", "msg": msg})
             continue
 
         dest_dir  = os.path.join(output_root, "generated", project, domain)
-        os.makedirs(dest_dir, exist_ok=True)
         dest_file = os.path.join(dest_dir, f"{pname}.py")
+
+        # makedirs FORA de try derrubava a execução inteira (volume read-only,
+        # permissão, disco cheio) e levava junto os pipelines seguintes.
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+        except Exception as e:
+            msg = f"{pname}: erro ao criar a pasta de destino {dest_dir} — {e}"
+            erros.append(msg)
+            steps_log.append({"tipo": "erro", "msg": msg})
+            continue
 
         try:
             source = _generate_dag_source(pipeline, jobs)
         except Exception as e:
             erros.append(f"{pname}: erro ao gerar — {e}")
+            steps_log.append({"tipo": "erro", "msg": f"Erro ao gerar '{pname}': {e}"})
             continue
 
         try:
@@ -1926,7 +1942,84 @@ def gerar_dags(**context):
             print(f"[FACTORY] AVISO: sync/pipeline-status falhou (não bloqueante) — {_e}")
 
     if erros:
-        raise RuntimeError(f"{len(erros)} pipeline(s) com erro:\n" + "\n".join(erros))
+        raise _ErrosPorPipeline(f"{len(erros)} pipeline(s) com erro:\n" + "\n".join(erros))
+
+
+class _ErrosPorPipeline(RuntimeError):
+    """Erro de um ou mais pipelines DURANTE a geração — o log já foi fechado
+    com a lista detalhada de cada um. Só existe para o wrapper da task não
+    sobrescrever esse detalhe com uma mensagem genérica."""
+
+
+def _escopo_de(conf):
+    """Mesma régua de escopo do gerar_dags — usada quando ele morre antes de
+    montar a própria descrição."""
+    if (conf.get("pipeline_name") or "").strip():
+        return f"Pipeline específico: {conf['pipeline_name'].strip()}"
+    if conf.get("force_all") and (conf.get("filter_project") or "").strip():
+        return f"Todos os pipelines do projeto {conf['filter_project'].strip()} (regeneração forçada)"
+    if conf.get("force_all"):
+        return "Todos os pipelines (regeneração forçada)"
+    return "Apenas pipelines pendentes de criação"
+
+
+def _fechar_log_em_falha(dag_run_id, escopo, pipeline_name, exc):
+    """Fecha o registro da factory como FAILED quando a task morre no meio.
+
+    Sem isso, QUALQUER exceção entre o log de RUNNING e o fechamento normal
+    (conexão com o banco, a SP de pendentes, criação do diretório de saída…)
+    deixa o registro em RUNNING para sempre. Do lado do operador o efeito é o
+    pior possível: a tela não mostra causa nenhuma, o arquivo não aparece no
+    servidor e o reconciliador só desiste 15 minutos depois, com um TIMEOUT que
+    não explica nada.
+
+    Best-effort de propósito — se nem isso conseguir gravar, o erro original é
+    o que importa e segue subindo para o Airflow marcar a task como vermelha.
+    """
+    causa = f"{type(exc).__name__}: {exc}"
+    detalhe = ("A geração foi interrompida por um erro antes de concluir — "
+               "nenhuma DAG foi gravada nesta execução.")
+    try:
+        import json as _json
+        payload = _json.dumps(
+            {"steps": [{"tipo": "erro", "msg": detalhe}], "erros": [causa]},
+            ensure_ascii=False)
+        MsSqlHook(mssql_conn_id=MSSQL_CONN_ID).run(
+            "MERGE dbo.etl_factory_log AS t "
+            "USING (SELECT %s AS r) AS s ON t.dag_run_id = s.r "
+            "WHEN MATCHED THEN UPDATE SET "
+            "  estado='FAILED', finalizado_em=GETDATE(), erros=1, detalhes_json=%s "
+            "WHEN NOT MATCHED THEN INSERT "
+            "  (dag_run_id, estado, escopo, pipeline_name, geradas, erros, detalhes_json) "
+            "  VALUES (%s, 'FAILED', %s, %s, 0, 1, %s);",
+            parameters=(dag_run_id, payload,
+                        dag_run_id, escopo, pipeline_name or None, payload),
+        )
+        print(f"[FACTORY] registro {dag_run_id} fechado como FAILED — {causa}")
+    except Exception as _le:
+        print(f"[FACTORY] AVISO: falha ao fechar o log da execução — {_le}")
+
+
+def gerar_dags_task(**context):
+    """python_callable da task — garante que o registro do log SEMPRE feche.
+
+    Envolve gerar_dags sem tocar no corpo dele: o caminho feliz e os erros por
+    pipeline continuam exatamente como eram; o que muda é que uma exceção
+    inesperada deixa de virar um RUNNING órfão.
+    """
+    dag_run = context.get("dag_run")
+    conf = (getattr(dag_run, "conf", None) or {})
+    pname = (conf.get("pipeline_name") or "").strip()
+    run_id = getattr(dag_run, "run_id", None)
+    try:
+        return gerar_dags(**context)
+    except _ErrosPorPipeline:
+        # O log já foi fechado com o detalhe de CADA pipeline que falhou —
+        # reescrever aqui apagaria essa lista.
+        raise
+    except Exception as exc:
+        _fechar_log_em_falha(run_id, _escopo_de(conf), pname, exc)
+        raise
 
 
 with DAG(
@@ -1942,5 +2035,5 @@ with DAG(
 
     task_gerar = PythonOperator(
         task_id="gerar_dags",
-        python_callable=gerar_dags,
+        python_callable=gerar_dags_task,
     )
