@@ -18,6 +18,13 @@ Endpoints:
   POST /pipelines/register                — cria/atualiza pipeline
   GET  /malha                             — todos pipelines + jobs para visualização de malha
 
+  GET    /malhas                          — lista malhas (agrupadoras) com agregados
+  POST   /malhas                          — cria malha
+  GET    /malhas/{name}                   — detalhe da malha + membros
+  PATCH  /malhas/{name}                   — descricao/ativo/renomear malha
+  POST   /malhas/{name}/pipelines         — adiciona pipeline à malha (idempotente)
+  DELETE /malhas/{name}/pipelines/{pipe}  — remove pipeline da malha
+
   GET  /jobs                              — lista jobs de pipeline
   POST /pipelines/jobs/register           — registra/atualiza jobs e lineage
   POST /pipelines/jobs/reorder            — reordena jobs
@@ -133,7 +140,7 @@ from routers import (
     lineage, catalogo, sync, admin, agenda, sequence,
     datastage, factory, airflow, change_plans, powerbi, lineage_xml,
     notificacoes, comunicados, backlog, monitor, mensagens, copias,
-    inventario, finalizacao, caixa_chat, ds_supervisao,
+    inventario, finalizacao, caixa_chat, ds_supervisao, malhas,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -192,6 +199,6 @@ for _router_module in [
     lineage, catalogo, sync, admin, agenda, sequence,
     datastage, factory, airflow, change_plans, powerbi, lineage_xml,
     notificacoes, comunicados, backlog, monitor, mensagens, copias,
-    inventario, finalizacao, caixa_chat, ds_supervisao,
+    inventario, finalizacao, caixa_chat, ds_supervisao, malhas,
 ]:
     app.include_router(_router_module.router)
