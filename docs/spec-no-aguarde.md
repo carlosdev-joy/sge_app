@@ -1,7 +1,8 @@
 # Spec — Nó "Aguarde" (ponto de encontro entre pernas paralelas)
 
-**Status:** RASCUNHO — aguardando aprovação
-**Criada em:** 2026-08-01
+**Status:** APROVADA e IMPLEMENTADA (F1–F4) — aguardando merge e smoke em produção
+**Criada em:** 2026-08-01 · **Aprovada em:** 2026-08-01
+**PRs:** F1 #231 · F2 #232 · F3 #233 (empilhadas, mergear em ordem)
 **Projeto:** Orquestra (sge_app)
 **Arquivo-mãe do motor:** `dags/etl_dag_factory.py`
 
@@ -273,6 +274,32 @@ pode ficar — é inerte para quem não usa o nó.
 ⚠️ **Gotcha de infra conhecido:** `sql/migrate.py` nunca lê `cur.messages`, então
 todo `PRINT` de migration é descartado. Não confiar em saída de migration para
 confirmar nada — conferir no banco.
+
+## 8.1 Roteiro de smoke (executável sem contexto desta spec)
+
+Rodar **depois** do deploy completo, incluindo o passo 3 (regerar as DAGs).
+Use um pipeline de teste — não a malha real.
+
+**Preparo:** um pipeline de teste com duas etapas que possam rodar em paralelo
+(`PernaA`, `PernaB`) e uma terceira que represente a limpeza (`Limpeza` — pode ser
+um `shell` com `echo`).
+
+| # | Passo | Resultado esperado |
+|---|---|---|
+| 1 | No editor de fluxo, arrastar **Aguarde** para o canvas | Nó aparece como barra vertical âmbar, rotulado `todas com sucesso` |
+| 2 | Ligar `PernaA` e `PernaB` na entrada dele, e ele em `Limpeza` | Painel mostra "2 etapas ligadas" |
+| 3 | Salvar, sair da tela e voltar | Desenho e política voltam idênticos |
+| 4 | Publicar (Gerar DAG) e abrir a DAG no Airflow | Aparece a task do Aguarde entre as pernas e a limpeza |
+| 5 | Executar o pipeline | `Limpeza` só inicia depois que **as duas** pernas terminam |
+| 6 | Fazer `PernaA` falhar de propósito e executar | `Limpeza` **não roda**; pipeline em falha |
+| 7 | Trocar a política para **"mesmo com falha"**, salvar e **regerar a DAG** | Card do nó passa a mostrar `mesmo com falha` |
+| 8 | Repetir a execução com `PernaA` falhando | ⭐ `Limpeza` **roda**, e o pipeline **continua vermelho** |
+| 9 | Criar um Aguarde e tentar salvar sem ligar nada nele | Erro nomeando o nó, antes de chegar ao servidor |
+
+⭐ **O passo 8 é o que precisa ser conferido com atenção.** Ele valida os dois lados
+ao mesmo tempo: a limpeza acontece E a falha continua visível. Se o pipeline
+aparecer **verde** no passo 8, pare o deploy e reabra a spec — é o modo de falha que
+derrubou a spec de dependências.
 
 ## 9. Fora de escopo (registrado de propósito)
 

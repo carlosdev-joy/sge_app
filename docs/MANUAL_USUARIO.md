@@ -144,6 +144,56 @@ disparou; não recalcula. Se um antecessor concluiu com uma data diferente, sai
 um alerta de **data de referência divergente**, em vez de o dependente ficar
 parado sem explicação.
 
+### 3.5 Nó Aguarde (esperar duas pernas antes de seguir)
+
+No editor de fluxo, arraste **Aguarde** (grupo *Fluxo* da paleta) quando um
+passo só puder acontecer depois que **várias etapas paralelas** terminarem.
+
+O caso clássico: dois processos rodam ao mesmo tempo usando os **mesmos arquivos
+de trabalho**, e a remoção desses arquivos só é segura quando os dois acabaram.
+Apagar antes corrompe quem ainda está lendo.
+
+```
+   ┌── Carga_Clientes ──┐
+───┤                    ├── ▮ Aguarde ── Limpa_Arquivos
+   └── Carga_Contratos ─┘
+```
+
+O nó é desenhado como uma **barra vertical**, atravessada no caminho: é o sinal
+visual de que ali as pernas se encontram.
+
+**Ele espera só quem está ligado nele.** O que não tiver uma linha chegando no
+Aguarde não é esperado. Se você tem várias pontas soltas no fluxo e quer todas
+esperando, use o botão **Prender as pontas soltas** no painel do nó — ele
+desenha as ligações de uma vez, e elas ficam visíveis no canvas.
+
+#### Escolher o que acontece quando uma perna falha
+
+No painel do Aguarde há duas opções, e a diferença importa:
+
+| Opção | Quando usar |
+|---|---|
+| **Só seguir se todas derem certo** (padrão) | O passo seguinte depende do resultado. Se qualquer perna falhar, ele não roda. |
+| **Seguir assim que todas terminarem, mesmo com falha** | O passo seguinte é **limpeza**. Os arquivos temporários precisam sair do disco mesmo que uma das cargas tenha quebrado. |
+
+⚠️ A segunda opção **não deixa o pipeline verde**. A etapa que falhou continua
+marcada como falha, o alerta de erro sai normalmente e o pipeline termina em
+erro. A única coisa que muda é que o passo seguinte ao Aguarde roda assim mesmo.
+Se você está procurando um jeito de "fazer o pipeline passar", esta opção não é
+isso — e nenhuma outra é.
+
+#### Erros comuns
+
+- **Aguarde sem nenhuma etapa ligada** — o fluxo não salva. Sem entrada, ele não
+  tem o que esperar.
+- **Aguarde com uma etapa só** — salva, mas aparece o aviso âmbar no nó: um ponto
+  de encontro com uma perna só não junta nada.
+- **Aguarde sem nada na saída** — salva, com aviso: ele não está segurando
+  ninguém.
+
+> **Depois de mexer no fluxo, republique o pipeline.** O desenho salvo só vira
+> execução quando a DAG é gerada de novo.
+
 ---
 
 ## 4. Perfil Administrador
