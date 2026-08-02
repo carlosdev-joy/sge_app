@@ -24,6 +24,12 @@ Data: 2026-07-31 · Status: ⛔ **REVERTIDA a partir da F2. Só a F1 sobrevive.*
 > `docker-compose.dev.yaml` do repo é o ponto de partida. Os 21 + 15 defeitos
 > estão descritos nos relatórios das duas revisões e valem como suíte de
 > aceitação do que for refeito.
+>
+> ✅ **Ambiente montado (2026-08-02):** o stack dev está DE PÉ na VPS — SQL
+> Server 2019 (`orquestra_dev`, schema de produção + migrations 002–069),
+> Airflow completo (webserver :8082, scheduler, worker, triggerer) e API :8000 /
+> UI :8090. Runbook, credenciais e armadilhas do bootstrap em
+> `docs/ambiente-dev.md`. A pré-condição da retomada está satisfeita.
 
 ## 1. Visão
 
@@ -59,6 +65,11 @@ estourar.
 - Alerta de **data de referência divergente** e de **janela estourada**.
 - Remoção do `ExternalTaskSensor` do gerador de DAGs.
 - UI de cadastro de dependências com busca por projeto/nome e visão do estado.
+- **Malha** (incluído em 2026-08-02): entidade que **agrupa pipelines de fato**
+  — o análogo da *sequence mestre* do DataStage e da malha/SMART Folder do
+  Control-M. A tela **Malha** é reaproveitada como o lugar onde as malhas são
+  **montadas e exibidas em diagrama** (nó = pipeline, aresta = dependência),
+  mantendo a linguagem visual atual. Ver §4b e as fases F7–F9.
 
 **OUT (explícito):**
 - **Dependência job → job entre pipelines diferentes.** Fica no backlog da
@@ -251,6 +262,58 @@ inexistente) e imprimindo cada uma no log da migration — são exatamente os ca
 que hoje falham em silêncio. O CSV continua sendo escrito durante a transição
 (F1–F4) para não quebrar `Malha.tsx` e o gerador; F6 o aposenta.
 
+## 4b. Malha — o agrupador de pipelines (incluído em 2026-08-02)
+
+### O conceito
+Uma **malha** é uma entidade nomeada que agrupa pipelines — o análogo direto da
+*sequence mestre* do DataStage (uma sequence que orquestra outras sequences,
+com Waits entre ondas) e da malha/SMART Folder do Control-M. A malha **não é um
+executor novo**: quem executa continua sendo o modelo desta spec (ODATE +
+push + guardiã). A malha é o **agrupador e a lente de montagem** — desenhar uma
+aresta entre dois pipelines na malha É cadastrar a dependência na tabela
+`etl_pipeline_dependencia` (F1), com as mesmas validações de ciclo (BFS) e
+existência (FK). Sem mecanismo paralelo, sem segunda fonte de verdade.
+
+### A tela
+A tela **Malha** (`/malha`) é reaproveitada: passa a **listar malhas** e, ao
+abrir uma, mostra o **diagrama Control-M** — nó = pipeline (com criticidade,
+agendamento e estado), aresta = dependência, ondas visíveis pelo layout
+topológico. A linguagem visual atual se mantém: cards com `CritBadge` e dot
+ativo/inativo, stats-pills, toolbar de filtros, export CSV. O que a tela mostra
+hoje e NÃO é malha-agrupadora sai dela: o inventário completo de pipelines
+(visões Cards/Diagrama) e o `JobChain` intra-pipeline (assunto do canvas de
+Etapas). **Destino decidido (2026-08-02): Catálogo & Lineage** (`/governanca`,
+permissão `tela_governanca`) — de propósito: quem NÃO tem acesso à construção
+de malhas (`tela_malha`) continua sabendo o que existe, pela mesma via de
+consulta que já usa para catálogo e lineage.
+
+O diagrama de montagem (`MalhaEditor`) nasce como **componente irmão** do
+`FluxoEditor` (React Flow), não parametrização dele — o FluxoEditor é acoplado
+a etapas. Na retomada, o modal de dependências da F5 e o MalhaEditor da F8
+**coexistem como duas portas de entrada da MESMA tabela** — o modal serve o
+ajuste pontual no cadastro do pipeline; a malha serve a montagem de conjunto. Os módulos puros migram para uso comum: `liveLayout`/`autoLayout`
+(layout em camadas), `criaCiclo` (validação client-side, espelho do BFS da F1).
+O `DependencyGraph` SVG atual da tela morre no processo (tem cores dark
+hardcoded, quebrado no tema claro — não herdar).
+
+### Modelo de dados (migration 070, na F7)
+- `etl_malha` — `malha_name` (PK), `descricao`, `ativo`, `criado_em/por`.
+- `etl_malha_pipeline` — membros: `malha_name` FK cascade, `pipeline_name` FK,
+  `layout_x/layout_y` (posição do nó no diagrama da malha). Um pipeline pode
+  estar em N malhas.
+- **As dependências NÃO ganham escopo por malha**: continuam globais em
+  `etl_pipeline_dependencia`. Uma dependência é um fato da orquestração, não da
+  visão — se dois pipelines aparecem em duas malhas, a aresta aparece nas duas,
+  porque ela é real nas duas. Consequência honesta: excluir uma aresta na malha
+  exclui a dependência DE VERDADE (o editor avisa).
+
+### Visão de execução (F9, depende de F2+)
+Com `etl_pipeline_execucao` alimentada, a malha aberta numa **data de
+referência** colore cada nó pelo status daquela data (AGUARDANDO_DEPENDENCIA /
+EXECUTANDO / SUCESSO / FALHA / PULADO) e mostra os eventos da guardiã
+(JANELA_ESTOUROU, DATA_DIVERGENTE) — a leitura diária de malha que o operador
+de Control-M conhece.
+
 ## 5. Fases
 
 ### F1 — Fundação: modelo, data de referência e validações do cadastro
@@ -347,6 +410,51 @@ que hoje falham em silêncio. O CSV continua sendo escrito durante a transição
   barata por um risco caro. Ver §10.
 - **Validação:** suíte completa + smoke manual. PR: `chore: dependência só pela tabela`.
 
+### F7 — Malha: entidade, API e lista (INDEPENDE da retomada F2–F6)
+- **Entregável:** malhas existem, têm membros e aparecem na tela Malha como
+  cards (linguagem visual atual); o inventário antigo segue acessível até a F9.
+- **Inclui:** migration 070 (`etl_malha`, `etl_malha_pipeline` com layout);
+  CRUD na API (criar/renomear/inativar malha; adicionar/remover membros);
+  permissão `tela_malha` reaproveitada; tela lista malhas (cards com contagem
+  de pipelines, criticidade agregada = a mais alta dos membros, dot ativo);
+  item "Malha de Pipelines" do menu migra de **Governança & Dados** para
+  **Construção** (`nav.ts` — decisão do usuário, 2026-08-02: montagem mora com
+  Pipelines/Etapas/Fluxos/Publicação).
+- **Critérios de aceite:** membro só pode ser pipeline existente (422 senão);
+  excluir pipeline que é membro não quebra a malha (membro some, malha avisa);
+  duas malhas podem conter o mesmo pipeline.
+- **Validação:** pytest + tsc/eslint baseline + build. PR: `feat: malha — entidade e lista`.
+
+### F8 — Malha: diagrama de montagem (INDEPENDE da retomada F2–F6)
+- **Entregável:** abrir a malha mostra o diagrama React Flow; montar a malha É
+  cadastrar dependências.
+- **Inclui:** `MalhaEditor` irmão do FluxoEditor (nó = pipeline, aresta =
+  dependência); extração de `liveLayout`/`autoLayout`/`criaCiclo` para módulo
+  comum; paleta = busca de pipelines por projeto/nome; desenhar aresta grava em
+  `etl_pipeline_dependencia` via API da F1 (ciclo BFS + existência + 422s);
+  excluir aresta remove a dependência com confirmação explícita ("isto apaga a
+  dependência real"); layout persistido em `etl_malha_pipeline`.
+- **Critérios de aceite:** aresta que criaria ciclo é recusada no cliente E no
+  servidor com a mesma mensagem; a MESMA dependência aparece em toda malha que
+  contenha os dois pipelines; salvar sem mudanças é no-op.
+- **Validação:** pytest + tsc/eslint baseline + build + revisão adversarial.
+  PR: `feat: malha — diagrama de montagem`.
+
+### F9 — Malha: visão de execução por data de referência (DEPENDE de F2–F4)
+- **Entregável:** a malha aberta numa data colore os nós pelo status da
+  `etl_pipeline_execucao` e mostra eventos da guardiã; o inventário antigo da
+  tela migra para **Catálogo & Lineage** (`/governanca` — decisão do usuário,
+  2026-08-02: consulta continua acessível a quem não constrói malhas) e a tela
+  Malha passa a exibir SÓ malhas.
+- **Inclui:** seletor de data de referência (default: ODATE corrente); polling
+  do status; legenda de estados; realocação do inventário + remoção do
+  `DependencyGraph` SVG legado.
+- **Critérios de aceite:** status na malha bate com `etl_pipeline_execucao` da
+  data; pipeline fora de malha não aparece em malha nenhuma (e o catálogo
+  realocado continua listando todos).
+- **Validação:** smoke no ambiente dev com cascata real (§7). PR:
+  `feat: malha — visão de execução`.
+
 ## 6. Riscos e mitigações
 
 | # | Risco | Impacto | Mitigação |
@@ -386,9 +494,26 @@ f) Conferir que a DAG gerada de um pipeline dependente **não** tem
   são coisas diferentes (SLA é duração da execução; o limite é o horário até o
   qual a liberação faz sentido).
 
+Decisões de 2026-08-02 (inclusão da Malha):
+- **A tela Malha exibirá SÓ malhas** (agrupadoras de pipelines, formato
+  Control-M); o inventário atual migra para **Catálogo & Lineage**
+  (`/governanca`) na F9 — separação deliberada entre construir (`tela_malha`)
+  e consultar (`tela_governanca`): quem não constrói continua vendo o que
+  existe.
+- **"Malha de Pipelines" muda de grupo no menu: Governança & Dados →
+  Construção** (na F7, junto da tela nova) — montagem mora com Pipelines,
+  Etapas, Fluxos e Publicação; em Governança fica a consulta.
+- **Dependência é global, não por malha** — a malha agrupa e exibe; a aresta
+  desenhada nela grava na tabela da F1. Uma fonte de verdade só.
+- **F7 e F8 podem andar ANTES da retomada F2–F6** (montagem só precisa da F1,
+  que está na main); a F9 espera a execução existir.
+- **Ambiente dev criado nesta VPS** como pré-condição da retomada — runbook em
+  `docs/ambiente-dev.md`.
+
 ## 10. Pendências desta spec (depois do deploy validado)
 
-Duas dívidas conscientes, ambas seguras de carregar e caras de antecipar:
+Duas dívidas conscientes (1–2, seguras de carregar e caras de antecipar) e
+dois fios soltos do ambiente dev (3–4, a resolver ANTES da retomada da F2):
 
 1. **Remover a escrita em espelho do CSV `etl_pipeline.depends_on`** e, depois,
    a própria coluna. Hoje ela é o fallback do `etl_dag_factory` e do preview
@@ -398,6 +523,24 @@ Duas dívidas conscientes, ambas seguras de carregar e caras de antecipar:
    nenhuma.
 2. **`trigger_por_dependencia`** já saiu da tela (F5) e não decide mais nada
    (F3), mas a coluna segue no banco. Some junto com o CSV, na mesma migration.
+
+3. **FIO SOLTO descoberto em 2026-08-02 (confirmar no ambiente dev antes da
+   F2):** a `sp_etl_pipelines_pendentes_criar` VERSIONADA no repo (migration
+   026) **não devolve `depends_on`**, e o supplement de colunas avançadas do
+   gerador também não o seleciona — pelo código do repo, `pipeline["depends_on"]`
+   chega `None` no gerador, e o `ExternalTaskSensor`/modo Dataset só sairiam se
+   a SP do banco de produção divergir do repo. Reproduzir no dev; a F6 precisa
+   cobrir a SP (ou o supplement) explicitamente.
+4. **Bootstrap de banco virgem tem 3 armadilhas conhecidas** (encontradas ao
+   montar o dev): `deploy_full.sql` referencia colunas de migrations posteriores
+   nas SPs da Seção 2 (converge na 2ª passada, mas deveria ser corrigido) e
+   está defasado do schema real (migrate para na 012 por falta de
+   `updated_at`); a migration 010 cria `etl_ds_job_log` (a TABELA real de
+   produção) **sem guarda de idempotência** e o bloco de limpeza do
+   `schema_prod_dev.sql` tenta `DROP VIEW` sem checar o tipo — a ordem dos
+   passos importa; `sqlcmd` (tools18) aborta o deploy_full com "Invalid cursor
+   state" — usar o runner pyodbc do runbook. Detalhes e a sequência que
+   funciona em `docs/ambiente-dev.md`.
 
 Sequência sugerida: deploy → smoke §7 → uma execução real de ponta a ponta →
 migration de limpeza removendo as duas colunas.

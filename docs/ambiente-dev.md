@@ -1,0 +1,85 @@
+# Ambiente de desenvolvimento — Airflow + SQL Server (VPS)
+
+Montado em 2026-08-02 como pré-condição da retomada da spec de dependências
+(`docs/spec-dependencias-pipelines.md`): os cenários de execução precisam ser
+**executados**, não deduzidos. Fica na mesma VPS dos demais produtos — portas
+escolhidas para não colidir com o Swarm de produção.
+
+## Endereços
+
+| Serviço | Endereço | Observação |
+|---|---|---|
+| UI (nginx) | `:8090` | ⚠️ o compose base usa `UI_PORT_VIP` (default 8090) — o `UI_PORT=8081` do example é ignorado |
+| Airflow webserver | `:8082` | login no `.env.dev` (`DEV_AIRFLOW_*`) |
+| API FastAPI | `:8000` | `/docs` para o Swagger |
+| SQL Server 2019 | `127.0.0.1:1433` | **loopback de propósito**: Docker publica portas por FORA do UFW; um `sa` exposto na internet não acontece. Acesso externo: túnel SSH |
+
+Credenciais: geradas no `.env.dev` (gitignored, `chmod 600`). Banco:
+`orquestra_dev`, usuário `sa`.
+
+## Subir / derrubar
+
+```bash
+cd /opt/orquestra-dev
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml --env-file .env.dev up -d
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml --env-file .env.dev down   # volumes preservados
+```
+
+⚠️ Nesta VPS, **nunca** derrubar por `pkill`/nome de processo — processos de
+containers de produção aparecem no host (incidente registrado na memória do
+ambiente). Sempre pelo compose ou por ID de container.
+
+## Bootstrap do banco (sequência REAL executada na montagem — banco virgem)
+
+⚠️ Esta sequência é para a **criação** do banco. Repeti-la sobre um banco
+populado é destrutivo: o `schema_prod_dev.sql` dá DROP+CREATE nas tabelas de
+dados.
+
+1. `CREATE DATABASE orquestra_dev` (sqlcmd no container `orquestra-sqlserver-dev`).
+2. **`deploy_full.sql` em DUAS passadas** com o runner pyodbc (batch a batch,
+   split por `GO`, continua-em-erro): as SPs da Seção 2 referenciam colunas que
+   as Seções 3 e 5 (migrações 002–008) criam — em banco virgem a 1ª passada
+   falha nesses batches e a 2ª os fecha. ⚠️ Não usar `sqlcmd` (tools18) para o
+   deploy_full: aborta com "Invalid cursor state".
+3. **`sql/migrate.py`** (1ª rodada) — aplica 002–011 e **PARA na 012 com
+   "Invalid column name 'updated_at'"**. Esperado: o deploy_full está defasado
+   do schema real (falta `updated_at` em `etl_pipeline_job`, entre outros); as
+   migrations até a 011 ficam registradas em `etl_schema_version`.
+4. **`DROP TABLE dbo.etl_ds_job_log`** e depois **`schema_prod_dev.sql`**
+   (schema EXATO de produção para as tabelas de dados). O drop manual é
+   necessário porque a migration 010 (rodada no passo 3) cria
+   `etl_ds_job_log` como TABELA **sem guarda de idempotência**, e o bloco de
+   limpeza do `schema_prod_dev.sql` tenta `DROP VIEW` sem checar o tipo do
+   objeto. (Papel real dos objetos: `etl_ds_job_log` é a **tabela** — nome real
+   de produção; `etl_datastage_job_log` é a **view-alias** criada pelo script.)
+5. **`sql/migrate.py`** (2ª rodada) — segue da 012 até a 069 (as registradas na
+   1ª rodada são puladas). Resultado na montagem: **002–069 todas OK**.
+
+O runner usado (executa dentro do container `orquestra-api`, que tem pyodbc +
+ODBC Driver 18):
+
+```bash
+docker cp sql orquestra-api:/tmp/sql
+docker cp <runner>.py orquestra-api:/tmp/run_sql.py
+docker exec -e SA_PW="<senha>" -e SQL_FILE=/tmp/sql/<arquivo>.sql orquestra-api python /tmp/run_sql.py
+docker exec orquestra-api python /tmp/sql/migrate.py --conn "DRIVER={ODBC Driver 18 for SQL Server};SERVER=sqlserver-dev,1433;DATABASE=orquestra_dev;UID=sa;PWD=<senha>;TrustServerCertificate=yes;"
+```
+
+## O que o `.env.dev.example` não cobria (corrigido no example)
+
+A API lê `MSSQL_CONN_STR` **pronto** (não monta a partir de `MSSQL_SERVER/USER/...`)
+e as credenciais do Airflow nos nomes `AIRFLOW_WWW_USER_USERNAME/PASSWORD`
+(não `DEV_AIRFLOW_*` — estes valem para o INIT do Airflow). Também são
+necessários `ORQUESTRA_CONN_KEY` (Fernet — mesma chave nos containers do
+Airflow e da API) e `AIRFLOW_UI_URL` (IP público, para os botões "Ver no
+Airflow").
+
+## Pendências conhecidas do ambiente
+
+- Corrigir a ordem do `deploy_full.sql` (SPs antes das colunas) e o tipo do
+  `etl_ds_job_log` — registradas no §10 da spec de dependências.
+- Confirmar no dev o FIO SOLTO da `sp_etl_pipelines_pendentes_criar` (não
+  devolve `depends_on` na versão do repo) — §10 da spec.
+- O banco está sem dados de negócio; para cenários com pipelines reais, usar
+  `scripts/carregar-dados-dev.sh` com um dump de produção, ou criar pipelines
+  de teste pela própria UI.
