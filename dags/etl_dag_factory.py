@@ -17,6 +17,18 @@ Registro de execução por data de referência (F2 — docs/retomada-f2-desenho.
   check_agenda, FALHA na task registrar_falha (espelho do teams_error),
   SUCESSO no próprio publish_dataset. O registro é observabilidade e NUNCA
   derruba a carga (degrada com aviso sem a migration 067).
+
+Liberação por condição e disparo push (F3 — docs/retomada-f3-desenho.md):
+  pipeline com dependência (tabela etl_pipeline_dependencia, migration 067)
+  nasce sem gatilho próprio e é disparado pelo publish_dataset do
+  predecessor, que — DEPOIS do commit do próprio SUCESSO — avalia os
+  dependentes ao vivo (utils/dependencias.py: condição EXISTS por data de
+  referência, pré-filtro de dia, claim serializable) e faz trigger_dag com o
+  conf herdando data_referencia + dia_operacional. Regras de HORA do
+  check_agenda valem só para disparo de agenda; regras de DIA valem para
+  toda origem e julgam o dia operacional. Falha no disparo NUNCA derruba o
+  pai (tudo logado com [DEP]). O ExternalTaskSensor e o consumo de Dataset
+  saíram do gerador; o outlet permanece como ponte para DAGs antigas.
 """
 from __future__ import annotations
 import os
@@ -204,6 +216,68 @@ def _chave_ci(nome) -> str:
     com "pipeline sem nenhuma etapa".
     """
     return (nome or "").strip().upper()
+
+
+def _derivar_restricao_dia(pipeline, dias_horarios_mes):
+    """Constante RESTRICAO_DIA do pipeline DEPENDENTE (F3, desenho §4.2).
+
+    A restrição de DIA do agendamento não pode evaporar quando o gatilho
+    próprio é desligado (D04: fechamento mensal dia 5 roda SÓ dia 5, nunca
+    30×/mês) — ela vira constante gerada e o check_agenda a julga contra o
+    dia operacional via utils.dependencias.dia_permitido, para TODA origem.
+
+    Derivação com `is not None`, nunca `int(x or 1)`: dow=0 é DOMINGO (D05).
+    Devolve None quando o agendamento não restringe dia (ex.: daily) — a
+    interpretação (conversão cron-dow, quinzenal d/d+15) mora SÓ no
+    dia_permitido; aqui é passthrough das colunas, com teste de paridade
+    contra a derivação de runtime do utils/dependencias.config_dependente.
+    """
+    stype = (pipeline.get("schedule_type") or "daily").lower().strip()
+    dias_semana = (pipeline.get("dias_semana") or "").strip()
+    dow = pipeline.get("schedule_dow")
+    dom = pipeline.get("schedule_dom")
+    dias_mes = sorted(dias_horarios_mes) if dias_horarios_mes else None
+    if stype not in ("weekly", "monthly", "biweekly") and not dias_mes and not dias_semana:
+        return None
+    return {
+        "schedule_type": stype,
+        "schedule_dow": int(dow) if dow is not None else None,
+        "schedule_dom": int(dom) if dom is not None else None,
+        "dias_semana": dias_semana,
+        "dias_horarios_mes_dias": dias_mes,
+    }
+
+
+def _dependencias_da_tabela(cursor):
+    """Supplement F3: dependências lidas DIRETO da tabela da migration 067
+    (a sp_etl_pipelines_pendentes_criar não devolve depends_on — D37; a SP
+    de produção pode divergir do repo, então ela NÃO muda: o supplement
+    versiona junto do código que o consome).
+
+    Contrato None × {} (D36): devolve **None** quando a tabela não existe
+    (o chamador preserva o que houver — deploy de dags/ sem a 067 não pode
+    apagar a dependência de todas as DAGs) e **dict {chave_ci: [predecessores]}**
+    quando existe — vazio SOBRESCREVE (dependência removida É remoção).
+    Erro de leitura é logado alto e tratado como tabela ausente: pipeline
+    com dependência então recusa a geração ruidosamente (D40), nunca volta
+    ao cron em silêncio.
+    """
+    try:
+        cursor.execute("SELECT OBJECT_ID('dbo.etl_pipeline_dependencia','U')")
+        row = cursor.fetchone()
+        if not row or row[0] is None:
+            return None
+        cursor.execute(
+            "SELECT pipeline_name, depende_de FROM dbo.etl_pipeline_dependencia "
+            "WHERE tipo = 'PIPELINE'")
+        mapa = {}
+        for dependente, predecessor in cursor.fetchall():
+            mapa.setdefault(_chave_ci(dependente), []).append(predecessor)
+        return mapa
+    except Exception as e:
+        print(f"[FACTORY] AVISO: leitura de etl_pipeline_dependencia falhou ({e}) "
+              "— tratando como tabela ausente (migration 067)")
+        return None
 
 
 def _alias(job) -> str:
@@ -569,6 +643,31 @@ def _generate_dag_source(pipeline, jobs):
     tags_raw   = pipeline["tags"]
     sched      = pipeline["scheduled_time"]
     depends_on = (pipeline.get("depends_on") or "").strip() or None
+    # F3 — dependências pela TABELA (supplement _dependencias_da_tabela):
+    # None = migration 067 ausente; lista (possivelmente vazia) = a tabela é a
+    # verdade. Sem a 067, pipeline COM dependência (via CSV) NÃO é gerado:
+    # nem `schedule=None` sem mecanismo de disparo (nunca roda, mudo), nem
+    # regressão a cron (roda sozinho, mudo — a classe do D40). Recusar
+    # ruidosamente é a única saída honesta; o arquivo antigo fica preservado.
+    deps_tabela = pipeline.get("_deps_tabela")
+    if deps_tabela is None and depends_on:
+        raise ValueError(
+            f"pipeline '{pname}': dependencia cadastrada ({depends_on}) mas a "
+            "migration 067 esta ausente — DAG nao gerada; o arquivo anterior "
+            "foi preservado")
+    # CSV órfão (revisão adversarial da F3): depends_on preenchido mas ZERO
+    # linhas na 067 — legado que a carga F descartou (predecessor fora de
+    # etl_pipeline, ex.: DAG externa que o sensor antigo esperava). Gerar como
+    # cron puro perderia a dependência EM SILÊNCIO no force_all; o sensor não
+    # existe mais para honrá-la. Recusa ruidosa: o operador decide (cadastrar
+    # a dependência na tabela ou limpar o campo).
+    if deps_tabela is not None and not deps_tabela and depends_on:
+        raise ValueError(
+            f"pipeline '{pname}': depends_on legado ({depends_on}) sem "
+            "correspondencia na tabela de dependencias (067) — DAG nao "
+            "gerada; cadastre a dependencia ou limpe o campo; o arquivo "
+            "anterior foi preservado")
+    tem_dependencia = bool(deps_tabela)
     is_prd  = (pipeline.get("ambiente") or "PROD").upper() == "PROD"
     f_ini   = bool(pipeline["envia_msg_inicio"]) and is_prd
     f_fim   = bool(pipeline["envia_msg_fim"])    and is_prd
@@ -584,13 +683,16 @@ def _generate_dag_source(pipeline, jobs):
     # Fase 4 — scheduling avançado
     calendario_val      = (pipeline.get("calendario_nome") or "").strip() or None
     dias_uteis_val      = bool(pipeline.get("somente_dias_uteis") or 0)
-    trigger_dep_val     = bool(pipeline.get("trigger_por_dependencia") or 0)
     _DS_QUEUE_MAP = {"ALTA": "HighPriorityJobs", "CRITICA": "HighPriorityJobs",
                      "MEDIA": "MediumPriorityJobs", "BAIXA": "LowPriorityJobs"}
     ds_queue_val = _DS_QUEUE_MAP.get((pipeline.get("criticidade") or "").upper().strip())
     runbook_val  = (pipeline.get("runbook_md") or "").strip() or None
 
     cron, horarios_list, dias_horarios_mes = _build_cron(pipeline)
+    # F3 — restrição de DIA do dependente vira constante gerada (§4.2): sem o
+    # gatilho próprio, o cron não julga mais nada — o dia sobrevive no check.
+    restricao_dia_val = (_derivar_restricao_dia(pipeline, dias_horarios_mes)
+                         if tem_dependencia else None)
     base_log    = BASE_LOG_ROOT
     user_tags   = [t.strip() for t in tags_raw.split(",") if t.strip()]
     all_tags    = list(dict.fromkeys([project, domain] + user_tags))
@@ -830,8 +932,11 @@ def _generate_dag_source(pipeline, jobs):
         # do flow_close; nós especiais (decisão/notificação/sql) ficam de fora.
         f'FLOW_JOBS     = {repr([j["job_name"] for j in sorted_jobs if _alias(j) not in _SPECIAL_NODES])}',
     ]
-    if depends_on:
-        consts_lines.append(f'DEPENDS_ON_DAG_ID = "{depends_on}"')
+    if tem_dependencia:
+        # Regras de dia como CONSTANTES geradas (mesmo padrão de
+        # HORARIOS_ESPECIFICOS): editar agendamento/dependência exige regerar
+        # o FILHO — dívida igual à do cron hoje (D30/F5 marca a DAG suja).
+        consts_lines.append(f'RESTRICAO_DIA = {repr(restricao_dia_val)}')
     if pool_name_val:
         consts_lines.append(f'POOL_NAME = "{pool_name_val}"')
     consts_str = "\n".join(consts_lines)
@@ -1347,6 +1452,65 @@ def _generate_dag_source(pipeline, jobs):
         "        return 'dataset'",
         "    return 'agenda'",
         "",
+        "def _origem_disparo(context):",
+        "    \"\"\"Taxonomia EXPLICITA da origem do disparo (F3): agenda | manual |",
+        "    dep | guardia | dataset. Substitui o sniffing por startswith('manual')",
+        "    nas REGRAS do check_agenda — dep__* nao comeca com 'manual' e caia nas",
+        "    regras de relogio (era PULADO em 100% dos disparos por evento).",
+        "    Origem desconhecida degrada para 'manual' (acao humana): nunca julga",
+        "    hora, mas continua julgando dia — degradacao visivel, nunca execucao",
+        "    indevida.\"\"\"",
+        "    run_id = str(context.get('run_id') or '')",
+        "    if run_id.startswith('scheduled'):",
+        "        return 'agenda'",
+        "    if run_id.startswith('dep__'):",
+        "        return 'dep'",
+        "    if run_id.startswith('guardia__'):",
+        "        return 'guardia'",
+        "    if run_id.startswith('dataset_triggered'):",
+        "        return 'dataset'",
+        "    return 'manual'",
+        "",
+        "def _dia_operacional(context):",
+        "    \"\"\"O dia de calendario em que a corrida foi ORDENADA na origem — e",
+        "    contra ele que as regras de DIA sao julgadas. A data_referencia e o",
+        "    ROTULO de juncao da corrida (a virada e artificio de juncao, nao",
+        "    re-rotulacao do dia de negocio): julgar dia pela data_referencia",
+        "    pulava a corrida certa quando a virada a carimbava no dia seguinte.",
+        "",
+        "    Precedencia: conf['dia_operacional'] valido > conf['data_referencia']",
+        "    (aproximacao com log — cobre trigger manual que so passou a data) >",
+        "    date do momento LOGICO em LOCAL_TZ. Nunca o relogio de parede: atraso",
+        "    de fila que vira a meia-noite nao muda o dia julgado.\"\"\"",
+        "    dr = context.get('dag_run')",
+        "    conf = (getattr(dr, 'conf', None) or {}) if dr is not None else {}",
+        "    from datetime import datetime as _dt",
+        "    for chave in ('dia_operacional', 'data_referencia'):",
+        "        bruto = conf.get(chave)",
+        "        if not bruto:",
+        "            continue",
+        "        try:",
+        "            valor = _dt.strptime(str(bruto).strip(), '%Y-%m-%d').date()",
+        "        except (ValueError, TypeError):",
+        "            print(f'[DEP] {chave} herdado invalido ({bruto!r}) — seguindo a cadeia de precedencia')",
+        "            continue",
+        "        if chave == 'data_referencia':",
+        "            print('[DEP] dia_operacional ausente no conf — aproximando pela data_referencia herdada')",
+        "        return valor",
+        "    # Run MANUAL em DAG com cron: o data_interval_end e o ULTIMO TICK do",
+        "    # cron (domingo 06:00 num daily disparado segunda 05:50; o dia 1 num",
+        "    # mensal) — julgar dias uteis/calendario contra ele pularia um manual",
+        "    # legitimo (regressao pega pela revisao adversarial da F3). O dia de",
+        "    # um manual sem conf e HOJE: e o dia em que o operador ordenou.",
+        "    if _origem_disparo(context) == 'manual':",
+        "        return pendulum.now(LOCAL_TZ).date()",
+        "    momento = context.get('data_interval_end') or context.get('logical_date')",
+        "    if momento is not None:",
+        "        momento = momento.in_timezone(LOCAL_TZ)",
+        "    else:",
+        "        momento = pendulum.now(LOCAL_TZ)",
+        "    return momento.date()",
+        "",
         "def _data_referencia(context):",
         "    \"\"\"A que dia de processamento (ODATE) esta corrida pertence.",
         "",
@@ -1488,31 +1652,147 @@ def _generate_dag_source(pipeline, jobs):
         "    # publicado pelos outlets no sucesso da task, como sempre foi.",
         "    # Degradado por construcao: _registrar_execucao nunca levanta.",
         "    _registrar_execucao('SUCESSO', context)",
+        "    # F3: avalia e dispara os dependentes DEPOIS do commit do SUCESSO,",
+        "    # no MESMO callable — commit -> avaliar e sequencia, nao corrida (a",
+        "    # condicao do candidato enxerga este pipeline ja gravado). Roda mesmo",
+        "    # se o registro degradou: sem o SUCESSO no banco a condicao nao fecha",
+        "    # e nada dispara — sem mentira. Nunca levanta (falha no disparo nao",
+        "    # derruba o pai).",
+        "    _disparar_dependentes(context)",
+        "",
+        "def _disparar_dependentes(context):",
+        "    \"\"\"F3 — disparo imediato dos dependentes (docs/retomada-f3-desenho.md).",
+        "",
+        "    A lista de dependentes NAO fica no codigo gerado: e lida ao vivo da",
+        "    tabela da migration 067 — cadastrar dependente novo vale no proximo",
+        "    fim deste pipeline sem regenerar o pai (so o filho e regerado).",
+        "",
+        "    Por candidato: pre-filtro de dia (MESMO predicado puro que o filho",
+        "    julga, com o MESMO dia operacional que vai no conf) -> condicao",
+        "    EXISTS -> janela nao_iniciar_antes (relogio de parede: janela E de",
+        "    relogio, por definicao) -> claim -> disparo com heranca de",
+        "    data_referencia + dia_operacional -> devolucao se o disparo levantar.",
+        "    Blackout NAO e pre-filtrado (e sobre o agora do FILHO, e a corrida",
+        "    devida merece linha PULADO visivel). Erro em um candidato nao cancela",
+        "    os demais e NENHUMA falha aqui derruba o pipeline pai — tudo logado",
+        "    com [DEP], nunca silencio.\"\"\"",
+        "    try:",
+        "        from utils.dependencias import (",
+        "            config_dependente as _dep_config,",
+        "            dependentes_de as _dep_dependentes,",
+        "            devolver_reserva as _dep_devolver,",
+        "            dia_permitido as _dep_dia_permitido,",
+        "            liberado as _dep_liberado,",
+        "            montar_conf as _dep_montar_conf,",
+        "            novo_run_id as _dep_novo_run_id,",
+        "            ordenar_corrida as _dep_ordenar,",
+        "            reservar_corrida as _dep_reservar,",
+        "        )",
+        "        hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "        obj = hook.get_first(\"SELECT OBJECT_ID('dbo.etl_pipeline_dependencia','U')\")",
+        "        if not obj or obj[0] is None:",
+        "            print('[DEP] migration 067 ausente — dependentes nao avaliados')",
+        "            return",
+        "        data_ref = _data_referencia(context)",
+        "        dia_op = _dia_operacional(context)",
+        "        conn = hook.get_conn()",
+        "        try:",
+        "            candidatos = _dep_dependentes(conn, PIPELINE_NAME)",
+        "            if not candidatos:",
+        "                return",
+        "            print(f'[DEP] candidatos de {PIPELINE_NAME} em {data_ref}: {candidatos}')",
+        "            for filho in candidatos:",
+        "                try:",
+        "                    cfg = _dep_config(conn, filho)",
+        "                    if cfg is None:",
+        "                        print(f'[DEP] {filho} sem cadastro em etl_pipeline — ignorado')",
+        "                        continue",
+        "                    ok_dia, motivo_dia = _dep_dia_permitido(cfg['regras_dia'], dia_op)",
+        "                    if not ok_dia:",
+        "                        print(f'[DEP] {filho} fora do dia em {dia_op}: {motivo_dia}')",
+        "                        continue",
+        "                    lib, faltantes = _dep_liberado(conn, filho, data_ref)",
+        "                    if not lib:",
+        "                        print(f'[DEP] {filho} aguardando: ' + ', '.join(faltantes))",
+        "                        continue",
+        "                    run_id = _dep_novo_run_id('dep', data_ref, PIPELINE_NAME)",
+        "                    janela = cfg.get('nao_iniciar_antes')",
+        "                    if janela is not None and pendulum.now(LOCAL_TZ).time() < janela:",
+        "                        criou = _dep_ordenar(conn, filho, data_ref, run_id, PIPELINE_NAME)",
+        "                        conn.commit()",
+        "                        print(f'[DEP] {filho} liberado antes da janela {janela} — '",
+        "                              + ('corrida ordenada, aguardando' if criou else 'corrida ja existente'))",
+        "                        continue",
+        "                    ganho = _dep_reservar(conn, filho, data_ref, run_id, PIPELINE_NAME)",
+        "                    conn.commit()",
+        "                    if ganho is None:",
+        "                        print(f'[DEP] {filho} ja tem corrida em {data_ref} — sem novo disparo')",
+        "                        continue",
+        "                    try:",
+        "                        from airflow.api.client.local_client import Client",
+        "                        Client(None, None).trigger_dag(",
+        "                            dag_id=filho, run_id=ganho,",
+        "                            conf=_dep_montar_conf(data_ref, dia_op, PIPELINE_NAME))",
+        "                        print(f'[DEP] {filho} disparado: run_id={ganho} data_ref={data_ref}')",
+        "                    except Exception as e:",
+        "                        _dep_devolver(conn, filho, data_ref, ganho,",
+        "                                      veio_de_adocao=(ganho != run_id))",
+        "                        conn.commit()",
+        "                        print(f'[DEP] disparo de {filho} falhou ({e}) — reserva devolvida')",
+        "                except Exception as e:",
+        "                    try:",
+        "                        conn.rollback()",
+        "                    except Exception:",
+        "                        pass",
+        "                    print(f'[DEP] avaliacao de {filho} falhou ({e}) — seguindo para o proximo')",
+        "        finally:",
+        "            conn.close()",
+        "    except Exception as e:",
+        "        print(f'[DEP] disparo de dependentes indisponivel ({e}) — o pipeline pai segue')",
         "",
         "def _check_agenda_regras(context):",
-        "    \"\"\"Fase 4 — blackout/freeze, dias úteis e calendário de feriados.",
-        "    Devolve (liberado, motivo): as regras de agenda de sempre, intactas —",
-        "    quem escreve o resultado da corrida e o wrapper check_agenda.\"\"\"",
+        "    \"\"\"Regras de agenda (F2/F3). Devolve (liberado, motivo) — quem",
+        "    escreve o resultado da corrida e o wrapper check_agenda.",
+        "",
+        "    Regras de HORA valem so para disparo de agenda: evento e 'quando",
+        "    liberou', nao 'que horas sao' — o piso de horario de um dependente e",
+        "    nao_iniciar_antes, no pusher. Regras de DIA valem para TODA origem e",
+        "    julgam o dia OPERACIONAL (nunca o relogio: atraso de fila que vira a",
+        "    meia-noite nao pula a corrida). Blackout segue medindo o relogio DE",
+        "    PROPOSITO: freeze operacional e sobre o agora, em qualquer origem.\"\"\"",
+        "    _origem = _origem_disparo(context)",
+        "    _dia_op = _dia_operacional(context)",
         "    # Horários específicos: o cron dispara na união minuto×hora;",
         "    # só executa se o horário agendado estiver na lista configurada.",
-        "    if HORARIOS_ESPECIFICOS and not str(context.get('run_id', '')).startswith('manual'):",
+        "    if HORARIOS_ESPECIFICOS and _origem == 'agenda':",
         "        _die = context.get('data_interval_end') or context.get('logical_date')",
         "        if _die is not None:",
         "            _hhmm = _die.in_timezone(LOCAL_TZ).strftime('%H:%M')",
         "            if _hhmm not in HORARIOS_ESPECIFICOS:",
         "                print(f\"[AGENDA] {_hhmm} fora dos horarios configurados {HORARIOS_ESPECIFICOS} — execucao pulada.\")",
         "                return False, f'horario {_hhmm} fora dos horarios configurados'",
-        "    # Dia + hora específico: o cron dispara na união dia×minuto×hora;",
-        "    # só executa se (dia, horario) atual estiver configurado para aquele dia.",
-        "    if DIAS_HORARIOS_MES and not str(context.get('run_id', '')).startswith('manual'):",
+        "    # Dia + hora específico do mês: parte de HORA (só agenda). O DIA é",
+        "    # julgado pelo dia operacional; para disparo por evento a parte de",
+        "    # dia sobrevive na restrição de dia gerada, julgada adiante.",
+        "    if DIAS_HORARIOS_MES and _origem == 'agenda':",
         "        _die = context.get('data_interval_end') or context.get('logical_date')",
         "        if _die is not None:",
-        "            _local = _die.in_timezone(LOCAL_TZ)",
-        "            _dia = _local.day",
-        "            _hhmm = _local.strftime('%H:%M')",
+        "            _hhmm = _die.in_timezone(LOCAL_TZ).strftime('%H:%M')",
+        "            _dia = _dia_op.day",
         "            if _hhmm not in DIAS_HORARIOS_MES.get(_dia, []):",
         "                print(f\"[AGENDA] dia {_dia} as {_hhmm} fora da configuracao {DIAS_HORARIOS_MES} — execucao pulada.\")",
         "                return False, f'dia {_dia} as {_hhmm} fora da configuracao de dia e hora do mes'",
+        *([
+        "    # Restrição de DIA do agendamento (F3): sem gatilho próprio, o cron",
+        "    # não julga mais nada — o dia sobrevive aqui, para TODA origem:",
+        "    # fechamento mensal dia 5 roda SÓ dia 5, dispare quem disparar.",
+        "    if RESTRICAO_DIA:",
+        "        from utils.dependencias import dia_permitido as _dia_permitido",
+        "        _lib_dia, _motivo_dia = _dia_permitido(RESTRICAO_DIA, _dia_op)",
+        "        if not _lib_dia:",
+        "            print(f\"[AGENDA] {_motivo_dia} — execucao pulada.\")",
+        "            return False, _motivo_dia",
+        ] if tem_dependencia else []),
         "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
         "    try:",
         "        row = hook.get_first(",
@@ -1526,18 +1806,19 @@ def _generate_dag_source(pipeline, jobs):
         "            return False, f'blackout vigente: {row[0]}'",
         "    except Exception as e:",
         "        print(f\"[AGENDA] Aviso: verificacao de blackout falhou ({e}) — seguindo.\")",
-        "    if SOMENTE_DIAS_UTEIS and pendulum.now(LOCAL_TZ).weekday() >= 5:",
+        "    if SOMENTE_DIAS_UTEIS and _dia_op.weekday() >= 5:",
         "        print(\"[AGENDA] Fim de semana e pipeline e somente dias uteis — execucao pulada.\")",
         "        return False, 'fim de semana e pipeline somente dias uteis'",
         "    if CALENDARIO_NOME:",
         "        try:",
-        "            row = hook.get_first(",
-        '                "SELECT TOP 1 ISNULL(descricao, \'\') FROM dbo.etl_calendario "',
-        '                "WHERE calendario_nome=%s AND data=CAST(GETDATE() AS DATE)",',
-        "                parameters=(CALENDARIO_NOME,),",
-        "            )",
-        "            if row is not None:",
-        "                print(f\"[AGENDA] Data bloqueada no calendario {CALENDARIO_NOME} ({row[0]}) — execucao pulada.\")",
+        "            from utils.dependencias import calendario_bloqueia as _cal_bloqueia",
+        "            _conn_cal = hook.get_conn()",
+        "            try:",
+        "                _bloqueado = _cal_bloqueia(_conn_cal, CALENDARIO_NOME, _dia_op)",
+        "            finally:",
+        "                _conn_cal.close()",
+        "            if _bloqueado:",
+        "                print(f\"[AGENDA] Data bloqueada no calendario {CALENDARIO_NOME} — execucao pulada.\")",
         "                return False, f'data bloqueada no calendario {CALENDARIO_NOME}'",
         "        except Exception as e:",
         "            print(f\"[AGENDA] Aviso: verificacao de calendario falhou ({e}) — seguindo.\")",
@@ -1650,7 +1931,8 @@ def _generate_dag_source(pipeline, jobs):
         ')',
     ])
 
-    # Fase 4 — publica Dataset ao final (consumido por pipelines com trigger_por_dependencia)
+    # Fase 4/F3 — o publish mantém o outlet Dataset como PONTE: DAG antiga não
+    # regenerada que consome o Dataset deste pipeline continua disparando.
     # F2: o publish deixa de ser EmptyOperator e vira PythonOperator com o
     # MESMO task_id, MESMA trigger rule (inclusive a condicional de decisão),
     # MESMOS outlets e MESMA posição — o callable grava SUCESSO (degradado,
@@ -1667,41 +1949,14 @@ def _generate_dag_source(pipeline, jobs):
         ')',
     ]))
 
-    # S4: ExternalTaskSensor — suporte a múltiplas dependências
-    dep_list = [d.strip() for d in depends_on.split(",") if d.strip()] if depends_on else []
-    # Em modo trigger_por_dependencia o schedule já é dirigido pelos Datasets
-    # dos pipelines dos quais depende — sensores são desnecessários.
-    use_dataset_schedule = trigger_dep_val and bool(dep_list)
-    if use_dataset_schedule:
-        dep_list = []
-    sensor_block = ""
-    sensor_names = []
-    if dep_list:
-        if "from airflow.sensors.external_task import ExternalTaskSensor" not in import_lines:
-            import_lines.append("from airflow.sensors.external_task import ExternalTaskSensor")
-        sensor_parts = []
-        for dep in dep_list:
-            sname = f"t_sensor_{dep}"
-            sensor_names.append(sname)
-            sensor_parts.append("\n".join([
-                f'{sname} = ExternalTaskSensor(',
-                f'    task_id="wait_{dep}",',
-                f'    external_dag_id="{dep}",',
-                f'    mode="reschedule",',
-                f'    timeout=3600,',
-                f'    poke_interval=60,',
-                f')',
-            ]))
-        sensor_block = "\n\n".join(sensor_parts)
-    # Rebuild imports_str after potential append
+    # F3 — o ExternalTaskSensor e o schedule-por-Dataset SAÍRAM do gerador
+    # (D01): a espera por polling (timeout de 1h, exigência de mesmo horário)
+    # deu lugar ao disparo por condição no publish do predecessor. O outlet
+    # Dataset do publish PERMANECE como ponte para DAGs antigas não regeradas;
+    # a âncora do grafo volta a ser sempre o t_check_agenda.
     imports_str = "\n".join(import_lines)
 
     dep_lines = []
-
-    # anchor: check_agenda → (sensors or first group)
-    if sensor_names:
-        sensors_ref = "[" + ", ".join(sensor_names) + "]"
-        dep_lines.append(f"t_check_agenda >> {sensors_ref}")
 
     # Modo de dependência: EXPLÍCITO (algum job tem depends_on_jobs OU há um nó
     # de Decisão) ou ONDAS (execution_order). Opt-in por pipeline — pipelines
@@ -1714,7 +1969,7 @@ def _generate_dag_source(pipeline, jobs):
     sql_task_refs = []     # t_sql_* a convergir no publish_dataset
     wait_task_refs = []    # t_wait_* a convergir no publish_dataset
     if explicit_deps:
-        root_anchor = sensors_ref if sensor_names else "t_check_agenda"
+        root_anchor = "t_check_agenda"
         teams_start_done = False
         def _end_ref(d):
             # Tarefa de conclusão de uma dependência. Nós de notificação, decisão e
@@ -1785,8 +2040,6 @@ def _generate_dag_source(pipeline, jobs):
             g_ends = [f"t_end_{_varname(j['job_name'])}" for j in group]
             if prev_ends:
                 up = "[" + ", ".join(prev_ends) + "]" if len(prev_ends) > 1 else prev_ends[0]
-            elif sensor_names:
-                up = sensors_ref
             else:
                 up = "t_check_agenda"
             for j_idx, j in enumerate(group):
@@ -1855,8 +2108,6 @@ def _generate_dag_source(pipeline, jobs):
     with_parts = []
     with_parts.append(_ind(check_block))
     with_parts.append(_ind(publish_block))
-    if sensor_block:
-        with_parts.append(_ind(sensor_block))
     for t in teams_tasks:
         with_parts.append(_ind(t))
     for b in job_blocks:
@@ -1873,10 +2124,10 @@ def _generate_dag_source(pipeline, jobs):
     else:
         sd_y, sd_m, sd_d = 2026, 1, 1
 
-    if use_dataset_schedule:
-        deps_orig = [d.strip() for d in depends_on.split(",") if d.strip()]
-        ds_items = ", ".join(f'Dataset("orq://pipeline/{d}")' for d in deps_orig)
-        schedule_line = f"    schedule=[{ds_items}],  # dispara quando as dependências publicarem"
+    if tem_dependencia:
+        # Dependente (F3): DAG ativa e visível, sem gatilho próprio — quem a
+        # dispara é o publish do predecessor (push), com a data herdada.
+        schedule_line = "    schedule=None,  # dependente: o gatilho e o disparo dos predecessores"
     elif cron is None:
         # Sob demanda. `schedule=None` mantém a DAG ATIVA no Airflow, listada e
         # disparável pelo botão Executar — ela só não tem gatilho automático.
@@ -2164,8 +2415,10 @@ def gerar_dags(**context):
             "AND COLUMN_NAME='calendario_nome'"
         )
         has_sched_cols = bool(cursor.fetchone()[0])
+        # trigger_por_dependencia saiu do SELECT junto com o consumo (F3): o
+        # modo Dataset não é mais gerado; a coluna morre na limpeza da F6.
         sched_cols = (
-            ", calendario_nome, somente_dias_uteis, trigger_por_dependencia"
+            ", calendario_nome, somente_dias_uteis"
             if has_sched_cols else ""
         )
         # colunas da migration 018 (horários múltiplos) — degradam se ausentes
@@ -2192,6 +2445,16 @@ def gerar_dags(**context):
         )
         if cursor.fetchone()[0]:
             sched_cols += ", schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom"
+        # depends_on (CSV legado) — fallback INFORMATIVO da F3: quando a tabela
+        # da 067 não existe, é ele que denuncia "dependência cadastrada" e faz
+        # a geração recusar ruidosamente em vez de regredir a cron em silêncio.
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' "
+            "AND COLUMN_NAME='depends_on'"
+        )
+        if cursor.fetchone()[0]:
+            sched_cols += ", depends_on"
         cursor.execute(
             f"SELECT pipeline_name, criticidade, sla_minutos, ambiente, "
             f"max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao, dag_start_date, "
@@ -2204,6 +2467,18 @@ def gerar_dags(**context):
         adv_map  = {r[0]: dict(zip(adv_cols, r)) for r in adv_rows}
         for p in pipelines:
             p.update(adv_map.get(p['pipeline_name'], {}))
+
+    # Supplement F3: dependências pela TABELA da migration 067 — contrato
+    # None × {} (D36): None = tabela ausente, preserva o que houver (o CSV
+    # vira só o denunciante da recusa); dict = a tabela é a verdade e o
+    # VAZIO sobrescreve (dependência removida É remoção).
+    _depmapa = _dependencias_da_tabela(cursor)
+    if _depmapa is None:
+        print("[FACTORY] etl_pipeline_dependencia indisponivel — dependencias "
+              "pela tabela nao aplicadas (migration 067)")
+    for p in pipelines:
+        p["_deps_tabela"] = (None if _depmapa is None
+                             else _depmapa.get(_chave_ci(p["pipeline_name"]), []))
 
     cursor.close(); conn.close()
 

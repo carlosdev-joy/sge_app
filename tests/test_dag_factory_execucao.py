@@ -67,18 +67,23 @@ def factory():
 # lazy (em tempo de CHAMADA), então ele entra no sys.modules só durante o exec
 # e as chamadas, via _ambiente_utils.
 _DREF_REAL = _load_module("utils_data_referencia_f2_test", "dags/utils/data_referencia.py")
+# Módulo REAL das dependências (F3): o check_agenda gerado julga calendário e
+# restrição de dia por ele, e o publish avalia dependentes por ele.
+_DEPS_REAL = _load_module("utils_dependencias_f2_test", "dags/utils/dependencias.py")
 
 
 @contextmanager
 def _ambiente_utils():
-    """Stuba ``utils.*`` (e aponta utils.data_referencia para o módulo REAL)
-    apenas durante o exec/chamada — mesmo padrão do _exec_source vizinho."""
+    """Stuba ``utils.*`` (e aponta utils.data_referencia/utils.dependencias
+    para os módulos REAIS) apenas durante o exec/chamada — mesmo padrão do
+    _exec_source vizinho."""
     util_mods = {
         "utils": MagicMock(),
         "utils.datastage_operator": MagicMock(),
         "utils.conditions": MagicMock(),
         "utils.job_operators": MagicMock(),
         "utils.data_referencia": _DREF_REAL,
+        "utils.dependencias": _DEPS_REAL,
     }
     saved = {m: sys.modules.get(m) for m in util_mods}
     try:
@@ -165,6 +170,7 @@ class _CursorF2:
         self._rowcount_update = rowcount_update
         self._select_row = select_row    # resposta do SELECT da guarda de PULADO
         self._ultimo_select = None
+        self.calendario = None           # F3: resposta de etl_calendario
         self.rowcount = -1
         self.execs = []          # (sql normalizada, params)
 
@@ -172,10 +178,17 @@ class _CursorF2:
         s = " ".join(str(sql).split())
         self.execs.append((s, params))
         self.rowcount = self._rowcount_update if s.startswith("UPDATE") else -1
-        self._ultimo_select = self._select_row if s.startswith("SELECT 1 FROM") else None
+        if "etl_calendario" in s:
+            # F3: calendário julgado via utils.dependencias.calendario_bloqueia
+            self._ultimo_select = (1,) if self.calendario else None
+        else:
+            self._ultimo_select = self._select_row if s.startswith("SELECT 1 FROM") else None
 
     def fetchone(self):
         return self._ultimo_select
+
+    def fetchall(self):
+        return []
 
 
 class _HookF2:
@@ -185,6 +198,7 @@ class _HookF2:
     def __init__(self, tem_067=True, virada=None, blackout=None, calendario=None,
                  rowcount_update=1):
         self.cursor = _CursorF2(rowcount_update)
+        self.cursor.calendario = calendario
         self.commits = 0
         self.tem_067 = tem_067
         self.virada = virada
@@ -305,8 +319,9 @@ def _cenarios(factory):
                  aguarde={"politica": "todas_terminarem"}),
             _job("Limpa", jtype="shell", order=3, depends="Encontro"),
         ]),
-        "sensores": _src(factory, depends_on="PIPE_PAI"),
-        "dataset": _src(factory, depends_on="PIPE_PAI", trigger_por_dependencia=1),
+        # F3: dependência vem da TABELA da 067 (_deps_tabela); o CSV é só o
+        # espelho legado. O modo sensor/Dataset saiu do gerador.
+        "dependencia": _src(factory, _deps_tabela=["PIPE_PAI"], depends_on="PIPE_PAI"),
         "horarios": _src(factory, horarios_especificos="09:00,10:30"),
         "dias_mes": _src(factory, schedule_type="monthly_days_times",
                          dias_horarios_mes='[{"dia": 1, "horarios": ["09:00"]}]'),
@@ -434,17 +449,21 @@ def test_motivo_especifico_das_cinco_saidas(factory):
     ok, motivo = ns["_check_agenda_regras"](_ctx())
     assert ok is False and motivo == "blackout vigente: Freeze"
 
-    # 4) fim de semana (2026-08-01 é sábado — pendulum.now congelado)
+    # 4) fim de semana — F3: julga o DIA OPERACIONAL (momento lógico,
+    # 2026-08-01 é sábado), não o relógio: pendulum.now congelado numa
+    # segunda-feira prova que o relógio de parede não participa.
     ns = _exec_ns(_src(factory, somente_dias_uteis=1))
     _instala_hook(ns, _HookF2())
-    ns["pendulum"] = SimpleNamespace(now=lambda tz: datetime(2026, 8, 1, 6, 0))
+    ns["pendulum"] = SimpleNamespace(now=lambda tz: datetime(2026, 8, 3, 6, 0))
     ok, motivo = ns["_check_agenda_regras"](_ctx())
     assert ok is False and motivo == "fim de semana e pipeline somente dias uteis"
 
-    # 5) calendário
+    # 5) calendário — F3: julgado pelo dia operacional via
+    # utils.dependencias.calendario_bloqueia (por isso o _ambiente_utils)
     ns = _exec_ns(_src(factory, calendario_nome="FERIADOS"))
     _instala_hook(ns, _HookF2(calendario=("Natal",)))
-    ok, motivo = ns["_check_agenda_regras"](_ctx())
+    with _ambiente_utils():
+        ok, motivo = ns["_check_agenda_regras"](_ctx())
     assert ok is False and motivo == "data bloqueada no calendario FERIADOS"
 
 
@@ -608,7 +627,7 @@ def test_registrar_sucesso_nunca_levanta(factory):
 def test_flow_close_fecha_ramo_vazio_so_com_decisao(factory):
     cen = _cenarios(factory)
     assert "decisao pulou todos os jobs" in cen["decisao"]
-    for nome in ("simples", "notif_sql", "aguarde", "sensores", "dataset"):
+    for nome in ("simples", "notif_sql", "aguarde", "dependencia"):
         assert "decisao pulou todos os jobs" not in cen[nome], nome
 
 
@@ -741,17 +760,24 @@ def test_default_args_nao_referencia_helper(factory):
     assert src.index("default_args") < src.index("def _now_str")
 
 
-# ═════════════════ 10. Não-regressão de agendamento (F2 §7) ═════════════════
+# ═════════════════ 10. Agendamento sob F3 (D01/D38) ═════════════════════════
 
-def test_sensores_e_dataset_permanecem(factory):
-    """A F2 não mexe no disparo: ExternalTaskSensor e modo Dataset ficam como
-    estão (removê-los é F3)."""
+def test_f3_dependente_sem_sensor_nem_consumo_de_dataset(factory):
+    """F3 (D01): o dependente perde o gatilho próprio e o polling; o cron de
+    quem NÃO tem dependência fica intacto (D38). O outlet do publish
+    permanece nos dois — é a ponte para DAG antiga não regenerada."""
     cen = _cenarios(factory)
-    assert "ExternalTaskSensor" in cen["sensores"]
-    assert 'schedule=[Dataset("orq://pipeline/PIPE_PAI")]' in cen["dataset"]
+    assert "ExternalTaskSensor" not in cen["dependencia"]
+    assert "schedule=[Dataset(" not in cen["dependencia"]
+    assert "DEPENDS_ON_DAG_ID" not in cen["dependencia"]
+    linhas_dep = [l.strip() for l in cen["dependencia"].splitlines()
+                  if l.strip().startswith("schedule=")]
+    assert len(linhas_dep) == 1 and linhas_dep[0].startswith("schedule=None,")
     linhas = [l.strip() for l in cen["simples"].splitlines()
               if l.strip().startswith("schedule=")]
     assert linhas == ['schedule="0 6 * * *",']
+    for nome in ("simples", "dependencia"):
+        assert "outlets=[Dataset(DATASET_URI)]" in cen[nome], nome
 
 
 # ═════════ 10. guarda: PULADO não rebaixa estado terminal (revisão F2) ══════
