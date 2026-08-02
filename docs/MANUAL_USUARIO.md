@@ -107,42 +107,111 @@ Aba Pipelines → **Importar sequence**: faça upload do `.dsx`, revise o rascun
 
 ### 3.4 Dependência entre pipelines
 
-No passo **Agendamento** do cadastro, clique em **Escolher** ao lado de "Depende
-de outros pipelines". A escolha é feita numa lista com busca por nome e filtro
-por projeto — não se digita o nome. Um pipeline **inativo** escolhido como
-dependência aparece com aviso: enquanto ele seguir assim, o dependente nunca vai
-ser liberado.
+"PIPE_C depende de PIPE_A e PIPE_B" significa: C só roda depois que A **e** B
+concluírem com sucesso **no mesmo dia de processamento** — e roda **em
+segundos** após o último deles terminar, não no próximo horário cheio. Quem
+depende de dois pipelines não é disparado pelo primeiro que termina; quem
+dispara é o que **fecha a conta**.
 
-**Com dependência, o horário deixa de valer.** O pipeline não tem mais
-agendamento próprio: ele é disparado assim que a **última** dependência conclui
-com sucesso — em segundos, não no próximo horário cheio. Se ele depende de dois
-pipelines, o primeiro a terminar não dispara nada; quem dispara é o que fecha a
-conta.
+#### As duas portas de cadastro (a mesma dependência)
 
-Dois campos opcionais aparecem junto:
+1. **No cadastro do pipeline (wizard)** — passo **Agendamento**, botão
+   **Escolher dependências** (ou **Editar dependências**). A escolha é feita
+   numa lista com busca por nome e filtro por projeto — **não se digita nome
+   livre**. Um pipeline **inativo** escolhido aparece com aviso: enquanto ele
+   seguir assim, o dependente nunca será liberado. Uma escolha que criaria
+   **ciclo** (A espera B que espera A) é bloqueada com a explicação na tela.
+2. **Na tela Malha** — abra uma malha que contenha os dois pipelines e
+   **desenhe a seta** entre eles no diagrama. Desenhar a aresta **é** cadastrar
+   a dependência — ela é real e global, não um desenho: excluir a seta apaga a
+   dependência de verdade (a tela pede confirmação), e a mesma aresta aparece
+   em toda malha que contenha os dois pipelines.
+
+Nas duas portas, a dependência é aplicada **na hora** — em edição, cancelar o
+wizard depois não desfaz.
+
+#### O horário deixa de valer; o DIA continua valendo
+
+Com dependência, o pipeline **perde o horário próprio**: o gatilho passa a ser
+a conclusão dos antecessores (os campos de hora ficam inertes na tela). Mas as
+restrições de **dia** continuam valendo: dias da semana, dia do mês, somente
+dias úteis e calendário de feriados seguem sendo respeitados — julgados pelo
+**dia em que a malha rodou** (o "dia operacional", que os dependentes herdam
+de quem os disparou), não pelo relógio da hora do disparo e não pelo rótulo da
+data de referência. A diferença aparece nas cadeias com virada: com virada
+20:00, o antecessor que conclui **sexta 21:00** carimba a data de referência de
+**sábado** — mas o dia da malha é **sexta**, então um dependente "somente dias
+úteis" **roda**. Um fechamento "todo dia 5" que depende de outro pipeline roda
+quando o antecessor concluir **na malha do dia 5**.
+
+#### Janela e hora-limite (bloco "Janela da liberação")
+
+Dois campos opcionais aparecem junto das dependências:
 
 - **Não iniciar antes de** — liberou às 07:10 mas o processo não deve começar
-  antes das 08:00? Ele espera.
+  antes das 08:00? Ele espera; o disparo sai na janela.
 - **Avisar se não liberar até** — passou desse horário sem liberar, sai um
-  alerta no Teams. **O pipeline não falha**: fica pendente, aguardando.
+  alerta no Teams. **Não trava e não falha**: o pipeline fica pendente,
+  aguardando — se o antecessor concluir depois, a corrida ainda roda.
 
-#### Data de referência (o dia de processamento)
+#### Data de referência (ODATE — o dia de processamento)
 
-Cada execução carrega uma **data de referência** — o dia de negócio a que ela
-pertence, que não é necessariamente a data do relógio. Ela é o que permite dizer
-que duas execuções são "a mesma corrida": um pipeline só é liberado quando todas
-as suas dependências concluíram **na mesma data de referência**. Sucesso de
-ontem não libera a corrida de hoje.
+Cada execução carrega uma **data de referência**: o dia de negócio a que ela
+pertence, que não é necessariamente a data do relógio. É ela que define o que é
+"a mesma corrida": um pipeline só é liberado quando **todas** as dependências
+concluíram com sucesso **na mesma data de referência**. Sucesso de ontem não
+libera a corrida de hoje. (Pipeline que roda várias vezes ao dia: vale a
+pergunta "existe sucesso **nesta data**?" — as execuções extras não atrapalham.)
 
-Por padrão a data de referência é a data do calendário. Para processos que
-atravessam a meia-noite, informe a **virada do dia** em Configurações Avançadas:
-com virada às 20:00, o que roda 31/07 às 23:30 e o que roda 01/08 às 00:40
-pertencem ambos ao dia **01/08** — e portanto conversam entre si.
+Por padrão, a data de referência é a data do calendário. Para cadeias que
+**atravessam a meia-noite**, informe a **Hora de virada do dia (ODATE)** no
+passo Agendamento: com virada às **20:00**, o que roda 31/07 às 23:30 e o que
+roda 01/08 às 00:40 pertencem ambos ao dia **01/08** — e portanto conversam
+entre si. O campo mostra ao lado a data que **seria** carimbada agora, para
+conferência.
 
 Quem é disparado por dependência **herda** a data de referência de quem o
-disparou; não recalcula. Se um antecessor concluiu com uma data diferente, sai
-um alerta de **data de referência divergente**, em vez de o dependente ficar
-parado sem explicação.
+disparou — não recalcula. É isso que mantém a corrida coerente quando ela cruza
+a meia-noite.
+
+#### A guardiã: o que os avisos significam
+
+Uma rotina de vigilância (a cada 5 minutos) confere se alguma corrida ficou
+presa e emite **eventos** — cada um com um significado e uma ação:
+
+| Evento | O que aconteceu | O que fazer |
+|---|---|---|
+| **JANELA_ESTOUROU** | Passou do "Avisar se não liberar até" e a corrida não liberou | Verifique o antecessor que falta; o pipeline segue **pendente**, não falhado — liberou depois, roda |
+| **DATA_DIVERGENTE** | Um antecessor concluiu com **outra** data de referência (o aviso cita as duas) | Quase sempre é virada de dia mal configurada — confira a Hora de virada dos dois pipelines |
+| **PREDECESSOR_FALHOU** | Um antecessor **falhou** na data | Trate a falha do antecessor (§2.2); ao reprocessar, a cadeia anda sozinha |
+| **NAO_LIBEROU** | O dia de processamento terminou sem a corrida liberar | A corrida foi **fechada** — não redispara sozinha; ver reprocesso abaixo |
+
+**Onde ver:** na tela **Malha**, abra a malha e alterne para o modo
+**Execução** — cada pipeline aparece colorido pelo status da data de referência
+escolhida (aguardando dependência / executando / sucesso / falha / pulado / não
+liberou), com os eventos da guardiã; no **Dashboard**, o painel **"Aguardando
+dependência"** lista quem espera o quê ("esperando PIPE_B · data ref 01/08").
+Os alertas também chegam como card no canal do Teams.
+
+#### Reprocesso: como a cadeia anda de novo
+
+- **Antecessor falhou?** Corrija a causa e reexecute a falha (§2.2 — Clear no
+  Airflow ou Reexecutar na aba Logs). Quando ele terminar verde, **a cadeia é
+  empurrada automaticamente**: os dependentes daquela mesma data de referência
+  disparam sozinhos — não é preciso rodar um por um.
+- **Corrida fechada como NAO_LIBEROU?** Ela não redispara sozinha (o dia dela
+  acabou). Para rodá-la mesmo assim, dispare o pipeline manualmente
+  **informando a data de referência**: no Airflow, *Trigger DAG w/ config* com
+  `{"data_referencia": "AAAA-MM-DD"}`. O botão **▶ Executar agora** da tela
+  dispara com a data de referência de **agora** (calculada pela virada).
+
+#### Depois de mexer em dependência: republique
+
+Criar ou remover dependência **muda a DAG** do dependente (o agendamento por
+horário vira disparo por evento). Até republicar, a DAG no Airflow continua
+rodando a **versão anterior** do cadastro — o pipeline fica com o badge âmbar
+**"publicação pendente"** na aba Pipelines. Clique em **Publicar nova versão**
+para atualizar. O badge some quando a publicação conclui.
 
 ### 3.5 Nó Aguarde (esperar duas pernas antes de seguir)
 

@@ -309,6 +309,7 @@ DELETE FROM dbo.etl_factory_log          WHERE pipeline_name LIKE 'HARNESS[_]%';
 DELETE FROM dbo.etl_pipeline_job_param   WHERE pipeline_name LIKE 'HARNESS[_]%';
 DELETE FROM dbo.etl_pipeline_job         WHERE pipeline_name LIKE 'HARNESS[_]%';
 DELETE FROM dbo.etl_pipeline_execucao    WHERE pipeline_name LIKE 'HARNESS[_]%';
+DELETE FROM dbo.etl_dependencia_evento   WHERE pipeline_name LIKE 'HARNESS[_]%';  -- eventos da guardiã (F4+)
 DELETE FROM dbo.etl_pipeline_dependencia WHERE pipeline_name LIKE 'HARNESS[_]%' OR depende_de LIKE 'HARNESS[_]%';
 DELETE FROM dbo.etl_pipeline             WHERE pipeline_name LIKE 'HARNESS[_]%';
 DELETE FROM dbo.harness_marca; UPDATE dbo.harness_controle SET falhar=0;"

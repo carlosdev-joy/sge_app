@@ -2252,6 +2252,19 @@ def gerar_dags(**context):
 
     conn.commit()   # commit antes da SP — mesma sessão, sem problema de isolamento
 
+    # Carimbo do LOTE no relógio do PRÓPRIO banco (F6): a limpeza da pendência
+    # de publicação, ao concluir cada pipeline, só apaga carimbos <= este
+    # instante — mudança de cadastro feita DURANTE a geração continua pendente
+    # (mesma régua do reconciliador da API em services/dag_reconcile).
+    momento_lote = None
+    try:
+        cursor.execute("SELECT GETDATE()")
+        _row_momento = cursor.fetchone()
+        momento_lote = _row_momento[0] if _row_momento else None
+    except Exception as _mle:
+        print(f"[FACTORY] carimbo do lote indisponivel — pendencia de publicacao "
+              f"nao sera zerada nesta execucao: {_mle}")
+
     cursor.execute("EXEC dbo.sp_etl_pipelines_pendentes_criar")
 
     pipelines_rows = cursor.fetchall()
@@ -2610,6 +2623,29 @@ def gerar_dags(**context):
             )
             print(f"[FACTORY] dag_criada=1 -> '{pname}'")
             steps_log.append({"tipo": "banco", "msg": f"Pipeline '{pname}' marcado como criado no cadastro"})
+            # F6 — fecha o falso-pendente do force_all fora da API (pendência
+            # registrada no desenho da F5 §7.2): uma regeneração administrativa
+            # direto no Airflow deixava o badge "publicação pendente" mentindo
+            # até a próxima publicação. SÓ nos runs SEM aguardar_ativacao: no
+            # fluxo da UI quem zera é o RECONCILIADOR, e só quando a ativação
+            # no Airflow é CONFIRMADA — import error e TIMEOUT deliberadamente
+            # NÃO limpam ("falso-pendente é recuperável; pendência escondida
+            # não é"). Zerar aqui nesses fluxos anularia o gating (achado da
+            # revisão adversarial da F6). Zera só carimbos <= momento_lote.
+            # Sem a migration 073, o batch nem compila (erro 207) e cai no
+            # except — é o except que segura, não o IF (deferred name
+            # resolution só vale para TABELA); comportamento final idêntico.
+            if momento_lote is not None and not conf.get("aguardar_ativacao"):
+                try:
+                    hook.run(
+                        "IF COL_LENGTH('dbo.etl_pipeline','dag_config_pendente_em') IS NOT NULL "
+                        "UPDATE dbo.etl_pipeline SET dag_config_pendente_em = NULL "
+                        "WHERE pipeline_name = %s AND dag_config_pendente_em <= %s",
+                        parameters=(pname, momento_lote),
+                    )
+                except Exception as _dcpe:
+                    print(f"[FACTORY] dag_config_pendente_em nao zerado para "
+                          f"'{pname}' (migration 073?): {_dcpe}")
         except Exception as e:
             if _pendencia_de_terceiro(pname):
                 steps_log.append({"tipo": "aviso",
