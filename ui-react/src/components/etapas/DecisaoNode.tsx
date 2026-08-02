@@ -96,8 +96,15 @@ function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNode
   // Tile cresce com o nº de casos para os handles (14px) não se sobreporem.
   const tileH = isSwitch ? Math.max(32, casos.length * 20 + 8) : 32
 
+  // Largura do invólucro = visual (tile de 32px) + 8px de folga por lado, só o
+  // bastante para o handle de ENTRADA encostar no desenho; o RÓTULO transborda
+  // de propósito (w-[128px] nos <p>). Feedback de produção: com o invólucro na
+  // largura do rótulo, os handles ancoravam a ~48px do tile e a aresta "morria
+  // no nada" — lia como espaço desperdiçado. Os handles de caso e os rótulos
+  // flutuantes do switch são absolutos EM RELAÇÃO AO TILE (position: relative
+  // no tile), não ao invólucro — não mudam com esta largura.
   return (
-    <div className="group relative flex w-[128px] flex-col items-center">
+    <div className="group relative flex w-12 flex-col items-center">
       {/* Entrada (esquerda) — centro vertical do tile (que cresce no switch) */}
       <Handle
         type="target"
@@ -225,16 +232,17 @@ function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNode
 
       {/* Nome embaixo — sem rótulos sim/não sobre o nó (a aresta já mostra a
           pílula sim/não; os handles coloridos indicam a direção). mt-1.5 como
-          nos irmãos, para a linha de base do nome alinhar entre nós vizinhos. */}
+          nos irmãos, para a linha de base do nome alinhar entre nós vizinhos.
+          w-[128px] > invólucro (w-12): transborda centrado (flex items-center). */}
       <p
-        className="mt-1.5 line-clamp-2 break-words text-center text-[11px] font-semibold leading-tight text-ink"
+        className="mt-1.5 w-[128px] line-clamp-2 break-words text-center text-[11px] font-semibold leading-tight text-ink"
         title={data.name}
       >
         {data.name}
       </p>
 
       {/* Linha de baixo: tipo + resumo da condição (label). */}
-      <p className="mt-0.5 line-clamp-1 text-center text-[9px] leading-tight text-dim" title={data.label}>
+      <p className="mt-0.5 w-[128px] line-clamp-1 text-center text-[9px] leading-tight text-dim" title={data.label}>
         Decisão · {data.label}
       </p>
     </div>
