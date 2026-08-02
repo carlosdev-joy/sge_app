@@ -38,10 +38,14 @@ class FakeDb(FakeDbF7):
     existir): leitura degrada para "arestas": [] e escrita de dependência dá
     503 — qualquer query que toque a tabela nesse estado LEVANTA no dublê."""
 
-    def __init__(self, pipelines=None, com_tabelas=True, com_067=True):
-        # pipelines: {grafia_oficial: {..., "depends_on": "A,B" | None}}
+    def __init__(self, pipelines=None, com_tabelas=True, com_067=True, com_073=False):
+        # pipelines: {grafia_oficial: {..., "depends_on": "A,B" | None,
+        #                              "dag_criada": 0|1, "dag_config_pendente": 0|1}}
         super().__init__(pipelines=pipelines, com_tabelas=com_tabelas)
         self.com_067 = com_067
+        # F5: coluna dag_config_pendente (migration 073). Default False = o
+        # banco de HOJE — os testes da flag ligam explicitamente.
+        self.com_073 = com_073
         self.dependencias: list[dict] = []  # {"pipeline", "depende_de"} (tipo PIPELINE)
 
     def cursor(self):
@@ -102,6 +106,26 @@ class FakeCur(FakeCurF7):
             k = db._pipeline_key(params[1])
             db.pipelines[k]["depends_on"] = params[0]
             self.rowcount = 1 if k else 0
+            return
+
+        # ── dag_config_pendente_em (migration 073 reescrita, F5) ────────────
+        # Carimbo no banco real (achado 2 — TOCTOU); o dublê guarda o 0/1
+        # equivalente em "dag_config_pendente" (o router só ESCREVE a coluna e
+        # devolve o booleano — os testes leem este dict).
+        if s.startswith("UPDATE dbo.etl_pipeline SET dag_config_pendente_em"):
+            if not getattr(db, "com_073", False):
+                raise RuntimeError("Invalid column name 'dag_config_pendente_em'")
+            k = db._pipeline_key(params[0])
+            n = 0
+            if k is not None:
+                if "dag_criada = 1" in s:
+                    if int(db.pipelines[k].get("dag_criada") or 0) == 1:
+                        db.pipelines[k]["dag_config_pendente"] = 1
+                        n = 1
+                else:
+                    db.pipelines[k]["dag_config_pendente"] = 0
+                    n = 1
+            self.rowcount = n
             return
 
         # ── layout (etl_malha_pipeline) ─────────────────────────────────────
@@ -195,7 +219,7 @@ def test_criar_dependencia_grava_tabela_e_espelho_csv(client, auth_editor):
         r = client.post("/dependencias",
                         json={"pipeline_name": "pipe_a", "depende_de": "pipe_b"})
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "ja_existia": False}
+    assert r.json() == {"ok": True, "ja_existia": False, "dag_config_pendente": False}
     assert db.dependencias == [{"pipeline": "PIPE_A", "depende_de": "PIPE_B"}]
     assert db.pipelines["PIPE_A"]["depends_on"] == "PIPE_B"
     assert db.pipelines["PIPE_B"]["depends_on"] is None   # espelho é só do dependente
@@ -227,9 +251,9 @@ def test_criar_dependencia_ja_existente_e_idempotente(client, auth_editor):
                          json={"pipeline_name": "PIPE_A", "depende_de": "PIPE_B"})
         r2 = client.post("/dependencias",
                          json={"pipeline_name": "pipe_a", "depende_de": "PIPE_B"})
-    assert r1.json() == {"ok": True, "ja_existia": False}
+    assert r1.json() == {"ok": True, "ja_existia": False, "dag_config_pendente": False}
     assert r2.status_code == 200
-    assert r2.json() == {"ok": True, "ja_existia": True}
+    assert r2.json() == {"ok": True, "ja_existia": True, "dag_config_pendente": False}
     assert len(db.dependencias) == 1
     assert db.pipelines["PIPE_A"]["depends_on"] == "PIPE_B"
     assert db.commits == 1                     # o re-salvar não commitou nada
@@ -319,7 +343,7 @@ def test_delete_remove_tabela_e_espelho_csv(client, auth_editor):
         client.post("/dependencias", json={"pipeline_name": "PIPE_A", "depende_de": "PIPE_B"})
         r = _delete(client, {"pipeline_name": "pipe_a", "depende_de": "pipe_b"})
     assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    assert r.json() == {"ok": True, "dag_config_pendente": False}
     assert db.dependencias == []
     assert db.pipelines["PIPE_A"]["depends_on"] == "PIPE_ORFAO"
 

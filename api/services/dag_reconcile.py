@@ -116,12 +116,15 @@ def enqueue(pipeline_name: str, desired_paused: bool, matricula: str | None,
 def _fetch_pendentes() -> list[dict]:
     try:
         conn = get_db_conn(); cur = conn.cursor()
+        # criado_em cru além do DATEDIFF: é o INÍCIO da publicação, insumo do
+        # clear condicional da pendência (achado 2 — TOCTOU).
         cur.execute(
             "SELECT id, pipeline_name, desired_paused, matricula, "
-            "       DATEDIFF(SECOND, criado_em, GETDATE()), dag_run_id "
+            "       DATEDIFF(SECOND, criado_em, GETDATE()), dag_run_id, criado_em "
             "FROM dbo.etl_dag_pendente WHERE status='pendente' ORDER BY criado_em")
         rows = [{"id": r[0], "pipeline_name": r[1], "desired_paused": bool(r[2]),
-                 "matricula": r[3], "idade_s": int(r[4] or 0), "dag_run_id": r[5]}
+                 "matricula": r[3], "idade_s": int(r[4] or 0), "dag_run_id": r[5],
+                 "criado_em": r[6]}
                 for r in cur.fetchall()]
         cur.close(); conn.close()
         return rows
@@ -197,6 +200,35 @@ def _update_factory_log(dag_run_id: str | None, estado: str,
         log.debug("[DAG-RECONCILE] factory_log %s=%s: %s", dag_run_id, estado, e)
 
 
+def _clear_dag_config_pendente(pipeline_name: str, inicio_publicacao) -> None:
+    """Zera a pendência de publicação (migration 073, F5/D30) ao CONCLUIR a
+    ativação: a DAG no Airflow passou a refletir o cadastro.
+
+    Clear CONDICIONAL (achado 2 da revisão adversarial — TOCTOU): a DAG
+    publicada foi gerada com a foto do cadastro no INÍCIO da publicação
+    (`inicio_publicacao` = criado_em de etl_dag_pendente). Uma edição feita
+    DURANTE a publicação em voo grava um carimbo MAIS NOVO que esse início —
+    o clear incondicional apagava essa pendência nova e o operador perdia o
+    "publicar de novo". Por isso: só limpa carimbos <= início. Sem o início
+    (defensivo), NÃO limpa — falso-pendente é recuperável na próxima
+    publicação; pendência escondida não é.
+
+    Guard de coluna por try/except — sem a 073, no-op. Limitação assumida
+    (desenho F5 §7.2): um force_all administrativo por fora da API não zera a
+    flag; a F6 pode ensinar o factory a zerar."""
+    if not pipeline_name or inicio_publicacao is None:
+        return
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "UPDATE dbo.etl_pipeline SET dag_config_pendente_em = NULL "
+            "WHERE pipeline_name = ? AND dag_config_pendente_em <= ?",
+            (pipeline_name, inicio_publicacao))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        log.debug("[DAG-RECONCILE] limpar dag_config_pendente_em %s: %s", pipeline_name, e)
+
+
 def _bump(pendente_id: int) -> None:
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -233,6 +265,11 @@ def _finalize(row: dict, found: bool, import_trace: str | None = None) -> None:
              "A DAG foi gerada e já está ativa para execução."),
             "success", "/pipelines")
         _set_status(row["id"], "concluido")
+        # Publicação concluída: a versão no Airflow reflete o cadastro NO
+        # INÍCIO da publicação — a pendência apaga no MESMO passo em que o
+        # operador é notificado (F5, Decisão 6/D30), mas só carimbos <=
+        # criado_em (achado 2 — edição em voo sobrevive).
+        _clear_dag_config_pendente(name, row.get("criado_em"))
         _update_factory_log(row.get("dag_run_id"), "SUCCESS", "ativada",
                             "DAG criada e ativada no Airflow — pronta para execução.")
     elif row["idade_s"] >= PENDENTE_TIMEOUT_S:
@@ -306,15 +343,17 @@ def recheck_geradas() -> None:
     pendente sem dag_run_id…)."""
     try:
         conn = get_db_conn(); cur = conn.cursor()
+        # iniciado_em cru além do DATEDIFF: início da publicação, insumo do
+        # clear condicional da pendência (achado 2 — TOCTOU).
         cur.execute(
             "SELECT dag_run_id, pipeline_name, detalhes_json, "
-            "       DATEDIFF(SECOND, iniciado_em, GETDATE()) "
+            "       DATEDIFF(SECOND, iniciado_em, GETDATE()), iniciado_em "
             "FROM dbo.etl_factory_log WHERE estado='GERADA'")
         rows = cur.fetchall()
         if not rows:
             cur.close(); conn.close(); return
         with httpx.Client(base_url=AIRFLOW_URL, auth=(AIRFLOW_USER, AIRFLOW_PASSWORD), timeout=10) as client:
-            for run_id, pname, detalhes, idade in rows:
+            for run_id, pname, detalhes, idade, iniciado_em in rows:
                 novo = None
                 step = None
                 import_trace = None
@@ -341,6 +380,20 @@ def recheck_geradas() -> None:
                                 else:
                                     novo = "SUCCESS"
                                     step = ("ativada", "DAG ativa no Airflow — pronta para execução.")
+                                    # Mesmo desfecho do _finalize: publicação
+                                    # concluída zera a pendência da 073 (D30),
+                                    # mas só carimbos <= iniciado_em (achado 2
+                                    # — TOCTOU: edição em voo sobrevive). Sem
+                                    # o início, NÃO limpa (defensivo).
+                                    if iniciado_em is not None:
+                                        try:
+                                            cur.execute(
+                                                "UPDATE dbo.etl_pipeline SET dag_config_pendente_em = NULL "
+                                                "WHERE pipeline_name = ? AND dag_config_pendente_em <= ?",
+                                                (pname, iniciado_em))
+                                        except Exception as e2:
+                                            log.debug("[GERADA-RECHECK] limpar dag_config_pendente_em %s: %s",
+                                                      pname, e2)
                     except Exception as e:
                         log.debug("[GERADA-RECHECK] poll %s: %s", pname, e)
                 if novo is None and int(idade or 0) >= GERADA_TIMEOUT_S:

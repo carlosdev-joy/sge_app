@@ -42,6 +42,10 @@ from deps import PERM_EDITAR, get_current_user, require_perm
 # Port do ODATE para a árvore da API (o canônico é dags/utils/data_referencia.py;
 # paridade garantida por teste — ver o docstring do módulo).
 from services import data_referencia as dref
+# Port do predicado de liberação (F5/D29 — canônico em dags/utils/dependencias.py;
+# paridade por teste). virada_global/tabela_067 moraram aqui inline até a F5 e
+# foram extraídos para o service, reusados também por routers/pipelines.
+from services import dependencias as deps_svc
 # Helpers da F1 — fonte ÚNICA das validações de dependência (não reimplementar:
 # a mensagem de ciclo do servidor é ESPELHADA no cliente pelo MalhaEditor, e
 # duas implementações divergiriam). Sem ciclo de import: pipelines.py não
@@ -113,16 +117,10 @@ def _exigir_tabelas(cur, conn):
 
 
 def _tabela_067(cur) -> bool:
-    """True se etl_pipeline_dependencia (migration 067) existe. Mesma regra da
-    checagem da 070: uma consulta por request, para o deploy parcial degradar
-    em vez de estourar 'Invalid object name'."""
-    try:
-        cur.execute("SELECT OBJECT_ID('dbo.etl_pipeline_dependencia', 'U')")
-        row = cur.fetchone()
-        return bool(row and row[0] is not None)
-    except Exception as e:
-        log.warning("[MALHA] checagem da tabela da migration 067 falhou: %s", e)
-        return False
+    """True se etl_pipeline_dependencia (migration 067) existe. Implementação
+    extraída para services.dependencias na F5 (reuso pelos dois routers) — o
+    alias local preserva os call sites."""
+    return deps_svc.tabela_067(cur)
 
 
 def _exigir_tabela_067(cur, conn):
@@ -149,19 +147,32 @@ def _tabelas_067_execucao(cur) -> bool:
 
 
 def _virada_global(cur):
-    """Valor CRU de etl_app_config['dependencia_hora_virada'] (a hora de virada
-    GLOBAL do ODATE — mesma chave que dags/ lê), ou None se ausente/ilegível.
-    O parse tolerante fica em services.data_referencia: config quebrado degrada
-    para a virada padrão 00:00, nunca impede a malha de abrir."""
+    """Valor CRU de etl_app_config['dependencia_hora_virada'] — implementação
+    extraída para services.dependencias na F5 (reuso pelos dois routers); o
+    parse tolerante segue em services.data_referencia."""
+    return deps_svc.virada_global(cur)
+
+
+def _ligar_dag_config_pendente(cur, pipeline_name) -> bool:
+    """Liga a pendência de publicação (migration 073) do DEPENDENTE, na MESMA
+    transação da escrita da dependência (Decisão 6/D30): mudar dependência
+    troca o `schedule` da DAG do filho — o pai NÃO precisa regerar (F3 §2.2:
+    ele lê a tabela ao vivo). Grava o CARIMBO GETDATE() em vez de um bit
+    (achado 2 da revisão — TOCTOU): o reconciliador só limpa carimbos <=
+    início da publicação concluída, então uma edição feita DURANTE uma
+    publicação em voo sobrevive ao clear. `WHERE dag_criada = 1`: pipeline
+    nunca publicado não tem versão velha rodando. Sem a coluna (073 pendente),
+    degrada em silêncio — comportamento = hoje. Devolve True se a flag foi
+    ligada (a resposta ao front segue sendo o booleano)."""
     try:
         cur.execute(
-            "SELECT config_value FROM dbo.etl_app_config WHERE config_key = ?",
-            ("dependencia_hora_virada",))
-        row = cur.fetchone()
-        return row[0] if row else None
+            "UPDATE dbo.etl_pipeline SET dag_config_pendente_em = GETDATE() "
+            "WHERE pipeline_name = ? AND dag_criada = 1",
+            (pipeline_name,))
+        return (cur.rowcount or 0) > 0
     except Exception as e:
-        log.warning("[MALHA] leitura de dependencia_hora_virada falhou: %s", e)
-        return None
+        log.debug("[MALHA] dag_config_pendente_em indisponível (migration 073?): %s", e)
+        return False
 
 
 def _agora() -> datetime:
@@ -488,36 +499,43 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
             return resposta
 
         # Execuções do dia num SELECT só (filtro de membros em Python, como nos
-        # agregados da listagem); por pipeline vence a MAIS RECENTE: maior
-        # inicio, desempate por execution_id. Status vai CRU — a legenda da
-        # tela fala o mesmo domínio da tabela (AGUARDANDO_DEPENDENCIA |
+        # agregados da listagem); por pipeline vence a MAIS RECENTE — regra F9
+        # extraída para services.dependencias.mais_recente_da_data na F5:
+        # maior inicio, desempate por execution_id (linha AGUARDANDO ainda sem
+        # start perde de qualquer linha iniciada). Status vai CRU — a legenda
+        # da tela fala o mesmo domínio da tabela (AGUARDANDO_DEPENDENCIA |
         # EXECUTANDO | SUCESSO | FALHA | PULADO | NAO_LIBEROU).
         cur.execute(
             "SELECT pipeline_name, status, inicio, fim, disparado_por, motivo, "
             "execution_id FROM dbo.etl_pipeline_execucao "
             "WHERE data_referencia = ?",
             (data_ref,))
-        mais_recente: dict[str, tuple] = {}
+        linhas_membro: dict[str, list] = {}
         for r in cur.fetchall():
             oficial = membro_oficial.get(str(r[0] or "").strip().casefold())
             if oficial is None:
                 continue        # execução de quem não é membro não aparece
-            # inicio NULL (linha AGUARDANDO_DEPENDENCIA ainda sem start) perde
-            # de qualquer linha com inicio; entre iguais decide o execution_id.
-            chave = (r[2] is not None, r[2], str(r[6] or ""))
-            atual = mais_recente.get(oficial)
-            if atual is None or chave > atual[0]:
-                mais_recente[oficial] = (chave, r)
-        for oficial in sorted(mais_recente):
-            _, r = mais_recente[oficial]
-            resposta["execucoes"].append({
+            linhas_membro.setdefault(oficial, []).append({
+                "status": r[1], "inicio": r[2], "fim": r[3],
+                "disparado_por": r[4], "motivo": r[5],
+                "execution_id": str(r[6] or "")})
+        for oficial in sorted(linhas_membro):
+            vencedora = deps_svc.mais_recente_da_data(linhas_membro[oficial])
+            item = {
                 "pipeline_name": oficial,
-                "status": r[1],
-                "inicio": _fmt_dt(r[2]),
-                "fim": _fmt_dt(r[3]),
-                "disparado_por": r[4],
-                "motivo": r[5],
-            })
+                "status": vencedora["status"],
+                "inicio": _fmt_dt(vencedora["inicio"]),
+                "fim": _fmt_dt(vencedora["fim"]),
+                "disparado_por": vencedora["disparado_por"],
+                "motivo": vencedora["motivo"],
+            }
+            # F5 (D32): quem está esperando ganha `faltantes` ADITIVO — de quem
+            # a corrida espera, pelo MESMO predicado do motor (o port, nunca um
+            # "mais recente" paralelo). Campo novo opcional: front antigo ignora.
+            if vencedora["status"] in ("AGUARDANDO_DEPENDENCIA", "NAO_LIBEROU"):
+                _, falt = deps_svc.liberado(cur, oficial, data_ref)
+                item["faltantes"] = falt
+            resposta["execucoes"].append(item)
 
         # Eventos da guardiã da MESMA data, só de membros, mais novo primeiro.
         cur.execute(
@@ -830,10 +848,15 @@ def add_dependencia(body: dict = Body(default={}),
                 "(pipeline_name, depende_de, tipo, criado_por) VALUES (?, ?, 'PIPELINE', ?)",
                 (pipeline, depende_de, (criado_por or "")[:100] or None))
         mudou_csv = _espelho_csv(cur, pipeline, depende_de, "add")
+        # Dependência NOVA troca o schedule da DAG do dependente: liga a
+        # pendência de publicação na MESMA transação (Decisão 6/D30). Aresta
+        # que já existia não mudou configuração — não liga nada.
+        dag_pendente = _ligar_dag_config_pendente(cur, pipeline) if not ja_existia else False
         if not ja_existia or mudou_csv:
             conn.commit()
         cur.close(); conn.close()
-        return {"ok": True, "ja_existia": ja_existia}
+        return {"ok": True, "ja_existia": ja_existia,
+                "dag_config_pendente": dag_pendente}
     except HTTPException:
         raise
     except ValueError as e:
@@ -874,8 +897,11 @@ def remove_dependencia(body: dict = Body(default={}),
                 status_code=404,
                 detail=f"Dependência não encontrada: '{nome_dep}' depende de '{nome_pred}'")
         _espelho_csv(cur, nome_dep, nome_pred, "remove")
+        # Remoção também muda o schedule da DAG do dependente (pode voltar ao
+        # cron): mesma pendência de publicação, mesma transação (Decisão 6).
+        dag_pendente = _ligar_dag_config_pendente(cur, nome_dep)
         conn.commit(); cur.close(); conn.close()
-        return {"ok": True}
+        return {"ok": True, "dag_config_pendente": dag_pendente}
     except HTTPException:
         raise
     except Exception as e:

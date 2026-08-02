@@ -156,12 +156,15 @@ def factory_preview(
     try:
         conn = get_db_conn(); cur = conn.cursor()
 
+        # trigger_por_dependencia saiu do SELECT na F5: não decide nada desde a
+        # F3 (ter dependência JÁ significa disparo por evento) — mantê-lo aqui
+        # era prometer um comportamento que o gerador ignora.
         cur.execute(
             """SELECT pipeline_name, project_name, domain, tags, scheduled_time, schedule_type,
                       schedule_hour, schedule_minute, schedule_dow, schedule_dom,
                       horarios_especificos, dias_semana, somente_dias_uteis,
                       envia_msg_inicio, envia_msg_fim, envia_msg_erro,
-                      depends_on, trigger_por_dependencia, calendario_nome,
+                      depends_on, calendario_nome,
                       retries_count, retry_delay_seconds, max_active_runs, pool_name,
                       criticidade, sla_minutos, ambiente, runbook_md, ssh_conn_id, dag_criada
                FROM dbo.etl_pipeline WHERE pipeline_name = ?""",
@@ -176,7 +179,7 @@ def factory_preview(
             "schedule_hour", "schedule_minute", "schedule_dow", "schedule_dom",
             "horarios_especificos", "dias_semana", "somente_dias_uteis",
             "envia_msg_inicio", "envia_msg_fim", "envia_msg_erro",
-            "depends_on", "trigger_por_dependencia", "calendario_nome",
+            "depends_on", "calendario_nome",
             "retries_count", "retry_delay_seconds", "max_active_runs", "pool_name",
             "criticidade", "sla_minutos", "ambiente", "runbook_md", "ssh_conn_id", "dag_criada",
         ]
@@ -184,7 +187,10 @@ def factory_preview(
 
         # F6: a pré-visualização tem de mostrar a MESMA dependência que a DAG
         # vai receber, e a fonte da verdade é a tabela (067). Sem ela, mantém o
-        # CSV que veio da consulta acima.
+        # CSV que veio da consulta acima — e registra que a GERAÇÃO será
+        # recusada (F3 Decisão 6): o preview não pode prometer o que o factory
+        # vai negar.
+        tabela_067_ok = True
         try:
             cur.execute(
                 "SELECT depende_de FROM dbo.etl_pipeline_dependencia "
@@ -192,6 +198,7 @@ def factory_preview(
                 (pipeline_name,))
             pipeline["depends_on"] = ",".join(str(r[0]) for r in cur.fetchall()) or None
         except Exception as e:
+            tabela_067_ok = False
             log.warning("[FACTORY] preview sem a tabela de dependências (%s) — usando o CSV.", e)
 
         cur.execute(
@@ -208,8 +215,17 @@ def factory_preview(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
 
-    # Build preview structure
-    cron = _preview_cron(pipeline)
+    # Build preview structure. Pipeline DEPENDENTE não tem cron: a DAG gerada
+    # sai com schedule=None e o disparo vem da conclusão dos predecessores
+    # (F3). O preview prometia o cron mesmo assim — a mesma mentira do
+    # ViewModal, corrigida na F5 (§6 do desenho): string no lugar do cron,
+    # espelhando o padrão do próprio 'on_demand'.
+    dependencias = [d.strip() for d in str(pipeline.get("depends_on") or "").split(",")
+                    if d.strip()]
+    if dependencias:
+        cron = f"(sem agendamento — disparo pelos predecessores: {', '.join(dependencias)})"
+    else:
+        cron = _preview_cron(pipeline)
 
     # Group jobs by execution_order
     by_order: dict = defaultdict(list)
@@ -252,6 +268,17 @@ def factory_preview(
         warnings.append("Pipeline sem jobs cadastrados — DAG gerada ficará vazia.")
     if pipeline.get("schedule_type") == "on_demand":
         warnings.append("Agendamento 'sob demanda': DAG não terá schedule.")
+    if dependencias:
+        warnings.append(
+            "Pipeline com dependência: a DAG é gerada com schedule=None — o horário "
+            "deixa de valer e o disparo vem da conclusão dos predecessores "
+            f"({', '.join(dependencias)}); as restrições de DIA continuam valendo.")
+        if not tabela_067_ok:
+            # Espelha a recusa ruidosa do factory (F3 Decisão 6): dependência
+            # que só existe no CSV, sem a tabela, não gera DAG.
+            warnings.append(
+                "dependência cadastrada mas migration 067 ausente — a geração "
+                "desta DAG será recusada")
     if not pipeline.get("dag_criada"):
         warnings.append("DAG ainda não foi gerada — esta seria a primeira geração.")
 
@@ -268,7 +295,6 @@ def factory_preview(
         "max_active_runs": int(pipeline.get("max_active_runs") or 1),
         "pool_name":       pipeline.get("pool_name"),
         "depends_on":      pipeline.get("depends_on"),
-        "trigger_dep":     bool(pipeline.get("trigger_por_dependencia")),
         "calendario":      pipeline.get("calendario_nome"),
         "somente_dias_uteis": bool(pipeline.get("somente_dias_uteis")),
         "notificacoes":    notifs,

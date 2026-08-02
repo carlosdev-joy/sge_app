@@ -25,9 +25,15 @@ export function ViewModal({ pipeline: p, onClose }: { pipeline: Pipeline; onClos
     </div>
   )
   const notifs = [p.envia_msg_inicio && 'Início', p.envia_msg_fim && 'Conclusão', p.envia_msg_erro && 'Erro'].filter(Boolean)
-  const cron = p.schedule_type && p.schedule_type !== 'on_demand'
-    ? buildCron(p.schedule_type, p.schedule_hour ?? 6, p.schedule_minute ?? 0, p.schedule_dow ?? 1, p.schedule_dom ?? 1)
-    : null
+  // Dependente NÃO tem cron: a DAG sai com schedule=None e o disparo vem dos
+  // predecessores (F3). Mostrar o cron calculado aqui era a mesma mentira do
+  // preview, corrigida na F5 (§6 do desenho).
+  const dependente = !!(p.depends_on && p.depends_on.trim())
+  const cron = dependente
+    ? '— (disparo por dependência)'
+    : p.schedule_type && p.schedule_type !== 'on_demand'
+      ? buildCron(p.schedule_type, p.schedule_hour ?? 6, p.schedule_minute ?? 0, p.schedule_dow ?? 1, p.schedule_dom ?? 1)
+      : null
 
   return (
     <Modal open title={p.pipeline_name} onClose={onClose} size="lg">
@@ -58,6 +64,14 @@ export function ViewModal({ pipeline: p, onClose }: { pipeline: Pipeline; onClos
               <div className="flex flex-wrap gap-1.5">
                 {pill(p.active ? 'Ativo' : 'Inativo', !!p.active)}
                 {pill(p.dag_criada ? 'DAG ✓' : 'DAG não gerada', !!p.dag_criada)}
+                {/* D30: a DAG publicada roda a versão ANTERIOR do cadastro. */}
+                {!!p.dag_criada && !!p.dag_config_pendente && (
+                  <span
+                    className="inline-block px-2 py-0.5 rounded-full text-xs border bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-900/20 dark:text-amber-400 dark:border-amber-800/40"
+                    title="A DAG no Airflow roda a versão anterior do cadastro — use “Publicar nova versão”.">
+                    publicação pendente
+                  </span>
+                )}
               </div>
             )}
             {cell('Tags',
@@ -72,9 +86,10 @@ export function ViewModal({ pipeline: p, onClose }: { pipeline: Pipeline; onClos
           <p className="text-[10px] font-bold uppercase tracking-wider text-blue-400 mb-2 border-b border-edge pb-1">Agendamento</p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-3">
             {cell('Tipo',          p.schedule_type ? SCHEDULE_LABELS[p.schedule_type] ?? p.schedule_type : null)}
-            {/* Sob demanda não tem horário nem cron: o valor gravado é só o
-                default do formulário e prometeria uma execução que não existe. */}
-            {cell('Horário',       p.schedule_type === 'on_demand' ? '—' : p.scheduled_time)}
+            {/* Sob demanda e dependente não têm horário nem cron: o valor
+                gravado é só o default do formulário e prometeria uma execução
+                que não existe (dependente dispara pelos predecessores — F3). */}
+            {cell('Horário',       (p.schedule_type === 'on_demand' || dependente) ? '—' : p.scheduled_time)}
             {cell('Expressão CRON', cron)}
             {cell('Data início',   p.dag_start_date || 'Imediato')}
             {cell('SLA',           p.sla_minutos ? `${p.sla_minutos} min` : null)}
@@ -330,7 +345,10 @@ export function InactivateModal({ pipeline, onClose }: { pipeline: Pipeline; onC
         retries_count:       pipeline.retries_count ?? 1,
         retry_delay_seconds: pipeline.retry_delay_seconds ?? 300,
         pool_name:           pipeline.pool_name ?? null,
-        depends_on:          pipeline.depends_on ?? null,
+        // SEM depends_on e SEM os campos da janela DE PROPÓSITO (Decisão 2 da
+        // F5): chave ausente = "não mexa" — inativar não zera NADA (D26). Era
+        // exatamente este body parcial que apagava dependência/janela alheias
+        // ao gesto (causa C).
         runbook_md:          pipeline.runbook_md ?? null,
         dag_start_date:      pipeline.dag_start_date ?? null,
         changed_by:          user?.matricula ?? 'react-ui',

@@ -15,6 +15,16 @@ export function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, 
       <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border flex-shrink-0 w-[46px] text-center ${p.dag_criada ? 'text-green-700 border-green-300 bg-green-50 dark:text-green-400 dark:border-green-800/40 dark:bg-green-900/10' : 'text-dim border-edge bg-canvas'}`}>
         {p.dag_criada ? 'DAG ✓' : 'DAG —'}
       </span>
+      {/* D30: pendência de publicação persistida (migration 073) — a DAG no
+          Airflow roda a versão ANTERIOR do cadastro até publicar de novo.
+          NULL (073 ausente) simplesmente não renderiza. */}
+      {!!p.dag_criada && !!p.dag_config_pendente && (
+        <span
+          className="text-[9px] font-bold px-1.5 py-0.5 rounded border flex-shrink-0 text-amber-700 border-amber-300 bg-amber-50 dark:text-amber-400 dark:border-amber-800/40 dark:bg-amber-900/15"
+          title="A DAG no Airflow roda a versão anterior do cadastro — clique em “Publicar nova versão” para atualizar.">
+          publicação pendente
+        </span>
+      )}
       <span className="text-[10px] text-dim flex-shrink-0 tabular-nums w-[42px]">
         {p.scheduled_time ? p.scheduled_time.substring(0, 5) : '—:——'}
       </span>

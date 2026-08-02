@@ -143,16 +143,18 @@ def auth_override(app):
 
 @pytest.mark.api
 def test_register_monthly_days_times_requires_dias_horarios_mes(client, auth_override):
-    """schedule_type='monthly_days_times' sem dias_horarios_mes -> 422.
-
-    A validação ocorre antes de qualquer chamada a get_db_conn (ver Step 3),
-    então este teste não precisa mockar o banco.
+    """schedule_type='monthly_days_times' com dias_horarios_mes PRESENTE e
+    vazio -> 422 antes de qualquer chamada a get_db_conn (por isso este teste
+    não precisa mockar o banco). A chave AUSENTE virou PATCH-parcial (achado 3
+    da revisão da F5) e é validada contra o valor vigente no banco — coberta
+    em tests/test_dependencias_f5.py.
     """
     r = client.post(
         "/pipelines/register",
         json={
             "pipeline_name": "TESTE_MDT", "scheduled_time": "09:00:00",
             "schedule_type": "monthly_days_times", "project_name": "BI_CVP", "domain": "TESTE",
+            "dias_horarios_mes": None,
         },
     )
     assert r.status_code == 422

@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import time
-from datetime import date, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from typing import Optional
 
 import httpx
@@ -20,6 +20,10 @@ from deps import (
 )
 from services.notify import add_notificacao
 from services.dag_reconcile import enqueue as enqueue_dag_pendente
+# Ports com paridade testada contra dags/ (o canônico): ODATE (F9) e o
+# predicado de liberação (F5/D29). services não importa routers — sem ciclo.
+from services import data_referencia as dref
+from services import dependencias as deps_svc
 
 log = logging.getLogger("orquestra-api")
 
@@ -98,7 +102,45 @@ AUDIT_FIELDS = {
     "project_name", "domain", "tags", "depends_on", "criticidade", "sla_minutos",
     "ambiente", "max_active_runs", "retries_count", "retry_delay_seconds", "pool_name", "descricao",
     "runbook_md",
+    # Janela e virada (migration 067) — auditados desde a F5 da retomada (D26).
+    "hora_virada", "nao_iniciar_antes", "hora_limite_dependencia",
 }
+
+# O que o gerador de DAGs (etl_dag_factory) CONSOME do cadastro: mudar qualquer
+# um destes com dag_criada=1 deixa a DAG publicada rodando a versão ANTERIOR
+# até o operador clicar em "Publicar nova versão" — é o que liga a pendência
+# persistida (migration 073, Decisão 6/D30). Campos de cadastro puro
+# (descricao, tags, runbook…) ficam de fora de propósito: derivar por
+# updated_at criaria falso-pendente crônico.
+CAMPOS_QUE_AFETAM_DAG = (
+    "scheduled_time", "schedule_type", "schedule_hour", "schedule_minute",
+    "schedule_dow", "schedule_dom", "horarios_especificos", "dias_semana",
+    "dias_horarios_mes", "somente_dias_uteis", "calendario_nome",
+    "hora_virada", "nao_iniciar_antes", "hora_limite_dependencia",
+    "retries_count", "retry_delay_seconds", "max_active_runs", "pool_name",
+    "envia_msg_inicio", "envia_msg_fim", "envia_msg_erro",
+    "ambiente", "criticidade", "dag_start_date",
+    # sla_minutos NÃO é cadastro puro: o gerador o emite como
+    # dagrun_timeout=timedelta(minutes=sla) no cabeçalho da DAG
+    # (dags/etl_dag_factory.py) — editar só o SLA também deixa a DAG
+    # publicada para trás (achado 1 da revisão adversarial da F5).
+    "sla_minutos",
+)
+
+
+def _norm_valor_dag(v):
+    """Normaliza para o diff servidor de CAMPOS_QUE_AFETAM_DAG: bit do banco
+    chega como bool no pyodbc e no body chega como 0/1 — sem normalizar, todo
+    save ligaria a pendência à toa."""
+    if isinstance(v, bool):
+        v = int(v)
+    return str(v) if v is not None else ""
+
+
+def _agora() -> datetime:
+    """Relógio do servidor, isolado para os testes congelarem o tempo (mesmo
+    padrão de routers/malhas.py)."""
+    return datetime.now()
 
 
 def _build_cron(schedule_type, hour, minute, dow, dom):
@@ -175,6 +217,34 @@ def _validate_dias_horarios_mes(raw):
         normalized.append({"dia": dia, "horarios": sorted(norm_times)})
     normalized.sort(key=lambda e: e["dia"])
     return json.dumps(normalized)
+
+
+def _parse_hora_opcional(campo, valor, avisos):
+    """'08:00'/'08:00:30' → 'HH:MM:SS' para o SQL Server; vazio → None.
+
+    Vazio significa "sem regra" — gravar '00:00' criaria uma janela que o
+    usuário não pediu (no limite, um JANELA_ESTOUROU diário — D35). Valor
+    INVÁLIDO também vira None SEM recusar o cadastro (os três campos são
+    opcionais; lixo em um não trava o resto), mas registra a linha em
+    `avisos` para a resposta — silêncio aqui é que seria defeito.
+    """
+    texto = str(valor or "").strip()
+    if not texto:
+        return None
+    partes = texto.split(":")
+    if len(partes) not in (2, 3):
+        avisos.append(f"{campo}: valor '{texto}' inválido (use HH:MM) — gravado sem regra (NULL)")
+        return None
+    try:
+        h, m = int(partes[0]), int(partes[1])
+        s = int(partes[2]) if len(partes) == 3 else 0
+    except ValueError:
+        avisos.append(f"{campo}: valor '{texto}' inválido (use HH:MM) — gravado sem regra (NULL)")
+        return None
+    if not (0 <= h <= 23 and 0 <= m <= 59 and 0 <= s <= 59):
+        avisos.append(f"{campo}: valor '{texto}' fora do intervalo (use HH:MM) — gravado sem regra (NULL)")
+        return None
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 def _get_valid_projects(cur):
@@ -328,21 +398,41 @@ def _gravar_dependencias(cur, pipeline_name, depends_on_list, usuario=None):
 
 
 def _read_pipeline_record(cur, pipeline_name):
+    """Fotografia do cadastro ANTES do save — insumo da auditoria e do diff de
+    CAMPOS_QUE_AFETAM_DAG (Decisão 6). Os grupos de colunas por migration são
+    tentados do mais completo para o mais enxuto: as migrations aplicam em
+    ordem, então a ausência é sempre um SUFIXO da lista (guard de coluna,
+    padrão do próprio register). Horas saem como VARCHAR(8) 'HH:MM:SS' — o
+    MESMO formato que _parse_hora_opcional grava, para o diff não acusar
+    mudança falsa."""
     base_cols = """active, scheduled_time, schedule_type, schedule_hour, schedule_minute,
                   schedule_dow, schedule_dom, envia_msg_inicio, envia_msg_fim, envia_msg_erro,
                   project_name, domain, tags, depends_on, criticidade, sla_minutos, ambiente,
-                  max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao"""
-    try:
-        cur.execute(
-            f"SELECT {base_cols}, runbook_md FROM dbo.etl_pipeline WHERE pipeline_name = ?",
-            (pipeline_name,),
-        )
-    except Exception:
-        # runbook_md pode não existir ainda (migration 013)
-        cur.execute(
-            f"SELECT {base_cols} FROM dbo.etl_pipeline WHERE pipeline_name = ?",
-            (pipeline_name,),
-        )
+                  max_active_runs, retries_count, retry_delay_seconds, pool_name, descricao,
+                  CAST(dag_criada AS INT) AS dag_criada,
+                  CONVERT(VARCHAR(10), dag_start_date, 120) AS dag_start_date"""
+    extras = [
+        ", runbook_md",                                              # migration 013
+        (", calendario_nome, CAST(somente_dias_uteis AS INT) AS somente_dias_uteis, "
+         "CAST(trigger_por_dependencia AS INT) AS trigger_por_dependencia"),   # 017
+        ", horarios_especificos, dias_semana",                       # migration 018
+        ", dias_horarios_mes",                                       # migration 024
+        (", CONVERT(VARCHAR(8), hora_virada, 108) AS hora_virada, "
+         "CONVERT(VARCHAR(8), nao_iniciar_antes, 108) AS nao_iniciar_antes, "
+         "CONVERT(VARCHAR(8), hora_limite_dependencia, 108) AS hora_limite_dependencia"),  # 067
+    ]
+    for n in range(len(extras), -1, -1):
+        try:
+            cur.execute(
+                f"SELECT {base_cols}{''.join(extras[:n])} "
+                "FROM dbo.etl_pipeline WHERE pipeline_name = ?",
+                (pipeline_name,),
+            )
+            break
+        except Exception:
+            if n == 0:
+                raise
+            continue
     row = cur.fetchone()
     if row is None:
         return None
@@ -352,6 +442,10 @@ def _read_pipeline_record(cur, pipeline_name):
 
 def _write_audit(cur, pipeline_name, changed_by, old, new_vals):
     for field in AUDIT_FIELDS:
+        if field not in new_vals:
+            # Chave ausente do body = "não mexa" (PATCH-parcial da F5): sem
+            # este pulo, um body parcial auditaria "valor → vazio" FALSO.
+            continue
         old_val = str(old.get(field, "") or "")
         new_val = str(new_vals.get(field, "") or "")
         if old_val != new_val:
@@ -539,6 +633,35 @@ def list_pipelines(
             inativ_cols = ("NULL AS motivo_inativacao, NULL AS inativado_por, "
                            "NULL AS inativado_em")
 
+        # colunas da migration 067 (janela e virada) — degradam para NULL.
+        # Sem devolvê-las, o formulário carregava os três campos VAZIOS e todo
+        # save os zerava no banco: a virada some, a corrida que atravessa a
+        # meia-noite se parte em dois dias e o dependente nunca libera (D26).
+        cur.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' AND COLUMN_NAME='hora_virada'
+        """)
+        if cur.fetchone()[0]:
+            janela_cols = ("CONVERT(VARCHAR(5), hora_virada, 108) AS hora_virada, "
+                           "CONVERT(VARCHAR(5), nao_iniciar_antes, 108) AS nao_iniciar_antes, "
+                           "CONVERT(VARCHAR(5), hora_limite_dependencia, 108) AS hora_limite_dependencia")
+        else:
+            janela_cols = ("NULL AS hora_virada, NULL AS nao_iniciar_antes, "
+                           "NULL AS hora_limite_dependencia")
+
+        # coluna da migration 073 (pendência de publicação da DAG) — degrada
+        # para NULL e o front simplesmente não renderiza o badge (D30). A
+        # coluna física é o carimbo dag_config_pendente_em (achado 2 — TOCTOU);
+        # o contrato com o front segue sendo o BOOLEANO derivado 0/1.
+        cur.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' AND COLUMN_NAME='dag_config_pendente_em'
+        """)
+        if cur.fetchone()[0]:
+            flag_dag_col = ("CAST(CASE WHEN dag_config_pendente_em IS NOT NULL "
+                            "THEN 1 ELSE 0 END AS INT) AS dag_config_pendente")
+        else:
+            flag_dag_col = "NULL AS dag_config_pendente"
 
         data_sql = f"""
             SELECT
@@ -563,7 +686,8 @@ def list_pipelines(
                 ISNULL(CAST(max_active_runs    AS INT), 1)   AS max_active_runs,
                 ISNULL(CAST(retries_count      AS INT), 1)   AS retries_count,
                 ISNULL(CAST(retry_delay_seconds AS INT), 300) AS retry_delay_seconds,
-                pool_name, {runbook_col}, {sched_cols}, {inativ_cols}, last_execution, created_at, updated_at
+                pool_name, {runbook_col}, {sched_cols}, {inativ_cols}, {janela_cols},
+                {flag_dag_col}, last_execution, created_at, updated_at
             FROM dbo.etl_pipeline
             {where_sql}
             ORDER BY project_name, domain, pipeline_name
@@ -580,7 +704,8 @@ def list_pipelines(
             "pool_name", "runbook_md", "calendario_nome", "somente_dias_uteis",
             "trigger_por_dependencia", "horarios_especificos", "dias_semana",
             "dias_horarios_mes", "motivo_inativacao", "inativado_por", "inativado_em",
-            "last_execution", "created_at", "updated_at",
+            "hora_virada", "nao_iniciar_antes", "hora_limite_dependencia",
+            "dag_config_pendente", "last_execution", "created_at", "updated_at",
         ]
         data = []
         for row in cur.fetchall():
@@ -599,6 +724,138 @@ def list_pipelines(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/pipelines/dependencias/estado", tags=["pipelines"])
+def estado_dependencias(data_referencia: str | None = None,
+                        _auth: dict = Depends(get_current_user)):
+    """Estado da malha de dependências numa data de referência (F5, D29/D32).
+
+    Um item por pipeline ATIVO com ≥1 dependência (tipo PIPELINE), com:
+    liberado/faltantes vindos EXCLUSIVAMENTE de services.dependencias (o port
+    do predicado do motor — o motivo legível "esperando X · data D" nasce dos
+    faltantes), o resumo dos predecessores (exibição, nunca decide), a corrida
+    mais recente da data (regra F9), a janela (hora_virada/nao_iniciar_antes/
+    hora_limite_dependencia) e os eventos da guardiã da data.
+
+    Sem `data_referencia` na query, usa o ODATE corrente calculado com a hora
+    de virada GLOBAL de etl_app_config — mesma regra/aproximação do F9;
+    pipeline com hora_virada própria usa o seletor de data (documentado).
+
+    Este endpoint NUNCA decide disparo: `liberado` aqui é leitura de painel —
+    quem dispara continua sendo o push/guardiã (dags/). Rota declarada antes
+    de qualquer futura GET /pipelines/{nome}.
+
+    Degradação: sem a migration 067, devolve data [] + migration_067_pendente
+    (padrão F9) — a tela some, o resto continua.
+    """
+    # Valida a data ANTES de abrir conexão: 422 de formato não gasta banco.
+    data_ref = None
+    if data_referencia is not None and str(data_referencia).strip() != "":
+        try:
+            data_ref = datetime.strptime(str(data_referencia).strip(), "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"data_referencia inválida: '{data_referencia}' "
+                       "(use o formato YYYY-MM-DD)")
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        if data_ref is None:
+            data_ref = dref.calcular(_agora(), deps_svc.virada_global(cur))
+        resposta: dict = {"data_referencia": data_ref.strftime("%Y-%m-%d"), "data": []}
+        if not deps_svc.tabela_067(cur):
+            log.warning("[DEP] migration 067 ausente — estado de dependências degradado para vazio")
+            resposta["migration_067_pendente"] = True
+            cur.close(); conn.close()
+            return resposta
+
+        # Grafo inteiro + janela de cada dependente, num SELECT só. As colunas
+        # de janela nascem na MESMA migration 067 da tabela — sem guard extra.
+        cur.execute(
+            "SELECT d.pipeline_name, d.depende_de, "
+            "CONVERT(VARCHAR(5), p.hora_virada, 108) AS hora_virada, "
+            "CONVERT(VARCHAR(5), p.nao_iniciar_antes, 108) AS nao_iniciar_antes, "
+            "CONVERT(VARCHAR(5), p.hora_limite_dependencia, 108) AS hora_limite_dependencia "
+            "FROM dbo.etl_pipeline_dependencia d "
+            "JOIN dbo.etl_pipeline p ON p.pipeline_name = d.pipeline_name "
+            "WHERE d.tipo = 'PIPELINE' AND p.active = 1 "
+            "ORDER BY d.pipeline_name, d.depende_de")
+        grafo: dict[str, dict] = {}
+        for nome, pred, hv, nia, hl in cur.fetchall():
+            item = grafo.setdefault(str(nome or "").strip(), {
+                "preds": [],
+                "janela": {"hora_virada": hv, "nao_iniciar_antes": nia,
+                           "hora_limite_dependencia": hl},
+            })
+            item["preds"].append(str(pred or "").strip())
+
+        # Execuções da data num SELECT só (agregação em Python, padrão
+        # malhas.py — sem N+1); chave casefold pela colação CI do banco.
+        cur.execute(
+            "SELECT pipeline_name, status, inicio, fim, disparado_por, motivo, "
+            "execution_id FROM dbo.etl_pipeline_execucao "
+            "WHERE data_referencia = ?",
+            (data_ref,))
+        execucoes: dict[str, list] = {}
+        for r in cur.fetchall():
+            execucoes.setdefault(str(r[0] or "").strip().casefold(), []).append({
+                "status": r[1], "inicio": r[2], "fim": r[3],
+                "disparado_por": r[4], "motivo": r[5], "execution_id": r[6]})
+
+        # Eventos da guardiã da MESMA data.
+        cur.execute(
+            "SELECT pipeline_name, tipo, detalhe, detectado_em "
+            "FROM dbo.etl_dependencia_evento WHERE data_referencia = ?",
+            (data_ref,))
+        eventos: dict[str, list] = {}
+        for r in cur.fetchall():
+            eventos.setdefault(str(r[0] or "").strip().casefold(), []).append({
+                "tipo": r[1], "detalhe": r[2], "detectado_em": _fmt_dt(r[3])})
+
+        for nome in sorted(grafo):
+            # EXCLUSIVAMENTE o port (D29): um NOT EXISTS por dependente —
+            # nenhum "mais recente" decide liberação aqui.
+            lib, falt = deps_svc.liberado(cur, nome, data_ref)
+            erro_consulta = any(str(f).startswith(deps_svc.ERRO_CONSULTA) for f in falt)
+            faltantes_cf = {str(f).casefold() for f in falt}
+            corrida_raw = deps_svc.mais_recente_da_data(execucoes.get(nome.casefold(), []))
+            corrida = None
+            if corrida_raw is not None:
+                corrida = {
+                    "status": corrida_raw["status"],
+                    "execution_id": corrida_raw["execution_id"],
+                    "inicio": _fmt_dt(corrida_raw["inicio"]),
+                    "fim": _fmt_dt(corrida_raw["fim"]),
+                    "disparado_por": corrida_raw["disparado_por"],
+                    "motivo": corrida_raw["motivo"],
+                }
+            predecessores = []
+            for p in grafo[nome]["preds"]:
+                # Status de EXIBIÇÃO: a execução mais recente do predecessor na
+                # data (um PULADO recente aparece) — mas `sucesso_na_data` vem
+                # dos faltantes do PORT, nunca do "mais recente" (B2/D14).
+                ult = deps_svc.mais_recente_da_data(execucoes.get(p.casefold(), []))
+                predecessores.append({
+                    "nome": p,
+                    "status": ult["status"] if ult is not None else None,
+                    "sucesso_na_data": (p.casefold() not in faltantes_cf) and not erro_consulta,
+                })
+            resposta["data"].append({
+                "pipeline_name": nome,
+                "liberado": lib,
+                "faltantes": falt,
+                "predecessores": predecessores,
+                "corrida": corrida,
+                "janela": grafo[nome]["janela"],
+                "eventos": eventos.get(nome.casefold(), []),
+            })
+        cur.close(); conn.close()
+        return resposta
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
 @router.post("/pipelines/register", tags=["pipelines"])
 async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Cria ou atualiza um pipeline (etl_pipeline_register)."""
@@ -615,6 +872,11 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
     dag_criada       = int(body.get("dag_criada",       0))
     domain           = body.get("domain", "Geral")
     tags             = body.get("tags", "")
+    # PATCH-parcial (Decisão 2 da F5): chave AUSENTE do body = "não mexa" —
+    # nunca "apague". `body.get(...) or ""` sozinho fazia um body parcial
+    # (inativar, script, import) APAGAR todas as dependências com tela 200.
+    # Chave presente (mesmo ""/null) = sincroniza para o valor.
+    tem_depends_on   = "depends_on" in body
     depends_on_raw   = (body.get("depends_on") or "").strip()
     # Deduplica ANTES de tudo: o CSV espelho e a tabela precisam contar a mesma
     # história, e um nome repetido (o campo era texto livre) viola o índice
@@ -639,11 +901,35 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
     runbook_md       = (body.get("runbook_md") or "").strip() or None
     # Migration 031 — motivo obrigatório ao inativar (por que o fluxo ficou indisponível)
     motivo_inativacao = (body.get("motivo_inativacao") or "").strip() or None
-    # Fase 4 — scheduling avançado
+    # Fase 4 — scheduling avançado. PATCH-parcial (achado 3 da revisão
+    # adversarial da F5, mesma filosofia da Decisão 2/D26): os 5 campos de
+    # agenda rica só são gravados com a CHAVE no body — o body do
+    # InactivateModal não os envia e o UPDATE incondicional zerava calendário,
+    # horários múltiplos e dias do mês ao inativar (wipe pré-existente que a
+    # flag da 073 passou a expor como falso "publicar de novo").
+    tem_calendario   = "calendario_nome" in body
+    tem_somente_uteis = "somente_dias_uteis" in body
     calendario_nome  = (body.get("calendario_nome") or "").strip() or None
-    somente_dias_uteis      = int(body.get("somente_dias_uteis", 0))
-    trigger_por_dependencia = int(body.get("trigger_por_dependencia", 0))
-    # Migration 018 — horários múltiplos
+    somente_dias_uteis      = int(body.get("somente_dias_uteis") or 0)
+    # Decisão 3 da F5: o checkbox saiu da tela (obsoleto desde a F3 — ter
+    # dependência JÁ significa disparo por ela) e a chave ausente PRESERVA o
+    # valor atual. Zerar aqui, num deploy API-antes-de-dags/, faria o factory
+    # ANTIGO voltar a emitir sensor na próxima regeneração (QA1/QA2). A coluna
+    # morre de verdade na migration de limpeza (§10.2 da spec), não aqui.
+    tem_trigger_dep         = "trigger_por_dependencia" in body
+    trigger_por_dependencia = int(body.get("trigger_por_dependencia") or 0)
+    # Janela e virada (migration 067) — mesma semântica parcial: só grava o que
+    # veio NO BODY (D26); vazio vira NULL e inválido vira NULL com aviso (D35).
+    avisos: list[str] = []
+    tem_hora_virada  = "hora_virada" in body
+    tem_nao_iniciar  = "nao_iniciar_antes" in body
+    tem_hora_limite  = "hora_limite_dependencia" in body
+    hora_virada             = _parse_hora_opcional("hora_virada", body.get("hora_virada"), avisos) if tem_hora_virada else None
+    nao_iniciar_antes       = _parse_hora_opcional("nao_iniciar_antes", body.get("nao_iniciar_antes"), avisos) if tem_nao_iniciar else None
+    hora_limite_dependencia = _parse_hora_opcional("hora_limite_dependencia", body.get("hora_limite_dependencia"), avisos) if tem_hora_limite else None
+    # Migration 018 — horários múltiplos (PATCH-parcial, achado 3)
+    tem_horarios_esp = "horarios_especificos" in body
+    tem_dias_semana  = "dias_semana" in body
     horarios_raw = (body.get("horarios_especificos") or "").strip()
     horarios_especificos = None
     if horarios_raw:
@@ -662,9 +948,14 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
             _hrs.append(f"{hh:02d}:{mm:02d}")
         horarios_especificos = ",".join(sorted(set(_hrs))) or None
     dias_semana = (body.get("dias_semana") or "").strip() or None
-    # Migration 024 — agendamento "Dia + Hora Específico"
+    # Migration 024 — agendamento "Dia + Hora Específico" (PATCH-parcial,
+    # achado 3). A obrigatoriedade p/ 'monthly_days_times' é validada adiante,
+    # sobre o valor EFETIVO (body ou, com chave ausente, o vigente no banco).
+    tem_dias_horarios_mes = "dias_horarios_mes" in body
     dias_horarios_mes = _validate_dias_horarios_mes(body.get("dias_horarios_mes"))
-    if schedule_type == "monthly_days_times" and not dias_horarios_mes:
+    if (schedule_type == "monthly_days_times" and tem_dias_horarios_mes
+            and not dias_horarios_mes):
+        # chave presente e vazia: recusa ANTES do banco (contrato original)
         raise HTTPException(status_code=422, detail="dias_horarios_mes é obrigatório para schedule_type 'monthly_days_times'")
 
     if pipeline in depends_on_list:
@@ -692,6 +983,15 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
         old_record = _read_pipeline_record(cur, pipeline)
         is_new = old_record is None
 
+        # 'monthly_days_times' com a chave AUSENTE (body parcial — achado 3):
+        # vale o dias_horarios_mes EFETIVO, o já vigente no banco. Sem valor
+        # vigente (pipeline novo ou nunca configurado), recusa como antes.
+        if (schedule_type == "monthly_days_times" and not tem_dias_horarios_mes
+                and not (old_record or {}).get("dias_horarios_mes")):
+            raise HTTPException(
+                status_code=422,
+                detail="dias_horarios_mes é obrigatório para schedule_type 'monthly_days_times'")
+
         cur.execute(
             "EXEC dbo.sp_etl_pipeline_upsert "
             "@pipeline_name=?, @scheduled_time=?, @schedule_type=?, @schedule_hour=?, "
@@ -702,14 +1002,26 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
              schedule_dom, active, envia_msg_inicio, envia_msg_fim, envia_msg_erro,
              dag_criada, project, domain, tags),
         )
-        cur.execute(
-            "UPDATE dbo.etl_pipeline SET depends_on=?, dag_start_date=?, updated_at=GETDATE() "
-            "WHERE pipeline_name=?",
-            (depends_on, dag_start_date, pipeline),
-        )
-        # A tabela é a fonte da verdade a partir da 067; o CSV acima segue como
-        # espelho até a F6, porque Malha.tsx e o gerador de DAGs ainda leem dele.
-        _gravar_dependencias(cur, pipeline, depends_on_list, _auth.get("matricula") if isinstance(_auth, dict) else None)
+        if tem_depends_on:
+            # Chave presente: sincroniza tabela 067 E espelho CSV para o valor
+            # (vazio = remoção explícita). O replace-all sobrevive AQUI porque
+            # com chave presente ele é o gesto pedido — e na criação a tabela
+            # está vazia (DELETE no-op, só INSERTs — Decisão 1).
+            cur.execute(
+                "UPDATE dbo.etl_pipeline SET depends_on=?, dag_start_date=?, updated_at=GETDATE() "
+                "WHERE pipeline_name=?",
+                (depends_on, dag_start_date, pipeline),
+            )
+            # A tabela é a fonte da verdade a partir da 067; o CSV acima segue como
+            # espelho até a F6, porque Malha.tsx e o gerador de DAGs ainda leem dele.
+            _gravar_dependencias(cur, pipeline, depends_on_list, _auth.get("matricula") if isinstance(_auth, dict) else None)
+        else:
+            # Chave ausente: tabela 067 e CSV espelho ficam INTACTOS (Decisão 2).
+            cur.execute(
+                "UPDATE dbo.etl_pipeline SET dag_start_date=?, updated_at=GETDATE() "
+                "WHERE pipeline_name=?",
+                (dag_start_date, pipeline),
+            )
         try:
             cur.execute(
                 "UPDATE dbo.etl_pipeline SET descricao=?, criticidade=?, sla_minutos=?, ambiente=?, "
@@ -728,27 +1040,73 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
                  max_active_runs, retries_count, retry_delay_secs, pool_name, pipeline),
             )
         try:
-            cur.execute(
-                "UPDATE dbo.etl_pipeline SET calendario_nome=?, somente_dias_uteis=?, "
-                "trigger_por_dependencia=?, updated_at=GETDATE() WHERE pipeline_name=?",
-                (calendario_nome, somente_dias_uteis, trigger_por_dependencia, pipeline),
-            )
+            # Cada campo da 017 só entra no SET com a chave no body (Decisão 3
+            # p/ trigger; achado 3 p/ calendário e dias úteis): ausente =
+            # valor atual preservado, nunca zerado.
+            _set_017: list = []
+            _vals_017: list = []
+            if tem_calendario:
+                _set_017.append("calendario_nome=?")
+                _vals_017.append(calendario_nome)
+            if tem_somente_uteis:
+                _set_017.append("somente_dias_uteis=?")
+                _vals_017.append(somente_dias_uteis)
+            if tem_trigger_dep:
+                _set_017.append("trigger_por_dependencia=?")
+                _vals_017.append(trigger_por_dependencia)
+            if _set_017:
+                cur.execute(
+                    "UPDATE dbo.etl_pipeline SET " + ", ".join(_set_017)
+                    + ", updated_at=GETDATE() WHERE pipeline_name=?",
+                    (*_vals_017, pipeline),
+                )
         except Exception:
             pass  # colunas da migration 017 podem não existir ainda — degrada sem erro
+        # Janela e virada (migration 067). Só grava o que veio NO BODY: o UPDATE
+        # incondicional foi o defeito C1 — o diálogo de inativar monta um body
+        # próprio, sem esses campos, e todo save os zerava (D26).
+        _janela = [(c, v, tem) for c, v, tem in (
+            ("hora_virada", hora_virada, tem_hora_virada),
+            ("nao_iniciar_antes", nao_iniciar_antes, tem_nao_iniciar),
+            ("hora_limite_dependencia", hora_limite_dependencia, tem_hora_limite),
+        ) if tem]
+        if _janela:
+            try:
+                cur.execute(
+                    "UPDATE dbo.etl_pipeline SET "
+                    + ", ".join(f"{c}=?" for c, _, _ in _janela)
+                    + ", updated_at=GETDATE() WHERE pipeline_name=?",
+                    tuple(v for _, v, _ in _janela) + (pipeline,),
+                )
+            except Exception:
+                pass  # migration 067 pendente — degrada sem erro
         try:
-            cur.execute(
-                "UPDATE dbo.etl_pipeline SET horarios_especificos=?, dias_semana=?, "
-                "updated_at=GETDATE() WHERE pipeline_name=?",
-                (horarios_especificos, dias_semana, pipeline),
-            )
+            # PATCH-parcial (achado 3): só grava horários múltiplos / dias da
+            # semana com a chave no body — o body do InactivateModal não os
+            # envia e o UPDATE incondicional os zerava ao inativar.
+            _set_018: list = []
+            _vals_018: list = []
+            if tem_horarios_esp:
+                _set_018.append("horarios_especificos=?")
+                _vals_018.append(horarios_especificos)
+            if tem_dias_semana:
+                _set_018.append("dias_semana=?")
+                _vals_018.append(dias_semana)
+            if _set_018:
+                cur.execute(
+                    "UPDATE dbo.etl_pipeline SET " + ", ".join(_set_018)
+                    + ", updated_at=GETDATE() WHERE pipeline_name=?",
+                    (*_vals_018, pipeline),
+                )
         except Exception:
             pass  # colunas da migration 018 podem não existir ainda — degrada sem erro
         try:
-            cur.execute(
-                "UPDATE dbo.etl_pipeline SET dias_horarios_mes=?, "
-                "updated_at=GETDATE() WHERE pipeline_name=?",
-                (dias_horarios_mes, pipeline),
-            )
+            if tem_dias_horarios_mes:   # PATCH-parcial (achado 3)
+                cur.execute(
+                    "UPDATE dbo.etl_pipeline SET dias_horarios_mes=?, "
+                    "updated_at=GETDATE() WHERE pipeline_name=?",
+                    (dias_horarios_mes, pipeline),
+                )
         except Exception:
             pass  # coluna da migration 024 pode não existir ainda — degrada sem erro
         try:
@@ -773,11 +1131,70 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
             "schedule_dow": schedule_dow, "schedule_dom": schedule_dom,
             "envia_msg_inicio": envia_msg_inicio, "envia_msg_fim": envia_msg_fim,
             "envia_msg_erro": envia_msg_erro, "project_name": project, "domain": domain,
-            "tags": tags, "depends_on": depends_on, "criticidade": criticidade,
+            "tags": tags, "criticidade": criticidade,
             "sla_minutos": sla_minutos, "ambiente": ambiente, "max_active_runs": max_active_runs,
             "retries_count": retries_count, "retry_delay_seconds": retry_delay_secs,
             "pool_name": pool_name, "descricao": descricao, "runbook_md": runbook_md,
         }
+        # Campos PATCH-parciais só entram em new_vals com a chave no body —
+        # _write_audit pula os ausentes (nada de "valor → vazio" falso).
+        if tem_depends_on:
+            new_vals["depends_on"] = depends_on
+        if tem_hora_virada:
+            new_vals["hora_virada"] = hora_virada
+        if tem_nao_iniciar:
+            new_vals["nao_iniciar_antes"] = nao_iniciar_antes
+        if tem_hora_limite:
+            new_vals["hora_limite_dependencia"] = hora_limite_dependencia
+
+        # ── Pendência de publicação (Decisão 6/D30, migration 073) ──────────
+        # O SERVIDOR decide, por diff sobre CAMPOS_QUE_AFETAM_DAG, se a DAG
+        # publicada ficou para trás — o ref do front segue existindo só para o
+        # prompt imediato. Pipeline nunca publicado (dag_criada=0) não tem
+        # versão velha rodando: nunca liga.
+        if not is_new and int(old_record.get("dag_criada") or 0) == 1:
+            _novos_dag = {
+                "scheduled_time": horario, "schedule_type": schedule_type,
+                "schedule_hour": schedule_hour, "schedule_minute": schedule_minute,
+                "schedule_dow": schedule_dow, "schedule_dom": schedule_dom,
+                "retries_count": retries_count, "retry_delay_seconds": retry_delay_secs,
+                "max_active_runs": max_active_runs, "pool_name": pool_name,
+                "envia_msg_inicio": envia_msg_inicio, "envia_msg_fim": envia_msg_fim,
+                "envia_msg_erro": envia_msg_erro, "ambiente": ambiente,
+                "criticidade": criticidade, "dag_start_date": dag_start_date,
+                # sla_minutos vira dagrun_timeout no gerador (achado 1) — e é
+                # gravado incondicionalmente acima, então o diff espelha o que
+                # de fato ficou no banco.
+                "sla_minutos": sla_minutos,
+            }
+            # PATCH-parciais (janela D26 + agenda rica do achado 3): ausente
+            # do body = não gravado = não entra no diff (nunca "mudou p/ vazio").
+            for campo, valor, tem in (
+                ("horarios_especificos", horarios_especificos, tem_horarios_esp),
+                ("dias_semana",          dias_semana,          tem_dias_semana),
+                ("dias_horarios_mes",    dias_horarios_mes,    tem_dias_horarios_mes),
+                ("somente_dias_uteis",   somente_dias_uteis,   tem_somente_uteis),
+                ("calendario_nome",      calendario_nome,      tem_calendario),
+            ):
+                if tem:
+                    _novos_dag[campo] = valor
+            for campo in ("hora_virada", "nao_iniciar_antes", "hora_limite_dependencia"):
+                if campo in new_vals:              # parciais: ausente = não mudou
+                    _novos_dag[campo] = new_vals[campo]
+            if any(_norm_valor_dag(old_record.get(c)) != _norm_valor_dag(v)
+                   for c, v in _novos_dag.items() if c in CAMPOS_QUE_AFETAM_DAG):
+                try:
+                    # Carimbo, não bit (achado 2 — TOCTOU): GETDATE() marca
+                    # QUANDO a pendência nasceu; o reconciliador só limpa
+                    # carimbos <= início da publicação concluída, então uma
+                    # edição feita DURANTE uma publicação em voo sobrevive.
+                    cur.execute(
+                        "UPDATE dbo.etl_pipeline SET dag_config_pendente_em = GETDATE() "
+                        "WHERE pipeline_name = ? AND dag_criada = 1",
+                        (pipeline,),
+                    )
+                except Exception as e:
+                    log.debug("[PIPELINE] dag_config_pendente_em indisponível (migration 073?): %s", e)
         if is_new:
             for field, val in new_vals.items():
                 cur.execute(
@@ -829,9 +1246,11 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
                                         f"Pipeline {pipeline} ativado", msg,
                                         "success", "/pipelines")
 
+    # `avisos`: hora inválida que virou NULL (D35) — o front mostra em toast;
+    # a resposta nunca silencia o descarte.
     return {"ok": True, "pipeline_name": pipeline, "is_new": is_new,
             "cron": _build_cron(schedule_type, schedule_hour, schedule_minute, schedule_dow, schedule_dom),
-            "dag_sync": dag_sync}
+            "dag_sync": dag_sync, "avisos": avisos}
 
 
 def _pipeline_active(pname: str) -> int:

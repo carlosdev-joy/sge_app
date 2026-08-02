@@ -13,8 +13,9 @@ import {
   DOW_LABELS,
   type ScheduleConfig, type MonthDayEntry,
   hourlyTimes, parseCustomTimes, computeNextRuns, runsPerDay,
-  critColor, buildCron, parseMonthDaysTimes, serializeMonthDaysTimes,
+  critColor, parseMonthDaysTimes, serializeMonthDaysTimes,
 } from './pipelineUtils'
+import { DependenciasModal } from './DependenciasModal'
 
 // ── Sub-types ─────────────────────────────────────────────────────────────────
 
@@ -40,7 +41,6 @@ interface FormState {
   schedule_month_days: MonthDayEntry[]
   somente_dias_uteis: boolean
   calendario_nome: string
-  trigger_por_dependencia: boolean
   active: boolean
   dag_start_date: string
   envia_msg_inicio: boolean
@@ -56,6 +56,23 @@ interface FormState {
   depends_on: string
   runbook_md: string
   motivo_inativacao: string
+  // Janela e virada (migration 067) — 'HH:MM' ou '' (= sem regra → NULL).
+  // hora_virada é rótulo ODATE de QUALQUER pipeline (o caso motivador é um
+  // PAI com virada 20:00); os outros dois são da liberação por dependência.
+  hora_virada: string
+  nao_iniciar_antes: string
+  hora_limite_dependencia: string
+}
+
+// Espelho DISPLAY-ONLY da regra canônica do ODATE (dags/utils/data_referencia
+// → api/services/data_referencia): hora >= virada → dia seguinte. A autoridade
+// continua sendo o servidor — este valor NUNCA decide nada, só ilustra o campo
+// (risco 4 da spec: a virada sem exemplo vivo era ilegível).
+function calcularDataRef(agora: Date, virada: string): Date {
+  const [h, m] = virada.split(':').map(Number)
+  const d = new Date(agora)
+  if ((h !== 0 || m !== 0) && agora.getHours() * 60 + agora.getMinutes() >= h * 60 + m) d.setDate(d.getDate() + 1)
+  return d
 }
 
 // Resultado da sincronização da DAG no Airflow ao salvar (vem de /pipelines/register).
@@ -77,12 +94,13 @@ const defaultForm = (): FormState => ({
   schedule_dow: 1, schedule_dom: 1, schedule_interval_hours: 2,
   schedule_start_hour: 8, schedule_end_hour: 18,
   schedule_custom_times: '', schedule_weekdays: [1, 2, 3, 4, 5], schedule_month_days: [],
-  somente_dias_uteis: false, calendario_nome: '', trigger_por_dependencia: false,
+  somente_dias_uteis: false, calendario_nome: '',
   active: true, dag_start_date: '',
   envia_msg_inicio: true, envia_msg_fim: true, envia_msg_erro: true,
   criticidade: 'Media', sla_minutos: '', ambiente: 'PROD',
   max_active_runs: 1, retries_count: 1, retry_delay_seconds: 300,
   pool_name: '', depends_on: '', runbook_md: '', motivo_inativacao: '',
+  hora_virada: '', nao_iniciar_antes: '', hora_limite_dependencia: '',
 })
 
 function pipelineToForm(p: Pipeline): FormState {
@@ -108,7 +126,6 @@ function pipelineToForm(p: Pipeline): FormState {
     schedule_month_days:     monthDays,
     somente_dias_uteis:      !!p.somente_dias_uteis,
     calendario_nome:         p.calendario_nome ?? '',
-    trigger_por_dependencia: !!p.trigger_por_dependencia,
     active:                  !!p.active,
     dag_start_date:          p.dag_start_date ?? '',
     envia_msg_inicio:        !!p.envia_msg_inicio,
@@ -124,6 +141,11 @@ function pipelineToForm(p: Pipeline): FormState {
     depends_on:              p.depends_on ?? '',
     runbook_md:              p.runbook_md ?? '',
     motivo_inativacao:       p.motivo_inativacao ?? '',
+    // Round-trip D26: os três chegam do GET ('HH:MM' ou null) — antes eram
+    // write-only e todo save os zerava no banco.
+    hora_virada:             p.hora_virada ?? '',
+    nao_iniciar_antes:       p.nao_iniciar_antes ?? '',
+    hora_limite_dependencia: p.hora_limite_dependencia ?? '',
   }
 }
 
@@ -169,6 +191,11 @@ function TagsInput({ value, onChange }: { value: string[]; onChange: (v: string[
     </div>
   )
 }
+
+// Campos de HORA ficam visíveis porém INERTES quando há dependência (F3/D03:
+// regra de relógio é só de disparo por agenda) — o title explica o porquê.
+const TITULO_HORA_INERTE =
+  'Com dependência, o horário não vale — o gatilho é a conclusão dos predecessores'
 
 // ── Wizard stepper ────────────────────────────────────────────────────────────
 
@@ -225,6 +252,8 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   const [stepErrors, setStepErrors] = useState<Record<number, string[]>>({})
   const [confirmClose, setConfirmClose] = useState(false)
   const [askGenerate, setAskGenerate]   = useState<string | null>(null)
+  // D31: o DependenciasModal só é MONTADO enquanto aberto — render condicional.
+  const [depsModalAberto, setDepsModalAberto] = useState(false)
 
   const { data: projData } = useQuery<{ projects: string[] }>({
     queryKey: ['pipeline-projects'],
@@ -241,15 +270,6 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   })
   const domains = domData?.domains ?? []
 
-  const { data: allPipes } = useQuery<{ data: Pipeline[] }>({
-    queryKey: ['pipelines', '', '', '', 0],
-    queryFn: () => apiFetch('/pipelines?limit=200'),
-    staleTime: 60_000,
-  })
-  const otherPipelines = (allPipes?.data ?? [])
-    .map(p => p.pipeline_name)
-    .filter(n => n !== form.pipeline_name)
-
   const { data: calData } = useQuery<{ calendarios: { calendario_nome: string; datas: number }[] }>({
     queryKey: ['agenda-calendarios'],
     queryFn: () => apiFetch('/agenda/calendarios'),
@@ -259,9 +279,12 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
 
   // "Dirty" cirúrgico: marca só quando muda algo que AFETA a DAG (não cadastro
   // puro). Usado para perguntar "Regenerar a DAG?" só quando precisa.
+  // Alinhado com CAMPOS_QUE_AFETAM_DAG do servidor (achado 1 da revisão da
+  // F5): sla_minutos vira dagrun_timeout e criticidade vira queue do
+  // DataStage no gerador — mudá-los TEM que disparar o prompt imediato.
   const dagDirtyRef = useRef(false)
   const CADASTRO_FIELDS = new Set<string>([
-    'tags_list', 'criticidade', 'descricao', 'runbook_md', 'sla_minutos',
+    'tags_list', 'descricao', 'runbook_md',
     'active', 'motivo_inativacao',
   ])
   function markDagDirty() {
@@ -271,6 +294,29 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   function f<K extends keyof FormState>(k: K, v: FormState[K]) {
     setForm(prev => ({ ...prev, [k]: v }))
     if (!CADASTRO_FIELDS.has(k as string)) markDagDirty()
+  }
+
+  const temDependencia = form.depends_on.trim() !== ''
+  const dependenciasLista = form.depends_on.split(',').map(s => s.trim()).filter(Boolean)
+
+  // Resultado do DependenciasModal. Criação: a lista vira o CSV que viaja no
+  // body do register (Decisão 1 — replace-all inofensivo sobre tabela vazia).
+  // Edição: o modal JÁ aplicou o diff no servidor (aresta a aresta, F8) — aqui
+  // só se espelha o estado local. Remover a ÚLTIMA dependência limpa janela e
+  // hora-limite (D34): o form zera os dois e envia '' (chave presente → NULL)
+  // — nada de configuração órfã no banco.
+  function aplicarDependencias(nomes: string[]) {
+    const tinha = form.depends_on.trim() !== ''
+    const limpaJanela = tinha && nomes.length === 0
+    setForm(prev => ({
+      ...prev,
+      depends_on: nomes.join(','),
+      ...(limpaJanela ? { nao_iniciar_antes: '', hora_limite_dependencia: '' } : {}),
+    }))
+    if (limpaJanela) {
+      toast.info('Última dependência removida — janela e hora-limite serão limpos ao salvar.')
+    }
+    markDagDirty()
   }
 
   const schedCfg: ScheduleConfig = {
@@ -309,13 +355,17 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       const t = form.schedule_type
       if (t === 'on_demand') return []
       if (t === 'hourly_n') {
-        if (form.schedule_interval_hours < 1 || form.schedule_interval_hours > 23) e.push('Intervalo deve ser entre 1 e 23 horas')
-        if (form.schedule_start_hour < 0 || form.schedule_start_hour > 23) e.push('Hora de início inválida (0–23)')
-        if (form.schedule_end_hour < 0 || form.schedule_end_hour > 23) e.push('Hora de término inválida (0–23)')
-        if (form.schedule_end_hour < form.schedule_start_hour) e.push('Hora de término deve ser ≥ hora de início')
-        if (form.schedule_minute < 0 || form.schedule_minute > 59) e.push('Minuto inválido (0–59)')
+        // Com dependência os campos de HORA estão inertes (F3/D03): não podem
+        // reprovar o passo — só as restrições de DIA seguem obrigatórias.
+        if (!temDependencia) {
+          if (form.schedule_interval_hours < 1 || form.schedule_interval_hours > 23) e.push('Intervalo deve ser entre 1 e 23 horas')
+          if (form.schedule_start_hour < 0 || form.schedule_start_hour > 23) e.push('Hora de início inválida (0–23)')
+          if (form.schedule_end_hour < 0 || form.schedule_end_hour > 23) e.push('Hora de término inválida (0–23)')
+          if (form.schedule_end_hour < form.schedule_start_hour) e.push('Hora de término deve ser ≥ hora de início')
+          if (form.schedule_minute < 0 || form.schedule_minute > 59) e.push('Minuto inválido (0–59)')
+        }
       } else if (t === 'custom') {
-        if (parseCustomTimes(form.schedule_custom_times).length === 0) e.push('Informe ao menos um horário válido (HH:MM)')
+        if (!temDependencia && parseCustomTimes(form.schedule_custom_times).length === 0) e.push('Informe ao menos um horário válido (HH:MM)')
         if (form.schedule_weekdays.length === 0) e.push('Selecione ao menos um dia da semana')
       } else if (t === 'monthly_days_times') {
         if (form.schedule_month_days.length === 0) e.push('Adicione ao menos um dia do mês')
@@ -428,19 +478,32 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         retries_count:       form.retries_count,
         retry_delay_seconds: form.retry_delay_seconds,
         pool_name:           form.pool_name.trim() || null,
-        depends_on:          form.depends_on.trim() || null,
-        trigger_por_dependencia: form.trigger_por_dependencia ? 1 : 0,
+        // Decisão 1/2: na CRIAÇÃO a seleção do modal viaja no register
+        // (replace-all inofensivo — a tabela do recém-criado está vazia); na
+        // EDIÇÃO a chave é OMITIDA: as arestas já foram gravadas na hora pelo
+        // modal (porta da F8) e chave ausente = "não mexa", nunca "apague".
+        ...(isEdit ? {} : { depends_on: form.depends_on.trim() || null }),
+        // trigger_por_dependencia NÃO é mais enviado (Decisão 3): a chave
+        // ausente preserva o valor no banco — zerar reabriria o hazard de
+        // deploy API-antes-de-dags (sensor de volta na regeneração).
+        // Janela e virada: chaves SEMPRE presentes no wizard ('' → NULL no
+        // banco — "limpo de verdade", não configuração órfã; D34/D35).
+        hora_virada:             form.hora_virada.trim(),
+        nao_iniciar_antes:       temDependencia ? form.nao_iniciar_antes.trim() : '',
+        hora_limite_dependencia: temDependencia ? form.hora_limite_dependencia.trim() : '',
         runbook_md:          form.runbook_md.trim() || null,
         changed_by:          user?.matricula ?? 'react-ui',
         dag_criada:          pipeline?.dag_criada ?? 0,
         ...buildSchedulePayload(),
       }
-      const reg = await apiFetch<{ dag_sync?: DagSync | null }>('/pipelines/register', { method: 'POST', body: JSON.stringify(body) })
+      const reg = await apiFetch<{ dag_sync?: DagSync | null; avisos?: string[] }>('/pipelines/register', { method: 'POST', body: JSON.stringify(body) })
       const dagSync = reg?.dag_sync ?? null
-      return { pname, dagSync }
+      return { pname, dagSync, avisos: reg?.avisos ?? [] }
     },
-    onSuccess: (res: { pname: string; dagSync?: DagSync | null }) => {
+    onSuccess: (res: { pname: string; dagSync?: DagSync | null; avisos?: string[] }) => {
       qc.invalidateQueries({ queryKey: ['pipelines'] })
+      // D35: hora inválida virou NULL no servidor — o descarte nunca é mudo.
+      res.avisos?.forEach(a => toast.info(`Atenção: ${a}`))
       const dag = dagSyncMsg(res.dagSync)
       const base = isEdit ? 'Pipeline atualizado!' : 'Pipeline criado com sucesso!'
       if (!dag.ok) toast.error(`${base} Atenção: ${dag.msg}`)
@@ -591,6 +654,39 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         {/* ── STEP 1: AGENDAMENTO ── */}
         {step === 1 && (
           <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-1">
+            {/* Dependências — escolhidas SÓ pelo modal (nunca texto livre, D33).
+                Semântica corrigida pela F3 (D03/D04): com dependência o HORÁRIO
+                deixa de valer, mas as restrições de DIA continuam valendo. */}
+            <div className="bg-canvas border border-edge rounded-lg px-3 py-2.5 flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Dependências</span>
+                <Button variant="secondary" size="sm" onClick={() => setDepsModalAberto(true)}>
+                  {temDependencia ? 'Editar dependências' : 'Escolher dependências'}
+                </Button>
+              </div>
+              {temDependencia ? (
+                <>
+                  <div className="flex flex-wrap gap-1.5">
+                    {dependenciasLista.map(n => (
+                      <span key={n} className="inline-flex items-center px-2 py-0.5 rounded-full border border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/30 text-[11px] font-mono text-blue-700 dark:text-blue-300">
+                        {n}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-dim">
+                    Com dependência, o <strong className="text-ink">horário</strong> deixa de valer
+                    (o gatilho é a conclusão dos predecessores); as restrições de{' '}
+                    <strong className="text-ink">dia</strong> — semanal, mensal, dias úteis,
+                    calendário — continuam valendo.
+                  </p>
+                </>
+              ) : (
+                <p className="text-[11px] text-dim">
+                  Sem dependências — o pipeline dispara pelo agendamento abaixo.
+                </p>
+              )}
+            </div>
+
             <Select label="Tipo de agendamento" value={form.schedule_type} onChange={e => f('schedule_type', e.target.value)}>
               {SCHEDULE_TYPES.map(t => <option key={t} value={t}>{SCHEDULE_LABELS[t]}</option>)}
             </Select>
@@ -601,28 +697,32 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-dim font-medium">A cada quantas horas? (1–23)</label>
                     <input type="number" min={1} max={23} value={form.schedule_interval_hours}
+                      disabled={temDependencia} title={temDependencia ? TITULO_HORA_INERTE : undefined}
                       onChange={e => f('schedule_interval_hours', Math.min(23, Math.max(1, parseInt(e.target.value) || 1)))}
-                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50" />
                   </div>
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-dim font-medium">Minuto (0–59)</label>
                     <input type="number" min={0} max={59} value={form.schedule_minute}
+                      disabled={temDependencia} title={temDependencia ? TITULO_HORA_INERTE : undefined}
                       onChange={e => f('schedule_minute', Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))}
-                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-dim font-medium">Começa às (hora 0–23)</label>
                     <input type="number" min={0} max={23} value={form.schedule_start_hour}
+                      disabled={temDependencia} title={temDependencia ? TITULO_HORA_INERTE : undefined}
                       onChange={e => f('schedule_start_hour', Math.min(23, Math.max(0, parseInt(e.target.value) || 0)))}
-                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50" />
                   </div>
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-dim font-medium">Termina às (hora 0–23)</label>
                     <input type="number" min={0} max={23} value={form.schedule_end_hour}
+                      disabled={temDependencia} title={temDependencia ? TITULO_HORA_INERTE : undefined}
                       onChange={e => f('schedule_end_hour', Math.min(23, Math.max(0, parseInt(e.target.value) || 0)))}
-                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50" />
                   </div>
                 </div>
                 <p className="text-[10px] text-dim">Ex: a cada 2h entre 08 e 18 → roda às 08, 10, 12, 14, 16 e 18.</p>
@@ -634,10 +734,15 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-dim font-medium">Horários de execução</label>
                   <input type="text" value={form.schedule_custom_times}
+                    disabled={temDependencia} title={temDependencia ? TITULO_HORA_INERTE : undefined}
                     onChange={e => f('schedule_custom_times', e.target.value)}
                     placeholder="ex: 09:00, 10:30, 13:00, 15:30"
-                    className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                  <p className="text-[10px] text-dim">Vários horários separados por vírgula no formato <span className="font-mono">HH:MM</span>.</p>
+                    className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50" />
+                  <p className="text-[10px] text-dim">
+                    {temDependencia
+                      ? 'Com dependência o horário não vale — só os dias da semana abaixo continuam restringindo.'
+                      : <>Vários horários separados por vírgula no formato <span className="font-mono">HH:MM</span>.</>}
+                  </p>
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-dim font-medium">Dias da semana</label>
@@ -683,10 +788,11 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                           className="ml-auto text-xs text-red-400 hover:text-red-300">Remover dia</button>
                       </div>
                       <input type="text" value={entry.horariosRaw}
+                        disabled={temDependencia} title={temDependencia ? TITULO_HORA_INERTE : undefined}
                         onChange={e => f('schedule_month_days', form.schedule_month_days.map((x, i) =>
                           i === di ? { ...x, horariosRaw: e.target.value } : x))}
                         placeholder="ex: 09:00, 14:00, 18:00"
-                        className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                        className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50" />
                       <p className="text-[10px] text-dim">
                         {times.length > 0
                           ? `${times.length} horário${times.length > 1 ? 's' : ''}: ${times.join(', ')}`
@@ -716,16 +822,24 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-dim font-medium">Hora (0–23)</label>
                     <input type="number" min={0} max={23} value={form.schedule_hour}
+                      disabled={temDependencia} title={temDependencia ? TITULO_HORA_INERTE : undefined}
                       onChange={e => f('schedule_hour', Math.min(23, Math.max(0, parseInt(e.target.value) || 0)))}
-                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50" />
                   </div>
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-dim font-medium">Minuto (0–59)</label>
                     <input type="number" min={0} max={59} value={form.schedule_minute}
+                      disabled={temDependencia} title={temDependencia ? TITULO_HORA_INERTE : undefined}
                       onChange={e => f('schedule_minute', Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))}
-                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50" />
                   </div>
                 </div>
+                {temDependencia && (
+                  <p className="text-[10px] text-dim -mt-1">
+                    Hora/minuto inertes: com dependência o gatilho é a conclusão dos predecessores.
+                    A restrição de <strong>dia</strong> abaixo continua valendo.
+                  </p>
+                )}
                 {form.schedule_type === 'weekly' && (
                   <Select label="Dia da semana" value={form.schedule_dow} onChange={e => f('schedule_dow', parseInt(e.target.value))}>
                     {[['0','Domingo'],['1','Segunda'],['2','Terça'],['3','Quarta'],['4','Quinta'],['5','Sexta'],['6','Sábado']].map(([v,l]) =>
@@ -775,8 +889,72 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
             <Input label="Data de início DAG (opcional)" type="date" value={form.dag_start_date}
               onChange={e => f('dag_start_date', e.target.value)} />
 
+            {/* hora_virada NÃO é campo de dependente — é o rótulo ODATE de
+                QUALQUER pipeline (o caso motivador é um PAI com virada 20:00,
+                que pode nem ter dependência). Aparece SEMPRE (§3.3). */}
+            <div className="bg-canvas border border-edge rounded-lg px-3 py-2.5 flex flex-col gap-1.5">
+              <label className="text-xs text-dim font-medium">Hora de virada do dia (ODATE) — opcional</label>
+              <input type="time" value={form.hora_virada}
+                onChange={e => f('hora_virada', e.target.value)}
+                className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm w-40 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+              {form.hora_virada ? (
+                <div className="text-[10px] text-dim flex flex-col gap-0.5">
+                  {/* Espelho display-only da regra canônica — nunca decide nada. */}
+                  <span>
+                    agora ({new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })})
+                    {' → '}data de referência{' '}
+                    <strong className="text-ink">
+                      {calcularDataRef(new Date(), form.hora_virada).toLocaleDateString('pt-BR')}
+                    </strong>
+                  </span>
+                  <span>início ≥ {form.hora_virada} conta para o dia seguinte
+                    {' '}(ex.: virada 20:00 · início 23:30 → dia seguinte).</span>
+                </div>
+              ) : (
+                <p className="text-[10px] text-dim">
+                  Em branco = a data de referência é a do calendário. Com virada 20:00, uma corrida
+                  iniciada 23:30 (ou 00:40) já pertence ao dia seguinte — as duas pontas da
+                  meia-noite viram a MESMA corrida de negócio.
+                </p>
+              )}
+            </div>
+
+            {/* Janela e hora-limite são da LIBERAÇÃO por dependência: só
+                aparecem com dependência e são limpos ao remover a última (D34). */}
+            {temDependencia && (
+              <div className="bg-canvas border border-edge rounded-lg px-3 py-2.5 flex flex-col gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Janela da liberação</span>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-dim font-medium">Não iniciar antes de (opcional)</label>
+                    <input type="time" value={form.nao_iniciar_antes}
+                      onChange={e => f('nao_iniciar_antes', e.target.value)}
+                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                    <p className="text-[10px] text-dim">
+                      Liberou antes disso? O disparo espera a hora (a guardiã dispara na janela).
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-dim font-medium">Avisar se não liberar até (opcional)</label>
+                    <input type="time" value={form.hora_limite_dependencia}
+                      onChange={e => f('hora_limite_dependencia', e.target.value)}
+                      className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                    <p className="text-[10px] text-dim">
+                      Ao passar da hora, o Orquestra <strong>alerta e mantém pendente</strong> —
+                      não bloqueia nem falha.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="bg-canvas border border-edge rounded-lg px-3 py-2.5">
-              {form.schedule_type === 'on_demand' ? (
+              {temDependencia ? (
+                <p className="text-xs text-dim">
+                  <span className="text-[10px] font-bold uppercase tracking-wider block mb-1">Disparo</span>
+                  disparo pelos predecessores: <span className="font-mono text-ink">{dependenciasLista.join(', ')}</span>
+                </p>
+              ) : form.schedule_type === 'on_demand' ? (
                 <p className="text-xs text-dim">Sem agendamento automático — execução apenas manual ou por dependência.</p>
               ) : (
                 <>
@@ -852,29 +1030,10 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                 </div>
                 <Input label="Fila de execução (pool)" value={form.pool_name}
                   onChange={e => f('pool_name', e.target.value)} placeholder="padrão do Airflow" />
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-dim font-medium">Depende de (pipelines separados por vírgula)</label>
-                  <input list="dep-list-wiz" value={form.depends_on}
-                    onChange={e => f('depends_on', e.target.value)}
-                    placeholder="ex: ETL_BASE_CLIENTES, ETL_CARTEIRA"
-                    className="bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                  <datalist id="dep-list-wiz">
-                    {otherPipelines.map(n => <option key={n} value={n} />)}
-                  </datalist>
-                  <p className="text-[10px] text-dim">Os pipelines acima precisam concluir com sucesso antes deste iniciar.</p>
-                  {form.depends_on.trim() && (
-                    <label className="flex items-start gap-2 cursor-pointer bg-amber-50 dark:bg-amber-900/15 border border-amber-300 dark:border-amber-800/40 rounded-lg px-3 py-2 mt-1">
-                      <input type="checkbox" checked={form.trigger_por_dependencia}
-                        onChange={e => f('trigger_por_dependencia', e.target.checked)} className="mt-0.5 accent-amber-500" />
-                      <div>
-                        <span className="text-sm text-ink font-medium">Disparar quando as dependências concluírem</span>
-                        <p className="text-[11px] text-amber-700 dark:text-amber-400 mt-0.5">
-                          ⚠ Ao ativar, o pipeline é disparado automaticamente assim que as dependências concluírem e <strong>ignora o horário de execução agendado</strong>.
-                        </p>
-                      </div>
-                    </label>
-                  )}
-                </div>
+                {/* O campo de texto "Depende de" e o checkbox "Disparar quando
+                    as dependências concluírem" morreram na F5: dependência é
+                    escolhida SÓ pelo modal do passo Agendamento (D33) e ter
+                    dependência JÁ significa disparo por ela (F3/Decisão 3). */}
                 <Textarea label="Runbook (Markdown)" value={form.runbook_md}
                   onChange={e => f('runbook_md', e.target.value)} rows={3}
                   placeholder="Como monitorar, tratar falhas, contato responsável…" />
@@ -946,10 +1105,21 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                 )}
                 {showBizToggle && form.somente_dias_uteis && <div><span className="text-dim">Restrição:</span> <span className="text-ink">somente dias úteis</span></div>}
                 {form.calendario_nome && <div><span className="text-dim">Calendário:</span> <span className="text-ink">{form.calendario_nome}</span></div>}
-                {form.depends_on.trim() && <div className="col-span-2"><span className="text-dim">Depende de:</span> <span className="font-mono text-ink">{form.depends_on}</span>{form.trigger_por_dependencia && <span className="text-amber-600 dark:text-amber-400"> · dispara por dependência (ignora horário)</span>}</div>}
+                {temDependencia && (
+                  <div className="col-span-2">
+                    <span className="text-dim">Depende de:</span>{' '}
+                    <span className="font-mono text-ink">{dependenciasLista.join(', ')}</span>
+                    <span className="text-amber-600 dark:text-amber-400">
+                      {' '}· o horário deixa de valer (dispara na conclusão dos predecessores); as restrições de dia continuam valendo
+                    </span>
+                  </div>
+                )}
+                {form.hora_virada && <div><span className="text-dim">Virada (ODATE):</span> <span className="text-ink">{form.hora_virada}</span></div>}
+                {temDependencia && form.nao_iniciar_antes && <div><span className="text-dim">Não iniciar antes:</span> <span className="text-ink">{form.nao_iniciar_antes}</span></div>}
+                {temDependencia && form.hora_limite_dependencia && <div><span className="text-dim">Avisar se não liberar até:</span> <span className="text-ink">{form.hora_limite_dependencia}</span></div>}
                 {form.dag_start_date && <div><span className="text-dim">Início DAG:</span> <span className="text-ink">{form.dag_start_date}</span></div>}
                 {form.sla_minutos && <div><span className="text-dim">SLA:</span> <span className="text-ink">{form.sla_minutos} min</span></div>}
-                {nextRuns.length > 0 && (
+                {!temDependencia && nextRuns.length > 0 && (
                   <div className="col-span-2 border-t border-edge/50 pt-1.5 mt-0.5">
                     <span className="text-dim">Próximas:</span> <span className="text-ink">{nextRuns.slice(0, 3).join('  ·  ')}</span>
                   </div>
@@ -1000,6 +1170,19 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       </div>
     )}
 
+    {/* D31: DependenciasModal MONTADO só enquanto aberto — "Cancelar" descarta
+        a seleção local e a próxima abertura re-hidrata do servidor; chip
+        removido não ressuscita (o Modal da casa esconde mas não desmonta). */}
+    {depsModalAberto && (
+      <DependenciasModal
+        pipelineAtual={(form.pipeline_name.trim() || 'NOVO_PIPELINE').toUpperCase()}
+        isEdit={isEdit}
+        selecionadas={dependenciasLista}
+        onClose={() => setDepsModalAberto(false)}
+        onConfirmar={aplicarDependencias}
+      />
+    )}
+
     {/* Após criar: oferece gerar a DAG agora (mesmo disparo do botão Gerar DAG) */}
     {askGenerate && (
       <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
@@ -1020,6 +1203,3 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
     </>
   )
 }
-
-// re-export buildCron for ViewModal (used in PipelineModals)
-export { buildCron }
