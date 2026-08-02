@@ -28,7 +28,14 @@ paridade, como api/services/data_referencia.py fez com o canônico de dags/.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
+
+# Sentinel de "não consegui perguntar" (≠ "condição não fechou"). liberado()
+# o embute nos faltantes (D21: erro é NÃO liberado para DISPARO); quem toma
+# decisão TERMINAL (fechamento NAO_LIBEROU da guardiã) deve checá-lo e ADIAR
+# — fechar uma corrida liberada por erro transitório de consulta seria
+# irrecuperável (achado da revisão adversarial da F4).
+ERRO_CONSULTA = "erro na consulta:"
 
 # ═════════════════════ puro (sem banco, sem Airflow) ════════════════════════
 
@@ -153,6 +160,49 @@ def novo_run_id(origem: str, data_ref: date, nome: str) -> str:
     return f"{origem}__{_como_iso(data_ref)}__{str(nome)[:60]}__{carimbo}"
 
 
+def candidatos_dia_operacional(agora: datetime, virada: time) -> list:
+    """F4 §2.3 — os dias de calendário que podem ser o dia OPERACIONAL da
+    corrida corrente de um predecessor com esta virada.
+
+    Para virada v > 00:00, o dia de origem é ambíguo no corredor
+    pós-meia-noite (o pai pode ter rodado ontem 23:30 ou hoje 01:00):
+
+      virada == 00:00        -> [hoje]
+      agora.time() >= virada -> [hoje]            (corrida de amanhã, ordenada hoje)
+      senão                  -> [hoje - 1, hoje]  (corredor pós-meia-noite)
+
+    O chamador julga `dia_permitido` por ALGUM candidato e prefere o mais
+    antigo (o dia de origem provável) como dia_operacional do conf — é o que
+    impede o sweep pós-meia-noite da guardiã de reabrir D06/D07 (Decisão 3).
+    """
+    hoje = agora.date()
+    v = _como_time(virada) or time(0, 0)
+    if v == time(0, 0) or agora.time() >= v:
+        return [hoje]
+    return [hoje - timedelta(days=1), hoje]
+
+
+def instante_deadline(data_ref: date, hora_limite: time, virada: time) -> datetime:
+    """F4 §5.1 — o instante REAL do deadline de uma corrida: `hora_limite`
+    ancorada dentro do dia operacional [(D-1)@virada, D@virada), nunca a
+    hora sozinha.
+
+      virada == 00:00       -> data_ref @ hora_limite
+      hora_limite >= virada -> (data_ref - 1) @ hora_limite  (trecho pré-meia-noite)
+      senão                 -> data_ref @ hora_limite        (trecho pós-meia-noite)
+
+    Sem a âncora de DATA, a linha de D=sábado criada sexta 21:00 com limite
+    02:00 alertaria sexta 21:05. `virada` é a efetiva dos PREDECESSORES — a
+    mesma que carimbou D. `hora_limite` é obrigatória (o deadline é opt-in:
+    o chamador só chega aqui com a regra configurada).
+    """
+    v = _como_time(virada) or time(0, 0)
+    limite = _como_time(hora_limite)
+    if v == time(0, 0) or limite < v:
+        return datetime.combine(data_ref, limite)
+    return datetime.combine(data_ref - timedelta(days=1), limite)
+
+
 def _como_iso(valor) -> str:
     """date/datetime → 'AAAA-MM-DD'; string já formatada passa direto."""
     if isinstance(valor, datetime):
@@ -246,7 +296,7 @@ def liberado(conn, pipeline: str, data_ref: date):
         return (not faltantes), faltantes
     except Exception as e:  # noqa: BLE001 — D21: erro é NÃO liberado, nunca silêncio
         print(f"[DEP] condicao de {pipeline} indisponivel ({e}) — tratada como NAO liberada")
-        return False, [f"erro na consulta: {e}"[:200]]
+        return False, [f"{ERRO_CONSULTA} {e}"[:200]]
 
 
 def calendario_bloqueia(conn, calendario_nome: str, dia: date) -> bool:
@@ -274,13 +324,18 @@ def config_dependente(conn, pipeline: str):
     cur = conn.cursor()
     cur.execute(
         "SELECT schedule_type, schedule_dow, schedule_dom, dias_semana, "
-        "dias_horarios_mes, somente_dias_uteis, nao_iniciar_antes "
+        "dias_horarios_mes, somente_dias_uteis, nao_iniciar_antes, "
+        "hora_limite_dependencia "
         "FROM dbo.etl_pipeline WHERE pipeline_name = %s",
         (pipeline,))
     row = cur.fetchone()
     if row is None:
         return None
-    stype, dow, dom, dias_semana, dias_horarios_mes, dias_uteis, nia = row
+    stype, dow, dom, dias_semana, dias_horarios_mes, dias_uteis, nia = row[:7]
+    # F4 (aditivo): hora_limite_dependencia vira a chave 'hora_limite' — o
+    # push a ignora; leitura TOLERANTE a linhas de 7 colunas para o contrato
+    # da F3 (e os stubs dela) seguirem valendo sem emenda.
+    hora_limite = row[7] if len(row) > 7 else None
     return {
         "regras_dia": {
             "somente_dias_uteis": bool(dias_uteis or 0),
@@ -291,6 +346,7 @@ def config_dependente(conn, pipeline: str):
             "dias_horarios_mes_dias": _dias_do_horarios_mes(dias_horarios_mes),
         },
         "nao_iniciar_antes": _como_time(nia),
+        "hora_limite": _como_time(hora_limite),
     }
 
 
@@ -393,3 +449,282 @@ def devolver_reserva(conn, filho: str, data_ref: date, run_id: str,
             "WHERE pipeline_name=%s AND data_referencia=%s AND execution_id=%s "
             "AND status='EXECUTANDO' AND inicio IS NULL",
             (filho, data_ref, run_id))
+
+
+# ═══════════════════ banco — F4 (guardiã) ═══════════════════════════════════
+# As perguntas do ciclo da guardiã (docs/retomada-f4-desenho.md §9). Mesmo
+# contrato: conn pymssql (%s), chamador dono da transação. Nenhuma delas
+# decide liberação — a pergunta de liberação continua sendo SÓ `liberado()`.
+
+
+def tabelas_067_presentes(conn) -> bool:
+    """As três tabelas da migration 067 existem? (D52 — degradação limpa da
+    guardiã: ausente qualquer uma, o ciclo encerra com log, sem exceção.)
+
+    Mora aqui, e não na DAG, por exigência da Decisão 15: a sonda OBJECT_ID
+    é SQL, e SQL não entra na DAG guardiã.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT OBJECT_ID('dbo.etl_pipeline_dependencia','U'), "
+        "OBJECT_ID('dbo.etl_pipeline_execucao','U'), "
+        "OBJECT_ID('dbo.etl_dependencia_evento','U')")
+    row = cur.fetchone()
+    return bool(row) and all(v is not None for v in row)
+
+
+def dependentes_com_dependencia(conn) -> list:
+    """Universo do New Day (F4 §3.1): pipelines ATIVOS com pelo menos uma
+    dependência tipo PIPELINE. É a única lista de "previstos" que a guardiã
+    conhece — quem não está aqui não é ordenado nem alertado."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT DISTINCT d.pipeline_name FROM dbo.etl_pipeline_dependencia d "
+        "JOIN dbo.etl_pipeline p ON p.pipeline_name = d.pipeline_name "
+        "WHERE d.tipo = 'PIPELINE' AND p.active = 1")
+    return [r[0] for r in cur.fetchall()]
+
+
+def predecessores_de(conn, pipeline: str) -> list:
+    """De quem `pipeline` depende (tipo PIPELINE) — o caminho inverso de
+    `dependentes_de`. A guardiã usa para carimbar datas (a virada que vale é
+    a do PREDECESSOR, §2.2) e para diagnóstico."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
+        "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE'",
+        (pipeline,))
+    return [r[0] for r in cur.fetchall()]
+
+
+def virada_efetiva(conn, pipeline: str) -> time:
+    """A virada do dia que vale para `pipeline`: hora_virada ?? config
+    global ?? 00:00 — a MESMA cadeia de precedência do _data_referencia
+    gerado (F2). O fallback é resolvido em Python, sem COALESCE no SQL (a
+    proibição do D15 vale para o módulo inteiro). Pipeline inexistente ou
+    valor inválido degradam para 00:00, o comportamento de sempre."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT p.hora_virada, c.config_value "
+        "FROM dbo.etl_pipeline p "
+        "LEFT JOIN dbo.etl_app_config c "
+        "ON c.config_key = 'dependencia_hora_virada' "
+        "WHERE p.pipeline_name = %s",
+        (pipeline,))
+    row = cur.fetchone()
+    if not row:
+        return time(0, 0)
+    bruto = row[0] if row[0] is not None else row[1]
+    v = _como_time(bruto)
+    return v if v is not None else time(0, 0)
+
+
+def agora_do_banco(conn) -> datetime:
+    """O relógio do SQL Server (GETDATE) — para converter cortes calculados em
+    hora LOCAL para a régua do banco antes de comparar com colunas carimbadas
+    por GETDATE (fim/criado_em/...). O dev provou que o banco pode estar em
+    UTC com a guardiã em -03: comparar régua local com carimbo do banco era a
+    ÚNICA comparação mista do módulo e gerava DATA_DIVERGENTE falso diário
+    (achado da revisão adversarial da F4)."""
+    cur = conn.cursor()
+    cur.execute("SELECT GETDATE()")
+    return cur.fetchone()[0]
+
+
+def corridas_aguardando(conn) -> list:
+    """As linhas AGUARDANDO_DEPENDENCIA que EXISTEM — a única fonte da rede
+    de segurança, do deadline e do fechamento (Decisão 6 da F4: a guardiã
+    não inventa datas; uma linha só existe se foi ordenada de propósito).
+
+    Devolve [(pipeline, data_referencia, execution_id, criado_em)]. O
+    `criado_em` sai como COLUNA (é a idade da linha, insumo do fechamento
+    §6) — jamais em ORDER BY ou COALESCE (D15)."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT pipeline_name, data_referencia, execution_id, criado_em "
+        "FROM dbo.etl_pipeline_execucao "
+        "WHERE status = 'AGUARDANDO_DEPENDENCIA'")
+    return [(r[0], r[1], r[2], r[3]) for r in cur.fetchall()]
+
+
+def resumo_predecessores(conn, pipeline: str, data_ref: date) -> dict:
+    """Status por predecessor na data — {predecessor: {status, ...}};
+    predecessor sem linha na data aparece com set VAZIO.
+
+    SÓ para diagnóstico e mensagem (as três frases do D46, o
+    PREDECESSOR_FALHOU do §7.2 e as guardas de fechamento do §6): NUNCA
+    decide liberação — a pergunta de liberação é exclusivamente
+    `liberado()` (proteção do D29)."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT dd.depende_de, e.status "
+        "FROM dbo.etl_pipeline_dependencia dd "
+        "LEFT JOIN dbo.etl_pipeline_execucao e "
+        "ON e.pipeline_name = dd.depende_de AND e.data_referencia = %s "
+        "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE'",
+        (data_ref, pipeline))
+    resumo: dict = {}
+    for pred, status in cur.fetchall():
+        resumo.setdefault(pred, set())
+        if status is not None:
+            resumo[pred].add(status)
+    return resumo
+
+
+def sucesso_recente_outra_data(conn, pipeline: str, data_ref: date,
+                               inicio_dia: datetime) -> list:
+    """F4 §7.1, face de execução do DATA_DIVERGENTE: predecessores de
+    `pipeline` SEM SUCESSO em `data_ref` mas COM SUCESSO carimbado em OUTRA
+    data cujo `fim` >= `inicio_dia` (a virada mais recente; o carimbo é
+    `fim`, nunca criado_em — D15). Ou seja: o predecessor trabalhou DENTRO
+    do dia operacional corrente e ainda assim as datas não casam. O sucesso
+    normal de ontem tem fim anterior à virada corrente e NÃO aparece (D42 —
+    o anti-ruído dos 200 cards/dia da 1ª guardiã).
+
+    Devolve [(predecessor, data_referencia_divergente)]. Pergunta fora da
+    lista do §9 do desenho, exigida pelo §7.1 — entra aqui pelo contrato do
+    módulo (nenhuma consulta paralela).
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT DISTINCT dd.depende_de, e.data_referencia "
+        "FROM dbo.etl_pipeline_dependencia dd "
+        "JOIN dbo.etl_pipeline_execucao e "
+        "ON e.pipeline_name = dd.depende_de AND e.status = 'SUCESSO' "
+        "AND e.fim >= %s AND e.data_referencia <> %s "
+        "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE' "
+        "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao s "
+        "WHERE s.pipeline_name = dd.depende_de "
+        "AND s.data_referencia = %s AND s.status = 'SUCESSO')",
+        (inicio_dia, data_ref, pipeline, data_ref))
+    return [(r[0], r[1]) for r in cur.fetchall()]
+
+
+def reservas_orfas(conn, idade_min: int) -> list:
+    """F4 §4.2 — candidatas a resgate: EXECUTANDO com inicio IS NULL (claim
+    que nunca virou corrida: worker morto entre o commit e o trigger),
+    paradas há mais de `idade_min` minutos. São as duas primeiras guardas da
+    tripla; a terceira (DagRun inexistente no Airflow) é do chamador, que é
+    quem fala com o Airflow. A guarda de idade elimina o falso resgate na
+    janela de milissegundos entre claim e trigger.
+
+    Devolve [(pipeline, data_referencia, execution_id)]."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT pipeline_name, data_referencia, execution_id "
+        "FROM dbo.etl_pipeline_execucao "
+        "WHERE status = 'EXECUTANDO' AND inicio IS NULL "
+        "AND atualizado_em < DATEADD(minute, -%s, GETDATE())",
+        (int(idade_min),))
+    return [(r[0], r[1], r[2]) for r in cur.fetchall()]
+
+
+def resgatar_reserva(conn, pipeline: str, data_ref: date, run_id: str) -> bool:
+    """Devolve a reserva órfã a AGUARDANDO_DEPENDENCIA — com a MESMA guarda
+    da devolução (status EXECUTANDO + inicio IS NULL): corrida adotada pelo
+    filho jamais é revertida (eco da Decisão 5 da F3). True = resgatou."""
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE dbo.etl_pipeline_execucao "
+        "SET status='AGUARDANDO_DEPENDENCIA', atualizado_em=GETDATE() "
+        "WHERE pipeline_name=%s AND data_referencia=%s AND execution_id=%s "
+        "AND status='EXECUTANDO' AND inicio IS NULL",
+        (pipeline, data_ref, run_id))
+    return cur.rowcount == 1
+
+
+def fechar_nao_liberou(conn, pipeline: str, data_ref: date, run_id: str,
+                       motivo: str) -> bool:
+    """F4 §6 — fecha a corrida como NAO_LIBEROU (o fim do ciclo de vida; a
+    F9 já renderiza o status). Guarda status='AGUARDANDO_DEPENDENCIA': só
+    linha ainda aguardando fecha; as guardas de idade, de não-liberada e de
+    predecessor-não-EXECUTANDO são do chamador (guardiã, §6).
+
+    NAO_LIBEROU é TERMINAL para a guardiã: nenhuma função deste módulo o
+    reabre — reprocesso do dia fechado é gesto explícito do operador
+    (trigger manual com conf), como o New Day do Control-M."""
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE dbo.etl_pipeline_execucao "
+        "SET status='NAO_LIBEROU', motivo=%s, atualizado_em=GETDATE() "
+        "WHERE pipeline_name=%s AND data_referencia=%s AND execution_id=%s "
+        "AND status='AGUARDANDO_DEPENDENCIA'",
+        (str(motivo)[:500] if motivo is not None else None,
+         pipeline, data_ref, run_id))
+    return cur.rowcount == 1
+
+
+def gravar_evento(conn, pipeline: str, data_ref: date, tipo: str,
+                  detalhe: str) -> bool:
+    """INSERT ... WHERE NOT EXISTS na chave do ux_dep_evento (pipeline,
+    data, tipo): idempotente — os 200 ciclos seguintes do dia não duplicam
+    nem reenviam (D49). True = evento novo.
+
+    O tipo NAO_LIBEROU estende o domínio comentado na migration 067 (o
+    campo é VARCHAR(30) sem CHECK — extensão registrada no desenho F4 §6)."""
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO dbo.etl_dependencia_evento "
+        "(pipeline_name, data_referencia, tipo, detalhe) "
+        "SELECT %s, %s, %s, %s "
+        "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
+        "WHERE pipeline_name=%s AND data_referencia=%s AND tipo=%s)",
+        (pipeline, data_ref, tipo,
+         str(detalhe)[:1000] if detalhe is not None else None,
+         pipeline, data_ref, tipo))
+    return cur.rowcount == 1
+
+
+def eventos_nao_notificados(conn, limite: int, janela_dias: int) -> list:
+    """Fila de notificação da guardiã (F4 §8): eventos sem notificado_em,
+    do passado recente (consertar um webhook não pode despejar semanas de
+    alertas velhos no canal), mais antigos primeiro, no máximo `limite` por
+    ciclo. O ORDER BY é sobre `detectado_em` do EVENTO — a proibição do D15
+    (ordenar a execução por criado_em) não se aplica aqui."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT TOP (%s) e.id, e.pipeline_name, "
+        "CONVERT(VARCHAR(10), e.data_referencia, 23), e.tipo, e.detalhe, "
+        "CONVERT(VARCHAR(19), e.detectado_em, 120) "
+        "FROM dbo.etl_dependencia_evento e "
+        "WHERE e.notificado_em IS NULL "
+        "AND e.detectado_em >= DATEADD(day, -%s, GETDATE()) "
+        "ORDER BY e.detectado_em",
+        (int(limite), int(janela_dias)))
+    return [{"id": r[0], "pipeline": r[1], "data_ref": r[2], "tipo": r[3],
+             "detalhe": r[4], "detectado_em": r[5]} for r in cur.fetchall()]
+
+
+def marcar_notificado(conn, evento_id) -> None:
+    """Carimba notificado_em — o chamador SÓ chama depois de o webhook
+    responder 2xx (contrato do ds_teams: 'avisei', nunca 'tentei avisar')."""
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE dbo.etl_dependencia_evento SET notificado_em=GETDATE() "
+        "WHERE id=%s", (evento_id,))
+
+
+def canal_teams_supervisao(conn):
+    """F4 §8 — o canal do Teams que a supervisão DataStage DE FATO usa
+    (decisão fechada da spec: reusa o canal, sem grupo novo): grupo ativo
+    com webhook preenchido e com jobs de supervisão ativos, o mais usado
+    primeiro (empate resolvido pelo menor id — determinístico).
+
+    Devolve {'id', 'webhook_url', 'nome'} ou None — sem grupo elegível os
+    eventos ficam gravados (notificado_em NULL) e vivem no painel; a URL é
+    credencial e JAMAIS vai a log. Pergunta fora da lista do §9 do desenho
+    pelo mesmo motivo da sonda 067: é SQL, e SQL não entra na DAG."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT TOP 1 g.id, g.webhook_url, g.nome "
+        "FROM dbo.etl_msg_grupo g "
+        "WHERE g.ativo = 1 AND g.webhook_url IS NOT NULL "
+        "AND LTRIM(RTRIM(g.webhook_url)) <> '' "
+        "AND EXISTS (SELECT 1 FROM dbo.etl_ds_supervisao_job s "
+        "WHERE s.grupo_id = g.id AND s.ativo = 1) "
+        "ORDER BY (SELECT COUNT(*) FROM dbo.etl_ds_supervisao_job s2 "
+        "WHERE s2.grupo_id = g.id AND s2.ativo = 1) DESC, g.id")
+    row = cur.fetchone()
+    if not row:
+        return None
+    return {"id": row[0], "webhook_url": row[1], "nome": row[2]}

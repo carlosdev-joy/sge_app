@@ -25,7 +25,9 @@ _DAGS = _ROOT / "dags"
 if str(_DAGS) not in sys.path:
     sys.path.insert(0, str(_DAGS))
 
-from utils.ds_teams import ESTILO, enviar_card, montar_card  # noqa: E402
+from utils.ds_teams import (  # noqa: E402
+    ESTILO, enviar_card, montar_card, montar_card_dependencia,
+)
 
 WEBHOOK = "https://outlook.office.com/webhook/SEGREDO-abc123"
 
@@ -196,3 +198,49 @@ def test_card_e_enviado_como_json(monkeypatch):
     _args, kwargs = mod.post.call_args
     assert kwargs["json"] == card
     assert kwargs["timeout"] == 15
+
+
+# ── Card de dependência entre pipelines (F4 — guardiã) ──────────────────────
+
+def _evento_dep(**kw) -> dict:
+    base = {"id": 9, "tipo": "JANELA_ESTOUROU", "pipeline": "PIPE_C",
+            "data_ref": "2026-08-01", "detalhe": "aguardando: PIPE_A",
+            "detectado_em": "2026-08-01 08:05:00"}
+    base.update(kw)
+    return base
+
+
+@pytest.mark.parametrize("tipo,cor", [
+    ("JANELA_ESTOUROU", "Warning"),
+    ("DATA_DIVERGENTE", "Warning"),
+    ("PREDECESSOR_FALHOU", "Attention"),
+    ("NAO_LIBEROU", "Attention"),
+])
+def test_card_de_dependencia_por_tipo(tipo, cor):
+    """Os 4 tipos da guardiã têm estilo próprio no ESTILO (F4 §8)."""
+    card = montar_card_dependencia(_evento_dep(tipo=tipo))
+    assert card["attachments"][0]["content"]["body"][0]["color"] == cor
+    assert {"rotulo", "icone", "cor"} <= set(ESTILO[tipo])
+
+
+def test_card_de_dependencia_traz_pipeline_data_e_detalhe():
+    texto = _texto_do_card(montar_card_dependencia(_evento_dep()))
+    assert "PIPE_C" in texto
+    assert "2026-08-01" in texto
+    assert "aguardando: PIPE_A" in texto        # o detalhe É o corpo
+    assert "Detectado em: 2026-08-01 08:05:00" in texto
+
+
+def test_card_de_dependencia_incompleto_ainda_sai():
+    # Card torto é melhor que alerta não enviado (mesma regra do canal).
+    card = montar_card_dependencia({"tipo": "NAO_LIBEROU"})
+    assert "—" in _texto_do_card(card)
+    assert card["attachments"][0]["content"]["body"]
+
+
+def test_card_de_dependencia_no_mesmo_envelope_do_canal():
+    card = montar_card_dependencia(_evento_dep())
+    anexo = card["attachments"][0]
+    assert card["type"] == "message"
+    assert anexo["contentType"] == "application/vnd.microsoft.card.adaptive"
+    assert anexo["content"]["version"] == "1.4"

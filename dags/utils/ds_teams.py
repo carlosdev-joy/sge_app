@@ -28,6 +28,13 @@ ESTILO: dict[str, dict[str, str]] = {
     "ATRASO":           {"rotulo": "Job atrasado",         "icone": "⏰", "cor": "Warning"},
     "ESTRUTURA":        {"rotulo": "Falha na verificação", "icone": "⚠️", "cor": "Warning"},
     "SITUACAO_INICIAL": {"rotulo": "Monitoramento iniciado", "icone": "✅", "cor": "Good"},
+    # F4 — eventos de dependência entre pipelines (guardiã). Warning para o
+    # que pede atenção do dia; Attention para o que já é fato consumado
+    # (predecessor falhou / a corrida morreu sem liberar).
+    "JANELA_ESTOUROU":    {"rotulo": "Janela de dependência estourou", "icone": "⏰", "cor": "Warning"},
+    "DATA_DIVERGENTE":    {"rotulo": "Datas de referência divergentes", "icone": "⚠️", "cor": "Warning"},
+    "PREDECESSOR_FALHOU": {"rotulo": "Predecessor falhou",             "icone": "🚨", "cor": "Attention"},
+    "NAO_LIBEROU":        {"rotulo": "Dependência não liberou",        "icone": "🚨", "cor": "Attention"},
 }
 
 _PADRAO = {"rotulo": "Alerta", "icone": "🔔", "cor": "Warning"}
@@ -76,6 +83,55 @@ def montar_card(evento: dict) -> dict:
             _fato("Descrição", evento.get("descricao")),
             _fato("Dia", evento.get("data_ref")),
             _fato("Janela esperada", janela),
+        ],
+    })
+
+    return {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": corpo,
+            },
+        }],
+    }
+
+
+def montar_card_dependencia(evento: dict) -> dict:
+    """Card dos eventos de DEPENDÊNCIA entre pipelines (F4 — guardiã).
+
+    PURA como `montar_card`: dict entra, dict sai — testável sem rede.
+    Espera as chaves: tipo, pipeline, data_ref, detalhe, detectado_em —
+    tudo opcional exceto tipo (evento incompleto ainda gera card, com
+    travessão no lugar do que faltar). O corpo é o `detalhe` do evento: a
+    mensagem é renderizada na DETECÇÃO, com o contexto em mãos (padrão da
+    supervisão). O transporte é o MESMO `enviar_card` — herda os dois
+    contratos já pagos: notificado_em só após 2xx e URL fora do log.
+    """
+    tipo = evento.get("tipo") or ""
+    estilo = ESTILO.get(tipo, _PADRAO)
+
+    corpo: list[dict] = [
+        {"type": "TextBlock", "text": f"{estilo['icone']} {estilo['rotulo']}",
+         "size": "Large", "weight": "Bolder", "wrap": True, "color": estilo["cor"]},
+        {"type": "TextBlock", "text": str(evento.get("pipeline") or "?"),
+         "wrap": True, "spacing": "None", "isSubtle": True},
+    ]
+
+    detalhe = (str(evento.get("detalhe") or "")).strip()
+    if detalhe:
+        corpo.append({"type": "TextBlock", "text": detalhe, "wrap": True,
+                      "spacing": "Medium"})
+
+    corpo.append({
+        "type": "FactSet", "spacing": "Medium",
+        "facts": [
+            _fato("Pipeline", evento.get("pipeline")),
+            _fato("Data de referência", evento.get("data_ref")),
+            _fato("Detectado em", evento.get("detectado_em")),
         ],
     })
 

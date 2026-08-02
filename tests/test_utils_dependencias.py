@@ -242,18 +242,27 @@ def test_liberado_excecao_nao_vira_pode_disparar(dep, capsys):
 
 def test_predicado_sem_ordenacao_nem_criado_em(dep):
     """D15: o mascaramento por criado_em não volta pela porta dos fundos —
-    nenhuma ordenação e nenhum criado_em/COALESCE em NENHUMA SQL do módulo
-    (docstrings podem citar o antipadrão; as consultas, jamais)."""
+    nenhuma SQL sobre etl_pipeline_execucao ordena nem usa COALESCE, e
+    `criado_em` só aparece como COLUNA devolvida pela varredura AGUARDANDO
+    da guardiã (a idade da linha, F4 §6) — jamais num predicado, COALESCE
+    ou ordenação. ORDER BY no módulo existe apenas FORA da tabela de
+    execução (fila de eventos por detectado_em e escolha de canal, F4 §8).
+    (Docstrings podem citar o antipadrão; as consultas, jamais.)"""
     import ast as _ast
     fonte = (_ROOT / "dags/utils/dependencias.py").read_text(encoding="utf-8")
-    assert "ORDER BY" not in fonte
     sqls = [n.value for n in _ast.walk(_ast.parse(fonte))
             if isinstance(n, _ast.Constant) and isinstance(n.value, str)
             and "dbo.etl_" in n.value]
     assert sqls, "esperava SQLs citando dbo.etl_* no módulo"
     for sql in sqls:
-        assert "criado_em" not in sql, sql
         assert "COALESCE" not in sql, sql
+        if "dbo.etl_pipeline_execucao" in sql:
+            assert "ORDER BY" not in sql, sql
+        if "ORDER BY" in sql:
+            assert "ORDER BY e.detectado_em" in sql or "etl_msg_grupo" in sql, sql
+        if "criado_em" in sql:
+            assert sql.index("criado_em") < sql.upper().index(" FROM "), sql
+            assert "AGUARDANDO_DEPENDENCIA" in sql, sql
 
 
 # ═══════════════════ 5. dependentes_de e calendário ═════════════════════════
@@ -415,3 +424,260 @@ def test_como_time_invalido_vira_none(dep):
     assert dep._como_time("banana") is None
     assert dep._como_time(None) is None
     assert dep._como_time("") is None
+
+
+# ═══════════ F4 §12.1 — candidatos_dia_operacional (puro, §2.3) ═════════════
+
+def test_candidatos_virada_meia_noite_e_so_hoje(dep):
+    agora = datetime(2026, 8, 3, 10, 0)
+    assert dep.candidatos_dia_operacional(agora, time(0, 0)) == [date(2026, 8, 3)]
+
+
+def test_candidatos_depois_da_virada_e_so_hoje(dep):
+    """Sexta 21:00, virada 20:00 (D07): a corrida corrente é a de amanhã,
+    ordenada HOJE — o único dia de origem possível é hoje."""
+    agora = datetime(2026, 7, 31, 21, 0)
+    assert dep.candidatos_dia_operacional(agora, time(20, 0)) == [date(2026, 7, 31)]
+
+
+def test_candidatos_no_corredor_pos_meia_noite(dep):
+    """Sábado 00:15, virada 20:00 (D06): o pai pode ter rodado ontem 23:30
+    ou hoje 01:00 — os dois candidatos, o mais antigo primeiro (o chamador
+    prefere o dia de origem provável)."""
+    agora = datetime(2026, 8, 1, 0, 15)
+    assert dep.candidatos_dia_operacional(agora, time(20, 0)) == [
+        date(2026, 7, 31), date(2026, 8, 1)]
+
+
+def test_candidatos_no_instante_exato_da_virada(dep):
+    agora = datetime(2026, 7, 31, 20, 0)
+    assert dep.candidatos_dia_operacional(agora, time(20, 0)) == [date(2026, 7, 31)]
+
+
+# ═══════════════ F4 §12.2 — instante_deadline (puro, §5.1) ══════════════════
+
+def test_deadline_virada_meia_noite_ancora_no_proprio_dia(dep):
+    assert dep.instante_deadline(date(2026, 8, 1), time(9, 0), time(0, 0)) \
+        == datetime(2026, 8, 1, 9, 0)
+
+
+def test_deadline_limite_apos_a_virada_ancora_na_vespera(dep):
+    """D=sábado, virada 20:00, limite 22:00 → sexta 22:00 (o trecho
+    pré-meia-noite do dia operacional [(D-1)@20:00, D@20:00))."""
+    assert dep.instante_deadline(date(2026, 8, 1), time(22, 0), time(20, 0)) \
+        == datetime(2026, 7, 31, 22, 0)
+
+
+def test_deadline_limite_antes_da_virada_ancora_no_dia(dep):
+    """D=sábado, virada 20:00, limite 02:00 → sábado 02:00: a linha criada
+    sexta 21:00 NÃO pode alertar sexta 21:05 (a âncora de DATA do §5.1)."""
+    assert dep.instante_deadline(date(2026, 8, 1), time(2, 0), time(20, 0)) \
+        == datetime(2026, 8, 1, 2, 0)
+
+
+def test_deadline_igual_a_virada_fica_na_vespera(dep):
+    assert dep.instante_deadline(date(2026, 8, 1), time(20, 0), time(20, 0)) \
+        == datetime(2026, 7, 31, 20, 0)
+
+
+# ═════════════ F4 — funções de banco da guardiã (§9 do desenho) ═════════════
+
+def test_sonda_da_067_exige_as_tres_tabelas(dep):
+    assert dep.tabelas_067_presentes(_conn([{"rows": [(1, 2, 3)]}])) is True
+    assert dep.tabelas_067_presentes(_conn([{"rows": [(1, None, 3)]}])) is False
+    assert dep.tabelas_067_presentes(_conn([{"rows": []}])) is False
+
+
+def test_universo_do_new_day_so_ativos_com_dependencia(dep):
+    conn = _conn([{"rows": [("PIPE_C",)]}])
+    assert dep.dependentes_com_dependencia(conn) == ["PIPE_C"]
+    sql, _ = conn._cur.execs[0]
+    assert "DISTINCT" in sql and "p.active = 1" in sql
+    assert "tipo = 'PIPELINE'" in sql
+
+
+def test_predecessores_de_tipo_pipeline(dep):
+    conn = _conn([{"rows": [("PIPE_A",), ("PIPE_B",)]}])
+    assert dep.predecessores_de(conn, "PIPE_C") == ["PIPE_A", "PIPE_B"]
+    sql, params = conn._cur.execs[0]
+    assert "dd.tipo = 'PIPELINE'" in sql
+    assert params == ("PIPE_C",)
+
+
+def test_virada_efetiva_prefere_a_coluna_do_pipeline(dep):
+    conn = _conn([{"rows": [(time(20, 0), "06:00")]}])
+    assert dep.virada_efetiva(conn, "PIPE_PAI") == time(20, 0)
+    sql, params = conn._cur.execs[0]
+    assert "hora_virada" in sql and "dependencia_hora_virada" in sql
+    assert "COALESCE" not in sql        # fallback em Python (D15 vale p/ o módulo)
+    assert params == ("PIPE_PAI",)
+
+
+def test_virada_efetiva_cai_na_config_global_e_no_default(dep):
+    assert dep.virada_efetiva(_conn([{"rows": [(None, "06:00")]}]), "P") == time(6, 0)
+    assert dep.virada_efetiva(_conn([{"rows": [(None, None)]}]), "P") == time(0, 0)
+    assert dep.virada_efetiva(_conn([{"rows": []}]), "NAO_EXISTE") == time(0, 0)
+    assert dep.virada_efetiva(_conn([{"rows": [(None, "lixo")]}]), "P") == time(0, 0)
+
+
+def test_corridas_aguardando_devolve_criado_em_como_coluna(dep):
+    linha = ("PIPE_C", date(2026, 8, 1), "guardia__x", datetime(2026, 8, 1, 6, 0))
+    conn = _conn([{"rows": [linha]}])
+    assert dep.corridas_aguardando(conn) == [linha]
+    sql, _ = conn._cur.execs[0]
+    assert "status = 'AGUARDANDO_DEPENDENCIA'" in sql
+    assert "ORDER BY" not in sql        # varredura sem ordenação (D15/D45)
+
+
+def test_resumo_predecessores_traz_todos_com_set_vazio_sem_linha(dep):
+    conn = _conn([{"rows": [("PIPE_A", "SUCESSO"), ("PIPE_A", "PULADO"),
+                            ("PIPE_B", None)]}])
+    resumo = dep.resumo_predecessores(conn, "PIPE_C", date(2026, 8, 1))
+    assert resumo == {"PIPE_A": {"SUCESSO", "PULADO"}, "PIPE_B": set()}
+    sql, params = conn._cur.execs[0]
+    assert "LEFT JOIN" in sql
+    assert params == (date(2026, 8, 1), "PIPE_C")
+
+
+def test_divergencia_de_execucao_exige_fim_dentro_do_dia_corrente(dep):
+    """D42: a consulta pede fim >= virada corrente E data <> D E sem SUCESSO
+    em D — o sucesso normal de ontem fica de fora por construção; o carimbo
+    é `fim`, nunca criado_em (D15)."""
+    inicio_dia = datetime(2026, 8, 1, 20, 0)
+    conn = _conn([{"rows": [("PIPE_A", date(2026, 8, 3))]}])
+    pares = dep.sucesso_recente_outra_data(conn, "PIPE_C", date(2026, 8, 2),
+                                           inicio_dia)
+    assert pares == [("PIPE_A", date(2026, 8, 3))]
+    sql, params = conn._cur.execs[0]
+    assert "e.fim >= %s" in sql and "e.data_referencia <> %s" in sql
+    assert "criado_em" not in sql
+    assert "NOT EXISTS" in sql and "s.status = 'SUCESSO'" in sql
+    assert params == (inicio_dia, date(2026, 8, 2), "PIPE_C", date(2026, 8, 2))
+
+
+def test_reservas_orfas_com_guarda_de_idade_e_inicio_nulo(dep):
+    conn = _conn([{"rows": [("PIPE_C", date(2026, 8, 1), "guardia__x")]}])
+    assert dep.reservas_orfas(conn, 10) == [("PIPE_C", date(2026, 8, 1), "guardia__x")]
+    sql, params = conn._cur.execs[0]
+    assert "status = 'EXECUTANDO'" in sql and "inicio IS NULL" in sql
+    assert "DATEADD(minute, -%s, GETDATE())" in sql
+    assert params == (10,)
+
+
+def test_resgatar_reserva_so_com_a_dupla_guarda(dep):
+    """§4.2: mesma guarda da devolução — corrida adotada (inicio carimbado)
+    jamais é revertida."""
+    conn = _conn([{"rowcount": 1}])
+    assert dep.resgatar_reserva(conn, "PIPE_C", date(2026, 8, 1), "guardia__x") is True
+    sql, params = conn._cur.execs[0]
+    assert "SET status='AGUARDANDO_DEPENDENCIA'" in sql
+    assert "status='EXECUTANDO' AND inicio IS NULL" in sql
+    assert params == ("PIPE_C", date(2026, 8, 1), "guardia__x")
+    conn2 = _conn([{"rowcount": 0}])
+    assert dep.resgatar_reserva(conn2, "PIPE_C", date(2026, 8, 1), "x") is False
+
+
+def test_fechar_nao_liberou_guarda_e_clip_do_motivo(dep):
+    """§12.8: fecha SÓ linha ainda AGUARDANDO (as demais guardas — idade,
+    não-liberada, sem EXECUTANDO — são do ciclo); motivo clipado no
+    VARCHAR(500); rowcount 0 = não fechou (não se assume nada)."""
+    conn = _conn([{"rowcount": 1}])
+    assert dep.fechar_nao_liberou(conn, "PIPE_C", date(2026, 8, 1),
+                                  "guardia__x", "m" * 600) is True
+    sql, params = conn._cur.execs[0]
+    assert "SET status='NAO_LIBEROU'" in sql
+    assert "AND status='AGUARDANDO_DEPENDENCIA'" in sql
+    assert params[0] == "m" * 500
+    conn2 = _conn([{"rowcount": 0}])
+    assert dep.fechar_nao_liberou(conn2, "PIPE_C", date(2026, 8, 1), "x", "m") is False
+
+
+def test_nao_liberou_e_terminal_no_modulo(dep):
+    """§6: NAO_LIBEROU é terminal — o único SQL do módulo que o cita é o
+    UPDATE que o grava; nenhuma função o reabre."""
+    import ast as _ast
+    fonte = (_ROOT / "dags/utils/dependencias.py").read_text(encoding="utf-8")
+    sqls = [n.value for n in _ast.walk(_ast.parse(fonte))
+            if isinstance(n, _ast.Constant) and isinstance(n.value, str)
+            and "NAO_LIBEROU" in n.value and "dbo.etl_" in n.value]
+    assert sqls, "esperava o UPDATE do fechamento"
+    assert all("SET status='NAO_LIBEROU'" in s for s in sqls)
+
+
+def test_gravar_evento_idempotente_pela_chave(dep):
+    """§12.9: 2ª chamada com a mesma chave (pipeline, data, tipo) devolve
+    False (o WHERE NOT EXISTS barrou) — ciclo repetido não duplica (D49);
+    detalhe clipado no VARCHAR(1000)."""
+    conn = _conn([{"rowcount": 1}, {"rowcount": 0}])
+    assert dep.gravar_evento(conn, "PIPE_C", date(2026, 8, 1),
+                             "JANELA_ESTOUROU", "d" * 1200) is True
+    assert dep.gravar_evento(conn, "PIPE_C", date(2026, 8, 1),
+                             "JANELA_ESTOUROU", "d") is False
+    sql, params = conn._cur.execs[0]
+    assert "WHERE NOT EXISTS" in sql and "etl_dependencia_evento" in sql
+    assert params[3] == "d" * 1000
+    assert params[4:] == ("PIPE_C", date(2026, 8, 1), "JANELA_ESTOUROU")
+
+
+def test_fila_de_notificacao_recente_e_em_ordem(dep):
+    linha = (7, "PIPE_C", "2026-08-01", "JANELA_ESTOUROU", "detalhe",
+             "2026-08-01 08:00:00")
+    conn = _conn([{"rows": [linha]}])
+    fila = dep.eventos_nao_notificados(conn, 50, 2)
+    assert fila == [{"id": 7, "pipeline": "PIPE_C", "data_ref": "2026-08-01",
+                     "tipo": "JANELA_ESTOUROU", "detalhe": "detalhe",
+                     "detectado_em": "2026-08-01 08:00:00"}]
+    sql, params = conn._cur.execs[0]
+    assert "notificado_em IS NULL" in sql
+    assert "DATEADD(day, -%s, GETDATE())" in sql
+    assert "ORDER BY e.detectado_em" in sql     # ordem do lote — nunca criado_em
+    assert params == (50, 2)
+
+
+def test_marcar_notificado_por_id(dep):
+    conn = _conn([{"rowcount": 1}])
+    dep.marcar_notificado(conn, 7)
+    sql, params = conn._cur.execs[0]
+    assert "SET notificado_em=GETDATE()" in sql
+    assert params == (7,)
+
+
+def test_canal_derivado_da_supervisao(dep):
+    """§8: o grupo que a supervisão DE FATO usa — ativo, com webhook e com
+    jobs ativos apontando para ele; sem elegível → None (degradação)."""
+    conn = _conn([{"rows": [(3, "https://webhook/SEGREDO", "Canal BI")]}])
+    canal = dep.canal_teams_supervisao(conn)
+    assert canal == {"id": 3, "webhook_url": "https://webhook/SEGREDO",
+                     "nome": "Canal BI"}
+    sql, _ = conn._cur.execs[0]
+    assert "etl_msg_grupo" in sql and "etl_ds_supervisao_job" in sql
+    assert "g.ativo = 1" in sql and "TOP 1" in sql
+    assert dep.canal_teams_supervisao(_conn([{"rows": []}])) is None
+
+
+def test_config_dependente_ganha_hora_limite_aditiva(dep):
+    """F4: a 8ª coluna vira a chave 'hora_limite' (o push a ignora); linha
+    de 7 colunas — os stubs e o contrato da F3 — continua aceita, com
+    hora_limite None (leitura tolerante)."""
+    row8 = ("daily", None, None, "", None, 0, None, time(9, 30))
+    cfg = dep.config_dependente(_conn([{"rows": [row8]}]), "PIPE_C")
+    assert cfg["hora_limite"] == time(9, 30)
+    row7 = ("daily", None, None, "", None, 0, None)
+    cfg7 = dep.config_dependente(_conn([{"rows": [row7]}]), "PIPE_C")
+    assert cfg7["hora_limite"] is None
+
+
+def test_guarda_de_idade_ausencia_de_varredura_historica(dep):
+    """D45 (§12.4, teste de ausência): nenhuma função do módulo seleciona
+    "datas em aberto" de etl_pipeline_execucao por janela temporal para
+    ORDENAR (o _datas_em_aberto de 48h da 1ª guardiã) — a única janela
+    temporal permitida é a idade das reservas órfãs (§4.2)."""
+    import ast as _ast
+    fonte = (_ROOT / "dags/utils/dependencias.py").read_text(encoding="utf-8")
+    assert "_datas_em_aberto" not in fonte
+    sqls = [n.value for n in _ast.walk(_ast.parse(fonte))
+            if isinstance(n, _ast.Constant) and isinstance(n.value, str)
+            and "dbo.etl_pipeline_execucao" in n.value]
+    for sql in sqls:
+        if "DATEADD" in sql:
+            assert "inicio IS NULL" in sql and "EXECUTANDO" in sql, sql
