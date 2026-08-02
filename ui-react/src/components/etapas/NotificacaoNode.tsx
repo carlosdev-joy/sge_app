@@ -26,8 +26,13 @@ const HANDLE_Y = 16
 
 function NotificacaoNodeImpl({ data, selected }: NodeProps & { data: NotificacaoNodeData }) {
   const pendente = !!(data as { pendente?: boolean }).pendente
+  // Largura do invólucro = visual (tile de 32px) + 8px de folga por lado, só o
+  // bastante para o handle encostar no desenho; o RÓTULO transborda de
+  // propósito (w-[128px] nos <p>). Feedback de produção: com o invólucro na
+  // largura do rótulo, os handles ancoravam a ~48px do tile e a aresta
+  // "morria no nada" — lia como espaço desperdiçado.
   return (
-    <div className="group flex w-[128px] flex-col items-center">
+    <div className="group flex w-12 flex-col items-center">
       <Handle
         type="target"
         position={Position.Left}
@@ -60,16 +65,17 @@ function NotificacaoNodeImpl({ data, selected }: NodeProps & { data: Notificacao
         <BellRing size={16} strokeWidth={2} />
       </div>
 
-      {/* Nome embaixo — até 2 linhas, sem truncar. */}
+      {/* Nome embaixo — até 2 linhas, sem truncar.
+          w-[128px] > invólucro (w-12): transborda centrado (flex items-center). */}
       <p
-        className="mt-1.5 line-clamp-2 break-words text-center text-[11px] font-semibold leading-tight text-ink"
+        className="mt-1.5 w-[128px] line-clamp-2 break-words text-center text-[11px] font-semibold leading-tight text-ink"
         title={data.name}
       >
         {data.name}
       </p>
 
       {/* Linha de baixo: resumo curto do destino/modelo (label). */}
-      <p className="mt-0.5 line-clamp-1 text-center text-[9px] leading-tight text-dim" title={data.label}>
+      <p className="mt-0.5 w-[128px] line-clamp-1 text-center text-[9px] leading-tight text-dim" title={data.label}>
         {data.label}
       </p>
 

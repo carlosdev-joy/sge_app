@@ -58,8 +58,13 @@ function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) 
   const Icon = meta.icon
   const pendente = !!(data as { pendente?: boolean }).pendente
 
+  // Largura do invólucro = visual (tile de 32px) + 8px de folga por lado, só o
+  // bastante para o handle encostar no desenho; o RÓTULO transborda de
+  // propósito (w-[128px] nos <p>). Feedback de produção: com o invólucro na
+  // largura do rótulo, os handles ancoravam a ~48px do tile e a aresta
+  // "morria no nada" — lia como espaço desperdiçado.
   return (
-    <div className="group flex w-[128px] flex-col items-center">
+    <div className="group flex w-12 flex-col items-center">
       <Handle
         type="target"
         position={Position.Left}
@@ -94,9 +99,10 @@ function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) 
         <Icon size={16} strokeWidth={2} />
       </div>
 
-      {/* Nome embaixo — até 2 linhas, sem truncar em 1; quebra palavras longas. */}
+      {/* Nome embaixo — até 2 linhas, sem truncar em 1; quebra palavras longas.
+          w-[128px] > invólucro (w-12): transborda centrado (flex items-center). */}
       <p
-        className="mt-1.5 line-clamp-2 break-words text-center text-[11px] font-semibold leading-tight text-ink"
+        className="mt-1.5 w-[128px] line-clamp-2 break-words text-center text-[11px] font-semibold leading-tight text-ink"
         title={data.name}
       >
         {data.name}
@@ -104,7 +110,7 @@ function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) 
 
       {/* Linha de baixo: subtítulo (quando derivado — ex.: modo do nó python)
           ou o label do tipo + ordem (discreto). */}
-      <p className="mt-0.5 text-center text-[9px] leading-tight text-dim">
+      <p className="mt-0.5 w-[128px] text-center text-[9px] leading-tight text-dim">
         {data.sublabel ?? meta.label} <span className="font-mono">#{data.order}</span>
       </p>
 
