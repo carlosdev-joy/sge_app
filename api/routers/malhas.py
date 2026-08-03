@@ -1379,12 +1379,166 @@ def _mesclar_efeito_agenda(efeito, efeito_ag, republicar_ag):
     return efeito
 
 
+# ── Agregados do CARD da lista (etapas · última execução · gatilho) ──────────
+# Os três campos são ADITIVOS no contrato do GET /malhas (front antigo ignora)
+# e cada um degrada SOZINHO quando a migration que o sustenta falta. Nenhum
+# deles abre consulta POR MALHA: a lista pode ter dezenas de malhas e um N+1
+# aqui viraria dezenas de round-trips a cada refresh da tela.
+
+# Campos de agendamento que o resumo do GATILHO lê do MEMBRO. É EXATAMENTE
+# _CAMPOS_AGENDAMENTO (o mesmo schema da malha), inclusive os qualificadores
+# somente_dias_uteis/calendario_nome/hora_virada: eles viram extras no
+# _resumo_agendamento ("· só dias úteis · calendário X") e omiti-los faria a
+# MESMA malha ter duas verdades — texto completo quando o gatilho vem do
+# Início, texto podado quando vem dos membros. Uma linguagem só no card.
+_CAMPOS_CRON_MEMBRO = _CAMPOS_AGENDAMENTO
+
+
+def _ultima_execucao_por_pipeline(cur) -> dict:
+    """{pipeline_casefold: (momento, status, pipeline)} — a corrida MAIS
+    RECENTE de cada pipeline que é membro de ALGUMA malha. A composição por
+    malha é feita em Python, sobre as linhas de membros que o endpoint já leu.
+
+    O timestamp que responde "quando esta malha foi usada" é o **início da
+    corrida** (COALESCE com criado_em, porque corrida ainda não partida —
+    AGUARDANDO_DEPENDENCIA — tem inicio NULL e mesmo assim é registro real).
+    NÃO é `data_referencia`: o ODATE é o dia de PROCESSAMENTO e pode estar no
+    futuro ou no passado do relógio (uma corrida de 05/08 iniciada em 03/08 é
+    rotina) — exibi-lo como "última execução" mentiria para o operador. E NÃO
+    é `fim`: corrida EXECUTANDO ainda não tem fim e sumiria justamente quando
+    é mais interessante.
+
+    FORMA da consulta (top-1 por pipeline com CROSS APPLY, não um ROW_NUMBER
+    sobre o JOIN inteiro): etl_pipeline_execucao é HISTÓRICO sem expurgo e
+    esta leitura roda a cada abertura da tela. Ranquear o JOIN inteiro obriga
+    a varrer a tabela toda; o APPLY entra por `pipeline_name = ?` — um SEEK
+    por pipeline membro no índice ix_pipe_exec_ultima (migration 077), lendo
+    só as corridas de quem está em alguma malha. NÃO existe recorte por data
+    de propósito: malha parada há meses tem de continuar mostrando quando
+    rodou pela última vez.
+
+    Chamar só com _tabelas_067_execucao True."""
+    cur.execute(
+        "SELECT m.pipeline_name, u.status, u.momento "
+        "FROM (SELECT DISTINCT pipeline_name FROM dbo.etl_malha_pipeline) m "
+        "CROSS APPLY ("
+        " SELECT TOP 1 e.status AS status,"
+        "        COALESCE(e.inicio, e.criado_em) AS momento"
+        " FROM dbo.etl_pipeline_execucao e"
+        " WHERE e.pipeline_name = m.pipeline_name"
+        " ORDER BY COALESCE(e.inicio, e.criado_em) DESC, e.id DESC) u")
+    out = {}
+    for pipeline, status, momento in cur.fetchall():
+        out[str(pipeline or "").strip().casefold()] = (momento, status,
+                                                       pipeline)
+    return out
+
+
+def _pipelines_com_dependencia(cur) -> set:
+    """Nomes (casefold) dos pipelines que têm QUALQUER dependência PIPELINE na
+    067. Dependente vira schedule=None no gerador: o cron gravado nele está
+    INERTE, e contá-lo como gatilho da malha seria mentira na tela. Uma
+    consulta só — chamar com _tabela_067 True."""
+    cur.execute("SELECT DISTINCT pipeline_name "
+                "FROM dbo.etl_pipeline_dependencia WHERE tipo = 'PIPELINE'")
+    return {str(r[0]).strip().casefold() for r in cur.fetchall() if r[0]}
+
+
+def _malhas_com_agenda_vigente(cur) -> set:
+    """Malhas em que o agendamento salvo está REALMENTE VIGENTE: existe nó
+    Início E existe ao menos uma raiz ASSINADA por ele (etl_pipeline.agenda_no
+    apontando para aquele nó).
+
+    Por que a checagem existe: `agendamento_json` sobrevive de propósito à
+    exclusão do Início (§7.3/Decisão 10 — o nó é o plugue, recriá-lo não perde
+    a configuração) e pode ser salvo ANTES de o Início ser desenhado. Nos dois
+    casos as raízes estão em `on_demand` e NADA dispara — anunciar o horário
+    guardado no card seria a mentira mais cara do produto, e ainda permanente
+    (não há rota para limpar o agendamento).
+
+    Uma consulta de CONJUNTO — chamar só com _tabelas_075 e _colunas_agenda
+    True."""
+    cur.execute(
+        "SELECT DISTINCT n.malha_name FROM dbo.etl_malha_no n "
+        "JOIN dbo.etl_pipeline p ON p.agenda_no = n.id "
+        "WHERE n.tipo = 'inicio'")
+    return {str(r[0]).strip() for r in cur.fetchall() if r[0]}
+
+
+def _gatilho_sob_demanda() -> dict:
+    """O gatilho honesto de quem não tem cron nenhum: a malha só anda por
+    disparo manual (ou por push de um pipeline de fora dela)."""
+    return {"origem": "nenhum", "resumo": "sob demanda", "horario": None,
+            "qtd_pipelines": 0, "horarios": [], "detalhes": [],
+            "agendamento": None}
+
+
+def _gatilho_da_malha(ag) -> dict:
+    """Gatilho quando a MALHA tem agendamento próprio VIGENTE (F13, Decisão 8):
+    o resumo sai do MESMO _resumo_agendamento que o nó Início mostra — duas
+    derivações do mesmo JSON divergiriam e a tela contradiria o diagrama.
+
+    Chamar só para malha em _malhas_com_agenda_vigente: agendamento guardado
+    sem Início ligado NÃO dispara nada e não pode virar horário no card."""
+    return {"origem": "malha", "resumo": _resumo_agendamento(ag),
+            "horario": _scheduled_time_do_agendamento(ag)[:5],
+            "qtd_pipelines": 0, "horarios": [], "detalhes": [],
+            "agendamento": ag}
+
+
+def _gatilho_dos_membros(membros_cron) -> dict:
+    """Gatilho DERIVADO dos membros que disparam sozinhos — cada item é
+    {"pipeline", "agendamento"} já filtrado (ATIVO, schedule_type ≠ on_demand
+    e sem dependência na 067).
+
+    Um horário só → "diário 06:00 (2 pipelines)". Horários distintos → o MAIS
+    CEDO com a indicação de que há outros ("06:00 · +2 horários"): o card não
+    tem espaço para a lista, e esconder que existem outros faria o operador
+    achar que a malha inteira parte às 06:00."""
+    if not membros_cron:
+        return _gatilho_sob_demanda()
+    detalhes, horarios, resumos = [], [], []
+    for m in membros_cron:
+        ag = m["agendamento"]
+        resumo = _resumo_agendamento(ag)
+        hm = _scheduled_time_do_agendamento(ag)[:5]
+        detalhes.append({"pipeline": m["pipeline"], "resumo": resumo,
+                         "horario": hm})
+        horarios.append(hm)
+        resumos.append(resumo)
+    detalhes.sort(key=lambda d: (d["horario"], d["pipeline"].casefold()))
+    distintos = sorted(set(horarios))
+    n = len(membros_cron)
+    plural = "s" if n != 1 else ""
+    if len(set(resumos)) == 1:
+        # Todos com o MESMO agendamento: o resumo completo cabe e é exato.
+        texto = f"{resumos[0]} ({n} pipeline{plural})"
+    else:
+        extras = len(distintos) - 1
+        texto = f"{distintos[0]} · +{extras} horário{'s' if extras != 1 else ''}" \
+            if extras > 0 else f"{distintos[0]} ({n} pipeline{plural})"
+    return {"origem": "membros", "resumo": texto, "horario": distintos[0],
+            "qtd_pipelines": n, "horarios": distintos, "detalhes": detalhes,
+            "agendamento": None}
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/malhas", tags=["malhas"])
 def list_malhas(_auth: dict = Depends(get_current_user)):
-    """Lista malhas com agregados por malha: qtd de pipelines, qtd de ativos e
-    a criticidade mais alta entre os membros. Ordenada por nome."""
+    """Lista malhas com agregados por malha: qtd de pipelines, qtd de ativos, a
+    criticidade mais alta entre os membros e — o que o card da tela mostra —
+    total de ETAPAS, ÚLTIMA EXECUÇÃO e GATILHO. Ordenada por nome.
+
+    Os três últimos são ADITIVOS (front antigo ignora) e degradam sozinhos:
+    sem a 067 não há última execução (`null`) nem como saber quem é dependente;
+    sem a coluna de agendamento da 075 o gatilho sai só dos membros. Tudo em
+    consultas de CONJUNTO — nenhuma por malha.
+
+    O `gatilho` só afirma o que VALE HOJE: agendamento da malha exige Início
+    ligado a raiz assinada (senão vira `agendamento_guardado` e a precedência
+    segue), e membro só conta se estiver ATIVO, com cron e sem dependência —
+    inativo tem DAG pausada, dependente vira schedule=None."""
     try:
         conn = get_db_conn(); cur = conn.cursor()
         if not _tabelas_070(cur):
@@ -1395,45 +1549,147 @@ def list_malhas(_auth: dict = Depends(get_current_user)):
             return {"malhas": [], "migration_pendente": True}
 
         # orientacao (074) é ADITIVA na lista: o card pode ignorar; a coluna
-        # ausente degrada para o default sem mudar o SQL de hoje.
+        # ausente degrada para o default sem mudar o SQL de hoje. Idem
+        # agendamento_json (075): sem a coluna, o gatilho cai nos membros.
         tem_074 = _coluna_074(cur)
+        tem_agenda = _colunas_agenda(cur)
         cur.execute(
             "SELECT malha_name, descricao, CAST(ativo AS INT) AS ativo, "
             "criado_em, criado_por, atualizado_em"
-            + (", orientacao" if tem_074 else "") +
+            + (", orientacao" if tem_074 else "")
+            + (", agendamento_json" if tem_agenda else "") +
             " FROM dbo.etl_malha ORDER BY malha_name"
         )
         data = []
         indice: dict[str, dict] = {}
+        ag_malha: dict[str, dict] = {}
         for r in cur.fetchall():
             rec = {
                 "malha_name": r[0], "descricao": r[1], "ativo": int(r[2] or 0),
                 "criado_em": _fmt_dt(r[3]), "criado_por": r[4],
                 "atualizado_em": _fmt_dt(r[5]),
                 "orientacao": _orientacao_norm(r[6]) if tem_074 else "horizontal",
-                "qtd_pipelines": 0, "qtd_ativos": 0, "criticidade": None,
+                "qtd_pipelines": 0, "qtd_ativos": 0, "qtd_etapas": 0,
+                "criticidade": None, "ultima_execucao": None,
+                "gatilho": _gatilho_sob_demanda(),
+                # Existe agendamento salvo que NÃO está vigente (sem Início
+                # ligado a nenhuma raiz)? O `gatilho` não pode anunciá-lo, mas
+                # o front tem direito de dizer que ele está guardado — some
+                # sozinho quando o Início for (re)ligado.
+                "agendamento_guardado": False,
             }
             data.append(rec)
             indice[rec["malha_name"]] = rec
+            if tem_agenda:
+                ag = _no_config(r[7 if tem_074 else 6])
+                if ag:
+                    ag_malha[rec["malha_name"]] = ag
 
         # Membros num SELECT só (agregação em Python): evita N+1 e mantém a
-        # regra da criticidade num único lugar testável.
+        # regra da criticidade num único lugar testável. As etapas entram como
+        # COUNT correlacionado (PK de etl_pipeline_job é pipeline_name+job_name
+        # — a contagem é um seek) e as colunas de cron alimentam o gatilho
+        # derivado dos membros, sem uma segunda ida ao banco.
         cur.execute(
             "SELECT mp.malha_name, CAST(p.active AS INT) AS active, "
-            "ISNULL(p.criticidade, 'Media') AS criticidade "
+            "ISNULL(p.criticidade, 'Media') AS criticidade, "
+            "(SELECT COUNT(*) FROM dbo.etl_pipeline_job j "
+            " WHERE j.pipeline_name = mp.pipeline_name) AS qtd_etapas, "
+            "p.pipeline_name, p.schedule_type, "
+            "CAST(p.schedule_hour AS INT), CAST(p.schedule_minute AS INT), "
+            "CAST(p.schedule_dow AS INT), CAST(p.schedule_dom AS INT), "
+            "p.horarios_especificos, p.dias_semana, p.dias_horarios_mes, "
+            "CAST(p.somente_dias_uteis AS INT), p.calendario_nome, "
+            "CONVERT(VARCHAR(5), p.hora_virada, 108) "
             "FROM dbo.etl_malha_pipeline mp "
             "JOIN dbo.etl_pipeline p ON p.pipeline_name = mp.pipeline_name"
         )
+        membros_linhas = cur.fetchall()
+
+        # Quem é DEPENDENTE não conta como gatilho: o gerador troca o cron dele
+        # por schedule=None. Sem a 067 ninguém é dependente (a tabela não
+        # existe) e o schedule_type sozinho decide — o comportamento pré-F1.
+        dependentes: set = set()
+        if _tabela_067(cur):
+            dependentes = _pipelines_com_dependencia(cur)
+        else:
+            log.warning("[MALHA] migration 067 ausente — gatilho da lista sem "
+                        "o filtro de dependentes")
+
         crits: dict[str, list] = {}
-        for malha, active, crit in cur.fetchall():
+        cron: dict[str, list] = {}
+        for row in membros_linhas:
+            malha, active, crit, qtd_etapas, pipeline, st = row[0], row[1], row[2], row[3], row[4], row[5]
             rec = indice.get(malha)
             if rec is None:
                 continue
             rec["qtd_pipelines"] += 1
             rec["qtd_ativos"] += int(active or 0)
+            rec["qtd_etapas"] += int(qtd_etapas or 0)
             crits.setdefault(malha, []).append(crit)
+            # Pipeline INATIVO não dispara: a tela de pipelines PAUSA a DAG no
+            # Airflow ao inativar e a SP de geração filtra active=1. O cron
+            # continua gravado na linha, mas está morto — contá-lo faria o
+            # card anunciar um horário que ninguém honra.
+            if not int(active or 0):
+                continue
+            tipo = (str(st).strip().lower() if st else "")
+            if not tipo or tipo == "on_demand":
+                continue
+            if str(pipeline or "").strip().casefold() in dependentes:
+                continue
+            cron.setdefault(malha, []).append({
+                "pipeline": pipeline,
+                "agendamento": dict(zip(_CAMPOS_CRON_MEMBRO,
+                                        (tipo,) + tuple(row[6:16]))),
+            })
         for malha, lista in crits.items():
             indice[malha]["criticidade"] = criticidade_agregada(lista)
+
+        # Agendamento da malha só vale se estiver VIGENTE (Início ligado a pelo
+        # menos uma raiz assinada). Sem as tabelas da 075 não há nó nenhum:
+        # nenhum agendamento é vigente e o gatilho cai nos membros.
+        vigentes: set = set()
+        if ag_malha and _tabelas_075(cur):
+            vigentes = _malhas_com_agenda_vigente(cur)
+        for malha, rec in indice.items():
+            # Agendamento PRÓPRIO da malha (F13) manda — quando ele de fato
+            # está plantado nas raízes. Guardado-porém-inerte não é gatilho:
+            # vira só a flag, e a precedência segue para os membros.
+            if malha in ag_malha and malha in vigentes:
+                rec["gatilho"] = _gatilho_da_malha(ag_malha[malha])
+                continue
+            if malha in ag_malha:
+                rec["agendamento_guardado"] = True
+            if malha in cron:
+                rec["gatilho"] = _gatilho_dos_membros(cron[malha])
+
+        # Última execução: UMA consulta (top-1 por pipeline membro) e a
+        # composição por malha aqui, sobre as linhas de membros já lidas —
+        # o mesmo padrão de agregação-em-Python da criticidade.
+        if _tabelas_067_execucao(cur):
+            por_pipeline = _ultima_execucao_por_pipeline(cur)
+            melhor: dict[str, tuple] = {}
+            for row in membros_linhas:
+                malha = row[0]
+                if indice.get(malha) is None:
+                    continue
+                u = por_pipeline.get(str(row[4] or "").strip().casefold())
+                if u is None:
+                    continue
+                # Desempate por nome do pipeline: duas corridas no mesmo
+                # instante não podem alternar entre refreshes da tela.
+                atual = melhor.get(malha)
+                if atual is None or (u[0], u[2].casefold()) > (atual[0],
+                                                               atual[2].casefold()):
+                    melhor[malha] = u
+            for malha, (momento, status, pipeline) in melhor.items():
+                indice[malha]["ultima_execucao"] = {
+                    "em": _fmt_dt(momento), "status": status,
+                    "pipeline": pipeline}
+        else:
+            log.warning("[MALHA] tabelas de execução da 067 ausentes — lista "
+                        "sem 'última execução'")
 
         cur.close(); conn.close()
         return {"malhas": data}

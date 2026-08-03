@@ -34,16 +34,47 @@ Histórico completo de execuções:
 2. Alterne entre **modo agregado** (uma linha por execução do pipeline) e **modo detalhe** (uma linha por job).
 3. Clique numa execução para abrir o log de cada job (saída completa, código de retorno, duração).
 
-### 1.3 Malha (aba ⊞)
-Mapa de todos os pipelines e suas cadeias de jobs:
-- **Visão cards**: um card por pipeline com horário, criticidade e a cadeia de jobs (jobs lado a lado = executam **em paralelo**; setas = ordem sequencial).
-- **Visão diagrama**: fluxo visual da malha.
-- **Filtros**: busca por nome/projeto, criticidade, status.
-- **Exportar**: botão de exportação gera planilha (Excel/CSV) com a malha completa — útil para reuniões e auditoria.
+### 1.3 Malha de Pipelines (aba ⊞)
+Uma **malha** é um agrupamento de pipelines que rodam juntos como um processo só
+— o equivalente à sequence mestre do DataStage ou a uma pasta SMART do Control-M.
+A malha não executa nada por si: ela é a planta de como os pipelines se encadeiam.
+O botão **“O que é a malha?”**, ao lado do título, abre essa explicação na tela.
+
+> O inventário de pipelines (cards por projeto, cadeias de jobs e exportação CSV)
+> mudou de endereço: vive em **Governança → Catálogo & Lineage** (§1.4).
+
+**A lista (tela inicial).** Um card por malha. O que cada informação diz:
+
+| No card | Significa |
+|---|---|
+| bolinha + **Ativa/Inativa** | malha inativa não emite mais notificações nem aviso de conclusão. Não apaga nada: dependências e agendamento já criados continuam valendo. |
+| **criticidade** | a mais alta entre os pipelines da malha (Crítica > Alta > Média > Baixa). |
+| ⚙ **N pipelines (M ativos) · E etapas** | o tamanho da malha: quantos pipelines participam, quantos estão ativos e o total de etapas (jobs) somando todos eles — é a leitura de complexidade. |
+| 🕒 **gatilho** | a que horas a malha começa. Sai do agendamento da própria malha (o componente Início) quando existe; senão é derivado dos pipelines que disparam sozinhos — havendo horários diferentes, o card mostra o **mais cedo** e avisa que há outros. Sem ninguém agendado: **sob demanda**. Passe o mouse para ver de onde veio e quais pipelines disparam. |
+| ▶ **última execução** | data e hora da corrida mais recente entre os pipelines da malha, com o status colorido — é o “quando isso foi usado pela última vez”. Sem corrida registrada, o card diz **sem execução registrada** (nunca inventa data). |
+| 📅 **criada em** | quando a malha foi cadastrada. |
+
+**Filtrar a lista.** A busca no topo casa **nome e descrição** (ignora
+maiúsculas e acentos) e o seletor ao lado filtra por **Ativas / Inativas /
+Todas**. As pílulas de contagem passam a mostrar “N de M malhas” enquanto
+houver filtro; **Limpar** volta à lista inteira.
+
+**Abrir uma malha** troca a lista pelo **diagrama** em tela cheia, com dois
+modos: **Montagem** (desenhar — arrastar uma seta entre dois pipelines cadastra
+a dependência de verdade) e **Execução** (acompanhar um dia: status de cada
+pipeline, componentes acesos e o botão *Disparar malha*). Os componentes
+Início, Aguarde, Notificação e Fim estão detalhados no §3.6.
+
+⚠️ A dependência é **global**, não pertence à malha: se dois desenhos usam o
+mesmo par de pipelines, é a mesma dependência. Por isso uma dependência criada
+pelo componente de uma malha aparece **com cadeado** nas outras e só a malha que
+a criou pode desfazê-la — e um pipeline só pode ser agendado pelo Início de uma
+malha por vez.
 
 ### 1.4 Governança (aba ⚖)
 - **Lineage**: para cada job, veja origens → transformação → destinos (tabelas, arquivos, colunas).
 - **Catálogo**: busque qualquer tabela/arquivo, veja quais pipelines o produzem/consomem, classificação (PII, Confidencial...), dono (owner/steward) e tags.
+- **Catálogo de pipelines**: o inventário que morava na tela Malha — cards por projeto, visão diagrama e exportação CSV.
 
 ### 1.5 Monitor DataStage (aba 🖥)
 Fila e desempenho dos jobs DataStage: tempo em fila, duração, jobs filhos, histórico.
