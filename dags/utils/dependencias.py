@@ -655,23 +655,46 @@ def fechar_nao_liberou(conn, pipeline: str, data_ref: date, run_id: str,
 
 
 def gravar_evento(conn, pipeline: str, data_ref: date, tipo: str,
-                  detalhe: str) -> bool:
+                  detalhe: str, notificar: bool = True) -> bool:
     """INSERT ... WHERE NOT EXISTS na chave do ux_dep_evento (pipeline,
     data, tipo): idempotente — os 200 ciclos seguintes do dia não duplicam
     nem reenviam (D49). True = evento novo.
 
     O tipo NAO_LIBEROU estende o domínio comentado na migration 067 (o
-    campo é VARCHAR(30) sem CHECK — extensão registrada no desenho F4 §6)."""
+    campo é VARCHAR(30) sem CHECK — extensão registrada no desenho F4 §6);
+    MALHA_NOTIFICACAO/MALHA_CONCLUIDA são a F14 (desenho de componentes
+    §5/§6), gravados com o marcador '#no:{id}' em pipeline_name.
+
+    `notificar=False` (F14, Decisão 14 — card do Fim é OPT-IN) grava o
+    evento JÁ carimbado com notificado_em: ele nunca entra na fila do Teams
+    (`eventos_nao_notificados` filtra por notificado_em IS NULL), mas existe
+    e vive no painel — "o evento e o painel são sempre; o card é opt-in".
+    Carimbar no NASCIMENTO é o que mantém a infra da F4 intacta: a
+    alternativa (filtrar na fila) deixaria o evento entupindo o lote por
+    dois dias. O contrato "notificado_em só após 2xx" segue valendo para
+    todo evento que DEVE ser notificado — aqui o carimbo significa "nada
+    pendente de notificação", decidido por configuração, não por envio."""
     cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO dbo.etl_dependencia_evento "
-        "(pipeline_name, data_referencia, tipo, detalhe) "
-        "SELECT %s, %s, %s, %s "
-        "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
-        "WHERE pipeline_name=%s AND data_referencia=%s AND tipo=%s)",
-        (pipeline, data_ref, tipo,
-         str(detalhe)[:1000] if detalhe is not None else None,
-         pipeline, data_ref, tipo))
+    if notificar:
+        cur.execute(
+            "INSERT INTO dbo.etl_dependencia_evento "
+            "(pipeline_name, data_referencia, tipo, detalhe) "
+            "SELECT %s, %s, %s, %s "
+            "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
+            "WHERE pipeline_name=%s AND data_referencia=%s AND tipo=%s)",
+            (pipeline, data_ref, tipo,
+             str(detalhe)[:1000] if detalhe is not None else None,
+             pipeline, data_ref, tipo))
+    else:
+        cur.execute(
+            "INSERT INTO dbo.etl_dependencia_evento "
+            "(pipeline_name, data_referencia, tipo, detalhe, notificado_em) "
+            "SELECT %s, %s, %s, %s, GETDATE() "
+            "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
+            "WHERE pipeline_name=%s AND data_referencia=%s AND tipo=%s)",
+            (pipeline, data_ref, tipo,
+             str(detalhe)[:1000] if detalhe is not None else None,
+             pipeline, data_ref, tipo))
     return cur.rowcount == 1
 
 
@@ -680,7 +703,22 @@ def eventos_nao_notificados(conn, limite: int, janela_dias: int) -> list:
     do passado recente (consertar um webhook não pode despejar semanas de
     alertas velhos no canal), mais antigos primeiro, no máximo `limite` por
     ciclo. O ORDER BY é sobre `detectado_em` do EVENTO — a proibição do D15
-    (ordenar a execução por criado_em) não se aplica aqui."""
+    (ordenar a execução por criado_em) não se aplica aqui.
+
+    Guarda de EXISTÊNCIA (achado 2 da revisão da F14 — a 076 derrubou a FK
+    de pipeline do evento, então a fila é quem confere): evento comum só sai
+    ao canal se o pipeline ainda existir em etl_pipeline; evento de marcador
+    '#no:{id}' só se o nó ainda existir em etl_malha_no — e essa segunda
+    checagem SÓ quando a 075 existe (sem ela não há como conferir, e a fila
+    dos eventos comuns não pode quebrar por isso). O evento órfão em si FICA
+    na tabela (histórico, filosofia F4 §7.2): ele só não vira card para uma
+    coisa que já não existe. O LIKE usa '%%' — pymssql interpola '%s' e o
+    literal precisa ser escapado (gotcha do placeholder por árvore)."""
+    if tabela_075_presente(conn):
+        guarda_no = ("EXISTS (SELECT 1 FROM dbo.etl_malha_no n "
+                     "WHERE e.pipeline_name = '#no:' + CAST(n.id AS VARCHAR(20)))")
+    else:
+        guarda_no = "1 = 1"
     cur = conn.cursor()
     cur.execute(
         "SELECT TOP (%s) e.id, e.pipeline_name, "
@@ -689,6 +727,10 @@ def eventos_nao_notificados(conn, limite: int, janela_dias: int) -> list:
         "FROM dbo.etl_dependencia_evento e "
         "WHERE e.notificado_em IS NULL "
         "AND e.detectado_em >= DATEADD(day, -%s, GETDATE()) "
+        "AND ((e.pipeline_name NOT LIKE '#no:%%' AND EXISTS "
+        "(SELECT 1 FROM dbo.etl_pipeline p "
+        "WHERE p.pipeline_name = e.pipeline_name)) "
+        "OR (e.pipeline_name LIKE '#no:%%' AND " + guarda_no + ")) "
         "ORDER BY e.detectado_em",
         (int(limite), int(janela_dias)))
     return [{"id": r[0], "pipeline": r[1], "data_ref": r[2], "tipo": r[3],
@@ -728,3 +770,141 @@ def canal_teams_supervisao(conn):
     if not row:
         return None
     return {"id": row[0], "webhook_url": row[1], "nome": row[2]}
+
+
+# ═══════════════ banco — F14 (observadores de malha) ════════════════════════
+# As perguntas da responsabilidade nova da guardiã (docs/
+# malha-componentes-desenho.md §5/§6): Notificação e Fim são OBSERVADORES —
+# nada aqui dispara, reserva ou fecha corrida; a única escrita é o evento
+# (gravar_evento, acima). Mesmo contrato do módulo: conn pymssql (%s),
+# chamador dono da transação, nenhuma consulta paralela.
+
+
+def tabela_075_presente(conn) -> bool:
+    """As tabelas de desenho da migration 075 (e a etl_malha da 070) existem?
+    Mesma razão da sonda da 067 (D52): sem elas os observadores são pulados
+    com log, sem exceção — e a sonda é SQL, então mora AQUI, não na DAG."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT OBJECT_ID('dbo.etl_malha','U'), "
+        "OBJECT_ID('dbo.etl_malha_no','U'), "
+        "OBJECT_ID('dbo.etl_malha_aresta','U')")
+    row = cur.fetchone()
+    return bool(row) and all(v is not None for v in row)
+
+
+def nos_observadores(conn) -> list:
+    """Universo dos observadores (F14 §5 passo 1): nós notificacao/fim de
+    malhas ATIVAS (`etl_malha.ativo=1`), cada um acompanhado do DESENHO
+    inteiro da sua malha (nós + arestas de nó) — é o insumo do canônico
+    `utils.malha_nos.expandir`, que a guardiã importa direto (paridade por
+    identidade de objeto, como a F4 fez com `liberado`).
+
+    Malha inativa NÃO aparece (filtro no SQL — Decisão do §12: inativar
+    desliga só os observadores; as dependências compiladas continuam).
+    config_json ilegível degrada para None com log — evento sem título é
+    melhor que observador mudo. `criado_em` (o carimbo da 075) sai junto:
+    é o corte anti-retroativo do observador — não existe notificação
+    "pedida" antes de o nó existir (achado 1 da revisão adversarial).
+
+    Devolve [{"malha", "no_id", "tipo", "config", "criado_em",
+              "nos": [{"id","tipo"}], "arestas": [{origem_no, origem_pipeline,
+              destino_no, destino_pipeline}]}], determinístico por (malha, id).
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT n.malha_name, n.id, n.tipo, n.config_json, n.criado_em "
+        "FROM dbo.etl_malha_no n "
+        "JOIN dbo.etl_malha m ON m.malha_name = n.malha_name "
+        "WHERE m.ativo = 1")
+    nos_por_malha: dict = {}
+    for malha, no_id, tipo, config_json, criado_em in cur.fetchall():
+        nos_por_malha.setdefault(str(malha), []).append(
+            {"id": int(no_id), "tipo": (str(tipo or "")).strip().lower(),
+             "config_json": config_json, "criado_em": criado_em})
+    cur.execute(
+        "SELECT a.malha_name, a.origem_no, a.origem_pipeline, "
+        "a.destino_no, a.destino_pipeline "
+        "FROM dbo.etl_malha_aresta a "
+        "JOIN dbo.etl_malha m ON m.malha_name = a.malha_name "
+        "WHERE m.ativo = 1")
+    arestas_por_malha: dict = {}
+    for malha, ono, opipe, dno, dpipe in cur.fetchall():
+        arestas_por_malha.setdefault(str(malha), []).append(
+            {"origem_no": int(ono) if ono is not None else None,
+             "origem_pipeline": opipe,
+             "destino_no": int(dno) if dno is not None else None,
+             "destino_pipeline": dpipe})
+
+    observadores = []
+    for malha in sorted(nos_por_malha):
+        nos = sorted(nos_por_malha[malha], key=lambda n: n["id"])
+        arestas = arestas_por_malha.get(malha, [])
+        for no in nos:
+            if no["tipo"] not in ("notificacao", "fim"):
+                continue
+            observadores.append({
+                "malha": malha,
+                "no_id": no["id"],
+                "tipo": no["tipo"],
+                "config": _config_do_no(no["config_json"], malha, no["id"]),
+                "criado_em": no["criado_em"],
+                "nos": [{"id": n["id"], "tipo": n["tipo"]} for n in nos],
+                "arestas": arestas,
+            })
+    return observadores
+
+
+def _config_do_no(raw, malha: str, no_id: int):
+    """config_json do nó → dict ou None, tolerante (o espelho do _no_config
+    da API): valor quebrado por SQL direto degrada com log, nunca derruba o
+    ciclo da guardiã."""
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        v = json.loads(raw)
+        if isinstance(v, dict):
+            return v
+    except (ValueError, TypeError):
+        pass
+    print(f"[DEP] config_json ilegivel no no {no_id} da malha {malha} — ignorado")
+    return None
+
+
+def pipelines_todos_sucesso(conn, pipelines, data_ref: date) -> bool:
+    """A condição dos observadores (F14 §5 passo 3): TODOS os `pipelines`
+    (lista explícita — o upstream expandido do nó) têm SUCESSO em `data_ref`?
+
+    O MESMO contrato EXISTS de `liberado()` (F2 §9), sobre nomes explícitos:
+    FALHA, EXECUTANDO, PULADO, ausência e SUCESSO em OUTRA data não contam;
+    nenhuma ordenação por criado_em (D15). Lista vazia → False SEMPRE — o
+    "vacuamente verdadeiro" é a guarda de runtime da Decisão 13 (a de
+    desenho é o aviso forte da §2.2).
+
+    Dedup por casefold com uma grafia representante (a colação do banco é
+    CI; o COUNT DISTINCT do SQL conta como o banco compara — o len do
+    Python precisa contar igual). Exceção → False com log [DEP] (o espelho
+    do D21: erro nunca vira "condição fechou"); o próximo ciclo re-pergunta.
+    """
+    vistos: dict = {}
+    for p in pipelines:
+        nome = str(p or "").strip()
+        if nome:
+            vistos.setdefault(nome.casefold(), nome)
+    nomes = sorted(vistos.values())
+    if not nomes:
+        return False
+    try:
+        cur = conn.cursor()
+        marcadores = ", ".join(["%s"] * len(nomes))
+        cur.execute(
+            "SELECT COUNT(DISTINCT e.pipeline_name) "
+            "FROM dbo.etl_pipeline_execucao e "
+            "WHERE e.data_referencia = %s AND e.status = 'SUCESSO' "
+            "AND e.pipeline_name IN (" + marcadores + ")",
+            tuple([data_ref] + nomes))
+        return int(cur.fetchone()[0]) == len(nomes)
+    except Exception as e:  # noqa: BLE001 — espelho do D21
+        print(f"[DEP] condicao dos observadores em {data_ref} indisponivel "
+              f"({e}) — tratada como NAO satisfeita")
+        return False

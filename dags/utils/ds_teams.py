@@ -35,6 +35,12 @@ ESTILO: dict[str, dict[str, str]] = {
     "DATA_DIVERGENTE":    {"rotulo": "Datas de referência divergentes", "icone": "⚠️", "cor": "Warning"},
     "PREDECESSOR_FALHOU": {"rotulo": "Predecessor falhou",             "icone": "🚨", "cor": "Attention"},
     "NAO_LIBEROU":        {"rotulo": "Dependência não liberou",        "icone": "🚨", "cor": "Attention"},
+    # F14 — observadores de malha (Notificação/Fim pela guardiã). Os quatro da
+    # F4 são de PROBLEMA; estes são os primeiros de CONCLUSÃO — tom positivo,
+    # como o SITUACAO_INICIAL: vermelho aqui ensinaria a ignorar a cor. O card
+    # do Fim é opt-in por config (Decisão 14) — quem chega ao canal foi pedido.
+    "MALHA_NOTIFICACAO":  {"rotulo": "Notificação da malha",           "icone": "📣", "cor": "Good"},
+    "MALHA_CONCLUIDA":    {"rotulo": "Malha concluída",                "icone": "✅", "cor": "Good"},
 }
 
 _PADRAO = {"rotulo": "Alerta", "icone": "🔔", "cor": "Warning"}

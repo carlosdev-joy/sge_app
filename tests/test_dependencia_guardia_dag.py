@@ -111,6 +111,10 @@ def _mundo(monkeypatch, agora=AGORA, **sobrescreve):
         "reservar_corrida": lambda conn, p, d, rid, o: rid,
         "ordenar_corrida": lambda conn, p, d, rid, o: True,
         "devolver_reserva": lambda conn, p, d, rid, veio_de_adocao: None,
+        # F14 — observadores de malha (base: migration presente, zero nós).
+        "tabela_075_presente": lambda conn: True,
+        "nos_observadores": lambda conn: [],
+        "pipelines_todos_sucesso": lambda conn, pipes, d: False,
     }
     base.update(sobrescreve)
     for nome, fn in base.items():
@@ -939,3 +943,250 @@ def test_erro_de_consulta_adia_o_fechamento(monkeypatch):
     saida = GUARDIA.ciclo()
     assert saida["fechadas"] == 0
     assert fechamentos == [] and eventos == []
+
+
+# ═══════════ F14 — observadores de malha (Notificação/Fim, §5/§6) ═══════════
+# docs/malha-componentes-desenho.md: a guardiã avalia os nós Notificação/Fim
+# dentro do MESMO ciclo (Decisão 12 — nenhuma task nova), janela fixa {D, D-1}
+# derivada do presente, evento com marcador #no:{id} idempotente pela chave.
+
+# Desenho padrão dos cenários: A,B → Aguarde(1) → Notificação(2).
+_NOS_F14 = [{"id": 1, "tipo": "aguarde"}, {"id": 2, "tipo": "notificacao"}]
+_ARESTAS_F14 = [
+    {"origem_pipeline": "PIPE_A", "destino_no": 1},
+    {"origem_pipeline": "PIPE_B", "destino_no": 1},
+    {"origem_no": 1, "destino_no": 2},
+]
+
+
+def _obs(no_id=2, tipo="notificacao", malha="M1", config=None,
+         nos=None, arestas=None, criado_em=datetime(2026, 8, 1, 10, 0)):
+    """criado_em default ANTERIOR à janela {D-1, D} dos cenários: o corte
+    anti-retroativo só age quando o cenário o pede explicitamente."""
+    return {"malha": malha, "no_id": no_id, "tipo": tipo, "config": config,
+            "criado_em": criado_em,
+            "nos": nos if nos is not None else _NOS_F14,
+            "arestas": arestas if arestas is not None else _ARESTAS_F14}
+
+
+def test_expandir_da_guardia_e_o_canonico_por_identidade():
+    """Paridade por IDENTIDADE de objeto (como a F4 fez com liberado): a
+    guardiã usa o MESMO expandir de dags/utils/malha_nos.py, nunca o port."""
+    import utils.malha_nos as mn
+    assert GUARDIA.expandir is mn.expandir
+
+
+def test_notificacao_satisfeita_grava_evento_com_marcador(monkeypatch):
+    """Condição fechada → 1 evento MALHA_NOTIFICACAO #no:{id} com o upstream
+    expandido (via Aguarde) no detalhe, e card SEMPRE (notificar=True)."""
+    gravados = []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_obs()],
+           pipelines_todos_sucesso=lambda conn, pipes, d: d == HOJE,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+               gravados.append((p, d, t, det, notificar)) or True)
+    saida = GUARDIA.ciclo()
+    assert saida["observadores"] == 1
+    p, d, t, det, notificar = gravados[0]
+    assert (p, d, t, notificar) == ("#no:2", HOJE, "MALHA_NOTIFICACAO", True)
+    assert "M1" in det and "PIPE_A, PIPE_B" in det and "2026-08-03" in det
+
+
+def test_notificacao_usa_titulo_e_mensagem_do_config(monkeypatch):
+    gravados = []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [
+               _obs(config={"titulo": "Onda 1 OK", "mensagem": "seguir"})],
+           pipelines_todos_sucesso=lambda conn, pipes, d: d == HOJE,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+               gravados.append(det) or True)
+    GUARDIA.ciclo()
+    assert "Onda 1 OK" in gravados[0] and "seguir" in gravados[0]
+
+
+def test_fim_satisfeito_grava_malha_concluida_sem_card_por_default(monkeypatch):
+    """Decisão 14: o card do Fim é OPT-IN — config ausente → notificar=False;
+    o evento (e o painel) saem sempre. Detalhe literal do §6."""
+    gravados = []
+    nos = [{"id": 1, "tipo": "aguarde"}, {"id": 9, "tipo": "fim"}]
+    arestas = _ARESTAS_F14[:2] + [{"origem_no": 1, "destino_no": 9}]
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [
+               _obs(no_id=9, tipo="fim", nos=nos, arestas=arestas)],
+           pipelines_todos_sucesso=lambda conn, pipes, d: d == HOJE,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+               gravados.append((p, t, det, notificar)) or True)
+    saida = GUARDIA.ciclo()
+    assert saida["observadores"] == 1
+    p, t, det, notificar = gravados[0]
+    assert (p, t, notificar) == ("#no:9", "MALHA_CONCLUIDA", False)
+    assert det == ("Malha M1 concluída na data 2026-08-03 — "
+                   "2 pipeline(s) com SUCESSO")
+
+
+def test_fim_com_notificar_teams_true_vai_a_fila(monkeypatch):
+    gravados = []
+    nos = [{"id": 1, "tipo": "aguarde"}, {"id": 9, "tipo": "fim"}]
+    arestas = _ARESTAS_F14[:2] + [{"origem_no": 1, "destino_no": 9}]
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [
+               _obs(no_id=9, tipo="fim", config={"notificar_teams": True},
+                    nos=nos, arestas=arestas)],
+           pipelines_todos_sucesso=lambda conn, pipes, d: d == HOJE,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+               gravados.append(notificar) or True)
+    GUARDIA.ciclo()
+    assert gravados == [True]
+
+
+def test_janela_e_d_e_d_menos_1_e_so_ela(monkeypatch):
+    """§5 passo 2 (eco do D45): as ÚNICAS datas perguntadas são D e D-1,
+    derivadas do presente — nenhuma varredura de histórico."""
+    perguntadas = []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_obs()],
+           pipelines_todos_sucesso=lambda conn, pipes, d:
+               perguntadas.append(d) or False)
+    saida = GUARDIA.ciclo()
+    assert perguntadas == [HOJE - timedelta(days=1), HOJE]
+    assert saida["observadores"] == 0       # malha saudável incompleta: zero
+
+
+def test_conclusao_pos_meia_noite_sai_pela_janela_d_menos_1(monkeypatch):
+    """A cadeia noturna que conclui 00:30 do dia seguinte (virada 00:00) não
+    perde o aviso: a condição fecha em D-1 e o evento sai chaveado em D-1."""
+    gravados = []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_obs()],
+           pipelines_todos_sucesso=lambda conn, pipes, d:
+               d == HOJE - timedelta(days=1),
+           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+               gravados.append(d) or True)
+    saida = GUARDIA.ciclo()
+    assert saida["observadores"] == 1
+    assert gravados == [HOJE - timedelta(days=1)]
+
+
+def test_evento_ja_gravado_nao_conta_nem_duplica(monkeypatch):
+    """Idempotência pela chave (D49): gravar_evento False → contador zero;
+    o 200º ciclo do dia é silencioso."""
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_obs()],
+           pipelines_todos_sucesso=lambda conn, pipes, d: True,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True: False)
+    assert GUARDIA.ciclo()["observadores"] == 0
+
+
+def test_observador_sem_upstream_nunca_emite(monkeypatch):
+    """Decisão 13: o 'todos com sucesso' vacuamente verdadeiro jamais vira
+    evento — nó sem entrada pula ANTES de perguntar a condição."""
+    perguntas, gravados = [], []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_obs(arestas=[])],
+           pipelines_todos_sucesso=lambda conn, pipes, d:
+               perguntas.append(d) or True,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+               gravados.append(p) or True)
+    assert GUARDIA.ciclo()["observadores"] == 0
+    assert perguntas == [] and gravados == []
+
+
+def test_viradas_divergentes_no_upstream_pulam_com_log(monkeypatch):
+    """§5 passo 2: o observador não adivinha a data — viradas divergentes já
+    têm o DATA_DIVERGENTE de configuração da F4 de guarda."""
+    perguntas = []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_obs()],
+           virada_efetiva=lambda conn, p:
+               time(0, 0) if p == "PIPE_A" else time(20, 0),
+           pipelines_todos_sucesso=lambda conn, pipes, d:
+               perguntas.append(d) or True)
+    assert GUARDIA.ciclo()["observadores"] == 0
+    assert perguntas == []
+
+
+def test_sem_075_os_observadores_sao_pulados_e_o_ciclo_segue(monkeypatch):
+    """Deploy parcial sem a 075: os observadores pulam com log e NENHUMA
+    pergunta de nó é feita; o restante do ciclo (F4) roda normal."""
+    tocou = []
+    _mundo(monkeypatch,
+           tabela_075_presente=lambda conn: False,
+           nos_observadores=lambda conn: tocou.append("nos") or [])
+    saida = GUARDIA.ciclo()
+    assert saida["observadores"] == 0 and tocou == []
+    assert "fechadas" in saida              # o ciclo inteiro rodou
+
+
+def test_primeiro_observador_explode_segundo_avaliado(monkeypatch):
+    """D51 nos observadores: erro em UM nó não interrompe o ciclo — o
+    segundo ainda emite."""
+    def _virada(conn, p):
+        if p == "PIPE_X":
+            raise RuntimeError("deadlock victim")
+        return time(0, 0)
+    quebrado = _obs(no_id=5, malha="M_QUEBRADA",
+                    nos=[{"id": 4, "tipo": "aguarde"},
+                         {"id": 5, "tipo": "notificacao"}],
+                    arestas=[{"origem_pipeline": "PIPE_X", "destino_no": 4},
+                             {"origem_no": 4, "destino_no": 5}])
+    gravados = []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [quebrado, _obs()],
+           virada_efetiva=_virada,
+           pipelines_todos_sucesso=lambda conn, pipes, d: d == HOJE,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+               gravados.append(p) or True)
+    saida = GUARDIA.ciclo()
+    assert saida["observadores"] == 1
+    assert gravados == ["#no:2"]
+
+
+def test_uma_expansao_por_malha_e_upstream_por_no(monkeypatch):
+    """Dois observadores da MESMA malha (Notificação no Aguarde + Fim nos
+    terminais): cada um avalia o PRÓPRIO upstream expandido."""
+    nos = [{"id": 1, "tipo": "aguarde"}, {"id": 2, "tipo": "notificacao"},
+           {"id": 9, "tipo": "fim"}]
+    arestas = _ARESTAS_F14 + [{"origem_pipeline": "PIPE_D", "destino_no": 9}]
+    perguntas = []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [
+               _obs(nos=nos, arestas=arestas),
+               _obs(no_id=9, tipo="fim", nos=nos, arestas=arestas)],
+           pipelines_todos_sucesso=lambda conn, pipes, d:
+               perguntas.append((tuple(sorted(pipes)), d)) or False)
+    GUARDIA.ciclo()
+    assert (("PIPE_A", "PIPE_B"), HOJE) in perguntas
+    assert (("PIPE_D",), HOJE) in perguntas
+
+
+def test_no_criado_hoje_nao_emite_retroativo_de_ontem(monkeypatch):
+    """Achado 1 da revisão adversarial: nó Notificação criado às 14:00 de D
+    numa malha cujo D-1 concluiu com sucesso — SEM o corte, a janela {D-1, D}
+    emitiria card retroativo de ontem que ninguém pediu (e dois cards no
+    mesmo tick se D também fechou). Com o corte por criado_em: zero evento em
+    D-1, evento normal em D."""
+    gravados, perguntas = [], []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [
+               _obs(criado_em=datetime(2026, 8, 3, 14, 0))],   # criado HOJE
+           pipelines_todos_sucesso=lambda conn, pipes, d:
+               perguntas.append(d) or True,                    # AMBAS fechariam
+           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+               gravados.append(d) or True)
+    saida = GUARDIA.ciclo()
+    assert saida["observadores"] == 1
+    assert gravados == [HOJE]                   # só D — nunca o retroativo
+    assert perguntas == [HOJE]                  # D-1 nem é PERGUNTADO
+
+
+def test_corte_aceita_criado_em_como_date_puro(monkeypatch):
+    """Tolerância de tipo: criado_em date (dublê/driver) corta igual ao
+    datetime do banco."""
+    gravados = []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_obs(criado_em=HOJE)],
+           pipelines_todos_sucesso=lambda conn, pipes, d: True,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+               gravados.append(d) or True)
+    GUARDIA.ciclo()
+    assert gravados == [HOJE]
