@@ -143,15 +143,20 @@ pelo desenho (aresta do nó). ✅
 
 1. Criar uma 2ª malha de teste com uma **Notificação sem entradas** → aviso
    forte no banner; após 1 ciclo da guardiã: **zero** evento desse nó. ✅
-2. Na malha do smoke, rodar só `SMK_A` amanhã (sem `SMK_B`): nenhum evento de
-   nó sai enquanto faltar SUCESSO. ✅
+2. Malha incompleta na data corrente: **entre** os passos 4.2 e 4.3 — com
+   `SMK_A` já em SUCESSO e `SMK_B` ainda executando — rode o SELECT do passo
+   4.4: vem **vazio**. Nenhum evento de nó sai enquanto faltar um SUCESSO. ✅
+   (a guardiã só avalia a data corrente e a anterior — conferir isso "amanhã"
+   não prova nada, porque data futura nunca entra na janela).
 
 ## 6. Limpeza
 
 ```sql
 -- A exclusão dos nós pela TELA descompila (remove as linhas assinadas).
 -- Ordem: excluir os componentes no diagrama (cada um mostra o efeito),
--- depois remover os membros e inativar/apagar a malha de teste.
+-- depois remover os membros e INATIVAR a malha de teste (⚠️ não existe
+-- "excluir malha" — nem na tela nem na API: o card oferece Renomear e
+-- Inativar, e inativar já silencia os observadores, §12 do desenho).
 ```
 
 Conferência final: os SELECTs do passo 1 voltam vazios para `SMK_%`;
