@@ -90,12 +90,47 @@ export interface IdentidadeApi {
   motivo: string | null
 }
 
+/** (F5) Uma pausa de etapa — `dbo.etl_etapa_pausa`, migration 079.
+ *
+ *  Os dois estados que a TELA precisa distinguir não são dois `estado`
+ *  diferentes, e sim `estado='PENDENTE'` com ou sem `aguardando_desde`:
+ *    • sem  → pausa MARCADA: a etapa ainda não chegou ao portão;
+ *    • com  → EM ESPERA: o processo está parado ali, agora.
+ *  Chamar as duas de "pausada" esconderia justamente o que o operador precisa
+ *  saber (se já parou ou não). */
+export interface PausaApi {
+  id: number
+  job_name: string
+  task_id: string | null
+  /** PENDENTE | LIBERADA | CANCELADA | EXPIRADA */
+  estado: string
+  motivo: string | null
+  observacao: string | null
+  teto_minutos: number | null
+  solicitado_por: string | null
+  solicitado_em: string | null
+  /** 1ª chegada da etapa ao portão — null = ainda não parou nada */
+  aguardando_desde: string | null
+  ultima_verificacao: string | null
+  verificacoes: number | null
+  resolvido_por: string | null
+  resolvido_em: string | null
+  alertado_em: string | null
+  data_referencia: string | null
+  /** minutos parados, calculados PELO BANCO (o carimbo é GETDATE(); medir com
+   *  o relógio do cliente daria tempo negativo — o defeito do "-179 min"). */
+  parado_min: number | null
+}
+
 export interface PipelineExecucaoApi {
   pipeline_name: string
   data_referencia: string | null
   identidade: IdentidadeApi
   corrida: CorridaApi | null
   etapas: EtapaExecucaoApi[]
+  /** (F5) pausas desta corrida — pendentes e resolvidas. Ausente/vazio quando
+   *  a migration 079 não está aplicada: a tela some com o recurso, não quebra. */
+  pausas?: PausaApi[]
   total_etapas: number
   etapas_executadas: number
   vazio: boolean
@@ -175,6 +210,10 @@ export interface ExecNoEtapa {
   tentativa: number | null
   /** (F4) tentativas superadas, para a linha do tempo do dock */
   tentativas: TentativaApi[]
+  /** (F5) a pausa PENDENTE desta etapa, se houver */
+  pausa?: PausaApi | null
+  /** (F5) true = a etapa está PARADA no portão agora (aguardando liberação) */
+  emEspera?: boolean
 }
 
 export interface CamadaExecucao {
@@ -183,6 +222,8 @@ export interface CamadaExecucao {
   porJob: Map<string, EtapaExecucaoApi>
   /** decorações prontas por nó, na mesma chave */
   noPorJob: Map<string, ExecNoEtapa>
+  /** (F5) pausa PENDENTE por etapa, na mesma chave */
+  pausaPorJob: Map<string, PausaApi>
 }
 
 const chave = (nome: string | null | undefined) =>
@@ -250,7 +291,74 @@ function decorarEtapa(e: EtapaExecucaoApi): ExecNoEtapa {
   }
 }
 
-export function construirCamada(etapas: EtapaExecucaoApi[]): CamadaExecucao {
+// ═══════════════════════════ (F5) a pausa por cima ══════════════════════════
+
+/** Só as pausas PENDENTES, por etapa. As resolvidas ficam para o histórico do
+ *  modal — pintar o nó com uma pausa já liberada seria contar o passado como
+ *  presente. */
+export function pausasPendentes(pausas: PausaApi[] | undefined): Map<string, PausaApi> {
+  const m = new Map<string, PausaApi>()
+  for (const p of pausas ?? []) {
+    if ((p.estado ?? '').toUpperCase() !== 'PENDENTE') continue
+    const k = chave(p.job_name)
+    if (k) m.set(k, p)
+  }
+  return m
+}
+
+/** Aplica a pausa sobre a decoração da etapa.
+ *
+ *  ⚠️ **A pausa só SOBRESCREVE o status quando a etapa está de fato parada**
+ *  (`aguardando_desde` preenchido). Uma pausa apenas marcada não muda a cor de
+ *  nada: a etapa continua "sem execução" — que é a verdade — e ganha só o aviso
+ *  de que vai parar ali. Pintar antes da hora seria a tela prometendo um estado
+ *  que o motor ainda não tem. */
+function comPausa(base: ExecNoEtapa, p: PausaApi): ExecNoEtapa {
+  const aguardando = !!p.aguardando_desde
+  const quem = p.solicitado_por ?? '?'
+  const teto = p.teto_minutos != null ? `${p.teto_minutos} min` : 'padrão'
+  // ⚠️ **NUNCA hora absoluta da pausa ao lado da hora da etapa.** Os carimbos
+  // da pausa (`aguardando_desde`, `solicitado_em`) vêm do GETDATE() do SQL
+  // Server; os horários das etapas vêm do relógio do factory — e no dev eles
+  // divergem 3h (a decisão registrada no topo deste arquivo). A prova visual
+  // mostrou o estrago: "em espera desde 22:57:54" logo abaixo de
+  // "19:56:03 → 19:57:51", como se a espera fosse no futuro.
+  // A tela passa a falar em DURAÇÃO (`parado_min`, calculado no banco), que é
+  // verdadeira em qualquer relógio; a hora absoluta só aparece no tooltip e
+  // rotulada como "registro" — o mesmo tratamento que `rotuloCorrida` já dá.
+  const linhas = [
+    aguardando
+      ? `EM ESPERA${p.parado_min != null ? ` há ${p.parado_min} min` : ''}`
+        + ` — aguardando liberação (registro ${horaLonga(p.aguardando_desde)})`
+      : 'Pausa marcada: a etapa vai parar aqui quando chegar',
+    `pedida por: ${quem}`,
+    p.motivo ? `motivo: ${p.motivo}` : null,
+    `teto de espera: ${teto}`,
+    aguardando && p.verificacoes ? `verificações do portão: ${p.verificacoes}` : null,
+  ].filter(Boolean).join('\n')
+  if (!aguardando) {
+    return { ...base, pausa: p, emEspera: false, titulo: `${base.titulo}\n— ${linhas}` }
+  }
+  const est = estiloStatus('EM_ESPERA')
+  return {
+    ...base,
+    status: 'EM_ESPERA',
+    rotulo: est.rotulo,
+    anel: est.anel,
+    dot: est.dot,
+    animado: !!est.animado,
+    resumo: p.parado_min != null
+      ? `em espera há ${p.parado_min} min`
+      : 'aguardando liberação',
+    titulo: `${p.job_name}\n${linhas}`,
+    pausa: p,
+    emEspera: true,
+  }
+}
+
+export function construirCamada(
+  etapas: EtapaExecucaoApi[], pausas?: PausaApi[],
+): CamadaExecucao {
   const porJob = new Map<string, EtapaExecucaoApi>()
   const noPorJob = new Map<string, ExecNoEtapa>()
   for (const e of etapas) {
@@ -266,7 +374,15 @@ export function construirCamada(etapas: EtapaExecucaoApi[]): CamadaExecucao {
     porJob.set(k, e)
     noPorJob.set(k, decorarEtapa(e))
   }
-  return { porJob, noPorJob }
+  const pausaPorJob = pausasPendentes(pausas)
+  for (const [k, p] of pausaPorJob) {
+    const base = noPorJob.get(k)
+    // Pausa numa etapa que nem está no desenho (etapa renomeada entre o pedido
+    // e agora): não há nó para pintar — a pausa continua existindo e aparece
+    // no painel de pausas, que lista pela API e não pelo canvas.
+    if (base) noPorJob.set(k, comPausa(base, p))
+  }
+  return { porJob, noPorJob, pausaPorJob }
 }
 
 // ═══════════════════════ o caminho realmente percorrido ═════════════════════
@@ -303,12 +419,23 @@ export interface ResumoExecucao {
   /** qualquer outro status cru que a telemetria tenha gravado */
   outros: number
   foraDoDesenho: number
+  /** (F5) etapas PARADAS no portão agora */
+  emEspera: number
+  /** (F5) pausas pedidas cuja etapa ainda não chegou ao portão */
+  pausaMarcada: number
 }
 
-export function resumoExecucao(etapas: EtapaExecucaoApi[]): ResumoExecucao {
+export function resumoExecucao(
+  etapas: EtapaExecucaoApi[], pausas?: PausaApi[],
+): ResumoExecucao {
   const r: ResumoExecucao = {
     total: etapas.length, sucesso: 0, falha: 0, executando: 0,
     pulado: 0, semExecucao: 0, outros: 0, foraDoDesenho: 0,
+    emEspera: 0, pausaMarcada: 0,
+  }
+  for (const p of pausasPendentes(pausas).values()) {
+    if (p.aguardando_desde) r.emEspera += 1
+    else r.pausaMarcada += 1
   }
   for (const e of etapas) {
     if (!e.no_desenho) r.foraDoDesenho += 1

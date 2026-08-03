@@ -9,8 +9,75 @@ agendamento) exigem regeneração.
 from __future__ import annotations
 
 from airflow.models import BaseOperator
+from airflow.operators.python import PythonOperator
 from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 from airflow.providers.ssh.operators.ssh import SSHOperator
+
+
+class LogStartOperator(PythonOperator):
+    """O ``log_start_<job>`` de toda etapa — um ``PythonOperator`` que o Airflow
+    aceita **rescheduleando de verdade** (F5, docs/spec-operacao-nivel-etapa.md
+    §5 Bloco C).
+
+    ⚠️ **DEFEITO ENCONTRADO NA PROVA VIVA (dev, 2026-08-03), e a razão desta
+    classe existir.** O portão da etapa em espera levanta
+    ``AirflowRescheduleException``, e o ``taskinstance`` do Airflow 2.11 aceita
+    isso de QUALQUER operador: a task vai para ``up_for_reschedule`` e a data do
+    próximo teste é gravada em ``task_reschedule``. Só que quem decide *quando*
+    trazer a task de volta é a dependência ``ReadyToRescheduleDep``, e ela
+    começa assim::
+
+        if not is_mapped and not getattr(ti.task, "reschedule", False) ...:
+            yield self._passing_status(reason="Task is not in reschedule mode.")
+            return
+
+    Ou seja: sem o atributo ``reschedule``, a data gravada é **ignorada** e o
+    scheduler recoloca a task na fila na primeira passagem. Medido na execução
+    real: **56 verificações em ~5 minutos** (uma a cada ~5s) em vez de uma por
+    minuto. Isso é polling caro disfarçado de espera barata — exatamente o que
+    o §5 promete NÃO fazer ("o modo do Airflow que devolve o worker entre as
+    verificações — não é polling que segura recurso").
+
+    A correção usa o MESMO contrato do framework, não um truque: o
+    ``BaseSensorOperator`` publica ``reschedule`` acrescentando o campo aos
+    ``serialized_fields`` — é assim que o atributo chega ao scheduler, que
+    trabalha sobre a DAG **serializada**. Uma classe com o atributo mas sem o
+    campo serializado não funcionaria: o scheduler não veria nada.
+
+    **Impacto quando NÃO há pausa: nenhum.** ``ReadyToRescheduleDep`` só olha o
+    atributo para então consultar ``task_reschedule``; sem linha lá, devolve
+    "There is no reschedule request for this task instance" e passa. O
+    comportamento de execução, os kwargs, o trigger_rule e o task_id continuam
+    os do ``PythonOperator`` de sempre — esta classe não sobrescreve
+    ``execute``.
+    """
+
+    reschedule = True
+
+    @classmethod
+    def get_serialized_fields(cls):
+        return super().get_serialized_fields() | {"reschedule"}
+
+    @property
+    def deps(self):
+        """⚠️ **A SEGUNDA metade da correção — e ela também veio da prova viva.**
+
+        Com o atributo ``reschedule`` serializado, a cadência continuou em ~4s.
+        Motivo: ``ReadyToRescheduleDep`` **não está em** ``BaseOperator.deps``.
+        Quem a acrescenta é o ``BaseSensorOperator``, por esta mesma
+        propriedade — sem ela a dependência simplesmente não é avaliada, e a
+        data gravada em ``task_reschedule`` nunca é consultada.
+
+        A serialização carrega o conjunto porque o Airflow só o inclui quando
+        ``op.deps != BaseOperator.deps`` (``_serialize_node``), e a
+        desserialização aceita classes de ``airflow.ti_deps.deps`` — que é
+        exatamente de onde esta vem.
+
+        Sem linha em ``task_reschedule`` a dep devolve "There is no reschedule
+        request for this task instance" e passa: no caminho normal, nada muda.
+        """
+        from airflow.ti_deps.deps.ready_to_reschedule import ReadyToRescheduleDep
+        return super().deps | {ReadyToRescheduleDep()}
 
 _INT_TYPES   = {"INT", "BIGINT", "SMALLINT", "TINYINT"}
 # DECIMAL/NUMERIC/MONEY são exatos: coagir via float() perdia precisão em

@@ -26,6 +26,8 @@ from services import dependencias as deps_svc
 from services import execucao_identidade as ident_svc
 # Cascata, reabertura de corrida e auditoria do rerun (F4 — §4 e decisão 1 §7).
 from services import rerun as rerun_svc
+# Pausa de etapa em runtime, liberação e cancelamento (F5 — §5 Bloco C, decisão 3).
+from services import espera as espera_svc
 
 log = logging.getLogger("orquestra-api")
 
@@ -562,7 +564,7 @@ def list_execucoes(
 
 
 async def _resolve_alvo_rerun(pipeline: str, *, exec_id: str, dag_run_id: str,
-                              data_referencia: str) -> tuple:
+                              data_referencia: str, gesto: str = "reexecutar") -> tuple:
     """Resolve (pipeline, …) → ``(oficial, dag_run_id, ident, data_ref)`` para
     o gesto destrutivo da F4. **Recusa em vez de escolher** quando não sabe.
 
@@ -627,7 +629,16 @@ async def _resolve_alvo_rerun(pipeline: str, *, exec_id: str, dag_run_id: str,
             status_code=409,
             detail={
                 "erro": "corrida_ambigua",
+                # `gesto` existe porque esta resolução é compartilhada: dizer
+                # "reexecutar" para quem clicou em PAUSAR seria a tela falando
+                # de outra coisa (visto na prova de UI). O default preserva,
+                # palavra por palavra, a mensagem que a F4 já entregava.
                 "mensagem": (f"Há {len(ident.get('candidatos') or [])} corridas de "
+                             f"'{oficial}' nesta data de referência. Escolha qual "
+                             f"{gesto} — {gesto} é um gesto sobre UMA corrida e "
+                             "não se escolhe por você."
+                             if gesto != "reexecutar" else
+                             f"Há {len(ident.get('candidatos') or [])} corridas de "
                              f"'{oficial}' nesta data de referência. Escolha qual "
                              "reexecutar — reexecutar é destrutivo e não se "
                              "escolhe por você."),
@@ -994,6 +1005,418 @@ async def _tasks_da_dag(client, dag_id: str) -> list:
         return []
 
 
+# ═══════════════════ F5 — etapa em espera (pausa de runtime) ═════════════════
+#
+# A tabela de pausas (migration 079) é o ESTADO; o portão que a obedece vive na
+# DAG (dags/utils/espera.py, chamado pelo log_start de toda etapa). Aqui ficam
+# os gestos: pedir, liberar, cancelar e listar — todos com PERM_EXECUTAR e
+# auditoria em etl_pipeline_audit, no mesmo padrão da F4.
+#
+# ⚠️ Nenhum destes gestos republica DAG. É a decisão arquitetural do preâmbulo
+# da spec: "a DAG é a planta, não o estado".
+
+def _pausa_json(p: dict) -> dict:
+    """Uma pausa pronta para JSON — datas no formato do resto da API."""
+    d = p.get("data_referencia")
+    return {
+        **p,
+        "data_referencia": (d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else d),
+        "solicitado_em": _fmt_dt(p.get("solicitado_em")),
+        "aguardando_desde": _fmt_dt(p.get("aguardando_desde")),
+        "ultima_verificacao": _fmt_dt(p.get("ultima_verificacao")),
+        "resolvido_em": _fmt_dt(p.get("resolvido_em")),
+        "alertado_em": _fmt_dt(p.get("alertado_em")),
+    }
+
+
+def _pausas_da_execucao(pipeline: str, execution_id: str) -> list:
+    """Lista as pausas de uma corrida — `[]` em qualquer indisponibilidade.
+
+    Usada pelo endpoint próprio E embutida no payload do drill-down: o canvas
+    precisa pintar "em espera" no mesmo ciclo em que pinta o status, sem uma
+    segunda ida ao servidor a cada refetch.
+    """
+    if not execution_id:
+        return []
+    conn = cur = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        return [_pausa_json(p) for p in espera_svc.listar(cur, pipeline, execution_id)]
+    except Exception as e:  # noqa: BLE001 — a tela nunca quebra por causa disto
+        log.warning("[ESPERA] pausas de '%s/%s' indisponiveis: %s",
+                    pipeline, execution_id, e)
+        return []
+    finally:
+        for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+            try:
+                f and f()
+            except Exception:
+                pass
+
+
+@router.post("/execucoes/pausas", tags=["execucoes"])
+async def criar_pausa(body: dict = Body(default={}),
+                      auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """Marca uma etapa que **ainda não iniciou** para parar e aguardar liberação.
+
+    Body:
+      pipeline_name    — nome do pipeline (= dag_id)
+      job_name         — a etapa (aceita `task_id` como sinônimo)
+      execution_id     — ts_nodash da corrida (caminho direto do drill-down)
+      dag_run_id       — a corrida escolhida à mão (ambiguidade da F3)
+      data_referencia  — ODATE; exige identidade exata (modo estrito)
+      motivo           — texto livre do operador (opcional, mas recomendado)
+      teto_minutos     — teto desta pausa; ausente usa `espera_teto_minutos`
+
+    ⚠️ **O limite honesto do §5, verificado e não só explicado**: etapa que já
+    tem linha em `etl_job_execution` nesta corrida já passou pelo portão. A
+    resposta é 409 com a lista das etapas que ainda dá para pausar — nunca uma
+    pausa que o operador acha que vai valer e não vale.
+    """
+    pipeline   = (body.get("pipeline_name") or "").strip()
+    job_pedido = (body.get("job_name") or body.get("task_id") or "").strip()
+    exec_id    = (body.get("execution_id") or "").strip()
+    dag_run_id = (body.get("dag_run_id") or "").strip()
+    data_ref_s = (body.get("data_referencia") or "").strip()
+    motivo     = (body.get("motivo") or "").strip()[:1000] or None
+
+    if not pipeline or not job_pedido:
+        raise HTTPException(status_code=422,
+                            detail="pipeline_name e job_name são obrigatórios")
+
+    oficial, ident, data_ref = await _resolve_alvo_rerun(
+        pipeline, exec_id=exec_id, dag_run_id=dag_run_id,
+        data_referencia=data_ref_s, gesto="pausar")
+    execution_id = str(ident.get("ts_nodash") or "").strip()
+    if not execution_id:
+        raise HTTPException(
+            status_code=409,
+            detail={"erro": "corrida_sem_execution_id",
+                    "mensagem": ("Não foi possível identificar o execution_id "
+                                 "(ts_nodash) desta corrida — sem ele o portão "
+                                 "da etapa não tem como reconhecer a pausa.")})
+    # O que vale contra o Airflow é o dag_run_id; guardá-lo agora é o que
+    # permite CANCELAR a execução depois sem re-resolver identidade.
+    run_airflow = (ident.get("dag_run_id") or ident.get("run_id") or "") or None
+    # ODATE: pausar segundos depois de disparar a corrida pega a janela em que
+    # o check_agenda ainda não gravou a linha da 067 — a identidade resolve o
+    # run e não a data. Sem este resgate a pausa nasce sem ODATE e os eventos
+    # dela não entram no painel (medido na prova viva).
+    if data_ref is None:
+        data_ref = espera_svc.data_do_execution_id(execution_id)
+
+    conn = cur = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        if not espera_svc.tem_tabela(cur):
+            raise HTTPException(
+                status_code=409,
+                detail={"erro": "migration_079_pendente",
+                        "mensagem": ("A tabela de pausas (migration 079) ainda "
+                                     "não foi aplicada neste ambiente.")})
+        desenho = ident_svc.etapas_do_desenho(cur, oficial)
+        nomes = {str(n.get("job_name") or "").strip().casefold():
+                 str(n.get("job_name") or "").strip() for n in desenho}
+        job_name = nomes.get(job_pedido.casefold())
+        if not job_name:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Etapa '{job_pedido}' não existe no desenho de '{oficial}'")
+        iniciadas = espera_svc.etapas_iniciadas(cur, oficial, execution_id)
+        if job_name.casefold() in iniciadas:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "erro": "etapa_ja_iniciou",
+                    "mensagem": (f"A etapa '{job_name}' já iniciou nesta "
+                                 "execução — o portão dela ficou para trás. Só "
+                                 "dá para pausar etapa que ainda não começou; "
+                                 "escolha uma etapa seguinte."),
+                    "etapas_pausaveis": [n["job_name"] for n in desenho
+                                         if str(n.get("job_name") or "").strip().casefold()
+                                         not in iniciadas],
+                })
+        teto = espera_svc.normaliza_teto(body.get("teto_minutos"),
+                                         espera_svc.teto_padrao(cur))
+        usuario = str((auth or {}).get("matricula") or "?")
+        pausa_id = espera_svc.criar(
+            cur, pipeline=oficial, execution_id=execution_id, job_name=job_name,
+            task_id=job_name, run_id=run_airflow, data_ref=data_ref,
+            motivo=motivo, teto=teto, usuario=usuario)
+        ja_existia = pausa_id == 0
+        if ja_existia:
+            atual = [p for p in espera_svc.listar(cur, oficial, execution_id)
+                     if p["job_name"].casefold() == job_name.casefold()
+                     and p["estado"] == "PENDENTE"]
+            pausa_id = atual[0]["id"] if atual else 0
+        else:
+            espera_svc.registrar_auditoria(
+                cur, oficial, usuario, "pausar",
+                {"execution_id": execution_id, "run_id": run_airflow,
+                 "data_referencia": (data_ref.strftime("%Y-%m-%d")
+                                     if hasattr(data_ref, "strftime") else data_ref),
+                 "job_name": job_name, "pausa_id": pausa_id,
+                 "motivo": motivo, "teto_minutos": teto})
+        avisos = espera_svc.avisos_da_pausa(cur, oficial, teto)
+        conn.commit()
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    finally:
+        for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+            try:
+                f and f()
+            except Exception:
+                pass
+
+    return {"ok": True, "pausa_id": pausa_id, "ja_existia": ja_existia,
+            "pipeline_name": oficial, "job_name": job_name,
+            "execution_id": execution_id, "teto_minutos": teto,
+            "avisos": avisos,
+            "pausas": _pausas_da_execucao(oficial, execution_id)}
+
+
+def _pausa_alvo(cur, pausa_id: int) -> dict:
+    """A pausa do gesto, ou 404/409 — a checagem comum de liberar e cancelar."""
+    if not espera_svc.tem_tabela(cur):
+        raise HTTPException(
+            status_code=409,
+            detail={"erro": "migration_079_pendente",
+                    "mensagem": "A tabela de pausas (migration 079) não existe."})
+    pausa = espera_svc.por_id(cur, pausa_id)
+    if pausa is None:
+        raise HTTPException(status_code=404, detail=f"Pausa {pausa_id} não encontrada")
+    if pausa["estado"] != "PENDENTE":
+        raise HTTPException(
+            status_code=409,
+            detail={"erro": "pausa_ja_resolvida",
+                    "estado": pausa["estado"],
+                    "mensagem": (f"Esta pausa já está {pausa['estado'].lower()}"
+                                 + (f" (por {pausa['resolvido_por']})"
+                                    if pausa.get("resolvido_por") else "") + ".")})
+    return pausa
+
+
+@router.post("/execucoes/pausas/{pausa_id}/liberar", tags=["execucoes"])
+def liberar_pausa(pausa_id: int, body: dict = Body(default={}),
+                  auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """Libera a etapa: na próxima verificação do portão (até 1 min por padrão)
+    a execução segue dali para frente.
+
+    Não toca no Airflow: a task está em `up_for_reschedule` e volta sozinha —
+    é justamente o que o modo `reschedule` compra. Mudar a linha é tudo.
+    """
+    obs = (body.get("observacao") or "").strip()[:1000] or None
+    usuario = str((auth or {}).get("matricula") or "?")
+    conn = cur = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        pausa = _pausa_alvo(cur, pausa_id)
+        if not espera_svc.resolver(cur, pausa_id, "LIBERADA", usuario, obs):
+            atual = espera_svc.por_id(cur, pausa_id) or {}
+            raise HTTPException(
+                status_code=409,
+                detail={"erro": "pausa_ja_resolvida",
+                        "estado": atual.get("estado"),
+                        "mensagem": ("A pausa mudou de estado entre a leitura e "
+                                     "a liberação (o teto pode ter estourado no "
+                                     "mesmo instante).")})
+        espera_svc.gravar_evento(
+            cur, pausa["pipeline_name"],
+            pausa.get("data_referencia")
+            or espera_svc.data_do_execution_id(pausa["execution_id"]),
+            espera_svc.EVENTO_LIBERADA,
+            f"Etapa '{pausa['job_name']}' liberada por {usuario}"
+            + (f": {obs}" if obs else ""))
+        espera_svc.registrar_auditoria(
+            cur, pausa["pipeline_name"], usuario, "liberar",
+            {"execution_id": pausa["execution_id"], "run_id": pausa.get("run_id"),
+             "data_referencia": (pausa["data_referencia"].strftime("%Y-%m-%d")
+                                 if hasattr(pausa.get("data_referencia"), "strftime")
+                                 else pausa.get("data_referencia")),
+             "job_name": pausa["job_name"], "pausa_id": pausa_id,
+             "observacao": obs})
+        conn.commit()
+        pipeline, execution_id = pausa["pipeline_name"], pausa["execution_id"]
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    finally:
+        for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+            try:
+                f and f()
+            except Exception:
+                pass
+    return {"ok": True, "pausa_id": pausa_id, "estado": "LIBERADA",
+            "pipeline_name": pipeline, "execution_id": execution_id,
+            "pausas": _pausas_da_execucao(pipeline, execution_id)}
+
+
+@router.post("/execucoes/pausas/{pausa_id}/cancelar", tags=["execucoes"])
+async def cancelar_pausa(pausa_id: int, body: dict = Body(default={}),
+                         auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """Desiste da corrida em vez de liberar: **falha o DagRun no Airflow** e só
+    então marca a pausa como CANCELADA.
+
+    ⚠️ **A ordem é a garantia.** Se o Airflow recusar, a resposta é 502 e a
+    pausa continua PENDENTE — a etapa segue segura no portão. O contrário
+    (marcar CANCELADA primeiro) abriria o portão para uma execução que ninguém
+    cancelou de fato, porque o portão faz UMA pergunta só: "existe pausa
+    pendente?".
+
+    O DagRun fica FALHA, nunca "sucesso com etapas puladas": pipeline abortado
+    pela metade não pode aparecer verde — a lição do sucesso falso que este
+    projeto já pagou.
+    """
+    obs = (body.get("observacao") or "").strip()[:1000] or None
+    usuario = str((auth or {}).get("matricula") or "?")
+    conn = cur = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        pausa = _pausa_alvo(cur, pausa_id)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    finally:
+        for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+            try:
+                f and f()
+            except Exception:
+                pass
+
+    dag_id = pausa["pipeline_name"]
+    dag_run_id = (pausa.get("run_id") or "").strip()
+    if not dag_run_id or not _DAG_ID_RE.match(dag_id or ""):
+        raise HTTPException(
+            status_code=409,
+            detail={"erro": "corrida_sem_dag_run",
+                    "mensagem": ("Esta pausa não guarda o dag_run da corrida — "
+                                 "sem ele não dá para cancelar a execução no "
+                                 "Airflow. Libere a pausa e pare a corrida pela "
+                                 "tela do Airflow.")})
+    async with get_airflow_client() as client:
+        r = await client.patch(f"/api/v1/dags/{dag_id}/dagRuns/{dag_run_id}",
+                               json={"state": "failed"})
+    if not r.is_success:
+        raise HTTPException(
+            status_code=502,
+            detail=(f"Airflow recusou cancelar a corrida: {r.status_code} — "
+                    f"{r.text[:300]}. A pausa continua pendente e a etapa "
+                    "segue segura."))
+
+    fechou = False
+    conn = cur = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        # A corrida JÁ foi falhada no Airflow: daqui para frente nada pode
+        # levantar a ponto de deixar a linha pendente sem registro — mas se
+        # levantar, o pior caso é uma pausa PENDENTE de uma corrida morta, que
+        # não solta nada e aparece na tela para o operador cancelar de novo.
+        espera_svc.resolver(cur, pausa_id, "CANCELADA", usuario, obs)
+        # Quem cancela é quem FECHA: o PATCH do Airflow pula o `registrar_falha`
+        # (ONE_FAILED), e sem isto a corrida ficaria EXECUTANDO para sempre —
+        # o "órfão em RUNNING" que este projeto já pagou uma vez.
+        fechou = espera_svc.fechar_corrida_cancelada(
+            cur, pausa["pipeline_name"], dag_run_id, usuario)
+        espera_svc.gravar_evento(
+            cur, pausa["pipeline_name"],
+            pausa.get("data_referencia")
+            or espera_svc.data_do_execution_id(pausa["execution_id"]),
+            espera_svc.EVENTO_CANCELADA,
+            f"Execução cancelada por {usuario} na etapa '{pausa['job_name']}'"
+            + (f": {obs}" if obs else ""))
+        espera_svc.registrar_auditoria(
+            cur, pausa["pipeline_name"], usuario, "cancelar",
+            {"execution_id": pausa["execution_id"], "run_id": dag_run_id,
+             "data_referencia": (pausa["data_referencia"].strftime("%Y-%m-%d")
+                                 if hasattr(pausa.get("data_referencia"), "strftime")
+                                 else pausa.get("data_referencia")),
+             "job_name": pausa["job_name"], "pausa_id": pausa_id,
+             "observacao": obs, "dagrun_falhado": True})
+        conn.commit()
+    except Exception as e:  # noqa: BLE001
+        log.warning("[ESPERA] cancelamento da pausa %s: corrida falhada no "
+                    "Airflow mas o registro falhou: %s", pausa_id, e)
+    finally:
+        for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+            try:
+                f and f()
+            except Exception:
+                pass
+
+    return {"ok": True, "pausa_id": pausa_id, "estado": "CANCELADA",
+            "pipeline_name": pausa["pipeline_name"], "dag_run_id": dag_run_id,
+            "execution_id": pausa["execution_id"],
+            "corrida_fechada": fechou,
+            "pausas": _pausas_da_execucao(pausa["pipeline_name"],
+                                          pausa["execution_id"])}
+
+
+@router.get("/pipelines/{pipeline_name}/pausas", tags=["execucoes"])
+def listar_pausas(pipeline_name: str,
+                  data_referencia: str | None = None,
+                  execution_id: str | None = None,
+                  run_id: str | None = None,
+                  _auth: dict = Depends(get_current_user)):
+    """As pausas de UMA corrida — pendentes e resolvidas, em ordem de criação.
+
+    Mesmas três portas de `GET /pipelines/{p}/execucao` (ODATE, ts_nodash ou
+    run_id), pelo mesmo serviço de identidade da F2. Leitura: exige login, não
+    `PERM_EXECUTAR` — quem só olha precisa enxergar que o processo está parado
+    e por quê.
+    """
+    if sum(1 for v in (data_referencia, execution_id, run_id) if v) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail="Informe data_referencia OU execution_id OU run_id, "
+                   "nunca mais de um")
+    conn = cur = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        oficial = ident_svc.pipeline_oficial(cur, pipeline_name)
+        if oficial is None:
+            raise HTTPException(status_code=404,
+                                detail=f"Pipeline não encontrado: '{pipeline_name}'")
+        ts = (execution_id or "").strip()
+        if not ts:
+            virada = deps_svc.virada_global(cur)
+            if run_id:
+                ident = ident_svc.resolve_por_run_id(cur, oficial, run_id.strip())
+            else:
+                if data_referencia:
+                    try:
+                        data_ref = datetime.strptime(
+                            str(data_referencia).strip(), "%Y-%m-%d").date()
+                    except ValueError:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"data_referencia inválida: '{data_referencia}'")
+                else:
+                    data_ref = dref.calcular(datetime.now(), virada)
+                ident = ident_svc.resolve_por_odate(cur, oficial, data_ref,
+                                                    virada=virada)
+            ts = str(ident.get("ts_nodash") or "").strip()
+        pausas = ([_pausa_json(p) for p in espera_svc.listar(cur, oficial, ts)]
+                  if ts else [])
+        tem_079 = espera_svc.tem_tabela(cur)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    finally:
+        for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+            try:
+                f and f()
+            except Exception:
+                pass
+    return {"pipeline_name": oficial, "execution_id": ts or None,
+            "pausas": pausas, "total": len(pausas),
+            "migration_079_pendente": not tem_079}
+
+
 def _ident_json(ident: dict) -> dict:
     """Identidade pronta para JSON — datas viram texto no formato do resto da
     API (`_fmt_dt` / `YYYY-MM-DD`). Nenhuma chave é omitida: o consumidor lê
@@ -1205,6 +1628,12 @@ async def get_pipeline_execucao(
             razao = "sem_etapas_registradas"
 
     ident_json = _ident_json(ident)
+    # F5 — as pausas desta corrida viajam JUNTO com as etapas. O canvas precisa
+    # pintar "em espera" no MESMO ciclo em que pinta o status (e ele refaz esta
+    # chamada a cada 30s); uma segunda rota só para isso dobraria o tráfego do
+    # modo Execução e abriria janela para as duas leituras discordarem.
+    # Sem a 079 a lista vem vazia — o payload é o da F4 e a tela não muda.
+    pausas = _pausas_da_execucao(oficial, ident.get("ts_nodash") or "")
     return {
         "pipeline_name": oficial,
         # Pelo ODATE, é o pedido; pelo execution_id, é o que a 067 revelou (pode
@@ -1214,6 +1643,7 @@ async def get_pipeline_execucao(
         "identidade": ident_json,
         "corrida": corrida,
         "etapas": etapas,
+        "pausas": pausas,
         "total_etapas": len(etapas),
         "etapas_executadas": len(executadas),
         "vazio": not executadas,

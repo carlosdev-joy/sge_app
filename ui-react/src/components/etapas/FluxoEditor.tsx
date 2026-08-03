@@ -55,7 +55,7 @@ import {
   Activity,
   Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing, Table2, Split, Hourglass,
   ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Maximize2, Minimize2,
-  MousePointerClick, Pencil, Search, X, History,
+  MousePointerClick, Pencil, Search, X, History, PauseCircle,
 } from 'lucide-react'
 import { EtapaNode, type EtapaNodeData } from './EtapaNode'
 import { DecisaoNode, casoCor, type CasoSwitch, type DecisaoNodeData, type NodeCondition } from './DecisaoNode'
@@ -84,6 +84,7 @@ import {
   construirCamada, estadoAresta, type CamadaExecucao, type PipelineExecucaoApi,
 } from './execucaoEtapas'
 import { ModalRerunEtapa } from './ModalRerunEtapa'
+import { ModalPausaEtapa } from './ModalPausaEtapa'
 import { useAuthStore } from '../../store/auth'
 
 const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode, aguarde: AguardeNode }
@@ -579,6 +580,11 @@ function FluxoEditorInner({
   const podeExecutar = ehAdmin() || !!usuarioAtual?.permissoes?.includes('acao_executar')
   const [rerunAberto, setRerunAberto] = useState(false)
 
+  // ── F5: etapa em espera (pausa de runtime) ────────────────────────────────
+  // Mesma permissão do rerun, mesmo motivo: esconder o botão é cortesia; a
+  // autoridade é o PERM_EXECUTAR dos POST /execucoes/pausas*.
+  const [pausaAberta, setPausaAberta] = useState(false)
+
   // Corrida escolhida À MÃO no aviso de ambiguidade (run_id). null = a
   // vencedora que o servidor resolveu (mais_recente_da_data, a MESMA regra do
   // painel da malha — descer para outra corrida sem dizer seria o defeito
@@ -624,7 +630,9 @@ function FluxoEditorInner({
   // decorações abaixo devolvem os arrays ORIGINAIS por identidade — a montagem
   // não paga nada por esta fase, nem em render nem em memória.
   const camadaExec = useMemo(
-    () => (emExecucao && execData ? construirCamada(execData.etapas) : null),
+    () => (emExecucao && execData
+      ? construirCamada(execData.etapas, execData.pausas)
+      : null),
     [emExecucao, execData],
   )
 
@@ -1824,7 +1832,12 @@ function FluxoEditorInner({
   //              continuam sendo o nudge de posição do React Flow
   //  Ctrl+Enter  salva o fluxo
   // Com um modal aberto, quem trata teclado é o Modal.
+  // (F4/F5) Os modais do modo Execução entram nesta conta: com um deles
+  // aberto o handler global continuava vivo e um Esc/Enter no campo do modal
+  // mexia no canvas atrás. `rerunAberto` estava de fora desde a F4 — a mesma
+  // lacuna, corrigida junto porque é a mesma linha.
   const temModalAberto = !!(delNodeIds?.length) || !!renamePedido || showPublish
+    || rerunAberto || pausaAberta
   useEffect(() => {
     if (temModalAberto) return
     const onKey = (e: KeyboardEvent) => {
@@ -2037,6 +2050,29 @@ function FluxoEditorInner({
   const execSelecionada = (camadaExec && selectedId)
     ? camadaExec.noPorJob.get(selectedId.trim().toLowerCase()) ?? null
     : null
+  // (F5) A pausa PENDENTE da etapa selecionada e o histórico dela nesta
+  // corrida. A pausa vem da MESMA camada que pinta o nó — se o botão lesse de
+  // outro lugar, a tela poderia oferecer "Liberar" para uma pausa que o canvas
+  // já não mostra.
+  const pausaSelecionada = (camadaExec && selectedId)
+    ? camadaExec.pausaPorJob.get(selectedId.trim().toLowerCase()) ?? null
+    : null
+  const historicoPausas = (execData?.pausas ?? []).filter(
+    p => selectedId && p.job_name.trim().toLowerCase() === selectedId.trim().toLowerCase())
+  // (F5) As etapas que AINDA dá para pausar — as sem linha de execução nesta
+  // corrida e sem pausa pendente. Sai da MESMA camada que pinta o canvas: uma
+  // segunda regra aqui poderia oferecer uma etapa que o servidor recusaria.
+  const etapasPausaveis = (camadaExec && execData)
+    ? (execData.etapas ?? [])
+        .filter(e => !(e.status ?? '').trim()
+          && !camadaExec.pausaPorJob.has(e.job_name.trim().toLowerCase()))
+        .map(e => e.job_name)
+    : []
+  // A etapa já rodou nesta corrida? É o limite do §5 — o botão de pausar não
+  // aparece para etapa que já iniciou (e a API recusa de qualquer forma).
+  const statusSelecionado = (camadaExec && selectedId)
+    ? camadaExec.porJob.get(selectedId.trim().toLowerCase())?.status ?? null
+    : null
 
   // Sem seleção o dock também respeita os estados (padrão Informatica — "o
   // painel nunca é inútil"): colapsado mantém a barra fina; senão mostra as
@@ -2208,6 +2244,30 @@ function FluxoEditorInner({
         />
       )}
 
+      {/* (F5) Pausar / liberar / cancelar. Montado só quando aberto, como o de
+          rerun (padrão D31: o Modal não desmonta com open=false). */}
+      {emExecucao && pausaAberta && selectedId && (
+        <ModalPausaEtapa
+          open
+          onClose={() => setPausaAberta(false)}
+          pipeline={pipeline}
+          jobName={selectedId}
+          dataReferencia={execData?.data_referencia ?? dataExecucao ?? null}
+          /* ⚠️ A corrida do gesto é a que ESTÁ NA TELA — a escolhida à mão ou,
+             na falta dela, a que a identidade resolveu e o canvas está
+             desenhando. Descoberto na prova de UI: com 2 corridas no mesmo
+             ODATE o pedido ia só com a data e voltava 409 "corrida ambígua",
+             mesmo com o operador olhando uma corrida concreta. Pausar o que
+             está na tela não é adivinhar: o banner âmbar declara qual é, e
+             trocar de corrida por lá troca o alvo junto. */
+          runId={corridaEscolhida ?? execData?.identidade?.run_id ?? null}
+          status={statusSelecionado}
+          pausa={pausaSelecionada}
+          historico={historicoPausas}
+          etapasPausaveis={etapasPausaveis}
+        />
+      )}
+
       {/* Dock inferior de propriedades (fase 3) — 3 estados: colapsado (36px
           com o resumo do nó), aberto (altura arrastável) e max (modo focado).
           Sem seleção o dock NÃO some nem vira só uma dica: mostra as
@@ -2338,6 +2398,42 @@ function FluxoEditorInner({
                   retomar de uma etapa que deu certo é legítimo. Sem etapa
                   executada não há de onde retomar, e sem PERM_EXECUTAR o botão
                   não existe (a autoridade continua sendo a API). */}
+              {/* (F5) Pausar antes desta etapa / gerir a pausa existente. O
+                  gesto mora ao lado do rerun porque é a MESMA operação de
+                  campo — "segurar aqui" e "refazer daqui" são as duas coisas
+                  que o operador quer quando está olhando uma etapa. O botão de
+                  PAUSAR só existe para etapa que ainda não iniciou (§5); a
+                  etapa já iniciada não ganha um botão que a API vai recusar. */}
+              {/* ⚠️ O botão existe para TODA etapa, inclusive a que já rodou —
+                  e é o modal que explica por que ali não dá. Esconder o botão
+                  na etapa iniciada (a 1ª versão desta fase) fazia o limite
+                  sumir junto: o operador não achava o gesto e não descobria
+                  que ele existe nem por que não vale. Limite explicado > gesto
+                  escondido. */}
+              {emExecucao && podeExecutar && (
+                <button
+                  onClick={() => setPausaAberta(true)}
+                  title={pausaSelecionada
+                    ? (pausaSelecionada.aguardando_desde
+                        ? `"${selNode.id}" está parada aguardando liberação — abrir para liberar ou cancelar`
+                        : `"${selNode.id}" está marcada para pausa — abrir para liberar ou cancelar`)
+                    : statusSelecionado
+                      ? `"${selNode.id}" já iniciou nesta execução — veja quais etapas ainda dá para pausar`
+                      : `Pausar antes de "${selNode.id}" — só vale para etapa que ainda não começou`}
+                  className={[
+                    'inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5',
+                    'text-[10px] font-semibold transition-colors',
+                    pausaSelecionada
+                      ? 'border-fuchsia-500 bg-fuchsia-500/10 text-fuchsia-700 hover:bg-fuchsia-500/20 dark:text-fuchsia-300'
+                      : 'border-edge text-dim hover:bg-edge/40 hover:text-ink',
+                  ].join(' ')}
+                >
+                  <PauseCircle size={10} />
+                  {pausaSelecionada
+                    ? (pausaSelecionada.aguardando_desde ? 'Em espera — liberar' : 'Pausa marcada')
+                    : statusSelecionado ? 'Pausar…' : 'Pausar aqui'}
+                </button>
+              )}
               {emExecucao && podeExecutar && execSelecionada && (
                 <button
                   onClick={() => setRerunAberto(true)}

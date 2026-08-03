@@ -425,8 +425,16 @@ def _task_block(job, project, pipeline, branch_reachable=False):
         if branch_reachable else None
     )
     end_rule = "TriggerRule.NONE_SKIPPED" if branch_reachable else "TriggerRule.ALL_DONE"
+    # ⚠️ F5 — `_LogStart` é `LogStartOperator` (utils/job_operators.py): um
+    # PythonOperator que publica o atributo `reschedule` nos campos
+    # serializados. SEM ele, o Airflow ACEITA a AirflowRescheduleException do
+    # portão mas IGNORA a data do próximo teste (ReadyToRescheduleDep sai por
+    # "Task is not in reschedule mode") — medido na prova viva: 56 verificações
+    # em 5 minutos em vez de 1 por minuto. Sem os módulos de utils, o import
+    # guardado do topo faz `_LogStart = PythonOperator` e o bloco volta a ser,
+    # byte a byte, o de antes desta fase.
     log_start = "\n".join(filter(None, [
-        f't_start_{vname} = PythonOperator(',
+        f't_start_{vname} = _LogStart(',
         f'    task_id={("log_start_" + name)!r},',
         f'    python_callable=log_start,',
         f'    op_kwargs={{"job_name": {name!r}, "task_key": {name!r}}},',
@@ -906,6 +914,28 @@ def _generate_dag_source(pipeline, jobs):
         "import re",
         "import json",
         "import requests",
+        "",
+        # ── F5: o portão da etapa em espera (docs/spec-operacao-nivel-etapa.md
+        # §5 Bloco C). Este bloco e a chamada dentro do log_start são o ÚNICO
+        # delta que a F5 introduz no fonte gerado — é exatamente o que
+        # tests/test_dag_factory_espera.py remove para provar que o resto sai
+        # byte-idêntico ao de antes (mitigação do §9: "sem linha de pausa na
+        # tabela, o caminho é byte-idêntico ao atual").
+        #
+        # Import GUARDADO de propósito: se utils/espera.py não estiver no
+        # servidor (deploy parcial), a DAG continua importando e o portão fica
+        # desligado. Uma feature nova não pode derrubar 100% dos pipelines por
+        # um arquivo que faltou subir.
+        "# F5 — portao da etapa em espera (utils/espera.py). Import guardado:",
+        "# sem os modulos no servidor a DAG importa igual, com o log_start de",
+        "# sempre (PythonOperator) e o portao desligado.",
+        "try:",
+        "    from utils import espera as _espera",
+        "    from utils.job_operators import LogStartOperator as _LogStart",
+        "except Exception as _espera_err:  # noqa: BLE001",
+        "    _espera = None",
+        "    _LogStart = PythonOperator",
+        "    print(f\"[ESPERA] utils.espera indisponivel ({_espera_err}) — portao desligado\")",
     ]
 
     # Constantes
@@ -1401,6 +1431,15 @@ def _generate_dag_source(pipeline, jobs):
         "def log_start(job_name, task_key, **context):",
         "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
         "    execution_id = context['ts_nodash']",
+        # ⚠️ ORDEM: o portão vem ANTES da telemetria. Uma etapa segurada no
+        # portão NÃO iniciou — gravar RUNNING antes de esperar faria a tela
+        # mostrar como "executando" algo que está parado, e ainda estragaria a
+        # duração. Enquanto espera, a etapa não tem linha: neutra, que é a
+        # regra de honestidade do §3 da spec.
+        "    # F5 — portao da etapa em espera: SEM pausa pedida (o caso normal)",
+        "    # devolve None de imediato e o caminho abaixo e o de sempre.",
+        "    if _espera is not None:",
+        "        _espera.portao(hook, PIPELINE_NAME, job_name, execution_id)",
         "    _exec_telemetry(hook, execution_id, job_name, task_key, 'RUNNING',",
         "                    _now_str(), '', 0, _build_log_file(job_name, execution_id))",
         "",

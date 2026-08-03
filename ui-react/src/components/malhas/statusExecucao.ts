@@ -101,6 +101,23 @@ export const STATUS_EXECUCAO: Record<string, EstiloStatus> = {
     badge: 'bg-purple-100 text-purple-700 border-purple-300 dark:bg-purple-900/60 dark:text-purple-300 dark:border-purple-700',
     dot: 'bg-purple-500',
   },
+  // F5 — a etapa está PARADA no portão, esperando um humano liberar. Existe só
+  // no nível de ETAPA (nenhum status de etl_pipeline_execucao é este), por isso
+  // fica FORA de ORDEM_LEGENDA: a legenda da malha não pode oferecer um estado
+  // que nenhum pipeline dela vai ter. A legenda do canvas de Etapas o desenha
+  // explicitamente.
+  // Fúcsia porque as vizinhas já estão tomadas e a confusão sairia cara: azul é
+  // "executando" (e em espera NÃO está executando), âmbar é "aguardando
+  // dependência" (espera de máquina, não de gente) e roxo é "não liberou".
+  // Pulsa como o "executando" — é o único jeito de a tela dizer, sem texto, que
+  // aquilo está prendendo o processo AGORA.
+  EM_ESPERA: {
+    rotulo: 'em espera',
+    anel: 'outline outline-2 outline-offset-2 outline-fuchsia-500/80 dark:outline-fuchsia-400/70',
+    badge: 'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-300 dark:bg-fuchsia-900/60 dark:text-fuchsia-300 dark:border-fuchsia-700',
+    dot: 'bg-fuchsia-500',
+    animado: true,
+  },
 }
 
 // Ordem fixa da legenda no rodapé (leitura de painel: bons → ruins → neutros).
@@ -132,6 +149,18 @@ export function estiloEvento(tipo: string): string {
       return 'bg-teal-100 text-teal-700 border-teal-300 dark:bg-teal-900/60 dark:text-teal-300 dark:border-teal-700'
     case 'MALHA_CONCLUIDA':
       return 'bg-green-100 text-green-700 border-green-300 dark:bg-green-900/60 dark:text-green-300 dark:border-green-700'
+    // F5 — eventos da etapa em espera. Reusam esta tabela (e a fila do Teams da
+    // guardiã) de propósito: nenhum canal novo. ESPERA_ESTOUROU é vermelho
+    // porque o teto estourar interrompe a execução; os outros três são
+    // informativos e não devem gritar no painel.
+    case 'ESPERA_ETAPA':
+      return 'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-300 dark:bg-fuchsia-900/60 dark:text-fuchsia-300 dark:border-fuchsia-700'
+    case 'ESPERA_LIBERADA':
+      return 'bg-green-100 text-green-700 border-green-300 dark:bg-green-900/60 dark:text-green-300 dark:border-green-700'
+    case 'ESPERA_CANCELADA':
+      return 'bg-slate-200 text-slate-700 border-slate-400 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-600'
+    case 'ESPERA_ESTOUROU':
+      return 'bg-red-100 text-red-700 border-red-300 dark:bg-red-900/60 dark:text-red-300 dark:border-red-700'
     default:
       return 'bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-600'
   }
