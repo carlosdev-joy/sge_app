@@ -1,6 +1,7 @@
 # Spec — Operação no nível de etapa
 
-Data: 2026-08-03 · Status: **RASCUNHO — aguardando decisões do usuário (§7)**
+Data: 2026-08-03 · Status: **APROVADA — as 4 decisões do §7 foram tomadas pelo
+usuário em 2026-08-03; implementação por fases (§8) autorizada.**
 
 > **Decisão arquitetural já tomada (usuário, 2026-08-03): não construir
 > executor próprio — seguir com o Airflow.** A dúvida levantada foi "como
@@ -132,24 +133,23 @@ acesa em cor forte, o resto esmaecido, com contador ("7 etapas dependem desta").
 É a fase de **menor risco e maior valor imediato** para mapeamento de processo
 — não toca em execução nenhuma.
 
-## 7. Decisões necessárias antes de implementar
+## 7. Decisões — TOMADAS pelo usuário em 2026-08-03
 
-1. **Cascata no rerun**: reexecutar um pipeline no meio da malha deve (a)
-   parar nele — comportamento atual de fato; (b) perguntar a cada vez, com as
-   duas opções no modal; ou (c) sempre propagar para os dependentes?
-   *Recomendação: (b) — o gesto mostra quem seria afetado e o operador
-   escolhe; é o que Control-M faz e evita tanto o reprocessamento cego quanto
-   a cadeia desatualizada em silêncio.*
-2. **Histórico de tentativas**: passar a acumular tentativas em
-   `etl_job_execution` (preenchendo `attempt`, com migration) ou aceitar que a
-   reexecução sobrescreve a anterior? *Recomendação: acumular — sem isso, a
-   tela de drill-down mente sobre o que aconteceu no dia.*
-3. **Pausa**: entregar C1 (declarada no desenho), C2 (runtime) ou as duas?
-   *Recomendação: C2 primeiro (é o que foi pedido) e C1 depois, se o uso
-   mostrar necessidade.*
-4. **Alcance do realce**: só destacar visualmente, ou também **filtrar** o
-   canvas (esconder o que não pertence à cadeia)? *Recomendação: destacar por
-   padrão, com um botão de "isolar" para grafos grandes.*
+1. **Cascata no rerun: SEMPRE PERGUNTAR.** O modal oferece as duas opções —
+   *"só este pipeline"* ou *"este e os dependentes (cascata)"* — mostrando
+   quais pipelines seriam afetados em cada caso. Nunca decidir em silêncio,
+   nos dois sentidos: nem reprocessar cadeia inteira sem aviso, nem deixar
+   dependentes com dado velho achando que o rerun resolveu.
+2. **Histórico de tentativas: ACUMULAR.** `etl_job_execution` passa a guardar
+   cada tentativa (coluna `attempt`, hoje existente e nunca preenchida), com
+   migration e ajuste da SP de telemetria. O drill-down mostra a linha do
+   tempo real do dia, e fica a base para medir retrabalho.
+3. **Pausa: RUNTIME primeiro** (C2 — marcar em execução qualquer etapa que
+   ainda não iniciou). A pausa declarada no desenho (C1) e demais variações
+   vão para o **backlog**, a reavaliar depois que o uso real mostrar
+   necessidade.
+4. **Realce: DESTACAR por padrão, com botão de "isolar"** para grafos grandes
+   (esconder o que não pertence à cadeia sob demanda, nunca automaticamente).
 
 ## 8. Fases propostas
 
