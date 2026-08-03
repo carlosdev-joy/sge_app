@@ -60,6 +60,10 @@ export interface DependenciaPredecessor {
   nome: string
   status: string | null          // última execução na data (exibição)
   sucesso_na_data: boolean       // do predicado EXISTS — nunca do "mais recente"
+  // ADITIVO (F11/Decisão 4): presente só quando a linha foi COMPILADA por um
+  // Aguarde de malha — o chip do modal F5 fica TRAVADO nomeando a malha dona
+  // (remover por lá seria 422 com a mesma mensagem).
+  compilada_por?: { malha: string | null; no: number }
 }
 
 export interface DependenciaCorrida {

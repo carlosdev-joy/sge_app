@@ -4,10 +4,10 @@ import { apiFetch } from '../../lib/api'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { toast } from '../ui/Toast'
-import { Search, X, AlertTriangle, Check, Ban } from 'lucide-react'
+import { Search, X, AlertTriangle, Check, Ban, Lock } from 'lucide-react'
 import type { Pipeline, DependenciasEstadoApi } from '../../types/pipeline'
 import { criaCiclo, type ArestaGrafo } from '../etapas/layoutGrafo'
-import { msgCiclo, msgRepublicar } from '../malhas/mensagensDependencia'
+import { msgCiclo, msgRepublicar, msgLinhaAssinada } from '../malhas/mensagensDependencia'
 import { estiloStatus } from '../malhas/statusExecucao'
 
 // Escolha das dependências de um pipeline (F5 da retomada).
@@ -99,6 +99,20 @@ export function DependenciasModal({ pipelineAtual, isEdit, selecionadas, onClose
     return entrada ? entrada.predecessores.map(p => p.nome) : selecionadas
   }, [isEdit, estadoQuery.isLoading, estadoQuery.data, pipelineAtual, selecionadas])
 
+  // Linha COMPILADA por Aguarde de malha (F11/Decisão 4): o chip fica TRAVADO
+  // — só a malha dona mexe nela. Mapa casefold(predecessor) → {malha, no} da
+  // entrada do próprio pipeline no /estado (campo ADITIVO compilada_por).
+  const compiladaPorPred = useMemo(() => {
+    const m = new Map<string, { malha: string | null; no: number }>()
+    if (!isEdit) return m
+    const entrada = (estadoQuery.data?.data ?? []).find(
+      d => d.pipeline_name.toLowerCase() === pipelineAtual.toLowerCase())
+    for (const p of entrada?.predecessores ?? []) {
+      if (p.compilada_por) m.set(p.nome.toLowerCase(), p.compilada_por)
+    }
+    return m
+  }, [isEdit, estadoQuery.data, pipelineAtual])
+
   // Grafo GLOBAL de dependências (source = predecessor → target = dependente):
   // é sobre ele que o criaCiclo desabilita candidato que fecharia ciclo —
   // inclusive por caminho que passa por pipeline de fora de qualquer malha.
@@ -142,6 +156,14 @@ export function DependenciasModal({ pipelineAtual, isEdit, selecionadas, onClose
   const lista = escolhidas ?? atuaisServidor ?? []
   const alternar = (nome: string) => {
     if (travado || aplicando) return
+    // Chip TRAVADO (F11/Decisão 4): linha compilada por Aguarde de malha não
+    // sai por aqui — a recusa usa a MESMA mensagem que o 422 do servidor
+    // daria, nomeando a malha e o nó donos.
+    const cp = compiladaPorPred.get(nome.toLowerCase())
+    if (cp && lista.some(n => n.toLowerCase() === nome.toLowerCase())) {
+      toast.error(msgLinhaAssinada(pipelineAtual, nome, cp.malha, cp.no))
+      return
+    }
     setErrosItem(prev => {
       if (!(nome in prev)) return prev
       const resto = { ...prev }
@@ -272,6 +294,9 @@ export function DependenciasModal({ pipelineAtual, isEdit, selecionadas, onClose
             {lista.map(nome => {
               const st = statusPorPipeline.get(nome.toLowerCase())
               const estilo = st ? estiloStatus(st) : null
+              // Chip TRAVADO (F11/Decisão 4): compilada por Aguarde de malha —
+              // cadeado no lugar do X, nomeando a malha dona no tooltip.
+              const cp = compiladaPorPred.get(nome.toLowerCase())
               return (
                 <span key={nome} className="inline-flex flex-col gap-0.5">
                   <span
@@ -284,7 +309,11 @@ export function DependenciasModal({ pipelineAtual, isEdit, selecionadas, onClose
                         {estilo.rotulo}
                       </span>
                     )}
-                    {!travado && (
+                    {cp ? (
+                      <span title={msgLinhaAssinada(pipelineAtual, nome, cp.malha, cp.no)}>
+                        <Lock size={11} className="text-dim" />
+                      </span>
+                    ) : !travado && (
                       <button onClick={() => alternar(nome)} aria-label={`Remover ${nome}`}
                         className="hover:text-red-600 dark:hover:text-red-400">
                         <X size={12} />
@@ -349,14 +378,20 @@ export function DependenciasModal({ pipelineAtual, isEdit, selecionadas, onClose
             // servidor), em vez de deixar o erro para o Aplicar (D33).
             const fechaCiclo = !marcado
               && criaCiclo(arestasGlobais, p.pipeline_name, pipelineAtual)
-            const desabilitado = travado || fechaCiclo
+            // Linha compilada por Aguarde de malha (F11): desmarcar por aqui
+            // também é recusado — mesmo tratamento do chip travado.
+            const cpCand = marcado
+              ? compiladaPorPred.get(p.pipeline_name.toLowerCase()) : undefined
+            const desabilitado = travado || fechaCiclo || !!cpCand
             return (
               <button
                 key={p.pipeline_name}
                 onClick={() => { if (!desabilitado) alternar(p.pipeline_name) }}
                 disabled={desabilitado}
                 aria-pressed={marcado}
-                title={fechaCiclo ? msgCiclo(pipelineAtual, p.pipeline_name) : undefined}
+                title={cpCand
+                  ? msgLinhaAssinada(pipelineAtual, p.pipeline_name, cpCand.malha, cpCand.no)
+                  : fechaCiclo ? msgCiclo(pipelineAtual, p.pipeline_name) : undefined}
                 className={`w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors ${
                   marcado ? 'bg-blue-50 dark:bg-blue-900/20'
                     : desabilitado ? 'opacity-50 cursor-not-allowed'
@@ -374,6 +409,12 @@ export function DependenciasModal({ pipelineAtual, isEdit, selecionadas, onClose
                   {fechaCiclo && (
                     <span className="text-[10px] text-amber-700 dark:text-amber-400 block">
                       {msgCiclo(pipelineAtual, p.pipeline_name)}
+                    </span>
+                  )}
+                  {cpCand && (
+                    <span className="inline-flex items-center gap-1 text-[10px] text-dim">
+                      <Lock size={10} /> compilada pelo Aguarde #{cpCand.no} da
+                      malha '{cpCand.malha}' — edite pelo desenho da malha
                     </span>
                   )}
                 </span>
