@@ -350,6 +350,44 @@ def config_dependente(conn, pipeline: str):
     }
 
 
+# ── Reabertura deliberada de corrida (F4 de docs/spec-operacao-nivel-etapa.md)
+# A migration 078 acrescentou `substituida_em` a etl_pipeline_execucao. Uma
+# corrida com esse carimbo foi APOSENTADA por um rerun com cascata pedido na
+# tela, com dono e hora — e o claim passa a ignorá-la, exatamente como já
+# ignora 'PULADO'. É o que faz a cascata acontecer pelo caminho NORMAL do
+# motor: quando o pai reexecutado conclui, o push encontra a corrida do
+# dependente aposentada, GANHA o claim e dispara com run_id novo e o MESMO
+# ODATE. Nada é disparado fora do claim, e a linha antiga não é apagada nem
+# reescrita — o histórico do dia fica inteiro.
+#
+# ⚠️ POR QUE O FALLBACK, E NÃO UM PROBE DE COLUNA: este é o caminho mais quente
+# do motor de dependências e ele roda em DAG já publicada (utils/ é importado em
+# runtime, não inlinado no código gerado). Num deploy parcial — dags/ novo, banco
+# ainda sem a 078 — a referência à coluna daria Msg 207 "Invalid column name" e
+# derrubaria o push de TODO pipeline com dependente. Um probe por chamada
+# custaria uma consulta extra em todo disparo; o fallback custa zero no caminho
+# feliz, é preciso (só reage à mensagem que cita a coluna, nunca a um deadlock
+# ou timeout, que continuam propagando) e se autocorrige assim que a migration
+# entra, sem reiniciar worker.
+_MARCA_078 = "substituida_em"
+
+
+def _exec_com_fallback_078(cur, sql_078: str, sql_legado: str, params) -> bool:
+    """Executa `sql_078`; se o banco ainda não tem a coluna da 078, repete com
+    `sql_legado`. Devolve True quando caiu no legado (o chamador loga uma vez).
+
+    Qualquer outro erro PROPAGA — degradar em silêncio um erro de banco seria
+    a classe D21 (erro virando "pode disparar")."""
+    try:
+        cur.execute(sql_078, params)
+        return False
+    except Exception as e:  # noqa: BLE001 — reagimos SÓ ao Invalid column name da 078
+        if _MARCA_078 not in str(e):
+            raise
+        cur.execute(sql_legado, params)
+        return True
+
+
 def reservar_corrida(conn, filho: str, data_ref: date, novo_run_id: str, origem: str):
     """Claim da corrida do dependente (§3.2) — devolve o run_id a disparar,
     ou None (perdi a corrida / já há corrida na data).
@@ -372,9 +410,20 @@ def reservar_corrida(conn, filho: str, data_ref: date, novo_run_id: str, origem:
     check_agenda do filho carimba inicio ao adotar). O chamador COMMITA
     imediatamente após (transação curta, fora da tx do SUCESSO do pai).
     F4: a guardiã chama com origem='guardia' e run_id guardia__*.
+
+    F4 (rerun com cascata): corrida com `substituida_em` NÃO bloqueia — nos
+    dois caminhos. Ver o bloco de comentário acima; sem a migration 078 o
+    comportamento é o de antes, byte a byte.
     """
     cur = conn.cursor()
-    cur.execute(
+    legado = _exec_com_fallback_078(
+        cur,
+        "UPDATE e SET e.status='EXECUTANDO', e.disparado_por=%s, "
+        "e.atualizado_em=GETDATE() "
+        "OUTPUT inserted.execution_id "
+        "FROM dbo.etl_pipeline_execucao e WITH (UPDLOCK, HOLDLOCK) "
+        "WHERE e.pipeline_name=%s AND e.data_referencia=%s "
+        "AND e.status='AGUARDANDO_DEPENDENCIA' AND e.substituida_em IS NULL",
         "UPDATE e SET e.status='EXECUTANDO', e.disparado_por=%s, "
         "e.atualizado_em=GETDATE() "
         "OUTPUT inserted.execution_id "
@@ -382,10 +431,21 @@ def reservar_corrida(conn, filho: str, data_ref: date, novo_run_id: str, origem:
         "WHERE e.pipeline_name=%s AND e.data_referencia=%s "
         "AND e.status='AGUARDANDO_DEPENDENCIA'",
         (origem, filho, data_ref))
+    if legado:
+        print("[DEP] migration 078 ausente — reabertura de corrida indisponivel; "
+              "claim segue a regra anterior")
     row = cur.fetchone()
     if row and row[0]:
         return row[0]
-    cur.execute(
+    _exec_com_fallback_078(
+        cur,
+        "INSERT INTO dbo.etl_pipeline_execucao "
+        "(pipeline_name, data_referencia, execution_id, status, disparado_por) "
+        "SELECT %s, %s, %s, 'EXECUTANDO', %s "
+        "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao "
+        "WITH (UPDLOCK, HOLDLOCK) "
+        "WHERE pipeline_name=%s AND data_referencia=%s AND status <> 'PULADO' "
+        "AND substituida_em IS NULL)",
         "INSERT INTO dbo.etl_pipeline_execucao "
         "(pipeline_name, data_referencia, execution_id, status, disparado_por) "
         "SELECT %s, %s, %s, 'EXECUTANDO', %s "
@@ -408,9 +468,22 @@ def ordenar_corrida(conn, filho: str, data_ref: date, run_id: str, origem: str) 
     nao_iniciar_antes no push (outro pai — ou a guardiã, F4 — adota depois
     pelo caminho (a) do claim); New Day da F4. Esta linha AGUARDANDO é
     intencional e nunca sofre devolução.
+
+    F4 (rerun com cascata): MESMO NOT EXISTS do claim, inclusive a cláusula
+    `substituida_em IS NULL` — as duas portas têm de concordar sobre o que
+    conta como "já há corrida na data", senão a janela nao_iniciar_antes
+    contaria uma corrida aposentada e o push, não.
     """
     cur = conn.cursor()
-    cur.execute(
+    _exec_com_fallback_078(
+        cur,
+        "INSERT INTO dbo.etl_pipeline_execucao "
+        "(pipeline_name, data_referencia, execution_id, status, disparado_por) "
+        "SELECT %s, %s, %s, 'AGUARDANDO_DEPENDENCIA', %s "
+        "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao "
+        "WITH (UPDLOCK, HOLDLOCK) "
+        "WHERE pipeline_name=%s AND data_referencia=%s AND status <> 'PULADO' "
+        "AND substituida_em IS NULL)",
         "INSERT INTO dbo.etl_pipeline_execucao "
         "(pipeline_name, data_referencia, execution_id, status, disparado_por) "
         "SELECT %s, %s, %s, 'AGUARDANDO_DEPENDENCIA', %s "

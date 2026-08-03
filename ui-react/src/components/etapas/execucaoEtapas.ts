@@ -42,10 +42,29 @@ export interface EtapaExecucaoApi {
   fim: string | null
   duration_seconds: number | null
   status_code: string | null
-  /** hoje sempre null — a coluna existe e só passa a ser preenchida na F4. */
+  /** número da tentativa CORRENTE (F4). Antes da migration 078 vinha null; o
+   *  backfill marcou 1 nas linhas existentes. Os campos acima são sempre os da
+   *  tentativa MAIS RECENTE — as anteriores vêm em `tentativas`. */
   attempt: number | null
   log_file: string | null
   host: string | null
+  /** (F4) tentativas SUPERADAS, da mais antiga para a mais nova, SEM a
+   *  corrente. Vazio = só houve uma (ou a migration 078 está pendente). */
+  tentativas: TentativaApi[]
+  /** anteriores + a corrente. 0 = etapa sem execução. */
+  total_tentativas: number
+}
+
+/** Uma tentativa já superada de uma etapa (migration 078). */
+export interface TentativaApi {
+  attempt: number | null
+  status: string | null
+  inicio: string | null
+  fim: string | null
+  duration_seconds: number | null
+  status_code: string | null
+  host: string | null
+  log_file: string | null
 }
 
 export interface CorridaApi {
@@ -149,9 +168,13 @@ export interface ExecNoEtapa {
   animado: boolean
   /** linha curta sob o nó: '09:49:59 → 09:50:15 · 16s' */
   resumo: string
-  /** tooltip completo (status, início, fim, duração, host, tentativa) */
+  /** tooltip completo (status, início, fim, duração, host, tentativas) */
   titulo: string
   pulada: boolean
+  /** (F4) número da tentativa em exibição (a mais recente) */
+  tentativa: number | null
+  /** (F4) tentativas superadas, para a linha do tempo do dock */
+  tentativas: TentativaApi[]
 }
 
 export interface CamadaExecucao {
@@ -181,6 +204,8 @@ function decorarEtapa(e: EtapaExecucaoApi): ExecNoEtapa {
       titulo: `${e.job_name}\nSem linha de execução nesta data — a etapa está `
         + 'no desenho, mas não rodou (nem sucesso, nem falha).',
       pulada: false,
+      tentativa: null,
+      tentativas: [],
     }
   }
   const ini = horaLonga(e.inicio)
@@ -190,6 +215,7 @@ function decorarEtapa(e: EtapaExecucaoApi): ExecNoEtapa {
     `${ini} → ${fim}`,
     dur,
   ].filter(Boolean).join(' · ')
+  const anteriores = e.tentativas ?? []
   const linhas = [
     e.job_name,
     `status: ${e.status}${pulada ? ' (ramo não tomado — não é sucesso nem falha)' : ''}`,
@@ -198,6 +224,16 @@ function decorarEtapa(e: EtapaExecucaoApi): ExecNoEtapa {
     `duração: ${dur ?? '—'}`,
     e.attempt != null ? `tentativa: ${e.attempt}` : null,
     e.host ? `host: ${e.host}` : null,
+    // (F4) A linha do tempo do dia no tooltip: o que está acima é a tentativa
+    // MAIS RECENTE; as anteriores aparecem aqui, para o operador ver que
+    // "falhou 10:12, reexecutado 11:03, passou" sem abrir nada.
+    ...(anteriores.length
+      ? ['— tentativas anteriores —',
+         ...anteriores.map(t =>
+           `  #${t.attempt ?? '?'}: ${t.status ?? '—'} · `
+           + `${horaLonga(t.inicio)} → ${horaLonga(t.fim)}`
+           + (t.duration_seconds != null ? ` · ${duracaoCurta(t.duration_seconds)}` : ''))]
+      : []),
     e.no_desenho ? null : 'esta etapa rodou mas NÃO está no desenho atual',
   ].filter(Boolean)
   return {
@@ -209,6 +245,8 @@ function decorarEtapa(e: EtapaExecucaoApi): ExecNoEtapa {
     resumo,
     titulo: linhas.join('\n'),
     pulada,
+    tentativa: e.attempt ?? null,
+    tentativas: anteriores,
   }
 }
 
@@ -217,7 +255,14 @@ export function construirCamada(etapas: EtapaExecucaoApi[]): CamadaExecucao {
   const noPorJob = new Map<string, ExecNoEtapa>()
   for (const e of etapas) {
     const k = chave(e.job_name)
-    if (!k || porJob.has(k)) continue
+    if (!k) continue
+    // (F4) Desempate por TENTATIVA, não por ordem de chegada. O servidor já
+    // entrega uma linha por etapa (a mais recente), mas o "primeiro que
+    // chegar vence" desta função era, antes da F4, o que faria a tela pintar
+    // a tentativa que FALHOU depois de o operador já ter reexecutado e
+    // passado. A regra fica explícita nos dois lados, não implícita em um.
+    const atual = porJob.get(k)
+    if (atual && (atual.attempt ?? 0) >= (e.attempt ?? 0)) continue
     porJob.set(k, e)
     noPorJob.set(k, decorarEtapa(e))
   }

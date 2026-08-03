@@ -24,6 +24,8 @@ from routers.airflow import _DAG_ID_RE
 from services import data_referencia as dref
 from services import dependencias as deps_svc
 from services import execucao_identidade as ident_svc
+# Cascata, reabertura de corrida e auditoria do rerun (F4 — §4 e decisão 1 §7).
+from services import rerun as rerun_svc
 
 log = logging.getLogger("orquestra-api")
 
@@ -559,25 +561,354 @@ def list_execucoes(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def _resolve_alvo_rerun(pipeline: str, *, exec_id: str, dag_run_id: str,
+                              data_referencia: str) -> tuple:
+    """Resolve (pipeline, …) → ``(oficial, dag_run_id, ident, data_ref)`` para
+    o gesto destrutivo da F4. **Recusa em vez de escolher** quando não sabe.
+
+    As três portas, por ordem de precisão — e cada uma existe por um motivo:
+
+      1. ``dag_run_id`` explícito → o operador JÁ escolheu (o canvas mostra o
+         aviso de ambiguidade da F3 e deixa clicar numa candidata). Usa como
+         veio; a ambiguidade já foi resolvida por gente.
+      2. ``execution_id`` (ts_nodash) → o caminho HISTÓRICO do modal de Logs e
+         do Dashboard, preservado byte a byte: casa o dag_run pela logical date
+         com ``_escolhe_dag_run``. É uma corrida concreta, não há o que
+         desambiguar.
+      3. ``data_referencia`` (ODATE) → a linguagem da malha, entrada nova da
+         F4. Aqui **e só aqui** cabe ambiguidade: o mesmo pipeline pode ter
+         rodado N vezes no dia. Usa ``resolve_por_odate(estrito=True)``, o modo
+         que a F2 criou exatamente para isto — com mais de uma corrida devolve
+         NÃO resolvido e o gesto responde 409 com a lista, para a tela
+         perguntar. Nunca "a mais recente": limpar tasks do run errado é
+         destrutivo e irreversível.
+
+    Recusa também identidade ``degradado=True`` (sem a migration 067 a
+    associação corrida↔ODATE é aproximada, e o docstring do serviço de
+    identidade já registra que aproximação não alimenta gesto destrutivo).
+    """
+    conn = cur = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        oficial = ident_svc.pipeline_oficial(cur, pipeline)
+        if oficial is None:
+            raise HTTPException(status_code=404,
+                                detail=f"Pipeline não encontrado: '{pipeline}'")
+        virada = deps_svc.virada_global(cur)
+        data_ref = None
+        if data_referencia:
+            try:
+                data_ref = datetime.strptime(data_referencia, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"data_referencia inválida: '{data_referencia}' "
+                           "(use o formato YYYY-MM-DD)")
+        if dag_run_id:
+            ident = ident_svc.resolve_por_run_id(cur, oficial, dag_run_id)
+        elif exec_id:
+            ident = ident_svc.resolve_por_ts_nodash(cur, oficial, exec_id)
+        else:
+            if data_ref is None:
+                data_ref = dref.calcular(datetime.now(), virada)
+            ident = ident_svc.resolve_por_odate(cur, oficial, data_ref,
+                                                virada=virada, estrito=True)
+        if data_ref is None:
+            data_ref = ident.get("data_referencia")
+    finally:
+        for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+            try:
+                f and f()
+            except Exception:
+                pass
+
+    if ident.get("motivo") == ident_svc.AMBIGUO:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "erro": "corrida_ambigua",
+                "mensagem": (f"Há {len(ident.get('candidatos') or [])} corridas de "
+                             f"'{oficial}' nesta data de referência. Escolha qual "
+                             "reexecutar — reexecutar é destrutivo e não se "
+                             "escolhe por você."),
+                "candidatos": _ident_json(ident).get("candidatos"),
+            })
+    if ident.get("degradado"):
+        raise HTTPException(
+            status_code=409,
+            detail={"erro": "identidade_degradada",
+                    "mensagem": ("A corrida foi identificada por APROXIMAÇÃO "
+                                 "(migration 067 pendente). Reexecutar exige "
+                                 "identidade exata.")})
+    if ident.get("motivo") == ident_svc.SEM_LINHA_NA_DATA:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nenhuma corrida de '{oficial}' na data de referência.")
+    return oficial, ident, data_ref
+
+
+def _previa_afetados(oficial: str, data_ref) -> dict:
+    """Bloco `cascata` da prévia — quem é atingido em CADA opção (decisão 1)."""
+    conn = cur = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        if not deps_svc.tabela_067(cur):
+            return {"disponivel": False, "razao": "migration_067_pendente",
+                    "dependentes": [], "com_corrida": [], "sem_corrida": [],
+                    "corridas": {}, "truncado": False}
+        info = rerun_svc.afetados(cur, oficial, data_ref)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        log.warning("[RERUN] previa de afetados de '%s' falhou: %s", oficial, e)
+        return {"disponivel": False, "razao": "erro_na_consulta",
+                "dependentes": [], "com_corrida": [], "sem_corrida": [],
+                "corridas": {}, "truncado": False}
+    finally:
+        for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+            try:
+                f and f()
+            except Exception:
+                pass
+    corridas = {
+        k: [{**c, "inicio": _fmt_dt(c.get("inicio")), "fim": _fmt_dt(c.get("fim")),
+             "substituida_em": _fmt_dt(c.get("substituida_em"))} for c in v]
+        for k, v in (info.get("corridas") or {}).items()
+    }
+    return {
+        "disponivel": not info.get("cascata_indisponivel"),
+        "razao": "migration_078_pendente" if info.get("cascata_indisponivel") else None,
+        "dependentes": info.get("dependentes") or [],
+        "com_corrida": info.get("com_corrida") or [],
+        "sem_corrida": info.get("sem_corrida") or [],
+        "corridas": corridas,
+        "truncado": bool(info.get("truncado")),
+    }
+
+
+@router.get("/pipelines/{pipeline_name}/rerun/previa", tags=["execucoes"])
+async def previa_rerun(
+    pipeline_name: str,
+    task_id: str,
+    data_referencia: str | None = None,
+    execution_id: str | None = None,
+    run_id: str | None = None,
+    _auth: dict = Depends(require_perm(PERM_EXECUTAR)),
+):
+    """O que o modal de confirmação da F4 mostra ANTES de reexecutar.
+
+    Decisão 1 do §7 — "sempre perguntar, mostrando quais pipelines seriam
+    afetados em cada caso". Esta rota devolve os dois lados do dilema:
+
+      • `etapas` — as etapas DESTE pipeline que serão reexecutadas. **Não é
+        estimativa**: é o `dry_run: true` do próprio `clearTaskInstances`, com
+        o MESMO corpo do clear de verdade (`rerun.corpo_clear`). Um modal que
+        promete N e um clear que limpa M seria a mentira mais fácil desta fase.
+      • `cascata` — o fecho a jusante, separado entre quem RODOU no ODATE
+        (`com_corrida`: será reaberto e roda de novo) e quem NÃO rodou
+        (`sem_corrida`: não há corrida a reabrir).
+
+    Exige `PERM_EXECUTAR` como o gesto: a prévia revela a topologia de execução
+    e é o primeiro passo do mesmo ato.
+    """
+    task_id = (task_id or "").strip()
+    if not task_id:
+        raise HTTPException(status_code=422, detail="task_id é obrigatório")
+
+    oficial, ident, data_ref = await _resolve_alvo_rerun(
+        pipeline_name,
+        exec_id=(execution_id or "").strip(),
+        dag_run_id=(run_id or "").strip(),
+        data_referencia=(data_referencia or "").strip())
+
+    dag_run_id = ident.get("dag_run_id") or ident.get("run_id")
+    etapas_info = {"etapas": [], "tasks_de_apoio": 0, "total_tasks": 0}
+    airflow_indisponivel = False
+    if not dag_run_id:
+        airflow_indisponivel = True
+    elif not _DAG_ID_RE.match(oficial or ""):
+        airflow_indisponivel = True
+    else:
+        try:
+            async with get_airflow_client() as client:
+                tarefas = rerun_svc.task_ids_do_clear(
+                    task_id, await _tasks_da_dag(client, oficial))
+                r = await client.post(
+                    f"/api/v1/dags/{oficial}/clearTaskInstances",
+                    json=rerun_svc.corpo_clear(dag_run_id, task_id, dry_run=True,
+                                               task_ids=tarefas))
+            if r.is_success:
+                conn = cur = None
+                try:
+                    conn = get_db_conn(); cur = conn.cursor()
+                    desenho = ident_svc.etapas_do_desenho(cur, oficial)
+                finally:
+                    for f in (getattr(cur, "close", None),
+                              getattr(conn, "close", None)):
+                        try:
+                            f and f()
+                        except Exception:
+                            pass
+                etapas_info = rerun_svc.etapas_do_clear(
+                    r.json().get("task_instances", []), desenho)
+            else:
+                airflow_indisponivel = True
+                log.warning("[RERUN] dry_run de %s devolveu %s — %s",
+                            oficial, r.status_code, r.text[:200])
+        except Exception as e:  # noqa: BLE001 — prévia degrada, nunca derruba
+            airflow_indisponivel = True
+            log.warning("[RERUN] dry_run de %s falhou: %s", oficial, e)
+
+    return {
+        "pipeline_name": oficial,
+        "task_id": task_id,
+        "data_referencia": (data_ref.strftime("%Y-%m-%d")
+                            if hasattr(data_ref, "strftime") else data_ref),
+        "identidade": _ident_json(ident),
+        "dag_run_id": dag_run_id,
+        "airflow_indisponivel": airflow_indisponivel,
+        **etapas_info,
+        "cascata": _previa_afetados(oficial, data_ref) if data_ref else {
+            "disponivel": False, "razao": "sem_data_referencia",
+            "dependentes": [], "com_corrida": [], "sem_corrida": [],
+            "corridas": {}, "truncado": False},
+    }
+
+
+def _aplicar_cascata(oficial: str, data_ref, task_id: str, dag_run_id: str,
+                     usuario: str, cascata: bool, tasks_limpas: int) -> dict:
+    """Reabertura dos dependentes + auditoria — DEPOIS de o Airflow aceitar o
+    clear. A ordem importa: auditar/reabrir antes e o clear falhar deixaria
+    corridas aposentadas sem reprocesso nenhum a caminho.
+
+    Também carimba o PRÓPRIO pipeline como EXECUTANDO na 067. Ele está mesmo
+    executando de novo — e enquanto a linha dele disser SUCESSO um push de
+    outro pai (ou a guardiã) pode liberar um dependente com o dado velho, que
+    é justamente o que a decisão 1 proíbe. O `publish_dataset` reescreve para
+    SUCESSO ao concluir e o caminho de falha grava FALHA, então a marca não
+    fica pendurada.
+
+    Nada aqui levanta: o clear JÁ aconteceu. Falhas viram log e o campo
+    `avisos` da resposta.
+    """
+    saida = {"corridas_substituidas": 0, "dependentes_reabertos": [],
+             "auditado": False, "avisos": []}
+    conn = cur = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        if data_ref is not None and deps_svc.tabela_067(cur):
+            try:
+                cur.execute(
+                    "UPDATE dbo.etl_pipeline_execucao "
+                    "SET status='EXECUTANDO', fim=NULL, atualizado_em=GETDATE() "
+                    "WHERE pipeline_name=? AND data_referencia=? AND execution_id=?",
+                    (oficial, data_ref, dag_run_id))
+            except Exception as e:  # noqa: BLE001
+                saida["avisos"].append(f"corrida do pipeline não marcada como EXECUTANDO: {e}")
+            if cascata:
+                info = rerun_svc.afetados(cur, oficial, data_ref)
+                alvos = info.get("com_corrida") or []
+                n = rerun_svc.marcar_substituidas(cur, alvos, data_ref, usuario)
+                saida["corridas_substituidas"] = n
+                # ⚠️ `dependentes_reabertos` só lista o que foi REABERTO DE FATO.
+                # Encontrado na prova do fallback (dev, 2026-08-03): com a
+                # migration 078 ausente a lista vinha cheia e
+                # `corridas_substituidas` vinha 0 — a resposta dizia
+                # "2 dependentes reabertos" e o aviso dizia que nenhum rodaria
+                # de novo. O toast do front conta esta lista; ele anunciaria
+                # uma cascata que não aconteceu.
+                saida["dependentes_reabertos"] = alvos if n > 0 else []
+                if info.get("cascata_indisponivel"):
+                    saida["avisos"].append(
+                        "migration 078 pendente — nenhuma corrida pôde ser reaberta; "
+                        "os dependentes NÃO vão rodar de novo")
+                if info.get("truncado"):
+                    saida["avisos"].append(
+                        "fecho de dependentes truncado no teto de segurança — "
+                        "pode haver pipeline a jusante não reaberto")
+        elif cascata:
+            saida["avisos"].append(
+                "migration 067 pendente (ou data de referência desconhecida) — "
+                "cascata indisponível")
+        saida["auditado"] = rerun_svc.registrar_auditoria(
+            cur, oficial, usuario,
+            {"dag_run_id": dag_run_id,
+             "data_referencia": (data_ref.strftime("%Y-%m-%d")
+                                 if hasattr(data_ref, "strftime") else data_ref),
+             "task_id": task_id, "cascata": cascata,
+             "dependentes_reabertos": saida["dependentes_reabertos"],
+             "corridas_substituidas": saida["corridas_substituidas"],
+             "tasks_limpas": tasks_limpas})
+        conn.commit()
+    except Exception as e:  # noqa: BLE001 — o clear já aconteceu; nunca levantar
+        log.warning("[RERUN] pós-clear de '%s' falhou: %s", oficial, e)
+        saida["avisos"].append(f"pós-clear parcial: {e}")
+        try:
+            conn and conn.rollback()
+        except Exception:
+            pass
+    finally:
+        for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+            try:
+                f and f()
+            except Exception:
+                pass
+    return saida
+
+
 @router.post("/execucoes/rerun", tags=["execucoes"])
-async def rerun_from_task(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+async def rerun_from_task(body: dict = Body(default={}),
+                          auth: dict = Depends(require_perm(PERM_EXECUTAR))):
     """Limpa tasks a partir de um job específico e reexecuta o DAG.
 
     Body:
-      pipeline_name  — nome do pipeline (= dag_id no Airflow)
-      execution_id   — execution_id da execução original (usado para localizar o dag_run_id)
-      task_id        — task_id a partir da qual reexecutar (inclusive, com downstream)
-      dag_run_id     — dag_run_id real (opcional; se não informado, tenta resolver via API)
+      pipeline_name    — nome do pipeline (= dag_id no Airflow)
+      task_id          — task_id a partir da qual reexecutar (inclusive, com downstream)
+      execution_id     — ts_nodash da execução (caminho histórico: Logs/Dashboard)
+      dag_run_id       — dag_run_id real (opcional; a corrida escolhida à mão)
+      data_referencia  — ODATE (F4: a linguagem da malha; exige identidade exata)
+      cascata          — F4/decisão 1: reabre os dependentes para rodarem de novo
+                         no MESMO ODATE. **Default False** — nunca em silêncio.
+
+    ⚠️ **`cascata` não tem default "verdadeiro" nem heurística.** A decisão 1
+    do §7 é "SEMPRE PERGUNTAR": quem chama já perguntou, e a resposta vem no
+    corpo. Sem o campo, o comportamento é o de antes desta fase (só este
+    pipeline) — que também é uma resposta legítima, só não é uma escolha
+    silenciosa da API.
+
+    ⚠️ **Não exige FALHA.** Retomar de uma etapa `SUCCESS` é legítimo: o
+    operador corrigiu o dado de origem e quer refazer dali para frente (§4).
     """
     pipeline   = (body.get("pipeline_name") or "").strip()
     exec_id    = (body.get("execution_id")  or "").strip()
     task_id    = (body.get("task_id")       or "").strip()
     dag_run_id = (body.get("dag_run_id")    or "").strip()
+    data_ref_s = (body.get("data_referencia") or "").strip()
+    cascata    = bool(body.get("cascata"))
 
     if not pipeline or not task_id:
         raise HTTPException(status_code=422, detail="pipeline_name e task_id são obrigatórios")
 
     dag_id = pipeline  # no Airflow o dag_id = pipeline_name exato
+    oficial, data_ref = pipeline, None
+
+    # A resolução com recusa (modo estrito) só entra quando o chamador NÃO deu
+    # uma corrida concreta. Com `execution_id` ou `dag_run_id` na mão o caminho
+    # segue o histórico, byte a byte — Logs e Dashboard não mudam de
+    # comportamento por causa desta fase.
+    if cascata or data_ref_s or not (exec_id or dag_run_id):
+        oficial, ident, data_ref = await _resolve_alvo_rerun(
+            pipeline, exec_id=exec_id, dag_run_id=dag_run_id,
+            data_referencia=data_ref_s)
+        dag_id = oficial
+        dag_run_id = dag_run_id or ident.get("dag_run_id") or ident.get("run_id") or ""
+        if not dag_run_id:
+            raise HTTPException(
+                status_code=409,
+                detail={"erro": "corrida_sem_dag_run",
+                        "mensagem": ("Não foi possível identificar o dag_run "
+                                     "desta corrida no Airflow — sem ele o clear "
+                                     "atingiria todas as corridas da DAG.")})
 
     async with get_airflow_client() as client:
         # 1. Resolver dag_run_id se não fornecido
@@ -598,16 +929,14 @@ async def rerun_from_task(body: dict = Body(default={}), _auth: dict = Depends(r
         # 2. Limpar a task e downstream via clearTaskInstances — SEMPRE com o
         # dag_run_id: sem ele o Airflow limpa a task em TODOS os dag_runs da DAG
         # (e reset_dag_runs re-enfileira todos) — reprocessamento em massa.
-        clear_body = {
-            "dry_run": False,
-            "dag_run_id": dag_run_id,
-            "task_ids": [task_id],
-            "include_downstream": True,
-            "include_future": False,
-            "include_past": False,
-            "include_upstream": False,
-            "reset_dag_runs": True,
-        }
+        # O corpo vem de rerun.corpo_clear, o MESMO que a prévia usou com
+        # dry_run: o que o modal prometeu é o que é executado. As tasks saem de
+        # `task_ids_do_clear`, que acrescenta o marcador de início da etapa —
+        # ver o defeito documentado lá (sem ele a etapa retomada mantinha o
+        # start_time antigo e a tentativa nunca era contada).
+        tarefas = rerun_svc.task_ids_do_clear(
+            task_id, await _tasks_da_dag(client, dag_id))
+        clear_body = rerun_svc.corpo_clear(dag_run_id, task_id, task_ids=tarefas)
         r2 = await client.post(
             f"/api/v1/dags/{dag_id}/clearTaskInstances",
             json=clear_body,
@@ -617,17 +946,52 @@ async def rerun_from_task(body: dict = Body(default={}), _auth: dict = Depends(r
                 detail=f"Airflow clearTaskInstances falhou: {r2.status_code} — {r2.text[:300]}")
 
         cleared = r2.json()
-        log.info("Rerun %s/%s a partir de %s — %s tasks limpas",
-                 dag_id, dag_run_id, task_id, len(cleared.get("task_instances", [])))
+        tasks_limpas = len(cleared.get("task_instances", []))
+        log.info("Rerun %s/%s a partir de %s — %s tasks limpas (cascata=%s)",
+                 dag_id, dag_run_id, task_id, tasks_limpas, cascata)
 
-        return {
-            "ok": True,
-            "pipeline_name": pipeline,
-            "dag_id": dag_id,
-            "dag_run_id": dag_run_id,
-            "task_id": task_id,
-            "tasks_cleared": len(cleared.get("task_instances", [])),
-        }
+    # 3. Reabertura dos dependentes (só com cascata) + auditoria. Fora do
+    # `async with`: nenhuma conexão de banco é aberta enquanto o cliente HTTP
+    # do Airflow está vivo.
+    # `matricula` é o mesmo campo que finalizacao.py e pipelines.py gravam em
+    # etl_pipeline_audit.changed_by — a auditoria do rerun entra na MESMA
+    # coluna, com o MESMO vocabulário, e aparece no histórico do pipeline que
+    # a tela de infra já lê.
+    usuario = str((auth or {}).get("matricula") or "?")
+    pos = _aplicar_cascata(oficial, data_ref, task_id, dag_run_id, usuario,
+                           cascata, tasks_limpas)
+
+    return {
+        "ok": True,
+        "pipeline_name": pipeline,
+        "dag_id": dag_id,
+        "dag_run_id": dag_run_id,
+        "task_id": task_id,
+        "tasks_cleared": tasks_limpas,
+        "cascata": cascata,
+        "dependentes_reabertos": pos["dependentes_reabertos"],
+        "corridas_substituidas": pos["corridas_substituidas"],
+        "auditado": pos["auditado"],
+        "avisos": pos["avisos"],
+    }
+
+
+async def _tasks_da_dag(client, dag_id: str) -> list:
+    """Lista de ``task_id`` da DAG — best-effort, ``[]`` em qualquer falha.
+
+    Só serve a ``rerun.task_ids_do_clear`` (decidir se o ``log_start_<etapa>``
+    existe). Lista vazia degrada para o comportamento histórico do clear em vez
+    de derrubar o gesto: é melhor reexecutar como antes do que não reexecutar.
+    """
+    try:
+        r = await client.get(f"/api/v1/dags/{dag_id}/tasks")
+        if not r.is_success:
+            log.warning("[RERUN] lista de tasks de %s devolveu %s", dag_id, r.status_code)
+            return []
+        return [str(t.get("task_id") or "") for t in r.json().get("tasks", [])]
+    except Exception as e:  # noqa: BLE001
+        log.warning("[RERUN] lista de tasks de %s indisponivel: %s", dag_id, e)
+        return []
 
 
 def _ident_json(ident: dict) -> dict:
@@ -782,6 +1146,7 @@ async def get_pipeline_execucao(
     # entra por execution_id: o run_id do Orquestra não é traduzível pela
     # string, então a 1ª passada não casa nenhuma corrida e o ODATE se perde.
     executadas = []
+    anteriores = []
     if ident.get("ts_nodash"):
         conn = cur = None
         try:
@@ -792,6 +1157,10 @@ async def get_pipeline_execucao(
                     ident,
                     ident_svc.corrida_por_run_id(cur, oficial, ident["run_id"]))
             executadas = ident_svc.etapas_executadas(
+                cur, oficial, ident["ts_nodash"])
+            # F4: as tentativas SUPERADAS desta execução (migration 078). Sem a
+            # tabela devolve [] e o payload é o da F3 — deploy parcial degrada.
+            anteriores = ident_svc.tentativas_anteriores(
                 cur, oficial, ident["ts_nodash"])
         except HTTPException:
             raise
@@ -805,8 +1174,12 @@ async def get_pipeline_execucao(
                     pass
 
     etapas = [
-        {**e, "inicio": _fmt_dt(e.get("inicio")), "fim": _fmt_dt(e.get("fim"))}
-        for e in ident_svc.compor_etapas(desenho, executadas)
+        {**e,
+         "inicio": _fmt_dt(e.get("inicio")), "fim": _fmt_dt(e.get("fim")),
+         "tentativas": [{**t, "inicio": _fmt_dt(t.get("inicio")),
+                         "fim": _fmt_dt(t.get("fim"))}
+                        for t in (e.get("tentativas") or [])]}
+        for e in ident_svc.compor_etapas(desenho, executadas, anteriores)
     ]
 
     # A corrida do pipeline é a candidata VENCEDORA da identidade — não uma
