@@ -9,11 +9,15 @@ gramática da tabela §2.1 célula a célula, unicidade, DELETE de nó com/sem
 arestas, avisos §2.2, GET estendido (nos com upstream do SERVIDOR, arestas_no,
 compilada_por), layout com "no:{id}" e degradação sem a 075.
 
-ACEITE CENTRAL DA FASE: ZERO efeito no motor — nenhum gesto de nó/aresta toca
-a 067 (etl_pipeline_dependencia) nem o CSV depends_on. A compilação é a F11.
+Fronteira F10→F11 FECHADA: com o compilador (F11), gesto que envolve Aguarde
+TEM efeito na 067 — o antigo aceite "zero efeito" virou o teste de ida e volta
+limpa (compila ↔ descompila) e o ciclo passou a ser o PÓS-expansão com a
+mensagem canônica da F1 (Decisão 15). Os testes do COMPILADOR em si (diff,
+dry_run, transferência, proteções) vivem em test_malhas_f11.py.
 
 Padrão ESTATAL de test_malhas_f8.py: o FakeDb da F8 é ESTENDIDO (subclasse)
-com etl_malha_no/etl_malha_aresta (075) e a coluna origem_no da 067.
+com etl_malha_no/etl_malha_aresta (075), a coluna origem_no da 067 e os SQLs
+do compilador da F11 (INSERT assinado, DELETE por assinatura, transferência).
 """
 from __future__ import annotations
 
@@ -220,6 +224,82 @@ class FakeCur(FakeCurF8):
                 out.append((d["pipeline"], d["depende_de"], ono,
                             n["malha"] if n else None))
             self._rows = sorted(out)
+            return
+
+        # ── compilador (F11) — SQLs novos dos gestos com efeito ─────────────
+        if s.startswith("SELECT id, malha_name, tipo FROM dbo.etl_malha_no"):
+            # mapa GLOBAL de nós (_nos_globais): proveniência + transferência
+            self._rows = sorted((nid, n["malha"], n["tipo"])
+                                for nid, n in db.nos.items())
+            return
+        if s.startswith("SELECT pipeline_name, depende_de, origem_no "
+                        "FROM dbo.etl_pipeline_dependencia"):
+            self._rows = sorted(
+                (d["pipeline"], d["depende_de"], d.get("origem_no"))
+                for d in db.dependencias)
+            return
+        if s.startswith("SELECT d.origem_no, n.malha_name "
+                        "FROM dbo.etl_pipeline_dependencia d"):
+            # assinatura de UMA linha (services.dependencias.assinatura)
+            dep_cf = (params[0] or "").casefold()
+            pred_cf = (params[1] or "").casefold()
+            self._rows = []
+            for d in db.dependencias:
+                if (d["pipeline"].casefold() == dep_cf
+                        and d["depende_de"].casefold() == pred_cf):
+                    ono = d.get("origem_no")
+                    n = db.nos.get(ono) if ono is not None else None
+                    self._rows = [(ono, n["malha"] if n else None)]
+                    break
+            return
+        if s.startswith("INSERT INTO dbo.etl_pipeline_dependencia") and "origem_no" in s:
+            # INSERT ASSINADO do compilador; ux_dep: uma linha por par
+            def _cf(v):
+                return (v or "").casefold()
+            if any(_cf(d["pipeline"]) == _cf(params[0])
+                   and _cf(d["depende_de"]) == _cf(params[1])
+                   for d in db.dependencias):
+                raise RuntimeError(
+                    "Cannot insert duplicate key row in object "
+                    "'dbo.etl_pipeline_dependencia' with unique index 'ux_dep'")
+            db.dependencias.append({"pipeline": params[0], "depende_de": params[1],
+                                    "criado_por": params[2], "origem_no": params[3]})
+            return
+        if s.startswith("DELETE FROM dbo.etl_pipeline_dependencia") and "origem_no = ?" in s:
+            # DELETE pela ASSINATURA (linha manual coincidente nunca é atingida)
+            antes = len(db.dependencias)
+            db.dependencias = [
+                d for d in db.dependencias
+                if not (d["pipeline"].casefold() == (params[0] or "").casefold()
+                        and d["depende_de"].casefold() == (params[1] or "").casefold()
+                        and d.get("origem_no") == params[2])]
+            self.rowcount = antes - len(db.dependencias)
+            return
+        if s.startswith("UPDATE dbo.etl_pipeline_dependencia SET origem_no"):
+            # transferência de assinatura (§7.3)
+            n = 0
+            for d in db.dependencias:
+                if (d["pipeline"].casefold() == (params[1] or "").casefold()
+                        and d["depende_de"].casefold() == (params[2] or "").casefold()):
+                    d["origem_no"] = params[0]
+                    n += 1
+            self.rowcount = n
+            return
+        if s.startswith("SELECT CAST(dag_criada AS INT) FROM dbo.etl_pipeline"):
+            k = db._pipeline_key(params[0])
+            self._rows = [(int(db.pipelines[k].get("dag_criada") or 0),)] if k else []
+            return
+        if s.startswith("SELECT 1 FROM dbo.etl_malha_aresta WHERE malha_name"):
+            # membro ligado a componente (recusa do remove_membro, §7.3)
+            malha_cf = (params[0] or "").casefold()
+            nome_cf = (params[1] or "").casefold()
+
+            def _cfp(v):
+                return v.casefold() if isinstance(v, str) else None
+            self._rows = [(1,)] if any(
+                a["malha"].casefold() == malha_cf
+                and nome_cf in (_cfp(a["origem_pipeline"]), _cfp(a["destino_pipeline"]))
+                for a in db.arestas_no) else []
             return
 
         super().execute(sql, params)
@@ -612,9 +692,12 @@ def test_grafia_do_pipeline_e_canonizada_na_aresta(client, auth_editor):
 # ── ciclo estrutural do desenho (F10) ────────────────────────────────────────
 
 def test_ciclo_atraves_de_nos_422(client, auth_editor):
-    """A→W1→B, B→W2: fechar W2→A cicla ATRAVÉS dos nós — 422 com o texto do
-    servidor (espelhado no cliente na F12). O ciclo PÓS-expansão contra a 067
-    (Decisão 15) é a F11 — aqui o grafo é o do desenho."""
+    """A→W1→B, B→W2: fechar W2→A cicla ATRAVÉS dos nós — na F11 o ciclo passa
+    a ser validado sobre o conjunto PÓS-expansão (Decisão 15): o gesto criaria
+    (A depende de B) contra a linha compilada (B depende de A), e o 422 traz a
+    MENSAGEM CANÔNICA do BFS da F1 (a fronteira F10/F11 registrada no
+    _criaria_ciclo_desenho foi fechada — o texto topológico fica de retaguarda
+    para o ciclo só-de-nós, ver o teste seguinte)."""
     db = FakeDb(pipelines=_pipes())
     with _patch_db(db):
         _monta_malha(client, "M1", ["PIPE_A", "PIPE_B"])
@@ -626,8 +709,8 @@ def test_ciclo_atraves_de_nos_422(client, auth_editor):
         r = _aresta(client, "M1", {"no": w2}, {"pipeline": "PIPE_A"})
     assert r.status_code == 422
     assert r.json()["detail"] == (
-        f"Ciclo no desenho: Aguarde #{w2} → 'PIPE_A' fecha um ciclo "
-        f"(o caminho volta para Aguarde #{w2})")
+        "Dependência circular: 'PIPE_A' → 'PIPE_B' fecha um ciclo "
+        "(o caminho volta para 'PIPE_A')")
     assert len(db.arestas_no) == 3
 
 
@@ -713,20 +796,34 @@ def test_delete_no_inexistente_404(client, auth_editor):
     assert r.status_code == 404
 
 
-# ── ZERO efeito no motor (o aceite central da fase) ──────────────────────────
+# ── efeito no motor: ida e volta limpa (fronteira F10→F11 fechada) ───────────
 
-def test_gestos_de_no_nao_tocam_a_067_nem_o_csv(client, auth_editor):
-    """F10 §10: 'Zero linha na 067 nasce desta fase' — o desenho completo
-    (nós + arestas + exclusões) deixa etl_pipeline_dependencia e o espelho
-    CSV depends_on EXATAMENTE como estavam."""
+def test_desenho_compila_e_descompila_ida_e_volta(client, auth_editor):
+    """Na F10 este teste guardava 'zero linha na 067 nasce desta fase'; a F11
+    é exatamente a fase em que o desenho GANHA efeito. O que permanece
+    invariante é a IDA E VOLTA LIMPA: desenhar A,B→W1→C compila as linhas
+    assinadas (com espelho CSV), e excluir o nó descompila TUDO — a 067 e o
+    CSV voltam byte a byte ao estado anterior (nada órfão, nada adotado)."""
     db = FakeDb(pipelines=_pipes())
     with _patch_db(db):
         _monta_malha(client, "M1", ["PIPE_A", "PIPE_B", "PIPE_C"])
         w1 = _cria_no(client, "M1", "aguarde")
         _aresta(client, "M1", {"pipeline": "PIPE_A"}, {"no": w1})
         _aresta(client, "M1", {"pipeline": "PIPE_B"}, {"no": w1})
-        _aresta(client, "M1", {"no": w1}, {"pipeline": "PIPE_C"})
-        client.delete(f"/malhas/M1/nos/{w1}")
+        r = _aresta(client, "M1", {"no": w1}, {"pipeline": "PIPE_C"})
+        # a IDA: a última aresta fecha a junção e compila 2 linhas ASSINADAS
+        assert r.json()["efeito"]["dependencias_criar"] == [
+            {"dependente": "PIPE_C", "predecessor": "PIPE_A"},
+            {"dependente": "PIPE_C", "predecessor": "PIPE_B"}]
+        assert sorted((d["pipeline"], d["depende_de"], d["origem_no"])
+                      for d in db.dependencias) == [
+            ("PIPE_C", "PIPE_A", w1), ("PIPE_C", "PIPE_B", w1)]
+        assert db.pipelines["PIPE_C"]["depends_on"] == "PIPE_A,PIPE_B"
+        # a VOLTA: excluir o nó descompila tudo na mesma transação
+        r_del = client.delete(f"/malhas/M1/nos/{w1}")
+        assert r_del.json()["efeito"]["dependencias_remover"] == [
+            {"dependente": "PIPE_C", "predecessor": "PIPE_A"},
+            {"dependente": "PIPE_C", "predecessor": "PIPE_B"}]
     assert db.dependencias == []
     assert all(p["depends_on"] is None for p in db.pipelines.values())
 

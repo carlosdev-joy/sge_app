@@ -277,17 +277,17 @@ def _dependencias_de(cur, pipeline_name):
         return [d.strip() for d in raw.split(",") if d.strip()]
 
 
-def _check_circular(cur, pipeline_name, depends_on_list):
-    """Recusa dependência que fecha ciclo, olhando TODOS os caminhos.
+def _check_circular_grafo(pipeline_name, depends_on_list, dependencias_de):
+    """NÚCLEO do BFS de ciclo da F1 — puro, com a adjacência INJETADA.
 
-    A versão anterior seguia apenas a PRIMEIRA dependência de cada nó
-    (`raw.split(",")[0]`), então um ciclo que passasse pela segunda em diante
-    passava batido: com A dependendo de 'X,B' e B de A, gravar B→A era aceito.
-    Um ciclo travaria as duas pontas para sempre — nenhuma jamais libera a outra.
+    `dependencias_de(nome) -> [predecessores]` é quem diz o grafo: o cadastro
+    passa a leitura do banco (abaixo); o compilador da malha (F11, Decisão 15)
+    passa o conjunto PÓS-expansão do gesto (067 − remoções ∪ adições) em
+    memória — o MESMO algoritmo e a MESMA mensagem literal nas duas portas,
+    nunca uma reimplementação (a regra que salvou o texto do ciclo na F8).
 
-    Agora é uma busca em largura sobre o grafo inteiro, a partir de cada
-    predecessor proposto. `visitados` é global à busca (e não por caminho):
-    grafo em diamante convergiria de novo no mesmo nó e o custo explodiria à toa.
+    `visitados` é global à busca (e não por caminho): grafo em diamante
+    convergiria de novo no mesmo nó e o custo explodiria à toa.
     """
     for dep in depends_on_list:
         if not dep:
@@ -306,7 +306,22 @@ def _check_circular(cur, pipeline_name, depends_on_list):
             # cadastro em varredura sem fim.
             if len(visitados) > 500:
                 break
-            fila.extend(_dependencias_de(cur, atual))
+            fila.extend(dependencias_de(atual))
+
+
+def _check_circular(cur, pipeline_name, depends_on_list):
+    """Recusa dependência que fecha ciclo, olhando TODOS os caminhos.
+
+    A versão anterior seguia apenas a PRIMEIRA dependência de cada nó
+    (`raw.split(",")[0]`), então um ciclo que passasse pela segunda em diante
+    passava batido: com A dependendo de 'X,B' e B de A, gravar B→A era aceito.
+    Um ciclo travaria as duas pontas para sempre — nenhuma jamais libera a outra.
+
+    A busca em largura mora em `_check_circular_grafo` (compartilhada com o
+    compilador da malha na F11); aqui entra a adjacência lida do banco.
+    """
+    _check_circular_grafo(pipeline_name, depends_on_list,
+                          lambda nome: _dependencias_de(cur, nome))
 
 
 def _validar_existencia(cur, depends_on_list):
@@ -373,16 +388,54 @@ def _gravar_dependencias(cur, pipeline_name, depends_on_list, usuario=None):
       INSERTs pela metade: o pipeline ficava sem dependência na tabela — que é a
       fonte da verdade da geração — e voltava a rodar por cron, sozinho, com a
       tela mostrando 200.
+
+    F11 (Decisão 4 do desenho de componentes): linha ASSINADA (compilada por
+    Aguarde de malha, origem_no da 075) só se mexe pela malha dona —
+    • lista SEM uma assinada → HTTPException 422 nomeando malha e nó (o
+      rollback do register desfaz o que veio antes na transação);
+    • lista COM a assinada → a linha é PRESERVADA intacta (o DELETE pula
+      origem_no NOT NULL e o INSERT a pula) — re-gravar sem assinatura seria
+      a adoção silenciosa que o §1.4 proibiu no modelo.
+    A leitura da assinatura é best-effort (guard de coluna + try/except):
+    deploy parcial sem a 075 se comporta como sempre.
     """
+    assinadas: dict = {}
+    if deps_svc.coluna_origem_no(cur):
+        try:
+            assinadas = deps_svc.linhas_assinadas(cur, pipeline_name)
+        except Exception as e:
+            log.warning("[PIPELINE] leitura de linhas assinadas falhou — "
+                        "seguindo sem proteção de assinatura: %s", e)
+            assinadas = {}
+    lista = deduplicar(depends_on_list)
+    if assinadas:
+        lista_cf = {d.casefold() for d in lista}
+        atingida = next((a for cf, a in sorted(assinadas.items())
+                         if cf not in lista_cf), None)
+        if atingida is not None:
+            raise HTTPException(
+                status_code=422,
+                detail=deps_svc.msg_linha_assinada(
+                    pipeline_name, atingida["depende_de"],
+                    atingida["malha"], atingida["origem_no"]))
+
     try:
-        cur.execute(
-            "DELETE FROM dbo.etl_pipeline_dependencia "
-            "WHERE pipeline_name = ? AND tipo = 'PIPELINE'", (pipeline_name,))
+        if assinadas:
+            cur.execute(
+                "DELETE FROM dbo.etl_pipeline_dependencia "
+                "WHERE pipeline_name = ? AND tipo = 'PIPELINE' "
+                "AND origem_no IS NULL", (pipeline_name,))
+        else:
+            cur.execute(
+                "DELETE FROM dbo.etl_pipeline_dependencia "
+                "WHERE pipeline_name = ? AND tipo = 'PIPELINE'", (pipeline_name,))
     except Exception as e:
         log.warning("[PIPELINE] dependências não gravadas na tabela (migration 067 aplicada?): %s", e)
         return False
 
-    for dep in deduplicar(depends_on_list):
+    for dep in lista:
+        if dep.casefold() in assinadas:
+            continue        # assinada preservada — nunca re-gravada sem dono
         # Canoniza a grafia pela registrada em etl_pipeline (mesma regra da
         # PR #236): gravar "como digitado" criava linha com caixa divergente,
         # que o diagrama da malha não consegue exibir e a 071 teve que limpar.
@@ -770,23 +823,52 @@ def estado_dependencias(data_referencia: str | None = None,
 
         # Grafo inteiro + janela de cada dependente, num SELECT só. As colunas
         # de janela nascem na MESMA migration 067 da tabela — sem guard extra.
-        cur.execute(
-            "SELECT d.pipeline_name, d.depende_de, "
-            "CONVERT(VARCHAR(5), p.hora_virada, 108) AS hora_virada, "
-            "CONVERT(VARCHAR(5), p.nao_iniciar_antes, 108) AS nao_iniciar_antes, "
-            "CONVERT(VARCHAR(5), p.hora_limite_dependencia, 108) AS hora_limite_dependencia "
-            "FROM dbo.etl_pipeline_dependencia d "
-            "JOIN dbo.etl_pipeline p ON p.pipeline_name = d.pipeline_name "
-            "WHERE d.tipo = 'PIPELINE' AND p.active = 1 "
-            "ORDER BY d.pipeline_name, d.depende_de")
+        # F11 (Decisão 4): com a assinatura da 075, cada predecessor COMPILADO
+        # por Aguarde de malha ganha o campo ADITIVO compilada_por — é o que o
+        # modal F5 usa para TRAVAR o chip (a remoção por lá seria 422 de
+        # qualquer forma; o front que trava é a F12). Sem a coluna, o SQL é o
+        # de sempre e o campo simplesmente não aparece.
+        tem_assinatura = deps_svc.coluna_origem_no(cur)
+        if tem_assinatura:
+            cur.execute(
+                "SELECT d.pipeline_name, d.depende_de, "
+                "CONVERT(VARCHAR(5), p.hora_virada, 108) AS hora_virada, "
+                "CONVERT(VARCHAR(5), p.nao_iniciar_antes, 108) AS nao_iniciar_antes, "
+                "CONVERT(VARCHAR(5), p.hora_limite_dependencia, 108) AS hora_limite_dependencia, "
+                "d.origem_no, mn.malha_name "
+                "FROM dbo.etl_pipeline_dependencia d "
+                "JOIN dbo.etl_pipeline p ON p.pipeline_name = d.pipeline_name "
+                "LEFT JOIN dbo.etl_malha_no mn ON mn.id = d.origem_no "
+                "WHERE d.tipo = 'PIPELINE' AND p.active = 1 "
+                "ORDER BY d.pipeline_name, d.depende_de")
+            linhas_grafo = [(r[0], r[1], r[2], r[3], r[4], r[5], r[6])
+                            for r in cur.fetchall()]
+        else:
+            cur.execute(
+                "SELECT d.pipeline_name, d.depende_de, "
+                "CONVERT(VARCHAR(5), p.hora_virada, 108) AS hora_virada, "
+                "CONVERT(VARCHAR(5), p.nao_iniciar_antes, 108) AS nao_iniciar_antes, "
+                "CONVERT(VARCHAR(5), p.hora_limite_dependencia, 108) AS hora_limite_dependencia "
+                "FROM dbo.etl_pipeline_dependencia d "
+                "JOIN dbo.etl_pipeline p ON p.pipeline_name = d.pipeline_name "
+                "WHERE d.tipo = 'PIPELINE' AND p.active = 1 "
+                "ORDER BY d.pipeline_name, d.depende_de")
+            linhas_grafo = [(r[0], r[1], r[2], r[3], r[4], None, None)
+                            for r in cur.fetchall()]
         grafo: dict[str, dict] = {}
-        for nome, pred, hv, nia, hl in cur.fetchall():
+        for nome, pred, hv, nia, hl, origem_no, malha_no in linhas_grafo:
             item = grafo.setdefault(str(nome or "").strip(), {
                 "preds": [],
                 "janela": {"hora_virada": hv, "nao_iniciar_antes": nia,
                            "hora_limite_dependencia": hl},
+                "compilada_por": {},
             })
-            item["preds"].append(str(pred or "").strip())
+            pred_nome = str(pred or "").strip()
+            item["preds"].append(pred_nome)
+            if origem_no is not None:
+                item["compilada_por"][pred_nome.casefold()] = {
+                    "malha": (str(malha_no).strip() if malha_no else None),
+                    "no": int(origem_no)}
 
         # Execuções da data num SELECT só (agregação em Python, padrão
         # malhas.py — sem N+1); chave casefold pela colação CI do banco.
@@ -834,11 +916,17 @@ def estado_dependencias(data_referencia: str | None = None,
                 # data (um PULADO recente aparece) — mas `sucesso_na_data` vem
                 # dos faltantes do PORT, nunca do "mais recente" (B2/D14).
                 ult = deps_svc.mais_recente_da_data(execucoes.get(p.casefold(), []))
-                predecessores.append({
+                item_pred = {
                     "nome": p,
                     "status": ult["status"] if ult is not None else None,
                     "sucesso_na_data": (p.casefold() not in faltantes_cf) and not erro_consulta,
-                })
+                }
+                # ADITIVO (F11): presente só em linha compilada — front antigo
+                # ignora; o modal F5 (F12) trava o chip com esta informação.
+                cp = grafo[nome]["compilada_por"].get(p.casefold())
+                if cp is not None:
+                    item_pred["compilada_por"] = cp
+                predecessores.append(item_pred)
             resposta["data"].append({
                 "pipeline_name": nome,
                 "liberado": lib,
