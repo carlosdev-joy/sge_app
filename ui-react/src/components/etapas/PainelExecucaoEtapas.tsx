@@ -56,7 +56,7 @@ export function BarraExecucao({
 }: BarraProps) {
   const etapas = dados?.etapas ?? []
   const janela = janelaDasEtapas(etapas)
-  const resumo = resumoExecucao(etapas)
+  const resumo = resumoExecucao(etapas, dados?.pausas)
   const ident = dados?.identidade
   const candidatos = ident?.candidatos ?? []
   const ambiguo = !!ident?.ambiguo && candidatos.length > 1
@@ -100,6 +100,18 @@ export function BarraExecucao({
             {resumo.semExecucao > 0 && (
               <Chip cor="bg-slate-300 dark:bg-slate-600" n={resumo.semExecucao}
                 t="sem execução" ts="sem execução" />
+            )}
+            {/* (F5) Os dois chips separados de propósito: "em espera" é o
+                processo PARADO agora; "pausa marcada" é um pedido que ainda não
+                segurou nada. Somar os dois esconderia a única diferença que
+                importa para quem está olhando a tela durante um incidente. */}
+            {resumo.emEspera > 0 && (
+              <Chip cor="bg-fuchsia-500" n={resumo.emEspera}
+                t="em espera" ts="em espera" />
+            )}
+            {resumo.pausaMarcada > 0 && (
+              <Chip cor="bg-fuchsia-300 dark:bg-fuchsia-800" n={resumo.pausaMarcada}
+                t="pausa marcada" ts="pausas marcadas" />
             )}
           </span>
         )}
@@ -274,6 +286,16 @@ export function LegendaExecucao() {
         title="A etapa está no desenho e não tem linha de execução nesta data. Neutra — nunca verde.">
         <span className="h-2 w-2 rounded-full bg-slate-300 dark:bg-slate-600" />
         sem execução
+      </span>
+      {/* (F5) Desenhado à mão, e não pela ORDEM_LEGENDA: 'em espera' só existe
+          no nível de ETAPA — pôr na lista compartilhada faria a legenda da
+          MALHA oferecer um estado que nenhum pipeline dela tem. */}
+      <span className="flex items-center gap-1 text-[10px] text-dim"
+        title={'A etapa está parada no portão, aguardando alguém liberar. Só dá '
+          + 'para pausar etapa que ainda não começou — se ela já estava rodando, '
+          + 'a pausa vale para as seguintes.'}>
+        <span className={`h-2 w-2 rounded-full ${STATUS_EXECUCAO.EM_ESPERA.dot} animate-pulse`} />
+        {STATUS_EXECUCAO.EM_ESPERA.rotulo}
       </span>
       <span className="flex items-center gap-1 text-[10px] text-dim"
         title="Ligação para uma etapa PULADA (ramo de decisão não tomado): tracejada e apagada.">

@@ -39,6 +39,15 @@ export function LinhaExecucaoNo({ exec }: { exec: ExecNoEtapa }) {
           className={`h-1.5 w-1.5 shrink-0 rounded-full ${exec.dot} ${exec.animado ? 'animate-pulse' : ''}`}
         />
         <span className="truncate">{exec.rotulo}</span>
+        {/* (F5) Pausa MARCADA — a etapa ainda não chegou ao portão. O símbolo
+            entra ao lado do status real (que continua "sem execução") em vez de
+            substituí-lo: a etapa não parou nada ainda, e dizer que parou seria
+            a tela prometendo o que o motor não tem. Quando ela PARA de fato, a
+            decoração inteira vira "em espera" e este marcador some. */}
+        {exec.pausa && !exec.emEspera && (
+          <span className="shrink-0 text-fuchsia-600 dark:text-fuchsia-400"
+                aria-label="pausa marcada">⏸</span>
+        )}
       </p>
       {exec.status && (
         <p

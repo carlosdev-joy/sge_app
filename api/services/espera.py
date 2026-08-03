@@ -1,0 +1,409 @@
+"""
+api/services/espera.py — o gesto de PAUSAR uma etapa, liberar e cancelar
+(F5 da spec `docs/spec-operacao-nivel-etapa.md`, §5 Bloco C + decisão 3 do §7:
+"Pausa: RUNTIME primeiro" — C2; a pausa declarada no desenho, C1, é backlog).
+
+═══════════════════════════════════════════════════════════════════════════════
+O QUE ESTA PEÇA RESOLVE
+═══════════════════════════════════════════════════════════════════════════════
+"Não há como segurar o processo num ponto para conferir um número antes de
+deixar seguir: hoje a alternativa é despausar/pausar DAG na mão ou deixar
+quebrar de propósito" (§1 da spec).
+
+O portão físico já existe e vive na DAG (`dags/utils/espera.py`, chamado pelo
+`log_start_<job>` de toda etapa). Esta camada é a outra metade: **quem pede,
+quem libera, quem cancela — e o registro de tudo isso.**
+
+═══════════════════════════════════════════════════════════════════════════════
+AS TRÊS REGRAS QUE GOVERNAM ESTE ARQUIVO
+═══════════════════════════════════════════════════════════════════════════════
+
+1. **Só pausa etapa que AINDA NÃO INICIOU.** É o limite honesto do §5 e ele é
+   verificado aqui, não só explicado na tela: etapa com linha em
+   `etl_job_execution` para esta execução já começou (ou já terminou), e o
+   portão dela ficou para trás. Recusa 409 com a lista do que dá para pausar.
+
+2. **Cancelar é falhar o DagRun, não marcar uma linha.** "Cancelar a execução"
+   (§5) significa que o operador desistiu da corrida — então quem cancela é o
+   Airflow, e a linha só vira CANCELADA **depois** de o Airflow confirmar. Se
+   o Airflow recusar, a pausa continua PENDENTE e a etapa continua segura: um
+   cancelamento que não pegou não pode virar "portão aberto". Essa ordem é o
+   que permite ao portão fazer UMA pergunta só (existe pausa pendente?) — a
+   mitigação de risco do §9 aplicada ao caminho crítico.
+
+3. **Transição de estado é atômica.** Liberar, cancelar e expirar são todos
+   `UPDATE ... WHERE estado = 'PENDENTE'` com `rowcount == 1` como resposta.
+   A corrida real desta fase é o operador clicando "Liberar" no mesmo segundo
+   em que o teto estoura no worker — quem chegar primeiro vence, e o outro
+   recebe 409 explicando o que aconteceu, nunca um sucesso mentiroso.
+
+CONVENÇÕES
+• Placeholder `?` (pyodbc — árvore api/); em dags/ é `%s` (pymssql).
+• Todas as funções recebem `cur` (cursor aberto); o CHAMADOR é dono da
+  transação e do commit — o mesmo contrato de `services/rerun.py`.
+• Nome de pipeline canonizado por `execucao_identidade.pipeline_oficial` antes
+  de virar chave (colação CI do banco × dict case-sensitive do Python, PR #236).
+"""
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime
+
+log = logging.getLogger("orquestra-api")
+
+TABELA = "dbo.etl_etapa_pausa"
+
+# Campo usado em dbo.etl_pipeline_audit — o padrão da casa é uma linha por
+# gesto com (field_name, old_value, new_value). Igual ao `rerun_etapa` da F4.
+CAMPO_AUDIT = "pausa_etapa"
+
+# Tipos de evento em dbo.etl_dependencia_evento — a MESMA tabela da guardiã.
+EVENTO_LIBERADA = "ESPERA_LIBERADA"
+EVENTO_CANCELADA = "ESPERA_CANCELADA"
+
+ESTADOS_FINAIS = ("LIBERADA", "CANCELADA", "EXPIRADA")
+
+TETO_PADRAO_MIN = 240
+TETO_MIN, TETO_MAX = 1, 10080
+
+
+# ═════════════════════════════ guardas de deploy ══════════════════════════════
+
+def tem_tabela(cur) -> bool:
+    """`dbo.etl_etapa_pausa` (migration 079) existe?
+
+    Mesma disciplina dos guards 073/074/075/078: deploy parcial DEGRADA — a
+    tela diz que o recurso está indisponível — em vez de estourar
+    'Invalid object name'. Qualquer falha conta como ausente.
+    """
+    try:
+        cur.execute("SELECT OBJECT_ID('dbo.etl_etapa_pausa', 'U')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None)
+    except Exception as e:  # noqa: BLE001
+        log.warning("[ESPERA] checagem da migration 079 falhou: %s", e)
+        return False
+
+
+def teto_padrao(cur) -> int:
+    """Teto de espera padrão, em minutos, de `etl_app_config` (079).
+
+    Fica no banco — e não numa Variable do Airflow — porque a TELA precisa
+    mostrá-lo ao operador antes de ele pausar. O valor é copiado para a linha
+    da pausa no momento da criação: o que a tela prometeu é o que o portão
+    obedece, mesmo que a configuração mude depois.
+    """
+    try:
+        cur.execute("SELECT config_value FROM dbo.etl_app_config "
+                    "WHERE config_key = 'espera_teto_minutos'")
+        row = cur.fetchone()
+        valor = int(str(row[0]).strip()) if row and row[0] is not None else 0
+    except Exception as e:  # noqa: BLE001
+        log.warning("[ESPERA] leitura de espera_teto_minutos falhou: %s", e)
+        return TETO_PADRAO_MIN
+    return valor if TETO_MIN <= valor <= TETO_MAX else TETO_PADRAO_MIN
+
+
+def normaliza_teto(bruto, padrao: int) -> int:
+    """Teto pedido pelo operador, dentro da faixa; fora dela usa o padrão."""
+    try:
+        valor = int(bruto)
+    except (TypeError, ValueError):
+        return padrao
+    return valor if TETO_MIN <= valor <= TETO_MAX else padrao
+
+
+# ═══════════════════════ "a etapa já começou?" — o limite ═════════════════════
+
+def etapas_iniciadas(cur, pipeline: str, execution_id: str) -> set:
+    """`{job_name.casefold()}` das etapas que JÁ têm linha de execução nesta
+    corrida — as que não dá mais para pausar.
+
+    Ter linha em `etl_job_execution` significa que o `log_start` da etapa
+    RODOU: o portão dela já ficou para trás. Vale para RUNNING, SUCCESS e
+    FAILED — em nenhum dos três a pausa teria efeito, e prometer que teria
+    seria a mentira mais fácil desta fase.
+    """
+    cur.execute(
+        "SELECT job_name FROM dbo.etl_job_execution "
+        "WHERE execution_id = ? AND pipeline = ?", (execution_id, pipeline))
+    return {str(r[0] or "").strip().casefold() for r in cur.fetchall() if r[0]}
+
+
+# ══════════════════════════════ leitura da tela ═══════════════════════════════
+
+def listar(cur, pipeline: str, execution_id: str) -> list:
+    """Todas as pausas da execução — inclusive as resolvidas.
+
+    O histórico faz parte da resposta de propósito: "quem liberou e quando" é
+    metade do valor do gesto (§5), e uma tela que só mostra o pendente esconde
+    justamente a prova de auditoria.
+    """
+    if not tem_tabela(cur):
+        return []
+    try:
+        # `data_referencia` e `parado_min` entram porque a TELA os mostra —
+        # a primeira versão omitia a data e o JSON saía com `data_referencia:
+        # null` numa linha que tinha a data no banco (visto na prova viva). Um
+        # campo prometido no contrato e sempre nulo é pior que campo ausente.
+        # O minuto parado vem do BANCO (mesmo motivo do portão: o carimbo é
+        # escrito com GETDATE() e misturar relógios dá tempo negativo).
+        cur.execute(
+            "SELECT id, job_name, task_id, estado, motivo, observacao, "
+            "       teto_minutos, solicitado_por, solicitado_em, "
+            "       aguardando_desde, ultima_verificacao, verificacoes, "
+            "       resolvido_por, resolvido_em, alertado_em, data_referencia, "
+            "       DATEDIFF(MINUTE, aguardando_desde, GETDATE()) "
+            "FROM " + TABELA + " "
+            "WHERE pipeline_name = ? AND execution_id = ? "
+            "ORDER BY id", (pipeline, execution_id))
+        return [
+            {"id": r[0], "job_name": r[1], "task_id": r[2], "estado": r[3],
+             "motivo": r[4], "observacao": r[5], "teto_minutos": r[6],
+             "solicitado_por": r[7], "solicitado_em": r[8],
+             "aguardando_desde": r[9], "ultima_verificacao": r[10],
+             "verificacoes": r[11], "resolvido_por": r[12],
+             "resolvido_em": r[13], "alertado_em": r[14],
+             "data_referencia": r[15], "parado_min": r[16]}
+            for r in cur.fetchall()
+        ]
+    except Exception as e:  # noqa: BLE001 — a tela nunca quebra por causa disto
+        log.warning("[ESPERA] listagem de pausas de '%s/%s' falhou: %s",
+                    pipeline, execution_id, e)
+        return []
+
+
+def por_id(cur, pausa_id: int):
+    """Uma pausa pelo id — com o contexto que os gestos de liberar/cancelar
+    precisam (pipeline, corrida e etapa)."""
+    cur.execute(
+        "SELECT id, pipeline_name, execution_id, job_name, task_id, run_id, "
+        "       data_referencia, estado, motivo, teto_minutos, "
+        "       solicitado_por, aguardando_desde, resolvido_por, resolvido_em "
+        "FROM " + TABELA + " WHERE id = ?", (pausa_id,))
+    r = cur.fetchone()
+    if not r:
+        return None
+    return {"id": r[0], "pipeline_name": r[1], "execution_id": r[2],
+            "job_name": r[3], "task_id": r[4], "run_id": r[5],
+            "data_referencia": r[6], "estado": r[7], "motivo": r[8],
+            "teto_minutos": r[9], "solicitado_por": r[10],
+            "aguardando_desde": r[11], "resolvido_por": r[12],
+            "resolvido_em": r[13]}
+
+
+# ═══════════════════════════════ os três gestos ═══════════════════════════════
+
+def criar(cur, *, pipeline: str, execution_id: str, job_name: str,
+          task_id: str | None, run_id: str | None, data_ref,
+          motivo: str | None, teto: int, usuario: str) -> int:
+    """Cria a pausa PENDENTE e devolve o id.
+
+    O INSERT é condicional (`WHERE NOT EXISTS ... estado='PENDENTE'`) para não
+    depender do erro do índice único filtrado da 079 como fluxo de controle:
+    duas abas do operador clicando "Pausar" ao mesmo tempo devem produzir UMA
+    pausa e nenhum 500. `rowcount == 0` significa "já havia uma pendente" e o
+    chamador devolve a existente.
+    """
+    cur.execute(
+        "INSERT INTO " + TABELA + " "
+        "(pipeline_name, execution_id, job_name, task_id, run_id, "
+        " data_referencia, estado, motivo, teto_minutos, solicitado_por) "
+        "SELECT ?, ?, ?, ?, ?, ?, 'PENDENTE', ?, ?, ? "
+        "WHERE NOT EXISTS (SELECT 1 FROM " + TABELA + " "
+        "WHERE pipeline_name = ? AND execution_id = ? AND job_name = ? "
+        "AND estado = 'PENDENTE')",
+        (pipeline, execution_id, job_name, task_id, run_id, data_ref,
+         (motivo or None), int(teto), (usuario or "?")[:200],
+         pipeline, execution_id, job_name))
+    if cur.rowcount == 0:
+        return 0
+    cur.execute(
+        "SELECT TOP (1) id FROM " + TABELA + " "
+        "WHERE pipeline_name = ? AND execution_id = ? AND job_name = ? "
+        "AND estado = 'PENDENTE' ORDER BY id DESC",
+        (pipeline, execution_id, job_name))
+    row = cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+def resolver(cur, pausa_id: int, estado: str, usuario: str,
+             observacao: str | None) -> bool:
+    """PENDENTE → LIBERADA/CANCELADA, atomicamente. True = fui eu quem mudou.
+
+    `AND estado = 'PENDENTE'` é a trava contra a corrida com o portão (que
+    pode estar expirando a mesma linha neste instante) e contra o duplo clique.
+    False não é erro do sistema: é "alguém chegou antes", e o chamador lê o
+    estado atual para contar a história certa.
+    """
+    cur.execute(
+        "UPDATE " + TABELA + " SET estado = ?, resolvido_por = ?, "
+        "resolvido_em = GETDATE(), observacao = ? "
+        "WHERE id = ? AND estado = 'PENDENTE'",
+        (estado, (usuario or "?")[:200],
+         (observacao or None), int(pausa_id)))
+    return cur.rowcount == 1
+
+
+# ═══════════════════════════ evento e auditoria ═══════════════════════════════
+
+def data_do_execution_id(ts):
+    """A data embutida no ``ts_nodash`` (``YYYYMMDDTHHMMSS``), ou None.
+
+    ⚠️ **DEFEITO ENCONTRADO NA PROVA VIVA (dev, 2026-08-03).** Pausar poucos
+    segundos depois de disparar a corrida cria a pausa com
+    ``data_referencia = NULL``: o ``check_agenda`` ainda não gravou a linha em
+    ``etl_pipeline_execucao``, então a identidade resolve o run mas não o ODATE.
+    A consequência apareceu no cancelamento — "evento ESPERA_CANCELADA sem data
+    — nao gravado" — ou seja, o gesto acontecia e o painel não ficava sabendo.
+
+    O ``ts_nodash`` É a data lógica da corrida, então ele é a fonte de
+    recuperação óbvia — e é a MESMA que o portão usa do lado da DAG
+    (``dags/utils/espera.data_do_evento``). Regra: o ODATE pode faltar na hora
+    do pedido, nunca no registro.
+    """
+    try:
+        return datetime.strptime(str(ts)[:8], "%Y%m%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def fechar_corrida_cancelada(cur, pipeline: str, run_id: str, usuario: str) -> bool:
+    """Fecha a corrida como FALHA quando o operador CANCELA a execução.
+
+    ⚠️ **DEFEITO ENCONTRADO NA PROVA VIVA (dev, 2026-08-03).** Cancelar pelo
+    Airflow (``PATCH state=failed``) marca as tasks não terminadas como
+    SKIPPED — inclusive o ``registrar_falha``, que tem ``trigger_rule=
+    ONE_FAILED`` e é quem grava FALHA em ``etl_pipeline_execucao``. Medido: o
+    DagRun ficou `failed` e a corrida ficou **EXECUTANDO para sempre**.
+
+    É a classe de defeito que este projeto já pagou (o `factory_log` órfão em
+    RUNNING): para o operador, um processo eternamente "executando" é um
+    timeout mudo. Quem cancela é quem fecha.
+
+    ``AND status NOT IN ('SUCESSO','FALHA')`` preserva estado terminal: se a
+    corrida já tinha fechado por conta própria, o cancelamento não a reescreve.
+    Nunca levanta — o DagRun já foi falhado e o gesto não pode ser desfeito.
+    """
+    try:
+        cur.execute(
+            "UPDATE dbo.etl_pipeline_execucao "
+            "SET status = 'FALHA', motivo = ?, fim = GETDATE(), "
+            "    atualizado_em = GETDATE() "
+            "WHERE pipeline_name = ? AND execution_id = ? "
+            "AND status NOT IN ('SUCESSO', 'FALHA')",
+            (f"execucao cancelada na etapa em espera por {usuario or '?'}"[:500],
+             pipeline, run_id))
+        return cur.rowcount == 1
+    except Exception as e:  # noqa: BLE001
+        log.warning("[ESPERA] corrida '%s/%s' nao fechada apos cancelamento: %s",
+                    pipeline, run_id, e)
+        return False
+
+
+def gravar_evento(cur, pipeline: str, data_ref, tipo: str, detalhe: str) -> bool:
+    """Evento em `dbo.etl_dependencia_evento` — a tabela da guardiã.
+
+    ⚠️ **Port do `dependencias.gravar_evento` de dags/**, com `?` no lugar de
+    `%s`. A casa prefere paridade por IDENTIDADE (o mesmo objeto), e é o que o
+    portão faz do lado da DAG; aqui a árvore muda o placeholder e a cópia é
+    inevitável — o mesmo caso já registrado em `rerun.dependentes_diretos`.
+    A chave de idempotência (`ux_dep_evento`: pipeline, data, tipo) é a mesma,
+    então os dois lados nunca duplicam um ao outro.
+
+    Reusar esta tabela é o que faz o alerta chegar ao Teams **sem uma linha de
+    mudança na guardiã**: ela já drena todo evento sem `notificado_em`.
+
+    Nunca levanta: registrar o evento não pode derrubar o gesto que já
+    aconteceu.
+    """
+    if data_ref is None:
+        log.warning("[ESPERA] evento %s de '%s' sem data — nao gravado",
+                    tipo, pipeline)
+        return False
+    try:
+        cur.execute(
+            "INSERT INTO dbo.etl_dependencia_evento "
+            "(pipeline_name, data_referencia, tipo, detalhe) "
+            "SELECT ?, ?, ?, ? "
+            "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
+            "WHERE pipeline_name = ? AND data_referencia = ? AND tipo = ?)",
+            (pipeline, data_ref, tipo, (detalhe or "")[:1000],
+             pipeline, data_ref, tipo))
+        return cur.rowcount == 1
+    except Exception as e:  # noqa: BLE001
+        log.warning("[ESPERA] evento %s de '%s' nao gravado: %s",
+                    tipo, pipeline, e)
+        return False
+
+
+def registrar_auditoria(cur, pipeline: str, usuario: str, gesto: str,
+                        detalhe: dict) -> bool:
+    """Uma linha em `dbo.etl_pipeline_audit` por gesto — pausar, liberar,
+    cancelar. `field_name` é `pausa_etapa`, `old_value` guarda a corrida e a
+    etapa, `new_value` o JSON do gesto.
+
+    É AQUI que mora a auditoria completa (uma linha por gesto, sem dedupe),
+    e não na tabela de eventos: a de eventos é única por (pipeline, dia, tipo)
+    e serve ao painel e ao card, não ao histórico.
+
+    **Nunca levanta** — falhar em auditar não pode desfazer um gesto que já
+    aconteceu (o mesmo contrato do `rerun.registrar_auditoria`).
+    """
+    try:
+        antes = json.dumps({
+            "execution_id": detalhe.get("execution_id"),
+            "run_id": detalhe.get("run_id"),
+            "data_referencia": detalhe.get("data_referencia"),
+            "job_name": detalhe.get("job_name"),
+        }, ensure_ascii=False)
+        depois = json.dumps({
+            "gesto": gesto,
+            "pausa_id": detalhe.get("pausa_id"),
+            "motivo": detalhe.get("motivo"),
+            "observacao": detalhe.get("observacao"),
+            "teto_minutos": detalhe.get("teto_minutos"),
+            "dagrun_falhado": detalhe.get("dagrun_falhado"),
+        }, ensure_ascii=False)
+        cur.execute(
+            "INSERT INTO dbo.etl_pipeline_audit "
+            "(pipeline_name, changed_by, field_name, old_value, new_value) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (pipeline, (usuario or "?")[:100], CAMPO_AUDIT,
+             antes[:4000], depois[:4000]))
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning("[ESPERA] auditoria de '%s' nao gravada: %s", pipeline, e)
+        return False
+
+
+# ══════════════════════════ material para a tela ══════════════════════════════
+
+def avisos_da_pausa(cur, pipeline: str, teto: int) -> list:
+    """Avisos honestos que o operador precisa ver ANTES de pausar.
+
+    Hoje há um só, e ele é real: pipeline com SLA configurado gera DAG com
+    `dagrun_timeout` (etl_dag_factory), e o Airflow mata a corrida inteira
+    quando o tempo estoura — inclusive uma corrida parada de propósito no
+    portão. Uma pausa maior que o SLA não fica esperando: ela vira falha por
+    timeout do DagRun, e por outro motivo que não o teto. Melhor dizer isso
+    antes do que explicar depois.
+    """
+    avisos: list = []
+    try:
+        cur.execute("SELECT sla_minutos FROM dbo.etl_pipeline "
+                    "WHERE pipeline_name = ?", (pipeline,))
+        row = cur.fetchone()
+        sla = int(row[0]) if row and row[0] is not None else 0
+    except Exception as e:  # noqa: BLE001
+        log.warning("[ESPERA] leitura de sla_minutos de '%s' falhou: %s",
+                    pipeline, e)
+        return avisos
+    if sla > 0 and sla <= teto:
+        avisos.append(
+            f"O pipeline tem SLA de {sla} min e a DAG roda com "
+            f"dagrun_timeout — uma espera até o teto de {teto} min pode ser "
+            "interrompida pelo Airflow antes disso, com a corrida marcada "
+            "como falha por timeout.")
+    return avisos

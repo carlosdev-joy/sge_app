@@ -164,11 +164,38 @@ else
         echo "[DEPLOY] Migrations SQL PENDENTES:"
         echo "$MIG_DRY" | sed 's/^/    /'
         MIG_QTD=$(echo "$MIG_DRY" | grep -c "DRY-RUN\]" || true)
+        MIG_NOMES=$(echo "$MIG_DRY" | sed -n 's/.*\[DRY-RUN\] *//p' | tr '\n' ' ')
         if [ "${MIG_QTD:-0}" -gt 5 ]; then
-            echo "[DEPLOY] ATENÇÃO: ${MIG_QTD} pendentes num banco que já funciona costuma ser"
-            echo "         DRIFT do etl_schema_version (schema aplicado por fora do migrate.py)."
-            echo "         Nesse caso, em vez de aplicar, registre-as com:"
-            echo "         docker compose exec orquestra-api python /tmp/deploy_sql/migrate.py --baseline"
+            # Muitas pendentes NÃO significa problema. Significa uma pergunta, e
+            # ela tem duas respostas opostas — o aviso existe para separá-las.
+            # (Antes daqui este bloco recomendava --baseline como saída padrão:
+            # era o conselho ERRADO para o caso comum, que é o (1) abaixo, e
+            # fazia a versão nova subir muda com o smoke ainda "passando".)
+            echo "[DEPLOY] ATENÇÃO: são ${MIG_QTD} migrations pendentes:"
+            echo "         ${MIG_NOMES}"
+            echo "         Reconheça os NOMES acima antes de responder — qual é o seu caso:"
+            echo ""
+            echo "         (1) VOCÊ ACABOU DE ATUALIZAR O CÓDIGO — é o caso normal de um"
+            echo "             deploy, e mais ainda quando várias features vão juntas."
+            echo "             Migration nova vem NO MESMO pacote da versão nova; ver aqui"
+            echo "             os nomes que acabaram de chegar no repo é o esperado."
+            echo "             ⇒ RESPONDA 's' E APLIQUE. São idempotentes."
+            echo "             Não aplicar faz a versão nova subir MUDA: as telas e o motor"
+            echo "             novos não acham tabela/coluna e degradam em silêncio — e o"
+            echo "             smoke ainda 'passa' nos primeiros passos."
+            echo ""
+            echo "         (2) BANCO ANTIGO QUE JÁ FUNCIONA E NUNCA RODOU O migrate.py"
+            echo "             (schema aplicado por deploy_full.sql ou na mão). Aí pode ser"
+            echo "             DRIFT do etl_schema_version: os objetos JÁ existem no banco,"
+            echo "             só não estão registrados."
+            echo "             ⇒ NÃO decida agora. Responda 'n', confira no banco se os"
+            echo "             objetos das migrations acima já existem e só então escolha."
+            echo ""
+            echo "         ⚠️ '--baseline' REGISTRA SEM EXECUTAR. Serve SÓ para o caso (2) e"
+            echo "            só depois da conferência objeto a objeto. NUNCA é o padrão:"
+            echo "            no caso (1) ele marca como aplicada uma migration que nunca"
+            echo "            rodou, e o banco fica permanentemente atrás do código —"
+            echo "            sem erro nenhum para avisar."
         fi
         if _confirmar "[DEPLOY] Aplicar as migrations acima agora? (idempotentes; recomendado backup do banco)"; then
             docker compose exec -T orquestra-api python /tmp/deploy_sql/migrate.py
