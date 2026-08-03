@@ -250,6 +250,23 @@ class FakeCur:
                 if e["ts"] == ts
                 and e["pipeline"].casefold() == str(pipe).casefold()]
             return
+        # ── F4: histórico de tentativas (migration 078) ──────────────────────
+        if s.startswith("SELECT OBJECT_ID('dbo.etl_job_execution_tentativa'"):
+            self._rows = [(1 if db.com_078 else None,)]
+            return
+        if s.startswith("SELECT job_name, task_id, attempt, status, start_time"):
+            if not db.com_078:
+                raise RuntimeError("Invalid object name 'etl_job_execution_tentativa'")
+            ts, pipe = params
+            self._rows = [
+                (t["job_name"], t.get("task_id") or t["job_name"], t["attempt"],
+                 t["status"], t.get("inicio"), t.get("fim"), t.get("dur"),
+                 t.get("status_code"), t.get("log_file"), t.get("host"),
+                 t.get("arquivado_em"))
+                for t in db.tentativas
+                if t["ts"] == ts
+                and t["pipeline"].casefold() == str(pipe).casefold()]
+            return
         if s.startswith("SELECT execution_id, MIN(start_time) FROM dbo.etl_job_execution"):
             pipe, ini, fim = params
             agrupado = {}
@@ -277,7 +294,8 @@ class FakeCur:
 
 class FakeDb:
     def __init__(self, *, pipelines=("DEV_F10_A",), corridas=(), etapas=(),
-                 desenho=(), com_067=True, com_038=True, virada="00:00"):
+                 desenho=(), com_067=True, com_038=True, virada="00:00",
+                 tentativas=(), com_078=True):
         self.pipelines = list(pipelines)
         self.corridas = [dict(c) for c in corridas]
         self.etapas = [dict(e) for e in etapas]
@@ -285,6 +303,10 @@ class FakeDb:
         self.com_067 = com_067
         self.com_038 = com_038
         self.virada = virada
+        # F4 (migration 078): tentativas SUPERADAS. `com_078=False` simula o
+        # deploy parcial — o drill-down tem de degradar para o payload da F3.
+        self.tentativas = [dict(t) for t in tentativas]
+        self.com_078 = com_078
 
     def cursor(self):
         return FakeCur(self)
@@ -1041,6 +1063,11 @@ _CLEAR_ESPERADO = {
     "include_future": False,
     "include_past": False,
     "include_upstream": False,
+    # (F4) Campo NOVO — e a única mudança no corpo desde a F2. Ver o defeito
+    # documentado em services/rerun.corpo_clear: sem ele o Airflow assume
+    # `only_failed=True` e o clear PULA a etapa escolhida quando ela não está
+    # falha. As demais guardas continuam idênticas.
+    "only_failed": False,
     "reset_dag_runs": True,
 }
 
@@ -1071,7 +1098,15 @@ def test_rerun_envia_o_mesmo_corpo_de_sempre(client, auth):
     assert gets[0][2] == {"limit": 50, "order_by": "-execution_date"}
 
 
-def test_rerun_com_dag_run_id_explicito_nao_consulta_o_airflow(client, auth):
+def test_rerun_com_dag_run_id_explicito_nao_resolve_corrida_no_airflow(client, auth):
+    """A corrida veio pronta do chamador — o Airflow NÃO é consultado para
+    escolher dag_run.
+
+    (F4) A leitura de `/tasks` que passou a existir NÃO conta aqui: ela não
+    resolve corrida nenhuma, só descobre se a DAG tem o `log_start_<etapa>` a
+    limpar junto (ver `rerun.task_ids_do_clear`). O que este teste protege é a
+    ausência da listagem de `dagRuns` — a consulta cara e a que poderia
+    escolher o run ERRADO."""
     cli = _ClientFake(runs=[])
     with patch("routers.execucoes.get_airflow_client", return_value=cli):
         r = client.post("/execucoes/rerun", json={
@@ -1079,7 +1114,7 @@ def test_rerun_com_dag_run_id_explicito_nao_consulta_o_airflow(client, auth):
             "dag_run_id": "scheduled__2026-08-03T06:00:00+00:00",
         })
     assert r.status_code == 200, r.text
-    assert [c for c in cli.chamadas if c[0] == "GET"] == []
+    assert [c for c in cli.chamadas if c[0] == "GET" and "dagRuns" in c[1]] == []
     assert [c for c in cli.chamadas if c[0] == "POST"][0][2] == _CLEAR_ESPERADO
 
 

@@ -55,7 +55,7 @@ import {
   Activity,
   Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing, Table2, Split, Hourglass,
   ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Maximize2, Minimize2,
-  MousePointerClick, Pencil, Search, X,
+  MousePointerClick, Pencil, Search, X, History,
 } from 'lucide-react'
 import { EtapaNode, type EtapaNodeData } from './EtapaNode'
 import { DecisaoNode, casoCor, type CasoSwitch, type DecisaoNodeData, type NodeCondition } from './DecisaoNode'
@@ -83,6 +83,8 @@ import { BarraExecucao, LegendaExecucao } from './PainelExecucaoEtapas'
 import {
   construirCamada, estadoAresta, type CamadaExecucao, type PipelineExecucaoApi,
 } from './execucaoEtapas'
+import { ModalRerunEtapa } from './ModalRerunEtapa'
+import { useAuthStore } from '../../store/auth'
 
 const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode, aguarde: AguardeNode }
 
@@ -566,6 +568,16 @@ function FluxoEditorInner({
   // esquecer outro seria a brecha por onde a leitura viraria edição.
   const emExecucao = !!modoExecucao
   const travado = readOnly || emExecucao
+
+  // ── F4: rerun a partir de uma etapa ───────────────────────────────────────
+  // A permissão é lida com o MESMO idioma do resto do app (Finalizacao,
+  // MalhaEditor, CopiaWizard): admin OU 'acao_executar'. Esconder o botão é
+  // cortesia, não segurança — a autoridade continua sendo o PERM_EXECUTAR do
+  // POST /execucoes/rerun (e do GET da prévia, que revela a topologia).
+  const usuarioAtual = useAuthStore(s => s.user)
+  const ehAdmin = useAuthStore(s => s.isAdmin)
+  const podeExecutar = ehAdmin() || !!usuarioAtual?.permissoes?.includes('acao_executar')
+  const [rerunAberto, setRerunAberto] = useState(false)
 
   // Corrida escolhida À MÃO no aviso de ambiguidade (run_id). null = a
   // vencedora que o servidor resolveu (mais_recente_da_data, a MESMA regra do
@@ -2179,6 +2191,23 @@ function FluxoEditorInner({
       {/* (F3) Legenda do modo Execução — mesma leitura de painel da malha. */}
       {emExecucao && <LegendaExecucao />}
 
+      {/* (F4) Confirmação do rerun. Montada só quando aberta: a prévia é uma
+          chamada de rede (dry_run no Airflow + fecho de dependências) e não
+          pode disparar por ter um nó selecionado. `selectedId` é o task_id no
+          Airflow — no grafo gerado o id do nó É o job_name/task_id. */}
+      {emExecucao && rerunAberto && selectedId && (
+        <ModalRerunEtapa
+          open
+          onClose={() => setRerunAberto(false)}
+          pipeline={pipeline}
+          taskId={selectedId}
+          jobName={selectedId}
+          dataReferencia={execData?.data_referencia ?? dataExecucao ?? null}
+          runId={corridaEscolhida}
+          status={camadaExec?.porJob.get(selectedId.trim().toLowerCase())?.status ?? null}
+        />
+      )}
+
       {/* Dock inferior de propriedades (fase 3) — 3 estados: colapsado (36px
           com o resumo do nó), aberto (altura arrastável) e max (modo focado).
           Sem seleção o dock NÃO some nem vira só uma dica: mostra as
@@ -2278,16 +2307,46 @@ function FluxoEditorInner({
                   )
                 }
                 return (
-                  <span
-                    title={ex.titulo}
-                    className="flex shrink-0 cursor-help items-center gap-1 rounded-full border border-edge px-2 py-0.5 text-[10px] font-semibold text-dim"
-                  >
-                    <span className={`h-1.5 w-1.5 rounded-full ${ex.dot} ${ex.animado ? 'animate-pulse' : ''}`} />
-                    {ex.rotulo}
-                    {ex.status && <span className="font-normal text-dim/80">· {ex.resumo}</span>}
-                  </span>
+                  <>
+                    <span
+                      title={ex.titulo}
+                      className="flex shrink-0 cursor-help items-center gap-1 rounded-full border border-edge px-2 py-0.5 text-[10px] font-semibold text-dim"
+                    >
+                      <span className={`h-1.5 w-1.5 rounded-full ${ex.dot} ${ex.animado ? 'animate-pulse' : ''}`} />
+                      {ex.rotulo}
+                      {ex.status && <span className="font-normal text-dim/80">· {ex.resumo}</span>}
+                    </span>
+                    {/* (F4) A linha do tempo do dia: só aparece quando houve
+                        MAIS DE UMA tentativa. Sem isso, a tela mostraria a
+                        última e calaria que houve uma falha antes. */}
+                    {ex.tentativas.length > 0 && (
+                      <span
+                        title={ex.titulo}
+                        className="flex shrink-0 cursor-help items-center gap-1 rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                      >
+                        <History size={10} />
+                        tentativa {ex.tentativa ?? ex.tentativas.length + 1} de{' '}
+                        {ex.tentativas.length + 1}
+                      </span>
+                    )}
+                  </>
                 )
               })()}
+              {/* (F4) Reexecutar A PARTIR desta etapa — o botão mora AQUI
+                  porque é aqui que o operador está quando investiga a falha
+                  (§4: "estar onde o operador está"). Não exige status FAILED:
+                  retomar de uma etapa que deu certo é legítimo. Sem etapa
+                  executada não há de onde retomar, e sem PERM_EXECUTAR o botão
+                  não existe (a autoridade continua sendo a API). */}
+              {emExecucao && podeExecutar && execSelecionada && (
+                <button
+                  onClick={() => setRerunAberto(true)}
+                  title={`Reexecutar a partir de "${selNode.id}" — abre a confirmação com o alcance`}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[#1A5FA8] bg-[#1A5FA8]/10 px-2 py-0.5 text-[10px] font-semibold text-[#1A5FA8] transition-colors hover:bg-[#1A5FA8]/20 dark:text-blue-300"
+                >
+                  <RefreshCw size={10} /> Reexecutar daqui
+                </button>
+              )}
               {(() => {
                 const pend = pendenciasPorNo.get(selNode.id)
                 return pend?.length ? (

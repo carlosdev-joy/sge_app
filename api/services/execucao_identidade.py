@@ -757,6 +757,62 @@ def etapas_executadas(cur, pipeline: str, ts: str) -> list:
             for r in cur.fetchall()]
 
 
+def tem_tabela_tentativas(cur) -> bool:
+    """``dbo.etl_job_execution_tentativa`` (migration 078) existe?
+
+    Mesma disciplina de ``tem_tabela_067``: deploy parcial DEGRADA — sem a
+    tabela o drill-down mostra só a tentativa corrente, que é exatamente o que
+    ele mostrava antes da F4. Qualquer falha conta como ausente.
+    """
+    try:
+        cur.execute("SELECT OBJECT_ID('dbo.etl_job_execution_tentativa', 'U')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None)
+    except Exception as e:  # noqa: BLE001
+        log.warning("[IDENT] checagem da tabela da migration 078 falhou: %s", e)
+        return False
+
+
+def tentativas_anteriores(cur, pipeline: str, ts: str) -> list:
+    """Tentativas JÁ SUPERADAS da execução ``ts`` — o histórico da 078.
+
+    ⚠️ **Onde mora cada tentativa** (decisão de desenho da F4, registrada por
+    inteiro no cabeçalho de sql/migrations/078): ``etl_job_execution`` continua
+    com UMA linha por etapa — a tentativa CORRENTE, agora com ``attempt``
+    preenchido. Toda tentativa superada é arquivada em
+    ``etl_job_execution_tentativa`` pela própria SP de telemetria. Assim os ~17
+    agregados de produção que somam/contam sobre ``etl_job_execution``
+    (dashboard, SLA, cards do Teams, Gestão de Falhas) continuam vendo
+    exatamente o que viam — e nada se perde.
+
+    A linha do tempo do dia de uma etapa é, portanto,
+    ``tentativas_anteriores(...) + [a linha corrente]``.
+
+    Devolve ``[]`` (nunca levanta) sem a tabela: o drill-down não pode quebrar
+    por causa de um deploy parcial.
+    """
+    if not tem_tabela_tentativas(cur):
+        return []
+    try:
+        cur.execute(
+            "SELECT job_name, task_id, attempt, status, start_time, end_time, "
+            "       duration_seconds, status_code, log_file, host, arquivado_em "
+            "FROM dbo.etl_job_execution_tentativa "
+            "WHERE execution_id = ? AND pipeline = ? "
+            "ORDER BY job_name, attempt",
+            (ts, pipeline))
+        return [{"job_name": r[0], "task_id": r[1], "attempt": r[2],
+                 "status": r[3], "inicio": r[4], "fim": r[5],
+                 "duration_seconds": int(r[6]) if r[6] is not None else None,
+                 "status_code": r[7], "log_file": r[8], "host": r[9],
+                 "arquivado_em": r[10]}
+                for r in cur.fetchall()]
+    except Exception as e:  # noqa: BLE001 — histórico ausente nunca derruba a tela
+        log.warning("[IDENT] tentativas anteriores de '%s'/%s indisponiveis: %s",
+                    pipeline, ts, e)
+        return []
+
+
 def etapas_do_desenho(cur, pipeline: str) -> list:
     """Etapas do DESENHO atual do pipeline: ``job_name``, ``job_type``,
     ``execution_order`` e ``depends_on_jobs`` (CSV → lista).
@@ -794,7 +850,23 @@ def etapas_do_desenho(cur, pipeline: str) -> list:
             for r in rows]
 
 
-def compor_etapas(desenho: list, executadas: list) -> list:
+def _chave_tentativa(e: dict) -> tuple:
+    """Ordem entre linhas da MESMA etapa: ``attempt`` manda; empate (ou
+    ``attempt`` nulo, o dado pré-078) desempata pelo início.
+
+    ``attempt`` nulo vira 0 — linha antiga, sem número, perde de qualquer
+    tentativa numerada. É a leitura honesta: se uma delas se declara tentativa
+    2, a que não se declara nada é mais velha.
+    """
+    a = e.get("attempt")
+    try:
+        n = int(a) if a is not None else 0
+    except (TypeError, ValueError):
+        n = 0
+    return (n, str(e.get("inicio") or ""))
+
+
+def compor_etapas(desenho: list, executadas: list, anteriores: list | None = None) -> list:
     """Une DESENHO e EXECUÇÃO numa lista só — a regra de honestidade do §3.
 
     • Etapa do desenho SEM linha de execução → ``status=None`` e
@@ -806,30 +878,72 @@ def compor_etapas(desenho: list, executadas: list) -> list:
 
     O casamento é por ``job_name`` casefold (colação CI do banco × dict
     case-sensitive do Python — o incidente da PR #236).
+
+    ⚠️ **F4 — a etapa mostra a tentativa MAIS RECENTE, com as anteriores
+    junto.** Até a F3 o casamento era ``setdefault``, isto é, "a primeira linha
+    que aparecer vence" — e como ``etapas_executadas`` ordena por
+    ``start_time``, a primeira é a MAIS ANTIGA. Com tentativas acumuladas isso
+    mostraria a tentativa que FALHOU depois de o operador já ter reexecutado e
+    passado; o pior tipo de mentira que esta tela pode contar. Agora vence a de
+    maior ``attempt`` (``_chave_tentativa``), explicitamente, sem depender da
+    ordem em que as linhas chegaram.
+
+    ``anteriores`` (histórico da 078) entra em cada etapa como ``tentativas``,
+    da mais antiga para a mais nova, SEM a corrente — a tela monta a linha do
+    tempo do dia juntando as duas. Ausente/vazio, o payload é o da F3 com
+    ``tentativas: []``.
     """
-    por_nome = {}
+    por_nome: dict = {}
     for e in executadas:
-        por_nome.setdefault(str(e.get("job_name") or "").strip().casefold(), e)
+        k = str(e.get("job_name") or "").strip().casefold()
+        atual = por_nome.get(k)
+        if atual is None or _chave_tentativa(e) > _chave_tentativa(atual):
+            por_nome[k] = e
+
+    hist: dict = {}
+    for t in (anteriores or []):
+        k = str(t.get("job_name") or "").strip().casefold()
+        hist.setdefault(k, []).append(t)
+    for k in hist:
+        hist[k].sort(key=_chave_tentativa)
 
     saida, usados = [], set()
     for no in desenho:
         chave = str(no.get("job_name") or "").strip().casefold()
         exec_ = por_nome.get(chave)
         usados.add(chave)
-        saida.append(_etapa(no, exec_, no_desenho=True))
+        saida.append(_etapa(no, exec_, no_desenho=True, anteriores=hist.get(chave)))
     for e in executadas:
         chave = str(e.get("job_name") or "").strip().casefold()
         if chave in usados:
             continue
         usados.add(chave)
-        saida.append(_etapa(None, e, no_desenho=False))
+        saida.append(_etapa(None, por_nome.get(chave) or e, no_desenho=False,
+                            anteriores=hist.get(chave)))
     return saida
 
 
-def _etapa(no, exec_, *, no_desenho: bool) -> dict:
+def _tentativa_json(t: dict) -> dict:
+    """Uma tentativa anterior, no molde curto que a tela precisa para a linha
+    do tempo (número, status, horários, duração e host). Sem `job_name`: ela já
+    vive DENTRO da etapa."""
+    return {
+        "attempt": t.get("attempt"),
+        "status": t.get("status"),
+        "inicio": t.get("inicio"),
+        "fim": t.get("fim"),
+        "duration_seconds": t.get("duration_seconds"),
+        "status_code": t.get("status_code"),
+        "host": t.get("host"),
+        "log_file": t.get("log_file"),
+    }
+
+
+def _etapa(no, exec_, *, no_desenho: bool, anteriores=None) -> dict:
     """Uma etapa do payload: identidade do nó + execução (ou a ausência dela)."""
     no = no or {}
     exec_ = exec_ or {}
+    tentativas = [_tentativa_json(t) for t in (anteriores or [])]
     return {
         "job_name": no.get("job_name") or exec_.get("job_name"),
         "task_id": exec_.get("task_id") or no.get("job_name"),
@@ -846,4 +960,8 @@ def _etapa(no, exec_, *, no_desenho: bool) -> dict:
         "attempt": exec_.get("attempt"),
         "log_file": exec_.get("log_file"),
         "host": exec_.get("host"),
+        # F4: tentativas SUPERADAS (da mais antiga para a mais nova), sem a
+        # corrente — que são os campos acima. Lista vazia = só houve uma.
+        "tentativas": tentativas,
+        "total_tentativas": len(tentativas) + (1 if exec_ else 0),
     }
