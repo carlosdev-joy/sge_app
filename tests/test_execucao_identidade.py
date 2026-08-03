@@ -19,6 +19,7 @@ import os
 import sys
 from datetime import date, datetime, time, timedelta
 from unittest.mock import MagicMock, patch
+from urllib.parse import quote
 
 import pytest
 
@@ -939,6 +940,86 @@ def test_endpoint_declara_ambiguidade_para_a_tela(client, auth):
     assert len(d["identidade"]["candidatos"]) == 2
     # candidatos serializados (datas viram texto — nada de datetime cru no JSON)
     assert d["identidade"]["candidatos"][0]["inicio"].startswith("2026-08-03 ")
+
+
+# ══════════ F3: abrir uma corrida ESPECÍFICA (?run_id=) — aditivo ═══════════
+# Sem esta porta, o aviso de ambiguidade da F3 só saberia DECLARAR ("há 2
+# corridas, mostrando a mais recente") e não conseguiria abrir a outra: pelo
+# ts_nodash não dá, porque os run_ids gerados pelo Orquestra não traduzem pela
+# string (a armadilha do §2). O parâmetro reusa `resolve_por_run_id` da F2 —
+# nenhuma regra de resolução nova entrou no sistema.
+
+def test_endpoint_pelo_run_id_abre_a_corrida_pedida(client, auth):
+    """A candidata NÃO vencedora: pedida pelo run_id, é ELA que volta."""
+    perdedora = "scheduled__2026-08-03T06:00:00+00:00"
+    db = _db_completo(
+        corridas=[
+            _corrida(perdedora, inicio=datetime(2026, 8, 3, 6, 0, 5),
+                     disparado_por="agenda"),
+            _corrida("scheduled__2026-08-03T18:00:00+00:00",
+                     inicio=datetime(2026, 8, 3, 18, 0, 5),
+                     disparado_por="manual")],
+        etapas=[_etapa("http_saude", ts="20260803T060000")])
+    # ⚠️ O run_id do Airflow tem '+' no fuso ('+00:00'); numa query string '+'
+    # é ESPAÇO. Sem escapar, o servidor receberia um run_id diferente e a
+    # resposta viria vazia — com 200, que é o pior jeito de errar. O front usa
+    # encodeURIComponent (vira %2B); aqui o teste faz o mesmo, e o assert do
+    # run_id devolvido é a prova do round-trip.
+    r, cli = _chama(
+        client, db,
+        url=f"/pipelines/DEV_F10_A/execucao?run_id={quote(perdedora, safe='')}")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["identidade"]["run_id"] == perdedora
+    assert d["identidade"]["ts_nodash"] == "20260803T060000"
+    assert d["identidade"]["data_referencia"] == "2026-08-03"
+    assert d["vazio"] is False and d["etapas_executadas"] == 1
+    assert d["corrida"]["disparado_por"] == "agenda"
+    assert cli.chamadas == []   # run_id do Airflow traduz pela string
+
+
+def test_endpoint_pelo_run_id_do_orquestra_passa_pelo_airflow(client, auth):
+    """O caso real do dev: run_id do Orquestra não traduz pela string, então a
+    identidade só fecha com o dag_run — e as etapas saem do ts_nodash dele."""
+    r, cli = _chama(
+        client, _db_completo(),
+        runs=[{"dag_run_id": RUN_ORQ, "logical_date": LOGICAL,
+               "state": "success"}],
+        url=f"/pipelines/DEV_F10_A/execucao?run_id={quote(RUN_ORQ, safe='')}")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["identidade"]["ts_nodash"] == TS
+    assert d["identidade"]["data_referencia"] == "2026-08-03"
+    assert d["etapas_executadas"] == 1
+    assert any(c[1].endswith("/dagRuns") for c in cli.chamadas)
+
+
+def test_endpoint_run_id_inexistente_e_vazio_honesto(client, auth):
+    """run_id que não existe: 200 com o DESENHO neutro e razão dita — a mesma
+    disciplina do vazio por data, nunca 404 nem etapa verde por omissão."""
+    db = _db_completo(corridas=[], etapas=[],
+                      desenho=[_no("etapa_1", ordem=1)])
+    r, _ = _chama(client, db,
+                  url="/pipelines/DEV_F10_A/execucao?run_id=nao__existe")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["vazio"] is True
+    # O Airflow também não tem o run: a razão FINAL é a dele, não a da
+    # string — o vocabulário fechado do "não sei" degrada em ordem.
+    assert d["razao"] == ident.SEM_DAG_RUN
+    assert d["etapas"][0]["status"] is None
+    assert d["etapas"][0]["sem_execucao"] is True
+
+
+@pytest.mark.parametrize("qs", [
+    f"data_referencia={_D}&run_id=x",
+    "execution_id=20260803T060000&run_id=x",
+    f"data_referencia={_D}&execution_id=20260803T060000&run_id=x",
+])
+def test_endpoint_recusa_parametros_combinados(client, auth, qs):
+    r, _ = _chama(client, _db_completo(),
+                  url=f"/pipelines/DEV_F10_A/execucao?{qs}")
+    assert r.status_code == 422
 
 
 def test_endpoint_grafia_divergente_devolve_a_oficial(client, auth):

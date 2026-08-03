@@ -5,6 +5,8 @@
 import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { BellRing } from 'lucide-react'
+import { LinhaExecucaoNo } from './LinhaExecucaoNo'
+import type { ExecNoEtapa } from './execucaoEtapas'
 
 // Config do nó (round-trip com /fluxo no campo `notify`). Guardamos o objeto
 // inteiro no `data` para ecoar no save; `label` é um resumo curto p/ o card.
@@ -12,6 +14,10 @@ export interface NotificacaoNodeData {
   name: string
   notify: { grupo_id: number | null; template_id: number | null; mensagem: string }
   label: string
+  // F3 (modo Execução): camada de status/horários desta etapa na data exibida.
+  // Injetada pelo FluxoEditor em CÓPIAS dos nós (nunca no estado do desenho);
+  // ausente/null = modo Montagem, ou nó fora da execução consultada.
+  exec?: ExecNoEtapa | null
   isNew?: boolean
   [k: string]: unknown
 }
@@ -26,6 +32,7 @@ const HANDLE_Y = 16
 
 function NotificacaoNodeImpl({ data, selected }: NodeProps & { data: NotificacaoNodeData }) {
   const pendente = !!(data as { pendente?: boolean }).pendente
+  const exec = data.exec ?? null
   // Largura do invólucro = visual (tile de 32px) + 8px de folga por lado, só o
   // bastante para o handle encostar no desenho; o RÓTULO transborda de
   // propósito (w-[128px] nos <p>). Feedback de produção: com o invólucro na
@@ -54,6 +61,9 @@ function NotificacaoNodeImpl({ data, selected }: NodeProps & { data: Notificacao
           data.isNew && !selected ? 'outline-dashed outline-1 outline-offset-2 outline-blue-400/70' : '',
           selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas'
             : pendente ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-canvas' : '',
+          // F3: anel de status da execução em `outline` — convive com o `ring`
+          // (box-shadow) da seleção e da pendência (MalhaPipelineNode, F9).
+          exec?.anel ?? '',
         ].join(' ')}
       >
         {pendente && (
@@ -74,10 +84,12 @@ function NotificacaoNodeImpl({ data, selected }: NodeProps & { data: Notificacao
         {data.name}
       </p>
 
-      {/* Linha de baixo: resumo curto do destino/modelo (label). */}
-      <p className="mt-0.5 w-[128px] line-clamp-1 text-center text-[9px] leading-tight text-dim" title={data.label}>
-        {data.label}
-      </p>
+      {/* Linha de baixo: no modo Execução vira status + horários (§3). */}
+      {exec ? <LinhaExecucaoNo exec={exec} /> : (
+        <p className="mt-0.5 w-[128px] line-clamp-1 text-center text-[9px] leading-tight text-dim" title={data.label}>
+          {data.label}
+        </p>
+      )}
 
       <Handle
         type="source"

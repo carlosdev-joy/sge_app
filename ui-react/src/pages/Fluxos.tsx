@@ -3,16 +3,43 @@
 // "bancada de montagem": biblioteca de pipelines + canvas com espaço total e
 // deep-link estável (?pipeline=). Mesmo componente FluxoEditor, sem fork —
 // revisão registrada em docs/DESIGN_navegacao_regroup.md.
-import { useEffect, useState } from 'react'
+//
+// ═══ F3 (spec-operacao-nivel-etapa §3, Bloco A) — ONDE O MODO EXECUÇÃO VIVE ═══
+// DECISÃO REGISTRADA: **página, não modal.** O drill-down da malha abre
+// `/fluxos?pipeline=X&modo=execucao&data=YYYY-MM-DD&de=malha:NOME`.
+//
+// Por quê, contra a alternativa do modal sobre a malha (o critério do escopo é
+// "o operador está investigando uma falha e precisa voltar rápido"):
+//   • VOLTA: o `de=malha:NOME` vira um botão "Voltar à malha" que devolve
+//     `/malha?malha=NOME&modo=execucao&data=…` — o MESMO modo e a MESMA data
+//     de onde ele saiu. O cache do TanStack (['malha',…] e
+//     ['malha-execucao',…]) ainda está quente, então a volta é praticamente
+//     instantânea, sem refetch visível. O modal devolveria mais rápido ainda,
+//     mas ao custo de tudo que vem abaixo.
+//   • LINKÁVEL: incidente se resolve em grupo. Colar o link do canvas exato,
+//     na data exata, num chat é a coisa mais útil que esta tela faz — e é o
+//     padrão de deep-link que o repo já usa (?pipeline=, ?malha=). Modal não
+//     tem URL.
+//   • ESPAÇO: um pipeline de 9+ etapas com status e horários EM CADA NÓ não
+//     cabe num `max-w-6xl` com `max-h-[90vh]`; e o conteúdo do Modal mora
+//     dentro de um `overflow-y-auto`, que é justamente onde este repo já
+//     tomou defeito de conteúdo clipado.
+//   • RISCO: aninhar um segundo `ReactFlowProvider` + canvas dentro do
+//     `ReactFlow` da malha, com dois donos de Esc (o `useOverlay` do Modal e o
+//     teclado do FluxoEditor, que usa Esc para limpar o realce da F1),
+//     brigaria por gesto. Página não tem nenhum desses.
+// Efeito colateral bom: o modo Execução da MALHA também virou linkável
+// (?modo=execucao&data=), o que não era antes — sem isso não haveria volta.
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
 import { useAuthStore } from '../store/auth'
 import { Button } from '../components/ui/Button'
 import { Autocomplete } from '../components/ui/Autocomplete'
 import { PageSpinner } from '../components/ui/Spinner'
 import { FluxoEditor } from '../components/etapas/FluxoEditor'
-import { GitBranch, List, Search, X } from 'lucide-react'
+import { Activity, GitBranch, List, Search, Wrench, X } from 'lucide-react'
 
 interface PipelineItem {
   pipeline_name: string
@@ -22,13 +49,36 @@ interface PipelineItem {
   last_execution?: string | null
 }
 
+// `de=malha:NOME` — de onde o operador desceu. Formato ESTRUTURADO de
+// propósito: guardar uma URL crua no parâmetro daria um redirecionador
+// genérico controlado por quem escreve o link. Aqui só existe uma origem
+// possível, e o destino é montado por nós.
+const PREFIXO_MALHA = 'malha:'
+
+// Mesma classe do par Montagem|Execução do MalhaEditor — copiada de propósito
+// (são 5 linhas; importar do módulo da malha arrastaria aquele chunk para cá).
+const modoBtnCls = (ativo: boolean) =>
+  `inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+    ativo
+      ? 'bg-[#1A5FA8] text-white'
+      : 'border border-edge bg-canvas text-dim hover:text-ink hover:bg-edge/40'
+  }`
+
 export default function Fluxos() {
   const user = useAuthStore(s => s.user)
   const isViewer = user?.perfil === 'consulta'
+  const navigate = useNavigate()
 
   // URL é a fonte da verdade do pipeline aberto (deep-link/estado navegável).
   const [searchParams, setSearchParams] = useSearchParams()
   const pipeline = (searchParams.get('pipeline') ?? '').trim()
+  // (F3) modo do canvas + data de referência da execução, também na URL.
+  const emExecucao = (searchParams.get('modo') ?? '').trim() === 'execucao'
+  const dataExec = (searchParams.get('data') ?? '').trim() || null
+  const de = (searchParams.get('de') ?? '').trim()
+  const malhaOrigem = de.startsWith(PREFIXO_MALHA)
+    ? de.slice(PREFIXO_MALHA.length).trim()
+    : ''
 
   const [input, setInput] = useState(pipeline)
   const [busca, setBusca] = useState('')      // filtro da biblioteca (debounced)
@@ -49,6 +99,30 @@ export default function Fluxos() {
     setSearchParams({})
   }
 
+  // Troca de modo/data preservando o resto da URL (o `de` da origem inclusive
+  // — trocar de dia durante a investigação não pode custar a volta à malha).
+  function irPara(patch: Record<string, string | null>) {
+    const p = new URLSearchParams(searchParams)
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null || v === '') p.delete(k)
+      else p.set(k, v)
+    }
+    setSearchParams(p)
+  }
+
+  // Volta à malha na MESMA lente e na MESMA data de onde se desceu.
+  const voltarMalha = useMemo(() => {
+    if (!malhaOrigem) return null
+    const alvo = `/malha?malha=${encodeURIComponent(malhaOrigem)}&modo=execucao`
+      + (dataExec ? `&data=${encodeURIComponent(dataExec)}` : '')
+    return {
+      rotulo: 'Voltar à malha',
+      titulo: `Voltar a ${malhaOrigem} no modo Execução`
+        + (dataExec ? `, em ${dataExec}` : ''),
+      onClick: () => navigate(alvo),
+    }
+  }, [malhaOrigem, dataExec, navigate])
+
   // Biblioteca — só busca quando nenhum pipeline está aberto.
   const { data, isLoading } = useQuery<{ data: PipelineItem[]; total: number }>({
     queryKey: ['fluxos-biblioteca', q],
@@ -66,7 +140,37 @@ export default function Fluxos() {
             <GitBranch size={20} className="text-[#1A5FA8]" /> Fluxo
             <span className="font-mono text-base text-dim">· {pipeline}</span>
           </h1>
+          {/* (F3) Montagem | Execução — o MESMO par de botões da malha, no
+              mesmo canto e com a mesma linguagem: descer de lá para cá tem de
+              parecer a mesma tela em outra lente. Fica no cabeçalho da PÁGINA
+              (e não dentro do editor) para o modo Montagem não herdar nenhuma
+              barra nova — ele segue idêntico ao de antes desta fase. */}
+          <div className="flex gap-1">
+            <button
+              onClick={() => irPara({ modo: null, data: null })}
+              title="Montar o fluxo: etapas, dependências, decisões e layout"
+              className={modoBtnCls(!emExecucao)}
+            >
+              <Wrench size={12} /> Montagem
+            </button>
+            <button
+              onClick={() => irPara({ modo: 'execucao' })}
+              title="Ver a execução deste pipeline etapa a etapa, numa data de referência (edição travada)"
+              className={modoBtnCls(emExecucao)}
+            >
+              <Activity size={12} /> Execução
+            </button>
+          </div>
           <div className="ml-auto flex items-center gap-2">
+            {voltarMalha && (
+              <Button
+                variant="secondary" size="sm"
+                onClick={voltarMalha.onClick}
+                title={voltarMalha.titulo}
+              >
+                <X size={13} /> {voltarMalha.rotulo}
+              </Button>
+            )}
             <Button
               variant="secondary" size="sm"
               title="Abrir as etapas deste pipeline em formato de lista"
@@ -80,7 +184,13 @@ export default function Fluxos() {
           </div>
         </div>
         <div className="h-[calc(100vh-11rem)]">
-          <FluxoEditor pipeline={pipeline} readOnly={isViewer} />
+          <FluxoEditor
+            pipeline={pipeline}
+            readOnly={isViewer}
+            modoExecucao={emExecucao}
+            dataExecucao={dataExec}
+            onDataExecucao={d => irPara({ data: d })}
+          />
         </div>
       </div>
     )

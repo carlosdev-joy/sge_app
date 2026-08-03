@@ -18,6 +18,8 @@
 import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { Hourglass } from 'lucide-react'
+import { LinhaExecucaoNo } from './LinhaExecucaoNo'
+import type { ExecNoEtapa } from './execucaoEtapas'
 
 // Config do nó (round-trip com /fluxo no campo `aguarde`).
 export interface AguardeNodeData {
@@ -26,6 +28,10 @@ export interface AguardeNodeData {
     politica: 'todas_sucesso' | 'todas_terminarem'
   }
   label: string
+  // F3 (modo Execução): camada de status/horários desta etapa na data exibida.
+  // Injetada pelo FluxoEditor em CÓPIAS dos nós (nunca no estado do desenho);
+  // ausente/null = modo Montagem, ou nó fora da execução consultada.
+  exec?: ExecNoEtapa | null
   isNew?: boolean
   [k: string]: unknown
 }
@@ -43,6 +49,7 @@ const HANDLE_Y = BAR_H / 2
 function AguardeNodeImpl({ data, selected }: NodeProps & { data: AguardeNodeData }) {
   const esperaTudo = data.aguarde?.politica === 'todas_terminarem'
   const pendente = !!(data as { pendente?: boolean }).pendente
+  const exec = data.exec ?? null
   // Largura do invólucro = visual (medalhão/barra em w-8) + 8px de folga por
   // lado, só o bastante para o handle encostar no desenho; o RÓTULO transborda
   // de propósito (w-[128px] nos <p>). Feedback de produção: com o invólucro na
@@ -71,6 +78,9 @@ function AguardeNodeImpl({ data, selected }: NodeProps & { data: AguardeNodeData
           // Tracejado = nó recém-arrastado, ainda não salvo (como nos irmãos).
           data.isNew && !selected ? 'outline-dashed outline-1 outline-offset-2 outline-blue-400/70' : '',
           selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas' : '',
+          // F3: anel de status da execução em `outline` — convive com o `ring`
+          // (box-shadow) da seleção (MalhaPipelineNode, F9).
+          exec?.anel ?? '',
         ].join(' ')}
         style={{ height: BAR_H }}
       >
@@ -106,19 +116,22 @@ function AguardeNodeImpl({ data, selected }: NodeProps & { data: AguardeNodeData
         {data.name}
       </p>
 
-      {/* Política — muda o comportamento em caso de falha, então fica VISÍVEL
-          no card em vez de escondida no painel. */}
-      <p
-        className={[
-          'mt-0.5 w-[128px] line-clamp-1 text-center text-[9px] leading-tight',
-          esperaTudo ? 'font-semibold text-amber-600 dark:text-amber-400' : 'text-dim',
-        ].join(' ')}
-        title={esperaTudo
-          ? 'Libera quando todas terminarem, mesmo com falha'
-          : 'Só libera se todas as etapas derem certo'}
-      >
-        {esperaTudo ? 'mesmo com falha' : 'todas com sucesso'}
-      </p>
+      {/* Política (montagem) — muda o comportamento em caso de falha, então
+          fica VISÍVEL no card. No modo Execução a linha vira o status +
+          horários da junção (§3); a política volta ao abrir o nó no dock. */}
+      {exec ? <LinhaExecucaoNo exec={exec} /> : (
+        <p
+          className={[
+            'mt-0.5 w-[128px] line-clamp-1 text-center text-[9px] leading-tight',
+            esperaTudo ? 'font-semibold text-amber-600 dark:text-amber-400' : 'text-dim',
+          ].join(' ')}
+          title={esperaTudo
+            ? 'Libera quando todas terminarem, mesmo com falha'
+            : 'Só libera se todas as etapas derem certo'}
+        >
+          {esperaTudo ? 'mesmo com falha' : 'todas com sucesso'}
+        </p>
+      )}
 
       <Handle
         type="source"

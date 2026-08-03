@@ -3,6 +3,26 @@
 // editar dependências NORMAIS (arrastar p/ conectar, deletar aresta), CRIAR nós
 // (paleta arrastar-para-criar), EDITAR a condição/ramos de decisões, EXCLUIR nós
 // e persiste tudo (POST /pipelines/{p}/fluxo) materializando o grafo.
+//
+// F3 (spec docs/spec-operacao-nivel-etapa.md §3, Bloco A) — MODO EXECUÇÃO: o
+// MESMO canvas, sem fork, ganha uma segunda leitura. Com `modoExecucao`:
+//   • a edição TRAVA pelo mesmo mecanismo do `readOnly` da consulta (`travado`)
+//     — sem paleta, sem conectar, sem excluir e sem arrastar (o layout salvo
+//     não pode ser sujo por quem só está investigando);
+//   • o desenho continua vindo de GET /pipelines/{p}/fluxo (é ele que tem
+//     layout, condição e ramos) e a EXECUÇÃO vem de
+//     GET /pipelines/{p}/execucao (F2) — duas leituras, um desenho só;
+//   • a execução é pintada em CÓPIAS de `nodes`/`edges`, exatamente como o
+//     realce da F1 faz. O estado do desenho não é tocado: sem isso, um refetch
+//     de 30s marcaria `dirty` e o canvas viraria um editor com "alterações não
+//     salvas" que ninguém pediu.
+// O realce da F1 CONVIVE: ele é ferramenta de leitura e aqui faz ainda mais
+// sentido ("o que mais quebrou por causa desta etapa?"). Ordem das camadas:
+// execução primeiro (status/caminho), realce por cima (foco do operador).
+//
+// ⚠️ HORÁRIOS: ver a decisão registrada no topo de ./execucaoEtapas.ts — todos
+// vêm das ETAPAS (etl_job_execution). Nada nesta tela lê inicio/fim de
+// etl_pipeline_execucao, que usa outro relógio.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -14,6 +34,7 @@ import {
   Panel,
   MarkerType,
   useReactFlow,
+  useNodesInitialized,
   useNodesState,
   useEdgesState,
   applyNodeChanges,
@@ -31,6 +52,7 @@ import { Button } from '../ui/Button'
 import { Modal } from '../ui/Modal'
 import { toast } from '../ui/Toast'
 import {
+  Activity,
   Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing, Table2, Split, Hourglass,
   ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Maximize2, Minimize2,
   MousePointerClick, Pencil, Search, X,
@@ -57,6 +79,10 @@ import { PainelPipeline, type ContagemNos } from './paineis/PainelPipeline'
 import { autoLayout, liveLayout, criaCiclo } from './layoutGrafo'
 import { useRealceDependencias } from './useRealceDependencias'
 import { PainelRealce } from './PainelRealce'
+import { BarraExecucao, LegendaExecucao } from './PainelExecucaoEtapas'
+import {
+  construirCamada, estadoAresta, type CamadaExecucao, type PipelineExecucaoApi,
+} from './execucaoEtapas'
 
 const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode, aguarde: AguardeNode }
 
@@ -273,6 +299,43 @@ function buildEdges(apiNodes: FluxoNode[]): Edge[] {
 const isBranch = (e: Edge) => !!(e.data as { branch?: boolean } | undefined)?.branch
 const edgeRamo = (e: Edge) => (e.data as { ramo?: string } | undefined)?.ramo
 
+// ── F3: pintura da execução sobre CÓPIAS de nós/arestas ─────────────────────
+// Mesmo contrato do realce (useRealceDependencias): recebe os arrays do estado
+// e devolve cópias decoradas só para o <ReactFlow>. Nada aqui vira estado.
+
+/** Nó "apagado" = etapa PULADA (ramo de decisão não tomado). Mesma receita do
+ *  esmaecido do realce (opacidade + grayscale), num patamar um pouco mais
+ *  forte: aqui o apagado é PERMANENTE na leitura da data, não um foco
+ *  momentâneo — e o §3 pede que ele saia de cena. */
+const NO_PULADO = { opacity: 0.5, filter: 'grayscale(0.9)' }
+
+function decorarNoExec(n: Node, camada: CamadaExecucao): Node {
+  const exec = camada.noPorJob.get(n.id.trim().toLowerCase()) ?? null
+  const data = { ...n.data, exec }
+  return exec?.pulada
+    ? { ...n, data, style: { ...n.style, ...NO_PULADO } }
+    : { ...n, data }
+}
+
+function decorarArestaExec(e: Edge, camada: CamadaExecucao): Edge {
+  const estado = estadoAresta(e.source, e.target, camada)
+  if (estado === 'percorrida') {
+    // Destaque do caminho REALMENTE percorrido: engrossa. A COR não é forçada —
+    // no ramo de decisão ela é significado (verde/slate/cor do caso), a mesma
+    // regra que o realce da F1 já adota.
+    return { ...e, style: { ...e.style, strokeWidth: 2.5 } }
+  }
+  if (estado === 'nao_tomada') {
+    return {
+      ...e,
+      style: { ...e.style, opacity: 0.22, strokeDasharray: '6 5' },
+      labelStyle: { ...e.labelStyle, opacity: 0.35 },
+      labelBgStyle: { ...e.labelBgStyle, opacity: 0.3 },
+    }
+  }
+  return e   // neutra: sem informação nas pontas — não saber ≠ negar
+}
+
 // SEM espaço: job_name vira task_id no Airflow, que rejeita espaço no import
 // da DAG (nós legados com espaço seguem funcionando; só a criação é estrita).
 const NAME_RE = /^[A-Za-z0-9_.\-]+$/
@@ -461,27 +524,97 @@ interface Props {
   // Somente leitura (perfil consulta): esconde paleta/ações e bloqueia edição.
   // A autoridade continua sendo a API (PERM_EDITAR no POST /fluxo).
   readOnly?: boolean
+  // ── F3: modo Execução ──────────────────────────────────────────────────
+  /** Liga a leitura de execução (read-only + camada de status/horários). */
+  modoExecucao?: boolean
+  /** ODATE a exibir. null/'' = o SERVIDOR calcula o corrente (virada global) —
+   *  a mesma semântica do painel da malha, para as duas telas não divergirem. */
+  dataExecucao?: string | null
+  /** Troca de data pedida pelo operador. Quem manda na URL é a PÁGINA (o
+   *  deep-link é do repo, não do componente) — o editor só avisa. */
+  onDataExecucao?: (data: string | null) => void
 }
 
 // Wrapper com o provider (necessário p/ useReactFlow/screenToFlowPosition).
-export function FluxoEditor({ pipeline, readOnly = false }: Props) {
+export function FluxoEditor(props: Props) {
   return (
     <ReactFlowProvider>
-      <FluxoEditorInner pipeline={pipeline} readOnly={readOnly} />
+      <FluxoEditorInner {...props} />
     </ReactFlowProvider>
   )
 }
 
-function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
+function FluxoEditorInner({
+  pipeline, readOnly = false, modoExecucao = false, dataExecucao = null,
+  onDataExecucao,
+}: Props) {
   const qc = useQueryClient()
   const colorMode = useColorMode()
   const rf = useReactFlow()
+  const nosMedidos = useNodesInitialized()
   const wrapperRef = useRef<HTMLDivElement>(null)
   const [nodes, setNodes] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChangeRF] = useEdgesState<Edge>([])
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [showPublish, setShowPublish] = useState(false)
+
+  // ── F3: modo Execução ─────────────────────────────────────────────────────
+  // `travado` é a ÚNICA porta de edição do componente: consulta (readOnly) e
+  // execução entram pelo mesmo lugar, como o MalhaEditor faz desde a F9. Todo
+  // ponto que antes olhava `readOnly` passou a olhar isto — trocar um deles e
+  // esquecer outro seria a brecha por onde a leitura viraria edição.
+  const emExecucao = !!modoExecucao
+  const travado = readOnly || emExecucao
+
+  // Corrida escolhida À MÃO no aviso de ambiguidade (run_id). null = a
+  // vencedora que o servidor resolveu (mais_recente_da_data, a MESMA regra do
+  // painel da malha — descer para outra corrida sem dizer seria o defeito
+  // D14/D15 registrado no projeto).
+  //
+  // A escolha carrega o PAR DONO (pipeline, data): trocar de pipeline ou de
+  // dia invalida sozinho, sem efeito de reset. É o mesmo idioma do
+  // `orientacaoLocal` do MalhaEditor — e o motivo é o mesmo lá e aqui
+  // (react-hooks/set-state-in-effect: um `setState` em efeito para "limpar"
+  // dispara render em cascata e abre a janela em que a tela mostra a corrida
+  // do pipeline ANTERIOR).
+  const [escolhaCorrida, setEscolhaCorrida] =
+    useState<{ pipeline: string; data: string | null; runId: string } | null>(null)
+  const corridaEscolhida =
+    (escolhaCorrida && escolhaCorrida.pipeline === pipeline
+      && escolhaCorrida.data === (dataExecucao ?? null))
+      ? escolhaCorrida.runId
+      : null
+  const escolherCorrida = useCallback((runId: string | null) => {
+    setEscolhaCorrida(runId
+      ? { pipeline, data: dataExecucao ?? null, runId }
+      : null)
+  }, [pipeline, dataExecucao])
+
+  const execQuery = useQuery<PipelineExecucaoApi>({
+    queryKey: ['pipeline-execucao', pipeline, dataExecucao ?? null, corridaEscolhida],
+    queryFn: () => {
+      const base = `/pipelines/${encodeURIComponent(pipeline)}/execucao`
+      if (corridaEscolhida) {
+        return apiFetch(`${base}?run_id=${encodeURIComponent(corridaEscolhida)}`)
+      }
+      return apiFetch(base + (dataExecucao
+        ? `?data_referencia=${encodeURIComponent(dataExecucao)}` : ''))
+    },
+    enabled: !!pipeline && emExecucao,
+    refetchInterval: 30_000,   // leitura de painel: acompanha o dia rodando
+  })
+  const execData = emExecucao ? execQuery.data : undefined
+  // A data exibida: a pedida, ou a que o servidor calculou (ODATE corrente).
+  const dataExibida = dataExecucao ?? execData?.data_referencia ?? ''
+
+  // Camada de execução (pura). Fora do modo Execução é `null` e as duas
+  // decorações abaixo devolvem os arrays ORIGINAIS por identidade — a montagem
+  // não paga nada por esta fase, nem em render nem em memória.
+  const camadaExec = useMemo(
+    () => (emExecucao && execData ? construirCamada(execData.etapas) : null),
+    [emExecucao, execData],
+  )
 
   // ── Realce de dependências (F1 — spec de operação no nível de etapa, §6) ──
   // Camada de LEITURA: acende a cadeia do nó/linha em foco e esmaece o resto.
@@ -491,7 +624,19 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   // outra: no grafo gerado elas SÃO dependência (o membro do ramo só roda
   // depois da decisão). Declarado aqui em cima porque os handlers de clique
   // precisam dele.
-  const realce = useRealceDependencias(nodes, edges, colorMode === 'dark')
+  //
+  // (F3) O realce recebe os arrays JÁ PINTADOS pela execução: as duas camadas
+  // se somam em vez de competir — o realce continua acendendo a cadeia, e o
+  // status/caminho da execução continua visível dentro dela.
+  const nodesExec = useMemo(
+    () => (camadaExec ? nodes.map(n => decorarNoExec(n, camadaExec)) : nodes),
+    [nodes, camadaExec],
+  )
+  const edgesExec = useMemo(
+    () => (camadaExec ? edges.map(e => decorarArestaExec(e, camadaExec)) : edges),
+    [edges, camadaExec],
+  )
+  const realce = useRealceDependencias(nodesExec, edgesExec, colorMode === 'dark')
   const {
     focarNo: realceFocarNo, focarAresta: realceFocarAresta, limpar: realceLimpar,
   } = realce
@@ -659,13 +804,32 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   }, [data, setNodes, setEdges])
 
   // Enquadra o fluxo ao abrir / trocar de pipeline (foco direto no conteúdo).
+  // (F3) O MODO entra na chave: entrar/sair da Execução acrescenta ou tira a
+  // barra superior e a legenda, ou seja, muda a ALTURA do canvas — sem
+  // reenquadrar, o grafo ficava cortado depois da troca. É só na troca de
+  // modo/pipeline; o refetch de 30s NÃO reenquadra (arrancar o zoom do
+  // operador no meio de uma investigação seria pior que a moldura imperfeita).
   const fittedPipeRef = useRef<string | null>(null)
+  // A CHEGADA do payload de execução também conta: é ela que faz aparecer a
+  // barra e os avisos, e um fit feito antes disso enquadra uma altura que
+  // deixou de existir. Só a PRESENÇA entra na chave — o refetch de 30s traz
+  // um objeto novo, mas a chave continua a mesma e o enquadramento não pula.
+  const chaveFit = `${pipeline}|${emExecucao ? 'exec' : 'montagem'}`
+    + `|${emExecucao && execData ? 'carregado' : '-'}`
+  // ⚠️ ESPERA a MEDIÇÃO dos nós (`useNodesInitialized`). Antes desta fase o fit
+  // saía 90 ms depois do payload, e nesse instante o React Flow ainda não tinha
+  // medido os nós: o bounding box saía minúsculo e o enquadramento abria com
+  // zoom altíssimo, mostrando um nó só. Dava para não notar porque um segundo
+  // fit (troca de modo, reorganizar) consertava — mas com o deep-link da F3 o
+  // canvas em Execução passou a ser a PRIMEIRA tela do drill-down, e primeira
+  // impressão torta é defeito.
   useEffect(() => {
-    if (!data || data.nodes.length === 0 || fittedPipeRef.current === pipeline) return
-    fittedPipeRef.current = pipeline
+    if (!data || data.nodes.length === 0 || !nosMedidos) return
+    if (fittedPipeRef.current === chaveFit) return
+    fittedPipeRef.current = chaveFit
     const t = setTimeout(() => rf.fitView({ padding: 0.2, duration: 250 }), 90)
     return () => clearTimeout(t)
-  }, [data, pipeline, rf])
+  }, [data, chaveFit, rf, nosMedidos])
 
   // Todos os nomes em uso (no canvas) — para gerar nomes default únicos.
   const nameSet = useCallback(() => new Set(nodes.map(n => n.id)), [nodes])
@@ -697,7 +861,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   // origem é decisão (handle sim/não). Exclusividade do ramo por decisão.
   const onConnect = useCallback(
     (conn: Connection) => {
-      if (readOnly) return
+      if (travado) return
       if (!conn.source || !conn.target) return
 
       // Bloqueia na hora a conexão que fecharia um ciclo (dep OU ramo) —
@@ -746,7 +910,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
       setEdges(eds => addEdge(depEdge(conn.source!, conn.target!, linkN), eds))
       setDirty(true)
     },
-    [edges, nodes, decisaoSet, setEdges, readOnly],
+    [edges, nodes, decisaoSet, setEdges, travado],
   )
 
   // Deletar arestas — todas deletáveis agora (inclusive ramos).
@@ -767,7 +931,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault()
-      if (readOnly) return
+      if (travado) return
       const tipo = e.dataTransfer.getData(DND_MIME)
       if (!tipo) return
       const position = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })
@@ -862,7 +1026,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
       setDirty(true)
       setSelectedId(name)
     },
-    [rf, nameSet, maxOrder, setNodes, gruposById, readOnly],
+    [rf, nameSet, maxOrder, setNodes, gruposById, travado],
   )
 
   // Atualiza o `data` de um nó (etapa) — usado pelo painel à direita ao vivo.
@@ -1231,7 +1395,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   // delete nativo deixaria vivas. Deleção só de arestas segue direto.
   const handleBeforeDelete = useCallback(
     async ({ nodes: toDel, edges: toDelEdges }: { nodes: Node[]; edges: Edge[] }) => {
-      if (readOnly) return false
+      if (travado) return false
       if (toDel.length > 0) {
         const ids = new Set(toDel.map(n => n.id))
         setDelNodeIds(toDel.map(n => n.id))
@@ -1242,7 +1406,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
       }
       return true
     },
-    [readOnly],
+    [travado],
   )
 
   // Re-roda o auto-layout sobre o grafo VIVO (inclui nós recém-adicionados,
@@ -1655,7 +1819,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
       const t = e.target as HTMLElement | null
       const emInput = !!t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-        if (!readOnly && dirty && !saving) {
+        if (!travado && dirty && !saving) {
           e.preventDefault()
           void salvar()
         }
@@ -1690,7 +1854,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [selectedId, temModalAberto, closePanel, dockEstado, nodes, dirty, saving, readOnly, setNodes, salvar, realceLimpar])
+  }, [selectedId, temModalAberto, closePanel, dockEstado, nodes, dirty, saving, travado, setNodes, salvar, realceLimpar])
 
   // ── Pendências por nó (validação leve, AO VIVO) — padrão ADF: o grafo
   // sinaliza o que falta configurar sem precisar abrir nó por nó. A régua é a
@@ -1791,18 +1955,24 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
 
   // Espelha a pendência no data do nó (o canvas desenha anel/ponto âmbar).
   // No-op quando nada mudou (retorna o MESMO array — não re-renderiza em loop).
+  //
+  // (F3) No modo Execução o anel âmbar de pendência NÃO acende: ali o anel do
+  // nó é vocabulário de STATUS, e dois significados no mesmo anel é como um
+  // painel começa a mentir. A pendência continua visível no dock (texto), que
+  // é onde ela é acionável. Sair do modo Execução reacende tudo — o efeito
+  // roda de novo porque `emExecucao` está nas deps.
   useEffect(() => {
     setNodes(nds => {
       let mudou = false
       const out = nds.map(n => {
-        const tem = pendenciasPorNo.has(n.id)
+        const tem = !emExecucao && pendenciasPorNo.has(n.id)
         if (tem === !!(n.data as { pendente?: boolean }).pendente) return n
         mudou = true
         return { ...n, data: { ...n.data, pendente: tem } }
       })
       return mudou ? out : nds
     })
-  }, [pendenciasPorNo, setNodes])
+  }, [pendenciasPorNo, setNodes, emExecucao])
 
   // Entradas do AGUARDE selecionado (arestas normais que chegam nele) e as
   // pontas soltas que a ação "prender" ligaria — derivados das arestas, para o
@@ -1849,6 +2019,12 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   }
 
   const selNode = selectedId ? nodes.find(n => n.id === selectedId) ?? null : null
+  // (F3) Execução da etapa selecionada — lida da camada, com a MESMA chave
+  // casefold do casamento do servidor (colação CI do banco × dict
+  // case-sensitive do JS: o incidente da PR #236).
+  const execSelecionada = (camadaExec && selectedId)
+    ? camadaExec.noPorJob.get(selectedId.trim().toLowerCase()) ?? null
+    : null
 
   // Sem seleção o dock também respeita os estados (padrão Informatica — "o
   // painel nunca é inútil"): colapsado mantém a barra fina; senão mostra as
@@ -1859,10 +2035,26 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-edge bg-canvas">
+      {/* (F3) Chrome do modo Execução: barra de data/janela/resumo + avisos
+          honestos. Não existe na Montagem — o modo Montagem segue exatamente
+          o de antes desta fase. */}
+      {emExecucao && (
+        <BarraExecucao
+          pipeline={pipeline}
+          dataExibida={dataExibida}
+          dataPedida={dataExecucao ?? null}
+          onData={d => onDataExecucao?.(d)}
+          carregando={execQuery.isFetching}
+          dados={execData}
+          erro={execQuery.isError ? (execQuery.error as Error) : null}
+          corridaEscolhida={corridaEscolhida}
+          onCorrida={escolherCorrida}
+        />
+      )}
       {/* Linha principal: paleta FIXA à esquerda (recolhível) + canvas.
           As propriedades moram no dock inferior (fase 3) — nada sobrepõe o grafo. */}
       <div className="flex min-h-0 flex-1">
-        {!readOnly && (
+        {!travado && (
           <Paleta open={paletaOpen} onToggle={() => setPaletaOpen(o => !o)} />
         )}
         <div className="relative min-h-0 min-w-0 flex-1" ref={wrapperRef}>
@@ -1870,7 +2062,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
           <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 text-dim">
             <span className="text-3xl">⬡</span>
             <p className="text-sm font-medium">Nenhuma etapa neste pipeline</p>
-            {!readOnly && (
+            {!travado && (
               <p className="text-xs">Arraste um tipo da paleta (à esquerda) para criar a primeira etapa.</p>
             )}
           </div>
@@ -1894,10 +2086,10 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
           fitViewOptions={{ padding: 0.25 }}
           proOptions={{ hideAttribution: true }}
           defaultEdgeOptions={{ type: 'smoothstep' }}
-          nodesDraggable={!readOnly}
-          nodesConnectable={!readOnly}
-          edgesFocusable={!readOnly}
-          deleteKeyCode={readOnly ? null : ['Delete', 'Backspace']}
+          nodesDraggable={!travado}
+          nodesConnectable={!travado}
+          edgesFocusable={!travado}
+          deleteKeyCode={travado ? null : ['Delete', 'Backspace']}
         >
           <Background gap={18} size={1} />
           <Controls />
@@ -1927,9 +2119,29 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
             </Panel>
           )}
 
-          {/* Barra de ações (topo direita) — no modo leitura vira só um selo */}
+          {/* Barra de ações (topo direita) — nos modos de leitura vira um selo.
+              (F3) O selo da execução diz o MESMO que o da malha ("edição
+              travada"), para o operador reconhecer que é a mesma lente. */}
           <Panel position="top-right">
-            {readOnly ? (
+            {emExecucao ? (
+              <div className="flex items-center gap-2 rounded-lg border border-edge bg-panel/95 px-2.5 py-1.5 shadow-md backdrop-blur">
+                <span className="flex items-center gap-1.5 text-[11px] font-semibold text-dim">
+                  <Activity size={12} /> visão de execução — edição travada
+                </span>
+                {/* O aviso de trabalho não salvo NÃO some ao trocar de lente:
+                    quem editou o desenho, entrou na Execução para conferir uma
+                    corrida e saiu da tela perderia o rascunho em silêncio. O
+                    estado do canvas é preservado (mesmo componente); o que
+                    faltava era dizer que ele existe. */}
+                {dirty && (
+                  <span className="flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300"
+                    title="Você tem alterações de desenho não salvas. Volte ao modo Montagem para salvar — sair da tela agora as descarta.">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                    alterações não salvas
+                  </span>
+                )}
+              </div>
+            ) : readOnly ? (
               <span className="flex items-center gap-1.5 rounded-lg border border-edge bg-panel/95 px-2.5 py-1.5 text-[11px] font-semibold text-dim shadow-md backdrop-blur">
                 <MousePointerClick size={12} /> somente leitura
               </span>
@@ -1958,6 +2170,9 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
         </ReactFlow>
         </div>
       </div>
+
+      {/* (F3) Legenda do modo Execução — mesma leitura de painel da malha. */}
+      {emExecucao && <LegendaExecucao />}
 
       {/* Dock inferior de propriedades (fase 3) — 3 estados: colapsado (36px
           com o resumo do nó), aberto (altura arrastável) e max (modo focado).
@@ -1991,7 +2206,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
               {headerDraft == null ? (
                 <>
                   <span className="truncate font-mono text-xs font-semibold text-ink">{selNode.id}</span>
-                  {!readOnly && (
+                  {!travado && (
                     <button
                       onClick={() => setHeaderDraft(selNode.id)}
                       title="Renomear job"
@@ -2039,11 +2254,35 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
                   · {(selNode.data as { label?: string }).label}
                 </span>
               )}
-              {readOnly && (
+              {travado && (
                 <span className="shrink-0 rounded-full border border-edge px-2 py-0.5 text-[10px] font-semibold text-dim">
                   somente leitura
                 </span>
               )}
+              {/* (F3) A execução DESTA etapa no header do dock — o operador que
+                  abriu o nó não precisa voltar ao canvas para ler o horário.
+                  Vem da camada (não de `selNode.data`): `selNode` sai do array
+                  ORIGINAL, que de propósito não carrega a pintura. */}
+              {emExecucao && (() => {
+                const ex = execSelecionada
+                if (!ex) {
+                  return (
+                    <span className="shrink-0 rounded-full border border-edge px-2 py-0.5 text-[10px] text-dim">
+                      sem execução nesta data
+                    </span>
+                  )
+                }
+                return (
+                  <span
+                    title={ex.titulo}
+                    className="flex shrink-0 cursor-help items-center gap-1 rounded-full border border-edge px-2 py-0.5 text-[10px] font-semibold text-dim"
+                  >
+                    <span className={`h-1.5 w-1.5 rounded-full ${ex.dot} ${ex.animado ? 'animate-pulse' : ''}`} />
+                    {ex.rotulo}
+                    {ex.status && <span className="font-normal text-dim/80">· {ex.resumo}</span>}
+                  </span>
+                )
+              })()}
               {(() => {
                 const pend = pendenciasPorNo.get(selNode.id)
                 return pend?.length ? (
@@ -2141,7 +2380,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
             propriedades do PIPELINE (read-only) — o dock nunca fica inútil. */}
         {!selNode && !dockColapsado && (
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <PainelPipeline pipeline={pipeline} contagem={contagemNos} readOnly={readOnly} />
+            <PainelPipeline pipeline={pipeline} contagem={contagemNos} readOnly={travado} />
           </div>
         )}
         {selNode && dockEstado !== 'colapsado' && (
@@ -2155,7 +2394,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
               sshConns={sshConns}
               mssqlConns={mssqlConns}
               grupos={grupos}
-              readOnly={readOnly}
+              readOnly={travado}
               onRename={renomear}
               onPatchData={patchNodeData}
               onPatchCondition={patchCondition}
