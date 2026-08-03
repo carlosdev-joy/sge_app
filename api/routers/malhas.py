@@ -9,12 +9,17 @@ montagem é a F8.
 Endpoints:
   GET    /malhas                                   — lista com agregados por malha
   POST   /malhas                                   — cria malha
-  GET    /malhas/{malha_name}                      — detalhe + membros + arestas (F8)
+  GET    /malhas/{malha_name}                      — detalhe + membros + arestas (F8) + nós (F10)
   GET    /malhas/{malha_name}/execucao             — status + eventos por data (F9)
   PATCH  /malhas/{malha_name}                      — descricao / ativo / renomear / orientacao
   POST   /malhas/{malha_name}/pipelines            — adiciona membro (idempotente)
   DELETE /malhas/{malha_name}/pipelines/{pipeline_name} — remove membro
-  PUT    /malhas/{malha_name}/layout               — persiste posições dos nós (F8)
+  PUT    /malhas/{malha_name}/layout               — persiste posições dos nós (F8/F10)
+  POST   /malhas/{malha_name}/nos                  — cria nó especial do desenho (F10)
+  PATCH  /malhas/{malha_name}/nos/{no_id}          — config/layout do nó (F10)
+  DELETE /malhas/{malha_name}/nos/{no_id}          — exclui nó + as arestas dele (F10)
+  POST   /malhas/{malha_name}/arestas              — aresta de nó, gramática §2.1 (F10)
+  DELETE /malhas/{malha_name}/arestas/{aresta_id}  — remove aresta de nó (F10)
   POST   /dependencias                             — cria dependência REAL (F8)
   DELETE /dependencias                             — remove dependência REAL (F8)
 
@@ -24,6 +29,14 @@ validações (existência + ciclo BFS, importadas de routers.pipelines, nunca
 reimplementadas). A aresta não tem escopo por malha: se dois pipelines aparecem
 em duas malhas, a dependência aparece nas duas, porque é real nas duas.
 
+F10 (docs/malha-componentes-desenho.md): nós especiais do desenho — Início,
+Aguarde, Notificação e Fim (etl_malha_no/etl_malha_aresta, migration 075).
+NESTA fase os nós são SÓ desenho: nenhuma linha da 067 nasce deles — a
+compilação do Aguarde é a F11, o agendamento do Início é a F13 e os
+observadores (guardiã) são a F14. A gramática das arestas de nó (§2.1) e os
+avisos de desenho (§2.2) valem desde já; a aresta pipeline→pipeline continua
+sendo o F8 acima (o CHECK CK_malha_ar_tem_no da 075 declara isso no modelo).
+
 Degradação em deploy parcial (API nova + migration 070 ainda não aplicada):
 cada endpoint checa UMA vez se as tabelas existem; leitura da lista degrada
 para vazio com log, e escrita devolve 503 com instrução clara em pt-BR —
@@ -32,6 +45,7 @@ nos endpoints de dependência: leitura degrada ("arestas": []), escrita dá 503.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 
@@ -42,6 +56,10 @@ from deps import PERM_EDITAR, get_current_user, require_perm
 # Port do ODATE para a árvore da API (o canônico é dags/utils/data_referencia.py;
 # paridade garantida por teste — ver o docstring do módulo).
 from services import data_referencia as dref
+# Port da expansão dos nós de malha (F10 — canônico em dags/utils/malha_nos.py;
+# paridade por teste). O upstream por nó que o GET devolve sai DAQUI: o front
+# nunca reimplementa a expansão (uma autoridade só, a regra do ciclo da F8).
+from services import malha_nos as malha_nos_svc
 # Port do predicado de liberação (F5/D29 — canônico em dags/utils/dependencias.py;
 # paridade por teste). virada_global/tabela_067 moraram aqui inline até a F5 e
 # foram extraídos para o service, reusados também por routers/pipelines.
@@ -65,6 +83,19 @@ _MSG_SEM_067 = (
     "Cadastro de dependências indisponível: a migration 067 "
     "(etl_pipeline_dependencia) ainda não foi aplicada neste banco."
 )
+
+_MSG_SEM_075 = (
+    "Componentes de malha indisponíveis: a migration 075 "
+    "(etl_malha_no/etl_malha_aresta) ainda não foi aplicada neste banco."
+)
+
+# Domínio dos nós especiais (F10). A coluna tipo não tem CHECK (padrão da
+# casa): a API valida na escrita; a unicidade de Início/Fim tem o índice
+# filtrado da 075 por baixo (o 2º chega a 422 aqui ANTES de estourar lá).
+_TIPOS_NO = ("inicio", "aguarde", "notificacao", "fim")
+_ROTULO_NO = {"inicio": "Início", "aguarde": "Aguarde",
+              "notificacao": "Notificação", "fim": "Fim",
+              "pipeline": "pipeline"}
 
 # Domínio da orientação do diagrama de montagem (migration 074). A coluna não
 # tem CHECK (padrão da casa): a API é quem valida na escrita e normaliza na
@@ -152,6 +183,246 @@ def _orientacao_norm(valor) -> str:
     'horizontal'|'vertical' (coluna sem CHECK) devolve o default."""
     v = (str(valor).strip().lower() if valor else "")
     return v if v in _ORIENTACOES else "horizontal"
+
+
+# ── helpers dos nós especiais (F10 — migration 075) ──────────────────────────
+
+def _tabelas_075(cur) -> bool:
+    """True se as tabelas da migration 075 existem. Mesma regra das outras
+    checagens (070/067): uma consulta por request, para o deploy parcial
+    degradar (leitura com flag, escrita 503) em vez de estourar
+    'Invalid object name' — princípio 6 do desenho de componentes."""
+    try:
+        cur.execute(
+            "SELECT OBJECT_ID('dbo.etl_malha_no', 'U'), "
+            "OBJECT_ID('dbo.etl_malha_aresta', 'U')"
+        )
+        row = cur.fetchone()
+        return bool(row and row[0] is not None and row[1] is not None)
+    except Exception as e:
+        log.warning("[MALHA] checagem das tabelas da migration 075 falhou: %s", e)
+        return False
+
+
+def _exigir_tabelas_075(cur, conn):
+    """Escrita de nó/aresta sem a 075 não tem degradação útil: 503 com
+    instrução clara, nunca 500 cru — padrão literal das guardas 070/067."""
+    if not _tabelas_075(cur):
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=503, detail=_MSG_SEM_075)
+
+
+def _coluna_origem_no(cur) -> bool:
+    """True se etl_pipeline_dependencia.origem_no (assinatura da 075) existe.
+    Guard de COLUNA no padrão de _coluna_074: COL_LENGTH, best-effort —
+    qualquer falha conta como ausente e o GET usa o SQL de sempre."""
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_pipeline_dependencia', 'origem_no')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None)
+    except Exception as e:
+        log.warning("[MALHA] checagem da coluna origem_no da migration 075 falhou: %s", e)
+        return False
+
+
+def _nos_da_malha(cur, malha) -> list:
+    """Nós do desenho da malha, ordenados por id (determinístico)."""
+    cur.execute(
+        "SELECT id, tipo, config_json, layout_x, layout_y "
+        "FROM dbo.etl_malha_no WHERE malha_name = ? ORDER BY id",
+        (malha,))
+    return [{"id": int(r[0]), "tipo": (r[1] or "").strip().lower(),
+             "config_json": r[2], "layout_x": r[3], "layout_y": r[4]}
+            for r in cur.fetchall()]
+
+
+def _arestas_da_malha(cur, malha) -> list:
+    """Arestas de nó do desenho da malha, ordenadas por id."""
+    cur.execute(
+        "SELECT id, origem_no, origem_pipeline, destino_no, destino_pipeline "
+        "FROM dbo.etl_malha_aresta WHERE malha_name = ? ORDER BY id",
+        (malha,))
+    return [{"id": int(r[0]),
+             "origem_no": int(r[1]) if r[1] is not None else None,
+             "origem_pipeline": r[2],
+             "destino_no": int(r[3]) if r[3] is not None else None,
+             "destino_pipeline": r[4]}
+            for r in cur.fetchall()]
+
+
+def _no_config(raw):
+    """config_json do nó → objeto para o front. A API só grava JSON válido;
+    valor quebrado por SQL direto degrada para None com log — nunca tela
+    quebrada (mesmo espírito do _orientacao_norm)."""
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        v = json.loads(raw)
+        return v if isinstance(v, dict) else None
+    except Exception:
+        log.warning("[MALHA] config_json ilegível em etl_malha_no — degradado para None")
+        return None
+
+
+def _erro_gramatica(origem_tipo, destino_tipo):
+    """Gramática do desenho — célula a célula da tabela §2.1: devolve a
+    mensagem do 422 para célula proibida, ou None para aresta permitida.
+
+    Permitidas: inicio→pipeline · pipeline→aguarde · aguarde→pipeline ·
+    aguarde→aguarde · pipeline/aguarde→notificacao · pipeline/aguarde→fim.
+    pipeline→pipeline é recusada AQUI com a instrução da porta certa (F8):
+    aresta direta é dependência REAL na 067, nunca desenho de nó (Decisão 2)."""
+    if origem_tipo in ("notificacao", "fim"):
+        return (f"Aresta inválida: {_ROTULO_NO[origem_tipo]} não tem saída — "
+                "Notificação e Fim são observadores terminais do desenho "
+                "(se tivessem saída, precisariam de um primitivo de runtime "
+                "que não existe).")
+    if destino_tipo == "inicio":
+        return ("Aresta inválida: nada liga NO Início — ele é o ponto de "
+                "partida do desenho, não um destino.")
+    if origem_tipo == "inicio" and destino_tipo != "pipeline":
+        return (f"Aresta inválida: Início → {_ROTULO_NO[destino_tipo]}. "
+                "O Início só liga em pipeline — ele planta o agendamento da "
+                "malha nas raízes, nada mais.")
+    if origem_tipo == "pipeline" and destino_tipo == "pipeline":
+        return ("Aresta pipeline → pipeline não entra no desenho de nós: use "
+                "a aresta direta do diagrama (F8) — ela grava a dependência "
+                "REAL na tabela global de dependências.")
+    return None
+
+
+def _avisos_desenho(nos, arestas) -> list:
+    """Avisos de desenho do §2.2 — os ESTRUTURAIS desta fase (F10).
+
+    A lição do nó Aguarde das Etapas (§5.5): ponta solta avisada no momento de
+    consequência — cada gesto devolve a lista (toast) e o GET a repete (o
+    banner persistente do editor, F12). Aviso NUNCA bloqueia: onde a tabela
+    §2.2 diz aviso, o gesto é aceito e o efeito (ou a ausência dele) é DITO.
+    Formato: {"no", "nivel" ('forte'|'leve'), "mensagem"}."""
+    entradas: dict = {}
+    saidas: dict = {}
+    for a in arestas:
+        if a["destino_no"] is not None:
+            entradas[a["destino_no"]] = entradas.get(a["destino_no"], 0) + 1
+        if a["origem_no"] is not None:
+            saidas[a["origem_no"]] = saidas.get(a["origem_no"], 0) + 1
+    avisos = []
+    for no in nos:                       # ordenados por id → determinístico
+        i, t = no["id"], no["tipo"]
+        e, s = entradas.get(i, 0), saidas.get(i, 0)
+        if t == "aguarde":
+            if s > 0 and e == 0:
+                avisos.append({"no": i, "nivel": "forte", "mensagem":
+                               "Aguarde sem entradas: nenhuma dependência "
+                               "será criada — ligue as entradas"})
+            elif e == 1:
+                avisos.append({"no": i, "nivel": "leve", "mensagem":
+                               "Aguarde com uma única entrada — junção de uma "
+                               "perna só (provável esquecimento)"})
+            if s == 0:
+                avisos.append({"no": i, "nivel": "leve", "mensagem":
+                               "Aguarde sem saída — vale como marco visual; "
+                               "nenhuma dependência nasce dele"})
+        elif t in ("notificacao", "fim") and e == 0:
+            avisos.append({"no": i, "nivel": "forte", "mensagem":
+                           f"{_ROTULO_NO[t]} sem entrada — a guardiã não "
+                           "avalia este nó (nada será emitido)"})
+        elif t == "inicio" and s == 0:
+            avisos.append({"no": i, "nivel": "forte", "mensagem":
+                           "Início sem saída — o agendamento da malha não "
+                           "alcançará nenhum pipeline"})
+    return avisos
+
+
+def _chave_ponta(no, pipe):
+    """Identidade de uma ponta no grafo do desenho: nó por id, pipeline por
+    casefold (colação CI do banco)."""
+    return ("no", no) if no is not None else ("pipe", (pipe or "").casefold())
+
+
+def _criaria_ciclo_desenho(arestas, chave_origem, chave_destino) -> bool:
+    """True se origem→destino fecharia ciclo no grafo do DESENHO da malha
+    (nós e pipelines ligados por arestas de nó): BFS para FRENTE a partir do
+    destino — se alcançar a origem, a aresta proposta fecha o ciclo.
+
+    FRONTEIRA F10/F11 (desenho §3.3, registrada de propósito): nesta fase o
+    ciclo validado é o TOPOLÓGICO do desenho. O ciclo do conjunto
+    PÓS-EXPANSÃO contra a 067 (Decisão 15 — um aguarde inocente pode fechar
+    A→…→A por linhas que o gesto cria aos pares, validado com o BFS da F1 e a
+    mensagem canônica compartilhada) chega com o compilador, na F11."""
+    if chave_origem == chave_destino:
+        return True
+    adj: dict = {}
+    for a in arestas:
+        o = _chave_ponta(a["origem_no"], a["origem_pipeline"])
+        d = _chave_ponta(a["destino_no"], a["destino_pipeline"])
+        adj.setdefault(o, []).append(d)
+    vistos, fila = set(), [chave_destino]
+    while fila:
+        atual = fila.pop(0)
+        if atual == chave_origem:
+            return True
+        if atual in vistos:
+            continue
+        vistos.add(atual)
+        fila.extend(adj.get(atual, ()))
+    return False
+
+
+def _resolver_ponta(cur, conn, malha, ponta, lado):
+    """Resolve uma ponta {"no": id} | {"pipeline": nome} da aresta (§9).
+
+    Nó: precisa existir NESTA malha (nó de outra malha é desenho de outra
+    malha — 422 claro). Pipeline: canonizado pela grafia registrada (PR #236)
+    e precisa ser MEMBRO da malha — aresta para não-membro deixaria o desenho
+    apontando para fora do conjunto (o outro lado desse invariante, recusar
+    remover membro ligado a nó, chega na F11 com o §7.3).
+    Devolve {"no": id|None, "pipeline": nome|None, "tipo": tipo}."""
+    if not isinstance(ponta, dict) or (("no" in ponta) == ("pipeline" in ponta)):
+        _fechar_silencioso(conn)
+        raise HTTPException(
+            status_code=422,
+            detail=f"{lado} deve ter exatamente uma das chaves: 'no' ou 'pipeline'")
+    if "no" in ponta:
+        no_id = ponta.get("no")
+        if not isinstance(no_id, int) or isinstance(no_id, bool):
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=422,
+                                detail=f"{lado}.no deve ser o id numérico do nó")
+        cur.execute("SELECT id, tipo FROM dbo.etl_malha_no "
+                    "WHERE id = ? AND malha_name = ?", (no_id, malha))
+        row = cur.fetchone()
+        if row is None:
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=422,
+                                detail=f"Nó {no_id} não existe na malha '{malha}'")
+        return {"no": int(row[0]), "pipeline": None,
+                "tipo": (row[1] or "").strip().lower()}
+    nome = (str(ponta.get("pipeline") or "")).strip()
+    if not nome:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=422, detail=f"{lado}.pipeline é obrigatório")
+    oficial = _pipeline_oficial(cur, nome)
+    if oficial is None:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=422, detail=f"Pipeline inexistente: '{nome}'")
+    cur.execute("SELECT 1 FROM dbo.etl_malha_pipeline "
+                "WHERE malha_name = ? AND pipeline_name = ?", (malha, oficial))
+    if not cur.fetchone():
+        _fechar_silencioso(conn)
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{oficial}' não é membro da malha '{malha}' — adicione-o "
+                   "à malha antes de ligá-lo a um componente")
+    return {"no": None, "pipeline": oficial, "tipo": "pipeline"}
+
+
+def _rotulo_ponta(p) -> str:
+    """Rótulo de uma ponta para mensagem de erro: pipeline pelo nome, nó pelo
+    tipo + id — o texto do ciclo é ESPELHADO no cliente (regra F8)."""
+    if p["pipeline"] is not None:
+        return f"'{p['pipeline']}'"
+    return f"{_ROTULO_NO.get(p['tipo'], 'nó')} #{p['no']}"
 
 
 def _tabelas_067_execucao(cur) -> bool:
@@ -432,6 +703,9 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
         # Filtro em Python sobre um SELECT só, como nos agregados da listagem.
         # Deploy parcial (067 pendente): a malha ainda abre, com "arestas": [] —
         # migration_067_pendente é o sinal para o front avisar e travar a edição.
+        # F10: as tabelas da 075 habilitam os nós do desenho e a anotação
+        # compilada_por das arestas diretas — checadas UMA vez por request.
+        tem_075 = _tabelas_075(cur)
         arestas = []
         if _tabela_067(cur):
             # Mapa casefold → grafia OFICIAL (a dos nós do diagrama). Linhas
@@ -441,22 +715,70 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
             # silêncio (id não casa com nó) e ela some do desenho.
             membro_oficial = {m["pipeline_name"].casefold(): m["pipeline_name"]
                               for m in membros}
-            cur.execute(
-                "SELECT pipeline_name, depende_de FROM dbo.etl_pipeline_dependencia "
-                "WHERE tipo = 'PIPELINE'")
-            for dep_pipe, dep_de in cur.fetchall():
+            if tem_075 and _coluna_origem_no(cur):
+                # Com a assinatura da 075 (§7.4 do desenho de componentes):
+                # linha assinada por nó DESTA malha não vira aresta direta (ela
+                # é o desenho do nó); assinada por nó de OUTRA malha vira
+                # aresta anotada compilada_por — o editor a desenha com
+                # cadeado, somente-leitura (F12). Na F10 nada assina linhas
+                # (a compilação é a F11): o contrato de leitura nasce pronto.
+                cur.execute(
+                    "SELECT d.pipeline_name, d.depende_de, d.origem_no, n.malha_name "
+                    "FROM dbo.etl_pipeline_dependencia d "
+                    "LEFT JOIN dbo.etl_malha_no n ON n.id = d.origem_no "
+                    "WHERE d.tipo = 'PIPELINE'")
+                linhas_067 = [(r[0], r[1], r[2], r[3]) for r in cur.fetchall()]
+            else:
+                cur.execute(
+                    "SELECT pipeline_name, depende_de FROM dbo.etl_pipeline_dependencia "
+                    "WHERE tipo = 'PIPELINE'")
+                linhas_067 = [(r[0], r[1], None, None) for r in cur.fetchall()]
+            for dep_pipe, dep_de, origem_no, malha_do_no in linhas_067:
                 a = membro_oficial.get(str(dep_pipe or "").strip().casefold())
                 b = membro_oficial.get(str(dep_de or "").strip().casefold())
-                if a and b:
-                    arestas.append({"pipeline_name": a, "depende_de": b})
+                if not (a and b):
+                    continue
+                if origem_no is not None and malha_do_no is not None and \
+                        str(malha_do_no).strip().casefold() == \
+                        malha["malha_name"].casefold():
+                    continue    # desenho do nó desta malha, não aresta direta
+                item = {"pipeline_name": a, "depende_de": b}
+                if origem_no is not None:
+                    item["compilada_por"] = {"malha": malha_do_no,
+                                             "no": int(origem_no)}
+                arestas.append(item)
             arestas.sort(key=lambda x: (x["pipeline_name"], x["depende_de"]))
         else:
             log.warning("[MALHA] migration 067 ausente — malha '%s' aberta sem arestas",
                         malha["malha_name"])
             malha["migration_067_pendente"] = True
+
+        # Nós do desenho (F10) — com o upstream calculado pelo SERVIDOR (port
+        # da expansão com paridade): o front nunca expande. Sem a 075, o resto
+        # da malha segue intacto e a flag liga o aviso de deploy parcial.
+        nos_payload, arestas_no_payload, avisos = [], [], []
+        if tem_075:
+            nos_l = _nos_da_malha(cur, malha["malha_name"])
+            arestas_l = _arestas_da_malha(cur, malha["malha_name"])
+            expansao = malha_nos_svc.expandir(nos_l, arestas_l)
+            nos_payload = [{
+                "id": n["id"], "tipo": n["tipo"],
+                "config": _no_config(n["config_json"]),
+                "layout_x": n["layout_x"], "layout_y": n["layout_y"],
+                "upstream": sorted(expansao["nos"][n["id"]]["upstream"]),
+            } for n in nos_l]
+            arestas_no_payload = arestas_l
+            avisos = _avisos_desenho(nos_l, arestas_l)
+        else:
+            log.warning("[MALHA] migration 075 ausente — malha '%s' aberta sem nós",
+                        malha["malha_name"])
+            malha["migration_075_pendente"] = True
         cur.close(); conn.close()
         malha["membros"] = membros
         malha["arestas"] = arestas
+        malha["nos"] = nos_payload
+        malha["arestas_no"] = arestas_no_payload
+        malha["avisos"] = avisos
         malha["qtd_pipelines"] = len(membros)
         malha["qtd_ativos"] = sum(m["active"] for m in membros)
         malha["criticidade"] = criticidade_agregada(m["criticidade"] for m in membros)
@@ -825,7 +1147,12 @@ def salvar_layout(malha_name: str, body: dict = Body(default={}),
     Só MEMBROS da malha são atualizados: posição de não-membro é ignorada e
     contada fora de 'atualizados' (o UPDATE não afeta linha) — o front pode
     ter um nó recém-removido da malha no estado local, e isso não é erro.
-    Tudo na MESMA transação: um salvar não pode deixar metade do layout novo."""
+    Tudo na MESMA transação: um salvar não pode deixar metade do layout novo.
+
+    F10 (§9 do desenho de componentes): entrada com pipeline_name "no:{id}"
+    é posição de NÓ ESPECIAL e grava em etl_malha_no.layout_* — mesma regra
+    de tolerância (nó de outra malha/excluído conta em 'ignorados'). Sem a
+    075, entrada de nó dá 503 instrutivo; layout só de pipelines segue ok."""
     posicoes = body.get("posicoes")
     if not isinstance(posicoes, list):
         raise HTTPException(status_code=422, detail="posicoes deve ser uma lista")
@@ -840,6 +1167,7 @@ def salvar_layout(malha_name: str, body: dict = Body(default={}),
                                 detail=f"Malha não encontrada: '{malha_name}'")
         atualizados = 0
         ignorados = 0
+        tem_075 = None      # lazy: só consulta o banco se aparecer nó especial
         for pos in posicoes:
             nome = (pos.get("pipeline_name") or "").strip() if isinstance(pos, dict) else ""
             x = pos.get("layout_x") if isinstance(pos, dict) else None
@@ -854,16 +1182,315 @@ def salvar_layout(malha_name: str, body: dict = Body(default={}),
                     status_code=422,
                     detail="Cada posição precisa de pipeline_name, layout_x e "
                            "layout_y numéricos")
-            cur.execute(
-                "UPDATE dbo.etl_malha_pipeline SET layout_x = ?, layout_y = ? "
-                "WHERE malha_name = ? AND pipeline_name = ?",
-                (float(x), float(y), malha, nome))
+            if nome.startswith("no:"):
+                # Nó especial (F10): "no:{id}" é o contrato do §9 — o prefixo
+                # não colide com pipeline real (nome com ':' não é dag_id
+                # válido no Airflow).
+                if tem_075 is None:
+                    tem_075 = _tabelas_075(cur)
+                if not tem_075:
+                    _fechar_silencioso(conn)
+                    raise HTTPException(status_code=503, detail=_MSG_SEM_075)
+                try:
+                    no_id = int(nome[3:])
+                except ValueError:
+                    _fechar_silencioso(conn)
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Posição de nó deve usar o formato 'no:{id}'")
+                cur.execute(
+                    "UPDATE dbo.etl_malha_no SET layout_x = ?, layout_y = ? "
+                    "WHERE id = ? AND malha_name = ?",
+                    (float(x), float(y), no_id, malha))
+            else:
+                cur.execute(
+                    "UPDATE dbo.etl_malha_pipeline SET layout_x = ?, layout_y = ? "
+                    "WHERE malha_name = ? AND pipeline_name = ?",
+                    (float(x), float(y), malha, nome))
             if (cur.rowcount or 0) > 0:
                 atualizados += 1
             else:
                 ignorados += 1
         conn.commit(); cur.close(); conn.close()
         return {"ok": True, "atualizados": atualizados, "ignorados": ignorados}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+# ── Nós especiais (F10) — o DESENHO dos componentes de malha ─────────────────
+# SÓ desenho, ZERO efeito no motor nesta fase: nenhuma linha da 067 nasce
+# destes gestos — a compilação do Aguarde (expansão → 067 assinada + espelho
+# CSV + carimbo + dry_run) é a F11; o agendamento do Início é a F13; os
+# observadores (guardiã) são a F14.
+
+@router.post("/malhas/{malha_name}/nos", tags=["malhas"])
+def add_no(malha_name: str, body: dict = Body(default={}),
+           _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    """Cria um nó especial do desenho (F10 — §1/§2 do desenho de componentes).
+
+    `config` nesta fase é validado só na ESTRUTURA (objeto JSON) — a validação
+    rica por tipo (agendamento do Início, título/mensagem da Notificação) é a
+    F13. Um Início e um Fim por malha: 422 aqui e índice filtrado da 075 por
+    baixo — um INSERT por SQL direto também estoura."""
+    tipo = (body.get("tipo") or "").strip().lower()
+    if tipo not in _TIPOS_NO:
+        raise HTTPException(status_code=422,
+                            detail="tipo deve ser um de: inicio, aguarde, "
+                                   "notificacao, fim")
+    config = body.get("config")
+    if config is not None and not isinstance(config, dict):
+        raise HTTPException(status_code=422, detail="config deve ser um objeto JSON")
+    x = body.get("layout_x")
+    y = body.get("layout_y")
+    for v in (x, y):
+        if v is not None and (not isinstance(v, (int, float)) or isinstance(v, bool)):
+            raise HTTPException(status_code=422,
+                                detail="layout_x/layout_y devem ser numéricos")
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabelas(cur, conn)
+        _exigir_tabelas_075(cur, conn)
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        if tipo in ("inicio", "fim"):
+            cur.execute("SELECT 1 FROM dbo.etl_malha_no "
+                        "WHERE malha_name = ? AND tipo = ?", (malha, tipo))
+            if cur.fetchone():
+                _fechar_silencioso(conn)
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"A malha já tem um nó {_ROTULO_NO[tipo]} — só "
+                           "pode haver um por malha")
+        criado_por = None
+        if isinstance(_auth, dict):
+            criado_por = (str(_auth.get("matricula") or "").strip() or None)
+        cur.execute(
+            "INSERT INTO dbo.etl_malha_no "
+            "(malha_name, tipo, config_json, layout_x, layout_y, criado_por) "
+            "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?, ?)",
+            (malha, tipo,
+             json.dumps(config, ensure_ascii=False) if config is not None else None,
+             None if x is None else float(x), None if y is None else float(y),
+             (criado_por or "")[:100] or None))
+        novo_id = int(cur.fetchone()[0])
+        avisos = _avisos_desenho(_nos_da_malha(cur, malha),
+                                 _arestas_da_malha(cur, malha))
+        conn.commit(); cur.close(); conn.close()
+        return {"ok": True, "id": novo_id, "avisos": avisos}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+@router.patch("/malhas/{malha_name}/nos/{no_id}", tags=["malhas"])
+def update_no(malha_name: str, no_id: int, body: dict = Body(default={}),
+              _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    """Atualiza config e/ou layout de um nó (F10 — §9).
+
+    `tipo` NÃO é editável: trocar o tipo mudaria a semântica do desenho por
+    baixo do que já está ligado — recriar o nó é o gesto honesto. `config`
+    presente com None LIMPA a configuração; a validação rica por tipo é F13."""
+    tem_config = "config" in body
+    config = body.get("config")
+    if tem_config and config is not None and not isinstance(config, dict):
+        raise HTTPException(status_code=422, detail="config deve ser um objeto JSON")
+    tem_layout = ("layout_x" in body) or ("layout_y" in body)
+    if tem_layout:
+        x, y = body.get("layout_x"), body.get("layout_y")
+        for v in (x, y):
+            if not isinstance(v, (int, float)) or isinstance(v, bool):
+                raise HTTPException(status_code=422,
+                                    detail="layout_x e layout_y devem vir "
+                                           "juntos e numéricos")
+    if not tem_config and not tem_layout:
+        raise HTTPException(status_code=422,
+                            detail="Nada para atualizar: envie config e/ou "
+                                   "layout_x/layout_y")
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabelas(cur, conn)
+        _exigir_tabelas_075(cur, conn)
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        cur.execute("SELECT id, tipo FROM dbo.etl_malha_no "
+                    "WHERE id = ? AND malha_name = ?", (no_id, malha))
+        if cur.fetchone() is None:
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=404,
+                                detail=f"Nó {no_id} não existe na malha '{malha}'")
+        if tem_config:
+            cur.execute(
+                "UPDATE dbo.etl_malha_no SET config_json = ? "
+                "WHERE id = ? AND malha_name = ?",
+                (json.dumps(config, ensure_ascii=False) if config is not None else None,
+                 no_id, malha))
+        if tem_layout:
+            cur.execute(
+                "UPDATE dbo.etl_malha_no SET layout_x = ?, layout_y = ? "
+                "WHERE id = ? AND malha_name = ?",
+                (float(x), float(y), no_id, malha))
+        avisos = _avisos_desenho(_nos_da_malha(cur, malha),
+                                 _arestas_da_malha(cur, malha))
+        conn.commit(); cur.close(); conn.close()
+        return {"ok": True, "avisos": avisos}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+@router.delete("/malhas/{malha_name}/nos/{no_id}", tags=["malhas"])
+def remove_no(malha_name: str, no_id: int,
+              _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    """Exclui um nó do desenho, removendo PRIMEIRO as arestas dele na MESMA
+    transação — a FK NO ACTION da 075 (§1.3/§1.4) não deixa outra ordem: um
+    DELETE de nó por SQL direto com arestas penduradas falha alto, nunca leva
+    desenho junto em silêncio.
+
+    FRONTEIRA F10/F11: nesta fase nós não têm linhas ASSINADAS na 067 (a
+    compilação ainda não existe), então não há descompilação — na F11 este
+    gesto ganha dry_run e o efeito §7.3 (remover/transferir linhas assinadas
+    entre malhas); o Início assinado (raiz vira on_demand) é a F13. As FKs
+    origem_no/agenda_no garantem que essa ordem também será obrigatória lá."""
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabelas(cur, conn)
+        _exigir_tabelas_075(cur, conn)
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        cur.execute("SELECT id, tipo FROM dbo.etl_malha_no "
+                    "WHERE id = ? AND malha_name = ?", (no_id, malha))
+        if cur.fetchone() is None:
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=404,
+                                detail=f"Nó {no_id} não existe na malha '{malha}'")
+        cur.execute("DELETE FROM dbo.etl_malha_aresta "
+                    "WHERE origem_no = ? OR destino_no = ?", (no_id, no_id))
+        arestas_removidas = max(cur.rowcount or 0, 0)
+        cur.execute("DELETE FROM dbo.etl_malha_no WHERE id = ?", (no_id,))
+        avisos = _avisos_desenho(_nos_da_malha(cur, malha),
+                                 _arestas_da_malha(cur, malha))
+        conn.commit(); cur.close(); conn.close()
+        return {"ok": True, "arestas_removidas": arestas_removidas,
+                "avisos": avisos}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+@router.post("/malhas/{malha_name}/arestas", tags=["malhas"])
+def add_aresta_no(malha_name: str, body: dict = Body(default={}),
+                  _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    """Cria uma aresta do desenho envolvendo nó (F10), com a GRAMÁTICA COMPLETA
+    da tabela §2.1 — cada célula proibida devolve 422 com a mensagem da célula;
+    pipeline→pipeline é recusado AQUI com a instrução da porta certa (a aresta
+    direta do F8 grava dependência REAL na 067 — outra semântica, outra porta).
+
+    Body (§9): {"origem": {"no": id} | {"pipeline": nome}, "destino": {...}}.
+    Idempotente: aresta que já existe devolve ja_existia=True sem regravar.
+    O ciclo validado nesta fase é o TOPOLÓGICO do desenho (ver
+    _criaria_ciclo_desenho — a fronteira F10/F11 está registrada lá); o
+    dry_run com o efeito compilado (§7.2) chega na F11."""
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabelas(cur, conn)
+        _exigir_tabelas_075(cur, conn)
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        origem = _resolver_ponta(cur, conn, malha, body.get("origem"), "origem")
+        destino = _resolver_ponta(cur, conn, malha, body.get("destino"), "destino")
+        erro = _erro_gramatica(origem["tipo"], destino["tipo"])
+        if erro:
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=422, detail=erro)
+        arestas = _arestas_da_malha(cur, malha)
+        chave_o = _chave_ponta(origem["no"], origem["pipeline"])
+        chave_d = _chave_ponta(destino["no"], destino["pipeline"])
+        for a in arestas:
+            if (_chave_ponta(a["origem_no"], a["origem_pipeline"]) == chave_o
+                    and _chave_ponta(a["destino_no"], a["destino_pipeline"]) == chave_d):
+                # Idempotente (aceite F8: re-salvar é no-op) — nem commit.
+                avisos = _avisos_desenho(_nos_da_malha(cur, malha), arestas)
+                cur.close(); conn.close()
+                return {"ok": True, "id": a["id"], "ja_existia": True,
+                        "avisos": avisos}
+        if _criaria_ciclo_desenho(arestas, chave_o, chave_d):
+            _fechar_silencioso(conn)
+            # Texto espelhado no cliente (regra F8) — determinístico.
+            raise HTTPException(
+                status_code=422,
+                detail=f"Ciclo no desenho: {_rotulo_ponta(origem)} → "
+                       f"{_rotulo_ponta(destino)} fecha um ciclo (o caminho "
+                       f"volta para {_rotulo_ponta(origem)})")
+        cur.execute(
+            "INSERT INTO dbo.etl_malha_aresta "
+            "(malha_name, origem_no, origem_pipeline, destino_no, destino_pipeline) "
+            "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?)",
+            (malha, origem["no"], origem["pipeline"],
+             destino["no"], destino["pipeline"]))
+        novo_id = int(cur.fetchone()[0])
+        avisos = _avisos_desenho(_nos_da_malha(cur, malha),
+                                 _arestas_da_malha(cur, malha))
+        conn.commit(); cur.close(); conn.close()
+        return {"ok": True, "id": novo_id, "ja_existia": False, "avisos": avisos}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+@router.delete("/malhas/{malha_name}/arestas/{aresta_id}", tags=["malhas"])
+def remove_aresta_no(malha_name: str, aresta_id: int,
+                     _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    """Remove UMA aresta de nó do desenho (F10 — sem efeito no motor: nenhuma
+    linha da 067 é tocada; a recompilação do nó afetado, o dry_run e a
+    confirmação de remoção de linhas reais chegam na F11, §7.3)."""
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabelas(cur, conn)
+        _exigir_tabelas_075(cur, conn)
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        cur.execute("DELETE FROM dbo.etl_malha_aresta "
+                    "WHERE id = ? AND malha_name = ?", (aresta_id, malha))
+        if (cur.rowcount or 0) == 0:
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=404,
+                detail=f"Aresta {aresta_id} não existe na malha '{malha}'")
+        avisos = _avisos_desenho(_nos_da_malha(cur, malha),
+                                 _arestas_da_malha(cur, malha))
+        conn.commit(); cur.close(); conn.close()
+        return {"ok": True, "avisos": avisos}
     except HTTPException:
         raise
     except Exception as e:

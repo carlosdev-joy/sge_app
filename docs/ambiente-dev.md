@@ -83,3 +83,10 @@ Airflow").
 - O banco está sem dados de negócio; para cenários com pipelines reais, usar
   `scripts/carregar-dados-dev.sh` com um dump de produção, ou criar pipelines
   de teste pela própria UI.
+
+## Nota de operação (075+): DML manual em etl_pipeline_dependencia
+
+Após a migration 075 (índice filtrado `ix_dep_origem_no`), qualquer
+INSERT/UPDATE/DELETE **manual** nessa tabela via `sqlcmd` exige a flag `-I`
+(QUOTED_IDENTIFIER ON) — sem ela, erro 1934. App e migrations não são
+afetados (pyodbc/pymssql já setam a opção).
