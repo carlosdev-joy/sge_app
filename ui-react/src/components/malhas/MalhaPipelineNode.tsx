@@ -70,12 +70,14 @@ function MalhaPipelineNodeImpl({ id, data, selected }: NodeProps & { data: Malha
           {exec.rotulo}
         </span>
       )}
-      {/* F13: badge de contradição (§2.2) — mesma posição do badge de
-          execução, mas eles nunca convivem (contradicao só na montagem). */}
-      {!exec && data.contradicao && (
+      {/* F13/F15: badge de contradição (§2.2). Ele CONVIVE com o badge de
+          execução (F15: a contradição também vale na visão de Execução — é
+          lá que mora o disparo manual, que parte a raiz por cima do
+          predecessor): status à direita, contradição à ESQUERDA. */}
+      {data.contradicao && (
         <span
-          className="absolute -top-2 -right-2 z-10 flex items-center gap-1 rounded-full border border-amber-300 bg-amber-100 px-1.5 py-px text-[9px] font-semibold leading-tight text-amber-800 dark:border-amber-700 dark:bg-amber-900/60 dark:text-amber-300"
-          title="Esta raiz tem dependência cadastrada — o motor obedece a dependência e o agendamento da malha está inerte nela."
+          className="absolute -top-2 -left-2 z-10 flex items-center gap-1 rounded-full border border-amber-300 bg-amber-100 px-1.5 py-px text-[9px] font-semibold leading-tight text-amber-800 dark:border-amber-700 dark:bg-amber-900/60 dark:text-amber-300"
+          title="Esta raiz tem dependência cadastrada — o motor obedece a dependência e o agendamento da malha está inerte nela. Um disparo manual da malha parte esta raiz POR CIMA do predecessor."
         >
           agenda inerte
         </span>

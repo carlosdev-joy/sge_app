@@ -29,6 +29,15 @@
 // (compilada_por) e desenha com CADEADO, somente leitura aqui — a recusa usa
 // a mesma mensagem do 422 (Decisão 4). Avisos de desenho (§2.2): banner
 // persistente alimentado pelo GET + toast no gesto que os cria.
+// F15 (desenho §8): os componentes ganham CAMADA de execução no modo Execução
+// — Início com raízes-na-data + próxima execução (display-only), Aguarde
+// satisfeito/bloqueado/aguardando derivado de execucoes[] × upstream (o
+// upstream vem do SERVIDOR), Notificação/Fim acesos pelo evento do dia
+// (eventos_no da F14) — nó sem dado na data fica NEUTRO (regra F9); banner
+// verde de "malha concluída"; eventos de nó entram no painel da guardiã; e o
+// DISPARO MANUAL da malha: botão → dry_run (raízes + ODATE no modal) →
+// confirmar → POST /malhas/{m}/disparo dispara as raízes pelo trigger REST
+// da casa — a cascata anda pelo push, nenhum executor novo.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -57,15 +66,17 @@ import { Autocomplete } from '../ui/Autocomplete'
 import { PageSpinner } from '../ui/Spinner'
 import {
   Activity, AlertCircle, AlertTriangle, Anchor, ArrowRightLeft, ArrowUpDown,
-  CalendarClock, ChevronLeft, ChevronRight, Info, Link2, Lock, Minus,
-  MousePointerClick, Plus, RefreshCw, Save, ShieldAlert, Trash2, Wrench,
+  CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, Info, Link2, Lock,
+  Minus, MousePointerClick, Play, Plus, RefreshCw, Save, ShieldAlert, Trash2,
+  Wrench,
 } from 'lucide-react'
+import { useAuthStore } from '../../store/auth'
 import { useColorMode } from '../etapas/useColorMode'
 import { liveLayout, criaCiclo, type Orientacao } from '../etapas/layoutGrafo'
 import { MalhaPipelineNode, type MalhaPipelineNodeData } from './MalhaPipelineNode'
 import {
   InicioNode, AguardeNode, NotificacaoNode, FimNode,
-  type MalhaComponenteNodeData,
+  type ExecComponente, type MalhaComponenteNodeData,
 } from './MalhaComponenteNodes'
 import { COMPONENTE_META, type TipoComponente } from './componenteMeta'
 // F13: painel de agendamento do nó Início — o agendamento mora na MALHA
@@ -75,6 +86,9 @@ import {
   STATUS_EXECUCAO, ORDEM_LEGENDA, estiloEvento,
   type ExecucaoPipeline, type MalhaExecucaoApi,
 } from './statusExecucao'
+// F15: próxima execução do agendamento — DISPLAY-ONLY (a autoridade do
+// gatilho é o scheduler; mesmo estatuto do calcularDataRef da F5).
+import { proximaExecucaoTexto } from './proximaExecucao'
 // Mensagens de recusa ESPELHADAS do servidor — módulo compartilhado com o
 // DependenciasModal da F5: cliente e servidor com o MESMO texto, num lugar só.
 import { msgCiclo, MSG_SELF, msgRepublicar, msgLinhaAssinada } from './mensagensDependencia'
@@ -140,6 +154,11 @@ interface AvisoDesenho {
   no: number | null
   nivel: string
   mensagem: string
+  // F15 (aditivo): chave estável do aviso — hoje só 'contradicao' (raiz
+  // assinada com dependência). A visão de Execução mostra ESTE aviso mesmo
+  // sem o banner de montagem: é lá que vive o disparo manual, que parte a
+  // raiz por cima do predecessor.
+  tipo?: string
 }
 interface MalhaDetalheApi {
   malha_name: string
@@ -197,6 +216,39 @@ interface GestoWriteResposta {
   efeito: EfeitoGesto
 }
 
+// ── Contrato do disparo manual da malha (F15 — POST /malhas/{m}/disparo) ────
+interface DisparoRaizInfo {
+  pipeline: string
+  active: number
+  dag_criada: number
+  // F15 (revisão): a raiz tem dependência na 067 (o disparo manual parte por
+  // cima do predecessor) e quantas corridas ela já tem na data (a raiz não é
+  // protegida pelo claim — disparar de novo roda de novo).
+  tem_dependencia?: boolean
+  corridas_na_data?: number
+}
+interface DisparoDryResposta {
+  data_referencia: string
+  raizes: DisparoRaizInfo[]
+  avisos: AvisoDesenho[]
+}
+interface DisparoResposta {
+  ok: boolean
+  data_referencia: string
+  disparadas: { pipeline: string; dag_run_id: string }[]
+  falhas: { pipeline: string; erro: string }[]
+  avisos: AvisoDesenho[]
+}
+
+// Linha unificada do painel de eventos (F9 pipelines + F14 nós observadores).
+interface EventoPainel {
+  rotulo: string
+  ehNo: boolean
+  tipo: string
+  criado_em: string
+  mensagem: string | null
+}
+
 // Ponta de aresta de nó no contrato §9: {no: id} XOR {pipeline: nome}.
 type PontaGesto = { no: number } | { pipeline: string }
 
@@ -246,6 +298,79 @@ function tituloExecucao(e: ExecucaoPipeline): string {
     linha += `\naguardando: ${e.faltantes.join(', ')}`
   }
   return e.motivo ? `${linha}\n${e.motivo}` : linha
+}
+
+// F15: estado de execução de um componente (desenho §8) — derivação PURA de
+// dados que o payload já tem. null = NEUTRO: modo Montagem, nó desligado do
+// grafo ou nenhuma execução na data que sustente estado (a regra F9 de nunca
+// inventar cor). O upstream do Aguarde vem do SERVIDOR (§3.2) — aqui só se
+// cruza com execucoes[]; Notificação/Fim acendem pelo evento do dia (F14).
+function execDoComponente(
+  n: MalhaNoApi,
+  tipo: TipoComponente,
+  raizes: string[],
+  execPorPipeline: Map<string, ExecucaoPipeline>,
+  eventoNoPorId: Map<string, string>,
+  agendamento: Record<string, unknown> | null,
+): ExecComponente | null {
+  switch (tipo) {
+    case 'inicio': {
+      if (raizes.length === 0) return null
+      // Contagem POR STATUS, nunca por presença de linha: PULADO (regra de
+      // agenda barrou o dia) e FALHA também têm linha em
+      // etl_pipeline_execucao — contá-las como "partiu" pintaria o Início de
+      // verde num sábado em que nada rodou, ou ao lado de um Aguarde
+      // vermelho. Verde é SUCESSO no canvas inteiro.
+      let sucesso = 0, falha = 0, pulado = 0, emCurso = 0, semLinha = 0
+      for (const p of raizes) {
+        const st = execPorPipeline.get(p)?.status
+        if (st === undefined) semLinha += 1
+        else if (st === 'SUCESSO') sucesso += 1
+        else if (st === 'FALHA') falha += 1
+        else if (st === 'PULADO') pulado += 1
+        else emCurso += 1        // EXECUTANDO / AGUARDANDO_DEPENDENCIA / cru
+      }
+      return {
+        kind: 'inicio',
+        raizes: raizes.length,
+        sucesso, falha, pulado, emCurso, semLinha,
+        proxima: proximaExecucaoTexto(agendamento),
+      }
+    }
+    case 'aguarde': {
+      const upstream = n.upstream
+      if (upstream.length === 0) return null
+      if (!upstream.some(p => execPorPipeline.has(p))) return null
+      const bloqueiam = upstream.filter(p => {
+        const st = execPorPipeline.get(p)?.status
+        return st === 'FALHA' || st === 'NAO_LIBEROU'
+      })
+      if (bloqueiam.length > 0) {
+        return { kind: 'aguarde', estado: 'bloqueado', faltam: [], bloqueiam }
+      }
+      const faltam = upstream.filter(
+        p => execPorPipeline.get(p)?.status !== 'SUCESSO')
+      return faltam.length === 0
+        ? { kind: 'aguarde', estado: 'satisfeito', faltam: [], bloqueiam: [] }
+        : { kind: 'aguarde', estado: 'aguardando', faltam, bloqueiam: [] }
+    }
+    // Observadores: upstream VAZIO é o skip da guardiã (Decisão 13) — a tela
+    // diz isso, em vez de prometer "aguardando" para sempre. Mesma régua do
+    // Aguarde acima, que já devolvia neutro sem upstream. Evento JÁ emitido
+    // (upstream desligado depois) continua aparecendo: histórico verdadeiro.
+    case 'notificacao':
+      return {
+        kind: 'notificacao',
+        emitidaEm: eventoNoPorId.get(`${n.id}:MALHA_NOTIFICACAO`) ?? null,
+        semEntradas: n.upstream.length === 0,
+      }
+    case 'fim':
+      return {
+        kind: 'fim',
+        concluidaEm: eventoNoPorId.get(`${n.id}:MALHA_CONCLUIDA`) ?? null,
+        semEntradas: n.upstream.length === 0,
+      }
+  }
 }
 
 // ── Construção de nós/arestas ───────────────────────────────────────────────
@@ -398,6 +523,10 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   const [gestoCarregando, setGestoCarregando] = useState(false)
   const [aplicandoGesto, setAplicandoGesto] = useState(false)
   const [prendendo, setPrendendo] = useState(false)
+  // F15: disparo manual da malha — dry_run aguardando confirmação no modal.
+  const [disparo, setDisparo] = useState<DisparoDryResposta | null>(null)
+  const [disparoCarregando, setDisparoCarregando] = useState(false)
+  const [disparando, setDisparando] = useState(false)
   // Busca da paleta (adicionar membro).
   const [busca, setBusca] = useState('')
   // F9: Montagem (default, editável) | Execução (leitura da data de referência).
@@ -445,10 +574,34 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
     for (const e of execData?.execucoes ?? []) map.set(e.pipeline_name, e)
     return map
   }, [execData])
-  const eventos = useMemo(
-    () => [...(execData?.eventos ?? [])]
-      .sort((a, b) => b.criado_em.localeCompare(a.criado_em)),
-    [execData])
+  // Painel de eventos UNIFICADO (F15): eventos de pipeline (F9) + eventos dos
+  // nós observadores (F14, marcador já resolvido pelo servidor) — o painel
+  // nunca esconde linha que o banco tem (contrato F9).
+  const eventos = useMemo<EventoPainel[]>(() => {
+    const lista: EventoPainel[] = [
+      ...(execData?.eventos ?? []).map(ev => ({
+        rotulo: ev.pipeline_name, ehNo: false, tipo: ev.tipo,
+        criado_em: ev.criado_em, mensagem: ev.mensagem,
+      })),
+      ...(execData?.eventos_no ?? []).map(ev => ({
+        rotulo: `${COMPONENTE_META[ev.tipo_no as TipoComponente]?.rotulo ?? ev.tipo_no} #${ev.no_id}`,
+        ehNo: true, tipo: ev.tipo, criado_em: ev.criado_em,
+        mensagem: ev.mensagem,
+      })),
+    ]
+    return lista.sort((a, b) => b.criado_em.localeCompare(a.criado_em))
+  }, [execData])
+  // F15: evento mais recente por nó observador E tipo — a fonte do estado
+  // aceso/apagado de Notificação ("emitida às") e Fim ("concluída às").
+  const eventoNoPorId = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const ev of [...(execData?.eventos_no ?? [])]
+      .sort((a, b) => b.criado_em.localeCompare(a.criado_em))) {
+      const k = `${ev.no_id}:${ev.tipo}`
+      if (!m.has(k)) m.set(k, ev.criado_em)
+    }
+    return m
+  }, [execData])
   // Edição travada na visão de execução — MESMO mecanismo do readOnly da F8.
   const travado = readOnly || emExecucao
 
@@ -470,6 +623,11 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   }, [data])
   const avisosDesenho = useMemo<AvisoDesenho[]>(
     () => (Array.isArray(data?.avisos) ? data.avisos : []), [data])
+  // F15: os avisos de CONTRADIÇÃO (raiz assinada com dependência) valem
+  // também na Execução — o disparo manual parte a raiz por cima do
+  // predecessor (trigger manual não consulta a liberação).
+  const avisosContradicao = useMemo(
+    () => avisosDesenho.filter(a => a.tipo === 'contradicao'), [avisosDesenho])
 
   // Rótulo curto de uma ponta/nó para mensagens ("Aguarde #8" / nome do pipe).
   const rotuloPontaGesto = useCallback((p: PontaGesto): string => {
@@ -505,12 +663,20 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
     // Contagens de arestas de nó — o subtítulo honesto dos cards.
     const entradasNo = new Map<number, number>()
     const saidasNo = new Map<number, number>()
+    // F15: pipelines de SAÍDA por nó — as raízes do Início na camada de
+    // execução ("raízes na data: M/N" conta execução registrada de cada uma).
+    const saidasPipelineNo = new Map<number, string[]>()
     for (const a of arestasNo) {
       if (a.destino_no != null) {
         entradasNo.set(a.destino_no, (entradasNo.get(a.destino_no) ?? 0) + 1)
       }
       if (a.origem_no != null) {
         saidasNo.set(a.origem_no, (saidasNo.get(a.origem_no) ?? 0) + 1)
+        if (a.destino_pipeline) {
+          const lista = saidasPipelineNo.get(a.origem_no) ?? []
+          lista.push(a.destino_pipeline)
+          saidasPipelineNo.set(a.origem_no, lista)
+        }
       }
     }
     // O auto-layout do baseline segue a orientação SALVA (a que o servidor
@@ -535,7 +701,8 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
       const base = salva ?? auto[noRfId(n.id)] ?? { x: 0, y: 0 }
       baseline.set(noRfId(n.id), { x: Math.round(base.x), y: Math.round(base.y) })
     }
-    return { membros, nos, novasEdges, baseline, entradasNo, saidasNo }
+    return { membros, nos, novasEdges, baseline, entradasNo, saidasNo,
+             saidasPipelineNo }
   }, [data])
 
   // (Re)constrói nós/arestas a partir do grafo derivado. O rebuild PRESERVA a
@@ -566,14 +733,19 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             ...nodeData(m),
             orientacao,
             exec: exec ? { status: exec.status, titulo: tituloExecucao(exec) } : null,
-            // F13: badge de contradição no pipeline (raiz assinada com
-            // dependência) — só na montagem; a Execução tem camada própria.
-            contradicao: !emExecucao && !!m.agenda_contradicao,
+            // F13/F15: badge de contradição no pipeline (raiz assinada com
+            // dependência) — nos DOIS modos: na Execução ele convive com o
+            // badge de status (cantos opostos do card).
+            contradicao: !!m.agenda_contradicao,
           },
         }
       }),
       ...grafo.nos.map(n => {
         const tipo = n.tipo as TipoComponente
+        // F15: a camada de execução só existe com a visão aberta E dados da
+        // 067 disponíveis — deploy parcial degrada para o card neutro.
+        const camadaExec = emExecucao && !!execData
+          && execData.migration_067_pendente !== true
         return {
           id: noRfId(n.id),
           type: COMPONENTE_META[tipo].nodeType,
@@ -593,15 +765,25 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             agendaResumo: tipo === 'inicio'
               ? (data?.agendamento_resumo ?? null)
               : null,
-            contradicao: tipo === 'inicio' && !emExecucao
+            // F15: a contradição vale nos DOIS modos — na Execução ela é
+            // ainda mais importante (o disparo manual atropela a
+            // dependência); o badge do Início não colide com camada nenhuma.
+            contradicao: tipo === 'inicio'
               && grafo.membros.some(
                 m => m.agenda_contradicao && m.agenda_no === n.id),
+            execNo: camadaExec
+              ? execDoComponente(n, tipo,
+                  grafo.saidasPipelineNo.get(n.id) ?? [],
+                  execPorPipeline, eventoNoPorId,
+                  data?.agendamento ?? null)
+              : null,
           } satisfies MalhaComponenteNodeData,
         }
       }),
     ])
     setEdges(grafo.novasEdges)
-  }, [grafo, setNodes, setEdges, emExecucao, execPorPipeline, orientacao, data])
+  }, [grafo, setNodes, setEdges, emExecucao, execPorPipeline, eventoNoPorId,
+      execData, orientacao, data])
 
   // dirty = alguma posição difere do baseline do servidor (arredondado — é o
   // que o PUT envia). Mover um nó e devolvê-lo ao lugar volta a desabilitar o
@@ -677,6 +859,70 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
     qc.invalidateQueries({ queryKey: ['malha'] })
     qc.invalidateQueries({ queryKey: ['pipelines'] })
   }, [qc])
+
+  // ── Disparo manual da malha (F15) ─────────────────────────────────────────
+  // Mesma permissão do botão de rodar pipeline (acao_executar) — o servidor
+  // exige por baixo de qualquer forma.
+  const user = useAuthStore(s => s.user)
+  const isAdmin = useAuthStore(s => s.isAdmin)
+  const podeExecutar = isAdmin() || !!user?.permissoes?.includes('acao_executar')
+
+  // dry_run ANTES do gesto (§7.2): o modal mostra raízes + ODATE + avisos —
+  // nada foi disparado ainda. A data enviada é a EXIBIDA (WYSIWYG: o que o
+  // operador vê é o que as raízes recebem no conf).
+  const abrirDisparo = useCallback(async () => {
+    if (disparoCarregando) return
+    setDisparoCarregando(true)
+    try {
+      const r = await apiFetch<DisparoDryResposta>(
+        `/malhas/${encodeURIComponent(malha)}/disparo`, {
+          method: 'POST',
+          body: JSON.stringify({
+            dry_run: true,
+            ...(dataExibida ? { data_referencia: dataExibida } : {}),
+          }),
+        })
+      setDisparo(r)
+    } catch (err) {
+      // 422 (sem Início / sem raiz / data inválida) e 503 (075) chegam como
+      // detail pt-BR — o servidor é a autoridade.
+      const httpErr = err as Error & { status?: number }
+      toast.error(httpErr.message || 'Erro ao preparar o disparo da malha')
+    } finally {
+      setDisparoCarregando(false)
+    }
+  }, [disparoCarregando, malha, dataExibida])
+
+  // Confirmar: re-envia SEM dry_run com a MESMA data mostrada no modal. O
+  // resultado é reportado POR RAIZ — sucesso agregado + um toast de erro por
+  // falha (nunca escondido num "ok" genérico).
+  const confirmarDisparo = useCallback(async () => {
+    if (!disparo || disparando) return
+    setDisparando(true)
+    try {
+      const r = await apiFetch<DisparoResposta>(
+        `/malhas/${encodeURIComponent(malha)}/disparo`, {
+          method: 'POST',
+          body: JSON.stringify({ data_referencia: disparo.data_referencia }),
+        })
+      if (r.disparadas.length > 0) {
+        toast.success(r.disparadas.length === 1
+          ? `1 raiz disparada com data de referência ${r.data_referencia} — a cadeia anda pelo push.`
+          : `${r.disparadas.length} raízes disparadas com data de referência ${r.data_referencia} — a cadeia anda pelo push.`)
+      }
+      r.falhas.forEach(f => toast.error(`${f.pipeline}: ${f.erro}`))
+      if (r.disparadas.length === 0 && r.falhas.length === 0) {
+        toast.info('Nenhuma raiz para disparar.')
+      }
+      qc.invalidateQueries({ queryKey: ['malha-execucao', malha] })
+    } catch (err) {
+      const httpErr = err as Error & { status?: number }
+      toast.error(httpErr.message || 'Erro ao disparar a malha')
+    } finally {
+      setDisparando(false)
+      setDisparo(null)
+    }
+  }, [disparo, disparando, malha, qc])
 
   // ── Gestos de aresta de nó / componente (dry_run → modal → write) ─────────
   const aplicarAresta = useCallback(async (
@@ -1338,6 +1584,28 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             {execQuery.isFetching && (
               <RefreshCw size={12} className="animate-spin text-dim" />
             )}
+            {/* F15: disparo manual da malha — dry_run mostra raízes + ODATE
+                no modal antes de qualquer trigger; sem Início o servidor
+                recusa com instrução (o botão avisa no title). */}
+            {!readOnly && podeExecutar && (
+              <Button
+                size="sm"
+                onClick={() => void abrirDisparo()}
+                loading={disparoCarregando}
+                // Sem dataExibida (execQuery ainda carregando ou em erro) o
+                // gesto enviaria SEM data e o servidor escolheria sozinho —
+                // o operador dispararia numa data que a tela não mostrou.
+                // Mesma condição dos botões de navegação de data.
+                disabled={!temInicio || !dataExibida}
+                title={!temInicio
+                  ? 'A malha não tem componente Início — adicione-o no modo Montagem e ligue-o às raízes'
+                  : !dataExibida
+                    ? 'Aguardando a data de referência desta visão'
+                    : 'Disparar as raízes da malha (ligadas ao Início) com esta data de referência — a cadeia anda pelo push'}
+              >
+                <Play size={13} /> Disparar malha
+              </Button>
+            )}
           </div>
         )}
       </div>
@@ -1411,6 +1679,22 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
         </div>
       )}
 
+      {/* F15: na Execução o banner de montagem não aparece, mas o aviso de
+          CONTRADIÇÃO sim — é aqui que vive o "Disparar malha", e um disparo
+          manual parte a raiz por cima do predecessor (o trigger manual não
+          consulta a liberação). */}
+      {emExecucao && avisosContradicao.length > 0 && (
+        <div className="max-h-20 overflow-y-auto border-b border-amber-200 bg-amber-50 px-3 py-1.5 dark:border-amber-800 dark:bg-amber-900/20">
+          {avisosContradicao.map((a, i) => (
+            <div key={`c-${i}`}
+              className="flex items-center gap-1.5 py-0.5 text-[11px] text-amber-700 dark:text-amber-400">
+              <AlertTriangle size={12} className="shrink-0" />
+              <span>{a.mensagem}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* F9: estados honestos da visão de execução. Antes da retomada F2–F4
           nada grava em etl_pipeline_execucao — o vazio é esperado e dito. */}
       {emExecucao && execQuery.isError && (
@@ -1433,6 +1717,18 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
         </div>
       )}
 
+      {/* F15 (§6): banner verde da conclusão — o evento MALHA_CONCLUIDA do nó
+          Fim nesta data. Evento emitido é histórico verdadeiro: o banner some
+          trocando a data consultada, nunca por apagamento. */}
+      {emExecucao && execData?.malha_concluida?.em && (
+        <div className="flex items-center gap-2 border-b border-green-200 bg-green-50 px-3 py-2 text-[12px] font-medium text-green-800 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300">
+          <CheckCircle2 size={14} className="shrink-0" />
+          <span>
+            Malha concluída em {dataExibida} às {horaCurta(execData.malha_concluida.em)}.
+          </span>
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1">
         {/* Painel lateral de eventos da guardiã (F9) — só na visão de execução. */}
         {emExecucao && (
@@ -1449,7 +1745,7 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
                   Nenhum evento da guardiã nesta data.
                 </p>
               ) : eventos.map((ev, i) => (
-                <div key={`${ev.pipeline_name}-${ev.criado_em}-${i}`}
+                <div key={`${ev.rotulo}-${ev.criado_em}-${i}`}
                   className="rounded-md border border-edge bg-canvas px-2 py-1.5">
                   <div className="flex items-center gap-1.5">
                     <span className={`rounded border px-1 py-px text-[9px] font-bold ${estiloEvento(ev.tipo)}`}>
@@ -1457,8 +1753,13 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
                     </span>
                     <span className="ml-auto text-[10px] text-dim">{horaCurta(ev.criado_em)}</span>
                   </div>
-                  <div className="mt-0.5 truncate font-mono text-[10px] text-ink" title={ev.pipeline_name}>
-                    {ev.pipeline_name}
+                  {/* F15: evento de NÓ observador (F14) usa o rótulo do
+                      componente; o de pipeline segue em mono, como sempre. */}
+                  <div
+                    className={`mt-0.5 truncate text-[10px] text-ink ${ev.ehNo ? 'font-medium' : 'font-mono'}`}
+                    title={ev.rotulo}
+                  >
+                    {ev.rotulo}
                   </div>
                   {ev.mensagem && (
                     <p className="mt-0.5 text-[10px] leading-snug text-dim">{ev.mensagem}</p>
@@ -1913,6 +2214,93 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
                   {gesto.acao === 'remover-no' && <><Trash2 size={13} /> Excluir componente</>}
                 </Button>
               )}
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* F15: confirmação do disparo manual — o que SERÁ disparado (raízes +
+          ODATE), dito antes de qualquer trigger; avisos honestos por raiz. */}
+      <Modal
+        open={!!disparo}
+        onClose={() => { if (!disparando) setDisparo(null) }}
+        title="Disparar malha"
+      >
+        {disparo && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-ink">
+              As raízes abaixo (ligadas ao Início) serão disparadas com a data
+              de referência{' '}
+              <strong className="font-mono text-xs">{disparo.data_referencia}</strong> —
+              o restante da malha anda sozinho pelo push, herdando a mesma data.
+            </p>
+            <div className="flex flex-col gap-1">
+              {disparo.raizes.map(r => (
+                <div key={r.pipeline}
+                  className="flex items-center gap-2 rounded-md border border-edge bg-canvas px-3 py-1.5">
+                  <Play size={12} className="shrink-0 text-dim" />
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink">
+                    {r.pipeline}
+                  </span>
+                  {r.dag_criada === 0 && (
+                    <span className="rounded-full border border-red-200 bg-red-50 px-1.5 py-px text-[10px] font-semibold text-red-700 dark:border-red-800 dark:bg-red-900/40 dark:text-red-300">
+                      DAG não publicada
+                    </span>
+                  )}
+                  {r.dag_criada === 1 && r.active === 0 && (
+                    <span className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px text-[10px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                      inativo
+                    </span>
+                  )}
+                  {r.tem_dependencia && (
+                    <span
+                      title="O disparo manual não consulta a liberação — a corrida parte por cima do predecessor."
+                      className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px text-[10px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                    >
+                      tem dependência
+                    </span>
+                  )}
+                  {(r.corridas_na_data ?? 0) > 0 && (
+                    <span
+                      title="Esta raiz já rodou nesta data — disparar de novo executa o pipeline outra vez."
+                      className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px text-[10px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                    >
+                      já rodou ({r.corridas_na_data})
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            {disparo.avisos.length > 0 && (
+              <div className="flex flex-col gap-0.5">
+                {disparo.avisos.map((a, i) => (
+                  <div key={i} className="flex items-center gap-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+                    {a.nivel === 'forte'
+                      ? <AlertTriangle size={12} className="shrink-0" />
+                      : <Info size={12} className="shrink-0" />}
+                    <span>{a.mensagem}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-[11px] text-dim">
+              O disparo é o mesmo gesto de "rodar pipeline", uma vez por raiz —
+              quem disparou fica registrado na corrida. Erros são reportados
+              por raiz.
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button
+                variant="secondary"
+                onClick={() => setDisparo(null)}
+                disabled={disparando}
+              >
+                Cancelar
+              </Button>
+              <Button onClick={() => void confirmarDisparo()} loading={disparando}>
+                <Play size={13} /> Disparar {disparo.raizes.length === 1
+                  ? '1 raiz'
+                  : `${disparo.raizes.length} raízes`}
+              </Button>
             </div>
           </div>
         )}

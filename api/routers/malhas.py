@@ -13,6 +13,9 @@ Endpoints:
   GET    /malhas/{malha_name}/execucao             — status + eventos por data (F9)
                                                      + eventos de nó #no:* e
                                                      malha_concluida (F14)
+  POST   /malhas/{malha_name}/disparo              — disparo MANUAL da malha (F15;
+                                                     dry_run no body): raízes do
+                                                     Início via trigger REST
   PATCH  /malhas/{malha_name}                      — descricao / ativo / renomear / orientacao
   POST   /malhas/{malha_name}/pipelines            — adiciona membro (idempotente)
   DELETE /malhas/{malha_name}/pipelines/{pipeline_name} — remove membro
@@ -82,7 +85,11 @@ from datetime import datetime
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import get_db_conn
-from deps import PERM_EDITAR, get_current_user, require_perm
+from deps import PERM_EDITAR, PERM_EXECUTAR, get_current_user, require_perm
+# F15 (disparo manual da malha): o disparo reusa o MESMO caminho do trigger
+# manual de pipeline (proxy REST do Airflow) — nenhum executor novo; o client
+# e a validação de dag_id vêm do proxy para não nascer uma segunda cópia.
+from routers.airflow import _DAG_ID_RE, get_airflow_client
 # Port do ODATE para a árvore da API (o canônico é dags/utils/data_referencia.py;
 # paridade garantida por teste — ver o docstring do módulo).
 from services import data_referencia as dref
@@ -1332,6 +1339,27 @@ def _raizes_assinadas_do_no(cur, no_id) -> list:
                   key=str.casefold)
 
 
+def _msg_disparo_raiz_com_dependencia(pipeline) -> str:
+    """Aviso do dry_run do disparo manual (F15): a raiz tem dependência na
+    067 — o trigger manual NÃO consulta liberado(), então a corrida parte por
+    cima do predecessor. Mesma linguagem do 422 do §2.2 (raiz não pode ter
+    dependência), em tom de aviso: o gesto continua sendo do operador."""
+    return (f"'{pipeline}' tem dependência cadastrada — o disparo manual não "
+            "consulta a liberação: a corrida parte POR CIMA do predecessor, "
+            "sem esperar o SUCESSO dele na data. Se a intenção é respeitar a "
+            "dependência, dispare o predecessor.")
+
+
+def _msg_corrida_existente(pipeline, quantas, data_ref) -> str:
+    """Aviso do dry_run do disparo manual (F15): já existe corrida da raiz na
+    data. Os DEPENDENTES são protegidos pelo claim serializable (uma corrida
+    por data), a RAIZ não — disparar de novo roda de novo."""
+    return (f"'{pipeline}' já tem {quantas} corrida(s) registrada(s) em "
+            f"{data_ref.strftime('%Y-%m-%d')} — disparar de novo executa o "
+            "pipeline outra vez (a proteção de corrida única vale para os "
+            "dependentes, não para a raiz disparada à mão).")
+
+
 def _msg_contradicao(pipeline) -> str:
     """Aviso do badge de contradição (§2.2, última linha): raiz assinada que
     ganhou dependência por OUTRA porta — aviso, nunca bloqueio das portas."""
@@ -1608,8 +1636,14 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
                                 continue
                             if _raiz_tem_dependencia(cur, m["pipeline_name"]):
                                 m["agenda_contradicao"] = True
+                                # `tipo` (F15): chave ESTÁVEL para o front
+                                # filtrar este aviso na visão de Execução (é
+                                # onde mora o disparo manual, que atropela a
+                                # dependência) sem casar texto — a mensagem
+                                # continua tendo uma fonte só, aqui.
                                 avisos.append({
                                     "no": inicio["id"], "nivel": "forte",
+                                    "tipo": "contradicao",
                                     "mensagem": _msg_contradicao(
                                         m["pipeline_name"])})
         else:
@@ -1801,6 +1835,220 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+@router.post("/malhas/{malha_name}/disparo", tags=["malhas"])
+async def disparar_malha(malha_name: str, body: dict = Body(default={}),
+                         auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """Disparo MANUAL da malha (F15): dispara as RAÍZES ligadas ao Início com
+    o MESMO ODATE, via trigger REST do Airflow — a cascata anda pelo push da
+    F3 (o filho herda a data e dispara em segundos após o último predecessor).
+
+    NENHUM executor novo (princípio 1 do desenho): este endpoint é o mesmo
+    gesto de "rodar pipeline" da tela Pipelines, repetido para cada raiz, com
+    o conf da casa (o schema de montar_conf do push, §7 da retomada):
+      • data_referencia — o rótulo ODATE pedido (default: ODATE corrente pela
+        virada da MALHA — Decisão 9 — ou, sem agendamento, pela virada global);
+        o filho NÃO recalcula: herança pela cadeia inteira;
+      • dia_operacional — HOJE (F3: o dia de um disparo manual é o dia em que
+        o operador ordenou — as regras de DIA julgam contra ele);
+      • disparado_por — auditoria: malha + matrícula de quem disparou (o
+        registro da corrida grava em etl_pipeline_execucao.disparado_por).
+    run_id com prefixo 'manual' — a origem F3 do disparo é 'manual' (não
+    julga hora, julga dia), como no botão da tela Pipelines.
+
+    Body: {"data_referencia"?: "YYYY-MM-DD", "dry_run"?: bool}. dry_run
+    devolve o que SERÁ disparado (raízes + ODATE + avisos) sem tocar o
+    Airflow — o modal de confirmação da tela mostra essa lista (§7.2, a
+    mesma cadência dos gestos do desenho). Os avisos por raiz são honestos
+    sobre o que o gesto atropela: DAG não publicada, pipeline inativo, raiz
+    COM DEPENDÊNCIA (o trigger manual não consulta liberado() — a corrida
+    parte por cima do predecessor) e corrida JÁ existente na data (o claim
+    protege os dependentes, não a raiz disparada à mão). O write reporta
+    erro POR RAIZ (uma raiz recusada não impede as outras — o resultado é
+    dito, nunca escondido). Permissão: acao_executar, a mesma do trigger de
+    pipeline.
+
+    Sem a 075 não existe desenho (Início/raízes) — 503 instrutivo. Malha
+    sem Início ou Início sem raízes é 422: não há o que disparar."""
+    dry_run = bool(body.get("dry_run"))
+    # Valida a data ANTES de abrir conexão (mesma regra do GET /execucao).
+    data_ref = None
+    bruto = body.get("data_referencia")
+    if bruto is not None and str(bruto).strip() != "":
+        try:
+            data_ref = datetime.strptime(str(bruto).strip(), "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"data_referencia inválida: '{bruto}' "
+                       "(use o formato YYYY-MM-DD)")
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabelas(cur, conn)
+        _exigir_tabelas_075(cur, conn)
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        nos_l = _nos_da_malha(cur, malha)
+        arestas_l = _arestas_da_malha(cur, malha)
+        inicio = next((n for n in nos_l if n["tipo"] == "inicio"), None)
+        if inicio is None:
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=422,
+                detail=f"A malha '{malha}' não tem componente Início — o "
+                       "disparo manual parte das raízes ligadas a ele. "
+                       "Adicione o Início no diagrama e ligue-o às raízes.")
+        raizes = sorted({a["destino_pipeline"] for a in arestas_l
+                         if a["origem_no"] == inicio["id"]
+                         and a["destino_pipeline"]}, key=str.casefold)
+        if not raizes:
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=422,
+                detail=f"O Início da malha '{malha}' não está ligado a "
+                       "nenhuma raiz — ligue-o aos pipelines que abrem a "
+                       "malha antes de disparar.")
+        if data_ref is None:
+            # ODATE corrente pela virada GLOBAL — a MESMA régua do
+            # GET /execucao (o painel de onde o gesto parte). Uma fonte só
+            # para o ODATE default: usar a virada da MALHA aqui faria o
+            # painel mostrar D e o disparo carimbar D+1 no mesmo minuto
+            # (virada da malha 20:00 × global 00:00, às 21:00) — divergência
+            # entre a tela e o que foi disparado, a doença que a retomada
+            # inteira existiu para matar. Se um dia a régua do painel passar
+            # a ser a virada da malha (Decisão 9), muda-se no /execucao e
+            # este default acompanha; não é escopo da F15. Na prática o front
+            # sempre manda a data EXIBIDA — este default é a rede de proteção
+            # de quem chama a API direto.
+            data_ref = dref.calcular(_agora(), _virada_global(cur))
+
+        # Fotografia honesta por raiz (avisos ditos ANTES do gesto — §2.2).
+        avisos: list = []
+        cur.execute("SELECT CAST(ativo AS INT) FROM dbo.etl_malha "
+                    "WHERE malha_name = ?", (malha,))
+        row = cur.fetchone()
+        if row is not None and int(row[0] or 0) == 0:
+            avisos.append({"no": None, "nivel": "forte", "mensagem":
+                           "malha inativa — os observadores (Notificação e "
+                           "Fim) não emitem eventos enquanto ativo=0; o "
+                           "disparo das raízes acontece mesmo assim"})
+        tem_067 = _tabela_067(cur)
+        tem_exec_067 = _tabelas_067_execucao(cur)
+        raizes_info = []
+        for p in raizes:
+            cur.execute(
+                "SELECT CAST(active AS INT), CAST(dag_criada AS INT) "
+                "FROM dbo.etl_pipeline WHERE pipeline_name = ?", (p,))
+            r = cur.fetchone()
+            ativo_p = int(r[0] or 0) if r else 0
+            dag_criada = int(r[1] or 0) if r else 0
+            info = {"pipeline": p, "active": ativo_p, "dag_criada": dag_criada,
+                    "tem_dependencia": False, "corridas_na_data": 0}
+            raizes_info.append(info)
+            # Raiz que ganhou dependência por outra porta (§2.2): o disparo
+            # manual parte a corrida POR CIMA do predecessor — o trigger
+            # manual não consulta liberado(). Aviso, nunca bloqueio (a mesma
+            # régua do badge de contradição): o gesto é do operador, mas ele
+            # precisa saber o que está atropelando ANTES de confirmar.
+            if tem_067 and _raiz_tem_dependencia(cur, p):
+                info["tem_dependencia"] = True
+                avisos.append({"no": inicio["id"], "nivel": "forte",
+                               "tipo": "contradicao",
+                               "mensagem": _msg_disparo_raiz_com_dependencia(p)})
+            # Corrida JÁ registrada na data: os filhos são protegidos pelo
+            # claim serializable, a RAIZ não — disparar de novo roda de novo.
+            if tem_exec_067:
+                cur.execute(
+                    "SELECT COUNT(*) FROM dbo.etl_pipeline_execucao "
+                    "WHERE pipeline_name = ? AND data_referencia = ?",
+                    (p, data_ref))
+                row_c = cur.fetchone()
+                n_corridas = int(row_c[0] or 0) if row_c else 0
+                info["corridas_na_data"] = n_corridas
+                if n_corridas > 0:
+                    avisos.append({
+                        "no": inicio["id"], "nivel": "forte",
+                        "tipo": "corrida_existente",
+                        "mensagem": _msg_corrida_existente(p, n_corridas,
+                                                           data_ref)})
+            if dag_criada == 0:
+                avisos.append({"no": inicio["id"], "nivel": "forte",
+                               "mensagem": f"'{p}': a DAG ainda não foi "
+                               "publicada — o disparo desta raiz vai falhar "
+                               "no Airflow (Pipelines ▸ Publicar nova versão)"})
+            elif ativo_p == 0:
+                avisos.append({"no": inicio["id"], "nivel": "leve",
+                               "mensagem": f"'{p}' está inativo — a DAG pode "
+                               "estar pausada no Airflow; a corrida criada "
+                               "só anda com a DAG despausada"})
+        # O banco fecha ANTES das chamadas ao Airflow: uma rede lenta não
+        # pode segurar conexão de pool aberta (padrão do proxy).
+        cur.close(); conn.close(); conn = None
+
+        if dry_run:
+            return {"data_referencia": data_ref.strftime("%Y-%m-%d"),
+                    "raizes": raizes_info, "avisos": avisos}
+
+        hoje = _agora().date()
+        quem = (str(auth.get("matricula") or "").strip() or "?")
+        conf = {
+            "data_referencia": data_ref.strftime("%Y-%m-%d"),
+            "dia_operacional": hoje.strftime("%Y-%m-%d"),
+            "disparado_por": f"malha:{malha} ({quem})",
+        }
+        disparadas: list = []
+        falhas: list = []
+        async with get_airflow_client() as client:
+            for p in raizes:
+                if not _DAG_ID_RE.match(p):
+                    falhas.append({"pipeline": p, "erro":
+                                   "nome de pipeline não é um dag_id válido"})
+                    continue
+                # Mesmo formato do novo_run_id da retomada, origem 'manual'.
+                carimbo = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+                run_id = (f"manual__{data_ref.strftime('%Y-%m-%d')}__"
+                          f"{p[:60]}__{carimbo}")
+                try:
+                    r = await client.post(
+                        f"/api/v1/dags/{p}/dagRuns",
+                        json={"dag_run_id": run_id, "conf": conf},
+                        headers={"Content-Type": "application/json"})
+                    if r.is_success:
+                        disparadas.append({
+                            "pipeline": p,
+                            "dag_run_id": r.json().get("dag_run_id", run_id)})
+                    elif r.status_code == 404:
+                        falhas.append({"pipeline": p, "erro":
+                                       "DAG não encontrada no Airflow — "
+                                       "publique o pipeline antes de disparar "
+                                       "(Pipelines ▸ Publicar nova versão)"})
+                    elif r.status_code == 409:
+                        falhas.append({"pipeline": p, "erro":
+                                       "o Airflow recusou: já existe uma "
+                                       "corrida com este run_id"})
+                    else:
+                        falhas.append({"pipeline": p, "erro":
+                                       f"Airflow recusou o disparo "
+                                       f"(HTTP {r.status_code}): {r.text[:200]}"})
+                except Exception as e:      # noqa: BLE001 — erro POR RAIZ
+                    falhas.append({"pipeline": p, "erro":
+                                   f"falha ao contatar o Airflow: {e}"})
+        log.info("[MALHA] disparo manual da malha '%s' por %s — data_ref=%s, "
+                 "%d disparada(s), %d falha(s)", malha, quem,
+                 conf["data_referencia"], len(disparadas), len(falhas))
+        return {"ok": len(falhas) == 0,
+                "data_referencia": conf["data_referencia"],
+                "disparadas": disparadas, "falhas": falhas, "avisos": avisos}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fechar_silencioso(conn)
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
 
 

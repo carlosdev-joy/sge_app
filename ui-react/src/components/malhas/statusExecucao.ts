@@ -22,15 +22,34 @@ export interface EventoGuardia {
   mensagem: string | null
 }
 
+// F14/F15: evento de NÓ observador (marcador '#no:{id}' RESOLVIDO pelo
+// servidor — o front nunca interpreta o marcador). tipo_no diz qual
+// componente emitiu (notificacao | fim).
+export interface EventoNo {
+  no_id: number
+  tipo_no: string
+  tipo: string
+  criado_em: string
+  mensagem: string | null
+}
+
 export interface MalhaExecucaoApi {
   // A data efetivamente usada: a pedida, ou o ODATE corrente calculado no
   // servidor com a virada global (etl_app_config['dependencia_hora_virada']).
   data_referencia: string
   execucoes: ExecucaoPipeline[]
   eventos: EventoGuardia[]
+  // F14 (aditivos): eventos dos nós observadores desta malha e a conclusão
+  // da data (evento MALHA_CONCLUIDA do nó Fim). Chave ausente (API anterior)
+  // degrada como array vazio/null — os componentes ficam neutros (F15).
+  eventos_no?: EventoNo[]
+  malha_concluida?: { em: string | null } | null
   // Deploy parcial (migration 067 ausente): arrays vazios + esta flag — a
   // malha continua abrindo e o aviso âmbar da F8 cobre a explicação.
   migration_067_pendente?: boolean
+  // Deploy parcial (migration 075 ausente): eventos_no vazio + flag — o
+  // resto da visão segue intacto (princípio 6 do desenho de componentes).
+  migration_075_pendente?: boolean
 }
 
 export interface EstiloStatus {
@@ -101,13 +120,18 @@ export function estiloStatus(status: string): EstiloStatus {
 }
 
 // Badge do tipo de evento da guardiã (JANELA_ESTOUROU / DATA_DIVERGENTE são os
-// conhecidos da spec; tipo novo cai no neutro).
+// conhecidos da spec; MALHA_NOTIFICACAO / MALHA_CONCLUIDA são os POSITIVOS da
+// F14 — os primeiros de conclusão, não de problema; tipo novo cai no neutro).
 export function estiloEvento(tipo: string): string {
   switch (tipo) {
     case 'JANELA_ESTOUROU':
       return 'bg-red-100 text-red-700 border-red-300 dark:bg-red-900/60 dark:text-red-300 dark:border-red-700'
     case 'DATA_DIVERGENTE':
       return 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800'
+    case 'MALHA_NOTIFICACAO':
+      return 'bg-teal-100 text-teal-700 border-teal-300 dark:bg-teal-900/60 dark:text-teal-300 dark:border-teal-700'
+    case 'MALHA_CONCLUIDA':
+      return 'bg-green-100 text-green-700 border-green-300 dark:bg-green-900/60 dark:text-green-300 dark:border-green-700'
     default:
       return 'bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-600'
   }
