@@ -83,10 +83,45 @@
 -- aposentada por um reprocesso deliberado.
 --
 -- ─────────────────────────────────────────────────────────────────────────────
+-- ⚠️ OPERAÇÃO — JANELA: LEIA ANTES DE APLICAR
+--
+-- O bloco 2 faz BACKFILL EM LOTE (`WHILE` + `UPDATE TOP (5000)`) na
+-- `dbo.etl_job_execution`, que é a tabela mais QUENTE do sistema: toda etapa de
+-- todo pipeline escreve nela duas vezes (log_start/log_end). A etapa 6c do
+-- deploy.sh roda DESASSISTIDA — ninguém está olhando enquanto o loop anda.
+--
+-- Quantas linhas o loop toca depende de a coluna `attempt` já ter DEFAULT((1))
+-- no banco. Se NÃO tiver (esta migration só o cria DEPOIS, no bloco seguinte —
+-- sinal de que ele pode faltar), TODAS as linhas estão NULL e o loop reescreve
+-- a tabela inteira, concorrendo com log_start/log_end.
+--
+-- DIMENSIONE ANTES, no banco de destino (a 058 registra a mesma cautela):
+--
+--     SELECT COUNT(*) AS total,
+--            SUM(CASE WHEN attempt IS NULL THEN 1 ELSE 0 END) AS sem_attempt
+--       FROM dbo.etl_job_execution;
+--
+-- Leitura do resultado:
+--   • sem_attempt = 0            → no-op, aplique quando quiser.
+--   • sem_attempt até ~100 mil   → segundos; aplicar fora do pico basta.
+--   • sem_attempt acima de ~1 mi → EXIJA JANELA: aplicar SEM execuções em
+--     andamento (scheduler/monitor pausados). São centenas de lotes de 5.000,
+--     cada um bloqueando as linhas que a telemetria quer escrever.
+-- O loop é retomável: se for interrompido, a próxima passada continua de onde
+-- parou (o filtro é `WHERE attempt IS NULL`).
+--
+-- Este aviso está NO COMENTÁRIO e na documentação de deploy de propósito:
+-- sql/migrate.py DESCARTA PRINT (D40) — um alerta em PRINT não chega a ninguém.
+--
+-- ─────────────────────────────────────────────────────────────────────────────
 -- IDEMPOTÊNCIA: roda 2× sem erro (etapa 6c do deploy.sh) — provado no dev.
 -- Toda guarda é por OBJECT_ID/COL_LENGTH/sys.*; blocos com shape divergente
--- pulam com [SKIP] em vez de estourar. Conferência por SELECT ao final —
--- sql/migrate.py descarta PRINT (D40).
+-- pulam com [SKIP] em vez de estourar. Para isso valer, todo comando que cita
+-- uma coluna CONDICIONAL (`attempt`) está dentro de `EXEC()`: o SQL Server
+-- valida nome de coluna em COMPILE-TIME do batch, então SQL estático guardado
+-- só por `IF COL_LENGTH(...)` estoura (Msg 207) mesmo inalcançável — a mesma
+-- armadilha que a migration 058 documentou e resolveu do mesmo jeito.
+-- Conferência por SELECT ao final — sql/migrate.py descarta PRINT (D40).
 --
 -- QUOTED_IDENTIFIER ON: etl_job_execution tem índice filtrado herdado da 058, e
 -- quem ESCREVE nela precisa da sessão com QI ON (a própria 058 registra o
@@ -160,17 +195,26 @@ GO
 --    leitura honesta: "é a primeira que conhecemos".
 --    UPDATE em lotes: a tabela é grande em produção e um UPDATE único
 --    escalaria o lock para a tabela inteira, bloqueando log_start/log_end.
+--    ⚠️ JANELA: veja o aviso de OPERAÇÃO no cabeçalho e RODE A CONSULTA DE
+--    DIMENSIONAMENTO antes — a etapa 6c do deploy roda desassistida.
+--
+--    ⚠️ EXEC() OBRIGATÓRIO (padrão da migration 058): o `IF COL_LENGTH` só
+--    protege de verdade se o comando que cita `attempt` não for compilado
+--    junto com o batch. Com o UPDATE estático aqui, um banco no shape do
+--    sql/deploy_full.sql (etl_job_execution sem attempt/task_id/pipeline)
+--    aborta a migration INTEIRA com Msg 207 — e o [SKIP] do ELSE nunca sai.
 -- ─────────────────────────────────────────────────────────────────────────────
 IF COL_LENGTH('dbo.etl_job_execution', 'attempt') IS NOT NULL
 BEGIN
-    DECLARE @n INT = 1;
-    WHILE @n > 0
-    BEGIN
-        UPDATE TOP (5000) dbo.etl_job_execution
-           SET attempt = 1
-         WHERE attempt IS NULL;
-        SET @n = @@ROWCOUNT;
-    END
+    EXEC('
+DECLARE @n INT = 1;
+WHILE @n > 0
+BEGIN
+    UPDATE TOP (5000) dbo.etl_job_execution
+       SET attempt = 1
+     WHERE attempt IS NULL;
+    SET @n = @@ROWCOUNT;
+END');
     PRINT '[OK] backfill de attempt=1 concluido';
 END
 ELSE
@@ -370,7 +414,22 @@ GO
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 5) Conferência por SELECT (sql/migrate.py descarta PRINT — D40).
 --    Uma linha só, legível no log do deploy.
+--
+--    ⚠️ A contagem de `attempt IS NULL` vem por EXEC() pelo mesmo motivo do
+--    bloco 2: escrita direto no SELECT, ela é resolvida em compile-time e
+--    derruba a migration num banco sem a coluna. `NULL` em
+--    `linhas_sem_attempt` = a coluna não existe neste banco (shape divergente),
+--    e não "zero linhas pendentes".
 -- ─────────────────────────────────────────────────────────────────────────────
+DECLARE @sem_attempt INT = NULL;
+IF COL_LENGTH('dbo.etl_job_execution', 'attempt') IS NOT NULL
+BEGIN
+    DECLARE @cnt TABLE (n INT);
+    INSERT INTO @cnt (n)
+        EXEC('SELECT COUNT(*) FROM dbo.etl_job_execution WHERE attempt IS NULL');
+    SELECT @sem_attempt = n FROM @cnt;
+END
+
 SELECT
     CASE WHEN OBJECT_ID('dbo.etl_job_execution_tentativa', 'U') IS NOT NULL
          THEN 'OK' ELSE 'FALTA' END                         AS tabela_tentativa,
@@ -380,6 +439,5 @@ SELECT
                       WHERE object_id = OBJECT_ID('dbo.sp_etl_job_execution_log')
                         AND definition LIKE '%etl_job_execution_tentativa%')
          THEN 'v3' ELSE 'ANTIGA' END                        AS sp_versao,
-    (SELECT COUNT(*) FROM dbo.etl_job_execution WHERE attempt IS NULL)
-                                                            AS linhas_sem_attempt;
+    @sem_attempt                                            AS linhas_sem_attempt;
 GO

@@ -50,32 +50,139 @@ Data: 2026-07-31 · Status: ✅ **Retomada F2–F6 COMPLETA NO CÓDIGO (PRs #243
 > **076** (derruba a `FK_dep_evento_pipeline` — sem isso o marcador `#no:{id}`
 > dos eventos de Notificação/Fim não cabe na tabela).
 >
+> ✅ **OPERAÇÃO NO NÍVEL DE ETAPA — F1–F4 TAMBÉM ENTRAM NESTE MESMO DEPLOY**
+> (`docs/spec-operacao-nivel-etapa.md`, PRs até a **#265**): realce de
+> dependências no canvas (F1), ponte `run_id ↔ ts_nodash` (F2), modo Execução
+> do canvas (F3) e **rerun a partir de uma etapa com tentativas acumuladas**
+> (F4). A F4 traz a migration **078**, que nenhum documento mencionava até aqui:
+> tabela `dbo.etl_job_execution_tentativa` (histórico das tentativas
+> superadas), colunas `substituida_em`/`substituida_por` em
+> `etl_pipeline_execucao` (reabertura de corrida do dependente) e a
+> **`sp_etl_job_execution_log` v3** (arquiva a tentativa superada e incrementa
+> `attempt`; assinatura idêntica à v2 — por isso não exige regerar DAG).
+>
 > **Pendente: o deploy de produção do trem inteiro** (motor + malha +
-> componentes vão JUNTOS), nesta ordem consolidada:
-> 1. migrations **067, 070–077** na etapa 6c do `deploy.sh` — o prompt é
->    padrão-**NÃO**, responder `s`. ⚠️ Se responder não, a feature sobe **muda**
->    e o smoke ainda assim "passa" nos primeiros passos: a conferência que não
->    mente é `SELECT COUNT(*) FROM sys.foreign_keys WHERE name =
->    'FK_dep_evento_pipeline'` → tem de vir **0** (achado da aceitação final);
-> 2. deploy de `dags/` (factory nova, guardiã com os observadores de malha,
->    utils) e da `api/` + front;
-> 3. **ANTES do force_all**, rodar a consulta de dimensionamento do CSV órfão
+> componentes + operação no nível de etapa vão JUNTOS).
+>
+> ---
+>
+> ### ⚠️ ORDEM: `dags/` ANTES das migrations
+>
+> Esta é a ordem do próprio `scripts/deploy.sh` (**dags na etapa 5, migrations
+> na 6c**) e é a única segura. Uma versão anterior deste preâmbulo mandava o
+> INVERSO — migrations primeiro — e o inverso **abre um defeito real**: com o
+> **banco novo e o `dags/` velho**, o carimbo de corrida substituída
+> (`substituida_em`, migration 078) já passa a ser gravado, mas o push antigo
+> não sabe o que ele significa — e **nenhum dependente roda**.
+>
+> No sentido certo não existe janela ruim: **o código novo degrada em banco
+> velho** (toda leitura nova é guardada por `COL_LENGTH`/`OBJECT_ID` e cai no
+> comportamento antigo), **mas o banco novo não se protege de código velho**.
+> Rodar o `deploy.sh` de ponta a ponta numa sessão só já entrega essa ordem —
+> **não inverta na mão**.
+>
+> ---
+>
+> **Durante o `deploy.sh`** (na ordem em que o script pergunta):
+>
+> 1. **`config/` e `dags/`** (etapas 4 e 5, com confirmação): factory nova,
+>    guardiã com os observadores de malha, utils. A `api/` e o front são
+>    automáticos (etapas 3 e 7).
+> 2. **`docker-compose.yaml`** (etapa 6, pergunta se divergir): responder **s**
+>    para levar o `TZ: America/Sao_Paulo` da API — pré-requisito da F9, que vai
+>    no MESMO deploy. Depois conferir `docker exec orquestra-api date` → `-03`
+>    (sem isso, o ODATE default da visão de execução nasce no dia seguinte entre
+>    21h e meia-noite de Brasília — achado da revisão da F9).
+> 3. **Migrations `067` e `070–078`** (etapa 6c) — o prompt é padrão-**NÃO**,
+>    **responder `s`**. Se responder não, a feature sobe **muda** e o smoke
+>    ainda assim "passa" nos primeiros passos.
+>
+>    ⚠️ **A etapa 6c vai avisar que há muitas pendentes — isto é ESPERADO neste
+>    deploy** (são 10: 067 + 070…078). Versões antigas do `deploy.sh`
+>    recomendavam ali `migrate.py --baseline`: **NÃO SIGA**. `--baseline`
+>    **registra sem executar** — usá-lo aqui marcaria como aplicadas dez
+>    migrations que nunca rodaram, e o banco ficaria permanentemente atrás do
+>    código, sem erro nenhum para avisar. O caso aqui é "acabei de atualizar o
+>    código, migrations novas vêm junto": aplicar.
+>
+>    ⚠️ **ANTES de responder `s`, dimensionar o backfill da 078** — ela roda
+>    `WHILE / UPDATE TOP (5000)` na `etl_job_execution`, tabela QUENTE (toda
+>    etapa de todo pipeline escreve nela), e a etapa 6c roda **desassistida**:
+>
+>    ```sql
+>    SELECT COUNT(*) AS total,
+>           SUM(CASE WHEN attempt IS NULL THEN 1 ELSE 0 END) AS sem_attempt
+>      FROM dbo.etl_job_execution;
+>    ```
+>
+>    `sem_attempt = 0` → no-op. Até ~100 mil → segundos, basta fora do pico.
+>    **Acima de ~1 milhão → exigir janela** (scheduler/monitor pausados), como
+>    a migration 058 já exigiu para a mesma tabela. O loop é retomável
+>    (`WHERE attempt IS NULL`).
+>
+> **Depois do `deploy.sh`:**
+>
+> 4. **Conferência pós-migration** — rodar no banco de produção logo após a 6c.
+>    `sql/migrate.py` **descarta PRINT** (D40): o log do deploy não prova nada
+>    sozinho.
+>
+>    ```sql
+>    SELECT
+>      (SELECT COUNT(*) FROM sys.tables WHERE name = 'etl_pipeline_execucao')          AS t067_pipe_exec,      -- 1
+>      (SELECT COUNT(*) FROM sys.tables WHERE name = 'etl_malha')                      AS t070_malha,          -- 1
+>      (SELECT COUNT(*) FROM sys.tables WHERE name = 'etl_malha_no')                   AS t075_malha_no,       -- 1
+>      (SELECT COUNT(*) FROM sys.indexes WHERE name = 'ix_pipe_exec_ultima')           AS ix077_ultima,        -- 1
+>      (SELECT COUNT(*) FROM sys.foreign_keys WHERE name = 'FK_dep_evento_pipeline')   AS fk076_TEM_DE_SER_0,  -- 0 !
+>      (SELECT COUNT(*) FROM sys.tables WHERE name = 'etl_job_execution_tentativa')    AS t078_tentativa,      -- 1
+>      COL_LENGTH('dbo.etl_pipeline_execucao', 'substituida_em')                       AS c078_subst_em,       -- não-NULL
+>      COL_LENGTH('dbo.etl_pipeline_execucao', 'substituida_por')                      AS c078_subst_por,      -- não-NULL
+>      CASE WHEN EXISTS (SELECT 1 FROM sys.sql_modules
+>                        WHERE object_id = OBJECT_ID('dbo.sp_etl_job_execution_log')
+>                          AND definition LIKE '%etl_job_execution_tentativa%')
+>           THEN 'v3' ELSE 'ANTIGA' END                                                AS sp078_versao,        -- 'v3'
+>      (SELECT COUNT(*) FROM dbo.etl_job_execution WHERE attempt IS NULL)              AS backfill_pendente,   -- 0
+>      (SELECT COUNT(*) FROM dbo.etl_schema_version
+>        WHERE migration_name IN ('067_dependencias_pipeline','070_malha',
+>              '071_normaliza_grafia_dependencias','072_execution_id_250',
+>              '073_dag_config_pendente','074_malha_orientacao','075_malha_nos',
+>              '076_dependencia_evento_no','077_pipe_exec_ultima_por_pipeline',
+>              '078_tentativas_acumuladas'))                                           AS registradas;         -- 10
+>    ```
+>
+>    **`fk076_TEM_DE_SER_0` é a linha que não mente** (achado da aceitação
+>    final): enquanto a `FK_dep_evento_pipeline` existir, o marcador `#no:{id}`
+>    dos eventos de Notificação/Fim não cabe na tabela e os componentes de malha
+>    ficam mudos. `registradas = 10` prova que o migrate rodou de verdade — mas
+>    **sozinho não basta**, porque `--baseline` também o deixaria em 10; é o
+>    conjunto das outras colunas que prova que o schema existe.
+> 5. **ANTES do `force_all`**, rodar a consulta de dimensionamento do CSV órfão
 >    (pipelines ativos com `depends_on` preenchido, por `schedule_type`) e
 >    tratar os órfãos — `sql/migrate.py` descarta PRINT (D40), o relatório não
->    chega sozinho;
-> 4. **regenerar as DAGs** (`force_all`) — sem isso NADA muda: o `deploy.sh`
->    exclui `generated/`;
-> 5. conferir `SELECT GETDATE()` no SQL Server (a data de referência nasce do
->    relógio DELE) e só então **despausar `etl_dependencia_guardia`**;
-> 6. **TZ do container da API** (pré-requisito da F9, que vai no MESMO deploy):
->    o `deploy.sh` PERGUNTA antes de sobrescrever o `docker-compose.yaml` —
->    responder "s" para levar o `TZ: America/Sao_Paulo` da API, recriar o
->    container e conferir `docker exec orquestra-api date` → `-03` (sem isso,
->    o ODATE default da visão de execução nasce no dia seguinte entre 21h e
->    meia-noite de Brasília — achado da revisão da F9);
-> 7. smoke §7 em produção (o motor), começando por um PAR de pipelines de
->    teste; e **`docs/smoke-malha-componentes.md`** para os componentes —
->    roteiro executável sem contexto, validado passo a passo no dev.
+>    chega sozinho.
+> 6. **Regenerar as DAGs** (`force_all`) — sem isso o **trem de dependências e
+>    a malha** não mudam nada: o `deploy.sh` exclui `generated/`.
+>
+>    ℹ️ **A F4 (rerun/tentativas acumuladas) NÃO exige `force_all`** — e isto
+>    nunca esteve escrito em lugar nenhum. A acumulação de tentativas vive
+>    inteira na `sp_etl_job_execution_log` v3, cuja **assinatura não mudou**
+>    (os 11 parâmetros que a factory já emite como texto dentro das DAGs
+>    publicadas), e o módulo de dependências é **importado em runtime** pelo
+>    código gerado. Ou seja: DAG antiga já publicada passa a acumular tentativa
+>    sozinha, assim que a migration 078 entra. Quem exige a regeração é o trem
+>    de dependências/malha, não a F4.
+> 7. Conferir `SELECT GETDATE()` no SQL Server (a data de referência nasce do
+>    relógio DELE) e só então **despausar `etl_dependencia_guardia`**.
+> 8. Smokes: **§7** desta spec em produção (o motor), começando por um PAR de
+>    pipelines de teste; e **`docs/smoke-malha-componentes.md`** para os
+>    componentes — roteiro executável sem contexto, validado passo a passo no
+>    dev.
+>
+>    ⚠️ **NÃO EXISTE ROTEIRO DE SMOKE PARA AS F1–F4 DE
+>    `docs/spec-operacao-nivel-etapa.md`** — manual e smoke são a entrega da
+>    **F6** daquela spec, que **ainda não foi feita**. Quem deployar agora sobe
+>    essas quatro fases (canvas em modo Execução, drill-down malha → etapa,
+>    rerun com cascata, tentativas acumuladas) **sem roteiro de aceitação**.
+>    Ou se aceita validá-las na mão, ou se espera a F6.
 >
 > ⚠️ No prompt do Airflow (rebuild da imagem), responder **N**: a factory e a
 > guardiã são código montado por bind-mount, não exigem imagem nova.
