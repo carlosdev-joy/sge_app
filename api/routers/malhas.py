@@ -11,6 +11,8 @@ Endpoints:
   POST   /malhas                                   — cria malha
   GET    /malhas/{malha_name}                      — detalhe + membros + arestas (F8) + nós (F10)
   GET    /malhas/{malha_name}/execucao             — status + eventos por data (F9)
+                                                     + eventos de nó #no:* e
+                                                     malha_concluida (F14)
   PATCH  /malhas/{malha_name}                      — descricao / ativo / renomear / orientacao
   POST   /malhas/{malha_name}/pipelines            — adiciona membro (idempotente)
   DELETE /malhas/{malha_name}/pipelines/{pipeline_name} — remove membro
@@ -60,7 +62,10 @@ mesmo tick do scheduler, cada uma na própria DAG — nenhum disparador novo.
 Raiz com dependência na 067 não pode ser ligada ao Início (422, §2.2); raiz
 assinada por Início de OUTRA malha idem (422, Decisão 11); desligar a raiz
 (aresta/nó excluído) vira on_demand + carimbo — nunca cron restaurado
-(Decisão 10). Os observadores (guardiã) são a F14.
+(Decisão 10). Os observadores (Notificação/Fim) são avaliados pela GUARDIÃ
+(F14 — dags/etl_dependencia_guardia.py): aqui só nasce o desenho, a validação
+do config por tipo (_validar_config_no) e a leitura dos eventos #no:* no
+endpoint de execução.
 
 Degradação em deploy parcial (API nova + migration 070 ainda não aplicada):
 cada endpoint checa UMA vez se as tabelas existem; leitura da lista degrada
@@ -293,6 +298,52 @@ def _no_config(raw):
     except Exception:
         log.warning("[MALHA] config_json ilegível em etl_malha_no — degradado para None")
         return None
+
+
+def _validar_config_no(tipo, config):
+    """Validação rica do config por tipo (F14 — a pendência declarada da F13;
+    desenho §5/§6). Levanta 422 com instrução; config None passa (limpar é
+    gesto legítimo).
+
+    • notificacao: {"titulo"?: str, "mensagem"?: str} — vira o corpo do
+      evento MALHA_NOTIFICACAO e do card (a guardiã renderiza na detecção);
+    • fim: {"notificar_teams"?: bool} — o card do Teams é OPT-IN (Decisão
+      14, default False); o evento e o painel são sempre;
+    • inicio/aguarde: sem schema AQUI de propósito — o agendamento do Início
+      mora na MALHA (Decisão 8, POST /malhas/{name}/agendamento) e o Aguarde
+      não tem configuração; a validação estrutural (objeto JSON) já foi
+      feita pelo chamador.
+
+    Chave desconhecida é 422, não silêncio: config que o motor ignora é a
+    tela contando uma história e a guardiã outra (princípio 5)."""
+    if config is None or tipo not in ("notificacao", "fim"):
+        return
+    if tipo == "notificacao":
+        extras = sorted(set(config) - {"titulo", "mensagem"})
+        if extras:
+            raise HTTPException(
+                status_code=422,
+                detail="config da Notificação aceita apenas 'titulo' e "
+                       f"'mensagem' — chave(s) desconhecida(s): {', '.join(extras)}")
+        for chave in ("titulo", "mensagem"):
+            v = config.get(chave)
+            if v is not None and not isinstance(v, str):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"'{chave}' da Notificação deve ser texto")
+        return
+    extras = sorted(set(config) - {"notificar_teams"})
+    if extras:
+        raise HTTPException(
+            status_code=422,
+            detail="config do Fim aceita apenas 'notificar_teams' — "
+                   f"chave(s) desconhecida(s): {', '.join(extras)}")
+    v = config.get("notificar_teams")
+    if v is not None and not isinstance(v, bool):
+        raise HTTPException(
+            status_code=422,
+            detail="'notificar_teams' do Fim deve ser booleano "
+                   "(o card do Teams é opt-in — Decisão 14)")
 
 
 def _erro_gramatica(origem_tipo, destino_tipo):
@@ -1639,6 +1690,11 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
             "data_referencia": data_ref.strftime("%Y-%m-%d"),
             "execucoes": [],
             "eventos": [],
+            # F14: eventos dos nós observadores desta malha (marcador #no:{id}
+            # resolvido para o id — risco 6 do desenho: o único leitor do
+            # marcador é este endpoint) e a conclusão da malha na data.
+            "eventos_no": [],
+            "malha_concluida": None,
         }
         if not _tabelas_067_execucao(cur):
             log.warning("[MALHA] migration 067 ausente — visão de execução da "
@@ -1686,14 +1742,38 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
                 item["faltantes"] = falt
             resposta["execucoes"].append(item)
 
-        # Eventos da guardiã da MESMA data, só de membros, mais novo primeiro.
+        # Nós desta malha (F14): resolve o marcador '#no:{id}' dos eventos de
+        # observador. Sem a 075 (deploy parcial) degrada — eventos_no vazio +
+        # flag, o resto da visão intacto (princípio 6; padrão do GET detalhe).
+        marcador_no: dict[str, dict] = {}
+        if _tabelas_075(cur):
+            for n in _nos_da_malha(cur, malha):
+                marcador_no[f"#no:{n['id']}"] = n
+        else:
+            resposta["migration_075_pendente"] = True
+
+        # Eventos da guardiã da MESMA data — de membros (F9) e dos nós desta
+        # malha (F14) — mais novo primeiro. Marcador de nó de OUTRA malha não
+        # resolve aqui e não aparece (mesma regra do filtro por membro).
         cur.execute(
             "SELECT pipeline_name, tipo, detectado_em, detalhe "
             "FROM dbo.etl_dependencia_evento WHERE data_referencia = ?",
             (data_ref,))
         eventos = []
+        eventos_no = []
         for r in cur.fetchall():
-            oficial = membro_oficial.get(str(r[0] or "").strip().casefold())
+            bruto = str(r[0] or "").strip()
+            no = marcador_no.get(bruto)
+            if no is not None:
+                eventos_no.append({
+                    "no_id": no["id"],
+                    "tipo_no": no["tipo"],
+                    "tipo": r[1],
+                    "criado_em": _fmt_dt(r[2]),
+                    "mensagem": r[3],
+                })
+                continue
+            oficial = membro_oficial.get(bruto.casefold())
             if oficial is None:
                 continue
             eventos.append({
@@ -1704,7 +1784,17 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
             })
         eventos.sort(key=lambda e: (e["criado_em"] or "", e["pipeline_name"]),
                      reverse=True)
+        eventos_no.sort(key=lambda e: (e["criado_em"] or "", e["no_id"]),
+                        reverse=True)
         resposta["eventos"] = eventos
+        resposta["eventos_no"] = eventos_no
+        # Conclusão da malha na data (§6): o evento MALHA_CONCLUIDA do nó Fim.
+        # Evento emitido é histórico verdadeiro (F4 §7.2) — o banner some só
+        # trocando a data consultada, nunca por apagamento.
+        for ev in eventos_no:
+            if ev["tipo"] == "MALHA_CONCLUIDA" and ev["tipo_no"] == "fim":
+                resposta["malha_concluida"] = {"em": ev["criado_em"]}
+                break
 
         cur.close(); conn.close()
         return resposta
@@ -2140,20 +2230,21 @@ def salvar_agendamento_malha(malha_name: str, body: dict = Body(default={}),
 
 
 # ── Nós especiais (F10) — o DESENHO dos componentes de malha ─────────────────
-# SÓ desenho, ZERO efeito no motor nesta fase: nenhuma linha da 067 nasce
-# destes gestos — a compilação do Aguarde (expansão → 067 assinada + espelho
-# CSV + carimbo + dry_run) é a F11; o agendamento do Início é a F13; os
-# observadores (guardiã) são a F14.
+# O desenho e sua validação: a compilação do Aguarde (expansão → 067 assinada
+# + espelho CSV + carimbo + dry_run) é a F11; o agendamento do Início é a F13;
+# os observadores (Notificação/Fim) são avaliados pela guardiã (F14) — aqui a
+# F14 só valida o config por tipo (_validar_config_no).
 
 @router.post("/malhas/{malha_name}/nos", tags=["malhas"])
 def add_no(malha_name: str, body: dict = Body(default={}),
            _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Cria um nó especial do desenho (F10 — §1/§2 do desenho de componentes).
 
-    `config` nesta fase é validado só na ESTRUTURA (objeto JSON) — a validação
-    rica por tipo (agendamento do Início, título/mensagem da Notificação) é a
-    F13. Um Início e um Fim por malha: 422 aqui e índice filtrado da 075 por
-    baixo — um INSERT por SQL direto também estoura."""
+    `config` é validado na estrutura (objeto JSON) e por TIPO
+    (_validar_config_no, F14): Notificação {titulo?, mensagem?}, Fim
+    {notificar_teams?} — o agendamento do Início mora na MALHA (F13,
+    Decisão 8). Um Início e um Fim por malha: 422 aqui e índice filtrado da
+    075 por baixo — um INSERT por SQL direto também estoura."""
     tipo = (body.get("tipo") or "").strip().lower()
     if tipo not in _TIPOS_NO:
         raise HTTPException(status_code=422,
@@ -2162,6 +2253,7 @@ def add_no(malha_name: str, body: dict = Body(default={}),
     config = body.get("config")
     if config is not None and not isinstance(config, dict):
         raise HTTPException(status_code=422, detail="config deve ser um objeto JSON")
+    _validar_config_no(tipo, config)
     x = body.get("layout_x")
     y = body.get("layout_y")
     for v in (x, y):
@@ -2217,7 +2309,8 @@ def update_no(malha_name: str, no_id: int, body: dict = Body(default={}),
 
     `tipo` NÃO é editável: trocar o tipo mudaria a semântica do desenho por
     baixo do que já está ligado — recriar o nó é o gesto honesto. `config`
-    presente com None LIMPA a configuração; a validação rica por tipo é F13."""
+    presente com None LIMPA a configuração; config não-nulo é validado por
+    TIPO (_validar_config_no, F14) — o tipo vem da LINHA, não do body."""
     tem_config = "config" in body
     config = body.get("config")
     if tem_config and config is not None and not isinstance(config, dict):
@@ -2246,10 +2339,18 @@ def update_no(malha_name: str, no_id: int, body: dict = Body(default={}),
                                 detail=f"Malha não encontrada: '{malha_name}'")
         cur.execute("SELECT id, tipo FROM dbo.etl_malha_no "
                     "WHERE id = ? AND malha_name = ?", (no_id, malha))
-        if cur.fetchone() is None:
+        linha_no = cur.fetchone()
+        if linha_no is None:
             _fechar_silencioso(conn)
             raise HTTPException(status_code=404,
                                 detail=f"Nó {no_id} não existe na malha '{malha}'")
+        if tem_config and config is not None:
+            try:
+                _validar_config_no((str(linha_no[1] or "")).strip().lower(),
+                                   config)
+            except HTTPException:
+                _fechar_silencioso(conn)
+                raise
         if tem_config:
             cur.execute(
                 "UPDATE dbo.etl_malha_no SET config_json = ? "

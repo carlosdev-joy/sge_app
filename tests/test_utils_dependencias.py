@@ -243,10 +243,12 @@ def test_liberado_excecao_nao_vira_pode_disparar(dep, capsys):
 def test_predicado_sem_ordenacao_nem_criado_em(dep):
     """D15: o mascaramento por criado_em não volta pela porta dos fundos —
     nenhuma SQL sobre etl_pipeline_execucao ordena nem usa COALESCE, e
-    `criado_em` só aparece como COLUNA devolvida pela varredura AGUARDANDO
-    da guardiã (a idade da linha, F4 §6) — jamais num predicado, COALESCE
-    ou ordenação. ORDER BY no módulo existe apenas FORA da tabela de
-    execução (fila de eventos por detectado_em e escolha de canal, F4 §8).
+    `criado_em` só aparece como COLUNA devolvida — pela varredura AGUARDANDO
+    da guardiã (a idade da linha, F4 §6) ou pelo universo dos observadores
+    (o carimbo do nó em etl_malha_no, corte anti-retroativo da F14) — jamais
+    num predicado, COALESCE ou ordenação. ORDER BY no módulo existe apenas
+    FORA da tabela de execução (fila de eventos por detectado_em e escolha
+    de canal, F4 §8).
     (Docstrings podem citar o antipadrão; as consultas, jamais.)"""
     import ast as _ast
     fonte = (_ROOT / "dags/utils/dependencias.py").read_text(encoding="utf-8")
@@ -262,7 +264,8 @@ def test_predicado_sem_ordenacao_nem_criado_em(dep):
             assert "ORDER BY e.detectado_em" in sql or "etl_msg_grupo" in sql, sql
         if "criado_em" in sql:
             assert sql.index("criado_em") < sql.upper().index(" FROM "), sql
-            assert "AGUARDANDO_DEPENDENCIA" in sql, sql
+            assert ("AGUARDANDO_DEPENDENCIA" in sql
+                    or "dbo.etl_malha_no" in sql), sql
 
 
 # ═══════════════════ 5. dependentes_de e calendário ═════════════════════════
@@ -620,14 +623,16 @@ def test_gravar_evento_idempotente_pela_chave(dep):
 
 
 def test_fila_de_notificacao_recente_e_em_ordem(dep):
+    # 1ª consulta é a sonda da 075 (guarda de existência do marcador — F14);
+    # a fila em si é a 2ª.
     linha = (7, "PIPE_C", "2026-08-01", "JANELA_ESTOUROU", "detalhe",
              "2026-08-01 08:00:00")
-    conn = _conn([{"rows": [linha]}])
+    conn = _conn([{"rows": [(1, 1, 1)]}, {"rows": [linha]}])
     fila = dep.eventos_nao_notificados(conn, 50, 2)
     assert fila == [{"id": 7, "pipeline": "PIPE_C", "data_ref": "2026-08-01",
                      "tipo": "JANELA_ESTOUROU", "detalhe": "detalhe",
                      "detectado_em": "2026-08-01 08:00:00"}]
-    sql, params = conn._cur.execs[0]
+    sql, params = conn._cur.execs[1]
     assert "notificado_em IS NULL" in sql
     assert "DATEADD(day, -%s, GETDATE())" in sql
     assert "ORDER BY e.detectado_em" in sql     # ordem do lote — nunca criado_em
@@ -681,3 +686,149 @@ def test_guarda_de_idade_ausencia_de_varredura_historica(dep):
     for sql in sqls:
         if "DATEADD" in sql:
             assert "inicio IS NULL" in sql and "EXECUTANDO" in sql, sql
+
+
+# ═══════════ F14 — observadores de malha (desenho de componentes §5/§6) ═════
+
+def test_tabela_075_presente_exige_as_tres_tabelas(dep):
+    assert dep.tabela_075_presente(_conn([{"rows": [(1, 2, 3)]}])) is True
+    assert dep.tabela_075_presente(_conn([{"rows": [(1, None, 3)]}])) is False
+    conn = _conn([{"rows": [(1, 2, 3)]}])
+    dep.tabela_075_presente(conn)
+    sql, _ = conn._cur.execs[0]
+    for tabela in ("etl_malha", "etl_malha_no", "etl_malha_aresta"):
+        assert f"'dbo.{tabela}'" in sql
+
+
+def test_nos_observadores_agrupa_por_malha_e_filtra_tipos(dep):
+    """Só notificacao/fim viram observador; cada um carrega o desenho INTEIRO
+    da malha (insumo do expandir canônico); config quebrado degrada p/ None;
+    malha ativa é filtro do SQL (m.ativo = 1 nas DUAS consultas)."""
+    criado = datetime(2026, 8, 1, 10, 0)
+    nos_rows = [
+        ("M1", 1, "aguarde", None, criado),
+        ("M1", 2, "notificacao", '{"titulo": "T"}', criado),
+        ("M1", 3, "fim", "lixo{", criado),
+        ("M2", 7, "inicio", None, criado),
+    ]
+    arestas_rows = [
+        ("M1", None, "PIPE_A", 1, None),
+        ("M1", 1, None, 2, None),
+        ("M2", 7, None, None, "PIPE_B"),
+    ]
+    conn = _conn([{"rows": nos_rows}, {"rows": arestas_rows}])
+    obs = dep.nos_observadores(conn)
+    assert [(o["malha"], o["no_id"], o["tipo"]) for o in obs] == [
+        ("M1", 2, "notificacao"), ("M1", 3, "fim")]
+    assert obs[0]["config"] == {"titulo": "T"}
+    assert obs[1]["config"] is None                 # ilegível degrada com log
+    assert obs[0]["criado_em"] == criado            # corte anti-retroativo
+    assert obs[0]["nos"] == [{"id": 1, "tipo": "aguarde"},
+                             {"id": 2, "tipo": "notificacao"},
+                             {"id": 3, "tipo": "fim"}]
+    assert len(obs[0]["arestas"]) == 2              # só as arestas de M1
+    for sql, _ in conn._cur.execs:
+        assert "m.ativo = 1" in sql
+
+
+def test_nos_observadores_malha_so_com_inicio_aguarde_nao_aparece(dep):
+    conn = _conn([{"rows": [("M2", 7, "inicio", None, datetime(2026, 8, 1)),
+                            ("M2", 8, "aguarde", None, datetime(2026, 8, 1))]},
+                  {"rows": []}])
+    assert dep.nos_observadores(conn) == []
+
+
+def test_pipelines_todos_sucesso_matriz(dep):
+    """O espelho da matriz de liberado (§13.7): todas com SUCESSO → True;
+    uma falta (FALHA/outra data/ausência dão o MESMO count menor) → False;
+    exceção → False (D21: erro nunca vira 'condição fechou')."""
+    d = date(2026, 8, 3)
+    assert dep.pipelines_todos_sucesso(
+        _conn([{"rows": [(2,)]}]), ["PIPE_A", "PIPE_B"], d) is True
+    assert dep.pipelines_todos_sucesso(
+        _conn([{"rows": [(1,)]}]), ["PIPE_A", "PIPE_B"], d) is False
+    assert dep.pipelines_todos_sucesso(
+        _conn([RuntimeError("deadlock")]), ["PIPE_A"], d) is False
+
+
+def test_pipelines_todos_sucesso_sql_e_contrato_exists(dep):
+    """A consulta é o contrato EXISTS sobre nomes EXPLÍCITOS: status SUCESSO,
+    data parametrizada, IN com um marcador por nome — nenhuma ordenação."""
+    d = date(2026, 8, 3)
+    conn = _conn([{"rows": [(2,)]}])
+    dep.pipelines_todos_sucesso(conn, ["PIPE_B", "PIPE_A"], d)
+    sql, params = conn._cur.execs[0]
+    assert "COUNT(DISTINCT e.pipeline_name)" in sql
+    assert "e.status = 'SUCESSO'" in sql
+    assert "e.data_referencia = %s" in sql
+    assert "IN (%s, %s)" in sql
+    assert "ORDER BY" not in sql
+    assert params == (d, "PIPE_A", "PIPE_B")
+
+
+def test_pipelines_todos_sucesso_vazio_nunca_e_verdadeiro(dep):
+    """Decisão 13 em runtime: lista vazia → False SEM consultar (o 'todos'
+    vacuamente verdadeiro jamais emite)."""
+    conn = _conn()
+    assert dep.pipelines_todos_sucesso(conn, [], date(2026, 8, 3)) is False
+    assert conn._cur.execs == []
+
+
+def test_pipelines_todos_sucesso_dedup_casefold(dep):
+    """Colação CI do banco × Python CS: grafias que o banco considera IGUAIS
+    contam UMA vez no len — senão a condição nunca fecharia."""
+    conn = _conn([{"rows": [(1,)]}])
+    assert dep.pipelines_todos_sucesso(
+        conn, ["PIPE_A", "pipe_a"], date(2026, 8, 3)) is True
+    _, params = conn._cur.execs[0]
+    assert len(params) == 2                         # data + UM nome
+
+
+def test_gravar_evento_com_notificar_false_carimba_no_nascimento(dep):
+    """Decisão 14 (card do Fim opt-in): notificar=False grava o evento JÁ
+    com notificado_em — nunca entra na fila do Teams; a chave idempotente
+    continua a mesma."""
+    conn = _conn([{"rowcount": 1}])
+    assert dep.gravar_evento(conn, "#no:9", date(2026, 8, 3),
+                             "MALHA_CONCLUIDA", "d", notificar=False) is True
+    sql, params = conn._cur.execs[0]
+    assert "notificado_em" in sql and "GETDATE()" in sql
+    assert "WHERE NOT EXISTS" in sql
+    assert params[4:] == ("#no:9", date(2026, 8, 3), "MALHA_CONCLUIDA")
+
+
+def test_gravar_evento_default_nao_carimba_notificado(dep):
+    """O caminho default (notificar=True) segue byte-idêntico ao da F4: sem
+    notificado_em no INSERT — a fila do Teams decide."""
+    conn = _conn([{"rowcount": 1}])
+    dep.gravar_evento(conn, "PIPE_C", date(2026, 8, 3), "NAO_LIBEROU", "d")
+    sql, _ = conn._cur.execs[0]
+    assert "notificado_em" not in sql
+
+
+def test_fila_exige_existencia_do_pipeline_e_do_no(dep):
+    """Achado 2 da revisão da F14: com a FK derrubada (076), a FILA é quem
+    confere existência — evento comum exige o pipeline em etl_pipeline;
+    marcador '#no:{id}' exige o nó em etl_malha_no (075 presente). Evento
+    órfão fica na tabela (histórico), só não vira card."""
+    conn = _conn([{"rows": [(1, 1, 1)]}, {"rows": []}])
+    dep.eventos_nao_notificados(conn, 50, 2)
+    sql, _ = conn._cur.execs[1]
+    assert ("e.pipeline_name NOT LIKE '#no:%%' AND EXISTS "
+            "(SELECT 1 FROM dbo.etl_pipeline p "
+            "WHERE p.pipeline_name = e.pipeline_name)") in sql
+    assert ("EXISTS (SELECT 1 FROM dbo.etl_malha_no n "
+            "WHERE e.pipeline_name = '#no:' + CAST(n.id AS VARCHAR(20)))") in sql
+
+
+def test_fila_sem_075_nao_toca_etl_malha_no(dep):
+    """Sem a 075 não há como conferir o marcador — e a fila dos eventos
+    COMUNS não pode quebrar por isso: a guarda do nó vira 1=1 e nenhuma
+    consulta cita etl_malha_no."""
+    conn = _conn([{"rows": [(1, None, 1)]}, {"rows": []}])
+    dep.eventos_nao_notificados(conn, 50, 2)
+    sql, _ = conn._cur.execs[1]
+    assert "etl_malha_no" not in sql
+    assert "1 = 1" in sql
+    # a guarda de pipeline continua mesmo sem a 075
+    assert "EXISTS (SELECT 1 FROM dbo.etl_pipeline p" in sql

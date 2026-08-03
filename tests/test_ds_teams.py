@@ -244,3 +244,19 @@ def test_card_de_dependencia_no_mesmo_envelope_do_canal():
     assert card["type"] == "message"
     assert anexo["contentType"] == "application/vnd.microsoft.card.adaptive"
     assert anexo["content"]["version"] == "1.4"
+
+
+@pytest.mark.parametrize("tipo,rotulo", [
+    ("MALHA_NOTIFICACAO", "Notificação da malha"),
+    ("MALHA_CONCLUIDA", "Malha concluída"),
+])
+def test_card_dos_observadores_de_malha_tem_tom_positivo(tipo, rotulo):
+    """F14 (Decisão 14): os 2 tipos novos são de CONCLUSÃO — cor Good, como o
+    SITUACAO_INICIAL; vermelho aqui ensinaria a operação a ignorar a cor. O
+    envelope é o MESMO montar_card_dependencia (pipeline = marcador #no:{id})."""
+    card = montar_card_dependencia(_evento_dep(tipo=tipo, pipeline="#no:9"))
+    corpo = card["attachments"][0]["content"]["body"]
+    assert corpo[0]["color"] == "Good"
+    assert rotulo in corpo[0]["text"]
+    assert {"rotulo", "icone", "cor"} <= set(ESTILO[tipo])
+    assert "#no:9" in _texto_do_card(card)

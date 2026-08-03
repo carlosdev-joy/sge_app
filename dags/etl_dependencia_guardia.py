@@ -26,7 +26,15 @@ sai no FIM, em lote (Decisão 1 do desenho):
      o pipeline fica PENDENTE — nada falha, nada fecha aqui.
   5. Divergência de execução + PREDECESSOR_FALHOU (§7): só com carimbo
      dentro do dia operacional corrente (D42) / FALHA sem sucesso na data.
-  6. Envio ao Teams (§8): canal derivado da supervisão DataStage, lote por
+  6. Observadores de malha (F14 — docs/malha-componentes-desenho.md §5/§6;
+     no desenho de componentes é a "responsabilidade 5, depois do fechamento
+     §6 da F4"): nós Notificação/Fim de malhas ATIVAS viram eventos
+     MALHA_NOTIFICACAO/MALHA_CONCLUIDA com marcador #no:{id}, na janela fixa
+     {D, D-1} do presente — nunca varredura de histórico (D45). Upstream
+     vazio ou viradas divergentes pulam com log (Decisão 13); o card do Fim
+     é OPT-IN por config (Decisão 14). Nada aqui dispara nem fecha corrida:
+     observador observa.
+  7. Envio ao Teams (§8): canal derivado da supervisão DataStage, lote por
      ciclo, notificado_em só após 2xx, URL do webhook JAMAIS em log.
 
 ZERO SQL neste arquivo (Decisão 15): toda pergunta ao banco mora em
@@ -66,6 +74,9 @@ if _DAGS_DIR not in sys.path:
 
 from utils import dependencias as dep                     # noqa: E402
 from utils.data_referencia import calcular                # noqa: E402
+# O CANÔNICO da expansão dos nós (F14): a guardiã importa o próprio objeto —
+# paridade por IDENTIDADE com o port da API, como a F4 fez com liberado().
+from utils.malha_nos import expandir                      # noqa: E402
 
 DAG_ID = "etl_dependencia_guardia"
 LOCAL_TZ = "America/Sao_Paulo"
@@ -531,7 +542,119 @@ def _divergencias_e_falhas(conn, agora: datetime, log) -> int:
     return eventos
 
 
-# ── Responsabilidade 6 — envio ao Teams (§8) ────────────────────────────────
+# ── Responsabilidade 6 — observadores de malha (F14 §5/§6) ──────────────────
+
+def _detalhe_notificacao(config: dict, malha: str, data_ref, upstream) -> str:
+    """Mensagem do evento MALHA_NOTIFICACAO, renderizada na DETECÇÃO com o
+    contexto em mãos (padrão da supervisão): título/mensagem do config do nó
+    + malha + a lista do upstream resumida (§5 passo 4). gravar_evento clipa
+    em 1000 — o resumo aqui é para o card sair legível, não para caber."""
+    cfg = config or {}
+    titulo = (str(cfg.get("titulo") or "")).strip() or "Notificação da malha"
+    mensagem = (str(cfg.get("mensagem") or "")).strip()
+    resumo = ", ".join(upstream[:10])
+    if len(upstream) > 10:
+        resumo += f" (+{len(upstream) - 10})"
+    detalhe = (f"{titulo} — malha {malha}: todas as entradas com SUCESSO "
+               f"em {_iso(data_ref)} ({resumo})")
+    if mensagem:
+        detalhe += f" - {mensagem}"
+    return detalhe
+
+
+def _observadores_malha(conn, agora: datetime, log) -> int:
+    """F14 (desenho de componentes §5/§6, Decisão 12): avalia os nós
+    Notificação/Fim de malhas ativas DENTRO do ciclo — nenhuma task nova em
+    DAG nenhuma; em runtime os nós não existem, quem observa é a guardiã.
+
+    Por observador (try/except por nó, D51):
+      • upstream via o CANÔNICO expandir (utils/malha_nos.py) — vazio pula
+        com log (Decisão 13: o "todos com sucesso" vacuamente verdadeiro
+        jamais emite);
+      • viradas do upstream via virada_efetiva — divergentes pulam com log
+        (a face de configuração do DATA_DIVERGENTE já alerta a doença; o
+        observador não adivinha);
+      • janela fixa {D-1, D} derivada do PRESENTE (D = calcular(agora,
+        virada)) — nunca varredura de histórico (D45). O D-1 pega a cadeia
+        noturna que conclui depois da meia-noite; a chave do ux_dep_evento
+        impede duplicata quando o evento já saiu no próprio dia; data
+        anterior ao DIA de criação do nó nunca é avaliada (corte
+        anti-retroativo — achado 1 da revisão);
+      • condição = pipelines_todos_sucesso (o MESMO contrato EXISTS de
+        liberado(), sobre a lista explícita) → gravar_evento com o marcador
+        #no:{id} (convenção §5: id é IDENTITY global; '#' não colide com
+        dag_id) e commit — evento e carimbo de opt-out saem na MESMA
+        transação, numa escrita só. Notificação SEMPRE vai à fila do Teams; o card
+        do Fim é OPT-IN (config notificar_teams, Decisão 14) — o evento e o
+        painel são sempre.
+
+    Sem a migration 075 os observadores são pulados com log — o restante do
+    ciclo (F4) não depende dela.
+    """
+    if not dep.tabela_075_presente(conn):
+        log.info("[GUARDIA] migration 075 ausente — observadores de malha "
+                 "pulados")
+        return 0
+    eventos = 0
+    expansoes: dict = {}    # malha -> expandir(...) (uma expansão por malha)
+    for obs in dep.nos_observadores(conn):
+        try:
+            malha, no_id = obs["malha"], obs["no_id"]
+            if malha not in expansoes:
+                expansoes[malha] = expandir(obs["nos"], obs["arestas"])
+            upstream = sorted(expansoes[malha]["nos"][no_id]["upstream"])
+            if not upstream:
+                log.info("[GUARDIA] no %s (%s) da malha '%s' sem upstream — "
+                         "nao avaliado (Decisao 13)", no_id, obs["tipo"], malha)
+                continue
+            viradas = sorted({dep.virada_efetiva(conn, p) for p in upstream})
+            if len(viradas) > 1:
+                log.warning("[GUARDIA] no %s da malha '%s' com viradas "
+                            "divergentes no upstream — nao avaliado", no_id,
+                            malha)
+                continue
+            # Corte anti-retroativo (achado 1 da revisão adversarial): o nó
+            # só observa datas >= o DIA em que foi criado — não existe
+            # notificação "pedida" antes de o nó existir. Sem isto, criar o
+            # nó às 14:00 com a malha de ontem concluída faria a janela D-1
+            # emitir um card retroativo que ninguém pediu (violação direta
+            # do anti-ruído, Decisões 13/14). Ruído único ACEITO e
+            # documentado: reativar uma malha inativa pode emitir pela
+            # janela {D-1, D} corrente (não há carimbo de reativação para
+            # cortar — rastreá-lo seria estado novo sem dono no modelo).
+            criado_em = obs.get("criado_em")
+            corte = (criado_em.date() if isinstance(criado_em, datetime)
+                     else criado_em)
+            data_corrente = calcular(agora, viradas[0])
+            for data_ref in (data_corrente - timedelta(days=1), data_corrente):
+                if corte is not None and data_ref < corte:
+                    continue
+                if not dep.pipelines_todos_sucesso(conn, upstream, data_ref):
+                    continue
+                if obs["tipo"] == "notificacao":
+                    tipo_ev, notificar = "MALHA_NOTIFICACAO", True
+                    detalhe = _detalhe_notificacao(obs["config"], malha,
+                                                   data_ref, upstream)
+                else:
+                    tipo_ev = "MALHA_CONCLUIDA"
+                    notificar = (obs["config"] or {}).get("notificar_teams") is True
+                    detalhe = (f"Malha {malha} concluída na data "
+                               f"{_iso(data_ref)} — {len(upstream)} "
+                               "pipeline(s) com SUCESSO")
+                if dep.gravar_evento(conn, f"#no:{no_id}", data_ref, tipo_ev,
+                                     detalhe, notificar=notificar):
+                    eventos += 1
+                    log.info("[GUARDIA] %s do no %s (malha '%s') em %s",
+                             tipo_ev, no_id, malha, _iso(data_ref))
+                conn.commit()
+        except Exception as e:
+            _rollback(conn)
+            log.warning("[GUARDIA] observador %s da malha '%s' falhou (%s) — "
+                        "seguindo", obs.get("no_id"), obs.get("malha"), e)
+    return eventos
+
+
+# ── Responsabilidade 7 — envio ao Teams (§8) ────────────────────────────────
 
 def _notificar(conn, log, limite: int) -> int:
     """Envio no FIM do ciclo, depois de toda a detecção, para o lote sair
@@ -601,19 +724,22 @@ def ciclo(**context) -> dict:
         disparadas  = _rede_seguranca(conn, agora, log)
         deadlines   = _deadline(conn, agora, log)
         eventos     = _divergencias_e_falhas(conn, agora, log)
+        # Observadores DEPOIS de toda a detecção do dia (fechamento incluso)
+        # e ANTES do Teams: o card da malha sai no lote do MESMO ciclo.
+        observadores = _observadores_malha(conn, agora, log)
         notificados = _notificar(conn, log, _lote_notificacao())
     finally:
         conn.close()
 
     log.info("[GUARDIA] ciclo concluído: %d fechada(s), %d ordenada(s), "
              "%d resgatada(s), %d disparada(s), %d deadline(s), %d evento(s), "
-             "%d notificado(s).",
+             "%d observador(es), %d notificado(s).",
              fechadas, ordenadas, resgatadas, disparadas, deadlines, eventos,
-             notificados)
+             observadores, notificados)
     return {"fechadas": fechadas, "ordenadas": ordenadas,
             "resgatadas": resgatadas, "disparadas": disparadas,
             "deadlines": deadlines, "eventos": eventos,
-            "notificados": notificados}
+            "observadores": observadores, "notificados": notificados}
 
 
 _INTERVALO = _intervalo()
