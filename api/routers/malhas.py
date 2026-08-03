@@ -101,6 +101,9 @@ from services import malha_nos as malha_nos_svc
 # paridade por teste). virada_global/tabela_067 moraram aqui inline até a F5 e
 # foram extraídos para o service, reusados também por routers/pipelines.
 from services import dependencias as deps_svc
+# Ponte de identidade / canonização de pipeline (F2 — spec de operação no nível
+# de etapa). Aqui entra só `pipeline_oficial`, que morava inline neste módulo.
+from services import execucao_identidade as ident_svc
 # Helpers da F1 — fonte ÚNICA das validações de dependência (não reimplementar:
 # a mensagem de ciclo do servidor é ESPELHADA no cliente pelo MalhaEditor, e
 # duas implementações divergiriam). Sem ciclo de import: pipelines.py não
@@ -579,11 +582,10 @@ def _pipeline_oficial(cur, pipeline_name):
 
     Mesma regra da PR #236 (incidente 2026-08-01): membro gravado em grafia
     divergente do registro some nos dicts case-sensitive do Python — aqui o
-    nome é canonizado ANTES de qualquer gravação."""
-    cur.execute("SELECT pipeline_name FROM dbo.etl_pipeline WHERE pipeline_name = ?",
-                (pipeline_name,))
-    row = cur.fetchone()
-    return (row[0] or "").strip() if row else None
+    nome é canonizado ANTES de qualquer gravação. Implementação extraída para
+    services.execucao_identidade na F2 (o drill-down por etapa precisa da MESMA
+    canonização) — mesmo padrão de _virada_global delegando para o service."""
+    return ident_svc.pipeline_oficial(cur, pipeline_name)
 
 
 def _espelho_csv(cur, pipeline, depende_de, acao):

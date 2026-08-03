@@ -18,6 +18,12 @@ from deps import (
     get_current_user, require_perm,
 )
 from services.notify import add_notificacao
+# Validação de dag_id do proxy (uma autoridade só, como malhas.py já faz).
+from routers.airflow import _DAG_ID_RE
+# Ponte de identidade run_id ↔ ts_nodash (F2 — docs/spec-operacao-nivel-etapa.md).
+from services import data_referencia as dref
+from services import dependencias as deps_svc
+from services import execucao_identidade as ident_svc
 
 log = logging.getLogger("orquestra-api")
 
@@ -34,28 +40,14 @@ def _fmt_dt(v):
     return str(v)
 
 
-def _iso_to_ts_nodash(iso: str) -> str:
-    """'2026-07-05T03:00:00+00:00' → '20260705T030000' (formato ts_nodash).
-
-    execution_id das linhas de telemetria = ts_nodash da logical date do run;
-    esta é a ponte para casar uma execução com o dag_run real no Airflow.
-    """
-    return (iso or "")[:19].replace("-", "").replace(":", "")
-
-
-def _escolhe_dag_run(runs: list, exec_id: str) -> dict:
-    """Escolhe o dag_run a limpar no rerun: casa a logical date (ts_nodash) com o
-    execution_id da execução clicada; sem match, mantém o fallback legado (1º run
-    terminado da lista, ordenada por -execution_date; senão o mais recente)."""
-    if exec_id:
-        for run in runs:
-            logical = run.get("logical_date") or run.get("execution_date") or ""
-            if _iso_to_ts_nodash(logical) == exec_id:
-                return run
-    for run in runs:
-        if run.get("state") in ("failed", "success"):
-            return run
-    return runs[0]
+# A ponte de identidade run_id ↔ ts_nodash vive numa peça SÓ desde a F2 da spec
+# de operação no nível de etapa (services/execucao_identidade.py). Os dois nomes
+# abaixo continuam existindo como ALIAS porque são caminho de produção (rerun e
+# reconciliação) e têm teste próprio (tests/test_execucoes_rerun.py) — delegar
+# em vez de reescrever mantém o comportamento byte a byte e deixa uma
+# autoridade só para a regra.
+_iso_to_ts_nodash = ident_svc.ts_nodash
+_escolhe_dag_run = ident_svc.escolhe_dag_run
 
 
 def get_airflow_client() -> httpx.AsyncClient:
@@ -636,6 +628,214 @@ async def rerun_from_task(body: dict = Body(default={}), _auth: dict = Depends(r
             "task_id": task_id,
             "tasks_cleared": len(cleared.get("task_instances", [])),
         }
+
+
+def _ident_json(ident: dict) -> dict:
+    """Identidade pronta para JSON — datas viram texto no formato do resto da
+    API (`_fmt_dt` / `YYYY-MM-DD`). Nenhuma chave é omitida: o consumidor lê
+    sempre o mesmo molde, resolvido ou não."""
+    out = dict(ident)
+    dref_val = out.get("data_referencia")
+    out["data_referencia"] = (dref_val.strftime("%Y-%m-%d")
+                              if hasattr(dref_val, "strftime") else dref_val)
+    out["candidatos"] = [
+        {**c, "inicio": _fmt_dt(c.get("inicio")), "fim": _fmt_dt(c.get("fim"))}
+        for c in (out.get("candidatos") or [])
+    ]
+    return out
+
+
+@router.get("/pipelines/{pipeline_name}/execucao", tags=["execucoes"])
+async def get_pipeline_execucao(
+    pipeline_name: str,
+    data_referencia: str | None = None,
+    execution_id: str | None = None,
+    _auth: dict = Depends(get_current_user),
+):
+    """Execução de UM pipeline no nível de ETAPA — a chamada do drill-down (F2).
+
+    **Fala a linguagem da malha**: `(pipeline, ODATE)`, o mesmo par de
+    `GET /malhas/{m}/execucao`. Uma chamada só devolve tudo que a F3 precisa
+    para abrir o canvas de Etapas em modo Execução: a identidade resolvida
+    (`ts_nodash` + `run_id`/`dag_run_id`, este último para a F4 reexecutar), a
+    corrida do pipeline e as etapas com status, início, fim e duração.
+
+    Parâmetros (mutuamente exclusivos):
+      • `data_referencia=YYYY-MM-DD` — o ODATE. Ausente, usa o ODATE corrente
+        calculado com a virada GLOBAL de `etl_app_config` (mesma semântica do
+        painel da malha).
+      • `execution_id=<ts_nodash>` — o **sentido inverso**, para quem já tem o
+        execution_id da telemetria (Dashboard / modal de Logs) e não o ODATE.
+
+    **Vazio ≠ erro.** Pipeline sem execução no ODATE responde 200 com
+    `vazio: true`, `razao` preenchida e `etapas` trazendo o DESENHO com
+    `status: null` e `sem_execucao: true` — o canvas desenha o grafo neutro em
+    vez de quebrar (regra de honestidade do §3: etapa sem linha de execução é
+    neutra, nunca verde). Só pipeline INEXISTENTE é 404.
+
+    **Degradação.** Sem a migration 067 a resposta vem por aproximação sobre
+    `etl_job_execution` (`identidade.degradado: true`); com o Airflow fora do ar
+    a identidade pode ficar sem `run_id`/`ts_nodash` e a resposta traz
+    `airflow_indisponivel: true` — em nenhum dos casos a tela fica sem resposta.
+
+    O payload COMPLETO do canvas (layout, condition, params) continua vindo de
+    `GET /pipelines/{p}/fluxo`; aqui vai só o mínimo do desenho (`job_type`,
+    `execution_order`, `depends_on_jobs`) que dá sentido às etapas — não se
+    duplica o editor.
+    """
+    if data_referencia and execution_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Informe data_referencia OU execution_id, nunca os dois")
+    # Valida a data ANTES de abrir conexão (mesma regra do GET /malhas/…/execucao).
+    data_ref = None
+    if data_referencia is not None and str(data_referencia).strip() != "":
+        try:
+            data_ref = datetime.strptime(
+                str(data_referencia).strip(), "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"data_referencia inválida: '{data_referencia}' "
+                       "(use o formato YYYY-MM-DD)")
+    ts_pedido = (execution_id or "").strip()
+
+    # ── Fase 1: tudo que o banco sabe (conexão aberta e FECHADA antes do await
+    # do Airflow — nenhuma conexão fica presa durante I/O de rede).
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    try:
+        oficial = ident_svc.pipeline_oficial(cur, pipeline_name)
+        if oficial is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Pipeline não encontrado: '{pipeline_name}'")
+        tem_067 = ident_svc.tem_tabela_067(cur)
+        virada = deps_svc.virada_global(cur)
+        if ts_pedido:
+            ident = ident_svc.resolve_por_ts_nodash(cur, oficial, ts_pedido)
+        else:
+            if data_ref is None:
+                data_ref = dref.calcular(datetime.now(), virada)
+            ident = ident_svc.resolve_por_odate(cur, oficial, data_ref,
+                                                virada=virada)
+        desenho = ident_svc.etapas_do_desenho(cur, oficial)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    finally:
+        try: cur.close()
+        except Exception: pass
+        try: conn.close()
+        except Exception: pass
+
+    # ── Fase 2: o Airflow, e SÓ quando ele é o único que sabe responder.
+    # É o caso comum: os run_ids gerados pelo Orquestra
+    # ('dep__…', 'manual__<odate>__…') não carregam a logical date, então o
+    # ts_nodash só sai do dag_run. Falha aqui NUNCA derruba a resposta.
+    airflow_indisponivel = False
+    perguntar = ident_svc.precisa_airflow(ident)
+    if perguntar and not _DAG_ID_RE.match(oficial or ""):
+        # Nome que não é dag_id válido não tem DAG — a identidade fica
+        # incompleta, mas o silêncio seria pior que a lacuna.
+        log.warning("[EXEC-ETAPA] '%s' não é um dag_id válido — identidade "
+                    "não completada pelo Airflow", oficial)
+        perguntar = False
+    if perguntar:
+        try:
+            async with get_airflow_client() as client:
+                r = await client.get(
+                    f"/api/v1/dags/{oficial}/dagRuns",
+                    params={"limit": 100, "order_by": "-execution_date"})
+            if r.is_success:
+                ident = ident_svc.completa_com_airflow(
+                    ident, r.json().get("dag_runs", []))
+            else:
+                airflow_indisponivel = True
+                log.warning("[EXEC-ETAPA] Airflow devolveu %s para dagRuns de %s",
+                            r.status_code, oficial)
+        except Exception as e:
+            airflow_indisponivel = True
+            log.warning("[EXEC-ETAPA] leitura de dagRuns de %s falhou: %s",
+                        oficial, e)
+
+    # ── Fase 3: as etapas, agora que o ts_nodash é conhecido — e, no sentido
+    # inverso, a SEGUNDA passada na 067 com o run_id que o Airflow acabou de
+    # revelar. Sem ela a resposta voltava com `data_referencia: null` para quem
+    # entra por execution_id: o run_id do Orquestra não é traduzível pela
+    # string, então a 1ª passada não casa nenhuma corrida e o ODATE se perde.
+    executadas = []
+    if ident.get("ts_nodash"):
+        conn = cur = None
+        try:
+            conn = get_db_conn(); cur = conn.cursor()
+            if (ts_pedido and ident.get("run_id")
+                    and ident.get("data_referencia") is None):
+                ident = ident_svc.aplica_corrida(
+                    ident,
+                    ident_svc.corrida_por_run_id(cur, oficial, ident["run_id"]))
+            executadas = ident_svc.etapas_executadas(
+                cur, oficial, ident["ts_nodash"])
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+        finally:
+            for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+                try:
+                    f and f()
+                except Exception:
+                    pass
+
+    etapas = [
+        {**e, "inicio": _fmt_dt(e.get("inicio")), "fim": _fmt_dt(e.get("fim"))}
+        for e in ident_svc.compor_etapas(desenho, executadas)
+    ]
+
+    # A corrida do pipeline é a candidata VENCEDORA da identidade — não uma
+    # segunda consulta com uma segunda regra de "mais recente" (D14/D15).
+    corrida = None
+    for c in (ident.get("candidatos") or []):
+        if c.get("run_id") and c["run_id"] == ident.get("run_id"):
+            corrida = {**c, "inicio": _fmt_dt(c.get("inicio")),
+                       "fim": _fmt_dt(c.get("fim"))}
+            break
+
+    # `razao` só existe quando NÃO há etapas executadas — é a explicação do
+    # vazio, nunca um erro disfarçado.
+    razao = None
+    if not executadas:
+        if ident.get("motivo") == ident_svc.SEM_LINHA_NA_DATA:
+            razao = "sem_execucao_na_data"
+        elif ident.get("motivo"):
+            razao = ident["motivo"]
+        elif airflow_indisponivel:
+            razao = "airflow_indisponivel"
+        else:
+            razao = "sem_etapas_registradas"
+
+    ident_json = _ident_json(ident)
+    return {
+        "pipeline_name": oficial,
+        # Pelo ODATE, é o pedido; pelo execution_id, é o que a 067 revelou (pode
+        # ser null quando a corrida não está registrada — vazio honesto).
+        "data_referencia": (data_ref.strftime("%Y-%m-%d") if data_ref
+                            else ident_json["data_referencia"]),
+        "identidade": ident_json,
+        "corrida": corrida,
+        "etapas": etapas,
+        "total_etapas": len(etapas),
+        "etapas_executadas": len(executadas),
+        "vazio": not executadas,
+        "razao": razao,
+        "migration_067_pendente": not tem_067,
+        "airflow_indisponivel": airflow_indisponivel,
+    }
 
 
 async def _estados_task_instances(dag_id: str, exec_id: str) -> dict:
