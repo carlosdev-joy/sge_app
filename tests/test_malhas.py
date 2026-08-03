@@ -36,13 +36,19 @@ _AGORA = datetime(2026, 8, 2, 10, 0, 0)
 
 class FakeDb:
     """etl_malha + etl_malha_pipeline em memória, com chaves case-insensitive
-    (a colação do SQL Server é CI — 'Fechamento' e 'FECHAMENTO' colidem)."""
+    (a colação do SQL Server é CI — 'Fechamento' e 'FECHAMENTO' colidem).
 
-    def __init__(self, pipelines=None, com_tabelas=True):
+    com_074=False (default, mesmo padrão do com_073 da F5) simula o banco SEM a
+    coluna etl_malha.orientacao: o guard COL_LENGTH devolve NULL, a API degrada
+    para 'horizontal' e qualquer UPDATE da coluna nesse estado LEVANTA no dublê
+    (chegar lá é bug de degradação)."""
+
+    def __init__(self, pipelines=None, com_tabelas=True, com_074=False):
         # pipelines: {grafia_oficial: {"active": 1, "criticidade": "Alta",
         #                              "schedule_type": "daily"}}
         self.pipelines = pipelines or {}
         self.com_tabelas = com_tabelas
+        self.com_074 = com_074
         self.malhas: dict[str, dict] = {}   # grafia_oficial -> linha
         self.membros: list[dict] = []       # {"malha", "pipeline", "layout_x", "layout_y"}
         self.commits = 0
@@ -98,6 +104,11 @@ class FakeCur:
         if "OBJECT_ID('dbo.etl_malha'" in s:
             self._rows = [(1, 1)] if db.com_tabelas else [(None, None)]
             return
+        # Guard da coluna orientacao (074): COL_LENGTH devolve NULL para coluna
+        # ausente sem estourar — inclusive sem a própria tabela.
+        if "COL_LENGTH('dbo.etl_malha'" in s:
+            self._rows = [(12,)] if (db.com_tabelas and db.com_074) else [(None,)]
+            return
         # A checagem única do router precisa impedir QUALQUER toque nas
         # tabelas quando elas não existem — chegar aqui é bug de degradação.
         if not db.com_tabelas and "etl_malha" in s:
@@ -109,10 +120,17 @@ class FakeCur:
             self._rows = [(k,)] if k else []
             return
         if s.startswith("SELECT malha_name, descricao"):
+            # Com a 074 o router pede a coluna extra; sem ela o SQL é o de
+            # sempre — o dublê espelha as DUAS formas.
+            tem_orientacao = ", orientacao" in s
+
             def linha(k):
                 m = db.malhas[k]
-                return (k, m["descricao"], m["ativo"], m["criado_em"],
-                        m["criado_por"], m["atualizado_em"])
+                cols = [k, m["descricao"], m["ativo"], m["criado_em"],
+                        m["criado_por"], m["atualizado_em"]]
+                if tem_orientacao:
+                    cols.append(m.get("orientacao", "horizontal"))
+                return tuple(cols)
             if "WHERE malha_name = ?" in s:
                 k = db._malha_key(params[0])
                 self._rows = [linha(k)] if k else []
@@ -173,9 +191,11 @@ class FakeCur:
             nome, descricao, criado_por = params
             if db._malha_key(nome):
                 raise RuntimeError("Violation of PRIMARY KEY constraint 'PK_etl_malha'")
+            # orientacao nasce no DEFAULT da 074 ('horizontal') — presente no
+            # dict mesmo sem a coluna: só o SELECT com a 074 a devolve.
             db.malhas[nome] = {"descricao": descricao, "ativo": 1,
                                "criado_em": _AGORA, "criado_por": criado_por,
-                               "atualizado_em": None}
+                               "atualizado_em": None, "orientacao": "horizontal"}
             return
         if s.startswith("UPDATE dbo.etl_malha SET malha_name"):
             novo, atual = params
@@ -189,6 +209,14 @@ class FakeCur:
         if s.startswith("UPDATE dbo.etl_malha SET ativo"):
             k = db._malha_key(params[1])
             db.malhas[k].update(ativo=params[0], atualizado_em=_AGORA)
+            return
+        if s.startswith("UPDATE dbo.etl_malha SET orientacao"):
+            # O guard COL_LENGTH tem de impedir o UPDATE sem a 074 — chegar
+            # aqui nesse estado é bug de degradação.
+            if not db.com_074:
+                raise RuntimeError("Invalid column name 'orientacao'")
+            k = db._malha_key(params[1])
+            db.malhas[k].update(orientacao=params[0], atualizado_em=_AGORA)
             return
         if s.startswith("DELETE FROM dbo.etl_malha WHERE"):
             k = db._malha_key(params[0])

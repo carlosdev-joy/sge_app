@@ -4,10 +4,11 @@
 // F9: na visão de execução o nó ganha um ANEL de status + badge pequeno como
 // CAMADA por cima — a identidade visual do card não muda; sem execução na
 // data, o nó fica exatamente como na montagem.
-import { memo } from 'react'
-import { Handle, Position, type NodeProps } from '@xyflow/react'
+import { memo, useEffect } from 'react'
+import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
 import { CritBadge } from './CritBadge'
 import { estiloStatus } from './statusExecucao'
+import type { Orientacao } from '../etapas/layoutGrafo'
 
 export interface MalhaPipelineNodeData {
   name: string
@@ -15,6 +16,10 @@ export interface MalhaPipelineNodeData {
   criticidade: string | null
   // Texto de agendamento pronto para exibição (schedule_type traduzido).
   schedule: string | null
+  // Orientação do diagrama (migration 074): decide onde os handles ancoram —
+  // horizontal = target Left / source Right (como sempre); vertical = target
+  // Top / source Bottom. Ausente = horizontal (payload antigo).
+  orientacao?: Orientacao
   // F9 (visão de execução): status cru de etl_pipeline_execucao na data de
   // referência + tooltip com início/fim/motivo. null = sem execução na data
   // (ou modo montagem) — o nó não ganha camada nenhuma.
@@ -26,14 +31,20 @@ export interface MalhaPipelineNodeData {
 const HANDLE_CLS =
   '!h-3.5 !w-3.5 !rounded-full !border-2 !border-panel !bg-slate-400 dark:!bg-slate-500'
 
-function MalhaPipelineNodeImpl({ data, selected }: NodeProps & { data: MalhaPipelineNodeData }) {
+function MalhaPipelineNodeImpl({ id, data, selected }: NodeProps & { data: MalhaPipelineNodeData }) {
   // Largura do invólucro = a do PRÓPRIO card (lição da PR #238): os handles
   // ancoram encostados no visual — nada de invólucro maior com aresta "morrendo
-  // no nada". O nome pode quebrar em até 2 linhas DENTRO do card (title mostra
-  // o nome completo).
+  // no nada". Vale nos DOIS modos: Left/Right encostam nas laterais do card,
+  // Top/Bottom nas bordas de cima/baixo.
   // Anel de execução em `outline` de propósito: não briga com o `ring` azul de
   // seleção (box-shadow) — os dois convivem.
   const exec = data.exec ? estiloStatus(data.exec.status) : null
+  const vertical = data.orientacao === 'vertical'
+  // Trocar a posição dos handles muda a geometria interna que o React Flow
+  // memoriza por nó — sem este aviso as arestas continuariam ancoradas nas
+  // coordenadas antigas até um drag forçar a remedição.
+  const updateNodeInternals = useUpdateNodeInternals()
+  useEffect(() => { updateNodeInternals(id) }, [vertical, id, updateNodeInternals])
   return (
     <div
       className={[
@@ -55,7 +66,7 @@ function MalhaPipelineNodeImpl({ data, selected }: NodeProps & { data: MalhaPipe
           {exec.rotulo}
         </span>
       )}
-      <Handle type="target" position={Position.Left} className={HANDLE_CLS} />
+      <Handle type="target" position={vertical ? Position.Top : Position.Left} className={HANDLE_CLS} />
       <div className="flex items-start gap-1.5">
         <span
           className={`mt-1 h-2 w-2 shrink-0 rounded-full ${data.active ? 'bg-green-400' : 'bg-slate-400'}`}
@@ -70,7 +81,7 @@ function MalhaPipelineNodeImpl({ data, selected }: NodeProps & { data: MalhaPipe
         {data.schedule && <span className="text-[10px] text-dim">📅 {data.schedule}</span>}
         {!data.active && <span className="text-[10px] text-dim">○ inativo</span>}
       </div>
-      <Handle type="source" position={Position.Right} className={HANDLE_CLS} />
+      <Handle type="source" position={vertical ? Position.Bottom : Position.Right} className={HANDLE_CLS} />
     </div>
   )
 }
