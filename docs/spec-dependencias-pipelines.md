@@ -52,7 +52,7 @@ Data: 2026-07-31 · Status: ✅ **Retomada F2–F6 COMPLETA NO CÓDIGO (PRs #243
 >
 > **Pendente: o deploy de produção do trem inteiro** (motor + malha +
 > componentes vão JUNTOS), nesta ordem consolidada:
-> 1. migrations **067, 070–076** na etapa 6c do `deploy.sh` — o prompt é
+> 1. migrations **067, 070–077** na etapa 6c do `deploy.sh` — o prompt é
 >    padrão-**NÃO**, responder `s`. ⚠️ Se responder não, a feature sobe **muda**
 >    e o smoke ainda assim "passa" nos primeiros passos: a conferência que não
 >    mente é `SELECT COUNT(*) FROM sys.foreign_keys WHERE name =
