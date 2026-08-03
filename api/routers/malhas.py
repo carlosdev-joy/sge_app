@@ -15,6 +15,8 @@ Endpoints:
   POST   /malhas/{malha_name}/pipelines            — adiciona membro (idempotente)
   DELETE /malhas/{malha_name}/pipelines/{pipeline_name} — remove membro
   PUT    /malhas/{malha_name}/layout               — persiste posições dos nós (F8/F10)
+  POST   /malhas/{malha_name}/agendamento          — agendamento da malha + compilação
+                                                     nas raízes (F13; dry_run no body)
   POST   /malhas/{malha_name}/nos                  — cria nó especial do desenho (F10)
   PATCH  /malhas/{malha_name}/nos/{no_id}          — config/layout do nó (F10)
   DELETE /malhas/{malha_name}/nos/{no_id}          — exclui nó + DESCOMPILA (F11; ?dry_run)
@@ -47,8 +49,18 @@ que a expansão perdeu — linha manual coincidente nunca é adotada nem removid
 (re-assinada, §7.3), nunca derrubada em silêncio. O ciclo passa a ser validado
 sobre o conjunto PÓS-expansão com o BFS canônico da F1 e a mensagem literal
 compartilhada (Decisão 15); o ciclo topológico do desenho segue de retaguarda
-para o ciclo só-de-nós, que não compila nada. O agendamento do Início é a F13
-e os observadores (guardiã) são a F14.
+para o ciclo só-de-nós, que não compila nada.
+
+F13 (desenho §4): o Início ganha EFEITO — o agendamento mora na MALHA
+(etl_malha.agendamento_json, Decisão 8) e compilar é COPIAR os campos para as
+colunas reais de cada raiz ligada ao Início + assinar agenda_no + carimbar,
+na mesma transação (POST /malhas/{name}/agendamento, dry_run no body).
+Todas as raízes com o MESMO cron e a MESMA virada (Decisão 9) disparam no
+mesmo tick do scheduler, cada uma na própria DAG — nenhum disparador novo.
+Raiz com dependência na 067 não pode ser ligada ao Início (422, §2.2); raiz
+assinada por Início de OUTRA malha idem (422, Decisão 11); desligar a raiz
+(aresta/nó excluído) vira on_demand + carimbo — nunca cron restaurado
+(Decisão 10). Os observadores (guardiã) são a F14.
 
 Degradação em deploy parcial (API nova + migration 070 ainda não aplicada):
 cada endpoint checa UMA vez se as tabelas existem; leitura da lista degrada
@@ -84,8 +96,15 @@ from services import dependencias as deps_svc
 # _check_circular_grafo (F11): o NÚCLEO do BFS com adjacência injetada — o
 # ciclo pós-expansão do compilador (Decisão 15) roda o MESMO algoritmo e emite
 # a MESMA mensagem literal do cadastro da F1.
-from routers.pipelines import (_check_circular, _check_circular_grafo,
-                               _validar_existencia, deduplicar)
+# F13 (Decisão 8): o agendamento da malha é validado pelas MESMAS funções do
+# register — _build_cron para o domínio, _validate_dias_horarios_mes,
+# _parse_horarios_especificos e _parse_hora_opcional (D35) — nunca uma
+# reimplementação (a regra que salvou o texto do ciclo na F8).
+from routers.pipelines import (_build_cron, _check_circular,
+                               _check_circular_grafo, _parse_hora_opcional,
+                               _parse_horarios_especificos,
+                               _validar_existencia,
+                               _validate_dias_horarios_mes, deduplicar)
 
 log = logging.getLogger("orquestra-api")
 
@@ -885,6 +904,402 @@ def _descompilacao_possivel(cur) -> bool:
     return _tabela_067(cur) and _coluna_origem_no(cur)
 
 
+# ── Compilador do Início (F13 — desenho §4) ──────────────────────────────────
+# O agendamento mora na MALHA (etl_malha.agendamento_json, Decisão 8); o nó
+# Início é a representação visual e o fio que diz QUEM recebe. Compilar =
+# COPIAR os campos para as colunas reais de cada raiz ligada + assinar
+# agenda_no + carimbar dag_config_pendente_em — o scheduler do Airflow dispara
+# todas no mesmo tick, cada uma na própria DAG; nenhum disparador novo (§4.2).
+# O motor NUNCA lê o JSON da malha.
+
+# O schema do agendamento é EXATAMENTE o subconjunto de campos do register
+# (§4.1) — chave fora dele é 422: o JSON é fonte de compilação, não saco de
+# configuração. hora_virada incluída de propósito (Decisão 9: UMA virada por
+# malha, aplicada a TODAS as raízes — mata o risco 4 da spec na raiz).
+_CAMPOS_AGENDAMENTO = (
+    "schedule_type", "schedule_hour", "schedule_minute", "schedule_dow",
+    "schedule_dom", "horarios_especificos", "dias_semana",
+    "dias_horarios_mes", "somente_dias_uteis", "calendario_nome",
+    "hora_virada",
+)
+
+# Nomes dos dias p/ resumo humano (D05 de guarda: convenção cron, 0=domingo).
+_DOW_NOMES = {0: "dom", 1: "seg", 2: "ter", 3: "qua", 4: "qui", 5: "sex",
+              6: "sáb"}
+
+
+def _colunas_agenda(cur) -> bool:
+    """True se as colunas de agendamento da 075 existem (etl_malha.
+    agendamento_json + etl_pipeline.agenda_no). Best-effort no padrão dos
+    guards de coluna (073/074): falha conta como ausente e o Início se
+    comporta como na F12 (só desenho, zero efeito)."""
+    try:
+        cur.execute(
+            "SELECT COL_LENGTH('dbo.etl_malha', 'agendamento_json'), "
+            "COL_LENGTH('dbo.etl_pipeline', 'agenda_no')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None and row[1] is not None)
+    except Exception as e:
+        log.warning("[MALHA] checagem das colunas de agendamento da 075 falhou: %s", e)
+        return False
+
+
+def _int_agenda(bruto, campo, minimo, maximo, default):
+    """Inteiro de um campo do agendamento, com faixa: o JSON da malha é
+    superfície NOVA — dá para validar faixa sem quebrar paridade com o
+    register (que herda a tolerância do formulário)."""
+    v = bruto.get(campo)
+    if v is None or v == "":
+        return default
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise HTTPException(status_code=422,
+                            detail=f"{campo} deve ser um inteiro")
+    if not (minimo <= v <= maximo):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{campo} fora do intervalo ({minimo}-{maximo}): {v}")
+    return v
+
+
+def _validar_agendamento(bruto):
+    """Valida e NORMALIZA o agendamento da malha (§4.1, Decisão 8) — pelas
+    MESMAS funções do register: _validate_dias_horarios_mes,
+    _parse_horarios_especificos (422 nos inválidos) e _parse_hora_opcional
+    (hora_virada inválida degrada para NULL com aviso — D35). Devolve
+    (agendamento_normalizado, avisos_texto).
+
+    'on_demand' é recusado de propósito: desligar raiz do cron é o gesto de
+    DESLIGAR a aresta/o Início (Decisão 10) — um agendamento 'sob demanda'
+    seria um não-agendamento guardado como se fosse um."""
+    if not isinstance(bruto, dict) or not bruto:
+        raise HTTPException(status_code=422,
+                            detail="agendamento deve ser um objeto com os "
+                                   "campos do agendamento da malha")
+    extras = sorted(set(bruto) - set(_CAMPOS_AGENDAMENTO))
+    if extras:
+        raise HTTPException(
+            status_code=422,
+            detail="Campos fora do schema do agendamento da malha: "
+                   + ", ".join(extras))
+    st = str(bruto.get("schedule_type") or "").strip().lower()
+    if not st:
+        raise HTTPException(status_code=422,
+                            detail="schedule_type é obrigatório no "
+                                   "agendamento da malha")
+    if st == "on_demand":
+        raise HTTPException(
+            status_code=422,
+            detail="O agendamento da malha não aceita 'on_demand' — para "
+                   "tirar uma raiz do cron, desligue-a do Início (a raiz "
+                   "vira sob demanda no gesto).")
+    avisos: list[str] = []
+    horarios = _parse_horarios_especificos(bruto.get("horarios_especificos"))
+    if st == "custom" and not horarios:
+        raise HTTPException(
+            status_code=422,
+            detail="horarios_especificos é obrigatório para schedule_type "
+                   "'custom'")
+    dias_horarios = _validate_dias_horarios_mes(bruto.get("dias_horarios_mes"))
+    if st == "monthly_days_times" and not dias_horarios:
+        # Mesma mensagem literal do register.
+        raise HTTPException(
+            status_code=422,
+            detail="dias_horarios_mes é obrigatório para schedule_type "
+                   "'monthly_days_times'")
+    dias_semana = None
+    dias_raw = str(bruto.get("dias_semana") or "").strip()
+    if dias_raw:
+        dias = []
+        for d in dias_raw.split(","):
+            d = d.strip()
+            if not d:
+                continue
+            if not d.isdigit() or not (0 <= int(d) <= 6):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"dias_semana inválido: '{d}' (use 0-6, 0=domingo)")
+            dias.append(int(d))
+        dias_semana = ",".join(str(d) for d in sorted(set(dias))) or None
+    hora = _int_agenda(bruto, "schedule_hour", 0, 23, 6)
+    minuto = _int_agenda(bruto, "schedule_minute", 0, 59, 0)
+    dom = _int_agenda(bruto, "schedule_dom", 1, 28, 1)
+    if st == "biweekly" and dom > 13:
+        # Quinzenal é dia D e D+15: dom 17–28 gera cron com dia 32–43 (não
+        # existe → Broken DAG após republicar, e a raiz PARA de agendar) e
+        # 14–16 cai em 29–31, que pula meses curtos — quinzena falsa. A MESMA
+        # regra e mensagem do wizard (defeito GRAVE da revisão adversarial).
+        raise HTTPException(
+            status_code=422,
+            detail=f"Dia da 1ª quinzena inválido (1–13): {dom}")
+    # custom/monthly_days_times: hora/minuto seguem o PRIMEIRO horário — a
+    # mesma derivação do wizard (buildSchedulePayload), para as colunas das
+    # raízes contarem uma história só.
+    if st == "custom" and horarios:
+        hora, minuto = int(horarios[:2]), int(horarios[3:5])
+    elif st == "monthly_days_times" and dias_horarios:
+        primeiro = json.loads(dias_horarios)[0]["horarios"][0]
+        hora, minuto = int(primeiro[:2]), int(primeiro[3:5])
+    return {
+        "schedule_type": st,
+        "schedule_hour": hora,
+        "schedule_minute": minuto,
+        "schedule_dow": _int_agenda(bruto, "schedule_dow", 0, 6, 1),
+        "schedule_dom": dom,
+        "horarios_especificos": horarios,
+        "dias_semana": dias_semana,
+        "dias_horarios_mes": dias_horarios,
+        "somente_dias_uteis": 1 if bruto.get("somente_dias_uteis") in (1, True) else 0,
+        "calendario_nome": (str(bruto.get("calendario_nome") or "").strip() or None),
+        "hora_virada": _parse_hora_opcional("hora_virada",
+                                            bruto.get("hora_virada"), avisos),
+    }, avisos
+
+
+def _scheduled_time_do_agendamento(ag) -> str:
+    """scheduled_time DERIVADO do agendamento (a mesma derivação do wizard):
+    o gerador de DAGs monta o cron a partir de scheduled_time — sem alinhar a
+    coluna, cada raiz dispararia no horário antigo dela e o aceite 'crons
+    idênticos' (§10-F13) seria impossível. Não entra no schema §4.1 porque é
+    derivado, nunca escolhido."""
+    st = ag.get("schedule_type")
+    if st == "custom" and ag.get("horarios_especificos"):
+        return f"{ag['horarios_especificos'][:5]}:00"
+    if st == "monthly_days_times" and ag.get("dias_horarios_mes"):
+        try:
+            primeiro = json.loads(ag["dias_horarios_mes"])[0]["horarios"][0]
+            return f"{primeiro}:00"
+        except Exception:
+            pass
+    return f"{int(ag.get('schedule_hour') or 0):02d}:" \
+           f"{int(ag.get('schedule_minute') or 0):02d}:00"
+
+
+def _resumo_agendamento(ag) -> str:
+    """Resumo humano de um agendamento (o 'de'/'para' do diff §7.2 e o
+    subtítulo do nó Início). Display-only: a autoridade do gatilho é o
+    scheduler — mesmo estatuto do calcularDataRef da F5."""
+    if not isinstance(ag, dict) or not ag:
+        return "sem agendamento"
+    st = str(ag.get("schedule_type") or "").strip().lower()
+    if st == "on_demand":
+        return "sob demanda"
+    try:
+        h = int(ag.get("schedule_hour") or 0)
+        m = int(ag.get("schedule_minute") or 0)
+    except (TypeError, ValueError):
+        h, m = 0, 0
+    hm = f"{h:02d}:{m:02d}"
+    if st == "weekly":
+        # dow 0 é DOMINGO (D05) — `or 1` engoliria o zero e viraria segunda.
+        dow_raw = ag.get("schedule_dow")
+        try:
+            dow = int(dow_raw) if dow_raw not in (None, "") else 1
+        except (TypeError, ValueError):
+            dow = 1
+        corpo = f"semanal ({_DOW_NOMES.get(dow, '?')}) {hm}"
+    elif st == "monthly":
+        corpo = f"mensal (dia {ag.get('schedule_dom') or 1}) {hm}"
+    elif st == "biweekly":
+        try:
+            d = int(ag.get("schedule_dom") or 1)
+        except (TypeError, ValueError):
+            d = 1
+        corpo = f"quinzenal (dias {d} e {d + 15}) {hm}"
+    elif st == "hourly":
+        corpo = f"de hora em hora (minuto {m:02d})"
+    elif st == "custom":
+        corpo = f"horários {ag.get('horarios_especificos') or '—'}"
+        dias = str(ag.get("dias_semana") or "").strip()
+        if dias:
+            nomes = ", ".join(_DOW_NOMES.get(int(d), "?")
+                              for d in dias.split(",") if d.strip().isdigit())
+            corpo += f" ({nomes})"
+    elif st == "monthly_days_times":
+        try:
+            entradas = json.loads(ag.get("dias_horarios_mes") or "[]")
+            corpo = "dia+hora: " + "; ".join(
+                f"dia {e['dia']} às {', '.join(e['horarios'])}"
+                for e in entradas)
+        except Exception:
+            corpo = "dia+hora (configuração ilegível)"
+    elif st == "daily":
+        corpo = f"diário {hm}"
+    else:
+        corpo = f"{st} {hm}"
+    extras = []
+    if int(ag.get("somente_dias_uteis") or 0):
+        extras.append("só dias úteis")
+    if ag.get("calendario_nome"):
+        extras.append(f"calendário {ag['calendario_nome']}")
+    if ag.get("hora_virada"):
+        extras.append(f"virada {str(ag['hora_virada'])[:5]}")
+    return " · ".join([corpo] + extras)
+
+
+def _agendamento_da_malha(cur, malha):
+    """agendamento_json da malha → dict, ou None (ausente/ilegível — mesmo
+    espírito do _no_config: valor quebrado por SQL direto degrada com log,
+    nunca tela quebrada). Chamar só com _colunas_agenda True."""
+    cur.execute("SELECT agendamento_json FROM dbo.etl_malha "
+                "WHERE malha_name = ?", (malha,))
+    row = cur.fetchone()
+    return _no_config(row[0] if row else None)
+
+
+def _agenda_da_raiz(cur, pipeline):
+    """Fotografia de agendamento de um pipeline raiz: o dict de agenda (o
+    'de' do diff), a assinatura agenda_no (+ malha dona do nó) e dag_criada.
+    Chamar só com _colunas_agenda True."""
+    cur.execute(
+        "SELECT p.schedule_type, CAST(p.schedule_hour AS INT), "
+        "CAST(p.schedule_minute AS INT), CAST(p.schedule_dow AS INT), "
+        "CAST(p.schedule_dom AS INT), p.horarios_especificos, p.dias_semana, "
+        "p.dias_horarios_mes, CAST(p.somente_dias_uteis AS INT), "
+        "p.calendario_nome, CONVERT(VARCHAR(5), p.hora_virada, 108), "
+        "p.agenda_no, n.malha_name, CAST(p.dag_criada AS INT) "
+        "FROM dbo.etl_pipeline p "
+        "LEFT JOIN dbo.etl_malha_no n ON n.id = p.agenda_no "
+        "WHERE p.pipeline_name = ?", (pipeline,))
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "agendamento": {
+            "schedule_type": (str(row[0]).strip().lower() if row[0] else None),
+            "schedule_hour": row[1], "schedule_minute": row[2],
+            "schedule_dow": row[3], "schedule_dom": row[4],
+            "horarios_especificos": row[5], "dias_semana": row[6],
+            "dias_horarios_mes": row[7], "somente_dias_uteis": row[8],
+            "calendario_nome": row[9], "hora_virada": row[10],
+        },
+        "agenda_no": int(row[11]) if row[11] is not None else None,
+        "agenda_malha": (str(row[12]).strip() if row[12] else None),
+        "dag_criada": int(row[13] or 0),
+    }
+
+
+def _mesma_agenda(agenda_raiz, ag_malha) -> bool:
+    """True se a raiz JÁ carrega o agendamento da malha, campo a campo (hora
+    normalizada para HH:MM — a coluna devolve VARCHAR(5), o JSON guarda
+    HH:MM:SS). Decide se um re-salvar de aresta tem efeito ou é no-op."""
+    def _hv(v):
+        return str(v)[:5] if v else None
+
+    for campo in _CAMPOS_AGENDAMENTO:
+        a, b = agenda_raiz.get(campo), ag_malha.get(campo)
+        if campo == "hora_virada":
+            a, b = _hv(a), _hv(b)
+        elif campo == "somente_dias_uteis":
+            a, b = int(a or 0), int(b or 0)
+        elif campo in ("schedule_hour", "schedule_minute", "schedule_dow",
+                       "schedule_dom"):
+            a = int(a) if a is not None else None
+            b = int(b) if b is not None else None
+        else:
+            a = str(a).strip() if a not in (None, "") else None
+            b = str(b).strip() if b not in (None, "") else None
+        if a != b:
+            return False
+    return True
+
+
+def _raiz_tem_dependencia(cur, pipeline) -> bool:
+    """True se o pipeline tem QUALQUER dependência (tipo PIPELINE) na 067 —
+    a pergunta do 422 de raiz (§2.2): dependente vira schedule=None no
+    gerador, e o agendamento plantado seria mentira."""
+    cur.execute(
+        "SELECT TOP 1 1 FROM dbo.etl_pipeline_dependencia "
+        "WHERE pipeline_name = ? AND tipo = 'PIPELINE'", (pipeline,))
+    return cur.fetchone() is not None
+
+
+def _msg_raiz_com_dependencia(pipeline) -> str:
+    """422 do §2.2 (a pendência declarada pela revisão da F12): raiz não pode
+    ter dependência — o schedule=None do motor venceria o cron e o
+    agendamento da malha seria mentira."""
+    return (f"'{pipeline}' não pode ser raiz da malha: raiz não pode ter "
+            "dependência — o schedule=None do motor venceria o cron e o "
+            "agendamento da malha seria mentira. Remova a dependência ou "
+            "chegue a ele por um Aguarde.")
+
+
+def _msg_raiz_de_outra_malha(pipeline, malha_dona, no_id) -> str:
+    """422 da Decisão 11: um dono por vez — nunca last-write-wins mudo entre
+    malhas; transferência é gesto explícito na malha dona."""
+    return (f"'{pipeline}' já é agendado pelo Início #{no_id} da malha "
+            f"'{malha_dona}' — um dono por vez: desligue-o de lá antes de "
+            "agendá-lo por aqui.")
+
+
+def _aplicar_agenda_na_raiz(cur, pipeline, ag, no_id):
+    """COPIA o agendamento da malha para as colunas REAIS da raiz + assina
+    agenda_no + carimba a republicação (WHERE dag_criada=1), na transação
+    ABERTA do gesto (§4.2 — quem commita é o endpoint). UM UPDATE só, sem
+    try/except por grupo de migration: o endpoint já exigiu a 075, e banco
+    com a 075 tem as colunas de agenda (017/018/024/067) — falha aqui é
+    rollback TOTAL, nunca cópia pela metade."""
+    cur.execute(
+        "UPDATE dbo.etl_pipeline SET scheduled_time = ?, schedule_type = ?, "
+        "schedule_hour = ?, schedule_minute = ?, schedule_dow = ?, "
+        "schedule_dom = ?, horarios_especificos = ?, dias_semana = ?, "
+        "dias_horarios_mes = ?, somente_dias_uteis = ?, calendario_nome = ?, "
+        "hora_virada = ?, agenda_no = ?, updated_at = GETDATE() "
+        "WHERE pipeline_name = ?",
+        (_scheduled_time_do_agendamento(ag), ag["schedule_type"],
+         ag.get("schedule_hour"), ag.get("schedule_minute"),
+         ag.get("schedule_dow"), ag.get("schedule_dom"),
+         ag.get("horarios_especificos"), ag.get("dias_semana"),
+         ag.get("dias_horarios_mes"), int(ag.get("somente_dias_uteis") or 0),
+         ag.get("calendario_nome"), ag.get("hora_virada"), no_id, pipeline))
+    _ligar_dag_config_pendente(cur, pipeline)
+
+
+def _desligar_raiz(cur, pipeline):
+    """Decisão 10: desligar a raiz do Início = 'on_demand' + limpar a
+    assinatura + carimbo — NUNCA restauração do agendamento antigo (classe
+    D40: pipeline voltando a rodar sozinho em silêncio). on_demand →
+    schedule=None no gerador: DAG ativa, só manual, visível. As demais
+    colunas de agenda ficam como estão — inertes para o gatilho (o
+    on_demand curto-circuita o cron no gerador) e a hora_virada é
+    PRESERVADA de propósito: mudá-la mudaria o rótulo ODATE de execuções
+    já registradas."""
+    cur.execute(
+        "UPDATE dbo.etl_pipeline SET schedule_type = 'on_demand', "
+        "agenda_no = NULL, updated_at = GETDATE() WHERE pipeline_name = ?",
+        (pipeline,))
+    _ligar_dag_config_pendente(cur, pipeline)
+
+
+def _raizes_assinadas_do_no(cur, no_id) -> list:
+    """Pipelines cuja assinatura agenda_no aponta para o nó — a fonte honesta
+    para a exclusão do Início (§7.3): a FK NO ACTION da 075 derruba o DELETE
+    do nó com assinatura pendurada, então desligar TODAS antes é a única
+    ordem possível."""
+    cur.execute("SELECT pipeline_name FROM dbo.etl_pipeline "
+                "WHERE agenda_no = ?", (no_id,))
+    return sorted((str(r[0]).strip() for r in cur.fetchall()),
+                  key=str.casefold)
+
+
+def _msg_contradicao(pipeline) -> str:
+    """Aviso do badge de contradição (§2.2, última linha): raiz assinada que
+    ganhou dependência por OUTRA porta — aviso, nunca bloqueio das portas."""
+    return (f"raiz '{pipeline}' tem dependência cadastrada — o motor obedece "
+            "a dependência e o agendamento da malha está inerte nela")
+
+
+def _mesclar_efeito_agenda(efeito, efeito_ag, republicar_ag):
+    """Anexa o efeito de agendamento do Início (F13) ao bloco §7.2 do gesto —
+    `agendamentos` deixa de ser sempre-vazio e `republicar` une compilação e
+    agenda, sem duplicar."""
+    if efeito_ag:
+        efeito["agendamentos"] = list(efeito_ag)
+    if republicar_ag:
+        efeito["republicar"] = sorted({*efeito["republicar"], *republicar_ag},
+                                      key=str.casefold)
+    return efeito
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/malhas", tags=["malhas"])
@@ -1018,37 +1433,44 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
             "atualizado_em": _fmt_dt(row[5]),
             "orientacao": _orientacao_norm(row[6]) if tem_074 else "horizontal",
         }
+        # F10/F13: as tabelas da 075 habilitam nós e assinaturas — checadas UMA
+        # vez por request; as colunas de agendamento (F13) têm guard próprio,
+        # porque a 075 pode estar aplicada pela metade num deploy parcial.
+        tem_075 = _tabelas_075(cur)
+        tem_agenda = tem_075 and _colunas_agenda(cur)
         # JOIN em etl_pipeline: além dos metadados, garante que membro de
         # pipeline excluído simplesmente some (aceite da F7) — e a FK CASCADE
-        # da 070 já removeu a linha de qualquer forma.
+        # da 070 já removeu a linha de qualquer forma. agenda_no (F13) é
+        # ADITIVO: entra no SELECT só com as colunas da 075 presentes.
         cur.execute(
             "SELECT p.pipeline_name, CAST(p.active AS INT) AS active, "
             "ISNULL(p.criticidade, 'Media') AS criticidade, p.schedule_type, "
-            "mp.layout_x, mp.layout_y "
-            "FROM dbo.etl_malha_pipeline mp "
+            "mp.layout_x, mp.layout_y"
+            + (", p.agenda_no" if tem_agenda else "") +
+            " FROM dbo.etl_malha_pipeline mp "
             "JOIN dbo.etl_pipeline p ON p.pipeline_name = mp.pipeline_name "
             "WHERE mp.malha_name = ? ORDER BY p.pipeline_name",
             (malha["malha_name"],),
         )
-        membros = [
-            {
+        membros = []
+        for r in cur.fetchall():
+            m = {
                 "pipeline_name": r[0], "active": int(r[1] or 0),
                 "criticidade": r[2], "schedule_type": r[3],
                 "layout_x": r[4], "layout_y": r[5],
             }
-            for r in cur.fetchall()
-        ]
+            if tem_agenda:
+                m["agenda_no"] = int(r[6]) if r[6] is not None else None
+            membros.append(m)
         # Arestas (F8): dependências GLOBAIS da 067 em que AMBAS as pontas são
         # membros desta malha — a mesma dependência aparece em toda malha que
         # contenha os dois pipelines (aceite da F8: a aresta é real nas duas).
         # Filtro em Python sobre um SELECT só, como nos agregados da listagem.
         # Deploy parcial (067 pendente): a malha ainda abre, com "arestas": [] —
         # migration_067_pendente é o sinal para o front avisar e travar a edição.
-        # F10: as tabelas da 075 habilitam os nós do desenho e a anotação
-        # compilada_por das arestas diretas — checadas UMA vez por request.
-        tem_075 = _tabelas_075(cur)
+        tem_067 = _tabela_067(cur)
         arestas = []
-        if _tabela_067(cur):
+        if tem_067:
             # Mapa casefold → grafia OFICIAL (a dos nós do diagrama). Linhas
             # legadas da 067 podem carregar grafia divergente (o register da F1
             # gravava como digitado e a 069 não normalizou esta tabela — a 071
@@ -1110,6 +1532,35 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
             } for n in nos_l]
             arestas_no_payload = arestas_l
             avisos = _avisos_desenho(nos_l, arestas_l)
+            # F13: o agendamento da MALHA (Decisão 8) + os avisos de agenda —
+            # Início ligado sem agendamento configurado (aviso forte enquanto
+            # durar) e o badge de contradição da raiz assinada que ganhou
+            # dependência por outra porta (§2.2, última linha).
+            if tem_agenda:
+                agendamento = _agendamento_da_malha(cur, malha["malha_name"])
+                malha["agendamento"] = agendamento
+                malha["agendamento_resumo"] = (
+                    _resumo_agendamento(agendamento) if agendamento else None)
+                inicio = next((n for n in nos_l if n["tipo"] == "inicio"), None)
+                if inicio is not None:
+                    tem_saida_inicio = any(a["origem_no"] == inicio["id"]
+                                           for a in arestas_l)
+                    if agendamento is None and tem_saida_inicio:
+                        avisos.append({
+                            "no": inicio["id"], "nivel": "forte", "mensagem":
+                            "o Início está ligado a raízes, mas a malha ainda "
+                            "não tem agendamento — configure no painel do "
+                            "Início"})
+                    if tem_067:
+                        for m in membros:
+                            if m.get("agenda_no") != inicio["id"]:
+                                continue
+                            if _raiz_tem_dependencia(cur, m["pipeline_name"]):
+                                m["agenda_contradicao"] = True
+                                avisos.append({
+                                    "no": inicio["id"], "nivel": "forte",
+                                    "mensagem": _msg_contradicao(
+                                        m["pipeline_name"])})
         else:
             log.warning("[MALHA] migration 075 ausente — malha '%s' aberta sem nós",
                         malha["malha_name"])
@@ -1580,6 +2031,114 @@ def salvar_layout(malha_name: str, body: dict = Body(default={}),
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
 
 
+@router.post("/malhas/{malha_name}/agendamento", tags=["malhas"])
+def salvar_agendamento_malha(malha_name: str, body: dict = Body(default={}),
+                             _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    """Salva o agendamento da MALHA (F13 — §4, Decisão 8) e o COMPILA para as
+    raízes ligadas ao Início: cópia campo a campo para as colunas reais
+    (scheduled_time derivado incluído), assinatura agenda_no e carimbo de
+    republicação, numa transação única. Todas as raízes ficam com o MESMO
+    cron e a MESMA virada (Decisão 9) → o scheduler dispara todas no mesmo
+    tick, em paralelo, cada uma na própria DAG (§4.2) — nenhum disparador
+    novo, nenhuma DAG-mestre.
+
+    Body (§9): {"agendamento": {...subconjunto do register, §4.1...},
+    "dry_run"?}. dry_run devolve o efeito §7.2 sem gravar ({efeito, avisos,
+    erros} — conflito de assinatura vai em `erros`, HTTP 200, como o ciclo
+    do compilador); o write RECOMPUTA sobre o estado corrente e o conflito
+    vira 422 nomeando a malha e o nó donos (Decisão 11). Raiz assinada que
+    ganhou dependência por outra porta recebe AVISO de contradição (badge
+    §2.2) — nunca bloqueio. Sem nó Início (ou sem saídas) o JSON é salvo
+    com aviso forte: o nó é o plugue, a configuração não se perde ao
+    recriá-lo (Decisão 8)."""
+    dry_run = bool(body.get("dry_run"))
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabelas(cur, conn)
+        _exigir_tabelas_075(cur, conn)
+        if not _colunas_agenda(cur):
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=503, detail=_MSG_SEM_075)
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        ag, avisos_validacao = _validar_agendamento(body.get("agendamento"))
+        resumo_para = _resumo_agendamento(ag)
+        nos_l = _nos_da_malha(cur, malha)
+        arestas_l = _arestas_da_malha(cur, malha)
+        inicio = next((n for n in nos_l if n["tipo"] == "inicio"), None)
+        raizes = sorted({a["destino_pipeline"] for a in arestas_l
+                         if inicio is not None
+                         and a["origem_no"] == inicio["id"]
+                         and a["destino_pipeline"]}, key=str.casefold)
+
+        tem_067 = _tabela_067(cur)
+        erros: list = []
+        efeito = _efeito_vazio()
+        avisos = _avisos_desenho(nos_l, arestas_l)
+        for msg in avisos_validacao:        # hora_virada inválida → NULL (D35)
+            avisos.append({"no": None, "nivel": "leve", "mensagem": msg})
+        if inicio is None:
+            avisos.append({"no": None, "nivel": "forte", "mensagem":
+                           "a malha não tem nó Início — o agendamento fica "
+                           "guardado e só alcança raízes quando um Início "
+                           "for ligado"})
+        aplicar: list = []          # raízes que recebem a cópia no write
+        for p in raizes:
+            info = _agenda_da_raiz(cur, p)
+            if info is None:
+                continue    # membro sumiu num gesto concorrente — defensivo
+            if info["agenda_no"] is not None and \
+                    (info["agenda_malha"] or "").casefold() != malha.casefold():
+                # Decisão 11: um dono por vez — nunca last-write-wins mudo.
+                erros.append(_msg_raiz_de_outra_malha(
+                    p, info["agenda_malha"], info["agenda_no"]))
+                continue
+            if tem_067 and _raiz_tem_dependencia(cur, p):
+                avisos.append({"no": inicio["id"], "nivel": "forte",
+                               "mensagem": _msg_contradicao(p)})
+            if info["agenda_no"] == inicio["id"] and \
+                    _mesma_agenda(info["agendamento"], ag):
+                continue            # já compilada campo a campo — no-op honesto
+            aplicar.append(p)
+            efeito["agendamentos"].append({
+                "pipeline": p,
+                "de": _resumo_agendamento(info["agendamento"]),
+                "para": resumo_para})
+            if info["dag_criada"] == 1:
+                efeito["republicar"].append(p)
+
+        if dry_run:
+            cur.close(); conn.close()
+            return {"efeito": efeito, "avisos": avisos, "erros": erros}
+        if erros:
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=422, detail=erros[0])
+
+        cur.execute(
+            "UPDATE dbo.etl_malha SET agendamento_json = ?, "
+            "atualizado_em = SYSDATETIME() WHERE malha_name = ?",
+            (json.dumps(ag, ensure_ascii=False), malha))
+        for p in aplicar:
+            _aplicar_agenda_na_raiz(cur, p, ag, inicio["id"])
+        conn.commit(); cur.close(); conn.close()
+        return {"ok": True, "efeito": efeito, "avisos": avisos,
+                "agendamento": ag, "agendamento_resumo": resumo_para,
+                # o cron pela MESMA função do register (conferência visual —
+                # a autoridade do gatilho segue sendo o scheduler)
+                "cron": _build_cron(ag["schedule_type"], ag["schedule_hour"],
+                                    ag["schedule_minute"], ag["schedule_dow"],
+                                    ag["schedule_dom"])}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
 # ── Nós especiais (F10) — o DESENHO dos componentes de malha ─────────────────
 # SÓ desenho, ZERO efeito no motor nesta fase: nenhuma linha da 067 nasce
 # destes gestos — a compilação do Aguarde (expansão → 067 assinada + espelho
@@ -1763,11 +2322,31 @@ def remove_no(malha_name: str, no_id: int, dry_run: bool = False,
             # canônico do add, senão a remoção recriaria o par fechando A↔D.
             erros = _erros_ciclo_canonico(diff)
 
+        # F13 — excluir o INÍCIO (Decisão 10/§7.3): toda raiz ASSINADA por
+        # este nó vira on_demand + carimbo, ANTES do DELETE — a FK agenda_no
+        # (NO ACTION, §1.4) derruba o DELETE com assinatura pendurada, então
+        # esta é a única ordem possível. O agendamento_json da MALHA fica:
+        # o nó é o plugue; recriar o Início não perde a configuração
+        # (Decisão 8).
+        efeito_ag, republicar_ag = [], []
+        if tipo_no == "inicio" and _colunas_agenda(cur):
+            for p in _raizes_assinadas_do_no(cur, no_id):
+                info = _agenda_da_raiz(cur, p)
+                if info is None:
+                    continue
+                efeito_ag.append({
+                    "pipeline": p,
+                    "de": _resumo_agendamento(info["agendamento"]),
+                    "para": "sob demanda"})
+                if info["dag_criada"] == 1:
+                    republicar_ag.append(p)
+
         if dry_run:
             avisos = _avisos_gesto(nos_prospectivos, prospectivas, diff)
             cur.close(); conn.close()
-            return {"efeito": _efeito_publico(diff), "avisos": avisos,
-                    "erros": erros,
+            return {"efeito": _mesclar_efeito_agenda(_efeito_publico(diff),
+                                                     efeito_ag, republicar_ag),
+                    "avisos": avisos, "erros": erros,
                     "preview_expandido": _preview_expandido(diff)}
         if erros:
             _fechar_silencioso(conn)
@@ -1780,6 +2359,8 @@ def remove_no(malha_name: str, no_id: int, dry_run: bool = False,
             # Descompila ANTES do DELETE do nó — com linha assinada pendurada
             # a FK FK_dep_origem_no derrubaria o DELETE (a ordem do §1.4).
             _aplicar_compilacao(cur, diff, criado_por)
+        for item in efeito_ag:
+            _desligar_raiz(cur, item["pipeline"])
         cur.execute("DELETE FROM dbo.etl_malha_aresta "
                     "WHERE origem_no = ? OR destino_no = ?", (no_id, no_id))
         arestas_removidas = max(cur.rowcount or 0, 0)
@@ -1787,7 +2368,9 @@ def remove_no(malha_name: str, no_id: int, dry_run: bool = False,
         avisos = _avisos_gesto(nos_prospectivos, prospectivas, diff)
         conn.commit(); cur.close(); conn.close()
         return {"ok": True, "arestas_removidas": arestas_removidas,
-                "avisos": avisos, "efeito": _efeito_publico(diff)}
+                "avisos": avisos,
+                "efeito": _mesclar_efeito_agenda(_efeito_publico(diff),
+                                                 efeito_ag, republicar_ag)}
     except HTTPException:
         raise
     except Exception as e:
@@ -1862,10 +2445,74 @@ def add_aresta_no(malha_name: str, body: dict = Body(default={}),
                 f"{_rotulo_ponta(destino)} fecha um ciclo (o caminho "
                 f"volta para {_rotulo_ponta(origem)})")
 
+        # F13 — Início → pipeline: o Início planta o agendamento da malha na
+        # raiz (§4.2). As validações são do MOMENTO DO GESTO (aresta NOVA,
+        # como a gramática): raiz com dependência na 067 → 422 (§2.2 — o
+        # schedule=None do motor venceria o cron e o agendamento da malha
+        # seria mentira); raiz assinada por Início de OUTRA malha → 422
+        # nomeando a dona (Decisão 11). Re-salvar aresta existente segue
+        # no-op reconciliável: a contradição vira aviso/badge, nunca recusa.
+        efeito_ag, avisos_ag, republicar_ag = [], [], []
+        ag_malha = None
+        if origem["tipo"] == "inicio" and destino["pipeline"] is not None:
+            if ja_existia is None and _tabela_067(cur) \
+                    and _raiz_tem_dependencia(cur, destino["pipeline"]):
+                _fechar_silencioso(conn)
+                raise HTTPException(
+                    status_code=422,
+                    detail=_msg_raiz_com_dependencia(destino["pipeline"]))
+            if _colunas_agenda(cur):
+                info = _agenda_da_raiz(cur, destino["pipeline"])
+                assinada_outra = (
+                    info is not None and info["agenda_no"] is not None
+                    and (info["agenda_malha"] or "").casefold()
+                    != malha.casefold())
+                if assinada_outra and ja_existia is None:
+                    _fechar_silencioso(conn)
+                    raise HTTPException(
+                        status_code=422,
+                        detail=_msg_raiz_de_outra_malha(
+                            destino["pipeline"], info["agenda_malha"],
+                            info["agenda_no"]))
+                ag_malha = _agendamento_da_malha(cur, malha)
+                if ag_malha is None:
+                    # Liga só o fio, com o aviso do §4.2 — nada plantado.
+                    avisos_ag.append({
+                        "no": origem["no"], "nivel": "forte", "mensagem":
+                        "configure o agendamento no Início — o fio fica "
+                        "ligado, mas nenhuma agenda foi plantada ainda"})
+                elif assinada_outra:
+                    # Re-salvar de aresta cuja raiz é de outra malha: nunca
+                    # re-assinada (o mesmo espírito da Decisão 4) — dito.
+                    avisos_ag.append({
+                        "no": origem["no"], "nivel": "leve", "mensagem":
+                        _msg_raiz_de_outra_malha(
+                            destino["pipeline"], info["agenda_malha"],
+                            info["agenda_no"]) + " Nada foi re-assinado."})
+                elif info is not None and not (
+                        info["agenda_no"] == origem["no"]
+                        and _mesma_agenda(info["agendamento"], ag_malha)):
+                    # A cópia acontece (P com agendamento próprio NÃO
+                    # assinado pode — a substituição é consentida no diff).
+                    efeito_ag.append({
+                        "pipeline": destino["pipeline"],
+                        "de": _resumo_agendamento(info["agendamento"]),
+                        "para": _resumo_agendamento(ag_malha)})
+                    if info["dag_criada"] == 1:
+                        republicar_ag.append(destino["pipeline"])
+                if ja_existia is not None and _tabela_067(cur) \
+                        and _raiz_tem_dependencia(cur, destino["pipeline"]):
+                    # Badge de contradição (§2.2): aviso, nunca bloqueio.
+                    avisos_ag.append({"no": origem["no"], "nivel": "forte",
+                                      "mensagem": _msg_contradicao(
+                                          destino["pipeline"])})
+
         if dry_run:
-            avisos = _avisos_gesto(nos_l, prospectivas, diff)
+            avisos = _avisos_gesto(nos_l, prospectivas, diff) + avisos_ag
+            efeito = _mesclar_efeito_agenda(_efeito_publico(diff),
+                                            efeito_ag, republicar_ag)
             cur.close(); conn.close()
-            return {"efeito": _efeito_publico(diff), "avisos": avisos,
+            return {"efeito": efeito, "avisos": avisos,
                     "erros": erros,
                     "preview_expandido": _preview_expandido(diff)}
         if erros:
@@ -1888,14 +2535,20 @@ def add_aresta_no(malha_name: str, body: dict = Body(default={}),
             if isinstance(_auth, dict):
                 criado_por = (str(_auth.get("matricula") or "").strip() or None)
             _aplicar_compilacao(cur, diff, criado_por)
-        avisos = _avisos_gesto(nos_l, prospectivas, diff)
-        if ja_existia is None or tem_efeito:
+        if efeito_ag:
+            # F13: cópia do agendamento + assinatura + carimbo, na MESMA
+            # transação da aresta (§4.2) — o desenho É o compilado.
+            _aplicar_agenda_na_raiz(cur, destino["pipeline"], ag_malha,
+                                    origem["no"])
+        avisos = _avisos_gesto(nos_l, prospectivas, diff) + avisos_ag
+        if ja_existia is None or tem_efeito or efeito_ag:
             conn.commit()
         # aresta re-salvada SEM efeito novo: no-op de verdade — nem commit
         cur.close(); conn.close()
         return {"ok": True, "id": novo_id,
                 "ja_existia": ja_existia is not None, "avisos": avisos,
-                "efeito": _efeito_publico(diff)}
+                "efeito": _mesclar_efeito_agenda(_efeito_publico(diff),
+                                                 efeito_ag, republicar_ag)}
     except HTTPException:
         raise
     except Exception as e:
@@ -1945,11 +2598,28 @@ def remove_aresta_no(malha_name: str, aresta_id: int, dry_run: bool = False,
             # isto o gesto de remoção recriaria uma linha que fecha A↔D.
             erros = _erros_ciclo_canonico(diff)
 
+        # F13 — desligar a raiz do Início (Decisão 10): raiz ASSINADA por este
+        # Início vira on_demand + carimbo — nunca restauração do agendamento
+        # antigo, nunca cron remanescente. Sem as colunas da 075 (deploy
+        # parcial) não existe assinatura — o gesto segue como na F12.
+        efeito_ag, republicar_ag = [], []
+        if tipos.get(alvo["origem_no"]) == "inicio" \
+                and alvo["destino_pipeline"] and _colunas_agenda(cur):
+            info = _agenda_da_raiz(cur, alvo["destino_pipeline"])
+            if info is not None and info["agenda_no"] == alvo["origem_no"]:
+                efeito_ag.append({
+                    "pipeline": alvo["destino_pipeline"],
+                    "de": _resumo_agendamento(info["agendamento"]),
+                    "para": "sob demanda"})
+                if info["dag_criada"] == 1:
+                    republicar_ag.append(alvo["destino_pipeline"])
+
         if dry_run:
             avisos = _avisos_gesto(nos_l, prospectivas, diff)
             cur.close(); conn.close()
-            return {"efeito": _efeito_publico(diff), "avisos": avisos,
-                    "erros": erros,
+            return {"efeito": _mesclar_efeito_agenda(_efeito_publico(diff),
+                                                     efeito_ag, republicar_ag),
+                    "avisos": avisos, "erros": erros,
                     "preview_expandido": _preview_expandido(diff)}
         if erros:
             _fechar_silencioso(conn)
@@ -1960,6 +2630,8 @@ def remove_aresta_no(malha_name: str, aresta_id: int, dry_run: bool = False,
             if isinstance(_auth, dict):
                 criado_por = (str(_auth.get("matricula") or "").strip() or None)
             _aplicar_compilacao(cur, diff, criado_por)
+        for item in efeito_ag:
+            _desligar_raiz(cur, item["pipeline"])
         cur.execute("DELETE FROM dbo.etl_malha_aresta "
                     "WHERE id = ? AND malha_name = ?", (aresta_id, malha))
         if (cur.rowcount or 0) == 0:
@@ -1969,7 +2641,9 @@ def remove_aresta_no(malha_name: str, aresta_id: int, dry_run: bool = False,
                 detail=f"Aresta {aresta_id} não existe na malha '{malha}'")
         avisos = _avisos_gesto(nos_l, prospectivas, diff)
         conn.commit(); cur.close(); conn.close()
-        return {"ok": True, "avisos": avisos, "efeito": _efeito_publico(diff)}
+        return {"ok": True, "avisos": avisos,
+                "efeito": _mesclar_efeito_agenda(_efeito_publico(diff),
+                                                 efeito_ag, republicar_ag)}
     except HTTPException:
         raise
     except Exception as e:

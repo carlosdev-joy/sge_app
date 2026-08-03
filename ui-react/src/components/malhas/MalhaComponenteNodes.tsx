@@ -33,7 +33,7 @@
 // transborda de propósito (w-[128px]).
 import { memo, useEffect } from 'react'
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
-import { Hourglass } from 'lucide-react'
+import { AlertTriangle, Hourglass } from 'lucide-react'
 import type { Orientacao } from '../etapas/layoutGrafo'
 // Metadados (rótulo/chip/ícone por tipo) em módulo PURO — compartilhados com
 // a paleta e o minimapa do MalhaEditor sem quebrar o react-refresh daqui.
@@ -47,9 +47,15 @@ export interface MalhaComponenteNodeData {
   // honesto sobre o que está ligado; o aviso estrutural mora no banner.
   entradas: number
   saidas: number
-  // config_json do nó (título da Notificação etc.) — edição rica é a F13.
+  // config_json do nó (título da Notificação etc.).
   config?: Record<string, unknown> | null
   orientacao?: Orientacao
+  // F13 (só no Início): resumo do agendamento da MALHA (o agendamento mora
+  // nela, Decisão 8 — o nó é o plugue) e o badge de contradição — alguma
+  // raiz assinada ganhou dependência por outra porta (§2.2): o motor
+  // obedece a dependência e o agendamento da malha está inerte nela.
+  agendaResumo?: string | null
+  contradicao?: boolean
   [key: string]: unknown
 }
 
@@ -74,6 +80,9 @@ function subtitulo(data: MalhaComponenteNodeData): string {
   const titulo = typeof tituloRaw === 'string' ? tituloRaw.trim() : ''
   switch (data.tipo) {
     case 'inicio':
+      // F13: com agendamento configurado, o resumo da malha manda; senão a
+      // contagem honesta do que está ligado.
+      if (data.agendaResumo) return data.agendaResumo
       return data.saidas === 0 ? 'ligue às raízes' : plural(data.saidas, 'raiz', 'raízes')
     case 'aguarde':
       // Decisão 6 do desenho: política única — todas com sucesso.
@@ -175,6 +184,16 @@ function ComponenteNodeImpl({ id, data, selected }: NodeProps & { data: MalhaCom
           ].join(' ')}
         >
           <meta.Icon size={16} strokeWidth={2.2} />
+          {/* F13: badge de contradição no Início (§2.2) — raiz assinada com
+              dependência; o texto completo mora no banner de avisos. */}
+          {data.tipo === 'inicio' && data.contradicao && (
+            <span
+              title="Alguma raiz deste Início tem dependência cadastrada — o motor obedece a dependência e o agendamento da malha está inerte nela (veja o banner de avisos)."
+              className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-panel bg-amber-500 text-white"
+            >
+              <AlertTriangle size={9} strokeWidth={2.6} />
+            </span>
+          )}
         </div>
       )}
 

@@ -215,6 +215,19 @@ class FakeCur(FakeCurF8):
             self.rowcount = antes - len(db.arestas_no)
             return
 
+        # ── F13: raiz-com-dependência (§2.2) ────────────────────────────────
+        # O gesto Início → pipeline pergunta se o destino TEM dependência na
+        # 067 (aresta nova → 422). Dublê no estado, com a mesma fidelidade da
+        # tabela ausente (com_067=False levanta como o banco levantaria).
+        if s.startswith("SELECT TOP 1 1 FROM dbo.etl_pipeline_dependencia"):
+            if not db.com_067:
+                raise RuntimeError(
+                    "Invalid object name 'dbo.etl_pipeline_dependencia'")
+            cf = (params[0] or "").casefold()
+            self._rows = [(1,)] if any(
+                d["pipeline"].casefold() == cf for d in db.dependencias) else []
+            return
+
         # ── 067 com a assinatura (JOIN do GET quando a 075 existe) ──────────
         if s.startswith("SELECT d.pipeline_name, d.depende_de, d.origem_no"):
             out = []

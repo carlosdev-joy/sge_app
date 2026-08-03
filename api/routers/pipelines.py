@@ -156,7 +156,11 @@ def _build_cron(schedule_type, hour, minute, dow, dom):
     h, m = int(hour or 0), int(minute or 0)
     if st == "hourly":   return f"{m} * * * *"
     if st == "daily":    return f"{m} {h} * * *"
-    if st == "weekly":   return f"{m} {h} * * {int(dow or 1)}"
+    if st == "weekly":
+        # dow 0 é DOMINGO (D05): `int(dow or 1)` engolia o zero e o preview
+        # mostrava segunda — o canônico (etl_dag_factory._build_cron) sempre
+        # tratou `is not None`; alinhado na F13 (o teste da malha pegou).
+        return f"{m} {h} * * {int(dow) if dow is not None else 1}"
     if st == "monthly":  return f"{m} {h} {int(dom or 1)} * *"
     if st == "biweekly":                       # quinzenal: dia D e D+15
         d = int(dom or 1)
@@ -217,6 +221,36 @@ def _validate_dias_horarios_mes(raw):
         normalized.append({"dia": dia, "horarios": sorted(norm_times)})
     normalized.sort(key=lambda e: e["dia"])
     return json.dumps(normalized)
+
+
+def _parse_horarios_especificos(raw):
+    """Valida e normaliza o CSV de horarios_especificos ('9:0, 14:30' →
+    '09:00,14:30' — ordenado, sem repetidos). Vazio → None; horário inválido →
+    422 com o nome do horário.
+
+    Extraída do corpo do register na F13 SEM mudar uma vírgula do
+    comportamento: o agendamento da malha (POST /malhas/{name}/agendamento,
+    Decisão 8 do desenho de componentes) valida pelas MESMAS funções do
+    register — nunca uma reimplementação (a regra que salvou o texto do
+    ciclo na F8).
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    _hrs = []
+    for t in raw.split(","):
+        t = t.strip()
+        if not t:
+            continue
+        tp = t.split(":")
+        try:
+            hh, mm = int(tp[0]), int(tp[1]) if len(tp) > 1 else 0
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Horário inválido: '{t}' (use HH:MM)")
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            raise HTTPException(status_code=422, detail=f"Horário fora do intervalo: '{t}'")
+        _hrs.append(f"{hh:02d}:{mm:02d}")
+    return ",".join(sorted(set(_hrs))) or None
 
 
 def _parse_hora_opcional(campo, valor, avisos):
@@ -1015,26 +1049,12 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
     hora_virada             = _parse_hora_opcional("hora_virada", body.get("hora_virada"), avisos) if tem_hora_virada else None
     nao_iniciar_antes       = _parse_hora_opcional("nao_iniciar_antes", body.get("nao_iniciar_antes"), avisos) if tem_nao_iniciar else None
     hora_limite_dependencia = _parse_hora_opcional("hora_limite_dependencia", body.get("hora_limite_dependencia"), avisos) if tem_hora_limite else None
-    # Migration 018 — horários múltiplos (PATCH-parcial, achado 3)
+    # Migration 018 — horários múltiplos (PATCH-parcial, achado 3). A validação
+    # mora em _parse_horarios_especificos (compartilhada com o agendamento da
+    # malha na F13) — o comportamento aqui é byte a byte o de sempre.
     tem_horarios_esp = "horarios_especificos" in body
     tem_dias_semana  = "dias_semana" in body
-    horarios_raw = (body.get("horarios_especificos") or "").strip()
-    horarios_especificos = None
-    if horarios_raw:
-        _hrs = []
-        for t in horarios_raw.split(","):
-            t = t.strip()
-            if not t:
-                continue
-            tp = t.split(":")
-            try:
-                hh, mm = int(tp[0]), int(tp[1]) if len(tp) > 1 else 0
-            except ValueError:
-                raise HTTPException(status_code=422, detail=f"Horário inválido: '{t}' (use HH:MM)")
-            if not (0 <= hh <= 23 and 0 <= mm <= 59):
-                raise HTTPException(status_code=422, detail=f"Horário fora do intervalo: '{t}'")
-            _hrs.append(f"{hh:02d}:{mm:02d}")
-        horarios_especificos = ",".join(sorted(set(_hrs))) or None
+    horarios_especificos = _parse_horarios_especificos(body.get("horarios_especificos"))
     dias_semana = (body.get("dias_semana") or "").strip() or None
     # Migration 024 — agendamento "Dia + Hora Específico" (PATCH-parcial,
     # achado 3). A obrigatoriedade p/ 'monthly_days_times' é validada adiante,

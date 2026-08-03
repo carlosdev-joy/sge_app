@@ -57,7 +57,7 @@ import { Autocomplete } from '../ui/Autocomplete'
 import { PageSpinner } from '../ui/Spinner'
 import {
   Activity, AlertCircle, AlertTriangle, Anchor, ArrowRightLeft, ArrowUpDown,
-  ChevronLeft, ChevronRight, Info, Link2, Lock, Minus,
+  CalendarClock, ChevronLeft, ChevronRight, Info, Link2, Lock, Minus,
   MousePointerClick, Plus, RefreshCw, Save, ShieldAlert, Trash2, Wrench,
 } from 'lucide-react'
 import { useColorMode } from '../etapas/useColorMode'
@@ -68,6 +68,9 @@ import {
   type MalhaComponenteNodeData,
 } from './MalhaComponenteNodes'
 import { COMPONENTE_META, type TipoComponente } from './componenteMeta'
+// F13: painel de agendamento do nó Início — o agendamento mora na MALHA
+// (Decisão 8); o nó é a porta.
+import { AgendamentoInicioModal } from './AgendamentoInicioModal'
 import {
   STATUS_EXECUCAO, ORDEM_LEGENDA, estiloEvento,
   type ExecucaoPipeline, type MalhaExecucaoApi,
@@ -95,6 +98,11 @@ interface MalhaMembroApi {
   schedule_type: string | null
   layout_x: number | null
   layout_y: number | null
+  // F13 (aditivos): assinatura de agendamento (qual Início agenda esta raiz)
+  // e o badge de contradição (raiz assinada que ganhou dependência por outra
+  // porta — o agendamento da malha está inerte nela, §2.2).
+  agenda_no?: number | null
+  agenda_contradicao?: boolean
 }
 // Proveniência de linha compilada (F11): o nó Aguarde dono e a malha dele.
 interface CompiladaPor {
@@ -156,6 +164,11 @@ interface MalhaDetalheApi {
   // Deploy parcial (migration 075 ausente): nós/arestas de nó vazios + flag —
   // o resto da malha segue intacto e a paleta de componentes desliga.
   migration_075_pendente?: boolean
+  // F13 (aditivos): o agendamento da MALHA (fonte de compilação — o motor
+  // nunca lê daqui) + o resumo humano do servidor. Chave ausente = colunas
+  // da 075 pendentes; o painel do Início desliga.
+  agendamento?: Record<string, unknown> | null
+  agendamento_resumo?: string | null
 }
 
 // ── Contrato do gesto (dry_run — desenho §7.2) ──────────────────────────────
@@ -380,6 +393,8 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   const [excluindo, setExcluindo] = useState(false)
   // Gesto de componente aguardando confirmação no modal (dry_run já rodou).
   const [gesto, setGesto] = useState<GestoPendente | null>(null)
+  // F13: painel de agendamento do nó Início (duplo clique ou botão).
+  const [agendaAberta, setAgendaAberta] = useState(false)
   const [gestoCarregando, setGestoCarregando] = useState(false)
   const [aplicandoGesto, setAplicandoGesto] = useState(false)
   const [prendendo, setPrendendo] = useState(false)
@@ -551,6 +566,9 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             ...nodeData(m),
             orientacao,
             exec: exec ? { status: exec.status, titulo: tituloExecucao(exec) } : null,
+            // F13: badge de contradição no pipeline (raiz assinada com
+            // dependência) — só na montagem; a Execução tem camada própria.
+            contradicao: !emExecucao && !!m.agenda_contradicao,
           },
         }
       }),
@@ -569,12 +587,21 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             saidas: grafo.saidasNo.get(n.id) ?? 0,
             config: n.config,
             orientacao,
+            // F13: o Início mostra o resumo do agendamento da malha e o
+            // badge de contradição quando alguma raiz assinada por ele
+            // ganhou dependência por outra porta (§2.2).
+            agendaResumo: tipo === 'inicio'
+              ? (data?.agendamento_resumo ?? null)
+              : null,
+            contradicao: tipo === 'inicio' && !emExecucao
+              && grafo.membros.some(
+                m => m.agenda_contradicao && m.agenda_no === n.id),
           } satisfies MalhaComponenteNodeData,
         }
       }),
     ])
     setEdges(grafo.novasEdges)
-  }, [grafo, setNodes, setEdges, emExecucao, execPorPipeline, orientacao])
+  }, [grafo, setNodes, setEdges, emExecucao, execPorPipeline, orientacao, data])
 
   // dirty = alguma posição difere do baseline do servidor (arredondado — é o
   // que o PUT envia). Mover um nó e devolvê-lo ao lugar volta a desabilitar o
@@ -631,6 +658,13 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
       partes.push(`${efeito.dependencias_transferir.length} transferida(s)`)
     }
     if (partes.length > 0) toast.info(`Dependências: ${partes.join(' · ')}.`)
+    // F13: agendamento plantado/desligado nas raízes — o modal já listou o
+    // de → para; o toast fecha o laço.
+    if (efeito.agendamentos.length > 0) {
+      toast.info(efeito.agendamentos.length === 1
+        ? `A raiz ${efeito.agendamentos[0].pipeline} mudou de agendamento.`
+        : `${efeito.agendamentos.length} raízes mudaram de agendamento.`)
+    }
     efeito.republicar.slice(0, 3).forEach(nome => toast.info(msgRepublicar(nome)))
     if (efeito.republicar.length > 3) {
       toast.info(`+${efeito.republicar.length - 3} DAGs precisam ser republicadas.`)
@@ -678,6 +712,7 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
         || ef.dependencias_remover.length > 0
         || ef.dependencias_transferir.length > 0
         || ef.ja_existentes_manuais.length > 0
+        || ef.agendamentos.length > 0            // F13: Início → raiz
         || ef.republicar.length > 0
       // Espelho client-side do ciclo (§3.3): criaCiclo roda sobre o
       // preview_expandido que o dry_run devolve — a autoridade é o servidor
@@ -1124,6 +1159,10 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   // ao Fim tem efeito zero na 067 — é o desenho da conclusão, em um clique.
   const fimNo = useMemo(
     () => grafo?.nos.find(n => n.tipo === 'fim') ?? null, [grafo])
+  // F13: o nó Início e a contagem de raízes ligadas (painel de agendamento).
+  const inicioNo = useMemo(
+    () => grafo?.nos.find(n => n.tipo === 'inicio') ?? null, [grafo])
+  const raizesInicio = inicioNo ? (grafo?.saidasNo.get(inicioNo.id) ?? 0) : 0
   const pontasSoltas = useMemo(() => {
     if (!fimNo) return []
     const naoSolto = new Set<string>()
@@ -1214,6 +1253,7 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
     || gestoEf.dependencias_remover.length > 0
     || gestoEf.dependencias_transferir.length > 0
     || gestoEf.ja_existentes_manuais.length > 0
+    || gestoEf.agendamentos.length > 0           // F13
     || gestoEf.republicar.length > 0)
 
   return (
@@ -1530,6 +1570,14 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             onBeforeDelete={handleBeforeDelete}
             onDrop={onDrop}
             onDragOver={onDragOver}
+            onNodeDoubleClick={(_, node) => {
+              // F13: duplo clique no Início abre o painel de agendamento —
+              // o nó é a porta (Decisão 8); travado/sem 075 não abre.
+              if (travado || nosIndisponiveis || !ehNo(node.id)) return
+              if (tipoDoNo.get(Number(node.id.slice(NO_PREFIX.length))) === 'inicio') {
+                setAgendaAberta(true)
+              }
+            }}
             colorMode={colorMode}
             fitView
             fitViewOptions={{ padding: 0.25 }}
@@ -1556,6 +1604,18 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
                 </span>
               ) : (
                 <div className="flex items-center gap-2 rounded-lg border border-edge bg-panel/95 px-2.5 py-2 shadow-md backdrop-blur">
+                  {selComponentes.length === 1
+                    && tipoDoNo.get(Number(selComponentes[0].id.slice(NO_PREFIX.length))) === 'inicio'
+                    && !nosIndisponiveis && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setAgendaAberta(true)}
+                      title="Agendamento da malha — copiado às raízes ligadas ao Início (duplo clique no nó também abre)"
+                    >
+                      <CalendarClock size={13} /> Agendamento
+                    </Button>
+                  )}
                   {selComponentes.length === 1 && (
                     <Button
                       variant="danger"
@@ -1767,6 +1827,25 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
                     ))}
                   </div>
                 )}
+                {gestoEf.agendamentos.length > 0 && (
+                  <div className="flex flex-col gap-1">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-dim">
+                      Agendamentos (raízes do Início)
+                    </p>
+                    {gestoEf.agendamentos.map(a => (
+                      <div key={`a-${a.pipeline}`}
+                        className="flex items-start gap-2 rounded-md border border-edge bg-canvas px-3 py-1.5">
+                        <CalendarClock size={12} className="mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                        <span className="min-w-0 text-xs text-ink">
+                          <span className="font-mono">{a.pipeline}</span>
+                          <span className="block text-[10px] text-dim">
+                            {a.de} <span className="mx-0.5">→</span> {a.para}
+                          </span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {gestoEf.ja_existentes_manuais.length > 0 && (
                   <div className="flex flex-col gap-1">
                     <p className="text-[11px] font-semibold uppercase tracking-wider text-dim">
@@ -1838,6 +1917,16 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
           </div>
         )}
       </Modal>
+
+      {/* F13: painel de agendamento do nó Início — o agendamento é da MALHA
+          (Decisão 8); salvar compila para as raízes com dry_run antes. */}
+      <AgendamentoInicioModal
+        malha={malha}
+        aberto={agendaAberta}
+        onClose={() => setAgendaAberta(false)}
+        agendamento={data?.agendamento ?? null}
+        raizes={raizesInicio}
+      />
     </div>
   )
 }
