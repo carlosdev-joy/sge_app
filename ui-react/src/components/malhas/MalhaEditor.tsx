@@ -12,6 +12,11 @@
 // lista os eventos da guardiã (etl_dependencia_evento) e TRAVA a edição —
 // reusa o mesmo mecanismo do readOnly da F8. Em produção, antes da retomada
 // F2–F4, nada alimenta essas tabelas: a visão mostra o estado vazio HONESTO.
+// Orientação (migration 074): o diagrama desenha horizontal (esquerda →
+// direita, default) ou vertical (cima → baixo) POR MALHA — a preferência
+// persiste no servidor junto do layout (PATCH /malhas/{name}) e trocar
+// reorganiza as posições na direção nova; a visão de Execução herda a mesma
+// orientação (é o mesmo grafo) e a consulta vê a salva sem poder trocar.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -39,11 +44,12 @@ import { toast } from '../ui/Toast'
 import { Autocomplete } from '../ui/Autocomplete'
 import { PageSpinner } from '../ui/Spinner'
 import {
-  Activity, AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Info, Link2,
+  Activity, AlertCircle, AlertTriangle, ArrowRightLeft, ArrowUpDown,
+  ChevronLeft, ChevronRight, Info, Link2,
   MousePointerClick, Plus, RefreshCw, Save, ShieldAlert, Trash2, Wrench,
 } from 'lucide-react'
 import { useColorMode } from '../etapas/useColorMode'
-import { liveLayout, criaCiclo } from '../etapas/layoutGrafo'
+import { liveLayout, criaCiclo, type Orientacao } from '../etapas/layoutGrafo'
 import { MalhaPipelineNode, type MalhaPipelineNodeData } from './MalhaPipelineNode'
 import {
   STATUS_EXECUCAO, ORDEM_LEGENDA, estiloEvento,
@@ -72,6 +78,9 @@ interface MalhaDetalheApi {
   malha_name: string
   descricao: string | null
   ativo: 0 | 1 | boolean
+  // Orientação do diagrama (migration 074) — preferência POR MALHA que viaja
+  // com o layout persistido. Chave ausente (API/banco antigos) = horizontal.
+  orientacao?: string
   membros: MalhaMembroApi[]
   // Contrato da F8: dependências (tipo PIPELINE) onde AMBAS as pontas são
   // membros da malha.
@@ -178,12 +187,25 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   // Data de referência pedida. null = sem query — o SERVIDOR devolve o ODATE
   // corrente (virada global de etl_app_config), e é ele que aparece no input.
   const [dataRef, setDataRef] = useState<string | null>(null)
+  // Orientação: o servidor é a fonte (viaja com o layout — todos veem o mesmo
+  // desenho); o override local dá resposta imediata ao toggle enquanto o PATCH
+  // viaja. Carrega a malha DONA junto: trocar de malha invalida o override
+  // sozinho, sem efeito de reset (lint react-hooks/set-state-in-effect).
+  const [orientacaoLocal, setOrientacaoLocal] =
+    useState<{ malha: string; valor: Orientacao } | null>(null)
 
   const { data, isLoading, isError, error } = useQuery<MalhaDetalheApi>({
     queryKey: ['malha', malha],
     queryFn: () => apiFetch(`/malhas/${encodeURIComponent(malha)}`),
     enabled: !!malha,
   })
+  // Normalização defensiva: qualquer coisa que não seja 'vertical' (chave
+  // ausente, payload antigo) é horizontal — o comportamento de sempre.
+  const orientacaoServidor: Orientacao =
+    data?.orientacao === 'vertical' ? 'vertical' : 'horizontal'
+  const orientacao: Orientacao = (orientacaoLocal && orientacaoLocal.malha === malha)
+    ? orientacaoLocal.valor
+    : orientacaoServidor
 
   // ── Visão de execução (F9): status + eventos da data de referência ────────
   const emExecucao = modo === 'execucao'
@@ -234,8 +256,11 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
     const membros = data.membros ?? []
     const arestas = Array.isArray(data.arestas) ? data.arestas : []
     const novasEdges = arestas.map(depEdge)
+    // O auto-layout do baseline segue a orientação SALVA (a que o servidor
+    // conhece) — o override local ainda-não-persistido não muda o baseline.
     const auto = liveLayout(
-      membros.map(m => ({ id: m.pipeline_name })), novasEdges, new Map())
+      membros.map(m => ({ id: m.pipeline_name })), novasEdges, new Map(),
+      data.orientacao === 'vertical' ? 'vertical' : 'horizontal')
     const baseline = new Map<string, { x: number; y: number }>()
     for (const m of membros) {
       const salva = (m.layout_x != null && m.layout_y != null)
@@ -253,6 +278,9 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   // "Salvar posições"). Na visão de execução (F9) o mesmo rebuild anexa o
   // status da data como CAMADA no data do nó — membro sem linha em
   // etl_pipeline_execucao fica sem camada (exec: null), nunca com cor inventada.
+  // A orientação entra no data de TODOS os nós (rebuild ao trocar): é ela que
+  // decide onde os handles ancoram — a visão de Execução herda a mesma, porque
+  // o grafo é o mesmo.
   useEffect(() => {
     if (!grafo) return
     const atuais = new Map(nodesRef.current.map(n => [n.id, n.position]))
@@ -266,12 +294,13 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
           ?? { x: 0, y: 0 },
         data: {
           ...nodeData(m),
+          orientacao,
           exec: exec ? { status: exec.status, titulo: tituloExecucao(exec) } : null,
         },
       }
     }))
     setEdges(grafo.novasEdges)
-  }, [grafo, setNodes, setEdges, emExecucao, execPorPipeline])
+  }, [grafo, setNodes, setEdges, emExecucao, execPorPipeline, orientacao])
 
   // dirty = alguma posição difere do baseline do servidor (arredondado — é o
   // que o PUT envia). Mover um nó e devolvê-lo ao lugar volta a desabilitar o
@@ -417,12 +446,56 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   }
 
   // ── Layout: reorganizar e salvar posições ─────────────────────────────────
-  const reorganizar = useCallback(() => {
+  // Recoloca os nós em camadas na orientação pedida (a corrente, por default).
+  const reLayout = useCallback((o: Orientacao) => {
     setNodes(nds => {
-      const pos = liveLayout(nds, edgesRef.current, new Map())
+      const pos = liveLayout(nds, edgesRef.current, new Map(), o)
       return nds.map(n => (pos[n.id] ? { ...n, position: pos[n.id] } : n))
     })
   }, [setNodes])
+  const reorganizar = useCallback(() => reLayout(orientacao), [reLayout, orientacao])
+
+  // ── Orientação (migration 074): PATCH + re-layout automático ──────────────
+  const mudarOrientacao = useMutation({
+    mutationFn: ({ nova }: { nova: Orientacao; anterior: Orientacao }) =>
+      apiFetch<{ ok: boolean; orientacao?: string; migration_074_pendente?: boolean }>(
+        `/malhas/${encodeURIComponent(malha)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ orientacao: nova }),
+        }),
+    onSuccess: (r) => {
+      // Deploy parcial (074 pendente): a tela funciona na orientação nova, mas
+      // ela não persistiu — aviso honesto em vez de silêncio.
+      if (r.migration_074_pendente) {
+        toast.info('migration 074 pendente — a orientação vale só nesta sessão, '
+          + 'o servidor ainda não a persiste.')
+      }
+      // O refetch traz a orientação recém-salva; o override local vira redundante.
+      qc.invalidateQueries({ queryKey: ['malha', malha] })
+    },
+    onError: (e: Error, { anterior }) => {
+      // UMA fonte só para o revert: o valor EXIBIDO antes do clique — não o do
+      // servidor (numa sessão degradada sem a 074 eles divergem, e reverter
+      // orientação para um lado e desenho para o outro criava estado híbrido:
+      // handles laterais com nós empilhados — achado da revisão adversarial).
+      setOrientacaoLocal({ malha, valor: anterior })
+      reLayout(anterior)
+      toast.error(e.message || 'Erro ao trocar a orientação do diagrama')
+    },
+  })
+
+  const trocarOrientacao = useCallback((nova: Orientacao) => {
+    if (nova === orientacao || travado) return
+    const anterior = orientacao
+    setOrientacaoLocal({ malha, valor: nova })
+    mudarOrientacao.mutate({ nova, anterior })
+    // Re-layout imediato na direção nova (mesmo módulo do Reorganizar) — as
+    // posições recalculadas só persistem pelo "Salvar posições" (fica dirty).
+    reLayout(nova)
+    toast.info('Posições reorganizadas — use "Salvar posições" para persistir.')
+    // Enquadra o desenho já na direção nova (mesmo delay do fit de abertura).
+    setTimeout(() => rf.fitView({ padding: 0.2, duration: 250 }), 90)
+  }, [orientacao, travado, malha, mudarOrientacao, reLayout, rf])
 
   const salvarLayout = useMutation({
     mutationFn: () =>
@@ -513,6 +586,32 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             <Activity size={12} /> Execução
           </button>
         </div>
+        {/* Orientação do diagrama (por malha, persiste no servidor com o
+            layout). Consulta (readOnly) vê a orientação salva, mas não troca —
+            o controle nem aparece. */}
+        {!emExecucao && !readOnly && (
+          <div className="ml-auto flex items-center gap-1.5">
+            <span className="text-[11px] text-dim">Orientação</span>
+            <div className="flex gap-1">
+              <button
+                onClick={() => trocarOrientacao('horizontal')}
+                disabled={mudarOrientacao.isPending}
+                title="Diagrama horizontal (esquerda → direita) — trocar reorganiza as posições na nova direção"
+                className={modoBtnCls(orientacao === 'horizontal')}
+              >
+                <ArrowRightLeft size={12} /> horizontal
+              </button>
+              <button
+                onClick={() => trocarOrientacao('vertical')}
+                disabled={mudarOrientacao.isPending}
+                title="Diagrama vertical (cima → baixo) — trocar reorganiza as posições na nova direção"
+                className={modoBtnCls(orientacao === 'vertical')}
+              >
+                <ArrowUpDown size={12} /> vertical
+              </button>
+            </div>
+          </div>
+        )}
         {emExecucao && (
           <div className="ml-auto flex flex-wrap items-center gap-1.5">
             <span className="text-[11px] text-dim">Data de referência</span>

@@ -11,7 +11,7 @@ Endpoints:
   POST   /malhas                                   — cria malha
   GET    /malhas/{malha_name}                      — detalhe + membros + arestas (F8)
   GET    /malhas/{malha_name}/execucao             — status + eventos por data (F9)
-  PATCH  /malhas/{malha_name}                      — descricao / ativo / renomear
+  PATCH  /malhas/{malha_name}                      — descricao / ativo / renomear / orientacao
   POST   /malhas/{malha_name}/pipelines            — adiciona membro (idempotente)
   DELETE /malhas/{malha_name}/pipelines/{pipeline_name} — remove membro
   PUT    /malhas/{malha_name}/layout               — persiste posições dos nós (F8)
@@ -65,6 +65,11 @@ _MSG_SEM_067 = (
     "Cadastro de dependências indisponível: a migration 067 "
     "(etl_pipeline_dependencia) ainda não foi aplicada neste banco."
 )
+
+# Domínio da orientação do diagrama de montagem (migration 074). A coluna não
+# tem CHECK (padrão da casa): a API é quem valida na escrita e normaliza na
+# leitura — valor estranho no banco vira 'horizontal', nunca tela quebrada.
+_ORIENTACOES = ("horizontal", "vertical")
 
 # Ordem de severidade da criticidade (mesmo domínio do CritBadge da tela Malha;
 # comparação em caixa alta porque o valor em etl_pipeline é texto livre).
@@ -127,6 +132,26 @@ def _exigir_tabela_067(cur, conn):
     if not _tabela_067(cur):
         _fechar_silencioso(conn)
         raise HTTPException(status_code=503, detail=_MSG_SEM_067)
+
+
+def _coluna_074(cur) -> bool:
+    """True se etl_malha.orientacao (migration 074) existe. Guard de COLUNA no
+    padrão de _has_card_cols (routers/mensagens.py): COL_LENGTH, best-effort —
+    qualquer falha conta como ausente e a API degrada para o default."""
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_malha', 'orientacao')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None)
+    except Exception as e:
+        log.warning("[MALHA] checagem da coluna da migration 074 falhou: %s", e)
+        return False
+
+
+def _orientacao_norm(valor) -> str:
+    """Normaliza o valor lido do banco para o domínio da API: fora de
+    'horizontal'|'vertical' (coluna sem CHECK) devolve o default."""
+    v = (str(valor).strip().lower() if valor else "")
+    return v if v in _ORIENTACOES else "horizontal"
 
 
 def _tabelas_067_execucao(cur) -> bool:
@@ -263,10 +288,14 @@ def list_malhas(_auth: dict = Depends(get_current_user)):
             # de deploy parcial e desabilita o "Nova malha" na tela.
             return {"malhas": [], "migration_pendente": True}
 
+        # orientacao (074) é ADITIVA na lista: o card pode ignorar; a coluna
+        # ausente degrada para o default sem mudar o SQL de hoje.
+        tem_074 = _coluna_074(cur)
         cur.execute(
             "SELECT malha_name, descricao, CAST(ativo AS INT) AS ativo, "
-            "criado_em, criado_por, atualizado_em "
-            "FROM dbo.etl_malha ORDER BY malha_name"
+            "criado_em, criado_por, atualizado_em"
+            + (", orientacao" if tem_074 else "") +
+            " FROM dbo.etl_malha ORDER BY malha_name"
         )
         data = []
         indice: dict[str, dict] = {}
@@ -275,6 +304,7 @@ def list_malhas(_auth: dict = Depends(get_current_user)):
                 "malha_name": r[0], "descricao": r[1], "ativo": int(r[2] or 0),
                 "criado_em": _fmt_dt(r[3]), "criado_por": r[4],
                 "atualizado_em": _fmt_dt(r[5]),
+                "orientacao": _orientacao_norm(r[6]) if tem_074 else "horizontal",
                 "qtd_pipelines": 0, "qtd_ativos": 0, "criticidade": None,
             }
             data.append(rec)
@@ -355,10 +385,14 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
     try:
         conn = get_db_conn(); cur = conn.cursor()
         _exigir_tabelas(cur, conn)
+        # orientacao (074): preferência de visão que viaja com o layout — sem a
+        # coluna, degrada para 'horizontal' (o comportamento de sempre).
+        tem_074 = _coluna_074(cur)
         cur.execute(
             "SELECT malha_name, descricao, CAST(ativo AS INT) AS ativo, "
-            "criado_em, criado_por, atualizado_em "
-            "FROM dbo.etl_malha WHERE malha_name = ?",
+            "criado_em, criado_por, atualizado_em"
+            + (", orientacao" if tem_074 else "") +
+            " FROM dbo.etl_malha WHERE malha_name = ?",
             (malha_name,),
         )
         row = cur.fetchone()
@@ -370,6 +404,7 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
             "malha_name": row[0], "descricao": row[1], "ativo": int(row[2] or 0),
             "criado_em": _fmt_dt(row[3]), "criado_por": row[4],
             "atualizado_em": _fmt_dt(row[5]),
+            "orientacao": _orientacao_norm(row[6]) if tem_074 else "horizontal",
         }
         # JOIN em etl_pipeline: além dos metadados, garante que membro de
         # pipeline excluído simplesmente some (aceite da F7) — e a FK CASCADE
@@ -568,13 +603,19 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
 @router.patch("/malhas/{malha_name}", tags=["malhas"])
 def update_malha(malha_name: str, body: dict = Body(default={}),
                  _auth: dict = Depends(require_perm(PERM_EDITAR))):
-    """Atualiza descricao/ativo e/ou renomeia a malha.
+    """Atualiza descricao/ativo/orientacao e/ou renomeia a malha.
 
     Renomear atualiza as DUAS tabelas na MESMA transação: a FK da 070 é
     cascade de DELETE, não de UPDATE — trocar o PK com filhas apontando para
     ele viola a FK em qualquer ordem de UPDATE simples. O caminho é criar a
     linha-mãe nova (preservando criado_em/criado_por), migrar as filhas e
     apagar a antiga (já sem filhas, o CASCADE não leva nada junto).
+
+    orientacao (074): 'horizontal' | 'vertical' — outro valor é 422. Sem a
+    coluna (deploy parcial), NÃO é 503: o precedente do arquivo para COLUNA
+    opcional é o degrade suave (_ligar_dag_config_pendente / migration 073) —
+    log + migration_074_pendente=True na resposta, e a tela avisa. O 503 fica
+    reservado às TABELAS (070/067), sem as quais o recurso inteiro não existe.
     """
     conn = None
     try:
@@ -594,6 +635,19 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
                 _fechar_silencioso(conn)
                 raise HTTPException(status_code=422, detail="ativo deve ser 0 ou 1")
             ativo = int(bool(body.get("ativo")))
+        # Valida a orientação ANTES de qualquer escrita (um rename não pode ir
+        # pela metade por causa de um valor inválido aqui). Caixa é tolerada na
+        # entrada ('Vertical' vale) e o gravado é o canônico minúsculo — mesmo
+        # espírito da colação CI do banco.
+        tem_orientacao = "orientacao" in body
+        if tem_orientacao:
+            orientacao = str(body.get("orientacao") or "").strip().lower()
+            if orientacao not in _ORIENTACOES:
+                _fechar_silencioso(conn)
+                raise HTTPException(
+                    status_code=422,
+                    detail="orientacao deve ser 'horizontal' ou 'vertical'")
+        tem_074 = _coluna_074(cur)
 
         novo_nome = (body.get("novo_nome") or "").strip()
         renomeada = False
@@ -622,12 +676,25 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
                     _fechar_silencioso(conn)
                     raise HTTPException(status_code=422,
                                         detail=f"Já existe uma malha com este nome: '{duplicada}'")
-                cur.execute(
-                    "INSERT INTO dbo.etl_malha "
-                    "(malha_name, descricao, ativo, criado_em, criado_por, atualizado_em) "
-                    "SELECT ?, descricao, ativo, criado_em, criado_por, SYSDATETIME() "
-                    "FROM dbo.etl_malha WHERE malha_name = ?",
-                    (novo_nome, atual))
+                # Com a 074, a orientação viaja junto no rename — a cópia por
+                # lista explícita de colunas deixaria a linha nova cair no
+                # DEFAULT 'horizontal' e a preferência salva se perderia.
+                if tem_074:
+                    cur.execute(
+                        "INSERT INTO dbo.etl_malha "
+                        "(malha_name, descricao, ativo, criado_em, criado_por, "
+                        "atualizado_em, orientacao) "
+                        "SELECT ?, descricao, ativo, criado_em, criado_por, "
+                        "SYSDATETIME(), orientacao "
+                        "FROM dbo.etl_malha WHERE malha_name = ?",
+                        (novo_nome, atual))
+                else:
+                    cur.execute(
+                        "INSERT INTO dbo.etl_malha "
+                        "(malha_name, descricao, ativo, criado_em, criado_por, atualizado_em) "
+                        "SELECT ?, descricao, ativo, criado_em, criado_por, SYSDATETIME() "
+                        "FROM dbo.etl_malha WHERE malha_name = ?",
+                        (novo_nome, atual))
                 cur.execute(
                     "UPDATE dbo.etl_malha_pipeline SET malha_name = ? WHERE malha_name = ?",
                     (novo_nome, atual))
@@ -643,9 +710,28 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
             cur.execute(
                 "UPDATE dbo.etl_malha SET ativo = ?, atualizado_em = SYSDATETIME() "
                 "WHERE malha_name = ?", (ativo, atual))
+        migration_074_pendente = False
+        if tem_orientacao:
+            if tem_074:
+                cur.execute(
+                    "UPDATE dbo.etl_malha SET orientacao = ?, atualizado_em = SYSDATETIME() "
+                    "WHERE malha_name = ?", (orientacao, atual))
+            else:
+                # Degrade suave (ver docstring): a tela segue funcionando na
+                # orientação escolhida; só a persistência espera a 074.
+                migration_074_pendente = True
+                log.warning("[MALHA] migration 074 ausente — orientacao da "
+                            "malha '%s' não foi persistida", atual)
 
         conn.commit(); cur.close(); conn.close()
-        return {"ok": True, "malha_name": atual, "renomeada": renomeada}
+        # Chaves da orientação são CONDICIONAIS (aditivas): quem não mexeu nela
+        # recebe a resposta de sempre, byte a byte.
+        resp = {"ok": True, "malha_name": atual, "renomeada": renomeada}
+        if tem_orientacao:
+            resp["orientacao"] = orientacao
+            if migration_074_pendente:
+                resp["migration_074_pendente"] = True
+        return resp
     except HTTPException:
         raise
     except Exception as e:
