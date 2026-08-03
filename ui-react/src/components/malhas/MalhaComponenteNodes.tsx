@@ -39,6 +39,40 @@ import type { Orientacao } from '../etapas/layoutGrafo'
 // a paleta e o minimapa do MalhaEditor sem quebrar o react-refresh daqui.
 import { COMPONENTE_META, type TipoComponente } from './componenteMeta'
 
+// F15 (desenho §8): estado do componente na VISÃO DE EXECUÇÃO — camada
+// derivada de dados que o payload já tem (execucoes[] × upstream do servidor
+// + eventos_no[] da F14), montada pelo MalhaEditor. Ausente (null/undefined)
+// = modo Montagem OU nó sem dado na data — o card fica neutro, a regra F9 de
+// nunca inventar cor.
+export type ExecComponente =
+  | {
+      // Início: as raízes ligadas contadas POR STATUS (nunca por presença de
+      // linha — PULADO e FALHA são linha registrada e NÃO são partida bem
+      // sucedida; verde é SUCESSO em todo o canvas) + a próxima execução do
+      // agendamento (display-only — a autoridade é o scheduler).
+      kind: 'inicio'
+      raizes: number
+      sucesso: number
+      falha: number
+      pulado: number
+      emCurso: number       // EXECUTANDO / AGUARDANDO_DEPENDENCIA / outros
+      semLinha: number      // sem execução registrada na data
+      proxima: string | null
+    }
+  | {
+      // Aguarde: derivação client-side de execucoes[] × upstream (§8) — o
+      // upstream vem do SERVIDOR (§3.2), o front nunca expande.
+      kind: 'aguarde'
+      estado: 'satisfeito' | 'bloqueado' | 'aguardando'
+      faltam: string[]
+      bloqueiam: string[]
+    }
+  // Notificação/Fim: `semEntradas` = upstream VAZIO (nenhum pipeline chega,
+  // nem através de Aguarde) — a guardiã PULA o nó e nunca emite (Decisão 13);
+  // prometer "aguardando" ali seria promessa falsa.
+  | { kind: 'notificacao'; emitidaEm: string | null; semEntradas: boolean }
+  | { kind: 'fim'; concluidaEm: string | null; semEntradas: boolean }
+
 export interface MalhaComponenteNodeData {
   // id da linha em etl_malha_no — o id do NÓ no canvas é "no:{noId}" (§9).
   noId: number
@@ -56,6 +90,8 @@ export interface MalhaComponenteNodeData {
   // obedece a dependência e o agendamento da malha está inerte nela.
   agendaResumo?: string | null
   contradicao?: boolean
+  // F15: estado do componente na visão de Execução (null/ausente = neutro).
+  execNo?: ExecComponente | null
   [key: string]: unknown
 }
 
@@ -92,6 +128,143 @@ function subtitulo(data: MalhaComponenteNodeData): string {
       return data.entradas === 0 ? 'sem entradas' : plural(data.entradas, 'entrada', 'entradas')
     case 'fim':
       return data.entradas === 0 ? 'sem entradas' : plural(data.entradas, 'ligado', 'ligados')
+  }
+}
+
+// ── Camada de execução (F15 — desenho §8) ───────────────────────────────────
+// Anel por CIMA do desenho (outline, como no MalhaPipelineNode: não briga com
+// o ring azul de seleção) — SÓ quando o dado sustenta o estado; linha de
+// estado embaixo do subtítulo; detalhe completo no tooltip.
+
+const ANEL = {
+  verde: 'outline outline-2 outline-offset-2 outline-green-500/70 dark:outline-green-400/60',
+  teal: 'outline outline-2 outline-offset-2 outline-teal-500/70 dark:outline-teal-400/60',
+  vermelho: 'outline outline-2 outline-offset-2 outline-red-500/80 dark:outline-red-400/70',
+  ambar: 'outline outline-2 outline-offset-2 outline-amber-400/60 dark:outline-amber-500/50',
+}
+
+function horaCurtaLocal(iso: string | null): string | null {
+  if (!iso) return null
+  const d = new Date(iso)
+  return isNaN(d.getTime())
+    ? iso
+    : d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+}
+
+// Anel do estado — string vazia = apagado (evento ausente ≠ problema).
+// VERDE É SUCESSO, em todo o canvas: o Início só acende verde com TODAS as
+// raízes em SUCESSO; falha pinta vermelho; PULADO/em curso/sem linha ficam
+// sem anel (o texto conta a verdade).
+function execAnel(e: ExecComponente): string {
+  switch (e.kind) {
+    case 'inicio':
+      if (e.falha > 0) return ANEL.vermelho
+      return e.raizes > 0 && e.sucesso === e.raizes ? ANEL.verde : ''
+    case 'aguarde':
+      return e.estado === 'satisfeito' ? ANEL.verde
+        : e.estado === 'bloqueado' ? ANEL.vermelho : ANEL.ambar
+    case 'notificacao':
+      return e.emitidaEm ? ANEL.teal : ''
+    case 'fim':
+      return e.concluidaEm ? ANEL.verde : ''
+  }
+}
+
+function plur(n: number, s: string, p: string): string {
+  return `${n} ${n === 1 ? s : p}`
+}
+
+// Linha de estado sob o subtítulo (texto curto; a lista completa vai no
+// tooltip). null = nada a dizer.
+function execLinha(e: ExecComponente): { texto: string; cls: string } | null {
+  switch (e.kind) {
+    case 'inicio': {
+      if (e.falha > 0) {
+        return { texto: `${plur(e.falha, 'raiz', 'raízes')} com falha`,
+                 cls: 'text-red-700 dark:text-red-400' }
+      }
+      if (e.sucesso === e.raizes) {
+        return { texto: `todas com sucesso (${e.raizes})`,
+                 cls: 'text-green-700 dark:text-green-400' }
+      }
+      if (e.semLinha === e.raizes) {
+        return { texto: 'sem execução na data', cls: 'text-dim' }
+      }
+      if (e.pulado > 0 && e.sucesso === 0 && e.emCurso === 0) {
+        // Dia em que a regra de agenda não deixou rodar (sábado com
+        // somente_dias_uteis, blackout): PULADO não é partida.
+        return { texto: `${plur(e.pulado, 'pulada', 'puladas')}`, cls: 'text-dim' }
+      }
+      return { texto: `${e.sucesso}/${e.raizes} com sucesso`, cls: 'text-dim' }
+    }
+    case 'aguarde':
+      if (e.estado === 'satisfeito') {
+        return { texto: 'satisfeito', cls: 'text-green-700 dark:text-green-400' }
+      }
+      if (e.estado === 'bloqueado') {
+        return {
+          texto: `bloqueado: ${e.bloqueiam.join(', ')}`,
+          cls: 'text-red-700 dark:text-red-400',
+        }
+      }
+      return {
+        texto: `aguardando (falta${e.faltam.length === 1 ? '' : 'm'} ${e.faltam.length})`,
+        cls: 'text-amber-700 dark:text-amber-400',
+      }
+    case 'notificacao':
+      if (e.emitidaEm) {
+        return { texto: `emitida às ${horaCurtaLocal(e.emitidaEm)}`,
+                 cls: 'text-teal-700 dark:text-teal-400' }
+      }
+      return e.semEntradas
+        ? { texto: 'sem entradas — não emite', cls: 'text-dim' }
+        : { texto: 'aguardando', cls: 'text-dim' }
+    case 'fim':
+      if (e.concluidaEm) {
+        return { texto: `concluída às ${horaCurtaLocal(e.concluidaEm)}`,
+                 cls: 'text-green-700 dark:text-green-400' }
+      }
+      return e.semEntradas
+        ? { texto: 'sem entradas — não conclui', cls: 'text-dim' }
+        : { texto: 'em andamento', cls: 'text-dim' }
+  }
+}
+
+// Detalhe do estado para o tooltip (anexado ao título semântico do tipo).
+function execTitulo(e: ExecComponente): string | null {
+  switch (e.kind) {
+    case 'inicio': {
+      const detalhe = [
+        `sucesso: ${e.sucesso}`,
+        ...(e.falha > 0 ? [`falha: ${e.falha}`] : []),
+        ...(e.pulado > 0 ? [`pulado: ${e.pulado}`] : []),
+        ...(e.emCurso > 0 ? [`em curso: ${e.emCurso}`] : []),
+        ...(e.semLinha > 0 ? [`sem execução: ${e.semLinha}`] : []),
+      ].join(' · ')
+      const partes = [`raízes ligadas: ${e.raizes} — ${detalhe}`]
+      if (e.proxima) partes.push(`próxima execução: ${e.proxima}`)
+      return partes.join('\n')
+    }
+    case 'aguarde':
+      if (e.estado === 'satisfeito') {
+        return 'todas as entradas com SUCESSO na data'
+      }
+      if (e.estado === 'bloqueado') {
+        return `bloqueado por: ${e.bloqueiam.join(', ')}`
+      }
+      return `aguardando: ${e.faltam.join(', ')}`
+    case 'notificacao':
+      if (e.emitidaEm) return `notificação emitida às ${horaCurtaLocal(e.emitidaEm)}`
+      return e.semEntradas
+        ? 'nenhum pipeline chega a este nó (nem através de um Aguarde) — a '
+          + 'guardiã não avalia e NENHUM evento será emitido: ligue as entradas'
+        : 'aguardando — o evento sai quando todas as entradas tiverem SUCESSO na data'
+    case 'fim':
+      if (e.concluidaEm) return `malha concluída às ${horaCurtaLocal(e.concluidaEm)}`
+      return e.semEntradas
+        ? 'nenhum pipeline chega a este nó (nem através de um Aguarde) — a '
+          + 'conclusão NUNCA será registrada: ligue as entradas'
+        : 'em andamento — a conclusão é registrada quando todos os ligados tiverem SUCESSO na data'
   }
 }
 
@@ -143,8 +316,18 @@ function ComponenteNodeImpl({ id, data, selected }: NodeProps & { data: MalhaCom
     ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas'
     : 'dark:group-hover:ring-1 dark:group-hover:ring-slate-500/60'
 
+  // F15: camada de execução — anel/linha SÓ quando o editor passou estado
+  // (modo Execução com dado na data); sem ela o card é o da montagem.
+  const exec = data.execNo ?? null
+  const anelExec = exec ? execAnel(exec) : ''
+  const linhaExec = exec ? execLinha(exec) : null
+  const tituloExec = exec ? execTitulo(exec) : null
+  const titulo = tituloExec
+    ? `${TITULO[data.tipo]}\n${tituloExec}`
+    : TITULO[data.tipo]
+
   return (
-    <div className="group flex w-12 flex-col items-center" title={TITULO[data.tipo]}>
+    <div className="group flex w-12 flex-col items-center" title={titulo}>
       <HandlesGramatica tipo={data.tipo} vertical={vertical} />
 
       {data.tipo === 'aguarde' ? (
@@ -156,6 +339,7 @@ function ComponenteNodeImpl({ id, data, selected }: NodeProps & { data: MalhaCom
           className={[
             'relative flex h-8 w-8 items-center justify-center rounded-full',
             selecaoCls,
+            anelExec,
           ].join(' ')}
         >
           <div
@@ -181,6 +365,7 @@ function ComponenteNodeImpl({ id, data, selected }: NodeProps & { data: MalhaCom
             `relative flex h-8 w-8 items-center justify-center rounded-xl ${meta.chip}`,
             'shadow-sm transition-shadow group-hover:shadow-md',
             selecaoCls,
+            anelExec,
           ].join(' ')}
         >
           <meta.Icon size={16} strokeWidth={2.2} />
@@ -204,6 +389,12 @@ function ComponenteNodeImpl({ id, data, selected }: NodeProps & { data: MalhaCom
       <p className="mt-0.5 w-[128px] line-clamp-1 text-center text-[9px] leading-tight text-dim">
         {subtitulo(data)}
       </p>
+      {/* F15: linha de estado da visão de Execução — só com dado na data. */}
+      {linhaExec && (
+        <p className={`mt-0.5 w-[128px] break-words text-center text-[9px] font-semibold leading-tight line-clamp-2 ${linhaExec.cls}`}>
+          {linhaExec.texto}
+        </p>
+      )}
     </div>
   )
 }

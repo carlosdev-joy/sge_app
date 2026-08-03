@@ -263,6 +263,100 @@ isso — e nenhuma outra é.
 > **Depois de mexer no fluxo, republique o pipeline.** O desenho salvo só vira
 > execução quando a DAG é gerada de novo.
 
+### 3.6 Componentes de malha (Início · Aguarde · Notificação · Fim)
+
+Na tela **Malha**, o diagrama de montagem tem uma paleta de **componentes** —
+quatro peças que transformam o desenho da malha na "sequence mestre" que o
+DataStage tinha: ondas de pipelines em paralelo, pontos de espera entre as
+ondas, aviso no meio do caminho e a conclusão registrada no fim.
+
+**Nenhum componente executa nada.** Eles são atalhos de desenho que viram as
+peças que já existem: agendamento nas raízes, dependências reais entre
+pipelines e avisos da guardiã. Quem roda continua sendo o scheduler do Airflow
+e o disparo por dependência — por isso não existe um "motor da malha" para
+quebrar.
+
+O exemplo clássico (duas ondas com espera no meio):
+
+```
+            ┌── Carga_Clientes ──┐                      ┌── Relatorio_A ──┐
+▶ Início ──┤                     ├── ▮ Aguarde ────────┤                  ├── ⚑ Fim
+            └── Carga_Contratos ─┘        │             └── Relatorio_B ──┘
+                                          └── 🔔 Notificação ("cargas ok")
+```
+
+| Componente | O que faz ao ser ligado |
+|---|---|
+| **▶ Início** | Guarda o agendamento **da malha** (um calendário só, com hora de virada única) e o copia para cada pipeline ligado a ele — as raízes. Todas disparam **no mesmo tick**, em paralelo. |
+| **▮ Aguarde** | Ponto de espera entre ondas: cada saída passa a **depender de todo mundo que entra** — são dependências reais, criadas na hora (o efeito é mostrado **antes** de gravar). |
+| **🔔 Notificação** | A guardiã avisa (painel + card no Teams) quando **todas as entradas tiverem SUCESSO no mesmo dia de processamento**. |
+| **⚑ Fim** | Registra a **conclusão da malha** no dia: quando todos os ligados a ele tiverem SUCESSO, sai o evento e o modo Execução mostra o banner verde. O card no Teams é opcional (desligado por padrão). |
+
+**A semântica é sempre "todas com sucesso"**: Aguarde, Notificação e Fim olham
+para o mesmo critério — todas as entradas com SUCESSO **na mesma data de
+referência**. Falha segura a malha e a guardiã alerta; não existe opção de
+"seguir mesmo com falha" na malha.
+
+#### Modo Execução: ler a malha rodando
+
+O botão **Execução** abre a malha numa data de referência. Além das cores dos
+pipelines, os componentes contam o dia:
+
+- **Início** — como as raízes terminaram na data: `todas com sucesso (2)` em
+  verde, `1 raiz com falha` em vermelho, `2 puladas` (regra de agenda barrou o
+  dia — sábado, blackout), `1/2 com sucesso` ou `sem execução na data`. Verde
+  só aparece quando **todas** deram certo. O tooltip abre o detalhe por status
+  e mostra a próxima execução do agendamento (orientação — quem manda é o
+  scheduler);
+- **Aguarde** — **satisfeito** (verde: todas as entradas com sucesso),
+  **aguardando** (âmbar: o tooltip diz quem falta) ou **bloqueado** (vermelho:
+  o tooltip nomeia quem falhou);
+- **Notificação** — "emitida às HH:MM" quando o aviso do dia saiu; senão
+  "aguardando" — ou **"sem entradas — não emite"** se nenhum pipeline chega
+  ao nó (aí ele nunca vai emitir: ligue as entradas);
+- **Fim** — "concluída às HH:MM" + o banner verde no topo; senão "em
+  andamento" (idem: "sem entradas — não conclui").
+
+Componente sem dado na data fica **neutro** — a tela não inventa estado.
+
+#### Disparar a malha manualmente
+
+No modo Execução, o botão **▶ Disparar malha** roda a malha fora do horário
+(reprocesso, teste, atraso do dia). Antes de qualquer coisa, a confirmação
+mostra **o que será disparado**: as raízes ligadas ao Início, a data de
+referência usada e o que o gesto atropela — raiz com a etiqueta **"tem
+dependência"** (o disparo manual não espera o predecessor: a corrida parte por
+cima dele) ou **"já rodou (N)"** (a raiz já tem corrida nessa data e vai rodar
+de novo). Ao confirmar:
+
+1. cada raiz é disparada no Airflow com a **mesma data de referência** — o
+   mesmo gesto do botão "rodar" da tela Pipelines, uma vez por raiz;
+2. o restante da malha anda **sozinho**, pelo disparo por dependência,
+   herdando a data — ninguém precisa disparar o meio da cadeia;
+3. quem disparou fica registrado na corrida (coluna "disparado por");
+4. erros são reportados **por raiz** — uma raiz recusada não impede as outras.
+
+Requer a permissão **Executar** (a mesma do botão de rodar pipeline).
+
+#### Erros comuns
+
+- **"raiz não pode ter dependência"** — quem tem dependência não é raiz: o
+  motor espera o predecessor e o agendamento plantado seria mentira. Chegue a
+  esse pipeline por um Aguarde.
+- **"já é agendado pelo Início da malha X"** — um pipeline só tem **um** dono
+  de agendamento por vez. Desligue-o na malha dona antes.
+- **Desligar uma raiz do Início** deixa o pipeline **sob demanda** — nunca
+  devolve o agendamento antigo. Reagendar é gesto seu, consciente.
+- **"compilada pelo Aguarde X da malha M"** — dependência criada por um
+  Aguarde só se edita pelo desenho da malha dona (a aresta aparece com
+  cadeado nas outras).
+- **Notificação/Fim sem entradas** — não avaliam nada e não emitem nada (o
+  aviso âmbar fica no banner até você ligar as entradas).
+
+> **Depois de mexer nos componentes, republique os pipelines afetados.** O
+> modal de cada gesto lista quem precisa (`Republicação necessária`) — sem
+> republicar, a DAG continua com o agendamento/dependência antigos.
+
 ---
 
 ## 4. Perfil Administrador

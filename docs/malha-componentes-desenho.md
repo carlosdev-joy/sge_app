@@ -271,12 +271,36 @@ O modo Execução (F9) já colore pipelines pelo status da data e trava a ediç�
 
 | Nó | Estado exibido | Fonte |
 |---|---|---|
-| Início | resumo do agendamento + "próxima execução: {texto}" (helper display-only, mesmo estatuto do `calcularDataRef` da F5 — a autoridade é o scheduler) + contagem de raízes | `agendamento_json` + arestas (payload do detalhe) |
+| Início | resumo do agendamento + "próxima execução: {texto}" (helper display-only, mesmo estatuto do `calcularDataRef` da F5 — a autoridade é o scheduler) + as raízes contadas **POR STATUS** | `agendamento_json` + arestas (payload do detalhe) + `execucoes[]` |
 | Aguarde | **satisfeito** (todas as entradas SUCESSO em D — anel verde) · **bloqueado** (alguma FALHA/NAO_LIBEROU — anel vermelho, tooltip nomeia) · **aguardando** (anel âmbar, "faltam: X, Y") | derivação client-side de `execucoes[]` × `upstream` (o upstream vem do servidor, §3.2 — nenhuma expansão no front) |
-| Notificação | "emitida às HH:MM" (evento `MALHA_NOTIFICACAO` da data) ou "aguardando" | eventos de nó no payload (F14) |
-| Fim | "malha concluída às HH:MM" + o **banner** verde no topo; senão "em andamento" | evento `MALHA_CONCLUIDA` + `malha_concluida` (§6) |
+| Notificação | "emitida às HH:MM" (evento `MALHA_NOTIFICACAO` da data) ou "aguardando" — e **"sem entradas — não emite"** quando o upstream é vazio (Decisão 13: a guardiã pula o nó; prometer "aguardando" ali seria promessa falsa) | eventos de nó + `upstream` no payload (F14) |
+| Fim | "malha concluída às HH:MM" + o **banner** verde no topo; senão "em andamento" (idem "sem entradas — não conclui") | evento `MALHA_CONCLUIDA` + `malha_concluida` (§6) |
 
 Nó sem dado na data fica neutro — a regra F9 de nunca inventar cor.
+
+**Verde é SUCESSO no canvas inteiro (F15).** O Início conta as raízes **por
+status**, nunca por presença de linha em `etl_pipeline_execucao`: PULADO (regra
+de agenda barrou o dia) e FALHA também são linha registrada, e contá-las como
+"partiu" acenderia o Início de verde num sábado em que nada rodou — ou ao lado
+de um Aguarde vermelho. Anel verde só com TODAS as raízes em SUCESSO; alguma
+FALHA pinta vermelho; PULADO/em curso/sem linha ficam sem anel, com o texto
+dizendo a verdade ("2 puladas", "1/2 com sucesso", "sem execução na data").
+
+O badge de **contradição** (raiz assinada que ganhou dependência por outra
+porta, §2.2) aparece nos DOIS modos — na Execução ele é mais importante, não
+menos: é lá que vive o disparo manual, que parte a raiz por cima do
+predecessor. O aviso correspondente carrega `tipo: 'contradicao'` para o front
+filtrá-lo por chave estável, sem casar texto.
+
+### 8.1 Disparo manual da malha (F15)
+
+Gesto no modo Execução: **dry_run → modal com as raízes e o ODATE → confirmar**
+(a mesma cadência de consentimento do §7.2). O contrato do endpoint está no §9.
+A régua: o front envia sempre a data EXIBIDA na visão (WYSIWYG — o botão fica
+desabilitado enquanto ela não existe, para nunca disparar numa data que a tela
+não mostrou), e o servidor dispara as raízes com esse ODATE. O que o gesto
+atropela é dito ANTES no dry_run (raiz com dependência, corrida já existente na
+data), nunca descoberto depois.
 
 ## 9. Resumo da API
 
@@ -288,9 +312,46 @@ POST   /malhas/{name}/arestas                  {origem:{pipeline|no}, destino:{.
 DELETE /malhas/{name}/arestas/{id}             (?dry_run)
 POST   /malhas/{name}/agendamento              {agendamento, dry_run?}   (§4)
 GET    /malhas/{name}        → + nos[] (com upstream), arestas_no[], arestas[].compilada_por
+                               (avisos[] ganham `tipo` estável: 'contradicao')
 GET    /malhas/{name}/execucao → + eventos de nó (#no:*) + malha_concluida
 PUT    /malhas/{name}/layout → aceita entradas "no:{id}" (grava etl_malha_no.layout_*)
+POST   /malhas/{name}/disparo  {data_referencia?, dry_run?}   (F15 — §8.1)
 ```
+
+**`POST /malhas/{name}/disparo` — disparo MANUAL da malha (F15).** Desvio
+consciente registrado: **não estava no §10-F15 original** — entrou pelo plano
+de fases da execução, e é implementado como **reuso puro dos primitivos**
+(princípio 1 continua de pé: nenhum executor novo). O endpoint dispara as
+RAÍZES ligadas ao Início — o mesmo gesto do botão "rodar pipeline" da tela
+Pipelines, repetido por raiz, pelo MESMO proxy REST (`routers.airflow`) — e a
+cascata anda pelo push da F3. Permissão `acao_executar` (a do trigger de
+pipeline), não `PERM_EDITAR`.
+
+```
+dry_run: → {data_referencia, raizes:[{pipeline, active, dag_criada,
+                                      tem_dependencia, corridas_na_data}],
+            avisos:[{no, nivel, tipo?, mensagem}]}
+write:   → {ok, data_referencia, disparadas:[{pipeline, dag_run_id}],
+            falhas:[{pipeline, erro}], avisos:[...]}
+conf do trigger (schema de montar_conf, §7 da retomada):
+   data_referencia = o ODATE (herdado pela cadeia — o filho NÃO recalcula)
+   dia_operacional = HOJE (F3: manual julga HOJE)
+   disparado_por   = "malha:{nome} ({matricula})"   ← auditoria
+run_id: "manual__{ODATE}__{pipeline}__{carimbo}"  (origem F3 = 'manual')
+```
+
+Regras que o gesto obedece:
+- **ODATE default = a MESMA régua do `GET /execucao`** (virada GLOBAL). Usar a
+  virada da malha aqui faria o painel mostrar D e o disparo carimbar D+1 no
+  mesmo minuto — divergência tela×motor. O front sempre manda a data EXIBIDA.
+- **Erro POR RAIZ**: uma raiz recusada (404 = DAG não publicada, 409, rede) não
+  impede as outras; `ok=false` com a lista nomeada.
+- **Avisos honestos antes de confirmar** (o dry_run é a confirmação do §7.2):
+  DAG não publicada · pipeline inativo · malha inativa (observadores mudos) ·
+  **raiz com dependência** (o trigger manual não consulta `liberado()` — a
+  corrida parte por cima do predecessor) · **corrida já existente na data** (o
+  claim protege os DEPENDENTES, não a raiz disparada à mão).
+- Sem a 075 → 503; malha sem Início ou Início sem raízes → 422 instrutivo.
 
 Permissões: as mesmas da malha (`tela_malha` + `PERM_EDITAR` nas escritas). Degradação sem a 075: GET com `migration_075_pendente` (nós/arestas vazios, resto da malha intacto), escrita de nó/aresta 503 com instrução — o padrão literal das guardas 070/067/074 do arquivo.
 
@@ -317,14 +378,14 @@ Permissões: as mesmas da malha (`tela_malha` + `PERM_EDITAR` nas escritas). Deg
 - **Validação:** pytest + cenário vivo: 2 raízes de teste disparando NO MESMO TICK do scheduler no dev e empurrando a cadeia (SELECT em `etl_pipeline_execucao` com o mesmo ODATE). PR: `feat: malha — início e agendamento da malha`.
 
 ### F14 — Guardiã: Notificação e Fim
-- **Entrega:** responsabilidade 5 no ciclo (após o fechamento §6/F4, try/except por nó); `pipelines_todos_sucesso` + `nos_observadores` em `dags/utils/dependencias.py`; janela {D, D−1}; tipos `MALHA_NOTIFICACAO`/`MALHA_CONCLUIDA` no `ESTILO` do card; endpoint de execução devolvendo eventos `#no:*` e `malha_concluida`; malha inativa ignorada.
+- **Entrega:** responsabilidade 5 no ciclo (após o fechamento §6/F4, try/except por nó); `pipelines_todos_sucesso` + `nos_observadores` em `dags/utils/dependencias.py`; janela {D, D−1}; tipos `MALHA_NOTIFICACAO`/`MALHA_CONCLUIDA` no `ESTILO` do card; endpoint de execução devolvendo eventos `#no:*` e `malha_concluida`; malha inativa ignorada. **Migration 076** (desvio consciente do "zero DDL em eventos" do §5): derruba `FK_dep_evento_pipeline`, que exigia pipeline real e recusava o marcador `#no:{id}` — sem ela NENHUM evento de nó nasce, em silêncio.
 - **Aceite:** condição fechada → 1 evento + card na fila; 200 ciclos = zero duplicata (chave); upstream vazio ou virada divergente → skip com log, zero evento; malha saudável incompleta → zero evento (anti-ruído); conclusão pós-meia-noite pega por D−1.
 - **Validação:** pytest (banco stubado) + cenários vivos com trigger manual da guardiã (o harness da F4). **Deploy desta fase é só `dags/` — sem regerar DAG nenhuma** (factory intocado, padrão F4). PR: `feat: malha — notificação e fim pela guardiã`.
 
-### F15 — Execução, manual e smoke consolidado
-- **Entrega:** camada de execução dos nós (§8) + banner "malha concluída"; `docs/MANUAL_USUARIO.md` (seção "Componentes de malha", com o exemplo ondas+Aguarde e a semântica "todas com sucesso"); release note; roteiro de smoke de produção executável sem contexto.
-- **Aceite:** modo Execução mostra Aguarde satisfeito/aguardando/bloqueado coerente com os SELECTs; banner na data concluída; roteiro executável por outra pessoa.
-- **Validação:** tsc/eslint/build baseline + smoke vivo consolidado (o §14 inteiro re-executado). PR: `feat: malha — execução dos componentes e manual`.
+### F15 — Execução, disparo manual, manual e smoke consolidado
+- **Entrega:** camada de execução dos nós (§8 — Início por STATUS, Aguarde, observadores com o "sem entradas" honesto) + banner "malha concluída"; **`POST /malhas/{name}/disparo`** — o disparo manual da malha (§8.1 + contrato no §9), acrescentado ao escopo pelo plano de fases da execução e implementado como reuso puro dos primitivos (trigger REST da casa + conf de herança + push; **nenhum executor novo**, princípio 1 intacto); `docs/MANUAL_USUARIO.md` §3.6 (seção "Componentes de malha", com o exemplo ondas+Aguarde e a semântica "todas com sucesso"); release note; roteiro de smoke de produção executável sem contexto.
+- **Aceite:** modo Execução mostra Aguarde satisfeito/aguardando/bloqueado coerente com os SELECTs; Início verde SÓ com todas as raízes em SUCESSO (sábado com tudo PULADO não acende); observador sem upstream diz que não emite; banner na data concluída; disparo manual parte as raízes com o MESMO ODATE e a cascata anda pelo push, com o que ele atropela dito ANTES; roteiro executável por outra pessoa.
+- **Validação:** pytest (endpoint de disparo: raízes certas, ODATE, avisos, erro por raiz) + tsc/eslint/build baseline + smoke vivo consolidado (o §14 inteiro re-executado). PR: `feat: malha — execução dos componentes e manual`.
 
 Revisão adversarial antes de cada PR (regra da casa — o histórico desta spec é o argumento).
 
@@ -403,4 +464,4 @@ Revisão adversarial antes de cada PR (regra da casa — o histórico desta spec
 | 15. Ciclo sobre o grafo expandido, mensagem única | defeito 3 do QA renascendo pela expansão; texto cliente≠servidor |
 | 16. Zero mudança no factory e no predicado | regeração em massa desnecessária; a classe inteira da reversão |
 
-**Arquivos tocados na implementação:** `sql/migrations/075_malha_nos.sql` (nova), `api/routers/malhas.py`, `api/routers/pipelines.py` (proteção de assinada), `api/services/malha_nos.py` (novo, port), `api/services/dependencias.py`, `dags/utils/malha_nos.py` (novo, canônico puro), `dags/utils/dependencias.py` (funções §5), `dags/etl_dependencia_guardia.py` (responsabilidade 5), `dags/utils/ds_teams.py` (2 tipos no `ESTILO`), `ui-react/src/components/malhas/` (nós novos + MalhaEditor + statusExecucao), `docs/MANUAL_USUARIO.md`, `tests/`. **`dags/etl_dag_factory.py` não é tocado.** Deploy: 075 na 6c → api + front (F10–F13, sem regerar DAGs — o carimbo/republicação cobre os afetados) → `dags/` na F14 (guardiã, sem force_all) → smoke §14 começando por uma malha de teste, não pela produção inteira.
+**Arquivos tocados na implementação:** `sql/migrations/075_malha_nos.sql` (nova), `api/routers/malhas.py`, `api/routers/pipelines.py` (proteção de assinada), `api/services/malha_nos.py` (novo, port), `api/services/dependencias.py`, `dags/utils/malha_nos.py` (novo, canônico puro), `dags/utils/dependencias.py` (funções §5), `dags/etl_dependencia_guardia.py` (responsabilidade 5), `dags/utils/ds_teams.py` (2 tipos no `ESTILO`), `ui-react/src/components/malhas/` (nós novos + MalhaEditor + statusExecucao), `docs/MANUAL_USUARIO.md`, `tests/`. **`dags/etl_dag_factory.py` não é tocado.** Deploy: **075 E 076** na 6c (as duas — o prompt da 6c é padrão-NÃO, e pular a 076 deixa Notificação/Fim/banner mudos para sempre) → api + front (F10–F13/F15, sem regerar DAGs — o carimbo/republicação cobre os afetados) → `dags/` na F14 (guardiã, sem force_all) → smoke `docs/smoke-malha-componentes.md` (§14 consolidado) começando por uma malha de teste, não pela produção inteira.
