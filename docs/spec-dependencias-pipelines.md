@@ -40,9 +40,25 @@ Data: 2026-07-31 · Status: ✅ **Retomada F2–F6 COMPLETA NO CÓDIGO (PRs #243
 > mergeadas em 2026-08-02, com os cenários **EXECUTADOS** no ambiente dev
 > (suíte `docs/retomada-aceitacao.md`; harness `docs/retomada-harness-dev.md`).
 >
-> **Pendente: o deploy de produção**, nesta ordem consolidada:
-> 1. migrations **067/070–073** na etapa 6c do `deploy.sh`;
-> 2. deploy de `dags/` (factory nova, guardiã, utils);
+> ✅ **COMPONENTES DE MALHA COMPLETOS (2026-08-03):** as fases F10–F15
+> (`docs/malha-componentes-desenho.md`, PRs **#250–#255**) entregaram os quatro
+> componentes — Início, Aguarde, Notificação e Fim — como **açúcar de
+> compilação sobre este motor**: nenhum executor, sensor ou DAG-mestre novo. A
+> **aceitação final** (matriz E1–E15 do §14 + smoke integrado com malha criada
+> do zero + validação do roteiro de produção) passou **inteira** no ambiente
+> dev em 2026-08-03. Migrations novas: **075** (nós e arestas do desenho) e
+> **076** (derruba a `FK_dep_evento_pipeline` — sem isso o marcador `#no:{id}`
+> dos eventos de Notificação/Fim não cabe na tabela).
+>
+> **Pendente: o deploy de produção do trem inteiro** (motor + malha +
+> componentes vão JUNTOS), nesta ordem consolidada:
+> 1. migrations **067, 070–076** na etapa 6c do `deploy.sh` — o prompt é
+>    padrão-**NÃO**, responder `s`. ⚠️ Se responder não, a feature sobe **muda**
+>    e o smoke ainda assim "passa" nos primeiros passos: a conferência que não
+>    mente é `SELECT COUNT(*) FROM sys.foreign_keys WHERE name =
+>    'FK_dep_evento_pipeline'` → tem de vir **0** (achado da aceitação final);
+> 2. deploy de `dags/` (factory nova, guardiã com os observadores de malha,
+>    utils) e da `api/` + front;
 > 3. **ANTES do force_all**, rodar a consulta de dimensionamento do CSV órfão
 >    (pipelines ativos com `depends_on` preenchido, por `schedule_type`) e
 >    tratar os órfãos — `sql/migrate.py` descarta PRINT (D40), o relatório não
@@ -57,7 +73,12 @@ Data: 2026-07-31 · Status: ✅ **Retomada F2–F6 COMPLETA NO CÓDIGO (PRs #243
 >    container e conferir `docker exec orquestra-api date` → `-03` (sem isso,
 >    o ODATE default da visão de execução nasce no dia seguinte entre 21h e
 >    meia-noite de Brasília — achado da revisão da F9);
-> 7. smoke §7 em produção, começando por um PAR de pipelines de teste.
+> 7. smoke §7 em produção (o motor), começando por um PAR de pipelines de
+>    teste; e **`docs/smoke-malha-componentes.md`** para os componentes —
+>    roteiro executável sem contexto, validado passo a passo no dev.
+>
+> ⚠️ No prompt do Airflow (rebuild da imagem), responder **N**: a factory e a
+> guardiã são código montado por bind-mount, não exigem imagem nova.
 
 ## 1. Visão
 
