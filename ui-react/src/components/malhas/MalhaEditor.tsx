@@ -1995,22 +1995,13 @@ function MalhaEditorInner({
             onNodeClick={(_, node) => realceFocarNo(node.id)}
             onEdgeClick={(_, edge) => realceFocarAresta(edge.id)}
             onPaneClick={() => realceLimpar()}
+            // O zoom por duplo clique do React Flow fica DESLIGADO
+            // (`zoomOnDoubleClick` abaixo): o `dblclicked` do d3-zoom
+            // interrompe a propagação no pane e, com a delegação de eventos do
+            // React 19, o gesto nunca chegava ao handler — o duplo clique
+            // anunciado na interface não disparava. Zoom segue pelos controles,
+            // pela roda e pelo atalho de teclado.
             onNodeDoubleClick={(_, node) => {
-              // ⚠️ ACHADO DA F3 (medido no dev, 2026-08-03): este callback
-              // NUNCA é chamado neste app. O React Flow liga `zoomOnDoubleClick`
-              // por padrão, e o `dblclicked` do d3-zoom (d3-zoom/src/zoom.js:311)
-              // chama `noevent(event)` — preventDefault + stopImmediatePropagation
-              // — no `.react-flow__pane`. Como o React 19 delega os eventos no
-              // container raiz, o `dblclick` morre no pane e nunca chega ao
-              // handler. Rastreado com listeners de bolha em toda a cadeia: o
-              // evento chega ao nó, chega ao pane e PARA ali.
-              // Consequência: o gesto abaixo (F13) está morto em main — o
-              // agendamento segue acessível pelo BOTÃO "Agendamento", que é
-              // por isso que ninguém notou. A F3 NÃO pendura gesto nenhum aqui
-              // (seria anunciar algo que não acontece); descer até as etapas é
-              // botão, no card e na barra. Conserto possível (fora do escopo
-              // desta fase, porque muda o canvas inteiro e os dois editores):
-              // `zoomOnDoubleClick={false}` no <ReactFlow>.
               // F13: duplo clique no Início abre o painel de agendamento —
               // o nó é a porta (Decisão 8); travado/sem 075 não abre.
               if (travado || nosIndisponiveis || !ehNo(node.id)) return
@@ -2019,6 +2010,7 @@ function MalhaEditorInner({
               }
             }}
             colorMode={colorMode}
+            zoomOnDoubleClick={false}
             fitView
             fitViewOptions={{ padding: 0.25 }}
             proOptions={{ hideAttribution: true }}
