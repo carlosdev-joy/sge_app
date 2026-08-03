@@ -143,3 +143,74 @@ def tabela_067(cur) -> bool:
     except Exception as e:
         log.warning("[DEP] checagem da tabela da migration 067 falhou: %s", e)
         return False
+
+
+# ── Assinatura de proveniência (F11 — origem_no da migration 075) ────────────
+# Helpers EXCLUSIVOS da árvore api/ (não são port de dags/): a assinatura é
+# proteção de ESCRITA (Decisão 4 do desenho de componentes — linha compilada
+# só se mexe pela malha dona) e o motor nunca a lê — `liberado()` continua
+# ignorando origem_no. Vivem aqui porque as TRÊS portas precisam da mesma
+# resposta e da MESMA mensagem: DELETE /dependencias (routers/malhas.py),
+# _gravar_dependencias do register (routers/pipelines.py) e o estado do modal
+# F5 (GET /pipelines/dependencias/estado) — e pipelines.py não pode importar
+# malhas.py (ciclo).
+
+def coluna_origem_no(cur) -> bool:
+    """True se etl_pipeline_dependencia.origem_no (migration 075) existe.
+    Best-effort no padrão dos guards de coluna (073/074): qualquer falha conta
+    como ausente e as portas se comportam como antes da F11."""
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_pipeline_dependencia', 'origem_no')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None)
+    except Exception as e:
+        log.warning("[DEP] checagem da coluna origem_no da migration 075 falhou: %s", e)
+        return False
+
+
+def assinatura(cur, pipeline: str, depende_de: str):
+    """Assinatura da linha (pipeline, depende_de, PIPELINE) na 067:
+    {"origem_no": id, "malha": nome} se ela foi COMPILADA por um nó de malha,
+    None se é manual ou não existe. Chamar só com coluna_origem_no True."""
+    cur.execute(
+        "SELECT d.origem_no, n.malha_name "
+        "FROM dbo.etl_pipeline_dependencia d "
+        "LEFT JOIN dbo.etl_malha_no n ON n.id = d.origem_no "
+        "WHERE d.pipeline_name = ? AND d.depende_de = ? AND d.tipo = 'PIPELINE'",
+        (pipeline, depende_de))
+    row = cur.fetchone()
+    if row is None or row[0] is None:
+        return None
+    return {"origem_no": int(row[0]),
+            "malha": (str(row[1]).strip() if row[1] else None)}
+
+
+def linhas_assinadas(cur, pipeline: str) -> dict:
+    """Linhas ASSINADAS do dependente: {casefold(depende_de): {"depende_de",
+    "origem_no", "malha"}}. É o que o replace-all do register consulta ANTES
+    do DELETE — remover uma delas por lá é 422 (Decisão 4), mantê-la na lista
+    preserva a assinatura intacta (nunca re-gravada sem origem_no)."""
+    cur.execute(
+        "SELECT d.depende_de, d.origem_no, n.malha_name "
+        "FROM dbo.etl_pipeline_dependencia d "
+        "LEFT JOIN dbo.etl_malha_no n ON n.id = d.origem_no "
+        "WHERE d.pipeline_name = ? AND d.tipo = 'PIPELINE' "
+        "AND d.origem_no IS NOT NULL",
+        (pipeline,))
+    out = {}
+    for r in cur.fetchall():
+        dep = str(r[0] or "").strip()
+        out[dep.casefold()] = {
+            "depende_de": dep,
+            "origem_no": int(r[1]),
+            "malha": (str(r[2]).strip() if r[2] else None)}
+    return out
+
+
+def msg_linha_assinada(pipeline, depende_de, malha, origem_no) -> str:
+    """Mensagem ÚNICA das três portas (Decisão 4): nomeia malha e nó donos e
+    instrui a porta certa. Texto compartilhado de propósito — divergir entre
+    as portas recriaria a classe cliente≠servidor que a F8 matou."""
+    return (f"A dependência '{pipeline}' → '{depende_de}' é compilada pelo "
+            f"Aguarde #{origem_no} da malha '{malha}' — edite pelo desenho da "
+            "malha (linha assinada só se mexe pela malha dona).")

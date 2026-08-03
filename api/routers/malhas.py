@@ -17,11 +17,12 @@ Endpoints:
   PUT    /malhas/{malha_name}/layout               — persiste posições dos nós (F8/F10)
   POST   /malhas/{malha_name}/nos                  — cria nó especial do desenho (F10)
   PATCH  /malhas/{malha_name}/nos/{no_id}          — config/layout do nó (F10)
-  DELETE /malhas/{malha_name}/nos/{no_id}          — exclui nó + as arestas dele (F10)
-  POST   /malhas/{malha_name}/arestas              — aresta de nó, gramática §2.1 (F10)
-  DELETE /malhas/{malha_name}/arestas/{aresta_id}  — remove aresta de nó (F10)
+  DELETE /malhas/{malha_name}/nos/{no_id}          — exclui nó + DESCOMPILA (F11; ?dry_run)
+  POST   /malhas/{malha_name}/arestas              — aresta de nó + COMPILA (F11; dry_run no body)
+  DELETE /malhas/{malha_name}/arestas/{aresta_id}  — remove aresta + RECOMPILA (F11; ?dry_run)
   POST   /dependencias                             — cria dependência REAL (F8)
-  DELETE /dependencias                             — remove dependência REAL (F8)
+  DELETE /dependencias                             — remove dependência REAL (F8;
+                                                     linha assinada → 422, F11/Decisão 4)
 
 F8: desenhar uma aresta no MalhaEditor É cadastrar a dependência GLOBAL em
 etl_pipeline_dependencia (migration 067) — a mesma tabela da F1, com as MESMAS
@@ -31,11 +32,23 @@ em duas malhas, a dependência aparece nas duas, porque é real nas duas.
 
 F10 (docs/malha-componentes-desenho.md): nós especiais do desenho — Início,
 Aguarde, Notificação e Fim (etl_malha_no/etl_malha_aresta, migration 075).
-NESTA fase os nós são SÓ desenho: nenhuma linha da 067 nasce deles — a
-compilação do Aguarde é a F11, o agendamento do Início é a F13 e os
-observadores (guardiã) são a F14. A gramática das arestas de nó (§2.1) e os
-avisos de desenho (§2.2) valem desde já; a aresta pipeline→pipeline continua
-sendo o F8 acima (o CHECK CK_malha_ar_tem_no da 075 declara isso no modelo).
+A gramática das arestas de nó (§2.1) e os avisos de desenho (§2.2) valem
+desde a F10; a aresta pipeline→pipeline continua sendo o F8 acima (o CHECK
+CK_malha_ar_tem_no da 075 declara isso no modelo).
+
+F11 (desenho §3/§7): o Aguarde ganha EFEITO — cada gesto que o envolve
+compila a expansão N×M (dags/utils/malha_nos.py via o port em services) para
+linhas NORMAIS da 067, ASSINADAS com origem_no, com espelho CSV depends_on e
+carimbo dag_config_pendente_em na MESMA transação (Decisão 7: incremental por
+gesto, o desenho É o compilado). dry_run devolve o efeito §7.2 sem gravar; o
+write RECOMPUTA (a autoridade é o estado corrente). Descompilar remove SÓ o
+que a expansão perdeu — linha manual coincidente nunca é adotada nem removida
+(Decisão 5) e linha que a expansão de OUTRA malha também produz é TRANSFERIDA
+(re-assinada, §7.3), nunca derrubada em silêncio. O ciclo passa a ser validado
+sobre o conjunto PÓS-expansão com o BFS canônico da F1 e a mensagem literal
+compartilhada (Decisão 15); o ciclo topológico do desenho segue de retaguarda
+para o ciclo só-de-nós, que não compila nada. O agendamento do Início é a F13
+e os observadores (guardiã) são a F14.
 
 Degradação em deploy parcial (API nova + migration 070 ainda não aplicada):
 cada endpoint checa UMA vez se as tabelas existem; leitura da lista degrada
@@ -68,7 +81,11 @@ from services import dependencias as deps_svc
 # a mensagem de ciclo do servidor é ESPELHADA no cliente pelo MalhaEditor, e
 # duas implementações divergiriam). Sem ciclo de import: pipelines.py não
 # importa malhas — mesmo padrão de admin.py/copias.py importando de routers.X.
-from routers.pipelines import _check_circular, _validar_existencia, deduplicar
+# _check_circular_grafo (F11): o NÚCLEO do BFS com adjacência injetada — o
+# ciclo pós-expansão do compilador (Decisão 15) roda o MESMO algoritmo e emite
+# a MESMA mensagem literal do cadastro da F1.
+from routers.pipelines import (_check_circular, _check_circular_grafo,
+                               _validar_existencia, deduplicar)
 
 log = logging.getLogger("orquestra-api")
 
@@ -214,15 +231,10 @@ def _exigir_tabelas_075(cur, conn):
 
 def _coluna_origem_no(cur) -> bool:
     """True se etl_pipeline_dependencia.origem_no (assinatura da 075) existe.
-    Guard de COLUNA no padrão de _coluna_074: COL_LENGTH, best-effort —
-    qualquer falha conta como ausente e o GET usa o SQL de sempre."""
-    try:
-        cur.execute("SELECT COL_LENGTH('dbo.etl_pipeline_dependencia', 'origem_no')")
-        row = cur.fetchone()
-        return bool(row and row[0] is not None)
-    except Exception as e:
-        log.warning("[MALHA] checagem da coluna origem_no da migration 075 falhou: %s", e)
-        return False
+    Implementação extraída para services.dependencias na F11 (as TRÊS portas
+    da Decisão 4 precisam do mesmo guard) — o alias local preserva os call
+    sites, como _tabela_067."""
+    return deps_svc.coluna_origem_no(cur)
 
 
 def _nos_da_malha(cur, malha) -> list:
@@ -542,6 +554,335 @@ def criticidade_agregada(criticidades):
         if rank > melhor_rank:
             melhor, melhor_rank = c, rank
     return melhor
+
+
+# ── Compilador do Aguarde (F11 — desenho §3/§7) ──────────────────────────────
+# O Aguarde é açúcar de compilação: a expansão N×M (canônico em dags/utils/
+# malha_nos.py, port em services) vira linhas NORMAIS da 067 assinadas com
+# origem_no. O diff de cada gesto é calculado sobre o estado PROSPECTIVO do
+# desenho × o estado CORRENTE da 067 — dry_run devolve o efeito §7.2 sem
+# gravar; o write recomputa e aplica na MESMA transação (espelho CSV +
+# carimbo). Nada aqui é lido pelo motor: quem libera segue sendo liberado().
+
+
+def _efeito_vazio() -> dict:
+    """O bloco `efeito` do §7.2 com todas as chaves — o schema é contrato
+    (o modal da F12 itera as listas): gesto sem efeito devolve listas vazias,
+    nunca chave ausente. `agendamentos` é preenchido pela F13 (Início)."""
+    return {"dependencias_criar": [], "dependencias_remover": [],
+            "dependencias_transferir": [], "ja_existentes_manuais": [],
+            "agendamentos": [], "republicar": []}
+
+
+def _nos_globais(cur) -> dict:
+    """Mapa global id → {"malha", "tipo"} de etl_malha_no: é o que diz de QUEM
+    é cada linha assinada da 067 (a ponte da Decisão 1) e quais OUTRAS malhas
+    são candidatas na transferência (§7.3)."""
+    cur.execute("SELECT id, malha_name, tipo FROM dbo.etl_malha_no")
+    return {int(r[0]): {"malha": (str(r[1]) or "").strip(),
+                        "tipo": (str(r[2]) or "").strip().lower()}
+            for r in cur.fetchall()}
+
+
+def _linhas_067(cur) -> dict:
+    """Todas as linhas tipo PIPELINE da 067 COM a assinatura, num SELECT só
+    (agregação em Python — o padrão do arquivo): {(dep_cf, pred_cf):
+    {"dependente", "predecessor", "origem_no"}}. Chamar só com a coluna
+    origem_no presente (o chamador guarda)."""
+    cur.execute(
+        "SELECT pipeline_name, depende_de, origem_no "
+        "FROM dbo.etl_pipeline_dependencia WHERE tipo = 'PIPELINE'")
+    out = {}
+    for r in cur.fetchall():
+        dep = str(r[0] or "").strip()
+        pred = str(r[1] or "").strip()
+        out[(dep.casefold(), pred.casefold())] = {
+            "dependente": dep, "predecessor": pred,
+            "origem_no": int(r[2]) if r[2] is not None else None}
+    return out
+
+
+def _pares_expansao(dependencias) -> dict:
+    """Conjunto compilado {(dep, pred, no_id)} → pares por chave CI:
+    {(dep_cf, pred_cf): {"dependente", "predecessor", "nos": set[int]}}.
+    Dois Aguardes da mesma malha podem produzir o MESMO par (a 067 tem uma
+    linha só por par — ux_dep): o dono é UM nó por vez; o menor id é o
+    escolhido determinístico quando a linha nasce."""
+    pares: dict = {}
+    for dependente, predecessor, no_id in dependencias:
+        ch = (dependente.casefold(), predecessor.casefold())
+        item = pares.setdefault(ch, {"dependente": dependente,
+                                     "predecessor": predecessor, "nos": set()})
+        item["nos"].add(no_id)
+    return pares
+
+
+def _dag_criada(cur, pipeline) -> bool:
+    """dag_criada do pipeline — decide quem entra em `republicar` (o carimbo
+    só existe para DAG publicada; pipeline nunca publicado não tem versão
+    velha rodando — a mesma regra do WHERE dag_criada = 1 da 073)."""
+    cur.execute("SELECT CAST(dag_criada AS INT) FROM dbo.etl_pipeline "
+                "WHERE pipeline_name = ?", (pipeline,))
+    row = cur.fetchone()
+    return bool(row and int(row[0] or 0) == 1)
+
+
+def _diff_compilacao(cur, malha, nos_l, arestas_l):
+    """O diff §7.2 do gesto: expansão do desenho PROSPECTIVO da malha × estado
+    corrente da 067. Devolve o dict interno (itens carregam origem_no para o
+    apply; a versão pública sai de _efeito_publico):
+
+      criar      — pares novos, assinados com o menor nó produtor
+      manuais    — par desejado que JÁ EXISTE manual (origem_no NULL): não é
+                   adotado nem re-criado (Decisão 5 — a linha continua do
+                   operador; a exclusão do nó não a leva)
+      transferir — linha assinada cujo nó dono deixou de produzi-la mas que a
+                   expansão (desta malha OU de outra, §7.3) ainda produz:
+                   re-assinada, nunca removida — dentro da própria malha isso
+                   também é obrigatório, senão a FK da 075 travaria o DELETE
+                   do nó e a proveniência mentiria
+      remover    — linha assinada por nó DESTA malha que expansão nenhuma
+                   produz mais
+      avisos     — par desejado já compilado por OUTRA malha (Decisão 4: não
+                   re-assinado; quem manda é a dona — se ela descompilar, a
+                   transferência §7.3 o traz para cá)
+      republicar — dependentes de criar/remover com dag_criada=1
+      pares_pos  — o conjunto PÓS-gesto {(dep_cf,pred_cf): (dep, pred)} — a
+                   base do ciclo da Decisão 15 e do preview_expandido (F12)
+    """
+    expansao = malha_nos_svc.expandir(nos_l, arestas_l)
+    desejado = _pares_expansao(expansao["dependencias"])
+    nos_info = _nos_globais(cur)
+    linhas = _linhas_067(cur)
+    malha_cf = malha.casefold()
+
+    def _malha_do_no(no_id):
+        info = nos_info.get(no_id)
+        return (info["malha"] if info else "").casefold()
+
+    criar, remover, transferir, manuais, avisos = [], [], [], [], []
+
+    # 1) pares que a expansão PROSPECTIVA desta malha produz
+    for ch in sorted(desejado):
+        item = desejado[ch]
+        linha = linhas.get(ch)
+        no_alvo = min(item["nos"])
+        if linha is None:
+            criar.append({"dependente": item["dependente"],
+                          "predecessor": item["predecessor"],
+                          "origem_no": no_alvo})
+        elif linha["origem_no"] is None:
+            manuais.append({"dependente": linha["dependente"],
+                            "predecessor": linha["predecessor"]})
+        elif _malha_do_no(linha["origem_no"]) == malha_cf:
+            if linha["origem_no"] not in item["nos"]:
+                # o nó dono saiu do desenho (ou perdeu o par), mas OUTRO nó
+                # desta malha ainda o produz: re-assina — transferência dentro
+                # da própria malha
+                transferir.append({"dependente": linha["dependente"],
+                                   "predecessor": linha["predecessor"],
+                                   "para_malha": malha, "para_no": no_alvo,
+                                   "origem_no": linha["origem_no"]})
+            # senão: já compilada por este desenho — nada a fazer
+        else:
+            dona = nos_info.get(linha["origem_no"], {})
+            avisos.append(
+                f"'{linha['dependente']}' → '{linha['predecessor']}' já "
+                f"compilada pelo Aguarde #{linha['origem_no']} da malha "
+                f"'{dona.get('malha')}' — não re-assinada (a linha continua "
+                "da malha dona; se ela descompilar, a assinatura transfere)")
+
+    # 2) linhas assinadas por nós DESTA malha que a expansão nova não produz:
+    #    transferência para OUTRA malha que as produza (§7.3) ou remoção
+    cache_outras: dict = {}
+    for ch in sorted(linhas):
+        linha = linhas[ch]
+        if linha["origem_no"] is None or ch in desejado:
+            continue
+        if _malha_do_no(linha["origem_no"]) != malha_cf:
+            continue
+        destino = _transferencia_externa(cur, ch, malha_cf, nos_info,
+                                         cache_outras)
+        if destino is not None:
+            transferir.append({"dependente": linha["dependente"],
+                               "predecessor": linha["predecessor"],
+                               "para_malha": destino[0], "para_no": destino[1],
+                               "origem_no": linha["origem_no"]})
+        else:
+            remover.append({"dependente": linha["dependente"],
+                            "predecessor": linha["predecessor"],
+                            "origem_no": linha["origem_no"]})
+
+    # 3) republicar: dependentes afetados COM DAG publicada (transferência não
+    #    muda o grafo do motor — só a proveniência — e fica de fora)
+    republicar = []
+    for nome in sorted({i["dependente"] for i in criar + remover},
+                       key=str.casefold):
+        if _dag_criada(cur, nome):
+            republicar.append(nome)
+
+    # 4) o conjunto PÓS-gesto (067 − remoções ∪ adições) — Decisão 15 e preview
+    pares_pos = {ch: (linha["dependente"], linha["predecessor"])
+                 for ch, linha in linhas.items()}
+    for item in remover:
+        pares_pos.pop((item["dependente"].casefold(),
+                       item["predecessor"].casefold()), None)
+    for item in criar:
+        pares_pos[(item["dependente"].casefold(),
+                   item["predecessor"].casefold())] = (item["dependente"],
+                                                       item["predecessor"])
+
+    return {"criar": criar, "remover": remover, "transferir": transferir,
+            "manuais": manuais, "avisos": avisos, "republicar": republicar,
+            "pares_pos": pares_pos}
+
+
+def _transferencia_externa(cur, ch, malha_cf, nos_info, cache):
+    """Outra malha cuja expansão produz o par `ch` (§7.3): devolve
+    (malha_oficial, no_id) ou None. Só malhas com nó Aguarde entram; a busca é
+    determinística (malhas em ordem CI, menor nó produtor) e o resultado por
+    malha é cacheado dentro do gesto — malhas são dezenas, não milhares."""
+    candidatas = sorted({info["malha"] for info in nos_info.values()
+                         if info["tipo"] == "aguarde"
+                         and info["malha"].casefold() != malha_cf},
+                        key=str.casefold)
+    for outra in candidatas:
+        if outra not in cache:
+            expansao = malha_nos_svc.expandir(_nos_da_malha(cur, outra),
+                                              _arestas_da_malha(cur, outra))
+            cache[outra] = _pares_expansao(expansao["dependencias"])
+        pares = cache[outra]
+        if ch in pares:
+            return outra, min(pares[ch]["nos"])
+    return None
+
+
+def _erros_ciclo_canonico(diff) -> list:
+    """Ciclo sobre o conjunto PÓS-expansão do gesto (Decisão 15), com o BFS
+    canônico da F1 (_check_circular_grafo) e a MESMA mensagem literal — o
+    defeito 3 do QA não renasce pela porta da expansão: um aguarde inocente
+    pode fechar A→…→A por linhas que o gesto cria aos pares."""
+    if not diff["criar"]:
+        return []
+    adjacencia: dict = {}
+    for dependente, predecessor in diff["pares_pos"].values():
+        adjacencia.setdefault(dependente.casefold(), []).append(predecessor)
+    por_dependente: dict = {}
+    for item in diff["criar"]:
+        por_dependente.setdefault(item["dependente"], []).append(item["predecessor"])
+    erros = []
+    for dependente in sorted(por_dependente, key=str.casefold):
+        try:
+            _check_circular_grafo(
+                dependente, sorted(por_dependente[dependente], key=str.casefold),
+                lambda nome: adjacencia.get(nome.casefold(), []))
+        except ValueError as e:
+            erros.append(str(e))
+    return erros
+
+
+def _aplicar_compilacao(cur, diff, criado_por):
+    """Aplica o diff na transação ABERTA do gesto (quem commita é o endpoint —
+    uma transação só, rollback explícito): transferências primeiro (UPDATE de
+    assinatura — obrigatórias ANTES do DELETE do nó, §1.4), depois remoções e
+    criações, cada uma com o espelho CSV do dependente na MESMA transação (o
+    mesmíssimo _espelho_csv das portas F5/F8 — nunca uma cópia), e por fim o
+    carimbo de republicação dos afetados (WHERE dag_criada = 1)."""
+    for item in diff["transferir"]:
+        cur.execute(
+            "UPDATE dbo.etl_pipeline_dependencia SET origem_no = ? "
+            "WHERE pipeline_name = ? AND depende_de = ? AND tipo = 'PIPELINE'",
+            (item["para_no"], item["dependente"], item["predecessor"]))
+    afetados = {i["dependente"] for i in diff["criar"]}
+    for item in diff["remover"]:
+        # DELETE pela ASSINATURA: linha manual coincidente (origem_no NULL)
+        # nunca é atingida — Decisão 5, garantida no próprio WHERE.
+        cur.execute(
+            "DELETE FROM dbo.etl_pipeline_dependencia "
+            "WHERE pipeline_name = ? AND depende_de = ? AND tipo = 'PIPELINE' "
+            "AND origem_no = ?",
+            (item["dependente"], item["predecessor"], item["origem_no"]))
+        if (cur.rowcount or 0) > 0:
+            # Espelho e carimbo SÓ para remoção EFETIVADA (achado da revisão):
+            # rowcount 0 = gesto concorrente transferiu/limpou a assinatura
+            # entre o cômputo do diff e o apply — tirar o predecessor do CSV
+            # com a linha da 067 ainda viva recriaria a divergência que a F6
+            # existe para impedir.
+            _espelho_csv(cur, item["dependente"], item["predecessor"], "remove")
+            afetados.add(item["dependente"])
+    for item in diff["criar"]:
+        cur.execute(
+            "INSERT INTO dbo.etl_pipeline_dependencia "
+            "(pipeline_name, depende_de, tipo, criado_por, origem_no) "
+            "VALUES (?, ?, 'PIPELINE', ?, ?)",
+            (item["dependente"], item["predecessor"],
+             (criado_por or "")[:100] or None, item["origem_no"]))
+        _espelho_csv(cur, item["dependente"], item["predecessor"], "add")
+    for nome in sorted(afetados, key=str.casefold):
+        _ligar_dag_config_pendente(cur, nome)
+
+
+def _efeito_publico(diff) -> dict:
+    """O bloco `efeito` do contrato §7.2 (chaves literais; origem_no interno
+    fica de fora — a proveniência pública é a do transferir)."""
+    if diff is None:
+        return _efeito_vazio()
+    return {
+        "dependencias_criar": [
+            {"dependente": i["dependente"], "predecessor": i["predecessor"]}
+            for i in diff["criar"]],
+        "dependencias_remover": [
+            {"dependente": i["dependente"], "predecessor": i["predecessor"]}
+            for i in diff["remover"]],
+        "dependencias_transferir": [
+            {"dependente": i["dependente"], "predecessor": i["predecessor"],
+             "para_malha": i["para_malha"], "para_no": i["para_no"]}
+            for i in diff["transferir"]],
+        "ja_existentes_manuais": list(diff["manuais"]),
+        "agendamentos": [],          # F13 (Início) — chave presente por contrato
+        "republicar": list(diff["republicar"]),
+    }
+
+
+def _avisos_gesto(nos_l, arestas_l, diff) -> list:
+    """Avisos do gesto = estruturais do desenho (§2.2, formato F10) + os do
+    COMPILADOR (par já compilado por outra malha — Decisão 4), no MESMO
+    formato {"no", "nivel", "mensagem"} para o toast/banner da F12 renderizar
+    uma lista só (aviso de compilação não pertence a um nó do desenho:
+    no=None)."""
+    avisos = _avisos_desenho(nos_l, arestas_l)
+    for msg in (diff["avisos"] if diff else []):
+        avisos.append({"no": None, "nivel": "leve", "mensagem": msg})
+    return avisos
+
+
+def _preview_expandido(diff) -> list:
+    """O conjunto PÓS-gesto como pares {pipeline_name, depende_de} — ADITIVO ao
+    §7.2, é sobre ele que o espelho client-side do ciclo (criaCiclo, F12) roda
+    (§3.3: cliente avisa antes, servidor é a autoridade, texto idêntico)."""
+    if diff is None:
+        return []
+    return [{"pipeline_name": dep, "depende_de": pred}
+            for dep, pred in sorted(diff["pares_pos"].values(),
+                                    key=lambda p: (p[0].casefold(),
+                                                   p[1].casefold()))]
+
+
+def _exigir_compilacao(cur, conn):
+    """Gesto que COMPILA (envolve Aguarde) precisa da 067 e da coluna de
+    assinatura: sem elas não existe 'gravar sem assinar' honesto — 503 com a
+    migration certa, no padrão das guardas do arquivo."""
+    _exigir_tabela_067(cur, conn)
+    if not _coluna_origem_no(cur):
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=503, detail=_MSG_SEM_075)
+
+
+def _descompilacao_possivel(cur) -> bool:
+    """Gesto que só DESCOMPILA (remover aresta/nó): sem 067 ou sem a coluna de
+    assinatura não EXISTE linha compilada — o gesto segue como na F10, com
+    diff vazio (deploy parcial não trava a limpeza do desenho)."""
+    return _tabela_067(cur) and _coluna_origem_no(cur)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -1112,7 +1453,13 @@ def add_membro(malha_name: str, body: dict = Body(default={}),
 def remove_membro(malha_name: str, pipeline_name: str,
                   _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Remove um pipeline da malha (só o vínculo — o pipeline continua
-    existindo, e a dependência global da 067 NÃO é tocada aqui)."""
+    existindo, e a dependência global da 067 NÃO é tocada aqui).
+
+    F11 (§7.3): membro LIGADO a componente do desenho é recusado com 422 —
+    remover o membro por baixo do desenho deixaria arestas apontando para um
+    não-membro. Desligar primeiro (excluir a aresta/nó) é o gesto honesto,
+    com o diff da descompilação dito lá. Sem a 075 (deploy parcial), o
+    comportamento é o de sempre — não existe desenho para proteger."""
     conn = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -1122,9 +1469,22 @@ def remove_membro(malha_name: str, pipeline_name: str,
             cur.close(); conn.close()
             raise HTTPException(status_code=404,
                                 detail=f"Malha não encontrada: '{malha_name}'")
+        nome = (pipeline_name or "").strip()
+        if _tabelas_075(cur):
+            cur.execute(
+                "SELECT 1 FROM dbo.etl_malha_aresta WHERE malha_name = ? "
+                "AND (origem_pipeline = ? OR destino_pipeline = ?)",
+                (malha, nome, nome))
+            if cur.fetchone():
+                _fechar_silencioso(conn)
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"'{nome}' está ligado a componente(s) do desenho "
+                           f"da malha '{malha}' — desligue-o dos componentes "
+                           "primeiro (exclua as arestas dele no diagrama).")
         cur.execute(
             "DELETE FROM dbo.etl_malha_pipeline WHERE malha_name = ? AND pipeline_name = ?",
-            (malha, (pipeline_name or "").strip()))
+            (malha, nome))
         if (cur.rowcount or 0) == 0:
             _fechar_silencioso(conn)
             raise HTTPException(
@@ -1354,18 +1714,21 @@ def update_no(malha_name: str, no_id: int, body: dict = Body(default={}),
 
 
 @router.delete("/malhas/{malha_name}/nos/{no_id}", tags=["malhas"])
-def remove_no(malha_name: str, no_id: int,
+def remove_no(malha_name: str, no_id: int, dry_run: bool = False,
               _auth: dict = Depends(require_perm(PERM_EDITAR))):
-    """Exclui um nó do desenho, removendo PRIMEIRO as arestas dele na MESMA
-    transação — a FK NO ACTION da 075 (§1.3/§1.4) não deixa outra ordem: um
-    DELETE de nó por SQL direto com arestas penduradas falha alto, nunca leva
-    desenho junto em silêncio.
+    """Exclui um nó do desenho — gesto destrutivo (§7.3): a MESMA transação
+    DESCOMPILA as linhas assinadas do nó (remove com espelho CSV + carimbo, ou
+    TRANSFERE a assinatura quando a expansão de outra malha — ou de outro nó
+    desta — ainda produz o par), remove as arestas do nó e o nó, nesta ordem.
+    A FK NO ACTION da 075 (§1.3/§1.4) não deixa ordem outra: um DELETE de nó
+    por SQL direto com arestas ou assinaturas penduradas falha alto, nunca
+    leva desenho ou dependência junto em silêncio.
 
-    FRONTEIRA F10/F11: nesta fase nós não têm linhas ASSINADAS na 067 (a
-    compilação ainda não existe), então não há descompilação — na F11 este
-    gesto ganha dry_run e o efeito §7.3 (remover/transferir linhas assinadas
-    entre malhas); o Início assinado (raiz vira on_demand) é a F13. As FKs
-    origem_no/agenda_no garantem que essa ordem também será obrigatória lá."""
+    ?dry_run=true devolve o efeito §7.2 sem gravar. A recompilação pode
+    CRIAR linhas (067 divergida do desenho) — o ciclo canônico da Decisão 15
+    vale aqui também: dry_run devolve em `erros`, write é 422. O Início
+    assinado (raiz vira on_demand) é a F13 — a FK agenda_no garantirá a
+    mesma ordem lá."""
     conn = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -1378,19 +1741,53 @@ def remove_no(malha_name: str, no_id: int,
                                 detail=f"Malha não encontrada: '{malha_name}'")
         cur.execute("SELECT id, tipo FROM dbo.etl_malha_no "
                     "WHERE id = ? AND malha_name = ?", (no_id, malha))
-        if cur.fetchone() is None:
+        row = cur.fetchone()
+        if row is None:
             _fechar_silencioso(conn)
             raise HTTPException(status_code=404,
                                 detail=f"Nó {no_id} não existe na malha '{malha}'")
+        tipo_no = (row[1] or "").strip().lower()
+        nos_l = _nos_da_malha(cur, malha)
+        arestas = _arestas_da_malha(cur, malha)
+        nos_prospectivos = [n for n in nos_l if n["id"] != no_id]
+        prospectivas = [a for a in arestas
+                        if a["origem_no"] != no_id and a["destino_no"] != no_id]
+        # Só a exclusão de AGUARDE muda compilação: pela gramática §2.1 nenhum
+        # outro tipo entra no upstream nem nas saídas de um Aguarde.
+        diff, erros = None, []
+        if tipo_no == "aguarde" and _descompilacao_possivel(cur):
+            diff = _diff_compilacao(cur, malha, nos_prospectivos, prospectivas)
+            # A recompilação (Decisão 7) pode conter CRIAÇÕES quando a 067
+            # divergiu do desenho (achado da revisão: linha manual apagada +
+            # aresta inversa criada no vão) — criação passa pelo MESMO ciclo
+            # canônico do add, senão a remoção recriaria o par fechando A↔D.
+            erros = _erros_ciclo_canonico(diff)
+
+        if dry_run:
+            avisos = _avisos_gesto(nos_prospectivos, prospectivas, diff)
+            cur.close(); conn.close()
+            return {"efeito": _efeito_publico(diff), "avisos": avisos,
+                    "erros": erros,
+                    "preview_expandido": _preview_expandido(diff)}
+        if erros:
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=422, detail=erros[0])
+
+        if diff is not None:
+            criado_por = None
+            if isinstance(_auth, dict):
+                criado_por = (str(_auth.get("matricula") or "").strip() or None)
+            # Descompila ANTES do DELETE do nó — com linha assinada pendurada
+            # a FK FK_dep_origem_no derrubaria o DELETE (a ordem do §1.4).
+            _aplicar_compilacao(cur, diff, criado_por)
         cur.execute("DELETE FROM dbo.etl_malha_aresta "
                     "WHERE origem_no = ? OR destino_no = ?", (no_id, no_id))
         arestas_removidas = max(cur.rowcount or 0, 0)
         cur.execute("DELETE FROM dbo.etl_malha_no WHERE id = ?", (no_id,))
-        avisos = _avisos_desenho(_nos_da_malha(cur, malha),
-                                 _arestas_da_malha(cur, malha))
+        avisos = _avisos_gesto(nos_prospectivos, prospectivas, diff)
         conn.commit(); cur.close(); conn.close()
         return {"ok": True, "arestas_removidas": arestas_removidas,
-                "avisos": avisos}
+                "avisos": avisos, "efeito": _efeito_publico(diff)}
     except HTTPException:
         raise
     except Exception as e:
@@ -1401,16 +1798,24 @@ def remove_no(malha_name: str, no_id: int,
 @router.post("/malhas/{malha_name}/arestas", tags=["malhas"])
 def add_aresta_no(malha_name: str, body: dict = Body(default={}),
                   _auth: dict = Depends(require_perm(PERM_EDITAR))):
-    """Cria uma aresta do desenho envolvendo nó (F10), com a GRAMÁTICA COMPLETA
-    da tabela §2.1 — cada célula proibida devolve 422 com a mensagem da célula;
+    """Cria uma aresta do desenho envolvendo nó, com a GRAMÁTICA COMPLETA da
+    tabela §2.1 — cada célula proibida devolve 422 com a mensagem da célula;
     pipeline→pipeline é recusado AQUI com a instrução da porta certa (a aresta
     direta do F8 grava dependência REAL na 067 — outra semântica, outra porta).
 
-    Body (§9): {"origem": {"no": id} | {"pipeline": nome}, "destino": {...}}.
-    Idempotente: aresta que já existe devolve ja_existia=True sem regravar.
-    O ciclo validado nesta fase é o TOPOLÓGICO do desenho (ver
-    _criaria_ciclo_desenho — a fronteira F10/F11 está registrada lá); o
-    dry_run com o efeito compilado (§7.2) chega na F11."""
+    Body (§9): {"origem": {"no": id} | {"pipeline": nome}, "destino": {...},
+    "dry_run": bool?}. Idempotente: aresta que já existe devolve
+    ja_existia=True — e o write ainda RECONCILIA a compilação se a 067 tiver
+    divergido do desenho (o invariante da Decisão 7: o desenho É o compilado).
+
+    F11 — aresta envolvendo AGUARDE compila (expansão → 067 assinada + espelho
+    CSV + carimbo, uma transação): dry_run devolve o efeito §7.2 sem gravar
+    (erros de ciclo vão na lista `erros`, HTTP 200 — o modal da F12 mostra);
+    o write recomputa sobre o estado corrente e o ciclo vira 422. O ciclo é
+    validado PRIMEIRO sobre o conjunto pós-expansão (BFS canônico da F1 +
+    mensagem literal — Decisão 15); o topológico do desenho segue de
+    retaguarda para o ciclo só-de-nós, que não compila nada."""
+    dry_run = bool(body.get("dry_run"))
     conn = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -1427,36 +1832,70 @@ def add_aresta_no(malha_name: str, body: dict = Body(default={}),
         if erro:
             _fechar_silencioso(conn)
             raise HTTPException(status_code=422, detail=erro)
+        nos_l = _nos_da_malha(cur, malha)
         arestas = _arestas_da_malha(cur, malha)
         chave_o = _chave_ponta(origem["no"], origem["pipeline"])
         chave_d = _chave_ponta(destino["no"], destino["pipeline"])
-        for a in arestas:
-            if (_chave_ponta(a["origem_no"], a["origem_pipeline"]) == chave_o
-                    and _chave_ponta(a["destino_no"], a["destino_pipeline"]) == chave_d):
-                # Idempotente (aceite F8: re-salvar é no-op) — nem commit.
-                avisos = _avisos_desenho(_nos_da_malha(cur, malha), arestas)
-                cur.close(); conn.close()
-                return {"ok": True, "id": a["id"], "ja_existia": True,
-                        "avisos": avisos}
-        if _criaria_ciclo_desenho(arestas, chave_o, chave_d):
+        ja_existia = next(
+            (a for a in arestas
+             if _chave_ponta(a["origem_no"], a["origem_pipeline"]) == chave_o
+             and _chave_ponta(a["destino_no"], a["destino_pipeline"]) == chave_d),
+            None)
+        prospectivas = arestas if ja_existia is not None else arestas + [{
+            "id": None, "origem_no": origem["no"],
+            "origem_pipeline": origem["pipeline"],
+            "destino_no": destino["no"],
+            "destino_pipeline": destino["pipeline"]}]
+
+        # Compilação (F11): só aresta que toca AGUARDE tem efeito na 067 —
+        # Início planta agenda (F13) e Notificação/Fim observam (F14).
+        diff, erros = None, []
+        if "aguarde" in (origem["tipo"], destino["tipo"]):
+            _exigir_compilacao(cur, conn)
+            diff = _diff_compilacao(cur, malha, nos_l, prospectivas)
+            erros = _erros_ciclo_canonico(diff)
+        if ja_existia is None and not erros \
+                and _criaria_ciclo_desenho(arestas, chave_o, chave_d):
+            # Retaguarda topológica (texto espelhado no cliente, regra F8).
+            erros.append(
+                f"Ciclo no desenho: {_rotulo_ponta(origem)} → "
+                f"{_rotulo_ponta(destino)} fecha um ciclo (o caminho "
+                f"volta para {_rotulo_ponta(origem)})")
+
+        if dry_run:
+            avisos = _avisos_gesto(nos_l, prospectivas, diff)
+            cur.close(); conn.close()
+            return {"efeito": _efeito_publico(diff), "avisos": avisos,
+                    "erros": erros,
+                    "preview_expandido": _preview_expandido(diff)}
+        if erros:
             _fechar_silencioso(conn)
-            # Texto espelhado no cliente (regra F8) — determinístico.
-            raise HTTPException(
-                status_code=422,
-                detail=f"Ciclo no desenho: {_rotulo_ponta(origem)} → "
-                       f"{_rotulo_ponta(destino)} fecha um ciclo (o caminho "
-                       f"volta para {_rotulo_ponta(origem)})")
-        cur.execute(
-            "INSERT INTO dbo.etl_malha_aresta "
-            "(malha_name, origem_no, origem_pipeline, destino_no, destino_pipeline) "
-            "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?)",
-            (malha, origem["no"], origem["pipeline"],
-             destino["no"], destino["pipeline"]))
-        novo_id = int(cur.fetchone()[0])
-        avisos = _avisos_desenho(_nos_da_malha(cur, malha),
-                                 _arestas_da_malha(cur, malha))
-        conn.commit(); cur.close(); conn.close()
-        return {"ok": True, "id": novo_id, "ja_existia": False, "avisos": avisos}
+            raise HTTPException(status_code=422, detail=erros[0])
+
+        novo_id = ja_existia["id"] if ja_existia is not None else None
+        if ja_existia is None:
+            cur.execute(
+                "INSERT INTO dbo.etl_malha_aresta "
+                "(malha_name, origem_no, origem_pipeline, destino_no, destino_pipeline) "
+                "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?)",
+                (malha, origem["no"], origem["pipeline"],
+                 destino["no"], destino["pipeline"]))
+            novo_id = int(cur.fetchone()[0])
+        tem_efeito = diff is not None and (diff["criar"] or diff["remover"]
+                                           or diff["transferir"])
+        if tem_efeito:
+            criado_por = None
+            if isinstance(_auth, dict):
+                criado_por = (str(_auth.get("matricula") or "").strip() or None)
+            _aplicar_compilacao(cur, diff, criado_por)
+        avisos = _avisos_gesto(nos_l, prospectivas, diff)
+        if ja_existia is None or tem_efeito:
+            conn.commit()
+        # aresta re-salvada SEM efeito novo: no-op de verdade — nem commit
+        cur.close(); conn.close()
+        return {"ok": True, "id": novo_id,
+                "ja_existia": ja_existia is not None, "avisos": avisos,
+                "efeito": _efeito_publico(diff)}
     except HTTPException:
         raise
     except Exception as e:
@@ -1465,11 +1904,17 @@ def add_aresta_no(malha_name: str, body: dict = Body(default={}),
 
 
 @router.delete("/malhas/{malha_name}/arestas/{aresta_id}", tags=["malhas"])
-def remove_aresta_no(malha_name: str, aresta_id: int,
+def remove_aresta_no(malha_name: str, aresta_id: int, dry_run: bool = False,
                      _auth: dict = Depends(require_perm(PERM_EDITAR))):
-    """Remove UMA aresta de nó do desenho (F10 — sem efeito no motor: nenhuma
-    linha da 067 é tocada; a recompilação do nó afetado, o dry_run e a
-    confirmação de remoção de linhas reais chegam na F11, §7.3)."""
+    """Remove UMA aresta de nó do desenho e RECOMPILA o efeito (F11, §7.3):
+    linha assinada que a expansão nova não produz é removida (com espelho CSV
+    e carimbo) — ou TRANSFERIDA quando a expansão desta ou de OUTRA malha
+    ainda a produz. ?dry_run=true devolve o efeito §7.2 sem gravar; a
+    confirmação quando remove ≥1 linha real é gesto da tela (F12), como no
+    DELETE /dependencias do F8 — a API executa, quem avisa é a tela. Como a
+    recompilação pode CRIAR linhas (067 divergida do desenho), o ciclo
+    canônico da Decisão 15 vale AQUI também: dry_run devolve em `erros`,
+    write é 422 com a mensagem literal da F1."""
     conn = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -1480,6 +1925,41 @@ def remove_aresta_no(malha_name: str, aresta_id: int,
             cur.close(); conn.close()
             raise HTTPException(status_code=404,
                                 detail=f"Malha não encontrada: '{malha_name}'")
+        nos_l = _nos_da_malha(cur, malha)
+        arestas = _arestas_da_malha(cur, malha)
+        alvo = next((a for a in arestas if a["id"] == aresta_id), None)
+        if alvo is None:
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=404,
+                detail=f"Aresta {aresta_id} não existe na malha '{malha}'")
+        prospectivas = [a for a in arestas if a["id"] != aresta_id]
+        tipos = {n["id"]: n["tipo"] for n in nos_l}
+        envolve_aguarde = ("aguarde" in (tipos.get(alvo["origem_no"]),
+                                         tipos.get(alvo["destino_no"])))
+        diff, erros = None, []
+        if envolve_aguarde and _descompilacao_possivel(cur):
+            diff = _diff_compilacao(cur, malha, nos_l, prospectivas)
+            # A recompilação pode conter CRIAÇÕES quando a 067 divergiu do
+            # desenho (achado da revisão) — ciclo canônico como no add: sem
+            # isto o gesto de remoção recriaria uma linha que fecha A↔D.
+            erros = _erros_ciclo_canonico(diff)
+
+        if dry_run:
+            avisos = _avisos_gesto(nos_l, prospectivas, diff)
+            cur.close(); conn.close()
+            return {"efeito": _efeito_publico(diff), "avisos": avisos,
+                    "erros": erros,
+                    "preview_expandido": _preview_expandido(diff)}
+        if erros:
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=422, detail=erros[0])
+
+        if diff is not None:
+            criado_por = None
+            if isinstance(_auth, dict):
+                criado_por = (str(_auth.get("matricula") or "").strip() or None)
+            _aplicar_compilacao(cur, diff, criado_por)
         cur.execute("DELETE FROM dbo.etl_malha_aresta "
                     "WHERE id = ? AND malha_name = ?", (aresta_id, malha))
         if (cur.rowcount or 0) == 0:
@@ -1487,10 +1967,9 @@ def remove_aresta_no(malha_name: str, aresta_id: int,
             raise HTTPException(
                 status_code=404,
                 detail=f"Aresta {aresta_id} não existe na malha '{malha}'")
-        avisos = _avisos_desenho(_nos_da_malha(cur, malha),
-                                 _arestas_da_malha(cur, malha))
+        avisos = _avisos_gesto(nos_l, prospectivas, diff)
         conn.commit(); cur.close(); conn.close()
-        return {"ok": True, "avisos": avisos}
+        return {"ok": True, "avisos": avisos, "efeito": _efeito_publico(diff)}
     except HTTPException:
         raise
     except Exception as e:
@@ -1588,7 +2067,12 @@ def remove_dependencia(body: dict = Body(default={}),
 
     A confirmação explícita ('isto apaga a dependência real, não só o desenho' —
     §4b da spec) é responsabilidade do MalhaEditor ANTES de chamar aqui: a API
-    executa, quem avisa é a tela."""
+    executa, quem avisa é a tela.
+
+    F11 (Decisão 4): linha ASSINADA (compilada por Aguarde de malha) é recusada
+    com 422 nomeando malha e nó donos — apagá-la por aqui deixaria o desenho da
+    malha dona contando uma história e o motor outra (e o Aguarde dela a
+    recriaria... ou nunca). A porta certa é o desenho da malha."""
     nome_dep = (body.get("pipeline_name") or "").strip()
     nome_pred = (body.get("depende_de") or "").strip()
     if not nome_dep or not nome_pred:
@@ -1598,6 +2082,14 @@ def remove_dependencia(body: dict = Body(default={}),
     try:
         conn = get_db_conn(); cur = conn.cursor()
         _exigir_tabela_067(cur, conn)
+        if _coluna_origem_no(cur):
+            ass = deps_svc.assinatura(cur, nome_dep, nome_pred)
+            if ass is not None:
+                _fechar_silencioso(conn)
+                raise HTTPException(
+                    status_code=422,
+                    detail=deps_svc.msg_linha_assinada(
+                        nome_dep, nome_pred, ass["malha"], ass["origem_no"]))
         # A colação CI do banco casa qualquer caixa no DELETE; o espelho CSV
         # também remove por casefold — canonização aqui seria redundante.
         cur.execute(
