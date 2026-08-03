@@ -2082,6 +2082,11 @@ function FluxoEditorInner({
           onDrop={onDrop}
           onDragOver={onDragOver}
           colorMode={colorMode}
+          // Zoom por duplo clique DESLIGADO: o handler do d3-zoom interrompe a
+          // propagação no pane e, com a delegação de eventos do React 19, o
+          // `onNodeDoubleClick` acima nunca era chamado — o modo focado que a
+          // interface anuncia não abria. Zoom segue pelos controles e pela roda.
+          zoomOnDoubleClick={false}
           fitView
           fitViewOptions={{ padding: 0.25 }}
           proOptions={{ hideAttribution: true }}
