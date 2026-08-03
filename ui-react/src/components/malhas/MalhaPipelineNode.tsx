@@ -6,6 +6,7 @@
 // data, o nó fica exatamente como na montagem.
 import { memo, useEffect } from 'react'
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
+import { Layers } from 'lucide-react'
 import { CritBadge } from './CritBadge'
 import { estiloStatus } from './statusExecucao'
 import type { Orientacao } from '../etapas/layoutGrafo'
@@ -28,6 +29,12 @@ export interface MalhaPipelineNodeData {
   // que ganhou dependência por outra porta: o motor obedece a dependência e
   // o agendamento da malha está inerte nela. Só na montagem.
   contradicao?: boolean
+  // F3 (§3, Bloco A): descer até o canvas de Etapas deste pipeline, na data
+  // que a malha está exibindo. null/ausente = modo Montagem, ou a página não
+  // ofereceu destino — e aí o card fica exatamente como sempre foi.
+  abrirEtapas?: (() => void) | null
+  /** só para o texto do tooltip do atalho acima */
+  dataExecucao?: string | null
   [key: string]: unknown
 }
 
@@ -96,6 +103,23 @@ function MalhaPipelineNodeImpl({ id, data, selected }: NodeProps & { data: Malha
         {data.criticidade && <CritBadge crit={data.criticidade} />}
         {data.schedule && <span className="text-[10px] text-dim">📅 {data.schedule}</span>}
         {!data.active && <span className="text-[10px] text-dim">○ inativo</span>}
+        {/* F3: atalho de drill-down NO CARD — o gesto fica onde o olho já está.
+            `nodrag`/`nopan` impedem o React Flow de tratar o clique como
+            arrasto do nó ou pan do canvas; `stopPropagation` impede que ele
+            também alterne o realce da F1 (o clique no nó é dele desde a F1). */}
+        {data.abrirEtapas && (
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); data.abrirEtapas?.() }}
+            onDoubleClick={e => e.stopPropagation()}
+            title={`Abrir as etapas de ${data.name}`
+              + (data.dataExecucao ? ` em ${data.dataExecucao}` : '')
+              + ' — status, início, fim e duração de cada uma'}
+            className="nodrag nopan ml-auto inline-flex items-center gap-1 rounded border border-edge bg-canvas px-1.5 py-0.5 text-[10px] font-medium text-dim transition-colors hover:border-[#1A5FA8]/50 hover:bg-edge/50 hover:text-ink"
+          >
+            <Layers size={10} /> etapas
+          </button>
+        )}
       </div>
       <Handle type="source" position={vertical ? Position.Bottom : Position.Right} className={HANDLE_CLS} />
     </div>

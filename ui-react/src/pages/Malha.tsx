@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
 import { normalizeBusca } from '../lib/busca'
 import { useAuthStore } from '../store/auth'
@@ -764,7 +764,17 @@ function MalhasView({ onAbrir }: { onAbrir: (malha: string) => void }) {
 
 export default function Malha() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const malhaAberta = (searchParams.get('malha') ?? '').trim()
+  // (F3) Lente e data com que o diagrama abre — é o que torna a visão de
+  // Execução LINKÁVEL e permite ao drill-down das etapas voltar exatamente
+  // para onde saiu. Depois de aberto, o editor manda no seu próprio estado
+  // (a URL é o ponto de partida, não um controlador ao vivo — sincronizar os
+  // dois sentidos criaria uma segunda fonte de verdade para o mesmo estado).
+  const modoInicial = (searchParams.get('modo') ?? '').trim() === 'execucao'
+    ? 'execucao' as const
+    : undefined
+  const dataInicial = (searchParams.get('data') ?? '').trim() || null
   const [membrosAberto, setMembrosAberto] = useState(false)
   const [ajudaAberta, setAjudaAberta] = useState(false)
   const user = useAuthStore(s => s.user)
@@ -789,13 +799,28 @@ export default function Malha() {
                 <Users size={13} /> Membros
               </Button>
             )}
+            {/* Fechar limpa TODOS os parâmetros (malha, modo e data) — voltar
+                à lista com `?modo=execucao` pendurado deixaria a próxima malha
+                aberta numa lente que ninguém pediu. */}
             <Button variant="secondary" size="sm" onClick={() => setSearchParams({})} title="Voltar à lista de malhas">
               <X size={13} /> Voltar
             </Button>
           </div>
         </div>
         <div className="h-[calc(100vh-11rem)]">
-          <MalhaEditor malha={malhaAberta} readOnly={isViewer} />
+          <MalhaEditor
+            malha={malhaAberta}
+            readOnly={isViewer}
+            modoInicial={modoInicial}
+            dataInicial={dataInicial}
+            // (F3) Descer até o canvas de Etapas do pipeline, na MESMA data —
+            // e levando de onde se veio (`de=malha:…`), que é o que dá a volta
+            // óbvia lá do outro lado. Ver a decisão registrada em pages/Fluxos.
+            onAbrirEtapas={(pipeline, data) => navigate(
+              `/fluxos?pipeline=${encodeURIComponent(pipeline)}`
+              + `&modo=execucao&data=${encodeURIComponent(data)}`
+              + `&de=malha:${encodeURIComponent(malhaAberta)}`)}
+          />
         </div>
         {membrosAberto && (
           <MembrosModal malhaName={malhaAberta} onClose={() => setMembrosAberto(false)} />

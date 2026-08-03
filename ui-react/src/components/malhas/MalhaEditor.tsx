@@ -49,6 +49,7 @@ import {
   Panel,
   MarkerType,
   useReactFlow,
+  useNodesInitialized,
   useNodesState,
   useEdgesState,
   applyNodeChanges,
@@ -66,9 +67,9 @@ import { Autocomplete } from '../ui/Autocomplete'
 import { PageSpinner } from '../ui/Spinner'
 import {
   Activity, AlertCircle, AlertTriangle, Anchor, ArrowRightLeft, ArrowUpDown,
-  CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, Info, Link2, Lock,
-  Minus, MousePointerClick, Play, Plus, RefreshCw, Save, ShieldAlert, Trash2,
-  Wrench,
+  CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, Info, Layers, Link2,
+  Lock, Minus, MousePointerClick, Play, Plus, RefreshCw, Save, ShieldAlert,
+  Trash2, Wrench,
 } from 'lucide-react'
 import { useAuthStore } from '../../store/auth'
 import { useColorMode } from '../etapas/useColorMode'
@@ -497,6 +498,16 @@ function ItemPaletaComponente({ tipo, desabilitado, motivo }: {
 interface Props {
   malha: string
   readOnly?: boolean
+  // ── F3 (spec-operacao-nivel-etapa §3) ──────────────────────────────────
+  /** Modo com que a malha ABRE. Serve ao deep-link (?modo=execucao) e, com
+   *  ele, à volta do drill-down: quem desceu para as etapas precisa voltar
+   *  para a MESMA lente. Depois de aberto, quem manda é o botão da barra. */
+  modoInicial?: 'montagem' | 'execucao'
+  /** Data de referência com que a visão de Execução abre (?data=). */
+  dataInicial?: string | null
+  /** Descer até o canvas de Etapas de um pipeline, na data exibida. Ausente =
+   *  o gesto some (a malha continua exatamente como era). */
+  onAbrirEtapas?: (pipeline: string, data: string) => void
 }
 
 // Wrapper com o provider (necessário p/ useReactFlow/fitView).
@@ -508,9 +519,12 @@ export function MalhaEditor(props: Props) {
   )
 }
 
-function MalhaEditorInner({ malha, readOnly = false }: Props) {
+function MalhaEditorInner({
+  malha, readOnly = false, modoInicial, dataInicial = null, onAbrirEtapas,
+}: Props) {
   const colorMode = useColorMode()
   const rf = useReactFlow()
+  const nosMedidos = useNodesInitialized()
   const qc = useQueryClient()
 
   const [nodes, setNodes] = useNodesState<Node>([])
@@ -545,10 +559,13 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   // Busca da paleta (adicionar membro).
   const [busca, setBusca] = useState('')
   // F9: Montagem (default, editável) | Execução (leitura da data de referência).
-  const [modo, setModo] = useState<'montagem' | 'execucao'>('montagem')
+  // (F3) O valor INICIAL vem da URL quando a página o passa — é o que faz a
+  // volta do drill-down cair na mesma lente. Sem prop, o default de sempre.
+  const [modo, setModo] = useState<'montagem' | 'execucao'>(
+    modoInicial === 'execucao' ? 'execucao' : 'montagem')
   // Data de referência pedida. null = sem query — o SERVIDOR devolve o ODATE
   // corrente (virada global de etl_app_config), e é ele que aparece no input.
-  const [dataRef, setDataRef] = useState<string | null>(null)
+  const [dataRef, setDataRef] = useState<string | null>(dataInicial ?? null)
   // Orientação: o servidor é a fonte (viaja com o layout — todos veem o mesmo
   // desenho); o override local dá resposta imediata ao toggle enquanto o PATCH
   // viaja. Carrega a malha DONA junto: trocar de malha invalida o override
@@ -619,6 +636,26 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   }, [execData])
   // Edição travada na visão de execução — MESMO mecanismo do readOnly da F8.
   const travado = readOnly || emExecucao
+
+  // ── F3: descer da malha até o canvas de Etapas ────────────────────────────
+  // GESTO ESCOLHIDO E REGISTRADO: **botão, em dois lugares** — um chip no
+  // PRÓPRIO card do pipeline (direto, onde o olho já está) e um botão na barra
+  // de ações com o pipeline selecionado (o caminho que segue a gramática do
+  // "Excluir componente"/"Agendamento" da montagem).
+  //   • clique simples NÃO: desde a F1 ele é o realce de dependências, e
+  //     roubá-lo tiraria a ferramenta de leitura de dentro da lente em que ela
+  //     é mais útil;
+  //   • duplo clique NÃO: medido no dev, `onNodeDoubleClick` está MORTO neste
+  //     app — ver o comentário longo no próprio handler, mais abaixo. Anunciar
+  //     um gesto que não dispara seria pior que não ter gesto.
+  // A DATA vai junto: descer sempre abre o MESMO dia que a malha está
+  // mostrando (é o ponto do drill-down — outra data seria outra história).
+  // Declarado aqui em cima porque o rebuild dos nós (efeito do `grafo`) põe o
+  // atalho no data de cada card.
+  const descerParaEtapas = useCallback((pipelineId: string) => {
+    if (!onAbrirEtapas || !dataExibida || ehNo(pipelineId)) return
+    onAbrirEtapas(pipelineId, dataExibida)
+  }, [onAbrirEtapas, dataExibida])
 
   // Deploy parcial: migration 067 ausente (flag da API) ou API anterior à F8
   // (sem a chave `arestas`) — o diagrama abre só com os nós e avisa (nunca um
@@ -748,6 +785,13 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             ...nodeData(m),
             orientacao,
             exec: exec ? { status: exec.status, titulo: tituloExecucao(exec) } : null,
+            // (F3) Atalho de descer até as etapas — só na Execução e só quando
+            // a página ofereceu o destino. Fora disso é `null` e o card fica
+            // exatamente como era.
+            abrirEtapas: (emExecucao && onAbrirEtapas && dataExibida)
+              ? () => descerParaEtapas(m.pipeline_name)
+              : null,
+            dataExecucao: dataExibida || null,
             // F13/F15: badge de contradição no pipeline (raiz assinada com
             // dependência) — nos DOIS modos: na Execução ele convive com o
             // badge de status (cantos opostos do card).
@@ -798,7 +842,7 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
     ])
     setEdges(grafo.novasEdges)
   }, [grafo, setNodes, setEdges, emExecucao, execPorPipeline, eventoNoPorId,
-      execData, orientacao, data])
+      execData, orientacao, data, onAbrirEtapas, dataExibida, descerParaEtapas])
 
   // dirty = alguma posição difere do baseline do servidor (arredondado — é o
   // que o PUT envia). Mover um nó e devolvê-lo ao lugar volta a desabilitar o
@@ -813,13 +857,29 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   }, [nodes, grafo])
 
   // Enquadra o diagrama ao abrir/trocar de malha.
+  // (F3) O MODO entra na chave junto com a chegada do payload de execução: são
+  // eles que acrescentam/retiram o painel de eventos à esquerda, os banners e a
+  // legenda — ou seja, mudam a área do canvas. Antes desta fase o efeito só
+  // olhava a malha, e o enquadramento ficava obsoleto ao entrar na Execução;
+  // com o deep-link `?modo=execucao` isso passou a ser a PRIMEIRA coisa que o
+  // operador vê. Só a PRESENÇA de `execData` entra na chave — o polling de 30s
+  // traz objeto novo e não pode arrancar o zoom de quem está investigando.
   const fittedRef = useRef<string | null>(null)
+  const chaveFit = `${malha}|${emExecucao ? 'exec' : 'montagem'}`
+    + `|${emExecucao && execData ? 'carregado' : '-'}`
+  // ⚠️ ESPERA a MEDIÇÃO dos nós (`useNodesInitialized`). Antes desta fase o fit
+  // saía 90 ms depois do payload, e nesse instante o React Flow ainda não tinha
+  // medido os nós: o bounding box saía minúsculo e o enquadramento abria com
+  // zoom altíssimo, mostrando um nó só. Dava para não notar porque um segundo
+  // fit (troca de modo, reorganizar) consertava — mas com o deep-link da F3 o
+  // canvas em Execução passou a ser a PRIMEIRA tela do drill-down, e primeira
+  // impressão torta é defeito.
   useEffect(() => {
-    if (!data || fittedRef.current === malha) return
-    fittedRef.current = malha
+    if (!data || !nosMedidos || fittedRef.current === chaveFit) return
+    fittedRef.current = chaveFit
     const t = setTimeout(() => rf.fitView({ padding: 0.2, duration: 250 }), 90)
     return () => clearTimeout(t)
-  }, [data, malha, rf])
+  }, [data, chaveFit, rf, nosMedidos])
 
   const onNodesChange = useCallback(
     (changes: NodeChange<Node>[]) => {
@@ -1246,6 +1306,9 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   const selEdges = useMemo(() => edges.filter(e => e.selected), [edges])
   const selComponentes = useMemo(
     () => nodes.filter(n => n.selected && ehNo(n.id)), [nodes])
+  // (F3) Nó-PIPELINE selecionado — o alvo do botão de descer até as etapas.
+  const selPipelines = useMemo(
+    () => nodes.filter(n => n.selected && !ehNo(n.id)), [nodes])
 
   // ── Realce: rótulo e contador (F1) ────────────────────────────────────────
   // O id cru do componente ("no:5") não é linguagem de operador — o rótulo sai
@@ -1933,6 +1996,21 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             onEdgeClick={(_, edge) => realceFocarAresta(edge.id)}
             onPaneClick={() => realceLimpar()}
             onNodeDoubleClick={(_, node) => {
+              // ⚠️ ACHADO DA F3 (medido no dev, 2026-08-03): este callback
+              // NUNCA é chamado neste app. O React Flow liga `zoomOnDoubleClick`
+              // por padrão, e o `dblclicked` do d3-zoom (d3-zoom/src/zoom.js:311)
+              // chama `noevent(event)` — preventDefault + stopImmediatePropagation
+              // — no `.react-flow__pane`. Como o React 19 delega os eventos no
+              // container raiz, o `dblclick` morre no pane e nunca chega ao
+              // handler. Rastreado com listeners de bolha em toda a cadeia: o
+              // evento chega ao nó, chega ao pane e PARA ali.
+              // Consequência: o gesto abaixo (F13) está morto em main — o
+              // agendamento segue acessível pelo BOTÃO "Agendamento", que é
+              // por isso que ninguém notou. A F3 NÃO pendura gesto nenhum aqui
+              // (seria anunciar algo que não acontece); descer até as etapas é
+              // botão, no card e na barra. Conserto possível (fora do escopo
+              // desta fase, porque muda o canvas inteiro e os dois editores):
+              // `zoomOnDoubleClick={false}` no <ReactFlow>.
               // F13: duplo clique no Início abre o painel de agendamento —
               // o nó é a porta (Decisão 8); travado/sem 075 não abre.
               if (travado || nosIndisponiveis || !ehNo(node.id)) return
@@ -1975,9 +2053,28 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             {/* Barra de ações (topo direita) — selo nos modos de leitura. */}
             <Panel position="top-right">
               {emExecucao ? (
-                <span className="flex items-center gap-1.5 rounded-lg border border-edge bg-panel/95 px-2.5 py-1.5 text-[11px] font-semibold text-dim shadow-md backdrop-blur">
-                  <Activity size={12} /> visão de execução — edição travada
-                </span>
+                <div className="flex items-center gap-2 rounded-lg border border-edge bg-panel/95 px-2.5 py-1.5 shadow-md backdrop-blur">
+                  <span className="flex items-center gap-1.5 text-[11px] font-semibold text-dim">
+                    <Activity size={12} /> visão de execução — edição travada
+                  </span>
+                  {/* (F3) Descer até as etapas do pipeline selecionado, na
+                      data exibida. Só aparece com UM nó-pipeline selecionado —
+                      mesma gramática do "Excluir componente" da montagem. */}
+                  {onAbrirEtapas && selPipelines.length === 1 && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => descerParaEtapas(selPipelines[0].id)}
+                      disabled={!dataExibida}
+                      title={dataExibida
+                        ? `Abrir o canvas de Etapas de ${selPipelines[0].id} em ${dataExibida}, `
+                          + 'com status e horários de cada etapa (duplo clique no nó também abre)'
+                        : 'Aguardando a data de referência desta visão'}
+                    >
+                      <Layers size={13} /> Ver etapas
+                    </Button>
+                  )}
+                </div>
               ) : readOnly ? (
                 <span className="flex items-center gap-1.5 rounded-lg border border-edge bg-panel/95 px-2.5 py-1.5 text-[11px] font-semibold text-dim shadow-md backdrop-blur">
                   <MousePointerClick size={12} /> somente leitura
@@ -2067,6 +2164,12 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
           <span className="ml-auto text-[10px] text-dim">
             nó sem anel = sem execução registrada na data
           </span>
+          {/* (F3) Descoberta do drill-down — o chip "etapas" mora no card. */}
+          {onAbrirEtapas && (
+            <span className="flex items-center gap-1 text-[10px] text-dim">
+              <Layers size={11} /> “etapas” no card abre o pipeline etapa a etapa nesta data
+            </span>
+          )}
         </div>
       )}
 

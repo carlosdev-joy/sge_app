@@ -8,6 +8,8 @@
 import { memo, useEffect } from 'react'
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
 import { Split } from 'lucide-react'
+import { LinhaExecucaoNo } from './LinhaExecucaoNo'
+import type { ExecNoEtapa } from './execucaoEtapas'
 
 // Um caso do SWITCH: primeiro (na ordem da lista) cujo valor_obtido <operador>
 // valor casar vence; `ramo` são os jobs de destino (derivado das arestas no save).
@@ -64,6 +66,10 @@ export interface DecisaoNodeData {
   condition: NodeCondition
   label: string
   isNew?: boolean
+  // F3 (modo Execução): camada de status/horários desta etapa na data exibida.
+  // Injetada pelo FluxoEditor em CÓPIAS dos nós (nunca no estado do desenho);
+  // ausente/null = modo Montagem, ou nó fora da execução consultada.
+  exec?: ExecNoEtapa | null
   [key: string]: unknown
 }
 
@@ -85,6 +91,7 @@ function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNode
   const casos = data.condition?.casos
   const isSwitch = Array.isArray(casos)
   const pendente = !!(data as { pendente?: boolean }).pendente
+  const exec = data.exec ?? null
   // Handles mudam com os casos (quantidade/nome) — o React Flow precisa
   // remedir o nó para reancorar as arestas.
   const updateNodeInternals = useUpdateNodeInternals()
@@ -126,6 +133,9 @@ function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNode
           data.isNew && !selected ? 'outline-dashed outline-1 outline-offset-2 outline-blue-400/70' : '',
           selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas'
             : pendente ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-canvas' : '',
+          // F3: anel de status da execução em `outline` — convive com o `ring`
+          // (box-shadow) da seleção e da pendência (MalhaPipelineNode, F9).
+          exec?.anel ?? '',
         ].join(' ')}
         style={{ height: tileH }}
       >
@@ -241,10 +251,14 @@ function DecisaoNodeImpl({ id, data, selected }: NodeProps & { data: DecisaoNode
         {data.name}
       </p>
 
-      {/* Linha de baixo: tipo + resumo da condição (label). */}
-      <p className="mt-0.5 w-[128px] line-clamp-1 text-center text-[9px] leading-tight text-dim" title={data.label}>
-        Decisão · {data.label}
-      </p>
+      {/* Linha de baixo: no modo Execução vira status + horários (§3) — é ela
+          que diz se a decisão avaliou, e os ramos não tomados aparecem
+          apagados nas arestas. */}
+      {exec ? <LinhaExecucaoNo exec={exec} /> : (
+        <p className="mt-0.5 w-[128px] line-clamp-1 text-center text-[9px] leading-tight text-dim" title={data.label}>
+          Decisão · {data.label}
+        </p>
+      )}
     </div>
   )
 }

@@ -650,6 +650,7 @@ async def get_pipeline_execucao(
     pipeline_name: str,
     data_referencia: str | None = None,
     execution_id: str | None = None,
+    run_id: str | None = None,
     _auth: dict = Depends(get_current_user),
 ):
     """Execução de UM pipeline no nível de ETAPA — a chamada do drill-down (F2).
@@ -666,6 +667,13 @@ async def get_pipeline_execucao(
         painel da malha).
       • `execution_id=<ts_nodash>` — o **sentido inverso**, para quem já tem o
         execution_id da telemetria (Dashboard / modal de Logs) e não o ODATE.
+      • `run_id=<run_id do Airflow>` — a corrida ESPECÍFICA. Aditivo da F3:
+        quando o ODATE tem mais de uma corrida a resposta volta
+        `identidade.ambiguo=true` com `candidatos[]`, e a tela precisa
+        conseguir abrir uma candidata que NÃO é a vencedora. Pelo ts_nodash
+        não dá: os run_ids gerados pelo Orquestra não são traduzíveis pela
+        string (a armadilha do §2), então só o próprio run_id serve de chave.
+        Reusa `resolve_por_run_id` da F2 — nenhuma regra nova.
 
     **Vazio ≠ erro.** Pipeline sem execução no ODATE responde 200 com
     `vazio: true`, `razao` preenchida e `etapas` trazendo o DESENHO com
@@ -683,10 +691,11 @@ async def get_pipeline_execucao(
     `execution_order`, `depends_on_jobs`) que dá sentido às etapas — não se
     duplica o editor.
     """
-    if data_referencia and execution_id:
+    if sum(1 for v in (data_referencia, execution_id, run_id) if v) > 1:
         raise HTTPException(
             status_code=422,
-            detail="Informe data_referencia OU execution_id, nunca os dois")
+            detail="Informe data_referencia OU execution_id OU run_id, "
+                   "nunca mais de um")
     # Valida a data ANTES de abrir conexão (mesma regra do GET /malhas/…/execucao).
     data_ref = None
     if data_referencia is not None and str(data_referencia).strip() != "":
@@ -699,6 +708,7 @@ async def get_pipeline_execucao(
                 detail=f"data_referencia inválida: '{data_referencia}' "
                        "(use o formato YYYY-MM-DD)")
     ts_pedido = (execution_id or "").strip()
+    run_pedido = (run_id or "").strip()
 
     # ── Fase 1: tudo que o banco sabe (conexão aberta e FECHADA antes do await
     # do Airflow — nenhuma conexão fica presa durante I/O de rede).
@@ -716,7 +726,9 @@ async def get_pipeline_execucao(
                 detail=f"Pipeline não encontrado: '{pipeline_name}'")
         tem_067 = ident_svc.tem_tabela_067(cur)
         virada = deps_svc.virada_global(cur)
-        if ts_pedido:
+        if run_pedido:
+            ident = ident_svc.resolve_por_run_id(cur, oficial, run_pedido)
+        elif ts_pedido:
             ident = ident_svc.resolve_por_ts_nodash(cur, oficial, ts_pedido)
         else:
             if data_ref is None:

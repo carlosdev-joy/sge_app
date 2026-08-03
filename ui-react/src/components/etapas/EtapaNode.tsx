@@ -7,6 +7,8 @@ import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { Database } from 'lucide-react'
 import { TYPE_META, type TypeMeta, type EtapaType } from './types'
 import type { JobParam, PythonDraft } from './JobTypeFields'
+import { LinhaExecucaoNo } from './LinhaExecucaoNo'
+import type { ExecNoEtapa } from './execucaoEtapas'
 
 export interface EtapaNodeData {
   name: string
@@ -29,6 +31,10 @@ export interface EtapaNodeData {
   sublabel?: string
   // Marca nós criados localmente (ainda não salvos) — nome/comando editáveis.
   isNew?: boolean
+  // F3 (modo Execução): camada de status/horários desta etapa na data exibida.
+  // Injetada pelo FluxoEditor em CÓPIAS dos nós (nunca no estado do desenho);
+  // ausente/null = modo Montagem, ou etapa fora da execução consultada.
+  exec?: ExecNoEtapa | null
   [key: string]: unknown
 }
 
@@ -57,6 +63,7 @@ function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) 
   const meta = TYPE_META[data.type] ?? { ...META_FALLBACK, label: data.type }
   const Icon = meta.icon
   const pendente = !!(data as { pendente?: boolean }).pendente
+  const exec = data.exec ?? null
 
   // Largura do invólucro = visual (tile de 32px) + 8px de folga por lado, só o
   // bastante para o handle encostar no desenho; o RÓTULO transborda de
@@ -87,6 +94,9 @@ function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) 
           data.isNew && !selected ? 'outline-dashed outline-1 outline-offset-2 outline-blue-400/70' : '',
           selected ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-canvas'
             : pendente ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-canvas' : '',
+          // F3: anel de status da execução em `outline` — convive com o `ring`
+          // (box-shadow) da seleção e da pendência, como no MalhaPipelineNode.
+          exec?.anel ?? '',
         ].join(' ')}
       >
         {/* Ponto âmbar = validação com pendência (derivado no editor) */}
@@ -108,11 +118,13 @@ function EtapaNodeImpl({ data, selected }: NodeProps & { data: EtapaNodeData }) 
         {data.name}
       </p>
 
-      {/* Linha de baixo: subtítulo (quando derivado — ex.: modo do nó python)
-          ou o label do tipo + ordem (discreto). */}
-      <p className="mt-0.5 w-[128px] text-center text-[9px] leading-tight text-dim">
-        {data.sublabel ?? meta.label} <span className="font-mono">#{data.order}</span>
-      </p>
+      {/* Linha de baixo: no modo Execução ela vira o status + horários da
+          etapa (§3); na montagem segue o subtítulo/tipo + ordem de sempre. */}
+      {exec ? <LinhaExecucaoNo exec={exec} /> : (
+        <p className="mt-0.5 w-[128px] text-center text-[9px] leading-tight text-dim">
+          {data.sublabel ?? meta.label} <span className="font-mono">#{data.order}</span>
+        </p>
+      )}
 
       <Handle
         type="source"
