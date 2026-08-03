@@ -55,6 +55,8 @@ import {
 import { PropriedadesPanel } from './paineis/PropriedadesPanel'
 import { PainelPipeline, type ContagemNos } from './paineis/PainelPipeline'
 import { autoLayout, liveLayout, criaCiclo } from './layoutGrafo'
+import { useRealceDependencias } from './useRealceDependencias'
+import { PainelRealce } from './PainelRealce'
 
 const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode, aguarde: AguardeNode }
 
@@ -480,6 +482,19 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [showPublish, setShowPublish] = useState(false)
+
+  // ── Realce de dependências (F1 — spec de operação no nível de etapa, §6) ──
+  // Camada de LEITURA: acende a cadeia do nó/linha em foco e esmaece o resto.
+  // Recebe os arrays de estado e devolve cópias pintadas — `nodes`/`edges`
+  // seguem intocados (seleção, dock, dirty, save e validação de ciclo não
+  // enxergam o realce). As arestas de RAMO entram na travessia como qualquer
+  // outra: no grafo gerado elas SÃO dependência (o membro do ramo só roda
+  // depois da decisão). Declarado aqui em cima porque os handlers de clique
+  // precisam dele.
+  const realce = useRealceDependencias(nodes, edges, colorMode === 'dark')
+  const {
+    focarNo: realceFocarNo, focarAresta: realceFocarAresta, limpar: realceLimpar,
+  } = realce
 
   // ── Dock inferior de propriedades (fase 3 do redesign) ────────────────────
   // 3 estados (padrão Informatica/ADF): 'colapsado' (barra 36px c/ resumo),
@@ -1600,14 +1615,25 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
   // Clique seleciona (e reabre o dock se estiver colapsado — padrão Informatica:
   // selecionar um nó é intenção de editar). Duplo-clique = abrir MAXIMIZADO
   // (modo focado, padrão DataStage/n8n).
+  // (F1) O clique também acende a cadeia do nó — SOMA ao gesto de sempre, não
+  // o substitui: selecionar/abrir o dock continua idêntico.
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     setSelectedId(node.id)
     setDockEstado(e => (e === 'colapsado' ? 'aberto' : e))
-  }, [])
+    realceFocarNo(node.id)
+  }, [realceFocarNo])
   const onNodeDouble = useCallback((_: React.MouseEvent, node: Node) => {
     setSelectedId(node.id)
     setDockEstado('max')
   }, [])
+  // (F1) "ao clicar em uma linha": acende a cadeia daquela ligação. Não mexe na
+  // seleção da aresta (quem trata Delete continua sendo o React Flow).
+  const onEdgeClick = useCallback((_: React.MouseEvent, edge: Edge) => {
+    realceFocarAresta(edge.id)
+  }, [realceFocarAresta])
+  // Clicar no fundo do canvas apaga o realce (o React Flow já desseleciona por
+  // conta própria; o dock segue como estava).
+  const onPaneClick = useCallback(() => { realceLimpar() }, [realceLimpar])
 
   // Fecha o painel de propriedades (desseleciona o nó) — botão "recolher".
   const closePanel = useCallback(() => {
@@ -1637,6 +1663,9 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
       }
       if (e.key === 'Escape') {
         if (emInput) { (t as HTMLInputElement).blur(); return }
+        // (F1) O Esc apaga o realce JUNTO com o painel — um Esc só continua
+        // resolvendo tudo, como antes de existir realce.
+        realceLimpar()
         if (selectedId) closePanel()
         return
       }
@@ -1661,7 +1690,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [selectedId, temModalAberto, closePanel, dockEstado, nodes, dirty, saving, readOnly, setNodes, salvar])
+  }, [selectedId, temModalAberto, closePanel, dockEstado, nodes, dirty, saving, readOnly, setNodes, salvar, realceLimpar])
 
   // ── Pendências por nó (validação leve, AO VIVO) — padrão ADF: o grafo
   // sinaliza o que falta configurar sem precisar abrir nó por nó. A régua é a
@@ -1723,19 +1752,42 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
     return out
   }, [nodes, edges])
 
+  // Contador HONESTO do que está aceso — o valor de mapeamento de processo do
+  // pedido ("7 etapas dependem desta"). O texto acompanha o SENTIDO: o lado
+  // apagado não aparece, para o número nunca descrever o que não está na tela.
+  const realceTextos = useMemo(() => {
+    const c = realce.cadeia
+    if (!c) return { tras: null, frente: null }
+    const ehAresta = realce.foco?.tipo === 'aresta'
+    const et = (n: number) => (n === 1 ? 'etapa' : 'etapas')
+    return {
+      tras: realce.sentido === 'frente' ? null
+        : ehAresta ? `${c.qtdTras} ${et(c.qtdTras)} antes desta ligação`
+        : c.qtdTras === 0 ? 'não depende de nenhuma etapa'
+        : `depende de ${c.qtdTras} ${et(c.qtdTras)}`,
+      frente: realce.sentido === 'tras' ? null
+        : ehAresta ? `${c.qtdFrente} ${et(c.qtdFrente)} depois desta ligação`
+        : c.qtdFrente === 0 ? 'nenhuma etapa depende desta'
+        : `${c.qtdFrente} ${et(c.qtdFrente)} ${c.qtdFrente === 1 ? 'depende' : 'dependem'} desta`,
+    }
+  }, [realce.cadeia, realce.foco, realce.sentido])
+
   // Hover numa linha de caso do painel → destaca a(s) aresta(s) daquele ramo
   // no canvas (fecha o ciclo painel↔grafo sem depender só da cor do handle).
+  // Roda DEPOIS do realce e por cima dele: o hover é gesto momentâneo e vence
+  // (inclusive devolvendo a opacidade cheia se aquela aresta estava esmaecida);
+  // o realce continua mandando na cor. Sem realce ativo, é o de sempre.
   const [hoverRamo, setHoverRamo] = useState<{ no: string; ramo: string } | null>(null)
   const onHoverRamo = useCallback((no: string, ramo: string | null) => {
     setHoverRamo(ramo == null ? null : { no, ramo })
   }, [])
   const edgesRender = useMemo(() => {
-    if (!hoverRamo) return edges
-    return edges.map(e =>
+    if (!hoverRamo) return realce.edgesRealce
+    return realce.edgesRealce.map(e =>
       isBranch(e) && e.source === hoverRamo.no && edgeRamo(e) === hoverRamo.ramo
-        ? { ...e, animated: true, style: { ...(e.style ?? {}), strokeWidth: 3 } }
+        ? { ...e, animated: true, style: { ...(e.style ?? {}), strokeWidth: 3, opacity: 1 } }
         : e)
-  }, [edges, hoverRamo])
+  }, [realce.edgesRealce, hoverRamo])
 
   // Espelha a pendência no data do nó (o canvas desenha anel/ponto âmbar).
   // No-op quando nada mudou (retorna o MESMO array — não re-renderiza em loop).
@@ -1824,7 +1876,7 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
           </div>
         )}
         <ReactFlow
-          nodes={nodes}
+          nodes={realce.nodesRealce}
           edges={edgesRender}
           nodeTypes={nodeTypes}
           onNodesChange={onNodesChange}
@@ -1833,6 +1885,8 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
           onBeforeDelete={handleBeforeDelete}
           onNodeClick={onNodeClick}
           onNodeDoubleClick={onNodeDouble}
+          onEdgeClick={onEdgeClick}
+          onPaneClick={onPaneClick}
           onDrop={onDrop}
           onDragOver={onDragOver}
           colorMode={colorMode}
@@ -1853,6 +1907,25 @@ function FluxoEditorInner({ pipeline, readOnly = false }: Props) {
             nodeColor={miniMapColor}
             className="!bg-panel"
           />
+
+          {/* (F1) Painel do realce — só existe com algo em foco; sem clique o
+              canvas é exatamente o de sempre. */}
+          {realce.cadeia && realce.rotuloFoco && (
+            <Panel position="top-left">
+              <PainelRealce
+                foco={realce.rotuloFoco}
+                sentido={realce.sentido}
+                onSentido={realce.mudarSentido}
+                isolar={realce.isolar}
+                onIsolar={realce.alternarIsolar}
+                onLimpar={realce.limpar}
+                textoTras={realceTextos.tras}
+                textoFrente={realceTextos.frente}
+                acesos={realce.cadeia.nos.size}
+                total={nodes.length}
+              />
+            </Panel>
+          )}
 
           {/* Barra de ações (topo direita) — no modo leitura vira só um selo */}
           <Panel position="top-right">

@@ -73,6 +73,8 @@ import {
 import { useAuthStore } from '../../store/auth'
 import { useColorMode } from '../etapas/useColorMode'
 import { liveLayout, criaCiclo, type Orientacao } from '../etapas/layoutGrafo'
+import { useRealceDependencias } from '../etapas/useRealceDependencias'
+import { PainelRealce } from '../etapas/PainelRealce'
 import { MalhaPipelineNode, type MalhaPipelineNodeData } from './MalhaPipelineNode'
 import {
   InicioNode, AguardeNode, NotificacaoNode, FimNode,
@@ -513,6 +515,19 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
 
   const [nodes, setNodes] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
+
+  // ── Realce de dependências (F1 — spec de operação no nível de etapa, §6) ──
+  // Ferramenta de LEITURA, vale nos DOIS modos (Montagem e Execução): acende a
+  // cadeia do item em foco e esmaece o resto. É camada de pintura sobre cópias
+  // — `nodes`/`edges` seguem intocados, e com eles a seleção nativa (que move o
+  // botão de excluir), o `dirty` das posições, o dry_run e a camada de status.
+  // A travessia atravessa os DOIS espaços de id do canvas (pipeline e "no:<id>"
+  // do componente): um Aguarde no meio do caminho faz parte da cadeia.
+  const realce = useRealceDependencias(nodes, edges, colorMode === 'dark')
+  const {
+    focarNo: realceFocarNo, focarAresta: realceFocarAresta, limpar: realceLimpar,
+  } = realce
+
   // Arestas aguardando a confirmação de exclusão (Delete ou botão).
   const [delEdges, setDelEdges] = useState<Edge[] | null>(null)
   const [excluindo, setExcluindo] = useState(false)
@@ -1232,6 +1247,46 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
   const selComponentes = useMemo(
     () => nodes.filter(n => n.selected && ehNo(n.id)), [nodes])
 
+  // ── Realce: rótulo e contador (F1) ────────────────────────────────────────
+  // O id cru do componente ("no:5") não é linguagem de operador — o rótulo sai
+  // pelo mesmo tradutor dos gestos ("Aguarde #5"). "Itens" e não "pipelines"
+  // porque a cadeia atravessa componentes de desenho: dizer pipeline seria
+  // mentira quando um Aguarde está no meio.
+  const realceRotulo = useMemo(() => {
+    const f = realce.foco
+    if (!f || !realce.cadeia) return null
+    if (f.tipo === 'no') return rotuloPontaGesto(pontaDoCanvas(f.id))
+    const a = edges.find(e => e.id === f.id)
+    if (!a) return null
+    return `${rotuloPontaGesto(pontaDoCanvas(a.source))} → ${rotuloPontaGesto(pontaDoCanvas(a.target))}`
+  }, [realce.foco, realce.cadeia, edges, rotuloPontaGesto])
+  const realceTextos = useMemo(() => {
+    const c = realce.cadeia
+    if (!c) return { tras: null, frente: null }
+    const ehAresta = realce.foco?.tipo === 'aresta'
+    const it = (n: number) => (n === 1 ? 'item' : 'itens')
+    return {
+      tras: realce.sentido === 'frente' ? null
+        : ehAresta ? `${c.qtdTras} ${it(c.qtdTras)} antes desta ligação`
+        : c.qtdTras === 0 ? 'não depende de nenhum item'
+        : `depende de ${c.qtdTras} ${it(c.qtdTras)}`,
+      frente: realce.sentido === 'tras' ? null
+        : ehAresta ? `${c.qtdFrente} ${it(c.qtdFrente)} depois desta ligação`
+        : c.qtdFrente === 0 ? 'nenhum item depende deste'
+        : `${c.qtdFrente} ${it(c.qtdFrente)} ${c.qtdFrente === 1 ? 'depende' : 'dependem'} deste`,
+    }
+  }, [realce.cadeia, realce.foco, realce.sentido])
+
+  // Esc apaga o realce. Handler próprio (o MalhaEditor não tinha teclado) e
+  // deliberadamente inerte quando não há realce: nenhum preventDefault, nenhum
+  // stopPropagation — o Esc dos modais segue sendo tratado pelo Modal.
+  useEffect(() => {
+    if (!realce.foco) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') realceLimpar() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [realce.foco, realceLimpar])
+
   async function confirmarExclusao() {
     if (!delEdges || delEdges.length === 0) return
     setExcluindo(true)
@@ -1862,8 +1917,8 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             </div>
           )}
           <ReactFlow
-            nodes={nodes}
-            edges={edges}
+            nodes={realce.nodesRealce}
+            edges={realce.edgesRealce}
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
@@ -1871,6 +1926,12 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             onBeforeDelete={handleBeforeDelete}
             onDrop={onDrop}
             onDragOver={onDragOver}
+            /* (F1) Clique acende a cadeia. A seleção nativa do React Flow
+               continua acontecendo por baixo — é ela que move os botões de
+               excluir/agendamento; o realce só soma. */
+            onNodeClick={(_, node) => realceFocarNo(node.id)}
+            onEdgeClick={(_, edge) => realceFocarAresta(edge.id)}
+            onPaneClick={() => realceLimpar()}
             onNodeDoubleClick={(_, node) => {
               // F13: duplo clique no Início abre o painel de agendamento —
               // o nó é a porta (Decisão 8); travado/sem 075 não abre.
@@ -1892,6 +1953,24 @@ function MalhaEditorInner({ malha, readOnly = false }: Props) {
             <Background gap={18} size={1} />
             <Controls />
             <MiniMap pannable zoomable nodeColor={miniMapColor} className="!bg-panel" />
+
+            {/* (F1) Painel do realce — nos dois modos; some sem foco. */}
+            {realce.cadeia && realceRotulo && (
+              <Panel position="top-left">
+                <PainelRealce
+                  foco={realceRotulo}
+                  sentido={realce.sentido}
+                  onSentido={realce.mudarSentido}
+                  isolar={realce.isolar}
+                  onIsolar={realce.alternarIsolar}
+                  onLimpar={realce.limpar}
+                  textoTras={realceTextos.tras}
+                  textoFrente={realceTextos.frente}
+                  acesos={realce.cadeia.nos.size}
+                  total={nodes.length}
+                />
+              </Panel>
+            )}
 
             {/* Barra de ações (topo direita) — selo nos modos de leitura. */}
             <Panel position="top-right">
