@@ -26,6 +26,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { apiFetch } from '../../lib/api'
+import { normalizeBusca } from '../../lib/busca'
 import { Button } from '../ui/Button'
 import { Modal } from '../ui/Modal'
 import { toast } from '../ui/Toast'
@@ -318,11 +319,6 @@ const PALETA_CATEGORIAS: PaletaCategoria[] = [
     ],
   },
 ]
-
-// Normaliza p/ busca acento-insensível (case + diacríticos simples).
-function normalizeBusca(s: string): string {
-  return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-}
 
 // Um item arrastável da paleta. Aberto → linha (chip à esquerda + label à
 // direita), estilo lista do designer. Colapsado → só o chip (faixa fininha).

@@ -41,14 +41,38 @@ class FakeDb:
     com_074=False (default, mesmo padrão do com_073 da F5) simula o banco SEM a
     coluna etl_malha.orientacao: o guard COL_LENGTH devolve NULL, a API degrada
     para 'horizontal' e qualquer UPDATE da coluna nesse estado LEVANTA no dublê
-    (chegar lá é bug de degradação)."""
+    (chegar lá é bug de degradação).
 
-    def __init__(self, pipelines=None, com_tabelas=True, com_074=False):
+    com_agenda=False (default) simula o banco SEM etl_malha.agendamento_json /
+    etl_pipeline.agenda_no e SEM as tabelas de execução/dependência da 067:
+    os agregados do card (última execução, filtro de dependentes, agendamento
+    próprio da malha) degradam sem quebrar a lista — tocar essas tabelas nesse
+    estado LEVANTA aqui, como no com_tabelas.
+
+    `nos_inicio` modela o MÍNIMO da 075 que a lista precisa: quais malhas têm
+    nó Início e qual raiz está ASSINADA por ele (etl_pipeline.agenda_no). É o
+    que separa agendamento VIGENTE de agendamento apenas guardado — o desenho
+    completo (etl_malha_no/aresta) continua sendo assunto do dublê da F10."""
+
+    def __init__(self, pipelines=None, com_tabelas=True, com_074=False,
+                 com_agenda=False, com_067=False, execucoes=None,
+                 dependencias=None, nos_inicio=None):
         # pipelines: {grafia_oficial: {"active": 1, "criticidade": "Alta",
-        #                              "schedule_type": "daily"}}
+        #                              "schedule_type": "daily", "jobs": 3,
+        #                              "schedule_hour": 6, ...}}
         self.pipelines = pipelines or {}
         self.com_tabelas = com_tabelas
         self.com_074 = com_074
+        self.com_agenda = com_agenda
+        self.com_067 = com_067
+        # execucoes: [{"pipeline", "status", "inicio", "criado_em"}] — a ordem
+        # da lista é a de INSERÇÃO (o desempate por id DESC do SQL real).
+        self.execucoes: list[dict] = list(execucoes or [])
+        # dependencias: [(pipeline_dependente, depende_de)] — as linhas da 067.
+        self.dependencias: list = [tuple(d) for d in (dependencias or ())]
+        # nos_inicio: {malha: [pipelines com agenda_no apontando p/ o Início]}
+        # — lista VAZIA = Início desenhado mas sem nenhuma raiz assinada.
+        self.nos_inicio: dict = dict(nos_inicio or {})
         self.malhas: dict[str, dict] = {}   # grafia_oficial -> linha
         self.membros: list[dict] = []       # {"malha", "pipeline", "layout_x", "layout_y"}
         self.commits = 0
@@ -104,15 +128,73 @@ class FakeCur:
         if "OBJECT_ID('dbo.etl_malha'" in s:
             self._rows = [(1, 1)] if db.com_tabelas else [(None, None)]
             return
+        # Guard das colunas de agendamento da 075 (agendamento_json/agenda_no).
+        # Tem de vir ANTES do guard da 074 — o prefixo COL_LENGTH é o mesmo.
+        # O nome do flag é `com_agenda` (o mesmo da F13) e não `com_075`: as
+        # subclasses da F10 já usam com_075 para as TABELAS de nó/aresta.
+        if "COL_LENGTH('dbo.etl_malha', 'agendamento_json')" in s:
+            self._rows = [(8, 4)] if (db.com_tabelas and db.com_agenda) \
+                else [(None, None)]
+            return
         # Guard da coluna orientacao (074): COL_LENGTH devolve NULL para coluna
         # ausente sem estourar — inclusive sem a própria tabela.
         if "COL_LENGTH('dbo.etl_malha'" in s:
             self._rows = [(12,)] if (db.com_tabelas and db.com_074) else [(None,)]
             return
+        # Tabelas da 075: existem exatamente quando as COLUNAS de agendamento
+        # existem (vieram na mesma migration). O desenho em si não é modelado
+        # aqui — só o Início e a assinatura agenda_no, via nos_inicio.
+        if "OBJECT_ID('dbo.etl_malha_no'" in s:
+            self._rows = [(1, 1)] if db.com_agenda else [(None, None)]
+            return
+        if s.startswith("SELECT DISTINCT n.malha_name FROM dbo.etl_malha_no n"):
+            if not db.com_agenda:
+                raise RuntimeError("Invalid object name 'dbo.etl_malha_no'")
+            # Só entra quem tem Início COM raiz assinada: Início sem raiz (lista
+            # vazia) é agendamento guardado, não vigente.
+            self._rows = [(m,) for m, raizes in sorted(db.nos_inicio.items())
+                          if raizes]
+            return
+        # Guards das tabelas da 067 (dependência e execução) — os agregados do
+        # card degradam sem elas, e tocá-las nesse estado é bug de degradação.
+        if "OBJECT_ID('dbo.etl_pipeline_dependencia'" in s:
+            self._rows = [(1,)] if db.com_067 else [(None,)]
+            return
+        if "OBJECT_ID('dbo.etl_pipeline_execucao'" in s:
+            self._rows = [(1, 1)] if db.com_067 else [(None, None)]
+            return
+        if not db.com_067 and ("etl_pipeline_dependencia" in s
+                               or "etl_pipeline_execucao" in s):
+            raise RuntimeError("Invalid object name 'dbo.etl_pipeline_execucao'")
         # A checagem única do router precisa impedir QUALQUER toque nas
         # tabelas quando elas não existem — chegar aqui é bug de degradação.
         if not db.com_tabelas and "etl_malha" in s:
             raise RuntimeError("Invalid object name 'dbo.etl_malha'")
+
+        # ── agregados do card da lista (etapas · gatilho · última execução) ──
+        if s.startswith("SELECT DISTINCT pipeline_name FROM dbo.etl_pipeline_dependencia"):
+            self._rows = [(p,) for p in sorted({d[0] for d in db.dependencias})]
+            return
+        if s.startswith("SELECT pipeline_name, depende_de FROM dbo.etl_pipeline_dependencia"):
+            self._rows = sorted(db.dependencias)
+            return
+        if "CROSS APPLY" in s and "etl_pipeline_execucao" in s:
+            # TOP 1 por pipeline MEMBRO, por COALESCE(inicio, criado_em),
+            # desempatando pela ordem de inserção (o id DESC real). A
+            # composição por malha é do router, em Python.
+            membros_pipes = {m["pipeline"].casefold() for m in db.membros}
+            melhor: dict[str, tuple] = {}
+            for i, e in enumerate(db.execucoes):
+                pk = str(e["pipeline"]).casefold()
+                if pk not in membros_pipes:
+                    continue
+                momento = e.get("inicio") or e["criado_em"]
+                atual = melhor.get(pk)
+                if atual is None or (momento, i) > (atual[0], atual[1]):
+                    melhor[pk] = (momento, i, e)
+            self._rows = [(v[2]["pipeline"], v[2]["status"], v[0])
+                          for _, v in sorted(melhor.items())]
+            return
 
         # ── SELECTs em etl_malha ────────────────────────────────────────────
         if s.startswith("SELECT malha_name FROM dbo.etl_malha WHERE"):
@@ -121,8 +203,10 @@ class FakeCur:
             return
         if s.startswith("SELECT malha_name, descricao"):
             # Com a 074 o router pede a coluna extra; sem ela o SQL é o de
-            # sempre — o dublê espelha as DUAS formas.
+            # sempre — o dublê espelha as DUAS formas. Idem agendamento_json
+            # (075), aditivo só na listagem.
             tem_orientacao = ", orientacao" in s
+            tem_agendamento = ", agendamento_json" in s
 
             def linha(k):
                 m = db.malhas[k]
@@ -130,6 +214,8 @@ class FakeCur:
                         m["criado_por"], m["atualizado_em"]]
                 if tem_orientacao:
                     cols.append(m.get("orientacao", "horizontal"))
+                if tem_agendamento:
+                    cols.append(m.get("agendamento_json"))
                 return tuple(cols)
             if "WHERE malha_name = ?" in s:
                 k = db._malha_key(params[0])
@@ -161,8 +247,23 @@ class FakeCur:
                     if pk is None:
                         continue
                     p = db.pipelines[pk]
+                    # A listagem pede as etapas (COUNT correlacionado em
+                    # etl_pipeline_job) e as colunas de cron do membro — os
+                    # insumos de qtd_etapas e do gatilho derivado.
                     out.append((db._malha_key(m["malha"]), p.get("active", 1),
-                                p.get("criticidade") or "Media"))
+                                p.get("criticidade") or "Media",
+                                p.get("jobs", 0), pk,
+                                p.get("schedule_type"),
+                                p.get("schedule_hour"),
+                                p.get("schedule_minute"),
+                                p.get("schedule_dow"),
+                                p.get("schedule_dom"),
+                                p.get("horarios_especificos"),
+                                p.get("dias_semana"),
+                                p.get("dias_horarios_mes"),
+                                p.get("somente_dias_uteis", 0),
+                                p.get("calendario_nome"),
+                                p.get("hora_virada")))
                 self._rows = out
             return
 
@@ -280,6 +381,45 @@ _PIPES = {
     "PIPE_ESTOQUE": {"active": 0, "criticidade": "Baixa",   "schedule_type": "on_demand"},
     "PIPE_FISCAL":  {"active": 1, "criticidade": "Critica", "schedule_type": "daily"},
     "PIPE_SEM_CRIT": {"active": 1, "criticidade": None,     "schedule_type": "weekly"},
+}
+
+# Pipelines dos agregados do CARD (etapas · gatilho · última execução): as
+# etapas em `jobs` (o COUNT de etl_pipeline_job) e as colunas de cron reais.
+_PIPES_CARD = {
+    # Duas raízes no MESMO cron diário das 06:00 — o caso "06:00 (2 pipelines)"
+    "P_RAIZ_A":    {"active": 1, "criticidade": "Alta", "jobs": 4,
+                    "schedule_type": "daily", "schedule_hour": 6,
+                    "schedule_minute": 0},
+    "P_RAIZ_B":    {"active": 1, "criticidade": "Media", "jobs": 3,
+                    "schedule_type": "daily", "schedule_hour": 6,
+                    "schedule_minute": 0},
+    # Raiz mais tarde: cria o caso "horários distintos"
+    "P_RAIZ_TARDE": {"active": 1, "criticidade": "Baixa", "jobs": 2,
+                     "schedule_type": "daily", "schedule_hour": 22,
+                     "schedule_minute": 30},
+    # Dependente: TEM cron gravado, mas o gerador o troca por schedule=None —
+    # não pode contar como gatilho da malha.
+    "P_FILHO":     {"active": 1, "criticidade": "Alta", "jobs": 3,
+                    "schedule_type": "daily", "schedule_hour": 8,
+                    "schedule_minute": 0},
+    # Sob demanda de verdade
+    "P_MANUAL":    {"active": 0, "criticidade": "Baixa", "jobs": 1,
+                    "schedule_type": "on_demand", "schedule_hour": 6,
+                    "schedule_minute": 0},
+    # INATIVO com cron mais cedo: DAG pausada no Airflow (a tela de pipelines
+    # sincroniza) e a SP de geração filtra active=1 — não dispara nada.
+    "P_INATIVO_CEDO": {"active": 0, "criticidade": "Alta", "jobs": 2,
+                       "schedule_type": "daily", "schedule_hour": 4,
+                       "schedule_minute": 0},
+    # Cron com qualificadores (dias úteis + calendário + virada)
+    "P_RAIZ_UTEIS": {"active": 1, "criticidade": "Media", "jobs": 1,
+                     "schedule_type": "daily", "schedule_hour": 6,
+                     "schedule_minute": 0, "somente_dias_uteis": 1,
+                     "calendario_nome": "BR", "hora_virada": "21:00"},
+    # Fora de qualquer malha — as etapas dele NÃO podem entrar na conta
+    "P_DE_FORA":   {"active": 1, "criticidade": "Critica", "jobs": 99,
+                    "schedule_type": "daily", "schedule_hour": 5,
+                    "schedule_minute": 0},
 }
 
 
@@ -522,6 +662,298 @@ def test_detalhe_malha_inexistente_404(client, auth_editor):
     with _patch_db(db):
         r = client.get("/malhas/NAO_EXISTE")
     assert r.status_code == 404
+
+
+# ── agregados do card: etapas · última execução · gatilho ────────────────────
+# Os três campos que o operador lê no card da tela Malha. São ADITIVOS no
+# contrato (front antigo ignora) e cada um degrada sozinho — os testes cobrem
+# tanto o cálculo quanto o deploy parcial.
+
+def _montar(client, malha, pipelines):
+    client.post("/malhas", json={"malha_name": malha})
+    for p in pipelines:
+        client.post(f"/malhas/{malha}/pipelines", json={"pipeline_name": p})
+
+
+def test_qtd_etapas_soma_so_os_membros(client, auth_editor):
+    """'4 pipelines, 10 etapas': a soma é das linhas de etl_pipeline_job dos
+    MEMBROS — pipeline de fora da malha (com 99 jobs) não entra na conta."""
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=True)
+    with _patch_db(db):
+        _montar(client, "M1", ["P_RAIZ_A", "P_RAIZ_B", "P_MANUAL"])
+        _montar(client, "M2", ["P_RAIZ_A"])
+        r = client.get("/malhas")
+    m1, m2 = r.json()["malhas"]
+    assert (m1["qtd_pipelines"], m1["qtd_etapas"]) == (3, 4 + 3 + 1)
+    assert (m2["qtd_pipelines"], m2["qtd_etapas"]) == (1, 4)
+
+
+def test_qtd_etapas_de_malha_sem_membros_e_zero(client, auth_editor):
+    """Malha vazia: zero etapas, sem execução e sem gatilho inventado."""
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=True)
+    with _patch_db(db):
+        client.post("/malhas", json={"malha_name": "VAZIA"})
+        r = client.get("/malhas")
+    vazia = r.json()["malhas"][0]
+    assert vazia["qtd_etapas"] == 0
+    assert vazia["ultima_execucao"] is None
+    assert vazia["gatilho"]["origem"] == "nenhum"
+    assert vazia["gatilho"]["resumo"] == "sob demanda"
+
+
+def test_ultima_execucao_e_a_mais_recente_entre_os_membros(client, auth_editor):
+    """A corrida mais recente entre os MEMBROS, por início — não a última
+    inserida nem a de maior data_referencia."""
+    db = FakeDb(
+        pipelines=_PIPES_CARD, com_067=True,
+        execucoes=[
+            {"pipeline": "P_RAIZ_A", "status": "SUCESSO",
+             "inicio": datetime(2026, 8, 3, 6, 0, 12),
+             "criado_em": datetime(2026, 8, 3, 6, 0, 0)},
+            {"pipeline": "P_RAIZ_B", "status": "FALHA",
+             "inicio": datetime(2026, 8, 3, 6, 15, 40),
+             "criado_em": datetime(2026, 8, 3, 6, 15, 0)},
+            # Inserida DEPOIS, mas começou ANTES: não pode vencer.
+            {"pipeline": "P_RAIZ_A", "status": "SUCESSO",
+             "inicio": datetime(2026, 8, 2, 6, 0, 5),
+             "criado_em": datetime(2026, 8, 2, 6, 0, 0)},
+            # De um pipeline que NÃO é membro: nunca aparece.
+            {"pipeline": "P_DE_FORA", "status": "SUCESSO",
+             "inicio": datetime(2026, 8, 3, 23, 59, 0),
+             "criado_em": datetime(2026, 8, 3, 23, 59, 0)},
+        ])
+    with _patch_db(db):
+        _montar(client, "M1", ["P_RAIZ_A", "P_RAIZ_B"])
+        r = client.get("/malhas")
+    assert r.json()["malhas"][0]["ultima_execucao"] == {
+        "em": "2026-08-03 06:15:40", "status": "FALHA",
+        "pipeline": "P_RAIZ_B"}
+
+
+def test_ultima_execucao_de_corrida_que_nao_partiu_usa_criado_em(client, auth_editor):
+    """AGUARDANDO_DEPENDENCIA tem inicio NULL: o registro existe e é o mais
+    recente — some-lo seria esconder do operador que a malha foi acionada."""
+    db = FakeDb(
+        pipelines=_PIPES_CARD, com_067=True,
+        execucoes=[
+            {"pipeline": "P_RAIZ_A", "status": "SUCESSO",
+             "inicio": datetime(2026, 8, 3, 6, 0, 0),
+             "criado_em": datetime(2026, 8, 3, 6, 0, 0)},
+            {"pipeline": "P_FILHO", "status": "AGUARDANDO_DEPENDENCIA",
+             "inicio": None, "criado_em": datetime(2026, 8, 3, 6, 1, 30)},
+        ])
+    with _patch_db(db):
+        _montar(client, "M1", ["P_RAIZ_A", "P_FILHO"])
+        r = client.get("/malhas")
+    assert r.json()["malhas"][0]["ultima_execucao"] == {
+        "em": "2026-08-03 06:01:30", "status": "AGUARDANDO_DEPENDENCIA",
+        "pipeline": "P_FILHO"}
+
+
+def test_malha_sem_execucao_devolve_null(client, auth_editor):
+    """Sem corrida registrada, `null` — a tela diz 'sem execução registrada'
+    em vez de inventar uma data."""
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=True)
+    with _patch_db(db):
+        _montar(client, "M1", ["P_RAIZ_A"])
+        r = client.get("/malhas")
+    assert r.json()["malhas"][0]["ultima_execucao"] is None
+
+
+def test_gatilho_do_agendamento_proprio_da_malha(client, auth_editor):
+    """Malha com agendamento próprio VIGENTE (F13 — Início desenhado e raiz
+    assinada): o resumo sai do MESMO _resumo_agendamento do nó Início — a
+    lista não pode contradizer o diagrama."""
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=True, com_agenda=True,
+                nos_inicio={"M1": ["P_RAIZ_A"]})
+    with _patch_db(db):
+        _montar(client, "M1", ["P_RAIZ_A", "P_RAIZ_TARDE"])
+        db.malhas["M1"]["agendamento_json"] = (
+            '{"schedule_type": "daily", "schedule_hour": 7, '
+            '"schedule_minute": 30}')
+        r = client.get("/malhas")
+    m1 = r.json()["malhas"][0]
+    g = m1["gatilho"]
+    assert g["origem"] == "malha"
+    assert g["resumo"] == "diário 07:30"
+    assert g["horario"] == "07:30"
+    assert g["agendamento"]["schedule_hour"] == 7
+    assert m1["agendamento_guardado"] is False
+
+
+def test_agendamento_sem_inicio_nao_vira_gatilho(client, auth_editor):
+    """GRAVE da revisão: excluir o nó Início desliga TODAS as raízes
+    (on_demand) mas PRESERVA agendamento_json de propósito (§7.3/Decisão 10).
+    Anunciar esse horário no card seria mentira — e permanente, porque não há
+    rota para limpar o agendamento. A precedência tem de cair para os membros;
+    aqui todos ficaram on_demand, então o card diz 'sob demanda' e sinaliza
+    que existe agendamento guardado."""
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=True, com_agenda=True,
+                nos_inicio={})           # Início excluído: nenhum nó sobrou
+    with _patch_db(db):
+        _montar(client, "M1", ["P_MANUAL"])
+        db.malhas["M1"]["agendamento_json"] = (
+            '{"schedule_type": "daily", "schedule_hour": 7, '
+            '"schedule_minute": 30}')
+        r = client.get("/malhas")
+    m1 = r.json()["malhas"][0]
+    assert m1["gatilho"]["origem"] == "nenhum"
+    assert m1["gatilho"]["resumo"] == "sob demanda"
+    assert m1["gatilho"]["horario"] is None
+    assert m1["agendamento_guardado"] is True
+
+
+def test_agendamento_com_inicio_sem_raiz_assinada_nao_vira_gatilho(client, auth_editor):
+    """Mesma mentira pelo outro caminho: agendamento salvo ANTES de o Início
+    ser ligado a qualquer raiz. O nó existe, mas ninguém carrega o cron."""
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=True, com_agenda=True,
+                nos_inicio={"M1": []})   # Início desenhado, nenhuma raiz assinada
+    with _patch_db(db):
+        _montar(client, "M1", ["P_MANUAL"])
+        db.malhas["M1"]["agendamento_json"] = '{"schedule_type": "daily"}'
+        r = client.get("/malhas")
+    m1 = r.json()["malhas"][0]
+    assert m1["gatilho"]["resumo"] == "sob demanda"
+    assert m1["agendamento_guardado"] is True
+
+
+def test_agendamento_inerte_nao_atropela_o_gatilho_dos_membros(client, auth_editor):
+    """Com agendamento guardado E membros em cron, quem manda são os MEMBROS:
+    é o que realmente dispara. A flag continua avisando do agendamento
+    guardado, sem virar horário."""
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=True, com_agenda=True,
+                nos_inicio={})
+    with _patch_db(db):
+        _montar(client, "M1", ["P_RAIZ_A", "P_RAIZ_B"])
+        db.malhas["M1"]["agendamento_json"] = (
+            '{"schedule_type": "daily", "schedule_hour": 23, '
+            '"schedule_minute": 0}')
+        r = client.get("/malhas")
+    m1 = r.json()["malhas"][0]
+    assert m1["gatilho"]["origem"] == "membros"
+    assert m1["gatilho"]["resumo"] == "diário 06:00 (2 pipelines)"
+    assert m1["agendamento_guardado"] is True
+
+
+def test_gatilho_dos_membros_traz_os_qualificadores(client, auth_editor):
+    """MENOR da revisão: o resumo derivado dos membros usa o MESMO schema de
+    campos do agendamento da malha — 'só dias úteis'/'calendário X'/'virada'
+    entram nos dois. Duas verdades para o mesmo campo é contradição na tela."""
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=True)
+    with _patch_db(db):
+        _montar(client, "M1", ["P_RAIZ_UTEIS"])
+        r = client.get("/malhas")
+    g = r.json()["malhas"][0]["gatilho"]
+    assert g["resumo"] == ("diário 06:00 · só dias úteis · calendário BR "
+                           "· virada 21:00 (1 pipeline)")
+
+
+def test_gatilho_derivado_dos_membros_com_cron(client, auth_editor):
+    """Sem agendamento próprio, o gatilho vem dos membros que disparam
+    sozinhos — mesmo cron nos dois: resumo completo + quantidade."""
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=True)
+    with _patch_db(db):
+        _montar(client, "M1", ["P_RAIZ_A", "P_RAIZ_B", "P_MANUAL"])
+        r = client.get("/malhas")
+    g = r.json()["malhas"][0]["gatilho"]
+    assert g["origem"] == "membros"
+    assert g["resumo"] == "diário 06:00 (2 pipelines)"
+    assert g["horario"] == "06:00"
+    assert g["qtd_pipelines"] == 2          # P_MANUAL é on_demand: fora
+    assert [d["pipeline"] for d in g["detalhes"]] == ["P_RAIZ_A", "P_RAIZ_B"]
+
+
+def test_gatilho_com_horarios_distintos_mostra_o_mais_cedo(client, auth_editor):
+    """Horários diferentes: o card mostra o MAIS CEDO e avisa que há outros —
+    esconder os outros faria o operador achar que tudo parte às 06:00."""
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=True)
+    with _patch_db(db):
+        _montar(client, "M1", ["P_RAIZ_A", "P_RAIZ_TARDE"])
+        r = client.get("/malhas")
+    g = r.json()["malhas"][0]["gatilho"]
+    assert g["resumo"] == "06:00 · +1 horário"
+    assert g["horario"] == "06:00"
+    assert g["horarios"] == ["06:00", "22:30"]
+    assert g["qtd_pipelines"] == 2
+
+
+def test_gatilho_ignora_membro_inativo(client, auth_editor):
+    """GRAVE da revisão: membro INATIVO com cron mais cedo tem a DAG PAUSADA
+    no Airflow e é filtrado pela SP de geração (active=1) — ele não dispara.
+    Contá-lo faria o card anunciar 04:00 numa malha que só começa às 06:00, e
+    uma malha 100% inativa anunciaria horário que nunca roda."""
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=True)
+    with _patch_db(db):
+        _montar(client, "M1", ["P_RAIZ_A", "P_INATIVO_CEDO"])
+        _montar(client, "M2", ["P_INATIVO_CEDO"])
+        r = client.get("/malhas")
+    m1, m2 = r.json()["malhas"]
+    assert m1["gatilho"]["resumo"] == "diário 06:00 (1 pipeline)"
+    assert m1["gatilho"]["horario"] == "06:00"     # nunca 04:00
+    assert [d["pipeline"] for d in m1["gatilho"]["detalhes"]] == ["P_RAIZ_A"]
+    # Malha só de inativos: nada dispara — 'sob demanda' é a verdade.
+    assert m2["gatilho"]["origem"] == "nenhum"
+    assert m2["gatilho"]["resumo"] == "sob demanda"
+
+
+def test_gatilho_ignora_membro_com_dependencia(client, auth_editor):
+    """Dependente tem cron gravado, mas o gerador o troca por schedule=None:
+    contá-lo como gatilho seria mentira. Malha só de dependentes → sob
+    demanda."""
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=True,
+                dependencias=[("P_FILHO", "P_RAIZ_A")])
+    with _patch_db(db):
+        _montar(client, "M1", ["P_FILHO"])
+        _montar(client, "M2", ["P_RAIZ_A", "P_FILHO"])
+        r = client.get("/malhas")
+    m1, m2 = r.json()["malhas"]
+    assert m1["gatilho"]["origem"] == "nenhum"
+    assert m1["gatilho"]["resumo"] == "sob demanda"
+    assert m2["gatilho"]["resumo"] == "diário 06:00 (1 pipeline)"
+    assert [d["pipeline"] for d in m2["gatilho"]["detalhes"]] == ["P_RAIZ_A"]
+
+
+def test_gatilho_sob_demanda_quando_ninguem_dispara_sozinho(client, auth_editor):
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=True)
+    with _patch_db(db):
+        _montar(client, "M1", ["P_MANUAL"])
+        r = client.get("/malhas")
+    g = r.json()["malhas"][0]["gatilho"]
+    assert g == {"origem": "nenhum", "resumo": "sob demanda", "horario": None,
+                 "qtd_pipelines": 0, "horarios": [], "detalhes": [],
+                 "agendamento": None}
+
+
+# ── degradação dos agregados (deploy parcial) ────────────────────────────────
+
+def test_sem_075_gatilho_cai_nos_membros(client, auth_editor):
+    """Sem a coluna agendamento_json (075 pendente), o agendamento próprio da
+    malha é ilegível — o gatilho degrada para a derivação dos membros e a
+    lista continua de pé (o dublê LEVANTA se a coluna for lida)."""
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=True, com_agenda=False)
+    with _patch_db(db):
+        _montar(client, "M1", ["P_RAIZ_A", "P_RAIZ_B"])
+        db.malhas["M1"]["agendamento_json"] = '{"schedule_type": "daily"}'
+        r = client.get("/malhas")
+    assert r.status_code == 200
+    g = r.json()["malhas"][0]["gatilho"]
+    assert g["origem"] == "membros"
+    assert g["resumo"] == "diário 06:00 (2 pipelines)"
+
+
+def test_sem_067_lista_sem_ultima_execucao_mas_com_etapas(client, auth_editor):
+    """Sem as tabelas da 067 não há execução para ler nem como saber quem é
+    dependente: `ultima_execucao` fica null, o gatilho sai do schedule_type
+    sozinho e etapas/contagens seguem valendo — nunca 500."""
+    db = FakeDb(pipelines=_PIPES_CARD, com_067=False)
+    with _patch_db(db):
+        _montar(client, "M1", ["P_RAIZ_A", "P_FILHO"])
+        r = client.get("/malhas")
+    assert r.status_code == 200
+    m1 = r.json()["malhas"][0]
+    assert m1["ultima_execucao"] is None
+    assert m1["qtd_etapas"] == 4 + 3
+    assert m1["gatilho"]["qtd_pipelines"] == 2   # sem a 067, ninguém é filho
 
 
 # ── degradação sem a migration 070 ───────────────────────────────────────────

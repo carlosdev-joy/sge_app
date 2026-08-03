@@ -1,18 +1,20 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
+import { normalizeBusca } from '../lib/busca'
 import { useAuthStore } from '../store/auth'
 import { PageSpinner } from '../components/ui/Spinner'
 import { Button } from '../components/ui/Button'
 import { Modal } from '../components/ui/Modal'
-import { Input, Textarea } from '../components/ui/Input'
+import { Input, Select, Textarea } from '../components/ui/Input'
 import { Autocomplete } from '../components/ui/Autocomplete'
 import { toast } from '../components/ui/Toast'
 import { CritBadge } from '../components/malhas/CritBadge'
 import { MalhaEditor } from '../components/malhas/MalhaEditor'
+import { estiloStatus } from '../components/malhas/statusExecucao'
 import {
-  RefreshCw, Network, X,
+  RefreshCw, Network, X, Search, HelpCircle,
   Plus, Edit, Users, Power, Trash2, AlertTriangle, Boxes,
 } from 'lucide-react'
 
@@ -26,6 +28,28 @@ import {
 // DataStage / SMART Folder do Control-M). Nesta fase existe a entidade, os
 // membros e a lista; o diagrama de montagem (MalhaEditor) chega na F8.
 
+// Última corrida registrada entre os pipelines da malha. `em` é o INÍCIO da
+// corrida (a API cai em criado_em quando ela ainda não partiu) — nunca a
+// data_referencia, que é o dia de PROCESSAMENTO e pode estar longe do relógio.
+interface UltimaExecucao {
+  em: string | null
+  status: string
+  pipeline: string
+}
+
+// Resumo do horário de disparo. `origem` diz de ONDE ele saiu, e é o que
+// permite o tooltip ser honesto: 'malha' = agendamento próprio (nó Início),
+// 'membros' = derivado dos pipelines que disparam sozinhos, 'nenhum' = a
+// malha só anda por disparo manual.
+interface Gatilho {
+  origem: 'malha' | 'membros' | 'nenhum'
+  resumo: string
+  horario: string | null
+  qtd_pipelines: number
+  horarios: string[]
+  detalhes: { pipeline: string; resumo: string; horario: string }[]
+}
+
 interface ApiMalha {
   malha_name: string
   descricao: string | null
@@ -34,6 +58,16 @@ interface ApiMalha {
   qtd_pipelines: number
   qtd_ativos: number
   criticidade: string | null // agregada = a mais alta entre os membros
+  // Aditivos do card. Opcionais de propósito: numa API antiga (deploy parcial
+  // do front) a chave não vem e a linha correspondente some, em vez de a tela
+  // exibir "undefined etapas".
+  qtd_etapas?: number
+  ultima_execucao?: UltimaExecucao | null
+  gatilho?: Gatilho | null
+  // Há agendamento salvo na malha que NÃO está vigente (o Início foi excluído,
+  // ou ainda não foi desenhado): nenhuma raiz o carrega, então ele não é
+  // gatilho — mas continua guardado e volta a valer quando o Início religar.
+  agendamento_guardado?: boolean
 }
 
 interface MalhasResponse {
@@ -63,6 +97,47 @@ function formataData(iso: string | null): string | null {
   return isNaN(d.getTime()) ? iso : d.toLocaleDateString('pt-BR')
 }
 
+// Data E hora curtas ("03/08 13:47") — o card precisa das duas: só a data não
+// distingue duas corridas do mesmo dia, e só a hora esconde que a última foi
+// na semana passada. O ano fica no title (formataDataHoraLonga).
+function formataDataHora(iso: string | null | undefined): string | null {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  const dia = d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
+  const hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  return `${dia} ${hora}`
+}
+
+function formataDataHoraLonga(iso: string | null | undefined): string | null {
+  if (!iso) return null
+  const d = new Date(iso)
+  return isNaN(d.getTime()) ? iso : d.toLocaleString('pt-BR')
+}
+
+// Explicação do gatilho no title — é aqui que a tela para de mentir: o resumo
+// curto cabe no card, mas de ONDE ele veio (e quais pipelines disparam) só
+// cabe no tooltip.
+function tituloGatilho(g: Gatilho): string {
+  if (g.origem === 'malha') {
+    return `Agendamento da própria malha (nó Início): ${g.resumo}\n`
+      + 'Todos os pipelines raiz ligados ao Início disparam neste horário.'
+  }
+  if (g.origem === 'membros') {
+    const linhas = g.detalhes.map(d => `• ${d.pipeline} — ${d.resumo}`).join('\n')
+    return `A malha não tem agendamento próprio — o horário é derivado dos `
+      + `${g.qtd_pipelines} pipeline(s) que disparam sozinhos:\n${linhas}`
+  }
+  return 'Nenhum pipeline desta malha dispara sozinho: ela anda por disparo '
+    + 'manual ou por dependência de um pipeline de fora.'
+}
+
+const AVISO_AGENDA_GUARDADA =
+  'Esta malha tem um agendamento salvo que NÃO está em vigor: nenhum pipeline '
+  + 'raiz está ligado ao componente Início, então nada dispara por ele. '
+  + 'Desenhe o Início e ligue-o às raízes para o agendamento voltar a valer — '
+  + 'a configuração continua guardada.'
+
 // ─── Card de malha (mesma linguagem do PipelineCard) ─────────────────────────
 
 function MalhaCard({ malha, onAbrir, onMembros, onRenomear, onToggle }: {
@@ -74,6 +149,9 @@ function MalhaCard({ malha, onAbrir, onMembros, onRenomear, onToggle }: {
 }) {
   const ativa = !!malha.ativo
   const criado = formataData(malha.criado_em)
+  const ultima = malha.ultima_execucao ?? null
+  const estilo = ultima ? estiloStatus(ultima.status) : null
+  const gatilho = malha.gatilho ?? null
   return (
     <div className="bg-panel border border-edge rounded-lg px-4 py-3 flex flex-col gap-2 hover:shadow-md hover:border-[#1A5FA8]/40 transition-all">
       <div className="flex items-center gap-2 flex-wrap">
@@ -89,8 +167,38 @@ function MalhaCard({ malha, onAbrir, onMembros, onRenomear, onToggle }: {
       {malha.descricao && (
         <p className="text-[11px] text-dim line-clamp-2">{malha.descricao}</p>
       )}
-      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-dim">
-        <span>⚙ {malha.qtd_pipelines} pipeline{malha.qtd_pipelines !== 1 ? 's' : ''} ({malha.qtd_ativos} ativo{malha.qtd_ativos !== 1 ? 's' : ''})</span>
+      <div className="flex flex-col gap-0.5 text-[11px] text-dim">
+        <span title="Pipelines membros e o total de etapas (jobs) somando todos eles — a complexidade da malha">
+          ⚙ {malha.qtd_pipelines} pipeline{malha.qtd_pipelines !== 1 ? 's' : ''} ({malha.qtd_ativos} ativo{malha.qtd_ativos !== 1 ? 's' : ''})
+          {typeof malha.qtd_etapas === 'number' && (
+            <> · {malha.qtd_etapas} etapa{malha.qtd_etapas !== 1 ? 's' : ''}</>
+          )}
+        </span>
+        {gatilho && (
+          <span className="truncate" title={tituloGatilho(gatilho)}>
+            🕒 gatilho: {gatilho.resumo}
+          </span>
+        )}
+        {malha.agendamento_guardado && (
+          <span className="truncate text-amber-700 dark:text-amber-400" title={AVISO_AGENDA_GUARDADA}>
+            ⚠ agendamento guardado, sem Início ligado
+          </span>
+        )}
+        {ultima ? (
+          <span
+            className="flex items-center gap-1 min-w-0"
+            title={`${ultima.pipeline} · ${ultima.status}`
+              + (formataDataHoraLonga(ultima.em) ? ` · ${formataDataHoraLonga(ultima.em)}` : '')}
+          >
+            <span className="shrink-0">▶ última execução: {formataDataHora(ultima.em) ?? '—'}</span>
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${estilo!.dot}`} />
+            <span className="truncate">{estilo!.rotulo}</span>
+          </span>
+        ) : (
+          <span className="italic" title="Nenhuma corrida registrada para os pipelines desta malha">
+            ▶ sem execução registrada
+          </span>
+        )}
         {criado && <span>📅 criada em {criado}</span>}
       </div>
       <div className="flex flex-wrap gap-1.5 pt-2 border-t border-edge mt-auto">
@@ -346,19 +454,116 @@ function MembrosModal({ malhaName, onClose }: { malhaName: string; onClose: () =
   )
 }
 
+// ─── Modal: o que é a malha (ajuda da tela) ──────────────────────────────────
+// A explicação vive AQUI, atrás de um botão, e não como texto fixo na página:
+// o espaço da tela é dos cards. O conteúdo é o mesmo do §1.3 do manual do
+// usuário — as duas fontes precisam contar a MESMA história.
+
+function AjudaMalhaModal({ onClose }: { onClose: () => void }) {
+  return (
+    <Modal open onClose={onClose} title="O que é a malha?" size="lg">
+      <div className="flex flex-col gap-4 text-sm text-ink leading-relaxed">
+
+        <p>
+          Uma <strong>malha</strong> é um agrupamento de pipelines que rodam juntos
+          como um processo só — o equivalente à sequence mestre do DataStage ou a
+          uma pasta SMART do Control-M. A malha <strong>não executa nada por si</strong>:
+          ela é a planta de como os pipelines se encadeiam.
+        </p>
+
+        <div>
+          <h3 className="text-sm font-semibold text-ink mb-1.5">A tela tem dois níveis</h3>
+
+          <p className="text-[13px] text-dim">
+            <strong className="text-ink">1. A lista</strong> (esta tela) — cada card é
+            uma malha, com nome, se está ativa, criticidade (a mais alta entre os
+            pipelines dela), o tamanho (pipelines e etapas), o horário de gatilho e a
+            última execução. Daqui você abre a malha, gerencia os pipelines membros,
+            renomeia ou inativa. Inativar não apaga nada: só faz a malha parar de
+            emitir notificações e avisos de conclusão — as dependências e o
+            agendamento já criados continuam valendo.
+          </p>
+
+          <p className="text-[13px] text-dim mt-2">
+            <strong className="text-ink">2. O diagrama</strong> (ao abrir uma malha) —
+            tem dois modos:
+          </p>
+          <ul className="mt-1.5 flex flex-col gap-2 text-[13px] text-dim">
+            <li className="border-l-2 border-edge pl-3">
+              <strong className="text-ink">Montagem</strong>: onde você desenha.
+              Arrastar uma seta entre dois pipelines <strong>cadastra a dependência de
+              verdade</strong> — o pipeline de destino passa a esperar o de origem
+              concluir com sucesso no mesmo dia de processamento. O desenho <em>é</em> a
+              configuração, não um diagrama decorativo. Aqui também ficam os quatro
+              componentes: <strong className="text-ink">Início</strong> (agenda a malha
+              inteira de uma vez — o horário configurado nele é copiado para os
+              primeiros pipelines), <strong className="text-ink">Aguarde</strong> (junta
+              várias pernas: tudo que entra precisa <strong className="text-ink">concluir com
+              sucesso</strong> antes do que sai começar),
+              <strong className="text-ink"> Notificação</strong> (avisa no painel e no Teams
+              quando todas as entradas dele concluírem com sucesso) e{' '}
+              <strong className="text-ink">Fim</strong> (registra a conclusão da malha no dia;
+              o card no Teams é opcional).
+            </li>
+            <li className="border-l-2 border-edge pl-3">
+              <strong className="text-ink">Execução</strong>: onde você acompanha.
+              Escolhe um dia e vê o que aconteceu — cada pipeline com seu status, o
+              Aguarde mostrando se as entradas concluíram, Notificação e Fim acesos com o
+              horário em que dispararam, e o banner verde quando a malha inteira
+              concluiu. É aqui também que fica o botão <strong className="text-ink">Disparar
+              malha</strong>, que roda tudo manualmente com a data que você está vendo;
+              as dependências fazem o resto andar sozinho.
+            </li>
+          </ul>
+
+          <p className="text-[13px] text-dim mt-2">
+            O critério é sempre o mesmo: <strong className="text-ink">todas as entradas com
+            SUCESSO na mesma data de referência</strong>. Falha, execução em andamento ou
+            pulado não liberam nada — a malha segura e a guardiã alerta.
+          </p>
+        </div>
+
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 dark:border-amber-800 dark:bg-amber-900/20">
+          <h3 className="text-[13px] font-semibold text-amber-800 dark:text-amber-300 mb-1">
+            A regra que evita surpresa
+          </h3>
+          <p className="text-[12px] text-amber-800 dark:text-amber-200 leading-relaxed">
+            A dependência é <strong>global</strong>, não pertence à malha. Se dois
+            desenhos usam o mesmo par de pipelines, é a mesma dependência: por isso uma
+            dependência criada pelo componente de uma malha aparece <strong>com
+            cadeado</strong> nas outras e só pode ser desfeita pela malha que a criou.
+            Do mesmo jeito, um pipeline só pode ser agendado pelo Início de uma malha
+            por vez.
+          </p>
+        </div>
+
+        <div className="flex justify-end pt-1">
+          <Button variant="secondary" onClick={onClose}>Entendi</Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 // ─── Visão Malhas (lista) ────────────────────────────────────────────────────
 
 function MalhasView({ onAbrir }: { onAbrir: (malha: string) => void }) {
   const [showCriar, setShowCriar] = useState(false)
   const [renomear, setRenomear] = useState<ApiMalha | null>(null)
   const [membrosDe, setMembrosDe] = useState<string | null>(null)
+  // Filtro CLIENT-SIDE: o endpoint devolve a lista inteira (dezenas de
+  // malhas, não milhares) — filtrar aqui responde a cada tecla sem round-trip.
+  const [busca, setBusca] = useState('')
+  const [statusFiltro, setStatusFiltro] = useState('')
 
   const qc = useQueryClient()
   const { data, isLoading, isError, error, refetch } = useQuery<MalhasResponse>({
     queryKey: ['malhas'],
     queryFn: () => apiFetch('/malhas'),
   })
-  const malhas = data?.malhas ?? []
+  // useMemo (e não `data?.malhas ?? []` solto): o `[]` de fallback nasce novo
+  // a cada render e faria o filtro abaixo recalcular sempre.
+  const malhas = useMemo(() => data?.malhas ?? [], [data])
   const migrationPendente = data?.migration_pendente === true
 
   const toggleMut = useMutation({
@@ -380,8 +585,25 @@ function MalhasView({ onAbrir }: { onAbrir: (malha: string) => void }) {
     toggleMut.mutate(m)
   }
 
-  const ativas = malhas.filter(m => m.ativo).length
-  const totalPipelines = malhas.reduce((s, m) => s + m.qtd_pipelines, 0)
+  const filtradas = useMemo(() => {
+    const q = normalizeBusca(busca.trim())
+    return malhas.filter(m => {
+      if (statusFiltro === '1' && !m.ativo) return false
+      if (statusFiltro === '0' && m.ativo) return false
+      if (!q) return true
+      return normalizeBusca(m.malha_name).includes(q)
+        || normalizeBusca(m.descricao ?? '').includes(q)
+    })
+  }, [malhas, busca, statusFiltro])
+
+  const filtroAtivo = busca.trim() !== '' || statusFiltro !== ''
+  const ativas = filtradas.filter(m => m.ativo).length
+  const totalPipelines = filtradas.reduce((s, m) => s + m.qtd_pipelines, 0)
+  // Só soma etapas se a API DEVOLVEU o campo (deploy parcial com API antiga):
+  // `?? 0` mostraria "0 etapas" para malhas com centenas — a mesma regra de
+  // omissão que o card usa, senão a stats bar contradiz os cards.
+  const temEtapas = filtradas.some(m => typeof m.qtd_etapas === 'number')
+  const totalEtapas = filtradas.reduce((s, m) => s + (m.qtd_etapas ?? 0), 0)
 
   return (
     <div className="flex flex-col gap-4">
@@ -396,6 +618,37 @@ function MalhasView({ onAbrir }: { onAbrir: (malha: string) => void }) {
 
       {/* Toolbar */}
       <div className="flex flex-wrap gap-2 items-center">
+        <div className="relative">
+          <Search size={14} className="absolute left-2.5 top-2.5 text-dim pointer-events-none" />
+          <input
+            type="search"
+            value={busca}
+            onChange={e => setBusca(e.target.value)}
+            placeholder="Buscar por nome ou descrição…"
+            aria-label="Buscar malha por nome ou descrição"
+            className="w-72 bg-panel border border-edge text-ink rounded-md pl-8 pr-3 py-1.5 text-sm placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
+        <Select
+          value={statusFiltro}
+          onChange={e => setStatusFiltro(e.target.value)}
+          title="Filtrar por situação da malha"
+          aria-label="Filtrar por situação da malha"
+          className="w-32"
+        >
+          <option value="">Todas</option>
+          <option value="1">Ativas</option>
+          <option value="0">Inativas</option>
+        </Select>
+        {filtroAtivo && (
+          <button
+            onClick={() => { setBusca(''); setStatusFiltro('') }}
+            title="Limpar os filtros"
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-sm border border-edge bg-canvas text-dim hover:text-ink hover:bg-edge/40 transition-colors"
+          >
+            <X size={13} /> Limpar
+          </button>
+        )}
         <div className="flex gap-1 ml-auto">
           <Button
             onClick={() => setShowCriar(true)}
@@ -414,13 +667,21 @@ function MalhasView({ onAbrir }: { onAbrir: (malha: string) => void }) {
         </div>
       </div>
 
-      {/* Stats bar (mesma linguagem das stats-pills do catálogo) */}
+      {/* Stats bar (mesma linguagem das stats-pills do catálogo). Com filtro
+          ligado a 1ª pílula vira "N de M" — a conta some do rodapé e o
+          operador nunca acha que a lista inteira encolheu. */}
       {!isLoading && !isError && malhas.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {[
-            { label: `${malhas.length}`, sub: `malha${malhas.length !== 1 ? 's' : ''}` },
+            {
+              label: filtroAtivo ? `${filtradas.length} de ${malhas.length}` : `${malhas.length}`,
+              sub: `malha${malhas.length !== 1 ? 's' : ''}`,
+            },
             { label: `${ativas}`, sub: `ativa${ativas !== 1 ? 's' : ''}` },
             { label: `${totalPipelines}`, sub: `pipeline${totalPipelines !== 1 ? 's' : ''} agrupados` },
+            ...(temEtapas
+              ? [{ label: `${totalEtapas}`, sub: `etapa${totalEtapas !== 1 ? 's' : ''}` }]
+              : []),
           ].map(s => (
             <div key={s.sub} className="bg-panel border border-edge rounded px-3 py-1.5 flex items-center gap-1.5">
               <strong className="text-ink font-bold text-sm">{s.label}</strong>
@@ -451,9 +712,23 @@ function MalhasView({ onAbrir }: { onAbrir: (malha: string) => void }) {
             </Button>
           )}
         </div>
+      ) : filtradas.length === 0 ? (
+        // Estado vazio do FILTRO — diferente de "nenhuma malha cadastrada":
+        // aqui existem malhas, o filtro é que não casou nenhuma.
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <Search size={40} className="text-dim mb-3" />
+          <p className="font-semibold text-ink">Nenhuma malha para este filtro</p>
+          <p className="text-sm text-dim mt-1 max-w-md">
+            As {malhas.length} malha{malhas.length !== 1 ? 's' : ''} cadastrada{malhas.length !== 1 ? 's' : ''} continua{malhas.length !== 1 ? 'm' : ''} lá —
+            ajuste a busca ou a situação.
+          </p>
+          <Button variant="secondary" className="mt-4" onClick={() => { setBusca(''); setStatusFiltro('') }}>
+            <X size={14} /> Limpar filtros
+          </Button>
+        </div>
       ) : (
         <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
-          {malhas.map(m => (
+          {filtradas.map(m => (
             <MalhaCard
               key={m.malha_name}
               malha={m}
@@ -491,9 +766,7 @@ export default function Malha() {
   const [searchParams, setSearchParams] = useSearchParams()
   const malhaAberta = (searchParams.get('malha') ?? '').trim()
   const [membrosAberto, setMembrosAberto] = useState(false)
-  // Aviso da mudança de endereço do catálogo (F9) — dispensável, mesmo padrão
-  // de banner com X que o catálogo desta tela usava.
-  const [avisoCatalogo, setAvisoCatalogo] = useState(true)
+  const [ajudaAberta, setAjudaAberta] = useState(false)
   const user = useAuthStore(s => s.user)
   const isViewer = user?.perfil === 'consulta'
 
@@ -534,32 +807,26 @@ export default function Malha() {
   return (
     <div className="flex flex-col gap-4">
 
-      <div>
-        <h1 className="text-xl font-bold text-ink">Malha de Pipelines</h1>
-        <p className="text-sm text-dim mt-0.5">
-          Agrupe pipelines em malhas — a lente de montagem da orquestração
-        </p>
+      <div className="flex flex-wrap items-start gap-2">
+        <div className="min-w-0">
+          <h1 className="text-xl font-bold text-ink">Malha de Pipelines</h1>
+          <p className="text-sm text-dim mt-0.5">
+            Agrupe pipelines em malhas — a lente de montagem da orquestração
+          </p>
+        </div>
+        {/* A explicação inteira mora no modal, não na página: espaço de tela é
+            para as malhas. */}
+        <Button
+          variant="ghost" size="sm" className="mt-0.5"
+          onClick={() => setAjudaAberta(true)}
+          title="O que é uma malha, o que a lista mostra e o que dá para fazer no diagrama"
+        >
+          <HelpCircle size={14} /> O que é a malha?
+        </Button>
       </div>
 
-      {avisoCatalogo && (
-        <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg px-3 py-2 text-[12px] text-blue-800 dark:text-blue-200">
-          <span>
-            O catálogo de pipelines agora vive em{' '}
-            <Link to="/governanca" className="font-semibold underline underline-offset-2">
-              Catálogo &amp; Lineage
-            </Link>.
-          </span>
-          <button
-            onClick={() => setAvisoCatalogo(false)}
-            className="ml-auto shrink-0 text-blue-400 hover:text-blue-700 dark:hover:text-blue-100 transition-colors"
-            aria-label="Dispensar"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      )}
-
       <MalhasView onAbrir={n => setSearchParams({ malha: n })} />
+      {ajudaAberta && <AjudaMalhaModal onClose={() => setAjudaAberta(false)} />}
     </div>
   )
 }
