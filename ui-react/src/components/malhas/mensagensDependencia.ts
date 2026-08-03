@@ -20,3 +20,15 @@ export const MSG_SELF = 'Pipeline não pode depender de si mesmo'
 export function msgRepublicar(pipeline: string): string {
   return `A DAG de ${pipeline} precisa ser republicada (Pipelines ▸ Publicar nova versão).`
 }
+
+// Texto IDÊNTICO ao de msg_linha_assinada em api/services/dependencias.py
+// (F11/Decisão 4): linha COMPILADA por Aguarde de malha só se mexe pela malha
+// dona — o MalhaEditor (aresta com cadeado) e o DependenciasModal (chip
+// travado) recusam o gesto com a MESMA mensagem que o 422 do servidor daria.
+export function msgLinhaAssinada(
+  pipeline: string, dependeDe: string, malha: string | null, no: number,
+): string {
+  return `A dependência '${pipeline}' → '${dependeDe}' é compilada pelo ` +
+    `Aguarde #${no} da malha '${malha}' — edite pelo desenho da malha ` +
+    '(linha assinada só se mexe pela malha dona).'
+}
