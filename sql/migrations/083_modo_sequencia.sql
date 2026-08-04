@@ -33,3 +33,4 @@ BEGIN
     PRINT '[OK] etl_app_config.dependencia_modo_sequencia criada (padrao 0)';
 END
 GO
+

@@ -698,21 +698,39 @@ def modo_sequencia(conn) -> bool:
     return valor
 
 
-def inicio_do_ciclo_corrente(conn) -> datetime:
-    """Corte do ciclo para o modo sequência: a virada global mais recente, na
-    régua do BANCO (é lá que `fim`/`inicio` são carimbados)."""
-    agora = agora_do_banco(conn)
+JANELA_SEQ_PADRAO_H = 12
+
+
+def janela_sequencia_horas(conn) -> int:
+    """Tamanho da janela do modo sequência, em horas (config, default 12).
+
+    Fora de 1..168 volta ao default: janela de 0 travaria tudo e uma de mil
+    horas deixaria o sucesso da semana passada liberar hoje."""
     try:
         cur = conn.cursor()
         cur.execute("SELECT config_value FROM dbo.etl_app_config "
-                    "WHERE config_key = 'dependencia_hora_virada'")
+                    "WHERE config_key = 'dependencia_janela_sequencia_horas'")
         row = cur.fetchone()
-        bruto = row[0] if row else None
-    except Exception:  # noqa: BLE001 — sem config, meia-noite
-        bruto = None
-    v = _como_time(bruto) or time(0, 0)
-    base = agora.date() if agora.time() >= v else agora.date() - timedelta(days=1)
-    return datetime.combine(base, v)
+        n = int(str(row[0]).strip()) if row and row[0] is not None else JANELA_SEQ_PADRAO_H
+        return n if 1 <= n <= 168 else JANELA_SEQ_PADRAO_H
+    except Exception as e:  # noqa: BLE001
+        print(f"[DEP] janela do modo sequencia indisponivel ({e}) — usando "
+              f"{JANELA_SEQ_PADRAO_H}h")
+        return JANELA_SEQ_PADRAO_H
+
+
+def inicio_do_ciclo_corrente(conn) -> datetime:
+    """Corte do modo sequência: `agora - janela`, na régua do BANCO (é lá que
+    `fim`/`inicio` são carimbados).
+
+    ⚠️ NÃO é a virada do dia, e a diferença é o caso que motivou esta função:
+    malha que começa 23h e termina 01h do dia seguinte. Com o corte na virada
+    (00:00), o filho avaliado à 01h não enxergaria o pai que concluiu às 23h30
+    — a corrida que atravessa a meia-noite travaria em silêncio, justamente o
+    problema que o ODATE existe para resolver. A janela deslizante ignora a
+    fronteira do dia e continua barrando a rodada ANTERIOR, desde que ela seja
+    menor que o intervalo entre execuções."""
+    return agora_do_banco(conn) - timedelta(hours=janela_sequencia_horas(conn))
 
 
 def _exec_liberado(cur, params):
