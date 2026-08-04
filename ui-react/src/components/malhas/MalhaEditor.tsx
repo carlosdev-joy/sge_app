@@ -1187,6 +1187,11 @@ function MalhaEditorInner({
   // predicado canônico — por isso o gesto é só um POST: nada aqui precisa
   // saber quem são os dependentes.
   const [retendo, setRetendo] = useState(false)
+  // O rótulo da mensagem sai do DESENHO, não do botão: o toast precisa dizer
+  // "Início" ou "Aguarde" mesmo quando o gesto vier de outro caminho.
+  const ehInicioNo = useCallback(
+    (noId: number) => grafo?.nos.find(n => n.id === noId)?.tipo === 'inicio',
+    [grafo])
   const alternarRetencao = useCallback(async (noId: number, reter: boolean) => {
     if (retendo) return
     setRetendo(true)
@@ -1197,14 +1202,17 @@ function MalhaEditorInner({
           body: JSON.stringify({ reter }),
         })
       if (reter) {
-        toast.success(`Aguarde #${noId} SEGURADO — nada passa por ele até você soltar.`)
+        toast.success(ehInicioNo(noId)
+          ? `Início #${noId} SEGURADO — a malha não parte até você soltar.`
+          : `Aguarde #${noId} SEGURADO — nada passa por ele até você soltar.`)
       } else {
         const n = r.dependentes?.length ?? 0
         // Soltar não dispara na hora: quem estava preso parte no próximo
         // publish do predecessor ou no próximo ciclo da guardiã.
+        const rotulo = ehInicioNo(noId) ? 'Início' : 'Aguarde'
         toast.success(n > 0
-          ? `Aguarde #${noId} liberado — ${n} pipeline(s) voltam a ser avaliados no próximo ciclo.`
-          : `Aguarde #${noId} liberado.`)
+          ? `${rotulo} #${noId} liberado — ${n} pipeline(s) voltam a ser avaliados no próximo ciclo.`
+          : `${rotulo} #${noId} liberado — a malha volta a partir no próximo horário agendado.`)
       }
       qc.invalidateQueries({ queryKey: ['malha', malha] })
       qc.invalidateQueries({ queryKey: ['malha-execucao', malha] })
@@ -1214,7 +1222,7 @@ function MalhaEditorInner({
     } finally {
       setRetendo(false)
     }
-  }, [retendo, malha, qc])
+  }, [retendo, malha, qc, ehInicioNo])
 
   // ── Republicação da malha (dry_run → modal → write) ───────────────────────
   // Mudar o desenho grava a dependência na hora; a DAG do Airflow só passa a
@@ -2451,10 +2459,13 @@ function MalhaEditorInner({
                     </Button>
                   )}
                   {selComponentes.length === 1
-                    && tipoDoNo.get(Number(selComponentes[0].id.slice(NO_PREFIX.length))) === 'aguarde'
+                    && ['aguarde', 'inicio'].includes(
+                      tipoDoNo.get(Number(selComponentes[0].id.slice(NO_PREFIX.length))) ?? '')
                     && !nosIndisponiveis && podeExecutar && (() => {
                       const noId = Number(selComponentes[0].id.slice(NO_PREFIX.length))
-                      const preso = !!grafo?.nos.find(n => n.id === noId)?.retido_em
+                      const noSel = grafo?.nos.find(n => n.id === noId)
+                      const preso = !!noSel?.retido_em
+                      const ehInicio = noSel?.tipo === 'inicio'
                       return (
                         <Button
                           variant={preso ? 'primary' : 'secondary'}
@@ -2462,8 +2473,12 @@ function MalhaEditorInner({
                           loading={retendo}
                           onClick={() => void alternarRetencao(noId, !preso)}
                           title={preso
-                            ? 'Soltar a trava — os pipelines depois deste Aguarde voltam a ser avaliados no próximo ciclo'
-                            : 'SEGURAR aqui: nenhum pipeline depois deste Aguarde é liberado até você soltar'}
+                            ? (ehInicio
+                              ? 'Soltar a trava — a malha volta a partir no próximo horário agendado'
+                              : 'Soltar a trava — os pipelines depois deste Aguarde voltam a ser avaliados no próximo ciclo')
+                            : (ehInicio
+                              ? 'SEGURAR a malha: nenhuma raiz parte até você soltar'
+                              : 'SEGURAR aqui: nenhum pipeline depois deste Aguarde é liberado até você soltar')}
                         >
                           {preso ? <><Unlock size={13} /> Soltar</> : <><Lock size={13} /> Segurar</>}
                         </Button>

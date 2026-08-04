@@ -28,27 +28,26 @@ from datetime import datetime, time, timedelta
 STATUS_VIVO = ("EXECUTANDO", "AGUARDANDO_DEPENDENCIA")
 
 
-def malha_do_pipeline(conn, pipeline: str):
-    """Nome da malha ATIVA de que o pipeline participa, ou None.
+def malhas_do_pipeline(conn, pipeline: str) -> list:
+    """TODAS as malhas ATIVAS de que o pipeline participa, ordenadas por nome.
 
-    Pipeline em mais de uma malha devolve a primeira por nome — determinístico
-    entre ciclos. É uma limitação assumida: a régua de data é da malha, e um
-    membro compartilhado entre duas malhas com réguas diferentes é uma
-    contradição de cadastro que a tela precisa impedir, não algo para o motor
-    adivinhar em runtime."""
+    Devolve lista, não uma só: um pipeline pode ser membro de várias malhas, e
+    uma trava (ou uma malha suja) em QUALQUER uma delas tem de segurar — foi
+    visto no dev, onde o Início segurado numa malha não pegava porque o
+    pipeline também pertencia a outra, e a barreira simplesmente não existia.
+    Barreira vale no mais restritivo."""
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT TOP 1 m.malha_name FROM dbo.etl_malha_pipeline mp "
+            "SELECT m.malha_name FROM dbo.etl_malha_pipeline mp "
             "JOIN dbo.etl_malha m ON m.malha_name = mp.malha_name "
             "WHERE mp.pipeline_name = %s AND m.ativo = 1 "
             "ORDER BY m.malha_name",
             (pipeline,))
-        row = cur.fetchone()
-        return row[0] if row else None
+        return [r[0] for r in cur.fetchall()]
     except Exception as e:  # noqa: BLE001 — sem as tabelas da 070 não há malha
-        print(f"[MALHA] malha de {pipeline} indisponivel ({e}) — seguindo")
-        return None
+        print(f"[MALHA] malhas de {pipeline} indisponiveis ({e}) — seguindo")
+        return []
 
 
 def equalizar_ligado(conn, malha: str) -> bool:
@@ -94,6 +93,29 @@ def inicio_do_ciclo(agora: datetime, virada) -> datetime:
     v = virada if isinstance(virada, time) else time(0, 0)
     base = agora.date() if agora.time() >= v else agora.date() - timedelta(days=1)
     return datetime.combine(base, v)
+
+
+def inicio_retido(conn, malha: str):
+    """Id do nó Início SEGURADO da malha, ou None (migration 082).
+
+    O hold do Aguarde é obedecido pelo predicado de liberação — mas o Início
+    não compila dependência nenhuma (ele planta agendamento nas raízes), então
+    a trava dele só existe se alguém perguntar ANTES de a raiz partir. Quem
+    pergunta é o check_agenda, por aqui.
+
+    Falha de consulta devolve None COM log: barrar a produção inteira por um
+    erro transitório seria pior que o problema que a trava evita."""
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT TOP 1 id FROM dbo.etl_malha_no "
+            "WHERE malha_name = %s AND tipo = 'inicio' AND retido_em IS NOT NULL",
+            (malha,))
+        row = cur.fetchone()
+        return int(row[0]) if row else None
+    except Exception as e:  # noqa: BLE001 — sem a 082 não há trava
+        print(f"[MALHA] retencao do Inicio de {malha} indisponivel ({e})")
+        return None
 
 
 def estado_do_ciclo(conn, malha: str, data_ref, desde: datetime) -> dict:

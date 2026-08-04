@@ -45,8 +45,9 @@ class _Cur:
         self.db["execs"].append((s, tuple(params)))
         if self.db.get("explode"):
             raise RuntimeError("banco indisponível (teste)")
-        if s.startswith("SELECT TOP 1 m.malha_name"):
-            self._rows = [(self.db["malha"],)] if self.db.get("malha") else []
+        if s.startswith("SELECT m.malha_name"):
+            self._rows = [(m,) for m in
+                          ([self.db["malha"]] if self.db.get("malha") else [])]
         elif s.startswith("SELECT CAST(equalizar_data AS INT)"):
             self._rows = [(self.db.get("equalizar", 0),)]
         elif s.startswith("SELECT hora_virada"):
@@ -103,20 +104,20 @@ def test_inicio_do_ciclo_sem_virada_e_meia_noite(mc):
 
 # ── leituras ────────────────────────────────────────────────────────────────
 
-def test_malha_do_pipeline(mc):
+def test_malhas_do_pipeline(mc):
     conn = _Conn(malha="M1")
-    assert mc.malha_do_pipeline(conn, "PIPE_A") == "M1"
+    assert mc.malhas_do_pipeline(conn, "PIPE_A") == ["M1"]
 
 
-def test_sem_malha_devolve_none(mc):
-    assert mc.malha_do_pipeline(_Conn(), "PIPE_A") is None
+def test_sem_malha_devolve_lista_vazia(mc):
+    assert mc.malhas_do_pipeline(_Conn(), "PIPE_A") == []
 
 
 def test_falha_de_consulta_nao_barra(mc, capsys):
     """Erro aqui NÃO pode virar 'malha suja': barrar a produção inteira por um
     problema transitório de banco seria pior que o defeito que a trava evita."""
     conn = _Conn(explode=True)
-    assert mc.malha_do_pipeline(conn, "PIPE_A") is None
+    assert mc.malhas_do_pipeline(conn, "PIPE_A") == []
     est = mc.estado_do_ciclo(conn, "M1", date(2026, 8, 4), datetime(2026, 8, 4))
     assert est == {"em_aberto": [], "divergentes": []}
     assert "indisponivel" in capsys.readouterr().out
@@ -189,3 +190,32 @@ def test_virada_da_malha_aceita_time_e_texto(mc):
     assert mc.virada_da_malha(_Conn(virada=time(20, 0)), "M1") == time(20, 0)
     assert mc.virada_da_malha(_Conn(virada="20:00:00"), "M1") == time(20, 0)
     assert mc.virada_da_malha(_Conn(virada=None), "M1") is None
+
+
+# ── hold do INÍCIO (082): segura a malha antes de partir ────────────────────
+
+def test_inicio_retido_devolve_o_id(mc):
+    class _C:
+        def cursor(self):
+            class Cur:
+                def execute(self, sql, params=()):
+                    assert "tipo = 'inicio'" in " ".join(str(sql).split())
+                    assert "retido_em IS NOT NULL" in " ".join(str(sql).split())
+                    self._r = [(15,)]
+
+                def fetchone(self):
+                    return self._r[0]
+            return Cur()
+    assert mc.inicio_retido(_C(), "M1") == 15
+
+
+def test_inicio_sem_trava_devolve_none(mc):
+    conn = _Conn()          # o dublê responde vazio ao SELECT do Início
+    assert mc.inicio_retido(conn, "M1") is None
+
+
+def test_inicio_retido_com_banco_fora_nao_barra(mc, capsys):
+    """Sem a 082 (ou com o banco intermitente) a trava simplesmente não
+    existe — nunca 'malha segurada' por erro de consulta."""
+    assert mc.inicio_retido(_Conn(explode=True), "M1") is None
+    assert "indisponivel" in capsys.readouterr().out
