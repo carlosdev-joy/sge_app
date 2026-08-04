@@ -16,6 +16,10 @@ Endpoints:
   POST   /malhas/{malha_name}/disparo              — disparo MANUAL da malha (F15;
                                                      dry_run no body): raízes do
                                                      Início via trigger REST
+  POST   /malhas/{malha_name}/republicar           — republica as DAGs de TODOS os
+                                                     pipelines membros (dry_run no
+                                                     body): o gesto "Publicar nova
+                                                     versão" repetido por membro
   PATCH  /malhas/{malha_name}                      — descricao / ativo / renomear / orientacao
   POST   /malhas/{malha_name}/pipelines            — adiciona membro (idempotente)
   DELETE /malhas/{malha_name}/pipelines/{pipeline_name} — remove membro
@@ -78,8 +82,10 @@ nos endpoints de dependência: leitura degrada ("arestas": []), escrita dá 503.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -115,11 +121,18 @@ from services import execucao_identidade as ident_svc
 # register — _build_cron para o domínio, _validate_dias_horarios_mes,
 # _parse_horarios_especificos e _parse_hora_opcional (D35) — nunca uma
 # reimplementação (a regra que salvou o texto do ciclo na F8).
-from routers.pipelines import (_build_cron, _check_circular,
+# FACTORY_DAG_ID: a republicação da malha (abaixo) dispara a MESMA factory do
+# botão "Publicar nova versão" da tela Pipelines — a constante vem de lá para
+# não nascer uma segunda grafia do dag_id.
+from routers.pipelines import (FACTORY_DAG_ID, _build_cron, _check_circular,
                                _check_circular_grafo, _parse_hora_opcional,
                                _parse_horarios_especificos,
                                _validar_existencia,
                                _validate_dias_horarios_mes, deduplicar)
+# Fila da ativação/notificação da DAG recém-publicada (padrão do repo: a
+# intenção mora no banco e um loop do lifespan reconcilia) — é ela que também
+# apaga o carimbo dag_config_pendente_em quando a DAG é confirmada no Airflow.
+from services.dag_reconcile import enqueue as enqueue_dag_pendente
 
 log = logging.getLogger("orquestra-api")
 
@@ -551,15 +564,42 @@ def _ligar_dag_config_pendente(cur, pipeline_name) -> bool:
     publicação em voo sobrevive ao clear. `WHERE dag_criada = 1`: pipeline
     nunca publicado não tem versão velha rodando. Sem a coluna (073 pendente),
     degrada em silêncio — comportamento = hoje. Devolve True se a flag foi
-    ligada (a resposta ao front segue sendo o booleano)."""
+    ligada (a resposta ao front segue sendo o booleano).
+
+    ⚠️ `dag_criada = 0` também é o estado de quem está SENDO REGERADO agora (é
+    assim que a factory seleciona o lote). Sem o OR abaixo, a aresta desenhada
+    no meio de uma publicação — cenário que a republicação da malha torna
+    comum, porque o operador continua no canvas — não deixava carimbo nenhum:
+    o pipeline terminava "em dia" com a DAG sem a dependência, mudo. O EXISTS
+    reconhece a publicação em voo pela fila do reconciliador (achado da
+    revisão adversarial)."""
     try:
         cur.execute(
             "UPDATE dbo.etl_pipeline SET dag_config_pendente_em = GETDATE() "
-            "WHERE pipeline_name = ? AND dag_criada = 1",
+            "WHERE pipeline_name = ? AND (dag_criada = 1 OR EXISTS ("
+            "  SELECT 1 FROM dbo.etl_dag_pendente q "
+            "  WHERE q.pipeline_name = dbo.etl_pipeline.pipeline_name "
+            "    AND q.status = 'pendente'))",
             (pipeline_name,))
         return (cur.rowcount or 0) > 0
     except Exception as e:
         log.debug("[MALHA] dag_config_pendente_em indisponível (migration 073?): %s", e)
+        return False
+
+
+def _coluna_073(cur) -> bool:
+    """True se etl_pipeline.dag_config_pendente_em (migration 073) existe — o
+    guard de LEITURA do carimbo de publicação pendente (o de escrita é o
+    try/except de _ligar_dag_config_pendente). Best-effort no padrão dos
+    demais guards de coluna: falha conta como ausente e quem lê degrada para
+    "não sei se está pendente" (chave ausente no payload), nunca para uma
+    tela quebrada."""
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_pipeline', 'dag_config_pendente_em')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None)
+    except Exception as e:
+        log.warning("[MALHA] checagem da coluna da migration 073 falhou: %s", e)
         return False
 
 
@@ -1779,11 +1819,18 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
         # pipeline excluído simplesmente some (aceite da F7) — e a FK CASCADE
         # da 070 já removeu a linha de qualquer forma. agenda_no (F13) é
         # ADITIVO: entra no SELECT só com as colunas da 075 presentes.
+        # dag_criada + o carimbo da 073 entram no membro para a tela responder
+        # "esta malha está publicada?" — é o insumo do botão de republicação
+        # (o contador de pendentes) e do badge por nó. Sem a 073, a chave
+        # `publicacao_pendente` simplesmente não vem: a UI não inventa um
+        # "está em dia" que o banco não sustenta.
+        tem_073 = _coluna_073(cur)
         cur.execute(
             "SELECT p.pipeline_name, CAST(p.active AS INT) AS active, "
             "ISNULL(p.criticidade, 'Media') AS criticidade, p.schedule_type, "
-            "mp.layout_x, mp.layout_y"
-            + (", p.agenda_no" if tem_agenda else "") +
+            "mp.layout_x, mp.layout_y, CAST(ISNULL(p.dag_criada, 0) AS INT)"
+            + (", p.agenda_no" if tem_agenda else "")
+            + (", p.dag_config_pendente_em" if tem_073 else "") +
             " FROM dbo.etl_malha_pipeline mp "
             "JOIN dbo.etl_pipeline p ON p.pipeline_name = mp.pipeline_name "
             "WHERE mp.malha_name = ? ORDER BY p.pipeline_name",
@@ -1795,9 +1842,14 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
                 "pipeline_name": r[0], "active": int(r[1] or 0),
                 "criticidade": r[2], "schedule_type": r[3],
                 "layout_x": r[4], "layout_y": r[5],
+                "dag_criada": int(r[6] or 0),
             }
+            i = 7
             if tem_agenda:
-                m["agenda_no"] = int(r[6]) if r[6] is not None else None
+                m["agenda_no"] = int(r[i]) if r[i] is not None else None
+                i += 1
+            if tem_073:
+                m["publicacao_pendente"] = r[i] is not None
             membros.append(m)
         # Arestas (F8): dependências GLOBAIS da 067 em que AMBAS as pontas são
         # membros desta malha — a mesma dependência aparece em toda malha que
@@ -2303,6 +2355,307 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
         return {"ok": len(falhas) == 0,
                 "data_referencia": conf["data_referencia"],
                 "disparadas": disparadas, "falhas": falhas, "avisos": avisos}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+async def _dags_existentes(nomes: list) -> dict:
+    """{pipeline: True|False|None} — a DAG existe no Airflow?
+
+    None = não deu para saber (Airflow fora do ar, timeout, nome inválido):
+    quem consome NÃO afirma nada nesse caso. É a diferença entre "esta é a
+    primeira publicação" e "não sei dizer" — e a tela só pode prometer o que
+    o dado sustenta."""
+    fora = {p: None for p in nomes}
+    alvos = [p for p in nomes if _DAG_ID_RE.match(p or "")]
+    if not alvos:
+        return fora
+
+    # Teto de chamadas simultâneas: malha grande não pode virar uma rajada de
+    # centenas de GETs no webserver do Airflow, que é o mesmo que serve a UI
+    # dos plantonistas.
+    porta = asyncio.Semaphore(8)
+
+    async def _um(client, pname):
+        try:
+            async with porta:
+                r = await client.get(f"/api/v1/dags/{pname}")
+            if r.status_code == 404:
+                return pname, False
+            if r.is_success:
+                return pname, True
+        except Exception as e:      # noqa: BLE001 — rede/timeout
+            log.debug("[MALHA] consulta da DAG %s no Airflow: %s", pname, e)
+        return pname, None
+
+    try:
+        async with get_airflow_client() as client:
+            pares = await asyncio.gather(*[_um(client, p) for p in alvos])
+        fora.update(dict(pares))
+    except Exception as e:          # noqa: BLE001 — cliente indisponível
+        log.warning("[MALHA] Airflow indisponível ao conferir as DAGs: %s", e)
+    return fora
+
+
+def _marcar_para_regeneracao(pipelines: list) -> None:
+    """dag_criada=0 nos alvos — a MESMA marcação do "Publicar DAGs" do Admin,
+    restrita ao escopo da malha. Um UPDATE por nome (o lote é de poucas
+    dezenas) para não montar lista de placeholders."""
+    if not pipelines:
+        return
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        for nome in pipelines:
+            cur.execute(
+                "UPDATE dbo.etl_pipeline SET dag_criada = 0, updated_at = GETDATE() "
+                "WHERE pipeline_name = ?", (nome,))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao liberar os pipelines para regeneração: {e}")
+
+
+def _desmarcar_regeneracao(pipelines: list) -> None:
+    """Desfaz a marcação quando o disparo NÃO aconteceu — só para quem estava
+    publicado (dag_criada=1); quem já era pendente continua pendente. Deixar
+    a marcação de pé anunciaria "DAG não publicada" para DAG viva, sem
+    ninguém a caminho para republicá-la. Best-effort: falhar aqui não pode
+    substituir o erro original do disparo."""
+    if not pipelines:
+        return
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        for nome in pipelines:
+            cur.execute(
+                "UPDATE dbo.etl_pipeline SET dag_criada = 1 "
+                "WHERE pipeline_name = ?", (nome,))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        log.warning("[MALHA] falha ao desfazer a marcação de %s: %s",
+                    ", ".join(pipelines), e)
+        _fechar_silencioso(conn)
+
+
+@router.post("/malhas/{malha_name}/republicar", tags=["malhas"])
+async def republicar_malha(malha_name: str, body: dict = Body(default={}),
+                           auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """Republica as DAGs de TODOS os pipelines membros da malha.
+
+    Mudar o desenho da malha (aresta nova, Aguarde, agendamento do Início)
+    grava a dependência no banco na hora, mas a DAG que o Airflow executa
+    continua sendo a versão ANTERIOR até ser regerada — é o que o carimbo
+    dag_config_pendente_em (073) anuncia pipeline a pipeline. Este endpoint é
+    o "Publicar nova versão" da tela Pipelines aplicado à malha inteira, para
+    o operador não ter de caçar os membros um a um depois de montar.
+
+    NENHUM executor novo (o mesmo princípio do disparo manual): marca os
+    membros ATIVOS como pendentes (dag_criada=0, a marcação do "Publicar DAGs"
+    do Admin restrita ao escopo da malha) e dispara UMA execução da
+    etl_dag_factory com a lista deles em `conf["pipelines"]` — o mesmo caminho
+    do "Publicar nova versão" por pipeline, que já mandava
+    `conf["pipeline_name"]`. A factory regenera com o cadastro atual
+    (dependências incluídas) e, ao concluir cada arquivo, zera o carimbo da
+    publicação pendente.
+
+    A marcação é feita AQUI de propósito, mesmo a factory nova refazendo-a: um
+    deploy que atualize `api/` e adie `dags/` (o deploy.sh pergunta separado)
+    deixaria a factory antiga ignorar `conf["pipelines"]`, gerar um lote vazio
+    e fechar SUCCESS — verde perfeito para um gesto que não regenerou nada.
+    Se o disparo falhar, a marcação é desfeita para quem estava publicado.
+
+    UMA execução, não uma por membro: disparada com um alvo só, a factory gera
+    TODOS os pendentes e reprova o run se o alvo pedido não entrar no lote —
+    N runs concorrentes pelo mesmo lote produziriam FAILED de corrida no log,
+    sem nenhuma DAG a mais ou a menos.
+
+    Efeito colateral DITO, nunca escondido: pipelines pendentes de fora desta
+    malha entram no mesmo lote (é o gerador de sempre, o botão por pipeline já
+    faz isso) — o dry_run conta quantos são e o modal avisa antes. Falha de um
+    pendente de terceiro vira AVISO no run, não erro: o run da malha só fica
+    vermelho pelo que é dela (provado ao vivo no dev, onde um pipeline sem
+    etapas alheio à malha reprovava o run inteiro).
+
+    Pipeline INATIVO não entra: a sp_etl_pipelines_pendentes_criar filtra
+    active=1, e é a mesma recusa (409) do botão por pipeline. Vem na resposta
+    como `ignorados`, com o motivo — nunca sumindo em silêncio.
+
+    Depois do run, o reconciliador confere CADA membro no Airflow (fila
+    etl_dag_pendente): quem não tinha DAG entra como ativação (a DAG nasce
+    pausada), quem já tinha entra em modo VERIFICAÇÃO (migration 080) — sem
+    notificar sucesso, só para cobrar erro de importação. Sem essa conferência,
+    um arquivo que o Airflow não consegue importar deixa a versão ANTERIOR
+    rodando com a tela dizendo "publicado e em dia".
+
+    Body: {"dry_run"?: bool}. dry_run devolve o que SERÁ republicado (membros,
+    ignorados, avisos, o total de pendentes de fora e, por membro,
+    `dag_no_airflow`) sem escrever nada. Permissão: acao_executar, a mesma do
+    publicar/disparar.
+    """
+    dry_run = bool(body.get("dry_run"))
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabelas(cur, conn)
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        tem_073 = _coluna_073(cur)
+        cur.execute(
+            "SELECT p.pipeline_name, CAST(p.active AS INT), "
+            "CAST(ISNULL(p.dag_criada, 0) AS INT)"
+            + (", p.dag_config_pendente_em" if tem_073 else "") +
+            " FROM dbo.etl_malha_pipeline mp "
+            "JOIN dbo.etl_pipeline p ON p.pipeline_name = mp.pipeline_name "
+            "WHERE mp.malha_name = ? ORDER BY p.pipeline_name",
+            (malha,))
+        membros = []
+        for r in cur.fetchall():
+            membros.append({"pipeline": r[0], "active": int(r[1] or 0),
+                            "dag_criada": int(r[2] or 0),
+                            "publicacao_pendente": (r[3] is not None) if tem_073 else None})
+        if not membros:
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=422,
+                detail=f"A malha '{malha}' não tem pipelines vinculados — "
+                       "não há o que republicar.")
+
+        alvos, ignorados = [], []
+        for m in membros:
+            if m["active"] == 0:
+                ignorados.append({
+                    "pipeline": m["pipeline"],
+                    "motivo": "pipeline inativo — o gerador de DAGs só "
+                              "considera pipelines ativos; ative-o e "
+                              "republique para que ele receba os vínculos"})
+            elif not _DAG_ID_RE.match(m["pipeline"]):
+                ignorados.append({
+                    "pipeline": m["pipeline"],
+                    "motivo": "o nome do pipeline não é um dag_id válido"})
+            else:
+                alvos.append(m)
+        if not alvos:
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=422,
+                detail=f"Nenhum pipeline da malha '{malha}' pode ser "
+                       "republicado: todos os membros estão inativos (o "
+                       "gerador de DAGs só considera pipelines ativos).")
+
+        avisos: list = []
+        # Sem a 067 a factory cai no CSV legado: a DAG sai publicada, mas as
+        # ligações desenhadas na malha podem não estar nela — o motivo pelo
+        # qual o operador clicou no botão. Dito ANTES do gesto.
+        if not _tabela_067(cur):
+            avisos.append({
+                "no": None, "nivel": "forte", "mensagem":
+                "migration 067 pendente neste banco — as DAGs serão regeradas "
+                "sem a tabela de dependências (as ligações da malha podem não "
+                "entrar na nova versão)"})
+        # Pendentes de FORA da malha: a factory processa o lote inteiro de
+        # pendentes, não só o escopo pedido (é assim desde sempre, inclusive
+        # no botão por pipeline). Contar e dizer é a única forma honesta.
+        cur.execute(
+            "SELECT COUNT(*) FROM dbo.etl_pipeline p "
+            "WHERE p.active = 1 AND ISNULL(p.dag_criada, 0) = 0 "
+            "AND NOT EXISTS (SELECT 1 FROM dbo.etl_malha_pipeline mp "
+            "                WHERE mp.malha_name = ? "
+            "                  AND mp.pipeline_name = p.pipeline_name)",
+            (malha,))
+        row_f = cur.fetchone()
+        pendentes_de_fora = int(row_f[0] or 0) if row_f else 0
+        if pendentes_de_fora:
+            avisos.append({
+                "no": None, "nivel": "leve", "mensagem":
+                (f"{pendentes_de_fora} pipeline(s) de fora desta malha também "
+                 "estão pendentes de publicação e serão gerados na mesma "
+                 "execução do gerador (comportamento normal da factory)")})
+
+        # O banco fecha ANTES de falar com o Airflow (padrão do proxy): rede
+        # lenta não pode segurar conexão de pool aberta.
+        nomes = [m["pipeline"] for m in alvos]
+        cur.close(); conn.close(); conn = None
+
+        # Quem já tem DAG lá? A pergunta é do AIRFLOW, não do cadastro:
+        # `dag_criada` fica 0 durante toda a regeneração (é assim que a factory
+        # seleciona o lote), então usá-lo aqui anunciaria "primeira publicação"
+        # para DAG que roda há meses sempre que houvesse um run em voo.
+        existe_no_airflow = await _dags_existentes(nomes)
+        sem_dag = [p for p in nomes if existe_no_airflow.get(p) is False]
+        if sem_dag:
+            avisos.append({
+                "no": None, "nivel": "leve", "mensagem":
+                (f"{len(sem_dag)} pipeline(s) ainda sem DAG no Airflow entram "
+                 "nesta publicação como PRIMEIRA versão: "
+                 + ", ".join(sem_dag[:5])
+                 + ("…" if len(sem_dag) > 5 else ""))})
+
+        if dry_run:
+            for m in alvos:
+                m["dag_no_airflow"] = existe_no_airflow.get(m["pipeline"])
+            return {"malha": malha, "pipelines": alvos, "ignorados": ignorados,
+                    "avisos": avisos, "pendentes_de_fora": pendentes_de_fora}
+
+        quem = (str(auth.get("matricula") or "").strip() or "?")
+        run_id = f"orquestra_malha_{int(time.time() * 1000)}"
+        conf = {"pipelines": nomes,
+                "escopo_rotulo": f"Malha {malha}",
+                "requested_by": f"malha:{malha} ({quem})"}
+        # A marcação AQUI é o que faz o gesto funcionar mesmo com a factory
+        # ANTIGA no servidor (deploy que atualiza api/ e adia dags/ — o
+        # deploy.sh pergunta separado): a factory antiga ignora
+        # `conf["pipelines"]` e geraria um lote VAZIO, devolvendo SUCCESS sem
+        # regenerar nada — verde perfeito para um gesto que não aconteceu. Com
+        # os alvos já pendentes, ela os encontra pelo caminho de sempre. A
+        # factory nova refaz a marcação (idempotente) e ainda isola terceiros.
+        publicados = [m["pipeline"] for m in alvos if m["dag_criada"] == 1]
+        _marcar_para_regeneracao(nomes)
+        try:
+            async with get_airflow_client() as client:
+                r = await client.post(
+                    f"/api/v1/dags/{FACTORY_DAG_ID}/dagRuns",
+                    json={"dag_run_id": run_id, "conf": conf},
+                    headers={"Content-Type": "application/json"})
+                if not r.is_success:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"O Airflow recusou a publicação "
+                               f"(HTTP {r.status_code}): {r.text[:200]}")
+        except HTTPException:
+            _desmarcar_regeneracao(publicados)
+            raise
+        except Exception as e:      # noqa: BLE001 — rede/timeout
+            _desmarcar_regeneracao(publicados)
+            raise HTTPException(status_code=502,
+                                detail=f"Erro ao disparar o gerador de DAGs: {e}")
+
+        # Fila do reconciliador para TODOS os alvos — o que muda é o papel:
+        #  • sem DAG no Airflow (ou desconhecido): ATIVAÇÃO — a DAG nasce
+        #    pausada e alguém precisa despausá-la e avisar;
+        #  • com DAG: VERIFICAÇÃO (migration 080) — o estado no Airflow já
+        #    está certo, mas ninguém conferiria se a versão NOVA é importável.
+        #    Sem isso, um erro de carga deixa a DAG ANTERIOR rodando com a tela
+        #    dizendo "publicado e em dia" (achado da revisão adversarial).
+        for pname in nomes:
+            verificar = existe_no_airflow.get(pname) is True
+            await asyncio.to_thread(enqueue_dag_pendente, pname, False,
+                                    auth.get("matricula"), run_id, verificar)
+
+        log.info("[MALHA] republicação da malha '%s' por %s — %d pipeline(s), "
+                 "%d ignorado(s), run=%s", malha, quem, len(alvos),
+                 len(ignorados), run_id)
+        return {"ok": True, "malha": malha, "dag_run_id": run_id,
+                "republicados": nomes, "ignorados": ignorados,
+                "avisos": avisos, "pendentes_de_fora": pendentes_de_fora}
     except HTTPException:
         raise
     except Exception as e:

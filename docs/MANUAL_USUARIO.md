@@ -71,6 +71,27 @@ pelo componente de uma malha aparece **com cadeado** nas outras e só a malha qu
 a criou pode desfazê-la — e um pipeline só pode ser agendado pelo Início de uma
 malha por vez.
 
+**Republicar os pipelines da malha.** Desenhar uma seta, ligar um Aguarde ou
+salvar o agendamento do Início grava a mudança na hora, mas **a DAG que o
+Airflow executa continua sendo a versão anterior até ser gerada de novo**. Os
+pipelines nessa situação ganham o chip âmbar **⟳ republicar** no card do
+diagrama, e o botão **Republicar pipelines** (barra do modo Montagem) mostra
+quantos são. Ao clicar, uma janela lista o que será publicado antes de
+qualquer coisa acontecer:
+
+- **primeira publicação** — o pipeline ainda não tem DAG no Airflow;
+- **desatualizada** — o cadastro mudou depois da última publicação;
+- **fora desta publicação** — pipelines **inativos**, que o gerador de DAGs não
+  aceita: ative-os e republique para que recebam os vínculos.
+
+Confirmar dispara o **gerador de DAGs** (o mesmo do botão *Publicar nova
+versão* da tela Pipelines, uma vez para a malha inteira). Leva de alguns
+segundos a poucos minutos; o andamento e os erros de cada pipeline ficam na
+tela de **Publicação**. As corridas em andamento não são interrompidas —
+a nova versão vale a partir da próxima execução. A janela também avisa quando
+há pipelines **de fora da malha** pendentes de publicação: eles entram na
+mesma execução do gerador, que é como ele sempre funcionou.
+
 ### 1.4 Governança (aba ⚖)
 - **Lineage**: para cada job, veja origens → transformação → destinos (tabelas, arquivos, colunas).
 - **Catálogo**: busque qualquer tabela/arquivo, veja quais pipelines o produzem/consomem, classificação (PII, Confidencial...), dono (owner/steward) e tags.

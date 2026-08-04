@@ -120,6 +120,11 @@ interface MalhaMembroApi {
   // porta — o agendamento da malha está inerte nela, §2.2).
   agenda_no?: number | null
   agenda_contradicao?: boolean
+  // Publicação: dag_criada (a DAG já existe no Airflow?) e o carimbo da 073
+  // (o cadastro mudou depois da última publicação?). `publicacao_pendente`
+  // AUSENTE = banco sem a 073 — a tela não afirma "está em dia".
+  dag_criada?: number
+  publicacao_pendente?: boolean
 }
 // Proveniência de linha compilada (F11): o nó Aguarde dono e a malha dele.
 interface CompiladaPor {
@@ -241,6 +246,39 @@ interface DisparoResposta {
   disparadas: { pipeline: string; dag_run_id: string }[]
   falhas: { pipeline: string; erro: string }[]
   avisos: AvisoDesenho[]
+}
+
+// ── Republicação da malha (POST /malhas/{m}/republicar) ─────────────────────
+// Desenhar aresta/Aguarde/agendamento grava a dependência na hora, mas a DAG
+// que o Airflow executa continua sendo a ANTERIOR até ser regerada. O gesto
+// republica TODOS os membros de uma vez; dry_run mostra quem entra, quem fica
+// de fora e por quê.
+interface RepublicarAlvo {
+  pipeline: string
+  active: number
+  dag_criada: number
+  // null = banco sem a migration 073 (nada a afirmar sobre estar em dia).
+  publicacao_pendente: boolean | null
+  // A DAG existe no Airflow? Vem do próprio Airflow (o cadastro não serve:
+  // dag_criada fica 0 durante a regeneração). null = não deu para saber —
+  // e aí o modal não afirma nada. Só no dry_run.
+  dag_no_airflow?: boolean | null
+}
+interface RepublicarDryResposta {
+  malha: string
+  pipelines: RepublicarAlvo[]
+  ignorados: { pipeline: string; motivo: string }[]
+  avisos: AvisoDesenho[]
+  pendentes_de_fora: number
+}
+interface RepublicarResposta {
+  ok: boolean
+  malha: string
+  dag_run_id: string
+  republicados: string[]
+  ignorados: { pipeline: string; motivo: string }[]
+  avisos: AvisoDesenho[]
+  pendentes_de_fora: number
 }
 
 // Linha unificada do painel de eventos (F9 pipelines + F14 nós observadores).
@@ -448,6 +486,15 @@ function nodeData(m: MalhaMembroApi): MalhaPipelineNodeData {
   }
 }
 
+/** Membro cuja DAG no Airflow não reflete mais o cadastro — o carimbo da 073.
+ *  `dag_criada` de propósito NÃO entra: ele fica 0 durante toda a regeneração
+ *  (é assim que a factory seleciona o lote), então usá-lo acenderia o chip em
+ *  todos os membros a cada republicação em voo. Sem a 073 no banco a chave nem
+ *  vem, e a tela não afirma nada. */
+function precisaRepublicar(m: MalhaMembroApi): boolean {
+  return m.publicacao_pendente === true
+}
+
 // Cor do nó no minimapa: azul da casa p/ pipeline ativo, slate p/ inativo e a
 // cor de identidade p/ cada componente (mesma do chip da paleta).
 function miniMapColor(n: Node): string {
@@ -556,6 +603,10 @@ function MalhaEditorInner({
   const [disparo, setDisparo] = useState<DisparoDryResposta | null>(null)
   const [disparoCarregando, setDisparoCarregando] = useState(false)
   const [disparando, setDisparando] = useState(false)
+  // Republicação da malha — dry_run aguardando confirmação no modal.
+  const [republicacao, setRepublicacao] = useState<RepublicarDryResposta | null>(null)
+  const [republicacaoCarregando, setRepublicacaoCarregando] = useState(false)
+  const [republicando, setRepublicando] = useState(false)
   // Busca da paleta (adicionar membro).
   const [busca, setBusca] = useState('')
   // F9: Montagem (default, editável) | Execução (leitura da data de referência).
@@ -796,6 +847,9 @@ function MalhaEditorInner({
             // dependência) — nos DOIS modos: na Execução ele convive com o
             // badge de status (cantos opostos do card).
             contradicao: !!m.agenda_contradicao,
+            // Chip "republicar" — só na MONTAGEM: é lá que o gesto vive, e na
+            // Execução o card já carrega a camada de status.
+            publicacaoPendente: !emExecucao && precisaRepublicar(m),
           },
         }
       }),
@@ -998,6 +1052,64 @@ function MalhaEditorInner({
       setDisparo(null)
     }
   }, [disparo, disparando, malha, qc])
+
+  // Membros cuja DAG no Airflow não reflete mais o cadastro — o contador do
+  // botão de republicação. Zero NÃO desabilita o botão: republicar com tudo
+  // em dia é legítimo (regerar depois de um deploy, por exemplo).
+  const membrosDesatualizados = useMemo(
+    () => (data?.membros ?? []).filter(precisaRepublicar).length,
+    [data?.membros])
+
+  // ── Republicação da malha (dry_run → modal → write) ───────────────────────
+  // Mudar o desenho grava a dependência na hora; a DAG do Airflow só passa a
+  // obedecê-la depois de regerada. Este é o "Publicar nova versão" da tela
+  // Pipelines aplicado à malha inteira — o dry_run diz quem entra e quem fica
+  // de fora ANTES de qualquer marcação.
+  const abrirRepublicacao = useCallback(async () => {
+    if (republicacaoCarregando) return
+    setRepublicacaoCarregando(true)
+    try {
+      const r = await apiFetch<RepublicarDryResposta>(
+        `/malhas/${encodeURIComponent(malha)}/republicar`, {
+          method: 'POST',
+          body: JSON.stringify({ dry_run: true }),
+        })
+      setRepublicacao(r)
+    } catch (err) {
+      // 422 (malha vazia / todos inativos) e 503 (070) chegam como detail
+      // pt-BR — o servidor é a autoridade da recusa.
+      const httpErr = err as Error & { status?: number }
+      toast.error(httpErr.message || 'Erro ao preparar a republicação da malha')
+    } finally {
+      setRepublicacaoCarregando(false)
+    }
+  }, [republicacaoCarregando, malha])
+
+  const confirmarRepublicacao = useCallback(async () => {
+    if (!republicacao || republicando) return
+    setRepublicando(true)
+    try {
+      const r = await apiFetch<RepublicarResposta>(
+        `/malhas/${encodeURIComponent(malha)}/republicar`, { method: 'POST' })
+      toast.success(r.republicados.length === 1
+        ? '1 pipeline enviado para publicação — a nova versão da DAG entra em alguns minutos.'
+        : `${r.republicados.length} pipelines enviados para publicação — as novas versões das DAGs entram em alguns minutos.`)
+      // Ignorado NÃO é sucesso silencioso: quem ficou de fora é dito com o
+      // motivo, um por um (a mesma régua do erro-por-raiz do disparo).
+      r.ignorados.forEach(i => toast.info(`${i.pipeline}: ${i.motivo}`))
+      // O acompanhamento fino (erro de geração, import error) mora na tela de
+      // Publicação, que lê o log da factory por run.
+      qc.invalidateQueries({ queryKey: ['malha', malha] })
+      qc.invalidateQueries({ queryKey: ['pipelines'] })   // badge "publicação pendente"
+      qc.invalidateQueries({ queryKey: ['factory-runs'] })
+    } catch (err) {
+      const httpErr = err as Error & { status?: number }
+      toast.error(httpErr.message || 'Erro ao republicar os pipelines da malha')
+    } finally {
+      setRepublicando(false)
+      setRepublicacao(null)
+    }
+  }, [republicacao, republicando, malha, qc])
 
   // ── Gestos de aresta de nó / componente (dry_run → modal → write) ─────────
   const aplicarAresta = useCallback(async (
@@ -1644,8 +1756,34 @@ function MalhaEditorInner({
             layout). Consulta (readOnly) vê a orientação salva, mas não troca —
             o controle nem aparece. */}
         {!emExecucao && !readOnly && (
-          <div className="ml-auto flex items-center gap-1.5">
-            <span className="text-[11px] text-dim">Orientação</span>
+          <div className="ml-auto flex flex-wrap items-center gap-3">
+            {/* Republicação da malha: desenhar aresta/Aguarde/agendamento
+                grava a dependência na hora, mas a DAG do Airflow só passa a
+                obedecê-la depois de regerada. O contador diz quantos membros
+                estão nessa situação AGORA (carimbo da 073 ou sem DAG). */}
+            {podeExecutar && (
+              <Button
+                size="sm"
+                variant={membrosDesatualizados > 0 ? 'primary' : 'secondary'}
+                onClick={() => void abrirRepublicacao()}
+                loading={republicacaoCarregando}
+                disabled={(data?.membros.length ?? 0) === 0}
+                title={(data?.membros.length ?? 0) === 0
+                  ? 'A malha ainda não tem pipelines vinculados'
+                  : membrosDesatualizados > 0
+                    ? `${membrosDesatualizados} pipeline(s) com a DAG desatualizada — republicar gera as novas versões com os vínculos atuais`
+                    : 'Gerar novamente as DAGs de todos os pipelines desta malha com o cadastro atual'}
+              >
+                <RefreshCw size={13} /> Republicar pipelines
+                {membrosDesatualizados > 0 && (
+                  <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-px text-[10px] font-semibold text-amber-800 dark:bg-amber-900/60 dark:text-amber-300">
+                    {membrosDesatualizados}
+                  </span>
+                )}
+              </Button>
+            )}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-dim">Orientação</span>
             <div className="flex gap-1">
               <button
                 onClick={() => trocarOrientacao('horizontal')}
@@ -1663,6 +1801,7 @@ function MalhaEditorInner({
               >
                 <ArrowUpDown size={12} /> vertical
               </button>
+              </div>
             </div>
           </div>
         )}
@@ -2474,6 +2613,89 @@ function MalhaEditorInner({
                 <Play size={13} /> Disparar {disparo.raizes.length === 1
                   ? '1 raiz'
                   : `${disparo.raizes.length} raízes`}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Confirmação da republicação: quem entra, quem fica de fora e por quê
+          — dito antes de qualquer marcação no cadastro. */}
+      <Modal
+        open={!!republicacao}
+        onClose={() => { if (!republicando) setRepublicacao(null) }}
+        title="Republicar pipelines da malha"
+      >
+        {republicacao && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-ink">
+              As DAGs dos pipelines abaixo serão geradas de novo com o cadastro
+              atual — é assim que os vínculos desenhados nesta malha passam a
+              valer no Airflow.
+            </p>
+            <div className="flex max-h-56 flex-col gap-1 overflow-y-auto">
+              {republicacao.pipelines.map(p => (
+                <div key={p.pipeline}
+                  className="flex items-center gap-2 rounded-md border border-edge bg-canvas px-3 py-1.5">
+                  <RefreshCw size={12} className="shrink-0 text-dim" />
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink">
+                    {p.pipeline}
+                  </span>
+                  {p.dag_no_airflow === false && (
+                    <span className="rounded-full border border-blue-200 bg-blue-50 px-1.5 py-px text-[10px] font-semibold text-blue-700 dark:border-blue-800 dark:bg-blue-900/40 dark:text-blue-300">
+                      primeira publicação
+                    </span>
+                  )}
+                  {p.dag_no_airflow !== false && p.publicacao_pendente === true && (
+                    <span className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px text-[10px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                      desatualizada
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            {republicacao.ignorados.length > 0 && (
+              <div className="flex flex-col gap-1 rounded-md border border-edge bg-panel px-3 py-2">
+                <span className="text-[11px] font-semibold text-dim">
+                  Fora desta publicação:
+                </span>
+                {republicacao.ignorados.map(i => (
+                  <div key={i.pipeline} className="text-[11px] text-dim">
+                    <span className="font-mono text-ink">{i.pipeline}</span> — {i.motivo}
+                  </div>
+                ))}
+              </div>
+            )}
+            {republicacao.avisos.length > 0 && (
+              <div className="flex flex-col gap-0.5">
+                {republicacao.avisos.map((a, i) => (
+                  <div key={i} className="flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+                    {a.nivel === 'forte'
+                      ? <AlertTriangle size={12} className="mt-px shrink-0" />
+                      : <Info size={12} className="mt-px shrink-0" />}
+                    <span>{a.mensagem}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-[11px] text-dim">
+              A publicação roda no gerador de DAGs (etl_dag_factory) e leva de
+              alguns segundos a poucos minutos. O andamento e os erros de cada
+              pipeline ficam na tela de Publicação. As corridas em andamento
+              não são interrompidas.
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button
+                variant="secondary"
+                onClick={() => setRepublicacao(null)}
+                disabled={republicando}
+              >
+                Cancelar
+              </Button>
+              <Button onClick={() => void confirmarRepublicacao()} loading={republicando}>
+                <RefreshCw size={13} /> Republicar {republicacao.pipelines.length === 1
+                  ? '1 pipeline'
+                  : `${republicacao.pipelines.length} pipelines`}
               </Button>
             </div>
           </div>

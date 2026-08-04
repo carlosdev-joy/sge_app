@@ -136,6 +136,13 @@ class FakeCur:
             self._rows = [(8, 4)] if (db.com_tabelas and db.com_agenda) \
                 else [(None, None)]
             return
+        # Guard de LEITURA do carimbo da 073 (publicação pendente): sem a
+        # coluna o membro sai do detalhe sem a chave `publicacao_pendente`.
+        # `com_073` só existe nas subclasses que modelam o carimbo (F8+) —
+        # aqui o default é "não tem", como no banco anterior à migration.
+        if "COL_LENGTH('dbo.etl_pipeline', 'dag_config_pendente_em')" in s:
+            self._rows = [(8,)] if getattr(db, "com_073", False) else [(None,)]
+            return
         # Guard da coluna orientacao (074): COL_LENGTH devolve NULL para coluna
         # ausente sem estourar — inclusive sem a própria tabela.
         if "COL_LENGTH('dbo.etl_malha'" in s:
@@ -235,10 +242,22 @@ class FakeCur:
                         if pk is None:
                             continue  # pipeline excluído: o JOIN o faz sumir
                         p = db.pipelines[pk]
-                        out.append((pk, p.get("active", 1),
-                                    p.get("criticidade") or "Media",
-                                    p.get("schedule_type"),
-                                    m["layout_x"], m["layout_y"]))
+                        # dag_criada é fixa; agenda_no (075) e o carimbo da
+                        # 073 são ADITIVOS — o dublê espelha as três formas
+                        # do SQL, como faz com orientacao/agendamento_json.
+                        cols = [pk, p.get("active", 1),
+                                p.get("criticidade") or "Media",
+                                p.get("schedule_type"),
+                                m["layout_x"], m["layout_y"],
+                                int(p.get("dag_criada") or 0)]
+                        if "p.agenda_no" in s:
+                            cols.append(p.get("agenda_no"))
+                        if "p.dag_config_pendente_em" in s:
+                            # o dublê guarda o 0/1 equivalente ao carimbo
+                            # (convenção do FakeDb da F8): 0/ausente = sem
+                            # carimbo, e o router só testa "is not None".
+                            cols.append(p.get("dag_config_pendente") or None)
+                        out.append(tuple(cols))
                 self._rows = sorted(out)
             else:                                 # agregados da listagem
                 out = []
@@ -651,9 +670,13 @@ def test_detalhe_traz_membros_com_layout(client, auth_editor):
     body = r.json()
     assert body["malha_name"] == "M1"
     assert body["qtd_pipelines"] == 1 and body["qtd_ativos"] == 1
+    # dag_criada acompanha o membro desde a republicação da malha; sem a 073
+    # (este FakeDb) NÃO existe chave publicacao_pendente — a tela não inventa
+    # "está em dia" quando o banco não tem o carimbo.
     assert body["membros"] == [{
         "pipeline_name": "PIPE_VENDAS", "active": 1, "criticidade": "Alta",
         "schedule_type": "daily", "layout_x": None, "layout_y": None,
+        "dag_criada": 0,
     }]
 
 

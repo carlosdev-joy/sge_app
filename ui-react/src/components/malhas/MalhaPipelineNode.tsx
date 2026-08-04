@@ -6,7 +6,7 @@
 // data, o nó fica exatamente como na montagem.
 import { memo, useEffect } from 'react'
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
-import { Layers } from 'lucide-react'
+import { Layers, RefreshCw } from 'lucide-react'
 import { CritBadge } from './CritBadge'
 import { estiloStatus } from './statusExecucao'
 import type { Orientacao } from '../etapas/layoutGrafo'
@@ -29,6 +29,11 @@ export interface MalhaPipelineNodeData {
   // que ganhou dependência por outra porta: o motor obedece a dependência e
   // o agendamento da malha está inerte nela. Só na montagem.
   contradicao?: boolean
+  // A DAG no Airflow não reflete o cadastro: ou o carimbo da 073
+  // (dag_config_pendente_em) está aceso — mudou depois da última publicação —,
+  // ou o pipeline nunca foi publicado. Ausente/false = nada a dizer (inclusive
+  // quando o banco não tem o carimbo). Só na montagem.
+  publicacaoPendente?: boolean
   // F3 (§3, Bloco A): descer até o canvas de Etapas deste pipeline, na data
   // que a malha está exibindo. null/ausente = modo Montagem, ou a página não
   // ofereceu destino — e aí o card fica exatamente como sempre foi.
@@ -103,6 +108,14 @@ function MalhaPipelineNodeImpl({ id, data, selected }: NodeProps & { data: Malha
         {data.criticidade && <CritBadge crit={data.criticidade} />}
         {data.schedule && <span className="text-[10px] text-dim">📅 {data.schedule}</span>}
         {!data.active && <span className="text-[10px] text-dim">○ inativo</span>}
+        {data.publicacaoPendente && (
+          <span
+            className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-100 px-1 py-px text-[9px] font-semibold text-amber-800 dark:border-amber-700 dark:bg-amber-900/50 dark:text-amber-300"
+            title="A DAG no Airflow não reflete o cadastro atual deste pipeline (mudou depois da última publicação, ou nunca foi publicada). Use “Republicar pipelines” na barra da malha."
+          >
+            <RefreshCw size={9} /> republicar
+          </span>
+        )}
         {/* F3: atalho de drill-down NO CARD — o gesto fica onde o olho já está.
             `nodrag`/`nopan` impedem o React Flow de tratar o clique como
             arrasto do nó ou pan do canvas; `stopPropagation` impede que ele

@@ -103,12 +103,21 @@ Data: 2026-07-31 · Status: ✅ **Retomada F2–F6 COMPLETA NO CÓDIGO (PRs #243
 >    no MESMO deploy. Depois conferir `docker exec orquestra-api date` → `-03`
 >    (sem isso, o ODATE default da visão de execução nasce no dia seguinte entre
 >    21h e meia-noite de Brasília — achado da revisão da F9).
-> 3. **Migrations `067` e `070–079`** (etapa 6c) — o prompt é padrão-**NÃO**,
+> ✅ **REPUBLICAÇÃO DA MALHA TAMBÉM ENTRA NESTE DEPLOY**: o botão *Republicar
+> pipelines* da tela Malha (regerar as DAGs de todos os membros para que os
+> vínculos desenhados passem a valer no Airflow) toca as TRÊS árvores —
+> `dags/etl_dag_factory.py` (a factory passou a aceitar uma LISTA de alvos em
+> `conf["pipelines"]`), `api/` (endpoint + fila de verificação) e o front. Traz
+> a migration **080** (coluna `modo_verificacao` em `etl_dag_pendente`): sem
+> ela o gesto funciona, mas a conferência pós-publicação não é registrada e um
+> erro de importação da DAG nova passa despercebido.
+>
+> 3. **Migrations `067` e `070–080`** (etapa 6c) — o prompt é padrão-**NÃO**,
 >    **responder `s`**. Se responder não, a feature sobe **muda** e o smoke
 >    ainda assim "passa" nos primeiros passos.
 >
 >    ⚠️ **A etapa 6c vai avisar que há muitas pendentes — isto é ESPERADO neste
->    deploy** (são **11**: 067 + 070…079). Versões antigas do `deploy.sh`
+>    deploy** (são **12**: 067 + 070…080). Versões antigas do `deploy.sh`
 >    recomendavam ali `migrate.py --baseline`: **NÃO SIGA**. `--baseline`
 >    **registra sem executar** — usá-lo aqui marcaria como aplicadas onze
 >    migrations que nunca rodaram, e o banco ficaria permanentemente atrás do
@@ -155,19 +164,21 @@ Data: 2026-07-31 · Status: ✅ **Retomada F2–F6 COMPLETA NO CÓDIGO (PRs #243
 >      (SELECT COUNT(*) FROM sys.indexes WHERE name = 'ux_etapa_pausa_pendente')       AS ix079_pausa_unica,   -- 1
 >      (SELECT COUNT(*) FROM dbo.etl_app_config
 >        WHERE config_key = 'espera_teto_minutos')                                     AS cfg079_teto,         -- 1
+>      COL_LENGTH('dbo.etl_dag_pendente', 'modo_verificacao')                          AS c080_verificacao,    -- não-NULL
 >      (SELECT COUNT(*) FROM dbo.etl_schema_version
 >        WHERE migration_name IN ('067_dependencias_pipeline','070_malha',
 >              '071_normaliza_grafia_dependencias','072_execution_id_250',
 >              '073_dag_config_pendente','074_malha_orientacao','075_malha_nos',
 >              '076_dependencia_evento_no','077_pipe_exec_ultima_por_pipeline',
->              '078_tentativas_acumuladas','079_etapa_pausa'))                         AS registradas;         -- 11
+>              '078_tentativas_acumuladas','079_etapa_pausa',
+>              '080_dag_pendente_verificacao'))                                        AS registradas;         -- 12
 >    ```
 >
 >    **`fk076_TEM_DE_SER_0` é a linha que não mente** (achado da aceitação
 >    final): enquanto a `FK_dep_evento_pipeline` existir, o marcador `#no:{id}`
 >    dos eventos de Notificação/Fim não cabe na tabela e os componentes de malha
->    ficam mudos. `registradas = 11` prova que o migrate rodou de verdade — mas
->    **sozinho não basta**, porque `--baseline` também o deixaria em 11; é o
+>    ficam mudos. `registradas = 12` prova que o migrate rodou de verdade — mas
+>    **sozinho não basta**, porque `--baseline` também o deixaria em 12; é o
 >    conjunto das outras colunas que prova que o schema existe.
 >
 >    As três linhas da **079** são a metade de BANCO da etapa em espera:

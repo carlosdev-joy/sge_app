@@ -2210,6 +2210,31 @@ def _generate_dag_source(pipeline, jobs):
     return "\n".join(parts)
 
 
+def _nomes_do_conf(bruto) -> list:
+    """Normaliza `conf["pipelines"]` numa lista de nomes limpa e sem repetição.
+
+    O conf vem da REST do Airflow: pode chegar como lista, como string única ou
+    como qualquer coisa. Nada de confiar no formato — item não-texto é
+    descartado e a ordem de chegada é preservada (é ela que o log mostra).
+    A dedup é case-insensitive: dois nomes que só diferem na caixa são o MESMO
+    pipeline para o banco (colação CI), e cobrá-los duas vezes no lote geraria
+    um erro fantasma."""
+    if bruto is None:
+        return []
+    itens = bruto if isinstance(bruto, (list, tuple, set)) else [bruto]
+    vistos, out = set(), []
+    for item in itens:
+        if not isinstance(item, str):
+            continue
+        nome = item.strip()
+        chave = _chave_ci(nome)
+        if not nome or chave in vistos:
+            continue
+        vistos.add(chave)
+        out.append(nome)
+    return out
+
+
 def gerar_dags(**context):
     import json as _json
     hook        = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
@@ -2220,9 +2245,21 @@ def gerar_dags(**context):
     force_all      = bool(conf.get("force_all", False))
     filter_project = (conf.get("filter_project") or "").strip()
     pipeline_name  = (conf.get("pipeline_name")  or "").strip()
+    # Lista de alvos (republicação de malha): mesma semântica do pipeline_name,
+    # para N pipelines — libera cada um para regeneração, cobra cada um no lote
+    # e trata pendência de terceiro como AVISO. `escopo_rotulo` deixa o log da
+    # factory dizer de onde veio ("Malha X") em vez de "apenas pendentes".
+    alvos_nomes    = _nomes_do_conf(conf.get("pipelines"))
+    escopo_rotulo  = (conf.get("escopo_rotulo") or "").strip()
+    if pipeline_name and _chave_ci(pipeline_name) not in {
+            _chave_ci(n) for n in alvos_nomes}:
+        alvos_nomes.append(pipeline_name)
 
     if pipeline_name:
         escopo = f"Pipeline específico: {pipeline_name}"
+    elif alvos_nomes:
+        escopo = (escopo_rotulo or "Pipelines selecionados") + \
+                 f" ({len(alvos_nomes)} pipeline(s))"
     elif force_all and filter_project:
         escopo = f"Todos os pipelines do projeto {filter_project} (regeneração forçada)"
     elif force_all:
@@ -2261,13 +2298,20 @@ def gerar_dags(**context):
     conn   = hook.get_conn()
     cursor = conn.cursor()
 
-    if pipeline_name:
-        cursor.execute(
-            "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
-            "WHERE pipeline_name=%s",
-            (pipeline_name,),
-        )
-        msg = f"Pipeline '{pipeline_name}' liberado para regeneração"
+    if alvos_nomes:
+        # Um UPDATE por alvo (em vez de IN com N marcadores): mantém o mesmo
+        # SQL simples do caso de um pipeline e não depende de montar lista de
+        # placeholders — o lote típico é de poucas dezenas.
+        for _nome in alvos_nomes:
+            cursor.execute(
+                "UPDATE dbo.etl_pipeline SET dag_criada=0, updated_at=GETDATE() "
+                "WHERE pipeline_name=%s",
+                (_nome,),
+            )
+        msg = (f"Pipeline '{alvos_nomes[0]}' liberado para regeneração"
+               if len(alvos_nomes) == 1 else
+               f"{len(alvos_nomes)} pipelines liberados para regeneração: "
+               + ", ".join(alvos_nomes))
         print(f"[FACTORY] {msg}")
         steps_log.append({"tipo": "reset", "msg": msg})
     elif force_all:
@@ -2318,18 +2362,21 @@ def gerar_dags(**context):
 
     if not pipelines_rows:
         cursor.close(); conn.close()
-        if pipeline_name:
-            # Run disparado para um pipeline específico que NÃO entrou no lote:
-            # inexistente, inativo (a SP filtra active=1) ou corrida entre o
+        if alvos_nomes:
+            # Run disparado para alvos específicos que NÃO entraram no lote:
+            # inexistentes, inativos (a SP filtra active=1) ou corrida entre o
             # clique e a execução. SUCCESS aqui seria um verde mentiroso — o
-            # operador pediu uma DAG que não foi gerada (achado da revisão
-            # adversarial desta correção).
-            msg = (f"{pipeline_name}: pipeline solicitado não entrou na geração — "
-                   "inexistente, inativo ou sem pendência no momento da execução")
-            print(f"[FACTORY] {msg}")
-            steps_log.append({"tipo": "erro", "msg": msg})
-            _log_upsert("FAILED", 0, 1, steps_log, [msg])
-            raise _ErrosPorPipeline(msg)
+            # operador pediu DAGs que não foram geradas (achado da revisão
+            # adversarial desta correção). Vale para um alvo ou para a lista
+            # inteira da republicação de malha: cada nome pedido é dito.
+            msgs = [f"{nome}: pipeline solicitado não entrou na geração — "
+                    "inexistente, inativo ou sem pendência no momento da execução"
+                    for nome in alvos_nomes]
+            for msg in msgs:
+                print(f"[FACTORY] {msg}")
+                steps_log.append({"tipo": "erro", "msg": msg})
+            _log_upsert("FAILED", 0, len(msgs), steps_log, msgs)
+            raise _ErrosPorPipeline("\n".join(msgs))
         msg = "Nenhum pipeline pendente encontrado — nada foi regenerado"
         print(f"[FACTORY] {msg}")
         steps_log.append({"tipo": "vazio", "msg": msg})
@@ -2554,24 +2601,32 @@ def gerar_dags(**context):
     # loop segue; problema do pipeline SOLICITADO — e qualquer problema em run
     # global/force_all — continua erro de primeira classe, preservando a
     # intenção da PR #234 (falha visível, nunca silêncio).
-    _alvo_ci = _chave_ci(pipeline_name) if pipeline_name else None
+    # `pipelines_alvo` (lista no conf) generaliza o mesmo isolamento para um
+    # CONJUNTO de alvos — é o que a republicação de malha usa: os membros são
+    # os alvos, e um pendente quebrado de terceiro não pode pintar o run de
+    # vermelho quando todos os membros foram gerados (visto ao vivo no dev).
+    _alvos_ci = {_chave_ci(p) for p in (alvos_nomes or []) if p} or None
     _SUFIXO_TERCEIRO = " — pendência de outro pipeline, ignorada nesta execução"
 
     def _pendencia_de_terceiro(pname_do_loop):
-        return _alvo_ci is not None and _chave_ci(pname_do_loop) != _alvo_ci
+        return _alvos_ci is not None and _chave_ci(pname_do_loop) not in _alvos_ci
 
     # O alvo entrou no lote? A SP filtra active=1 e dag_criada=0: entre o clique
     # e a execução o pipeline pode ter sido inativado/excluído, ou o conf de um
     # trigger manual pode ter vindo com nome errado. Sem esta checagem, o run
     # demoveria tudo a 'aviso' e fecharia SUCCESS com "0 geradas" — sem uma
-    # linha sequer mencionando o pipeline pedido.
-    if _alvo_ci is not None and not any(
-            _chave_ci(p["pipeline_name"]) == _alvo_ci for p in pipelines):
-        msg = (f"{pipeline_name}: pipeline solicitado não entrou na geração — "
-               "inexistente, inativo ou sem pendência no momento da execução")
-        print(f"[FACTORY] {msg}")
-        erros.append(msg)
-        steps_log.append({"tipo": "erro", "msg": msg})
+    # linha sequer mencionando o pipeline pedido. Com vários alvos, a cobrança
+    # é POR ALVO: um membro que não entrou é erro nomeado, e os outros seguem.
+    if _alvos_ci is not None:
+        _no_lote = {_chave_ci(p["pipeline_name"]) for p in pipelines}
+        for _nome in (alvos_nomes or []):
+            if _chave_ci(_nome) in _no_lote:
+                continue
+            msg = (f"{_nome}: pipeline solicitado não entrou na geração — "
+                   "inexistente, inativo ou sem pendência no momento da execução")
+            print(f"[FACTORY] {msg}")
+            erros.append(msg)
+            steps_log.append({"tipo": "erro", "msg": msg})
 
     for pipeline in pipelines:
         pname   = pipeline["pipeline_name"]
@@ -2738,6 +2793,10 @@ def _escopo_de(conf):
     montar a própria descrição."""
     if (conf.get("pipeline_name") or "").strip():
         return f"Pipeline específico: {conf['pipeline_name'].strip()}"
+    alvos = _nomes_do_conf(conf.get("pipelines"))
+    if alvos:
+        rotulo = (conf.get("escopo_rotulo") or "").strip() or "Pipelines selecionados"
+        return f"{rotulo} ({len(alvos)} pipeline(s))"
     if conf.get("force_all") and (conf.get("filter_project") or "").strip():
         return f"Todos os pipelines do projeto {conf['filter_project'].strip()} (regeneração forçada)"
     if conf.get("force_all"):

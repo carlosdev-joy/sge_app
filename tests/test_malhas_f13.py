@@ -146,7 +146,9 @@ class FakeCur(FakeCurF11):
             return
         if "FROM dbo.etl_malha_pipeline mp JOIN dbo.etl_pipeline p" in s \
                 and "p.agenda_no" in s:
-            # membros do detalhe COM a coluna aditiva agenda_no (F13)
+            # membros do detalhe COM a coluna aditiva agenda_no (F13) — e,
+            # quando a 073 está presente, o carimbo da publicação pendente
+            # no fim da lista (a ordem do SELECT do router).
             k = db._malha_key(params[0])
             out = []
             for m in db.membros:
@@ -155,11 +157,16 @@ class FakeCur(FakeCurF11):
                     if pk is None:
                         continue
                     p = db.pipelines[pk]
-                    out.append((pk, p.get("active", 1),
-                                p.get("criticidade") or "Media",
-                                p.get("schedule_type"),
-                                m["layout_x"], m["layout_y"],
-                                p.get("agenda_no")))
+                    cols = [pk, p.get("active", 1),
+                            p.get("criticidade") or "Media",
+                            p.get("schedule_type"),
+                            m["layout_x"], m["layout_y"],
+                            int(p.get("dag_criada") or 0),
+                            p.get("agenda_no")]
+                    if "p.dag_config_pendente_em" in s:
+                        # 0/1 equivalente ao carimbo (convenção do FakeDb F8)
+                        cols.append(p.get("dag_config_pendente") or None)
+                    out.append(tuple(cols))
             self._rows = sorted(out)
             self.rowcount = -1
             return
