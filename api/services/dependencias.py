@@ -158,27 +158,36 @@ def modo_sequencia(cur) -> bool:
     return valor
 
 
+JANELA_SEQ_PADRAO_H = 12
+
+
+def janela_sequencia_horas(cur) -> int:
+    """Port do canônico: janela do modo sequência em horas (default 12,
+    domínio 1..168)."""
+    try:
+        cur.execute("SELECT config_value FROM dbo.etl_app_config "
+                    "WHERE config_key = 'dependencia_janela_sequencia_horas'")
+        row = cur.fetchone()
+        n = int(str(row[0]).strip()) if row and row[0] is not None else JANELA_SEQ_PADRAO_H
+        return n if 1 <= n <= 168 else JANELA_SEQ_PADRAO_H
+    except Exception as e:  # noqa: BLE001
+        log.debug("[DEP] janela do modo sequencia indisponivel (%s)", e)
+        return JANELA_SEQ_PADRAO_H
+
+
 def inicio_do_ciclo_corrente(cur):
-    """Corte do ciclo (port do canônico): virada global mais recente, na régua
-    do BANCO — é lá que `fim`/`inicio` são carimbados."""
-    from datetime import datetime, time as _time, timedelta
+    """Corte do modo sequência (port): `agora - janela`, na régua do BANCO.
+
+    NÃO é a virada do dia: com o corte na virada, a corrida que atravessa a
+    meia-noite (pai 23h30, filho 01h) travaria em silêncio."""
+    from datetime import datetime, timedelta
     try:
         cur.execute("SELECT GETDATE()")
         row = cur.fetchone()
         agora = row[0] if row and row[0] is not None else datetime.now()
     except Exception:  # noqa: BLE001
         agora = datetime.now()
-    v = _time(0, 0)
-    try:
-        bruto = virada_global(cur)
-        if bruto is not None:
-            texto = str(bruto).strip()
-            partes = texto.split(":")
-            v = _time(int(partes[0]), int(partes[1]) if len(partes) > 1 else 0)
-    except Exception:  # noqa: BLE001 — config ruim = meia-noite
-        v = _time(0, 0)
-    base = agora.date() if agora.time() >= v else agora.date() - timedelta(days=1)
-    return datetime.combine(base, v)
+    return agora - timedelta(hours=janela_sequencia_horas(cur))
 
 
 def faltantes(cur, pipeline: str, data_ref: date) -> list:

@@ -1060,3 +1060,36 @@ def test_liberado_em_modo_sequencia_usa_o_corte(dep, monkeypatch):
     assert "data_referencia" not in sql
     assert params == ("PIPE_C", corte)
     dep.limpar_cache_modo()
+
+
+def test_janela_do_modo_sequencia_atravessa_a_meia_noite(dep, monkeypatch):
+    """O caso que motivou a janela: malha começa 23h do dia 03 e o filho é
+    avaliado 01h do dia 04. Com corte na VIRADA (00:00), o pai que concluiu
+    23h30 ficaria de fora e a cadeia travaria em silêncio — o problema que o
+    ODATE existe para resolver. Com janela, o corte é 13h do dia 03 e o pai
+    continua valendo."""
+    dep.limpar_cache_modo()
+    monkeypatch.setattr(dep, "agora_do_banco",
+                        lambda _c: datetime(2026, 8, 4, 1, 0))
+    conn = _conn([{"rows": [("12",)]}])
+    corte = dep.inicio_do_ciclo_corrente(conn)
+    assert corte == datetime(2026, 8, 3, 13, 0)
+    assert corte < datetime(2026, 8, 3, 23, 30)   # o pai das 23h30 ENTRA
+    dep.limpar_cache_modo()
+
+
+def test_janela_barra_a_rodada_anterior(dep, monkeypatch):
+    """24h depois, o mesmo sucesso já não vale: a rodada de hoje não é
+    liberada pelo sucesso de ontem."""
+    monkeypatch.setattr(dep, "agora_do_banco",
+                        lambda _c: datetime(2026, 8, 5, 1, 0))
+    conn = _conn([{"rows": [("12",)]}])
+    assert dep.inicio_do_ciclo_corrente(conn) > datetime(2026, 8, 3, 23, 30)
+
+
+def test_janela_fora_do_dominio_volta_ao_padrao(dep):
+    """0 travaria tudo; 10000 deixaria o sucesso da semana passada liberar."""
+    assert dep.janela_sequencia_horas(_conn([{"rows": [("0",)]}])) == 12
+    assert dep.janela_sequencia_horas(_conn([{"rows": [("10000",)]}])) == 12
+    assert dep.janela_sequencia_horas(_conn([{"rows": [("abc",)]}])) == 12
+    assert dep.janela_sequencia_horas(_conn([{"rows": [("6",)]}])) == 6
