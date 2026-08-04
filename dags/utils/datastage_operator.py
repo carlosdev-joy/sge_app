@@ -7,6 +7,9 @@ Features:
   - Idempotent trigger: attaches to an already-running job on Airflow restart
   - Real-time polling via dsjob -jobinfo (no blocking -wait flag)
   - Full log capture via dsjob -logsum on completion or failure only
+  - Diagnóstico no caminho de erro: quando o dsjob recusa o disparo (ou o job
+    some/volta com status desconhecido), o log do JOB é anexado à exceção —
+    best-effort, nunca substitui o erro original (incidente DSJE_REPERROR)
   - Child job visibility for SEQUENCE type jobs (BATCH/finish events)
   - Espelha fielmente o status do DataStage (sem RESET/retry — nao manipula o job)
   - Optional logical-date parameter for catch-up scheduling correctness
@@ -69,12 +72,31 @@ _ERR_ESTADO = re.compile(
     r"badstate|not in the (?:right|correct) state|job is (?:not compiled|being reset)"
     r"|needs? (?:to be )?reset",
     re.IGNORECASE)
+# ── Segundo incidente, 2026-08-02 (pipeline TESTE_DS / SsdVidaDimePessoa02Ftp) ─
+# O log dizia só:
+#     [DS] trigger rc=255 | Error running job
+#     Status code = -99 DSJE_REPERROR
+# Diferente do de ontem: o job FOI ENCONTRADO (não é "Cannot find job"). O
+# DataStage abriu o job e RECUSOU o -run com o erro genérico de repositório
+# (DSJE_REPERROR, -99), que por definição não diz o motivo. O motivo real (job
+# não compilado, -param que o job não declara, -queue inexistente, run travado,
+# permissão) está no LOG DO JOB — que o operator sabe buscar (`_logsum`) e não
+# buscava neste caminho. O marcador é confirmável (texto DSJE_REPERROR + código
+# -99), então vira categoria própria; o que ela NÃO faz é adivinhar qual das
+# causas foi — ela lista as hipóteses e mostra o que o Orquestra enviou.
+# `\b` depois de -99 evita casar -999/-9999 (este último é erro de sintaxe do
+# próprio dsjob, outra coisa).
+_ERR_REPOSITORIO = re.compile(
+    r"dsje_reperror|status code\s*=\s*-99\b", re.IGNORECASE)
 
 
 def _classifica_erro_dsjob(saida: str) -> str | None:
     """Categoria do erro na saída do dsjob: 'job_inexistente' | 'projeto' |
-    'estado' | None (não reconhecido). Ordem importa: 'Cannot find job' é o
-    marcador mais específico e vence."""
+    'estado' | 'repositorio' | None (não reconhecido). Ordem importa: 'Cannot
+    find job' é o marcador mais específico e vence; 'repositorio' fica por
+    ÚLTIMO porque o -99 é o balde genérico do DataStage — se a saída trouxer
+    junto um marcador que diz de fato o que houve (projeto, BADSTATE), esse
+    ganha."""
     texto = saida or ""
     if _ERR_JOB_INEXISTENTE.search(texto):
         return "job_inexistente"
@@ -82,6 +104,8 @@ def _classifica_erro_dsjob(saida: str) -> str | None:
         return "projeto"
     if _ERR_ESTADO.search(texto):
         return "estado"
+    if _ERR_REPOSITORIO.search(texto):
+        return "repositorio"
     return None
 
 
@@ -281,7 +305,10 @@ class DataStageOperator(BaseOperator):
             if sc == self._ST_ABORTED:
                 # Espelho puro: o DataStage abortou → reportamos ABORTED (FAILED) e
                 # paramos. Sem RESET, sem retry, sem re-disparo — não manipulamos o job.
-                logsum     = self._logsum()   # logsum para diagnóstico
+                # Best-effort: uma falha do -logsum aqui NÃO pode esconder do
+                # operador que o job ABORTOU (o erro de diagnóstico tomaria o
+                # lugar do erro real).
+                logsum     = self._logsum_seguro()   # logsum para diagnóstico
                 child_jobs = self._parse_child_jobs(logsum)
                 self._log_child_jobs(child_jobs)
                 self._persist(
@@ -292,16 +319,27 @@ class DataStageOperator(BaseOperator):
                 )
                 raise AirflowException(
                     f"[DS] '{self.project}/{self.job_name}' ABORTED.\n"
-                    f"Log summary (2 000 chars):\n{logsum[:2000]}"
+                    + (f"Log summary (2 000 chars):\n{logsum[:2000]}" if logsum
+                       else "O DataStage não devolveu log para este job "
+                            "(dsjob -logsum vazio ou indisponível).")
                 )
 
+            # Os dois ramos abaixo mandavam o operador "conferir o log do
+            # DataStage" sem trazer o log — sendo que aqui ele está a uma
+            # chamada de distância e o custo é zero (caminho de erro).
             if sc == self._ST_NOT_RUN:
+                diag = self._logsum_diagnostico()
                 raise AirflowException(
                     f"[DS] '{self.project}/{self.job_name}' is NOT RUNNING unexpectedly "
                     f"(wave {wave_num}). Check DataStage logs."
+                    + ("\n" + diag if diag else "")
                 )
 
-            raise AirflowException(f"[DS] Unknown status code {sc} for '{self.job_name}'")
+            diag = self._logsum_diagnostico()
+            raise AirflowException(
+                f"[DS] Unknown status code {sc} for '{self.job_name}'"
+                + ("\n" + diag if diag else "")
+            )
 
     # ── trigger / attach ─────────────────────────────────────────────────────
 
@@ -330,17 +368,36 @@ class DataStageOperator(BaseOperator):
         rc, out, err = self._exec(cmd, timeout=60)
         combined = (out + " " + err).strip()
         self.log.info("[DS] trigger rc=%d | %s", rc, combined[:300])
+        # O comando disparado NÃO carrega credencial: usuário/chave vêm da
+        # conexão SSH do Airflow (`SSHHook`) e o dsjob autentica pelo dsenv do
+        # servidor — o que aparece aqui é dshome, -mode, -queue, -param (data
+        # lógica), projeto e job. Pode ir para o log. Mostramos SEMPRE no
+        # caminho de erro (é a informação que diz se a fila/param que o
+        # Orquestra mandou existe no job) e, no caminho feliz, só com
+        # verbose_log — mesma disciplina do -logsum parcial.
+        if rc not in (0, 1) or self.verbose_log:
+            self.log.info("[DS] comando: %s", cmd)
 
         # Espelho puro: não tentamos RESET no BADSTATE. Se o disparo for recusado
         # (job travado de um run anterior), reportamos o erro — não manipulamos o job.
         if rc not in (0, 1):
+            categoria = _classifica_erro_dsjob(((out or "") + "\n" + (err or "")).strip())
+            # Incidente 2026-08-02: quando o disparo é recusado com erro
+            # genérico, o motivo real está no log do JOB. Buscamos best-effort,
+            # só aqui (custo zero no caminho feliz). Exceção: job inexistente —
+            # job que não existe não tem log, e ali o diagnóstico bom é a lista
+            # de nomes parecidos (-ljobs), que a mensagem já traz.
+            diag = "" if categoria == "job_inexistente" else self._logsum_diagnostico()
             # Primeiro, o motivo VERDADEIRO quando ele é reconhecível (job
-            # inexistente / projeto / estado). Só cai no genérico se a saída não
-            # trouxer marcador — aí a mensagem crua é tudo que temos.
-            self._falhar_se_erro_dsjob(rc, out, err, "disparar o job (dsjob -run)")
-            raise AirflowException(
+            # inexistente / projeto / estado / repositório). Só cai no genérico
+            # se a saída não trouxer marcador — aí a mensagem crua é tudo que temos.
+            self._falhar_se_erro_dsjob(
+                rc, out, err, "disparar o job (dsjob -run)", cmd=cmd, extra=diag)
+            generico = (
                 f"[DS] Failed to trigger '{self.job_name}': rc={rc} | {combined[:300]}"
+                f"\n     Comando: {cmd}"
             )
+            raise AirflowException(generico + ("\n" + diag if diag else ""))
 
         info = self._jobinfo()
         try:
@@ -363,18 +420,26 @@ class DataStageOperator(BaseOperator):
 
     # ── diagnóstico de erro do dsjob ─────────────────────────────────────────
 
-    def _falhar_se_erro_dsjob(self, rc: int, out: str, err: str, acao: str) -> None:
+    def _falhar_se_erro_dsjob(self, rc: int, out: str, err: str, acao: str,
+                              cmd: str = "", extra: str = "") -> None:
         """Levanta AirflowException com mensagem ESPECÍFICA quando a saída do
         dsjob traz um erro reconhecível. Silencioso (no-op) quando não há
         marcador de erro — inclusive com rc≠0 desconhecido, que segue para o
-        tratamento genérico de quem chamou."""
+        tratamento genérico de quem chamou.
+
+        ``cmd``   — comando que foi executado (entra na mensagem; sem credencial).
+        ``extra`` — bloco de diagnóstico já pronto (ex.: o log do job), anexado
+        no fim. Quem monta o ``extra`` é responsável por ele ser best-effort:
+        aqui ele só é concatenado."""
         combinado = ((out or "") + "\n" + (err or "")).strip()
         categoria = _classifica_erro_dsjob(combinado)
         if categoria is None:
             return
-        raise AirflowException(self._mensagem_erro(categoria, acao, rc, combinado))
+        msg = self._mensagem_erro(categoria, acao, rc, combinado, cmd=cmd)
+        raise AirflowException(msg + ("\n" + extra if extra else ""))
 
-    def _mensagem_erro(self, categoria: str, acao: str, rc, combinado: str) -> str:
+    def _mensagem_erro(self, categoria: str, acao: str, rc, combinado: str,
+                       cmd: str = "") -> str:
         trecho = (combinado or "")[:300]
         if categoria == "job_inexistente":
             linhas = [
@@ -395,6 +460,31 @@ class DataStageOperator(BaseOperator):
                 f"[DS] O projeto '{self.project}' não pôde ser aberto no "
                 f"DataStage (ao {acao}, rc={rc}) — confira o projeto do pipeline "
                 f"e o dsenv de {self.dshome}.\n     Saída do dsjob: {trecho}")
+        if categoria == "repositorio":
+            # DSJE_REPERROR (-99) é o balde genérico do DataStage: ele NÃO diz o
+            # motivo. O que podemos afirmar é o que o marcador garante (o job
+            # existe e foi aberto; a execução foi recusada) + o que só o
+            # Orquestra sabe: os valores que ELE mandou no comando. Nada de
+            # eleger uma causa sem marcador.
+            linhas = [
+                f"[DS] O DataStage RECUSOU a execução de "
+                f"'{self.project}/{self.job_name}' (ao {acao}, rc={rc}).",
+                "     O job EXISTE e foi aberto — o erro é o genérico de "
+                "repositório do DataStage (DSJE_REPERROR, código -99), que NÃO "
+                "informa o motivo. Confira, nesta ordem:",
+                "     1) o job está COMPILADO no projeto? (recompile no "
+                "Designer e dispare de novo — é a causa mais comum);",
+                f"     2) o job declara o parâmetro que o Orquestra enviou? "
+                f"{self._descreve_param()}",
+                f"     3) a fila do Workload Management existe e está "
+                f"habilitada? {self._descreve_fila()}",
+                "     4) sobrou run anterior travado, ou falta permissão ao "
+                "usuário da conexão SSH sobre o job/projeto.",
+            ]
+            if cmd:
+                linhas.append(f"     Comando: {cmd}")
+            linhas.append(f"     Saída do dsjob: {trecho}")
+            return "\n".join(linhas)
         # 'estado'
         return (
             f"[DS] O job '{self.project}/{self.job_name}' está em estado que não "
@@ -402,6 +492,55 @@ class DataStageOperator(BaseOperator):
             "anterior travado/abortado que precisa de RESET no DataStage. "
             "O Orquestra é espelho puro: não damos reset por conta própria.\n"
             f"     Saída do dsjob: {trecho}")
+
+    def _descreve_param(self) -> str:
+        """O que o Orquestra manda em -param — informação que só ELE tem."""
+        if self.execution_date_param:
+            return (f"o Orquestra envia '-param {self.execution_date_param}=<data>' "
+                    f"(parâmetro de data lógica da etapa). Se o job não declarar "
+                    f"'{self.execution_date_param}', o DataStage recusa o run.")
+        return "o Orquestra NÃO envia nenhum -param nesta etapa."
+
+    def _descreve_fila(self) -> str:
+        """O que o Orquestra manda em -queue (mapeado da criticidade)."""
+        if self.queue_name:
+            return (f"o Orquestra envia '-queue {self.queue_name}' (fila derivada "
+                    f"da criticidade do pipeline). Se essa fila não existir no "
+                    f"Workload Management, o DataStage recusa o run.")
+        return "o Orquestra NÃO envia -queue (usa a fila padrão do projeto)."
+
+    def _logsum_seguro(self) -> str:
+        """`_logsum()` que NUNCA levanta — devolve '' em qualquer falha. Para os
+        ramos em que o logsum é insumo (parse de filhos, persistência) e uma
+        falha de diagnóstico não pode substituir o erro real."""
+        try:
+            return self._logsum() or ""
+        except Exception as exc:
+            self.log.warning("[DS] -logsum indisponível: %s", exc)
+            return ""
+
+    def _logsum_diagnostico(self, limite: int = 2000) -> str:
+        """Bloco com o log do JOB (`dsjob -logsum`) para ANEXAR a uma mensagem de
+        erro — é onde está o motivo real quando o dsjob devolve erro genérico.
+
+        Best-effort de verdade (mesma disciplina do `_nomes_do_projeto`): se o
+        -logsum falhar ou expirar, devolve string VAZIA e o erro ORIGINAL sai
+        íntegro — nunca é substituído por um erro de diagnóstico. Se o DataStage
+        responder mas sem conteúdo, dizemos isso explicitamente em vez de anexar
+        um bloco vazio. Só é chamado no CAMINHO DE ERRO: custo zero quando o
+        disparo dá certo."""
+        try:
+            logsum = self._logsum()
+        except Exception as exc:
+            self.log.debug("[DS] -logsum para diagnóstico falhou: %s", exc)
+            return ""
+        texto = (logsum or "").strip()
+        if not texto:
+            return ("     Log do job: o DataStage não devolveu log para este job "
+                    "(dsjob -logsum vazio).")
+        # Mesmo teto do ramo ABORTED (2 000 chars) para não inundar o log do Airflow.
+        return (f"     Log do job (dsjob -logsum, últimas {self.logsum_max} "
+                f"entradas, {limite} chars):\n{texto[:limite]}")
 
     def _nomes_do_projeto(self) -> list:
         """Nomes de job do projeto (`dsjob -ljobs`). SÓ é chamado no caminho de
