@@ -1,8 +1,8 @@
 # Spec: data de referência ÚNICA por malha
 
-Data: 2026-08-04 · Status: ✅ **F1, F2 e F3 no código** (branch
-`feat/malha-republicar-pipelines`) · 🔜 F4 e F5 (mexem no fonte gerado,
-exigem `force_all` no deploy)
+Data: 2026-08-04 · Status: ✅ **F1–F5 no código** (branch
+`feat/malha-republicar-pipelines`). ⚠️ F4 e F5 mexem no fonte gerado —
+o deploy delas EXIGE `force_all`.
 Origem: incidente de produção na malha `Carga_Vida` (2026-08-04) — o Aguarde
 liberou os dependentes com os predecessores em datas de referência diferentes
 (parte no dia 3, parte no dia 4) e as execuções seguintes saíram erradas.
@@ -108,7 +108,7 @@ agendamento do Início (F13), estendido dos filhos-raiz para todos os membros.
   mostra o evento com o de/para e a corrida anda; malha não marcada → bloqueio
   da F1.
 
-### F4 — Push com a mesma trava da guardiã
+### F4 — Push com a mesma trava da guardiã ✅
 - O push do pai (fonte gerado do `dag_factory`) recusa disparar quando os
   predecessores do filho estão em datas divergentes, gravando `DATA_DIVERGENTE`
   — hoje só a guardiã faz isso, e o push é quem dispara.
@@ -116,7 +116,7 @@ agendamento do Início (F13), estendido dos filhos-raiz para todos os membros.
 - **Aceite:** cenário reproduzido no dev com dois pais em datas diferentes: o
   filho não é disparado e o evento aparece no painel.
 
-### F5 — Validação no gatilho automático
+### F5 — Validação no gatilho automático ✅
 - O `check_agenda` da raiz consulta a malha antes de partir: com membro em
   execução no dia ou data divergente, **não parte** (PULADO com motivo) ou
   equaliza, conforme a marca da malha.
@@ -125,9 +125,13 @@ agendamento do Início (F13), estendido dos filhos-raiz para todos os membros.
 
 ## 6. Ordem e risco
 
-F1 e F2 são API + front (deploy leve, sem regerar DAG) e já cobrem o caso
-operacional. F3 é a que escreve em execução — vai depois, com o smoke dedicado.
-F4 e F5 mexem no fonte gerado e entram juntas, com `force_all`.
+F1, F2 e F3 são API + front (deploy leve, sem regerar DAG) e já cobrem o caso
+operacional — a F3 é a que escreve em execução, com as guardas do §5.
+F4 e F5 mexem no fonte gerado e entram juntas, com `force_all`: sem regerar as
+DAGs, o push antigo continua liberando e o cron continua partindo malha suja.
+
+**Ordem no deploy:** migration **081** na etapa 6c → api/ + front (F1–F3
+valem na hora) → dags/ + `force_all` (liga F4 e F5).
 
 **Enquanto nada disso sobe:** republicar os pipelines da malha já corta a fonte
 da divergência (o dependente para de rodar por cron e passa a herdar a data).

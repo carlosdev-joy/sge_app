@@ -147,6 +147,50 @@ _DELTA_DIVERGENCIA = [
 ]
 
 
+_DELTA_MALHA_CICLO = [
+    "    # F5 (spec-malha-data-unica): a malha comeca do ZERO. Vale so para",
+    "    # disparo por AGENDA — quem vem por evento ja passou pelas travas do",
+    "    # push (F4) e herdou a data do pai, entao re-julgar aqui pararia a",
+    "    # propria cascata que acabou de ser liberada.",
+    "    if _origem == 'agenda':",
+    "        try:",
+    "            from utils.malha_ciclo import (",
+    "                equalizar as _mc_equalizar,",
+    "                equalizar_ligado as _mc_eq_ligado,",
+    "                estado_do_ciclo as _mc_estado,",
+    "                inicio_do_ciclo as _mc_inicio,",
+    "                malha_do_pipeline as _mc_malha,",
+    "                resumo as _mc_resumo,",
+    "                virada_da_malha as _mc_virada,",
+    "            )",
+    "            from datetime import datetime as _dt_malha",
+    "            _conn_malha = hook.get_conn()",
+    "            try:",
+    "                _malha = _mc_malha(_conn_malha, PIPELINE_NAME)",
+    "                if _malha:",
+    "                    _dref = _data_referencia(context)",
+    "                    _desde = _mc_inicio(_dt_malha.now(),",
+    "                                        _mc_virada(_conn_malha, _malha))",
+    "                    _est = _mc_estado(_conn_malha, _malha, _dref, _desde)",
+    "                    if _est['divergentes'] and not _est['em_aberto'] \\",
+    "                            and _mc_eq_ligado(_conn_malha, _malha):",
+    "                        _feitos = _mc_equalizar(_conn_malha, _malha, _dref,",
+    "                                                _est['divergentes'], 'agenda')",
+    "                        _conn_malha.commit()",
+    "                        for _p, _de, _para in _feitos:",
+    "                            print(f'[MALHA] {_p}: data {_de} -> {_para} (equalizada)')",
+    "                        _est = _mc_estado(_conn_malha, _malha, _dref, _desde)",
+    "                    if _est['em_aberto'] or _est['divergentes']:",
+    "                        _res = _mc_resumo(_est)",
+    "                        print(f'[MALHA] {_malha} nao esta limpa — execucao pulada: {_res}')",
+    "                        return False, f'malha {_malha} nao esta limpa — {_res}'",
+    "            finally:",
+    "                _conn_malha.close()",
+    "        except Exception as e:",
+    "            print(f\"[MALHA] Aviso: estado da malha nao verificado ({e}) — seguindo.\")",
+]
+
+
 def _remover_delta(src: str) -> str:
     """Devolve o fonte SEM o delta da F5 — a operação inversa exata do que a
     factory passou a emitir. Falha ruidosamente (AssertionError) se um dos
@@ -158,7 +202,8 @@ def _remover_delta(src: str) -> str:
     linhas = src.split("\n")
     for bloco in (_DELTA_IMPORT, _DELTA_LOG_START,
                   _DELTA_DIVERGENCIA_IMPORT, _DELTA_DIVERGENCIA_IMPORT2,
-                  _DELTA_DIVERGENCIA_IMPORT3, _DELTA_DIVERGENCIA):
+                  _DELTA_DIVERGENCIA_IMPORT3, _DELTA_DIVERGENCIA,
+                  _DELTA_MALHA_CICLO):
         ocorrencias = [i for i in range(len(linhas) - len(bloco) + 1)
                        if linhas[i:i + len(bloco)] == bloco]
         # Os blocos do PUSH só existem em pipeline com dependência: cenário
