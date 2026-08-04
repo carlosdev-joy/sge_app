@@ -2425,6 +2425,28 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
         bloqueios = ({"em_aberto": [], "datas_divergentes": []}
                      if not tem_exec_067
                      else _bloqueios_do_ciclo(cur, malha, data_ref))
+
+        # F3: a malha marcada NÃO para para perguntar — ela carimba todos com a
+        # data do ciclo e segue. Vale só para DATA: corrida em ANDAMENTO
+        # continua barrando com ou sem a marca (recarimbar uma corrida em voo
+        # trocaria a chave dela no meio do caminho).
+        equaliza = (tem_exec_067 and bool(bloqueios["datas_divergentes"])
+                    and _equalizar_data_da_malha(cur, malha))
+        equalizaveis, nao_equalizaveis = ([], [])
+        if equaliza:
+            equalizaveis, nao_equalizaveis = _equalizaveis(
+                cur, malha, data_ref, bloqueios["datas_divergentes"])
+        quem = (str(auth.get("matricula") or "").strip() or "?")
+        equalizados: list = []
+        if equaliza and not dry_run and not bloqueios["em_aberto"]:
+            equalizados = _equalizar(cur, malha, data_ref, equalizaveis, quem)
+            conn.commit()
+            # Reconta com o banco JÁ equalizado: o que sobrar aqui é bloqueio
+            # de verdade (o que não pôde ser recarimbado).
+            bloqueios = _bloqueios_do_ciclo(cur, malha, data_ref)
+            log.info("[MALHA] malha '%s': %d execução(ões) equalizadas para %s "
+                     "por %s", malha, len(equalizados), data_ref, quem)
+
         tem_bloqueio = bool(bloqueios["em_aberto"]
                             or bloqueios["datas_divergentes"])
         # O banco fecha ANTES das chamadas ao Airflow: uma rede lenta não
@@ -2434,11 +2456,24 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
         if dry_run:
             # O dry_run NÃO recusa: ele MOSTRA. O modal precisa exibir quem
             # está segurando a malha (com nome e data) para o operador agir —
-            # um 422 seco aqui esconderia a lista.
-            return {"data_referencia": data_ref.strftime("%Y-%m-%d"),
+            # um 422 seco aqui esconderia a lista. Com a marca de equalização,
+            # mostra também o que SERÁ recarimbado: a malha anda sozinha, mas
+            # o operador vê o de→para antes de confirmar.
+            resp = {"data_referencia": data_ref.strftime("%Y-%m-%d"),
                     "raizes": raizes_info, "avisos": avisos,
                     "bloqueios": bloqueios,
-                    "bloqueado": tem_bloqueio}
+                    "bloqueado": tem_bloqueio and not equaliza}
+            if equaliza:
+                resp["equalizacao"] = {
+                    "prevista": equalizaveis,
+                    "impedidos": nao_equalizaveis,
+                    # Corrida em aberto não é resolvida por equalização: com
+                    # ela presente, o bloqueio continua de pé.
+                    "bloqueado_por_corrida": bool(bloqueios["em_aberto"]),
+                }
+                resp["bloqueado"] = bool(bloqueios["em_aberto"]
+                                         or nao_equalizaveis)
+            return resp
 
         if tem_bloqueio:
             raise HTTPException(
@@ -2446,7 +2481,6 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
                 detail=_msg_bloqueio(bloqueios, data_ref.strftime("%Y-%m-%d")))
 
         hoje = _agora().date()
-        quem = (str(auth.get("matricula") or "").strip() or "?")
         conf = {
             "data_referencia": data_ref.strftime("%Y-%m-%d"),
             "dia_operacional": hoje.strftime("%Y-%m-%d"),
@@ -2492,9 +2526,15 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
         log.info("[MALHA] disparo manual da malha '%s' por %s — data_ref=%s, "
                  "%d disparada(s), %d falha(s)", malha, quem,
                  conf["data_referencia"], len(disparadas), len(falhas))
-        return {"ok": len(falhas) == 0,
-                "data_referencia": conf["data_referencia"],
-                "disparadas": disparadas, "falhas": falhas, "avisos": avisos}
+        # `equalizados` é ADITIVO e só aparece quando houve recarimbo: a tela
+        # avisa o operador do que foi mudado no histórico em nome dele.
+        resp_write = {"ok": len(falhas) == 0,
+                      "data_referencia": conf["data_referencia"],
+                      "disparadas": disparadas, "falhas": falhas,
+                      "avisos": avisos}
+        if equalizados:
+            resp_write["equalizados"] = equalizados
+        return resp_write
     except HTTPException:
         raise
     except Exception as e:
@@ -2575,6 +2615,83 @@ def _bloqueios_do_ciclo(cur, malha: str, data_ref) -> dict:
     divergentes = _datas_divergentes(cur, malha, data_ref,
                                      _inicio_do_ciclo(cur, _agora()))
     return {"em_aberto": em_aberto, "datas_divergentes": divergentes}
+
+
+def _equalizar_data_da_malha(cur, malha: str) -> bool:
+    """A malha está marcada para equalizar sozinha (F3)? Sem a 081, não."""
+    if not _colunas_081(cur):
+        return False
+    try:
+        cur.execute("SELECT CAST(equalizar_data AS INT) FROM dbo.etl_malha "
+                    "WHERE malha_name = ?", (malha,))
+        row = cur.fetchone()
+        return bool(row and int(row[0] or 0))
+    except Exception as e:
+        log.warning("[MALHA] leitura de equalizar_data falhou: %s", e)
+        return False
+
+
+def _equalizaveis(cur, malha: str, data_ref, divergentes: list) -> tuple:
+    """Separa o que PODE ser recarimbado do que não pode.
+
+    Não pode: pipeline que já tem linha na data-alvo. Recarimbar criaria duas
+    corridas do mesmo pipeline no mesmo ODATE — e a leitura "mais recente da
+    data" passaria a escolher entre duas verdades. Melhor recusar nominalmente
+    do que produzir um estado que ninguém consegue explicar depois."""
+    podem, nao_podem = [], []
+    for d in divergentes:
+        cur.execute(
+            "SELECT COUNT(*) FROM dbo.etl_pipeline_execucao "
+            "WHERE pipeline_name = ? AND data_referencia = ?",
+            (d["pipeline"], data_ref))
+        row = cur.fetchone()
+        if row and int(row[0] or 0) > 0:
+            nao_podem.append({**d, "motivo":
+                              "já existe corrida deste pipeline na data da "
+                              "malha — recarimbar criaria duas"})
+        else:
+            podem.append(d)
+    return podem, nao_podem
+
+
+def _equalizar(cur, malha: str, data_ref, alvos: list, quem: str) -> list:
+    """Recarimba para `data_ref` as execuções listadas e registra o de→para.
+
+    Escrita em linha de EXECUÇÃO — histórico não pode mudar em silêncio:
+    o `motivo` da própria linha guarda a origem da mudança e um evento
+    DATA_EQUALIZADA fica no painel da malha, com quem mandou. Só linhas do
+    ciclo corrente chegam aqui (o recorte é de quem chama)."""
+    feitos = []
+    for a in alvos:
+        origem = a["data_referencia"]
+        cur.execute(
+            "UPDATE dbo.etl_pipeline_execucao "
+            "SET data_referencia = ?, atualizado_em = GETDATE(), "
+            "    motivo = LEFT(ISNULL(motivo + ' | ', '') + ?, 500) "
+            "WHERE pipeline_name = ? AND data_referencia = ? "
+            "  AND status = ?",
+            (data_ref,
+             f"data de referência equalizada de {origem} para "
+             f"{_fmt_dia(data_ref)} pela malha {malha} ({quem})",
+             a["pipeline"], origem, a["status"]))
+        if (cur.rowcount or 0) > 0:
+            feitos.append({"pipeline": a["pipeline"], "de": origem,
+                           "para": _fmt_dia(data_ref)})
+    if feitos:
+        detalhe = "; ".join(f"{f['pipeline']}: {f['de']} -> {f['para']}"
+                            for f in feitos)
+        try:
+            cur.execute(
+                "INSERT INTO dbo.etl_dependencia_evento "
+                "(pipeline_name, data_referencia, tipo, detalhe) "
+                "VALUES (?, ?, 'DATA_EQUALIZADA', ?)",
+                (feitos[0]["pipeline"], data_ref,
+                 f"malha {malha} ({quem}): {detalhe}"[:1000]))
+        except Exception as e:
+            # O evento é o RASTRO, não a operação: perdê-lo não desfaz o
+            # recarimbo (que já está na transação), mas tem de aparecer no log.
+            log.warning("[MALHA] evento DATA_EQUALIZADA não registrado: %s", e)
+    return feitos
 
 
 def _msg_bloqueio(bloqueios: dict, data_ref: str) -> str:
@@ -3379,14 +3496,33 @@ def salvar_agendamento_malha(malha_name: str, body: dict = Body(default={}),
             (json.dumps(ag, ensure_ascii=False), malha))
         for p in aplicar:
             _aplicar_agenda_na_raiz(cur, p, ag, inicio["id"])
+        # F2 da spec-malha-data-unica: a virada do agendamento É a régua de
+        # data da MALHA — guardá-la só nas raízes deixaria os demais membros
+        # calculando ODATE por outra régua (a doença da Carga_Vida) e faria a
+        # própria tela acusar as raízes como "fora da régua", porque
+        # etl_malha.hora_virada continuaria nula. Uma porta só: salvar o
+        # agendamento aqui grava a régua e a compila para a malha inteira.
+        equalizados_virada: list = []
+        if _colunas_081(cur):
+            cur.execute(
+                "UPDATE dbo.etl_malha SET hora_virada = ?, "
+                "atualizado_em = SYSDATETIME() WHERE malha_name = ?",
+                (ag.get("hora_virada"), malha))
+            equalizados_virada = _compilar_virada(cur, malha,
+                                                  ag.get("hora_virada"))
         conn.commit(); cur.close(); conn.close()
-        return {"ok": True, "efeito": efeito, "avisos": avisos,
-                "agendamento": ag, "agendamento_resumo": resumo_para,
-                # o cron pela MESMA função do register (conferência visual —
-                # a autoridade do gatilho segue sendo o scheduler)
-                "cron": _build_cron(ag["schedule_type"], ag["schedule_hour"],
-                                    ag["schedule_minute"], ag["schedule_dow"],
-                                    ag["schedule_dom"])}
+        resp_ag = {"ok": True, "efeito": efeito, "avisos": avisos,
+                   "agendamento": ag, "agendamento_resumo": resumo_para,
+                   # o cron pela MESMA função do register (conferência visual —
+                   # a autoridade do gatilho segue sendo o scheduler)
+                   "cron": _build_cron(ag["schedule_type"], ag["schedule_hour"],
+                                       ag["schedule_minute"], ag["schedule_dow"],
+                                       ag["schedule_dom"])}
+        if equalizados_virada:
+            # Membros NÃO-raiz que foram alinhados à régua de data: o efeito da
+            # F13 fala das raízes, e este é maior — precisa ser dito.
+            resp_ag["virada_equalizada"] = equalizados_virada
+        return resp_ag
     except HTTPException:
         raise
     except Exception as e:

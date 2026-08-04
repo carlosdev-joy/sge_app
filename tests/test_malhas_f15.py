@@ -673,3 +673,167 @@ def test_sem_067_nao_bloqueia_nem_quebra(client, auth_operador):
         r = _disparar(client, "M1", {"data_referencia": "2026-08-04"})
     assert r.status_code == 200, r.text
     assert len(fake.chamadas) == 2
+
+
+# ── F3 da spec-malha-data-unica: equalização automática ────────────────────
+# A malha marcada não para para o operador decidir: carimba todos com a data
+# do ciclo e segue. Vale só para DATA — corrida em ANDAMENTO continua barrando.
+
+class FakeDbEq(FakeDb):
+    """FakeDb da F15 + a marca `equalizar_data` (081) e o recarimbo."""
+
+    def __init__(self, *a, equalizar=1, **kw):
+        super().__init__(*a, **kw)
+        self.equalizar = equalizar
+        self.eventos_gravados: list = []
+
+    def cursor(self):
+        super().cursor()
+        return FakeCurEq(self)
+
+
+class FakeCurEq(FakeCur):
+    def execute(self, sql, params=()):  # noqa: C901 — dispatcher de dublê
+        db = self.db
+        s = " ".join(str(sql).split())
+        params = tuple(params)
+
+        if "COL_LENGTH('dbo.etl_malha', 'hora_virada')" in s:
+            self._rows = [(5, 1)]
+            self.rowcount = -1
+            return
+        if s.startswith("SELECT CAST(equalizar_data AS INT) FROM dbo.etl_malha"):
+            self._rows = [(db.equalizar,)]
+            self.rowcount = -1
+            return
+        if s.startswith("UPDATE dbo.etl_pipeline_execucao SET data_referencia"):
+            # O router manda a data ANTIGA como texto 'YYYY-MM-DD' (é o que ele
+            # devolveu na lista de divergentes); o SQL Server coage DATE ×
+            # literal. O dublê faz a mesma coerção — comparar date com str
+            # daria rowcount 0 e a equalização pareceria não ter efeito.
+            nova, _motivo, pipe, antiga, status = params
+            alvo = str(antiga)[:10]
+            n = 0
+            for e in db.execucoes:
+                if (e["pipeline"] == pipe
+                        and str(e["data_referencia"])[:10] == alvo
+                        and e["status"] == status):
+                    e["data_referencia"] = nova
+                    n += 1
+            self.rowcount = n
+            return
+        if s.startswith("INSERT INTO dbo.etl_dependencia_evento"):
+            db.eventos_gravados.append(params)
+            self.rowcount = 1
+            return
+
+        super().execute(sql, params)
+
+
+def test_equalizacao_recarimba_e_dispara(client, auth_operador):
+    """O caso que o usuário pediu: data diferente no ciclo → a malha carimba
+    todos com a data dela e ANDA, sem parar para o operador avaliar."""
+    db = FakeDbEq(pipelines=_pipes())
+    db.execucoes.append(
+        _exec("RAIZ_B", date(2026, 8, 3), "SUCESSO",
+              datetime(2026, 8, 4, 1, 10)))
+    fake = FakeAirflowClient()
+    with _patch_db(db), _patch_airflow(fake):
+        _malha_com_inicio(client)
+        with patch("routers.malhas._agora",
+                   return_value=datetime(2026, 8, 4, 9, 0)):
+            r = _disparar(client, "M1", {"data_referencia": "2026-08-04"})
+    assert r.status_code == 200, r.text
+    corpo = r.json()
+    assert corpo["equalizados"] == [
+        {"pipeline": "RAIZ_B", "de": "2026-08-03", "para": "2026-08-04"}]
+    assert db.execucoes[0]["data_referencia"] == date(2026, 8, 4)
+    assert len(fake.chamadas) == 2, "a malha tem de ter partido"
+    # o rastro: histórico não muda em silêncio
+    assert len(db.eventos_gravados) == 1
+    assert "RAIZ_B: 2026-08-03 -> 2026-08-04" in db.eventos_gravados[0][2]
+
+
+def test_equalizacao_nao_atropela_corrida_em_andamento(client, auth_operador):
+    """Equalizar é sobre DATA. Corrida viva continua barrando — recarimbar uma
+    corrida em voo trocaria a chave dela no meio do caminho."""
+    db = FakeDbEq(pipelines=_pipes())
+    db.execucoes.append(
+        _exec("PIPE_MEIO", date(2026, 8, 4), "EXECUTANDO",
+              datetime(2026, 8, 4, 8, 0)))
+    db.execucoes.append(
+        _exec("RAIZ_B", date(2026, 8, 3), "SUCESSO",
+              datetime(2026, 8, 4, 1, 10)))
+    fake = FakeAirflowClient()
+    with _patch_db(db), _patch_airflow(fake):
+        _malha_com_inicio(client)
+        with patch("routers.malhas._agora",
+                   return_value=datetime(2026, 8, 4, 9, 0)):
+            r = _disparar(client, "M1", {"data_referencia": "2026-08-04"})
+    assert r.status_code == 422
+    assert "PIPE_MEIO" in r.json()["detail"]
+    assert fake.chamadas == []
+    # e NADA foi recarimbado: a equalização não roda sob corrida viva
+    assert db.execucoes[1]["data_referencia"] == date(2026, 8, 3)
+    assert db.eventos_gravados == []
+
+
+def test_equalizacao_recusa_quem_ja_tem_corrida_na_data_alvo(client, auth_operador):
+    """Duas corridas do mesmo pipeline no mesmo ODATE seria um estado que
+    ninguém explica depois — esse membro é nomeado em vez de recarimbado."""
+    db = FakeDbEq(pipelines=_pipes())
+    db.execucoes.append(
+        _exec("RAIZ_B", date(2026, 8, 3), "SUCESSO",
+              datetime(2026, 8, 4, 1, 10)))
+    db.execucoes.append(
+        _exec("RAIZ_B", date(2026, 8, 4), "SUCESSO",
+              datetime(2026, 8, 4, 6, 0)))
+    fake = FakeAirflowClient()
+    with _patch_db(db), _patch_airflow(fake):
+        _malha_com_inicio(client)
+        with patch("routers.malhas._agora",
+                   return_value=datetime(2026, 8, 4, 9, 0)):
+            r = _disparar(client, "M1", {"data_referencia": "2026-08-04"})
+    assert r.status_code == 422
+    assert "RAIZ_B" in r.json()["detail"]
+    assert db.execucoes[0]["data_referencia"] == date(2026, 8, 3)   # intacta
+    assert fake.chamadas == []
+
+
+def test_dry_run_mostra_o_de_para_antes(client, auth_operador):
+    """A malha anda sozinha, mas o operador vê o que SERÁ mudado."""
+    db = FakeDbEq(pipelines=_pipes())
+    db.execucoes.append(
+        _exec("RAIZ_B", date(2026, 8, 3), "SUCESSO",
+              datetime(2026, 8, 4, 1, 10)))
+    fake = FakeAirflowClient()
+    with _patch_db(db), _patch_airflow(fake):
+        _malha_com_inicio(client)
+        with patch("routers.malhas._agora",
+                   return_value=datetime(2026, 8, 4, 9, 0)):
+            r = _disparar(client, "M1",
+                          {"dry_run": True, "data_referencia": "2026-08-04"})
+    assert r.status_code == 200, r.text
+    corpo = r.json()
+    assert corpo["bloqueado"] is False       # a marca resolve o bloqueio
+    prevista = corpo["equalizacao"]["prevista"]
+    assert [p["pipeline"] for p in prevista] == ["RAIZ_B"]
+    assert corpo["equalizacao"]["impedidos"] == []
+    # dry_run não escreve
+    assert db.execucoes[0]["data_referencia"] == date(2026, 8, 3)
+    assert db.eventos_gravados == []
+
+
+def test_sem_a_marca_continua_bloqueando(client, auth_operador):
+    db = FakeDbEq(pipelines=_pipes(), equalizar=0)
+    db.execucoes.append(
+        _exec("RAIZ_B", date(2026, 8, 3), "SUCESSO",
+              datetime(2026, 8, 4, 1, 10)))
+    fake = FakeAirflowClient()
+    with _patch_db(db), _patch_airflow(fake):
+        _malha_com_inicio(client)
+        with patch("routers.malhas._agora",
+                   return_value=datetime(2026, 8, 4, 9, 0)):
+            r = _disparar(client, "M1", {"data_referencia": "2026-08-04"})
+    assert r.status_code == 422
+    assert db.execucoes[0]["data_referencia"] == date(2026, 8, 3)

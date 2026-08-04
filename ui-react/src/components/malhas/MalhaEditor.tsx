@@ -269,6 +269,13 @@ interface DisparoDryResposta {
   avisos: AvisoDesenho[]
   bloqueios?: { em_aberto: BloqueioCiclo[]; datas_divergentes: BloqueioCiclo[] }
   bloqueado?: boolean
+  // F3: malha marcada para equalizar — em vez de parar, ela carimba todos com
+  // a data do ciclo. O de→para é mostrado ANTES de confirmar.
+  equalizacao?: {
+    prevista: BloqueioCiclo[]
+    impedidos: (BloqueioCiclo & { motivo: string })[]
+    bloqueado_por_corrida: boolean
+  }
 }
 interface DisparoResposta {
   ok: boolean
@@ -276,6 +283,8 @@ interface DisparoResposta {
   disparadas: { pipeline: string; dag_run_id: string }[]
   falhas: { pipeline: string; erro: string }[]
   avisos: AvisoDesenho[]
+  // F3: o que a malha recarimbou em nome do operador (aditivo).
+  equalizados?: { pipeline: string; de: string; para: string }[]
 }
 
 // ── Republicação da malha (POST /malhas/{m}/republicar) ─────────────────────
@@ -1089,6 +1098,14 @@ function MalhaEditorInner({
           method: 'POST',
           body: JSON.stringify({ data_referencia: disparo.data_referencia }),
         })
+      // F3: o recarimbo vem ANTES do sucesso — mudança em histórico de
+      // execução tem de ser dita, mesmo quando o operador pediu que fosse
+      // automática.
+      if (r.equalizados?.length) {
+        toast.info(r.equalizados.length === 1
+          ? `Data equalizada: ${r.equalizados[0].pipeline} passou de ${r.equalizados[0].de} para ${r.equalizados[0].para}.`
+          : `${r.equalizados.length} execuções tiveram a data de referência equalizada para ${r.data_referencia}.`)
+      }
       if (r.disparadas.length > 0) {
         toast.success(r.disparadas.length === 1
           ? `1 raiz disparada com data de referência ${r.data_referencia} — a cadeia anda pelo push.`
@@ -2724,6 +2741,37 @@ function MalhaEditorInner({
             {/* F1: a malha começa do ZERO. O que segura vem PRIMEIRO, com nome
                 e data de cada um — o operador precisa saber o que resolver, não
                 só que não pode disparar. */}
+            {/* F3: a malha marcada equaliza sozinha — mas o de→para aparece
+                antes de confirmar. Automático não é secreto. */}
+            {(disparo.equalizacao?.prevista.length ?? 0) > 0 && (
+              <div className="flex flex-col gap-1 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 dark:border-blue-800 dark:bg-blue-900/20">
+                <span className="flex items-center gap-1.5 text-[12px] font-semibold text-blue-700 dark:text-blue-300">
+                  <RefreshCw size={13} /> Esta malha equaliza a data automaticamente
+                </span>
+                {disparo.equalizacao!.prevista.map(p => (
+                  <div key={p.pipeline} className="text-[11px] text-blue-700 dark:text-blue-300">
+                    <span className="font-mono">{p.pipeline}</span>: {p.data_referencia}
+                    {' → '}<strong>{disparo.data_referencia}</strong>
+                  </div>
+                ))}
+                <span className="text-[11px] text-blue-700/90 dark:text-blue-300/90">
+                  A mudança fica registrada no histórico da execução e no painel
+                  de eventos da malha.
+                </span>
+              </div>
+            )}
+            {(disparo.equalizacao?.impedidos.length ?? 0) > 0 && (
+              <div className="flex flex-col gap-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 dark:border-amber-800 dark:bg-amber-900/20">
+                <span className="text-[12px] font-semibold text-amber-700 dark:text-amber-300">
+                  Não dá para equalizar:
+                </span>
+                {disparo.equalizacao!.impedidos.map(p => (
+                  <div key={p.pipeline} className="text-[11px] text-amber-700 dark:text-amber-300">
+                    <span className="font-mono">{p.pipeline}</span> — {p.motivo}
+                  </div>
+                ))}
+              </div>
+            )}
             {disparo.bloqueado && disparo.bloqueios && (
               <div className="flex flex-col gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 dark:border-red-800 dark:bg-red-900/20">
                 <span className="flex items-center gap-1.5 text-[12px] font-semibold text-red-700 dark:text-red-300">
@@ -2930,6 +2978,7 @@ function MalhaEditorInner({
         onClose={() => setAgendaAberta(false)}
         agendamento={data?.agendamento ?? null}
         raizes={raizesInicio}
+        equalizarData={data?.equalizar_data}
       />
     </div>
   )
