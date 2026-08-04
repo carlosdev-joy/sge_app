@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import os
+import time
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -10,17 +12,26 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from db import get_db_conn
 from deps import (
     AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
-    PERM_EXECUTAR,
+    PERM_EDITAR, PERM_EXECUTAR,
     require_perm, require_ds_console,
 )
 from services.ssh_datastage import (
-    DSJOB_COMMANDS, DsConsoleError, run_dsjob, ssh_configured,
+    DSJOB_COMMANDS, DsConsoleError, build_dsjob_command, parse_ljobs,
+    run_dsjob, ssh_configured,
 )
 from services.ds_seq_flow import parse_seq_flow
 
 log = logging.getLogger("orquestra-api")
 
 router = APIRouter()
+
+# ── Cache dos nomes de job por PROJETO (GET /datastage/jobs) ────────────────
+# A lista muda pouco e cada consulta é uma sessão SSH nova: sem cache, o
+# autocompletar do cadastro abriria uma conexão por tecla. TTL curto para o
+# operador enxergar um job recém-publicado sem reiniciar a API.
+# Formato: {projeto_upper: (expira_em_epoch, resultado_dict)}.
+_LJOBS_CACHE: dict[str, tuple[float, dict]] = {}
+_LJOBS_TTL = int(os.getenv("DS_LJOBS_TTL_SEGUNDOS", "300"))
 
 
 def get_airflow_client() -> httpx.AsyncClient:
@@ -208,6 +219,105 @@ async def datastage_console_exec(body: dict = Body(...), user: dict = Depends(re
         user.get("matricula"), command, project, job, result.get("exit_code"),
     )
     return {"command": command, "project": project, "job": job, **result}
+
+
+@router.get("/datastage/jobs")
+async def datastage_listar_jobs(
+    project: str = Query(...),
+    refresh: bool = Query(False),
+    _auth: dict = Depends(require_perm(PERM_EDITAR)),
+):
+    """Nomes REAIS dos jobs de um projeto DataStage (`dsjob -ljobs <PROJETO>`).
+
+    Serve à conferência do nome no CADASTRO da etapa: o DataStage é
+    case-sensitive nos nomes de job e o SQL Server (colação padrão) não é —
+    a divergência de caixa só aparecia quando o pipeline rodava em produção
+    (incidente 2026-08-01: cadastrado 'SsdVidaCobranca01…', o job real era
+    'SSDVidaCobranca01…' → "Cannot find job", status -1004).
+
+    ⚠️ REGRA: **indisponibilidade do DataStage NÃO bloqueia o cadastro.** Este
+    endpoint responde SEMPRE 200: quando não dá para consultar (SSH não
+    configurado, servidor fora, timeout), devolve ``disponivel=false`` com o
+    motivo em texto — a UI mostra "não foi possível conferir agora" em vez de
+    travar o gesto. Só entrada inválida (projeto fora da allowlist) é 422.
+
+    Cache em memória por projeto (TTL ``DS_LJOBS_TTL_SEGUNDOS``, default 300s) —
+    o autocompletar do cadastro filtra a lista NO NAVEGADOR, sem uma ida por
+    tecla digitada. ``refresh=true`` força a releitura.
+
+    Resposta: {project, disponivel, jobs[], total, cached, verificado_em, motivo}
+    """
+    proj = (project or "").strip()
+    if not proj:
+        raise HTTPException(status_code=422, detail="project é obrigatório")
+
+    # Validação da ENTRADA primeiro (allowlist anti-injeção): projeto inválido é
+    # erro do chamador (422) e não deve ser confundido com "DataStage fora".
+    try:
+        build_dsjob_command("ljobs", proj)
+    except DsConsoleError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    chave = proj.upper()
+    agora = time.time()
+    if not refresh:
+        entrada = _LJOBS_CACHE.get(chave)
+        if entrada and entrada[0] > agora:
+            return {**entrada[1], "cached": True}
+
+    if not ssh_configured():
+        return _ljobs_indisponivel(
+            chave, proj,
+            "SSH do DataStage não configurado nesta instância da API "
+            "(DS_SSH_HOST/DS_SSH_USER) — o nome não pôde ser conferido.",
+            agora)
+
+    try:
+        resultado = run_dsjob("ljobs", proj)
+    except DsConsoleError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        log.warning("DS /datastage/jobs: falha ao listar jobs de %s: %s", proj, e)
+        return _ljobs_indisponivel(
+            chave, proj, f"não foi possível falar com o DataStage: {e}", agora)
+
+    if resultado.get("exit_code") not in (0, None):
+        detalhe = (resultado.get("stderr") or resultado.get("stdout") or "").strip()
+        return _ljobs_indisponivel(
+            chave, proj,
+            f"o dsjob recusou a consulta (exit={resultado.get('exit_code')})"
+            + (f": {detalhe[:300]}" if detalhe else ""),
+            agora)
+
+    jobs = parse_ljobs(resultado.get("stdout"))
+    payload = {
+        "project": proj,
+        "disponivel": True,
+        "jobs": jobs,
+        "total": len(jobs),
+        "cached": False,
+        "verificado_em": int(agora),
+        "motivo": None,
+    }
+    _LJOBS_CACHE[chave] = (agora + _LJOBS_TTL, payload)
+    return payload
+
+
+def _ljobs_indisponivel(chave: str, proj: str, motivo: str, agora: float) -> dict:
+    """Resposta 200 de degradação — e cacheia por um TTL CURTO (1/5 do normal)
+    para não martelar um servidor fora do ar a cada tecla, sem esconder a volta
+    dele por 5 minutos."""
+    payload = {
+        "project": proj,
+        "disponivel": False,
+        "jobs": [],
+        "total": 0,
+        "cached": False,
+        "verificado_em": int(agora),
+        "motivo": motivo,
+    }
+    _LJOBS_CACHE[chave] = (agora + max(15, _LJOBS_TTL // 5), payload)
+    return payload
 
 
 @router.get("/datastage/seq-flow")
