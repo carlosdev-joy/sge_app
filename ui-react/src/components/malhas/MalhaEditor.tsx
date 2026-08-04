@@ -89,6 +89,12 @@ import {
   STATUS_EXECUCAO, ORDEM_LEGENDA, estiloEvento,
   type ExecucaoPipeline, type MalhaExecucaoApi,
 } from './statusExecucao'
+// Camada de FLUXO da visão de Execução: a linha entre dois nós conta por onde
+// a corrida do dia passou, onde ela está agora e onde parou.
+import {
+  arestaComFluxo, estadoDaAresta, estadoDoComponente, estadoDoPipeline,
+  type EstadoElemento,
+} from './fluxoExecucao'
 // F15: próxima execução do agendamento — DISPLAY-ONLY (a autoridade do
 // gatilho é o scheduler; mesmo estatuto do calcularDataRef da F5).
 import { proximaExecucaoTexto } from './proximaExecucao'
@@ -386,14 +392,15 @@ function execDoComponente(
         const st = execPorPipeline.get(p)?.status
         return st === 'FALHA' || st === 'NAO_LIBEROU'
       })
+      const total = upstream.length
       if (bloqueiam.length > 0) {
-        return { kind: 'aguarde', estado: 'bloqueado', faltam: [], bloqueiam }
+        return { kind: 'aguarde', estado: 'bloqueado', faltam: [], bloqueiam, total }
       }
       const faltam = upstream.filter(
         p => execPorPipeline.get(p)?.status !== 'SUCESSO')
       return faltam.length === 0
-        ? { kind: 'aguarde', estado: 'satisfeito', faltam: [], bloqueiam: [] }
-        : { kind: 'aguarde', estado: 'aguardando', faltam, bloqueiam: [] }
+        ? { kind: 'aguarde', estado: 'satisfeito', faltam: [], bloqueiam: [], total }
+        : { kind: 'aguarde', estado: 'aguardando', faltam, bloqueiam: [], total }
     }
     // Observadores: upstream VAZIO é o skip da guardiã (Decisão 13) — a tela
     // diz isso, em vez de prometer "aguardando" para sempre. Mesma régua do
@@ -823,6 +830,17 @@ function MalhaEditorInner({
   useEffect(() => {
     if (!grafo) return
     const atuais = new Map(nodesRef.current.map(n => [n.id, n.position]))
+    // Estado de cada COMPONENTE na data — calculado uma vez e reusado pelo card
+    // e pela linha (duas leituras da mesma verdade, nunca dois cálculos).
+    const camadaExecNos = emExecucao && !!execData
+      && execData.migration_067_pendente !== true
+    const estadoPonta = new Map<string, EstadoElemento>()
+    if (camadaExecNos) {
+      for (const m of grafo.membros) {
+        estadoPonta.set(m.pipeline_name,
+          estadoDoPipeline(execPorPipeline.get(m.pipeline_name)?.status))
+      }
+    }
     setNodes([
       ...grafo.membros.map(m => {
         const exec = emExecucao ? execPorPipeline.get(m.pipeline_name) : undefined
@@ -857,8 +875,14 @@ function MalhaEditorInner({
         const tipo = n.tipo as TipoComponente
         // F15: a camada de execução só existe com a visão aberta E dados da
         // 067 disponíveis — deploy parcial degrada para o card neutro.
-        const camadaExec = emExecucao && !!execData
-          && execData.migration_067_pendente !== true
+        const camadaExec = camadaExecNos
+        const execNo = camadaExec
+          ? execDoComponente(n, tipo,
+              grafo.saidasPipelineNo.get(n.id) ?? [],
+              execPorPipeline, eventoNoPorId,
+              data?.agendamento ?? null)
+          : null
+        if (camadaExec) estadoPonta.set(noRfId(n.id), estadoDoComponente(execNo))
         return {
           id: noRfId(n.id),
           type: COMPONENTE_META[tipo].nodeType,
@@ -884,19 +908,24 @@ function MalhaEditorInner({
             contradicao: tipo === 'inicio'
               && grafo.membros.some(
                 m => m.agenda_contradicao && m.agenda_no === n.id),
-            execNo: camadaExec
-              ? execDoComponente(n, tipo,
-                  grafo.saidasPipelineNo.get(n.id) ?? [],
-                  execPorPipeline, eventoNoPorId,
-                  data?.agendamento ?? null)
-              : null,
+            execNo,
           } satisfies MalhaComponenteNodeData,
         }
       }),
     ])
-    setEdges(grafo.novasEdges)
+    // A LINHA conta o caminho da corrida: verde onde já passou, azul animada na
+    // frente que está avançando, vermelha onde parou. Fora da Execução (ou sem
+    // dado na data) as arestas ficam exatamente como na Montagem.
+    setEdges(camadaExecNos
+      ? grafo.novasEdges.map(e => arestaComFluxo(
+          e,
+          estadoDaAresta(estadoPonta.get(e.source) ?? null,
+                         estadoPonta.get(e.target) ?? null),
+          colorMode === 'dark'))
+      : grafo.novasEdges)
   }, [grafo, setNodes, setEdges, emExecucao, execPorPipeline, eventoNoPorId,
-      execData, orientacao, data, onAbrirEtapas, dataExibida, descerParaEtapas])
+      execData, orientacao, data, onAbrirEtapas, dataExibida, descerParaEtapas,
+      colorMode])
 
   // dirty = alguma posição difere do baseline do servidor (arredondado — é o
   // que o PUT envia). Mover um nó e devolvê-lo ao lugar volta a desabilitar o
@@ -2292,6 +2321,17 @@ function MalhaEditorInner({
               </span>
             )
           })}
+          {/* A linha é a outra metade da leitura: o card diz o estado de UM
+              pipeline, a linha diz se a corrida ATRAVESSOU aquele trecho. */}
+          <span className="flex items-center gap-1.5 border-l border-edge pl-3 text-[10px] text-dim">
+            linha:
+            <span className="inline-block h-0.5 w-4 rounded bg-green-600 dark:bg-green-400" />
+            percorrida
+            <span className="inline-block h-0.5 w-4 animate-pulse rounded bg-blue-600 dark:bg-blue-400" />
+            em andamento
+            <span className="inline-block h-0.5 w-4 rounded bg-red-600 dark:bg-red-400" />
+            parada
+          </span>
           <span className="ml-auto text-[10px] text-dim">
             nó sem anel = sem execução registrada na data
           </span>

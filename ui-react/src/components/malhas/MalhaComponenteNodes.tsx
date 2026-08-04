@@ -66,6 +66,10 @@ export type ExecComponente =
       estado: 'satisfeito' | 'bloqueado' | 'aguardando'
       faltam: string[]
       bloqueiam: string[]
+      // Quantas entradas o nó tem no desenho. Sem ela o card dizia só "faltam
+      // 3" e a pergunta seguinte era sempre "de quantas?" — o operador conta
+      // as setas na tela para saber se o número fecha.
+      total: number
     }
   // Notificação/Fim: `semEntradas` = upstream VAZIO (nenhum pipeline chega,
   // nem através de Aguarde) — a guardiã PULA o nó e nunca emite (Decisão 13);
@@ -208,7 +212,8 @@ function execLinha(e: ExecComponente): { texto: string; cls: string } | null {
         }
       }
       return {
-        texto: `aguardando (falta${e.faltam.length === 1 ? '' : 'm'} ${e.faltam.length})`,
+        texto: `aguardando (falta${e.faltam.length === 1 ? '' : 'm'} `
+          + `${e.faltam.length} de ${e.total})`,
         cls: 'text-amber-700 dark:text-amber-400',
       }
     case 'notificacao':
@@ -247,12 +252,16 @@ function execTitulo(e: ExecComponente): string | null {
     }
     case 'aguarde':
       if (e.estado === 'satisfeito') {
-        return 'todas as entradas com SUCESSO na data'
+        return `todas as ${e.total} entradas com SUCESSO na data`
       }
       if (e.estado === 'bloqueado') {
         return `bloqueado por: ${e.bloqueiam.join(', ')}`
       }
-      return `aguardando: ${e.faltam.join(', ')}`
+      // Diz também quantas JÁ estão prontas: sem isso, uma entrada que rodou
+      // fora de ordem (pipeline ainda no cron antigo, publicação pendente)
+      // vira um número que não fecha com o desenho.
+      return `${e.total - e.faltam.length} de ${e.total} com SUCESSO na data\n`
+        + `aguardando: ${e.faltam.join(', ')}`
     case 'notificacao':
       if (e.emitidaEm) return `notificação emitida às ${horaCurtaLocal(e.emitidaEm)}`
       return e.semEntradas
