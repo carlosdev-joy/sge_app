@@ -272,20 +272,104 @@ def dependentes_de(conn, pai: str) -> list:
     return [r[0] for r in cur.fetchall()]
 
 
+# ── Reabertura deliberada de corrida (F4 de docs/spec-operacao-nivel-etapa.md)
+# A migration 078 acrescentou `substituida_em` a etl_pipeline_execucao. Uma
+# corrida com esse carimbo foi APOSENTADA por um rerun com cascata pedido na
+# tela, com dono e hora — e o motor passa a ignorá-la, exatamente como já
+# ignora 'PULADO'. É o que faz a cascata acontecer pelo caminho NORMAL do
+# motor: quando o pai reexecutado conclui, o push encontra a corrida do
+# dependente aposentada, GANHA o claim e dispara com run_id novo e o MESMO
+# ODATE. Nada é disparado fora do claim, e a linha antiga não é apagada nem
+# reescrita — o histórico do dia fica inteiro.
+#
+# ⚠️ SÃO TRÊS AS PORTAS, e elas têm de concordar: `liberado()` (quem PODE
+# rodar), `ordenar_corrida` (o que conta como "já há corrida na data") e
+# `reservar_corrida` (o claim). A F4 ensinou só as duas últimas; a terceira
+# ficou para trás e o dev provou o estrago em 2026-08-03 — ver o docstring de
+# `liberado()`. Regra do módulo: cláusula de corrida substituída nova entra
+# NAS TRÊS ou em nenhuma.
+#
+# ⚠️ POR QUE O FALLBACK, E NÃO UM PROBE DE COLUNA: este é o caminho mais quente
+# do motor de dependências e ele roda em DAG já publicada (utils/ é importado em
+# runtime, não inlinado no código gerado). Num deploy parcial — dags/ novo, banco
+# ainda sem a 078 — a referência à coluna daria Msg 207 "Invalid column name" e
+# derrubaria o push de TODO pipeline com dependente. Um probe por chamada
+# custaria uma consulta extra em todo disparo; o fallback custa zero no caminho
+# feliz, é preciso (só reage à mensagem que cita a coluna, nunca a um deadlock
+# ou timeout, que continuam propagando) e se autocorrige assim que a migration
+# entra, sem reiniciar worker.
+_MARCA_078 = "substituida_em"
+
+# ⚠️ CONTRATO COM A API (correção do achado "078 sim / dags não").
+# `tem_coluna_substituida()` da API responde sobre o BANCO. Com as migrations
+# aplicadas e o `dags/` AINDA ANTIGO, a API oferecia a cascata, carimbava as
+# corridas (rowcount > 0), respondia "2 dependentes reabertos" — e o push
+# antigo ignorava o carimbo: nenhum dependente rodava e as corridas ficavam
+# aposentadas para sempre. Esta tupla é a resposta HONESTA à pergunta "o
+# motor deployado entende o carimbo?": a API monta `dags/` read-only
+# (docker-compose.yaml, orquestra-api) e LÊ esta declaração do arquivo — a
+# mesma árvore que o scheduler e o worker importam.
+#
+# Regra: quem TIRAR a cláusula `substituida_em` de qualquer uma das três
+# portas tira 'rerun_cascata_078' daqui no MESMO commit. A declaração vale o
+# que o código faz — declarar capacidade que não existe é o defeito, não a
+# cura. (Teste de amarração em tests/test_rerun_etapa_f4.py.)
+CAPACIDADES = ("rerun_cascata_078",)
+
+
+def _exec_com_fallback_078(cur, sql_078: str, sql_legado: str, params) -> bool:
+    """Executa `sql_078`; se o banco ainda não tem a coluna da 078, repete com
+    `sql_legado`. Devolve True quando caiu no legado (o chamador loga uma vez).
+
+    Qualquer outro erro PROPAGA — degradar em silêncio um erro de banco seria
+    a classe D21 (erro virando "pode disparar")."""
+    try:
+        cur.execute(sql_078, params)
+        return False
+    except Exception as e:  # noqa: BLE001 — reagimos SÓ ao Invalid column name da 078
+        if _MARCA_078 not in str(e):
+            raise
+        cur.execute(sql_legado, params)
+        return True
+
+
 def liberado(conn, pipeline: str, data_ref: date):
-    """Todos os predecessores de `pipeline` têm SUCESSO em `data_ref`?
+    """Todos os predecessores de `pipeline` têm SUCESSO VIVO em `data_ref`?
 
     Devolve (liberado, faltantes). Contrato EXISTS do §9 da F2 (serve-se de
     ix_pipe_exec_cond): FALHA, EXECUTANDO, PULADO, ausência e SUCESSO em
     OUTRA data não liberam (D20); PULADO intercalado não mascara um SUCESSO
     existente (D14); nenhuma ordenação por criado_em (D15).
 
+    ⚠️ **TERCEIRA PORTA DO MODELO DE CORRIDA (correção pós-F4).** Corrida com
+    `substituida_em` NÃO conta como SUCESSO — a MESMA regra que
+    `reservar_corrida` e `ordenar_corrida` já seguem. Sem esta cláusula a
+    cascata do rerun tinha um buraco de dado velho: reaberto A→B→C, a corrida
+    APOSENTADA de B continuava dizendo SUCESSO na data, a guardiã liberava C
+    no ciclo seguinte e C rodava com a saída ANTIGA de B — e, pior, quando B
+    reexecutava e publicava, o claim de C encontrava corrida viva e devolvia
+    None: **C nunca mais rodava com o dado novo, sem volta no ODATE**
+    (reproduzido no dev em 2026-08-03, cadeia de três níveis).
+
+    As três portas têm de concordar sobre o que é uma corrida que conta:
+    quem libera, quem ordena e quem reserva. Divergir entre elas é o que
+    produz disparo cedo (libera sem reservar) ou corrida órfã (reserva sem
+    liberar). Mesmo fallback das outras duas (`_exec_com_fallback_078`): sem a
+    migration 078 o comportamento é o de antes, byte a byte.
+
     Qualquer exceção na consulta → NÃO liberado, com log [DEP] (D21: erro
     nunca vira "pode disparar"). Predicado canônico para F4 e F5/D29.
     """
     try:
         cur = conn.cursor()
-        cur.execute(
+        legado = _exec_com_fallback_078(
+            cur,
+            "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
+            "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE' "
+            "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
+            "WHERE e.pipeline_name = dd.depende_de "
+            "AND e.data_referencia = %s AND e.status = 'SUCESSO' "
+            "AND e.substituida_em IS NULL)",
             "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
             "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE' "
             "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
@@ -293,6 +377,9 @@ def liberado(conn, pipeline: str, data_ref: date):
             "AND e.data_referencia = %s AND e.status = 'SUCESSO')",
             (pipeline, data_ref))
         faltantes = [r[0] for r in cur.fetchall()]
+        if legado:
+            print("[DEP] migration 078 ausente — liberacao segue a regra "
+                  "anterior (corrida substituida ainda conta como SUCESSO)")
         return (not faltantes), faltantes
     except Exception as e:  # noqa: BLE001 — D21: erro é NÃO liberado, nunca silêncio
         print(f"[DEP] condicao de {pipeline} indisponivel ({e}) — tratada como NAO liberada")
@@ -348,44 +435,6 @@ def config_dependente(conn, pipeline: str):
         "nao_iniciar_antes": _como_time(nia),
         "hora_limite": _como_time(hora_limite),
     }
-
-
-# ── Reabertura deliberada de corrida (F4 de docs/spec-operacao-nivel-etapa.md)
-# A migration 078 acrescentou `substituida_em` a etl_pipeline_execucao. Uma
-# corrida com esse carimbo foi APOSENTADA por um rerun com cascata pedido na
-# tela, com dono e hora — e o claim passa a ignorá-la, exatamente como já
-# ignora 'PULADO'. É o que faz a cascata acontecer pelo caminho NORMAL do
-# motor: quando o pai reexecutado conclui, o push encontra a corrida do
-# dependente aposentada, GANHA o claim e dispara com run_id novo e o MESMO
-# ODATE. Nada é disparado fora do claim, e a linha antiga não é apagada nem
-# reescrita — o histórico do dia fica inteiro.
-#
-# ⚠️ POR QUE O FALLBACK, E NÃO UM PROBE DE COLUNA: este é o caminho mais quente
-# do motor de dependências e ele roda em DAG já publicada (utils/ é importado em
-# runtime, não inlinado no código gerado). Num deploy parcial — dags/ novo, banco
-# ainda sem a 078 — a referência à coluna daria Msg 207 "Invalid column name" e
-# derrubaria o push de TODO pipeline com dependente. Um probe por chamada
-# custaria uma consulta extra em todo disparo; o fallback custa zero no caminho
-# feliz, é preciso (só reage à mensagem que cita a coluna, nunca a um deadlock
-# ou timeout, que continuam propagando) e se autocorrige assim que a migration
-# entra, sem reiniciar worker.
-_MARCA_078 = "substituida_em"
-
-
-def _exec_com_fallback_078(cur, sql_078: str, sql_legado: str, params) -> bool:
-    """Executa `sql_078`; se o banco ainda não tem a coluna da 078, repete com
-    `sql_legado`. Devolve True quando caiu no legado (o chamador loga uma vez).
-
-    Qualquer outro erro PROPAGA — degradar em silêncio um erro de banco seria
-    a classe D21 (erro virando "pode disparar")."""
-    try:
-        cur.execute(sql_078, params)
-        return False
-    except Exception as e:  # noqa: BLE001 — reagimos SÓ ao Invalid column name da 078
-        if _MARCA_078 not in str(e):
-            raise
-        cur.execute(sql_legado, params)
-        return True
 
 
 def reservar_corrida(conn, filho: str, data_ref: date, novo_run_id: str, origem: str):
@@ -627,7 +676,15 @@ def resumo_predecessores(conn, pipeline: str, data_ref: date) -> dict:
     SÓ para diagnóstico e mensagem (as três frases do D46, o
     PREDECESSOR_FALHOU do §7.2 e as guardas de fechamento do §6): NUNCA
     decide liberação — a pergunta de liberação é exclusivamente
-    `liberado()` (proteção do D29)."""
+    `liberado()` (proteção do D29).
+
+    ⚠️ Examinada de propósito pela lente da corrida substituída e MANTIDA
+    como está: aqui a pergunta é "o que ACONTECEU nesta data", e uma corrida
+    aposentada aconteceu. Os dois consumidores que decidem algo com este
+    resumo continuam corretos com ela dentro — `_predecessor_esperado` (D44)
+    fica MAIS certo (o predecessor reaberto vai mesmo rodar hoje) e a guarda
+    "predecessor EXECUTANDO não fecha o dia" só adia fechamento, que é o
+    lado seguro. Quem decide liberação é `liberado()`, e só ele filtra."""
     cur = conn.cursor()
     cur.execute(
         "SELECT dd.depende_de, e.status "
@@ -958,6 +1015,11 @@ def pipelines_todos_sucesso(conn, pipelines, data_ref: date) -> bool:
     CI; o COUNT DISTINCT do SQL conta como o banco compara — o len do
     Python precisa contar igual). Exceção → False com log [DEP] (o espelho
     do D21: erro nunca vira "condição fechou"); o próximo ciclo re-pergunta.
+
+    Corrida SUBSTITUÍDA não conta (mesma lente de `liberado()`): a entrada
+    foi aposentada por um rerun com cascata e vai rodar de novo — anunciar
+    "malha concluída" com ela seria avisar o fim de um dia que voltou a
+    correr. Mesmo fallback para banco sem a 078.
     """
     vistos: dict = {}
     for p in pipelines:
@@ -970,7 +1032,13 @@ def pipelines_todos_sucesso(conn, pipelines, data_ref: date) -> bool:
     try:
         cur = conn.cursor()
         marcadores = ", ".join(["%s"] * len(nomes))
-        cur.execute(
+        _exec_com_fallback_078(
+            cur,
+            "SELECT COUNT(DISTINCT e.pipeline_name) "
+            "FROM dbo.etl_pipeline_execucao e "
+            "WHERE e.data_referencia = %s AND e.status = 'SUCESSO' "
+            "AND e.substituida_em IS NULL "
+            "AND e.pipeline_name IN (" + marcadores + ")",
             "SELECT COUNT(DISTINCT e.pipeline_name) "
             "FROM dbo.etl_pipeline_execucao e "
             "WHERE e.data_referencia = %s AND e.status = 'SUCESSO' "

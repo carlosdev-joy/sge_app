@@ -240,6 +240,86 @@ def test_liberado_excecao_nao_vira_pode_disparar(dep, capsys):
     assert "[DEP]" in capsys.readouterr().out
 
 
+# ── a TERCEIRA porta: corrida substituída não libera ─────────────────────────
+# A F4 ensinou `reservar_corrida` e `ordenar_corrida` a ignorar corrida
+# aposentada e ESQUECEU `liberado()`. O estrago, reproduzido no dev em
+# 2026-08-03 com a cadeia A→B→C: reaberto o dia inteiro, a corrida APOSENTADA
+# de B seguia dizendo SUCESSO na data, a guardiã liberava C no ciclo seguinte
+# e C rodava com a saída ANTIGA de B — depois, quando B rerodava e publicava,
+# o claim de C encontrava corrida viva e devolvia None: C nunca mais rodava
+# com o dado novo. Estes testes falham no código anterior à correção.
+
+def test_liberado_ignora_corrida_substituida(dep):
+    """A cláusula está no NOT EXISTS — corrida aposentada não conta como
+    SUCESSO. Sem ela, liberar o neto era questão de um ciclo da guardiã."""
+    conn = _conn([{"rows": []}])
+    dep.liberado(conn, "PIPE_C", date(2026, 8, 1))
+    sql, params = conn._cur.execs[0]
+    assert "AND e.substituida_em IS NULL" in sql
+    assert "NOT EXISTS" in sql and "status = 'SUCESSO'" in sql
+    assert params == ("PIPE_C", date(2026, 8, 1))
+
+
+def test_as_tres_portas_concordam_sobre_corrida_substituida(dep):
+    """Liberar, ordenar e reservar têm de olhar a MESMA corrida. Divergir
+    produz disparo cedo (libera sem reservar) ou linha órfã (reserva sem
+    liberar) — este teste é a amarração das três."""
+    c1 = _conn([{"rows": []}])
+    dep.liberado(c1, "P", date(2026, 8, 1))
+    c2 = _conn([{"rowcount": 1}])
+    dep.ordenar_corrida(c2, "P", date(2026, 8, 1), "r", "PAI")
+    c3 = _conn([{"rows": []}, {"rowcount": 1}])
+    dep.reservar_corrida(c3, "P", date(2026, 8, 1), "r", "PAI")
+    sqls = ([c1._cur.execs[0][0]] + [c2._cur.execs[0][0]]
+            + [s for s, _ in c3._cur.execs])
+    assert all("substituida_em IS NULL" in s for s in sqls), sqls
+
+
+def test_liberado_com_banco_sem_a_078_cai_no_legado(dep, capsys):
+    """Deploy parcial ao contrário (dags/ novo, banco sem a migration): a
+    referência à coluna daria Msg 207 e derrubaria o push de TODO pipeline
+    com dependente. O fallback repete o SQL antigo e o comportamento é o de
+    antes, byte a byte — com log, nunca em silêncio."""
+    erro = Exception("Invalid column name 'substituida_em'.")
+    conn = _conn([erro, {"rows": [("PIPE_A",)]}])
+    ok, faltantes = dep.liberado(conn, "PIPE_C", date(2026, 8, 1))
+    assert (ok, faltantes) == (False, ["PIPE_A"])
+    assert len(conn._cur.execs) == 2
+    assert "substituida_em" not in conn._cur.execs[1][0]
+    assert "078" in capsys.readouterr().out
+
+
+def test_liberado_nao_engole_erro_que_nao_seja_da_078(dep, capsys):
+    """Deadlock/timeout continuam sendo D21 (não liberado com sentinel), e
+    NÃO viram uma segunda consulta silenciosa contra o banco."""
+    conn = _conn([Exception("deadlock victim")])
+    ok, faltantes = dep.liberado(conn, "PIPE_C", date(2026, 8, 1))
+    assert ok is False and faltantes[0].startswith("erro na consulta:")
+    assert len(conn._cur.execs) == 1
+    assert "[DEP]" in capsys.readouterr().out
+
+
+def test_observadores_de_malha_tambem_ignoram_corrida_substituida(dep):
+    """Mesma lente na condição dos observadores (F14): anunciar 'malha
+    concluída' contando uma entrada aposentada seria avisar o fim de um dia
+    que voltou a correr."""
+    conn = _conn([{"rows": [(2,)]}])
+    dep.pipelines_todos_sucesso(conn, ["A", "B"], date(2026, 8, 1))
+    sql, _ = conn._cur.execs[0]
+    assert "e.substituida_em IS NULL" in sql
+    conn2 = _conn([Exception("Invalid column name 'substituida_em'."),
+                   {"rows": [(2,)]}])
+    assert dep.pipelines_todos_sucesso(conn2, ["A", "B"], date(2026, 8, 1)) is True
+    assert "substituida_em" not in conn2._cur.execs[1][0]
+
+
+def test_modulo_declara_a_capacidade_que_a_api_le(dep):
+    """O contrato com a API (deploy parcial '078 sim / dags não'): a
+    declaração só pode existir enquanto as três portas de fato filtram —
+    senão a API volta a prometer uma cascata que o motor não cumpre."""
+    assert "rerun_cascata_078" in dep.CAPACIDADES
+
+
 def test_predicado_sem_ordenacao_nem_criado_em(dep):
     """D15: o mascaramento por criado_em não volta pela porta dos fundos —
     nenhuma SQL sobre etl_pipeline_execucao ordena nem usa COALESCE, e

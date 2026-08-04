@@ -658,6 +658,24 @@ async def _resolve_alvo_rerun(pipeline: str, *, exec_id: str, dag_run_id: str,
     return oficial, ident, data_ref
 
 
+# A frase do aviso por razão — o operador precisa saber O QUE consertar, e as
+# duas metades do deploy têm conserto diferente (rodar migration × deployar
+# dags/). Falar sempre em "migration 078" era a mentira do deploy parcial.
+AVISO_CASCATA_INDISPONIVEL = {
+    "migration_078_pendente":
+        "migration 078 pendente — nenhuma corrida pôde ser reaberta; "
+        "os dependentes NÃO vão rodar de novo",
+    rerun_svc.CAP_AUSENTE:
+        "o motor de dependências deployado (dags/) ainda não entende corrida "
+        "reaberta — nenhuma corrida foi aposentada; os dependentes NÃO vão "
+        "rodar de novo. Deploy de dags/ pendente",
+    rerun_svc.CAP_DESCONHECIDA:
+        "não foi possível confirmar se o motor deployado (dags/) entende "
+        "corrida reaberta — nada foi aposentado, para não deixar corrida "
+        "carimbada sem reprocesso a caminho",
+}
+
+
 def _previa_afetados(oficial: str, data_ref) -> dict:
     """Bloco `cascata` da prévia — quem é atingido em CADA opção (decisão 1)."""
     conn = cur = None
@@ -672,6 +690,7 @@ def _previa_afetados(oficial: str, data_ref) -> dict:
         raise
     except Exception as e:  # noqa: BLE001
         log.warning("[RERUN] previa de afetados de '%s' falhou: %s", oficial, e)
+        # (a razão fica "erro_na_consulta" — o modal já a traduz)
         return {"disponivel": False, "razao": "erro_na_consulta",
                 "dependentes": [], "com_corrida": [], "sem_corrida": [],
                 "corridas": {}, "truncado": False}
@@ -688,7 +707,12 @@ def _previa_afetados(oficial: str, data_ref) -> dict:
     }
     return {
         "disponivel": not info.get("cascata_indisponivel"),
-        "razao": "migration_078_pendente" if info.get("cascata_indisponivel") else None,
+        # A razão vem do serviço: são TRÊS motivos possíveis (banco sem a 078,
+        # dags/ deployado que não entende o carimbo, e capacidade do dags/
+        # desconhecida) e cada um tem conserto diferente. Fixar a string aqui
+        # foi o que fez a API dizer "migration 078 pendente" para um ambiente
+        # com a 078 aplicada e o dags/ velho.
+        "razao": info.get("razao_indisponivel"),
         "dependentes": info.get("dependentes") or [],
         "com_corrida": info.get("com_corrida") or [],
         "sem_corrida": info.get("sem_corrida") or [],
@@ -735,6 +759,8 @@ async def previa_rerun(
     dag_run_id = ident.get("dag_run_id") or ident.get("run_id")
     etapas_info = {"etapas": [], "tasks_de_apoio": 0, "total_tasks": 0}
     airflow_indisponivel = False
+    # None = não deu para perguntar; o modal só avisa no True (ver _dag_pausada).
+    dag_pausada = None
     if not dag_run_id:
         airflow_indisponivel = True
     elif not _DAG_ID_RE.match(oficial or ""):
@@ -742,6 +768,7 @@ async def previa_rerun(
     else:
         try:
             async with get_airflow_client() as client:
+                dag_pausada = await _dag_pausada(client, oficial)
                 tarefas = rerun_svc.task_ids_do_clear(
                     task_id, await _tasks_da_dag(client, oficial))
                 r = await client.post(
@@ -778,6 +805,9 @@ async def previa_rerun(
         "identidade": _ident_json(ident),
         "dag_run_id": dag_run_id,
         "airflow_indisponivel": airflow_indisponivel,
+        # O gesto RECUSA com 409 quando a DAG está pausada; a prévia diz isso
+        # antes, para o modal não oferecer um botão que só pode dar erro.
+        "dag_pausada": dag_pausada,
         **etapas_info,
         "cascata": _previa_afetados(oficial, data_ref) if data_ref else {
             "disponivel": False, "razao": "sem_data_referencia",
@@ -799,11 +829,20 @@ def _aplicar_cascata(oficial: str, data_ref, task_id: str, dag_run_id: str,
     SUCESSO ao concluir e o caminho de falha grava FALHA, então a marca não
     fica pendurada.
 
+    ⚠️ O `rowcount` desse UPDATE é CONFERIDO. Ele passava em silêncio: com um
+    `execution_id` que não casasse (corrida fora da 067, grafia divergente,
+    linha apagada à mão), a marca simplesmente não acontecia — e é ela que
+    protege o filho direto. Zero linha agora vira aviso na resposta e log, no
+    mesmo idioma do resto: o gesto aconteceu, o alcance foi menor, e isso é
+    dito. E as demais corridas vivas do pipeline no ODATE são aposentadas
+    (`aposentar_irmas`) — sem isso um SUCESSO irmão sobrevivente libera o
+    dependente sozinho.
+
     Nada aqui levanta: o clear JÁ aconteceu. Falhas viram log e o campo
     `avisos` da resposta.
     """
     saida = {"corridas_substituidas": 0, "dependentes_reabertos": [],
-             "auditado": False, "avisos": []}
+             "corridas_irmas_aposentadas": 0, "auditado": False, "avisos": []}
     conn = cur = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -814,8 +853,31 @@ def _aplicar_cascata(oficial: str, data_ref, task_id: str, dag_run_id: str,
                     "SET status='EXECUTANDO', fim=NULL, atualizado_em=GETDATE() "
                     "WHERE pipeline_name=? AND data_referencia=? AND execution_id=?",
                     (oficial, data_ref, dag_run_id))
+                if (cur.rowcount or 0) < 1:
+                    log.warning("[RERUN] corrida de '%s' em %s (run_id=%s) NAO "
+                                "marcada como EXECUTANDO: nenhuma linha casou",
+                                oficial, data_ref, dag_run_id)
+                    saida["avisos"].append(
+                        "a corrida deste pipeline não pôde ser marcada como em "
+                        "execução (nenhuma linha com este identificador de "
+                        "corrida na data) — dependentes podem partir com o dado "
+                        "anterior enquanto o reprocesso roda")
             except Exception as e:  # noqa: BLE001
                 saida["avisos"].append(f"corrida do pipeline não marcada como EXECUTANDO: {e}")
+            try:
+                irmas = rerun_svc.aposentar_irmas(cur, oficial, data_ref,
+                                                  dag_run_id, usuario)
+                saida["corridas_irmas_aposentadas"] = irmas
+                if irmas:
+                    log.info("[RERUN] %d corrida(s) irma(s) de '%s' em %s "
+                             "aposentada(s)", irmas, oficial, data_ref)
+                    saida["avisos"].append(
+                        f"{irmas} outra(s) corrida(s) deste pipeline nesta data "
+                        "foram aposentadas — só a reexecutada vale a partir de "
+                        "agora")
+            except Exception as e:  # noqa: BLE001
+                saida["avisos"].append(
+                    f"outras corridas do pipeline na data não aposentadas: {e}")
             if cascata:
                 info = rerun_svc.afetados(cur, oficial, data_ref)
                 alvos = info.get("com_corrida") or []
@@ -831,8 +893,10 @@ def _aplicar_cascata(oficial: str, data_ref, task_id: str, dag_run_id: str,
                 saida["dependentes_reabertos"] = alvos if n > 0 else []
                 if info.get("cascata_indisponivel"):
                     saida["avisos"].append(
-                        "migration 078 pendente — nenhuma corrida pôde ser reaberta; "
-                        "os dependentes NÃO vão rodar de novo")
+                        AVISO_CASCATA_INDISPONIVEL.get(
+                            info.get("razao_indisponivel"),
+                            "cascata indisponível neste ambiente — nenhuma corrida "
+                            "pôde ser reaberta; os dependentes NÃO vão rodar de novo"))
                 if info.get("truncado"):
                     saida["avisos"].append(
                         "fecho de dependentes truncado no teto de segurança — "
@@ -937,6 +1001,22 @@ async def rerun_from_task(body: dict = Body(default={}),
             # comportamento antigo como fallback.
             dag_run_id = _escolhe_dag_run(runs, exec_id)["dag_run_id"]
 
+        # 1.5. DAG pausada: RECUSA antes de mexer em qualquer coisa. O clear
+        # seria aceito, o run voltaria para QUEUED e nada rodaria — e a corrida
+        # ficaria EXECUTANDO travando os dependentes. Recusar é honesto e o
+        # conserto é de um clique ("Ativar" na tela do pipeline). Só recusa
+        # quando a resposta é um SIM: não saber não bloqueia (ver _dag_pausada).
+        if await _dag_pausada(client, dag_id) is True:
+            raise HTTPException(
+                status_code=409,
+                detail={"erro": "dag_pausada",
+                        "mensagem": (f"O pipeline '{dag_id}' está PAUSADO no "
+                                     "Airflow. Reexecutar agora limparia as "
+                                     "tarefas sem nada rodar, e a corrida "
+                                     "ficaria presa em execução bloqueando os "
+                                     "dependentes. Ative o pipeline e "
+                                     "reexecute.")})
+
         # 2. Limpar a task e downstream via clearTaskInstances — SEMPRE com o
         # dag_run_id: sem ele o Airflow limpa a task em TODOS os dag_runs da DAG
         # (e reset_dag_runs re-enfileira todos) — reprocessamento em massa.
@@ -982,9 +1062,39 @@ async def rerun_from_task(body: dict = Body(default={}),
         "cascata": cascata,
         "dependentes_reabertos": pos["dependentes_reabertos"],
         "corridas_substituidas": pos["corridas_substituidas"],
+        "corridas_irmas_aposentadas": pos["corridas_irmas_aposentadas"],
         "auditado": pos["auditado"],
         "avisos": pos["avisos"],
     }
+
+
+async def _dag_pausada(client, dag_id: str):
+    """A DAG está PAUSADA no Airflow? ``True``/``False``, ou ``None`` quando
+    não deu para perguntar (Airflow fora, 404, resposta sem o campo).
+
+    ⚠️ **DEFEITO CORRIGIDO: rerun em DAG pausada deixava a corrida pendurada.**
+    Com a DAG pausada, o ``clearTaskInstances`` com ``reset_dag_runs`` devolve
+    200 e re-enfileira o dag_run — que fica QUEUED **para sempre**, porque o
+    scheduler não agenda DAG pausada. O gesto respondia "ok, 8 tarefas limpas",
+    a corrida ficava EXECUTANDO (a marca do pós-clear) e **todo dependente
+    parava atrás dela** — a classe do "órfão em RUNNING" já registrada no
+    projeto, agora criada pelo próprio botão.
+
+    ``None`` NÃO bloqueia: o gesto histórico (Logs/Dashboard) não pode ficar
+    refém de uma pergunta a mais ao Airflow. Bloqueia só o que sabemos ser
+    pausado.
+    """
+    try:
+        r = await client.get(f"/api/v1/dags/{dag_id}")
+        if not r.is_success:
+            log.warning("[RERUN] estado de pausa de %s devolveu %s",
+                        dag_id, r.status_code)
+            return None
+        valor = r.json().get("is_paused")
+        return bool(valor) if valor is not None else None
+    except Exception as e:  # noqa: BLE001
+        log.warning("[RERUN] estado de pausa de %s indisponivel: %s", dag_id, e)
+        return None
 
 
 async def _tasks_da_dag(client, dag_id: str) -> list:
