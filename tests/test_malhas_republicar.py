@@ -300,6 +300,28 @@ def test_dry_run_com_airflow_fora_nao_promete_primeira_versao(client, auth_opera
     assert not any("PRIMEIRA versão" in a["mensagem"] for a in body["avisos"])
 
 
+def test_nome_invalido_como_dag_id_fica_de_fora(client, auth_operador):
+    """Nome que não é dag_id válido nunca vira DAG — mandá-lo no conf faria a
+    factory cobrar um alvo que ela não consegue gerar. Sai em `ignorados`."""
+    pipes = _pipes()
+    pipes["PIPE COM ESPAÇO"] = {"criticidade": "Media", "schedule_type": "daily",
+                                "depends_on": None, "active": 1, "dag_criada": 1}
+    db = FakeDb(pipelines=pipes)
+    fake = FakeAirflowClient(dags=["PIPE_A"])
+    with _patch_db(db), _patch_airflow(fake), \
+            patch("routers.malhas.enqueue_dag_pendente"):
+        _monta(client, "MX", ["PIPE_A", "PIPE COM ESPAÇO"])
+        r = _republicar(client, "MX")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["republicados"] == ["PIPE_A"]
+    assert [i["pipeline"] for i in body["ignorados"]] == ["PIPE COM ESPAÇO"]
+    assert "dag_id" in body["ignorados"][0]["motivo"]
+    # e o nome inválido não é consultado no Airflow nem marcado no cadastro
+    assert "PIPE COM ESPAÇO" not in fake.gets
+    assert db.pipelines["PIPE COM ESPAÇO"]["dag_criada"] == 1
+
+
 def test_dry_run_avisa_067_pendente(client, auth_operador):
     """Sem a 067 a DAG sai publicada, mas pode sair SEM as ligações da malha —
     exatamente o que o operador quis publicar. Aviso forte antes do gesto."""
