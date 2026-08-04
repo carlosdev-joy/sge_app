@@ -1,6 +1,8 @@
 # Spec: data de referência ÚNICA por malha
 
-Data: 2026-08-04 · Status: 🚧 rascunho para aprovação
+Data: 2026-08-04 · Status: ✅ **F1, F2 e F3 no código** (branch
+`feat/malha-republicar-pipelines`) · 🔜 F4 e F5 (mexem no fonte gerado,
+exigem `force_all` no deploy)
 Origem: incidente de produção na malha `Carga_Vida` (2026-08-04) — o Aguarde
 liberou os dependentes com os predecessores em datas de referência diferentes
 (parte no dia 3, parte no dia 4) e as execuções seguintes saíram erradas.
@@ -69,7 +71,7 @@ agendamento do Início (F13), estendido dos filhos-raiz para todos os membros.
 
 ## 5. Fases
 
-### F1 — Bloqueio no disparo + o aviso que precede o estrago
+### F1 — Bloqueio no disparo + o aviso que precede o estrago ✅
 - `POST /malhas/{m}/disparo` passa a **recusar** (422) quando algum membro tem
   execução no dia com data de referência diferente da data do ciclo, ou corrida
   em aberto. Hoje isso é aviso no modal. A recusa nomeia os pipelines e a data
@@ -80,7 +82,7 @@ agendamento do Início (F13), estendido dos filhos-raiz para todos os membros.
 - **Aceite:** malha com um membro carimbando D-1 não dispara pela tela; a
   mensagem diz quem e qual data. Com todos na mesma data, dispara como hoje.
 
-### F2 — Virada única por malha
+### F2 — Virada única por malha ✅
 - Campo de virada no painel da malha (ao lado do agendamento do Início).
 - Ao salvar/publicar, a virada é copiada para **todos os membros** (hoje só as
   raízes assinadas recebem), com carimbo de publicação pendente em cada um.
@@ -89,7 +91,7 @@ agendamento do Início (F13), estendido dos filhos-raiz para todos os membros.
   execução; após "equalizar", `hora_virada` é idêntica em todos e os cards
   pedem republicação.
 
-### F3 — Equalização automática (a opção do §3.3)
+### F3 — Equalização automática (a opção do §3.3) ✅
 - Marca `equalizar_data` no cadastro da malha.
 - No início do ciclo, quando há divergência: em vez de bloquear, **recarimba
   para a data da malha** as execuções do ciclo corrente que estiverem em outra
