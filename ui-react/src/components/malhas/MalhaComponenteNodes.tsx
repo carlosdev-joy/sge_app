@@ -33,7 +33,7 @@
 // transborda de propósito (w-[128px]).
 import { memo, useEffect } from 'react'
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
-import { AlertTriangle, Hourglass } from 'lucide-react'
+import { AlertTriangle, Hourglass, Lock } from 'lucide-react'
 import type { Orientacao } from '../etapas/layoutGrafo'
 // Metadados (rótulo/chip/ícone por tipo) em módulo PURO — compartilhados com
 // a paleta e o minimapa do MalhaEditor sem quebrar o react-refresh daqui.
@@ -96,6 +96,10 @@ export interface MalhaComponenteNodeData {
   contradicao?: boolean
   // F15: estado do componente na visão de Execução (null/ausente = neutro).
   execNo?: ExecComponente | null
+  // 082: Aguarde SEGURADO — enquanto estiver, ele não solta ninguém. Ausente
+  // = o banco não tem a migration e a tela não oferece nem mostra a trava.
+  retidoEm?: string | null
+  retidoPor?: string | null
   [key: string]: unknown
 }
 
@@ -365,6 +369,17 @@ function ComponenteNodeImpl({ id, data, selected }: NodeProps & { data: MalhaCom
             ].join(' ')}
           >
             <Hourglass size={15} strokeWidth={2.4} />
+            {/* 082: cadeado do Aguarde SEGURADO — a informação mais dura do
+                card: enquanto estiver ali, nada passa por este ponto. */}
+            {data.retidoEm && (
+              <span
+                title={`Aguarde SEGURADO${data.retidoPor ? ` por ${data.retidoPor}` : ''}`
+                  + ` em ${data.retidoEm} — nenhum pipeline depois dele é liberado até você soltar.`}
+                className="absolute -left-2 -top-2 flex h-4 w-4 items-center justify-center rounded-full border border-panel bg-red-600 text-white"
+              >
+                <Lock size={9} strokeWidth={2.6} />
+              </span>
+            )}
           </div>
         </div>
       ) : (

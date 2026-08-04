@@ -69,6 +69,7 @@ import {
   Activity, AlertCircle, AlertTriangle, Anchor, ArrowRightLeft, ArrowUpDown,
   CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, Info, Layers, Link2,
   Lock, Minus, MousePointerClick, Play, Plus, RefreshCw, Save, ShieldAlert,
+  Unlock,
   Trash2, Wrench,
 } from 'lucide-react'
 import { useAuthStore } from '../../store/auth'
@@ -158,6 +159,10 @@ interface MalhaNoApi {
   layout_y: number | null
   // Upstream expandido pelo SERVIDOR (§3.2) — o front nunca expande.
   upstream: string[]
+  // 082: Aguarde SEGURADO. Chaves ausentes = banco sem a migration, e a tela
+  // não oferece o gesto (botão que não segura é pior que botão ausente).
+  retido_em?: string | null
+  retido_por?: string | null
 }
 // Aresta de nó do desenho (F10 — etl_malha_aresta).
 interface MalhaArestaNoApi {
@@ -944,6 +949,8 @@ function MalhaEditorInner({
               && grafo.membros.some(
                 m => m.agenda_contradicao && m.agenda_no === n.id),
             execNo,
+            retidoEm: n.retido_em,
+            retidoPor: n.retido_por,
           } satisfies MalhaComponenteNodeData,
         }
       }),
@@ -1175,6 +1182,39 @@ function MalhaEditorInner({
       setAlinhandoVirada(false)
     }
   }, [alinhandoVirada, malha, viradaSalva, qc])
+
+  // 082: SEGURAR/soltar o Aguarde. A trava vive no nó e é obedecida pelo
+  // predicado canônico — por isso o gesto é só um POST: nada aqui precisa
+  // saber quem são os dependentes.
+  const [retendo, setRetendo] = useState(false)
+  const alternarRetencao = useCallback(async (noId: number, reter: boolean) => {
+    if (retendo) return
+    setRetendo(true)
+    try {
+      const r = await apiFetch<{ dependentes?: string[] }>(
+        `/malhas/${encodeURIComponent(malha)}/nos/${noId}/retencao`, {
+          method: 'POST',
+          body: JSON.stringify({ reter }),
+        })
+      if (reter) {
+        toast.success(`Aguarde #${noId} SEGURADO — nada passa por ele até você soltar.`)
+      } else {
+        const n = r.dependentes?.length ?? 0
+        // Soltar não dispara na hora: quem estava preso parte no próximo
+        // publish do predecessor ou no próximo ciclo da guardiã.
+        toast.success(n > 0
+          ? `Aguarde #${noId} liberado — ${n} pipeline(s) voltam a ser avaliados no próximo ciclo.`
+          : `Aguarde #${noId} liberado.`)
+      }
+      qc.invalidateQueries({ queryKey: ['malha', malha] })
+      qc.invalidateQueries({ queryKey: ['malha-execucao', malha] })
+    } catch (err) {
+      const httpErr = err as Error & { status?: number }
+      toast.error(httpErr.message || 'Erro ao mudar a retenção do Aguarde')
+    } finally {
+      setRetendo(false)
+    }
+  }, [retendo, malha, qc])
 
   // ── Republicação da malha (dry_run → modal → write) ───────────────────────
   // Mudar o desenho grava a dependência na hora; a DAG do Airflow só passa a
@@ -2410,6 +2450,25 @@ function MalhaEditorInner({
                       <CalendarClock size={13} /> Agendamento
                     </Button>
                   )}
+                  {selComponentes.length === 1
+                    && tipoDoNo.get(Number(selComponentes[0].id.slice(NO_PREFIX.length))) === 'aguarde'
+                    && !nosIndisponiveis && podeExecutar && (() => {
+                      const noId = Number(selComponentes[0].id.slice(NO_PREFIX.length))
+                      const preso = !!grafo?.nos.find(n => n.id === noId)?.retido_em
+                      return (
+                        <Button
+                          variant={preso ? 'primary' : 'secondary'}
+                          size="sm"
+                          loading={retendo}
+                          onClick={() => void alternarRetencao(noId, !preso)}
+                          title={preso
+                            ? 'Soltar a trava — os pipelines depois deste Aguarde voltam a ser avaliados no próximo ciclo'
+                            : 'SEGURAR aqui: nenhum pipeline depois deste Aguarde é liberado até você soltar'}
+                        >
+                          {preso ? <><Unlock size={13} /> Soltar</> : <><Lock size={13} /> Segurar</>}
+                        </Button>
+                      )
+                    })()}
                   {selComponentes.length === 1 && (
                     <Button
                       variant="danger"

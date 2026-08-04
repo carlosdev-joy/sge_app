@@ -362,21 +362,8 @@ def liberado(conn, pipeline: str, data_ref: date):
     """
     try:
         cur = conn.cursor()
-        legado = _exec_com_fallback_078(
-            cur,
-            "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
-            "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE' "
-            "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
-            "WHERE e.pipeline_name = dd.depende_de "
-            "AND e.data_referencia = %s AND e.status = 'SUCESSO' "
-            "AND e.substituida_em IS NULL)",
-            "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
-            "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE' "
-            "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
-            "WHERE e.pipeline_name = dd.depende_de "
-            "AND e.data_referencia = %s AND e.status = 'SUCESSO')",
-            (pipeline, data_ref))
-        faltantes = [r[0] for r in cur.fetchall()]
+        _com_retencao, legado = _exec_liberado(cur, (pipeline, data_ref))
+        faltantes = [_faltante(r) for r in cur.fetchall()]
         if legado:
             print("[DEP] migration 078 ausente — liberacao segue a regra "
                   "anterior (corrida substituida ainda conta como SUCESSO)")
@@ -605,6 +592,80 @@ def dependentes_com_dependencia(conn) -> list:
         "JOIN dbo.etl_pipeline p ON p.pipeline_name = d.pipeline_name "
         "WHERE d.tipo = 'PIPELINE' AND p.active = 1")
     return [r[0] for r in cur.fetchall()]
+
+
+# ── SQL do predicado: uma consulta só, com a retenção do Aguarde dentro ─────
+# A 2ª coluna é o id do Aguarde SEGURADO (migration 082) que compilou aquela
+# linha. Trazê-la aqui — em vez de perguntar depois — mantém o contrato de UMA
+# ida ao banco e faz a trava valer nas TRÊS portas de uma vez (push, guardiã e
+# o painel consultam este mesmo predicado). A lição da F4 em forma de SQL:
+# regra que mora numa porta só não protege.
+#
+# `_MARCA_082` é o que o fallback reconhece: sem a coluna (ou sem a tabela de
+# nós), a consulta cai na versão sem retenção e o comportamento é o de antes.
+_MARCA_082 = "retido_em"
+
+_SELECT_RETENCAO = (
+    ", (SELECT TOP 1 n.id FROM dbo.etl_malha_no n "
+    "   WHERE n.id = dd.origem_no AND n.retido_em IS NOT NULL) AS aguarde_retido ")
+_ONDE_SEM_SUCESSO_078 = (
+    "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
+    "WHERE e.pipeline_name = dd.depende_de "
+    "AND e.data_referencia = %s AND e.status = 'SUCESSO' "
+    "AND e.substituida_em IS NULL)")
+_ONDE_SEM_SUCESSO_LEGADO = (
+    "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
+    "WHERE e.pipeline_name = dd.depende_de "
+    "AND e.data_referencia = %s AND e.status = 'SUCESSO')")
+# Com a 082, a linha entra na resposta por DOIS motivos: predecessor sem
+# sucesso OU Aguarde segurado. Sem ela, só o primeiro.
+SQL_LIBERADO_082 = (
+    "SELECT dd.depende_de" + _SELECT_RETENCAO +
+    "FROM dbo.etl_pipeline_dependencia dd "
+    "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE' "
+    "AND (" + _ONDE_SEM_SUCESSO_078[4:] +
+    " OR EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
+    "            WHERE n2.id = dd.origem_no AND n2.retido_em IS NOT NULL))")
+SQL_LIBERADO_078 = (
+    "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
+    "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE' " +
+    _ONDE_SEM_SUCESSO_078)
+SQL_LIBERADO_LEGADO = (
+    "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
+    "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE' " +
+    _ONDE_SEM_SUCESSO_LEGADO)
+
+
+def _exec_liberado(cur, params):
+    """Executa o predicado no nível mais alto que o banco aguenta.
+
+    Cascata 082 → 078 → legado. Sem ela, um banco sem a 082 receberia
+    "Invalid column name 'retido_em'", o erro subiria e `liberado` devolveria
+    NÃO-liberado para TODO mundo (D21) — a trava nova pararia a produção
+    inteira em vez de segurar um Aguarde. Devolve (com_retencao, no_legado)."""
+    try:
+        cur.execute(SQL_LIBERADO_082, params)
+        return True, False
+    except Exception as e:  # noqa: BLE001 — só as marcas conhecidas degradam
+        msg = str(e)
+        if (_MARCA_082 not in msg and "etl_malha_no" not in msg
+                and _MARCA_078 not in msg):
+            raise
+    return False, _exec_com_fallback_078(
+        cur, SQL_LIBERADO_078, SQL_LIBERADO_LEGADO, params)
+
+# Mensagem do faltante quando quem segura é o Aguarde, não o predecessor:
+# dizer "aguardando PIPE_A" com PIPE_A já concluído mandaria o plantonista
+# investigar o pipeline errado.
+MSG_AGUARDE_RETIDO = "Aguarde #{} SEGURADO na malha (libere no diagrama)"
+
+
+def _faltante(linha):
+    """Linha do predicado → texto do faltante. Com o id do Aguarde na 2ª
+    coluna, quem segura é a TRAVA — e é isso que o operador precisa ler."""
+    if len(linha) > 1 and linha[1] is not None:
+        return MSG_AGUARDE_RETIDO.format(linha[1])
+    return linha[0]
 
 
 def datas_dos_predecessores(conn, pipeline: str, agora: datetime) -> dict:

@@ -363,15 +363,38 @@ def _coluna_origem_no(cur) -> bool:
     return deps_svc.coluna_origem_no(cur)
 
 
+def _colunas_082(cur) -> bool:
+    """True se as colunas da retenção do Aguarde (migration 082) existem."""
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_malha_no', 'retido_em'), "
+                    "COL_LENGTH('dbo.etl_malha_no', 'retido_por')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None and row[1] is not None)
+    except Exception as e:
+        log.warning("[MALHA] checagem das colunas da migration 082 falhou: %s", e)
+        return False
+
+
 def _nos_da_malha(cur, malha) -> list:
-    """Nós do desenho da malha, ordenados por id (determinístico)."""
+    """Nós do desenho da malha, ordenados por id (determinístico).
+
+    `retido_em` (082) é ADITIVO: sem a migration, o nó vem sem as chaves de
+    retenção e a tela não oferece o gesto — nunca um botão que não segura."""
+    tem_082 = _colunas_082(cur)
     cur.execute(
-        "SELECT id, tipo, config_json, layout_x, layout_y "
-        "FROM dbo.etl_malha_no WHERE malha_name = ? ORDER BY id",
+        "SELECT id, tipo, config_json, layout_x, layout_y"
+        + (", retido_em, retido_por" if tem_082 else "") +
+        " FROM dbo.etl_malha_no WHERE malha_name = ? ORDER BY id",
         (malha,))
-    return [{"id": int(r[0]), "tipo": (r[1] or "").strip().lower(),
+    nos = []
+    for r in cur.fetchall():
+        n = {"id": int(r[0]), "tipo": (r[1] or "").strip().lower(),
              "config_json": r[2], "layout_x": r[3], "layout_y": r[4]}
-            for r in cur.fetchall()]
+        if tem_082:
+            n["retido_em"] = _fmt_dt(r[5])
+            n["retido_por"] = r[6]
+        nos.append(n)
+    return nos
 
 
 def _arestas_da_malha(cur, malha) -> list:
@@ -2037,6 +2060,10 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
                 "config": _no_config(n["config_json"]),
                 "layout_x": n["layout_x"], "layout_y": n["layout_y"],
                 "upstream": sorted(expansao["nos"][n["id"]]["upstream"]),
+                # 082 (aditivo): o Aguarde SEGURADO não solta ninguém — a
+                # tela mostra o estado e quem segurou.
+                **({"retido_em": n["retido_em"], "retido_por": n["retido_por"]}
+                   if "retido_em" in n else {}),
             } for n in nos_l]
             arestas_no_payload = arestas_l
             avisos = _avisos_desenho(nos_l, arestas_l)
@@ -3667,6 +3694,87 @@ def update_no(malha_name: str, no_id: int, body: dict = Body(default={}),
                                  _arestas_da_malha(cur, malha))
         conn.commit(); cur.close(); conn.close()
         return {"ok": True, "avisos": avisos}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+@router.post("/malhas/{malha_name}/nos/{no_id}/retencao", tags=["malhas"])
+def reter_no(malha_name: str, no_id: int, body: dict = Body(default={}),
+             auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """SEGURA ou LIBERA um nó Aguarde (migration 082).
+
+    Segurado, ele não solta ninguém: o predicado canônico de liberação
+    (`utils/dependencias.liberado`) traz o id do Aguarde retido junto com os
+    faltantes, então push, guardiã e painel obedecem à trava sem que nenhum
+    deles precise saber que ela existe — a lição da F4 (regra que mora numa
+    porta só não protege) aplicada de propósito.
+
+    É gesto de EXECUÇÃO (acao_executar), não de edição: segurar a malha é
+    operação, e quem opera pode não ter permissão de mexer no desenho.
+
+    Body: {"reter": true|false}. Sem a 082 é 503 com instrução — botão que não
+    segura seria pior que botão ausente.
+    """
+    reter = bool(body.get("reter", True))
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabelas(cur, conn)
+        _exigir_tabelas_075(cur, conn)
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        if not _colunas_082(cur):
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=503,
+                detail="Segurar o Aguarde exige a migration 082 "
+                       "(etl_malha_no.retido_em), ainda não aplicada neste banco.")
+        cur.execute("SELECT tipo FROM dbo.etl_malha_no WHERE id = ? AND malha_name = ?",
+                    (no_id, malha))
+        row = cur.fetchone()
+        if row is None:
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=404,
+                                detail=f"Nó {no_id} não existe na malha '{malha}'")
+        tipo = (row[0] or "").strip().lower()
+        if tipo != "aguarde":
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=422,
+                detail=f"Só o Aguarde pode ser segurado — o nó {no_id} é "
+                       f"'{_ROTULO_NO.get(tipo, tipo)}'. O Início se segura "
+                       "pelo agendamento; Notificação e Fim só observam.")
+        quem = (str(auth.get("matricula") or "").strip() or "?")
+        if reter:
+            cur.execute(
+                "UPDATE dbo.etl_malha_no SET retido_em = GETDATE(), retido_por = ? "
+                "WHERE id = ? AND malha_name = ?", (quem[:64], no_id, malha))
+        else:
+            cur.execute(
+                "UPDATE dbo.etl_malha_no SET retido_em = NULL, retido_por = NULL "
+                "WHERE id = ? AND malha_name = ?", (no_id, malha))
+        conn.commit()
+        # Quem estava esperando: com a trava solta, o próximo ciclo da guardiã
+        # (ou o próximo publish de um pai) libera. Dito para o operador não
+        # ficar esperando um disparo imediato que não vem.
+        dependentes = []
+        if _tabela_067(cur) and _coluna_origem_no(cur):
+            cur.execute(
+                "SELECT DISTINCT pipeline_name FROM dbo.etl_pipeline_dependencia "
+                "WHERE origem_no = ? ORDER BY pipeline_name", (no_id,))
+            dependentes = [r[0] for r in cur.fetchall()]
+        cur.close(); conn.close()
+        log.info("[MALHA] Aguarde #%s da malha '%s' %s por %s", no_id, malha,
+                 "SEGURADO" if reter else "liberado", quem)
+        return {"ok": True, "no_id": no_id, "retido": reter,
+                "retido_por": quem if reter else None,
+                "dependentes": dependentes}
     except HTTPException:
         raise
     except Exception as e:

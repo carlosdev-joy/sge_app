@@ -278,15 +278,42 @@ def test_as_tres_portas_concordam_sobre_corrida_substituida(dep):
 def test_liberado_com_banco_sem_a_078_cai_no_legado(dep, capsys):
     """Deploy parcial ao contrário (dags/ novo, banco sem a migration): a
     referência à coluna daria Msg 207 e derrubaria o push de TODO pipeline
-    com dependente. O fallback repete o SQL antigo e o comportamento é o de
-    antes, byte a byte — com log, nunca em silêncio."""
-    erro = Exception("Invalid column name 'substituida_em'.")
-    conn = _conn([erro, {"rows": [("PIPE_A",)]}])
+    com dependente. A cascata desce um nível de cada vez — 082 (retenção do
+    Aguarde) → 078 (corrida substituída) → legado — e o comportamento final é
+    o de antes, byte a byte, com log e nunca em silêncio."""
+    erro_082 = Exception("Invalid column name 'retido_em'.")
+    erro_078 = Exception("Invalid column name 'substituida_em'.")
+    conn = _conn([erro_082, erro_078, {"rows": [("PIPE_A",)]}])
     ok, faltantes = dep.liberado(conn, "PIPE_C", date(2026, 8, 1))
     assert (ok, faltantes) == (False, ["PIPE_A"])
-    assert len(conn._cur.execs) == 2
-    assert "substituida_em" not in conn._cur.execs[1][0]
+    assert len(conn._cur.execs) == 3
+    ultimo = conn._cur.execs[2][0]
+    assert "substituida_em" not in ultimo and "retido_em" not in ultimo
     assert "078" in capsys.readouterr().out
+
+
+def test_liberado_sem_a_082_usa_o_predicado_de_antes(dep):
+    """Banco COM a 078 e SEM a 082: uma queda só, e a trava do Aguarde
+    simplesmente não existe — nunca 'não liberado para todo mundo'."""
+    erro_082 = Exception("Invalid column name 'retido_em'.")
+    conn = _conn([erro_082, {"rows": []}])
+    assert dep.liberado(conn, "PIPE_C", date(2026, 8, 1)) == (True, [])
+    assert len(conn._cur.execs) == 2
+    assert "substituida_em" in conn._cur.execs[1][0]
+
+
+def test_aguarde_retido_vira_faltante_nomeado(dep):
+    """Com a 082, a 2ª coluna traz o id do Aguarde SEGURADO — e o faltante
+    fala da TRAVA, não do predecessor (que pode estar concluído)."""
+    conn = _conn([{"rows": [("PIPE_A", 16)]}])
+    ok, faltantes = dep.liberado(conn, "PIPE_C", date(2026, 8, 1))
+    assert ok is False
+    assert faltantes == ["Aguarde #16 SEGURADO na malha (libere no diagrama)"]
+
+
+def test_sem_retencao_o_faltante_continua_sendo_o_predecessor(dep):
+    conn = _conn([{"rows": [("PIPE_A", None)]}])
+    assert dep.liberado(conn, "PIPE_C", date(2026, 8, 1)) == (False, ["PIPE_A"])
 
 
 def test_liberado_nao_engole_erro_que_nao_seja_da_078(dep, capsys):

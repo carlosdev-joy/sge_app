@@ -58,6 +58,65 @@ def _exec_com_fallback_078(cur, sql_078: str, sql_legado: str, params) -> bool:
         return True
 
 
+# ── SQL do predicado: port EXATO do canônico (só ? no lugar de %s) ──────────
+# A 2ª coluna traz o id do Aguarde SEGURADO (082) que compilou a linha: a trava
+# vale nas TRÊS portas porque todas passam por este predicado. A cascata
+# 082 → 078 → legado existe para um banco sem a coluna nova NÃO virar
+# "não liberado para todo mundo" — a trava pararia a produção inteira.
+_MARCA_082 = "retido_em"
+
+_SELECT_RETENCAO = (
+    ", (SELECT TOP 1 n.id FROM dbo.etl_malha_no n "
+    "   WHERE n.id = dd.origem_no AND n.retido_em IS NOT NULL) AS aguarde_retido ")
+_ONDE_SEM_SUCESSO_078 = (
+    "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
+    "WHERE e.pipeline_name = dd.depende_de "
+    "AND e.data_referencia = ? AND e.status = 'SUCESSO' "
+    "AND e.substituida_em IS NULL)")
+_ONDE_SEM_SUCESSO_LEGADO = (
+    "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
+    "WHERE e.pipeline_name = dd.depende_de "
+    "AND e.data_referencia = ? AND e.status = 'SUCESSO')")
+SQL_LIBERADO_082 = (
+    "SELECT dd.depende_de" + _SELECT_RETENCAO +
+    "FROM dbo.etl_pipeline_dependencia dd "
+    "WHERE dd.pipeline_name = ? AND dd.tipo = 'PIPELINE' "
+    "AND (" + _ONDE_SEM_SUCESSO_078[4:] +
+    " OR EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
+    "            WHERE n2.id = dd.origem_no AND n2.retido_em IS NOT NULL))")
+SQL_LIBERADO_078 = (
+    "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
+    "WHERE dd.pipeline_name = ? AND dd.tipo = 'PIPELINE' " +
+    _ONDE_SEM_SUCESSO_078)
+SQL_LIBERADO_LEGADO = (
+    "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
+    "WHERE dd.pipeline_name = ? AND dd.tipo = 'PIPELINE' " +
+    _ONDE_SEM_SUCESSO_LEGADO)
+
+MSG_AGUARDE_RETIDO = "Aguarde #{} SEGURADO na malha (libere no diagrama)"
+
+
+def _faltante(linha):
+    """Linha do predicado → texto do faltante (port do canônico)."""
+    if len(linha) > 1 and linha[1] is not None:
+        return MSG_AGUARDE_RETIDO.format(linha[1])
+    return linha[0]
+
+
+def _exec_liberado(cur, params):
+    """Cascata 082 → 078 → legado (port do canônico)."""
+    try:
+        cur.execute(SQL_LIBERADO_082, params)
+        return True, False
+    except Exception as e:  # noqa: BLE001 — só as marcas conhecidas degradam
+        msg = str(e)
+        if (_MARCA_082 not in msg and "etl_malha_no" not in msg
+                and _MARCA_078 not in msg):
+            raise
+    return False, _exec_com_fallback_078(
+        cur, SQL_LIBERADO_078, SQL_LIBERADO_LEGADO, params)
+
+
 def faltantes(cur, pipeline: str, data_ref: date) -> list:
     """Predecessores de `pipeline` SEM SUCESSO VIVO em `data_ref`.
 
@@ -72,21 +131,8 @@ def faltantes(cur, pipeline: str, data_ref: date) -> list:
     tem de contar a MESMA história do motor: com o dependente reaberto pela
     cascata, "aguardando o predecessor" é a verdade dos dois lados.
     """
-    _exec_com_fallback_078(
-        cur,
-        "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
-        "WHERE dd.pipeline_name = ? AND dd.tipo = 'PIPELINE' "
-        "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
-        "WHERE e.pipeline_name = dd.depende_de "
-        "AND e.data_referencia = ? AND e.status = 'SUCESSO' "
-        "AND e.substituida_em IS NULL)",
-        "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
-        "WHERE dd.pipeline_name = ? AND dd.tipo = 'PIPELINE' "
-        "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
-        "WHERE e.pipeline_name = dd.depende_de "
-        "AND e.data_referencia = ? AND e.status = 'SUCESSO')",
-        (pipeline, data_ref))
-    return [r[0] for r in cur.fetchall()]
+    _exec_liberado(cur, (pipeline, data_ref))
+    return [_faltante(r) for r in cur.fetchall()]
 
 
 def liberado(cur, pipeline: str, data_ref: date):
