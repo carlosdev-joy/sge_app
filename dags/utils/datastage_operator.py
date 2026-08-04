@@ -45,6 +45,88 @@ from airflow.providers.ssh.hooks.ssh import SSHHook
 # Nome de job seguro p/ interpolar no comando dsjob remoto (evita injeção shell)
 _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9_.]+$")
 
+# ── Classificação de erro do dsjob (incidente 2026-08-01) ────────────────────
+# O log real de produção dizia apenas "Failed to trigger '<job>'", que soa como
+# problema de FILA/disparo. O que aconteceu de verdade foi outra coisa: o job
+# NÃO EXISTIA no projeto, porque o DataStage diferencia maiúsculas de minúsculas
+# nos nomes de job e o Orquestra tinha cadastrado 'SsdVida…' onde o DataStage
+# tem 'SSDVida…'. Pior: o operador já sabia — o `_jobinfo()` roda ANTES do
+# trigger e recebeu o MESMO "Cannot find job", mas o parse não tratava job
+# inexistente (caía no status 99) e seguia para o disparo. Duas conexões SSH
+# antes do erro genérico.
+#
+# Os padrões abaixo são de TEXTO da saída do dsjob — foi o que o incidente
+# comprovou (mensagem + "Status code = -1004"); o de-para de códigos já existe
+# em ui-react/src/pages/DsConsole.tsx. Sem categorias inventadas: só entram
+# casos com marcador textual reconhecível.
+_ERR_JOB_INEXISTENTE = re.compile(
+    r"cannot find job|invalid job name|status code\s*=\s*-1004", re.IGNORECASE)
+_ERR_PROJETO = re.compile(
+    r"failed to open project|cannot open project|project .{0,60}not (?:found|recognised|recognized)"
+    r"|invalid project|status code\s*=\s*-1002",
+    re.IGNORECASE)
+_ERR_ESTADO = re.compile(
+    r"badstate|not in the (?:right|correct) state|job is (?:not compiled|being reset)"
+    r"|needs? (?:to be )?reset",
+    re.IGNORECASE)
+
+
+def _classifica_erro_dsjob(saida: str) -> str | None:
+    """Categoria do erro na saída do dsjob: 'job_inexistente' | 'projeto' |
+    'estado' | None (não reconhecido). Ordem importa: 'Cannot find job' é o
+    marcador mais específico e vence."""
+    texto = saida or ""
+    if _ERR_JOB_INEXISTENTE.search(texto):
+        return "job_inexistente"
+    if _ERR_PROJETO.search(texto):
+        return "projeto"
+    if _ERR_ESTADO.search(texto):
+        return "estado"
+    return None
+
+
+def _prefixo_comum(a: str, b: str) -> int:
+    """Tamanho do prefixo comum entre duas strings já normalizadas."""
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def nomes_parecidos(alvo: str, candidatos, limite: int = 5) -> list:
+    """Nomes de ``candidatos`` parecidos com ``alvo``, para a mensagem de erro.
+
+    Prioriza o casamento SEM CAIXA (o caso do incidente: mesma grafia, caixa
+    diferente); depois ordena por MAIOR PREFIXO COMUM e, por último, os que
+    contêm/estão contidos. Tudo sem caixa. Função pura — só é chamada no
+    CAMINHO DE ERRO, então custa zero quando está tudo certo.
+
+    ⚠️ Prefixo COMUM em vez de ``startswith``: o erro real de digitação quase
+    nunca deixa um nome como prefixo do outro ('…Cobranca09Inexistente' ×
+    '…Cobranca01…'), e a lista saía vazia justo quando era mais útil."""
+    alvo_cf = (alvo or "").strip().casefold()
+    if not alvo_cf:
+        return []
+    min_prefixo = min(4, len(alvo_cf))
+    exatos, por_prefixo, contidos = [], [], []
+    for c in candidatos or []:
+        c = (c or "").strip()
+        if not c:
+            continue
+        c_cf = c.casefold()
+        if c_cf == alvo_cf:
+            exatos.append(c)
+            continue
+        n = _prefixo_comum(c_cf, alvo_cf)
+        if n >= min_prefixo:
+            por_prefixo.append((n, c))
+        elif alvo_cf in c_cf or c_cf in alvo_cf:
+            contidos.append(c)
+    por_prefixo.sort(key=lambda t: -t[0])
+    return (exatos + [c for _, c in por_prefixo] + contidos)[:limite]
+
 
 class DataStageOperator(BaseOperator):
     """
@@ -252,6 +334,10 @@ class DataStageOperator(BaseOperator):
         # Espelho puro: não tentamos RESET no BADSTATE. Se o disparo for recusado
         # (job travado de um run anterior), reportamos o erro — não manipulamos o job.
         if rc not in (0, 1):
+            # Primeiro, o motivo VERDADEIRO quando ele é reconhecível (job
+            # inexistente / projeto / estado). Só cai no genérico se a saída não
+            # trouxer marcador — aí a mensagem crua é tudo que temos.
+            self._falhar_se_erro_dsjob(rc, out, err, "disparar o job (dsjob -run)")
             raise AirflowException(
                 f"[DS] Failed to trigger '{self.job_name}': rc={rc} | {combined[:300]}"
             )
@@ -266,8 +352,77 @@ class DataStageOperator(BaseOperator):
 
     def _jobinfo(self) -> dict:
         cmd = f"{self.dshome}/bin/dsjob -jobinfo '{self.project}' '{self.job_name}'"
-        _, out, _ = self._exec(cmd, timeout=30)
+        rc, out, err = self._exec(cmd, timeout=30)
+        # O -jobinfo roda ANTES do trigger: se o job não existe, o erro aparece
+        # AQUI. Antes o parse ignorava a mensagem, devolvia status 99 ("not
+        # running") e o operador seguia para o disparo — que falhava com a
+        # mensagem genérica "Failed to trigger". Agora falhamos no primeiro
+        # ponto em que a informação existe, com o motivo verdadeiro.
+        self._falhar_se_erro_dsjob(rc, out, err, "consultar o job (dsjob -jobinfo)")
         return self._parse_jobinfo(out)
+
+    # ── diagnóstico de erro do dsjob ─────────────────────────────────────────
+
+    def _falhar_se_erro_dsjob(self, rc: int, out: str, err: str, acao: str) -> None:
+        """Levanta AirflowException com mensagem ESPECÍFICA quando a saída do
+        dsjob traz um erro reconhecível. Silencioso (no-op) quando não há
+        marcador de erro — inclusive com rc≠0 desconhecido, que segue para o
+        tratamento genérico de quem chamou."""
+        combinado = ((out or "") + "\n" + (err or "")).strip()
+        categoria = _classifica_erro_dsjob(combinado)
+        if categoria is None:
+            return
+        raise AirflowException(self._mensagem_erro(categoria, acao, rc, combinado))
+
+    def _mensagem_erro(self, categoria: str, acao: str, rc, combinado: str) -> str:
+        trecho = (combinado or "")[:300]
+        if categoria == "job_inexistente":
+            linhas = [
+                f"[DS] O job '{self.job_name}' NÃO EXISTE no projeto "
+                f"'{self.project}' do DataStage (ao {acao}, rc={rc}).",
+                "     O DataStage DIFERENCIA maiúsculas de minúsculas nos nomes "
+                "de job — o SQL Server, não. Confira a grafia exata cadastrada "
+                "na etapa do Orquestra.",
+            ]
+            parecidos = nomes_parecidos(self.job_name, self._nomes_do_projeto())
+            if parecidos:
+                linhas.append(
+                    "     Nomes parecidos no projeto: " + ", ".join(parecidos))
+            linhas.append(f"     Saída do dsjob: {trecho}")
+            return "\n".join(linhas)
+        if categoria == "projeto":
+            return (
+                f"[DS] O projeto '{self.project}' não pôde ser aberto no "
+                f"DataStage (ao {acao}, rc={rc}) — confira o projeto do pipeline "
+                f"e o dsenv de {self.dshome}.\n     Saída do dsjob: {trecho}")
+        # 'estado'
+        return (
+            f"[DS] O job '{self.project}/{self.job_name}' está em estado que não "
+            f"aceita a operação (ao {acao}, rc={rc}) — normalmente é um run "
+            "anterior travado/abortado que precisa de RESET no DataStage. "
+            "O Orquestra é espelho puro: não damos reset por conta própria.\n"
+            f"     Saída do dsjob: {trecho}")
+
+    def _nomes_do_projeto(self) -> list:
+        """Nomes de job do projeto (`dsjob -ljobs`). SÓ é chamado no caminho de
+        erro — custo zero quando o disparo dá certo. Best-effort: qualquer falha
+        devolve lista vazia (a mensagem sai sem a lista de parecidos, nunca
+        troca o erro real por um erro de diagnóstico)."""
+        try:
+            cmd = f"{self.dshome}/bin/dsjob -ljobs '{self.project}'"
+            _, out, _ = self._exec(cmd, timeout=30)
+            nomes = []
+            for raw in (out or "").splitlines():
+                linha = raw.strip()
+                if (not linha or linha.lower() == "<none>"
+                        or re.match(r"^status code\s*=", linha, re.IGNORECASE)
+                        or not _SAFE_JOB_RE.match(linha)):
+                    continue
+                nomes.append(linha)
+            return nomes
+        except Exception as exc:
+            self.log.debug("[DS] -ljobs para diagnóstico falhou: %s", exc)
+            return []
 
     def _logsum(self) -> str:
         # -max limita às últimas N entradas (o run atual), evitando puxar o

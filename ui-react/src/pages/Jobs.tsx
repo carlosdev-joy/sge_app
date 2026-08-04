@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
@@ -22,6 +22,8 @@ import {
   JobTypeFields, jobTypeFieldsErrors, defaultPythonDraft, pythonFromApi, pythonToApi,
   type JobTypeFieldsValue, type JobParam, type PythonDraft, type PythonNodeApi,
 } from '../components/etapas/JobTypeFields'
+import { ConferenciaDsJob } from '../components/console/ConferenciaDsJob'
+import { conferirNomeDs, sugestoesDs, useDsJobs, usePipelineProject } from '../lib/dsJobs'
 
 // ── constants ──────────────────────────────────────────────────────────────
 
@@ -198,6 +200,53 @@ function JobFormModal({
       .catch(() => {})
   }, [isEdit, pipeline, job])
 
+  // ── Conferência do nome no DataStage (incidente 2026-08-01) ──────────────
+  // Vale só para etapa 'datastage' — nos outros tipos o nome não é um job do DS
+  // e a faixa nem aparece. A lista de jobs do projeto vem UMA vez (cache de 5
+  // min no servidor e no TanStack) e alimenta tanto o autocompletar quanto o
+  // veredito, calculado localmente a cada tecla sem ida ao servidor.
+  const projetoDoPipeline = usePipelineProject(pipeline)
+  const dsProject = job?.project_name || projetoDoPipeline
+  const ehDatastage = form.job_type === 'datastage'
+  const dsJobsQ = useDsJobs(dsProject, ehDatastage)
+  const conferencia = useMemo(
+    () => ehDatastage
+      ? conferirNomeDs(form.job_name, dsJobsQ.data)
+      : { status: 'vazio' as const, sugestao: null, parecidos: [], motivo: null },
+    [ehDatastage, form.job_name, dsJobsQ.data],
+  )
+  // Filtro LOCAL sobre a lista já carregada — o Autocomplete pede uma Promise,
+  // mas nenhuma tecla vira requisição.
+  const sugerirJobsDs = useCallback(
+    async (q: string) => sugestoesDs(q, dsJobsQ.data),
+    [dsJobsQ.data],
+  )
+
+  // Job já salvo com a grafia errada: o conserto é o RENAME TRANSACIONAL (o
+  // campo de nome é read-only na edição). É o mesmo endpoint do canvas — ele
+  // atualiza dependências, condições, lineage e histórico numa transação.
+  const renameMut = useMutation({
+    mutationFn: (novo: string) => apiFetch<{ avisos?: string[] }>(
+      `/pipelines/jobs/${encodeURIComponent(pipeline)}/${encodeURIComponent(job!.job_name)}/rename`,
+      { method: 'POST', body: JSON.stringify({ novo_nome: novo }) },
+    ),
+    onSuccess: () => {
+      toast.success('Nome corrigido. Republique a DAG para a grafia nova valer no Airflow.')
+      qc.invalidateQueries({ queryKey: ['jobs'] })
+      onClose()
+    },
+    onError: (e: Error) => setErr([e.message]),
+  })
+
+  function aplicarGrafiaDs(nome: string) {
+    if (!isEdit) { f('job_name', nome); return }
+    if (!confirm(
+      `Renomear "${job!.job_name}" para "${nome}"?\n\n`
+      + 'O rename é transacional: dependências, condições, lineage e histórico '
+      + 'acompanham. Depois é preciso republicar a DAG.')) return
+    renameMut.mutate(nome)
+  }
+
   const saveMut = useMutation({
     mutationFn: () => apiFetch('/pipelines/jobs/register', {
       method: 'POST',
@@ -303,14 +352,38 @@ function JobFormModal({
           Pipeline: <span className="font-mono text-ink">{pipeline}</span>
         </div>
 
-        <Input
-          label="Nome da Etapa *"
-          value={form.job_name}
-          onChange={e => f('job_name', e.target.value)}
-          placeholder="ex: BiCvp_BaseCobranca_01_ext_Parcelas"
-          disabled={isEdit}
-          className={isEdit ? 'opacity-60' : ''}
-        />
+        <div className="flex flex-col gap-1.5">
+          {/* Etapa DataStage nova: autocompletar sobre os nomes REAIS do projeto
+              — mata a classe de erro (digitação e caixa) antes de nascer. */}
+          {ehDatastage && !isEdit && dsJobsQ.data?.disponivel ? (
+            <Autocomplete
+              label="Nome da Etapa *"
+              value={form.job_name}
+              onChange={v => f('job_name', v)}
+              fetchSuggestions={sugerirJobsDs}
+              placeholder="ex: BiCvp_BaseCobranca_01_ext_Parcelas"
+              className="font-mono"
+            />
+          ) : (
+            <Input
+              label="Nome da Etapa *"
+              value={form.job_name}
+              onChange={e => f('job_name', e.target.value)}
+              placeholder="ex: BiCvp_BaseCobranca_01_ext_Parcelas"
+              disabled={isEdit}
+              className={isEdit ? 'opacity-60' : ''}
+            />
+          )}
+          {ehDatastage && (
+            <ConferenciaDsJob
+              conferencia={conferencia}
+              project={dsProject}
+              carregando={dsJobsQ.isLoading}
+              onUsarGrafia={aplicarGrafiaDs}
+              rotuloAcao={isEdit ? 'Renomear para' : 'Usar esta grafia'}
+            />
+          )}
+        </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div className="flex flex-col gap-1">
@@ -431,8 +504,17 @@ function JobFormModal({
 
         <div className="flex justify-end gap-2 pt-1 border-t border-edge">
           <Button variant="secondary" onClick={onClose}>Cancelar</Button>
-          <Button loading={saveMut.isPending} onClick={() => { if (validate()) saveMut.mutate() }}>
+          {/* Divergência SÓ DE CAIXA: o salvar sai do azul de "tudo certo" e vira
+              âmbar de alerta. Não bloqueia (a conferência é aviso, não trava),
+              mas deixa de parecer um caminho feliz. */}
+          <Button
+            loading={saveMut.isPending || renameMut.isPending}
+            onClick={() => { if (validate()) saveMut.mutate() }}
+            className={conferencia.status === 'caixa'
+              ? 'bg-amber-600 hover:bg-amber-700 focus:ring-amber-500/50' : ''}
+          >
             <Save size={13} /> {isEdit ? 'Salvar alterações' : 'Criar Etapa'}
+            {conferencia.status === 'caixa' ? ' assim mesmo' : ''}
           </Button>
         </div>
       </div>

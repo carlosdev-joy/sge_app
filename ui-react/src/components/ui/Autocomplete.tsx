@@ -12,6 +12,9 @@ interface AutocompleteProps {
   minChars?: number
   disabled?: boolean
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
+  // Campos com commit no blur (ex.: o nome da etapa no dock do canvas) precisam
+  // saber que o foco saiu — sem isto o valor digitado nunca é confirmado.
+  onBlur?: () => void
 }
 
 export function Autocomplete({
@@ -25,6 +28,7 @@ export function Autocomplete({
   minChars = 1,
   disabled,
   onKeyDown,
+  onBlur,
 }: AutocompleteProps) {
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [open, setOpen] = useState(false)
@@ -110,6 +114,7 @@ export function Autocomplete({
           value={value}
           onChange={e => { onChange(e.target.value); setOpen(true) }}
           onFocus={() => { if (suggestions.length > 0) setOpen(true) }}
+          onBlur={() => onBlur?.()}
           onKeyDown={handleKey}
           placeholder={placeholder}
           disabled={disabled}

@@ -2557,6 +2557,7 @@ function FluxoEditorInner({
           <div className="min-h-0 flex-1 overflow-y-auto">
             <PropriedadesPanel
               node={selNode}
+              pipeline={pipeline}
               nodes={nodes}
               ramos={selRamos}
               jobNames={jobNames}

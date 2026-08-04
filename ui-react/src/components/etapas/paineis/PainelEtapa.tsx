@@ -2,6 +2,7 @@
 // Fase 4 do redesign: layout LARGO para o dock inferior — 2 colunas no lg+
 // (esquerda = identidade: nome/tipo/ordem; direita = campos por tipo via
 // JobTypeFields SEM compact — em storedproc os params ganham a largura toda).
+import { useCallback, useMemo } from 'react'
 import type { Node } from '@xyflow/react'
 import { Trash2 } from 'lucide-react'
 import { Button } from '../../ui/Button'
@@ -12,10 +13,14 @@ import {
   JobTypeFields, jobTypeFieldsErrors,
   type JobTypeFieldsValue, type JobFieldsType, type JobParam,
 } from '../JobTypeFields'
+import { ConferenciaDsJob } from '../../console/ConferenciaDsJob'
+import { conferirNomeDs, sugestoesDs, useDsJobs, usePipelineProject } from '../../../lib/dsJobs'
 import { NomeField } from './shared'
 
 export interface PainelEtapaProps {
   node: Node
+  // Pipeline do canvas — resolve o PROJETO DataStage para conferir o nome do job.
+  pipeline: string
   sshConns: { conn_id: string; host: string }[]
   mssqlConns: { conn_id: string; host: string }[]
   onRename: (oldName: string, novo: string) => boolean
@@ -25,11 +30,29 @@ export interface PainelEtapaProps {
   onMaximizar?: () => void
 }
 
-export function PainelEtapa({ node, sshConns, mssqlConns, onRename, onPatchData, onDelete, onMaximizar }: PainelEtapaProps) {
+export function PainelEtapa({ node, pipeline, sshConns, mssqlConns, onRename, onPatchData, onDelete, onMaximizar }: PainelEtapaProps) {
   const d = node.data as EtapaNodeData
   const isNew = !!d.isNew
   const meta = TYPE_META[d.type]
   const Icon = meta.icon
+
+  // ── Conferência do nome contra o DataStage (incidente 2026-08-01) ────────
+  // Só para etapa 'datastage': nos outros tipos o nome não é um job do DS.
+  // A lista vem UMA vez por projeto (cache no servidor e no TanStack) e o
+  // veredito é local — nenhuma ida ao servidor por tecla.
+  const ehDatastage = d.type === 'datastage'
+  const dsProject = usePipelineProject(pipeline)
+  const dsJobsQ = useDsJobs(dsProject, ehDatastage)
+  const conferencia = useMemo(
+    () => ehDatastage
+      ? conferirNomeDs(d.name, dsJobsQ.data)
+      : { status: 'vazio' as const, sugestao: null, parecidos: [], motivo: null },
+    [ehDatastage, d.name, dsJobsQ.data],
+  )
+  const sugerirJobsDs = useCallback(
+    async (q: string) => sugestoesDs(q, dsJobsQ.data),
+    [dsJobsQ.data],
+  )
 
   // Valor consumido pela fonte única de campos por tipo (JobTypeFields).
   const typeValue: JobTypeFieldsValue = {
@@ -79,7 +102,28 @@ export function PainelEtapa({ node, sshConns, mssqlConns, onRename, onPatchData,
       <div className="grid gap-4 p-4 lg:grid-cols-[minmax(300px,380px)_1fr]">
         {/* ── Coluna esquerda: identidade ─────────────────────────────────── */}
         <div className="flex min-w-0 flex-col gap-3">
-          <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: CARGA_CLIENTES" onRename={onRename} />
+          <NomeField
+            id={node.id}
+            name={d.name}
+            isNew={isNew}
+            placeholder="ex: CARGA_CLIENTES"
+            onRename={onRename}
+            // Autocompletar com os nomes REAIS do projeto — só no nó NOVO
+            // (num nó salvo o nome muda pelo rename transacional) e só quando
+            // a lista chegou (DataStage fora = campo normal, sem travar nada).
+            fetchSuggestions={ehDatastage && dsJobsQ.data?.disponivel ? sugerirJobsDs : undefined}
+            extra={ehDatastage ? (
+              <ConferenciaDsJob
+                conferencia={conferencia}
+                project={dsProject}
+                carregando={dsJobsQ.isLoading}
+                // Nó novo: preenche. Nó salvo: dispara o rename transacional
+                // (a mesma confirmação de qualquer rename no canvas).
+                onUsarGrafia={nome => { onRename(node.id, nome) }}
+                rotuloAcao={isNew ? 'Usar esta grafia' : 'Renomear para'}
+              />
+            ) : undefined}
+          />
 
           {/* Tipo (editável só na criação) e Ordem */}
           <div className="grid grid-cols-2 gap-2">

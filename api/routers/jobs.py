@@ -437,15 +437,32 @@ def _condition_branch_members(cond) -> list[str]:
 
 # ── Rename transacional de job (onda 3) — helpers puros ─────────────────────
 
+def _mesmo_job(a, b) -> bool:
+    """Compara dois nomes de job do Orquestra IGNORANDO A CAIXA.
+
+    Por que CI: a chave é ``(pipeline_name, job_name)`` no SQL Server com colação
+    padrão (case-insensitive) — duas grafias que só diferem na caixa NÃO podem
+    coexistir no mesmo pipeline, então casar sem caixa nunca acerta o job errado.
+    Já o CSV ``depends_on_jobs`` e o ``condition_json`` são TEXTO comparado em
+    Python (case-sensitive): sem isto, uma referência gravada com outra caixa
+    (ex.: CSV 'SsdVida' × cadastro 'SSDVida') sobreviveria ao rename apontando
+    para um job que não existe mais. Incidente 2026-08-01."""
+    return str(a or "").strip().casefold() == str(b or "").strip().casefold()
+
+
 def _rename_in_dep_csv(dep_csv, antigo: str, novo: str):
     """Troca ``antigo`` por ``novo`` num CSV de depends_on_jobs. Retorna o CSV
-    novo, ou None quando nada mudou (evita UPDATE desnecessário)."""
+    novo, ou None quando nada mudou (evita UPDATE desnecessário).
+
+    O casamento ignora a caixa (ver ``_mesmo_job``) — mas só devolve CSV novo se
+    o texto realmente mudou, para não gerar UPDATE à toa."""
     if not dep_csv:
         return None
     parts = [p.strip() for p in str(dep_csv).split(",") if p.strip()]
-    if antigo not in parts:
+    if not any(_mesmo_job(p, antigo) for p in parts):
         return None
-    return ",".join(novo if p == antigo else p for p in parts)
+    saida = ",".join(novo if _mesmo_job(p, antigo) else p for p in parts)
+    return saida if saida != str(dep_csv) else None
 
 
 def _rename_in_condition(cond, antigo: str, novo: str) -> bool:
@@ -453,23 +470,28 @@ def _rename_in_condition(cond, antigo: str, novo: str) -> bool:
     deserializado (muta in place): ramos binários, casos[].ramo, ramo_senao,
     ``job_name`` (linhas_job) e ``source_job`` (valor_sql). NÃO toca
     ``child_job`` — é nome de job-filho do DataStage, não do Orquestra.
+    O casamento ignora a caixa (ver ``_mesmo_job``).
     Retorna True se algo mudou."""
     if not isinstance(cond, dict):
         return False
     mudou = False
     for key in ("ramo_verdadeiro", "ramo_falso", "ramo_senao"):
         ramo = cond.get(key)
-        if isinstance(ramo, list) and antigo in ramo:
-            cond[key] = [novo if m == antigo else m for m in ramo]
-            mudou = True
+        if isinstance(ramo, list) and any(_mesmo_job(m, antigo) for m in ramo):
+            novo_ramo = [novo if _mesmo_job(m, antigo) else m for m in ramo]
+            if novo_ramo != ramo:
+                cond[key] = novo_ramo
+                mudou = True
     if isinstance(cond.get("casos"), list):
         for caso in cond["casos"]:
             if (isinstance(caso, dict) and isinstance(caso.get("ramo"), list)
-                    and antigo in caso["ramo"]):
-                caso["ramo"] = [novo if m == antigo else m for m in caso["ramo"]]
-                mudou = True
+                    and any(_mesmo_job(m, antigo) for m in caso["ramo"])):
+                novo_ramo = [novo if _mesmo_job(m, antigo) else m for m in caso["ramo"]]
+                if novo_ramo != caso["ramo"]:
+                    caso["ramo"] = novo_ramo
+                    mudou = True
     for key in ("job_name", "source_job"):
-        if cond.get(key) == antigo:
+        if _mesmo_job(cond.get(key), antigo) and cond.get(key) != novo:
             cond[key] = novo
             mudou = True
     return mudou
@@ -1377,7 +1399,21 @@ async def rename_pipeline_job(
 
     Guardas: nome novo válido (sem espaço — vira task_id), único no pipeline,
     e NENHUMA execução RUNNING do pipeline (rename no meio de um run confunde
-    o monitor e o reconciliador)."""
+    o monitor e o reconciliador).
+
+    RENAME SÓ DE CAIXA (incidente 2026-08-01 — 'SsdVida…' × 'SSDVida…' no
+    DataStage, que É case-sensitive nos nomes de job): o SQL Server com a
+    colação padrão NÃO distingue caixa, então
+      - a guarda de unicidade casava com a PRÓPRIA linha e devolvia 422
+        ("já existe um job X") — impossível consertar a grafia pela tela;
+      - a estratégia CÓPIA estouraria a PK, porque (pipeline_name, job_name)
+        vê as duas grafias como a MESMA chave.
+    Por isso: a unicidade é conferida em PYTHON contra a lista real de nomes do
+    pipeline (o banco não distingue, o código precisa distinguir) e, quando só a
+    caixa muda, a linha é renomeada por UPDATE IN PLACE (o
+    `UPDATE … SET job_name='SSD…' WHERE job_name='Ssd…'` casa pelo WHERE sob CI
+    e grava a grafia nova). O CONTRATO ACIMA VALE INTEGRALMENTE nos dois
+    caminhos — o que muda é só como a própria linha se move."""
     pipe = (pipeline_name or "").strip()
     antigo = (job_name or "").strip()
     novo = str(body.get("novo_nome") or "").strip()
@@ -1385,8 +1421,6 @@ async def rename_pipeline_job(
         raise HTTPException(status_code=422, detail="pipeline e job são obrigatórios")
     if not novo:
         raise HTTPException(status_code=422, detail="novo_nome é obrigatório")
-    if novo == antigo:
-        raise HTTPException(status_code=422, detail="o novo nome é igual ao atual")
     if not _JOB_NAME_STRICT_RE.match(novo):
         raise HTTPException(
             status_code=422,
@@ -1409,16 +1443,30 @@ async def rename_pipeline_job(
         return bool(cur.fetchone()[0])
 
     try:
+        # A grafia OFICIAL do job é a que está gravada — o path da rota casa sob
+        # colação CI com qualquer caixa, então canonizamos antes de decidir
+        # qualquer coisa (senão 'renomear SSD→SSD' com 'Ssd' no banco viraria
+        # "igual ao atual" e o conserto ficaria impossível).
         cur.execute(
-            "SELECT COUNT(*) FROM dbo.etl_pipeline_job WHERE pipeline_name=? AND job_name=?",
-            (pipe, antigo))
-        if not cur.fetchone()[0]:
+            "SELECT job_name FROM dbo.etl_pipeline_job WHERE pipeline_name=?", (pipe,))
+        nomes_pipeline = [(r[0] or "").strip() for r in cur.fetchall()]
+        atual = next((n for n in nomes_pipeline if _mesmo_job(n, antigo)), None)
+        if atual is None:
             raise HTTPException(status_code=404, detail=f"job '{antigo}' não existe no pipeline '{pipe}'")
-        cur.execute(
-            "SELECT COUNT(*) FROM dbo.etl_pipeline_job WHERE pipeline_name=? AND job_name=?",
-            (pipe, novo))
-        if cur.fetchone()[0]:
+        antigo = atual
+        if novo == antigo:
+            raise HTTPException(status_code=422, detail="o novo nome é igual ao atual")
+        # Unicidade conferida EM PYTHON: o COUNT(*) sob colação CI casava com a
+        # própria linha quando só a caixa mudava (incidente). Aqui excluímos a
+        # linha que está sendo renomeada e comparamos sem caixa com as demais —
+        # duas grafias que só diferem na caixa não podem coexistir sob CI, então
+        # o conflito real continua barrado.
+        outros = [n for n in nomes_pipeline if not _mesmo_job(n, antigo)]
+        if any(_mesmo_job(n, novo) for n in outros):
             raise HTTPException(status_code=422, detail=f"já existe um job '{novo}' no pipeline")
+
+        # Só a CAIXA muda → UPDATE in-place (a cópia estouraria a PK sob CI).
+        so_caixa = _mesmo_job(antigo, novo)
 
         # A coluna 'pipeline' entrou na 027 (NULLable) — instalações antigas
         # degradam sem o guard/reescrita do histórico, como o resto do arquivo.
@@ -1434,29 +1482,45 @@ async def rename_pipeline_job(
                     detail="o pipeline tem execução em andamento — aguarde (ou use a "
                            "Finalização) antes de renomear")
 
-        # 1) A própria linha (estratégia cópia — ver docstring). Colunas
-        # dinâmicas: as duas shapes de produção divergem (PK composta vs id
-        # IDENTITY + UNIQUE); sys.columns exclui identity/computed.
-        cur.execute(
-            "SELECT c.name FROM sys.columns c "
-            "WHERE c.object_id=OBJECT_ID('dbo.etl_pipeline_job') "
-            "AND c.is_identity=0 AND c.is_computed=0 ORDER BY c.column_id")
-        cols = [r[0] for r in cur.fetchall()]
-        if "job_name" not in cols:
-            raise HTTPException(status_code=500, detail="schema inesperado em etl_pipeline_job")
-        col_list = ", ".join(f"[{c}]" for c in cols)
-        sel_list = ", ".join("?" if c == "job_name" else f"[{c}]" for c in cols)
-        cur.execute(
-            f"INSERT INTO dbo.etl_pipeline_job ({col_list}) "
-            f"SELECT {sel_list} FROM dbo.etl_pipeline_job WHERE pipeline_name=? AND job_name=?",
-            (novo, pipe, antigo))
-        if _tem_tabela("etl_pipeline_job_param"):
+        # 1) A própria linha.
+        if so_caixa:
+            # Caminho SÓ-CAIXA: UPDATE in-place. A cópia não serve — sob colação
+            # CI o INSERT com a grafia nova bate na MESMA chave da linha antiga
+            # (violação de PK/UNIQUE). O UPDATE funciona porque o WHERE casa sob
+            # CI e o SET grava a grafia nova. A FK de etl_pipeline_job_param
+            # também é avaliada sob CI, então os filhos continuam válidos entre
+            # os dois UPDATEs (nenhuma ordem quebra a integridade).
             cur.execute(
-                "UPDATE dbo.etl_pipeline_job_param SET job_name=? "
+                "UPDATE dbo.etl_pipeline_job SET job_name=? "
                 "WHERE pipeline_name=? AND job_name=?", (novo, pipe, antigo))
-        cur.execute(
-            "DELETE FROM dbo.etl_pipeline_job WHERE pipeline_name=? AND job_name=?",
-            (pipe, antigo))
+            if _tem_tabela("etl_pipeline_job_param"):
+                cur.execute(
+                    "UPDATE dbo.etl_pipeline_job_param SET job_name=? "
+                    "WHERE pipeline_name=? AND job_name=?", (novo, pipe, antigo))
+        else:
+            # Estratégia CÓPIA (ver docstring). Colunas dinâmicas: as duas shapes
+            # de produção divergem (PK composta vs id IDENTITY + UNIQUE);
+            # sys.columns exclui identity/computed.
+            cur.execute(
+                "SELECT c.name FROM sys.columns c "
+                "WHERE c.object_id=OBJECT_ID('dbo.etl_pipeline_job') "
+                "AND c.is_identity=0 AND c.is_computed=0 ORDER BY c.column_id")
+            cols = [r[0] for r in cur.fetchall()]
+            if "job_name" not in cols:
+                raise HTTPException(status_code=500, detail="schema inesperado em etl_pipeline_job")
+            col_list = ", ".join(f"[{c}]" for c in cols)
+            sel_list = ", ".join("?" if c == "job_name" else f"[{c}]" for c in cols)
+            cur.execute(
+                f"INSERT INTO dbo.etl_pipeline_job ({col_list}) "
+                f"SELECT {sel_list} FROM dbo.etl_pipeline_job WHERE pipeline_name=? AND job_name=?",
+                (novo, pipe, antigo))
+            if _tem_tabela("etl_pipeline_job_param"):
+                cur.execute(
+                    "UPDATE dbo.etl_pipeline_job_param SET job_name=? "
+                    "WHERE pipeline_name=? AND job_name=?", (novo, pipe, antigo))
+            cur.execute(
+                "DELETE FROM dbo.etl_pipeline_job WHERE pipeline_name=? AND job_name=?",
+                (pipe, antigo))
 
         # 2) Irmãos: depends_on_jobs (CSV) e condition_json.
         if _tem_coluna("etl_pipeline_job", "depends_on_jobs"):
@@ -1537,15 +1601,23 @@ async def rename_pipeline_job(
         "Republique a DAG para o novo task_id valer no Airflow.",
         tipo="info", link=f"/fluxos?pipeline={pipe}",
     )
+    avisos = [
+        "Republique a DAG do pipeline — o task_id no Airflow deriva do nome "
+        "(rerun e reconciliação usam o task_id).",
+    ]
+    if so_caixa:
+        avisos.append(
+            "Só a caixa (maiúsculas/minúsculas) mudou. Para o Orquestra e o SQL "
+            "Server os dois nomes eram equivalentes, mas o DataStage diferencia "
+            "maiúsculas de minúsculas — a DAG precisa ser republicada para o "
+            "disparo usar a grafia nova.")
     return {
         "ok": True,
         "de": antigo,
         "para": novo,
+        "so_caixa": so_caixa,
         "historico": {"execucoes": hist_exec, "ds_logs": hist_ds},
-        "avisos": [
-            "Republique a DAG do pipeline — o task_id no Airflow deriva do nome "
-            "(rerun e reconciliação usam o task_id).",
-        ],
+        "avisos": avisos,
     }
 
 
