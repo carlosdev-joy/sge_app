@@ -361,6 +361,15 @@ def liberado(conn, pipeline: str, data_ref: date):
     nunca vira "pode disparar"). Predicado canônico para F4 e F5/D29.
     """
     try:
+        # Modo SEQUÊNCIA: a chave da pergunta deixa de ser o ODATE e passa a
+        # ser o ciclo corrente. Tudo o mais é igual — inclusive a retenção do
+        # Aguarde e o descarte de corrida substituída.
+        if modo_sequencia(conn):
+            cur = conn.cursor()
+            cur.execute(SQL_LIBERADO_SEQ,
+                        (pipeline, inicio_do_ciclo_corrente(conn)))
+            faltantes = [_faltante(r) for r in cur.fetchall()]
+            return (not faltantes), faltantes
         cur = conn.cursor()
         _com_retencao, legado = _exec_liberado(cur, (pipeline, data_ref))
         faltantes = [_faltante(r) for r in cur.fetchall()]
@@ -626,6 +635,23 @@ SQL_LIBERADO_082 = (
     "AND (" + _ONDE_SEM_SUCESSO_078[4:] +
     " OR EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
     "            WHERE n2.id = dd.origem_no AND n2.retido_em IS NOT NULL))")
+# Modo SEQUÊNCIA (config `dependencia_modo_sequencia`): a pergunta deixa de
+# ser "SUCESSO nesta data de referência" e passa a ser "SUCESSO NESTE ciclo".
+# `ISNULL(fim, inicio)` porque uma corrida que concluiu sem carimbar fim ainda
+# é um sucesso desta rodada; o corte vem de quem chama (relógio do BANCO).
+_ONDE_SEM_SUCESSO_SEQ = (
+    "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
+    "WHERE e.pipeline_name = dd.depende_de "
+    "AND e.status = 'SUCESSO' AND e.substituida_em IS NULL "
+    "AND ISNULL(e.fim, e.inicio) >= %s)")
+SQL_LIBERADO_SEQ = (
+    "SELECT dd.depende_de" + _SELECT_RETENCAO +
+    "FROM dbo.etl_pipeline_dependencia dd "
+    "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE' "
+    "AND (" + _ONDE_SEM_SUCESSO_SEQ[4:] +
+    " OR EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
+    "            WHERE n2.id = dd.origem_no AND n2.retido_em IS NOT NULL))")
+
 SQL_LIBERADO_078 = (
     "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
     "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE' " +
@@ -634,6 +660,59 @@ SQL_LIBERADO_LEGADO = (
     "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
     "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE' " +
     _ONDE_SEM_SUCESSO_LEGADO)
+
+
+_MODO_CACHE: dict = {}
+
+
+def limpar_cache_modo() -> None:
+    """Esquece o modo lido. Existe para TESTE e para quem quiser reavaliar no
+    mesmo processo — em produção o cache morre com a task."""
+    _MODO_CACHE.clear()
+
+
+def modo_sequencia(conn) -> bool:
+    """A liberação está em modo SEQUÊNCIA (ODATE fora da conta)?
+
+    Lido de etl_app_config uma vez por PROCESSO: a task do Airflow é curta e
+    avalia N dependentes — perguntar por filho seria N idas ao banco para uma
+    resposta que não muda no meio do run. Trocar a chave vale no próximo run,
+    que é o comportamento esperado de configuração.
+
+    Ausente, ilegível ou banco fora → False (modo DATA, o de sempre): o
+    interruptor nunca liga sozinho."""
+    if "modo" in _MODO_CACHE:
+        return _MODO_CACHE["modo"]
+    valor = False
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT config_value FROM dbo.etl_app_config "
+                    "WHERE config_key = 'dependencia_modo_sequencia'")
+        row = cur.fetchone()
+        valor = bool(row) and str(row[0] or "").strip() in ("1", "true", "True")
+    except Exception as e:  # noqa: BLE001
+        print(f"[DEP] modo de liberacao indisponivel ({e}) — usando data de referencia")
+    _MODO_CACHE["modo"] = valor
+    if valor:
+        print("[DEP] modo SEQUENCIA ligado — a liberacao olha o ciclo, nao o ODATE")
+    return valor
+
+
+def inicio_do_ciclo_corrente(conn) -> datetime:
+    """Corte do ciclo para o modo sequência: a virada global mais recente, na
+    régua do BANCO (é lá que `fim`/`inicio` são carimbados)."""
+    agora = agora_do_banco(conn)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT config_value FROM dbo.etl_app_config "
+                    "WHERE config_key = 'dependencia_hora_virada'")
+        row = cur.fetchone()
+        bruto = row[0] if row else None
+    except Exception:  # noqa: BLE001 — sem config, meia-noite
+        bruto = None
+    v = _como_time(bruto) or time(0, 0)
+    base = agora.date() if agora.time() >= v else agora.date() - timedelta(days=1)
+    return datetime.combine(base, v)
 
 
 def _exec_liberado(cur, params):
