@@ -86,7 +86,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
@@ -179,6 +179,16 @@ def _fmt_dt(v):
     return str(v)
 
 
+def _fmt_dia(v):
+    """DATE → 'YYYY-MM-DD' (o formato que a tela e o contrato usam para a data
+    de referência). None continua None."""
+    if v is None:
+        return None
+    if hasattr(v, "strftime"):
+        return v.strftime("%Y-%m-%d")
+    return str(v)
+
+
 def _fechar_silencioso(conn):
     """Desfaz a transação e fecha, sem mascarar o erro original."""
     if conn is None:
@@ -240,6 +250,75 @@ def _coluna_074(cur) -> bool:
     except Exception as e:
         log.warning("[MALHA] checagem da coluna da migration 074 falhou: %s", e)
         return False
+
+
+def _compilar_virada(cur, malha: str, hora_virada) -> list:
+    """Copia a virada da MALHA para todos os membros e carimba publicação
+    pendente em quem mudou. Devolve os nomes alinhados.
+
+    É o mesmo movimento do agendamento do Início (F13), que já copia
+    `hora_virada` para as RAÍZES — aqui ele vale para a malha inteira, porque
+    quem calcula data não é só a raiz: qualquer membro que ainda dispare por
+    agenda calcula a dele (e foi assim que a corrida saiu partida).
+
+    Só toca em quem DIVERGE: um UPDATE cego carimbaria publicação pendente em
+    toda a malha a cada salvamento, e o operador aprenderia a ignorar o aviso.
+    Sem a coluna em etl_pipeline (067 pendente), não há o que compilar."""
+    if not _coluna_hora_virada(cur):
+        return []
+    cur.execute(
+        "SELECT p.pipeline_name FROM dbo.etl_malha_pipeline mp "
+        "JOIN dbo.etl_pipeline p ON p.pipeline_name = mp.pipeline_name "
+        "WHERE mp.malha_name = ? AND ("
+        "  (p.hora_virada IS NULL AND ? IS NOT NULL) OR "
+        "  (p.hora_virada IS NOT NULL AND ? IS NULL) OR "
+        "  (p.hora_virada <> ?))",
+        (malha, hora_virada, hora_virada, hora_virada))
+    fora = [r[0] for r in cur.fetchall()]
+    for nome in fora:
+        cur.execute(
+            "UPDATE dbo.etl_pipeline SET hora_virada = ?, updated_at = GETDATE() "
+            "WHERE pipeline_name = ?", (hora_virada, nome))
+        # A DAG publicada ainda carrega a virada ANTIGA no _data_referencia
+        # gerado: sem republicar, a régua nova só vale no papel.
+        _ligar_dag_config_pendente(cur, nome)
+    return sorted(fora)
+
+
+def _coluna_hora_virada(cur) -> bool:
+    """True se etl_pipeline.hora_virada (migration 067) existe."""
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_pipeline', 'hora_virada')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None)
+    except Exception as e:
+        log.warning("[MALHA] checagem de etl_pipeline.hora_virada falhou: %s", e)
+        return False
+
+
+def _colunas_081(cur) -> bool:
+    """True se as colunas da migration 081 (hora_virada + equalizar_data da
+    MALHA) existem. Mesmo padrão dos demais guards: falha conta como ausente e
+    a malha se comporta como antes da fase — a virada continua vindo do
+    pipeline/global e a equalização não é oferecida."""
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_malha', 'hora_virada'), "
+                    "COL_LENGTH('dbo.etl_malha', 'equalizar_data')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None and row[1] is not None)
+    except Exception as e:
+        log.warning("[MALHA] checagem das colunas da migration 081 falhou: %s", e)
+        return False
+
+
+def _hhmm(valor):
+    """TIME/str → 'HH:MM' (o formato que a tela usa), ou None."""
+    if valor is None:
+        return None
+    if hasattr(valor, "strftime"):
+        return valor.strftime("%H:%M")
+    texto = str(valor).strip()
+    return texto[:5] if texto else None
 
 
 def _orientacao_norm(valor) -> str:
@@ -1792,10 +1871,14 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
         # orientacao (074): preferência de visão que viaja com o layout — sem a
         # coluna, degrada para 'horizontal' (o comportamento de sempre).
         tem_074 = _coluna_074(cur)
+        # F2 (081): a virada da MALHA e a marca de equalização — aditivas, no
+        # mesmo esquema condicional da orientacao.
+        tem_081 = _colunas_081(cur)
         cur.execute(
             "SELECT malha_name, descricao, CAST(ativo AS INT) AS ativo, "
             "criado_em, criado_por, atualizado_em"
-            + (", orientacao" if tem_074 else "") +
+            + (", orientacao" if tem_074 else "")
+            + (", hora_virada, CAST(equalizar_data AS INT)" if tem_081 else "") +
             " FROM dbo.etl_malha WHERE malha_name = ?",
             (malha_name,),
         )
@@ -1810,6 +1893,9 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
             "atualizado_em": _fmt_dt(row[5]),
             "orientacao": _orientacao_norm(row[6]) if tem_074 else "horizontal",
         }
+        _i081 = 7 if tem_074 else 6
+        row_virada = row[_i081] if tem_081 else None
+        equalizar = row[_i081 + 1] if tem_081 else 0
         # F10/F13: as tabelas da 075 habilitam nós e assinaturas — checadas UMA
         # vez por request; as colunas de agendamento (F13) têm guard próprio,
         # porque a 075 pode estar aplicada pela metade num deploy parcial.
@@ -1825,12 +1911,16 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
         # `publicacao_pendente` simplesmente não vem: a UI não inventa um
         # "está em dia" que o banco não sustenta.
         tem_073 = _coluna_073(cur)
+        # hora_virada nasce na 067 (que a malha NÃO exige para abrir) — guard
+        # próprio, como as demais colunas aditivas deste SELECT.
+        tem_virada_pipe = _coluna_hora_virada(cur)
         cur.execute(
             "SELECT p.pipeline_name, CAST(p.active AS INT) AS active, "
             "ISNULL(p.criticidade, 'Media') AS criticidade, p.schedule_type, "
             "mp.layout_x, mp.layout_y, CAST(ISNULL(p.dag_criada, 0) AS INT)"
             + (", p.agenda_no" if tem_agenda else "")
-            + (", p.dag_config_pendente_em" if tem_073 else "") +
+            + (", p.dag_config_pendente_em" if tem_073 else "")
+            + (", p.hora_virada" if tem_virada_pipe else "") +
             " FROM dbo.etl_malha_pipeline mp "
             "JOIN dbo.etl_pipeline p ON p.pipeline_name = mp.pipeline_name "
             "WHERE mp.malha_name = ? ORDER BY p.pipeline_name",
@@ -1850,7 +1940,36 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
                 i += 1
             if tem_073:
                 m["publicacao_pendente"] = r[i] is not None
+                i += 1
+            if tem_virada_pipe:
+                m["hora_virada"] = _hhmm(r[i])
             membros.append(m)
+        # Quantos predecessores cada membro tem na 067 (F1 da
+        # spec-malha-data-unica). É o que permite à tela apontar o pipeline que
+        # TEM dependência mas ainda dispara por AGENDA: a DAG dele não foi
+        # republicada, então roda fora da malha, calcula a própria data de
+        # referência e mistura a corrida. Foi essa a causa do incidente da
+        # Carga_Vida. Sem a 067 a chave não vem e a tela não afirma nada.
+        if _tabela_067(cur) and membros:
+            cur.execute(
+                "SELECT pipeline_name, COUNT(*) FROM dbo.etl_pipeline_dependencia "
+                "WHERE tipo = 'PIPELINE' GROUP BY pipeline_name")
+            por_nome = {str(r[0] or "").strip().casefold(): int(r[1] or 0)
+                        for r in cur.fetchall()}
+            for m in membros:
+                m["qtd_predecessores"] = por_nome.get(
+                    m["pipeline_name"].casefold(), 0)
+        # F2: a virada da MALHA (migration 081) e quem está fora dela. É a
+        # virada que decide o ODATE de quem roda por agenda — membros em
+        # viradas diferentes carimbam datas diferentes para a MESMA corrida.
+        if tem_081:
+            malha["hora_virada"] = _hhmm(row_virada)
+            malha["equalizar_data"] = int(equalizar or 0)
+            if tem_virada_pipe:
+                alvo = malha["hora_virada"]     # None = a global manda
+                malha["virada_divergente"] = sorted(
+                    m["pipeline_name"] for m in membros
+                    if (m.get("hora_virada") or None) != alvo)
         # Arestas (F8): dependências GLOBAIS da 067 em que AMBAS as pontas são
         # membros desta malha — a mesma dependência aparece em toda malha que
         # contenha os dois pipelines (aceite da F8: a aresta é real nas duas).
@@ -2297,13 +2416,34 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
                                "mensagem": f"'{p}' está inativo — a DAG pode "
                                "estar pausada no Airflow; a corrida criada "
                                "só anda com a DAG despausada"})
+        # F1 da spec-malha-data-unica: a malha começa do ZERO. Corrida viva de
+        # membro ou data de referência divergente NESTE ciclo barram o disparo
+        # — a partida por cima de uma corrida em andamento é o que produziu, na
+        # Carga_Vida, metade da malha num ODATE e metade em outro.
+        # (Gancho da F3: com `equalizar_data` ligado na malha, este ponto passa
+        # a recarimbar em vez de recusar — o desenho está na spec.)
+        bloqueios = ({"em_aberto": [], "datas_divergentes": []}
+                     if not tem_exec_067
+                     else _bloqueios_do_ciclo(cur, malha, data_ref))
+        tem_bloqueio = bool(bloqueios["em_aberto"]
+                            or bloqueios["datas_divergentes"])
         # O banco fecha ANTES das chamadas ao Airflow: uma rede lenta não
         # pode segurar conexão de pool aberta (padrão do proxy).
         cur.close(); conn.close(); conn = None
 
         if dry_run:
+            # O dry_run NÃO recusa: ele MOSTRA. O modal precisa exibir quem
+            # está segurando a malha (com nome e data) para o operador agir —
+            # um 422 seco aqui esconderia a lista.
             return {"data_referencia": data_ref.strftime("%Y-%m-%d"),
-                    "raizes": raizes_info, "avisos": avisos}
+                    "raizes": raizes_info, "avisos": avisos,
+                    "bloqueios": bloqueios,
+                    "bloqueado": tem_bloqueio}
+
+        if tem_bloqueio:
+            raise HTTPException(
+                status_code=422,
+                detail=_msg_bloqueio(bloqueios, data_ref.strftime("%Y-%m-%d")))
 
         hoje = _agora().date()
         quem = (str(auth.get("matricula") or "").strip() or "?")
@@ -2360,6 +2500,106 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
     except Exception as e:
         _fechar_silencioso(conn)
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+# ── Estado do ciclo da malha (spec-malha-data-unica.md, F1) ─────────────────
+# A malha começa do ZERO: nenhum membro correndo e todos na MESMA data de
+# referência. Duas perguntas, uma consulta cada — as duas são sobre MEMBROS
+# desta malha, nunca sobre o banco inteiro.
+_STATUS_EM_ABERTO = ("EXECUTANDO", "AGUARDANDO_DEPENDENCIA")
+
+
+def _corridas_em_aberto(cur, malha: str) -> list:
+    """Membros com corrida viva (EXECUTANDO/AGUARDANDO), em QUALQUER data.
+
+    Sem filtro de data de propósito: uma corrida presa em outro ODATE é
+    exatamente o que a regra quer barrar — a malha não pode recomeçar por cima
+    de si mesma. Corrida substituída (rerun, migration 078) não conta."""
+    marcadores = ",".join("?" for _ in _STATUS_EM_ABERTO)
+    sql = ("SELECT e.pipeline_name, e.data_referencia, e.status, e.inicio "
+           "FROM dbo.etl_pipeline_execucao e "
+           "JOIN dbo.etl_malha_pipeline mp ON mp.pipeline_name = e.pipeline_name "
+           f"WHERE mp.malha_name = ? AND e.status IN ({marcadores}) ")
+    deps_svc._exec_com_fallback_078(
+        cur, sql + "AND e.substituida_em IS NULL", sql,
+        (malha, *_STATUS_EM_ABERTO))
+    return [{"pipeline": r[0], "data_referencia": _fmt_dia(r[1]),
+             "status": r[2], "inicio": _fmt_dt(r[3])}
+            for r in cur.fetchall()]
+
+
+def _datas_divergentes(cur, malha: str, data_ref, desde) -> list:
+    """Membros com execução carimbada em data DIFERENTE da do ciclo, iniciada
+    de `desde` para cá (a virada corrente).
+
+    O recorte por `inicio` é o que separa "a corrida de ontem, encerrada" —
+    que é histórico legítimo — de "esta mesma madrugada, com dois ODATEs
+    diferentes", que é a doença. Sem ele, toda malha com histórico seria
+    barrada para sempre."""
+    cur.execute(
+        "SELECT e.pipeline_name, e.data_referencia, e.status, e.inicio "
+        "FROM dbo.etl_pipeline_execucao e "
+        "JOIN dbo.etl_malha_pipeline mp ON mp.pipeline_name = e.pipeline_name "
+        "WHERE mp.malha_name = ? AND e.data_referencia <> ? AND e.inicio >= ? "
+        "ORDER BY e.pipeline_name, e.inicio",
+        (malha, data_ref, desde))
+    return [{"pipeline": r[0], "data_referencia": _fmt_dia(r[1]),
+             "status": r[2], "inicio": _fmt_dt(r[3])}
+            for r in cur.fetchall()]
+
+
+def _inicio_do_ciclo(cur, agora: datetime):
+    """Instante da virada mais recente — o começo do ciclo corrente.
+
+    Convertido para a régua do BANCO (GETDATE pode estar em outro fuso que o
+    container da API — caso real do dev): `inicio` é carimbado por lá, e
+    comparar relógios diferentes produziria divergência fantasma ou, pior,
+    silêncio."""
+    virada = dref.parse_virada(_virada_global(cur))
+    base = (agora.date() if agora.time() >= virada
+            else agora.date() - timedelta(days=1))
+    corte = datetime.combine(base, virada)
+    try:
+        cur.execute("SELECT GETDATE()")
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            corte += (row[0] - agora)
+    except Exception as e:
+        log.debug("[MALHA] relógio do banco indisponível para o corte: %s", e)
+    return corte
+
+
+def _bloqueios_do_ciclo(cur, malha: str, data_ref) -> dict:
+    """As duas travas juntas, no formato que a tela e o 422 consomem."""
+    em_aberto = _corridas_em_aberto(cur, malha)
+    divergentes = _datas_divergentes(cur, malha, data_ref,
+                                     _inicio_do_ciclo(cur, _agora()))
+    return {"em_aberto": em_aberto, "datas_divergentes": divergentes}
+
+
+def _msg_bloqueio(bloqueios: dict, data_ref: str) -> str:
+    """Mensagem única do 422 e do modal — um texto só, como a do ciclo da F8."""
+    partes = []
+    if bloqueios["em_aberto"]:
+        quem = ", ".join(f"{b['pipeline']} ({b['status'].lower()}"
+                         f", {b['data_referencia']})"
+                         for b in bloqueios["em_aberto"][:5])
+        partes.append(
+            f"{len(bloqueios['em_aberto'])} pipeline(s) da malha ainda com "
+            f"corrida em andamento: {quem}"
+            + ("…" if len(bloqueios["em_aberto"]) > 5 else ""))
+    if bloqueios["datas_divergentes"]:
+        quem = ", ".join(f"{b['pipeline']} em {b['data_referencia']}"
+                         for b in bloqueios["datas_divergentes"][:5])
+        partes.append(
+            f"{len(bloqueios['datas_divergentes'])} pipeline(s) executaram "
+            f"neste ciclo com data de referência diferente de {data_ref}: "
+            f"{quem}" + ("…" if len(bloqueios["datas_divergentes"]) > 5 else ""))
+    return ("A malha não pode começar: " + " · ".join(partes)
+            + ". A malha só parte do zero — encerre as corridas em aberto e "
+              "iguale a data de referência dos membros antes de disparar "
+              "(Malha ▸ Republicar pipelines resolve o caso mais comum: "
+              "dependente que ainda dispara por agenda).")
 
 
 async def _dags_existentes(nomes: list) -> dict:
@@ -2711,6 +2951,37 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
                     status_code=422,
                     detail="orientacao deve ser 'horizontal' ou 'vertical'")
         tem_074 = _coluna_074(cur)
+        # F2 (081): virada da malha e a marca de equalização. `hora_virada`
+        # aceita 'HH:MM' ou null (null = a malha segue a virada global). Valor
+        # inválido é 422 ANTES de qualquer escrita — a mesma régua da
+        # orientacao, e o oposto do D35 (que aceita NULL com aviso): aqui o
+        # campo É a régua de data, e cair calado no global seria o bug.
+        tem_virada = "hora_virada" in body
+        hora_virada = None
+        if tem_virada:
+            # `_parse_hora_opcional` do register é tolerante por contrato (D35:
+            # valor ruim vira NULL com aviso). Aqui NÃO pode ser: o campo É a
+            # régua de data da malha, e cair calado na virada global mudaria o
+            # ODATE de todos os membros sem ninguém pedir. Por isso a recusa.
+            _avisos_hora: list = []
+            hora_virada = _parse_hora_opcional("hora_virada",
+                                               body.get("hora_virada"),
+                                               _avisos_hora)
+            if _avisos_hora:
+                _fechar_silencioso(conn)
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"hora_virada inválida: '{body.get('hora_virada')}' "
+                           "(use HH:MM, ou null para seguir a virada global)")
+        tem_equalizar = "equalizar_data" in body
+        equalizar_data = 0
+        if tem_equalizar:
+            if body.get("equalizar_data") not in (0, 1, True, False):
+                _fechar_silencioso(conn)
+                raise HTTPException(status_code=422,
+                                    detail="equalizar_data deve ser 0 ou 1")
+            equalizar_data = int(bool(body.get("equalizar_data")))
+        tem_081 = _colunas_081(cur)
 
         novo_nome = (body.get("novo_nome") or "").strip()
         renomeada = False
@@ -2786,6 +3057,30 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
                 log.warning("[MALHA] migration 074 ausente — orientacao da "
                             "malha '%s' não foi persistida", atual)
 
+        # F2 da spec-malha-data-unica: a virada da MALHA é a régua de data do
+        # ciclo — e ela SÓ vale se chegar a todos os membros, que é onde o
+        # motor a lê. Gravar na malha sem compilar deixaria o campo decorativo,
+        # com a corrida continuando partida (a doença da Carga_Vida).
+        equalizados: list = []
+        migration_081_pendente = False
+        if tem_virada or tem_equalizar:
+            if not tem_081:
+                migration_081_pendente = True
+                log.warning("[MALHA] migration 081 ausente — virada/equalização "
+                            "da malha '%s' não foram persistidas", atual)
+            else:
+                if tem_virada:
+                    cur.execute(
+                        "UPDATE dbo.etl_malha SET hora_virada = ?, "
+                        "atualizado_em = SYSDATETIME() WHERE malha_name = ?",
+                        (hora_virada, atual))
+                    equalizados = _compilar_virada(cur, atual, hora_virada)
+                if tem_equalizar:
+                    cur.execute(
+                        "UPDATE dbo.etl_malha SET equalizar_data = ?, "
+                        "atualizado_em = SYSDATETIME() WHERE malha_name = ?",
+                        (equalizar_data, atual))
+
         conn.commit(); cur.close(); conn.close()
         # Chaves da orientação são CONDICIONAIS (aditivas): quem não mexeu nela
         # recebe a resposta de sempre, byte a byte.
@@ -2794,6 +3089,17 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
             resp["orientacao"] = orientacao
             if migration_074_pendente:
                 resp["migration_074_pendente"] = True
+        if tem_virada or tem_equalizar:
+            if migration_081_pendente:
+                resp["migration_081_pendente"] = True
+            else:
+                if tem_virada:
+                    resp["hora_virada"] = _hhmm(hora_virada)
+                    # Quem foi alinhado à régua nova — o front usa para dizer
+                    # "N pipelines precisam ser republicados" logo em seguida.
+                    resp["equalizados"] = equalizados
+                if tem_equalizar:
+                    resp["equalizar_data"] = equalizar_data
         return resp
     except HTTPException:
         raise

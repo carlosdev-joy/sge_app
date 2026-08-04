@@ -143,6 +143,14 @@ class FakeCur:
         if "COL_LENGTH('dbo.etl_pipeline', 'dag_config_pendente_em')" in s:
             self._rows = [(8,)] if getattr(db, "com_073", False) else [(None,)]
             return
+        # Colunas da 081 (virada + equalização da MALHA) e a hora_virada do
+        # PIPELINE (067) — guards independentes, como no router.
+        if "COL_LENGTH('dbo.etl_malha', 'hora_virada')" in s:
+            self._rows = [(5, 1)] if getattr(db, "com_081", False) else [(None, None)]
+            return
+        if "COL_LENGTH('dbo.etl_pipeline', 'hora_virada')" in s:
+            self._rows = [(5,)] if getattr(db, "com_virada_pipe", False) else [(None,)]
+            return
         # Guard da coluna orientacao (074): COL_LENGTH devolve NULL para coluna
         # ausente sem estourar — inclusive sem a própria tabela.
         if "COL_LENGTH('dbo.etl_malha'" in s:
@@ -214,6 +222,7 @@ class FakeCur:
             # (075), aditivo só na listagem.
             tem_orientacao = ", orientacao" in s
             tem_agendamento = ", agendamento_json" in s
+            tem_081 = ", hora_virada, CAST(equalizar_data AS INT)" in s
 
             def linha(k):
                 m = db.malhas[k]
@@ -223,6 +232,9 @@ class FakeCur:
                     cols.append(m.get("orientacao", "horizontal"))
                 if tem_agendamento:
                     cols.append(m.get("agendamento_json"))
+                if tem_081:
+                    cols.append(m.get("hora_virada"))
+                    cols.append(int(m.get("equalizar_data") or 0))
                 return tuple(cols)
             if "WHERE malha_name = ?" in s:
                 k = db._malha_key(params[0])

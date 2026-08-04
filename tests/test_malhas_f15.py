@@ -56,6 +56,9 @@ class FakeDb(FakeDbF13):
         self.config = {} if config is None else config
         # {"pipeline", "data_referencia" (date), "execution_id", "status", ...}
         self.execucoes: list[dict] = []
+        # Relógio do BANCO (GETDATE) — a F1 ancora nele o corte do ciclo. Igual
+        # ao da API por default: o desvio é assunto de teste próprio.
+        self.agora_banco = datetime(2026, 8, 4, 9, 0, 0)
 
     def cursor(self):
         super().cursor()            # mantém o snapshot da F13
@@ -91,6 +94,37 @@ class FakeCur(FakeCurF13):
         # tabelas de execução da 067 (guard do aviso de corrida existente)
         if "OBJECT_ID('dbo.etl_pipeline_execucao'" in s:
             self._rows = [(1, 1)] if db.com_067 else [(None, None)]
+            self.rowcount = -1
+            return
+        # F1 da spec-malha-data-unica: as duas travas do ciclo + o relógio do
+        # banco que ancora o corte. O dublê modela o mesmo recorte do SQL —
+        # status vivo em QUALQUER data; data diferente com `inicio` >= corte.
+        if s.startswith("SELECT e.pipeline_name, e.data_referencia, e.status, "
+                        "e.inicio FROM dbo.etl_pipeline_execucao e"):
+            if not db.com_067:
+                raise RuntimeError("Invalid object name 'dbo.etl_pipeline_execucao'")
+            k = db._malha_key(params[0])
+            membros = {m["pipeline"].casefold() for m in db.membros
+                       if k and m["malha"].casefold() == k.casefold()}
+            if "e.status IN" in s:
+                vivos = set(params[1:])
+                linhas = [e for e in db.execucoes
+                          if e["pipeline"].casefold() in membros
+                          and e["status"] in vivos
+                          and e.get("substituida_em") is None]
+            else:
+                data_ref, corte = params[1], params[2]
+                linhas = [e for e in db.execucoes
+                          if e["pipeline"].casefold() in membros
+                          and e["data_referencia"] != data_ref
+                          and e.get("inicio") is not None
+                          and e["inicio"] >= corte]
+            self._rows = [(e["pipeline"], e["data_referencia"], e["status"],
+                           e.get("inicio")) for e in linhas]
+            self.rowcount = -1
+            return
+        if s.startswith("SELECT GETDATE()"):
+            self._rows = [(db.agora_banco,)]
             self.rowcount = -1
             return
         if s.startswith("SELECT COUNT(*) FROM dbo.etl_pipeline_execucao"):
@@ -516,3 +550,126 @@ def test_disparo_excecao_de_rede_por_raiz(client, auth_operador):
     assert [d["pipeline"] for d in corpo["disparadas"]] == ["RAIZ_A"]
     assert corpo["falhas"][0]["pipeline"] == "RAIZ_B"
     assert "Airflow" in corpo["falhas"][0]["erro"]
+
+
+# ── F1 da spec-malha-data-unica: a malha começa do ZERO ─────────────────────
+# O incidente da Carga_Vida (2026-08-04): metade dos membros num ODATE, metade
+# em outro, e o Aguarde liberou. A regra do usuário: nada parte com corrida
+# viva na malha nem com data de referência divergente NESTE ciclo.
+
+def _exec(pipeline, data, status, inicio):
+    return {"pipeline": pipeline, "data_referencia": data, "status": status,
+            "inicio": inicio, "execution_id": f"x_{pipeline}_{status}",
+            "substituida_em": None}
+
+
+def test_disparo_recusa_com_corrida_em_aberto(client, auth_operador):
+    """Membro EXECUTANDO (em qualquer data) segura a malha: recomeçar por cima
+    de si mesma é o que mistura os ODATEs."""
+    db = FakeDb(pipelines=_pipes())
+    db.execucoes.append(
+        _exec("PIPE_MEIO", date(2026, 8, 4), "EXECUTANDO",
+              datetime(2026, 8, 4, 8, 0)))
+    fake = FakeAirflowClient()
+    with _patch_db(db), _patch_airflow(fake):
+        _malha_com_inicio(client)
+        with patch("routers.malhas._agora",
+                   return_value=datetime(2026, 8, 4, 9, 0)):
+            r = _disparar(client, "M1", {"data_referencia": "2026-08-04"})
+    assert r.status_code == 422
+    detalhe = r.json()["detail"]
+    assert "PIPE_MEIO" in detalhe and "executando" in detalhe
+    assert fake.chamadas == [], "nada pode ser disparado sob bloqueio"
+
+
+def test_disparo_recusa_com_data_divergente_no_ciclo(client, auth_operador):
+    """Membro que rodou NESTE ciclo carimbando outra data — a assinatura exata
+    do incidente (parte no dia 3, parte no dia 4)."""
+    db = FakeDb(pipelines=_pipes())
+    db.execucoes.append(
+        _exec("RAIZ_B", date(2026, 8, 3), "SUCESSO",
+              datetime(2026, 8, 4, 1, 10)))     # rodou hoje, carimbou ontem
+    fake = FakeAirflowClient()
+    with _patch_db(db), _patch_airflow(fake):
+        _malha_com_inicio(client)
+        with patch("routers.malhas._agora",
+                   return_value=datetime(2026, 8, 4, 9, 0)):
+            r = _disparar(client, "M1", {"data_referencia": "2026-08-04"})
+    assert r.status_code == 422
+    detalhe = r.json()["detail"]
+    assert "RAIZ_B" in detalhe and "2026-08-03" in detalhe
+    assert "Republicar pipelines" in detalhe    # o caminho da correção
+    assert fake.chamadas == []
+
+
+def test_corrida_encerrada_de_ontem_nao_bloqueia(client, auth_operador):
+    """Histórico legítimo: a corrida de ontem, iniciada ANTES da virada
+    corrente, não pode barrar a malha de hoje — senão toda malha com histórico
+    ficaria travada para sempre."""
+    db = FakeDb(pipelines=_pipes())
+    db.execucoes.append(
+        _exec("RAIZ_B", date(2026, 8, 3), "SUCESSO",
+              datetime(2026, 8, 3, 1, 10)))     # ciclo anterior
+    fake = FakeAirflowClient()
+    with _patch_db(db), _patch_airflow(fake):
+        _malha_com_inicio(client)
+        with patch("routers.malhas._agora",
+                   return_value=datetime(2026, 8, 4, 9, 0)):
+            r = _disparar(client, "M1", {"data_referencia": "2026-08-04"})
+    assert r.status_code == 200, r.text
+    assert len(fake.chamadas) == 2
+
+
+def test_dry_run_mostra_o_bloqueio_em_vez_de_recusar(client, auth_operador):
+    """O modal precisa da LISTA (quem e qual data) para o operador agir — um
+    422 seco no dry_run esconderia exatamente o que ele foi buscar."""
+    db = FakeDb(pipelines=_pipes())
+    db.execucoes.append(
+        _exec("RAIZ_A", date(2026, 8, 3), "SUCESSO",
+              datetime(2026, 8, 4, 1, 10)))
+    db.execucoes.append(
+        _exec("PIPE_MEIO", date(2026, 8, 4), "EXECUTANDO",
+              datetime(2026, 8, 4, 2, 0)))
+    fake = FakeAirflowClient()
+    with _patch_db(db), _patch_airflow(fake):
+        _malha_com_inicio(client)
+        with patch("routers.malhas._agora",
+                   return_value=datetime(2026, 8, 4, 9, 0)):
+            r = _disparar(client, "M1",
+                          {"dry_run": True, "data_referencia": "2026-08-04"})
+    assert r.status_code == 200, r.text
+    corpo = r.json()
+    assert corpo["bloqueado"] is True
+    assert [b["pipeline"] for b in corpo["bloqueios"]["em_aberto"]] == ["PIPE_MEIO"]
+    divergentes = corpo["bloqueios"]["datas_divergentes"]
+    assert [(b["pipeline"], b["data_referencia"]) for b in divergentes] \
+        == [("RAIZ_A", "2026-08-03")]
+    assert fake.chamadas == []
+
+
+def test_malha_limpa_nao_tem_bloqueio(client, auth_operador):
+    db = FakeDb(pipelines=_pipes())
+    db.execucoes.append(
+        _exec("RAIZ_A", date(2026, 8, 4), "SUCESSO",
+              datetime(2026, 8, 4, 1, 10)))
+    fake = FakeAirflowClient()
+    with _patch_db(db), _patch_airflow(fake):
+        _malha_com_inicio(client)
+        with patch("routers.malhas._agora",
+                   return_value=datetime(2026, 8, 4, 9, 0)):
+            r = _disparar(client, "M1",
+                          {"dry_run": True, "data_referencia": "2026-08-04"})
+    assert r.status_code == 200, r.text
+    assert r.json()["bloqueado"] is False
+
+
+def test_sem_067_nao_bloqueia_nem_quebra(client, auth_operador):
+    """Deploy parcial: sem as tabelas de execução não há o que conferir — o
+    disparo segue como antes desta fase, nunca 500."""
+    db = FakeDb(pipelines=_pipes(), com_067=False)
+    fake = FakeAirflowClient()
+    with _patch_db(db), _patch_airflow(fake):
+        _malha_com_inicio(client)
+        r = _disparar(client, "M1", {"data_referencia": "2026-08-04"})
+    assert r.status_code == 200, r.text
+    assert len(fake.chamadas) == 2

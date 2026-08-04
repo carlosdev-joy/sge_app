@@ -131,6 +131,11 @@ interface MalhaMembroApi {
   // AUSENTE = banco sem a 073 — a tela não afirma "está em dia".
   dag_criada?: number
   publicacao_pendente?: boolean
+  // Quantos predecessores o membro tem na 067. Com predecessor E agendamento
+  // próprio, ele dispara FORA da malha: calcula a própria data de referência
+  // e mistura a corrida (causa do incidente da Carga_Vida). Chave ausente =
+  // sem a 067 no banco — a tela não afirma nada.
+  qtd_predecessores?: number
 }
 // Proveniência de linha compilada (F11): o nó Aguarde dono e a malha dele.
 interface CompiladaPor {
@@ -202,6 +207,13 @@ interface MalhaDetalheApi {
   // da 075 pendentes; o painel do Início desliga.
   agendamento?: Record<string, unknown> | null
   agendamento_resumo?: string | null
+  // F2 da spec-malha-data-unica (migration 081): a régua de data do ciclo.
+  // `hora_virada` null = a malha segue a virada global; `virada_divergente`
+  // lista os membros fora da régua (chaves ausentes = sem a 081 no banco, e a
+  // tela não afirma nada).
+  hora_virada?: string | null
+  equalizar_data?: number
+  virada_divergente?: string[]
 }
 
 // ── Contrato do gesto (dry_run — desenho §7.2) ──────────────────────────────
@@ -241,10 +253,22 @@ interface DisparoRaizInfo {
   tem_dependencia?: boolean
   corridas_na_data?: number
 }
+// F1 da spec-malha-data-unica: o que SEGURA a malha. `em_aberto` = membro com
+// corrida viva (a malha começa do zero); `datas_divergentes` = membro que
+// rodou NESTE ciclo carimbando outra data de referência (o incidente da
+// Carga_Vida). O servidor recusa o disparo; o dry_run só mostra.
+interface BloqueioCiclo {
+  pipeline: string
+  data_referencia: string | null
+  status: string
+  inicio: string | null
+}
 interface DisparoDryResposta {
   data_referencia: string
   raizes: DisparoRaizInfo[]
   avisos: AvisoDesenho[]
+  bloqueios?: { em_aberto: BloqueioCiclo[]; datas_divergentes: BloqueioCiclo[] }
+  bloqueado?: boolean
 }
 interface DisparoResposta {
   ok: boolean
@@ -610,6 +634,8 @@ function MalhaEditorInner({
   const [disparo, setDisparo] = useState<DisparoDryResposta | null>(null)
   const [disparoCarregando, setDisparoCarregando] = useState(false)
   const [disparando, setDisparando] = useState(false)
+  // F2: alinhamento da régua de data (copia a virada da malha aos membros).
+  const [alinhandoVirada, setAlinhandoVirada] = useState(false)
   // Republicação da malha — dry_run aguardando confirmação no modal.
   const [republicacao, setRepublicacao] = useState<RepublicarDryResposta | null>(null)
   const [republicacaoCarregando, setRepublicacaoCarregando] = useState(false)
@@ -1088,6 +1114,50 @@ function MalhaEditorInner({
   const membrosDesatualizados = useMemo(
     () => (data?.membros ?? []).filter(precisaRepublicar).length,
     [data?.membros])
+
+  // Membro que TEM predecessor mas continua com agendamento próprio: a DAG
+  // dele não foi republicada, então ele dispara fora da malha, calcula a
+  // própria data de referência e mistura a corrida. É o sintoma que precede o
+  // estrago — e o único que aparece ANTES de a malha rodar errado.
+  const membrosForaDaMalha = useMemo(
+    () => (data?.membros ?? [])
+      .filter(m => (m.qtd_predecessores ?? 0) > 0
+        && !!m.schedule_type && m.schedule_type !== 'on_demand')
+      .map(m => m.pipeline_name),
+    [data?.membros])
+
+  // F2: copia a virada da MALHA para todos os membros. Reenvia a própria
+  // virada salva — o gesto é "alinhar", não "mudar a régua": trocar a régua é
+  // outra decisão, e ela mora no painel de agendamento.
+  // A virada sai do objeto ANTES do callback: `data?.x` na lista de deps
+  // impede o compilador do React de preservar a memoização.
+  const viradaSalva = data?.hora_virada ?? null
+  const alinharVirada = useCallback(async () => {
+    if (alinhandoVirada) return
+    setAlinhandoVirada(true)
+    try {
+      const r = await apiFetch<{ equalizados?: string[]; migration_081_pendente?: boolean }>(
+        `/malhas/${encodeURIComponent(malha)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ hora_virada: viradaSalva }),
+        })
+      if (r.migration_081_pendente) {
+        toast.error('migration 081 pendente neste ambiente — a régua de data da malha ainda não pode ser salva.')
+      } else {
+        const n = r.equalizados?.length ?? 0
+        toast.success(n === 1
+          ? '1 pipeline alinhado à data da malha — republique-o para a régua valer no Airflow.'
+          : `${n} pipelines alinhados à data da malha — republique-os para a régua valer no Airflow.`)
+        qc.invalidateQueries({ queryKey: ['malha', malha] })
+        qc.invalidateQueries({ queryKey: ['pipelines'] })
+      }
+    } catch (err) {
+      const httpErr = err as Error & { status?: number }
+      toast.error(httpErr.message || 'Erro ao alinhar a data da malha')
+    } finally {
+      setAlinhandoVirada(false)
+    }
+  }, [alinhandoVirada, malha, viradaSalva, qc])
 
   // ── Republicação da malha (dry_run → modal → write) ───────────────────────
   // Mudar o desenho grava a dependência na hora; a DAG do Airflow só passa a
@@ -1896,6 +1966,76 @@ function MalhaEditorInner({
         )}
       </div>
 
+      {/* F2 da spec-malha-data-unica: membros fora da régua de data da malha.
+          A virada decide o ODATE de quem roda por agenda — divergir aqui é o
+          que parte a corrida em dois dias. O botão alinha todos de uma vez. */}
+      {(data?.virada_divergente?.length ?? 0) > 0 && (
+        <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            <strong>
+              {data!.virada_divergente!.length === 1
+                ? '1 pipeline fora da régua de data da malha'
+                : `${data!.virada_divergente!.length} pipelines fora da régua de data da malha`}
+            </strong>
+            {' — '}a hora de virada deles é diferente da malha
+            {data?.hora_virada
+              ? <> (<span className="font-mono">{data.hora_virada}</span>)</>
+              : ' (virada global)'}
+            , então carimbam data de referência diferente na mesma corrida.{' '}
+            <span className="font-mono text-[11px]">
+              {data!.virada_divergente!.slice(0, 4).join(', ')}
+              {data!.virada_divergente!.length > 4
+                ? ` +${data!.virada_divergente!.length - 4}` : ''}
+            </span>
+          </span>
+          {!readOnly && !emExecucao && (
+            <button
+              onClick={() => void alinharVirada()}
+              disabled={alinhandoVirada}
+              title="Copiar a hora de virada da malha para todos os membros"
+              className="shrink-0 rounded-md border border-amber-300 bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 transition-colors hover:bg-amber-200 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-200 dark:hover:bg-amber-900/60"
+            >
+              {alinhandoVirada ? 'alinhando…' : 'Alinhar data da malha'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* F1 da spec-malha-data-unica: o pipeline que tem predecessor E
+          agendamento próprio dispara FORA da malha — foi assim que a corrida
+          da Carga_Vida saiu com metade dos membros num ODATE e metade em
+          outro. Vale nos DOIS modos: na Execução é onde o estrago aparece. */}
+      {membrosForaDaMalha.length > 0 && (
+        <div className="flex items-start gap-2 border-b border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            <strong>
+              {membrosForaDaMalha.length === 1
+                ? '1 pipeline com dependência ainda dispara por agenda'
+                : `${membrosForaDaMalha.length} pipelines com dependência ainda disparam por agenda`}
+            </strong>
+            {' — '}a DAG deles não foi republicada depois que a dependência foi
+            criada, então rodam no horário próprio, fora da ordem da malha, e
+            carimbam a própria data de referência.{' '}
+            <span className="font-mono text-[11px]">
+              {membrosForaDaMalha.slice(0, 4).join(', ')}
+              {membrosForaDaMalha.length > 4
+                ? ` +${membrosForaDaMalha.length - 4}` : ''}
+            </span>
+          </span>
+          {!readOnly && podeExecutar && (
+            <button
+              onClick={() => void abrirRepublicacao()}
+              disabled={republicacaoCarregando}
+              className="shrink-0 rounded-md border border-red-300 bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-800 transition-colors hover:bg-red-200 disabled:opacity-50 dark:border-red-700 dark:bg-red-900/40 dark:text-red-200 dark:hover:bg-red-900/60"
+            >
+              Republicar pipelines
+            </button>
+          )}
+        </div>
+      )}
+
       {(depsIndisponiveis || (emExecucao && execData?.migration_067_pendente === true)) && (
         <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400">
           <AlertTriangle size={14} className="shrink-0" />
@@ -2581,6 +2721,39 @@ function MalhaEditorInner({
       >
         {disparo && (
           <div className="flex flex-col gap-3">
+            {/* F1: a malha começa do ZERO. O que segura vem PRIMEIRO, com nome
+                e data de cada um — o operador precisa saber o que resolver, não
+                só que não pode disparar. */}
+            {disparo.bloqueado && disparo.bloqueios && (
+              <div className="flex flex-col gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 dark:border-red-800 dark:bg-red-900/20">
+                <span className="flex items-center gap-1.5 text-[12px] font-semibold text-red-700 dark:text-red-300">
+                  <AlertTriangle size={13} /> A malha não pode começar agora
+                </span>
+                {disparo.bloqueios.em_aberto.length > 0 && (
+                  <div className="text-[11px] text-red-700 dark:text-red-300">
+                    <span className="font-semibold">Corrida em andamento:</span>{' '}
+                    {disparo.bloqueios.em_aberto.map(b =>
+                      `${b.pipeline} (${b.status.toLowerCase()}, ${b.data_referencia})`
+                    ).join(' · ')}
+                  </div>
+                )}
+                {disparo.bloqueios.datas_divergentes.length > 0 && (
+                  <div className="text-[11px] text-red-700 dark:text-red-300">
+                    <span className="font-semibold">
+                      Data de referência diferente de {disparo.data_referencia}:
+                    </span>{' '}
+                    {disparo.bloqueios.datas_divergentes.map(b =>
+                      `${b.pipeline} em ${b.data_referencia}`).join(' · ')}
+                  </div>
+                )}
+                <span className="text-[11px] text-red-700/90 dark:text-red-300/90">
+                  A malha só parte do zero e com todos na mesma data. Encerre as
+                  corridas em aberto e iguale a data dos membros — o caso mais
+                  comum é dependente que ainda dispara por agenda, resolvido por
+                  <strong> Republicar pipelines</strong>.
+                </span>
+              </div>
+            )}
             <p className="text-sm text-ink">
               As raízes abaixo (ligadas ao Início) serão disparadas com a data
               de referência{' '}
@@ -2649,7 +2822,14 @@ function MalhaEditorInner({
               >
                 Cancelar
               </Button>
-              <Button onClick={() => void confirmarDisparo()} loading={disparando}>
+              <Button
+                onClick={() => void confirmarDisparo()}
+                loading={disparando}
+                disabled={disparo.bloqueado === true}
+                title={disparo.bloqueado
+                  ? 'A malha tem corrida em aberto ou data de referência divergente — resolva antes de disparar'
+                  : undefined}
+              >
                 <Play size={13} /> Disparar {disparo.raizes.length === 1
                   ? '1 raiz'
                   : `${disparo.raizes.length} raízes`}
