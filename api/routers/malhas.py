@@ -3704,7 +3704,7 @@ def update_no(malha_name: str, no_id: int, body: dict = Body(default={}),
 @router.post("/malhas/{malha_name}/nos/{no_id}/retencao", tags=["malhas"])
 def reter_no(malha_name: str, no_id: int, body: dict = Body(default={}),
              auth: dict = Depends(require_perm(PERM_EXECUTAR))):
-    """SEGURA ou LIBERA um nó Aguarde (migration 082).
+    """SEGURA ou LIBERA um nó Aguarde ou Início (migration 082).
 
     Segurado, ele não solta ninguém: o predicado canônico de liberação
     (`utils/dependencias.liberado`) traz o id do Aguarde retido junto com os
@@ -3743,13 +3743,18 @@ def reter_no(malha_name: str, no_id: int, body: dict = Body(default={}),
             raise HTTPException(status_code=404,
                                 detail=f"Nó {no_id} não existe na malha '{malha}'")
         tipo = (row[0] or "").strip().lower()
-        if tipo != "aguarde":
+        # Aguarde segura o PONTO DE JUNÇÃO (o predicado de liberação obedece);
+        # Início segura a MALHA INTEIRA antes de partir (o check_agenda da raiz
+        # pergunta). Notificação e Fim não liberam ninguém — só observam e
+        # emitem evento —, então segurá-los não teria efeito nenhum: recusa
+        # nominal em vez de um botão que aceita o clique e não faz nada.
+        if tipo not in ("aguarde", "inicio"):
             _fechar_silencioso(conn)
             raise HTTPException(
                 status_code=422,
-                detail=f"Só o Aguarde pode ser segurado — o nó {no_id} é "
-                       f"'{_ROTULO_NO.get(tipo, tipo)}'. O Início se segura "
-                       "pelo agendamento; Notificação e Fim só observam.")
+                detail=f"'{_ROTULO_NO.get(tipo, tipo)}' não pode ser segurado — "
+                       "só o Aguarde (o ponto de junção) e o Início (a partida "
+                       "da malha). Notificação e Fim apenas observam.")
         quem = (str(auth.get("matricula") or "").strip() or "?")
         if reter:
             cur.execute(

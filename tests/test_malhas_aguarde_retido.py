@@ -162,14 +162,29 @@ def test_segurar_exige_permissao_de_execucao(client, auth_sem_executar):
         assert _retencao(client, "M1", 1).status_code == 403
 
 
-def test_so_o_aguarde_pode_ser_segurado(client, auth_operador):
+def test_inicio_tambem_pode_ser_segurado(client, auth_operador):
+    """O Início segura a MALHA INTEIRA antes de partir — quem obedece é o
+    check_agenda da raiz, não o predicado (o Início não compila dependência)."""
     db = FakeDb(pipelines=_pipes())
     with _patch_db(db):
         _monta_malha(client, "M1", ["PIPE_A"])
         inicio = _cria_no(client, "M1", "inicio")
         r = _retencao(client, "M1", inicio)
+    assert r.status_code == 200, r.text
+    assert r.json()["retido"] is True
+    assert inicio in db.retencao
+
+
+def test_observadores_nao_podem_ser_segurados(client, auth_operador):
+    """Notificação e Fim não liberam ninguém: um botão que aceitasse o clique
+    e não fizesse nada seria pior que a recusa nominal."""
+    db = FakeDb(pipelines=_pipes())
+    with _patch_db(db):
+        _monta_malha(client, "M1", ["PIPE_A"])
+        fim = _cria_no(client, "M1", "fim")
+        r = _retencao(client, "M1", fim)
     assert r.status_code == 422
-    assert "Início" in r.json()["detail"]
+    assert "Fim" in r.json()["detail"] and "observam" in r.json()["detail"]
 
 
 def test_no_inexistente_404(client, auth_operador):

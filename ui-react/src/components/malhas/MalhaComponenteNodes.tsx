@@ -393,6 +393,18 @@ function ComponenteNodeImpl({ id, data, selected }: NodeProps & { data: MalhaCom
           ].join(' ')}
         >
           <meta.Icon size={16} strokeWidth={2.2} />
+          {/* 082: cadeado do Início SEGURADO — a malha não parte enquanto
+              estiver ali. Mesmo canto e mesma cor do cadeado do Aguarde: é a
+              mesma informação, no ponto onde ela vale. */}
+          {data.tipo === 'inicio' && data.retidoEm && (
+            <span
+              title={`Início SEGURADO${data.retidoPor ? ` por ${data.retidoPor}` : ''}`
+                + ` em ${data.retidoEm} — a malha não parte até você soltar.`}
+              className="absolute -left-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-panel bg-red-600 text-white"
+            >
+              <Lock size={9} strokeWidth={2.6} />
+            </span>
+          )}
           {/* F13: badge de contradição no Início (§2.2) — raiz assinada com
               dependência; o texto completo mora no banner de avisos. */}
           {data.tipo === 'inicio' && data.contradicao && (
