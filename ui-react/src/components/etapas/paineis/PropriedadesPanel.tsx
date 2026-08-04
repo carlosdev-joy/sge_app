@@ -18,6 +18,9 @@ import { PainelAguarde } from './PainelAguarde'
 
 interface PropriedadesPanelProps extends CasoOps {
   node: Node | null
+  // Pipeline do canvas — o painel de etapa usa para resolver o projeto
+  // DataStage e conferir o nome do job no cadastro.
+  pipeline: string
   nodes: Node[]
   ramos: Record<string, string[]>
   jobNames: string[]
@@ -47,7 +50,7 @@ interface PropriedadesPanelProps extends CasoOps {
 }
 
 export function PropriedadesPanel({
-  node, nodes, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, grupos,
+  node, pipeline, nodes, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, grupos,
   readOnly, onRename, onPatchData, onPatchCondition, onPatchNotify, onPatchSql, onSimular, onDelete,
   onPatchAguarde, aguardeEntradas, aguardePontasSoltas, onPrenderPontasSoltas,
   onMaximizar, onHoverRamo,
@@ -115,6 +118,7 @@ export function PropriedadesPanel({
         <PainelEtapa
           key={node.id}
           node={node}
+          pipeline={pipeline}
           sshConns={sshConns}
           mssqlConns={mssqlConns}
           onRename={onRename}

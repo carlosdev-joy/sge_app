@@ -45,6 +45,32 @@ class DsConsoleError(Exception):
     """Erro de validação/configuração — vira HTTP 422 no endpoint."""
 
 
+def parse_ljobs(stdout: str | None) -> list[str]:
+    """Nomes de job na saída de ``dsjob -ljobs <PROJETO>`` — um por linha.
+
+    Descarta o rodapé ``Status code = N``, o marcador ``<none>`` (projeto vazio)
+    e qualquer linha que não seja um nome de job válido (mensagens de erro do
+    dsjob costumam ter espaços/parênteses e caem fora da allowlist ``_SAFE_RE``).
+    Função PURA — o parse é testável sem SSH. Preserva a ordem e a CAIXA
+    original: é justamente a caixa que o DataStage cobra."""
+    if not stdout:
+        return []
+    jobs: list[str] = []
+    vistos: set[str] = set()
+    for raw in stdout.splitlines():
+        linha = raw.strip()
+        if not linha or linha.lower() == "<none>":
+            continue
+        if re.match(r"^status code\s*=", linha, re.IGNORECASE):
+            continue
+        if not _SAFE_RE.match(linha):
+            continue
+        if linha not in vistos:
+            vistos.add(linha)
+            jobs.append(linha)
+    return jobs
+
+
 def ssh_configured() -> bool:
     """True se as variáveis mínimas de SSH estão presentes no ambiente."""
     return bool(os.getenv("DS_SSH_HOST") and os.getenv("DS_SSH_USER"))
