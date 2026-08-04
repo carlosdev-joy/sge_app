@@ -61,6 +61,16 @@ Data: 2026-07-31 · Status: ✅ **Retomada F2–F6 COMPLETA NO CÓDIGO (PRs #243
 > **`sp_etl_job_execution_log` v3** (arquiva a tentativa superada e incrementa
 > `attempt`; assinatura idêntica à v2 — por isso não exige regerar DAG).
 >
+> ✅ **OPERAÇÃO NO NÍVEL DE ETAPA — A F5 (ETAPA EM ESPERA) TAMBÉM ENTRA NESTE
+> DEPLOY** (PRs até a **#268**): pausa em runtime de uma etapa que ainda não
+> começou, liberação/cancelamento com auditoria, teto com alerta. Ela traz a
+> migration **079** — tabela `dbo.etl_etapa_pausa`, índice único filtrado
+> `ux_etapa_pausa_pendente` (uma pausa PENDENTE por etapa/corrida) e a chave
+> `espera_teto_minutos` em `etl_app_config`.
+>
+> ⚠️ **A F5 é a única fase deste trem que EXIGE `force_all`** — ver o passo 6.
+> Sem regerar, o pipeline **não tem portão** e a pausa não segura nada.
+>
 > **Pendente: o deploy de produção do trem inteiro** (motor + malha +
 > componentes + operação no nível de etapa vão JUNTOS).
 >
@@ -93,14 +103,14 @@ Data: 2026-07-31 · Status: ✅ **Retomada F2–F6 COMPLETA NO CÓDIGO (PRs #243
 >    no MESMO deploy. Depois conferir `docker exec orquestra-api date` → `-03`
 >    (sem isso, o ODATE default da visão de execução nasce no dia seguinte entre
 >    21h e meia-noite de Brasília — achado da revisão da F9).
-> 3. **Migrations `067` e `070–078`** (etapa 6c) — o prompt é padrão-**NÃO**,
+> 3. **Migrations `067` e `070–079`** (etapa 6c) — o prompt é padrão-**NÃO**,
 >    **responder `s`**. Se responder não, a feature sobe **muda** e o smoke
 >    ainda assim "passa" nos primeiros passos.
 >
 >    ⚠️ **A etapa 6c vai avisar que há muitas pendentes — isto é ESPERADO neste
->    deploy** (são 10: 067 + 070…078). Versões antigas do `deploy.sh`
+>    deploy** (são **11**: 067 + 070…079). Versões antigas do `deploy.sh`
 >    recomendavam ali `migrate.py --baseline`: **NÃO SIGA**. `--baseline`
->    **registra sem executar** — usá-lo aqui marcaria como aplicadas dez
+>    **registra sem executar** — usá-lo aqui marcaria como aplicadas onze
 >    migrations que nunca rodaram, e o banco ficaria permanentemente atrás do
 >    código, sem erro nenhum para avisar. O caso aqui é "acabei de atualizar o
 >    código, migrations novas vêm junto": aplicar.
@@ -141,48 +151,113 @@ Data: 2026-07-31 · Status: ✅ **Retomada F2–F6 COMPLETA NO CÓDIGO (PRs #243
 >                          AND definition LIKE '%etl_job_execution_tentativa%')
 >           THEN 'v3' ELSE 'ANTIGA' END                                                AS sp078_versao,        -- 'v3'
 >      (SELECT COUNT(*) FROM dbo.etl_job_execution WHERE attempt IS NULL)              AS backfill_pendente,   -- 0
+>      (SELECT COUNT(*) FROM sys.tables WHERE name = 'etl_etapa_pausa')                AS t079_etapa_pausa,    -- 1
+>      (SELECT COUNT(*) FROM sys.indexes WHERE name = 'ux_etapa_pausa_pendente')       AS ix079_pausa_unica,   -- 1
+>      (SELECT COUNT(*) FROM dbo.etl_app_config
+>        WHERE config_key = 'espera_teto_minutos')                                     AS cfg079_teto,         -- 1
 >      (SELECT COUNT(*) FROM dbo.etl_schema_version
 >        WHERE migration_name IN ('067_dependencias_pipeline','070_malha',
 >              '071_normaliza_grafia_dependencias','072_execution_id_250',
 >              '073_dag_config_pendente','074_malha_orientacao','075_malha_nos',
 >              '076_dependencia_evento_no','077_pipe_exec_ultima_por_pipeline',
->              '078_tentativas_acumuladas'))                                           AS registradas;         -- 10
+>              '078_tentativas_acumuladas','079_etapa_pausa'))                         AS registradas;         -- 11
 >    ```
 >
 >    **`fk076_TEM_DE_SER_0` é a linha que não mente** (achado da aceitação
 >    final): enquanto a `FK_dep_evento_pipeline` existir, o marcador `#no:{id}`
 >    dos eventos de Notificação/Fim não cabe na tabela e os componentes de malha
->    ficam mudos. `registradas = 10` prova que o migrate rodou de verdade — mas
->    **sozinho não basta**, porque `--baseline` também o deixaria em 10; é o
+>    ficam mudos. `registradas = 11` prova que o migrate rodou de verdade — mas
+>    **sozinho não basta**, porque `--baseline` também o deixaria em 11; é o
 >    conjunto das outras colunas que prova que o schema existe.
+>
+>    As três linhas da **079** são a metade de BANCO da etapa em espera:
+>    `t079_etapa_pausa` (onde a pausa vive), `ix079_pausa_unica` (o índice
+>    único FILTRADO que impede duas pausas pendentes para a mesma
+>    etapa/corrida — sem ele, dois cliques criam duas pausas e liberar uma não
+>    solta nada) e `cfg079_teto` (o teto default que a TELA mostra antes de o
+>    operador pausar). A metade de DAG é o passo 6.
 > 5. **ANTES do `force_all`**, rodar a consulta de dimensionamento do CSV órfão
 >    (pipelines ativos com `depends_on` preenchido, por `schedule_type`) e
 >    tratar os órfãos — `sql/migrate.py` descarta PRINT (D40), o relatório não
 >    chega sozinho.
-> 6. **Regenerar as DAGs** (`force_all`) — sem isso o **trem de dependências e
->    a malha** não mudam nada: o `deploy.sh` exclui `generated/`.
+> 6. **Regenerar as DAGs** (`force_all`) — **OBRIGATÓRIO neste deploy**, e por
+>    DOIS motivos independentes: o **trem de dependências e a malha** não mudam
+>    nada sem isso (o `deploy.sh` exclui `generated/`) **e a F5 (etapa em
+>    espera) simplesmente não existe até a regeração**.
 >
->    ℹ️ **A F4 (rerun/tentativas acumuladas) NÃO exige `force_all`** — e isto
->    nunca esteve escrito em lugar nenhum. A acumulação de tentativas vive
->    inteira na `sp_etl_job_execution_log` v3, cuja **assinatura não mudou**
->    (os 11 parâmetros que a factory já emite como texto dentro das DAGs
->    publicadas), e o módulo de dependências é **importado em runtime** pelo
->    código gerado. Ou seja: DAG antiga já publicada passa a acumular tentativa
->    sozinha, assim que a migration 078 entra. Quem exige a regeração é o trem
->    de dependências/malha, não a F4.
+>    ⚠️ **A F5 EXIGE `force_all` — regerar NÃO é opcional.** O portão que
+>    obedece a pausa não é uma migration nem um módulo importado em runtime:
+>    ele é uma linha **emitida dentro do fonte gerado de cada DAG**, no
+>    `log_start` de toda etapa (`dags/etl_dag_factory.py`):
+>
+>    ```python
+>    if _espera is not None:
+>        _espera.portao(hook, PIPELINE_NAME, job_name, execution_id)
+>    ```
+>
+>    **DAG publicada antes da F5 não tem essas linhas.** Sem regerar, o banco
+>    aceita a pausa, a tela mostra "pausa marcada" e **o pipeline passa
+>    direto** — a etapa nunca pergunta se há pausa pendente. É por isso que a
+>    API passou a **recusar** a criação de pausa em pipeline cuja DAG publicada
+>    não tem portão (409 `dag_sem_portao`, com a frase do conserto) e a tela
+>    desliga o botão: melhor recusar do que prometer.
+>
+>    ℹ️ **A F4 (rerun/tentativas acumuladas), essa sim, NÃO exige
+>    `force_all`** — e isto nunca esteve escrito em lugar nenhum. A acumulação
+>    de tentativas vive inteira na `sp_etl_job_execution_log` v3, cuja
+>    **assinatura não mudou** (os 11 parâmetros que a factory já emite como
+>    texto dentro das DAGs publicadas), e o módulo de dependências é
+>    **importado em runtime** pelo código gerado. DAG antiga já publicada passa
+>    a acumular tentativa sozinha, assim que a migration 078 entra. Não
+>    confundir uma coisa com a outra: **a F4 dispensa, a F5 exige** — e o
+>    `docs/spec-operacao-nivel-etapa.md` §9 já dizia isso da F5 ("Republicação
+>    geral: F5 exige regerar as DAGs para o portão valer (`force_all`)").
+>
+>    **Conferência de UMA LINHA, depois do `force_all`** — a única prova de que
+>    o portão foi mesmo publicado (o log da factory diz "N geradas", não diz o
+>    que foi gerado):
+>
+>    ```bash
+>    grep -rl "_espera.portao" <DAGS_FOLDER>/generated/ | wc -l
+>    ```
+>
+>    O número **tem de bater com o total de pipelines ativos**:
+>
+>    ```sql
+>    SELECT COUNT(*) FROM dbo.etl_pipeline WHERE active = 1;
+>    ```
+>
+>    Menor que isso = há pipeline ativo publicado sem portão; a pausa nele será
+>    recusada pela API (`dag_sem_portao`) até ser republicado individualmente.
 > 7. Conferir `SELECT GETDATE()` no SQL Server (a data de referência nasce do
 >    relógio DELE) e só então **despausar `etl_dependencia_guardia`**.
+>
+>    ℹ️ A guardiã deste deploy ganhou uma responsabilidade nova (§4.3): fechar
+>    a corrida que **começou** e cujo DagRun morreu sem gravar nada. É a rede
+>    contra o `dagrun_timeout` estourado — ele marca o DagRun FAILED e pula
+>    `registrar_falha`/`flow_close`, deixando `etl_pipeline_execucao` em
+>    EXECUTANDO para sempre e travando todos os dependentes (a classe "órfão em
+>    RUNNING"). A F5 tornou essa rota alcançável por desenho: etapa parada no
+>    portão consome o SLA sem consumir worker. Fecha FALHA só com DagRun
+>    `failed`; DagRun `success` sem fecho vira **alerta** (`EXECUCAO_ORFA`) e
+>    conserto pela Finalização Manual — a guardiã não inventa verde.
 > 8. Smokes: **§7** desta spec em produção (o motor), começando por um PAR de
 >    pipelines de teste; e **`docs/smoke-malha-componentes.md`** para os
 >    componentes — roteiro executável sem contexto, validado passo a passo no
 >    dev.
 >
->    ⚠️ **NÃO EXISTE ROTEIRO DE SMOKE PARA AS F1–F4 DE
+>    ⚠️ **NÃO EXISTE ROTEIRO DE SMOKE PARA AS F1–F5 DE
 >    `docs/spec-operacao-nivel-etapa.md`** — manual e smoke são a entrega da
 >    **F6** daquela spec, que **ainda não foi feita**. Quem deployar agora sobe
->    essas quatro fases (canvas em modo Execução, drill-down malha → etapa,
->    rerun com cascata, tentativas acumuladas) **sem roteiro de aceitação**.
->    Ou se aceita validá-las na mão, ou se espera a F6.
+>    essas cinco fases (canvas em modo Execução, drill-down malha → etapa,
+>    rerun com cascata, tentativas acumuladas e etapa em espera) **sem roteiro
+>    de aceitação**. Ou se aceita validá-las na mão, ou se espera a F6.
+>
+>    Para a F5, a validação mínima na mão é: (a) a conferência de uma linha do
+>    passo 6 (`grep -rl "_espera.portao"`), (b) pausar uma etapa que ainda não
+>    começou num pipeline de teste e ver a execução PARAR ali, e (c) liberar e
+>    ver seguir. Se (a) não bater, (b) vai passar direto — e é exatamente esse
+>    o defeito que a recusa `dag_sem_portao` existe para tornar visível.
 >
 > ⚠️ No prompt do Airflow (rebuild da imagem), responder **N**: a factory e a
 > guardiã são código montado por bind-mount, não exigem imagem nova.

@@ -2265,6 +2265,10 @@ function FluxoEditorInner({
           pausa={pausaSelecionada}
           historico={historicoPausas}
           etapasPausaveis={etapasPausaveis}
+          /* A DAG publicada tem o portão da F5? Vem no MESMO payload que pinta
+             o canvas — o modal avisa (e desliga o botão) antes do clique, em
+             vez de o operador descobrir pelo 409. */
+          portao={execData?.portao ?? null}
         />
       )}
 
@@ -2419,7 +2423,12 @@ function FluxoEditorInner({
                         : `"${selNode.id}" está marcada para pausa — abrir para liberar ou cancelar`)
                     : statusSelecionado
                       ? `"${selNode.id}" já iniciou nesta execução — veja quais etapas ainda dá para pausar`
-                      : `Pausar antes de "${selNode.id}" — só vale para etapa que ainda não começou`}
+                      // (F5) O rótulo não pode prometer o que a DAG publicada
+                      // não faz: sem portão, o botão abre o modal para
+                      // EXPLICAR — nunca para pausar.
+                      : execData?.portao === 'dag_sem_portao'
+                        ? `A DAG publicada de "${pipeline}" não tem o portão de espera — abrir para entender`
+                        : `Pausar antes de "${selNode.id}" — só vale para etapa que ainda não começou`}
                   className={[
                     'inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5',
                     'text-[10px] font-semibold transition-colors',
@@ -2431,7 +2440,8 @@ function FluxoEditorInner({
                   <PauseCircle size={10} />
                   {pausaSelecionada
                     ? (pausaSelecionada.aguardando_desde ? 'Em espera — liberar' : 'Pausa marcada')
-                    : statusSelecionado ? 'Pausar…' : 'Pausar aqui'}
+                    : statusSelecionado ? 'Pausar…'
+                      : execData?.portao === 'dag_sem_portao' ? 'Pausar…' : 'Pausar aqui'}
                 </button>
               )}
               {emExecucao && podeExecutar && execSelecionada && (

@@ -662,11 +662,18 @@ class _CurRerun:
                            c.get("disparado_por"), None)
                           for c in db.corridas if str(c["run_id"]) == str(rid)]
             return
-        if s.startswith("SELECT execution_id, status, inicio, fim, disparado_por, motivo "
-                        "FROM dbo.etl_pipeline_execucao"):
+        # `corridas_na_data` da F2 passou a trazer `substituida_em` (ou `NULL`
+        # sem a 078) — o modal de ambiguidade precisa distinguir a corrida viva
+        # da já aposentada por um rerun anterior.
+        if s.startswith("SELECT execution_id, status, inicio, fim, disparado_por, motivo, "
+                        "substituida_em FROM dbo.etl_pipeline_execucao") \
+                or s.startswith("SELECT execution_id, status, inicio, fim, disparado_por, "
+                                "motivo, NULL FROM dbo.etl_pipeline_execucao"):
             pipe, _d = params
+            tem_col = ", substituida_em FROM" in s
             self._rows = [(c["run_id"], c["status"], c.get("inicio"), c.get("fim"),
-                           c.get("disparado_por"), None)
+                           c.get("disparado_por"), None,
+                           c.get("substituida_em") if tem_col else None)
                           for c in db.corridas
                           if c["pipeline"].casefold() == str(pipe).casefold()]
             return
@@ -809,8 +816,14 @@ def test_sem_cascata_nenhum_dependente_e_reaberto(cliente):
     # `test_variante_duas_corridas_*`; com uma corrida só ela não muda nada,
     # e é isso que `corridas_irmas_aposentadas` diz.)
     assert body["corridas_irmas_aposentadas"] == 0
+    # Nenhuma APOSENTADORIA (`substituida_em = GETDATE()`) fora do UPDATE das
+    # irmãs. O carimbo aparece também no UPDATE do próprio pipeline, mas ali
+    # ele é `= NULL`: é a RESSURREIÇÃO da corrida reexecutada (ver
+    # `rerun.reviver_corrida`) — o oposto de aposentar, e ela tem de acontecer
+    # com e sem cascata.
     assert not [e for e in db.escritas
-                if "substituida_em" in e[0] and "execution_id <> ?" not in e[0]]
+                if "substituida_em = GETDATE()" in e[0]
+                and "execution_id <> ?" not in e[0]]
 
 
 def test_com_cascata_os_dependentes_com_corrida_sao_reabertos(cliente):
@@ -1179,3 +1192,105 @@ def test_previa_avisa_a_dag_pausada_antes_do_clique(cliente):
         r = cliente.get("/pipelines/DEV_F10_A/rerun/previa"
                         "?task_id=etapa_x&data_referencia=2026-08-03")
     assert r.status_code == 200 and r.json()["dag_pausada"] is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 9. A CORRIDA REEXECUTADA VOLTA A SER A CORRIDA VIVA
+#
+# ⚠️ **DEFEITO ENCONTRADO NA REVISÃO ADVERSARIAL PRÉ-DEPLOY (2026-08-03).**
+# `aposentar_irmas` carimba `substituida_em` nas outras corridas do ODATE — e
+# NENHUM caminho do projeto limpava esse carimbo (`grep -rn "substituida_em"
+# api/ dags/ sql/` não tinha um `= NULL` sequer). Num pipeline que roda 2×/dia:
+#
+#   1. reexecutar a das 18:00 aposenta a das 06:00;
+#   2. reexecutar depois a das 06:00 → ela era marcada EXECUTANDO MANTENDO o
+#      carimbo, e ao concluir gravava SUCESSO ainda carimbada;
+#   3. `liberado()` e `pipelines_todos_sucesso()` ignoram corrida substituída
+#      (por desenho, as três portas concordam) → nenhum SUCESSO VIVO no dia:
+#      TODO dependente bloqueado, MALHA_CONCLUIDA nunca sai, só UPDATE manual
+#      desfaz.
+#
+# Os testes abaixo falham no `main` de hoje.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_reviver_limpa_o_carimbo_no_MESMO_update_que_marca_executando():
+    """Um UPDATE só, e não dois: uma falha entre "voltou a rodar" e "voltou a
+    contar" deixaria exatamente o estado que este defeito descreve."""
+    cur = _CurGrafo({"A": []})
+    assert rr.reviver_corrida(cur, "DEV_F10_A", _D, _RUN_A) == 1
+    sql, params = cur.execs[-1]
+    assert sql.startswith("UPDATE dbo.etl_pipeline_execucao SET status='EXECUTANDO'")
+    assert "substituida_em = NULL" in sql and "substituida_por = NULL" in sql
+    assert params == ("DEV_F10_A", _D, _RUN_A)
+
+
+def test_reviver_degrada_sem_a_078():
+    """Deploy parcial: sem as colunas o UPDATE é o de antes, byte a byte."""
+    cur = _CurGrafo({"A": []}, tem_078=False)
+    rr.reviver_corrida(cur, "DEV_F10_A", _D, _RUN_A)
+    sql, _ = cur.execs[-1]
+    assert "substituida_em" not in sql and "substituida_por" not in sql
+    assert "status='EXECUTANDO'" in sql and "fim=NULL" in sql
+
+
+def test_reviver_sem_linha_casada_devolve_zero():
+    """Zero não vira exceção: o chamador transforma em aviso na resposta."""
+    class _Zero(_CurGrafo):
+        def execute(self, sql, params=()):
+            super().execute(sql, params)
+            if str(sql).startswith("UPDATE"):
+                self.rowcount = 0
+    assert rr.reviver_corrida(_Zero({"A": []}), "P", _D, "r") == 0
+
+
+def test_reexecutar_corrida_APOSENTADA_a_traz_de_volta(cliente):
+    """⛔ **O cenário do defeito, ponta a ponta.** Duas corridas no ODATE; a
+    das 06:00 já foi aposentada por um rerun anterior. Reexecutá-la tem de
+    RESSUSCITÁ-LA — senão ela conclui em SUCESSO invisível e trava o dia."""
+    aposentada = _corrida(_RUN_A)
+    aposentada["substituida_em"] = datetime(2026, 8, 3, 18, 5, 0)
+    db = _DbRerun(corridas=[aposentada, _corrida(_RUN_B)],
+                  grafo={"DEV_F10_A": ["DEV_F10_C"]})
+    r, _ = _post(cliente, db, {"pipeline_name": "DEV_F10_A",
+                               "task_id": "etapa_x",
+                               "dag_run_id": _RUN_A,
+                               "data_referencia": "2026-08-03"})
+    assert r.status_code == 200
+    ressurreicao = [e for e in db.escritas
+                    if "status='EXECUTANDO'" in e[0]]
+    assert len(ressurreicao) == 1
+    sql, params = ressurreicao[0]
+    assert "substituida_em = NULL" in sql and "substituida_por = NULL" in sql
+    assert params[2] == _RUN_A            # a corrida REEXECUTADA, não a irmã
+
+
+def test_ressurreicao_e_aposentadoria_nao_se_atropelam(cliente):
+    """A irmã é aposentada (`execution_id <> ?`) e a escolhida é ressuscitada —
+    dois UPDATEs com alvos disjuntos, na ordem 'reviver antes de aposentar'."""
+    db = _DbRerun(corridas=[_corrida(_RUN_A), _corrida(_RUN_B)],
+                  grafo={"DEV_F10_A": []})
+    r, _ = _post(cliente, db, {"pipeline_name": "DEV_F10_A",
+                               "task_id": "etapa_x",
+                               "dag_run_id": _RUN_A,
+                               "data_referencia": "2026-08-03"})
+    assert r.status_code == 200
+    ordem = [s for s, _ in db.escritas if s.startswith("UPDATE")]
+    assert "substituida_em = NULL" in ordem[0]
+    assert "substituida_em = GETDATE()" in ordem[1] and "execution_id <> ?" in ordem[1]
+    assert r.json()["corridas_irmas_aposentadas"] == 1
+
+
+def test_candidatos_declaram_a_corrida_aposentada(cliente):
+    """O modal de ambiguidade mostrava DUAS LINHAS IGUAIS quando uma delas já
+    tinha sido aposentada — e elas não são iguais em nada que importe."""
+    aposentada = _corrida(_RUN_A)
+    aposentada["substituida_em"] = datetime(2026, 8, 3, 18, 5, 0)
+    db = _DbRerun(corridas=[aposentada, _corrida(_RUN_B)])
+    r, _ = _post(cliente, db, {"pipeline_name": "DEV_F10_A",
+                               "task_id": "etapa_x",
+                               "data_referencia": "2026-08-03"})
+    assert r.status_code == 409
+    cands = r.json()["detail"]["candidatos"]
+    por_run = {c["run_id"]: c for c in cands}
+    assert por_run[_RUN_A]["substituida_em"].startswith("2026-08-03")
+    assert por_run[_RUN_B]["substituida_em"] is None

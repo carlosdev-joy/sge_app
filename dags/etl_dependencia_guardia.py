@@ -21,7 +21,11 @@ sai no FIM, em lote (Decisão 1 do desenho):
      liberado() (a MESMA função do push), janela, filho pausado não dispara,
      claim reusado da F3, trigger, devolução em exceção (o ciclo seguinte
      re-tenta: a varredura É o retry do D16/D50). Resgate de reserva órfã
-     com tripla guarda (§4.2).
+     com tripla guarda (§4.2) E resgate da corrida que COMEÇOU e cujo
+     DagRun morreu sem fechar nada (§4.3, F5): `dagrun_timeout` estourado
+     pula `registrar_falha`/`flow_close` e deixaria EXECUTANDO para sempre,
+     bloqueando todo dependente. Fecha FALHA só com DagRun `failed`; com
+     `success` (ou sem DagRun) só ALERTA — a guardiã não inventa verde.
   4. Deadline (§5): hora limite OPT-IN estourada vira evento JANELA_ESTOUROU;
      o pipeline fica PENDENTE — nada falha, nada fecha aqui.
   5. Divergência de execução + PREDECESSOR_FALHOU (§7): só com carimbo
@@ -140,6 +144,31 @@ def _dag_pausada(dag_id: str) -> bool:
 def _dagrun_existe(dag_id: str, run_id: str) -> bool:
     from airflow.models import DagRun
     return bool(DagRun.find(dag_id=dag_id, run_id=run_id))
+
+
+# Estados TERMINAIS de DagRun no Airflow. 'queued'/'running' ficam de fora de
+# propósito: corrida em andamento não é órfã, e essa é a única distinção que
+# separa uma rede de segurança de um assassino de corrida legítima.
+DAGRUN_TERMINAIS = ("failed", "success")
+
+
+def _dagrun_terminado(dag_id: str, run_id: str):
+    """``(state, end_date)`` do DagRun, ou ``None`` quando ele não existe.
+
+    ``state`` vem como texto minúsculo (o Airflow devolve enum em algumas
+    versões e str em outras); ``end_date`` é naive local, para comparar com o
+    relógio de parede da guardiã sem misturar fusos."""
+    from airflow.models import DagRun
+    runs = DagRun.find(dag_id=dag_id, run_id=run_id)
+    if not runs:
+        return None
+    dr = runs[0]
+    estado = getattr(dr, "state", None)
+    estado = str(getattr(estado, "value", estado) or "").lower()
+    fim = getattr(dr, "end_date", None)
+    if fim is not None and getattr(fim, "tzinfo", None) is not None:
+        fim = pendulum.instance(fim).in_tz(LOCAL_TZ).naive()
+    return (estado, fim)
 
 
 def _trigger(dag_id: str, run_id: str, conf: dict) -> None:
@@ -393,6 +422,103 @@ def _resgatar_orfas(conn, intervalo: int, log) -> int:
             log.warning("[GUARDIA] resgate de %s em %s falhou (%s) — seguindo",
                         pipeline, data_ref, e)
     return resgatadas
+
+
+EVENTO_ORFA = "EXECUCAO_ORFA"
+
+
+def _resgatar_em_execucao(conn, agora: datetime, intervalo: int, log) -> int:
+    """§4.3 (F5) — a corrida que COMEÇOU, cujo DagRun já morreu e que ninguém
+    fechou. Devolve quantas foram fechadas ou alertadas.
+
+    **Por que a guardiã e não a DAG.** O buraco é justamente o caso em que a
+    DAG não roda mais nada: `dagrun_timeout` estourado marca o DagRun FAILED e
+    **toda TI não-finalizada como SKIPPED** — `registrar_falha` (ONE_FAILED) e
+    `flow_close` (ALL_DONE) são pulados, e ninguém grava FALHA. Não há dentro
+    da DAG um lugar que ainda execute; a rede de segurança tem de ser de fora.
+    A F5 tornou a rota alcançável **por desenho** (etapa parada no portão
+    consome o SLA sem consumir worker), mas ela sempre existiu para qualquer
+    morte dura do worker.
+
+    **Três guardas contra falso-positivo**, na ordem em que descartam mais:
+
+      1. `inicio IS NOT NULL` + sem carimbo há mais de `idade` minutos
+         (`corridas_em_execucao`) — corrida que acabou de ser tocada não entra;
+      2. DagRun em estado **terminal** no Airflow (`failed`/`success`).
+         `queued`/`running` — inclusive a corrida PARADA NO PORTÃO da F5, que
+         fica `up_for_reschedule` com o DagRun `running` — nunca são tocadas;
+      3. o DagRun terminou há mais de `idade` minutos. É a guarda que fecha a
+         janela de segundos entre o Airflow marcar o DagRun e o
+         `registrar_falha` da própria DAG gravar FALHA: nesse intervalo quem
+         fecha é a DAG, como sempre foi.
+
+    **Fecha FALHA só quando o DagRun FALHOU.** DagRun `success` com a corrida
+    ainda EXECUTANDO é outro defeito (o `flow_close` não gravou) e a guardiã
+    **não inventa verde**: sai o alerta e o conserto é a Finalização Manual,
+    a tela que existe para registro órfão. Fechar como falha um pipeline que
+    o Airflow diz ter concluído seria a mentira simétrica.
+
+    DagRun inexistente também não fecha: sem o Airflow confirmar o desfecho,
+    o que a guardiã sabe é que não sabe — e isso vira alerta, não sentença.
+    """
+    tocadas = 0
+    idade = max(15, 3 * intervalo)
+    for pipeline, data_ref, run_id, inicio in dep.corridas_em_execucao(conn, idade):
+        try:
+            info = _dagrun_terminado(pipeline, run_id)
+            if info is None:
+                # Sem DagRun não há desfecho para copiar. Alerta e segue: a
+                # linha continua bloqueando, e dizer isso é o mínimo honesto.
+                if dep.gravar_evento(
+                        conn, pipeline, data_ref, EVENTO_ORFA,
+                        f"corrida {run_id} em EXECUTANDO desde {_iso(inicio)} "
+                        "sem DagRun no Airflow - finalize pela tela de "
+                        "Finalizacao Manual"):
+                    tocadas += 1
+                    log.warning("[GUARDIA] corrida %s de %s sem DagRun — "
+                                "alertada", run_id, pipeline)
+                conn.commit()
+                continue
+            estado, fim_dagrun = info
+            if estado not in DAGRUN_TERMINAIS:
+                continue        # em andamento (inclusive parada no portão)
+            if fim_dagrun is not None and \
+                    fim_dagrun > agora - timedelta(minutes=idade):
+                continue        # a própria DAG ainda pode estar fechando
+            if estado == "success":
+                # Nunca inventar verde: alerta e Finalização Manual.
+                if dep.gravar_evento(
+                        conn, pipeline, data_ref, EVENTO_ORFA,
+                        f"corrida {run_id} ficou EXECUTANDO apesar de o DagRun "
+                        "ter concluido com sucesso - a corrida NAO foi fechada "
+                        "automaticamente; use a Finalizacao Manual"):
+                    tocadas += 1
+                    log.warning("[GUARDIA] corrida %s de %s: DagRun success "
+                                "sem fecho — alertada", run_id, pipeline)
+                conn.commit()
+                continue
+            motivo = (f"corrida orfa: DagRun {run_id} terminou como FALHA no "
+                      "Airflow sem fechar a execucao (timeout do DagRun ou "
+                      "worker interrompido) - fechada pela guardia")
+            # Evento e fechamento na MESMA transação, pelo motivo do §6: a
+            # detecção consome a própria fonte (a linha sai de EXECUTANDO) e
+            # nada re-tentaria o evento perdido.
+            dep.gravar_evento(
+                conn, pipeline, data_ref, EVENTO_ORFA,
+                f"corrida de {_iso(data_ref)} fechada como FALHA - {motivo}")
+            if not dep.fechar_orfa_em_execucao(conn, pipeline, data_ref,
+                                               run_id, motivo):
+                _rollback(conn)   # outra ponta fechou primeiro — o certo
+                continue
+            conn.commit()
+            tocadas += 1
+            log.warning("[GUARDIA] corrida orfa de %s em %s fechada como FALHA "
+                        "(DagRun %s failed)", pipeline, data_ref, run_id)
+        except Exception as e:
+            _rollback(conn)
+            log.warning("[GUARDIA] orfa em execucao de %s em %s nao tratada "
+                        "(%s) — seguindo", pipeline, data_ref, e)
+    return tocadas
 
 
 def _rede_seguranca(conn, agora: datetime, log) -> int:
@@ -721,6 +847,10 @@ def ciclo(**context) -> dict:
         fechadas    = _fechar_dia_anterior(conn, agora, log)
         ordenadas   = _new_day(conn, agora, log)
         resgatadas  = _resgatar_orfas(conn, intervalo, log)
+        # Órfãs que COMEÇARAM (§4.3) ANTES da rede: uma corrida fechada aqui
+        # pode ser a que falta para um dependente decidir o dia no MESMO ciclo
+        # (FALHA é resposta; EXECUTANDO eterno não é).
+        orfas_exec = _resgatar_em_execucao(conn, agora, intervalo, log)
         disparadas  = _rede_seguranca(conn, agora, log)
         deadlines   = _deadline(conn, agora, log)
         eventos     = _divergencias_e_falhas(conn, agora, log)
@@ -732,12 +862,14 @@ def ciclo(**context) -> dict:
         conn.close()
 
     log.info("[GUARDIA] ciclo concluído: %d fechada(s), %d ordenada(s), "
-             "%d resgatada(s), %d disparada(s), %d deadline(s), %d evento(s), "
-             "%d observador(es), %d notificado(s).",
-             fechadas, ordenadas, resgatadas, disparadas, deadlines, eventos,
-             observadores, notificados)
+             "%d resgatada(s), %d orfa(s) em execucao, %d disparada(s), "
+             "%d deadline(s), %d evento(s), %d observador(es), "
+             "%d notificado(s).",
+             fechadas, ordenadas, resgatadas, orfas_exec, disparadas,
+             deadlines, eventos, observadores, notificados)
     return {"fechadas": fechadas, "ordenadas": ordenadas,
-            "resgatadas": resgatadas, "disparadas": disparadas,
+            "resgatadas": resgatadas, "orfas_em_execucao": orfas_exec,
+            "disparadas": disparadas,
             "deadlines": deadlines, "eventos": eventos,
             "observadores": observadores, "notificados": notificados}
 

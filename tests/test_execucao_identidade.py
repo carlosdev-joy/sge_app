@@ -188,6 +188,12 @@ class FakeCur:
         if s.startswith("SELECT config_value FROM dbo.etl_app_config"):
             self._rows = [(db.virada,)] if db.virada is not None else []
             return
+        # (F5) o drill-down pergunta projeto/domínio para montar o caminho da
+        # DAG gerada e checar o PORTÃO de espera — sem `generated/` no disco a
+        # resposta é 'portao_desconhecido', que é a degradação prevista.
+        if s.startswith("SELECT project_name, domain FROM dbo.etl_pipeline"):
+            self._rows = [("PROJ", "DOM")]
+            return
         if s.startswith("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS"):
             cols = ["job_name", "job_type", "execution_order"]
             if db.com_038:
@@ -203,14 +209,23 @@ class FakeCur:
                  j.get("ordem"), j.get("deps") if db.com_038 else None)
                 for j in db.desenho if j["pipeline"].casefold() == alvo]
             return
+        # A checagem da coluna da 078 (`corridas_na_data` acrescenta
+        # `substituida_em` quando ela existe — sem ela, `NULL`).
+        if s.startswith("SELECT COL_LENGTH('dbo.etl_pipeline_execucao', 'substituida_em')"):
+            self._rows = [(8 if db.com_078 else None,)]
+            return
         if s.startswith("SELECT execution_id, status, inicio, fim, "
-                        "disparado_por, motivo FROM dbo.etl_pipeline_execucao"):
+                        "disparado_por, motivo, substituida_em FROM dbo.etl_pipeline_execucao") \
+                or s.startswith("SELECT execution_id, status, inicio, fim, "
+                                "disparado_por, motivo, NULL FROM dbo.etl_pipeline_execucao"):
             if not db.com_067:
                 raise RuntimeError("Invalid object name 'etl_pipeline_execucao'")
             pipe, dref_ = params
+            tem_col = ", substituida_em FROM" in s
             self._rows = [
                 (c["run_id"], c["status"], c["inicio"], c["fim"],
-                 c.get("disparado_por"), c.get("motivo"))
+                 c.get("disparado_por"), c.get("motivo"),
+                 c.get("substituida_em") if tem_col else None)
                 for c in db.corridas
                 if c["pipeline"].casefold() == str(pipe).casefold()
                 and c["data_referencia"] == dref_]

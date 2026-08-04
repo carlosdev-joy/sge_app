@@ -412,6 +412,51 @@ def marcar_substituidas(cur, pipelines: list, data_ref: date, usuario: str) -> i
     return total
 
 
+def reviver_corrida(cur, pipeline: str, data_ref: date, run_id: str) -> int:
+    """Marca a corrida REEXECUTADA como EXECUTANDO — e a traz de volta à VIDA.
+
+    Devolve o `rowcount` do UPDATE (0 = nenhuma linha casou; o chamador avisa).
+
+    ⚠️ **DEFEITO CORRIGIDO AQUI: reexecutar corrida já APOSENTADA criava um
+    SUCESSO invisível para sempre.** `aposentar_irmas` carimba
+    `substituida_em` nas OUTRAS corridas do ODATE, e **nenhum caminho do
+    projeto limpava esse carimbo** (`grep -rn "substituida_em" api/ dags/ sql/`
+    não tinha um `= NULL` sequer). Num pipeline que roda 2×/dia:
+
+      1. reexecutar a corrida das 18:00 aposenta a das 06:00;
+      2. reexecutar depois a das 06:00 — ela era marcada EXECUTANDO
+         **mantendo o carimbo**, e ao concluir gravava SUCESSO ainda
+         carimbada;
+      3. a partir daí `liberado()` e `pipelines_todos_sucesso()` não enxergam
+         nenhum SUCESSO VIVO no dia (as três portas ignoram corrida
+         substituída, por desenho): **todo dependente fica bloqueado**,
+         `MALHA_CONCLUIDA` nunca sai, e só um UPDATE manual desfaz.
+
+    A regra que fecha o buraco é a mesma que o modelo já usa em toda parte: a
+    corrida que está sendo reexecutada **é a corrida viva do momento**. Limpar
+    o carimbo no MESMO UPDATE que marca EXECUTANDO é o que impede a janela
+    entre "voltou a rodar" e "voltou a contar" — se fossem dois UPDATEs, uma
+    falha no meio deixaria exatamente o estado que este defeito descreve.
+
+    `substituida_por` também é limpo: um carimbo de quem aposentou uma corrida
+    que não está mais aposentada é história errada, não auditoria (a auditoria
+    do gesto vive em `etl_pipeline_audit`, que nunca é reescrita).
+
+    Sem a migration 078 o UPDATE é o de antes, byte a byte (deploy parcial
+    degrada — as duas colunas não existem e não há carimbo a limpar).
+    """
+    revive = ", substituida_em = NULL, substituida_por = NULL" \
+        if tem_coluna_substituida(cur) else ""
+    cur.execute(
+        "UPDATE dbo.etl_pipeline_execucao "
+        "SET status='EXECUTANDO', fim=NULL" + revive + ", "
+        "    atualizado_em=GETDATE() "
+        "WHERE pipeline_name=? AND data_referencia=? AND execution_id=?",
+        (pipeline, data_ref, run_id))
+    n = cur.rowcount
+    return n if n and n > 0 else 0
+
+
 def aposentar_irmas(cur, pipeline: str, data_ref: date, run_id: str,
                     usuario: str) -> int:
     """Aposenta as OUTRAS corridas vivas do pipeline reexecutado no ODATE —

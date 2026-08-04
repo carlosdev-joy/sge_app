@@ -829,6 +829,12 @@ def _aplicar_cascata(oficial: str, data_ref, task_id: str, dag_run_id: str,
     SUCESSO ao concluir e o caminho de falha grava FALHA, então a marca não
     fica pendurada.
 
+    ⚠️ E o MESMO UPDATE **ressuscita** a corrida (`substituida_em`/
+    `substituida_por` = NULL): reexecutar uma corrida que um rerun anterior
+    aposentou produzia SUCESSO carimbado — invisível para `liberado()` e para
+    `pipelines_todos_sucesso()`, bloqueando todo dependente do dia sem nada na
+    tela. Ver `rerun.reviver_corrida`.
+
     ⚠️ O `rowcount` desse UPDATE é CONFERIDO. Ele passava em silêncio: com um
     `execution_id` que não casasse (corrida fora da 067, grafia divergente,
     linha apagada à mão), a marca simplesmente não acontecia — e é ela que
@@ -848,12 +854,13 @@ def _aplicar_cascata(oficial: str, data_ref, task_id: str, dag_run_id: str,
         conn = get_db_conn(); cur = conn.cursor()
         if data_ref is not None and deps_svc.tabela_067(cur):
             try:
-                cur.execute(
-                    "UPDATE dbo.etl_pipeline_execucao "
-                    "SET status='EXECUTANDO', fim=NULL, atualizado_em=GETDATE() "
-                    "WHERE pipeline_name=? AND data_referencia=? AND execution_id=?",
-                    (oficial, data_ref, dag_run_id))
-                if (cur.rowcount or 0) < 1:
+                # `reviver_corrida` (e não um UPDATE inline): além de marcar
+                # EXECUTANDO, ela LIMPA `substituida_em`/`substituida_por` da
+                # corrida reexecutada — reexecutar uma corrida já aposentada
+                # produzia um SUCESSO invisível para sempre (defeito
+                # documentado na função).
+                if rerun_svc.reviver_corrida(cur, oficial, data_ref,
+                                             dag_run_id) < 1:
                     log.warning("[RERUN] corrida de '%s' em %s (run_id=%s) NAO "
                                 "marcada como EXECUTANDO: nenhuma linha casou",
                                 oficial, data_ref, dag_run_id)
@@ -1232,6 +1239,34 @@ async def criar_pausa(body: dict = Body(default={}),
             raise HTTPException(
                 status_code=404,
                 detail=f"Etapa '{job_pedido}' não existe no desenho de '{oficial}'")
+        # ⚠️ **A DAG PUBLICADA tem portão?** O banco ter a 079 não basta: o
+        # portão é emitido DENTRO do fonte gerado de cada DAG, e só existe
+        # depois de o pipeline ser republicado (`force_all`). Sem esta
+        # checagem a pausa nascia 200/OK em pipeline que passa direto — a
+        # mentira mais cara desta fase. Ver `espera.estado_portao`.
+        #
+        # DECISÃO (registrada): **sem portão a pausa NÃO é criada.** O
+        # caminho "criar com aviso forte" foi avaliado e recusado — uma pausa
+        # que não segura nada fica PENDENTE para sempre, ninguém a libera
+        # (não há o que liberar), e ela ainda vira ruído no canvas e no
+        # histórico de auditoria. A regra da casa é não mostrar como garantido
+        # o que não está; aqui o honesto é recusar e dizer o conserto, que é
+        # de um clique ("gerar DAG novamente").
+        #
+        # DESCONHECIDO (fonte ilegível: mount ausente, permissão) NÃO recusa —
+        # ele CRIA com aviso forte na resposta e na tela. Recusar por não
+        # conseguir ler um arquivo tiraria a feature inteira de ambientes que
+        # nunca serão provados errados; e o dano de uma pausa que não segura é
+        # exatamente o que o aviso desfaz. É o único ponto em que este gesto
+        # se afasta do `rerun` (lá o desconhecido bloqueia a cascata) — porque
+        # lá o gesto principal sobrevive à recusa, e aqui ele é o gesto.
+        portao = espera_svc.estado_portao(cur, oficial)
+        if portao == espera_svc.PORTAO_AUSENTE:
+            raise HTTPException(
+                status_code=409,
+                detail={"erro": espera_svc.PORTAO_AUSENTE,
+                        "mensagem": espera_svc.MENSAGEM_PORTAO[portao],
+                        "pipeline_name": oficial})
         iniciadas = espera_svc.etapas_iniciadas(cur, oficial, execution_id)
         if job_name.casefold() in iniciadas:
             raise HTTPException(
@@ -1268,6 +1303,8 @@ async def criar_pausa(body: dict = Body(default={}),
                  "job_name": job_name, "pausa_id": pausa_id,
                  "motivo": motivo, "teto_minutos": teto})
         avisos = espera_svc.avisos_da_pausa(cur, oficial, teto)
+        if portao == espera_svc.PORTAO_DESCONHECIDO:
+            avisos.insert(0, espera_svc.MENSAGEM_PORTAO[portao])
         conn.commit()
     except HTTPException:
         raise
@@ -1283,7 +1320,7 @@ async def criar_pausa(body: dict = Body(default={}),
     return {"ok": True, "pausa_id": pausa_id, "ja_existia": ja_existia,
             "pipeline_name": oficial, "job_name": job_name,
             "execution_id": execution_id, "teto_minutos": teto,
-            "avisos": avisos,
+            "portao": portao, "avisos": avisos,
             "pausas": _pausas_da_execucao(oficial, execution_id)}
 
 
@@ -1512,6 +1549,7 @@ def listar_pausas(pipeline_name: str,
         pausas = ([_pausa_json(p) for p in espera_svc.listar(cur, oficial, ts)]
                   if ts else [])
         tem_079 = espera_svc.tem_tabela(cur)
+        portao = espera_svc.estado_portao(cur, oficial)
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001
@@ -1524,7 +1562,10 @@ def listar_pausas(pipeline_name: str,
                 pass
     return {"pipeline_name": oficial, "execution_id": ts or None,
             "pausas": pausas, "total": len(pausas),
-            "migration_079_pendente": not tem_079}
+            "migration_079_pendente": not tem_079,
+            # As DUAS metades do deploy da F5: banco (079) e DAG publicada
+            # (portão). Dizer só a primeira foi o defeito.
+            "portao": portao}
 
 
 def _ident_json(ident: dict) -> dict:
@@ -1536,7 +1577,11 @@ def _ident_json(ident: dict) -> dict:
     out["data_referencia"] = (dref_val.strftime("%Y-%m-%d")
                               if hasattr(dref_val, "strftime") else dref_val)
     out["candidatos"] = [
-        {**c, "inicio": _fmt_dt(c.get("inicio")), "fim": _fmt_dt(c.get("fim"))}
+        {**c, "inicio": _fmt_dt(c.get("inicio")), "fim": _fmt_dt(c.get("fim")),
+         # A corrida APOSENTADA por um rerun com cascata não pode aparecer no
+         # aviso de ambiguidade com a mesma cara da corrida viva — a tela a
+         # rotula por este campo.
+         "substituida_em": _fmt_dt(c.get("substituida_em"))}
         for c in (out.get("candidatos") or [])
     ]
     return out
@@ -1633,6 +1678,11 @@ async def get_pipeline_execucao(
             ident = ident_svc.resolve_por_odate(cur, oficial, data_ref,
                                                 virada=virada)
         desenho = ident_svc.etapas_do_desenho(cur, oficial)
+        # F5 — a DAG PUBLICADA deste pipeline obedece a pausa? O canvas precisa
+        # saber ANTES do clique: oferecer "Pausar aqui" num pipeline sem portão
+        # e só recusar no POST seria fazer o operador descobrir pela recusa.
+        # Custo: um `os.stat` (o conteúdo é cacheado por mtime+tamanho).
+        portao = espera_svc.estado_portao(cur, oficial)
     except HTTPException:
         raise
     except Exception as e:
@@ -1721,7 +1771,8 @@ async def get_pipeline_execucao(
     for c in (ident.get("candidatos") or []):
         if c.get("run_id") and c["run_id"] == ident.get("run_id"):
             corrida = {**c, "inicio": _fmt_dt(c.get("inicio")),
-                       "fim": _fmt_dt(c.get("fim"))}
+                       "fim": _fmt_dt(c.get("fim")),
+                       "substituida_em": _fmt_dt(c.get("substituida_em"))}
             break
 
     # `razao` só existe quando NÃO há etapas executadas — é a explicação do
@@ -1754,6 +1805,9 @@ async def get_pipeline_execucao(
         "corrida": corrida,
         "etapas": etapas,
         "pausas": pausas,
+        # 'ok' | 'dag_sem_portao' | 'portao_desconhecido' — o que a tela usa
+        # para não oferecer (ou para avisar antes de oferecer) a pausa.
+        "portao": portao,
         "total_etapas": len(etapas),
         "etapas_executadas": len(executadas),
         "vazio": not executadas,

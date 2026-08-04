@@ -432,20 +432,49 @@ def pipeline_oficial(cur, pipeline_name):
     return (row[0] or "").strip() if row else None
 
 
+def tem_coluna_substituida(cur) -> bool:
+    """``etl_pipeline_execucao.substituida_em`` (migration 078) existe?
+
+    Mesma sonda de ``services.rerun.tem_coluna_substituida`` — repetida aqui e
+    não importada porque este módulo é a base da qual `rerun` depende, nunca o
+    contrário (importar de volta fecharia um ciclo). Qualquer falha conta como
+    ausente: deploy parcial degrada.
+    """
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_pipeline_execucao', 'substituida_em')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None)
+    except Exception as e:  # noqa: BLE001
+        log.warning("[IDENT] checagem da coluna substituida_em (078) falhou: %s", e)
+        return False
+
+
 def corridas_na_data(cur, pipeline: str, data_ref: date) -> list:
     """TODAS as linhas de ``etl_pipeline_execucao`` de (pipeline, ODATE).
 
     Sem ``TOP 1`` e sem ``ORDER BY``: a escolha da vencedora é do Python, pela
     função compartilhada com o painel da malha. Ordenar aqui criaria uma segunda
     regra de "mais recente" — o defeito D14/D15 registrado no projeto.
+
+    ⚠️ **``substituida_em`` faz parte da linha.** O modal de ambiguidade da F3
+    mostrava DUAS corridas indistinguíveis quando uma delas já tinha sido
+    aposentada por um rerun com cascata — e as duas são bem diferentes: a
+    aposentada não conta em `liberado()`, não conta em
+    `pipelines_todos_sucesso()` e reexecutá-la é justamente o gesto que o
+    defeito do "SUCESSO invisível" exigiu consertar. Quem escolhe a corrida
+    precisa ver qual é qual. Sem a migration 078 o campo vem `None` e o
+    payload é o de antes.
     """
+    tem_col = tem_coluna_substituida(cur)
+    col = ", substituida_em" if tem_col else ", NULL"
     cur.execute(
-        "SELECT execution_id, status, inicio, fim, disparado_por, motivo "
+        "SELECT execution_id, status, inicio, fim, disparado_por, motivo" + col + " "
         "FROM dbo.etl_pipeline_execucao "
         "WHERE pipeline_name = ? AND data_referencia = ?",
         (pipeline, data_ref))
     return [{"execution_id": str(r[0] or ""), "status": r[1], "inicio": r[2],
-             "fim": r[3], "disparado_por": r[4], "motivo": r[5]}
+             "fim": r[3], "disparado_por": r[4], "motivo": r[5],
+             "substituida_em": r[6]}
             for r in cur.fetchall()]
 
 
@@ -496,13 +525,19 @@ def aplica_corrida(ident: dict, corrida) -> dict:
 def _candidato(linha: dict) -> dict:
     """Corrida candidata, no formato que vai para ``candidatos`` da identidade
     (o suficiente para a tela dizer "há N corridas hoje; esta é a mais recente"
-    e para o gesto da F4 oferecer a escolha)."""
+    e para o gesto da F4 oferecer a escolha).
+
+    ``substituida_em`` viaja junto: sem ele, o aviso de ambiguidade lista duas
+    linhas iguais e o operador escolhe no escuro entre a corrida VIVA e uma já
+    aposentada por rerun (ver `corridas_na_data`).
+    """
     return {
         "run_id": linha.get("execution_id") or None,
         "status": linha.get("status"),
         "inicio": linha.get("inicio"),
         "fim": linha.get("fim"),
         "disparado_por": linha.get("disparado_por"),
+        "substituida_em": linha.get("substituida_em"),
     }
 
 

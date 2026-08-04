@@ -161,6 +161,11 @@ export function estiloEvento(tipo: string): string {
       return 'bg-slate-200 text-slate-700 border-slate-400 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-600'
     case 'ESPERA_ESTOUROU':
       return 'bg-red-100 text-red-700 border-red-300 dark:bg-red-900/60 dark:text-red-300 dark:border-red-700'
+    // F5 — corrida que começou e cujo DagRun morreu sem fechar nada (órfã em
+    // execução, detectada pela guardiã). Vermelho: enquanto ela existir, todos
+    // os dependentes do dia ficam parados atrás dela.
+    case 'EXECUCAO_ORFA':
+      return 'bg-red-100 text-red-700 border-red-300 dark:bg-red-900/60 dark:text-red-300 dark:border-red-700'
     default:
       return 'bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-600'
   }
