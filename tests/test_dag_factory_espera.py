@@ -108,6 +108,44 @@ _DELTA_LOG_START = [
     "        _espera.portao(hook, PIPELINE_NAME, job_name, execution_id)",
 ]
 
+# Delta da F4 da spec-malha-data-unica (a trava de datas divergentes no push).
+# Entra AQUI, na âncora da F5, pelo mesmo motivo que os blocos acima existem:
+# a âncora não é "o fonte nunca muda", é "o fonte só muda no que foi
+# DECLARADO". Mudança não declarada continua sendo pega.
+_DELTA_DIVERGENCIA_IMPORT = [
+    "            datas_dos_predecessores as _dep_datas_pred,",
+    "            datas_divergentes as _dep_datas_divergentes,",
+]
+_DELTA_DIVERGENCIA_IMPORT2 = [
+    "            detalhe_divergencia as _dep_detalhe_div,",
+]
+_DELTA_DIVERGENCIA_IMPORT3 = [
+    "            gravar_evento as _dep_gravar_evento,",
+]
+_DELTA_DIVERGENCIA = [
+    "                    # F4 (spec-malha-data-unica): a MESMA trava que a",
+    "                    # guardia ja tinha (Decisao 5). Com os predecessores",
+    "                    # em datas diferentes, a condicao do filho nao fecha",
+    "                    # numa data so — liberar aqui junta dados de dois",
+    "                    # dias na mesma corrida (incidente Carga_Vida).",
+    "                    try:",
+    "                        from datetime import datetime as _dt_div",
+    "                        _datas_pred = _dep_datas_pred(conn, filho, _dt_div.now())",
+    "                    except Exception as _e_div:",
+    "                        _datas_pred = {}",
+    "                        print(f'[DEP] viradas de {filho} indisponiveis ({_e_div}) — seguindo')",
+    "                    if _dep_datas_divergentes(_datas_pred):",
+    "                        _det = _dep_detalhe_div(_datas_pred)",
+    "                        print(f'[DEP] {filho} NAO disparado — {_det}')",
+    "                        try:",
+    "                            _dep_gravar_evento(conn, filho, data_ref,",
+    "                                               'DATA_DIVERGENTE', _det)",
+    "                            conn.commit()",
+    "                        except Exception as _e_ev:",
+    "                            print(f'[DEP] evento DATA_DIVERGENTE de {filho} nao gravado: {_e_ev}')",
+    "                        continue",
+]
+
 
 def _remover_delta(src: str) -> str:
     """Devolve o fonte SEM o delta da F5 — a operação inversa exata do que a
@@ -118,12 +156,20 @@ def _remover_delta(src: str) -> str:
     assert src.count(velho) >= 1, "nenhum t_start com o operador da F5"
     src = src.replace(velho, novo)
     linhas = src.split("\n")
-    for bloco in (_DELTA_IMPORT, _DELTA_LOG_START):
+    for bloco in (_DELTA_IMPORT, _DELTA_LOG_START,
+                  _DELTA_DIVERGENCIA_IMPORT, _DELTA_DIVERGENCIA_IMPORT2,
+                  _DELTA_DIVERGENCIA_IMPORT3, _DELTA_DIVERGENCIA):
         ocorrencias = [i for i in range(len(linhas) - len(bloco) + 1)
                        if linhas[i:i + len(bloco)] == bloco]
-        assert len(ocorrencias) == 1, (
+        # Os blocos do PUSH só existem em pipeline com dependência: cenário
+        # sem dependente gera o fonte sem eles, e ausência ali é correta.
+        opcional = bloco in (_DELTA_DIVERGENCIA_IMPORT, _DELTA_DIVERGENCIA_IMPORT2,
+                             _DELTA_DIVERGENCIA_IMPORT3, _DELTA_DIVERGENCIA)
+        assert len(ocorrencias) == 1 or (opcional and not ocorrencias), (
             f"bloco do portao esperado 1x, encontrado {len(ocorrencias)}x: "
             f"{bloco[1] if bloco[0] == '' else bloco[0]!r}")
+        if not ocorrencias:
+            continue
         i = ocorrencias[0]
         linhas = linhas[:i] + linhas[i + len(bloco):]
     return "\n".join(linhas)

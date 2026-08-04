@@ -294,6 +294,24 @@ def _dep_fake(**over):
     f.montar_conf = _DEPS_REAL.montar_conf
     f.novo_run_id = _DEPS_REAL.novo_run_id
     f.calendario_bloqueia = _DEPS_REAL.calendario_bloqueia
+
+    # F4 (spec-malha-data-unica): a trava de datas divergentes no push. Por
+    # default os predecessores estão na MESMA data (nada diverge) — quem testa
+    # a trava injeta `datas_pred`. Os predicados puros são os REAIS: divergir
+    # é regra, e regra duplicada no dublê esconderia mudança.
+    def datas_dos_predecessores(conn, filho, agora):
+        f.chamadas.append(("datas_pred", filho))
+        d = over.get("datas_pred", {})
+        return d(filho) if callable(d) else dict(d)
+
+    def gravar_evento(conn, pipeline, data_ref, tipo, detalhe, notificar=True):
+        f.chamadas.append(("evento", pipeline, data_ref, tipo, detalhe))
+        return True
+
+    f.datas_dos_predecessores = datas_dos_predecessores
+    f.datas_divergentes = _DEPS_REAL.datas_divergentes
+    f.detalhe_divergencia = _DEPS_REAL.detalhe_divergencia
+    f.gravar_evento = over.get("gravar_evento", gravar_evento)
     return f
 
 
@@ -1000,3 +1018,75 @@ def test_csv_espelho_com_linha_na_067_gera_normalmente(factory):
 def test_sem_csv_e_tabela_vazia_gera_cron_normal(factory):
     src = _src(factory, _deps_tabela=[])
     assert "schedule=" in src and "schedule=None" not in src
+
+
+# ── F4 (spec-malha-data-unica): a trava de datas divergentes no PUSH ────────
+# A guardiã já recusava ordenar com viradas divergentes (Decisão 5), mas quem
+# dispara na cascata é o push — e ele liberava assim mesmo. Foi por aí que a
+# malha Carga_Vida juntou, na mesma corrida, dados do dia 3 e do dia 4.
+
+def test_push_recusa_com_predecessores_em_datas_diferentes(factory, capsys):
+    ns = _exec_ns(_src(factory))
+    _instala_hook(ns, _Hook())
+    fake = _dep_fake(datas_pred={"PIPE_A": date(2026, 8, 3),
+                                 "PIPE_B": date(2026, 8, 4)})
+    with _ambiente_utils(fake), _cliente_trigger() as disparos:
+        ns["_disparar_dependentes"](_ctx())
+    assert disparos == [], "nada pode ser disparado sob divergência"
+    # nem chega a perguntar pela liberação: a condição não fecha numa data só
+    assert not any(c[0] == "liberado" for c in fake.chamadas)
+    # e o operador fica sabendo, com o MESMO texto da guardiã
+    evento = next(c for c in fake.chamadas if c[0] == "evento")
+    assert evento[3] == "DATA_DIVERGENTE"
+    assert "PIPE_A->2026-08-03" in evento[4] and "PIPE_B->2026-08-04" in evento[4]
+    assert "NAO disparado" in capsys.readouterr().out
+
+
+def test_push_segue_normal_com_datas_iguais(factory):
+    """O caso são: uma data só entre os predecessores — nada muda."""
+    ns = _exec_ns(_src(factory))
+    _instala_hook(ns, _Hook())
+    fake = _dep_fake(datas_pred={"PIPE_A": date(2026, 8, 4),
+                                 "PIPE_B": date(2026, 8, 4)})
+    with _ambiente_utils(fake), _cliente_trigger() as disparos:
+        ns["_disparar_dependentes"](_ctx())
+    assert len(disparos) == 1
+    assert not any(c[0] == "evento" for c in fake.chamadas)
+
+
+def test_push_sem_predecessores_nao_inventa_divergencia(factory):
+    ns = _exec_ns(_src(factory))
+    _instala_hook(ns, _Hook())
+    fake = _dep_fake(datas_pred={})
+    with _ambiente_utils(fake), _cliente_trigger() as disparos:
+        ns["_disparar_dependentes"](_ctx())
+    assert len(disparos) == 1
+
+
+def test_push_falha_ao_ler_viradas_nao_trava_a_cascata(factory, capsys):
+    """Erro de consulta aqui NÃO pode virar 'não dispara': isso pararia a
+    malha inteira por um problema transitório de banco. Segue e loga — o
+    oposto do liberado(), onde erro é não-liberado de propósito (D21)."""
+    def _explode(filho):
+        raise RuntimeError("timeout na consulta de viradas")
+    ns = _exec_ns(_src(factory))
+    _instala_hook(ns, _Hook())
+    fake = _dep_fake(datas_pred=_explode)
+    with _ambiente_utils(fake), _cliente_trigger() as disparos:
+        ns["_disparar_dependentes"](_ctx())
+    assert len(disparos) == 1
+    assert "viradas de" in capsys.readouterr().out
+
+
+def test_push_evento_que_falha_nao_derruba_o_laco(factory, capsys):
+    def _evento_ruim(conn, pipeline, data_ref, tipo, detalhe, notificar=True):
+        raise RuntimeError("evento indisponível")
+    ns = _exec_ns(_src(factory))
+    _instala_hook(ns, _Hook())
+    fake = _dep_fake(datas_pred={"PIPE_A": date(2026, 8, 3),
+                                 "PIPE_B": date(2026, 8, 4)},
+                     gravar_evento=_evento_ruim)
+    with _ambiente_utils(fake), _cliente_trigger() as disparos:
+        ns["_disparar_dependentes"](_ctx())
+    assert disparos == []
+    assert "nao gravado" in capsys.readouterr().out
