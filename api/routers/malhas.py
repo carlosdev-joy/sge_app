@@ -16,6 +16,10 @@ Endpoints:
   POST   /malhas/{malha_name}/disparo              — disparo MANUAL da malha (F15;
                                                      dry_run no body): raízes do
                                                      Início via trigger REST
+  POST   /malhas/{malha_name}/republicar           — republica as DAGs de TODOS os
+                                                     pipelines membros (dry_run no
+                                                     body): o gesto "Publicar nova
+                                                     versão" repetido por membro
   PATCH  /malhas/{malha_name}                      — descricao / ativo / renomear / orientacao
   POST   /malhas/{malha_name}/pipelines            — adiciona membro (idempotente)
   DELETE /malhas/{malha_name}/pipelines/{pipeline_name} — remove membro
@@ -78,9 +82,11 @@ nos endpoints de dependência: leitura degrada ("arestas": []), escrita dá 503.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
@@ -115,11 +121,18 @@ from services import execucao_identidade as ident_svc
 # register — _build_cron para o domínio, _validate_dias_horarios_mes,
 # _parse_horarios_especificos e _parse_hora_opcional (D35) — nunca uma
 # reimplementação (a regra que salvou o texto do ciclo na F8).
-from routers.pipelines import (_build_cron, _check_circular,
+# FACTORY_DAG_ID: a republicação da malha (abaixo) dispara a MESMA factory do
+# botão "Publicar nova versão" da tela Pipelines — a constante vem de lá para
+# não nascer uma segunda grafia do dag_id.
+from routers.pipelines import (FACTORY_DAG_ID, _build_cron, _check_circular,
                                _check_circular_grafo, _parse_hora_opcional,
                                _parse_horarios_especificos,
                                _validar_existencia,
                                _validate_dias_horarios_mes, deduplicar)
+# Fila da ativação/notificação da DAG recém-publicada (padrão do repo: a
+# intenção mora no banco e um loop do lifespan reconcilia) — é ela que também
+# apaga o carimbo dag_config_pendente_em quando a DAG é confirmada no Airflow.
+from services.dag_reconcile import enqueue as enqueue_dag_pendente
 
 log = logging.getLogger("orquestra-api")
 
@@ -163,6 +176,16 @@ def _fmt_dt(v):
         return None
     if hasattr(v, "strftime"):
         return v.strftime("%Y-%m-%d %H:%M:%S")
+    return str(v)
+
+
+def _fmt_dia(v):
+    """DATE → 'YYYY-MM-DD' (o formato que a tela e o contrato usam para a data
+    de referência). None continua None."""
+    if v is None:
+        return None
+    if hasattr(v, "strftime"):
+        return v.strftime("%Y-%m-%d")
     return str(v)
 
 
@@ -227,6 +250,75 @@ def _coluna_074(cur) -> bool:
     except Exception as e:
         log.warning("[MALHA] checagem da coluna da migration 074 falhou: %s", e)
         return False
+
+
+def _compilar_virada(cur, malha: str, hora_virada) -> list:
+    """Copia a virada da MALHA para todos os membros e carimba publicação
+    pendente em quem mudou. Devolve os nomes alinhados.
+
+    É o mesmo movimento do agendamento do Início (F13), que já copia
+    `hora_virada` para as RAÍZES — aqui ele vale para a malha inteira, porque
+    quem calcula data não é só a raiz: qualquer membro que ainda dispare por
+    agenda calcula a dele (e foi assim que a corrida saiu partida).
+
+    Só toca em quem DIVERGE: um UPDATE cego carimbaria publicação pendente em
+    toda a malha a cada salvamento, e o operador aprenderia a ignorar o aviso.
+    Sem a coluna em etl_pipeline (067 pendente), não há o que compilar."""
+    if not _coluna_hora_virada(cur):
+        return []
+    cur.execute(
+        "SELECT p.pipeline_name FROM dbo.etl_malha_pipeline mp "
+        "JOIN dbo.etl_pipeline p ON p.pipeline_name = mp.pipeline_name "
+        "WHERE mp.malha_name = ? AND ("
+        "  (p.hora_virada IS NULL AND ? IS NOT NULL) OR "
+        "  (p.hora_virada IS NOT NULL AND ? IS NULL) OR "
+        "  (p.hora_virada <> ?))",
+        (malha, hora_virada, hora_virada, hora_virada))
+    fora = [r[0] for r in cur.fetchall()]
+    for nome in fora:
+        cur.execute(
+            "UPDATE dbo.etl_pipeline SET hora_virada = ?, updated_at = GETDATE() "
+            "WHERE pipeline_name = ?", (hora_virada, nome))
+        # A DAG publicada ainda carrega a virada ANTIGA no _data_referencia
+        # gerado: sem republicar, a régua nova só vale no papel.
+        _ligar_dag_config_pendente(cur, nome)
+    return sorted(fora)
+
+
+def _coluna_hora_virada(cur) -> bool:
+    """True se etl_pipeline.hora_virada (migration 067) existe."""
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_pipeline', 'hora_virada')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None)
+    except Exception as e:
+        log.warning("[MALHA] checagem de etl_pipeline.hora_virada falhou: %s", e)
+        return False
+
+
+def _colunas_081(cur) -> bool:
+    """True se as colunas da migration 081 (hora_virada + equalizar_data da
+    MALHA) existem. Mesmo padrão dos demais guards: falha conta como ausente e
+    a malha se comporta como antes da fase — a virada continua vindo do
+    pipeline/global e a equalização não é oferecida."""
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_malha', 'hora_virada'), "
+                    "COL_LENGTH('dbo.etl_malha', 'equalizar_data')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None and row[1] is not None)
+    except Exception as e:
+        log.warning("[MALHA] checagem das colunas da migration 081 falhou: %s", e)
+        return False
+
+
+def _hhmm(valor):
+    """TIME/str → 'HH:MM' (o formato que a tela usa), ou None."""
+    if valor is None:
+        return None
+    if hasattr(valor, "strftime"):
+        return valor.strftime("%H:%M")
+    texto = str(valor).strip()
+    return texto[:5] if texto else None
 
 
 def _orientacao_norm(valor) -> str:
@@ -551,15 +643,42 @@ def _ligar_dag_config_pendente(cur, pipeline_name) -> bool:
     publicação em voo sobrevive ao clear. `WHERE dag_criada = 1`: pipeline
     nunca publicado não tem versão velha rodando. Sem a coluna (073 pendente),
     degrada em silêncio — comportamento = hoje. Devolve True se a flag foi
-    ligada (a resposta ao front segue sendo o booleano)."""
+    ligada (a resposta ao front segue sendo o booleano).
+
+    ⚠️ `dag_criada = 0` também é o estado de quem está SENDO REGERADO agora (é
+    assim que a factory seleciona o lote). Sem o OR abaixo, a aresta desenhada
+    no meio de uma publicação — cenário que a republicação da malha torna
+    comum, porque o operador continua no canvas — não deixava carimbo nenhum:
+    o pipeline terminava "em dia" com a DAG sem a dependência, mudo. O EXISTS
+    reconhece a publicação em voo pela fila do reconciliador (achado da
+    revisão adversarial)."""
     try:
         cur.execute(
             "UPDATE dbo.etl_pipeline SET dag_config_pendente_em = GETDATE() "
-            "WHERE pipeline_name = ? AND dag_criada = 1",
+            "WHERE pipeline_name = ? AND (dag_criada = 1 OR EXISTS ("
+            "  SELECT 1 FROM dbo.etl_dag_pendente q "
+            "  WHERE q.pipeline_name = dbo.etl_pipeline.pipeline_name "
+            "    AND q.status = 'pendente'))",
             (pipeline_name,))
         return (cur.rowcount or 0) > 0
     except Exception as e:
         log.debug("[MALHA] dag_config_pendente_em indisponível (migration 073?): %s", e)
+        return False
+
+
+def _coluna_073(cur) -> bool:
+    """True se etl_pipeline.dag_config_pendente_em (migration 073) existe — o
+    guard de LEITURA do carimbo de publicação pendente (o de escrita é o
+    try/except de _ligar_dag_config_pendente). Best-effort no padrão dos
+    demais guards de coluna: falha conta como ausente e quem lê degrada para
+    "não sei se está pendente" (chave ausente no payload), nunca para uma
+    tela quebrada."""
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_pipeline', 'dag_config_pendente_em')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None)
+    except Exception as e:
+        log.warning("[MALHA] checagem da coluna da migration 073 falhou: %s", e)
         return False
 
 
@@ -1752,10 +1871,14 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
         # orientacao (074): preferência de visão que viaja com o layout — sem a
         # coluna, degrada para 'horizontal' (o comportamento de sempre).
         tem_074 = _coluna_074(cur)
+        # F2 (081): a virada da MALHA e a marca de equalização — aditivas, no
+        # mesmo esquema condicional da orientacao.
+        tem_081 = _colunas_081(cur)
         cur.execute(
             "SELECT malha_name, descricao, CAST(ativo AS INT) AS ativo, "
             "criado_em, criado_por, atualizado_em"
-            + (", orientacao" if tem_074 else "") +
+            + (", orientacao" if tem_074 else "")
+            + (", hora_virada, CAST(equalizar_data AS INT)" if tem_081 else "") +
             " FROM dbo.etl_malha WHERE malha_name = ?",
             (malha_name,),
         )
@@ -1770,6 +1893,9 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
             "atualizado_em": _fmt_dt(row[5]),
             "orientacao": _orientacao_norm(row[6]) if tem_074 else "horizontal",
         }
+        _i081 = 7 if tem_074 else 6
+        row_virada = row[_i081] if tem_081 else None
+        equalizar = row[_i081 + 1] if tem_081 else 0
         # F10/F13: as tabelas da 075 habilitam nós e assinaturas — checadas UMA
         # vez por request; as colunas de agendamento (F13) têm guard próprio,
         # porque a 075 pode estar aplicada pela metade num deploy parcial.
@@ -1779,11 +1905,22 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
         # pipeline excluído simplesmente some (aceite da F7) — e a FK CASCADE
         # da 070 já removeu a linha de qualquer forma. agenda_no (F13) é
         # ADITIVO: entra no SELECT só com as colunas da 075 presentes.
+        # dag_criada + o carimbo da 073 entram no membro para a tela responder
+        # "esta malha está publicada?" — é o insumo do botão de republicação
+        # (o contador de pendentes) e do badge por nó. Sem a 073, a chave
+        # `publicacao_pendente` simplesmente não vem: a UI não inventa um
+        # "está em dia" que o banco não sustenta.
+        tem_073 = _coluna_073(cur)
+        # hora_virada nasce na 067 (que a malha NÃO exige para abrir) — guard
+        # próprio, como as demais colunas aditivas deste SELECT.
+        tem_virada_pipe = _coluna_hora_virada(cur)
         cur.execute(
             "SELECT p.pipeline_name, CAST(p.active AS INT) AS active, "
             "ISNULL(p.criticidade, 'Media') AS criticidade, p.schedule_type, "
-            "mp.layout_x, mp.layout_y"
-            + (", p.agenda_no" if tem_agenda else "") +
+            "mp.layout_x, mp.layout_y, CAST(ISNULL(p.dag_criada, 0) AS INT)"
+            + (", p.agenda_no" if tem_agenda else "")
+            + (", p.dag_config_pendente_em" if tem_073 else "")
+            + (", p.hora_virada" if tem_virada_pipe else "") +
             " FROM dbo.etl_malha_pipeline mp "
             "JOIN dbo.etl_pipeline p ON p.pipeline_name = mp.pipeline_name "
             "WHERE mp.malha_name = ? ORDER BY p.pipeline_name",
@@ -1795,10 +1932,44 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
                 "pipeline_name": r[0], "active": int(r[1] or 0),
                 "criticidade": r[2], "schedule_type": r[3],
                 "layout_x": r[4], "layout_y": r[5],
+                "dag_criada": int(r[6] or 0),
             }
+            i = 7
             if tem_agenda:
-                m["agenda_no"] = int(r[6]) if r[6] is not None else None
+                m["agenda_no"] = int(r[i]) if r[i] is not None else None
+                i += 1
+            if tem_073:
+                m["publicacao_pendente"] = r[i] is not None
+                i += 1
+            if tem_virada_pipe:
+                m["hora_virada"] = _hhmm(r[i])
             membros.append(m)
+        # Quantos predecessores cada membro tem na 067 (F1 da
+        # spec-malha-data-unica). É o que permite à tela apontar o pipeline que
+        # TEM dependência mas ainda dispara por AGENDA: a DAG dele não foi
+        # republicada, então roda fora da malha, calcula a própria data de
+        # referência e mistura a corrida. Foi essa a causa do incidente da
+        # Carga_Vida. Sem a 067 a chave não vem e a tela não afirma nada.
+        if _tabela_067(cur) and membros:
+            cur.execute(
+                "SELECT pipeline_name, COUNT(*) FROM dbo.etl_pipeline_dependencia "
+                "WHERE tipo = 'PIPELINE' GROUP BY pipeline_name")
+            por_nome = {str(r[0] or "").strip().casefold(): int(r[1] or 0)
+                        for r in cur.fetchall()}
+            for m in membros:
+                m["qtd_predecessores"] = por_nome.get(
+                    m["pipeline_name"].casefold(), 0)
+        # F2: a virada da MALHA (migration 081) e quem está fora dela. É a
+        # virada que decide o ODATE de quem roda por agenda — membros em
+        # viradas diferentes carimbam datas diferentes para a MESMA corrida.
+        if tem_081:
+            malha["hora_virada"] = _hhmm(row_virada)
+            malha["equalizar_data"] = int(equalizar or 0)
+            if tem_virada_pipe:
+                alvo = malha["hora_virada"]     # None = a global manda
+                malha["virada_divergente"] = sorted(
+                    m["pipeline_name"] for m in membros
+                    if (m.get("hora_virada") or None) != alvo)
         # Arestas (F8): dependências GLOBAIS da 067 em que AMBAS as pontas são
         # membros desta malha — a mesma dependência aparece em toda malha que
         # contenha os dois pipelines (aceite da F8: a aresta é real nas duas).
@@ -2245,16 +2416,71 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
                                "mensagem": f"'{p}' está inativo — a DAG pode "
                                "estar pausada no Airflow; a corrida criada "
                                "só anda com a DAG despausada"})
+        # F1 da spec-malha-data-unica: a malha começa do ZERO. Corrida viva de
+        # membro ou data de referência divergente NESTE ciclo barram o disparo
+        # — a partida por cima de uma corrida em andamento é o que produziu, na
+        # Carga_Vida, metade da malha num ODATE e metade em outro.
+        # (Gancho da F3: com `equalizar_data` ligado na malha, este ponto passa
+        # a recarimbar em vez de recusar — o desenho está na spec.)
+        bloqueios = ({"em_aberto": [], "datas_divergentes": []}
+                     if not tem_exec_067
+                     else _bloqueios_do_ciclo(cur, malha, data_ref))
+
+        # F3: a malha marcada NÃO para para perguntar — ela carimba todos com a
+        # data do ciclo e segue. Vale só para DATA: corrida em ANDAMENTO
+        # continua barrando com ou sem a marca (recarimbar uma corrida em voo
+        # trocaria a chave dela no meio do caminho).
+        equaliza = (tem_exec_067 and bool(bloqueios["datas_divergentes"])
+                    and _equalizar_data_da_malha(cur, malha))
+        equalizaveis, nao_equalizaveis = ([], [])
+        if equaliza:
+            equalizaveis, nao_equalizaveis = _equalizaveis(
+                cur, malha, data_ref, bloqueios["datas_divergentes"])
+        quem = (str(auth.get("matricula") or "").strip() or "?")
+        equalizados: list = []
+        if equaliza and not dry_run and not bloqueios["em_aberto"]:
+            equalizados = _equalizar(cur, malha, data_ref, equalizaveis, quem)
+            conn.commit()
+            # Reconta com o banco JÁ equalizado: o que sobrar aqui é bloqueio
+            # de verdade (o que não pôde ser recarimbado).
+            bloqueios = _bloqueios_do_ciclo(cur, malha, data_ref)
+            log.info("[MALHA] malha '%s': %d execução(ões) equalizadas para %s "
+                     "por %s", malha, len(equalizados), data_ref, quem)
+
+        tem_bloqueio = bool(bloqueios["em_aberto"]
+                            or bloqueios["datas_divergentes"])
         # O banco fecha ANTES das chamadas ao Airflow: uma rede lenta não
         # pode segurar conexão de pool aberta (padrão do proxy).
         cur.close(); conn.close(); conn = None
 
         if dry_run:
-            return {"data_referencia": data_ref.strftime("%Y-%m-%d"),
-                    "raizes": raizes_info, "avisos": avisos}
+            # O dry_run NÃO recusa: ele MOSTRA. O modal precisa exibir quem
+            # está segurando a malha (com nome e data) para o operador agir —
+            # um 422 seco aqui esconderia a lista. Com a marca de equalização,
+            # mostra também o que SERÁ recarimbado: a malha anda sozinha, mas
+            # o operador vê o de→para antes de confirmar.
+            resp = {"data_referencia": data_ref.strftime("%Y-%m-%d"),
+                    "raizes": raizes_info, "avisos": avisos,
+                    "bloqueios": bloqueios,
+                    "bloqueado": tem_bloqueio and not equaliza}
+            if equaliza:
+                resp["equalizacao"] = {
+                    "prevista": equalizaveis,
+                    "impedidos": nao_equalizaveis,
+                    # Corrida em aberto não é resolvida por equalização: com
+                    # ela presente, o bloqueio continua de pé.
+                    "bloqueado_por_corrida": bool(bloqueios["em_aberto"]),
+                }
+                resp["bloqueado"] = bool(bloqueios["em_aberto"]
+                                         or nao_equalizaveis)
+            return resp
+
+        if tem_bloqueio:
+            raise HTTPException(
+                status_code=422,
+                detail=_msg_bloqueio(bloqueios, data_ref.strftime("%Y-%m-%d")))
 
         hoje = _agora().date()
-        quem = (str(auth.get("matricula") or "").strip() or "?")
         conf = {
             "data_referencia": data_ref.strftime("%Y-%m-%d"),
             "dia_operacional": hoje.strftime("%Y-%m-%d"),
@@ -2300,9 +2526,493 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
         log.info("[MALHA] disparo manual da malha '%s' por %s — data_ref=%s, "
                  "%d disparada(s), %d falha(s)", malha, quem,
                  conf["data_referencia"], len(disparadas), len(falhas))
-        return {"ok": len(falhas) == 0,
-                "data_referencia": conf["data_referencia"],
-                "disparadas": disparadas, "falhas": falhas, "avisos": avisos}
+        # `equalizados` é ADITIVO e só aparece quando houve recarimbo: a tela
+        # avisa o operador do que foi mudado no histórico em nome dele.
+        resp_write = {"ok": len(falhas) == 0,
+                      "data_referencia": conf["data_referencia"],
+                      "disparadas": disparadas, "falhas": falhas,
+                      "avisos": avisos}
+        if equalizados:
+            resp_write["equalizados"] = equalizados
+        return resp_write
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+# ── Estado do ciclo da malha (spec-malha-data-unica.md, F1) ─────────────────
+# A malha começa do ZERO: nenhum membro correndo e todos na MESMA data de
+# referência. Duas perguntas, uma consulta cada — as duas são sobre MEMBROS
+# desta malha, nunca sobre o banco inteiro.
+_STATUS_EM_ABERTO = ("EXECUTANDO", "AGUARDANDO_DEPENDENCIA")
+
+
+def _corridas_em_aberto(cur, malha: str) -> list:
+    """Membros com corrida viva (EXECUTANDO/AGUARDANDO), em QUALQUER data.
+
+    Sem filtro de data de propósito: uma corrida presa em outro ODATE é
+    exatamente o que a regra quer barrar — a malha não pode recomeçar por cima
+    de si mesma. Corrida substituída (rerun, migration 078) não conta."""
+    marcadores = ",".join("?" for _ in _STATUS_EM_ABERTO)
+    sql = ("SELECT e.pipeline_name, e.data_referencia, e.status, e.inicio "
+           "FROM dbo.etl_pipeline_execucao e "
+           "JOIN dbo.etl_malha_pipeline mp ON mp.pipeline_name = e.pipeline_name "
+           f"WHERE mp.malha_name = ? AND e.status IN ({marcadores}) ")
+    deps_svc._exec_com_fallback_078(
+        cur, sql + "AND e.substituida_em IS NULL", sql,
+        (malha, *_STATUS_EM_ABERTO))
+    return [{"pipeline": r[0], "data_referencia": _fmt_dia(r[1]),
+             "status": r[2], "inicio": _fmt_dt(r[3])}
+            for r in cur.fetchall()]
+
+
+def _datas_divergentes(cur, malha: str, data_ref, desde) -> list:
+    """Membros com execução carimbada em data DIFERENTE da do ciclo, iniciada
+    de `desde` para cá (a virada corrente).
+
+    O recorte por `inicio` é o que separa "a corrida de ontem, encerrada" —
+    que é histórico legítimo — de "esta mesma madrugada, com dois ODATEs
+    diferentes", que é a doença. Sem ele, toda malha com histórico seria
+    barrada para sempre."""
+    cur.execute(
+        "SELECT e.pipeline_name, e.data_referencia, e.status, e.inicio "
+        "FROM dbo.etl_pipeline_execucao e "
+        "JOIN dbo.etl_malha_pipeline mp ON mp.pipeline_name = e.pipeline_name "
+        "WHERE mp.malha_name = ? AND e.data_referencia <> ? AND e.inicio >= ? "
+        "ORDER BY e.pipeline_name, e.inicio",
+        (malha, data_ref, desde))
+    return [{"pipeline": r[0], "data_referencia": _fmt_dia(r[1]),
+             "status": r[2], "inicio": _fmt_dt(r[3])}
+            for r in cur.fetchall()]
+
+
+def _inicio_do_ciclo(cur, agora: datetime):
+    """Instante da virada mais recente — o começo do ciclo corrente.
+
+    Convertido para a régua do BANCO (GETDATE pode estar em outro fuso que o
+    container da API — caso real do dev): `inicio` é carimbado por lá, e
+    comparar relógios diferentes produziria divergência fantasma ou, pior,
+    silêncio."""
+    virada = dref.parse_virada(_virada_global(cur))
+    base = (agora.date() if agora.time() >= virada
+            else agora.date() - timedelta(days=1))
+    corte = datetime.combine(base, virada)
+    try:
+        cur.execute("SELECT GETDATE()")
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            corte += (row[0] - agora)
+    except Exception as e:
+        log.debug("[MALHA] relógio do banco indisponível para o corte: %s", e)
+    return corte
+
+
+def _bloqueios_do_ciclo(cur, malha: str, data_ref) -> dict:
+    """As duas travas juntas, no formato que a tela e o 422 consomem."""
+    em_aberto = _corridas_em_aberto(cur, malha)
+    divergentes = _datas_divergentes(cur, malha, data_ref,
+                                     _inicio_do_ciclo(cur, _agora()))
+    return {"em_aberto": em_aberto, "datas_divergentes": divergentes}
+
+
+def _equalizar_data_da_malha(cur, malha: str) -> bool:
+    """A malha está marcada para equalizar sozinha (F3)? Sem a 081, não."""
+    if not _colunas_081(cur):
+        return False
+    try:
+        cur.execute("SELECT CAST(equalizar_data AS INT) FROM dbo.etl_malha "
+                    "WHERE malha_name = ?", (malha,))
+        row = cur.fetchone()
+        return bool(row and int(row[0] or 0))
+    except Exception as e:
+        log.warning("[MALHA] leitura de equalizar_data falhou: %s", e)
+        return False
+
+
+def _equalizaveis(cur, malha: str, data_ref, divergentes: list) -> tuple:
+    """Separa o que PODE ser recarimbado do que não pode.
+
+    Não pode: pipeline que já tem linha na data-alvo. Recarimbar criaria duas
+    corridas do mesmo pipeline no mesmo ODATE — e a leitura "mais recente da
+    data" passaria a escolher entre duas verdades. Melhor recusar nominalmente
+    do que produzir um estado que ninguém consegue explicar depois."""
+    podem, nao_podem = [], []
+    for d in divergentes:
+        cur.execute(
+            "SELECT COUNT(*) FROM dbo.etl_pipeline_execucao "
+            "WHERE pipeline_name = ? AND data_referencia = ?",
+            (d["pipeline"], data_ref))
+        row = cur.fetchone()
+        if row and int(row[0] or 0) > 0:
+            nao_podem.append({**d, "motivo":
+                              "já existe corrida deste pipeline na data da "
+                              "malha — recarimbar criaria duas"})
+        else:
+            podem.append(d)
+    return podem, nao_podem
+
+
+def _equalizar(cur, malha: str, data_ref, alvos: list, quem: str) -> list:
+    """Recarimba para `data_ref` as execuções listadas e registra o de→para.
+
+    Escrita em linha de EXECUÇÃO — histórico não pode mudar em silêncio:
+    o `motivo` da própria linha guarda a origem da mudança e um evento
+    DATA_EQUALIZADA fica no painel da malha, com quem mandou. Só linhas do
+    ciclo corrente chegam aqui (o recorte é de quem chama)."""
+    feitos = []
+    for a in alvos:
+        origem = a["data_referencia"]
+        cur.execute(
+            "UPDATE dbo.etl_pipeline_execucao "
+            "SET data_referencia = ?, atualizado_em = GETDATE(), "
+            "    motivo = LEFT(ISNULL(motivo + ' | ', '') + ?, 500) "
+            "WHERE pipeline_name = ? AND data_referencia = ? "
+            "  AND status = ?",
+            (data_ref,
+             f"data de referência equalizada de {origem} para "
+             f"{_fmt_dia(data_ref)} pela malha {malha} ({quem})",
+             a["pipeline"], origem, a["status"]))
+        if (cur.rowcount or 0) > 0:
+            feitos.append({"pipeline": a["pipeline"], "de": origem,
+                           "para": _fmt_dia(data_ref)})
+    if feitos:
+        detalhe = "; ".join(f"{f['pipeline']}: {f['de']} -> {f['para']}"
+                            for f in feitos)
+        try:
+            cur.execute(
+                "INSERT INTO dbo.etl_dependencia_evento "
+                "(pipeline_name, data_referencia, tipo, detalhe) "
+                "VALUES (?, ?, 'DATA_EQUALIZADA', ?)",
+                (feitos[0]["pipeline"], data_ref,
+                 f"malha {malha} ({quem}): {detalhe}"[:1000]))
+        except Exception as e:
+            # O evento é o RASTRO, não a operação: perdê-lo não desfaz o
+            # recarimbo (que já está na transação), mas tem de aparecer no log.
+            log.warning("[MALHA] evento DATA_EQUALIZADA não registrado: %s", e)
+    return feitos
+
+
+def _msg_bloqueio(bloqueios: dict, data_ref: str) -> str:
+    """Mensagem única do 422 e do modal — um texto só, como a do ciclo da F8."""
+    partes = []
+    if bloqueios["em_aberto"]:
+        quem = ", ".join(f"{b['pipeline']} ({b['status'].lower()}"
+                         f", {b['data_referencia']})"
+                         for b in bloqueios["em_aberto"][:5])
+        partes.append(
+            f"{len(bloqueios['em_aberto'])} pipeline(s) da malha ainda com "
+            f"corrida em andamento: {quem}"
+            + ("…" if len(bloqueios["em_aberto"]) > 5 else ""))
+    if bloqueios["datas_divergentes"]:
+        quem = ", ".join(f"{b['pipeline']} em {b['data_referencia']}"
+                         for b in bloqueios["datas_divergentes"][:5])
+        partes.append(
+            f"{len(bloqueios['datas_divergentes'])} pipeline(s) executaram "
+            f"neste ciclo com data de referência diferente de {data_ref}: "
+            f"{quem}" + ("…" if len(bloqueios["datas_divergentes"]) > 5 else ""))
+    return ("A malha não pode começar: " + " · ".join(partes)
+            + ". A malha só parte do zero — encerre as corridas em aberto e "
+              "iguale a data de referência dos membros antes de disparar "
+              "(Malha ▸ Republicar pipelines resolve o caso mais comum: "
+              "dependente que ainda dispara por agenda).")
+
+
+async def _dags_existentes(nomes: list) -> dict:
+    """{pipeline: True|False|None} — a DAG existe no Airflow?
+
+    None = não deu para saber (Airflow fora do ar, timeout, nome inválido):
+    quem consome NÃO afirma nada nesse caso. É a diferença entre "esta é a
+    primeira publicação" e "não sei dizer" — e a tela só pode prometer o que
+    o dado sustenta."""
+    fora = {p: None for p in nomes}
+    alvos = [p for p in nomes if _DAG_ID_RE.match(p or "")]
+    if not alvos:
+        return fora
+
+    # Teto de chamadas simultâneas: malha grande não pode virar uma rajada de
+    # centenas de GETs no webserver do Airflow, que é o mesmo que serve a UI
+    # dos plantonistas.
+    porta = asyncio.Semaphore(8)
+
+    async def _um(client, pname):
+        try:
+            async with porta:
+                r = await client.get(f"/api/v1/dags/{pname}")
+            if r.status_code == 404:
+                return pname, False
+            if r.is_success:
+                return pname, True
+        except Exception as e:      # noqa: BLE001 — rede/timeout
+            log.debug("[MALHA] consulta da DAG %s no Airflow: %s", pname, e)
+        return pname, None
+
+    try:
+        async with get_airflow_client() as client:
+            pares = await asyncio.gather(*[_um(client, p) for p in alvos])
+        fora.update(dict(pares))
+    except Exception as e:          # noqa: BLE001 — cliente indisponível
+        log.warning("[MALHA] Airflow indisponível ao conferir as DAGs: %s", e)
+    return fora
+
+
+def _marcar_para_regeneracao(pipelines: list) -> None:
+    """dag_criada=0 nos alvos — a MESMA marcação do "Publicar DAGs" do Admin,
+    restrita ao escopo da malha. Um UPDATE por nome (o lote é de poucas
+    dezenas) para não montar lista de placeholders."""
+    if not pipelines:
+        return
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        for nome in pipelines:
+            cur.execute(
+                "UPDATE dbo.etl_pipeline SET dag_criada = 0, updated_at = GETDATE() "
+                "WHERE pipeline_name = ?", (nome,))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao liberar os pipelines para regeneração: {e}")
+
+
+def _desmarcar_regeneracao(pipelines: list) -> None:
+    """Desfaz a marcação quando o disparo NÃO aconteceu — só para quem estava
+    publicado (dag_criada=1); quem já era pendente continua pendente. Deixar
+    a marcação de pé anunciaria "DAG não publicada" para DAG viva, sem
+    ninguém a caminho para republicá-la. Best-effort: falhar aqui não pode
+    substituir o erro original do disparo."""
+    if not pipelines:
+        return
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        for nome in pipelines:
+            cur.execute(
+                "UPDATE dbo.etl_pipeline SET dag_criada = 1 "
+                "WHERE pipeline_name = ?", (nome,))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        log.warning("[MALHA] falha ao desfazer a marcação de %s: %s",
+                    ", ".join(pipelines), e)
+        _fechar_silencioso(conn)
+
+
+@router.post("/malhas/{malha_name}/republicar", tags=["malhas"])
+async def republicar_malha(malha_name: str, body: dict = Body(default={}),
+                           auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """Republica as DAGs de TODOS os pipelines membros da malha.
+
+    Mudar o desenho da malha (aresta nova, Aguarde, agendamento do Início)
+    grava a dependência no banco na hora, mas a DAG que o Airflow executa
+    continua sendo a versão ANTERIOR até ser regerada — é o que o carimbo
+    dag_config_pendente_em (073) anuncia pipeline a pipeline. Este endpoint é
+    o "Publicar nova versão" da tela Pipelines aplicado à malha inteira, para
+    o operador não ter de caçar os membros um a um depois de montar.
+
+    NENHUM executor novo (o mesmo princípio do disparo manual): marca os
+    membros ATIVOS como pendentes (dag_criada=0, a marcação do "Publicar DAGs"
+    do Admin restrita ao escopo da malha) e dispara UMA execução da
+    etl_dag_factory com a lista deles em `conf["pipelines"]` — o mesmo caminho
+    do "Publicar nova versão" por pipeline, que já mandava
+    `conf["pipeline_name"]`. A factory regenera com o cadastro atual
+    (dependências incluídas) e, ao concluir cada arquivo, zera o carimbo da
+    publicação pendente.
+
+    A marcação é feita AQUI de propósito, mesmo a factory nova refazendo-a: um
+    deploy que atualize `api/` e adie `dags/` (o deploy.sh pergunta separado)
+    deixaria a factory antiga ignorar `conf["pipelines"]`, gerar um lote vazio
+    e fechar SUCCESS — verde perfeito para um gesto que não regenerou nada.
+    Se o disparo falhar, a marcação é desfeita para quem estava publicado.
+
+    UMA execução, não uma por membro: disparada com um alvo só, a factory gera
+    TODOS os pendentes e reprova o run se o alvo pedido não entrar no lote —
+    N runs concorrentes pelo mesmo lote produziriam FAILED de corrida no log,
+    sem nenhuma DAG a mais ou a menos.
+
+    Efeito colateral DITO, nunca escondido: pipelines pendentes de fora desta
+    malha entram no mesmo lote (é o gerador de sempre, o botão por pipeline já
+    faz isso) — o dry_run conta quantos são e o modal avisa antes. Falha de um
+    pendente de terceiro vira AVISO no run, não erro: o run da malha só fica
+    vermelho pelo que é dela (provado ao vivo no dev, onde um pipeline sem
+    etapas alheio à malha reprovava o run inteiro).
+
+    Pipeline INATIVO não entra: a sp_etl_pipelines_pendentes_criar filtra
+    active=1, e é a mesma recusa (409) do botão por pipeline. Vem na resposta
+    como `ignorados`, com o motivo — nunca sumindo em silêncio.
+
+    Depois do run, o reconciliador confere CADA membro no Airflow (fila
+    etl_dag_pendente): quem não tinha DAG entra como ativação (a DAG nasce
+    pausada), quem já tinha entra em modo VERIFICAÇÃO (migration 080) — sem
+    notificar sucesso, só para cobrar erro de importação. Sem essa conferência,
+    um arquivo que o Airflow não consegue importar deixa a versão ANTERIOR
+    rodando com a tela dizendo "publicado e em dia".
+
+    Body: {"dry_run"?: bool}. dry_run devolve o que SERÁ republicado (membros,
+    ignorados, avisos, o total de pendentes de fora e, por membro,
+    `dag_no_airflow`) sem escrever nada. Permissão: acao_executar, a mesma do
+    publicar/disparar.
+    """
+    dry_run = bool(body.get("dry_run"))
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabelas(cur, conn)
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        tem_073 = _coluna_073(cur)
+        cur.execute(
+            "SELECT p.pipeline_name, CAST(p.active AS INT), "
+            "CAST(ISNULL(p.dag_criada, 0) AS INT)"
+            + (", p.dag_config_pendente_em" if tem_073 else "") +
+            " FROM dbo.etl_malha_pipeline mp "
+            "JOIN dbo.etl_pipeline p ON p.pipeline_name = mp.pipeline_name "
+            "WHERE mp.malha_name = ? ORDER BY p.pipeline_name",
+            (malha,))
+        membros = []
+        for r in cur.fetchall():
+            membros.append({"pipeline": r[0], "active": int(r[1] or 0),
+                            "dag_criada": int(r[2] or 0),
+                            "publicacao_pendente": (r[3] is not None) if tem_073 else None})
+        if not membros:
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=422,
+                detail=f"A malha '{malha}' não tem pipelines vinculados — "
+                       "não há o que republicar.")
+
+        alvos, ignorados = [], []
+        for m in membros:
+            if m["active"] == 0:
+                ignorados.append({
+                    "pipeline": m["pipeline"],
+                    "motivo": "pipeline inativo — o gerador de DAGs só "
+                              "considera pipelines ativos; ative-o e "
+                              "republique para que ele receba os vínculos"})
+            elif not _DAG_ID_RE.match(m["pipeline"]):
+                ignorados.append({
+                    "pipeline": m["pipeline"],
+                    "motivo": "o nome do pipeline não é um dag_id válido"})
+            else:
+                alvos.append(m)
+        if not alvos:
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=422,
+                detail=f"Nenhum pipeline da malha '{malha}' pode ser "
+                       "republicado: todos os membros estão inativos (o "
+                       "gerador de DAGs só considera pipelines ativos).")
+
+        avisos: list = []
+        # Sem a 067 a factory cai no CSV legado: a DAG sai publicada, mas as
+        # ligações desenhadas na malha podem não estar nela — o motivo pelo
+        # qual o operador clicou no botão. Dito ANTES do gesto.
+        if not _tabela_067(cur):
+            avisos.append({
+                "no": None, "nivel": "forte", "mensagem":
+                "migration 067 pendente neste banco — as DAGs serão regeradas "
+                "sem a tabela de dependências (as ligações da malha podem não "
+                "entrar na nova versão)"})
+        # Pendentes de FORA da malha: a factory processa o lote inteiro de
+        # pendentes, não só o escopo pedido (é assim desde sempre, inclusive
+        # no botão por pipeline). Contar e dizer é a única forma honesta.
+        cur.execute(
+            "SELECT COUNT(*) FROM dbo.etl_pipeline p "
+            "WHERE p.active = 1 AND ISNULL(p.dag_criada, 0) = 0 "
+            "AND NOT EXISTS (SELECT 1 FROM dbo.etl_malha_pipeline mp "
+            "                WHERE mp.malha_name = ? "
+            "                  AND mp.pipeline_name = p.pipeline_name)",
+            (malha,))
+        row_f = cur.fetchone()
+        pendentes_de_fora = int(row_f[0] or 0) if row_f else 0
+        if pendentes_de_fora:
+            avisos.append({
+                "no": None, "nivel": "leve", "mensagem":
+                (f"{pendentes_de_fora} pipeline(s) de fora desta malha também "
+                 "estão pendentes de publicação e serão gerados na mesma "
+                 "execução do gerador (comportamento normal da factory)")})
+
+        # O banco fecha ANTES de falar com o Airflow (padrão do proxy): rede
+        # lenta não pode segurar conexão de pool aberta.
+        nomes = [m["pipeline"] for m in alvos]
+        cur.close(); conn.close(); conn = None
+
+        # Quem já tem DAG lá? A pergunta é do AIRFLOW, não do cadastro:
+        # `dag_criada` fica 0 durante toda a regeneração (é assim que a factory
+        # seleciona o lote), então usá-lo aqui anunciaria "primeira publicação"
+        # para DAG que roda há meses sempre que houvesse um run em voo.
+        existe_no_airflow = await _dags_existentes(nomes)
+        sem_dag = [p for p in nomes if existe_no_airflow.get(p) is False]
+        if sem_dag:
+            avisos.append({
+                "no": None, "nivel": "leve", "mensagem":
+                (f"{len(sem_dag)} pipeline(s) ainda sem DAG no Airflow entram "
+                 "nesta publicação como PRIMEIRA versão: "
+                 + ", ".join(sem_dag[:5])
+                 + ("…" if len(sem_dag) > 5 else ""))})
+
+        if dry_run:
+            for m in alvos:
+                m["dag_no_airflow"] = existe_no_airflow.get(m["pipeline"])
+            return {"malha": malha, "pipelines": alvos, "ignorados": ignorados,
+                    "avisos": avisos, "pendentes_de_fora": pendentes_de_fora}
+
+        quem = (str(auth.get("matricula") or "").strip() or "?")
+        run_id = f"orquestra_malha_{int(time.time() * 1000)}"
+        conf = {"pipelines": nomes,
+                "escopo_rotulo": f"Malha {malha}",
+                "requested_by": f"malha:{malha} ({quem})"}
+        # A marcação AQUI é o que faz o gesto funcionar mesmo com a factory
+        # ANTIGA no servidor (deploy que atualiza api/ e adia dags/ — o
+        # deploy.sh pergunta separado): a factory antiga ignora
+        # `conf["pipelines"]` e geraria um lote VAZIO, devolvendo SUCCESS sem
+        # regenerar nada — verde perfeito para um gesto que não aconteceu. Com
+        # os alvos já pendentes, ela os encontra pelo caminho de sempre. A
+        # factory nova refaz a marcação (idempotente) e ainda isola terceiros.
+        publicados = [m["pipeline"] for m in alvos if m["dag_criada"] == 1]
+        _marcar_para_regeneracao(nomes)
+        try:
+            async with get_airflow_client() as client:
+                r = await client.post(
+                    f"/api/v1/dags/{FACTORY_DAG_ID}/dagRuns",
+                    json={"dag_run_id": run_id, "conf": conf},
+                    headers={"Content-Type": "application/json"})
+                if not r.is_success:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"O Airflow recusou a publicação "
+                               f"(HTTP {r.status_code}): {r.text[:200]}")
+        except HTTPException:
+            _desmarcar_regeneracao(publicados)
+            raise
+        except Exception as e:      # noqa: BLE001 — rede/timeout
+            _desmarcar_regeneracao(publicados)
+            raise HTTPException(status_code=502,
+                                detail=f"Erro ao disparar o gerador de DAGs: {e}")
+
+        # Fila do reconciliador para TODOS os alvos — o que muda é o papel:
+        #  • sem DAG no Airflow (ou desconhecido): ATIVAÇÃO — a DAG nasce
+        #    pausada e alguém precisa despausá-la e avisar;
+        #  • com DAG: VERIFICAÇÃO (migration 080) — o estado no Airflow já
+        #    está certo, mas ninguém conferiria se a versão NOVA é importável.
+        #    Sem isso, um erro de carga deixa a DAG ANTERIOR rodando com a tela
+        #    dizendo "publicado e em dia" (achado da revisão adversarial).
+        for pname in nomes:
+            verificar = existe_no_airflow.get(pname) is True
+            await asyncio.to_thread(enqueue_dag_pendente, pname, False,
+                                    auth.get("matricula"), run_id, verificar)
+
+        log.info("[MALHA] republicação da malha '%s' por %s — %d pipeline(s), "
+                 "%d ignorado(s), run=%s", malha, quem, len(alvos),
+                 len(ignorados), run_id)
+        return {"ok": True, "malha": malha, "dag_run_id": run_id,
+                "republicados": nomes, "ignorados": ignorados,
+                "avisos": avisos, "pendentes_de_fora": pendentes_de_fora}
     except HTTPException:
         raise
     except Exception as e:
@@ -2358,6 +3068,37 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
                     status_code=422,
                     detail="orientacao deve ser 'horizontal' ou 'vertical'")
         tem_074 = _coluna_074(cur)
+        # F2 (081): virada da malha e a marca de equalização. `hora_virada`
+        # aceita 'HH:MM' ou null (null = a malha segue a virada global). Valor
+        # inválido é 422 ANTES de qualquer escrita — a mesma régua da
+        # orientacao, e o oposto do D35 (que aceita NULL com aviso): aqui o
+        # campo É a régua de data, e cair calado no global seria o bug.
+        tem_virada = "hora_virada" in body
+        hora_virada = None
+        if tem_virada:
+            # `_parse_hora_opcional` do register é tolerante por contrato (D35:
+            # valor ruim vira NULL com aviso). Aqui NÃO pode ser: o campo É a
+            # régua de data da malha, e cair calado na virada global mudaria o
+            # ODATE de todos os membros sem ninguém pedir. Por isso a recusa.
+            _avisos_hora: list = []
+            hora_virada = _parse_hora_opcional("hora_virada",
+                                               body.get("hora_virada"),
+                                               _avisos_hora)
+            if _avisos_hora:
+                _fechar_silencioso(conn)
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"hora_virada inválida: '{body.get('hora_virada')}' "
+                           "(use HH:MM, ou null para seguir a virada global)")
+        tem_equalizar = "equalizar_data" in body
+        equalizar_data = 0
+        if tem_equalizar:
+            if body.get("equalizar_data") not in (0, 1, True, False):
+                _fechar_silencioso(conn)
+                raise HTTPException(status_code=422,
+                                    detail="equalizar_data deve ser 0 ou 1")
+            equalizar_data = int(bool(body.get("equalizar_data")))
+        tem_081 = _colunas_081(cur)
 
         novo_nome = (body.get("novo_nome") or "").strip()
         renomeada = False
@@ -2433,6 +3174,30 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
                 log.warning("[MALHA] migration 074 ausente — orientacao da "
                             "malha '%s' não foi persistida", atual)
 
+        # F2 da spec-malha-data-unica: a virada da MALHA é a régua de data do
+        # ciclo — e ela SÓ vale se chegar a todos os membros, que é onde o
+        # motor a lê. Gravar na malha sem compilar deixaria o campo decorativo,
+        # com a corrida continuando partida (a doença da Carga_Vida).
+        equalizados: list = []
+        migration_081_pendente = False
+        if tem_virada or tem_equalizar:
+            if not tem_081:
+                migration_081_pendente = True
+                log.warning("[MALHA] migration 081 ausente — virada/equalização "
+                            "da malha '%s' não foram persistidas", atual)
+            else:
+                if tem_virada:
+                    cur.execute(
+                        "UPDATE dbo.etl_malha SET hora_virada = ?, "
+                        "atualizado_em = SYSDATETIME() WHERE malha_name = ?",
+                        (hora_virada, atual))
+                    equalizados = _compilar_virada(cur, atual, hora_virada)
+                if tem_equalizar:
+                    cur.execute(
+                        "UPDATE dbo.etl_malha SET equalizar_data = ?, "
+                        "atualizado_em = SYSDATETIME() WHERE malha_name = ?",
+                        (equalizar_data, atual))
+
         conn.commit(); cur.close(); conn.close()
         # Chaves da orientação são CONDICIONAIS (aditivas): quem não mexeu nela
         # recebe a resposta de sempre, byte a byte.
@@ -2441,6 +3206,17 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
             resp["orientacao"] = orientacao
             if migration_074_pendente:
                 resp["migration_074_pendente"] = True
+        if tem_virada or tem_equalizar:
+            if migration_081_pendente:
+                resp["migration_081_pendente"] = True
+            else:
+                if tem_virada:
+                    resp["hora_virada"] = _hhmm(hora_virada)
+                    # Quem foi alinhado à régua nova — o front usa para dizer
+                    # "N pipelines precisam ser republicados" logo em seguida.
+                    resp["equalizados"] = equalizados
+                if tem_equalizar:
+                    resp["equalizar_data"] = equalizar_data
         return resp
     except HTTPException:
         raise
@@ -2720,14 +3496,33 @@ def salvar_agendamento_malha(malha_name: str, body: dict = Body(default={}),
             (json.dumps(ag, ensure_ascii=False), malha))
         for p in aplicar:
             _aplicar_agenda_na_raiz(cur, p, ag, inicio["id"])
+        # F2 da spec-malha-data-unica: a virada do agendamento É a régua de
+        # data da MALHA — guardá-la só nas raízes deixaria os demais membros
+        # calculando ODATE por outra régua (a doença da Carga_Vida) e faria a
+        # própria tela acusar as raízes como "fora da régua", porque
+        # etl_malha.hora_virada continuaria nula. Uma porta só: salvar o
+        # agendamento aqui grava a régua e a compila para a malha inteira.
+        equalizados_virada: list = []
+        if _colunas_081(cur):
+            cur.execute(
+                "UPDATE dbo.etl_malha SET hora_virada = ?, "
+                "atualizado_em = SYSDATETIME() WHERE malha_name = ?",
+                (ag.get("hora_virada"), malha))
+            equalizados_virada = _compilar_virada(cur, malha,
+                                                  ag.get("hora_virada"))
         conn.commit(); cur.close(); conn.close()
-        return {"ok": True, "efeito": efeito, "avisos": avisos,
-                "agendamento": ag, "agendamento_resumo": resumo_para,
-                # o cron pela MESMA função do register (conferência visual —
-                # a autoridade do gatilho segue sendo o scheduler)
-                "cron": _build_cron(ag["schedule_type"], ag["schedule_hour"],
-                                    ag["schedule_minute"], ag["schedule_dow"],
-                                    ag["schedule_dom"])}
+        resp_ag = {"ok": True, "efeito": efeito, "avisos": avisos,
+                   "agendamento": ag, "agendamento_resumo": resumo_para,
+                   # o cron pela MESMA função do register (conferência visual —
+                   # a autoridade do gatilho segue sendo o scheduler)
+                   "cron": _build_cron(ag["schedule_type"], ag["schedule_hour"],
+                                       ag["schedule_minute"], ag["schedule_dow"],
+                                       ag["schedule_dom"])}
+        if equalizados_virada:
+            # Membros NÃO-raiz que foram alinhados à régua de data: o efeito da
+            # F13 fala das raízes, e este é maior — precisa ser dito.
+            resp_ag["virada_equalizada"] = equalizados_virada
+        return resp_ag
     except HTTPException:
         raise
     except Exception as e:

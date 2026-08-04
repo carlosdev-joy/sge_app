@@ -67,6 +67,15 @@ class FakeCur(FakeCurF7):
             raise RuntimeError("Invalid object name 'dbo.etl_pipeline_dependencia'")
 
         # ── etl_pipeline_dependencia ────────────────────────────────────────
+        if s.startswith("SELECT pipeline_name, COUNT(*) FROM dbo.etl_pipeline_dependencia"):
+            # F1 da spec-malha-data-unica: quantos predecessores cada membro
+            # tem — o insumo do aviso "tem dependência mas ainda dispara por
+            # agenda" no detalhe da malha.
+            contagem: dict = {}
+            for d in db.dependencias:
+                contagem[d["pipeline"]] = contagem.get(d["pipeline"], 0) + 1
+            self._rows = sorted(contagem.items())
+            return
         if s.startswith("SELECT pipeline_name, depende_de FROM dbo.etl_pipeline_dependencia"):
             self._rows = sorted((d["pipeline"], d["depende_de"])
                                 for d in db.dependencias)

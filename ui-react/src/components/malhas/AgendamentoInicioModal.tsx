@@ -124,9 +124,13 @@ interface Props {
   agendamento: Record<string, unknown> | null
   // Contagem de raízes ligadas ao Início (para o texto honesto do rodapé).
   raizes: number
+  // F3 da spec-malha-data-unica: a marca de equalização automática da malha
+  // (migration 081). undefined = a API ainda não a expõe (deploy parcial) e o
+  // controle não é oferecido.
+  equalizarData?: number
 }
 
-export function AgendamentoInicioModal({ malha, aberto, onClose, agendamento, raizes }: Props) {
+export function AgendamentoInicioModal({ malha, aberto, onClose, agendamento, raizes, equalizarData }: Props) {
   // O corpo só monta com o modal aberto: o useState do form inicializa do
   // agendamento da malha NO MOUNT — reabrir remonta e recarrega, sem
   // setState em efeito (lint react-hooks/set-state-in-effect, a mesma lição
@@ -135,13 +139,14 @@ export function AgendamentoInicioModal({ malha, aberto, onClose, agendamento, ra
     <Modal open={aberto} onClose={onClose} title="Agendamento da malha" size="lg">
       {aberto && (
         <CorpoAgendamento malha={malha} onClose={onClose}
-          agendamento={agendamento} raizes={raizes} />
+          agendamento={agendamento} raizes={raizes}
+          equalizarData={equalizarData} />
       )}
     </Modal>
   )
 }
 
-function CorpoAgendamento({ malha, onClose, agendamento, raizes }: Omit<Props, 'aberto'>) {
+function CorpoAgendamento({ malha, onClose, agendamento, raizes, equalizarData }: Omit<Props, 'aberto'>) {
   const qc = useQueryClient()
   const [form, setForm] = useState<FormAgendamento>(
     () => formDoAgendamento(agendamento))
@@ -149,6 +154,10 @@ function CorpoAgendamento({ malha, onClose, agendamento, raizes }: Omit<Props, '
   const [preview, setPreview] = useState<RespostaDry | null>(null)
   const [carregando, setCarregando] = useState(false)
   const [aplicando, setAplicando] = useState(false)
+  // F3: a marca vive na MALHA (081) e é salva pelo PATCH — o agendamento tem
+  // porta própria, e misturar os dois payloads faria um gesto escrever no
+  // contrato do outro.
+  const [equalizarLocal, setEqualizarLocal] = useState(!!Number(equalizarData ?? 0))
 
   const { data: calData } = useQuery<{ calendarios: { calendario_nome: string }[] }>({
     queryKey: ['agenda-calendarios'],
@@ -191,12 +200,32 @@ function CorpoAgendamento({ malha, onClose, agendamento, raizes }: Omit<Props, '
     if (aplicando) return
     setAplicando(true)
     try {
-      const r = await apiFetch<RespostaDry & { ok: boolean; agendamento_resumo: string }>(
+      const r = await apiFetch<RespostaDry & {
+        ok: boolean; agendamento_resumo: string; virada_equalizada?: string[]
+      }>(
         `/malhas/${encodeURIComponent(malha)}/agendamento`, {
           method: 'POST',
           body: JSON.stringify({ agendamento: payloadDoForm(form) }),
         })
+      // A marca de equalização mora na MALHA e tem porta própria (PATCH): o
+      // agendamento não pode escrever no contrato dela. Só vai se MUDOU.
+      if (equalizarLocal !== !!Number(equalizarData ?? 0)) {
+        try {
+          await apiFetch(`/malhas/${encodeURIComponent(malha)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ equalizar_data: equalizarLocal ? 1 : 0 }),
+          })
+        } catch (e2) {
+          // O agendamento JÁ foi salvo — falhar aqui não pode parecer que
+          // nada aconteceu, nem que a marca pegou.
+          const err2 = e2 as Error
+          toast.error(`Agendamento salvo, mas a equalização automática não: ${err2.message}`)
+        }
+      }
       toast.success(`Agendamento da malha salvo: ${r.agendamento_resumo}.`)
+      if (r.virada_equalizada?.length) {
+        toast.info(`${r.virada_equalizada.length} pipeline(s) alinhados à hora de virada da malha — republique-os.`)
+      }
       if (r.efeito.agendamentos.length > 0) {
         toast.info(`${r.efeito.agendamentos.length} raiz(es) receberam o agendamento da malha.`)
       }
@@ -389,7 +418,7 @@ function CorpoAgendamento({ malha, onClose, agendamento, raizes }: Omit<Props, '
                 </select>
               </label>
               <label className="flex flex-col gap-1">
-                <span className={labelCls}>Hora de virada (ODATE) — vale p/ todas as raízes</span>
+                <span className={labelCls}>Hora de virada (ODATE) — a régua de data da malha</span>
                 <input type="time" value={form.horaVirada}
                   onChange={e => set({ horaVirada: e.target.value })}
                   className={`${inputCls} w-28`} />
@@ -401,6 +430,35 @@ function CorpoAgendamento({ malha, onClose, agendamento, raizes }: Omit<Props, '
                 ? 'O Início ainda não está ligado a nenhum pipeline — o agendamento fica guardado na malha e nada é alterado nos pipelines.'
                 : `Ao confirmar, ${raizes === 1 ? '1 raiz ligada recebe' : `${raizes} raízes ligadas recebem`} este agendamento — o efeito é mostrado antes de gravar.`}
             </p>
+            <p className="text-[11px] text-dim">
+              A <strong>hora de virada</strong> vale para a malha inteira, não
+              só para as raízes: é ela que decide a data de referência de quem
+              dispara por agenda. Ao salvar, todos os membros fora dessa régua
+              são alinhados e passam a pedir republicação.
+            </p>
+
+            {/* F3 da spec-malha-data-unica: a marca do "não pare para
+                perguntar". Sem ela, data divergente barra o disparo. */}
+            <label className="flex items-start gap-2 rounded-md border border-edge bg-canvas px-3 py-2">
+              <input
+                type="checkbox"
+                checked={equalizarLocal}
+                onChange={e => setEqualizarLocal(e.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-[#1A5FA8]"
+              />
+              <span className="flex flex-col gap-0.5">
+                <span className="text-xs font-medium text-ink">
+                  Equalizar a data automaticamente
+                </span>
+                <span className="text-[11px] text-dim">
+                  Se, na hora de começar, algum membro estiver com data de
+                  referência diferente, a malha carimba todos com a data dela e
+                  segue — sem parar para o operador avaliar. A mudança fica
+                  registrada no histórico. Desmarcado, o disparo é bloqueado com
+                  a lista de quem está fora.
+                </span>
+              </span>
+            </label>
 
             <div className="flex justify-end gap-2 pt-1">
               <Button variant="secondary" onClick={onClose}>Cancelar</Button>

@@ -89,6 +89,12 @@ import {
   STATUS_EXECUCAO, ORDEM_LEGENDA, estiloEvento,
   type ExecucaoPipeline, type MalhaExecucaoApi,
 } from './statusExecucao'
+// Camada de FLUXO da visão de Execução: a linha entre dois nós conta por onde
+// a corrida do dia passou, onde ela está agora e onde parou.
+import {
+  arestaComFluxo, estadoDaAresta, estadoDoComponente, estadoDoPipeline,
+  type EstadoElemento,
+} from './fluxoExecucao'
 // F15: próxima execução do agendamento — DISPLAY-ONLY (a autoridade do
 // gatilho é o scheduler; mesmo estatuto do calcularDataRef da F5).
 import { proximaExecucaoTexto } from './proximaExecucao'
@@ -120,6 +126,16 @@ interface MalhaMembroApi {
   // porta — o agendamento da malha está inerte nela, §2.2).
   agenda_no?: number | null
   agenda_contradicao?: boolean
+  // Publicação: dag_criada (a DAG já existe no Airflow?) e o carimbo da 073
+  // (o cadastro mudou depois da última publicação?). `publicacao_pendente`
+  // AUSENTE = banco sem a 073 — a tela não afirma "está em dia".
+  dag_criada?: number
+  publicacao_pendente?: boolean
+  // Quantos predecessores o membro tem na 067. Com predecessor E agendamento
+  // próprio, ele dispara FORA da malha: calcula a própria data de referência
+  // e mistura a corrida (causa do incidente da Carga_Vida). Chave ausente =
+  // sem a 067 no banco — a tela não afirma nada.
+  qtd_predecessores?: number
 }
 // Proveniência de linha compilada (F11): o nó Aguarde dono e a malha dele.
 interface CompiladaPor {
@@ -191,6 +207,13 @@ interface MalhaDetalheApi {
   // da 075 pendentes; o painel do Início desliga.
   agendamento?: Record<string, unknown> | null
   agendamento_resumo?: string | null
+  // F2 da spec-malha-data-unica (migration 081): a régua de data do ciclo.
+  // `hora_virada` null = a malha segue a virada global; `virada_divergente`
+  // lista os membros fora da régua (chaves ausentes = sem a 081 no banco, e a
+  // tela não afirma nada).
+  hora_virada?: string | null
+  equalizar_data?: number
+  virada_divergente?: string[]
 }
 
 // ── Contrato do gesto (dry_run — desenho §7.2) ──────────────────────────────
@@ -230,10 +253,29 @@ interface DisparoRaizInfo {
   tem_dependencia?: boolean
   corridas_na_data?: number
 }
+// F1 da spec-malha-data-unica: o que SEGURA a malha. `em_aberto` = membro com
+// corrida viva (a malha começa do zero); `datas_divergentes` = membro que
+// rodou NESTE ciclo carimbando outra data de referência (o incidente da
+// Carga_Vida). O servidor recusa o disparo; o dry_run só mostra.
+interface BloqueioCiclo {
+  pipeline: string
+  data_referencia: string | null
+  status: string
+  inicio: string | null
+}
 interface DisparoDryResposta {
   data_referencia: string
   raizes: DisparoRaizInfo[]
   avisos: AvisoDesenho[]
+  bloqueios?: { em_aberto: BloqueioCiclo[]; datas_divergentes: BloqueioCiclo[] }
+  bloqueado?: boolean
+  // F3: malha marcada para equalizar — em vez de parar, ela carimba todos com
+  // a data do ciclo. O de→para é mostrado ANTES de confirmar.
+  equalizacao?: {
+    prevista: BloqueioCiclo[]
+    impedidos: (BloqueioCiclo & { motivo: string })[]
+    bloqueado_por_corrida: boolean
+  }
 }
 interface DisparoResposta {
   ok: boolean
@@ -241,6 +283,41 @@ interface DisparoResposta {
   disparadas: { pipeline: string; dag_run_id: string }[]
   falhas: { pipeline: string; erro: string }[]
   avisos: AvisoDesenho[]
+  // F3: o que a malha recarimbou em nome do operador (aditivo).
+  equalizados?: { pipeline: string; de: string; para: string }[]
+}
+
+// ── Republicação da malha (POST /malhas/{m}/republicar) ─────────────────────
+// Desenhar aresta/Aguarde/agendamento grava a dependência na hora, mas a DAG
+// que o Airflow executa continua sendo a ANTERIOR até ser regerada. O gesto
+// republica TODOS os membros de uma vez; dry_run mostra quem entra, quem fica
+// de fora e por quê.
+interface RepublicarAlvo {
+  pipeline: string
+  active: number
+  dag_criada: number
+  // null = banco sem a migration 073 (nada a afirmar sobre estar em dia).
+  publicacao_pendente: boolean | null
+  // A DAG existe no Airflow? Vem do próprio Airflow (o cadastro não serve:
+  // dag_criada fica 0 durante a regeneração). null = não deu para saber —
+  // e aí o modal não afirma nada. Só no dry_run.
+  dag_no_airflow?: boolean | null
+}
+interface RepublicarDryResposta {
+  malha: string
+  pipelines: RepublicarAlvo[]
+  ignorados: { pipeline: string; motivo: string }[]
+  avisos: AvisoDesenho[]
+  pendentes_de_fora: number
+}
+interface RepublicarResposta {
+  ok: boolean
+  malha: string
+  dag_run_id: string
+  republicados: string[]
+  ignorados: { pipeline: string; motivo: string }[]
+  avisos: AvisoDesenho[]
+  pendentes_de_fora: number
 }
 
 // Linha unificada do painel de eventos (F9 pipelines + F14 nós observadores).
@@ -348,14 +425,15 @@ function execDoComponente(
         const st = execPorPipeline.get(p)?.status
         return st === 'FALHA' || st === 'NAO_LIBEROU'
       })
+      const total = upstream.length
       if (bloqueiam.length > 0) {
-        return { kind: 'aguarde', estado: 'bloqueado', faltam: [], bloqueiam }
+        return { kind: 'aguarde', estado: 'bloqueado', faltam: [], bloqueiam, total }
       }
       const faltam = upstream.filter(
         p => execPorPipeline.get(p)?.status !== 'SUCESSO')
       return faltam.length === 0
-        ? { kind: 'aguarde', estado: 'satisfeito', faltam: [], bloqueiam: [] }
-        : { kind: 'aguarde', estado: 'aguardando', faltam, bloqueiam: [] }
+        ? { kind: 'aguarde', estado: 'satisfeito', faltam: [], bloqueiam: [], total }
+        : { kind: 'aguarde', estado: 'aguardando', faltam, bloqueiam: [], total }
     }
     // Observadores: upstream VAZIO é o skip da guardiã (Decisão 13) — a tela
     // diz isso, em vez de prometer "aguardando" para sempre. Mesma régua do
@@ -446,6 +524,15 @@ function nodeData(m: MalhaMembroApi): MalhaPipelineNodeData {
     // tradução do card da tela Malha).
     schedule: m.schedule_type === 'on_demand' ? 'sob demanda' : m.schedule_type,
   }
+}
+
+/** Membro cuja DAG no Airflow não reflete mais o cadastro — o carimbo da 073.
+ *  `dag_criada` de propósito NÃO entra: ele fica 0 durante toda a regeneração
+ *  (é assim que a factory seleciona o lote), então usá-lo acenderia o chip em
+ *  todos os membros a cada republicação em voo. Sem a 073 no banco a chave nem
+ *  vem, e a tela não afirma nada. */
+function precisaRepublicar(m: MalhaMembroApi): boolean {
+  return m.publicacao_pendente === true
 }
 
 // Cor do nó no minimapa: azul da casa p/ pipeline ativo, slate p/ inativo e a
@@ -556,6 +643,12 @@ function MalhaEditorInner({
   const [disparo, setDisparo] = useState<DisparoDryResposta | null>(null)
   const [disparoCarregando, setDisparoCarregando] = useState(false)
   const [disparando, setDisparando] = useState(false)
+  // F2: alinhamento da régua de data (copia a virada da malha aos membros).
+  const [alinhandoVirada, setAlinhandoVirada] = useState(false)
+  // Republicação da malha — dry_run aguardando confirmação no modal.
+  const [republicacao, setRepublicacao] = useState<RepublicarDryResposta | null>(null)
+  const [republicacaoCarregando, setRepublicacaoCarregando] = useState(false)
+  const [republicando, setRepublicando] = useState(false)
   // Busca da paleta (adicionar membro).
   const [busca, setBusca] = useState('')
   // F9: Montagem (default, editável) | Execução (leitura da data de referência).
@@ -772,6 +865,17 @@ function MalhaEditorInner({
   useEffect(() => {
     if (!grafo) return
     const atuais = new Map(nodesRef.current.map(n => [n.id, n.position]))
+    // Estado de cada COMPONENTE na data — calculado uma vez e reusado pelo card
+    // e pela linha (duas leituras da mesma verdade, nunca dois cálculos).
+    const camadaExecNos = emExecucao && !!execData
+      && execData.migration_067_pendente !== true
+    const estadoPonta = new Map<string, EstadoElemento>()
+    if (camadaExecNos) {
+      for (const m of grafo.membros) {
+        estadoPonta.set(m.pipeline_name,
+          estadoDoPipeline(execPorPipeline.get(m.pipeline_name)?.status))
+      }
+    }
     setNodes([
       ...grafo.membros.map(m => {
         const exec = emExecucao ? execPorPipeline.get(m.pipeline_name) : undefined
@@ -796,6 +900,9 @@ function MalhaEditorInner({
             // dependência) — nos DOIS modos: na Execução ele convive com o
             // badge de status (cantos opostos do card).
             contradicao: !!m.agenda_contradicao,
+            // Chip "republicar" — só na MONTAGEM: é lá que o gesto vive, e na
+            // Execução o card já carrega a camada de status.
+            publicacaoPendente: !emExecucao && precisaRepublicar(m),
           },
         }
       }),
@@ -803,8 +910,14 @@ function MalhaEditorInner({
         const tipo = n.tipo as TipoComponente
         // F15: a camada de execução só existe com a visão aberta E dados da
         // 067 disponíveis — deploy parcial degrada para o card neutro.
-        const camadaExec = emExecucao && !!execData
-          && execData.migration_067_pendente !== true
+        const camadaExec = camadaExecNos
+        const execNo = camadaExec
+          ? execDoComponente(n, tipo,
+              grafo.saidasPipelineNo.get(n.id) ?? [],
+              execPorPipeline, eventoNoPorId,
+              data?.agendamento ?? null)
+          : null
+        if (camadaExec) estadoPonta.set(noRfId(n.id), estadoDoComponente(execNo))
         return {
           id: noRfId(n.id),
           type: COMPONENTE_META[tipo].nodeType,
@@ -830,19 +943,24 @@ function MalhaEditorInner({
             contradicao: tipo === 'inicio'
               && grafo.membros.some(
                 m => m.agenda_contradicao && m.agenda_no === n.id),
-            execNo: camadaExec
-              ? execDoComponente(n, tipo,
-                  grafo.saidasPipelineNo.get(n.id) ?? [],
-                  execPorPipeline, eventoNoPorId,
-                  data?.agendamento ?? null)
-              : null,
+            execNo,
           } satisfies MalhaComponenteNodeData,
         }
       }),
     ])
-    setEdges(grafo.novasEdges)
+    // A LINHA conta o caminho da corrida: verde onde já passou, azul animada na
+    // frente que está avançando, vermelha onde parou. Fora da Execução (ou sem
+    // dado na data) as arestas ficam exatamente como na Montagem.
+    setEdges(camadaExecNos
+      ? grafo.novasEdges.map(e => arestaComFluxo(
+          e,
+          estadoDaAresta(estadoPonta.get(e.source) ?? null,
+                         estadoPonta.get(e.target) ?? null),
+          colorMode === 'dark'))
+      : grafo.novasEdges)
   }, [grafo, setNodes, setEdges, emExecucao, execPorPipeline, eventoNoPorId,
-      execData, orientacao, data, onAbrirEtapas, dataExibida, descerParaEtapas])
+      execData, orientacao, data, onAbrirEtapas, dataExibida, descerParaEtapas,
+      colorMode])
 
   // dirty = alguma posição difere do baseline do servidor (arredondado — é o
   // que o PUT envia). Mover um nó e devolvê-lo ao lugar volta a desabilitar o
@@ -980,6 +1098,14 @@ function MalhaEditorInner({
           method: 'POST',
           body: JSON.stringify({ data_referencia: disparo.data_referencia }),
         })
+      // F3: o recarimbo vem ANTES do sucesso — mudança em histórico de
+      // execução tem de ser dita, mesmo quando o operador pediu que fosse
+      // automática.
+      if (r.equalizados?.length) {
+        toast.info(r.equalizados.length === 1
+          ? `Data equalizada: ${r.equalizados[0].pipeline} passou de ${r.equalizados[0].de} para ${r.equalizados[0].para}.`
+          : `${r.equalizados.length} execuções tiveram a data de referência equalizada para ${r.data_referencia}.`)
+      }
       if (r.disparadas.length > 0) {
         toast.success(r.disparadas.length === 1
           ? `1 raiz disparada com data de referência ${r.data_referencia} — a cadeia anda pelo push.`
@@ -998,6 +1124,108 @@ function MalhaEditorInner({
       setDisparo(null)
     }
   }, [disparo, disparando, malha, qc])
+
+  // Membros cuja DAG no Airflow não reflete mais o cadastro — o contador do
+  // botão de republicação. Zero NÃO desabilita o botão: republicar com tudo
+  // em dia é legítimo (regerar depois de um deploy, por exemplo).
+  const membrosDesatualizados = useMemo(
+    () => (data?.membros ?? []).filter(precisaRepublicar).length,
+    [data?.membros])
+
+  // Membro que TEM predecessor mas continua com agendamento próprio: a DAG
+  // dele não foi republicada, então ele dispara fora da malha, calcula a
+  // própria data de referência e mistura a corrida. É o sintoma que precede o
+  // estrago — e o único que aparece ANTES de a malha rodar errado.
+  const membrosForaDaMalha = useMemo(
+    () => (data?.membros ?? [])
+      .filter(m => (m.qtd_predecessores ?? 0) > 0
+        && !!m.schedule_type && m.schedule_type !== 'on_demand')
+      .map(m => m.pipeline_name),
+    [data?.membros])
+
+  // F2: copia a virada da MALHA para todos os membros. Reenvia a própria
+  // virada salva — o gesto é "alinhar", não "mudar a régua": trocar a régua é
+  // outra decisão, e ela mora no painel de agendamento.
+  // A virada sai do objeto ANTES do callback: `data?.x` na lista de deps
+  // impede o compilador do React de preservar a memoização.
+  const viradaSalva = data?.hora_virada ?? null
+  const alinharVirada = useCallback(async () => {
+    if (alinhandoVirada) return
+    setAlinhandoVirada(true)
+    try {
+      const r = await apiFetch<{ equalizados?: string[]; migration_081_pendente?: boolean }>(
+        `/malhas/${encodeURIComponent(malha)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ hora_virada: viradaSalva }),
+        })
+      if (r.migration_081_pendente) {
+        toast.error('migration 081 pendente neste ambiente — a régua de data da malha ainda não pode ser salva.')
+      } else {
+        const n = r.equalizados?.length ?? 0
+        toast.success(n === 1
+          ? '1 pipeline alinhado à data da malha — republique-o para a régua valer no Airflow.'
+          : `${n} pipelines alinhados à data da malha — republique-os para a régua valer no Airflow.`)
+        qc.invalidateQueries({ queryKey: ['malha', malha] })
+        qc.invalidateQueries({ queryKey: ['pipelines'] })
+      }
+    } catch (err) {
+      const httpErr = err as Error & { status?: number }
+      toast.error(httpErr.message || 'Erro ao alinhar a data da malha')
+    } finally {
+      setAlinhandoVirada(false)
+    }
+  }, [alinhandoVirada, malha, viradaSalva, qc])
+
+  // ── Republicação da malha (dry_run → modal → write) ───────────────────────
+  // Mudar o desenho grava a dependência na hora; a DAG do Airflow só passa a
+  // obedecê-la depois de regerada. Este é o "Publicar nova versão" da tela
+  // Pipelines aplicado à malha inteira — o dry_run diz quem entra e quem fica
+  // de fora ANTES de qualquer marcação.
+  const abrirRepublicacao = useCallback(async () => {
+    if (republicacaoCarregando) return
+    setRepublicacaoCarregando(true)
+    try {
+      const r = await apiFetch<RepublicarDryResposta>(
+        `/malhas/${encodeURIComponent(malha)}/republicar`, {
+          method: 'POST',
+          body: JSON.stringify({ dry_run: true }),
+        })
+      setRepublicacao(r)
+    } catch (err) {
+      // 422 (malha vazia / todos inativos) e 503 (070) chegam como detail
+      // pt-BR — o servidor é a autoridade da recusa.
+      const httpErr = err as Error & { status?: number }
+      toast.error(httpErr.message || 'Erro ao preparar a republicação da malha')
+    } finally {
+      setRepublicacaoCarregando(false)
+    }
+  }, [republicacaoCarregando, malha])
+
+  const confirmarRepublicacao = useCallback(async () => {
+    if (!republicacao || republicando) return
+    setRepublicando(true)
+    try {
+      const r = await apiFetch<RepublicarResposta>(
+        `/malhas/${encodeURIComponent(malha)}/republicar`, { method: 'POST' })
+      toast.success(r.republicados.length === 1
+        ? '1 pipeline enviado para publicação — a nova versão da DAG entra em alguns minutos.'
+        : `${r.republicados.length} pipelines enviados para publicação — as novas versões das DAGs entram em alguns minutos.`)
+      // Ignorado NÃO é sucesso silencioso: quem ficou de fora é dito com o
+      // motivo, um por um (a mesma régua do erro-por-raiz do disparo).
+      r.ignorados.forEach(i => toast.info(`${i.pipeline}: ${i.motivo}`))
+      // O acompanhamento fino (erro de geração, import error) mora na tela de
+      // Publicação, que lê o log da factory por run.
+      qc.invalidateQueries({ queryKey: ['malha', malha] })
+      qc.invalidateQueries({ queryKey: ['pipelines'] })   // badge "publicação pendente"
+      qc.invalidateQueries({ queryKey: ['factory-runs'] })
+    } catch (err) {
+      const httpErr = err as Error & { status?: number }
+      toast.error(httpErr.message || 'Erro ao republicar os pipelines da malha')
+    } finally {
+      setRepublicando(false)
+      setRepublicacao(null)
+    }
+  }, [republicacao, republicando, malha, qc])
 
   // ── Gestos de aresta de nó / componente (dry_run → modal → write) ─────────
   const aplicarAresta = useCallback(async (
@@ -1644,8 +1872,34 @@ function MalhaEditorInner({
             layout). Consulta (readOnly) vê a orientação salva, mas não troca —
             o controle nem aparece. */}
         {!emExecucao && !readOnly && (
-          <div className="ml-auto flex items-center gap-1.5">
-            <span className="text-[11px] text-dim">Orientação</span>
+          <div className="ml-auto flex flex-wrap items-center gap-3">
+            {/* Republicação da malha: desenhar aresta/Aguarde/agendamento
+                grava a dependência na hora, mas a DAG do Airflow só passa a
+                obedecê-la depois de regerada. O contador diz quantos membros
+                estão nessa situação AGORA (carimbo da 073 ou sem DAG). */}
+            {podeExecutar && (
+              <Button
+                size="sm"
+                variant={membrosDesatualizados > 0 ? 'primary' : 'secondary'}
+                onClick={() => void abrirRepublicacao()}
+                loading={republicacaoCarregando}
+                disabled={(data?.membros.length ?? 0) === 0}
+                title={(data?.membros.length ?? 0) === 0
+                  ? 'A malha ainda não tem pipelines vinculados'
+                  : membrosDesatualizados > 0
+                    ? `${membrosDesatualizados} pipeline(s) com a DAG desatualizada — republicar gera as novas versões com os vínculos atuais`
+                    : 'Gerar novamente as DAGs de todos os pipelines desta malha com o cadastro atual'}
+              >
+                <RefreshCw size={13} /> Republicar pipelines
+                {membrosDesatualizados > 0 && (
+                  <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-px text-[10px] font-semibold text-amber-800 dark:bg-amber-900/60 dark:text-amber-300">
+                    {membrosDesatualizados}
+                  </span>
+                )}
+              </Button>
+            )}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-dim">Orientação</span>
             <div className="flex gap-1">
               <button
                 onClick={() => trocarOrientacao('horizontal')}
@@ -1663,6 +1917,7 @@ function MalhaEditorInner({
               >
                 <ArrowUpDown size={12} /> vertical
               </button>
+              </div>
             </div>
           </div>
         )}
@@ -1727,6 +1982,76 @@ function MalhaEditorInner({
           </div>
         )}
       </div>
+
+      {/* F2 da spec-malha-data-unica: membros fora da régua de data da malha.
+          A virada decide o ODATE de quem roda por agenda — divergir aqui é o
+          que parte a corrida em dois dias. O botão alinha todos de uma vez. */}
+      {(data?.virada_divergente?.length ?? 0) > 0 && (
+        <div className="flex items-start gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            <strong>
+              {data!.virada_divergente!.length === 1
+                ? '1 pipeline fora da régua de data da malha'
+                : `${data!.virada_divergente!.length} pipelines fora da régua de data da malha`}
+            </strong>
+            {' — '}a hora de virada deles é diferente da malha
+            {data?.hora_virada
+              ? <> (<span className="font-mono">{data.hora_virada}</span>)</>
+              : ' (virada global)'}
+            , então carimbam data de referência diferente na mesma corrida.{' '}
+            <span className="font-mono text-[11px]">
+              {data!.virada_divergente!.slice(0, 4).join(', ')}
+              {data!.virada_divergente!.length > 4
+                ? ` +${data!.virada_divergente!.length - 4}` : ''}
+            </span>
+          </span>
+          {!readOnly && !emExecucao && (
+            <button
+              onClick={() => void alinharVirada()}
+              disabled={alinhandoVirada}
+              title="Copiar a hora de virada da malha para todos os membros"
+              className="shrink-0 rounded-md border border-amber-300 bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 transition-colors hover:bg-amber-200 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-200 dark:hover:bg-amber-900/60"
+            >
+              {alinhandoVirada ? 'alinhando…' : 'Alinhar data da malha'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* F1 da spec-malha-data-unica: o pipeline que tem predecessor E
+          agendamento próprio dispara FORA da malha — foi assim que a corrida
+          da Carga_Vida saiu com metade dos membros num ODATE e metade em
+          outro. Vale nos DOIS modos: na Execução é onde o estrago aparece. */}
+      {membrosForaDaMalha.length > 0 && (
+        <div className="flex items-start gap-2 border-b border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            <strong>
+              {membrosForaDaMalha.length === 1
+                ? '1 pipeline com dependência ainda dispara por agenda'
+                : `${membrosForaDaMalha.length} pipelines com dependência ainda disparam por agenda`}
+            </strong>
+            {' — '}a DAG deles não foi republicada depois que a dependência foi
+            criada, então rodam no horário próprio, fora da ordem da malha, e
+            carimbam a própria data de referência.{' '}
+            <span className="font-mono text-[11px]">
+              {membrosForaDaMalha.slice(0, 4).join(', ')}
+              {membrosForaDaMalha.length > 4
+                ? ` +${membrosForaDaMalha.length - 4}` : ''}
+            </span>
+          </span>
+          {!readOnly && podeExecutar && (
+            <button
+              onClick={() => void abrirRepublicacao()}
+              disabled={republicacaoCarregando}
+              className="shrink-0 rounded-md border border-red-300 bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-800 transition-colors hover:bg-red-200 disabled:opacity-50 dark:border-red-700 dark:bg-red-900/40 dark:text-red-200 dark:hover:bg-red-900/60"
+            >
+              Republicar pipelines
+            </button>
+          )}
+        </div>
+      )}
 
       {(depsIndisponiveis || (emExecucao && execData?.migration_067_pendente === true)) && (
         <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400">
@@ -2153,6 +2478,17 @@ function MalhaEditorInner({
               </span>
             )
           })}
+          {/* A linha é a outra metade da leitura: o card diz o estado de UM
+              pipeline, a linha diz se a corrida ATRAVESSOU aquele trecho. */}
+          <span className="flex items-center gap-1.5 border-l border-edge pl-3 text-[10px] text-dim">
+            linha:
+            <span className="inline-block h-0.5 w-4 rounded bg-green-600 dark:bg-green-400" />
+            percorrida
+            <span className="inline-block h-0.5 w-4 animate-pulse rounded bg-blue-600 dark:bg-blue-400" />
+            em andamento
+            <span className="inline-block h-0.5 w-4 rounded bg-red-600 dark:bg-red-400" />
+            parada
+          </span>
           <span className="ml-auto text-[10px] text-dim">
             nó sem anel = sem execução registrada na data
           </span>
@@ -2402,6 +2738,70 @@ function MalhaEditorInner({
       >
         {disparo && (
           <div className="flex flex-col gap-3">
+            {/* F1: a malha começa do ZERO. O que segura vem PRIMEIRO, com nome
+                e data de cada um — o operador precisa saber o que resolver, não
+                só que não pode disparar. */}
+            {/* F3: a malha marcada equaliza sozinha — mas o de→para aparece
+                antes de confirmar. Automático não é secreto. */}
+            {(disparo.equalizacao?.prevista.length ?? 0) > 0 && (
+              <div className="flex flex-col gap-1 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 dark:border-blue-800 dark:bg-blue-900/20">
+                <span className="flex items-center gap-1.5 text-[12px] font-semibold text-blue-700 dark:text-blue-300">
+                  <RefreshCw size={13} /> Esta malha equaliza a data automaticamente
+                </span>
+                {disparo.equalizacao!.prevista.map(p => (
+                  <div key={p.pipeline} className="text-[11px] text-blue-700 dark:text-blue-300">
+                    <span className="font-mono">{p.pipeline}</span>: {p.data_referencia}
+                    {' → '}<strong>{disparo.data_referencia}</strong>
+                  </div>
+                ))}
+                <span className="text-[11px] text-blue-700/90 dark:text-blue-300/90">
+                  A mudança fica registrada no histórico da execução e no painel
+                  de eventos da malha.
+                </span>
+              </div>
+            )}
+            {(disparo.equalizacao?.impedidos.length ?? 0) > 0 && (
+              <div className="flex flex-col gap-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 dark:border-amber-800 dark:bg-amber-900/20">
+                <span className="text-[12px] font-semibold text-amber-700 dark:text-amber-300">
+                  Não dá para equalizar:
+                </span>
+                {disparo.equalizacao!.impedidos.map(p => (
+                  <div key={p.pipeline} className="text-[11px] text-amber-700 dark:text-amber-300">
+                    <span className="font-mono">{p.pipeline}</span> — {p.motivo}
+                  </div>
+                ))}
+              </div>
+            )}
+            {disparo.bloqueado && disparo.bloqueios && (
+              <div className="flex flex-col gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 dark:border-red-800 dark:bg-red-900/20">
+                <span className="flex items-center gap-1.5 text-[12px] font-semibold text-red-700 dark:text-red-300">
+                  <AlertTriangle size={13} /> A malha não pode começar agora
+                </span>
+                {disparo.bloqueios.em_aberto.length > 0 && (
+                  <div className="text-[11px] text-red-700 dark:text-red-300">
+                    <span className="font-semibold">Corrida em andamento:</span>{' '}
+                    {disparo.bloqueios.em_aberto.map(b =>
+                      `${b.pipeline} (${b.status.toLowerCase()}, ${b.data_referencia})`
+                    ).join(' · ')}
+                  </div>
+                )}
+                {disparo.bloqueios.datas_divergentes.length > 0 && (
+                  <div className="text-[11px] text-red-700 dark:text-red-300">
+                    <span className="font-semibold">
+                      Data de referência diferente de {disparo.data_referencia}:
+                    </span>{' '}
+                    {disparo.bloqueios.datas_divergentes.map(b =>
+                      `${b.pipeline} em ${b.data_referencia}`).join(' · ')}
+                  </div>
+                )}
+                <span className="text-[11px] text-red-700/90 dark:text-red-300/90">
+                  A malha só parte do zero e com todos na mesma data. Encerre as
+                  corridas em aberto e iguale a data dos membros — o caso mais
+                  comum é dependente que ainda dispara por agenda, resolvido por
+                  <strong> Republicar pipelines</strong>.
+                </span>
+              </div>
+            )}
             <p className="text-sm text-ink">
               As raízes abaixo (ligadas ao Início) serão disparadas com a data
               de referência{' '}
@@ -2470,10 +2870,100 @@ function MalhaEditorInner({
               >
                 Cancelar
               </Button>
-              <Button onClick={() => void confirmarDisparo()} loading={disparando}>
+              <Button
+                onClick={() => void confirmarDisparo()}
+                loading={disparando}
+                disabled={disparo.bloqueado === true}
+                title={disparo.bloqueado
+                  ? 'A malha tem corrida em aberto ou data de referência divergente — resolva antes de disparar'
+                  : undefined}
+              >
                 <Play size={13} /> Disparar {disparo.raizes.length === 1
                   ? '1 raiz'
                   : `${disparo.raizes.length} raízes`}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Confirmação da republicação: quem entra, quem fica de fora e por quê
+          — dito antes de qualquer marcação no cadastro. */}
+      <Modal
+        open={!!republicacao}
+        onClose={() => { if (!republicando) setRepublicacao(null) }}
+        title="Republicar pipelines da malha"
+      >
+        {republicacao && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-ink">
+              As DAGs dos pipelines abaixo serão geradas de novo com o cadastro
+              atual — é assim que os vínculos desenhados nesta malha passam a
+              valer no Airflow.
+            </p>
+            <div className="flex max-h-56 flex-col gap-1 overflow-y-auto">
+              {republicacao.pipelines.map(p => (
+                <div key={p.pipeline}
+                  className="flex items-center gap-2 rounded-md border border-edge bg-canvas px-3 py-1.5">
+                  <RefreshCw size={12} className="shrink-0 text-dim" />
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink">
+                    {p.pipeline}
+                  </span>
+                  {p.dag_no_airflow === false && (
+                    <span className="rounded-full border border-blue-200 bg-blue-50 px-1.5 py-px text-[10px] font-semibold text-blue-700 dark:border-blue-800 dark:bg-blue-900/40 dark:text-blue-300">
+                      primeira publicação
+                    </span>
+                  )}
+                  {p.dag_no_airflow !== false && p.publicacao_pendente === true && (
+                    <span className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px text-[10px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                      desatualizada
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            {republicacao.ignorados.length > 0 && (
+              <div className="flex flex-col gap-1 rounded-md border border-edge bg-panel px-3 py-2">
+                <span className="text-[11px] font-semibold text-dim">
+                  Fora desta publicação:
+                </span>
+                {republicacao.ignorados.map(i => (
+                  <div key={i.pipeline} className="text-[11px] text-dim">
+                    <span className="font-mono text-ink">{i.pipeline}</span> — {i.motivo}
+                  </div>
+                ))}
+              </div>
+            )}
+            {republicacao.avisos.length > 0 && (
+              <div className="flex flex-col gap-0.5">
+                {republicacao.avisos.map((a, i) => (
+                  <div key={i} className="flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+                    {a.nivel === 'forte'
+                      ? <AlertTriangle size={12} className="mt-px shrink-0" />
+                      : <Info size={12} className="mt-px shrink-0" />}
+                    <span>{a.mensagem}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-[11px] text-dim">
+              A publicação roda no gerador de DAGs (etl_dag_factory) e leva de
+              alguns segundos a poucos minutos. O andamento e os erros de cada
+              pipeline ficam na tela de Publicação. As corridas em andamento
+              não são interrompidas.
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button
+                variant="secondary"
+                onClick={() => setRepublicacao(null)}
+                disabled={republicando}
+              >
+                Cancelar
+              </Button>
+              <Button onClick={() => void confirmarRepublicacao()} loading={republicando}>
+                <RefreshCw size={13} /> Republicar {republicacao.pipelines.length === 1
+                  ? '1 pipeline'
+                  : `${republicacao.pipelines.length} pipelines`}
               </Button>
             </div>
           </div>
@@ -2488,6 +2978,7 @@ function MalhaEditorInner({
         onClose={() => setAgendaAberta(false)}
         agendamento={data?.agendamento ?? null}
         raizes={raizesInicio}
+        equalizarData={data?.equalizar_data}
       />
     </div>
   )

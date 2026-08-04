@@ -90,47 +90,133 @@ def _import_error_sync(client: httpx.Client, pipeline: str) -> str | None:
 
 # ── fila (DB síncrono) ──────────────────────────────────────────────────────
 
+def _tem_modo_verificacao(cur) -> bool:
+    """True se a coluna da migration 080 existe. Guard no padrão da casa: sem
+    ela, o modo verificação não é registrável e quem pediu decide o que fazer
+    (a republicação de malha simplesmente não enfileira — ver `enqueue`)."""
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_dag_pendente', 'modo_verificacao')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None)
+    except Exception as e:
+        log.debug("[DAG-RECONCILE] checagem da coluna modo_verificacao: %s", e)
+        return False
+
+
 def enqueue(pipeline_name: str, desired_paused: bool, matricula: str | None,
-            dag_run_id: str | None = None) -> None:
+            dag_run_id: str | None = None,
+            modo_verificacao: bool = False) -> bool:
     """Registra a intenção de ativar/notificar uma DAG recém-gerada (best-effort).
-    `dag_run_id` liga o pendente ao run da factory (etl_factory_log)."""
+    `dag_run_id` liga o pendente ao run da factory (etl_factory_log).
+
+    `modo_verificacao=True` (republicação de malha, migration 080): o item
+    existe só para CONFERIR o desfecho — não notifica sucesso e não mexe no
+    carimbo de publicação pendente (quem publica é a factory), mas continua
+    cobrando erro de importação. Sem a 080 este modo não é registrável e a
+    função devolve False SEM enfileirar: um pendente comum no lugar dele
+    limparia o carimbo antes da hora e notificaria N vezes por clique.
+
+    Devolve True quando o item entrou na fila."""
     if not pipeline_name:
-        return
+        return False
     try:
         conn = get_db_conn(); cur = conn.cursor()
+        tem_coluna = _tem_modo_verificacao(cur)
+        if modo_verificacao and not tem_coluna:
+            cur.close(); conn.close()
+            log.info("[DAG-RECONCILE] verificação de %s ignorada — migration 080 pendente",
+                     pipeline_name)
+            return False
         # Mantém só um pendente ativo por pipeline: supersede os anteriores.
         cur.execute(
             "UPDATE dbo.etl_dag_pendente SET status='superseded', atualizado_em=GETDATE() "
             "WHERE pipeline_name=? AND status='pendente'", (pipeline_name,))
-        cur.execute(
-            "INSERT INTO dbo.etl_dag_pendente (pipeline_name, desired_paused, matricula, dag_run_id) "
-            "VALUES (?, ?, ?, ?)",
-            (pipeline_name[:200], 1 if desired_paused else 0,
-             (str(matricula)[:64] if matricula else None),
-             (str(dag_run_id)[:200] if dag_run_id else None)))
+        campos = (pipeline_name[:200], 1 if desired_paused else 0,
+                  (str(matricula)[:64] if matricula else None),
+                  (str(dag_run_id)[:200] if dag_run_id else None))
+        if tem_coluna:
+            cur.execute(
+                "INSERT INTO dbo.etl_dag_pendente "
+                "(pipeline_name, desired_paused, matricula, dag_run_id, modo_verificacao) "
+                "VALUES (?, ?, ?, ?, ?)", (*campos, 1 if modo_verificacao else 0))
+        else:
+            cur.execute(
+                "INSERT INTO dbo.etl_dag_pendente "
+                "(pipeline_name, desired_paused, matricula, dag_run_id) "
+                "VALUES (?, ?, ?, ?)", campos)
         conn.commit(); cur.close(); conn.close()
+        return True
     except Exception as e:
         log.warning("[DAG-RECONCILE] enqueue falhou p/ %s: %s", pipeline_name, e)
+        return False
 
 
 def _fetch_pendentes() -> list[dict]:
     try:
         conn = get_db_conn(); cur = conn.cursor()
+        verif = _tem_modo_verificacao(cur)
         # criado_em cru além do DATEDIFF: é o INÍCIO da publicação, insumo do
         # clear condicional da pendência (achado 2 — TOCTOU).
         cur.execute(
             "SELECT id, pipeline_name, desired_paused, matricula, "
-            "       DATEDIFF(SECOND, criado_em, GETDATE()), dag_run_id, criado_em "
-            "FROM dbo.etl_dag_pendente WHERE status='pendente' ORDER BY criado_em")
+            "       DATEDIFF(SECOND, criado_em, GETDATE()), dag_run_id, criado_em"
+            + (", modo_verificacao" if verif else "") +
+            " FROM dbo.etl_dag_pendente WHERE status='pendente' ORDER BY criado_em")
         rows = [{"id": r[0], "pipeline_name": r[1], "desired_paused": bool(r[2]),
                  "matricula": r[3], "idade_s": int(r[4] or 0), "dag_run_id": r[5],
-                 "criado_em": r[6]}
+                 "criado_em": r[6],
+                 "modo_verificacao": bool(r[7]) if verif else False}
                 for r in cur.fetchall()]
         cur.close(); conn.close()
         return rows
     except Exception as e:
         log.debug("[DAG-RECONCILE] fetch pendentes: %s", e)
         return []
+
+
+def _run_da_factory_em_andamento(dag_run_id: str | None) -> bool:
+    """True enquanto o run da factory que originou o pendente ainda está
+    RUNNING. Verificar antes disso responderia sobre a versão ANTIGA da DAG —
+    ela já está no Airflow, ativa e sem erro de importação — e o item fecharia
+    com "tudo certo" antes de o novo arquivo sequer existir.
+
+    'GERADA' NÃO conta como em andamento: nesse estado quem fecha o registro é
+    este mesmo loop (fluxo do Publicar por pipeline) — esperar seria travar um
+    no outro."""
+    if not dag_run_id:
+        return False
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute("SELECT estado FROM dbo.etl_factory_log WHERE dag_run_id=?",
+                    (dag_run_id,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        return bool(row) and str(row[0] or "").upper() == "RUNNING"
+    except Exception as e:
+        log.debug("[DAG-RECONCILE] estado do run %s: %s", dag_run_id, e)
+        return False
+
+
+def _marcar_dag_config_pendente(pipeline_name: str) -> None:
+    """REACENDE o carimbo de publicação pendente (073).
+
+    Chamado quando a DAG existe no Airflow mas não é importável: a factory já
+    zerou o carimbo ao gravar o arquivo (é o fluxo sem aguardar_ativacao, o da
+    republicação de malha), e sem reacender o operador veria "publicado e em
+    dia" com a versão ANTERIOR rodando — o pior desfecho possível, porque é
+    silencioso. Guard de coluna por try/except: sem a 073, no-op."""
+    if not pipeline_name:
+        return
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "UPDATE dbo.etl_pipeline SET dag_config_pendente_em = GETDATE() "
+            "WHERE pipeline_name = ? AND dag_config_pendente_em IS NULL",
+            (pipeline_name,))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        log.debug("[DAG-RECONCILE] reacender dag_config_pendente_em %s: %s",
+                  pipeline_name, e)
 
 
 def _set_status(pendente_id: int, status: str) -> None:
@@ -246,6 +332,11 @@ def _finalize(row: dict, found: bool, import_trace: str | None = None) -> None:
     importação — NÃO é sucesso. Registra FALHA (estado ERRO + step import_error +
     trace) e notifica com severidade 'error'."""
     name = row["pipeline_name"]; mat = row["matricula"]; desired_paused = row["desired_paused"]
+    # Modo verificação (republicação de malha, migration 080): confere o
+    # desfecho sem falar por cima da factory — nada de "DAG pronta" N vezes por
+    # clique, e o carimbo de publicação pendente é assunto de quem publicou.
+    # O ERRO, esse, é dito sempre: é o único jeito de o operador saber.
+    verificacao = bool(row.get("modo_verificacao"))
     if found and import_trace:
         add_notificacao(
             mat, f"DAG de {name} com erro de importação",
@@ -256,20 +347,29 @@ def _finalize(row: dict, found: bool, import_trace: str | None = None) -> None:
         _update_factory_log(row.get("dag_run_id"), "ERRO", "import_error",
                             "DAG com erro de importação no Airflow — não executável.",
                             trace=import_trace)
+        # A publicação NÃO valeu: o Airflow segue executando a versão anterior.
+        # Na verificação a factory já zerou o carimbo ao gravar o arquivo —
+        # reacender é o que impede o "publicado e em dia" mentiroso.
+        if verificacao:
+            _marcar_dag_config_pendente(name)
         log.warning("[DAG-RECONCILE] %s ATIVA porém com import error no Airflow", name)
     elif found:
-        add_notificacao(
-            mat, f"DAG de {name} pronta no Airflow",
-            ("A DAG foi gerada e está pausada (pipeline inativo)."
-             if desired_paused else
-             "A DAG foi gerada e já está ativa para execução."),
-            "success", "/pipelines")
+        if not verificacao:
+            add_notificacao(
+                mat, f"DAG de {name} pronta no Airflow",
+                ("A DAG foi gerada e está pausada (pipeline inativo)."
+                 if desired_paused else
+                 "A DAG foi gerada e já está ativa para execução."),
+                "success", "/pipelines")
         _set_status(row["id"], "concluido")
         # Publicação concluída: a versão no Airflow reflete o cadastro NO
         # INÍCIO da publicação — a pendência apaga no MESMO passo em que o
         # operador é notificado (F5, Decisão 6/D30), mas só carimbos <=
-        # criado_em (achado 2 — edição em voo sobrevive).
-        _clear_dag_config_pendente(name, row.get("criado_em"))
+        # criado_em (achado 2 — edição em voo sobrevive). Na verificação quem
+        # limpou foi a factory, ao gravar cada arquivo: limpar aqui apagaria
+        # carimbo de edição que a geração já não incluiu.
+        if not verificacao:
+            _clear_dag_config_pendente(name, row.get("criado_em"))
         _update_factory_log(row.get("dag_run_id"), "SUCCESS", "ativada",
                             "DAG criada e ativada no Airflow — pronta para execução.")
     elif row["idade_s"] >= PENDENTE_TIMEOUT_S:
@@ -291,6 +391,14 @@ async def _process_one(client: httpx.AsyncClient, row: dict) -> None:
     name = row["pipeline_name"]
     if not _DAG_ID_RE.match(name or ""):
         await asyncio.to_thread(_set_status, row["id"], "timeout")
+        return
+    # A DAG ANTIGA está viva no Airflow durante a geração: perguntar por ela
+    # agora responderia sobre a versão que estamos justamente substituindo.
+    # Espera o run da factory fechar — o timeout do item continua correndo, então
+    # run travado vira TIMEOUT em vez de espera eterna.
+    if row["idade_s"] < PENDENTE_TIMEOUT_S and await asyncio.to_thread(
+            _run_da_factory_em_andamento, row.get("dag_run_id")):
+        await asyncio.to_thread(_bump, row["id"])
         return
     found = False
     try:

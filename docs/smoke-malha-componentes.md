@@ -149,6 +149,49 @@ pelo desenho (aresta do nó). ✅
    (a guardiã só avalia a data corrente e a anterior — conferir isso "amanhã"
    não prova nada, porque data futura nunca entra na janela).
 
+## 5b. Republicar os pipelines da malha
+
+O gesto que faz os vínculos desenhados valerem no Airflow. Exige a migration
+**080** (`COL_LENGTH('dbo.etl_dag_pendente','modo_verificacao')` não-NULL) —
+sem ela o botão publica, mas ninguém confere o desfecho.
+
+1. Com a malha aberta em **Montagem**, ligar `SMK_B` a um Aguarde (ou desenhar
+   qualquer aresta nova). O card do dependente ganha o chip âmbar
+   **⟳ republicar** e o botão **Republicar pipelines** passa a exibir a
+   contagem. ✅
+2. O arquivo publicado ainda é o ANTIGO — provar antes de republicar:
+   ```bash
+   grep -n "schedule=" dags/generated/<projeto>/<dominio>/SMK_B.py
+   ```
+   (dependente publicado tem `schedule=None  # dependente: …`; se ainda mostra
+   cron, é a versão anterior — é exatamente o que o botão resolve).
+3. Clicar em **Republicar pipelines**: a janela lista os membros ATIVOS, marca
+   com **primeira publicação** quem ainda não tem DAG no Airflow, com
+   **desatualizada** quem tem carimbo, e mostra em *Fora desta publicação* os
+   **inativos** com o motivo. Confirmar. ✅
+4. Acompanhar em **Publicação**: o run tem escopo `Malha <NOME> (N pipeline(s))`
+   e fecha **SUCCESS** com N geradas. Pendência de pipeline de **fora** da
+   malha aparece como `aviso` — nunca reprova o run. ✅
+5. Depois do run: o chip ⟳ some sozinho (a factory zera o carimbo) e o
+   `grep` do passo 2 mostra a versão nova. ✅
+6. Fila de conferência (deve haver uma linha por membro, em modo verificação,
+   e **nenhuma** notificação "DAG … pronta no Airflow"):
+   ```sql
+   SELECT pipeline_name, status, modo_verificacao, tentativas
+     FROM dbo.etl_dag_pendente
+    WHERE dag_run_id LIKE 'orquestra_malha%'
+    ORDER BY id DESC;
+   ```
+7. **Membro inativo**: inativar um pipeline da malha e republicar → ele sai em
+   *Fora desta publicação* com o motivo, o run leva só os ativos e fecha
+   SUCCESS. ✅
+
+⚠️ **Ainda não reproduzido ao vivo** (coberto por teste unitário): DAG gerada
+com erro de **carga** (NameError no import). O esperado é notificação de erro
+severidade `error` apontando para /publicacao e o chip ⟳ **voltando a acender**
+— o Airflow mantém a versão anterior ativa nesse caso, e o pior desfecho seria
+a tela dizer "publicado e em dia".
+
 ## 6. Limpeza
 
 ```sql

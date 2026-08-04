@@ -607,6 +607,34 @@ def dependentes_com_dependencia(conn) -> list:
     return [r[0] for r in cur.fetchall()]
 
 
+def datas_dos_predecessores(conn, pipeline: str, agora: datetime) -> dict:
+    """{predecessor: data de referência que ELE carimbaria agora}.
+
+    A virada que vale é sempre a do PREDECESSOR (§2.2): é ele quem produz o
+    dado, e é a data dele que o filho herda. Vazio quando não há predecessor.
+    """
+    from utils.data_referencia import calcular      # import tardio: módulo puro
+    return {p: calcular(agora, virada_efetiva(conn, p))
+            for p in predecessores_de(conn, pipeline)}
+
+
+def datas_divergentes(datas: dict) -> bool:
+    """Os predecessores calculam datas DIFERENTES entre si?
+
+    É a Decisão 5 da guardiã, extraída para valer também no PUSH: com viradas
+    divergentes, a condição do filho não fecha numa data só — e liberar assim
+    junta, na mesma corrida, dados de dias diferentes (incidente da malha
+    Carga_Vida, 2026-08-04). Menos de dois predecessores nunca diverge."""
+    return len(set(datas.values())) > 1
+
+
+def detalhe_divergencia(datas: dict) -> str:
+    """Texto do evento DATA_DIVERGENTE — o MESMO formato da guardiã, para o
+    operador ler a mesma frase venha ela de onde vier."""
+    return "viradas divergentes: " + ", ".join(
+        f"{p}->{d.strftime('%Y-%m-%d')}" for p, d in sorted(datas.items()))
+
+
 def predecessores_de(conn, pipeline: str) -> list:
     """De quem `pipeline` depende (tipo PIPELINE) — o caminho inverso de
     `dependentes_de`. A guardiã usa para carimbar datas (a virada que vale é
