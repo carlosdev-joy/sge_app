@@ -84,6 +84,19 @@ SQL_LIBERADO_082 = (
     "AND (" + _ONDE_SEM_SUCESSO_078[4:] +
     " OR EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
     "            WHERE n2.id = dd.origem_no AND n2.retido_em IS NOT NULL))")
+_ONDE_SEM_SUCESSO_SEQ = (
+    "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
+    "WHERE e.pipeline_name = dd.depende_de "
+    "AND e.status = 'SUCESSO' AND e.substituida_em IS NULL "
+    "AND ISNULL(e.fim, e.inicio) >= ?)")
+SQL_LIBERADO_SEQ = (
+    "SELECT dd.depende_de" + _SELECT_RETENCAO +
+    "FROM dbo.etl_pipeline_dependencia dd "
+    "WHERE dd.pipeline_name = ? AND dd.tipo = 'PIPELINE' "
+    "AND (" + _ONDE_SEM_SUCESSO_SEQ[4:] +
+    " OR EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
+    "            WHERE n2.id = dd.origem_no AND n2.retido_em IS NOT NULL))")
+
 SQL_LIBERADO_078 = (
     "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
     "WHERE dd.pipeline_name = ? AND dd.tipo = 'PIPELINE' " +
@@ -117,6 +130,57 @@ def _exec_liberado(cur, params):
         cur, SQL_LIBERADO_078, SQL_LIBERADO_LEGADO, params)
 
 
+_MODO_CACHE: dict = {}
+
+
+def limpar_cache_modo() -> None:
+    """Esquece o modo lido (teste / reavaliação no mesmo processo)."""
+    _MODO_CACHE.clear()
+
+
+def modo_sequencia(cur) -> bool:
+    """A liberação está em modo SEQUÊNCIA? Port do canônico — aqui o cache
+    dura o processo da API, e a API é longa: por isso o TTL curto, para o
+    operador não precisar reiniciar nada depois de virar a chave no Admin."""
+    import time as _t
+    agora = _t.time()
+    if _MODO_CACHE.get("ate", 0) > agora:
+        return _MODO_CACHE["modo"]
+    valor = False
+    try:
+        cur.execute("SELECT config_value FROM dbo.etl_app_config "
+                    "WHERE config_key = 'dependencia_modo_sequencia'")
+        row = cur.fetchone()
+        valor = bool(row) and str(row[0] or "").strip() in ("1", "true", "True")
+    except Exception as e:  # noqa: BLE001
+        log.debug("[DEP] modo de liberacao indisponivel (%s)", e)
+    _MODO_CACHE.update({"modo": valor, "ate": agora + 30})
+    return valor
+
+
+def inicio_do_ciclo_corrente(cur):
+    """Corte do ciclo (port do canônico): virada global mais recente, na régua
+    do BANCO — é lá que `fim`/`inicio` são carimbados."""
+    from datetime import datetime, time as _time, timedelta
+    try:
+        cur.execute("SELECT GETDATE()")
+        row = cur.fetchone()
+        agora = row[0] if row and row[0] is not None else datetime.now()
+    except Exception:  # noqa: BLE001
+        agora = datetime.now()
+    v = _time(0, 0)
+    try:
+        bruto = virada_global(cur)
+        if bruto is not None:
+            texto = str(bruto).strip()
+            partes = texto.split(":")
+            v = _time(int(partes[0]), int(partes[1]) if len(partes) > 1 else 0)
+    except Exception:  # noqa: BLE001 — config ruim = meia-noite
+        v = _time(0, 0)
+    base = agora.date() if agora.time() >= v else agora.date() - timedelta(days=1)
+    return datetime.combine(base, v)
+
+
 def faltantes(cur, pipeline: str, data_ref: date) -> list:
     """Predecessores de `pipeline` SEM SUCESSO VIVO em `data_ref`.
 
@@ -131,6 +195,11 @@ def faltantes(cur, pipeline: str, data_ref: date) -> list:
     tem de contar a MESMA história do motor: com o dependente reaberto pela
     cascata, "aguardando o predecessor" é a verdade dos dois lados.
     """
+    # Modo SEQUÊNCIA: o painel tem de contar a MESMA história do motor —
+    # se lá a data saiu da conta, aqui também.
+    if modo_sequencia(cur):
+        cur.execute(SQL_LIBERADO_SEQ, (pipeline, inicio_do_ciclo_corrente(cur)))
+        return [_faltante(r) for r in cur.fetchall()]
     _exec_liberado(cur, (pipeline, data_ref))
     return [_faltante(r) for r in cur.fetchall()]
 

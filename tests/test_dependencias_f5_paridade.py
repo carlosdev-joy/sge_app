@@ -149,6 +149,26 @@ def _liberado_nas_duas_arvores(deps_dags, dependencias, execucoes):
 
 # ── nível 1: SQL idêntico ────────────────────────────────────────────────────
 
+@pytest.fixture(autouse=True)
+def _modo_data(deps_dags):
+    """Modo DATA nas duas árvores, sem gastar consulta (o cache preenchido faz
+    `modo_sequencia` nem perguntar). A paridade do modo SEQUÊNCIA tem teste
+    próprio abaixo."""
+    deps_dags._MODO_CACHE["modo"] = False
+    deps_api._MODO_CACHE.update({"modo": False, "ate": float("inf")})
+    yield
+    deps_dags.limpar_cache_modo()
+    deps_api.limpar_cache_modo()
+
+
+def test_paridade_sql_do_modo_sequencia(deps_dags):
+    """O SQL do modo SEQUÊNCIA também tem de ser o MESMO nas duas árvores —
+    senão o painel diria uma coisa e o motor faria outra, que é a doença que
+    a paridade existe para impedir."""
+    assert _norm(deps_dags.SQL_LIBERADO_SEQ.replace("%s", "?")) \
+        == _norm(deps_api.SQL_LIBERADO_SEQ)
+
+
 def test_paridade_sql_liberado(deps_dags):
     conn = ConnCaptura()
     deps_dags.liberado(conn, "PIPE_C", _D)

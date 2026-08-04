@@ -215,6 +215,16 @@ def test_sem_truncagem_em_50_no_modulo(dep):
 
 # ═════════════ 4. liberado — contrato EXISTS (D14/D20/D21) ══════════════════
 
+@pytest.fixture(autouse=True)
+def _modo_data(dep):
+    """Modo DATA em todos os testes deste arquivo, sem gastar consulta: o
+    cache já preenchido faz `modo_sequencia` nem perguntar. Quem testa o modo
+    SEQUÊNCIA limpa o cache e deixa o dublê responder."""
+    dep._MODO_CACHE["modo"] = False
+    yield
+    dep.limpar_cache_modo()
+
+
 def test_liberado_todas_com_sucesso(dep):
     conn = _conn([{"rows": []}])
     assert dep.liberado(conn, "PIPE_C", date(2026, 8, 1)) == (True, [])
@@ -992,3 +1002,61 @@ def test_fechar_orfa_nunca_grava_sucesso(dep):
     import inspect
     src = inspect.getsource(dep.fechar_orfa_em_execucao)
     assert "SUCESSO" not in src.split('"""')[-1]
+
+
+# ── interruptor do MODO SEQUÊNCIA (config dependencia_modo_sequencia) ───────
+# Enquanto a operação amadurece a execução agendada, a data de referência pode
+# atrapalhar: pai e filho em ODATEs diferentes travam (ou soltam) a cadeia por
+# um motivo que o operador não vê. O modo troca a pergunta do predicado.
+
+def test_modo_desligado_por_padrao(dep):
+    """Ausente no banco = modo DATA. O interruptor nunca liga sozinho."""
+    dep.limpar_cache_modo()
+    conn = _conn([{"rows": []}])
+    assert dep.modo_sequencia(conn) is False
+
+
+def test_modo_ligado_com_1(dep):
+    dep.limpar_cache_modo()
+    assert dep.modo_sequencia(_conn([{"rows": [("1",)]}])) is True
+
+
+def test_modo_erro_de_consulta_fica_no_modo_data(dep, capsys):
+    """Config ilegível não pode virar mudança de regra silenciosa."""
+    dep.limpar_cache_modo()
+    assert dep.modo_sequencia(_conn([Exception("banco fora")])) is False
+    assert "modo de liberacao indisponivel" in capsys.readouterr().out
+
+
+def test_modo_e_lido_uma_vez_por_processo(dep):
+    """A task avalia N dependentes: perguntar por filho seria N idas ao banco
+    para uma resposta que não muda no meio do run."""
+    dep.limpar_cache_modo()
+    conn = _conn([{"rows": [("1",)]}, {"rows": [("0",)]}])
+    assert dep.modo_sequencia(conn) is True
+    assert dep.modo_sequencia(conn) is True      # 2ª vez não consulta
+    assert len(conn._cur.execs) == 1
+
+
+def test_sequencia_olha_o_ciclo_e_nao_o_odate(dep):
+    """O SQL do modo não filtra por data_referencia — filtra pela janela."""
+    assert "data_referencia" not in dep.SQL_LIBERADO_SEQ
+    assert "ISNULL(e.fim, e.inicio) >= %s" in dep.SQL_LIBERADO_SEQ
+    # e continua descartando corrida substituída e obedecendo a retenção
+    assert "substituida_em IS NULL" in dep.SQL_LIBERADO_SEQ
+    assert "retido_em IS NOT NULL" in dep.SQL_LIBERADO_SEQ
+
+
+def test_liberado_em_modo_sequencia_usa_o_corte(dep, monkeypatch):
+    """No modo, o parâmetro deixa de ser a data e passa a ser o instante do
+    início do ciclo — o sucesso tem de ser DESTA rodada."""
+    dep.limpar_cache_modo()
+    dep._MODO_CACHE["modo"] = True
+    corte = datetime(2026, 8, 4, 20, 0)
+    monkeypatch.setattr(dep, "inicio_do_ciclo_corrente", lambda _c: corte)
+    conn = _conn([{"rows": []}])
+    assert dep.liberado(conn, "PIPE_C", date(2026, 8, 5)) == (True, [])
+    sql, params = conn._cur.execs[0]
+    assert "data_referencia" not in sql
+    assert params == ("PIPE_C", corte)
+    dep.limpar_cache_modo()
