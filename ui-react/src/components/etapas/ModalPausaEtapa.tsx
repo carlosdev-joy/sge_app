@@ -56,11 +56,15 @@ interface Props {
   /** etapas que AINDA dá para pausar nesta corrida — a resposta à pergunta que
    *  o operador faz logo depois de "aqui não dá": então onde dá? */
   etapasPausaveis: string[]
+  /** (F5) estado do PORTÃO na DAG publicada: 'ok' | 'dag_sem_portao' |
+   *  'portao_desconhecido' (ausente = API anterior, que não sabia responder).
+   *  Ver o bloco de aviso abaixo — é a segunda metade do deploy da F5. */
+  portao?: string | null
 }
 
 export function ModalPausaEtapa({
   open, onClose, pipeline, jobName, dataReferencia, runId, status, pausa,
-  historico, etapasPausaveis,
+  historico, etapasPausaveis, portao,
 }: Props) {
   const qc = useQueryClient()
   const [motivo, setMotivo] = useState('')
@@ -72,6 +76,16 @@ export function ModalPausaEtapa({
   // regra paralela do front.
   const jaIniciou = !!(status ?? '').trim()
   const aguardando = !!pausa?.aguardando_desde
+
+  // ── (F5) A DAG PUBLICADA obedece a pausa? ──────────────────────────────────
+  // O banco ter a migration 079 NÃO basta: o portão que segura a etapa é uma
+  // linha emitida DENTRO do fonte gerado da DAG, e só existe depois de o
+  // pipeline ser republicado (`force_all` do deploy). Sem portão, "Pausar
+  // aqui" respondia 200, a tela pintava "pausa marcada" e o pipeline passava
+  // direto — a regra da casa é nunca mostrar como garantido o que não está.
+  // Por isso o botão fica DESLIGADO aqui, e não só o POST recusa.
+  const semPortao = portao === 'dag_sem_portao'
+  const portaoIncerto = portao === 'portao_desconhecido'
 
   const invalida = () => {
     qc.invalidateQueries({ queryKey: ['pipeline-execucao'] })
@@ -151,6 +165,30 @@ export function ModalPausaEtapa({
           </div>
         </div>
 
+        {/* ── A segunda metade do deploy: a DAG publicada tem portão? ─────── */}
+        {!pausa && (semPortao || portaoIncerto) && (
+          <Aviso tom={semPortao ? 'erro' : 'alerta'}
+                 icone={<AlertTriangle size={14} className="mt-0.5 shrink-0" />}>
+            {semPortao ? (
+              <>
+                Este pipeline foi <strong>publicado antes da etapa em
+                espera</strong>: a DAG que está no Airflow não tem o portão que
+                obedece a pausa. Marcar uma pausa aqui{' '}
+                <strong>não seguraria nada</strong> — a execução passaria
+                direto. Gere a DAG novamente (publicar o pipeline) e a pausa
+                volta a valer.
+              </>
+            ) : (
+              <>
+                Não foi possível confirmar se a DAG publicada deste pipeline tem
+                o portão de espera. Se ela tiver sido publicada antes desta
+                funcionalidade, a pausa <strong>não vai segurar</strong> a
+                execução — republique o pipeline para ter certeza.
+              </>
+            )}
+          </Aviso>
+        )}
+
         {/* ── O limite honesto do §5, dito onde se decide ─────────────────── */}
         {!pausa && (
           <Aviso tom={jaIniciou ? 'erro' : 'info'}
@@ -227,7 +265,7 @@ export function ModalPausaEtapa({
         )}
 
         {/* ── Campo de texto do gesto ─────────────────────────────────────── */}
-        {!pausa && !jaIniciou && (
+        {!pausa && !jaIniciou && !semPortao && (
           <label className="flex flex-col gap-1">
             <span className="text-[11px] font-semibold text-dim">
               Motivo da pausa <span className="font-normal">(fica na auditoria)</span>
@@ -335,10 +373,12 @@ export function ModalPausaEtapa({
           {!pausa && (
             <button
               onClick={() => pedir.mutate()}
-              disabled={jaIniciou || ocupado}
+              disabled={jaIniciou || semPortao || ocupado}
               title={jaIniciou
                 ? 'A etapa já iniciou nesta execução — a pausa não teria efeito'
-                : 'Marca a etapa para parar e aguardar liberação'}
+                : semPortao
+                  ? 'A DAG publicada não tem o portão de espera — publique o pipeline novamente'
+                  : 'Marca a etapa para parar e aguardar liberação'}
               className="inline-flex items-center gap-1.5 rounded-md bg-[#1A5FA8] px-3 py-1.5 text-[12px] font-medium text-white hover:bg-[#164e8b] disabled:opacity-40 disabled:pointer-events-none"
             >
               {pedir.isPending

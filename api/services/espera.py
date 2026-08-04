@@ -48,7 +48,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 from datetime import datetime
+from pathlib import Path
 
 log = logging.getLogger("orquestra-api")
 
@@ -112,6 +115,154 @@ def normaliza_teto(bruto, padrao: int) -> int:
     except (TypeError, ValueError):
         return padrao
     return valor if TETO_MIN <= valor <= TETO_MAX else padrao
+
+
+# ═══════════════ a DAG PUBLICADA tem portão? (o outro deploy parcial) ═════════
+#
+# ⚠️ **DEFEITO CORRIGIDO AQUI: pausa criada em pipeline sem portão.**
+# `tem_tabela()` responde sobre o BANCO. Mas o portão que OBEDECE a pausa não
+# está no banco nem no módulo `utils/espera.py`: ele é uma linha **emitida
+# dentro do fonte gerado de cada DAG** (`etl_dag_factory`, no `log_start`):
+#
+#     if _espera is not None:
+#         _espera.portao(hook, PIPELINE_NAME, job_name, execution_id)
+#
+# Ou seja: **DAG publicada antes da F5 não tem portão**, e só volta a ter
+# depois de uma regeração (`force_all` — passo 6 do deploy). Sem esta sonda o
+# operador clicava "Pausar aqui", recebia `200 {"ok": true}`, a tela pintava
+# "pausa marcada" e **o pipeline passava direto**. Medido no dev em 2026-08-03:
+# banco com a 079 aplicada e ZERO das 5 DAGs geradas contendo `_espera.portao`.
+#
+# A técnica é a MESMA que a PR #268 criou para o outro lado
+# (`services/rerun.capacidade_dags`): a API monta `${AIRFLOW_PROJ_DIR}/dags`
+# como `:ro` (docker-compose.yaml, serviço orquestra-api) — o MESMO bind mount
+# que o scheduler e o worker usam rw. Ler o `.py` de lá é ler o código que o
+# Airflow vai importar, não uma cópia nem um palpite. A diferença é o alcance:
+# lá a pergunta é sobre o MOTOR (um arquivo para todos); aqui é por PIPELINE
+# (cada DAG tem o seu fonte, e o `force_all` pode ter regenerado umas e não
+# outras).
+#
+# Por que não perguntar ao Airflow: a REST expõe a DAG serializada (grafo,
+# tasks), não o corpo do `log_start` — o portão é uma chamada DENTRO de uma
+# PythonOperator callable, invisível ali.
+#
+# Por que texto e não AST (o inverso da escolha de `rerun`): lá a declaração é
+# um `CAPACIDADES = (...)` no nível do módulo, que um `in` casaria dentro da
+# própria docstring que explica a capacidade. Aqui o alvo é uma CHAMADA no
+# corpo de uma função aninhada, e o fonte é gerado por concatenação de strings
+# pela factory — a marca `_espera.portao(` só aparece no arquivo gerado se a
+# factory a emitiu. (Amarração nos testes: se a factory mudar a marca, o teste
+# de paridade quebra.)
+#
+# LIMITE HONESTO: isto prova o que está NO DISCO. Um scheduler que ainda não
+# reparseou o arquivo novo não é coberto — a janela é a de um ciclo de parse.
+
+MARCA_PORTAO = "_espera.portao("
+
+PORTAO_OK = "ok"
+PORTAO_AUSENTE = "dag_sem_portao"
+PORTAO_DESCONHECIDO = "portao_desconhecido"
+
+# Nome de projeto/domínio/pipeline que pode virar caminho. Vem do BANCO, mas
+# concatenar em caminho o que veio de um cadastro editável sem filtrar é como
+# se abre travessia de diretório — a mesma disciplina do `_DAG_ID_RE` do router.
+_SEGMENTO_RE = re.compile(r"^[A-Za-z0-9_.\- ]+$")
+
+# {caminho: ((mtime, tamanho), resultado)} — invalida sozinho quando o
+# force_all reescreve o arquivo. Sem cache, todo abrir de canvas em modo
+# Execução releria o fonte da DAG (que tem milhares de linhas).
+_cache_portao: dict = {}
+
+
+def raiz_dags() -> Path:
+    """`DAGS_FOLDER` — a MESMA variável que admin/sync/lineage/rerun já usam."""
+    return Path(os.environ.get("DAGS_FOLDER", "/opt/airflow/dags"))
+
+
+def caminho_dag_gerada(project, domain, pipeline):
+    """`<DAGS_FOLDER>/generated/<project>/<domain>/<pipeline>.py`, ou `None`.
+
+    É EXATAMENTE como `etl_dag_factory` monta o destino::
+
+        dest_dir  = os.path.join(output_root, "generated", project, domain)
+        dest_file = os.path.join(dest_dir, f"{pname}.py")
+
+    `None` quando algum segmento está vazio ou tem caractere que não cabe num
+    nome de arquivo — e aí a resposta da sonda é DESCONHECIDA, nunca "sem
+    portão": não saber montar o caminho não é prova de nada.
+    """
+    partes = [str(project or "").strip(), str(domain or "").strip(),
+              str(pipeline or "").strip()]
+    if not all(partes) or not all(_SEGMENTO_RE.match(p) for p in partes):
+        return None
+    proj, dom, pipe = partes
+    return raiz_dags() / "generated" / proj / dom / f"{pipe}.py"
+
+
+def _cadastro_do_pipeline(cur, pipeline: str):
+    """`(project_name, domain)` do cadastro, ou `(None, None)`."""
+    try:
+        cur.execute("SELECT project_name, domain FROM dbo.etl_pipeline "
+                    "WHERE pipeline_name = ?", (pipeline,))
+        row = cur.fetchone()
+        return (row[0], row[1]) if row else (None, None)
+    except Exception as e:  # noqa: BLE001
+        log.warning("[ESPERA] cadastro de '%s' indisponivel: %s", pipeline, e)
+        return (None, None)
+
+
+def portao_no_arquivo(caminho) -> str:
+    """`PORTAO_OK` | `PORTAO_AUSENTE` | `PORTAO_DESCONHECIDO` para UM arquivo.
+
+    As três respostas são distintas de propósito: "tem portão", "li o arquivo
+    e ele NÃO tem" e "não deu para ler". Só a segunda é uma acusação; a
+    terceira é uma dúvida, e elas têm frases e consequências diferentes.
+    """
+    if caminho is None:
+        return PORTAO_DESCONHECIDO
+    p = Path(caminho)
+    try:
+        st = p.stat()
+        chave = (st.st_mtime_ns, st.st_size)
+        anterior = _cache_portao.get(str(p))
+        if anterior and anterior[0] == chave:
+            return anterior[1]
+        fonte = p.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:  # noqa: BLE001 — não saber é uma resposta própria
+        log.warning("[ESPERA] fonte da DAG ilegivel (%s em %s)", e, p)
+        return PORTAO_DESCONHECIDO
+    resultado = PORTAO_OK if MARCA_PORTAO in fonte else PORTAO_AUSENTE
+    _cache_portao[str(p)] = (chave, resultado)
+    if resultado != PORTAO_OK:
+        log.warning("[ESPERA] DAG publicada em %s NAO tem portao de espera — "
+                    "pipeline precisa ser republicado (force_all)", p)
+    return resultado
+
+
+def estado_portao(cur, pipeline: str) -> str:
+    """A DAG PUBLICADA deste pipeline obedece a pausa?
+
+    Junta as duas metades: o cadastro (projeto/domínio, que dão o caminho) e o
+    fonte gerado. Cadastro incompleto → DESCONHECIDO, jamais AUSENTE.
+    """
+    project, domain = _cadastro_do_pipeline(cur, pipeline)
+    return portao_no_arquivo(caminho_dag_gerada(project, domain, pipeline))
+
+
+# Uma frase por estado, no idioma do operador — o que aconteceu e o que
+# consertar. Espelha o `AVISO_CASCATA_INDISPONIVEL` da F4.
+MENSAGEM_PORTAO = {
+    PORTAO_AUSENTE: (
+        "A DAG publicada deste pipeline NÃO tem o portão de espera: ela foi "
+        "gerada antes desta funcionalidade. Uma pausa marcada aqui não "
+        "seguraria nada — a execução passaria direto. Republique o pipeline "
+        "(gerar DAG novamente) e a pausa volta a ser aceita."),
+    PORTAO_DESCONHECIDO: (
+        "não foi possível confirmar se a DAG publicada deste pipeline tem o "
+        "portão de espera (o fonte gerado não pôde ser lido). Se ela tiver "
+        "sido publicada antes desta funcionalidade, a pausa NÃO vai segurar a "
+        "execução — republique o pipeline para ter certeza"),
+}
 
 
 # ═══════════════════════ "a etapa já começou?" — o limite ═════════════════════

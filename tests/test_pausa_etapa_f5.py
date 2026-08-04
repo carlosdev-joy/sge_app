@@ -412,3 +412,289 @@ def test_ambiguidade_fala_do_gesto_certo(E):
     assert 'gesto: str = "reexecutar"' in src
     assert 'gesto != "reexecutar"' in src
     assert 'gesto="pausar"' in inspect.getsource(E.criar_pausa)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 9. O PORTÃO DA DAG PUBLICADA — a segunda metade do deploy da F5
+#
+# ⚠️ **DEFEITO ENCONTRADO NA REVISÃO ADVERSARIAL PRÉ-DEPLOY (2026-08-03).**
+# A API conferia banco, desenho e telemetria e criava a pausa — sem nunca
+# perguntar se a DAG PUBLICADA tem o portão. O portão não é migration nem
+# módulo importado em runtime: é uma linha EMITIDA no fonte gerado de cada
+# DAG (`etl_dag_factory`, no `log_start`), e só existe depois do `force_all`.
+# Estado do dev que provou o buraco: banco com a 079 aplicada e ZERO das 5
+# DAGs geradas contendo `_espera.portao` → "Pausar aqui" respondia 200,
+# a tela pintava "pausa marcada" e o pipeline passava DIRETO.
+#
+# Os testes abaixo falham no `main` de hoje.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_FONTE_COM_PORTAO = (
+    "def log_start(job_name, task_key, **context):\n"
+    "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)\n"
+    "    if _espera is not None:\n"
+    "        _espera.portao(hook, PIPELINE_NAME, job_name, execution_id)\n"
+)
+_FONTE_SEM_PORTAO = (
+    "def log_start(job_name, task_key, **context):\n"
+    "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)\n"
+    "    _exec_telemetry(hook, execution_id, job_name, task_key, 'RUNNING')\n"
+)
+
+
+def _gera_dag(raiz, projeto, dominio, pipeline, fonte):
+    destino = raiz / "generated" / projeto / dominio
+    destino.mkdir(parents=True, exist_ok=True)
+    alvo = destino / f"{pipeline}.py"
+    alvo.write_text(fonte, encoding="utf-8")
+    return alvo
+
+
+def test_caminho_da_dag_gerada_e_o_mesmo_que_a_factory_monta():
+    """Amarração com `etl_dag_factory`: se o layout de `generated/` mudar lá,
+    a sonda passa a olhar para o lugar errado e diria "sem portão" para toda
+    DAG do mundo. O fonte da factory é a fonte da verdade."""
+    import os as _os
+    from pathlib import Path as _Path
+    fonte = (_Path(__file__).parent.parent
+             / "dags/etl_dag_factory.py").read_text(encoding="utf-8")
+    assert 'os.path.join(output_root, "generated", project, domain)' in fonte
+    assert 'f"{pname}.py"' in fonte
+    _os.environ["DAGS_FOLDER"] = "/opt/airflow/dags"
+    caminho = esp.caminho_dag_gerada("PROJ", "DOM", "PIPE")
+    assert str(caminho) == "/opt/airflow/dags/generated/PROJ/DOM/PIPE.py"
+
+
+def test_marca_do_portao_e_a_que_a_factory_emite():
+    """A sonda procura `_espera.portao(` — a MESMA chamada que a factory
+    escreve dentro do `log_start`. Mudar uma sem a outra é o defeito."""
+    from pathlib import Path as _Path
+    fonte = (_Path(__file__).parent.parent
+             / "dags/etl_dag_factory.py").read_text(encoding="utf-8")
+    assert esp.MARCA_PORTAO in fonte
+
+
+def test_portao_presente_ausente_e_desconhecido(tmp_path):
+    """Três estados HONESTOS, e só o do meio é uma acusação."""
+    com = _gera_dag(tmp_path, "P", "D", "COM_PORTAO", _FONTE_COM_PORTAO)
+    sem = _gera_dag(tmp_path, "P", "D", "SEM_PORTAO", _FONTE_SEM_PORTAO)
+    assert esp.portao_no_arquivo(com) == esp.PORTAO_OK
+    assert esp.portao_no_arquivo(sem) == esp.PORTAO_AUSENTE
+    assert esp.portao_no_arquivo(tmp_path / "nao_existe.py") == esp.PORTAO_DESCONHECIDO
+    assert esp.portao_no_arquivo(None) == esp.PORTAO_DESCONHECIDO
+
+
+def test_cadastro_incompleto_nunca_vira_acusacao():
+    """Não saber montar o caminho não é prova de que falta portão — é dúvida.
+    (E segmento com `..` não vira travessia de diretório.)"""
+    assert esp.caminho_dag_gerada("", "D", "P") is None
+    assert esp.caminho_dag_gerada("../etc", "D", "P") is None
+    assert esp.caminho_dag_gerada("P", "D", "pipe/../../x") is None
+    assert esp.estado_portao(_Cur(erro=RuntimeError("db fora")), "P") \
+        == esp.PORTAO_DESCONHECIDO
+
+
+def test_cache_do_portao_invalida_ao_republicar(tmp_path):
+    """Republicar o pipeline tem de mudar a resposta na hora — o cache é por
+    (mtime, tamanho), como o de `rerun.capacidade_dags`."""
+    import os as _os
+    alvo = _gera_dag(tmp_path, "P", "D", "PIPE", _FONTE_SEM_PORTAO)
+    assert esp.portao_no_arquivo(alvo) == esp.PORTAO_AUSENTE
+    alvo.write_text(_FONTE_COM_PORTAO, encoding="utf-8")
+    st = alvo.stat()
+    _os.utime(alvo, ns=(st.st_atime_ns, st.st_mtime_ns + 10_000_000))
+    assert esp.portao_no_arquivo(alvo) == esp.PORTAO_OK
+
+
+def test_estado_portao_le_projeto_e_dominio_do_cadastro(tmp_path, monkeypatch):
+    monkeypatch.setenv("DAGS_FOLDER", str(tmp_path))
+    _gera_dag(tmp_path, "PROJ", "DOM", "PIPE", _FONTE_COM_PORTAO)
+
+    class _CurCad(_Cur):
+        def execute(self, sql, params=()):
+            s = " ".join(str(sql).split())
+            if s.startswith("SELECT project_name, domain"):
+                self._rows = [("PROJ", "DOM")]
+                self.sqls.append((s, params))
+                return
+            return super().execute(sql, params)
+
+    assert esp.estado_portao(_CurCad(), "PIPE") == esp.PORTAO_OK
+
+
+# ── o gesto: a API RECUSA em vez de prometer ────────────────────────────────
+
+def test_criar_pausa_recusa_pipeline_sem_portao(E):
+    """A DECISÃO desta correção, no código: sem portão a pausa **não é
+    criada**. Criar com aviso deixaria uma pausa pendente para sempre, que
+    ninguém libera (não há o que liberar) e que vira ruído no canvas."""
+    import inspect
+    src = inspect.getsource(E.criar_pausa)
+    assert "estado_portao" in src
+    assert "PORTAO_AUSENTE" in src
+    # a recusa vem ANTES de qualquer escrita
+    assert src.index("PORTAO_AUSENTE") < src.index("espera_svc.criar(")
+
+
+def test_portao_desconhecido_cria_mas_avisa(E):
+    """O único ponto em que este gesto se afasta do `rerun`: lá o desconhecido
+    bloqueia a cascata (o gesto principal sobrevive); aqui ele É o gesto."""
+    import inspect
+    src = inspect.getsource(E.criar_pausa)
+    assert "PORTAO_DESCONHECIDO" in src and "avisos.insert(0" in src
+
+
+def test_estado_do_portao_viaja_no_payload_da_execucao(E):
+    """A tela avisa ANTES do clique — descobrir pela recusa é pior."""
+    import inspect
+    assert '"portao": portao' in inspect.getsource(E.get_pipeline_execucao)
+    assert '"portao": portao' in inspect.getsource(E.listar_pausas)
+
+
+def test_mensagem_do_portao_diz_o_conserto():
+    """Frase acionável, no idioma do operador: o que aconteceu E o que fazer
+    (o mesmo contrato do AVISO_CASCATA_INDISPONIVEL da F4)."""
+    for estado in (esp.PORTAO_AUSENTE, esp.PORTAO_DESCONHECIDO):
+        frase = esp.MENSAGEM_PORTAO[estado]
+        assert "epublique" in frase or "publicar" in frase
+        assert len(frase) > 80
+
+
+# ── a prova de comportamento: o POST de verdade, ponta a ponta ──────────────
+
+_RUN = "manual__2026-08-03T12:49:24+00:00"
+
+
+class _DbPausa:
+    """Banco de mentira do endpoint de pausa: cadastro, corrida, desenho e as
+    escritas. `portao` decide o que o disco (mockado) responde."""
+
+    def __init__(self, *, projeto="PROJ", dominio="DOM"):
+        self.projeto = projeto
+        self.dominio = dominio
+        self.escritas = []
+        self._cur = None
+
+    def cursor(self):
+        self._cur = _CurPausa(self)
+        return self._cur
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class _CurPausa:
+    def __init__(self, db):
+        self.db = db
+        self._rows = []
+        self.rowcount = 0
+
+    def execute(self, sql, params=()):  # noqa: C901 — dispatcher de dublê
+        s = " ".join(str(sql).split())
+        self._rows = []
+        self.rowcount = 0
+        if s.startswith("SELECT pipeline_name FROM dbo.etl_pipeline WHERE"):
+            self._rows = [("DEV_F10_A",)]
+        elif s.startswith("SELECT project_name, domain FROM dbo.etl_pipeline"):
+            self._rows = [(self.db.projeto, self.db.dominio)]
+        elif s.startswith("SELECT config_value FROM dbo.etl_app_config"):
+            self._rows = [("00:00",)]
+        elif s.startswith("SELECT OBJECT_ID('dbo.etl_pipeline_execucao'"):
+            self._rows = [(1,)]
+        elif s.startswith("SELECT OBJECT_ID('dbo.etl_etapa_pausa'"):
+            self._rows = [(1,)]
+        elif s.startswith("SELECT data_referencia, status, inicio, fim, "
+                          "disparado_por, motivo FROM dbo.etl_pipeline_execucao"):
+            self._rows = [(_D, "EXECUTANDO", None, None, "manual", None)]
+        elif s.startswith("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS"):
+            self._rows = [("job_name",), ("job_type",), ("execution_order",),
+                          ("depends_on_jobs",)]
+        elif s.startswith("SELECT job_name, ISNULL(job_type"):
+            self._rows = [("etapa_x", "http", 1, None)]
+        elif s.startswith("SELECT job_name FROM dbo.etl_job_execution"):
+            self._rows = []                      # nenhuma etapa iniciou
+        elif s.startswith("SELECT sla_minutos"):
+            self._rows = [(None,)]
+        elif s.startswith("SELECT TOP (1) id FROM dbo.etl_etapa_pausa"):
+            self._rows = [(77,)]
+        elif s.startswith("INSERT INTO dbo.etl_etapa_pausa"):
+            self.db.escritas.append((s, params))
+            self.rowcount = 1
+        elif s.startswith("INSERT INTO dbo.etl_pipeline_audit"):
+            self.db.escritas.append((s, params))
+            self.rowcount = 1
+        elif s.startswith("SELECT id, job_name, task_id, estado"):
+            self._rows = []
+        else:
+            raise AssertionError(f"SQL não previsto no dublê: {s[:140]}")
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def cliente_exec(client, app):
+    from deps import PERM_EXECUTAR, get_current_user
+    app.dependency_overrides[get_current_user] = lambda: {
+        "matricula": "DEV1", "perfil": "desenvolvedor",
+        "permissoes": [PERM_EXECUTAR, "tela_malha"],
+    }
+    yield client
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+def _post_pausa(cliente, db, monkeypatch, portao):
+    from unittest.mock import patch as _patch
+    import services.espera as _esp
+    monkeypatch.setattr(_esp, "estado_portao", lambda cur, p: portao)
+    with _patch("routers.execucoes.get_db_conn", return_value=db):
+        return cliente.post("/execucoes/pausas", json={
+            "pipeline_name": "DEV_F10_A", "job_name": "etapa_x",
+            "dag_run_id": _RUN})
+
+
+def test_POST_pausa_recusa_quando_a_dag_publicada_nao_tem_portao(
+        cliente_exec, monkeypatch):
+    """⛔ **O defeito, em uma linha.** Antes desta correção este POST devolvia
+    `200 {"ok": true}`, a tela pintava "pausa marcada" e a execução passava
+    direto. Agora é 409 com o conserto — e NADA é gravado."""
+    db = _DbPausa()
+    r = _post_pausa(cliente_exec, db, monkeypatch, esp.PORTAO_AUSENTE)
+    assert r.status_code == 409
+    det = r.json()["detail"]
+    assert det["erro"] == "dag_sem_portao"
+    assert "republique" in det["mensagem"].lower()
+    assert db.escritas == []          # nenhuma pausa, nenhuma auditoria
+
+
+def test_POST_pausa_com_portao_ok_cria_normalmente(cliente_exec, monkeypatch):
+    """Não-regressão: com o portão publicado o gesto é o de sempre."""
+    db = _DbPausa()
+    r = _post_pausa(cliente_exec, db, monkeypatch, esp.PORTAO_OK)
+    assert r.status_code == 200
+    corpo = r.json()
+    assert corpo["ok"] is True and corpo["portao"] == "ok"
+    assert any(s.startswith("INSERT INTO dbo.etl_etapa_pausa")
+               for s, _ in db.escritas)
+
+
+def test_POST_pausa_com_portao_desconhecido_cria_com_aviso_forte(
+        cliente_exec, monkeypatch):
+    db = _DbPausa()
+    r = _post_pausa(cliente_exec, db, monkeypatch, esp.PORTAO_DESCONHECIDO)
+    assert r.status_code == 200
+    corpo = r.json()
+    assert corpo["portao"] == "portao_desconhecido"
+    assert corpo["avisos"] and "portão de espera" in corpo["avisos"][0]

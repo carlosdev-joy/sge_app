@@ -73,6 +73,11 @@ export interface CorridaApi {
   inicio: string | null
   fim: string | null
   disparado_por: string | null
+  /** (F4) carimbo de aposentadoria por rerun com cascata — quando preenchido,
+   *  esta corrida NÃO conta como sucesso vivo do dia (`liberado()` e
+   *  `pipelines_todos_sucesso()` a ignoram). Sem ele, o aviso de ambiguidade
+   *  mostrava duas corridas idênticas e o operador escolhia no escuro. */
+  substituida_em?: string | null
 }
 
 export interface IdentidadeApi {
@@ -131,6 +136,16 @@ export interface PipelineExecucaoApi {
   /** (F5) pausas desta corrida — pendentes e resolvidas. Ausente/vazio quando
    *  a migration 079 não está aplicada: a tela some com o recurso, não quebra. */
   pausas?: PausaApi[]
+  /** (F5) a DAG PUBLICADA deste pipeline obedece a pausa?
+   *
+   *  As duas metades do deploy da F5 são o BANCO (migration 079) e a DAG
+   *  (o portão só é emitido no fonte gerado, e só depois de republicar).
+   *  Uma pausa criada em DAG sem portão não segura nada — o processo passa
+   *  direto. Por isso o estado vem no payload: a tela avisa ANTES do clique,
+   *  em vez de o operador descobrir pela recusa do servidor.
+   *
+   *  'ok' | 'dag_sem_portao' | 'portao_desconhecido' (ausente = API anterior). */
+  portao?: string | null
   total_etapas: number
   etapas_executadas: number
   vazio: boolean
@@ -531,6 +546,16 @@ export function rotuloCorrida(c: CorridaApi): string {
     c.status ?? 'status ?',
     c.inicio ? `registro ${horaLonga(c.inicio)}` : null,
     c.disparado_por ? `por ${c.disparado_por}` : null,
+    // Uma corrida APOSENTADA por um rerun com cascata tem o mesmo status e o
+    // mesmo horário de qualquer outra — e não conta mais como sucesso do dia.
+    // Sem esta marca, o operador escolhia entre duas linhas indistinguíveis.
+    c.substituida_em ? 'substituída por rerun' : null,
   ].filter(Boolean)
   return partes.join(' · ')
+}
+
+/** Uma corrida aposentada por rerun com cascata? (o carimbo `substituida_em`
+ *  da migration 078). Serve à tela para não tratá-la como a corrida viva. */
+export function corridaSubstituida(c: CorridaApi | null | undefined): boolean {
+  return !!(c?.substituida_em ?? null)
 }

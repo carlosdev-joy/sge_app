@@ -763,6 +763,66 @@ def resgatar_reserva(conn, pipeline: str, data_ref: date, run_id: str) -> bool:
     return cur.rowcount == 1
 
 
+def corridas_em_execucao(conn, idade_min: int) -> list:
+    """F5 §rede de segurança — corridas que COMEÇARAM e nunca fecharam:
+    EXECUTANDO com `inicio` NÃO nulo, sem carimbo há mais de `idade_min`
+    minutos.
+
+    É o complemento exato de `reservas_orfas` (aquela cobre `inicio IS NULL`
+    — o claim que nunca virou corrida). O buraco que sobrava:
+
+      • uma etapa parada no portão da F5 fica `up_for_reschedule` até o teto
+        (default 240 min); se o pipeline tem SLA, a DAG é gerada com
+        `dagrun_timeout=timedelta(minutes=sla)` (`etl_dag_factory`);
+      • estourando o `dagrun_timeout`, o scheduler marca o DagRun FAILED e
+        **toda TI não-finalizada como SKIPPED** — então `registrar_falha`
+        (ONE_FAILED) e `flow_close` (ALL_DONE) são PULADOS;
+      • ninguém grava FALHA: `etl_pipeline_execucao` fica EXECUTANDO para
+        sempre e **bloqueia todos os dependentes** (é a classe "órfão em
+        RUNNING" que este projeto já pagou uma vez).
+
+    O mesmo desfecho vale para qualquer morte dura do worker no meio da
+    corrida — o `dagrun_timeout` só tornou a rota alcançável por desenho.
+
+    A guarda de estado do DagRun (terminal no Airflow) é do CHAMADOR, que é
+    quem fala com o Airflow — mesma divisão de `reservas_orfas`.
+
+    Devolve [(pipeline, data_referencia, execution_id, inicio)]."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT pipeline_name, data_referencia, execution_id, inicio "
+        "FROM dbo.etl_pipeline_execucao "
+        "WHERE status = 'EXECUTANDO' AND inicio IS NOT NULL "
+        "AND atualizado_em < DATEADD(minute, -%s, GETDATE())",
+        (int(idade_min),))
+    return [(r[0], r[1], r[2], r[3]) for r in cur.fetchall()]
+
+
+def fechar_orfa_em_execucao(conn, pipeline: str, data_ref: date, run_id: str,
+                            motivo: str) -> bool:
+    """Fecha como FALHA a corrida que começou, cujo DagRun já MORREU e que
+    ninguém fechou. True = fechei eu.
+
+    ⚠️ **Só FALHA, nunca SUCESSO.** A guardiã fecha o que o Airflow já disse
+    que terminou mal; corrida cujo DagRun terminou em `success` sem fecho na
+    067 é outro defeito (o `flow_close` não gravou) e **não se conserta
+    inventando verde** — ela vira alerta e vai para a Finalização Manual, que
+    existe exatamente para isso. A lição do sucesso falso vale aqui também.
+
+    `AND status='EXECUTANDO' AND inicio IS NOT NULL` é a trava contra a
+    corrida com quem estiver fechando de verdade no mesmo instante: quem
+    chegar primeiro vence e o outro vê rowcount 0."""
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE dbo.etl_pipeline_execucao "
+        "SET status='FALHA', motivo=%s, fim=GETDATE(), atualizado_em=GETDATE() "
+        "WHERE pipeline_name=%s AND data_referencia=%s AND execution_id=%s "
+        "AND status='EXECUTANDO' AND inicio IS NOT NULL",
+        (str(motivo)[:500] if motivo is not None else None,
+         pipeline, data_ref, run_id))
+    return cur.rowcount == 1
+
+
 def fechar_nao_liberou(conn, pipeline: str, data_ref: date, run_id: str,
                        motivo: str) -> bool:
     """F4 §6 — fecha a corrida como NAO_LIBEROU (o fim do ciclo de vida; a

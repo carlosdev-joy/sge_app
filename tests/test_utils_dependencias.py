@@ -756,16 +756,25 @@ def test_guarda_de_idade_ausencia_de_varredura_historica(dep):
     """D45 (§12.4, teste de ausência): nenhuma função do módulo seleciona
     "datas em aberto" de etl_pipeline_execucao por janela temporal para
     ORDENAR (o _datas_em_aberto de 48h da 1ª guardiã) — a única janela
-    temporal permitida é a idade das reservas órfãs (§4.2)."""
+    temporal permitida é a idade das ÓRFÃS (§4.2 e §4.3).
+
+    São DUAS varreduras por idade, e só duas, cada uma sobre um lado do
+    `inicio`: `reservas_orfas` (claim que nunca virou corrida, `inicio IS
+    NULL`) e `corridas_em_execucao` (corrida que começou e cujo DagRun morreu
+    sem fechar nada, `inicio IS NOT NULL` — a F5). Qualquer DATEADD novo sobre
+    a tabela que não seja uma dessas duas é varredura histórica voltando pela
+    porta dos fundos."""
     import ast as _ast
     fonte = (_ROOT / "dags/utils/dependencias.py").read_text(encoding="utf-8")
     assert "_datas_em_aberto" not in fonte
     sqls = [n.value for n in _ast.walk(_ast.parse(fonte))
             if isinstance(n, _ast.Constant) and isinstance(n.value, str)
             and "dbo.etl_pipeline_execucao" in n.value]
-    for sql in sqls:
-        if "DATEADD" in sql:
-            assert "inicio IS NULL" in sql and "EXECUTANDO" in sql, sql
+    com_idade = [sql for sql in sqls if "DATEADD" in sql]
+    for sql in com_idade:
+        assert "EXECUTANDO" in sql, sql
+        assert ("inicio IS NULL" in sql or "inicio IS NOT NULL" in sql), sql
+    assert len(com_idade) == 2, com_idade
 
 
 # ═══════════ F14 — observadores de malha (desenho de componentes §5/§6) ═════
@@ -912,3 +921,47 @@ def test_fila_sem_075_nao_toca_etl_malha_no(dep):
     assert "1 = 1" in sql
     # a guarda de pipeline continua mesmo sem a 075
     assert "EXISTS (SELECT 1 FROM dbo.etl_pipeline p" in sql
+
+
+# ═════════ §4.3 (F5) — a corrida que COMEÇOU e nunca fechou ═════════════════
+#
+# Complemento exato de `reservas_orfas`: aquela cobre `inicio IS NULL` (claim
+# que nunca virou corrida); esta cobre `inicio IS NOT NULL` — o `dagrun_timeout`
+# estourado que pula `registrar_falha`/`flow_close` e deixa EXECUTANDO para
+# sempre, bloqueando todos os dependentes. Falha no `main` de hoje.
+
+def test_corridas_em_execucao_e_o_espelho_das_reservas_orfas(dep):
+    conn = _conn([{"rows": [("PIPE_C", _SEGUNDA, "dep__c",
+                             datetime(2026, 8, 3, 6, 0))]}])
+    saida = dep.corridas_em_execucao(conn, 15)
+    assert saida == [("PIPE_C", _SEGUNDA, "dep__c", datetime(2026, 8, 3, 6, 0))]
+    sql, params = conn._cur.execs[0]
+    assert "status = 'EXECUTANDO'" in sql
+    assert "inicio IS NOT NULL" in sql          # o lado que faltava
+    assert "DATEADD(minute, -%s, GETDATE())" in sql
+    assert params == (15,)
+
+
+def test_fechar_orfa_em_execucao_so_toca_corrida_que_comecou(dep):
+    """A guarda de status+inicio é a trava contra quem estiver fechando de
+    verdade no mesmo instante — e contra rebaixar uma reserva órfã."""
+    conn = _conn([{"rowcount": 1}])
+    assert dep.fechar_orfa_em_execucao(conn, "PIPE_C", _SEGUNDA, "dep__c",
+                                       "motivo honesto") is True
+    sql, params = conn._cur.execs[0]
+    assert "SET status='FALHA'" in sql
+    assert "AND status='EXECUTANDO' AND inicio IS NOT NULL" in sql
+    assert "fim=GETDATE()" in sql
+    assert params[0] == "motivo honesto"
+
+
+def test_fechar_orfa_perdeu_a_corrida_devolve_false(dep):
+    conn = _conn([{"rowcount": 0}])
+    assert dep.fechar_orfa_em_execucao(conn, "P", _SEGUNDA, "r", "m") is False
+
+
+def test_fechar_orfa_nunca_grava_sucesso(dep):
+    """A guardiã não inventa verde: esta função só sabe escrever FALHA."""
+    import inspect
+    src = inspect.getsource(dep.fechar_orfa_em_execucao)
+    assert "SUCESSO" not in src.split('"""')[-1]

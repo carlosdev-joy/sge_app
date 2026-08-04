@@ -103,6 +103,9 @@ def _mundo(monkeypatch, agora=AGORA, **sobrescreve):
         "sucesso_recente_outra_data": lambda conn, p, d, inicio: [],
         "reservas_orfas": lambda conn, idade: [],
         "resgatar_reserva": lambda conn, p, d, r: True,
+        # F5 §4.3 — corrida que COMEÇOU e cujo DagRun morreu sem fechar nada.
+        "corridas_em_execucao": lambda conn, idade: [],
+        "fechar_orfa_em_execucao": lambda conn, p, d, r, m: True,
         "fechar_nao_liberou": lambda conn, p, d, r, m: True,
         "gravar_evento": lambda conn, p, d, t, det: True,
         "eventos_nao_notificados": lambda conn, lim, jan: [],
@@ -522,6 +525,132 @@ def test_reserva_resgatada_dispara_no_mesmo_ciclo(monkeypatch):
     saida = GUARDIA.ciclo()
     assert saida["resgatadas"] == 1 and saida["disparadas"] == 1
     assert disparos == [("PIPE_C", "guardia__orfa")]
+
+
+# ═════════ §12.6b — órfã que COMEÇOU e nunca fechou (§4.3, F5) ══════════════
+#
+# ⚠️ **DEFEITO ENCONTRADO NA REVISÃO ADVERSARIAL PRÉ-DEPLOY (2026-08-03).**
+# `etl_dag_factory` emite `dagrun_timeout=timedelta(minutes=sla_minutos)` para
+# pipeline com SLA. Uma etapa parada no portão da F5 fica `up_for_reschedule`
+# até o teto (default 240 min). Estourando o `dagrun_timeout`, o scheduler
+# marca o DagRun FAILED e **toda TI não-finalizada como SKIPPED** — então
+# `registrar_falha` (ONE_FAILED) e `flow_close` (ALL_DONE) são PULADOS e
+# ninguém grava FALHA: `etl_pipeline_execucao` fica EXECUTANDO para sempre,
+# bloqueando todos os dependentes. `_resgatar_orfas` só cobria `inicio IS
+# NULL` — corrida que COMEÇOU não era resgatada por ninguém.
+#
+# Os testes abaixo falham no `main` de hoje.
+
+def _dagrun(estado, fim):
+    return lambda dag_id, run_id: (estado, fim)
+
+
+def test_orfa_em_execucao_com_dagrun_failed_e_fechada_como_falha(monkeypatch):
+    fechadas, eventos = [], []
+    _mundo(monkeypatch,
+           corridas_em_execucao=lambda conn, idade:
+               [("PIPE_C", HOJE, "dep__c", datetime(2026, 8, 3, 6, 0))],
+           fechar_orfa_em_execucao=lambda conn, p, d, r, m:
+               fechadas.append((p, d, r, m)) or True,
+           gravar_evento=lambda conn, p, d, t, det:
+               eventos.append((p, t, det)) or True)
+    monkeypatch.setattr(GUARDIA, "_dagrun_terminado",
+                        _dagrun("failed", datetime(2026, 8, 3, 7, 0)))
+    assert GUARDIA.ciclo()["orfas_em_execucao"] == 1
+    assert fechadas and fechadas[0][0] == "PIPE_C"
+    assert "orfa" in fechadas[0][3]
+    assert eventos and eventos[0][1] == "EXECUCAO_ORFA"
+
+
+def test_corrida_parada_no_portao_JAMAIS_e_tocada(monkeypatch):
+    """A etapa em espera deixa o DagRun `running` (up_for_reschedule não é
+    estado terminal). Fechar essa corrida seria a rede de segurança matando
+    exatamente a feature que ela existe para proteger."""
+    fechadas = []
+    _mundo(monkeypatch,
+           corridas_em_execucao=lambda conn, idade:
+               [("PIPE_C", HOJE, "dep__c", datetime(2026, 8, 3, 6, 0))],
+           fechar_orfa_em_execucao=lambda conn, p, d, r, m:
+               fechadas.append(p) or True)
+    monkeypatch.setattr(GUARDIA, "_dagrun_terminado", _dagrun("running", None))
+    assert GUARDIA.ciclo()["orfas_em_execucao"] == 0
+    assert fechadas == []
+
+
+def test_dagrun_recem_terminado_e_da_propria_dag(monkeypatch):
+    """A janela entre o Airflow marcar o DagRun e o `registrar_falha` da DAG
+    gravar FALHA é de segundos — nela quem fecha é a DAG, como sempre foi."""
+    fechadas = []
+    _mundo(monkeypatch,
+           corridas_em_execucao=lambda conn, idade:
+               [("PIPE_C", HOJE, "dep__c", datetime(2026, 8, 3, 6, 0))],
+           fechar_orfa_em_execucao=lambda conn, p, d, r, m:
+               fechadas.append(p) or True)
+    # AGORA = 09:00; idade = max(15, 3×5) = 15 min → 08:59 é recentíssimo.
+    monkeypatch.setattr(GUARDIA, "_dagrun_terminado",
+                        _dagrun("failed", datetime(2026, 8, 3, 8, 59)))
+    assert GUARDIA.ciclo()["orfas_em_execucao"] == 0
+    assert fechadas == []
+
+
+def test_dagrun_success_sem_fecho_ALERTA_mas_nao_inventa_verde(monkeypatch):
+    """A guardiã não fecha como SUCESSO o que ela não viu suceder, nem como
+    FALHA o que o Airflow diz ter concluído. Vira alerta + Finalização
+    Manual — a lição do sucesso falso vale nos dois sentidos."""
+    fechadas, eventos = [], []
+    _mundo(monkeypatch,
+           corridas_em_execucao=lambda conn, idade:
+               [("PIPE_C", HOJE, "dep__c", datetime(2026, 8, 3, 6, 0))],
+           fechar_orfa_em_execucao=lambda conn, p, d, r, m:
+               fechadas.append(p) or True,
+           gravar_evento=lambda conn, p, d, t, det:
+               eventos.append((t, det)) or True)
+    monkeypatch.setattr(GUARDIA, "_dagrun_terminado",
+                        _dagrun("success", datetime(2026, 8, 3, 7, 0)))
+    saida = GUARDIA.ciclo()
+    assert saida["orfas_em_execucao"] == 1      # foi TOCADA (alertada)
+    assert fechadas == []                       # mas NÃO fechada
+    assert eventos[0][0] == "EXECUCAO_ORFA"
+    assert "Finalizacao Manual" in eventos[0][1]
+
+
+def test_sem_dagrun_no_airflow_so_alerta(monkeypatch):
+    """Sem o Airflow confirmar o desfecho, o que a guardiã sabe é que não
+    sabe — e isso vira alerta, não sentença."""
+    fechadas, eventos = [], []
+    _mundo(monkeypatch,
+           corridas_em_execucao=lambda conn, idade:
+               [("PIPE_C", HOJE, "dep__c", datetime(2026, 8, 3, 6, 0))],
+           fechar_orfa_em_execucao=lambda conn, p, d, r, m:
+               fechadas.append(p) or True,
+           gravar_evento=lambda conn, p, d, t, det:
+               eventos.append((t, det)) or True)
+    monkeypatch.setattr(GUARDIA, "_dagrun_terminado",
+                        lambda dag_id, run_id: None)
+    assert GUARDIA.ciclo()["orfas_em_execucao"] == 1
+    assert fechadas == [] and eventos[0][0] == "EXECUCAO_ORFA"
+
+
+def test_erro_numa_orfa_nao_interrompe_o_ciclo(monkeypatch):
+    """D51 aplicado à responsabilidade nova: erro em UM item não derruba o
+    ciclo inteiro."""
+    def _explode(dag_id, run_id):
+        raise RuntimeError("airflow fora")
+    _mundo(monkeypatch,
+           corridas_em_execucao=lambda conn, idade:
+               [("PIPE_C", HOJE, "dep__c", datetime(2026, 8, 3, 6, 0)),
+                ("PIPE_D", HOJE, "dep__d", datetime(2026, 8, 3, 6, 0))])
+    monkeypatch.setattr(GUARDIA, "_dagrun_terminado", _explode)
+    assert GUARDIA.ciclo()["orfas_em_execucao"] == 0     # nenhuma, e sem crash
+
+
+def test_orfa_e_tratada_ANTES_da_rede_de_seguranca(monkeypatch):
+    """Uma corrida fechada como FALHA pode ser a resposta que falta para um
+    dependente decidir o dia no MESMO ciclo. EXECUTANDO eterno não é resposta;
+    FALHA é."""
+    import inspect
+    src = inspect.getsource(GUARDIA.ciclo)
+    assert src.index("_resgatar_em_execucao") < src.index("_rede_seguranca(")
 
 
 # ═══════════════════ §12.7 — deadline (D35/D46/D49) ═════════════════════════

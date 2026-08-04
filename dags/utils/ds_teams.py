@@ -35,6 +35,10 @@ ESTILO: dict[str, dict[str, str]] = {
     "DATA_DIVERGENTE":    {"rotulo": "Datas de referência divergentes", "icone": "⚠️", "cor": "Warning"},
     "PREDECESSOR_FALHOU": {"rotulo": "Predecessor falhou",             "icone": "🚨", "cor": "Attention"},
     "NAO_LIBEROU":        {"rotulo": "Dependência não liberou",        "icone": "🚨", "cor": "Attention"},
+    # F5 — corrida que COMEÇOU e cujo DagRun morreu sem fechar nada (a classe
+    # "órfão em RUNNING"). Attention: enquanto a linha estiver EXECUTANDO,
+    # TODOS os dependentes do dia ficam parados atrás dela.
+    "EXECUCAO_ORFA":      {"rotulo": "Execução órfã",                  "icone": "🚨", "cor": "Attention"},
     # F14 — observadores de malha (Notificação/Fim pela guardiã). Os quatro da
     # F4 são de PROBLEMA; estes são os primeiros de CONCLUSÃO — tom positivo,
     # como o SITUACAO_INICIAL: vermelho aqui ensinaria a ignorar a cor. O card
