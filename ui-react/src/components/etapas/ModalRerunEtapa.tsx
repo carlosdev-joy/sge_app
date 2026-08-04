@@ -62,6 +62,9 @@ interface PreviaRerun {
   data_referencia: string | null
   dag_run_id: string | null
   airflow_indisponivel: boolean
+  /** true = DAG pausada no Airflow (o gesto recusa com 409); null = não deu
+   *  para perguntar — e não saber não bloqueia nada. */
+  dag_pausada: boolean | null
   /** etapas DESTE pipeline que o clear vai reexecutar (do dry_run real) */
   etapas: string[]
   /** log_start/log_end/publish_dataset/cards — não somem do relato */
@@ -76,6 +79,8 @@ interface RespostaRerun {
   cascata: boolean
   dependentes_reabertos: string[]
   corridas_substituidas: number
+  /** outras corridas DESTE pipeline no mesmo ODATE, aposentadas junto */
+  corridas_irmas_aposentadas: number
   auditado: boolean
   avisos: string[]
 }
@@ -102,6 +107,17 @@ const RAZOES: Record<string, string> = {
   migration_078_pendente:
     'a migration 078 não está aplicada neste ambiente — sem a marca de corrida '
     + 'substituída, o claim continua barrando o segundo disparo do dependente.',
+  // As duas metades do deploy têm conserto diferente: uma é rodar migration,
+  // a outra é deployar dags/. Dizer sempre "migration 078" era o que fazia a
+  // tela mandar o operador conferir o que já estava certo.
+  dags_desatualizado:
+    'o motor de dependências publicado (pasta dags/) ainda não entende corrida '
+    + 'reaberta — as migrations foram aplicadas, o deploy de dags/ não. '
+    + 'Reabrir agora aposentaria as corridas sem nada rodar de novo.',
+  capacidade_dags_desconhecida:
+    'não foi possível conferir se o motor publicado (pasta dags/) entende '
+    + 'corrida reaberta. Enquanto isso a cascata fica indisponível — melhor do '
+    + 'que prometer um reprocesso que pode não acontecer.',
   sem_data_referencia:
     'a data de referência desta execução não pôde ser determinada.',
   erro_na_consulta:
@@ -158,6 +174,9 @@ export function ModalRerunEtapa({
         ? ` · ${r.dependentes_reabertos.length} dependente(s) reaberto(s)`
         : ''
       toast.success(`Reexecução disparada — ${r.tasks_cleared} tarefa(s) limpa(s)${extra}`)
+      // `corridas_irmas_aposentadas` vem como aviso do servidor (e o loop
+      // abaixo o mostra): a aposentadoria das outras corridas do dia é um
+      // efeito colateral real do gesto e não pode passar em silêncio.
       // Os avisos do servidor NUNCA são engolidos: um rerun que aconteceu mas
       // não reabriu ninguém precisa ser dito, senão o operador sai achando que
       // a cascata funcionou. (`toast` só tem success/error/info — e `error`
@@ -172,8 +191,11 @@ export function ModalRerunEtapa({
   })
 
   const carregando = previa.isLoading || previa.isFetching
-  // Sem prévia não se confirma: é o alcance do gesto que está faltando.
+  // Sem prévia não se confirma: é o alcance do gesto que está faltando. DAG
+  // pausada também trava o botão — o servidor recusa com 409, e oferecer um
+  // clique que só pode dar erro é a tela mentindo sobre o que é possível.
   const bloqueado = carregando || !!previa.error || !p || !p.dag_run_id
+    || p.dag_pausada === true
 
   return (
     <Modal open={open} onClose={onClose} size="lg"
@@ -230,6 +252,15 @@ export function ModalRerunEtapa({
             Não foi possível identificar a corrida desta execução no Airflow.
             Sem ela o comando atingiria todas as corridas da DAG — por isso a
             reexecução fica indisponível aqui.
+          </Aviso>
+        )}
+
+        {p?.dag_pausada === true && (
+          <Aviso tom="erro" icone={<AlertTriangle size={14} className="mt-0.5 shrink-0" />}>
+            Este pipeline está <strong>pausado</strong> no Airflow. Reexecutar
+            agora limparia as etapas sem nada rodar, e a corrida ficaria presa
+            em execução bloqueando os dependentes. Ative o pipeline e volte
+            aqui.
           </Aviso>
         )}
 

@@ -36,16 +36,50 @@ log = logging.getLogger("orquestra-api")
 ERRO_CONSULTA = "erro na consulta:"
 
 
+# Marca da migration 078 e fallback — o MESMO recurso do canônico de dags/
+# (`_MARCA_078`/`_exec_com_fallback_078`), portado para cá pela regra de
+# paridade: o predicado emite UMA consulta só, e ela tem de ser textualmente
+# igual à do motor (o teste de paridade conta as chamadas). Um probe de coluna
+# aqui gastaria uma consulta a mais e quebraria essa contagem.
+_MARCA_078 = "substituida_em"
+
+
+def _exec_com_fallback_078(cur, sql_078: str, sql_legado: str, params) -> bool:
+    """Executa `sql_078`; se o banco ainda não tem a coluna da 078, repete com
+    `sql_legado`. True = caiu no legado. Qualquer outro erro PROPAGA (a
+    tradução D21 é de `liberado()`)."""
+    try:
+        cur.execute(sql_078, params)
+        return False
+    except Exception as e:  # noqa: BLE001 — reagimos SÓ ao Invalid column name da 078
+        if _MARCA_078 not in str(e):
+            raise
+        cur.execute(sql_legado, params)
+        return True
+
+
 def faltantes(cur, pipeline: str, data_ref: date) -> list:
-    """Predecessores de `pipeline` SEM SUCESSO em `data_ref`.
+    """Predecessores de `pipeline` SEM SUCESSO VIVO em `data_ref`.
 
     Port EXATO do SELECT de dags/utils/dependencias.liberado() (só o
     placeholder muda, %s→?): NOT EXISTS(... status='SUCESSO' na data) por
     predecessor — FALHA, EXECUTANDO, PULADO, ausência e SUCESSO em OUTRA data
     contam como faltando (D20); PULADO intercalado não mascara um SUCESSO
     existente (D14). Exceção PROPAGA — a tradução D21 fica em `liberado()`.
+
+    Corrida com `substituida_em` (078) NÃO conta como SUCESSO — a correção da
+    terceira porta do modelo de corrida, feita primeiro no canônico. O painel
+    tem de contar a MESMA história do motor: com o dependente reaberto pela
+    cascata, "aguardando o predecessor" é a verdade dos dois lados.
     """
-    cur.execute(
+    _exec_com_fallback_078(
+        cur,
+        "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
+        "WHERE dd.pipeline_name = ? AND dd.tipo = 'PIPELINE' "
+        "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
+        "WHERE e.pipeline_name = dd.depende_de "
+        "AND e.data_referencia = ? AND e.status = 'SUCESSO' "
+        "AND e.substituida_em IS NULL)",
         "SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd "
         "WHERE dd.pipeline_name = ? AND dd.tipo = 'PIPELINE' "
         "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "

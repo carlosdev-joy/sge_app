@@ -41,6 +41,24 @@ _ROOT = Path(__file__).parent.parent
 _D = date(2026, 8, 3)
 
 
+@pytest.fixture(autouse=True)
+def _dags_do_repo(monkeypatch):
+    """`DAGS_FOLDER` apontando para o `dags/` DESTE repo — o que a API vê em
+    produção (bind mount read-only do compose).
+
+    Autouse porque a sonda de capacidade do deploy parcial passou a ser parte
+    do caminho da cascata: sem a variável, a suíte rodaria contra
+    `/opt/airflow/dags`, que não existe na máquina de teste, e TODA cascata
+    apareceria indisponível — mascarando o que os testes querem ver. Com ela,
+    a sonda lê o módulo do motor de verdade: se alguém tirar a cláusula de
+    corrida substituída e a declaração `CAPACIDADES` junto, estes testes caem.
+    """
+    monkeypatch.setenv("DAGS_FOLDER", str(_ROOT / "dags"))
+    rr._cache_capacidade.clear()
+    yield
+    rr._cache_capacidade.clear()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. TENTATIVAS ACUMULADAS — a leitura (decisão 2)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -549,11 +567,17 @@ class _RespFake:
 
 
 class _ClientFake:
-    """Cliente Airflow de mentira — grava cada POST feito."""
+    """Cliente Airflow de mentira — grava cada POST feito.
 
-    def __init__(self, *, task_instances=None):
+    `is_paused=None` = o Airflow não respondeu a pergunta (o default, e o
+    comportamento histórico do dublê): o gesto SEGUE, porque não saber não
+    pode bloquear o rerun de Logs/Dashboard.
+    """
+
+    def __init__(self, *, task_instances=None, is_paused=None):
         self.posts = []
         self.task_instances = task_instances or [{"task_id": "etapa_x"}]
+        self.is_paused = is_paused
 
     async def __aenter__(self):
         return self
@@ -562,7 +586,11 @@ class _ClientFake:
         return False
 
     async def get(self, url, params=None):
-        return _RespFake({"dag_runs": []})
+        if url.endswith("/dagRuns"):
+            return _RespFake({"dag_runs": []})
+        if url.endswith("/tasks"):
+            return _RespFake({"tasks": [{"task_id": t} for t in ("etapa_x",)]})
+        return _RespFake({"is_paused": self.is_paused})
 
     async def post(self, url, json=None):
         self.posts.append((url, json))
@@ -573,10 +601,15 @@ class _DbRerun:
     """Banco de mentira do endpoint: pipeline oficial, corridas do ODATE,
     grafo de dependência, desenho e as escritas do pós-clear."""
 
-    def __init__(self, *, corridas=(), grafo=None, tem_078=True):
+    def __init__(self, *, corridas=(), grafo=None, tem_078=True,
+                 executando_rowcount=1):
         self.corridas = list(corridas)
         self.grafo = {k.casefold(): v for k, v in (grafo or {}).items()}
         self.tem_078 = tem_078
+        # rowcount do carimbo de EXECUTANDO: 0 é o caso em que o
+        # `execution_id` não casa com nenhuma linha — a marca que protege o
+        # filho direto simplesmente não acontece.
+        self.executando_rowcount = executando_rowcount
         self.escritas = []
         self._cur = None
 
@@ -620,6 +653,15 @@ class _CurRerun:
         if s.startswith("SELECT COL_LENGTH('dbo.etl_pipeline_execucao', 'substituida_em')"):
             self._rows = [(8 if db.tem_078 else None,)]
             return
+        if s.startswith("SELECT data_referencia, status, inicio, fim, "
+                        "disparado_por, motivo FROM dbo.etl_pipeline_execucao"):
+            # corrida_por_run_id — o caminho de quem já escolheu a corrida à
+            # mão (a variante das duas corridas no ODATE).
+            _pipe, rid = params
+            self._rows = [(_D, c["status"], c.get("inicio"), c.get("fim"),
+                           c.get("disparado_por"), None)
+                          for c in db.corridas if str(c["run_id"]) == str(rid)]
+            return
         if s.startswith("SELECT execution_id, status, inicio, fim, disparado_por, motivo "
                         "FROM dbo.etl_pipeline_execucao"):
             pipe, _d = params
@@ -647,6 +689,22 @@ class _CurRerun:
         if s.startswith("UPDATE dbo.etl_pipeline_execucao") \
                 or s.startswith("INSERT INTO dbo.etl_pipeline_audit"):
             db.escritas.append((s, params))
+            # rowcount REALISTA na aposentadoria das irmãs (`execution_id <> ?`):
+            # conta as OUTRAS corridas vivas do pipeline na data. Com um dublê
+            # que devolvesse 1 sempre, um pipeline de corrida única acusaria
+            # irmã aposentada — e o teste da variante das duas corridas não
+            # provaria nada.
+            if s.startswith("UPDATE dbo.etl_pipeline_execucao SET status='EXECUTANDO'"):
+                self.rowcount = db.executando_rowcount
+                return
+            if "execution_id <> ?" in s:
+                pipe, escolhida = str(params[1]), str(params[3])
+                self.rowcount = len(
+                    [c for c in db.corridas
+                     if c["pipeline"].casefold() == pipe.casefold()
+                     and str(c["run_id"]) != escolhida
+                     and c.get("status") != "AGUARDANDO_DEPENDENCIA"])
+                return
             self.rowcount = 1
             return
         raise AssertionError(f"SQL não previsto no dublê: {s[:140]}")
@@ -746,8 +804,13 @@ def test_sem_cascata_nenhum_dependente_e_reaberto(cliente):
     assert body["cascata"] is False
     assert body["dependentes_reabertos"] == []
     assert body["corridas_substituidas"] == 0
+    # Nenhum DEPENDENTE aposentado. (A aposentadoria das corridas IRMÃS do
+    # próprio pipeline é outra pergunta e vale sem cascata — ver
+    # `test_variante_duas_corridas_*`; com uma corrida só ela não muda nada,
+    # e é isso que `corridas_irmas_aposentadas` diz.)
+    assert body["corridas_irmas_aposentadas"] == 0
     assert not [e for e in db.escritas
-                if "substituida_em" in e[0]]
+                if "substituida_em" in e[0] and "execution_id <> ?" not in e[0]]
 
 
 def test_com_cascata_os_dependentes_com_corrida_sao_reabertos(cliente):
@@ -768,7 +831,8 @@ def test_com_cascata_os_dependentes_com_corrida_sao_reabertos(cliente):
     assert body["cascata"] is True
     assert sorted(body["dependentes_reabertos"]) == ["DEV_F10_C", "DEV_F10_D"]
     assert body["corridas_substituidas"] == 2
-    subs = [e for e in db.escritas if "substituida_em = GETDATE()" in e[0]]
+    subs = [e for e in db.escritas if "substituida_em = GETDATE()" in e[0]
+            and "execution_id <> ?" not in e[0]]
     assert {e[1][1] for e in subs} == {"DEV_F10_C", "DEV_F10_D"}
 
 
@@ -885,3 +949,233 @@ def test_previa_recusa_odate_ambiguo(cliente):
                         "?task_id=etapa_x&data_referencia=2026-08-03")
     assert r.status_code == 409
     assert r.json()["detail"]["erro"] == "corrida_ambigua"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 8. OS TRÊS DEFEITOS DA REVISÃO PRÉ-DEPLOY (correções de 2026-08-03)
+#
+#   1. a cascata liberava o NETO com dado velho — a terceira porta
+#      (`liberado()`) não filtrava corrida substituída, e a variante das duas
+#      corridas do pai deixava um SUCESSO sobrevivente liberando o filho;
+#   2. deploy parcial "078 sim / dags não": a API afirmava uma cascata que o
+#      motor deployado não cumpria;
+#   3. o carimbo de EXECUTANDO não conferia rowcount, e rerun em DAG PAUSADA
+#      deixava a corrida pendurada bloqueando todo dependente.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── defeito 2: a API sabe se o dags/ deployado entende o carimbo ─────────────
+
+def _escreve_modulo(tmp_path, corpo: str) -> Path:
+    alvo = tmp_path / "utils"
+    alvo.mkdir(parents=True, exist_ok=True)
+    (alvo / "dependencias.py").write_text(corpo, encoding="utf-8")
+    return alvo / "dependencias.py"
+
+
+def test_capacidade_le_a_declaracao_do_modulo_do_motor(tmp_path):
+    p = _escreve_modulo(tmp_path, 'CAPACIDADES = ("rerun_cascata_078",)\n')
+    assert rr.capacidade_dags(p) == rr.CAP_OK
+
+
+def test_capacidade_ausente_quando_o_dags_e_antigo(tmp_path):
+    """dags/ anterior à fase: o arquivo existe, a declaração não."""
+    p = _escreve_modulo(tmp_path, "def liberado(conn, p, d):\n    return True, []\n")
+    assert rr.capacidade_dags(p) == rr.CAP_AUSENTE
+
+
+def test_capacidade_nao_se_engana_com_comentario_ou_docstring(tmp_path):
+    """A sonda é AST, não `in`: o texto que EXPLICA a capacidade aparece no
+    módulo do motor em comentário e docstring. Um grep diria 'sim' para um
+    dags/ que só fala do assunto."""
+    p = _escreve_modulo(
+        tmp_path,
+        '"""fala de rerun_cascata_078 na docstring."""\n'
+        "# rerun_cascata_078 em comentario\n"
+        "OUTRA = ('rerun_cascata_078',)\n")
+    assert rr.capacidade_dags(p) == rr.CAP_AUSENTE
+
+
+def test_capacidade_desconhecida_quando_nao_da_para_ler(tmp_path):
+    """Mount ausente / permissão: a resposta é DESCONHECIDA — e desconhecida
+    NÃO vira 'pode'. É o inverso exato do defeito."""
+    assert rr.capacidade_dags(tmp_path / "nao" / "existe.py") == rr.CAP_DESCONHECIDA
+
+
+def test_capacidade_do_repo_de_verdade():
+    """Fecha o contrato com o canônico: o dags/ DESTE repo declara."""
+    assert rr.capacidade_dags(_ROOT / "dags/utils/dependencias.py") == rr.CAP_OK
+
+
+def test_razao_separa_as_duas_metades_do_deploy(monkeypatch):
+    """Banco sem a 078 e dags/ velho são consertos DIFERENTES (rodar migration
+    × deployar dags/) — a razão tem de dizer qual."""
+    cur_sem_078 = _CurGrafo({"A": []}, tem_078=False)
+    assert rr.razao_cascata_indisponivel(cur_sem_078) == "migration_078_pendente"
+    cur_ok = _CurGrafo({"A": []})
+    monkeypatch.setattr(rr, "capacidade_dags", lambda *a, **k: rr.CAP_AUSENTE)
+    assert rr.razao_cascata_indisponivel(cur_ok) == rr.CAP_AUSENTE
+    monkeypatch.setattr(rr, "capacidade_dags", lambda *a, **k: rr.CAP_OK)
+    assert rr.razao_cascata_indisponivel(cur_ok) is None
+
+
+def test_sem_o_dags_novo_nada_e_carimbado(monkeypatch):
+    """O coração do defeito 2: com a 078 no banco e o dags/ ANTIGO, carimbar
+    seria aposentar corridas que ninguém vai reabrir — dependentes parados
+    para sempre e uma resposta dizendo 'reabertos'."""
+    monkeypatch.setattr(rr, "capacidade_dags", lambda *a, **k: rr.CAP_AUSENTE)
+    cur = _CurGrafo({"A": ["C"], "C": []},
+                    corridas={"c": [{"run_id": "r", "status": "SUCESSO"}]})
+    assert rr.marcar_substituidas(cur, ["C"], _D, "DEV1") == 0
+    assert not [e for e in cur.execs if "substituida_em = GETDATE()" in e[0]]
+
+
+def test_cascata_com_dags_desatualizado_avisa_o_deploy_pendente(cliente, monkeypatch):
+    """Ponta a ponta: a resposta não promete a cascata, a lista de reabertos
+    vem vazia e o aviso nomeia o conserto certo (deploy de dags/, não
+    migration)."""
+    monkeypatch.setattr(rr, "capacidade_dags", lambda *a, **k: rr.CAP_AUSENTE)
+    db = _DbRerun(corridas=[_corrida(_RUN_A),
+                            _corrida("dep__c", pipeline="DEV_F10_C")],
+                  grafo={"DEV_F10_A": ["DEV_F10_C"]})
+    r, _ = _post(cliente, db, {"pipeline_name": "DEV_F10_A",
+                               "task_id": "etapa_x",
+                               "data_referencia": "2026-08-03",
+                               "cascata": True})
+    assert r.status_code == 200
+    b = r.json()
+    assert b["corridas_substituidas"] == 0
+    assert b["dependentes_reabertos"] == []
+    assert any("dags/" in a for a in b["avisos"]), b["avisos"]
+    assert not [e for e in db.escritas if "substituida_em = GETDATE()" in e[0]]
+
+
+def test_previa_diz_que_a_cascata_depende_do_deploy_do_dags(cliente, monkeypatch):
+    monkeypatch.setattr(rr, "capacidade_dags", lambda *a, **k: rr.CAP_AUSENTE)
+    db = _DbRerun(corridas=[_corrida(_RUN_A),
+                            _corrida("dep__c", pipeline="DEV_F10_C")],
+                  grafo={"DEV_F10_A": ["DEV_F10_C"]})
+    with patch("routers.execucoes.get_db_conn", return_value=db), \
+         patch("routers.execucoes.get_airflow_client", return_value=_ClientFake()):
+        r = cliente.get("/pipelines/DEV_F10_A/rerun/previa"
+                        "?task_id=etapa_x&data_referencia=2026-08-03")
+    assert r.status_code == 200
+    assert r.json()["cascata"]["disponivel"] is False
+    assert r.json()["cascata"]["razao"] == rr.CAP_AUSENTE
+
+
+# ── defeito 1 (variante): as OUTRAS corridas do pai no mesmo ODATE ───────────
+
+def test_variante_duas_corridas_a_irma_e_aposentada(cliente):
+    """Com dois runs do pai no ODATE, o operador escolhe UM (`dag_run_id`) e o
+    carimbo de EXECUTANDO só toca o escolhido. O outro continuava dizendo
+    SUCESSO — e liberação é EXISTS: UM sobrevivente basta para o filho partir
+    com o dado velho. A corrida irmã é aposentada."""
+    db = _DbRerun(corridas=[_corrida(_RUN_A), _corrida(_RUN_B)],
+                  grafo={"DEV_F10_A": ["DEV_F10_C"]})
+    r, _ = _post(cliente, db, {"pipeline_name": "DEV_F10_A",
+                               "task_id": "etapa_x",
+                               "dag_run_id": _RUN_A,
+                               "data_referencia": "2026-08-03",
+                               "cascata": True})
+    assert r.status_code == 200
+    assert r.json()["corridas_irmas_aposentadas"] == 1
+    irmas = [e for e in db.escritas if "execution_id <> ?" in e[0]]
+    assert len(irmas) == 1
+    # a escolhida é preservada (é ela que está rodando de novo)
+    assert irmas[0][1] == ("rerun:DEV1", "DEV_F10_A", date(2026, 8, 3), _RUN_A)
+    # e a linha aposentada NÃO tem o status reescrito nem é apagada
+    assert "status =" not in irmas[0][0].split("WHERE")[0]
+    assert any("aposentadas" in a for a in r.json()["avisos"])
+
+
+def test_variante_duas_corridas_vale_tambem_sem_cascata(cliente):
+    """'Sem cascata' quer dizer *não reabro quem já rodou* — nunca *deixo uma
+    corrida velha do próprio pipeline liberando quem ainda não rodou*. É a
+    mesma proteção do carimbo de EXECUTANDO, que já é incondicional."""
+    db = _DbRerun(corridas=[_corrida(_RUN_A), _corrida(_RUN_B)],
+                  grafo={"DEV_F10_A": ["DEV_F10_C"]})
+    r, _ = _post(cliente, db, {"pipeline_name": "DEV_F10_A",
+                               "task_id": "etapa_x",
+                               "dag_run_id": _RUN_A,
+                               "data_referencia": "2026-08-03"})
+    assert r.status_code == 200
+    assert r.json()["corridas_irmas_aposentadas"] == 1
+
+
+def test_corrida_unica_nao_tem_irma_a_aposentar(cliente):
+    """Não-regressão do caso comum: um run só no dia → nada a aposentar e
+    nenhum aviso a mais."""
+    db = _DbRerun(corridas=[_corrida(_RUN_A)], grafo={"DEV_F10_A": []})
+    r, _ = _post(cliente, db, {"pipeline_name": "DEV_F10_A",
+                               "task_id": "etapa_x",
+                               "data_referencia": "2026-08-03"})
+    assert r.json()["corridas_irmas_aposentadas"] == 0
+    assert r.json()["avisos"] == []
+
+
+def test_irmas_nao_sao_aposentadas_sem_o_motor_que_le_o_carimbo(cliente, monkeypatch):
+    """Mesma disciplina do defeito 2: sem as duas metades do deploy, carimbar
+    só criaria corrida aposentada que ninguém lê."""
+    monkeypatch.setattr(rr, "capacidade_dags", lambda *a, **k: rr.CAP_AUSENTE)
+    db = _DbRerun(corridas=[_corrida(_RUN_A), _corrida(_RUN_B)],
+                  grafo={"DEV_F10_A": []})
+    r, _ = _post(cliente, db, {"pipeline_name": "DEV_F10_A",
+                               "task_id": "etapa_x",
+                               "dag_run_id": _RUN_A,
+                               "data_referencia": "2026-08-03"})
+    assert r.json()["corridas_irmas_aposentadas"] == 0
+    assert not [e for e in db.escritas if "execution_id <> ?" in e[0]]
+
+
+# ── defeito 3: rowcount do carimbo e DAG pausada ────────────────────────────
+
+def test_carimbo_de_executando_sem_linha_casada_vira_aviso(cliente):
+    """O UPDATE passava em silêncio: `execution_id` que não casa → a marca
+    não acontece, e é ela que impede o filho de partir com o dado velho.
+    Rowcount 0 agora é dito."""
+    db = _DbRerun(corridas=[_corrida(_RUN_A)], grafo={"DEV_F10_A": []},
+                  executando_rowcount=0)
+    r, _ = _post(cliente, db, {"pipeline_name": "DEV_F10_A",
+                               "task_id": "etapa_x",
+                               "data_referencia": "2026-08-03"})
+    assert r.status_code == 200
+    assert any("em execução" in a for a in r.json()["avisos"]), r.json()["avisos"]
+
+
+def test_rerun_em_dag_pausada_e_recusado_sem_limpar_nada(cliente):
+    """Com a DAG pausada o clear é aceito, o run volta para QUEUED e NADA
+    roda — e a corrida fica EXECUTANDO travando todo dependente (a classe do
+    'órfão em RUNNING'). Recusar é o único desfecho honesto: nada é limpo,
+    nada é carimbado, e a mensagem diz o conserto."""
+    db = _DbRerun(corridas=[_corrida(_RUN_A)], grafo={"DEV_F10_A": []})
+    af = _ClientFake(is_paused=True)
+    r, af = _post(cliente, db, {"pipeline_name": "DEV_F10_A",
+                                "task_id": "etapa_x",
+                                "data_referencia": "2026-08-03",
+                                "cascata": True}, af=af)
+    assert r.status_code == 409
+    assert r.json()["detail"]["erro"] == "dag_pausada"
+    assert af.posts == []                      # nada foi limpo
+    assert db.escritas == []                   # nada foi carimbado
+
+
+def test_airflow_mudo_sobre_pausa_nao_bloqueia_o_gesto(cliente):
+    """Não-regressão: `is_paused` indisponível (Airflow fora, 404) não pode
+    derrubar o rerun histórico de Logs/Dashboard — só o SIM bloqueia."""
+    db = _DbRerun(corridas=[_corrida(_RUN_A)], grafo={"DEV_F10_A": []})
+    r, af = _post(cliente, db, {"pipeline_name": "DEV_F10_A",
+                                "task_id": "etapa_x",
+                                "data_referencia": "2026-08-03"},
+                  af=_ClientFake(is_paused=None))
+    assert r.status_code == 200 and len(af.posts) == 1
+
+
+def test_previa_avisa_a_dag_pausada_antes_do_clique(cliente):
+    """O modal não pode oferecer um botão que só pode dar 409."""
+    db = _DbRerun(corridas=[_corrida(_RUN_A)], grafo={"DEV_F10_A": []})
+    with patch("routers.execucoes.get_db_conn", return_value=db), \
+         patch("routers.execucoes.get_airflow_client",
+               return_value=_ClientFake(is_paused=True)):
+        r = cliente.get("/pipelines/DEV_F10_A/rerun/previa"
+                        "?task_id=etapa_x&data_referencia=2026-08-03")
+    assert r.status_code == 200 and r.json()["dag_pausada"] is True

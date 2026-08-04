@@ -72,9 +72,12 @@ CONVENÇÕES
 """
 from __future__ import annotations
 
+import ast
 import json
 import logging
+import os
 from datetime import date
+from pathlib import Path
 
 log = logging.getLogger("orquestra-api")
 
@@ -164,6 +167,129 @@ def tem_coluna_substituida(cur) -> bool:
         return False
 
 
+# ═════════════ o dags/ deployado entende o carimbo? (deploy parcial) ═════════
+# ⚠️ **DEFEITO CORRIGIDO AQUI: "078 sim / dags não".**
+# `tem_coluna_substituida()` responde sobre o BANCO. Se o operador aplicar as
+# migrations e NÃO deployar `dags/`, a API oferecia a cascata, carimbava as
+# corridas (rowcount > 0) e respondia "2 dependentes reabertos" — enquanto o
+# push antigo ignorava o carimbo: **nenhum dependente rodava**, e as corridas
+# ficavam aposentadas para sempre. A API afirmava o que não podia garantir.
+#
+# A pergunta certa tem duas metades — banco E motor — e esta é a segunda. O
+# meio escolhido, entre os três avaliados:
+#
+#   (a) ✅ **ler a declaração de capacidade do módulo do motor.** O container
+#       da API monta `${AIRFLOW_PROJ_DIR}/dags:/opt/airflow/dags:ro`
+#       (docker-compose.yaml, serviço orquestra-api) — o MESMO bind mount que
+#       o scheduler e o worker usam rw. Ler `utils/dependencias.py` de lá é
+#       ler o código que o motor vai importar, não uma cópia nem um palpite.
+#       Custo: um `os.stat` por chamada (o parse é cacheado por mtime+tamanho).
+#   (b) ❌ o próprio `dags/` registrar a capacidade numa tabela na 1ª execução:
+#       exigiria migration nova e um carimbo que SOBREVIVE ao rollback — o
+#       banco continuaria dizendo "sei fazer" depois de voltar o dags/. Trocar
+#       uma mentira por outra.
+#   (c) ❌ perguntar ao Airflow: a REST não expõe o conteúdo de utils/, só o
+#       código da DAG serializada — e `utils/` é importado em runtime.
+#
+# LIMITE HONESTO, registrado: isto prova o que está NO DISCO da árvore que o
+# motor importa. Um worker que ficou com o módulo velho em memória (processo
+# vivo desde antes do deploy) não é coberto — Airflow importa `utils/` por
+# task, então a janela é a de uma task em voo. E se o arquivo não puder ser
+# lido (mount ausente), a resposta é DESCONHECIDA e a cascata fica
+# indisponível com mensagem acionável: é o inverso exato do defeito — na
+# dúvida a API não promete.
+CAPACIDADE_CASCATA = "rerun_cascata_078"
+
+CAP_OK = "ok"
+CAP_AUSENTE = "dags_desatualizado"
+CAP_DESCONHECIDA = "capacidade_dags_desconhecida"
+
+_MODULO_MOTOR = ("utils", "dependencias.py")
+
+# {caminho: (mtime, tamanho, resultado)} — invalida sozinho quando o deploy
+# reescreve o arquivo. Sem cache, todo abrir de modal reparsaria ~1000 linhas.
+_cache_capacidade: dict = {}
+
+
+def caminho_modulo_motor() -> Path:
+    """`<DAGS_FOLDER>/utils/dependencias.py` — o módulo do motor visto pela
+    API. `DAGS_FOLDER` é a MESMA variável que admin/sync/lineage já usam."""
+    base = os.environ.get("DAGS_FOLDER", "/opt/airflow/dags")
+    return Path(base).joinpath(*_MODULO_MOTOR)
+
+
+def _capacidades_declaradas(fonte: str) -> set:
+    """Nomes em ``CAPACIDADES = (...)`` no nível do módulo, por AST.
+
+    AST e não regex/`in`: um `grep` casaria com a palavra dentro de um
+    comentário ou de uma docstring (inclusive a que EXPLICA a capacidade), e
+    aí a sonda diria "sim" para um dags/ que só fala do assunto. E não import:
+    importar o módulo do motor dentro da API acopla as duas árvores de deploy
+    — exatamente o que o port de `services/dependencias.py` existe para
+    evitar.
+    """
+    try:
+        arvore = ast.parse(fonte)
+    except SyntaxError as e:
+        log.warning("[RERUN] modulo do motor ilegivel (%s)", e)
+        return set()
+    achadas: set = set()
+    for no in arvore.body:
+        if not isinstance(no, ast.Assign):
+            continue
+        alvos = [a.id for a in no.targets if isinstance(a, ast.Name)]
+        if "CAPACIDADES" not in alvos:
+            continue
+        valor = no.value
+        if isinstance(valor, (ast.Tuple, ast.List, ast.Set)):
+            for elt in valor.elts:
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                    achadas.add(elt.value)
+    return achadas
+
+
+def capacidade_dags(caminho=None) -> str:
+    """O `dags/` deployado entende corrida substituída?
+
+    Devolve ``CAP_OK`` | ``CAP_AUSENTE`` (arquivo lido, sem a declaração:
+    dags/ antigo) | ``CAP_DESCONHECIDA`` (não deu para ler: mount ausente,
+    permissão, I/O). As três respostas são distintas de propósito — cada uma
+    tem uma frase diferente para o operador, e nenhuma delas é "pode ir".
+    """
+    p = Path(caminho) if caminho else caminho_modulo_motor()
+    try:
+        st = p.stat()
+        chave = (str(p), st.st_mtime_ns, st.st_size)
+        anterior = _cache_capacidade.get(str(p))
+        if anterior and anterior[0] == chave:
+            return anterior[1]
+        fonte = p.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:  # noqa: BLE001 — não saber é uma resposta, e ela recusa
+        log.warning("[RERUN] capacidade do dags/ desconhecida (%s em %s)", e, p)
+        return CAP_DESCONHECIDA
+    resultado = (CAP_OK if CAPACIDADE_CASCATA in _capacidades_declaradas(fonte)
+                 else CAP_AUSENTE)
+    _cache_capacidade[str(p)] = (chave, resultado)
+    if resultado != CAP_OK:
+        log.warning("[RERUN] dags/ deployado NAO declara '%s' — cascata "
+                    "indisponivel (deploy parcial: migrations sem dags/)",
+                    CAPACIDADE_CASCATA)
+    return resultado
+
+
+def razao_cascata_indisponivel(cur) -> str | None:
+    """A razão pela qual a cascata NÃO pode acontecer, ou None se pode.
+
+    As duas metades na ordem em que o operador as conserta: primeiro o banco
+    (migration 078), depois o motor (deploy de dags/). Uma razão por vez —
+    o modal mostra uma frase, não uma lista de tudo que falta.
+    """
+    if not tem_coluna_substituida(cur):
+        return "migration_078_pendente"
+    cap = capacidade_dags()
+    return None if cap == CAP_OK else cap
+
+
 def corridas_do_dia(cur, pipelines: list, data_ref: date) -> dict:
     """``{casefold(pipeline): [corrida, ...]}`` das corridas VIVAS de cada
     pipeline no ODATE — as que o claim ainda considera existentes.
@@ -205,7 +331,8 @@ def afetados(cur, raiz: str, data_ref: date) -> dict:
          "corridas": {"c": [...], ...},       # corridas VIVAS no ODATE
          "com_corrida": ["C", "D"],           # rodaram no ODATE → serão reabertos
          "sem_corrida": ["E"],                # não rodaram → nada a reabrir
-         "cascata_indisponivel": False}
+         "cascata_indisponivel": False,
+         "razao_indisponivel": None}          # banco OU dags/ (deploy parcial)
 
     A distinção ``com_corrida`` × ``sem_corrida`` é o que impede o modal de
     prometer o que não vai acontecer: reabrir um pipeline que **não rodou** no
@@ -224,13 +351,15 @@ def afetados(cur, raiz: str, data_ref: date) -> dict:
         vivas = [c for c in corridas.get(p.strip().casefold(), [])
                  if str(c.get("status") or "") != "AGUARDANDO_DEPENDENCIA"]
         (com if vivas else sem).append(p)
+    razao = razao_cascata_indisponivel(cur)
     return {
         "dependentes": deps,
         "truncado": truncado,
         "corridas": corridas,
         "com_corrida": com,
         "sem_corrida": sem,
-        "cascata_indisponivel": not tem_coluna_substituida(cur),
+        "cascata_indisponivel": razao is not None,
+        "razao_indisponivel": razao,
     }
 
 
@@ -249,12 +378,17 @@ def marcar_substituidas(cur, pipelines: list, data_ref: date, usuario: str) -> i
     gesto não re-carimba corrida já aposentada (e não estraga o carimbo
     original, que é prova de auditoria).
 
-    ⚠️ **Não toca no pipeline reexecutado.** Ele NÃO é redisparado: o
-    ``clearTaskInstances`` reaproveita o MESMO dag_run e, portanto, a MESMA
+    ⚠️ **Não toca na corrida REEXECUTADA do pipeline.** Ela NÃO é redisparada:
+    o ``clearTaskInstances`` reaproveita o MESMO dag_run e, portanto, a MESMA
     corrida na 067 (mesmo run_id). Aposentá-la faria o pai aparecer sem corrida
-    viva no dia enquanto ele está rodando.
+    viva no dia enquanto ele está rodando. As OUTRAS corridas do pai no ODATE
+    são caso à parte — ver ``aposentar_irmas``.
+
+    ⚠️ Carimbar exige as DUAS metades (banco e motor): sem a 078 não há coluna;
+    com a 078 e um ``dags/`` antigo o carimbo não seria lido por ninguém e as
+    corridas ficariam aposentadas para sempre, sem nada rodar de novo.
     """
-    if not pipelines or not tem_coluna_substituida(cur):
+    if not pipelines or razao_cascata_indisponivel(cur) is not None:
         return 0
     total = 0
     # Proveniência no mesmo idioma de `disparado_por` ('malha:X (ADMIN)',
@@ -276,6 +410,48 @@ def marcar_substituidas(cur, pipelines: list, data_ref: date, usuario: str) -> i
         n = cur.rowcount
         total += n if n and n > 0 else 0
     return total
+
+
+def aposentar_irmas(cur, pipeline: str, data_ref: date, run_id: str,
+                    usuario: str) -> int:
+    """Aposenta as OUTRAS corridas vivas do pipeline reexecutado no ODATE —
+    todas menos a escolhida. Devolve quantas.
+
+    ⚠️ **A variante das duas corridas.** Com dois runs do mesmo pipeline no
+    mesmo ODATE, o operador escolhe UM (a F2 recusa o gesto com 409 até que
+    ele escolha). O carimbo de EXECUTANDO só toca o escolhido — e o outro
+    continua dizendo ``SUCESSO`` na data. Como liberação é EXISTS, **um único
+    SUCESSO sobrevivente basta**: o filho direto é liberado e roda com o dado
+    velho antes de o reprocesso terminar, o mesmo estrago da cascata do neto.
+
+    Por que APOSENTAR e não marcar EXECUTANDO junto: EXECUTANDO em corrida que
+    ninguém está executando é órfão em RUNNING — o ``publish_dataset`` do
+    reprocesso só reescreve o run_id DELE, e a irmã ficaria pendurada
+    bloqueando todo dependente para sempre (a classe de defeito já registrada
+    no projeto). Aposentadoria é o gesto que já existe, é o que o modelo lê nas
+    três portas e é reversível na leitura: a linha mantém status, horários e
+    ``disparado_por`` — some só da pergunta "existe SUCESSO vivo hoje?".
+
+    Vale COM e SEM cascata: a marca de EXECUTANDO no pipeline reexecutado já é
+    incondicional (protege o dependente que ainda não rodou de partir com dado
+    velho), e isto aqui é a metade que faltava dessa mesma proteção. "Sem
+    cascata" quer dizer *não reabro quem já rodou*, nunca *deixo uma corrida
+    velha liberando quem ainda não rodou*.
+    """
+    if not run_id or razao_cascata_indisponivel(cur) is not None:
+        return 0
+    marca = f"rerun:{usuario or '?'}"[:200]
+    cur.execute(
+        "UPDATE dbo.etl_pipeline_execucao "
+        "SET substituida_em = GETDATE(), substituida_por = ?, "
+        "    atualizado_em = GETDATE() "
+        "WHERE pipeline_name = ? AND data_referencia = ? "
+        "AND execution_id <> ? "
+        "AND substituida_em IS NULL "
+        "AND status <> 'AGUARDANDO_DEPENDENCIA'",
+        (marca, pipeline, data_ref, run_id))
+    n = cur.rowcount
+    return n if n and n > 0 else 0
 
 
 # ═════════════════════════════════ auditoria ═════════════════════════════════
