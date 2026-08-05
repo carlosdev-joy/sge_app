@@ -94,7 +94,16 @@ _CONSTANTES_SQL = ("SQL_TETO_DA_MALHA", "SQL_VIRADA_DA_MALHA",
                    "SQL_VIRADA_GLOBAL", "SQL_CORRIDA_ABERTA",
                    "SQL_CORRIDAS_ABERTAS", "SQL_CORRIDA_POR_ID",
                    "SQL_ABERTAS_DO_PIPELINE", "SQL_MEMBROS", "SQL_ABRIR",
-                   "SQL_VINCULAR", "SQL_FECHAR", "SQL_REABRIR")
+                   "SQL_VINCULAR", "SQL_FECHAR", "SQL_REABRIR",
+                   # F2 — as portas, o predicado `estado` e os relógios. Entram
+                   # nesta tupla no MESMO commit em que nascem: um SQL que
+                   # exista só de um lado é a próxima divergência silenciosa
+                   # entre o que o motor fecha e o que o painel mostra.
+                   "SQL_RAIZES_DA_MALHA", "SQL_ESTADO", "SQL_FORA_DO_ODATE",
+                   "SQL_AGUARDANDO_DO_SNAPSHOT", "SQL_RELOGIOS",
+                   "SQL_NO_RETIDO", "SQL_CARIMBAR_MOTIVO",
+                   "SQL_HEARTBEAT_GRAVAR", "SQL_HEARTBEAT_CRIAR",
+                   "SQL_HEARTBEAT_LER", "SQL_CORRIDA_DA_DATA")
 
 
 @pytest.mark.parametrize("nome", _CONSTANTES_SQL)
@@ -106,6 +115,16 @@ def test_paridade_do_sql_dos_marcadores(mcd):
     assert set(mcd._SQL_VISTO) == set(mca._SQL_VISTO) == {"falha", "atraso"}
     for chave in mcd._SQL_VISTO:
         assert _norm(mcd._SQL_VISTO[chave]) == _norm(mca._SQL_VISTO[chave])
+
+
+@pytest.mark.parametrize("quantos", [0, 1, 2, 5])
+def test_paridade_das_partidas_que_variam_com_a_lista(mcd, quantos):
+    """Mesma razão do snapshot: sem `IN ()` em T-SQL, o texto muda com o
+    tamanho da lista, e lista vazia vira `1 = 0` (nunca a ausência da cláusula,
+    que varreria a maior tabela do schema)."""
+    assert _norm(mcd.sql_partidas(quantos)) == _norm(mca.sql_partidas(quantos))
+    assert "?" not in mcd.sql_partidas(quantos)
+    assert "%s" not in mca.sql_partidas(quantos)
 
 
 @pytest.mark.parametrize("quantos", [None, 0, 1, 2, 5])
@@ -140,7 +159,18 @@ def test_paridade_do_dominio_e_das_constantes(mcd):
                  "CARENCIA_PARTIDA_MAX", "CHAVE_ATIVA", "CHAVE_TETO",
                  "CHAVE_QUIESCENCIA", "CHAVE_CARENCIA", "LOG", "IX_ABERTA",
                  "IX_SEQUENCIA", "_TENTATIVAS_ABERTURA", "_ERROS_AUSENCIA",
-                 "_MARCAS_085", "_COLS", "_CAMPOS", "_INTEIROS"):
+                 "_MARCAS_085", "_COLS", "_CAMPOS", "_INTEIROS",
+                 # F2 — o vocabulário da classificação e dos carimbos. Não é
+                 # domínio do banco como os de cima, e por isso é MAIS fácil de
+                 # divergir: nenhum CHECK reclamaria se o painel da F4 lesse
+                 # `orfa` de um lado e `orfã` do outro, ou se o fechador
+                 # considerasse PULADO uma partida e a API não. O que se
+                 # perderia é a concordância entre quem FECHA a corrida e quem
+                 # a MOSTRA — que é o defeito desta spec, com outra roupa.
+                 "STATUS_PARTIU", "CLASSES_PENDENTES", "_ORDEM_CLASSE",
+                 "EVENTO_ORFA", "ERRO_LEITURA", "MOTIVO_FORA_DA_CORRIDA",
+                 "MOTIVO_OUTRO_ODATE", "CHAVE_HEARTBEAT",
+                 "DESCRICAO_HEARTBEAT", "_MARCAS_HOLD"):
         assert getattr(mcd, nome) == getattr(mca, nome), nome
     assert mcd._CAMPOS == CAMPOS       # e os dois batem com o contrato do dublê
 
@@ -233,7 +263,27 @@ _CHAMADAS = {
     "marcar_visto_atraso": lambda m, a: m.marcar_visto(a, 7, "atraso"),
     "odate_da_abertura": lambda m, a: m.odate_da_abertura(
         a, "M1", datetime(2026, 8, 4, 23, 30)),
+    # ── F2 ──────────────────────────────────────────────────────────────────
+    "raizes_da_malha": lambda m, a: m.raizes_da_malha(a, "M1"),
+    "partidas_a_cobrir": lambda m, a: m.partidas_a_cobrir(
+        a, "M1", ["PIPE_B", "PIPE_A", "PIPE_A"], (ODATE_ONTEM, ODATE), 24),
+    "estado": lambda m, a: m.estado(a, _CORRIDA_F2),
+    "aguardando_do_snapshot": lambda m, a: m.aguardando_do_snapshot(
+        a, _CORRIDA_F2),
+    "relogios": lambda m, a: m.relogios(a, _CORRIDA_F2, 15, 20),
+    "ha_no_retido": lambda m, a: m.ha_no_retido(a, "M1"),
+    "carimbar_motivo": lambda m, a: m.carimbar_motivo(
+        a, "PIPE_A", ODATE, "run_1", m.MOTIVO_FORA_DA_CORRIDA, "texto"),
+    "marcar_heartbeat": lambda m, a: m.marcar_heartbeat(a),
+    "heartbeat_guardia": lambda m, a: m.heartbeat_guardia(a, 15),
+    "corrida_da_data": lambda m, a: m.corrida_da_data(a, "M1", ODATE),
 }
+
+# A corrida que a F2 passa para `estado`/`relogios`/`aguardando_do_snapshot`:
+# as três leem os MESMOS três campos, e trocá-los de ordem entre as árvores não
+# muda o texto do SQL — só os parâmetros, que é o que o nível 2 compara.
+_CORRIDA_F2 = {"id": 7, "malha_name": "M1", "data_referencia": ODATE,
+               "aberta_em": datetime(2026, 8, 4, 23, 30)}
 
 
 @pytest.mark.parametrize("nome", sorted(_CHAMADAS))

@@ -908,3 +908,637 @@ def marcar_visto(cur, corrida_id, o_que: str) -> bool:
                         "gravado", LOG, e, o_que, corrida_id)
             return False
         raise
+
+
+# ════════════════ F2 — as portas 2 e 3, o estado e os relógios ══════════════
+# Tudo daqui para baixo nasceu na F2 (a guardiã) e é o PRIMEIRO consumidor do
+# módulo. A regra que governa este bloco é a mesma do de cima: SQL em constante
+# nomeada, o chamador é dono da transação e NENHUMA conta de tempo em Python —
+# `teto_em < SYSDATETIME()`, `DATEADD(MINUTE, -N, SYSDATETIME())` e o `>=` da
+# carência saem todos do banco, porque no dev o SQL Server está ~3h à frente do
+# worker e da API (medido), e a mesma diferença existe em qualquer servidor
+# com o fuso desalinhado.
+
+# Os estados que significam "esta linha PARTIU" (§6.2, portas 2 e 3).
+# `PULADO` está dentro de propósito: é ele que abre a corrida do sábado, e sem a
+# corrida não existe o `SEM_TRABALHO` imediato da Decisão 26 — a malha
+# `somente_dias_uteis` ficaria o dia inteiro sem ciclo nenhum e o `MALHA_ORFA`
+# do domingo voltaria. `AGUARDANDO_DEPENDENCIA` e `NAO_LIBEROU` ficam FORA: a
+# primeira é linha ORDENADA (o New Day criou, ninguém partiu) e a segunda é uma
+# ordenação que morreu sem nunca ter partido.
+STATUS_PARTIU = ("EXECUTANDO", "SUCESSO", "FALHA", "PULADO")
+
+# O tipo do evento que a guardiã emite para a linha órfã (o `EVENTO_ORFA` de
+# dags/etl_dependencia_guardia.py). Aparece DENTRO do SQL de `estado()` porque
+# a Decisão 22 é uma regra de classificação, não de apresentação; o teste amarra
+# as duas grafias para que renomear uma sem a outra não passe.
+EVENTO_ORFA = "EXECUCAO_ORFA"
+
+# Prefixos dos motivos carimbados NA LINHA de execução (Decisões 15 e 17). São
+# `chave` + texto: a chave é o que o `NOT LIKE` usa para não carimbar duas vezes
+# a mesma coisa a cada ciclo de 5 min, e o texto é o que o plantonista lê.
+MOTIVO_FORA_DA_CORRIDA = "FORA_DA_CORRIDA"
+MOTIVO_OUTRO_ODATE = "CORRIDA_ABERTA_DE_OUTRO_ODATE"
+
+# Heartbeat da guardiã (§10/F2): "a guardiã DESTE deploy passou por aqui e está
+# operando a corrida". É o que a F3 consulta, junto com `capacidade_dags()`,
+# antes de deixar a API abrir corrida — a célula mais provável da matriz §11.1 é
+# `api/` nova com `dags/` antigo, e nela a API abriria corridas que o motor
+# deployado não sabe fechar. Fica em `etl_app_config` (e não em tabela nova)
+# porque é configuração operacional de uma chave só, e a 085 está FECHADA:
+# editá-la depois de aplicada é no-op silencioso (§11.3).
+CHAVE_HEARTBEAT = "malha_corrida_guardia_visto_em"
+DESCRICAO_HEARTBEAT = (
+    "Carimbo do ultimo ciclo em que a guardia operou a corrida de malha "
+    "(gravado pela propria guardia, so com malha_corrida_ativa=1 e a 085 "
+    "presente). A API consulta este valor antes de abrir corrida pelo disparo.")
+
+# Como se reconhece "o hold da 082/075 não está neste banco" — mesmo par de
+# condições de `_sem_085`, com outras marcas. Existe separado porque a resposta
+# é OPOSTA: sem a coluna não há nó retido nenhum (False, e a corrida fecha
+# normalmente); com a coluna presente e a consulta falhando por outro motivo, a
+# resposta é True — "não consegui perguntar" nunca pode virar "pode fechar".
+_MARCAS_HOLD = ("etl_malha_no", "retido_em")
+
+
+def _sem_hold(e) -> bool:
+    texto = str(e)
+    if not any(marca in texto for marca in _MARCAS_HOLD):
+        return False
+    args = getattr(e, "args", ())
+    if args and isinstance(args[0], int) and args[0] in _ERROS_AUSENCIA:
+        return True
+    return any("(%d)" % codigo in texto for codigo in _ERROS_AUSENCIA)
+
+
+# ── porta 3: quem é raiz DENTRO da malha (Decisão 16) ───────────────────────
+# É o MESMO predicado do `eh_raiz` do snapshot (`_SQL_SNAPSHOT`), de propósito:
+# a porta implícita e o snapshot têm de concordar sobre quem é raiz, senão a
+# corrida nasceria ancorada num membro que ela própria não considera raiz.
+# `etl_pipeline_dependencia ∩ etl_malha_pipeline` e nada de `malha_nos`: o
+# Aguarde já compilou para linhas normais da 067 (Decisão 16).
+SQL_RAIZES_DA_MALHA = (
+    "SELECT mp.pipeline_name FROM dbo.etl_malha_pipeline mp "
+    "WHERE mp.malha_name = ? "
+    "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_dependencia d "
+    "JOIN dbo.etl_malha_pipeline irmao ON irmao.malha_name = mp.malha_name "
+    "AND irmao.pipeline_name = d.depende_de "
+    "WHERE d.pipeline_name = mp.pipeline_name AND d.tipo = 'PIPELINE') "
+    "ORDER BY mp.pipeline_name")
+
+
+def raizes_da_malha(cur, malha: str) -> list:
+    """Membros SEM predecessor dentro da malha — as raízes da porta 3.
+
+    Malha inteira sem dependência interna (o caso de `SMOKE_F11_E5` no dev) faz
+    TODOS os membros serem raiz, e isso é a resposta certa: sem aresta não há
+    ordem, e qualquer um que parta abre o ciclo."""
+    try:
+        cur.execute(SQL_RAIZES_DA_MALHA, (malha,))
+        return [r[0] for r in cur.fetchall()]
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("%s raizes de %s indisponiveis (%s) — porta implicita "
+                    "pulada neste ciclo", LOG, malha, e)
+        return []
+
+
+# ── portas 2 e 3: as linhas que partiram e a corrida ainda não cobriu ───────
+# O `NOT EXISTS` é o que impede a guardiã de reabrir a mesma corrida a cada 5
+# minutos, e ele tem DUAS pernas de propósito:
+#
+#   • `e.malha_execucao_id = me.id` (sem olhar `fechada_em`) — a linha JÁ foi
+#     carimbada por uma corrida desta malha. É a perna que fecha o laço do
+#     sábado: o `PULADO` das 06:00 abre a corrida, ela fecha `SEM_TRABALHO` no
+#     mesmo ciclo, e sem esta perna o ciclo das 06:05 abriria a corrida #2, o
+#     das 06:10 a #3, e o dia inteiro sairia com 288 corridas;
+#   • a linha caiu DENTRO do intervalo `[aberta_em, fechada_em]` de uma corrida
+#     FECHADA desta malha — a perna do membro compartilhado. `DEV_F10_A` é
+#     membro de quatro malhas no dev: ele carimba a corrida de UMA (a coluna é
+#     proveniência, tem um dono só — Decisão 1) e as outras três precisam de
+#     outro critério para saber que já viram aquela linha.
+#
+# A corrida ABERTA de propósito NÃO exclui: enquanto ela está aberta, cada raiz
+# que parte tem de passar pela conferência de ODATE da Decisão 15. Excluir aqui
+# seria exatamente a "adesão silenciosa" que reintroduz o `Carga_Vida` por
+# dentro do mecanismo criado para matá-lo. O preço é um INSERT que falha com
+# 2601 por ciclo enquanto a corrida está aberta — barato, e é o padrão claim da
+# Decisão 14.
+#
+# ⚠️ A perna do INTERVALO — e só ela — exige `e.data_referencia =
+# me.data_referencia`. A cláusula e o lugar dela foram MEDIDOS no dev:
+#
+#   • na perna do intervalo ela é obrigatória. Sem ela, a corrida de D-1 que
+#     atravessou a virada "cobre" toda a madrugada de D só por causa do
+#     `[aberta_em, fechada_em]`. Efeito medido: guardiã parada das 23:00 às
+#     02:00, a corrida de D-1 abre e fecha às 02:00, e a raiz que partiu às
+#     01:00 do dia D fica coberta PARA SEMPRE — o ciclo de D nunca abre e o dia
+#     sai mudo, que é o defeito (a) desta spec produzido pela própria cura;
+#   • na perna da PROVENIÊNCIA ela não pode entrar, e isso também foi medido:
+#     quando a linha âncora carimbou um ODATE diferente do canônico (o
+#     `Carga_Vida` literal), a corrida nasce com o canônico e a linha entra como
+#     `fora_do_odate` (§6.2) — datas diferentes por construção. Exigir o ODATE
+#     aqui faria a linha nunca contar como coberta, e a guardiã abriria uma
+#     corrida nova a cada 5 min, cada uma fechando `ABORTADA` com dois cards no
+#     Teams: 288 corridas e 576 cards por dia. Proveniência é dona, não data.
+_SQL_PARTIDAS = (
+    "SELECT e.pipeline_name, e.data_referencia, e.execution_id, "
+    "COALESCE(e.inicio, e.criado_em), e.status "
+    "FROM dbo.etl_pipeline_execucao e "
+    "WHERE {lista} "
+    "AND e.data_referencia IN (?, ?) "
+    "AND e.status IN (" + ", ".join("?" for _ in STATUS_PARTIU) + ") "
+    "AND e.substituida_em IS NULL "
+    "AND COALESCE(e.inicio, e.criado_em) >= DATEADD(HOUR, -?, SYSDATETIME()) "
+    "AND NOT EXISTS (SELECT 1 FROM dbo.etl_malha_execucao me "
+    "WHERE me.malha_name = ? "
+    "AND (e.malha_execucao_id = me.id "
+    "OR (me.fechada_em IS NOT NULL "
+    "AND e.data_referencia = me.data_referencia "
+    "AND COALESCE(e.inicio, e.criado_em) >= me.aberta_em "
+    "AND COALESCE(e.inicio, e.criado_em) <= me.fechada_em))) "
+    "ORDER BY COALESCE(e.inicio, e.criado_em), e.pipeline_name, e.execution_id")
+
+
+def sql_partidas(quantos: int) -> str:
+    """O SQL das partidas para `quantos` pipelines na lista.
+
+    Público pela mesma razão de `sql_snapshot`: não há `IN ()` em T-SQL, então
+    o texto muda com o tamanho da lista e o teste de paridade precisa comparar
+    as duas formas. Lista vazia vira `1 = 0` — nunca `IN ()`, que é erro de
+    sintaxe, e nunca a ausência da cláusula, que varreria a tabela inteira."""
+    if quantos <= 0:
+        return _SQL_PARTIDAS.format(lista="1 = 0")
+    marcadores = ", ".join("?" for _ in range(quantos))
+    return _SQL_PARTIDAS.format(lista="e.pipeline_name IN (" + marcadores + ")")
+
+
+def partidas_a_cobrir(cur, malha: str, pipelines, datas, teto_horas: int) -> list:
+    """As linhas de `pipelines` que PARTIRAM e que nenhuma corrida desta malha
+    cobriu ainda — o insumo das portas 2 e 3.
+
+    `datas` é a janela `{D-1, D}` do PRESENTE, derivada da virada da malha (o
+    mesmo recorte dos observadores, D45): sem ela, o reprocesso do dia 03 feito
+    hoje abriria uma corrida do dia 03 no meio da corrida de hoje. `teto_horas`
+    é o segundo limite, e o mais importante: uma corrida cujo `aberta_em` recua
+    para além do próprio teto nasceria EXPIRADA no ato — a guardiã que voltou
+    depois de um dia fora não pode ressuscitar a madrugada de ontem.
+
+    Devolve `[{pipeline, data_referencia, execution_id, momento, status}]`
+    ordenado por `momento` — a PRIMEIRA é a âncora (§6.2: `aberta_em` recua para
+    o início da linha âncora, e recuar para a mais antiga é o que impede a
+    corrida de "perder" o trabalho que a originou)."""
+    nomes = sorted({str(p).strip() for p in pipelines if str(p or "").strip()})
+    if not nomes:
+        return []
+    janela = list(datas)[:2]
+    while len(janela) < 2:            # a forma do SQL é fixa em duas datas
+        janela.append(janela[0])
+    try:
+        cur.execute(sql_partidas(len(nomes)),
+                    tuple(nomes) + tuple(janela) + STATUS_PARTIU
+                    + (int(teto_horas), malha))
+        return [{"pipeline": r[0], "data_referencia": r[1],
+                 "execution_id": r[2], "momento": r[3], "status": r[4]}
+                for r in cur.fetchall()]
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("%s partidas de %s indisponiveis (%s) — nenhuma "
+                    "abertura neste ciclo", LOG, malha, e)
+        return []
+
+
+# ── o predicado 'estado' (§6.4, Decisões 21/22/23) ──────────────────────────
+# UM predicado, dois consumidores (o padrão de `liberado()`): o fechador carimba
+# o desfecho e o painel da F4 lê o mesmo dicionário. Nenhum dos dois deriva do
+# outro.
+#
+# O escopo da linha é o SQL da Decisão 23, literal: `data_referencia = @odate`
+# **nos dois ramos**, e a linha entra por PROVENIÊNCIA (`malha_execucao_id`) OU
+# por RECORTE DE TEMPO (`>= aberta_em`). O ramo do recorte é o que faz o
+# fechamento funcionar ANTES de a F5 carimbar as linhas; o ramo da proveniência
+# é o que continua funcionando quando a próxima corrida do mesmo dia já abriu.
+# Exigir o ODATE no ramo do vínculo é o que impede o reprocesso do dia 03, feito
+# às 3h da manhã do dia 04, de contar como OK para a corrida do dia 04.
+SQL_ESTADO = (
+    "SELECT m.pipeline_name, m.conta_para_fim, m.ativo_na_abertura, m.eh_raiz, "
+    "e.status, COALESCE(e.inicio, e.criado_em), "
+    "CASE WHEN e.status = 'EXECUTANDO' AND EXISTS "
+    "(SELECT 1 FROM dbo.etl_dependencia_evento ev "
+    "WHERE ev.pipeline_name = e.pipeline_name "
+    "AND ev.data_referencia = e.data_referencia "
+    "AND ev.tipo = '" + EVENTO_ORFA + "') THEN 1 ELSE 0 END "
+    "FROM dbo.etl_malha_execucao_membro m "
+    "LEFT JOIN dbo.etl_pipeline_execucao e "
+    "ON e.pipeline_name = m.pipeline_name "
+    "AND e.data_referencia = ? "
+    "AND e.substituida_em IS NULL "
+    "AND (e.malha_execucao_id = ? "
+    "OR COALESCE(e.inicio, e.criado_em) >= ?) "
+    "WHERE m.malha_execucao_id = ? "
+    "ORDER BY m.pipeline_name, e.id")
+
+# §6.9/#15 e Decisão 23: a linha que a corrida carimbou mas cujo ODATE é outro.
+# Nunca conta como OK, e o painel a mostra NOMINALMENTE — divergência visível é
+# o oposto de divergência silenciosa.
+SQL_FORA_DO_ODATE = (
+    "SELECT DISTINCT e.pipeline_name, e.data_referencia "
+    "FROM dbo.etl_pipeline_execucao e "
+    "WHERE e.malha_execucao_id = ? AND e.data_referencia <> ? "
+    "AND e.substituida_em IS NULL "
+    "ORDER BY e.pipeline_name, e.data_referencia")
+
+# Prioridade da classificação quando um membro tem MAIS DE UMA linha viva no
+# escopo (o caso é real: `PULADO` do cron às 06:00 + disparo manual às 09:00, ou
+# `FALHA` + rerun bem-sucedido). Lê-se de cima para baixo, o primeiro que
+# aparecer vence:
+#   • `vivo` na frente de tudo — nunca fechar com trabalho em voo (§16/5);
+#   • `ok` na frente de `falhou` — é o MESMO julgamento de `liberado()` e de
+#     `_divergencias_e_falhas` ("FALHA sem SUCESSO na data"): o rerun que deu
+#     certo apaga a falha anterior, senão a corrida iria a FALHA por causa da
+#     tentativa que o operador já consertou;
+#   • `dispensado` (PULADO) atrás dos pendentes: pulado numa linha e falhado em
+#     outra é um problema, não uma dispensa.
+_ORDEM_CLASSE = ("vivo", "ok", "falhou", "orfa", "nao_liberou", "dispensado",
+                 "nao_partiu")
+CLASSES_PENDENTES = ("falhou", "orfa", "nao_liberou", "nao_partiu")
+
+
+def _classe_da_linha(status, orfa) -> str:
+    """Status da linha → classe do §6.4. Status desconhecido vira `nao_partiu`
+    (pendente) e NUNCA `vivo`: um status que o código não entende classificado
+    como vivo congelaria a corrida até o teto — e o teto, por não poder matar
+    vivo (Decisão 25), só alarmaria. A corrida ficaria aberta para sempre,
+    bloqueando o disparo, que é o pior desfecho possível."""
+    s = str(status or "").strip().upper()
+    if s == "EXECUTANDO":
+        # Decisão 22: órfã JÁ ALERTADA sai de "vivo". O caso órfão mais comum do
+        # sistema (DagRun success, linha EXECUTANDO) viraria N horas de malha
+        # bloqueada em vez de um alerta; a corrida fecha FALHA nomeando a linha,
+        # que é a verdade, em vez de esperar 24h para dizer EXPIRADA.
+        return "orfa" if orfa else "vivo"
+    if s == "AGUARDANDO_DEPENDENCIA":
+        return "vivo"
+    if s == "SUCESSO":
+        return "ok"
+    if s == "FALHA":
+        return "falhou"
+    if s == "NAO_LIBEROU":
+        return "nao_liberou"
+    if s == "PULADO":
+        return "dispensado"
+    return "nao_partiu"
+
+
+def estado(cur, corrida: dict, dispensa_sem_linha=None) -> dict:
+    """A classificação de cada membro do snapshot (§6.4) — o predicado que o
+    fechador da F2 e o painel da F4 leem.
+
+    Devolve
+    `{vivos[], ok[], pendentes[{pipeline, classe, desde, faltante}],
+      dispensados[], fora_do_fim[], fora_do_odate[{pipeline, data}],
+      inativos[], conta_para_fim[], linhas, membros}`.
+
+    `dispensa_sem_linha(pipeline) -> bool` é injetado pelo CHAMADOR e responde
+    "membro sem linha nenhuma: o dia dele permitia rodar?". O julgamento mora
+    fora daqui de propósito — ele é `dia_permitido(regras_dia, dia_operacional)`,
+    exatamente o de `_predecessor_esperado` da guardiã (§6.4 manda REUSAR, não
+    duplicar), e trazê-lo para cá obrigaria este módulo a reimplementar as regras
+    de agenda. Sem o callback todo membro sem linha é `nao_partiu`, que é a
+    resposta conservadora: a corrida vai a FALHA nomeando quem não rodou, em vez
+    de dispensar em silêncio.
+
+    Membro `ativo_na_abertura = 0` sai de TODOS os baldes e vai para `inativos`
+    (§6.9/#9): fora do denominador, mas nunca sumindo em silêncio."""
+    odate, corrida_id = corrida["data_referencia"], int(corrida["id"])
+    vazio = {"vivos": [], "ok": [], "pendentes": [], "dispensados": [],
+             "fora_do_fim": [], "fora_do_odate": [], "inativos": [],
+             "conta_para_fim": [], "linhas": 0, "membros": 0}
+    try:
+        cur.execute(SQL_ESTADO,
+                    (odate, corrida_id, corrida["aberta_em"], corrida_id))
+        linhas = cur.fetchall()
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("%s estado da corrida #%s indisponivel (%s) — nada a "
+                    "fechar neste ciclo", LOG, corrida_id, e)
+        return vazio
+
+    membros: dict = {}
+    total_linhas = 0
+    for pipeline, conta_fim, ativo, _raiz, status, desde, orfa in linhas:
+        m = membros.setdefault(pipeline, {
+            "conta_para_fim": bool(conta_fim), "ativo": bool(ativo),
+            "classe": None, "desde": None})
+        if status is None:
+            continue                    # membro sem linha no escopo
+        total_linhas += 1
+        classe = _classe_da_linha(status, bool(orfa))
+        atual = m["classe"]
+        if atual is None or _ORDEM_CLASSE.index(classe) < _ORDEM_CLASSE.index(atual):
+            m["classe"], m["desde"] = classe, desde
+
+    saida = dict(vazio)
+    saida["linhas"] = total_linhas
+    saida["membros"] = len(membros)
+    for pipeline in sorted(membros):
+        m = membros[pipeline]
+        if not m["ativo"]:
+            saida["inativos"].append(pipeline)
+            continue
+        if m["conta_para_fim"]:
+            saida["conta_para_fim"].append(pipeline)
+        else:
+            saida["fora_do_fim"].append(pipeline)
+        classe = m["classe"]
+        if classe is None:
+            # Sem linha: quem decide é a regra de DIA do próprio membro.
+            classe = "dispensado" if (
+                dispensa_sem_linha is not None
+                and dispensa_sem_linha(pipeline)) else "nao_partiu"
+        if classe == "vivo":
+            saida["vivos"].append(pipeline)
+        elif classe == "ok":
+            saida["ok"].append(pipeline)
+        elif classe == "dispensado":
+            saida["dispensados"].append(pipeline)
+        else:
+            # Decisão 21: o pendente carrega a CLASSE, não só o nome — é o que
+            # separa "rode o job de novo" de "solte a dependência" de "descubra
+            # por que a DAG nunca partiu". `faltante` é preenchido pelo painel
+            # da F4, que tem o `liberado()` em mãos.
+            saida["pendentes"].append({"pipeline": pipeline, "classe": classe,
+                                       "desde": m["desde"], "faltante": None})
+    try:
+        cur.execute(SQL_FORA_DO_ODATE, (corrida_id, odate))
+        saida["fora_do_odate"] = [{"pipeline": r[0], "data": r[1]}
+                                  for r in cur.fetchall()]
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("%s linhas fora do ODATE da corrida #%s indisponiveis "
+                    "(%s)", LOG, corrida_id, e)
+    return saida
+
+
+# Sentinela de "não consegui perguntar" (o `ERRO_CONSULTA` de
+# utils/dependencias.py, na forma deste módulo): nunca é nome de pipeline, então
+# não colide, e força o chamador a decidir explicitamente.
+ERRO_LEITURA = "#erro-de-leitura"
+
+
+# ── guarda 1 da quiescência (§6.5) ──────────────────────────────────────────
+# Deliberadamente SEM o recorte de tempo do `estado()`: a linha que a guarda
+# procura é justamente a que ficou de FORA dele — ordenada pelo New Day às 00:05,
+# com a corrida aberta às 01:10. Ela não é "vivo" pelo §6.4 e mesmo assim a
+# `_rede_seguranca` vai dispará-la neste ciclo ou no próximo. Fechar a corrida
+# aqui seria fechá-la no meio de si mesma.
+SQL_AGUARDANDO_DO_SNAPSHOT = (
+    "SELECT DISTINCT e.pipeline_name "
+    "FROM dbo.etl_pipeline_execucao e "
+    "JOIN dbo.etl_malha_execucao_membro m "
+    "ON m.malha_execucao_id = ? AND m.pipeline_name = e.pipeline_name "
+    "WHERE e.data_referencia = ? AND e.status = 'AGUARDANDO_DEPENDENCIA' "
+    "AND e.substituida_em IS NULL "
+    "ORDER BY e.pipeline_name")
+
+
+def aguardando_do_snapshot(cur, corrida: dict) -> list:
+    """Membros do snapshot com linha `AGUARDANDO_DEPENDENCIA` no ODATE da
+    corrida — o chamador pergunta `liberado()` a cada um (a MESMA função do
+    push) e, se algum estiver liberado, NÃO fecha."""
+    try:
+        cur.execute(SQL_AGUARDANDO_DO_SNAPSHOT,
+                    (int(corrida["id"]), corrida["data_referencia"]))
+        return [r[0] for r in cur.fetchall()]
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("%s aguardando da corrida #%s indisponivel (%s) — "
+                    "fechamento adiado", LOG, corrida["id"], e)
+        # [] diria "não há ninguém aguardando" e liberaria o fechamento com base
+        # numa pergunta que não foi respondida. O chamador trata a marca abaixo
+        # como "não fecho neste ciclo" — a mesma política do ERRO_CONSULTA.
+        return [ERRO_LEITURA]
+
+
+# ── os relógios, todos no banco (Decisão 10) ────────────────────────────────
+# UMA consulta para os três: teto vencido, carência de partida vencida e
+# quiescência. Fossem três, seriam três idas ao banco por corrida por ciclo, e a
+# terceira poderia ler um instante diferente da primeira.
+#
+# A âncora da quiescência é `GREATEST(aberta_em, MAX(COALESCE(fim, inicio,
+# criado_em)))`, escrita como "as DUAS pontas abaixo do corte" porque `GREATEST`
+# só existe no SQL Server 2022 e a Caixa não declarou a edição. E é
+# `COALESCE(fim, inicio, criado_em)` — **nunca `atualizado_em`**: `malha_ciclo.
+# equalizar` e `rerun.marcar_substituidas` bumpam `atualizado_em` por gesto
+# ADMINISTRATIVO, e a corrida ficaria com o relógio de quiescência reiniciado
+# sem que nada tivesse rodado.
+SQL_RELOGIOS = (
+    "SELECT "
+    "CASE WHEN me.teto_em IS NOT NULL AND me.teto_em < SYSDATETIME() "
+    "THEN 1 ELSE 0 END, "
+    "CASE WHEN me.aberta_em < DATEADD(MINUTE, -?, SYSDATETIME()) "
+    "THEN 1 ELSE 0 END, "
+    "CASE WHEN me.aberta_em < DATEADD(MINUTE, -?, SYSDATETIME()) "
+    "AND COALESCE((SELECT MAX(COALESCE(e.fim, e.inicio, e.criado_em)) "
+    "FROM dbo.etl_pipeline_execucao e "
+    "JOIN dbo.etl_malha_execucao_membro mm "
+    "ON mm.malha_execucao_id = me.id AND mm.pipeline_name = e.pipeline_name "
+    "WHERE e.data_referencia = me.data_referencia "
+    "AND e.substituida_em IS NULL "
+    "AND (e.malha_execucao_id = me.id "
+    "OR COALESCE(e.inicio, e.criado_em) >= me.aberta_em)), me.aberta_em) "
+    "< DATEADD(MINUTE, -?, SYSDATETIME()) THEN 1 ELSE 0 END "
+    "FROM dbo.etl_malha_execucao me WHERE me.id = ?")
+
+
+def relogios(cur, corrida: dict, carencia_min: int, quiescencia_min: int) -> dict:
+    """`{teto_vencido, partida_vencida, quiescente}` — os três relógios da
+    corrida, respondidos pelo BANCO numa consulta só.
+
+    Falha de leitura devolve os três em `False`: nenhum desfecho por relógio
+    acontece no ciclo em que a pergunta não pôde ser feita. É a política do
+    `ERRO_CONSULTA` — "não consegui perguntar" nunca vira "o teto estourou"."""
+    try:
+        cur.execute(SQL_RELOGIOS, (int(carencia_min), int(quiescencia_min),
+                                   int(quiescencia_min), int(corrida["id"])))
+        row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("%s relogios da corrida #%s indisponiveis (%s) — nenhum "
+                    "desfecho por tempo neste ciclo", LOG, corrida["id"], e)
+        row = None
+    if not row:
+        return {"teto_vencido": False, "partida_vencida": False,
+                "quiescente": False}
+    return {"teto_vencido": bool(row[0]), "partida_vencida": bool(row[1]),
+            "quiescente": bool(row[2])}
+
+
+# ── guarda 3 da quiescência: o HOLD (§6.7, Decisão 30) ──────────────────────
+SQL_NO_RETIDO = (
+    "SELECT COUNT(*) FROM dbo.etl_malha_no n "
+    "WHERE n.malha_name = ? AND n.retido_em IS NOT NULL")
+
+
+def ha_no_retido(cur, malha: str) -> bool:
+    """Existe nó da malha SEGURADO agora? (`MIN(etl_malha_no.retido_em)` — lido
+    na avaliação, nunca materializado: com dois Aguardes segurados, soltar UM
+    limparia um espelho e o teto voltaria a correr com a malha travada.)
+
+    Retido = o teto não corre, a quiescência não avalia e o aborto por carência
+    não acontece (Decisão 30). Sem isso, um Aguarde que o próprio operador
+    segurou faz `liberado()` devolver False para o dependente — que é
+    literalmente "nenhum vivo, nenhum liberado" — e a corrida fecharia como
+    **FALHA por causa da trava que o operador pôs**.
+
+    Sem a 075/082 (`etl_malha_no`/`retido_em` ausentes) → **False**: não há nó,
+    logo não há retenção. Qualquer OUTRO erro → **True**: "não consegui
+    perguntar" nunca pode virar "pode fechar" (a lição do `ERRO_CONSULTA`,
+    literal). Adiar um fechamento custa um ciclo de 5 min; fechar uma corrida
+    como FALHA por causa de um timeout custa o card mentiroso que esta spec
+    existe para matar."""
+    try:
+        cur.execute(SQL_NO_RETIDO, (malha,))
+        row = cur.fetchone()
+        return bool(row) and int(row[0] or 0) > 0
+    except Exception as e:  # noqa: BLE001
+        if _sem_hold(e):
+            return False
+        log.warning("%s retencao de %s indisponivel (%s) — assumindo "
+                    "RETIDA; nada fecha neste ciclo", LOG, malha, e)
+        return True
+
+
+# ── o carimbo NA LINHA (Decisões 15 e 17) ──────────────────────────────────
+# O diagnóstico tem de viajar com a EXECUÇÃO: de plantão se chega pelo pipeline,
+# não pela malha. É exatamente o alarme que faltou no incidente `Carga_Vida` —
+# lá a linha rodou com a data errada e não havia, na própria linha, nada que
+# dissesse por quê.
+#
+# O `NOT LIKE` é a idempotência: a guardiã passa a cada 5 min e o carimbo é o
+# mesmo. ⚠️ `_registrar_execucao` do fonte gerado SOBRESCREVE `motivo` a cada
+# transição de status, então um carimbo posto em `EXECUTANDO` some quando a
+# linha vira `SUCESSO` — e o ciclo seguinte o repõe. É aceito: o carimbo
+# interessa no estado TERMINAL, que é onde ele sobrevive.
+SQL_CARIMBAR_MOTIVO = (
+    "UPDATE dbo.etl_pipeline_execucao "
+    "SET motivo = LEFT(ISNULL(motivo + ' | ', '') + ?, 500), "
+    "atualizado_em = GETDATE() "
+    "WHERE pipeline_name = ? AND data_referencia = ? AND execution_id = ? "
+    "AND (motivo IS NULL OR motivo NOT LIKE ?)")
+
+
+def carimbar_motivo(cur, pipeline: str, data_ref, execution_id,
+                    chave: str, texto: str) -> bool:
+    """Anexa `texto` ao `motivo` da linha, uma vez só (a `chave` é o que o
+    `NOT LIKE` procura). True = carimbou agora.
+
+    ⚠️ **Sem guarda por `malha_execucao_id IS NULL`, e isso foi MEDIDO.** A
+    primeira versão só carimbava linha sem corrida, o que parecia coerente
+    ("não escrever *ficou fora do ciclo* numa linha que está num ciclo"). No
+    dev, com `DEV_F10_A` membro de quatro malhas, a consequência foi a
+    seguinte: a corrida da primeira malha carimbou a linha, e quando a segunda
+    malha recusou por ODATE divergente (Decisão 15) o motivo NÃO foi gravado —
+    o `rowcount` voltou 0 e o diagnóstico sumiu justamente no caso do §6.9/#6,
+    que é o mais difícil de entender de plantão.
+
+    A guarda era desnecessária porque quem chama já garante o que ela tentava
+    garantir: `partidas_a_cobrir` exclui as linhas que uma corrida DESTA malha
+    já cobriu, então a linha carimbada nunca pertence à corrida sobre a qual o
+    texto fala. E o texto nomeia a MALHA, então "fora do ciclo da malha X" é
+    verdade mesmo quando a linha está no ciclo da malha Y."""
+    # SEM try/except de degradação, de propósito: este statement não toca
+    # objeto nenhum da 085 (o `WHERE` é pipeline/data/execution_id), então um
+    # `_sem_085` aqui seria um ramo morto — e ramo morto de degradação é pior
+    # que ramo nenhum, porque promete uma proteção que não existe. Quem chama
+    # já passou pelo portão que confere a 085, e o `try/except` por malha da
+    # guardiã desfaz o ciclo inteiro daquela malha se algo aqui estourar.
+    cur.execute(SQL_CARIMBAR_MOTIVO,
+                (str(texto)[:400], pipeline, data_ref, execution_id,
+                 "%" + chave + "%"))
+    return (cur.rowcount or 0) == 1
+
+
+# ── o heartbeat da guardiã (§10/F2, contrato com a F3) ─────────────────────
+SQL_HEARTBEAT_GRAVAR = (
+    "UPDATE dbo.etl_app_config "
+    "SET config_value = CONVERT(VARCHAR(19), SYSDATETIME(), 120), "
+    "updated_by = ?, updated_at = GETDATE() "
+    "WHERE config_key = ?")
+SQL_HEARTBEAT_CRIAR = (
+    "INSERT INTO dbo.etl_app_config "
+    "(config_key, config_value, descricao, updated_by) "
+    "SELECT ?, CONVERT(VARCHAR(19), SYSDATETIME(), 120), ?, ? "
+    "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_app_config WHERE config_key = ?)")
+SQL_HEARTBEAT_LER = (
+    "SELECT c.config_value, "
+    "CASE WHEN TRY_CONVERT(DATETIME2, c.config_value) >= "
+    "DATEADD(MINUTE, -?, SYSDATETIME()) THEN 1 ELSE 0 END "
+    "FROM dbo.etl_app_config c WHERE c.config_key = ?")
+
+
+def marcar_heartbeat(cur, quem: str = "guardia") -> bool:
+    """Carimba `malha_corrida_guardia_visto_em` com o relógio do BANCO.
+
+    UPDATE-e-depois-INSERT (e não MERGE): duas guardiãs em paralelo com MERGE
+    produzem a duplicata clássica da chave, e aqui o INSERT já vem com
+    `WHERE NOT EXISTS`. O valor é texto ISO porque `etl_app_config.config_value`
+    é `VARCHAR(1000)` — a conversão é do BANCO (`CONVERT(..., 120)`), nunca um
+    `datetime.now().isoformat()` do processo, que no dev estaria 3h atrás.
+
+    Só é chamado com o interruptor LIGADO e a 085 presente: o heartbeat responde
+    "a guardiã está OPERANDO a corrida", e não "a guardiã está viva". Com o
+    interruptor em 0 a resposta honesta à pergunta da F3 é NÃO."""
+    try:
+        cur.execute(SQL_HEARTBEAT_GRAVAR, (quem, CHAVE_HEARTBEAT))
+        if (cur.rowcount or 0) >= 1:
+            return True
+        cur.execute(SQL_HEARTBEAT_CRIAR,
+                    (CHAVE_HEARTBEAT, DESCRICAO_HEARTBEAT, quem,
+                     CHAVE_HEARTBEAT))
+        return (cur.rowcount or 0) == 1
+    except Exception as e:  # noqa: BLE001 — o heartbeat NUNCA derruba o ciclo
+        log.warning("%s heartbeat da guardia nao gravado (%s) — a F3 vai "
+                    "tratar como guardia ausente", LOG, e)
+        return False
+
+
+def heartbeat_guardia(cur, minutos: int = 15) -> dict:
+    """`{visto_em, recente}` — o que a F3 consulta antes de deixar a API abrir
+    corrida (§11.1: a célula `api/` nova × `dags/` antigo é a mais provável, e
+    nela a API abriria corridas que o motor deployado não sabe fechar).
+
+    A comparação com `minutos` é feita no BANCO: a API e o worker podem estar em
+    relógios diferentes, e comparar em Python daria "guardiã morta" ou "guardiã
+    viva" conforme o servidor. Ausente/ilegível → `recente=False`."""
+    try:
+        cur.execute(SQL_HEARTBEAT_LER, (int(minutos), CHAVE_HEARTBEAT))
+        row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("%s heartbeat da guardia indisponivel (%s) — tratado "
+                    "como ausente", LOG, e)
+        return {"visto_em": None, "recente": False}
+    if not row:
+        return {"visto_em": None, "recente": False}
+    return {"visto_em": row[0], "recente": bool(row[1])}
+
+
+# ── a corrida daquele DIA (chave estável do evento do observador) ───────────
+# `TOP 1` com `ORDER BY` explícito (regra da casa D15): a mais recente do dia,
+# aberta ou fechada. Não é identidade — identidade é o `id` (Decisão 7) — é a
+# resposta a "de que corrida é o evento desta data?", e ela precisa continuar a
+# MESMA depois de a corrida fechar. Sem isso, o observador do nó Fim gravaria
+# `MALHA_CONCLUIDA` com a corrida no ciclo em que ela ainda está aberta e
+# gravaria de novo, com a corrida em NULL, no ciclo seguinte — chave diferente,
+# índice satisfeito, DOIS cards para a mesma malha no mesmo dia.
+SQL_CORRIDA_DA_DATA = (
+    "SELECT TOP 1 " + _COLS + " FROM dbo.etl_malha_execucao "
+    "WHERE malha_name = ? AND data_referencia = ? "
+    "ORDER BY sequencia DESC, id DESC")
+
+
+def corrida_da_data(cur, malha: str, data_ref):
+    """A corrida mais recente da malha naquele ODATE, aberta ou fechada, ou
+    None."""
+    try:
+        cur.execute(SQL_CORRIDA_DA_DATA, (malha, data_ref))
+        row = cur.fetchone()
+        return _como_dict(row) if row else None
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("%s corrida de %s em %s indisponivel (%s) — seguindo "
+                    "sem", LOG, malha, data_ref, e)
+        return None

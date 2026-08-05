@@ -314,7 +314,16 @@ _MARCA_078 = "substituida_em"
 # portas tira 'rerun_cascata_078' daqui no MESMO commit. A declaração vale o
 # que o código faz — declarar capacidade que não existe é o defeito, não a
 # cura. (Teste de amarração em tests/test_rerun_etapa_f4.py.)
-CAPACIDADES = ("rerun_cascata_078",)
+# 'malha_corrida_085' entra na F2, JUNTO com o consumidor (§10/F1 proibiu
+# declará-la antes: "declarar capacidade que não existe é o defeito, não a
+# cura"). Ela responde à pergunta da F3 — "o motor deployado sabe ABRIR,
+# VINCULAR e FECHAR corrida de malha?" — e existe porque a etapa 7 (`api/`) é
+# automática e a 5 (`dags/`) é padrão-NÃO: com a API nova e o `dags/` antigo, a
+# API abriria corridas que ninguém fecha, e corrida aberta BLOQUEIA o disparo.
+# A API paralisaria a malha com uma trava que o motor não sabe destravar.
+# Regra: quem remover `_abrir_corridas_malha`/`_fechar_corridas_malha` de
+# dags/etl_dependencia_guardia.py remove este nome daqui no MESMO commit.
+CAPACIDADES = ("rerun_cascata_078", "malha_corrida_085")
 
 
 def _exec_com_fallback_078(cur, sql_078: str, sql_legado: str, params) -> bool:
@@ -1030,8 +1039,58 @@ def fechar_nao_liberou(conn, pipeline: str, data_ref: date, run_id: str,
     return cur.rowcount == 1
 
 
+# As quatro formas do INSERT idempotente do evento. Não é elegância: são
+# `notificar` × `com corrida`, e as duas dimensões mudam COLUNAS do statement.
+# A forma sem corrida é a de hoje, BYTE A BYTE — evento de dependência comum
+# continua indo ao banco com o mesmo texto e os mesmos parâmetros de antes da
+# 085, e é isso que garante que a F2 não muda o comportamento de nenhuma das
+# cinco responsabilidades antigas da guardiã.
+_SQL_EVENTO = {
+    (True, False): (
+        "INSERT INTO dbo.etl_dependencia_evento "
+        "(pipeline_name, data_referencia, tipo, detalhe) "
+        "SELECT %s, %s, %s, %s "
+        "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
+        "WHERE pipeline_name=%s AND data_referencia=%s AND tipo=%s)"),
+    (False, False): (
+        "INSERT INTO dbo.etl_dependencia_evento "
+        "(pipeline_name, data_referencia, tipo, detalhe, notificado_em) "
+        "SELECT %s, %s, %s, %s, GETDATE() "
+        "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
+        "WHERE pipeline_name=%s AND data_referencia=%s AND tipo=%s)"),
+    # Com corrida, o NOT EXISTS tem de casar a chave INTEIRA do
+    # ux_dep_evento_corrida — inclusive quando a coluna é NULL do outro lado.
+    # Em índice único do SQL Server dois NULLs são IGUAIS, mas em predicado
+    # `= NULL` nunca é verdadeiro: sem o ISNULL, a segunda MALHA_FALHOU da
+    # corrida #13 passaria pelo NOT EXISTS e morreria no 2601 do índice, dentro
+    # da transação do chamador.
+    (True, True): (
+        "INSERT INTO dbo.etl_dependencia_evento "
+        "(pipeline_name, data_referencia, tipo, detalhe, malha_execucao_id) "
+        "SELECT %s, %s, %s, %s, %s "
+        "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
+        "WHERE pipeline_name=%s AND data_referencia=%s AND tipo=%s "
+        "AND ISNULL(malha_execucao_id, -1) = ISNULL(CAST(%s AS BIGINT), -1))"),
+    (False, True): (
+        "INSERT INTO dbo.etl_dependencia_evento "
+        "(pipeline_name, data_referencia, tipo, detalhe, malha_execucao_id, "
+        "notificado_em) "
+        "SELECT %s, %s, %s, %s, %s, GETDATE() "
+        "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
+        "WHERE pipeline_name=%s AND data_referencia=%s AND tipo=%s "
+        "AND ISNULL(malha_execucao_id, -1) = ISNULL(CAST(%s AS BIGINT), -1))"),
+}
+
+# A marca da 085 na tabela de eventos, para a cascata de degradação: `dags/`
+# novo com a migration ainda não aplicada (célula 2 da matriz §11.1) tem de
+# gravar o evento MESMO ASSIM, só que sem a corrida. Perder o alerta porque a
+# coluna nova não existe seria pior que o problema que a coluna resolve.
+_MARCA_085 = "malha_execucao_id"
+
+
 def gravar_evento(conn, pipeline: str, data_ref: date, tipo: str,
-                  detalhe: str, notificar: bool = True) -> bool:
+                  detalhe: str, notificar: bool = True,
+                  malha_execucao_id=None) -> bool:
     """INSERT ... WHERE NOT EXISTS na chave do ux_dep_evento_corrida
     (pipeline, data, tipo, malha_execucao_id): idempotente — os 200 ciclos
     seguintes do dia não duplicam nem reenviam (D49). True = evento novo.
@@ -1040,10 +1099,18 @@ def gravar_evento(conn, pipeline: str, data_ref: date, tipo: str,
     085, que o substituiu para que a corrida entre na chave — sem isso, o rerun
     da F8 nunca conseguiria gravar a segunda MALHA_CONCLUIDA do mesmo dia.
 
+    ``malha_execucao_id`` (F2) é EXPLÍCITO e nunca inferido: o evento que
+    pertence a uma corrida tem de dizer a QUAL, senão a idempotência da chave
+    passa a ser por (pipeline, dia, tipo) e o segundo ciclo da mesma malha no
+    mesmo dia fica mudo. ``None`` reproduz o comportamento anterior à 085 byte a
+    byte, e é o que todo evento de dependência comum continua usando. Sem a
+    coluna no banco, cai na forma antiga com log — o alerta sai, sem a corrida.
+
     O tipo NAO_LIBEROU estende o domínio comentado na migration 067 (o
     campo é VARCHAR(30) sem CHECK — extensão registrada no desenho F4 §6);
     MALHA_NOTIFICACAO/MALHA_CONCLUIDA são a F14 (desenho de componentes
-    §5/§6), gravados com o marcador '#no:{id}' em pipeline_name.
+    §5/§6), gravados com o marcador '#no:{id}' em pipeline_name; os sete
+    MALHA_* do ciclo da corrida (F2) usam o marcador '#corrida:{id}'.
 
     `notificar=False` (F14, Decisão 14 — card do Fim é OPT-IN) grava o
     evento JÁ carimbado com notificado_em: ele nunca entra na fila do Teams
@@ -1055,26 +1122,24 @@ def gravar_evento(conn, pipeline: str, data_ref: date, tipo: str,
     todo evento que DEVE ser notificado — aqui o carimbo significa "nada
     pendente de notificação", decidido por configuração, não por envio."""
     cur = conn.cursor()
-    if notificar:
-        cur.execute(
-            "INSERT INTO dbo.etl_dependencia_evento "
-            "(pipeline_name, data_referencia, tipo, detalhe) "
-            "SELECT %s, %s, %s, %s "
-            "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
-            "WHERE pipeline_name=%s AND data_referencia=%s AND tipo=%s)",
-            (pipeline, data_ref, tipo,
-             str(detalhe)[:1000] if detalhe is not None else None,
-             pipeline, data_ref, tipo))
-    else:
-        cur.execute(
-            "INSERT INTO dbo.etl_dependencia_evento "
-            "(pipeline_name, data_referencia, tipo, detalhe, notificado_em) "
-            "SELECT %s, %s, %s, %s, GETDATE() "
-            "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
-            "WHERE pipeline_name=%s AND data_referencia=%s AND tipo=%s)",
-            (pipeline, data_ref, tipo,
-             str(detalhe)[:1000] if detalhe is not None else None,
-             pipeline, data_ref, tipo))
+    texto = str(detalhe)[:1000] if detalhe is not None else None
+    base = (pipeline, data_ref, tipo, texto)
+    if malha_execucao_id is None:
+        cur.execute(_SQL_EVENTO[(bool(notificar), False)],
+                    base + (pipeline, data_ref, tipo))
+        return cur.rowcount == 1
+    corrida = int(malha_execucao_id)
+    try:
+        cur.execute(_SQL_EVENTO[(bool(notificar), True)],
+                    base + (corrida, pipeline, data_ref, tipo, corrida))
+    except Exception as e:  # noqa: BLE001 — reagimos SÓ ao Invalid column da 085
+        if _MARCA_085 not in str(e):
+            raise
+        print(f"[DEP] evento {tipo} de {pipeline}: banco sem a 085 ({e}) — "
+              f"gravado SEM a corrida #{corrida}")
+        cur = conn.cursor()
+        cur.execute(_SQL_EVENTO[(bool(notificar), False)],
+                    base + (pipeline, data_ref, tipo))
     return cur.rowcount == 1
 
 
@@ -1093,28 +1158,59 @@ def eventos_nao_notificados(conn, limite: int, janela_dias: int) -> list:
     dos eventos comuns não pode quebrar por isso). O evento órfão em si FICA
     na tabela (histórico, filosofia F4 §7.2): ele só não vira card para uma
     coisa que já não existe. O LIKE usa '%%' — pymssql interpola '%s' e o
-    literal precisa ser escapado (gotcha do placeholder por árvore)."""
+    literal precisa ser escapado (gotcha do placeholder por árvore).
+
+    F2 — o marcador '#corrida:{id}' entra como TERCEIRO ramo, e não como
+    exceção do primeiro: sem ele os sete MALHA_* do ciclo da corrida cairiam
+    no ramo do pipeline comum, o EXISTS em etl_pipeline nunca casaria (não
+    existe pipeline chamado '#corrida:12') e **nenhum card do ciclo de malha
+    chegaria ao Teams** — em silêncio, com o evento gravado e visível no
+    painel. É a mesma classe do achado 2, com o marcador novo.
+
+    O `LEFT JOIN` na corrida existe para o CARD, não para o filtro: o
+    `montar_card_malha` do ds_teams publica a MALHA e a ordinal do dia
+    (Decisão 74 — a corrida se chama pela data, nunca pelo id), e sem estas
+    duas colunas o card do evento mais grave do produto sairia com o sujeito
+    "malha não identificada"."""
     if tabela_075_presente(conn):
         guarda_no = ("EXISTS (SELECT 1 FROM dbo.etl_malha_no n "
                      "WHERE e.pipeline_name = '#no:' + CAST(n.id AS VARCHAR(20)))")
     else:
         guarda_no = "1 = 1"
+    if _tabela_085_presente(conn):
+        guarda_corrida = ("EXISTS (SELECT 1 FROM dbo.etl_malha_execucao mx "
+                          "WHERE e.pipeline_name = '#corrida:' + "
+                          "CAST(mx.id AS VARCHAR(20)))")
+        cols_corrida = "c.malha_name, c.sequencia "
+        join_corrida = ("LEFT JOIN dbo.etl_malha_execucao c "
+                        "ON c.id = e.malha_execucao_id ")
+    else:
+        # Sem a 085 não há corrida para conferir — e também não há como um
+        # evento '#corrida:' ter sido gravado neste banco. `1 = 1` mantém o
+        # ramo inerte em vez de quebrar a fila dos eventos comuns, e as duas
+        # colunas saem NULL para a forma do resultado não mudar com o banco.
+        guarda_corrida = "1 = 1"
+        cols_corrida = "NULL, NULL "
+        join_corrida = ""
     cur = conn.cursor()
     cur.execute(
         "SELECT TOP (%s) e.id, e.pipeline_name, "
         "CONVERT(VARCHAR(10), e.data_referencia, 23), e.tipo, e.detalhe, "
-        "CONVERT(VARCHAR(19), e.detectado_em, 120) "
-        "FROM dbo.etl_dependencia_evento e "
+        "CONVERT(VARCHAR(19), e.detectado_em, 120), " + cols_corrida +
+        "FROM dbo.etl_dependencia_evento e " + join_corrida +
         "WHERE e.notificado_em IS NULL "
         "AND e.detectado_em >= DATEADD(day, -%s, GETDATE()) "
-        "AND ((e.pipeline_name NOT LIKE '#no:%%' AND EXISTS "
+        "AND ((e.pipeline_name NOT LIKE '#no:%%' "
+        "AND e.pipeline_name NOT LIKE '#corrida:%%' AND EXISTS "
         "(SELECT 1 FROM dbo.etl_pipeline p "
         "WHERE p.pipeline_name = e.pipeline_name)) "
-        "OR (e.pipeline_name LIKE '#no:%%' AND " + guarda_no + ")) "
+        "OR (e.pipeline_name LIKE '#no:%%' AND " + guarda_no + ") "
+        "OR (e.pipeline_name LIKE '#corrida:%%' AND " + guarda_corrida + ")) "
         "ORDER BY e.detectado_em",
         (int(limite), int(janela_dias)))
     return [{"id": r[0], "pipeline": r[1], "data_ref": r[2], "tipo": r[3],
-             "detalhe": r[4], "detectado_em": r[5]} for r in cur.fetchall()]
+             "detalhe": r[4], "detectado_em": r[5],
+             "malha": r[6], "sequencia": r[7]} for r in cur.fetchall()]
 
 
 def marcar_notificado(conn, evento_id) -> None:
@@ -1171,6 +1267,74 @@ def tabela_075_presente(conn) -> bool:
         "OBJECT_ID('dbo.etl_malha_aresta','U')")
     row = cur.fetchone()
     return bool(row) and all(v is not None for v in row)
+
+
+def _tabela_085_presente(conn) -> bool:
+    """A tabela da corrida (085) existe? Privada de propósito: a sonda pública
+    da corrida é `malha_corrida.tabela_085_presente`, e este módulo não importa
+    aquele — `utils/dependencias.py` é o módulo que TODA porta do motor carrega,
+    e acoplá-lo à corrida faria um erro de import lá derrubar o push inteiro.
+    Aqui basta a pergunta mínima da fila de notificação."""
+    cur = conn.cursor()
+    cur.execute("SELECT OBJECT_ID('dbo.etl_malha_execucao','U')")
+    row = cur.fetchone()
+    return bool(row) and row[0] is not None
+
+
+def malhas_ativas_com_desenho(conn) -> list:
+    """Toda malha ATIVA com o desenho (nós + arestas) e os membros — o universo
+    das portas 2 e 3 da guardiã (§6.2).
+
+    Por que não reusar `nos_observadores`: ele só devolve malhas que TÊM nó
+    Notificação/Fim, e a porta 3 existe exatamente para as malhas que não têm
+    componente nenhum (3 de 4 no dev). Uma malha só com nó Início — ou sem nó
+    nenhum — nunca apareceria ali, e a abertura automática não existiria
+    justamente para a maioria.
+
+    Só `etl_malha.ativo = 1` (§6.9/#8): malha inativa **não abre** corrida nova.
+    A corrida já aberta segue até fechar, e por isso o FECHADOR não usa esta
+    lista — ele varre `corridas_abertas()`, que não filtra por `ativo`. Órfã
+    eterna é o pior resultado possível, porque corrida aberta bloqueia disparo.
+
+    Devolve `[{"malha", "membros": [pipeline], "nos": [{"id","tipo"}],
+    "arestas": [...]}]`, determinístico por (malha, id) — a mesma forma que
+    `utils.malha_nos.expandir` consome, para a guardiã importar o CANÔNICO da
+    expansão em vez de reimplementá-la."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT mp.malha_name, mp.pipeline_name "
+        "FROM dbo.etl_malha_pipeline mp "
+        "JOIN dbo.etl_malha m ON m.malha_name = mp.malha_name "
+        "WHERE m.ativo = 1")
+    membros: dict = {}
+    for malha, pipeline in cur.fetchall():
+        membros.setdefault(str(malha), []).append(pipeline)
+    cur.execute(
+        "SELECT n.malha_name, n.id, n.tipo FROM dbo.etl_malha_no n "
+        "JOIN dbo.etl_malha m ON m.malha_name = n.malha_name "
+        "WHERE m.ativo = 1")
+    nos: dict = {}
+    for malha, no_id, tipo in cur.fetchall():
+        nos.setdefault(str(malha), []).append(
+            {"id": int(no_id), "tipo": (str(tipo or "")).strip().lower()})
+    cur.execute(
+        "SELECT a.malha_name, a.origem_no, a.origem_pipeline, "
+        "a.destino_no, a.destino_pipeline "
+        "FROM dbo.etl_malha_aresta a "
+        "JOIN dbo.etl_malha m ON m.malha_name = a.malha_name "
+        "WHERE m.ativo = 1")
+    arestas: dict = {}
+    for malha, ono, opipe, dno, dpipe in cur.fetchall():
+        arestas.setdefault(str(malha), []).append(
+            {"origem_no": int(ono) if ono is not None else None,
+             "origem_pipeline": opipe,
+             "destino_no": int(dno) if dno is not None else None,
+             "destino_pipeline": dpipe})
+    return [{"malha": malha,
+             "membros": sorted(membros[malha]),
+             "nos": sorted(nos.get(malha, []), key=lambda n: n["id"]),
+             "arestas": arestas.get(malha, [])}
+            for malha in sorted(membros)]
 
 
 def nos_observadores(conn) -> list:

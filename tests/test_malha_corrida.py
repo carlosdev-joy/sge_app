@@ -30,6 +30,7 @@ ESTREITA — sem a 085 e com o banco fora do ar.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 from datetime import date, datetime, time, timedelta
@@ -1421,17 +1422,41 @@ def test_o_modulo_NAO_inventa_verde(mc):
     assert "INSERT INTO dbo.etl_dependencia_evento" not in fonte
 
 
-def test_a_F1_nao_tem_consumidor():
-    """§10/F1 — o modelo entra antes, sozinho e provável. Um import prematuro no
-    motor ou na guardiã transformaria a fase de "inerte" em "muda comportamento
-    com o interruptor em 0"."""
-    consumidores = [
-        "dags/etl_dag_factory.py", "dags/etl_dependencia_guardia.py",
-        "dags/utils/dependencias.py", "dags/utils/malha_ciclo.py",
-        "dags/utils/malha_nos.py",
+def test_o_unico_consumidor_em_dags_e_a_guardia():
+    """A F2 trouxe o PRIMEIRO consumidor, e é um só: a guardiã.
+
+    Era `test_a_F1_nao_tem_consumidor` — a fase que exigia zero consumidores.
+    A lista de fora continua valendo, e por motivos diferentes em cada linha:
+
+      • `etl_dag_factory.py` é o FONTE GERADO, e mexer nele custa `force_all`
+        num deploy inteiro. Ele só entra na F5, junto com o carimbo do ODATE —
+        se esta asserção cair antes disso, alguém está pagando o `force_all`
+        sem saber;
+      • `utils/dependencias.py` é o módulo que TODA porta do motor carrega:
+        acoplá-lo à corrida faria um erro de import na corrida derrubar o push
+        de dependências do banco inteiro;
+      • `utils/malha_ciclo.py` e `utils/malha_nos.py` são as autoridades que a
+        corrida CONSOME (virada e expansão do desenho). O sentido da seta é
+        parte do desenho: invertê-la cria o ciclo de import.
+    """
+    guardia = (_ROOT / "dags/etl_dependencia_guardia.py").read_text(encoding="utf-8")
+    assert "from utils import malha_corrida as mc" in guardia
+    assert "_abrir_corridas_malha" in guardia and "_fechar_corridas_malha" in guardia
+    fora = [
+        "dags/etl_dag_factory.py", "dags/utils/dependencias.py",
+        "dags/utils/malha_ciclo.py", "dags/utils/malha_nos.py",
     ]   # o lado da API é varrido inteiro em test_malha_corrida_paridade.py
-    for rel in consumidores:
+    # Por AST e não por substring: `dependencias.py` CITA o módulo num
+    # comentário que explica justamente por que não o importa, e um `in` cru
+    # transformaria a explicação correta em falha de teste. O que a invariante
+    # proíbe é a DEPENDÊNCIA, não a menção.
+    for rel in fora:
         caminho = _ROOT / rel
         if not caminho.exists():
             continue
-        assert "malha_corrida" not in caminho.read_text(encoding="utf-8"), rel
+        for no in ast.walk(ast.parse(caminho.read_text(encoding="utf-8"))):
+            if isinstance(no, ast.Import):
+                assert all("malha_corrida" not in a.name for a in no.names), rel
+            elif isinstance(no, ast.ImportFrom):
+                alvo = (no.module or "") + "." + ".".join(a.name for a in no.names)
+                assert "malha_corrida" not in alvo, rel

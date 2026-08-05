@@ -2866,6 +2866,30 @@ errado.
 9. Configurar `etl_app_config.app_base_url` (Decisão 69) — sem ela, o card do
    Teams sai sem botão, que é a degradação correta, mas também é a camada de §9.8
    inteira sem efeito.
+10. **A janela de fallback do observador ainda usa o relógio do WORKER**
+    (`dags/etl_dependencia_guardia.py`, `data_corrente = calcular(_agora(), …)`).
+    É pré-existente da F14 e sobreviveu de propósito à F2 — o aceite manda o
+    observador continuar sendo "o de antes" quando o interruptor está desligado.
+    Mas ele agora **convive** com o caminho novo, que lê o relógio do banco: com
+    os 3 h de desvio medidos no dev e virada 00:00, das 21:00 às 24:00 do worker
+    a janela `{D-1, D}` fica um dia atrás do banco e a conclusão do "hoje" do
+    banco fica invisível. Em produção o desvio é presumido zero — **presumido, não
+    medido**. Medir antes de ligar o interruptor, e converter para o relógio do
+    banco numa PR própria se houver desvio.
+11. **O card de `MALHA_CONCLUIDA` do nó Fim ainda publica o marcador interno**
+    (`dags/utils/ds_teams.py`): sai com sujeito `#no:38` e fato `Pipeline: #no:38`,
+    contrariando a Decisão 74 (nome de máquina não vai ao celular). É
+    pré-existente na `main` e o roteamento que o mantém no card genérico é
+    deliberado (Fim e Notificação são componentes do desenho, não a corrida).
+    Resolver na **F11**, que é a fase que reabre `montar_card` — a fila precisa
+    passar a trazer a malha do NÓ, e não só a da corrida, que é o que ela ganhou
+    na F2.
+12. **`_fechar_dia_anterior` ainda fecha como `NAO_LIBEROU` linhas de corrida
+    `ABERTA`** que atravessem o dia operacional (teto > 24 h, ou cadeia longa com
+    rerun) — virando pendentes e levando a corrida a `FALHA` por ação da própria
+    guardiã. É entregável da **F7** (Decisão 31) e o interruptor só vai a `1`
+    depois dela, então está coberto pela ordem de deploy; registrado aqui para
+    não escapar se a ordem mudar.
 
 ---
 
