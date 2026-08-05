@@ -740,16 +740,20 @@ def test_gravar_evento_idempotente_pela_chave(dep):
 
 
 def test_fila_de_notificacao_recente_e_em_ordem(dep):
-    # 1ª consulta é a sonda da 075 (guarda de existência do marcador — F14);
-    # a fila em si é a 2ª.
+    # 1ª consulta é a sonda da 075 (guarda de existência do marcador — F14),
+    # a 2ª é a sonda da 085 (guarda do marcador '#corrida:' — F2); a fila em
+    # si é a 3ª. As duas sondas são baratas e respondem sobre o BANCO, não
+    # sobre o deploy — é o que permite a mesma fila servir os três formatos
+    # de evento sem quebrar quando uma migration ainda não entrou.
     linha = (7, "PIPE_C", "2026-08-01", "JANELA_ESTOUROU", "detalhe",
-             "2026-08-01 08:00:00")
-    conn = _conn([{"rows": [(1, 1, 1)]}, {"rows": [linha]}])
+             "2026-08-01 08:00:00", None, None)
+    conn = _conn([{"rows": [(1, 1, 1)]}, {"rows": [(1,)]}, {"rows": [linha]}])
     fila = dep.eventos_nao_notificados(conn, 50, 2)
     assert fila == [{"id": 7, "pipeline": "PIPE_C", "data_ref": "2026-08-01",
                      "tipo": "JANELA_ESTOUROU", "detalhe": "detalhe",
-                     "detectado_em": "2026-08-01 08:00:00"}]
-    sql, params = conn._cur.execs[1]
+                     "detectado_em": "2026-08-01 08:00:00",
+                     "malha": None, "sequencia": None}]
+    sql, params = conn._cur.execs[2]
     assert "notificado_em IS NULL" in sql
     assert "DATEADD(day, -%s, GETDATE())" in sql
     assert "ORDER BY e.detectado_em" in sql     # ordem do lote — nunca criado_em
@@ -932,15 +936,172 @@ def test_gravar_evento_default_nao_carimba_notificado(dep):
     assert "notificado_em" not in sql
 
 
+def test_evento_sem_corrida_e_byte_a_byte_o_de_antes_da_085(dep):
+    """F2 — `malha_execucao_id=None` (todo evento de dependência comum) tem de
+    produzir EXATAMENTE o statement anterior à 085.
+
+    É o que garante que a F2 não muda o comportamento de nenhuma das cinco
+    responsabilidades antigas da guardiã: a coluna nova não aparece no INSERT
+    nem no NOT EXISTS, e os parâmetros são os sete de sempre. Um `ISNULL(...)`
+    que vazasse para este caminho passaria a exigir a coluna num banco que
+    ainda não a tem — a célula 2 da matriz §11.1, em que `dags/` é novo e a
+    migration não entrou."""
+    conn = _conn([{"rowcount": 1}])
+    assert dep.gravar_evento(conn, "PIPE_C", date(2026, 8, 1),
+                             "JANELA_ESTOUROU", "d") is True
+    sql, params = conn._cur.execs[0]
+    assert "malha_execucao_id" not in sql
+    assert params == ("PIPE_C", date(2026, 8, 1), "JANELA_ESTOUROU", "d",
+                      "PIPE_C", date(2026, 8, 1), "JANELA_ESTOUROU")
+
+
+def test_evento_da_corrida_poe_a_corrida_na_CHAVE_e_nao_so_na_coluna(dep):
+    """F2 — o evento que pertence a uma corrida tem de dizer a QUAL, e a
+    idempotência passa a ser por (pipeline, dia, tipo, **corrida**).
+
+    Sem a corrida no `NOT EXISTS`, o segundo ciclo da mesma malha no mesmo dia
+    ficaria MUDO: a chave (pipeline, dia, tipo) já existiria e o `MALHA_FALHOU`
+    da corrida #13 nunca sairia. E o `ISNULL(..., -1)` dos dois lados não é
+    enfeite — em índice único do SQL Server dois NULLs são IGUAIS, mas em
+    predicado `= NULL` nunca é verdadeiro: sem ele o NOT EXISTS aprovaria a
+    linha e o INSERT morreria no 2601 do `ux_dep_evento_corrida`, DENTRO da
+    transação do chamador — que aqui é a transação que fecha a corrida."""
+    conn = _conn([{"rowcount": 1}])
+    assert dep.gravar_evento(conn, "#corrida:12", date(2026, 8, 1),
+                             "MALHA_FALHOU", "d", malha_execucao_id=12) is True
+    sql, params = conn._cur.execs[0]
+    assert "(pipeline_name, data_referencia, tipo, detalhe, malha_execucao_id)" in sql
+    assert ("AND ISNULL(malha_execucao_id, -1) = ISNULL(CAST(%s AS BIGINT), -1)"
+            in sql)
+    # o id viaja duas vezes: uma para gravar, outra para casar a chave inteira
+    assert params == ("#corrida:12", date(2026, 8, 1), "MALHA_FALHOU", "d", 12,
+                      "#corrida:12", date(2026, 8, 1), "MALHA_FALHOU", 12)
+    # opt-out do Teams continua valendo com corrida (o MALHA_SEM_TRABALHO do
+    # sábado nasce carimbado de notificado)
+    conn = _conn([{"rowcount": 1}])
+    dep.gravar_evento(conn, "#corrida:12", date(2026, 8, 1),
+                      "MALHA_SEM_TRABALHO", "d", notificar=False,
+                      malha_execucao_id=12)
+    sql, _ = conn._cur.execs[0]
+    assert "notificado_em" in sql and "malha_execucao_id" in sql
+
+
+def test_evento_da_corrida_sem_a_085_ainda_grava_o_ALERTA(dep):
+    """Célula 2 da matriz §11.1 — `dags/` novo, migration ainda não aplicada.
+
+    Perder o alerta porque a coluna nova não existe seria pior que o problema
+    que a coluna resolve: o evento é gravado na forma antiga, com log, e a
+    corrida some do registro — não o aviso. A degradação é ESTREITA: só o erro
+    que NOMEIA a coluna da 085 desvia; qualquer outro (deadlock, timeout,
+    violação de FK) sobe, porque engolir esses devolvendo "gravei" faria o
+    fechador seguir achando que o card saiu."""
+    sem_coluna = Exception("Invalid column name 'malha_execucao_id'.")
+    conn = _conn([sem_coluna, {"rowcount": 1}])
+    assert dep.gravar_evento(conn, "#corrida:12", date(2026, 8, 1),
+                             "MALHA_FALHOU", "d", malha_execucao_id=12) is True
+    assert len(conn._cur.execs) == 2
+    assert "malha_execucao_id" not in conn._cur.execs[1][0]
+
+    outro = Exception("Transaction (Process ID 58) was deadlocked")
+    conn = _conn([outro])
+    with pytest.raises(Exception, match="deadlocked"):
+        dep.gravar_evento(conn, "#corrida:12", date(2026, 8, 1),
+                          "MALHA_FALHOU", "d", malha_execucao_id=12)
+
+
+def test_a_fila_RESOLVE_o_marcador_da_corrida(dep):
+    """§10/F2 — "o evento aparece no painel (marcador `#corrida:{id}`
+    resolvido)".
+
+    O marcador precisa de um TERCEIRO ramo, e não de uma exceção do primeiro:
+    caindo no ramo do pipeline comum, o `EXISTS` em `etl_pipeline` nunca
+    casaria (não existe pipeline chamado `#corrida:12`) e **nenhum card do
+    ciclo de malha chegaria ao Teams** — em silêncio, com o evento gravado e
+    visível no painel. É a mesma classe do achado 2 da F14, com o marcador
+    novo.
+
+    O `LEFT JOIN` é do CARD, não do filtro: o card publica a MALHA e a ordinal
+    do dia (a corrida se chama pela data, nunca pelo id), e sem estas duas
+    colunas o evento mais grave do produto sairia com o sujeito "malha não
+    identificada"."""
+    linha = (9, "#corrida:12", "2026-08-01", "MALHA_FALHOU", "detalhe",
+             "2026-08-01 08:00:00", "Carga_Vida", 2)
+    conn = _conn([{"rows": [(1, 1, 1)]}, {"rows": [(1,)]}, {"rows": [linha]}])
+    fila = dep.eventos_nao_notificados(conn, 50, 2)
+    assert fila[0]["malha"] == "Carga_Vida" and fila[0]["sequencia"] == 2
+    sql, _ = conn._cur.execs[2]
+    assert ("OR (e.pipeline_name LIKE '#corrida:%%' AND EXISTS "
+            "(SELECT 1 FROM dbo.etl_malha_execucao mx "
+            "WHERE e.pipeline_name = '#corrida:' + "
+            "CAST(mx.id AS VARCHAR(20))))") in sql
+    assert ("LEFT JOIN dbo.etl_malha_execucao c ON c.id = e.malha_execucao_id"
+            in sql)
+    assert "c.malha_name, c.sequencia" in sql
+
+
+def test_a_fila_sem_a_085_mantem_o_ramo_da_corrida_INERTE(dep):
+    """A mesma degradação da 075, um ramo adiante: sem a tabela não há corrida
+    para conferir — e também não há como um evento `#corrida:` ter sido gravado
+    neste banco. O ramo vira `1 = 1` (inerte, não quebrado), as duas colunas
+    saem NULL para a FORMA do resultado não mudar com o banco, e a fila dos
+    eventos comuns segue intacta."""
+    conn = _conn([{"rows": [(1, 1, 1)]}, {"rows": [(None,)]},
+                  {"rows": [(9, "PIPE_C", "2026-08-01", "NAO_LIBEROU", "d",
+                             "2026-08-01 08:00:00", None, None)]}])
+    fila = dep.eventos_nao_notificados(conn, 50, 2)
+    # a forma do dicionário é a MESMA com e sem a 085 — quem monta o card não
+    # pode ter de perguntar em que banco está
+    assert set(fila[0]) == {"id", "pipeline", "data_ref", "tipo", "detalhe",
+                            "detectado_em", "malha", "sequencia"}
+    sql, _ = conn._cur.execs[2]
+    assert "etl_malha_execucao" not in sql
+    assert "NULL, NULL" in sql
+    assert "EXISTS (SELECT 1 FROM dbo.etl_pipeline p" in sql
+
+
+def test_malhas_ativas_com_desenho_nao_traz_malha_INATIVA(dep):
+    """§6.2/§6.9/#8 — o universo das portas 2 e 3.
+
+    Duas guardas nesta função, e as duas são do WHERE (por isso se conferem no
+    TEXTO da consulta, não no dublê):
+
+      • `etl_malha.ativo = 1` nas TRÊS consultas: malha inativa **não abre**
+        corrida nova. A corrida já aberta segue até fechar, e é por isso que o
+        FECHADOR não usa esta lista — ele varre `corridas_abertas()`, que não
+        filtra por `ativo`. Órfã eterna é o pior resultado possível, porque
+        corrida aberta bloqueia disparo;
+      • a malha entra pelos MEMBROS, não pelos nós: `nos_observadores` só
+        devolve malha que TEM Notificação/Fim, e a porta 3 existe justamente
+        para as malhas sem componente nenhum (3 de 4 no dev). Reusar aquela
+        consulta deixaria a maioria das malhas sem abertura automática."""
+    conn = _conn([
+        {"rows": [("M2", "PIPE_Z"), ("M1", "PIPE_B"), ("M1", "PIPE_A")]},
+        {"rows": [("M1", 1, "inicio")]},
+        {"rows": [("M1", 1, None, None, "PIPE_A")]},
+    ])
+    saida = dep.malhas_ativas_com_desenho(conn)
+    assert [m["malha"] for m in saida] == ["M1", "M2"]      # determinístico
+    assert saida[0]["membros"] == ["PIPE_A", "PIPE_B"]      # e ordenado
+    assert saida[0]["nos"] == [{"id": 1, "tipo": "inicio"}]
+    assert saida[0]["arestas"] == [{"origem_no": 1, "origem_pipeline": None,
+                                    "destino_no": None,
+                                    "destino_pipeline": "PIPE_A"}]
+    # a malha sem componente nenhum continua no universo — é a porta 3
+    assert saida[1]["nos"] == [] and saida[1]["arestas"] == []
+    for sql, _ in conn._cur.execs:
+        assert "JOIN dbo.etl_malha m" in sql and "m.ativo = 1" in sql
+
+
 def test_fila_exige_existencia_do_pipeline_e_do_no(dep):
     """Achado 2 da revisão da F14: com a FK derrubada (076), a FILA é quem
     confere existência — evento comum exige o pipeline em etl_pipeline;
     marcador '#no:{id}' exige o nó em etl_malha_no (075 presente). Evento
     órfão fica na tabela (histórico), só não vira card."""
-    conn = _conn([{"rows": [(1, 1, 1)]}, {"rows": []}])
+    conn = _conn([{"rows": [(1, 1, 1)]}, {"rows": [(1,)]}, {"rows": []}])
     dep.eventos_nao_notificados(conn, 50, 2)
-    sql, _ = conn._cur.execs[1]
-    assert ("e.pipeline_name NOT LIKE '#no:%%' AND EXISTS "
+    sql, _ = conn._cur.execs[2]
+    assert ("e.pipeline_name NOT LIKE '#no:%%' "
+            "AND e.pipeline_name NOT LIKE '#corrida:%%' AND EXISTS "
             "(SELECT 1 FROM dbo.etl_pipeline p "
             "WHERE p.pipeline_name = e.pipeline_name)") in sql
     assert ("EXISTS (SELECT 1 FROM dbo.etl_malha_no n "
@@ -951,9 +1112,9 @@ def test_fila_sem_075_nao_toca_etl_malha_no(dep):
     """Sem a 075 não há como conferir o marcador — e a fila dos eventos
     COMUNS não pode quebrar por isso: a guarda do nó vira 1=1 e nenhuma
     consulta cita etl_malha_no."""
-    conn = _conn([{"rows": [(1, None, 1)]}, {"rows": []}])
+    conn = _conn([{"rows": [(1, None, 1)]}, {"rows": [(1,)]}, {"rows": []}])
     dep.eventos_nao_notificados(conn, 50, 2)
-    sql, _ = conn._cur.execs[1]
+    sql, _ = conn._cur.execs[2]
     assert "etl_malha_no" not in sql
     assert "1 = 1" in sql
     # a guarda de pipeline continua mesmo sem a 075

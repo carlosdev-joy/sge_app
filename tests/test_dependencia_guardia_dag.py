@@ -107,7 +107,7 @@ def _mundo(monkeypatch, agora=AGORA, **sobrescreve):
         "corridas_em_execucao": lambda conn, idade: [],
         "fechar_orfa_em_execucao": lambda conn, p, d, r, m: True,
         "fechar_nao_liberou": lambda conn, p, d, r, m: True,
-        "gravar_evento": lambda conn, p, d, t, det: True,
+        "gravar_evento": lambda conn, p, d, t, det, **kw: True,
         "eventos_nao_notificados": lambda conn, lim, jan: [],
         "marcar_notificado": lambda conn, i: None,
         "canal_teams_supervisao": lambda conn: None,
@@ -240,7 +240,7 @@ def test_new_day_nao_ordena_dependente_fora_do_dia(monkeypatch):
            config_dependente=_config,
            ordenar_corrida=lambda conn, p, d, rid, o:
                ordens.append(p) or True,
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append(t) or True)
     saida = GUARDIA.ciclo()
     assert saida["ordenadas"] == 0
@@ -266,7 +266,7 @@ def test_new_day_predecessor_fora_do_dia_bloqueia_sem_alerta(monkeypatch):
            resumo_predecessores=lambda conn, p, d: {"PIPE_A": {"PULADO"}},
            ordenar_corrida=lambda conn, p, d, rid, o:
                ordens.append(p) or True,
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append(t) or True)
     saida = GUARDIA.ciclo()
     assert saida["ordenadas"] == 0
@@ -308,7 +308,7 @@ def test_new_day_viradas_divergentes_bloqueiam_e_viram_evento(monkeypatch):
                time(20, 0) if p == "PIPE_A" else time(0, 0),
            ordenar_corrida=lambda conn, p, d, rid, o:
                ordens.append(p) or True,
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append((p, d, t, det)) or True)
     saida = GUARDIA.ciclo()
     assert saida["ordenadas"] == 0 and ordens == []
@@ -327,7 +327,7 @@ def test_new_day_corrida_existente_nao_assume_ordenacao(monkeypatch):
            predecessores_de=lambda conn, p: ["PIPE_A"],
            resumo_predecessores=lambda conn, p, d: {"PIPE_A": set()},
            ordenar_corrida=lambda conn, p, d, rid, o: False,
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append(t) or True)
     assert GUARDIA.ciclo()["ordenadas"] == 0
     assert eventos == []
@@ -552,7 +552,7 @@ def test_orfa_em_execucao_com_dagrun_failed_e_fechada_como_falha(monkeypatch):
                [("PIPE_C", HOJE, "dep__c", datetime(2026, 8, 3, 6, 0))],
            fechar_orfa_em_execucao=lambda conn, p, d, r, m:
                fechadas.append((p, d, r, m)) or True,
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append((p, t, det)) or True)
     monkeypatch.setattr(GUARDIA, "_dagrun_terminado",
                         _dagrun("failed", datetime(2026, 8, 3, 7, 0)))
@@ -603,7 +603,7 @@ def test_dagrun_success_sem_fecho_ALERTA_mas_nao_inventa_verde(monkeypatch):
                [("PIPE_C", HOJE, "dep__c", datetime(2026, 8, 3, 6, 0))],
            fechar_orfa_em_execucao=lambda conn, p, d, r, m:
                fechadas.append(p) or True,
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append((t, det)) or True)
     monkeypatch.setattr(GUARDIA, "_dagrun_terminado",
                         _dagrun("success", datetime(2026, 8, 3, 7, 0)))
@@ -623,7 +623,7 @@ def test_sem_dagrun_no_airflow_so_alerta(monkeypatch):
                [("PIPE_C", HOJE, "dep__c", datetime(2026, 8, 3, 6, 0))],
            fechar_orfa_em_execucao=lambda conn, p, d, r, m:
                fechadas.append(p) or True,
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append((t, det)) or True)
     monkeypatch.setattr(GUARDIA, "_dagrun_terminado",
                         lambda dag_id, run_id: None)
@@ -662,7 +662,7 @@ def test_deadline_sem_hora_limite_nunca_alerta(monkeypatch):
            corridas_aguardando=lambda conn: [_linha()],
            liberado=lambda conn, p, d: (False, ["PIPE_A"]),
            resumo_predecessores=lambda conn, p, d: {"PIPE_A": set()},
-           gravar_evento=lambda conn, p, d, t, det: eventos.append(t) or True)
+           gravar_evento=lambda conn, p, d, t, det, **kw: eventos.append(t) or True)
     GUARDIA.ciclo()
     assert "JANELA_ESTOUROU" not in eventos
 
@@ -680,7 +680,7 @@ def test_deadline_pendente_nao_falha(monkeypatch):
            resumo_predecessores=lambda conn, p, d: {"PIPE_A": {"EXECUTANDO"}},
            fechar_nao_liberou=lambda conn, p, d, r, m:
                fechamentos.append(p) or True,
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append((t, det)) or True)
     saida = GUARDIA.ciclo()
     assert saida["deadlines"] == 1 and saida["fechadas"] == 0
@@ -706,7 +706,7 @@ def test_deadline_mensagem_liberado_sem_disparo(monkeypatch):
            predecessores_de=lambda conn, p: ["PIPE_A"],
            liberado=lambda conn, p, d: (True, []),
            reservar_corrida=lambda conn, p, d, rid, o: "guardia__ja",
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append((t, det)) or True)
     monkeypatch.setattr(GUARDIA, "_trigger", _explode)
     GUARDIA.ciclo()
@@ -723,7 +723,7 @@ def test_deadline_mensagem_nenhum_predecessor_executou(monkeypatch):
            predecessores_de=lambda conn, p: ["PIPE_A"],
            liberado=lambda conn, p, d: (False, ["PIPE_A"]),
            resumo_predecessores=lambda conn, p, d: {"PIPE_A": set()},
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append((t, det)) or True)
     GUARDIA.ciclo()
     assert ("JANELA_ESTOUROU",
@@ -741,7 +741,7 @@ def test_deadline_no_passado_nao_alerta(monkeypatch):
            predecessores_de=lambda conn, p: ["PIPE_A"],
            liberado=lambda conn, p, d: (False, ["PIPE_A"]),
            resumo_predecessores=lambda conn, p, d: {"PIPE_A": set()},
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append(t) or True)
     assert GUARDIA.ciclo()["deadlines"] == 0
     assert "JANELA_ESTOUROU" not in eventos
@@ -755,7 +755,7 @@ def test_deadline_antes_da_hora_nao_alerta(monkeypatch):
            predecessores_de=lambda conn, p: ["PIPE_A"],
            liberado=lambda conn, p, d: (False, ["PIPE_A"]),
            resumo_predecessores=lambda conn, p, d: {"PIPE_A": set()},
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append(t) or True)
     assert GUARDIA.ciclo()["deadlines"] == 0
     assert eventos == []
@@ -770,7 +770,7 @@ def test_deadline_idempotente_no_ciclo_seguinte(monkeypatch):
            predecessores_de=lambda conn, p: ["PIPE_A"],
            liberado=lambda conn, p, d: (False, ["PIPE_A"]),
            resumo_predecessores=lambda conn, p, d: {"PIPE_A": set()},
-           gravar_evento=lambda conn, p, d, t, det: False)
+           gravar_evento=lambda conn, p, d, t, det, **kw: False)
     assert GUARDIA.ciclo()["deadlines"] == 0
 
 
@@ -808,7 +808,7 @@ def test_fechamento_de_linha_velha_nao_liberada(monkeypatch):
            resumo_predecessores=lambda conn, p, d: {"PIPE_A": set()},
            fechar_nao_liberou=lambda conn, p, d, r, m:
                fechamentos.append((p, d, r, m)) or True,
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append((t, det)) or True)
     saida = GUARDIA.ciclo()
     assert saida["fechadas"] == 1
@@ -864,7 +864,7 @@ def test_fechamento_que_nao_pegou_a_linha_faz_rollback_do_evento(monkeypatch):
            resumo_predecessores=lambda conn, p, d: {"PIPE_A": set()},
            fechar_nao_liberou=lambda conn, p, d, r, m:
                chamadas.append("fechar") or False,
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                chamadas.append(("evento", t)) or True)
     saida = GUARDIA.ciclo()
     assert saida["fechadas"] == 0
@@ -884,7 +884,7 @@ def test_divergencia_de_execucao_cita_as_duas_datas(monkeypatch):
            predecessores_de=lambda conn, p: ["PIPE_A"],
            sucesso_recente_outra_data=lambda conn, p, d, inicio:
                inicios.append(inicio) or [("PIPE_A", date(2026, 8, 4))],
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append((t, det)) or True)
     saida = GUARDIA.ciclo()
     assert saida["eventos"] == 1
@@ -903,7 +903,7 @@ def test_sucesso_de_ontem_nao_gera_divergencia(monkeypatch):
            corridas_aguardando=lambda conn: [_linha()],
            predecessores_de=lambda conn, p: ["PIPE_A"],
            sucesso_recente_outra_data=lambda conn, p, d, inicio: [],
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append(t) or True)
     assert GUARDIA.ciclo()["eventos"] == 0
     assert eventos == []
@@ -918,7 +918,7 @@ def test_predecessor_falhou_imediato_so_com_falha_sem_sucesso(monkeypatch):
            predecessores_de=lambda conn, p: ["PIPE_A", "PIPE_B"],
            resumo_predecessores=lambda conn, p, d: {
                "PIPE_A": {"FALHA"}, "PIPE_B": {"FALHA", "SUCESSO"}},
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append((t, det)) or True)
     saida = GUARDIA.ciclo()
     assert saida["eventos"] == 1
@@ -934,7 +934,7 @@ def test_clear_que_virou_sucesso_nao_gera_predecessor_falhou(monkeypatch):
            predecessores_de=lambda conn, p: ["PIPE_B"],
            resumo_predecessores=lambda conn, p, d: {
                "PIPE_B": {"FALHA", "SUCESSO"}},
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append(t) or True)
     assert GUARDIA.ciclo()["eventos"] == 0
     assert eventos == []
@@ -1067,7 +1067,7 @@ def test_erro_de_consulta_adia_o_fechamento(monkeypatch):
            resumo_predecessores=lambda conn, p, d: {"PIPE_A": {"SUCESSO"}},
            fechar_nao_liberou=lambda conn, p, d, r, m:
                fechamentos.append(p) or True,
-           gravar_evento=lambda conn, p, d, t, det:
+           gravar_evento=lambda conn, p, d, t, det, **kw:
                eventos.append(t) or True)
     saida = GUARDIA.ciclo()
     assert saida["fechadas"] == 0
@@ -1112,7 +1112,7 @@ def test_notificacao_satisfeita_grava_evento_com_marcador(monkeypatch):
     _mundo(monkeypatch,
            nos_observadores=lambda conn: [_obs()],
            pipelines_todos_sucesso=lambda conn, pipes, d: d == HOJE,
-           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
                gravados.append((p, d, t, det, notificar)) or True)
     saida = GUARDIA.ciclo()
     assert saida["observadores"] == 1
@@ -1127,7 +1127,7 @@ def test_notificacao_usa_titulo_e_mensagem_do_config(monkeypatch):
            nos_observadores=lambda conn: [
                _obs(config={"titulo": "Onda 1 OK", "mensagem": "seguir"})],
            pipelines_todos_sucesso=lambda conn, pipes, d: d == HOJE,
-           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
                gravados.append(det) or True)
     GUARDIA.ciclo()
     assert "Onda 1 OK" in gravados[0] and "seguir" in gravados[0]
@@ -1143,7 +1143,7 @@ def test_fim_satisfeito_grava_malha_concluida_sem_card_por_default(monkeypatch):
            nos_observadores=lambda conn: [
                _obs(no_id=9, tipo="fim", nos=nos, arestas=arestas)],
            pipelines_todos_sucesso=lambda conn, pipes, d: d == HOJE,
-           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
                gravados.append((p, t, det, notificar)) or True)
     saida = GUARDIA.ciclo()
     assert saida["observadores"] == 1
@@ -1162,7 +1162,7 @@ def test_fim_com_notificar_teams_true_vai_a_fila(monkeypatch):
                _obs(no_id=9, tipo="fim", config={"notificar_teams": True},
                     nos=nos, arestas=arestas)],
            pipelines_todos_sucesso=lambda conn, pipes, d: d == HOJE,
-           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
                gravados.append(notificar) or True)
     GUARDIA.ciclo()
     assert gravados == [True]
@@ -1189,7 +1189,7 @@ def test_conclusao_pos_meia_noite_sai_pela_janela_d_menos_1(monkeypatch):
            nos_observadores=lambda conn: [_obs()],
            pipelines_todos_sucesso=lambda conn, pipes, d:
                d == HOJE - timedelta(days=1),
-           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
                gravados.append(d) or True)
     saida = GUARDIA.ciclo()
     assert saida["observadores"] == 1
@@ -1202,7 +1202,7 @@ def test_evento_ja_gravado_nao_conta_nem_duplica(monkeypatch):
     _mundo(monkeypatch,
            nos_observadores=lambda conn: [_obs()],
            pipelines_todos_sucesso=lambda conn, pipes, d: True,
-           gravar_evento=lambda conn, p, d, t, det, notificar=True: False)
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw: False)
     assert GUARDIA.ciclo()["observadores"] == 0
 
 
@@ -1214,7 +1214,7 @@ def test_observador_sem_upstream_nunca_emite(monkeypatch):
            nos_observadores=lambda conn: [_obs(arestas=[])],
            pipelines_todos_sucesso=lambda conn, pipes, d:
                perguntas.append(d) or True,
-           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
                gravados.append(p) or True)
     assert GUARDIA.ciclo()["observadores"] == 0
     assert perguntas == [] and gravados == []
@@ -1263,7 +1263,7 @@ def test_primeiro_observador_explode_segundo_avaliado(monkeypatch):
            nos_observadores=lambda conn: [quebrado, _obs()],
            virada_efetiva=_virada,
            pipelines_todos_sucesso=lambda conn, pipes, d: d == HOJE,
-           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
                gravados.append(p) or True)
     saida = GUARDIA.ciclo()
     assert saida["observadores"] == 1
@@ -1300,7 +1300,7 @@ def test_no_criado_hoje_nao_emite_retroativo_de_ontem(monkeypatch):
                _obs(criado_em=datetime(2026, 8, 3, 14, 0))],   # criado HOJE
            pipelines_todos_sucesso=lambda conn, pipes, d:
                perguntas.append(d) or True,                    # AMBAS fechariam
-           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
                gravados.append(d) or True)
     saida = GUARDIA.ciclo()
     assert saida["observadores"] == 1
@@ -1315,7 +1315,7 @@ def test_corte_aceita_criado_em_como_date_puro(monkeypatch):
     _mundo(monkeypatch,
            nos_observadores=lambda conn: [_obs(criado_em=HOJE)],
            pipelines_todos_sucesso=lambda conn, pipes, d: True,
-           gravar_evento=lambda conn, p, d, t, det, notificar=True:
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
                gravados.append(d) or True)
     GUARDIA.ciclo()
     assert gravados == [HOJE]
