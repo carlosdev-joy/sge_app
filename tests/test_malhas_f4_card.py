@@ -63,7 +63,7 @@ from services import malha_corrida as mc
 from tests.test_malha_corrida_porta import (AGORA_API, AGORA_BANCO, FakeCur as
                                             FakeCurF3, FakeDb as FakeDbF3,
                                             _guarda, _proj)
-from tests.test_malhas_f10 import _monta_malha
+from tests.test_malhas_f10 import _cria_no, _monta_malha
 
 ODATE = date(2026, 8, 5)
 ODATE_ONTEM = date(2026, 8, 4)
@@ -72,7 +72,7 @@ ODATE_ONTEM = date(2026, 8, 4)
 # preparação, não o que se prova, e um `_pipes` por teste só criaria ruído.
 _NOMES = (["CARGA_A", "CARGA_B", "A", "B", "C", "OK1", "OK2", "OK3", "VIVO",
            "PULA", "FALHOU", "P_FALHOU", "P_NAO_LIBEROU", "P_NAO_PARTIU",
-           "P_ORFA"] + [f"P{i}" for i in range(10)])
+           "P_ORFA"] + [f"P{i}" for i in range(40)])
 
 
 def _pipes():
@@ -124,11 +124,34 @@ def _qtd_quiescencia(db):
 
 
 class FakeCur(FakeCurF3):
+    # As três consultas que a F4 acrescenta. Ficam nomeadas aqui porque a
+    # checagem de marcadores abaixo precisa saber QUAIS statements ela audita:
+    # o dublê herdado atende dezenas de outros, e uma checagem global sobre
+    # texto de SQL que este arquivo não escreveu seria contrato de outra fase.
+    _DA_F4 = ("SELECT m.malha_name, c.id",
+              "SELECT mm.malha_execucao_id",
+              "SELECT pipeline_name, status, inicio")
+
     def execute(self, sql, params=()):  # noqa: C901 — dispatcher de dublê
         db = self.db
         s = " ".join(str(sql).split())
         db.sqls.append(s)
         p = tuple(params)
+
+        # ⚠️ O DRIVER CONTA OS MARCADORES — e o dublê tem de contar também.
+        #
+        # `pyodbc` recusa o statement com "The SQL contains 1 parameter
+        # markers, but 2 parameters were supplied". Sem esta linha o dublê era
+        # MAIS PERMISSIVO que o driver, e a mutação que apaga o
+        # `WHERE m.malha_name = ?` do módulo (deixando o parâmetro na tupla)
+        # passava VERDE aqui — a suíte inteira dizendo "ok" sobre um SQL que o
+        # banco recusaria na primeira chamada. É a mesma família da regra de
+        # honestidade do `_guarda`: o dublê não pode ser mais generoso que a
+        # coisa que ele imita.
+        if s.startswith(self._DA_F4):
+            assert s.count("?") == len(p), (
+                "SQL com %d marcador(es) e %d parametro(s) — o pyodbc "
+                "recusaria:\n%s\nparams=%r" % (s.count("?"), len(p), s, p))
 
         # A degradação vem ANTES do dispatch: sem a 085 as consultas novas têm
         # de morrer como morreriam no banco (208, Invalid object name), e não
@@ -152,6 +175,20 @@ class FakeCur(FakeCurF3):
         # ── o SELECT de `execucoes[]` do painel (com ou sem lente) ─────────
         if s.startswith("SELECT pipeline_name, status, inicio"):
             self._rows = self._painel(s, p)
+            self.rowcount = -1
+            return
+        # ── os eventos do painel (`eventos[]` + `eventos_no[]`) ────────────
+        # O dublê da F15 devolve lista VAZIA aqui ("sem eventos nestes
+        # cenários"), e essa complacência esconderia exatamente o que a F4
+        # precisa provar: `etl_dependencia_evento` é chaveada por (pipeline,
+        # data, tipo) e NÃO pela corrida, então o `MALHA_CONCLUIDA` da corrida
+        # anterior do MESMO dia continua chegando ao painel. Um dublê que
+        # devolve vazio faz o teste do canvas verde passar sem canvas nenhum.
+        if s.startswith("SELECT pipeline_name, tipo, detectado_em"):
+            self._rows = [
+                (e.get("pipeline_name") or e.get("pipeline"), e["tipo"],
+                 e.get("detectado_em") or db.agora_banco, e.get("detalhe"))
+                for e in db.eventos if e.get("data_referencia") == p[0]]
             self.rowcount = -1
             return
         super().execute(sql, params)
@@ -312,6 +349,25 @@ def _card(resp, malha="M1"):
     return next(m for m in resp.json()["malhas"] if m["malha_name"] == malha)
 
 
+def _estado_na_tela(card) -> tuple:
+    """O que o card MOSTRA — a regra do front, em uma linha: a corrida quando
+    ela existe, o "membro mais recente" quando não.
+
+    Existe porque o aceite desta fase é sobre o que o gestor LÊ às 8h, e não
+    sobre chaves de JSON. `MalhaCard` (`Malha.tsx`) faz exatamente isto:
+    `const corrida = malha.corrida ?? null` e, sem ela, o fallback declarado
+    com o sufixo "(membro mais recente)"."""
+    corrida = card.get("corrida")
+    if corrida:
+        culpado = (corrida["pendentes"][0]["pipeline"]
+                   if corrida["pendentes"] else None)
+        return (corrida["status"], corrida["saude"], culpado)
+    ultima = card.get("ultima_execucao")
+    if not ultima:
+        return ("sem execução registrada", None, None)
+    return (ultima["status"], "(membro mais recente)", ultima["pipeline"])
+
+
 def _cenario_defeito(db, client):
     """O defeito relatado, montado uma vez: CARGA_A falha 03:00, CARGA_B
     conclui 03:40 — e CARGA_B é a execução MAIS RECENTE da malha."""
@@ -349,6 +405,35 @@ def test_card_diz_falhou_e_nomeia_quem_falhou(client, auth):
     assert [(x["pipeline"], x["classe"]) for x in corrida["pendentes"]] == [
         ("CARGA_A", "falhou")]
     assert (corrida["membros_total"], corrida["membros_ok"]) == (2, 1)
+
+
+def test_o_estado_na_tela_deixa_de_ser_o_do_membro_mais_recente(client, auth):
+    """O MESMO cenário, olhado como o gestor olha: o que o card MOSTRA.
+
+    Este teste nasceu escrito ao contrário — afirmando o comportamento de hoje,
+    `("SUCESSO", "(membro mais recente)", "CARGA_B")`. Contra o código desta
+    branch ele ficou VERMELHO com a diferença exata:
+
+        assert ('ABERTA', 'COM_FALHA', 'CARGA_A')
+            == ('SUCESSO', '(membro mais recente)', 'CARGA_B')
+
+    e contra a `main` (o código anterior à fase) ficou VERDE — porque lá o card
+    não tem bloco `corrida` e o único estado disponível é o do membro que
+    executou por último. É essa dupla execução que prova que o teste mede o
+    DEFEITO, e não a própria opinião.
+
+    Guardado agora na forma de regressão: se alguém devolver a decisão para
+    `melhor[malha] = max((momento, pipeline))`, esta linha volta a ser
+    `SUCESSO · CARGA_B` e este teste cai."""
+    db = FakeDb(pipelines=_pipes())
+    with _patch(db), _patch_agora():
+        _cenario_defeito(db, client)
+        card = _card(client.get("/malhas"))
+    assert _estado_na_tela(card) == ("ABERTA", "COM_FALHA", "CARGA_A")
+    # ...e o fallback continua guardado e continua dizendo o que sempre disse:
+    # ele é o que a malha SEM corrida mostra, com a confissão no sufixo
+    assert (card["ultima_execucao"]["status"],
+            card["ultima_execucao"]["pipeline"]) == ("SUCESSO", "CARGA_B")
 
 
 def test_leitura_da_corrida_independe_do_interruptor(client, auth):
@@ -389,25 +474,37 @@ def test_corrida_em_voo_sem_falha_e_azul(client, auth):
 
 
 def test_falha_pinta_vermelho_com_a_malha_inteira_correndo(client, auth):
-    """A saúde não espera o fechamento: com 1 falha e 8 correndo o card já é
-    vermelho e já nomeia. Esperar o desfecho é perder a madrugada."""
+    """O aceite da F4, com os números da spec: `CARGA_A` em falha e **38
+    membros correndo**.
+
+    A saúde não espera o fechamento. Com 38 pipelines em voo a corrida só
+    fecharia horas depois — e é exatamente aí que o card de hoje ficaria azul
+    (ou verde, pelo membro mais recente) enquanto a madrugada já está perdida.
+    A proporção importa: 1 em 39 é o caso em que "a maioria está indo bem" é
+    verdade e irrelevante."""
     db = FakeDb(pipelines=_pipes())
-    membros = [f"P{i}" for i in range(9)]
+    correndo = [f"P{i}" for i in range(38)]
+    membros = ["CARGA_A"] + correndo
     with _patch(db), _patch_agora():
         _monta_malha(client, "M1", membros)
         c = db.abrir_corrida("M1", odate=ODATE,
                              aberta_em=AGORA_BANCO - timedelta(minutes=20),
                              membros=membros)
-        db.execucao("P0", "FALHA", inicio=AGORA_BANCO - timedelta(minutes=15),
+        db.execucao("CARGA_A", "FALHA",
+                    inicio=AGORA_BANCO - timedelta(minutes=15),
                     fim=AGORA_BANCO - timedelta(minutes=14), corrida=c["id"])
-        for p in membros[1:]:
+        for p in correndo:
             db.execucao(p, "EXECUTANDO",
                         inicio=AGORA_BANCO - timedelta(minutes=5),
                         corrida=c["id"])
-        corrida = _card(client.get("/malhas"))["corrida"]
+        card = _card(client.get("/malhas"))
+    corrida = card["corrida"]
+    # o ciclo continua ABERTO — e mesmo assim o card já é vermelho e já nomeia
+    assert corrida["status"] == "ABERTA"
     assert corrida["saude"] == "COM_FALHA"
-    assert corrida["membros_vivos"] == 8
-    assert [x["pipeline"] for x in corrida["pendentes"]] == ["P0"]
+    assert (corrida["membros_total"], corrida["membros_vivos"]) == (39, 38)
+    assert [x["pipeline"] for x in corrida["pendentes"]] == ["CARGA_A"]
+    assert _estado_na_tela(card) == ("ABERTA", "COM_FALHA", "CARGA_A")
 
 
 def test_pendentes_distinguem_as_quatro_classes(client, auth):
@@ -461,6 +558,44 @@ def test_lista_gasta_duas_consultas_qualquer_que_seja_o_numero_de_malhas(
     assert sum(1 for m in resp.json()["malhas"] if m.get("corrida")) == quantas
     da_corrida = [s for s in db.sqls if "etl_malha_execucao" in s]
     assert len(da_corrida) == 2, "\n".join(da_corrida)
+
+
+def test_o_custo_TOTAL_da_lista_nao_cresce_com_o_numero_de_malhas(client, auth):
+    """A contagem das DUAS consultas do bloco não basta sozinha: ela provaria
+    o orçamento da corrida enquanto um N+1 podia ter entrado ao lado (um probe
+    de tabela por malha, uma sonda de config por card).
+
+    Aqui se mede o statement por statement do endpoint inteiro — todas as
+    chamadas ao cursor — com 4 malhas e com 40. Os dois números têm de ser o
+    MESMO: `GET /malhas` é a tela de acompanhamento, ela faz refetch a cada
+    20 s com corrida em voo, e cada statement a mais é multiplicado por 3 por
+    minuto e por operador."""
+    def gasto(quantas):
+        db = FakeDb(pipelines=_pipes())
+        with _patch(db), _patch_agora():
+            for i in range(quantas):
+                nome = f"M{i:03d}"
+                _monta_malha(client, nome, ["A", "B"])
+                db.abrir_corrida(nome, odate=ODATE,
+                                 aberta_em=AGORA_BANCO - timedelta(hours=1),
+                                 membros=["A", "B"])
+                db.execucao("A", "SUCESSO",
+                            inicio=AGORA_BANCO - timedelta(minutes=50),
+                            fim=AGORA_BANCO - timedelta(minutes=40))
+            db.sqls.clear()
+            resp = client.get("/malhas")
+        assert resp.status_code == 200
+        assert len(resp.json()["malhas"]) == quantas
+        return list(db.sqls)
+
+    com_4, com_40 = gasto(4), gasto(40)
+    assert len(com_4) == len(com_40), (
+        "o endpoint gastou %d statements com 4 malhas e %d com 40 — o que "
+        "cresceu:\n%s" % (len(com_4), len(com_40),
+                          "\n".join(sorted(set(com_40) - set(com_4))[:5])))
+    # e o bloco da corrida são DOIS deles, nomeados, para o número acima nunca
+    # ser "constante porque nada foi consultado"
+    assert len([s for s in com_40 if "etl_malha_execucao" in s]) == 2
 
 
 # ═════════════ F4+/1 — `substituida_em IS NULL` nos DOIS lugares ════════════
@@ -555,9 +690,9 @@ def test_membro_inativado_na_abertura_fica_fora_do_denominador_mas_visivel(
 def test_travado_e_campo_proprio_e_a_identidade_da_barra_fecha(client, auth):
     """Decisão 54 — a barra responde UMA coisa: quanto já ficou pronto.
 
-    `total = ok + vivos + dispensados + travados` é a identidade que garante
-    que o travado não é pintado: se ele entrasse na barra, `3 de 6` pintaria
-    5/6 do trilho e, a 1,5 m, leria-se "quase pronto"."""
+    `total = ok + vivos + dispensados + travados + nao_partiram` é a identidade
+    que garante que o travado não é pintado: se ele entrasse na barra, `3 de 6`
+    pintaria 5/6 do trilho e, a 1,5 m, leria-se "quase pronto"."""
     db = FakeDb(pipelines=_pipes())
     membros = ["OK1", "OK2", "OK3", "VIVO", "PULA", "FALHOU"]
     with _patch(db), _patch_agora():
@@ -582,9 +717,78 @@ def test_travado_e_campo_proprio_e_a_identidade_da_barra_fecha(client, auth):
     assert corrida["membros_vivos"] == 1
     assert corrida["membros_dispensados"] == 1
     assert corrida["membros_travados"] == 1
+    assert corrida["membros_nao_partiram"] == 0
     assert (corrida["membros_total"]
             == corrida["membros_ok"] + corrida["membros_vivos"]
-            + corrida["membros_dispensados"] + corrida["membros_travados"])
+            + corrida["membros_dispensados"] + corrida["membros_travados"]
+            + corrida["membros_nao_partiram"])
+
+
+def test_corrida_recem_aberta_nao_nasce_com_o_chip_vermelho(client, auth):
+    """⚠️ REGRESSÃO de um alarme falso DIÁRIO, encontrado na revisão
+    adversarial da F4.
+
+    Toda corrida abre antes de qualquer pipeline ter linha em
+    `etl_pipeline_execucao` — o Início dispara as raízes, e nos primeiros
+    segundos o snapshot inteiro está sem linha. A classificação conservadora
+    manda todo mundo para `nao_partiu` (que é a resposta certa: separar
+    "não roda hoje" exigiria um `dia_permitido` POR MEMBRO, o N+1 que a fase
+    existe para não ter). Com `travados = len(pendentes)`, o card de TODA
+    malha nascia às 01:10 com
+
+        em andamento · corrida de 05/08 · 0 de 7   ▲ 7 travados
+        ↳ não chegou a iniciar: A
+
+    — chip vermelho e um culpado escolhido por ordem alfabética, sobre um
+    ciclo perfeitamente saudável, todas as noites. As Decisões 26/27 são
+    literais sobre isto: alarme falso treina o operador a ignorar o alarme.
+
+    A tabela da Decisão 54 é a régua: chip é para `falhou`, `orfa` e
+    `nao_liberou`; `nao_partiu` fica no trilho vazio e ganha campo próprio.
+    O NÚMERO não some — some o vermelho."""
+    db = FakeDb(pipelines=_pipes())
+    membros = ["A", "B", "C", "OK1", "OK2", "OK3", "VIVO"]
+    with _patch(db), _patch_agora():
+        _monta_malha(client, "M1", membros)
+        db.abrir_corrida("M1", odate=ODATE,
+                         aberta_em=AGORA_BANCO - timedelta(seconds=30),
+                         membros=membros)
+        corrida = _card(client.get("/malhas"))["corrida"]
+    assert corrida["status"] == "ABERTA"
+    assert corrida["saude"] == "OK"          # azul, não âmbar, não vermelho
+    assert corrida["membros_travados"] == 0, "chip vermelho numa corrida de 30s"
+    assert corrida["membros_nao_partiram"] == 7
+    assert (corrida["membros_total"], corrida["membros_ok"]) == (7, 0)
+    # e a informação continua inteira: quem ainda não partiu está nomeado
+    assert [x["classe"] for x in corrida["pendentes"]] == ["nao_partiu"] * 7
+
+
+def test_chip_vermelho_conta_falhou_orfa_e_nao_liberou(client, auth):
+    """O outro lado da mesma régua: as três classes que SÃO problema com dono
+    continuam no chip, e o `nao_partiu` que está junto delas não engorda o
+    número (`▲ 4 travados` em vez de `▲ 3` diria "há mais um incêndio")."""
+    db = FakeDb(pipelines=_pipes())
+    membros = ["P_FALHOU", "P_ORFA", "P_NAO_LIBEROU", "P_NAO_PARTIU"]
+    with _patch(db), _patch_agora():
+        _monta_malha(client, "M1", membros)
+        c = db.abrir_corrida("M1", odate=ODATE,
+                             aberta_em=AGORA_BANCO - timedelta(hours=1),
+                             membros=membros)
+        db.execucao("P_FALHOU", "FALHA",
+                    inicio=AGORA_BANCO - timedelta(minutes=40),
+                    fim=AGORA_BANCO - timedelta(minutes=39), corrida=c["id"])
+        db.execucao("P_ORFA", "EXECUTANDO",
+                    inicio=AGORA_BANCO - timedelta(minutes=40), corrida=c["id"])
+        db.eventos.append({"pipeline": "P_ORFA", "pipeline_name": "P_ORFA",
+                           "data_referencia": ODATE, "tipo": mc.EVENTO_ORFA,
+                           "detectado_em": AGORA_BANCO, "detalhe": ""})
+        db.execucao("P_NAO_LIBEROU", "NAO_LIBEROU",
+                    criado_em=AGORA_BANCO - timedelta(minutes=40),
+                    corrida=c["id"])
+        corrida = _card(client.get("/malhas"))["corrida"]
+    assert corrida["membros_travados"] == 3
+    assert corrida["membros_nao_partiram"] == 1
+    assert corrida["saude"] == "COM_FALHA"
 
 
 # ═══════════════════ a lente: duas corridas no mesmo ODATE ══════════════════
@@ -624,6 +828,62 @@ def test_duas_corridas_do_mesmo_odate_nao_se_sobrepoem(client, auth):
                   for e in p1["execucoes"]) == [("A", "FALHA"),
                                                 ("B", "SUCESSO")]
     assert len(lista["corridas"]) == 2
+
+
+def test_o_MALHA_CONCLUIDA_da_corrida_anterior_nao_conclui_a_de_agora(
+        client, auth):
+    """⚠️ REGRESSÃO da revisão adversarial — o verde que sobrava para o CANVAS.
+
+    Cenário: a corrida #1 de 05/08 concluiu, e o nó Fim emitiu
+    `MALHA_CONCLUIDA` às 04:02. Evento emitido é histórico verdadeiro e não se
+    apaga. Às 05:00 o operador redispara (gesto diário), e a corrida #2 do
+    MESMO ODATE nasce e falha.
+
+    Este teste fixa as DUAS metades do fato:
+
+      1. o `malha_concluida` do payload — a fonte do banner verde — responde
+         pelo STATUS DA CORRIDA em foco, e sai `None`. Essa metade a F4 já
+         tinha;
+      2. `eventos_no` CONTINUA trazendo o evento das 04:02, porque a tabela é
+         chaveada por (pipeline, data, tipo) e o marcador do nó não carrega o
+         id do ciclo (a Decisão 49 só chega na F9). É por isso que o front
+         **não pode** derivar o verde do nó Fim desse evento — a guarda está
+         em `MalhaEditor.execDoComponente` e é travada em
+         `test_malhas_f4_front.py`. Se um dia o evento passar a ser filtrado
+         por corrida, esta linha cai e o par de testes é revisto junto."""
+    db = FakeDb(pipelines=_pipes())
+    with _patch(db), _patch_agora():
+        _monta_malha(client, "M1", ["CARGA_A", "CARGA_B"])
+        fim = _cria_no(client, "M1", "fim")
+        c1 = db.abrir_corrida("M1", odate=ODATE,
+                              aberta_em=datetime(2026, 8, 5, 1, 0),
+                              membros=["CARGA_A", "CARGA_B"],
+                              status="CONCLUIDA")
+        for p in ("CARGA_A", "CARGA_B"):
+            db.execucao(p, "SUCESSO", inicio=datetime(2026, 8, 5, 1, 5),
+                        fim=datetime(2026, 8, 5, 1, 20), corrida=c1["id"])
+        db.eventos.append({"pipeline_name": f"#no:{fim}",
+                           "data_referencia": ODATE, "tipo": "MALHA_CONCLUIDA",
+                           "detectado_em": datetime(2026, 8, 5, 4, 2),
+                           "detalhe": "malha concluída", "malha_execucao_id": None})
+        c2 = db.abrir_corrida("M1", odate=ODATE,
+                              aberta_em=datetime(2026, 8, 5, 5, 0),
+                              membros=["CARGA_A", "CARGA_B"])
+        db.execucao("CARGA_A", "FALHA", inicio=datetime(2026, 8, 5, 5, 5),
+                    fim=datetime(2026, 8, 5, 5, 6), corrida=c2["id"])
+        db.execucao("CARGA_B", "EXECUTANDO", inicio=datetime(2026, 8, 5, 5, 15),
+                    corrida=c2["id"])
+        painel = client.get(f"/malhas/M1/execucao?corrida={c2['id']}").json()
+
+    assert painel["corrida"]["status"] == "ABERTA"
+    assert painel["corrida"]["saude"] == "COM_FALHA"
+    # (1) o banner verde não sai — quem responde é o status da corrida em foco
+    assert painel["malha_concluida"] is None
+    # (2) ...e o evento das 04:02 continua no payload: é o insumo que o nó Fim
+    #     do canvas NÃO pode ler como "esta corrida concluiu"
+    assert [(e["tipo_no"], e["tipo"], e["criado_em"])
+            for e in painel["eventos_no"]] == [
+        ("fim", "MALHA_CONCLUIDA", "2026-08-05 04:02:00")]
 
 
 def test_lente_de_corrida_de_outra_malha_e_404(client, auth):
@@ -723,6 +983,78 @@ def test_sem_a_085_a_chave_corrida_nao_existe(client, auth):
     assert "corrida" not in painel
     assert painel["migration_085_pendente"] is True
     assert painel["execucoes"], "o painel continua de pé sem a 085"
+
+
+def test_sem_a_085_o_card_e_o_painel_degradam_JUNTOS(client, auth):
+    """Aceite da F4 — "o banner verde some junto com o card verde, e a palavra
+    'concluída' não aparece em nenhum dos dois".
+
+    O cenário é o pior possível: a malha rodou de verdade, o nó Fim emitiu
+    `MALHA_CONCLUIDA` (evento emitido é histórico verdadeiro, e não se apaga) e
+    o banco está SEM a 085. Sem disciplina, o painel pintaria o banner verde
+    sozinho enquanto o card ao lado, sem corrida, não pode afirmar nada.
+
+    A API responde a isso com **um sinal em cada payload** — a mesma flag, nos
+    dois — e é ela que o painel usa para calar o banner
+    (`MalhaEditor.tsx`: `!corrida && !sem085 && …`, provado em
+    `test_malhas_f4_front.py`). Aqui se prova a metade do servidor: a flag
+    viaja nos DOIS, nenhum dos dois ganha o bloco `corrida`, e nenhum dos dois
+    diz "CONCLUIDA" pela malha."""
+    db = FakeDb(pipelines=_pipes(), com_085=False)
+    with _patch(db), _patch_agora():
+        _monta_malha(client, "M1", ["CARGA_A", "CARGA_B"])
+        db.execucao("CARGA_A", "FALHA", inicio=datetime(2026, 8, 5, 3, 0),
+                    fim=datetime(2026, 8, 5, 3, 5))
+        db.execucao("CARGA_B", "SUCESSO", inicio=datetime(2026, 8, 5, 3, 30),
+                    fim=datetime(2026, 8, 5, 3, 40))
+        corpo = client.get("/malhas").json()
+        painel = client.get("/malhas/M1/execucao").json()
+    card = next(m for m in corpo["malhas"] if m["malha_name"] == "M1")
+
+    # o MESMO sinal nos dois payloads — é o que sincroniza as duas superfícies
+    assert corpo["migration_085_pendente"] is True
+    assert painel["migration_085_pendente"] is True
+    # ...e nenhuma das duas ganha o bloco do ciclo
+    assert "corrida" not in card and "corrida" not in painel
+    # o card cai no fallback DECLARADO, que fala de um MEMBRO e não da malha
+    assert _estado_na_tela(card) == ("SUCESSO", "(membro mais recente)",
+                                     "CARGA_B")
+    # e em lugar nenhum dos dois payloads existe um "CONCLUIDA" da MALHA: o
+    # único status que sobra é o de `etl_pipeline_execucao`, cujo domínio nem
+    # tem essa palavra
+    assert card["ultima_execucao"]["status"] in ("SUCESSO", "FALHA")
+    assert all(e["status"] != "CONCLUIDA" for e in painel["execucoes"])
+    # o painel continua de pé: sem a 085 ele perde o CICLO, não a tela
+    assert {e["pipeline_name"] for e in painel["execucoes"]} == {"CARGA_A",
+                                                                "CARGA_B"}
+
+
+def test_fora_do_odate_e_contado_e_nomeavel(client, auth):
+    """Decisão 66 — o incidente que originou a spec (`Carga_Vida`): membros da
+    MESMA corrida rodando com datas de referência diferentes.
+
+    O número existe no payload (`membros_fora_do_odate`) para virar banner
+    âmbar nominal, e o membro continua contando no denominador: ele não foi
+    dispensado, ele rodou o dia errado."""
+    db = FakeDb(pipelines=_pipes())
+    with _patch(db), _patch_agora():
+        _monta_malha(client, "M1", ["A", "B"])
+        c = db.abrir_corrida("M1", odate=ODATE,
+                             aberta_em=AGORA_BANCO - timedelta(hours=1),
+                             membros=["A", "B"])
+        db.execucao("A", "SUCESSO", inicio=AGORA_BANCO - timedelta(minutes=50),
+                    fim=AGORA_BANCO - timedelta(minutes=40), corrida=c["id"])
+        # B rodou VINCULADO a esta corrida, mas carimbando o ODATE de ontem
+        db.execucao("B", "SUCESSO", odate=ODATE_ONTEM,
+                    inicio=AGORA_BANCO - timedelta(minutes=30),
+                    fim=AGORA_BANCO - timedelta(minutes=20), corrida=c["id"])
+        corrida = _card(client.get("/malhas"))["corrida"]
+    assert corrida["membros_fora_do_odate"] == 1
+    assert corrida["membros_total"] == 2
+    # a linha de outro ODATE não conta como concluída nesta corrida — o membro
+    # fica pendente, que é o fato: para ESTE dia, ele não rodou
+    assert corrida["membros_ok"] == 1
+    assert [x["pipeline"] for x in corrida["pendentes"]] == ["B"]
 
 
 def test_sem_a_085_a_lente_responde_404_e_nao_500(client, auth):
@@ -860,7 +1192,8 @@ def test_contrato_do_bloco_corrida(client, auth):
         "reaberta_em", "reaberta_por", "motivo",
         # derivados da leitura (F4)
         "saude", "membros_total", "membros_ok", "membros_vivos",
-        "membros_dispensados", "membros_travados", "membros_fora_do_odate",
+        "membros_dispensados", "membros_travados", "membros_nao_partiram",
+        "membros_fora_do_odate",
         "membros_inativos", "pendentes", "ultimo_movimento_em",
         "sem_sinal_min", "decorrido_min", "apurado_em",
     }

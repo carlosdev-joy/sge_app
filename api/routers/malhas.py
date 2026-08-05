@@ -1864,6 +1864,24 @@ SAUDE_SEM_PROGRESSO = "SEM_PROGRESSO"
 # em incidente vermelho — quem decide isso é o operador olhando a aba.
 _CLASSES_FALHA = ("falhou", "orfa")
 
+# As classes que viram o CHIP VERMELHO "▲ N travados" ao lado da barra
+# (Decisão 54) — e `nao_partiu` NÃO é uma delas.
+#
+# ⚠️ Isto é correção de um alarme falso NOTURNO, medido: a corrida abre às
+# 01:10 e, nos primeiros segundos, NENHUM membro tem linha em
+# `etl_pipeline_execucao`. Todos caem em `nao_partiu` (a resposta conservadora
+# de `_corrida_do_card`), e com `travados = len(pendentes)` o card de TODA
+# malha nasceria com `0 de 7 · ▲ 7 travados` em vermelho — todas as noites, em
+# todas as malhas, sobre um ciclo perfeitamente saudável. "Alarme falso semanal
+# treina o operador a ignorar o alarme" (Decisões 26/27); alarme falso DIÁRIO
+# faz pior. A tabela da Decisão 54 é literal: `falhou`/`orfa`/`nao_liberou`
+# ganham chip, `nao_partiu` fica só no trilho vazio — e é ele que o painel
+# mostra à parte, como "1 não chegou a iniciar" (ASCII do §9.13).
+#
+# Quem ainda não partiu continua no denominador e continua em `pendentes[]`
+# com o nome e a classe: some o VERMELHO, não a informação.
+_CLASSES_TRAVADAS = ("falhou", "orfa", "nao_liberou")
+
 
 def _quiescencia_da_linha(bruto) -> int:
     """Config de quiescência que veio junto da consulta (A) → int no domínio.
@@ -1979,9 +1997,12 @@ def _corrida_do_card(c: dict, agg) -> dict:
       `membros_dispensados` é classe SEPARADA, nunca subtração do total;
     • **`membros_travados` fica FORA do que a barra preenche** (Decisão 54): a
       barra é `ok + vivos + dispensados`, e o travado é chip ao lado. Vale a
-      identidade `total = ok + vivos + dispensados + travados`, e é ela que
+      identidade
+      `total = ok + vivos + dispensados + travados + nao_partiram`, e é ela que
       impede a barra de pintar 5/6 de vermelho e ser lida como "quase pronto"
-      a 1,5 m de distância;
+      a 1,5 m de distância. `nao_partiram` é a quinta parcela e vem separada
+      DE PROPÓSITO (ver `_CLASSES_TRAVADAS`): pintá-la de vermelho faria toda
+      corrida nascer com um alarme falso nos primeiros segundos;
     • **`saude` é derivada na leitura**, nunca guardada, e só existe com a
       corrida `ABERTA` — em corrida terminal o `status` já diz tudo, e uma
       saúde `OK` embaixo de um `FALHA` seria a contradição na mesma linha;
@@ -2000,7 +2021,8 @@ def _corrida_do_card(c: dict, agg) -> dict:
     if agg is None:
         out.update({"saude": None, "membros_total": None, "membros_ok": None,
                     "membros_vivos": None, "membros_dispensados": None,
-                    "membros_travados": None, "membros_fora_do_odate": None,
+                    "membros_travados": None, "membros_nao_partiram": None,
+                    "membros_fora_do_odate": None,
                     "membros_inativos": None, "pendentes": [],
                     "ultimo_movimento_em": None, "sem_sinal_min": None})
         return out
@@ -2047,9 +2069,16 @@ def _corrida_do_card(c: dict, agg) -> dict:
     pendentes.sort(key=lambda x: (mc._ORDEM_CLASSE.index(x["classe"]),
                                   x["pipeline"]))
     total = ok + vivos + dispensados + len(pendentes)
+    travados = sum(1 for p in pendentes if p["classe"] in _CLASSES_TRAVADAS)
     out.update({
         "membros_total": total, "membros_ok": ok, "membros_vivos": vivos,
-        "membros_dispensados": dispensados, "membros_travados": len(pendentes),
+        "membros_dispensados": dispensados, "membros_travados": travados,
+        # Os que ainda não têm linha nenhuma. Campo PRÓPRIO, e não somado ao
+        # chip vermelho: "ainda não começou" às 01:10 é o estado normal de toda
+        # corrida recém-aberta, e "não chegou a iniciar" às 04:00 é problema —
+        # o que separa os dois é o relógio, não a classe. Enquanto o relógio
+        # de partida não existe (F7), a tela mostra o número sem pintá-lo.
+        "membros_nao_partiram": len(pendentes) - travados,
         "membros_fora_do_odate": fora_odate, "membros_inativos": inativos,
         "pendentes": pendentes,
         "ultimo_movimento_em": _fmt_dt(agg["movimento_em"]),

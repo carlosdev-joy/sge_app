@@ -167,8 +167,15 @@ export interface CorridaApi extends CorridaCabecalho {
   membros_vivos: number | null
   /** `PULADO` / regra de dia. Conta no denominador, nunca como concluído. */
   membros_dispensados: number | null
-  /** Fica FORA do que a barra preenche (D54) — é chip, não comprimento. */
+  /** Fica FORA do que a barra preenche (D54) — é chip, não comprimento.
+   *  NÃO inclui quem ainda não partiu: toda corrida nasce com o snapshot
+   *  inteiro sem linha, e chipar isso de vermelho seria um alarme falso por
+   *  noite, em toda malha. */
   membros_travados: number | null
+  /** Membros do snapshot ainda SEM linha nenhuma. Número, nunca alarme —
+   *  "ainda não começou" às 01:10 e "não chegou a iniciar" às 04:00 são o
+   *  mesmo dado com relógios diferentes, e o relógio de partida é da F7. */
+  membros_nao_partiram?: number | null
   membros_fora_do_odate: number | null
   /** Inativos na abertura: ficaram FORA do denominador, mas não somem. */
   membros_inativos: number | null

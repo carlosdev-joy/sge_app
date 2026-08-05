@@ -401,9 +401,14 @@ function execDoComponente(
   execPorPipeline: Map<string, ExecucaoPipeline>,
   eventoNoPorId: Map<string, string>,
   agendamento: Record<string, unknown> | null,
-  // F4: existe uma corrida ABERTA nesta lente. Só o nó Fim usa — é o único que
-  // fala de CICLO, e até esta fase ele só tinha "verde" ou "apagado".
-  cicloAberto: boolean,
+  // F4: o CICLO desta lente, como o nó Fim precisa dele. Só ele usa — é o
+  // único nó que fala de ciclo, e até esta fase ele só tinha "verde" ou
+  // "apagado".
+  //   `aberto`     — há corrida ABERTA: o terceiro estado, anel azul discreto;
+  //   `concluido`  — `true`/`false` quando existe corrida no payload; `null`
+  //                  quando NÃO existe (API anterior, banco sem a 085, malha
+  //                  sem ciclo), e aí o nó volta a ser o de hoje: o evento.
+  ciclo: { aberto: boolean; concluido: boolean | null },
 ): ExecComponente | null {
   switch (tipo) {
     case 'inicio': {
@@ -457,13 +462,29 @@ function execDoComponente(
         emitidaEm: eventoNoPorId.get(`${n.id}:MALHA_NOTIFICACAO`) ?? null,
         semEntradas: n.upstream.length === 0,
       }
-    case 'fim':
+    case 'fim': {
+      // ⚠️ O EVENTO NÃO É MAIS A AUTORIDADE (§9.6: "o evento vira rastro, não
+      // fonte de verdade"). `eventos_no` é recortado por DATA, nunca por
+      // corrida — `etl_dependencia_evento` é chaveada por (pipeline, data,
+      // tipo) e o marcador do nó não carrega o id do ciclo. Então o
+      // `MALHA_CONCLUIDA` que a corrida #1 de 04/08 emitiu às 04:02 continua
+      // na resposta quando a lente está na corrida #2 do MESMO dia — o
+      // redisparo às 05h depois de um incidente, que é gesto diário.
+      //
+      // Sem esta guarda o nó Fim ficaria VERDE, com o tooltip "malha concluída
+      // às 04:02", a 3 cm de uma faixa dizendo "em andamento · com falha" — e
+      // a aresta que chega nele viraria "trecho percorrido", também verde
+      // (`estadoDoComponente`). É o defeito desta fase inteira voltando pela
+      // porta do canvas: a API já parou de publicar `malha_concluida` nesse
+      // caso, e deixar o nó ler o evento cru desfazia metade da correção.
+      const evento = eventoNoPorId.get(`${n.id}:MALHA_CONCLUIDA`) ?? null
       return {
         kind: 'fim',
-        concluidaEm: eventoNoPorId.get(`${n.id}:MALHA_CONCLUIDA`) ?? null,
+        concluidaEm: ciclo.concluido === false ? null : evento,
         semEntradas: n.upstream.length === 0,
-        cicloAberto,
+        cicloAberto: ciclo.aberto,
       }
+    }
   }
 }
 
@@ -726,6 +747,13 @@ function MalhaEditorInner({
   // lugar — o painel volta ao texto de hoje, sem exceção e sem inventar nada.
   const corrida = execData?.corrida ?? null
   const sem085 = execData?.migration_085_pendente === true
+  // O que o nó Fim precisa saber do ciclo, em DOIS primitivos — e não no
+  // objeto `corrida`, que traz `apurado_em` novo a cada refetch e faria o
+  // efeito do canvas remontar todos os nós de 30 em 30 segundos sem nada ter
+  // mudado no desenho. `concluido = null` significa "não há corrida no
+  // payload": o nó volta a ler o evento, que é o comportamento de hoje.
+  const cicloAberto = corrida?.status === 'ABERTA'
+  const cicloConcluido = corrida === null ? null : corrida.status === 'CONCLUIDA'
   // O relógio LOCAL (Decisão 60) — o decorrido da faixa sai dele somado ao
   // `decorrido_min` que o BANCO já subtraiu; `apurado_em` fica no tooltip.
   const agoraLocal = useDecorrido(emExecucao && corrida?.status === 'ABERTA')
@@ -996,7 +1024,7 @@ function MalhaEditorInner({
               grafo.saidasPipelineNo.get(n.id) ?? [],
               execPorPipeline, eventoNoPorId,
               data?.agendamento ?? null,
-              corrida?.status === 'ABERTA')
+              { aberto: cicloAberto, concluido: cicloConcluido })
           : null
         if (camadaExec) estadoPonta.set(noRfId(n.id), estadoDoComponente(execNo))
         return {
@@ -1043,11 +1071,12 @@ function MalhaEditorInner({
       : grafo.novasEdges)
   }, [grafo, setNodes, setEdges, emExecucao, execPorPipeline, eventoNoPorId,
       execData, orientacao, data, onAbrirEtapas, dataExibida, descerParaEtapas,
-      // F4: só o STATUS da corrida entra na chave (não o objeto inteiro) — é a
-      // única parte dela que muda o desenho, e o payload traz `apurado_em`
-      // novo a cada refetch: a corrida inteira remontaria todos os nós de
-      // 20 em 20 segundos, sem nada ter mudado no grafo.
-      corrida?.status, colorMode])
+      // F4: só os dois PRIMITIVOS do ciclo entram na chave (não o objeto
+      // `corrida` inteiro) — são a única parte dela que muda o desenho, e o
+      // payload traz `apurado_em` novo a cada refetch: a corrida inteira
+      // remontaria todos os nós de 30 em 30 segundos, sem nada ter mudado no
+      // grafo.
+      cicloAberto, cicloConcluido, colorMode])
 
   // dirty = alguma posição difere do baseline do servidor (arredondado — é o
   // que o PUT envia). Mover um nó e devolvê-lo ao lugar volta a desabilitar o

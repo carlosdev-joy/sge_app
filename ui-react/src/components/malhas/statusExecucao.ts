@@ -543,14 +543,30 @@ export function resumoCorrida(
       // é o caso do membro inativado na sexta que faria o sábado dizer "2 de 2,
       // concluída". Sem a palavra "inativos" no rótulo curto porque a causa
       // pode ser outra (entrou na malha DEPOIS da abertura); o tooltip abre.
-      fora = Math.max(0, (qtdCadastro ?? 0) - total)
+      //
+      // Duas fontes, e o MAIOR vence, porque cada uma enxerga metade do fato e
+      // uma delas nem sempre está à mão: `qtd_cadastro` (o cadastro de hoje)
+      // pega também quem ENTROU na malha depois da abertura, mas só o CARD o
+      // tem; `membros_inativos` (a linha `ativo_na_abertura = 0` do snapshot)
+      // viaja no payload da corrida e é o que a FAIXA do painel enxerga. Sem
+      // o `??`, a faixa calava justamente sobre "2 de 2, concluída" — a mesma
+      // omissão que a Decisão 53 existe para matar, um andar acima.
+      fora = Math.max(0, (qtdCadastro ?? 0) - total, c.membros_inativos ?? 0)
       if (fora > 0) partes.push(`${fora} fora desta corrida`)
       membros = partes.join(' · ')
     }
   }
 
+  // O servidor entrega `pendentes[]` ordenado por GRAVIDADE, então `[0]` é
+  // sempre o nome que a tela deve dizer. Uma exceção, e ela é de relógio: com
+  // a corrida ABERTA, `nao_partiu` significa só "ainda não começou" — é o
+  // estado de TODO membro nos primeiros segundos de TODA corrida, e escrever
+  // "↳ não chegou a iniciar: A" às 01:10 seria acusar por ordem alfabética
+  // um pipeline que está apenas na fila. Fechada a corrida, o mesmo dado vira
+  // veredito e volta a aparecer.
   const pendente = c.pendentes?.[0] ?? null
-  const culpado = pendente
+  const soFaltaComecar = aberta && pendente?.classe === 'nao_partiu'
+  const culpado = (pendente && !soFaltaComecar)
     ? `${ROTULO_PENDENCIA[pendente.classe] ?? pendente.classe}: ${pendente.pipeline}`
     : null
 
