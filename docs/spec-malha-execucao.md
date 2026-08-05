@@ -886,6 +886,7 @@ Precedência nova de `_data_referencia(context)` no fonte gerado
 
 | # | Fonte | Quem cai aqui |
 |---|---|---|
+| 0 | **o ODATE já gravado na linha deste `run_id`** (`malha_corrida.odate`, `SQL_ODATE_DO_RUN`) | a Decisão 36 tornada durável — ver a nota abaixo da própria Decisão 36 |
 | 1 | `conf['malha_execucao_id']` → `SELECT data_referencia FROM etl_malha_execucao WHERE id = %s AND fechada_em IS NULL` **e** a corrida é de uma malha deste pipeline | a fonte única: cascata por push dentro da corrida |
 | 2 | `conf['data_referencia']` | herança de hoje: push fora de malha, rerun, disparo manual com data |
 | 3 | **corrida ABERTA de alguma malha deste pipeline** (`malha_corrida.corrida_aberta_do_pipeline`) | ⚠️ **o membro com cron próprio, DAG não republicada — é o `Carga_Vida` invertido**: em vez de calcular a própria data, ele **adere** ao ODATE do ciclo em voo |
@@ -927,6 +928,25 @@ ODATEs: a doença desta spec, produzida por ela)*. A memoização também elimin
 3 idas extras ao banco por run — o degrau 3 custa 1–2 consultas e
 `_disparar_dependentes` as multiplicaria por dependente. **É entregável da fase,
 não detalhe de implementação.**
+
+> **Como ficou, na execução da F5 (2026-08-05):** a memoização é de **duas
+> camadas**, e a segunda é o **degrau 0** da tabela acima. Um dicionário por
+> `run_id` no fonte gerado resolve as chamadas do MESMO processo; mas o cenário
+> literal da Decisão 36 é entre **tasks diferentes** — `check_agenda` às 01:10 e
+> `_registrar_sucesso` às 04:52 rodam em processos distintos, e cache em memória
+> não os atravessa. Por isso o degrau 0 lê o ODATE **já gravado na linha deste
+> `run_id`**: o run tem um ODATE, ele nasce na primeira chamada e nenhuma
+> chamada posterior o redecide. De quebra, é ele que faz "rerun que reusa o
+> `run_id` preserva o `malha_execucao_id`" valer sem nenhuma regra especial de
+> rerun.
+>
+> ⚠️ O degrau 0 decide a **data**, e só ela: a **proveniência** continua sendo
+> procurada enquanto a linha não tem dono, limitada a corrida do MESMO ODATE.
+> Sem essa ressalva, o dependente — cuja linha nasce no claim do pai
+> (`reservar_corrida`), sem `malha_execucao_id` — ficaria para sempre sem
+> vínculo mesmo tendo recebido a corrida no conf. Foi **medido no dev**:
+> `DEV_F10_D` concluiu em `2026-08-02` com `malha_execucao_id` NULL, isto é,
+> toda a cascata fora do ciclo a que pertence e o "4 de 7" contando errado.
 
 **Decisão 37 — `conf['malha_execucao_id']` é OTIMIZAÇÃO de herança, não
 identidade, e é VALIDADA** *(evita: amarrar a identidade a uma string frágil —
@@ -2894,6 +2914,37 @@ errado.
     dizer *"este dia teve N corridas — escolha uma"* e oferecer o
     `SeletorCorrida`, que é entregável da F10. Enquanto isso não existe, o
     operador vê o canvas do dia sem faixa, que é honesto mas mudo.
+14. **A guardiã é uma QUARTA porta de disparo e não propaga a corrida.**
+    `dags/etl_dependencia_guardia.py` chama `montar_conf(data_ref, dia_op,
+    "guardia")` — sem `malha_execucao_id`. A **data** não sofre (o degrau 0 lê a
+    linha que a própria guardiã acabou de criar) e a proveniência costuma ser
+    recuperada pelo degrau 3; mas ela se perde exatamente quando o pipeline é
+    membro de **duas corridas do mesmo ODATE**, que é o caso que a F5 existe
+    para tratar. A recusa por ambiguidade também não roda nessa porta. Se "as
+    três portas" da Decisão 35 incluem a guardiã, falta esta — resolver na F7,
+    que já mexe na guardiã.
+15. **Um blip de banco na primeira pergunta do run ainda pode gravar a linha
+    com a data do cálculo.** A F5 fechou metade: resposta dada com o banco mudo
+    não vira memória, então a próxima task refaz a pergunta (teste
+    `test_banco_mudo_na_1a_chamada_nao_vira_a_data_oficial_do_run`). O que
+    **não** existe é reconciliação: se a linha já nasceu com a data errada, o
+    degrau 0 a lê e a fixa. Fechar isso exige mover linha entre ODATEs, que é
+    mais arriscado que o defeito — decidir com o dono depois do smoke.
+16. **`Clear` de um run recusado por ODATE ambíguo reencontra a linha `PULADO`**
+    pelo degrau 0 e roda com a data do cálculo. A mensagem manda "dispare de
+    novo" (run novo), que escapa — mas `Clear` é o gesto de plantão mais comum.
+17. **Uma conexão a mais por task enquanto o interruptor está em `0`.** Medido:
+    `_odate_do_run` num processo novo abre 1 conexão + 1 `SELECT config_value`
+    mesmo desligado; do 2º run em diante a consulta some, a conexão não. Como o
+    interruptor só liga depois da F7, esse é o estado permanente até lá.
+18. **A sonda do §12.2 responde `DESCONHECIDO` para pipeline nunca publicado**
+    (sem arquivo em `generated/`), mandando o operador conferir um arquivo que
+    nunca existiu. Seguro pela regra ("desconhecido nunca é ausência"), mas o
+    texto podia distinguir os dois.
+19. **N+1 na sonda do disparo:** `carimbo_corrida_dos_pipelines` consulta o
+    cadastro **por membro** antes de ler cada arquivo — numa malha de 40 são 40
+    consultas + 40 `stat` a cada disparo, inclusive `dry_run`. O cache é por
+    arquivo; o do cadastro não existe.
 13. **`_fechar_dia_anterior` ainda fecha como `NAO_LIBEROU` linhas de corrida
     `ABERTA`** que atravessem o dia operacional (teto > 24 h, ou cadeia longa com
     rerun) — virando pendentes e levando a corrida a `FALHA` por ação da própria

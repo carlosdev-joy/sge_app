@@ -226,6 +226,38 @@ def _acumula_motivo(atual, novo):
     return (prefixo + novo)[:500]
 
 
+# ── o CONTRATO textual das três consultas do §7 (F5) ────────────────────────
+#
+# REGRA DA HONESTIDADE DO DUBLÊ, e por que ela precisou virar isto aqui: as
+# guardas dos degraus 0, 1 e 3 moram TODAS no `WHERE` (`fechada_em IS NULL`, o
+# `mp.pipeline_name` do JOIN, o filtro por `execution_id`, o `ORDER BY id`), e
+# este dublê não tem avaliador de `WHERE` — ele despachava por prefixo e
+# aplicava as guardas por conta própria. Provado por mutação em 2026-08-05:
+# apagar `me.fechada_em IS NULL` do degrau 1, ou o `ORDER BY id` do degrau 0,
+# deixava a suíte INTEIRA verde; só a paridade acusava — e paridade prova que
+# as duas árvores dizem a MESMA coisa, não que a coisa está certa (o repo manda
+# mudar as duas no mesmo commit, então uma regressão coordenada passaria).
+#
+# A saída honesta é a que o próprio contrato do dublê já declara — "SQL que ele
+# não reconhece levanta AssertionError": as três consultas são servidas SÓ na
+# forma canônica. Enfraquecer um predicado no módulo deixa de ser uma resposta
+# filtrada pela bondade do dublê e passa a ser divergência de contrato.
+_WHERE_CANONICO = {
+    "degrau_0": ("WHERE pipeline_name = ? AND execution_id = ? ORDER BY id"),
+    "degrau_1": ("WHERE me.id = ? AND mp.pipeline_name = ? "
+                 "AND me.fechada_em IS NULL"),
+    "degrau_3": ("WHERE mp.pipeline_name = ? AND me.fechada_em IS NULL "
+                 "ORDER BY me.malha_name"),
+}
+
+
+def _contrato(s: str, chave: str):
+    esperado = _WHERE_CANONICO[chave]
+    assert s.endswith(esperado), (
+        f"{chave}: o WHERE mudou, e o dublê nao pode adivinhar a intencao.\n"
+        f"  esperado terminar em: {esperado}\n  veio: {s}")
+
+
 class Cur:
     def __init__(self, db: Banco):
         self.db = db
@@ -298,11 +330,38 @@ class Cur:
             return
 
         if s.startswith("SELECT me.id, me.malha_name"):
+            # Duas consultas começam igual e são OPOSTAS em intenção: as
+            # corridas abertas DO PIPELINE (degrau 3) e a corrida DO CONF
+            # (degrau 1, que também exige `me.id`). Despachar pelo prefixo
+            # devolveria a lista inteira para quem pediu uma corrida só.
+            if "WHERE me.id = ?" in s:
+                _contrato(s, "degrau_1")
+                corrida_id, pipe = int(p[0]), p[1]
+                c = db.por_id(corrida_id)
+                malhas = [m for m, ps in db.malha_pipeline.items() if pipe in ps]
+                achou = (c is not None and c["fechada_em"] is None
+                         and c["malha_name"] in malhas)
+                self._rows = [self._proj(c)] if achou else []
+                return
+            _contrato(s, "degrau_3")
             malhas = [m for m, ps in db.malha_pipeline.items() if p[0] in ps]
             achadas = [c for c in db.corridas
                        if c["malha_name"] in malhas and c["fechada_em"] is None]
             self._rows = [self._proj(c) for c in
                           sorted(achadas, key=lambda c: c["malha_name"])]
+            return
+
+        # Degrau 0 do §7: o ODATE que a linha deste run já carimbou. `ORDER BY
+        # id` é do SQL e é reproduzido aqui — se um dia houver duas linhas do
+        # mesmo run (a doença), a resposta tem de ser SEMPRE a mesma.
+        if s.startswith("SELECT TOP 1 data_referencia, malha_execucao_id"):
+            _contrato(s, "degrau_0")
+            achadas = [l for l in db.execucoes
+                       if l["pipeline_name"] == p[0]
+                       and str(l["execution_id"]) == str(p[1])]
+            achadas.sort(key=lambda l: l.get("id", 0))
+            self._rows = [(l["data_referencia"], l.get("malha_execucao_id"))
+                          for l in achadas[:1]]
             return
 
         if s.startswith("SELECT pipeline_name, conta_para_fim"):
@@ -1422,16 +1481,18 @@ def test_o_modulo_NAO_inventa_verde(mc):
     assert "INSERT INTO dbo.etl_dependencia_evento" not in fonte
 
 
-def test_o_unico_consumidor_em_dags_e_a_guardia():
-    """A F2 trouxe o PRIMEIRO consumidor, e é um só: a guardiã.
+def test_os_consumidores_em_dags_sao_a_guardia_e_o_fonte_gerado():
+    """A F2 trouxe o primeiro consumidor (a guardiã); a F5 trouxe o segundo, e
+    ele é o FONTE GERADO — a fase que custa `force_all` num deploy inteiro.
 
-    Era `test_a_F1_nao_tem_consumidor` — a fase que exigia zero consumidores.
+    A diferença é sutil e é o ponto: `etl_dag_factory.py` **emite** o import
+    dentro do texto da DAG; o processo da factory continua sem importar a
+    corrida. Por isso ele sai da lista do AST (a DAG gerada é que importa) e
+    ganha as duas asserções de EMISSÃO abaixo — inclusive a da marca sintática
+    que a sonda do §12.2 procura no fonte publicado.
+
     A lista de fora continua valendo, e por motivos diferentes em cada linha:
 
-      • `etl_dag_factory.py` é o FONTE GERADO, e mexer nele custa `force_all`
-        num deploy inteiro. Ele só entra na F5, junto com o carimbo do ODATE —
-        se esta asserção cair antes disso, alguém está pagando o `force_all`
-        sem saber;
       • `utils/dependencias.py` é o módulo que TODA porta do motor carrega:
         acoplá-lo à corrida faria um erro de import na corrida derrubar o push
         de dependências do banco inteiro;
@@ -1442,8 +1503,11 @@ def test_o_unico_consumidor_em_dags_e_a_guardia():
     guardia = (_ROOT / "dags/etl_dependencia_guardia.py").read_text(encoding="utf-8")
     assert "from utils import malha_corrida as mc" in guardia
     assert "_abrir_corridas_malha" in guardia and "_fechar_corridas_malha" in guardia
+    factory = (_ROOT / "dags/etl_dag_factory.py").read_text(encoding="utf-8")
+    assert '"    from utils import malha_corrida as _corrida",' in factory
+    assert "_corrida.odate(" in factory     # a marca sintática do §12.2
     fora = [
-        "dags/etl_dag_factory.py", "dags/utils/dependencias.py",
+        "dags/utils/dependencias.py",
         "dags/utils/malha_ciclo.py", "dags/utils/malha_nos.py",
     ]   # o lado da API é varrido inteiro em test_malha_corrida_paridade.py
     # Por AST e não por substring: `dependencias.py` CITA o módulo num
@@ -1460,3 +1524,287 @@ def test_o_unico_consumidor_em_dags_e_a_guardia():
             elif isinstance(no, ast.ImportFrom):
                 alvo = (no.module or "") + "." + ".".join(a.name for a in no.names)
                 assert "malha_corrida" not in alvo, rel
+
+
+# ═════════════ o ODATE do §7 — a precedência dos degraus (F5) ═══════════════
+#
+# O que estes testes guardam não é "a data saiu certa": é QUAL degrau respondeu.
+# A data pode sair certa pelo motivo errado (foi o cálculo, e não a corrida) e o
+# incidente `Carga_Vida` voltaria no primeiro dia em que os dois discordassem.
+
+def _linha(pipe="PIPE_A", dref=ODATE, exec_id="run_1", corrida=None, ident=1):
+    return {"pipeline_name": pipe, "data_referencia": dref,
+            "execution_id": exec_id, "malha_execucao_id": corrida, "id": ident}
+
+
+def test_degrau_0_o_carimbo_do_run_manda_em_todos_os_outros(mc):
+    """O run tem UM ODATE, e quem o decidiu foi a primeira chamada.
+
+    É a Decisão 36 atravessando TASKS: o `check_agenda` gravou a linha às 01:10
+    e o `_registrar_sucesso` das 04:52 é outro processo. Aqui a corrida está
+    aberta em `ODATE` e a linha carimbou `ODATE_ONTEM` — se o degrau 3 vencesse,
+    o UPDATE de fechamento erraria a chave e nasceria uma SEGUNDA linha do mesmo
+    run em outro dia."""
+    db = banco(execucoes=[_linha(dref=ODATE_ONTEM, corrida=7)])
+    abre(mc, db, odate=ODATE)
+    r = mc.odate(db, "PIPE_A", run_id="run_1")
+    assert r["data"] == ODATE_ONTEM
+    assert r["corrida_id"] == 7
+    assert r["degrau"] == mc.DEGRAU_CARIMBO
+
+
+def test_degrau_0_ignora_run_de_outro_pipeline(mc):
+    db = banco(execucoes=[_linha(pipe="PIPE_B", dref=ODATE_ONTEM)])
+    c = abre(mc, db, odate=ODATE)
+    r = mc.odate(db, "PIPE_A", run_id="run_1")
+    assert r["degrau"] == mc.DEGRAU_CORRIDA and r["data"] == ODATE
+    assert r["corrida_id"] == c["id"]
+
+
+def test_degrau_1_conf_com_corrida_aberta_da_malha_do_pipeline(mc):
+    db = banco()
+    c = abre(mc, db, odate=ODATE)
+    r = mc.odate(db, "PIPE_A", conf_id=c["id"])
+    assert r["data"] == ODATE and r["corrida_id"] == c["id"]
+    assert r["degrau"] == mc.DEGRAU_CONF_CORRIDA
+
+
+def test_degrau_1_conf_de_corrida_FECHADA_e_tratado_como_ausente(mc, capsys):
+    """Decisão 37 — o conf é otimização, nunca identidade. Um rerun tardio
+    carrega o conf do ciclo de ontem; obedecê-lo carimbaria a linha de hoje com
+    o ODATE de um ciclo encerrado."""
+    db = banco()
+    c = abre(mc, db, odate=ODATE_ONTEM)
+    mc.fechar_corrida(db, c["id"], "CONCLUIDA", "guardia")
+    r = mc.odate(db, "PIPE_A", conf_id=c["id"])
+    assert r["degrau"] is None and r["data"] is None
+    assert "tratado como AUSENTE" in capsys.readouterr().out
+
+
+def test_degrau_1_conf_de_malha_que_nao_contem_o_pipeline_e_ausente(mc):
+    """`POST /airflow/dags/{id}/dagRuns` repassa o conf CRU: sem o JOIN por
+    `etl_malha_pipeline`, qualquer id arbitrário ditaria o ODATE por HTTP."""
+    db = banco()
+    c = abre(mc, db, malha="M2", odate=ODATE_ONTEM)     # M2 não tem PIPE_A
+    r = mc.odate(db, "PIPE_A", conf_id=c["id"])
+    assert r["degrau"] is None and r["corrida_id"] is None
+
+
+def test_degrau_1_conf_invalido_nao_levanta(mc):
+    db = banco()
+    abre(mc, db)
+    assert mc.odate(db, "PIPE_A", conf_id="nao-e-numero")["degrau"] == mc.DEGRAU_CORRIDA
+
+
+def test_degrau_2_a_heranca_vence_a_corrida_aberta(mc, capsys):
+    """Quem recebeu data explícita já teve o ODATE decidido por quem disparou
+    (rerun, disparo manual com data, push de fora da malha). Re-decidir aqui
+    reabriria a porta que a herança fechou — e a divergência vira LOG, não
+    recusa."""
+    db = banco()
+    abre(mc, db, odate=ODATE)
+    r = mc.odate(db, "PIPE_A", herdada=ODATE_ONTEM)
+    assert r["data"] == ODATE_ONTEM and r["degrau"] == mc.DEGRAU_CONF_DATA
+    assert r["corrida_id"] is None            # linha sem proveniência, de propósito
+    assert "difere do ODATE" in capsys.readouterr().out
+
+
+def test_degrau_2_com_a_mesma_data_carimba_a_proveniencia(mc):
+    db = banco()
+    c = abre(mc, db, odate=ODATE)
+    r = mc.odate(db, "PIPE_A", herdada=ODATE)
+    assert r["degrau"] == mc.DEGRAU_CONF_DATA and r["corrida_id"] == c["id"]
+
+
+def test_degrau_3_o_Carga_Vida_invertido(mc):
+    """O membro com cron próprio ADERE ao ciclo em voo em vez de calcular a
+    própria data (Decisão 33) — e não precisou ser republicado para isso, porque
+    quem consulta é a DAG que JÁ foi."""
+    db = banco()
+    c = abre(mc, db, odate=ODATE_ONTEM)
+    r = mc.odate(db, "PIPE_A")
+    assert r["data"] == ODATE_ONTEM and r["corrida_id"] == c["id"]
+    assert r["degrau"] == mc.DEGRAU_CORRIDA
+
+
+def test_degrau_3_duas_corridas_com_ODATES_DIFERENTES_e_RECUSA(mc):
+    """Decisão 34: nunca escolha. PIPE_B é membro de M1 e M2 — o caso do membro
+    compartilhado, que é quase sempre um DEPENDENTE."""
+    db = banco()
+    abre(mc, db, malha="M1", odate=ODATE)
+    abre(mc, db, malha="M2", odate=ODATE_ONTEM)
+    r = mc.odate(db, "PIPE_B")
+    assert r["ambiguo"] is True
+    assert r["data"] is None and r["corrida_id"] is None
+    assert mc.MOTIVO_ODATE_AMBIGUO in r["detalhe"]
+    # o detalhe NOMEIA as duas corridas: é o que o operador precisa para saber
+    # qual encerrar, e é o corpo do card que chega às 3h
+    assert str(ODATE) in r["detalhe"] and str(ODATE_ONTEM) in r["detalhe"]
+
+
+def test_degrau_3_duas_corridas_no_MESMO_odate_nao_sao_ambiguidade(mc, capsys):
+    """A resposta é a mesma data — não há o que escolher. O que fica sem dono é
+    a PROVENIÊNCIA, e inventá-la seria escolher onde não há motivo (Decisão 2:
+    a prova de que o membro concluiu é da LINHA no intervalo)."""
+    db = banco()
+    abre(mc, db, malha="M1", odate=ODATE)
+    abre(mc, db, malha="M2", odate=ODATE)
+    r = mc.odate(db, "PIPE_B")
+    assert r["ambiguo"] is False and r["data"] == ODATE
+    assert r["corrida_id"] is None
+    assert "proveniencia sem dono" in capsys.readouterr().out
+
+
+def test_sem_corrida_aberta_o_modulo_nao_responde_e_o_chamador_calcula(mc):
+    db = banco()
+    r = mc.odate(db, "PIPE_A")
+    assert r == {"data": None, "corrida_id": None, "ambiguo": False,
+                 "degrau": None, "detalhe": None}
+
+
+def test_interruptor_desligado_nao_toca_o_banco(mc):
+    """"Sem a 085" e "desligado" são o MESMO caminho (§11.2) — e ele é mudo:
+    nenhuma consulta, nenhum degrau, nada para a DAG velha notar."""
+    db = banco(config={"malha_corrida_ativa": "0"})
+    abre(mc, db, odate=ODATE)
+    db.sqls.clear()
+    r = mc.odate(db, "PIPE_A", run_id="run_1", conf_id=1, herdada=ODATE_ONTEM)
+    assert r["data"] is None and r["degrau"] is None
+    assert [s for s, _ in db.sqls if "etl_app_config" not in s] == []
+
+
+def test_sem_a_085_o_odate_e_mudo(mc):
+    db = banco(com_085=False, config={})
+    assert mc.odate(db, "PIPE_A", run_id="run_1")["data"] is None
+
+
+def test_banco_fora_do_ar_nao_levanta(mc):
+    """Leitura degrada LARGA: o ODATE volta para o degrau 4 e a carga anda."""
+    db = banco(explodir=True)
+    assert mc.odate(db, "PIPE_A", run_id="run_1")["data"] is None
+
+
+def test_degrau_0_sem_dono_ainda_procura_a_proveniencia(mc):
+    """⛔ Defeito MEDIDO no dev em 2026-08-05, e corrigido aqui.
+
+    A linha do DEPENDENTE nasce no claim do pai (`reservar_corrida`) já com
+    data e run_id, e SEM `malha_execucao_id`. Com o degrau 0 respondendo
+    sozinho, o filho herdava a data certa e ficava para sempre sem vínculo —
+    mesmo tendo recebido a corrida do pai no conf. Resultado medido: DEV_F10_D
+    concluiu em 2026-08-02 com `malha_execucao_id` NULL, isto é, TODA a cascata
+    (a maior parte de uma malha) fora do ciclo a que pertence, e o "4 de 7" do
+    card contando errado.
+
+    O degrau 0 decide a DATA. A proveniência é procurada enquanto a linha não
+    tem dono."""
+    db = banco(execucoes=[_linha(pipe="PIPE_B", dref=ODATE, exec_id="dep_1")])
+    c = abre(mc, db, malha="M1", odate=ODATE)
+    r = mc.odate(db, "PIPE_B", run_id="dep_1", conf_id=c["id"])
+    assert r["degrau"] == mc.DEGRAU_CARIMBO and r["data"] == ODATE
+    assert r["corrida_id"] == c["id"]
+
+
+def test_degrau_0_acha_a_dona_ate_sem_o_conf(mc):
+    """O filho de uma DAG antiga (que não repassa a corrida no conf) também
+    entra no ciclo: basta haver UMA corrida aberta do MESMO ODATE."""
+    db = banco(execucoes=[_linha(pipe="PIPE_B", dref=ODATE, exec_id="dep_1")])
+    c = abre(mc, db, malha="M1", odate=ODATE)
+    assert mc.odate(db, "PIPE_B", run_id="dep_1")["corrida_id"] == c["id"]
+
+
+def test_degrau_0_NAO_carimba_corrida_de_outro_odate(mc):
+    """Proveniência é "de onde veio ESTA data". Carimbar a corrida de terça na
+    linha de quarta seria a doença desta spec com outro rótulo — e é o que
+    aconteceria se a busca ignorasse a data."""
+    db = banco(execucoes=[_linha(pipe="PIPE_B", dref=ODATE, exec_id="dep_1")])
+    c = abre(mc, db, malha="M1", odate=ODATE_ONTEM)
+    r = mc.odate(db, "PIPE_B", run_id="dep_1", conf_id=c["id"])
+    assert r["data"] == ODATE and r["corrida_id"] is None
+
+
+def test_degrau_0_com_dono_NAO_e_reescrito(mc):
+    """WRITE-ONCE também na leitura: linha que já tem dono devolve o dono dela,
+    e nenhuma corrida nova a reivindica."""
+    db = banco(execucoes=[_linha(pipe="PIPE_B", dref=ODATE, exec_id="dep_1",
+                                 corrida=555)])
+    c = abre(mc, db, malha="M1", odate=ODATE)
+    assert c["id"] != 555
+    assert mc.odate(db, "PIPE_B", run_id="dep_1")["corrida_id"] == 555
+
+
+def test_degrau_0_com_duas_corridas_do_mesmo_odate_nao_escolhe_dona(mc):
+    """PIPE_B é membro de M1 e M2. Duas corridas do MESMO dia não tornam a data
+    ambígua, mas a proveniência não tem por que ser inventada."""
+    db = banco(execucoes=[_linha(pipe="PIPE_B", dref=ODATE, exec_id="dep_1")])
+    abre(mc, db, malha="M1", odate=ODATE)
+    abre(mc, db, malha="M2", odate=ODATE)
+    r = mc.odate(db, "PIPE_B", run_id="dep_1")
+    assert r["data"] == ODATE and r["corrida_id"] is None
+
+
+def test_degrau_0_com_DUAS_linhas_do_mesmo_run_responde_sempre_a_MAIS_ANTIGA(mc):
+    """LOTE, e não "um caso": o degrau 0 é `TOP 1 ... ORDER BY id`, e a ordem
+    não é decoração.
+
+    Se a doença já aconteceu — o run existe em dois ODATEs, que é exatamente o
+    estrago que a Decisão 36 evita —, a resposta tem de ser SEMPRE a mesma, e
+    tem de ser a linha que NASCEU primeiro: é ela a identidade do run. Uma
+    resposta que alternasse faria o `UPDATE ... WHERE data_referencia=%s` mudar
+    de alvo entre uma task e outra, transformando duas linhas em três."""
+    db = banco(execucoes=[
+        _linha(pipe="PIPE_A", dref=ODATE_ONTEM, exec_id="run_1", corrida=7,
+               ident=10),
+        _linha(pipe="PIPE_A", dref=ODATE, exec_id="run_1", corrida=8,
+               ident=11)])
+    for _ in range(3):
+        r = mc.odate(db, "PIPE_A", run_id="run_1")
+        assert (r["data"], r["corrida_id"]) == (ODATE_ONTEM, 7)
+    # e a mais nova primeiro na lista não muda a resposta: quem ordena é o SQL
+    db.execucoes.reverse()
+    assert mc.odate(db, "PIPE_A", run_id="run_1")["data"] == ODATE_ONTEM
+
+
+def test_conf_de_corrida_FECHADA_cai_no_degrau_3_e_o_ciclo_em_voo_resolve(mc):
+    """Decisão 37 diz "tratado como AUSENTE" — e ausente significa *o degrau
+    seguinte responde*, não *ninguém responde*.
+
+    O caso é o rerun tardio: ele carrega o conf do ciclo de ontem enquanto o de
+    hoje está em voo. Obedecer ao conf carimbaria a data de um ciclo encerrado;
+    parar aqui devolveria o pipeline ao cálculo próprio, que é o incidente. A
+    resposta certa é a corrida ABERTA."""
+    db = banco()
+    velha = abre(mc, db, odate=ODATE_ONTEM)
+    mc.fechar_corrida(db, velha["id"], "CONCLUIDA", "guardia")
+    hoje = abre(mc, db, odate=ODATE)
+    r = mc.odate(db, "PIPE_A", conf_id=velha["id"])
+    assert r["degrau"] == mc.DEGRAU_CORRIDA
+    assert r["data"] == ODATE and r["corrida_id"] == hoje["id"]
+
+
+def test_conf_de_MALHA_QUE_NAO_CONTEM_o_pipeline_cai_no_degrau_3(mc):
+    """A outra metade da validação do §7/degrau 1, com o degrau seguinte
+    respondendo: `POST /airflow/dags/{id}/dagRuns` repassa o conf CRU, então um
+    id de corrida de outra malha não pode ditar o ODATE — nem paralisar o
+    pipeline."""
+    db = banco()
+    outra = abre(mc, db, malha="M2", odate=ODATE_ONTEM)   # M2 não tem PIPE_A
+    minha = abre(mc, db, malha="M1", odate=ODATE)
+    r = mc.odate(db, "PIPE_A", conf_id=outra["id"])
+    assert r["degrau"] == mc.DEGRAU_CORRIDA
+    assert r["data"] == ODATE and r["corrida_id"] == minha["id"]
+
+
+def test_085_ausente_com_o_interruptor_LIGADO_degrada_sem_levantar(mc, capsys):
+    """A célula que ninguém planeja e que acontece: a chave de configuração
+    existe (restore de outro ambiente, rollback parcial, alguém que inseriu a
+    linha na mão) e as TABELAS não.
+
+    Com o interruptor lendo `1`, a função passa da primeira linha e vai ao
+    banco de verdade — e é aí que "leitura degrada larga" precisa valer, ou
+    todo pipeline do produto cai junto com a 085 que não está lá."""
+    db = banco(com_085=False)               # config ainda traz o interruptor em 1
+    assert mc.corrida_ativa(db) is True
+    r = mc.odate(db, "PIPE_A", run_id="run_1", conf_id=1, herdada=None)
+    assert r == {"data": None, "corrida_id": None, "ambiguo": False,
+                 "degrau": None, "detalhe": None}
+    assert "indisponivel" in capsys.readouterr().out

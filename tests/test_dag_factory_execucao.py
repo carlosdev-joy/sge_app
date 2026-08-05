@@ -72,18 +72,42 @@ _DREF_REAL = _load_module("utils_data_referencia_f2_test", "dags/utils/data_refe
 _DEPS_REAL = _load_module("utils_dependencias_f2_test", "dags/utils/dependencias.py")
 
 
+# F5 (spec-malha-execucao) — a corrida de malha DESLIGADA, que é o estado de
+# todo banco sem a 085 e do dev enquanto o interruptor está em 0. Precisa ser um
+# dublê EXPLÍCITO e não um MagicMock: `_corrida.odate(...)['ambiguo']` num mock
+# devolve um mock — que é VERDADEIRO — e o pipeline inteiro passaria a recusar
+# por ODATE ambíguo dentro do teste, sem nenhuma corrida existir.
+_CORRIDA_DESLIGADA = SimpleNamespace(
+    corrida_ativa=lambda *a, **kw: False,
+    odate=lambda *a, **kw: {"data": None, "corrida_id": None, "ambiguo": False,
+                            "degrau": None, "detalhe": None},
+    corrida_aberta_do_pipeline=lambda *a, **kw: {"corridas": [], "odate": None,
+                                                 "ambiguo": False},
+)
+
+
+def _utils_stub(malha_corrida=_CORRIDA_DESLIGADA):
+    """O pacote ``utils`` stubado, com o módulo da corrida ACOPLADO: o fonte
+    gerado faz ``from utils import malha_corrida``, e num MagicMock puro isso
+    devolve um filho mock silenciosamente."""
+    pacote = MagicMock()
+    pacote.malha_corrida = malha_corrida
+    return pacote
+
+
 @contextmanager
-def _ambiente_utils():
+def _ambiente_utils(malha_corrida=_CORRIDA_DESLIGADA):
     """Stuba ``utils.*`` (e aponta utils.data_referencia/utils.dependencias
     para os módulos REAIS) apenas durante o exec/chamada — mesmo padrão do
     _exec_source vizinho."""
     util_mods = {
-        "utils": MagicMock(),
+        "utils": _utils_stub(malha_corrida),
         "utils.datastage_operator": MagicMock(),
         "utils.conditions": MagicMock(),
         "utils.job_operators": MagicMock(),
         "utils.data_referencia": _DREF_REAL,
         "utils.dependencias": _DEPS_REAL,
+        "utils.malha_corrida": malha_corrida,
     }
     saved = {m: sys.modules.get(m) for m in util_mods}
     try:

@@ -118,6 +118,12 @@ from services import execucao_identidade as ident_svc
 # a mesma disciplina de "zero SQL de corrida" que a guardiã segue do outro lado,
 # e a razão de a API e o motor não poderem discordar sobre o que é uma corrida.
 from services import malha_corrida as mc
+# F5 da spec-malha-execucao (§12.2): a sonda do fonte GERADO. `rerun_svc`
+# pergunta o que o `dags/` deployado sabe fazer (um arquivo para todos);
+# `espera_svc` pergunta o que a DAG PUBLICADA de CADA pipeline tem dentro — e é
+# essa a pergunta do `force_all`, porque a regeração pode ter alcançado uns
+# pipelines e não outros.
+from services import espera as espera_svc
 # `capacidade_dags` responde o que o `dags/` DEPLOYADO declara saber fazer — é
 # metade do portão da §11.1 (a outra metade é o heartbeat da guardiã).
 from services import rerun as rerun_svc
@@ -1492,6 +1498,18 @@ def _raizes_assinadas_do_no(cur, no_id) -> list:
                 "WHERE agenda_no = ?", (no_id,))
     return sorted((str(r[0]).strip() for r in cur.fetchall()),
                   key=str.casefold)
+
+
+def _lista_curta(nomes, teto: int = 4) -> str:
+    """`'A', 'B' e mais 3` — nomes de verdade na frase, sem virar parede.
+
+    Aviso com contagem só ("3 pipelines desatualizados") obriga o operador a
+    caçar QUAIS; aviso com 40 nomes ele não lê. O teto é baixo de propósito, e
+    a lista completa continua no campo estruturado da resposta."""
+    nomes = list(nomes)
+    cabeca = ", ".join(f"'{n}'" for n in nomes[:teto])
+    resto = len(nomes) - teto
+    return f"{cabeca} e mais {resto}" if resto > 0 else cabeca
 
 
 def _msg_disparo_raiz_com_dependencia(pipeline) -> str:
@@ -3123,6 +3141,59 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
                                "mensagem": f"'{p}' está inativo — a DAG pode "
                                "estar pausada no Airflow; a corrida criada "
                                "só anda com a DAG despausada"})
+        # F5 da spec-malha-execucao (§12.2, risco 9) — a sonda do `force_all`,
+        # POR MEMBRO. A F5 é a única fase que exige regeração das DAGs, e o
+        # gesto não está no deploy.sh: enquanto ele não acontece, metade dos
+        # membros carimba o ODATE pela corrida e metade calcula sozinha — a
+        # doença com aparência de cura. O disparo AVISA e segue: o gesto é do
+        # operador, e recusar aqui pararia a malha por causa de um arquivo
+        # desatualizado que ninguém sabe que existe.
+        #
+        # Vale para TODO membro, não só para as raízes: quem calcula a própria
+        # data no meio da malha é justamente o membro com cron próprio — o
+        # `Carga_Vida` invertido do §7.
+        #
+        # DESCONHECIDO tem frase PRÓPRIA e nunca vira acusação: não conseguir
+        # ler o fonte não prova nada sobre ele.
+        # A sonda só fala com o interruptor LIGADO: enquanto ele está em 0,
+        # ninguém carimba ODATE pela corrida e "sua DAG não tem o carimbo" seria
+        # ruído puro — e ruído que aparece em todo disparo ensina a operação a
+        # ignorar a caixa de avisos inteira.
+        sondas: list = []
+        try:
+            if mc.corrida_ativa(cur):
+                cur.execute(_SQL_MEMBROS_DA_MALHA, (malha,))
+                _membros_sonda = sorted({r[0] for r in cur.fetchall() if r[0]},
+                                        key=str.casefold)
+                sondas = espera_svc.carimbo_corrida_dos_pipelines(
+                    cur, _membros_sonda)
+        except Exception as e:  # noqa: BLE001 — sonda é diagnóstico, nunca porta
+            log.warning("[MALHA] sonda do carimbo de ODATE indisponivel: %s", e)
+            sondas = []
+        sem_carimbo = [s["pipeline"] for s in sondas
+                       if s["sonda"] == espera_svc.CORRIDA_AUSENTE]
+        carimbo_incerto = [s["pipeline"] for s in sondas
+                           if s["sonda"] == espera_svc.CORRIDA_DESCONHECIDO]
+        if sem_carimbo:
+            avisos.append({
+                "no": inicio["id"], "nivel": "forte", "tipo": "sem_carimbo_odate",
+                "mensagem": (
+                    f"{_lista_curta(sem_carimbo)} — a DAG publicada foi gerada "
+                    f"antes do carimbo de data pela corrida da malha: "
+                    f"{'esses pipelines' if len(sem_carimbo) > 1 else 'esse pipeline'} "
+                    f"vai calcular a própria data de referência em vez de "
+                    f"aderir à do ciclo. Publique a DAG de novo (Pipelines ▸ "
+                    f"Publicar nova versão) para o ciclo inteiro ficar na "
+                    f"mesma data")})
+        if carimbo_incerto:
+            avisos.append({
+                "no": inicio["id"], "nivel": "leve", "tipo": "carimbo_incerto",
+                "mensagem": (
+                    f"não foi possível conferir o fonte publicado de "
+                    f"{_lista_curta(carimbo_incerto)} — se a DAG for anterior "
+                    f"ao carimbo de data pela corrida, o membro calcula a "
+                    f"própria data; na dúvida, publique a DAG de novo")})
+
         # F1 da spec-malha-data-unica: a malha começa do ZERO. Corrida viva de
         # membro ou data de referência divergente NESTE ciclo barram o disparo
         # — a partida por cima de uma corrida em andamento é o que produziu, na
@@ -3250,6 +3321,13 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
                     "raizes": raizes_info, "avisos": avisos,
                     "bloqueios": bloqueios,
                     "bloqueado": tem_bloqueio and not equaliza}
+            # ADITIVO e só quando há o que reportar (§12.2): as duas colunas —
+            # pipeline e sonda — para o operador republicar só quem ficou para
+            # trás. Quem está em dia não entra na lista: um relatório que
+            # sempre aparece deixa de ser lido.
+            if sem_carimbo or carimbo_incerto:
+                resp["carimbo_odate"] = [
+                    s for s in sondas if s["sonda"] != espera_svc.CORRIDA_OK]
             if equaliza:
                 resp["equalizacao"] = {
                     "prevista": equalizaveis,
@@ -3346,6 +3424,9 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
                       "data_referencia": conf["data_referencia"],
                       "disparadas": disparadas, "falhas": falhas,
                       "avisos": avisos}
+        if sem_carimbo or carimbo_incerto:
+            resp_write["carimbo_odate"] = [
+                s for s in sondas if s["sonda"] != espera_svc.CORRIDA_OK]
         if equalizados:
             resp_write["equalizados"] = equalizados
         if corrida is not None:

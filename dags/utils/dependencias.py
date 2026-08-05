@@ -130,7 +130,8 @@ def dia_permitido(regras: dict, dia: date):
     return True, None
 
 
-def montar_conf(data_ref: date, dia_operacional: date, pai: str) -> dict:
+def montar_conf(data_ref: date, dia_operacional: date, pai: str,
+                malha_execucao_id=None) -> dict:
     """Conf do disparo por dependência — o schema do §7 num lugar só.
 
     data_referencia: a data DA CORRIDA DO PAI — o filho NÃO recalcula
@@ -138,12 +139,26 @@ def montar_conf(data_ref: date, dia_operacional: date, pai: str) -> dict:
     as regras de DIA julgam (§1.1); disparado_por: consumido pelo
     _disparado_por da F2. A cascata repassa os dois valores do próprio run —
     o rótulo e o dia da RAIZ atravessam a cadeia sem recálculo (D12).
+
+    ``malha_execucao_id`` (F5 da spec-malha-execucao, §7/degrau 1) é a corrida
+    do PAI, e é **ADITIVO**: a chave só aparece quando existe corrida. Sem ela o
+    conf sai byte a byte como antes desta fase — nenhum disparo fora de malha
+    (a maioria) muda de forma, e nenhum consumidor de conf precisa aprender uma
+    chave nova para continuar funcionando.
+
+    É OTIMIZAÇÃO de herança, nunca identidade (Decisão 37): o filho VALIDA o id
+    recebido (corrida aberta, de malha que o contém) e o trata como ausente se
+    não bater — sem isso, `POST /airflow/dags/{id}/dagRuns`, que repassa o conf
+    cru, seria um jeito de ditar o ODATE de qualquer linha por HTTP.
     """
-    return {
+    conf = {
         "data_referencia": _como_iso(data_ref),
         "dia_operacional": _como_iso(dia_operacional),
         "disparado_por": str(pai),
     }
+    if malha_execucao_id is not None:
+        conf["malha_execucao_id"] = int(malha_execucao_id)
+    return conf
 
 
 def novo_run_id(origem: str, data_ref: date, nome: str) -> str:

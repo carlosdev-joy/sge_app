@@ -103,7 +103,12 @@ _CONSTANTES_SQL = ("SQL_TETO_DA_MALHA", "SQL_VIRADA_DA_MALHA",
                    "SQL_AGUARDANDO_DO_SNAPSHOT", "SQL_RELOGIOS",
                    "SQL_NO_RETIDO", "SQL_CARIMBAR_MOTIVO",
                    "SQL_HEARTBEAT_GRAVAR", "SQL_HEARTBEAT_CRIAR",
-                   "SQL_HEARTBEAT_LER", "SQL_CORRIDA_DA_DATA")
+                   "SQL_HEARTBEAT_LER", "SQL_CORRIDA_DA_DATA",
+                   # F5 — os degraus 0 e 1 do §7. O ODATE que o motor carimba e
+                   # o que a API mostra têm de sair do MESMO texto: divergir
+                   # aqui é a tela dizer que a linha é de D e o banco gravar
+                   # D-1, que é o incidente desta spec com outra roupa.
+                   "SQL_ODATE_DO_RUN", "SQL_CORRIDA_DO_CONF")
 
 
 @pytest.mark.parametrize("nome", _CONSTANTES_SQL)
@@ -170,7 +175,13 @@ def test_paridade_do_dominio_e_das_constantes(mcd):
                  "STATUS_PARTIU", "CLASSES_PENDENTES", "_ORDEM_CLASSE",
                  "EVENTO_ORFA", "ERRO_LEITURA", "MOTIVO_FORA_DA_CORRIDA",
                  "MOTIVO_OUTRO_ODATE", "CHAVE_HEARTBEAT",
-                 "DESCRICAO_HEARTBEAT", "_MARCAS_HOLD"):
+                 "DESCRICAO_HEARTBEAT", "_MARCAS_HOLD",
+                 # F5 — os nomes dos degraus do §7 e o motivo da recusa. O
+                 # motivo é o que o operador vai procurar por `grep` às 3h e o
+                 # que o front casa para pintar a linha: escrevê-lo diferente em
+                 # cada árvore faz a recusa existir no banco e sumir da tela.
+                 "DEGRAU_CARIMBO", "DEGRAU_CONF_CORRIDA", "DEGRAU_CONF_DATA",
+                 "DEGRAU_CORRIDA", "DEGRAU_CALCULO", "MOTIVO_ODATE_AMBIGUO"):
         assert getattr(mcd, nome) == getattr(mca, nome), nome
     assert mcd._CAMPOS == CAMPOS       # e os dois batem com o contrato do dublê
 
@@ -277,7 +288,22 @@ _CHAMADAS = {
     "marcar_heartbeat": lambda m, a: m.marcar_heartbeat(a),
     "heartbeat_guardia": lambda m, a: m.heartbeat_guardia(a, 15),
     "corrida_da_data": lambda m, a: m.corrida_da_data(a, "M1", ODATE),
+    # ── F5 — os degraus do §7 ───────────────────────────────────────────────
+    # `_ligado` liga o interruptor NAS DUAS FORMAS de cache (por processo no
+    # canônico, por TTL no port). Sem isso a função devolveria vazio na primeira
+    # linha e a paridade compararia duas listas vazias — verde sem provar nada.
+    "odate_degrau_0": lambda m, a: (_ligado(m),
+                                    m.odate(a, "PIPE_A", run_id="run_1")),
+    "odate_degrau_1": lambda m, a: (_ligado(m),
+                                    m.odate(a, "PIPE_A", conf_id=7)),
+    "odate_degrau_3": lambda m, a: (_ligado(m), m.odate(a, "PIPE_A")),
 }
+
+
+def _ligado(m):
+    """Interruptor LIGADO nas duas formas de cache, sem ir ao banco."""
+    m._CACHE_ATIVA["ativa"] = True
+    m._CACHE_ATIVA["ate"] = float("inf")     # só o port lê esta chave
 
 # A corrida que a F2 passa para `estado`/`relogios`/`aguardando_do_snapshot`:
 # as três leem os MESMOS três campos, e trocá-los de ordem entre as árvores não
@@ -358,6 +384,45 @@ def _roteiro(m, alvo, db):
     passos.append(("aberta", m.corrida_aberta(alvo, "M1")))
     passos.append(("abertas", m.corridas_abertas(alvo)))
     passos.append(("do_pipeline", m.corrida_aberta_do_pipeline(alvo, "PIPE_B")))
+    # ── F5: os degraus do §7, com o banco RESPONDENDO ───────────────────────
+    # O nível 2 (o `(sql, params)` emitido) compara as duas árvores contra um
+    # cursor que devolve `None` para tudo: as duas percorrem os degraus até o
+    # fim e não acham nada, e a paridade fica sendo sobre o caminho VAZIO. Os
+    # ramos que decidem — "a linha já tem dono", "a linha não tem dono e a
+    # proveniência é procurada", "a herança vence e a corrida discorda" — só
+    # existem quando há linha e corrida, e é aqui que há.
+    passos.append(("odate_carimbo", m.odate(alvo, "PIPE_A", run_id="run_1")))
+    passos.append(("odate_orfa", m.odate(alvo, "PIPE_B", run_id="run_dep",
+                                         conf_id=c["id"])))
+    passos.append(("odate_conf", m.odate(alvo, "PIPE_A", conf_id=c["id"])))
+    passos.append(("odate_conf_alheio", m.odate(alvo, "PIPE_D",
+                                                conf_id=c["id"])))
+    passos.append(("odate_corrida", m.odate(alvo, "PIPE_B")))
+    passos.append(("odate_herdada", m.odate(alvo, "PIPE_A",
+                                            herdada=ODATE_ONTEM)))
+    # ── a RECUSA da Decisão 34, nas duas árvores ────────────────────────────
+    # Sem estes três passos o ramo `ambiguo` do gêmeo da API não é executado
+    # por teste nenhum: provado por mutação em 2026-08-05 — trocar o `if
+    # aberta["ambiguo"]:` de api/services/malha_corrida.py por `if False:`
+    # (isto é, ESCOLHER uma das duas corridas em silêncio, que é exatamente o
+    # incidente `Carga_Vida`) deixava a suíte INTEIRA verde. O canônico tem
+    # teste direto; o gêmeo só tinha a paridade, e a paridade só cobre o que o
+    # roteiro percorre.
+    # PIPE_B é membro de M1 e M2 (é para isso que o dublê o criou assim): uma
+    # segunda corrida aberta em M2 com ODATE de ONTEM torna o pipeline ambíguo
+    # sem tocar em nada do resto do roteiro.
+    c2 = m.abrir_corrida(alvo, "M2", ODATE_ONTEM, "manual",
+                         aberta_por="manual:C999999")
+    passos.append(("abrir_m2", c2))
+    passos.append(("odate_ambiguo", m.odate(alvo, "PIPE_B")))
+    # herança VENCE mesmo com ambiguidade (o degrau 2 é o caminho do rerun e do
+    # disparo manual com data; recusá-lo seria trocar proteção por paralisia),
+    # e a linha fica sem proveniência — as duas árvores têm de dizer isso igual.
+    passos.append(("odate_ambiguo_herdado", m.odate(alvo, "PIPE_B",
+                                                    herdada=ODATE)))
+    passos.append(("fechar_m2", m.fechar_corrida(alvo, c2["id"], "CANCELADA",
+                                                 "manual:C999999",
+                                                 motivo="fim do cenario")))
     passos.append(("visto1", m.marcar_visto(alvo, c["id"], "falha")))
     passos.append(("visto2", m.marcar_visto(alvo, c["id"], "falha")))
     passos.append(("fechar1", m.fechar_corrida(alvo, c["id"], "FALHA",
@@ -378,14 +443,18 @@ def _estado(db: Banco):
 def _nas_duas_arvores(mcd, **kw):
     """Roda o roteiro nas duas árvores, contra bancos idênticos, e devolve
     (rastro_dags, rastro_api, db_dags, db_api)."""
-    db_d = banco(execucoes=[{"pipeline_name": "PIPE_A",
-                             "data_referencia": ODATE,
-                             "execution_id": "run_1",
-                             "malha_execucao_id": None}], **kw)
-    db_a = banco(execucoes=[{"pipeline_name": "PIPE_A",
-                             "data_referencia": ODATE,
-                             "execution_id": "run_1",
-                             "malha_execucao_id": None}], **kw)
+    def _linhas():
+        # A linha do PIPE_A é a do vínculo write-once (F1). A do PIPE_B é a
+        # ÓRFÃ que o claim do pai cria (F5): ela tem data e run_id e NÃO tem
+        # `malha_execucao_id` — é o caso medido no dev, e o único que exercita
+        # a busca de proveniência do degrau 0.
+        return [{"pipeline_name": "PIPE_A", "data_referencia": ODATE,
+                 "execution_id": "run_1", "malha_execucao_id": None, "id": 1},
+                {"pipeline_name": "PIPE_B", "data_referencia": ODATE,
+                 "execution_id": "run_dep", "malha_execucao_id": None, "id": 2}]
+
+    db_d = banco(execucoes=_linhas(), **kw)
+    db_a = banco(execucoes=_linhas(), **kw)
     return _roteiro(mcd, db_d, db_d), _roteiro(mca, db_a.cursor(), db_a), db_d, db_a
 
 
@@ -431,7 +500,11 @@ def test_o_roteiro_prova_o_que_a_F2_vai_precisar(mcd):
     assert passos["final"]["tentativas"] == 2
     assert passos["final"]["motivo"] == "porta 2 | 1 falhou | rerun"
     assert passos["final"]["aberta_em"] == AGORA_BANCO   # o relógio do BANCO
-    assert len(db_d.corridas) == 1                       # a adesão não criou linha
+    # A adesão não criou linha: M1 continua com UMA corrida. A contagem é por
+    # malha (e não `len(db_d.corridas)`) desde que o roteiro passou a abrir a
+    # corrida de M2 que torna PIPE_B ambíguo — contar o total confundiria "o
+    # 2601 virou adesão" com "o cenário tem mais de uma malha".
+    assert len([c for c in db_d.corridas if c["malha_name"] == "M1"]) == 1
 
 
 def test_o_erro_de_dominio_e_o_mesmo_nas_duas_arvores(mcd):
@@ -701,3 +774,35 @@ def test_nenhuma_das_arvores_importa_a_outra():
     fonte_dags = (_ROOT / "dags/utils/malha_corrida.py").read_text(encoding="utf-8")
     assert "from utils" not in fonte_api and "import utils" not in fonte_api
     assert "from services" not in fonte_dags and "import services" not in fonte_dags
+
+
+def test_o_roteiro_prova_os_DEGRAUS_do_ODATE_e_nao_o_caminho_vazio(mcd):
+    """⚠️ Guarda contra a paridade que passa por ser vazia dos dois lados.
+
+    `odate` devolve o mesmo dicionário `{data: None, degrau: None, ...}` quando
+    NENHUM degrau responde — e duas árvores que não respondem nada são
+    trivialmente iguais. Esta asserção é o que obriga o roteiro a ter EXERCITADO
+    cada ramo: se um dia o dublê parar de responder (ou alguém tirar as linhas
+    semeadas), a paridade continuaria verde e este teste cai."""
+    r_dags, r_api, _, _ = _nas_duas_arvores(mcd)
+    passos = dict(r_dags)
+    assert dict(r_api) == passos
+    corrida_id = passos["abrir"]["id"]
+    # degrau 0 com dono: a linha do PIPE_A ganhou o vínculo em `vinculo1`
+    assert passos["odate_carimbo"]["degrau"] == mcd.DEGRAU_CARIMBO
+    assert passos["odate_carimbo"]["corrida_id"] == corrida_id
+    # degrau 0 SEM dono: a data vem da linha, a proveniência é PROCURADA
+    assert passos["odate_orfa"]["degrau"] == mcd.DEGRAU_CARIMBO
+    assert passos["odate_orfa"]["data"] == ODATE
+    assert passos["odate_orfa"]["corrida_id"] == corrida_id
+    # degrau 1: o conf validado
+    assert passos["odate_conf"]["degrau"] == mcd.DEGRAU_CONF_CORRIDA
+    # ...e o mesmo conf num pipeline de OUTRA malha não vale nada (Decisão 37)
+    assert passos["odate_conf_alheio"]["degrau"] is None
+    # degrau 3: o `Carga_Vida` invertido
+    assert passos["odate_corrida"]["degrau"] == mcd.DEGRAU_CORRIDA
+    assert passos["odate_corrida"]["corrida_id"] == corrida_id
+    # degrau 2: a herança vence, e a linha fica sem proveniência
+    assert passos["odate_herdada"]["degrau"] == mcd.DEGRAU_CONF_DATA
+    assert passos["odate_herdada"]["data"] == ODATE_ONTEM
+    assert passos["odate_herdada"]["corrida_id"] is None

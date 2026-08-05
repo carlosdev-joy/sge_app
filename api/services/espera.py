@@ -163,6 +163,30 @@ PORTAO_OK = "ok"
 PORTAO_AUSENTE = "dag_sem_portao"
 PORTAO_DESCONHECIDO = "portao_desconhecido"
 
+# ── A MESMA sonda, para a F5 da spec-malha-execucao (§12.2) ──────────────────
+# `_corrida.odate(` é a marca que a factory emite quando o fonte gerado carimba
+# o ODATE pela corrida da malha. A pergunta é a mesma de cima ("a DAG PUBLICADA
+# já tem isto?"), a técnica é a mesma, e por isso mora aqui em vez de virar um
+# segundo leitor de `generated/` com regras próprias de caminho e de cache.
+#
+# Por que ela é NECESSÁRIA e não decorativa: a F5 é a única fase da spec que
+# exige `force_all`, e o gesto NÃO está no `deploy.sh` — é um trigger manual de
+# `etl_dag_factory` com `conf={"force_all": true}`. Entre o deploy e a
+# regeração, metade das DAGs carimba pela corrida e metade calcula sozinha: a
+# doença com aparência de cura. Esta sonda responde POR PIPELINE quem ficou
+# para trás, para o operador republicar só aquele.
+#
+# ⚠️ Não se usa `grep -rl "malha_execucao_id" generated/ | wc -l` contra o
+# COUNT de pipelines ativos: `generated/` guarda fonte de pipeline INATIVO
+# também (o deploy nunca limpa a pasta), então o total do grep é legitimamente
+# ≥ o COUNT e a conferência deixa de conferir. A marca é sintática, emitida por
+# concatenação pela factory, e não casa em comentário nem em código morto.
+MARCA_CORRIDA = "_corrida.odate("
+
+CORRIDA_OK = "ok"
+CORRIDA_AUSENTE = "dag_sem_carimbo_de_corrida"
+CORRIDA_DESCONHECIDO = "carimbo_desconhecido"
+
 # Nome de projeto/domínio/pipeline que pode virar caminho. Vem do BANCO, mas
 # concatenar em caminho o que veio de um cadastro editável sem filtrar é como
 # se abre travessia de diretório — a mesma disciplina do `_DAG_ID_RE` do router.
@@ -211,32 +235,57 @@ def _cadastro_do_pipeline(cur, pipeline: str):
         return (None, None)
 
 
-def portao_no_arquivo(caminho) -> str:
-    """`PORTAO_OK` | `PORTAO_AUSENTE` | `PORTAO_DESCONHECIDO` para UM arquivo.
+def _marca_no_arquivo(caminho, marca: str, rotulo: str,
+                      valores: tuple) -> str:
+    """`ok` | `ausente` | `desconhecido` para UMA marca em UM arquivo.
 
-    As três respostas são distintas de propósito: "tem portão", "li o arquivo
-    e ele NÃO tem" e "não deu para ler". Só a segunda é uma acusação; a
-    terceira é uma dúvida, e elas têm frases e consequências diferentes.
+    As três respostas são distintas de propósito: "tem", "li o arquivo e ele
+    NÃO tem" e "não deu para ler". Só a segunda é uma acusação; a terceira é
+    uma dúvida, e elas têm frases e consequências diferentes.
+
+    O cache é por `(arquivo, marca)`: duas marcas no mesmo fonte respondem
+    coisas diferentes, e uma chave só faria a segunda pergunta herdar a
+    resposta da primeira.
     """
+    ok, ausente, desconhecido = valores
     if caminho is None:
-        return PORTAO_DESCONHECIDO
+        return desconhecido
     p = Path(caminho)
     try:
         st = p.stat()
         chave = (st.st_mtime_ns, st.st_size)
-        anterior = _cache_portao.get(str(p))
+        anterior = _cache_portao.get((str(p), marca))
         if anterior and anterior[0] == chave:
             return anterior[1]
         fonte = p.read_text(encoding="utf-8", errors="replace")
     except Exception as e:  # noqa: BLE001 — não saber é uma resposta própria
         log.warning("[ESPERA] fonte da DAG ilegivel (%s em %s)", e, p)
-        return PORTAO_DESCONHECIDO
-    resultado = PORTAO_OK if MARCA_PORTAO in fonte else PORTAO_AUSENTE
-    _cache_portao[str(p)] = (chave, resultado)
-    if resultado != PORTAO_OK:
-        log.warning("[ESPERA] DAG publicada em %s NAO tem portao de espera — "
-                    "pipeline precisa ser republicado (force_all)", p)
+        return desconhecido
+    resultado = ok if marca in fonte else ausente
+    _cache_portao[(str(p), marca)] = (chave, resultado)
+    if resultado != ok:
+        log.warning("[ESPERA] DAG publicada em %s NAO tem %s — pipeline precisa "
+                    "ser republicado (force_all)", p, rotulo)
     return resultado
+
+
+def portao_no_arquivo(caminho) -> str:
+    """`PORTAO_OK` | `PORTAO_AUSENTE` | `PORTAO_DESCONHECIDO` para UM arquivo."""
+    return _marca_no_arquivo(caminho, MARCA_PORTAO, "portao de espera",
+                             (PORTAO_OK, PORTAO_AUSENTE, PORTAO_DESCONHECIDO))
+
+
+def carimbo_corrida_no_arquivo(caminho) -> str:
+    """`CORRIDA_OK` | `CORRIDA_AUSENTE` | `CORRIDA_DESCONHECIDO` (§12.2).
+
+    ⚠️ O terceiro valor NÃO é ausência: "não consegui montar o caminho" e "não
+    consegui ler o arquivo" não provam nada sobre o fonte publicado, e tratá-los
+    como AUSENTE mandaria o operador republicar 40 pipelines por causa de um
+    cadastro com espaço no nome do domínio.
+    """
+    return _marca_no_arquivo(caminho, MARCA_CORRIDA,
+                             "o carimbo de ODATE pela corrida",
+                             (CORRIDA_OK, CORRIDA_AUSENTE, CORRIDA_DESCONHECIDO))
 
 
 def estado_portao(cur, pipeline: str) -> str:
@@ -247,6 +296,30 @@ def estado_portao(cur, pipeline: str) -> str:
     """
     project, domain = _cadastro_do_pipeline(cur, pipeline)
     return portao_no_arquivo(caminho_dag_gerada(project, domain, pipeline))
+
+
+def estado_carimbo_corrida(cur, pipeline: str) -> str:
+    """A DAG PUBLICADA deste pipeline já carimba o ODATE pela corrida? (§12.2)
+
+    `dag_config_pendente_em` **não** serve para esta pergunta: ele responde "a
+    configuração mudou desde a publicação", e não "o fonte publicado tem o
+    carimbo" — uma DAG que ninguém editou tem `pendente` nulo e pode estar anos
+    atrás do gerador.
+    """
+    project, domain = _cadastro_do_pipeline(cur, pipeline)
+    return carimbo_corrida_no_arquivo(
+        caminho_dag_gerada(project, domain, pipeline))
+
+
+def carimbo_corrida_dos_pipelines(cur, pipelines) -> list:
+    """As duas colunas do §12.2: `[{"pipeline", "sonda"}]`, na ordem recebida.
+
+    Existe para o operador ver QUEM ficou para trás e republicar só aquele — a
+    conferência agregada ("N de M") esconde exatamente a informação que resolve
+    o problema.
+    """
+    return [{"pipeline": p, "sonda": estado_carimbo_corrida(cur, p)}
+            for p in pipelines]
 
 
 # Uma frase por estado, no idioma do operador — o que aconteceu e o que
