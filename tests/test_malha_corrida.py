@@ -226,6 +226,38 @@ def _acumula_motivo(atual, novo):
     return (prefixo + novo)[:500]
 
 
+# ── o CONTRATO textual das três consultas do §7 (F5) ────────────────────────
+#
+# REGRA DA HONESTIDADE DO DUBLÊ, e por que ela precisou virar isto aqui: as
+# guardas dos degraus 0, 1 e 3 moram TODAS no `WHERE` (`fechada_em IS NULL`, o
+# `mp.pipeline_name` do JOIN, o filtro por `execution_id`, o `ORDER BY id`), e
+# este dublê não tem avaliador de `WHERE` — ele despachava por prefixo e
+# aplicava as guardas por conta própria. Provado por mutação em 2026-08-05:
+# apagar `me.fechada_em IS NULL` do degrau 1, ou o `ORDER BY id` do degrau 0,
+# deixava a suíte INTEIRA verde; só a paridade acusava — e paridade prova que
+# as duas árvores dizem a MESMA coisa, não que a coisa está certa (o repo manda
+# mudar as duas no mesmo commit, então uma regressão coordenada passaria).
+#
+# A saída honesta é a que o próprio contrato do dublê já declara — "SQL que ele
+# não reconhece levanta AssertionError": as três consultas são servidas SÓ na
+# forma canônica. Enfraquecer um predicado no módulo deixa de ser uma resposta
+# filtrada pela bondade do dublê e passa a ser divergência de contrato.
+_WHERE_CANONICO = {
+    "degrau_0": ("WHERE pipeline_name = ? AND execution_id = ? ORDER BY id"),
+    "degrau_1": ("WHERE me.id = ? AND mp.pipeline_name = ? "
+                 "AND me.fechada_em IS NULL"),
+    "degrau_3": ("WHERE mp.pipeline_name = ? AND me.fechada_em IS NULL "
+                 "ORDER BY me.malha_name"),
+}
+
+
+def _contrato(s: str, chave: str):
+    esperado = _WHERE_CANONICO[chave]
+    assert s.endswith(esperado), (
+        f"{chave}: o WHERE mudou, e o dublê nao pode adivinhar a intencao.\n"
+        f"  esperado terminar em: {esperado}\n  veio: {s}")
+
+
 class Cur:
     def __init__(self, db: Banco):
         self.db = db
@@ -303,6 +335,7 @@ class Cur:
             # (degrau 1, que também exige `me.id`). Despachar pelo prefixo
             # devolveria a lista inteira para quem pediu uma corrida só.
             if "WHERE me.id = ?" in s:
+                _contrato(s, "degrau_1")
                 corrida_id, pipe = int(p[0]), p[1]
                 c = db.por_id(corrida_id)
                 malhas = [m for m, ps in db.malha_pipeline.items() if pipe in ps]
@@ -310,6 +343,7 @@ class Cur:
                          and c["malha_name"] in malhas)
                 self._rows = [self._proj(c)] if achou else []
                 return
+            _contrato(s, "degrau_3")
             malhas = [m for m, ps in db.malha_pipeline.items() if p[0] in ps]
             achadas = [c for c in db.corridas
                        if c["malha_name"] in malhas and c["fechada_em"] is None]
@@ -321,6 +355,7 @@ class Cur:
         # id` é do SQL e é reproduzido aqui — se um dia houver duas linhas do
         # mesmo run (a doença), a resposta tem de ser SEMPRE a mesma.
         if s.startswith("SELECT TOP 1 data_referencia, malha_execucao_id"):
+            _contrato(s, "degrau_0")
             achadas = [l for l in db.execucoes
                        if l["pipeline_name"] == p[0]
                        and str(l["execution_id"]) == str(p[1])]
@@ -1705,3 +1740,71 @@ def test_degrau_0_com_duas_corridas_do_mesmo_odate_nao_escolhe_dona(mc):
     abre(mc, db, malha="M2", odate=ODATE)
     r = mc.odate(db, "PIPE_B", run_id="dep_1")
     assert r["data"] == ODATE and r["corrida_id"] is None
+
+
+def test_degrau_0_com_DUAS_linhas_do_mesmo_run_responde_sempre_a_MAIS_ANTIGA(mc):
+    """LOTE, e não "um caso": o degrau 0 é `TOP 1 ... ORDER BY id`, e a ordem
+    não é decoração.
+
+    Se a doença já aconteceu — o run existe em dois ODATEs, que é exatamente o
+    estrago que a Decisão 36 evita —, a resposta tem de ser SEMPRE a mesma, e
+    tem de ser a linha que NASCEU primeiro: é ela a identidade do run. Uma
+    resposta que alternasse faria o `UPDATE ... WHERE data_referencia=%s` mudar
+    de alvo entre uma task e outra, transformando duas linhas em três."""
+    db = banco(execucoes=[
+        _linha(pipe="PIPE_A", dref=ODATE_ONTEM, exec_id="run_1", corrida=7,
+               ident=10),
+        _linha(pipe="PIPE_A", dref=ODATE, exec_id="run_1", corrida=8,
+               ident=11)])
+    for _ in range(3):
+        r = mc.odate(db, "PIPE_A", run_id="run_1")
+        assert (r["data"], r["corrida_id"]) == (ODATE_ONTEM, 7)
+    # e a mais nova primeiro na lista não muda a resposta: quem ordena é o SQL
+    db.execucoes.reverse()
+    assert mc.odate(db, "PIPE_A", run_id="run_1")["data"] == ODATE_ONTEM
+
+
+def test_conf_de_corrida_FECHADA_cai_no_degrau_3_e_o_ciclo_em_voo_resolve(mc):
+    """Decisão 37 diz "tratado como AUSENTE" — e ausente significa *o degrau
+    seguinte responde*, não *ninguém responde*.
+
+    O caso é o rerun tardio: ele carrega o conf do ciclo de ontem enquanto o de
+    hoje está em voo. Obedecer ao conf carimbaria a data de um ciclo encerrado;
+    parar aqui devolveria o pipeline ao cálculo próprio, que é o incidente. A
+    resposta certa é a corrida ABERTA."""
+    db = banco()
+    velha = abre(mc, db, odate=ODATE_ONTEM)
+    mc.fechar_corrida(db, velha["id"], "CONCLUIDA", "guardia")
+    hoje = abre(mc, db, odate=ODATE)
+    r = mc.odate(db, "PIPE_A", conf_id=velha["id"])
+    assert r["degrau"] == mc.DEGRAU_CORRIDA
+    assert r["data"] == ODATE and r["corrida_id"] == hoje["id"]
+
+
+def test_conf_de_MALHA_QUE_NAO_CONTEM_o_pipeline_cai_no_degrau_3(mc):
+    """A outra metade da validação do §7/degrau 1, com o degrau seguinte
+    respondendo: `POST /airflow/dags/{id}/dagRuns` repassa o conf CRU, então um
+    id de corrida de outra malha não pode ditar o ODATE — nem paralisar o
+    pipeline."""
+    db = banco()
+    outra = abre(mc, db, malha="M2", odate=ODATE_ONTEM)   # M2 não tem PIPE_A
+    minha = abre(mc, db, malha="M1", odate=ODATE)
+    r = mc.odate(db, "PIPE_A", conf_id=outra["id"])
+    assert r["degrau"] == mc.DEGRAU_CORRIDA
+    assert r["data"] == ODATE and r["corrida_id"] == minha["id"]
+
+
+def test_085_ausente_com_o_interruptor_LIGADO_degrada_sem_levantar(mc, capsys):
+    """A célula que ninguém planeja e que acontece: a chave de configuração
+    existe (restore de outro ambiente, rollback parcial, alguém que inseriu a
+    linha na mão) e as TABELAS não.
+
+    Com o interruptor lendo `1`, a função passa da primeira linha e vai ao
+    banco de verdade — e é aí que "leitura degrada larga" precisa valer, ou
+    todo pipeline do produto cai junto com a 085 que não está lá."""
+    db = banco(com_085=False)               # config ainda traz o interruptor em 1
+    assert mc.corrida_ativa(db) is True
+    r = mc.odate(db, "PIPE_A", run_id="run_1", conf_id=1, herdada=None)
+    assert r == {"data": None, "corrida_id": None, "ambiguo": False,
+                 "degrau": None, "detalhe": None}
+    assert "indisponivel" in capsys.readouterr().out

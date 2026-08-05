@@ -154,6 +154,47 @@ def test_a_marca_da_sonda_e_emitida_por_toda_dag(factory):
     assert esp.MARCA_CORRIDA == "_corrida.odate("
 
 
+def test_a_marca_so_aparece_em_CHAMADA_nunca_em_texto(factory):
+    """§12.2 exige marca SINTÁTICA: ela não pode casar em comentário nem em
+    código morto.
+
+    O defeito real (achado 3 da revisão da F5): o aviso que explica a sonda
+    estava no docstring da função GERADA, então o arquivo publicado tinha três
+    ocorrências — duas chamadas e um texto. Uma DAG que perdesse a chamada mas
+    guardasse o docstring passaria na sonda dizendo `ok`, e o operador
+    confiaria numa regeração que não aconteceu.
+
+    O teste é sobre o ARQUIVO PUBLICADO: cada linha que contém a marca tem de
+    ser uma chamada de verdade — não um `#`, não uma linha dentro de `\"\"\"`."""
+    import ast
+
+    from api.services import espera as esp
+    src = _src(factory)
+
+    # Quantas vezes a sonda VERIA a marca (ela faz busca textual, é o ponto).
+    textuais = src.count(esp.MARCA_CORRIDA)
+    assert textuais, "a marca sumiu do fonte gerado"
+
+    # Quantas CHAMADAS existem de verdade, segundo o parser do Python — a única
+    # autoridade sobre o que é código e o que é texto. Comparar linha a linha
+    # não serve: a linha de um docstring multilinha não contém as aspas, então
+    # um aviso lá dentro passaria por chamada (foi assim que o defeito 3 nasceu,
+    # e a primeira versão deste teste não o pegou).
+    chamadas = sum(
+        1 for no in ast.walk(ast.parse(src))
+        if isinstance(no, ast.Call)
+        and isinstance(no.func, ast.Attribute) and no.func.attr == "odate"
+        and isinstance(no.func.value, ast.Name) and no.func.value.id == "_corrida")
+
+    assert textuais == chamadas, (
+        f"a sonda enxerga {textuais} ocorrência(s) de '{esp.MARCA_CORRIDA}' mas "
+        f"só {chamadas} é/são chamada(s) de verdade: {textuais - chamadas} "
+        f"está/estão em docstring ou comentário do arquivo PUBLICADO. Uma DAG "
+        f"que perdesse a chamada e guardasse o texto passaria na sonda dizendo "
+        f"'ok', e o operador confiaria numa regeração que não aconteceu — mova "
+        f"o texto para um comentário DA FACTORY, que não é emitido.")
+
+
 def test_o_import_do_modulo_da_corrida_e_guardado(factory):
     """Deploy parcial não pode derrubar DAG: sem `utils/malha_corrida.py` no
     servidor, `_corrida` vira None e a data volta a ser a de sempre."""

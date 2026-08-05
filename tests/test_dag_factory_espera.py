@@ -331,12 +331,13 @@ _DELTA_ODATE = [
     '    conserto barato. A regra da precedencia mora em utils/malha_corrida,',
     '    que tem teste unitario e gemeo na API.',
     '',
-    '    ⚠️ A marca `_corrida.odate(` abaixo e a SONDA do §12.2: e por ela que',
-    '    a API sabe, PIPELINE A PIPELINE, se a DAG publicada ja foi regerada',
-    '    com esta fase. Trocar o alias ou o nome da funcao sem trocar',
-    "    MARCA_CORRIDA em api/services/espera.py faz a sonda acusar 'ausente'",
-    '    em quem esta em dia — o teste de paridade das duas marcas quebra de',
-    '    proposito.',
+    # O aviso longo sobre a sonda mora na FACTORY, não aqui: o texto do §12.2
+    # exige que a marca `_corrida.odate(` case só na CHAMADA — escrevê-la no
+    # docstring emitido punha uma segunda ocorrência dentro do arquivo
+    # publicado, e uma DAG que perdesse a chamada mas guardasse o texto passaria
+    # na sonda dizendo OK.
+    '    ⚠️ A chamada logo abaixo e a SONDA do §12.2 — ver o comentario na',
+    '    factory antes de renomear o alias ou a funcao.',
     '',
     '    Devolve None quando nao ha o que responder (modulo ausente ou banco',
     '    fora): o chamador segue pela heranca e pelo calculo, como sempre."""',
@@ -352,7 +353,14 @@ _DELTA_ODATE = [
     '            _conn_od.close()',
     '    except Exception as e:',
     "        print(f'[MALHA] ODATE da corrida indisponivel ({e}) — seguindo pelo calculo de sempre')",
-    '        return None',
+    '        # FALHOU e diferente de NAO HA CORRIDA, e a diferenca custa caro:',
+    '        # quem responde pelo calculo proprio grava a linha com essa data,',
+    '        # e a partir dai o degrau 0 a le e a FIXA para o run inteiro. Um',
+    '        # blip de pool no primeiro instante do run bastaria para trazer de',
+    '        # volta o Carga_Vida — o membro carimbando a propria data enquanto',
+    '        # a malha corre em outra. Marcando a falha, a proxima task tenta de',
+    '        # novo em vez de herdar a resposta de um banco que estava mudo.',
+    "        return {'falhou': True}",
     '',
     '# Memoria do ODATE por run_id (Decisao 36). NAO e cache de performance:',
     '# e o que impede a funcao de responder DUAS coisas diferentes no mesmo',
@@ -406,6 +414,17 @@ _DELTA_ODATE = [
     '    else:',
     "        resposta = {'data': _odate_pela_virada(context), 'corrida': None,",
     "                    'ambiguo': False, 'degrau': 'calculo', 'detalhe': None}",
+    '    # Resposta dada com o banco MUDO nao vira memoria: memoizar aqui',
+    '    # transformaria uma indisponibilidade de um segundo na data oficial',
+    '    # do run inteiro. Sem memoizar, a proxima task refaz a pergunta — e',
+    '    # se o banco ja tiver voltado, o degrau 0 (a linha gravada) responde.',
+    '    # O risco residual esta declarado na §18: se a linha JA nasceu com a',
+    '    # data do calculo, nada a reconcilia depois.',
+    "    if _resp.get('falhou'):",
+    '        print(f"[EXEC] ODATE de {PIPELINE_NAME}: {resposta[\'data\']} "',
+    '              f"(degrau={resposta[\'degrau\']}) — resolvido SEM o banco, "',
+    '              f"NAO memoizado; a proxima task pergunta de novo")',
+    '        return resposta',
     '    # O dicionario e do RUN, nao do processo: um worker atende muitos runs',
     '    # e guardar todos vazaria memoria por nada.',
     '    if len(_ODATE_DO_RUN) > 20:',
@@ -605,7 +624,20 @@ _DELTA_PUSH_GANHO = [
     '                        # marca — e so existe quando ha corrida aberta do',
     '                        # filho DIFERENTE da do pai; disputa comum entre',
     '                        # dois pais da MESMA corrida continua muda.',
-    "                        if (_od_filho['data'] is not None",
+    '                        #',
+    '                        # As DUAS proveniencias tem de ser CONHECIDAS: o',
+    "                        # `corrida_id` e None tanto para 'nao ha corrida'",
+    "                        # quanto para 'ha duas do MESMO ODATE e nenhuma e",
+    "                        # dona' (Decisao 2), e comparar None com um id",
+    '                        # trata desconhecido como diferente. Reproduzido',
+    '                        # no dev em 2026-08-05: pai e filho na MESMA',
+    '                        # corrida #666, o pai sem dono so por tambem ser',
+    '                        # membro da #667 do mesmo dia, e o evento saia',
+    "                        # dizendo 'corrida #None empurrou' — alarme falso",
+    '                        # exatamente no caso que a F5 existe para tratar,',
+    '                        # e alarme falso ensina a ignorar o canal.',
+    "                        if (_od_filho['corrida_id'] is not None",
+    '                                and _corrida_pai is not None',
     "                                and _od_filho['corrida_id'] != _corrida_pai):",
     '                            _det_sm = (f"MALHA_CORRIDA_SEM_MEMBRO: {filho} ja tinha "',
     '                                       f"corrida em {data_ref} quando {PIPELINE_NAME} "',
@@ -621,12 +653,41 @@ _DELTA_PUSH_GANHO = [
 ]
 
 _VELHO_PUSH_CONF = [
+    '                    try:',
+    '                        from airflow.api.client.local_client import Client',
+    '                        Client(None, None).trigger_dag(',
+    '                            dag_id=filho, run_id=ganho,',
     '                            conf=_dep_montar_conf(data_ref, dia_op, PIPELINE_NAME))',
 ]
 
+# A montagem do conf sai de DENTRO do `try` do trigger e ganha rede para o
+# ROLLBACK: com `dags/utils/` revertido para antes da F5 e o `generated/` ainda
+# regerado (o force_all não se desfaz no deploy, e o deploy nunca limpa a
+# pasta), a chamada de 4 argumentos levantava TypeError, a reserva era devolvida
+# e a CASCATA INTEIRA parava com o pai VERDE — medido no dev em 2026-08-05.
 _NOVO_PUSH_CONF = [
-    '                            conf=_dep_montar_conf(data_ref, dia_op, PIPELINE_NAME,',
-    '                                                  _corrida_pai))',
+    '                    try:',
+    '                        _conf_f = _dep_montar_conf(data_ref, dia_op,',
+    '                                                   PIPELINE_NAME, _corrida_pai)',
+    '                    except TypeError:',
+    '                        # ROLLBACK da F5: `dags/utils/` volta para antes da',
+    '                        # fase (montar_conf de 3 argumentos) mas o',
+    '                        # `generated/` continua o regerado — o force_all',
+    '                        # NAO se desfaz no deploy e o deploy nunca limpa a',
+    '                        # pasta. Sem esta rede, TODO disparo por',
+    '                        # dependencia levanta TypeError, a reserva e',
+    '                        # devolvida e a CASCATA INTEIRA para com o pai',
+    '                        # VERDE (medido no dev em 2026-08-05). A chave da',
+    '                        # corrida e ADITIVA: perde-la e perder a',
+    '                        # otimizacao de heranca, nao a carga — o filho',
+    '                        # resolve a proveniencia sozinho pelo degrau 0.',
+    "                        print('[DEP] utils.dependencias anterior a F5 — '",
+    "                              'conf sem a corrida do pai')",
+    '                        _conf_f = _dep_montar_conf(data_ref, dia_op, PIPELINE_NAME)',
+    '                    try:',
+    '                        from airflow.api.client.local_client import Client',
+    '                        Client(None, None).trigger_dag(',
+    '                            dag_id=filho, run_id=ganho, conf=_conf_f)',
 ]
 
 # As trocas, em pares (novo, velho). Removidas as adicoes, o que sobra tem de

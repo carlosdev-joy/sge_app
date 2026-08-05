@@ -2914,6 +2914,37 @@ errado.
     dizer *"este dia teve N corridas — escolha uma"* e oferecer o
     `SeletorCorrida`, que é entregável da F10. Enquanto isso não existe, o
     operador vê o canvas do dia sem faixa, que é honesto mas mudo.
+14. **A guardiã é uma QUARTA porta de disparo e não propaga a corrida.**
+    `dags/etl_dependencia_guardia.py` chama `montar_conf(data_ref, dia_op,
+    "guardia")` — sem `malha_execucao_id`. A **data** não sofre (o degrau 0 lê a
+    linha que a própria guardiã acabou de criar) e a proveniência costuma ser
+    recuperada pelo degrau 3; mas ela se perde exatamente quando o pipeline é
+    membro de **duas corridas do mesmo ODATE**, que é o caso que a F5 existe
+    para tratar. A recusa por ambiguidade também não roda nessa porta. Se "as
+    três portas" da Decisão 35 incluem a guardiã, falta esta — resolver na F7,
+    que já mexe na guardiã.
+15. **Um blip de banco na primeira pergunta do run ainda pode gravar a linha
+    com a data do cálculo.** A F5 fechou metade: resposta dada com o banco mudo
+    não vira memória, então a próxima task refaz a pergunta (teste
+    `test_banco_mudo_na_1a_chamada_nao_vira_a_data_oficial_do_run`). O que
+    **não** existe é reconciliação: se a linha já nasceu com a data errada, o
+    degrau 0 a lê e a fixa. Fechar isso exige mover linha entre ODATEs, que é
+    mais arriscado que o defeito — decidir com o dono depois do smoke.
+16. **`Clear` de um run recusado por ODATE ambíguo reencontra a linha `PULADO`**
+    pelo degrau 0 e roda com a data do cálculo. A mensagem manda "dispare de
+    novo" (run novo), que escapa — mas `Clear` é o gesto de plantão mais comum.
+17. **Uma conexão a mais por task enquanto o interruptor está em `0`.** Medido:
+    `_odate_do_run` num processo novo abre 1 conexão + 1 `SELECT config_value`
+    mesmo desligado; do 2º run em diante a consulta some, a conexão não. Como o
+    interruptor só liga depois da F7, esse é o estado permanente até lá.
+18. **A sonda do §12.2 responde `DESCONHECIDO` para pipeline nunca publicado**
+    (sem arquivo em `generated/`), mandando o operador conferir um arquivo que
+    nunca existiu. Seguro pela regra ("desconhecido nunca é ausência"), mas o
+    texto podia distinguir os dois.
+19. **N+1 na sonda do disparo:** `carimbo_corrida_dos_pipelines` consulta o
+    cadastro **por membro** antes de ler cada arquivo — numa malha de 40 são 40
+    consultas + 40 `stat` a cada disparo, inclusive `dry_run`. O cache é por
+    arquivo; o do cadastro não existe.
 13. **`_fechar_dia_anterior` ainda fecha como `NAO_LIBEROU` linhas de corrida
     `ABERTA`** que atravessem o dia operacional (teto > 24 h, ou cadeia longa com
     rerun) — virando pendentes e levando a corrida a `FALHA` por ação da própria

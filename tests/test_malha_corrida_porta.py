@@ -1762,3 +1762,25 @@ def test_interruptor_desligado_nao_sonda_nada(client, auth_operador):
         r = _disparar(client)
     assert r.status_code == 200, r.text
     assert sonda.call_count == 0
+
+
+def test_a_sonda_que_QUEBRA_nao_impede_o_disparo(client, auth_operador):
+    """A sonda é DIAGNÓSTICO, nunca porta. Ela lê arquivo do disco — permissão,
+    disco cheio, `DAGS_FOLDER` errado no ambiente — e nada disso pode virar
+    "a malha não parte". O comentário no router promete exatamente isso; sem
+    teste, a promessa é uma frase."""
+    import services.espera as esp_svc
+    db = FakeDb(pipelines=_pipes())
+    fake = FakeAirflowClient()
+    with _patch_db(db), patch("routers.malhas.get_airflow_client",
+                              return_value=fake), _dags_novo(), _patch_agora(), \
+            patch.object(esp_svc, "carimbo_corrida_dos_pipelines",
+                         side_effect=OSError("permissao negada em generated/")):
+        _malha_com_inicio(client)
+        r = _disparar(client)
+    assert r.status_code == 200, r.text
+    corpo = r.json()
+    assert fake.chamadas, "a sonda quebrou e o disparo parou junto"
+    assert "carimbo_odate" not in corpo
+    assert [a for a in corpo["avisos"]
+            if a.get("tipo") in ("sem_carimbo_odate", "carimbo_incerto")] == []

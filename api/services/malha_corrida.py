@@ -515,6 +515,15 @@ def corrida_aberta_do_pipeline(cur, pipeline: str) -> dict:
 # e o painel precisam saber qual ODATE uma execução TERIA, e uma segunda régua
 # aqui é como a tela e o motor voltam a discordar sobre o mesmo fato.
 
+# ⚠️ SEM `substituida_em IS NULL`, e de PROPOSITO — e a unica consulta do
+# projeto sobre etl_pipeline_execucao que a omite, entao a ausencia precisa
+# estar escrita ou alguem "conserta". As outras perguntam "o que CONTA para a
+# corrida", e linha aposentada por rerun nao conta. Esta pergunta e outra:
+# "que ODATE ESTE run ja carimbou" — identidade, nao contagem. Se o rerun
+# aposentou a linha, o run_id continua sendo o mesmo e a data dele tambem;
+# filtrar aqui faria a task seguinte do MESMO run cair no degrau 3/4 e
+# eventualmente gravar uma segunda linha noutro dia, que e a doenca que este
+# degrau existe para impedir.
 SQL_ODATE_DO_RUN = (
     "SELECT TOP 1 data_referencia, malha_execucao_id "
     "FROM dbo.etl_pipeline_execucao "
