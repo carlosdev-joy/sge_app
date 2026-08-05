@@ -928,6 +928,55 @@ def test_navegacao_por_dia_nao_traz_a_faixa_de_outro_dia(client, auth):
     assert "corrida" not in painel
 
 
+def test_dia_com_DUAS_corridas_nao_mistura_a_faixa_de_uma_com_o_canvas_das_duas(
+        client, auth):
+    """O buraco que sobrou entre a navegação por dia e a lente (achado 4 da
+    revisão da F4).
+
+    Sem lente, `execucoes[]` traz o DIA INTEIRO — as linhas das duas corridas.
+    O bloco `corrida`, porém, descreveria só a última. Resultado: o nó da
+    corrida #1 verde no canvas ao lado de uma faixa dizendo `0 de 2` da #2, na
+    MESMA tela — a Decisão 55 pelo avesso, e a mesma família de defeito que
+    esta fase inteira existe para matar.
+
+    Com mais de uma corrida no dia o bloco SAI, e `corridas_no_dia` diz ao
+    front que há uma escolha a oferecer (o ◀ ▶, que aplica a lente e recorta as
+    duas pontas juntas). Não é a mesma coisa que "este dia não teve corrida",
+    onde o bloco simplesmente não vem e não há ação nenhuma a sugerir."""
+    db = FakeDb(pipelines=_pipes(), config={"dependencia_hora_virada": "00:00"})
+    db.config[mc.CHAVE_ATIVA] = "0"
+    with _patch(db), _patch_agora():
+        _monta_malha(client, "M1", ["A", "B"])
+        # duas corridas no MESMO ODATE: a #1 fechada (o ciclo da madrugada) e a
+        # #2 aberta (o rerun das 5h) — o gesto que o próprio aceite descreve.
+        db.abrir_corrida("M1", odate=ODATE, status="CONCLUIDA",
+                         aberta_em=datetime(2026, 8, 5, 1, 10),
+                         membros=["A", "B"])
+        db.abrir_corrida("M1", odate=ODATE,
+                         aberta_em=datetime(2026, 8, 5, 5, 0),
+                         membros=["A", "B"])
+        painel = client.get(
+            "/malhas/M1/execucao?data_referencia=2026-08-05").json()
+    assert "corrida" not in painel, \
+        "com duas corridas no dia, descrever UMA sobre a lista das DUAS é a mentira"
+    assert painel["corridas_no_dia"] == 2
+
+
+def test_dia_com_UMA_corrida_mantem_a_faixa(client, auth):
+    """O contraponto — sem ele, o conserto acima poderia ter simplesmente
+    apagado a faixa de toda navegação por data, que é o caso comum."""
+    db = FakeDb(pipelines=_pipes(), config={"dependencia_hora_virada": "00:00"})
+    db.config[mc.CHAVE_ATIVA] = "0"
+    with _patch(db), _patch_agora():
+        _monta_malha(client, "M1", ["A"])
+        db.abrir_corrida("M1", odate=ODATE, aberta_em=AGORA_BANCO,
+                         membros=["A"])
+        painel = client.get(
+            "/malhas/M1/execucao?data_referencia=2026-08-05").json()
+    assert painel["corrida"]["data_referencia"] == "2026-08-05"
+    assert "corridas_no_dia" not in painel
+
+
 # ════════════════════ o banner verde e o card verde juntos ══════════════════
 
 def test_malha_concluida_sai_do_status_da_corrida(client, auth):
@@ -1196,6 +1245,10 @@ def test_contrato_do_bloco_corrida(client, auth):
         "membros_fora_do_odate",
         "membros_inativos", "pendentes", "ultimo_movimento_em",
         "sem_sinal_min", "decorrido_min", "apurado_em",
+        # Separa "a corrida abriu com snapshot vazio" (fato: alguém olhe o
+        # cadastro da malha) de "a consulta não respondeu" (tente de novo) —
+        # sem ele os dois chegavam à tela iguais, de contadores em branco.
+        "sem_membros",
     }
     assert set(corrida["pendentes"][0]) == {"pipeline", "classe", "desde",
                                             "faltante"}

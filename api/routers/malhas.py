@@ -2024,7 +2024,10 @@ def _corrida_do_card(c: dict, agg) -> dict:
                     "membros_travados": None, "membros_nao_partiram": None,
                     "membros_fora_do_odate": None,
                     "membros_inativos": None, "pendentes": [],
-                    "ultimo_movimento_em": None, "sem_sinal_min": None})
+                    "ultimo_movimento_em": None, "sem_sinal_min": None,
+                    # `False` e não `None`: aqui não sabemos NADA, e afirmar
+                    # "sem membros" seria trocar uma ignorância por um fato.
+                    "sem_membros": False})
         return out
     ok = vivos = dispensados = inativos = fora_odate = 0
     pendentes = []
@@ -2083,6 +2086,12 @@ def _corrida_do_card(c: dict, agg) -> dict:
         "pendentes": pendentes,
         "ultimo_movimento_em": _fmt_dt(agg["movimento_em"]),
         "sem_sinal_min": agg["sem_sinal_min"],
+        # `total == 0` é um FATO, não uma falha de leitura: a corrida abriu e o
+        # snapshot saiu vazio (malha sem membro ativo no instante da abertura).
+        # Sem esta marca ele chegaria à tela igualzinho ao `agg is None` do lock
+        # timeout — contadores em branco —, e são coisas opostas: uma pede que
+        # alguém olhe o cadastro da malha, a outra que alguém tente de novo.
+        "sem_membros": total == 0,
     })
     if agg.get("apurado_em") is not None:
         out["apurado_em"] = _fmt_dt(agg["apurado_em"])
@@ -2755,7 +2764,7 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
             cur.close(); conn.close()
             raise HTTPException(
                 status_code=404,
-                detail=f"Corrida #{corrida} não encontrada na malha "
+                detail=f"Não encontrei essa corrida na malha "
                        f"'{malha}'." + (" A migration 085 ainda não foi "
                                         "aplicada neste banco." if sem_085
                                         else ""))
@@ -2785,6 +2794,32 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
             # Navegação por dia numa data que não é a da corrida corrente: o
             # bloco sai do payload em vez de descrever outro ciclo.
             corrida_payload = None
+        corridas_no_dia = None
+        if lente is None and corrida_payload is not None:
+            # Mesma data da corrente, mas o DIA pode ter tido mais de uma
+            # corrida (rerun às 5h, o gesto que o aceite "duas corridas no mesmo
+            # ODATE" descreve). Sem lente, `execucoes[]` traz o dia INTEIRO — as
+            # linhas das duas — enquanto o bloco descreveria só a última: o nó
+            # da corrida #1 verde no canvas ao lado de uma faixa dizendo "0 de
+            # 2" da #2. É a MESMA tela contando duas coisas, que é exatamente o
+            # que a Decisão 55 e esta fase existem para matar; então o bloco sai
+            # e o front manda escolher uma corrida (o ◀ ▶, que aplica a lente e
+            # aí sim recorta as duas pontas juntas).
+            # Consulta própria, e não uma coluna no SQL compartilhado, porque
+            # aquele serve a lista de 40 malhas com aceite de DUAS consultas;
+            # aqui é uma malha só, e o custo é um seek em ix_malha_exec_malha.
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM dbo.etl_malha_execucao "
+                    "WHERE malha_name = ? AND data_referencia = ?",
+                    (malha, data_ref))
+                corridas_no_dia = int(cur.fetchone()[0] or 0)
+            except Exception as e:  # noqa: BLE001 — leitura degrada
+                log.warning("[malhas] contagem de corridas do dia indisponivel "
+                            "(%s); o bloco da corrida segue no payload", e)
+                corridas_no_dia = None
+            if corridas_no_dia and corridas_no_dia > 1:
+                corrida_payload = None
 
         # Membros da malha (JOIN garante que pipeline excluído some, como no
         # detalhe) — mapa casefold → grafia OFICIAL, a mesma canonização das
@@ -2812,6 +2847,12 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
             resposta["corrida"] = corrida_payload
         elif sem_085:
             resposta["migration_085_pendente"] = True
+        if corrida_payload is None and corridas_no_dia and corridas_no_dia > 1:
+            # O front precisa distinguir "este dia não teve corrida" (o bloco
+            # simplesmente não vem) de "teve VÁRIAS e você está vendo o dia
+            # inteiro" — no segundo caso existe uma ação a oferecer, e é ela
+            # que evita a leitura errada de um canvas que mistura dois ciclos.
+            resposta["corridas_no_dia"] = corridas_no_dia
         if not _tabelas_067_execucao(cur):
             log.warning("[MALHA] migration 067 ausente — visão de execução da "
                         "malha '%s' degradada para vazio", malha)
@@ -3337,7 +3378,7 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
                     "no": inicio["id"], "nivel": "forte",
                     "tipo": "corrida_orfa",
                     "mensagem": (
-                        f"nenhuma raiz partiu e a corrida #{corrida['id']} "
+                        f"nenhuma raiz partiu e a {_rotulo_corrida(corrida)} "
                         f"NÃO pôde ser encerrada automaticamente — ela segue "
                         f"aberta e vai recusar o próximo disparo desta malha. "
                         f"Encerre-a em Malha ▸ Encerrar corrida (com motivo) "
@@ -3414,7 +3455,7 @@ def encerrar_corrida(malha_name: str, corrida_id: int,
             _fechar_silencioso(conn)
             raise HTTPException(
                 status_code=404,
-                detail=f"Corrida #{corrida_id} não encontrada.")
+                detail="Não encontrei essa corrida. Ela pode ter sido de outra malha, ou o link está velho — abra a malha e escolha a corrida na lista.")
         # A corrida é identificada pelo `id` (Decisão 7), mas o endpoint vive
         # sob a malha: encerrar a corrida de OUTRA malha por um id digitado
         # errado é o tipo de gesto que ninguém desfaz.
@@ -3422,14 +3463,14 @@ def encerrar_corrida(malha_name: str, corrida_id: int,
             _fechar_silencioso(conn)
             raise HTTPException(
                 status_code=422,
-                detail=f"A corrida #{corrida_id} é da malha "
+                detail=f"Essa corrida é da malha "
                        f"'{corrida['malha_name']}', não de '{malha}'. Abra a "
                        f"malha dona da corrida para encerrá-la.")
         if corrida["fechada_em"] is not None:
             _fechar_silencioso(conn)
             raise HTTPException(
                 status_code=422,
-                detail=f"A corrida #{corrida_id} já foi encerrada em "
+                detail=f"A {_rotulo_corrida(corrida)} já foi encerrada em "
                        f"{_fmt_dt(corrida['fechada_em'])} como "
                        f"{corrida['status']}"
                        + (f" por {corrida['fechada_por']}"
@@ -3446,7 +3487,7 @@ def encerrar_corrida(malha_name: str, corrida_id: int,
             _fechar_silencioso(conn)
             raise HTTPException(
                 status_code=422,
-                detail=f"A corrida #{corrida_id} foi encerrada por outra ponta "
+                detail=f"A {_rotulo_corrida(corrida)} foi encerrada por outra ponta "
                        f"enquanto esta tela pedia o encerramento. Recarregue a "
                        f"malha: o ciclo já está fechado.")
         _evento_da_corrida(cur, corrida, "MALHA_CANCELADA", detalhe)
@@ -3920,6 +3961,23 @@ def _corrida_publica(c: dict) -> dict:
     }
 
 
+def _rotulo_corrida(c: dict) -> str:
+    """O nome HUMANO da corrida (Decisão 74): `corrida de 04/08`, e só a partir
+    da segunda do dia, `2ª corrida de 04/08`.
+
+    O `#` fica de fora de propósito, e não por estilo: hoje três numerações
+    diferentes disputam essa notação (`id`, `sequencia` e o `inicio:#12` de
+    `aberta_por`), então `#12` numa malha diária lê-se como "12ª tentativa
+    hoje". Mensagem de erro da API É interface — ela sai no toast da tela.
+    """
+    dia = _fmt_dia(c["data_referencia"])
+    try:
+        seq = int(c.get("sequencia") or 1)
+    except (TypeError, ValueError):
+        seq = 1                     # rótulo humano nunca derruba a resposta
+    return f"corrida de {dia}" if seq <= 1 else f"{seq}ª corrida de {dia}"
+
+
 def _msg_corrida_aberta(c: dict) -> str:
     """O 422 da porta 1 — o que aconteceu, por que, e o que a pessoa faz agora.
 
@@ -3927,12 +3985,12 @@ def _msg_corrida_aberta(c: dict) -> str:
     porque é a dúvida que trava o operador às 3h: encerrar a corrida **não**
     mata processo nenhum, e sem dizer isso o botão não é usado.
     """
+    rotulo = _rotulo_corrida(c)
     return (
-        f"A malha '{c['malha_name']}' já tem a corrida #{c['id']} "
-        f"({c['sequencia']}ª de {_fmt_dia(c['data_referencia'])}) em andamento "
+        f"A malha '{c['malha_name']}' já tem a {rotulo} em andamento "
         f"desde {_fmt_dt(c['aberta_em'])}. Disparar agora abriria um SEGUNDO "
         f"ciclo por cima do que está em voo — é assim que a mesma malha termina "
-        f"metade num dia e metade em outro. Encerre a corrida #{c['id']} "
+        f"metade num dia e metade em outro. Encerre a {rotulo} "
         f"(Malha ▸ Encerrar corrida, com motivo) e dispare de novo; encerrar "
         f"fecha o CICLO e não interrompe pipeline nenhum — o que já está "
         f"rodando continua rodando.")
