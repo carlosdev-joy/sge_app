@@ -2644,7 +2644,7 @@ teto é a rede obrigatória.
   (861 linhas, sem `etl_malha*` nem `etl_dependencia_evento`).
 - Se as fases forem em janelas separadas e uma for pulada, o `deploy.sh` pede que
   o operador **reconheça os nomes** das migrations pendentes: o nome é
-  `085_malha_corrida.sql` e a resposta é sempre `s`.
+  `085_malha_execucao.sql` e a resposta é sempre `s`.
 - **F7 sem F2** (hold sem corrida): o hold continua funcionando exatamente como
   hoje — o predicado é a autoridade, a corrida só suspende relógios que ainda não
   existem.
@@ -2715,7 +2715,7 @@ ver **quem** ficou para trás e republicar só aquele. `dag_config_pendente_em`
 
 | Arquivo | O que muda |
 |---|---|
-| `sql/migrations/085_malha_corrida.sql` | **novo** — todo o §5.3 |
+| `sql/migrations/085_malha_execucao.sql` | **novo** — todo o §5.3 |
 | `dags/utils/malha_corrida.py` | **novo** — canônico e puro: `odate_da_abertura`, `abrir`, `estado`, `fechar`, `corrida_aberta_do_pipeline`, `expirar_na_porta` |
 | `api/services/malha_corrida.py` | **novo** — port `?`/pyodbc, com teste de paridade |
 | `dags/etl_dependencia_guardia.py` | responsabilidades `_abrir_corridas_malha` e `_fechar_corridas_malha` no `ciclo()` (`:832`); `_observadores_malha` escopado pela corrida; `_fechar_dia_anterior` (`:259`) pula membros de corrida `ABERTA` |

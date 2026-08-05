@@ -276,9 +276,9 @@ def gravar_evento(conn, pipeline: str, data_ref, tipo: str, detalhe: str) -> boo
     mudança na guardiã**, e o painel da malha já os lê pela data. Inventar um
     canal novo aqui seria criar um segundo lugar onde procurar alerta.
 
-    Limite herdado e aceito: ``ux_dep_evento`` é único por
-    (pipeline, data, tipo) — duas etapas do MESMO pipeline no MESMO dia geram
-    UM evento. O detalhe nomeia a primeira; a tela de execução mostra todas as
+    Limite herdado e aceito: ``ux_dep_evento_corrida`` (``ux_dep_evento`` até a
+    migration 085) é único por (pipeline, data, tipo, corrida) — duas etapas do
+    MESMO pipeline no MESMO dia e na MESMA corrida geram UM evento. O detalhe nomeia a primeira; a tela de execução mostra todas as
     pausas. É a mesma dedupe que JANELA_ESTOUROU usa desde a 067.
 
     Nunca levanta: alerta que falha não pode mudar a decisão do portão.
