@@ -13,6 +13,8 @@ Endpoints:
   GET    /malhas/{malha_name}/execucao             — status + eventos por data (F9)
                                                      + eventos de nó #no:* e
                                                      malha_concluida (F14)
+                                                     + lente ?corrida={id} e o
+                                                     bloco `corrida` (F4)
   POST   /malhas/{malha_name}/disparo              — disparo MANUAL da malha (F15;
                                                      dry_run no body): raízes do
                                                      Início via trigger REST
@@ -1675,6 +1677,475 @@ def _gatilho_dos_membros(membros_cron) -> dict:
             "agendamento": None}
 
 
+# ══════ F4 — a CORRIDA no card e no painel (spec-malha-execucao.md §9) ═══════
+#
+# O DEFEITO que este bloco existe para matar: o card da lista escolhe hoje a
+# execução MAIS RECENTE entre os membros (`_ultima_execucao_por_pipeline` +
+# o laço `melhor[malha]` de `list_malhas`). Com `CARGA_A` em FALHA às 03:00 e
+# `CARGA_B` em SUCESSO às 03:40, a chave de comparação elege `CARGA_B` e o card
+# diz **sucesso**. O gestor abre a tela às 8h, vê verde, e a malha falhou.
+#
+# A cura não é um desempate melhor: é trocar a PERGUNTA. O status passa a ser o
+# da CORRIDA (`etl_malha_execucao`), que é um registro do CICLO — e o ciclo
+# sabe dizer "falhou" e NOMEAR quem falhou, coisa que "o membro mais recente"
+# nunca soube. `_ultima_execucao_por_pipeline` continua no payload como
+# FALLBACK declarado (Decisão 41): é o que a malha sem corrida mostra, e é o que
+# o front anterior a esta fase continua lendo.
+#
+# ── O orçamento de consultas, que é requisito e não detalhe ──────────────────
+# DUAS consultas para a lista inteira, independentemente de haver 4 ou 40
+# malhas (aceite da F4). Nenhuma por malha, nenhum probe extra:
+#
+#   (A) `_SQL_ULTIMA_CORRIDA` — um SEEK por malha em `ix_malha_exec_malha`,
+#       dentro de UM `CROSS APPLY`. Traz também o relógio do teto (já avaliado
+#       pelo BANCO) e o valor da config de quiescência, para que nem um nem
+#       outro custem uma ida a mais;
+#   (B) `_SQL_DENOMINADOR` — o snapshot de TODAS as corridas de (A) numa
+#       consulta só, `WHERE malha_execucao_id IN (…)`, com a linha viva de cada
+#       membro pendurada por LEFT JOIN.
+#
+# A sonda `tabela_085_presente()` NÃO é chamada aqui de propósito: seria uma
+# terceira consulta para descobrir o que a primeira já descobre ao falhar. A
+# degradação é por ERRO reconhecido (`mc._sem_085`), o mesmo padrão
+# claim-não-check de `_exec_com_fallback_078` — que este bloco também usa, para
+# a coluna `substituida_em` da 078.
+#
+# ── Por que a agregação é em Python, e não um `GROUP BY` de contadores ───────
+# Porque o card precisa NOMEAR o culpado, e nome não sai de `COUNT`. A consulta
+# (B) devolve uma linha por (corrida, membro, linha viva) — algumas centenas de
+# linhas para 40 malhas — e quem classifica é `mc._classe_da_linha`, a MESMA
+# função que a guardiã usa para decidir o desfecho (§6.4). Uma segunda
+# implementação da classificação, em T-SQL, seria o motor e a tela discordando
+# sobre o que é "falhou" — exatamente o que o módulo gêmeo existe para impedir.
+# Os contadores da barra saem do mesmo laço, sem custo.
+#
+# ── O interruptor NÃO governa a leitura ─────────────────────────────────────
+# `malha_corrida_ativa` (§11.2) governa quem ABRE e quem FECHA. Aqui ele não é
+# consultado, e a razão é operacional: (i) com o interruptor em `0` nada abre,
+# logo não há corrida, logo toda malha cai no fallback por AUSÊNCIA DE CAMPO —
+# que é o estado do dia do deploy e o que a §11.3 descreve; (ii) se alguém
+# DESLIGAR o interruptor com corridas já abertas (o gesto de rollback), essas
+# corridas continuam existindo, continuam `ABERTA` e continuam sendo o único
+# lugar onde o operador vê que precisa encerrá-las — `POST .../encerrar` não
+# passa pelo portão justamente por ser a saída (§6.8). Esconder o registro
+# nesse momento seria o card mentindo de novo, agora por omissão.
+
+# `SEM_PROGRESSO` = corrida viva em que NADA se mexeu há tempo demais. O limiar
+# é múltiplo da quiescência porque é o único relógio que a 085 configura, mas
+# NÃO pode ser a própria quiescência: aquela é o relógio de FECHAMENTO ("nada
+# mais vai acontecer", e ela só é avaliada quando não há ninguém vivo), e aqui
+# há vivos por definição. Com 15 min, toda carga honesta de meia hora ficaria
+# âmbar aos 15 — alarme falso semanal treina o operador a ignorar o alarme
+# (Decisões 26/27). Quatro ciclos (60 min no default) é folgado o bastante para
+# a etapa longa que está só trabalhando e curto o bastante para a órfã de 20h.
+_SEM_SINAL_X_QUIESCENCIA = 4
+
+# A corrente de cada malha: a de `aberta_em` mais recente, aberta ou fechada.
+# `CROSS APPLY` (e não `OUTER`): malha sem corrida nenhuma não aparece, e é a
+# ausência da chave `corrida` no payload que liga o fallback no front — a
+# degradação da Decisão 41 é por AUSÊNCIA DE CAMPO, nunca por flag.
+#
+# Duas colunas viajam junto porque custariam uma consulta a mais se viessem
+# sozinhas, e nenhuma delas é conta de tempo em Python (Decisão 10):
+#   • `teto_vencido` — o `<` entre `teto_em` e `SYSDATETIME()` é avaliado pelo
+#     BANCO. No dev o SQL Server está ~3h à frente do container da API, e um
+#     `datetime.now()` daqui responderia "atrasada" a manhã inteira;
+#   • `quiescencia_cfg` — a config que o limiar de sinal usa. `TOP 1` com a
+#     chave exata; ausente/estranha volta ao default do módulo.
+_SQL_ULTIMA_CORRIDA = (
+    "SELECT m.malha_name, " + mc._COLS_ME.replace("me.", "c.") + ", "
+    "CASE WHEN c.teto_em IS NOT NULL AND c.teto_em < SYSDATETIME() "
+    "THEN 1 ELSE 0 END AS teto_vencido, "
+    "DATEDIFF(MINUTE, c.aberta_em, SYSDATETIME()) AS decorrido_min, "
+    "SYSDATETIME() AS apurado_em, "
+    "(SELECT TOP 1 cfg.config_value FROM dbo.etl_app_config cfg "
+    " WHERE cfg.config_key = '" + mc.CHAVE_QUIESCENCIA + "') AS quiescencia_cfg "
+    "FROM dbo.etl_malha m "
+    "CROSS APPLY (SELECT TOP 1 " + mc._COLS_ME + " "
+    "             FROM dbo.etl_malha_execucao me "
+    "             WHERE me.malha_name = m.malha_name {alvo}"
+    "             ORDER BY me.aberta_em DESC, me.id DESC) c "
+    "{filtro}ORDER BY m.malha_name")
+# Os dois recortes entram por SLOT, e não por `.replace()` no texto pronto: o
+# `WHERE` da malha tem de nascer DEPOIS do `CROSS APPLY` (um replace sobre
+# "FROM dbo.etl_malha m" o colocaria antes, e o SQL inválido só apareceria no
+# banco), e a LENTE `?corrida={id}` tem de entrar DENTRO do APPLY — filtrar o
+# id por fora traria a corrente e devolveria vazio quando a lente aponta para
+# uma corrida anterior, que é justamente o caso que a lente existe para servir.
+# A ordem dos parâmetros segue a ordem do TEXTO: alvo (dentro) antes de filtro
+# (fora).
+_FILTRO_UMA_MALHA = "WHERE m.malha_name = ? "
+_ALVO_UMA_CORRIDA = "AND me.id = ? "
+
+# O ESCOPO da linha de um membro nesta corrida — o predicado da Decisão 23,
+# literal, com UMA adição que só a tela precisa:
+#
+#   e.data_referencia = me.data_referencia
+#   AND (   e.malha_execucao_id = me.id
+#        OR COALESCE(e.inicio, e.criado_em) >= me.aberta_em )
+#   AND e.substituida_em IS NULL
+#
+# A adição é o TETO do ramo de recorte por tempo (`<= me.fechada_em`). O
+# predicado do §6.4 é escrito para o FECHADOR, que só olha corrida ABERTA — lá
+# `fechada_em` é NULL e a cláusula é inerte. A tela olha também corrida
+# FECHADA, e sem o teto a corrida #1 de 04/08 (01:10→04:02) "enxergaria" as
+# linhas da corrida #2 do MESMO dia, que começaram depois: as duas corridas do
+# aceite se sobreporiam, e a #1 mudaria de número ao ser reaberta na tela.
+# Proveniência (`malha_execucao_id`) continua entrando sempre — ela tem dono e
+# não depende de janela.
+#
+# `substituida_em IS NULL` é a Decisão 55 e vale no numerador E no painel, na
+# MESMA PR: sem ela, um rerun às 3h deixa o nó verde no canvas com a linha que
+# o motor já aposentou enquanto a faixa conta outra coisa — a MESMA tela
+# contando duas coisas diferentes. Banco sem a 078 cai no texto legado por
+# `_exec_com_fallback_078`.
+_ESCOPO_LINHA_078 = (
+    " AND e.data_referencia = me.data_referencia"
+    " AND e.substituida_em IS NULL"
+    " AND (e.malha_execucao_id = me.id"
+    "      OR (COALESCE(e.inicio, e.criado_em) >= me.aberta_em"
+    "          AND (me.fechada_em IS NULL"
+    "               OR COALESCE(e.inicio, e.criado_em) <= me.fechada_em)))")
+_ESCOPO_LINHA_LEGADO = _ESCOPO_LINHA_078.replace(
+    " AND e.substituida_em IS NULL", "")
+
+# O snapshot de TODAS as corridas correntes numa consulta — o denominador que
+# NÃO ENCOLHE (Decisão 52): ele é `etl_malha_execucao_membro`, congelado na
+# abertura, e não a lista de membros de AGORA. Um membro marcado `PULADO` pelo
+# ciclo seguinte muda de CLASSE (vira dispensado) e continua no denominador; se
+# o denominador fosse `total − dispensados`, `2 de 7` viraria `2 de 4` sem nada
+# ter acontecido, e o olho leria "avançou" onde três pipelines foram barrados.
+#
+# `sem_sinal_min` sai do BANCO em MINUTOS já subtraídos (Decisão 10) — o Python
+# só escolhe o MENOR intervalo entre as linhas da corrida, o que é seleção e não
+# aritmética de relógio. Com o SQL Server ~3h à frente do container da API (o
+# desvio medido no dev), qualquer `datetime.now()` daqui responderia "sem sinal
+# há -3h" e o alarme nunca dispararia.
+_SQL_DENOMINADOR = (
+    "SELECT mm.malha_execucao_id, mm.pipeline_name, "
+    "CAST(mm.ativo_na_abertura AS INT), CAST(mm.conta_para_fim AS INT), "
+    "e.status, COALESCE(e.inicio, e.criado_em) AS desde, "
+    "CASE WHEN e.status = 'EXECUTANDO' AND EXISTS "
+    "(SELECT 1 FROM dbo.etl_dependencia_evento ev "
+    " WHERE ev.pipeline_name = e.pipeline_name "
+    " AND ev.data_referencia = e.data_referencia "
+    " AND ev.tipo = '" + mc.EVENTO_ORFA + "') THEN 1 ELSE 0 END AS orfa, "
+    "DATEDIFF(MINUTE, COALESCE(e.fim, e.inicio, e.criado_em), SYSDATETIME()) "
+    "AS sem_sinal_min, "
+    "COALESCE(e.fim, e.inicio, e.criado_em) AS movimento_em, "
+    "CASE WHEN EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao o "
+    " WHERE o.malha_execucao_id = me.id "
+    " AND o.pipeline_name = mm.pipeline_name "
+    " AND o.data_referencia <> me.data_referencia{sub_o}) THEN 1 ELSE 0 END "
+    "AS fora_do_odate, "
+    "SYSDATETIME() AS apurado_em "
+    "FROM dbo.etl_malha_execucao_membro mm "
+    "JOIN dbo.etl_malha_execucao me ON me.id = mm.malha_execucao_id "
+    "LEFT JOIN dbo.etl_pipeline_execucao e "
+    "ON e.pipeline_name = mm.pipeline_name{escopo} "
+    "WHERE mm.malha_execucao_id IN ({ids}) "
+    "ORDER BY mm.malha_execucao_id, mm.pipeline_name, e.id")
+
+# Saúde (§9.3 / Decisão 11) — DERIVADA na leitura, nunca guardada. A ordem é a
+# da AÇÃO, não a do alfabeto:
+#   1. COM_FALHA  — há culpado com nome; é o único que já define o que fazer;
+#   2. ATRASADA   — o teto venceu (o prazo estourou, mas ninguém falhou);
+#   3. SEM_PROGRESSO — há vivo e nada se mexe: o sintoma nº 1 da execução órfã;
+#   4. OK.
+SAUDE_OK = "OK"
+SAUDE_COM_FALHA = "COM_FALHA"
+SAUDE_ATRASADA = "ATRASADA"
+SAUDE_SEM_PROGRESSO = "SEM_PROGRESSO"
+
+# As classes de pendência que significam "isto JÁ deu errado" — as duas que
+# pintam a corrida viva de vermelho. `nao_liberou` e `nao_partiu` são pendências
+# de ORDENAÇÃO (a linha morreu sem ser liberada; a DAG nunca partiu): entram em
+# `pendentes[]` com o nome e a classe, mas não transformam uma corrida em voo
+# em incidente vermelho — quem decide isso é o operador olhando a aba.
+_CLASSES_FALHA = ("falhou", "orfa")
+
+
+def _quiescencia_da_linha(bruto) -> int:
+    """Config de quiescência que veio junto da consulta (A) → int no domínio.
+
+    Fora do domínio ou ausente volta ao default do módulo — a MESMA regra de
+    `mc.quiescencia_minutos`, sem a consulta que ela faria."""
+    valor = mc._inteiro_no_dominio(bruto, mc.QUIESCENCIA_MIN_MIN,
+                                   mc.QUIESCENCIA_MIN_MAX)
+    return mc.QUIESCENCIA_MIN_PADRAO if valor is None else valor
+
+
+def _ultima_corrida_por_malha(cur, malha=None, corrida_id=None):
+    """Consulta (A): `{malha_name: linha_da_corrida}` para TODAS as malhas.
+
+    Devolve `(por_malha, sem_085)`. `sem_085 = True` significa "a migration 085
+    não está neste banco": o chamador omite a chave `corrida` de todos os cards
+    e liga `migration_085_pendente`. Qualquer outra falha de leitura degrada do
+    mesmo jeito, mas com log de aviso — nunca 500 (a corrida é aditiva; sem ela
+    a tela de Malha continua de pé).
+
+    `malha` recorta para uma malha só (o painel); `corrida_id` é a LENTE
+    `?corrida={id}`, e o recorte por malha vem junto de propósito — pedir a
+    corrida de OUTRA malha devolve vazio em vez de vazar o ciclo do vizinho."""
+    sql = _SQL_ULTIMA_CORRIDA.format(
+        alvo=_ALVO_UMA_CORRIDA if corrida_id else "",
+        filtro=_FILTRO_UMA_MALHA if malha else "")
+    params: tuple = tuple(
+        p for p in (int(corrida_id) if corrida_id else None, malha)
+        if p is not None)
+    try:
+        cur.execute(sql, params)
+        linhas = cur.fetchall()
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        if mc._sem_085(e):
+            log.warning("[MALHA] migration 085 ausente — o card e o painel "
+                        "voltam ao 'membro mais recente' (fallback)")
+            return {}, True
+        log.warning("[MALHA] corrida corrente das malhas indisponivel (%s) — "
+                    "cards sem o bloco 'corrida'", e)
+        return {}, False
+    fim = len(mc._CAMPOS) + 1
+    por_malha = {}
+    for r in linhas:
+        c = mc._como_dict(r[1:fim])
+        c["_teto_vencido"] = bool(r[fim])
+        c["_decorrido_min"] = int(r[fim + 1] or 0)
+        c["_apurado_em"] = r[fim + 2]
+        c["_quiescencia"] = _quiescencia_da_linha(r[fim + 3])
+        por_malha[str(r[0]).strip()] = c
+    return por_malha, False
+
+
+def _denominador_das_corridas(cur, corridas: list) -> dict:
+    """Consulta (B): a classificação de cada membro do snapshot de CADA corrida.
+
+    `{corrida_id: {membros: {...}, apurado_em, sem_sinal_min, movimento_em}}`.
+    Falha de leitura devolve `{}` — o chamador publica a corrida SEM os
+    contadores (`membros_total = null`), que é a resposta honesta a "não
+    consegui apurar" e o oposto de publicar zero como se fosse medida.
+    """
+    if not corridas:
+        return {}
+    ids = [int(c["id"]) for c in corridas]
+    marcadores = ",".join("?" for _ in ids)
+    sql_078 = _SQL_DENOMINADOR.format(escopo=_ESCOPO_LINHA_078, ids=marcadores,
+                                      sub_o=" AND o.substituida_em IS NULL")
+    sql_legado = _SQL_DENOMINADOR.format(escopo=_ESCOPO_LINHA_LEGADO,
+                                         ids=marcadores, sub_o="")
+    try:
+        deps_svc._exec_com_fallback_078(cur, sql_078, sql_legado, tuple(ids))
+        linhas = cur.fetchall()
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("[MALHA] snapshot das corridas %s indisponivel (%s) — "
+                    "corrida publicada sem contadores", ids[:5], e)
+        return {}
+    out: dict = {}
+    for (cid, pipeline, ativo, conta_fim, status, desde, orfa, sem_sinal,
+         movimento, fora_odate, apurado) in linhas:
+        agg = out.setdefault(int(cid), {"membros": {}, "apurado_em": apurado,
+                                        "sem_sinal_min": None,
+                                        "movimento_em": None})
+        m = agg["membros"].setdefault(pipeline, {
+            "ativo": bool(ativo), "conta_para_fim": bool(conta_fim),
+            "classe": None, "desde": None, "fora_do_odate": False})
+        if fora_odate:
+            m["fora_do_odate"] = True
+        if status is None:
+            continue                    # membro sem linha no escopo
+        classe = mc._classe_da_linha(status, bool(orfa))
+        atual = m["classe"]
+        # A MESMA precedência do `estado()` do módulo gêmeo: vivo na frente de
+        # tudo (nunca fechar com trabalho em voo) e `ok` na frente de `falhou`
+        # (o rerun que deu certo apaga a tentativa que o operador consertou).
+        if atual is None or (mc._ORDEM_CLASSE.index(classe)
+                             < mc._ORDEM_CLASSE.index(atual)):
+            m["classe"], m["desde"] = classe, desde
+        if sem_sinal is not None:
+            atual_sinal = agg["sem_sinal_min"]
+            if atual_sinal is None or int(sem_sinal) < atual_sinal:
+                agg["sem_sinal_min"] = int(sem_sinal)
+                agg["movimento_em"] = movimento
+    return out
+
+
+def _corrida_do_card(c: dict, agg) -> dict:
+    """A corrida no formato que o card e a faixa consomem — `_corrida_publica`
+    (o cabeçalho do ciclo, já usado por `GET /corridas`) mais os derivados da
+    leitura.
+
+    Regras que este dicionário carrega, e que a tela não pode reinventar:
+
+    • **o denominador é `membros_total` e ele NÃO ENCOLHE** (Decisão 52);
+      `membros_dispensados` é classe SEPARADA, nunca subtração do total;
+    • **`membros_travados` fica FORA do que a barra preenche** (Decisão 54): a
+      barra é `ok + vivos + dispensados`, e o travado é chip ao lado. Vale a
+      identidade `total = ok + vivos + dispensados + travados`, e é ela que
+      impede a barra de pintar 5/6 de vermelho e ser lida como "quase pronto"
+      a 1,5 m de distância;
+    • **`saude` é derivada na leitura**, nunca guardada, e só existe com a
+      corrida `ABERTA` — em corrida terminal o `status` já diz tudo, e uma
+      saúde `OK` embaixo de um `FALHA` seria a contradição na mesma linha;
+    • **`apurado_em` é o relógio do BANCO** no instante da apuração (Decisão
+      40). Ele serve ao texto ABSOLUTO do tooltip; o "atualizado há 8s" é do
+      relógio LOCAL do navegador (Decisão 60), e misturar os dois com o desvio
+      de 3h medido no dev produziria "atualizado há -3h".
+
+    `agg = None` (a consulta (B) não respondeu) → contadores `null` e
+    `pendentes` vazio: a tela mostra o estado do ciclo e NÃO desenha a barra.
+    """
+    out = _corrida_publica(c)
+    out["reaberta_por"] = c["reaberta_por"]
+    out["decorrido_min"] = c["_decorrido_min"]
+    out["apurado_em"] = _fmt_dt(c["_apurado_em"])
+    if agg is None:
+        out.update({"saude": None, "membros_total": None, "membros_ok": None,
+                    "membros_vivos": None, "membros_dispensados": None,
+                    "membros_travados": None, "membros_fora_do_odate": None,
+                    "membros_inativos": None, "pendentes": [],
+                    "ultimo_movimento_em": None, "sem_sinal_min": None})
+        return out
+    ok = vivos = dispensados = inativos = fora_odate = 0
+    pendentes = []
+    for pipeline in sorted(agg["membros"]):
+        m = agg["membros"][pipeline]
+        if m["fora_do_odate"]:
+            fora_odate += 1
+        if not m["ativo"]:
+            # §6.9/#9: quem já estava inativo na abertura fica FORA do
+            # denominador, mas nunca some em silêncio.
+            inativos += 1
+            continue
+        classe = m["classe"]
+        if classe is None:
+            # Membro sem linha nenhuma no escopo. `nao_partiu` é a resposta
+            # conservadora e deliberada: separar "não rodou hoje por regra de
+            # dia" exigiria avaliar `dia_permitido` por membro (o callback que
+            # a guardiã injeta em `estado()`), e isso é uma consulta de agenda
+            # por membro — o N+1 que este bloco existe para não ter. O membro
+            # dispensado de verdade tem linha `PULADO`, e essa a consulta vê.
+            classe = "nao_partiu"
+        if classe == "ok":
+            ok += 1
+        elif classe == "vivo":
+            vivos += 1
+        elif classe == "dispensado":
+            dispensados += 1
+        else:
+            pendentes.append({"pipeline": pipeline, "classe": classe,
+                              "desde": _fmt_dt(m["desde"]),
+                              # `faltante` é o "de quem esta corrida espera".
+                              # Fica `null` no CARD de propósito: respondê-lo é
+                              # `deps_svc.liberado()` por pendente, um N+1 na
+                              # lista inteira. O painel (uma malha só) o
+                              # preenche em `execucoes[].faltantes`.
+                              "faltante": None})
+    # O card tem espaço para UM nome, e ele tem de ser o do problema mais
+    # grave — não o primeiro do alfabeto. A ordem é a mesma precedência de
+    # classificação do módulo gêmeo, então `pendentes[0]` é sempre o que a tela
+    # deve nomear: `falhou` na frente de `orfa`, `orfa` na frente de
+    # `nao_liberou`, e `nao_partiu` por último.
+    pendentes.sort(key=lambda x: (mc._ORDEM_CLASSE.index(x["classe"]),
+                                  x["pipeline"]))
+    total = ok + vivos + dispensados + len(pendentes)
+    out.update({
+        "membros_total": total, "membros_ok": ok, "membros_vivos": vivos,
+        "membros_dispensados": dispensados, "membros_travados": len(pendentes),
+        "membros_fora_do_odate": fora_odate, "membros_inativos": inativos,
+        "pendentes": pendentes,
+        "ultimo_movimento_em": _fmt_dt(agg["movimento_em"]),
+        "sem_sinal_min": agg["sem_sinal_min"],
+    })
+    if agg.get("apurado_em") is not None:
+        out["apurado_em"] = _fmt_dt(agg["apurado_em"])
+    out["saude"] = _saude_da_corrida(c, out)
+    return out
+
+
+def _saude_da_corrida(c: dict, publico: dict):
+    """O eixo SAÚDE (§6.1) — o que a cor do card lê quando o ciclo está aberto.
+
+    `None` fora de `ABERTA`: o eixo CICLO já respondeu, e pendurar uma saúde
+    numa corrida terminal criaria duas afirmações sobre o mesmo fato."""
+    if c["status"] != mc.STATUS_ABERTA:
+        return None
+    if any(p["classe"] in _CLASSES_FALHA for p in publico["pendentes"]):
+        return SAUDE_COM_FALHA
+    if c["_teto_vencido"]:
+        return SAUDE_ATRASADA
+    limiar = c["_quiescencia"] * _SEM_SINAL_X_QUIESCENCIA
+    sem_sinal = publico["sem_sinal_min"]
+    # Sem NENHUM movimento ainda, o relógio do sinal é o da própria abertura:
+    # uma corrida aberta há 3h sem uma única linha é o caso mais mudo que
+    # existe, e é o que a `ABORTADA` da guardiã atende — enquanto ela não
+    # passa, quem avisa é a saúde.
+    if sem_sinal is None:
+        sem_sinal = c["_decorrido_min"]
+    elif not publico["membros_vivos"]:
+        # Sem vivo, "nada se mexe" é o estado NORMAL de quem terminou: é a
+        # quiescência, e quem age sobre ela é o fechador, não a cor do card.
+        return SAUDE_OK
+    return SAUDE_SEM_PROGRESSO if sem_sinal >= limiar else SAUDE_OK
+
+
+def _bloco_corrida(cur, malha=None, corrida_id=None):
+    """As duas consultas, juntas: `{malha_name: payload_da_corrida}`.
+
+    Devolve `(publicas, sem_085, brutas)`. É o ÚNICO ponto de entrada — o card
+    da lista e a faixa do painel leem o mesmo dicionário, porque o defeito que
+    esta fase mata é justamente o de duas superfícies derivando o mesmo fato
+    por caminhos diferentes.
+
+    `brutas` traz as linhas com os DATETIME2 originais. Só o painel a usa, e o
+    motivo é de precisão: os instantes do payload público passam por `_fmt_dt`,
+    que corta a fração de segundo, e `aberta_em`/`fechada_em` são as pontas de
+    um intervalo `>=`/`<=` — arredondar a borda de um recorte é como uma linha
+    entra ou sai da corrida errada."""
+    correntes, sem_085 = _ultima_corrida_por_malha(cur, malha, corrida_id)
+    if not correntes:
+        return {}, sem_085, {}
+    agregado = _denominador_das_corridas(cur, list(correntes.values()))
+    return ({nome: _corrida_do_card(c, agregado.get(int(c["id"])))
+             for nome, c in correntes.items()}, False, correntes)
+
+
+# `execucoes[]` do painel. Três textos, e o que muda entre eles é só o recorte:
+#   • sem lente          — o dia inteiro (o comportamento anterior à F4);
+#   • lente em corrida ABERTA  — proveniência OU "começou depois da abertura";
+#   • lente em corrida FECHADA — o mesmo, com o teto `<= fechada_em`, que é o
+#     que impede a corrida #1 de 04/08 de mostrar as linhas da #2 do mesmo dia.
+# `substituida_em IS NULL` (Decisão 55) entra nos TRÊS; sem a 078 no banco, o
+# `_exec_com_fallback_078` repete sem a cláusula.
+_SQL_EXEC_PAINEL = (
+    "SELECT pipeline_name, status, inicio, fim, disparado_por, motivo, "
+    "execution_id FROM dbo.etl_pipeline_execucao "
+    "WHERE data_referencia = ?{sub}{escopo}")
+_ESCOPO_PAINEL_ABERTA = (
+    " AND (malha_execucao_id = ? OR COALESCE(inicio, criado_em) >= ?)")
+_ESCOPO_PAINEL_FECHADA = (
+    " AND (malha_execucao_id = ? OR (COALESCE(inicio, criado_em) >= ? "
+    "AND COALESCE(inicio, criado_em) <= ?))")
+
+
+def _exec_linhas_do_painel(cur, data_ref, bruta) -> None:
+    """Executa o SELECT de `execucoes[]` — com a lente da corrida quando há
+    uma, e sempre com `substituida_em IS NULL`. O chamador faz o `fetchall`."""
+    escopo, extras = "", ()
+    if bruta is not None:
+        if bruta["fechada_em"] is None:
+            escopo = _ESCOPO_PAINEL_ABERTA
+            extras = (int(bruta["id"]), bruta["aberta_em"])
+        else:
+            escopo = _ESCOPO_PAINEL_FECHADA
+            extras = (int(bruta["id"]), bruta["aberta_em"],
+                      bruta["fechada_em"])
+    deps_svc._exec_com_fallback_078(
+        cur,
+        _SQL_EXEC_PAINEL.format(sub=" AND substituida_em IS NULL",
+                                escopo=escopo),
+        _SQL_EXEC_PAINEL.format(sub="", escopo=escopo),
+        (data_ref,) + extras)
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/malhas", tags=["malhas"])
@@ -1691,7 +2162,16 @@ def list_malhas(_auth: dict = Depends(get_current_user)):
     O `gatilho` só afirma o que VALE HOJE: agendamento da malha exige Início
     ligado a raiz assinada (senão vira `agendamento_guardado` e a precedência
     segue), e membro só conta se estiver ATIVO, com cron e sem dependência —
-    inativo tem DAG pausada, dependente vira schedule=None."""
+    inativo tem DAG pausada, dependente vira schedule=None.
+
+    F4 (spec-malha-execucao §9.1): cada malha COM ciclo registrado ganha o bloco
+    `corrida` — status do CICLO, saúde derivada, o denominador do snapshot e os
+    pendentes com CLASSE. É ele que faz o card parar de dizer "sucesso" quando
+    `CARGA_A` falhou e `CARGA_B` terminou depois. Duas consultas para a lista
+    inteira, nunca uma por malha. Malha SEM corrida (ou banco sem a 085) não
+    ganha a chave: a degradação é por AUSÊNCIA DE CAMPO (Decisão 41), e
+    `ultima_execucao` continua no payload como o fallback "(membro mais
+    recente)"."""
     try:
         conn = get_db_conn(); cur = conn.cursor()
         if not _tabelas_070(cur):
@@ -1817,9 +2297,34 @@ def list_malhas(_auth: dict = Depends(get_current_user)):
             if malha in cron:
                 rec["gatilho"] = _gatilho_dos_membros(cron[malha])
 
+        # F4 — a CORRIDA: duas consultas para a lista inteira (ver o bloco de
+        # comentário de `_bloco_corrida`). Vem ANTES da última execução porque
+        # é ela quem responde o status da malha; a última execução fica como
+        # fallback declarado para quem não tem corrida.
+        corridas, sem_085, _brutas = _bloco_corrida(cur)
+        if sem_085:
+            # Decisão 41: a degradação é POR MALHA (a chave `corrida` some), e
+            # a flag é só o texto explicativo do tooltip — jamais o que o front
+            # testa para decidir renderizar.
+            resposta_flag_085 = True
+        else:
+            resposta_flag_085 = False
+        for malha, payload in corridas.items():
+            rec = indice.get(malha)
+            if rec is not None:
+                rec["corrida"] = payload
+
         # Última execução: UMA consulta (top-1 por pipeline membro) e a
         # composição por malha aqui, sobre as linhas de membros já lidas —
         # o mesmo padrão de agregação-em-Python da criticidade.
+        #
+        # ⚠️ Ela CONTINUA no caminho corrente mesmo quando toda malha tem
+        # corrida, e a §9.1 diz "sai do caminho". A divergência é deliberada e
+        # o motivo é de deploy: o `deploy.sh` publica o `dist/` na etapa 3 e a
+        # `api/` só na 7 — mas um rollback do FRONT sem rollback da API deixaria
+        # o card anterior a esta fase sem nada para mostrar. O custo é uma
+        # consulta de CONJUNTO que já existia (nunca um N+1), e o ganho é a
+        # linha "(membro mais recente)" da Decisão 41 continuar tendo dado.
         if _tabelas_067_execucao(cur):
             por_pipeline = _ultima_execucao_por_pipeline(cur)
             melhor: dict[str, tuple] = {}
@@ -1845,7 +2350,10 @@ def list_malhas(_auth: dict = Depends(get_current_user)):
                         "sem 'última execução'")
 
         cur.close(); conn.close()
-        return {"malhas": data}
+        saida = {"malhas": data}
+        if resposta_flag_085:
+            saida["migration_085_pendente"] = True
+        return saida
     except HTTPException:
         raise
     except Exception as e:
@@ -2133,8 +2641,10 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
 
 @router.get("/malhas/{malha_name}/execucao", tags=["malhas"])
 def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
+                       corrida: int | None = None,
                        _auth: dict = Depends(get_current_user)):
-    """Visão de execução da malha numa data de referência (F9, spec §4b).
+    """Visão de execução da malha numa data de referência (F9, spec §4b) — ou,
+    a partir da F4, na LENTE de uma CORRIDA (`?corrida={id}`).
 
     Devolve, APENAS para pipelines MEMBROS da malha, a execução MAIS RECENTE de
     cada um na data (regra do §6 risco 6: pipeline com horários específicos
@@ -2145,10 +2655,43 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
     de virada GLOBAL de etl_app_config — mesma semântica de
     dags/utils/data_referencia.py (port com teste de paridade).
 
+    ── A lente `?corrida={id}` (F4, §9.6) ──────────────────────────────────
+    A data sozinha NÃO distingue duas corridas do mesmo ODATE: redisparar às
+    05h depois de um incidente é gesto legítimo e diário, e `?data_referencia`
+    devolveria as duas madrugadas embaralhadas numa lista só, com a segunda
+    sobrepondo a primeira em cada pipeline. Com a lente:
+
+    • o ODATE vem da PRÓPRIA corrida (o parâmetro `data_referencia` passa a ser
+      redundante e é ignorado — a corrida é a identidade, a data é o atalho);
+    • `execucoes[]` é recortado pelo escopo do §6.4 (proveniência OU janela
+      `[aberta_em, fechada_em]`), com `substituida_em IS NULL`;
+    • corrida de OUTRA malha, ou id inexistente, responde **404** — nunca a
+      corrida corrente disfarçada, que faria o ◀ ▶ "funcionar" mostrando o
+      ciclo errado.
+
+    Sem `corrida` e sem `data_referencia` — a pergunta "o que está acontecendo
+    AGORA" — a corrente da malha vira a lente e o ODATE da RESPOSTA passa a ser
+    o dela. É aqui que some a divergência confessada em `:2377-2384`: a data
+    que o painel mostra deixa de ser calculada com a virada GLOBAL e passa a
+    ser a que o ciclo carimbou, que é a mesma que o disparo usou.
+
+    Com `?data_referencia=D` explícito (a navegação por dia), nada disso vale:
+    o recorte é o dia inteiro, como antes da F4, e o bloco `corrida` só vem se
+    a corrida corrente for daquele dia — uma faixa falando de 05/08 sobre uma
+    lista de 03/08 seria o card mentindo com layout novo.
+
+    ⚠️ `substituida_em IS NULL` entra no `SELECT` de `execucoes[]` **sempre**
+    (Decisão 55), com ou sem lente: sem ela, depois de um rerun às 3h o nó do
+    canvas fica verde com a linha que o motor já aposentou enquanto a faixa
+    conta outro número — a mesma tela contando duas coisas diferentes. Banco
+    sem a coluna (078 pendente) cai no texto legado.
+
     Produção PRÉ-retomada (F2–F4): as tabelas da 067 existem mas NADA as
     alimenta — a resposta é o estado vazio HONESTO (arrays vazios), nunca tela
     quebrada nem promessa falsa. Deploy parcial SEM a 067: arrays vazios +
-    migration_067_pendente, e a malha continua abrindo.
+    migration_067_pendente, e a malha continua abrindo. Sem a 085 o bloco
+    `corrida` simplesmente NÃO VEM (Decisão 41) e o painel volta ao banner de
+    hoje.
     """
     # Valida a data ANTES de abrir conexão: 422 de formato não gasta banco.
     data_ref = None
@@ -2160,6 +2703,10 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
                 status_code=422,
                 detail=f"data_referencia inválida: '{data_referencia}' "
                        "(use o formato YYYY-MM-DD)")
+    if corrida is not None and int(corrida) <= 0:
+        raise HTTPException(status_code=422,
+                            detail=f"corrida inválida: '{corrida}' "
+                                   "(o id é um inteiro positivo)")
     try:
         conn = get_db_conn(); cur = conn.cursor()
         _exigir_tabelas(cur, conn)
@@ -2168,10 +2715,47 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
             cur.close(); conn.close()
             raise HTTPException(status_code=404,
                                 detail=f"Malha não encontrada: '{malha_name}'")
+
+        # F4 — a corrida (a da lente, ou a corrente). As DUAS consultas do
+        # bloco, para uma malha só. Vem antes do resto porque é ela quem decide
+        # o ODATE quando a lente está em uso.
+        corridas, sem_085, brutas = _bloco_corrida(cur, malha, corrida)
+        corrida_payload = corridas.get(malha)
+        corrida_bruta = brutas.get(malha)
+        if corrida is not None and corrida_payload is None:
+            cur.close(); conn.close()
+            raise HTTPException(
+                status_code=404,
+                detail=f"Corrida #{corrida} não encontrada na malha "
+                       f"'{malha}'." + (" A migration 085 ainda não foi "
+                                        "aplicada neste banco." if sem_085
+                                        else ""))
+        # A LENTE — e ela nunca é adivinhada. Só existe em dois casos:
+        #   1. `?corrida={id}` explícito: a corrida é a identidade e o ODATE
+        #      sai dela (pedir `&data_referencia=X` divergente devolveria uma
+        #      faixa falando de um dia sobre a lista de outro);
+        #   2. sem NENHUM parâmetro — "o que está acontecendo agora": a
+        #      corrente vira a lente e o ODATE da resposta é o que o ciclo
+        #      carimbou, não o que a virada global calcularia.
+        # Com `?data_referencia` explícito não há lente: navegar por dia é
+        # navegar por dia, e recortar pela corrida corrente devolveria a
+        # madrugada de hoje sob o rótulo do dia pedido.
+        lente = None
+        if corrida is not None:
+            lente = corrida_bruta
+            data_ref = corrida_bruta["data_referencia"]
+        elif data_ref is None and corrida_bruta is not None:
+            lente = corrida_bruta
+            data_ref = corrida_bruta["data_referencia"]
         if data_ref is None:
             # ODATE corrente: virada GLOBAL (a mesma chave que dags/ lê) sobre o
             # relógio do servidor. Config ausente/ruim degrada para 00:00.
             data_ref = dref.calcular(_agora(), _virada_global(cur))
+        if lente is None and corrida_payload is not None and \
+                corrida_payload["data_referencia"] != _fmt_dia(data_ref):
+            # Navegação por dia numa data que não é a da corrida corrente: o
+            # bloco sai do payload em vez de descrever outro ciclo.
+            corrida_payload = None
 
         # Membros da malha (JOIN garante que pipeline excluído some, como no
         # detalhe) — mapa casefold → grafia OFICIAL, a mesma canonização das
@@ -2195,6 +2779,10 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
             "eventos_no": [],
             "malha_concluida": None,
         }
+        if corrida_payload is not None:
+            resposta["corrida"] = corrida_payload
+        elif sem_085:
+            resposta["migration_085_pendente"] = True
         if not _tabelas_067_execucao(cur):
             log.warning("[MALHA] migration 067 ausente — visão de execução da "
                         "malha '%s' degradada para vazio", malha)
@@ -2209,11 +2797,7 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
         # start perde de qualquer linha iniciada). Status vai CRU — a legenda
         # da tela fala o mesmo domínio da tabela (AGUARDANDO_DEPENDENCIA |
         # EXECUTANDO | SUCESSO | FALHA | PULADO | NAO_LIBEROU).
-        cur.execute(
-            "SELECT pipeline_name, status, inicio, fim, disparado_por, motivo, "
-            "execution_id FROM dbo.etl_pipeline_execucao "
-            "WHERE data_referencia = ?",
-            (data_ref,))
+        _exec_linhas_do_painel(cur, data_ref, lente)
         linhas_membro: dict[str, list] = {}
         for r in cur.fetchall():
             oficial = membro_oficial.get(str(r[0] or "").strip().casefold())
@@ -2287,13 +2871,25 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
                         reverse=True)
         resposta["eventos"] = eventos
         resposta["eventos_no"] = eventos_no
-        # Conclusão da malha na data (§6): o evento MALHA_CONCLUIDA do nó Fim.
-        # Evento emitido é histórico verdadeiro (F4 §7.2) — o banner some só
-        # trocando a data consultada, nunca por apagamento.
-        for ev in eventos_no:
-            if ev["tipo"] == "MALHA_CONCLUIDA" and ev["tipo_no"] == "fim":
-                resposta["malha_concluida"] = {"em": ev["criado_em"]}
-                break
+        # Conclusão da malha (§9.6): com a corrida no payload quem responde é o
+        # STATUS DELA — o evento vira rastro, não fonte de verdade. Sem isso, o
+        # banner verde e o card vermelho conviveriam na mesma tela: o
+        # `MALHA_CONCLUIDA` de uma corrida ANTERIOR do mesmo dia continua na
+        # tabela (evento emitido é histórico verdadeiro e não se apaga), e o
+        # laço abaixo o encontraria mesmo com a corrida corrente em FALHA.
+        #
+        # Sem corrida (malha sem ciclo registrado, ou banco sem a 085) o
+        # comportamento é o de hoje, byte a byte — é assim que o painel degrada
+        # junto com o card, e não um verde sobrando de cada vez.
+        if corrida_payload is not None:
+            resposta["malha_concluida"] = (
+                {"em": corrida_payload["fechada_em"]}
+                if corrida_payload["status"] == "CONCLUIDA" else None)
+        else:
+            for ev in eventos_no:
+                if ev["tipo"] == "MALHA_CONCLUIDA" and ev["tipo_no"] == "fim":
+                    resposta["malha_concluida"] = {"em": ev["criado_em"]}
+                    break
 
         cur.close(); conn.close()
         return resposta

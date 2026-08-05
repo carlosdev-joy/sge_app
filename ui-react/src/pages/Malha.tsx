@@ -12,7 +12,12 @@ import { Autocomplete } from '../components/ui/Autocomplete'
 import { toast } from '../components/ui/Toast'
 import { CritBadge } from '../components/malhas/CritBadge'
 import { MalhaEditor } from '../components/malhas/MalhaEditor'
-import { estiloStatus } from '../components/malhas/statusExecucao'
+import { estiloStatus, resumoCorrida } from '../components/malhas/statusExecucao'
+// F4 (spec-malha-execucao §9.1): o relógio LOCAL do carimbo de frescor e do
+// decorrido — nunca `apurado_em`, que é o relógio do BANCO (Decisão 60).
+import { useDecorrido } from '../components/malhas/useDecorrido'
+import { frescor } from '../components/malhas/tempoCorrida'
+import type { CorridaApi } from '../types'
 import {
   RefreshCw, Network, X, Search, HelpCircle,
   Plus, Edit, Users, Power, Trash2, AlertTriangle, Boxes,
@@ -68,6 +73,11 @@ interface ApiMalha {
   // ou ainda não foi desenhado): nenhuma raiz o carrega, então ele não é
   // gatilho — mas continua guardado e volta a valer quando o Início religar.
   agendamento_guardado?: boolean
+  // F4 — a CORRIDA (o ciclo da malha). É ELA que responde "a malha rodou?".
+  // Opcional, e a ausência é o contrato (Decisão 41): API anterior à fase,
+  // banco sem a 085 e malha sem ciclo nenhum degradam no MESMO lugar, o
+  // fallback "(membro mais recente)" logo abaixo. Nunca vem `null`.
+  corrida?: CorridaApi
 }
 
 interface MalhasResponse {
@@ -75,6 +85,10 @@ interface MalhasResponse {
   // Deploy parcial (API nova + migration 070 não aplicada): a API degrada
   // devolvendo lista vazia + esta flag, em vez de 500.
   migration_pendente?: boolean
+  // F4: a 085 não está neste banco. NÃO é o que o card testa para decidir
+  // renderizar (isso é a ausência da chave `corrida`) — é o que permite DIZER
+  // ao operador que falta informação, em vez de degradar em silêncio.
+  migration_085_pendente?: boolean
 }
 
 interface MalhaMembro {
@@ -140,8 +154,14 @@ const AVISO_AGENDA_GUARDADA =
 
 // ─── Card de malha (mesma linguagem do PipelineCard) ─────────────────────────
 
-function MalhaCard({ malha, onAbrir, onMembros, onRenomear, onToggle }: {
+function MalhaCard({ malha, tempo, sem085, onAbrir, onMembros, onRenomear, onToggle }: {
   malha: ApiMalha
+  /** Os DOIS instantes do relógio LOCAL (Decisão 60): quando a resposta chegou
+   *  e que horas são agora. `apurado_em` (relógio do banco) não participa de
+   *  conta nenhuma — no dev ele está 3 h à frente. */
+  tempo: { respostaEm: number; agora: number }
+  /** A 085 não está no banco: a degradação é DITA, não só silenciosa. */
+  sem085: boolean
   onAbrir: () => void
   onMembros: () => void
   onRenomear: () => void
@@ -152,6 +172,18 @@ function MalhaCard({ malha, onAbrir, onMembros, onRenomear, onToggle }: {
   const ultima = malha.ultima_execucao ?? null
   const estilo = ultima ? estiloStatus(ultima.status) : null
   const gatilho = malha.gatilho ?? null
+  // ── F4: o bloco da CORRIDA ────────────────────────────────────────────────
+  // Até aqui o status do card era `max((momento, pipeline))` entre os membros —
+  // "a execução mais recente". Com `CARGA_A` falhando às 03:00 e `CARGA_B`
+  // concluindo às 03:40, o card dizia **sucesso · CARGA_B** e o gestor abria a
+  // tela às 8h vendo verde numa malha que falhou. Agora quem responde é o
+  // CICLO, e a saúde manda na cor enquanto ele está aberto: falha detectada às
+  // 03:00 pinta o card de vermelho às 03:00, sem esperar o fechamento —
+  // descobrir às 05:00 é depois do SLA.
+  const corrida = malha.corrida ?? null
+  const resumo = useMemo(
+    () => (corrida ? resumoCorrida(corrida, tempo, malha.qtd_pipelines) : null),
+    [corrida, tempo, malha.qtd_pipelines])
   return (
     <div className="bg-panel border border-edge rounded-lg px-4 py-3 flex flex-col gap-2 hover:shadow-md hover:border-[#1A5FA8]/40 transition-all">
       <div className="flex items-center gap-2 flex-wrap">
@@ -184,11 +216,63 @@ function MalhaCard({ malha, onAbrir, onMembros, onRenomear, onToggle }: {
             ⚠ agendamento guardado, sem Início ligado
           </span>
         )}
-        {ultima ? (
+        {resumo ? (
+          // O bloco da corrida SUBSTITUI a linha "▶ última execução": as duas
+          // juntas seriam duas respostas para a mesma pergunta, e a antiga é a
+          // que mente. Sem barra e sem "%" nesta fase (Decisão 56): o rótulo é
+          // sempre `x de y`, e o substantivo é "pipelines".
+          <span
+            className={`flex flex-col gap-0.5 rounded-md border px-2 py-1.5 ${resumo.faixa}`}
+            title={resumo.titulo}
+          >
+            <span className="flex items-center gap-1.5 min-w-0">
+              {resumo.estilo.animado && (
+                <span className={`h-1.5 w-1.5 shrink-0 animate-pulse rounded-full ${resumo.estilo.dot}`} />
+              )}
+              <resumo.estilo.Icone size={12} className="shrink-0" />
+              <span className="font-semibold truncate">{resumo.estilo.rotulo}</span>
+              <span className="shrink-0 opacity-80">· {resumo.identidade}</span>
+              {resumo.tempo && <span className="shrink-0 opacity-80">· {resumo.tempo}</span>}
+            </span>
+            {resumo.contagem && (
+              <span className="flex items-center gap-1.5 min-w-0">
+                <span className="font-medium">{resumo.contagem}</span>
+                {/* O travado NÃO entra no número de concluídos (Decisão 54):
+                    ele é chip ao lado, com ícone próprio — vermelho ocupando
+                    comprimento seria lido como "quase pronto" a 1,5 m. */}
+                {resumo.travados && (
+                  <span className="ml-auto inline-flex shrink-0 items-center gap-1 rounded border border-red-300 bg-red-100 px-1 py-px text-[10px] font-semibold text-red-700 dark:border-red-700 dark:bg-red-900/60 dark:text-red-300">
+                    <AlertTriangle size={10} /> {resumo.travados}
+                  </span>
+                )}
+              </span>
+            )}
+            {/* Decisão 53: a subtração é FATO VISÍVEL e vem SEMPRE junto do
+                "x de y" — é ela que impede "2 de 2 · concluída, verde" numa
+                malha de 7 em que alguém inativou 5 na sexta-feira. */}
+            {resumo.membros && <span className="opacity-80">{resumo.membros}</span>}
+            {resumo.culpado && <span className="font-medium truncate">↳ {resumo.culpado}</span>}
+            {resumo.vivos && <span className="opacity-80">↳ {resumo.vivos}</span>}
+            {resumo.encerramento && <span className="opacity-80">{resumo.encerramento}</span>}
+            {resumo.motivo && <span className="italic opacity-80 line-clamp-2">{resumo.motivo}</span>}
+            {resumo.foraDoOdate && (
+              <span className="font-medium text-amber-700 dark:text-amber-400">
+                ⚠ {resumo.foraDoOdate}
+              </span>
+            )}
+          </span>
+        ) : ultima ? (
+          // FALLBACK DECLARADO (Decisão 41): sem a chave `corrida` o card volta
+          // ao texto de hoje — e diz de onde ele saiu. "(membro mais recente)"
+          // não é enfeite: é a confissão de que este status é de UM pipeline, e
+          // não da malha. A palavra "concluída" não aparece aqui.
           <span
             className="flex items-center gap-1 min-w-0"
             title={`${ultima.pipeline} · ${ultima.status}`
-              + (formataDataHoraLonga(ultima.em) ? ` · ${formataDataHoraLonga(ultima.em)}` : '')}
+              + (formataDataHoraLonga(ultima.em) ? ` · ${formataDataHoraLonga(ultima.em)}` : '')
+              + '\nEste é o status do MEMBRO que executou por último — não o da '
+              + 'malha inteira. O ciclo da malha aparece aqui quando houver '
+              + 'corrida registrada.'}
           >
             <span className="shrink-0">▶ última execução: {formataDataHora(ultima.em) ?? '—'}</span>
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${estilo!.dot}`} />
@@ -197,6 +281,27 @@ function MalhaCard({ malha, onAbrir, onMembros, onRenomear, onToggle }: {
         ) : (
           <span className="italic" title="Nenhuma corrida registrada para os pipelines desta malha">
             ▶ sem execução registrada
+          </span>
+        )}
+        {!resumo && ultima && (
+          <span className="truncate opacity-75">
+            (membro mais recente — {ultima.pipeline})
+          </span>
+        )}
+        {/* Aditivo à Decisão 41: a degradação é DITA, e igual em todos os cards
+            afetados — quem não é técnico não pode ler o card degradado como um
+            card diferente, e sim como uma tela sem parte da informação. Sai só
+            com a FLAG (a 085 ausente); com o interruptor da corrida ainda em 0,
+            que é o estado do dia do deploy, a lista inteira cairia neste aviso
+            e o operador chegaria de manhã com 100% das malhas "sem informação"
+            (§11.3). */}
+        {!resumo && sem085 && (
+          <span
+            className="flex items-center gap-1 text-amber-700 dark:text-amber-400"
+            title="A migration 085 (o registro do ciclo da malha) ainda não foi aplicada neste banco. O que está na tela continua verdadeiro; o que falta é o ciclo."
+          >
+            <AlertTriangle size={11} className="shrink-0" />
+            sem dados de corrida — sistema em atualização
           </span>
         )}
         {criado && <span>📅 criada em {criado}</span>}
@@ -557,14 +662,35 @@ function MalhasView({ onAbrir }: { onAbrir: (malha: string) => void }) {
   const [statusFiltro, setStatusFiltro] = useState('')
 
   const qc = useQueryClient()
-  const { data, isLoading, isError, error, refetch } = useQuery<MalhasResponse>({
-    queryKey: ['malhas'],
-    queryFn: () => apiFetch('/malhas'),
-  })
+  const { data, isLoading, isError, error, refetch, dataUpdatedAt, isFetching } =
+    useQuery<MalhasResponse>({
+      queryKey: ['malhas'],
+      queryFn: () => apiFetch('/malhas'),
+      // F4 (Decisão 73) — polling CONDICIONAL: 20 s enquanto alguma malha tem
+      // corrida em voo, e NADA quando não há o que acompanhar. Ligar polling
+      // incondicional numa tela que hoje não tem nenhum seria pagar o custo
+      // das 24 h por causa das 4 da madrugada. O recorte é a lista inteira (e
+      // não só as malhas visíveis): o filtro é client-side, e uma corrida em
+      // voo escondida por um filtro continua sendo uma corrida em voo.
+      refetchInterval: q =>
+        (q.state.data?.malhas ?? []).some(m => m.corrida?.status === 'ABERTA')
+          ? 20_000 : false,
+    })
   // useMemo (e não `data?.malhas ?? []` solto): o `[]` de fallback nasce novo
   // a cada render e faria o filtro abaixo recalcular sempre.
   const malhas = useMemo(() => data?.malhas ?? [], [data])
   const migrationPendente = data?.migration_pendente === true
+  const sem085 = data?.migration_085_pendente === true
+  // Alguma corrida em voo = há o que envelhecer na tela; é o mesmo predicado
+  // do polling, e é ele que decide se o carimbo de frescor vira ALARME.
+  const acompanhando = malhas.some(m => m.corrida?.status === 'ABERTA')
+  const agora = useDecorrido(acompanhando)
+  // Decisão 60: o frescor é o relógio local CONSIGO MESMO. `dataUpdatedAt` é o
+  // instante LOCAL em que a resposta chegou — misturar com `apurado_em` (o
+  // relógio do banco, 3 h à frente no dev) daria "atualizado há -3h".
+  const fresco = frescor(dataUpdatedAt, agora)
+  const tempo = useMemo(() => ({ respostaEm: dataUpdatedAt, agora }),
+                        [dataUpdatedAt, agora])
 
   const toggleMut = useMutation({
     mutationFn: (m: ApiMalha) =>
@@ -649,7 +775,25 @@ function MalhasView({ onAbrir }: { onAbrir: (malha: string) => void }) {
             <X size={13} /> Limpar
           </button>
         )}
-        <div className="flex gap-1 ml-auto">
+        <div className="flex items-center gap-1 ml-auto">
+          {/* Carimbo de frescor — UM por página (Decisão 60), nunca um por
+              card: precisão de segundo em polling de 20 s sugere tempo real, e
+              dois cards com "há 8s" e "há 31s" na mesma tela fazem duvidar dos
+              dois. Acima de 90 s sem refetch com sucesso ele vira ALARME —
+              mas só quando há corrida em voo: sem nada acontecendo, "dado de
+              10:58" é fato, não incidente. */}
+          {!isLoading && !isError && (
+            <span
+              className={`mr-1 text-[11px] ${fresco.velho && acompanhando
+                ? 'font-medium text-amber-700 dark:text-amber-400' : 'text-dim'}`}
+              title={acompanhando
+                ? 'Esta lista se atualiza sozinha a cada 20 s enquanto houver corrida em andamento.'
+                : 'Sem corrida em andamento, a lista não se atualiza sozinha — use o botão ao lado.'}
+            >
+              {fresco.velho && acompanhando ? '⚠ ' : '· '}
+              {isFetching ? 'atualizando…' : `atualizado ${fresco.texto}`}
+            </span>
+          )}
           <Button
             onClick={() => setShowCriar(true)}
             disabled={migrationPendente}
@@ -732,6 +876,8 @@ function MalhasView({ onAbrir }: { onAbrir: (malha: string) => void }) {
             <MalhaCard
               key={m.malha_name}
               malha={m}
+              tempo={tempo}
+              sem085={sem085}
               onAbrir={() => onAbrir(m.malha_name)}
               onMembros={() => setMembrosDe(m.malha_name)}
               onRenomear={() => setRenomear(m)}

@@ -87,14 +87,18 @@ import { COMPONENTE_META, type TipoComponente } from './componenteMeta'
 // (Decisão 8); o nó é a porta.
 import { AgendamentoInicioModal } from './AgendamentoInicioModal'
 import {
-  STATUS_EXECUCAO, ORDEM_LEGENDA, estiloEvento,
-  type ExecucaoPipeline, type MalhaExecucaoApi,
+  STATUS_EXECUCAO, ORDEM_LEGENDA, estiloEvento, resumoCorrida, rotuloCorrida,
+  type CorridasResposta, type ExecucaoPipeline, type MalhaExecucaoApi,
 } from './statusExecucao'
+// F4: o relógio LOCAL da faixa (Decisão 60) — o decorrido anda no navegador, o
+// `apurado_em` do banco fica no tooltip.
+import { useDecorrido } from './useDecorrido'
+import type { CorridaCabecalho } from '../../types'
 // Camada de FLUXO da visão de Execução: a linha entre dois nós conta por onde
 // a corrida do dia passou, onde ela está agora e onde parou.
 import {
   arestaComFluxo, estadoDaAresta, estadoDoComponente, estadoDoPipeline,
-  type EstadoElemento,
+  ROTULO_FLUXO, type EstadoElemento,
 } from './fluxoExecucao'
 // F15: próxima execução do agendamento — DISPLAY-ONLY (a autoridade do
 // gatilho é o scheduler; mesmo estatuto do calcularDataRef da F5).
@@ -397,6 +401,9 @@ function execDoComponente(
   execPorPipeline: Map<string, ExecucaoPipeline>,
   eventoNoPorId: Map<string, string>,
   agendamento: Record<string, unknown> | null,
+  // F4: existe uma corrida ABERTA nesta lente. Só o nó Fim usa — é o único que
+  // fala de CICLO, e até esta fase ele só tinha "verde" ou "apagado".
+  cicloAberto: boolean,
 ): ExecComponente | null {
   switch (tipo) {
     case 'inicio': {
@@ -455,6 +462,7 @@ function execDoComponente(
         kind: 'fim',
         concluidaEm: eventoNoPorId.get(`${n.id}:MALHA_CONCLUIDA`) ?? null,
         semEntradas: n.upstream.length === 0,
+        cicloAberto,
       }
   }
 }
@@ -664,6 +672,12 @@ function MalhaEditorInner({
   // Data de referência pedida. null = sem query — o SERVIDOR devolve o ODATE
   // corrente (virada global de etl_app_config), e é ele que aparece no input.
   const [dataRef, setDataRef] = useState<string | null>(dataInicial ?? null)
+  // F4 — a LENTE da corrida (`?corrida={id}`). A data sozinha NÃO distingue
+  // duas corridas do mesmo ODATE: redisparar às 05h depois de um incidente é
+  // gesto diário, e navegar por dia devolveria as duas madrugadas embaralhadas
+  // numa lista só, com a segunda SOBREPONDO a primeira em cada pipeline.
+  // null = sem lente explícita (o servidor usa a corrida corrente).
+  const [corridaRef, setCorridaRef] = useState<number | null>(null)
   // Orientação: o servidor é a fonte (viaja com o layout — todos veem o mesmo
   // desenho); o override local dá resposta imediata ao toggle enquanto o PATCH
   // viaja. Carrega a malha DONA junto: trocar de malha invalida o override
@@ -687,16 +701,77 @@ function MalhaEditorInner({
   // ── Visão de execução (F9): status + eventos da data de referência ────────
   const emExecucao = modo === 'execucao'
   const execQuery = useQuery<MalhaExecucaoApi>({
-    queryKey: ['malha-execucao', malha, dataRef],
+    queryKey: ['malha-execucao', malha, dataRef, corridaRef],
+    // A lente da CORRIDA tem precedência sobre a data: quando ela está em uso
+    // o ODATE vem da própria corrida (pedir os dois juntos faria a faixa falar
+    // de um dia sobre a lista de outro — o servidor ignora a data de
+    // propósito, e o cliente nem a manda).
     queryFn: () => apiFetch(
-      `/malhas/${encodeURIComponent(malha)}/execucao` +
-      (dataRef ? `?data_referencia=${encodeURIComponent(dataRef)}` : '')),
+      `/malhas/${encodeURIComponent(malha)}/execucao`
+      + (corridaRef ? `?corrida=${corridaRef}`
+        : dataRef ? `?data_referencia=${encodeURIComponent(dataRef)}` : '')),
     enabled: !!malha && emExecucao,
     refetchInterval: 30_000,   // leitura de painel: acompanha o dia rodando
   })
   const execData = execQuery.data
   // A data exibida/navegada: a pedida ou a que o servidor calculou (ODATE).
-  const dataExibida = dataRef ?? execData?.data_referencia ?? ''
+  // Com a lente ligada quem manda é a resposta — a data da CORRIDA, que é a
+  // mesma que o disparo usou (§9.6: é aqui que some a divergência confessada
+  // entre o painel e o disparo).
+  const dataExibida = (corridaRef ? execData?.data_referencia : dataRef)
+    ?? execData?.data_referencia ?? ''
+  // ── F4: a corrida desta lente ────────────────────────────────────────────
+  // Chave AUSENTE (não `null`) é o contrato da degradação (Decisão 41): API
+  // anterior à fase, banco sem a 085 e malha sem ciclo nenhum caem no MESMO
+  // lugar — o painel volta ao texto de hoje, sem exceção e sem inventar nada.
+  const corrida = execData?.corrida ?? null
+  const sem085 = execData?.migration_085_pendente === true
+  // O relógio LOCAL (Decisão 60) — o decorrido da faixa sai dele somado ao
+  // `decorrido_min` que o BANCO já subtraiu; `apurado_em` fica no tooltip.
+  const agoraLocal = useDecorrido(emExecucao && corrida?.status === 'ABERTA')
+  const resumo = useMemo(
+    () => (corrida
+      ? resumoCorrida(corrida, { respostaEm: execQuery.dataUpdatedAt, agora: agoraLocal })
+      : null),
+    [corrida, execQuery.dataUpdatedAt, agoraLocal])
+
+  // As corridas desta malha — o que o ◀ ▶ percorre (Decisão 42). Duas do MESMO
+  // ODATE são legítimas e vêm as duas, distinguidas por `sequencia`. Sem a 085
+  // (ou em API anterior) a lista sai vazia e a navegação volta a ser por DIA:
+  // é a degradação por ausência de dado, não por flag.
+  const corridasQuery = useQuery<CorridasResposta>({
+    queryKey: ['malha-corridas', malha],
+    queryFn: () => apiFetch(`/malhas/${encodeURIComponent(malha)}/corridas?limite=30`),
+    enabled: !!malha && emExecucao,
+    // Metade da cadência do painel: a LISTA de ciclos muda quando um ciclo
+    // abre ou fecha (uma vez por madrugada), não a cada movimento de pipeline.
+    // O react-query já não dispara o timer com a aba fora de foco.
+    refetchInterval: 60_000,
+  })
+  const corridas = useMemo(() => corridasQuery.data?.corridas ?? [],
+                           [corridasQuery.data])
+  // Índice da corrida em foco DENTRO da lista. -1 = a lente não está numa
+  // corrida conhecida (navegação por dia, ou corrida mais antiga que o limite):
+  // aí o ◀ ▶ continua sendo o de dia, que é o comportamento de sempre.
+  const idxCorrida = useMemo(() => {
+    const alvo = corridaRef ?? corrida?.id ?? null
+    return alvo === null ? -1 : corridas.findIndex(c => c.id === alvo)
+  }, [corridas, corridaRef, corrida])
+  const navegaPorCorrida = idxCorrida >= 0 && corridas.length > 1
+  // A lista vem da mais NOVA para a mais antiga: ◀ anda para trás no tempo.
+  const corridaAnterior = navegaPorCorrida ? corridas[idxCorrida + 1] ?? null : null
+  const corridaSeguinte = navegaPorCorrida ? corridas[idxCorrida - 1] ?? null : null
+  function irParaCorrida(alvo: CorridaCabecalho | null) {
+    if (!alvo) return
+    setCorridaRef(alvo.id)
+    // A data sai do caminho: com a lente ligada ela é derivada da corrida, e
+    // manter as duas produziria dois recortes disputando a mesma tela.
+    setDataRef(null)
+  }
+  function irParaDia(dia: string | null) {
+    setCorridaRef(null)
+    setDataRef(dia)
+  }
   // Execução MAIS RECENTE por pipeline (o endpoint já entrega uma por membro —
   // regra do §6 risco 6 da spec).
   const execPorPipeline = useMemo(() => {
@@ -920,7 +995,8 @@ function MalhaEditorInner({
           ? execDoComponente(n, tipo,
               grafo.saidasPipelineNo.get(n.id) ?? [],
               execPorPipeline, eventoNoPorId,
-              data?.agendamento ?? null)
+              data?.agendamento ?? null,
+              corrida?.status === 'ABERTA')
           : null
         if (camadaExec) estadoPonta.set(noRfId(n.id), estadoDoComponente(execNo))
         return {
@@ -967,7 +1043,11 @@ function MalhaEditorInner({
       : grafo.novasEdges)
   }, [grafo, setNodes, setEdges, emExecucao, execPorPipeline, eventoNoPorId,
       execData, orientacao, data, onAbrirEtapas, dataExibida, descerParaEtapas,
-      colorMode])
+      // F4: só o STATUS da corrida entra na chave (não o objeto inteiro) — é a
+      // única parte dela que muda o desenho, e o payload traz `apurado_em`
+      // novo a cada refetch: a corrida inteira remontaria todos os nós de
+      // 20 em 20 segundos, sem nada ter mudado no grafo.
+      corrida?.status, colorMode])
 
   // dirty = alguma posição difere do baseline do servidor (arredondado — é o
   // que o PUT envia). Mover um nó e devolvê-lo ao lugar volta a desabilitar o
@@ -1971,36 +2051,72 @@ function MalhaEditorInner({
         )}
         {emExecucao && (
           <div className="ml-auto flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] text-dim">Data de referência</span>
+            {/* F4 — o ◀ ▶ passa a andar por CORRIDA quando a malha tem mais de
+                uma registrada: duas do mesmo dia (redisparo às 05h depois de
+                um incidente) são indistinguíveis pela data, e navegar por dia
+                sobreporia uma na outra. Sem corridas conhecidas — API anterior
+                à fase, banco sem a 085, ou uma corrida só — os mesmos botões
+                continuam sendo os de DIA, byte a byte como antes. O
+                `input[type=date]` fica como o atalho "ir para uma data". */}
+            <span className="text-[11px] text-dim">
+              {navegaPorCorrida ? 'Corrida' : 'Data de referência'}
+            </span>
             <button
-              onClick={() => setDataRef(somaDia(dataExibida, -1))}
-              disabled={!dataExibida}
-              title="Dia anterior"
+              onClick={() => (navegaPorCorrida
+                ? irParaCorrida(corridaAnterior)
+                : irParaDia(somaDia(dataExibida, -1)))}
+              disabled={navegaPorCorrida ? !corridaAnterior : !dataExibida}
+              title={navegaPorCorrida
+                ? (corridaAnterior
+                  ? `Corrida anterior — ${rotuloCorrida(corridaAnterior)}`
+                  : 'Não há corrida anterior registrada')
+                : 'Dia anterior'}
+              aria-label={navegaPorCorrida ? 'Corrida anterior' : 'Dia anterior'}
               className={navBtnCls}
             >
               <ChevronLeft size={13} />
             </button>
+            {navegaPorCorrida && resumo && (
+              <span
+                className="max-w-[15rem] truncate text-[11px] font-medium text-ink"
+                title={resumo.titulo}
+              >
+                {resumo.identidade}
+                <span className="ml-1 text-dim">
+                  ({idxCorrida + 1} de {corridas.length})
+                </span>
+              </span>
+            )}
             <input
               type="date"
               value={dataExibida}
-              onChange={e => setDataRef(e.target.value || null)}
+              onChange={e => irParaDia(e.target.value || null)}
+              title="Ir para uma data de referência"
+              aria-label="Ir para uma data de referência"
               className="rounded-md border border-edge bg-canvas px-2 py-1 text-xs text-ink focus:outline-none focus:ring-2 focus:ring-[#1A5FA8]/40"
             />
             <button
-              onClick={() => setDataRef(somaDia(dataExibida, 1))}
-              disabled={!dataExibida}
-              title="Dia seguinte"
+              onClick={() => (navegaPorCorrida
+                ? irParaCorrida(corridaSeguinte)
+                : irParaDia(somaDia(dataExibida, 1)))}
+              disabled={navegaPorCorrida ? !corridaSeguinte : !dataExibida}
+              title={navegaPorCorrida
+                ? (corridaSeguinte
+                  ? `Corrida seguinte — ${rotuloCorrida(corridaSeguinte)}`
+                  : 'Esta já é a corrida mais recente')
+                : 'Dia seguinte'}
+              aria-label={navegaPorCorrida ? 'Corrida seguinte' : 'Dia seguinte'}
               className={navBtnCls}
             >
               <ChevronRight size={13} />
             </button>
             <button
-              onClick={() => setDataRef(null)}
-              disabled={dataRef === null}
-              title="Voltar à data de referência corrente (ODATE, calculado pela virada global)"
+              onClick={() => irParaDia(null)}
+              disabled={dataRef === null && corridaRef === null}
+              title="Voltar ao que está acontecendo agora — a corrida corrente da malha (ou, sem corrida, a data de referência do dia)"
               className={`${navBtnCls} px-2`}
             >
-              hoje
+              agora
             </button>
             {execQuery.isFetching && (
               <RefreshCw size={12} className="animate-spin text-dim" />
@@ -2197,7 +2313,11 @@ function MalhaEditorInner({
           </span>
         </div>
       )}
-      {emExecucao && execData && !execData.migration_067_pendente
+      {/* F4: com corrida no payload este aviso sai do ar — a faixa já diz o
+          estado do ciclo, e "sem execuções registradas" ao lado de "em
+          andamento · 4 de 7" seriam duas afirmações opostas na mesma tela
+          (uma corrida recém-aberta ainda não tem linha de pipeline nenhuma). */}
+      {emExecucao && execData && !corrida && !execData.migration_067_pendente
         && execData.execucoes.length === 0 && (
         <div className="flex items-center gap-2 border-b border-blue-200 bg-blue-50 px-3 py-2 text-[12px] text-blue-800 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
           <Info size={14} className="shrink-0" />
@@ -2208,10 +2328,70 @@ function MalhaEditorInner({
         </div>
       )}
 
+      {/* ── F4: a FAIXA DA CORRIDA ────────────────────────────────────────
+          Quem responde "a malha rodou?" passa a ser o CICLO — e não mais o
+          membro que começou por último, que é a chave de comparação do defeito
+          desta fase. A faixa e o card da lista leem o MESMO agregado
+          (`resumoCorrida`), porque duas superfícies derivando o mesmo fato por
+          caminhos diferentes é como elas passam a discordar na mesma tela. */}
+      {emExecucao && resumo && (
+        <div className={`flex flex-col gap-0.5 border-b px-3 py-2 text-[12px] ${resumo.faixa}`}
+             title={resumo.titulo}>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-semibold ${resumo.estilo.chip}`}>
+              <resumo.estilo.Icone size={12} className="shrink-0" />
+              {resumo.estilo.rotulo}
+            </span>
+            <span className="font-medium">{resumo.identidade}</span>
+            {resumo.tempo && <span>· {resumo.tempo}</span>}
+            {resumo.contagem && <span>· {resumo.contagem}</span>}
+            {/* O travado NÃO engorda o número de concluídos (Decisão 54): ele
+                é chip ao lado, com ícone próprio. */}
+            {resumo.travados && (
+              <span className="inline-flex items-center gap-1 rounded border border-red-300 bg-red-100 px-1.5 py-0.5 text-[11px] font-semibold text-red-700 dark:border-red-700 dark:bg-red-900/60 dark:text-red-300">
+                <AlertTriangle size={11} className="shrink-0" /> {resumo.travados}
+              </span>
+            )}
+            {resumo.vivos && <span>· {resumo.vivos}</span>}
+          </div>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] opacity-90">
+            {/* A subtração aparece SEMPRE junto do "x de y" (Decisão 53) — sem
+                ela, uma malha de 7 com 5 membros inativados na sexta diria
+                "2 de 2 · concluída" no sábado, verde. */}
+            {resumo.membros && <span>{resumo.membros}</span>}
+            {resumo.culpado && <span className="font-medium">↳ {resumo.culpado}</span>}
+            {resumo.encerramento && <span>· {resumo.encerramento}</span>}
+            {resumo.motivo && <span className="italic">{resumo.motivo}</span>}
+          </div>
+          {/* Decisão 66 — o incidente que ORIGINOU esta spec: é o único caso em
+              que a contagem está certa e o DIA está errado. */}
+          {resumo.foraDoOdate && (
+            <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+              <AlertTriangle size={12} className="shrink-0" /> {resumo.foraDoOdate}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Deploy parcial SEM a 085: o card e o painel calam JUNTOS. Um dizer
+          "concluída" enquanto o outro não sabe de nada é pior que os dois
+          calarem — por isso o banner verde abaixo também sai do ar aqui, e a
+          degradação é DITA, não só silenciosa (aditivo à Decisão 41). */}
+      {emExecucao && !corrida && sem085 && (
+        <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400"
+             title="A migration 085 (o registro do ciclo da malha) ainda não foi aplicada neste banco. O que a tela mostra continua verdadeiro; o que falta é o ciclo.">
+          <AlertTriangle size={14} className="shrink-0" />
+          <span>sem dados de corrida — sistema em atualização</span>
+        </div>
+      )}
+
       {/* F15 (§6): banner verde da conclusão — o evento MALHA_CONCLUIDA do nó
           Fim nesta data. Evento emitido é histórico verdadeiro: o banner some
-          trocando a data consultada, nunca por apagamento. */}
-      {emExecucao && execData?.malha_concluida?.em && (
+          trocando a data consultada, nunca por apagamento.
+          F4: só sobra para quem NÃO tem corrida no payload (API anterior à
+          fase, ou interruptor em 0) — com a corrida, quem afirma "concluída" é
+          o status dela, uma vez só, na faixa acima. */}
+      {emExecucao && !corrida && !sem085 && execData?.malha_concluida?.em && (
         <div className="flex items-center gap-2 border-b border-green-200 bg-green-50 px-3 py-2 text-[12px] font-medium text-green-800 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300">
           <CheckCircle2 size={14} className="shrink-0" />
           <span>
@@ -2553,15 +2733,22 @@ function MalhaEditorInner({
             )
           })}
           {/* A linha é a outra metade da leitura: o card diz o estado de UM
-              pipeline, a linha diz se a corrida ATRAVESSOU aquele trecho. */}
+              pipeline, a linha diz se a corrida ATRAVESSOU aquele trecho.
+              F4: entra o traço tracejado ÂMBAR de `esperando` — e os rótulos
+              passam a sair de ROTULO_FLUXO, a mesma fonte do nome acessível da
+              aresta, para legenda e desenho não divergirem de vocabulário. */}
           <span className="flex items-center gap-1.5 border-l border-edge pl-3 text-[10px] text-dim">
             linha:
             <span className="inline-block h-0.5 w-4 rounded bg-green-600 dark:bg-green-400" />
-            percorrida
+            {ROTULO_FLUXO.concluido.replace('trecho ', '')}
             <span className="inline-block h-0.5 w-4 animate-pulse rounded bg-blue-600 dark:bg-blue-400" />
-            em andamento
+            {ROTULO_FLUXO.ativo}
+            {/* Tracejado de verdade (border-dashed sobre 0 de altura): o
+                operador precisa reconhecer no canvas o MESMO traço. */}
+            <span className="inline-block w-4 border-t-2 border-dashed border-amber-600 dark:border-amber-400" />
+            {ROTULO_FLUXO.esperando}
             <span className="inline-block h-0.5 w-4 rounded bg-red-600 dark:bg-red-400" />
-            parada
+            {ROTULO_FLUXO.bloqueado}
           </span>
           <span className="ml-auto text-[10px] text-dim">
             nó sem anel = sem execução registrada na data
