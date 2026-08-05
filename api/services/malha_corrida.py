@@ -508,6 +508,147 @@ def corrida_aberta_do_pipeline(cur, pipeline: str) -> dict:
             "ambiguo": False}
 
 
+# ═══════════ o ODATE do §7 — a precedência num lugar só (F5) ════════════════
+#
+# Port do canônico `dags/utils/malha_corrida.py`. O motor é quem CARIMBA; esta
+# árvore existe para que a API responda a mesma coisa que ele — o disparo avulso
+# e o painel precisam saber qual ODATE uma execução TERIA, e uma segunda régua
+# aqui é como a tela e o motor voltam a discordar sobre o mesmo fato.
+
+SQL_ODATE_DO_RUN = (
+    "SELECT TOP 1 data_referencia, malha_execucao_id "
+    "FROM dbo.etl_pipeline_execucao "
+    "WHERE pipeline_name = ? AND execution_id = ? "
+    "ORDER BY id")
+
+SQL_CORRIDA_DO_CONF = (
+    "SELECT " + _COLS_ME + " FROM dbo.etl_malha_execucao me "
+    "JOIN dbo.etl_malha_pipeline mp ON mp.malha_name = me.malha_name "
+    "WHERE me.id = ? AND mp.pipeline_name = ? AND me.fechada_em IS NULL")
+
+DEGRAU_CARIMBO = "carimbo"
+DEGRAU_CONF_CORRIDA = "conf_corrida"
+DEGRAU_CONF_DATA = "conf_data"
+DEGRAU_CORRIDA = "corrida"
+DEGRAU_CALCULO = "calculo"
+
+MOTIVO_ODATE_AMBIGUO = "MALHA_ODATE_AMBIGUO"
+
+
+def _odate_carimbado(cur, pipeline: str, run_id) -> dict:
+    """Degrau 0 — o que a linha deste run já gravou, ou `{}`."""
+    try:
+        cur.execute(SQL_ODATE_DO_RUN, (pipeline, str(run_id)))
+        row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("%s carimbo do run %s indisponivel (%s) — seguindo pelos degraus",
+                    LOG, run_id, e)
+        return {}
+    if not row or row[0] is None:
+        return {}
+    return {"data": row[0],
+            "corrida_id": int(row[1]) if row[1] is not None else None}
+
+
+def _corrida_do_conf(cur, conf_id, pipeline: str):
+    """Degrau 1 — a corrida do conf, **se** aberta e de malha deste pipeline."""
+    try:
+        alvo = int(str(conf_id).strip())
+    except (TypeError, ValueError):
+        log.warning("%s conf malha_execucao_id invalido (%r) — tratado como AUSENTE",
+                    LOG, conf_id)
+        return None
+    try:
+        cur.execute(SQL_CORRIDA_DO_CONF, (alvo, pipeline))
+        row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("%s corrida #%s do conf indisponivel (%s) — tratada como AUSENTE",
+                    LOG, alvo, e)
+        return None
+    if row is None:
+        log.warning("%s conf aponta a corrida #%s, que nao esta aberta ou nao e de "
+                    "malha de %s — tratado como AUSENTE (Decisao 37)",
+                    LOG, alvo, pipeline)
+        return None
+    return _como_dict(row)
+
+
+def _dona_do_odate(cur, pipeline: str, data_ref, conf_id=None):
+    """A corrida DONA de uma data já decidida, ou None — nunca muda a data."""
+    if conf_id is not None:
+        c = _corrida_do_conf(cur, conf_id, pipeline)
+        if c is not None and c["data_referencia"] == data_ref:
+            return c["id"]
+    aberta = corrida_aberta_do_pipeline(cur, pipeline)
+    donas = [c for c in aberta["corridas"] if c["data_referencia"] == data_ref]
+    return donas[0]["id"] if len(donas) == 1 else None
+
+
+def odate(cur, pipeline: str, run_id=None, conf_id=None, herdada=None) -> dict:
+    """A precedência do §7 (degraus 0 a 3) para UM run deste pipeline.
+
+    Gêmea da função canônica de `dags/utils/malha_corrida.py` — a documentação
+    inteira dos degraus está lá, e é lá que se muda a regra primeiro.
+    """
+    vazio = {"data": None, "corrida_id": None, "ambiguo": False,
+             "degrau": None, "detalhe": None}
+    if not corrida_ativa(cur):
+        return vazio
+    if run_id:
+        carimbo = _odate_carimbado(cur, pipeline, run_id)
+        if carimbo:
+            # O degrau 0 decide a DATA, e só ela — a proveniência continua
+            # sendo procurada quando a linha ainda não tem dono (ver o
+            # comentário do canônico: é o caso do dependente, cuja linha nasce
+            # no claim do pai, sem vínculo).
+            if carimbo["corrida_id"] is not None:
+                return {**vazio, "data": carimbo["data"],
+                        "corrida_id": carimbo["corrida_id"],
+                        "degrau": DEGRAU_CARIMBO}
+            return {**vazio, "data": carimbo["data"],
+                    "corrida_id": _dona_do_odate(cur, pipeline,
+                                                 carimbo["data"], conf_id),
+                    "degrau": DEGRAU_CARIMBO}
+    if conf_id is not None:
+        c = _corrida_do_conf(cur, conf_id, pipeline)
+        if c is not None:
+            return {**vazio, "data": c["data_referencia"],
+                    "corrida_id": c["id"], "degrau": DEGRAU_CONF_CORRIDA}
+    aberta = corrida_aberta_do_pipeline(cur, pipeline)
+    if herdada is not None:
+        dona = (aberta["corridas"][0] if len(aberta["corridas"]) == 1
+                and aberta["odate"] == herdada else None)
+        if aberta["ambiguo"]:
+            log.warning("%s %s tem corridas abertas com ODATEs diferentes, mas a "
+                        "data %s veio herdada — a heranca prevalece",
+                        LOG, pipeline, herdada)
+        elif aberta["odate"] is not None and dona is None:
+            log.warning("%s %s: data herdada %s difere do ODATE %s da corrida "
+                        "aberta — a heranca prevalece e a linha fica sem "
+                        "proveniencia", LOG, pipeline, herdada, aberta["odate"])
+        return {**vazio, "data": herdada,
+                "corrida_id": (dona["id"] if dona else None),
+                "degrau": DEGRAU_CONF_DATA}
+    if aberta["ambiguo"]:
+        datas = ", ".join(sorted(f"#{c['id']} ({c['data_referencia']})"
+                                 for c in aberta["corridas"]))
+        return {**vazio, "ambiguo": True, "degrau": DEGRAU_CORRIDA,
+                "detalhe": (f"{MOTIVO_ODATE_AMBIGUO}: {pipeline} e membro de "
+                            f"corridas abertas com ODATEs diferentes — {datas}. "
+                            f"Encerre a corrida que nao deveria estar aberta "
+                            f"(Malha ▸ Encerrar corrida) e dispare de novo")}
+    if aberta["odate"] is not None:
+        unica = aberta["corridas"][0] if len(aberta["corridas"]) == 1 else None
+        if unica is None:
+            log.warning("%s %s e membro de %d corridas abertas no MESMO ODATE %s "
+                        "— data resolvida, proveniencia sem dono",
+                        LOG, pipeline, len(aberta["corridas"]), aberta["odate"])
+        return {**vazio, "data": aberta["odate"],
+                "corrida_id": (unica["id"] if unica else None),
+                "degrau": DEGRAU_CORRIDA}
+    return vazio
+
+
 def membros(cur, corrida_id) -> list:
     """O snapshot congelado da corrida: `[{pipeline, conta_para_fim,
     ativo_na_abertura, eh_raiz}]`, por pipeline.

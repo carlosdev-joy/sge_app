@@ -489,6 +489,223 @@ def corrida_aberta_do_pipeline(conn, pipeline: str) -> dict:
             "ambiguo": False}
 
 
+# ═══════════ o ODATE do §7 — a precedência num lugar só (F5) ════════════════
+#
+# Os degraus 0 a 3 da tabela do §7 moram AQUI, e não no fonte gerado, por três
+# razões que este repo já pagou: (i) SQL não entra na DAG gerada (D52) — o que
+# está no fonte publicado só muda com `force_all`, e uma consulta errada ficaria
+# congelada em N pipelines até alguém regerar todos; (ii) o gêmeo da API tem de
+# responder a MESMA coisa que o motor, e paridade se prova sobre UM texto;
+# (iii) o fonte gerado não tem teste unitário barato, este módulo tem.
+#
+# O degrau 4 (cálculo pela virada) NÃO está aqui, de propósito: ele é puro, é o
+# comportamento de hoje e precisa continuar funcionando com este módulo AUSENTE
+# do servidor. Quem chama faz o degrau 4 quando esta função devolve `data=None`.
+
+# O carimbo que a linha deste run JÁ tem. É o degrau 0 — e é ele que faz a
+# Decisão 36 valer ENTRE TASKS, não só dentro de uma: o `check_agenda` e o
+# `publish_dataset` são processos diferentes, e um cache em memória não os
+# atravessa. O cenário da Decisão 36 (01:10 resolve degrau 3, 04:50 a corrida
+# fecha, 04:52 o registro de sucesso recalcula e erra a chave do UPDATE) é
+# EXATAMENTE um caso de duas tasks; sem este degrau, memoizar por processo
+# consertaria só a metade barata do problema.
+#
+# `ORDER BY id`: a linha que NASCEU primeiro deste run é a identidade dele. Se
+# um dia houver duas (a doença), a mais antiga é a legítima — e escolher sempre
+# a mesma é o que impede o UPDATE de alternar de alvo entre uma chamada e outra.
+SQL_ODATE_DO_RUN = (
+    "SELECT TOP 1 data_referencia, malha_execucao_id "
+    "FROM dbo.etl_pipeline_execucao "
+    "WHERE pipeline_name = %s AND execution_id = %s "
+    "ORDER BY id")
+
+# Degrau 1 com a VALIDAÇÃO da Decisão 37 embutida no WHERE, e não em Python: a
+# corrida do conf só vale se estiver ABERTA (`fechada_em IS NULL`) **e** for de
+# uma malha que contém este pipeline (o JOIN). `POST /airflow/dags/{id}/dagRuns`
+# repassa o conf CRU — sem estas duas condições, qualquer id arbitrário no conf
+# viraria o ODATE da linha.
+SQL_CORRIDA_DO_CONF = (
+    "SELECT " + _COLS_ME + " FROM dbo.etl_malha_execucao me "
+    "JOIN dbo.etl_malha_pipeline mp ON mp.malha_name = me.malha_name "
+    "WHERE me.id = %s AND mp.pipeline_name = %s AND me.fechada_em IS NULL")
+
+# Os degraus, nomeados: o chamador loga qual venceu, e o teste afirma sobre o
+# nome — nunca sobre "a data deu certo por acaso".
+DEGRAU_CARIMBO = "carimbo"          # 0 — a linha deste run já tem ODATE
+DEGRAU_CONF_CORRIDA = "conf_corrida"  # 1 — conf['malha_execucao_id'] validado
+DEGRAU_CONF_DATA = "conf_data"      # 2 — conf['data_referencia'] herdado
+DEGRAU_CORRIDA = "corrida"          # 3 — corrida aberta de malha deste pipeline
+DEGRAU_CALCULO = "calculo"          # 4 — o cálculo pela virada, no chamador
+
+# O motivo nominal da recusa (Decisão 34). Vai no `motivo` da linha PULADA e no
+# `detalhe` do evento: quem for de plantão precisa achar isto por `grep`.
+MOTIVO_ODATE_AMBIGUO = "MALHA_ODATE_AMBIGUO"
+
+
+def _odate_carimbado(conn, pipeline: str, run_id) -> dict:
+    """Degrau 0 — o que a linha deste run já gravou, ou `{}`."""
+    try:
+        cur = conn.cursor()
+        cur.execute(SQL_ODATE_DO_RUN, (pipeline, str(run_id)))
+        row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        print(f"{LOG} carimbo do run {run_id} indisponivel ({e}) — seguindo pelos degraus")
+        return {}
+    if not row or row[0] is None:
+        return {}
+    return {"data": row[0],
+            "corrida_id": int(row[1]) if row[1] is not None else None}
+
+
+def _corrida_do_conf(conn, conf_id, pipeline: str):
+    """Degrau 1 — a corrida do conf, **se** aberta e de malha deste pipeline."""
+    try:
+        alvo = int(str(conf_id).strip())
+    except (TypeError, ValueError):
+        print(f"{LOG} conf malha_execucao_id invalido ({conf_id!r}) — tratado como AUSENTE")
+        return None
+    try:
+        cur = conn.cursor()
+        cur.execute(SQL_CORRIDA_DO_CONF, (alvo, pipeline))
+        row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        print(f"{LOG} corrida #{alvo} do conf indisponivel ({e}) — tratada como AUSENTE")
+        return None
+    if row is None:
+        # A frase nomeia as DUAS causas possíveis porque elas pedem reações
+        # diferentes do operador: corrida fechada é ciclo encerrado (rerun tardio
+        # herdando um conf velho); malha que não contém o pipeline é conf
+        # inventado ou desenho editado no meio do voo.
+        print(f"{LOG} conf aponta a corrida #{alvo}, que nao esta aberta ou nao e "
+              f"de malha de {pipeline} — tratado como AUSENTE (Decisao 37)")
+        return None
+    return _como_dict(row)
+
+
+def _dona_do_odate(conn, pipeline: str, data_ref, conf_id=None):
+    """A corrida DONA de uma data já decidida, ou None — nunca muda a data.
+
+    Serve ao degrau 0 quando a linha existe sem proveniência (o caso do
+    dependente, cuja linha nasce no claim do pai). Pergunta primeiro ao conf
+    (que é a resposta do pai, e é barata) e depois às corridas abertas da malha;
+    nos dois casos, só aceita quem carimba EXATAMENTE `data_ref`."""
+    if conf_id is not None:
+        c = _corrida_do_conf(conn, conf_id, pipeline)
+        if c is not None and c["data_referencia"] == data_ref:
+            return c["id"]
+    aberta = corrida_aberta_do_pipeline(conn, pipeline)
+    donas = [c for c in aberta["corridas"] if c["data_referencia"] == data_ref]
+    return donas[0]["id"] if len(donas) == 1 else None
+
+
+def odate(conn, pipeline: str, run_id=None, conf_id=None, herdada=None) -> dict:
+    """A precedência do §7 (degraus 0 a 3) para UM run deste pipeline.
+
+    Devolve `{"data", "corrida_id", "ambiguo", "degrau", "detalhe"}`.
+    `data is None` e `ambiguo False` = **nenhum degrau daqui respondeu**: o
+    chamador segue para o degrau 4 (o cálculo pela virada, byte a byte o de
+    hoje). `ambiguo True` = RECUSA (Decisão 34) — nunca escolha.
+
+    Ordem, e por que cada uma está onde está:
+
+      0. `SQL_ODATE_DO_RUN` — o ODATE já gravado para este `run_id`. É a
+         Decisão 36 atravessando tasks (ver o comentário do SQL). Também é o
+         que faz "rerun que reusa o `run_id`" preservar o `malha_execucao_id`
+         original sem nenhuma regra especial de rerun;
+      1. `conf['malha_execucao_id']` VALIDADO (Decisão 37) — otimização de
+         herança dentro da corrida, jamais identidade;
+      2. `conf['data_referencia']` — a herança de hoje (push fora de malha,
+         rerun, disparo manual com data). Vem ANTES do degrau 3 de propósito:
+         quem recebeu uma data explícita já teve o ODATE decidido por quem o
+         disparou, e re-decidir aqui reabriria a porta que a herança fechou;
+      3. corrida ABERTA de alguma malha deste pipeline (Decisão 33) — o
+         `Carga_Vida` invertido: o membro com cron próprio, cuja DAG nem foi
+         republicada com a mudança da fase, **adere** ao ciclo em voo em vez de
+         calcular a própria data.
+
+    Com o interruptor DESLIGADO (ou sem a 085) a função devolve o vazio na
+    PRIMEIRA linha, sem tocar o banco: "sem a 085" e "desligado" são o mesmo
+    caminho para todo chamador — e é isso que garante que o fonte gerado novo
+    rode num banco velho emitindo exatamente as consultas de antes.
+    """
+    vazio = {"data": None, "corrida_id": None, "ambiguo": False,
+             "degrau": None, "detalhe": None}
+    if not corrida_ativa(conn):
+        return vazio
+    if run_id:
+        carimbo = _odate_carimbado(conn, pipeline, run_id)
+        if carimbo:
+            # ⚠️ O degrau 0 decide a DATA, e só ela. A PROVENIÊNCIA continua
+            # sendo procurada quando a linha ainda não tem dono — e isso não é
+            # detalhe: a linha do dependente NASCE no claim do pai
+            # (`reservar_corrida`), sem `malha_execucao_id`, e o filho a
+            # encontra pronta. MEDIDO no dev em 2026-08-05: com o degrau 0
+            # respondendo sozinho, DEV_F10_D herdou a data 2026-08-02 e ficou
+            # com `malha_execucao_id` NULL mesmo tendo recebido `647` no conf —
+            # ou seja, TODA a cascata (a maior parte de uma malha) ficava fora
+            # do ciclo a que pertence, e o "4 de 7" contaria errado.
+            #
+            # A busca é limitada a corrida do MESMO ODATE da linha: proveniência
+            # é "de onde veio esta data", e carimbar uma corrida de outro dia
+            # seria mentira gravada — a doença com outro rótulo.
+            if carimbo["corrida_id"] is not None:
+                return {**vazio, "data": carimbo["data"],
+                        "corrida_id": carimbo["corrida_id"],
+                        "degrau": DEGRAU_CARIMBO}
+            return {**vazio, "data": carimbo["data"],
+                    "corrida_id": _dona_do_odate(conn, pipeline,
+                                                 carimbo["data"], conf_id),
+                    "degrau": DEGRAU_CARIMBO}
+    if conf_id is not None:
+        c = _corrida_do_conf(conn, conf_id, pipeline)
+        if c is not None:
+            return {**vazio, "data": c["data_referencia"],
+                    "corrida_id": c["id"], "degrau": DEGRAU_CONF_CORRIDA}
+    aberta = corrida_aberta_do_pipeline(conn, pipeline)
+    if herdada is not None:
+        # A data herdada VENCE (degrau 2) — mas a proveniência ainda é útil, e a
+        # discordância ainda é notícia. Uma corrida só, com o MESMO ODATE, é
+        # dona da linha; com ODATE diferente, a linha fica sem dono e o log diz
+        # por quê. O que não pode acontecer aqui é RECUSA: o degrau 2 é o
+        # caminho do rerun e do disparo manual com data, e recusá-los
+        # transformaria a proteção em paralisia.
+        dona = (aberta["corridas"][0] if len(aberta["corridas"]) == 1
+                and aberta["odate"] == herdada else None)
+        if aberta["ambiguo"]:
+            print(f"{LOG} {pipeline} tem corridas abertas com ODATEs diferentes, "
+                  f"mas a data {herdada} veio herdada — a heranca prevalece")
+        elif aberta["odate"] is not None and dona is None:
+            print(f"{LOG} {pipeline}: data herdada {herdada} difere do ODATE "
+                  f"{aberta['odate']} da corrida aberta — a heranca prevalece e a "
+                  f"linha fica sem proveniencia")
+        return {**vazio, "data": herdada,
+                "corrida_id": (dona["id"] if dona else None),
+                "degrau": DEGRAU_CONF_DATA}
+    if aberta["ambiguo"]:
+        datas = ", ".join(sorted(f"#{c['id']} ({c['data_referencia']})"
+                                 for c in aberta["corridas"]))
+        return {**vazio, "ambiguo": True, "degrau": DEGRAU_CORRIDA,
+                "detalhe": (f"{MOTIVO_ODATE_AMBIGUO}: {pipeline} e membro de "
+                            f"corridas abertas com ODATEs diferentes — {datas}. "
+                            f"Encerre a corrida que nao deveria estar aberta "
+                            f"(Malha ▸ Encerrar corrida) e dispare de novo")}
+    if aberta["odate"] is not None:
+        # Proveniência só quando há UMA corrida: duas corridas do mesmo ODATE
+        # (membro compartilhado, as duas legítimas) não tornam a data ambígua —
+        # a resposta é a mesma data —, mas inventar de qual delas a linha veio
+        # seria escolher onde não há motivo para escolher (Decisão 2: a prova de
+        # que o membro concluiu é da LINHA no intervalo, nunca da proveniência).
+        unica = aberta["corridas"][0] if len(aberta["corridas"]) == 1 else None
+        if unica is None:
+            print(f"{LOG} {pipeline} e membro de {len(aberta['corridas'])} corridas "
+                  f"abertas no MESMO ODATE {aberta['odate']} — data resolvida, "
+                  f"proveniencia sem dono")
+        return {**vazio, "data": aberta["odate"],
+                "corrida_id": (unica["id"] if unica else None),
+                "degrau": DEGRAU_CORRIDA}
+    return vazio
+
+
 def membros(conn, corrida_id) -> list:
     """O snapshot congelado da corrida: `[{pipeline, conta_para_fim,
     ativo_na_abertura, eh_raiz}]`, por pipeline.

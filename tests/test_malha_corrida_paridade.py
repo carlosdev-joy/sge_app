@@ -103,7 +103,12 @@ _CONSTANTES_SQL = ("SQL_TETO_DA_MALHA", "SQL_VIRADA_DA_MALHA",
                    "SQL_AGUARDANDO_DO_SNAPSHOT", "SQL_RELOGIOS",
                    "SQL_NO_RETIDO", "SQL_CARIMBAR_MOTIVO",
                    "SQL_HEARTBEAT_GRAVAR", "SQL_HEARTBEAT_CRIAR",
-                   "SQL_HEARTBEAT_LER", "SQL_CORRIDA_DA_DATA")
+                   "SQL_HEARTBEAT_LER", "SQL_CORRIDA_DA_DATA",
+                   # F5 — os degraus 0 e 1 do §7. O ODATE que o motor carimba e
+                   # o que a API mostra têm de sair do MESMO texto: divergir
+                   # aqui é a tela dizer que a linha é de D e o banco gravar
+                   # D-1, que é o incidente desta spec com outra roupa.
+                   "SQL_ODATE_DO_RUN", "SQL_CORRIDA_DO_CONF")
 
 
 @pytest.mark.parametrize("nome", _CONSTANTES_SQL)
@@ -170,7 +175,13 @@ def test_paridade_do_dominio_e_das_constantes(mcd):
                  "STATUS_PARTIU", "CLASSES_PENDENTES", "_ORDEM_CLASSE",
                  "EVENTO_ORFA", "ERRO_LEITURA", "MOTIVO_FORA_DA_CORRIDA",
                  "MOTIVO_OUTRO_ODATE", "CHAVE_HEARTBEAT",
-                 "DESCRICAO_HEARTBEAT", "_MARCAS_HOLD"):
+                 "DESCRICAO_HEARTBEAT", "_MARCAS_HOLD",
+                 # F5 — os nomes dos degraus do §7 e o motivo da recusa. O
+                 # motivo é o que o operador vai procurar por `grep` às 3h e o
+                 # que o front casa para pintar a linha: escrevê-lo diferente em
+                 # cada árvore faz a recusa existir no banco e sumir da tela.
+                 "DEGRAU_CARIMBO", "DEGRAU_CONF_CORRIDA", "DEGRAU_CONF_DATA",
+                 "DEGRAU_CORRIDA", "DEGRAU_CALCULO", "MOTIVO_ODATE_AMBIGUO"):
         assert getattr(mcd, nome) == getattr(mca, nome), nome
     assert mcd._CAMPOS == CAMPOS       # e os dois batem com o contrato do dublê
 
@@ -277,7 +288,22 @@ _CHAMADAS = {
     "marcar_heartbeat": lambda m, a: m.marcar_heartbeat(a),
     "heartbeat_guardia": lambda m, a: m.heartbeat_guardia(a, 15),
     "corrida_da_data": lambda m, a: m.corrida_da_data(a, "M1", ODATE),
+    # ── F5 — os degraus do §7 ───────────────────────────────────────────────
+    # `_ligado` liga o interruptor NAS DUAS FORMAS de cache (por processo no
+    # canônico, por TTL no port). Sem isso a função devolveria vazio na primeira
+    # linha e a paridade compararia duas listas vazias — verde sem provar nada.
+    "odate_degrau_0": lambda m, a: (_ligado(m),
+                                    m.odate(a, "PIPE_A", run_id="run_1")),
+    "odate_degrau_1": lambda m, a: (_ligado(m),
+                                    m.odate(a, "PIPE_A", conf_id=7)),
+    "odate_degrau_3": lambda m, a: (_ligado(m), m.odate(a, "PIPE_A")),
 }
+
+
+def _ligado(m):
+    """Interruptor LIGADO nas duas formas de cache, sem ir ao banco."""
+    m._CACHE_ATIVA["ativa"] = True
+    m._CACHE_ATIVA["ate"] = float("inf")     # só o port lê esta chave
 
 # A corrida que a F2 passa para `estado`/`relogios`/`aguardando_do_snapshot`:
 # as três leem os MESMOS três campos, e trocá-los de ordem entre as árvores não

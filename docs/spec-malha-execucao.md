@@ -886,6 +886,7 @@ Precedência nova de `_data_referencia(context)` no fonte gerado
 
 | # | Fonte | Quem cai aqui |
 |---|---|---|
+| 0 | **o ODATE já gravado na linha deste `run_id`** (`malha_corrida.odate`, `SQL_ODATE_DO_RUN`) | a Decisão 36 tornada durável — ver a nota abaixo da própria Decisão 36 |
 | 1 | `conf['malha_execucao_id']` → `SELECT data_referencia FROM etl_malha_execucao WHERE id = %s AND fechada_em IS NULL` **e** a corrida é de uma malha deste pipeline | a fonte única: cascata por push dentro da corrida |
 | 2 | `conf['data_referencia']` | herança de hoje: push fora de malha, rerun, disparo manual com data |
 | 3 | **corrida ABERTA de alguma malha deste pipeline** (`malha_corrida.corrida_aberta_do_pipeline`) | ⚠️ **o membro com cron próprio, DAG não republicada — é o `Carga_Vida` invertido**: em vez de calcular a própria data, ele **adere** ao ODATE do ciclo em voo |
@@ -927,6 +928,25 @@ ODATEs: a doença desta spec, produzida por ela)*. A memoização também elimin
 3 idas extras ao banco por run — o degrau 3 custa 1–2 consultas e
 `_disparar_dependentes` as multiplicaria por dependente. **É entregável da fase,
 não detalhe de implementação.**
+
+> **Como ficou, na execução da F5 (2026-08-05):** a memoização é de **duas
+> camadas**, e a segunda é o **degrau 0** da tabela acima. Um dicionário por
+> `run_id` no fonte gerado resolve as chamadas do MESMO processo; mas o cenário
+> literal da Decisão 36 é entre **tasks diferentes** — `check_agenda` às 01:10 e
+> `_registrar_sucesso` às 04:52 rodam em processos distintos, e cache em memória
+> não os atravessa. Por isso o degrau 0 lê o ODATE **já gravado na linha deste
+> `run_id`**: o run tem um ODATE, ele nasce na primeira chamada e nenhuma
+> chamada posterior o redecide. De quebra, é ele que faz "rerun que reusa o
+> `run_id` preserva o `malha_execucao_id`" valer sem nenhuma regra especial de
+> rerun.
+>
+> ⚠️ O degrau 0 decide a **data**, e só ela: a **proveniência** continua sendo
+> procurada enquanto a linha não tem dono, limitada a corrida do MESMO ODATE.
+> Sem essa ressalva, o dependente — cuja linha nasce no claim do pai
+> (`reservar_corrida`), sem `malha_execucao_id` — ficaria para sempre sem
+> vínculo mesmo tendo recebido a corrida no conf. Foi **medido no dev**:
+> `DEV_F10_D` concluiu em `2026-08-02` com `malha_execucao_id` NULL, isto é,
+> toda a cascata fora do ciclo a que pertence e o "4 de 7" contando errado.
 
 **Decisão 37 — `conf['malha_execucao_id']` é OTIMIZAÇÃO de herança, não
 identidade, e é VALIDADA** *(evita: amarrar a identidade a uma string frágil —

@@ -67,17 +67,39 @@ _DREF_REAL = _load_module("utils_data_referencia_f3_test", "dags/utils/data_refe
 _DEPS_REAL = _load_module("utils_dependencias_f3_test", "dags/utils/dependencias.py")
 
 
+# F5 (spec-malha-execucao) — a corrida DESLIGADA: o estado de todo banco sem a
+# 085 e do dev com o interruptor em 0. Dublê explícito, nunca MagicMock: num
+# mock, `_corrida.odate(...)['ambiguo']` devolve um mock — que é VERDADEIRO — e
+# o push recusaria TODO dependente por "ODATE ambíguo" sem corrida nenhuma
+# existir. (O caminho com a corrida LIGADA é testado em
+# tests/test_dag_factory_odate_corrida.py, com o dublê ligado.)
+_CORRIDA_DESLIGADA = SimpleNamespace(
+    corrida_ativa=lambda *a, **kw: False,
+    odate=lambda *a, **kw: {"data": None, "corrida_id": None, "ambiguo": False,
+                            "degrau": None, "detalhe": None},
+    corrida_aberta_do_pipeline=lambda *a, **kw: {"corridas": [], "odate": None,
+                                                 "ambiguo": False},
+)
+
+
 @contextmanager
-def _ambiente_utils(dependencias=_DEPS_REAL):
+def _ambiente_utils(dependencias=_DEPS_REAL, malha_corrida=_CORRIDA_DESLIGADA):
     """utils.* stubados; data_referencia sempre REAL; dependencias REAL por
-    padrão ou um dublê por teste (o push importa por nome de módulo)."""
+    padrão ou um dublê por teste (o push importa por nome de módulo).
+
+    ``utils.malha_corrida`` entra como ATRIBUTO do pacote stubado, e não só no
+    sys.modules: o fonte gerado faz ``from utils import malha_corrida``, que num
+    MagicMock puro devolve um filho mock em silêncio."""
+    pacote_utils = MagicMock()
+    pacote_utils.malha_corrida = malha_corrida
     util_mods = {
-        "utils": MagicMock(),
+        "utils": pacote_utils,
         "utils.datastage_operator": MagicMock(),
         "utils.conditions": MagicMock(),
         "utils.job_operators": MagicMock(),
         "utils.data_referencia": _DREF_REAL,
         "utils.dependencias": dependencias,
+        "utils.malha_corrida": malha_corrida,
     }
     saved = {m: sys.modules.get(m) for m in util_mods}
     try:

@@ -1653,3 +1653,112 @@ def test_corrida_aberta_de_ODATE_antigo_nao_some_da_lista_paginada(
     assert len(corpo["corridas"]) == 3
     assert antiga["id"] not in [c["id"] for c in corpo["corridas"]]
     assert corpo["aberta"] is not None and corpo["aberta"]["id"] == antiga["id"]
+
+
+# ═══════ a sonda do `force_all` no disparo (F5/§12.2, risco 9) ══════════════
+#
+# A F5 é a única fase que exige regeração das DAGs, e o gesto NÃO está no
+# deploy.sh. Enquanto ele não acontece, metade dos membros carimba o ODATE pela
+# corrida e metade calcula sozinha — a doença com aparência de cura. O disparo
+# AVISA (nunca recusa) e nomeia quem ficou para trás.
+#
+# A sonda em si (ler o fonte publicado) é provada contra ARQUIVOS DE VERDADE em
+# tests/test_dag_factory_odate_corrida.py; aqui se prova a FIAÇÃO: quem chama,
+# com que lista, e o que aparece na resposta.
+
+def _sonda_fixa(mapa):
+    """Substitui a sonda por uma resposta conhecida — a leitura de disco tem
+    teste próprio, e reproduzi-la aqui provaria o dublê duas vezes."""
+    import services.espera as esp_svc
+    return patch.object(
+        esp_svc, "carimbo_corrida_dos_pipelines",
+        side_effect=lambda cur, pipelines: [
+            {"pipeline": p, "sonda": mapa.get(p, esp_svc.CORRIDA_OK)}
+            for p in pipelines])
+
+
+def test_disparo_avisa_membro_sem_o_carimbo_e_NAO_recusa(client, auth_operador):
+    """O membro com a DAG velha calcula a própria data em vez de aderir ao
+    ciclo — é o `Carga_Vida` invertido do §7, e o operador precisa saber ANTES
+    de confirmar. Aviso FORTE; o gesto continua sendo dele."""
+    import services.espera as esp_svc
+    db = FakeDb(pipelines=_pipes())
+    fake = FakeAirflowClient()
+    with _patch_db(db), patch("routers.malhas.get_airflow_client",
+                              return_value=fake), _dags_novo(), _patch_agora(), \
+            _sonda_fixa({"PIPE_MEIO": esp_svc.CORRIDA_AUSENTE}):
+        _malha_com_inicio(client)
+        r = _disparar(client)
+    assert r.status_code == 200, r.text
+    corpo = r.json()
+    aviso = [a for a in corpo["avisos"] if a.get("tipo") == "sem_carimbo_odate"]
+    assert len(aviso) == 1 and aviso[0]["nivel"] == "forte"
+    assert "PIPE_MEIO" in aviso[0]["mensagem"]
+    # ADITIVO: as duas colunas do §12.2, e SÓ quem não está OK
+    assert corpo["carimbo_odate"] == [{"pipeline": "PIPE_MEIO",
+                                       "sonda": esp_svc.CORRIDA_AUSENTE}]
+    assert fake.chamadas, "o disparo AVISA, nunca recusa"
+
+
+def test_a_sonda_cobre_todo_MEMBRO_e_nao_so_as_raizes(client, auth_operador):
+    """Quem calcula a própria data no meio da malha é justamente o membro com
+    cron próprio — cobrir só as raízes deixaria de fora o caso do incidente."""
+    import services.espera as esp_svc
+    db = FakeDb(pipelines=_pipes())
+    fake = FakeAirflowClient()
+    with _patch_db(db), patch("routers.malhas.get_airflow_client",
+                              return_value=fake), _dags_novo(), _patch_agora(), \
+            _sonda_fixa({}) as sonda:
+        _malha_com_inicio(client)
+        _disparar(client)
+    pedidos = sonda.call_args[0][1]
+    assert set(pedidos) >= {"RAIZ_A", "RAIZ_B", "PIPE_MEIO"}
+
+
+def test_DESCONHECIDO_vira_aviso_LEVE_com_frase_propria(client, auth_operador):
+    """Não conseguir ler o fonte não prova nada sobre ele: a frase é de dúvida,
+    não de acusação, e o nível é leve."""
+    import services.espera as esp_svc
+    db = FakeDb(pipelines=_pipes())
+    fake = FakeAirflowClient()
+    with _patch_db(db), patch("routers.malhas.get_airflow_client",
+                              return_value=fake), _dags_novo(), _patch_agora(), \
+            _sonda_fixa({"RAIZ_A": esp_svc.CORRIDA_DESCONHECIDO}):
+        _malha_com_inicio(client)
+        r = _disparar(client)
+    corpo = r.json()
+    assert [a for a in corpo["avisos"] if a.get("tipo") == "sem_carimbo_odate"] == []
+    incerto = [a for a in corpo["avisos"] if a.get("tipo") == "carimbo_incerto"]
+    assert len(incerto) == 1 and incerto[0]["nivel"] == "leve"
+    assert "não foi possível conferir" in incerto[0]["mensagem"]
+
+
+def test_malha_toda_regerada_nao_gera_aviso_nenhum(client, auth_operador):
+    """Aviso que aparece sempre deixa de ser lido: com todo mundo em dia, nem
+    aviso nem a chave aditiva na resposta."""
+    db = FakeDb(pipelines=_pipes())
+    fake = FakeAirflowClient()
+    with _patch_db(db), patch("routers.malhas.get_airflow_client",
+                              return_value=fake), _dags_novo(), _patch_agora(), \
+            _sonda_fixa({}):
+        _malha_com_inicio(client)
+        r = _disparar(client)
+    corpo = r.json()
+    assert "carimbo_odate" not in corpo
+    assert [a for a in corpo["avisos"]
+            if a.get("tipo") in ("sem_carimbo_odate", "carimbo_incerto")] == []
+
+
+def test_interruptor_desligado_nao_sonda_nada(client, auth_operador):
+    """Com a corrida em 0, ninguém carimba ODATE pela corrida — dizer "sua DAG
+    não tem o carimbo" seria ruído puro, e ruído em todo disparo ensina a
+    operação a ignorar a caixa de avisos inteira."""
+    db = FakeDb(pipelines=_pipes(), config={mc.CHAVE_ATIVA: "0"})
+    fake = FakeAirflowClient()
+    with _patch_db(db), patch("routers.malhas.get_airflow_client",
+                              return_value=fake), _dags_novo(), _patch_agora(), \
+            _sonda_fixa({}) as sonda:
+        _malha_com_inicio(client)
+        r = _disparar(client)
+    assert r.status_code == 200, r.text
+    assert sonda.call_count == 0
