@@ -702,8 +702,9 @@ def _observadores_malha(conn, agora: datetime, log) -> int:
         observador não adivinha);
       • janela fixa {D-1, D} derivada do PRESENTE (D = calcular(agora,
         virada)) — nunca varredura de histórico (D45). O D-1 pega a cadeia
-        noturna que conclui depois da meia-noite; a chave do ux_dep_evento
-        impede duplicata quando o evento já saiu no próprio dia; data
+        noturna que conclui depois da meia-noite; a chave do
+        ux_dep_evento_corrida (ux_dep_evento até a 085) impede duplicata
+        quando o evento já saiu no próprio dia; data
         anterior ao DIA de criação do nó nunca é avaliada (corte
         anti-retroativo — achado 1 da revisão);
       • condição = pipelines_todos_sucesso (o MESMO contrato EXISTS de

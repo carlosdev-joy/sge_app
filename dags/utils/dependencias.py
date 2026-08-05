@@ -1032,9 +1032,13 @@ def fechar_nao_liberou(conn, pipeline: str, data_ref: date, run_id: str,
 
 def gravar_evento(conn, pipeline: str, data_ref: date, tipo: str,
                   detalhe: str, notificar: bool = True) -> bool:
-    """INSERT ... WHERE NOT EXISTS na chave do ux_dep_evento (pipeline,
-    data, tipo): idempotente — os 200 ciclos seguintes do dia não duplicam
-    nem reenviam (D49). True = evento novo.
+    """INSERT ... WHERE NOT EXISTS na chave do ux_dep_evento_corrida
+    (pipeline, data, tipo, malha_execucao_id): idempotente — os 200 ciclos
+    seguintes do dia não duplicam nem reenviam (D49). True = evento novo.
+
+    O índice se chamava ``ux_dep_evento`` e tinha três colunas até a migration
+    085, que o substituiu para que a corrida entre na chave — sem isso, o rerun
+    da F8 nunca conseguiria gravar a segunda MALHA_CONCLUIDA do mesmo dia.
 
     O tipo NAO_LIBEROU estende o domínio comentado na migration 067 (o
     campo é VARCHAR(30) sem CHECK — extensão registrada no desenho F4 §6);

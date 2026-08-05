@@ -460,8 +460,9 @@ def gravar_evento(cur, pipeline: str, data_ref, tipo: str, detalhe: str) -> bool
     `%s`. A casa prefere paridade por IDENTIDADE (o mesmo objeto), e é o que o
     portão faz do lado da DAG; aqui a árvore muda o placeholder e a cópia é
     inevitável — o mesmo caso já registrado em `rerun.dependentes_diretos`.
-    A chave de idempotência (`ux_dep_evento`: pipeline, data, tipo) é a mesma,
-    então os dois lados nunca duplicam um ao outro.
+    A chave de idempotência (`ux_dep_evento_corrida`: pipeline, data, tipo,
+    corrida — era `ux_dep_evento`, com três colunas, até a migration 085) é a
+    mesma, então os dois lados nunca duplicam um ao outro.
 
     Reusar esta tabela é o que faz o alerta chegar ao Teams **sem uma linha de
     mudança na guardiã**: ela já drena todo evento sem `notificado_em`.
