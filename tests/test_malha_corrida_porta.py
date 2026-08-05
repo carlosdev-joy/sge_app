@@ -253,6 +253,19 @@ class FakeCur(FakeCurF15):
             raise RuntimeError(
                 "[42S02] Invalid object name 'dbo.etl_malha_execucao'. (208)")
 
+        # ── quantas corridas a malha teve NESTE dia (F4, achado 4) ──────────
+        # O painel usa isto para decidir se descrever UMA corrida sobre a lista
+        # do dia inteiro seria honesto. Fica ANTES dos demais SELECTs de
+        # etl_malha_execucao porque é o mais específico.
+        if s.startswith("SELECT COUNT(*) FROM dbo.etl_malha_execucao "
+                        "WHERE malha_name = ?"):
+            alvo = db._malha_key(p[0])
+            self._rows = [(sum(1 for c in db.corridas
+                               if c["malha_name"].casefold() == (alvo or "").casefold()
+                               and c["data_referencia"] == p[1]),)]
+            self.rowcount = -1
+            return
+
         # ── heartbeat da guardiã (a comparação é do BANCO) ──────────────────
         if s.startswith("SELECT c.config_value, CASE WHEN TRY_CONVERT"):
             valor = db.config.get(p[1])
@@ -824,7 +837,12 @@ def test_guardia_abre_entre_a_conferencia_e_o_insert_a_api_adere_e_recusa(
         db.antes_de_abrir = lambda d: d.abrir_corrida("M1")
         r = _disparar(client)
     assert r.status_code == 422, r.text
-    assert "#1" in r.json()["detail"] and "M1" in r.json()["detail"]
+    detalhe = r.json()["detail"]
+    # Decisao 74: nomeia a corrida pelo DIA, e o "#" nao aparece — tres
+    # numeracoes disputam essa notacao, e "#1" numa malha diaria le-se
+    # como "1a tentativa hoje".
+    assert "corrida de" in detalhe and "M1" in detalhe
+    assert "#" not in detalhe
     assert fake.chamadas == []            # nenhuma raiz partiu por cima
     assert db.membros_corrida == []       # quem adere NÃO congela snapshot
 
@@ -865,7 +883,8 @@ def test_corrida_aberta_recusa_422_nomeando_a_corrida_e_a_saida(
         r = _disparar(client)
     assert r.status_code == 422, r.text
     detalhe = r.json()["detail"]
-    assert "#1" in detalhe and "M1" in detalhe
+    assert "corrida de" in detalhe and "M1" in detalhe
+    assert "#" not in detalhe   # Decisao 74
     assert "Encerrar corrida" in detalhe
     assert "não interrompe pipeline nenhum" in detalhe
     assert fake.chamadas == []            # nada foi disparado
@@ -968,7 +987,8 @@ def test_teto_vencido_NAO_expira_com_membro_vivo(client, auth_operador):
     # o bloqueio de hoje NÃO enxerga essa linha (o pipeline não é mais membro):
     # quem recusa é o portão da corrida, e é isso que o teste prova
     assert r.status_code == 422, r.text
-    assert f"#{presa['id']}" in r.json()["detail"]
+    assert "corrida de" in r.json()["detail"]   # Decisao 74: dia, nao id
+    assert "#" not in r.json()["detail"]
     assert db.por_id(presa["id"])["status"] == "ABERTA"
     assert "MALHA_EXPIRADA" not in db.tipos_de_evento()
     assert fake.chamadas == []
@@ -1247,7 +1267,10 @@ def test_encerrar_corrida_inexistente_404(client, auth_operador):
         _monta_malha(client, "M1", ["RAIZ_A"])
         r = _encerrar(client, 999)
     assert r.status_code == 404
-    assert "999" in r.json()["detail"]
+    # O id sai do texto (Decisao 74) e entra uma frase de acao: ecoar "999"
+    # nao ajuda quem digitou errado; dizer onde achar a corrida, sim.
+    assert "escolha a corrida na lista" in r.json()["detail"]
+    assert "#" not in r.json()["detail"]
 
 
 def test_outra_ponta_fecha_no_vao_e_o_encerramento_recusa_sem_reescrever(
@@ -1602,7 +1625,8 @@ def test_aborto_que_nao_passa_diz_ao_operador_o_que_fazer(client,
     orfa = [a for a in corpo["avisos"] if a.get("tipo") == "corrida_orfa"]
     assert len(orfa) == 1, corpo["avisos"]
     assert orfa[0]["nivel"] == "forte"
-    assert f"#{corpo['corrida']['id']}" in orfa[0]["mensagem"]
+    assert "corrida de" in orfa[0]["mensagem"]   # Decisao 74: dia, nao id
+    assert "#" not in orfa[0]["mensagem"]
     assert "Encerrar corrida" in orfa[0]["mensagem"]
 
 

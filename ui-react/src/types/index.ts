@@ -98,6 +98,92 @@ export interface LineageJob {
   destinos: LineageNode[]
 }
 
+// ─── A CORRIDA de malha (F4 — spec-malha-execucao §9.1) ──────────────────────
+// O ciclo da malha como REGISTRO (etl_malha_execucao, migration 085). É ele
+// que responde "a malha rodou?" — e não mais "qual membro começou por último",
+// que é a chave de comparação do defeito que esta fase mata: `CARGA_A` falha
+// às 03:00, `CARGA_B` conclui às 03:40, e o card dizia "sucesso · CARGA_B".
+//
+// ⚠️ A chave `corrida` é OPCIONAL no payload, e a ausência dela é o contrato
+// (Decisão 41): API anterior à F4, banco sem a 085 e malha que ainda não teve
+// ciclo nenhum caem todas no mesmo lugar — o fallback "(membro mais recente)".
+// Nunca vem `corrida: null` para o front interpretar.
+
+/** Um membro que a corrida está esperando, com a CLASSE do problema — três
+ *  donos diferentes, nunca somados em "3 pendentes" (Decisão 21). */
+export interface PendenteCorrida {
+  pipeline: string
+  /** falhou | orfa | nao_liberou | nao_partiu — em ordem de gravidade, e o
+   *  servidor já entrega ordenado: `pendentes[0]` é o que a tela nomeia. */
+  classe: string
+  desde: string | null
+  /** De quem esta pendência espera. `null` no CARD de propósito (respondê-lo
+   *  por card seria um N+1 na lista inteira); o painel preenche. */
+  faltante: string | null
+}
+
+/** O CABEÇALHO do ciclo — exatamente o que `GET /malhas/{m}/corridas` entrega
+ *  por linha. Separado de `CorridaApi` de propósito: a lista NÃO traz os
+ *  derivados da leitura (saúde, denominador, pendentes), e tipá-los como
+ *  presentes convidaria a tela a ler `undefined` como "zero". */
+export interface CorridaCabecalho {
+  id: number
+  malha_name: string
+  /** ODATE do ciclo — 'YYYY-MM-DD'. É o dia de PROCESSAMENTO, não o relógio. */
+  data_referencia: string
+  /** N-ésima corrida do dia. Só vira texto quando > 1 (Decisão 74). */
+  sequencia: number
+  /** ABERTA | CONCLUIDA | FALHA | EXPIRADA | ABORTADA | SEM_TRABALHO | CANCELADA */
+  status: string
+  aberta_em: string | null
+  fechada_em: string | null
+  fechada_por: string | null
+  origem: string | null
+  aberta_por: string | null
+  ancora_pipeline: string | null
+  modo_fechamento: string | null
+  teto_em: string | null
+  tentativas: number
+  reaberta_em: string | null
+  motivo: string | null
+}
+
+/** A corrida com os DERIVADOS DA LEITURA — o que o card e a faixa consomem. */
+export interface CorridaApi extends CorridaCabecalho {
+  reaberta_por: string | null
+  /** SAÚDE — só existe com o ciclo ABERTO (§6.1): OK | COM_FALHA | ATRASADA |
+   *  SEM_PROGRESSO. É ela que manda na COR enquanto a corrida está em voo. */
+  saude: string | null
+  /** `apurado_em − aberta_em`, subtraído NO SERVIDOR (Decisão 60). O front
+   *  soma a ele o que passou no relógio LOCAL — nunca subtrai `aberta_em` de
+   *  `Date.now()`. */
+  decorrido_min: number | null
+  /** Relógio do BANCO no instante da apuração. Alimenta SÓ o texto absoluto do
+   *  tooltip: no dev o banco está 3 h à frente do navegador. */
+  apurado_em: string | null
+  /** Denominador do snapshot — e ele NÃO ENCOLHE durante a corrida (D52). */
+  membros_total: number | null
+  membros_ok: number | null
+  membros_vivos: number | null
+  /** `PULADO` / regra de dia. Conta no denominador, nunca como concluído. */
+  membros_dispensados: number | null
+  /** Fica FORA do que a barra preenche (D54) — é chip, não comprimento.
+   *  NÃO inclui quem ainda não partiu: toda corrida nasce com o snapshot
+   *  inteiro sem linha, e chipar isso de vermelho seria um alarme falso por
+   *  noite, em toda malha. */
+  membros_travados: number | null
+  /** Membros do snapshot ainda SEM linha nenhuma. Número, nunca alarme —
+   *  "ainda não começou" às 01:10 e "não chegou a iniciar" às 04:00 são o
+   *  mesmo dado com relógios diferentes, e o relógio de partida é da F7. */
+  membros_nao_partiram?: number | null
+  membros_fora_do_odate: number | null
+  /** Inativos na abertura: ficaram FORA do denominador, mas não somem. */
+  membros_inativos: number | null
+  pendentes: PendenteCorrida[]
+  ultimo_movimento_em: string | null
+  sem_sinal_min: number | null
+}
+
 export interface MalhaItem {
   pipeline_name: string
   projeto: string

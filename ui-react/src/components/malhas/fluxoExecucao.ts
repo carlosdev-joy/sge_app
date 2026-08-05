@@ -14,23 +14,29 @@ import type { Edge } from '@xyflow/react'
 import type { ExecComponente } from './MalhaComponenteNodes'
 
 /** Estado de uma PONTA da linha (pipeline ou componente). null = sem dado. */
-export type EstadoElemento = 'concluido' | 'ativo' | 'bloqueado' | null
+export type EstadoElemento = 'concluido' | 'ativo' | 'esperando' | 'bloqueado' | null
 
 /** Estado do TRECHO entre duas pontas. */
-export type EstadoFluxo = 'concluido' | 'ativo' | 'bloqueado' | 'inerte'
+export type EstadoFluxo = 'concluido' | 'ativo' | 'esperando' | 'bloqueado' | 'inerte'
 
 /** Status cru de etl_pipeline_execucao → estado da ponta.
  *
  *  PULADO fica NEUTRO de propósito: o dia foi barrado pela regra de agenda, o
  *  fluxo não passou por ali — mas também não quebrou, e pintá-lo de vermelho
- *  mandaria o plantonista investigar um sábado normal. */
+ *  mandaria o plantonista investigar um sábado normal.
+ *
+ *  F4 (§9.9): `AGUARDANDO_DEPENDENCIA` ganha o estado próprio **esperando**.
+ *  Até esta fase ele devolvia `null` e a linha ficava IDÊNTICA à de quem não
+ *  rodou — a diferença entre "ninguém pediu" e "está parado esperando alguém"
+ *  sumia justamente no desenho que existe para mostrar onde a corrida parou. */
 export function estadoDoPipeline(status?: string | null): EstadoElemento {
   switch (status) {
-    case 'SUCESSO':      return 'concluido'
-    case 'EXECUTANDO':   return 'ativo'
+    case 'SUCESSO':                 return 'concluido'
+    case 'EXECUTANDO':              return 'ativo'
+    case 'AGUARDANDO_DEPENDENCIA':  return 'esperando'
     case 'FALHA':
-    case 'NAO_LIBEROU':  return 'bloqueado'
-    default:             return null   // AGUARDANDO_DEPENDENCIA, PULADO, sem linha
+    case 'NAO_LIBEROU':             return 'bloqueado'
+    default:                        return null   // PULADO, sem linha
   }
 }
 
@@ -70,8 +76,14 @@ export function estadoDaAresta(origem: EstadoElemento,
   if (origem === 'bloqueado' || destino === 'bloqueado') return 'bloqueado'
   if (destino === 'concluido') return 'concluido'  // a corrida atravessou aqui
   if (destino === 'ativo') return 'ativo'          // a frente da corrida está aqui
-  // Predecessor pronto e o destino ainda sem partir: é exatamente onde a
-  // corrida está avançando agora — a linha viva do painel.
+  // F4: o destino REGISTROU que está esperando. Vem antes do `origem ===
+  // 'concluido'` de propósito: com o predecessor pronto, aquele trecho era
+  // pintado de azul-animado ("avançando") quando o que existe do outro lado é
+  // um pipeline PARADO — animação em cima de espera é a tela prometendo
+  // movimento que não está acontecendo.
+  if (destino === 'esperando') return 'esperando'
+  // Predecessor pronto e o destino ainda sem linha nenhuma: é onde a corrida
+  // está avançando agora — a linha viva do painel.
   if (origem === 'concluido') return 'ativo'
   return 'inerte'
 }
@@ -82,8 +94,17 @@ export function estadoDaAresta(origem: EstadoElemento,
 const CORES: Record<Exclude<EstadoFluxo, 'inerte'>, { claro: string; escuro: string }> = {
   concluido: { claro: '#16a34a', escuro: '#4ade80' },
   ativo:     { claro: '#2563eb', escuro: '#60a5fa' },
+  // Âmbar é o "prazo/espera" desta camada inteira (Decisão 59) — a mesma cor
+  // do anel de AGUARDANDO_DEPENDENCIA no card do nó.
+  esperando: { claro: '#d97706', escuro: '#fbbf24' },
   bloqueado: { claro: '#dc2626', escuro: '#f87171' },
 }
+
+// Tracejado do `esperando`. Padrão DIFERENTE do '6 3' que marca a linha
+// compilada por nó de outra malha (o cadeado, `depEdge`): duas coisas
+// tracejadas na mesma tela precisam de um segundo canal, e aqui ele é o
+// desenho do traço somado à cor âmbar.
+const TRACO_ESPERANDO = '4 4'
 
 export interface DecoracaoAresta {
   style: Record<string, unknown>
@@ -98,11 +119,26 @@ export function decorarAresta(estado: EstadoFluxo, escuro: boolean): DecoracaoAr
   const cor = escuro ? CORES[estado].escuro : CORES[estado].claro
   return {
     // Só o trecho ATIVO anda: animação em tudo viraria ruído e o olho perderia
-    // justamente a frente da corrida, que é o que o operador procura.
+    // justamente a frente da corrida, que é o que o operador procura. O
+    // `esperando` NÃO anda — ele é, por definição, o trecho parado.
     animated: estado === 'ativo',
     cor,
-    style: { stroke: cor, strokeWidth: estado === 'ativo' ? 3 : 2.5 },
+    style: {
+      stroke: cor,
+      strokeWidth: estado === 'ativo' ? 3 : 2.5,
+      ...(estado === 'esperando' ? { strokeDasharray: TRACO_ESPERANDO } : {}),
+    },
   }
+}
+
+/** Rótulo humano do trecho, para o rótulo acessível da linha e a legenda do
+ *  rodapé. Português de operador (Decisão 74): nenhum nome de máquina. */
+export const ROTULO_FLUXO: Record<EstadoFluxo, string> = {
+  concluido: 'trecho percorrido',
+  ativo: 'em andamento',
+  esperando: 'esperando outro pipeline',
+  bloqueado: 'parado',
+  inerte: 'sem execução na data',
 }
 
 /** Aplica a camada de fluxo a uma aresta do canvas, preservando o que ela já
@@ -120,13 +156,10 @@ export function arestaComFluxo(e: Edge, estado: EstadoFluxo, escuro: boolean): E
     animated: d.animated,
     style: { ...e.style, ...d.style },
     markerEnd: marcador,
+    // F4: `ROTULO_FLUXO` estava DECLARADO e não era consumido em lugar nenhum
+    // do front — a cor da linha era a única coisa a dizer o que ela significa,
+    // e cor sozinha nunca é canal único nesta casa. `ariaLabel` é o que o React
+    // Flow expõe no elemento da aresta (o `<path>` do SVG não aceita `title`).
+    ariaLabel: `${e.source} → ${e.target}: ${ROTULO_FLUXO[estado]}`,
   }
-}
-
-/** Rótulo humano do trecho, para o title da linha e a legenda do rodapé. */
-export const ROTULO_FLUXO: Record<EstadoFluxo, string> = {
-  concluido: 'trecho concluído',
-  ativo: 'em andamento',
-  bloqueado: 'parado',
-  inerte: 'sem execução na data',
 }

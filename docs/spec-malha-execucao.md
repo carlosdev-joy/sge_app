@@ -2886,7 +2886,15 @@ errado.
     Resolver na **F11**, que é a fase que reabre `montar_card` — a fila precisa
     passar a trazer a malha do NÓ, e não só a da corrida, que é o que ela ganhou
     na F2.
-12. **`_fechar_dia_anterior` ainda fecha como `NAO_LIBEROU` linhas de corrida
+12b. **A F10 tem de consumir `corridas_no_dia`.** Quando o operador navega por
+    data e aquele dia teve **mais de uma** corrida, a API passou (na F4) a
+    OMITIR o bloco `corrida` e a devolver `corridas_no_dia: N` — porque
+    descrever uma corrida sobre a lista do dia inteiro é a mesma mentira que a
+    fase inteira mata. Hoje o front só deixa de mostrar a faixa; o certo é
+    dizer *"este dia teve N corridas — escolha uma"* e oferecer o
+    `SeletorCorrida`, que é entregável da F10. Enquanto isso não existe, o
+    operador vê o canvas do dia sem faixa, que é honesto mas mudo.
+13. **`_fechar_dia_anterior` ainda fecha como `NAO_LIBEROU` linhas de corrida
     `ABERTA`** que atravessem o dia operacional (teto > 24 h, ou cadeia longa com
     rerun) — virando pendentes e levando a corrida a `FALHA` por ação da própria
     guardiã. É entregável da **F7** (Decisão 31) e o interruptor só vai a `1`

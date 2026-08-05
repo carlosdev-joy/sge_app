@@ -75,7 +75,17 @@ export type ExecComponente =
   // nem através de Aguarde) — a guardiã PULA o nó e nunca emite (Decisão 13);
   // prometer "aguardando" ali seria promessa falsa.
   | { kind: 'notificacao'; emitidaEm: string | null; semEntradas: boolean }
-  | { kind: 'fim'; concluidaEm: string | null; semEntradas: boolean }
+  // F4 (§9.3): o Fim é o único nó que fala de CICLO, e até esta fase ele tinha
+  // dois estados só — verde (concluída) ou apagado. Faltava o terceiro, que é
+  // o do meio da madrugada: `cicloAberto` = existe uma corrida ABERTA nesta
+  // lente. Anel azul DISCRETO e tooltip, **sem texto novo no nó** (D75/#11: o
+  // número já está na faixa a 3 cm de distância).
+  | {
+      kind: 'fim'
+      concluidaEm: string | null
+      semEntradas: boolean
+      cicloAberto?: boolean
+    }
 
 export interface MalhaComponenteNodeData {
   // id da linha em etl_malha_no — o id do NÓ no canvas é "no:{noId}" (§9).
@@ -149,6 +159,11 @@ const ANEL = {
   teal: 'outline outline-2 outline-offset-2 outline-teal-500/70 dark:outline-teal-400/60',
   vermelho: 'outline outline-2 outline-offset-2 outline-red-500/80 dark:outline-red-400/70',
   ambar: 'outline outline-2 outline-offset-2 outline-amber-400/60 dark:outline-amber-500/50',
+  // F4 — "ciclo aberto" no nó Fim. DISCRETO (opacidade menor que a dos outros)
+  // e SEM animação: a §9.15/#13 fecha a lista dos três animados desta camada
+  // (o segmento vivo da barra, o dot de ABERTA e a aresta ativa), e o anel de
+  // um nó que só espera não entra nela.
+  azul: 'outline outline-2 outline-offset-2 outline-blue-500/60 dark:outline-blue-400/50',
 }
 
 function horaCurtaLocal(iso: string | null): string | null {
@@ -174,7 +189,11 @@ function execAnel(e: ExecComponente): string {
     case 'notificacao':
       return e.emitidaEm ? ANEL.teal : ''
     case 'fim':
-      return e.concluidaEm ? ANEL.verde : ''
+      if (e.concluidaEm) return ANEL.verde
+      // O ciclo está ABERTO: o nó não está apagado, está esperando. Só o anel
+      // muda — a linha de estado embaixo continua dizendo "em andamento", que
+      // já era a verdade e continua sendo.
+      return e.cicloAberto ? ANEL.azul : ''
   }
 }
 
@@ -274,9 +293,15 @@ function execTitulo(e: ExecComponente): string | null {
         : 'aguardando — o evento sai quando todas as entradas tiverem SUCESSO na data'
     case 'fim':
       if (e.concluidaEm) return `malha concluída às ${horaCurtaLocal(e.concluidaEm)}`
-      return e.semEntradas
-        ? 'nenhum pipeline chega a este nó (nem através de um Aguarde) — a '
+      if (e.semEntradas) {
+        return 'nenhum pipeline chega a este nó (nem através de um Aguarde) — a '
           + 'conclusão NUNCA será registrada: ligue as entradas'
+      }
+      // F4: com a corrida no payload, o nó Fim diz que o CICLO está aberto —
+      // e não só que ele próprio ainda não acendeu.
+      return e.cicloAberto
+        ? 'ciclo aberto — esta corrida ainda não passou pelo Fim; a conclusão é '
+          + 'registrada quando todos os ligados tiverem SUCESSO na data'
         : 'em andamento — a conclusão é registrada quando todos os ligados tiverem SUCESSO na data'
   }
 }
