@@ -199,6 +199,11 @@ def tem_coluna_substituida(cur) -> bool:
 # indisponível com mensagem acionável: é o inverso exato do defeito — na
 # dúvida a API não promete.
 CAPACIDADE_CASCATA = "rerun_cascata_078"
+# F3 da spec-malha-execucao: "este `dags/` sabe abrir, vincular e FECHAR corrida
+# de malha". A API pergunta antes de abrir corrida pelo disparo (§11.1) — a
+# célula `api/` nova × `dags/` antigo é a mais provável da matriz de deploy,
+# porque a etapa 7 é automática e a 5 é padrão-NÃO.
+CAPACIDADE_CORRIDA = "malha_corrida_085"
 
 CAP_OK = "ok"
 CAP_AUSENTE = "dags_desatualizado"
@@ -206,8 +211,11 @@ CAP_DESCONHECIDA = "capacidade_dags_desconhecida"
 
 _MODULO_MOTOR = ("utils", "dependencias.py")
 
-# {caminho: (mtime, tamanho, resultado)} — invalida sozinho quando o deploy
+# {caminho: ((mtime, tamanho), frozenset)} — invalida sozinho quando o deploy
 # reescreve o arquivo. Sem cache, todo abrir de modal reparsaria ~1000 linhas.
+# O que se guarda é o CONJUNTO declarado, e não o veredito de UMA capacidade:
+# desde a F3 há dois consumidores com perguntas diferentes sobre o mesmo
+# arquivo, e cachear o veredito faria a segunda pergunta responder a primeira.
 _cache_capacidade: dict = {}
 
 
@@ -248,13 +256,19 @@ def _capacidades_declaradas(fonte: str) -> set:
     return achadas
 
 
-def capacidade_dags(caminho=None) -> str:
-    """O `dags/` deployado entende corrida substituída?
+def capacidade_dags(caminho=None, capacidade: str = CAPACIDADE_CASCATA) -> str:
+    """O `dags/` deployado declara `capacidade`?
 
     Devolve ``CAP_OK`` | ``CAP_AUSENTE`` (arquivo lido, sem a declaração:
     dags/ antigo) | ``CAP_DESCONHECIDA`` (não deu para ler: mount ausente,
     permissão, I/O). As três respostas são distintas de propósito — cada uma
     tem uma frase diferente para o operador, e nenhuma delas é "pode ir".
+
+    `capacidade` é parâmetro desde a F3 da spec-malha-execucao, e o default é o
+    da cascata para que todo call site anterior siga idêntico. A sonda é a mesma
+    porque a pergunta é a mesma ("o que está NO DISCO da árvore que o motor
+    importa"): duplicá-la para a corrida faria nascer uma segunda régua de
+    deploy parcial, com um cache próprio e um bug próprio.
     """
     p = Path(caminho) if caminho else caminho_modulo_motor()
     try:
@@ -262,18 +276,19 @@ def capacidade_dags(caminho=None) -> str:
         chave = (str(p), st.st_mtime_ns, st.st_size)
         anterior = _cache_capacidade.get(str(p))
         if anterior and anterior[0] == chave:
-            return anterior[1]
-        fonte = p.read_text(encoding="utf-8", errors="replace")
+            declaradas = anterior[1]
+        else:
+            declaradas = frozenset(_capacidades_declaradas(
+                p.read_text(encoding="utf-8", errors="replace")))
+            _cache_capacidade[str(p)] = (chave, declaradas)
     except Exception as e:  # noqa: BLE001 — não saber é uma resposta, e ela recusa
         log.warning("[RERUN] capacidade do dags/ desconhecida (%s em %s)", e, p)
         return CAP_DESCONHECIDA
-    resultado = (CAP_OK if CAPACIDADE_CASCATA in _capacidades_declaradas(fonte)
-                 else CAP_AUSENTE)
-    _cache_capacidade[str(p)] = (chave, resultado)
+    resultado = CAP_OK if capacidade in declaradas else CAP_AUSENTE
     if resultado != CAP_OK:
-        log.warning("[RERUN] dags/ deployado NAO declara '%s' — cascata "
+        log.warning("[RERUN] dags/ deployado NAO declara '%s' — recurso "
                     "indisponivel (deploy parcial: migrations sem dags/)",
-                    CAPACIDADE_CASCATA)
+                    capacidade)
     return resultado
 
 

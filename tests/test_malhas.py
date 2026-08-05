@@ -156,6 +156,15 @@ class FakeCur:
         if "COL_LENGTH('dbo.etl_malha'" in s:
             self._rows = [(12,)] if (db.com_tabelas and db.com_074) else [(None,)]
             return
+        # Sonda da 085 (corrida de malha) — `tabela_085_presente`. Default
+        # AUSENTE: o banco desta suíte é o de antes da migration, e é isso que
+        # exercita a degradação (o rename não carimba corrida nenhuma e a
+        # resposta sai byte a byte igual à de antes da F3). Tem de vir antes do
+        # guard de `com_tabelas` abaixo, que barra tudo que cita `etl_malha`.
+        if "OBJECT_ID('dbo.etl_malha_execucao'" in s:
+            self._rows = ([(1, 1, 8)] if getattr(db, "com_085", False)
+                          else [(None, None, None)])
+            return
         # Tabelas da 075: existem exatamente quando as COLUNAS de agendamento
         # existem (vieram na mesma migration). O desenho em si não é modelado
         # aqui — só o Início e a assinatura agenda_no, via nos_inicio.

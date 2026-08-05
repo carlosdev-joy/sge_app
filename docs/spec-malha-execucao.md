@@ -871,7 +871,7 @@ e a mensagem de recusa do disparo (422) aponta para ele.
 | 11 | Órfã | Quiescência (normal) + teto (rede, sem matar vivo) + `ABORTADA` com piso |
 | 12 | HOLD | §6.7 |
 | 13 | **Malha renomeada com corrida aberta** | `PATCH /malhas/{m}` com `novo_nome` (`api/routers/malhas.py:3130-3181`) faz `INSERT` do novo + `DELETE` do antigo. Sem tratamento, a corrida aberta ficaria **órfã sob o nome antigo**, ocupando o slot de `ux_malha_exec_aberta` para sempre, e o nome novo nasceria sem corrida → **dupla abertura por construção**. O rename passa a carimbar: `UPDATE etl_malha_execucao SET malha_name = ? WHERE malha_name = ? AND fechada_em IS NULL`, na mesma transação. ⚠️ **Achado colateral, pré-existente, a reportar ao dono:** `FK_malha_no_malha ... ON DELETE CASCADE` (`sql/migrations/075_malha_nos.sql:56-57`) e o rename **não** atualiza `etl_malha_no`/`etl_malha_aresta` — renomear uma malha hoje **apaga Início, Fim, Aguarde e Notificação** pelo cascade. Anterior a esta spec; é a prova de que `malha_name` não é identidade |
-| 14 | Malha excluída com corrida aberta | `DELETE` **cancela** a corrida na mesma transação — senão a corrida órfã presa no índice filtrado impediria recriar uma malha com o mesmo nome |
+| 14 | Malha excluída com corrida aberta | ⚠️ **BORDA INEXISTENTE, verificada na F3 (2026-08-05):** não há `@router.delete("/malhas/{m}")` no código, nem `deleteMalha` no front — o único `DELETE FROM dbo.etl_malha` é o do rename (borda 13, que já carimba a corrida). Malha não se exclui neste produto; ela se **inativa** (`PATCH ativo=0`, tratado na F8). Se um dia existir exclusão, ela precisa cancelar a corrida na mesma transação, senão a corrida órfã presa no índice filtrado impede recriar uma malha com o mesmo nome |
 | 15 | Reprocesso de outro ODATE durante a corrida | `fora_do_odate` (Decisão 23): aparece nominalmente, nunca conta como OK |
 | 16 | Desenho editado com corrida aberta | O **snapshot congela** membros, `conta_para_fim` e `modo_fechamento` na abertura. Edição vale **da próxima corrida em diante**, e a tela diz isso. Mesmo princípio do corte anti-retroativo do observador, aplicado ao ciclo inteiro |
 | 17 | Republicar com corrida aberta | Aviso no `dry_run` do `POST /republicar` — hoje ele não tem como saber que há ciclo em voo, e metade dos membros ficaria com código novo no meio do ciclo |
@@ -2241,7 +2241,8 @@ autorização do usuário.
   (`dry_run` **não** abre), com expiração preguiçosa (Decisão 29) e **aborta em
   segunda conexão** se todas as raízes falharem; `POST
   /malhas/{m}/corridas/{id}/encerrar` (motivo obrigatório, `PERM_EXECUTAR`);
-  `GET /malhas/{m}/corridas`; `DELETE /malhas/{m}` cancela a corrida aberta;
+  `GET /malhas/{m}/corridas`; (o `DELETE /malhas/{m}` da borda 14 **não existe** —
+  verificado na execução da F3; malha se inativa, não se exclui);
   `PATCH` com `novo_nome` **carimba** a corrida aberta (§6.9/#13); a API só abre
   se `capacidade_dags()` declarar `malha_corrida_085` **e** o heartbeat da
   guardiã for recente.
@@ -2389,8 +2390,9 @@ autorização do usuário.
   - rerun de pipeline **sem** dependentes aposentados → **não** reabre nada;
   - `add_membro` com corrida aberta → entra no cadastro, **não** entra no
     snapshot, e a resposta diz isso;
-  - `DELETE` da malha com corrida aberta → `CANCELADA`, e o nome pode ser
-    recriado;
+  - ~~`DELETE` da malha com corrida aberta~~ — **removido do aceite**: não há
+    rota de exclusão de malha (verificado na F3). O gesto equivalente é o
+    `PATCH ativo=0`, que já está no aceite acima;
   - Finalização Manual fecha linha órfã → a corrida é reavaliada **no mesmo
     gesto**, sem esperar 5 min.
 - **PR:** `feat: rerun reabre a corrida e o desenho editado vale do proximo ciclo`

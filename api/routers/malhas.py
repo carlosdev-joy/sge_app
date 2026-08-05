@@ -110,6 +110,15 @@ from services import dependencias as deps_svc
 # Ponte de identidade / canonização de pipeline (F2 — spec de operação no nível
 # de etapa). Aqui entra só `pipeline_oficial`, que morava inline neste módulo.
 from services import execucao_identidade as ident_svc
+# F3 da spec-malha-execucao: o REGISTRO da corrida de malha. Port `?`/pyodbc do
+# canônico dags/utils/malha_corrida.py, com paridade garantida por teste. Toda
+# TRANSIÇÃO do ciclo (abrir, congelar snapshot, expirar, fechar) passa por ele —
+# a mesma disciplina de "zero SQL de corrida" que a guardiã segue do outro lado,
+# e a razão de a API e o motor não poderem discordar sobre o que é uma corrida.
+from services import malha_corrida as mc
+# `capacidade_dags` responde o que o `dags/` DEPLOYADO declara saber fazer — é
+# metade do portão da §11.1 (a outra metade é o heartbeat da guardiã).
+from services import rerun as rerun_svc
 # Helpers da F1 — fonte ÚNICA das validações de dependência (não reimplementar:
 # a mensagem de ciclo do servidor é ESPELHADA no cliente pelo MalhaEditor, e
 # duas implementações divergiriam). Sem ciclo de import: pipelines.py não
@@ -2370,6 +2379,11 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
                 detail=f"O Início da malha '{malha}' não está ligado a "
                        "nenhuma raiz — ligue-o aos pipelines que abrem a "
                        "malha antes de disparar.")
+        # Quem escolheu o ODATE: o operador (data no body) ou o default da
+        # tela. A F3 usa isso para não avisar de divergência quando a data foi
+        # ESCOLHIDA — reprocessar um dia anterior é gesto legítimo e diário, e
+        # um aviso a cada vez ensina o operador a ignorar todos os avisos.
+        data_do_body = data_ref is not None
         if data_ref is None:
             # ODATE corrente pela virada GLOBAL — a MESMA régua do
             # GET /execucao (o painel de onde o gesto parte). Uma fonte só
@@ -2476,8 +2490,88 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
 
         tem_bloqueio = bool(bloqueios["em_aberto"]
                             or bloqueios["datas_divergentes"])
+
+        # ── Porta 1 do §6.2 — a corrida abre AQUI, na mesma transação dos
+        # bloqueios e ANTES dos triggers (spec-malha-execucao, F3) ───────────
+        #
+        # A ORDEM importa e é o que torna a expiração preguiçosa segura: só se
+        # chega ao portão da corrida com `tem_bloqueio` falso, isto é, com
+        # NENHUM membro da malha `EXECUTANDO`/`AGUARDANDO_DEPENDENCIA` em data
+        # nenhuma. Assim a Decisão 25 ("o teto nunca fecha corrida com membro
+        # vivo") vale por construção, e não por sorte — o `estado()` que o
+        # `_expirar_na_porta` consulta é a segunda trava, não a única.
+        #
+        # `corrida` é ADITIVO na resposta: quando o portão do §11.1 está
+        # fechado, a chave não aparece e o disparo responde exatamente como
+        # antes desta fase (degradação por AUSÊNCIA do campo, o contrato da F4).
+        corrida = None            # a corrida que ESTE disparo abriu
+        corrida_previa = None     # o que o dry_run mostra, sem escrever nada
+        erro_corrida = None       # a frase do 422 "já existe corrida aberta"
+        opera_corrida, _razao = _corrida_operavel(cur, malha)
+        if opera_corrida:
+            aberta = mc.corrida_aberta(cur, malha)
+            # Divergência VISÍVEL é o oposto de divergência silenciosa (§6.2): o
+            # ODATE default do disparo é a virada GLOBAL (a régua do painel) e o
+            # canônico da malha (Decisão 18) é a virada DELA. Quando as duas
+            # discordam, a corrida nasce com a data que este disparo vai
+            # carimbar — e o operador lê isso ANTES de confirmar, em vez de
+            # descobrir no card. Só quando a data NÃO foi escolhida: reprocessar
+            # um dia anterior de propósito não é divergência, é o gesto.
+            if not data_do_body:
+                odate_canonico = mc.odate_da_abertura(cur, malha,
+                                                      _agora_do_banco(cur))
+                if odate_canonico != data_ref:
+                    avisos.append({
+                        "no": inicio["id"], "nivel": "leve",
+                        "tipo": "odate_malha",
+                        "mensagem": (
+                            f"a virada desta malha aponta "
+                            f"{_fmt_dia(odate_canonico)} e o disparo vai "
+                            f"carimbar {_fmt_dia(data_ref)} (a régua do "
+                            f"painel) — a corrida nasce com a data do disparo; "
+                            f"informe a data no modal se quiser a outra")})
+            if dry_run:
+                if aberta is not None:
+                    # O dry_run NÃO escreve (é prévia, não gesto): mostra a
+                    # corrida e diz o que o gesto real FARIA com ela. Sem esta
+                    # segunda frase o modal mentiria por omissão — anunciaria
+                    # bloqueio numa corrida que o disparo vai expirar sozinho.
+                    vencido = mc.relogios(
+                        cur, aberta, mc.CARENCIA_PARTIDA_PADRAO,
+                        mc.QUIESCENCIA_MIN_PADRAO).get("teto_vencido")
+                    corrida_previa = {**_corrida_publica(aberta),
+                                      "teto_vencido": bool(vencido),
+                                      "sera_expirada": bool(vencido)}
+            elif not tem_bloqueio:
+                if aberta is not None and _expirar_na_porta(cur, aberta, quem):
+                    aberta = None          # Decisão 29 — expirou e prossegue
+                if aberta is not None:
+                    erro_corrida = _msg_corrida_aberta(aberta)
+                else:
+                    corrida = _abrir_corrida_do_disparo(
+                        cur, malha, nos_l, arestas_l, data_ref, quem,
+                        inicio["id"])
+                    if corrida is not None and not corrida["nova"]:
+                        # Aderimos ao ciclo de outra ponta (a guardiã abriu
+                        # entre a conferência e o INSERT). Recusar é a mesma
+                        # resposta do caso acima — e é o que impede o disparo de
+                        # partir por cima de um ciclo recém-nascido.
+                        erro_corrida = _msg_corrida_aberta(corrida)
+                        corrida = None
+
         # O banco fecha ANTES das chamadas ao Airflow: uma rede lenta não
         # pode segurar conexão de pool aberta (padrão do proxy).
+        if erro_corrida:
+            # Rollback explícito: a expiração preguiçosa pode ter escrito antes
+            # de descobrirmos que ainda havia corrida (duas abertas é
+            # impossível, mas a leitura e a decisão são dois instantes).
+            _fechar_silencioso(conn); conn = None
+            raise HTTPException(status_code=422, detail=erro_corrida)
+        if opera_corrida:
+            # Abertura + snapshot num commit só (§6.2). Sem corrida aberta o
+            # commit é de uma transação sem escrita — inofensivo, e mantém um
+            # caminho só.
+            conn.commit()
         cur.close(); conn.close(); conn = None
 
         if dry_run:
@@ -2500,6 +2594,13 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
                 }
                 resp["bloqueado"] = bool(bloqueios["em_aberto"]
                                          or nao_equalizaveis)
+            if corrida_previa is not None:
+                # ADITIVO e só quando há corrida aberta: o modal mostra qual
+                # ciclo está em voo e se o disparo real vai expirá-lo sozinho.
+                # `dry_run` NÃO abre e NÃO expira nada — é prévia, não gesto.
+                resp["corrida"] = corrida_previa
+                resp["bloqueado"] = (resp["bloqueado"]
+                                     or not corrida_previa["sera_expirada"])
             return resp
 
         if tem_bloqueio:
@@ -2515,41 +2616,61 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
         }
         disparadas: list = []
         falhas: list = []
-        async with get_airflow_client() as client:
-            for p in raizes:
-                if not _DAG_ID_RE.match(p):
-                    falhas.append({"pipeline": p, "erro":
-                                   "nome de pipeline não é um dag_id válido"})
-                    continue
-                # Mesmo formato do novo_run_id da retomada, origem 'manual'.
-                carimbo = datetime.now().strftime("%Y%m%dT%H%M%S%f")
-                run_id = (f"manual__{data_ref.strftime('%Y-%m-%d')}__"
-                          f"{p[:60]}__{carimbo}")
-                try:
-                    r = await client.post(
-                        f"/api/v1/dags/{p}/dagRuns",
-                        json={"dag_run_id": run_id, "conf": conf},
-                        headers={"Content-Type": "application/json"})
-                    if r.is_success:
-                        disparadas.append({
-                            "pipeline": p,
-                            "dag_run_id": r.json().get("dag_run_id", run_id)})
-                    elif r.status_code == 404:
+        # ⚠️ Da linha do `conn.commit()` acima até aqui a corrida JÁ ESTÁ
+        # COMMITADA e nenhuma raiz partiu ainda. Uma exceção que escape do
+        # `try` POR RAIZ (o cliente HTTP que não sobe, o `aclose` que
+        # estoura) sairia pelo 500 do fim da função deixando a corrida
+        # ABERTA sem nada que a originasse — e o §6.9/#4 existe justamente
+        # para isso não acontecer. O aborto do caminho "todas as raízes
+        # falharam" não cobre este: lá `falhas` está cheia, aqui ela está
+        # VAZIA porque nem se chegou a tentar. Mesma resposta, mesma
+        # segunda conexão — senão a malha congela até o teto de 24h.
+        try:
+            async with get_airflow_client() as client:
+                for p in raizes:
+                    if not _DAG_ID_RE.match(p):
                         falhas.append({"pipeline": p, "erro":
-                                       "DAG não encontrada no Airflow — "
-                                       "publique o pipeline antes de disparar "
-                                       "(Pipelines ▸ Publicar nova versão)"})
-                    elif r.status_code == 409:
+                                       "nome de pipeline não é um dag_id válido"})
+                        continue
+                    # Mesmo formato do novo_run_id da retomada, origem 'manual'.
+                    carimbo = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+                    run_id = (f"manual__{data_ref.strftime('%Y-%m-%d')}__"
+                              f"{p[:60]}__{carimbo}")
+                    try:
+                        r = await client.post(
+                            f"/api/v1/dags/{p}/dagRuns",
+                            json={"dag_run_id": run_id, "conf": conf},
+                            headers={"Content-Type": "application/json"})
+                        if r.is_success:
+                            disparadas.append({
+                                "pipeline": p,
+                                "dag_run_id": r.json().get("dag_run_id", run_id)})
+                        elif r.status_code == 404:
+                            falhas.append({"pipeline": p, "erro":
+                                           "DAG não encontrada no Airflow — "
+                                           "publique o pipeline antes de disparar "
+                                           "(Pipelines ▸ Publicar nova versão)"})
+                        elif r.status_code == 409:
+                            falhas.append({"pipeline": p, "erro":
+                                           "o Airflow recusou: já existe uma "
+                                           "corrida com este run_id"})
+                        else:
+                            falhas.append({"pipeline": p, "erro":
+                                           f"Airflow recusou o disparo "
+                                           f"(HTTP {r.status_code}): {r.text[:200]}"})
+                    except Exception as e:      # noqa: BLE001 — erro POR RAIZ
                         falhas.append({"pipeline": p, "erro":
-                                       "o Airflow recusou: já existe uma "
-                                       "corrida com este run_id"})
-                    else:
-                        falhas.append({"pipeline": p, "erro":
-                                       f"Airflow recusou o disparo "
-                                       f"(HTTP {r.status_code}): {r.text[:200]}"})
-                except Exception as e:      # noqa: BLE001 — erro POR RAIZ
-                    falhas.append({"pipeline": p, "erro":
-                                   f"falha ao contatar o Airflow: {e}"})
+                                       f"falha ao contatar o Airflow: {e}"})
+        except Exception as e:  # noqa: BLE001 — aborta e RELANÇA
+            # `not disparadas`: se alguma raiz JÁ partiu, a corrida é dela e
+            # abortá-la seria fechar um ciclo em voo — o oposto do objetivo.
+            if corrida is not None and not disparadas:
+                _abortar_corrida_do_disparo(
+                    corrida, quem,
+                    [{"pipeline": p,
+                      "erro": f"o disparo não chegou a ser tentado: {e}"}
+                     for p in raizes])
+            raise
         log.info("[MALHA] disparo manual da malha '%s' por %s — data_ref=%s, "
                  "%d disparada(s), %d falha(s)", malha, quem,
                  conf["data_referencia"], len(disparadas), len(falhas))
@@ -2561,7 +2682,248 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
                       "avisos": avisos}
         if equalizados:
             resp_write["equalizados"] = equalizados
+        if corrida is not None:
+            # §6.9/#4 — TODAS as raízes falharam: a corrida não pode sobreviver
+            # ao gesto que não aconteceu. O aborto vai numa SEGUNDA conexão
+            # porque a transação do disparo já foi commitada acima; sem ele, o
+            # primeiro Airflow fora do ar congelaria a malha até o teto, com o
+            # próximo disparo recusado por uma corrida FANTASMA.
+            precisa_abortar = bool(falhas and not disparadas)
+            fechada = (_abortar_corrida_do_disparo(corrida, quem, falhas)
+                       if precisa_abortar else None)
+            resp_write["corrida"] = {
+                # A corrida RELIDA quando o aborto passou: `status` e
+                # `fechada_em` são a mesma informação no modelo, e publicá-los
+                # em desacordo faria a tela ler "fechada" de um campo e
+                # "aberta" do outro.
+                **_corrida_publica(fechada if fechada is not None else corrida),
+                "abortada": fechada is not None,
+            }
+            if precisa_abortar and fechada is None:
+                # O aborto NÃO passou (segunda conexão fora do ar, ou outra
+                # ponta mexeu na corrida no vão). A malha fica travada até o
+                # teto e só um gesto humano a destrava — e até aqui isso só
+                # existia no log do servidor, que o operador não lê. A regra da
+                # casa é frase de AÇÃO: o que aconteceu, por que, e o que a
+                # pessoa faz agora. Sem ela o plantonista vê "nenhuma raiz
+                # partiu", tenta de novo e leva um 422 de uma corrida que ele
+                # não sabe que existe.
+                avisos.append({
+                    "no": inicio["id"], "nivel": "forte",
+                    "tipo": "corrida_orfa",
+                    "mensagem": (
+                        f"nenhuma raiz partiu e a corrida #{corrida['id']} "
+                        f"NÃO pôde ser encerrada automaticamente — ela segue "
+                        f"aberta e vai recusar o próximo disparo desta malha. "
+                        f"Encerre-a em Malha ▸ Encerrar corrida (com motivo) "
+                        f"antes de disparar de novo; encerrar fecha o ciclo e "
+                        f"não interrompe pipeline nenhum")})
         return resp_write
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+_MSG_SEM_085 = (
+    "Corrida de malha indisponível: a migration 085 (etl_malha_execucao) ainda "
+    "não foi aplicada neste banco — não há ciclo registrado para listar nem "
+    "para encerrar."
+)
+
+
+@router.post("/malhas/{malha_name}/corridas/{corrida_id}/encerrar",
+             tags=["malhas"])
+def encerrar_corrida(malha_name: str, corrida_id: int,
+                     body: dict = Body(default={}),
+                     auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    """A porta de saída do operador (§6.8, Decisão 32): fecha a corrida como
+    `CANCELADA`, com motivo OBRIGATÓRIO, e libera o disparo NA HORA.
+
+    Por que existe: sem ela, a única saída para uma corrida travada às 3h seria
+    esperar as 24h do teto ou apagar a malha. Teto de 24h não é ferramenta de
+    plantão, é espera.
+
+    ⚠️ **Encerrar a corrida NÃO mata processo nenhum.** O que está `EXECUTANDO`
+    continua executando: o gesto fecha o CICLO — o registro que diz "esta
+    madrugada acabou" —, não os DagRuns. Quem precisa parar um pipeline usa a
+    tela de Execuções. A resposta diz isso nominalmente, porque é a dúvida que
+    faz o operador não apertar o botão.
+
+    Motivo é obrigatório e vai para `motivo` + `fechada_por`: uma corrida
+    cancelada sem razão registrada é um buraco no histórico da malha justamente
+    no dia em que algo deu errado.
+
+    **NÃO passa pelo portão do §11.1** (interruptor / capacidade do `dags/` /
+    heartbeat), de propósito: é a saída de emergência, e ela precisa funcionar
+    exatamente nos ambientes em que o resto não funciona — motor antigo,
+    guardiã morta, interruptor desligado depois de uma corrida já aberta. Exige
+    só que a 085 exista, senão não há o que encerrar.
+
+    Permissão: `acao_executar` — a mesma do disparo (é o par dele).
+    """
+    motivo = str(body.get("motivo") or "").strip()
+    if not motivo:
+        raise HTTPException(
+            status_code=422,
+            detail="Informe o motivo do encerramento: ele fica no histórico da "
+                   "corrida e é o que explica, depois, por que este ciclo foi "
+                   "fechado à mão (ex.: 'carga do dia refeita por fora').")
+    motivo = motivo[:300]
+    quem = (str(auth.get("matricula") or "").strip() or "?")
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabelas(cur, conn)
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        if not mc.tabela_085_presente(cur):
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=503, detail=_MSG_SEM_085)
+        corrida = mc.corrida(cur, corrida_id)
+        if corrida is None:
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=404,
+                detail=f"Corrida #{corrida_id} não encontrada.")
+        # A corrida é identificada pelo `id` (Decisão 7), mas o endpoint vive
+        # sob a malha: encerrar a corrida de OUTRA malha por um id digitado
+        # errado é o tipo de gesto que ninguém desfaz.
+        if str(corrida["malha_name"]).casefold() != str(malha).casefold():
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=422,
+                detail=f"A corrida #{corrida_id} é da malha "
+                       f"'{corrida['malha_name']}', não de '{malha}'. Abra a "
+                       f"malha dona da corrida para encerrá-la.")
+        if corrida["fechada_em"] is not None:
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=422,
+                detail=f"A corrida #{corrida_id} já foi encerrada em "
+                       f"{_fmt_dt(corrida['fechada_em'])} como "
+                       f"{corrida['status']}"
+                       + (f" por {corrida['fechada_por']}"
+                          if corrida["fechada_por"] else "")
+                       + ". O disparo desta malha já está liberado — se ele "
+                         "ainda recusa, o motivo é outro (a mensagem do 422 do "
+                         "disparo nomeia qual).")
+        detalhe = f"encerrada por {quem}: {motivo}"
+        # Evento e fechamento no MESMO commit (Decisão 20): a detecção do que
+        # ainda está aberto consome a própria fonte (`fechada_em IS NULL`), e
+        # uma falha entre dois commits perderia o card PARA SEMPRE.
+        if not mc.fechar_corrida(cur, corrida["id"], "CANCELADA",
+                                 f"manual:{quem}", motivo=detalhe):
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=422,
+                detail=f"A corrida #{corrida_id} foi encerrada por outra ponta "
+                       f"enquanto esta tela pedia o encerramento. Recarregue a "
+                       f"malha: o ciclo já está fechado.")
+        _evento_da_corrida(cur, corrida, "MALHA_CANCELADA", detalhe)
+        conn.commit()
+        fechada = mc.corrida(cur, corrida["id"]) or corrida
+        cur.close(); conn.close(); conn = None
+        log.warning("[MALHA] corrida #%s da malha '%s' CANCELADA por %s: %s",
+                    corrida_id, malha, quem, motivo)
+        return {
+            "ok": True,
+            "corrida": _corrida_publica(fechada),
+            # A resposta diz o que NÃO aconteceu. É a metade da verdade que o
+            # operador precisa para não achar que "encerrar" é "matar".
+            "execucoes_interrompidas": 0,
+            "aviso": ("O ciclo da malha foi encerrado. Os pipelines que já "
+                      "estavam rodando CONTINUAM rodando — encerrar a corrida "
+                      "fecha o registro do ciclo, não interrompe execução "
+                      "nenhuma. O disparo desta malha volta a funcionar agora."),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fechar_silencioso(conn)
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+@router.get("/malhas/{malha_name}/corridas", tags=["malhas"])
+def listar_corridas(malha_name: str, data_referencia: str | None = None,
+                    limite: int = 30,
+                    _auth: dict = Depends(get_current_user)):
+    """Os ciclos desta malha, do mais recente para o mais antigo.
+
+    É o que a F4 navega: duas corridas do MESMO ODATE (redisparo) são legítimas
+    e vêm as duas, distinguidas por `sequencia` — o rótulo humano da N-ésima do
+    dia — e identificadas pelo `id`, que é a identidade de verdade (Decisão 7).
+    Com `?data_referencia=YYYY-MM-DD` a lista já vem recortada no dia, que é
+    como o ◀ ▶ do painel pede.
+
+    Leitura: degrada, nunca 503 por causa da 085 — sem a migration a lista sai
+    vazia com `migration_085_pendente`, e o painel volta ao texto de hoje. A
+    falta do ciclo não pode tirar a tela de Malha do ar.
+    """
+    limite = max(1, min(int(limite or 30), 200))
+    data_ref = None
+    if data_referencia is not None and str(data_referencia).strip() != "":
+        try:
+            data_ref = datetime.strptime(
+                str(data_referencia).strip(), "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"data_referencia inválida: '{data_referencia}' "
+                       "(use o formato YYYY-MM-DD)")
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        _exigir_tabelas(cur, conn)
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            _fechar_silencioso(conn)
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        resposta = {"malha_name": malha, "corridas": [], "aberta": None,
+                    "data_referencia": _fmt_dia(data_ref)}
+        if not mc.tabela_085_presente(cur):
+            log.warning("[MALHA] migration 085 ausente — lista de corridas da "
+                        "malha '%s' degradada para vazia", malha)
+            resposta["migration_085_pendente"] = True
+            cur.close(); conn.close()
+            return resposta
+        try:
+            if data_ref is None:
+                cur.execute(_SQL_CORRIDAS_DA_MALHA, (limite, malha))
+            else:
+                cur.execute(_SQL_CORRIDAS_DA_MALHA_NA_DATA,
+                            (limite, malha, data_ref))
+            linhas = [mc._como_dict(r) for r in cur.fetchall()]
+        except Exception as e:  # noqa: BLE001 — leitura degrada larga
+            log.warning("[MALHA] corridas da malha '%s' indisponíveis (%s) — "
+                        "lista vazia", malha, e)
+            linhas = []
+        resposta["corridas"] = [_corrida_publica(c) for c in linhas]
+        # `aberta` é o id do ciclo em voo, e vem separado porque a página pode
+        # estar recortada por data: a corrida aberta é a única sobre a qual há
+        # um GESTO possível (encerrar), e escondê-la atrás da paginação seria
+        # esconder justamente o botão que destrava a malha.
+        em_voo = next((c for c in linhas if c["fechada_em"] is None), None)
+        if em_voo is None:
+            # A releitura é INCONDICIONAL, e não só quando há recorte por data.
+            # A ordenação é `data_referencia DESC` e a corrida aberta pode ser
+            # de um ODATE ANTIGO — reprocessar um dia anterior é gesto legítimo
+            # e diário (o `data_referencia` do body do disparo existe para
+            # isso). Numa malha com mais de `limite` corridas, essa corrida
+            # aberta cai FORA da página, `aberta` sairia `null` e a F4 esconderia
+            # exatamente o botão que destrava a malha — o oposto do que o
+            # comentário acima promete.
+            em_voo = mc.corrida_aberta(cur, malha)
+        resposta["aberta"] = (_corrida_publica(em_voo)
+                              if em_voo is not None else None)
+        resposta["total"] = len(resposta["corridas"])
+        cur.close(); conn.close()
+        return resposta
     except HTTPException:
         raise
     except Exception as e:
@@ -2744,6 +3106,537 @@ def _msg_bloqueio(bloqueios: dict, data_ref: str) -> str:
               "iguale a data de referência dos membros antes de disparar "
               "(Malha ▸ Republicar pipelines resolve o caso mais comum: "
               "dependente que ainda dispara por agenda).")
+
+
+# ══════ A CORRIDA DE MALHA na API — docs/spec-malha-execucao.md, fase F3 ═════
+#
+# A porta 1 do §6.2: o disparo manual ABRE a corrida, na MESMA transação dos
+# bloqueios e ANTES dos triggers do Airflow; o operador ENCERRA pela tela; a
+# lista alimenta a navegação da F4; o rename CARIMBA e a exclusão CANCELA.
+#
+# Onde mora o SQL, e por quê a fronteira é esta:
+#   • toda TRANSIÇÃO do ciclo (abrir, congelar snapshot, expirar, fechar) e
+#     toda leitura que o MOTOR também faz vivem em `services/malha_corrida.py`,
+#     que é o par exato de `dags/utils/malha_corrida.py` — o teste de paridade
+#     compara os dois textos, e é ele que impede a API e o motor de discordarem
+#     sobre o que é uma corrida;
+#   • os dois statements daqui de baixo (`_SQL_CORRIDAS_DA_MALHA` e
+#     `_SQL_CORRIDA_RENOMEAR`) são de TELA e de CADASTRO, e só existem nesta
+#     árvore. Pô-los no módulo gêmeo criaria uma constante SEM PAR do outro
+#     lado — exatamente a divergência silenciosa que a paridade existe para
+#     pegar, com o agravante de parecer coberta.
+#
+# NADA aqui roda quando o portão do §11.1 está fechado, e a recusa é sempre
+# "responder como antes desta fase", nunca 500.
+
+# Quanto tempo o heartbeat da guardiã pode ter sem que ela conte como ausente.
+# A guardiã roda a cada 5 min e carimba ao fim de todo ciclo que OPEROU a
+# corrida: 15 min = três ciclos, a mesma folga do default de quiescência. Menos
+# que isso faria um ciclo lento (banco ocupado às 3h) virar "motor antigo", e a
+# API pararia de abrir corrida no meio da madrugada sem nada ter mudado.
+HEARTBEAT_MINUTOS = 15
+
+# `pipeline_name` do evento da corrida — a tabela de eventos é chaveada por
+# pipeline e a corrida não é um pipeline. MESMA grafia do MARCADOR_CORRIDA da
+# guardiã (`dags/etl_dependencia_guardia.py`): o painel da F4 resolve UM
+# marcador, e duas grafias fariam metade dos eventos sumir da tela.
+MARCADOR_CORRIDA = "#corrida:{}"
+
+# As razões pelas quais a API NÃO opera a corrida. São nomes, e não um booleano,
+# porque cada uma tem uma frase diferente no log de plantão — e nenhuma delas é
+# erro para quem disparou: o disparo responde exatamente como antes da F3.
+MOTIVO_INTERRUPTOR = "malha_corrida_desligada"
+MOTIVO_SEM_085 = "migration_085_pendente"
+MOTIVO_GUARDIA_AUSENTE = "guardia_sem_heartbeat"
+
+
+def _corrida_operavel(cur, malha: str):
+    """A API pode OPERAR a corrida de malha nesta request? `(bool, motivo)`.
+
+    Quatro perguntas, nesta ordem:
+
+      1. o interruptor `malha_corrida_ativa` (§11.2). Nasce em `0` na própria
+         085 e só vai a `1` depois da F7 — é o gesto de rollback da spec
+         inteira, e vem primeiro porque é absoluto;
+      2. a 085 no banco;
+      3. o `dags/` DEPLOYADO declara `malha_corrida_085`. **É a célula mais
+         provável da matriz §11.1**: no `deploy.sh` a etapa 7 (`api/`) é
+         automática e a etapa 5 (`dags/`) é padrão-NÃO, então a API nova sobe
+         sozinha o tempo todo. Sem esta pergunta a API abriria corridas que o
+         motor deployado não sabe vincular nem fechar: TODA corrida ficaria
+         aberta até o teto e, enquanto isso, BLOQUEARIA o disparo — a API
+         paralisando a malha com uma trava que o motor não sabe destravar;
+      4. o heartbeat da guardiã é recente. O item (3) prova o que está no
+         DISCO; só o heartbeat prova que a guardiã daquele disco está RODANDO
+         e operando a corrida. DAG da guardiã pausada, worker fora do ar ou
+         interruptor desligado só no worker produzem exatamente o mesmo estrago
+         do motor antigo, e nenhum dos três aparece no arquivo.
+
+    ⚠️ A recusa vale para a porta INTEIRA: sem os quatro, a API não abre, não
+    expira e **também não recusa disparo por corrida aberta**. Recusar sem poder
+    abrir nem expirar prenderia o operador a uma corrida que nada no ambiente
+    sabe encerrar — o oposto do que a §11.1 pede. `POST .../encerrar` segue
+    disponível de propósito: ele é a saída, e por isso não passa por aqui.
+    """
+    if not mc.corrida_ativa(cur):
+        return False, MOTIVO_INTERRUPTOR
+    if not mc.tabela_085_presente(cur):
+        log.warning("[MALHA] migration 085 ausente — a corrida da malha '%s' "
+                    "não é operada pela API; o disparo segue como antes", malha)
+        return False, MOTIVO_SEM_085
+    cap = rerun_svc.capacidade_dags(capacidade=rerun_svc.CAPACIDADE_CORRIDA)
+    if cap != rerun_svc.CAP_OK:
+        log.warning("[MALHA] dags/ deployado não declara '%s' (%s) — a API NÃO "
+                    "abre corrida para a malha '%s': o motor no ar não saberia "
+                    "fechá-la e ela bloquearia o disparo até o teto",
+                    rerun_svc.CAPACIDADE_CORRIDA, cap, malha)
+        return False, cap
+    if not mc.heartbeat_guardia(cur, HEARTBEAT_MINUTOS)["recente"]:
+        log.warning("[MALHA] guardiã sem heartbeat de corrida nos últimos %d "
+                    "min — a API NÃO abre corrida para a malha '%s' (quem abre "
+                    "sem quem fecha congela a malha)", HEARTBEAT_MINUTOS, malha)
+        return False, MOTIVO_GUARDIA_AUSENTE
+    return True, None
+
+
+# Espelho `?` do `_SQL_EVENTO[(True, True)]` de dags/utils/dependencias.py — a
+# MESMA chave de idempotência do `ux_dep_evento_corrida` (pipeline, data, tipo,
+# corrida). O `ISNULL(..., -1)` dos dois lados não é decoração: em índice único
+# do SQL Server dois NULLs são IGUAIS, mas `= NULL` nunca é verdadeiro em
+# predicado — sem ele o INSERT passaria pelo NOT EXISTS e morreria no 2601 do
+# índice, dentro da transação do chamador.
+_SQL_EVENTO_CORRIDA = (
+    "INSERT INTO dbo.etl_dependencia_evento "
+    "(pipeline_name, data_referencia, tipo, detalhe, malha_execucao_id) "
+    "SELECT ?, ?, ?, ?, ? "
+    "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
+    "WHERE pipeline_name=? AND data_referencia=? AND tipo=? "
+    "AND ISNULL(malha_execucao_id, -1) = ISNULL(CAST(? AS BIGINT), -1))")
+_SQL_EVENTO_SEM_CORRIDA = (
+    "INSERT INTO dbo.etl_dependencia_evento "
+    "(pipeline_name, data_referencia, tipo, detalhe) "
+    "SELECT ?, ?, ?, ? "
+    "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
+    "WHERE pipeline_name=? AND data_referencia=? AND tipo=?)")
+
+
+def _evento_da_corrida(cur, corrida: dict, tipo: str, detalhe: str) -> bool:
+    """Grava o evento do ciclo (`MALHA_CANCELADA`, `MALHA_ABORTADA`) na
+    transação de quem chama. True = evento novo.
+
+    O CHAMADOR commita — evento e fechamento no MESMO commit (Decisão 20). A
+    ordem antiga (fechar, commitar, e só então o evento) perdia o card PARA
+    SEMPRE se a falha caísse entre os dois commits, porque a detecção consome a
+    própria fonte: aqui a detecção é `fechada_em IS NULL`, e é ela que o
+    fechamento consome.
+
+    Reusar `etl_dependencia_evento` é o que faz o alerta chegar ao Teams **sem
+    uma linha de mudança na guardiã** — ela já drena todo evento sem
+    `notificado_em`, e os sete tipos da corrida já estão em `ds_teams.ESTILO`.
+
+    Nunca levanta: o evento é o RASTRO do gesto, não o gesto. Perdê-lo não pode
+    desfazer um encerramento que o operador já mandou fazer.
+    """
+    texto = (str(detalhe)[:1000] if detalhe is not None else None)
+    base = (MARCADOR_CORRIDA.format(corrida["id"]), corrida["data_referencia"],
+            tipo)
+    cid = int(corrida["id"])
+    try:
+        cur.execute(_SQL_EVENTO_CORRIDA, base + (texto, cid) + base + (cid,))
+        return (cur.rowcount or 0) == 1
+    except Exception as e:  # noqa: BLE001
+        # Banco com as tabelas da 085 mas sem a coluna no evento (migration
+        # aplicada pela metade): grava na forma antiga, sem a corrida. É a mesma
+        # degradação do `gravar_evento` do motor — o alerta sai, sem o vínculo.
+        if "malha_execucao_id" not in str(e):
+            log.warning("[MALHA] evento %s da corrida #%s não gravado: %s",
+                        tipo, corrida["id"], e)
+            return False
+        try:
+            cur.execute(_SQL_EVENTO_SEM_CORRIDA, base + (texto,) + base)
+            log.warning("[MALHA] evento %s gravado SEM o vínculo da corrida "
+                        "#%s (banco sem a coluna da 085)", tipo, corrida["id"])
+            return (cur.rowcount or 0) == 1
+        except Exception as e2:  # noqa: BLE001
+            log.warning("[MALHA] evento %s da corrida #%s não gravado: %s",
+                        tipo, corrida["id"], e2)
+            return False
+
+
+def _corrida_publica(c: dict) -> dict:
+    """A corrida no formato da tela — datas em texto, e só o que a F4 consome.
+
+    Projeção EXPLÍCITA (nunca `dict(c)`): o dicionário do módulo carrega colunas
+    de auditoria e de efeito colateral (`falha_vista_em`, `atraso_visto_em`) que
+    são memória interna do ciclo, e publicá-las convidaria o front a derivar
+    estado delas — que é justamente o que a §5.2 proíbe.
+    """
+    return {
+        "id": c["id"],
+        "malha_name": c["malha_name"],
+        "data_referencia": _fmt_dia(c["data_referencia"]),
+        # `sequencia` é o rótulo humano ("2ª corrida de 04/08") e é o que faz o
+        # ◀ ▶ da F4 distinguir DUAS corridas do mesmo ODATE. Identidade é o
+        # `id`, sempre — nunca o par (malha, data), que é o beco de onde esta
+        # spec inteira sai.
+        "sequencia": c["sequencia"],
+        "status": c["status"],
+        "aberta_em": _fmt_dt(c["aberta_em"]),
+        "fechada_em": _fmt_dt(c["fechada_em"]),
+        "fechada_por": c["fechada_por"],
+        "origem": c["origem"],
+        "aberta_por": c["aberta_por"],
+        "ancora_pipeline": c["ancora_pipeline"],
+        "modo_fechamento": c["modo_fechamento"],
+        "teto_em": _fmt_dt(c["teto_em"]),
+        "tentativas": c["tentativas"],
+        "reaberta_em": _fmt_dt(c["reaberta_em"]),
+        "motivo": c["motivo"],
+    }
+
+
+def _msg_corrida_aberta(c: dict) -> str:
+    """O 422 da porta 1 — o que aconteceu, por que, e o que a pessoa faz agora.
+
+    Nomeia a corrida (§6.9/#14) e aponta a saída (§6.8). A última frase existe
+    porque é a dúvida que trava o operador às 3h: encerrar a corrida **não**
+    mata processo nenhum, e sem dizer isso o botão não é usado.
+    """
+    return (
+        f"A malha '{c['malha_name']}' já tem a corrida #{c['id']} "
+        f"({c['sequencia']}ª de {_fmt_dia(c['data_referencia'])}) em andamento "
+        f"desde {_fmt_dt(c['aberta_em'])}. Disparar agora abriria um SEGUNDO "
+        f"ciclo por cima do que está em voo — é assim que a mesma malha termina "
+        f"metade num dia e metade em outro. Encerre a corrida #{c['id']} "
+        f"(Malha ▸ Encerrar corrida, com motivo) e dispare de novo; encerrar "
+        f"fecha o CICLO e não interrompe pipeline nenhum — o que já está "
+        f"rodando continua rodando.")
+
+
+def _expirar_na_porta(cur, corrida: dict, quem: str) -> bool:
+    """Decisão 29 — expiração PREGUIÇOSA: a corrida presa com o teto vencido
+    expira AQUI, na mesma transação, e o disparo prossegue. True = expirou.
+
+    Por que na porta e não só na guardiã: com `teto_horas = 24` numa malha
+    diária, a corrida de 01:00 vence às 01:00 do dia seguinte. Se a raiz roda às
+    01:00:00 e a guardiã só passa às 01:03, a malha **pula o dia inteiro** — e
+    no dia seguinte a mesma moeda é jogada de novo. Pior: um operador travado às
+    3h porque a guardiã morreu não tem como esperar por ela. Nunca depender de
+    outro processo ter passado.
+
+    **Decisão 25 é conferida antes**: o teto NUNCA fecha corrida com membro
+    vivo. Aqui isso vale duas vezes — o disparo só chega neste ponto com
+    `_bloqueios_do_ciclo` vazio (nenhum membro da malha `EXECUTANDO` ou
+    `AGUARDANDO_DEPENDENCIA`, em data nenhuma), e ainda assim se pergunta ao
+    `estado()`, que é a autoridade do §6.4. A segunda pergunta não é redundância
+    cosmética: o bloqueio olha `etl_malha_pipeline` (o desenho de AGORA) e o
+    `estado()` olha o SNAPSHOT congelado na abertura — o membro removido da
+    malha no meio do ciclo existe só no segundo.
+
+    ⚠️ O teto é lido por `relogios()` e o fechamento é um `UPDATE ... WHERE id =
+    ? AND fechada_em IS NULL` com `rowcount` de árbitro; a Decisão 29 escreve os
+    dois num statement só. São dois aqui porque o SQL da corrida mora no módulo
+    gêmeo (e um SQL só desta árvore seria uma constante sem par do outro lado), e
+    a composição é exata enquanto `teto_em` for imutável depois da abertura — o
+    que vale hoje: `teto_creditado_min` nasceu na 085 e **ninguém o escreve até
+    a F7**. Quando a F7 passar a reprojetar `teto_em` no hold, o `teto_em <
+    SYSDATETIME()` tem de entrar no `WHERE` do `fechar_corrida`, senão abre-se
+    uma janela em que a porta expira uma corrida cujo teto acabou de andar.
+    """
+    # Só `teto_vencido` é consumido: os outros dois relógios (carência de
+    # partida e quiescência) decidem desfechos que são do FECHADOR — a guardiã,
+    # sempre (Decisão 19). Os parâmetros vão nos padrões do módulo porque as
+    # respostas correspondentes são descartadas aqui.
+    if not mc.relogios(cur, corrida, mc.CARENCIA_PARTIDA_PADRAO,
+                       mc.QUIESCENCIA_MIN_PADRAO).get("teto_vencido"):
+        return False
+    est = mc.estado(cur, corrida)
+    # ⚠️ `estado()` degrada LARGA: se a consulta não puder ser feita (lock
+    # timeout em `etl_pipeline_execucao` às 3h, deadlock, coluna ausente) ela
+    # loga e devolve os BALDES VAZIOS. Vazio lido como "ninguém vivo" inverteria
+    # a Decisão 25 no pior momento possível: a corrida com um pipeline
+    # `EXECUTANDO` sairia EXPIRADA e o disparo partiria por cima dele — e as
+    # linhas que terminassem depois carregariam id de corrida FECHADA. É a
+    # única pergunta que enxerga o membro REMOVIDO da malha no meio do ciclo
+    # (o bloqueio olha `etl_malha_pipeline`, o desenho de AGORA), então perdê-la
+    # em silêncio é perder a trava inteira.
+    #
+    # `membros` é o discriminador honesto: toda corrida nasce com o snapshot
+    # congelado no mesmo commit (§6.2), logo `membros = 0` só acontece quando a
+    # leitura NÃO respondeu. Não expirar custa um ciclo de 5 min da guardiã —
+    # ou o botão Encerrar corrida, que existe justamente para isto (§6.8). É a
+    # mesma política do `ERRO_CONSULTA`, e a que `ha_no_retido` já aplica no
+    # módulo gêmeo: "não consegui perguntar" NUNCA vira "pode fechar".
+    if int(est.get("membros") or 0) == 0:
+        log.warning("[MALHA] corrida #%s da malha '%s' com teto vencido, mas o "
+                    "estado do snapshot não pôde ser lido — NÃO expirada na "
+                    "porta (a guardiã ou o botão Encerrar corrida resolvem)",
+                    corrida["id"], corrida["malha_name"])
+        return False
+    vivos = est.get("vivos") or []
+    if vivos:
+        log.warning("[MALHA] corrida #%s da malha '%s' com teto vencido mas "
+                    "%d membro(s) ainda vivo(s) (%s) — NÃO expirada na porta",
+                    corrida["id"], corrida["malha_name"], len(vivos),
+                    ", ".join(vivos[:5]))
+        return False
+    detalhe = (f"teto vencido em {_fmt_dt(corrida['teto_em'])} e nenhum membro "
+               f"vivo — corrida expirada na porta do disparo por {quem}")
+    if not mc.fechar_corrida(cur, corrida["id"], "EXPIRADA",
+                             f"manual:{quem}", motivo=detalhe):
+        return False        # outra ponta fechou primeiro — resposta, não erro
+    _evento_da_corrida(cur, corrida, "MALHA_EXPIRADA", detalhe)
+    log.warning("[MALHA] corrida #%s da malha '%s' EXPIRADA na porta do "
+                "disparo (%s)", corrida["id"], corrida["malha_name"], detalhe)
+    return True
+
+
+def _agora_do_banco(cur):
+    """O relógio do BANCO (Decisão 10) — nenhuma conta de tempo em Python.
+
+    No dev o SQL Server está ~3h à frente do container da API (medido, não
+    suposto), e um ODATE calculado sobre `datetime.now()` do processo carimbaria
+    o dia errado em toda hora vizinha da virada. Falha de leitura cai em
+    `_agora()`, que é o comportamento anterior a esta fase — nunca uma exceção.
+    """
+    try:
+        cur.execute("SELECT GETDATE()")
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            return row[0]
+    except Exception as e:  # noqa: BLE001
+        log.debug("[MALHA] relógio do banco indisponível: %s", e)
+    return _agora()
+
+
+# Membros da malha pela grafia OFICIAL (o JOIN faz o pipeline excluído sumir) —
+# o mesmo SELECT do painel, de propósito: o denominador do card e o alvo do
+# `conta_para_fim` têm de vir da mesma lista.
+_SQL_MEMBROS_DA_MALHA = (
+    "SELECT p.pipeline_name FROM dbo.etl_malha_pipeline mp "
+    "JOIN dbo.etl_pipeline p ON p.pipeline_name = mp.pipeline_name "
+    "WHERE mp.malha_name = ?")
+
+
+def _abrir_corrida_do_disparo(cur, malha: str, nos_l: list, arestas_l: list,
+                              data_ref, quem: str, no_inicio):
+    """Porta 1 do §6.2 — abre a corrida do disparo manual, com o snapshot no
+    MESMO commit. Devolve o dict da corrida, ou None quando não deu para abrir.
+
+    O ODATE é o `data_ref` **que este disparo vai carimbar**, e não o
+    `odate_da_abertura` da Decisão 18. ⚠️ Divergência deliberada, e o motivo é
+    de correção: o disparo manda `data_referencia` no `conf` de toda raiz, e uma
+    corrida nascida com outro ODATE classificaria TODAS as suas linhas como
+    `fora_do_odate` (§6.4) — a corrida nunca fecharia, o card diria 0 de N com a
+    malha inteira verde embaixo, e o teto a mataria 24h depois. A Decisão 18
+    governa as portas AUTOMÁTICAS, cujo insumo é um instante do banco e onde não
+    existe data pedida por gente; aqui o rótulo é escolha do operador (ou o
+    default da tela, que é a virada GLOBAL de propósito — o `/execucao` usa a
+    mesma régua, e divergir dela devolveria o defeito "painel mostra D, disparo
+    carimba D+1"). Alinhar as duas réguas é mudar o `conf` do disparo, que é
+    assunto do §7/F5, não desta fase.
+
+    `aberta_em` fica `None` = `SYSDATETIME()` do BANCO: aqui não há linha âncora
+    para recuar (nada partiu ainda — os triggers vêm depois), e o recuo das
+    portas 2 e 3 existe justamente porque lá a corrida nasce até um ciclo depois
+    do trabalho. Nenhum `datetime.now()` do processo: no dev o banco está ~3h à
+    frente da API, e um `aberta_em` do relógio errado faria o recorte de tempo
+    da Decisão 23 varrer três horas de linhas alheias — ou nenhuma.
+    """
+    fins = [n["id"] for n in nos_l if n["tipo"] == "fim"]
+    conta_fim = None
+    if fins:
+        # `conta_para_fim` = o upstream EXPANDIDO do nó Fim, pela única
+        # autoridade da expansão (a mesma que a guardiã usa do outro lado).
+        # Conjunto VAZIO é diferente de None e não é erro (§6.9/#2): existe um
+        # Fim e ele não alcança ninguém — o fechamento continua exigindo nenhum
+        # membro vivo, e o painel lista os `fora_do_fim` nominalmente.
+        expansao = malha_nos_svc.expandir(nos_l, arestas_l)
+        alvo: set = set()
+        for no_id in fins:
+            alvo |= set(expansao["nos"].get(no_id, {}).get("upstream", ()))
+        # A lista de membros só é lida quando existe Fim — 3 das 4 malhas do dev
+        # não têm, e uma consulta a mais no caminho quente do disparo por nada é
+        # o tipo de custo que ninguém revisa depois.
+        cur.execute(_SQL_MEMBROS_DA_MALHA, (malha,))
+        membros = {str(r[0]).strip() for r in cur.fetchall()}
+        conta_fim = sorted(alvo & membros)
+    corrida = mc.abrir_corrida(
+        cur, malha, data_ref, "manual",
+        aberta_por=f"manual:{quem}",
+        no_inicio=no_inicio, no_fim=(fins[0] if fins else None),
+        # Derivado do DESENHO e congelado com ele (§6.9/#1): 3 das 4 malhas do
+        # dev não têm nó Fim e fecham por quiescência. Nunca é configurado à mão.
+        modo_fechamento=("fim" if fins else "quiescencia"))
+    if corrida is None:
+        return None
+    if not corrida["nova"]:
+        # INSERT-first, nunca SELECT-then-INSERT (Decisão 14): a conferência
+        # "não há corrida aberta" e o INSERT são dois instantes, e a guardiã
+        # pode ter aberto entre eles. `nova=False` significa que ADERIMOS a um
+        # ciclo alheio — e disparar as raízes por cima de um ciclo que acabou de
+        # nascer é o mesmo estrago que o 422 recusa quando a corrida já estava
+        # lá. Quem chama devolve o 422 e NÃO congela snapshot: o dono do
+        # snapshot é quem abriu.
+        return corrida
+    mc.congelar_snapshot(cur, corrida["id"], malha, conta_para_fim=conta_fim)
+    return corrida
+
+
+def _abortar_corrida_do_disparo(corrida: dict, quem: str, falhas: list):
+    """§6.9/#4 — TODAS as raízes falharam no trigger: a corrida sai `ABORTADA`
+    **numa SEGUNDA conexão**, na mesma resposta. Devolve a corrida RELIDA do
+    banco quando abortou, ou None.
+
+    Relê em vez de remendar o dict em memória porque `status` e `fechada_em`
+    são a MESMA informação no modelo (`CK_mexec_coerente`), e devolver
+    `status='ABORTADA'` com `fechada_em: null` seria publicar um estado que o
+    banco recusaria — a tela leria "fechada" de um campo e "aberta" do outro.
+
+    A segunda conexão não é preciosismo: a transação do disparo já foi
+    **commitada** quando os triggers rodam (o banco fecha antes das chamadas ao
+    Airflow, para que uma rede lenta não segure conexão de pool). Sem isto, o
+    primeiro Airflow fora do ar deixaria uma corrida ABERTA que nada originou —
+    ela ocuparia o slot do índice filtrado, o próximo disparo seria recusado por
+    uma corrida FANTASMA e a malha ficaria congelada até o teto de 24h.
+
+    Nunca levanta: a resposta do disparo já foi construída e as falhas já estão
+    nela. Se o aborto não passar, quem destrava é o teto ou o botão de encerrar —
+    e o log diz nominalmente qual dos dois vai ser preciso.
+    """
+    conn2 = None
+    try:
+        conn2 = get_db_conn(); cur2 = conn2.cursor()
+        nomes = ", ".join(str(f.get("pipeline")) for f in falhas[:5])
+        detalhe = (f"nenhuma das {len(falhas)} raiz(es) partiu — o Airflow "
+                   f"recusou todas ({nomes}); ciclo abortado na resposta do "
+                   f"disparo de {quem}")
+        if not mc.fechar_corrida(cur2, corrida["id"], "ABORTADA",
+                                 f"manual:{quem}", motivo=detalhe):
+            # Outra ponta já fechou (a guardiã pelo piso de partida, ou o
+            # operador). O objetivo — não deixar corrida fantasma — está
+            # cumprido do mesmo jeito.
+            conn2.rollback()
+            log.info("[MALHA] corrida #%s já estava fechada quando o disparo "
+                     "tentou abortá-la", corrida["id"])
+            return None
+        _evento_da_corrida(cur2, corrida, "MALHA_ABORTADA", detalhe)
+        conn2.commit()          # evento e fechamento no MESMO commit (D20)
+        log.warning("[MALHA] corrida #%s da malha '%s' ABORTADA: %s",
+                    corrida["id"], corrida["malha_name"], detalhe)
+        return mc.corrida(cur2, corrida["id"])
+    except Exception as e:  # noqa: BLE001 — o aborto não pode derrubar a resposta
+        _fechar_silencioso(conn2); conn2 = None
+        log.error("[MALHA] corrida #%s NÃO foi abortada (%s) — ela seguirá "
+                  "ABERTA bloqueando o disparo até o teto ou até alguém "
+                  "encerrá-la pela tela", corrida["id"], e)
+        return None
+    finally:
+        if conn2 is not None:
+            try:
+                conn2.close()
+            except Exception:
+                pass
+
+
+# §6.9/#13 — o rename faz INSERT do nome novo + DELETE do antigo (a FK da 070 é
+# cascade de DELETE, não de UPDATE). Sem este carimbo a corrida aberta ficaria
+# ÓRFÃ sob o nome antigo, ocupando o slot de `ux_malha_exec_aberta` para sempre,
+# e o nome novo nasceria sem corrida: DUPLA ABERTURA por construção.
+#
+# Só a corrida ABERTA, como manda a spec. As fechadas ficam com o nome de
+# quando aconteceram — é histórico, e reescrever histórico por causa de um
+# cadastro é o oposto do que a 076 decidiu quando derrubou a FK do evento. O
+# preço é conhecido e aceito: o `GET /corridas` do nome novo não mostra o que
+# rodou sob o nome velho.
+_SQL_CORRIDA_RENOMEAR = (
+    "UPDATE dbo.etl_malha_execucao SET malha_name = ?, "
+    "atualizado_em = SYSDATETIME() "
+    "WHERE malha_name = ? AND fechada_em IS NULL")
+
+
+def _carimbar_corrida_no_rename(cur, conn, de: str, para: str) -> int:
+    """Leva a corrida ABERTA para o nome novo, na MESMA transação do rename.
+    Devolve quantas linhas carimbou.
+
+    Sem a 085 não há corrida nenhuma: degrada com log e devolve 0 — o rename é
+    gesto de cadastro e não pode virar 503 por causa de uma migration que este
+    banco talvez nunca vá receber.
+
+    Violação de `ux_malha_exec_seq` (o nome de destino já teve corridas do mesmo
+    ODATE e da mesma sequência, de uma malha homônima anterior) é recusa
+    explícita, e não rollback mudo: renomear por cima disso deixaria a corrida
+    órfã — que é exatamente o defeito que este carimbo existe para evitar.
+    """
+    if not mc.tabela_085_presente(cur):
+        log.warning("[MALHA] migration 085 ausente — corrida da malha '%s' não "
+                    "foi carimbada no rename para '%s'", de, para)
+        return 0
+    try:
+        cur.execute(_SQL_CORRIDA_RENOMEAR, (para, de))
+        return int(cur.rowcount or 0)
+    except Exception as e:  # noqa: BLE001
+        if mc.IX_SEQUENCIA in str(e):
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=422,
+                detail=f"A malha '{de}' tem uma corrida em andamento e o nome "
+                       f"'{para}' já tem histórico de corridas do mesmo dia com "
+                       f"a mesma sequência — renomear agora deixaria a corrida "
+                       f"órfã sob o nome antigo. Encerre a corrida em andamento "
+                       f"(Malha ▸ Encerrar corrida) e renomeie em seguida.")
+        if mc.IX_ABERTA in str(e):
+            # O nome de destino já tem uma corrida ABERTA sem malha por trás —
+            # a órfã que sobra quando um rename anterior aconteceu com a 085
+            # ausente (o `return 0` degradado acima). O duplicado de `etl_malha`
+            # não pega este caso: lá não há linha de cadastro nenhuma. Sem esta
+            # frase o operador levava um 500 "Erro DB: ... 2601 ..." num gesto
+            # de cadastro, e nada dizia onde está a corrida que trava o nome.
+            _fechar_silencioso(conn)
+            raise HTTPException(
+                status_code=422,
+                detail=f"O nome '{para}' já tem uma corrida em andamento sem "
+                       f"malha por trás (ficou órfã de um rename anterior) e a "
+                       f"malha '{de}' também tem a sua — duas corridas abertas "
+                       f"com o mesmo nome é o que o modelo proíbe. Encerre a "
+                       f"corrida aberta de '{para}' (Malha ▸ Encerrar corrida, "
+                       f"pelo id que a lista de corridas mostra) e renomeie em "
+                       f"seguida.")
+        raise
+
+
+# ⚠️ DIVERGÊNCIA DA SPEC, deliberada e reportada — §6.9/#14 ("malha excluída com
+# corrida aberta: o DELETE cancela a corrida na mesma transação") NÃO tem onde
+# ser implementada: **não existe `DELETE /malhas/{m}` neste código**. Levantado
+# no repo inteiro, o único lugar que apaga uma linha de `etl_malha` é o rename
+# do `PATCH` acima (INSERT do nome novo + DELETE do antigo), e ele está coberto
+# pelo `_carimbar_corrida_no_rename` — a corrida acompanha o nome, não fica
+# órfã, e o nome antigo fica livre. A tela de Malha também não oferece o gesto
+# (não há `deleteMalha` no front).
+#
+# Escrever aqui um endpoint destrutivo novo só para pendurar nele o
+# cancelamento seria entregar exclusão de malha — com o cascade da 070 levando
+# membros, e o da 075 levando Início/Fim/Aguarde/Notificação — dentro de uma
+# fase cujo entregável é a porta 1 do disparo. Quando o `DELETE` existir, a
+# única linha que ele precisa é a mesma do encerramento: fechar como
+# `CANCELADA` com `fechada_por`, na transação da exclusão, ANTES de apagar a
+# malha — senão a corrida órfã presa no índice filtrado impede recriar uma
+# malha com o mesmo nome.
+
+# Projeção da listagem: a MESMA de `services/malha_corrida.py`, reusada em vez
+# de redigitada. `_COLS`/`_como_dict` são derivados um do outro lá dentro, então
+# reusá-los é o que impede a lista de degradar em silêncio no dia em que alguém
+# acrescentar uma coluna à corrida. Alcançar um privado de outro módulo tem
+# precedente literal neste arquivo (`deps_svc._exec_com_fallback_078`), e o
+# risco aqui é menor: um `_COLS` que suma quebra o import na hora, não na tela.
+_SQL_CORRIDAS_DA_MALHA = (
+    "SELECT TOP (?) " + mc._COLS + " FROM dbo.etl_malha_execucao "
+    "WHERE malha_name = ? "
+    "ORDER BY data_referencia DESC, sequencia DESC, id DESC")
+_SQL_CORRIDAS_DA_MALHA_NA_DATA = (
+    "SELECT TOP (?) " + mc._COLS + " FROM dbo.etl_malha_execucao "
+    "WHERE malha_name = ? AND data_referencia = ? "
+    "ORDER BY sequencia DESC, id DESC")
 
 
 async def _dags_existentes(nomes: list) -> dict:
@@ -3129,6 +4022,8 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
 
         novo_nome = (body.get("novo_nome") or "").strip()
         renomeada = False
+        nome_antigo = atual
+        corridas_renomeadas = 0
         if novo_nome and novo_nome != atual:
             if len(novo_nome) > 200:
                 _fechar_silencioso(conn)
@@ -3179,6 +4074,14 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
                 cur.execute("DELETE FROM dbo.etl_malha WHERE malha_name = ?", (atual,))
             atual = novo_nome
             renomeada = True
+            # §6.9/#13 — a corrida ABERTA acompanha o nome, na MESMA transação.
+            # Sem isto ela ficaria órfã sob o nome antigo, ocupando o slot de
+            # `ux_malha_exec_aberta` para sempre (o nome velho não existe mais
+            # em etl_malha, então nada nem ninguém a encontraria para encerrar),
+            # e o nome novo nasceria sem corrida: DUPLA ABERTURA por construção
+            # — a próxima raiz abriria a corrida #2 por cima do ciclo em voo.
+            corridas_renomeadas = _carimbar_corrida_no_rename(
+                cur, conn, nome_antigo, atual)
 
         if tem_descricao:
             cur.execute(
@@ -3229,6 +4132,11 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
         # Chaves da orientação são CONDICIONAIS (aditivas): quem não mexeu nela
         # recebe a resposta de sempre, byte a byte.
         resp = {"ok": True, "malha_name": atual, "renomeada": renomeada}
+        # ADITIVO e só quando houve o quê dizer: a tela avisa que o ciclo em voo
+        # acompanhou o nome novo. Banco sem a 085 (ou malha sem corrida aberta)
+        # devolve a resposta de sempre, byte a byte.
+        if corridas_renomeadas:
+            resp["corridas_renomeadas"] = corridas_renomeadas
         if tem_orientacao:
             resp["orientacao"] = orientacao
             if migration_074_pendente:
