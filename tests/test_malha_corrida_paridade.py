@@ -634,13 +634,27 @@ def test_o_erro_que_nao_e_da_085_sobe_nas_DUAS_arvores(mcd):
 
 # ═══════════════════════ ausência estrutural (F1) ═══════════════════════════
 
-def test_nenhum_router_consome_o_port_na_F1():
-    """§10/F1: "nenhum leitor, nenhum escritor no motor". A fase é inerte de
-    propósito — o modelo entra antes, sozinho e provável."""
+def test_so_o_router_de_malhas_consome_o_port():
+    """A F1 provava a AUSÊNCIA total de consumidor ("nenhum leitor, nenhum
+    escritor no motor" — a fase era inerte de propósito). A F3 é a fase que
+    rompe isso, e a invariante que a substitui é mais forte que a original:
+    **um consumidor só, e ele fala com o registro pelo MÓDULO**.
+
+    A segunda metade é a que importa de verdade. Um router que montasse SQL de
+    `etl_malha_execucao` por conta própria teria escapado do teste de paridade —
+    e é exatamente assim que a API e o motor passam a discordar sobre o que é
+    uma corrida, que é a doença que esta spec inteira existe para curar. As duas
+    exceções nomeadas em `malhas.py` (a listagem da tela e o carimbo do rename)
+    são de TELA e de CADASTRO, existem só nesta árvore e estão comentadas lá.
+    """
     routers = _ROOT / "api/routers"
-    for arquivo in routers.glob("*.py"):
-        assert "malha_corrida" not in arquivo.read_text(encoding="utf-8"), \
-            arquivo.name
+    for arquivo in sorted(routers.glob("*.py")):
+        fonte = arquivo.read_text(encoding="utf-8")
+        if arquivo.name == "malhas.py":
+            assert "from services import malha_corrida as mc" in fonte
+            continue
+        assert "malha_corrida" not in fonte, arquivo.name
+        assert "etl_malha_execucao" not in fonte, arquivo.name
 
 
 def test_nenhuma_das_arvores_commita_por_conta(mcd):
