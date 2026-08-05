@@ -1004,7 +1004,35 @@ pararia a produção em vez de segurar um Aguarde.
 
 ---
 
-## 9. O card, o painel e os eventos
+## 9. O card, o painel e os eventos — a camada de visibilidade da corrida
+
+Com a corrida existindo como **registro**, a tela pode responder o que hoje ela
+não tem como responder: *está rodando?*, *em que pé está?*, *o que está
+travando?*. Esta seção é o desenho dessa camada — e ela vale uma regra só, a
+mesma da casa: **campo agregado que não responde "isso é verdade AGORA?" não
+entra.** Um número derivado sem denominador, sem instante de apuração e sem
+degradação declarada é o card que mente com roupa nova.
+
+### 9.0 As quatro perguntas, na ordem em que são feitas
+
+| # | Pergunta | Onde ela é feita | O que responde |
+|---|---|---|---|
+| **0** | **onde está o incêndio?** | celular (Teams), Dashboard | *qual* malha abrir |
+| 1 | está rodando? | card da lista, faixa do painel | estado + saúde |
+| 2 | em que pé está? | barra + `x de y` + relógio | progresso e tempo |
+| 3 | o que está travando, e **posso esperar**? | abas do painel | culpado, dono e duração típica |
+
+**A hierarquia é uma só e vale nas duas superfícies: estado → progresso → tempo
+→ culpado.** O culpado só ocupa espaço quando existe. Nada de KPI cards, nada de
+grade de números: a malha é tela de **acompanhamento**, não dashboard.
+
+A pergunta 0 decide se as outras três chegam a ser feitas. Às 3h ninguém abre
+`/malha` por vontade própria: chega-se pelo card do Teams (que hoje **não tem
+botão de link** — `dags/utils/ds_teams.py:montar_card` não emite `Action.OpenUrl`,
+ao contrário do gerador de DAG em `dags/etl_dag_factory.py:1049`) ou pelo
+Dashboard (cujo link de dependência faz `navigate('/malha')` **sem malha e sem
+modo**, `ui-react/src/pages/Dashboard.tsx:499`). Uma camada de visibilidade sem
+§9.8 é uma tela para o horário comercial.
 
 ### 9.1 O card da lista — como "concluída" deixa de mentir
 
@@ -1014,16 +1042,18 @@ corrente** e vira fallback. Entram **duas** consultas, nenhuma por malha:
 ```sql
 -- (1) a corrida corrente de cada malha: um SEEK por malha em ix_malha_exec_malha
 SELECT m.malha_name, c.id, c.sequencia, c.status, c.data_referencia,
-       c.aberta_em, c.fechada_em, c.origem, c.aberta_por, c.tentativas,
-       c.modo_fechamento, c.teto_em
+       c.aberta_em, c.fechada_em, c.fechada_por, c.motivo, c.origem,
+       c.aberta_por, c.tentativas, c.reaberta_por, c.modo_fechamento,
+       c.teto_em, c.teto_creditado_min
 FROM dbo.etl_malha m
 CROSS APPLY (SELECT TOP 1 me.* FROM dbo.etl_malha_execucao me
               WHERE me.malha_name = m.malha_name
               ORDER BY me.aberta_em DESC, me.id DESC) c;
 
 -- (2) o denominador de TODAS elas de uma vez (GROUP BY unico sobre o indice
---     filtrado novo) — ok/total/falhas, derivados na leitura, com o instante
---     de apuracao vindo do MESMO relogio da consulta.
+--     filtrado novo) — ok/total/vivos/dispensados/travados, derivados na
+--     leitura, com o instante de apuracao vindo do MESMO relogio da consulta.
+--     A clausula substituida_em IS NULL e OBRIGATORIA no numerador (Decisao 55).
 SELECT SYSDATETIME() AS apurado_em, ... GROUP BY mm.malha_execucao_id;
 ```
 
@@ -1043,17 +1073,43 @@ O "concluída" deixa de mentir por **quatro** mecanismos, não um:
 4. existe o eixo de **saúde** (Decisão 11): "em andamento" com falha já detectada
    é **vermelho**, não azul.
 
-Payload:
-`corrida: {id, sequencia, status, saude, data_referencia, aberta_em, fechada_em,
-origem, aberta_por, tentativas, modo_fechamento, teto_em, membros_ok,
-membros_total, falhas[], pendentes[], apurado_em}`.
+**Payload** (tudo sai do mesmo `GROUP BY` ou do `SELECT` que já roda — o custo
+por refetch **cai**, porque `_ultima_execucao_por_pipeline` sai do caminho):
+
+```
+corrida: {
+  id, sequencia, status, saude, data_referencia,
+  aberta_em, fechada_em, fechada_por, motivo, origem, aberta_por,
+  tentativas, reaberta_em, reaberta_por, modo_fechamento,
+  teto_em, teto_configurado, teto_creditado_min,
+  membros_total, membros_ok, membros_vivos, membros_dispensados,
+  membros_travados, membros_fora_do_odate,
+  qtd_cadastro, inativos_fora,
+  ultimo_movimento_em, quiescencia_ate,
+  falhas[], pendentes[], vivos[],
+  notificado_em, notificacao_pendente_desde,
+  apurado_em
+}
+corrida_esperada: { previsto_para, atrasada_desde } | null      -- Decisao 58
+```
+
+| Campo aditivo | Como sai | Custo |
+|---|---|---|
+| `membros_vivos`, `membros_dispensados`, `membros_travados` | `SUM(CASE WHEN classe=… THEN 1 END)` no mesmo `GROUP BY` | 0 |
+| `qtd_cadastro`, `inativos_fora` | já contados hoje para `⚙ N pipelines (N ativos)` | 0 |
+| `ultimo_movimento_em` | `MAX(COALESCE(e.fim, e.inicio))` | 0 |
+| `quiescencia_ate` | `DATEADD(MINUTE, @quiescencia, ultimo_movimento)` **em SQL**, nunca em Python (Decisão 10) | 0 |
+| `teto_configurado` | `etl_malha.teto_horas IS NOT NULL` — separa SLA de anti-travamento (Decisão 61) | 0 |
+| `notificado_em`, `notificacao_pendente_desde` | coluna que já existe (`067:189`) e **nunca foi lida** | 0 (uma coluna a mais no SELECT) |
+| `vivos[]: {pipeline, desde}`, `pendentes[]` classificado | derivados de `execucoes[]`, **só** em `GET /execucao` | 0 |
 
 **Decisão 40 — todo campo derivado exibido carrega o instante em que foi apurado,
 ou é derivado na leitura** *(evita: a tela responder "isso era verdade há pouco"
 quando o operador perguntou "isso é verdade agora?" — batendo F5 num número
 congelado sem saber que está congelado)*. Aqui os derivados são calculados na
-leitura e o payload traz `apurado_em` do relógio do banco; o front exibe
-*"· atualizado agora"*.
+leitura e o payload traz `apurado_em` do relógio do banco. **Como esse instante
+vira texto na tela é a Decisão 60** — e não é subtraindo `apurado_em` de
+`Date.now()`, que é exatamente a armadilha do §14/risco 8.
 
 **Decisão 41 — a degradação é POR MALHA (`corrida` ausente), nunca por flag de
 migration** *(evita: o front novo contra a API velha — o `deploy.sh` publica o
@@ -1062,54 +1118,951 @@ etapa 7; nesse intervalo o front novo conversa com a API velha, que não manda
 `corrida` **nem** `migration_085_pendente`. Sem flag, o front concluiria "está
 tudo certo" e renderizaria `corrida` indefinida. E se o operador responder `n` na
 6c, o intervalo é permanente)*. Regra: `if (!m.corrida)` → texto de hoje com o
-sufixo **"(membro mais recente)"** e **jamais** a palavra "concluída". A flag
+sufixo **"(membro mais recente)"** e **jamais** a palavra "concluída".
+
+**Aditivo à Decisão 41:** a degradação também é **dita**. O card degradado ganha
+a linha `⚠ sem dados de corrida — sistema em atualização`, igual em todos os
+cards afetados *(evita: quem não é técnico ler o card degradado como um card
+diferente, e não como uma tela sem parte da informação)*. A flag
 `migration_085_pendente` fica só como texto explicativo do tooltip.
 
-### 9.2 A visão de execução
+### 9.2 O progresso — o denominador, e as travas do número
+
+**Decisão 52 — o denominador é `membros_total` do snapshot
+(`ativo_na_abertura = 1`), e ele NÃO ENCOLHE durante a corrida** *(evita: o
+progresso subir quando a situação piora. `dispensado` inclui `PULADO`, que é
+carimbado **durante** a corrida — regra de dia, barragem do `check_agenda` e a
+Decisão 15, `CORRIDA_ABERTA_DE_OUTRO_ODATE`. Com `esperados = total −
+dispensados`, o cenário real é: 02:00 o card diz `2 de 7`; 02:40 a guardiã marca
+3 membros `PULADO` por divergência de ODATE — o incidente `Carga_Vida`; 02:41 o
+card diz **`2 de 4`**. O olho lê "avançou", e o que aconteceu foi três pipelines
+serem barrados. É o card que mente com matemática nova, e um texto numa terceira
+linha não desfaz a leitura de 2 segundos que a barra já entregou)*.
+
+Os outros dois candidatos a denominador, e por que não:
+
+- **etapas (`etl_pipeline_job` / `etl_job_execution`)** — parece o mais fino, e
+  é o mais caro. Para os run_ids `dep__…` — exatamente o caso de cascata de
+  malha — a ponte entre `etl_pipeline_execucao.execution_id` (run_id) e
+  `etl_job_execution.execution_id` (ts_nodash) é **leitura do Airflow**
+  (`api/services/execucao_identidade.py:179-188,300`;
+  `api/routers/execucoes.py:1707-1723`). Uma chamada HTTP por membro a cada
+  refetch é proibitiva. **Fica em backlog**, com o caminho barato já identificado
+  e a justificativa correta: um rollup por `pipeline IN membros AND start_time >=
+  aberta_em` sobre `IX_etl_job_execution_pipeline_status_start` é **uma** consulta
+  de conjunto, sem Airflow — o que ele não é é **identidade de run**; é recorte de
+  tempo, e isso precisa estar escrito para a próxima pessoa não ler "proibitivo" e
+  nunca mais voltar.
+- **peso por duração histórica** — transformaria progresso em **previsão**. O §3
+  proíbe backfill: no dia 1 o histórico é **zero**, e uma barra ponderada por
+  média inexistente é número inventado com aparência de precisão.
+
+**Decisão 53 — a subtração aparece SEMPRE, na linha imediatamente abaixo da
+barra, e é ancorada no cadastro** *(evita: dois denominadores no mesmo card —
+`⚙ 7 pipelines (7 ativos)` na terceira linha e `4 de 6` na barra, com a explicação
+numa quarta linha que só existe "se houver problema"; e o caso pior do membro
+inativado: alguém inativa 5 dos 7 na sexta, `ativo_na_abertura = 0` os tira do
+snapshot, e sábado o card diz **`2 de 2 · concluída`, verde** — a família "card
+que mente" com um número dando autoridade)*.
+
+```
+membros_total (denominador)  =  COUNT(snapshot WHERE ativo_na_abertura = 1)
+linha de baixo, obrigatoria  =  "N membros nesta corrida"
+                              + ", K nao rodam hoje (regra de dia)"   se dispensados > 0
+                              + ", J inativos fora desta corrida"     se membros_total < qtd_cadastro
+```
+
+`membros_total < qtd_cadastro` é **fato visível**, nunca nota de rodapé.
+
+**Decisão 54 — o TRAVADO não entra na barra: vira chip vermelho ao lado**
+*(evita: a leitura periférica errada. `████▓▓▓▒▒░░ 3 de 6` pinta 5/6 da barra e,
+a 1,5 m, lê-se "quase pronto". "Vermelho é lastro, ocupa o lugar que ocuparia se
+tivesse dado certo" é teoria de layout correta e prática noturna ruim: em
+varredura de 40 cards o operador lê comprimento, não cor)*. A casa já tem a
+linguagem certa — os chips de `PainelExecucaoEtapas.tsx:253-266`
+(`3 sucesso · 1 falha · 2 executando`). **A barra responde uma coisa só: quanto
+já ficou pronto.** O chip é clicável e leva à aba `Travando`.
+
+Composição final da barra, ordem **fixa** (nunca reordena entre refreshes):
+
+```
+[ verde: ok ][ azul: vivo ][ trilho hachurado neutro: dispensado ][ trilho vazio: o resto ]
+```
+
+| Classe (§6.4) | Entra no denominador? | Conta como ok? | Onde aparece |
+|---|---|---|---|
+| `OK` (SUCESSO vivo, `substituida_em IS NULL`) | sim | **sim** | segmento verde |
+| `vivo` (EXECUTANDO / AGUARDANDO_DEPENDENCIA) | sim | não | segmento **azul**, o único animado |
+| `dispensado` (`PULADO` / sem dia permitido) | **sim** | não | **trilho hachurado neutro**, dentro da barra |
+| pendente `falhou` | sim | **nunca** | trilho vazio + **chip vermelho** fora da barra |
+| pendente `nao_liberou` / `orfa` | sim | nunca | trilho vazio + chip |
+| pendente `nao_partiu` | sim | nunca | trilho vazio |
+| `fora_do_odate` | não | **nunca** | banner âmbar na faixa (Decisão 66), nominal |
+
+O card usa **duas** cores preenchidas (verde e azul) mais dois tratamentos de
+trilho; as classes de pendência ficam nos chips. A legenda de quatro cores vive
+no painel, onde cabe legenda — no card, quem nomeia é a linha 3.
+
+**Decisão 55 — `substituida_em IS NULL` é cláusula obrigatória do numerador E do
+`GET /malhas/{m}/execucao`, na MESMA PR** *(evita: dois números discordando na
+mesma tela. Hoje o painel monta `execucoes[]` filtrando só `data_referencia`
+(`api/routers/malhas.py:2203-2210`, desempate por `mais_recente_da_data`) e não lê
+essa coluna, enquanto o motor filtra por ela em 12 pontos
+(`dags/utils/dependencias.py:471,493,531,624,645,1286`). Depois de um rerun às 3h:
+a **faixa** diz `3 de 6` e o **nó no canvas** fica verde com a linha que o motor
+já aposentou. Corrigir só a barra é trocar o defeito de lugar)*.
+
+**Decisão 56 — não existe `%` em superfície nenhuma; "concluída" e barra cheia só
+em corrida terminal verde** *(evita: quatro coisas — (i) o arredondamento
+`99,6 → 100` que é o defeito clássico; (ii) `4/6 = 66,67` virar `67%` (o próprio
+rascunho desta camada escreveu `67%` em dois mockups, com a regra do `Math.floor`
+escrita três parágrafos acima — se o mockup arredonda, o código arredonda);
+(iii) com 6 membros o percentual só assume 7 valores, e `(67%)` sugere medição
+contínua de uma contagem de 6; (iv) o pior: é **% de pipelines** apresentado como
+progresso de **trabalho** — numa malha de 6 em que o último leva 3h e os cinco
+primeiros 5 min cada, aos 25 minutos o painel diria `83%` faltando 87% do
+tempo)*. O rótulo é sempre `x de y`, e o substantivo é **pipelines**, nunca
+"progresso": *"4 de 7 pipelines concluídos"*.
+
+⚠️ **Isto contrariava a letra do pedido original ("% de execução"). RESOLVIDO
+pela Decisão 56b abaixo, decidida com o usuário em 2026-08-04: o `%` volta — mas
+medindo TEMPO, não contagem de pipelines.**
+
+**Decisão 56b — existe UM percentual, e ele é do TEMPO ESTIMADO, nunca de
+pipelines: `≈ 60% do tempo típico`** *(evita, de uma vez, o defeito que a 56
+descreve e a lacuna que ela abria. O pedido do usuário — "dentro de cada malha %
+de execução" — é a pergunta "em que pé está?", e a resposta honesta a ela é o
+tempo, não a contagem: numa malha de 6 em que o último leva 3h e os cinco
+primeiros 5 min, `5 de 6` é 83% dos pipelines e 12% do trabalho. O percentual
+ponderado dá 12%, que é a verdade)*.
+
+Regras que o tornam honesto — todas obrigatórias, e a ausência de qualquer uma
+tira o número da tela:
+- **Numerador e denominador são MINUTOS**, vindos da duração típica por membro
+  (Decisão 64): soma das durações típicas dos membros já concluídos, sobre a soma
+  de todos os membros do snapshot. Membro em execução entra pelo tempo já
+  decorrido, limitado à própria duração típica — nunca ultrapassa a própria fatia.
+- **Só aparece com `n ≥ 5` em TODOS os membros do snapshot.** Faltando histórico
+  em um só, o percentual some (não é estimado, não é "aproximado com ressalva"):
+  fica só o `x de y` e a duração típica dos vivos. É a mesma regra do `n` visível
+  da Decisão 64 — número sem lastro não entra.
+- **Prefixo `≈` e sufixo `do tempo típico`, sempre.** Nunca `60%` solto, nunca
+  "concluído": o rótulo é `≈ 60% do tempo típico`. O `≈` é parte do dado, não
+  enfeite — remove a promessa de precisão que a 56(iii) denuncia.
+- **`Math.floor`, teto em 99** enquanto a corrida não for terminal (a 56(i)), e
+  **sem percentual nenhum** em corrida terminal: lá o estado já diz tudo.
+- **Ele nunca substitui o `x de y`**, que continua sendo o número primário e o
+  primeiro a ser lido. O percentual é o SEGUNDO, entre parênteses, e some antes
+  dele em qualquer aperto de espaço (card estreito, mobile).
+- **Corrida `ATRASADA` mostra o percentual mesmo passando de 100% do típico** —
+  aí ele vira `≈ 140% do tempo típico`, que é exatamente o sinal de atraso, e
+  **não** é truncado em 100: truncar esconderia o que o operador precisa ver.
+
+Rótulo final da faixa, com histórico suficiente:
+
+> `4 de 7 pipelines · ≈ 38% do tempo típico · 2 rodando há 12 min`
+
+E sem histórico suficiente (o caso do primeiro mês de uma malha nova):
+
+> `4 de 7 pipelines · 2 rodando há 12 min`
+
+Com `status = 'ABERTA'` e `ok === membros_total − dispensados`, a barra fica
+cheia e o rótulo é:
+
+> `7 de 7 · fechando — fecha 15 min após o último movimento; se nada mais mexer,
+> por volta de 04:17`
+
+Nunca "concluída", nunca barra terminal. Isto implementa a Decisão 45 sem
+reintroduzir o defeito que ela existe para evitar: **o relógio de quiescência
+reinicia a cada movimento**, então um horário exato ("até 04:17") faria o operador
+reportar bug às 04:18 quando um pipeline se mexeu às 04:16. A frase diz a regra
+antes de dizer a hora.
+
+**Decisão 57 — `SEM_TRABALHO` não tem barra; desfecho interrompido tem barra
+CONGELADA** *(evita: 0% ler como "falhou tudo" e 100% ler como "rodou tudo", nos
+dois casos em que nenhum dos dois é verdade)*.
+
+- **`SEM_TRABALHO`**: a barra **desaparece**. No lugar, traço neutro e a frase
+  *"nada previsto para 09/08 — os 7 membros não rodam hoje (regra de dia)"*. Sem
+  alarme, sem vermelho (Decisões 26/27: alarme falso semanal treina o operador a
+  ignorar o alarme). A exceção é a Decisão 68 (sábado legítimo × terça suspeita).
+- **`EXPIRADA` / `ABORTADA` / `CANCELADA`**: a barra **congela** no valor apurado
+  no fechamento, ganha `opacity-60`, e o rótulo muda de *"4 de 7"* para **"parou
+  em 4 de 7"**. A palavra "concluído" não aparece em nenhuma das três
+  (invariante 4 do §16: nunca inventar verde).
+
+**Decisão 58 — a corrida que NÃO ABRIU é um estado da tela, e ela ordena
+primeiro** *(evita: o pior modo de falha ficar mudo. O Início não disparou às
+01:00 — DAG pausada, Airflow fora, agendamento quebrado. Às 8h o card mostra a
+corrida de **ontem**, `concluída`, verde, com carimbo de frescor recente. Toda
+esta camada pressupõe "a corrida existe"; a única peça que sabe o que **deveria**
+ter acontecido é `proximaExecucao.ts`, listada na §13 como não tocada por ser
+"gatilho, não ciclo" — e é exatamente por isso que ela é a peça que falta)*.
+
+`corrida_esperada` é calculada **na API**, não no front: comparar a hora agendada
+do gatilho com "agora" no relógio do navegador é a armadilha do §14/risco 8 numa
+casa em que o desvio medido é de 3h. Usa-se `dep.agora_do_banco(conn)` +
+`desvio_banco`, como `_divergencias_e_falhas` já faz. Condição: existe gatilho com
+horário previsto para o ODATE corrente, esse horário já passou com folga
+configurável, e **não existe corrida com aquele `data_referencia`**. Resultado:
+estado `não abriu`, âmbar, contador próprio na stats bar, e ordenação no topo da
+lista. §13 passa a ter uma exceção nominal — `proximaExecucao.ts` é tocada, e a
+razão é esta.
+
+### 9.3 Os estados, a saúde e a cor
+
+**Decisão 46 — `statusExecucao.ts` ganha um mapa PARALELO `STATUS_CORRIDA`, não
+reusa `STATUS_EXECUCAO`** *(evita: mentira de domínio — reusar faria `ABERTA`
+herdar o estilo de `EXECUTANDO`, e `EXPIRADA`/`SEM_TRABALHO` caírem no
+`default` cinza)*. Tokens `canvas/panel/edge/ink/dim` nos **dois** temas, pt-BR.
+`MalhaComponenteNodes.tsx`: o nó Fim ganha o estado que hoje não tem — hoje é
+verde (`concluidaEm`, `:176-177`) ou apagado; passa a ter **"ciclo aberto"**,
+como **anel azul discreto e `title`, sem texto no nó** (o número já está na faixa
+a 3 cm de distância, e a regra de não empilhar informação no nó vale igual aqui).
+
+| Status | Rótulo pt-BR | Ícone (lucide) | Claro | Escuro | Nó Fim |
+|---|---|---|---|---|---|
+| `ABERTA` | **em andamento** | `Activity` | `bg-blue-100 text-blue-700 border-blue-300` | `dark:bg-blue-900/60 dark:text-blue-300 dark:border-blue-700` | anel azul animado |
+| `CONCLUIDA` | **concluída** | `CheckCircle2` | `bg-green-100 text-green-700 border-green-300` | `dark:bg-green-900/60 dark:text-green-300 dark:border-green-700` | anel verde |
+| `FALHA` | **falhou** | `XCircle` | `bg-red-100 text-red-700 border-red-300` | `dark:bg-red-900/60 dark:text-red-300 dark:border-red-700` | anel vermelho |
+| `EXPIRADA` | **encerrada sem terminar** | `TimerOff` | `bg-red-100 text-red-700 border-red-300` | `dark:bg-red-900/60 …` | anel vermelho |
+| `ABORTADA` | **não chegou a começar** | `CircleSlash` | `bg-red-100 text-red-700 border-red-300` | `dark:bg-red-900/60 …` | anel vermelho |
+| `SEM_TRABALHO` | **sem trabalho hoje** | `Moon` | `bg-slate-100 text-slate-600 border-slate-300` | `dark:bg-slate-800 dark:text-slate-300 dark:border-slate-600` | apagado |
+| `CANCELADA` | **encerrada por C123456** | `Ban` | `bg-amber-50 text-amber-700 border-amber-300` (contorno) | `dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800` | apagado |
+| *(derivado)* `nao_abriu` | **não abriu** | `CalendarX` | `bg-amber-50 text-amber-700 border-amber-300` | `dark:bg-amber-900/30 …` | apagado |
+
+**Decisão 59 — a partição de cor é "isso me chama às 3h?", o preenchimento separa
+"acabou mal" de "ainda pode virar", e o cinza é só para "não havia trabalho"**
+*(evita: três defeitos de varredura medidos na leitura desta camada — (i) três
+cinzas competindo (`SEM_TRABALHO`, `CANCELADA` e a malha inativa que já é slate
+em `Malha.tsx:158-165`), o que ensina "cinza = não preciso olhar" e esconde um
+cancelamento humano que é item de auditoria; (ii) quatro vermelhos indistintos —
+`FALHA`, `EXPIRADA`, `ABORTADA` e `ABERTA·com falha` — fazendo o gestor reportar
+"4 incidentes" quando três já acabaram e um ainda pode fechar verde; (iii)
+`SEM_PROGRESSO` em slate, que é a decisão de cor mais perigosa possível, porque
+"nada se moveu há 40 min" com membro vivo é o sintoma nº 1 da execução órfã
+(`dags/etl_dependencia_guardia.py:430`), a classe de defeito mais cara do
+produto)*.
+
+```
+vermelho CHEIO     = acabou mal, acao agora      (FALHA, EXPIRADA, ABORTADA)
+vermelho CONTORNO  = falha dentro de corrida VIVA, com a palavra "ainda rodando"
+ambar              = prazo/atipico/humano        (ATRASADA, SEM_PROGRESSO, CANCELADA, nao_abriu)
+slate              = nao havia trabalho          (SEM_TRABALHO)  — e so ele
+```
+
+E a regra da casa continua valendo: **cor nunca é o único canal**
+(`SupervisaoCard.tsx:64-65`) — os três vermelhos têm ícone e rótulo distintos,
+legíveis por quem não distingue vermelho de âmbar.
+
+**A saúde manda na cor quando o status é `ABERTA`** (Decisão 11):
+
+| Saúde | Rótulo composto | Cor | Ícone |
+|---|---|---|---|
+| `OK` | `em andamento` | azul | `Activity` |
+| `COM_FALHA` | `em andamento · com falha (ainda rodando)` | **vermelho contornado** | `AlertTriangle` |
+| `ATRASADA` | `em andamento · fora do prazo` | **âmbar** | `Clock` |
+| `SEM_PROGRESSO` | `em andamento · sem sinal há 40 min` | **âmbar** | `Hourglass` |
+
+`SEM_PROGRESSO` e `ATRASADA` são **os dois âmbar**, e o desempate é por ícone e
+por texto, não por cor. A objeção "dois âmbares se apagam" resolve estética
+criando risco operacional, e a própria Decisão 59 diz que ícone+rótulo separam
+dentro da cor.
+
+No **canvas**, a corrida não pinta nós — pinta o **nó Fim** (o único que fala de
+ciclo) e a faixa. Os nós continuam com `STATUS_EXECUCAO`. A legenda do rodapé
+(`MalhaEditor.tsx:2542-2576`) ganha **só** o traço tracejado âmbar de `esperando`
+(§9.9): oito estados de corrida na legenda seria o ruído que a Decisão 75 proíbe.
+
+### 9.4 O tempo — três relógios diferentes, e nenhum deles é o mesmo
+
+**Decisão 60 — o DECORRIDO é do banco; o FRESCOR é do navegador consigo mesmo; e
+nenhum dos dois mistura os dois relógios** *(evita: o defeito que o próprio
+rascunho desta camada cometeu ao proteger o decorrido e esquecer o frescor. Com
+`apurado_em` do banco e `Date.now()` do navegador e o desvio de 3h medido no dev,
+`· atualizado há 8s` viraria "atualizado há -3h", ou "agora" eternamente, e o
+alarme de dado velho **nunca dispararia** — um carimbo de frescor que mente sobre
+o próprio frescor)*.
+
+```
+decorridoBase = apurado_em − aberta_em      -- os DOIS do banco, subtraidos no servidor
+decorrido     = decorridoBase + (Date.now() − instanteLocalDaResposta)
+frescor       = Date.now() − instanteLocalDaResposta      -- so relogio local
+```
+
+Módulo novo `malhas/tempoCorrida.ts`, puro (sem React, regra do
+`react-refresh/only-export-components`, como `componenteMeta.ts`), com
+`useDecorrido()` à parte, testado com relógio deslocado. `apurado_em` alimenta
+apenas o **texto absoluto do tooltip**.
+
+Aditivos de forma, que custam zero e evitam desconfiança:
+
+- **granularidade grossa** no frescor (`agora` / `há menos de 1 min` / `há 3 min`)
+  — precisão de segundo em polling de 15–20 s sugere tempo real; e dois cards com
+  `há 8s` e `há 31s` na mesma tela fazem duvidar dos dois;
+- **um carimbo por página**, no cabeçalho da lista, não um por card;
+- acima de 90 s sem sucesso de refetch: `⚠ dado de HH:MM:SS`, em âmbar;
+- **um formato de tempo por posição**: relativo enquanto a corrida está aberta
+  (`há 42 min`), absoluto quando fechada (`01:10 → 04:02 · 2h52`). Nunca os três
+  formatos no mesmo card.
+
+**Decisão 61 — o prazo que aparece por padrão é o PRÓXIMO GATILHO da própria
+malha, não o teto; e a barra de teto só existe quando `etl_malha.teto_horas` foi
+configurado para aquela malha** *(evita: três coisas — (i) o teto ser lido como
+SLA quando ele é **anti-travamento**: `teto_horas` é `NULL` por padrão e cai no
+global de 24h (§6.6), então uma barra em 80% às 20h numa malha que sempre fecha em
+3h faria escalar por nada; (ii) a barra **andar para trás**, porque
+`teto_creditado_min` empurra `teto_em` quando um hold é solto (§6.7) — às 03:00 a
+barra em 80%, alguém solta um hold de 6h, a barra cai para 55% sozinha, e uma
+barra de prazo que recua destrói a confiança em todas as outras; (iii) às 04:00
+"faltam 21h de teto" ser irrelevante enquanto o fato que importa é que a próxima
+corrida parte às 01:00 e a corrida aberta **bloqueia** essa partida)*.
+
+O prazo por padrão, custo zero, com as duas peças já prontas (`proximaExecucao.ts`
++ `gatilho` do payload do card):
+
+> *"a próxima corrida parte em 2h50 (01:00) — enquanto esta não fechar, ela não
+> abre"*
+
+Essa é a frase de consequência do índice `ux_malha_exec_aberta` (§5.3), e é o
+gatilho real do escalonamento: a hora em que o incidente deixa de ser "um dia" e
+vira "dois dias empilhados". Com `teto_configurado = true`, aparece **também** a
+barra de teto; e o crédito de hold nunca é silencioso: vira evento nomeado na aba
+`Eventos` — *"+6h creditados por retenção às 03:05"*.
+
+### 9.5 Quem está rodando AGORA, o que está travando, e se dá para esperar
+
+Três superfícies, três níveis de detalhe, **uma única fonte** — o agregado do
+§9.1. Nenhuma delas conta linha de `execucoes[]` no cliente.
+
+| Superfície | Detalhe | Custo |
+|---|---|---|
+| **Card da lista** | `2 rodando (mais antigo há 12 min)`, dot azul `animate-pulse`, só com `membros_vivos > 0` | 0 — mesmo `GROUP BY` |
+| **Faixa do painel** | segmento azul animado + `2 rodando` clicável (abre a aba `Agora`) | 0 |
+| **Aba `Agora (2)`** | `CARGA_B · há 12 min · típico 18 min (n=23)` · `▶ etapas` | `vivos[]` sai de `execucoes[]` que já vem |
+| **Aba `Travando (2)`** | classe, dono, raio de alcance e ação por classe | `pendentes[]` agregado |
+| **Canvas** | anel azul pulsante (já existe) | 0 |
+
+O contador de vivos **carrega a idade do mais antigo** *(evita: `1 rodando` numa
+corrida atrasada há 25h tranquilizar o operador quando aquele `EXECUTANDO` não se
+mexe há 20h e não é `orfa` porque o evento `EXECUCAO_ORFA` nunca saiu)*. Acima do
+limiar, a palavra muda: `1 sem sinal há 20h`.
+
+**Decisão 62 — a aba ativa é derivada da SAÚDE, e `Encerrar corrida…` existe em
+TODA corrida `ABERTA`** *(evita: (i) enterrar a única pergunta aberta — quando o
+operador abre o painel às 3h, as perguntas 1 e 2 já foram respondidas pelo card ou
+pelo alarme, e obrigar um clique em `Travando` é um clique a mais na única coisa
+que ele veio fazer; (ii) o botão de encerrar nascer só depois do teto vencido,
+que reintroduz o problema que a Decisão 32 existe para matar — os casos em que
+mais se precisa encerrar são `ABERTA · SEM_PROGRESSO` (DagRun morto) e
+`ABERTA · COM_FALHA` quando já se decidiu que a madrugada acabou)*.
+
+```
+COM_FALHA | ATRASADA | SEM_PROGRESSO  -> abre em  Travando
+OK                                     -> abre em  Agora
+corrida fechada                        -> abre em  Eventos
+```
+
+O que muda por estado é o **texto da confirmação** do encerramento, nunca a
+presença do botão. E a confirmação diz a consequência, não só a permissão:
+*"encerrar libera o disparo da próxima corrida; os 2 pipelines em execução
+continuam rodando"*.
+
+**Um clique até o problema.** Cada linha das abas `Agora` e `Travando` tem:
+
+- **clique na linha** → acende o realce no canvas (reusa
+  `components/etapas/PainelRealce.tsx`, já montado no editor em
+  `MalhaEditor.tsx:2400-2416`) e centraliza o nó;
+- **botão `▶ etapas`** → abre o drill-down do pipeline, o mesmo caminho do chip do
+  nó (`MalhaPipelineNode.tsx:123-135`), sem exigir que o operador ache o nó no
+  desenho.
+
+Isto resolve o buraco que hoje é estrutural: descobrir o que está rodando é
+**varrer o canvas com o olho** procurando anel azul, e o painel lateral fica
+**vazio justamente durante a corrida saudável**, porque ele é de *eventos da
+guardiã* (`MalhaEditor.tsx:2225-2262`) e corrida saudável não gera evento.
+
+**Decisão 63 — cada travado carrega RAIO DE ALCANCE e CRITICIDADE** *(evita:
+`↳ falhou: CARGA_A` não dizer se atrás dela há 1 ou 17 pipelines parados, nem se
+algum é `ALTA` — que é exatamente o que decide acordar alguém)*. Custo zero e
+client-side puro: `useRealceDependencias`/`cadeiaRealce` já calculam a cadeia à
+frente e `criticidade` já vem no payload. A linha vira:
+
+```
+▲ CARGA_A [ALTA] · falhou 03:07 · 4 pipelines parados atrás   [▶ etapas] [↻ reexecutar]
+◐ CARGA_C          esperando CARGA_A desde 03:07              [🔍 realçar]
+```
+
+E as classes **nunca** viram "3 pendentes" — são três problemas com três donos
+(Decisão 21), e a ação por classe é: `falhou` → `▶ etapas` / `↻ reexecutar`;
+`nao_liberou` → realçar a dependência / soltar hold; `nao_partiu` → ver a DAG;
+`orfa` → Finalização Manual.
+
+**Decisão 64 — a duração típica POR MEMBRO é o número que decide "posso
+esperar", e ela vem com `n` visível e piso de `n ≥ 5`** *(evita: `4 de 7 · 2
+rodando · há 12 min` não dizer se os dois vivos são de 5 min ou de 3h — e, pior,
+`4 de 7` com os dois mais pesados restantes parecer "quase lá" e mandar o operador
+dormir)*.
+
+O argumento "sem histórico no dia 1" vale para a **corrida**, não para o
+**membro**: `etl_job_execution` tem o histórico de sempre, e o molde já existe em
+`GET /execucoes/duracao-media` (`api/routers/execucoes.py:2504`, `PERCENTILE_CONT`
+com `COUNT(*)`, sem tocar o Airflow) — só que hoje ele é **por `job_name` dentro
+de um pipeline**. O agregado desta camada é o irmão dele, **por pipeline**, sobre
+os membros do snapshot, numa consulta de conjunto por painel aberto. Forma na
+tela, com a mesma honestidade da própria fonte:
+
+```
+CARGA_B · há 12 min · típico 18 min (n=23)          -- normal
+CARGA_D · há 41 min · típico 18 min (n=23)  ⚠ 2x    -- ambar acima de 2x o p50
+CARGA_E · há  3 min                                  -- n<5: SO o decorrido, sem tipico
+```
+
+Sem `n ≥ 5` não se exibe nada — e o `n` aparece **sempre** ao lado do número.
+Isto **não** é ETA de conclusão da corrida (Decisão 75/#3): é a duração típica de
+um membro, medida, com amostra declarada.
+
+**Decisão 65 — `↻ reexecutar` só existe com a frase do efeito na corrida em voo;
+sem a frase, o botão não existe** *(evita: o gesto mais delicado do modelo virar
+um clique de 3h no escuro. §6.9/#3: rerun com cascata só reabre a corrida se não
+houver outra aberta; e `rerun.marcar_substituidas` bumpa `atualizado_em`, que a
+guarda 2 da quiescência explicitamente **não** usa como âncora. Sem o texto, o
+operador aperta e o painel muda de estado por baixo dele)*. O botão abre a prévia
+que já existe (`GET /pipelines/{p}/rerun/previa`,
+`api/routers/execucoes.py:724`) com uma linha nova: *"esta reexecução entra na
+corrida de 04/08 (em andamento); o relógio de fechamento não reinicia por este
+gesto"*. Se essa frase não puder ser escrita com certeza na fase, o botão sai e
+fica só `▶ etapas`.
+
+### 9.6 A visão de execução
 
 | Hoje | Com a corrida |
 |---|---|
 | lente = `?data_referencia=YYYY-MM-DD` (`api/routers/malhas.py:2146`) | lente = `?corrida={id}`; a data continua como **atalho** |
 | sem data → `dref.calcular(_agora(), _virada_global(cur))`, virada **GLOBAL**, com a divergência painel×disparo confessada em `:2377-2384` | sem parâmetro → **a corrida ABERTA**; sem corrida aberta, a última fechada. **A divergência some**: painel e disparo leem o mesmo registro |
-| `WHERE data_referencia = ?` sobre o banco inteiro, filtro de membro em Python (`:2205-2210`) | o predicado do §6.4 — recorte exato |
+| `WHERE data_referencia = ?` sobre o banco inteiro, filtro de membro em Python (`:2205-2210`), **sem** `substituida_em` | o predicado do §6.4 — recorte exato, sobre `ix_pipe_exec_malha`, com `substituida_em IS NULL` (Decisão 55) |
+| `deps_svc.liberado()` **por membro esperando** (`:2231`, 2 round-trips × membro) | `pendentes[]` do agregado, calculado **uma vez por corrida** no servidor — o N+1 sai do caminho corrente |
 | `malha_concluida` varre `eventos_no` procurando `MALHA_CONCLUIDA` do nó Fim (`:2280-2286`) | lê `status`/`fechada_em` da corrida. **O evento vira rastro, não fonte de verdade** |
-| navegação ◀ ▶ por **dia** (`MalhaEditor.tsx:1976-1993`) | navegação por **corrida**, alimentada por `GET /malhas/{m}/corridas?limite=N` (Decisão 42) |
-| banner verde "Malha concluída em…" (`MalhaEditor.tsx:2214`) | ganha os pares honestos: *"ciclo #12 ABERTO desde 01:10 — 4 de 7 · 1 falha"*, *"ciclo #12 falhou: CARGA_A"*, e a linha de diagnóstico da Decisão 43 |
-| `bloqueios.em_aberto` + `datas_divergentes`, duas listas (`:2849-2872`) | **uma linha**: *"a corrida #12, aberta em 04/08 às 01:10, ainda não passou pelo Fim"* — mantendo a **frase de ação** que a mensagem de hoje tem (*"…resolvido por Republicar pipelines"*, `MalhaEditor.tsx:2872`), agora apontando para o botão de encerrar |
+| navegação ◀ ▶ por **dia** (`MalhaEditor.tsx:1976-1993`) | navegação por **corrida** (Decisão 42), com a faixa das últimas N |
+| banner verde "Malha concluída em…" (`MalhaEditor.tsx:2214`) | a **faixa de corrida** do §9.13, com os pares honestos e a linha de diagnóstico da Decisão 43 |
+| `bloqueios.em_aberto` + `datas_divergentes`, duas listas (`:2849-2872`) | **uma linha**: *"a corrida de 04/08, aberta às 01:10, ainda não passou pelo Fim"* — mantendo a **frase de ação** que a mensagem de hoje tem (`MalhaEditor.tsx:2872`), agora apontando para o botão de encerrar |
+| `Segurar/Soltar` só no modo **Montagem** (`:2461-2486`) | existe **também** na Execução — hoje destravar exige sair da lente de acompanhamento no meio do incidente |
+| painel lateral "EVENTOS DA GUARDIÃ" (`:2225-2262`), vazio na corrida saudável | **abas** `Agora · Travando · Eventos` com contador, reusando `ui/Tabs.tsx` |
 
 **Decisão 42 — existe `GET /malhas/{m}/corridas?limite=N`** *(evita: navegar "por
 corrida" no escuro, sem saber quantas corridas existiram na madrugada nem poder
-pular para a #10; e o atalho por data resolver para "a de maior `sequencia`",
+pular para a anterior; e o atalho por data resolver para "a de maior `sequencia`",
 **escondendo as anteriores do mesmo dia** — exatamente o caso que a `sequencia`
-existe para preservar)*.
+existe para preservar)*. A navegação é **uma só**: a **faixa das últimas N**,
+clicável, com `title` por bloco; o `input[type=date]` vira um item do menu ("ir
+para uma data…"). Não há `◀ ▶` **e** dropdown **e** faixa **e** calendário — às 3h
+usa-se um, e quatro mecanismos de navegação temporal na mesma barra é decisão
+adiada, não flexibilidade.
 
 **Decisão 43 — o banner expõe os campos de diagnóstico em uma linha** *(evita:
 gravar seis campos e não mostrar nenhum — as três primeiras perguntas às 3h são
-"quem começou isso?", "é a primeira tentativa ou já mexeram aqui?" e "por que
-essa malha fecha sem passar pelo Fim?", todas respondíveis pelo banco e nenhuma
-pela tela)*: *"corrida #12 · 2ª tentativa · aberta por **agendamento do Início**
-(CARGA_RAIZ) às 01:10 · fecha por quiescência"*. `aberta_por` é traduzido na API
-(`'inicio:#12'` é formato de máquina).
+"quem começou isso?", "é a primeira tentativa ou já mexeram aqui?" e "por que essa
+malha fecha sem passar pelo Fim?", todas respondíveis pelo banco e nenhuma pela
+tela)*: *"corrida de 04/08 · reaberta 1x por C123456 · aberta pelo **agendamento
+do Início** (CARGA_RAIZ) às 01:10 · fecha sozinha 15 min após o último
+movimento"*. `aberta_por` é traduzido na API (`'inicio:#12'` é formato de
+máquina), e **nenhum dos rótulos técnicos** da §9.11 sobrevive à tradução.
 
-**Decisão 44 — corrida com `origem='implicita'` DIZ isso na tela** *(evita: nas
-3 de 4 malhas sem Início, o ODATE ser "o que o primeiro membro achou" e a tela
-apresentar isso como "o ODATE da corrida", com uma autoridade que ele não tem)*:
-*"data de referência definida pela primeira raiz a partir (CARGA_C, 01:03) —
-esta malha não tem nó Início"*, e o aviso leve do desenho diz isso também.
+**Decisão 44 — corrida com `origem='implicita'` DIZ isso na tela, e também no
+card** *(evita: nas 3 de 4 malhas sem Início, o ODATE ser "o que o primeiro membro
+achou" e a tela apresentar isso como "o ODATE da corrida", com uma autoridade que
+ele não tem — e, na lista, essa corrida ser indistinguível de uma agendada)*: no
+painel, *"data de referência definida pela primeira raiz a partir (CARGA_C,
+01:03) — esta malha não tem nó Início"*; no card, a marca discreta
+`início manual (C123456)` / `sem nó Início`.
 
-**Decisão 45 — a carência de quiescência é explicada na tela** *(evita: o último
-pipeline ficar verde às 04:02, o card continuar "em andamento" até 04:17, e o
-operador reportar bug ou — pior — disparar coisa na mão)*: *"aguardando 15 min de
-estabilidade antes de fechar (até 04:17)"*.
+**Decisão 45 — a carência de quiescência é explicada na tela, dizendo a REGRA
+antes da hora** *(evita: o último pipeline ficar verde às 04:02, o card continuar
+"em andamento" até 04:17, e o operador reportar bug ou — pior — disparar coisa na
+mão; **e** o defeito espelho, de anunciar "até 04:17" como horário exato quando o
+relógio reinicia a cada movimento, produzindo o mesmo chamado falso pela forma do
+texto)*: *"fecha 15 min após o último movimento — se nada mais mexer, por volta
+de 04:17"*.
 
-**Decisão 46 — `statusExecucao.ts` ganha um mapa PARALELO `STATUS_CORRIDA`, não
-reusa `STATUS_EXECUCAO`** *(evita: mentira de domínio — reusar faria `ABERTA`
-herdar o estilo de `EXECUTANDO`, e `EXPIRADA`/`SEM_TRABALHO` caírem no
-`default`)*. Tokens `canvas/panel/edge/ink` nos **dois** temas, pt-BR.
-`MalhaComponenteNodes.tsx`: o nó Fim ganha o estado que hoje não tem — hoje é
-verde (`concluidaEm`) ou apagado; passa a ter **"ciclo aberto"**.
+**Decisão 66 — os três fatos que hoje não têm onde aparecer viram BANNER na
+faixa, não item de aba** *(evita: enterrar numa aba o que decide a próxima ação)*:
 
-### 9.3 Os eventos e o Teams
+| Banner | Quando | Por que na faixa |
+|---|---|---|
+| âmbar · `2 pipelines de outra data de referência: CARGA_X, CARGA_Y` | `membros_fora_do_odate > 0` | é o incidente que **originou esta spec**; é o único caso em que a barra está certa e o **dia** está errado. Mesmo patamar do banner de virada divergente que o editor já tem (`MalhaEditor.tsx:2028+`) |
+| âmbar · `2 nós segurados desde 02:40 (por C123456) — a corrida não avança` + `Soltar` | `retido_em` em algum nó | hoje o cadeado existe só no nó, sem banner nem contador; `retido_em`/`retido_por` já vêm em `nos[]` e a ação já tem endpoint |
+| vermelho · `aviso ao Teams na fila desde 03:07 — ninguém foi avisado ainda` | `notificacao_pendente_desde` | é o **pior** cenário de plantão: webhook com 401 por URL rotacionada, a guardiã loga e segue (`dags/etl_dependencia_guardia.py:822`), a malha falha em silêncio para todo mundo e o operador é o único que sabe |
+
+**Decisão 67 — quem encerrou, por quê e por qual porta aparece na TELA, não só no
+banco** *(evita: gravar `fechada_por`, `motivo`, `reaberta_por`, `origem` e
+`tentativas` — a Decisão 32 até **exige** motivo no encerramento manual — e
+apresentar tudo isso como o rótulo mudo "encerrada pelo operador"; fechar o mês
+com 3 corridas canceladas e não conseguir explicar nenhuma sem abrir o banco)*.
+Card e faixa: `encerrada por C123456 às 05:20 — motivo: "…"`. A lista de corridas
+(Decisão 42) traz a coluna. `origem` e `tentativas` idem, com as palavras da
+§9.11 (`reaberta 1x`, nunca `1ª tentativa`).
+
+### 9.7 O histórico factual — e a fronteira com previsão
+
+**Decisão 68 — contar desfechos PASSADOS não é previsão e entra; prever DURAÇÃO
+sem histórico é adivinhação e fica fora** *(evita: usar a proibição de backfill do
+§3 para bloquear **toda** informação histórica, que passa do ponto. A proibição é
+contra **inventar corrida retroativa**; ler as corridas que de fato existiram é
+fato registrado, disponível a partir do dia 2, e sai do índice
+`ix_malha_exec_malha` que esta camada já usa)*.
+
+Três leituras, todas factuais, todas com o `n` visível:
+
+| Onde | Frase | Por que importa |
+|---|---|---|
+| card | `falhou 2 das últimas 7 corridas` | responde "está pior que antes?" sem abrir malha por malha |
+| faixa | `corrida anterior: 03/08 · concluída · 01:10 → 04:02` | exige `n = 1`, não `n ≥ 5`: é fato, não mediana, e é a resposta mais direta a *"está pior que ontem?"* |
+| faixa das últimas N | `title` do bloco = `04/08 · concluída · 2h41 · travou: CARGA_A` | 3 madrugadas seguidas travando em `CARGA_A` = crônico, espera o horário comercial; 9 verdes e essa vermelha = novidade, escala |
+
+E o caso que só o histórico enxerga: **`SEM_TRABALHO` num dia atípico**. Alguém
+inativa membros numa terça; o card diz `sem trabalho hoje`, cinza, sem alarme —
+indistinguível de um sábado legítimo. Regra: se as últimas 4 ocorrências do mesmo
+dia da semana **tiveram** trabalho, o estado sobe para âmbar com a frase *"as
+últimas 4 terças tiveram trabalho"*. Sábado legítimo continua cinza e mudo
+(Decisão 26).
+
+**Backlog nomeado, porque o dado passa a existir:** quantas vezes esta malha
+atrasou ou falhou em 30 dias — a pergunta da reunião mensal. Fica no §17.
+
+### 9.8 Onde a corrida chega ANTES da tela de Malha
+
+**Decisão 69 — os cards de malha no Teams levam BOTÃO para a corrida** *(evita:
+a camada mais cara desta spec ter taxa de uso perto de zero exatamente no horário
+para o qual foi feita. Às 3h chega um card no celular e, a partir dali: destravar
+o telefone, abrir o notebook, VPN, `/malha`, achar a malha na lista, trocar o
+modo, escolher a data)*. `montar_card` (`dags/utils/ds_teams.py:57`) ganha
+`actions: [{"type": "Action.OpenUrl", …}]` para os tipos `MALHA_*`, apontando para
+`/malha?malha={m}&modo=execucao&corrida={id}` — **a URL que a própria §9.9 está
+criando**. O molde literal já existe no gerador de DAG
+(`dags/etl_dag_factory.py:1049-1051`). Base em `etl_app_config.app_base_url`
+(config nova); **sem ela configurada, o card sai exatamente como hoje, sem
+botão** — degradação por ausência, nunca URL inventada.
+
+**Decisão 70 — o Dashboard ganha a corrida na forma mínima, e o link quebrado que
+já existe é consertado junto** *(evita: manter cega a tela em que o plantonista
+de fato cai. O Dashboard já tem "Rodando agora" e "Aguardando dependência" com
+refetch de 60 s, e o link de dependência faz `navigate('/malha')` sem malha e sem
+modo (`Dashboard.tsx:499`), despejando o operador na lista)*. Forma mínima: uma
+linha por corrida `ABERTA`/`FALHA`, com `CorridaBadge` + `x de y` + link direto —
+mesmo payload da lista, **zero consulta nova**.
+
+⚠️ **Defeito pré-existente que esta camada não pode herdar em silêncio:** a barra
+de "Rodando agora" (`Dashboard.tsx:438`, `pct = jobs_ok / total_jobs`) está em
+**0% desde sempre**. O backend monta a CTE com `WHERE status='RUNNING'` e, dentro
+dela, `SUM(CASE WHEN status='SUCCESS' …) AS jobs_ok` sobre um conjunto onde toda
+linha é `RUNNING` (`api/routers/dashboard.py:202-210`): `jobs_ok` é sempre 0 e
+`total_jobs == jobs_running`. A tela mais vista do produto exibe `0/3 ok` para um
+pipeline com 2 jobs concluídos — card que mente, já em produção. **A correção da
+agregação (rollup pelo `execution_id` inteiro, sem o filtro de status dentro do
+CTE) sai na mesma PR que extrai `ui/Progress`**, porque é o molde que esta camada
+ia copiar.
+
+### 9.9 Componentes — arquivo, props, estados
+
+**Decisão 71 — só se promove para `ui/` o que tem CHAMADOR PROVADO, e não se
+inventa estado sem chamador** *(evita: os dois erros opostos — deixar em
+`MalhaEditor.tsx` a décima cópia literal das mesmas classes de banner, e criar um
+componente genérico com modos que ninguém usa)*.
+
+#### Novos em `ui/` — **novos, com justificativa medida**
+
+`ui-react/src/components/ui/Progress.tsx` — **novo**
+
+```ts
+export interface SegmentoProgresso {
+  chave: string          // 'ok' | 'vivo' | 'dispensado' — usado em key e no aria-label
+  valor: number
+  cor: string            // classe Tailwind, par claro+escuro obrigatorio
+  rotulo: string         // pt-BR, entra no title e no aria-label
+  animado?: boolean
+  hachurado?: boolean    // so 'dispensado'
+}
+export interface ProgressProps {
+  segmentos: SegmentoProgresso[]
+  total: number                    // sempre membros_total (Decisao 52)
+  altura?: 'xs' | 'sm'             // xs = card (h-1.5), sm = painel (h-2.5)
+  ariaLabel: string                // obrigatorio
+}
+```
+
+*Por que criar:* existem **4 barras ad-hoc** (`CopiaProgressoModal.tsx:125`,
+`Dashboard.tsx:448`, `PlanosAjuste.tsx:36`, `Admin.tsx:2064`), **nenhuma** com
+`role="progressbar"`/`aria-valuenow`, e **nenhuma** segmentada. Trilho canônico
+mantido: `bg-edge/60 rounded-full overflow-hidden` + preenchimento com
+`transition-all`. **Sem** modo `indeterminado` e **sem** modo `total === 0`: nesta
+camada a barra só existe com `corrida`, que sempre traz `membros_total`, e
+`SEM_TRABALHO` não renderiza barra nenhuma (Decisão 57) — modo sem chamador é
+código que nasce sem teste.
+
+`ui-react/src/components/ui/Banner.tsx` — **novo (promoção)**
+
+```ts
+{ tom: 'info' | 'alerta' | 'erro' | 'sucesso'; icone?: ReactNode; acao?: ReactNode; children }
+```
+
+Extrai o `Banner` de `components/etapas/PainelExecucaoEtapas.tsx:252-268` e
+acrescenta o tom `sucesso`. *Por que criar:* o `MalhaEditor` tem **nove** cópias
+literais das mesmas classes (`:2037`, `:2074`, `:2104`, `:2116`, `:2130`, `:2177`,
+`:2191`, `:2200`, `:2214`) e esta camada acrescentaria mais três. Nove cópias é o
+ponto em que a duplicação vira risco de regressão de tema.
+
+`ui-react/src/components/ui/Tabs.tsx` — **alterado**: ganha
+`badgeTom?: 'neutro' | 'alerta'`. Hoje **todo** badge é vermelho
+(`Tabs.tsx:26-28`: `bg-red-100 text-red-700`), então `Agora (2)` — dois pipelines
+saudáveis rodando — sairia gritando "2 problemas". `Agora` é neutro, `Travando` é
+alerta.
+
+#### Novos em `components/malhas/`
+
+| Arquivo (todos **novos**) | Props | Estados |
+|---|---|---|
+| `CorridaBadge.tsx` | `{ corrida: CorridaApi \| null; esperada?: CorridaEsperadaApi \| null; tamanho?: 'sm'\|'md' }` | 7 status × 4 saúdes + `nao_abriu` (§9.3); **degradado**: `corrida = null` e `esperada = null` → não renderiza (o fallback é do chamador) |
+| `CorridaProgresso.tsx` | `{ corrida: CorridaApi; variante: 'card'\|'painel' }` | **normal** · **fechando** (D56) · **congelado** (`opacity-60` + "parou em") · **sem trabalho** (sem barra, traço + frase) · **snapshot vazio** (`membros_total === 0` → "a corrida abriu sem membros ativos", âmbar) |
+| `CabecalhoCorrida.tsx` | `{ corrida, esperada, malha, onEncerrar, onAbrirAba }` | **carregando** (`ui/Skeleton` de 1 linha, altura fixa — a faixa não pode saltar) · **normal** · **ausente** (`!corrida` → faixa neutra + explicação) · **degradado** (Decisão 41) |
+| `PainelCorridaLateral.tsx` | `{ corrida, execucoes, tipicos, eventos, eventosNo, onFocar, onAbrirEtapas }` | 3 abas com default por saúde (D62), cada uma com **vazio explícito**: *"nenhum pipeline em execução agora"* · *"nada travando — os pendentes estão em dia"* · *"nenhum evento nesta corrida"* |
+| `RelogioCorrida.tsx` | `{ aberta_em, fechada_em, apurado_em, teto_em, teto_configurado, quiescencia_ate, ultimo_movimento_em, proximoGatilho }` | **em voo** · **fora do prazo** · **fechando** (D45) · **fechada** (`01:10 → 04:02 · 2h52`) · **sem teto configurado** (só o próximo gatilho, D61) |
+| `SeletorCorrida.tsx` | `{ malha, corridaId, onTrocar }` | faixa das últimas N clicável + menu (`ir para uma data…`); **1 corrida** → faixa de um bloco, sem controles mortos; **erro** → cai no seletor de data de hoje |
+| `tempoCorrida.ts` | módulo puro + `useDecorrido(...)` à parte | Decisão 60; testado com relógio deslocado |
+
+#### Alterados
+
+| Arquivo | Alteração |
+|---|---|
+| `malhas/statusExecucao.ts` | `STATUS_CORRIDA` **paralelo** (D46) + `SAUDE_CORRIDA` + `estiloCorrida(status, saude)` + `ORDEM_LEGENDA_CORRIDA`; `estiloEvento` (`:142`) ganha os tipos `MALHA_*` (D47); interfaces `CorridaApi` / `CorridaEsperadaApi` no contrato |
+| `malhas/fluxoExecucao.ts` | novo estado **`'esperando'`** (âmbar tracejado) para `AGUARDANDO_DEPENDENCIA` — hoje `estadoDoPipeline` devolve `null` (`:29-35`) e a linha fica **idêntica a "não rodou"**; e `ROTULO_FLUXO` (`:127`), hoje **declarado e nunca consumido em lugar nenhum do front** (verificado), passa a alimentar o `title` da aresta e a legenda |
+| `malhas/MalhaComponenteNodes.tsx` | nó **Fim** ganha o terceiro estado "ciclo aberto" (hoje `:176-177` é verde ou nada): **anel azul + `title`**, sem texto no nó |
+| `malhas/MalhaEditor.tsx` | `CabecalhoCorrida`; painel lateral → `PainelCorridaLateral`; `SeletorCorrida` no lugar do navegador de data; `Segurar/Soltar` **também** no modo Execução (`:2461-2486`); banners da D66; texto de fase antiga removido (`:2205-2206`) |
+| `pages/Malha.tsx` | bloco de corrida no card (substitui a linha `▶ última execução`, `:187-201`); `Acompanhar` como ação; filtro por estado de corrida; contadores na stats bar (`:670`+); polling condicional; textos "chega na F8" removidos (`:450`, `:707`) |
+| `pages/Dashboard.tsx` + `api/routers/dashboard.py` | linha de corrida; link de dependência com malha e modo (`:499`); **correção do `jobs_ok`** (§9.8) |
+| `components/malhas/proximaExecucao.ts` | **exceção nominal à §13**: passa a alimentar `corrida_esperada` (D58) e o prazo do próximo gatilho (D61) |
+| `dags/utils/ds_teams.py` | `Action.OpenUrl` nos `MALHA_*` (D69) |
+| `types/index.ts` | `CorridaApi`, `CorridaEsperadaApi` no `ApiMalha` e no `MalhaExecucaoApi` |
+
+#### Intocados, de propósito
+
+`MalhaPipelineNode.tsx` — a §13 já o lista, e a razão fica registrada aqui: ele
+já carrega dot, nome, `CritBadge`, agenda, chip republicar, badge de status e
+badge de contradição; **duração e classe por membro vivem no painel lateral**.
+`componenteMeta.ts`, `AgendamentoInicioModal.tsx`, `CritBadge.tsx`,
+`layoutGrafo.ts`.
+
+**Decisão 72 — `Acompanhar` existe SEMPRE, e as posições dos botões do card são
+FIXAS** *(evita: dois defeitos de bancada — (i) o interruptor `malha_corrida_ativa`
+nasce em `0` (§11.2), então no dia do deploy **nenhuma** malha tem `corrida` e um
+botão que só existe com corrida deixa a fase **não testável**; e às 8h, quando não
+há corrida aberta nenhuma, o primário voltaria a ser `Diagrama`, que é a tela de
+**montagem**; (ii) botões que mudam de posição entre estados — clicar "Diagrama" no
+card 1 e acertar "Membros" no card 2)*. `Acompanhar` leva à lente de execução da
+data corrente, que **já funciona hoje**; com corrida, acrescenta `&corrida=N` e o
+destaque de primário. Posição fixa, desabilitar em vez de remover ou reordenar.
+
+### 9.10 Cadência e frescor
+
+**Decisão 73 — o polling é CONDICIONAL, e o painel só sobe de frequência DEPOIS
+que o N+1 sai** *(evita: dobrar a frequência de um endpoint que ainda faz
+`deps_svc.liberado()` por membro esperando (`api/routers/malhas.py:2231`, 2
+round-trips × membro) — numa malha de 40 membros, durante um incidente, é o pior
+ordenamento possível)*.
+
+| Superfície | Hoje | Decisão |
+|---|---|---|
+| Lista `/malha` | **sem polling** (`Malha.tsx:560-563`) | `refetchInterval` condicional: `20_000` se alguma malha **visível** tem corrida `ABERTA` ou está `nao_abriu`; senão `false` |
+| Painel `/execucao` | `30_000` fixo (`MalhaEditor.tsx:695`) | **continua 30 s** até o `pendentes[]` agregado entrar; **com ele**, `15_000` com corrida `ABERTA` e `60_000` com corrida fechada (histórico não muda) |
+| Frescor | só o spinner de `isFetching` | `· atualizado agora / há 3 min`, **um por página** (Decisão 60) |
+
+**O que a corrida também corrige de custo:** a lente deixa de ser
+`WHERE data_referencia = ?` (`malhas.py:2203`, **sem índice**, varredura do
+histórico inteiro a cada 30 s por painel aberto — hoje invisível porque a tabela
+tem 0 linhas no dev) e passa a ser `malha_execucao_id` sobre o `ix_pipe_exec_malha`
+filtrado.
+
+### 9.11 O vocabulário, e a acessibilidade que cabe agora
+
+**Decisão 74 — uma palavra por conceito, em português, e nenhum nome de máquina
+na interface** *(evita: o relatório da reunião herdar o vocabulário do motor —
+"a malha expirou por quiescência com 2 membros dispensados" não é uma frase que
+alguém leve para uma reunião, e "corrida" no painel com "ciclo" no nó Fim e
+"Corridas" no menu são três palavras para a mesma coisa na mesma tela)*.
+
+| Está no modelo | **Escrever na tela** |
+|---|---|
+| corrida / ciclo (as duas) | **corrida** — uma só, em todo lugar |
+| `#12` / `sequencia` / `id` | `corrida de 04/08`; e **só se `sequencia > 1`**, `2ª corrida de 04/08`. **`#` não aparece na interface** — hoje três numerações diferentes disputam essa notação (`id`, `sequencia`, `aberta_por='inicio:#12'`), e `#12` numa malha diária lê-se como "12ª tentativa hoje" |
+| quiescência | *"fecha 15 min após o último movimento"* |
+| teto / `teto_em` | *"limite de segurança (24h)"* |
+| guardiã | *"o monitor automático"* |
+| dispensado / `PULADO` | *"não roda hoje (regra de dia)"* |
+| `nao_liberou` | *"esperando outro pipeline"* |
+| `nao_partiu` | *"não chegou a iniciar"* |
+| `orfa` | *"terminou sem registrar o fim"* |
+| `fora_do_odate` | *"de outra data de referência"* |
+| `ABORTADA` | *"não chegou a começar"* |
+| `EXPIRADA` | *"encerrada sem terminar"* |
+| `tentativas = 1` | *"não foi reaberta"* / `reaberta 1x por C123456` |
+| `MALHA_ATRASADA` | *"aviso de atraso enviado ao Teams às 01:12"* |
+| `modo_fechamento = quiescencia` | *"fecha sozinha, sem nó Fim (normal nesta malha)"* |
+| membro | *"pipeline da malha"* |
+| ATRASADA (saúde) × EXPIRADA (ciclo) | eixo de prazo em pt-BR: **`no prazo` / `fora do prazo`** (saúde) e **`encerrada sem terminar`** (desfecho). ⚠️ A ambiguidade é real e vaza para o Teams: `ATRASADA` aparece como **estado** no pedido do usuário e como **saúde** no §6.1. Esta é a resolução, e ela vale nas duas superfícies e no card do celular |
+
+Aceite verificável: `grep -nE 'quiesc|ODATE|dispensad|teto|guardiã|órfã|#[0-9]'`
+nos `.tsx` da malha não casa **texto exibido** (casar em comentário e em nome de
+variável é esperado).
+
+**Decisão 75 — a acessibilidade que entra é a barata e correta; a região viva
+fica em backlog nomeado** *(evita: escrever uma máquina de estados de `aria-live`
+— com trava de re-render por `status`/`saude`/`membros_ok` para o leitor não falar
+a cada 15 s — sendo que o front **não tem um único `aria-live`** hoje e o plantão
+da Caixa não usa leitor de tela: seria a peça mais sujeita a bug servindo a
+ninguém no dia 1)*.
+
+Entra agora:
+
+- `Progress` com `role="progressbar" aria-valuenow aria-valuemin=0 aria-valuemax`
+  + `aria-label` em pt-BR — **as 4 barras existentes não têm nenhum dos dois**;
+- todo contador clicável é `<button>` com `aria-pressed` quando age como filtro
+  (molde de `PainelRealce.tsx:100,120`);
+- `SeletorCorrida` com `aria-label` nos controles — o navegador de data da malha
+  **não tem**, e o gêmeo de `PainelExecucaoEtapas.tsx:133` tem;
+- `animate-pulse` continua **semântico e escasso**: só o segmento `vivo` da barra,
+  o dot de `ABERTA` e a aresta ativa que já existe. Nada mais.
+
+Fica em backlog (§17): região `aria-live="polite"` anunciando **mudança de fato**
+(`status`, `saude` ou o inteiro `membros_ok`), nunca tique de relógio.
+
+### 9.12 ASCII — o card da lista
+
+Legenda dos blocos: `█` feito · `▒` rodando (azul, animado) · `▨` não roda hoje
+(trilho hachurado neutro) · `░` ainda não feito.
+
+**Em andamento, saúde OK**
+
+```
+┌────────────────────────────────────────────────────────┐
+│ ● CARGA_DIARIA_SEGUROS                 [ALTA]  ● Ativa │
+│ Consolidação diária das apólices e sinistros           │
+│ ⚙ 7 pipelines (7 ativos) · 41 etapas                   │
+│ 🕒 gatilho: todo dia 01:00 (nó Início)                 │
+│ ┌────────────────────────────────────────────────────┐ │
+│ │ ◉ em andamento · corrida de 04/08 · há 42 min      │ │
+│ │ ████████████▒▒▒▒▒▒░░░░░░▨▨▨▨          4 de 7       │ │
+│ │ 7 membros nesta corrida · 1 não roda hoje          │ │
+│ │ ↳ 2 rodando (mais antigo há 12 min)                │ │
+│ └────────────────────────────────────────────────────┘ │
+│ 📅 criada em 12/06/2026                                │
+│ [ ▶ Acompanhar ] [ Diagrama ] [ Membros ] [ ⋯ ]        │
+└────────────────────────────────────────────────────────┘
+   ◉ = dot azul animate-pulse. Sem "%", sem "#12".
+```
+
+**Concluída**
+
+```
+│ ┌────────────────────────────────────────────────────┐ │
+│ │ ✔ concluída · corrida de 04/08 · 01:10 → 04:02     │ │
+│ │ ██████████████████████████████▨▨▨▨    6 de 7       │ │
+│ │ 7 membros nesta corrida · 1 não roda hoje          │ │
+│ │ ↳ falhou 2 das últimas 7 corridas                  │ │
+│ └────────────────────────────────────────────────────┘ │
+   Duração absoluta (fechada) · "concluída" so com status do banco.
+```
+
+**Com falha, corrida ainda aberta — o defeito relatado, corrigido**
+
+```
+│ ┌────────────────────────────────────────────────────┐ │
+│ │ ▲ em andamento · com falha (ainda rodando)         │ │
+│ │   corrida de 04/08 · há 42 min                     │ │
+│ │ ████████▒▒▒▒▒▒░░░░░░░░░░░░░░  3 de 7   ▲ 1 travado │ │
+│ │ 7 membros nesta corrida                            │ │
+│ │ ↳ falhou: CARGA_A [ALTA] · 4 pipelines parados     │ │
+│ └────────────────────────────────────────────────────┘ │
+   O travado NAO engorda a barra: chip vermelho ao lado (D54).
+   Hoje esta mesma corrida diz "● sucesso · CARGA_B".
+```
+
+**Fora do prazo (limite vencido, ainda com trabalho vivo)**
+
+```
+│ ┌────────────────────────────────────────────────────┐ │
+│ │ ⏰ em andamento · fora do prazo · corrida de 03/08 │ │
+│ │   há 25h 14min                                     │ │
+│ │ ████████▒▒▒▒░░░░░░░░░░░░░░░░  3 de 7   ▲ 2 travados│ │
+│ │ ↳ a próxima corrida parte em 2h50 (01:00) —        │ │
+│ │   enquanto esta não fechar, ela não abre           │ │
+│ └────────────────────────────────────────────────────┘ │
+   Limite vencido COM trabalho vivo e alarme, nao desfecho (D25).
+   O prazo exibido e o PROXIMO GATILHO, nao o limite tecnico (D61).
+```
+
+**Sem trabalho hoje (sábado legítimo)**
+
+```
+│ ┌────────────────────────────────────────────────────┐ │
+│ │ ☾ sem trabalho hoje · corrida de 09/08             │ │
+│ │ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─    nada previsto         │ │
+│ │ os 7 membros não rodam hoje (regra de dia)         │ │
+│ └────────────────────────────────────────────────────┘ │
+   Sem barra. Nem 0, nem 7 de 7 (D57). Cinza e mudo.
+```
+
+**Sem trabalho num dia ATÍPICO (D68) — o mesmo estado, outra cor**
+
+```
+│ ┌────────────────────────────────────────────────────┐ │
+│ │ ⚠ sem trabalho hoje · corrida de 05/08 (terça)     │ │
+│ │ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─    nada previsto         │ │
+│ │ ↳ as últimas 4 terças tiveram trabalho             │ │
+│ └────────────────────────────────────────────────────┘ │
+   Ambar: e o unico jeito de a tela pegar membros inativados por engano.
+```
+
+**Encerrada pelo operador (auditoria, D67)**
+
+```
+│ ┌────────────────────────────────────────────────────┐ │
+│ │ ⊘ encerrada por C123456 às 05:20                   │ │
+│ │ ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░  parou em 4 de 7        │ │
+│ │ motivo: "carga do dia 03 remarcada para a tarde"   │ │
+│ └────────────────────────────────────────────────────┘ │
+   Ambar de contorno, nao cinza: e acao humana, e ela precisa
+   ser explicavel no fechamento do mes. Barra congelada, opacity-60.
+```
+
+**Não abriu (D58) — a pior notícia da manhã, e o card que hoje não existe**
+
+```
+│ ┌────────────────────────────────────────────────────┐ │
+│ │ ⏰ não abriu · previsto para 01:00 · já são 08:12  │ │
+│ │ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   nenhuma corrida de 04/08     │ │
+│ │ ↳ anterior: 03/08 · concluída · 01:10 → 04:02      │ │
+│ └────────────────────────────────────────────────────┘ │
+   Ordena PRIMEIRO na lista. Sem isto, o card mostraria a
+   corrida de ONTEM, verde, com carimbo de frescor recente.
+```
+
+**Degradado — API velha ou 085 ausente (D41)**
+
+```
+│ ┌────────────────────────────────────────────────────┐ │
+│ │ ▶ última execução: 03/08 13:47  ● sucesso          │ │
+│ │   (membro mais recente — CARGA_B)                  │ │
+│ │ ⚠ sem dados de corrida — sistema em atualização    │ │
+│ └────────────────────────────────────────────────────┘ │
+   Sem barra, sem data de corrida, e a palavra "concluída"
+   nao aparece. A degradacao e DITA, nao so silenciosa.
+```
+
+### 9.13 ASCII — o cabeçalho do painel de execução
+
+Zonas, ordem fixa: **identidade/estado · progresso · relógio/prazo · travas**.
+
+**Em andamento**
+
+```
+┌ Montagem │ ▓EXECUÇÃO▓ ───────────────────────────────────────────────────────────┐
+│ faixa das últimas corridas:  ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ ▉▉ [▉▉]      ⌄ ir para…     │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│ ◉ EM ANDAMENTO            ████████████▒▒▒▒▒▒░░░░▨▨    4 de 7 pipelines concluídos│
+│ corrida de 04/08          7 membros nesta corrida · 1 não roda hoje              │
+│ aberta pelo agendamento   aberta 01:10 · há 42 min                               │
+│ do Início (CARGA_RAIZ)    a próxima corrida parte em 2h50 (01:00) —              │
+│ às 01:10 · não foi        enquanto esta não fechar, ela não abre                 │
+│ reaberta · fecha sozinha  2 rodando · 1 não chegou a iniciar    [ Encerrar… ]    │
+│ 15 min após o último mov.                                                        │
+└───────────────────────────────────────────────────── · atualizado agora ─────────┘
+┌───────────────┬──────────────────────────────────────────────────────────────────┐
+│ Agora (2) │ Travando │ Eventos (3)          [ canvas ]                           │
+├───────────────┤                                                                  │
+│ ◉ CARGA_B     │   (Início)──▶(CARGA_A ✔)──▶(CARGA_B ◉)──▶(Aguarde)──▶(Fim ◐)     │
+│   há 12 min   │                  │                                               │
+│   típico 18   │             (CARGA_D ◉)                                          │
+│   min (n=23)  │                                                                  │
+│   [▶ etapas]  │   Fim com anel azul = corrida aberta (sem texto no nó)           │
+│ ◉ CARGA_D     │                                                                  │
+│   há 3 min    │                                                                  │
+│   [▶ etapas]  │                                                                  │
+└───────────────┴──────────────────────────────────────────────────────────────────┘
+   Aba default = Agora, porque a saúde é OK (D62).
+```
+
+**Com falha — aba default vira `Travando`**
+
+```
+│ ▲ COM FALHA (ainda      █████████▒▒▒▒░░░░░░░░░  3 de 7 pipelines concluídos     │
+│   rodando)              7 membros nesta corrida            ▲ 2 travados         │
+│ corrida de 04/08        aberta 01:10 · há 3h50                                  │
+│ aberta pelo agendamento a próxima corrida parte em 2h50 (01:00)                 │
+│ do Início às 01:10      aviso de falha enviado ao Teams às 03:12                │
+│                         2 rodando · 2 travados              [ Encerrar… ]       │
+└──────────────────────────────────────────────────── · atualizado há 1 min ──────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ Agora (2) │ ▓Travando (2)▓ │ Eventos (5)        ← ABERTA AQUI (D62)             │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│ ▲ CARGA_A [ALTA]   falhou 03:07 · 4 pipelines parados atrás                     │
+│                    [▶ etapas]  [↻ reexecutar]  [🔍 realçar cadeia]              │
+│ ◐ CARGA_C          esperando CARGA_A desde 03:07                                │
+│                    [🔍 realçar]                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+   "3 pendentes" NUNCA aparece: sao problemas com donos diferentes (D21/D63).
+   [↻ reexecutar] abre a previa dizendo o efeito na corrida em voo (D65).
+```
+
+**Concluída**
+
+```
+│ ✔ CONCLUÍDA             ██████████████████████████▨▨  6 de 7 concluídos         │
+│ corrida de 04/08        7 membros nesta corrida · 1 não roda hoje               │
+│ aberta pelo agendamento 01:10 → 04:02 · 2h52                                    │
+│ do Início · fechada     dentro do limite de segurança (24h)                     │
+│ pelo nó Fim             corrida anterior: 03/08 · concluída · 01:10 → 04:02     │
+└──────────────────────────────────────────────────── · atualizado há 1 min ──────┘
+   Aba default = Eventos (corrida fechada). Nada anima.
+```
+
+**Sem trabalho hoje**
+
+```
+│ ☾ SEM TRABALHO HOJE     ─ ─ ─ ─ ─ ─ ─ ─ ─ ─    nada previsto                    │
+│ corrida de 09/08        os 7 membros não rodam hoje (regra de dia)              │
+│ aberta pelo agendamento 01:00 → 01:02 · 2 min                                   │
+│ do Início às 01:00      fechada de imediato pelo monitor automático             │
+│                         sem aviso — não é incidente                             │
+└──────────────────────────────────────────────────── · atualizado há 2 min ──────┘
+```
+
+**Fora do prazo, com banner de data divergente (D66)**
+
+```
+│ ⚠ 2 pipelines de outra data de referência: CARGA_X, CARGA_Y                     │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│ ⏰ FORA DO PRAZO        ████████▒▒▒░░░░░░░░░░░  3 de 7 concluídos               │
+│ corrida de 03/08        7 membros nesta corrida             ▲ 2 travados        │
+│ aberta 03/08 às 01:10   há 25h 14min                                            │
+│ · não foi reaberta      limite ▉▉▉▉▉▉▉▉▉▉▉▉▉▉▉▉▉▉▉█ vencido (24h configuradas)  │
+│                         a próxima corrida parte em 2h50 (01:00) —               │
+│                         enquanto esta não fechar, ela não abre                  │
+│                         1 rodando · 2 travados              [ Encerrar… ]       │
+└──────────────────────────────────────────────────── · atualizado agora ─────────┘
+   A barra de limite so aparece porque etl_malha.teto_horas foi
+   configurado NESTA malha (D61). Sem isso, so a linha do gatilho.
+```
+
+**Não abriu (D58) — a faixa quando não há corrida**
+
+```
+│ ⏰ NÃO ABRIU            ─ ─ ─ ─ ─ ─ ─ ─ ─    nenhuma corrida de 04/08           │
+│ previsto para 01:00     já são 08:12 · 7h12 de atraso                           │
+│ (nó Início)             corrida anterior: 03/08 · concluída · 01:10 → 04:02     │
+│                         [ Disparar malha… ]   [ ver a DAG do Início ]           │
+└──────────────────────────────────────────────────── · atualizado agora ─────────┘
+```
+
+### 9.14 Os eventos e o Teams
 
 **Decisão 47 — os sete tipos novos entram em `ESTILO`
 (`dags/utils/ds_teams.py:25-48`) e em `estiloEvento`
@@ -1128,11 +2081,15 @@ neutro cinza pelo mesmo motivo)*.
 | `MALHA_CONCLUIDA` | ✅ Good | **opt-in** (`notificar_teams`, como hoje) |
 | `MALHA_SEM_TRABALHO` | 💤 Good | **não vira card** |
 
+A partição de cor do Teams e a do painel são **a mesma** (Decisão 59): o painel
+não pode discordar do celular.
+
 **Decisão 48 — falha notifica SEMPRE; sucesso é que é opt-in** *(evita: o
 `MALHA_FALHOU` herdar o opt-in de hoje e a malha falhar **em silêncio** para quem
 nunca ligou a config — que é a maioria)*. O `detalhe` do evento **nomeia malha,
-corrida (#N) e os pendentes com a classe** — é o corpo do card e é a única coisa
-que se lê no celular.
+corrida (pela data) e os pendentes com a classe** — é o corpo do card e é a única
+coisa que se lê no celular. E, com a Decisão 69, o card leva o **botão** para a
+tela desta corrida.
 
 **Decisão 49 — o evento da corrida é gravado com o marcador `#corrida:{id}`, e o
 resolvedor do `GET /execucao` é estendido no MESMO PR** *(evita: em malha **sem
@@ -1151,6 +2108,59 @@ fase falharia; (ii) se **alguns** escritores passarem a coluna e outros não, o
 mesmo `(pipeline, data, tipo)` vira duas linhas — `NULL` e `12` — e o operador
 recebe **dois cards para o mesmo fato**, quebrando a anti-duplicação de 200
 ciclos/dia)*.
+
+E a coluna `notificado_em` (`067:189`), que **existe e nunca foi lida**, passa a
+alimentar duas coisas: a linha `avisados às 03:12 · Teams` na aba `Eventos`, e o
+banner vermelho da Decisão 66 quando a notificação está presa na fila.
+
+### 9.15 O que NÃO fazer
+
+**Decisão 75 (continuação) — a lista de proibições desta camada**, cada uma com o
+defeito que ela evita:
+
+1. **Nada de donut, gauge ou anel de progresso circular** — a legenda inteira da
+   malha é baseada em `dot` circular; um anel de progresso colidiria com
+   "bolinha = status". A linguagem da casa é **barra + dot + texto**.
+2. **Não introduzir `recharts`** (está no `package.json`, usado **só** na POC
+   Caixa Seguro). Numa tela 100% CSS/React Flow custa bundle e cria um segundo
+   dialeto visual. A faixa de histórico é bloco colorido em CSS.
+3. **Não prometer ETA de conclusão da corrida.** Não há coluna de duração
+   esperada e o §3 proíbe backfill. O que entra é a **duração típica por membro**,
+   medida, com `n` (Decisão 64) — que é outra coisa.
+4. **Não exibir `%`** (Decisão 56). E nunca `x de y` sem a linha da subtração
+   logo abaixo (Decisão 53).
+5. **Não derivar progresso no cliente a partir de `execucoes[]`** — é o caminho
+   para card e painel discordarem na mesma tela. Um agregado, uma fonte.
+6. **Não contar como OK linha com `substituida_em IS NOT NULL`** (Decisão 55).
+7. **Não calcular decorrido com `Date.now() − aberta_em`**, nem frescor com
+   `Date.now() − apurado_em` (Decisão 60). 3 h de desvio medidas no dev.
+8. **Não buscar % de etapas no refetch** — 1 HTTP por pipeline + Airflow por
+   run_id `dep__` a cada 15 s derruba o painel exatamente quando a malha é grande
+   e o incidente é real.
+9. **Não ligar polling incondicional na lista** (Decisão 73).
+10. **Não somar estados distintos para "simplificar"** — `falhou`,
+    `nao_liberou`, `nao_partiu` e `orfa` **nunca** viram "3 pendentes": são três
+    donos diferentes (Decisão 21). Precedente literal:
+    `PainelExecucaoEtapas.tsx:104-107` mantém "em espera" e "pausa marcada"
+    separados de propósito.
+11. **Não acrescentar badge ao `MalhaPipelineNode`** nem texto ao nó Fim — o
+    número já está na faixa a 3 cm.
+12. **Não pôr os estados de corrida na legenda do rodapé** — estado de corrida é
+    **escrito por extenso** na faixa.
+13. **Não animar mais nada** além do segmento `vivo`, do dot de `ABERTA` e da
+    aresta ativa que já existe (`fluxoExecucao.ts:102`: *"animação em tudo viraria
+    ruído e o olho perderia a frente da corrida"*).
+14. **Não usar `bg-{hue}-900/20` ou `text-{hue}-300` como classe base**
+    (`docs/ui-temas-cores.md:63-82`). Todo par claro+escuro, tokens
+    `canvas/panel/edge/ink/dim` para superfície.
+15. **Não escrever "concluída" sem `status = 'CONCLUIDA'` vindo do banco**
+    (Decisão 41).
+16. **Não usar hachura para dois significados.** Hachura é **uma** coisa nesta
+    camada: `não roda hoje`. Corrida congelada usa `opacity-60` + a palavra
+    "parou em".
+17. **Não criar quatro mecanismos de navegação temporal** (Decisão 42).
+18. **Não criar botão que cicla entre os vivos** — com 2 vira toggle sem estado
+    visível, com 8 perde-se a conta. A aba `Agora` já centraliza.
 
 ---
 
@@ -1385,6 +2395,203 @@ autorização do usuário.
     gesto**, sem esperar 5 min.
 - **PR:** `feat: rerun reabre a corrida e o desenho editado vale do proximo ciclo`
 
+### F4+ — Os quatro aditivos de VERACIDADE (entram na PR da F4; não são fase nova)
+
+Não é uma fase: são quatro itens do §9 que **não podem esperar** a camada de
+visibilidade, porque sem eles a camada nasce mentindo — e porque três deles são
+correções de consultas que a própria F4 escreve. Se a F4 já tiver sido mergeada
+quando esta seção for executada, viram a primeira PR da F9.
+
+- **Entregável:**
+  1. `substituida_em IS NULL` no numerador **e** no `SELECT` de
+     `GET /malhas/{m}/execucao` (`api/routers/malhas.py:2203-2210`) — Decisão 55;
+  2. denominador = `membros_total` do snapshot, que **não encolhe**, com
+     `membros_dispensados` como classe separada no payload — Decisão 52;
+  3. `membros_travados` como campo próprio, **fora** do que a barra preenche —
+     Decisão 54;
+  4. frescor derivado do **relógio local** (Decisão 60), com `apurado_em`
+     restrito ao texto absoluto do tooltip.
+- **Deploy:** `api/` + front. **Não** exige `force_all`.
+- **Aceite:**
+  - rerun às 3h de um membro já concluído → a faixa e o **nó no canvas** contam a
+    MESMA linha; sem a cláusula, o nó fica verde com a linha aposentada e a faixa
+    diz outro número (o teste é a comparação dos dois na mesma tela);
+  - corrida de 7 membros, 2 concluídos; a guardiã marca 3 `PULADO` no ciclo
+    seguinte → o card continua dizendo **`2 de 7`** (nunca `2 de 4`), e a linha de
+    baixo passa a dizer `3 não rodam hoje`;
+  - `CARGA_A` em falha numa malha de 7 com 3 OK → a barra preenche **3/7**, e o
+    travado aparece como **chip fora da barra**;
+  - relógio do banco deslocado 3 h do navegador → o carimbo de frescor diz
+    `agora`, nunca `há -3h`, e o alarme de dado velho dispara aos 90 s (teste com
+    relógio deslocado, mesmo molde de `test_malha_corrida_relogio.py`).
+- **PR:** `fix: a corrida conta a linha viva e o denominador nao encolhe`
+
+### F9 — O card responde "em que pé está" (e a corrida que NÃO abriu)
+
+- **Entregável:** `ui/Progress` (**novo**, com `role="progressbar"`) e `ui/Banner`
+  (**novo**, promoção de `PainelExecucaoEtapas.tsx:252-268`); `ui/Tabs` com
+  `badgeTom`; `STATUS_CORRIDA` + `SAUDE_CORRIDA` + `estiloCorrida` em
+  `statusExecucao.ts`; `CorridaBadge.tsx`, `CorridaProgresso.tsx`,
+  `tempoCorrida.ts` (**novos**); o bloco de corrida no card de `Malha.tsx`
+  (substitui a linha `▶ última execução`, `:187-201`); aditivos de payload do
+  §9.1 (mesmo `GROUP BY`); `corrida_esperada` calculada **na API** com
+  `agora_do_banco` (Decisão 58); nó Fim com anel de "ciclo aberto" (sem texto);
+  `Acompanhar` presente sempre (Decisão 72); e a **correção do `jobs_ok` do
+  Dashboard** (`api/routers/dashboard.py:202-210`) na mesma PR que extrai
+  `ui/Progress`, porque é o molde que esta camada copiaria.
+- **Deploy:** `api/` + front (`dist/` commitada). **Não** exige `force_all`.
+- **Aceite:**
+  - sábado com todos os membros dispensados → **nenhuma barra**, texto "nada
+    previsto", e a palavra "concluída" **ausente** (teste de ausência);
+  - corrida `ABERTA` com `ok === total − dispensados` → barra cheia, rótulo
+    `7 de 7 · fechando — fecha 15 min após o último movimento; se nada mais mexer,
+    por volta de 04:17`, e **nem "100%" nem "concluída"** em lugar nenhum;
+  - `grep -rn '%' ` nos componentes de corrida não casa nenhum percentual
+    **exibido** (Decisão 56), e `grep -nE '#[0-9]'` não casa texto de interface
+    (Decisão 74);
+  - `EXPIRADA` e `CANCELADA` → barra congelada com `opacity-60` e o rótulo
+    **"parou em 4 de 7"**; `CANCELADA` mostra **quem** encerrou e o **motivo**
+    (Decisão 67);
+  - DAG do Início pausada, horário previsto vencido, nenhuma corrida com o ODATE
+    do dia → card **`não abriu`**, âmbar, **primeiro** na ordenação da lista; com
+    o relógio do banco deslocado 3 h, o atraso exibido continua correto (o cálculo
+    é da API, Decisão 58);
+  - **front novo × API velha** (payload sem `corrida`) → card com "(membro mais
+    recente)" **e** a linha `⚠ sem dados de corrida — sistema em atualização`,
+    zero exceção no console;
+  - com o interruptor `malha_corrida_ativa = 0` (o estado do dia do deploy) →
+    `Acompanhar` **existe e funciona**, levando à lente de execução da data
+    corrente — a fase é testável sem nenhuma corrida no banco;
+  - Dashboard: pipeline com 2 de 3 jobs concluídos deixa de exibir `0/3 ok`;
+  - `axe`/inspeção manual: a barra tem `role="progressbar"`, `aria-valuenow`,
+    `aria-valuemax` e `aria-label` em pt-BR — as 4 barras existentes não têm
+    nenhum dos dois;
+  - tsc + eslint com **baseline HEAD** (zero NOVOS) e build com `dist/`.
+- **PR:** `feat: o card da malha mostra o progresso da corrida`
+
+### F10 — A faixa de corrida e o painel que responde "o que está travando"
+
+- **Entregável:** `CabecalhoCorrida.tsx`, `RelogioCorrida.tsx`,
+  `PainelCorridaLateral.tsx` (3 abas, default por saúde — Decisão 62),
+  `SeletorCorrida.tsx` (**novos**); `pendentes[]` **agregado no servidor**,
+  tirando o `deps_svc.liberado()` por membro do caminho corrente
+  (`api/routers/malhas.py:2231`); `Encerrar corrida…` em toda corrida `ABERTA`,
+  com a consequência escrita na confirmação; os três banners da Decisão 66
+  (`fora_do_odate`, hold com contador e `Soltar`, notificação presa);
+  `Segurar/Soltar` também no modo Execução; raio de alcance + criticidade por
+  travado (Decisão 63); `↻ reexecutar` com a frase do efeito (Decisão 65);
+  `fluxoExecucao.ts` com o estado `esperando` e `ROTULO_FLUXO` **ligado** no
+  `title` da aresta e na legenda; `estiloEvento` com os tipos `MALHA_*`;
+  `refetchInterval` do painel só então em `15_000` (Decisão 73).
+- **Deploy:** `api/` + front. **Não** exige `force_all`.
+- **Aceite:**
+  - painel de uma malha com 40 membros, 12 esperando → **uma** consulta de
+    conjunto para os pendentes (medida no log de SQL), nunca 24 round-trips;
+  - o `refetchInterval` só vai a `15_000` na mesma PR do agregado — teste de
+    ordenamento: com o N+1 ainda no caminho, o intervalo continua `30_000`;
+  - corrida com saúde `COM_FALHA` → o painel **abre em `Travando`**; saúde `OK` →
+    abre em `Agora`; corrida fechada → abre em `Eventos`;
+  - `Agora (2)` com dois pipelines saudáveis → badge **neutro**, não vermelho
+    (hoje `Tabs.tsx:26-28` pinta todo badge de vermelho);
+  - `Encerrar corrida…` está presente e habilitado em `ABERTA · OK`,
+    `ABERTA · COM_FALHA` e `ABERTA · SEM_PROGRESSO` — **não** só depois do limite
+    vencido; a confirmação diz que os pipelines em execução continuam rodando;
+  - malha **sem** `etl_malha.teto_horas` configurado → **nenhuma barra de limite**,
+    só a linha do próximo gatilho; malha **com** `teto_horas` → barra, e soltar um
+    hold de 6 h **não** faz a barra recuar em silêncio: aparece o evento
+    `+6h creditados por retenção` (Decisão 61);
+  - duas corridas no mesmo ODATE → a faixa mostra **dois** blocos e trocar entre
+    elas não sobrepõe (Decisão 42); e existe **um** mecanismo de navegação
+    temporal, não quatro;
+  - malha **sem nó Fim** → o evento `#corrida:{id}` aparece na aba `Eventos`
+    (Decisão 49);
+  - clicar numa linha de `Travando` acende a cadeia no canvas e centraliza o nó,
+    sem sair da lente de execução; soltar um hold também não exige sair;
+  - `↻ reexecutar` mostra a prévia com a frase do efeito na corrida em voo — ou o
+    botão **não existe** (Decisão 65);
+  - aresta de `AGUARDANDO_DEPENDENCIA` deixa de ser idêntica a "não rodou": traço
+    âmbar tracejado com `title` vindo de `ROTULO_FLUXO`.
+- **PR:** `feat: a faixa de corrida e o painel de quem esta travando`
+
+### F11 — Onde a corrida chega ANTES da tela de Malha
+
+- **Entregável:** `Action.OpenUrl` nos cards `MALHA_*` de
+  `dags/utils/ds_teams.py:montar_card`, apontando para
+  `/malha?malha={m}&modo=execucao&corrida={id}` (molde literal em
+  `dags/etl_dag_factory.py:1049-1051`), com base em
+  `etl_app_config.app_base_url` (**config nova**, idempotente, na migration da
+  fase); linha de corrida no Dashboard (`CorridaBadge` + `x de y` + link direto,
+  **sem consulta nova**) e o link de dependência passando a levar malha **e**
+  modo (`Dashboard.tsx:499`); filtro por estado de corrida na lista
+  (`Todas · Rodando agora · Com falha · Fora do prazo · Não abriram · Concluídas`)
+  ao lado do filtro Ativas/Inativas; contadores clicáveis na stats bar
+  (`Malha.tsx:670`+) **com a régua declarada no rótulo**; polling condicional da
+  lista (Decisão 73); remoção dos textos de fase antiga (`Malha.tsx:450`, `:707`;
+  `MalhaEditor.tsx:2205-2206`).
+- **Deploy:** `dags/` (etapa 5) + `api/` + front + 1 config na 6c. **Não** exige
+  `force_all` — `ds_teams` é importado em runtime pela guardiã, não é fonte
+  gerado.
+- **Aceite:**
+  - card de `MALHA_FALHOU` no Teams → botão que abre
+    `?malha=X&modo=execucao&corrida=N` e cai **direto** na corrida certa, no
+    celular;
+  - `app_base_url` **ausente** → o card sai exatamente como hoje, **sem** botão e
+    sem erro no ciclo da guardiã (degradação por ausência, nunca URL inventada);
+  - contador da stats bar declara a régua: `12 concluídas na madrugada (referência
+    03/08)` — às 08:00 de 04/08 ele **não** mostra `0` por filtrar ODATE = hoje,
+    nem um número que não bate com nenhum relatório por ODATE;
+  - filtro `Rodando agora` responde da lista, sem abrir malha por malha — hoje é
+    **impossível** saber qual malha está rodando sem abrir uma a uma e trocar o
+    modo;
+  - lista com 40 malhas → **duas** consultas por refetch (medido); **sem** corrida
+    aberta nem `não abriu` visível → **zero** refetch;
+  - `grep -rn "chega na F8" ui-react/src` volta vazio.
+- **PR:** `feat: a corrida chega ao Teams, ao Dashboard e ao filtro da lista`
+
+### F12 — O que decide "posso esperar": duração típica, prazo real e histórico
+
+- **Entregável:** agregado novo de **duração típica por pipeline** sobre
+  `etl_job_execution` (irmão de `GET /execucoes/duracao-media`,
+  `api/routers/execucoes.py:2504` — `PERCENTILE_CONT` + `COUNT(*)`, **sem tocar o
+  Airflow**), escopado aos membros do snapshot, com piso `n ≥ 5` e o `n` no
+  payload (Decisão 64); o próximo gatilho como prazo padrão na faixa e no card
+  (Decisão 61, reusando `proximaExecucao.ts`); histórico factual da Decisão 68 —
+  `falhou 2 das últimas 7 corridas` no card, `corrida anterior: …` na faixa,
+  `title` dos blocos da faixa com o membro que travou, e `SEM_TRABALHO` em dia
+  atípico virando âmbar; `notificado_em` na aba `Eventos` e no banner de fila
+  presa; auditoria completa na tela (Decisão 67: `fechada_por`, `motivo`,
+  `origem`, `reaberta_por`) no card, na faixa e na lista de corridas.
+- **Deploy:** `api/` + front. **Não** exige `force_all`.
+- **Aceite:**
+  - membro com 23 execuções históricas → `há 12 min · típico 18 min (n=23)`;
+    membro com **3** execuções → **só** o decorrido, sem "típico" e sem `n`
+    (o piso é duro, e o `n` nunca aparece sem o número ao lado);
+  - membro rodando há 41 min com `p50 = 18 min` → marca âmbar `⚠ 2x`, e a marca
+    **não** vira alarme no Teams (é leitura de tela, não evento);
+  - o número de duração **não** é chamado de ETA nem de previsão de conclusão da
+    corrida em nenhum texto da interface;
+  - malha que rodou nas últimas 4 terças e hoje (terça) sai `SEM_TRABALHO` →
+    card **âmbar** com *"as últimas 4 terças tiveram trabalho"*; no sábado, a
+    mesma malha continua **cinza e muda**;
+  - corrida `CANCELADA` → card e faixa dizem `encerrada por C123456 às 05:20 —
+    motivo: "…"`, e a lista de `GET /corridas` traz a coluna (o fechamento do mês
+    é explicável **sem abrir o banco**);
+  - malha `origem = implicita` → o card diz `sem nó Início` e a faixa diz de qual
+    raiz veio a data de referência (Decisão 44);
+  - webhook do Teams com 401 → banner **vermelho** na faixa,
+    `aviso ao Teams na fila desde 03:07`, e não uma linha escondida numa aba;
+  - histórico com **zero** corridas fechadas (dia 1) → nenhuma das frases desta
+    fase é renderizada, e nada quebra — `n = 0` é ausência, nunca `0%`.
+- **PR:** `feat: duracao tipica por membro, prazo real e historico da corrida`
+
+**Ordem de entrega, e por quê:** F4+ antes de tudo (são correções de veracidade —
+sem elas a camada nasce mentindo); F9 antes de F10 (o card é a superfície de
+varredura, e é o que o gestor abre às 8h); F11 antes de F12 (uma tela ótima que
+ninguém alcança às 3h vale menos que uma tela boa com caminho até ela); F12 por
+último porque é a única que depende de **corrida real gravada** — antes do smoke
+da F9 o histórico é literalmente zero, e um número sem amostra é o que esta spec
+inteira existe para não fazer.
+
 ---
 
 ## 11. Degradação, deploy parcial e o interruptor
@@ -1607,6 +2814,23 @@ errado.
    critério; `fechada_em` é um.
 5. **Corrida de malha como predecessor de outra malha** (dependência entre
    malhas) — a corrida é a identidade que faltava; nada disso é escopo agora.
+6. **Progresso por ETAPA dentro de cada membro** (§9.2) — o caminho barato está
+   identificado e é **uma** consulta de conjunto: rollup por
+   `pipeline IN membros AND start_time >= aberta_em` sobre
+   `IX_etl_job_execution_pipeline_status_start`, **sem tocar o Airflow**. A
+   ressalva que precisa viajar junto: isso é **recorte de tempo, não identidade
+   de run** — quem ler "proibitivo" e parar aí nunca mais volta ao assunto.
+7. **Métrica do mês por malha** (§9.7) — quantas vezes esta malha atrasou ou
+   falhou em 30 dias. É a pergunta da reunião mensal, o dado passa a existir a
+   partir da F9, e sai do `ix_malha_exec_malha`.
+8. **Região `aria-live="polite"` na faixa de corrida** (§9.11) — anunciando
+   **mudança de fato** (`status`, `saude` ou o inteiro `membros_ok`), nunca tique
+   de relógio. Fica fora do dia 1 porque o front não tem nenhum `aria-live` e a
+   trava de re-render é a peça mais sujeita a bug desta camada inteira.
+9. **Gantt da corrida** (reuso de `GanttChart`, `Dashboard.tsx:236-374`, escopado
+   a `aberta_em → fechada_em`) — mostra caminho crítico e paralelismo real, "quem
+   atrasou quem". Depende de ≥1 corrida real gravada; entra depois do smoke da
+   F10.
 
 ## 18. Pendências desta spec (depois do deploy validado)
 
@@ -1620,8 +2844,28 @@ errado.
 4. Reescrever os docstrings de `dependencia_janela_sequencia_horas` e
    `inicio_do_ciclo_corrente` para dizerem que agora são **fallback de quem não
    tem corrida**.
-5. Confirmar com o usuário a leitura da decisão 4 (§4): o ODATE é carimbado na
-   **abertura**, não ao passar pelo Fim.
+5. ✅ **CONFIRMADO pelo usuário (2026-08-04): o ODATE é carimbado na ABERTURA**,
+   não ao passar pelo Fim — a leitura da Decisão 4 registrada no §4 é a correta,
+   e nenhuma fase muda de forma por causa dela.
+6. ✅ **RESOLVIDO (2026-08-04, com o usuário): o `%` existe, medindo TEMPO.** A
+   Decisão 56 continua valendo para o que ela de fato ataca — não há percentual
+   de **contagem de pipelines** em superfície nenhuma, porque `4 de 7` lido como
+   `57%` é % de trabalho que não existe. Mas o pedido original (*"dentro de cada
+   malha % de execução"*) é legítimo e foi atendido pela **Decisão 56b**: um
+   percentual do **tempo típico**, ponderado pela duração histórica de cada
+   membro, com `≈`, sufixo `do tempo típico`, piso de `n ≥ 5` em todos os
+   membros e sumiço total quando falta histórico. Ele é sempre o SEGUNDO número
+   da faixa — o `x de y` continua primário.
+7. Resolver com o dono o eixo de prazo (§9.11): `ATRASADA` aparece como
+   **estado** no pedido do usuário e como **saúde** no §6.1. A resolução escrita
+   é `no prazo` / `fora do prazo` (saúde) × `encerrada sem terminar` (desfecho), e
+   ela **vaza para o card do Teams** — precisa estar fechada antes da F9.
+8. Fixar o **limiar de "sem sinal"** (§9.5, `1 sem sinal há 20h`) e a **folga do
+   `nao_abriu`** (§9.2, Decisão 58): quantos minutos depois do horário previsto o
+   card vira âmbar. Os dois são config, não constante no front.
+9. Configurar `etl_app_config.app_base_url` (Decisão 69) — sem ela, o card do
+   Teams sai sem botão, que é a degradação correta, mas também é a camada de §9.8
+   inteira sem efeito.
 
 ---
 
