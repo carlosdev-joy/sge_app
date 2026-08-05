@@ -285,8 +285,12 @@ def _dep_fake(**over):
         cfg = over.get("config", {"regras_dia": {}, "nao_iniciar_antes": None})
         return cfg(filho) if callable(cfg) else cfg
 
-    def liberado(conn, filho, data_ref):
-        f.chamadas.append(("liberado", filho, data_ref))
+    def liberado(conn, filho, data_ref, corrida=None):
+        # F6 — a assinatura ganhou a corrida da LINHA avaliada. O dublê tem de
+        # aceitá-la: com a assinatura antiga, o fonte gerado cairia na rede de
+        # `TypeError` e os testes do push passariam sem NUNCA exercitar a
+        # chamada de verdade (teste verde pelo motivo errado).
+        f.chamadas.append(("liberado", filho, data_ref, corrida))
         lib = over.get("liberado", (True, []))
         return lib(filho) if callable(lib) else lib
 

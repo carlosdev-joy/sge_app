@@ -366,19 +366,39 @@ def test_predicado_sem_ordenacao_nem_criado_em(dep):
     num predicado, COALESCE ou ordenação. ORDER BY no módulo existe apenas
     FORA da tabela de execução (fila de eventos por detectado_em e escolha
     de canal, F4 §8).
-    (Docstrings podem citar o antipadrão; as consultas, jamais.)"""
+    (Docstrings podem citar o antipadrão; as consultas, jamais.)
+
+    ⚠️ A F6 trouxe DUAS construções que este teste barrava por atacado, e a
+    proibição foi ESTREITADA para o que ela de fato protege — nunca afrouxada:
+
+      • `COALESCE` só é proibido sobre a ESCOLHA DA LINHA de execução. O corte
+        em três degraus (§8) coalesce INSTANTES de corte (`aberta_em`,
+        `aberta_em` da malha que assinou, janela) — nenhum deles é `inicio` nem
+        `criado_em`, e é isso que o teste passa a exigir literalmente;
+      • `ORDER BY` num SQL que toca `etl_pipeline_execucao` só é aceito quando
+        ordena a tabela de CORRIDAS (`etl_malha_execucao`) — o `TOP 1` do
+        degrau 2, que a regra da casa D15 manda ser explícito. Ordenar a
+        execução continua proibido.
+    """
     import ast as _ast
     fonte = (_ROOT / "dags/utils/dependencias.py").read_text(encoding="utf-8")
     sqls = [n.value for n in _ast.walk(_ast.parse(fonte))
             if isinstance(n, _ast.Constant) and isinstance(n.value, str)
             and "dbo.etl_" in n.value]
     assert sqls, "esperava SQLs citando dbo.etl_* no módulo"
+    _ORDER_DA_CORRIDA = "ORDER BY me2.aberta_em DESC, me2.id DESC"
     for sql in sqls:
-        assert "COALESCE" not in sql, sql
+        if "COALESCE" in sql:
+            # O antipadrão B2/D14/D15 é COALESCE sobre inicio/criado_em: era ele
+            # que escolhia "a linha mais recente" em vez de perguntar EXISTS.
+            depois = sql[sql.index("COALESCE"):]
+            assert "inicio" not in depois and "criado_em" not in depois, sql
         if "dbo.etl_pipeline_execucao" in sql:
-            assert "ORDER BY" not in sql, sql
+            assert ("ORDER BY" not in sql
+                    or sql.count("ORDER BY") == sql.count(_ORDER_DA_CORRIDA)), sql
         if "ORDER BY" in sql:
-            assert "ORDER BY e.detectado_em" in sql or "etl_msg_grupo" in sql, sql
+            assert ("ORDER BY e.detectado_em" in sql or "etl_msg_grupo" in sql
+                    or _ORDER_DA_CORRIDA in sql), sql
         if "criado_em" in sql:
             assert sql.index("criado_em") < sql.upper().index(" FROM "), sql
             assert ("AGUARDANDO_DEPENDENCIA" in sql
@@ -1200,17 +1220,21 @@ def test_modo_e_lido_uma_vez_por_processo(dep):
 
 
 def test_sequencia_olha_o_ciclo_e_nao_o_odate(dep):
-    """O SQL do modo não filtra por data_referencia — filtra pela janela."""
-    assert "data_referencia" not in dep.SQL_LIBERADO_SEQ
-    assert "ISNULL(e.fim, e.inicio) >= %s" in dep.SQL_LIBERADO_SEQ
-    # e continua descartando corrida substituída e obedecendo a retenção
-    assert "substituida_em IS NULL" in dep.SQL_LIBERADO_SEQ
-    assert "retido_em IS NOT NULL" in dep.SQL_LIBERADO_SEQ
+    """O SQL do modo não filtra por data_referencia — filtra pela janela.
+    Vale para os DOIS degraus do modo (o de hoje e o da corrida)."""
+    for sql in (dep.SQL_LIBERADO_SEQ_084, dep.SQL_LIBERADO_SEQ_085):
+        assert "data_referencia" not in sql
+        assert "ISNULL(e.fim, e.inicio) >=" in sql
+        # e continua descartando corrida substituída e obedecendo a retenção
+        assert "substituida_em IS NULL" in sql
+        assert "retido_em IS NOT NULL" in sql
+    assert "ISNULL(e.fim, e.inicio) >= %s" in dep.SQL_LIBERADO_SEQ_084
 
 
 def test_liberado_em_modo_sequencia_usa_o_corte(dep, monkeypatch):
     """No modo, o parâmetro deixa de ser a data e passa a ser o instante do
-    início do ciclo — o sucesso tem de ser DESTA rodada."""
+    início do ciclo — o sucesso tem de ser DESTA rodada. Sem corrida em mãos,
+    o 1º degrau vai NULL e o SQL resolve pelos degraus 2 e 3."""
     dep.limpar_cache_modo()
     dep._MODO_CACHE["modo"] = True
     corte = datetime(2026, 8, 4, 20, 0)
@@ -1219,8 +1243,204 @@ def test_liberado_em_modo_sequencia_usa_o_corte(dep, monkeypatch):
     assert dep.liberado(conn, "PIPE_C", date(2026, 8, 5)) == (True, [])
     sql, params = conn._cur.execs[0]
     assert "data_referencia" not in sql
-    assert params == ("PIPE_C", corte)
+    assert params == ("PIPE_C", None, corte)
     dep.limpar_cache_modo()
+
+
+# ── F6 · o corte em TRÊS degraus (§8, Decisões 38 e 39) ─────────────────────
+# O predicado é consultado em TRÊS portas (push, guardiã, API). Errar aqui não
+# atrasa uma tela: ou solta o que devia segurar, ou segura a casa inteira.
+
+def _seq(dep, monkeypatch, corte=datetime(2026, 8, 4, 13, 0)):
+    """Liga o modo SEQUÊNCIA sem gastar consulta e fixa o corte da janela."""
+    dep.limpar_cache_modo()
+    dep._MODO_CACHE["modo"] = True
+    monkeypatch.setattr(dep, "inicio_do_ciclo_corrente", lambda _c: corte)
+    return corte
+
+
+def test_corte_tem_os_tres_degraus_na_ordem_da_decisao_38(dep):
+    """A ORDEM é a regra: corrida da linha → corrida da malha que assinou →
+    janela. Trocar o 1º pelo 2º é trocar "a corrida desta linha" por "a corrida
+    aberta agora", que é o defeito que a Decisão 39 nomeia."""
+    sql = dep.SQL_LIBERADO_SEQ_085
+    corte = sql[sql.index("COALESCE"):]
+    d1 = corte.index("dbo.etl_malha_execucao me ")
+    d2 = corte.index("dbo.etl_malha_no n3")
+    assert d1 < d2, "o degrau da LINHA tem de vir antes do degrau da MALHA"
+    # 1) a corrida da linha é PARÂMETRO, e não tem `fechada_em IS NULL`: o
+    #    corte não muda de significado porque a corrida fechou (Decisão 39).
+    assert "WHERE me.id = CAST(%s AS BIGINT)" in corte
+    assert "me.fechada_em" not in corte[d1:d2]
+    # 2) a malha vem do NÓ que assinou a linha — determinada, sem ambiguidade
+    #    de membro compartilhado — e a corrida dela tem de estar ABERTA.
+    assert "WHERE n3.id = dd.origem_no" in corte
+    assert "me2.fechada_em IS NULL" in corte
+    # 3) TOP 1 com ORDER BY explícito (regra da casa D15).
+    assert "TOP 1 me2.aberta_em" in corte
+    assert "ORDER BY me2.aberta_em DESC, me2.id DESC" in corte
+
+
+def test_corrida_da_linha_vira_o_primeiro_parametro(dep, monkeypatch):
+    """A assinatura nova entrega a corrida ao SQL, na posição do 1º degrau."""
+    corte = _seq(dep, monkeypatch)
+    conn = _conn([{"rows": []}])
+    assert dep.liberado(conn, "PIPE_C", date(2026, 8, 5), 77) == (True, [])
+    sql, params = conn._cur.execs[0]
+    assert "dbo.etl_malha_execucao" in sql
+    assert params == ("PIPE_C", 77, corte)
+    dep.limpar_cache_modo()
+
+
+def test_corrida_ilegivel_nao_trava_o_banco_inteiro(dep, monkeypatch, capsys):
+    """Um id malformado é "não tenho corrida" (degrau 2 resolve), jamais uma
+    exceção: levantar aqui viraria "não liberado" para todos os dependentes do
+    ciclo — a catástrofe da cascata entrando pela outra ponta."""
+    corte = _seq(dep, monkeypatch)
+    conn = _conn([{"rows": []}])
+    assert dep.liberado(conn, "PIPE_C", date(2026, 8, 5), "abc") == (True, [])
+    assert conn._cur.execs[0][1] == ("PIPE_C", None, corte)
+    assert "id de corrida ilegivel" in capsys.readouterr().out
+    dep.limpar_cache_modo()
+
+
+def test_modo_data_ignora_a_corrida(dep):
+    """Fora do modo SEQUÊNCIA nada muda: o SQL e os parâmetros são os de antes
+    da fase, byte a byte, mesmo com corrida em mãos."""
+    dep.limpar_cache_modo()
+    dep._MODO_CACHE["modo"] = False
+    conn = _conn([{"rows": []}])
+    assert dep.liberado(conn, "PIPE_C", date(2026, 8, 5), 77) == (True, [])
+    sql, params = conn._cur.execs[0]
+    assert "etl_malha_execucao" not in sql
+    assert params == ("PIPE_C", date(2026, 8, 5))
+    dep.limpar_cache_modo()
+
+
+def test_sem_a_085_a_cascata_cai_na_seq_084_e_nao_trava_o_banco(dep, monkeypatch,
+                                                                capsys):
+    """⚠️ O TESTE MAIS IMPORTANTE DA FASE (aceite §10/F6 e célula 2 da §11.1).
+
+    `dags/` novo + migration 085 ausente é a combinação mais provável do
+    deploy: a etapa 5 é padrão-NÃO e a 6c também. Sem a cascata, o "Invalid
+    object name 'dbo.etl_malha_execucao'" sobe, `liberado()` devolve NÃO
+    LIBERADO para o BANCO INTEIRO e a trava nova PARA A PRODUÇÃO — em vez de
+    segurar um Aguarde."""
+    corte = _seq(dep, monkeypatch)
+    conn = _conn([
+        Exception("Invalid object name 'dbo.etl_malha_execucao'."),
+        {"rows": []},
+    ])
+    assert dep.liberado(conn, "PIPE_C", date(2026, 8, 5), 77) == (True, [])
+    tentativas = conn._cur.execs
+    assert len(tentativas) == 2, tentativas
+    assert "dbo.etl_malha_execucao" in tentativas[0][0]
+    # o degrau seguinte é o SEQ_084: modo SEQUÊNCIA preservado, corte pela
+    # janela — NÃO a volta silenciosa para a data de referência.
+    assert "dbo.etl_malha_execucao" not in tentativas[1][0]
+    assert "data_referencia" not in tentativas[1][0]
+    assert tentativas[1][1] == ("PIPE_C", corte)
+    assert "migration 085 ausente" in capsys.readouterr().out
+    dep.limpar_cache_modo()
+
+
+def test_sem_a_085_o_erro_pode_ser_da_coluna_ou_da_tabela(dep, monkeypatch):
+    """O banco reclama da COLUNA quando só ela falta e da TABELA quando a
+    migration inteira não passou — reagir a uma só deixaria metade dos deploys
+    parciais levantando exceção."""
+    for msg in ("Invalid object name 'dbo.etl_malha_execucao'.",
+                "Invalid column name 'malha_execucao_id'."):
+        corte = _seq(dep, monkeypatch)
+        conn = _conn([Exception(msg), {"rows": []}])
+        assert dep.liberado(conn, "PIPE_C", date(2026, 8, 5), 77) == (True, [])
+        assert len(conn._cur.execs) == 2, msg
+    dep.limpar_cache_modo()
+
+
+def test_sem_a_082_o_modo_sequencia_volta_para_a_data(dep, monkeypatch, capsys):
+    """Degrau seguinte da cascata: sem `etl_malha_no` nenhum SQL do modo roda,
+    e a liberação volta a olhar a data de referência — em VOZ ALTA. Um banco
+    anterior à 082 com o interruptor ligado só existe em deploy fora de ordem;
+    travar seria pior que degradar, e degradar em silêncio seria pior que os
+    dois."""
+    _seq(dep, monkeypatch)
+    conn = _conn([
+        Exception("Invalid object name 'dbo.etl_malha_execucao'."),
+        Exception("Invalid object name 'dbo.etl_malha_no'."),
+        {"rows": []},
+    ])
+    assert dep.liberado(conn, "PIPE_C", date(2026, 8, 5), 77) == (True, [])
+    execs = conn._cur.execs
+    assert len(execs) == 3
+    assert "data_referencia = %s" in execs[2][0]
+    assert execs[2][1] == ("PIPE_C", date(2026, 8, 5))
+    saida = capsys.readouterr().out
+    # o log CITA o objeto que falta: "modo SEQUENCIA indisponivel" sem dizer
+    # por quê mandaria o plantonista adivinhar qual migration pular.
+    assert "modo SEQUENCIA indisponivel" in saida
+    assert "dbo.etl_malha_no" in saida
+    dep.limpar_cache_modo()
+
+
+def test_sem_a_078_o_modo_sequencia_tambem_degrada_em_vez_de_travar(dep,
+                                                                    monkeypatch):
+    """Os DOIS SQLs do modo citam `substituida_em` — num banco anterior à 078
+    nenhum roda. A cascata precisa reconhecer essa marca também, senão o erro
+    sobe e volta a catástrofe: não-liberado para o banco inteiro."""
+    _seq(dep, monkeypatch)
+    conn = _conn([
+        Exception("Invalid column name 'substituida_em'."),   # SEQ_085
+        Exception("Invalid column name 'substituida_em'."),   # 082 (por data)
+        Exception("Invalid column name 'substituida_em'."),   # 078
+        {"rows": []},                                         # legado
+    ])
+    assert dep.liberado(conn, "PIPE_C", date(2026, 8, 5), 77) == (True, [])
+    assert "substituida_em" not in conn._cur.execs[-1][0]
+    dep.limpar_cache_modo()
+
+
+def test_seq_085_direto_para_a_data_quando_falta_a_tabela_de_nos(dep, monkeypatch):
+    """Sem `etl_malha_no`, o SEQ_084 falharia pelo MESMO motivo — a cascata
+    pula o degrau inútil em vez de gastar uma ida ao banco para reprovar."""
+    _seq(dep, monkeypatch)
+    conn = _conn([
+        Exception("Invalid object name 'dbo.etl_malha_no'."),
+        {"rows": []},
+    ])
+    assert dep.liberado(conn, "PIPE_C", date(2026, 8, 5), 77) == (True, [])
+    execs = conn._cur.execs
+    assert len(execs) == 2
+    assert "data_referencia = %s" in execs[1][0]
+    dep.limpar_cache_modo()
+
+
+def test_erro_desconhecido_no_modo_sequencia_nao_degrada(dep, monkeypatch):
+    """Deadlock e timeout continuam PROPAGANDO para o try/except do `liberado`
+    (D21: NÃO liberado com o sentinel) — degradar em silêncio um erro de banco
+    é a classe que a cascata NÃO pode virar."""
+    _seq(dep, monkeypatch)
+    conn = _conn([Exception("deadlock victim")])
+    lib, falt = dep.liberado(conn, "PIPE_C", date(2026, 8, 5), 77)
+    assert lib is False
+    assert falt[0].startswith(dep.ERRO_CONSULTA)
+    assert len(conn._cur.execs) == 1, "não pode ter tentado outro degrau"
+    dep.limpar_cache_modo()
+
+
+def test_a_janela_continua_existindo_para_dependencia_avulsa(dep):
+    """Decisão 38, degrau 3: a janela NÃO está depreciada. Dependência criada à
+    mão pelo POST /dependencias tem `origem_no IS NULL` — os degraus 1 e 2 não
+    respondem por ela, e sem a janela TODA dependência avulsa quebraria."""
+    corte = dep.SQL_LIBERADO_SEQ_085
+    corte = corte[corte.index("COALESCE"):]
+    # o último argumento do COALESCE é o parâmetro da janela, e ele é o único
+    # que não depende de tabela nenhuma.
+    assert corte.rstrip().endswith("%s))") or "%s)" in corte
+    assert dep.janela_sequencia_horas.__doc__.count("FALLBACK") >= 1
+    assert "não está depreciada" in dep.janela_sequencia_horas.__doc__ \
+        or "não** está depreciada" in dep.janela_sequencia_horas.__doc__
+    assert "FALLBACK" in dep.inicio_do_ciclo_corrente.__doc__ \
+        or "fallback" in dep.inicio_do_ciclo_corrente.__doc__
 
 
 def test_janela_do_modo_sequencia_atravessa_a_meia_noite(dep, monkeypatch):

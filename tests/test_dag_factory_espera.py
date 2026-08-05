@@ -26,8 +26,9 @@ alguém mudar o delta do portão sem atualizar a constante, quebra também. É a
 única barreira automática entre esta fase e 100% dos pipelines de produção.
 
 ⚠️ O arquivo virou a âncora de TODA fase que toca o fonte gerado, e não só da
-F5 do portão: a F4 da spec-malha-data-unica e a F5 da spec-malha-execucao (o
-ODATE pela corrida) declaram os deltas delas aqui pelo mesmo motivo — a âncora
+F5 do portão: a F4 da spec-malha-data-unica e as F5/F6 da spec-malha-execucao
+(o ODATE pela corrida e o corte de liberação pela corrida) declaram os deltas
+delas aqui pelo mesmo motivo — a âncora
 não é "o fonte nunca muda", é "o fonte só muda no que foi DECLARADO". A partir
 da corrida, "desfazer" tem dois modos: **remoção** (bloco novo, some) e
 **troca** (a fase reescreveu um trecho que já existia — ``_TROCAS_DA_CORRIDA``
@@ -690,6 +691,43 @@ _NOVO_PUSH_CONF = [
     '                            dag_id=filho, run_id=ganho, conf=_conf_f)',
 ]
 
+# F6 — a porta do PUSH passa a entregar ao predicado a corrida da LINHA
+# avaliada (a do FILHO, `_od_filho['corrida_id']`), que no modo SEQUÊNCIA é o
+# 1º degrau do corte da §8. Uma linha vira um bloco, então é TROCA e não adição.
+# A rede de `TypeError` é a mesma que a F5 precisou em `montar_conf`, pelo mesmo
+# motivo: `dags/utils/` revertido com o `generated/` já regerado faria TODO push
+# levantar e a cascata inteira parar com o pai VERDE.
+_VELHO_PUSH_LIBERADO = [
+    '                    lib, faltantes = _dep_liberado(conn, filho, data_ref)',
+]
+
+_NOVO_PUSH_LIBERADO = [
+    '                    # F6 (Decisao 39) — a corrida da LINHA avaliada entra',
+    '                    # no predicado. A linha avaliada e a do FILHO, entao a',
+    '                    # corrida e a dele (`_od_filho`), nunca a do pai: no',
+    '                    # modo SEQUENCIA e o `aberta_em` DELA que corta o que',
+    '                    # conta como sucesso desta rodada. Ela vem como',
+    "                    # PARAMETRO — se fosse subconsulta por 'corrida aberta",
+    "                    # agora', uma corrida que fechasse entre duas",
+    '                    # avaliacoes derrubaria o corte para a janela de 12h em',
+    '                    # SILENCIO, no meio da madrugada.',
+    '                    try:',
+    '                        lib, faltantes = _dep_liberado(',
+    "                            conn, filho, data_ref, _od_filho['corrida_id'])",
+    '                    except TypeError:',
+    '                        # ROLLBACK da F6: `dags/utils/` volta para antes da',
+    '                        # fase (liberado de 3 argumentos) e o `generated/`',
+    '                        # segue regerado — a mesma rede que a F5 precisou',
+    '                        # em `montar_conf`, pelo mesmo motivo: sem ela TODO',
+    '                        # push levanta TypeError e a cascata inteira para',
+    '                        # com o pai VERDE. A corrida e ADITIVA — sem ela o',
+    '                        # corte cai no degrau 2, que resolve a corrida pela',
+    '                        # malha que ASSINOU a dependencia.',
+    "                        print('[DEP] utils.dependencias anterior a F6 — '",
+    "                              'liberacao sem a corrida da linha')",
+    '                        lib, faltantes = _dep_liberado(conn, filho, data_ref)',
+]
+
 # As trocas, em pares (novo, velho). Removidas as adicoes, o que sobra tem de
 # voltar a ser, byte a byte, o texto do commit base.
 _TROCAS_DA_CORRIDA = [
@@ -697,6 +735,7 @@ _TROCAS_DA_CORRIDA = [
     (_NOVO_REGISTRO_DATA, _VELHO_REGISTRO_DATA),
     (_NOVO_UPSERT, _VELHO_UPSERT),
     (_NOVO_PUSH_DATA, _VELHO_PUSH_DATA),
+    (_NOVO_PUSH_LIBERADO, _VELHO_PUSH_LIBERADO),
     (_NOVO_PUSH_CONF, _VELHO_PUSH_CONF),
 ]
 

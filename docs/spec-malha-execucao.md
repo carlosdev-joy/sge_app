@@ -2863,9 +2863,11 @@ errado.
    apaga Início/Fim/Aguarde/Notificação pelo `ON DELETE CASCADE` de
    `sql/migrations/075_malha_nos.sql:56-57`. É anterior a esta spec e merece PR
    própria.
-4. Reescrever os docstrings de `dependencia_janela_sequencia_horas` e
-   `inicio_do_ciclo_corrente` para dizerem que agora são **fallback de quem não
-   tem corrida**.
+4. ✅ **RESOLVIDA na F6.** Os docstrings de `janela_sequencia_horas`
+   (`dependencia_janela_sequencia_horas`) e `inicio_do_ciclo_corrente` dizem, nas
+   duas árvores, que agora são o **3º degrau** do corte — o fallback de quem não
+   tem corrida — e que a janela **não** está depreciada, porque dependência
+   avulsa (`origem_no IS NULL`) nunca terá corrida nenhuma.
 5. ✅ **CONFIRMADO pelo usuário (2026-08-04): o ODATE é carimbado na ABERTURA**,
    não ao passar pelo Fim — a leitura da Decisão 4 registrada no §4 é a correta,
    e nenhuma fase muda de forma por causa dela.
@@ -2951,6 +2953,20 @@ errado.
     guardiã. É entregável da **F7** (Decisão 31) e o interruptor só vai a `1`
     depois dela, então está coberto pela ordem de deploy; registrado aqui para
     não escapar se a ordem mudar.
+20. **A varredura de `corridas_aguardando` da guardiã pergunta `liberado()` sem
+    a corrida da linha** (F6). Três das quatro chamadas da guardiã —
+    `_rede_seguranca`, `_fechar_dia_anterior` e o `_diagnostico` do deadline —
+    iteram `dep.corridas_aguardando(conn)`, que devolve
+    `(pipeline, data, run_id, criado_em)`: o `malha_execucao_id` da linha existe
+    na tabela desde a F5, mas trazê-lo mudaria a **aridade** de uma leitura que
+    quatro responsabilidades consomem e ~30 dublês de teste espelham. Sem o
+    degrau 1, o corte cai no degrau 2 (a corrida **aberta** da malha que assinou
+    a dependência), que é a resposta certa em todo ciclo **em voo**; a diferença
+    aparece só depois que a corrida da linha fechou, e aí decide a janela — que é
+    **exatamente o comportamento de hoje**, não uma regressão. A quarta chamada
+    (`_quiescencia_liberada`) já passa a corrida, porque a tem em mãos. Fechar o
+    resto é da **F7**, que reabre esta varredura (e é a mesma família da
+    pendência 14).
 
 ---
 
