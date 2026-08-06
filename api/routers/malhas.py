@@ -3546,16 +3546,31 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
             # bloco sai do payload em vez de descrever outro ciclo.
             corrida_payload = None
         corridas_no_dia = None
-        if lente is None and corrida_payload is not None:
-            # Mesma data da corrente, mas o DIA pode ter tido mais de uma
-            # corrida (rerun às 5h, o gesto que o aceite "duas corridas no mesmo
-            # ODATE" descreve). Sem lente, `execucoes[]` traz o dia INTEIRO — as
-            # linhas das duas — enquanto o bloco descreveria só a última: o nó
-            # da corrida #1 verde no canvas ao lado de uma faixa dizendo "0 de
-            # 2" da #2. É a MESMA tela contando duas coisas, que é exatamente o
-            # que a Decisão 55 e esta fase existem para matar; então o bloco sai
-            # e o front manda escolher uma corrida (o ◀ ▶, que aplica a lente e
-            # aí sim recorta as duas pontas juntas).
+        if lente is None and corrida_bruta is not None:
+            # Sem lente, `execucoes[]` traz o dia INTEIRO — as linhas de TODAS
+            # as corridas daquele dia — enquanto o bloco descreveria só uma: o
+            # nó da corrida #1 verde no canvas ao lado de uma faixa dizendo "0
+            # de 2" da #2. É a MESMA tela contando duas coisas, que é
+            # exatamente o que a Decisão 55 e esta fase existem para matar;
+            # então o bloco sai e o front manda ESCOLHER uma corrida na faixa
+            # (a lente, que aí sim recorta as duas pontas juntas).
+            #
+            # ⚠️ A pergunta é sobre o DIA EXIBIDO, e não sobre "o dia da corrida
+            # corrente" (F10, revisão da pendência §18/12b). O caso comum de
+            # plantão é abrir a malha de manhã e navegar para ONTEM, o dia do
+            # incidente — e é justamente ele que tem duas corridas (a madrugada
+            # + o redisparo das 5h). Perguntando só quando o dia exibido é o da
+            # corrente, esse dia caía no ramo do `data_referencia` divergente,
+            # o bloco saía por OUTRA razão e `corridas_no_dia` ficava `None`: o
+            # canvas misturava os dois ciclos e a tela ficava MUDA sobre isso,
+            # que é exatamente o que a pendência 12b existe para consertar.
+            #
+            # O gatilho é `corrida_bruta is not None` (a malha tem ao menos uma
+            # corrida registrada) e não `corrida_payload`: com o interruptor
+            # `malha_corrida_ativa` em `0` — o estado do dev e o do dia do
+            # deploy — não existe corrida nenhuma, a contagem seria zero em todo
+            # refetch e a consulta seria custo puro.
+            #
             # Consulta própria, e não uma coluna no SQL compartilhado, porque
             # aquele serve a lista de 40 malhas com aceite de DUAS consultas;
             # aqui é uma malha só, e o custo é um seek em ix_malha_exec_malha.

@@ -55,7 +55,8 @@ from services import dependencias as deps_svc
 from services import malha_corrida as mc
 from routers import malhas as malhas_router
 from tests.test_malha_corrida_porta import AGORA_BANCO, _guarda
-from tests.test_malhas_f4_card import (ODATE, FakeCur as FakeCurF4,
+from tests.test_malhas_f4_card import (ODATE, ODATE_ONTEM,
+                                       FakeCur as FakeCurF4,
                                        FakeDb as FakeDbF4, _patch, _patch_agora,
                                        _pipes, auth)                # noqa: F401
 from tests.test_malhas_f10 import _monta_malha
@@ -206,22 +207,59 @@ class FakeCur(FakeCurF4):
         return out
 
     def _grafo(self, s, p):
-        """O snapshot + criticidade + arestas com as DUAS pontas dentro dele."""
+        """O snapshot + criticidade + arestas com as DUAS pontas dentro dele.
+
+        ⚠️ REGRA DE HONESTIDADE DO DUBLÊ: as QUATRO guardas desta consulta são
+        lidas do TEXTO (`_guarda`), nunca aplicadas de graça. A primeira versão
+        deste método filtrava por `malha_execucao_id` em Python — e com isso o
+        recorte por CORRIDA ficava impossível de derrubar por mutação: apagá-lo
+        do SQL deixava a suíte inteira verde, porque quem o aplicava era o
+        dublê. É o modo de falso verde nº 1 da lista desta spec ("dublê que
+        aplica guarda que mora no WHERE"), e ele estava aqui.
+
+        As quatro, e o que cada uma vale:
+          • `mm.malha_execucao_id = ?` — o recorte da CORRIDA. Sem ele o grafo
+            traz o snapshot de outras corridas (e de outras malhas), e a
+            travessia atravessa um membro que só existiu ONTEM para chegar a um
+            pendente de hoje: o raio infla e o número que decide a escalação
+            mente para cima;
+          • `mm.ativo_na_abertura = 1` — Decisão 52, o snapshot é o da abertura;
+          • o `EXISTS` de `d.depende_de` — a aresta só conta com as DUAS pontas
+            dentro do snapshot;
+          • `m2.ativo_na_abertura = 1` dentro dele — a ponta de cima também.
+        """
         db = self.db
         cid = int(p[0])
+        so_esta_corrida = _guarda(s, "WHERE mm.malha_execucao_id = ?")
         so_ativos = _guarda(s, "AND mm.ativo_na_abertura = 1")
+        pontas_no_snapshot = _guarda(s, "AND m2.pipeline_name = d.depende_de")
+        pai_ativo = _guarda(s, "AND m2.ativo_na_abertura = 1")
         membros = [m for m in db.membros_corrida
-                   if int(m["malha_execucao_id"]) == cid
+                   if (not so_esta_corrida
+                       or int(m["malha_execucao_id"]) == cid)
                    and (not so_ativos or m["ativo_na_abertura"])]
-        nomes = {m["pipeline_name"].casefold() for m in membros}
+
+        def aceitos_por(membro):
+            """A ponta de CIMA que o `EXISTS` aceita para ESTE membro — ele se
+            amarra em `m2.malha_execucao_id = mm.malha_execucao_id`, ou seja, na
+            corrida DA LINHA, e não na da lente."""
+            if not pontas_no_snapshot:
+                return None                     # sem guarda: qualquer aresta
+            return {m["pipeline_name"].casefold() for m in db.membros_corrida
+                    if int(m["malha_execucao_id"])
+                    == int(membro["malha_execucao_id"])
+                    and (not pai_ativo or m["ativo_na_abertura"])}
+
         out = []
-        for m in sorted(membros, key=lambda m: m["pipeline_name"]):
+        for m in sorted(membros, key=lambda m: (m["pipeline_name"],
+                                                m["malha_execucao_id"])):
             nome = m["pipeline_name"]
             chave = db._pipeline_key(nome)
             critic = (db.pipelines.get(chave, {}) or {}).get("criticidade")
+            nomes = aceitos_por(m)
             pais = [d["depende_de"] for d in db.dependencias
                     if d["pipeline"].casefold() == nome.casefold()
-                    and d["depende_de"].casefold() in nomes]
+                    and (nomes is None or d["depende_de"].casefold() in nomes)]
             if not pais:
                 out.append((nome, critic, None))
                 continue
@@ -752,6 +790,82 @@ def test_a_api_declara_o_contrato_novo_dos_pendentes(client, auth):
     assert set(painel["corrida"]["pendentes"][0]) == {
         "pipeline", "classe", "desde", "faltante", "faltantes",
         "alcance", "alcance_alta", "criticidade"}
+
+
+# ═══ §18/12b — o dia com VÁRIAS corridas não pode ficar mudo, nem no PASSADO ═
+
+def test_dia_ANTERIOR_com_duas_corridas_diz_quantas_foram(client, auth):
+    """A pendência 12b, no caso que ela de fato descreve.
+
+    O gesto de plantão é abrir a malha de manhã e navegar para **ONTEM** — o
+    dia do incidente, e justamente o que tem duas corridas (a madrugada + o
+    redisparo das 5h). Sem lente, `execucoes[]` traz o dia INTEIRO, então o
+    canvas empilha os dois ciclos no mesmo desenho.
+
+    A contagem era feita só quando o dia exibido era o da corrida CORRENTE:
+    para qualquer dia anterior o bloco `corrida` já tinha saído pelo ramo do
+    `data_referencia` divergente, a contagem nem chegava a rodar e
+    `corridas_no_dia` ficava ausente. Resultado: a tela ficava MUDA sobre as
+    duas madrugadas que ela estava misturando — exatamente o estado que a 12b
+    existe para consertar, no dia em que ele mais dói."""
+    db = FakeDb(pipelines=_pipes(),
+                config={"dependencia_hora_virada": "00:00"})
+    db.config[mc.CHAVE_ATIVA] = "0"
+    with _patch(db), _patch_agora():
+        _monta_malha(client, "M1", ["A", "B"])
+        db.abrir_corrida("M1", odate=ODATE_ONTEM, status="CONCLUIDA",
+                         aberta_em=AGORA_BANCO - timedelta(hours=30),
+                         membros=["A", "B"])
+        db.abrir_corrida("M1", odate=ODATE_ONTEM, status="FALHA",
+                         aberta_em=AGORA_BANCO - timedelta(hours=26),
+                         membros=["A", "B"])
+        # E HOJE abriu a de sempre: é ela a CORRENTE, e é o que fazia a
+        # contagem de ontem nunca acontecer.
+        db.abrir_corrida("M1", odate=ODATE, aberta_em=AGORA_BANCO,
+                         membros=["A", "B"])
+        painel = client.get(
+            "/malhas/M1/execucao?data_referencia=2026-08-04").json()
+    assert "corrida" not in painel, (
+        "descrever UMA corrida sobre a lista das DUAS é a mentira que a fase "
+        "mata — o bloco tem de sair")
+    assert painel["corridas_no_dia"] == 2, (
+        "o dia anterior com duas corridas ficou mudo: o canvas mistura os dois "
+        "ciclos e a tela não tem como oferecer a escolha")
+
+
+def test_dia_ANTERIOR_com_UMA_corrida_nao_inventa_escolha(client, auth):
+    """O contraponto — sem ele o conserto acima poderia acender a frase de
+    "escolha uma" em toda navegação por data, que é o caso comum."""
+    db = FakeDb(pipelines=_pipes(),
+                config={"dependencia_hora_virada": "00:00"})
+    db.config[mc.CHAVE_ATIVA] = "0"
+    with _patch(db), _patch_agora():
+        _monta_malha(client, "M1", ["A"])
+        db.abrir_corrida("M1", odate=ODATE_ONTEM, status="CONCLUIDA",
+                         aberta_em=AGORA_BANCO - timedelta(hours=30),
+                         membros=["A"])
+        db.abrir_corrida("M1", odate=ODATE, aberta_em=AGORA_BANCO,
+                         membros=["A"])
+        painel = client.get(
+            "/malhas/M1/execucao?data_referencia=2026-08-04").json()
+    assert "corridas_no_dia" not in painel
+
+
+def test_malha_SEM_corrida_nenhuma_nao_gasta_a_consulta_da_contagem(client, auth):
+    """O custo do conserto, com o interruptor `malha_corrida_ativa` em `0` — o
+    estado do dev e o do dia do deploy.
+
+    Sem corrida nenhuma no banco a contagem seria zero em TODO refetch de TODO
+    painel aberto: custo puro, de 15 em 15 segundos, para uma resposta que já
+    se sabe. O gatilho é a malha ter ao menos uma corrida registrada."""
+    db = FakeDb(pipelines=_pipes(),
+                config={"dependencia_hora_virada": "00:00"})
+    db.config[mc.CHAVE_ATIVA] = "0"
+    with _patch(db), _patch_agora():
+        _monta_malha(client, "M1", ["A"])
+        db.sqls.clear()
+        client.get("/malhas/M1/execucao?data_referencia=2026-08-04")
+    assert db.statements("SELECT COUNT(*) FROM dbo.etl_malha_execucao") == []
 
 
 # ═════ Decisão 66/3 — a FILA DE AVISO chega ao painel (`notificado_em`) ══════

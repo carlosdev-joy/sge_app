@@ -100,7 +100,12 @@ export function CabecalhoCorrida({
   const [motivo, setMotivo] = useState('')
 
   const f = frescor(respostaEm, agoraLocal)
-  const carimbo = (
+  // ⚠️ `respostaEm` é o `dataUpdatedAt` do react-query, e ele vale **0**
+  // enquanto NENHUMA resposta chegou — inclusive depois de um erro, quando a
+  // faixa continua na tela. Carimbar esse zero daria "⚠ dado sem atualizar há
+  // 466702h", que é o carimbo de frescor mentindo sobre o próprio frescor (a
+  // Decisão 60 pelo avesso). Sem resposta não há o que carimbar: some.
+  const carimbo = respostaEm > 0 ? (
     <span
       className={`ml-auto shrink-0 text-[10px] ${f.velho ? 'font-semibold text-amber-700 dark:text-amber-400' : 'text-dim'}`}
       title={carimboLongo(corrida?.apurado_em)
@@ -111,7 +116,51 @@ export function CabecalhoCorrida({
           operador precisa saber que está olhando dado velho antes de agir. */}
       {f.velho ? '⚠ dado sem atualizar ' : '· atualizado '}{f.texto}
     </span>
-  )
+  ) : null
+
+  // ── Banner 2 (Decisão 66/2): nós segurados + o gesto de soltar ───────────
+  // Ele nasce AQUI, fora dos ramos, porque é o ÚNICO dos três que não fala da
+  // corrida: a condição da Decisão 66 é `retido_em` em algum nó, e nada mais.
+  // Prendê-lo à existência de um ciclo apagava o banner exatamente no caso que
+  // ele existe para cobrir — **Início segurado**, que impede a corrida de
+  // abrir: sem ciclo, sem banner, e a malha parada sem ninguém saber por quê.
+  // É também o que mantém a Decisão 66/2 testável com o interruptor
+  // `malha_corrida_ativa` em `0`, onde não há corrida nenhuma no banco.
+  const maisAntigo = nosSegurados[0] ?? null
+  const bannerHold = maisAntigo ? (
+    <Banner
+      tom="alerta"
+      icone={<PauseCircle size={14} className="mt-0.5 shrink-0" />}
+      acao={onSoltar ? (
+        <button
+          type="button"
+          disabled={soltando}
+          onClick={() => onSoltar(maisAntigo.id)}
+          title={`Soltar ${maisAntigo.rotulo} — os pipelines depois dele voltam a ser avaliados no próximo ciclo; o tempo em que a malha ficou segurada é devolvido ao limite de segurança`}
+          className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 transition-colors hover:bg-amber-200 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-200 dark:hover:bg-amber-900/60"
+        >
+          <Unlock size={11} aria-hidden="true" />
+          {soltando ? 'soltando…' : `Soltar ${maisAntigo.rotulo}`}
+        </button>
+      ) : undefined}
+    >
+      <strong>
+        {nosSegurados.length === 1
+          ? '1 nó segurado'
+          : `${nosSegurados.length} nós segurados`}
+        {maisAntigo.retido_em ? ` desde ${horaCurta(maisAntigo.retido_em)}` : ''}
+        {maisAntigo.retido_por ? ` (por ${maisAntigo.retido_por})` : ''}
+      </strong>
+      {' — '}
+      {corrida
+        ? 'a corrida não avança e os relógios estão parados.'
+        : 'enquanto a trava estiver posta, a malha não parte no horário agendado.'}
+      {/* Um botão que solta N nós de uma vez pode falhar no meio e deixar
+          a malha meio presa sem ninguém saber qual metade. O gesto é
+          nominal: solta o mais antigo, e o banner volta com o próximo. */}
+      {nosSegurados.length > 1 && ' Soltar libera um por vez, do mais antigo.'}
+    </Banner>
+  ) : null
 
   // ── Carregando: altura reservada ─────────────────────────────────────────
   // A faixa não pode saltar. Um cabeçalho que aparece 400 ms depois empurra o
@@ -140,6 +189,7 @@ export function CabecalhoCorrida({
             </span>
           </Banner>
         )}
+        {bannerHold}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-edge bg-panel px-3 py-2 text-[12px] text-dim">
           {seletor}
           {/* §18/12b — a tela deixa de ser MUDA. Sem esta frase o operador vê o
@@ -147,8 +197,9 @@ export function CabecalhoCorrida({
               DUAS madrugadas empilhadas no mesmo desenho. */}
           {corridasNoDia && corridasNoDia > 1 ? (
             <span className="font-medium text-amber-700 dark:text-amber-400">
-              este dia teve {corridasNoDia} corridas — escolha uma na faixa
-              acima para ver o ciclo separado (o desenho abaixo mistura as duas)
+              este dia teve {corridasNoDia} corridas — escolha uma na faixa de
+              corridas para ver o ciclo separado (o desenho abaixo mistura
+              {corridasNoDia === 2 ? ' as duas' : ` as ${corridasNoDia}`})
             </span>
           ) : (
             !sem085 && <span>nenhuma corrida registrada nesta lente</span>
@@ -161,7 +212,6 @@ export function CabecalhoCorrida({
 
   const congelado = CORRIDA_INTERROMPIDA.has(corrida.status)
   const aberta = corrida.status === 'ABERTA'
-  const maisAntigo = nosSegurados[0] ?? null
 
   return (
     <>
@@ -179,38 +229,10 @@ export function CabecalhoCorrida({
         </Banner>
       )}
 
-      {/* ── Banner 2 (Decisão 66): nós segurados + o gesto de soltar ───────── */}
-      {maisAntigo && (
-        <Banner
-          tom="alerta"
-          icone={<PauseCircle size={14} className="mt-0.5 shrink-0" />}
-          acao={onSoltar ? (
-            <button
-              type="button"
-              disabled={soltando}
-              onClick={() => onSoltar(maisAntigo.id)}
-              title={`Soltar ${maisAntigo.rotulo} — os pipelines depois dele voltam a ser avaliados no próximo ciclo; o tempo em que a malha ficou segurada é devolvido ao limite de segurança`}
-              className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 transition-colors hover:bg-amber-200 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-200 dark:hover:bg-amber-900/60"
-            >
-              <Unlock size={11} aria-hidden="true" />
-              {soltando ? 'soltando…' : `Soltar ${maisAntigo.rotulo}`}
-            </button>
-          ) : undefined}
-        >
-          <strong>
-            {nosSegurados.length === 1
-              ? '1 nó segurado'
-              : `${nosSegurados.length} nós segurados`}
-            {maisAntigo.retido_em ? ` desde ${horaCurta(maisAntigo.retido_em)}` : ''}
-            {maisAntigo.retido_por ? ` (por ${maisAntigo.retido_por})` : ''}
-          </strong>
-          {' — '}a corrida não avança e os relógios estão parados.
-          {/* Um botão que solta N nós de uma vez pode falhar no meio e deixar
-              a malha meio presa sem ninguém saber qual metade. O gesto é
-              nominal: solta o mais antigo, e o banner volta com o próximo. */}
-          {nosSegurados.length > 1 && ' Soltar libera um por vez, do mais antigo.'}
-        </Banner>
-      )}
+      {/* ── Banner 2 (Decisão 66): nós segurados + o gesto de soltar ─────────
+          Montado lá em cima, fora dos ramos: ele é o único dos três que vale
+          COM e SEM ciclo (a condição é `retido_em`, e nada mais). */}
+      {bannerHold}
 
       {/* ── Banner 3 (Decisão 66): o aviso que ninguém recebeu ─────────────── */}
       {avisoPreso && (
@@ -345,12 +367,17 @@ export function CabecalhoCorrida({
             {' '}— encerrar fecha o REGISTRO do ciclo, não os processos. Para
             parar um pipeline, use a tela de Execuções.
           </div>
+          {/* Decisão 74: o nome que o motor dá a esta classe de execução, e o
+              nome que o Airflow dá ao processo morto, NÃO chegam à tela — os
+              dois são vocabulário de máquina, e este texto é lido às 3h por
+              quem opera. O FATO ("terminou sem registrar o fim") diz a mesma
+              coisa, é a tradução que a §9.11 fixa, e ainda aponta a ação. */}
           {corrida.saude === 'SEM_PROGRESSO' && (
             <p className="text-[13px] text-dim">
               Esta corrida está sem sinal
               {corrida.sem_sinal_min ? ` há ${corrida.sem_sinal_min} min` : ''}:
-              é o sintoma de execução órfã (o DagRun morreu sem fechar a linha).
-              Encerrar aqui não conserta a linha — ela continua aberta na
+              é o sintoma de um pipeline que terminou sem registrar o fim.
+              Encerrar aqui não conserta essa execução — ela continua aberta na
               Finalização Manual.
             </p>
           )}
