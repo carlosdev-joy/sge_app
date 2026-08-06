@@ -72,6 +72,11 @@ export interface CabecalhoCorridaProps {
   corridasNoDia?: number | null
   /** Decisão 61 — o prazo por padrão é o PRÓXIMO GATILHO da própria malha. */
   proximoGatilho?: ProximaExecucao | null
+  /** F12/Decisão 56b — `≈ 38% do tempo típico`. Chega pronto do editor, que é
+   *  quem tem `tipicos[]` e `execucoes[]` em mãos. `null` = sem histórico
+   *  suficiente em algum membro: o número some por completo e fica o `x de y`,
+   *  que nunca deixou de ser o primário. */
+  percentualTempo?: string | null
   /** Instante local da última resposta (`dataUpdatedAt`) e o relógio local:
    *  o frescor é o navegador consigo mesmo, e com mais nenhum (Decisão 60). */
   respostaEm: number
@@ -93,8 +98,9 @@ export interface CabecalhoCorridaProps {
 
 export function CabecalhoCorrida({
   corrida, resumo, seletor, carregando, sem085, corridasNoDia = null,
-  proximoGatilho = null, respostaEm, agoraLocal, nosSegurados, onSoltar,
-  soltando = false, avisoPreso, onEncerrar, encerrando = false, onAbrirAba,
+  proximoGatilho = null, percentualTempo = null, respostaEm, agoraLocal,
+  nosSegurados, onSoltar, soltando = false, avisoPreso, onEncerrar,
+  encerrando = false, onAbrirAba,
 }: CabecalhoCorridaProps) {
   const [confirmando, setConfirmando] = useState(false)
   const [motivo, setMotivo] = useState('')
@@ -287,6 +293,20 @@ export function CabecalhoCorrida({
             {resumo.motivo && (
               <span className="text-[11px] italic">{resumo.motivo}</span>
             )}
+            {/* Decisão 68 — o `SEM_TRABALHO` que merece atenção. A cor já subiu
+                para âmbar em `resumo.faixa`; esta é a palavra que a acompanha,
+                porque cor nunca é canal único. */}
+            {resumo.diaAtipico && (
+              <span className="text-[11px] font-medium">
+                ⚠ {resumo.diaAtipico}
+              </span>
+            )}
+            {/* Decisão 68 — o FATO de ontem, que é a resposta mais direta a
+                "está pior que ontem?". Exige `n = 1`, não `n ≥ 5`: isto é
+                registro, não mediana. */}
+            {resumo.anterior && (
+              <span className="text-[11px] opacity-75">{resumo.anterior}</span>
+            )}
           </div>
 
           {/* Zona 2 — progresso. O chip de travados é CLICÁVEL e leva à aba
@@ -297,6 +317,10 @@ export function CabecalhoCorrida({
               variante="painel"
               congelado={congelado}
               onTravados={onAbrirAba ? () => onAbrirAba('travando') : undefined}
+              /* Decisão 56b — o percentual de TEMPO, sempre o SEGUNDO número.
+                 Só a faixa o recebe: no card cabe um número só, e o que fica é
+                 o `x de y`. */
+              percentualTempo={percentualTempo}
             />
             {resumo.culpado && (
               <span className="mt-0.5 block text-[11px] font-medium">

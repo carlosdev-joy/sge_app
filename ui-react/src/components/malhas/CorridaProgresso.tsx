@@ -46,10 +46,22 @@ export interface CorridaProgressoProps {
   /** O chip vermelho é clicável no painel (leva à aba `Travando`, F10); no card
    *  ele é só sinal. Sem `onTravados`, sai como texto e não como botão morto. */
   onTravados?: () => void
+  /** F12/Decisão 56b — `≈ 38% do tempo típico`, o percentual de TEMPO.
+   *
+   *  Ele é o SEGUNDO número da linha e nunca substitui o `x de y`, que
+   *  continua primário e primeiro a ser lido. Chega pronto de fora (só o
+   *  painel tem `tipicos[]` e `execucoes[]` para calculá-lo) e `null` é o caso
+   *  comum: sem histórico em TODOS os membros ele some por completo — não é
+   *  estimado, não é "aproximado com ressalva".
+   *
+   *  ⚠️ O CARD não o recebe de propósito: lá cabe um número só, e o que fica é
+   *  o primário. */
+  percentualTempo?: string | null
 }
 
 export function CorridaProgresso({
   resumo, variante = 'card', congelado = false, onTravados,
+  percentualTempo = null,
 }: CorridaProgressoProps) {
   const { barra, contagem, membros, travados, fechamento, nadaPrevisto } = resumo
 
@@ -97,6 +109,22 @@ export function CorridaProgresso({
       />
       <div className="flex items-center gap-1.5 min-w-0">
         <span className="font-medium">{contagem}</span>
+        {/* Decisão 56b — o SEGUNDO número, e ele nasce depois do primeiro na
+            ordem do DOM, que é a ordem em que o leitor de tela o anuncia.
+            `font-normal` + `opacity-80`: o olho tem de bater no `x de y`
+            primeiro, e um percentual com o mesmo peso disputaria a leitura de
+            2 segundos com o número que manda. */}
+        {percentualTempo && (
+          <span
+            className="shrink-0 font-normal opacity-80"
+            title={'Percentual do TEMPO típico desta corrida, ponderado pela '
+              + 'duração de cada membro — não é percentual de pipelines, e não '
+              + 'é previsão de conclusão. Só aparece quando todos os membros '
+              + 'têm histórico suficiente.'}
+          >
+            · {percentualTempo}
+          </span>
+        )}
         {travados && (
           onTravados ? (
             <button

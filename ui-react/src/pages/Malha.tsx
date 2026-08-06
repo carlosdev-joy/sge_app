@@ -166,9 +166,16 @@ function MalhaCard({ malha, tempo, semDadosDeCorrida, onAcompanhar, onAbrir,
   // 03:00 pinta o card de vermelho às 03:00, sem esperar o fechamento —
   // descobrir às 05:00 é depois do SLA.
   const corrida = malha.corrida ?? null
+  // ── F12: o HISTÓRICO FACTUAL (Decisão 68) ─────────────────────────────────
+  // Chave AUSENTE = dia 1 (nenhuma corrida fechada), API anterior à fase ou
+  // erro de leitura — os três caem no mesmo lugar, e NENHUMA frase desta fase
+  // é renderizada. `n = 0` é ausência, nunca "0%".
+  const historico = malha.historico ?? null
   const resumo = useMemo(
-    () => (corrida ? resumoCorrida(corrida, tempo, malha.qtd_pipelines) : null),
-    [corrida, tempo, malha.qtd_pipelines])
+    () => (corrida
+      ? resumoCorrida(corrida, tempo, malha.qtd_pipelines, historico)
+      : null),
+    [corrida, tempo, malha.qtd_pipelines, historico])
   // ── F9: a corrida que NÃO ABRIU (Decisão 58) ──────────────────────────────
   // Ela tem PRECEDÊNCIA sobre a corrida anterior no bloco do card, e a razão é
   // a pergunta que o operador faz às 8h: "a madrugada rodou?". Mostrar a
@@ -255,7 +262,10 @@ function MalhaCard({ malha, tempo, semDadosDeCorrida, onAcompanhar, onAbrir,
             title={resumo.titulo}
           >
             <div className="flex items-center gap-1.5 min-w-0">
-              <CorridaBadge corrida={corrida} />
+              {/* Decisão 68: `SEM_TRABALHO` num dia que costuma ter trabalho
+                  sobe para âmbar — e a pílula, a moldura e a frase têm de
+                  concordar, senão o card fica cinza com uma borda âmbar. */}
+              <CorridaBadge corrida={corrida} diaAtipico={!!resumo.diaAtipico} />
               <span className="shrink-0 opacity-80">· {resumo.identidade}</span>
               {resumo.tempo && <span className="truncate opacity-80">· {resumo.tempo}</span>}
             </div>
@@ -269,8 +279,32 @@ function MalhaCard({ malha, tempo, semDadosDeCorrida, onAcompanhar, onAbrir,
             />
             {resumo.culpado && <span className="font-medium truncate">↳ {resumo.culpado}</span>}
             {resumo.vivos && <span className="opacity-80">↳ {resumo.vivos}</span>}
+            {/* Decisão 68 — o `SEM_TRABALHO` de dia atípico. A frase vem JUNTO
+                da cor (as duas saem do mesmo `resumoCorrida`): pintar de âmbar
+                sem dizer por quê seria um alarme sem causa, e no sábado desta
+                mesma malha nem a cor nem a frase existem. */}
+            {resumo.diaAtipico && (
+              <span className="font-medium">⚠ {resumo.diaAtipico}</span>
+            )}
+            {/* Auditoria (Decisão 67), na ordem das perguntas de plantão:
+                por qual porta entrou · já mexeram aqui? · quem encerrou e por
+                quê. A faixa do painel já dizia as duas primeiras dentro do
+                diagnóstico; o CARD calava sobre elas. */}
+            {resumo.origemCurta && (
+              <span className="truncate opacity-75">{resumo.origemCurta}</span>
+            )}
+            {resumo.reaberta && <span className="opacity-80">{resumo.reaberta}</span>}
             {resumo.encerramento && <span className="opacity-80">{resumo.encerramento}</span>}
             {resumo.motivo && <span className="italic opacity-80 line-clamp-2">{resumo.motivo}</span>}
+            {/* Decisão 68 — o histórico FACTUAL, e ele é a última linha do
+                bloco de propósito: responde "está pior que antes?", que é a
+                pergunta DEPOIS de "o que está acontecendo agora?". Sem falha
+                nenhuma no período ele nem aparece — o histórico só fala quando
+                tem notícia, senão são 40 cards com uma linha dizendo que está
+                tudo como sempre esteve. */}
+            {resumo.historicoFalhas && (
+              <span className="font-medium opacity-90">{resumo.historicoFalhas}</span>
+            )}
             {resumo.foraDoOdate && (
               <span className="font-medium text-amber-700 dark:text-amber-400">
                 ⚠ {resumo.foraDoOdate}

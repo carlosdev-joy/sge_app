@@ -161,12 +161,26 @@ export interface CorridaCabecalho {
   teto_em: string | null
   tentativas: number
   reaberta_em: string | null
+  /** F12/Decisão 67 — a auditoria completa também aqui, na LISTA de corridas,
+   *  e não só no card. `reaberta 1x` sem dizer POR QUEM é meia auditoria: na
+   *  hora de explicar o fechamento do mês ela não vale mais que nenhuma. */
+  reaberta_por: string | null
   motivo: string | null
+  /** F12/Decisão 68 — QUEM travou esta corrida, para o `title` do bloco da
+   *  faixa (`04/08 · falhou · 2h41 · travou: CARGA_A`).
+   *
+   *  As três leituras precisam continuar distinguíveis:
+   *    • chave AUSENTE — não apurei (fora do teto de apuração do servidor, ou
+   *      a leitura falhou);
+   *    • `null` — apurei e **ninguém** travou (a corrida foi limpa);
+   *    • objeto — este membro travou, com a classe dele.
+   *  Confundir a primeira com a segunda faria a faixa afirmar "nada travou"
+   *  sobre madrugadas que ela simplesmente não olhou. */
+  travou?: { pipeline: string; classe: string } | null
 }
 
 /** A corrida com os DERIVADOS DA LEITURA — o que o card e a faixa consomem. */
 export interface CorridaApi extends CorridaCabecalho {
-  reaberta_por: string | null
   /** SAÚDE — só existe com o ciclo ABERTO (§6.1): OK | COM_FALHA | ATRASADA |
    *  SEM_PROGRESSO. É ela que manda na COR enquanto a corrida está em voo. */
   saude: string | null
@@ -271,6 +285,55 @@ export interface TipicosApi {
    *  nem "aproximado com ressalva". */
   completo: boolean
   itens: TipicoMembro[]
+}
+
+// ─── F12: o HISTÓRICO FACTUAL da malha (§9.7, Decisão 68) ───────────────────
+// A fronteira desta fase: **contar desfechos PASSADOS não é previsão.** A
+// proibição de backfill do §3 é contra INVENTAR corrida retroativa; ler as
+// corridas que de fato existiram é fato registrado.
+//
+// Nada aqui prevê nada, e nenhum texto derivado deste bloco usa "provavelmente",
+// "tendência" ou "vai falhar": o produto conta o que ACONTECEU, e quem decide é
+// a pessoa que está lendo às 3h.
+//
+// ⚠️ Chave AUSENTE no payload é o dia 1 — histórico ZERO. Nenhuma frase desta
+// fase é renderizada, e `n = 0` nunca vira "0%".
+
+/** A corrida imediatamente ANTERIOR — projeção curta de propósito: a faixa
+ *  escreve UMA linha, e publicar o cabeçalho inteiro convidaria a tela a
+ *  montar um segundo card de corrida dentro do primeiro. */
+export interface CorridaAnterior {
+  id: number
+  data_referencia: string
+  sequencia: number
+  status: string
+  aberta_em: string | null
+  fechada_em: string | null
+}
+
+/** O bloco `historico` do card e da faixa. */
+export interface HistoricoCorridas {
+  /** O teto pedido ao servidor (7). */
+  janela: number
+  /** Quantas corridas de fato entraram na conta — o `Y` de "falhou X das
+   *  últimas Y". Ele VEM PRONTO: a tela nunca deduz denominador, senão uma
+   *  malha de três semanas diria "das últimas 7" sobre 4 corridas existentes.
+   *  Dias `SEM_TRABALHO` ficam fora — não tiveram chance de falhar. */
+  consideradas: number
+  /** O `X`. `CANCELADA` não conta: encerrar à mão é gesto humano deliberado, e
+   *  somá-lo a "falhou" faria a malha em que o operador agiu certo parecer a
+   *  malha que quebrou. */
+  falhou: number
+  anterior: CorridaAnterior | null
+  /** Só existe quando a corrida corrente é `SEM_TRABALHO` (Decisão 68): o
+   *  `SEM_TRABALHO` de dia atípico. `atipico` é a REGRA já aplicada no
+   *  servidor — regra que mora em dois lugares vira duas regras. */
+  dia_semana?: {
+    exigidas: number
+    encontradas: number
+    com_trabalho: number
+    atipico: boolean
+  }
 }
 
 /** A corrida que DEVERIA existir e não existe (F9 — §9.2, Decisão 58).

@@ -41,6 +41,9 @@ const { transform } = require(path.join(RAIZ, 'ui-react', 'node_modules', 'sucra
 // o que a barra anuncia.
 const MODULOS = [
   ['components/malhas/tempoCorrida.ts', 'tempoCorrida'],
+  // Dependência nova de `statusExecucao` desde a F12: o histórico factual
+  // (Decisão 68) mora num módulo puro próprio.
+  ['components/malhas/historicoCorridas.ts', 'historicoCorridas'],
   ['components/malhas/statusExecucao.ts', 'statusExecucao'],
   ['components/malhas/CorridaBadge.tsx', 'CorridaBadge'],
   ['components/malhas/CorridaProgresso.tsx', 'CorridaProgresso'],

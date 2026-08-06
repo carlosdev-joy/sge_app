@@ -1,5 +1,7 @@
 import { diaCurto, horaCurta } from './tempoCorrida'
-import type { CorridaApi, CorridaEsperadaApi } from '../../types'
+import type {
+  CorridaApi, CorridaEsperadaApi, HistoricoCorridas,
+} from '../../types'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // A lista de malhas VISTA PELA CORRIDA — spec docs/spec-malha-execucao.md
@@ -70,6 +72,13 @@ export interface ApiMalha {
   // só chega para malha ATIVA que já teve corrida antes — o que mantém a lista
   // muda no dia do deploy, com o interruptor ainda em 0.
   corrida_esperada?: CorridaEsperadaApi
+  // F12 (Decisão 68) — o histórico FACTUAL: `falhou 2 das últimas 7 corridas`
+  // e o `SEM_TRABALHO` de dia atípico. Opcional, e a ausência é o contrato: no
+  // DIA 1 nenhuma malha tem corrida fechada, a chave não vem em card nenhum e
+  // nenhuma frase desta fase é renderizada. Contar desfechos passados não é
+  // previsão — mas contar ZERO deles e publicar um número seria pior que as
+  // duas coisas juntas.
+  historico?: HistoricoCorridas
 }
 
 export interface MalhasResponse {

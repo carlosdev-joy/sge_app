@@ -246,12 +246,24 @@ def test_duas_corridas_no_mesmo_dia_viram_dois_blocos_num_so_mecanismo(tela):
     E trocar aplica a LENTE (`?corrida={id}`), nunca a data: é o que impede as
     duas de se sobreporem no mesmo canvas. O `title` de cada bloco distingue as
     duas por SEQUÊNCIA em português ("2ª corrida de 05/08"), sem `#N`
-    (Decisão 74)."""
+    (Decisão 74).
+
+    ⚠️ O `title` GANHOU LINHAS na F12 (Decisões 67/68): além do nome e do
+    estado, ele passou a trazer o intervalo, quem travou a corrida e a
+    auditoria do fechamento — é o que transforma dez quadradinhos coloridos em
+    diagnóstico. O que este aceite protege continua sendo o mesmo: um bloco por
+    corrida, a SEQUÊNCIA em português na primeira linha e nenhum `#N`. Por isso
+    a asserção passou a ser sobre a PRIMEIRA linha de cada `title`, e não sobre
+    o texto inteiro — o `aria-label`, que é o rótulo curto lido a cada passagem
+    de foco, continua sendo exatamente o de antes."""
     d = _cena(tela, "dia_com_varias_corridas")
     assert d["blocos"] == 2, d["blocos"]
-    assert d["titulos"] == ["2ª corrida de 05/08 · em andamento · aberta 05:20",
+    assert [t.split("\n")[0] for t in d["titulos"]] == [
+        "2ª corrida de 05/08 · em andamento",
+        "corrida de 05/08 · concluída"]
+    assert d["rotulos"] == ["2ª corrida de 05/08 · em andamento · aberta 05:20",
                             "corrida de 05/08 · concluída · aberta 01:10"]
-    for t in d["titulos"]:
+    for t in d["titulos"] + d["rotulos"]:
         assert "#" not in t
     # Clicar no bloco troca de CORRIDA (o id), não de data.
     assert d["trocou_para"] == [12]

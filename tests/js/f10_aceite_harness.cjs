@@ -381,6 +381,12 @@ function main() {
       mudo: mudo.texto,
       blocos: blocosNaTela.length,
       titulos: blocosNaTela.map(b => b.props.title),
+      // F12: o `title` ganhou linhas (quem travou + a auditoria), e o
+      // `aria-label` continua sendo o rótulo CURTO — é ele que o leitor de
+      // tela lê a cada passagem de foco, e despejar seis linhas de auditoria
+      // em cada um dos dez blocos transformaria a navegação por teclado num
+      // parágrafo.
+      rotulos: blocosNaTela.map(b => b.props['aria-label']),
       trocou_para: trocas,
     }
   })

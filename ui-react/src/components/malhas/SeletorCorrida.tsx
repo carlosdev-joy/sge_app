@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { CalendarDays, ChevronDown } from 'lucide-react'
-import { estiloCorrida, rotuloCorrida } from './statusExecucao'
+import { estiloCorrida, quemFez, rotuloCorrida } from './statusExecucao'
+import { tituloDoBloco } from './historicoCorridas'
 import { diaCurto, horaCurta } from './tempoCorrida'
 import type { CorridaCabecalho } from '../../types'
 
@@ -112,7 +113,19 @@ export function SeletorCorrida({
                      inteira (molde de PainelRealce): quem usa leitor precisa
                      saber qual bloco está aplicado, e não só que existe. */
                   aria-pressed={emFoco}
-                  title={rotuloCorrida(c)}
+                  /* F12 (Decisões 67 e 68) — o `title` deixa de ser só o nome:
+                     `04/08 · concluída · 2h41 · travou: CARGA_A`, mais quem
+                     encerrou, por qual porta e com que motivo. É o que
+                     transforma dez quadradinhos coloridos em DIAGNÓSTICO —
+                     três madrugadas seguidas travando no mesmo membro é
+                     crônico e espera o horário comercial; nove verdes e uma
+                     vermelha é novidade e escala.
+
+                     O `aria-label` continua CURTO de propósito: leitor de tela
+                     lê o rótulo do botão a cada passagem de foco, e despejar
+                     seis linhas de auditoria em cada um dos dez blocos
+                     transformaria a navegação por teclado num parágrafo. */
+                  title={tituloDoBloco(c, s => estiloCorrida(s).rotulo, quemFez)}
                   aria-label={rotuloCorrida(c)}
                   className={`h-5 w-3.5 shrink-0 rounded-sm transition-all ${estilo.dot} ${
                     emFoco

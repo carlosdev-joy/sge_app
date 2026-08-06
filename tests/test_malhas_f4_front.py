@@ -518,7 +518,13 @@ def test_o_card_le_a_corrida_por_guarda_e_nao_por_flag():
     `corrida?: CorridaApi` é opcional, e acesso sem guarda não compila.)"""
     src = _fonte(SRC / "pages" / "Malha.tsx")
     assert "const corrida = malha.corrida ?? null" in src
-    assert "corrida ? resumoCorrida(" in src
+    # ⚠️ A asserção é sobre a GUARDA, não sobre a formatação: a F12
+    # acrescentou o histórico ao `resumoCorrida` e a chamada passou a ocupar
+    # três linhas. O que não pode mudar é o que ela protege — a derivação
+    # acontece SÓ com `corrida` presente, e a decisão nunca é por flag.
+    codigo = " ".join(_codigo(SRC / "pages" / "Malha.tsx").split())
+    assert "(corrida ? resumoCorrida(" in codigo
+    assert "migration_085_pendente ? resumoCorrida" not in codigo
     # o fallback continua existindo, e CONFESSA de onde veio o status
     assert "(membro mais recente" in src
     # o tipo é opcional: sem isso, o `tsc -b` deixaria passar acesso sem guarda.

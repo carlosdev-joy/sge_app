@@ -877,8 +877,18 @@ def test_lista_de_40_malhas_custa_DUAS_consultas_por_refetch(client,
         assert sum(1 for m in pl["malhas"] if m.get("corrida")) == quantas
 
     da_corrida = [s for s in gastos[40] if "etl_malha_execucao" in s]
-    assert len(da_corrida) == 2, "\n".join(da_corrida)
-    # E o TOTAL não cresce: a contagem das duas consultas do bloco não basta
+    # ⚠️ Eram DUAS até a F11; a F12 acrescentou a terceira — o histórico
+    # factual da Decisão 68 (`falhou 2 das últimas 7 corridas`), também de
+    # CONJUNTO, com `ROW_NUMBER() OVER (PARTITION BY malha_name)`. Ela ficou
+    # fora da consulta (A) de propósito, para poder falhar sozinha: dobrada num
+    # `OUTER APPLY`, um erro na leitura do histórico levaria junto o bloco
+    # `corrida` inteiro, e o card perderia o CICLO por causa de uma frase de
+    # contexto. O que este aceite protege — custo constante, nunca por malha —
+    # continua provado pela comparação de 4 × 40 logo abaixo.
+    assert len(da_corrida) == 3, "\n".join(da_corrida)
+    assert sum(1 for s in da_corrida
+               if "ROW_NUMBER() OVER (PARTITION BY malha_name" in s) == 1
+    # E o TOTAL não cresce: a contagem das consultas do bloco não basta
     # sozinha — ela ficaria verde com um probe de tabela por malha ao lado.
     assert len(gastos[4]) == len(gastos[40]), (
         f"4 malhas gastaram {len(gastos[4])} statements e 40 gastaram "

@@ -395,11 +395,16 @@ def test_sem_movimento_nenhum_nao_ha_hora_de_fechamento(client, auth):
 
 
 def test_orcamento_de_consultas_nao_muda_por_causa_do_aviso(client, auth):
-    """O bloco da corrida continua custando DUAS consultas para a lista
-    inteira, e o aviso acrescenta UMA — o relógio —, nunca uma por malha.
+    """O bloco da corrida continua custando um número FIXO de consultas para a
+    lista inteira, e o aviso acrescenta UMA — o relógio —, nunca uma por malha.
 
     Um `_relogio_e_folga` por candidato seria N+1 exatamente na madrugada em
-    que várias malhas não abriram."""
+    que várias malhas não abriram.
+
+    ⚠️ Eram duas consultas de conjunto até a F11 e são TRÊS desde a F12 (o
+    histórico factual da Decisão 68). O que este teste protege é o aviso: ele
+    não pode ser o que transforma a lista num N+1 — e por isso o `SELECT
+    GETDATE()` continua sendo exatamente UM, com três candidatos."""
     db = FakeDb(pipelines=_pipes())
     with _patch(db), _patch_agora():
         for nome in ("M1", "M2", "M3"):
@@ -411,7 +416,7 @@ def test_orcamento_de_consultas_nao_muda_por_causa_do_aviso(client, auth):
         resp = client.get("/malhas")
 
     assert all(m.get("corrida_esperada") for m in resp.json()["malhas"])
-    assert len([s for s in db.sqls if "etl_malha_execucao" in s]) == 2
+    assert len([s for s in db.sqls if "etl_malha_execucao" in s]) == 3
     assert len([s for s in db.sqls if s.startswith("SELECT GETDATE(),")]) == 1
 
 

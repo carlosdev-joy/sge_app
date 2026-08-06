@@ -100,6 +100,10 @@ import { SeletorCorrida } from './SeletorCorrida'
 // F7: o texto de duração da corrida (o mesmo módulo puro da faixa) — o crédito
 // de retenção chega em MINUTOS do servidor e vira "6h" no toast.
 import { textoDuracao } from './tempoCorrida'
+// F12 (Decisão 56b): o percentual de TEMPO — o "%" que o usuário pediu, e o
+// único que a spec permite. Derivação PURA, testada no Node com o relógio
+// deslocado, como todo número desta camada.
+import { percentualTempoTipico } from './duracaoTipica'
 // F4: o relógio LOCAL da faixa (Decisão 60) — o decorrido anda no navegador, o
 // `apurado_em` do banco fica no tooltip.
 import { useDecorrido } from './useDecorrido'
@@ -801,11 +805,39 @@ function MalhaEditorInner({
   // O relógio LOCAL (Decisão 60) — o decorrido da faixa sai dele somado ao
   // `decorrido_min` que o BANCO já subtraiu; `apurado_em` fica no tooltip.
   const agoraLocal = useDecorrido(emExecucao && corrida?.status === 'ABERTA')
+  // F12 (Decisão 68) — o histórico FACTUAL desta malha, RELATIVO À LENTE: a
+  // "corrida anterior" é a anterior à que esta tela está descrevendo, e não a
+  // penúltima da malha. Chave ausente = dia 1 / API anterior / erro de leitura,
+  // e aí nenhuma frase desta fase existe.
+  const historico = execData?.historico ?? null
   const resumo = useMemo(
     () => (corrida
-      ? resumoCorrida(corrida, { respostaEm: execQuery.dataUpdatedAt, agora: agoraLocal })
+      ? resumoCorrida(corrida,
+                      { respostaEm: execQuery.dataUpdatedAt, agora: agoraLocal },
+                      undefined, historico)
       : null),
-    [corrida, execQuery.dataUpdatedAt, agoraLocal])
+    [corrida, execQuery.dataUpdatedAt, agoraLocal, historico])
+
+  // ── F12 (Decisão 56b): o percentual de TEMPO ─────────────────────────────
+  // O "%" que o usuário pediu, e o único que esta spec permite. Ele mora AQUI
+  // (e não dentro do `resumoCorrida`) porque precisa de duas coisas que só o
+  // PAINEL tem: `tipicos[]` (a duração típica por membro) e `execucoes[]` (o
+  // estado e o início de cada um). O card da lista não tem nenhuma das duas —
+  // e não deve ter: o orçamento dele é de consultas de conjunto sobre 40
+  // malhas, e lá cabe um número só, que é o `x de y`.
+  const percentualTempo = useMemo(() => {
+    if (!corrida) return null
+    return percentualTempoTipico({
+      tipicos: execData?.tipicos,
+      execucoes: execData?.execucoes ?? [],
+      status: corrida.status,
+      saude: corrida.saude,
+      apuradoEm: corrida.apurado_em,
+      respostaEm: execQuery.dataUpdatedAt,
+      agoraLocal,
+    })?.texto ?? null
+  }, [corrida, execData?.tipicos, execData?.execucoes,
+      execQuery.dataUpdatedAt, agoraLocal])
 
   // As corridas desta malha — o que o ◀ ▶ percorre (Decisão 42). Duas do MESMO
   // ODATE são legítimas e vêm as duas, distinguidas por `sequencia`. Sem a 085
@@ -2558,6 +2590,11 @@ function MalhaEditorInner({
           sem085={sem085}
           corridasNoDia={execData?.corridas_no_dia ?? null}
           proximoGatilho={proximoGatilho}
+          /* F12/Decisão 56b — o percentual de TEMPO, o SEGUNDO número da
+             faixa. `null` na esmagadora maioria dos casos (basta um membro sem
+             histórico), e é assim que tem de ser: sem lastro, o número some
+             por completo em vez de sair "aproximado com ressalva". */
+          percentualTempo={percentualTempo}
           respostaEm={execQuery.dataUpdatedAt}
           agoraLocal={agoraLocal}
           nosSegurados={nosSegurados}
