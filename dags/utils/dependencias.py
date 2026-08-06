@@ -28,6 +28,7 @@ paridade, como api/services/data_referencia.py fez com o canônico de dags/.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, time, timedelta
 
 # Sentinel de "não consegui perguntar" (≠ "condição não fechou"). liberado()
@@ -351,6 +352,12 @@ def _exec_com_fallback_078(cur, sql_078: str, sql_legado: str, params) -> bool:
         cur.execute(sql_078, params)
         return False
     except Exception as e:  # noqa: BLE001 — reagimos SÓ ao Invalid column name da 078
+        # ⚠️ LACUNA CONHECIDA: ao contrário de `_marca_de`, esta marca não
+        # distingue "a coluna não existe" de "o banco negou a coluna"
+        # (erro 230). Com um DENY em `substituida_em`, o legado assume e o
+        # descarte da corrida substituída some em silêncio. Mora aqui
+        # porque `test_claim_tem_fallback_para_banco_sem_a_078` pina este
+        # texto-fonte; fechar exige mexer no teste, e é da 078, não da F6.
         if _MARCA_078 not in str(e):
             raise
         cur.execute(sql_legado, params)
@@ -681,7 +688,38 @@ _MARCA_085 = "malha_execucao_id"
 # inteira não passou. Reagir a uma só deixaria metade dos deploys parciais
 # levantando exceção — que é justamente o que a cascata existe para não fazer.
 _MARCAS_085 = (_MARCA_085, "etl_malha_execucao")
-_MARCAS_082 = (_MARCA_082, "etl_malha_no")
+# `origem_no` entra nas marcas da 082 pelo mesmo motivo que `etl_malha_no`: as
+# duas nasceram na 075 e os SQLs do modo SEQUENCIA citam AS DUAS. Sem esta
+# marca, um banco sem a coluna devolvia `Invalid column name 'origem_no'`, que
+# nao casava com degrau nenhum, propagava, e `liberado()` respondia
+# NAO-LIBERADO para o banco INTEIRO — a mesma catastrofe da §11.1 por outra
+# coluna. Era anterior a esta fase (a `main` tambem cita `dd.origem_no`), mas
+# endurecer a cascata sem fechar o buraco vizinho seria consertar so o que a
+# revisao apontou.
+_MARCAS_082 = (_MARCA_082, "etl_malha_no", "origem_no")
+
+
+# ⚠️ O SQL Server NOMEIA o objeto também quando RECUSA a consulta:
+#   229 → "The SELECT permission was denied on the object 'etl_malha_execucao'"
+#   230 → "... was denied on the column 'substituida_em' of the object ..."
+# Como as marcas casam por SUBSTRING, uma permissão faltando na conta do
+# Airflow seria lida como "a migration não passou": a cascata desceria um
+# degrau, o corte cairia do `aberta_em` da corrida para a janela de 12h e o
+# filho partiria com o dado da rodada ANTERIOR — em silêncio, e com o log
+# dizendo "migration 085 ausente", que manda o operador olhar o lugar errado.
+# Reproduzido no dev com DENY SELECT em `dbo.etl_malha_execucao`.
+#
+# Permissão NÃO é deploy parcial: ela PROPAGA até a tradução D21 (não liberado
+# com o sentinel), que é o que `test_erro_desconhecido_NAO_degrada` já
+# prometia. O número vem antes da frase porque ele não depende do idioma do
+# servidor; a frase em inglês fica como rede para driver que só repasse texto.
+_NUM_RECUSA = re.compile(r"\((?:229|230|297|300)[,)]")
+
+
+def _recusa_de_permissao(erro) -> bool:
+    """O banco RECUSOU a consulta, em vez de não ter o objeto?"""
+    msg = str(erro)
+    return bool(_NUM_RECUSA.search(msg)) or "permission was denied" in msg
 
 
 def _marca_de(erro, marcas) -> bool:
@@ -689,6 +727,8 @@ def _marca_de(erro, marcas) -> bool:
 
     Só elas degradam: deadlock, timeout e permissão continuam PROPAGANDO — um
     fallback que engole erro de banco é a classe D21 (erro virando resposta)."""
+    if _recusa_de_permissao(erro):
+        return False
     msg = str(erro)
     return any(m in msg for m in marcas)
 
@@ -706,7 +746,7 @@ def _degrau_apos(erro):
     """
     if _marca_de(erro, _MARCAS_085):
         return "seq_084"
-    if _marca_de(erro, _MARCAS_082) or _MARCA_078 in str(erro):
+    if _marca_de(erro, _MARCAS_082) or _marca_de(erro, (_MARCA_078,)):
         return "data"
     return None
 
@@ -788,17 +828,40 @@ _CORTE_SEQ_085 = (
     "AND me2.fechada_em IS NULL WHERE n3.id = dd.origem_no "
     "ORDER BY me2.aberta_em DESC, me2.id DESC), "
     "%s)")
+# ⚠️ O corte é avaliado UMA VEZ POR LINHA de dependência, num `CROSS APPLY` —
+# e NÃO dentro do `NOT EXISTS`. A diferença não é de estilo, é de plano:
+# escrito como `ISNULL(e.fim, e.inicio) >= COALESCE(<subconsulta>, …)`, o lado
+# direito deixa de ser um valor conhecido e vira expressão correlacionada, o
+# SQL Server desiste do seek em `ix_pipe_exec_cond` (o índice que a docstring
+# de `liberado()` diz servir) e passa a VARRER `etl_pipeline_execucao` inteira,
+# avaliando as duas subconsultas do COALESCE por linha CANDIDATA.
+#
+# Medido no dev (malha de 40 membros, 57.640 execuções, esquema e índices
+# reais, cache quente): 27,6 ms no SEQ_084 → 227–346 ms com o COALESCE dentro
+# do NOT EXISTS → 24–30 ms com o `CROSS APPLY`. O plano volta a não ter scan
+# nenhum de `etl_pipeline_execucao`, e a resposta é IDÊNTICA nos três degraus
+# (conferido contra o banco, degrau 1, degrau 2 e janela).
+#
+# Isto importa porque este predicado não roda uma vez: roda no push de CADA pai
+# para CADA filho, na varredura da guardiã para CADA linha aguardando e no
+# painel. Um fator de 10 aqui é a diferença entre a janela da madrugada caber
+# e não caber.
+#
+# O filtro do dependente vai para a tabela derivada para que a ORDEM dos
+# parâmetros continue sendo (pipeline, corrida, janela) — a mesma do SEQ_084 e
+# a que as três portas e a paridade já falam.
 _ONDE_SEM_SUCESSO_SEQ_085 = (
     "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
     "WHERE e.pipeline_name = dd.depende_de "
     "AND e.status = 'SUCESSO' AND e.substituida_em IS NULL "
-    "AND ISNULL(e.fim, e.inicio) >= " + _CORTE_SEQ_085 + ")")
+    "AND ISNULL(e.fim, e.inicio) >= k.corte)")
 # Parâmetros, na ordem em que o texto os pede: (pipeline, corrida, janela).
 SQL_LIBERADO_SEQ_085 = (
     "SELECT dd.depende_de" + _SELECT_RETENCAO +
-    "FROM dbo.etl_pipeline_dependencia dd "
-    "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE' "
-    "AND (" + _ONDE_SEM_SUCESSO_SEQ_085[4:] +
+    "FROM (SELECT depende_de, origem_no FROM dbo.etl_pipeline_dependencia "
+    "WHERE pipeline_name = %s AND tipo = 'PIPELINE') dd "
+    "CROSS APPLY (SELECT corte = " + _CORTE_SEQ_085 + ") k "
+    "WHERE (" + _ONDE_SEM_SUCESSO_SEQ_085[4:] +
     " OR EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
     "            WHERE n2.id = dd.origem_no AND n2.retido_em IS NOT NULL))")
 
@@ -949,7 +1012,7 @@ def _exec_liberado(cur, params, params_seq=None):
         cur.execute(SQL_LIBERADO_082, params)
         return True, False
     except Exception as e:  # noqa: BLE001 — só as marcas conhecidas degradam
-        if not _marca_de(e, _MARCAS_082) and _MARCA_078 not in str(e):
+        if not _marca_de(e, _MARCAS_082) and not _marca_de(e, (_MARCA_078,)):
             raise
     return False, _exec_com_fallback_078(
         cur, SQL_LIBERADO_078, SQL_LIBERADO_LEGADO, params)

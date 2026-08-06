@@ -1281,6 +1281,38 @@ def test_corte_tem_os_tres_degraus_na_ordem_da_decisao_38(dep):
     assert "ORDER BY me2.aberta_em DESC, me2.id DESC" in corte
 
 
+def test_corte_e_avaliado_UMA_VEZ_POR_LINHA_e_nao_por_execucao(dep):
+    """⚠️ **Onde o corte é avaliado decide o PLANO, não o estilo.**
+
+    Escrito como `ISNULL(e.fim, e.inicio) >= COALESCE(<subconsulta>, …)`, o
+    lado direito da comparação deixa de ser um valor conhecido e vira expressão
+    correlacionada: o SQL Server desiste do seek em `ix_pipe_exec_cond` — o
+    índice que a docstring de `liberado()` diz servir — e passa a VARRER
+    `etl_pipeline_execucao` inteira, resolvendo as duas subconsultas do
+    COALESCE por linha CANDIDATA.
+
+    Medido no dev com o esquema e os índices reais (malha de 40 membros, 57.640
+    execuções, cache quente): 27,6 ms no SEQ_084, 227–346 ms com o COALESCE
+    dentro do `NOT EXISTS`, 24–30 ms com ele num `CROSS APPLY`. Este predicado
+    roda no push de CADA pai para CADA filho, na varredura da guardiã para CADA
+    linha aguardando e no painel — um fator de 10 aqui é a janela da madrugada
+    caber ou não caber.
+
+    O que este teste tranca: o corte sai UMA VEZ POR LINHA de dependência e a
+    comparação é contra a COLUNA calculada, nunca contra o COALESCE inline."""
+    # (a árvore `api/` herda a forma pela paridade textual, que compara os dois
+    # SQLs byte a byte a menos do placeholder)
+    sql = dep.SQL_LIBERADO_SEQ_085
+    assert "CROSS APPLY (SELECT corte = COALESCE(" in sql, (
+        "o corte voltou para dentro do NOT EXISTS — o seek morre com ele")
+    assert "ISNULL(e.fim, e.inicio) >= k.corte)" in sql
+    # e o COALESCE aparece UMA vez só: duas seriam duas avaliações
+    assert sql.count("COALESCE(") == 1
+    # o filtro do dependente vem ANTES do APPLY, que é o que mantém a ordem
+    # dos parâmetros (pipeline, corrida, janela) que as três portas falam
+    assert sql.index("pipeline_name =") < sql.index("CROSS APPLY")
+
+
 def test_corrida_da_linha_vira_o_primeiro_parametro(dep, monkeypatch):
     """A assinatura nova entrega a corrida ao SQL, na posição do 1º degrau."""
     corte = _seq(dep, monkeypatch)

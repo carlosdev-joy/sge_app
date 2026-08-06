@@ -90,3 +90,29 @@ Após a migration 075 (índice filtrado `ix_dep_origem_no`), qualquer
 INSERT/UPDATE/DELETE **manual** nessa tabela via `sqlcmd` exige a flag `-I`
 (QUOTED_IDENTIFIER ON) — sem ela, erro 1934. App e migrations não são
 afetados (pyodbc/pymssql já setam a opção).
+
+## Testes AO VIVO contra o SQL Server (F6+ da corrida de malha)
+
+Parte da suíte só prova o que promete se conversar com o banco de verdade —
+`tests/test_dependencias_f6_vivo.py` (16 testes) pergunta ao SQL Server se o
+predicado de liberação resolve o degrau certo, com o SQL que a DAG manda em
+produção. Sem a variável de ambiente eles **pulam em silêncio**, e a suíte fica
+verde sem ter provado nada:
+
+```bash
+# do /opt/orquestra-dev, com o ambiente dev de pé
+ORQ_TEST_MSSQL_PASSWORD='<senha do sa do dev>' python3 -m pytest tests/ -q
+```
+
+Sem a variável: `2622 passed, 17 skipped`.
+Com a variável: `2638 passed, 1 skipped` — os 16 que importam.
+
+⚠️ **Rode COM a variável antes de ligar `malha_corrida_ativa`** (§11.2 da
+`spec-malha-execucao.md`). São os únicos testes que provam que o corte do modo
+SEQUÊNCIA sai do `aberta_em` da corrida, e não da janela de 12h — e é
+exatamente essa troca que o incidente `Carga_Vida` produziu. A senha nunca
+entra no repositório; ela vem de `.env.dev` (`DEV_MSSQL_SA_PASSWORD`), que é
+ignorado pelo git.
+
+Os outros 17 pulados sem a variável são: os 16 acima + 1 de compilação de DAG
+que já pulava antes.

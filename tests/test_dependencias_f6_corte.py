@@ -636,6 +636,86 @@ def test_erro_desconhecido_NAO_degrada(arvore):
     assert len(tentativas) == 1, "erro desconhecido nao pode virar degradacao"
 
 
+@pytest.mark.parametrize("msg", [
+    # 229 — a tabela inteira negada. O texto CITA `etl_malha_execucao`, que é
+    # exatamente a marca da 085: sem guarda, a cascata lê "a migration não
+    # passou" e desce um degrau.
+    "(229, b\"The SELECT permission was denied on the object "
+    "'etl_malha_execucao', database 'orquestra', schema 'dbo'.\")",
+    # 230 — a COLUNA negada. Cita `substituida_em`, a marca da 078.
+    "(230, b\"The SELECT permission was denied on the column 'substituida_em' "
+    "of the object 'etl_pipeline_execucao', database 'orquestra', schema 'dbo'.\")",
+    # e o mesmo erro como o pyodbc o entrega, para a guarda não depender do driver
+    "('42000', \"[42000] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]"
+    "The SELECT permission was denied on the object 'etl_malha_execucao'. (229) "
+    "(SQLExecDirectW)\")",
+])
+def test_permissao_negada_NAO_e_deploy_parcial(arvore, msg):
+    """⚠️ **A degradação pela porta errada.** O SQL Server NOMEIA o objeto
+    quando RECUSA a consulta, e as marcas da cascata casam por SUBSTRING — sem
+    guarda, um `GRANT` faltando na conta do Airflow é lido como "a 085 não
+    passou": o corte cai do `aberta_em` da corrida para a janela de 12h, o
+    filho parte com o dado da rodada ANTERIOR e o log manda o operador procurar
+    uma migration que está aplicada.
+
+    É a catástrofe simétrica à que a cascata evita — em vez de segurar a casa
+    inteira, ela SOLTA o que devia segurar — e chega sem deploy nenhum, só com
+    uma permissão. Reproduzido no dev com `DENY SELECT ON dbo.etl_malha_execucao`.
+
+    Permissão PROPAGA até a tradução D21, que é o que o teste acima já
+    prometia na docstring e o código ainda não cumpria."""
+    banco = _mundo()
+    banco.erro_fixo = msg
+    lib, falt = arvore.liberado(banco, "FILHO_MALHA", CORRIDA_A)
+    assert lib is False
+    assert falt and falt[0].startswith(arvore.mod.ERRO_CONSULTA)
+    tentativas = [s for s, _ in banco.execs if "etl_pipeline_dependencia" in s]
+    assert len(tentativas) == 1, (
+        "recusa de permissao virou degradacao: o corte afrouxou sozinho")
+
+
+@pytest.mark.parametrize("msg", [
+    "(207, b\"Invalid column name 'origem_no'.DB-Lib error message 20018\")",
+    "('42S22', \"[42S22] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]"
+    "Invalid column name 'origem_no'. (207) (SQLExecDirectW)\")",
+])
+def test_coluna_origem_no_ausente_NAO_trava_a_casa_inteira(arvore, msg):
+    """A catástrofe da §11.1 pela coluna vizinha.
+
+    `origem_no` nasceu na 075, junto com `etl_malha_no`, e os SQLs do modo
+    SEQUÊNCIA citam AS DUAS. Só `etl_malha_no` estava nas marcas: num banco sem
+    a coluna, o `Invalid column name 'origem_no'` não casava com degrau nenhum,
+    propagava, e `liberado()` respondia NÃO-LIBERADO para o banco INTEIRO — a
+    trava nova parando a produção em vez de segurar um Aguarde, que é
+    exatamente o modo de falha que a cascata existe para impedir.
+
+    Era anterior a esta fase (a `main` também cita `dd.origem_no` no
+    `SQL_LIBERADO_082`), mas endurecer a cascata e deixar o buraco vizinho
+    aberto seria consertar só o que a revisão apontou."""
+    banco = _mundo()
+
+    # O erro tem de acontecer SÓ onde a coluna é citada — um `erro_fixo` que
+    # derruba toda consulta não simula coluna ausente, simula banco fora, e o
+    # teste passaria provando outra coisa.
+    _responder = banco._responder
+
+    def _so_onde_cita(sql, params):
+        if "origem_no" in sql:
+            raise Exception(msg)
+        return _responder(sql, params)
+
+    banco._responder = _so_onde_cita
+
+    lib, falt = arvore.liberado(banco, "FILHO_MALHA", CORRIDA_A)
+    # Degrada para um degrau que não cita a coluna — não vira sentinel de erro.
+    assert not (falt and falt[0].startswith(arvore.mod.ERRO_CONSULTA)), (
+        "coluna ausente virou erro de consulta: liberado() trava o banco inteiro")
+    tentativas = [s for s, _ in banco.execs if "etl_pipeline_dependencia" in s]
+    assert len(tentativas) > 1, "a cascata não desceu de degrau"
+    assert "origem_no" not in tentativas[-1], (
+        "a última tentativa ainda cita a coluna que não existe")
+
+
 # ════════════ 8. paridade de SEMÂNTICA — inclusive degradada ════════════════
 
 def _todas_as_respostas(arv, migrations):

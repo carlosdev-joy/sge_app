@@ -2916,6 +2916,16 @@ errado.
     dizer *"este dia teve N corridas — escolha uma"* e oferecer o
     `SeletorCorrida`, que é entregável da F10. Enquanto isso não existe, o
     operador vê o canvas do dia sem faixa, que é honesto mas mudo.
+13b. **Os 16 testes ao vivo da F6 pulam sem `ORQ_TEST_MSSQL_PASSWORD`** — e
+    são os únicos que provam que o corte do modo SEQUÊNCIA sai do `aberta_em`
+    da corrida, e não da janela de 12h. Sem a variável a suíte fica verde sem
+    ter perguntado ao banco. Rodar COM ela antes de ligar `malha_corrida_ativa`
+    (§11.2); o comando está em `docs/ambiente-dev.md`.
+13c. **`_exec_com_fallback_078` não tem a guarda de recusa de permissão** que a
+    cascata do modo SEQUÊNCIA ganhou na F6. Um `DENY` de coluna em
+    `substituida_em` cairia no legado e o descarte da linha substituída sumiria
+    em silêncio. É código anterior a esta spec e há teste pinando o texto-fonte
+    — marcado como LACUNA CONHECIDA no código; PR própria.
 14. **A guardiã é uma QUARTA porta de disparo e não propaga a corrida.**
     `dags/etl_dependencia_guardia.py` chama `montar_conf(data_ref, dia_op,
     "guardia")` — sem `malha_execucao_id`. A **data** não sofre (o degrau 0 lê a
