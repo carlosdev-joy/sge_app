@@ -388,6 +388,20 @@ function main() {
       // parágrafo.
       rotulos: blocosNaTela.map(b => b.props['aria-label']),
       trocou_para: trocas,
+      // O menu "ir para uma data": ABERTO, para a classe de posicionamento
+      // poder ser lida. Fechado ele nem existe na árvore, e o teste passaria
+      // afirmando nada — o modo de falso verde nº 6 desta spec.
+      menu_data: (() => {
+        const so2 = mini.montar(seletor)
+        const gatilho = so2.botoes('ir para')[0]
+        if (!gatilho) return { erro: 'gatilho "ir para…" não existe' }
+        so2.clicar(gatilho)
+        const painel = so2.porPapel('dialog')[0]
+        return painel
+          ? { classe: String(painel.props.className || ''),
+              tem_campo_data: so2.achar(n => n.props.type === 'date').length }
+          : { erro: 'o menu não abriu' }
+      })(),
     }
   })
 

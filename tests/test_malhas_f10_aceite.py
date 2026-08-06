@@ -289,6 +289,27 @@ def test_o_dia_com_varias_corridas_manda_escolher_uma_em_vez_de_ficar_mudo(tela)
     assert "nenhuma corrida registrada" in d["mudo"]
 
 
+def test_o_menu_ir_para_data_abre_DENTRO_da_area_de_conteudo(tela):
+    """O seletor de data ficava inalcançável, que é o mesmo que não existir.
+
+    O gatilho "ir para…" é o PRIMEIRO elemento da faixa, colado na borda
+    esquerda do painel. Com o menu alinhado pela DIREITA (`right-0`), os 16rem
+    dele se estendiam para a esquerda, saíam da área de conteúdo e sumiam por
+    baixo do menu lateral — relatado com print pelo usuário, com o texto do
+    menu cortado ao meio.
+
+    O menu é aberto de verdade antes de a classe ser lida: fechado ele nem
+    existe na árvore, e um teste sobre o elemento ausente passaria afirmando
+    nada."""
+    menu = _cena(tela, "dia_com_varias_corridas")["menu_data"]
+    assert "erro" not in menu, menu
+    assert "left-0" in menu["classe"], (
+        "o menu alinha pela direita e vaza para fora da área de conteúdo")
+    assert "right-0" not in menu["classe"]
+    # e ele abre com o que foi aberto para usar
+    assert menu["tem_campo_data"] == 1
+
+
 # ═══ aceite 9 — um clique até o problema, sem sair da lente ══════════════════
 
 def test_clicar_numa_linha_de_travando_pede_o_realce_do_pipeline_certo(tela):
