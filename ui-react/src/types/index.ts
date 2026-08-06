@@ -117,9 +117,25 @@ export interface PendenteCorrida {
    *  servidor já entrega ordenado: `pendentes[0]` é o que a tela nomeia. */
   classe: string
   desde: string | null
-  /** De quem esta pendência espera. `null` no CARD de propósito (respondê-lo
-   *  por card seria um N+1 na lista inteira); o painel preenche. */
+  /** De quem esta pendência espera — UM nome, que é o espaço que o card tem.
+   *  `null` no CARD de propósito: lá ele quer dizer "não perguntei", nunca
+   *  "não falta ninguém". Quem apura é o PAINEL (F10), numa consulta de
+   *  conjunto — o predicado deixou de ser perguntado por membro. */
   faltante: string | null
+  /** A lista completa do mesmo fato, para a aba `Travando`, que tem espaço
+   *  para todos. `null` = não apurado (o card); `[]` = perguntei e não falta
+   *  ninguém. Os dois estados são diferentes e a tela não pode confundi-los. */
+  faltantes?: string[] | null
+  /** RAIO DE ALCANCE (Decisão 63): quantos membros DESTA corrida estão parados
+   *  atrás deste. É o que separa "um job parado no fim da cadeia" de "um job
+   *  parado que segura 18 outros" — e é o que decide se alguém acorda.
+   *  `null` = não apurado; `0` = ninguém atrás. */
+  alcance?: number | null
+  /** Quantos dos parados atrás são de criticidade ALTA. 18 atrás sem nenhum
+   *  crítico espera o horário comercial; 2 com um `ALTA` no meio, não. */
+  alcance_alta?: number | null
+  /** A criticidade do próprio pendente (`etl_pipeline.criticidade`). */
+  criticidade?: string | null
 }
 
 /** O CABEÇALHO do ciclo — exatamente o que `GET /malhas/{m}/corridas` entrega

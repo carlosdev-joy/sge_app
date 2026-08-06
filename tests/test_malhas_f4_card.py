@@ -1067,13 +1067,23 @@ def _espiao_do_predicado():
     O predicado é o mesmo objeto do motor; aqui só se prova o ARGUMENTO — se o
     painel não entregar a corrida, ele responderia pela janela de 12h enquanto
     o motor responde pelo `aberta_em`, e a tela voltaria a contar uma história
-    diferente da do motor (a doença que o D29 matou, entrando pelo corte)."""
-    vistos: list = []
+    diferente da do motor (a doença que o D29 matou, entrando pelo corte).
 
-    def _liberado(cur, pipeline, data_ref, corrida=None):
-        vistos.append((pipeline, data_ref, corrida))
-        return False, ["PAI_X"]
-    return vistos, _liberado
+    F10: o port passou a ser perguntado EM LOTE, e o espião acompanhou. A
+    corrida continua sendo o terceiro elemento de cada tupla — é o argumento
+    que a Decisão 39 exige, e ele não muda de dono por ser perguntado de uma
+    vez. `chamadas` guarda quantas idas ao port houve: é o que separa "o
+    argumento certo" de "o argumento certo N vezes"."""
+    vistos: list = []
+    chamadas: list = []
+
+    def _lote(cur, pipelines, data_ref, corrida=None):
+        alvos = list(pipelines)
+        chamadas.append(alvos)
+        vistos.extend((p, data_ref, corrida) for p in alvos)
+        return {p: ["PAI_X"] for p in alvos}
+    _lote.chamadas = chamadas
+    return vistos, _lote
 
 
 def test_painel_com_lente_pergunta_o_predicado_com_a_corrida(client, auth):
@@ -1082,7 +1092,7 @@ def test_painel_com_lente_pergunta_o_predicado_com_a_corrida(client, auth):
     vistos, espiao = _espiao_do_predicado()
     db = FakeDb(pipelines=_pipes())
     with _patch(db), _patch_agora(), \
-            patch("routers.malhas.deps_svc.liberado", espiao):
+            patch("routers.malhas.deps_svc.faltantes_em_lote", espiao):
         _monta_malha(client, "M1", ["A"])
         c = db.abrir_corrida("M1", odate=ODATE, aberta_em=AGORA_BANCO,
                              membros=["A"])
@@ -1099,7 +1109,7 @@ def test_painel_sem_lente_pergunta_sem_corrida(client, auth):
     vistos, espiao = _espiao_do_predicado()
     db = FakeDb(pipelines=_pipes())
     with _patch(db), _patch_agora(), \
-            patch("routers.malhas.deps_svc.liberado", espiao):
+            patch("routers.malhas.deps_svc.faltantes_em_lote", espiao):
         _monta_malha(client, "M1", ["A"])
         db.execucao("A", "AGUARDANDO_DEPENDENCIA", odate=ODATE_ONTEM)
         client.get(f"/malhas/M1/execucao?data_referencia={ODATE_ONTEM}").json()
@@ -1361,8 +1371,16 @@ def test_contrato_do_bloco_corrida(client, auth):
         # falso das 04:18 quando alguém se mexeu às 04:16.
         "quiescencia_min", "quiescencia_ate",
     }
-    assert set(corrida["pendentes"][0]) == {"pipeline", "classe", "desde",
-                                            "faltante"}
+    # F10: os quatro campos que só o PAINEL apura chegam ao card como `null` —
+    # "não perguntei", nunca "não há". A chave existir aqui é o que impede o
+    # front de ler `undefined` como zero na janela entre o `dist/` (etapa 3) e
+    # a `api/` (etapa 7).
+    assert set(corrida["pendentes"][0]) == {
+        "pipeline", "classe", "desde", "faltante", "faltantes",
+        "alcance", "alcance_alta", "criticidade"}
+    assert all(corrida["pendentes"][0][k] is None
+               for k in ("faltante", "faltantes", "alcance", "alcance_alta",
+                         "criticidade"))
 
 
 def test_pendentes_vem_do_mais_grave_para_o_menos(client, auth):
