@@ -15,6 +15,9 @@ Endpoints:
                                                      malha_concluida (F14)
                                                      + lente ?corrida={id} e o
                                                      bloco `corrida` (F4)
+                                                     + `tipicos`: a duração
+                                                     típica por membro do
+                                                     snapshot (F12)
   POST   /malhas/{malha_name}/disparo              — disparo MANUAL da malha (F15;
                                                      dry_run no body): raízes do
                                                      Início via trigger REST
@@ -2117,6 +2120,183 @@ def _raio_dos_pendentes(cur, corrida_payload: dict) -> None:
             .strip().casefold() == _CRITICIDADE_ALTA)
 
 
+# ══════ F12 — a duração TÍPICA por membro (§9.5, Decisão 64) ════════════════
+#
+# `4 de 7 · 2 rodando · há 12 min` não diz se os dois vivos são de 5 min ou de
+# 3h — e, pior, `4 de 7` com os dois mais pesados ainda por rodar parece "quase
+# lá" e manda o operador dormir. O número que responde "posso esperar?" é a
+# duração TÍPICA de cada membro, medida, com a amostra declarada.
+#
+# ── Por que `etl_job_execution`, e não `etl_pipeline_execucao` ──────────────
+# O argumento "sem histórico no dia 1" vale para a CORRIDA, não para o MEMBRO:
+# `etl_pipeline_execucao` só existe para o que passou pela guardiã e nasceu na
+# 067, enquanto `etl_job_execution` tem o histórico de sempre — inclusive o dos
+# membros que rodam por agenda própria. O molde é o do irmão mais velho,
+# `GET /execucoes/duracao-media` (`PERCENTILE_CONT` + `COUNT(*)`, **sem tocar o
+# Airflow**); a diferença é o SUJEITO: lá o p50 é por `job_name` DENTRO de um
+# pipeline, aqui é do PIPELINE inteiro, de ponta a ponta, para os membros do
+# snapshot.
+#
+# ── O piso de `n ≥ 5` é DURO, e ele mora no `HAVING` ────────────────────────
+# Sem amostra não sai número: o membro simplesmente não aparece na lista, e a
+# tela mostra só o decorrido. É a mesma honestidade da fonte — publicar "típico
+# 18 min" apurado em duas execuções é inventar precisão, e é exatamente o que
+# esta spec inteira existe para não fazer. O `n` viaja junto do p50 no payload
+# porque na tela ele **nunca aparece sozinho**: ou saem os dois (`típico 18 min
+# (n=23)`), ou não sai nenhum.
+#
+# ── O que conta como "uma execução do pipeline" ────────────────────────────
+# O rollup é por `(pipeline, execution_id)` — a mesma identidade de run que o
+# próprio produto usa no card de fim de execução das DAGs geradas e no
+# `sla-report`: `MIN(start_time)` → `MAX(end_time)`, ponta a ponta, que é o
+# tempo que o operador vê passar. Só entram execuções **limpas**: nenhuma linha
+# `FAILED`/`RUNNING` e nenhuma sem `end_time`. Uma execução que quebrou no meio
+# termina cedo e puxaria a mediana para baixo — o número serviria para tudo,
+# menos para decidir esperar.
+#
+# ⚠️ NÃO se enumera o domínio de `status` no `WHERE`. Enumerar tornaria a faixa
+# de `start_time` sargável (o índice é `(pipeline, status, start_time)`) e o
+# custo cairia; o preço seria uma linha de status DESCONHECIDO ficar invisível
+# — e uma execução suja passaria por limpa, em silêncio, na conta que decide se
+# alguém acorda. O lever está nomeado aqui de propósito, com o custo medido
+# abaixo, para quem um dia precise dele em produção.
+#
+# ── O custo, medido no dev (480.000 linhas, 300 pipelines) ─────────────────
+#   7 membros:  156 leituras lógicas, ~10 ms   (1 seek COBERTO por membro)
+#  40 membros:  918 leituras lógicas, ~40 ms   (cresce com MEMBRO, não com a
+#                                               tabela)
+# O seek é coberto porque `IX_etl_job_execution_pipeline_status_start` INCLUI
+# `end_time`, `execution_id` e `job_name` (migration 058) — zero key lookup.
+#
+# ⚠️ GOTCHA MEDIDO, e ele vale para toda consulta que cruze estas duas tabelas:
+# `etl_malha_execucao_membro.pipeline_name` é **NVARCHAR** e
+# `etl_job_execution.pipeline` é **VARCHAR**. Comparados direto, o NVARCHAR tem
+# precedência, a COLUNA da tabela grande é convertida e o predicado deixa de ser
+# sargável: **4.822 leituras e 169 ms** no mesmo cenário de 7 membros (scan do
+# índice inteiro), contra 156 e 10 ms com o `CAST` do lado PEQUENO. É o mesmo
+# alerta que a 085 escreveu sobre `ancora_execution_id`, agora medido.
+PISO_TIPICO_N = 5
+# 90 dias: uma malha diária dá ~90 amostras e uma semanal ~13. Mais que isso e a
+# mediana passa a descrever uma malha que já mudou de forma (job novo, servidor
+# novo); menos, e a malha semanal perde o número.
+TIPICO_JANELA_DIAS = 90
+# Teto de execuções por membro: a mediana de 30 já é estável, e o que passa
+# disso só envelhece o número.
+TIPICO_MAX_EXECUCOES = 30
+
+_SQL_TIPICOS = (
+    "WITH membros AS ("
+    " SELECT CAST(mm.pipeline_name AS VARCHAR(200)) AS pipeline_name"
+    " FROM dbo.etl_malha_execucao_membro mm"
+    " WHERE mm.malha_execucao_id = ? AND mm.ativo_na_abertura = 1), "
+    "execucoes AS ("
+    " SELECT m.pipeline_name,"
+    " DATEDIFF(SECOND, MIN(j.start_time), MAX(j.end_time)) AS dur_seg,"
+    " ROW_NUMBER() OVER (PARTITION BY m.pipeline_name"
+    "                    ORDER BY MIN(j.start_time) DESC) AS rn"
+    " FROM membros m"
+    " JOIN dbo.etl_job_execution j"
+    "   ON j.pipeline = m.pipeline_name"
+    "  AND j.start_time >= DATEADD(DAY, ?, SYSDATETIME())"
+    " GROUP BY m.pipeline_name, j.execution_id"
+    " HAVING COUNT(*) = COUNT(j.end_time)"
+    "    AND SUM(CASE WHEN j.status IN ('FAILED','RUNNING') THEN 1 ELSE 0 END) = 0) "
+    "SELECT t.pipeline_name, MAX(t.p50) AS p50_seg, COUNT(*) AS n "
+    "FROM (SELECT pipeline_name, dur_seg,"
+    "             PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY dur_seg)"
+    "                 OVER (PARTITION BY pipeline_name) AS p50"
+    "      FROM execucoes WHERE rn <= ? AND dur_seg > 0) t "
+    "GROUP BY t.pipeline_name "
+    "HAVING COUNT(*) >= ?")
+
+# Cache por CORRIDA, com TTL — o mesmo desenho de `_LJOBS_CACHE`
+# (routers/datastage.py) e do `modo_sequencia` dos serviços.
+#
+# Por que cachear justamente ISTO: o painel refaz a leitura a cada 15–30 s, e a
+# duração típica é um número de escala de DIAS — dentro de uma madrugada ele não
+# muda. Sem o cache, a consulta mais pesada desta camada seria a única que roda
+# em toda leitura sem que nada nela possa ter mudado.
+_CACHE_TIPICOS: dict = {}
+_TTL_TIPICOS_S = 300
+
+
+def limpar_cache_tipicos() -> None:
+    """Zera o cache — para os testes e para quem precise forçar releitura."""
+    _CACHE_TIPICOS.clear()
+
+
+def _tipicos_do_banco(cur, corrida_id: int):
+    """A consulta crua: `[{pipeline, p50_seg, n}]`, já com o piso aplicado.
+
+    `None` = **não apurei** (erro de leitura, banco sem a tabela, driver sem
+    `PERCENTILE_CONT`). Nunca `[]` nesse caso: lista vazia é uma AFIRMAÇÃO
+    ("nenhum membro tem histórico suficiente") e mentir isso apagaria da tela
+    números que existem."""
+    try:
+        cur.execute(_SQL_TIPICOS, (int(corrida_id), -int(TIPICO_JANELA_DIAS),
+                                   int(TIPICO_MAX_EXECUCOES),
+                                   int(PISO_TIPICO_N)))
+        linhas = cur.fetchall()
+    except Exception as e:  # noqa: BLE001 — leitura degrada, nunca 500
+        log.warning("[MALHA] duracao tipica da corrida #%s indisponivel (%s) — "
+                    "o painel mostra so o decorrido", corrida_id, e)
+        return None
+    itens = []
+    for pipeline, p50_seg, n in linhas:
+        if p50_seg is None:
+            continue
+        segundos = int(round(float(p50_seg)))
+        if segundos <= 0:
+            # Pipeline que roda em menos de um segundo não tem "duração típica"
+            # que ajude ninguém a decidir esperar — e `0` na tela leria como
+            # medida. Ausência é a resposta honesta.
+            continue
+        itens.append({"pipeline": str(pipeline).strip(),
+                      "p50_seg": segundos, "n": int(n)})
+    itens.sort(key=lambda i: i["pipeline"].casefold())
+    return itens
+
+
+def _tipicos_da_corrida(cur, corrida_payload: dict):
+    """O bloco `tipicos` do payload — ou `None`, e aí a chave nem existe.
+
+    A chave AUSENTE é o contrato da degradação (Decisão 41), o mesmo de
+    `corrida`: API anterior à fase, banco sem a tabela e erro de leitura caem
+    todos no mesmo lugar — o painel mostra o decorrido e mais nada, que é
+    exatamente o que ele mostra hoje.
+
+    `completo` é o que a Decisão 56b exige antes de existir percentual de tempo:
+    **todos** os membros do snapshot com `n ≥ 5`. Faltando um só, o percentual
+    some por inteiro — não é estimado, não é "aproximado com ressalva"."""
+    corrida_id = int(corrida_payload["id"])
+    agora = time.time()
+    entrada = _CACHE_TIPICOS.get(corrida_id)
+    if entrada is not None and entrada[0] > agora:
+        itens = entrada[1]
+    else:
+        itens = _tipicos_do_banco(cur, corrida_id)
+        if itens is None:
+            return None
+        # Limpeza dos vencidos junto da escrita: sem ela o dicionário guardaria
+        # uma entrada por corrida já visitada pelo processo inteiro.
+        for chave in [k for k, v in _CACHE_TIPICOS.items() if v[0] <= agora]:
+            _CACHE_TIPICOS.pop(chave, None)
+        _CACHE_TIPICOS[corrida_id] = (agora + _TTL_TIPICOS_S, itens)
+    membros = corrida_payload.get("membros_total")
+    membros = int(membros) if isinstance(membros, int) else None
+    return {
+        "piso_n": PISO_TIPICO_N,
+        "janela_dias": TIPICO_JANELA_DIAS,
+        "limite_execucoes": TIPICO_MAX_EXECUCOES,
+        # O denominador do snapshot (Decisão 52), repetido aqui para que quem
+        # lê `tipicos` não precise cruzar dois blocos para saber se falta gente.
+        "membros": membros,
+        "com_historico": len(itens),
+        "completo": bool(membros) and len(itens) == membros,
+        "itens": itens,
+    }
+
+
 def _quiescencia_da_linha(bruto) -> int:
     """Config de quiescência que veio junto da consulta (A) → int no domínio.
 
@@ -3512,6 +3692,14 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
     conta outro número — a mesma tela contando duas coisas diferentes. Banco
     sem a coluna (078 pendente) cai no texto legado.
 
+    ── `tipicos` (F12, Decisão 64) ─────────────────────────────────────────
+    Com corrida na lente vem também a **duração típica de cada membro do
+    snapshot** — o número que responde *posso esperar*: `p50` das execuções
+    limpas de `etl_job_execution`, com o `n` junto e piso de `n ≥ 5` aplicado no
+    servidor. Membro sem amostra simplesmente não está na lista, e a tela mostra
+    só o decorrido. Isto **não é ETA**: é a duração típica DAQUELE membro, e
+    somar típicos não dá previsão de conclusão da corrida.
+
     Produção PRÉ-retomada (F2–F4): as tabelas da 067 existem mas NADA as
     alimenta — a resposta é o estado vazio HONESTO (arrays vazios), nunca tela
     quebrada nem promessa falsa. Deploy parcial SEM a 067: arrays vazios +
@@ -3756,6 +3944,19 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
         # que decide se alguém acorda às 3h ou espera até as 7h.
         if pendentes_da_corrida:
             _raio_dos_pendentes(cur, corrida_payload)
+
+        # F12 (Decisão 64) — a duração TÍPICA de cada membro do snapshot: o
+        # número que decide "posso esperar". Uma consulta de conjunto, escopada
+        # ao snapshot (nunca ao banco inteiro) e cacheada por 5 min, porque
+        # dentro de uma madrugada ela não muda.
+        #
+        # ⚠️ Ela só existe com CORRIDA na lente: fora dela não há snapshot, e
+        # sem snapshot o "típico de quem?" não tem resposta. Chave ausente é o
+        # contrato — o painel volta a mostrar só o decorrido, byte a byte.
+        if corrida_payload is not None:
+            tipicos = _tipicos_da_corrida(cur, corrida_payload)
+            if tipicos is not None:
+                resposta["tipicos"] = tipicos
 
         # Nós desta malha (F14): resolve o marcador '#no:{id}' dos eventos de
         # observador. Sem a 075 (deploy parcial) degrada — eventos_no vazio +

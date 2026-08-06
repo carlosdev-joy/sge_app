@@ -230,6 +230,49 @@ export interface CorridaApi extends CorridaCabecalho {
   quiescencia_ate?: string | null
 }
 
+// ─── F12: a duração TÍPICA por membro (§9.5, Decisão 64) ────────────────────
+// O número que decide **posso esperar**. `4 de 7 · 2 rodando · há 12 min` não
+// diz se os dois vivos são de 5 min ou de 3h — e `4 de 7` com os dois mais
+// pesados ainda por rodar parece "quase lá" e manda o operador dormir.
+//
+// Ele vem do histórico de `etl_job_execution` (o irmão por PIPELINE do
+// `GET /execucoes/duracao-media`), medido, com a amostra declarada — e **não**
+// é ETA: somar típicos de membros não dá previsão de conclusão da corrida, que
+// roda em paralelo e com dependências.
+
+/** Um membro com histórico SUFICIENTE. Membro que não passou do piso `n ≥ 5`
+ *  simplesmente NÃO ESTÁ na lista — não existe item com `p50` sem `n`, porque
+ *  na tela os dois aparecem juntos ou não aparece nenhum. */
+export interface TipicoMembro {
+  pipeline: string
+  /** Mediana (p50) da duração ponta a ponta das execuções limpas, em SEGUNDOS
+   *  — a unidade crua da fonte. Quem arredonda para minutos é a tela. */
+  p50_seg: number
+  /** Tamanho da amostra. Nunca aparece sozinho na interface (Decisão 64). */
+  n: number
+}
+
+/** O bloco `tipicos` do `GET /malhas/{m}/execucao`. Chave AUSENTE = não apurei
+ *  (API anterior à fase, erro de leitura, ou lente sem corrida) — a mesma
+ *  degradação por ausência de campo da Decisão 41. */
+export interface TipicosApi {
+  /** O piso da amostra que o servidor aplicou (5). Vem no payload para a tela
+   *  poder EXPLICAR a ausência em vez de só calar. */
+  piso_n: number
+  /** Janela de histórico lida, em dias, e o teto de execuções por membro. */
+  janela_dias: number
+  limite_execucoes: number
+  /** Membros do snapshot (o denominador da Decisão 52). `null` = o agregado da
+   *  corrida não apurou o denominador. */
+  membros: number | null
+  com_historico: number
+  /** TODOS os membros do snapshot têm `n ≥ 5`. É a pré-condição da Decisão 56b
+   *  — sem ela o percentual de tempo típico não existe na tela, nem estimado
+   *  nem "aproximado com ressalva". */
+  completo: boolean
+  itens: TipicoMembro[]
+}
+
 /** A corrida que DEVERIA existir e não existe (F9 — §9.2, Decisão 58).
  *
  *  O pior modo de falha da tela, e o que ela não sabia contar: o Início não

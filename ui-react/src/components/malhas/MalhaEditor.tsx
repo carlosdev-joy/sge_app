@@ -2629,6 +2629,11 @@ function MalhaEditorInner({
             onReexecutar={podeExecutar && corrida?.status === 'ABERTA' && dataExibida
               ? (p => void abrirReexecucao(p))
               : undefined}
+            /* F12 (Decisão 64): a duração típica por membro — o que decide
+               "posso esperar". Chave ausente na resposta (API anterior, erro
+               de leitura ou lente sem corrida) vira `null` aqui, e a linha
+               volta a mostrar só o decorrido. */
+            tipicos={execData?.tipicos ?? null}
             fraseReexecucao={corrida?.status === 'ABERTA'
               ? `Esta reexecução entra na ${resumo?.identidade ?? 'corrida em andamento'}`
                 + ' (em andamento) e o relógio de fechamento do ciclo NÃO'

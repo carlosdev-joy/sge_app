@@ -14,7 +14,7 @@ import {
   Hourglass, Moon, TimerOff, XCircle,
 } from 'lucide-react'
 import type {
-  CorridaApi, CorridaCabecalho, CorridaEsperadaApi, PendenteCorrida,
+  CorridaApi, CorridaCabecalho, CorridaEsperadaApi, PendenteCorrida, TipicosApi,
 } from '../../types'
 import {
   diaCurto, duracaoEntre, decorridoMin, horaCurta, carimboLongo, textoDuracao,
@@ -109,6 +109,11 @@ export interface MalhaExecucaoApi {
    *  para sempre — o alarme falso crônico da Decisão 26. Chave ausente = a API
    *  não respondeu; mantém o comportamento anterior. */
   teams_configurado?: boolean
+  /** F12 (Decisão 64) — a duração TÍPICA de cada membro do snapshot, com o `n`
+   *  junto e o piso `n ≥ 5` já aplicado no servidor. Chave AUSENTE = não
+   *  apurei (API anterior à fase, erro de leitura, ou lente sem corrida): o
+   *  painel volta a mostrar só o decorrido, que é o que ele mostra hoje. */
+  tipicos?: TipicosApi
 }
 
 /** Evento do CICLO — sem `pipeline_name`, porque o sujeito é a corrida. */
