@@ -571,9 +571,6 @@ class FakeCur(FakeCurF15):
         retidos = self._nos_retidos(malha, _guarda(s, "AND n.tipo <> 'inicio'"))
         if not retidos:
             return []          # `MIN` sobre conjunto vazio: `h.cred` é NULL
-        cred = int((db.agora_banco - retidos[0][1]["retido_em"]).total_seconds() // 60)
-        if _guarda(s, "AND h.cred > 0") and cred <= 0:
-            return []
         candidatas = [c for c in db.corridas
                       if c["malha_name"].casefold() == str(
                           db._malha_key(malha) or malha).casefold()]
@@ -583,6 +580,16 @@ class FakeCur(FakeCurF15):
             candidatas = [c for c in candidatas if c["teto_em"] is not None]
         alvo = next(iter(candidatas), None)
         if alvo is None:
+            return []
+        # A corrida é escolhida ANTES do cálculo porque o piso do crédito é
+        # `me.aberta_em` — e, como toda guarda desta suíte, ele só vale se o SQL
+        # o contiver. Sem esta leitura, apagar o CASE do módulo passaria verde e
+        # um nó esquecido há dias voltaria a creditar dias a um teto de horas.
+        desde = retidos[0][1]["retido_em"]
+        if _guarda(s, "CASE WHEN MIN(n.retido_em) < me.aberta_em THEN me.aberta_em"):
+            desde = max(desde, alvo["aberta_em"])
+        cred = int((db.agora_banco - desde).total_seconds() // 60)
+        if _guarda(s, "AND h.cred > 0") and cred <= 0:
             return []
         alvo["teto_creditado_min"] = int(alvo.get("teto_creditado_min") or 0) + cred
         if _guarda(s, "teto_em = DATEADD(MINUTE, h.cred, me.teto_em)"):

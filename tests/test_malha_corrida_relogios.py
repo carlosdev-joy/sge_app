@@ -285,24 +285,24 @@ def test_soltar_UM_de_DOIS_nao_credita_nada_e_o_relogio_segue_parado(
     assert c["teto_em"] == teto_antes + timedelta(hours=6)
 
 
-def test_no_segurado_ONTEM_credita_o_hold_INTEIRO_a_corrida_que_nasceu_hoje(
+def test_no_segurado_ONTEM_credita_so_o_hold_QUE_ESTA_CORRIDA_VIVEU(
         client, auth_operador):
-    """Aceite da fase: *nó segurado ontem, corrida abre hoje → nasce com os
-    relógios parados*, visto pelo lado do CRÉDITO.
+    """Aceite da fase — *nó segurado ontem, corrida abre hoje* — visto pelo lado
+    do CRÉDITO, e com a decisão que estava pinada aqui já tomada.
 
-    O hold não começa quando a corrida abre — ele já estava lá. Quem mede é
-    `MIN(retido_em)`, e ele é de ONTEM: a corrida que viveu presa desde o
-    primeiro minuto recebe de volta o hold inteiro, e o teto passa a valer a
-    partir do momento em que a malha foi de fato liberada.
+    A janela do crédito é `[max(aberta_em, MIN(retido_em)), agora]`, e não
+    `[MIN(retido_em), agora]`. O motivo: hold posto ANTES de a corrida nascer
+    não atrasou ESTA corrida — ela nasceu presa, mas não esperou o tempo em que
+    nem existia.
 
-    ⚠️ E recebe **mais** do que viveu, de propósito e por construção: a janela
-    do crédito é `[MIN(retido_em), agora]` (§6.7, literal), não
-    `[max(aberta_em, MIN(retido_em)), agora]`. Aqui o hold tem 14h e a corrida
-    tem 9h — creditam-se as 14h. É o único lugar em que o crédito erra para
-    MAIS (o comentário do módulo declara segura a direção OPOSTA para holds
-    encavalados), e o efeito é adiar por 5h o único mecanismo anti-travamento
-    da malha. Está PINADO aqui: se algum dia o crédito for limitado a
-    `aberta_em`, é este teste que muda, com decisão do dono junto."""
+    Sem o piso, um nó esquecido segurado há 3 dias creditaria 72h a um teto de
+    24h, e o teto passaria a vencer quatro dias depois da abertura: o ÚNICO
+    mecanismo anti-travamento da malha neutralizado por um cadeado que não tem
+    nada a ver com o ciclo em voo. O erro seria sempre para MAIS, que é a
+    direção cara — o teto existe justamente para a corrida não ficar aberta
+    para sempre bloqueando o disparo.
+
+    Aqui o hold tem 14h e a corrida tem 9h: creditam-se **9h**."""
     db = FakeDb(pipelines=_pipes(), com_082=True)
     ontem = AGORA_BANCO_API - timedelta(hours=14)      # 20:00 do dia anterior
     with _patch_db(db), _patch_agora():
@@ -317,9 +317,33 @@ def test_no_segurado_ONTEM_credita_o_hold_INTEIRO_a_corrida_que_nasceu_hoje(
         r = _reter(client, nos[0], False)
     assert r.status_code == 200, r.text
     assert c["fechada_em"] is None
-    assert c["teto_creditado_min"] == 14 * 60
-    assert c["teto_em"] == AGORA_BANCO_API + timedelta(hours=9)
-    assert r.json()["credito_teto"]["minutos"] == 14 * 60
+    # 9h (o que a corrida viveu), não 14h (o que o cadeado tem de idade)
+    assert c["teto_creditado_min"] == 9 * 60
+    assert c["teto_em"] == AGORA_BANCO_API + timedelta(hours=4)
+    assert r.json()["credito_teto"]["minutos"] == 9 * 60
+
+
+def test_hold_posto_DEPOIS_da_abertura_credita_o_hold_inteiro(
+        client, auth_operador):
+    """O contraponto do piso — sem este par, limitar o crédito a `aberta_em`
+    poderia ter passado a valer para TODO caso, e o hold legítimo (posto no meio
+    da corrida) passaria a creditar menos do que segurou.
+
+    Aqui o hold começou 2h DEPOIS da abertura: o piso não morde, e as 6h de
+    cadeado voltam inteiras ao teto."""
+    db = FakeDb(pipelines=_pipes(), com_082=True)
+    with _patch_db(db), _patch_agora():
+        nos = _malha_com_dois_aguardes(client, db)
+        c = db.abrir_corrida("M1", odate=ODATE_API, teto_horas=4,
+                             aberta_em=AGORA_BANCO_API - timedelta(hours=8),
+                             membros=["RAIZ_A", "RAIZ_B"])
+        teto_antes = c["teto_em"]
+        db.nos[nos[0]]["retido_em"] = AGORA_BANCO_API - timedelta(hours=6)
+        db.nos[nos[0]]["retido_por"] = "C123456"
+        r = _reter(client, nos[0], False)
+    assert r.status_code == 200, r.text
+    assert c["teto_creditado_min"] == 6 * 60
+    assert c["teto_em"] == teto_antes + timedelta(hours=6)
 
 
 def test_hold_de_menos_de_um_minuto_nao_gera_credito_nem_evento(
@@ -1329,7 +1353,10 @@ def test_o_SQL_do_credito_mede_o_hold_no_BANCO_e_so_com_o_ultimo_no():
     """As três cláusulas que fazem o crédito ser verdade, lidas no texto — é o
     contrato que a paridade compara entre as árvores."""
     sql = " ".join(mc.SQL_CREDITAR_HOLD.split())
-    assert "DATEDIFF(MINUTE, MIN(n.retido_em), SYSDATETIME())" in sql
+    # O crédito mede do MAIOR entre "quando o hold começou" e "quando a
+    # corrida abriu" até agora — tudo em SQL, tudo no relógio do banco.
+    assert "CASE WHEN MIN(n.retido_em) < me.aberta_em THEN me.aberta_em" in sql
+    assert "ELSE MIN(n.retido_em) END, SYSDATETIME())" in sql
     assert "DATEADD(MINUTE, h.cred, me.teto_em)" in sql
     assert "h.cred > 0" in sql
     assert "n2.id <> ?" in sql

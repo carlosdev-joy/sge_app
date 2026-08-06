@@ -1661,7 +1661,15 @@ SQL_CREDITAR_HOLD = (
     "inserted.teto_creditado_min - deleted.teto_creditado_min, "
     "inserted.teto_em, inserted.teto_creditado_min, inserted.data_referencia "
     "FROM dbo.etl_malha_execucao me "
-    "CROSS APPLY (SELECT DATEDIFF(MINUTE, MIN(n.retido_em), SYSDATETIME()) AS cred "
+    # O piso e `me.aberta_em`: hold posto ANTES de a corrida nascer nao
+    # atrasou ESTA corrida. Sem o piso, um no esquecido segurado ha 3 dias
+    # creditaria 72h a um teto de 24h — o unico mecanismo anti-travamento
+    # da malha neutralizado por um cadeado que nao tem nada a ver com o
+    # ciclo em voo. O CASE mora no SQL porque o `me.` ja esta no escopo do
+    # CROSS APPLY, e porque conta de tempo em Python e proibida aqui.
+    "CROSS APPLY (SELECT DATEDIFF(MINUTE, "
+    "  CASE WHEN MIN(n.retido_em) < me.aberta_em THEN me.aberta_em "
+    "       ELSE MIN(n.retido_em) END, SYSDATETIME()) AS cred "
     "FROM dbo.etl_malha_no n "
     "WHERE n.malha_name = me.malha_name AND n.retido_em IS NOT NULL "
     + _SO_NO_QUE_TRAVA.format(a="n") + ") h "
