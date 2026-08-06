@@ -1,4 +1,6 @@
-import { estadoDaCorrida, ESTILO_NAO_ABRIU } from './statusExecucao'
+import {
+  estadoDaCorrida, estiloDiaAtipico, ESTILO_NAO_ABRIU,
+} from './statusExecucao'
 import type { CorridaApi, CorridaEsperadaApi } from '../../types'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -28,6 +30,15 @@ export interface CorridaBadgeProps {
    *  que hoje não começou. */
   esperada?: CorridaEsperadaApi | null
   tamanho?: 'sm' | 'md'
+  /** F12/Decisão 68 — `SEM_TRABALHO` em DIA ATÍPICO: a pílula sobe para âmbar.
+   *
+   *  O rótulo e o ícone NÃO mudam (o fato é o mesmo: não houve trabalho hoje);
+   *  o que muda é a cor, e quem carrega o segundo canal — a regra da casa de
+   *  que cor nunca é canal único — é a frase que o chamador escreve ao lado
+   *  ("as últimas 4 terças tiveram trabalho"). Por isso este prop é `boolean`
+   *  e não um estilo pronto: quem decide é o `resumoCorrida`, uma vez só, e as
+   *  duas superfícies pintam igual. */
+  diaAtipico?: boolean
 }
 
 const TAMANHO = {
@@ -35,11 +46,13 @@ const TAMANHO = {
   md: { pill: 'px-2 py-0.5 text-[12px] gap-1.5', icone: 13, dot: 'h-2 w-2' },
 }
 
-export function CorridaBadge({ corrida, esperada, tamanho = 'sm' }: CorridaBadgeProps) {
+export function CorridaBadge({ corrida, esperada, tamanho = 'sm',
+                               diaAtipico = false }: CorridaBadgeProps) {
   // Degradação por AUSÊNCIA (Decisão 41): sem corrida e sem previsão, esta
   // pílula não tem o que dizer — e quem escreve o fallback "(membro mais
   // recente)" é o CHAMADOR, que é quem tem o dado antigo em mãos.
-  const estilo = esperada ? ESTILO_NAO_ABRIU : (corrida ? estadoDaCorrida(corrida) : null)
+  const base = esperada ? ESTILO_NAO_ABRIU : (corrida ? estadoDaCorrida(corrida) : null)
+  const estilo = base && diaAtipico ? estiloDiaAtipico(base) : base
   if (!estilo) return null
   const t = TAMANHO[tamanho]
   return (

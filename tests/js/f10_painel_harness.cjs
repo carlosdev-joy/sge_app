@@ -33,7 +33,11 @@ const RAIZ = path.resolve(__dirname, '..', '..')
 const SRC = path.join(RAIZ, 'ui-react', 'src', 'components', 'malhas')
 const { transform } = require(path.join(RAIZ, 'ui-react', 'node_modules', 'sucrase'))
 
-const MODULOS = ['tempoCorrida.ts', 'statusExecucao.ts', 'proximaExecucao.ts']
+// `historicoCorridas.ts` entra porque `statusExecucao` passou a importá-lo
+// na F12 (o histórico factual mora num módulo puro próprio) — sem ele o Node
+// não resolve o import e a bancada inteira morre no arranque.
+const MODULOS = ['tempoCorrida.ts', 'historicoCorridas.ts',
+                 'statusExecucao.ts', 'proximaExecucao.ts']
 
 function preparar(destino) {
   const icones = new Set()

@@ -15,6 +15,9 @@ Endpoints:
                                                      malha_concluida (F14)
                                                      + lente ?corrida={id} e o
                                                      bloco `corrida` (F4)
+                                                     + `tipicos`: a duração
+                                                     típica por membro do
+                                                     snapshot (F12)
   POST   /malhas/{malha_name}/disparo              — disparo MANUAL da malha (F15;
                                                      dry_run no body): raízes do
                                                      Início via trigger REST
@@ -88,7 +91,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
@@ -2117,6 +2120,192 @@ def _raio_dos_pendentes(cur, corrida_payload: dict) -> None:
             .strip().casefold() == _CRITICIDADE_ALTA)
 
 
+# ══════ F12 — a duração TÍPICA por membro (§9.5, Decisão 64) ════════════════
+#
+# `4 de 7 · 2 rodando · há 12 min` não diz se os dois vivos são de 5 min ou de
+# 3h — e, pior, `4 de 7` com os dois mais pesados ainda por rodar parece "quase
+# lá" e manda o operador dormir. O número que responde "posso esperar?" é a
+# duração TÍPICA de cada membro, medida, com a amostra declarada.
+#
+# ── Por que `etl_job_execution`, e não `etl_pipeline_execucao` ──────────────
+# O argumento "sem histórico no dia 1" vale para a CORRIDA, não para o MEMBRO:
+# `etl_pipeline_execucao` só existe para o que passou pela guardiã e nasceu na
+# 067, enquanto `etl_job_execution` tem o histórico de sempre — inclusive o dos
+# membros que rodam por agenda própria. O molde é o do irmão mais velho,
+# `GET /execucoes/duracao-media` (`PERCENTILE_CONT` + `COUNT(*)`, **sem tocar o
+# Airflow**); a diferença é o SUJEITO: lá o p50 é por `job_name` DENTRO de um
+# pipeline, aqui é do PIPELINE inteiro, de ponta a ponta, para os membros do
+# snapshot.
+#
+# ── O piso de `n ≥ 5` é DURO, e ele mora no `HAVING` ────────────────────────
+# Sem amostra não sai número: o membro simplesmente não aparece na lista, e a
+# tela mostra só o decorrido. É a mesma honestidade da fonte — publicar "típico
+# 18 min" apurado em duas execuções é inventar precisão, e é exatamente o que
+# esta spec inteira existe para não fazer. O `n` viaja junto do p50 no payload
+# porque na tela ele **nunca aparece sozinho**: ou saem os dois (`típico 18 min
+# (n=23)`), ou não sai nenhum.
+#
+# ── O que conta como "uma execução do pipeline" ────────────────────────────
+# O rollup é por `(pipeline, execution_id)` — a mesma identidade de run que o
+# próprio produto usa no card de fim de execução das DAGs geradas e no
+# `sla-report`: `MIN(start_time)` → `MAX(end_time)`, ponta a ponta, que é o
+# tempo que o operador vê passar. Só entram execuções **limpas**: nenhuma linha
+# `FAILED`/`RUNNING` e nenhuma sem `end_time`. Uma execução que quebrou no meio
+# termina cedo e puxaria a mediana para baixo — o número serviria para tudo,
+# menos para decidir esperar.
+#
+# ⚠️ `WARNING` PASSA por limpa, e isso é uma escolha, não descuido: aviso de job
+# DataStage é desfecho legítimo e frequente, e excluí-lo cortaria a amostra
+# justamente nos pipelines mais barulhentos — que são os que mais precisam do
+# piso `n >= 5`. O preço conhecido: a Finalização Manual grava
+# `SUCCESS|WARNING|FAILED` com `end_time = GETDATE()` no instante do clique,
+# então uma execução travada e fechada à mão às 11h entra com a duração
+# "travada". Mediana + piso de amostra absorvem um outlier; um dia ruim inteiro
+# fechado à mão, não. Se isso aparecer no campo, o lugar de resolver é aqui.
+#
+# ⚠️ NÃO se enumera o domínio de `status` no `WHERE`. Enumerar tornaria a faixa
+# de `start_time` sargável (o índice é `(pipeline, status, start_time)`) e o
+# custo cairia; o preço seria uma linha de status DESCONHECIDO ficar invisível
+# — e uma execução suja passaria por limpa, em silêncio, na conta que decide se
+# alguém acorda. O lever está nomeado aqui de propósito, com o custo medido
+# abaixo, para quem um dia precise dele em produção.
+#
+# ── O custo, medido no dev (480.000 linhas, 300 pipelines) ─────────────────
+#   7 membros:  156 leituras lógicas, ~10 ms   (1 seek COBERTO por membro)
+#  40 membros:  918 leituras lógicas, ~40 ms   (cresce com MEMBRO, não com a
+#                                               tabela)
+# O seek é coberto porque `IX_etl_job_execution_pipeline_status_start` INCLUI
+# `end_time`, `execution_id` e `job_name` (migration 058) — zero key lookup.
+#
+# ⚠️ GOTCHA MEDIDO, e ele vale para toda consulta que cruze estas duas tabelas:
+# `etl_malha_execucao_membro.pipeline_name` é **NVARCHAR** e
+# `etl_job_execution.pipeline` é **VARCHAR**. Comparados direto, o NVARCHAR tem
+# precedência, a COLUNA da tabela grande é convertida e o predicado deixa de ser
+# sargável: **4.822 leituras e 169 ms** no mesmo cenário de 7 membros (scan do
+# índice inteiro), contra 156 e 10 ms com o `CAST` do lado PEQUENO. É o mesmo
+# alerta que a 085 escreveu sobre `ancora_execution_id`, agora medido.
+PISO_TIPICO_N = 5
+# 90 dias: uma malha diária dá ~90 amostras e uma semanal ~13. Mais que isso e a
+# mediana passa a descrever uma malha que já mudou de forma (job novo, servidor
+# novo); menos, e a malha semanal perde o número.
+TIPICO_JANELA_DIAS = 90
+# Teto de execuções por membro: a mediana de 30 já é estável, e o que passa
+# disso só envelhece o número.
+TIPICO_MAX_EXECUCOES = 30
+
+_SQL_TIPICOS = (
+    "WITH membros AS ("
+    " SELECT CAST(mm.pipeline_name AS VARCHAR(200)) AS pipeline_name"
+    " FROM dbo.etl_malha_execucao_membro mm"
+    " WHERE mm.malha_execucao_id = ? AND mm.ativo_na_abertura = 1), "
+    "execucoes AS ("
+    " SELECT m.pipeline_name,"
+    " DATEDIFF(SECOND, MIN(j.start_time), MAX(j.end_time)) AS dur_seg,"
+    " ROW_NUMBER() OVER (PARTITION BY m.pipeline_name"
+    "                    ORDER BY MIN(j.start_time) DESC) AS rn"
+    " FROM membros m"
+    " JOIN dbo.etl_job_execution j"
+    "   ON j.pipeline = m.pipeline_name"
+    "  AND j.start_time >= DATEADD(DAY, ?, SYSDATETIME())"
+    " GROUP BY m.pipeline_name, j.execution_id"
+    " HAVING COUNT(*) = COUNT(j.end_time)"
+    "    AND SUM(CASE WHEN j.status IN ('FAILED','RUNNING') THEN 1 ELSE 0 END) = 0) "
+    "SELECT t.pipeline_name, MAX(t.p50) AS p50_seg, COUNT(*) AS n "
+    "FROM (SELECT pipeline_name, dur_seg,"
+    "             PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY dur_seg)"
+    "                 OVER (PARTITION BY pipeline_name) AS p50"
+    "      FROM execucoes WHERE rn <= ? AND dur_seg > 0) t "
+    "GROUP BY t.pipeline_name "
+    "HAVING COUNT(*) >= ?")
+
+# Cache por CORRIDA, com TTL — o mesmo desenho de `_LJOBS_CACHE`
+# (routers/datastage.py) e do `modo_sequencia` dos serviços.
+#
+# Por que cachear justamente ISTO: o painel refaz a leitura a cada 15–30 s, e a
+# duração típica é um número de escala de DIAS — dentro de uma madrugada ele não
+# muda. Sem o cache, a consulta mais pesada desta camada seria a única que roda
+# em toda leitura sem que nada nela possa ter mudado.
+_CACHE_TIPICOS: dict = {}
+_TTL_TIPICOS_S = 300
+
+
+def limpar_cache_tipicos() -> None:
+    """Zera o cache — para os testes e para quem precise forçar releitura."""
+    _CACHE_TIPICOS.clear()
+
+
+def _tipicos_do_banco(cur, corrida_id: int):
+    """A consulta crua: `[{pipeline, p50_seg, n}]`, já com o piso aplicado.
+
+    `None` = **não apurei** (erro de leitura, banco sem a tabela, driver sem
+    `PERCENTILE_CONT`). Nunca `[]` nesse caso: lista vazia é uma AFIRMAÇÃO
+    ("nenhum membro tem histórico suficiente") e mentir isso apagaria da tela
+    números que existem."""
+    try:
+        cur.execute(_SQL_TIPICOS, (int(corrida_id), -int(TIPICO_JANELA_DIAS),
+                                   int(TIPICO_MAX_EXECUCOES),
+                                   int(PISO_TIPICO_N)))
+        linhas = cur.fetchall()
+    except Exception as e:  # noqa: BLE001 — leitura degrada, nunca 500
+        log.warning("[MALHA] duracao tipica da corrida #%s indisponivel (%s) — "
+                    "o painel mostra so o decorrido", corrida_id, e)
+        return None
+    itens = []
+    for pipeline, p50_seg, n in linhas:
+        if p50_seg is None:
+            continue
+        segundos = int(round(float(p50_seg)))
+        if segundos <= 0:
+            # Pipeline que roda em menos de um segundo não tem "duração típica"
+            # que ajude ninguém a decidir esperar — e `0` na tela leria como
+            # medida. Ausência é a resposta honesta.
+            continue
+        itens.append({"pipeline": str(pipeline).strip(),
+                      "p50_seg": segundos, "n": int(n)})
+    itens.sort(key=lambda i: i["pipeline"].casefold())
+    return itens
+
+
+def _tipicos_da_corrida(cur, corrida_payload: dict):
+    """O bloco `tipicos` do payload — ou `None`, e aí a chave nem existe.
+
+    A chave AUSENTE é o contrato da degradação (Decisão 41), o mesmo de
+    `corrida`: API anterior à fase, banco sem a tabela e erro de leitura caem
+    todos no mesmo lugar — o painel mostra o decorrido e mais nada, que é
+    exatamente o que ele mostra hoje.
+
+    `completo` é o que a Decisão 56b exige antes de existir percentual de tempo:
+    **todos** os membros do snapshot com `n ≥ 5`. Faltando um só, o percentual
+    some por inteiro — não é estimado, não é "aproximado com ressalva"."""
+    corrida_id = int(corrida_payload["id"])
+    agora = time.time()
+    entrada = _CACHE_TIPICOS.get(corrida_id)
+    if entrada is not None and entrada[0] > agora:
+        itens = entrada[1]
+    else:
+        itens = _tipicos_do_banco(cur, corrida_id)
+        if itens is None:
+            return None
+        # Limpeza dos vencidos junto da escrita: sem ela o dicionário guardaria
+        # uma entrada por corrida já visitada pelo processo inteiro.
+        for chave in [k for k, v in _CACHE_TIPICOS.items() if v[0] <= agora]:
+            _CACHE_TIPICOS.pop(chave, None)
+        _CACHE_TIPICOS[corrida_id] = (agora + _TTL_TIPICOS_S, itens)
+    membros = corrida_payload.get("membros_total")
+    membros = int(membros) if isinstance(membros, int) else None
+    return {
+        "piso_n": PISO_TIPICO_N,
+        "janela_dias": TIPICO_JANELA_DIAS,
+        "limite_execucoes": TIPICO_MAX_EXECUCOES,
+        # O denominador do snapshot (Decisão 52), repetido aqui para que quem
+        # lê `tipicos` não precise cruzar dois blocos para saber se falta gente.
+        "membros": membros,
+        "com_historico": len(itens),
+        "completo": bool(membros) and len(itens) == membros,
+        "itens": itens,
+    }
+
+
 def _quiescencia_da_linha(bruto) -> int:
     """Config de quiescência que veio junto da consulta (A) → int no domínio.
 
@@ -2288,7 +2477,6 @@ def _corrida_do_card(c: dict, agg) -> dict:
     `pendentes` vazio: a tela mostra o estado do ciclo e NÃO desenha a barra.
     """
     out = _corrida_publica(c)
-    out["reaberta_por"] = c["reaberta_por"]
     out["decorrido_min"] = c["_decorrido_min"]
     out["apurado_em"] = _fmt_dt(c["_apurado_em"])
     # ── F7: os relógios do prazo, sempre — inclusive com `agg is None` ───────
@@ -2485,6 +2673,271 @@ def _bloco_corrida(cur, malha=None, corrida_id=None):
                                          quiescencia)
     return ({nome: _corrida_do_card(c, agregado.get(int(c["id"])))
              for nome, c in correntes.items()}, False, correntes)
+
+
+# ══════ F12 — o HISTÓRICO FACTUAL da malha (§9.7, Decisão 68) ═══════════════
+#
+# A fronteira desta fase, e ela é a razão de o bloco existir: **contar desfechos
+# PASSADOS não é previsão.** A proibição do §3 é contra INVENTAR corrida
+# retroativa (backfill); ler as corridas que de fato existiram é fato
+# registrado, e ele sai do mesmo `ix_malha_exec_malha` que esta camada já usa.
+#
+# Nada aqui prevê nada. Não existe "provavelmente vai falhar", não existe
+# tendência, não existe score: o produto conta o que ACONTECEU e quem decide é
+# a pessoa que está lendo às 3h. As três leituras:
+#
+#   • card  — `falhou 2 das últimas 7 corridas`: responde "está pior que
+#     antes?" sem obrigar a abrir malha por malha;
+#   • faixa — `corrida anterior: 03/08 · concluída · 01:10 → 04:02`. Exige
+#     `n = 1`, e não `n ≥ 5`: é FATO, não mediana, e é a resposta mais direta a
+#     "está pior que ontem?";
+#   • `SEM_TRABALHO` em DIA ATÍPICO — o caso que só o histórico enxerga.
+#
+# ── ⚠️ O dia 1: `n = 0` é AUSÊNCIA, nunca "0%" ──────────────────────────────
+# Antes do primeiro smoke o histórico é literalmente ZERO. Nenhuma frase desta
+# fase pode nascer de uma lista vazia: sem corrida fechada não sai `historico`
+# nenhum (chave AUSENTE, o contrato da Decisão 41), e o card volta a ser o da
+# F9 — byte a byte. `falhou 0 das últimas 0 corridas` seria um número sem
+# amostra com cara de medida, que é o que esta spec inteira existe para não
+# fazer.
+#
+# ── Por que SEM_TRABALHO não entra na janela do "falhou X de Y" ────────────
+# Numa malha "seg a sex", dois dos últimos sete ciclos são sábado e domingo.
+# Contá-los no denominador diria "falhou 2 das últimas 7" sobre 5 madrugadas
+# que de fato tiveram trabalho — o número certo com o denominador errado. Dia
+# sem trabalho não teve chance de falhar, então ele não conta; e é por isso que
+# a janela lida é MAIOR que a exibida (o `Y` da frase é o que sobrou, e ele vem
+# no payload em vez de ser suposto pela tela).
+JANELA_HISTORICO = 7
+# Quantas corridas se lê para conseguir preencher a janela depois de descartar
+# a corrente e os dias sem trabalho. Doze cobre uma malha "seg a sex" (7 com
+# trabalho + 4 de fim de semana + a corrente) sem virar varredura.
+_LEITURA_HISTORICO = 12
+# Os desfechos que contam como "falhou" na frase do card. `CANCELADA` fica
+# FORA: encerrar à mão é gesto humano deliberado, e somá-lo a "falhou" faria a
+# malha em que o operador agiu certo parecer a malha que quebrou. Ela continua
+# no DENOMINADOR (foi uma corrida com trabalho), e o motivo dela aparece na
+# auditoria da Decisão 67, que é o lugar dela.
+_DESFECHOS_RUINS = ("FALHA", "EXPIRADA", "ABORTADA")
+# Quantas ocorrências do MESMO dia da semana precisam ter tido trabalho para
+# um `SEM_TRABALHO` de hoje virar âmbar. Quatro é um mês de terças: menos que
+# isso vira alarme por coincidência, e "as últimas 2 terças tiveram trabalho"
+# não é evidência de nada num calendário com feriado.
+DIAS_ATIPICO = 4
+
+# ⚠️ `DATEDIFF(DAY, '19000101', d) % 7` e NÃO `DATEPART(WEEKDAY, d)`:
+# `DATEPART(WEEKDAY)` depende de `SET DATEFIRST`, que varia com o idioma da
+# conexão — a instalação da Caixa pode estar em pt-BR. O resto do `DATEDIFF` é
+# determinístico e independe de configuração de sessão; qual inteiro sai de
+# cada dia da semana não importa, porque ele só é comparado consigo mesmo.
+_DOW = "DATEDIFF(DAY, '19000101', {c}) % 7"
+
+_COLS_HIST = ("malha_name, id, data_referencia, sequencia, status, "
+              "aberta_em, fechada_em, fechada_por, motivo, origem, tentativas")
+_SQL_HISTORICO = (
+    "SELECT " + _COLS_HIST + " FROM ("
+    " SELECT " + _COLS_HIST + ","
+    " ROW_NUMBER() OVER (PARTITION BY malha_name"
+    "                    ORDER BY data_referencia DESC, sequencia DESC,"
+    "                             id DESC) AS rn"
+    " FROM dbo.etl_malha_execucao"
+    " WHERE fechada_em IS NOT NULL{filtro}) t "
+    "WHERE rn <= ? ORDER BY malha_name, rn")
+# O mesmo recorte, restrito a UM dia da semana e às malhas que precisam dele.
+# Ele só roda quando alguma malha está `SEM_TRABALHO` AGORA — que é raro por
+# construção. Sem candidato, ZERO consulta a mais.
+_SQL_HISTORICO_DIA = (
+    "SELECT malha_name, id, status FROM ("
+    " SELECT malha_name, id, status,"
+    " ROW_NUMBER() OVER (PARTITION BY malha_name"
+    "                    ORDER BY data_referencia DESC, sequencia DESC,"
+    "                             id DESC) AS rn"
+    " FROM dbo.etl_malha_execucao"
+    " WHERE fechada_em IS NOT NULL AND "
+    + _DOW.format(c="data_referencia") + " = ?"
+    " AND malha_name IN ({malhas})) t "
+    "WHERE rn <= ? ORDER BY malha_name, rn")
+
+
+def _corrida_anterior_publica(c: dict) -> dict:
+    """A corrida ANTERIOR, no mínimo que a frase da faixa consome.
+
+    Projeção curta de propósito: a faixa escreve UMA linha
+    (`corrida anterior: 03/08 · concluída · 01:10 → 04:02`), e publicar o
+    cabeçalho inteiro convidaria a tela a montar um segundo card de corrida
+    dentro do primeiro — dois estados na mesma faixa, que é o ruído que a
+    Decisão 75 proíbe. A auditoria da anterior tem lugar próprio: a faixa de
+    corridas (Decisão 42), onde ela é clicável."""
+    return {
+        "id": int(c["id"]),
+        "data_referencia": _fmt_dia(c["data_referencia"]),
+        "sequencia": int(c["sequencia"] or 1),
+        "status": c["status"],
+        "aberta_em": _fmt_dt(c["aberta_em"]),
+        "fechada_em": _fmt_dt(c["fechada_em"]),
+    }
+
+
+def _chave_ordem(c: dict) -> tuple:
+    """A ordem CRONOLÓGICA de uma corrida — a mesma do `ORDER BY` da consulta.
+
+    A data vai por `_fmt_dia` (texto ISO) de propósito: 'YYYY-MM-DD' ordena
+    lexicograficamente igual a cronologicamente, e o texto compara igual venha
+    a coluna como `date` (a corrente, lida por `mc._como_dict`) ou como string
+    (o driver pode devolver qualquer um dos dois). Comparar `date` com `str`
+    levantaria `TypeError` no meio da lista de malhas — um histórico derrubando
+    a tela de entrada, que é exatamente o que este bloco não pode fazer."""
+    return (_fmt_dia(c["data_referencia"]) or "",
+            int(c.get("sequencia") or 1), int(c["id"]))
+
+
+def _historico_das_malhas(cur, correntes: dict, malha=None) -> dict:
+    """`{malha_name: bloco_historico}` — as corridas que DE FATO existiram.
+
+    `correntes` é `{malha: payload_da_corrida_corrente}`: ela entra porque toda
+    leitura daqui é RELATIVA à corrente (a anterior é a anterior A ELA, e o dia
+    da semana é o DELA). Malha sem corrente não tem histórico a publicar — não
+    há a que comparar.
+
+    Uma consulta de conjunto para a lista inteira, mais UMA condicional para o
+    dia atípico. Falha de leitura devolve `{}`: o card volta a ser o da F9, sem
+    nenhuma das frases desta fase, e a lista de malhas continua de pé. Histórico
+    é aditivo — ele nunca pode derrubar a tela de entrada."""
+    if not correntes:
+        return {}
+    sql = _SQL_HISTORICO.format(filtro=" AND malha_name = ?" if malha else "")
+    params = ((malha, _LEITURA_HISTORICO) if malha
+              else (_LEITURA_HISTORICO,))
+    try:
+        cur.execute(sql, params)
+        linhas = cur.fetchall()
+    except Exception as e:  # noqa: BLE001 — leitura degrada, nunca 500
+        log.warning("[MALHA] historico das corridas indisponivel (%s) — os "
+                    "cards saem sem as frases de historico", e)
+        return {}
+    campos = tuple(c.strip() for c in _COLS_HIST.split(","))
+    por_malha: dict = {}
+    for row in linhas:
+        d = dict(zip(campos, row))
+        por_malha.setdefault(str(d["malha_name"]), []).append(d)
+
+    saida: dict = {}
+    # As malhas cuja corrente É a última corrida conhecida — só elas podem
+    # responder a pergunta do DIA ATÍPICO, que é sobre hoje.
+    ultimas: set = set()
+    for nome, corrente in correntes.items():
+        conhecidas = por_malha.get(nome, [])
+        # ⚠️ ANTERIOR é anterior À CORRENTE, e não "a próxima da lista".
+        #
+        # Com a LENTE `?corrida={id}` apontada para uma corrida antiga (o gesto
+        # normal de quem clica num bloco da faixa), um simples `id != corrente`
+        # deixaria as corridas MAIS NOVAS na frente — e a faixa escreveria
+        # "corrida anterior: 05/08" embaixo da corrida de 03/08. Uma linha que
+        # chama de anterior o que veio DEPOIS é pior que linha nenhuma: ela
+        # inverte a resposta de "está pior que ontem?".
+        chave_corrente = _chave_ordem(corrente)
+        anteriores = [c for c in conhecidas
+                      if _chave_ordem(c) < chave_corrente]
+        if not anteriores:
+            # Dia 1: a chave nem existe. Ausência, nunca zero.
+            continue
+        # A janela do "falhou X das últimas Y" — só o que teve trabalho.
+        janela = [c for c in anteriores
+                  if str(c["status"]) != "SEM_TRABALHO"][:JANELA_HISTORICO]
+        bloco = {
+            "janela": JANELA_HISTORICO,
+            # O `Y` da frase é o que SOBROU depois do descarte, e ele viaja
+            # pronto: a tela nunca deduz denominador (uma malha de três
+            # semanas diria "das últimas 7" sobre 4 corridas existentes).
+            "consideradas": len(janela),
+            "falhou": sum(1 for c in janela
+                          if str(c["status"]) in _DESFECHOS_RUINS),
+            "anterior": _corrida_anterior_publica(anteriores[0]),
+        }
+        saida[nome] = bloco
+        # A corrente é a mais nova que este módulo conhece? Só aí o "dia
+        # atípico" é sobre HOJE. Com a lente numa corrida antiga, a pergunta
+        # "as últimas 4 terças tiveram trabalho?" seria respondida com terças
+        # POSTERIORES àquela — presente respondendo sobre passado.
+        if conhecidas and _chave_ordem(conhecidas[0]) == chave_corrente:
+            ultimas.add(nome)
+
+    _dia_atipico(cur, correntes, saida, ultimas)
+    return saida
+
+
+def _dia_atipico(cur, correntes: dict, saida: dict, ultimas: set) -> None:
+    """Decisão 68 — o `SEM_TRABALHO` que merece âmbar, e só ele.
+
+    O caso que só o histórico enxerga: alguém inativa membros numa TERÇA, a
+    corrida fecha `SEM_TRABALHO` e o card fica cinza e mudo — indistinguível de
+    um sábado legítimo. A regra é uma comparação com o MESMO dia da semana: se
+    as últimas quatro terças tiveram trabalho, esta terça sem trabalho é
+    notícia.
+
+    ⚠️ **No sábado a mesma malha continua cinza e muda**, e isso não é detalhe:
+    um alarme de sábado toda semana treina o operador a ignorar o alarme
+    (Decisão 26) — e aí ele ignora também a terça, que é a única que importava.
+    A comparação por dia da semana é o que separa os dois casos sem pedir
+    calendário nenhum ao operador.
+
+    Só roda com candidato: sem `SEM_TRABALHO` corrente, ZERO consulta."""
+    candidatos = {nome: c for nome, c in correntes.items()
+                  if str(c["status"]) == "SEM_TRABALHO" and nome in saida
+                  and nome in ultimas}
+    if not candidatos:
+        return
+    # Agrupa por dia da semana da data de referência da própria corrente: uma
+    # consulta por grupo, e na prática o grupo é um só (as malhas sem trabalho
+    # de hoje têm o ODATE de hoje).
+    grupos: dict = {}
+    for nome, c in candidatos.items():
+        dia = c["data_referencia"]
+        try:
+            # Mesmo cálculo do `_DOW` do SQL, para os dois lados casarem: dia
+            # da semana de uma DATA é rótulo de calendário, não conta de
+            # relógio (Decisão 10 fala de "agora", e aqui não há "agora").
+            dow = (dia.toordinal() - date(1900, 1, 1).toordinal()) % 7
+        except AttributeError:
+            continue
+        grupos.setdefault(dow, []).append((nome, c))
+    for dow, itens in grupos.items():
+        nomes = [n for n, _ in itens]
+        marcadores = ",".join("?" for _ in nomes)
+        sql = _SQL_HISTORICO_DIA.format(malhas=marcadores)
+        # ⚠️ Lê-se UMA a mais e descarta-se a CORRENTE em Python, em vez de um
+        # `id <> ?` no SQL: a corrente é uma por malha e o grupo tem várias
+        # malhas, então um único id excluiria a corrente de uma delas e
+        # deixaria as outras contarem a PRÓPRIA corrida de hoje como uma das
+        # quatro terças passadas — o `SEM_TRABALHO` de hoje se auto-absolvendo,
+        # em silêncio. Um id por malha custaria uma consulta por malha.
+        try:
+            cur.execute(sql, (int(dow), *nomes, DIAS_ATIPICO + 1))
+            linhas = cur.fetchall()
+        except Exception as e:  # noqa: BLE001 — aditivo degrada em silêncio
+            log.warning("[MALHA] historico por dia da semana indisponivel "
+                        "(%s) — o card sem trabalho segue cinza", e)
+            continue
+        por_malha: dict = {}
+        for nome, cid, status in linhas:
+            por_malha.setdefault(str(nome), []).append((int(cid), str(status)))
+        for nome, corrente in itens:
+            passadas = [s for cid, s in por_malha.get(nome, [])
+                        if cid != int(corrente["id"])][:DIAS_ATIPICO]
+            # As quatro precisam EXISTIR e todas terem tido trabalho. Faltando
+            # uma, não se afirma nada: três terças não são "as últimas 4
+            # terças", e uma frase com número errado é pior que silêncio.
+            com_trabalho = sum(1 for s in passadas if s != "SEM_TRABALHO")
+            saida[nome]["dia_semana"] = {
+                "exigidas": DIAS_ATIPICO,
+                "encontradas": len(passadas),
+                "com_trabalho": com_trabalho,
+                # O ÚNICO campo que a tela lê para decidir a cor. Ele é
+                # calculado aqui (e não no front) porque é a regra, e regra que
+                # mora em dois lugares vira duas regras.
+                "atipico": (len(passadas) >= DIAS_ATIPICO
+                            and com_trabalho == len(passadas)),
+            }
 
 
 # ══════ F9 — a corrida que NÃO ABRIU (§9.2, Decisão 58) ═════════════════════
@@ -3083,6 +3536,22 @@ def list_malhas(_auth: dict = Depends(get_current_user)):
             if rec is not None:
                 rec["corrida"] = payload
 
+        # F12 (Decisão 68) — o histórico FACTUAL: `falhou 2 das últimas 7
+        # corridas` e o `SEM_TRABALHO` de dia atípico. Uma consulta de conjunto
+        # para a lista inteira (mais uma condicional, só se houver malha sem
+        # trabalho hoje), sobre o mesmo `ix_malha_exec_malha` desta camada.
+        #
+        # ⚠️ Entra `brutas`, e não `corridas`: o dia da semana sai de um `date`,
+        # e o payload público já passou por `_fmt_dia`. Ler o dia da semana de
+        # um texto aqui seria reparsear o que o banco já entregou tipado.
+        #
+        # Dia 1 — histórico ZERO — sai como AUSÊNCIA da chave em todo card, e
+        # nenhuma frase desta fase é renderizada. `n = 0` nunca vira "0%".
+        for malha, bloco in _historico_das_malhas(cur, brutas).items():
+            rec = indice.get(malha)
+            if rec is not None:
+                rec["historico"] = bloco
+
         # F9 (Decisão 58) — a corrida que NÃO ABRIU. Só chega aqui malha ATIVA
         # que JÁ TEVE corrida (a trava do dia do deploy: com o interruptor em
         # `0` ninguém tem, e a lista inteira se cala) e que tem agendamento
@@ -3512,6 +3981,21 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
     conta outro número — a mesma tela contando duas coisas diferentes. Banco
     sem a coluna (078 pendente) cai no texto legado.
 
+    ── `tipicos` (F12, Decisão 64) ─────────────────────────────────────────
+    Com corrida na lente vem também a **duração típica de cada membro do
+    snapshot** — o número que responde *posso esperar*: `p50` das execuções
+    limpas de `etl_job_execution`, com o `n` junto e piso de `n ≥ 5` aplicado no
+    servidor. Membro sem amostra simplesmente não está na lista, e a tela mostra
+    só o decorrido. Isto **não é ETA**: é a duração típica DAQUELE membro, e
+    somar típicos não dá previsão de conclusão da corrida.
+
+    ── `historico` (F12, Decisão 68) ───────────────────────────────────────
+    O que DE FATO aconteceu nas corridas anteriores A ESTA — nunca o que vai
+    acontecer. `anterior` é a corrida imediatamente anterior à da lente, e
+    `falhou/consideradas` é a contagem de desfechos passados. Sem corrida
+    anterior nenhuma (dia 1), a chave não existe: `n = 0` é ausência, e a faixa
+    não escreve frase nenhuma desta fase.
+
     Produção PRÉ-retomada (F2–F4): as tabelas da 067 existem mas NADA as
     alimenta — a resposta é o estado vazio HONESTO (arrays vazios), nunca tela
     quebrada nem promessa falsa. Deploy parcial SEM a 067: arrays vazios +
@@ -3756,6 +4240,33 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
         # que decide se alguém acorda às 3h ou espera até as 7h.
         if pendentes_da_corrida:
             _raio_dos_pendentes(cur, corrida_payload)
+
+        # F12 (Decisão 64) — a duração TÍPICA de cada membro do snapshot: o
+        # número que decide "posso esperar". Uma consulta de conjunto, escopada
+        # ao snapshot (nunca ao banco inteiro) e cacheada por 5 min, porque
+        # dentro de uma madrugada ela não muda.
+        #
+        # ⚠️ Ela só existe com CORRIDA na lente: fora dela não há snapshot, e
+        # sem snapshot o "típico de quem?" não tem resposta. Chave ausente é o
+        # contrato — o painel volta a mostrar só o decorrido, byte a byte.
+        if corrida_payload is not None:
+            tipicos = _tipicos_da_corrida(cur, corrida_payload)
+            if tipicos is not None:
+                resposta["tipicos"] = tipicos
+
+            # F12 (Decisão 68) — o histórico FACTUAL desta malha: a frase
+            # `corrida anterior: 03/08 · concluída · 01:10 → 04:02` da faixa.
+            # Ela exige `n = 1`, e não `n ≥ 5`: é FATO, não mediana, e é a
+            # resposta mais direta a "está pior que ontem?".
+            #
+            # ⚠️ RELATIVO À LENTE: `corrida_bruta` é a corrida que esta tela
+            # está descrevendo, não necessariamente a mais recente da malha —
+            # e é dela que "anterior" fala. Sem isso, clicar num bloco antigo
+            # da faixa faria a linha chamar de anterior uma corrida POSTERIOR.
+            historico = _historico_das_malhas(
+                cur, {malha: corrida_bruta}, malha=malha).get(malha)
+            if historico is not None:
+                resposta["historico"] = historico
 
         # Nós desta malha (F14): resolve o marcador '#no:{id}' dos eventos de
         # observador. Sem a 075 (deploy parcial) degrada — eventos_no vazio +
@@ -4491,6 +5002,91 @@ def encerrar_corrida(malha_name: str, corrida_id: int,
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
 
 
+# F12 (§9.7, Decisão 68) — QUEM TRAVOU cada corrida da faixa.
+#
+# A terceira leitura factual: `title` do bloco = `04/08 · concluída · 2h41 ·
+# travou: CARGA_A`. É o que transforma dez quadradinhos coloridos em
+# diagnóstico — três madrugadas seguidas travando no MESMO membro é problema
+# CRÔNICO e espera o horário comercial; nove verdes e uma vermelha é NOVIDADE
+# e escala. Sem o nome, a faixa responde "foi ruim" e para aí.
+#
+# ── Por que a MESMA classificação, e não o `motivo` do fechamento ──────────
+# O `motivo` da corrida traz o texto que a guardiã escreveu ("3 pipeline(s) sem
+# concluir: CARGA_A (falhou)…") — e ele é vocabulário de MÁQUINA (Decisão 74),
+# além de exigir que a tela faça parse de frase para achar um nome. Aqui o nome
+# sai de `_denominador_das_corridas`, a MESMA função que classifica os membros
+# do card, com a MESMA precedência de gravidade. Uma segunda definição de "quem
+# travou" seria a faixa e o card discordando sobre a mesma madrugada.
+#
+# ── O teto, e por que ele existe ──────────────────────────────────────────
+# A faixa mostra dez blocos (`BLOCOS_VISIVEIS` do `SeletorCorrida`); o endpoint
+# aceita `limite` até 200. Apurar 200 snapshots a cada 60 s pagaria por 190
+# nomes que ninguém vê. Fora do teto a chave `travou` simplesmente não sai, que
+# é o mesmo contrato de ausência do resto desta camada.
+_TRAVOU_MAX_CORRIDAS = 12
+
+
+def _travou_por_corrida(cur, linhas: list) -> dict:
+    """`{corrida_id: {"pipeline", "classe"} | None}` para as N mais recentes.
+
+    `None` no valor é "apurei e não havia travado" (corrida limpa). A chave
+    AUSENTE é "não apurei" — as duas leituras precisam continuar distinguíveis,
+    porque a faixa escreve `travou: X` só na primeira e nada nas outras duas.
+
+    Falha de leitura devolve `{}`: a faixa volta ao `title` de antes desta
+    fase. Nenhum bloco some, nenhuma cor muda — o que falta é o nome."""
+    alvos = linhas[:_TRAVOU_MAX_CORRIDAS]
+    if not alvos:
+        return {}
+    # A quiescência aqui é INERTE: ela só alimenta o `quiescencia_ate` do
+    # agregado, que este chamador não lê (a faixa não fala de fechamento
+    # futuro de corrida passada). Passa-se o default do módulo em vez de gastar
+    # uma ida ao banco para buscar uma config que não muda nada nesta resposta.
+    agregado = _denominador_das_corridas(cur, alvos,
+                                         mc.QUIESCENCIA_MIN_PADRAO)
+    if not agregado:
+        return {}
+    saida: dict = {}
+    for c in alvos:
+        cid = int(c["id"])
+        agg = agregado.get(cid)
+        if agg is None:
+            continue                    # não apurei ESTA: chave ausente
+        # `nao_partiu` entra aqui de propósito, ao contrário do chip vermelho
+        # do card: numa corrida FECHADA "não chegou a iniciar" deixou de ser o
+        # estado normal dos primeiros segundos e virou veredito — foi ele que
+        # segurou a madrugada, e é o nome que o operador procura de manhã.
+        #
+        # ⚠️ E ele só chega aqui pela NORMALIZAÇÃO: o agregado nunca ATRIBUI a
+        # classe `nao_partiu` — ela nasce de `classe is None` ("membro sem
+        # linha nenhuma no escopo"), exatamente como em `_corrida_do_card`.
+        # Sem esta linha, a madrugada que o operador procura de manhã — aquela
+        # em que ninguém falhou, mas alguém nunca chegou a iniciar — sairia com
+        # `travou: null`, e `null` é a afirmação "apurei e ninguém travou".
+        #
+        # Em corrida ABERTA a normalização fica de FORA, e é a mesma razão pela
+        # qual `nao_partiu` não ganha chip vermelho no card: nos primeiros
+        # segundos NENHUM membro tem linha, e nomear culpado ali seria acusar
+        # toda malha, todas as noites, sobre um ciclo saudável.
+        fechada = c["fechada_em"] is not None
+        pendentes = []
+        for pipeline, m in agg["membros"].items():
+            if not m["ativo"]:
+                continue
+            classe = m["classe"]
+            if classe is None:
+                if not fechada:
+                    continue
+                classe = "nao_partiu"
+            if classe in ("ok", "vivo", "dispensado"):
+                continue
+            pendentes.append((mc._ORDEM_CLASSE.index(classe), pipeline, classe))
+        pendentes.sort()
+        saida[cid] = ({"pipeline": pendentes[0][1], "classe": pendentes[0][2]}
+                      if pendentes else None)
+    return saida
+
+
 @router.get("/malhas/{malha_name}/corridas", tags=["malhas"])
 def listar_corridas(malha_name: str, data_referencia: str | None = None,
                     limite: int = 30,
@@ -4546,7 +5142,16 @@ def listar_corridas(malha_name: str, data_referencia: str | None = None,
             log.warning("[MALHA] corridas da malha '%s' indisponíveis (%s) — "
                         "lista vazia", malha, e)
             linhas = []
-        resposta["corridas"] = [_corrida_publica(c) for c in linhas]
+        travou = _travou_por_corrida(cur, linhas)
+        resposta["corridas"] = []
+        for c in linhas:
+            publica = _corrida_publica(c)
+            # Chave AUSENTE = não apurei (fora do teto de apuração, ou a
+            # leitura falhou); `None` = apurei e ninguém travou. São coisas
+            # diferentes, e a faixa escreve uma só delas.
+            if int(c["id"]) in travou:
+                publica["travou"] = travou[int(c["id"])]
+            resposta["corridas"].append(publica)
         # `aberta` é o id do ciclo em voo, e vem separado porque a página pode
         # estar recortada por data: a corrida aberta é a única sobre a qual há
         # um GESTO possível (encerrar), e escondê-la atrás da paginação seria
@@ -4946,6 +5551,14 @@ def _corrida_publica(c: dict) -> dict:
         "teto_em": _fmt_dt(c["teto_em"]),
         "tentativas": c["tentativas"],
         "reaberta_em": _fmt_dt(c["reaberta_em"]),
+        # F12/Decisão 67 — a auditoria completa também na LISTA de corridas, e
+        # não só no card: fechar o mês com três corridas canceladas e não
+        # conseguir explicar nenhuma sem abrir o banco é o buraco que esta
+        # projeção fecha. `reaberta_por` morava só no payload do card (era
+        # acrescentado por `_corrida_do_card`), então a lista mostrava
+        # "reaberta 1x" sem dizer POR QUEM — meia auditoria, que na hora de
+        # explicar não vale mais que nenhuma.
+        "reaberta_por": c["reaberta_por"],
         "motivo": c["motivo"],
     }
 

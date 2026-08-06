@@ -588,14 +588,35 @@ def test_pendentes_distinguem_as_quatro_classes(client, auth):
 
 
 # ══════════════════ o orçamento de consultas (o N+1 que não há) ═════════════
+#
+# ⚠️ O NÚMERO MUDOU NA F12, e o que ele protege não.
+#
+# O aceite da F4 era "duas consultas" para o bloco da corrida. A F12 (Decisão
+# 68) acrescenta a TERCEIRA: o histórico factual (`falhou 2 das últimas 7
+# corridas`), também de CONJUNTO — uma para a lista inteira, com `ROW_NUMBER()
+# OVER (PARTITION BY malha_name)`, nunca uma por malha.
+#
+# **Por que não foi dobrada dentro da consulta (A), que manteria o número em
+# dois:** porque ela precisa poder FALHAR SOZINHA. Como `OUTER APPLY` da (A),
+# um erro na leitura do histórico — coluna ausente num deploy pela metade,
+# lock, plano ruim — derrubaria o bloco `corrida` INTEIRO, e card e painel
+# perderiam o ciclo por causa de uma frase de contexto. É o mesmo raciocínio
+# que já pôs `teto_horas` e as três perguntas do hold em slots próprios.
+#
+# O que estes testes protegem continua sendo o mesmo, e é o que importa: o
+# custo é CONSTANTE, nunca por malha. Por isso o número é uma constante
+# nomeada — mexer nela é uma decisão consciente, e o teste de baixo prova que
+# ela não cresce com 4 nem com 40 malhas.
+_CONSULTAS_DO_BLOCO = 3
+
 
 @pytest.mark.parametrize("quantas", [4, 40])
 def test_lista_gasta_duas_consultas_qualquer_que_seja_o_numero_de_malhas(
         client, auth, quantas):
-    """Aceite da F4: **duas** consultas no total para o bloco da corrida — e o
-    número não pode crescer com a lista. A tela de acompanhamento faz refetch;
-    40 malhas × 1 consulta por malha seria o custo multiplicado por 40 a cada
-    ciclo de polling."""
+    """Aceite da F4 (+ a terceira da F12): o bloco da corrida custa um número
+    FIXO de consultas de conjunto, e ele não cresce com a lista. A tela de
+    acompanhamento faz refetch; 40 malhas × 1 consulta por malha seria o custo
+    multiplicado por 40 a cada ciclo de polling."""
     db = FakeDb(pipelines=_pipes())
     with _patch(db), _patch_agora():
         for i in range(quantas):
@@ -609,7 +630,12 @@ def test_lista_gasta_duas_consultas_qualquer_que_seja_o_numero_de_malhas(
     assert resp.status_code == 200
     assert sum(1 for m in resp.json()["malhas"] if m.get("corrida")) == quantas
     da_corrida = [s for s in db.sqls if "etl_malha_execucao" in s]
-    assert len(da_corrida) == 2, "\n".join(da_corrida)
+    assert len(da_corrida) == _CONSULTAS_DO_BLOCO, "\n".join(da_corrida)
+    # E o histórico é UMA delas, nomeada: sem esta linha o número acima
+    # continuaria fechando no dia em que alguém trocasse a consulta de conjunto
+    # do histórico por uma leitura por malha e removesse outra coisa.
+    assert sum(1 for s in da_corrida
+               if "ROW_NUMBER() OVER (PARTITION BY malha_name" in s) == 1
 
 
 def test_o_custo_TOTAL_da_lista_nao_cresce_com_o_numero_de_malhas(client, auth):
@@ -645,9 +671,10 @@ def test_o_custo_TOTAL_da_lista_nao_cresce_com_o_numero_de_malhas(client, auth):
         "o endpoint gastou %d statements com 4 malhas e %d com 40 — o que "
         "cresceu:\n%s" % (len(com_4), len(com_40),
                           "\n".join(sorted(set(com_40) - set(com_4))[:5])))
-    # e o bloco da corrida são DOIS deles, nomeados, para o número acima nunca
-    # ser "constante porque nada foi consultado"
-    assert len([s for s in com_40 if "etl_malha_execucao" in s]) == 2
+    # e o bloco da corrida são alguns deles, nomeados, para o número acima
+    # nunca ser "constante porque nada foi consultado"
+    assert len([s for s in com_40
+                if "etl_malha_execucao" in s]) == _CONSULTAS_DO_BLOCO
 
 
 # ═════════════ F4+/1 — `substituida_em IS NULL` nos DOIS lugares ════════════

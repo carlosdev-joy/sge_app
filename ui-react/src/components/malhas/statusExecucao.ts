@@ -14,11 +14,21 @@ import {
   Hourglass, Moon, TimerOff, XCircle,
 } from 'lucide-react'
 import type {
-  CorridaApi, CorridaCabecalho, CorridaEsperadaApi, PendenteCorrida,
+  CorridaApi, CorridaCabecalho, CorridaEsperadaApi, HistoricoCorridas,
+  PendenteCorrida, TipicosApi,
 } from '../../types'
 import {
   diaCurto, duracaoEntre, decorridoMin, horaCurta, carimboLongo, textoDuracao,
 } from './tempoCorrida'
+// F12 (Decisão 68) — o histórico factual vive num módulo PURO próprio, e este
+// arquivo só o consome. `motivoLimpo` e `textoOrigem` mudaram de casa junto:
+// eles são lidos também pelo `title` dos blocos da faixa, e duas cópias da
+// mesma limpeza de texto é como a faixa e o card passam a transcrever motivos
+// diferentes da mesma corrida.
+import {
+  motivoLimpo, pessoaQueFechou, textoCorridaAnterior, textoDiaAtipico,
+  textoFalhasRecentes, textoOrigem,
+} from './historicoCorridas'
 
 export interface ExecucaoPipeline {
   pipeline_name: string
@@ -109,6 +119,16 @@ export interface MalhaExecucaoApi {
    *  para sempre — o alarme falso crônico da Decisão 26. Chave ausente = a API
    *  não respondeu; mantém o comportamento anterior. */
   teams_configurado?: boolean
+  /** F12 (Decisão 64) — a duração TÍPICA de cada membro do snapshot, com o `n`
+   *  junto e o piso `n ≥ 5` já aplicado no servidor. Chave AUSENTE = não
+   *  apurei (API anterior à fase, erro de leitura, ou lente sem corrida): o
+   *  painel volta a mostrar só o decorrido, que é o que ele mostra hoje. */
+  tipicos?: TipicosApi
+  /** F12 (Decisão 68) — o histórico FACTUAL desta malha, RELATIVO À LENTE: a
+   *  corrida anterior é a anterior à que esta resposta descreve. Chave
+   *  AUSENTE = dia 1 (nenhuma corrida fechada antes desta), API anterior à
+   *  fase, ou erro de leitura — e aí nenhuma frase de histórico existe. */
+  historico?: HistoricoCorridas
 }
 
 /** Evento do CICLO — sem `pipeline_name`, porque o sujeito é a corrida. */
@@ -485,13 +505,20 @@ export function quemFez(v: string | null | undefined): string | null {
   return s.split('#')[0].replace(/[:_\s]+$/, '').trim() || null
 }
 
-/** O `motivo` do encerramento manual é composto pelo servidor como
- *  `"encerrada por C123456: <texto>"`. O card já diz QUEM e QUANDO numa linha
- *  estruturada — repetir o prefixo na linha de baixo é ruído em cima da única
- *  frase que o operador escreveu com as próprias palavras. */
-function motivoLimpo(v: string | null): string | null {
-  if (!v) return null
-  return v.replace(/^encerrada por [^:]{1,80}:\s*/i, '').trim() || null
+/** Decisão 68 — o `SEM_TRABALHO` que sobe para ÂMBAR, e só ele.
+ *
+ *  O estado continua sendo "sem trabalho hoje": o que muda é a COR e a frase
+ *  ao lado ("as últimas 4 terças tiveram trabalho"). O ícone segue sendo a lua
+ *  de propósito — o fato é o mesmo, e trocar o ícone diria que aconteceu outra
+ *  coisa. Quem carrega o segundo canal (a regra da casa: cor nunca é canal
+ *  único) é a frase, que o card e a faixa escrevem logo abaixo.
+ *
+ *  ⚠️ Isto NÃO acontece no sábado da mesma malha, e é a metade que importa:
+ *  um alarme de sábado toda semana treina o operador a ignorar o alarme
+ *  (Decisão 26) — e aí ele ignora também a terça. Quem separa os dois casos é
+ *  o `atipico` do servidor, comparando com o MESMO dia da semana. */
+export function estiloDiaAtipico(base: EstiloCorrida): EstiloCorrida {
+  return { ...base, chip: CHIP_AMBAR, dot: 'bg-amber-500' }
 }
 
 /** Classe de pendência → português de reunião (Decisão 74). Nenhum nome de
@@ -712,6 +739,25 @@ export interface ResumoCorrida {
   /** Auditoria (Decisão 67): quem encerrou, quando e por quê. */
   encerramento: string | null
   motivo: string | null
+  // ── F12: a auditoria que faltava no CARD, e o histórico factual ──────────
+  /** Decisão 44/67 — `sem nó Início` · `início manual (C123456)`. `null` na
+   *  corrida agendada, que é o caso normal: uma linha em todo card para dizer
+   *  "abriu como sempre abre" é ruído em 40 cards. */
+  origemCurta: string | null
+  /** Decisão 67 — `reaberta 1x por C123456`. A faixa já dizia isto dentro do
+   *  `diagnostico`; o CARD não dizia, e "já mexeram aqui?" é uma das três
+   *  primeiras perguntas de plantão. */
+  reaberta: string | null
+  /** Decisão 68 — `falhou 2 das últimas 7 corridas`. `null` sem histórico
+   *  (dia 1) e `null` sem falha nenhuma: o histórico só fala quando tem
+   *  notícia. */
+  historicoFalhas: string | null
+  /** Decisão 68 — `corrida anterior: 03/08 · concluída · 01:10 → 04:02`. */
+  anterior: string | null
+  /** Decisão 68 — `as últimas 4 terças tiveram trabalho`. Quando existe, o
+   *  `estilo` e a `faixa` já vieram em ÂMBAR: os dois saem juntos daqui, para
+   *  ser impossível pintar sem dizer por quê. */
+  diaAtipico: string | null
   /** Banner do incidente que originou a spec (Decisão 66). */
   foraDoOdate: string | null
   // ── F7: os relógios ──────────────────────────────────────────────────────
@@ -795,8 +841,19 @@ export function resumoCorrida(
   c: CorridaApi,
   tempo: { respostaEm: number; agora: number },
   qtdCadastro?: number,
+  /** F12/Decisão 68 — o histórico FACTUAL desta malha. Opcional, e a ausência
+   *  é o contrato: dia 1 (nenhuma corrida fechada), API anterior à fase e erro
+   *  de leitura caem todos no mesmo lugar — nenhuma frase desta fase é
+   *  renderizada e o resumo é, byte a byte, o da F11. */
+  historico?: HistoricoCorridas | null,
 ): ResumoCorrida {
-  const estilo = estadoDaCorrida(c)
+  const atipico = textoDiaAtipico(historico, c.data_referencia)
+  // A cor sai daqui já corrigida, e não do JSX: o chip, a faixa e a pílula do
+  // card têm de concordar sobre a MESMA corrida. Um âmbar aplicado só numa das
+  // superfícies seria "sem trabalho hoje" cinza no card e âmbar no painel.
+  const estilo = atipico
+    ? estiloDiaAtipico(estadoDaCorrida(c))
+    : estadoDaCorrida(c)
   const rotulo = estilo.rotulo
   const aberta = c.status === 'ABERTA'
 
@@ -901,7 +958,13 @@ export function resumoCorrida(
     : null
 
   const abriu = quemFez(c.aberta_por)
-  const fechou = quemFez(c.fechada_por)
+  // ⚠️ Quem encerrou só vira texto quando quem encerrou foi GENTE (Decisão
+  // 67 + Decisão 74). Fechador automático grava um `motivo` que é o texto do
+  // MOTOR ("3 pipeline(s) sem concluir: …") — vocabulário de máquina, cuja
+  // casa é a aba de eventos. O critério é o SUJEITO, não o status: por isso
+  // isto deixou de ser `status === 'CANCELADA'` e passou a ser "fechada por
+  // uma matrícula", que é o que a frase de fato afirma.
+  const fechou = pessoaQueFechou(c, quemFez)
   const linhas: string[] = [`${rotulo} · ${identidade}`]
   if (texto) linhas.push(texto)
   if (contagem) linhas.push(contagem)
@@ -923,12 +986,23 @@ export function resumoCorrida(
   }
   const fechamento = fechando ? textoFechamento(c) : null
   if (fechamento) linhas.push(fechamento)
+  // F12 — o histórico no TOOLTIP também: quem passa o mouse no card já viu a
+  // frase curta e quer o resto (a corrida anterior, com hora), sem precisar
+  // abrir a malha.
+  const historicoFalhas = textoFalhasRecentes(historico)
+  const anterior = textoCorridaAnterior(historico,
+                                        s => estiloCorrida(s).rotulo)
+  if (atipico) linhas.push(atipico)
+  if (historicoFalhas) linhas.push(historicoFalhas)
+  if (anterior) linhas.push(anterior)
   const apurado = carimboLongo(c.apurado_em)
   if (apurado) linhas.push(`apurado em ${apurado}`)
 
   return {
     estilo: { ...estilo, rotulo },
-    faixa: faixaDaCorrida(c.status, c.saude),
+    // A faixa segue a MESMA correção de cor do chip: sem isto, o painel
+    // pintaria de cinza a mesma corrida que o card acabou de pintar de âmbar.
+    faixa: atipico ? FAIXA_AMBAR : faixaDaCorrida(c.status, c.saude),
     identidade,
     tempo: texto,
     contagem,
@@ -944,16 +1018,24 @@ export function resumoCorrida(
     vivos: c.membros_vivos ? `${c.membros_vivos} rodando` : null,
     // Auditoria (Decisão 67): quem encerrou, quando e por quê — no fechamento
     // do mês, três corridas canceladas precisam ser explicáveis sem abrir o
-    // banco. Só em CANCELADA: nos outros desfechos quem "fecha" é o monitor
-    // automático, e o diagnóstico dele é a linguagem do motor (a aba de
-    // eventos é o lugar dela, não o card).
-    encerramento: (c.status === 'CANCELADA' && fechou)
+    // banco.
+    encerramento: fechou
       ? `encerrada por ${fechou}`
         + (c.fechada_em ? ` às ${horaCurta(c.fechada_em)}` : '')
       : null,
-    motivo: (c.status === 'CANCELADA' && motivoLimpo(c.motivo))
+    motivo: (fechou && motivoLimpo(c.motivo))
       ? `motivo: "${motivoLimpo(c.motivo)}"`
       : null,
+    // Decisão 44/67 — a origem e a reabertura, agora também no CARD. A faixa
+    // já as dizia dentro do `diagnostico`; o card calava sobre as duas.
+    origemCurta: textoOrigem(c, quemFez),
+    reaberta: c.tentativas > 1
+      ? `reaberta ${c.tentativas - 1}x`
+        + (quemFez(c.reaberta_por) ? ` por ${quemFez(c.reaberta_por)}` : '')
+      : null,
+    historicoFalhas,
+    anterior,
+    diaAtipico: atipico,
     foraDoOdate: c.membros_fora_do_odate
       ? `${plural(c.membros_fora_do_odate, 'pipeline', 'pipelines')} de outra `
         + 'data de referência'

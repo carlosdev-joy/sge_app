@@ -36,7 +36,9 @@ const RAIZ = path.resolve(__dirname, '..', '..')
 const SRC = path.join(RAIZ, 'ui-react', 'src', 'components', 'malhas')
 const { transform } = require(path.join(RAIZ, 'ui-react', 'node_modules', 'sucrase'))
 
-const MODULOS = ['tempoCorrida.ts', 'statusExecucao.ts', 'fluxoExecucao.ts']
+// `historicoCorridas.ts`: dependência nova de `statusExecucao` desde a F12.
+const MODULOS = ['tempoCorrida.ts', 'historicoCorridas.ts',
+                 'statusExecucao.ts', 'fluxoExecucao.ts']
 
 // ── transpilação ────────────────────────────────────────────────────────────
 // Só o transform `typescript`: o ESM é preservado, e é ele que o Node roda.

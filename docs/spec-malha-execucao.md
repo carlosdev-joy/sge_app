@@ -3015,6 +3015,22 @@ errado.
     `substituida_em` cairia no legado e o descarte da linha substituída sumiria
     em silêncio. É código anterior a esta spec e há teste pinando o texto-fonte
     — marcado como LACUNA CONHECIDA no código; PR própria.
+13l. **O custo da duração típica cresce com o histórico TOTAL do pipeline**, não
+    com a janela de 90 dias — `start_time` é coluna residual no índice. Medido
+    com 525.600 linhas: 5.955 leituras lógicas, 75–120 ms para 40 membros
+    (contra as "918 leituras, ~40 ms" do comentário, que valem para o dataset
+    dele). Com o cache de 5 min é ~100 ms a cada 5 min por corrida — aceitável,
+    mas o número no comentário vira âncora falsa para quem dimensionar
+    produção. ⚠️ E a FALHA de leitura **não é cacheada**: num lock storm a
+    consulta pesada é refeita a cada refetch por painel aberto.
+13m. **A faixa perde "corrida anterior" além da 12ª corrida** — a leitura do
+    histórico é dimensionada para a janela do "falhou X de Y", mas serve também
+    à lente. Falha em ausência (nenhum número errado), e a faixa só mostra 10
+    blocos; o seletor, porém, pede 30.
+13n. **`GET /corridas` ganhou custo novo** (o "travou: X" de cada bloco roda o
+    agregado sobre as 12 corridas mais recentes a cada 60 s por painel aberto).
+    Cabe no envelope já aceito para a lista, mas não há teste de orçamento de
+    statements nesse endpoint — a lista tem.
 13h. **O filtro "Concluídas" volta sozinho e a lista encolhe sem clique.** O
     estado ativo do filtro é derivado, mas a escolha fica no estado: um rerun às
     5 h reabre a única concluída, o filtro some (e "Limpar filtros" some junto),

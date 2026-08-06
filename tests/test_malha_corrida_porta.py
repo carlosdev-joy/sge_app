@@ -351,6 +351,18 @@ class FakeCur(FakeCurF15):
             self._rows = self._ler_corridas(s, p)
             self.rowcount = -1
             return
+        # F12 (Decisão 68) — o HISTÓRICO factual. Mora no dublê BASE porque
+        # `GET /malhas` o consulta em toda chamada, e toda suíte que exercita a
+        # lista passa por aqui: um branch por arquivo de teste seria a mesma
+        # regra escrita cinco vezes, com cinco chances de divergir.
+        if s.startswith("SELECT malha_name, id, data_referencia"):
+            self._rows = self._historico(s, p)
+            self.rowcount = -1
+            return
+        if s.startswith("SELECT malha_name, id, status FROM ("):
+            self._rows = self._historico_do_dia(s, p)
+            self.rowcount = -1
+            return
         if s.startswith("SELECT pipeline_name, conta_para_fim"):
             self._rows = [(m["pipeline_name"], m["conta_para_fim"],
                            m["ativo_na_abertura"], m["eh_raiz"])
@@ -419,6 +431,67 @@ class FakeCur(FakeCurF15):
         super().execute(sql, params)
 
     # ── implementações ──────────────────────────────────────────────────────
+    _CAMPOS_HIST = ("malha_name", "id", "data_referencia", "sequencia",
+                    "status", "aberta_em", "fechada_em", "fechada_por",
+                    "motivo", "origem", "tentativas")
+
+    @staticmethod
+    def _ordem_corrida(c):
+        """A MESMA chave do `ORDER BY` do módulo. Ela é o que decide o que é
+        "anterior", e é justamente isso que o histórico afirma na tela."""
+        return (c["data_referencia"], c["sequencia"], c["id"])
+
+    def _historico(self, s, p):
+        """`_SQL_HISTORICO` — as últimas N corridas FECHADAS de cada malha.
+
+        As duas guardas são lidas do TEXTO (regra de honestidade do `_guarda`):
+        apagar `fechada_em IS NOT NULL` do módulo tem de fazer o dublê devolver
+        corrida em voo, e aí o teste do "falhou X de Y" fica vermelho — que é o
+        único jeito de a mutação não passar verde."""
+        db = self.db
+        so_fechadas = _guarda(s, "WHERE fechada_em IS NOT NULL")
+        recorta_malha = _guarda(s, "AND malha_name = ?")
+        malha = p[0] if recorta_malha else None
+        teto = int(p[-1])
+        elegiveis = [c for c in db.corridas
+                     if (c["fechada_em"] is not None or not so_fechadas)
+                     and (malha is None
+                          or c["malha_name"].casefold() == malha.casefold())]
+        elegiveis.sort(key=self._ordem_corrida, reverse=True)
+        por_malha: dict = {}
+        for c in elegiveis:
+            fila = por_malha.setdefault(c["malha_name"], [])
+            if len(fila) < teto:
+                fila.append(c)
+        return [tuple(c[campo] for campo in self._CAMPOS_HIST)
+                for nome in sorted(por_malha) for c in por_malha[nome]]
+
+    def _historico_do_dia(self, s, p):
+        """`_SQL_HISTORICO_DIA` — as últimas N do MESMO dia da semana.
+
+        O dia da semana sai do mesmo `DATEDIFF(DAY, '19000101', d) % 7` do
+        módulo, e não de `DATEPART(WEEKDAY)`: aquele depende de `SET DATEFIRST`
+        e o dublê estaria imitando um comportamento que o banco da Caixa (em
+        pt-BR) pode não ter."""
+        db = self.db
+        assert _guarda(s, "DATEDIFF(DAY, '19000101', data_referencia) % 7 = ?"), (
+            "o recorte por dia da semana sumiu do statement:\n" + s)
+        dow, teto = int(p[0]), int(p[-1])
+        nomes = {str(n).casefold() for n in p[1:-1]}
+        base = date(1900, 1, 1).toordinal()
+        elegiveis = [c for c in db.corridas
+                     if c["fechada_em"] is not None
+                     and c["malha_name"].casefold() in nomes
+                     and (c["data_referencia"].toordinal() - base) % 7 == dow]
+        elegiveis.sort(key=self._ordem_corrida, reverse=True)
+        por_malha: dict = {}
+        for c in elegiveis:
+            fila = por_malha.setdefault(c["malha_name"], [])
+            if len(fila) < teto:
+                fila.append(c)
+        return [(c["malha_name"], c["id"], c["status"])
+                for nome in sorted(por_malha) for c in por_malha[nome]]
+
     def _ler_corridas(self, s, p):
         db = self.db
         if "WHERE malha_name = ?" in s and _guarda(s, "AND fechada_em IS NULL"):

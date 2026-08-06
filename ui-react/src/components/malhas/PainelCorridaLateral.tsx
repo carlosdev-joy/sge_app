@@ -9,7 +9,10 @@ import {
   textoAlcance, type ExecucaoPipeline,
 } from './statusExecucao'
 import { decorridoMin, duracaoEntre, horaCurta, textoDuracao } from './tempoCorrida'
-import type { CorridaApi, PendenteCorrida } from '../../types'
+import {
+  mapaTipicos, marcaAtipica, textoTipico, tipicoDe, tituloAtipico,
+} from './duracaoTipica'
+import type { CorridaApi, PendenteCorrida, TipicosApi } from '../../types'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // O PAINEL LATERAL DA CORRIDA — spec docs/spec-malha-execucao.md §9.5 (F10).
@@ -71,6 +74,10 @@ export interface PainelCorridaLateralProps {
   onReexecutar?: (pipeline: string) => void
   /** A frase da Decisão 65, escrita pelo editor (que conhece o ciclo). */
   fraseReexecucao?: string | null
+  /** F12 (Decisão 64) — a duração típica por membro, com `n` e piso `n ≥ 5` já
+   *  aplicados no servidor. Ausente/`null` = não apurei: a linha mostra só o
+   *  decorrido, exatamente como antes desta fase. */
+  tipicos?: TipicosApi | null
   /** Instante local da resposta e o relógio local — Decisão 60. */
   respostaEm: number
   agoraLocal: number
@@ -133,7 +140,7 @@ function BotaoAcao({
 
 export function PainelCorridaLateral({
   corrida, execucoes, eventos, aba, onAba, onFocar, onAbrirEtapas,
-  onReexecutar, fraseReexecucao = null, respostaEm, agoraLocal,
+  onReexecutar, fraseReexecucao = null, tipicos = null, respostaEm, agoraLocal,
 }: PainelCorridaLateralProps) {
   // ── Quem está vivo AGORA — os NOMES saem de `execucoes[]`, que já vem ────
   const vivos = useMemo(
@@ -150,15 +157,21 @@ export function PainelCorridaLateral({
     () => (corrida?.pendentes ?? []).filter(p => p.classe === 'nao_partiu'),
     [corrida])
 
-  /** Há quanto tempo esta linha está assim. Os dois carimbos são do BANCO
-   *  (`inicio` e `apurado_em`), subtraídos entre si, e só depois somados ao que
-   *  passou no relógio LOCAL desde a resposta (Decisão 60). Nunca
-   *  `Date.now() − inicio`: no dev o banco está 3h à frente do navegador. */
-  const desdeQuando = (carimbo: string | null): string | null => {
-    const base = duracaoEntre(carimbo, corrida?.apurado_em)
-    const min = decorridoMin(base, respostaEm, agoraLocal)
-    return min === null ? null : textoDuracao(min)
-  }
+  // ── A duração típica de cada membro (F12, Decisão 64) ────────────────────
+  // O índice é em `casefold` porque as duas pontas escrevem o nome com a
+  // grafia de origens diferentes (a oficial de `etl_pipeline` em `execucoes[]`,
+  // a do snapshot em `tipicos[]`) — e o `Map` distingue caixa onde o banco não
+  // distingue.
+  const tipicoPorPipeline = useMemo(() => mapaTipicos(tipicos), [tipicos])
+
+  /** Há quanto tempo esta linha está assim, EM MINUTOS. Os dois carimbos são
+   *  do BANCO (`inicio` e `apurado_em`), subtraídos entre si, e só depois
+   *  somados ao que passou no relógio LOCAL desde a resposta (Decisão 60).
+   *  Nunca `Date.now() − inicio`: no dev o banco está 3h à frente do
+   *  navegador. */
+  const minutosDesde = (carimbo: string | null): number | null =>
+    decorridoMin(duracaoEntre(carimbo, corrida?.apurado_em),
+                 respostaEm, agoraLocal)
 
   const abas = [
     {
@@ -191,7 +204,17 @@ export function PainelCorridaLateral({
           </p>
         ) : vivos.map(e => {
           const esperando = e.status === 'AGUARDANDO_DEPENDENCIA'
-          const ha = desdeQuando(e.inicio)
+          const minutos = minutosDesde(e.inicio)
+          const ha = minutos === null ? null : textoDuracao(minutos)
+          const tipico = tipicoDe(tipicoPorPipeline, e.pipeline_name)
+          const quantoCostuma = textoTipico(tipico)
+          // A marca só existe para quem está RODANDO. Quem espera acumula
+          // tempo de FILA, e comparar fila com duração de execução seria somar
+          // duas coisas diferentes para pintar um alerta — o membro apareceria
+          // âmbar por causa do vizinho que travou, não do próprio tempo.
+          const marca = esperando
+            ? null
+            : marcaAtipica(minutos, tipico)
           return (
             <div key={e.pipeline_name} className={LINHA}>
               <CorpoDaLinha
@@ -206,6 +229,17 @@ export function PainelCorridaLateral({
                   <span className="truncate font-mono text-[11px] text-ink">
                     {e.pipeline_name}
                   </span>
+                  {/* ⚠ 2x — âmbar, e SÓ aqui: é leitura de tela, não evento.
+                      Um alarme por "está demorando" tocaria toda madrugada, e
+                      alarme que toca sempre é alarme que ninguém lê. */}
+                  {marca && (
+                    <span
+                      className="ml-auto shrink-0 rounded border border-amber-300 bg-amber-50 px-1 py-px text-[9px] font-bold text-amber-700 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300"
+                      title={tituloAtipico(tipico) ?? undefined}
+                    >
+                      {marca}
+                    </span>
+                  )}
                 </span>
                 <span className="mt-0.5 block text-[10px] text-dim">
                   {esperando
@@ -214,6 +248,11 @@ export function PainelCorridaLateral({
                       : 'esperando outro pipeline')
                     : (ha ? `rodando há ${ha}` : 'em execução')}
                   {esperando && ha ? ` · há ${ha}` : ''}
+                  {/* A duração típica DESTE membro (Decisão 64) — o número que
+                      responde "posso esperar". Sem amostra (`n < 5`) o servidor
+                      não manda o item e aqui não sobra nada: fica só o
+                      decorrido, sem "típico" e sem `n` solto. */}
+                  {quantoCostuma ? ` · ${quantoCostuma}` : ''}
                 </span>
               </CorpoDaLinha>
               {onAbrirEtapas && (

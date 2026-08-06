@@ -161,12 +161,26 @@ export interface CorridaCabecalho {
   teto_em: string | null
   tentativas: number
   reaberta_em: string | null
+  /** F12/Decisão 67 — a auditoria completa também aqui, na LISTA de corridas,
+   *  e não só no card. `reaberta 1x` sem dizer POR QUEM é meia auditoria: na
+   *  hora de explicar o fechamento do mês ela não vale mais que nenhuma. */
+  reaberta_por: string | null
   motivo: string | null
+  /** F12/Decisão 68 — QUEM travou esta corrida, para o `title` do bloco da
+   *  faixa (`04/08 · falhou · 2h41 · travou: CARGA_A`).
+   *
+   *  As três leituras precisam continuar distinguíveis:
+   *    • chave AUSENTE — não apurei (fora do teto de apuração do servidor, ou
+   *      a leitura falhou);
+   *    • `null` — apurei e **ninguém** travou (a corrida foi limpa);
+   *    • objeto — este membro travou, com a classe dele.
+   *  Confundir a primeira com a segunda faria a faixa afirmar "nada travou"
+   *  sobre madrugadas que ela simplesmente não olhou. */
+  travou?: { pipeline: string; classe: string } | null
 }
 
 /** A corrida com os DERIVADOS DA LEITURA — o que o card e a faixa consomem. */
 export interface CorridaApi extends CorridaCabecalho {
-  reaberta_por: string | null
   /** SAÚDE — só existe com o ciclo ABERTO (§6.1): OK | COM_FALHA | ATRASADA |
    *  SEM_PROGRESSO. É ela que manda na COR enquanto a corrida está em voo. */
   saude: string | null
@@ -228,6 +242,98 @@ export interface CorridaApi extends CorridaCabecalho {
    *  movimento não há de onde contar. A tela escreve "por volta de", nunca
    *  "até": o relógio REINICIA a cada movimento. */
   quiescencia_ate?: string | null
+}
+
+// ─── F12: a duração TÍPICA por membro (§9.5, Decisão 64) ────────────────────
+// O número que decide **posso esperar**. `4 de 7 · 2 rodando · há 12 min` não
+// diz se os dois vivos são de 5 min ou de 3h — e `4 de 7` com os dois mais
+// pesados ainda por rodar parece "quase lá" e manda o operador dormir.
+//
+// Ele vem do histórico de `etl_job_execution` (o irmão por PIPELINE do
+// `GET /execucoes/duracao-media`), medido, com a amostra declarada — e **não**
+// é ETA: somar típicos de membros não dá previsão de conclusão da corrida, que
+// roda em paralelo e com dependências.
+
+/** Um membro com histórico SUFICIENTE. Membro que não passou do piso `n ≥ 5`
+ *  simplesmente NÃO ESTÁ na lista — não existe item com `p50` sem `n`, porque
+ *  na tela os dois aparecem juntos ou não aparece nenhum. */
+export interface TipicoMembro {
+  pipeline: string
+  /** Mediana (p50) da duração ponta a ponta das execuções limpas, em SEGUNDOS
+   *  — a unidade crua da fonte. Quem arredonda para minutos é a tela. */
+  p50_seg: number
+  /** Tamanho da amostra. Nunca aparece sozinho na interface (Decisão 64). */
+  n: number
+}
+
+/** O bloco `tipicos` do `GET /malhas/{m}/execucao`. Chave AUSENTE = não apurei
+ *  (API anterior à fase, erro de leitura, ou lente sem corrida) — a mesma
+ *  degradação por ausência de campo da Decisão 41. */
+export interface TipicosApi {
+  /** O piso da amostra que o servidor aplicou (5). Vem no payload para a tela
+   *  poder EXPLICAR a ausência em vez de só calar. */
+  piso_n: number
+  /** Janela de histórico lida, em dias, e o teto de execuções por membro. */
+  janela_dias: number
+  limite_execucoes: number
+  /** Membros do snapshot (o denominador da Decisão 52). `null` = o agregado da
+   *  corrida não apurou o denominador. */
+  membros: number | null
+  com_historico: number
+  /** TODOS os membros do snapshot têm `n ≥ 5`. É a pré-condição da Decisão 56b
+   *  — sem ela o percentual de tempo típico não existe na tela, nem estimado
+   *  nem "aproximado com ressalva". */
+  completo: boolean
+  itens: TipicoMembro[]
+}
+
+// ─── F12: o HISTÓRICO FACTUAL da malha (§9.7, Decisão 68) ───────────────────
+// A fronteira desta fase: **contar desfechos PASSADOS não é previsão.** A
+// proibição de backfill do §3 é contra INVENTAR corrida retroativa; ler as
+// corridas que de fato existiram é fato registrado.
+//
+// Nada aqui prevê nada, e nenhum texto derivado deste bloco usa "provavelmente",
+// "tendência" ou "vai falhar": o produto conta o que ACONTECEU, e quem decide é
+// a pessoa que está lendo às 3h.
+//
+// ⚠️ Chave AUSENTE no payload é o dia 1 — histórico ZERO. Nenhuma frase desta
+// fase é renderizada, e `n = 0` nunca vira "0%".
+
+/** A corrida imediatamente ANTERIOR — projeção curta de propósito: a faixa
+ *  escreve UMA linha, e publicar o cabeçalho inteiro convidaria a tela a
+ *  montar um segundo card de corrida dentro do primeiro. */
+export interface CorridaAnterior {
+  id: number
+  data_referencia: string
+  sequencia: number
+  status: string
+  aberta_em: string | null
+  fechada_em: string | null
+}
+
+/** O bloco `historico` do card e da faixa. */
+export interface HistoricoCorridas {
+  /** O teto pedido ao servidor (7). */
+  janela: number
+  /** Quantas corridas de fato entraram na conta — o `Y` de "falhou X das
+   *  últimas Y". Ele VEM PRONTO: a tela nunca deduz denominador, senão uma
+   *  malha de três semanas diria "das últimas 7" sobre 4 corridas existentes.
+   *  Dias `SEM_TRABALHO` ficam fora — não tiveram chance de falhar. */
+  consideradas: number
+  /** O `X`. `CANCELADA` não conta: encerrar à mão é gesto humano deliberado, e
+   *  somá-lo a "falhou" faria a malha em que o operador agiu certo parecer a
+   *  malha que quebrou. */
+  falhou: number
+  anterior: CorridaAnterior | null
+  /** Só existe quando a corrida corrente é `SEM_TRABALHO` (Decisão 68): o
+   *  `SEM_TRABALHO` de dia atípico. `atipico` é a REGRA já aplicada no
+   *  servidor — regra que mora em dois lugares vira duas regras. */
+  dia_semana?: {
+    exigidas: number
+    encontradas: number
+    com_trabalho: number
+    atipico: boolean
+  }
 }
 
 /** A corrida que DEVERIA existir e não existe (F9 — §9.2, Decisão 58).
