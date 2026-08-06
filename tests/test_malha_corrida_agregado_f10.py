@@ -87,6 +87,9 @@ class FakeDb(FakeDbF4):
         # SQL Server: "Invalid column name" — é essa marca, e não um `except`
         # cego, que autoriza a consulta de fallback.
         self.sem_notificado_em = False
+        # None = a sonda do canal estoura (não perguntei); True/False = a
+        # resposta do banco. O default é 'há canal', que é o mundo comum.
+        self.canal_teams = True
 
     def depende(self, pipeline, de, origem_no=None):
         self.dependencias.append({"pipeline": pipeline, "depende_de": de,
@@ -104,6 +107,17 @@ class FakeCur(FakeCurF4):
         if s.startswith(PREFIXO_LOTE):
             db.sqls.append(s)
             self._rows = self._lote(s, p)
+            self.rowcount = -1
+            return
+        if s.startswith("SELECT TOP 1 1 FROM dbo.etl_msg_grupo"):
+            # A sonda "há canal do Teams?". O dublê NÃO decide sozinho: ele
+            # devolve o que o cenário montou, e um cenário que não a espera
+            # (canal_teams=None) faz a consulta estourar — assim, chamá-la onde
+            # não devia vira teste vermelho em vez de passar despercebido.
+            db.sqls.append(s)
+            if db.canal_teams is None:
+                raise RuntimeError("lock timeout em etl_msg_grupo")
+            self._rows = [(1,)] if db.canal_teams else []
             self.rowcount = -1
             return
         if s.startswith("SELECT pipeline_name, tipo, detectado_em") \
@@ -927,6 +941,70 @@ def test_banco_sem_a_coluna_OMITE_a_chave_em_vez_de_mandar_null(client, auth):
     # O resto da leitura não sofre — inclusive o agregado desta fase.
     assert painel["corrida"]["membros_total"] == 5
     assert _pendentes(painel)["B"]["faltante"] == "A"
+
+
+def test_sem_canal_do_Teams_o_painel_diz_que_NAO_HA_DESTINO(client, auth):
+    """A terceira leitura de `notificado_em` nulo, que faltava.
+
+    Sem canal configurado a guardiã sai cedo e **nada** é carimbado: todo
+    evento fica `notificado_em NULL` para sempre. Lido como "está na fila", isso
+    acende o banner vermelho *"N avisos ao Teams na fila — ninguém foi avisado
+    ainda"* permanentemente, em QUALQUER instalação sem webhook — o dev
+    inclusive. É o alarme falso crônico que a Decisão 26 proíbe: na primeira
+    semana o operador aprende a ignorar o banner, e aí ele deixa de servir para
+    o webhook que quebrou de verdade.
+
+    O evento continua chegando com `notificado_em: null` (é o fato); o que a
+    resposta acrescenta é o CONTEXTO que o transforma em "não há destino"."""
+    db = FakeDb(pipelines=_pipes())
+    db.canal_teams = False
+    with _patch(db), _patch_agora():
+        c = _com_evento_do_ciclo(client, db, notificado_em=None)
+        painel = client.get(f"/malhas/M1/execucao?corrida={c['id']}").json()
+    assert painel["teams_configurado"] is False
+    assert painel["eventos_corrida"][0]["notificado_em"] is None
+
+
+def test_com_canal_configurado_o_aviso_sem_carimbo_E_fila_presa(client, auth):
+    """O contraponto — sem ele, a correção poderia ter simplesmente apagado o
+    banner para todo mundo, e o webhook com 401 voltaria a falhar em silêncio,
+    que é exatamente o que a Decisão 66 existe para acabar."""
+    db = FakeDb(pipelines=_pipes())
+    db.canal_teams = True
+    with _patch(db), _patch_agora():
+        c = _com_evento_do_ciclo(client, db, notificado_em=None)
+        painel = client.get(f"/malhas/M1/execucao?corrida={c['id']}").json()
+    assert painel["teams_configurado"] is True
+    assert painel["eventos_corrida"][0]["notificado_em"] is None
+
+
+def test_banco_sem_a_coluna_nao_gasta_consulta_perguntando_pelo_canal(
+        client, auth):
+    """Sem `notificado_em` não há banner a decidir — perguntar pelo canal seria
+    ida ao banco por nada, a cada refetch de 15s de cada painel aberto.
+
+    O dublê estoura se a sonda for chamada com o cenário que não a espera, então
+    este teste falha se alguém tirar a guarda."""
+    db = FakeDb(pipelines=_pipes())
+    db.sem_notificado_em = True
+    db.canal_teams = None          # perguntar aqui = RuntimeError no dublê
+    with _patch(db), _patch_agora():
+        c = _com_evento_do_ciclo(client, db, notificado_em=None)
+        painel = client.get(f"/malhas/M1/execucao?corrida={c['id']}").json()
+    assert "teams_configurado" not in painel
+    assert not [q for q in db.sqls if "etl_msg_grupo" in q]
+
+
+def test_sonda_do_canal_indisponivel_OMITE_a_chave(client, auth):
+    """Não perguntei ⇒ não afirmo. `False` diria "não há canal" e apagaria um
+    banner legítimo; a ausência mantém o comportamento anterior."""
+    db = FakeDb(pipelines=_pipes())
+    db.canal_teams = None          # a sonda estoura
+    with _patch(db), _patch_agora():
+        c = _com_evento_do_ciclo(client, db, notificado_em=None)
+        painel = client.get(f"/malhas/M1/execucao?corrida={c['id']}").json()
+    assert "teams_configurado" not in painel
+    assert painel["eventos_corrida"][0]["notificado_em"] is None
 
 
 def test_a_marca_da_coluna_e_o_que_autoriza_o_fallback():

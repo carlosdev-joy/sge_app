@@ -811,9 +811,16 @@ function MalhaEditorInner({
   // ODATE são legítimas e vêm as duas, distinguidas por `sequencia`. Sem a 085
   // (ou em API anterior) a lista sai vazia e a navegação volta a ser por DIA:
   // é a degradação por ausência de dado, não por flag.
+  // ⚠️ Quando o operador navegou para um DIA (`dataRef`), a lista é recortada
+  // NAQUELE dia. Sem isso ela traz as últimas 30 corridas da malha, e num dia
+  // mais antigo que ~30 ciclos a frase "este dia teve N corridas — escolha uma
+  // na faixa" apontaria para uma faixa que não contém nenhuma delas: mandar o
+  // operador procurar no lugar onde não está é pior que não dizer nada.
   const corridasQuery = useQuery<CorridasResposta>({
-    queryKey: ['malha-corridas', malha],
-    queryFn: () => apiFetch(`/malhas/${encodeURIComponent(malha)}/corridas?limite=30`),
+    queryKey: ['malha-corridas', malha, dataRef ?? ''],
+    queryFn: () => apiFetch(
+      `/malhas/${encodeURIComponent(malha)}/corridas?limite=30`
+      + (dataRef ? `&data_referencia=${encodeURIComponent(dataRef)}` : '')),
     enabled: !!malha && emExecucao,
     // Metade da cadência do painel: a LISTA de ciclos muda quando um ciclo
     // abre ou fecha (uma vez por madrugada), não a cada movimento de pipeline.
@@ -879,8 +886,9 @@ function MalhaEditorInner({
   // malha falhando em silêncio para todo o plantão. A carência mora no módulo
   // puro, e a idade é medida entre dois carimbos do BANCO (Decisão 60).
   const avisoPreso = useMemo(
-    () => avisoPresoNaFila(execData?.eventos_corrida ?? [], corrida?.apurado_em),
-    [execData?.eventos_corrida, corrida?.apurado_em])
+    () => avisoPresoNaFila(execData?.eventos_corrida ?? [], corrida?.apurado_em,
+                           execData?.teams_configurado),
+    [execData?.eventos_corrida, corrida?.apurado_em, execData?.teams_configurado])
 
   // Execução MAIS RECENTE por pipeline (o endpoint já entrega uma por membro —
   // regra do §6 risco 6 da spec).

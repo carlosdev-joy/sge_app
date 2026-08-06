@@ -2872,6 +2872,43 @@ def _eventos_da_data(cur, data_ref):
     return cur.fetchall(), False
 
 
+# A MESMA condição de `dags/utils/dependencias.py:canal_teams_supervisao`, sem
+# trazer a `webhook_url`: ela é credencial e não vai ao payload de tela.
+_SQL_TEM_CANAL_TEAMS = (
+    "SELECT TOP 1 1 FROM dbo.etl_msg_grupo g "
+    "WHERE g.ativo = 1 AND g.webhook_url IS NOT NULL "
+    "AND LTRIM(RTRIM(g.webhook_url)) <> '' "
+    "AND EXISTS (SELECT 1 FROM dbo.etl_ds_supervisao_job s "
+    "WHERE s.grupo_id = g.id AND s.ativo = 1)")
+
+
+def _tem_canal_teams(cur):
+    """Existe destino para o aviso? `True`/`False`, ou `None` se não deu para
+    perguntar.
+
+    A terceira resposta que faltava. `notificado_em` nulo hoje significa duas
+    coisas MUITO diferentes: "o webhook falhou e o aviso está preso na fila"
+    (vermelho, alguém precisa agir) e "não há canal configurado, então nunca
+    houve fila" (nada a fazer). Sem separá-las, QUALQUER instalação sem webhook
+    — o dev inclusive — acende o banner vermelho *"N avisos ao Teams na fila,
+    ninguém foi avisado ainda"* permanentemente, e cada linha de evento ganha
+    "ainda na fila de aviso" sem carência nenhuma. É o alarme falso crônico que
+    a Decisão 26 proíbe: na primeira semana o operador aprende a ignorar o
+    banner, e aí ele deixa de servir para o webhook que quebrou de verdade.
+
+    `None` (não perguntei) é diferente de `False` (não há canal) pelo mesmo
+    motivo que a ausência da chave é diferente de `null` acima — o chamador
+    omite a chave e a tela não afirma nada.
+    """
+    try:
+        cur.execute(_SQL_TEM_CANAL_TEAMS)
+        return cur.fetchone() is not None
+    except Exception as e:  # noqa: BLE001 — leitura de tela degrada
+        log.warning("[MALHA] nao consegui conferir se ha canal do Teams (%s) — "
+                    "o painel segue sem afirmar sobre a fila de aviso", e)
+        return None
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/malhas", tags=["malhas"])
@@ -3755,6 +3792,13 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
         def _notif(r):
             return {"notificado_em": _fmt_dt(r[4])} if tem_notificado else {}
 
+        # A TERCEIRA leitura de `notificado_em` nulo, que faltava: "não há canal
+        # configurado". Sem ela, `null` significa fila presa e QUALQUER
+        # instalação sem webhook — o dev inclusive — acende o banner vermelho
+        # para sempre. Só perguntamos se a coluna existe: sem ela não há banner
+        # nenhum a decidir, e a consulta seria gasto puro.
+        canal_teams = _tem_canal_teams(cur) if tem_notificado else None
+
         for r in linhas_evento:
             bruto = str(r[0] or "").strip()
             if marcador_corrida is not None and bruto == marcador_corrida:
@@ -3798,6 +3842,12 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
         # e a ausência dela não muda nada do que já era mostrado.
         if marcador_corrida is not None:
             resposta["eventos_corrida"] = eventos_corrida
+        # ADITIVO, e só quando temos resposta: `False` = "não há canal, então
+        # nunca houve fila" (o banner NÃO acende); `True` = "há destino, e o que
+        # está sem carimbo está mesmo preso" (acende). A chave AUSENTE mantém o
+        # comportamento anterior para o front que não a conhece.
+        if canal_teams is not None:
+            resposta["teams_configurado"] = canal_teams
         # Conclusão da malha (§9.6): com a corrida no payload quem responde é o
         # STATUS DELA — o evento vira rastro, não fonte de verdade. Sem isso, o
         # banner verde e o card vermelho conviveriam na mesma tela: o

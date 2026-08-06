@@ -102,6 +102,13 @@ export interface MalhaExecucaoApi {
    *  mata) e esta chave diz quantas foram. A tela não pode se limitar a calar:
    *  ela diz "este dia teve N corridas — escolha uma" e oferece o seletor. */
   corridas_no_dia?: number
+  /** F10 — existe canal do Teams configurado? Separa as DUAS leituras de
+   *  `notificado_em` nulo: "o webhook falhou e o aviso está preso" (vermelho,
+   *  alguém precisa agir) e "não há destino, então nunca houve fila" (nada a
+   *  fazer). Sem ela, toda instalação sem webhook acende o banner vermelho
+   *  para sempre — o alarme falso crônico da Decisão 26. Chave ausente = a API
+   *  não respondeu; mantém o comportamento anterior. */
+  teams_configurado?: boolean
 }
 
 /** Evento do CICLO — sem `pipeline_name`, porque o sujeito é a corrida. */
@@ -566,7 +573,17 @@ const TIPOS_QUE_SEMPRE_AVISAM = new Set([
 export function avisoPresoNaFila(
   eventos: (ComNotificacao & { tipo: string; criado_em: string })[],
   apuradoEm: string | null | undefined,
+  /** Existe canal do Teams configurado? `false` = não há destino, então nunca
+   *  houve fila — e sem isto QUALQUER instalação sem webhook (o dev inclusive)
+   *  acenderia o banner vermelho permanentemente. `undefined` = a API não
+   *  respondeu; mantém o comportamento anterior em vez de calar por suposição. */
+  temCanal?: boolean,
 ): { desde: string; quantos: number } | null {
+  // Sem destino não há fila: o que está sem carimbo nunca foi enfileirado, e
+  // acusar isso todo dia é o alarme falso que a Decisão 26 proíbe — na primeira
+  // semana o operador aprende a ignorar o banner, e aí ele deixa de servir para
+  // o webhook que quebrou de verdade.
+  if (temCanal === false) return null
   let desde: string | null = null
   let quantos = 0
   for (const ev of eventos) {
