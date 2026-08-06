@@ -2387,8 +2387,19 @@ autorização do usuário.
   - corrida parada além do teto sem vivo → `EXPIRADA` + `MALHA_EXPIRADA`, e
     **`MALHA_CONCLUIDA` não sai** (ausência);
   - hold do Início com corrida aberta → toast diz *"a próxima corrida não parte;
-    a corrida #N segue"*.
+    a corrida em andamento segue"* (**sem `#N`** — Decisão 74: `#` não aparece
+    na interface).
 - **PR:** `feat: teto, atraso e hold da corrida de malha`
+- ✅ **ENTREGUE (2026-08-06).** O hold é derivado (`SQL_HOLD_DA_MALHA`, `MIN`),
+  o crédito é um `UPDATE ... CROSS APPLY ... OUTPUT` só (`SQL_CREDITAR_HOLD`,
+  com `NOT EXISTS (… n2.id <> ?)` fazendo o "último nó"), o `teto_vencido` do
+  card nasce do banco **com a guarda do hold dentro**, e a Decisão 31 entrou por
+  `corrida_aberta_da_linha`. Também nesta PR: pendências 12, 14, 17 e (em parte)
+  20 da §18. **Medido no dev**, com o SQL Server 3h à frente do worker: corrida
+  de 26h com teto de 24h e 8 membros `EXECUTANDO` → `MALHA_ATRASADA` uma vez,
+  `fechadas=0`, corrida `ABERTA`; o mesmo cenário com nó segurado → **zero**
+  eventos; soltar um de dois nós → 0 min creditados; soltar o último após 6h →
+  `+361 min`, `teto_em` 00:58 → 06:59 e a corrida de `VENCIDO` para **no prazo**.
 
 ### F8 — Rerun, desenho editado e os avisos que faltavam
 - **Entregável:** rerun com cascata (`marcar_substituidas` com `rowcount > 0`)
@@ -2926,7 +2937,20 @@ errado.
     `substituida_em` cairia no legado e o descarte da linha substituída sumiria
     em silêncio. É código anterior a esta spec e há teste pinando o texto-fonte
     — marcado como LACUNA CONHECIDA no código; PR própria.
-14. **A guardiã é uma QUARTA porta de disparo e não propaga a corrida.**
+14. ✅ **RESOLVIDA na F7.** `_rede_seguranca` passou a fazer as duas coisas
+    que as outras três portas já faziam: **recusa por ODATE ambíguo**
+    (`mc.odate(conn, pipeline)` ANTES do claim — reservar e não disparar
+    deixaria a linha com `execution_id` de um run que nunca existiu; a recusa
+    grava `DATA_DIVERGENTE` e segue) e **propagação da corrida**
+    (`mc.odate(conn, pipeline, run_id=ganho, herdada=data_ref)` DEPOIS do claim,
+    porque é o claim que carimba `execution_id` na linha — o degrau 0 devolve
+    então a corrida DA PRÓPRIA LINHA, e não uma corrida "provável" da malha).
+    Nenhuma das duas derruba a guardiã: falha ao resolver a corrida dispara sem
+    proveniência, que é infinitamente melhor que não disparar. Com o interruptor
+    em `0`, `odate()` devolve o vazio na primeira linha e nenhuma consulta a
+    mais chega ao banco. Texto original abaixo, para histórico:
+
+    ~~**A guardiã é uma QUARTA porta de disparo e não propaga a corrida.**~~
     `dags/etl_dependencia_guardia.py` chama `montar_conf(data_ref, dia_op,
     "guardia")` — sem `malha_execucao_id`. A **data** não sofre (o degrau 0 lê a
     linha que a própria guardiã acabou de criar) e a proveniência costuma ser
@@ -2945,10 +2969,17 @@ errado.
 16. **`Clear` de um run recusado por ODATE ambíguo reencontra a linha `PULADO`**
     pelo degrau 0 e roda com a data do cálculo. A mensagem manda "dispare de
     novo" (run novo), que escapa — mas `Clear` é o gesto de plantão mais comum.
-17. **Uma conexão a mais por task enquanto o interruptor está em `0`.** Medido:
-    `_odate_do_run` num processo novo abre 1 conexão + 1 `SELECT config_value`
-    mesmo desligado; do 2º run em diante a consulta some, a conexão não. Como o
-    interruptor só liga depois da F7, esse é o estado permanente até lá.
+17. ✅ **ENCERRADA pela F7 — sem código.** A medição continua verdadeira
+    (`_odate_do_run` num processo novo abre 1 conexão + 1 `SELECT config_value`
+    mesmo desligado; do 2º run em diante a consulta some, a conexão não), mas o
+    que a tornava um problema era a frase final: *"como o interruptor só liga
+    depois da F7, esse é o estado permanente até lá"*. A F7 é a última fase antes
+    do interruptor (§11.2), então o custo deixa de ser pago **por nada** no
+    momento em que `malha_corrida_ativa` vai a `1`. Fechar a conexão exigiria ou
+    mover a chave para uma `Variable` do Airflow (uma segunda fonte de verdade
+    para o gesto de rollback — pior) ou memoizar entre processos (não existe).
+    **Nada a fazer**; se o interruptor ficar em `0` por muito tempo em produção,
+    reabrir com essa decisão em mãos.
 18. **A sonda do §12.2 responde `DESCONHECIDO` para pipeline nunca publicado**
     (sem arquivo em `generated/`), mandando o operador conferir um arquivo que
     nunca existiu. Seguro pela regra ("desconhecido nunca é ausência"), mas o
@@ -2957,12 +2988,20 @@ errado.
     cadastro **por membro** antes de ler cada arquivo — numa malha de 40 são 40
     consultas + 40 `stat` a cada disparo, inclusive `dry_run`. O cache é por
     arquivo; o do cadastro não existe.
-13. **`_fechar_dia_anterior` ainda fecha como `NAO_LIBEROU` linhas de corrida
-    `ABERTA`** que atravessem o dia operacional (teto > 24 h, ou cadeia longa com
-    rerun) — virando pendentes e levando a corrida a `FALHA` por ação da própria
-    guardiã. É entregável da **F7** (Decisão 31) e o interruptor só vai a `1`
-    depois dela, então está coberto pela ordem de deploy; registrado aqui para
-    não escapar se a ordem mudar.
+13. ✅ **RESOLVIDA na F7 (Decisão 31).** `_fechar_dia_anterior` ganhou DUAS
+    guardas novas, e as duas antes do `liberado()`: (i) **corrida ABERTA cobre a
+    linha** — `malha_corrida.corrida_aberta_da_linha`, que pergunta pelo
+    `malha_execucao_id` da linha **ou** pela participação do pipeline no snapshot
+    de uma corrida aberta do mesmo ODATE (a segunda porta não é zelo: a linha do
+    dependente NASCE no claim do pai, sem `malha_execucao_id`, e fechar por "não
+    aponta para corrida nenhuma" mataria exatamente quem a corrida está
+    esperando); (ii) **nó SEGURADO** — `dep.eh_retencao(faltante)`, sobre a marca
+    derivada de `MSG_AGUARDE_RETIDO`, que corrige o defeito que existia HOJE. A
+    guarda (i) só é perguntada com o interruptor em `1` (o `corrida_on` desce de
+    `ciclo()`), e a leitura indisponível ADIA o fechamento, nunca o autoriza. O
+    portão `_corrida_habilitada` subiu para ANTES da responsabilidade 1 — a
+    limpeza de cache do interruptor tem de preceder a PRIMEIRA pergunta do
+    ciclo, não a sexta.
 20. **A varredura de `corridas_aguardando` da guardiã pergunta `liberado()` sem
     a corrida da linha** (F6). Três das quatro chamadas da guardiã —
     `_rede_seguranca`, `_fechar_dia_anterior` e o `_diagnostico` do deadline —
@@ -2974,9 +3013,16 @@ errado.
     a dependência), que é a resposta certa em todo ciclo **em voo**; a diferença
     aparece só depois que a corrida da linha fechou, e aí decide a janela — que é
     **exatamente o comportamento de hoje**, não uma regressão. A quarta chamada
-    (`_quiescencia_liberada`) já passa a corrida, porque a tem em mãos. Fechar o
-    resto é da **F7**, que reabre esta varredura (e é a mesma família da
-    pendência 14).
+    (`_quiescencia_liberada`) já passa a corrida, porque a tem em mãos.
+    **PARCIALMENTE RESOLVIDA na F7**, e por um caminho que não mexe na aridade:
+    onde a corrida da LINHA importa de verdade — o disparo — ela é perguntada
+    pelo `run_id` que o claim acabou de carimbar (pendência 14), e o degrau 0 a
+    devolve exata. `_fechar_dia_anterior` ganhou a sua pela via da Decisão 31.
+    O que **não** mudou é o `liberado()` das três varreduras, que segue caindo no
+    degrau 2 — a resposta certa em todo ciclo em voo, e o comportamento de hoje
+    depois que a corrida da linha fechou. Mudar `corridas_aguardando` continua
+    custando ~30 dublês de teste para um ganho que só aparece fora do ciclo em
+    voo: **decidir com o dono depois do smoke**, com o interruptor já em `1`.
 
 ---
 

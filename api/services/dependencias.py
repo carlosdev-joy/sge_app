@@ -206,6 +206,17 @@ SQL_LIBERADO_LEGADO = (
     _ONDE_SEM_SUCESSO_LEGADO)
 
 MSG_AGUARDE_RETIDO = "Aguarde #{} SEGURADO na malha (libere no diagrama)"
+# Port do canônico: o prefixo pelo qual quem CONSOME os faltantes reconhece a
+# retenção sem reimplementar o texto (§6.7, Decisão 30).
+MARCA_RETIDO = MSG_AGUARDE_RETIDO.split("#", 1)[0]
+
+
+def eh_retencao(faltante) -> bool:
+    """O faltante é uma TRAVA do operador, e não um predecessor que não
+    concluiu? (Port do canônico — as duas árvores têm de concordar sobre isto,
+    senão a tela chama de "esperando outro pipeline" o que o motor sabe que é
+    um nó segurado.)"""
+    return str(faltante).startswith(MARCA_RETIDO)
 
 
 def _faltante(linha):

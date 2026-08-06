@@ -211,12 +211,31 @@ class FakeCur(FakeCurF3):
             if not candidatas:
                 continue                      # CROSS APPLY: a malha não sai
             c = max(candidatas, key=lambda x: (x["aberta_em"], x["id"]))
+            # F7: o HOLD entra na conta do teto — e o dublê o DERIVA dos nós, do
+            # mesmo jeito que o SQL. Sem isto, um teste de retenção passaria
+            # verde com o card ainda acusando "fora do prazo".
+            retidos = sorted(
+                (n for n in getattr(db, "nos", {}).values()
+                 if str(n.get("malha", "")).casefold() == nome.casefold()
+                 and n.get("retido_em") is not None),
+                key=lambda n: n["retido_em"])
             teto = 1 if (c["teto_em"] is not None
-                         and c["teto_em"] < db.agora_banco) else 0
+                         and c["teto_em"] < db.agora_banco
+                         and not retidos) else 0
             decorrido = int(
                 (db.agora_banco - c["aberta_em"]).total_seconds() // 60)
-            out.append((nome,) + _proj(c) + (teto, decorrido, db.agora_banco,
-                                             _qtd_quiescencia(db)))
+            teto_total = (None if c["teto_em"] is None else
+                          int((c["teto_em"] - c["aberta_em"]).total_seconds() // 60))
+            # As três colunas do hold só existem no SQL quando a 082 está no
+            # banco; sem ela o router as troca por literais e o dublê responde o
+            # mesmo — "nunca retido".
+            tem_082 = "MIN(n.retido_em)" in s
+            out.append((nome,) + _proj(c) + (
+                teto, decorrido, db.agora_banco, _qtd_quiescencia(db),
+                teto_total, db.malhas[nome].get("teto_horas"),
+                (retidos[0]["retido_em"] if (retidos and tem_082) else None),
+                (len(retidos) if tem_082 else 0),
+                (retidos[0].get("retido_por") if (retidos and tem_082) else None)))
         return out
 
     def _denominador_das_corridas(self, s, p):
@@ -1296,6 +1315,14 @@ def test_contrato_do_bloco_corrida(client, auth):
         # cadastro da malha) de "a consulta não respondeu" (tente de novo) —
         # sem ele os dois chegavam à tela iguais, de contadores em branco.
         "sem_membros",
+        # ── F7: os relógios do prazo ────────────────────────────────────────
+        # `teto_configurado` é o que decide se a BARRA existe (Decisão 61: o
+        # teto é anti-travamento, não SLA); `teto_creditado_min` é o que
+        # explica a barra que ANDOU PARA TRÁS; `retido_*` é o porquê de os
+        # relógios estarem parados. Todos saem da consulta (A) — nenhuma ida a
+        # mais ao banco.
+        "teto_vencido", "teto_total_min", "teto_creditado_min", "teto_horas",
+        "teto_configurado", "retido_desde", "retido_nos", "retido_por",
     }
     assert set(corrida["pendentes"][0]) == {"pipeline", "classe", "desde",
                                             "faltante"}

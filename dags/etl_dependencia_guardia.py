@@ -264,7 +264,7 @@ def _diagnostico(conn, pipeline: str, data_ref) -> str:
 
 # ── Responsabilidade 1 — fechar o dia anterior (§6) ─────────────────────────
 
-def _fechar_dia_anterior(conn, agora: datetime, log) -> int:
+def _fechar_dia_anterior(conn, agora: datetime, log, corrida_on: bool = False) -> int:
     """NAO_LIBEROU: fecha as linhas aguardando que atravessaram um dia
     operacional COMPLETO sem liberar. Três guardas, cada uma com dono
     (Decisão 11): idade de um dia inteiro (a cadeia noturna meramente LENTA
@@ -272,8 +272,31 @@ def _fechar_dia_anterior(conn, agora: datetime, log) -> int:
     (linha velha porém LIBERADA vai para a rede, que dispara — rodar
     atrasado é o propósito da feature); sem predecessor EXECUTANDO (pai de
     30h rodando não derruba o filho que o espera). Fechou → evento
-    NAO_LIBEROU + card: é o D41 de quem não configurou deadline."""
+    NAO_LIBEROU + card: é o D41 de quem não configurou deadline.
+
+    **F7 — mais duas guardas, e as duas consertam defeitos que existem HOJE**
+    (spec-malha-execucao §6.7/§6.8, Decisões 30 e 31):
+
+      • **corrida ABERTA cobre a linha** (Decisão 31): esta função corta por
+        `criado_em < virada_anterior`, régua derivada da VIRADA. Malha com teto
+        de 48h, ou corrida que atravessa a virada seguinte (cadeia noturna longa
+        + rerun), teria os `AGUARDANDO_DEPENDENCIA` dela fechados como
+        `NAO_LIBEROU` **enquanto a corrida ainda é válida** — os membros virariam
+        pendentes e a corrida iria a `FALHA` por ação da própria guardiã. A
+        corrida passa a ser a autoridade sobre "este ciclo ainda não acabou";
+      • **nó SEGURADO** (Decisão 30): com um Aguarde retido, `liberado()`
+        devolve False por construção — é a trava que o operador pôs, não um
+        predecessor que faltou. Fechar aqui é a guardiã desfazendo o gesto dele
+        depois de 24h, sem que ninguém tenha soltado nada. O faltante já
+        DIZ que é retenção (`dep.eh_retencao`, 2ª coluna do predicado); o que
+        faltava era alguém escutar.
+    """
     fechadas = 0
+    # `corrida_on` chega PRONTO de `ciclo()` (avaliado uma vez, no portão): com
+    # o interruptor em 0 — o estado de todo ambiente antes desta fase — a
+    # pergunta da Decisão 31 nem chega ao banco, e esta função sai byte a byte
+    # como antes. O default `False` é o que mantém verdes os chamadores de
+    # teste que a exercitam com três argumentos.
     for pipeline, data_ref, run_id, criado_em in dep.corridas_aguardando(conn):
         try:
             if criado_em is None:
@@ -288,9 +311,33 @@ def _fechar_dia_anterior(conn, agora: datetime, log) -> int:
                         for v in viradas.values())
             if criado_em >= corte:
                 continue
+            # Decisão 31 — depois do corte de propósito: só as linhas que ESTÃO
+            # para ser fechadas pagam a consulta (o corte descarta a esmagadora
+            # maioria), e nenhum ciclo saudável gasta uma ida ao banco a mais.
+            if corrida_on:
+                aberta = mc.corrida_aberta_da_linha(conn, pipeline, data_ref)
+                if aberta is not None:
+                    if aberta["id"] is None:
+                        log.warning("[GUARDIA] corrida de %s em %s indisponivel "
+                                    "— fechamento adiado", pipeline, data_ref)
+                    else:
+                        log.info("[GUARDIA] %s em %s pertence a corrida ABERTA "
+                                 "da malha '%s' — NAO fechado como NAO_LIBEROU "
+                                 "(o ciclo ainda nao acabou)", pipeline,
+                                 data_ref, aberta["malha_name"])
+                    continue
             lib, faltantes = dep.liberado(conn, pipeline, data_ref)
             if lib:
                 continue        # liberada velha: disparo (rede), não fechamento
+            if any(dep.eh_retencao(f) for f in faltantes):
+                # Decisão 30: quem segura é o OPERADOR. "Nenhum vivo, nenhum
+                # liberado" aqui não é abandono — é uma decisão humana em curso,
+                # e ela não tem prazo de 24h.
+                log.info("[GUARDIA] %s em %s espera no de malha SEGURADO (%s) "
+                         "— NAO fechado como NAO_LIBEROU", pipeline, data_ref,
+                         ", ".join(str(f) for f in faltantes
+                                   if dep.eh_retencao(f))[:200])
+                continue
             if any(str(f).startswith(dep.ERRO_CONSULTA) for f in faltantes):
                 # "Não consegui perguntar" ≠ "não liberou": fechar TERMINAL
                 # com base em erro transitório mataria uma corrida liberada
@@ -535,7 +582,18 @@ def _rede_seguranca(conn, agora: datetime, log) -> int:
     janela (relógio de parede — o 'dispara às 08:00' do D22) → filho
     pausado não dispara (Decisão 8) → claim → trigger → devolução em
     exceção. O ciclo seguinte re-tenta pela mesma varredura: a varredura É
-    o retry (D16/D50), sem código novo de retry."""
+    o retry (D16/D50), sem código novo de retry.
+
+    **F7 — esta é a QUARTA PORTA DE DISPARO** (pendência 14 da §18), e até aqui
+    ela era a única que não levava a corrida junto: `montar_conf(data_ref,
+    dia_op, "guardia")`, sem `malha_execucao_id`. A DATA nunca sofreu (o degrau
+    0 do §7 lê a linha que o claim acabou de carimbar), mas a PROVENIÊNCIA se
+    perdia exatamente no caso que a F5 existe para tratar — o pipeline membro de
+    duas corridas do MESMO ODATE, em que o degrau 3 se recusa a escolher e a
+    linha ficaria sem dono. Agora a porta faz as duas coisas que as outras três
+    já faziam: **recusa por ODATE ambíguo** (Decisão 34) e **propaga a corrida**
+    (Decisão 35).
+    """
     disparadas = 0
     for pipeline, data_ref, _run_id, _criado_em in dep.corridas_aguardando(conn):
         try:
@@ -546,11 +604,32 @@ def _rede_seguranca(conn, agora: datetime, log) -> int:
             # corrida ABERTA da malha que assinou a dependência), que é a resposta
             # certa em todo ciclo em voo; só quando a corrida da linha já fechou é
             # que o degrau 3 (janela) decide — que é EXATAMENTE o comportamento
-            # de hoje, não uma regressão. Fechar esse resto é da F7, que reabre
-            # esta varredura (pendência 20 da §18).
+            # de hoje, não uma regressão.
             lib, _faltantes = dep.liberado(conn, pipeline, data_ref)
             if not lib:
                 continue    # deadline (§5) e divergência (§7) diagnosticam o resto
+            # F7 (Decisão 34) — duas corridas abertas com ODATEs DIFERENTES para
+            # este pipeline: recusa nominal, nunca escolha. Vem ANTES do claim de
+            # propósito: reservar e não disparar deixaria a linha com
+            # `execution_id` de um run que nunca existiu, e o próximo ciclo teria
+            # de devolver a reserva para chegar à mesma recusa.
+            #
+            # Com o interruptor em 0 (ou sem a 085) `odate()` devolve o vazio na
+            # PRIMEIRA linha, sem tocar o banco: nenhuma consulta a mais nesta
+            # varredura enquanto a corrida não estiver ligada.
+            od = mc.odate(conn, pipeline)
+            if od["ambiguo"]:
+                log.warning("[GUARDIA] %s NAO disparado — %s", pipeline,
+                            od["detalhe"])
+                try:
+                    dep.gravar_evento(conn, pipeline, data_ref,
+                                      "DATA_DIVERGENTE", od["detalhe"])
+                    conn.commit()
+                except Exception as e_amb:   # noqa: BLE001 — o evento é rastro
+                    _rollback(conn)
+                    log.warning("[GUARDIA] evento de ODATE ambiguo de %s nao "
+                                "gravado (%s)", pipeline, e_amb)
+                continue
             cfg = dep.config_dependente(conn, pipeline)
             if cfg is None:
                 log.info("[GUARDIA] %s sem cadastro — ignorado", pipeline)
@@ -572,12 +651,32 @@ def _rede_seguranca(conn, agora: datetime, log) -> int:
                 log.info("[GUARDIA] %s já tem corrida em %s — outra ponta venceu",
                          pipeline, data_ref)
                 continue    # push × guardiã: exatamente um vence (D18)
+            # F7 (pendência 14) — a PROVENIÊNCIA, perguntada DEPOIS do claim
+            # porque é o claim que carimba `execution_id = ganho` na linha: com
+            # o `run_id` em mãos, o degrau 0 devolve a corrida DA PRÓPRIA LINHA
+            # (o que a pendência 20 queria de `corridas_aguardando` sem mudar a
+            # aridade dela), e não uma corrida "provável" da malha. `herdada`
+            # fecha o caso da linha que ainda não tem dono: a data é a dela,
+            # ponto, e a corrida só é aceita se carimbar exatamente essa data.
+            #
+            # Nunca levanta: `montar_conf` sem a chave é o conf de antes desta
+            # spec, byte a byte, e disparar sem proveniência é infinitamente
+            # melhor que não disparar.
+            corrida_id = None
+            try:
+                corrida_id = mc.odate(conn, pipeline, run_id=ganho,
+                                      herdada=data_ref).get("corrida_id")
+            except Exception as e_prov:  # noqa: BLE001
+                log.warning("[GUARDIA] corrida de %s nao resolvida (%s) — "
+                            "disparo segue sem a proveniencia", pipeline, e_prov)
             try:
                 _trigger(pipeline, ganho,
-                         dep.montar_conf(data_ref, dia_op, "guardia"))
+                         dep.montar_conf(data_ref, dia_op, "guardia",
+                                         malha_execucao_id=corrida_id))
                 disparadas += 1
-                log.info("[GUARDIA] %s disparado: run_id=%s data_ref=%s dia_op=%s",
-                         pipeline, ganho, data_ref, dia_op)
+                log.info("[GUARDIA] %s disparado: run_id=%s data_ref=%s dia_op=%s "
+                         "corrida=%s", pipeline, ganho, data_ref, dia_op,
+                         corrida_id if corrida_id is not None else "-")
             except Exception as e:
                 dep.devolver_reserva(conn, pipeline, data_ref, ganho,
                                      veio_de_adocao=(ganho != rid_novo))
@@ -1418,7 +1517,15 @@ def ciclo(**context) -> dict:
         if not dep.tabelas_067_presentes(conn):
             log.warning("[GUARDIA] migration 067 ausente — ciclo encerrado")
             return {"migration_067": False}
-        fechadas    = _fechar_dia_anterior(conn, agora, log)
+        # O portão da corrida sobe ANTES da primeira responsabilidade (F7). Ele
+        # já era "uma vez por ciclo"; o que mudou é que a responsabilidade 1
+        # passou a depender dele — `_fechar_dia_anterior` não pode fechar como
+        # NAO_LIBEROU a linha de uma corrida ABERTA (Decisão 31). Avaliá-lo no
+        # meio do ciclo faria a primeira responsabilidade ler o cache do ciclo
+        # ANTERIOR num worker reaproveitado, e virar a chave às 3h deixaria de
+        # valer justamente na função que a chave passou a governar.
+        corrida_on = _corrida_habilitada(conn, log)
+        fechadas    = _fechar_dia_anterior(conn, agora, log, corrida_on)
         ordenadas   = _new_day(conn, agora, log)
         resgatadas  = _resgatar_orfas(conn, intervalo, log)
         # Órfãs que COMEÇARAM (§4.3) ANTES da rede: uma corrida fechada aqui
@@ -1434,10 +1541,10 @@ def ciclo(**context) -> dict:
         # Teams: o card do desfecho sai no lote do MESMO ciclo, e o observador
         # do nó Fim ainda enxerga a corrida aberta quando grava a conclusão.
         #
-        # O interruptor é avaliado UMA vez e governa as três chamadas: com ele
-        # em 0 nada abre, nada fecha, o observador volta ao comportamento
-        # anterior byte a byte e o log não ganha uma linha sequer.
-        corrida_on = _corrida_habilitada(conn, log)
+        # O interruptor foi avaliado UMA vez, no portão lá em cima, e governa
+        # estas três chamadas junto com a responsabilidade 1: com ele em 0 nada
+        # abre, nada fecha, o observador volta ao comportamento anterior byte a
+        # byte e o log não ganha uma linha sequer.
         corridas_abertas = _abrir_corridas_malha(conn, log) if corrida_on else 0
         observadores = _observadores_malha(conn, agora, log, corrida_on)
         corridas_fechadas = (_fechar_corridas_malha(conn, log)

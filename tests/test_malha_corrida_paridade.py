@@ -101,7 +101,13 @@ _CONSTANTES_SQL = ("SQL_TETO_DA_MALHA", "SQL_VIRADA_DA_MALHA",
                    # entre o que o motor fecha e o que o painel mostra.
                    "SQL_RAIZES_DA_MALHA", "SQL_ESTADO", "SQL_FORA_DO_ODATE",
                    "SQL_AGUARDANDO_DO_SNAPSHOT", "SQL_RELOGIOS",
-                   "SQL_NO_RETIDO", "SQL_CARIMBAR_MOTIVO",
+                   "SQL_HOLD_DA_MALHA", "SQL_CARIMBAR_MOTIVO",
+                   # F7 — os relógios. O crédito de hold e a guarda da
+                   # Decisão 31 escrevem/leem a MESMA corrida que o motor
+                   # fecha: divergir aqui faria a API empurrar um teto que a
+                   # guardiã não enxerga (ou o contrário), e o sintoma seria
+                   # uma corrida expirando com hold solto minutos antes.
+                   "SQL_CREDITAR_HOLD", "SQL_CORRIDA_ABERTA_DA_LINHA",
                    "SQL_HEARTBEAT_GRAVAR", "SQL_HEARTBEAT_CRIAR",
                    "SQL_HEARTBEAT_LER", "SQL_CORRIDA_DA_DATA",
                    # F5 — os degraus 0 e 1 do §7. O ODATE que o motor carimba e
@@ -283,6 +289,11 @@ _CHAMADAS = {
         a, _CORRIDA_F2),
     "relogios": lambda m, a: m.relogios(a, _CORRIDA_F2, 15, 20),
     "ha_no_retido": lambda m, a: m.ha_no_retido(a, "M1"),
+    # ── F7 — os relógios ────────────────────────────────────────────────────
+    "hold_da_malha": lambda m, a: m.hold_da_malha(a, "M1"),
+    "creditar_hold": lambda m, a: m.creditar_hold(a, "M1", 12),
+    "corrida_aberta_da_linha": lambda m, a: m.corrida_aberta_da_linha(
+        a, "PIPE_A", ODATE),
     "carimbar_motivo": lambda m, a: m.carimbar_motivo(
         a, "PIPE_A", ODATE, "run_1", m.MOTIVO_FORA_DA_CORRIDA, "texto"),
     "marcar_heartbeat": lambda m, a: m.marcar_heartbeat(a),

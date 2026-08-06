@@ -1142,6 +1142,18 @@ EVENTO_ORFA = "EXECUCAO_ORFA"
 MOTIVO_FORA_DA_CORRIDA = "FORA_DA_CORRIDA"
 MOTIVO_OUTRO_ODATE = "CORRIDA_ABERTA_DE_OUTRO_ODATE"
 
+# O evento do crédito de retenção (F7, Decisão 61). Existe porque a barra do
+# limite de segurança ANDA PARA TRÁS quando um hold é solto — às 03:00 ela está
+# em 80%, alguém solta um hold de 6h e ela cai para 55% sozinha. Uma barra de
+# prazo que recua sem explicação destrói a confiança em todas as outras: o
+# crédito vira FATO NOMEADO na aba Eventos, com o quanto e o quando.
+#
+# É gravado com `notificar=False` de propósito: o gesto é humano e síncrono (o
+# operador acabou de clicar em Soltar e leu o toast), e um card no Teams seria o
+# eco do próprio clique dele às 3h — exatamente o alarme que as Decisões 26/27
+# mandam não criar.
+EVENTO_TETO_CREDITADO = "MALHA_TETO_CREDITADO"
+
 # Heartbeat da guardiã (§10/F2): "a guardiã DESTE deploy passou por aqui e está
 # operando a corrida". É o que a F3 consulta, junto com `capacidade_dags()`,
 # antes de deixar a API abrir corrida — a célula mais provável da matriz §11.1 é
@@ -1576,40 +1588,201 @@ def relogios(conn, corrida: dict, carencia_min: int, quiescencia_min: int) -> di
             "quiescente": bool(row[2])}
 
 
-# ── guarda 3 da quiescência: o HOLD (§6.7, Decisão 30) ──────────────────────
-SQL_NO_RETIDO = (
-    "SELECT COUNT(*) FROM dbo.etl_malha_no n "
+# ── guarda 3 da quiescência: o HOLD (§6.7, Decisões 30 e 31) ────────────────
+# O hold é DERIVADO de `MIN(etl_malha_no.retido_em)` a cada avaliação, e nunca
+# materializado numa coluna da corrida. O teste que separa as duas formas é o
+# aceite da F7: com DOIS Aguardes segurados, soltar UM não pode destravar os
+# relógios. Um espelho ("esta corrida está retida") seria limpo pelo primeiro
+# `soltar` e o teto voltaria a correr com a malha ainda travada — a corrida
+# expirando por causa da trava que o próprio operador pôs.
+#
+# `MIN` (e não `MAX`): o hold começou no PRIMEIRO nó segurado. A janela do
+# crédito é [MIN(retido_em), agora], e é o banco quem a mede — `DATEDIFF` aqui,
+# nunca subtração em Python (o SQL Server do dev está 3h à frente do worker).
+SQL_HOLD_DA_MALHA = (
+    "SELECT COUNT(*), MIN(n.retido_em), "
+    "DATEDIFF(MINUTE, MIN(n.retido_em), SYSDATETIME()), "
+    "(SELECT TOP 1 n2.retido_por FROM dbo.etl_malha_no n2 "
+    "WHERE n2.malha_name = %s AND n2.retido_em IS NOT NULL "
+    "ORDER BY n2.retido_em, n2.id) "
+    "FROM dbo.etl_malha_no n "
     "WHERE n.malha_name = %s AND n.retido_em IS NOT NULL")
 
 
-def ha_no_retido(conn, malha: str) -> bool:
-    """Existe nó da malha SEGURADO agora? (`MIN(etl_malha_no.retido_em)` — lido
-    na avaliação, nunca materializado: com dois Aguardes segurados, soltar UM
-    limparia um espelho e o teto voltaria a correr com a malha travada.)
+def hold_da_malha(conn, malha: str) -> dict:
+    """O HOLD desta malha AGORA: `{retido, nos, desde, minutos, por}`.
 
-    Retido = o teto não corre, a quiescência não avalia e o aborto por carência
-    não acontece (Decisão 30). Sem isso, um Aguarde que o próprio operador
-    segurou faz `liberado()` devolver False para o dependente — que é
-    literalmente "nenhum vivo, nenhum liberado" — e a corrida fecharia como
-    **FALHA por causa da trava que o operador pôs**.
+    `desde` é `MIN(retido_em)` — o instante em que o hold começou — e `minutos`
+    é o `DATEDIFF` que o BANCO calculou até `SYSDATETIME()`. Nenhum dos dois
+    passa por conta em Python: `desde` vem do relógio do banco e comparar com o
+    relógio do worker (3h atrás no dev, medido) daria "segurado há -3h".
 
-    Sem a 075/082 (`etl_malha_no`/`retido_em` ausentes) → **False**: não há nó,
-    logo não há retenção. Qualquer OUTRO erro → **True**: "não consegui
-    perguntar" nunca pode virar "pode fechar" (a lição do `ERRO_CONSULTA`,
-    literal). Adiar um fechamento custa um ciclo de 5 min; fechar uma corrida
-    como FALHA por causa de um timeout custa o card mentiroso que esta spec
-    existe para matar."""
+    Retido = o teto não corre, a quiescência não avalia, o aborto por carência
+    não acontece (Decisão 30) e `_fechar_dia_anterior` pula os membros
+    (Decisão 31). Sem isso, um Aguarde que o próprio operador segurou faz
+    `liberado()` devolver False para o dependente — que é literalmente "nenhum
+    vivo, nenhum liberado" — e a corrida fecharia como **FALHA por causa da
+    trava que o operador pôs**.
+
+    Sem a 075/082 (`etl_malha_no`/`retido_em` ausentes) → **não retido**: não há
+    nó, logo não há retenção. Qualquer OUTRO erro → **retido**, com `desde=None`:
+    "não consegui perguntar" nunca pode virar "pode fechar" (a lição do
+    `ERRO_CONSULTA`, literal). Adiar um fechamento custa um ciclo de 5 min;
+    fechar uma corrida como FALHA por causa de um timeout custa o card
+    mentiroso que esta spec existe para matar. `desde=None` com `retido=True` é
+    deliberado: quem escreve na tela não pode inventar um instante que a
+    consulta não devolveu."""
+    vazio = {"retido": False, "nos": 0, "desde": None, "minutos": 0, "por": None}
     try:
         cur = conn.cursor()
-        cur.execute(SQL_NO_RETIDO, (malha,))
+        cur.execute(SQL_HOLD_DA_MALHA, (malha, malha))
         row = cur.fetchone()
-        return bool(row) and int(row[0] or 0) > 0
     except Exception as e:  # noqa: BLE001
         if _sem_hold(e):
-            return False
+            return vazio
         print(f"{LOG} retencao de {malha} indisponivel ({e}) — assumindo "
               f"RETIDA; nada fecha neste ciclo")
-        return True
+        return {**vazio, "retido": True}
+    if not row or not int(row[0] or 0):
+        return vazio
+    return {"retido": True, "nos": int(row[0] or 0),
+            "desde": row[1] if len(row) > 1 else None,
+            "minutos": int(row[2] or 0) if len(row) > 2 and row[2] is not None else 0,
+            "por": row[3] if len(row) > 3 else None}
+
+
+def ha_no_retido(conn, malha: str) -> bool:
+    """Existe nó da malha SEGURADO agora? A pergunta de SIM/NÃO sobre o mesmo
+    `hold_da_malha` — uma consulta só, uma derivação só."""
+    return hold_da_malha(conn, malha)["retido"]
+
+
+# ── o crédito do teto ao soltar o ÚLTIMO nó (§6.7, Decisão 30) ──────────────
+# Soltar depois de 6h de hold numa malha com teto de 4h empurra o teto em 6h, e
+# a corrida NÃO expirou. Três coisas fazem isso ser verdade, e as três estão
+# neste UPDATE — num statement só, porque medir o hold e apagá-lo em dois
+# statements abre a janela em que o crédito se perde:
+#
+#   • `h.cred` é `DATEDIFF(MINUTE, MIN(retido_em), SYSDATETIME())` — o banco
+#     mede, e mede ANTES de o `retido_em` ser limpo (quem chama limpa DEPOIS);
+#   • `NOT EXISTS (... n2.id <> ?)` é o "ÚLTIMO nó": com outro Aguarde ainda
+#     segurado, nada é creditado e os relógios seguem parados — o hold continua
+#     correndo e o crédito virá inteiro quando o último for solto;
+#   • `teto_em = DATEADD(MINUTE, h.cred, teto_em)` reprojeta o teto. É
+#     equivalente a `aberta_em + teto_horas + creditado`, porque `teto_em` só se
+#     move por crédito — e incremental não precisa reler `teto_horas`, que pode
+#     ter sido editado no cadastro no meio do voo (o snapshot do ciclo é o que
+#     valia na abertura).
+#
+# ⚠️ SUBESTIMA de propósito quando houve DOIS holds encavalados: A segurado às
+# 01:00 e solto às 02:00, B segurado às 01:30 e solto às 03:00 credita 90 min
+# (de B), não 120. `MIN` é sobre quem AINDA está retido, e não há histórico de
+# retenção no modelo. Errar para MENOS é a direção segura: crédito a mais
+# adiaria o único mecanismo anti-travamento que a malha tem.
+#
+# `atraso_visto_em = NULL`: o `MALHA_ATRASADA` já emitido falava de um teto que
+# acabou de mudar de lugar. Sem zerar, um atraso NOVO — depois do crédito —
+# ficaria mudo para sempre, porque a memória de efeito colateral é por corrida.
+SQL_CREDITAR_HOLD = (
+    "UPDATE me SET teto_creditado_min = me.teto_creditado_min + h.cred, "
+    "teto_em = DATEADD(MINUTE, h.cred, me.teto_em), "
+    "atraso_visto_em = NULL, atualizado_em = SYSDATETIME() "
+    "OUTPUT inserted.id, "
+    "inserted.teto_creditado_min - deleted.teto_creditado_min, "
+    "inserted.teto_em, inserted.teto_creditado_min, inserted.data_referencia "
+    "FROM dbo.etl_malha_execucao me "
+    "CROSS APPLY (SELECT DATEDIFF(MINUTE, MIN(n.retido_em), SYSDATETIME()) AS cred "
+    "FROM dbo.etl_malha_no n "
+    "WHERE n.malha_name = me.malha_name AND n.retido_em IS NOT NULL) h "
+    "WHERE me.malha_name = %s AND me.fechada_em IS NULL "
+    "AND me.teto_em IS NOT NULL AND h.cred > 0 "
+    "AND NOT EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
+    "WHERE n2.malha_name = me.malha_name AND n2.retido_em IS NOT NULL "
+    "AND n2.id <> %s)")
+
+
+def creditar_hold(conn, malha: str, no_id) -> dict:
+    """Credita ao teto da corrida ABERTA o tempo que a malha passou segurada —
+    e só quando `no_id` é o ÚLTIMO nó retido. `None` quando não há o que
+    creditar. **Não commita**: o crédito e a limpeza do `retido_em` são o mesmo
+    gesto e têm de cair no mesmo commit.
+
+    Chamado ANTES do `UPDATE ... SET retido_em = NULL`, porque é o próprio
+    `retido_em` que mede o crédito.
+
+    Devolve `{corrida_id, minutos, teto_em, total_min, data_referencia}`.
+    Hold de menos de um minuto não credita (`h.cred > 0`) — e não gera evento,
+    que é o certo: "+0h creditados" seria ruído com a forma de fato.
+
+    Degrada em silêncio para `None`: sem a 085 (banco a meio deploy), sem a 082
+    ou com a leitura indisponível, **soltar o nó continua funcionando**. Perder
+    o crédito adia o teto para o valor original; falhar o `soltar` deixaria a
+    malha travada, que é o oposto do gesto."""
+    try:
+        cur = conn.cursor()
+        cur.execute(SQL_CREDITAR_HOLD, (malha, int(no_id)))
+        row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 — o gesto do operador nunca cai por isto
+        print(f"{LOG} credito de retencao da malha {malha} nao aplicado ({e}) "
+              f"— o teto segue com o valor original")
+        return None
+    if not row:
+        return None
+    return {"corrida_id": int(row[0]), "minutos": int(row[1] or 0),
+            "teto_em": row[2], "total_min": int(row[3] or 0),
+            "data_referencia": row[4] if len(row) > 4 else None}
+
+
+# ── Decisão 31: a corrida ABERTA que cobre uma linha AGUARDANDO ─────────────
+# `_fechar_dia_anterior` corta por `criado_em < virada_anterior` — régua
+# derivada da VIRADA. Uma malha com teto de 48h, ou uma corrida que atravessa a
+# virada seguinte (cadeia noturna longa + rerun), teria seus
+# `AGUARDANDO_DEPENDENCIA` fechados como `NAO_LIBEROU` **enquanto a corrida
+# ainda é válida** — e esses membros virariam pendentes, levando a corrida a
+# FALHA por ação da própria guardiã. A corrida passa a ser a autoridade sobre
+# "este ciclo ainda não acabou".
+#
+# Duas portas no mesmo `EXISTS`, e a segunda não é zelo: a linha do dependente
+# NASCE no claim do pai (`reservar_corrida`), sem `malha_execucao_id`, e só o
+# `_registrar_execucao` do filho a carimba. Fechar por "a linha não aponta para
+# corrida nenhuma" mataria exatamente as linhas que ainda não partiram — que
+# são as que a corrida está esperando.
+SQL_CORRIDA_ABERTA_DA_LINHA = (
+    "SELECT TOP 1 me.id, me.malha_name, me.data_referencia "
+    "FROM dbo.etl_malha_execucao me "
+    "WHERE me.fechada_em IS NULL AND ("
+    "EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
+    "WHERE e.pipeline_name = %s AND e.data_referencia = %s "
+    "AND e.malha_execucao_id = me.id) "
+    "OR (me.data_referencia = %s AND EXISTS ("
+    "SELECT 1 FROM dbo.etl_malha_execucao_membro mm "
+    "WHERE mm.malha_execucao_id = me.id AND mm.pipeline_name = %s))) "
+    "ORDER BY me.id")
+
+
+def corrida_aberta_da_linha(conn, pipeline: str, data_ref):
+    """A corrida ABERTA que cobre a linha `(pipeline, data_ref)`, ou `None`.
+
+    `{"id": None}` é o veredito de LEITURA INDISPONÍVEL: quem chama trata como
+    "há corrida" e adia o fechamento por um ciclo. É a política do
+    `ERRO_CONSULTA` — "não consegui perguntar" nunca vira "pode fechar
+    NAO_LIBEROU". Sem a 085, `None`: o comportamento é o de antes desta spec,
+    byte a byte."""
+    try:
+        cur = conn.cursor()
+        cur.execute(SQL_CORRIDA_ABERTA_DA_LINHA,
+                    (pipeline, data_ref, data_ref, pipeline))
+        row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001
+        if _sem_085(e):
+            return None
+        print(f"{LOG} corrida aberta de {pipeline} em {data_ref} indisponivel "
+              f"({e}) — fechamento adiado")
+        return {"id": None, "malha_name": None, "data_referencia": None}
+    if not row:
+        return None
+    return {"id": int(row[0]), "malha_name": row[1],
+            "data_referencia": row[2] if len(row) > 2 else None}
 
 
 # ── o carimbo NA LINHA (Decisões 15 e 17) ──────────────────────────────────

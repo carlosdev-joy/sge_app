@@ -100,6 +100,15 @@ def _corrida(monkeypatch, **sobrescreve):
                                                "quiescente": True},
         "aguardando_do_snapshot": lambda conn, c: [],
         "ha_no_retido": lambda conn, m: False,
+        # F7 — os relógios. Defaults do mundo comum: nada segurado, nenhuma
+        # corrida cobrindo a linha e o §7 sem resposta (o degrau 4 decide).
+        "hold_da_malha": lambda conn, m: {"retido": False, "nos": 0,
+                                          "desde": None, "minutos": 0,
+                                          "por": None},
+        "corrida_aberta_da_linha": lambda conn, p, d: None,
+        "odate": lambda conn, p, run_id=None, conf_id=None, herdada=None: {
+            "data": None, "corrida_id": None, "ambiguo": False,
+            "degrau": None, "detalhe": None},
         # `marcar_visto` devolve True só na PRIMEIRA vez (é o `rowcount` do
         # carimbo que arbitra, §5.2). Um dublê que devolvesse True sempre
         # esconderia o defeito que a Decisão 12 existe para evitar: o mesmo

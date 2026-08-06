@@ -151,6 +151,13 @@ class FakeCur:
         if "COL_LENGTH('dbo.etl_pipeline', 'hora_virada')" in s:
             self._rows = [(5,)] if getattr(db, "com_virada_pipe", False) else [(None,)]
             return
+        # Coluna do LIMITE DE SEGURANCA por malha (085/F7). Guard PROPRIO no
+        # router — a 085 cria a tabela da corrida e esta coluna em blocos
+        # separados —, entao guard proprio aqui tambem. Tem de vir ANTES do
+        # catch-all da 074 abaixo, que casa qualquer COL_LENGTH de etl_malha.
+        if "COL_LENGTH('dbo.etl_malha', 'teto_horas')" in s:
+            self._rows = [(4,)] if getattr(db, "com_085", False) else [(None,)]
+            return
         # Guard da coluna orientacao (074): COL_LENGTH devolve NULL para coluna
         # ausente sem estourar — inclusive sem a própria tabela.
         if "COL_LENGTH('dbo.etl_malha'" in s:
@@ -232,6 +239,7 @@ class FakeCur:
             tem_orientacao = ", orientacao" in s
             tem_agendamento = ", agendamento_json" in s
             tem_081 = ", hora_virada, CAST(equalizar_data AS INT)" in s
+            tem_teto = ", teto_horas" in s
 
             def linha(k):
                 m = db.malhas[k]
@@ -244,6 +252,8 @@ class FakeCur:
                 if tem_081:
                     cols.append(m.get("hora_virada"))
                     cols.append(int(m.get("equalizar_data") or 0))
+                if tem_teto:
+                    cols.append(m.get("teto_horas"))
                 return tuple(cols)
             if "WHERE malha_name = ?" in s:
                 k = db._malha_key(params[0])
@@ -358,6 +368,14 @@ class FakeCur:
                 raise RuntimeError("Invalid column name 'orientacao'")
             k = db._malha_key(params[1])
             db.malhas[k].update(orientacao=params[0], atualizado_em=_AGORA)
+            return
+        if s.startswith("UPDATE dbo.etl_malha SET teto_horas"):
+            # Mesmo contrato do orientacao: sem a coluna, o guard do router tem
+            # de impedir o UPDATE — chegar aqui sem a 085 é bug de degradação.
+            if not getattr(db, "com_085", False):
+                raise RuntimeError("Invalid column name 'teto_horas'")
+            k = db._malha_key(params[1])
+            db.malhas[k].update(teto_horas=params[0], atualizado_em=_AGORA)
             return
         if s.startswith("DELETE FROM dbo.etl_malha WHERE"):
             k = db._malha_key(params[0])

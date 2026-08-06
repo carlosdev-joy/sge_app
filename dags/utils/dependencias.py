@@ -1021,6 +1021,23 @@ def _exec_liberado(cur, params, params_seq=None):
 # dizer "aguardando PIPE_A" com PIPE_A já concluído mandaria o plantonista
 # investigar o pipeline errado.
 MSG_AGUARDE_RETIDO = "Aguarde #{} SEGURADO na malha (libere no diagrama)"
+# O prefixo pelo qual quem CONSOME os faltantes reconhece a retenção sem
+# reimplementar o texto. Derivado da própria mensagem (e não escrito à mão):
+# mudar a frase sem mudar isto faria a guardiã voltar a fechar como
+# NAO_LIBEROU o dependente de um Aguarde segurado — em silêncio, porque o
+# `startswith` continuaria compilando.
+MARCA_RETIDO = MSG_AGUARDE_RETIDO.split("#", 1)[0]
+
+
+def eh_retencao(faltante) -> bool:
+    """O faltante é uma TRAVA do operador, e não um predecessor que não
+    concluiu? (§6.7, Decisão 30.)
+
+    Quem segura é o Aguarde, e a resposta muda o que se pode fazer com a linha:
+    predecessor que não concluiu é diagnóstico; nó segurado é uma decisão humana
+    em curso — fechar a linha como `NAO_LIBEROU` seria a guardiã desfazer a
+    trava que o operador pôs, e é o defeito que existe HOJE."""
+    return str(faltante).startswith(MARCA_RETIDO)
 
 
 def _faltante(linha):
