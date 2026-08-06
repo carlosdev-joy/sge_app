@@ -44,6 +44,20 @@ class FakeDb(FakeDbF9):
 
 
 class FakeCur(FakeCurF9):
+    def _faltantes(self, pipeline, data_ref):
+        """O predicado, avaliado DE VERDADE sobre o estado do dublê."""
+        db = self.db
+        for d in db.dependencias:
+            if d["pipeline"].casefold() != str(pipeline).casefold():
+                continue
+            tem_sucesso = any(
+                e["pipeline"].casefold() == d["depende_de"].casefold()
+                and e["data_referencia"] == data_ref
+                and e["status"] == "SUCESSO"
+                for e in db.execucoes)
+            if not tem_sucesso:
+                yield d["depende_de"]
+
     def execute(self, sql, params=()):  # noqa: C901 — dispatcher de dublê
         db = self.db
         s = " ".join(str(sql).split())
@@ -54,18 +68,22 @@ class FakeCur(FakeCurF9):
             if not db.com_067:
                 raise RuntimeError("Invalid object name (migration 067 ausente)")
             pipeline, data_ref = params
-            self._rows = []
+            self._rows = [(f,) for f in self._faltantes(pipeline, data_ref)]
             self.rowcount = -1
-            for d in db.dependencias:
-                if d["pipeline"].casefold() != str(pipeline).casefold():
-                    continue
-                tem_sucesso = any(
-                    e["pipeline"].casefold() == d["depende_de"].casefold()
-                    and e["data_referencia"] == data_ref
-                    and e["status"] == "SUCESSO"
-                    for e in db.execucoes)
-                if not tem_sucesso:
-                    self._rows.append((d["depende_de"],))
+            return
+        # F10 — a forma de CONJUNTO do MESMO predicado (uma consulta para N
+        # pipelines). O dublê a avalia pelo mesmo caminho de propósito: se as
+        # duas formas divergirem, é aqui que a diferença aparece, e não na
+        # madrugada. `params` = (…nomes…, data_ref).
+        if s.startswith("SELECT dd.pipeline_name, dd.depende_de "
+                        "FROM dbo.etl_pipeline_dependencia dd") \
+                and "NOT EXISTS" in s:
+            if not db.com_067:
+                raise RuntimeError("Invalid object name (migration 067 ausente)")
+            *nomes, data_ref = params
+            self._rows = [(p, f) for p in nomes
+                          for f in self._faltantes(p, data_ref)]
+            self.rowcount = -1
             return
         super().execute(sql, params)
 

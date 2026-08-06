@@ -1982,6 +1982,140 @@ _CLASSES_FALHA = ("falhou", "orfa")
 # com o nome e a classe: some o VERMELHO, não a informação.
 _CLASSES_TRAVADAS = ("falhou", "orfa", "nao_liberou")
 
+# As classes em que "esperando quem?" é uma pergunta de verdade, e por isso as
+# únicas que entram no lote do predicado (F10). `falhou`/`orfa` são veredito
+# sobre o PRÓPRIO pipeline: ele rodou, logo os predecessores dele concluíram —
+# perguntar de quem ele espera devolveria lista vazia e gastaria nome no `IN`.
+_CLASSES_QUE_ESPERAM = ("nao_liberou", "nao_partiu")
+
+# ══════ F10 — o raio de alcance por travado (§9.5, Decisão 63) ═══════════════
+#
+# `↳ falhou: CARGA_A` não diz se atrás dela há 1 ou 17 pipelines parados, nem se
+# algum é `ALTA` — e é exatamente isso que decide acordar alguém. O número que
+# falta é o RAIO: quantos membros DESTA corrida dependem, direta ou
+# indiretamente, do que está travado.
+#
+# ── Por que no servidor, e não no canvas ────────────────────────────────────
+# A Decisão 63 aposta em `cadeiaRealce` (client-side, sobre as arestas do
+# desenho). Só que o desenho e a cadeia que TRAVA não são a mesma coisa: os nós
+# do canvas incluem Início, Aguarde e Fim, então `qtdFrente` contaria caixas que
+# não são pipeline; e a dependência que segura de verdade é a linha COMPILADA em
+# `etl_pipeline_dependencia`, que pode existir sem aresta correspondente
+# (dependência avulsa) — a tela diria "2 parados atrás" onde há 5. O número tem
+# de sair de onde o motor lê, pelo mesmo motivo que `liberado()` é um port e não
+# uma segunda opinião.
+#
+# ── Uma consulta, e o passeio no Python ─────────────────────────────────────
+# A consulta traz o SNAPSHOT (Decisão 52 — os membros da abertura, não os de
+# agora), a criticidade de cada um e as arestas de dependência entre eles. O
+# fecho transitivo é feito em Python com conjunto de visitados: um CTE recursivo
+# em T-SQL estouraria `MAXRECURSION` (erro 530, e a leitura inteira cairia) na
+# primeira dependência circular do cadastro — e cadastro com ciclo é dado do
+# usuário, não impossibilidade. Passeio de grafo não é conta de tempo: a
+# Decisão 10 proíbe aritmética de relógio em Python, e isto é topologia.
+#
+# A aresta só conta com as DUAS pontas no snapshot: o raio é "quantos membros
+# DESTA corrida estão parados atrás", e um dependente de outra malha não está
+# parado por esta corrida — contá-lo inflaria o número que decide a escalação.
+_SQL_GRAFO_DA_CORRIDA = (
+    "SELECT mm.pipeline_name, p.criticidade, d.depende_de "
+    "FROM dbo.etl_malha_execucao_membro mm "
+    "LEFT JOIN dbo.etl_pipeline p ON p.pipeline_name = mm.pipeline_name "
+    "LEFT JOIN dbo.etl_pipeline_dependencia d "
+    "  ON d.pipeline_name = mm.pipeline_name AND d.tipo = 'PIPELINE' "
+    "  AND EXISTS (SELECT 1 FROM dbo.etl_malha_execucao_membro m2 "
+    "              WHERE m2.malha_execucao_id = mm.malha_execucao_id "
+    "              AND m2.pipeline_name = d.depende_de "
+    "              AND m2.ativo_na_abertura = 1) "
+    "WHERE mm.malha_execucao_id = ? AND mm.ativo_na_abertura = 1")
+
+_CRITICIDADE_ALTA = "alta"
+
+
+def _grafo_da_corrida(cur, corrida_id: int):
+    """`(filhos, criticidade)` do snapshot desta corrida, numa consulta.
+
+    `filhos` = `{pai_casefold: {filho_casefold}}` — o sentido em que a travada
+    se PROPAGA. `criticidade` = `{pipeline_casefold: texto}`.
+
+    Chaves em `casefold` porque o SQL Server compara nome de pipeline sem
+    distinguir caixa e o dict do Python distingue: sem a ponte, uma aresta
+    gravada como `carga_a` não encontraria o membro `CARGA_A` e o raio sairia
+    zero com o grafo inteiro carregado — o GOTCHA de grafia que já quebrou
+    pipeline em produção, agora silencioso porque zero parece uma resposta.
+
+    Falha de leitura devolve `(None, None)`: o chamador publica `alcance: null`,
+    que é "não apurei" — o oposto de publicar `0` como se fosse medida."""
+    try:
+        cur.execute(_SQL_GRAFO_DA_CORRIDA, (int(corrida_id),))
+        linhas = cur.fetchall()
+    except Exception as e:  # noqa: BLE001 — leitura degrada, nunca 500
+        log.warning("[MALHA] grafo da corrida #%s indisponivel (%s) — "
+                    "pendentes sem raio de alcance", corrida_id, e)
+        return None, None
+    filhos: dict = {}
+    criticidade: dict = {}
+    for pipeline, critic, depende_de in linhas:
+        chave = str(pipeline or "").strip().casefold()
+        criticidade[chave] = (str(critic).strip() if critic else None)
+        if depende_de is None:
+            continue
+        filhos.setdefault(str(depende_de).strip().casefold(), set()).add(chave)
+    return filhos, criticidade
+
+
+def _parados_atras(filhos: dict, origem: str, parados: dict) -> list:
+    """Os PENDENTES alcançáveis a partir de `origem`, andando para a frente.
+
+    `parados` = `{pipeline_casefold: pendente}` — só quem está pendente entra na
+    conta, e a razão é a palavra: "4 pipelines **parados** atrás". Um dependente
+    que já concluiu não está parado, e contá-lo transformaria o número que
+    decide a escalação num número que só cresce com o tamanho da malha.
+
+    Conjunto de visitados de propósito: dependência circular no cadastro é dado
+    do usuário, e um passeio ingênuo giraria para sempre com o operador olhando
+    um spinner às 3h."""
+    vistos = {origem}
+    fila = [origem]
+    achados = []
+    while fila:
+        atual = fila.pop()
+        for filho in filhos.get(atual, ()):  # noqa: SIM118 — set, não dict
+            if filho in vistos:
+                continue
+            vistos.add(filho)
+            fila.append(filho)
+            pendente = parados.get(filho)
+            if pendente is not None:
+                achados.append(pendente)
+    return achados
+
+
+def _raio_dos_pendentes(cur, corrida_payload: dict) -> None:
+    """Preenche `alcance`, `alcance_alta` e `criticidade` em `pendentes[]`.
+
+    Muta o payload no lugar (o mesmo dicionário que a faixa já consome): criar
+    uma segunda lista faria a tela ter duas fontes para a mesma pendência, que é
+    a família de defeito que esta spec inteira existe para matar."""
+    pendentes = corrida_payload.get("pendentes") or []
+    filhos, criticidade = _grafo_da_corrida(cur, int(corrida_payload["id"]))
+    if filhos is None:
+        return                          # `alcance` fica `null` — "não apurei"
+    parados = {p["pipeline"].strip().casefold(): p for p in pendentes}
+    for p in pendentes:
+        chave = p["pipeline"].strip().casefold()
+        p["criticidade"] = criticidade.get(chave)
+        atras = _parados_atras(filhos, chave, parados)
+        p["alcance"] = len(atras)
+        # Quantos dos parados atrás são de criticidade ALTA. É o segundo número
+        # da Decisão 63, e ele é o que muda a resposta: 18 parados atrás sem
+        # nenhum crítico espera o horário comercial; 2 com um `ALTA` no meio,
+        # não.
+        p["alcance_alta"] = sum(
+            1 for q in atras
+            if str(criticidade.get(q["pipeline"].strip().casefold()) or "")
+            .strip().casefold() == _CRITICIDADE_ALTA)
+
 
 def _quiescencia_da_linha(bruto) -> int:
     """Config de quiescência que veio junto da consulta (A) → int no domínio.
@@ -2209,12 +2343,20 @@ def _corrida_do_card(c: dict, agg) -> dict:
         else:
             pendentes.append({"pipeline": pipeline, "classe": classe,
                               "desde": _fmt_dt(m["desde"]),
-                              # `faltante` é o "de quem esta corrida espera".
-                              # Fica `null` no CARD de propósito: respondê-lo é
-                              # `deps_svc.liberado()` por pendente, um N+1 na
-                              # lista inteira. O painel (uma malha só) o
-                              # preenche em `execucoes[].faltantes`.
-                              "faltante": None})
+                              # Os quatro campos que só o PAINEL apura (F10).
+                              # `null` aqui é "não perguntei", nunca "não há":
+                              # o card serve 40 malhas com orçamento de DUAS
+                              # consultas (aceite da F4), e o predicado das
+                              # dependências mais o grafo do snapshot são mais
+                              # duas — por malha, elas nem cabem; em lote sobre
+                              # a lista inteira, seriam ~1.600 nomes num `IN`
+                              # para nomear UM culpado por card, que é tudo o
+                              # que o card mostra. O painel é uma malha só, tem
+                              # a aba `Travando` inteira para preencher, e é lá
+                              # que os quatro nascem.
+                              "faltante": None, "faltantes": None,
+                              "alcance": None, "alcance_alta": None,
+                              "criticidade": None})
     # O card tem espaço para UM nome, e ele tem de ser o do problema mais
     # grave — não o primeiro do alfabeto. A ordem é a mesma precedência de
     # classificação do módulo gêmeo, então `pendentes[0]` é sempre o que a tela
@@ -2690,6 +2832,81 @@ def _exec_linhas_do_painel(cur, data_ref, bruta) -> None:
                                 escopo=escopo),
         _SQL_EXEC_PAINEL.format(sub="", escopo=escopo),
         (data_ref,) + extras)
+
+
+_SQL_EVENTOS_DA_DATA = (
+    "SELECT pipeline_name, tipo, detectado_em, detalhe{notif} "
+    "FROM dbo.etl_dependencia_evento WHERE data_referencia = ?")
+
+
+def _eventos_da_data(cur, data_ref):
+    """Eventos da guardiã na data → `(linhas, tem_notificado_em)`.
+
+    F10 (§9.14/Decisão 66) — `notificado_em` existe na 067 e **nunca foi lido
+    pela tela**. Ele é o único jeito de responder a pior pergunta do plantão:
+    *o aviso saiu?* Webhook com 401 por URL rotacionada faz a guardiã logar e
+    seguir (`dags/etl_dependencia_guardia.py:822`), e a malha falha em silêncio
+    para todo mundo menos para quem já está olhando a tela.
+
+    A coluna pode não estar no banco (deploy parcial): aí a leitura degrada
+    para a consulta de sempre e o chamador **omite a chave** — que é diferente
+    de mandá-la `null`. `null` significa "está na fila e ninguém foi avisado", e
+    é o que ACENDE o banner vermelho; a ausência significa "não perguntei", e
+    não acende nada. Trocar um pelo outro pintaria de vermelho toda malha de um
+    banco antigo, que é o alarme falso que a Decisão 26 proíbe.
+    """
+    try:
+        cur.execute(_SQL_EVENTOS_DA_DATA.format(notif=", notificado_em"),
+                    (data_ref,))
+        return cur.fetchall(), True
+    except Exception as e:  # noqa: BLE001 — reagimos SÓ à coluna ausente/negada
+        # Marca, e não `except` cego: um timeout de lock não vira "banco sem a
+        # coluna" (a segunda consulta pagaria o mesmo timeout de novo e a tela
+        # perderia o banner por um motivo que não é o dela). "Invalid column
+        # name 'notificado_em'" e o DENY do erro 230 citam os dois a coluna.
+        if "notificado_em" not in str(e):
+            raise
+        log.warning("[MALHA] coluna notificado_em indisponivel (%s) — o painel "
+                    "segue sem o estado da fila de aviso", e)
+    cur.execute(_SQL_EVENTOS_DA_DATA.format(notif=""), (data_ref,))
+    return cur.fetchall(), False
+
+
+# A MESMA condição de `dags/utils/dependencias.py:canal_teams_supervisao`, sem
+# trazer a `webhook_url`: ela é credencial e não vai ao payload de tela.
+_SQL_TEM_CANAL_TEAMS = (
+    "SELECT TOP 1 1 FROM dbo.etl_msg_grupo g "
+    "WHERE g.ativo = 1 AND g.webhook_url IS NOT NULL "
+    "AND LTRIM(RTRIM(g.webhook_url)) <> '' "
+    "AND EXISTS (SELECT 1 FROM dbo.etl_ds_supervisao_job s "
+    "WHERE s.grupo_id = g.id AND s.ativo = 1)")
+
+
+def _tem_canal_teams(cur):
+    """Existe destino para o aviso? `True`/`False`, ou `None` se não deu para
+    perguntar.
+
+    A terceira resposta que faltava. `notificado_em` nulo hoje significa duas
+    coisas MUITO diferentes: "o webhook falhou e o aviso está preso na fila"
+    (vermelho, alguém precisa agir) e "não há canal configurado, então nunca
+    houve fila" (nada a fazer). Sem separá-las, QUALQUER instalação sem webhook
+    — o dev inclusive — acende o banner vermelho *"N avisos ao Teams na fila,
+    ninguém foi avisado ainda"* permanentemente, e cada linha de evento ganha
+    "ainda na fila de aviso" sem carência nenhuma. É o alarme falso crônico que
+    a Decisão 26 proíbe: na primeira semana o operador aprende a ignorar o
+    banner, e aí ele deixa de servir para o webhook que quebrou de verdade.
+
+    `None` (não perguntei) é diferente de `False` (não há canal) pelo mesmo
+    motivo que a ausência da chave é diferente de `null` acima — o chamador
+    omite a chave e a tela não afirma nada.
+    """
+    try:
+        cur.execute(_SQL_TEM_CANAL_TEAMS)
+        return cur.fetchone() is not None
+    except Exception as e:  # noqa: BLE001 — leitura de tela degrada
+        log.warning("[MALHA] nao consegui conferir se ha canal do Teams (%s) — "
+                    "o painel segue sem afirmar sobre a fila de aviso", e)
+        return None
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -3366,16 +3583,31 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
             # bloco sai do payload em vez de descrever outro ciclo.
             corrida_payload = None
         corridas_no_dia = None
-        if lente is None and corrida_payload is not None:
-            # Mesma data da corrente, mas o DIA pode ter tido mais de uma
-            # corrida (rerun às 5h, o gesto que o aceite "duas corridas no mesmo
-            # ODATE" descreve). Sem lente, `execucoes[]` traz o dia INTEIRO — as
-            # linhas das duas — enquanto o bloco descreveria só a última: o nó
-            # da corrida #1 verde no canvas ao lado de uma faixa dizendo "0 de
-            # 2" da #2. É a MESMA tela contando duas coisas, que é exatamente o
-            # que a Decisão 55 e esta fase existem para matar; então o bloco sai
-            # e o front manda escolher uma corrida (o ◀ ▶, que aplica a lente e
-            # aí sim recorta as duas pontas juntas).
+        if lente is None and corrida_bruta is not None:
+            # Sem lente, `execucoes[]` traz o dia INTEIRO — as linhas de TODAS
+            # as corridas daquele dia — enquanto o bloco descreveria só uma: o
+            # nó da corrida #1 verde no canvas ao lado de uma faixa dizendo "0
+            # de 2" da #2. É a MESMA tela contando duas coisas, que é
+            # exatamente o que a Decisão 55 e esta fase existem para matar;
+            # então o bloco sai e o front manda ESCOLHER uma corrida na faixa
+            # (a lente, que aí sim recorta as duas pontas juntas).
+            #
+            # ⚠️ A pergunta é sobre o DIA EXIBIDO, e não sobre "o dia da corrida
+            # corrente" (F10, revisão da pendência §18/12b). O caso comum de
+            # plantão é abrir a malha de manhã e navegar para ONTEM, o dia do
+            # incidente — e é justamente ele que tem duas corridas (a madrugada
+            # + o redisparo das 5h). Perguntando só quando o dia exibido é o da
+            # corrente, esse dia caía no ramo do `data_referencia` divergente,
+            # o bloco saía por OUTRA razão e `corridas_no_dia` ficava `None`: o
+            # canvas misturava os dois ciclos e a tela ficava MUDA sobre isso,
+            # que é exatamente o que a pendência 12b existe para consertar.
+            #
+            # O gatilho é `corrida_bruta is not None` (a malha tem ao menos uma
+            # corrida registrada) e não `corrida_payload`: com o interruptor
+            # `malha_corrida_ativa` em `0` — o estado do dev e o do dia do
+            # deploy — não existe corrida nenhuma, a contagem seria zero em todo
+            # refetch e a consulta seria custo puro.
+            #
             # Consulta própria, e não uma coluna no SQL compartilhado, porque
             # aquele serve a lista de 40 malhas com aceite de DUAS consultas;
             # aqui é uma malha só, e o custo é um seek em ix_malha_exec_malha.
@@ -3448,6 +3680,13 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
                 "status": r[1], "inicio": r[2], "fim": r[3],
                 "disparado_por": r[4], "motivo": r[5],
                 "execution_id": str(r[6] or "")})
+        # F10 (§9.6, Decisão 73) — os que precisam da resposta "de quem esta
+        # corrida espera", num LOTE só. Antes desta fase cada um deles gastava
+        # uma ida ao banco (três, no modo SEQUÊNCIA): com 12 esperando numa
+        # malha de 40, o painel fazia 12 a 36 round-trips A CADA REFETCH, e é
+        # exatamente durante o incidente que esse número cresce.
+        esperando = []
+        itens_esperando = {}
         for oficial in sorted(linhas_membro):
             vencedora = deps_svc.mais_recente_da_data(linhas_membro[oficial])
             item = {
@@ -3462,18 +3701,61 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
             # a corrida espera, pelo MESMO predicado do motor (o port, nunca um
             # "mais recente" paralelo). Campo novo opcional: front antigo ignora.
             if vencedora["status"] in ("AGUARDANDO_DEPENDENCIA", "NAO_LIBEROU"):
-                # F6 (Decisão 39): a corrida da LINHA avaliada — aqui, a da
-                # LENTE, que é justamente o recorte de onde estas linhas saíram.
-                # Sem ela, no modo SEQUÊNCIA o painel cortaria pela janela de 12h
-                # enquanto o motor corta pelo `aberta_em` da corrida: a tela
-                # diria "aguardando PAI_X" com PAI_X já contado pelo motor (ou o
-                # contrário) — a divergência painel×motor que a paridade do D29
-                # existe para impedir, reaparecendo pela porta do corte.
-                _, falt = deps_svc.liberado(
-                    cur, oficial, data_ref,
-                    lente["id"] if lente is not None else None)
-                item["faltantes"] = falt
+                esperando.append(oficial)
+                itens_esperando[oficial] = item
             resposta["execucoes"].append(item)
+        # Os pendentes da CORRIDA entram no mesmo lote (§9.5): a aba `Travando`
+        # precisa da mesma resposta, e perguntá-la à parte seria reabrir o N+1
+        # numa segunda porta. Só as classes em que "esperando quem?" é uma
+        # pergunta de verdade — `falhou`/`orfa` são sobre o próprio pipeline, e
+        # os predecessores deles concluíram (senão ele não teria rodado).
+        #
+        # ⚠️ A deduplicação é em `casefold`, e não por igualdade de string: os
+        # nomes de `execucoes[]` vêm da grafia OFICIAL de `etl_pipeline` e os de
+        # `pendentes[]` vêm do SNAPSHOT (`etl_malha_execucao_membro`), que
+        # guarda a grafia do dia da abertura. As duas divergirem em caixa é o
+        # GOTCHA que já quebrou pipeline em produção — aqui ele custaria o mesmo
+        # nome duas vezes no `IN` e um faltante procurado numa chave que não
+        # existe (a tela calando sobre quem está esperando).
+        pendentes_da_corrida = (corrida_payload or {}).get("pendentes") or []
+        ja_no_lote = {n.strip().casefold() for n in esperando}
+        for p in pendentes_da_corrida:
+            chave = str(p["pipeline"]).strip().casefold()
+            if p["classe"] in _CLASSES_QUE_ESPERAM and chave not in ja_no_lote:
+                ja_no_lote.add(chave)
+                esperando.append(p["pipeline"])
+        if esperando:
+            # F6 (Decisão 39): a corrida da LINHA avaliada — aqui, a da LENTE,
+            # que é justamente o recorte de onde estas linhas saíram. Sem ela,
+            # no modo SEQUÊNCIA o painel cortaria pela janela de 12h enquanto o
+            # motor corta pelo `aberta_em` da corrida: a tela diria "aguardando
+            # PAI_X" com PAI_X já contado pelo motor (ou o contrário) — a
+            # divergência painel×motor que a paridade do D29 existe para
+            # impedir, reaparecendo pela porta do corte.
+            faltantes = deps_svc.faltantes_em_lote(
+                cur, esperando, data_ref,
+                lente["id"] if lente is not None else None)
+            # A mesma ponte de caixa da montagem do lote, agora na volta.
+            por_chave = {str(k).strip().casefold(): v
+                         for k, v in faltantes.items()}
+            for oficial, item in itens_esperando.items():
+                item["faltantes"] = por_chave.get(
+                    oficial.strip().casefold(), [])
+            for p in pendentes_da_corrida:
+                falt = por_chave.get(str(p["pipeline"]).strip().casefold())
+                if falt is None:
+                    continue
+                p["faltantes"] = falt
+                # `faltante` (singular) é o campo que a F4 deixou reservado: o
+                # card tem espaço para UM nome. A lista completa viaja ao lado,
+                # para a aba do painel, que tem espaço para todos.
+                p["faltante"] = falt[0] if falt else None
+        # O RAIO DE ALCANCE (Decisão 63) — quantos membros esta corrida tem
+        # parados atrás de cada pendente. É o que separa "um job parado no fim
+        # da cadeia" de "um job parado que segura 18 outros", e é a informação
+        # que decide se alguém acorda às 3h ou espera até as 7h.
+        if pendentes_da_corrida:
+            _raio_dos_pendentes(cur, corrida_payload)
 
         # Nós desta malha (F14): resolve o marcador '#no:{id}' dos eventos de
         # observador. Sem a 075 (deploy parcial) degrada — eventos_no vazio +
@@ -3488,10 +3770,7 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
         # Eventos da guardiã da MESMA data — de membros (F9) e dos nós desta
         # malha (F14) — mais novo primeiro. Marcador de nó de OUTRA malha não
         # resolve aqui e não aparece (mesma regra do filtro por membro).
-        cur.execute(
-            "SELECT pipeline_name, tipo, detectado_em, detalhe "
-            "FROM dbo.etl_dependencia_evento WHERE data_referencia = ?",
-            (data_ref,))
+        linhas_evento, tem_notificado = _eventos_da_data(cur, data_ref)
         eventos = []
         eventos_no = []
         eventos_corrida = []
@@ -3503,13 +3782,31 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
         # do limite mudou de lugar ou ficou âmbar.
         marcador_corrida = (MARCADOR_CORRIDA.format(corrida_payload["id"])
                             if corrida_payload is not None else None)
-        for r in cur.fetchall():
+        # `notificado_em` (F10): a CHAVE só existe quando a coluna existe. Ela
+        # tem três leituras, e as três precisam ser distinguíveis na tela —
+        # chave ausente = "não perguntei" (banco sem a coluna), `null` =
+        # "está na fila e ninguém foi avisado", texto = "avisado às HH:MM".
+        # Sem a distinção, um banco sem a coluna acenderia o banner vermelho de
+        # notificação presa em TODA malha, que é o alarme falso da Decisão 26
+        # com roupa nova.
+        def _notif(r):
+            return {"notificado_em": _fmt_dt(r[4])} if tem_notificado else {}
+
+        # A TERCEIRA leitura de `notificado_em` nulo, que faltava: "não há canal
+        # configurado". Sem ela, `null` significa fila presa e QUALQUER
+        # instalação sem webhook — o dev inclusive — acende o banner vermelho
+        # para sempre. Só perguntamos se a coluna existe: sem ela não há banner
+        # nenhum a decidir, e a consulta seria gasto puro.
+        canal_teams = _tem_canal_teams(cur) if tem_notificado else None
+
+        for r in linhas_evento:
             bruto = str(r[0] or "").strip()
             if marcador_corrida is not None and bruto == marcador_corrida:
                 eventos_corrida.append({
                     "tipo": r[1],
                     "criado_em": _fmt_dt(r[2]),
                     "mensagem": r[3],
+                    **_notif(r),
                 })
                 continue
             no = marcador_no.get(bruto)
@@ -3520,6 +3817,7 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
                     "tipo": r[1],
                     "criado_em": _fmt_dt(r[2]),
                     "mensagem": r[3],
+                    **_notif(r),
                 })
                 continue
             oficial = membro_oficial.get(bruto.casefold())
@@ -3530,6 +3828,7 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
                 "tipo": r[1],
                 "criado_em": _fmt_dt(r[2]),
                 "mensagem": r[3],
+                **_notif(r),
             })
         eventos.sort(key=lambda e: (e["criado_em"] or "", e["pipeline_name"]),
                      reverse=True)
@@ -3543,6 +3842,12 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
         # e a ausência dela não muda nada do que já era mostrado.
         if marcador_corrida is not None:
             resposta["eventos_corrida"] = eventos_corrida
+        # ADITIVO, e só quando temos resposta: `False` = "não há canal, então
+        # nunca houve fila" (o banner NÃO acende); `True` = "há destino, e o que
+        # está sem carimbo está mesmo preso" (acende). A chave AUSENTE mantém o
+        # comportamento anterior para o front que não a conhece.
+        if canal_teams is not None:
+            resposta["teams_configurado"] = canal_teams
         # Conclusão da malha (§9.6): com a corrida no payload quem responde é o
         # STATUS DELA — o evento vira rastro, não fonte de verdade. Sem isso, o
         # banner verde e o card vermelho conviveriam na mesma tela: o

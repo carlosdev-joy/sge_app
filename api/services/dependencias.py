@@ -205,6 +205,74 @@ SQL_LIBERADO_LEGADO = (
     "WHERE dd.pipeline_name = ? AND dd.tipo = 'PIPELINE' " +
     _ONDE_SEM_SUCESSO_LEGADO)
 
+# ── O MESMO predicado, na forma de CONJUNTO (F10, §9.6/Decisão 73) ──────────
+#
+# O DEFEITO que este bloco mata: o painel perguntava `liberado()` **por membro
+# esperando** (`routers/malhas.py`, no laço de `execucoes[]`). Numa malha de 40
+# membros com 12 esperando são 12 idas ao banco só para o predicado — e o modo
+# SEQUÊNCIA multiplica por 3, porque `inicio_do_ciclo_corrente()` gasta
+# `SELECT GETDATE()` + a janela A CADA CHAMADA. Com o painel se atualizando
+# sozinho durante um incidente, é o pior ordenamento possível: a tela mais
+# consultada da madrugada é a que mais pesa exatamente quando o banco já está
+# ruim.
+#
+# ⚠️ A regra que torna isto seguro: **os textos abaixo são montados dos MESMOS
+# fragmentos** (`_ONDE_SEM_SUCESSO_*`, `_CORTE_SEQ_085`, `_SELECT_RETENCAO`)
+# que os de uma linha. Uma segunda redação do predicado, ainda que "igual hoje",
+# seria o painel e o motor discordando no dia em que alguém mudasse um deles —
+# a doença que a paridade D29 existe para impedir. Quem mexer no predicado
+# muda o canônico de `dags/`, espelha nos fragmentos daqui, e as DUAS formas
+# andam juntas de graça.
+#
+# O que muda, e só isto: `pipeline_name = ?` vira `pipeline_name IN (…)`, e a
+# projeção ganha `dd.pipeline_name` na frente para o chamador saber de QUEM é
+# cada faltante. A linha devolvida é `(pipeline, depende_de[, aguarde_retido])`
+# — o mesmo `_faltante()` a lê, deslocada de uma coluna.
+_ALVO_LOTE = "IN ({m})"
+_EXISTS_RETIDO = (
+    " OR EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
+    "            WHERE n2.id = dd.origem_no AND n2.retido_em IS NOT NULL))")
+# Parâmetros, na ordem em que o texto os pede: (…nomes…, corrida, janela).
+SQL_LOTE_SEQ_085 = (
+    "SELECT dd.pipeline_name, dd.depende_de" + _SELECT_RETENCAO +
+    "FROM (SELECT pipeline_name, depende_de, origem_no "
+    "FROM dbo.etl_pipeline_dependencia "
+    "WHERE pipeline_name " + _ALVO_LOTE + " AND tipo = 'PIPELINE') dd "
+    "CROSS APPLY (SELECT corte = " + _CORTE_SEQ_085 + ") k "
+    "WHERE (" + _ONDE_SEM_SUCESSO_SEQ_085[4:] + _EXISTS_RETIDO)
+# (…nomes…, corte da janela)
+SQL_LOTE_SEQ_084 = (
+    "SELECT dd.pipeline_name, dd.depende_de" + _SELECT_RETENCAO +
+    "FROM dbo.etl_pipeline_dependencia dd "
+    "WHERE dd.pipeline_name " + _ALVO_LOTE + " AND dd.tipo = 'PIPELINE' "
+    "AND (" + _ONDE_SEM_SUCESSO_SEQ_084[4:] + _EXISTS_RETIDO)
+# (…nomes…, data_ref)
+SQL_LOTE_082 = (
+    "SELECT dd.pipeline_name, dd.depende_de" + _SELECT_RETENCAO +
+    "FROM dbo.etl_pipeline_dependencia dd "
+    "WHERE dd.pipeline_name " + _ALVO_LOTE + " AND dd.tipo = 'PIPELINE' "
+    "AND (" + _ONDE_SEM_SUCESSO_078[4:] + _EXISTS_RETIDO)
+# Os dois últimos degraus são anteriores à 082 e por isso NÃO trazem a coluna
+# da retenção: `origem_no` só existe a partir da 075, e citá-la aqui devolveria
+# o "Invalid column name" no degrau que existe justamente para sobreviver a ele.
+SQL_LOTE_078 = (
+    "SELECT dd.pipeline_name, dd.depende_de "
+    "FROM dbo.etl_pipeline_dependencia dd "
+    "WHERE dd.pipeline_name " + _ALVO_LOTE + " AND dd.tipo = 'PIPELINE' " +
+    _ONDE_SEM_SUCESSO_078)
+SQL_LOTE_LEGADO = (
+    "SELECT dd.pipeline_name, dd.depende_de "
+    "FROM dbo.etl_pipeline_dependencia dd "
+    "WHERE dd.pipeline_name " + _ALVO_LOTE + " AND dd.tipo = 'PIPELINE' " +
+    _ONDE_SEM_SUCESSO_LEGADO)
+
+# Teto de nomes por consulta. O TDS aceita 2100 parâmetros por statement, e
+# passar disso não devolve "consulta grande": devolve erro, e a tela perderia
+# TODOS os faltantes de uma vez. Com o teto, uma malha absurda degrada para
+# duas ou três consultas de conjunto — que continua sendo O(1) em relação ao
+# número de membros ESPERANDO, que é o que esta fase existe para consertar.
+_TETO_NOMES_POR_CONSULTA = 900
+
 MSG_AGUARDE_RETIDO = "Aguarde #{} SEGURADO na malha (libere no diagrama)"
 # Port do canônico: o prefixo pelo qual quem CONSOME os faltantes reconhece a
 # retenção sem reimplementar o texto (§6.7, Decisão 30).
@@ -226,16 +294,23 @@ def _faltante(linha):
     return linha[0]
 
 
-def _exec_liberado(cur, params, params_seq=None):
+def _descer_cascata(cur, seq085, seq084, s082, s078, legado):
     """Cascata **SEQ_085 → SEQ_084 → 082 → 078 → legado** (port do canônico).
 
-    Sem ela, um banco sem a 085 faria `liberado()` devolver não-liberado para o
-    banco inteiro — no painel isso é toda malha pintada de "aguardando" sem que
-    ninguém esteja aguardando nada. `params` = (pipeline, data_ref);
-    `params_seq`, quando presente, = (pipeline, corrida, corte da janela)."""
-    if params_seq is not None:
+    Cada degrau é um par `(sql, params)`; `seq085`/`seq084` vêm `None` quando o
+    modo SEQUÊNCIA está desligado. Sem esta cascata, um banco sem a 085 faria
+    `liberado()` devolver não-liberado para o banco inteiro — no painel isso é
+    toda malha pintada de "aguardando" sem que ninguém esteja aguardando nada.
+
+    ⚠️ A cascata mora AQUI, num lugar só, porque a partir da F10 ela tem DOIS
+    consumidores: o predicado de uma linha (`_exec_liberado`) e o de conjunto
+    (`_exec_faltantes_em_lote`). Duplicá-la faria o painel degradar por um
+    caminho e o motor por outro — a divergência painel×motor que a paridade D29
+    existe para impedir, reaparecendo pela porta do deploy parcial, que é
+    justamente quando ela é mais cara de diagnosticar."""
+    if seq085 is not None:
         try:
-            cur.execute(SQL_LIBERADO_SEQ_085, params_seq)
+            cur.execute(*seq085)
             return True, False
         except Exception as e:  # noqa: BLE001 — só as marcas conhecidas degradam
             proximo, motivo = _degrau_apos(e), e
@@ -245,7 +320,7 @@ def _exec_liberado(cur, params, params_seq=None):
             log.info("[DEP] migration 085 ausente — o corte do modo SEQUENCIA "
                      "volta a ser a janela em horas")
             try:
-                cur.execute(SQL_LIBERADO_SEQ_084, (params_seq[0], params_seq[2]))
+                cur.execute(*seq084)
                 return True, False
             except Exception as e:  # noqa: BLE001
                 proximo, motivo = _degrau_apos(e), e
@@ -254,13 +329,25 @@ def _exec_liberado(cur, params, params_seq=None):
         log.warning("[DEP] modo SEQUENCIA indisponivel neste banco (%s) — a "
                     "liberacao volta a olhar a data de referencia", motivo)
     try:
-        cur.execute(SQL_LIBERADO_082, params)
+        cur.execute(*s082)
         return True, False
     except Exception as e:  # noqa: BLE001 — só as marcas conhecidas degradam
         if not _marca_de(e, _MARCAS_082) and not _marca_de(e, (_MARCA_078,)):
             raise
-    return False, _exec_com_fallback_078(
-        cur, SQL_LIBERADO_078, SQL_LIBERADO_LEGADO, params)
+    return False, _exec_com_fallback_078(cur, s078[0], legado[0], s078[1])
+
+
+def _exec_liberado(cur, params, params_seq=None):
+    """A cascata para UMA linha. `params` = (pipeline, data_ref);
+    `params_seq`, quando presente, = (pipeline, corrida, corte da janela)."""
+    seq085 = seq084 = None
+    if params_seq is not None:
+        seq085 = (SQL_LIBERADO_SEQ_085, params_seq)
+        seq084 = (SQL_LIBERADO_SEQ_084, (params_seq[0], params_seq[2]))
+    return _descer_cascata(cur, seq085, seq084,
+                           (SQL_LIBERADO_082, params),
+                           (SQL_LIBERADO_078, params),
+                           (SQL_LIBERADO_LEGADO, params))
 
 
 _MODO_CACHE: dict = {}
@@ -372,6 +459,83 @@ def faltantes(cur, pipeline: str, data_ref: date, corrida=None) -> list:
                       inicio_do_ciclo_corrente(cur))
     _exec_liberado(cur, (pipeline, data_ref), params_seq)
     return [_faltante(r) for r in cur.fetchall()]
+
+
+def _params_do_lote(cur, nomes: list, data_ref: date, corrida=None):
+    """Os cinco degraus da cascata já com o `IN (…)` expandido e os parâmetros
+    na ordem do TEXTO. Devolve `(seq085, seq084, s082, s078, legado)`, cada um
+    `(sql, params)` — `seq085`/`seq084` são `None` fora do modo SEQUÊNCIA.
+
+    O corte da janela e o modo são lidos **uma vez por lote**, e é aí que mora
+    metade do ganho: em `faltantes()` eles saem por CHAMADA, então cada membro
+    esperando custava também um `SELECT GETDATE()` e a leitura da config."""
+    marcadores = ",".join("?" for _ in nomes)
+    nomes = tuple(nomes)
+    seq085 = seq084 = None
+    if modo_sequencia(cur):
+        corte = inicio_do_ciclo_corrente(cur)
+        seq085 = (SQL_LOTE_SEQ_085.replace("{m}", marcadores),
+                  nomes + (_id_corrida(corrida), corte))
+        seq084 = (SQL_LOTE_SEQ_084.replace("{m}", marcadores), nomes + (corte,))
+    por_data = nomes + (data_ref,)
+    return (seq085, seq084,
+            (SQL_LOTE_082.replace("{m}", marcadores), por_data),
+            (SQL_LOTE_078.replace("{m}", marcadores), por_data),
+            (SQL_LOTE_LEGADO.replace("{m}", marcadores), por_data))
+
+
+def faltantes_em_lote(cur, pipelines, data_ref: date, corrida=None) -> dict:
+    """`{pipeline: [faltantes]}` para TODOS os `pipelines` numa consulta só.
+
+    O irmão de conjunto de `faltantes()` — MESMO predicado, MESMA cascata,
+    MESMOS textos de faltante (inclusive o da retenção). É o que tira o N+1 do
+    caminho corrente do painel (§9.6): o custo deixa de crescer com o número
+    de membros esperando, que é justamente o número que cresce durante um
+    incidente.
+
+    Todo nome pedido volta como chave, mesmo sem faltante nenhum — `[]` é a
+    resposta "perguntei e não falta ninguém", e ela é diferente de "não
+    perguntei". Nome sem chave nenhuma seria o chamador tendo de adivinhar qual
+    dos dois aconteceu.
+
+    Falha de consulta degrada como em `liberado()` (D21): o sentinel
+    `ERRO_CONSULTA` entra nos faltantes dos nomes daquele lote — erro NUNCA
+    vira "pode disparar", nem no painel. E degrada **por lote**, não por nome:
+    o lote que respondeu continua valendo.
+    """
+    alvos, vistos = [], set()
+    for p in pipelines:
+        chave = str(p or "").strip().casefold()
+        if not chave or chave in vistos:
+            continue
+        vistos.add(chave)
+        alvos.append(str(p).strip())
+    out: dict = {nome: [] for nome in alvos}
+    if not alvos:
+        return out
+    # `casefold` porque o SQL Server compara nome de pipeline sem distinguir
+    # caixa (collation CI) mas o dict do Python distingue: sem esta ponte, uma
+    # linha gravada como `carga_a` devolveria os faltantes numa chave que o
+    # chamador nunca procuraria — o GOTCHA de grafia que a F8 já pagou.
+    indice = {nome.casefold(): nome for nome in alvos}
+    for i in range(0, len(alvos), _TETO_NOMES_POR_CONSULTA):
+        lote = alvos[i:i + _TETO_NOMES_POR_CONSULTA]
+        try:
+            _descer_cascata(cur, *_params_do_lote(cur, lote, data_ref, corrida))
+            linhas = cur.fetchall()
+        except Exception as e:  # noqa: BLE001 — D21: erro é NÃO liberado
+            log.warning("[DEP] condicao em lote de %d pipelines indisponivel "
+                        "(%s) — tratada como NAO liberada", len(lote), e)
+            marca = f"{ERRO_CONSULTA} {e}"[:200]
+            for nome in lote:
+                out[nome] = [marca]
+            continue
+        for linha in linhas:
+            nome = indice.get(str(linha[0] or "").strip().casefold())
+            if nome is None:
+                continue        # não pedimos por este; nunca deveria acontecer
+            out[nome].append(_faltante(linha[1:]))
+    return out
 
 
 def liberado(cur, pipeline: str, data_ref: date, corrida=None):

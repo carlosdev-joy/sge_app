@@ -240,9 +240,12 @@ def test_eventos_de_no_resolvidos_fora_do_array_de_membros(client, auth_editor):
     assert r.status_code == 200
     body = r.json()
     assert [e["pipeline_name"] for e in body["eventos"]] == ["PIPE_A"]
+    # F10: `notificado_em` é aditivo e vale para TODO evento — o de nó
+    # observador também entra na fila do Teams.
     assert body["eventos_no"] == [{
         "no_id": 5, "tipo_no": "notificacao", "tipo": "MALHA_NOTIFICACAO",
-        "criado_em": "2026-08-01 08:30:00", "mensagem": "Onda 1 OK"}]
+        "criado_em": "2026-08-01 08:30:00", "mensagem": "Onda 1 OK",
+        "notificado_em": None}]
     assert body["malha_concluida"] is None      # notificação não conclui
 
 

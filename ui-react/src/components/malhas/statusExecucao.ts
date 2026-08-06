@@ -14,7 +14,7 @@ import {
   Hourglass, Moon, TimerOff, XCircle,
 } from 'lucide-react'
 import type {
-  CorridaApi, CorridaCabecalho, CorridaEsperadaApi,
+  CorridaApi, CorridaCabecalho, CorridaEsperadaApi, PendenteCorrida,
 } from '../../types'
 import {
   diaCurto, duracaoEntre, decorridoMin, horaCurta, carimboLongo, textoDuracao,
@@ -32,7 +32,22 @@ export interface ExecucaoPipeline {
   faltantes?: string[]
 }
 
-export interface EventoGuardia {
+/** F10 — o estado da FILA DE AVISO de um evento (`notificado_em`, coluna que
+ *  existe desde a 067 e nunca foi lida pela tela). Três leituras, e as três
+ *  precisam continuar distinguíveis:
+ *
+ *    • chave AUSENTE (`undefined`) — o banco não tem a coluna: "não perguntei";
+ *    • `null` — o evento está na fila e **ninguém foi avisado ainda**;
+ *    • texto  — avisado naquele instante.
+ *
+ *  Confundir `undefined` com `null` acenderia o banner vermelho da Decisão 66
+ *  em toda malha de um banco antigo, que é o alarme falso da Decisão 26 com
+ *  roupa nova. */
+export interface ComNotificacao {
+  notificado_em?: string | null
+}
+
+export interface EventoGuardia extends ComNotificacao {
   pipeline_name: string
   tipo: string
   criado_em: string
@@ -42,7 +57,7 @@ export interface EventoGuardia {
 // F14/F15: evento de NÓ observador (marcador '#no:{id}' RESOLVIDO pelo
 // servidor — o front nunca interpreta o marcador). tipo_no diz qual
 // componente emitiu (notificacao | fim).
-export interface EventoNo {
+export interface EventoNo extends ComNotificacao {
   no_id: number
   tipo_no: string
   tipo: string
@@ -81,10 +96,23 @@ export interface MalhaExecucaoApi {
   // tabela de eventos é chaveada por pipeline e a corrida não é um pipeline.
   // Chave ausente (API anterior, ou lente sem corrida) degrada como vazio.
   eventos_corrida?: EventoCorrida[]
+  /** F4/F10 — o operador navegou por DATA e aquele dia teve mais de uma
+   *  corrida. Nesse caso o bloco `corrida` é OMITIDO de propósito (descrever
+   *  uma corrida sobre a lista do dia inteiro é a mesma mentira que a fase
+   *  mata) e esta chave diz quantas foram. A tela não pode se limitar a calar:
+   *  ela diz "este dia teve N corridas — escolha uma" e oferece o seletor. */
+  corridas_no_dia?: number
+  /** F10 — existe canal do Teams configurado? Separa as DUAS leituras de
+   *  `notificado_em` nulo: "o webhook falhou e o aviso está preso" (vermelho,
+   *  alguém precisa agir) e "não há destino, então nunca houve fila" (nada a
+   *  fazer). Sem ela, toda instalação sem webhook acende o banner vermelho
+   *  para sempre — o alarme falso crônico da Decisão 26. Chave ausente = a API
+   *  não respondeu; mantém o comportamento anterior. */
+  teams_configurado?: boolean
 }
 
 /** Evento do CICLO — sem `pipeline_name`, porque o sujeito é a corrida. */
-export interface EventoCorrida {
+export interface EventoCorrida extends ComNotificacao {
   tipo: string
   criado_em: string
   mensagem: string | null
@@ -474,6 +502,101 @@ export const ROTULO_PENDENCIA: Record<string, string> = {
   orfa: 'terminou sem registrar o fim',
   nao_liberou: 'esperando outro pipeline',
   nao_partiu: 'não chegou a iniciar',
+}
+
+// ═════════════════ F10 — o painel que responde "o que está travando" ═════════
+
+/** As classes que ENTRAM na aba `Travando` — as mesmas que o servidor conta em
+ *  `membros_travados` (Decisão 54). `nao_partiu` fica FORA de propósito: às
+ *  01:10 ele é o estado normal de todo membro de toda corrida recém-aberta, e
+ *  chipá-lo de vermelho seria um alarme falso por noite, em toda malha. Ele
+ *  aparece na aba como linha quieta, com o número e sem cor. */
+export const CLASSES_TRAVADAS = new Set(['falhou', 'orfa', 'nao_liberou'])
+
+/** A aba com que o painel ABRE (Decisão 62).
+ *
+ *  Quando o operador abre o painel às 3h, as perguntas "está rodando?" e "em
+ *  que pé está?" já foram respondidas pelo card ou pelo alarme que o trouxe
+ *  até aqui — obrigá-lo a clicar em `Travando` é um clique a mais na única
+ *  coisa que ele veio fazer. Corrida fechada não tem "agora" nem "travando":
+ *  o que resta a ler é o histórico do ciclo. */
+export function abaInicialDaCorrida(
+  c: CorridaApi | null | undefined,
+): 'agora' | 'travando' | 'eventos' {
+  if (!c || c.status !== 'ABERTA') return 'eventos'
+  if (c.saude === 'COM_FALHA' || c.saude === 'ATRASADA'
+      || c.saude === 'SEM_PROGRESSO') return 'travando'
+  return 'agora'
+}
+
+/** O RAIO DE ALCANCE de um travado, em texto (Decisão 63).
+ *
+ *  `↳ falhou: CARGA_A` não diz se atrás dela há 1 ou 17 pipelines parados, nem
+ *  se algum é `ALTA` — e é exatamente isso que decide acordar alguém. Os dois
+ *  números vêm do SERVIDOR (o fecho é sobre a dependência COMPILADA, não sobre
+ *  as arestas do desenho), e `null` ali significa "não apurei": nesse caso a
+ *  frase some inteira, em vez de publicar "0 parados atrás" como se fosse
+ *  medida. */
+export function textoAlcance(p: PendenteCorrida): string | null {
+  if (p.alcance === null || p.alcance === undefined) return null
+  if (p.alcance === 0) return 'nenhum pipeline parado atrás'
+  const base = `${p.alcance} ${p.alcance === 1 ? 'pipeline parado' : 'pipelines parados'} atrás`
+  return p.alcance_alta ? `${base} (${p.alcance_alta} de criticidade alta)` : base
+}
+
+/** Quanto tempo um aviso pode ficar na fila antes de virar banner vermelho.
+ *
+ *  A guardiã drena a fila a cada ciclo (5 min). SEM esta carência, toda falha
+ *  de malha acenderia "ninguém foi avisado" por alguns minutos e apagaria
+ *  sozinha — o alarme falso que a Decisão 26 proíbe, e que treinaria o
+ *  operador a ignorar justamente o banner que existe para o caso em que o
+ *  webhook está com 401 e a malha falha em silêncio para todo mundo. */
+export const CARENCIA_FILA_AVISO_MIN = 10
+
+/** Os tipos que a guardiã SEMPRE notifica (Decisão 48). `MALHA_CONCLUIDA` é
+ *  opt-in e `MALHA_SEM_TRABALHO` nem vira card — nenhum dos dois pendurado na
+ *  fila é notícia, e acusá-los aqui produziria banner vermelho por sucesso. */
+const TIPOS_QUE_SEMPRE_AVISAM = new Set([
+  'MALHA_FALHOU', 'MALHA_EXPIRADA', 'MALHA_ABORTADA', 'MALHA_ATRASADA',
+  'MALHA_CANCELADA', 'MALHA_REPROCESSO',
+])
+
+/** Decisão 66 — o aviso que está preso na fila do Teams.
+ *
+ *  É o PIOR cenário de plantão: webhook com 401 por URL rotacionada, a guardiã
+ *  loga e segue, e a malha falha em silêncio para todo mundo menos para quem
+ *  já está com esta tela aberta.
+ *
+ *  ⚠️ Relógios: a carência é medida entre `criado_em` e `apurado_em`, que são
+ *  os DOIS do banco (Decisão 60) — comparar `criado_em` com `Date.now()` daria
+ *  "preso há -3h" com o desvio medido no dev, e o banner nunca acenderia. */
+export function avisoPresoNaFila(
+  eventos: (ComNotificacao & { tipo: string; criado_em: string })[],
+  apuradoEm: string | null | undefined,
+  /** Existe canal do Teams configurado? `false` = não há destino, então nunca
+   *  houve fila — e sem isto QUALQUER instalação sem webhook (o dev inclusive)
+   *  acenderia o banner vermelho permanentemente. `undefined` = a API não
+   *  respondeu; mantém o comportamento anterior em vez de calar por suposição. */
+  temCanal?: boolean,
+): { desde: string; quantos: number } | null {
+  // Sem destino não há fila: o que está sem carimbo nunca foi enfileirado, e
+  // acusar isso todo dia é o alarme falso que a Decisão 26 proíbe — na primeira
+  // semana o operador aprende a ignorar o banner, e aí ele deixa de servir para
+  // o webhook que quebrou de verdade.
+  if (temCanal === false) return null
+  let desde: string | null = null
+  let quantos = 0
+  for (const ev of eventos) {
+    // `undefined` = a coluna não veio (banco sem ela): não se acusa o que não
+    // se perguntou. Só `null` é "está na fila".
+    if (ev.notificado_em !== null) continue
+    if (!TIPOS_QUE_SEMPRE_AVISAM.has(ev.tipo)) continue
+    const idade = duracaoEntre(ev.criado_em, apuradoEm)
+    if (idade === null || idade < CARENCIA_FILA_AVISO_MIN) continue
+    quantos += 1
+    if (desde === null || ev.criado_em < desde) desde = ev.criado_em
+  }
+  return desde === null ? null : { desde, quantos }
 }
 
 /** O que a `ui/Progress` desenha, já resolvido — segmentos, denominador e os

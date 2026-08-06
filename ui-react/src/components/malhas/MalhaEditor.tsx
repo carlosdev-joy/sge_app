@@ -67,10 +67,9 @@ import { Autocomplete } from '../ui/Autocomplete'
 import { PageSpinner } from '../ui/Spinner'
 import {
   Activity, AlertCircle, AlertTriangle, Anchor, ArrowRightLeft, ArrowUpDown,
-  CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, Clock, Info, Layers,
+  CalendarClock, CheckCircle2, Info, Layers,
   Link2,
-  Lock, Minus, MousePointerClick, PauseCircle, Play, Plus, RefreshCw, Save,
-  ShieldAlert,
+  Lock, Minus, MousePointerClick, Play, Plus, RefreshCw, Save,
   Unlock,
   Trash2, Wrench,
 } from 'lucide-react'
@@ -89,10 +88,15 @@ import { COMPONENTE_META, type TipoComponente } from './componenteMeta'
 // (Decisão 8); o nó é a porta.
 import { AgendamentoInicioModal } from './AgendamentoInicioModal'
 import {
-  STATUS_EXECUCAO, ORDEM_LEGENDA, ROTULO_EVENTO_CORRIDA, estiloEvento,
-  resumoCorrida, rotuloCorrida,
+  STATUS_EXECUCAO, ORDEM_LEGENDA,
+  abaInicialDaCorrida, avisoPresoNaFila, resumoCorrida,
   type CorridasResposta, type ExecucaoPipeline, type MalhaExecucaoApi,
 } from './statusExecucao'
+// F10 — a faixa da corrida, o painel de "o que está travando" e a navegação
+// por corrida (Decisões 42, 62, 63, 65 e 66).
+import { CabecalhoCorrida, type NoSegurado } from './CabecalhoCorrida'
+import { PainelCorridaLateral, type AbaCorrida } from './PainelCorridaLateral'
+import { SeletorCorrida } from './SeletorCorrida'
 // F7: o texto de duração da corrida (o mesmo módulo puro da faixa) — o crédito
 // de retenção chega em MINUTOS do servidor e vira "6h" no toast.
 import { textoDuracao } from './tempoCorrida'
@@ -108,7 +112,12 @@ import {
 } from './fluxoExecucao'
 // F15: próxima execução do agendamento — DISPLAY-ONLY (a autoridade do
 // gatilho é o scheduler; mesmo estatuto do calcularDataRef da F5).
-import { proximaExecucaoTexto } from './proximaExecucao'
+// F10 (Decisão 61): o mesmo helper passa a dar o INSTANTE, que é o que permite
+// escrever "a próxima corrida parte em 2h50 (01:00)" na faixa.
+import { proximaExecucao, proximaExecucaoTexto } from './proximaExecucao'
+// F10 (Decisão 65): a reexecução de um travado reusa a prévia que já existe —
+// é ela que traz, do servidor, a frase do efeito na corrida em voo.
+import { ModalRerunEtapa } from '../etapas/ModalRerunEtapa'
 // Mensagens de recusa ESPELHADAS do servidor — módulo compartilhado com o
 // DependenciasModal da F5: cliente e servidor com o MESMO texto, num lugar só.
 import { msgCiclo, MSG_SELF, msgRepublicar, msgLinhaAssinada } from './mensagensDependencia'
@@ -346,6 +355,11 @@ interface EventoPainel {
   tipo: string
   criado_em: string
   mensagem: string | null
+  // F10: o estado da FILA DE AVISO. Chave AUSENTE = o banco não tem a coluna
+  // (não perguntei) · `null` = na fila, ninguém foi avisado · texto = avisado.
+  // As três leituras precisam continuar distinguíveis: confundir a primeira
+  // com a segunda acenderia o banner vermelho em toda malha de banco antigo.
+  notificado_em?: string | null
 }
 
 // Ponta de aresta de nó no contrato §9: {no: id} XOR {pipeline: nome}.
@@ -366,13 +380,9 @@ interface GestoPendente {
 }
 
 // ── Helpers da visão de execução (F9) ───────────────────────────────────────
-// Soma dias a um 'YYYY-MM-DD' em UTC puro — sem passar por fuso local (Date
-// com string ISO curta interpreta UTC; misturar com métodos locais deslocaria
-// o dia em fusos negativos como o de Brasília).
-function somaDia(iso: string, delta: number): string {
-  const [a, m, d] = iso.split('-').map(Number)
-  return new Date(Date.UTC(a, m - 1, d + delta)).toISOString().slice(0, 10)
-}
+// F10: `somaDia` saiu junto com o ◀ ▶ por DIA. A navegação temporal virou uma
+// só — a faixa de corridas do `SeletorCorrida` (Decisão 42) —, e o dia deixou
+// de ser um passo do teclado para virar um item de menu.
 
 function horaCurta(iso: string | null): string | null {
   if (!iso) return null
@@ -751,7 +761,22 @@ function MalhaEditorInner({
       + (corridaRef ? `?corrida=${corridaRef}`
         : dataRef ? `?data_referencia=${encodeURIComponent(dataRef)}` : '')),
     enabled: !!malha && emExecucao,
-    refetchInterval: 30_000,   // leitura de painel: acompanha o dia rodando
+    // ── Decisão 73 — a cadência, e o ORDENAMENTO que a torna legítima ──────
+    // Até a F10 este painel perguntava `deps_svc.liberado()` POR MEMBRO
+    // esperando (2 round-trips cada, 3 no modo SEQUÊNCIA): numa malha de 40
+    // com 12 esperando eram 24 a 36 idas ao banco A CADA REFETCH — e é durante
+    // o incidente que esse número cresce. Encurtar o intervalo com o N+1 ainda
+    // no caminho MULTIPLICARIA o estrago; por isso os 15 s só entram na mesma
+    // PR em que o `pendentes[]` passou a ser uma consulta de conjunto.
+    //
+    // Condicional, e não fixo: corrida FECHADA é histórico, e histórico não
+    // muda — repetir a consulta de 15 em 15 segundos gastaria banco para
+    // redesenhar exatamente a mesma tela.
+    refetchInterval: q => {
+      const c = (q.state.data as MalhaExecucaoApi | undefined)?.corrida
+      if (!c) return 30_000          // sem ciclo: a cadência de sempre
+      return c.status === 'ABERTA' ? 15_000 : 60_000
+    },
   })
   const execData = execQuery.data
   // A data exibida/navegada: a pedida ou a que o servidor calculou (ODATE).
@@ -786,9 +811,16 @@ function MalhaEditorInner({
   // ODATE são legítimas e vêm as duas, distinguidas por `sequencia`. Sem a 085
   // (ou em API anterior) a lista sai vazia e a navegação volta a ser por DIA:
   // é a degradação por ausência de dado, não por flag.
+  // ⚠️ Quando o operador navegou para um DIA (`dataRef`), a lista é recortada
+  // NAQUELE dia. Sem isso ela traz as últimas 30 corridas da malha, e num dia
+  // mais antigo que ~30 ciclos a frase "este dia teve N corridas — escolha uma
+  // na faixa" apontaria para uma faixa que não contém nenhuma delas: mandar o
+  // operador procurar no lugar onde não está é pior que não dizer nada.
   const corridasQuery = useQuery<CorridasResposta>({
-    queryKey: ['malha-corridas', malha],
-    queryFn: () => apiFetch(`/malhas/${encodeURIComponent(malha)}/corridas?limite=30`),
+    queryKey: ['malha-corridas', malha, dataRef ?? ''],
+    queryFn: () => apiFetch(
+      `/malhas/${encodeURIComponent(malha)}/corridas?limite=30`
+      + (dataRef ? `&data_referencia=${encodeURIComponent(dataRef)}` : '')),
     enabled: !!malha && emExecucao,
     // Metade da cadência do painel: a LISTA de ciclos muda quando um ciclo
     // abre ou fecha (uma vez por madrugada), não a cada movimento de pipeline.
@@ -797,17 +829,9 @@ function MalhaEditorInner({
   })
   const corridas = useMemo(() => corridasQuery.data?.corridas ?? [],
                            [corridasQuery.data])
-  // Índice da corrida em foco DENTRO da lista. -1 = a lente não está numa
-  // corrida conhecida (navegação por dia, ou corrida mais antiga que o limite):
-  // aí o ◀ ▶ continua sendo o de dia, que é o comportamento de sempre.
-  const idxCorrida = useMemo(() => {
-    const alvo = corridaRef ?? corrida?.id ?? null
-    return alvo === null ? -1 : corridas.findIndex(c => c.id === alvo)
-  }, [corridas, corridaRef, corrida])
-  const navegaPorCorrida = idxCorrida >= 0 && corridas.length > 1
-  // A lista vem da mais NOVA para a mais antiga: ◀ anda para trás no tempo.
-  const corridaAnterior = navegaPorCorrida ? corridas[idxCorrida + 1] ?? null : null
-  const corridaSeguinte = navegaPorCorrida ? corridas[idxCorrida - 1] ?? null : null
+  // F10: o índice na lista saiu junto com o ◀ ▶ (Decisão 42) — a faixa mostra
+  // TODAS as corridas de uma vez, então "onde estou na fila" deixou de ser
+  // uma pergunta que a tela precisa responder com um número.
   function irParaCorrida(alvo: CorridaCabecalho | null) {
     if (!alvo) return
     setCorridaRef(alvo.id)
@@ -819,6 +843,53 @@ function MalhaEditorInner({
     setCorridaRef(null)
     setDataRef(dia)
   }
+
+  // ── F10: a aba com que o painel lateral ABRE (Decisão 62) ────────────────
+  // A escolha é derivada da SAÚDE, e re-derivada quando a corrida em foco
+  // MUDA — nunca quando a saúde muda no meio do acompanhamento. Um painel que
+  // troca de aba sozinha às 3h tira o operador de onde ele estava lendo, que é
+  // o oposto do que a Decisão 62 quer.
+  const [abaPainel, setAbaPainel] = useState<AbaCorrida>('eventos')
+  const abaDerivadaDe = useRef<number | null | undefined>(undefined)
+  useEffect(() => {
+    const id = corrida?.id ?? null
+    if (abaDerivadaDe.current === id) return
+    abaDerivadaDe.current = id
+    setAbaPainel(abaInicialDaCorrida(corrida))
+  }, [corrida])
+
+  // ── F10: o prazo POR PADRÃO é o próximo gatilho da malha (Decisão 61) ────
+  // Recalculado no tique do relógio LOCAL — é hora de parede contra hora de
+  // parede, a única conta de tempo desta camada que não toca o banco.
+  const proximoGatilho = useMemo(
+    () => proximaExecucao(data?.agendamento ?? null, new Date(agoraLocal)),
+    [data?.agendamento, agoraLocal])
+
+  // ── F10: os nós SEGURADOS (Decisão 66/2) ────────────────────────────────
+  // Hoje o cadeado existe só no nó, sem banner e sem contador: quem chega às
+  // 3h não tem como saber que a malha está parada porque alguém a segurou às
+  // 02:40. O mais antigo vem primeiro — é ele que o botão `Soltar` nomeia.
+  const nosSegurados = useMemo<NoSegurado[]>(() => (data?.nos ?? [])
+    .filter(n => !!n.retido_em)
+    .map(n => ({
+      id: n.id,
+      tipo: n.tipo,
+      rotulo: COMPONENTE_META[n.tipo as TipoComponente]?.rotulo ?? n.tipo,
+      retido_em: n.retido_em ?? null,
+      retido_por: n.retido_por ?? null,
+    }))
+    .sort((a, b) => (a.retido_em ?? '').localeCompare(b.retido_em ?? '')),
+    [data?.nos])
+
+  // ── F10: o aviso preso na fila do Teams (Decisão 66/3) ──────────────────
+  // Só os eventos DO CICLO entram: `MALHA_FALHOU` sem `notificado_em` é a
+  // malha falhando em silêncio para todo o plantão. A carência mora no módulo
+  // puro, e a idade é medida entre dois carimbos do BANCO (Decisão 60).
+  const avisoPreso = useMemo(
+    () => avisoPresoNaFila(execData?.eventos_corrida ?? [], corrida?.apurado_em,
+                           execData?.teams_configurado),
+    [execData?.eventos_corrida, corrida?.apurado_em, execData?.teams_configurado])
+
   // Execução MAIS RECENTE por pipeline (o endpoint já entrega uma por membro —
   // regra do §6 risco 6 da spec).
   const execPorPipeline = useMemo(() => {
@@ -831,14 +902,19 @@ function MalhaEditorInner({
   // nunca esconde linha que o banco tem (contrato F9).
   const eventos = useMemo<EventoPainel[]>(() => {
     const lista: EventoPainel[] = [
+      // `notificado_em` é REPASSADO com a chave que veio (spread), e não
+      // normalizado para `null`: a ausência dela significa "o banco não tem a
+      // coluna", que é outra coisa que "está na fila e ninguém foi avisado".
       ...(execData?.eventos ?? []).map(ev => ({
         rotulo: ev.pipeline_name, ehNo: false, tipo: ev.tipo,
         criado_em: ev.criado_em, mensagem: ev.mensagem,
+        ...('notificado_em' in ev ? { notificado_em: ev.notificado_em } : {}),
       })),
       ...(execData?.eventos_no ?? []).map(ev => ({
         rotulo: `${COMPONENTE_META[ev.tipo_no as TipoComponente]?.rotulo ?? ev.tipo_no} #${ev.no_id}`,
         ehNo: true, tipo: ev.tipo, criado_em: ev.criado_em,
         mensagem: ev.mensagem,
+        ...('notificado_em' in ev ? { notificado_em: ev.notificado_em } : {}),
       })),
       // F7: os eventos do CICLO. Até aqui eles eram gravados e NUNCA chegavam
       // à tela — a tabela de eventos é chaveada por pipeline e a corrida não é
@@ -850,6 +926,7 @@ function MalhaEditorInner({
         rotulo: 'corrida', ehNo: true,
         tipo: ev.tipo, criado_em: ev.criado_em,
         mensagem: ev.mensagem,
+        ...('notificado_em' in ev ? { notificado_em: ev.notificado_em } : {}),
       })),
     ]
     return lista.sort((a, b) => b.criado_em.localeCompare(a.criado_em))
@@ -887,6 +964,22 @@ function MalhaEditorInner({
     if (!onAbrirEtapas || !dataExibida || ehNo(pipelineId)) return
     onAbrirEtapas(pipelineId, dataExibida)
   }, [onAbrirEtapas, dataExibida])
+
+  // ── F10: um clique até o problema, SEM sair da lente ─────────────────────
+  // Clicar numa linha do painel acende a cadeia (o mesmo `PainelRealce` do
+  // canvas) e CENTRALIZA o nó. As duas coisas juntas: acender sem centralizar
+  // deixa o realce fora da viewport numa malha de 40 nós — o operador clica,
+  // "nada acontece" e ele volta a varrer o desenho com o olho, que é
+  // exatamente o gesto que esta fase existe para eliminar.
+  //
+  // `maxZoom` limita a aproximação: sem ele o React Flow enquadra UM nó e
+  // aproxima até perder a vizinhança, que é justamente o contexto que o realce
+  // acabou de acender.
+  const focarPipeline = useCallback((pipeline: string) => {
+    realceFocarNo(pipeline)
+    const alvo = rf.getNode(pipeline)
+    if (alvo) rf.fitView({ nodes: [{ id: pipeline }], duration: 250, maxZoom: 1.1 })
+  }, [realceFocarNo, rf])
 
   // Deploy parcial: migration 067 ausente (flag da API) ou API anterior à F8
   // (sem a chave `arestas`) — o diagrama abre só com os nós e avisa (nunca um
@@ -1384,6 +1477,71 @@ function MalhaEditorInner({
     }
   }, [retendo, malha, qc, ehInicioNo])
 
+  // ── F10: a PORTA DE SAÍDA do operador (§6.8, Decisões 32 e 62) ───────────
+  // Sem ela, a única saída para uma corrida travada às 3h seria esperar as 24h
+  // do teto ou apagar a malha — e teto de 24h não é ferramenta de plantão, é
+  // espera. O botão existe em TODA corrida ABERTA; o que muda por estado é o
+  // texto da confirmação, que é onde mora a consequência.
+  const [encerrando, setEncerrando] = useState(false)
+  const encerrarCorrida = useCallback(async (motivo: string) => {
+    if (!corrida || encerrando) return
+    setEncerrando(true)
+    try {
+      const r = await apiFetch<{ aviso?: string }>(
+        `/malhas/${encodeURIComponent(malha)}/corridas/${corrida.id}/encerrar`,
+        { method: 'POST', body: JSON.stringify({ motivo }) })
+      toast.success('Corrida encerrada — o disparo desta malha volta a funcionar.')
+      // O aviso do SERVIDOR não é engolido: é ele que diz o que NÃO aconteceu
+      // ("os pipelines em execução continuam rodando"), e essa é a metade da
+      // verdade que impede o operador de achar que "encerrar" é "matar".
+      if (r.aviso) toast.info(r.aviso)
+      qc.invalidateQueries({ queryKey: ['malha-execucao', malha] })
+      qc.invalidateQueries({ queryKey: ['malha-corridas', malha] })
+      qc.invalidateQueries({ queryKey: ['malhas'] })
+    } catch (err) {
+      toast.error((err as Error).message || 'Erro ao encerrar a corrida')
+    } finally {
+      setEncerrando(false)
+    }
+  }, [corrida, encerrando, malha, qc])
+
+  // ── F10: `↻ reexecutar` de um travado (Decisão 65) ──────────────────────
+  // O gesto mais delicado do modelo não pode virar um clique de 3h no escuro:
+  // o botão abre a PRÉVIA que já existe (`ModalRerunEtapa`), e é ela que traz
+  // do servidor a frase do efeito no ciclo em voo — *"esta reexecução entra na
+  // corrida de 04/08; o relógio de fechamento não reinicia por este gesto"*.
+  //
+  // A prévia é por ETAPA (o clear do Airflow é por task), então o alvo é a
+  // PRIMEIRA etapa do pipeline, resolvida no clique. O que exatamente será
+  // reexecutado continua sendo mostrado pelo modal ANTES de confirmar — é o
+  // contrato dele desde a F4 de operação por etapa, e é o que torna honesto
+  // oferecer o gesto a partir de um nó de malha.
+  const [rerunAlvo, setRerunAlvo] = useState<
+    { pipeline: string; taskId: string } | null>(null)
+  const [resolvendoRerun, setResolvendoRerun] = useState(false)
+  const abrirReexecucao = useCallback(async (pipeline: string) => {
+    if (resolvendoRerun) return
+    setResolvendoRerun(true)
+    try {
+      const r = await apiFetch<{ nodes?: { job_name: string }[] }>(
+        `/pipelines/${encodeURIComponent(pipeline)}/fluxo`)
+      const primeira = r.nodes?.[0]?.job_name
+      if (!primeira) {
+        // Sem etapa não há o que reexecutar — e mandar o operador ao modal
+        // para descobrir isso lá dentro seria gastar o clique dele.
+        toast.error(`Não encontrei as etapas de ${pipeline} para reexecutar. `
+          + 'Abra "etapas" e escolha o ponto de retomada.')
+        return
+      }
+      setRerunAlvo({ pipeline, taskId: primeira })
+    } catch (err) {
+      toast.error((err as Error).message
+        || `Não foi possível ler as etapas de ${pipeline}`)
+    } finally {
+      setResolvendoRerun(false)
+    }
+  }, [resolvendoRerun])
+
   // ── Republicação da malha (dry_run → modal → write) ───────────────────────
   // Mudar o desenho grava a dependência na hora; a DAG do Airflow só passa a
   // obedecê-la depois de regerada. Este é o "Publicar nova versão" da tela
@@ -1746,6 +1904,43 @@ function MalhaEditorInner({
   const selPipelines = useMemo(
     () => nodes.filter(n => n.selected && !ehNo(n.id)), [nodes])
 
+  // ── F10: Segurar/Soltar também na EXECUÇÃO (§9.6) ────────────────────────
+  // O gesto vivia SÓ no modo Montagem, e isso obrigava a sair da lente de
+  // acompanhamento no meio do incidente para destravar a malha — trocar de
+  // modo é perder o recorte da corrida, a faixa e o painel de quem está
+  // travando, exatamente quando eles são o que se está lendo.
+  //
+  // Uma função só, usada nos dois modos: duas cópias do mesmo botão seriam
+  // duas oportunidades de os textos divergirem, e este é o botão cuja frase
+  // decide se o operador entende que "segurar o Início" NÃO para o ciclo que
+  // já está rodando.
+  const botaoRetencao = () => {
+    if (readOnly || nosIndisponiveis || !podeExecutar) return null
+    if (selComponentes.length !== 1) return null
+    const noId = Number(selComponentes[0].id.slice(NO_PREFIX.length))
+    const noSel = grafo?.nos.find(n => n.id === noId)
+    if (!noSel || !['aguarde', 'inicio'].includes(noSel.tipo)) return null
+    const preso = !!noSel.retido_em
+    const ehInicio = noSel.tipo === 'inicio'
+    return (
+      <Button
+        variant={preso ? 'primary' : 'secondary'}
+        size="sm"
+        loading={retendo}
+        onClick={() => void alternarRetencao(noId, !preso)}
+        title={preso
+          ? (ehInicio
+            ? 'Soltar a trava — a malha volta a partir no próximo horário agendado'
+            : 'Soltar a trava — os pipelines depois deste Aguarde voltam a ser avaliados no próximo ciclo')
+          : (ehInicio
+            ? 'SEGURAR a malha: nenhuma raiz parte até você soltar'
+            : 'SEGURAR aqui: nenhum pipeline depois deste Aguarde é liberado até você soltar')}
+      >
+        {preso ? <><Unlock size={13} /> Soltar</> : <><Lock size={13} /> Segurar</>}
+      </Button>
+    )
+  }
+
   // ── Realce: rótulo e contador (F1) ────────────────────────────────────────
   // O id cru do componente ("no:5") não é linguagem de operador — o rótulo sai
   // pelo mesmo tradutor dos gestos ("Aguarde #5"). "Itens" e não "pipelines"
@@ -2028,10 +2223,6 @@ function MalhaEditorInner({
         ? 'bg-[#1A5FA8] text-white'
         : 'border border-edge bg-canvas text-dim hover:text-ink hover:bg-edge/40'
     }`
-  const navBtnCls =
-    'inline-flex items-center px-1.5 py-1 rounded-md text-xs border border-edge bg-canvas ' +
-    'text-dim hover:text-ink hover:bg-edge/40 transition-colors disabled:opacity-40 disabled:pointer-events-none'
-
   // Rótulo de nó p/ o banner de avisos ("Aguarde #8"), null p/ aviso geral.
   const rotuloNoAviso = (no: number | null): string | null => {
     if (no == null) return null
@@ -2131,73 +2322,13 @@ function MalhaEditorInner({
         )}
         {emExecucao && (
           <div className="ml-auto flex flex-wrap items-center gap-1.5">
-            {/* F4 — o ◀ ▶ passa a andar por CORRIDA quando a malha tem mais de
-                uma registrada: duas do mesmo dia (redisparo às 05h depois de
-                um incidente) são indistinguíveis pela data, e navegar por dia
-                sobreporia uma na outra. Sem corridas conhecidas — API anterior
-                à fase, banco sem a 085, ou uma corrida só — os mesmos botões
-                continuam sendo os de DIA, byte a byte como antes. O
-                `input[type=date]` fica como o atalho "ir para uma data". */}
-            <span className="text-[11px] text-dim">
-              {navegaPorCorrida ? 'Corrida' : 'Data de referência'}
-            </span>
-            <button
-              onClick={() => (navegaPorCorrida
-                ? irParaCorrida(corridaAnterior)
-                : irParaDia(somaDia(dataExibida, -1)))}
-              disabled={navegaPorCorrida ? !corridaAnterior : !dataExibida}
-              title={navegaPorCorrida
-                ? (corridaAnterior
-                  ? `Corrida anterior — ${rotuloCorrida(corridaAnterior)}`
-                  : 'Não há corrida anterior registrada')
-                : 'Dia anterior'}
-              aria-label={navegaPorCorrida ? 'Corrida anterior' : 'Dia anterior'}
-              className={navBtnCls}
-            >
-              <ChevronLeft size={13} />
-            </button>
-            {navegaPorCorrida && resumo && (
-              <span
-                className="max-w-[15rem] truncate text-[11px] font-medium text-ink"
-                title={resumo.titulo}
-              >
-                {resumo.identidade}
-                <span className="ml-1 text-dim">
-                  ({idxCorrida + 1} de {corridas.length})
-                </span>
-              </span>
-            )}
-            <input
-              type="date"
-              value={dataExibida}
-              onChange={e => irParaDia(e.target.value || null)}
-              title="Ir para uma data de referência"
-              aria-label="Ir para uma data de referência"
-              className="rounded-md border border-edge bg-canvas px-2 py-1 text-xs text-ink focus:outline-none focus:ring-2 focus:ring-[#1A5FA8]/40"
-            />
-            <button
-              onClick={() => (navegaPorCorrida
-                ? irParaCorrida(corridaSeguinte)
-                : irParaDia(somaDia(dataExibida, 1)))}
-              disabled={navegaPorCorrida ? !corridaSeguinte : !dataExibida}
-              title={navegaPorCorrida
-                ? (corridaSeguinte
-                  ? `Corrida seguinte — ${rotuloCorrida(corridaSeguinte)}`
-                  : 'Esta já é a corrida mais recente')
-                : 'Dia seguinte'}
-              aria-label={navegaPorCorrida ? 'Corrida seguinte' : 'Dia seguinte'}
-              className={navBtnCls}
-            >
-              <ChevronRight size={13} />
-            </button>
-            <button
-              onClick={() => irParaDia(null)}
-              disabled={dataRef === null && corridaRef === null}
-              title="Voltar ao que está acontecendo agora — a corrida corrente da malha (ou, sem corrida, a data de referência do dia)"
-              className={`${navBtnCls} px-2`}
-            >
-              agora
-            </button>
+            {/* F10 — Decisão 42: a navegação temporal saiu daqui. Havia três
+                mecanismos nesta barra (◀ ▶ · input de data · botão "agora") e
+                a fase pedia uma faixa de corridas: quatro mecanismos para a
+                mesma pergunta na mesma barra é decisão adiada, não
+                flexibilidade — às 3h usa-se UM. Agora existe a FAIXA das
+                últimas corridas, no cabeçalho da corrida (`SeletorCorrida`),
+                com a data e o "agora" como itens do menu dela. */}
             {execQuery.isFetching && (
               <RefreshCw size={12} className="animate-spin text-dim" />
             )}
@@ -2408,100 +2539,52 @@ function MalhaEditorInner({
         </div>
       )}
 
-      {/* ── F4: a FAIXA DA CORRIDA ────────────────────────────────────────
-          Quem responde "a malha rodou?" passa a ser o CICLO — e não mais o
-          membro que começou por último, que é a chave de comparação do defeito
-          desta fase. A faixa e o card da lista leem o MESMO agregado
+      {/* ── F10: A FAIXA DA CORRIDA ───────────────────────────────────────
+          Quem responde "a malha rodou?" é o CICLO — e não mais o membro que
+          começou por último, que é a chave de comparação do defeito que esta
+          spec mata. A faixa e o card da lista leem o MESMO agregado
           (`resumoCorrida`), porque duas superfícies derivando o mesmo fato por
-          caminhos diferentes é como elas passam a discordar na mesma tela. */}
-      {emExecucao && resumo && (
-        <div className={`flex flex-col gap-0.5 border-b px-3 py-2 text-[12px] ${resumo.faixa}`}
-             title={resumo.titulo}>
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-semibold ${resumo.estilo.chip}`}>
-              <resumo.estilo.Icone size={12} className="shrink-0" />
-              {resumo.estilo.rotulo}
-            </span>
-            <span className="font-medium">{resumo.identidade}</span>
-            {resumo.tempo && <span>· {resumo.tempo}</span>}
-            {resumo.contagem && <span>· {resumo.contagem}</span>}
-            {/* O travado NÃO engorda o número de concluídos (Decisão 54): ele
-                é chip ao lado, com ícone próprio. */}
-            {resumo.travados && (
-              <span className="inline-flex items-center gap-1 rounded border border-red-300 bg-red-100 px-1.5 py-0.5 text-[11px] font-semibold text-red-700 dark:border-red-700 dark:bg-red-900/60 dark:text-red-300">
-                <AlertTriangle size={11} className="shrink-0" /> {resumo.travados}
-              </span>
-            )}
-            {resumo.vivos && <span>· {resumo.vivos}</span>}
-          </div>
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] opacity-90">
-            {/* A subtração aparece SEMPRE junto do "x de y" (Decisão 53) — sem
-                ela, uma malha de 7 com 5 membros inativados na sexta diria
-                "2 de 2 · concluída" no sábado, verde. */}
-            {resumo.membros && <span>{resumo.membros}</span>}
-            {resumo.culpado && <span className="font-medium">↳ {resumo.culpado}</span>}
-            {resumo.encerramento && <span>· {resumo.encerramento}</span>}
-            {resumo.motivo && <span className="italic">{resumo.motivo}</span>}
-          </div>
-          {/* F7 — Decisão 43: quem abriu, se foi reaberta e como esta malha
-              fecha. Seis campos gravados desde a F1 e nenhum mostrado até
-              aqui; são as três primeiras perguntas de plantão. */}
-          {resumo.diagnostico && (
-            <div className="text-[11px] opacity-75">{resumo.diagnostico}</div>
-          )}
-          {/* F7 — o LIMITE DE SEGURANÇA. A barra só existe quando a MALHA
-              configurou o teto (Decisão 61): o global de 24h é anti-travamento,
-              e uma barra em 80% às 20h numa malha que sempre fecha em 3h faria
-              escalar por nada. O crédito vem colado nela porque é a explicação
-              de uma barra que ANDOU PARA TRÁS — recuo sem explicação destrói a
-              confiança em todas as outras barras da tela. */}
-          {(resumo.prazo || resumo.credito || resumo.hold) && (
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
-              {resumo.prazo && (
-                <span className="inline-flex items-center gap-1.5">
-                  <Clock size={11} className="shrink-0" />
-                  {resumo.prazoPct !== null && (
-                    <span className="inline-block h-1.5 w-16 overflow-hidden rounded-full bg-black/10 dark:bg-white/15"
-                          role="progressbar" aria-valuemin={0} aria-valuemax={100}
-                          aria-valuenow={resumo.prazoPct}
-                          aria-label="Limite de segurança da corrida">
-                      <span className={`block h-full ${resumo.prazoPct >= 100 ? 'bg-red-500' : 'bg-current opacity-60'}`}
-                            style={{ width: `${resumo.prazoPct}%` }} />
-                    </span>
-                  )}
-                  {resumo.prazo}
-                </span>
-              )}
-              {resumo.credito && (
-                <span className="opacity-80">· {resumo.credito}</span>
-              )}
-              {resumo.hold && (
-                <span className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-100 px-1.5 py-0.5 font-medium text-amber-800 dark:border-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
-                  <PauseCircle size={11} className="shrink-0" /> {resumo.hold}
-                </span>
-              )}
-            </div>
-          )}
-          {/* Decisão 66 — o incidente que ORIGINOU esta spec: é o único caso em
-              que a contagem está certa e o DIA está errado. */}
-          {resumo.foraDoOdate && (
-            <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
-              <AlertTriangle size={12} className="shrink-0" /> {resumo.foraDoOdate}
-            </div>
-          )}
-        </div>
-      )}
+          caminhos diferentes é como elas passam a discordar na mesma tela.
 
-      {/* Deploy parcial SEM a 085: o card e o painel calam JUNTOS. Um dizer
-          "concluída" enquanto o outro não sabe de nada é pior que os dois
-          calarem — por isso o banner verde abaixo também sai do ar aqui, e a
-          degradação é DITA, não só silenciosa (aditivo à Decisão 41). */}
-      {emExecucao && !corrida && sem085 && (
-        <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400"
-             title="A migration 085 (o registro do ciclo da malha) ainda não foi aplicada neste banco. O que a tela mostra continua verdadeiro; o que falta é o ciclo.">
-          <AlertTriangle size={14} className="shrink-0" />
-          <span>sem dados de corrida — sistema em atualização</span>
-        </div>
+          A F10 tira o JSX daqui e o põe num componente: a faixa passou a ter
+          os três banners da Decisão 66, o botão de encerrar, o relógio do
+          prazo e a faixa de navegação — 120 linhas de JSX no meio de um editor
+          de 3.400 é onde uma regressão de tema entra sem ninguém ver. */}
+      {emExecucao && (
+        <CabecalhoCorrida
+          corrida={corrida}
+          resumo={resumo}
+          carregando={execQuery.isLoading}
+          sem085={sem085}
+          corridasNoDia={execData?.corridas_no_dia ?? null}
+          proximoGatilho={proximoGatilho}
+          respostaEm={execQuery.dataUpdatedAt}
+          agoraLocal={agoraLocal}
+          nosSegurados={nosSegurados}
+          /* Soltar do BANNER: o mesmo gesto do botão do canvas, sem exigir que
+             o operador saia da lente de acompanhamento, ache o nó no desenho e
+             o selecione no meio do incidente. */
+          onSoltar={!readOnly && podeExecutar && !nosIndisponiveis
+            ? (noId => void alternarRetencao(noId, false))
+            : undefined}
+          soltando={retendo}
+          avisoPreso={avisoPreso}
+          onEncerrar={podeExecutar ? encerrarCorrida : undefined}
+          encerrando={encerrando}
+          onAbrirAba={setAbaPainel}
+          seletor={(
+            <SeletorCorrida
+              corridas={corridas}
+              corridaId={corridaRef ?? corrida?.id ?? null}
+              onTrocar={irParaCorrida}
+              dataExibida={dataExibida}
+              onIrParaData={irParaDia}
+              onAgora={() => irParaDia(null)}
+              noAgora={dataRef === null && corridaRef === null}
+              carregando={corridasQuery.isLoading}
+            />
+          )}
+        />
       )}
 
       {/* F15 (§6): banner verde da conclusão — o evento MALHA_CONCLUIDA do nó
@@ -2520,50 +2603,41 @@ function MalhaEditorInner({
       )}
 
       <div className="flex min-h-0 flex-1">
-        {/* Painel lateral de eventos da guardiã (F9) — só na visão de execução. */}
+        {/* ── F10: o painel lateral da CORRIDA (§9.5) ──────────────────────
+            Até aqui ele era "EVENTOS DA GUARDIÃ" — e corrida saudável não gera
+            evento, então ele ficava VAZIO justamente durante a corrida.
+            Descobrir o que estava rodando era varrer o canvas com o olho
+            procurando anel azul. Agora são três abas, com a inicial derivada
+            da SAÚDE (Decisão 62), e cada linha leva ao problema em um clique
+            SEM sair da lente de execução. */}
         {emExecucao && (
-          <div className="flex w-64 shrink-0 flex-col border-r border-edge bg-panel">
-            <div className="flex items-center gap-1.5 border-b border-edge px-3 py-2">
-              <ShieldAlert size={13} className="shrink-0 text-dim" />
-              <span className="text-xs font-semibold uppercase tracking-wider text-dim">
-                Eventos da guardiã
-              </span>
-            </div>
-            <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-2">
-              {eventos.length === 0 ? (
-                <p className="px-1 py-4 text-center text-[11px] leading-relaxed text-dim">
-                  Nenhum evento da guardiã nesta data.
-                </p>
-              ) : eventos.map((ev, i) => (
-                <div key={`${ev.rotulo}-${ev.criado_em}-${i}`}
-                  className="rounded-md border border-edge bg-canvas px-2 py-1.5">
-                  <div className="flex items-center gap-1.5">
-                    {/* F7 (Decisão 74): os eventos do CICLO ganham nome em
-                        pt-BR — "MALHA_TETO_CREDITADO" é justamente o que
-                        precisa ser LIDO para explicar um número que mudou. Os
-                        demais tipos seguem crus: são o vocabulário da guardiã e
-                        têm tradução própria em outra fase. */}
-                    <span className={`rounded border px-1 py-px text-[9px] font-bold ${estiloEvento(ev.tipo)}`}
-                          title={ev.tipo}>
-                      {ROTULO_EVENTO_CORRIDA[ev.tipo] ?? ev.tipo}
-                    </span>
-                    <span className="ml-auto text-[10px] text-dim">{horaCurta(ev.criado_em)}</span>
-                  </div>
-                  {/* F15: evento de NÓ observador (F14) usa o rótulo do
-                      componente; o de pipeline segue em mono, como sempre. */}
-                  <div
-                    className={`mt-0.5 truncate text-[10px] text-ink ${ev.ehNo ? 'font-medium' : 'font-mono'}`}
-                    title={ev.rotulo}
-                  >
-                    {ev.rotulo}
-                  </div>
-                  {ev.mensagem && (
-                    <p className="mt-0.5 text-[10px] leading-snug text-dim">{ev.mensagem}</p>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
+          <PainelCorridaLateral
+            corrida={corrida}
+            execucoes={execData?.execucoes ?? []}
+            eventos={eventos}
+            aba={abaPainel}
+            onAba={setAbaPainel}
+            onFocar={focarPipeline}
+            onAbrirEtapas={onAbrirEtapas && dataExibida
+              ? descerParaEtapas
+              : undefined}
+            /* Decisão 65 — o botão só existe quando a frase do efeito PODE ser
+               escrita com certeza, e ela só pode com um ciclo ABERTO em foco:
+               é dele que se afirma "esta reexecução entra nele e o relógio de
+               fechamento não reinicia". Sem corrida aberta o botão some e
+               sobra `▶ etapas`, que é o que a própria Decisão 65 manda. */
+            onReexecutar={podeExecutar && corrida?.status === 'ABERTA' && dataExibida
+              ? (p => void abrirReexecucao(p))
+              : undefined}
+            fraseReexecucao={corrida?.status === 'ABERTA'
+              ? `Esta reexecução entra na ${resumo?.identidade ?? 'corrida em andamento'}`
+                + ' (em andamento) e o relógio de fechamento do ciclo NÃO'
+                + ' reinicia por este gesto. A prévia mostra o que será'
+                + ' reexecutado antes de confirmar.'
+              : null}
+            respostaEm={execQuery.dataUpdatedAt}
+            agoraLocal={agoraLocal}
+          />
         )}
 
         {/* Paleta lateral: ADICIONAR membro (a remoção continua no modal
@@ -2744,6 +2818,10 @@ function MalhaEditorInner({
                       <Layers size={13} /> Ver etapas
                     </Button>
                   )}
+                  {/* F10 — o gesto de retenção passa a existir AQUI. A edição
+                      do desenho continua travada; segurar/soltar não é edição
+                      de desenho, é operação do ciclo. */}
+                  {botaoRetencao()}
                 </div>
               ) : readOnly ? (
                 <span className="flex items-center gap-1.5 rounded-lg border border-edge bg-panel/95 px-2.5 py-1.5 text-[11px] font-semibold text-dim shadow-md backdrop-blur">
@@ -2763,32 +2841,9 @@ function MalhaEditorInner({
                       <CalendarClock size={13} /> Agendamento
                     </Button>
                   )}
-                  {selComponentes.length === 1
-                    && ['aguarde', 'inicio'].includes(
-                      tipoDoNo.get(Number(selComponentes[0].id.slice(NO_PREFIX.length))) ?? '')
-                    && !nosIndisponiveis && podeExecutar && (() => {
-                      const noId = Number(selComponentes[0].id.slice(NO_PREFIX.length))
-                      const noSel = grafo?.nos.find(n => n.id === noId)
-                      const preso = !!noSel?.retido_em
-                      const ehInicio = noSel?.tipo === 'inicio'
-                      return (
-                        <Button
-                          variant={preso ? 'primary' : 'secondary'}
-                          size="sm"
-                          loading={retendo}
-                          onClick={() => void alternarRetencao(noId, !preso)}
-                          title={preso
-                            ? (ehInicio
-                              ? 'Soltar a trava — a malha volta a partir no próximo horário agendado'
-                              : 'Soltar a trava — os pipelines depois deste Aguarde voltam a ser avaliados no próximo ciclo')
-                            : (ehInicio
-                              ? 'SEGURAR a malha: nenhuma raiz parte até você soltar'
-                              : 'SEGURAR aqui: nenhum pipeline depois deste Aguarde é liberado até você soltar')}
-                        >
-                          {preso ? <><Unlock size={13} /> Soltar</> : <><Lock size={13} /> Segurar</>}
-                        </Button>
-                      )
-                    })()}
+                  {/* F10: a MESMA função do modo Execução — um botão só,
+                      um texto só. */}
+                  {botaoRetencao()}
                   {selComponentes.length === 1 && (
                     <Button
                       variant="danger"
@@ -3368,6 +3423,29 @@ function MalhaEditorInner({
         tetoHoras={data?.teto_horas ?? null}
         temTeto={data ? 'teto_horas' in data : false}
       />
+
+      {/* F10 (Decisão 65): a prévia da reexecução de um travado. Montada só
+          quando aberta — a prévia é uma chamada de rede (dry_run no Airflow +
+          fecho de dependências) e não pode disparar por ter uma linha na tela.
+          É este modal que traz, do SERVIDOR, a frase do efeito no ciclo em
+          voo: sem ela o operador apertaria e o painel mudaria de estado por
+          baixo dele. */}
+      {rerunAlvo && (
+        <ModalRerunEtapa
+          open
+          onClose={() => setRerunAlvo(null)}
+          pipeline={rerunAlvo.pipeline}
+          taskId={rerunAlvo.taskId}
+          jobName={rerunAlvo.taskId}
+          dataReferencia={dataExibida || null}
+          /* Sem `run_id`: a lente da malha é a CORRIDA, e a identidade de run
+             do pipeline dentro dela é resolvida pelo servidor a partir da
+             data. Mandar um run_id que esta tela não escolheu seria escolher
+             por ele. */
+          runId={null}
+          status={execPorPipeline.get(rerunAlvo.pipeline)?.status ?? null}
+        />
+      )}
     </div>
   )
 }

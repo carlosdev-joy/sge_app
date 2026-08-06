@@ -100,8 +100,14 @@ class FakeCur(FakeCurF8):
 
         # ── etl_dependencia_evento por data ─────────────────────────────────
         if s.startswith("SELECT pipeline_name, tipo, detectado_em"):
+            # F10: a 5ª coluna é `notificado_em` (a fila de aviso do Teams).
+            # O dublê a devolve SEMPRE que o SELECT a pede — um dublê que
+            # entrega menos colunas que o banco faria o painel parecer quebrado
+            # aqui e funcionar em produção, que é o pior dos dois mundos.
+            notif = "notificado_em" in s
             self._rows = [
                 (e["pipeline"], e["tipo"], e["detectado_em"], e["detalhe"])
+                + ((e.get("notificado_em"),) if notif else ())
                 for e in db.eventos if e["data_referencia"] == params[0]]
             return
 
@@ -312,13 +318,19 @@ def test_eventos_filtrados_por_membro_e_ordenados_desc(client, auth_editor):
     with _patch_db(db):
         _monta_malha(client, "M1", ["PIPE_A", "PIPE_B"])
         r = client.get("/malhas/M1/execucao?data_referencia=2026-08-01")
+    # F10: `notificado_em` entra como campo ADITIVO — chave presente com
+    # `null` significa "está na fila e ninguém foi avisado", e é ela que
+    # alimenta o banner da Decisão 66. A chave só some quando o BANCO não tem
+    # a coluna, que é outra coisa ("não perguntei") e tem teste próprio.
     assert r.json()["eventos"] == [
         {"pipeline_name": "PIPE_A", "tipo": "DATA_DIVERGENTE",
          "criado_em": "2026-08-01 09:10:00",
-         "mensagem": "predecessor em 31/07, dependente em 01/08"},
+         "mensagem": "predecessor em 31/07, dependente em 01/08",
+         "notificado_em": None},
         {"pipeline_name": "PIPE_A", "tipo": "JANELA_ESTOUROU",
          "criado_em": "2026-08-01 08:05:00",
-         "mensagem": "limite 08:00 estourado"},
+         "mensagem": "limite 08:00 estourado",
+         "notificado_em": None},
     ]
 
 

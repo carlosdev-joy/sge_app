@@ -101,20 +101,44 @@ function rotuloDia(d: Date, agora: Date): string {
   return `${DOW_NOMES[d.getDay()]} ${dd}/${mm}`
 }
 
+/** A próxima partida do agendamento — o INSTANTE, e não só o texto.
+ *
+ *  F10 (Decisão 61): o prazo que aparece por padrão na faixa é o PRÓXIMO
+ *  GATILHO da própria malha, não o teto — e para escrever *"parte em 2h50
+ *  (01:00)"* é preciso o instante, não a frase. `quando` é `null` na cadência
+ *  sem instante (`hourly`), e aí só o texto de cadência é honesto.
+ *
+ *  ⚠️ O relógio aqui é o LOCAL, e isso está certo (Decisão 60): o gatilho é
+ *  hora de PAREDE do agendamento, e o que se mede é "daqui a quanto tempo" —
+ *  local contra local. O que a Decisão 60 proíbe é misturar carimbo do BANCO
+ *  com `Date.now()`, que não acontece em lugar nenhum deste módulo. */
+export interface ProximaExecucao {
+  /** Instante local da próxima partida. `null` = cadência sem hora exata. */
+  quando: Date | null
+  /** 'HH:MM' do gatilho, quando existe. */
+  hora: string | null
+  /** 'hoje 01:00' | 'amanhã 01:00' | 'sex 08/08 01:00' (+ sufixo). */
+  texto: string
+}
+
 // Texto da próxima execução do agendamento, ou null quando não dá para dizer
 // com honestidade (sem agendamento, on_demand, tipo desconhecido, nada num
 // horizonte de 62 dias — cobre o mensal de dia 28 com folga).
-export function proximaExecucaoTexto(
+export function proximaExecucao(
   ag: Record<string, unknown> | null | undefined,
   agora: Date = new Date(),
-): string | null {
+): ProximaExecucao | null {
   if (!ag || typeof ag !== 'object') return null
   const a = ag as Agendamento
   const st = String(a.schedule_type ?? '').trim().toLowerCase()
   if (!st || st === 'on_demand') return null
   const sufixo = a.calendario_nome ? ' (sujeito ao calendário)' : ''
   if (st === 'hourly') {
-    return `a cada hora no minuto ${String(int(a.schedule_minute, 0)).padStart(2, '0')}${sufixo}`
+    return {
+      quando: null,
+      hora: null,
+      texto: `a cada hora no minuto ${String(int(a.schedule_minute, 0)).padStart(2, '0')}${sufixo}`,
+    }
   }
   const soUteis = a.somente_dias_uteis === 1 || a.somente_dias_uteis === true
   const agoraHm = hm(agora.getHours(), agora.getMinutes())
@@ -125,8 +149,18 @@ export function proximaExecucaoTexto(
       // No próprio dia, só horário ainda por vir (comparação lexicográfica
       // de 'HH:MM' zero-padded é a ordem do relógio).
       if (i === 0 && h <= agoraHm) continue
-      return `${rotuloDia(d, agora)} ${h}${sufixo}`
+      const quando = new Date(d.getFullYear(), d.getMonth(), d.getDate(),
+                              int(h.split(':')[0], 0), int(h.split(':')[1], 0))
+      return { quando, hora: h, texto: `${rotuloDia(d, agora)} ${h}${sufixo}` }
     }
   }
   return null
+}
+
+/** O texto de sempre (F15) — o card do Início continua chamando este. */
+export function proximaExecucaoTexto(
+  ag: Record<string, unknown> | null | undefined,
+  agora: Date = new Date(),
+): string | null {
+  return proximaExecucao(ag, agora)?.texto ?? null
 }
