@@ -239,6 +239,51 @@ async function main() {
     }
   })
 
+  cenario('barra_cheia_com_no_segurado_nao_promete_hora', () => {
+    // O mesmo estado do aceite 2 — tudo pronto, corrida ABERTA — com UM fato a
+    // mais: há nó segurado. Com hold, "o teto não corre e a quiescência não
+    // avalia" (§6.7/Decisão 30), e `quiescencia_ate` vira um carimbo que o
+    // hold deixou para trás: aqui o último movimento foi às 02:30, a retenção
+    // entrou às 02:40, e a frase de sempre anunciaria "por volta de 02:45"
+    // para um fechamento que não vai acontecer.
+    const c = corrida({
+      membros_ok: 7, membros_vivos: 0, membros_dispensados: 0,
+      ultimo_movimento_em: '2026-08-05 02:30:00',
+      quiescencia_ate: '2026-08-05 02:45:00',
+      retido_nos: 2, retido_desde: '2026-08-05 02:40:00', retido_por: 'C123456',
+    })
+    const r = S.resumoCorrida(c, TEMPO, 7)
+    return { contagem: r.contagem, fechando: r.fechando,
+             fechamento: r.fechamento, lido: tudoQueSeLe(progresso(c)) }
+  })
+
+  cenario('snapshot_vazio_nao_publica_zero_de_zero', () => {
+    // A corrida abriu e NENHUM membro estava ativo. É fato do CADASTRO, e é
+    // diferente de "não consegui apurar" (`membros_total` nulo): pede que
+    // alguém olhe a malha, não que tente de novo.
+    const c = corrida({
+      membros_total: 0, membros_ok: 0, membros_vivos: 0,
+      membros_dispensados: 0, membros_travados: 0,
+    })
+    const r = S.resumoCorrida(c, TEMPO, 7)
+    return { contagem: r.contagem, membros: r.membros, fechando: r.fechando,
+             barra: propsDaBarra(progresso(c)), titulo: r.titulo,
+             lido: tudoQueSeLe(progresso(c)) }
+  })
+
+  cenario('um_membro_so_fala_no_singular', () => {
+    // O `aria-valuetext` é a única frase da tela que SÓ quem não enxerga a
+    // barra ouve — e era a única em português errado ("1 de 1 pipelines
+    // concluídos") enquanto o texto visível já dizia o singular.
+    const c = corrida({
+      membros_total: 1, membros_ok: 0, membros_vivos: 1,
+      membros_dispensados: 0,
+    })
+    const p = propsDaBarra(progresso(c))
+    return { contagem: S.resumoCorrida(c, TEMPO, 1).contagem,
+             valorTexto: p.valorTexto }
+  })
+
   cenario('malha_com_no_fim_nao_promete_o_relogio_errado', () => {
     // Malha que fecha pelo nó Fim não tem carência de quiescência: dizer
     // "fecha 15 min após o último movimento" descreveria o mecanismo errado.

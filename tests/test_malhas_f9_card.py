@@ -161,6 +161,58 @@ def test_malha_com_no_fim_nao_descreve_o_relogio_errado(card):
     assert d["fechamento"] == "aguarda o nó Fim registrar a conclusão"
 
 
+def test_barra_cheia_com_no_segurado_nao_promete_hora_de_fechamento(card):
+    """HOLD: o relógio de fechamento NÃO está correndo, e a frase não pode
+    fingir que está.
+
+    Com nó segurado, "o teto não corre, a quiescência não avalia"
+    (`malha_corrida.hold_da_malha`, §6.7/Decisão 30). `quiescencia_ate`
+    continua sendo `último movimento + carência` e vira um carimbo que o hold
+    deixou para trás: com movimento às 02:30 e retenção às 02:40, a frase de
+    sempre anunciaria "por volta de 02:45" — uma hora JÁ PASSADA, para um
+    fechamento que não vai acontecer enquanto o cadeado estiver posto.
+
+    É o mesmo defeito que a F7 pagou na barra de limite (ela enchia durante o
+    hold e contradizia o texto ao lado). A linha que se contradiz sozinha leva
+    junto a confiança em todas as outras."""
+    d = _cenario(card, "barra_cheia_com_no_segurado_nao_promete_hora")
+    assert d["fechando"] is True
+    assert d["contagem"] == "7 de 7 · fechando"
+    assert d["fechamento"] == ("o fechamento está parado — 2 nós segurados "
+                               "desde 02:40")
+    # NENHUMA hora prometida, e nenhuma menção à carência que não está correndo
+    assert "por volta de" not in d["lido"]
+    assert "02:45" not in d["lido"]
+    assert "15 min após" not in d["lido"]
+
+
+def test_snapshot_vazio_nao_publica_zero_de_zero(card):
+    """`membros_total = 0` é fato do CADASTRO, não medida de trabalho.
+
+    "0 de 0 pipelines concluídos" publicaria zero como se fosse a medida de um
+    trabalho que não existiu — e essa frase chegava ao `title` do card, que é o
+    que o operador lê com o mouse parado. §9.9 nomeia o estado: *"a corrida
+    abriu sem membros ativos"*. É diferente de `membros_total` NULO, que é
+    "não consegui apurar" e pede outra ação (tentar de novo, não olhar a
+    malha)."""
+    d = _cenario(card, "snapshot_vazio_nao_publica_zero_de_zero")
+    assert d["contagem"] is None
+    assert d["fechando"] is False        # barra CHEIA de nada não é "fechando"
+    assert d["barra"] is None
+    assert d["membros"].startswith("a corrida abriu sem membros ativos")
+    assert "0 de 0" not in d["lido"] and "0 de 0" not in d["titulo"]
+
+
+def test_o_leitor_de_tela_ouve_o_singular_quando_o_membro_e_um(card):
+    """O `aria-valuetext` é a única frase da barra que só quem NÃO enxerga
+    ouve — e era a única da tela em português errado: "1 de 1 pipelines
+    concluídos" enquanto o texto visível ao lado já dizia "pipeline
+    concluído"."""
+    d = _cenario(card, "um_membro_so_fala_no_singular")
+    assert d["contagem"] == "0 de 1 pipeline concluído"
+    assert d["valorTexto"] == "0 de 1 pipeline concluído, 1 em execução"
+
+
 # ═══════ 3. desfecho interrompido: barra congelada (Decisões 57 e 67) ═══════
 
 def test_expirada_congela_a_barra_e_diz_onde_parou(card):

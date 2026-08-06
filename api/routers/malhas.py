@@ -2575,15 +2575,33 @@ def _corrida_esperada(cur, malha: str, agendamentos: list, corrente,
     OBRIGATÓRIA: sem histórico não há "não abriu" (trava 1). `relogio` é a tupla
     de `_relogio_e_folga`.
 
-    A comparação que decide tudo:
+    "ABRIU" tem DUAS portas, e as duas precisam existir:
 
         previsto_banco = previsto_local + (agora_banco − agora_local)
-        abriu          = corrente.aberta_em >= previsto_banco
+        abriu = corrente.aberta_em >= previsto_banco          # (i) o relógio
+             OR corrente.data_referencia == odate_do_previsto  # (ii) o ODATE
 
-    O desvio some da conta do ATRASO (ele aparece nos dois lados) e é
-    indispensável na comparação com `aberta_em`, que é coluna carimbada pelo
-    banco. Somar minutos "à mão" em cima de um dos dois relógios é o defeito que
-    o dev exibe em 3h de diferença."""
+    (i) é a barata e responde o caso comum. O desvio some da conta do ATRASO
+    (ele aparece nos dois lados) e é indispensável aqui, porque `aberta_em` é
+    coluna carimbada pelo banco. Somar minutos "à mão" em cima de um dos dois
+    relógios é o defeito que o dev exibe em 3h de diferença.
+
+    (ii) é a condição LITERAL da Decisão 58 — *"não existe corrida com aquele
+    `data_referencia`"* — e sem ela o card acusa malha que abriu, porque a
+    corrida DESTE ciclo pode nascer ANTES do horário previsto por três caminhos
+    rotineiros, nenhum deles borda:
+
+      • **disparo manual** às 00:50, uma das três portas do §6.2 — o operador
+        sabe que o insumo chegou cedo e não espera o cron das 01:00;
+      • **corrida implícita**, nas 3 de 4 malhas sem nó Início: quem a abre é a
+        primeira raiz a partir, e ela pode partir por push de fora;
+      • **virada da malha** (§7): com `hora_virada` às 22:00, a corrida aberta
+        ontem às 23:00 carimba o ODATE de HOJE — ela É a de hoje.
+
+    Sem (ii) o card exibia, na mesma caixa e em duas linhas seguidas,
+    *"nenhuma corrida de 05/08"* e *"anterior: corrida de 05/08 · em
+    andamento"* — e escondia a barra de progresso da corrida que estava
+    rodando, porque o estado "não abriu" tem precedência no card."""
     agora_banco, agora_local, folga = relogio
     previsto = _primeiro_previsto(agendamentos, agora_local)
     if previsto is None:
@@ -2595,6 +2613,19 @@ def _corrida_esperada(cur, malha: str, agendamentos: list, corrente,
     aberta_em = corrente.get("aberta_em")
     if aberta_em is not None and aberta_em >= previsto + desvio:
         return None                     # abriu — e no horário ou depois dele
+    # Porta (ii). O ODATE é o que a corrida carimbaria se tivesse aberto NO
+    # HORÁRIO PREVISTO — `previsto + desvio` põe esse horário na régua do banco,
+    # a única que `odate_da_abertura` entende (Decisão 10). Não é "o ODATE de
+    # agora": com virada às 06:00, previsto 01:00 e agora 08:00 caem em DIAS
+    # diferentes, e o card anunciaria uma data que a corrida ausente nunca teria
+    # usado.
+    #
+    # A consulta acontece só DEPOIS de a porta barata falhar, e é a mesma que o
+    # payload abaixo já fazia: no caminho saudável (a corrida abriu depois do
+    # previsto) continua sendo zero consulta a mais por malha.
+    odate = mc.odate_da_abertura(cur, malha, previsto + desvio)
+    if odate is not None and _fmt_dia(corrente.get("data_referencia")) == _fmt_dia(odate):
+        return None                     # a corrida DESTE ciclo existe
     # Trava 3 (a parte que mora no servidor): feriado não é atraso.
     for ag in agendamentos:
         nome = (ag.get("calendario_nome") or "").strip() if isinstance(ag, dict) else ""
@@ -2606,10 +2637,11 @@ def _corrida_esperada(cur, malha: str, agendamentos: list, corrente,
     atraso = int((agora_local - previsto).total_seconds() // 60)
     return {
         # O ODATE que a corrida carimbaria se tivesse aberto — pela virada da
-        # MALHA (Decisão 18), a mesma função das três portas. Uma consulta por
-        # CANDIDATO, e candidato é o caso raro.
-        "data_referencia": _fmt_dia(mc.odate_da_abertura(cur, malha,
-                                                         agora_banco)),
+        # MALHA (Decisão 18), a mesma função das três portas. É o MESMO `odate`
+        # que a porta (ii) acabou de comparar: dois cálculos dariam duas datas
+        # no dia em que a virada estivesse entre o previsto e o agora, e o card
+        # acusaria uma data e se calaria sobre a outra.
+        "data_referencia": _fmt_dia(odate),
         "previsto_para": previsto.strftime("%H:%M"),
         "atrasada_desde": _fmt_dt(previsto),
         # Minutos, e não um instante para o front subtrair: o "há 7h" da tela

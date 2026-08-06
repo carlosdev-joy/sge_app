@@ -190,6 +190,17 @@ const AVISO_AGENDA_GUARDADA =
   + 'Desenhe o Início e ligue-o às raízes para o agendamento voltar a valer — '
   + 'a configuração continua guardada.'
 
+/** A malha tem algo que ANDA sozinho na tela (Decisão 73)?
+ *
+ *  Duas coisas andam: a corrida em voo (o `x de y` e o decorrido) e a corrida
+ *  que não abriu (o atraso, que cresce a cada minuto). As duas governam o
+ *  polling E o alarme de dado velho, e por isso vivem numa função só: separá-las
+ *  já produziu o card mais grave da manhã sendo o único a envelhecer em
+ *  silêncio, com o relógio congelado no "há 7h12" da abertura da página. */
+function emMovimento(m: ApiMalha): boolean {
+  return m.corrida?.status === 'ABERTA' || !!m.corrida_esperada
+}
+
 // ─── Card de malha (mesma linguagem do PipelineCard) ─────────────────────────
 
 function MalhaCard({ malha, tempo, semDadosDeCorrida, onAcompanhar, onAbrir,
@@ -777,9 +788,15 @@ function MalhasView({ onAbrir, onAcompanhar }: {
       // das 24 h por causa das 4 da madrugada. O recorte é a lista inteira (e
       // não só as malhas visíveis): o filtro é client-side, e uma corrida em
       // voo escondida por um filtro continua sendo uma corrida em voo.
+      //
+      // F9: `não abriu` entra no MESMO predicado, e a Decisão 73 o nomeia. Ele
+      // é um estado de RELÓGIO — "previsto para 01:00 · há 7h12" cresce —, e
+      // sem polling a tela congelaria naquele "há 7h12" enquanto alguém
+      // dispara a malha na mão do outro lado. Pior: `acompanhando` também
+      // governa o alarme de dado velho, então o card mais grave da manhã seria
+      // o único a envelhecer em silêncio.
       refetchInterval: q =>
-        (q.state.data?.malhas ?? []).some(m => m.corrida?.status === 'ABERTA')
-          ? 20_000 : false,
+        (q.state.data?.malhas ?? []).some(emMovimento) ? 20_000 : false,
     })
   // useMemo (e não `data?.malhas ?? []` solto): o `[]` de fallback nasce novo
   // a cada render e faria o filtro abaixo recalcular sempre.
@@ -793,9 +810,10 @@ function MalhasView({ onAbrir, onAcompanhar }: {
   const sem085 = data?.migration_085_pendente === true
   const apiAnterior = data !== undefined && data.corrida_suportada !== true
   const semDadosDeCorrida = sem085 || apiAnterior
-  // Alguma corrida em voo = há o que envelhecer na tela; é o mesmo predicado
-  // do polling, e é ele que decide se o carimbo de frescor vira ALARME.
-  const acompanhando = malhas.some(m => m.corrida?.status === 'ABERTA')
+  // Alguma corrida em voo — ou alguma que deveria ter aberto e não abriu — é
+  // o que há para envelhecer na tela; é o MESMO predicado do polling, e é ele
+  // que decide se o carimbo de frescor vira ALARME.
+  const acompanhando = malhas.some(emMovimento)
   const agora = useDecorrido(acompanhando)
   // Decisão 60: o frescor é o relógio local CONSIGO MESMO. `dataUpdatedAt` é o
   // instante LOCAL em que a resposta chegou — misturar com `apurado_em` (o

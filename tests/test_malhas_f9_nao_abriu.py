@@ -187,13 +187,18 @@ def test_corrida_que_abriu_no_horario_nao_vira_alarme(client, auth):
 def test_desvio_do_banco_nao_inventa_atraso_nem_esconde_corrida(client, auth):
     """A prova do desvio nas DUAS pontas, num teste só: a corrida abriu
     exatamente no limite (previsto + desvio) e o aviso some; um minuto ANTES
-    dela ele existe, com o atraso medido na régua certa."""
+    dela, e sendo de OUTRO ciclo, ele existe — com o atraso na régua certa.
+
+    ⚠️ O "de outro ciclo" é o que dá sentido à comparação por relógio: uma
+    corrida do MESMO ODATE aberta antes do horário previsto É a de hoje (é o
+    teste seguinte), e acusá-la seria o card gritando sobre a malha que rodou.
+    """
     db = FakeDb(pipelines=_pipes())
     with _patch(db), _patch_agora():
         _com_corrida_de_ontem(db, client)
-        # previsto local 01:00 → 04:00 no banco. Abrir 1 min ANTES disso é uma
-        # corrida de outro ciclo (madrugada anterior), não a de hoje.
-        db.abrir_corrida("M1", odate=ODATE,
+        # previsto local 01:00 → 04:00 no banco. Abrir 1 min ANTES disso, com o
+        # ODATE de ONTEM, é a madrugada anterior se arrastando — não a de hoje.
+        db.abrir_corrida("M1", odate=ONTEM,
                          aberta_em=datetime(2026, 8, 5, 3, 59),
                          membros=["A", "B"])
         antes = _card(client.get("/malhas"))
@@ -207,6 +212,42 @@ def test_desvio_do_banco_nao_inventa_atraso_nem_esconde_corrida(client, auth):
                           membros=["A", "B"])
         no_ponto = _card(client.get("/malhas"))
     assert "corrida_esperada" not in no_ponto
+
+
+def test_corrida_do_dia_aberta_ANTES_do_horario_previsto_nao_e_alarme(client,
+                                                                     auth):
+    """TRAVA 5 — a condição LITERAL da Decisão 58: *"não existe corrida com
+    aquele `data_referencia`"*.
+
+    O cenário é rotina, não borda: o operador dispara a malha na mão às 00:50
+    porque o insumo chegou cedo (uma das três portas do §6.2). A corrida de
+    05/08 abre, roda e está saudável — e `aberta_em` é ANTES do horário
+    previsto das 01:00.
+
+    Sem esta trava o card exibia, na mesma caixa e em duas linhas seguidas,
+    *"nenhuma corrida de 05/08"* e *"anterior: corrida de 05/08 · em
+    andamento"* — e escondia a barra de progresso, porque "não abriu" tem
+    precedência no card. Alarme falso diário na malha que está rodando bem.
+
+    Os outros dois caminhos que produzem o mesmo `aberta_em` cedo: a corrida
+    IMPLÍCITA das malhas sem nó Início (aberta pela primeira raiz, que pode
+    partir por push) e a virada da malha jogando a madrugada anterior no ODATE
+    de hoje."""
+    db = FakeDb(pipelines=_pipes())
+    with _patch(db), _patch_agora():
+        _com_corrida_de_ontem(db, client)
+        # 00:50 no relógio local = 03:50 na régua do banco (desvio de 3h) —
+        # 10 min ANTES do previsto convertido (04:00).
+        db.abrir_corrida("M1", odate=ODATE,
+                         aberta_em=datetime(2026, 8, 5, 3, 50),
+                         membros=["A", "B"])
+        card = _card(client.get("/malhas"))
+
+    assert "corrida_esperada" not in card
+    # ...e o card volta a contar a corrida que EXISTE, que é a pergunta que o
+    # operador fez.
+    assert card["corrida"]["data_referencia"] == "2026-08-05"
+    assert card["corrida"]["status"] == "ABERTA"
 
 
 def test_corrida_de_ontem_ainda_aberta_diz_que_e_ela_que_segura(client, auth):

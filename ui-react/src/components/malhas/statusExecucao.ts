@@ -530,8 +530,12 @@ function barraDaCorrida(c: CorridaApi, ok: number, total: number): BarraCorrida 
     total,
     valorAtual: ok,
     ariaLabel: 'progresso da corrida, em pipelines concluídos',
-    // Sem "%" em lugar nenhum, nem para o leitor de tela.
-    valorTexto: `${ok} de ${total} pipelines concluídos`
+    // Sem "%" em lugar nenhum, nem para o leitor de tela. O plural acompanha o
+    // denominador, como no texto visível: "1 de 1 pipelines concluídos" seria
+    // a única frase da tela em português errado, e ela é justamente a que só
+    // quem não enxerga a barra ouve.
+    valorTexto: `${ok} de ${total} pipeline${total === 1 ? '' : 's'} `
+      + `concluído${total === 1 ? '' : 's'}`
       + (vivos ? `, ${vivos} em execução` : '')
       + (dispensados ? `, ${dispensados} não ${dispensados === 1 ? 'roda' : 'rodam'} hoje` : ''),
   }
@@ -708,25 +712,36 @@ export function resumoCorrida(
       membros = `os ${total} membros não rodam hoje (regra de dia)`
       nadaPrevisto = 'nada previsto'
     } else {
+      // SNAPSHOT VAZIO (§9.9): a corrida abriu e NENHUM membro estava ativo.
+      // Não é falha de leitura (essa é `membros_total` nulo, alguns blocos
+      // acima) — é um fato sobre o CADASTRO, e ele pede outra ação: alguém tem
+      // de olhar a malha, não tentar de novo. "0 de 0 pipelines concluídos"
+      // publicaria zero como se fosse medida de um trabalho que não existiu, e
+      // essa frase chegava ao tooltip do card.
+      const vazio = total === 0
       // TODOS os que podiam concluir já concluíram — e a corrida continua
       // ABERTA. É o estado em que a barra fica CHEIA sem que nada tenha
       // acabado: o ciclo está fechando, e a palavra "concluída" só existe com
       // `status = 'CONCLUIDA'` vindo do banco (§9.15/#15).
-      fechando = aberta && total > 0
+      fechando = aberta && !vazio
         && ok === total - (c.membros_dispensados ?? 0)
-      contagem = INTERROMPIDA.has(c.status)
-        ? `parou em ${ok} de ${total}`
-        : fechando
-          ? `${ok} de ${total} · fechando`
-          : `${ok} de ${total} pipeline${total === 1 ? '' : 's'} concluído${total === 1 ? '' : 's'}`
-      // A barra existe sempre que há denominador — inclusive nos desfechos
-      // interrompidos, onde ela CONGELA (o `opacity-60` é do componente) e o
-      // rótulo já mudou para "parou em".
-      if (total > 0) barra = barraDaCorrida(c, ok, total)
+      if (!vazio) {
+        contagem = INTERROMPIDA.has(c.status)
+          ? `parou em ${ok} de ${total}`
+          : fechando
+            ? `${ok} de ${total} · fechando`
+            : `${ok} de ${total} pipeline${total === 1 ? '' : 's'} concluído${total === 1 ? '' : 's'}`
+        // A barra existe sempre que há denominador — inclusive nos desfechos
+        // interrompidos, onde ela CONGELA (o `opacity-60` é do componente) e o
+        // rótulo já mudou para "parou em".
+        barra = barraDaCorrida(c, ok, total)
+      }
       // Decisão 53: a subtração é FATO VISÍVEL, nunca nota de rodapé — é ela
       // que impede "2 de 2 · concluída, verde" numa malha de 7 em que alguém
       // inativou 5 na sexta-feira.
-      const partes = [plural(total, 'membro nesta corrida', 'membros nesta corrida')]
+      const partes = [vazio
+        ? 'a corrida abriu sem membros ativos'
+        : plural(total, 'membro nesta corrida', 'membros nesta corrida')]
       if (c.membros_dispensados) {
         partes.push(`${c.membros_dispensados} não `
           + `${c.membros_dispensados === 1 ? 'roda' : 'rodam'} hoje (regra de dia)`)
@@ -850,6 +865,22 @@ function textoFechamento(c: CorridaApi): string {
   // e o operador esperaria por um relógio que não está correndo.
   if (c.modo_fechamento === 'fim') {
     return 'aguarda o nó Fim registrar a conclusão'
+  }
+  // ⚠️ HOLD — o relógio de fechamento NÃO ESTÁ CORRENDO (§6.7/Decisão 30: com
+  // nó segurado "o teto não corre, a quiescência não avalia"). `quiescencia_ate`
+  // continua sendo `último movimento + carência`, e é um carimbo que o hold
+  // deixa para trás: com a retenção posta às 02:40 sobre um movimento das
+  // 02:30, a frase honesta de sempre anunciaria "por volta de 02:45" às 13h —
+  // uma hora que já passou, para um fechamento que não vai acontecer.
+  //
+  // É o mesmo defeito que a F7 já pagou na barra de limite (ela enchia durante
+  // o hold, chegava ao vermelho e contradizia o texto ao lado). A linha que se
+  // contradiz sozinha leva junto a confiança em todas as outras — por isso aqui
+  // ela diz o FATO ("está parado") e a CAUSA, e nenhuma hora.
+  const retidos = c.retido_nos ?? 0
+  if (retidos > 0) {
+    return `o fechamento está parado — ${plural(retidos, 'nó segurado', 'nós segurados')}`
+      + (c.retido_desde ? ` desde ${horaCurta(c.retido_desde)}` : '')
   }
   const min = c.quiescencia_min
   const regra = (min && min > 0)
