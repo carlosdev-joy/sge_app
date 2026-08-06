@@ -328,6 +328,22 @@ def _colunas_081(cur) -> bool:
         return False
 
 
+def _coluna_teto_horas(cur) -> bool:
+    """True se `etl_malha.teto_horas` (migration 085) existe.
+
+    Guard PRÓPRIO, e não `tabela_085_presente`: a 085 cria a tabela da corrida e
+    esta coluna em blocos separados, e um deploy parcial pode ter um sem o
+    outro. Perguntar pela tabela e ler a coluna é como um `SELECT` inválido
+    chega ao banco no meio de uma request que só queria mostrar a malha."""
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_malha', 'teto_horas')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None)
+    except Exception as e:
+        log.warning("[MALHA] checagem de etl_malha.teto_horas falhou: %s", e)
+        return False
+
+
 def _hhmm(valor):
     """TIME/str → 'HH:MM' (o formato que a tela usa), ou None."""
     if valor is None:
@@ -1763,27 +1779,78 @@ _SEM_SINAL_X_QUIESCENCIA = 4
 # ausência da chave `corrida` no payload que liga o fallback no front — a
 # degradação da Decisão 41 é por AUSÊNCIA DE CAMPO, nunca por flag.
 #
-# Duas colunas viajam junto porque custariam uma consulta a mais se viessem
-# sozinhas, e nenhuma delas é conta de tempo em Python (Decisão 10):
+# As colunas derivadas viajam junto porque custariam uma consulta a mais se
+# viessem sozinhas, e nenhuma delas é conta de tempo em Python (Decisão 10):
 #   • `teto_vencido` — o `<` entre `teto_em` e `SYSDATETIME()` é avaliado pelo
 #     BANCO. No dev o SQL Server está ~3h à frente do container da API, e um
-#     `datetime.now()` daqui responderia "atrasada" a manhã inteira;
+#     `datetime.now()` daqui responderia "atrasada" a manhã inteira. **F7:
+#     `AND {hold} IS NULL`** — com nó SEGURADO o teto NÃO CORRE (Decisão 30), e
+#     o card não pode pintar de âmbar "fora do prazo" uma malha que está parada
+#     porque o próprio operador a travou. O hold é DERIVADO aqui (`MIN(retido_em)`
+#     na hora da leitura), nunca lido de um espelho: com dois Aguardes
+#     segurados, soltar um limparia o espelho e o card voltaria a acusar atraso
+#     com a malha ainda travada;
+#   • `teto_total_min` — o denominador da barra de limite, `aberta_em → teto_em`,
+#     JÁ com o crédito de hold dentro (é `teto_em` que se move). Subtrair no
+#     cliente exigiria os dois carimbos e o relógio do banco na mesma conta;
+#   • `retido_desde`/`retido_nos`/`retido_por` — a explicação de por que a barra
+#     parou. Sem eles a tela mostraria uma barra congelada sem dizer por quê,
+#     que é a mesma família de mentira que a barra que recua em silêncio;
+#   • `teto_horas_malha` — `etl_malha.teto_horas`, e é o `IS NOT NULL` dele que
+#     decide se a barra EXISTE (Decisão 61: o teto é anti-travamento, não SLA;
+#     uma barra em 80% às 20h numa malha que sempre fecha em 3h faria escalar
+#     por nada);
 #   • `quiescencia_cfg` — a config que o limiar de sinal usa. `TOP 1` com a
 #     chave exata; ausente/estranha volta ao default do módulo.
+#
+# `{hold}` é SLOT, e não texto fixo, por causa do deploy parcial: sem a 082
+# (`etl_malha_no.retido_em`) a subconsulta seria "Invalid column name" e
+# derrubaria o bloco `corrida` INTEIRO — card e painel calariam por causa de uma
+# coluna que só serve para explicar um caso raro. Sem a 082 não há retenção
+# possível, então o slot vira `NULL` e o teto volta a ser o de antes.
+#
+# O `tipo <> 'inicio'` é o MESMO recorte de `mc.SQL_HOLD_DA_MALHA`, e por isso
+# sai da constante dele: quem trava o ciclo em voo é o Aguarde (segurado, ele
+# faz `liberado()` devolver False para o dependente); o Início segura a
+# PARTIDA, não o ciclo já aberto. Card e motor divergirem aqui é o card
+# pintando "os relógios estão parados" numa corrida que a guardiã está
+# fechando — a família de mentira que esta spec inteira existe para matar.
+_HOLD_DA_CORRIDA = (
+    "(SELECT MIN(n.retido_em) FROM dbo.etl_malha_no n "
+    "WHERE n.malha_name = m.malha_name AND n.retido_em IS NOT NULL "
+    + mc._SO_NO_QUE_TRAVA.format(a="n") + ")")
+_HOLD_POR = (
+    "(SELECT TOP 1 n2.retido_por FROM dbo.etl_malha_no n2 "
+    "WHERE n2.malha_name = m.malha_name AND n2.retido_em IS NOT NULL "
+    + mc._SO_NO_QUE_TRAVA.format(a="n2") +
+    "ORDER BY n2.retido_em, n2.id)")
+_HOLD_NOS = (
+    "(SELECT COUNT(*) FROM dbo.etl_malha_no n3 "
+    "WHERE n3.malha_name = m.malha_name AND n3.retido_em IS NOT NULL "
+    + mc._SO_NO_QUE_TRAVA.format(a="n3") + ")")
 _SQL_ULTIMA_CORRIDA = (
     "SELECT m.malha_name, " + mc._COLS_ME.replace("me.", "c.") + ", "
     "CASE WHEN c.teto_em IS NOT NULL AND c.teto_em < SYSDATETIME() "
-    "THEN 1 ELSE 0 END AS teto_vencido, "
+    "AND {hold} IS NULL THEN 1 ELSE 0 END AS teto_vencido, "
     "DATEDIFF(MINUTE, c.aberta_em, SYSDATETIME()) AS decorrido_min, "
     "SYSDATETIME() AS apurado_em, "
     "(SELECT TOP 1 cfg.config_value FROM dbo.etl_app_config cfg "
-    " WHERE cfg.config_key = '" + mc.CHAVE_QUIESCENCIA + "') AS quiescencia_cfg "
+    " WHERE cfg.config_key = '" + mc.CHAVE_QUIESCENCIA + "') AS quiescencia_cfg, "
+    "DATEDIFF(MINUTE, c.aberta_em, c.teto_em) AS teto_total_min, "
+    "{teto_malha} AS teto_horas_malha, "
+    "{hold} AS retido_desde, {hold_nos} AS retido_nos, "
+    "{hold_por} AS retido_por "
     "FROM dbo.etl_malha m "
     "CROSS APPLY (SELECT TOP 1 " + mc._COLS_ME + " "
     "             FROM dbo.etl_malha_execucao me "
     "             WHERE me.malha_name = m.malha_name {alvo}"
     "             ORDER BY me.aberta_em DESC, me.id DESC) c "
     "{filtro}ORDER BY m.malha_name")
+# Sem a 082 as três perguntas do hold viram literais: "nunca retido".
+_HOLD_AUSENTE = {"hold": "CAST(NULL AS DATETIME)", "hold_nos": "0",
+                 "hold_por": "CAST(NULL AS NVARCHAR(64))"}
+_HOLD_PRESENTE = {"hold": _HOLD_DA_CORRIDA, "hold_nos": _HOLD_NOS,
+                  "hold_por": _HOLD_POR}
 # Os dois recortes entram por SLOT, e não por `.replace()` no texto pronto: o
 # `WHERE` da malha tem de nascer DEPOIS do `CROSS APPLY` (um replace sobre
 # "FROM dbo.etl_malha m" o colocaria antes, e o SQL inválido só apareceria no
@@ -1922,10 +1989,24 @@ def _ultima_corrida_por_malha(cur, malha=None, corrida_id=None):
 
     `malha` recorta para uma malha só (o painel); `corrida_id` é a LENTE
     `?corrida={id}`, e o recorte por malha vem junto de propósito — pedir a
-    corrida de OUTRA malha devolve vazio em vez de vazar o ciclo do vizinho."""
+    corrida de OUTRA malha devolve vazio em vez de vazar o ciclo do vizinho.
+
+    F7: as três perguntas do HOLD entram por slot, conforme a 082 esteja no
+    banco — sem ela, `_colunas_082` devolve False e o SQL nasce com literais.
+    A alternativa (deixar a subconsulta e degradar no `except`) derrubaria o
+    bloco `corrida` inteiro num banco sem a 082: card e painel calariam por
+    causa de uma coluna que só serve para explicar um caso raro."""
     sql = _SQL_ULTIMA_CORRIDA.format(
         alvo=_ALVO_UMA_CORRIDA if corrida_id else "",
-        filtro=_FILTRO_UMA_MALHA if malha else "")
+        filtro=_FILTRO_UMA_MALHA if malha else "",
+        # `etl_malha.teto_horas` nasce na 085, mas em BLOCO SEPARADO da tabela
+        # da corrida: um deploy que aplicou meia migration teria a tabela e não
+        # a coluna, e o `Invalid column name` NÃO casa `_MARCAS_085` — cairia no
+        # degrade genérico e o card perderia o ciclo inteiro por causa de uma
+        # coluna que só decide se a barra aparece.
+        teto_malha=("m.teto_horas" if _coluna_teto_horas(cur)
+                    else "CAST(NULL AS INT)"),
+        **(_HOLD_PRESENTE if _colunas_082(cur) else _HOLD_AUSENTE))
     params: tuple = tuple(
         p for p in (int(corrida_id) if corrida_id else None, malha)
         if p is not None)
@@ -1948,6 +2029,16 @@ def _ultima_corrida_por_malha(cur, malha=None, corrida_id=None):
         c["_decorrido_min"] = int(r[fim + 1] or 0)
         c["_apurado_em"] = r[fim + 2]
         c["_quiescencia"] = _quiescencia_da_linha(r[fim + 3])
+        # F7 — os relógios. `teto_total_min` pode ser NULL (corrida aberta antes
+        # da 085 ter teto, ou `teto_em` nulo): None viaja como None e a barra
+        # simplesmente não existe, que é a degradação correta.
+        c["_teto_total_min"] = (int(r[fim + 4])
+                                if r[fim + 4] is not None else None)
+        c["_teto_horas_malha"] = (int(r[fim + 5])
+                                  if r[fim + 5] is not None else None)
+        c["_retido_desde"] = r[fim + 6]
+        c["_retido_nos"] = int(r[fim + 7] or 0)
+        c["_retido_por"] = r[fim + 8]
         por_malha[str(r[0]).strip()] = c
     return por_malha, False
 
@@ -2036,6 +2127,12 @@ def _corrida_do_card(c: dict, agg) -> dict:
     out["reaberta_por"] = c["reaberta_por"]
     out["decorrido_min"] = c["_decorrido_min"]
     out["apurado_em"] = _fmt_dt(c["_apurado_em"])
+    # ── F7: os relógios do prazo, sempre — inclusive com `agg is None` ───────
+    # Eles não dependem da consulta (B): saem da mesma linha da corrida. Numa
+    # falha de leitura do denominador a tela perde a BARRA DE PROGRESSO, mas
+    # continua sabendo que o limite de segurança venceu — que é exatamente o
+    # que o operador precisa quando o banco está ruim às 3h.
+    out.update(_prazo_da_corrida(c))
     if agg is None:
         out.update({"saude": None, "membros_total": None, "membros_ok": None,
                     "membros_vivos": None, "membros_dispensados": None,
@@ -2115,6 +2212,44 @@ def _corrida_do_card(c: dict, agg) -> dict:
         out["apurado_em"] = _fmt_dt(agg["apurado_em"])
     out["saude"] = _saude_da_corrida(c, out)
     return out
+
+
+def _prazo_da_corrida(c: dict) -> dict:
+    """Os relógios do PRAZO da corrida (F7, §6.6/§6.7 e Decisão 61).
+
+    Sete campos, e cada um responde uma pergunta que a tela hoje não consegue
+    fazer:
+
+      • `teto_configurado` — `etl_malha.teto_horas IS NOT NULL`. É ele que decide
+        se a BARRA de limite existe. O teto é **anti-travamento**, não SLA: o
+        default global de 24h vale para toda malha, e desenhar uma barra em 80%
+        às 20h numa malha que sempre fecha em 3h faria escalar por nada
+        (Decisão 61). Configurou na malha → configurou porque quer ver;
+      • `teto_horas` — o número que a malha configurou (`null` = segue o global);
+      • `teto_total_min` / `teto_em` — o denominador e o fim da barra, **já com
+        o crédito de hold dentro**, porque é `teto_em` que se move;
+      • `teto_creditado_min` — o quanto o teto já andou por retenção. É o que
+        permite à tela dizer POR QUE a barra recuou, em vez de recuar em
+        silêncio (Decisão 61);
+      • `teto_vencido` — avaliado pelo BANCO, e `False` enquanto houver nó
+        segurado (Decisão 30);
+      • `retido_desde` / `retido_nos` / `retido_por` — por que os relógios
+        pararam. Nomes e instante, nunca só um cadeado.
+
+    Tudo já veio da consulta (A): nenhuma ida a mais ao banco, nenhuma conta de
+    tempo em Python. `teto_em` NÃO está aqui de propósito — ele já é campo de
+    `_corrida_publica`, que a lista de corridas também usa; duplicá-lo criaria
+    duas fontes para o mesmo carimbo."""
+    return {
+        "teto_vencido": bool(c["_teto_vencido"]),
+        "teto_total_min": c.get("_teto_total_min"),
+        "teto_creditado_min": int(c.get("teto_creditado_min") or 0),
+        "teto_horas": c.get("_teto_horas_malha"),
+        "teto_configurado": c.get("_teto_horas_malha") is not None,
+        "retido_desde": _fmt_dt(c.get("_retido_desde")),
+        "retido_nos": int(c.get("_retido_nos") or 0),
+        "retido_por": c.get("_retido_por"),
+    }
 
 
 def _saude_da_corrida(c: dict, publico: dict):
@@ -2470,11 +2605,16 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
         # F2 (081): a virada da MALHA e a marca de equalização — aditivas, no
         # mesmo esquema condicional da orientacao.
         tem_081 = _colunas_081(cur)
+        # F7 (085): o limite de segurança POR MALHA. Aditivo pelo mesmo esquema
+        # das anteriores — sem a 085 a chave simplesmente não vem, e a tela não
+        # oferece um campo que o banco não sabe guardar.
+        tem_teto = _coluna_teto_horas(cur)
         cur.execute(
             "SELECT malha_name, descricao, CAST(ativo AS INT) AS ativo, "
             "criado_em, criado_por, atualizado_em"
             + (", orientacao" if tem_074 else "")
-            + (", hora_virada, CAST(equalizar_data AS INT)" if tem_081 else "") +
+            + (", hora_virada, CAST(equalizar_data AS INT)" if tem_081 else "")
+            + (", teto_horas" if tem_teto else "") +
             " FROM dbo.etl_malha WHERE malha_name = ?",
             (malha_name,),
         )
@@ -2492,6 +2632,13 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
         _i081 = 7 if tem_074 else 6
         row_virada = row[_i081] if tem_081 else None
         equalizar = row[_i081 + 1] if tem_081 else 0
+        if tem_teto:
+            # `None` é RESPOSTA, não ausência: significa "esta malha segue o
+            # limite global". A chave só some quando a COLUNA não existe — e aí
+            # a tela não oferece o campo, em vez de oferecer um que não grava.
+            _i085 = _i081 + (2 if tem_081 else 0)
+            malha["teto_horas"] = (int(row[_i085])
+                                   if row[_i085] is not None else None)
         # F10/F13: as tabelas da 075 habilitam nós e assinaturas — checadas UMA
         # vez por request; as colunas de agendamento (F13) têm guard próprio,
         # porque a 075 pode estar aplicada pela metade num deploy parcial.
@@ -2941,8 +3088,24 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
             (data_ref,))
         eventos = []
         eventos_no = []
+        eventos_corrida = []
+        # F7: o marcador da corrida em foco. Até aqui os sete `MALHA_*` do ciclo
+        # eram gravados e **nunca chegavam à tela** — `membro_oficial` não os
+        # reconhece (a corrida não é um pipeline) e eles caíam no `continue`. O
+        # crédito de retenção (Decisão 61) e o `MALHA_ATRASADA` são justamente
+        # os dois fatos que o operador precisa ler para entender por que a barra
+        # do limite mudou de lugar ou ficou âmbar.
+        marcador_corrida = (MARCADOR_CORRIDA.format(corrida_payload["id"])
+                            if corrida_payload is not None else None)
         for r in cur.fetchall():
             bruto = str(r[0] or "").strip()
+            if marcador_corrida is not None and bruto == marcador_corrida:
+                eventos_corrida.append({
+                    "tipo": r[1],
+                    "criado_em": _fmt_dt(r[2]),
+                    "mensagem": r[3],
+                })
+                continue
             no = marcador_no.get(bruto)
             if no is not None:
                 eventos_no.append({
@@ -2966,8 +3129,14 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
                      reverse=True)
         eventos_no.sort(key=lambda e: (e["criado_em"] or "", e["no_id"]),
                         reverse=True)
+        eventos_corrida.sort(key=lambda e: (e["criado_em"] or "", e["tipo"]),
+                             reverse=True)
         resposta["eventos"] = eventos
         resposta["eventos_no"] = eventos_no
+        # ADITIVO e só quando há corrida na lente: front antigo ignora a chave,
+        # e a ausência dela não muda nada do que já era mostrado.
+        if marcador_corrida is not None:
+            resposta["eventos_corrida"] = eventos_corrida
         # Conclusão da malha (§9.6): com a corrida no payload quem responde é o
         # STATUS DELA — o evento vira rastro, não fonte de verdade. Sem isso, o
         # banner verde e o card vermelho conviveriam na mesma tela: o
@@ -3282,12 +3451,19 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
                     # corrida e diz o que o gesto real FARIA com ela. Sem esta
                     # segunda frase o modal mentiria por omissão — anunciaria
                     # bloqueio numa corrida que o disparo vai expirar sozinho.
-                    vencido = mc.relogios(
+                    #
+                    # F7: com nó SEGURADO o teto não corre (Decisão 30) — e a
+                    # prévia tem de dizer a MESMA coisa que o gesto real fará,
+                    # senão o modal promete "esta corrida será expirada" e o
+                    # disparo, meio segundo depois, recusa por corrida aberta.
+                    hold_previa = mc.hold_da_malha(cur, malha)
+                    vencido = (not hold_previa["retido"]) and mc.relogios(
                         cur, aberta, mc.CARENCIA_PARTIDA_PADRAO,
                         mc.QUIESCENCIA_MIN_PADRAO).get("teto_vencido")
                     corrida_previa = {**_corrida_publica(aberta),
                                       "teto_vencido": bool(vencido),
-                                      "sera_expirada": bool(vencido)}
+                                      "sera_expirada": bool(vencido),
+                                      "nos_retidos": hold_previa["nos"]}
             elif not tem_bloqueio:
                 if aberta is not None and _expirar_na_porta(cur, aberta, quem):
                     aberta = None          # Decisão 29 — expirou e prossegue
@@ -3974,9 +4150,19 @@ _SQL_EVENTO_SEM_CORRIDA = (
     "SELECT ?, ?, ?, ? "
     "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
     "WHERE pipeline_name=? AND data_referencia=? AND tipo=?)")
+# `notificar=False` (F7): o evento nasce JÁ carimbado com `notificado_em` e
+# nunca entra na fila do Teams (`eventos_nao_notificados` filtra por
+# `notificado_em IS NULL`) — mas existe, e vive no painel. É a MESMA técnica do
+# `gravar_evento` do motor, pela mesma razão: "o evento e o painel são sempre;
+# o card é opt-in". Carimbar no NASCIMENTO (em vez de filtrar na fila) é o que
+# impede o evento de entupir o lote por dois dias.
+_SQL_EVENTO_CORRIDA_MUDO = _SQL_EVENTO_CORRIDA.replace(
+    "malha_execucao_id) SELECT ?, ?, ?, ?, ? ",
+    "malha_execucao_id, notificado_em) SELECT ?, ?, ?, ?, ?, GETDATE() ")
 
 
-def _evento_da_corrida(cur, corrida: dict, tipo: str, detalhe: str) -> bool:
+def _evento_da_corrida(cur, corrida: dict, tipo: str, detalhe: str,
+                       notificar: bool = True) -> bool:
     """Grava o evento do ciclo (`MALHA_CANCELADA`, `MALHA_ABORTADA`) na
     transação de quem chama. True = evento novo.
 
@@ -3998,7 +4184,9 @@ def _evento_da_corrida(cur, corrida: dict, tipo: str, detalhe: str) -> bool:
             tipo)
     cid = int(corrida["id"])
     try:
-        cur.execute(_SQL_EVENTO_CORRIDA, base + (texto, cid) + base + (cid,))
+        cur.execute(_SQL_EVENTO_CORRIDA if notificar
+                    else _SQL_EVENTO_CORRIDA_MUDO,
+                    base + (texto, cid) + base + (cid,))
         return (cur.rowcount or 0) == 1
     except Exception as e:  # noqa: BLE001
         # Banco com as tabelas da 085 mas sem a coluna no evento (migration
@@ -4109,13 +4297,26 @@ def _expirar_na_porta(cur, corrida: dict, quem: str) -> bool:
     ⚠️ O teto é lido por `relogios()` e o fechamento é um `UPDATE ... WHERE id =
     ? AND fechada_em IS NULL` com `rowcount` de árbitro; a Decisão 29 escreve os
     dois num statement só. São dois aqui porque o SQL da corrida mora no módulo
-    gêmeo (e um SQL só desta árvore seria uma constante sem par do outro lado), e
-    a composição é exata enquanto `teto_em` for imutável depois da abertura — o
-    que vale hoje: `teto_creditado_min` nasceu na 085 e **ninguém o escreve até
-    a F7**. Quando a F7 passar a reprojetar `teto_em` no hold, o `teto_em <
-    SYSDATETIME()` tem de entrar no `WHERE` do `fechar_corrida`, senão abre-se
-    uma janela em que a porta expira uma corrida cujo teto acabou de andar.
+    gêmeo (e um SQL só desta árvore seria uma constante sem par do outro lado).
+    **A F7 fechou a janela que essa composição abria**: `teto_creditado_min`
+    passou a ser escrito (o crédito de hold reprojeta `teto_em`), então entre a
+    leitura e o `UPDATE` o teto pode ANDAR. A guarda é o `hold_da_malha` abaixo —
+    enquanto houver nó segurado nada expira, e o crédito só acontece no
+    `soltar`, que limpa a retenção no MESMO commit. A corrida cujo teto acabou
+    de andar tem, por construção, um hold recém-solto: ou a porta viu a
+    retenção e não expirou, ou o crédito já estava aplicado quando ela leu.
     """
+    # HOLD suspende os relógios (Decisão 30) — e aqui a guarda vale duas vezes:
+    # a porta é a ÚNICA que expira sem passar pela guardiã, então sem ela um
+    # Aguarde segurado às 22h faria o disparo das 01:00 expirar a corrida que o
+    # próprio operador travou de propósito. Vem ANTES do `relogios()` porque é
+    # mais barata e responde sozinha.
+    hold = mc.hold_da_malha(cur, corrida["malha_name"])
+    if hold["retido"]:
+        log.info("[MALHA] corrida #%s da malha '%s' com %d no(s) SEGURADO(s) — "
+                 "o teto nao corre e ela NAO expira na porta (Decisão 30)",
+                 corrida["id"], corrida["malha_name"], hold["nos"])
+        return False
     # Só `teto_vencido` é consumido: os outros dois relógios (carência de
     # partida e quiescência) decidem desfechos que são do FECHADOR — a guardiã,
     # sempre (Decisão 19). Os parâmetros vão nos padrões do módulo porque as
@@ -4791,6 +4992,26 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
                 raise HTTPException(status_code=422,
                                     detail="equalizar_data deve ser 0 ou 1")
             equalizar_data = int(bool(body.get("equalizar_data")))
+        # F7 (085): o LIMITE DE SEGURANÇA desta malha, em horas. `null` = segue
+        # o global (`malha_teto_horas_padrao`, 24 por padrão) — e é o `null` que
+        # apaga a barra da tela, porque o teto é anti-travamento e não SLA
+        # (Decisão 61). Domínio conferido pelo MESMO `_inteiro_no_dominio` do
+        # módulo da corrida: a API recusar 0 e o motor aceitar faria uma corrida
+        # nascer com `teto_em = aberta_em`, isto é, EXPIRADA no ato de abrir.
+        tem_teto = "teto_horas" in body
+        teto_horas = None
+        if tem_teto and body.get("teto_horas") is not None:
+            teto_horas = mc._inteiro_no_dominio(body.get("teto_horas"),
+                                                mc.TETO_HORAS_MIN,
+                                                mc.TETO_HORAS_MAX)
+            if teto_horas is None:
+                _fechar_silencioso(conn)
+                raise HTTPException(
+                    status_code=422,
+                    detail=(f"teto_horas inválido: '{body.get('teto_horas')}' "
+                            f"(use um inteiro de {mc.TETO_HORAS_MIN} a "
+                            f"{mc.TETO_HORAS_MAX} horas, ou null para seguir o "
+                            f"limite global)"))
         tem_081 = _colunas_081(cur)
 
         novo_nome = (body.get("novo_nome") or "").strip()
@@ -4901,6 +5122,22 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
                         "atualizado_em = SYSDATETIME() WHERE malha_name = ?",
                         (equalizar_data, atual))
 
+        # F7: o limite de segurança da malha. Vale da PRÓXIMA corrida em diante
+        # — `teto_em` é congelado na abertura (§6.9/#16, o snapshot congela o
+        # ciclo), e reprojetar o teto de um ciclo em voo mudaria a régua no meio
+        # do jogo. A resposta diz isso ao operador em vez de deixá-lo descobrir.
+        migration_085_pendente = False
+        if tem_teto:
+            if not mc.tabela_085_presente(cur):
+                migration_085_pendente = True
+                log.warning("[MALHA] migration 085 ausente — teto_horas da "
+                            "malha '%s' não foi persistido", atual)
+            else:
+                cur.execute(
+                    "UPDATE dbo.etl_malha SET teto_horas = ?, "
+                    "atualizado_em = SYSDATETIME() WHERE malha_name = ?",
+                    (teto_horas, atual))
+
         conn.commit(); cur.close(); conn.close()
         # Chaves da orientação são CONDICIONAIS (aditivas): quem não mexeu nela
         # recebe a resposta de sempre, byte a byte.
@@ -4914,6 +5151,11 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
             resp["orientacao"] = orientacao
             if migration_074_pendente:
                 resp["migration_074_pendente"] = True
+        if tem_teto:
+            if migration_085_pendente:
+                resp["migration_085_pendente"] = True
+            else:
+                resp["teto_horas"] = teto_horas
         if tem_virada or tem_equalizar:
             if migration_081_pendente:
                 resp["migration_081_pendente"] = True
@@ -5398,6 +5640,21 @@ def reter_no(malha_name: str, no_id: int, body: dict = Body(default={}),
 
     Body: {"reter": true|false}. Sem a 082 é 503 com instrução — botão que não
     segura seria pior que botão ausente.
+
+    **F7 — os relógios (spec-malha-execucao §6.7).** Enquanto qualquer
+    **Aguarde** da malha estiver segurado, o teto da corrida não corre — o
+    Início NÃO conta: ele segura a partida da próxima corrida, e a que já está
+    em andamento segue (é o que o `aviso` da resposta diz, e o hold da corrida
+    tem de concordar com essa frase). Soltar o **último** Aguarde retido
+    credita ao teto o tempo que a malha passou parada
+    (`teto_creditado_min`) e reprojeta `teto_em` — soltar após 6h de hold numa
+    malha com teto de 4h empurra o teto em 6h, e a corrida NÃO expirou. O
+    crédito e a limpeza do `retido_em` caem no MESMO commit, nesta ordem: é o
+    `retido_em` que mede o crédito.
+
+    O crédito vira EVENTO (`MALHA_TETO_CREDITADO`, Decisão 61) porque a barra do
+    limite de segurança anda PARA TRÁS quando ele acontece — uma barra de prazo
+    que recua sem explicação destrói a confiança em todas as outras.
     """
     reter = bool(body.get("reter", True))
     conn = None
@@ -5437,14 +5694,37 @@ def reter_no(malha_name: str, no_id: int, body: dict = Body(default={}),
                        "só o Aguarde (o ponto de junção) e o Início (a partida "
                        "da malha). Notificação e Fim apenas observam.")
         quem = (str(auth.get("matricula") or "").strip() or "?")
+        # A corrida ABERTA, lida ANTES da escrita: ela decide as duas coisas
+        # novas desta fase — o crédito do teto (ao soltar) e a frase que o
+        # operador lê (ao segurar o Início). Sem a 085 ou com o interruptor em
+        # 0, `corrida_aberta` nem vai ao banco/devolve None e este endpoint se
+        # comporta byte a byte como antes da spec.
+        corrida_viva = (mc.corrida_aberta(cur, malha)
+                        if mc.corrida_ativa(cur) else None)
+        credito = None
         if reter:
             cur.execute(
                 "UPDATE dbo.etl_malha_no SET retido_em = GETDATE(), retido_por = ? "
                 "WHERE id = ? AND malha_name = ?", (quem[:64], no_id, malha))
         else:
+            # ⚠️ ORDEM: creditar ANTES de limpar. O crédito é
+            # `DATEDIFF(MINUTE, MIN(retido_em), SYSDATETIME())` — com o
+            # `retido_em` já apagado, `MIN` volta NULL e o hold inteiro se perde
+            # em silêncio. Os dois statements + o evento caem no mesmo commit
+            # abaixo: se algo estourar no meio, nada aconteceu e o operador
+            # clica de novo.
+            if corrida_viva is not None:
+                credito = mc.creditar_hold(cur, malha, no_id)
             cur.execute(
                 "UPDATE dbo.etl_malha_no SET retido_em = NULL, retido_por = NULL "
                 "WHERE id = ? AND malha_name = ?", (no_id, malha))
+            if credito is not None:
+                _evento_da_corrida(
+                    cur, corrida_viva, mc.EVENTO_TETO_CREDITADO,
+                    f"limite de seguranca adiado em {credito['minutos']} min "
+                    f"por retencao ({_ROTULO_NO.get(tipo, tipo)} liberado por "
+                    f"{quem}) — novo limite {_fmt_dt(credito['teto_em'])}",
+                    notificar=False)
         conn.commit()
         # Quem estava esperando: com a trava solta, o próximo ciclo da guardiã
         # (ou o próximo publish de um pai) libera. Dito para o operador não
@@ -5458,9 +5738,31 @@ def reter_no(malha_name: str, no_id: int, body: dict = Body(default={}),
         cur.close(); conn.close()
         log.info("[MALHA] Aguarde #%s da malha '%s' %s por %s", no_id, malha,
                  "SEGURADO" if reter else "liberado", quem)
-        return {"ok": True, "no_id": no_id, "retido": reter,
+        resp = {"ok": True, "no_id": no_id, "retido": reter,
                 "retido_por": quem if reter else None,
                 "dependentes": dependentes}
+        # ── ADITIVOS da F7, e só quando há o quê dizer ──────────────────────
+        # Segurar o INÍCIO com corrida em voo é o gesto mais mal-entendido da
+        # tela: o botão parece "parar a malha" e não para — ele segura a
+        # PARTIDA. Sem esta frase o operador segura o Início às 3h achando que
+        # travou o ciclo que está rodando, e o ciclo continua (Decisão 45: a
+        # regra dita ANTES, não o horário exato depois). Sem "#N": o número da
+        # corrida não aparece na interface (Decisão 74).
+        if reter and tipo == "inicio" and corrida_viva is not None:
+            resp["aviso"] = ("Início segurado: a próxima corrida não parte. "
+                             "A corrida em andamento SEGUE — segurar o Início "
+                             "segura a partida, não o ciclo já aberto.")
+        if credito is not None:
+            resp["credito_teto"] = {
+                "minutos": credito["minutos"],
+                "teto_em": _fmt_dt(credito["teto_em"]),
+                "total_min": credito["total_min"],
+            }
+            log.info("[MALHA] corrida da malha '%s': +%d min de limite por "
+                     "retencao (total %d min); novo limite %s", malha,
+                     credito["minutos"], credito["total_min"],
+                     _fmt_dt(credito["teto_em"]))
+        return resp
     except HTTPException:
         raise
     except Exception as e:

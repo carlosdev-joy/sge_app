@@ -67,8 +67,10 @@ import { Autocomplete } from '../ui/Autocomplete'
 import { PageSpinner } from '../ui/Spinner'
 import {
   Activity, AlertCircle, AlertTriangle, Anchor, ArrowRightLeft, ArrowUpDown,
-  CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, Info, Layers, Link2,
-  Lock, Minus, MousePointerClick, Play, Plus, RefreshCw, Save, ShieldAlert,
+  CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, Clock, Info, Layers,
+  Link2,
+  Lock, Minus, MousePointerClick, PauseCircle, Play, Plus, RefreshCw, Save,
+  ShieldAlert,
   Unlock,
   Trash2, Wrench,
 } from 'lucide-react'
@@ -87,9 +89,13 @@ import { COMPONENTE_META, type TipoComponente } from './componenteMeta'
 // (Decisão 8); o nó é a porta.
 import { AgendamentoInicioModal } from './AgendamentoInicioModal'
 import {
-  STATUS_EXECUCAO, ORDEM_LEGENDA, estiloEvento, resumoCorrida, rotuloCorrida,
+  STATUS_EXECUCAO, ORDEM_LEGENDA, ROTULO_EVENTO_CORRIDA, estiloEvento,
+  resumoCorrida, rotuloCorrida,
   type CorridasResposta, type ExecucaoPipeline, type MalhaExecucaoApi,
 } from './statusExecucao'
+// F7: o texto de duração da corrida (o mesmo módulo puro da faixa) — o crédito
+// de retenção chega em MINUTOS do servidor e vira "6h" no toast.
+import { textoDuracao } from './tempoCorrida'
 // F4: o relógio LOCAL da faixa (Decisão 60) — o decorrido anda no navegador, o
 // `apurado_em` do banco fica no tooltip.
 import { useDecorrido } from './useDecorrido'
@@ -222,6 +228,10 @@ interface MalhaDetalheApi {
   // tela não afirma nada).
   hora_virada?: string | null
   equalizar_data?: number
+  // F7 (085): o limite de segurança da MALHA. Chave AUSENTE = a coluna não
+  // está neste banco (deploy parcial) e o campo não é oferecido; `null` =
+  // "segue o limite global", que é resposta, não ausência.
+  teto_horas?: number | null
   virada_divergente?: string[]
 }
 
@@ -821,6 +831,17 @@ function MalhaEditorInner({
         ehNo: true, tipo: ev.tipo, criado_em: ev.criado_em,
         mensagem: ev.mensagem,
       })),
+      // F7: os eventos do CICLO. Até aqui eles eram gravados e NUNCA chegavam
+      // à tela — a tabela de eventos é chaveada por pipeline e a corrida não é
+      // um pipeline, então o painel os descartava em silêncio. São eles que
+      // explicam o que mudou no prazo: o aviso de atraso e o crédito de
+      // retenção (Decisão 61). O rótulo é "corrida", nunca o marcador
+      // `#corrida:{id}` (Decisão 74: nome de máquina não vai à tela).
+      ...(execData?.eventos_corrida ?? []).map(ev => ({
+        rotulo: 'corrida', ehNo: true,
+        tipo: ev.tipo, criado_em: ev.criado_em,
+        mensagem: ev.mensagem,
+      })),
     ]
     return lista.sort((a, b) => b.criado_em.localeCompare(a.criado_em))
   }, [execData])
@@ -1305,7 +1326,14 @@ function MalhaEditorInner({
     if (retendo) return
     setRetendo(true)
     try {
-      const r = await apiFetch<{ dependentes?: string[] }>(
+      const r = await apiFetch<{
+        dependentes?: string[]
+        // F7: o servidor é quem sabe se há ciclo em voo e quanto de limite foi
+        // creditado — os dois vêm da MESMA transação do gesto. Derivar isso no
+        // cliente exigiria um refetch que ainda não aconteceu.
+        aviso?: string
+        credito_teto?: { minutos: number; teto_em: string | null }
+      }>(
         `/malhas/${encodeURIComponent(malha)}/nos/${noId}/retencao`, {
           method: 'POST',
           body: JSON.stringify({ reter }),
@@ -1314,6 +1342,12 @@ function MalhaEditorInner({
         toast.success(ehInicioNo(noId)
           ? `Início #${noId} SEGURADO — a malha não parte até você soltar.`
           : `Aguarde #${noId} SEGURADO — nada passa por ele até você soltar.`)
+        // Decisão 45 — a regra DITA antes. Segurar o Início com corrida em voo
+        // é o gesto mais mal-entendido da tela: parece "parar a malha" e não
+        // para; ele segura a PARTIDA. Sem esta frase o operador segura o Início
+        // às 3h achando que travou o ciclo que está rodando, e o ciclo
+        // continua. O texto vem do servidor e não traz "#N" (Decisão 74).
+        if (r.aviso) toast.info(r.aviso)
       } else {
         const n = r.dependentes?.length ?? 0
         // Soltar não dispara na hora: quem estava preso parte no próximo
@@ -1322,6 +1356,14 @@ function MalhaEditorInner({
         toast.success(n > 0
           ? `${rotulo} #${noId} liberado — ${n} pipeline(s) voltam a ser avaliados no próximo ciclo.`
           : `${rotulo} #${noId} liberado — a malha volta a partir no próximo horário agendado.`)
+        // Decisão 61 — o crédito NUNCA é silencioso. A barra do limite anda
+        // para trás neste exato instante, e uma barra de prazo que recua sem
+        // explicação destrói a confiança em todas as outras.
+        if (r.credito_teto) {
+          toast.info(`O tempo em que a malha ficou segurada foi devolvido ao `
+            + `limite de segurança: +${textoDuracao(r.credito_teto.minutos)}`
+            + ' — a corrida não expira por causa da retenção.')
+        }
       }
       qc.invalidateQueries({ queryKey: ['malha', malha] })
       qc.invalidateQueries({ queryKey: ['malha-execucao', malha] })
@@ -2392,6 +2434,45 @@ function MalhaEditorInner({
             {resumo.encerramento && <span>· {resumo.encerramento}</span>}
             {resumo.motivo && <span className="italic">{resumo.motivo}</span>}
           </div>
+          {/* F7 — Decisão 43: quem abriu, se foi reaberta e como esta malha
+              fecha. Seis campos gravados desde a F1 e nenhum mostrado até
+              aqui; são as três primeiras perguntas de plantão. */}
+          {resumo.diagnostico && (
+            <div className="text-[11px] opacity-75">{resumo.diagnostico}</div>
+          )}
+          {/* F7 — o LIMITE DE SEGURANÇA. A barra só existe quando a MALHA
+              configurou o teto (Decisão 61): o global de 24h é anti-travamento,
+              e uma barra em 80% às 20h numa malha que sempre fecha em 3h faria
+              escalar por nada. O crédito vem colado nela porque é a explicação
+              de uma barra que ANDOU PARA TRÁS — recuo sem explicação destrói a
+              confiança em todas as outras barras da tela. */}
+          {(resumo.prazo || resumo.credito || resumo.hold) && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+              {resumo.prazo && (
+                <span className="inline-flex items-center gap-1.5">
+                  <Clock size={11} className="shrink-0" />
+                  {resumo.prazoPct !== null && (
+                    <span className="inline-block h-1.5 w-16 overflow-hidden rounded-full bg-black/10 dark:bg-white/15"
+                          role="progressbar" aria-valuemin={0} aria-valuemax={100}
+                          aria-valuenow={resumo.prazoPct}
+                          aria-label="Limite de segurança da corrida">
+                      <span className={`block h-full ${resumo.prazoPct >= 100 ? 'bg-red-500' : 'bg-current opacity-60'}`}
+                            style={{ width: `${resumo.prazoPct}%` }} />
+                    </span>
+                  )}
+                  {resumo.prazo}
+                </span>
+              )}
+              {resumo.credito && (
+                <span className="opacity-80">· {resumo.credito}</span>
+              )}
+              {resumo.hold && (
+                <span className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-100 px-1.5 py-0.5 font-medium text-amber-800 dark:border-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
+                  <PauseCircle size={11} className="shrink-0" /> {resumo.hold}
+                </span>
+              )}
+            </div>
+          )}
           {/* Decisão 66 — o incidente que ORIGINOU esta spec: é o único caso em
               que a contagem está certa e o DIA está errado. */}
           {resumo.foraDoOdate && (
@@ -2448,8 +2529,14 @@ function MalhaEditorInner({
                 <div key={`${ev.rotulo}-${ev.criado_em}-${i}`}
                   className="rounded-md border border-edge bg-canvas px-2 py-1.5">
                   <div className="flex items-center gap-1.5">
-                    <span className={`rounded border px-1 py-px text-[9px] font-bold ${estiloEvento(ev.tipo)}`}>
-                      {ev.tipo}
+                    {/* F7 (Decisão 74): os eventos do CICLO ganham nome em
+                        pt-BR — "MALHA_TETO_CREDITADO" é justamente o que
+                        precisa ser LIDO para explicar um número que mudou. Os
+                        demais tipos seguem crus: são o vocabulário da guardiã e
+                        têm tradução própria em outra fase. */}
+                    <span className={`rounded border px-1 py-px text-[9px] font-bold ${estiloEvento(ev.tipo)}`}
+                          title={ev.tipo}>
+                      {ROTULO_EVENTO_CORRIDA[ev.tipo] ?? ev.tipo}
                     </span>
                     <span className="ml-auto text-[10px] text-dim">{horaCurta(ev.criado_em)}</span>
                   </div>
@@ -3269,6 +3356,8 @@ function MalhaEditorInner({
         agendamento={data?.agendamento ?? null}
         raizes={raizesInicio}
         equalizarData={data?.equalizar_data}
+        tetoHoras={data?.teto_horas ?? null}
+        temTeto={data ? 'teto_horas' in data : false}
       />
     </div>
   )

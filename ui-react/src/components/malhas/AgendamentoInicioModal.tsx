@@ -128,9 +128,14 @@ interface Props {
   // (migration 081). undefined = a API ainda não a expõe (deploy parcial) e o
   // controle não é oferecido.
   equalizarData?: number
+  // F7 (085): o LIMITE DE SEGURANÇA da malha em horas. `null` = segue o limite
+  // global; `undefined` = a API não expõe a chave (deploy parcial) e o controle
+  // não é oferecido — botão que não grava é pior que botão ausente.
+  tetoHoras?: number | null
+  temTeto?: boolean
 }
 
-export function AgendamentoInicioModal({ malha, aberto, onClose, agendamento, raizes, equalizarData }: Props) {
+export function AgendamentoInicioModal({ malha, aberto, onClose, agendamento, raizes, equalizarData, tetoHoras, temTeto }: Props) {
   // O corpo só monta com o modal aberto: o useState do form inicializa do
   // agendamento da malha NO MOUNT — reabrir remonta e recarrega, sem
   // setState em efeito (lint react-hooks/set-state-in-effect, a mesma lição
@@ -140,13 +145,14 @@ export function AgendamentoInicioModal({ malha, aberto, onClose, agendamento, ra
       {aberto && (
         <CorpoAgendamento malha={malha} onClose={onClose}
           agendamento={agendamento} raizes={raizes}
-          equalizarData={equalizarData} />
+          equalizarData={equalizarData}
+          tetoHoras={tetoHoras} temTeto={temTeto} />
       )}
     </Modal>
   )
 }
 
-function CorpoAgendamento({ malha, onClose, agendamento, raizes, equalizarData }: Omit<Props, 'aberto'>) {
+function CorpoAgendamento({ malha, onClose, agendamento, raizes, equalizarData, tetoHoras, temTeto }: Omit<Props, 'aberto'>) {
   const qc = useQueryClient()
   const [form, setForm] = useState<FormAgendamento>(
     () => formDoAgendamento(agendamento))
@@ -158,6 +164,11 @@ function CorpoAgendamento({ malha, onClose, agendamento, raizes, equalizarData }
   // porta própria, e misturar os dois payloads faria um gesto escrever no
   // contrato do outro.
   const [equalizarLocal, setEqualizarLocal] = useState(!!Number(equalizarData ?? 0))
+  // F7: o limite de segurança da malha, como TEXTO — vazio significa "segue o
+  // limite global", que é um estado legítimo e diferente de zero. Um `number`
+  // aqui obrigaria a inventar um sentinela para o vazio.
+  const [tetoLocal, setTetoLocal] = useState(
+    tetoHoras === null || tetoHoras === undefined ? '' : String(tetoHoras))
 
   const { data: calData } = useQuery<{ calendarios: { calendario_nome: string }[] }>({
     queryKey: ['agenda-calendarios'],
@@ -209,17 +220,30 @@ function CorpoAgendamento({ malha, onClose, agendamento, raizes, equalizarData }
         })
       // A marca de equalização mora na MALHA e tem porta própria (PATCH): o
       // agendamento não pode escrever no contrato dela. Só vai se MUDOU.
-      if (equalizarLocal !== !!Number(equalizarData ?? 0)) {
+      const tetoNovo = tetoLocal.trim() === '' ? null : Number(tetoLocal.trim())
+      const tetoMudou = temTeto && tetoNovo !== (tetoHoras ?? null)
+      if (equalizarLocal !== !!Number(equalizarData ?? 0) || tetoMudou) {
         try {
           await apiFetch(`/malhas/${encodeURIComponent(malha)}`, {
             method: 'PATCH',
-            body: JSON.stringify({ equalizar_data: equalizarLocal ? 1 : 0 }),
+            body: JSON.stringify({
+              equalizar_data: equalizarLocal ? 1 : 0,
+              // A chave só vai quando MUDOU: mandar `teto_horas` em todo save
+              // faria um deploy sem a 085 responder `migration_085_pendente`
+              // para quem nem mexeu no campo.
+              ...(tetoMudou ? { teto_horas: tetoNovo } : {}),
+            }),
           })
+          if (tetoMudou) {
+            toast.info(tetoNovo === null
+              ? 'Limite de segurança da malha: volta a seguir o limite global. Vale da PRÓXIMA corrida — o limite do ciclo em voo foi fixado quando ele abriu.'
+              : `Limite de segurança da malha: ${tetoNovo}h. Vale da PRÓXIMA corrida — o limite do ciclo em voo foi fixado quando ele abriu.`)
+          }
         } catch (e2) {
           // O agendamento JÁ foi salvo — falhar aqui não pode parecer que
           // nada aconteceu, nem que a marca pegou.
           const err2 = e2 as Error
-          toast.error(`Agendamento salvo, mas a equalização automática não: ${err2.message}`)
+          toast.error(`Agendamento salvo, mas a configuração da malha não: ${err2.message}`)
         }
       }
       toast.success(`Agendamento da malha salvo: ${r.agendamento_resumo}.`)
@@ -459,6 +483,37 @@ function CorpoAgendamento({ malha, onClose, agendamento, raizes, equalizarData }
                 </span>
               </span>
             </label>
+
+            {/* F7 (Decisão 61) — o LIMITE DE SEGURANÇA da malha. Ele mora
+                aqui, ao lado da hora de virada, porque os dois são relógios da
+                MALHA (e não do pipeline). O texto diz o que ele NÃO é: teto não
+                é SLA, é anti-travamento — o que ele evita é a corrida travada
+                bloquear o disparo para sempre, e por isso ele nunca encerra
+                trabalho vivo. */}
+            {temTeto && (
+              <div className="flex flex-col gap-1 rounded-md border border-edge bg-canvas px-3 py-2">
+                <label className={labelCls} htmlFor="malha-teto-horas">
+                  Limite de segurança da corrida (horas)
+                </label>
+                <input
+                  id="malha-teto-horas"
+                  type="number" min={1} max={168} step={1}
+                  value={tetoLocal}
+                  placeholder="segue o limite global (24h)"
+                  onChange={e => setTetoLocal(e.target.value)}
+                  className={`${inputCls} w-56`}
+                />
+                <span className="text-[11px] text-dim">
+                  Passado esse tempo <strong>sem nenhum pipeline em execução</strong>,
+                  a corrida é encerrada e o disparo volta a funcionar. Com
+                  pipeline rodando, o limite só <strong>avisa</strong> — ele
+                  nunca encerra trabalho vivo. O tempo em que a malha ficar
+                  segurada é devolvido ao limite. Em branco, vale o limite
+                  global. Preencher aqui também faz a barra de limite aparecer
+                  no painel desta malha.
+                </span>
+              </div>
+            )}
 
             <div className="flex justify-end gap-2 pt-1">
               <Button variant="secondary" onClick={onClose}>Cancelar</Button>

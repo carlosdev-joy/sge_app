@@ -74,6 +74,18 @@ export interface MalhaExecucaoApi {
   // Deploy parcial (migration 075 ausente): eventos_no vazio + flag — o
   // resto da visão segue intacto (princípio 6 do desenho de componentes).
   migration_075_pendente?: boolean
+  // F7: os eventos DO CICLO (MALHA_ATRASADA, MALHA_EXPIRADA, o crédito de
+  // retenção…). Até a F7 eles eram gravados e nunca chegavam à tela — a
+  // tabela de eventos é chaveada por pipeline e a corrida não é um pipeline.
+  // Chave ausente (API anterior, ou lente sem corrida) degrada como vazio.
+  eventos_corrida?: EventoCorrida[]
+}
+
+/** Evento do CICLO — sem `pipeline_name`, porque o sujeito é a corrida. */
+export interface EventoCorrida {
+  tipo: string
+  criado_em: string
+  mensagem: string | null
 }
 
 /** GET /malhas/{name}/corridas (F3/F4) — os ciclos, do mais recente para o
@@ -220,6 +232,12 @@ export function estiloEvento(tipo: string): string {
     // treina o operador a ignorar o alarme) — e é o ÚNICO slate desta camada.
     case 'MALHA_SEM_TRABALHO':
       return 'bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-600'
+    // F7 — o crédito de retenção. Azul e não âmbar: nada aconteceu de errado;
+    // é o REGISTRO de por que o limite mudou de lugar. Ele existe exatamente
+    // para que a barra que anda para trás tenha uma explicação nomeada
+    // (Decisão 61), e pintá-lo de alarme diria o contrário do que ele é.
+    case 'MALHA_TETO_CREDITADO':
+      return 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800'
     default:
       return 'bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-600'
   }
@@ -450,8 +468,42 @@ export interface ResumoCorrida {
   motivo: string | null
   /** Banner do incidente que originou a spec (Decisão 66). */
   foraDoOdate: string | null
+  // ── F7: os relógios ──────────────────────────────────────────────────────
+  /** "limite de segurança (6h)" · "limite de segurança VENCIDO (6h)". Só
+   *  existe quando a MALHA configurou o teto (Decisão 61) — o global de 24h é
+   *  anti-travamento, e uma barra em 80% às 20h numa malha que sempre fecha em
+   *  3h faria escalar por nada. */
+  prazo: string | null
+  /** 0–100 do limite, e `null` quando não há barra. Nunca passa de 100: a
+   *  barra cheia diz "venceu", e um número acima disso não diria mais nada. */
+  prazoPct: number | null
+  /** "+6h de limite creditados por retenção" — a EXPLICAÇÃO da barra que andou
+   *  para trás. Sem ela o recuo é silencioso, e uma barra de prazo que recua
+   *  sem explicação destrói a confiança em todas as outras (Decisão 61). */
+  credito: string | null
+  /** "2 nós segurados desde 02:40 (C123456) — os relógios estão parados". */
+  hold: string | null
+  /** Decisão 43 — o diagnóstico numa linha: quem abriu, se foi reaberta e como
+   *  esta malha fecha. As três primeiras perguntas de plantão, todas
+   *  respondíveis pelo banco e nenhuma pela tela até esta fase. */
+  diagnostico: string | null
   /** Tooltip — o único lugar em que `apurado_em` (relógio do BANCO) aparece. */
   titulo: string
+}
+
+/** Tipo de evento do CICLO → português de reunião (Decisão 74). Nome de
+ *  máquina não vai à tela, e `MALHA_TETO_CREDITADO` é o pior deles: ele existe
+ *  justamente para EXPLICAR um número que mudou. */
+export const ROTULO_EVENTO_CORRIDA: Record<string, string> = {
+  MALHA_FALHOU: 'falha na corrida',
+  MALHA_ATRASADA: 'fora do prazo',
+  MALHA_EXPIRADA: 'encerrada sem terminar',
+  MALHA_ABORTADA: 'não chegou a começar',
+  MALHA_CANCELADA: 'encerrada pelo operador',
+  MALHA_CONCLUIDA: 'corrida concluída',
+  MALHA_SEM_TRABALHO: 'sem trabalho hoje',
+  MALHA_REPROCESSO: 'reprocesso',
+  MALHA_TETO_CREDITADO: 'limite adiado por retenção',
 }
 
 /** Os desfechos em que a corrida foi INTERROMPIDA: o número que ficou não é
@@ -508,9 +560,14 @@ export function resumoCorrida(
     : `corrida de ${dia}`
 
   let texto: string | null = null
+  // O decorrido do ciclo em voo, reusado pela BARRA DE LIMITE da F7: os dois
+  // números têm de sair do mesmo lugar, senão o texto diz "há 3h50" enquanto a
+  // barra desenha outra coisa na mesma linha.
+  const decorridoAgora = aberta
+    ? decorridoMin(c.decorrido_min, tempo.respostaEm, tempo.agora)
+    : null
   if (aberta) {
-    const min = decorridoMin(c.decorrido_min, tempo.respostaEm, tempo.agora)
-    texto = min === null ? null : `há ${textoDuracao(min)}`
+    texto = decorridoAgora === null ? null : `há ${textoDuracao(decorridoAgora)}`
   } else if (c.aberta_em && c.fechada_em) {
     const dur = textoDuracao(duracaoEntre(c.aberta_em, c.fechada_em))
     texto = `${horaCurta(c.aberta_em)} → ${horaCurta(c.fechada_em)}`
@@ -622,6 +679,107 @@ export function resumoCorrida(
       ? `${plural(c.membros_fora_do_odate, 'pipeline', 'pipelines')} de outra `
         + 'data de referência'
       : null,
+    ...prazoDaCorrida(c, aberta, decorridoAgora),
+    diagnostico: diagnosticoDaCorrida(c, abriu),
     titulo: linhas.join('\n'),
   }
+}
+
+/** O bloco de PRAZO da faixa (F7 — §6.6/§6.7, Decisões 30 e 61).
+ *
+ *  Três fatos, e a ordem em que eles aparecem é a ordem em que o operador
+ *  precisa deles: onde o limite está, por que ele mudou de lugar, e por que os
+ *  relógios estão parados.
+ *
+ *  Nenhuma conta de tempo entre relógios diferentes: `decorrido` já é o do
+ *  servidor somado ao relógio LOCAL desde a resposta (Decisão 60), e
+ *  `teto_total_min` é `aberta_em → teto_em` subtraído NO BANCO. A razão entre
+ *  os dois é adimensional — é o único jeito honesto de desenhar esta barra. */
+function prazoDaCorrida(c: CorridaApi, aberta: boolean, decorrido: number | null) {
+  const total = c.teto_total_min ?? null
+  // A barra só existe com teto CONFIGURADO na malha (Decisão 61): o default
+  // global é anti-travamento, não SLA.
+  const temBarra = !!c.teto_configurado && !!total && total > 0
+  // ⚠️ A BARRA TAMBÉM PARA no hold (Decisão 30) — e isto não é cosmético.
+  // `decorrido` é relógio de parede desde `aberta_em`: ele continua andando com
+  // a malha segurada, e `teto_em` só se move no CRÉDITO, que só acontece ao
+  // soltar. Sem congelar, o operador leria "os relógios estão parados" ao lado
+  // de uma barra que enche, chega a 100% e fica VERMELHA — enquanto o texto ao
+  // lado dela diz que o limite não venceu. Uma linha que se contradiz sozinha
+  // destrói a confiança em todas as outras barras da tela, que é exatamente o
+  // que a Decisão 61 existe para impedir.
+  //
+  // O numerador congelado é `aberta_em → retido_desde`: os DOIS são carimbos do
+  // BANCO (mesmo relógio), e essa é a única subtração honesta possível aqui —
+  // comparar `retido_desde` com o relógio do navegador daria "parado há -3h"
+  // com o desvio de 3h medido no dev.
+  const decorridoNaBarra = c.retido_desde
+    ? duracaoEntre(c.aberta_em, c.retido_desde)
+    : decorrido
+  let prazo: string | null = null
+  let prazoPct: number | null = null
+  if (temBarra) {
+    const horas = textoDuracao(total)
+    prazo = c.teto_vencido
+      ? `limite de segurança VENCIDO (${horas})`
+      : `limite de segurança ${horas}`
+    if (aberta && decorridoNaBarra !== null) {
+      prazoPct = Math.max(0, Math.min(100,
+        Math.round((decorridoNaBarra / total) * 100)))
+    } else if (c.teto_vencido) {
+      prazoPct = 100
+    }
+  }
+  const creditado = c.teto_creditado_min ?? 0
+  return {
+    prazo,
+    prazoPct,
+    // Aparece mesmo SEM barra: o crédito é fato do ciclo, e quem não configurou
+    // teto próprio também precisa saber que o limite global foi adiado.
+    credito: creditado > 0
+      ? `+${textoDuracao(creditado)} de limite creditados por retenção`
+      : null,
+    hold: (c.retido_nos ?? 0) > 0
+      ? `${plural(c.retido_nos ?? 0, 'nó segurado', 'nós segurados')}`
+        + (c.retido_desde ? ` desde ${horaCurta(c.retido_desde)}` : '')
+        + (c.retido_por ? ` (${c.retido_por})` : '')
+        + ' — os relógios estão parados'
+      : null,
+  }
+}
+
+/** Decisão 43 — o diagnóstico do ciclo em UMA linha.
+ *
+ *  "quem começou isto?", "é a primeira tentativa ou já mexeram aqui?" e "por
+ *  que esta malha fecha sem passar pelo Fim?" são as três primeiras perguntas
+ *  às 3h. Todas respondíveis pelo banco desde a F1, e nenhuma pela tela até
+ *  aqui — seis campos gravados e nenhum mostrado.
+ *
+ *  Decisão 44: corrida `implicita` DIZ que não há nó Início, em vez de
+ *  apresentar o ODATE do primeiro membro com uma autoridade que ele não tem. */
+function diagnosticoDaCorrida(c: CorridaApi, abriu: string | null): string | null {
+  const partes: string[] = []
+  if (c.origem === 'inicio') {
+    partes.push('aberta pelo agendamento do Início'
+      + (c.ancora_pipeline ? ` (${c.ancora_pipeline})` : ''))
+  } else if (c.origem === 'manual') {
+    partes.push(`aberta manualmente${abriu ? ` por ${abriu}` : ''}`)
+  } else if (c.origem === 'implicita') {
+    partes.push('data de referência definida pela primeira raiz a partir'
+      + (c.ancora_pipeline ? ` (${c.ancora_pipeline})` : '')
+      + ' — esta malha não tem nó Início')
+  }
+  if (c.aberta_em) partes.push(`às ${horaCurta(c.aberta_em)}`)
+  // "não foi reaberta" nunca vira "1ª tentativa" (Decisão 74).
+  if (c.tentativas > 1) {
+    partes.push(`reaberta ${c.tentativas - 1}x`
+      + (quemFez(c.reaberta_por) ? ` por ${quemFez(c.reaberta_por)}` : ''))
+  }
+  // Decisão 45 — a REGRA antes da hora. Anunciar "até 04:17" como horário
+  // exato produz o mesmo chamado falso pela forma do texto: o relógio da
+  // quiescência REINICIA a cada movimento.
+  if (c.status === 'ABERTA' && c.modo_fechamento === 'quiescencia') {
+    partes.push('fecha sozinha alguns minutos após o último movimento')
+  }
+  return partes.length ? partes.join(' · ') : null
 }

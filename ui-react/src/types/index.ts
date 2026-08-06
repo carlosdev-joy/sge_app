@@ -182,6 +182,27 @@ export interface CorridaApi extends CorridaCabecalho {
   pendentes: PendenteCorrida[]
   ultimo_movimento_em: string | null
   sem_sinal_min: number | null
+  // ── F7: os relógios do prazo (spec §6.6/§6.7, Decisões 30 e 61) ──────────
+  /** O limite venceu? Avaliado pelo BANCO — e **`false` enquanto houver nó
+   *  segurado**, porque com hold o teto não corre. Sem isso o card pintaria
+   *  de âmbar uma malha parada porque o próprio operador a travou. */
+  teto_vencido?: boolean
+  /** `aberta_em → teto_em` em minutos: o denominador da barra, JÁ com o
+   *  crédito de retenção dentro (é `teto_em` que se move). */
+  teto_total_min?: number | null
+  /** O quanto o limite já andou por retenção. É o que permite dizer POR QUE a
+   *  barra recuou, em vez de recuar em silêncio (Decisão 61). */
+  teto_creditado_min?: number
+  /** `etl_malha.teto_horas` — `null` = a malha segue o limite global. */
+  teto_horas?: number | null
+  /** A malha configurou limite próprio? É ele que decide se a BARRA existe: o
+   *  teto é anti-travamento, não SLA (Decisão 61). */
+  teto_configurado?: boolean
+  /** Desde quando os relógios estão parados (`MIN(retido_em)`), quantos nós
+   *  estão segurados e quem segurou o mais antigo. */
+  retido_desde?: string | null
+  retido_nos?: number
+  retido_por?: string | null
 }
 
 export interface MalhaItem {

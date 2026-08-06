@@ -124,9 +124,12 @@ class FakeDb(FakeDbF15):
     """
 
     def __init__(self, pipelines=None, config=None, com_085=True,
-                 agora_banco=AGORA_BANCO, **kw):
+                 agora_banco=AGORA_BANCO, com_082=False, **kw):
         super().__init__(pipelines=pipelines, config=config, **kw)
         self.com_085 = com_085
+        # F7: a retenção do Aguarde (082). Default AUSENTE — é o estado do
+        # dublê herdado, e ligá-lo muda o SQL do card (o hold entra por slot).
+        self.com_082 = com_082
         self.corridas: list[dict] = []
         self.membros_corrida: list[dict] = []
         self.eventos: list[dict] = []
@@ -249,6 +252,55 @@ class FakeCur(FakeCurF15):
             self._rows = [(1, 1, 8)] if db.com_085 else [(None, None, None)]
             self.rowcount = -1
             return
+        # F7: `etl_malha.teto_horas` nasce na 085, em BLOCO SEPARADO da tabela
+        # da corrida — por isso guard próprio no router e branch próprio aqui.
+        if "COL_LENGTH('dbo.etl_malha', 'teto_horas')" in s:
+            self._rows = [(4,)] if db.com_085 else [(None,)]
+            self.rowcount = -1
+            return
+        # F7: a retenção (082). Default AUSENTE — é o estado do dublê herdado
+        # (a checagem levantava e o router degradava); `com_082=True` liga o
+        # hold e é o que os cenários de retenção usam.
+        if "COL_LENGTH('dbo.etl_malha_no', 'retido_em')" in s:
+            self._rows = ([(8, 64)] if getattr(db, "com_082", False)
+                          else [(None, None)])
+            self.rowcount = -1
+            return
+        # O SELECT de nós COM as colunas da 082 (o router só o emite com
+        # `com_082=True`). Espelha o da F10 mais as duas colunas da retenção.
+        if s.startswith("SELECT id, tipo, config_json, layout_x, layout_y, "
+                        "retido_em, retido_por FROM dbo.etl_malha_no"):
+            k = str(p[0] or "").casefold()
+            self._rows = sorted(
+                (nid, n["tipo"], n["config_json"], n["layout_x"], n["layout_y"],
+                 n.get("retido_em"), n.get("retido_por"))
+                for nid, n in db.nos.items() if n["malha"].casefold() == k)
+            self.rowcount = -1
+            return
+        # O tipo do nó, que o endpoint de retenção lê antes de decidir.
+        if s.startswith("SELECT tipo FROM dbo.etl_malha_no WHERE id = ?"):
+            no = db.nos.get(int(p[0]))
+            k = db._malha_key(p[1])
+            self._rows = ([(no["tipo"],)] if no is not None
+                          and str(no["malha"]).casefold() == str(k or "").casefold()
+                          else [])
+            self.rowcount = -1
+            return
+        # Segurar/soltar — as duas escritas do endpoint de retenção.
+        if s.startswith("UPDATE dbo.etl_malha_no SET retido_em = GETDATE()"):
+            no = db.nos.get(int(p[1]))
+            if no is not None:
+                no["retido_em"] = db.agora_banco
+                no["retido_por"] = p[0]
+            self.rowcount = 1 if no is not None else 0
+            return
+        if s.startswith("UPDATE dbo.etl_malha_no SET retido_em = NULL"):
+            no = db.nos.get(int(p[0]))
+            if no is not None:
+                no["retido_em"] = None
+                no["retido_por"] = None
+            self.rowcount = 1 if no is not None else 0
+            return
         if not db.com_085 and "etl_malha_execucao" in s:
             raise RuntimeError(
                 "[42S02] Invalid object name 'dbo.etl_malha_execucao'. (208)")
@@ -322,6 +374,18 @@ class FakeCur(FakeCurF15):
         if s.startswith("SELECT CASE WHEN me.teto_em IS NOT NULL"):
             self._rows = self._relogios(p)
             self.rowcount = -1
+            return
+        # ── F7: o HOLD, derivado de MIN(retido_em) ─────────────────────────
+        # Nunca materializado: o dublê recalcula a cada chamada, do jeito que o
+        # banco faz. É isto que torna vermelho o teste "soltar UM de DOIS
+        # Aguardes destravou os relógios".
+        if s.startswith("SELECT COUNT(*), MIN(n.retido_em)"):
+            self._rows = self._hold(s, p)
+            self.rowcount = -1
+            return
+        if s.startswith("UPDATE me SET teto_creditado_min"):
+            self._rows = self._creditar_hold(s, p)
+            self.rowcount = len(self._rows)
             return
 
         # ── escritas da corrida ────────────────────────────────────────────
@@ -432,6 +496,111 @@ class FakeCur(FakeCurF15):
                       and ultimo < agora - timedelta(minutes=int(p[2])))
         return [(1 if teto else 0, 1 if partida else 0,
                  1 if quiescente else 0)]
+
+    # ── F7 — o hold e o crédito do teto ────────────────────────────────────
+    def _nos_retidos(self, malha, sem_inicio=False):
+        """Os nós SEGURADOS da malha, do mais antigo para o mais novo.
+
+        `sem_inicio` é a cláusula `AND n.tipo <> 'inicio'` do statement, e ela
+        NUNCA é aplicada de graça: quem segura o ciclo em voo é o Aguarde; o
+        Início segura a PARTIDA, e a corrida em andamento segue (§6.7). Sem o
+        recorte, segurar o Início congelaria o teto da corrida aberta — e
+        apagar a cláusula do módulo tem de virar teste vermelho aqui."""
+        db = self.db
+        k = db._malha_key(malha) or malha
+        return sorted(
+            ((nid, n) for nid, n in getattr(db, "nos", {}).items()
+             if str(n.get("malha", "")).casefold() == str(k).casefold()
+             and n.get("retido_em") is not None
+             and not (sem_inicio and str(n.get("tipo")) == "inicio")),
+            key=lambda item: (item[1]["retido_em"], item[0]))
+
+    def _hold(self, s, p):
+        """`SQL_HOLD_DA_MALHA` — contagem, `MIN(retido_em)`, o DATEDIFF contra
+        o relógio do BANCO e quem segurou o mais antigo. O dublê nunca guarda
+        "está retido": ele deriva, como a spec manda.
+
+        ⚠️ REGRA DE HONESTIDADE: o recorte "só os nós SEGURADOS" mora no
+        `WHERE` do statement. Sem ele o banco contaria TODO nó da malha como
+        retido — Início, Fim e Notificação inclusive — e a malha inteira
+        nasceria travada para sempre, com o teto congelado e a quiescência
+        muda. O dublê só filtra se o SQL filtrar; do contrário a mutação
+        "apaga o `AND n.retido_em IS NOT NULL`" passaria verde."""
+        so_retidos = _guarda(s, "AND n.retido_em IS NOT NULL")
+        sem_inicio = _guarda(s, "AND n.tipo <> 'inicio'")
+        retidos = (self._nos_retidos(p[0], sem_inicio) if so_retidos
+                   else self._todos_os_nos(p[0]))
+        if not retidos:
+            return [(0, None, None, None)]
+        desde = retidos[0][1].get("retido_em")
+        minutos = (int((self.db.agora_banco - desde).total_seconds() // 60)
+                   if desde is not None else None)
+        return [(len(retidos), desde, minutos, retidos[0][1].get("retido_por"))]
+
+    def _todos_os_nos(self, malha):
+        """O que a consulta devolveria SEM o filtro da retenção — existe só
+        para que apagar o filtro mude o comportamento do dublê."""
+        db = self.db
+        k = db._malha_key(malha) or malha
+        return sorted(((nid, n) for nid, n in getattr(db, "nos", {}).items()
+                       if str(n.get("malha", "")).casefold() == str(k).casefold()),
+                      key=lambda item: (item[1].get("retido_em") or
+                                        db.agora_banco, item[0]))
+
+    def _creditar_hold(self, s, p):
+        """`SQL_CREDITAR_HOLD` — o `WHERE` aplicado a partir do TEXTO emitido.
+
+        ⚠️ REGRA DE HONESTIDADE, e aqui ela é o assunto da fase: cada cláusula
+        abaixo só é aplicada se o statement a contiver. Aplicá-las por conta
+        própria deixaria a suíte verde com o crédito acontecendo no meio de um
+        hold ainda em curso (`n2.id <> ?`), sobre corrida já fechada
+        (`fechada_em IS NULL`) ou com crédito zero — e a mutação "apaga a
+        cláusula" provaria o dublê, não o módulo."""
+        db = self.db
+        malha, no_id = p[0], int(p[1])
+        # `NOT EXISTS (... n2.id <> ?)` — o "ÚLTIMO nó". Sem esta cláusula o
+        # crédito sai com outro Aguarde ainda segurado, que é exatamente o
+        # defeito que o espelho materializado teria.
+        if _guarda(s, "AND n2.id <> ?"):
+            outros = self._nos_retidos(malha,
+                                       _guarda(s, "AND n2.tipo <> 'inicio'"))
+            if [nid for nid, _ in outros if nid != no_id]:
+                return []
+        # `MIN(retido_em)` do CROSS APPLY — com o MESMO recorte do Início, e
+        # por isso lido do alias `n` (o do CROSS APPLY), não do `n2`.
+        retidos = self._nos_retidos(malha, _guarda(s, "AND n.tipo <> 'inicio'"))
+        if not retidos:
+            return []          # `MIN` sobre conjunto vazio: `h.cred` é NULL
+        candidatas = [c for c in db.corridas
+                      if c["malha_name"].casefold() == str(
+                          db._malha_key(malha) or malha).casefold()]
+        if _guarda(s, "AND me.fechada_em IS NULL"):
+            candidatas = [c for c in candidatas if c["fechada_em"] is None]
+        if _guarda(s, "AND me.teto_em IS NOT NULL"):
+            candidatas = [c for c in candidatas if c["teto_em"] is not None]
+        alvo = next(iter(candidatas), None)
+        if alvo is None:
+            return []
+        # A corrida é escolhida ANTES do cálculo porque o piso do crédito é
+        # `me.aberta_em` — e, como toda guarda desta suíte, ele só vale se o SQL
+        # o contiver. Sem esta leitura, apagar o CASE do módulo passaria verde e
+        # um nó esquecido há dias voltaria a creditar dias a um teto de horas.
+        desde = retidos[0][1]["retido_em"]
+        if _guarda(s, "CASE WHEN MIN(n.retido_em) < me.aberta_em THEN me.aberta_em"):
+            desde = max(desde, alvo["aberta_em"])
+        cred = int((db.agora_banco - desde).total_seconds() // 60)
+        if _guarda(s, "AND h.cred > 0") and cred <= 0:
+            return []
+        alvo["teto_creditado_min"] = int(alvo.get("teto_creditado_min") or 0) + cred
+        if _guarda(s, "teto_em = DATEADD(MINUTE, h.cred, me.teto_em)"):
+            alvo["teto_em"] = alvo["teto_em"] + timedelta(minutes=cred)
+        # A memória do alarme de atraso falava de um teto que acabou de mudar
+        # de lugar: sem zerá-la, o próximo atraso — depois do crédito — fica
+        # mudo para sempre. O dublê só zera se o `SET` zerar.
+        if _guarda(s, "atraso_visto_em = NULL"):
+            alvo["atraso_visto_em"] = None
+        return [(alvo["id"], cred, alvo["teto_em"], alvo["teto_creditado_min"],
+                 alvo["data_referencia"])]
 
     def _abrir(self, s, p):
         """O INSERT-first com os DOIS índices únicos aplicados de verdade: a
@@ -552,7 +721,14 @@ class FakeCur(FakeCurF15):
             return
         db.eventos.append({"pipeline_name": pipeline, "data_referencia": data_ref,
                            "tipo": tipo, "detalhe": p[3],
-                           "malha_execucao_id": corrida})
+                           "malha_execucao_id": corrida,
+                           # F7: `notificar=False` grava o evento JÁ carimbado
+                           # com `notificado_em` — ele existe e vive no painel,
+                           # mas nunca entra na fila do Teams. O dublê tem de
+                           # espelhar isso, senão o teste da Decisão 61 não
+                           # conseguiria distinguir "evento" de "card".
+                           "notificado_em": (db.agora_banco
+                                             if "notificado_em" in s else None)})
         self.rowcount = 1
 
 
