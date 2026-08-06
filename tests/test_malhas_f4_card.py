@@ -214,22 +214,39 @@ class FakeCur(FakeCurF3):
             # F7: o HOLD entra na conta do teto — e o dublê o DERIVA dos nós, do
             # mesmo jeito que o SQL. Sem isto, um teste de retenção passaria
             # verde com o card ainda acusando "fora do prazo".
+            #
+            # O `tipo <> 'inicio'` só é aplicado se o statement o contiver
+            # (regra de honestidade): o Início segura a PARTIDA, não o ciclo em
+            # voo (§6.7), e apagar a cláusula do router tem de virar teste
+            # vermelho — não card mudo com a corrida congelada.
+            sem_inicio = "AND n.tipo <> 'inicio'" in s
             retidos = sorted(
                 (n for n in getattr(db, "nos", {}).values()
                  if str(n.get("malha", "")).casefold() == nome.casefold()
-                 and n.get("retido_em") is not None),
+                 and n.get("retido_em") is not None
+                 and not (sem_inicio and str(n.get("tipo")) == "inicio")),
                 key=lambda n: n["retido_em"])
-            teto = 1 if (c["teto_em"] is not None
-                         and c["teto_em"] < db.agora_banco
-                         and not retidos) else 0
-            decorrido = int(
-                (db.agora_banco - c["aberta_em"]).total_seconds() // 60)
-            teto_total = (None if c["teto_em"] is None else
-                          int((c["teto_em"] - c["aberta_em"]).total_seconds() // 60))
             # As três colunas do hold só existem no SQL quando a 082 está no
             # banco; sem ela o router as troca por literais e o dublê responde o
             # mesmo — "nunca retido".
             tem_082 = "MIN(n.retido_em)" in s
+            # ⚠️ REGRA DE HONESTIDADE: a suspensão do teto por hold mora no SQL
+            # (`AND {hold} IS NULL`, DENTRO do CASE do `teto_vencido`). Se ela
+            # sumir do módulo, o dublê tem de voltar a acusar "vencido" com a
+            # malha travada — senão apagar a cláusula deixa a suíte verde e o
+            # card volta a pintar âmbar um atraso que o próprio operador criou.
+            # As DUAS condições são necessárias: sem a 082 o slot vira
+            # `CAST(NULL AS DATETIME) IS NULL`, que é sempre verdade — e aí o
+            # banco de verdade ignora a retenção, como o dublê tem de ignorar.
+            teto_para_no_hold = tem_082 and _guarda(
+                s, "IS NULL THEN 1 ELSE 0 END AS teto_vencido")
+            teto = 1 if (c["teto_em"] is not None
+                         and c["teto_em"] < db.agora_banco
+                         and not (retidos and teto_para_no_hold)) else 0
+            decorrido = int(
+                (db.agora_banco - c["aberta_em"]).total_seconds() // 60)
+            teto_total = (None if c["teto_em"] is None else
+                          int((c["teto_em"] - c["aberta_em"]).total_seconds() // 60))
             out.append((nome,) + _proj(c) + (
                 teto, decorrido, db.agora_banco, _qtd_quiescencia(db),
                 teto_total, db.malhas[nome].get("teto_horas"),

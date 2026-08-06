@@ -700,6 +700,22 @@ function prazoDaCorrida(c: CorridaApi, aberta: boolean, decorrido: number | null
   // A barra só existe com teto CONFIGURADO na malha (Decisão 61): o default
   // global é anti-travamento, não SLA.
   const temBarra = !!c.teto_configurado && !!total && total > 0
+  // ⚠️ A BARRA TAMBÉM PARA no hold (Decisão 30) — e isto não é cosmético.
+  // `decorrido` é relógio de parede desde `aberta_em`: ele continua andando com
+  // a malha segurada, e `teto_em` só se move no CRÉDITO, que só acontece ao
+  // soltar. Sem congelar, o operador leria "os relógios estão parados" ao lado
+  // de uma barra que enche, chega a 100% e fica VERMELHA — enquanto o texto ao
+  // lado dela diz que o limite não venceu. Uma linha que se contradiz sozinha
+  // destrói a confiança em todas as outras barras da tela, que é exatamente o
+  // que a Decisão 61 existe para impedir.
+  //
+  // O numerador congelado é `aberta_em → retido_desde`: os DOIS são carimbos do
+  // BANCO (mesmo relógio), e essa é a única subtração honesta possível aqui —
+  // comparar `retido_desde` com o relógio do navegador daria "parado há -3h"
+  // com o desvio de 3h medido no dev.
+  const decorridoNaBarra = c.retido_desde
+    ? duracaoEntre(c.aberta_em, c.retido_desde)
+    : decorrido
   let prazo: string | null = null
   let prazoPct: number | null = null
   if (temBarra) {
@@ -707,8 +723,9 @@ function prazoDaCorrida(c: CorridaApi, aberta: boolean, decorrido: number | null
     prazo = c.teto_vencido
       ? `limite de segurança VENCIDO (${horas})`
       : `limite de segurança ${horas}`
-    if (aberta && decorrido !== null) {
-      prazoPct = Math.max(0, Math.min(100, Math.round((decorrido / total) * 100)))
+    if (aberta && decorridoNaBarra !== null) {
+      prazoPct = Math.max(0, Math.min(100,
+        Math.round((decorridoNaBarra / total) * 100)))
     } else if (c.teto_vencido) {
       prazoPct = 100
     }

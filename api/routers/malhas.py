@@ -1808,16 +1808,26 @@ _SEM_SINAL_X_QUIESCENCIA = 4
 # derrubaria o bloco `corrida` INTEIRO — card e painel calariam por causa de uma
 # coluna que só serve para explicar um caso raro. Sem a 082 não há retenção
 # possível, então o slot vira `NULL` e o teto volta a ser o de antes.
+#
+# O `tipo <> 'inicio'` é o MESMO recorte de `mc.SQL_HOLD_DA_MALHA`, e por isso
+# sai da constante dele: quem trava o ciclo em voo é o Aguarde (segurado, ele
+# faz `liberado()` devolver False para o dependente); o Início segura a
+# PARTIDA, não o ciclo já aberto. Card e motor divergirem aqui é o card
+# pintando "os relógios estão parados" numa corrida que a guardiã está
+# fechando — a família de mentira que esta spec inteira existe para matar.
 _HOLD_DA_CORRIDA = (
     "(SELECT MIN(n.retido_em) FROM dbo.etl_malha_no n "
-    "WHERE n.malha_name = m.malha_name AND n.retido_em IS NOT NULL)")
+    "WHERE n.malha_name = m.malha_name AND n.retido_em IS NOT NULL "
+    + mc._SO_NO_QUE_TRAVA.format(a="n") + ")")
 _HOLD_POR = (
     "(SELECT TOP 1 n2.retido_por FROM dbo.etl_malha_no n2 "
     "WHERE n2.malha_name = m.malha_name AND n2.retido_em IS NOT NULL "
+    + mc._SO_NO_QUE_TRAVA.format(a="n2") +
     "ORDER BY n2.retido_em, n2.id)")
 _HOLD_NOS = (
     "(SELECT COUNT(*) FROM dbo.etl_malha_no n3 "
-    "WHERE n3.malha_name = m.malha_name AND n3.retido_em IS NOT NULL)")
+    "WHERE n3.malha_name = m.malha_name AND n3.retido_em IS NOT NULL "
+    + mc._SO_NO_QUE_TRAVA.format(a="n3") + ")")
 _SQL_ULTIMA_CORRIDA = (
     "SELECT m.malha_name, " + mc._COLS_ME.replace("me.", "c.") + ", "
     "CASE WHEN c.teto_em IS NOT NULL AND c.teto_em < SYSDATETIME() "
@@ -5631,9 +5641,12 @@ def reter_no(malha_name: str, no_id: int, body: dict = Body(default={}),
     Body: {"reter": true|false}. Sem a 082 é 503 com instrução — botão que não
     segura seria pior que botão ausente.
 
-    **F7 — os relógios (spec-malha-execucao §6.7).** Enquanto QUALQUER nó da
-    malha estiver segurado, o teto da corrida não corre. Soltar o **último**
-    deles credita ao teto o tempo que a malha passou parada
+    **F7 — os relógios (spec-malha-execucao §6.7).** Enquanto qualquer
+    **Aguarde** da malha estiver segurado, o teto da corrida não corre — o
+    Início NÃO conta: ele segura a partida da próxima corrida, e a que já está
+    em andamento segue (é o que o `aviso` da resposta diz, e o hold da corrida
+    tem de concordar com essa frase). Soltar o **último** Aguarde retido
+    credita ao teto o tempo que a malha passou parada
     (`teto_creditado_min`) e reprojeta `teto_em` — soltar após 6h de hold numa
     malha com teto de 4h empurra o teto em 6h, e a corrida NÃO expirou. O
     crédito e a limpeza do `retido_em` caem no MESMO commit, nesta ordem: é o

@@ -1541,14 +1541,34 @@ def relogios(cur, corrida: dict, carencia_min: int, quiescencia_min: int) -> dic
 # `MIN` (e não `MAX`): o hold começou no PRIMEIRO nó segurado. A janela do
 # crédito é [MIN(retido_em), agora], e é o banco quem a mede — `DATEDIFF` aqui,
 # nunca subtração em Python (o SQL Server do dev está 3h à frente da API).
+#
+# ⚠️ O **Início fica de fora** (§6.7, literal: *"Hold do Início não para corrida
+# aberta — está certo: ele segura a partida"*). Quem trava o ciclo EM VOO é o
+# Aguarde: segurado, ele faz `liberado()` devolver False para o dependente
+# (`dependencias._SQL_*`, correlação por `n.id = dd.origem_no`), e é ESSA a
+# razão de o teto ter de parar. O Início não segura ninguém que já partiu — ele
+# impede a PRÓXIMA corrida de nascer, e quem lê isso é `malha_ciclo.
+# inicio_retido`, que filtra `tipo = 'inicio'` de propósito.
+#
+# Sem este recorte, segurar o Início às 22h para a malha não partir de
+# madrugada PARARIA o teto da corrida já aberta: ela nunca fecharia (nem por
+# quiescência, nem por teto), o disparo ficaria bloqueado enquanto o cadeado
+# estivesse lá, e soltar dias depois creditaria os mesmos dias ao teto. É
+# exatamente o *"congelaria a malha para sempre, sem tela para destravar"* que
+# a §6.6 dá como justificativa do teto — e o próprio endpoint promete o
+# contrário ao operador ("a corrida em andamento SEGUE").
+TIPO_NO_DA_PARTIDA = "inicio"
+_SO_NO_QUE_TRAVA = "AND {a}.tipo <> '" + TIPO_NO_DA_PARTIDA + "' "
 SQL_HOLD_DA_MALHA = (
     "SELECT COUNT(*), MIN(n.retido_em), "
     "DATEDIFF(MINUTE, MIN(n.retido_em), SYSDATETIME()), "
     "(SELECT TOP 1 n2.retido_por FROM dbo.etl_malha_no n2 "
     "WHERE n2.malha_name = ? AND n2.retido_em IS NOT NULL "
+    + _SO_NO_QUE_TRAVA.format(a="n2") +
     "ORDER BY n2.retido_em, n2.id) "
     "FROM dbo.etl_malha_no n "
-    "WHERE n.malha_name = ? AND n.retido_em IS NOT NULL")
+    "WHERE n.malha_name = ? AND n.retido_em IS NOT NULL "
+    + _SO_NO_QUE_TRAVA.format(a="n").rstrip())
 
 
 def hold_da_malha(cur, malha: str) -> dict:
@@ -1594,8 +1614,11 @@ def hold_da_malha(cur, malha: str) -> dict:
 
 
 def ha_no_retido(cur, malha: str) -> bool:
-    """Existe nó da malha SEGURADO agora? A pergunta de SIM/NÃO sobre o mesmo
-    `hold_da_malha` — uma consulta só, uma derivação só."""
+    """Existe nó da malha SEGURADO agora — **fora o Início**? A pergunta de
+    SIM/NÃO sobre o mesmo `hold_da_malha`: uma consulta só, uma derivação só.
+
+    O Início não entra (§6.7): ele segura a PARTIDA, e a corrida em andamento
+    segue. Ver o comentário de `SQL_HOLD_DA_MALHA`."""
     return hold_da_malha(cur, malha)["retido"]
 
 
@@ -1625,6 +1648,11 @@ def ha_no_retido(cur, malha: str) -> bool:
 # `atraso_visto_em = NULL`: o `MALHA_ATRASADA` já emitido falava de um teto que
 # acabou de mudar de lugar. Sem zerar, um atraso NOVO — depois do crédito —
 # ficaria mudo para sempre, porque a memória de efeito colateral é por corrida.
+#
+# O Início fica fora das DUAS pontas (ver `SQL_HOLD_DA_MALHA`): fora do `MIN`
+# que mede — soltar o Início não pode creditar nada, porque ele nunca parou o
+# ciclo — e fora do `NOT EXISTS` do "último nó" — um Início segurado não pode
+# impedir o crédito do último Aguarde solto.
 SQL_CREDITAR_HOLD = (
     "UPDATE me SET teto_creditado_min = me.teto_creditado_min + h.cred, "
     "teto_em = DATEADD(MINUTE, h.cred, me.teto_em), "
@@ -1635,11 +1663,13 @@ SQL_CREDITAR_HOLD = (
     "FROM dbo.etl_malha_execucao me "
     "CROSS APPLY (SELECT DATEDIFF(MINUTE, MIN(n.retido_em), SYSDATETIME()) AS cred "
     "FROM dbo.etl_malha_no n "
-    "WHERE n.malha_name = me.malha_name AND n.retido_em IS NOT NULL) h "
+    "WHERE n.malha_name = me.malha_name AND n.retido_em IS NOT NULL "
+    + _SO_NO_QUE_TRAVA.format(a="n") + ") h "
     "WHERE me.malha_name = ? AND me.fechada_em IS NULL "
     "AND me.teto_em IS NOT NULL AND h.cred > 0 "
     "AND NOT EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
     "WHERE n2.malha_name = me.malha_name AND n2.retido_em IS NOT NULL "
+    + _SO_NO_QUE_TRAVA.format(a="n2") +
     "AND n2.id <> ?)")
 
 

@@ -1182,6 +1182,28 @@ def _fechar_corridas_malha(conn, log) -> int:
         try:
             est = mc.estado(conn, corrida,
                             dispensa_sem_linha=_dispensa_por_dia(conn, corrida, {}))
+            # ⚠️ `estado()` degrada LARGA: lock timeout na tabela das execuções
+            # (a maior do schema, e às 3h a mais disputada), deadlock ou coluna
+            # ausente fazem a função logar e devolver os BALDES VAZIOS —
+            # a razão de o nome dela não aparecer aqui é a invariante "zero SQL
+            # no fonte da DAG". Vazio lido como fato é `linhas == 0`, e
+            # `linhas == 0` com a carência vencida fecha a corrida como
+            # `ABORTADA` — "não chegou a começar", com card no Teams, por cima
+            # de oito pipelines `EXECUTANDO`. É o MESMO furo que a revisão da F3
+            # achou na porta do disparo, na única leitura que ainda não o
+            # tratava; `_expirar_na_porta` já recusa por este exato motivo.
+            #
+            # `membros` é o discriminador honesto: toda corrida nasce com o
+            # snapshot congelado no MESMO commit (§6.2), logo `membros = 0` só
+            # acontece quando a leitura não respondeu. Pular custa um ciclo de
+            # 5 min — e a corrida travada de verdade tem o teto e o botão
+            # Encerrar corrida (§6.8). "Não consegui perguntar" nunca vira
+            # "pode fechar", literal.
+            if int(est.get("membros") or 0) == 0:
+                log.warning("[GUARDIA] estado da corrida da malha '%s' nao "
+                            "pode ser lido (snapshot vazio) — NENHUM desfecho "
+                            "neste ciclo", malha)
+                continue
             rel = mc.relogios(conn, corrida, carencia, quiescencia)
             # HOLD suspende os relógios (Decisão 30): um Aguarde que o próprio
             # operador segurou faz liberado() devolver False para o dependente
