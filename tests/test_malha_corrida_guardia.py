@@ -1198,6 +1198,76 @@ def test_observador_usa_o_odate_da_corrida_aberta_e_carimba_o_id(monkeypatch):
     assert eventos == [("#no:18", ONTEM, "MALHA_CONCLUIDA", 31)]
 
 
+def test_o_card_do_Fim_NAO_sai_com_pipeline_ainda_em_execucao(monkeypatch):
+    """"Malha concluída" com gente correndo é card mentiroso.
+
+    A F8 abriu essa porta sem querer: o descarte de desfecho — que existe para
+    a SEGUNDA `MALHA_CONCLUIDA` do rerun poder ser gravada — apaga também o
+    evento do NÓ, e era justamente o remanescente que impedia a re-emissão.
+    Rerun de um pipeline que **não** é upstream do Fim reabre a corrida, deixa
+    os upstream intactos, e em ≤5 min o Teams anunciaria a malha concluída com
+    o reprocesso ainda em voo.
+
+    A guarda é mais ampla que o rerun de propósito: o nó Fim significa "a malha
+    terminou", e afirmar isso com QUALQUER membro vivo é falso — venha ele de
+    reprocesso ou de um ramo que não passa pelo Fim."""
+    eventos = []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_OBSERVADOR],
+           pipelines_todos_sucesso=lambda conn, pipes, d: True,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
+               eventos.append((p, t)) or True)
+    _corrida(monkeypatch,
+             corrida_aberta=lambda conn, m: _corrida_dict(id=31),
+             estado=lambda conn, c, dispensa_sem_linha=None:
+                 _estado(vivos=["PIPE_REPROCESSO"], ok=["PIPE_A"], linhas=2,
+                         membros=2))
+    GUARDIA.ciclo()
+    assert eventos == [], "o card saiu com um pipeline ainda em execucao"
+
+
+def test_o_card_do_Fim_SAI_quando_ninguem_mais_esta_correndo(monkeypatch):
+    """O contraponto — sem ele, a guarda acima poderia ter emudecido o
+    observador para sempre, e o card do Fim nunca mais sairia."""
+    eventos = []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_OBSERVADOR],
+           pipelines_todos_sucesso=lambda conn, pipes, d: True,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
+               eventos.append((p, t)) or True)
+    _corrida(monkeypatch,
+             corrida_aberta=lambda conn, m: _corrida_dict(id=31),
+             estado=lambda conn, c, dispensa_sem_linha=None:
+                 _estado(ok=["PIPE_A", "PIPE_B"], linhas=2, membros=2))
+    GUARDIA.ciclo()
+    assert eventos == [("#no:18", "MALHA_CONCLUIDA")]
+
+
+def test_leitura_de_vivos_indisponivel_ADIA_o_card_em_vez_de_afirmar(monkeypatch):
+    """Não sei se há vivo ⇒ não afirmo que acabou.
+
+    É a mesma política que a F3 e a F7 já aplicaram nas outras leituras que
+    degradam larga: baldes vazios lidos como fato foram, nas duas, a causa de
+    um defeito ALTO. Aqui o custo de adiar é um ciclo de 5 min; o de afirmar é
+    um card errado no celular de quem está de plantão."""
+    eventos = []
+
+    def _explode(conn, c, dispensa_sem_linha=None):
+        raise RuntimeError("lock request time out period exceeded (1222)")
+
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_OBSERVADOR],
+           pipelines_todos_sucesso=lambda conn, pipes, d: True,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
+               eventos.append((p, t)) or True)
+    _corrida(monkeypatch,
+             corrida_aberta=lambda conn, m: _corrida_dict(id=31),
+             estado=_explode)
+    saida = GUARDIA.ciclo()          # o ciclo SEGUE — observador não derruba
+    assert eventos == []
+    assert saida["observadores"] == 0
+
+
 def test_sem_corrida_aberta_a_janela_D_menos_1_e_D_volta_a_valer(monkeypatch):
     """A janela vira FALLBACK, não some: é o que vale com o interruptor
     desligado, sem a 085 e para malha sem corrida. E o id vem da corrida
@@ -1452,7 +1522,9 @@ def test_o_escopo_da_linha_exige_o_odate_nos_DOIS_ramos(mc):
     assert "e.data_referencia = %s" in normal
     assert ("(e.malha_execucao_id = %s OR COALESCE(e.inicio, e.criado_em) >= %s)"
             in normal)
-    assert "e.substituida_em IS NULL" in normal
+    # F8 (pendência 13g): a linha APOSENTADA some do escopo — menos quando ela
+    # ainda está `EXECUTANDO`. Ver o teste de comportamento logo abaixo.
+    assert ("(e.substituida_em IS NULL OR e.status = 'EXECUTANDO')" in normal)
     assert params == (ODATE, 12, MOMENTO_ANCORA, 12)
     # e a segunda consulta é o espelho do mesmo predicado (§6.9/#15): a linha
     # que a corrida carimbou e cujo ODATE é OUTRO aparece nominalmente. Trocar
@@ -1462,6 +1534,38 @@ def test_o_escopo_da_linha_exige_o_odate_nos_DOIS_ramos(mc):
     normal_fora = " ".join(sql_fora.split())
     assert "e.malha_execucao_id = %s AND e.data_referencia <> %s" in normal_fora
     assert params_fora == (12, ODATE)
+
+
+def test_a_linha_aposentada_que_ainda_EXECUTA_continua_viva(mc):
+    """Pendência 13g da §18, fechada na F8 — e o gesto que abre a janela é o
+    próprio rerun.
+
+    `marcar_substituidas` carimba `substituida_em` num statement; a linha nova
+    só nasce quando o claim acontecer, que pode ser no ciclo seguinte da
+    guardiã. Entre os dois, com o filtro puro, o membro que continua rodando no
+    Airflow SUMIA de `vivos` — e vivo invisível deixa a corrida fechar por cima
+    de trabalho em andamento (a família de defeito que a F3 e a F7 já
+    consertaram em outras leituras).
+
+    A guarda é ESTREITA de propósito: aposentada em SUCESSO continua fora (senão
+    a Decisão 55 cairia e o rerun às 3h contaria a linha velha como OK).
+    """
+    conn = _Conn([{"rows": [_linha_estado("P_RODANDO", status="EXECUTANDO")]},
+                  {"rows": []}])
+    saida = mc.estado(conn, _corrida_dict(), dispensa_sem_linha=lambda p: False)
+    assert saida["vivos"] == ["P_RODANDO"]
+    assert saida["pendentes"] == []
+    # A cláusula que faz isso ser possível está no statement — e é ela, não a
+    # bondade do roteiro, que traz a linha aposentada de volta.
+    normal = " ".join(conn._cur.execs[0][0].split())
+    assert "OR e.status = 'EXECUTANDO'" in normal
+    # E o outro lado: a órfã já alertada continua saindo de `vivos` (Decisão
+    # 22), senão a guarda nova viraria bloqueio eterno por linha morta.
+    conn2 = _Conn([{"rows": [_linha_estado("P_RODANDO", status="EXECUTANDO",
+                                           orfa=1)]}, {"rows": []}])
+    saida2 = mc.estado(conn2, _corrida_dict(), dispensa_sem_linha=lambda p: False)
+    assert saida2["vivos"] == []
+    assert [p["classe"] for p in saida2["pendentes"]] == ["orfa"]
 
 
 def test_aguardando_indisponivel_devolve_a_MARCA_nunca_lista_vazia(mc):

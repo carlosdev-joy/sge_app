@@ -54,6 +54,25 @@ interface CascataPrevia {
   sem_corrida: string[]
   corridas: Record<string, CorridaAfetada[]>
   truncado: boolean
+  /** F8 — o CICLO da malha em que esta reexecução cai (§6.9/#3, Decisão 65).
+   *  `null`/ausente = pipeline fora de malha, banco a meio deploy ou leitura
+   *  indisponível: sem certeza, sem frase. */
+  corrida?: CorridaDoCiclo | null
+}
+
+interface CorridaDoCiclo {
+  malha: string
+  data_referencia: string
+  status: string
+  /** 'em_andamento' | 'reabre' | 'fora_do_ciclo' — o efeito COM cascata */
+  efeito: string
+  mensagem: string
+  /** O MESMO ciclo lido pela opção "apenas este pipeline": o servidor só toca
+   *  na corrida dentro da cascata e com dependente aposentado, então na opção
+   *  que nasce marcada a reabertura não acontece. Opcional porque uma API
+   *  anterior a esta correção não manda o par — e aí a frase única é a antiga. */
+  efeito_sem_cascata?: string
+  mensagem_sem_cascata?: string
 }
 
 interface PreviaRerun {
@@ -83,6 +102,10 @@ interface RespostaRerun {
   corridas_irmas_aposentadas: number
   auditado: boolean
   avisos: string[]
+  /** F8 — ciclos que voltaram a ABERTA por causa deste gesto */
+  corridas_reabertas?: { malha: string; data_referencia: string; tentativas: number }[]
+  /** F8 — ciclos que NÃO reabriram e ficaram com o registro do reprocesso */
+  corridas_com_reprocesso?: { malha: string; data_referencia: string; status: string }[]
 }
 
 interface Props {
@@ -157,6 +180,20 @@ export function ModalRerunEtapa({
   // ter marcado a opção mandaria `cascata: true` e o botão prometeria um
   // alcance que o servidor não entrega — a mentira que a decisão 1 proíbe.
   const cascataEfetiva = cascata && podeCascata
+  // O ciclo da malha só é tocado DENTRO da cascata e só quando alguma corrida
+  // de dependente foi aposentada (`n > 0` no servidor — `com_corrida` é o mesmo
+  // predicado). Fora disso o gesto não reabre nada, e a frase tem de ser a
+  // outra: prometer a reabertura na opção que nasce marcada seria a tela
+  // dizendo o contrário do que o servidor faz.
+  const ciclo = deps?.corrida
+  const cicloMensagem = ciclo
+    ? (cascataEfetiva ? ciclo.mensagem
+                      : (ciclo.mensagem_sem_cascata ?? ciclo.mensagem))
+    : null
+  const cicloEfeito = ciclo
+    ? (cascataEfetiva ? ciclo.efeito
+                      : (ciclo.efeito_sem_cascata ?? ciclo.efeito))
+    : null
 
   const executar = useMutation<RespostaRerun>({
     mutationFn: () => apiFetch('/execucoes/rerun', {
@@ -268,6 +305,23 @@ export function ModalRerunEtapa({
           <Aviso tom="alerta" icone={<AlertTriangle size={14} className="mt-0.5 shrink-0" />}>
             O Airflow não respondeu à simulação — a lista de etapas abaixo pode
             estar incompleta. Nada foi escondido; o que falta é dito.
+          </Aviso>
+        )}
+
+        {/* ── O que acontece com o CICLO da malha (F8, Decisão 65) ───────
+            "O gesto mais delicado do modelo não pode virar um clique de 3h no
+            escuro": reexecutar dentro de um ciclo em voo o ALIMENTA sem
+            reiniciar o relógio dele; reexecutar um ciclo já fechado o REABRE;
+            e com outro ciclo em andamento, o antigo não volta. Só aparece
+            quando o servidor teve certeza — sem certeza, sem frase.
+            A frase ACOMPANHA a opção marcada: o servidor só reabre dentro da
+            cascata, e dizer "volta a ficar ABERTO" na opção "apenas este
+            pipeline" seria prometer o que não vai acontecer. */}
+        {ciclo && cicloMensagem && (
+          <Aviso tom={cicloEfeito === 'reabre' ? 'alerta' : 'info'}
+                 icone={<AlertTriangle size={14} className="mt-0.5 shrink-0" />}>
+            <strong>Malha {ciclo.malha}</strong> — ciclo de{' '}
+            {ciclo.data_referencia}: {cicloMensagem}
           </Aviso>
         )}
 
@@ -488,12 +542,17 @@ function ListaPipelines({
 }
 
 function Aviso({ tom, icone, children }: {
-  tom: 'alerta' | 'erro'
+  // `info` (F8): o ciclo em voo que só ganha um pipeline a mais NÃO é um
+  // problema — pintá-lo de âmbar junto com "DAG pausada" ensinaria o olho a
+  // ignorar o âmbar justamente onde ele importa.
+  tom: 'info' | 'alerta' | 'erro'
   icone: React.ReactNode
   children: React.ReactNode
 }) {
   const cls = tom === 'erro'
     ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300'
+    : tom === 'info'
+    ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300'
     : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400'
   return (
     <div className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-[11px] leading-snug ${cls}`}>

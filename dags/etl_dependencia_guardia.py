@@ -1446,6 +1446,34 @@ def _observadores_malha(conn, agora: datetime, log, corrida_on: bool = False) ->
                     continue
                 if not dep.pipelines_todos_sucesso(conn, upstream, data_ref):
                     continue
+                # "Concluída" com gente correndo é card mentiroso — e a F8
+                # abriu essa porta sem querer: o descarte de desfecho (que
+                # existe para a SEGUNDA MALHA_CONCLUIDA do rerun poder ser
+                # gravada) apaga também o evento do NÓ, e o remanescente era
+                # justamente o que impedia a re-emissão. Rerun de um pipeline
+                # que não é upstream do Fim reabre a corrida, deixa os upstream
+                # intactos, e em ≤5 min o Teams anunciaria a malha concluída
+                # com o reprocesso ainda em voo.
+                #
+                # A guarda é mais ampla que o rerun de propósito: o Fim
+                # significa "a malha terminou", e afirmar isso com QUALQUER
+                # membro vivo é falso — venha ele de reprocesso ou de um ramo
+                # que não passa pelo Fim.
+                if aberta is not None:
+                    try:
+                        if mc.estado(conn, aberta).get("vivos"):
+                            log.info("[GUARDIA] no %s (malha '%s'): upstream "
+                                     "concluido, mas a corrida ainda tem "
+                                     "pipeline em execucao — card adiado",
+                                     no_id, malha)
+                            continue
+                    except Exception as e:  # noqa: BLE001 — observador degrada
+                        # Não sei se há vivo ⇒ não afirmo que acabou. O card
+                        # sai no próximo ciclo se a leitura voltar.
+                        log.warning("[GUARDIA] no %s (malha '%s'): nao consegui "
+                                    "conferir se ha pipeline vivo (%s) — card "
+                                    "adiado", no_id, malha, e)
+                        continue
                 corrida_id = None
                 if corrida_on:
                     dona = (aberta if aberta is not None

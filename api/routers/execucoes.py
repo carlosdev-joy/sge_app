@@ -24,6 +24,9 @@ from routers.airflow import _DAG_ID_RE
 from services import data_referencia as dref
 from services import dependencias as deps_svc
 from services import execucao_identidade as ident_svc
+# O registro da CORRIDA de malha (F8 — §6.9/#3): o rerun com cascata reabre o
+# ciclo que acabou de aposentar, na mesma transação do carimbo.
+from services import malha_corrida as mc
 # Cascata, reabertura de corrida e auditoria do rerun (F4 — §4 e decisão 1 §7).
 from services import rerun as rerun_svc
 # Pausa de etapa em runtime, liberação e cancelamento (F5 — §5 Bloco C, decisão 3).
@@ -676,9 +679,210 @@ AVISO_CASCATA_INDISPONIVEL = {
 }
 
 
+# ── F8: o efeito do rerun sobre o CICLO da malha (§6.9/#3) ──────────────────
+#
+# Nada aqui é importado no topo do módulo de propósito: `routers.malhas` importa
+# `routers.pipelines` e meia dúzia de serviços, e um import de router para router
+# no topo é a forma mais barata de criar um ciclo de import que só aparece no
+# arranque do container. Dentro da função, o custo é um lookup em `sys.modules`.
+
+
+def _corrida_operavel(cur, malha: str):
+    """O portão do §11.1, emprestado do router de malhas — MESMA função, nunca
+    uma segunda cópia da regra.
+
+    Reabrir corrida que o `dags/` deployado não sabe fechar é o mesmo estrago de
+    ABRIR uma: ela ficaria aberta até o teto e, enquanto isso, bloquearia o
+    disparo da malha. Com o interruptor desligado (o estado de hoje), o rerun
+    responde exatamente como antes desta fase."""
+    from routers.malhas import _corrida_operavel as portao
+    return portao(cur, malha)
+
+
+def _frase_da_corrida(c: dict, sufixo: str) -> str:
+    """Decisão 74 — a corrida se chama pela DATA, nunca pelo `#id`. O `#12` é
+    chave de banco; quem lê às 3h procura "a corrida de 2026-08-04".
+
+    O rótulo vem de `_rotulo_corrida`, o MESMO da tela de malhas: duas grafias
+    do mesmo ciclo (uma no toast do rerun, outra no painel) fariam o operador
+    achar que são dois."""
+    from routers.malhas import _rotulo_corrida
+    return f"a {_rotulo_corrida(c)} da malha '{c.get('malha_name')}' {sufixo}"
+
+
+def _efeito_na_corrida(cur, oficial: str, alvos: list, data_ref, usuario: str,
+                       saida: dict) -> None:
+    """Reabre o ciclo que o rerun acabou de aposentar — ou registra que ele NÃO
+    foi reaberto e por quê (§6.9/#3).
+
+    Roda na transação de `_aplicar_cascata`, que é a MESMA que carimbou
+    `substituida_em`: a spec exige as duas coisas no mesmo commit, senão ou o
+    rerun rola inteiro de volta por um 2601, ou a corrida não reabre e ninguém
+    percebe.
+
+    Três desfechos, e os três são DITOS:
+
+      • corrida `CONCLUIDA`/`FALHA` e nenhuma outra aberta da malha → reabre,
+        `tentativas += 1`, e os eventos do desfecho anulado são descartados
+        (é o que deixa a segunda `MALHA_CONCLUIDA` do dia existir);
+      • já há OUTRA corrida aberta da malha (o plantão do dia 04 reprocessando
+        o dia 03) → **não reabre** — a linha preserva o `malha_execucao_id`
+        original (Decisão 9) —, grava `MALHA_REPROCESSO` na corrida antiga e a
+        do dia 04 não é tocada. O desenho não passa por cima do próprio índice
+        único;
+      • a corrida em questão está ABERTA → não há o que reabrir; o aviso diz
+        que a reexecução ENTRA nela e que o relógio de fechamento não reinicia
+        (Decisão 65).
+
+    Nunca levanta: o clear JÁ aconteceu no Airflow. Falha vira aviso.
+    """
+    from routers.malhas import _evento_da_corrida
+    if not mc.tabela_085_presente(cur):
+        return
+    corridas = mc.corridas_das_linhas(cur, [oficial, *alvos], data_ref)
+    for c in corridas:
+        try:
+            operavel, motivo_portao = _corrida_operavel(cur, c["malha_name"])
+            if not operavel:
+                log.info("[RERUN] ciclo da malha '%s' não operado pela API "
+                         "(%s) — o rerun segue como antes da F8",
+                         c["malha_name"], motivo_portao)
+                continue
+            if c["status"] == mc.STATUS_ABERTA:
+                # Decisão 65: o botão só existe com a frase do efeito. Aqui ela
+                # é dita depois porque o gesto já aconteceu — a prévia diz antes.
+                saida["avisos"].append(_frase_da_corrida(
+                    c, "está em andamento: esta reexecução é contada nela, e o "
+                       "relógio de fechamento do ciclo NÃO reinicia por este "
+                       "gesto"))
+                continue
+            detalhe = (f"reexecucao de {oficial} em "
+                       f"{_iso_data(data_ref)} por {usuario}")
+            if mc.reabrir_corrida(cur, c["id"], f"rerun:{usuario}", detalhe):
+                recarregada = mc.corrida(cur, c["id"]) or c
+                saida["corridas_reabertas"].append({
+                    "malha": c["malha_name"],
+                    "data_referencia": _iso_data(c["data_referencia"]),
+                    "tentativas": recarregada.get("tentativas"),
+                })
+                saida["avisos"].append(_frase_da_corrida(
+                    c, f"voltou a ABERTA (tentativa "
+                       f"{recarregada.get('tentativas')}) — ela fecha de novo "
+                       "quando o reprocesso terminar"))
+                log.info("[RERUN] corrida #%s da malha '%s' reaberta por %s",
+                         c["id"], c["malha_name"], usuario)
+                continue
+            # Não reabriu. As duas causas têm conserto e leitura DIFERENTES, e
+            # por isso a mensagem não pode ser uma só: "há outro ciclo em voo" é
+            # temporário e esperado; "este ciclo é fim de linha" é definitivo.
+            outra = mc.corrida_aberta(cur, c["malha_name"])
+            if outra is not None and int(outra["id"]) != int(c["id"]):
+                porque = ("há outro ciclo desta malha em andamento (o de "
+                          + _iso_data(outra["data_referencia"]) +
+                          ") — o reprocesso roda, mas fora do ciclo antigo")
+            else:
+                porque = (f"o ciclo foi encerrado como {c['status']} e não "
+                          "volta — o reprocesso roda fora dele")
+            _evento_da_corrida(cur, c, "MALHA_REPROCESSO",
+                               f"{detalhe}: corrida NAO reaberta ({porque})")
+            saida["corridas_com_reprocesso"].append({
+                "malha": c["malha_name"],
+                "data_referencia": _iso_data(c["data_referencia"]),
+                "status": c["status"],
+            })
+            saida["avisos"].append(_frase_da_corrida(c, "NÃO foi reaberta: "
+                                                    + porque))
+        except Exception as e:  # noqa: BLE001 — o clear já aconteceu
+            log.warning("[RERUN] efeito na corrida da malha '%s' não aplicado: "
+                        "%s", c.get("malha_name"), e)
+            saida["avisos"].append(
+                f"o ciclo da malha '{c.get('malha_name')}' não pôde ser "
+                f"atualizado por este reprocesso ({e}) — confira a tela da "
+                f"malha")
+
+
+def _iso_data(v) -> str:
+    return v.strftime("%Y-%m-%d") if hasattr(v, "strftime") else str(v)
+
+
+# A frase da prévia NUNCA pode prometer mais do que `_efeito_na_corrida` faz —
+# e ele faz menos do que a leitura ingênua sugere, por DUAS razões que a prévia
+# tem de conhecer:
+#
+#   1. o portão do §11.1. Com o interruptor em `0` (o estado de hoje), com a
+#      085 ausente, com o `dags/` deployado sem a capacidade ou com a guardiã
+#      sem heartbeat, o efeito é PULADO em silêncio — e o modal ficaria dizendo
+#      "este ciclo volta a ficar ABERTO" para um gesto que não toca em corrida
+#      nenhuma. É a mesma régua de "sem certeza, sem frase" que já governa o
+#      `None`: a certeza aqui inclui poder operar;
+#   2. a CASCATA. `_efeito_na_corrida` só roda dentro de `if cascata:` e com
+#      `marcar_substituidas` tendo aposentado alguma corrida (`n > 0`) — e a
+#      opção que nasce marcada no modal é "apenas este pipeline". Sem a segunda
+#      frase, a promessa da reabertura apareceria justamente na opção em que ela
+#      nunca acontece.
+#
+# Por isso a prévia devolve DUAS leituras do mesmo ciclo, e quem escolhe é a
+# tela, que é quem sabe qual opção está marcada. As frases moram aqui (e não no
+# front) pelo motivo de sempre: duas grafias do mesmo efeito fariam o operador
+# achar que são dois efeitos.
+def _previa_da_corrida(cur, oficial: str, data_ref) -> dict | None:
+    """A frase da Decisão 65, dita ANTES do clique: em que ciclo esta
+    reexecução cai, e o que acontece com ele — em CADA uma das duas opções.
+
+    `None` quando não há corrida nenhuma (pipeline fora de malha, banco sem a
+    085, leitura indisponível) **ou quando a API não pode operar a corrida**
+    (§11.1) — e aí o modal fica como era antes desta fase, que é a degradação
+    certa: sem certeza, sem frase."""
+    try:
+        if not mc.tabela_085_presente(cur):
+            return None
+        corridas = mc.corridas_das_linhas(cur, [oficial], data_ref)
+        if not corridas:
+            return None
+        c = corridas[0]
+        operavel, motivo_portao = _corrida_operavel(cur, c["malha_name"])
+        if not operavel:
+            log.info("[RERUN] prévia do ciclo da malha '%s' omitida (%s) — o "
+                     "rerun não vai tocar na corrida, e a tela não promete",
+                     c["malha_name"], motivo_portao)
+            return None
+        if c["status"] == mc.STATUS_ABERTA:
+            # A linha reexecutada já é deste ciclo (`reviver_corrida` preserva o
+            # `malha_execucao_id`), então a leitura é a MESMA com e sem cascata.
+            efeito = ("em_andamento", "esta reexecução entra neste ciclo, que "
+                      "está em andamento; o relógio de fechamento não reinicia "
+                      "por este gesto")
+            sem_cascata = efeito
+        elif c["status"] in mc.REABREM and \
+                mc.corrida_aberta(cur, c["malha_name"]) is None:
+            efeito = ("reabre", "este ciclo já encerrado volta a ficar ABERTO e "
+                      "fecha de novo quando o reprocesso terminar")
+            sem_cascata = ("nao_toca", "este ciclo já encerrado NÃO volta a "
+                           "abrir por este gesto — só a reexecução COM os "
+                           "dependentes o reabre; sozinha, ela roda fora dele")
+        else:
+            efeito = ("fora_do_ciclo", "este ciclo NÃO volta a abrir — o "
+                      "reprocesso roda fora dele, e fica registrado nele")
+            sem_cascata = ("nao_toca", "este ciclo NÃO volta a abrir, e sem os "
+                           "dependentes o reprocesso nem fica registrado nele")
+        return {"malha": c["malha_name"],
+                "data_referencia": _iso_data(c["data_referencia"]),
+                "status": c["status"], "efeito": efeito[0],
+                "mensagem": efeito[1],
+                # ADITIVAS: front antigo lê só `mensagem` e continua desenhando
+                # a frase da cascata — que era o comportamento desta fase.
+                "efeito_sem_cascata": sem_cascata[0],
+                "mensagem_sem_cascata": sem_cascata[1]}
+    except Exception as e:  # noqa: BLE001 — prévia degrada, nunca derruba
+        log.warning("[RERUN] prévia do ciclo de '%s' indisponível: %s",
+                    oficial, e)
+        return None
+
+
 def _previa_afetados(oficial: str, data_ref) -> dict:
     """Bloco `cascata` da prévia — quem é atingido em CADA opção (decisão 1)."""
     conn = cur = None
+    corrida_previa = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
         if not deps_svc.tabela_067(cur):
@@ -686,6 +890,7 @@ def _previa_afetados(oficial: str, data_ref) -> dict:
                     "dependentes": [], "com_corrida": [], "sem_corrida": [],
                     "corridas": {}, "truncado": False}
         info = rerun_svc.afetados(cur, oficial, data_ref)
+        corrida_previa = _previa_da_corrida(cur, oficial, data_ref)
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001
@@ -718,7 +923,106 @@ def _previa_afetados(oficial: str, data_ref) -> dict:
         "sem_corrida": info.get("sem_corrida") or [],
         "corridas": corridas,
         "truncado": bool(info.get("truncado")),
+        # ADITIVO (F8): `None` quando o pipeline não é membro de ciclo nenhum,
+        # ou quando o banco/interruptor não permitem responder com certeza.
+        # Front antigo ignora a chave; front novo só desenha a frase quando ela
+        # existe — "sem certeza, sem frase" (Decisão 65).
+        "corrida": corrida_previa,
     }
+
+
+@router.get("/pipelines/{pipeline_name}/corrida", tags=["execucoes"])
+def corrida_do_pipeline(pipeline_name: str,
+                        data_referencia: str | None = None,
+                        _auth: dict = Depends(get_current_user)):
+    """O ciclo de malha em que um disparo AVULSO deste pipeline vai cair
+    (§6.9/#5) — a frase que o modal de "Executar agora" diz **antes**.
+
+    Disparo avulso **nunca abre e nunca reabre** corrida. O que ele faz é
+    ADERIR: o degrau 3 do §7 faz o pipeline herdar o ODATE do ciclo em voo, e a
+    linha nasce contada nele. Sem esta frase, o operador dispara "só este
+    pipeline" às 3h e o número da malha muda sozinho na tela ao lado — ou, pior,
+    ele dispara para OUTRA data e a execução fica fora do ciclo sem que nada
+    diga isso.
+
+    Três respostas possíveis, e cada uma tem uma consequência diferente:
+
+      • `conta` — há ciclo aberto e a data bate: a execução será contada nele;
+      • `fora_do_ciclo` — o ODATE pedido é outro: **não** vincula, e a execução
+        fica fora do ciclo (Decisão 23 exige o ODATE nos dois ramos);
+      • `ambiguo` — o pipeline é membro de DUAS corridas abertas com ODATEs
+        diferentes: a execução será **recusada** com data divergente
+        (Decisão 34 — dois ODATEs nunca viram escolha).
+
+    `corrida: null` é a resposta normal de pipeline fora de malha, de banco sem
+    a 085 e de leitura indisponível: o modal fica como era antes desta fase.
+    Leitura pura, sem escrita nenhuma — por isso `get_current_user` basta.
+
+    ⚠️ **O interruptor decide as TRÊS frases, não só a primeira.** Quem faz o
+    disparo avulso aderir ao ciclo é `mc.odate()`, e a primeira linha dele é
+    `if not corrida_ativa(cur): return vazio`. Com o interruptor em `0` (o
+    estado de hoje) a execução NÃO é contada, NÃO fica "fora do ciclo" e — o
+    pior dos três — NÃO é recusada por data divergente: ela roda como antes da
+    spec, calculando a própria data. Anunciar uma recusa que não vai acontecer
+    é a única das três frases que faz o operador desistir de um disparo
+    legítimo às 3h, então o portão vem antes de todas elas.
+    """
+    pipeline = (pipeline_name or "").strip()
+    vazio = {"corrida": None, "efeito": None, "mensagem": None}
+    if not pipeline:
+        return vazio
+    conn = cur = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        if not mc.tabela_085_presente(cur) or not mc.corrida_ativa(cur):
+            return vazio
+        info = mc.corrida_aberta_do_pipeline(cur, pipeline)
+        abertas = info.get("corridas") or []
+        if not abertas:
+            return vazio
+        c = abertas[0]
+        rotulo = _iso_data(c["data_referencia"])
+        if info.get("ambiguo"):
+            malhas = ", ".join(sorted({str(x["malha_name"]) for x in abertas}))
+            return {
+                "corrida": {"malha": c["malha_name"],
+                            "data_referencia": rotulo, "status": c["status"]},
+                "efeito": "ambiguo",
+                "mensagem": (f"Este pipeline é membro de ciclos em andamento "
+                             f"com datas de referência DIFERENTES ({malhas}). "
+                             f"Um disparo agora será recusado por data "
+                             f"divergente — encerre ou aguarde um dos ciclos "
+                             f"antes de disparar."),
+            }
+        pedida = (data_referencia or "").strip()
+        if pedida and pedida != rotulo:
+            return {
+                "corrida": {"malha": c["malha_name"],
+                            "data_referencia": rotulo, "status": c["status"]},
+                "efeito": "fora_do_ciclo",
+                "mensagem": (f"A malha '{c['malha_name']}' tem um ciclo em "
+                             f"andamento na data {rotulo}. Como esta execução "
+                             f"pede a data {pedida}, ela ficará FORA desse "
+                             f"ciclo — não conta para o fechamento dele."),
+            }
+        return {
+            "corrida": {"malha": c["malha_name"], "data_referencia": rotulo,
+                        "status": c["status"]},
+            "efeito": "conta",
+            "mensagem": (f"Este pipeline é membro da malha "
+                         f"'{c['malha_name']}', que tem um ciclo em andamento "
+                         f"na data {rotulo}. Esta execução será CONTADA nesse "
+                         f"ciclo — ela não abre um ciclo novo."),
+        }
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("[MALHA] ciclo aberto de '%s' indisponível: %s", pipeline, e)
+        return vazio
+    finally:
+        for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+            try:
+                f and f()
+            except Exception:
+                pass
 
 
 @router.get("/pipelines/{pipeline_name}/rerun/previa", tags=["execucoes"])
@@ -848,7 +1152,11 @@ def _aplicar_cascata(oficial: str, data_ref, task_id: str, dag_run_id: str,
     `avisos` da resposta.
     """
     saida = {"corridas_substituidas": 0, "dependentes_reabertos": [],
-             "corridas_irmas_aposentadas": 0, "auditado": False, "avisos": []}
+             "corridas_irmas_aposentadas": 0, "auditado": False, "avisos": [],
+             # F8 — o efeito sobre o CICLO da malha. Listas (e não um objeto):
+             # o pipeline pode ser membro de N malhas (§6.9/#6), e o gesto pode
+             # reabrir um ciclo e apenas registrar reprocesso em outro.
+             "corridas_reabertas": [], "corridas_com_reprocesso": []}
     conn = cur = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -898,6 +1206,14 @@ def _aplicar_cascata(oficial: str, data_ref, task_id: str, dag_run_id: str,
                 # de novo. O toast do front conta esta lista; ele anunciaria
                 # uma cascata que não aconteceu.
                 saida["dependentes_reabertos"] = alvos if n > 0 else []
+                # F8 §6.9/#3 — o CICLO da malha, na MESMA transação do carimbo.
+                # O gatilho é `rowcount > 0`: sem corrida aposentada não houve
+                # reprocesso a jusante, e reabrir um ciclo por um gesto que não
+                # vai fazer nada rodar de novo o deixaria aberto até o teto,
+                # bloqueando o disparo da malha por nada.
+                if n > 0:
+                    _efeito_na_corrida(cur, oficial, alvos, data_ref, usuario,
+                                       saida)
                 if info.get("cascata_indisponivel"):
                     saida["avisos"].append(
                         AVISO_CASCATA_INDISPONIVEL.get(

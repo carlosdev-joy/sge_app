@@ -22,6 +22,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import get_db_conn
 from deps import PERM_EXECUTAR, get_current_user, require_perm
+from services import execucao_identidade as ident_svc
+from services import malha_corrida as mc
 from services.notify import add_notificacao
 
 log = logging.getLogger("orquestra-api")
@@ -35,6 +37,14 @@ _STATUS_DS = {
     "FAILED":  ("ABORTED", 3),
 }
 
+# ...e o equivalente na 067, que é a linha que o CICLO da malha lê (F8).
+# WARNING vira SUCESSO porque é assim que o resto do produto o trata: o
+# DataStage devolve "terminou com avisos", e `liberado()`/`pipelines_todos_sucesso`
+# já contam WARNING como conclusão. Inventar um terceiro estado aqui faria a
+# corrida ficar esperando para sempre por um pipeline que o operador declarou
+# terminado.
+_STATUS_067 = {"SUCCESS": "SUCESSO", "WARNING": "SUCESSO", "FAILED": "FALHA"}
+
 
 def _fmt_dt(v):
     if v is None:
@@ -42,6 +52,134 @@ def _fmt_dt(v):
     if hasattr(v, "strftime"):
         return v.strftime("%Y-%m-%d %H:%M:%S")
     return str(v)
+
+
+def _iso(v) -> str:
+    return v.strftime("%Y-%m-%d") if hasattr(v, "strftime") else str(v)
+
+
+def _fechar_linha_do_ciclo(cur, pipeline: str, alvos: list, status_final: str,
+                           quem: str, motivo) -> dict:
+    """F8 (Decisão 22) — a finalização manual passa a alcançar a linha da 067, e
+    reavalia o ciclo da malha **no mesmo gesto**.
+
+    Por que isto faltava: a linha órfã mais comum do sistema é `EXECUTANDO` na
+    067 com o DagRun já morto, e é ela que a Decisão 22 tira de `vivos` para a
+    corrida poder fechar nomeando o problema. A Finalização Manual é a
+    ferramenta do operador para esse caso — mas ela mexia em três tabelas e
+    **nenhuma delas era a 067**. O gesto "encerrei essa órfã" era literalmente
+    invisível para o ciclo: o membro continuava vivo no denominador, e a corrida
+    esperava por ele até o teto (24h por padrão).
+
+    O que este passo faz e o que NÃO faz:
+
+      • fecha a linha da 067 **só quando ela está `EXECUTANDO`** — nunca
+        reescreve terminal, nunca ressuscita, e o `rowcount` é o árbitro;
+      • carimba o `motivo` com a autoria, porque um SUCESSO declarado à mão tem
+        consequência a jusante (o dependente parte) e precisa ser rastreável;
+      • **não fecha a corrida.** Fechar é da guardiã, sempre (Decisão 19): os
+        sete desfechos dependem de quiescência, carência e teto, e uma segunda
+        implementação deles aqui seria a próxima divergência. O que o gesto
+        entrega na hora é tirar o membro de `vivos` — que é o que travava — e
+        DIZER como o ciclo ficou.
+
+    A ponte ts_nodash ↔ run_id é a `resolve_por_ts_nodash` que já existe: a 067
+    guarda o `run_id` do Airflow e o log de jobs guarda o `ts_nodash`, e casar
+    os dois "por parecido" foi um defeito que este repo já pagou.
+
+    ⚠️ **Medido no dev (2026-08-06):** essa ponte só fecha sozinha para run_id
+    da forma do Airflow (`scheduled__<ISO>`). Os run_ids que o próprio Orquestra
+    gera — `manual_orq_…` e o `guardia__…` do push, que é como a MAIORIA dos
+    membros de malha parte — devolvem `None` de propósito (o timestamp deles é
+    relógio local, e traduzi-lo daria um ts_nodash deslocado do fuso). Sem um
+    segundo caminho, a Decisão 22 valeria só para o membro agendado, que é
+    justamente o que menos precisa dela.
+
+    O segundo caminho é o `candidatos` que a própria resolução já devolve — as
+    linhas do pipeline na janela de ±1 dia do ts. Dele sai a linha a fechar
+    **só quando há exatamente UMA em execução**. Duas é ambiguidade, e
+    ambiguidade aqui se DECLARA, nunca se escolhe: fechar a errada carimbaria
+    SUCESSO num pipeline que ainda está rodando, e o dependente partiria com o
+    dado da véspera.
+
+    Nunca levanta: a finalização é a ferramenta de emergência do plantão, e ela
+    não pode falhar porque a malha não pôde ser consultada.
+    """
+    saida = {"linhas_ciclo_fechadas": 0, "corridas": [], "avisos": []}
+    novo_status = _STATUS_067.get(status_final)
+    if novo_status is None:
+        return saida
+    if not ident_svc.tem_tabela_067(cur):
+        return saida
+    texto = f"finalizacao manual por {quem}" + (f": {motivo}" if motivo else "")
+    datas: set = set()
+    for ts in alvos:
+        try:
+            ident = ident_svc.resolve_por_ts_nodash(cur, pipeline, str(ts))
+            run_id = ident.get("run_id")
+            if not run_id:
+                vivas = [c for c in (ident.get("candidatos") or [])
+                         if str(c.get("status") or "") == "EXECUTANDO"
+                         and c.get("substituida_em") is None
+                         and c.get("run_id")]
+                if len(vivas) > 1:
+                    saida["avisos"].append(
+                        f"há {len(vivas)} execuções em andamento deste pipeline "
+                        "na janela desta data e não dá para saber qual é esta — "
+                        "nenhuma foi encerrada para o ciclo da malha; encerre a "
+                        "corrida pela tela de Malha se ela estiver travada")
+                    continue
+                if not vivas:
+                    # A 067 pode simplesmente não ter linha em execução (pipeline
+                    # pré-retomada, disparo fora do Orquestra, ou a linha já
+                    # fechada). Não é erro: é o caso sem ciclo a reavaliar.
+                    continue
+                run_id = vivas[0]["run_id"]
+            # A chave é (pipeline, execution_id): o run_id é único no Airflow, e
+            # com ele a data não precisa entrar no WHERE — o que importa é não
+            # depender dela quando ela veio do caminho dos candidatos. O
+            # `status = 'EXECUTANDO'` é a guarda que impede reescrever terminal.
+            cur.execute(
+                "UPDATE dbo.etl_pipeline_execucao "
+                "SET status = ?, fim = GETDATE(), "
+                "    motivo = LEFT(ISNULL(motivo + ' | ', '') + ?, 500), "
+                "    atualizado_em = GETDATE() "
+                "OUTPUT inserted.data_referencia "
+                "WHERE pipeline_name = ? AND execution_id = ? "
+                "AND status = 'EXECUTANDO'",
+                (novo_status, texto[:400], pipeline, run_id))
+            fechadas = [r[0] for r in cur.fetchall()]
+            saida["linhas_ciclo_fechadas"] += len(fechadas)
+            datas.update(fechadas)
+        except Exception as e:  # noqa: BLE001
+            log.warning("[FINALIZACAO] linha do ciclo de '%s' (ts=%s) não "
+                        "fechada: %s", pipeline, ts, e)
+            saida["avisos"].append(
+                "a linha de execução usada pelo ciclo da malha não pôde ser "
+                f"encerrada ({e}) — a malha pode continuar esperando por este "
+                "pipeline")
+    if not datas:
+        return saida
+    # A reavaliação: com o membro fora de `vivos`, o que sobrou no ciclo?
+    try:
+        if not mc.tabela_085_presente(cur):
+            return saida
+        for c in (mc.corrida_aberta_do_pipeline(cur, pipeline).get("corridas")
+                  or []):
+            if c["data_referencia"] not in datas:
+                continue
+            est = mc.estado(cur, c)
+            saida["corridas"].append({
+                "malha": c["malha_name"],
+                "data_referencia": _iso(c["data_referencia"]),
+                "em_execucao": len(est["vivos"]),
+                "pendentes": [p["pipeline"] for p in est["pendentes"]],
+                "concluidos": len(est["ok"]),
+            })
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("[FINALIZACAO] ciclo de '%s' não reavaliado: %s",
+                    pipeline, e)
+    return saida
 
 
 @router.get("/finalizacao/executando", tags=["finalizacao"])
@@ -209,6 +347,13 @@ def finalizar_execucao(body: dict = Body(default={}),
                 (pipeline, matricula, novo),
             )
 
+        # F8: a MESMA transação alcança a linha que o ciclo da malha lê, e
+        # devolve como o ciclo ficou. Fora da transação, uma falha de rede
+        # deixaria o log fechado e a malha ainda esperando — que é exatamente o
+        # estado que o operador veio desfazer.
+        ciclo = _fechar_linha_do_ciclo(cur, pipeline, alvos, status_final,
+                                       matricula, motivo)
+
         conn.commit()
         cur.close(); conn.close()
     except HTTPException:
@@ -228,9 +373,18 @@ def finalizar_execucao(body: dict = Body(default={}),
              pipeline, user.get("matricula"), status_final,
              alvos, jobs_fechados, estruturas_fechadas, snapshots_removidos)
 
-    return {
+    resp = {
         "ok": True, "pipeline": pipeline, "status_final": status_final,
         "execucoes_finalizadas": alvos, "jobs_fechados": jobs_fechados,
         "estruturas_fechadas": estruturas_fechadas,
         "snapshots_removidos": snapshots_removidos,
     }
+    # ADITIVAS (F8) e só quando houve o quê dizer: front antigo ignora as
+    # chaves, e pipeline fora de malha responde byte a byte como antes.
+    if ciclo["linhas_ciclo_fechadas"]:
+        resp["linhas_ciclo_fechadas"] = ciclo["linhas_ciclo_fechadas"]
+    if ciclo["corridas"]:
+        resp["corridas"] = ciclo["corridas"]
+    if ciclo["avisos"]:
+        resp["avisos"] = ciclo["avisos"]
+    return resp

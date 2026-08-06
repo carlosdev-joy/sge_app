@@ -4256,6 +4256,65 @@ def _rotulo_corrida(c: dict) -> str:
     return f"corrida de {dia}" if seq <= 1 else f"{seq}ª corrida de {dia}"
 
 
+# ── F8: o que a EDIÇÃO do desenho faz (e não faz) com o ciclo em voo ────────
+#
+# §6.9/#16 e #17. O snapshot da corrida CONGELA membros, `conta_para_fim` e
+# `modo_fechamento` na abertura: qualquer edição vale da PRÓXIMA corrida em
+# diante. A regra já existia; o que faltava era a tela DIZER isso — sem a frase,
+# o operador adiciona um membro às 3h, olha o painel, não o vê no denominador e
+# conclui que a tela está quebrada (ou, pior, que o pipeline não vai rodar).
+#
+# **Avisa, nunca recusa.** Recusar seria transformar "esta malha tem ciclo em
+# voo" em "esta malha não pode ser editada por horas" — e a edição é legítima:
+# ela é o preparo do ciclo seguinte, que muitas vezes é o motivo pelo qual o
+# operador está acordado.
+_AVISOS_CICLO_EM_VOO = {
+    "inativar":
+        "a malha foi inativada, mas a {rotulo} continua até fechar sozinha — "
+        "nenhuma execução é interrompida, e nenhum ciclo NOVO abre. Para "
+        "encerrar o ciclo agora, use Encerrar corrida (com motivo)",
+    "membro_add":
+        "a {rotulo} está em andamento e o quadro de membros dela foi congelado "
+        "na abertura: o pipeline entra na malha agora, mas só passa a contar a "
+        "partir do próximo ciclo",
+    "membro_remove":
+        "a {rotulo} está em andamento e o quadro de membros dela foi congelado "
+        "na abertura: o pipeline sai da malha agora, mas continua contando "
+        "neste ciclo até ele fechar",
+    "republicar":
+        "a {rotulo} está em andamento: os membros que ainda não partiram vão "
+        "rodar com a versão NOVA da DAG e os que já partiram terminam com a "
+        "anterior — este ciclo fica metade com cada uma. Republicar depois de o "
+        "ciclo fechar evita isso",
+}
+
+
+def _aviso_ciclo_em_voo(cur, malha: str, gesto: str):
+    """A frase do §6.9/#16-#17 quando — e SÓ quando — há corrida aberta.
+
+    `None` é a resposta normal (malha sem ciclo em voo, banco sem a 085,
+    leitura indisponível): a chave nem entra na resposta, e a tela fica como
+    era antes desta fase. Um aviso inventado por leitura que falhou seria pior
+    que aviso nenhum.
+
+    Não passa pelo portão do §11.1 de propósito — ele governa quem OPERA a
+    corrida, e isto aqui só LÊ. Uma corrida aberta antes de alguém desligar o
+    interruptor continua em voo, e continuar avisando sobre ela é a verdade.
+    """
+    try:
+        if not mc.tabela_085_presente(cur):
+            return None
+        c = mc.corrida_aberta(cur, malha)
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("[MALHA] ciclo em voo de '%s' indisponível (%s) — gesto "
+                    "sem aviso", malha, e)
+        return None
+    if c is None:
+        return None
+    modelo = _AVISOS_CICLO_EM_VOO.get(gesto)
+    return modelo.format(rotulo=_rotulo_corrida(c)) if modelo else None
+
+
 def _msg_corrida_aberta(c: dict) -> str:
     """O 422 da porta 1 — o que aconteceu, por que, e o que a pessoa faz agora.
 
@@ -4830,6 +4889,16 @@ async def republicar_malha(malha_name: str, body: dict = Body(default={}),
                 (f"{pendentes_de_fora} pipeline(s) de fora desta malha também "
                  "estão pendentes de publicação e serão gerados na mesma "
                  "execução do gerador (comportamento normal da factory)")})
+        # §6.9/#17 (F8) — republicar com ciclo em voo deixa metade dos membros
+        # com código novo e metade com o anterior, dentro do MESMO ciclo. É
+        # `forte` porque é um efeito que ninguém enxerga depois: as duas metades
+        # rodam verdes, e a divergência só aparece no dado. Avisa e deixa
+        # seguir: às 3h, republicar no meio do ciclo pode ser exatamente o
+        # conserto que o operador precisa fazer.
+        aviso_ciclo = _aviso_ciclo_em_voo(cur, malha, "republicar")
+        if aviso_ciclo:
+            avisos.append({"no": None, "nivel": "forte",
+                           "mensagem": aviso_ciclo})
 
         # O banco fecha ANTES de falar com o Airflow (padrão do proxy): rede
         # lenta não pode segurar conexão de pool aberta.
@@ -5081,10 +5150,18 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
             cur.execute(
                 "UPDATE dbo.etl_malha SET descricao = ?, atualizado_em = SYSDATETIME() "
                 "WHERE malha_name = ?", (descricao, atual))
+        aviso_ciclo = None
         if tem_ativo:
             cur.execute(
                 "UPDATE dbo.etl_malha SET ativo = ?, atualizado_em = SYSDATETIME() "
                 "WHERE malha_name = ?", (ativo, atual))
+            # §6.9/#8 — inativar NÃO mata o ciclo em voo: corrida já aberta
+            # segue até fechar (órfã eterna é o pior resultado), e o que a
+            # inativação impede é a PRÓXIMA abrir. A tela tem de dizer isso; do
+            # contrário o operador inativa a malha achando que parou a
+            # madrugada, e ela continua andando.
+            if ativo == 0:
+                aviso_ciclo = _aviso_ciclo_em_voo(cur, atual, "inativar")
         migration_074_pendente = False
         if tem_orientacao:
             if tem_074:
@@ -5147,6 +5224,11 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
         # devolve a resposta de sempre, byte a byte.
         if corridas_renomeadas:
             resp["corridas_renomeadas"] = corridas_renomeadas
+        # ADITIVO e só quando há ciclo em voo (F8, §6.9/#8): front antigo
+        # ignora a chave, e malha sem corrida aberta responde byte a byte como
+        # antes desta fase.
+        if aviso_ciclo:
+            resp["aviso_ciclo"] = aviso_ciclo
         if tem_orientacao:
             resp["orientacao"] = orientacao
             if migration_074_pendente:
@@ -5212,9 +5294,17 @@ def add_membro(malha_name: str, body: dict = Body(default={}),
         cur.execute(
             "INSERT INTO dbo.etl_malha_pipeline (malha_name, pipeline_name) VALUES (?, ?)",
             (malha, pipeline))
+        # §6.9/#16 (F8) — o snapshot da corrida congelou na abertura: o membro
+        # entra no CADASTRO agora e no CICLO só no próximo. Avisa, não recusa:
+        # preparar o ciclo seguinte no meio do atual é gesto legítimo, e
+        # recusá-lo deixaria a malha inteditável por horas.
+        aviso_ciclo = _aviso_ciclo_em_voo(cur, malha, "membro_add")
         conn.commit(); cur.close(); conn.close()
-        return {"ok": True, "malha_name": malha, "pipeline_name": pipeline,
+        resp = {"ok": True, "malha_name": malha, "pipeline_name": pipeline,
                 "ja_membro": False}
+        if aviso_ciclo:
+            resp["aviso_ciclo"] = aviso_ciclo
+        return resp
     except HTTPException:
         raise
     except Exception as e:
@@ -5263,8 +5353,16 @@ def remove_membro(malha_name: str, pipeline_name: str,
             raise HTTPException(
                 status_code=404,
                 detail=f"'{pipeline_name}' não é membro da malha '{malha}'")
+        # §6.9/#16 (F8): o membro sai do cadastro, mas o snapshot do ciclo em
+        # voo já o congelou — ele continua no denominador até o ciclo fechar.
+        # Sem a frase, o operador remove o membro e não entende por que o
+        # painel continua esperando por ele.
+        aviso_ciclo = _aviso_ciclo_em_voo(cur, malha, "membro_remove")
         conn.commit(); cur.close(); conn.close()
-        return {"ok": True, "malha_name": malha}
+        resp = {"ok": True, "malha_name": malha}
+        if aviso_ciclo:
+            resp["aviso_ciclo"] = aviso_ciclo
+        return resp
     except HTTPException:
         raise
     except Exception as e:

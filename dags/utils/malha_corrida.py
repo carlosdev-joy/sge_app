@@ -71,6 +71,26 @@ MODOS_FECHAMENTO = ("fim", "quiescencia")
 # alguém (ou o teto) encerrou de propósito.
 REABREM = ("CONCLUIDA", "FALHA")
 
+# Os três eventos que a TENTATIVA encerrada deixou para trás e que a reabertura
+# tem de descartar (F8). Não são "history of the world": são a mesma MEMÓRIA DE
+# EFEITO COLATERAL de `falha_vista_em`/`atraso_visto_em` (Decisão 12), só que
+# morando na tabela de eventos por causa da chave única `ux_dep_evento_corrida`
+# — e `creditar_hold` já zera `atraso_visto_em` por este exato motivo, com estas
+# exatas palavras ("a memória de efeito colateral é por corrida").
+#
+# Sem descartá-los, a tentativa 2 conclui e a SEGUNDA `MALHA_CONCLUIDA` do dia é
+# engolida pelo `WHERE NOT EXISTS` de `gravar_evento`: a corrida reaberta guarda
+# o MESMO `id`, então a chave (marcador, data, tipo, corrida) é byte a byte a
+# da tentativa 1. O operador que mandou reprocessar às 08:40 não receberia card
+# nenhum, e o painel continuaria dizendo "concluída 05:12" — a hora do ciclo que
+# ele acabou de anular.
+#
+# O que NÃO se perde: o desfecho anulado e a hora dele passam a viver no
+# `motivo` da própria corrida, escritos pelo `SQL_REABRIR` no mesmo statement.
+# A casa da história do ciclo é `etl_malha_execucao` (é ela que tem `tentativas`,
+# `reaberta_em/por` e `fechada_em`); a tabela de eventos é a fila de alerta.
+EVENTOS_DO_DESFECHO = ("MALHA_CONCLUIDA", "MALHA_FALHOU", "MALHA_ATRASADA")
+
 # Defaults e domínios das configs da 085. Fora do domínio volta ao default —
 # mesma regra de `janela_sequencia_horas`: teto 0 congelaria a malha para
 # sempre e teto de mil horas transformaria a rede de segurança em decoração.
@@ -449,6 +469,53 @@ def corrida(conn, corrida_id):
     except Exception as e:  # noqa: BLE001
         print(f"{LOG} corrida #{corrida_id} indisponivel ({e}) — seguindo sem")
         return None
+
+
+# As corridas DONAS das linhas de um lote de pipelines num ODATE — a pergunta do
+# rerun (F8): "o que eu acabei de aposentar pertencia a que ciclo?".
+#
+# A resposta vem do vínculo já carimbado na linha (`malha_execucao_id`), e não
+# de `corrida_da_data(malha, data)`: com duas corridas da mesma malha no mesmo
+# dia (§6.9/#7) a segunda pergunta devolveria a MAIS RECENTE, e o rerun de um
+# membro da primeira reabriria a errada. A linha sabe de qual ciclo ela é —
+# ninguém mais sabe.
+#
+# Sem filtro de `substituida_em`: quando esta função é chamada, `substituida_em`
+# JÁ foi carimbado pelo próprio rerun. Filtrar deixaria o lote vazio e nada
+# reabriria — o defeito seria "o rerun não reabre nada e não diz por quê".
+def sql_corridas_das_linhas(quantos: int) -> str:
+    """O texto varia com o tamanho da lista (não há `IN ()` em T-SQL). Lista
+    vazia vira `1 = 0` — nunca a ausência da cláusula, que varreria a maior
+    tabela do schema."""
+    dentro = (", ".join("%s" for _ in range(int(quantos)))
+              if int(quantos) > 0 else None)
+    filtro = (f"e.pipeline_name IN ({dentro})" if dentro else "1 = 0")
+    return ("SELECT " + _COLS + " FROM dbo.etl_malha_execucao "
+            "WHERE id IN (SELECT DISTINCT e.malha_execucao_id "
+            "FROM dbo.etl_pipeline_execucao e "
+            "WHERE e.data_referencia = %s AND e.malha_execucao_id IS NOT NULL "
+            "AND " + filtro + ") ORDER BY id")
+
+
+def corridas_das_linhas(conn, pipelines, data_ref) -> list:
+    """As corridas que carimbaram as linhas de `pipelines` naquele ODATE, da
+    mais antiga para a mais nova. Lista vazia quando não há vínculo nenhum —
+    que é o caso normal de pipeline fora de malha, e não é erro.
+
+    Leitura degrada LARGA: banco mudo devolve `[]` e o rerun segue sem tocar em
+    corrida nenhuma. O reprocesso do operador nunca cai porque a malha não pôde
+    ser consultada."""
+    alvos = [str(p).strip() for p in (pipelines or []) if str(p).strip()]
+    if not alvos:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(sql_corridas_das_linhas(len(alvos)), (data_ref, *alvos))
+        return [_como_dict(r) for r in cur.fetchall()]
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        print(f"{LOG} corridas das linhas de {len(alvos)} pipeline(s) em "
+              f"{data_ref} indisponiveis ({e}) — nenhuma corrida tocada")
+        return []
 
 
 def corrida_aberta_do_pipeline(conn, pipeline: str) -> dict:
@@ -1034,12 +1101,33 @@ def fechar_corrida(conn, corrida_id, desfecho: str, fechada_por: str,
 # `ux_malha_exec_aberta` ali dentro ou rolaria o rerun inteiro de volta, ou
 # deixaria a corrida sem reabrir sem ninguém perceber (§6.9/#3). Com a condição
 # no WHERE, o pior caso é `rowcount = 0` — que é uma resposta, não um estrago.
+#
+# F8 — três acréscimos, e os três são a mesma ideia: **a tentativa encerrada não
+# pode continuar decidindo pela tentativa nova**.
+#
+#   • `falha_vista_em`/`atraso_visto_em` voltam a NULL. Elas são a memória que
+#     impede o mesmo card 200 vezes num dia (Decisão 12) — e essa memória é da
+#     TENTATIVA, não da linha: sem zerar, uma falha NOVA depois do reprocesso
+#     ficaria muda para sempre. É literalmente o que `creditar_hold` já faz com
+#     `atraso_visto_em`, pelo mesmo motivo escrito lá;
+#   • o desfecho ANULADO e a hora dele entram no `motivo`, compostos em T-SQL a
+#     partir de `me.status`/`me.fechada_em` (no SQL Server o lado direito do SET
+#     enxerga os valores ANTERIORES ao UPDATE — e conta de tempo em Python é
+#     proibida aqui, Decisão 10). É o que preserva "concluiu 05:12, foi
+#     reprocessada, concluiu de novo 09:30" depois que os eventos da tentativa 1
+#     forem descartados;
+#   • o `motivo` do chamador vira sufixo opcional do mesmo texto — e continua
+#     entrando DUAS vezes no statement (uma para testar o NULL, outra para
+#     concatenar), porque o parâmetro é posicional nas duas árvores.
 SQL_REABRIR = (
     "UPDATE me SET me.status = 'ABERTA', me.fechada_em = NULL, "
     "me.fechada_por = NULL, me.tentativas = me.tentativas + 1, "
     "me.reaberta_em = SYSDATETIME(), me.reaberta_por = %s, "
-    "me.motivo = CASE WHEN %s IS NULL THEN me.motivo "
-    "ELSE LEFT(ISNULL(me.motivo + ' | ', '') + %s, 500) END, "
+    "me.falha_vista_em = NULL, me.atraso_visto_em = NULL, "
+    "me.motivo = LEFT(ISNULL(me.motivo + ' | ', '') "
+    "+ 'reaberta apos ' + me.status + ' de ' "
+    "+ ISNULL(CONVERT(VARCHAR(19), me.fechada_em, 120), 'data desconhecida') "
+    "+ CASE WHEN %s IS NULL THEN '' ELSE ': ' + %s END, 500), "
     "me.atualizado_em = SYSDATETIME() "
     "FROM dbo.etl_malha_execucao me "
     "WHERE me.id = %s AND me.status IN (" +
@@ -1058,17 +1146,74 @@ def reabrir_corrida(conn, corrida_id, reaberta_por: str, motivo=None) -> bool:
     `EXPIRADA`, `ABORTADA` e `CANCELADA` não voltam; (ii) já existe OUTRA corrida
     aberta da malha, e nesse caso a regra da spec é explícita: **não reabre**, a
     linha preserva o `malha_execucao_id` original (Decisão 9) e grava-se
-    `MALHA_REPROCESSO` na corrida antiga."""
+    `MALHA_REPROCESSO` na corrida antiga.
+
+    Reabrir e descartar os eventos do desfecho anulado são **um gesto só**, e
+    por isso o descarte mora aqui dentro em vez de ser cobrado do chamador:
+    reabrir sem descartar produz uma corrida que roda de novo e conclui EM
+    SILÊNCIO, que é o defeito que a F8 existe para fechar. Não commita — quem
+    chama é dono da transação (o rerun carimba `substituida_em` na mesma)."""
     try:
         cur = conn.cursor()
         cur.execute(SQL_REABRIR,
                     (reaberta_por, motivo, motivo, int(corrida_id), *REABREM))
-        return (cur.rowcount or 0) == 1
+        reabriu = (cur.rowcount or 0) == 1
     except Exception as e:  # noqa: BLE001 — escrita degrada ESTREITA
         if _sem_085(e):
             print(f"{LOG} 085 ausente ({e}) — corrida #{corrida_id} nao reaberta")
             return False
         raise
+    if reabriu:
+        descartar_desfecho(conn, corrida_id)
+    return reabriu
+
+
+# O descarte é por CORRIDA e por TIPO, e só alcança linha de MARCADOR: o evento
+# de um membro (`CARGA_A`, `EXECUCAO_ORFA`) nunca é tocado — ele fala do
+# pipeline, não do ciclo, e continua sendo o histórico que ninguém apaga.
+#
+# `LEFT(...)` e não `LIKE '#corrida:%'`: o `%` literal precisaria virar `%%` na
+# árvore do pymssql e continuar `%` na do pyodbc, e as duas cópias divergiriam
+# no texto — que é exatamente o que a paridade existe para impedir.
+MARCA_EVENTO_CORRIDA = "#corrida:"
+MARCA_EVENTO_NO = "#no:"
+SQL_DESCARTAR_DESFECHO = (
+    "DELETE FROM dbo.etl_dependencia_evento "
+    "WHERE malha_execucao_id = %s "
+    "AND tipo IN (" + ", ".join("%s" for _ in EVENTOS_DO_DESFECHO) + ") "
+    "AND (LEFT(pipeline_name, " + str(len(MARCA_EVENTO_CORRIDA)) + ") = '"
+    + MARCA_EVENTO_CORRIDA + "' "
+    "OR LEFT(pipeline_name, " + str(len(MARCA_EVENTO_NO)) + ") = '"
+    + MARCA_EVENTO_NO + "')")
+
+
+def descartar_desfecho(conn, corrida_id) -> int:
+    """Libera a chave `ux_dep_evento_corrida` dos eventos que a tentativa
+    ANULADA deixou, para que a tentativa nova possa gravar os seus (F8).
+    Devolve quantos saíram.
+
+    Ver `EVENTOS_DO_DESFECHO` para o porquê de isto não ser "apagar histórico":
+    o desfecho anulado e a hora dele já foram para o `motivo` da corrida no
+    mesmo `UPDATE` que a reabriu, e a corrida é a casa da história do ciclo.
+
+    Degrada: banco sem a 085 (ou sem a coluna no evento) só significa que não
+    havia chave estendida para liberar — a reabertura, que é o gesto, já
+    aconteceu, e derrubá-la aqui seria trocar um card perdido por um reprocesso
+    perdido."""
+    try:
+        cur = conn.cursor()
+        cur.execute(SQL_DESCARTAR_DESFECHO,
+                    (int(corrida_id), *EVENTOS_DO_DESFECHO))
+        n = max(0, cur.rowcount or 0)
+    except Exception as e:  # noqa: BLE001
+        print(f"{LOG} eventos do desfecho da corrida #{corrida_id} nao "
+              f"descartados ({e}) — a corrida reabriu; o card da proxima "
+              f"conclusao pode nao sair")
+        return 0
+    if n:
+        print(f"{LOG} corrida #{corrida_id}: {n} evento(s) do desfecho anulado "
+              f"descartado(s) — a tentativa nova volta a poder avisar")
+    return n
 
 
 # ═════════════════ memória de efeito colateral (Decisão 12) ═════════════════
@@ -1346,7 +1491,21 @@ SQL_ESTADO = (
     "LEFT JOIN dbo.etl_pipeline_execucao e "
     "ON e.pipeline_name = m.pipeline_name "
     "AND e.data_referencia = %s "
-    "AND e.substituida_em IS NULL "
+    # Pendência 13g da §18, fechada na F8. `substituida_em IS NULL` puro
+    # ESCONDIA o membro que está `EXECUTANDO` no Airflow e cuja linha acabou de
+    # ser aposentada — e o rerun é justamente o gesto que abre essa janela: ele
+    # carimba `substituida_em` num statement e a linha nova nasce no claim
+    # seguinte, que pode ser no ciclo seguinte da guardiã. Entre os dois, o
+    # membro sumia de `vivos`, e vivo invisível faz a corrida FECHAR POR CIMA de
+    # trabalho em andamento — a mesma família de defeito que a F3 (leitura da
+    # porta) e a F7 (`_fechar_dia_anterior`) já consertaram em outras leituras.
+    #
+    # A cláusula continua valendo para tudo o mais: linha aposentada em
+    # `SUCESSO` NÃO conta como OK (Decisão 55), em `FALHA` não conta como
+    # pendente. Só o que está VIVO atravessa — e vivo que morreu sem fechar a
+    # linha já tem dono: o `EXECUCAO_ORFA` o tira de `vivos` (Decisão 22) e o
+    # teto é a rede (Decisão 25).
+    "AND (e.substituida_em IS NULL OR e.status = 'EXECUTANDO') "
     "AND (e.malha_execucao_id = %s "
     "OR COALESCE(e.inicio, e.criado_em) >= %s) "
     "WHERE m.malha_execucao_id = %s "

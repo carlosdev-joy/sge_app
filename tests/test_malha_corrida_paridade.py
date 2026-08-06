@@ -114,7 +114,13 @@ _CONSTANTES_SQL = ("SQL_TETO_DA_MALHA", "SQL_VIRADA_DA_MALHA",
                    # o que a API mostra têm de sair do MESMO texto: divergir
                    # aqui é a tela dizer que a linha é de D e o banco gravar
                    # D-1, que é o incidente desta spec com outra roupa.
-                   "SQL_ODATE_DO_RUN", "SQL_CORRIDA_DO_CONF")
+                   "SQL_ODATE_DO_RUN", "SQL_CORRIDA_DO_CONF",
+                   # F8 — o rerun. `SQL_DESCARTAR_DESFECHO` é a única escrita
+                   # do módulo na tabela de EVENTOS: divergir de um lado
+                   # significaria a API liberar a chave e o motor não (ou o
+                   # contrário), e o sintoma seria a segunda `MALHA_CONCLUIDA`
+                   # aparecendo ou sumindo conforme quem reabriu a corrida.
+                   "SQL_DESCARTAR_DESFECHO")
 
 
 @pytest.mark.parametrize("nome", _CONSTANTES_SQL)
@@ -136,6 +142,22 @@ def test_paridade_das_partidas_que_variam_com_a_lista(mcd, quantos):
     assert _norm(mcd.sql_partidas(quantos)) == _norm(mca.sql_partidas(quantos))
     assert "?" not in mcd.sql_partidas(quantos)
     assert "%s" not in mca.sql_partidas(quantos)
+
+
+@pytest.mark.parametrize("quantos", [0, 1, 2, 5])
+def test_paridade_das_corridas_das_linhas_que_variam_com_a_lista(mcd, quantos):
+    """F8 — a pergunta do rerun ("o que aposentei era de que ciclo?") tem de
+    sair do MESMO texto nas duas árvores: a API reabre, a guardiã fecha, e uma
+    divergência aqui é o rerun reabrindo uma corrida que o motor não considera
+    dona da linha."""
+    assert _norm(mcd.sql_corridas_das_linhas(quantos)) == \
+        _norm(mca.sql_corridas_das_linhas(quantos))
+    assert "?" not in mcd.sql_corridas_das_linhas(quantos)
+    assert "%s" not in mca.sql_corridas_das_linhas(quantos)
+    # Lista vazia NUNCA vira ausência de cláusula: seria varrer a maior tabela
+    # do schema por causa de um lote vazio.
+    if quantos == 0:
+        assert "1 = 0" in mcd.sql_corridas_das_linhas(0)
 
 
 @pytest.mark.parametrize("quantos", [None, 0, 1, 2, 5])
@@ -187,7 +209,12 @@ def test_paridade_do_dominio_e_das_constantes(mcd):
                  # que o front casa para pintar a linha: escrevê-lo diferente em
                  # cada árvore faz a recusa existir no banco e sumir da tela.
                  "DEGRAU_CARIMBO", "DEGRAU_CONF_CORRIDA", "DEGRAU_CONF_DATA",
-                 "DEGRAU_CORRIDA", "DEGRAU_CALCULO", "MOTIVO_ODATE_AMBIGUO"):
+                 "DEGRAU_CORRIDA", "DEGRAU_CALCULO", "MOTIVO_ODATE_AMBIGUO",
+                 # F8 — os tipos que a reabertura descarta e os dois marcadores
+                 # que delimitam o alcance do DELETE. Uma lista maior de um
+                 # lado apagaria evento que o outro preserva.
+                 "EVENTOS_DO_DESFECHO", "MARCA_EVENTO_CORRIDA",
+                 "MARCA_EVENTO_NO"):
         assert getattr(mcd, nome) == getattr(mca, nome), nome
     assert mcd._CAMPOS == CAMPOS       # e os dois batem com o contrato do dublê
 
@@ -509,7 +536,14 @@ def test_o_roteiro_prova_o_que_a_F2_vai_precisar(mcd):
     assert passos["reabrir1"] is True and passos["reabrir2"] is False
     assert passos["final"]["status"] == "ABERTA"
     assert passos["final"]["tentativas"] == 2
-    assert passos["final"]["motivo"] == "porta 2 | 1 falhou | rerun"
+    # F8: a reabertura acumula o desfecho ANULADO no `motivo` — nas DUAS
+    # árvores, com a mesma redação. Divergir aqui faria o painel e o log de
+    # plantão contarem histórias diferentes do mesmo reprocesso.
+    assert passos["final"]["motivo"] == (
+        "porta 2 | 1 falhou | reaberta apos FALHA de 2026-08-05 01:30:00: rerun")
+    # E a memória de efeito colateral zera: a tentativa 2 pode alertar de novo.
+    assert passos["final"]["falha_vista_em"] is None
+    assert passos["final"]["atraso_visto_em"] is None
     assert passos["final"]["aberta_em"] == AGORA_BANCO   # o relógio do BANCO
     # A adesão não criou linha: M1 continua com UMA corrida. A contagem é por
     # malha (e não `len(db_d.corridas)`) desde que o roteiro passou a abrir a
@@ -718,11 +752,21 @@ def test_o_erro_que_nao_e_da_085_sobe_nas_DUAS_arvores(mcd):
 
 # ═══════════════════════ ausência estrutural (F1) ═══════════════════════════
 
-def test_so_o_router_de_malhas_consome_o_port():
+# Os routers que podem falar com o registro da corrida — e SEMPRE pelo módulo.
+# A lista cresce com a spec e é revista a cada fase; o que ela protege não é o
+# número de consumidores, é a PORTA por onde eles entram.
+_CONSUMIDORES = {
+    "malhas.py":      "a tela da malha (F3/F4/F7)",
+    "execucoes.py":   "o rerun: reabre o ciclo que aposentou (F8, §6.9/#3)",
+    "finalizacao.py": "a órfã fechada à mão reavalia o ciclo (F8, Decisão 22)",
+}
+
+
+def test_so_quem_a_spec_nomeia_consome_o_port_e_sempre_pelo_MODULO():
     """A F1 provava a AUSÊNCIA total de consumidor ("nenhum leitor, nenhum
-    escritor no motor" — a fase era inerte de propósito). A F3 é a fase que
-    rompe isso, e a invariante que a substitui é mais forte que a original:
-    **um consumidor só, e ele fala com o registro pelo MÓDULO**.
+    escritor no motor" — a fase era inerte de propósito). A F3 rompeu isso, e a
+    invariante que a substituiu é mais forte que a original: **os consumidores
+    são nomeados, e todos falam com o registro pelo MÓDULO**.
 
     A segunda metade é a que importa de verdade. Um router que montasse SQL de
     `etl_malha_execucao` por conta própria teria escapado do teste de paridade —
@@ -732,13 +776,23 @@ def test_so_o_router_de_malhas_consome_o_port():
     são de TELA e de CADASTRO, existem só nesta árvore e estão comentadas lá.
     """
     routers = _ROOT / "api/routers"
+    vistos = set()
     for arquivo in sorted(routers.glob("*.py")):
         fonte = arquivo.read_text(encoding="utf-8")
-        if arquivo.name == "malhas.py":
-            assert "from services import malha_corrida as mc" in fonte
+        if arquivo.name in _CONSUMIDORES:
+            assert "from services import malha_corrida as mc" in fonte, \
+                f"{arquivo.name} está na lista mas não importa o port"
+            vistos.add(arquivo.name)
+            if arquivo.name != "malhas.py":
+                # Só o router da malha tem as duas exceções comentadas; nos
+                # demais, SQL cru do registro é divergência por construção.
+                assert "etl_malha_execucao" not in fonte, arquivo.name
             continue
         assert "malha_corrida" not in fonte, arquivo.name
         assert "etl_malha_execucao" not in fonte, arquivo.name
+    # Consumidor que saiu da lista sem sair do código (ou o contrário) é
+    # exatamente o tipo de deriva que esta invariante existe para pegar.
+    assert vistos == set(_CONSUMIDORES), sorted(set(_CONSUMIDORES) - vistos)
 
 
 def test_nenhuma_das_arvores_commita_por_conta(mcd):

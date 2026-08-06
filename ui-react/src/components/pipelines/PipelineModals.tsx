@@ -550,9 +550,31 @@ export function GenDagModal({ pipeline, onClose }: { pipeline: Pipeline; onClose
 
 // ── ExecModal ─────────────────────────────────────────────────────────────────
 
+/** F8 (spec-malha-execucao §6.9/#5) — o ciclo de malha em que um disparo AVULSO
+ *  vai cair. `corrida: null` (pipeline fora de malha, banco a meio deploy,
+ *  leitura indisponível) é a resposta normal, e aí o modal fica como era. */
+interface CicloDoPipeline {
+  corrida: { malha: string; data_referencia: string; status: string } | null
+  efeito: 'conta' | 'fora_do_ciclo' | 'ambiguo' | null
+  mensagem: string | null
+}
+
 export function ExecModal({ pipeline, onConfirm, onClose, loading }: {
   pipeline: Pipeline; onConfirm: () => void; onClose: () => void; loading: boolean
 }) {
+  // Disparo avulso NUNCA abre e NUNCA reabre ciclo: ele ADERE ao que estiver em
+  // voo. Perguntar ANTES é o ponto — depois do clique, o número da malha já
+  // mudou sozinho na tela ao lado e ninguém explicou por quê.
+  const { data: ciclo } = useQuery<CicloDoPipeline>({
+    queryKey: ['pipeline-corrida', pipeline.pipeline_name],
+    queryFn: () => apiFetch(
+      `/pipelines/${encodeURIComponent(pipeline.pipeline_name)}/corrida`),
+    staleTime: 0,
+    gcTime: 0,
+    // Não saber não pode travar o disparo: sem a resposta, o modal é o de
+    // antes desta fase.
+    retry: false,
+  })
   return (
     <Modal open title="Executar pipeline agora" onClose={onClose} size="sm">
       <div className="flex flex-col gap-4">
@@ -562,6 +584,18 @@ export function ExecModal({ pipeline, onConfirm, onClose, loading }: {
         <p className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800/40 rounded-lg px-3 py-2">
           ⚠ Inicia uma execução imediata no Airflow. Certifique-se que não há execução ativa.
         </p>
+        {/* `ambiguo` é o único caso em que o disparo já nasce recusado (dois
+            ODATEs abertos nunca viram escolha, Decisão 34) — por isso ele é o
+            único pintado de âmbar. "Será contado no ciclo" é informação, não
+            problema; âmbar em tudo ensina o olho a ignorar o âmbar. */}
+        {ciclo?.mensagem && (
+          <p className={`text-xs rounded-lg border px-3 py-2 ${
+            ciclo.efeito === 'ambiguo'
+              ? 'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/15 border-amber-200 dark:border-amber-800/40'
+              : 'text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/15 border-blue-200 dark:border-blue-800/40'}`}>
+            {ciclo.mensagem}
+          </p>
+        )}
         <div className="flex justify-end gap-2 border-t border-edge pt-3">
           <Button variant="secondary" onClick={onClose} disabled={loading}>Cancelar</Button>
           <Button loading={loading} className="border-green-800/40 text-green-400" onClick={onConfirm}>

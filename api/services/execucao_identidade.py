@@ -671,15 +671,29 @@ def resolve_por_ts_nodash(cur, pipeline: str, ts: str, *,
     dia = _data_do_ts_nodash(ts)
     if dia is None:
         return ident
+    # ⚠️ `substituida_em` na projeção, como em `corridas_na_data`. Ele estava de
+    # fora, e `_candidato` — cujo docstring PROMETE que o campo viaja junto — o
+    # devolvia sempre `None` por este caminho. Duas consequências reais:
+    #   • o modal de ambiguidade da F3 volta a mostrar duas linhas
+    #     indistinguíveis quando uma delas já foi aposentada por um rerun (é
+    #     exatamente o defeito que o docstring de `corridas_na_data` descreve);
+    #   • a Finalização Manual (F8) filtra os candidatos por
+    #     `substituida_em is None` antes de fechar a linha do ciclo — com o
+    #     campo sempre nulo a guarda não guardava nada, e uma linha aposentada
+    #     entrava na conta de "execuções vivas": ou empatava com a viva e o
+    #     gesto se declarava ambíguo sem precisar, ou era ela a fechada.
+    # Sem a 078 o campo vem `None` e o payload é o de antes, byte a byte.
+    col = ", substituida_em" if tem_coluna_substituida(cur) else ", NULL"
     cur.execute(
         "SELECT execution_id, status, inicio, fim, disparado_por, "
-        "       motivo, data_referencia "
+        "       motivo, data_referencia" + col + " "
         "FROM dbo.etl_pipeline_execucao "
         "WHERE pipeline_name = ? AND data_referencia BETWEEN ? AND ?",
         (pipeline, dia - timedelta(days=1), dia + timedelta(days=1)))
     linhas = [{"execution_id": str(r[0] or ""), "status": r[1], "inicio": r[2],
                "fim": r[3], "disparado_por": r[4], "motivo": r[5],
-               "data_referencia": r[6]} for r in cur.fetchall()]
+               "data_referencia": r[6], "substituida_em": r[7]}
+              for r in cur.fetchall()]
     ident["candidatos"] = [_candidato(l) for l in linhas]
 
     alvo = str(run_id or "").strip()
