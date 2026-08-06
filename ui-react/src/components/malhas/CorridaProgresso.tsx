@@ -13,8 +13,9 @@ import type { ResumoCorrida } from './statusExecucao'
 //    no que o leitor de tela anuncia. "4 de 7" lido como "57%" é percentual de
 //    um trabalho que não existe: os pipelines têm durações diferentes, e numa
 //    malha em que o último leva 3h e os cinco primeiros 5 min, `5 de 6` é 83%
-//    dos pipelines e 12% do trabalho. O percentual que o usuário pediu existe,
-//    mede TEMPO e chega na F12;
+//    dos pipelines e 12% do trabalho. O percentual que o usuário pediu existe e
+//    é outro número: ele mede TEMPO (Decisão 56b), ponderado pela duração
+//    histórica de cada membro, e entra junto com a duração típica por membro;
 //  • **não enche com o que travou** (Decisão 54). Vermelho ocupando comprimento
 //    é lido como "quase pronto" a 1,5 m — em varredura de 40 cards o operador
 //    lê COMPRIMENTO, não cor. O travado é chip ao lado, com ícone;

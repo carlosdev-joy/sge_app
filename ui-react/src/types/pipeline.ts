@@ -77,6 +77,13 @@ export interface DependenciaCorrida {
 
 export interface DependenciaEstadoItem {
   pipeline_name: string
+  // ADITIVO (F11/Decisão 70): a malha DESTE pipeline, e só quando ela é ÚNICA.
+  // Existe para o painel "Aguardando dependência" do Dashboard levar à malha
+  // certa em vez de despejar o operador na lista. Chave AUSENTE quando não dá
+  // para afirmar (nenhuma malha, ou mais de uma — o Orquestra permite o mesmo
+  // pipeline em várias): escolher uma seria o link abrir a malha errada com
+  // cara de certa.
+  malha?: string
   liberado: boolean
   faltantes: string[]
   predecessores: DependenciaPredecessor[]

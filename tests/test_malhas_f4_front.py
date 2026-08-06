@@ -521,8 +521,13 @@ def test_o_card_le_a_corrida_por_guarda_e_nao_por_flag():
     assert "corrida ? resumoCorrida(" in src
     # o fallback continua existindo, e CONFESSA de onde veio o status
     assert "(membro mais recente" in src
-    # o tipo é opcional: sem isso, o `tsc -b` deixaria passar acesso sem guarda
-    assert "corrida?: CorridaApi" in src
+    # o tipo é opcional: sem isso, o `tsc -b` deixaria passar acesso sem guarda.
+    # F11: `ApiMalha` mudou de casa (o Dashboard passou a ler o MESMO payload, e
+    # um tipo declarado numa `pages/` não é importável de outra sem inverter a
+    # direção da dependência) — o que não muda é a opcionalidade.
+    tipos = _fonte(SRC / "components" / "malhas" / "corridasDaLista.ts")
+    assert "corrida?: CorridaApi" in tipos
+    assert "corrida_esperada?: CorridaEsperadaApi" in tipos
     # e a flag NÃO decide renderização — ela só acrescenta a linha de aviso.
     #
     # F9 ampliou o que liga essa linha, sem mudar a regra: além da 085 ausente,

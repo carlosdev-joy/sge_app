@@ -24,7 +24,15 @@ import { CorridaProgresso } from '../components/malhas/CorridaProgresso'
 // decorrido — nunca `apurado_em`, que é o relógio do BANCO (Decisão 60).
 import { useDecorrido } from '../components/malhas/useDecorrido'
 import { frescor } from '../components/malhas/tempoCorrida'
-import type { CorridaApi, CorridaEsperadaApi } from '../types'
+// F11 (§9.8) — o estado de corrida VISTO PELA LISTA: tipos, predicado de
+// polling, filtro por estado, contadores e o link canônico. Módulo próprio
+// porque o Dashboard consome as MESMAS regras sobre o MESMO payload: duas
+// cópias é como duas telas discordam sobre a mesma malha na mesma manhã.
+import {
+  ESTADOS_CORRIDA, QUERY_MALHAS, cadenciaDaLista, casaEstado, contarEstados,
+  emMovimento, referenciaConcluidas, rotuloEstado,
+  type ApiMalha, type EstadoCorrida, type Gatilho, type MalhasResponse,
+} from '../components/malhas/corridasDaLista'
 import {
   RefreshCw, Network, X, Search, HelpCircle, Play,
   Plus, Edit, Users, Power, Trash2, AlertTriangle, Boxes,
@@ -37,8 +45,8 @@ import {
 
 // ─── Malhas (F7) — agrupadoras de pipelines ──────────────────────────────────
 // Malha = agrupador nomeado de pipelines (análogo da sequence mestre do
-// DataStage / SMART Folder do Control-M). Nesta fase existe a entidade, os
-// membros e a lista; o diagrama de montagem (MalhaEditor) chega na F8.
+// DataStage / SMART Folder do Control-M). A lista abaixo é a lente de
+// varredura; o diagrama de montagem vive no `MalhaEditor`, aberto por `?malha=`.
 
 // F8 (spec-malha-execucao §6.9/#16 e #17) — o aviso que os gestos de EDIÇÃO
 // passam a devolver quando há ciclo em voo.
@@ -58,76 +66,10 @@ function avisarCiclo(r: RespostaComAvisoDeCiclo | undefined) {
   if (r?.aviso_ciclo) toast.info(r.aviso_ciclo)
 }
 
-// Última corrida registrada entre os pipelines da malha. `em` é o INÍCIO da
-// corrida (a API cai em criado_em quando ela ainda não partiu) — nunca a
-// data_referencia, que é o dia de PROCESSAMENTO e pode estar longe do relógio.
-interface UltimaExecucao {
-  em: string | null
-  status: string
-  pipeline: string
-}
-
-// Resumo do horário de disparo. `origem` diz de ONDE ele saiu, e é o que
-// permite o tooltip ser honesto: 'malha' = agendamento próprio (nó Início),
-// 'membros' = derivado dos pipelines que disparam sozinhos, 'nenhum' = a
-// malha só anda por disparo manual.
-interface Gatilho {
-  origem: 'malha' | 'membros' | 'nenhum'
-  resumo: string
-  horario: string | null
-  qtd_pipelines: number
-  horarios: string[]
-  detalhes: { pipeline: string; resumo: string; horario: string }[]
-}
-
-interface ApiMalha {
-  malha_name: string
-  descricao: string | null
-  ativo: 0 | 1 | boolean
-  criado_em: string | null
-  qtd_pipelines: number
-  qtd_ativos: number
-  criticidade: string | null // agregada = a mais alta entre os membros
-  // Aditivos do card. Opcionais de propósito: numa API antiga (deploy parcial
-  // do front) a chave não vem e a linha correspondente some, em vez de a tela
-  // exibir "undefined etapas".
-  qtd_etapas?: number
-  ultima_execucao?: UltimaExecucao | null
-  gatilho?: Gatilho | null
-  // Há agendamento salvo na malha que NÃO está vigente (o Início foi excluído,
-  // ou ainda não foi desenhado): nenhuma raiz o carrega, então ele não é
-  // gatilho — mas continua guardado e volta a valer quando o Início religar.
-  agendamento_guardado?: boolean
-  // F4 — a CORRIDA (o ciclo da malha). É ELA que responde "a malha rodou?".
-  // Opcional, e a ausência é o contrato (Decisão 41): API anterior à fase,
-  // banco sem a 085 e malha sem ciclo nenhum degradam no MESMO lugar, o
-  // fallback "(membro mais recente)" logo abaixo. Nunca vem `null`.
-  corrida?: CorridaApi
-  // F9 (Decisão 58) — a corrida que NÃO ABRIU: o gatilho venceu e nenhuma
-  // corrida nasceu. Chave ausente = não há o que acusar (o caso normal), e ela
-  // só chega para malha ATIVA que já teve corrida antes — o que mantém a lista
-  // muda no dia do deploy, com o interruptor ainda em 0.
-  corrida_esperada?: CorridaEsperadaApi
-}
-
-interface MalhasResponse {
-  malhas: ApiMalha[]
-  // Deploy parcial (API nova + migration 070 não aplicada): a API degrada
-  // devolvendo lista vazia + esta flag, em vez de 500.
-  migration_pendente?: boolean
-  // F4: a 085 não está neste banco. NÃO é o que o card testa para decidir
-  // renderizar (isso é a ausência da chave `corrida`) — é o que permite DIZER
-  // ao operador que falta informação, em vez de degradar em silêncio.
-  migration_085_pendente?: boolean
-  // F9: esta API sabe responder sobre corrida. Marcador POSITIVO de versão, e
-  // ele existe por causa da janela de deploy: o `dist/` sobe na etapa 3 e a
-  // `api/` só na 7, então por alguns minutos o front novo fala com a API
-  // velha — que não manda `corrida` nem flag nenhuma. Sem esta chave, o front
-  // não distinguiria "esta malha não tem ciclo" (silêncio correto no dia do
-  // deploy) de "esta API não sabe responder" (a hora de dizer que falta
-  // informação). Ausente = API anterior à F9.
-  corrida_suportada?: boolean
-}
+// F11: `UltimaExecucao`, `Gatilho`, `ApiMalha` e `MalhasResponse` MUDARAM de
+// casa para `components/malhas/corridasDaLista.ts` — o Dashboard passou a ler
+// o mesmo payload, e um tipo declarado numa `pages/` não é importável de outra
+// sem inverter a direção da dependência.
 
 interface MalhaMembro {
   pipeline_name: string
@@ -189,17 +131,6 @@ const AVISO_AGENDA_GUARDADA =
   + 'raiz está ligado ao componente Início, então nada dispara por ele. '
   + 'Desenhe o Início e ligue-o às raízes para o agendamento voltar a valer — '
   + 'a configuração continua guardada.'
-
-/** A malha tem algo que ANDA sozinho na tela (Decisão 73)?
- *
- *  Duas coisas andam: a corrida em voo (o `x de y` e o decorrido) e a corrida
- *  que não abriu (o atraso, que cresce a cada minuto). As duas governam o
- *  polling E o alarme de dado velho, e por isso vivem numa função só: separá-las
- *  já produziu o card mais grave da manhã sendo o único a envelhecer em
- *  silêncio, com o relógio congelado no "há 7h12" da abertura da página. */
-function emMovimento(m: ApiMalha): boolean {
-  return m.corrida?.status === 'ABERTA' || !!m.corrida_esperada
-}
 
 // ─── Card de malha (mesma linguagem do PipelineCard) ─────────────────────────
 
@@ -662,7 +593,7 @@ function MembrosModal({ malhaName, onClose }: { malhaName: string; onClose: () =
 
         <p className="text-[11px] text-dim border-t border-edge pt-3">
           Aqui você define apenas <strong className="text-ink">quem participa</strong> da malha —
-          o diagrama de montagem (nós, dependências e layout) chega na F8.
+          os nós, as dependências e o layout são desenhados no diagrama, em <strong className="text-ink">Diagrama</strong>.
         </p>
       </div>
     </Modal>
@@ -776,27 +707,23 @@ function MalhasView({ onAbrir, onAcompanhar }: {
   // malhas, não milhares) — filtrar aqui responde a cada tecla sem round-trip.
   const [busca, setBusca] = useState('')
   const [statusFiltro, setStatusFiltro] = useState('')
+  // F11 — o filtro por ESTADO DE CORRIDA, ao lado do de Ativas/Inativas. Antes
+  // dele era **impossível** saber qual malha está rodando sem abrir uma a uma e
+  // trocar o modo: o estado do ciclo existia só dentro de cada card.
+  const [corridaFiltro, setCorridaFiltro] = useState<EstadoCorrida | ''>('')
 
   const qc = useQueryClient()
   const { data, isLoading, isError, error, refetch, dataUpdatedAt, isFetching } =
     useQuery<MalhasResponse>({
-      queryKey: ['malhas'],
+      queryKey: QUERY_MALHAS,
       queryFn: () => apiFetch('/malhas'),
-      // F4 (Decisão 73) — polling CONDICIONAL: 20 s enquanto alguma malha tem
-      // corrida em voo, e NADA quando não há o que acompanhar. Ligar polling
-      // incondicional numa tela que hoje não tem nenhum seria pagar o custo
-      // das 24 h por causa das 4 da madrugada. O recorte é a lista inteira (e
-      // não só as malhas visíveis): o filtro é client-side, e uma corrida em
-      // voo escondida por um filtro continua sendo uma corrida em voo.
-      //
-      // F9: `não abriu` entra no MESMO predicado, e a Decisão 73 o nomeia. Ele
-      // é um estado de RELÓGIO — "previsto para 01:00 · há 7h12" cresce —, e
-      // sem polling a tela congelaria naquele "há 7h12" enquanto alguém
-      // dispara a malha na mão do outro lado. Pior: `acompanhando` também
-      // governa o alarme de dado velho, então o card mais grave da manhã seria
-      // o único a envelhecer em silêncio.
-      refetchInterval: q =>
-        (q.state.data?.malhas ?? []).some(emMovimento) ? 20_000 : false,
+      // F4/F9/F11 (Decisão 73) — polling CONDICIONAL: 20 s enquanto alguma
+      // malha tem corrida em voo (ou uma que não abriu, que é um estado de
+      // RELÓGIO e cresce sozinho), e NADA quando não há o que acompanhar.
+      // A regra mora em `cadenciaDaLista` porque o Dashboard observa a MESMA
+      // chave de cache: duas cadências sobre a mesma chave dariam à tela um
+      // refetch que ninguém pediu.
+      refetchInterval: q => cadenciaDaLista(q.state.data?.malhas),
     })
   // useMemo (e não `data?.malhas ?? []` solto): o `[]` de fallback nasce novo
   // a cada render e faria o filtro abaixo recalcular sempre.
@@ -846,15 +773,52 @@ function MalhasView({ onAbrir, onAcompanhar }: {
     toggleMut.mutate(m)
   }
 
-  const filtradas = useMemo(() => {
+  // ── Os DOIS conjuntos, e por que são dois ─────────────────────────────────
+  // `base` = depois da busca e do filtro Ativas/Inativas, ANTES do filtro por
+  // estado de corrida. É sobre ele que os contadores contam: contar sobre o
+  // resultado do próprio filtro faria os outros contadores irem a zero e
+  // sumirem no primeiro clique — e aí não haveria como trocar de filtro pela
+  // stats bar, que é justamente o gesto que esta fase entrega.
+  const base = useMemo(() => {
     const q = normalizeBusca(busca.trim())
-    const visiveis = malhas.filter(m => {
+    return malhas.filter(m => {
       if (statusFiltro === '1' && !m.ativo) return false
       if (statusFiltro === '0' && m.ativo) return false
       if (!q) return true
       return normalizeBusca(m.malha_name).includes(q)
         || normalizeBusca(m.descricao ?? '').includes(q)
     })
+  }, [malhas, busca, statusFiltro])
+
+  // A RÉGUA do contador de concluídas (§10 "### F11"): a referência mais
+  // recente entre as corridas concluídas em vista. Sem ela o contador ou
+  // mostra `0` às 08:00 (filtrando ODATE = hoje, quando a madrugada carimbou
+  // ontem) ou soma referências diferentes e produz um número que não bate com
+  // relatório nenhum por ODATE.
+  const referencia = useMemo(() => referenciaConcluidas(base), [base])
+  const contagens = useMemo(() => contarEstados(base, referencia),
+                            [base, referencia])
+
+  // ── O filtro EFETIVO ──────────────────────────────────────────────────────
+  // `Concluídas` só existe quando existe corrida concluída, e são DUAS razões
+  // apontando para o mesmo lado:
+  //   • o rótulo dele carrega uma RÉGUA (a data de referência contada) — sem
+  //     nenhuma corrida concluída não há régua, e um filtro que anuncia uma
+  //     que não existe é pior que um filtro a menos;
+  //   • "concluída" é palavra proibida na tela sem `status = 'CONCLUIDA'`
+  //     vindo do banco (Decisão 41 e §9.15/#15). Num sábado sem trabalho, a
+  //     página não pode conter a palavra em lugar NENHUM — nem num <option>.
+  // Derivado (e não um `useEffect` que zera o estado): se a última corrida
+  // concluída sair da vista num refetch, o filtro se comporta como "todas" sem
+  // um render intermediário com o <select> apontando para uma opção que já não
+  // está lá.
+  const estadoAtivo: EstadoCorrida | '' =
+    corridaFiltro === 'concluida' && !referencia ? '' : corridaFiltro
+
+  const filtradas = useMemo(() => {
+    const visiveis = estadoAtivo
+      ? base.filter(m => casaEstado(m, estadoAtivo, referencia))
+      : base
     // Decisão 58 — "não abriu" ORDENA PRIMEIRO. É a única reordenação da lista,
     // e ela existe porque este é o estado que o operador precisa ver ANTES de
     // procurar: a malha que não rodou não aparece em lugar nenhum hoje, e numa
@@ -864,9 +828,13 @@ function MalhasView({ onAbrir, onAcompanhar }: {
     // card que troca de lugar debaixo do cursor é um clique errado às 3h.
     return visiveis.slice().sort((a, b) =>
       Number(!!b.corrida_esperada) - Number(!!a.corrida_esperada))
-  }, [malhas, busca, statusFiltro])
+  }, [base, estadoAtivo, referencia])
 
   const filtroAtivo = busca.trim() !== '' || statusFiltro !== ''
+    || estadoAtivo !== ''
+  function limparFiltros() {
+    setBusca(''); setStatusFiltro(''); setCorridaFiltro('')
+  }
   const ativas = filtradas.filter(m => m.ativo).length
   const totalPipelines = filtradas.reduce((s, m) => s + m.qtd_pipelines, 0)
   // Só soma etapas se a API DEVOLVEU o campo (deploy parcial com API antiga):
@@ -874,10 +842,6 @@ function MalhasView({ onAbrir, onAcompanhar }: {
   // omissão que o card usa, senão a stats bar contradiz os cards.
   const temEtapas = filtradas.some(m => typeof m.qtd_etapas === 'number')
   const totalEtapas = filtradas.reduce((s, m) => s + (m.qtd_etapas ?? 0), 0)
-  // Contador próprio do "não abriu" (Decisão 58). Só existe quando existe: uma
-  // pílula "0 não abriram" verde todo dia treinaria o olho a passar por ela —
-  // e no dia em que o número fosse 1 ele não seria visto.
-  const naoAbriram = filtradas.filter(m => m.corrida_esperada).length
 
   return (
     <div className="flex flex-col gap-4">
@@ -914,9 +878,33 @@ function MalhasView({ onAbrir, onAcompanhar }: {
           <option value="1">Ativas</option>
           <option value="0">Inativas</option>
         </Select>
+        {/* F11 — o filtro por estado de CORRIDA, ao lado do de situação da
+            malha (e não no lugar dele: "ativa" é cadastro, "rodando agora" é
+            ciclo, e o plantão precisa cruzar os dois).
+
+            O rótulo de `Concluídas` carrega a RÉGUA — a data de referência
+            contada —, porque `Concluídas` sem ela não diz de que dia. */}
+        <Select
+          value={estadoAtivo}
+          onChange={e => setCorridaFiltro(e.target.value as EstadoCorrida | '')}
+          title="Filtrar pelo estado da corrida (o ciclo da malha)"
+          aria-label="Filtrar pelo estado da corrida"
+          className="w-52"
+        >
+          <option value="">Todas as corridas</option>
+          {ESTADOS_CORRIDA
+            .filter(def => def.chave !== 'concluida' || referencia)
+            .map(def => (
+              <option key={def.chave} value={def.chave}>
+                {def.chave === 'concluida' && referencia
+                  ? `${def.rotulo} (ref. ${referencia.curta})`
+                  : def.rotulo}
+              </option>
+            ))}
+        </Select>
         {filtroAtivo && (
           <button
-            onClick={() => { setBusca(''); setStatusFiltro('') }}
+            onClick={limparFiltros}
             title="Limpar os filtros"
             className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-sm border border-edge bg-canvas text-dim hover:text-ink hover:bg-edge/40 transition-colors"
           >
@@ -974,28 +962,71 @@ function MalhasView({ onAbrir, onAcompanhar }: {
             ...(temEtapas
               ? [{ label: `${totalEtapas}`, sub: `etapa${totalEtapas !== 1 ? 's' : ''}` }]
               : []),
-            // Decisão 58 — contador próprio, e ÂMBAR: é a pílula que responde
-            // "a madrugada rodou?" antes de o olho descer para os cards.
-            ...(naoAbriram > 0
-              ? [{
-                label: `${naoAbriram}`,
-                sub: `não abri${naoAbriram !== 1 ? 'ram' : 'u'}`,
-                tom: 'border-amber-300 bg-amber-50 text-amber-800 '
-                  + 'dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300',
-              }]
-              : []),
           ].map(s => (
             <div
               key={s.sub}
-              className={`rounded px-3 py-1.5 flex items-center gap-1.5 border ${
-                'tom' in s && s.tom ? s.tom : 'bg-panel border-edge'}`}
+              className="rounded px-3 py-1.5 flex items-center gap-1.5 border bg-panel border-edge"
             >
-              <strong className={`font-bold text-sm ${'tom' in s && s.tom ? '' : 'text-ink'}`}>
-                {s.label}
-              </strong>
-              <span className={`text-xs ${'tom' in s && s.tom ? '' : 'text-dim'}`}>{s.sub}</span>
+              <strong className="font-bold text-sm text-ink">{s.label}</strong>
+              <span className="text-xs text-dim">{s.sub}</span>
             </div>
           ))}
+
+          {/* ── F11: os contadores de CORRIDA, e eles são BOTÕES ────────────
+              Clicar num contador aplica o filtro correspondente — é o caminho
+              mais curto de "a madrugada rodou?" para "quais não rodaram", e ele
+              não passa por abrir malha por malha.
+
+              Três regras herdadas, cada uma com o defeito que evita:
+                • **só aparece com número > 0** (Decisão 58): uma pílula
+                  "0 não abriram" todo dia treina o olho a passar por ela — e no
+                  dia em que fosse 1, não seria vista;
+                • **`aria-pressed`** (Decisão 75, molde de `PainelRealce`):
+                  contador que age como filtro é botão de estado, e sem isso o
+                  leitor de tela anuncia "12 concluídas" sem dizer que ESTE é o
+                  filtro ligado;
+                • **a régua no rótulo**: `12 concluídas na madrugada (referência
+                  03/08)`. Sem a segunda metade o número é verdadeiro e
+                  ininterpretável — às 08:00 de 04/08, "12 concluídas" pode ser
+                  de ontem, de anteontem ou de uma mistura das duas, e aí ele não
+                  bate com relatório nenhum por ODATE. */}
+          {ESTADOS_CORRIDA.filter(def => contagens[def.chave] > 0).map(def => {
+            const n = contagens[def.chave]
+            const ligado = estadoAtivo === def.chave
+            // A metade HONESTA da régua: quem ficou de fora da conta, e por quê.
+            //
+            // Ela vale nos DOIS estados do botão, e não só no desligado. É com o
+            // filtro LIGADO que o operador vê 12 cards na tela sabendo que 13
+            // malhas concluíram — o momento exato em que a explicação da
+            // diferença deixa de ser nota de rodapé e vira a resposta.
+            const foraDaConta =
+              def.chave === 'concluida' && referencia?.foraDaReferencia
+                ? `\n\nOutra${referencia.foraDaReferencia !== 1 ? 's' : ''} `
+                  + `${referencia.foraDaReferencia} malha`
+                  + `${referencia.foraDaReferencia !== 1 ? 's' : ''} `
+                  + `concluí${referencia.foraDaReferencia !== 1 ? 'ram' : 'u'} `
+                  + 'a corrida de uma data de referência anterior e fica'
+                  + `${referencia.foraDaReferencia !== 1 ? 'm' : ''} fora desta `
+                  + 'conta — o número bate, exato, com o relatório da '
+                  + `referência ${referencia.curta}.`
+                : ''
+            return (
+              <button
+                key={def.chave}
+                type="button"
+                aria-pressed={ligado}
+                onClick={() => setCorridaFiltro(ligado ? '' : def.chave)}
+                title={(ligado
+                  ? `${def.ajuda}\n\nClique para voltar a ver todas.`
+                  : `${def.ajuda}\n\nClique para ver só estas.`) + foraDaConta}
+                className={`rounded px-3 py-1.5 flex items-center gap-1.5 border transition-all ${def.tom}`
+                  + (ligado ? ' ring-2 ring-offset-1 ring-current ring-offset-canvas' : ' hover:brightness-95')}
+              >
+                <strong className="font-bold text-sm">{n}</strong>
+                <span className="text-xs">{rotuloEstado(def.chave, n, referencia)}</span>
+              </button>
+            )
+          })}
         </div>
       )}
 
@@ -1012,7 +1043,7 @@ function MalhasView({ onAbrir, onAcompanhar }: {
           <p className="font-semibold text-ink">Nenhuma malha cadastrada</p>
           <p className="text-sm text-dim mt-1 max-w-md">
             Uma malha agrupa pipelines — o análogo da sequence mestre do DataStage.
-            O diagrama de montagem chega na F8.
+            Crie a malha, adicione os membros e desenhe as dependências no diagrama.
           </p>
           {!migrationPendente && (
             <Button className="mt-4" onClick={() => setShowCriar(true)}>
@@ -1028,9 +1059,9 @@ function MalhasView({ onAbrir, onAcompanhar }: {
           <p className="font-semibold text-ink">Nenhuma malha para este filtro</p>
           <p className="text-sm text-dim mt-1 max-w-md">
             As {malhas.length} malha{malhas.length !== 1 ? 's' : ''} cadastrada{malhas.length !== 1 ? 's' : ''} continua{malhas.length !== 1 ? 'm' : ''} lá —
-            ajuste a busca ou a situação.
+            ajuste a busca, a situação ou o estado da corrida.
           </p>
-          <Button variant="secondary" className="mt-4" onClick={() => { setBusca(''); setStatusFiltro('') }}>
+          <Button variant="secondary" className="mt-4" onClick={limparFiltros}>
             <X size={14} /> Limpar filtros
           </Button>
         </div>

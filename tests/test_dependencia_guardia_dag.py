@@ -21,6 +21,7 @@ import re
 import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -70,6 +71,9 @@ def _carregar():
 
 
 GUARDIA = _carregar()
+# A função REAL, capturada antes de qualquer `monkeypatch` — é o que permite um
+# cenário exercitar a leitura de produção em vez de um dublê dela.
+_APP_BASE_URL_DE_PRODUCAO = GUARDIA.dep.app_base_url
 DAG_KWARGS = dict(_DAG_STUB.call_args.kwargs)
 OP_KWARGS = dict(_OP_STUB.call_args.kwargs)
 OP_CHAMADAS = _OP_STUB.call_count
@@ -114,6 +118,10 @@ def _mundo(monkeypatch, agora=AGORA, **sobrescreve):
         "eventos_nao_notificados": lambda conn, lim, jan: [],
         "marcar_notificado": lambda conn, i: None,
         "canal_teams_supervisao": lambda conn: None,
+        # F11 (Decisão 69): o endereço do app. O DEFAULT do dublê é o mesmo
+        # default de produção — vazio, migration 086 —, para que o cenário que
+        # não fala de botão exercite o card SEM botão.
+        "app_base_url": lambda conn: "",
         "reservar_corrida": lambda conn, p, d, rid, o: rid,
         "ordenar_corrida": lambda conn, p, d, rid, o: True,
         "devolver_reserva": lambda conn, p, d, rid, veio_de_adocao: None,
@@ -1035,6 +1043,104 @@ def test_envio_usa_o_card_de_dependencia_com_o_webhook_do_canal(monkeypatch):
     assert webhook == "https://webhook/SEGREDO"
     corpo = card["attachments"][0]["content"]["body"]
     assert any("PIPE_C" in str(b.get("text", "")) for b in corpo)
+
+
+# ═══ F11 (Decisão 69) — o botão do card, e a degradação por ausência ════════
+
+_EV_MALHA = {"id": 21, "pipeline": "#corrida:12", "tipo": "MALHA_FALHOU",
+             "data_ref": "2026-08-04", "detalhe": "PIPE_A falhou",
+             "detectado_em": "2026-08-04 03:07:00", "malha": "Carga_Vida",
+             "sequencia": 1, "corrida_id": 12}
+
+
+def test_o_endereco_do_app_chega_ao_card_do_ciclo(monkeypatch):
+    """O caminho inteiro, ponta a ponta: config → `_notificar` → card. Se a
+    base parasse em qualquer degrau, o botão existiria no teste do ds_teams e
+    não existiria no celular."""
+    chamadas = _patch_envio(monkeypatch, lambda card: (True, "HTTP 200"))
+    _mundo(monkeypatch,
+           eventos_nao_notificados=lambda conn, lim, jan: [dict(_EV_MALHA)],
+           canal_teams_supervisao=lambda conn: dict(_CANAL),
+           app_base_url=lambda conn: "https://orquestra.exemplo.com")
+    GUARDIA.ciclo()
+    (_webhook, card), = chamadas
+    acoes = card["attachments"][0]["content"]["actions"]
+    assert acoes[0]["url"] == ("https://orquestra.exemplo.com/malha"
+                               "?malha=Carga_Vida&modo=execucao&corrida=12")
+
+
+def test_o_endereco_e_lido_UMA_vez_por_lote_e_nao_por_evento(monkeypatch):
+    """Custo: o lote é de até 50 cards por ciclo de 5 min. Ler a config por
+    evento seriam 50 idas ao banco para uma resposta que não muda no meio do
+    lote."""
+    leituras = []
+    _patch_envio(monkeypatch, lambda card: (True, "HTTP 200"))
+    _mundo(monkeypatch,
+           eventos_nao_notificados=lambda conn, lim, jan:
+               [dict(_EV_MALHA, id=i) for i in range(5)],
+           canal_teams_supervisao=lambda conn: dict(_CANAL),
+           app_base_url=lambda conn: leituras.append(1) or "https://x.exemplo")
+    GUARDIA.ciclo()
+    assert len(leituras) == 1
+
+
+def test_sem_endereco_o_card_do_ciclo_sai_EXATAMENTE_como_hoje(monkeypatch):
+    """O aceite literal da fase: `app_base_url` ausente → card sem botão e
+    **sem erro no ciclo da guardiã**. Degradação por ausência."""
+    chamadas = _patch_envio(monkeypatch, lambda card: (True, "HTTP 200"))
+    _mundo(monkeypatch,
+           eventos_nao_notificados=lambda conn, lim, jan: [dict(_EV_MALHA)],
+           canal_teams_supervisao=lambda conn: dict(_CANAL))
+    saida = GUARDIA.ciclo()
+    (_webhook, card), = chamadas
+    assert "actions" not in card["attachments"][0]["content"]
+    assert saida["notificados"] == 1          # e o alerta CHEGOU assim mesmo
+
+
+class _BancoQueRecusa:
+    """Banco que nega toda leitura — a forma mais dura do `DENY SELECT`."""
+
+    def __init__(self):
+        self.tentativas = 0
+
+    def cursor(self):
+        self.tentativas += 1
+        raise Exception("SELECT permission denied on object 'etl_app_config'")
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_config_ILEGIVEL_no_ciclo_nao_custa_o_alerta_das_3h(monkeypatch):
+    """O outro lado da degradação por ausência: a config existe e o banco
+    **recusa** a leitura (um `DENY SELECT` em `etl_app_config`, um lock).
+
+    Aqui o `app_base_url` é o de PRODUÇÃO, não um dublê que devolve `''` — um
+    dublê provaria que o ciclo aguenta uma função que nunca levanta, que é
+    exatamente o que não está em dúvida. O que se prova é a COMPOSIÇÃO: a
+    leitura de verdade, sobre um banco que diz não, dentro do ciclo que manda o
+    alerta das 3h. O card sai sem botão, o alerta chega, e o ciclo termina
+    normalmente — "a guardiã nunca cai" vale também para um enfeite de card."""
+    banco = _BancoQueRecusa()
+    mssql = sys.modules["airflow.providers.microsoft.mssql.hooks.mssql"]
+    monkeypatch.setattr(mssql, "MsSqlHook",
+                        lambda **kw: SimpleNamespace(get_conn=lambda: banco))
+    chamadas = _patch_envio(monkeypatch, lambda card: (True, "HTTP 200"))
+    _mundo(monkeypatch,
+           eventos_nao_notificados=lambda conn, lim, jan: [dict(_EV_MALHA)],
+           canal_teams_supervisao=lambda conn: dict(_CANAL),
+           app_base_url=_APP_BASE_URL_DE_PRODUCAO)
+    saida = GUARDIA.ciclo()
+    (_webhook, card), = chamadas
+    assert banco.tentativas >= 1, "o banco recusador nem chegou a ser usado"
+    assert "actions" not in card["attachments"][0]["content"]
+    assert saida["notificados"] == 1
 
 
 # ═══ correções da revisão adversarial da F4 ═════════════════════════════════

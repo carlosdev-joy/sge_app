@@ -766,13 +766,13 @@ def test_fila_de_notificacao_recente_e_em_ordem(dep):
     # sobre o deploy — é o que permite a mesma fila servir os três formatos
     # de evento sem quebrar quando uma migration ainda não entrou.
     linha = (7, "PIPE_C", "2026-08-01", "JANELA_ESTOUROU", "detalhe",
-             "2026-08-01 08:00:00", None, None)
+             "2026-08-01 08:00:00", None, None, None)
     conn = _conn([{"rows": [(1, 1, 1)]}, {"rows": [(1,)]}, {"rows": [linha]}])
     fila = dep.eventos_nao_notificados(conn, 50, 2)
     assert fila == [{"id": 7, "pipeline": "PIPE_C", "data_ref": "2026-08-01",
                      "tipo": "JANELA_ESTOUROU", "detalhe": "detalhe",
                      "detectado_em": "2026-08-01 08:00:00",
-                     "malha": None, "sequencia": None}]
+                     "malha": None, "sequencia": None, "corrida_id": None}]
     sql, params = conn._cur.execs[2]
     assert "notificado_em IS NULL" in sql
     assert "DATEADD(day, -%s, GETDATE())" in sql
@@ -799,6 +799,35 @@ def test_canal_derivado_da_supervisao(dep):
     assert "etl_msg_grupo" in sql and "etl_ds_supervisao_job" in sql
     assert "g.ativo = 1" in sql and "TOP 1" in sql
     assert dep.canal_teams_supervisao(_conn([{"rows": []}])) is None
+
+
+# ── F11 (Decisão 69) — o endereço do app, e o que ele faz quando falta ──────
+
+def test_endereco_do_app_lido_da_config(dep):
+    conn = _conn([{"rows": [("https://orquestra.exemplo.com",)]}])
+    assert dep.app_base_url(conn) == "https://orquestra.exemplo.com"
+    sql, _ = conn._cur.execs[0]
+    assert "etl_app_config" in sql and "app_base_url" in sql
+
+
+@pytest.mark.parametrize("roteiro", [
+    [{"rows": []}],                    # chave ausente (migration 086 não veio)
+    [{"rows": [(None,)]}],             # linha existe, valor nulo
+    [{"rows": [("   ",)]}],            # o default da 086: criada VAZIA
+])
+def test_endereco_ausente_devolve_vazio_e_nao_inventa(dep, roteiro):
+    """`''` significa uma coisa só: **o card sai sem botão**. Nunca um host
+    adivinhado — ele mandaria o plantão para um endereço que não responde, às
+    3h, e queimaria a confiança no botão inteiro."""
+    assert dep.app_base_url(_conn(roteiro)) == ""
+
+
+def test_endereco_indisponivel_NUNCA_derruba_o_ciclo(dep):
+    """Esta leitura acontece dentro do ciclo da guardiã: um DENY de SELECT em
+    etl_app_config não pode custar o alerta das 3h. A função engole a própria
+    exceção e devolve o vazio — que é o card de sempre."""
+    conn = _conn([Exception("SELECT permission denied on etl_app_config")])
+    assert dep.app_base_url(conn) == ""
 
 
 def test_config_dependente_ganha_hora_limite_aditiva(dep):
@@ -1045,10 +1074,13 @@ def test_a_fila_RESOLVE_o_marcador_da_corrida(dep):
     colunas o evento mais grave do produto sairia com o sujeito "malha não
     identificada"."""
     linha = (9, "#corrida:12", "2026-08-01", "MALHA_FALHOU", "detalhe",
-             "2026-08-01 08:00:00", "Carga_Vida", 2)
+             "2026-08-01 08:00:00", "Carga_Vida", 2, 12)
     conn = _conn([{"rows": [(1, 1, 1)]}, {"rows": [(1,)]}, {"rows": [linha]}])
     fila = dep.eventos_nao_notificados(conn, 50, 2)
     assert fila[0]["malha"] == "Carga_Vida" and fila[0]["sequencia"] == 2
+    # F11 (Decisão 69): o id da corrida é a LENTE do botão do card
+    # (`?corrida={id}`) — viaja na URL e nunca no texto (Decisão 74).
+    assert fila[0]["corrida_id"] == 12
     sql, _ = conn._cur.execs[2]
     assert ("OR (e.pipeline_name LIKE '#corrida:%%' AND EXISTS "
             "(SELECT 1 FROM dbo.etl_malha_execucao mx "
@@ -1056,7 +1088,34 @@ def test_a_fila_RESOLVE_o_marcador_da_corrida(dep):
             "CAST(mx.id AS VARCHAR(20))))") in sql
     assert ("LEFT JOIN dbo.etl_malha_execucao c ON c.id = e.malha_execucao_id"
             in sql)
-    assert "c.malha_name, c.sequencia" in sql
+    # A corrida tem PRECEDÊNCIA sobre o nó na resolução da malha (é a fonte
+    # mais específica); o nó é o fallback de quem não tem corrida nenhuma.
+    assert "COALESCE(c.malha_name, n2.malha_name), c.sequencia" in sql
+
+
+def test_a_fila_RESOLVE_a_malha_do_NO_e_nao_so_a_da_corrida(dep):
+    """Pendência 11 do §18 — o card do nó Fim publicava `#no:38`.
+
+    O evento dos componentes do desenho (Fim, Notificação) é gravado com o
+    marcador `'#no:{id}'` e **sem** `malha_execucao_id`: a resolução que a F2
+    deu à fila era só a da corrida, então `malha` vinha `None` e o card do
+    celular saía com sujeito `#no:38` e fato `Pipeline: #no:38` — nome de
+    máquina na tela, contra a Decisão 74.
+
+    O segundo `LEFT JOIN` resolve o marcador em `etl_malha_no.malha_name`. Ele
+    é do CARD, não do filtro: a guarda de existência do nó continua sendo o
+    `EXISTS` do `WHERE`, e um evento de nó apagado segue fora do canal."""
+    linha = (11, "#no:38", "2026-08-04", "MALHA_CONCLUIDA", "detalhe",
+             "2026-08-04 04:02:00", "Carga_Vida", None, None)
+    conn = _conn([{"rows": [(1, 1, 1)]}, {"rows": [(1,)]}, {"rows": [linha]}])
+    fila = dep.eventos_nao_notificados(conn, 50, 2)
+    assert fila[0]["malha"] == "Carga_Vida"
+    # Sem corrida: o botão do card leva à lente de execução da malha, e não a
+    # uma corrida inventada (§9.8 — degradação por ausência).
+    assert fila[0]["corrida_id"] is None
+    sql, _ = conn._cur.execs[2]
+    assert ("LEFT JOIN dbo.etl_malha_no n2 ON e.pipeline_name = '#no:' + "
+            "CAST(n2.id AS VARCHAR(20))") in sql
 
 
 def test_a_fila_sem_a_085_mantem_o_ramo_da_corrida_INERTE(dep):
@@ -1067,16 +1126,36 @@ def test_a_fila_sem_a_085_mantem_o_ramo_da_corrida_INERTE(dep):
     eventos comuns segue intacta."""
     conn = _conn([{"rows": [(1, 1, 1)]}, {"rows": [(None,)]},
                   {"rows": [(9, "PIPE_C", "2026-08-01", "NAO_LIBEROU", "d",
-                             "2026-08-01 08:00:00", None, None)]}])
+                             "2026-08-01 08:00:00", None, None, None)]}])
     fila = dep.eventos_nao_notificados(conn, 50, 2)
     # a forma do dicionário é a MESMA com e sem a 085 — quem monta o card não
     # pode ter de perguntar em que banco está
     assert set(fila[0]) == {"id", "pipeline", "data_ref", "tipo", "detalhe",
-                            "detectado_em", "malha", "sequencia"}
+                            "detectado_em", "malha", "sequencia", "corrida_id"}
     sql, _ = conn._cur.execs[2]
     assert "etl_malha_execucao" not in sql
     assert "NULL, NULL" in sql
+    # F11: com a 075 no banco, a malha ainda é resolvida — pelo NÓ. É a fonte
+    # que não depende da 085, e é justamente a dos eventos de componente.
+    assert "n2.malha_name, NULL, NULL" in sql
     assert "EXISTS (SELECT 1 FROM dbo.etl_pipeline p" in sql
+
+
+def test_a_fila_sem_075_e_sem_085_nao_monta_COALESCE_de_dois_NULL(dep):
+    """A borda que o SQL Server recusa em COMPILAÇÃO, e não em execução:
+    `COALESCE(NULL, NULL)` levanta "at least one of the arguments must not be
+    the NULL constant" — e as duas pontas SÃO literais num banco sem a 075 e
+    sem a 085 (o cenário de um deploy só de `api/`). A coluna é montada por
+    composição justamente para esse banco: sai um `NULL` solto, a fila dos
+    eventos comuns continua de pé e a forma do resultado não muda."""
+    conn = _conn([{"rows": [(1, None, 1)]}, {"rows": [(None,)]},
+                  {"rows": [(9, "PIPE_C", "2026-08-01", "NAO_LIBEROU", "d",
+                             "2026-08-01 08:00:00", None, None, None)]}])
+    fila = dep.eventos_nao_notificados(conn, 50, 2)
+    assert fila[0]["malha"] is None and fila[0]["corrida_id"] is None
+    sql, _ = conn._cur.execs[2]
+    assert "COALESCE" not in sql
+    assert "etl_malha_no" not in sql and "etl_malha_execucao" not in sql
 
 
 def test_malhas_ativas_com_desenho_nao_traz_malha_INATIVA(dep):

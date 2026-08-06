@@ -10,15 +10,21 @@ um por família de evento — supervisão do DataStage (`montar_card`), dependê
 entre pipelines (`montar_card_dependencia`) e corrida de malha
 (`montar_card_malha`) —, todos no MESMO envelope de Adaptive Card.
 
-Duas regras que valem conhecer antes de mexer:
+Três regras que valem conhecer antes de mexer:
 
   • **`notificado_em` só é marcado depois de o webhook responder 2xx.** Marcar
     antes trocaria "avisei" por "tentei avisar" — e um alerta perdido em silêncio
     é o pior resultado possível numa feature cujo propósito é avisar.
   • **A URL do webhook nunca entra em log nem em mensagem de erro.** Ela é
     credencial: quem tem a URL posta no canal. Os erros citam o canal pelo nome.
+  • **Nome de máquina não chega ao celular** (Decisão 74). Os eventos de malha
+    são gravados com marcador interno em `pipeline_name` — `#corrida:{id}` para
+    a corrida e `#no:{id}` para os componentes do desenho —, e nenhum dos dois
+    aparece no card: quem lê às 3h precisa do nome da malha, não da chave.
 """
 from __future__ import annotations
+
+from urllib.parse import quote
 
 # Rótulo, ícone e cor do Adaptive Card por tipo de evento.
 #
@@ -90,15 +96,99 @@ _TIPOS_CORRIDA = frozenset({
     "MALHA_CANCELADA", "MALHA_REPROCESSO", "MALHA_SEM_TRABALHO",
 })
 
+# ── F11 (Decisão 69) — o BOTÃO que leva o card à corrida ────────────────────
+#
+# O que ele evita: a camada mais cara desta spec ter taxa de uso perto de zero
+# exatamente no horário para o qual foi feita. Às 3h chega um card no celular e,
+# a partir dali, o caminho até a tela é destravar o telefone, abrir o notebook,
+# VPN, `/malha`, achar a malha na lista, trocar o modo e escolher a data. Uma
+# tela ótima que ninguém alcança às 3h vale menos que uma tela boa com caminho
+# até ela.
+#
+# ⚠️ **A degradação é por AUSÊNCIA, nunca por invenção.** Sem `app_base_url`
+# configurada (migration 086, que a cria VAZIA) o card sai exatamente como
+# hoje: sem `actions`, sem texto a mais e sem uma linha sequer de erro no ciclo
+# da guardiã. Um endereço adivinhado é pior que nenhum — manda o plantão para
+# um host que não responde, às 3h, e queima a confiança no botão inteiro.
+#
+# O molde da URL é o mesmo que a interface usa nos seus próprios links
+# (`ui-react/src/components/malhas/corridasDaLista.ts`), e o do `Action.OpenUrl`
+# é o que o gerador de DAG já emite (`dags/etl_dag_factory.py:1065-1069`).
+_ROTULO_BOTAO = "Abrir a malha no Orquestra"
+
+
+def _base_do_app(base) -> str:
+    """Normaliza a base do endereço, ou devolve `''` — que aqui significa
+    exatamente "não há botão".
+
+    Exige esquema explícito: `orquestra.exemplo.com` sem `https://` viraria um
+    link relativo dentro do Teams, que abre um erro em vez da tela. Barra final
+    some para a concatenação não produzir `//malha` (que alguns proxies tratam
+    como outra rota).
+
+    A comparação do esquema é SEM CAIXA: `HTTPS://orquestra…` é endereço
+    perfeitamente válido, e recusá-lo apagaria o botão da fase inteira por uma
+    diferença que navegador nenhum enxerga.
+
+    ⚠️ **E a base tem de ser SÓ o endereço.** Um valor com `?`, `#` ou espaço
+    no meio — `https://host/?x=1`, `https://host#topo`, um espaço colado num
+    copiar/colar — passaria pela checagem de esquema e sairia CONCATENADO
+    (`https://host/?x=1/malha?malha=…`): um link quebrado, que é URL inventada
+    com outro nome. A promessa desta fase é a oposta — sem base utilizável o
+    card sai sem botão, e o plantão não clica às 3h para cair num 404."""
+    texto = str(base or "").strip().rstrip("/")
+    if not texto or not texto.lower().startswith(("https://", "http://")):
+        return ""
+    if "?" in texto or "#" in texto or any(c.isspace() for c in texto):
+        return ""
+    return texto
+
+
+def url_da_corrida(base, malha, corrida_id=None) -> str | None:
+    """`{base}/malha?malha={m}&modo=execucao&corrida={id}` — ou `None`.
+
+    `None` em três casos, e os três são a mesma regra (degradação por ausência):
+    base não configurada, malha desconhecida e malha que é marcador interno
+    (`#…` nunca vai para a URL — seria publicar a chave técnica na barra de
+    endereço do celular, e o parâmetro sequer casaria com uma malha real).
+
+    Sem `corrida_id` o link ainda vale e ainda é melhor que a lista: leva à
+    lente de execução DAQUELA malha, que é onde o operador precisa estar. É o
+    caso dos eventos dos componentes do desenho (`#no:{id}`), que não carregam
+    corrida — inventar um id ali abriria a tela na corrida de outra pessoa.
+    """
+    b = _base_do_app(base)
+    nome = str(malha or "").strip()
+    if not b or not nome or nome.startswith("#"):
+        return None
+    url = f"{b}/malha?malha={quote(nome, safe='')}&modo=execucao"
+    try:
+        cid = int(corrida_id)
+    except (TypeError, ValueError):
+        cid = 0
+    return f"{url}&corrida={cid}" if cid > 0 else url
+
+
+def _acoes(url) -> list | None:
+    """O bloco `actions` do Adaptive Card, ou `None` para não criar a chave.
+
+    Chave AUSENTE, e não lista vazia: `"actions": []` faz o Teams renderizar a
+    faixa de ações vazia em algumas versões do cliente — um card com uma tira
+    cinza embaixo que não faz nada é pior que o card de hoje."""
+    if not url:
+        return None
+    return [{"type": "Action.OpenUrl", "title": _ROTULO_BOTAO, "url": url}]
+
+
 # O próximo passo, por tipo. O `detalhe` do evento diz o que aconteceu e nomeia
 # os pendentes (Decisão 48); esta linha diz o que FAZER — porque na maioria das
 # noites o card é a única superfície que a pessoa de plantão vê, e "Malha
 # falhou" sem próximo passo obriga a abrir o notebook só para descobrir se há
 # algo a fazer agora.
 #
-# Divergência declarada da spec: o §9.14 não prevê este bloco — prevê o BOTÃO
-# para a tela da corrida, que é entregável da F11 (Decisão 69). Esta é a versão
-# em texto, que vale antes e depois dele; nenhuma URL é inventada aqui.
+# Ele continua valendo COM o botão da Decisão 69: o botão diz para onde ir, o
+# texto diz o que fazer quando se chega lá — e é o único dos dois que sobrevive
+# a `app_base_url` ausente.
 ACAO_MALHA: dict[str, str] = {
     "MALHA_FALHOU": (
         "Reprocesse a partir do pipeline que falhou. Os outros podem seguir "
@@ -217,7 +307,7 @@ def montar_card(evento: dict) -> dict:
     }
 
 
-def montar_card_dependencia(evento: dict) -> dict:
+def montar_card_dependencia(evento: dict, base_url=None) -> dict:
     """Card dos eventos de DEPENDÊNCIA entre pipelines (F4 — guardiã).
 
     PURA como `montar_card`: dict entra, dict sai — testável sem rede.
@@ -227,6 +317,9 @@ def montar_card_dependencia(evento: dict) -> dict:
     mensagem é renderizada na DETECÇÃO, com o contexto em mãos (padrão da
     supervisão). O transporte é o MESMO `enviar_card` — herda os dois
     contratos já pagos: notificado_em só após 2xx e URL fora do log.
+
+    `base_url` é o endereço desta instalação (config `app_base_url`), e é
+    OPCIONAL de propósito: sem ela o card sai byte a byte como antes da F11.
     """
     tipo = evento.get("tipo") or ""
     pipeline = str(evento.get("pipeline") or "")
@@ -239,14 +332,45 @@ def montar_card_dependencia(evento: dict) -> dict:
     # neste card: Fim e Notificação são componentes do desenho, não a corrida.
     if pipeline.startswith(_MARCA_CORRIDA) or (
             tipo in _TIPOS_CORRIDA and not pipeline.startswith(_MARCA_NO)):
-        return montar_card_malha(evento)
+        return montar_card_malha(evento, base_url)
 
     estilo = ESTILO.get(tipo, _PADRAO)
+
+    # ── Pendência 11 do §18: o card do nó Fim publicava `#no:38` ─────────────
+    # O roteamento acima mantém Fim e Notificação NESTE card de propósito (são
+    # componentes do desenho, não a corrida), mas o sujeito e o fato saíam do
+    # `pipeline_name`, que para eles é o marcador interno: chegava ao celular um
+    # card com subtítulo `#no:38` e o fato `Pipeline: #no:38`, contra a Decisão
+    # 74. Quem lê às 3h precisa do nome da malha — e é a fila que passou a
+    # trazê-lo (`eventos_nao_notificados` resolve o marcador em
+    # `etl_malha_no.malha_name`, e não só a malha da corrida).
+    #
+    # A malha desconhecida NÃO volta a publicar o marcador: prefere-se dizer
+    # que não se sabe a mandar a chave técnica — "?" com o id ao lado é o pior
+    # dos dois mundos, porque parece informação.
+    #
+    # ⚠️ E o descarte do marcador vale para o campo `malha` TAMBÉM, não só para
+    # o `pipeline`. `montar_card_malha` já limpa o seu (o `provavel` logo
+    # abaixo), e a assimetria era o buraco: um chamador que nomeasse a malha
+    # com a mesma chave que gravou o evento — o gesto mais natural de quem tem
+    # uma chave só em mãos — republicava `#no:38` no sujeito E no fato, que é
+    # literalmente o defeito que a pendência 11 fechou. A regra da casa é uma
+    # só: '#' é prefixo de chave interna, e chave interna não vai ao celular.
+    do_no = pipeline.startswith(_MARCA_NO)
+    malha = str(evento.get("malha") or "").strip()
+    if malha.startswith("#"):
+        malha = ""
+    if do_no:
+        sujeito = malha or "malha não identificada"
+        fato_sujeito = _fato("Malha", malha)
+    else:
+        sujeito = pipeline or "?"
+        fato_sujeito = _fato("Pipeline", evento.get("pipeline"))
 
     corpo: list[dict] = [
         {"type": "TextBlock", "text": f"{estilo['icone']} {estilo['rotulo']}",
          "size": "Large", "weight": "Bolder", "wrap": True, "color": estilo["cor"]},
-        {"type": "TextBlock", "text": pipeline or "?",
+        {"type": "TextBlock", "text": sujeito,
          "wrap": True, "spacing": "None", "isSubtle": True},
     ]
 
@@ -258,33 +382,48 @@ def montar_card_dependencia(evento: dict) -> dict:
     corpo.append({
         "type": "FactSet", "spacing": "Medium",
         "facts": [
-            _fato("Pipeline", evento.get("pipeline")),
+            fato_sujeito,
             _fato("Data de referência", evento.get("data_ref")),
             _fato("Detectado em", evento.get("detectado_em")),
         ],
     })
 
+    conteudo = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "body": corpo,
+    }
+    # Botão SÓ para o evento de componente de malha (Decisão 69): o evento de
+    # dependência entre pipelines não tem malha para abrir — mandá-lo para a
+    # lista seria o botão que esta fase existe para consertar. Sem corrida no
+    # evento do nó, o link leva à lente de execução da malha, que é a tela
+    # certa.
+    if do_no:
+        acoes = _acoes(url_da_corrida(base_url, malha))
+        if acoes:
+            conteudo["actions"] = acoes
+
     return {
         "type": "message",
         "attachments": [{
             "contentType": "application/vnd.microsoft.card.adaptive",
-            "content": {
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "type": "AdaptiveCard",
-                "version": "1.4",
-                "body": corpo,
-            },
+            "content": conteudo,
         }],
     }
 
 
-def montar_card_malha(evento: dict) -> dict:
+def montar_card_malha(evento: dict, base_url=None) -> dict:
     """Card dos eventos da CORRIDA de malha (F2 — spec §6.5/§9.14).
 
     PURA como as outras duas: dict entra, dict sai. Espera as chaves tipo,
-    malha, data_ref, detalhe, detectado_em e — quando houver — sequencia; tudo
-    opcional exceto tipo. Mesmo envelope, mesmo esqueleto (título · sujeito ·
-    corpo · fatos) das outras famílias: quem está de plantão já lê esse card.
+    malha, data_ref, detalhe, detectado_em e — quando houver — sequencia e
+    corrida_id; tudo opcional exceto tipo. Mesmo envelope, mesmo esqueleto
+    (título · sujeito · corpo · fatos) das outras famílias: quem está de
+    plantão já lê esse card.
+
+    `base_url` (config `app_base_url`) acrescenta o BOTÃO da Decisão 69.
+    Ausente = card idêntico ao de antes da F11 — a degradação é por ausência.
 
     O que muda, e por quê: o sujeito é a MALHA, não o `pipeline_name` — que
     para estes eventos é o marcador interno '#corrida:{id}' (Decisão 49).
@@ -345,16 +484,26 @@ def montar_card_malha(evento: dict) -> dict:
         ],
     })
 
+    conteudo = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "body": corpo,
+    }
+    # Decisão 69 — o botão cai na corrida DESTE evento (`?corrida={id}`), e não
+    # na corrida corrente da malha: às 3h o card que chega é o de um ciclo
+    # específico, e abrir outro responderia a pergunta errada. O id viaja na
+    # URL e continua fora do TEXTO do card (Decisão 74) — a corrida se chama
+    # pela data em tudo que se lê.
+    acoes = _acoes(url_da_corrida(base_url, malha, evento.get("corrida_id")))
+    if acoes:
+        conteudo["actions"] = acoes
+
     return {
         "type": "message",
         "attachments": [{
             "contentType": "application/vnd.microsoft.card.adaptive",
-            "content": {
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "type": "AdaptiveCard",
-                "version": "1.4",
-                "body": corpo,
-            },
+            "content": conteudo,
         }],
     }
 

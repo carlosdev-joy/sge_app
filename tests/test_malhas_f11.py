@@ -43,7 +43,7 @@ from api.main import app as _app  # noqa: F401  (ordem de import — ver test_co
 from deps import PERM_EDITAR, get_current_user
 from tests.test_malhas_f10 import (FakeCur as FakeCurF10, FakeDb as FakeDbF10,
                                    _aresta, _cria_no, _monta_malha)
-from tests.test_dependencias_f5 import (FakePipeCur, FakePipeDb,
+from tests.test_dependencias_f5 import (FakePipeCur, FakePipeDb, malha_unica,
                                         _body_registro, _linha_pipeline,
                                         _patch_airflow)
 
@@ -751,7 +751,13 @@ class FakePipeCur11(FakePipeCur):
                     (str(p["hora_virada"])[:5] if p.get("hora_virada") else None),
                     (str(p["nao_iniciar_antes"])[:5] if p.get("nao_iniciar_antes") else None),
                     (str(p["hora_limite_dependencia"])[:5] if p.get("hora_limite_dependencia") else None),
-                    ono, (n or {}).get("malha")))
+                    ono, (n or {}).get("malha"))
+                    # F11 — a malha ÚNICA do dependente entra como última
+                    # coluna, e só quando a consulta a pede (banco sem a 070
+                    # nasce com o literal `NULL` e a coluna não existe no SQL).
+                    + (((malha_unica(db, k, s)
+                         if "etl_malha_pipeline" in s else None),)
+                       if "malha_unica" in s else ()))
             self._rows = sorted(out, key=lambda r: (r[0], r[1]))
             self.rowcount = -1
             return

@@ -27,7 +27,7 @@ if str(_DAGS) not in sys.path:
 
 from utils.ds_teams import (  # noqa: E402
     ACAO_MALHA, ESTILO, enviar_card, montar_card, montar_card_dependencia,
-    montar_card_malha,
+    montar_card_malha, url_da_corrida,
 )
 
 WEBHOOK = "https://outlook.office.com/webhook/SEGREDO-abc123"
@@ -255,12 +255,14 @@ def test_card_dos_observadores_de_malha_tem_tom_positivo(tipo, rotulo):
     """F14 (Decisão 14): os 2 tipos novos são de CONCLUSÃO — cor Good, como o
     SITUACAO_INICIAL; vermelho aqui ensinaria a operação a ignorar a cor. O
     envelope é o MESMO montar_card_dependencia (pipeline = marcador #no:{id})."""
-    card = montar_card_dependencia(_evento_dep(tipo=tipo, pipeline="#no:9"))
+    card = montar_card_dependencia(
+        _evento_dep(tipo=tipo, pipeline="#no:9", malha="Carga_Vida"))
     corpo = card["attachments"][0]["content"]["body"]
     assert corpo[0]["color"] == "Good"
     assert rotulo in corpo[0]["text"]
     assert {"rotulo", "icone", "cor"} <= set(ESTILO[tipo])
-    assert "#no:9" in _texto_do_card(card)
+    # F11 (pendência 11 do §18): o sujeito é a MALHA, nunca o marcador.
+    assert "Carga_Vida" in _texto_do_card(card)
 
 
 # ── Card da CORRIDA de malha (F2 — spec §6.5/§9.14) ─────────────────────────
@@ -431,13 +433,58 @@ def test_evento_da_corrida_sem_marcador_ainda_vira_card_de_malha():
 @pytest.mark.parametrize("tipo", ["MALHA_NOTIFICACAO", "MALHA_CONCLUIDA"])
 def test_roteamento_nao_sequestra_os_eventos_de_no(tipo):
     """Regressão da F14: Fim e Notificação são componentes do DESENHO, não a
-    corrida — chegam com '#no:{id}' e seguem no card de nó, com o mesmo texto
-    de antes. MALHA_CONCLUIDA é o caso que prova que o roteamento é pelo
-    MARCADOR: o mesmo tipo sai do nó Fim e do fechamento da corrida."""
-    texto = _texto_do_card(montar_card_dependencia(
-        _evento_dep(tipo=tipo, pipeline="#no:9")))
-    assert "#no:9" in texto
+    corrida — chegam com '#no:{id}' e seguem no card de nó. MALHA_CONCLUIDA é o
+    caso que prova que o roteamento é pelo MARCADOR: o mesmo tipo sai do nó Fim
+    e do fechamento da corrida, e cada um tem o seu card.
+
+    O que MUDOU na F11 (pendência 11 do §18) é o SUJEITO, não a rota: o card
+    continua sendo o de nó e continua trazendo a data, mas quem aparece é a
+    malha — o marcador é chave interna e não vai ao celular (Decisão 74)."""
+    card = montar_card_dependencia(
+        _evento_dep(tipo=tipo, pipeline="#no:9", malha="Carga_Vida"))
+    texto = _texto_do_card(card)
     assert "Data de referência: 2026-08-01" in texto
+    # O card de NÓ não é o card da corrida: o de nó não fala em "corrida de
+    # 01/08" (o componente do desenho não tem ordinal de ciclo).
+    assert "corrida de" not in texto
+
+
+# ── Pendência 11 do §18 — `#no:38` não vai ao celular ───────────────────────
+#
+# O defeito, medido na `main`: o card de MALHA_CONCLUIDA do nó Fim saía com
+# subtítulo `#no:38` e fato `Pipeline: #no:38`. O roteamento (mantê-lo no card
+# de nó) é deliberado — Fim e Notificação são componentes do DESENHO, não a
+# corrida —, e o que estava errado era publicar a chave técnica no lugar do
+# nome que a pessoa de plantão conhece.
+
+@pytest.mark.parametrize("tipo", ["MALHA_NOTIFICACAO", "MALHA_CONCLUIDA"])
+def test_card_do_no_NAO_publica_o_marcador_interno(tipo):
+    card = montar_card_dependencia(
+        _evento_dep(tipo=tipo, pipeline="#no:38", malha="Carga_Vida"))
+    texto = _texto_do_card(card)
+    assert "#no:" not in texto and "#" not in texto
+    assert "Malha: Carga_Vida" in texto
+    # E o subtítulo é a malha, não o "?" mudo nem o marcador.
+    assert card["attachments"][0]["content"]["body"][1]["text"] == "Carga_Vida"
+
+
+def test_card_do_no_sem_malha_DIZ_que_nao_sabe_em_vez_de_publicar_a_chave():
+    """A malha pode faltar (fila de uma versão anterior, nó apagado entre a
+    detecção e o envio). Preferir "não identificada" a `#no:38` não é preciosismo:
+    o marcador PARECE informação — quem lê às 3h tenta procurar por ele."""
+    texto = _texto_do_card(montar_card_dependencia(
+        _evento_dep(tipo="MALHA_CONCLUIDA", pipeline="#no:38")))
+    assert "#no:" not in texto
+    assert "malha não identificada" in texto
+
+
+def test_evento_de_dependencia_COMUM_continua_nomeando_o_pipeline():
+    """A contrapartida da correção acima: o card de dependência entre
+    pipelines não perde o sujeito. `PIPE_C` não é nome de máquina — é o nome
+    do pipeline, e é por ele que se procura no painel."""
+    texto = _texto_do_card(montar_card_dependencia(_evento_dep()))
+    assert "Pipeline: PIPE_C" in texto
+    assert "Malha:" not in texto
 
 
 def test_conclusao_do_fechamento_da_corrida_vai_pelo_card_da_malha():
@@ -512,3 +559,280 @@ def test_sem_trabalho_nao_parece_alerta():
     cor = dormindo["attachments"][0]["content"]["body"][0]["color"]
     assert cor == "Good" != alarme["attachments"][0]["content"]["body"][0]["color"]
     assert "sem trabalho" in _texto_do_card(dormindo).lower()
+
+
+# ── F11 (Decisão 69) — o BOTÃO que leva o card à corrida ────────────────────
+#
+# A pergunta que esta fase responde: uma tela ótima que ninguém alcança às 3h
+# vale menos que uma tela boa com caminho até ela. O card chega no celular e o
+# caminho até a corrida era destravar o telefone, abrir o notebook, VPN,
+# `/malha`, achar a malha na lista, trocar o modo e escolher a data.
+#
+# O que estes testes protegem, e o defeito de cada um:
+#   • **sem `app_base_url` o card sai EXATAMENTE como hoje.** Degradação por
+#     ausência — uma URL adivinhada manda o plantão para um host que não
+#     responde, às 3h, e queima a confiança no botão inteiro;
+#   • **o id da corrida viaja na URL e nunca no texto** (Decisão 74);
+#   • **marcador nunca vira parâmetro:** `?malha=%23corrida%3A12` abriria a
+#     tela numa malha que não existe, com a chave técnica na barra de endereço.
+
+BASE = "https://orquestra.exemplo.com"
+
+
+def _acoes_do_card(card: dict):
+    return card["attachments"][0]["content"].get("actions")
+
+
+def _url_do_card(card: dict):
+    acoes = _acoes_do_card(card)
+    return acoes[0]["url"] if acoes else None
+
+
+def test_card_da_corrida_leva_botao_para_a_corrida_certa():
+    card = montar_card_malha(_evento_corrida(corrida_id=98765), BASE)
+    acoes = _acoes_do_card(card)
+    assert len(acoes) == 1
+    assert acoes[0]["type"] == "Action.OpenUrl"
+    assert acoes[0]["title"]                      # botão sem rótulo não existe
+    assert acoes[0]["url"] == (
+        "https://orquestra.exemplo.com/malha?malha=Carga_Vida"
+        "&modo=execucao&corrida=98765")
+
+
+@pytest.mark.parametrize("base", [None, "", "   ", "orquestra.exemplo.com",
+                                  "ftp://orquestra", "/malha"])
+def test_sem_endereco_utilizavel_o_card_sai_EXATAMENTE_como_hoje(base):
+    """O aceite literal da fase. Esquema ausente entra na mesma vala do vazio:
+    `orquestra.exemplo.com` sem `https://` vira link relativo dentro do Teams e
+    abre um erro — e um botão que erra é pior que nenhum botão."""
+    com = montar_card_malha(_evento_corrida(corrida_id=1), base)
+    sem = montar_card_malha(_evento_corrida(corrida_id=1))
+    assert "actions" not in com["attachments"][0]["content"]
+    assert com == sem                              # byte a byte
+
+
+@pytest.mark.parametrize("base", [
+    "https://orquestra.exemplo.com/?x=1",     # query colada na base
+    "https://orquestra.exemplo.com#topo",     # fragmento colado na base
+    "https:// orquestra.exemplo.com",         # espaço no meio (copiar/colar)
+    "https://orquestra.exemplo.com\tX",       # tabulação vinda da planilha
+])
+def test_base_que_nao_e_SO_endereco_sai_sem_botao_em_vez_de_link_colado(base):
+    """A degradação desta fase é por AUSÊNCIA, e a checagem de esquema sozinha
+    não a garante.
+
+    ⚠️ Medido: `https://host/?x=1` passa por "começa com https://" e sai
+    concatenado — `https://host/?x=1/malha?malha=…`. Um link quebrado é URL
+    inventada com outro nome: o plantão clica às 3h e cai num 404, que é
+    exatamente o que queima a confiança no botão inteiro. Sem base utilizável,
+    o card sai como o de antes da fase."""
+    card = montar_card_malha(_evento_corrida(corrida_id=12), base)
+    assert "actions" not in card["attachments"][0]["content"]
+    assert card == montar_card_malha(_evento_corrida(corrida_id=12))
+
+
+@pytest.mark.parametrize("base", ["HTTPS://orquestra.exemplo.com",
+                                  "Https://orquestra.exemplo.com"])
+def test_esquema_em_CAIXA_ALTA_continua_sendo_um_endereco(base):
+    """O outro lado da mesma checagem: `HTTPS://` é endereço válido em todo
+    navegador, e recusá-lo apagaria o botão da fase inteira por uma diferença
+    que ninguém enxerga — com o sintoma mais caro possível, que é o silêncio
+    (a degradação por ausência esconderia um erro de digitação da config)."""
+    url = _url_do_card(montar_card_malha(_evento_corrida(corrida_id=12), base))
+    assert url == f"{base}/malha?malha=Carga_Vida&modo=execucao&corrida=12"
+
+
+def test_botao_sem_o_id_da_corrida_ainda_leva_a_lente_de_execucao():
+    """Evento sem corrida (o dos componentes do desenho): o link ainda é melhor
+    que a lista — abre a malha na lente de execução. Inventar um id abriria a
+    tela na corrida de outra pessoa."""
+    url = _url_do_card(montar_card_malha(_evento_corrida(corrida_id=None), BASE))
+    assert url == ("https://orquestra.exemplo.com/malha?malha=Carga_Vida"
+                   "&modo=execucao")
+    assert "corrida=" not in url
+
+
+@pytest.mark.parametrize("cid", ["12", 12])
+def test_id_de_corrida_em_texto_ainda_vira_lente(cid):
+    """A fila devolve o que o driver der (int ou str) — o botão não pode
+    depender disso."""
+    assert _url_do_card(
+        montar_card_malha(_evento_corrida(corrida_id=cid), BASE)).endswith(
+            "&corrida=12")
+
+
+@pytest.mark.parametrize("cid", ["duas", None, 0, -3, ""])
+def test_id_de_corrida_estranho_nao_vira_parametro_nem_derruba_o_card(cid):
+    url = _url_do_card(montar_card_malha(_evento_corrida(corrida_id=cid), BASE))
+    assert url and "corrida=" not in url
+
+
+def test_a_url_nao_leva_marcador_interno():
+    """`malha` vindo como marcador é o caso do evento gravado sem a resolução
+    da fila. Ele não pode virar `?malha=%23corrida%3A12`: é chave interna na
+    barra de endereço, e o parâmetro não casaria com malha nenhuma."""
+    card = montar_card_malha(
+        _evento_corrida(malha=None, pipeline="#corrida:12"), BASE)
+    assert "actions" not in card["attachments"][0]["content"]
+
+
+@pytest.mark.parametrize("marcador", ["#corrida:12", "#no:38"])
+def test_a_guarda_do_MARCADOR_e_perguntada_a_url_da_corrida(marcador):
+    """A mesma regra, perguntada a QUEM a aplica — e a diferença não é estilo.
+
+    ⚠️ Achado por MUTAÇÃO: apagando a guarda `nome.startswith('#')` de
+    `url_da_corrida`, o teste acima continuava VERDE. Ele entra por
+    `montar_card_malha`, que já limpa o marcador antes (o `provavel` do §F2), e
+    por isso o `malha` que chega à URL nunca é um marcador **por aquele
+    caminho** — a asserção passava por um motivo que não é o que ela afirma.
+
+    O outro caminho não limpa nada: `montar_card_dependencia` entrega o
+    `evento['malha']` cru ao botão do evento de nó. A guarda é a única coisa
+    entre um `malha` estranho e `?malha=%23no%3A38` na barra de endereço do
+    celular."""
+    assert url_da_corrida(BASE, marcador, 12) is None
+    assert url_da_corrida(BASE, marcador) is None
+
+
+def test_o_card_do_NO_com_malha_estranha_nao_publica_a_chave_na_url():
+    """O caminho que a guarda de fato protege, ponta a ponta: o card do nó usa
+    `evento['malha']` sem limpeza nenhuma. Fila de uma versão anterior, ou um
+    evento gravado antes da resolução da pendência 11, e o marcador chegaria
+    inteiro à URL."""
+    card = montar_card_dependencia(
+        _evento_dep(tipo="MALHA_CONCLUIDA", pipeline="#no:38",
+                    malha="#no:38"), BASE)
+    assert "actions" not in card["attachments"][0]["content"]
+    assert "#no:" not in _texto_do_card(card)
+
+
+def test_nome_de_malha_com_espaco_e_acento_vai_percentcodificado():
+    url = _url_do_card(montar_card_malha(
+        _evento_corrida(malha="Carga Vida & Previdência"), BASE))
+    assert "malha=Carga%20Vida%20%26%20Previd%C3%AAncia" in url
+    assert " " not in url
+
+
+def test_barra_final_da_config_nao_duplica_na_url():
+    url = _url_do_card(montar_card_malha(
+        _evento_corrida(), "https://orquestra.exemplo.com/"))
+    assert url.startswith("https://orquestra.exemplo.com/malha?")
+
+
+def test_o_id_da_corrida_continua_FORA_do_texto_do_card():
+    """Decisão 74 — o `#` não vai à interface nem ao celular. A URL é endereço,
+    não texto lido: o id pode estar nela e não pode estar no card."""
+    texto = _texto_do_card(montar_card_malha(
+        _evento_corrida(corrida_id=98765), BASE))
+    assert "98765" not in texto and "#" not in texto
+    assert "corrida de 04/08" in texto
+
+
+def test_o_roteamento_repassa_o_endereco_para_o_card_da_corrida():
+    """A guardiã chama UMA função (`montar_card_dependencia`); se a base
+    parasse no roteador, o botão existiria em teste e não em produção."""
+    url = _url_do_card(montar_card_dependencia(
+        _evento_corrida(corrida_id=7), BASE))
+    assert url.endswith("&corrida=7")
+
+
+def test_card_do_NO_tambem_leva_botao_para_a_malha():
+    """`MALHA_CONCLUIDA` do nó Fim é o card que a §18/11 conserta — e ele é
+    tão `MALHA_*` quanto os outros: com a malha resolvida pela fila, ganha o
+    botão. Sem corrida no evento, o link é o da lente de execução."""
+    url = _url_do_card(montar_card_dependencia(
+        _evento_dep(tipo="MALHA_CONCLUIDA", pipeline="#no:38",
+                    malha="Carga_Vida"), BASE))
+    assert url == ("https://orquestra.exemplo.com/malha?malha=Carga_Vida"
+                   "&modo=execucao")
+
+
+def test_card_de_dependencia_COMUM_nao_ganha_botao():
+    """Evento de dependência entre pipelines não tem malha para abrir —
+    mandá-lo para a LISTA seria o botão que esta fase existe para consertar."""
+    card = montar_card_dependencia(_evento_dep(), BASE)
+    assert "actions" not in card["attachments"][0]["content"]
+
+
+def test_card_do_no_sem_malha_nao_ganha_botao():
+    card = montar_card_dependencia(
+        _evento_dep(tipo="MALHA_CONCLUIDA", pipeline="#no:38"), BASE)
+    assert "actions" not in card["attachments"][0]["content"]
+
+
+def test_actions_nunca_sai_como_lista_vazia():
+    """`"actions": []` faz alguns clientes do Teams desenharem a faixa de ações
+    vazia — uma tira cinza embaixo do card que não faz nada."""
+    for card in (montar_card_malha(_evento_corrida()),
+                 montar_card_dependencia(_evento_dep()),
+                 montar_card(_evento())):
+        assert card["attachments"][0]["content"].get("actions") != []
+
+
+# ── "EXATAMENTE como hoje" — o card de antes da F11, congelado ──────────────
+#
+# Por que um card inteiro escrito à mão, e não `card_com == card_sem`:
+# aquela comparação prova que os dois CAMINHOS desta versão coincidem, o que é
+# necessário e insuficiente. Se a F11 tivesse acrescentado uma linha de texto
+# ("acompanhe pelo Orquestra"), os dois lados a teriam e a igualdade
+# continuaria verdadeira — com o card do celular mudado para todo mundo que
+# ainda não configurou o endereço.
+#
+# Este é o card que a `main` produzia, capturado dela byte a byte antes da
+# fase. É a régua externa: ele não muda quando o código muda.
+_CARD_DE_ANTES = {
+    "type": "message",
+    "attachments": [{
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "content": {
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "type": "AdaptiveCard",
+            "version": "1.4",
+            "body": [
+                {"type": "TextBlock", "text": "🚨 Malha falhou",
+                 "size": "Large", "weight": "Bolder", "wrap": True,
+                 "color": "Attention"},
+                {"type": "TextBlock", "text": "Carga_Vida · corrida de 04/08",
+                 "wrap": True, "spacing": "None", "isSubtle": True},
+                {"type": "TextBlock",
+                 "text": ("Malha Carga_Vida, corrida de 04/08: 2 pendentes — "
+                          "CARGA_A (falhou 01:12), CARGA_B (esperando outro "
+                          "pipeline)"),
+                 "wrap": True, "spacing": "Medium"},
+                {"type": "TextBlock",
+                 "text": ("O que fazer: Reprocesse a partir do pipeline que "
+                          "falhou. Os outros podem seguir rodando — a corrida "
+                          "só fecha quando nada mais estiver em execução."),
+                 "wrap": True, "spacing": "Medium", "isSubtle": True},
+                {"type": "FactSet", "spacing": "Medium", "facts": [
+                    {"title": "Malha", "value": "Carga_Vida"},
+                    {"title": "Data de referência", "value": "2026-08-04"},
+                    {"title": "Detectado em", "value": "2026-08-04 01:12:30"},
+                ]},
+            ],
+        },
+    }],
+}
+
+
+def test_sem_a_config_o_card_e_o_MESMO_de_antes_da_fase():
+    """O aceite literal, contra a régua de fora: sem `app_base_url` o card do
+    celular é o de antes da F11, campo a campo.
+
+    A degradação por ausência é o contrato desta fase — e ela não vale só para
+    o botão: vale para o card inteiro. Quem não configurar o endereço não pode
+    receber um card diferente do que recebia ontem."""
+    assert montar_card_malha(_evento_corrida()) == _CARD_DE_ANTES
+
+
+def test_com_a_config_o_UNICO_acrescimo_e_o_botao():
+    """A contrapartida: o botão é ADITIVO. Nenhum texto novo, nenhum bloco
+    movido, nenhuma cor trocada — só a chave `actions`.
+
+    É o que permite ligar a config em produção sem revalidar o card com quem
+    está de plantão: o que ele já sabia ler continua onde estava."""
+    card = montar_card_malha(_evento_corrida(corrida_id=7), BASE)
+    conteudo = card["attachments"][0]["content"]
+    antes = _CARD_DE_ANTES["attachments"][0]["content"]
+    assert set(conteudo) - set(antes) == {"actions"}
+    assert conteudo["body"] == antes["body"]
