@@ -805,13 +805,34 @@ def _iso_data(v) -> str:
     return v.strftime("%Y-%m-%d") if hasattr(v, "strftime") else str(v)
 
 
+# A frase da prévia NUNCA pode prometer mais do que `_efeito_na_corrida` faz —
+# e ele faz menos do que a leitura ingênua sugere, por DUAS razões que a prévia
+# tem de conhecer:
+#
+#   1. o portão do §11.1. Com o interruptor em `0` (o estado de hoje), com a
+#      085 ausente, com o `dags/` deployado sem a capacidade ou com a guardiã
+#      sem heartbeat, o efeito é PULADO em silêncio — e o modal ficaria dizendo
+#      "este ciclo volta a ficar ABERTO" para um gesto que não toca em corrida
+#      nenhuma. É a mesma régua de "sem certeza, sem frase" que já governa o
+#      `None`: a certeza aqui inclui poder operar;
+#   2. a CASCATA. `_efeito_na_corrida` só roda dentro de `if cascata:` e com
+#      `marcar_substituidas` tendo aposentado alguma corrida (`n > 0`) — e a
+#      opção que nasce marcada no modal é "apenas este pipeline". Sem a segunda
+#      frase, a promessa da reabertura apareceria justamente na opção em que ela
+#      nunca acontece.
+#
+# Por isso a prévia devolve DUAS leituras do mesmo ciclo, e quem escolhe é a
+# tela, que é quem sabe qual opção está marcada. As frases moram aqui (e não no
+# front) pelo motivo de sempre: duas grafias do mesmo efeito fariam o operador
+# achar que são dois efeitos.
 def _previa_da_corrida(cur, oficial: str, data_ref) -> dict | None:
     """A frase da Decisão 65, dita ANTES do clique: em que ciclo esta
-    reexecução cai, e o que acontece com ele.
+    reexecução cai, e o que acontece com ele — em CADA uma das duas opções.
 
     `None` quando não há corrida nenhuma (pipeline fora de malha, banco sem a
-    085, leitura indisponível) — e aí o modal fica como era antes desta fase,
-    que é a degradação certa: sem certeza, sem frase."""
+    085, leitura indisponível) **ou quando a API não pode operar a corrida**
+    (§11.1) — e aí o modal fica como era antes desta fase, que é a degradação
+    certa: sem certeza, sem frase."""
     try:
         if not mc.tabela_085_presente(cur):
             return None
@@ -819,21 +840,39 @@ def _previa_da_corrida(cur, oficial: str, data_ref) -> dict | None:
         if not corridas:
             return None
         c = corridas[0]
+        operavel, motivo_portao = _corrida_operavel(cur, c["malha_name"])
+        if not operavel:
+            log.info("[RERUN] prévia do ciclo da malha '%s' omitida (%s) — o "
+                     "rerun não vai tocar na corrida, e a tela não promete",
+                     c["malha_name"], motivo_portao)
+            return None
         if c["status"] == mc.STATUS_ABERTA:
+            # A linha reexecutada já é deste ciclo (`reviver_corrida` preserva o
+            # `malha_execucao_id`), então a leitura é a MESMA com e sem cascata.
             efeito = ("em_andamento", "esta reexecução entra neste ciclo, que "
                       "está em andamento; o relógio de fechamento não reinicia "
                       "por este gesto")
+            sem_cascata = efeito
         elif c["status"] in mc.REABREM and \
                 mc.corrida_aberta(cur, c["malha_name"]) is None:
             efeito = ("reabre", "este ciclo já encerrado volta a ficar ABERTO e "
                       "fecha de novo quando o reprocesso terminar")
+            sem_cascata = ("nao_toca", "este ciclo já encerrado NÃO volta a "
+                           "abrir por este gesto — só a reexecução COM os "
+                           "dependentes o reabre; sozinha, ela roda fora dele")
         else:
             efeito = ("fora_do_ciclo", "este ciclo NÃO volta a abrir — o "
                       "reprocesso roda fora dele, e fica registrado nele")
+            sem_cascata = ("nao_toca", "este ciclo NÃO volta a abrir, e sem os "
+                           "dependentes o reprocesso nem fica registrado nele")
         return {"malha": c["malha_name"],
                 "data_referencia": _iso_data(c["data_referencia"]),
                 "status": c["status"], "efeito": efeito[0],
-                "mensagem": efeito[1]}
+                "mensagem": efeito[1],
+                # ADITIVAS: front antigo lê só `mensagem` e continua desenhando
+                # a frase da cascata — que era o comportamento desta fase.
+                "efeito_sem_cascata": sem_cascata[0],
+                "mensagem_sem_cascata": sem_cascata[1]}
     except Exception as e:  # noqa: BLE001 — prévia degrada, nunca derruba
         log.warning("[RERUN] prévia do ciclo de '%s' indisponível: %s",
                     oficial, e)
@@ -918,6 +957,15 @@ def corrida_do_pipeline(pipeline_name: str,
     `corrida: null` é a resposta normal de pipeline fora de malha, de banco sem
     a 085 e de leitura indisponível: o modal fica como era antes desta fase.
     Leitura pura, sem escrita nenhuma — por isso `get_current_user` basta.
+
+    ⚠️ **O interruptor decide as TRÊS frases, não só a primeira.** Quem faz o
+    disparo avulso aderir ao ciclo é `mc.odate()`, e a primeira linha dele é
+    `if not corrida_ativa(cur): return vazio`. Com o interruptor em `0` (o
+    estado de hoje) a execução NÃO é contada, NÃO fica "fora do ciclo" e — o
+    pior dos três — NÃO é recusada por data divergente: ela roda como antes da
+    spec, calculando a própria data. Anunciar uma recusa que não vai acontecer
+    é a única das três frases que faz o operador desistir de um disparo
+    legítimo às 3h, então o portão vem antes de todas elas.
     """
     pipeline = (pipeline_name or "").strip()
     vazio = {"corrida": None, "efeito": None, "mensagem": None}
@@ -926,7 +974,7 @@ def corrida_do_pipeline(pipeline_name: str,
     conn = cur = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
-        if not mc.tabela_085_presente(cur):
+        if not mc.tabela_085_presente(cur) or not mc.corrida_ativa(cur):
             return vazio
         info = mc.corrida_aberta_do_pipeline(cur, pipeline)
         abertas = info.get("corridas") or []

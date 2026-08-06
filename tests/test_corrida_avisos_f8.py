@@ -32,6 +32,10 @@ os.environ.setdefault("MSSQL_CONN_STR", "__mock__")
 from api.main import app as _app  # noqa: F401  (ordem de import — ver test_copias.py)
 
 from deps import PERM_EDITAR, PERM_EXECUTAR, get_current_user
+# O dublê INTERPRETADOR do router de malhas (idioma da casa: `test_malhas_f10`
+# reusa o da `f8`, a `f13` reusa o da `f11`). Aqui ele serve para provar o que
+# o gesto NÃO escreve, que é a metade do aceite que nenhuma frase alcança.
+from tests.test_malhas import FakeCur as _FakeCurMalhas, FakeDb as _FakeDbMalhas
 
 ODATE = date(2026, 8, 4)
 
@@ -170,14 +174,128 @@ def test_sem_ciclo_em_voo_a_resposta_e_a_de_sempre_byte_a_byte(client,
     assert r.status_code == 200 and "aviso_ciclo" not in r.json()
 
 
+# ══ a OUTRA metade do aceite: o que o gesto faz, e o que ele NÃO faz ════════
+#
+# A frase é o entregável visível, mas cada bullet do aceite tem duas metades, e
+# a segunda é sempre uma AUSÊNCIA: "entra no cadastro, **NÃO** entra no
+# snapshot"; "a corrida **continua** até fechar sozinha". Ausência não se prova
+# lendo o texto da resposta — a lição que a F7 pagou foi exatamente essa (o
+# teste afirmava o toast e passava verde com a corrida congelada). Prova-se
+# olhando o que o gesto mandou para o banco.
+#
+# Por isso aqui o dublê é o INTERPRETADOR do router de malhas
+# (`tests/test_malhas.py`), com o SQL emitido registrado: o cadastro acontece de
+# verdade, e o que não deve acontecer aparece como lista vazia.
+
+class _DbEspiao(_FakeDbMalhas):
+    """`FakeDb` do router de malhas + o registro do SQL EMITIDO."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.sqls: list[str] = []
+
+    def cursor(self):
+        dono = self
+
+        class _Cur(_FakeCurMalhas):
+            def execute(self, sql, params=()):
+                dono.sqls.append(" ".join(str(sql).split()))
+                return super().execute(sql, params)
+
+        return _Cur(self)
+
+    def tocou(self, tabela: str) -> list:
+        return [s for s in self.sqls if tabela in s]
+
+
+@pytest.fixture
+def malha_com_ciclo(client, auth_editor, M, monkeypatch):
+    """Uma malha M1 já criada, um ciclo em voo, e o SQL sob observação.
+
+    `mc` é dublado (o registro da corrida tem a sua própria suíte, nas duas
+    árvores); o que NÃO é dublado é o router — as escritas de cadastro passam
+    pelo dublê interpretador e ficam registradas."""
+    def montar():
+        db = _DbEspiao(pipelines={"CARGA_A": {"active": 1,
+                                              "criticidade": "Alta"}})
+        with patch("routers.malhas.get_db_conn", return_value=db):
+            assert client.post("/malhas",
+                               json={"malha_name": "M1"}).status_code in (200,
+                                                                          201)
+        db.sqls.clear()
+        db.commits = 0          # o preparo do cenário não conta como gesto
+        monkeypatch.setattr(M, "mc", _McAviso(_corrida()))
+        return db
+    return montar
+
+
+def test_add_membro_entra_no_cadastro_e_NAO_entra_no_snapshot(client,
+                                                              malha_com_ciclo):
+    """O aceite, inteiro: "entra no cadastro, NÃO entra no snapshot, e a
+    resposta diz isso".
+
+    O snapshot congelou na abertura (§6.9/#16) — e "congelou" tem de significar
+    que o gesto **não escreve** em `etl_malha_execucao_membro`. Se um dia
+    alguém decidir "ajudar" o operador inserindo o membro na corrida em voo, o
+    denominador do ciclo mudaria no meio dele: o `x de y` do painel passaria a
+    contar um pipeline que não vai rodar nesta madrugada, e o `y` cresceria
+    depois de o operador ter lido o número.
+    """
+    db = malha_com_ciclo()
+    with patch("routers.malhas.get_db_conn", return_value=db):
+        r = client.post("/malhas/M1/pipelines",
+                        json={"pipeline_name": "CARGA_A"})
+
+    assert r.status_code == 200                       # avisa, nunca recusa
+    # 1. a resposta DIZ.
+    assert "só passa a contar a partir do próximo ciclo" in r.json()["aviso_ciclo"]
+    assert "corrida de 2026-08-04" in r.json()["aviso_ciclo"]
+    # 2. entrou no CADASTRO — o aviso não é uma recusa disfarçada.
+    assert [(m["malha"], m["pipeline"]) for m in db.membros] == [("M1",
+                                                                 "CARGA_A")]
+    assert db.commits == 1
+    # 3. e NÃO entrou no ciclo em voo: nem no snapshot, nem na corrida.
+    assert db.tocou("etl_malha_execucao") == []
+
+
+def test_inativar_avisa_e_NAO_encerra_o_ciclo_em_voo(client, malha_com_ciclo):
+    """§6.9/#8, e o gesto que ficou no lugar do `DELETE` que não existe: malha
+    se INATIVA, não se exclui (borda #14, verificada na F3).
+
+    As duas metades outra vez. A frase diz que a corrida continua até fechar
+    sozinha e aponta a saída (`Encerrar corrida`) — e o comportamento tem de
+    corresponder: o `PATCH` **não pode** fechar, cancelar nem carimbar a corrida
+    aberta. Órfã eterna é ruim; matar no meio um ciclo cujas execuções já estão
+    rodando no Airflow é pior, porque a malha ficaria com metade do dia feita e
+    ninguém observando o resto.
+    """
+    db = malha_com_ciclo()
+    with patch("routers.malhas.get_db_conn", return_value=db):
+        r = client.patch("/malhas/M1", json={"ativo": 0})
+
+    assert r.status_code == 200
+    aviso = r.json()["aviso_ciclo"]
+    assert "continua até fechar sozinha" in aviso
+    assert "nenhum ciclo NOVO abre" in aviso
+    assert "Encerrar corrida" in aviso                # a saída existe e é dita
+    # A inativação aconteceu de verdade...
+    assert db.malhas["M1"]["ativo"] == 0 and db.commits == 1
+    # ...e a corrida em voo não foi tocada por este gesto.
+    assert db.tocou("etl_malha_execucao") == []
+
+
 # ═══════ o disparo AVULSO: nunca abre, nunca reabre — mas é contado ═════════
 
 class _McPipeline:
-    def __init__(self, corridas, ambiguo=False, tem_085=True):
+    def __init__(self, corridas, ambiguo=False, tem_085=True, ativa=True):
         self._c, self._amb, self._085 = corridas, ambiguo, tem_085
+        self._ativa = ativa
 
     def tabela_085_presente(self, cur):
         return self._085
+
+    def corrida_ativa(self, cur):
+        return self._ativa
 
     def corrida_aberta_do_pipeline(self, cur, pipeline):
         return {"corridas": self._c, "ambiguo": self._amb,
@@ -236,13 +354,25 @@ def test_dois_ciclos_com_datas_diferentes_avisam_RECUSA(client, auth_leitor,
 @pytest.mark.parametrize("mc_falso", [
     _McPipeline([]),                       # pipeline fora de malha
     _McPipeline([_corrida()], tem_085=False),
+    # ⚠️ Interruptor DESLIGADO com corrida aberta no banco — o estado de HOJE
+    # (`malha_corrida_ativa = 0`) e o de todo rollback. Quem faz o disparo
+    # avulso aderir ao ciclo é `mc.odate()`, cuja primeira linha é
+    # `if not corrida_ativa(cur): return vazio`: nada é contado, nada fica
+    # "fora do ciclo" e — a pior das três — NADA é recusado por data
+    # divergente. Anunciar a recusa é a única frase que faz o operador
+    # desistir de um disparo legítimo às 3h.
+    _McPipeline([_corrida()], ativa=False),
+    _McPipeline([_corrida(), dict(_corrida(), malha="M2",
+                                  data_referencia=date(2026, 8, 3))],
+                ambiguo=True, ativa=False),
 ])
 def test_pipeline_sem_ciclo_devolve_corrida_nula(client, auth_leitor, E,
                                                  monkeypatch, mc_falso):
     monkeypatch.setattr(E, "mc", mc_falso)
     with patch("routers.execucoes.get_db_conn", return_value=MagicMock()):
         r = client.get("/pipelines/CARGA_A/corrida")
-    assert r.status_code == 200 and r.json()["corrida"] is None
+    assert r.status_code == 200
+    assert r.json() == {"corrida": None, "efeito": None, "mensagem": None}
 
 
 # ════════ Finalização Manual: o gesto passa a alcançar a 067 (D22) ══════════
@@ -418,3 +548,124 @@ def test_falha_ao_alcancar_o_ciclo_vira_aviso_e_nunca_derruba_a_finalizacao(
                                      None)
     assert saida["linhas_ciclo_fechadas"] == 0
     assert any("continuar esperando" in a for a in saida["avisos"])
+
+
+# ══════ "no MESMO gesto": a ordem dos statements, não a boa intenção ════════
+
+_ROTULOS = (
+    ("SELECT execution_id", "alvos"),
+    ("UPDATE dbo.etl_job_execution", "executando"),
+    ("UPDATE dbo.etl_ds_job_log", "log_ds"),
+    ("DELETE FROM dbo.etl_pipeline_performance_snapshot", "performance"),
+    ("INSERT INTO dbo.etl_pipeline_audit", "auditoria"),
+    ("UPDATE dbo.etl_pipeline_execucao", "linha_do_ciclo"),
+)
+
+
+class _ConnFinalizacao:
+    """A conexão da Finalização Manual, com a ORDEM dos gestos registrada.
+
+    O aceite diz "a corrida é reavaliada **no mesmo gesto**, sem esperar 5 min",
+    e "mesmo gesto" aqui é literal: a linha da 067 tem de ser fechada DENTRO da
+    transação que fecha os três logs, antes do `commit`. Depois do commit seria
+    outra transação — e o estado que o operador veio desfazer (log fechado, mas
+    a malha ainda esperando por ele) voltaria a existir na primeira falha de
+    rede, exatamente entre os dois commits."""
+
+    def __init__(self, alvos=("run_x",), datas=(ODATE,)):
+        self.ordem: list = []
+        self._cur = _CurFinalizacao(self, alvos, datas)
+
+    def cursor(self):
+        return self._cur
+
+    def commit(self):
+        self.ordem.append("commit")
+
+    def rollback(self):
+        self.ordem.append("rollback")
+
+    def close(self):
+        pass
+
+
+class _CurFinalizacao:
+    def __init__(self, conn, alvos, datas):
+        self.conn, self._alvos, self._datas = conn, list(alvos), list(datas)
+        self._rows: list = []
+        self.rowcount = 1
+
+    def execute(self, sql, params=()):
+        s = " ".join(str(sql).split())
+        self.conn.ordem.append(next((r for marca, r in _ROTULOS
+                                     if s.startswith(marca)), s[:40]))
+        self._rows = []
+        if s.startswith("SELECT execution_id"):
+            self._rows = [(a,) for a in self._alvos]
+        elif s.startswith("UPDATE dbo.etl_pipeline_execucao"):
+            self._rows = [(d,) for d in self._datas]   # OUTPUT inserted.…
+        self.rowcount = 1
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def close(self):
+        pass
+
+
+def test_a_orfa_fechada_a_mao_reavalia_o_ciclo_ANTES_do_commit(client,
+                                                               auth_editor, F,
+                                                               monkeypatch):
+    """O aceite da Finalização Manual, provado no endpoint e não no ajudante.
+
+    Três fatos, e o primeiro é o que nenhum teste de unidade alcança:
+
+      1. a linha que o ciclo lê é fechada na MESMA transação dos três logs —
+         a ordem observada termina em `linha_do_ciclo`, `commit`;
+      2. o operador recebe o ciclo reavaliado na resposta do próprio clique:
+         quem está em execução, o que falta e quantos concluíram. Sem isso ele
+         fecha a órfã e volta a olhar a tela de Malha sem saber se destravou;
+      3. as chaves são ADITIVAS — pipeline fora de malha responde como antes.
+    """
+    monkeypatch.setattr(F, "ident_svc", _IdentFalso())
+    monkeypatch.setattr(F, "mc", _McFinal(
+        corridas=[_corrida()],
+        estado={"vivos": [], "ok": ["CARGA_B", "CARGA_C"],
+                "pendentes": [{"pipeline": "CARGA_D", "classe": "falhou"}]}))
+    conn = _ConnFinalizacao()
+    with patch("routers.finalizacao.get_db_conn", return_value=conn):
+        r = client.post("/finalizacao/finalizar",
+                        json={"pipeline": "CARGA_A", "status_final": "SUCCESS",
+                              "motivo": "worker caiu"})
+
+    assert r.status_code == 200
+    assert conn.ordem == ["alvos", "executando", "log_ds", "performance",
+                          "auditoria", "linha_do_ciclo", "commit"]
+    corpo = r.json()
+    assert corpo["linhas_ciclo_fechadas"] == 1
+    assert corpo["corridas"] == [{"malha": "M1",
+                                  "data_referencia": "2026-08-04",
+                                  "em_execucao": 0, "pendentes": ["CARGA_D"],
+                                  "concluidos": 2}]
+
+
+def test_pipeline_fora_de_malha_responde_byte_a_byte_como_antes(client,
+                                                                auth_editor, F,
+                                                                monkeypatch):
+    """A degradação que faz a fase ser aditiva: sem linha da 067 em execução não
+    há ciclo a reavaliar, e as três chaves novas nem entram na resposta. Front
+    antigo continua funcionando sem uma linha de mudança."""
+    monkeypatch.setattr(F, "ident_svc", _IdentFalso(resolve=False))
+    monkeypatch.setattr(F, "mc", _McFinal())
+    conn = _ConnFinalizacao()
+    with patch("routers.finalizacao.get_db_conn", return_value=conn):
+        r = client.post("/finalizacao/finalizar",
+                        json={"pipeline": "CARGA_A", "status_final": "FAILED"})
+
+    assert r.status_code == 200
+    assert "linha_do_ciclo" not in conn.ordem       # nada a fechar, nada tentado
+    for chave in ("linhas_ciclo_fechadas", "corridas", "avisos"):
+        assert chave not in r.json()

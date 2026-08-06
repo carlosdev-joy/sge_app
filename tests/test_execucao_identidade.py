@@ -247,9 +247,15 @@ class FakeCur:
             if not db.com_067:
                 raise RuntimeError("Invalid object name 'etl_pipeline_execucao'")
             pipe, d_ini, d_fim = params
+            # A janela de ±1 dia também traz `substituida_em` (ou `NULL` sem a
+            # 078), como `corridas_na_data`: quem escolhe entre duas candidatas
+            # — o modal de ambiguidade da F3 e a Finalização Manual da F8 —
+            # precisa saber qual delas já foi aposentada por um rerun.
+            tem_col = ", data_referencia, substituida_em FROM" in s
             self._rows = [
                 (c["run_id"], c["status"], c["inicio"], c["fim"],
-                 c.get("disparado_por"), c.get("motivo"), c["data_referencia"])
+                 c.get("disparado_por"), c.get("motivo"), c["data_referencia"],
+                 c.get("substituida_em") if tem_col else None)
                 for c in db.corridas
                 if c["pipeline"].casefold() == str(pipe).casefold()
                 and d_ini <= c["data_referencia"] <= d_fim]
@@ -573,6 +579,33 @@ def test_resolve_por_ts_nodash_ts_torto_nao_estoura():
     r = ident.resolve_por_ts_nodash(db.cursor(), "DEV_F10_A", "nao-e-ts")
     assert r["run_id"] is None
     assert r["motivo"] == ident.SEM_EXECUCAO_PARA_TS
+
+
+@pytest.mark.parametrize("com_078,esperado", [(True, "2026-08-03 07:00:00"),
+                                              (False, None)])
+def test_resolve_por_ts_nodash_traz_substituida_em_nos_candidatos(com_078,
+                                                                  esperado):
+    """`_candidato` PROMETE no docstring que `substituida_em` viaja junto — e
+    por este caminho ele não viajava: a projeção da janela de ±1 dia não pedia a
+    coluna, então o campo voltava `None` para toda linha, inclusive as
+    aposentadas por um rerun.
+
+    Quem paga são os dois consumidores que ESCOLHEM entre candidatas:
+
+      • o modal de ambiguidade da F3 mostrava duas linhas indistinguíveis, uma
+        delas já aposentada (o defeito que o docstring de `corridas_na_data`
+        descreve, com outra porta de entrada);
+      • a Finalização Manual da F8 filtra os candidatos por
+        `substituida_em is None` antes de fechar a linha que o ciclo da malha
+        lê. Com o campo sempre nulo a guarda não guardava nada: uma linha
+        aposentada empatava com a viva e o gesto se declarava ambíguo sem
+        precisar — ou, sozinha, era ela a fechada.
+
+    Sem a 078 (deploy parcial) o campo vem `None` e o payload é o de antes."""
+    db = FakeDb(com_078=com_078, corridas=[
+        dict(_corrida(RUN_ORQ), substituida_em="2026-08-03 07:00:00")])
+    r = ident.resolve_por_ts_nodash(db.cursor(), "DEV_F10_A", TS)
+    assert [c["substituida_em"] for c in r["candidatos"]] == [esperado]
 
 
 def test_resolve_por_ts_nodash_janela_pega_odate_do_dia_anterior():

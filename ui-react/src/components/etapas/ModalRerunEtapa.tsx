@@ -64,9 +64,15 @@ interface CorridaDoCiclo {
   malha: string
   data_referencia: string
   status: string
-  /** 'em_andamento' | 'reabre' | 'fora_do_ciclo' */
+  /** 'em_andamento' | 'reabre' | 'fora_do_ciclo' — o efeito COM cascata */
   efeito: string
   mensagem: string
+  /** O MESMO ciclo lido pela opção "apenas este pipeline": o servidor só toca
+   *  na corrida dentro da cascata e com dependente aposentado, então na opção
+   *  que nasce marcada a reabertura não acontece. Opcional porque uma API
+   *  anterior a esta correção não manda o par — e aí a frase única é a antiga. */
+  efeito_sem_cascata?: string
+  mensagem_sem_cascata?: string
 }
 
 interface PreviaRerun {
@@ -174,6 +180,20 @@ export function ModalRerunEtapa({
   // ter marcado a opção mandaria `cascata: true` e o botão prometeria um
   // alcance que o servidor não entrega — a mentira que a decisão 1 proíbe.
   const cascataEfetiva = cascata && podeCascata
+  // O ciclo da malha só é tocado DENTRO da cascata e só quando alguma corrida
+  // de dependente foi aposentada (`n > 0` no servidor — `com_corrida` é o mesmo
+  // predicado). Fora disso o gesto não reabre nada, e a frase tem de ser a
+  // outra: prometer a reabertura na opção que nasce marcada seria a tela
+  // dizendo o contrário do que o servidor faz.
+  const ciclo = deps?.corrida
+  const cicloMensagem = ciclo
+    ? (cascataEfetiva ? ciclo.mensagem
+                      : (ciclo.mensagem_sem_cascata ?? ciclo.mensagem))
+    : null
+  const cicloEfeito = ciclo
+    ? (cascataEfetiva ? ciclo.efeito
+                      : (ciclo.efeito_sem_cascata ?? ciclo.efeito))
+    : null
 
   const executar = useMutation<RespostaRerun>({
     mutationFn: () => apiFetch('/execucoes/rerun', {
@@ -293,12 +313,15 @@ export function ModalRerunEtapa({
             escuro": reexecutar dentro de um ciclo em voo o ALIMENTA sem
             reiniciar o relógio dele; reexecutar um ciclo já fechado o REABRE;
             e com outro ciclo em andamento, o antigo não volta. Só aparece
-            quando o servidor teve certeza — sem certeza, sem frase. */}
-        {deps?.corrida && (
-          <Aviso tom={deps.corrida.efeito === 'reabre' ? 'alerta' : 'info'}
+            quando o servidor teve certeza — sem certeza, sem frase.
+            A frase ACOMPANHA a opção marcada: o servidor só reabre dentro da
+            cascata, e dizer "volta a ficar ABERTO" na opção "apenas este
+            pipeline" seria prometer o que não vai acontecer. */}
+        {ciclo && cicloMensagem && (
+          <Aviso tom={cicloEfeito === 'reabre' ? 'alerta' : 'info'}
                  icone={<AlertTriangle size={14} className="mt-0.5 shrink-0" />}>
-            <strong>Malha {deps.corrida.malha}</strong> — ciclo de{' '}
-            {deps.corrida.data_referencia}: {deps.corrida.mensagem}
+            <strong>Malha {ciclo.malha}</strong> — ciclo de{' '}
+            {ciclo.data_referencia}: {cicloMensagem}
           </Aviso>
         )}
 

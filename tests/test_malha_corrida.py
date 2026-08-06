@@ -1426,15 +1426,31 @@ def test_reabertura_descarta_o_desfecho_para_a_2a_CONCLUIDA_poder_existir(mc):
 
 def test_o_descarte_nao_alcanca_evento_de_MEMBRO_nem_de_outra_corrida(mc):
     """O DELETE é por corrida, por tipo e só em linha de MARCADOR. O evento de
-    um pipeline (`EXECUCAO_ORFA` de CARGA_A) fala do pipeline, não do ciclo —
-    apagá-lo seria perder histórico de verdade, e é o que o `LEFT(...)` do
-    statement impede."""
+    um pipeline fala do pipeline, não do ciclo — apagá-lo seria perder
+    histórico de verdade, e é o que o `LEFT(...)` do statement impede.
+
+    ⚠️ A linha que prova o `LEFT(...)` é a ÚLTIMA, e ela precisa ter um tipo de
+    DESFECHO: `EXECUCAO_ORFA` já é barrado pelo `tipo IN (...)`, então um
+    cenário só com ele deixaria o `LEFT(...)` sem nada do lado errado da
+    cláusula — apagar a guarda do módulo não pintaria teste nenhum de vermelho
+    (medido por mutação em 2026-08-06; só a paridade acusava, e paridade prova
+    que as duas árvores dizem o mesmo, não que o que dizem está certo).
+
+    Um `MALHA_ATRASADA` carimbado num pipeline é defensivo, e é defensivo de
+    propósito: `etl_dependencia_evento.tipo` é `VARCHAR(30)` **sem CHECK** (os
+    tipos `MALHA_*` são extensão do domínio comentado na 067, como diz o
+    docstring de `gravar_evento`), e o `pipeline_name` do evento é texto livre.
+    Nada no schema impede um escritor futuro de emitir um desfecho sobre a
+    linha de um membro — e nesse dia a guarda é o que separa "liberei a chave
+    do ciclo" de "apaguei o histórico de um pipeline".
+    """
     db = banco(eventos=[
         _evento("MALHA_CONCLUIDA", 1),                       # sai
         _evento("MALHA_CONCLUIDA", 1, pipeline="#no:38"),    # sai (nó Fim)
         _evento("MALHA_CONCLUIDA", 2),                       # outra corrida
         _evento("MALHA_CANCELADA", 1),                       # não é desfecho anulável
         _evento("EXECUCAO_ORFA", 1, pipeline="CARGA_A"),     # é do MEMBRO
+        _evento("MALHA_ATRASADA", 1, pipeline="CARGA_A"),    # desfecho, mas do MEMBRO
     ])
     c = abre(mc, db)
     mc.fechar_corrida(db, c["id"], "CONCLUIDA", "guardia")
@@ -1442,7 +1458,8 @@ def test_o_descarte_nao_alcanca_evento_de_MEMBRO_nem_de_outra_corrida(mc):
     restaram = sorted((e["pipeline_name"], e["tipo"]) for e in db.eventos)
     assert restaram == [("#corrida:1", "MALHA_CANCELADA"),
                         ("#corrida:2", "MALHA_CONCLUIDA"),
-                        ("CARGA_A", "EXECUCAO_ORFA")]
+                        ("CARGA_A", "EXECUCAO_ORFA"),
+                        ("CARGA_A", "MALHA_ATRASADA")]
 
 
 def test_reabertura_que_NAO_acontece_nao_descarta_evento_nenhum(mc):

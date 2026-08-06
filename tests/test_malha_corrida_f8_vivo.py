@@ -49,15 +49,33 @@ ODATE = date(2026, 8, 4)
 OUTRO_ODATE = date(2026, 8, 5)
 
 
-@pytest.fixture(scope="module")
-def mc():
-    """O canônico de `dags/`, carregado por caminho (técnica da casa). É o
-    módulo com `%s` — o mesmo texto que a guardiã manda em produção."""
-    spec = importlib.util.spec_from_file_location(
-        "malha_corrida_dags_f8_vivo", _ROOT / "dags/utils/malha_corrida.py")
+def _modulo(nome: str, rel: str):
+    """Carrega o módulo de `dags/` por caminho (técnica da casa). É a árvore com
+    `%s` — o mesmo texto que a guardiã manda em produção."""
+    spec = importlib.util.spec_from_file_location(nome, _ROOT / rel)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+@pytest.fixture(scope="module")
+def mc():
+    return _modulo("malha_corrida_dags_f8_vivo", "dags/utils/malha_corrida.py")
+
+
+@pytest.fixture(scope="module")
+def dep():
+    """O ESCRITOR de verdade da fila de alerta.
+
+    A segunda `MALHA_CONCLUIDA` do dia é gravada — ou engolida — por
+    `dependencias.gravar_evento`, e por mais ninguém: é ele que a guardiã chama
+    ao fechar a corrida (`#corrida:{id}`) e é ele que o observador do nó Fim
+    chama (`#no:{id}`). Perguntar a uma cópia do `INSERT ... WHERE NOT EXISTS`
+    escrita dentro do teste provaria a cópia: se a chave real do
+    `ux_dep_evento_corrida` não fosse a que o descarte libera — ou se o
+    `EVENTOS_DO_DESFECHO` não cobrisse o tipo que o escritor de fato emite —, o
+    card do reprocesso continuaria sumindo em produção com o teste verde."""
+    return _modulo("dependencias_dags_f8_vivo", "dags/utils/dependencias.py")
 
 
 class Mundo:
@@ -135,20 +153,6 @@ class Mundo:
             "VALUES (%s, %s, %s, N'tentativa 1', %s)",
             (marcador, data_ref, tipo, corrida_id))
 
-    def gravar_conclusao(self, marcador, corrida_id, data_ref=ODATE) -> int:
-        """O `INSERT ... WHERE NOT EXISTS` de `dependencias.gravar_evento`, na
-        chave da 085. Devolve o `rowcount` — 0 é "o índice engoliu"."""
-        self.cur.execute(
-            "INSERT INTO dbo.etl_dependencia_evento (pipeline_name, "
-            "data_referencia, tipo, detalhe, malha_execucao_id) "
-            "SELECT %s, %s, 'MALHA_CONCLUIDA', N'conclusao', %s "
-            "WHERE NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento "
-            "WHERE pipeline_name = %s AND data_referencia = %s "
-            "AND tipo = 'MALHA_CONCLUIDA' AND ISNULL(malha_execucao_id, -1) = "
-            "ISNULL(CAST(%s AS BIGINT), -1))",
-            (marcador, data_ref, corrida_id, marcador, data_ref, corrida_id))
-        return self.cur.rowcount
-
     def eventos_de(self, corrida_id):
         self.cur.execute(
             "SELECT pipeline_name, tipo FROM dbo.etl_dependencia_evento "
@@ -184,14 +188,33 @@ def mundo():
 
 # ═══ 1. o ganho da fase: a SEGUNDA MALHA_CONCLUIDA do dia é gravada ═════════
 
-def test_a_segunda_conclusao_do_dia_e_engolida_ANTES_e_gravada_DEPOIS(mundo, mc):
-    """O aceite da F8, medido contra o índice de verdade.
+@pytest.mark.parametrize("quem,marcador,notificar", [
+    # O observador do nó Fim (F14): marcador do NÓ, e o card é opt-in — este
+    # evento nasce JÁ carimbado como notificado.
+    ("observador do no Fim", "#no:38", False),
+    # A guardiã fechando a corrida sem nó Fim (§6.5): marcador da CORRIDA, card
+    # normal. O descarte tem de alcançar os dois — e alcançar também o que JÁ
+    # foi notificado, senão a segunda conclusão só sairia para quem não recebeu
+    # a primeira, que é o avesso do que o operador precisa.
+    ("guardia sem no Fim", "#corrida:", True),
+])
+def test_a_segunda_conclusao_do_dia_e_engolida_ANTES_e_gravada_DEPOIS(
+        mundo, mc, dep, quem, marcador, notificar):
+    """O aceite da F8, medido de ponta a ponta e com o ESCRITOR DE VERDADE.
 
-    A primeira asserção é a que dá sentido às outras: **sem o descarte, o
-    `INSERT ... WHERE NOT EXISTS` devolve 0** — a corrida reaberta guarda o
-    MESMO `id`, então a chave (marcador, data, tipo, corrida) da tentativa 2 é
-    byte a byte a da tentativa 1. Sem ela, o teste passaria mesmo que o índice
-    nunca tivesse engolido nada, e não estaria provando fase nenhuma.
+    Quem grava a `MALHA_CONCLUIDA` em produção é `dependencias.gravar_evento`,
+    das duas portas que a spec nomeia — e é o `ux_dep_evento_corrida` real que
+    decide se ela entra. O teste chama exatamente essa função, nos dois
+    marcadores, em vez de reproduzir o `INSERT ... WHERE NOT EXISTS` aqui
+    dentro: uma cópia provaria a cópia, e o defeito que esta fase fecha
+    sobreviveria a qualquer divergência entre a chave que o escritor usa e a
+    que o descarte libera.
+
+    A segunda asserção é a que dá sentido às outras: **sem o descarte, o
+    escritor devolve `False`** — a corrida reaberta guarda o MESMO `id`, então
+    a chave (marcador, data, tipo, corrida) da tentativa 2 é byte a byte a da
+    tentativa 1. Sem ela, o teste passaria mesmo que o índice nunca tivesse
+    engolido nada, e não estaria provando fase nenhuma.
     """
     m = mundo
     malha = m.malha("M")
@@ -199,14 +222,25 @@ def test_a_segunda_conclusao_do_dia_e_engolida_ANTES_e_gravada_DEPOIS(mundo, mc)
     c = m.corrida(malha, "CONCLUIDA", motivo="porta 2")
     m.membro(c, pipe, raiz=1)
     m.execucao(pipe, c)
-    m.evento("#no:38", "MALHA_CONCLUIDA", c)
+    alvo = f"{marcador}{c}" if marcador.endswith(":") else marcador
 
-    assert m.gravar_conclusao("#no:38", c) == 0, (
+    def concluir(detalhe):
+        return dep.gravar_evento(m.conn, alvo, ODATE, "MALHA_CONCLUIDA",
+                                 detalhe, notificar=notificar,
+                                 malha_execucao_id=c)
+
+    assert concluir("tentativa 1") is True, quem
+    assert concluir("tentativa 2 (antes)") is False, (
         "o indice ux_dep_evento_corrida NAO engoliu a 2a conclusao — o cenario "
         "nao reproduz o defeito, e o resto do teste nao prova nada")
 
     assert mc.reabrir_corrida(m.conn, c, "rerun:C123456", "reexecucao") is True
-    assert m.gravar_conclusao("#no:38", c) == 1
+    assert concluir("tentativa 2 (depois)") is True
+    # E o que ficou na fila é o card do reprocesso, não o do ciclo anulado.
+    m.cur.execute("SELECT detalhe FROM dbo.etl_dependencia_evento "
+                  "WHERE malha_execucao_id = %s AND tipo = 'MALHA_CONCLUIDA'",
+                  (c,))
+    assert [r[0] for r in m.cur.fetchall()] == ["tentativa 2 (depois)"]
 
 
 def test_a_reabertura_zera_a_memoria_e_registra_o_desfecho_ANULADO(mundo, mc):
@@ -232,9 +266,17 @@ def test_a_reabertura_zera_a_memoria_e_registra_o_desfecho_ANULADO(mundo, mc):
 
 
 def test_o_descarte_nao_alcanca_evento_de_MEMBRO_nem_de_outra_corrida(mundo, mc):
-    """O `LEFT(pipeline_name, …)` do statement, contra o banco: o evento de um
-    pipeline (`EXECUCAO_ORFA` de um membro) fala do pipeline, não do ciclo —
-    apagá-lo seria perder histórico de verdade."""
+    """O `LEFT(pipeline_name, …)` do statement, executado pelo SQL Server: o
+    evento de um pipeline fala do pipeline, não do ciclo — apagá-lo seria
+    perder histórico de verdade.
+
+    ⚠️ A linha que exercita o `LEFT(...)` é a do MEMBRO com tipo de DESFECHO
+    (`MALHA_ATRASADA` em cima do pipeline). Um cenário só com `EXECUCAO_ORFA`
+    já é barrado pelo `tipo IN (...)` e deixaria a guarda de marcador sem nada
+    do lado errado da cláusula — apagá-la do módulo não pintaria nada de
+    vermelho. Ver o irmão em `tests/test_malha_corrida.py` para por que a linha
+    é defensiva e por que a guarda não é decorativa (`tipo` é `VARCHAR(30)` sem
+    CHECK e `pipeline_name` é texto livre)."""
     m = mundo
     malha = m.malha("M")
     pipe = m.pipeline("A")
@@ -243,10 +285,12 @@ def test_o_descarte_nao_alcanca_evento_de_MEMBRO_nem_de_outra_corrida(mundo, mc)
     m.evento(f"#corrida:{c1}", "MALHA_FALHOU", c1)
     m.evento(f"#corrida:{c1}", "MALHA_CANCELADA", c1)   # nao e desfecho anulavel
     m.evento(pipe, "EXECUCAO_ORFA", c1)                 # e do MEMBRO
+    m.evento(pipe, "MALHA_ATRASADA", c1)                # desfecho, mas do MEMBRO
 
     assert mc.descartar_desfecho(m.conn, c1) == 2
     assert m.eventos_de(c1) == [(f"#corrida:{c1}", "MALHA_CANCELADA"),
-                                (pipe, "EXECUCAO_ORFA")]
+                                (pipe, "EXECUCAO_ORFA"),
+                                (pipe, "MALHA_ATRASADA")]
 
 
 # ═══ 2. a guarda do índice único: reabrir NUNCA pode estourar 2601 ══════════
