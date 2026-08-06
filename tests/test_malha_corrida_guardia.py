@@ -1198,6 +1198,76 @@ def test_observador_usa_o_odate_da_corrida_aberta_e_carimba_o_id(monkeypatch):
     assert eventos == [("#no:18", ONTEM, "MALHA_CONCLUIDA", 31)]
 
 
+def test_o_card_do_Fim_NAO_sai_com_pipeline_ainda_em_execucao(monkeypatch):
+    """"Malha concluída" com gente correndo é card mentiroso.
+
+    A F8 abriu essa porta sem querer: o descarte de desfecho — que existe para
+    a SEGUNDA `MALHA_CONCLUIDA` do rerun poder ser gravada — apaga também o
+    evento do NÓ, e era justamente o remanescente que impedia a re-emissão.
+    Rerun de um pipeline que **não** é upstream do Fim reabre a corrida, deixa
+    os upstream intactos, e em ≤5 min o Teams anunciaria a malha concluída com
+    o reprocesso ainda em voo.
+
+    A guarda é mais ampla que o rerun de propósito: o nó Fim significa "a malha
+    terminou", e afirmar isso com QUALQUER membro vivo é falso — venha ele de
+    reprocesso ou de um ramo que não passa pelo Fim."""
+    eventos = []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_OBSERVADOR],
+           pipelines_todos_sucesso=lambda conn, pipes, d: True,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
+               eventos.append((p, t)) or True)
+    _corrida(monkeypatch,
+             corrida_aberta=lambda conn, m: _corrida_dict(id=31),
+             estado=lambda conn, c, dispensa_sem_linha=None:
+                 _estado(vivos=["PIPE_REPROCESSO"], ok=["PIPE_A"], linhas=2,
+                         membros=2))
+    GUARDIA.ciclo()
+    assert eventos == [], "o card saiu com um pipeline ainda em execucao"
+
+
+def test_o_card_do_Fim_SAI_quando_ninguem_mais_esta_correndo(monkeypatch):
+    """O contraponto — sem ele, a guarda acima poderia ter emudecido o
+    observador para sempre, e o card do Fim nunca mais sairia."""
+    eventos = []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_OBSERVADOR],
+           pipelines_todos_sucesso=lambda conn, pipes, d: True,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
+               eventos.append((p, t)) or True)
+    _corrida(monkeypatch,
+             corrida_aberta=lambda conn, m: _corrida_dict(id=31),
+             estado=lambda conn, c, dispensa_sem_linha=None:
+                 _estado(ok=["PIPE_A", "PIPE_B"], linhas=2, membros=2))
+    GUARDIA.ciclo()
+    assert eventos == [("#no:18", "MALHA_CONCLUIDA")]
+
+
+def test_leitura_de_vivos_indisponivel_ADIA_o_card_em_vez_de_afirmar(monkeypatch):
+    """Não sei se há vivo ⇒ não afirmo que acabou.
+
+    É a mesma política que a F3 e a F7 já aplicaram nas outras leituras que
+    degradam larga: baldes vazios lidos como fato foram, nas duas, a causa de
+    um defeito ALTO. Aqui o custo de adiar é um ciclo de 5 min; o de afirmar é
+    um card errado no celular de quem está de plantão."""
+    eventos = []
+
+    def _explode(conn, c, dispensa_sem_linha=None):
+        raise RuntimeError("lock request time out period exceeded (1222)")
+
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_OBSERVADOR],
+           pipelines_todos_sucesso=lambda conn, pipes, d: True,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
+               eventos.append((p, t)) or True)
+    _corrida(monkeypatch,
+             corrida_aberta=lambda conn, m: _corrida_dict(id=31),
+             estado=_explode)
+    saida = GUARDIA.ciclo()          # o ciclo SEGUE — observador não derruba
+    assert eventos == []
+    assert saida["observadores"] == 0
+
+
 def test_sem_corrida_aberta_a_janela_D_menos_1_e_D_volta_a_valer(monkeypatch):
     """A janela vira FALLBACK, não some: é o que vale com o interruptor
     desligado, sem a 085 e para malha sem corrida. E o id vem da corrida
