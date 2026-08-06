@@ -2154,6 +2154,15 @@ def _raio_dos_pendentes(cur, corrida_payload: dict) -> None:
 # termina cedo e puxaria a mediana para baixo — o número serviria para tudo,
 # menos para decidir esperar.
 #
+# ⚠️ `WARNING` PASSA por limpa, e isso é uma escolha, não descuido: aviso de job
+# DataStage é desfecho legítimo e frequente, e excluí-lo cortaria a amostra
+# justamente nos pipelines mais barulhentos — que são os que mais precisam do
+# piso `n >= 5`. O preço conhecido: a Finalização Manual grava
+# `SUCCESS|WARNING|FAILED` com `end_time = GETDATE()` no instante do clique,
+# então uma execução travada e fechada à mão às 11h entra com a duração
+# "travada". Mediana + piso de amostra absorvem um outlier; um dia ruim inteiro
+# fechado à mão, não. Se isso aparecer no campo, o lugar de resolver é aqui.
+#
 # ⚠️ NÃO se enumera o domínio de `status` no `WHERE`. Enumerar tornaria a faixa
 # de `start_time` sargável (o índice é `(pipeline, status, start_time)`) e o
 # custo cairia; o preço seria uma linha de status DESCONHECIDO ficar invisível
@@ -5043,18 +5052,35 @@ def _travou_por_corrida(cur, linhas: list) -> dict:
         agg = agregado.get(cid)
         if agg is None:
             continue                    # não apurei ESTA: chave ausente
-        pendentes = []
-        for pipeline, m in agg["membros"].items():
-            if not m["ativo"] or m["classe"] is None:
-                continue
-            if m["classe"] in ("ok", "vivo", "dispensado"):
-                continue
-            pendentes.append((mc._ORDEM_CLASSE.index(m["classe"]), pipeline,
-                              m["classe"]))
         # `nao_partiu` entra aqui de propósito, ao contrário do chip vermelho
         # do card: numa corrida FECHADA "não chegou a iniciar" deixou de ser o
         # estado normal dos primeiros segundos e virou veredito — foi ele que
         # segurou a madrugada, e é o nome que o operador procura de manhã.
+        #
+        # ⚠️ E ele só chega aqui pela NORMALIZAÇÃO: o agregado nunca ATRIBUI a
+        # classe `nao_partiu` — ela nasce de `classe is None` ("membro sem
+        # linha nenhuma no escopo"), exatamente como em `_corrida_do_card`.
+        # Sem esta linha, a madrugada que o operador procura de manhã — aquela
+        # em que ninguém falhou, mas alguém nunca chegou a iniciar — sairia com
+        # `travou: null`, e `null` é a afirmação "apurei e ninguém travou".
+        #
+        # Em corrida ABERTA a normalização fica de FORA, e é a mesma razão pela
+        # qual `nao_partiu` não ganha chip vermelho no card: nos primeiros
+        # segundos NENHUM membro tem linha, e nomear culpado ali seria acusar
+        # toda malha, todas as noites, sobre um ciclo saudável.
+        fechada = c["fechada_em"] is not None
+        pendentes = []
+        for pipeline, m in agg["membros"].items():
+            if not m["ativo"]:
+                continue
+            classe = m["classe"]
+            if classe is None:
+                if not fechada:
+                    continue
+                classe = "nao_partiu"
+            if classe in ("ok", "vivo", "dispensado"):
+                continue
+            pendentes.append((mc._ORDEM_CLASSE.index(classe), pipeline, classe))
         pendentes.sort()
         saida[cid] = ({"pipeline": pendentes[0][1], "classe": pendentes[0][2]}
                       if pendentes else None)

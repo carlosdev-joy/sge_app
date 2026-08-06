@@ -239,6 +239,22 @@ async function main() {
     return { frase: r.historicoFalhas }
   })
 
+  cenario('anterior_sem_trabalho_nao_diz_hoje', () => {
+    // ⚠️ O rótulo de `SEM_TRABALHO` é escrito no PRESENTE ("sem trabalho
+    // hoje") porque nasceu para a pílula da corrida CORRENTE. Reusado cru na
+    // linha da corrida ANTERIOR, ele produzia "corrida anterior: 03/08 · sem
+    // trabalho hoje" — a palavra "hoje" afirmando algo sobre anteontem, na
+    // linha cujo trabalho é responder "está pior que ontem?".
+    const r = S.resumoCorrida(corrida(), TEMPO, 7, historico({
+      anterior: {
+        id: 8, data_referencia: '2026-08-03', sequencia: 1,
+        status: 'SEM_TRABALHO', aberta_em: '2026-08-03 01:00:00',
+        fechada_em: '2026-08-03 01:02:00',
+      },
+    }))
+    return { anterior: r.anterior, titulo: r.titulo }
+  })
+
   // ══ ACEITE — SEM_TRABALHO: terça ÂMBAR × sábado CINZA e MUDO ════════════
   const semTrabalho = (dia) => corrida({
     status: 'SEM_TRABALHO', saude: null, data_referencia: dia,
@@ -335,6 +351,39 @@ async function main() {
       contagem: r.contagem,
       titulo: r.titulo,
     }
+  })
+
+  cenario('motivo_ACUMULADO_so_transcreve_a_frase_do_operador', () => {
+    // ⚠️ A coluna `motivo` ACUMULA em ' | ' (`SQL_FECHAR`/`SQL_REABRIR`
+    // concatenam com `LEFT(ISNULL(motivo + ' | ', '') + …, 500)`). Uma corrida
+    // REABERTA e depois encerrada à mão — o caminho normal do rerun com
+    // cascata seguido do gesto do plantão — chega com o texto do MOTOR na
+    // frente do texto da pessoa.
+    //
+    // Com a limpeza ancorada em `^`, o card publicava "reaberta apos CONCLUIDA
+    // de …" (vocabulário de máquina, Decisão 74) E repetia "encerrada por
+    // C123456" na linha debaixo da que já diz exatamente isso.
+    const r = S.resumoCorrida(corrida({
+      status: 'CANCELADA', saude: null, fechada_em: '2026-08-05 05:20:00',
+      fechada_por: 'manual:C123456', tentativas: 2,
+      reaberta_em: '2026-08-05 03:00:00', reaberta_por: 'manual:C999999',
+      motivo: 'reaberta apos CONCLUIDA de 2026-08-05 03:00:00 | encerrada por '
+        + 'C123456: carga do dia 03 remarcada para a tarde',
+    }), TEMPO, 7, historico())
+    return { encerramento: r.encerramento, motivo: r.motivo }
+  })
+
+  cenario('motivo_truncado_pelo_banco_nao_vira_texto_de_maquina', () => {
+    // `LEFT(…, 500)` corta pelo FIM: numa corrida com muita história
+    // acumulada, o que se perde é justamente a frase do operador. Publicar o
+    // resto seria trocar a palavra dele pela do motor — o card se cala.
+    const r = S.resumoCorrida(corrida({
+      status: 'CANCELADA', saude: null, fechada_em: '2026-08-05 05:20:00',
+      fechada_por: 'manual:C123456',
+      motivo: 'DATA_DIVERGENTE: CARGA_X (03/08) | reaberta apos FALHA de '
+        + '2026-08-05 03:00:00',
+    }), TEMPO, 7, historico())
+    return { encerramento: r.encerramento, motivo: r.motivo }
   })
 
   cenario('fechada_pelo_monitor_nao_transcreve_o_motor', () => {
@@ -447,6 +496,25 @@ async function main() {
       ],
     })
     return r
+  })
+
+  cenario('atrasada_absurda_para_no_teto_de_exibicao', () => {
+    // ⚠️ `ATRASADA` é a saúde de uma corrida cujo TETO venceu, e o teto padrão
+    // é de 24h (§6.6): quando este ramo acende, o membro vivo já passou de
+    // dezenas de vezes a própria fatia. Sem teto de exibição, a mesma conta
+    // que produz "≈ 140%" no exemplo da spec produz QUATRO OU CINCO DÍGITOS na
+    // madrugada real — e um "≈ 8000%" ao lado de "4 de 7 pipelines" não é
+    // sinal de atraso, é o número que faz duvidar do que está do lado dele.
+    // O número continua subindo e monotônico até 999, e para ali.
+    const r = pct({
+      saude: 'ATRASADA',
+      // 48h de execução (o teto padrão é 24h — quando esta saúde acende, o
+      // relógio já passou dele) sobre um denominador de 205 min: 1404%.
+      execucoes: [exec('A', 'EXECUTANDO', '2026-08-03 13:59:20')],
+    })
+    // O bruto, para o teste poder provar que o teto é DE EXIBIÇÃO: o número
+    // foi calculado inteiro e só a casa que não informa mais nada saiu.
+    return Object.assign({ teto: D.TETO_PERCENTUAL_ATRASADA }, r)
   })
 
   cenario('teto_em_99_enquanto_nao_terminou', () => {

@@ -158,6 +158,31 @@ string | null {
 // para o lado de "não vá dormir", que é o lado certo de errar.
 export const TETO_PERCENTUAL_EM_VOO = 99
 
+// ── ⚠️ E o teto do OUTRO lado, que a regra escrita não previa ───────────────
+// A Decisão 56b manda a corrida `ATRASADA` mostrar o percentual mesmo passando
+// de 100 — `≈ 140% do tempo típico` É o sinal de atraso, e truncar em 100
+// esconderia o que o operador precisa ver. O exemplo da spec é 140%; a
+// aritmética em produção não é.
+//
+// `ATRASADA` é a saúde de uma corrida cujo TETO venceu, e o teto padrão é de
+// 24h (§6.6). Um membro de duração típica 18 min preso há 24h entra por 80× a
+// própria fatia: a mesma conta que produz "140%" no exemplo produz **"≈ 8000%
+// do tempo típico"** na madrugada real — medido nesta revisão, com um membro
+// de p50 = 10 min rodando há 6h: `≈ 3600%`.
+//
+// Quatro ou cinco dígitos ao lado de `4 de 7 pipelines` não são sinal, são
+// ruído com aparência de defeito de software: o número que existe para dizer
+// "isto passou muito do normal" passa a fazer o operador duvidar do `x de y`
+// que está do lado. O sinal satura muito antes disso — passado de ~10× já não
+// há decisão nova a tomar —, então o número continua subindo e MONOTÔNICO até
+// 999 e para ali.
+//
+// ⚠️ Isto é um TETO DE EXIBIÇÃO, não truncamento em 100: a leitura "muito além
+// do típico" continua inteira, e o que sai de cena é só a casa decimal que já
+// não informa nada. Se o dono preferir trocar a forma acima do teto (por
+// exemplo `≈ mais de 10x o tempo típico`), é este ponto único que muda.
+export const TETO_PERCENTUAL_ATRASADA = 999
+
 /** O estado de um membro, do jeito que `execucoes[]` entrega. */
 export interface MembroEmCurso {
   pipeline_name: string
@@ -212,9 +237,21 @@ export function percentualTempoTipico(e: EntradaPercentual):
   for (const item of t.itens) {
     const fatia = minutosTipicos(item)
     if (fatia === null) continue
-    denominador += fatia
     const membro = emCurso.get(
       String(item.pipeline ?? '').trim().toLowerCase())
+    // Membro DISPENSADO hoje sai do denominador: o tempo típico de quem não
+    // roda não faz parte do trabalho de hoje. Com ele dentro, uma corrida de 7
+    // com 3 dispensados NUNCA passava de 57% — a faixa escrevia
+    // `4 de 7 · fechando · ≈ 57% do tempo típico` com a barra CHEIA, três
+    // números na mesma linha contando histórias diferentes.
+    //
+    // ⚠️ É deliberadamente DIFERENTE do denominador da contagem, que NÃO
+    // encolhe (Decisão 52): lá o motivo é o progresso não poder andar para
+    // trás quando a guardiã marca `PULADO` num ciclo seguinte. Aqui o número é
+    // secundário, traz `≈`, e a expectativa de trabalho diminuiu DE VERDADE —
+    // encolher é o que o torna verdadeiro.
+    if (membro?.status === 'PULADO') continue
+    denominador += fatia
     if (!membro) continue
     if (membro.status === 'SUCESSO') {
       numerador += fatia
@@ -234,7 +271,11 @@ export function percentualTempoTipico(e: EntradaPercentual):
 
   const bruto = Math.floor((numerador / denominador) * 100)
   // Regra 4: acima de 100 só existe de verdade no ramo sem teto; abaixo dele,
-  // 100 com a corrida aberta é a palavra "pronto" dita por um número.
-  const pct = bruto >= 100 && !semTeto ? TETO_PERCENTUAL_EM_VOO : bruto
+  // 100 com a corrida aberta é a palavra "pronto" dita por um número. E no
+  // ramo sem teto o número sobe, mas para em 999: acima disso ele deixa de
+  // ser sinal de atraso e vira dígito (ver `TETO_PERCENTUAL_ATRASADA`).
+  const pct = semTeto
+    ? Math.min(bruto, TETO_PERCENTUAL_ATRASADA)
+    : (bruto >= 100 ? TETO_PERCENTUAL_EM_VOO : bruto)
   return { pct, texto: `≈ ${pct}% do tempo típico` }
 }

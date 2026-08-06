@@ -38,6 +38,22 @@ const DIAS_SEMANA = ['domingos', 'segundas', 'terças', 'quartas', 'quintas',
 
 const RE_DIA = /^(\d{4})-(\d{2})-(\d{2})/
 
+/** O rótulo de um estado quando o sujeito é uma corrida do PASSADO.
+ *
+ *  `STATUS_CORRIDA.SEM_TRABALHO` é escrito no presente — *"sem trabalho
+ *  hoje"* — porque nasceu para a pílula da corrida CORRENTE. Aplicado sem
+ *  ajuste às frases desta fase, ele produzia *"corrida anterior: 03/08 · sem
+ *  trabalho hoje"*: a palavra "hoje" afirmando algo sobre anteontem, na linha
+ *  cujo trabalho é exatamente responder *"está pior que ontem?"*.
+ *
+ *  O corte é do sufixo, e não um segundo mapa de rótulos: dois mapas para os
+ *  mesmos sete estados é como o card e a faixa passam a chamar o mesmo
+ *  desfecho por dois nomes. */
+function rotuloPassado(status: string,
+                       rotulo: (status: string) => string): string {
+  return rotulo(status).replace(/\s+hoje$/, '')
+}
+
 /** O dia da semana de uma data de referência, no plural.
  *
  *  ⚠️ `Date.UTC(...)` e `getUTCDay()`, nunca `new Date('2026-08-04')` lido em
@@ -91,7 +107,7 @@ string | null {
   if (!a) return null
   const dia = diaCurto(a.data_referencia) ?? a.data_referencia
   const nome = a.sequencia > 1 ? `${a.sequencia}ª corrida de ${dia}` : dia
-  const partes = [`corrida anterior: ${nome}`, rotulo(a.status)]
+  const partes = [`corrida anterior: ${nome}`, rotuloPassado(a.status, rotulo)]
   // O intervalo é ABSOLUTO (`01:10 → 04:02`), como todo tempo de corrida
   // FECHADA (Decisão 60): "há 22h" sobre uma corrida que acabou seria o
   // relógio de uma coisa colado no rótulo de outra.
@@ -153,7 +169,10 @@ export function tituloDoBloco(
   const cabecalho = c.sequencia > 1
     ? `${c.sequencia}ª corrida de ${dia}`
     : `corrida de ${dia}`
-  const linhas = [`${cabecalho} · ${rotulo(c.status)}`]
+  // O mesmo cuidado do `textoCorridaAnterior`: o bloco fala de uma corrida
+  // datada, e "sem trabalho hoje" com a data de 09/08 ao lado é o presente
+  // opinando sobre o passado.
+  const linhas = [`${cabecalho} · ${rotuloPassado(c.status, rotulo)}`]
   const inicio = horaCurta(c.aberta_em)
   const fim = horaCurta(c.fechada_em)
   if (inicio && fim) {
@@ -234,8 +253,34 @@ string | null {
 /** O `motivo` do encerramento manual vem composto pelo servidor como
  *  `"encerrada por C123456: <texto>"`. Quem e quando já saem numa linha
  *  estruturada — repetir o prefixo é ruído em cima da única frase que o
- *  operador escreveu com as próprias palavras. */
+ *  operador escreveu com as próprias palavras.
+ *
+ *  ⚠️ E o prefixo **nem sempre está no começo do texto**: a coluna `motivo`
+ *  ACUMULA em `' | '` (`SQL_FECHAR`/`SQL_REABRIR` concatenam com
+ *  `LEFT(ISNULL(motivo + ' | ', '') + ..., 500)`), então uma corrida que foi
+ *  reaberta e depois encerrada à mão chega assim:
+ *
+ *    `reaberta apos CONCLUIDA de 2026-08-04 05:12 | encerrada por C123456: …`
+ *
+ *  Uma limpeza ancorada em `^` não casaria, e o card publicaria o texto do
+ *  MOTOR ("reaberta apos CONCLUIDA de…") — vocabulário de máquina, que a
+ *  Decisão 74 mantém fora da interface — **e** repetiria "encerrada por
+ *  C123456" na linha de baixo da que já diz exatamente isso. Por isso o corte
+ *  é na ÚLTIMA ocorrência do prefixo: o encerramento manual é sempre o último
+ *  trecho a ser concatenado, e o que vem antes dele é história do ciclo, cuja
+ *  casa é a aba de eventos. */
+const RE_ENCERRADA_POR = /(?:^|\|\s*)encerrada por [^:|]{1,80}:\s*/gi
+
 export function motivoLimpo(v: string | null | undefined): string | null {
   if (!v) return null
-  return String(v).replace(/^encerrada por [^:]{1,80}:\s*/i, '').trim() || null
+  const texto = String(v)
+  let corte = -1
+  for (const m of texto.matchAll(RE_ENCERRADA_POR)) {
+    if (m.index !== undefined) corte = m.index + m[0].length
+  }
+  // Sem o prefixo em lugar nenhum, o que sobrou é texto de MÁQUINA e o card
+  // se cala. O caso existe: `LEFT(..., 500)` corta pelo FIM, então uma corrida
+  // com muita história acumulada perde justamente a frase do operador — e aí
+  // publicar o resto seria trocar a palavra dele pela do motor.
+  return corte >= 0 ? (texto.slice(corte).trim() || null) : null
 }

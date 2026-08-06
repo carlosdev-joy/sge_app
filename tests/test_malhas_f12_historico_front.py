@@ -276,6 +276,51 @@ def test_corrida_interrompida_nao_diz_concluida(front):
     assert "conclu" not in d["contagem"]
 
 
+def test_motivo_ACUMULADO_so_transcreve_a_frase_do_operador(front):
+    """⚠️ O `motivo` da corrida **acumula**: `SQL_FECHAR` e `SQL_REABRIR`
+    concatenam com `LEFT(ISNULL(motivo + ' | ', '') + …, 500)`.
+
+    O caminho é normal, não exótico: rerun com cascata REABRE a corrida (F8) e
+    o plantão a encerra à mão às 05:20 — e o texto chega como
+    `"reaberta apos CONCLUIDA de … | encerrada por C123456: …"`.
+
+    Com a limpeza ancorada em `^`, o card publicava as duas coisas que a spec
+    proíbe na mesma linha: o vocabulário do MOTOR (Decisão 74) e a repetição
+    de "encerrada por C123456" logo abaixo da linha estruturada que já diz
+    exatamente isso (Decisão 67)."""
+    d = _cenario(front, "motivo_ACUMULADO_so_transcreve_a_frase_do_operador")
+    assert d["encerramento"] == "encerrada por C123456 às 05:20"
+    assert d["motivo"] == 'motivo: "carga do dia 03 remarcada para a tarde"'
+    assert "reaberta apos" not in d["motivo"]
+    assert "encerrada por C123456:" not in d["motivo"]
+
+
+def test_motivo_truncado_pelo_banco_nao_vira_texto_de_maquina(front):
+    """`LEFT(…, 500)` corta pelo FIM: numa corrida com muita história
+    acumulada, o que se perde é justamente a frase do operador.
+
+    Publicar o que sobrou seria trocar a palavra dele pela do motor — e
+    `DATA_DIVERGENTE` é exatamente o nome de máquina que a Decisão 74 mantém
+    fora da tela. Sem a frase, o card diz QUEM encerrou e QUANDO, e se cala
+    sobre o porquê."""
+    d = _cenario(front, "motivo_truncado_pelo_banco_nao_vira_texto_de_maquina")
+    assert d["encerramento"] == "encerrada por C123456 às 05:20"
+    assert d["motivo"] is None
+
+
+def test_a_corrida_anterior_nao_diz_hoje_sobre_anteontem(front):
+    """O rótulo de `SEM_TRABALHO` é escrito no PRESENTE — "sem trabalho hoje" —
+    porque nasceu para a pílula da corrida CORRENTE.
+
+    Reusado cru, ele escrevia *"corrida anterior: 03/08 · sem trabalho hoje"*:
+    a palavra "hoje" afirmando algo sobre anteontem, e justamente na linha cujo
+    trabalho é responder *"está pior que ontem?"*."""
+    d = _cenario(front, "anterior_sem_trabalho_nao_diz_hoje")
+    assert d["anterior"] == ("corrida anterior: 03/08 · sem trabalho · "
+                             "01:00 → 01:02 · 2 min")
+    assert "hoje" not in d["anterior"]
+
+
 def test_fechador_automatico_nao_transcreve_o_vocabulario_do_motor(front):
     """O critério é o SUJEITO, não o status.
 
@@ -394,6 +439,25 @@ def test_corrida_atrasada_passa_de_cem_e_nao_e_truncada(front):
     d = _cenario(front, "atrasada_passa_de_cem")
     assert d["pct"] > 100
     assert d["texto"] == "≈ 187% do tempo típico"
+
+
+def test_a_atrasada_sobe_ate_999_e_para_ali(front):
+    """⚠️ O outro lado do mesmo número, e a regra escrita não o previa.
+
+    `ATRASADA` é a saúde de uma corrida cujo TETO venceu, e o teto padrão é de
+    **24h** (§6.6): quando este ramo acende, o membro vivo já passou de dezenas
+    de vezes a própria fatia. A mesma conta que produz o `≈ 140%` do exemplo da
+    spec produz quatro ou cinco dígitos na madrugada real — e `≈ 8000%` ao lado
+    de `4 de 7 pipelines` não é sinal de atraso: é o número que faz duvidar do
+    `x de y` que está do lado dele, que é o oposto do que esta camada existe
+    para fazer.
+
+    O teto é DE EXIBIÇÃO, não truncamento em 100 (que esconderia o atraso): a
+    leitura "muito além do típico" continua inteira e monotônica até 999."""
+    d = _cenario(front, "atrasada_absurda_para_no_teto_de_exibicao")
+    assert d["teto"] == 999
+    assert d["pct"] == 999
+    assert d["texto"] == "≈ 999% do tempo típico"
 
 
 def test_o_teto_e_99_enquanto_a_corrida_nao_terminou(front):

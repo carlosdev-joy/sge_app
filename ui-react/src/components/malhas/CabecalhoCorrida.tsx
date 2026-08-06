@@ -290,8 +290,16 @@ export function CabecalhoCorrida({
             {resumo.encerramento && (
               <span className="text-[11px]">{resumo.encerramento}</span>
             )}
+            {/* O motivo é texto LIVRE do operador (até 300 chars no endpoint,
+                e a coluna acumula até 500). Sem o clamp, uma frase longa
+                empilha ~15 linhas numa coluna de 13rem e a faixa — que a
+                Decisão 71 manda ter altura estável, a ponto de o estado
+                "carregando" ser um skeleton de altura fixa — cresce para
+                empurrar a barra e o botão de encerrar para fora da primeira
+                tela. Duas linhas na faixa, o resto no `title`, igual ao card. */}
             {resumo.motivo && (
-              <span className="text-[11px] italic">{resumo.motivo}</span>
+              <span className="line-clamp-2 text-[11px] italic"
+                    title={resumo.motivo}>{resumo.motivo}</span>
             )}
             {/* Decisão 68 — o `SEM_TRABALHO` que merece atenção. A cor já subiu
                 para âmbar em `resumo.faixa`; esta é a palavra que a acompanha,
