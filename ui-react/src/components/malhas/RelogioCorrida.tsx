@@ -86,31 +86,42 @@ export function RelogioCorrida({
       {/* O LIMITE DE SEGURANÇA. Sem `teto_horas` na malha esta linha inteira
           não existe — nem a barra, nem o texto (Decisão 61). */}
       {temLimite && (
-        <span className="inline-flex items-center gap-1.5">
+        // `div`, e não `span`: a `ui/Progress` renderiza uma `div` com
+        // `role="progressbar"`, e `div` dentro de `span` é aninhamento
+        // inválido — o navegador desenha, o validador reclama e o próximo a
+        // mexer aqui herda uma árvore que não bate com o HTML que ele lê.
+        // (Mesma correção que a `CorridaProgresso` já carrega.)
+        <div className="flex items-center gap-1.5">
+          {/* Contêiner com a largura, e NÃO `className="w-20"` na barra: o
+              trilho da `ui/Progress` já traz `w-full`, e duas utilidades de
+              largura na mesma classe deixam a decisão para a ORDEM DA FOLHA DE
+              ESTILO — a barra sairia com a largura da coluna inteira num build
+              e com 5rem no outro. */}
           {resumo.prazoPct !== null && (
-            <Progress
-              className="w-20"
-              segmentos={[{
-                chave: 'limite',
-                valor: resumo.prazoPct,
-                cor: resumo.prazoPct >= 100
-                  ? 'bg-red-500 dark:bg-red-500'
-                  : 'bg-amber-500 dark:bg-amber-500',
-                rotulo: 'do limite decorrido',
-              }]}
-              total={100}
-              valorAtual={resumo.prazoPct}
-              ariaLabel="limite de segurança da corrida"
-              /* `aria-valuetext` explícito: sem ele o leitor de tela converte
-                 valuenow/valuemax em percentual sozinho. Aqui o percentual É
-                 do tempo (não de contagem de pipelines, que a Decisão 56
-                 proíbe), mas quem o anuncia tem de ser o texto que a tela
-                 mostra — e ele diz "limite", nunca "progresso". */
-              valorTexto={resumo.prazo ?? 'limite de segurança'}
-            />
+            <div className="w-20 shrink-0">
+              <Progress
+                segmentos={[{
+                  chave: 'limite',
+                  valor: resumo.prazoPct,
+                  cor: resumo.prazoPct >= 100
+                    ? 'bg-red-500 dark:bg-red-500'
+                    : 'bg-amber-500 dark:bg-amber-500',
+                  rotulo: 'do limite decorrido',
+                }]}
+                total={100}
+                valorAtual={resumo.prazoPct}
+                ariaLabel="limite de segurança da corrida"
+                /* `aria-valuetext` explícito: sem ele o leitor de tela
+                   converte valuenow/valuemax em percentual sozinho. Aqui o
+                   percentual É do tempo (não de contagem de pipelines, que a
+                   Decisão 56 proíbe), mas quem o anuncia tem de ser o texto
+                   que a tela mostra — e ele diz "limite", nunca "progresso". */
+                valorTexto={resumo.prazo ?? 'limite de segurança'}
+              />
+            </div>
           )}
-          {resumo.prazo}
-        </span>
+          <span>{resumo.prazo}</span>
+        </div>
       )}
 
       {/* O CRÉDITO vem colado no limite porque ele é a explicação de uma barra
