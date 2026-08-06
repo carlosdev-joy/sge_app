@@ -2911,6 +2911,12 @@ errado.
     banco fica invisível. Em produção o desvio é presumido zero — **presumido, não
     medido**. Medir antes de ligar o interruptor, e converter para o relógio do
     banco numa PR própria se houver desvio.
+    ⚠️ **A F7 mediu de novo e achou um SEGUNDO ponto na mesma família:**
+    `_fechar_dia_anterior` deriva o corte do relógio do WORKER e o compara com
+    `criado_em`, que vem do banco. Com os 3 h medidos, `criado_em >= corte` fica
+    verdadeiro por 3 h a mais e a função sub-fecha — e a guarda da Decisão 31
+    (que a F7 acrescentou) roda logo DEPOIS dessa comparação, então o desvio
+    decide quais linhas sequer chegam nela.
 11. **O card de `MALHA_CONCLUIDA` do nó Fim ainda publica o marcador interno**
     (`dags/utils/ds_teams.py`): sai com sujeito `#no:38` e fato `Pipeline: #no:38`,
     contrariando a Decisão 74 (nome de máquina não vai ao celular). É
@@ -2937,6 +2943,27 @@ errado.
     `substituida_em` cairia no legado e o descarte da linha substituída sumiria
     em silêncio. É código anterior a esta spec e há teste pinando o texto-fonte
     — marcado como LACUNA CONHECIDA no código; PR própria.
+13d. **Leitura de retenção indisponível trava a corrida indefinidamente.**
+    `hold_da_malha` devolve `retido=True` para qualquer erro que não seja
+    "coluna ausente" — a política conservadora certa (na dúvida, não solta),
+    mas um `DENY SELECT` em `etl_malha_no` transforma "adiar um ciclo de 5 min"
+    em "a corrida nunca fecha e o disparo nunca libera". Mitigado pelo botão
+    Encerrar corrida (§6.8). **Item de smoke antes de ligar o interruptor:**
+    conferir `SELECT` em `etl_malha_no` para o login da guardiã E o da API.
+13e. **Duplo crédito de teto por clique duplo concorrente.** Dois
+    `POST /retencao {reter:false}` simultâneos no mesmo nó podem computar o
+    crédito a partir do mesmo `MIN` antes de qualquer commit. O X-lock na linha
+    da corrida fecha a janela na maioria dos planos; se escapar, o custo é o
+    teto empurrado 2×. Fecharia de vez inverter a ordem: fazer o
+    `retido_em = NULL` ser o statement que MEDE.
+13f. **A 4ª porta ficou mais cara, e a recusa subiu de posição.** Com o
+    interruptor ligado, a guardiã pergunta o ODATE para toda linha aguardando
+    liberada — +1 consulta por linha por ciclo de 5 min (família da pendência
+    19). E pipeline **sem cadastro** com corridas ambíguas passa a gravar
+    `DATA_DIVERGENTE` onde antes só logava "sem cadastro".
+13g. **`substituida_em IS NULL` em `SQL_ESTADO` esconde membro `EXECUTANDO`**
+    cuja linha foi substituída e que ainda esteja rodando no Airflow. Normalmente
+    a substituição e a linha nova caem no mesmo commit; é território da F8.
 14. ✅ **RESOLVIDA na F7.** `_rede_seguranca` passou a fazer as duas coisas
     que as outras três portas já faziam: **recusa por ODATE ambíguo**
     (`mc.odate(conn, pipeline)` ANTES do claim — reservar e não disparar
