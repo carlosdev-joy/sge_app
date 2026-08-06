@@ -176,7 +176,12 @@ export function SeletorCorrida({
           <div
             role="dialog"
             aria-label="Ir para uma data de referência"
-            className="absolute right-0 z-50 mt-1 flex w-64 flex-col gap-2 rounded-md border border-edge bg-panel p-2 shadow-lg"
+            // `left-0`, e não `right-0`: o gatilho é o PRIMEIRO elemento da
+            // faixa, colado na borda esquerda do painel. Alinhado pela
+            // direita, os 16rem do menu se estendiam para fora da área de
+            // conteúdo e sumiam por baixo do menu lateral — o seletor de data
+            // ficava inalcançável, que é o mesmo que não existir.
+            className="absolute left-0 z-50 mt-1 flex w-64 flex-col gap-2 rounded-md border border-edge bg-panel p-2 shadow-lg"
           >
             <label className="flex flex-col gap-1 text-[11px] text-dim">
               Data de referência
