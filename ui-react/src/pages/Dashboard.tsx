@@ -6,6 +6,7 @@ import { PageSpinner } from '../components/ui/Spinner'
 import { SupervisaoCard } from '../components/dashboard/SupervisaoCard'
 import { Select } from '../components/ui/Input'
 import { Button } from '../components/ui/Button'
+import { Progress } from '../components/ui/Progress'
 import {
   RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock,
   Activity, Layers, BarChart2, ChevronRight, FileText,
@@ -435,7 +436,6 @@ function AlertaRow({ a, onOpen, onDetail }: { a: AlertaPerf; onOpen: () => void;
 // ── Executando agora row ───────────────────────────────────────────────────
 
 function RunningRow({ e, onOpen, onDetail }: { e: Executando; onOpen: () => void; onDetail: () => void }) {
-  const pct = e.total_jobs > 0 ? Math.round((e.jobs_ok / e.total_jobs) * 100) : 0
   return (
     <div className="flex items-center gap-3 px-4 py-2.5 border-b border-edge/40 last:border-0 hover:bg-blue-50 dark:hover:bg-blue-900/10 transition-all cursor-pointer" onClick={onOpen}>
       <span className="relative flex h-2 w-2 flex-shrink-0">
@@ -445,9 +445,25 @@ function RunningRow({ e, onOpen, onDetail }: { e: Executando; onOpen: () => void
       <div className="flex-1 min-w-0">
         <div className="font-mono text-xs font-medium text-ink truncate">{e.pipeline}</div>
         <div className="text-[10px] text-dim">{e.project} · {fmtSec(e.elapsed_seconds)} rodando</div>
-        <div className="mt-1 h-1 bg-edge/30 rounded-full overflow-hidden w-full max-w-[120px]">
-          <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${pct}%` }} />
-        </div>
+        {/* Esta barra dizia 0% em TODA execução: o `jobs_ok` do backend contava
+            SUCCESS dentro de um recorte que só tinha RUNNING (ver
+            `_sql_executando_agora`). Com o número consertado, ela passa a ser
+            segmentada — verde do que terminou, azul do que está de pé — que é
+            o mesmo desenho da barra da corrida da malha, e ganha os atributos
+            que faltavam para quem usa leitor de tela.
+            Sem `animado`: a linha já tem o dot com `animate-ping`, e duas
+            animações no mesmo lugar viram ruído (§9.15/13 da spec). */}
+        <Progress
+          className="mt-1 max-w-[120px]"
+          total={e.total_jobs}
+          valorAtual={e.jobs_ok}
+          ariaLabel={`jobs concluídos do pipeline ${e.pipeline}`}
+          valorTexto={`${e.jobs_ok} de ${e.total_jobs} jobs concluídos, ${e.jobs_running} em execução`}
+          segmentos={[
+            { chave: 'ok', valor: e.jobs_ok, cor: 'bg-green-500 dark:bg-green-500', rotulo: 'concluídos' },
+            { chave: 'rodando', valor: e.jobs_running, cor: 'bg-blue-500 dark:bg-blue-400', rotulo: 'em execução' },
+          ]}
+        />
       </div>
       <div className="text-right flex-shrink-0">
         <div className="text-[10px] text-blue-500 dark:text-blue-400 font-bold">{e.jobs_running} rod.</div>

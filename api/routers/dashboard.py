@@ -37,6 +37,68 @@ def _status_expr_sql() -> str:
     """
 
 
+def _sql_executando_agora(where_proj: str) -> str:
+    """SQL do painel "Rodando agora" — o rollup da execução INTEIRA.
+
+    ⚠️ O defeito que este texto corrige está em produção desde sempre (spec
+    `docs/spec-malha-execucao.md` §9.8). A consulta antiga agregava **dentro**
+    de um recorte `WHERE status='RUNNING'`:
+
+        SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) AS jobs_ok
+        FROM dbo.etl_job_execution WHERE status='RUNNING'
+
+    As duas condições nunca são verdadeiras na mesma linha — `jobs_ok` era
+    **0 sempre**, e `total_jobs` era igual a `jobs_running` porque o `COUNT(*)`
+    só via os jobs em curso. Medido no dev com 3 jobs (2 SUCCESS + 1 RUNNING),
+    a tela mais vista do produto dizia **`0/1 ok`**, barra em 0% — pior que o
+    `0/3 ok` descrito na spec, porque o denominador desabava junto: card que
+    mente, e o molde que a camada de corrida da malha copiaria.
+
+    A correção mantém o SEEK por `status='RUNNING'` (o índice
+    `IX_etl_job_execution_project_status_start` continua sendo a porta de
+    entrada) e só depois volta à tabela para contar a execução inteira. Um
+    `GROUP BY` sem o filtro varreria o histórico completo a cada refetch de
+    60 s — a correção não pode custar a tela.
+
+    ⚠️ O JOIN de volta carrega `pipeline` **e** `project`, não só o
+    `execution_id`: o `execution_id` é o `ts_nodash` do Airflow e COLIDE entre
+    pipelines agendadas no mesmo tick (a mesma razão documentada na subconsulta
+    de fila, migration 027). Sem as três colunas, o `total_jobs` de um pipeline
+    somaria os jobs de outro — trocaríamos um número mentiroso por outro.
+
+    Consequência declarada: `inicio` passa a ser o começo da EXECUÇÃO, e não o
+    do primeiro job que ainda está de pé. É o número que a tela já diz estar
+    mostrando ("há X rodando", do pipeline), e antes ele pulava para frente a
+    cada job concluído.
+    """
+    return f"""
+        WITH ativos AS (
+            -- As execuções com ao menos um job de pé. É o único predicado que
+            -- toca o índice de status; tudo mais é resolvido por chave.
+            SELECT DISTINCT execution_id, project, pipeline
+            FROM dbo.etl_job_execution
+            WHERE status='RUNNING' {where_proj}
+        ),
+        runs AS (
+            SELECT e.execution_id, e.project, e.pipeline,
+                MIN(e.start_time) AS inicio,
+                COUNT(*) AS total_jobs,
+                SUM(CASE WHEN e.status='RUNNING' THEN 1 ELSE 0 END) AS jobs_running,
+                SUM(CASE WHEN e.status='SUCCESS' THEN 1 ELSE 0 END) AS jobs_ok
+            FROM dbo.etl_job_execution e
+            JOIN ativos a
+              ON a.execution_id = e.execution_id
+             AND a.pipeline     = e.pipeline
+             AND a.project      = e.project
+            GROUP BY e.execution_id, e.project, e.pipeline
+        )
+        SELECT TOP 10 execution_id, project, pipeline, inicio,
+            total_jobs, jobs_running, jobs_ok,
+            DATEDIFF(SECOND, inicio, GETDATE()) AS elapsed_seconds
+        FROM runs ORDER BY inicio DESC
+    """
+
+
 @router.get("/dashboard", tags=["dashboard"])
 def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] = None):
     """KPIs + status + falhas + running. Substitui etl_dashboard_query."""
@@ -199,21 +261,7 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
             for r in cur.fetchall()
         ]
 
-        cur.execute(f"""
-            WITH runs AS (
-                SELECT execution_id, project, pipeline, MIN(start_time) AS inicio,
-                    COUNT(*) AS total_jobs,
-                    SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) AS jobs_running,
-                    SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) AS jobs_ok
-                FROM dbo.etl_job_execution
-                WHERE status='RUNNING' {where_proj}
-                GROUP BY execution_id, project, pipeline
-            )
-            SELECT TOP 10 execution_id, project, pipeline, inicio,
-                total_jobs, jobs_running, jobs_ok,
-                DATEDIFF(SECOND, inicio, GETDATE()) AS elapsed_seconds
-            FROM runs ORDER BY inicio DESC
-        """, [fp] if fp else [])
+        cur.execute(_sql_executando_agora(where_proj), [fp] if fp else [])
         executando_agora = [
             {
                 "execution_id": r[0], "project": r[1], "pipeline": r[2],

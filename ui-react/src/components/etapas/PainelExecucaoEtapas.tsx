@@ -6,11 +6,15 @@
 // modo Montagem não pode pagar por isto. A linguagem é a MESMA do MalhaEditor
 // (mesmos controles de data, mesmo formato de banner, mesma legenda por
 // bolinha), porque descer da malha para cá tem de parecer a mesma tela.
-import type { ReactNode } from 'react'
 import {
   Activity, AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Info,
   MousePointerClick, RefreshCw,
 } from 'lucide-react'
+// O `Banner` nasceu aqui e foi PROMOVIDO para `ui/` na F9 da spec de malha
+// (Decisão 71): o MalhaEditor já tinha nove cópias literais das mesmas classes.
+// O componente de lá é este mesmo, com `icone` opcional e dois acréscimos que
+// esta tela não usa (tom `sucesso` e slot `acao`).
+import { Banner } from '../ui/Banner'
 import { STATUS_EXECUCAO, ORDEM_LEGENDA } from '../malhas/statusExecucao'
 import {
   duracaoCurta, horaLonga, janelaDasEtapas, resumoExecucao, rotuloCorrida,
@@ -246,24 +250,6 @@ function Chip({ cor, n, t, ts }: { cor: string; n: number; t: string; ts?: strin
       <span className={`h-1.5 w-1.5 rounded-full ${cor}`} />
       {n} {n === 1 ? t : (ts ?? `${t}s`)}
     </span>
-  )
-}
-
-function Banner({ tom, icone, children }: {
-  tom: 'info' | 'alerta' | 'erro'
-  icone: ReactNode
-  children: ReactNode
-}) {
-  const cls = tom === 'erro'
-    ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300'
-    : tom === 'alerta'
-      ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400'
-      : 'border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-200'
-  return (
-    <div className={`flex items-start gap-2 border-b px-3 py-2 text-[12px] ${cls}`}>
-      {icone}
-      <span>{children}</span>
-    </div>
   )
 }
 
