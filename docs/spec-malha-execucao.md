@@ -2409,7 +2409,12 @@ autorização do usuário.
   próxima corrida" / "há ciclo #N em voo") sem recusar; disparo avulso de um
   pipeline avisa que será contado na corrida; Finalização Manual reavalia a
   corrida ao fechar a linha órfã.
-- **Deploy:** `api/` + front. **Não** exige `force_all`.
+- **Deploy:** `api/` + **`dags/`** + front. **Não** exige `force_all`.
+  ⚠️ **Correção de rota (execução):** a linha dizia `api/` + front. O `dags/`
+  entra porque a pendência 13g mora no `SQL_ESTADO`, que é dos **módulos
+  gêmeos** — e quem lê esse texto para FECHAR a corrida é a guardiã. Deployar só
+  `api/` deixaria o painel enxergando o membro vivo e o motor não, que é a
+  divergência que a paridade existe para impedir.
 - **Aceite:**
   - malha `CONCLUIDA` sem outra aberta, rerun com cascata → corrida volta a
     `ABERTA` com `tentativas=2`; quando o rerun conclui, **a segunda
@@ -2427,6 +2432,53 @@ autorização do usuário.
   - Finalização Manual fecha linha órfã → a corrida é reavaliada **no mesmo
     gesto**, sem esperar 5 min.
 - **PR:** `feat: rerun reabre a corrida e o desenho editado vale do proximo ciclo`
+- ✅ **ENTREGUE (2026-08-06).** O que a execução acrescentou ao desenho, e por
+  quê:
+  - **a reabertura virou UM gesto, não três.** `reabrir_corrida` passou a
+    (i) zerar `falha_vista_em`/`atraso_visto_em` — a memória de efeito colateral
+    é da TENTATIVA, e o precedente literal é o `atraso_visto_em = NULL` que
+    `creditar_hold` já fazia —, (ii) escrever o desfecho ANULADO e a hora dele
+    no `motivo`, composto em T-SQL a partir de `me.status`/`me.fechada_em`, e
+    (iii) chamar `descartar_desfecho`. Cobrar o (iii) do chamador produziria
+    uma corrida que roda de novo e **conclui em silêncio**;
+  - **a 2ª `MALHA_CONCLUIDA` não vinha só do índice.** A 085 pôs a corrida na
+    chave, mas a corrida reaberta guarda o MESMO `id` — a chave da tentativa 2 é
+    byte a byte a da tentativa 1. **Medido no dev:** o `INSERT ... WHERE NOT
+    EXISTS` devolve `0` antes do descarte e `1` depois. O que faltava era
+    liberar a chave, e é o que `SQL_DESCARTAR_DESFECHO` faz — por corrida, por
+    tipo (`MALHA_CONCLUIDA`/`MALHA_FALHOU`/`MALHA_ATRASADA`) e **só em linha de
+    marcador** (`LEFT(...) = '#corrida:'`/`'#no:'`), nunca no evento de um
+    membro. O que se perderia de história migra para o `motivo` da corrida, que
+    é a casa dela;
+  - **`corridas_das_linhas` (gêmea nova):** "de que ciclo era a linha que eu
+    acabei de aposentar?" sai do `malha_execucao_id` da LINHA, nunca de
+    `corrida_da_data(malha, data)` — com duas corridas do mesmo dia (§6.9/#7) a
+    segunda devolveria a mais recente e o rerun reabriria a errada;
+  - **o portão do §11.1 governa a reabertura**, e não só a abertura: reabrir o
+    que o `dags/` deployado não sabe fechar bloqueia o disparo até o teto. Com
+    o interruptor em `0` o rerun responde como antes da fase;
+  - **Finalização Manual: a ponte tem DOIS caminhos.** Medido no dev, o
+    `resolve_por_ts_nodash` só traduz run_id da forma do Airflow
+    (`scheduled__<ISO>`); os que o Orquestra gera (`guardia__…` do push,
+    `manual_orq_…`) devolvem `None` de propósito. Com um caminho só, a
+    Decisão 22 valeria apenas para o membro agendado — justamente o que menos
+    precisa dela. O 2º caminho é o `candidatos` da própria resolução, e ele
+    fecha a linha **só quando há exatamente UMA em execução**; duas se
+    DECLARAM, nunca se escolhem;
+  - **o que a fase NÃO faz:** fechar corrida continua sendo da guardiã
+    (Decisão 19). O que a Finalização entrega "no mesmo gesto" é tirar o membro
+    de `vivos` — que é o que travava — e devolver o ciclo reavaliado.
+- **Medições no dev (2026-08-06, SQL Server ~3h à frente do worker):** 2ª
+  conclusão `0 → 1`; reabertura `tentativas 1 → 2`, memória zerada, `motivo` =
+  `porta 2 | reaberta apos CONCLUIDA de 2026-08-06 04:12:44: reexecucao de …`;
+  2 eventos de marcador descartados e o `EXECUCAO_ORFA` do membro intacto; com
+  outra corrida aberta, `rowcount = 0` **sem 2601** e a corrida do dia seguinte
+  intocada; 13g — o membro aposentado em `EXECUTANDO` volta a `vivos` e o
+  aposentado em `SUCESSO` continua fora; Finalização com run_id de push fecha a
+  067 e devolve `em_execucao: 0, pendentes: [], concluidos: 2`. Os quatro
+  avisos conferidos pela API de pé (`aviso_ciclo` em `PATCH ativo=0`,
+  `add_membro`, `remove_membro` e o `nivel: forte` do `republicar`), e
+  `GET /pipelines/{p}/corrida` nos três efeitos.
 
 ### F4+ — Os quatro aditivos de VERACIDADE (entram na PR da F4; não são fase nova)
 
@@ -2961,9 +3013,30 @@ errado.
     liberada — +1 consulta por linha por ciclo de 5 min (família da pendência
     19). E pipeline **sem cadastro** com corridas ambíguas passa a gravar
     `DATA_DIVERGENTE` onde antes só logava "sem cadastro".
-13g. **`substituida_em IS NULL` em `SQL_ESTADO` esconde membro `EXECUTANDO`**
-    cuja linha foi substituída e que ainda esteja rodando no Airflow. Normalmente
-    a substituição e a linha nova caem no mesmo commit; é território da F8.
+13g. ✅ **RESOLVIDA na F8.** `SQL_ESTADO` passou a aceitar a linha por
+    `(e.substituida_em IS NULL OR e.status = 'EXECUTANDO')`, nas duas árvores.
+    A guarda é ESTREITA de propósito: aposentada em `SUCESSO` continua fora
+    (senão a Decisão 55 cairia e o rerun às 3h contaria a linha velha como OK),
+    e vivo que morreu sem fechar a linha já tem dono — o `EXECUCAO_ORFA` o tira
+    de `vivos` (Decisão 22) e o teto é a rede (Decisão 25). Provado ao vivo em
+    `tests/test_malha_corrida_f8_vivo.py`. Texto original abaixo:
+    ~~`substituida_em IS NULL` em `SQL_ESTADO` esconde membro `EXECUTANDO` cuja
+    linha foi substituída e que ainda esteja rodando no Airflow.~~
+
+21. **A ponte `ts_nodash` ↔ `run_id` da Finalização Manual fecha sozinha só
+    para run_id do Airflow.** Medido na F8: `ts_nodash_do_run_id` devolve `None`
+    para `guardia__…` e `manual_orq_…` (o timestamp deles é relógio local, e
+    traduzi-lo daria um ts deslocado do fuso — a armadilha está escrita no
+    docstring do módulo). A F8 contornou pelo `candidatos` da janela de ±1 dia,
+    com a regra "uma só em execução, senão declara a ambiguidade". Fechar de vez
+    exigiria a Finalização perguntar o `run_id` ao Airflow — o que traz rede
+    para dentro do gesto de emergência, que é exatamente o que ele não pode ter.
+    **Decidir com o dono depois do smoke.**
+
+22. **`add_membro` idempotente (`ja_membro: true`) não avisa do ciclo em voo.**
+    É o caminho de no-op: nada mudou no cadastro, então não há efeito a
+    descrever. Se a tela passar a usar esse retorno como "confirmação de
+    membro", o aviso terá de sair também por ali.
 14. ✅ **RESOLVIDA na F7.** `_rede_seguranca` passou a fazer as duas coisas
     que as outras três portas já faziam: **recusa por ODATE ambíguo**
     (`mc.odate(conn, pipeline)` ANTES do claim — reservar e não disparar

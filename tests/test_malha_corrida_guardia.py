@@ -1452,7 +1452,9 @@ def test_o_escopo_da_linha_exige_o_odate_nos_DOIS_ramos(mc):
     assert "e.data_referencia = %s" in normal
     assert ("(e.malha_execucao_id = %s OR COALESCE(e.inicio, e.criado_em) >= %s)"
             in normal)
-    assert "e.substituida_em IS NULL" in normal
+    # F8 (pendência 13g): a linha APOSENTADA some do escopo — menos quando ela
+    # ainda está `EXECUTANDO`. Ver o teste de comportamento logo abaixo.
+    assert ("(e.substituida_em IS NULL OR e.status = 'EXECUTANDO')" in normal)
     assert params == (ODATE, 12, MOMENTO_ANCORA, 12)
     # e a segunda consulta é o espelho do mesmo predicado (§6.9/#15): a linha
     # que a corrida carimbou e cujo ODATE é OUTRO aparece nominalmente. Trocar
@@ -1462,6 +1464,38 @@ def test_o_escopo_da_linha_exige_o_odate_nos_DOIS_ramos(mc):
     normal_fora = " ".join(sql_fora.split())
     assert "e.malha_execucao_id = %s AND e.data_referencia <> %s" in normal_fora
     assert params_fora == (12, ODATE)
+
+
+def test_a_linha_aposentada_que_ainda_EXECUTA_continua_viva(mc):
+    """Pendência 13g da §18, fechada na F8 — e o gesto que abre a janela é o
+    próprio rerun.
+
+    `marcar_substituidas` carimba `substituida_em` num statement; a linha nova
+    só nasce quando o claim acontecer, que pode ser no ciclo seguinte da
+    guardiã. Entre os dois, com o filtro puro, o membro que continua rodando no
+    Airflow SUMIA de `vivos` — e vivo invisível deixa a corrida fechar por cima
+    de trabalho em andamento (a família de defeito que a F3 e a F7 já
+    consertaram em outras leituras).
+
+    A guarda é ESTREITA de propósito: aposentada em SUCESSO continua fora (senão
+    a Decisão 55 cairia e o rerun às 3h contaria a linha velha como OK).
+    """
+    conn = _Conn([{"rows": [_linha_estado("P_RODANDO", status="EXECUTANDO")]},
+                  {"rows": []}])
+    saida = mc.estado(conn, _corrida_dict(), dispensa_sem_linha=lambda p: False)
+    assert saida["vivos"] == ["P_RODANDO"]
+    assert saida["pendentes"] == []
+    # A cláusula que faz isso ser possível está no statement — e é ela, não a
+    # bondade do roteiro, que traz a linha aposentada de volta.
+    normal = " ".join(conn._cur.execs[0][0].split())
+    assert "OR e.status = 'EXECUTANDO'" in normal
+    # E o outro lado: a órfã já alertada continua saindo de `vivos` (Decisão
+    # 22), senão a guarda nova viraria bloqueio eterno por linha morta.
+    conn2 = _Conn([{"rows": [_linha_estado("P_RODANDO", status="EXECUTANDO",
+                                           orfa=1)]}, {"rows": []}])
+    saida2 = mc.estado(conn2, _corrida_dict(), dispensa_sem_linha=lambda p: False)
+    assert saida2["vivos"] == []
+    assert [p["classe"] for p in saida2["pendentes"]] == ["orfa"]
 
 
 def test_aguardando_indisponivel_devolve_a_MARCA_nunca_lista_vazia(mc):

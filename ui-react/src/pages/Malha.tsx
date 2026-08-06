@@ -33,6 +33,24 @@ import {
 // DataStage / SMART Folder do Control-M). Nesta fase existe a entidade, os
 // membros e a lista; o diagrama de montagem (MalhaEditor) chega na F8.
 
+// F8 (spec-malha-execucao §6.9/#16 e #17) — o aviso que os gestos de EDIÇÃO
+// passam a devolver quando há ciclo em voo.
+//
+// O snapshot da corrida congela membros e regra de fechamento na abertura, então
+// editar durante o ciclo é legítimo e vale do PRÓXIMO em diante. O que faltava
+// era dizer isso: sem a frase, quem adiciona um membro às 3h não o vê no
+// denominador do painel e conclui que a tela quebrou.
+//
+// Chave OPCIONAL de propósito: malha sem corrida aberta (e API anterior à F8)
+// não a manda, e o gesto se comporta exatamente como antes.
+interface RespostaComAvisoDeCiclo { aviso_ciclo?: string }
+
+function avisarCiclo(r: RespostaComAvisoDeCiclo | undefined) {
+  // `info`, não `error`: o gesto DEU CERTO — o que muda é o alcance dele no
+  // tempo. Pintar de vermelho ensinaria o operador a temer uma edição legítima.
+  if (r?.aviso_ciclo) toast.info(r.aviso_ciclo)
+}
+
 // Última corrida registrada entre os pipelines da malha. `em` é o INÍCIO da
 // corrida (a API cai em criado_em quando ela ainda não partiu) — nunca a
 // data_referencia, que é o dia de PROCESSAMENTO e pode estar longe do relógio.
@@ -458,12 +476,18 @@ function MembrosModal({ malhaName, onClose }: { malhaName: string; onClose: () =
 
   const addMut = useMutation({
     mutationFn: (pipeline_name: string) =>
-      apiFetch(`/malhas/${encodeURIComponent(malhaName)}/pipelines`, {
-        method: 'POST',
-        body: JSON.stringify({ pipeline_name }),
-      }),
-    onSuccess: (_r, pipeline_name) => {
+      apiFetch<RespostaComAvisoDeCiclo>(
+        `/malhas/${encodeURIComponent(malhaName)}/pipelines`, {
+          method: 'POST',
+          body: JSON.stringify({ pipeline_name }),
+        }),
+    onSuccess: (r, pipeline_name) => {
       toast.success(`Pipeline "${pipeline_name}" adicionado à malha.`)
+      // O membro entra no CADASTRO agora e no CICLO em voo só no próximo: o
+      // quadro de membros da corrida congelou na abertura. Sem esta frase, o
+      // operador não vê o pipeline no denominador do painel e conclui que a
+      // tela quebrou.
+      avisarCiclo(r)
       setBusca('')
       invalidar()
     },
@@ -473,11 +497,15 @@ function MembrosModal({ malhaName, onClose }: { malhaName: string; onClose: () =
 
   const removerMut = useMutation({
     mutationFn: (pipeline_name: string) =>
-      apiFetch(`/malhas/${encodeURIComponent(malhaName)}/pipelines/${encodeURIComponent(pipeline_name)}`, {
-        method: 'DELETE',
-      }),
-    onSuccess: (_r, pipeline_name) => {
+      apiFetch<RespostaComAvisoDeCiclo>(
+        `/malhas/${encodeURIComponent(malhaName)}/pipelines/${encodeURIComponent(pipeline_name)}`, {
+          method: 'DELETE',
+        }),
+    onSuccess: (r, pipeline_name) => {
       toast.success(`Pipeline "${pipeline_name}" removido da malha.`)
+      // Efeito OPOSTO ao de adicionar, e por isso a frase é outra: o membro
+      // sai do cadastro, mas continua contando no ciclo em voo até ele fechar.
+      avisarCiclo(r)
       invalidar()
     },
     onError: (e: Error) => toast.error(e.message || 'Erro ao remover o pipeline'),
@@ -694,12 +722,17 @@ function MalhasView({ onAbrir }: { onAbrir: (malha: string) => void }) {
 
   const toggleMut = useMutation({
     mutationFn: (m: ApiMalha) =>
-      apiFetch(`/malhas/${encodeURIComponent(m.malha_name)}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ ativo: !m.ativo }),
-      }),
-    onSuccess: (_r, m) => {
+      apiFetch<RespostaComAvisoDeCiclo>(
+        `/malhas/${encodeURIComponent(m.malha_name)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ ativo: !m.ativo }),
+        }),
+    onSuccess: (r, m) => {
       toast.success(m.ativo ? `Malha "${m.malha_name}" inativada.` : `Malha "${m.malha_name}" reativada.`)
+      // Inativar NÃO interrompe o ciclo em voo — ele segue até fechar sozinho,
+      // e o que a inativação impede é o PRÓXIMO abrir. Sem a frase, o operador
+      // inativa a malha achando que parou a madrugada.
+      avisarCiclo(r)
       qc.invalidateQueries({ queryKey: ['malhas'] })
     },
     onError: (e: Error) => toast.error(e.message || 'Erro ao alterar a malha'),

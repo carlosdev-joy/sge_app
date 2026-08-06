@@ -54,6 +54,19 @@ interface CascataPrevia {
   sem_corrida: string[]
   corridas: Record<string, CorridaAfetada[]>
   truncado: boolean
+  /** F8 — o CICLO da malha em que esta reexecução cai (§6.9/#3, Decisão 65).
+   *  `null`/ausente = pipeline fora de malha, banco a meio deploy ou leitura
+   *  indisponível: sem certeza, sem frase. */
+  corrida?: CorridaDoCiclo | null
+}
+
+interface CorridaDoCiclo {
+  malha: string
+  data_referencia: string
+  status: string
+  /** 'em_andamento' | 'reabre' | 'fora_do_ciclo' */
+  efeito: string
+  mensagem: string
 }
 
 interface PreviaRerun {
@@ -83,6 +96,10 @@ interface RespostaRerun {
   corridas_irmas_aposentadas: number
   auditado: boolean
   avisos: string[]
+  /** F8 — ciclos que voltaram a ABERTA por causa deste gesto */
+  corridas_reabertas?: { malha: string; data_referencia: string; tentativas: number }[]
+  /** F8 — ciclos que NÃO reabriram e ficaram com o registro do reprocesso */
+  corridas_com_reprocesso?: { malha: string; data_referencia: string; status: string }[]
 }
 
 interface Props {
@@ -268,6 +285,20 @@ export function ModalRerunEtapa({
           <Aviso tom="alerta" icone={<AlertTriangle size={14} className="mt-0.5 shrink-0" />}>
             O Airflow não respondeu à simulação — a lista de etapas abaixo pode
             estar incompleta. Nada foi escondido; o que falta é dito.
+          </Aviso>
+        )}
+
+        {/* ── O que acontece com o CICLO da malha (F8, Decisão 65) ───────
+            "O gesto mais delicado do modelo não pode virar um clique de 3h no
+            escuro": reexecutar dentro de um ciclo em voo o ALIMENTA sem
+            reiniciar o relógio dele; reexecutar um ciclo já fechado o REABRE;
+            e com outro ciclo em andamento, o antigo não volta. Só aparece
+            quando o servidor teve certeza — sem certeza, sem frase. */}
+        {deps?.corrida && (
+          <Aviso tom={deps.corrida.efeito === 'reabre' ? 'alerta' : 'info'}
+                 icone={<AlertTriangle size={14} className="mt-0.5 shrink-0" />}>
+            <strong>Malha {deps.corrida.malha}</strong> — ciclo de{' '}
+            {deps.corrida.data_referencia}: {deps.corrida.mensagem}
           </Aviso>
         )}
 
@@ -488,12 +519,17 @@ function ListaPipelines({
 }
 
 function Aviso({ tom, icone, children }: {
-  tom: 'alerta' | 'erro'
+  // `info` (F8): o ciclo em voo que só ganha um pipeline a mais NÃO é um
+  // problema — pintá-lo de âmbar junto com "DAG pausada" ensinaria o olho a
+  // ignorar o âmbar justamente onde ele importa.
+  tom: 'info' | 'alerta' | 'erro'
   icone: React.ReactNode
   children: React.ReactNode
 }) {
   const cls = tom === 'erro'
     ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300'
+    : tom === 'info'
+    ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300'
     : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400'
   return (
     <div className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-[11px] leading-snug ${cls}`}>

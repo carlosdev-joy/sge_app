@@ -162,7 +162,7 @@ class Banco:
     """
 
     def __init__(self, *, malhas=None, malha_pipeline=None, pipelines=None,
-                 dependencias=None, config=None, execucoes=None,
+                 dependencias=None, config=None, execucoes=None, eventos=None,
                  com_085=True, explodir=False, driver="pymssql",
                  agora=AGORA_BANCO, forcar_seq=0, forcar_aberta=0):
         self.malhas = dict(malhas or {})                  # nome → {teto_horas, hora_virada}
@@ -173,6 +173,11 @@ class Banco:
         self.execucoes = list(execucoes or [])            # dicts de etl_pipeline_execucao
         self.corridas: list[dict] = []
         self.membros: list[dict] = []
+        # F8: a fila de alerta. O dublê a guarda porque a reabertura passou a
+        # MEXER nela — e um dublê que não conhecesse o DELETE deixaria o
+        # descarte cair no `except` do módulo, verde, com o card da segunda
+        # conclusão perdido em produção. (Foi o que aconteceu na 1ª rodada.)
+        self.eventos: list[dict] = list(eventos or [])
         self.com_085 = com_085
         self.explodir = explodir
         self.driver = driver
@@ -224,6 +229,20 @@ def _acumula_motivo(atual, novo):
         return atual
     prefixo = (atual + " | ") if atual is not None else ""
     return (prefixo + novo)[:500]
+
+
+def _texto_da_reabertura(s, c, motivo):
+    """O `motivo` que o `SQL_REABRIR` compõe em T-SQL (F8): o desfecho anulado,
+    a hora dele e — opcionalmente — o texto de quem reabriu. Reproduzido aqui
+    para que a prova seja do statement, não da bondade do dublê; se o módulo
+    parar de compor, o `in s` abaixo não casa e o dublê volta ao texto cru."""
+    if "'reaberta apos '" not in s:
+        return motivo
+    quando = c["fechada_em"]
+    quando = (quando.strftime("%Y-%m-%d %H:%M:%S") if quando is not None
+              else "data desconhecida")
+    texto = f"reaberta apos {c['status']} de {quando}"
+    return texto + (f": {motivo}" if motivo is not None else "")
 
 
 # ── o CONTRATO textual das três consultas do §7 (F5) ────────────────────────
@@ -322,6 +341,23 @@ class Cur:
                               sorted((c for c in db.corridas
                                       if c["fechada_em"] is None),
                                      key=lambda c: c["malha_name"])]
+            elif "WHERE id IN (SELECT DISTINCT e.malha_execucao_id" in s:
+                # F8 — as corridas DONAS das linhas de um lote de pipelines.
+                # As guardas do módulo são reproduzidas do SQL EMITIDO, e não
+                # inventadas: sem `malha_execucao_id IS NOT NULL` o dublê
+                # devolveria a corrida de quem não tem vínculo nenhum.
+                assert "e.data_referencia = ?" in s and \
+                       "e.malha_execucao_id IS NOT NULL" in s, s
+                data_ref, alvos = p[0], set(p[1:])
+                ids = {l.get("malha_execucao_id") for l in db.execucoes
+                       if l["pipeline_name"] in alvos
+                       and l["data_referencia"] == data_ref
+                       and l.get("malha_execucao_id") is not None}
+                if "1 = 0" in s:
+                    ids = set()
+                achadas = [c for c in db.corridas if c["id"] in ids]
+                self._rows = [self._proj(c)
+                              for c in sorted(achadas, key=lambda c: c["id"])]
             elif "WHERE id = ?" in s:
                 achada = db.por_id(p[0])
                 self._rows = [self._proj(achada)] if achada else []
@@ -399,6 +435,10 @@ class Cur:
 
         if s.startswith("UPDATE dbo.etl_malha_execucao SET atraso_visto_em"):
             self._visto(s, "atraso_visto_em", p)
+            return
+
+        if s.startswith("DELETE FROM dbo.etl_dependencia_evento"):
+            self._descartar_desfecho(s, p)
             return
 
         raise AssertionError(f"SQL fora do contrato do dublê: {s}")
@@ -572,11 +612,48 @@ class Cur:
             # deixaria DUAS linhas abertas da mesma malha, e é o índice filtrado
             # que recusa — dentro da transação do rerun, que rolaria inteira.
             raise erro_duplicata("ux_malha_exec_aberta", db.driver)
-        c.update({"status": "ABERTA", "fechada_em": None, "fechada_por": None,
-                  "tentativas": c["tentativas"] + 1, "reaberta_em": db.agora,
-                  "reaberta_por": reaberta_por,
-                  "motivo": _acumula_motivo(c["motivo"], motivo)})
+        novo = {"status": "ABERTA", "fechada_em": None, "fechada_por": None,
+                "tentativas": c["tentativas"] + 1, "reaberta_em": db.agora,
+                "reaberta_por": reaberta_por,
+                # F8: o desfecho anulado e a HORA dele viram texto no `motivo`
+                # — é o que preserva a história do ciclo depois que os eventos
+                # da tentativa 1 forem descartados. Composto a partir dos
+                # valores ANTERIORES ao UPDATE, como o SQL Server faz.
+                "motivo": _acumula_motivo(
+                    c["motivo"], _texto_da_reabertura(s, c, motivo))}
+        # Regra do dublê: guarda que mora no statement só vale se o statement a
+        # contiver. Zerar a memória de efeito colateral por conta própria faria
+        # o teste passar com o módulo esquecendo de zerá-la.
+        if "me.falha_vista_em = NULL" in s:
+            novo["falha_vista_em"] = None
+        if "me.atraso_visto_em = NULL" in s:
+            novo["atraso_visto_em"] = None
+        c.update(novo)
         self.rowcount = 1
+
+    def _descartar_desfecho(self, s, p):
+        """O DELETE da F8: por corrida, por tipo, e SÓ em linha de marcador."""
+        db = self.db
+        corrida_id, tipos = int(p[0]), set(p[1:])
+        assert "malha_execucao_id = ?" in s and "tipo IN (" in s, s
+        # Os dois `LEFT(...)` são o que impede o DELETE de alcançar o evento de
+        # um MEMBRO. Se o módulo os perder, o dublê deixa de filtrar — e o
+        # teste que guarda o evento de `CARGA_A` fica vermelho.
+        so_marcador = ("LEFT(pipeline_name, 9) = '#corrida:'" in s
+                       and "LEFT(pipeline_name, 4) = '#no:'" in s)
+
+        def alvo(ev):
+            if ev.get("malha_execucao_id") != corrida_id or ev["tipo"] not in tipos:
+                return False
+            nome = str(ev.get("pipeline_name") or "")
+            if so_marcador and not (nome.startswith("#corrida:")
+                                    or nome.startswith("#no:")):
+                return False
+            return True
+
+        antes = len(db.eventos)
+        db.eventos = [ev for ev in db.eventos if not alvo(ev)]
+        self.rowcount = antes - len(db.eventos)
 
     def _visto(self, s, coluna, p):
         db = self.db
@@ -1258,7 +1335,12 @@ def test_reabre_o_que_pode_voltar(mc, desfecho):
     assert reaberta["tentativas"] == 2
     assert reaberta["reaberta_em"] == AGORA_BANCO
     assert reaberta["reaberta_por"] == "manual:C123456"
-    assert reaberta["motivo"] == "rerun"
+    # F8: o `motivo` guarda o desfecho ANULADO e a hora dele — é onde a história
+    # do ciclo passa a morar depois que os eventos da tentativa 1 são
+    # descartados. Sem esta linha, "concluiu 05:12 e foi reprocessada" viraria
+    # um fato sem registro em lugar nenhum.
+    assert reaberta["motivo"] == (
+        f"reaberta apos {desfecho} de 2026-08-05 01:30:00: rerun")
 
 
 @pytest.mark.parametrize("desfecho", ["SEM_TRABALHO", "EXPIRADA", "ABORTADA",
@@ -1293,6 +1375,143 @@ def test_reabrir_nunca_produz_duas_abertas(mc):
     assert mc.reabrir_corrida(db, c["id"], "op") is False   # já está aberta
     assert len(db.abertas("M1")) == 1
     assert mc.corrida(db, c["id"])["tentativas"] == 2
+
+
+# ══════════════ F8 — o que a reabertura precisa desfazer ════════════════════
+
+def _evento(tipo, corrida, pipeline=None, data=ODATE):
+    return {"pipeline_name": pipeline or f"#corrida:{corrida}",
+            "data_referencia": data, "tipo": tipo,
+            "malha_execucao_id": corrida}
+
+
+def test_reabertura_zera_a_memoria_para_a_tentativa_2_poder_alertar(mc):
+    """Sem isto, a corrida reabre, falha de novo e fica MUDA: `falha_vista_em`
+    é a memória que impede o mesmo card 200 vezes no dia (Decisão 12) — e essa
+    memória é da TENTATIVA, não da linha. É o mesmo raciocínio que já fez
+    `creditar_hold` zerar `atraso_visto_em` ao empurrar o teto."""
+    db = banco()
+    c = abre(mc, db)
+    assert mc.marcar_visto(db, c["id"], "falha") is True
+    assert mc.marcar_visto(db, c["id"], "atraso") is True
+    mc.fechar_corrida(db, c["id"], "FALHA", "guardia")
+    assert mc.reabrir_corrida(db, c["id"], "manual:C1", "rerun") is True
+
+    reaberta = mc.corrida(db, c["id"])
+    assert reaberta["falha_vista_em"] is None
+    assert reaberta["atraso_visto_em"] is None
+    # e a prova de que zerar SERVE para alguma coisa: a tentativa 2 alerta.
+    assert mc.marcar_visto(db, c["id"], "falha") is True
+
+
+def test_reabertura_descarta_o_desfecho_para_a_2a_CONCLUIDA_poder_existir(mc):
+    """O ganho da fase, e o que hoje some em silêncio (§10/F8).
+
+    A corrida reaberta guarda o MESMO `id`, então a chave de
+    `ux_dep_evento_corrida` (marcador, data, tipo, corrida) da tentativa 2 é
+    byte a byte a da tentativa 1: o `INSERT ... WHERE NOT EXISTS` de
+    `gravar_evento` engoliria a segunda `MALHA_CONCLUIDA` do dia. O operador
+    que mandou reprocessar não receberia card nenhum e o painel continuaria
+    marcando a hora do ciclo que ele acabou de anular."""
+    db = banco(eventos=[_evento("MALHA_CONCLUIDA", 1),
+                        _evento("MALHA_FALHOU", 1),
+                        _evento("MALHA_ATRASADA", 1)])
+    c = abre(mc, db)
+    mc.fechar_corrida(db, c["id"], "CONCLUIDA", "guardia")
+    assert mc.reabrir_corrida(db, c["id"], "manual:C1") is True
+    assert db.eventos == []
+    # A história não se perde: ela migra para a casa certa, que é a corrida.
+    assert "reaberta apos CONCLUIDA de" in mc.corrida(db, c["id"])["motivo"]
+
+
+def test_o_descarte_nao_alcanca_evento_de_MEMBRO_nem_de_outra_corrida(mc):
+    """O DELETE é por corrida, por tipo e só em linha de MARCADOR. O evento de
+    um pipeline (`EXECUCAO_ORFA` de CARGA_A) fala do pipeline, não do ciclo —
+    apagá-lo seria perder histórico de verdade, e é o que o `LEFT(...)` do
+    statement impede."""
+    db = banco(eventos=[
+        _evento("MALHA_CONCLUIDA", 1),                       # sai
+        _evento("MALHA_CONCLUIDA", 1, pipeline="#no:38"),    # sai (nó Fim)
+        _evento("MALHA_CONCLUIDA", 2),                       # outra corrida
+        _evento("MALHA_CANCELADA", 1),                       # não é desfecho anulável
+        _evento("EXECUCAO_ORFA", 1, pipeline="CARGA_A"),     # é do MEMBRO
+    ])
+    c = abre(mc, db)
+    mc.fechar_corrida(db, c["id"], "CONCLUIDA", "guardia")
+    mc.reabrir_corrida(db, c["id"], "op")
+    restaram = sorted((e["pipeline_name"], e["tipo"]) for e in db.eventos)
+    assert restaram == [("#corrida:1", "MALHA_CANCELADA"),
+                        ("#corrida:2", "MALHA_CONCLUIDA"),
+                        ("CARGA_A", "EXECUCAO_ORFA")]
+
+
+def test_reabertura_que_NAO_acontece_nao_descarta_evento_nenhum(mc):
+    """Fim de linha não volta — e não pode limpar a fila de alerta de um ciclo
+    que ninguém reabriu. O descarte é consequência da reabertura, nunca gesto
+    independente."""
+    db = banco(eventos=[_evento("MALHA_CONCLUIDA", 1)])
+    c = abre(mc, db)
+    mc.fechar_corrida(db, c["id"], "EXPIRADA", "guardia")
+    assert mc.reabrir_corrida(db, c["id"], "op") is False
+    assert len(db.eventos) == 1
+
+
+def test_descarte_indisponivel_nao_derruba_a_reabertura(mc):
+    """Banco sem a coluna da 085 no evento: não havia chave estendida para
+    liberar. Derrubar aqui trocaria um card perdido por um REPROCESSO perdido —
+    e o reprocesso é o gesto que o operador mandou fazer."""
+    db = banco()
+    c = abre(mc, db)
+    mc.fechar_corrida(db, c["id"], "CONCLUIDA", "guardia")
+
+    class _CurQueQuebraNoDelete(type(db.cursor())):
+        def execute(self, sql, params=()):
+            if str(sql).lstrip().startswith("DELETE"):
+                raise RuntimeError("Invalid column name 'malha_execucao_id'.")
+            return super().execute(sql, params)
+
+    db.cursor = lambda: _CurQueQuebraNoDelete(db)   # noqa: E731
+    assert mc.reabrir_corrida(db, c["id"], "op") is True
+    assert mc.corrida(db, c["id"])["status"] == "ABERTA"
+
+
+# ═══════════ F8 — de que ciclo era a linha que o rerun aposentou ════════════
+
+def test_corridas_das_linhas_responde_pelo_VINCULO_da_linha(mc):
+    """A pergunta do rerun. A resposta sai do `malha_execucao_id` da linha, e
+    não de `corrida_da_data(malha, data)`: com duas corridas da mesma malha no
+    mesmo dia (§6.9/#7), a segunda devolveria a MAIS RECENTE, e o rerun de um
+    membro da primeira reabriria a errada."""
+    db = banco(execucoes=[_execucao("PIPE_A", ODATE, "run_1", corrida=1),
+                          _execucao("PIPE_B", ODATE, "run_2", corrida=2),
+                          _execucao("PIPE_C", ODATE, "run_3", corrida=None)])
+    primeira = abre(mc, db)
+    mc.fechar_corrida(db, primeira["id"], "CONCLUIDA", "guardia")
+    segunda = abre(mc, db)
+
+    achadas = mc.corridas_das_linhas(db, ["PIPE_A"], ODATE)
+    assert [c["id"] for c in achadas] == [primeira["id"]]
+    achadas2 = mc.corridas_das_linhas(db, ["PIPE_A", "PIPE_B"], ODATE)
+    assert [c["id"] for c in achadas2] == [primeira["id"], segunda["id"]]
+    # Linha sem vínculo (pipeline fora de malha) não inventa corrida nenhuma —
+    # e isso NÃO é erro: é o caso comum do rerun de pipeline avulso.
+    assert mc.corridas_das_linhas(db, ["PIPE_C"], ODATE) == []
+    assert mc.corridas_das_linhas(db, [], ODATE) == []
+
+
+def test_corridas_das_linhas_nao_atravessa_o_ODATE(mc):
+    """O reprocesso do dia 03 não pode reabrir o ciclo do dia 04 — é a mesma
+    exigência de ODATE da Decisão 23, na porta do rerun."""
+    db = banco(execucoes=[_execucao("PIPE_A", ODATE, "run_1", corrida=1)])
+    abre(mc, db)
+    assert mc.corridas_das_linhas(db, ["PIPE_A"], ODATE_ONTEM) == []
+
+
+def test_corridas_das_linhas_degrada_larga(mc):
+    """Leitura indisponível devolve `[]` e o rerun segue sem tocar em corrida
+    nenhuma. O reprocesso do operador nunca cai porque a malha não pôde ser
+    consultada."""
+    assert mc.corridas_das_linhas(banco(explodir=True), ["PIPE_A"], ODATE) == []
 
 
 # ═════════════════════ memória de efeito colateral ══════════════════════════
