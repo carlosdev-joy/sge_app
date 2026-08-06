@@ -15,7 +15,17 @@ import {
   LogDetailModal, AirflowLogModal, DsLogModal,
   type ExecRow, type AirflowLogState,
 } from '../components/execucao/ExecucaoDetailModal'
-import type { DependenciasEstadoApi } from '../types/pipeline'
+// F11 (§9.8/Decisão 70) — a corrida da malha chega ao Dashboard, que é a tela
+// em que o plantonista de fato cai. Mesmo payload da lista, mesma chave de
+// cache, mesma cadência: ZERO consulta nova.
+import { CorridaBadge } from '../components/malhas/CorridaBadge'
+import { useDecorrido } from '../components/malhas/useDecorrido'
+import { resumoCorrida, resumoEsperada } from '../components/malhas/statusExecucao'
+import {
+  QUERY_MALHAS, cadenciaDaLista, emMovimento, linkDaCorrida,
+  type ApiMalha, type MalhasResponse,
+} from '../components/malhas/corridasDaLista'
+import type { DependenciaEstadoItem, DependenciasEstadoApi } from '../types/pipeline'
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -484,6 +494,34 @@ function RunningRow({ e, onOpen, onDetail }: { e: Executando; onOpen: () => void
 // — distinção explícita, não ausência. A tela-lar do estado segue sendo a
 // Malha (Decisão 5): aqui é só o resumo com motivo e link.
 
+/** A malha a que este dependente pertence, na ordem em que a resposta é mais
+ *  específica — e `null` quando não dá para afirmar.
+ *
+ *  1. **a malha que COMPILOU a dependência que está segurando.** É a resposta
+ *     mais precisa que existe: aquele Aguarde é literalmente quem não deixou o
+ *     pipeline andar, e é o desenho daquela malha que o operador precisa ver;
+ *  2. qualquer dependência compilada do mesmo pipeline (o predecessor que
+ *     falta pode ser avulso, e a malha ainda é a mesma);
+ *  3. a malha do próprio pipeline, quando ele está em UMA só (campo aditivo da
+ *     API — ausente quando ele está em várias).
+ *
+ *  Sem nenhuma das três, o link volta a ser o de hoje: a lista. Melhor cair na
+ *  lista do que abrir a malha errada com cara de certa. */
+function malhaDoDependente(d: DependenciaEstadoItem): string | null {
+  const faltando = new Set(d.faltantes.map(f => String(f).toLowerCase()))
+  const compiladas = d.predecessores.filter(p => p.compilada_por?.malha)
+  const doFaltante = compiladas.find(p => faltando.has(p.nome.toLowerCase()))
+  if (doFaltante) return doFaltante.compilada_por?.malha ?? d.malha ?? null
+  // Sem saber QUAL predecessor falta, só respondemos se todas as dependências
+  // compiladas vierem da MESMA malha. `compiladas[0]` abriria a malha errada
+  // com cara de certa — e a fonte de baixo (a consulta do servidor) já usa
+  // `HAVING COUNT(*) = 1` exatamente para nunca escolher a primeira. Duas
+  // fontes para o mesmo fato têm de concordar sobre quando NÃO sabem.
+  const malhas = new Set(compiladas.map(p => p.compilada_por!.malha))
+  if (malhas.size === 1) return compiladas[0].compilada_por?.malha ?? null
+  return d.malha ?? null
+}
+
 function AguardandoDependenciaCard() {
   const navigate = useNavigate()
   const { data } = useQuery<DependenciasEstadoApi>({
@@ -508,12 +546,25 @@ function AguardandoDependenciaCard() {
         <p className="px-4 py-3 text-xs text-dim">
           Nenhum pipeline aguardando dependência nesta data — os dependentes estão em dia.
         </p>
-      ) : aguardando.map(d => (
+      ) : aguardando.map(d => {
+        // ── F11: o link que despejava o operador na LISTA ──────────────────
+        // Era `navigate('/malha')`, sem malha e sem modo: quem clicava numa
+        // linha que nomeia o pipeline e o predecessor caía numa grade de 40
+        // cards em ordem alfabética e tinha de achar a malha, abrir, trocar o
+        // modo e escolher a data. Agora leva à malha, na lente de EXECUÇÃO e na
+        // data de referência que esta própria linha declara.
+        const malha = malhaDoDependente(d)
+        return (
         <div
           key={d.pipeline_name}
           className="flex items-center gap-3 px-4 py-2.5 border-b border-edge/40 last:border-0 hover:bg-amber-50 dark:hover:bg-amber-900/10 transition-colors cursor-pointer"
-          onClick={() => navigate('/malha')}
-          title="Abrir a Malha (acompanhe pela visão Execução)"
+          onClick={() => navigate(malha
+            ? linkDaCorrida(malha, null, data.data_referencia)
+            : '/malha')}
+          title={malha
+            ? `Abrir a malha "${malha}" na visão Execução, em ${data.data_referencia}`
+            : 'Abrir a lista de malhas — este pipeline não está numa malha só, '
+              + 'então não dá para dizer qual abrir'}
         >
           <div className="flex-1 min-w-0">
             <div className="font-mono text-xs font-medium text-ink truncate">{d.pipeline_name}</div>
@@ -531,7 +582,151 @@ function AguardandoDependenciaCard() {
           )}
           <ChevronRight size={13} className="text-dim flex-shrink-0" />
         </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Corrida de malha (F11, §9.8/Decisão 70) ────────────────────────────────
+//
+// O defeito que este bloco mata: o Dashboard é a tela em que o plantonista de
+// fato cai, e ela era CEGA para o ciclo da malha. Ele mostra pipeline a
+// pipeline ("Rodando agora" é por `execution_id`) — e a pergunta das 3h não é
+// "que pipeline está rodando", é "que MALHA está rodando, e ela está bem".
+//
+// **Zero consulta nova** (Decisão 70): mesma rota, MESMA chave de cache e
+// MESMA cadência condicional da lista (`QUERY_MALHAS` + `cadenciaDaLista`).
+// Com as duas telas abertas o react-query serve as duas do mesmo payload; com
+// só esta, a cadência é a mesma da lista — e ZERO refetch quando não há corrida
+// aberta nem "não abriu" (Decisão 73).
+//
+// **Divergência declarada da §9.8:** a Decisão 70 diz "uma linha por corrida
+// `ABERTA`/`FALHA`", e ela foi escrita antes de a F9 existir. `não abriu` entra
+// junto porque é o PIOR modo de falha e o mais silencioso — a malha que não
+// rodou é a única que não aparece em lugar nenhum, e omiti-la aqui deixaria o
+// Dashboard mudo justamente sobre a linha que o card da lista põe no topo.
+//
+// A linha some inteira quando não há nada a dizer: um painel "0 corridas" fixo
+// no topo do Dashboard treina o olho a pular a região (Decisões 26/27).
+
+/** Os desfechos que exigem alguém AGORA — e o motivo de serem um conjunto
+ *  nomeado em vez de uma lista de `||`: esta é a resposta a "o que aparece no
+ *  Dashboard", e a pergunta volta toda vez que um desfecho novo nascer.
+ *
+ *  `ABORTADA` entrou depois, pelo pior dos motivos: ela não casava filtro
+ *  nenhum, não tinha contador e não estava aqui — a corrida que abortou à
+ *  01:00 ficava invisível às 8h em TODAS as superfícies. */
+const DESFECHO_RUIM = new Set(['FALHA', 'ABORTADA', 'EXPIRADA'])
+
+/** Ordem de GRAVIDADE, com desempate estável pelo nome — duas malhas no mesmo
+ *  estado não podem trocar de lugar a cada refetch de 20 s. */
+const PESO_CORRIDA = (m: ApiMalha): number => {
+  if (m.corrida_esperada) return 0                       // não abriu
+  const c = m.corrida
+  if (c?.status === 'FALHA') return 1
+  // `ABORTADA` ao lado da falha: "não chegou a começar" é tão grave quanto
+  // "começou e quebrou", e o operador precisa achá-la no mesmo lugar.
+  if (c?.status === 'ABORTADA') return 1
+  if (c?.status === 'ABERTA' && c?.saude === 'COM_FALHA') return 2
+  if (c?.status === 'EXPIRADA') return 2
+  return 3                                               // rodando saudável
+}
+
+function CorridasDeMalhaCard() {
+  const navigate = useNavigate()
+  const { data, dataUpdatedAt } = useQuery<MalhasResponse>({
+    queryKey: QUERY_MALHAS,
+    queryFn: () => apiFetch('/malhas'),
+    refetchInterval: q => cadenciaDaLista(q.state.data?.malhas),
+  })
+  const malhas = useMemo(() => data?.malhas ?? [], [data])
+  const acompanhando = malhas.some(emMovimento)
+  // Decisão 60: o decorrido anda com o relógio LOCAL a partir do que o
+  // SERVIDOR mediu — nunca `Date.now() − aberta_em` (3 h de desvio no dev).
+  const agora = useDecorrido(acompanhando)
+  const tempo = useMemo(() => ({ respostaEm: dataUpdatedAt, agora }),
+                        [dataUpdatedAt, agora])
+  // Os desfechos que exigem alguém agora. Conjunto nomeado (e não uma lista de
+  // `||`) porque ele é a resposta a "o que aparece no Dashboard", e essa
+  // pergunta vai voltar quando um desfecho novo nascer.
+  const linhas = useMemo(
+    () => malhas
+      // `ABORTADA` e `EXPIRADA` entram junto com `FALHA`: as três são
+      // desfechos ruins que pedem ação, e ficar de fora daqui significa que a
+      // corrida que abortou à 01:00 não aparece em NENHUMA superfície às 8h —
+      // nem no filtro da lista, nem no contador, nem aqui.
+      .filter(m => m.corrida_esperada || m.corrida?.status === 'ABERTA'
+        || DESFECHO_RUIM.has(m.corrida?.status ?? ''))
+      .slice()
+      .sort((a, b) => PESO_CORRIDA(a) - PESO_CORRIDA(b)
+        || a.malha_name.localeCompare(b.malha_name, 'pt-BR')),
+    [malhas])
+  if (linhas.length === 0) return null
+  return (
+    <div className="bg-panel border border-edge rounded-xl overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-edge flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-ink flex items-center gap-1.5">
+          <Layers size={14} /> Corridas de malha ({linhas.length})
+        </h3>
+        <span className="text-[10px] text-dim">
+          o ciclo da malha — clique para acompanhar
+        </span>
+      </div>
+      {linhas.map(m => (
+        <CorridaLinha key={m.malha_name} malha={m} tempo={tempo}
+          onAbrir={() => navigate(linkDaCorrida(m.malha_name, m.corrida?.id))} />
       ))}
+    </div>
+  )
+}
+
+function CorridaLinha({ malha, tempo, onAbrir }: {
+  malha: ApiMalha
+  tempo: { respostaEm: number; agora: number }
+  onAbrir: () => void
+}) {
+  const corrida = malha.corrida ?? null
+  const esperada = malha.corrida_esperada ?? null
+  // Os MESMOS derivadores do card da lista e da faixa do painel: um agregado,
+  // uma fonte (§9.15/#5). Se o Dashboard montasse o próprio texto, seria a
+  // terceira superfície a contar a história do mesmo ciclo — e a primeira a
+  // discordar das outras duas.
+  const resumo = useMemo(
+    () => (corrida ? resumoCorrida(corrida, tempo, malha.qtd_pipelines) : null),
+    [corrida, tempo, malha.qtd_pipelines])
+  const previsao = useMemo(
+    () => (esperada ? resumoEsperada(esperada, tempo) : null),
+    [esperada, tempo])
+  return (
+    <div
+      onClick={onAbrir}
+      title={previsao?.titulo ?? resumo?.titulo}
+      className="flex items-center gap-3 px-4 py-2.5 border-b border-edge/40 last:border-0 hover:bg-blue-50 dark:hover:bg-blue-900/10 transition-colors cursor-pointer"
+    >
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-mono text-xs font-medium text-ink truncate">
+            {malha.malha_name}
+          </span>
+          <CorridaBadge corrida={corrida} esperada={esperada} />
+        </div>
+        <div className="text-[10px] text-dim truncate">
+          {/* `x de y` — nunca "%" (Decisão 56) e nunca sem a subtração ao lado
+              (Decisão 53): "2 de 2 concluídos" num dia em que 5 dos 7 membros
+              foram inativados é a mentira que esta camada existe para matar. */}
+          {previsao
+            ? `${previsao.cabecalho} · ${previsao.semCorrida}`
+            : [resumo?.identidade, resumo?.contagem, resumo?.membros, resumo?.tempo]
+                .filter(Boolean).join(' · ')}
+        </div>
+        {(previsao?.bloqueio ?? resumo?.culpado) && (
+          <div className="text-[10px] font-medium text-red-600 dark:text-red-400 truncate">
+            ↳ {previsao?.bloqueio ?? resumo?.culpado}
+          </div>
+        )}
+      </div>
+      <ChevronRight size={13} className="text-dim flex-shrink-0" />
     </div>
   )
 }
@@ -742,6 +937,16 @@ export default function Dashboard() {
           carregamento dos KPIs. Dia sem execução nenhuma no Orquestra ainda
           precisa mostrar que um job DataStage supervisionado não rodou. */}
       <SupervisaoCard date={date} />
+
+      {/* ── Corridas de malha (F11/D70) ──
+          ACIMA de "Aguardando dependência" de propósito: a corrida é o ciclo
+          inteiro, e o pipeline esperando predecessor é um detalhe DENTRO dela.
+          Ler o detalhe antes do todo é como o plantão chega a "reprocessa o
+          PIPE_C" sem saber que a malha inteira já foi encerrada sem terminar.
+          Fica FORA do bloco condicional dos KPIs pelo mesmo motivo dos outros
+          dois: um dia sem execução nenhuma no Orquestra ainda precisa mostrar
+          a malha que não abriu. */}
+      <CorridasDeMalhaCard />
 
       {/* ── Aguardando dependência (F5/D32) ──
           Como o SupervisaoCard, fica FORA do bloco condicional dos KPIs: um

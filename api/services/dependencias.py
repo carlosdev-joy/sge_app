@@ -655,6 +655,24 @@ def coluna_origem_no(cur) -> bool:
         return False
 
 
+def tabela_malha_pipeline(cur) -> bool:
+    """True se etl_malha_pipeline (migration 070) existe.
+
+    F11 (§9.8/Decisão 70): o painel "Aguardando dependência" do Dashboard
+    despejava o operador na LISTA de malhas (`navigate('/malha')`, sem malha e
+    sem modo). Para levá-lo à malha certa é preciso saber a que malha o
+    dependente pertence — e essa é a única razão desta sonda. Ausente = o link
+    volta a ser o de hoje, que é a degradação correta: um deploy sem a 070 não
+    pode transformar o Dashboard em 500."""
+    try:
+        cur.execute("SELECT OBJECT_ID('dbo.etl_malha_pipeline', 'U')")
+        row = cur.fetchone()
+        return bool(row and row[0] is not None)
+    except Exception as e:
+        log.warning("[DEP] checagem da tabela etl_malha_pipeline falhou: %s", e)
+        return False
+
+
 def assinatura(cur, pipeline: str, depende_de: str):
     """Assinatura da linha (pipeline, depende_de, PIPELINE) na 067:
     {"origem_no": id, "malha": nome} se ela foi COMPILADA por um nó de malha,

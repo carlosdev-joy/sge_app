@@ -2,7 +2,8 @@
 // CreditCardLinkDialog shadcn sobre Modal nativo (F7). Mesmo fluxo (gerar →
 // copiar → enviar via canais); o SendOptionsDialog é montado como IRMÃO
 // (fora do Modal pai) para a pilha de modais e o trap de Tab não conflitarem.
-// Consumidor chega na F8 (fluxo de pagamento) — sem montagem até lá.
+// O consumidor deste diálogo é o fluxo de pagamento, ainda não montado — até
+// ele existir, nada aqui é renderizado em tela nenhuma.
 import { useRef, useState } from "react";
 import { Copy, Check, Mail } from "lucide-react";
 import { Modal } from "../../components/ui/Modal";

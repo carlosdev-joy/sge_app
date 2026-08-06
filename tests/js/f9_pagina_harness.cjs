@@ -265,7 +265,31 @@ function corpoDoStub(chave, nomes, destino) {
 // `setInterval` de verdade tornaria a saída irreprodutível.
 const STUB_REACT = `
 export function useState(inicial) {
-  return [typeof inicial === 'function' ? inicial() : inicial, () => {}]
+  // O setter é ESPIÃO, e o estado é SEMEÁVEL (F11).
+  //
+  // Por que as duas coisas: o aceite da fase é *"o filtro \`Rodando agora\`
+  // responde da LISTA"* — e "responder" é a lista ENCOLHER, não o botão pedir
+  // um valor. Só o espião provaria que o contador é clicável e inerte; só a
+  // semente provaria que a lista filtra, mas não que o clique chega lá. A
+  // bancada faz as duas metades: aperta o contador, ANOTA o que ele pediu e
+  // redesenha a página com aquele estado — que é o que o React faria.
+  //
+  // A semente é por ÍNDICE de hook (a ordem de chamada, que é determinística
+  // nesta árvore) e vem SEMPRE de um clique de verdade da passada anterior:
+  // um índice escrito à mão no teste seria a bancada semeando o estado que ela
+  // quer provar, e aí o botão poderia estar desligado que ninguém veria.
+  const b = globalThis.__BANCADA
+  const i = b ? b.hooks++ : -1
+  const semeado = b && b.sementes && Object.prototype.hasOwnProperty.call(b.sementes, i)
+  const valor = semeado
+    ? b.sementes[i]
+    : (typeof inicial === 'function' ? inicial() : inicial)
+  return [valor, (v) => {
+    if (!b) return
+    const pedido = typeof v === 'function' ? '<fn>' : v
+    b.estados.push(pedido)
+    b.setados.push({ i, valor: pedido })
+  }]
 }
 export function useEffect() {}
 export function useLayoutEffect() {}
@@ -289,6 +313,11 @@ const STUB_QUERY = `
 export function useQuery(opcoes) {
   const chave = JSON.stringify(opcoes && opcoes.queryKey)
   const b = globalThis.__BANCADA
+  // TODA consulta montada pela página é anotada, e não só a da lista: é assim
+  // que se mede "o filtro responde DA LISTA, sem abrir malha por malha"
+  // (F11). Uma consulta por card apareceria aqui como 15 chaves distintas —
+  // e nenhuma asserção de texto pegaria isso.
+  b.chaves.push(opcoes && opcoes.queryKey)
   if (chave === JSON.stringify(['malhas'])) {
     b.consultas.push(opcoes)
     return {
@@ -417,7 +446,8 @@ async function main() {
   const saida = {}
   for (const [nome, cenario] of Object.entries(cenarios)) {
     try {
-      saida[nome] = rodar(pagina.default, cenario)
+      saida[nome] = cenario.apertar ? comClique(pagina.default, cenario)
+                                    : rodar(pagina.default, cenario)
     } catch (e) {
       saida[nome] = { __erro__: String((e && e.stack) || e) }
     }
@@ -425,7 +455,56 @@ async function main() {
   process.stdout.write(JSON.stringify(saida, null, 1))
 }
 
-function rodar(Malha, cenario) {
+/** Aperta o nó e devolve o que o clique PEDIU: os valores (como o teste da F9
+ *  já os lê) e as sementes `{i, valor}` que a próxima passada aplica. `[]` = o
+ *  clique não pediu nada (botão decorativo) ou nem havia `onClick`. */
+function clicar(no) {
+  const b = globalThis.__BANCADA
+  if (!no || typeof no.props.onClick !== 'function') {
+    return { valores: [], sementes: [] }
+  }
+  const antes = b.setados.length
+  no.props.onClick()
+  const novos = b.setados.slice(antes)
+  return { valores: novos.map(s => s.valor), sementes: novos }
+}
+
+/** A página DEPOIS de o contador ser apertado — as duas passadas que o React
+ *  faria: renderiza, aperta a pílula cujo texto contém `cenario.apertar`,
+ *  anota o estado que o clique pediu e redesenha com ele.
+ *
+ *  ⚠️ A semente sai do CLIQUE, nunca do cenário. Se o `onClick` não existir,
+ *  ou não pedir nada, a segunda passada é idêntica à primeira e o teste vê a
+ *  lista inteira — que é exatamente o vermelho certo para um contador
+ *  decorativo. A alternativa (o teste dizer "renderize com filtro=rodando")
+ *  provaria o filtro e esconderia o botão desligado.
+ *
+ *  A saída é a da SEGUNDA passada, com o rastro da primeira em `antes`. */
+function comClique(Malha, cenario) {
+  const antes = rodar(Malha, cenario)
+  const alvo = (antes.stats || []).find(
+    s => s.texto.toLowerCase().includes(String(cenario.apertar).toLowerCase()))
+  if (!alvo) {
+    return Object.assign(antes, {
+      __erro__: 'pílula não encontrada para apertar: ' + cenario.apertar
+        + ' — na tela: ' + JSON.stringify((antes.stats || []).map(s => s.texto)),
+    })
+  }
+  const sementes = {}
+  for (const s of alvo.sementes) sementes[s.i] = s.valor
+  const depois = rodar(Malha, cenario, sementes)
+  return Object.assign(depois, {
+    apertou: alvo.texto,
+    pedido: alvo.clique,
+    antes: { ordem: antes.ordem, chaves: antes.chaves },
+  })
+}
+
+/** Uma passada de render, com o estado que a passada anterior semeou.
+ *
+ *  `sementes` é `{índice do hook: valor}` e vem SEMPRE de um clique real —
+ *  ver o comentário do `useState` do stub. */
+function rodar(Malha, cenario, sementes) {
   const agora = cenario.agora_ms
   // O relógio LOCAL do cenário — o único que o frescor e o decorrido consultam
   // (Decisão 60). Fixá-lo aqui é o que torna o texto reprodutível.
@@ -436,6 +515,11 @@ function rodar(Malha, cenario) {
     searchParams: new URLSearchParams(cenario.url || ''),
     navegacoes: [],
     consultas: [],
+    chaves: [],
+    estados: [],
+    setados: [],
+    hooks: 0,
+    sementes: sementes || null,
   }
   const raiz = Malha({})
   const b = globalThis.__BANCADA
@@ -494,11 +578,47 @@ function rodar(Malha, cenario) {
     editor,
     polling,
     // A stats bar: cada pílula como o olho a lê ("1 não abriu"), com o tom.
+    //
+    // F11: as pílulas de CORRIDA são `<button>` (contador que age como filtro é
+    // botão de estado, Decisão 75), então o extrator aceita os dois elementos —
+    // filtrar só `div` faria os contadores novos sumirem daqui e o teste da F9
+    // acusar a ausência de uma pílula que está na tela. `pressionado` é o
+    // `aria-pressed`: `null` para as pílulas que não filtram nada.
     stats: todosOsNos(raiz)
-      .filter(n => n.tipo === 'div' && /rounded px-3 py-1\.5/.test(n.props.className || ''))
-      .map(n => ({ texto: textoDe(n).join(' '), classes: n.props.className })),
+      .filter(n => (n.tipo === 'div' || n.tipo === 'button')
+        && /rounded px-3 py-1\.5/.test(n.props.className || ''))
+      .map(n => {
+        // O CLIQUE de verdade, como o navegador o faria: o que sai do outro
+        // lado é o valor pedido ao `setState`. Contador clicável e inerte
+        // (o `onClick` que não chama nada) sai daqui com `[]`.
+        const apertado = clicar(n)
+        return {
+          texto: textoDe(n).join(' '),
+          classes: n.props.className,
+          pressionado: n.props['aria-pressed'] ?? null,
+          clicavel: n.tipo === 'button',
+          clique: apertado.valores,
+          sementes: apertado.sementes,
+        }
+      }),
+    // F11: os filtros da toolbar, com as opções como o olho as lê. `Ativas/
+    // Inativas` é situação de CADASTRO e `Rodando agora/…` é estado de CICLO —
+    // são dois <select>, e o aceite exige que o segundo exista ao lado do
+    // primeiro (e não no lugar dele).
+    filtros: todosOsNos(raiz)
+      .filter(n => n.tipo === 'select')
+      .map(n => ({
+        aria: n.props['aria-label'] || null,
+        valor: n.props.value,
+        opcoes: todosOsNos(n).filter(o => o.tipo === 'option')
+          .map(o => ({ valor: o.props.value, rotulo: textoDe(o).join('') })),
+      })),
     lido: tudoQueSeLe(raiz),
     texto: textoDe(raiz).join(''),
+    // Toda chave de consulta que a página montou nesta passada. Com 15 cards
+    // na tela, uma chave por card seria N+1 na lista — e o aceite da F11 é
+    // exatamente que o filtro responde SEM abrir malha por malha.
+    chaves: b.chaves,
     // Ordem em que os cards aparecem na tela — o aceite da Decisão 58.
     ordem: cards.map(c => c.malha),
     // "zero exceção": qualquer componente que levantou vira dado, não crash.

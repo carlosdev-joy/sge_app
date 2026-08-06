@@ -1447,33 +1447,65 @@ def eventos_nao_notificados(conn, limite: int, janela_dias: int) -> list:
     `montar_card_malha` do ds_teams publica a MALHA e a ordinal do dia
     (Decisão 74 — a corrida se chama pela data, nunca pelo id), e sem estas
     duas colunas o card do evento mais grave do produto sairia com o sujeito
-    "malha não identificada"."""
+    "malha não identificada".
+
+    F11 (pendência 11 do §18) — **a malha vem de DOIS lugares, não de um.** A
+    F2 resolveu a malha da CORRIDA (`e.malha_execucao_id` → `etl_malha_execucao`)
+    e ficou de fora quem não tem corrida: os eventos dos componentes do desenho,
+    gravados com o marcador `'#no:{id}'` e sem `malha_execucao_id` nenhum. O
+    resultado era o card de `MALHA_CONCLUIDA` do nó Fim chegando ao celular com
+    sujeito `#no:38` e fato `Pipeline: #no:38` — nome de máquina na tela, que a
+    Decisão 74 proíbe. O segundo `LEFT JOIN` resolve o marcador em
+    `etl_malha_no.malha_name`, e o `COALESCE` dá precedência à corrida (mais
+    específica) sobre o nó.
+
+    ⚠️ `COALESCE(NULL, NULL)` é erro de compilação no SQL Server ("at least one
+    of the arguments must not be the NULL constant"), e as duas pontas SÃO
+    literais `NULL` num banco sem a 075 e sem a 085 — por isso a coluna é
+    montada por composição, e não por `COALESCE` fixo. A FORMA do resultado
+    (mesmas chaves, sempre) não muda com o banco: quem monta o card não pode
+    ter de perguntar em que ambiente está."""
     if tabela_075_presente(conn):
         guarda_no = ("EXISTS (SELECT 1 FROM dbo.etl_malha_no n "
                      "WHERE e.pipeline_name = '#no:' + CAST(n.id AS VARCHAR(20)))")
+        col_malha_no = "n2.malha_name"
+        join_no = ("LEFT JOIN dbo.etl_malha_no n2 "
+                   "ON e.pipeline_name = '#no:' + CAST(n2.id AS VARCHAR(20)) ")
     else:
         guarda_no = "1 = 1"
+        col_malha_no = ""
+        join_no = ""
     if _tabela_085_presente(conn):
         guarda_corrida = ("EXISTS (SELECT 1 FROM dbo.etl_malha_execucao mx "
                           "WHERE e.pipeline_name = '#corrida:' + "
                           "CAST(mx.id AS VARCHAR(20)))")
-        cols_corrida = "c.malha_name, c.sequencia "
+        col_malha_corrida = "c.malha_name"
+        cols_corrida = "c.sequencia, e.malha_execucao_id "
         join_corrida = ("LEFT JOIN dbo.etl_malha_execucao c "
                         "ON c.id = e.malha_execucao_id ")
     else:
         # Sem a 085 não há corrida para conferir — e também não há como um
         # evento '#corrida:' ter sido gravado neste banco. `1 = 1` mantém o
-        # ramo inerte em vez de quebrar a fila dos eventos comuns, e as duas
+        # ramo inerte em vez de quebrar a fila dos eventos comuns, e as
         # colunas saem NULL para a forma do resultado não mudar com o banco.
         guarda_corrida = "1 = 1"
+        col_malha_corrida = ""
         cols_corrida = "NULL, NULL "
         join_corrida = ""
+    fontes_malha = [c for c in (col_malha_corrida, col_malha_no) if c]
+    if not fontes_malha:
+        col_malha = "NULL"
+    elif len(fontes_malha) == 1:
+        col_malha = fontes_malha[0]
+    else:
+        col_malha = f"COALESCE({fontes_malha[0]}, {fontes_malha[1]})"
     cur = conn.cursor()
     cur.execute(
         "SELECT TOP (%s) e.id, e.pipeline_name, "
         "CONVERT(VARCHAR(10), e.data_referencia, 23), e.tipo, e.detalhe, "
-        "CONVERT(VARCHAR(19), e.detectado_em, 120), " + cols_corrida +
-        "FROM dbo.etl_dependencia_evento e " + join_corrida +
+        "CONVERT(VARCHAR(19), e.detectado_em, 120), " + col_malha + ", "
+        + cols_corrida +
+        "FROM dbo.etl_dependencia_evento e " + join_corrida + join_no +
         "WHERE e.notificado_em IS NULL "
         "AND e.detectado_em >= DATEADD(day, -%s, GETDATE()) "
         "AND ((e.pipeline_name NOT LIKE '#no:%%' "
@@ -1484,9 +1516,13 @@ def eventos_nao_notificados(conn, limite: int, janela_dias: int) -> list:
         "OR (e.pipeline_name LIKE '#corrida:%%' AND " + guarda_corrida + ")) "
         "ORDER BY e.detectado_em",
         (int(limite), int(janela_dias)))
+    # `corrida_id` é a LENTE do botão do card (Decisão 69: `?corrida={id}`) —
+    # ele viaja na URL e nunca no texto (Decisão 74). Chave sempre presente,
+    # valor `None` para quem não tem corrida (é o caso de todo evento de nó).
     return [{"id": r[0], "pipeline": r[1], "data_ref": r[2], "tipo": r[3],
              "detalhe": r[4], "detectado_em": r[5],
-             "malha": r[6], "sequencia": r[7]} for r in cur.fetchall()]
+             "malha": r[6], "sequencia": r[7], "corrida_id": r[8]}
+            for r in cur.fetchall()]
 
 
 def marcar_notificado(conn, evento_id) -> None:
@@ -1522,6 +1558,33 @@ def canal_teams_supervisao(conn):
     if not row:
         return None
     return {"id": row[0], "webhook_url": row[1], "nome": row[2]}
+
+
+def app_base_url(conn) -> str:
+    """Endereço base desta instalação do Orquestra (config `app_base_url`,
+    migration 086) — a base do BOTÃO que os cards de malha levam para a
+    corrida (F11, Decisão 69).
+
+    Devolve `''` para tudo que não seja um endereço utilizável: chave ausente,
+    valor vazio, banco mudo, migration não aplicada. `''` significa uma coisa
+    só, e é a regra da fase: **o card sai exatamente como hoje, sem botão** —
+    degradação por ausência, nunca URL inventada. Um endereço adivinhado manda
+    o plantão para um host que não responde, às 3h.
+
+    NUNCA levanta: esta leitura acontece dentro do ciclo da guardiã, e a
+    guardiã não cai por causa de um enfeite de card. Lida uma vez por ciclo
+    (não por evento) — o lote de notificação é o último passo, e a chave não
+    muda no meio dele."""
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT config_value FROM dbo.etl_app_config "
+                    "WHERE config_key = 'app_base_url'")
+        row = cur.fetchone()
+        return str(row[0] or "").strip() if row else ""
+    except Exception as e:  # noqa: BLE001 — enfeite de card nunca derruba o ciclo
+        print(f"[DEP] endereco do app indisponivel ({e}) — os cards de malha "
+              f"saem sem o botao")
+        return ""
 
 
 # ═══════════════ banco — F14 (observadores de malha) ════════════════════════

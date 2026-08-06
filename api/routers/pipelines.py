@@ -31,6 +31,26 @@ router = APIRouter()
 
 LOCAL_TZ = timezone(timedelta(hours=-3))  # America/Sao_Paulo
 
+# F11 (§9.8/Decisão 70) — a malha do DEPENDENTE, e SÓ quando ela é única.
+#
+# Constante de módulo, e não literal embutido na consulta, por uma razão de
+# prova: o `HAVING COUNT(*) = 1` é a regra inteira desta coluna e ele mora no
+# SERVIDOR — um dublê de banco a reimplementaria em Python e ficaria verde com
+# o `HAVING` apagado do SQL (o modo de falso verde "dublê que aplica a guarda
+# que mora no WHERE"). Sendo constante, o teste ao vivo executa exatamente este
+# texto contra o SQL Server.
+#
+# ⚠️ `HAVING` sem `GROUP BY` sobre uma correlacionada é o ponto sutil: com 2
+# malhas o grupo único é descartado, a subconsulta escalar não devolve linha
+# nenhuma e o resultado é `NULL` — que é a resposta certa ("não sei qual"), e
+# não "a primeira". Escolher uma seria o link do Dashboard abrir a malha errada
+# com cara de certa, e o Orquestra permite o mesmo pipeline em várias malhas de
+# propósito (no dev, os dois dependentes estão em 3 e em 2).
+SQL_MALHA_UNICA_DO_PIPELINE = (
+    "(SELECT MIN(mp.malha_name) FROM dbo.etl_malha_pipeline mp "
+    "WHERE mp.pipeline_name = d.pipeline_name "
+    "HAVING COUNT(*) = 1)")
+
 # dag_id no Airflow == pipeline_name exato; valida antes de interpolar na URL.
 _DAG_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 FACTORY_DAG_ID = "etl_dag_factory"
@@ -863,39 +883,58 @@ def estado_dependencias(data_referencia: str | None = None,
         # qualquer forma; o front que trava é a F12). Sem a coluna, o SQL é o
         # de sempre e o campo simplesmente não aparece.
         tem_assinatura = deps_svc.coluna_origem_no(cur)
+        # F11 (§9.8/Decisão 70) — a malha do DEPENDENTE, para o link do painel
+        # "Aguardando dependência" do Dashboard levar à malha certa em vez de
+        # despejar o operador na lista.
+        #
+        # Subconsulta CORRELACIONADA na consulta que já existe: nenhum
+        # round-trip novo (o painel do Dashboard é a tela mais vista do
+        # produto e já refaz esta leitura a cada 60 s).
+        #
+        # ⚠️ `HAVING COUNT(*) = 1` é a parte que importa: pipeline em DUAS
+        # malhas devolve NULL, não "a primeira". Escolher uma seria o link
+        # abrir a malha errada com cara de certa — e o Orquestra permite o
+        # mesmo pipeline em várias malhas de propósito (no dev, os dois
+        # dependentes estão em 3 e em 2). Quando não dá para afirmar, o front
+        # cai no outro caminho (a malha que COMPILOU a dependência) e, se nem
+        # esse existir, no link de hoje.
+        col_malha = (SQL_MALHA_UNICA_DO_PIPELINE
+                     if deps_svc.tabela_malha_pipeline(cur) else "NULL")
         if tem_assinatura:
             cur.execute(
                 "SELECT d.pipeline_name, d.depende_de, "
                 "CONVERT(VARCHAR(5), p.hora_virada, 108) AS hora_virada, "
                 "CONVERT(VARCHAR(5), p.nao_iniciar_antes, 108) AS nao_iniciar_antes, "
                 "CONVERT(VARCHAR(5), p.hora_limite_dependencia, 108) AS hora_limite_dependencia, "
-                "d.origem_no, mn.malha_name "
+                "d.origem_no, mn.malha_name, " + col_malha + " AS malha_unica "
                 "FROM dbo.etl_pipeline_dependencia d "
                 "JOIN dbo.etl_pipeline p ON p.pipeline_name = d.pipeline_name "
                 "LEFT JOIN dbo.etl_malha_no mn ON mn.id = d.origem_no "
                 "WHERE d.tipo = 'PIPELINE' AND p.active = 1 "
                 "ORDER BY d.pipeline_name, d.depende_de")
-            linhas_grafo = [(r[0], r[1], r[2], r[3], r[4], r[5], r[6])
+            linhas_grafo = [(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7])
                             for r in cur.fetchall()]
         else:
             cur.execute(
                 "SELECT d.pipeline_name, d.depende_de, "
                 "CONVERT(VARCHAR(5), p.hora_virada, 108) AS hora_virada, "
                 "CONVERT(VARCHAR(5), p.nao_iniciar_antes, 108) AS nao_iniciar_antes, "
-                "CONVERT(VARCHAR(5), p.hora_limite_dependencia, 108) AS hora_limite_dependencia "
+                "CONVERT(VARCHAR(5), p.hora_limite_dependencia, 108) AS hora_limite_dependencia, "
+                + col_malha + " AS malha_unica "
                 "FROM dbo.etl_pipeline_dependencia d "
                 "JOIN dbo.etl_pipeline p ON p.pipeline_name = d.pipeline_name "
                 "WHERE d.tipo = 'PIPELINE' AND p.active = 1 "
                 "ORDER BY d.pipeline_name, d.depende_de")
-            linhas_grafo = [(r[0], r[1], r[2], r[3], r[4], None, None)
+            linhas_grafo = [(r[0], r[1], r[2], r[3], r[4], None, None, r[5])
                             for r in cur.fetchall()]
         grafo: dict[str, dict] = {}
-        for nome, pred, hv, nia, hl, origem_no, malha_no in linhas_grafo:
+        for nome, pred, hv, nia, hl, origem_no, malha_no, malha_unica in linhas_grafo:
             item = grafo.setdefault(str(nome or "").strip(), {
                 "preds": [],
                 "janela": {"hora_virada": hv, "nao_iniciar_antes": nia,
                            "hora_limite_dependencia": hl},
                 "compilada_por": {},
+                "malha": (str(malha_unica).strip() if malha_unica else None),
             })
             pred_nome = str(pred or "").strip()
             item["preds"].append(pred_nome)
@@ -961,7 +1000,7 @@ def estado_dependencias(data_referencia: str | None = None,
                 if cp is not None:
                     item_pred["compilada_por"] = cp
                 predecessores.append(item_pred)
-            resposta["data"].append({
+            item_saida = {
                 "pipeline_name": nome,
                 "liberado": lib,
                 "faltantes": falt,
@@ -969,7 +1008,14 @@ def estado_dependencias(data_referencia: str | None = None,
                 "corrida": corrida,
                 "janela": grafo[nome]["janela"],
                 "eventos": eventos.get(nome.casefold(), []),
-            })
+            }
+            # ADITIVO (F11): a malha do dependente, quando ela é ÚNICA. Chave
+            # ausente = não dá para afirmar (nenhuma malha, ou mais de uma), e
+            # aí o link do Dashboard cai no caminho seguinte. Ausência de
+            # campo, nunca `null` interpretável — o front antigo ignora.
+            if grafo[nome]["malha"]:
+                item_saida["malha"] = grafo[nome]["malha"]
+            resposta["data"].append(item_saida)
         cur.close(); conn.close()
         return resposta
     except HTTPException:

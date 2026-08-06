@@ -2950,9 +2950,16 @@ errado.
 8. Fixar o **limiar de "sem sinal"** (§9.5, `1 sem sinal há 20h`) e a **folga do
    `nao_abriu`** (§9.2, Decisão 58): quantos minutos depois do horário previsto o
    card vira âmbar. Os dois são config, não constante no front.
-9. Configurar `etl_app_config.app_base_url` (Decisão 69) — sem ela, o card do
-   Teams sai sem botão, que é a degradação correta, mas também é a camada de §9.8
-   inteira sem efeito.
+9. ⚙️ **PARCIAL — a chave existe (F11), falta o valor de PRODUÇÃO.** A
+   migration **086** cria `etl_app_config.app_base_url` **vazia**, de propósito:
+   o endereço muda por ambiente e migration não adivinha host de produção. Com a
+   chave vazia o card sai exatamente como hoje, sem botão e sem erro no ciclo da
+   guardiã (degradação por ausência, nunca URL inventada), e a linha existe para
+   ser **descoberta** na tela de configuração, com a descrição ao lado.
+   ✅ **Configurada no dev** (`https://orquestra.lcseguranca.com`, 2026-08-06) e
+   o botão validado ao vivo — falta a de produção, e ela é o gesto que liga a
+   camada de §9.8 inteira. Só aceita `http://`/`https://`; qualquer outro valor
+   é tratado como vazio.
 10. **A janela de fallback do observador ainda usa o relógio do WORKER**
     (`dags/etl_dependencia_guardia.py`, `data_corrente = calcular(_agora(), …)`).
     É pré-existente da F14 e sobreviveu de propósito à F2 — o aceite manda o
@@ -2969,14 +2976,27 @@ errado.
     verdadeiro por 3 h a mais e a função sub-fecha — e a guarda da Decisão 31
     (que a F7 acrescentou) roda logo DEPOIS dessa comparação, então o desvio
     decide quais linhas sequer chegam nela.
-11. **O card de `MALHA_CONCLUIDA` do nó Fim ainda publica o marcador interno**
-    (`dags/utils/ds_teams.py`): sai com sujeito `#no:38` e fato `Pipeline: #no:38`,
-    contrariando a Decisão 74 (nome de máquina não vai ao celular). É
-    pré-existente na `main` e o roteamento que o mantém no card genérico é
-    deliberado (Fim e Notificação são componentes do desenho, não a corrida).
-    Resolver na **F11**, que é a fase que reabre `montar_card` — a fila precisa
-    passar a trazer a malha do NÓ, e não só a da corrida, que é o que ela ganhou
-    na F2.
+11. ✅ **RESOLVIDA na F11.** A fila (`eventos_nao_notificados`) passou a
+    resolver a malha por **duas** fontes, e não uma: além do `LEFT JOIN` na
+    corrida que a F2 lhe deu (`e.malha_execucao_id` → `etl_malha_execucao`),
+    um segundo `LEFT JOIN` resolve o marcador `'#no:{id}'` em
+    `etl_malha_no.malha_name` — que é justamente quem não tem corrida nenhuma.
+    O `COALESCE` dá precedência à corrida (fonte mais específica).
+    `montar_card_dependencia` deixou de publicar o marcador: para evento de nó
+    o sujeito é a MALHA e o fato vira `Malha:` em vez de `Pipeline:`; malha
+    desconhecida diz *"malha não identificada"* — nunca volta a publicar a
+    chave, que **parece** informação e faz o plantão procurar por ela.
+    O roteamento continua o de antes (Fim e Notificação seguem no card de nó,
+    porque são componentes do desenho, não a corrida), e o evento de nó também
+    ganhou o botão da Decisão 69 — sem `corrida=`, porque não tem corrida:
+    leva à lente de execução da malha.
+    ⚠️ Duas armadilhas encontradas e travadas por teste: (i) `COALESCE(NULL,
+    NULL)` é erro de **compilação** no SQL Server, e as duas pontas são
+    literais num banco sem a 075 e sem a 085 — a coluna é montada por
+    composição; (ii) o `LEFT JOIN` novo é do CARD, não do filtro: a guarda de
+    existência do nó (achado 2 da F14) continua no `WHERE`, e evento de nó
+    apagado segue fora do canal.
+    Provado ao vivo em `tests/test_malha_corrida_f11_vivo.py`.
 12b. **A F10 tem de consumir `corridas_no_dia`.** Quando o operador navega por
     data e aquele dia teve **mais de uma** corrida, a API passou (na F4) a
     OMITIR o bloco `corrida` e a devolver `corridas_no_dia: N` — porque
@@ -2995,6 +3015,25 @@ errado.
     `substituida_em` cairia no legado e o descarte da linha substituída sumiria
     em silêncio. É código anterior a esta spec e há teste pinando o texto-fonte
     — marcado como LACUNA CONHECIDA no código; PR própria.
+13h. **O filtro "Concluídas" volta sozinho e a lista encolhe sem clique.** O
+    estado ativo do filtro é derivado, mas a escolha fica no estado: um rerun às
+    5 h reabre a única concluída, o filtro some (e "Limpar filtros" some junto),
+    e quando ela fecha de novo a lista encolhe sem ninguém ter tocado em nada.
+13i. **A guardiã ainda pode cair pela montagem do card.** `montar_card_*` não
+    está dentro de `try` no laço de notificação, e `ciclo()` só tem
+    `finally: conn.close()`. Não há entrada conhecida que levante — os caminhos
+    novos são defensivos —, mas "a guardiã nunca cai" fica sendo verdade por
+    sorte de implementação, não por construção. PR própria, barata.
+13j. **O orçamento de "duas consultas por refetch" não cobre a noite ruim.** O
+    teste monta 40 malhas cuja corrida ABRIU, e aí a sonda do "não abriu" sai
+    pela porta barata. Com 40 que NÃO abriram (queda do scheduler — exatamente a
+    noite em que a tela é mais usada) são até 40 consultas de agenda + 40 de
+    calendário por refetch. Declarado como "o caso raro" no código; o aceite não
+    traz a ressalva.
+13k. **`app_base_url` com caminho vira 404.** `https://host/malha` — o
+    copiar/colar da barra de endereço — produz `/malha/malha`. Não foi recusado
+    porque `https://host/orquestra` é subcaminho legítimo; vale a ressalva ao
+    preencher a chave em produção (pendência 9).
 13d. **Leitura de retenção indisponível trava a corrida indefinidamente.**
     `hold_da_malha` devolve `retido=True` para qualquer erro que não seja
     "coluna ausente" — a política conservadora certa (na dúvida, não solta),
@@ -3011,8 +3050,23 @@ errado.
 13f. **A 4ª porta ficou mais cara, e a recusa subiu de posição.** Com o
     interruptor ligado, a guardiã pergunta o ODATE para toda linha aguardando
     liberada — +1 consulta por linha por ciclo de 5 min (família da pendência
-    19). E pipeline **sem cadastro** com corridas ambíguas passa a gravar
-    `DATA_DIVERGENTE` onde antes só logava "sem cadastro".
+    19). **Este pedaço continua aberto.**
+    ✅ **A metade do RUÍDO foi MEDIDA e fechada na F11.** A preocupação era o
+    `DATA_DIVERGENTE` que pipeline **sem cadastro** passou a gravar (a recusa
+    por ODATE ambíguo subiu para ANTES da checagem de cadastro,
+    `etl_dependencia_guardia.py:620` × `:634`) virar **card novo no celular**.
+    Não vira, e quem impede é a guarda de EXISTÊNCIA da fila (achado 2 da
+    revisão da F14): "sem cadastro" é exatamente `config_dependente() is None`,
+    que é exatamente "não existe em `etl_pipeline`" — a mesma condição que o
+    `EXISTS` do `WHERE` de `eventos_nao_notificados` exige para o evento sair ao
+    canal. O evento **fica** na tabela (histórico, filosofia F4 §7.2) e aparece
+    no painel; só não vira card para uma coisa que o cadastro não conhece.
+    Medido contra o SQL Server em
+    `tests/test_malha_corrida_f11_vivo.py::test_data_divergente_de_pipeline_SEM_CADASTRO_nao_vira_card`,
+    com a contraprova ao lado (o mesmo evento **com** cadastro sai na fila) — sem
+    ela, uma fila quebrada devolveria vazio para tudo e o teste passaria por
+    qualquer motivo. ⚠️ O teste é a REDE: se a guarda de existência sair da
+    fila, o ruído novo aparece ali antes de aparecer no plantão.
 13g. ✅ **RESOLVIDA na F8.** `SQL_ESTADO` passou a aceitar a linha por
     `(e.substituida_em IS NULL OR e.status = 'EXECUTANDO')`, nas duas árvores.
     A guarda é ESTREITA de propósito: aposentada em `SUCESSO` continua fora
@@ -3124,10 +3178,64 @@ errado.
     custando ~30 dublês de teste para um ganho que só aparece fora do ciclo em
     voo: **decidir com o dono depois do smoke**, com o interruptor já em `1`.
 
+23. **A linha do Dashboard inclui `não abriu`, e a Decisão 70 não previa.**
+    O §9.8 diz "uma linha por corrida `ABERTA`/`FALHA`", e foi escrito ANTES de
+    a F9 existir. A F11 acrescentou `não abriu` à mesma linha, com a divergência
+    declarada no fonte: é o pior modo de falha e o mais silencioso — a malha que
+    não rodou é a única que não aparece em lugar nenhum, e omiti-la deixaria o
+    Dashboard mudo justamente sobre a linha que o card da lista põe no topo.
+    **Confirmar com o dono** no smoke; reverter é apagar um `||` do filtro.
+
+24. **O link de dependência do Dashboard não resolve pipeline em VÁRIAS
+    malhas.** A F11 lhe deu três fontes, na ordem em que a resposta é mais
+    específica: (1) a malha que COMPILOU a dependência que está segurando
+    (`compilada_por.malha`, que já vinha no payload), (2) qualquer dependência
+    compilada do mesmo pipeline, (3) a malha do próprio pipeline **quando ela é
+    única** — subconsulta correlacionada nova, sem round-trip a mais. Sem
+    nenhuma das três o link volta a ser `/malha` (a lista), que é o de hoje:
+    melhor a lista do que abrir a malha errada com cara de certa. **Medido no
+    dev:** os dois dependentes existentes estão em 3 e em 2 malhas — a fonte (3)
+    devolve `NULL` para os dois, e quem responde é a (1). Se a operação passar a
+    ter dependência manual (`origem_no IS NULL`) em pipeline multi-malha, esses
+    caem na lista e **aí** vale perguntar ao dono qual malha o link deve abrir.
+
+25. **A guardiã está PAUSADA no dev** (`dag.is_paused = true`, medido em
+    2026-08-06; o último ciclo agendado é de 04/08). É estado de ambiente, não
+    de código — mas significa que **nenhum smoke que dependa do ciclo da guardiã
+    roda no dev sem despausar antes**, e que a fila de notificação não drena
+    sozinha. Despausar dispara pipelines: fazer com o dono, e não de passagem.
+
+26. **Dois modos de falso verde NOVOS, achados por MUTAÇÃO na F11 e já
+    fechados** — ficam registrados porque a próxima fase herda a lista:
+
+    26a. **Dublê que reimplementa em Python a guarda que mora no SERVIDOR.**
+    O `HAVING COUNT(*) = 1` da subconsulta da Decisão 70 (pipeline em duas
+    malhas → `NULL`, nunca "a primeira") foi APAGADO do `pipelines.py` e a
+    suíte inteira continuou verde: o dublê de banco aplicava a regra por conta
+    própria. É primo do modo das F2/F4/F5 ("guarda que mora no `WHERE`"), com
+    a agravante de o `HAVING` sem `GROUP BY` sobre uma correlacionada ser
+    justamente o que ninguém prevê de cabeça. **Cura em duas pontas:** o dublê
+    passou a LER o SQL que chegou (sem o `HAVING`, devolve o `MIN`, e o teste
+    da malha ambígua fica vermelho), e o texto virou constante de módulo
+    (`SQL_MALHA_UNICA_DO_PIPELINE`) para o teste ao vivo executá-lo, byte a
+    byte, contra o SQL Server.
+
+    26b. **`grep` no `.tsx` provando componente que nenhum ramo MONTA.** A F10
+    pagou a versão "texto que nenhum ramo renderiza"; a da F11 é uma casa
+    acima: apagar `<CorridasDeMalhaCard />` do JSX do Dashboard (o bloco
+    existe, compila e some da tela) e fazer `malhaDoDependente` devolver
+    sempre `null` (o link volta a despejar o operador na lista — o defeito que
+    a fase existe para consertar) **passavam nas duas**. Cura:
+    `tests/js/f11_dashboard_harness.cjs` renderiza o Dashboard e APERTA as
+    linhas; o que se afirma é para onde a página navegou, e as cinco mutações
+    da região passaram a cair.
+
 ---
 
 **Ordem de deploy, numa frase:** etapa 5 (`dags/`, responder `s`) → etapa 6c
-(migration **085**, prompt padrão-NÃO, responder `s`, **nunca** `--baseline`) →
-`api/` + front (automáticos) → etapa 8b **`n`** em todas as fases — e **só na F5**
-com `force_all` disparado à parte, confirmado pela sonda por pipeline do §12.2;
-o interruptor `malha_corrida_ativa` só vai a `1` depois da F7 e do smoke.
+(migrations **085** e **086**, prompt padrão-NÃO, responder `s`, **nunca**
+`--baseline`) → `api/` + front (automáticos) → etapa 8b **`n`** em todas as
+fases — e **só na F5** com `force_all` disparado à parte, confirmado pela sonda
+por pipeline do §12.2; o interruptor `malha_corrida_ativa` só vai a `1` depois
+da F7 e do smoke. A **086** é só uma linha de config e não exige `force_all`:
+`ds_teams` é importado em runtime pela guardiã, não é fonte gerado.

@@ -442,10 +442,17 @@ def test_o_card_que_nao_abriu_ordena_primeiro():
     errado às 3h."""
     src = _codigo(SRC / "pages" / "Malha.tsx")
     assert "Number(!!b.corrida_esperada) - Number(!!a.corrida_esperada)" in src
-    # contador próprio na stats bar, e SÓ quando existe (uma pílula "0 não
-    # abriram" todo dia treinaria o olho a passar por ela)
-    assert "const naoAbriram = filtradas.filter(m => m.corrida_esperada).length" in src
-    assert "naoAbriram > 0" in src
+    # Contador próprio na stats bar, e SÓ quando existe (uma pílula "0 não
+    # abriram" todo dia treinaria o olho a passar por ela).
+    #
+    # F11 generalizou o contador: ele virou um dos cinco estados de corrida,
+    # com a MESMA regra de só aparecer com número > 0 — e a regra passou a
+    # valer para os cinco. O predicado do "não abriu" continua sendo a presença
+    # de `corrida_esperada`, e é ele que a lista pergunta.
+    assert "contagens[def.chave] > 0" in src
+    estados = _codigo(SRC / "components" / "malhas" / "corridasDaLista.ts")
+    assert "case 'nao_abriu':" in estados
+    assert "return !!m.corrida_esperada" in estados
 
 
 def test_api_anterior_a_fase_faz_o_card_DIZER_que_falta_informacao():

@@ -120,14 +120,45 @@ def _valor(row: dict, expr: str):
     return v
 
 
+def malha_unica(db, pipeline, sql=""):
+    """A subconsulta correlacionada da F11, executada pelo dublê — e a guarda
+    aplicada **só se ela estiver no SQL que chegou**.
+
+    ⚠️ Esta assinatura é uma correção de honestidade, não um detalhe. A regra
+    que mais importa aqui (`HAVING COUNT(*) = 1`: pipeline em DUAS malhas
+    devolve `None`, e não "a primeira") mora no SERVIDOR. Um dublê que a
+    reimplementasse em Python ficaria VERDE com o `HAVING` apagado do
+    `pipelines.py` — provado por mutação: a guarda saiu da consulta e nenhum
+    teste caiu. É o modo de falso verde "dublê que aplica a guarda que mora no
+    WHERE", já pago nas F2/F4/F5 desta spec.
+
+    Agora o dublê lê o SQL: sem `HAVING COUNT(*) = 1`, ele devolve o `MIN` —
+    exatamente o que o SQL Server devolveria — e o teste da malha ambígua fica
+    vermelho. A prova de que o `HAVING` faz no servidor o que se diz que ele
+    faz é do banco de verdade (`test_malha_corrida_f11_vivo.py`)."""
+    malhas = sorted(db.malhas_do_pipeline.get(pipeline) or [])
+    if not malhas:
+        return None                      # subconsulta sem linha → NULL
+    if "HAVING COUNT(*) = 1" in " ".join(str(sql).split()) and len(malhas) != 1:
+        return None
+    return malhas[0]                     # MIN(mp.malha_name)
+
+
 class FakePipeDb:
     """etl_pipeline + 067 + execuções/eventos + audit em memória (chave CI)."""
 
-    def __init__(self, pipelines=None, com_067=True, com_073=True, config=None):
+    def __init__(self, pipelines=None, com_067=True, com_073=True, config=None,
+                 com_070=True, malhas_do_pipeline=None):
         self.pipelines: dict[str, dict] = pipelines or {}
         self.com_067 = com_067
         self.com_073 = com_073
         self.config = config or {}
+        # F11 — etl_malha_pipeline: `{pipeline: [malhas]}`. É a fonte da malha
+        # que o link do Dashboard usa, e o dublê guarda a LISTA (não o nome) de
+        # propósito: o caso que importa é o pipeline em VÁRIAS malhas, em que a
+        # resposta certa é "não sei", nunca "a primeira".
+        self.com_070 = com_070
+        self.malhas_do_pipeline: dict[str, list] = malhas_do_pipeline or {}
         self.dependencias: list[dict] = []   # {"pipeline", "depende_de"}
         self.execucoes: list[dict] = []      # {"pipeline","data_referencia","status","inicio","fim","disparado_por","motivo","execution_id"}
         self.eventos: list[dict] = []        # {"pipeline","data_referencia","tipo","detalhe","detectado_em"}
@@ -181,6 +212,9 @@ class FakePipeCur:
         if "OBJECT_ID('dbo.etl_pipeline_dependencia'" in s:
             self._rows = [(1,)] if db.com_067 else [(None,)]
             return
+        if "OBJECT_ID('dbo.etl_malha_pipeline'" in s:
+            self._rows = [(1,)] if db.com_070 else [(None,)]
+            return
         if "INFORMATION_SCHEMA.COLUMNS" in s:
             if "'hora_virada'" in s:
                 self._rows = [(1 if db.com_067 else 0,)]
@@ -214,7 +248,10 @@ class FakePipeCur:
                 out.append((k, d["depende_de"],
                             (str(p["hora_virada"])[:5] if p.get("hora_virada") else None),
                             (str(p["nao_iniciar_antes"])[:5] if p.get("nao_iniciar_antes") else None),
-                            (str(p["hora_limite_dependencia"])[:5] if p.get("hora_limite_dependencia") else None)))
+                            (str(p["hora_limite_dependencia"])[:5] if p.get("hora_limite_dependencia") else None))
+                           + (((malha_unica(db, k, s)
+                                if "etl_malha_pipeline" in s else None),)
+                              if "malha_unica" in s else ()))
             self._rows = sorted(out)
             return
         if s.startswith("SELECT dd.depende_de FROM dbo.etl_pipeline_dependencia dd") \

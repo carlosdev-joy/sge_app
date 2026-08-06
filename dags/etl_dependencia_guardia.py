@@ -1521,11 +1521,16 @@ def _notificar(conn, log, limite: int) -> int:
     if canal is None:
         log.info("[GUARDIA] sem canal do Teams — eventos só no painel")
         return 0
+    # F11 (Decisão 69) — o endereço do app, lido UMA vez por lote: os cards de
+    # malha ganham o botão que cai direto na corrida. Ausente/vazio devolve ''
+    # e o card sai byte a byte como antes desta fase, sem botão e sem uma linha
+    # de erro aqui — a leitura já engole a própria exceção.
+    base_url = dep.app_base_url(conn)
 
     enviados = 0
     for ev in eventos:
         ok, motivo = enviar_card(canal["webhook_url"],
-                                 montar_card_dependencia(ev))
+                                 montar_card_dependencia(ev, base_url))
         if not ok:
             log.warning("[GUARDIA] evento %s de %s não foi ao canal '%s': %s",
                         ev.get("tipo"), ev.get("pipeline"),
