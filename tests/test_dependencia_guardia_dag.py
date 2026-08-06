@@ -98,7 +98,10 @@ def _mundo(monkeypatch, agora=AGORA, **sobrescreve):
         "predecessores_de": lambda conn, p: [],
         "virada_efetiva": lambda conn, p: time(0, 0),
         "config_dependente": lambda conn, p: _cfg(),
-        "liberado": lambda conn, p, d: (False, ["PIPE_A"]),
+        # F6: a assinatura ganhou `corrida` (a da LINHA avaliada). O dublê
+        # a aceita para que uma porta que a passe seja EXERCITADA aqui, e
+        # não caia calada na rede de `TypeError` do fonte gerado.
+        "liberado": lambda conn, p, d, corrida=None: (False, ["PIPE_A"]),
         "resumo_predecessores": lambda conn, p, d: {},
         "sucesso_recente_outra_data": lambda conn, p, d, inicio: [],
         "reservas_orfas": lambda conn, idade: [],

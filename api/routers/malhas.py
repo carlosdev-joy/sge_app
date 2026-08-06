@@ -2909,7 +2909,16 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
             # a corrida espera, pelo MESMO predicado do motor (o port, nunca um
             # "mais recente" paralelo). Campo novo opcional: front antigo ignora.
             if vencedora["status"] in ("AGUARDANDO_DEPENDENCIA", "NAO_LIBEROU"):
-                _, falt = deps_svc.liberado(cur, oficial, data_ref)
+                # F6 (Decisão 39): a corrida da LINHA avaliada — aqui, a da
+                # LENTE, que é justamente o recorte de onde estas linhas saíram.
+                # Sem ela, no modo SEQUÊNCIA o painel cortaria pela janela de 12h
+                # enquanto o motor corta pelo `aberta_em` da corrida: a tela
+                # diria "aguardando PAI_X" com PAI_X já contado pelo motor (ou o
+                # contrário) — a divergência painel×motor que a paridade do D29
+                # existe para impedir, reaparecendo pela porta do corte.
+                _, falt = deps_svc.liberado(
+                    cur, oficial, data_ref,
+                    lente["id"] if lente is not None else None)
                 item["faltantes"] = falt
             resposta["execucoes"].append(item)
 

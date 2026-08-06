@@ -542,6 +542,67 @@ def test_claim_perdido_na_MESMA_corrida_continua_mudo(factory):
     assert [c for c in dep.chamadas if c[0] == "evento"] == []
 
 
+# ══════ 6b. F6 — a porta do PUSH entrega a corrida da LINHA ao predicado ════
+
+def _corrida_perguntada(dep):
+    """O 4º elemento do registro de `liberado` no dublê — a corrida passada."""
+    return [c[3] for c in dep.chamadas if c[0] == "liberado"]
+
+
+def test_push_pergunta_pela_corrida_do_FILHO_e_nao_do_pai(factory):
+    """Decisão 39 — a linha avaliada é a do FILHO, então o corte é o
+    `aberta_em` da corrida DELE.
+
+    Passar a do pai pareceria "quase certo" e seria errado exatamente no caso
+    que a malha existe para tratar: pai e filho em corridas diferentes (membro
+    compartilhado, rerun, cadeia que atravessa a virada). O filho seria julgado
+    pelo relógio de um ciclo que não é o dele."""
+    corrida = _Corrida(
+        _resp(data=ODATE, corrida_id=12, degrau="corrida"),
+        por_pipeline={"PIPE_C": {"data": ODATE, "corrida_id": 99,
+                                 "degrau": "corrida"}})
+    dep = _dep_fake()
+    ns = _ns_push(factory, corrida, dep)
+    _instala_hook(ns, _HookF2())
+    _dispara(ns, corrida, dep)
+    assert _corrida_perguntada(dep) == [99]
+
+
+def test_push_sem_corrida_pergunta_com_None_e_o_degrau_2_resolve(factory):
+    """Fora de malha (ou com o interruptor em 0) a corrida é None e o predicado
+    resolve pelos degraus 2 e 3 — o comportamento de antes da fase."""
+    corrida = _Corrida()
+    dep = _dep_fake()
+    ns = _ns_push(factory, corrida, dep)
+    _instala_hook(ns, _HookF2())
+    _dispara(ns, corrida, dep)
+    assert _corrida_perguntada(dep) == [None]
+
+
+def test_push_com_utils_anterior_a_F6_nao_para_a_cascata(factory, capsys):
+    """A rede de ROLLBACK, e ela vale o teste porque a rota já foi MEDIDA uma
+    vez neste projeto: `dags/utils/` revertido com o `generated/` ainda
+    regerado (o `force_all` não se desfaz e o deploy nunca limpa a pasta).
+
+    Sem a rede, `liberado` de 3 argumentos levanta `TypeError`, o `except` do
+    laço engole por filho e NENHUM dependente roda — com o pai VERDE. Com ela,
+    perde-se só o degrau 1 do corte."""
+    corrida = _Corrida(_resp(data=ODATE, corrida_id=12, degrau="corrida"))
+    dep = _dep_fake()
+
+    def _antigo(conn, filho, data_ref):            # a assinatura de antes da F6
+        dep.chamadas.append(("liberado", filho, data_ref, "3-args"))
+        return True, []
+
+    dep.liberado = _antigo
+    ns = _ns_push(factory, corrida, dep)
+    _instala_hook(ns, _HookF2())
+    disparos = _dispara(ns, corrida, dep)
+    assert disparos, "a cascata NAO pode parar com o pai verde"
+    assert _corrida_perguntada(dep) == ["3-args"]
+    assert "anterior a F6" in capsys.readouterr().out
+
+
 # ════════ 7. DEGRADAÇÃO — o fonte novo × o fonte de main, lado a lado ═══════
 #
 # Aqui não se lê código: roda-se o MESMO cenário nas duas árvores e comparam-se

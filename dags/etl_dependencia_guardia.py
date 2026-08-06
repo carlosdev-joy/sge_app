@@ -539,6 +539,15 @@ def _rede_seguranca(conn, agora: datetime, log) -> int:
     disparadas = 0
     for pipeline, data_ref, _run_id, _criado_em in dep.corridas_aguardando(conn):
         try:
+            # F6: aqui a corrida da linha NÃO está em mãos — `corridas_aguardando`
+            # devolve (pipeline, data, run_id, criado_em), e trazer o
+            # `malha_execucao_id` mudaria a aridade de uma leitura que quatro
+            # responsabilidades consomem. Sem ela o corte cai no degrau 2 (a
+            # corrida ABERTA da malha que assinou a dependência), que é a resposta
+            # certa em todo ciclo em voo; só quando a corrida da linha já fechou é
+            # que o degrau 3 (janela) decide — que é EXATAMENTE o comportamento
+            # de hoje, não uma regressão. Fechar esse resto é da F7, que reabre
+            # esta varredura (pendência 20 da §18).
             lib, _faltantes = dep.liberado(conn, pipeline, data_ref)
             if not lib:
                 continue    # deadline (§5) e divergência (§7) diagnosticam o resto
@@ -1015,7 +1024,15 @@ def _quiescencia_liberada(conn, corrida: dict, log) -> bool:
     if mc.ERRO_LEITURA in esperando:
         return False
     for pipeline in esperando:
-        lib, faltantes = dep.liberado(conn, pipeline, corrida["data_referencia"])
+        # F6 (Decisão 39): a corrida da LINHA avaliada, e aqui ela é conhecida —
+        # a linha é membro DESTA corrida. Passá-la é o que faz o corte do modo
+        # SEQUÊNCIA continuar valendo no instante exato em que este ciclo pode
+        # fechá-la: se o corte viesse de "corrida aberta agora", o fechamento
+        # que esta função autoriza mudaria, na avaliação seguinte, o próprio
+        # critério que a autorizou — e a janela de 12h liberaria um filho com o
+        # sucesso da rodada anterior, sem nada no banco explicando a virada.
+        lib, faltantes = dep.liberado(conn, pipeline,
+                                      corrida["data_referencia"], corrida["id"])
         if lib:
             log.info("[GUARDIA] corrida da malha '%s': %s esta liberado e vai "
                      "partir — fechamento adiado", corrida["malha_name"],

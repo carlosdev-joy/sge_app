@@ -1052,9 +1052,23 @@ def test_guarda_1_linha_aguardando_e_liberada_adia_o_fechamento(monkeypatch):
         aguardando_do_snapshot=lambda conn, c: ["PIPE_B"],
         estado=lambda conn, c, dispensa_sem_linha=None:
             _estado(ok=["PIPE_A"], linhas=1, membros=2))
-    _mundo(monkeypatch, liberado=lambda conn, p, d: (True, []))
+    vistos = []
+
+    def _liberado(conn, p, d, corrida=None):
+        vistos.append((p, corrida))
+        return True, []
+
+    _mundo(monkeypatch, liberado=_liberado)
     assert GUARDIA.ciclo()["corridas_fechadas"] == 0
     assert fechou == []
+    # F6 (Decisão 39) — a guarda pergunta pela corrida DA LINHA, e a linha é
+    # membro DESTA corrida. Sem o id, o corte do modo SEQUÊNCIA cairia na
+    # janela de 12h no instante exato em que este ciclo decide fechar: a
+    # avaliação seguinte usaria um critério diferente do que autorizou a
+    # decisão anterior. (Com a assinatura de 3 argumentos este teste passaria
+    # do mesmo jeito — pelo `except` do fechador —, e é por isso que a
+    # afirmação é sobre o ARGUMENTO, não só sobre o desfecho.)
+    assert vistos == [("PIPE_B", 12)]
 
 
 def test_guarda_1_nao_consegui_perguntar_nunca_vira_pode_fechar(monkeypatch):

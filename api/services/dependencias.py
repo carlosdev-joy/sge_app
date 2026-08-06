@@ -27,6 +27,7 @@ funções recebem `cur` (cursor aberto) e o CHAMADOR é dono da transação.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 
 log = logging.getLogger("orquestra-api")
@@ -52,6 +53,12 @@ def _exec_com_fallback_078(cur, sql_078: str, sql_legado: str, params) -> bool:
         cur.execute(sql_078, params)
         return False
     except Exception as e:  # noqa: BLE001 — reagimos SÓ ao Invalid column name da 078
+        # ⚠️ LACUNA CONHECIDA: ao contrário de `_marca_de`, esta marca não
+        # distingue "a coluna não existe" de "o banco negou a coluna"
+        # (erro 230). Com um DENY em `substituida_em`, o legado assume e o
+        # descarte da corrida substituída some em silêncio. Mora aqui
+        # porque `test_claim_tem_fallback_para_banco_sem_a_078` pina este
+        # texto-fonte; fechar exige mexer no teste, e é da 078, não da F6.
         if _MARCA_078 not in str(e):
             raise
         cur.execute(sql_legado, params)
@@ -64,6 +71,57 @@ def _exec_com_fallback_078(cur, sql_078: str, sql_legado: str, params) -> bool:
 # 082 → 078 → legado existe para um banco sem a coluna nova NÃO virar
 # "não liberado para todo mundo" — a trava pararia a produção inteira.
 _MARCA_082 = "retido_em"
+# A marca da 085 — port do canônico, e a mais importante desta cascata: sem a
+# migration, um SQL que cite `dbo.etl_malha_execucao` levanta "Invalid object
+# name" e `liberado()` viraria NÃO-liberado para o banco inteiro (célula 2 da
+# matriz §11.1). Duas marcas por degrau porque o banco reclama da COLUNA quando
+# só ela falta e da TABELA quando a migration inteira não passou.
+_MARCA_085 = "malha_execucao_id"
+_MARCAS_085 = (_MARCA_085, "etl_malha_execucao")
+# `origem_no` entra nas marcas da 082 pelo mesmo motivo que `etl_malha_no`: as
+# duas nasceram na 075 e os SQLs do modo SEQUENCIA citam AS DUAS. Sem esta
+# marca, um banco sem a coluna devolvia `Invalid column name 'origem_no'`, que
+# nao casava com degrau nenhum, propagava, e `liberado()` respondia
+# NAO-LIBERADO para o banco INTEIRO — a mesma catastrofe da §11.1 por outra
+# coluna. Era anterior a esta fase (a `main` tambem cita `dd.origem_no`), mas
+# endurecer a cascata sem fechar o buraco vizinho seria consertar so o que a
+# revisao apontou.
+_MARCAS_082 = (_MARCA_082, "etl_malha_no", "origem_no")
+
+
+# ⚠️ O SQL Server NOMEIA o objeto também quando RECUSA a consulta (229 na
+# tabela, 230 na coluna), e as marcas casam por SUBSTRING — sem esta guarda uma
+# permissão faltando seria lida como "a migration não passou" e a cascata
+# desceria um degrau em silêncio. Port do canônico, onde está o porquê inteiro.
+_NUM_RECUSA = re.compile(r"\((?:229|230|297|300)[,)]")
+
+
+def _recusa_de_permissao(erro) -> bool:
+    """O banco RECUSOU a consulta, em vez de não ter o objeto? (port)"""
+    msg = str(erro)
+    return bool(_NUM_RECUSA.search(msg)) or "permission was denied" in msg
+
+
+def _marca_de(erro, marcas) -> bool:
+    """O erro é UMA das marcas conhecidas de deploy parcial? (port) Só elas
+    degradam: deadlock, timeout e permissão continuam PROPAGANDO."""
+    if _recusa_de_permissao(erro):
+        return False
+    msg = str(erro)
+    return any(m in msg for m in marcas)
+
+
+def _degrau_apos(erro):
+    """Depois deste erro, qual degrau tentar — ou None para PROPAGAR (port).
+
+    085 → `"seq_084"` (o modo sobrevive, o corte vira a janela); 082/078 →
+    `"data"` (nenhum SQL do modo roda neste banco)."""
+    if _marca_de(erro, _MARCAS_085):
+        return "seq_084"
+    if _marca_de(erro, _MARCAS_082) or _marca_de(erro, (_MARCA_078,)):
+        return "data"
+    return None
+
 
 _SELECT_RETENCAO = (
     ", (SELECT TOP 1 n.id FROM dbo.etl_malha_no n "
@@ -84,16 +142,57 @@ SQL_LIBERADO_082 = (
     "AND (" + _ONDE_SEM_SUCESSO_078[4:] +
     " OR EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
     "            WHERE n2.id = dd.origem_no AND n2.retido_em IS NOT NULL))")
-_ONDE_SEM_SUCESSO_SEQ = (
+_ONDE_SEM_SUCESSO_SEQ_084 = (
     "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
     "WHERE e.pipeline_name = dd.depende_de "
     "AND e.status = 'SUCESSO' AND e.substituida_em IS NULL "
     "AND ISNULL(e.fim, e.inicio) >= ?)")
-SQL_LIBERADO_SEQ = (
+SQL_LIBERADO_SEQ_084 = (
     "SELECT dd.depende_de" + _SELECT_RETENCAO +
     "FROM dbo.etl_pipeline_dependencia dd "
     "WHERE dd.pipeline_name = ? AND dd.tipo = 'PIPELINE' "
-    "AND (" + _ONDE_SEM_SUCESSO_SEQ[4:] +
+    "AND (" + _ONDE_SEM_SUCESSO_SEQ_084[4:] +
+    " OR EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
+    "            WHERE n2.id = dd.origem_no AND n2.retido_em IS NOT NULL))")
+
+# O corte em TRÊS degraus (Decisão 38, §8) — port do canônico, onde está o
+# porquê de cada degrau. Em uma frase: (1) a corrida da PRÓPRIA LINHA avaliada,
+# como parâmetro e não como subconsulta viva; (2) a corrida aberta da malha que
+# ASSINOU a dependência (`origem_no`, migration 075 — a malha é determinada, e
+# a ambiguidade do membro compartilhado não aparece); (3) a janela em horas, o
+# fallback de quem não tem corrida. `ORDER BY` explícito no `TOP 1` (D15).
+#
+# O painel tem de contar a MESMA história do motor: se lá o corte passou a ser
+# o `aberta_em` da corrida, aqui também — senão a tela diria "liberado" para um
+# filho que o motor está segurando, que é a divergência painel×motor que a
+# paridade existe para impedir.
+_CORTE_SEQ_085 = (
+    "COALESCE("
+    "(SELECT me.aberta_em FROM dbo.etl_malha_execucao me "
+    "WHERE me.id = CAST(? AS BIGINT)), "
+    "(SELECT TOP 1 me2.aberta_em FROM dbo.etl_malha_no n3 "
+    "JOIN dbo.etl_malha_execucao me2 ON me2.malha_name = n3.malha_name "
+    "AND me2.fechada_em IS NULL WHERE n3.id = dd.origem_no "
+    "ORDER BY me2.aberta_em DESC, me2.id DESC), "
+    "?)")
+# ⚠️ O corte sai UMA VEZ POR LINHA, num `CROSS APPLY` — porque dentro do
+# `NOT EXISTS` ele vira expressão correlacionada, o SQL Server abandona o seek
+# em `ix_pipe_exec_cond` e varre `etl_pipeline_execucao` inteira. Medido no dev
+# (40 membros, 57.640 execuções): 227–346 ms → 24–30 ms, resposta idêntica. O
+# porquê completo está no canônico de `dags/`; aqui vale em dobro, porque esta
+# árvore responde a uma TELA que se atualiza sozinha.
+_ONDE_SEM_SUCESSO_SEQ_085 = (
+    "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
+    "WHERE e.pipeline_name = dd.depende_de "
+    "AND e.status = 'SUCESSO' AND e.substituida_em IS NULL "
+    "AND ISNULL(e.fim, e.inicio) >= k.corte)")
+# Parâmetros, na ordem em que o texto os pede: (pipeline, corrida, janela).
+SQL_LIBERADO_SEQ_085 = (
+    "SELECT dd.depende_de" + _SELECT_RETENCAO +
+    "FROM (SELECT depende_de, origem_no FROM dbo.etl_pipeline_dependencia "
+    "WHERE pipeline_name = ? AND tipo = 'PIPELINE') dd "
+    "CROSS APPLY (SELECT corte = " + _CORTE_SEQ_085 + ") k "
+    "WHERE (" + _ONDE_SEM_SUCESSO_SEQ_085[4:] +
     " OR EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
     "            WHERE n2.id = dd.origem_no AND n2.retido_em IS NOT NULL))")
 
@@ -116,15 +215,38 @@ def _faltante(linha):
     return linha[0]
 
 
-def _exec_liberado(cur, params):
-    """Cascata 082 → 078 → legado (port do canônico)."""
+def _exec_liberado(cur, params, params_seq=None):
+    """Cascata **SEQ_085 → SEQ_084 → 082 → 078 → legado** (port do canônico).
+
+    Sem ela, um banco sem a 085 faria `liberado()` devolver não-liberado para o
+    banco inteiro — no painel isso é toda malha pintada de "aguardando" sem que
+    ninguém esteja aguardando nada. `params` = (pipeline, data_ref);
+    `params_seq`, quando presente, = (pipeline, corrida, corte da janela)."""
+    if params_seq is not None:
+        try:
+            cur.execute(SQL_LIBERADO_SEQ_085, params_seq)
+            return True, False
+        except Exception as e:  # noqa: BLE001 — só as marcas conhecidas degradam
+            proximo, motivo = _degrau_apos(e), e
+            if proximo is None:
+                raise
+        if proximo == "seq_084":
+            log.info("[DEP] migration 085 ausente — o corte do modo SEQUENCIA "
+                     "volta a ser a janela em horas")
+            try:
+                cur.execute(SQL_LIBERADO_SEQ_084, (params_seq[0], params_seq[2]))
+                return True, False
+            except Exception as e:  # noqa: BLE001
+                proximo, motivo = _degrau_apos(e), e
+                if proximo != "data":
+                    raise
+        log.warning("[DEP] modo SEQUENCIA indisponivel neste banco (%s) — a "
+                    "liberacao volta a olhar a data de referencia", motivo)
     try:
         cur.execute(SQL_LIBERADO_082, params)
         return True, False
     except Exception as e:  # noqa: BLE001 — só as marcas conhecidas degradam
-        msg = str(e)
-        if (_MARCA_082 not in msg and "etl_malha_no" not in msg
-                and _MARCA_078 not in msg):
+        if not _marca_de(e, _MARCAS_082) and not _marca_de(e, (_MARCA_078,)):
             raise
     return False, _exec_com_fallback_078(
         cur, SQL_LIBERADO_078, SQL_LIBERADO_LEGADO, params)
@@ -163,7 +285,12 @@ JANELA_SEQ_PADRAO_H = 12
 
 def janela_sequencia_horas(cur) -> int:
     """Port do canônico: janela do modo sequência em horas (default 12,
-    domínio 1..168)."""
+    domínio 1..168).
+
+    ⚠️ **A partir da F6 é o FALLBACK de quem não tem corrida** (3º degrau do
+    corte, §8) — não o corte único. E **não** está depreciada: dependência
+    criada à mão pelo `POST /dependencias` tem `origem_no IS NULL` e nunca terá
+    corrida; removê-la quebraria toda dependência avulsa."""
     try:
         cur.execute("SELECT config_value FROM dbo.etl_app_config "
                     "WHERE config_key = 'dependencia_janela_sequencia_horas'")
@@ -176,7 +303,13 @@ def janela_sequencia_horas(cur) -> int:
 
 
 def inicio_do_ciclo_corrente(cur):
-    """Corte do modo sequência (port): `agora - janela`, na régua do BANCO.
+    """O corte de FALLBACK do modo sequência (port): `agora - janela`, na régua
+    do BANCO.
+
+    ⚠️ **A partir da F6 é o 3º degrau do corte**, não o corte (§8): vale para a
+    linha sem corrida — a dependência avulsa e a linha de malha cujo ciclo ainda
+    não abriu. O valor é calculado e passado SEMPRE (é o último argumento do
+    `COALESCE`); quem decide se ele chega a ser usado é o SQL Server.
 
     NÃO é a virada do dia: com o corte na virada, a corrida que atravessa a
     meia-noite (pai 23h30, filho 01h) travaria em silêncio."""
@@ -190,7 +323,19 @@ def inicio_do_ciclo_corrente(cur):
     return agora - timedelta(hours=janela_sequencia_horas(cur))
 
 
-def faltantes(cur, pipeline: str, data_ref: date) -> list:
+def _id_corrida(valor):
+    """`corrida` → int, ou None (port). Tolerante: id ilegível é "não tenho
+    corrida", nunca exceção — o degrau 2 resolve."""
+    if valor is None:
+        return None
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        log.warning("[DEP] id de corrida ilegivel (%r) — ignorado", valor)
+        return None
+
+
+def faltantes(cur, pipeline: str, data_ref: date, corrida=None) -> list:
     """Predecessores de `pipeline` SEM SUCESSO VIVO em `data_ref`.
 
     Port EXATO do SELECT de dags/utils/dependencias.liberado() (só o
@@ -205,24 +350,33 @@ def faltantes(cur, pipeline: str, data_ref: date) -> list:
     cascata, "aguardando o predecessor" é a verdade dos dois lados.
     """
     # Modo SEQUÊNCIA: o painel tem de contar a MESMA história do motor —
-    # se lá a data saiu da conta, aqui também.
+    # se lá a data saiu da conta, aqui também. E se lá o corte passou a sair da
+    # CORRIDA da linha (F6), aqui também: o painel que mostrasse a janela de 12h
+    # enquanto o motor usa o `aberta_em` diria "aguardando" para um filho já
+    # liberado (ou o contrário) nas horas em que os dois cortes discordam — que
+    # são exatamente as horas em que alguém está olhando a tela.
+    params_seq = None
     if modo_sequencia(cur):
-        cur.execute(SQL_LIBERADO_SEQ, (pipeline, inicio_do_ciclo_corrente(cur)))
-        return [_faltante(r) for r in cur.fetchall()]
-    _exec_liberado(cur, (pipeline, data_ref))
+        params_seq = (pipeline, _id_corrida(corrida),
+                      inicio_do_ciclo_corrente(cur))
+    _exec_liberado(cur, (pipeline, data_ref), params_seq)
     return [_faltante(r) for r in cur.fetchall()]
 
 
-def liberado(cur, pipeline: str, data_ref: date):
+def liberado(cur, pipeline: str, data_ref: date, corrida=None):
     """Todos os predecessores de `pipeline` têm SUCESSO em `data_ref`?
 
     Devolve (liberado, faltantes) — a MESMA pergunta e a MESMA resposta do
     canônico de dags/. Qualquer exceção na consulta → NÃO liberado, com o
     sentinel ERRO_CONSULTA embutido nos faltantes (D21: erro nunca vira
     "pode disparar" — nem no painel).
+
+    `corrida` (F6, Decisão 39) é a corrida de malha DA LINHA avaliada — no
+    painel, a da LENTE. Aditiva: quem chama com três argumentos tem exatamente
+    o comportamento anterior.
     """
     try:
-        falta = faltantes(cur, pipeline, data_ref)
+        falta = faltantes(cur, pipeline, data_ref, corrida)
         return (not falta), falta
     except Exception as e:  # noqa: BLE001 — D21: erro é NÃO liberado, nunca silêncio
         log.warning("[DEP] condicao de %s indisponivel (%s) — tratada como NAO liberada",

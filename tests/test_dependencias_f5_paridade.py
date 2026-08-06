@@ -24,6 +24,7 @@ import importlib.util
 import os
 import sys
 from datetime import date
+from datetime import datetime as _DT
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -52,13 +53,21 @@ def deps_dags():
 # ── dublês ───────────────────────────────────────────────────────────────────
 
 class CurCaptura:
-    """Captura (sql, params) sem responder nada — nível 1 (texto)."""
+    """Captura (sql, params) sem responder nada — nível 1 (texto).
+
+    `falhar_em` = {índice da chamada: mensagem} força a exceção do deploy
+    parcial na enésima tentativa, para a CASCATA ser comparada entre as
+    árvores como o SQL feliz já é."""
 
     def __init__(self):
         self.chamadas: list[tuple] = []
+        self.falhar_em: dict = {}
 
     def execute(self, sql, params=()):
+        n = len(self.chamadas)
         self.chamadas.append((str(sql), tuple(params)))
+        if n in self.falhar_em:
+            raise RuntimeError(self.falhar_em[n])
 
     def fetchall(self):
         return []
@@ -164,9 +173,76 @@ def _modo_data(deps_dags):
 def test_paridade_sql_do_modo_sequencia(deps_dags):
     """O SQL do modo SEQUÊNCIA também tem de ser o MESMO nas duas árvores —
     senão o painel diria uma coisa e o motor faria outra, que é a doença que
-    a paridade existe para impedir."""
-    assert _norm(deps_dags.SQL_LIBERADO_SEQ.replace("%s", "?")) \
-        == _norm(deps_api.SQL_LIBERADO_SEQ)
+    a paridade existe para impedir. Os DOIS degraus do modo (F6)."""
+    for nome in ("SQL_LIBERADO_SEQ_084", "SQL_LIBERADO_SEQ_085"):
+        assert _norm(getattr(deps_dags, nome).replace("%s", "?")) \
+            == _norm(getattr(deps_api, nome)), nome
+
+
+def _liga_sequencia(deps_dags, monkeypatch):
+    """Modo SEQUÊNCIA ligado nas DUAS árvores, com o MESMO corte de janela.
+
+    O corte é fixado porque ele sai de `GETDATE()` em cada árvore: deixá-lo
+    livre faria a paridade de PARÂMETROS falhar por microssegundos e esconderia
+    a divergência que este teste procura."""
+    corte = _DT(2026, 8, 4, 13, 0)
+    deps_dags.limpar_cache_modo()
+    deps_api.limpar_cache_modo()
+    deps_dags._MODO_CACHE["modo"] = True
+    deps_api._MODO_CACHE.update({"modo": True, "ate": float("inf")})
+    monkeypatch.setattr(deps_dags, "inicio_do_ciclo_corrente", lambda _c: corte)
+    monkeypatch.setattr(deps_api, "inicio_do_ciclo_corrente", lambda _c: corte)
+    return corte
+
+
+def test_paridade_do_corte_em_tres_degraus(deps_dags, monkeypatch):
+    """F6 — o corte da §8 emitido DE VERDADE pelas duas árvores: mesmo texto e
+    MESMOS parâmetros, na mesma ordem (pipeline, corrida, janela).
+
+    É o degrau mais alto do predicado canônico e ele decide DISPARO: se o motor
+    cortasse pelo `aberta_em` da corrida e o painel pela janela de 12h, a tela
+    diria "aguardando" para um filho já solto (ou o contrário) exatamente nas
+    horas em que alguém está olhando para ela."""
+    corte = _liga_sequencia(deps_dags, monkeypatch)
+    try:
+        conn = ConnCaptura()
+        deps_dags.liberado(conn, "PIPE_C", _D, 77)
+        cur = CurCaptura()
+        deps_api.liberado(cur, "PIPE_C", _D, 77)
+        assert len(conn.cur.chamadas) == 1 and len(cur.chamadas) == 1
+        sql_dags, params_dags = conn.cur.chamadas[0]
+        sql_api, params_api = cur.chamadas[0]
+        assert _norm(sql_dags) == _norm(sql_api)
+        assert params_dags == params_api == ("PIPE_C", 77, corte)
+    finally:
+        deps_dags.limpar_cache_modo()
+        deps_api.limpar_cache_modo()
+
+
+def test_paridade_da_cascata_sem_a_085(deps_dags, monkeypatch):
+    """A DEGRADAÇÃO também tem de ser gêmea: com a 085 ausente, as duas árvores
+    caem no MESMO degrau, com o MESMO SQL e os MESMOS parâmetros. Uma cascata
+    que divergisse faria o painel e o motor discordarem justamente no deploy
+    parcial — o momento em que a divergência é mais cara de diagnosticar."""
+    corte = _liga_sequencia(deps_dags, monkeypatch)
+    try:
+        conn = ConnCaptura()
+        conn.cur.falhar_em = {0: "Invalid object name 'dbo.etl_malha_execucao'."}
+        deps_dags.liberado(conn, "PIPE_C", _D, 77)
+        cur = CurCaptura()
+        cur.falhar_em = {0: "Invalid object name 'dbo.etl_malha_execucao'."}
+        deps_api.liberado(cur, "PIPE_C", _D, 77)
+        assert len(conn.cur.chamadas) == len(cur.chamadas) == 2
+        for (s_dags, p_dags), (s_api, p_api) in zip(conn.cur.chamadas,
+                                                    cur.chamadas):
+            assert _norm(s_dags) == _norm(s_api)
+            assert p_dags == p_api
+        # e o degrau em que pararam é o SEQ_084 — não a volta para a data
+        assert "data_referencia" not in conn.cur.chamadas[1][0]
+        assert conn.cur.chamadas[1][1] == ("PIPE_C", corte)
+    finally:
+        deps_dags.limpar_cache_modo()
+        deps_api.limpar_cache_modo()
 
 
 def test_paridade_sql_liberado(deps_dags):

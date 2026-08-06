@@ -1010,6 +1010,53 @@ def test_corrida_concluida_alimenta_o_banner(client, auth):
     assert painel["corrida"]["saude"] is None      # terminal: o status já diz
 
 
+# ══════ F6 — a TERCEIRA porta: o painel pergunta pela corrida da LENTE ══════
+
+def _espiao_do_predicado():
+    """Recorde de `(pipeline, data_ref, corrida)` de cada consulta ao port.
+
+    O predicado é o mesmo objeto do motor; aqui só se prova o ARGUMENTO — se o
+    painel não entregar a corrida, ele responderia pela janela de 12h enquanto
+    o motor responde pelo `aberta_em`, e a tela voltaria a contar uma história
+    diferente da do motor (a doença que o D29 matou, entrando pelo corte)."""
+    vistos: list = []
+
+    def _liberado(cur, pipeline, data_ref, corrida=None):
+        vistos.append((pipeline, data_ref, corrida))
+        return False, ["PAI_X"]
+    return vistos, _liberado
+
+
+def test_painel_com_lente_pergunta_o_predicado_com_a_corrida(client, auth):
+    """Decisão 39 — a corrida da LINHA avaliada, e no painel a linha veio do
+    recorte da LENTE: é a corrida dela que corta."""
+    vistos, espiao = _espiao_do_predicado()
+    db = FakeDb(pipelines=_pipes())
+    with _patch(db), _patch_agora(), \
+            patch("routers.malhas.deps_svc.liberado", espiao):
+        _monta_malha(client, "M1", ["A"])
+        c = db.abrir_corrida("M1", odate=ODATE, aberta_em=AGORA_BANCO,
+                             membros=["A"])
+        db.execucao("A", "AGUARDANDO_DEPENDENCIA", corrida=c["id"])
+        painel = client.get(f"/malhas/M1/execucao?corrida={c['id']}").json()
+    assert painel["execucoes"][0]["faltantes"] == ["PAI_X"]
+    assert vistos == [("A", ODATE, c["id"])]
+
+
+def test_painel_sem_lente_pergunta_sem_corrida(client, auth):
+    """Navegação por DIA não tem lente: sem corrida, o predicado resolve pelos
+    degraus 2 e 3 — o comportamento de antes da fase. Inventar uma corrida aqui
+    recortaria o dia inteiro pelo relógio de um ciclo só."""
+    vistos, espiao = _espiao_do_predicado()
+    db = FakeDb(pipelines=_pipes())
+    with _patch(db), _patch_agora(), \
+            patch("routers.malhas.deps_svc.liberado", espiao):
+        _monta_malha(client, "M1", ["A"])
+        db.execucao("A", "AGUARDANDO_DEPENDENCIA", odate=ODATE_ONTEM)
+        client.get(f"/malhas/M1/execucao?data_referencia={ODATE_ONTEM}").json()
+    assert vistos == [("A", ODATE_ONTEM, None)]
+
+
 # ═══════════════════════ degradação (Decisão 41 e §11.1) ════════════════════
 
 def test_sem_a_085_a_chave_corrida_nao_existe(client, auth):

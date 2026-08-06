@@ -28,6 +28,7 @@ paridade, como api/services/data_referencia.py fez com o canônico de dags/.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, time, timedelta
 
 # Sentinel de "não consegui perguntar" (≠ "condição não fechou"). liberado()
@@ -351,13 +352,19 @@ def _exec_com_fallback_078(cur, sql_078: str, sql_legado: str, params) -> bool:
         cur.execute(sql_078, params)
         return False
     except Exception as e:  # noqa: BLE001 — reagimos SÓ ao Invalid column name da 078
+        # ⚠️ LACUNA CONHECIDA: ao contrário de `_marca_de`, esta marca não
+        # distingue "a coluna não existe" de "o banco negou a coluna"
+        # (erro 230). Com um DENY em `substituida_em`, o legado assume e o
+        # descarte da corrida substituída some em silêncio. Mora aqui
+        # porque `test_claim_tem_fallback_para_banco_sem_a_078` pina este
+        # texto-fonte; fechar exige mexer no teste, e é da 078, não da F6.
         if _MARCA_078 not in str(e):
             raise
         cur.execute(sql_legado, params)
         return True
 
 
-def liberado(conn, pipeline: str, data_ref: date):
+def liberado(conn, pipeline: str, data_ref: date, corrida=None):
     """Todos os predecessores de `pipeline` têm SUCESSO VIVO em `data_ref`?
 
     Devolve (liberado, faltantes). Contrato EXISTS do §9 da F2 (serve-se de
@@ -381,21 +388,36 @@ def liberado(conn, pipeline: str, data_ref: date):
     liberar). Mesmo fallback das outras duas (`_exec_com_fallback_078`): sem a
     migration 078 o comportamento é o de antes, byte a byte.
 
+    ⚠️ **`corrida` (F6, Decisão 39)** é a corrida de malha DA LINHA que está
+    sendo avaliada — a do dependente —, e só tem efeito no modo SEQUÊNCIA, onde
+    vira o 1º degrau do corte (§8). É **aditiva**: quem chama com três
+    argumentos continua tendo exatamente o comportamento anterior, e é por isso
+    que esta fase não exige `force_all` — a DAG já publicada chama com três e
+    cai no degrau 2, que resolve a corrida pela malha que ASSINOU a dependência.
+
+    Ela é PARÂMETRO, e não subconsulta, de propósito. Se o corte fosse "a
+    corrida aberta no instante da avaliação", uma corrida que fechasse entre
+    duas avaliações do mesmo ciclo derrubaria o corte para a janela de 12h **em
+    silêncio**: o predicado mudaria de significado no meio da madrugada e o
+    operador veria um filho partir com o dado da rodada anterior sem nada no
+    banco explicando o quê. Vindo da linha, o corte é estável por construção.
+
     Qualquer exceção na consulta → NÃO liberado, com log [DEP] (D21: erro
     nunca vira "pode disparar"). Predicado canônico para F4 e F5/D29.
     """
     try:
         # Modo SEQUÊNCIA: a chave da pergunta deixa de ser o ODATE e passa a
         # ser o ciclo corrente. Tudo o mais é igual — inclusive a retenção do
-        # Aguarde e o descarte de corrida substituída.
+        # Aguarde e o descarte de corrida substituída. A leitura do modo e a da
+        # janela vêm ANTES do cursor do predicado para preservar a ordem de
+        # consultas de antes desta fase.
+        params_seq = None
         if modo_sequencia(conn):
-            cur = conn.cursor()
-            cur.execute(SQL_LIBERADO_SEQ,
-                        (pipeline, inicio_do_ciclo_corrente(conn)))
-            faltantes = [_faltante(r) for r in cur.fetchall()]
-            return (not faltantes), faltantes
+            params_seq = (pipeline, _id_corrida(corrida),
+                          inicio_do_ciclo_corrente(conn))
         cur = conn.cursor()
-        _com_retencao, legado = _exec_liberado(cur, (pipeline, data_ref))
+        _com_retencao, legado = _exec_liberado(cur, (pipeline, data_ref),
+                                               params_seq)
         faltantes = [_faltante(r) for r in cur.fetchall()]
         if legado:
             print("[DEP] migration 078 ausente — liberacao segue a regra "
@@ -404,6 +426,22 @@ def liberado(conn, pipeline: str, data_ref: date):
     except Exception as e:  # noqa: BLE001 — D21: erro é NÃO liberado, nunca silêncio
         print(f"[DEP] condicao de {pipeline} indisponivel ({e}) — tratada como NAO liberada")
         return False, [f"{ERRO_CONSULTA} {e}"[:200]]
+
+
+def _id_corrida(valor):
+    """`corrida` → int, ou None. Tolerante DE PROPÓSITO: um id ilegível é "não
+    tenho corrida" (e o degrau 2 resolve), jamais uma exceção. Levantar aqui
+    seria transformar um argumento malformado de UMA porta em "não liberado"
+    para todos os dependentes daquele ciclo — a mesma catástrofe que a cascata
+    de degradação evita, entrando pela outra ponta."""
+    if valor is None:
+        return None
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        print(f"[DEP] id de corrida ilegivel ({valor!r}) — ignorado; o corte "
+              "sai da malha que assinou a dependencia ou da janela")
+        return None
 
 
 def calendario_bloqueia(conn, calendario_nome: str, dia: date) -> bool:
@@ -637,6 +675,81 @@ def dependentes_com_dependencia(conn) -> list:
 # `_MARCA_082` é o que o fallback reconhece: sem a coluna (ou sem a tabela de
 # nós), a consulta cai na versão sem retenção e o comportamento é o de antes.
 _MARCA_082 = "retido_em"
+# A marca da 085. Ela mora AQUI — e não junto do INSERT de evento que também a
+# usa — porque a partir da F6 quem mais depende dela é o PREDICADO: sem a
+# migration, um SQL que cite `dbo.etl_malha_execucao` levanta "Invalid object
+# name" e, sem cascata, `liberado()` devolveria NÃO-LIBERADO para o banco
+# inteiro (célula 2 da matriz §11.1). A trava nova pararia a produção em vez de
+# segurar um Aguarde — é a catástrofe que a cascata desta fase existe para
+# evitar, e por isso a marca é uma constante só, lida por todos os fallbacks.
+_MARCA_085 = "malha_execucao_id"
+# Duas marcas por degrau porque o banco reclama de coisas diferentes conforme o
+# que falta: da COLUNA quando só ela não existe, da TABELA quando a migration
+# inteira não passou. Reagir a uma só deixaria metade dos deploys parciais
+# levantando exceção — que é justamente o que a cascata existe para não fazer.
+_MARCAS_085 = (_MARCA_085, "etl_malha_execucao")
+# `origem_no` entra nas marcas da 082 pelo mesmo motivo que `etl_malha_no`: as
+# duas nasceram na 075 e os SQLs do modo SEQUENCIA citam AS DUAS. Sem esta
+# marca, um banco sem a coluna devolvia `Invalid column name 'origem_no'`, que
+# nao casava com degrau nenhum, propagava, e `liberado()` respondia
+# NAO-LIBERADO para o banco INTEIRO — a mesma catastrofe da §11.1 por outra
+# coluna. Era anterior a esta fase (a `main` tambem cita `dd.origem_no`), mas
+# endurecer a cascata sem fechar o buraco vizinho seria consertar so o que a
+# revisao apontou.
+_MARCAS_082 = (_MARCA_082, "etl_malha_no", "origem_no")
+
+
+# ⚠️ O SQL Server NOMEIA o objeto também quando RECUSA a consulta:
+#   229 → "The SELECT permission was denied on the object 'etl_malha_execucao'"
+#   230 → "... was denied on the column 'substituida_em' of the object ..."
+# Como as marcas casam por SUBSTRING, uma permissão faltando na conta do
+# Airflow seria lida como "a migration não passou": a cascata desceria um
+# degrau, o corte cairia do `aberta_em` da corrida para a janela de 12h e o
+# filho partiria com o dado da rodada ANTERIOR — em silêncio, e com o log
+# dizendo "migration 085 ausente", que manda o operador olhar o lugar errado.
+# Reproduzido no dev com DENY SELECT em `dbo.etl_malha_execucao`.
+#
+# Permissão NÃO é deploy parcial: ela PROPAGA até a tradução D21 (não liberado
+# com o sentinel), que é o que `test_erro_desconhecido_NAO_degrada` já
+# prometia. O número vem antes da frase porque ele não depende do idioma do
+# servidor; a frase em inglês fica como rede para driver que só repasse texto.
+_NUM_RECUSA = re.compile(r"\((?:229|230|297|300)[,)]")
+
+
+def _recusa_de_permissao(erro) -> bool:
+    """O banco RECUSOU a consulta, em vez de não ter o objeto?"""
+    msg = str(erro)
+    return bool(_NUM_RECUSA.search(msg)) or "permission was denied" in msg
+
+
+def _marca_de(erro, marcas) -> bool:
+    """O erro é UMA das marcas conhecidas de deploy parcial?
+
+    Só elas degradam: deadlock, timeout e permissão continuam PROPAGANDO — um
+    fallback que engole erro de banco é a classe D21 (erro virando resposta)."""
+    if _recusa_de_permissao(erro):
+        return False
+    msg = str(erro)
+    return any(m in msg for m in marcas)
+
+
+def _degrau_apos(erro):
+    """Depois deste erro, qual degrau tentar — ou None para PROPAGAR.
+
+      • marca da 085 → `"seq_084"`: a migration da corrida falta, mas o modo
+        SEQUÊNCIA continua possível; o corte só volta a ser a janela em horas;
+      • marca da 082 ou da 078 → `"data"`: os DOIS SQLs do modo citam
+        `etl_malha_no` e `substituida_em`, então nenhum deles roda neste banco e
+        tentar o de baixo seria gastar uma ida ao banco para receber o mesmo
+        erro. O predicado por data tem cascata própria (082 → 078 → legado);
+      • qualquer outra coisa → None, e o erro sobe.
+    """
+    if _marca_de(erro, _MARCAS_085):
+        return "seq_084"
+    if _marca_de(erro, _MARCAS_082) or _marca_de(erro, (_MARCA_078,)):
+        return "data"
+    return None
+
 
 _SELECT_RETENCAO = (
     ", (SELECT TOP 1 n.id FROM dbo.etl_malha_no n "
@@ -663,16 +776,92 @@ SQL_LIBERADO_082 = (
 # ser "SUCESSO nesta data de referência" e passa a ser "SUCESSO NESTE ciclo".
 # `ISNULL(fim, inicio)` porque uma corrida que concluiu sem carimbar fim ainda
 # é um sucesso desta rodada; o corte vem de quem chama (relógio do BANCO).
-_ONDE_SEM_SUCESSO_SEQ = (
+_ONDE_SEM_SUCESSO_SEQ_084 = (
     "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
     "WHERE e.pipeline_name = dd.depende_de "
     "AND e.status = 'SUCESSO' AND e.substituida_em IS NULL "
     "AND ISNULL(e.fim, e.inicio) >= %s)")
-SQL_LIBERADO_SEQ = (
+SQL_LIBERADO_SEQ_084 = (
     "SELECT dd.depende_de" + _SELECT_RETENCAO +
     "FROM dbo.etl_pipeline_dependencia dd "
     "WHERE dd.pipeline_name = %s AND dd.tipo = 'PIPELINE' "
-    "AND (" + _ONDE_SEM_SUCESSO_SEQ[4:] +
+    "AND (" + _ONDE_SEM_SUCESSO_SEQ_084[4:] +
+    " OR EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
+    "            WHERE n2.id = dd.origem_no AND n2.retido_em IS NOT NULL))")
+
+# ── O corte do modo SEQUÊNCIA em TRÊS degraus (Decisão 38, §8 da spec) ───────
+# O corte deixa de ser um PARÂMETRO GLOBAL e passa a ser resolvido POR LINHA de
+# dependência — porque as linhas têm naturezas diferentes, e é esse o defeito
+# que a Decisão 38 nomeia: dependência assinada por uma malha TEM corrida;
+# dependência avulsa (`POST /dependencias`, `origem_no IS NULL`) NÃO tem. Um
+# corte só para as duas é ou frouxo demais para a primeira ou fatal para a
+# segunda. Ordem, e o que cada degrau evita:
+#
+#   1. a corrida da PRÓPRIA LINHA avaliada, que chega como PARÂMETRO. Não há
+#      `fechada_em IS NULL` aqui, e a ausência é deliberada (Decisão 39): o
+#      corte é o `aberta_em` DAQUELA corrida e não pode mudar de significado só
+#      porque ela fechou entre duas avaliações do mesmo ciclo. Fosse uma
+#      subconsulta por "corrida aberta agora", o fechamento derrubaria o corte
+#      para a janela de 12h EM SILÊNCIO, no meio da madrugada;
+#   2. a corrida ABERTA da malha que ASSINOU a dependência. Como a assinatura é
+#      do NÓ (`etl_pipeline_dependencia.origem_no`, migration 075), a malha é
+#      DETERMINADA: não se pergunta "de que malha este pipeline é membro" (essa
+#      é ambígua para o membro compartilhado), e sim "que malha compilou ESTA
+#      linha", que tem uma resposta só. É este degrau que faz a DAG ainda não
+#      republicada — que chama `liberado()` com três argumentos — obedecer ao
+#      ciclo em voo sem `force_all`;
+#   3. a janela em horas (084) — o fallback de quem não tem corrida, e é ele que
+#      mantém TODA dependência avulsa funcionando exatamente como antes.
+#
+# O `ORDER BY` do `TOP 1` é explícito por regra da casa (D15): com duas corridas
+# abertas da mesma malha (o rerun da F8), sem ele o corte ficaria a critério do
+# plano de execução — e "qual corrida segura este filho" não é detalhe de plano.
+# O `CAST(... AS BIGINT)` protege a comparação com `id` quando o driver manda o
+# parâmetro sem tipo (o mesmo cuidado do `ISNULL(CAST(%s AS BIGINT), -1)` dos
+# eventos), e `NULL` no degrau 1 é o caminho NORMAL de quem não recebeu corrida.
+_CORTE_SEQ_085 = (
+    "COALESCE("
+    "(SELECT me.aberta_em FROM dbo.etl_malha_execucao me "
+    "WHERE me.id = CAST(%s AS BIGINT)), "
+    "(SELECT TOP 1 me2.aberta_em FROM dbo.etl_malha_no n3 "
+    "JOIN dbo.etl_malha_execucao me2 ON me2.malha_name = n3.malha_name "
+    "AND me2.fechada_em IS NULL WHERE n3.id = dd.origem_no "
+    "ORDER BY me2.aberta_em DESC, me2.id DESC), "
+    "%s)")
+# ⚠️ O corte é avaliado UMA VEZ POR LINHA de dependência, num `CROSS APPLY` —
+# e NÃO dentro do `NOT EXISTS`. A diferença não é de estilo, é de plano:
+# escrito como `ISNULL(e.fim, e.inicio) >= COALESCE(<subconsulta>, …)`, o lado
+# direito deixa de ser um valor conhecido e vira expressão correlacionada, o
+# SQL Server desiste do seek em `ix_pipe_exec_cond` (o índice que a docstring
+# de `liberado()` diz servir) e passa a VARRER `etl_pipeline_execucao` inteira,
+# avaliando as duas subconsultas do COALESCE por linha CANDIDATA.
+#
+# Medido no dev (malha de 40 membros, 57.640 execuções, esquema e índices
+# reais, cache quente): 27,6 ms no SEQ_084 → 227–346 ms com o COALESCE dentro
+# do NOT EXISTS → 24–30 ms com o `CROSS APPLY`. O plano volta a não ter scan
+# nenhum de `etl_pipeline_execucao`, e a resposta é IDÊNTICA nos três degraus
+# (conferido contra o banco, degrau 1, degrau 2 e janela).
+#
+# Isto importa porque este predicado não roda uma vez: roda no push de CADA pai
+# para CADA filho, na varredura da guardiã para CADA linha aguardando e no
+# painel. Um fator de 10 aqui é a diferença entre a janela da madrugada caber
+# e não caber.
+#
+# O filtro do dependente vai para a tabela derivada para que a ORDEM dos
+# parâmetros continue sendo (pipeline, corrida, janela) — a mesma do SEQ_084 e
+# a que as três portas e a paridade já falam.
+_ONDE_SEM_SUCESSO_SEQ_085 = (
+    "AND NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao e "
+    "WHERE e.pipeline_name = dd.depende_de "
+    "AND e.status = 'SUCESSO' AND e.substituida_em IS NULL "
+    "AND ISNULL(e.fim, e.inicio) >= k.corte)")
+# Parâmetros, na ordem em que o texto os pede: (pipeline, corrida, janela).
+SQL_LIBERADO_SEQ_085 = (
+    "SELECT dd.depende_de" + _SELECT_RETENCAO +
+    "FROM (SELECT depende_de, origem_no FROM dbo.etl_pipeline_dependencia "
+    "WHERE pipeline_name = %s AND tipo = 'PIPELINE') dd "
+    "CROSS APPLY (SELECT corte = " + _CORTE_SEQ_085 + ") k "
+    "WHERE (" + _ONDE_SEM_SUCESSO_SEQ_085[4:] +
     " OR EXISTS (SELECT 1 FROM dbo.etl_malha_no n2 "
     "            WHERE n2.id = dd.origem_no AND n2.retido_em IS NOT NULL))")
 
@@ -726,7 +915,18 @@ JANELA_SEQ_PADRAO_H = 12
 
 
 def janela_sequencia_horas(conn) -> int:
-    """Tamanho da janela do modo sequência, em horas (config, default 12).
+    """Tamanho da janela do modo sequência, em horas (config
+    `dependencia_janela_sequencia_horas`, default 12).
+
+    ⚠️ **A partir da F6 esta janela é o FALLBACK de quem não tem corrida** — o
+    3º degrau do corte (§8, Decisão 38), não mais o corte único. Quem tem
+    corrida (a linha assinada por uma malha) é cortado pelo `aberta_em` dela.
+
+    E ela **não** está depreciada: dependência criada à mão pelo
+    `POST /dependencias` tem `origem_no IS NULL` e nunca terá corrida nenhuma —
+    tirar a janela quebraria TODA dependência avulsa de uma vez, que é uma
+    classe inteira de uso do produto. Ela deixou de ser a régua de todos para
+    ser a régua de quem não tem outra.
 
     Fora de 1..168 volta ao default: janela de 0 travaria tudo e uma de mil
     horas deixaria o sucesso da semana passada liberar hoje."""
@@ -744,8 +944,17 @@ def janela_sequencia_horas(conn) -> int:
 
 
 def inicio_do_ciclo_corrente(conn) -> datetime:
-    """Corte do modo sequência: `agora - janela`, na régua do BANCO (é lá que
-    `fim`/`inicio` são carimbados).
+    """O corte de FALLBACK do modo sequência: `agora - janela`, na régua do
+    BANCO (é lá que `fim`/`inicio` são carimbados).
+
+    ⚠️ **A partir da F6 este é o 3º degrau do corte, não o corte** (§8, Decisão
+    38): ele vale para a linha que não tem corrida — a dependência avulsa
+    (`origem_no IS NULL`) e a linha de malha cuja corrida ainda não abriu. Onde
+    há corrida, quem corta é o `aberta_em` dela, resolvido dentro do SQL. O
+    valor continua sendo calculado SEMPRE e passado SEMPRE: ele é o último
+    argumento do `COALESCE`, e é o SQL Server — não o Python — que decide se
+    chega a usá-lo. Uma conta de tempo aqui para "adivinhar" se haverá corrida
+    seria a conta de tempo no worker que este projeto proibiu.
 
     ⚠️ NÃO é a virada do dia, e a diferença é o caso que motivou esta função:
     malha que começa 23h e termina 01h do dia seguinte. Com o corte na virada
@@ -757,20 +966,53 @@ def inicio_do_ciclo_corrente(conn) -> datetime:
     return agora_do_banco(conn) - timedelta(hours=janela_sequencia_horas(conn))
 
 
-def _exec_liberado(cur, params):
+def _exec_liberado(cur, params, params_seq=None):
     """Executa o predicado no nível mais alto que o banco aguenta.
 
-    Cascata 082 → 078 → legado. Sem ela, um banco sem a 082 receberia
-    "Invalid column name 'retido_em'", o erro subiria e `liberado` devolveria
-    NÃO-liberado para TODO mundo (D21) — a trava nova pararia a produção
-    inteira em vez de segurar um Aguarde. Devolve (com_retencao, no_legado)."""
+    Cascata **SEQ_085 → SEQ_084 → 082 → 078 → legado**, e ela é obrigatória: um
+    banco sem a 082 receberia "Invalid column name 'retido_em'"; um sem a 085,
+    "Invalid object name 'dbo.etl_malha_execucao'". Em qualquer dos dois o erro
+    subiria, `liberado` devolveria NÃO-liberado para TODO mundo (D21) e a trava
+    nova pararia a produção inteira em vez de segurar um Aguarde. É a célula 2
+    da matriz do §11.1 — `dags/` novo com a migration ainda não aplicada —, e é
+    a mais provável de todas, porque a etapa 5 do `deploy.sh` é padrão-NÃO.
+
+    `params` = (pipeline, data_ref) do modo DATA. `params_seq`, quando presente,
+    = (pipeline, corrida, corte da janela) e liga o modo SEQUÊNCIA; o degrau
+    SEQ_084 reusa (pipeline, corte) do mesmo tuple, sem recalcular nada — a
+    conta de tempo é do SQL Server, nunca daqui.
+
+    Devolve (com_retencao, no_legado)."""
+    if params_seq is not None:
+        try:
+            cur.execute(SQL_LIBERADO_SEQ_085, params_seq)
+            return True, False
+        except Exception as e:  # noqa: BLE001 — só as marcas conhecidas degradam
+            proximo, motivo = _degrau_apos(e), e
+            if proximo is None:
+                raise
+        if proximo == "seq_084":
+            print("[DEP] migration 085 ausente — o corte do modo SEQUENCIA "
+                  "volta a ser a janela em horas (a corrida fica fora da conta)")
+            try:
+                cur.execute(SQL_LIBERADO_SEQ_084, (params_seq[0], params_seq[2]))
+                return True, False
+            except Exception as e:  # noqa: BLE001
+                proximo, motivo = _degrau_apos(e), e
+                if proximo != "data":
+                    raise
+        # Banco anterior à 082/078 com o interruptor de SEQUÊNCIA ligado só
+        # existe em deploy fora de ordem. Voltar à pergunta por data de
+        # referência muda a REGRA, e por isso o log é explícito e cita o objeto
+        # que falta: melhor o operador ler que a regra caiu do que a malha
+        # travar sem ninguém saber por quê.
+        print(f"[DEP] modo SEQUENCIA indisponivel neste banco ({motivo}) — a "
+              "liberacao volta a olhar a data de referencia")
     try:
         cur.execute(SQL_LIBERADO_082, params)
         return True, False
     except Exception as e:  # noqa: BLE001 — só as marcas conhecidas degradam
-        msg = str(e)
-        if (_MARCA_082 not in msg and "etl_malha_no" not in msg
-                and _MARCA_078 not in msg):
+        if not _marca_de(e, _MARCAS_082) and not _marca_de(e, (_MARCA_078,)):
             raise
     return False, _exec_com_fallback_078(
         cur, SQL_LIBERADO_078, SQL_LIBERADO_LEGADO, params)
@@ -1096,11 +1338,13 @@ _SQL_EVENTO = {
         "AND ISNULL(malha_execucao_id, -1) = ISNULL(CAST(%s AS BIGINT), -1))"),
 }
 
-# A marca da 085 na tabela de eventos, para a cascata de degradação: `dags/`
-# novo com a migration ainda não aplicada (célula 2 da matriz §11.1) tem de
-# gravar o evento MESMO ASSIM, só que sem a corrida. Perder o alerta porque a
-# coluna nova não existe seria pior que o problema que a coluna resolve.
-_MARCA_085 = "malha_execucao_id"
+# A marca da 085 vale também aqui, na tabela de eventos: `dags/` novo com a
+# migration ainda não aplicada (célula 2 da matriz §11.1) tem de gravar o evento
+# MESMO ASSIM, só que sem a corrida. Perder o alerta porque a coluna nova não
+# existe seria pior que o problema que a coluna resolve. A constante é a MESMA
+# do predicado (definida junto de `_MARCA_082`) de propósito: são duas quedas do
+# mesmo deploy parcial, e duas grafias divergiriam no dia em que a mensagem do
+# SQL Server mudasse.
 
 
 def gravar_evento(conn, pipeline: str, data_ref: date, tipo: str,
