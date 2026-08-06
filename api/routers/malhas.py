@@ -2834,6 +2834,44 @@ def _exec_linhas_do_painel(cur, data_ref, bruta) -> None:
         (data_ref,) + extras)
 
 
+_SQL_EVENTOS_DA_DATA = (
+    "SELECT pipeline_name, tipo, detectado_em, detalhe{notif} "
+    "FROM dbo.etl_dependencia_evento WHERE data_referencia = ?")
+
+
+def _eventos_da_data(cur, data_ref):
+    """Eventos da guardiã na data → `(linhas, tem_notificado_em)`.
+
+    F10 (§9.14/Decisão 66) — `notificado_em` existe na 067 e **nunca foi lido
+    pela tela**. Ele é o único jeito de responder a pior pergunta do plantão:
+    *o aviso saiu?* Webhook com 401 por URL rotacionada faz a guardiã logar e
+    seguir (`dags/etl_dependencia_guardia.py:822`), e a malha falha em silêncio
+    para todo mundo menos para quem já está olhando a tela.
+
+    A coluna pode não estar no banco (deploy parcial): aí a leitura degrada
+    para a consulta de sempre e o chamador **omite a chave** — que é diferente
+    de mandá-la `null`. `null` significa "está na fila e ninguém foi avisado", e
+    é o que ACENDE o banner vermelho; a ausência significa "não perguntei", e
+    não acende nada. Trocar um pelo outro pintaria de vermelho toda malha de um
+    banco antigo, que é o alarme falso que a Decisão 26 proíbe.
+    """
+    try:
+        cur.execute(_SQL_EVENTOS_DA_DATA.format(notif=", notificado_em"),
+                    (data_ref,))
+        return cur.fetchall(), True
+    except Exception as e:  # noqa: BLE001 — reagimos SÓ à coluna ausente/negada
+        # Marca, e não `except` cego: um timeout de lock não vira "banco sem a
+        # coluna" (a segunda consulta pagaria o mesmo timeout de novo e a tela
+        # perderia o banner por um motivo que não é o dela). "Invalid column
+        # name 'notificado_em'" e o DENY do erro 230 citam os dois a coluna.
+        if "notificado_em" not in str(e):
+            raise
+        log.warning("[MALHA] coluna notificado_em indisponivel (%s) — o painel "
+                    "segue sem o estado da fila de aviso", e)
+    cur.execute(_SQL_EVENTOS_DA_DATA.format(notif=""), (data_ref,))
+    return cur.fetchall(), False
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/malhas", tags=["malhas"])
@@ -3680,10 +3718,7 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
         # Eventos da guardiã da MESMA data — de membros (F9) e dos nós desta
         # malha (F14) — mais novo primeiro. Marcador de nó de OUTRA malha não
         # resolve aqui e não aparece (mesma regra do filtro por membro).
-        cur.execute(
-            "SELECT pipeline_name, tipo, detectado_em, detalhe "
-            "FROM dbo.etl_dependencia_evento WHERE data_referencia = ?",
-            (data_ref,))
+        linhas_evento, tem_notificado = _eventos_da_data(cur, data_ref)
         eventos = []
         eventos_no = []
         eventos_corrida = []
@@ -3695,13 +3730,24 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
         # do limite mudou de lugar ou ficou âmbar.
         marcador_corrida = (MARCADOR_CORRIDA.format(corrida_payload["id"])
                             if corrida_payload is not None else None)
-        for r in cur.fetchall():
+        # `notificado_em` (F10): a CHAVE só existe quando a coluna existe. Ela
+        # tem três leituras, e as três precisam ser distinguíveis na tela —
+        # chave ausente = "não perguntei" (banco sem a coluna), `null` =
+        # "está na fila e ninguém foi avisado", texto = "avisado às HH:MM".
+        # Sem a distinção, um banco sem a coluna acenderia o banner vermelho de
+        # notificação presa em TODA malha, que é o alarme falso da Decisão 26
+        # com roupa nova.
+        def _notif(r):
+            return {"notificado_em": _fmt_dt(r[4])} if tem_notificado else {}
+
+        for r in linhas_evento:
             bruto = str(r[0] or "").strip()
             if marcador_corrida is not None and bruto == marcador_corrida:
                 eventos_corrida.append({
                     "tipo": r[1],
                     "criado_em": _fmt_dt(r[2]),
                     "mensagem": r[3],
+                    **_notif(r),
                 })
                 continue
             no = marcador_no.get(bruto)
@@ -3712,6 +3758,7 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
                     "tipo": r[1],
                     "criado_em": _fmt_dt(r[2]),
                     "mensagem": r[3],
+                    **_notif(r),
                 })
                 continue
             oficial = membro_oficial.get(bruto.casefold())
@@ -3722,6 +3769,7 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
                 "tipo": r[1],
                 "criado_em": _fmt_dt(r[2]),
                 "mensagem": r[3],
+                **_notif(r),
             })
         eventos.sort(key=lambda e: (e["criado_em"] or "", e["pipeline_name"]),
                      reverse=True)

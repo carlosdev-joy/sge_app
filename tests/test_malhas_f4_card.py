@@ -185,9 +185,12 @@ class FakeCur(FakeCurF3):
         # anterior do MESMO dia continua chegando ao painel. Um dublê que
         # devolve vazio faz o teste do canvas verde passar sem canvas nenhum.
         if s.startswith("SELECT pipeline_name, tipo, detectado_em"):
+            # F10: `notificado_em` é a 5ª coluna quando o SELECT a pede.
+            notif = "notificado_em" in s
             self._rows = [
                 (e.get("pipeline_name") or e.get("pipeline"), e["tipo"],
                  e.get("detectado_em") or db.agora_banco, e.get("detalhe"))
+                + ((e.get("notificado_em"),) if notif else ())
                 for e in db.eventos if e.get("data_referencia") == p[0]]
             self.rowcount = -1
             return

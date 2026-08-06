@@ -53,6 +53,7 @@ from api.main import app as _app  # noqa: F401  (ordem de import — ver test_co
 
 from services import dependencias as deps_svc
 from services import malha_corrida as mc
+from routers import malhas as malhas_router
 from tests.test_malha_corrida_porta import AGORA_BANCO, _guarda
 from tests.test_malhas_f4_card import (ODATE, FakeCur as FakeCurF4,
                                        FakeDb as FakeDbF4, _patch, _patch_agora,
@@ -81,6 +82,10 @@ class FakeDb(FakeDbF4):
         # Injeção de falha na leitura do grafo: "não consegui apurar o raio" tem
         # de ser uma resposta possível, e ela é DIFERENTE de "ninguém atrás".
         self.falhar_grafo = False
+        # Banco SEM a coluna `notificado_em` (deploy parcial). O dublê imita o
+        # SQL Server: "Invalid column name" — é essa marca, e não um `except`
+        # cego, que autoriza a consulta de fallback.
+        self.sem_notificado_em = False
 
     def depende(self, pipeline, de, origem_no=None):
         self.dependencias.append({"pipeline": pipeline, "depende_de": de,
@@ -100,6 +105,10 @@ class FakeCur(FakeCurF4):
             self._rows = self._lote(s, p)
             self.rowcount = -1
             return
+        if s.startswith("SELECT pipeline_name, tipo, detectado_em") \
+                and "notificado_em" in s and db.sem_notificado_em:
+            db.sqls.append(s)
+            raise RuntimeError("Invalid column name 'notificado_em'.")
         if s.startswith("SELECT mm.pipeline_name, p.criticidade, d.depende_de"):
             db.sqls.append(s)
             if db.falhar_grafo:
@@ -681,7 +690,13 @@ def test_o_refetch_do_painel_so_encurta_depois_que_o_N_MAIS_1_sai():
 
     A leitura é de FONTE de propósito: o que se prova é uma relação entre duas
     árvores de deploy (`api/` e o `dist/` do front), e ela não existe em
-    nenhum runtime — o `dist/` sobe na etapa 3 e a `api/` na 7."""
+    nenhum runtime — o `dist/` sobe na etapa 3 e a `api/` na 7.
+
+    ⚠️ A régua mede o MENOR intervalo que a fonte autoriza, e não "o número
+    depois dos dois pontos": desde a F10 o `refetchInterval` é CONDICIONAL
+    (15 s com corrida ABERTA, 60 s com ela fechada, 30 s sem ciclo — Decisão
+    73), e uma regex que casasse só o primeiro literal deixaria passar um
+    `5_000` escondido no segundo ramo."""
     router = (RAIZ / "api" / "routers" / "malhas.py").read_text(encoding="utf-8")
     corpo = router.split("def get_malha_execucao(", 1)[1]
     corpo = corpo.split("\n@router.", 1)[0]
@@ -689,10 +704,16 @@ def test_o_refetch_do_painel_so_encurta_depois_que_o_N_MAIS_1_sai():
 
     editor = (RAIZ / "ui-react" / "src" / "components" / "malhas"
               / "MalhaEditor.tsx").read_text(encoding="utf-8")
-    trecho = editor.split("'malha-execucao'", 1)[1].split("})", 1)[0]
-    m = re.search(r"refetchInterval:\s*([0-9_]+)", trecho)
-    assert m, "o painel perdeu o refetchInterval — a régua deste teste sumiu"
-    intervalo = int(m.group(1).replace("_", ""))
+    trecho = editor.split("'malha-execucao'", 1)[1].split("\n  })", 1)[0]
+    assert "refetchInterval:" in trecho, (
+        "o painel perdeu o refetchInterval — a régua deste teste sumiu")
+    bloco = trecho.split("refetchInterval:", 1)[1]
+    # Só literais de milissegundos (`15_000`, `30000`): "15 s" no comentário ao
+    # lado não é intervalo, e casá-lo faria o teste reprovar a própria prosa.
+    numeros = [int(n.replace("_", ""))
+               for n in re.findall(r"\b(\d{1,3}_\d{3}|\d{4,})\b", bloco)]
+    assert numeros, "o refetchInterval do painel não tem intervalo nenhum"
+    intervalo = min(numeros)
 
     if n_mais_1:
         assert intervalo >= 30_000, (
@@ -703,6 +724,12 @@ def test_o_refetch_do_painel_so_encurta_depois_que_o_N_MAIS_1_sai():
         assert intervalo >= 15_000, (
             "refetch de %d ms é mais agressivo do que a Decisão 73 autoriza"
             % intervalo)
+        # O outro lado: com o agregado no caminho, o painel TEM de aproveitar
+        # — deixar os 30 s de sempre seria pagar o custo da fase e não colher
+        # nada dela.
+        assert intervalo <= 15_000, (
+            "o agregado entrou e o painel continuou em %d ms: a Decisão 73 "
+            "manda 15 s com corrida ABERTA depois que o N+1 sai" % intervalo)
 
 
 def test_o_agregado_esta_no_caminho_corrente_do_painel():
@@ -725,3 +752,74 @@ def test_a_api_declara_o_contrato_novo_dos_pendentes(client, auth):
     assert set(painel["corrida"]["pendentes"][0]) == {
         "pipeline", "classe", "desde", "faltante", "faltantes",
         "alcance", "alcance_alta", "criticidade"}
+
+
+# ═════ Decisão 66/3 — a FILA DE AVISO chega ao painel (`notificado_em`) ══════
+
+def _com_evento_do_ciclo(client, db, *, notificado_em):
+    """Corrida com um `MALHA_FALHOU` gravado no marcador do ciclo."""
+    c = _corrida_em_cadeia(client, db)
+    db.eventos.append({
+        "pipeline_name": malhas_router.MARCADOR_CORRIDA.format(c["id"]),
+        "data_referencia": ODATE, "tipo": "MALHA_FALHOU",
+        "detectado_em": AGORA_BANCO - timedelta(minutes=52),
+        "detalhe": "malha M1 falhou", "notificado_em": notificado_em})
+    return c
+
+
+def test_o_evento_do_ciclo_diz_se_o_aviso_saiu(client, auth):
+    """`notificado_em` existe na 067 desde sempre e NUNCA foi lido pela tela.
+
+    Ele é o único jeito de responder a pior pergunta do plantão — *o aviso
+    saiu?*: webhook com 401 por URL rotacionada faz a guardiã logar e seguir, e
+    a malha falha em silêncio para todo mundo menos para quem já está com esta
+    tela aberta."""
+    db = FakeDb(pipelines=_pipes())
+    with _patch(db), _patch_agora():
+        c = _com_evento_do_ciclo(client, db, notificado_em=None)
+        painel = client.get(f"/malhas/M1/execucao?corrida={c['id']}").json()
+    ev = painel["eventos_corrida"][0]
+    assert ev["tipo"] == "MALHA_FALHOU"
+    # Chave PRESENTE com `null` = está na fila. É o que acende o banner.
+    assert "notificado_em" in ev and ev["notificado_em"] is None
+
+
+def test_aviso_ja_enviado_chega_com_o_instante(client, auth):
+    db = FakeDb(pipelines=_pipes())
+    quando = AGORA_BANCO - timedelta(minutes=50)
+    with _patch(db), _patch_agora():
+        c = _com_evento_do_ciclo(client, db, notificado_em=quando)
+        painel = client.get(f"/malhas/M1/execucao?corrida={c['id']}").json()
+    assert painel["eventos_corrida"][0]["notificado_em"] == \
+        quando.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def test_banco_sem_a_coluna_OMITE_a_chave_em_vez_de_mandar_null(client, auth):
+    """Deploy parcial (§11.1). As duas leituras são OPOSTAS e a tela precisa
+    distingui-las: `null` é "está na fila e ninguém foi avisado" — banner
+    vermelho —, e a AUSÊNCIA é "não perguntei". Mandar `null` num banco sem a
+    coluna acenderia o banner em toda malha, que é o alarme falso da Decisão 26
+    com roupa nova.
+
+    E o painel continua inteiro: a degradação é da coluna, não da tela."""
+    db = FakeDb(pipelines=_pipes())
+    db.sem_notificado_em = True
+    with _patch(db), _patch_agora():
+        c = _com_evento_do_ciclo(client, db, notificado_em=None)
+        painel = client.get(f"/malhas/M1/execucao?corrida={c['id']}").json()
+    ev = painel["eventos_corrida"][0]
+    assert "notificado_em" not in ev
+    assert ev["tipo"] == "MALHA_FALHOU"
+    # O resto da leitura não sofre — inclusive o agregado desta fase.
+    assert painel["corrida"]["membros_total"] == 5
+    assert _pendentes(painel)["B"]["faltante"] == "A"
+
+
+def test_a_marca_da_coluna_e_o_que_autoriza_o_fallback():
+    """A cascata reage à MARCA, e não a um `except` cego: um timeout de lock
+    não pode virar "banco sem a coluna" — a segunda consulta pagaria o mesmo
+    timeout e a tela perderia o banner por um motivo que não é o dela."""
+    fonte = (RAIZ / "api" / "routers" / "malhas.py").read_text(encoding="utf-8")
+    corpo = fonte.split("def _eventos_da_data(", 1)[1].split("\ndef ", 1)[0]
+    assert 'if "notificado_em" not in str(e):' in corpo
+    assert "raise" in corpo
