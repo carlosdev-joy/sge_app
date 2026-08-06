@@ -10,10 +10,12 @@
 // `SEM_TRABALHO` caírem no cinza do `default`, que é mentira de domínio.
 import type { LucideIcon } from 'lucide-react'
 import {
-  Activity, AlertTriangle, Ban, CheckCircle2, CircleSlash, Clock, Hourglass,
-  Moon, TimerOff, XCircle,
+  Activity, AlertTriangle, Ban, CalendarX, CheckCircle2, CircleSlash, Clock,
+  Hourglass, Moon, TimerOff, XCircle,
 } from 'lucide-react'
-import type { CorridaApi, CorridaCabecalho } from '../../types'
+import type {
+  CorridaApi, CorridaCabecalho, CorridaEsperadaApi,
+} from '../../types'
 import {
   diaCurto, duracaoEntre, decorridoMin, horaCurta, carimboLongo, textoDuracao,
 } from './tempoCorrida'
@@ -328,6 +330,23 @@ export const STATUS_CORRIDA: Record<string, EstiloCorrida> = {
   },
 }
 
+/** F9 (Decisão 58) — o estado DERIVADO `não abriu`.
+ *
+ *  Fica FORA de `STATUS_CORRIDA` de propósito: aquele mapa é o domínio da
+ *  coluna `status` de `etl_malha_execucao`, e "não abriu" é a ausência de
+ *  linha, não um valor dela. Misturá-los convidaria alguém a procurar
+ *  `'nao_abriu'` no banco — onde ele nunca vai estar.
+ *
+ *  Âmbar, e não vermelho: pela partição da Decisão 59, vermelho CHEIO é
+ *  "acabou mal" e este ciclo não chegou a começar. Âmbar é a faixa de
+ *  "prazo/atípico/humano", que é exatamente onde este estado mora. */
+export const ESTILO_NAO_ABRIU: EstiloCorrida = {
+  rotulo: 'não abriu',
+  chip: CHIP_AMBAR,
+  dot: 'bg-amber-500',
+  Icone: CalendarX,
+}
+
 /** A SAÚDE manda na cor quando o ciclo está ABERTO (Decisão 11). O rótulo é
  *  COMPOSTO — "em andamento · com falha (ainda rodando)" —, porque o estado do
  *  ciclo e o do trabalho são duas afirmações, e omitir a segunda é o card
@@ -386,6 +405,25 @@ export function estiloCorrida(status: string,
   }
 }
 
+/** O ESTADO da corrida como a tela o anuncia: status + saúde + o "há 40 min"
+ *  do sinal perdido, num objeto só.
+ *
+ *  Existe como função exportada porque DOIS consumidores precisam da mesma
+ *  frase — o `CorridaBadge` (que só recebe a corrida) e o `resumoCorrida` (que
+ *  monta o card inteiro). Duas derivações do mesmo estado divergiriam no dia em
+ *  que alguém mexesse numa delas, e o defeito apareceria como a pílula dizendo
+ *  "em andamento" ao lado de um texto dizendo "sem sinal há 40 min".
+ *
+ *  Os minutos vêm do BANCO (`sem_sinal_min`, já subtraído lá): é medida de
+ *  relógio, e nenhum relógio local participa. */
+export function estadoDaCorrida(c: CorridaApi): EstiloCorrida {
+  const estilo = estiloCorrida(c.status, c.saude)
+  if (c.status !== 'ABERTA' || c.saude !== 'SEM_PROGRESSO' || !c.sem_sinal_min) {
+    return estilo
+  }
+  return { ...estilo, rotulo: `${estilo.rotulo} há ${textoDuracao(c.sem_sinal_min)}` }
+}
+
 /** Rótulo curto de uma corrida da LISTA (`GET /corridas`) — o que o ◀ ▶ diz
  *  antes de o operador clicar. Só o cabeçalho: a lista não traz saúde nem
  *  denominador, e inventar "0 de 0" aqui seria o card mentindo com dado que
@@ -438,6 +476,71 @@ export const ROTULO_PENDENCIA: Record<string, string> = {
   nao_partiu: 'não chegou a iniciar',
 }
 
+/** O que a `ui/Progress` desenha, já resolvido — segmentos, denominador e os
+ *  dois textos acessíveis. Sai daqui (e não do JSX) pela mesma razão que a
+ *  cor da faixa: card e painel têm de desenhar a MESMA barra a partir do
+ *  MESMO agregado (D75/#5). */
+export interface BarraCorrida {
+  segmentos: {
+    chave: string
+    valor: number
+    cor: string
+    rotulo: string
+    animado?: boolean
+    hachurado?: boolean
+  }[]
+  /** Denominador: `membros_total` do snapshot, que NÃO ENCOLHE (Decisão 52). */
+  total: number
+  /** O `x` do `x de y` — o mesmo número que o olho lê ao lado da barra. */
+  valorAtual: number
+  ariaLabel: string
+  /** O que o leitor de tela ANUNCIA. Existe para calar o cálculo automático de
+   *  `valuenow/valuemax`, que anunciaria "57%" — o percentual de CONTAGEM que a
+   *  Decisão 56 proíbe em toda superfície, entrando pela porta da
+   *  acessibilidade. Nenhuma das duas metades pode produzir "%". */
+  valorTexto: string
+}
+
+// A ordem dos segmentos é FIXA (§9.2) e nunca reordena entre refreshes: o olho
+// aprende o desenho, e uma barra que troca a ordem dos pedaços a cada 20 s
+// destrói a leitura periférica que ela existe para servir.
+//
+// Só DUAS cores preenchidas — verde (feito) e azul (rodando) — mais o trilho
+// hachurado de "não roda hoje". O que travou fica FORA (Decisão 54): vermelho
+// ocupando comprimento é lido como "quase pronto" a 1,5 m, e a barra responde
+// UMA coisa só — quanto já ficou pronto.
+function barraDaCorrida(c: CorridaApi, ok: number, total: number): BarraCorrida {
+  const vivos = c.membros_vivos ?? 0
+  const dispensados = c.membros_dispensados ?? 0
+  const segmentos = [
+    { chave: 'ok', valor: ok, cor: 'bg-green-500 dark:bg-green-500',
+      rotulo: total === 1 ? 'concluído' : 'concluídos' },
+    // O ÚNICO animado desta camada, junto do dot de ABERTA e da aresta ativa
+    // (Decisão 75/#13) — animação em tudo viraria ruído e o olho perderia a
+    // frente da corrida.
+    { chave: 'vivo', valor: vivos, cor: 'bg-blue-500 dark:bg-blue-500',
+      rotulo: 'em execução', animado: true },
+    // Hachura significa UMA coisa nesta camada: "não roda hoje" (§9.15/#16).
+    // Corrida congelada usa `opacity-60` + a palavra "parou em", nunca hachura.
+    { chave: 'dispensado', valor: dispensados, cor: '',
+      rotulo: 'não rodam hoje (regra de dia)', hachurado: true },
+  ].filter(s => s.valor > 0)
+  return {
+    segmentos,
+    total,
+    valorAtual: ok,
+    ariaLabel: 'progresso da corrida, em pipelines concluídos',
+    // Sem "%" em lugar nenhum, nem para o leitor de tela. O plural acompanha o
+    // denominador, como no texto visível: "1 de 1 pipelines concluídos" seria
+    // a única frase da tela em português errado, e ela é justamente a que só
+    // quem não enxerga a barra ouve.
+    valorTexto: `${ok} de ${total} pipeline${total === 1 ? '' : 's'} `
+      + `concluído${total === 1 ? '' : 's'}`
+      + (vivos ? `, ${vivos} em execução` : '')
+      + (dispensados ? `, ${dispensados} não ${dispensados === 1 ? 'roda' : 'rodam'} hoje` : ''),
+  }
+}
+
 /** O que o card e a faixa escrevem sobre a corrida. Derivação PURA — é ela que
  *  garante que as duas superfícies contem a MESMA história (D75/#5: um
  *  agregado, uma fonte), e é ela que o teste com relógio deslocado exercita. */
@@ -453,11 +556,31 @@ export interface ResumoCorrida {
   /** Relativo enquanto aberta ("há 42 min"); ABSOLUTO quando fechada
    *  ("01:10 → 04:02 · 2h52"). Nunca os dois formatos no mesmo card. */
   tempo: string | null
-  /** "1 de 4 pipelines concluídos" · "parou em 2 de 4" · null em SEM_TRABALHO
-   *  (Decisão 57: nem 0, nem 4 de 4 — nenhum dos dois é verdade). */
+  /** "1 de 4 pipelines concluídos" · "parou em 2 de 4" · "4 de 4 · fechando" ·
+   *  null em SEM_TRABALHO (Decisão 57: nem 0, nem 4 de 4 — nenhum dos dois é
+   *  verdade). */
   contagem: string | null
   /** A subtração da Decisão 53, obrigatória sempre que há contagem. */
   membros: string | null
+  // ── F9: a barra, o fechamento e o "nada previsto" ────────────────────────
+  /** Todos os membros que podiam concluir já concluíram, e a corrida CONTINUA
+   *  ABERTA. Barra cheia — mas **não** é "concluída" nem "100%": o ciclo ainda
+   *  está fechando, e chamar isso de concluído é a mentira de sempre, agora
+   *  antecipada em 15 minutos. */
+  fechando: boolean
+  /** O que FALTA para ela fechar (Decisão 45), dizendo a REGRA antes da hora:
+   *  "fecha 15 min após o último movimento; se nada mais mexer, por volta de
+   *  04:17". Anunciar só a hora produziria o chamado falso das 04:18 quando
+   *  alguém se mexeu às 04:16 — o relógio REINICIA a cada movimento. */
+  fechamento: string | null
+  /** Os segmentos da barra, na ORDEM FIXA da §9.2, ou `null` quando não há
+   *  barra: `SEM_TRABALHO` (Decisão 57) e "não consegui apurar"
+   *  (`membros_total` nulo) não desenham barra nenhuma. */
+  barra: BarraCorrida | null
+  /** "nada previsto" — o traço neutro que substitui a barra em `SEM_TRABALHO`.
+   *  Nem 0, nem "4 de 4": 0 leria como "falhou tudo" e a barra cheia como
+   *  "rodou tudo", e nenhum dos dois aconteceu. */
+  nadaPrevisto: string | null
   /** Chip FORA do que a barra preencheria (Decisão 54). */
   travados: string | null
   /** O nome do problema mais grave, com a classe dele. */
@@ -507,8 +630,12 @@ export const ROTULO_EVENTO_CORRIDA: Record<string, string> = {
 }
 
 /** Os desfechos em que a corrida foi INTERROMPIDA: o número que ficou não é
- *  progresso, é onde ela parou (Decisão 57). */
-const INTERROMPIDA = new Set(['EXPIRADA', 'ABORTADA', 'CANCELADA'])
+ *  progresso, é onde ela parou (Decisão 57) — o rótulo vira "parou em 4 de 7" e
+ *  a barra CONGELA com `opacity-60`. Exportado porque quem escreve o texto
+ *  (aqui) e quem apaga a barra (o card) precisam da MESMA lista: um desfecho de
+ *  fora dela sairia com barra viva embaixo de "parou em". */
+export const CORRIDA_INTERROMPIDA = new Set(['EXPIRADA', 'ABORTADA', 'CANCELADA'])
+const INTERROMPIDA = CORRIDA_INTERROMPIDA
 
 const FAIXA_VERMELHA =
   'border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-900/20 dark:text-red-200'
@@ -546,13 +673,9 @@ export function resumoCorrida(
   tempo: { respostaEm: number; agora: number },
   qtdCadastro?: number,
 ): ResumoCorrida {
-  const estilo = estiloCorrida(c.status, c.saude)
+  const estilo = estadoDaCorrida(c)
+  const rotulo = estilo.rotulo
   const aberta = c.status === 'ABERTA'
-  // "sem sinal há 40 min" — os minutos vêm do BANCO (`sem_sinal_min`, já
-  // subtraído lá): é medida de relógio, e nenhum relógio local participa.
-  const rotulo = (aberta && c.saude === 'SEM_PROGRESSO' && c.sem_sinal_min)
-    ? `${estilo.rotulo} há ${textoDuracao(c.sem_sinal_min)}`
-    : estilo.rotulo
 
   const dia = diaCurto(c.data_referencia) ?? c.data_referencia
   const identidade = c.sequencia > 1
@@ -578,20 +701,47 @@ export function resumoCorrida(
   const ok = c.membros_ok
   let contagem: string | null = null
   let membros: string | null = null
+  let barra: BarraCorrida | null = null
+  let nadaPrevisto: string | null = null
+  let fechando = false
   let fora = 0
   if (total !== null && total !== undefined && ok !== null && ok !== undefined) {
     if (c.status === 'SEM_TRABALHO') {
       // Sem barra e sem "x de y": 0 leria como "falhou tudo" e 4 de 4 como
       // "rodou tudo", e nenhum dos dois aconteceu.
       membros = `os ${total} membros não rodam hoje (regra de dia)`
+      nadaPrevisto = 'nada previsto'
     } else {
-      contagem = INTERROMPIDA.has(c.status)
-        ? `parou em ${ok} de ${total}`
-        : `${ok} de ${total} pipeline${total === 1 ? '' : 's'} concluído${total === 1 ? '' : 's'}`
+      // SNAPSHOT VAZIO (§9.9): a corrida abriu e NENHUM membro estava ativo.
+      // Não é falha de leitura (essa é `membros_total` nulo, alguns blocos
+      // acima) — é um fato sobre o CADASTRO, e ele pede outra ação: alguém tem
+      // de olhar a malha, não tentar de novo. "0 de 0 pipelines concluídos"
+      // publicaria zero como se fosse medida de um trabalho que não existiu, e
+      // essa frase chegava ao tooltip do card.
+      const vazio = total === 0
+      // TODOS os que podiam concluir já concluíram — e a corrida continua
+      // ABERTA. É o estado em que a barra fica CHEIA sem que nada tenha
+      // acabado: o ciclo está fechando, e a palavra "concluída" só existe com
+      // `status = 'CONCLUIDA'` vindo do banco (§9.15/#15).
+      fechando = aberta && !vazio
+        && ok === total - (c.membros_dispensados ?? 0)
+      if (!vazio) {
+        contagem = INTERROMPIDA.has(c.status)
+          ? `parou em ${ok} de ${total}`
+          : fechando
+            ? `${ok} de ${total} · fechando`
+            : `${ok} de ${total} pipeline${total === 1 ? '' : 's'} concluído${total === 1 ? '' : 's'}`
+        // A barra existe sempre que há denominador — inclusive nos desfechos
+        // interrompidos, onde ela CONGELA (o `opacity-60` é do componente) e o
+        // rótulo já mudou para "parou em".
+        barra = barraDaCorrida(c, ok, total)
+      }
       // Decisão 53: a subtração é FATO VISÍVEL, nunca nota de rodapé — é ela
       // que impede "2 de 2 · concluída, verde" numa malha de 7 em que alguém
       // inativou 5 na sexta-feira.
-      const partes = [plural(total, 'membro nesta corrida', 'membros nesta corrida')]
+      const partes = [vazio
+        ? 'a corrida abriu sem membros ativos'
+        : plural(total, 'membro nesta corrida', 'membros nesta corrida')]
       if (c.membros_dispensados) {
         partes.push(`${c.membros_dispensados} não `
           + `${c.membros_dispensados === 1 ? 'roda' : 'rodam'} hoje (regra de dia)`)
@@ -648,6 +798,8 @@ export function resumoCorrida(
     linhas.push(`${fora} pipeline(s) da malha ficaram fora desta corrida — `
       + 'inativos quando ela abriu, ou adicionados à malha depois')
   }
+  const fechamento = fechando ? textoFechamento(c) : null
+  if (fechamento) linhas.push(fechamento)
   const apurado = carimboLongo(c.apurado_em)
   if (apurado) linhas.push(`apurado em ${apurado}`)
 
@@ -658,6 +810,10 @@ export function resumoCorrida(
     tempo: texto,
     contagem,
     membros,
+    fechando,
+    fechamento,
+    barra,
+    nadaPrevisto,
     travados: c.membros_travados
       ? plural(c.membros_travados, 'travado', 'travados')
       : null,
@@ -681,6 +837,108 @@ export function resumoCorrida(
       : null,
     ...prazoDaCorrida(c, aberta, decorridoAgora),
     diagnostico: diagnosticoDaCorrida(c, abriu),
+    titulo: linhas.join('\n'),
+  }
+}
+
+/** O que falta para a corrida CHEIA fechar (Decisão 45) — a REGRA antes da
+ *  hora, sempre nessa ordem.
+ *
+ *  O defeito que este texto evita tem duas caras opostas, e é preciso escapar
+ *  das duas na mesma frase:
+ *    • **calar** — o último pipeline fica verde às 04:02, o card continua "em
+ *      andamento" até 04:17 e o operador reporta bug (ou, pior, dispara coisa
+ *      na mão às 04:05);
+ *    • **prometer a hora** — anunciar "fecha às 04:17" como horário exato
+ *      produz o MESMO chamado falso às 04:18, porque a carência REINICIA a cada
+ *      movimento: bastou alguém se mexer às 04:16.
+ *
+ *  Por isso: primeiro a regra ("fecha 15 min após o último movimento"), depois
+ *  a hora sob condição explícita ("se nada mais mexer, por volta de 04:17").
+ *
+ *  As duas degradações são de payload, não de estado: API anterior à F9 não
+ *  manda `quiescencia_min` nem `quiescencia_ate`, e a frase encolhe até o que
+ *  ainda for verdade — nunca inventa o minuto que não veio. */
+function textoFechamento(c: CorridaApi): string {
+  // Malha com nó Fim não fecha por carência: quem fecha é o Fim. Dizer "fecha
+  // 15 min após o último movimento" ali seria descrever o mecanismo errado —
+  // e o operador esperaria por um relógio que não está correndo.
+  if (c.modo_fechamento === 'fim') {
+    return 'aguarda o nó Fim registrar a conclusão'
+  }
+  // ⚠️ HOLD — o relógio de fechamento NÃO ESTÁ CORRENDO (§6.7/Decisão 30: com
+  // nó segurado "o teto não corre, a quiescência não avalia"). `quiescencia_ate`
+  // continua sendo `último movimento + carência`, e é um carimbo que o hold
+  // deixa para trás: com a retenção posta às 02:40 sobre um movimento das
+  // 02:30, a frase honesta de sempre anunciaria "por volta de 02:45" às 13h —
+  // uma hora que já passou, para um fechamento que não vai acontecer.
+  //
+  // É o mesmo defeito que a F7 já pagou na barra de limite (ela enchia durante
+  // o hold, chegava ao vermelho e contradizia o texto ao lado). A linha que se
+  // contradiz sozinha leva junto a confiança em todas as outras — por isso aqui
+  // ela diz o FATO ("está parado") e a CAUSA, e nenhuma hora.
+  const retidos = c.retido_nos ?? 0
+  if (retidos > 0) {
+    return `o fechamento está parado — ${plural(retidos, 'nó segurado', 'nós segurados')}`
+      + (c.retido_desde ? ` desde ${horaCurta(c.retido_desde)}` : '')
+  }
+  const min = c.quiescencia_min
+  const regra = (min && min > 0)
+    ? `fecha ${min} min após o último movimento`
+    : 'fecha alguns minutos após o último movimento'
+  const hora = horaCurta(c.quiescencia_ate)
+  return hora ? `${regra}; se nada mais mexer, por volta de ${hora}` : regra
+}
+
+/** F9 (Decisão 58) — o texto do estado que não tem registro: a corrida que
+ *  DEVERIA ter aberto e não abriu.
+ *
+ *  `esperada.atrasada_min` foi medido no SERVIDOR, entre o horário previsto e o
+ *  relógio do BANCO. Aqui ele só ganha o que passou no relógio LOCAL desde a
+ *  resposta — exatamente como o decorrido da corrida em voo (Decisão 60), e
+ *  nunca subtraindo `atrasada_desde` de `Date.now()`. */
+export interface ResumoEsperada {
+  estilo: EstiloCorrida
+  faixa: string
+  /** "previsto para 01:00 · há 7h12" — o "há" é o atraso, não o relógio de
+   *  parede: dizer "já são 08:12" exibiria a hora do BANCO, que no dev está 3h
+   *  à frente do relógio do próprio operador. */
+  cabecalho: string
+  /** "nenhuma corrida de 06/08" — o lugar onde a barra estaria. */
+  semCorrida: string
+  /** A consequência, quando ela existe: a corrida anterior continua aberta e é
+   *  ELA que está segurando a porta (o índice de corrida única). Muda a ação —
+   *  não é "o Airflow morreu", é "alguém precisa fechar a de ontem". */
+  bloqueio: string | null
+  titulo: string
+}
+
+export function resumoEsperada(
+  e: CorridaEsperadaApi,
+  tempo: { respostaEm: number; agora: number },
+): ResumoEsperada {
+  const atraso = decorridoMin(e.atrasada_min, tempo.respostaEm, tempo.agora)
+  const dia = diaCurto(e.data_referencia)
+  const cabecalho = `previsto para ${e.previsto_para}`
+    + (atraso === null ? '' : ` · há ${textoDuracao(atraso)}`)
+  const bloqueio = e.bloqueada_por_corrida_aberta
+    ? 'a corrida anterior continua aberta — enquanto ela não fechar, a próxima '
+      + 'não abre'
+    : null
+  const linhas = [
+    `não abriu · ${cabecalho}`,
+    dia ? `nenhuma corrida de ${dia} foi registrada` : 'nenhuma corrida registrada',
+    `horário previsto: ${e.atrasada_desde ?? e.previsto_para}`,
+  ]
+  if (bloqueio) linhas.push(bloqueio)
+  linhas.push('O gatilho desta malha já venceu e nenhuma corrida abriu — '
+    + 'verifique se a DAG do Início está ativa no Airflow.')
+  return {
+    estilo: ESTILO_NAO_ABRIU,
+    faixa: FAIXA_AMBAR,
+    cabecalho,
+    semCorrida: dia ? `nenhuma corrida de ${dia}` : 'nenhuma corrida registrada',
+    bloqueio,
     titulo: linhas.join('\n'),
   }
 }

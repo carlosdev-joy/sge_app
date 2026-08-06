@@ -1918,6 +1918,21 @@ _SQL_DENOMINADOR = (
     "DATEDIFF(MINUTE, COALESCE(e.fim, e.inicio, e.criado_em), SYSDATETIME()) "
     "AS sem_sinal_min, "
     "COALESCE(e.fim, e.inicio, e.criado_em) AS movimento_em, "
+    # F9 (§9.1) — `quiescencia_ate`: quando esta corrida fecharia sozinha se
+    # NADA mais se mexesse. `DATEADD` no BANCO (Decisão 10), com os minutos
+    # entrando por PARÂMETRO já validados no domínio da config: somar minutos a
+    # um carimbo do banco em Python devolveria um instante na régua errada (o
+    # SQL Server está ~3h à frente do container da API no dev), e a tela diria
+    # "por volta de 07:17" para uma corrida que fecha às 04:17.
+    #
+    # É o número que sustenta a Decisão 45 — dizer a REGRA antes da hora: "fecha
+    # 15 min após o último movimento; se nada mais mexer, por volta de 04:17".
+    # Sem ele o card, com todos os membros prontos, teria de escolher entre
+    # calar (e o operador reportar bug às 04:03, com o último pipeline verde e a
+    # malha ainda "em andamento") ou dizer "concluída" antes do fechamento — que
+    # é exatamente a mentira que esta spec existe para matar.
+    "DATEADD(MINUTE, ?, COALESCE(e.fim, e.inicio, e.criado_em)) "
+    "AS quiescencia_ate, "
     "CASE WHEN EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao o "
     " WHERE o.malha_execucao_id = me.id "
     " AND o.pipeline_name = mm.pipeline_name "
@@ -2043,13 +2058,18 @@ def _ultima_corrida_por_malha(cur, malha=None, corrida_id=None):
     return por_malha, False
 
 
-def _denominador_das_corridas(cur, corridas: list) -> dict:
+def _denominador_das_corridas(cur, corridas: list, quiescencia: int) -> dict:
     """Consulta (B): a classificação de cada membro do snapshot de CADA corrida.
 
-    `{corrida_id: {membros: {...}, apurado_em, sem_sinal_min, movimento_em}}`.
-    Falha de leitura devolve `{}` — o chamador publica a corrida SEM os
-    contadores (`membros_total = null`), que é a resposta honesta a "não
-    consegui apurar" e o oposto de publicar zero como se fosse medida.
+    `{corrida_id: {membros: {...}, apurado_em, sem_sinal_min, movimento_em,
+    quiescencia_ate}}`. Falha de leitura devolve `{}` — o chamador publica a
+    corrida SEM os contadores (`membros_total = null`), que é a resposta honesta
+    a "não consegui apurar" e o oposto de publicar zero como se fosse medida.
+
+    `quiescencia` são os minutos JÁ validados no domínio da config (a consulta
+    (A) trouxe o valor cru junto da corrida, sem gastar uma ida a mais). Ele
+    entra como parâmetro do `DATEADD` — a soma acontece no banco, e o Python só
+    escolhe qual linha responde pelo movimento mais recente.
     """
     if not corridas:
         return {}
@@ -2059,8 +2079,11 @@ def _denominador_das_corridas(cur, corridas: list) -> dict:
                                       sub_o=" AND o.substituida_em IS NULL")
     sql_legado = _SQL_DENOMINADOR.format(escopo=_ESCOPO_LINHA_LEGADO,
                                          ids=marcadores, sub_o="")
+    # A ordem dos parâmetros segue a ordem do TEXTO: o `?` do DATEADD aparece
+    # antes do `IN (…)`.
+    params = (int(quiescencia),) + tuple(ids)
     try:
-        deps_svc._exec_com_fallback_078(cur, sql_078, sql_legado, tuple(ids))
+        deps_svc._exec_com_fallback_078(cur, sql_078, sql_legado, params)
         linhas = cur.fetchall()
     except Exception as e:  # noqa: BLE001 — leitura degrada larga
         log.warning("[MALHA] snapshot das corridas %s indisponivel (%s) — "
@@ -2068,10 +2091,11 @@ def _denominador_das_corridas(cur, corridas: list) -> dict:
         return {}
     out: dict = {}
     for (cid, pipeline, ativo, conta_fim, status, desde, orfa, sem_sinal,
-         movimento, fora_odate, apurado) in linhas:
+         movimento, quiescencia_ate, fora_odate, apurado) in linhas:
         agg = out.setdefault(int(cid), {"membros": {}, "apurado_em": apurado,
                                         "sem_sinal_min": None,
-                                        "movimento_em": None})
+                                        "movimento_em": None,
+                                        "quiescencia_ate": None})
         m = agg["membros"].setdefault(pipeline, {
             "ativo": bool(ativo), "conta_para_fim": bool(conta_fim),
             "classe": None, "desde": None, "fora_do_odate": False})
@@ -2092,6 +2116,12 @@ def _denominador_das_corridas(cur, corridas: list) -> dict:
             if atual_sinal is None or int(sem_sinal) < atual_sinal:
                 agg["sem_sinal_min"] = int(sem_sinal)
                 agg["movimento_em"] = movimento
+                # O relógio de fechamento é do ÚLTIMO movimento — o mesmo que
+                # responde pelo `sem_sinal_min`. Guardar o `quiescencia_ate`
+                # aqui (e não num `max()` à parte) é o que garante que os dois
+                # números da tela contem a mesma linha: "sem sinal há 3 min" e
+                # "fecha por volta de 04:17" saem do MESMO carimbo.
+                agg["quiescencia_ate"] = quiescencia_ate
     return out
 
 
@@ -2133,6 +2163,11 @@ def _corrida_do_card(c: dict, agg) -> dict:
     # continua sabendo que o limite de segurança venceu — que é exatamente o
     # que o operador precisa quando o banco está ruim às 3h.
     out.update(_prazo_da_corrida(c))
+    # F9 (§9.1) — os minutos da carência de fechamento. Vêm da consulta (A)
+    # (config lida junto da corrida) e existem MESMO sem o denominador: a frase
+    # da Decisão 45 diz a REGRA antes da hora, e a regra ("fecha 15 min após o
+    # último movimento") continua verdadeira quando a apuração falhou.
+    out["quiescencia_min"] = c["_quiescencia"]
     if agg is None:
         out.update({"saude": None, "membros_total": None, "membros_ok": None,
                     "membros_vivos": None, "membros_dispensados": None,
@@ -2140,6 +2175,7 @@ def _corrida_do_card(c: dict, agg) -> dict:
                     "membros_fora_do_odate": None,
                     "membros_inativos": None, "pendentes": [],
                     "ultimo_movimento_em": None, "sem_sinal_min": None,
+                    "quiescencia_ate": None,
                     # `False` e não `None`: aqui não sabemos NADA, e afirmar
                     # "sem membros" seria trocar uma ignorância por um fato.
                     "sem_membros": False})
@@ -2201,6 +2237,11 @@ def _corrida_do_card(c: dict, agg) -> dict:
         "pendentes": pendentes,
         "ultimo_movimento_em": _fmt_dt(agg["movimento_em"]),
         "sem_sinal_min": agg["sem_sinal_min"],
+        # Quando esta corrida fecharia sozinha se nada mais se mexesse —
+        # `DATEADD` do BANCO sobre o último movimento. `None` enquanto nenhum
+        # membro tiver linha: sem movimento não há de onde contar, e inventar
+        # "por volta de" a partir da abertura seria promessa, não medida.
+        "quiescencia_ate": _fmt_dt(agg["quiescencia_ate"]),
         # `total == 0` é um FATO, não uma falha de leitura: a corrida abriu e o
         # snapshot saiu vazio (malha sem membro ativo no instante da abertura).
         # Sem esta marca ele chegaria à tela igualzinho ao `agg is None` do lock
@@ -2294,9 +2335,323 @@ def _bloco_corrida(cur, malha=None, corrida_id=None):
     correntes, sem_085 = _ultima_corrida_por_malha(cur, malha, corrida_id)
     if not correntes:
         return {}, sem_085, {}
-    agregado = _denominador_das_corridas(cur, list(correntes.values()))
+    # A quiescência é config GLOBAL (uma chave só), e a consulta (A) já a trouxe
+    # validada em toda linha — pegar a da primeira é ler o mesmo valor, não
+    # eleger um vencedor entre valores diferentes.
+    quiescencia = next(iter(correntes.values()))["_quiescencia"]
+    agregado = _denominador_das_corridas(cur, list(correntes.values()),
+                                         quiescencia)
     return ({nome: _corrida_do_card(c, agregado.get(int(c["id"])))
              for nome, c in correntes.items()}, False, correntes)
+
+
+# ══════ F9 — a corrida que NÃO ABRIU (§9.2, Decisão 58) ═════════════════════
+#
+# O PIOR MODO DE FALHA desta tela, e o único que ela ainda não sabia contar: o
+# Início não disparou às 01:00 — DAG pausada, Airflow fora, agendamento quebrado
+# —, e às 8h o card mostra a corrida de ONTEM, `concluída`, verde, com carimbo
+# de frescor recente. Toda a camada de visibilidade pressupõe "a corrida
+# existe"; quem sabe o que DEVERIA ter acontecido é o agendamento, e ele nunca
+# foi comparado com o relógio.
+#
+# ── Por que na API, e não no front ─────────────────────────────────────────
+# Comparar a hora agendada com "agora" no relógio do NAVEGADOR é a armadilha da
+# Decisão 60 numa casa em que o desvio medido é de 3h. E há uma comparação que o
+# navegador não pode fazer de jeito nenhum: `aberta_em` é carimbado por
+# `GETDATE()` — para saber se ALGUMA corrida abriu depois do horário previsto é
+# preciso pôr o previsto na RÉGUA DO BANCO antes de comparar. É o mesmo gesto do
+# `desvio_banco` de `_divergencias_e_falhas` (dags/etl_dependencia_guardia.py:749),
+# e pela mesma razão: o corte nasce em hora local (é o cron que o define) e a
+# coluna com que ele é comparado nasce no banco.
+#
+# ── As quatro travas contra o alarme falso ─────────────────────────────────
+# "Não abriu" pinta o card de âmbar e o joga para o topo da lista. Alarme falso
+# diário treina o operador a ignorar o alarme (Decisões 26/27), então cada trava
+# aqui é uma classe inteira de falso positivo:
+#
+#   1. **só malha que JÁ TEVE corrida.** É a trava do DIA DO DEPLOY: o
+#      interruptor `malha_corrida_ativa` nasce em `0` (§11.2), NADA abre corrida,
+#      e sem esta trava as 40 malhas amanheceriam âmbar com "não abriu" — a
+#      lista inteira gritando sobre uma configuração, não sobre um incidente. A
+#      corrida anterior é a prova de que o registro funciona para aquela malha, e
+#      é ela que o próprio card exibe na linha "anterior: 03/08 · concluída";
+#   2. **só malha ATIVA** — inativa não dispara nada, por definição;
+#   3. **só gatilho que de fato existe hoje** — o agendamento é julgado pelo
+#      mesmo desenho que `proximaExecucao.ts` julga do outro lado (dia da semana,
+#      dia do mês, dias úteis, calendário): sábado de uma malha "seg a sex" não
+#      é atraso, é sábado;
+#   4. **folga configurável** — o Airflow não dispara no segundo do relógio, e a
+#      corrida só nasce quando a primeira raiz parte. Acusar às 01:00:30 seria
+#      acusar a latência normal do scheduler.
+#
+# Sem QUALQUER uma das quatro, o campo não sai: silêncio é melhor que uma
+# acusação errada.
+CHAVE_FOLGA_NAO_ABRIU = "malha_nao_abriu_folga_min"
+FOLGA_NAO_ABRIU_PADRAO = 15
+FOLGA_NAO_ABRIU_MIN, FOLGA_NAO_ABRIU_MAX = 1, 720
+
+# Convenção de cron da casa (D05): 0 = domingo. `weekday()` do Python é
+# 0 = segunda — a conversão fica aqui, num lugar só.
+def _dow_cron(dia) -> int:
+    return (dia.weekday() + 1) % 7
+
+
+def _hm_texto(h, m) -> str:
+    """`(hora, minuto)` → 'HH:MM'. Irmão de `_hhmm`, que converte um TIME do
+    banco; aqui a entrada são dois inteiros vindos do agendamento."""
+    return f"{int(h):02d}:{int(m):02d}"
+
+
+def _int_ou(valor, padrao: int) -> int:
+    try:
+        return int(str(valor).strip())
+    except (TypeError, ValueError):
+        return padrao
+
+
+def _hm_valido(texto):
+    """'H:MM'/'HH:MM' → `(hora, minuto)` normalizado, ou `None`.
+
+    Sem regex de propósito: este módulo não importa `re`, e a validação aqui
+    precisa ser a mesma do front (que aceita `H:MM` e normaliza com zero à
+    esquerda) — o par tem de casar dígito a dígito, senão as duas telas
+    discordam sobre o mesmo `horarios_especificos`."""
+    partes = str(texto or "").strip().split(":")
+    if len(partes) != 2:
+        return None
+    h, m = partes[0].strip(), partes[1].strip()
+    if not (h.isdigit() and m.isdigit()) or not (1 <= len(h) <= 2) or len(m) != 2:
+        return None
+    if int(h) > 23 or int(m) > 59:
+        return None
+    return int(h), int(m)
+
+
+def _horarios_do_dia(ag: dict, dia) -> list:
+    """Os `HH:MM` em que este agendamento dispara NAQUELE dia de calendário.
+
+    Port da mesma regra que `proximaExecucao.ts` aplica no front (`horariosDoDia`)
+    — as duas leituras do mesmo JSON precisam concordar, senão o card diz "não
+    abriu" e o rodapé do diagrama diz "próxima execução: hoje 01:00" sobre o
+    mesmo agendamento e o mesmo relógio.
+
+    `hourly` devolve `[]` DE PROPÓSITO: uma malha não abre uma corrida por hora,
+    e transformar cadência em instante seria inventar um horário previsto que
+    ninguém prometeu. Tipo desconhecido e `on_demand` idem — o que não dá para
+    afirmar não vira alarme."""
+    st = str(ag.get("schedule_type") or "").strip().lower()
+    hora = _hm_texto(_int_ou(ag.get("schedule_hour"), 6),
+                     _int_ou(ag.get("schedule_minute"), 0))
+    if st == "daily":
+        return [hora]
+    if st == "weekly":
+        return [hora] if _dow_cron(dia) == _int_ou(ag.get("schedule_dow"), 1) else []
+    if st == "monthly":
+        return [hora] if dia.day == _int_ou(ag.get("schedule_dom"), 1) else []
+    if st == "biweekly":
+        dom = _int_ou(ag.get("schedule_dom"), 1)
+        return [hora] if dia.day in (dom, dom + 15) else []
+    if st == "custom":
+        dias = [d.strip() for d in str(ag.get("dias_semana") or "").split(",")
+                if d.strip()]
+        if dias and str(_dow_cron(dia)) not in dias:
+            return []
+        saida = []
+        for bruto in str(ag.get("horarios_especificos") or "").split(","):
+            hm = _hm_valido(bruto)
+            if hm:
+                saida.append(_hm_texto(*hm))
+        return sorted(saida)
+    if st == "monthly_days_times":
+        try:
+            entradas = json.loads(ag.get("dias_horarios_mes") or "[]")
+        except Exception:  # noqa: BLE001 — JSON estragado não vira alarme
+            return []
+        saida = []
+        for e in entradas:
+            if not isinstance(e, dict) or _int_ou(e.get("dia"), -1) != dia.day:
+                continue
+            for bruto in (e.get("horarios") or []):
+                hm = _hm_valido(bruto)
+                if hm:
+                    saida.append(_hm_texto(*hm))
+        return sorted(saida)
+    return []
+
+
+def _primeiro_previsto(agendamentos: list, agora_local: datetime):
+    """O instante em que esta malha DEVERIA ter aberto a corrente — o PRIMEIRO
+    horário previsto das últimas 24h, ou `None`.
+
+    Por que o PRIMEIRO, e não o mais recente: a corrida é UMA por ciclo, e quem
+    a abre é o primeiro gatilho do dia. Numa malha com raízes às 01:00 e às
+    06:00, os membros das 06:00 entram na corrida que já está aberta desde as
+    01:00 (mesmo ODATE) — eleger as 06:00 como "previsto" faria o card acusar
+    "não abriu" às 06:15 de uma malha que abriu, rodou e está saudável desde a
+    01:10. A janela de 24h basta porque a comparação seguinte é com
+    `aberta_em`: se a corrida de ontem abriu no horário, ela é ≥ o previsto de
+    ontem e o card se cala sozinho.
+
+    `somente_dias_uteis` pula sábado e domingo — a MESMA regra que o motor
+    julga, e a mesma que o front aplica no texto da próxima execução."""
+    candidatos = []
+    for dia in (agora_local.date() - timedelta(days=1), agora_local.date()):
+        for ag in agendamentos:
+            if not isinstance(ag, dict):
+                continue
+            if int(ag.get("somente_dias_uteis") or 0) and dia.weekday() >= 5:
+                continue
+            for hm in _horarios_do_dia(ag, dia):
+                # `datetime(...)` e não `datetime.combine(dia, time(...))`:
+                # `time` neste módulo é o MÓDULO time do Python (import da
+                # linha 90), não `datetime.time`.
+                momento = datetime(dia.year, dia.month, dia.day,
+                                   int(hm[:2]), int(hm[3:5]))
+                if momento <= agora_local:
+                    candidatos.append(momento)
+    if not candidatos:
+        return None
+    limite = agora_local - timedelta(hours=24)
+    dentro = [m for m in candidatos if m >= limite]
+    return min(dentro) if dentro else None
+
+
+def _calendario_bloqueia(cur, calendario: str, dia):
+    """O calendário de feriados barra este dia? `None` = não deu para saber.
+
+    Chamada SÓ para candidato a "não abriu" (o caso raro), e por isso não entra
+    no orçamento de consultas da lista. Falha de leitura devolve `None` e o
+    chamador se cala: feriado é exatamente o dia em que nada roda, e acusar
+    atraso no Natal é o alarme falso mais caro que esta tela poderia inventar."""
+    try:
+        cur.execute("SELECT TOP 1 1 FROM dbo.etl_calendario "
+                    "WHERE calendario_nome = ? AND data = ?",
+                    (calendario, dia))
+        return cur.fetchone() is not None
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.warning("[MALHA] calendario '%s' indisponivel (%s) — sem aviso de "
+                    "corrida que nao abriu", calendario, e)
+        return None
+
+
+def _relogio_e_folga(cur):
+    """`(agora_banco, agora_local, folga_min)` — ou `None` quando o relógio do
+    banco não respondeu.
+
+    UM statement para a lista inteira, e ele traz as duas coisas que a Decisão
+    58 precisa: o relógio do BANCO (a régua de `aberta_em`) e a folga.
+
+    Falhar aqui **cala** o campo, em vez de cair no relógio do processo como
+    `_agora_do_banco` faz: lá o pior caso é um ODATE de borda; aqui seria
+    publicar "atrasada há 3h" às 01:05 no dev, com o banco 3h à frente — um
+    alarme inventado pelo desvio, que é justamente o defeito que a Decisão 58
+    manda evitar."""
+    try:
+        cur.execute(
+            "SELECT GETDATE(), (SELECT TOP 1 config_value "
+            "FROM dbo.etl_app_config WHERE config_key = ?)",
+            (CHAVE_FOLGA_NAO_ABRIU,))
+        row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 — leitura degrada larga
+        log.debug("[MALHA] relogio do banco indisponivel (%s) — lista sem "
+                  "'corrida que nao abriu'", e)
+        return None
+    if not row or row[0] is None:
+        return None
+    # `len(row) > 1` não é paranoia de estilo: um banco (ou um dublê) que
+    # responda só o relógio não pode derrubar a lista inteira por um
+    # IndexError — a folga tem default, e ele é a resposta certa aqui.
+    folga = mc._inteiro_no_dominio(row[1] if len(row) > 1 else None,
+                                   FOLGA_NAO_ABRIU_MIN, FOLGA_NAO_ABRIU_MAX)
+    return (row[0], _agora(),
+            FOLGA_NAO_ABRIU_PADRAO if folga is None else folga)
+
+
+def _corrida_esperada(cur, malha: str, agendamentos: list, corrente,
+                      relogio) -> dict | None:
+    """A corrida que deveria existir e não existe — ou `None`.
+
+    `corrente` é a corrida mais recente da malha (a do bloco `corrida`), e ela é
+    OBRIGATÓRIA: sem histórico não há "não abriu" (trava 1). `relogio` é a tupla
+    de `_relogio_e_folga`.
+
+    "ABRIU" tem DUAS portas, e as duas precisam existir:
+
+        previsto_banco = previsto_local + (agora_banco − agora_local)
+        abriu = corrente.aberta_em >= previsto_banco          # (i) o relógio
+             OR corrente.data_referencia == odate_do_previsto  # (ii) o ODATE
+
+    (i) é a barata e responde o caso comum. O desvio some da conta do ATRASO
+    (ele aparece nos dois lados) e é indispensável aqui, porque `aberta_em` é
+    coluna carimbada pelo banco. Somar minutos "à mão" em cima de um dos dois
+    relógios é o defeito que o dev exibe em 3h de diferença.
+
+    (ii) é a condição LITERAL da Decisão 58 — *"não existe corrida com aquele
+    `data_referencia`"* — e sem ela o card acusa malha que abriu, porque a
+    corrida DESTE ciclo pode nascer ANTES do horário previsto por três caminhos
+    rotineiros, nenhum deles borda:
+
+      • **disparo manual** às 00:50, uma das três portas do §6.2 — o operador
+        sabe que o insumo chegou cedo e não espera o cron das 01:00;
+      • **corrida implícita**, nas 3 de 4 malhas sem nó Início: quem a abre é a
+        primeira raiz a partir, e ela pode partir por push de fora;
+      • **virada da malha** (§7): com `hora_virada` às 22:00, a corrida aberta
+        ontem às 23:00 carimba o ODATE de HOJE — ela É a de hoje.
+
+    Sem (ii) o card exibia, na mesma caixa e em duas linhas seguidas,
+    *"nenhuma corrida de 05/08"* e *"anterior: corrida de 05/08 · em
+    andamento"* — e escondia a barra de progresso da corrida que estava
+    rodando, porque o estado "não abriu" tem precedência no card."""
+    agora_banco, agora_local, folga = relogio
+    previsto = _primeiro_previsto(agendamentos, agora_local)
+    if previsto is None:
+        return None
+    # Trava 4: a latência normal do scheduler não é atraso.
+    if agora_local - previsto < timedelta(minutes=folga):
+        return None
+    desvio = agora_banco - agora_local
+    aberta_em = corrente.get("aberta_em")
+    if aberta_em is not None and aberta_em >= previsto + desvio:
+        return None                     # abriu — e no horário ou depois dele
+    # Porta (ii). O ODATE é o que a corrida carimbaria se tivesse aberto NO
+    # HORÁRIO PREVISTO — `previsto + desvio` põe esse horário na régua do banco,
+    # a única que `odate_da_abertura` entende (Decisão 10). Não é "o ODATE de
+    # agora": com virada às 06:00, previsto 01:00 e agora 08:00 caem em DIAS
+    # diferentes, e o card anunciaria uma data que a corrida ausente nunca teria
+    # usado.
+    #
+    # A consulta acontece só DEPOIS de a porta barata falhar, e é a mesma que o
+    # payload abaixo já fazia: no caminho saudável (a corrida abriu depois do
+    # previsto) continua sendo zero consulta a mais por malha.
+    odate = mc.odate_da_abertura(cur, malha, previsto + desvio)
+    if odate is not None and _fmt_dia(corrente.get("data_referencia")) == _fmt_dia(odate):
+        return None                     # a corrida DESTE ciclo existe
+    # Trava 3 (a parte que mora no servidor): feriado não é atraso.
+    for ag in agendamentos:
+        nome = (ag.get("calendario_nome") or "").strip() if isinstance(ag, dict) else ""
+        if not nome:
+            continue
+        bloqueia = _calendario_bloqueia(cur, nome, previsto.date())
+        if bloqueia is None or bloqueia:
+            return None
+    atraso = int((agora_local - previsto).total_seconds() // 60)
+    return {
+        # O ODATE que a corrida carimbaria se tivesse aberto — pela virada da
+        # MALHA (Decisão 18), a mesma função das três portas. É o MESMO `odate`
+        # que a porta (ii) acabou de comparar: dois cálculos dariam duas datas
+        # no dia em que a virada estivesse entre o previsto e o agora, e o card
+        # acusaria uma data e se calaria sobre a outra.
+        "data_referencia": _fmt_dia(odate),
+        "previsto_para": previsto.strftime("%H:%M"),
+        "atrasada_desde": _fmt_dt(previsto),
+        # Minutos, e não um instante para o front subtrair: o "há 7h" da tela
+        # sai daqui somado ao relógio LOCAL desde a resposta (Decisão 60).
+        "atrasada_min": atraso,
+        # Há uma corrida ABERTA de OUTRO ciclo segurando a porta (o índice
+        # `ux_malha_exec_aberta`, §5.3). Muda a AÇÃO — não é "o Airflow morreu",
+        # é "alguém precisa fechar a de ontem" —, e por isso é campo, não texto.
+        "bloqueada_por_corrida_aberta": corrente.get("status") == mc.STATUS_ABERTA,
+    }
 
 
 # `execucoes[]` do painel. Três textos, e o que muda entre eles é só o recorte:
@@ -2362,7 +2717,13 @@ def list_malhas(_auth: dict = Depends(get_current_user)):
     inteira, nunca uma por malha. Malha SEM corrida (ou banco sem a 085) não
     ganha a chave: a degradação é por AUSÊNCIA DE CAMPO (Decisão 41), e
     `ultima_execucao` continua no payload como o fallback "(membro mais
-    recente)"."""
+    recente)".
+
+    F9 (Decisão 58): malha ATIVA, com corrida anterior registrada e com gatilho
+    cujo horário do dia já venceu **sem** nenhuma corrida ter aberto ganha
+    `corrida_esperada` — o estado "não abriu", que é o único jeito de a tela
+    contar o pior modo de falha (o Início que não disparou) em vez de exibir a
+    corrida de ontem, verde, com carimbo de frescor recente."""
     try:
         conn = get_db_conn(); cur = conn.cursor()
         if not _tabelas_070(cur):
@@ -2492,7 +2853,7 @@ def list_malhas(_auth: dict = Depends(get_current_user)):
         # comentário de `_bloco_corrida`). Vem ANTES da última execução porque
         # é ela quem responde o status da malha; a última execução fica como
         # fallback declarado para quem não tem corrida.
-        corridas, sem_085, _brutas = _bloco_corrida(cur)
+        corridas, sem_085, brutas = _bloco_corrida(cur)
         if sem_085:
             # Decisão 41: a degradação é POR MALHA (a chave `corrida` some), e
             # a flag é só o texto explicativo do tooltip — jamais o que o front
@@ -2504,6 +2865,39 @@ def list_malhas(_auth: dict = Depends(get_current_user)):
             rec = indice.get(malha)
             if rec is not None:
                 rec["corrida"] = payload
+
+        # F9 (Decisão 58) — a corrida que NÃO ABRIU. Só chega aqui malha ATIVA
+        # que JÁ TEVE corrida (a trava do dia do deploy: com o interruptor em
+        # `0` ninguém tem, e a lista inteira se cala) e que tem agendamento
+        # legível. Sem candidato nenhum, ZERO consulta a mais — o relógio do
+        # banco só é lido quando há o que comparar com ele.
+        candidatos = [m for m, rec in indice.items()
+                      if rec.get("corrida") and int(rec["ativo"] or 0)
+                      and ((m in ag_malha and m in vigentes) or m in cron)]
+        try:
+            relogio = _relogio_e_folga(cur) if candidatos else None
+            if relogio:
+                for malha in candidatos:
+                    rec = indice[malha]
+                    # O agendamento julgado é o MESMO que virou `gatilho` na
+                    # tela: o da malha quando ele está vigente, senão o dos
+                    # membros que disparam sozinhos. Julgar outro faria o card
+                    # acusar o atraso de um horário que ele não mostra.
+                    ags = ([ag_malha[malha]]
+                           if rec["gatilho"]["origem"] == "malha"
+                           else [m["agendamento"] for m in cron.get(malha, [])])
+                    esperada = _corrida_esperada(cur, malha, ags,
+                                                 brutas.get(malha) or {},
+                                                 relogio)
+                    if esperada:
+                        rec["corrida_esperada"] = esperada
+        except Exception as e:  # noqa: BLE001 — aditivo NUNCA derruba a lista
+            # A lista de malhas é a tela de entrada: um agendamento estranho no
+            # banco não pode transformá-la em 500. Sem o campo, o card volta a
+            # mostrar a corrida anterior — que é o comportamento de antes desta
+            # fase, não um terceiro comportamento inventado.
+            log.warning("[MALHA] aviso de corrida que nao abriu indisponivel "
+                        "(%s) — lista sem 'corrida_esperada'", e)
 
         # Última execução: UMA consulta (top-1 por pipeline membro) e a
         # composição por malha aqui, sobre as linhas de membros já lidas —
@@ -2541,7 +2935,19 @@ def list_malhas(_auth: dict = Depends(get_current_user)):
                         "sem 'última execução'")
 
         cur.close(); conn.close()
-        saida = {"malhas": data}
+        # F9 — o MARCADOR DE VERSÃO da resposta, e ele existe por causa de uma
+        # janela de deploy real: o `deploy.sh` publica o `dist/` na etapa 3,
+        # automático e sem pergunta, e só reconstrói a `api/` na etapa 7. Nesse
+        # intervalo o front novo conversa com a API velha, que não manda
+        # `corrida` **nem** `migration_085_pendente` — e, sem um marcador
+        # positivo, o front não teria como distinguir "esta malha não tem ciclo"
+        # (silêncio correto, o estado do dia do deploy) de "esta API não sabe
+        # responder sobre ciclo" (a hora de DIZER que falta informação).
+        #
+        # `True` fixo de propósito: quem responde isto é a VERSÃO do código, não
+        # o estado do banco. Se o front não vir a chave, é porque está falando
+        # com uma API anterior a esta fase.
+        saida = {"malhas": data, "corrida_suportada": True}
         if resposta_flag_085:
             saida["migration_085_pendente"] = True
         return saida

@@ -523,8 +523,17 @@ def test_o_card_le_a_corrida_por_guarda_e_nao_por_flag():
     assert "(membro mais recente" in src
     # o tipo é opcional: sem isso, o `tsc -b` deixaria passar acesso sem guarda
     assert "corrida?: CorridaApi" in src
-    # e a flag NÃO decide renderização — ela só acrescenta a linha de aviso
-    assert "!resumo && sem085" in src
+    # e a flag NÃO decide renderização — ela só acrescenta a linha de aviso.
+    #
+    # F9 ampliou o que liga essa linha, sem mudar a regra: além da 085 ausente,
+    # ela sai quando a resposta não traz `corrida_suportada` — o sinal de que se
+    # está falando com a API ANTERIOR à fase (a janela entre as etapas 3 e 7 do
+    # `deploy.sh`, em que o `dist/` novo já subiu e a `api/` não). As duas causas
+    # dizem a mesma frase ao operador, e nenhuma das duas decide se o bloco da
+    # corrida renderiza: isso continua sendo a ausência da chave `corrida`.
+    assert "!resumo && semDadosDeCorrida" in src
+    assert "const semDadosDeCorrida = sem085 || apiAnterior" in src
+    assert "data.corrida_suportada !== true" in src
 
 
 def test_sem_a_085_o_banner_verde_do_painel_some_junto_com_o_card():

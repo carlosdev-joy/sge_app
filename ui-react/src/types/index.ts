@@ -203,6 +203,41 @@ export interface CorridaApi extends CorridaCabecalho {
   retido_desde?: string | null
   retido_nos?: number
   retido_por?: string | null
+  // ── F9: o relógio do FECHAMENTO (Decisão 45) ──────────────────────────────
+  /** Minutos de carência — a REGRA ("fecha 15 min após o último movimento"),
+   *  que é o que se diz ANTES da hora. */
+  quiescencia_min?: number | null
+  /** Quando ela fecharia se NADA mais se mexesse — `DATEADD` do BANCO sobre o
+   *  último movimento. `null` enquanto nenhum membro tiver linha: sem
+   *  movimento não há de onde contar. A tela escreve "por volta de", nunca
+   *  "até": o relógio REINICIA a cada movimento. */
+  quiescencia_ate?: string | null
+}
+
+/** A corrida que DEVERIA existir e não existe (F9 — §9.2, Decisão 58).
+ *
+ *  O pior modo de falha da tela, e o que ela não sabia contar: o Início não
+ *  disparou às 01:00 e, às 8h, o card mostra a corrida de ONTEM, verde,
+ *  "concluída", com carimbo de frescor recente.
+ *
+ *  Calculada na API (nunca no navegador): saber se ALGUMA corrida abriu depois
+ *  do horário previsto é comparar com `aberta_em`, que é carimbo do BANCO — e
+ *  o desvio medido entre os dois relógios no dev é de 3h. Chave AUSENTE
+ *  (nunca `null` interpretável) quando não há o que acusar. */
+export interface CorridaEsperadaApi {
+  /** O ODATE que a corrida carimbaria — pela virada da MALHA (Decisão 18). */
+  data_referencia: string | null
+  /** 'HH:MM' do gatilho que deveria ter aberto o ciclo. */
+  previsto_para: string
+  /** O instante previsto, para o texto absoluto do tooltip. */
+  atrasada_desde: string | null
+  /** Minutos desde o previsto, medidos no SERVIDOR. O front soma a este número
+   *  o que passou no relógio LOCAL desde a resposta (Decisão 60) — nunca
+   *  subtrai `atrasada_desde` de `Date.now()`. */
+  atrasada_min: number
+  /** Há corrida ABERTA de outro ciclo segurando a porta. Muda a AÇÃO: não é
+   *  "o Airflow morreu", é "alguém precisa fechar a de ontem". */
+  bloqueada_por_corrida_aberta: boolean
 }
 
 export interface MalhaItem {
