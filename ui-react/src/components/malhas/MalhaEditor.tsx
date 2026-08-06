@@ -636,6 +636,12 @@ interface Props {
   modoInicial?: 'montagem' | 'execucao'
   /** Data de referência com que a visão de Execução abre (?data=). */
   dataInicial?: string | null
+  /** (F9) LENTE de corrida com que a Execução abre (?corrida=). O `Acompanhar`
+   *  do card da lista a preenche quando há ciclo registrado — sem ela o painel
+   *  cairia na corrida corrente do servidor, que é OUTRA quando o operador
+   *  clicou num card que mostrava a de ontem. A data sozinha não distingue duas
+   *  corridas do mesmo ODATE (é a razão de a lente existir). */
+  corridaInicial?: number | null
   /** Descer até o canvas de Etapas de um pipeline, na data exibida. Ausente =
    *  o gesto some (a malha continua exatamente como era). */
   onAbrirEtapas?: (pipeline: string, data: string) => void
@@ -651,7 +657,8 @@ export function MalhaEditor(props: Props) {
 }
 
 function MalhaEditorInner({
-  malha, readOnly = false, modoInicial, dataInicial = null, onAbrirEtapas,
+  malha, readOnly = false, modoInicial, dataInicial = null,
+  corridaInicial = null, onAbrirEtapas,
 }: Props) {
   const colorMode = useColorMode()
   const rf = useReactFlow()
@@ -707,8 +714,10 @@ function MalhaEditorInner({
   // duas corridas do mesmo ODATE: redisparar às 05h depois de um incidente é
   // gesto diário, e navegar por dia devolveria as duas madrugadas embaralhadas
   // numa lista só, com a segunda SOBREPONDO a primeira em cada pipeline.
-  // null = sem lente explícita (o servidor usa a corrida corrente).
-  const [corridaRef, setCorridaRef] = useState<number | null>(null)
+  // null = sem lente explícita (o servidor usa a corrida corrente). O valor
+  // INICIAL vem da URL (?corrida=), do mesmo jeito que o modo e a data: é o que
+  // faz o `Acompanhar` do card cair na corrida que o card estava mostrando.
+  const [corridaRef, setCorridaRef] = useState<number | null>(corridaInicial)
   // Orientação: o servidor é a fonte (viaja com o layout — todos veem o mesmo
   // desenho); o override local dá resposta imediata ao toggle enquanto o PATCH
   // viaja. Carrega a malha DONA junto: trocar de malha invalida o override

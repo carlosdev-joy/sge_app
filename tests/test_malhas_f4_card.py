@@ -262,7 +262,14 @@ class FakeCur(FakeCurF3):
         `data_referencia`, `substituida_em`, a proveniência/janela e o teto por
         `fechada_em`. Apagar qualquer uma do módulo muda o que o dublê devolve."""
         db = self.db
-        ids = {int(x) for x in p}
+        # F9: o `DATEADD(MINUTE, ?, …)` do `quiescencia_ate` põe UM parâmetro
+        # antes dos ids. Ele é lido do TEXTO (regra de honestidade): se a coluna
+        # sumir do módulo, o dublê volta a ler todos os parâmetros como ids — e
+        # o teste que exige a hora do fechamento fica vermelho, em vez de verde
+        # com o card calado.
+        tem_quiescencia = _guarda(s, "DATEADD(MINUTE, ?,")
+        quiescencia = int(p[0]) if tem_quiescencia else 0
+        ids = {int(x) for x in (p[1:] if tem_quiescencia else p)}
         exige_odate = _guarda(s, "AND e.data_referencia = me.data_referencia")
         exige_viva = _guarda(s, "AND e.substituida_em IS NULL")
         recorta = _guarda(s, "AND (e.malha_execucao_id = me.id")
@@ -301,7 +308,7 @@ class FakeCur(FakeCurF3):
                         continue
                 linhas.append(e)
             if not linhas:
-                out.append(base + (None, None, 0, None, None, fora,
+                out.append(base + (None, None, 0, None, None, None, fora,
                                    db.agora_banco))
                 continue
             for e in linhas:
@@ -312,9 +319,15 @@ class FakeCur(FakeCurF3):
                 movimento = e.get("fim") or e.get("inicio") or e.get("criado_em")
                 sem_sinal = int(
                     (db.agora_banco - movimento).total_seconds() // 60)
+                # A soma é do BANCO (`DATEADD`), então o dublê a faz sobre o
+                # carimbo do banco — nunca sobre `datetime.now()` do processo,
+                # que aqui está 3h atrás de propósito.
+                ate = (movimento + timedelta(minutes=quiescencia)
+                       if tem_quiescencia else None)
                 out.append(base + (e["status"],
                                    e.get("inicio") or e.get("criado_em"), orfa,
-                                   sem_sinal, movimento, fora, db.agora_banco))
+                                   sem_sinal, movimento, ate, fora,
+                                   db.agora_banco))
         return out
 
     def _painel(self, s, p):
@@ -1340,6 +1353,13 @@ def test_contrato_do_bloco_corrida(client, auth):
         # mais ao banco.
         "teto_vencido", "teto_total_min", "teto_creditado_min", "teto_horas",
         "teto_configurado", "retido_desde", "retido_nos", "retido_por",
+        # ── F9: o relógio do FECHAMENTO (Decisão 45) ────────────────────────
+        # `quiescencia_min` é a REGRA ("fecha 15 min após o último movimento")
+        # e `quiescencia_ate` é a hora ("por volta de 04:17"), somada pelo
+        # `DATEADD` do banco. Nessa ordem, e nunca só a hora: o relógio
+        # reinicia a cada movimento, e anunciar só "até 04:17" produz o chamado
+        # falso das 04:18 quando alguém se mexeu às 04:16.
+        "quiescencia_min", "quiescencia_ate",
     }
     assert set(corrida["pendentes"][0]) == {"pipeline", "classe", "desde",
                                             "faltante"}
