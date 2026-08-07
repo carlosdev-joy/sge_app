@@ -184,7 +184,7 @@ class Mundo:
             "retido_por = 'TESTE' WHERE id = %s", (no_id,))
 
     def corrida(self, malha, min=0, seq=1):
-        """Corrida ABERTA cujo `aberta_em` é `SYSDATETIME() + min` minutos."""
+        """Ciclo ABERTA cujo `aberta_em` é `SYSDATETIME() + min` minutos."""
         self.cur.execute(
             "INSERT INTO dbo.etl_malha_execucao (malha_name, data_referencia, "
             "sequencia, status, aberta_em, origem, modo_fechamento) "
@@ -492,10 +492,10 @@ def test_corrida_que_FECHA_entre_duas_avaliacoes_nao_muda_o_corte(mundo):
     m.fechar(corrida)
     depois = m.avaliar(filho, corrida)
     assert antes == depois == (False, [pai]), (
-        "o corte mudou de significado porque a corrida fechou")
+        "o corte mudou de significado porque o ciclo fechou")
 
     assert m.avaliar(filho, corrida=None) == (True, []), (
-        "cenario invalido: sem a corrida da linha a janela TEM de soltar — e "
+        "cenario invalido: sem o ciclo da linha a janela TEM de soltar — e "
         "e essa a virada silenciosa que a Decisao 39 evita")
 
 
@@ -507,7 +507,7 @@ def test_a_corrida_da_LINHA_ganha_da_corrida_aberta_AGORA(mundo):
       • avaliada pela corrida aberta agora (#2) → o pai seria "da rodada
         passada" → seguraria.
 
-    Trocar o 1º degrau pelo 2º é trocar "a corrida desta linha" por "a corrida
+    Trocar o 1º degrau pelo 2º é trocar "o ciclo desta linha" por "a corrida
     aberta no instante da avaliação" — exatamente o que a Decisão 39 proíbe."""
     m = mundo
     filho, pai = m.pipeline("FILHO"), m.pipeline("PAI")
@@ -522,7 +522,7 @@ def test_a_corrida_da_LINHA_ganha_da_corrida_aberta_AGORA(mundo):
     assert m.avaliar(filho, primeira) == (True, [])
     assert m.avaliar(filho, segunda) == (False, [pai])
     assert m.avaliar(filho, corrida=None) == (False, [pai]), (
-        "sem corrida em maos o degrau 2 responde, e ele olha a ABERTA")
+        "sem ciclo em maos o degrau 2 responde, e ele olha a ABERTA")
 
 
 # ══════════ 5. o 2º degrau: a malha que ASSINOU, e só ela ═══════════════════
@@ -535,7 +535,7 @@ def test_degrau_2_usa_a_malha_que_ASSINOU_a_linha_e_nao_qualquer_uma(mundo):
     Duas linhas do mesmo filho, assinadas por malhas diferentes; só a malha A
     tem corrida aberta. O pai de A (anterior à abertura) segura; o pai de B,
     cuja malha não tem corrida, é julgado pela janela e passa. Um degrau 2 que
-    pegasse "qualquer corrida aberta" seguraria os dois."""
+    pegasse "qualquer ciclo aberto" seguraria os dois."""
     m = mundo
     filho = m.pipeline("FILHO")
     pai_a, pai_b = m.pipeline("PAI_A"), m.pipeline("PAI_B")
@@ -554,7 +554,7 @@ def test_degrau_2_ignora_corrida_ja_FECHADA(mundo):
     """`me2.fechada_em IS NULL` no 2º degrau: corrida encerrada não corta mais
     nada. Sem essa guarda, a última corrida da malha continuaria segurando os
     filhos depois de fechada — e o pipeline avulso da mesma malha ficaria preso
-    a um ciclo que acabou."""
+    o um ciclo que acabou."""
     m = mundo
     filho, pai = m.pipeline("FILHO"), m.pipeline("PAI")
     malha = m.malha("M")
@@ -566,7 +566,7 @@ def test_degrau_2_ignora_corrida_ja_FECHADA(mundo):
     assert m.avaliar(filho, corrida=None) == (False, [pai])
     m.fechar(corrida)
     assert m.avaliar(filho, corrida=None) == (True, []), (
-        "corrida FECHADA nao pode continuar cortando pelo degrau 2")
+        "ciclo FECHADA nao pode continuar cortando pelo degrau 2")
 
 
 # ═══════════ 6. o que o SQL novo tinha de continuar respeitando ═════════════

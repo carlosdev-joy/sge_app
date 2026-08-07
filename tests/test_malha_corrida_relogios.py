@@ -247,7 +247,7 @@ def test_soltar_apos_6h_de_hold_empurra_o_teto_de_4h_e_a_corrida_NAO_expirou(
         db.nos[nos[0]]["retido_por"] = "C123456"
         r = _reter(client, nos[0], False)
     assert r.status_code == 200, r.text
-    assert c["fechada_em"] is None, "a corrida expirou apesar do hold"
+    assert c["fechada_em"] is None, "o ciclo expirou apesar do hold"
     assert c["teto_creditado_min"] == 360
     assert c["teto_em"] == teto_antes + timedelta(hours=6)
     assert r.json()["credito_teto"]["minutos"] == 360
@@ -382,7 +382,7 @@ def test_o_credito_ZERA_a_memoria_do_alarme_de_atraso(client, auth_operador):
         r = _reter(client, nos[0], False)
     assert r.status_code == 200, r.text
     assert c["atraso_visto_em"] is None, \
-        "o proximo MALHA_ATRASADA desta corrida nasceria mudo"
+        "o proximo MALHA_ATRASADA deste ciclo nasceria mudo"
 
 
 def test_soltar_continua_funcionando_sem_a_085(client, auth_operador):
@@ -413,9 +413,9 @@ def test_segurar_o_INICIO_com_corrida_aberta_diz_o_que_o_botao_NAO_faz(
         db.abrir_corrida("M1", odate=ODATE_API, membros=["RAIZ_A"])
         r = _reter(client, inicio, True)
     aviso = r.json()["aviso"]
-    assert "próxima corrida não parte" in aviso
+    assert "próximo ciclo não parte" in aviso
     assert "SEGUE" in aviso
-    assert "#" not in aviso, "numero de corrida nao aparece na interface (D74)"
+    assert "#" not in aviso, "numero de ciclo nao aparece na interface (D74)"
 
 
 def test_sem_corrida_aberta_segurar_o_inicio_nao_inventa_aviso(
@@ -434,7 +434,7 @@ def test_o_INICIO_segurado_NAO_para_os_relogios_da_corrida_em_andamento(
         client, auth_operador):
     """§6.7, literal: *"Hold do Início não para corrida aberta — está certo:
     ele segura a PARTIDA"*. E é a mesma frase que a resposta do endpoint
-    promete ao operador: *"a corrida em andamento SEGUE"*.
+    promete ao operador: *"o ciclo em andamento SEGUE"*.
 
     ⚠️ O DEFEITO QUE ESTE TESTE MATA (medido no dev, com a 085 real): o hold da
     corrida era `MIN(retido_em)` sobre TODO `etl_malha_no`, e o Início é uma
@@ -458,7 +458,7 @@ def test_o_INICIO_segurado_NAO_para_os_relogios_da_corrida_em_andamento(
         return hold
 
     assert _cenario("inicio")["retido"] is False, \
-        "o Inicio segurado congelou o teto da corrida em andamento"
+        "o Inicio segurado congelou o teto do ciclo em andamento"
     controle = _cenario("aguarde")
     assert controle["retido"] is True and controle["nos"] == 1, \
         "o cenario de controle nao trava — o teste acima nao provava nada"
@@ -488,7 +488,7 @@ def test_soltar_o_INICIO_nao_credita_teto_e_nao_impede_o_credito_do_AGUARDE(
             db.nos[no]["retido_por"] = "C123456"
         r_inicio = _reter(client, inicio, False)
         assert "credito_teto" not in r_inicio.json(), \
-            "soltar o Inicio creditou tempo em que a corrida NAO estava parada"
+            "soltar o Inicio creditou tempo em que o ciclo NAO estava parado"
         assert c["teto_em"] == teto_antes and c["teto_creditado_min"] == 0
         # e agora com o Início SEGURADO de novo: ele não pode barrar o crédito
         # do Aguarde, que é quem de fato travou o ciclo.
@@ -523,7 +523,7 @@ def test_o_card_nao_diz_relogios_parados_por_causa_do_INICIO(
 
     com_inicio = _cenario("inicio")
     assert com_inicio["retido_nos"] == 0, \
-        "o card contou o Inicio como no que trava a corrida"
+        "o card contou o Inicio como no que trava o ciclo"
     assert com_inicio["teto_vencido"] is True, \
         "o Inicio segurado escondeu do card o limite JA vencido"
     com_aguarde = _cenario("aguarde")
@@ -650,7 +650,7 @@ def test_teto_vencido_com_8_membros_EXECUTANDO_fica_ABERTA_e_pinta_ATRASADA(
     assert card["teto_vencido"] is True
     assert card["saude"] == "ATRASADA"
     assert card["membros_vivos"] == 8
-    assert c["fechada_em"] is None, "a leitura do card fechou a corrida"
+    assert c["fechada_em"] is None, "a leitura do card fechou o ciclo"
 
 
 def test_teto_vencido_com_8_membros_EXECUTANDO_NAO_libera_o_disparo(
@@ -839,7 +839,7 @@ def test_estado_ILEGIVEL_nao_fecha_a_corrida_como_ABORTADA(monkeypatch):
     maior tabela do schema, e às 3h a mais disputada) faz a função logar e
     devolver os BALDES VAZIOS. Lido como fato, isso é `linhas == 0` — e
     `linhas == 0` com a carência de partida vencida fecha a corrida como
-    `ABORTADA`, *"a corrida não chegou a começar"*, com card no Teams, por cima
+    `ABORTADA`, *"o ciclo não chegou a começar"*, com card no Teams, por cima
     de oito pipelines `EXECUTANDO`. Depois disso o disparo parte, e as linhas
     que terminarem carregam id de corrida FECHADA.
 
@@ -868,7 +868,7 @@ def test_estado_ILEGIVEL_nao_fecha_a_corrida_como_ABORTADA(monkeypatch):
 
     fechadas, eventos = _cenario(membros_lidos=0)      # a leitura FALHOU
     assert fechadas == [], \
-        f"a guardia fechou a corrida com o estado ilegivel: {fechadas}"
+        f"a guardia fechou o ciclo com o estado ilegivel: {fechadas}"
     assert not [e for e in eventos if e[1] == "MALHA_ABORTADA"]
 
     fechadas, eventos = _cenario(membros_lidos=8)      # a leitura RESPONDEU
@@ -922,7 +922,7 @@ def test_aguarde_segurado_por_30h_NAO_leva_a_corrida_a_FALHA_pela_quiescencia(
         return fechadas, eventos
 
     fechadas, eventos = _cenario(com_hold=True)
-    assert fechadas == [], "a guardia fechou a corrida por causa do hold"
+    assert fechadas == [], "a guardia fechou o ciclo por causa do hold"
     assert not [e for e in eventos if e[1] == "MALHA_FALHOU"]
 
     fechadas, eventos = _cenario(com_hold=False)
@@ -976,7 +976,7 @@ def test_linha_de_corrida_ABERTA_nao_e_fechada_como_NAO_LIBEROU(monkeypatch):
         monkeypatch, faltantes=["PIPE_A"],
         corrida_da_linha={"id": 12, "malha_name": "M1",
                           "data_referencia": ODATE})
-    assert fechadas == [], "a guardia fechou a linha da propria corrida aberta"
+    assert fechadas == [], "a guardia fechou a linha do propria ciclo aberto"
 
 
 def test_sem_corrida_cobrindo_a_linha_o_fechamento_continua_acontecendo(
@@ -1012,7 +1012,7 @@ def test_com_o_interruptor_em_zero_a_guarda_da_corrida_nao_e_perguntada(
     Com um lambda devolvendo `None`, este teste ficaria verde mesmo com o
     `if corrida_on` apagado do módulo — provaria o cenário, não a guarda."""
     def _proibido(conn, p, d):
-        raise AssertionError("interruptor em 0 — a corrida nao pode ser "
+        raise AssertionError("interruptor em 0 — o ciclo nao pode ser "
                              "perguntada nesta funcao")
 
     fechadas, eventos = _fechar_dia(monkeypatch, faltantes=["PIPE_A"],
@@ -1150,7 +1150,7 @@ def test_a_corrida_cobre_a_linha_PELO_CARIMBO_e_pela_PARTICIPACAO_no_snapshot(
         arvore):
     """As DUAS portas do `EXISTS`, e a segunda não é zelo: a linha do dependente
     NASCE no claim do pai, **sem** `malha_execucao_id` — só o registro do filho
-    a carimba. Fechar por "não aponta para corrida nenhuma" mataria exatamente
+    a carimba. Fechar por "não aponta para ciclo nenhuma" mataria exatamente
     as linhas que ainda não partiram, que são as que a corrida está esperando."""
     mod = _arvore(arvore)
     # (a) a linha já carimbada
@@ -1247,7 +1247,7 @@ def test_a_guardia_propaga_a_corrida_da_LINHA_no_conf(monkeypatch):
     mas a PROVENIÊNCIA se perdia exatamente quando o pipeline é membro de duas
     corridas do MESMO ODATE — o caso que a F5 existe para tratar. O `run_id`
     entra na pergunta porque é ele que identifica a LINHA: sem ele a resposta
-    seria "uma corrida provável da malha", que é justamente a escolha que a
+    seria "um ciclo provável da malha", que é justamente a escolha que a
     Decisão 34 proíbe."""
     perguntas: list = []
 
@@ -1292,7 +1292,7 @@ def test_ODATE_ambiguo_RECUSA_o_disparo_nesta_porta_tambem(monkeypatch):
         lambda conn, p, run_id=None, conf_id=None, herdada=None: {
             "data": None, "corrida_id": None, "ambiguo": True,
             "degrau": "corrida",
-            "detalhe": "MALHA_ODATE_AMBIGUO: PIPE_C e membro de corridas "
+            "detalhe": "MALHA_ODATE_AMBIGUO: PIPE_C e membro de ciclos "
                        "abertas com ODATEs diferentes"},
         reservar_corrida=lambda conn, p, d, rid, o:
             reservas.append(rid) or rid)

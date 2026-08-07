@@ -159,7 +159,7 @@ export function CabecalhoCorrida({
       </strong>
       {' — '}
       {corrida
-        ? 'a corrida não avança e os relógios estão parados.'
+        ? 'o ciclo não avança e os relógios estão parados.'
         : 'enquanto a trava estiver posta, a malha não parte no horário agendado.'}
       {/* Um botão que solta N nós de uma vez pode falhar no meio e deixar
           a malha meio presa sem ninguém saber qual metade. O gesto é
@@ -191,7 +191,7 @@ export function CabecalhoCorrida({
             icone={<AlertTriangle size={14} className="mt-0.5 shrink-0" />}
           >
             <span title="A migration 085 (o registro do ciclo da malha) ainda não foi aplicada neste banco. O que a tela mostra continua verdadeiro; o que falta é o ciclo.">
-              sem dados de corrida — sistema em atualização
+              sem dados de ciclo — sistema em atualização
             </span>
           </Banner>
         )}
@@ -208,7 +208,7 @@ export function CabecalhoCorrida({
               {corridasNoDia === 2 ? ' as duas' : ` as ${corridasNoDia}`})
             </span>
           ) : (
-            !sem085 && <span>nenhuma corrida registrada nesta lente</span>
+            !sem085 && <span>nenhum ciclo registrado nesta lente</span>
           )}
           {carimbo}
         </div>
@@ -366,10 +366,10 @@ export function CabecalhoCorrida({
                 disabled={!onEncerrar}
                 onClick={() => { setMotivo(''); setConfirmando(true) }}
                 title={onEncerrar
-                  ? 'Encerrar o ciclo desta madrugada e liberar o disparo da próxima corrida'
-                  : 'Encerrar a corrida exige a permissão de execução'}
+                  ? 'Encerrar o ciclo desta madrugada e liberar o disparo do próximo ciclo'
+                  : 'Encerrar o ciclo exige a permissão de execução'}
               >
-                Encerrar corrida…
+                Encerrar ciclo…
               </Button>
             </div>
           )}
@@ -380,14 +380,14 @@ export function CabecalhoCorrida({
       <Modal
         open={confirmando}
         onClose={() => setConfirmando(false)}
-        title="Encerrar a corrida"
+        title="Encerrar o ciclo"
         size="lg"
       >
         <div className="flex flex-col gap-3 text-sm text-ink">
           <p>
             Isto fecha o ciclo da <strong>{resumo.identidade}</strong>
             {resumo.tempo ? <> (<span>{resumo.tempo}</span>)</> : null} e{' '}
-            <strong>libera o disparo da próxima corrida desta malha</strong>.
+            <strong>libera o disparo do próximo ciclo desta malha</strong>.
           </p>
           {/* A dúvida que faz o operador NÃO apertar o botão, respondida antes
               do clique: encerrar não é matar. */}
@@ -406,7 +406,7 @@ export function CabecalhoCorrida({
               coisa, é a tradução que a §9.11 fixa, e ainda aponta a ação. */}
           {corrida.saude === 'SEM_PROGRESSO' && (
             <p className="text-[13px] text-dim">
-              Esta corrida está sem sinal
+              Este ciclo está sem sinal
               {corrida.sem_sinal_min ? ` há ${corrida.sem_sinal_min} min` : ''}:
               é o sintoma de um pipeline que terminou sem registrar o fim.
               Encerrar aqui não conserta essa execução — ela continua aberta na
@@ -415,7 +415,7 @@ export function CabecalhoCorrida({
           )}
           {corrida.saude === 'COM_FALHA' && (
             <p className="text-[13px] text-dim">
-              Esta corrida já tem falha detectada. Encerrar registra que a
+              Este ciclo já tem falha detectada. Encerrar registra que a
               madrugada acabou assim; o reprocesso continua possível depois.
             </p>
           )}
@@ -451,7 +451,7 @@ export function CabecalhoCorrida({
                 setConfirmando(false)
               }}
             >
-              Encerrar corrida
+              Encerrar ciclo
             </Button>
           </div>
         </div>

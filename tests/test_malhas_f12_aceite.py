@@ -557,7 +557,7 @@ def _card(lista: dict, nome: str) -> dict:
 # Tudo o que esta fase escreve na tela. Nenhuma destas frases pode existir sem
 # corrida fechada gravada — e a lista é a régua das provas de ausência.
 _FRASES_DA_FASE = ("típico", "n=", "% do tempo típico", "falhou ",
-                   "das últimas", "corrida anterior", "tiveram trabalho",
+                   "das últimas", "ciclo anterior", "tiveram trabalho",
                    "⚠ 2x")
 
 
@@ -600,7 +600,7 @@ def test_dia_1_nada_quebra_a_tela_continua_contando_o_que_ja_contava(
     assert cena["barras"] and cena["barras"][0]["valuetext"]
     card = _card(lista, "dia_1")
     assert "em andamento" in card["texto"]
-    assert "2 membros nesta corrida" in card["texto"]
+    assert "2 membros neste ciclo" in card["texto"]
     # E o servidor não publicou número sem amostra: a chave `historico` NÃO
     # existe (ausência), e `tipicos` veio apurado e VAZIO — que são coisas
     # diferentes e precisam continuar sendo.
@@ -1061,7 +1061,7 @@ def test_corrida_terminal_nao_tem_percentual_nenhum(painel):
     Um `≈ 94%` ao lado de "concluída" só levantaria a dúvida de onde foram
     parar os 6% — e a corrida acabou."""
     cena = _cena(painel, "terminal")
-    assert "concluída" in cena["texto"]
+    assert "concluído" in cena["texto"]
     assert "do tempo típico" not in cena["lido"]
     assert "%" not in cena["lido"]
 
@@ -1143,14 +1143,14 @@ def test_nenhuma_superficie_publica_percentual_de_CONTAGEM(painel, lista):
 # ═════════ ACEITE 10 — o histórico factual do card e da faixa ══════════════
 
 def test_o_card_conta_as_falhas_com_o_denominador_do_SERVIDOR(lista, cenarios):
-    """`falhou 2 das últimas 7 corridas` — a frase que responde "está pior que
+    """`falhou 2 dos últimos 7 ciclos` — a frase que responde "está pior que
     antes?" sem obrigar o gestor a abrir malha por malha às 8h.
 
     O denominador vem PRONTO do servidor: a malha tem dois dias `SEM_TRABALHO`
     no meio, e eles não entram (não tiveram chance de falhar). Uma tela que
     deduzisse "das últimas 7" da janela pedida diria 7 sobre 5 madrugadas."""
     card = _card(lista, "falhou_2_de_7")
-    assert "falhou 2 das últimas 7 corridas" in card["texto"]
+    assert "falhou 2 dos últimos 7 ciclos" in card["texto"]
     historico = next(m for m in cenarios["falhou_2_de_7"]["malhas"]["malhas"]
                      if m["malha_name"] == "M1")["historico"]
     assert historico["consideradas"] == 7 and historico["falhou"] == 2
@@ -1163,7 +1163,7 @@ def test_a_faixa_diz_o_que_aconteceu_na_corrida_ANTERIOR(painel):
     Ela exige `n = 1`, e não o piso `n ≥ 5` da duração típica: isto é FATO
     registrado, não mediana."""
     texto = _cena(painel, "faixa_com_historico")["texto"]
-    assert "corrida anterior: 04/08" in texto
+    assert "ciclo anterior: 04/08" in texto
     assert "01:10 → 04:02" in texto
 
 

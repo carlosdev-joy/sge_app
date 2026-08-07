@@ -117,7 +117,7 @@ export function CorridaProgresso({
         {percentualTempo && (
           <span
             className="shrink-0 font-normal opacity-80"
-            title={'Percentual do TEMPO típico desta corrida, ponderado pela '
+            title={'Percentual do TEMPO típico deste ciclo, ponderado pela '
               + 'duração de cada membro — não é percentual de pipelines, e não '
               + 'é previsão de conclusão. Só aparece quando todos os membros '
               + 'têm histórico suficiente.'}
@@ -130,7 +130,7 @@ export function CorridaProgresso({
             <button
               type="button"
               onClick={onTravados}
-              title="Ver o que está travando esta corrida"
+              title="Ver o que está travando este ciclo"
               className="ml-auto inline-flex shrink-0 items-center gap-1 rounded border border-red-300 bg-red-100 px-1 py-px text-[10px] font-semibold text-red-700 hover:bg-red-200 dark:border-red-700 dark:bg-red-900/60 dark:text-red-300 dark:hover:bg-red-900"
             >
               <AlertTriangle size={10} aria-hidden="true" /> {travados}

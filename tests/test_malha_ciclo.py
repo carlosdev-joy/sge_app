@@ -157,7 +157,7 @@ def test_equalizar_pula_quem_ja_tem_corrida_na_data(mc, capsys):
                           [("PIPE_Y", date(2026, 8, 3), "SUCESSO")], "agenda")
     assert feitos == []
     assert conn.db["updates"] == []
-    assert "ja tem corrida" in capsys.readouterr().out
+    assert "ja tem ciclo" in capsys.readouterr().out
 
 
 def test_equalizar_um_erro_nao_derruba_os_outros(mc):

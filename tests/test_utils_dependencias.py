@@ -1340,7 +1340,7 @@ def _seq(dep, monkeypatch, corte=datetime(2026, 8, 4, 13, 0)):
 
 def test_corte_tem_os_tres_degraus_na_ordem_da_decisao_38(dep):
     """A ORDEM é a regra: corrida da linha → corrida da malha que assinou →
-    janela. Trocar o 1º pelo 2º é trocar "a corrida desta linha" por "a corrida
+    janela. Trocar o 1º pelo 2º é trocar "o ciclo desta linha" por "a corrida
     aberta agora", que é o defeito que a Decisão 39 nomeia."""
     sql = dep.SQL_LIBERADO_SEQ_085
     corte = sql[sql.index("COALESCE"):]
@@ -1393,7 +1393,7 @@ def test_corte_e_avaliado_UMA_VEZ_POR_LINHA_e_nao_por_execucao(dep):
 
 
 def test_corrida_da_linha_vira_o_primeiro_parametro(dep, monkeypatch):
-    """A assinatura nova entrega a corrida ao SQL, na posição do 1º degrau."""
+    """A assinatura nova entrega o ciclo ao SQL, na posição do 1º degrau."""
     corte = _seq(dep, monkeypatch)
     conn = _conn([{"rows": []}])
     assert dep.liberado(conn, "PIPE_C", date(2026, 8, 5), 77) == (True, [])
@@ -1411,7 +1411,7 @@ def test_corrida_ilegivel_nao_trava_o_banco_inteiro(dep, monkeypatch, capsys):
     conn = _conn([{"rows": []}])
     assert dep.liberado(conn, "PIPE_C", date(2026, 8, 5), "abc") == (True, [])
     assert conn._cur.execs[0][1] == ("PIPE_C", None, corte)
-    assert "id de corrida ilegivel" in capsys.readouterr().out
+    assert "id de ciclo ilegivel" in capsys.readouterr().out
     dep.limpar_cache_modo()
 
 

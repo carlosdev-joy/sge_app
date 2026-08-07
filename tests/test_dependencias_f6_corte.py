@@ -79,7 +79,7 @@ def _degraus_do_corte(sql: str):
 
     Ler a ordem do SQL — em vez de assumi-la — é o que faz este dublê reprovar
     a troca do 1º degrau pelo 2º, que é o defeito que a Decisão 39 nomeia: o
-    corte deixaria de ser "a corrida desta linha" e passaria a ser "a corrida
+    corte deixaria de ser "o ciclo desta linha" e passaria a ser "a corrida
     aberta no instante da avaliação".
 
     Devolve [(nome, trecho do SQL daquele degrau)], onde o trecho é o que
@@ -446,13 +446,13 @@ def test_corrida_que_FECHA_entre_duas_avaliacoes_nao_muda_o_corte(arvore):
     assert antes == depois == (False, ["PAI_ONTEM"])
 
     assert arvore.liberado(banco, "FILHO_MALHA", None) == (True, []), (
-        "cenario invalido: sem a corrida da LINHA a janela tem de soltar")
+        "cenario invalido: sem o ciclo da LINHA a janela tem de soltar")
 
 
 def test_a_corrida_da_LINHA_ganha_da_corrida_aberta_AGORA(arvore):
     """A ordem dos degraus, no cenário em que ela decide: a corrida #1 fechou,
     a #2 já abriu e o pai concluiu ENTRE as duas. Pela corrida da linha (#1) o
-    pai é desta rodada e LIBERA; pela "corrida aberta agora" (#2) ele seria da
+    pai é desta rodada e LIBERA; pela "ciclo aberto agora" (#2) ele seria da
     rodada passada. Trocar o 1º degrau pelo 2º inverte esta resposta."""
     banco = _mundo(
         corridas={
@@ -473,7 +473,7 @@ def test_degrau_2_usa_a_malha_que_ASSINOU_a_linha(arvore):
     """A malha vem do NÓ (`dd.origem_no`, migration 075), então é DETERMINADA
     por linha. A linha assinada pela malha A (com corrida aberta) segura; a
     assinada pela malha B (sem corrida) é julgada pela janela e passa — um
-    degrau 2 que pegasse "qualquer corrida aberta" seguraria as duas."""
+    degrau 2 que pegasse "qualquer ciclo aberto" seguraria as duas."""
     banco = _mundo()
     assert arvore.liberado(banco, "FILHO_MALHA", None) == (False, ["PAI_ONTEM"])
     assert arvore.liberado(banco, "FILHO_SEM_CORRIDA", None) == (True, [])
@@ -520,7 +520,7 @@ def test_com_o_modo_DESLIGADO_a_corrida_nao_muda_nada(arvore):
         "no modo DATA o sucesso NA DATA libera, mesmo anterior a abertura"
     )
     assert arvore.liberado(banco, "FILHO_OK", CORRIDA_A) == (False, ["PAI_HOJE"]), (
-        "no modo DATA o sucesso de OUTRA data nao libera, mesmo dentro da corrida"
+        "no modo DATA o sucesso de OUTRA data nao libera, mesmo dentro do ciclo"
     )
     assert all("etl_malha_execucao" not in sql for sql, _ in banco.execs)
 

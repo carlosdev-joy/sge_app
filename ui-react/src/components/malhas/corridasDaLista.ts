@@ -140,7 +140,7 @@ export function cadenciaDaLista(malhas: ApiMalha[] | undefined): 20_000 | false 
  *
  *  Sem `corrida`, leva à lente de execução da data corrente, que já funciona
  *  hoje: é o que mantém o caminho testável no dia do deploy, com o interruptor
- *  `malha_corrida_ativa` ainda em `0` e nenhuma malha com ciclo.
+ *  `malha_corrida_ativa` ainda em `0` e nenhum malha com ciclo.
  *
  *  `data` é o ODATE com que o painel abre, e serve ao caso em que não há
  *  corrida para apontar mas SE SABE o dia — é o do painel de dependência do
@@ -197,35 +197,35 @@ export const ESTADOS_CORRIDA: DefinicaoEstado[] = [
     // `STATUS_CORRIDA` publica na pílula, e nome de máquina não entra na
     // interface (Decisão 74) — `title` inclusive, que é texto lido tanto pelo
     // olho quanto pelo leitor de tela.
-    ajuda: 'Malhas com a corrida em andamento neste momento — inclusive as que '
-      + 'já têm falha dentro (uma corrida que falhou continua rodando o resto).',
+    ajuda: 'Malhas com ciclo em andamento neste momento — inclusive as que '
+      + 'já têm falha dentro (um ciclo que falhou continua rodando o resto).',
   },
   {
     chave: 'falha',
     rotulo: 'Com falha',
     tom: TOM_VERMELHO,
-    ajuda: 'Malhas cuja corrida falhou — a que já fechou em falha e também a '
+    ajuda: 'Malhas cuja ciclo falhou — a que já fechou em falha e também a '
       + 'que ainda está rodando com uma falha dentro.',
   },
   {
     chave: 'prazo',
     rotulo: 'Fora do prazo',
     tom: TOM_AMBAR,
-    ajuda: 'Malhas cuja corrida passou do limite: em andamento fora do prazo, '
+    ajuda: 'Malhas cuja ciclo passou do limite: em andamento fora do prazo, '
       + 'ou encerrada sem terminar.',
   },
   {
     chave: 'nao_abriu',
     rotulo: 'Não abriram',
     tom: TOM_AMBAR,
-    ajuda: 'O horário previsto passou e nenhuma corrida nasceu — o pior modo '
+    ajuda: 'O horário previsto passou e nenhum ciclo nasceu — o pior modo '
       + 'de falha, e o que a lista não sabia contar.',
   },
   {
     chave: 'concluida',
     rotulo: 'Concluídas',
     tom: TOM_VERDE,
-    ajuda: 'Malhas que concluíram a corrida da data de referência indicada.',
+    ajuda: 'Malhas que concluíram o ciclo da data de referência indicada.',
   },
 ]
 

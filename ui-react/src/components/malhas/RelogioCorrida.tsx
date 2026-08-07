@@ -110,7 +110,7 @@ export function RelogioCorrida({
                 }]}
                 total={100}
                 valorAtual={resumo.prazoPct}
-                ariaLabel="limite de segurança da corrida"
+                ariaLabel="limite de segurança do ciclo"
                 /* `aria-valuetext` explícito: sem ele o leitor de tela
                    converte valuenow/valuemax em percentual sozinho. Aqui o
                    percentual É do tempo (não de contagem de pipelines, que a
@@ -135,16 +135,16 @@ export function RelogioCorrida({
       )}
 
       {/* Decisão 61 — o prazo POR PADRÃO. Às 04:00 "faltam 21h de teto" é
-          irrelevante; o que importa é que a próxima corrida parte às 01:00 e a
-          corrida aberta BLOQUEIA essa partida. A consequência só é dita com a
+          irrelevante; o que importa é que a próxima corrida parte às 01:00 e o
+          ciclo aberto BLOQUEIA essa partida. A consequência só é dita com a
           corrida ABERTA: com ela fechada, o gatilho é informação, não trava. */}
       {proximoGatilho && (
         <span className="inline-flex flex-wrap items-center gap-x-1.5 opacity-90">
           <Clock size={11} className="shrink-0" aria-hidden="true" />
-          <span>a próxima corrida parte {faltaPara(proximoGatilho, agoraLocal)}</span>
+          <span>o próximo ciclo parte {faltaPara(proximoGatilho, agoraLocal)}</span>
           {aberta && (
             <span className="font-medium">
-              — enquanto esta não fechar, ela não abre
+              — enquanto este não fechar, ele não abre
             </span>
           )}
         </span>

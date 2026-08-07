@@ -781,7 +781,7 @@ def test_o_refetch_do_painel_so_encurta_depois_que_o_N_MAIS_1_sai():
         # nada dela.
         assert intervalo <= 15_000, (
             "o agregado entrou e o painel continuou em %d ms: a Decisão 73 "
-            "manda 15 s com corrida ABERTA depois que o N+1 sai" % intervalo)
+            "manda 15 s com ciclo ABERTA depois que o N+1 sai" % intervalo)
 
 
 def test_o_agregado_esta_no_caminho_corrente_do_painel():
@@ -840,10 +840,10 @@ def test_dia_ANTERIOR_com_duas_corridas_diz_quantas_foram(client, auth):
         painel = client.get(
             "/malhas/M1/execucao?data_referencia=2026-08-04").json()
     assert "corrida" not in painel, (
-        "descrever UMA corrida sobre a lista das DUAS é a mentira que a fase "
+        "descrever UMA ciclo sobre a lista das DUAS é a mentira que a fase "
         "mata — o bloco tem de sair")
     assert painel["corridas_no_dia"] == 2, (
-        "o dia anterior com duas corridas ficou mudo: o canvas mistura os dois "
+        "o dia anterior com dois ciclos ficou mudo: o canvas mistura os dois "
         "ciclos e a tela não tem como oferecer a escolha")
 
 
@@ -885,7 +885,7 @@ def test_malha_SEM_corrida_nenhuma_nao_gasta_a_consulta_da_contagem(client, auth
 # ═════ Decisão 66/3 — a FILA DE AVISO chega ao painel (`notificado_em`) ══════
 
 def _com_evento_do_ciclo(client, db, *, notificado_em):
-    """Corrida com um `MALHA_FALHOU` gravado no marcador do ciclo."""
+    """Ciclo com um `MALHA_FALHOU` gravado no marcador do ciclo."""
     c = _corrida_em_cadeia(client, db)
     db.eventos.append({
         "pipeline_name": malhas_router.MARCADOR_CORRIDA.format(c["id"]),

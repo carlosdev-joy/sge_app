@@ -192,9 +192,9 @@ def _acoes(url) -> list | None:
 ACAO_MALHA: dict[str, str] = {
     "MALHA_FALHOU": (
         "Reprocesse a partir do pipeline que falhou. Os outros podem seguir "
-        "rodando — a corrida só fecha quando nada mais estiver em execução."),
+        "rodando — o ciclo só fecha quando nada mais estiver em execução."),
     "MALHA_EXPIRADA": (
-        "A corrida bateu o limite de segurança e foi encerrada sem terminar. "
+        "O ciclo bateu o limite de segurança e foi encerrada sem terminar. "
         "Confira o que ficou para trás antes de disparar a malha de novo."),
     "MALHA_ABORTADA": (
         "Nenhum pipeline da malha chegou a iniciar. Confira se o Airflow está "
@@ -204,14 +204,14 @@ ACAO_MALHA: dict[str, str] = {
     # disparar de novo aqui recebe recusa e perde minutos de plantão.
     "MALHA_ATRASADA": (
         "Ainda há pipeline rodando, então nada foi encerrado e a malha segue "
-        "bloqueada para um novo disparo. Se travou, encerre a corrida pela "
+        "bloqueada para um novo disparo. Se travou, encerre o ciclo pela "
         "tela da malha."),
     "MALHA_CANCELADA": (
         "Encerramento pedido por uma pessoa, com o motivo acima. A malha volta "
         "a aceitar disparo."),
     "MALHA_REPROCESSO": (
-        "Um pipeline desta corrida foi reprocessado sem reabri-la, porque já "
-        "existe outra corrida em andamento. Confira se o resultado do dia "
+        "Um pipeline deste ciclo foi reprocessado sem reabri-la, porque já "
+        "existe outro ciclo em andamento. Confira se o resultado do dia "
         "mudou."),
     "MALHA_SEM_TRABALHO": (
         "Nenhum pipeline da malha roda nesta data (regra de dia). Não há nada "
@@ -239,7 +239,7 @@ def _corrida_publica(evento: dict) -> str:
     Decisão 74 — `#12` numa malha diária lê-se como "12ª tentativa hoje", e o
     id é numeração interna (IDENTITY global) que não significa nada para quem
     está de plantão. A ordinal só aparece da 2ª corrida do mesmo dia em diante,
-    porque "1ª corrida de 04/08" sugere que houve uma segunda.
+    porque "1º ciclo de 04/08" sugere que houve uma segunda.
     """
     dia = _dia_curto(evento.get("data_ref"))
     if not dia:
@@ -248,7 +248,7 @@ def _corrida_publica(evento: dict) -> str:
         sequencia = int(evento.get("sequencia") or 1)
     except (TypeError, ValueError):
         sequencia = 1                      # rótulo humano nunca derruba o card
-    return f"corrida de {dia}" if sequencia <= 1 else f"{sequencia}ª corrida de {dia}"
+    return f"ciclo de {dia}" if sequencia <= 1 else f"{sequencia}º ciclo de {dia}"
 
 
 def montar_card(evento: dict) -> dict:

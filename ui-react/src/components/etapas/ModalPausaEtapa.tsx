@@ -138,7 +138,7 @@ export function ModalPausaEtapa({
       method: 'POST',
       body: JSON.stringify({ observacao: observacao.trim() || undefined }),
     }),
-    onSuccess: feito('Execução cancelada — a corrida foi marcada como falha.'),
+    onSuccess: feito('Execução cancelada — o ciclo foi marcada como falha.'),
     onError: (e: unknown) => toast.error(mensagemErro(e)),
   })
 

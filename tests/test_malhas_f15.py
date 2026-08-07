@@ -96,7 +96,7 @@ class FakeCur(FakeCurF13):
             self._rows = [(1, 1)] if db.com_067 else [(None, None)]
             self.rowcount = -1
             return
-        # F1 da spec-malha-data-unica: as duas travas do ciclo + o relógio do
+        # F1 da spec-malha-data-unica: as dois travas do ciclo + o relógio do
         # banco que ancora o corte. O dublê modela o mesmo recorte do SQL —
         # status vivo em QUALQUER data; data diferente com `inicio` >= corte.
         if s.startswith("SELECT e.pipeline_name, e.data_referencia, e.status, "

@@ -914,7 +914,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                 <p className="text-[10px] text-dim">
                   Em branco = a data de referência é a do calendário. Com virada 20:00, uma corrida
                   iniciada 23:30 (ou 00:40) já pertence ao dia seguinte — as duas pontas da
-                  meia-noite viram a MESMA corrida de negócio.
+                  meia-noite viram o MESMO ciclo de negócio.
                 </p>
               )}
             </div>

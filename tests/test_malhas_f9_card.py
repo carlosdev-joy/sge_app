@@ -145,7 +145,7 @@ def test_barra_cheia_com_dispensados_nao_encolhe_o_denominador(card):
     de baixo diz, sempre, quem não rodou (Decisão 53)."""
     d = _cenario(card, "barra_cheia_com_dispensados")
     assert d["contagem"] == "5 de 7 · fechando"
-    assert d["membros"] == "7 membros nesta corrida · 2 não rodam hoje (regra de dia)"
+    assert d["membros"] == "7 membros neste ciclo · 2 não rodam hoje (regra de dia)"
     assert d["barra"]["total"] == 7 and d["barra"]["valorAtual"] == 5
     assert [s["chave"] for s in d["barra"]["segmentos"]] == ["ok", "dispensado"]
     assert d["barra"]["valorTexto"] == ("5 de 7 pipelines concluídos, "
@@ -199,7 +199,7 @@ def test_snapshot_vazio_nao_publica_zero_de_zero(card):
     assert d["contagem"] is None
     assert d["fechando"] is False        # barra CHEIA de nada não é "fechando"
     assert d["barra"] is None
-    assert d["membros"].startswith("a corrida abriu sem membros ativos")
+    assert d["membros"].startswith("o ciclo abriu sem membros ativos")
     assert "0 de 0" not in d["lido"] and "0 de 0" not in d["titulo"]
 
 
@@ -226,7 +226,7 @@ def test_expirada_congela_a_barra_e_diz_onde_parou(card):
     assert d["travados"] == "2 travados"
     assert sum(s["valor"] for s in d["barra"]["segmentos"]) == 4
     assert d["barra"]["total"] == 7
-    assert d["estilo"]["rotulo"] == "encerrada sem terminar"
+    assert d["estilo"]["rotulo"] == "encerrado sem terminar"
     # ícone PRÓPRIO: os três vermelhos não podem ser indistinguíveis para quem
     # não separa vermelho de âmbar
     assert d["estilo"]["icone"] == "icone:TimerOff"
@@ -261,7 +261,7 @@ def test_nao_abriu_e_um_estado_da_tela(card):
     assert d["estilo"]["icone"] == "icone:CalendarX"
     assert "amber" in d["estilo"]["chip"]
     assert d["cabecalho"] == "previsto para 01:00 · há 6h"
-    assert d["sem_corrida"] == "nenhuma corrida de 05/08"
+    assert d["sem_corrida"] == "nenhum ciclo de 05/08"
     # a pílula anuncia "não abriu" mesmo com a corrida de ONTEM em mãos: o que
     # o operador precisa saber às 8h não é que ontem foi bem
     assert "não abriu" in d["badge_lido"]
@@ -272,9 +272,9 @@ def test_nao_abriu_e_um_estado_da_tela(card):
 
 def test_nao_abriu_bloqueada_diz_que_e_a_de_ontem_que_segura(card):
     """Muda a AÇÃO: não é "o Airflow morreu", é "alguém precisa fechar a de
-    ontem" — a corrida aberta bloqueia a partida da próxima."""
+    ontem" — o ciclo aberto bloqueia a partida da próxima."""
     d = _cenario(card, "nao_abriu_bloqueada_pela_de_ontem")
-    assert d["bloqueio"] == ("a corrida anterior continua aberta — enquanto ela "
+    assert d["bloqueio"] == ("o ciclo anterior continua aberto — enquanto ela "
                              "não fechar, a próxima não abre")
 
 
@@ -313,9 +313,9 @@ def test_o_numero_de_maquina_nao_chega_na_interface(card):
     numerações diferentes disputando a mesma notação, e "#12" numa malha diária
     lê-se como "12ª tentativa hoje", que é falso.
 
-    A 2ª corrida do dia se chama "2ª corrida de 05/08"."""
+    A 2ª corrida do dia se chama "2º ciclo de 05/08"."""
     d = _cenario(card, "nada_de_numero_de_maquina")
-    assert d["identidade"] == "2ª corrida de 05/08"
+    assert d["identidade"] == "2º ciclo de 05/08"
     for onde in ("lido", "titulo", "diagnostico"):
         assert "#" not in d[onde], onde
     # nome de máquina traduzido (Decisão 74): nada de `inicio:#12`
@@ -369,8 +369,8 @@ def test_cada_estado_tem_rotulo_e_icone_proprios(card):
     assert rotulos["ABERTA_OK"] == "em andamento"
     assert rotulos["ABERTA_COM_FALHA"] == "em andamento · com falha (ainda rodando)"
     assert rotulos["ABERTA_SEM_PROGRESSO"] == "em andamento · sem sinal há 40 min"
-    assert rotulos["CONCLUIDA"] == "concluída"
-    assert rotulos["EXPIRADA"] == "encerrada sem terminar"
+    assert rotulos["CONCLUIDA"] == "concluído"
+    assert rotulos["EXPIRADA"] == "encerrado sem terminar"
     assert rotulos["ABORTADA"] == "não chegou a começar"
     assert rotulos["SEM_TRABALHO"] == "sem trabalho hoje"
     # ícones distintos entre os VERMELHOS
@@ -422,7 +422,7 @@ def test_acompanhar_existe_sempre_e_as_posicoes_sao_fixas():
     src = _codigo(SRC / "pages" / "Malha.tsx")
     # o botão não está dentro de nenhuma guarda de corrida
     assert "onClick={onAcompanhar}" in src
-    assert "corrida &&" not in src.split("onClick={onAcompanhar}")[0][-400:]
+    assert "ciclo &&" not in src.split("onClick={onAcompanhar}")[0][-400:]
     # a lente vai com `modo=execucao`; a corrida entra só quando existe
     assert "modo: 'execucao', corrida: String(corrida)" in src
     assert "{ malha: n, modo: 'execucao' })" in src
@@ -457,7 +457,7 @@ def test_o_card_que_nao_abriu_ordena_primeiro():
 
 def test_api_anterior_a_fase_faz_o_card_DIZER_que_falta_informacao():
     """Aceite: front novo × API velha → "(membro mais recente)" **e** a linha
-    "sem dados de corrida — sistema em atualização".
+    "sem dados de ciclo — sistema em atualização".
 
     O `deploy.sh` publica o `dist/` na etapa 3 e a `api/` só na 7: nesse
     intervalo o front novo conversa com a API velha, que não manda `corrida`
@@ -466,7 +466,7 @@ def test_api_anterior_a_fase_faz_o_card_DIZER_que_falta_informacao():
     dizendo."""
     src = _codigo(SRC / "pages" / "Malha.tsx")
     assert "data.corrida_suportada !== true" in src
-    assert "sem dados de corrida — sistema em atualização" in src
+    assert "sem dados de ciclo — sistema em atualização" in src
     assert "(membro mais recente" in src
     # a degradação continua sendo decidida POR MALHA, pela ausência da chave
     assert "const corrida = malha.corrida ?? null" in src

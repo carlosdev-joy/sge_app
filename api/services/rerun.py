@@ -120,7 +120,7 @@ def fecho_dependentes(cur, raiz: str) -> tuple:
     afetado pela cascata.
 
     Guarda de ciclo por ``visitados`` (casefold): o cadastro de dependências
-    não impede A→B→A, e uma cascata em ciclo giraria para sempre. Teto
+    não impede A→B→A, e um cascata em ciclo giraria para sempre. Teto
     ``MAX_FECHO`` como segunda barreira; estourar devolve ``truncado=True`` em
     vez de mentir que a lista está completa.
     """
@@ -310,7 +310,7 @@ def corridas_do_dia(cur, pipelines: list, data_ref: date) -> dict:
     pipeline no ODATE — as que o claim ainda considera existentes.
 
     "Viva" = não substituída. Uma corrida já aposentada por um rerun anterior
-    não deve aparecer no modal como "corrida que será substituída": ela já foi.
+    não deve aparecer no modal como "ciclo que será substituída": ela já foi.
     Sem a coluna da 078 (deploy parcial) todas contam como vivas — é o
     comportamento de antes desta fase.
 

@@ -127,7 +127,7 @@ def _fechar_linha_do_ciclo(cur, pipeline: str, alvos: list, status_final: str,
                         f"há {len(vivas)} execuções em andamento deste pipeline "
                         "na janela desta data e não dá para saber qual é esta — "
                         "nenhuma foi encerrada para o ciclo da malha; encerre a "
-                        "corrida pela tela de Malha se ela estiver travada")
+                        "ciclo pela tela de Malha se ela estiver travada")
                     continue
                 if not vivas:
                     # A 067 pode simplesmente não ter linha em execução (pipeline

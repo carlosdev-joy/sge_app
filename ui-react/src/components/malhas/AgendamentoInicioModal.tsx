@@ -236,8 +236,8 @@ function CorpoAgendamento({ malha, onClose, agendamento, raizes, equalizarData, 
           })
           if (tetoMudou) {
             toast.info(tetoNovo === null
-              ? 'Limite de segurança da malha: volta a seguir o limite global. Vale da PRÓXIMA corrida — o limite do ciclo em voo foi fixado quando ele abriu.'
-              : `Limite de segurança da malha: ${tetoNovo}h. Vale da PRÓXIMA corrida — o limite do ciclo em voo foi fixado quando ele abriu.`)
+              ? 'Limite de segurança da malha: volta a seguir o limite global. Vale do PRÓXIMO ciclo — o limite do ciclo em voo foi fixado quando ele abriu.'
+              : `Limite de segurança da malha: ${tetoNovo}h. Vale do PRÓXIMO ciclo — o limite do ciclo em voo foi fixado quando ele abriu.`)
           }
         } catch (e2) {
           // O agendamento JÁ foi salvo — falhar aqui não pode parecer que
@@ -505,7 +505,7 @@ function CorpoAgendamento({ malha, onClose, agendamento, raizes, equalizarData, 
                 />
                 <span className="text-[11px] text-dim">
                   Passado esse tempo <strong>sem nenhum pipeline em execução</strong>,
-                  a corrida é encerrada e o disparo volta a funcionar. Com
+                  o ciclo é encerrado e o disparo volta a funcionar. Com
                   pipeline rodando, o limite só <strong>avisa</strong> — ele
                   nunca encerra trabalho vivo. O tempo em que a malha ficar
                   segurada é devolvido ao limite. Em branco, vale o limite

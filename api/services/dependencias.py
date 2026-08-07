@@ -422,14 +422,14 @@ def inicio_do_ciclo_corrente(cur):
 
 
 def _id_corrida(valor):
-    """`corrida` → int, ou None (port). Tolerante: id ilegível é "não tenho
+    """`ciclo` → int, ou None (port). Tolerante: id ilegível é "não tenho
     corrida", nunca exceção — o degrau 2 resolve."""
     if valor is None:
         return None
     try:
         return int(valor)
     except (TypeError, ValueError):
-        log.warning("[DEP] id de corrida ilegivel (%r) — ignorado", valor)
+        log.warning("[DEP] id de ciclo ilegivel (%r) — ignorado", valor)
         return None
 
 

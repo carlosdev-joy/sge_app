@@ -192,12 +192,12 @@ def test_com_o_interruptor_em_zero_nada_abre_nada_fecha_e_o_log_nao_cresce(
     Sem esta garantia, o rollback da F2 às 3h seria "reverter o merge e refazer
     o ciclo de deploy". As três provas juntas: nenhuma pergunta do módulo da
     corrida chega ao banco, nenhuma responsabilidade nova roda, e o log é
-    EXATAMENTE o de antes — uma linha, o resumo do ciclo. Uma linha a mais por
+    EXATAMENTE o de antes — uma linha, o resumo do ciclo. Uma linha o mais por
     ciclo são 288 por dia por ambiente, e é assim que um `grep` de plantão
     deixa de achar o que importa.
     """
     def _proibido(*a, **k):
-        raise AssertionError("o interruptor esta em 0 — nada da corrida pode "
+        raise AssertionError("o interruptor esta em 0 — nada do ciclo pode "
                              "ser perguntado")
 
     _mundo(monkeypatch)
@@ -227,7 +227,7 @@ def test_sem_a_085_loga_uma_vez_por_ciclo_e_o_ciclo_inteiro_segue(
     porque o aviso mora no portão e não dentro dos laços.
     """
     def _proibido(*a, **k):
-        raise AssertionError("sem a 085 nada da corrida pode ser perguntado")
+        raise AssertionError("sem a 085 nada do ciclo pode ser perguntado")
 
     _mundo(monkeypatch, dependentes_com_dependencia=lambda conn: [])
     _corrida(monkeypatch, tabela_085_presente=lambda conn: False,
@@ -247,9 +247,9 @@ def test_sem_a_085_loga_uma_vez_por_ciclo_e_o_ciclo_inteiro_segue(
 def test_o_heartbeat_so_e_carimbado_com_a_corrida_operando(monkeypatch):
     """§10/F2 — o contrato com a F3.
 
-    O heartbeat responde "a guardiã deste deploy OPEROU a corrida", não "a
+    O heartbeat responde "a guardiã deste deploy OPEROU o ciclo", não "a
     guardiã está viva". Com o interruptor em 0 a resposta honesta à pergunta da
-    F3 ("posso abrir corrida pela API?") é NÃO — carimbar assim mesmo faria a
+    F3 ("posso abrir ciclo pela API?") é NÃO — carimbar assim mesmo faria a
     API abrir corridas que ninguém iria fechar, e corrida aberta BLOQUEIA o
     disparo: a API paralisaria a malha com uma trava que o motor não destrava.
     """
@@ -1175,7 +1175,7 @@ _OBSERVADOR = {
 
 
 def test_observador_usa_o_odate_da_corrida_aberta_e_carimba_o_id(monkeypatch):
-    """§10/F2 — o observador passa a ler o ciclo em voo: uma cadeia longa pode
+    """§10/F2 — o observador passa o ler o ciclo em voo: uma cadeia longa pode
     ter começado antes de D-1, e a janela fixa não a alcançaria.
 
     E o evento carrega o id da corrida: sem ele, a idempotência do índice volta
@@ -1298,7 +1298,7 @@ def test_com_o_interruptor_desligado_o_observador_e_o_de_antes(monkeypatch):
     eventos = []
 
     def _proibido(*a, **k):
-        raise AssertionError("interruptor desligado — nada da corrida")
+        raise AssertionError("interruptor desligado — nada do ciclo")
 
     _mundo(monkeypatch,
            nos_observadores=lambda conn: [_OBSERVADOR],
@@ -1664,7 +1664,7 @@ def test_a_busca_das_partidas_exclui_o_que_a_corrida_ja_cobriu(mc):
 
       • a linha JÁ carimbada por uma corrida desta malha — é o laço do sábado:
         o `PULADO` das 06:00 abre a corrida, ela fecha imediatamente, e sem
-        esta perna o ciclo das 06:05 abriria a corrida #2, o das 06:10 a #3, e
+        este perna o ciclo das 06:05 abriria a corrida #2, o das 06:10 a #3, e
         o dia sairia com 288 corridas;
       • a linha DENTRO do intervalo de uma corrida FECHADA desta malha — é o
         membro compartilhado: um pipeline de quatro malhas carimba a corrida de

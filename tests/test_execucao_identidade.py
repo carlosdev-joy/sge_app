@@ -131,7 +131,7 @@ def test_janela_odate_virada_padrao_e_o_dia_do_calendario():
 
 
 def test_janela_odate_virada_20h_atravessa_a_meia_noite():
-    """O caso que motivou a spec: 31/07 23:30 e 01/08 00:40 são a MESMA corrida."""
+    """O caso que motivou a spec: 31/07 23:30 e 01/08 00:40 são o MESMA ciclo."""
     ini, fim = ident.janela_odate(date(2026, 8, 1), "20:00")
     assert ini == datetime(2026, 7, 31, 20, 0)
     assert fim == datetime(2026, 8, 1, 20, 0)

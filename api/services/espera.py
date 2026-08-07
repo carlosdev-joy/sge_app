@@ -155,7 +155,7 @@ def normaliza_teto(bruto, padrao: int) -> int:
 # de paridade quebra.)
 #
 # LIMITE HONESTO: isto prova o que está NO DISCO. Um scheduler que ainda não
-# reparseou o arquivo novo não é coberto — a janela é a de um ciclo de parse.
+# reparseou o arquivo novo não é coberto — a janela é o de um ciclo de parse.
 
 MARCA_PORTAO = "_espera.portao("
 
@@ -284,7 +284,7 @@ def carimbo_corrida_no_arquivo(caminho) -> str:
     cadastro com espaço no nome do domínio.
     """
     return _marca_no_arquivo(caminho, MARCA_CORRIDA,
-                             "o carimbo de ODATE pela corrida",
+                             "o carimbo de ODATE pelo ciclo",
                              (CORRIDA_OK, CORRIDA_AUSENTE, CORRIDA_DESCONHECIDO))
 
 
@@ -521,7 +521,7 @@ def fechar_corrida_cancelada(cur, pipeline: str, run_id: str, usuario: str) -> b
              pipeline, run_id))
         return cur.rowcount == 1
     except Exception as e:  # noqa: BLE001
-        log.warning("[ESPERA] corrida '%s/%s' nao fechada apos cancelamento: %s",
+        log.warning("[ESPERA] ciclo '%s/%s' nao fechada apos cancelamento: %s",
                     pipeline, run_id, e)
         return False
 
@@ -629,6 +629,6 @@ def avisos_da_pausa(cur, pipeline: str, teto: int) -> list:
         avisos.append(
             f"O pipeline tem SLA de {sla} min e a DAG roda com "
             f"dagrun_timeout — uma espera até o teto de {teto} min pode ser "
-            "interrompida pelo Airflow antes disso, com a corrida marcada "
+            "interrompida pelo Airflow antes disso, com o ciclo marcada "
             "como falha por timeout.")
     return avisos

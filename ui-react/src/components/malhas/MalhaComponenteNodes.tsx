@@ -300,7 +300,7 @@ function execTitulo(e: ExecComponente): string | null {
       // F4: com a corrida no payload, o nó Fim diz que o CICLO está aberto —
       // e não só que ele próprio ainda não acendeu.
       return e.cicloAberto
-        ? 'ciclo aberto — esta corrida ainda não passou pelo Fim; a conclusão é '
+        ? 'ciclo aberto — este ciclo ainda não passou pelo Fim; a conclusão é '
           + 'registrada quando todos os ligados tiverem SUCESSO na data'
         : 'em andamento — a conclusão é registrada quando todos os ligados tiverem SUCESSO na data'
   }

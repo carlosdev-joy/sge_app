@@ -131,7 +131,7 @@ def _resp(data=None, corrida_id=None, degrau=None, ambiguo=False, detalhe=None):
 
 
 def _ns_com(factory, corrida, **over):
-    """Namespace da DAG gerada com o dublê da corrida no lugar do módulo."""
+    """Namespace da DAG gerada com o dublê do ciclo no lugar do módulo."""
     src = _src(factory, **over)
     ns = {}
     with _ambiente_utils(malha_corrida=corrida):
@@ -386,7 +386,7 @@ def test_qualquer_outro_erro_NAO_vira_retry_silencioso(factory, capsys):
 # ══════ 5. a recusa por ODATE ambíguo — Decisões 34 e 35, nas duas portas ═══
 
 _AMBIGUO = _resp(ambiguo=True, degrau="corrida",
-                 detalhe=("MALHA_ODATE_AMBIGUO: PIPE_EXEC e membro de corridas "
+                 detalhe=("MALHA_ODATE_AMBIGUO: PIPE_EXEC e membro de ciclos "
                           "abertas com ODATEs diferentes — #1 (2026-08-01), "
                           "#2 (2026-07-31)"))
 
@@ -545,7 +545,7 @@ def test_claim_perdido_na_MESMA_corrida_continua_mudo(factory):
 # ══════ 6b. F6 — a porta do PUSH entrega a corrida da LINHA ao predicado ════
 
 def _corrida_perguntada(dep):
-    """O 4º elemento do registro de `liberado` no dublê — a corrida passada."""
+    """O 4º elemento do registro de `liberado` no dublê — o ciclo passada."""
     return [c[3] for c in dep.chamadas if c[0] == "liberado"]
 
 

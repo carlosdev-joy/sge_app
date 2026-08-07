@@ -93,7 +93,7 @@ REABREM = ("CONCLUIDA", "FALHA")
 #
 # O que NÃO se perde: o desfecho anulado e a hora dele passam a viver no
 # `motivo` da própria corrida, escritos pelo `SQL_REABRIR` no mesmo statement.
-# A casa da história do ciclo é `etl_malha_execucao` (é ela que tem `tentativas`,
+# A casa do história do ciclo é `etl_malha_execucao` (é ela que tem `tentativas`,
 # `reaberta_em/por` e `fechada_em`); a tabela de eventos é a fila de alerta.
 EVENTOS_DO_DESFECHO = ("MALHA_CONCLUIDA", "MALHA_FALHOU", "MALHA_ATRASADA")
 
@@ -252,11 +252,11 @@ def corrida_ativa(cur) -> bool:
     # é INFO, então em `debug` a linha não existe para o plantão. O canônico
     # imprime sempre; aqui o TTL de 30s já limita a repetição.
     except Exception as e:  # noqa: BLE001 — sem config não há corrida, e ponto
-        log.warning("%s interruptor %s indisponivel (%s) — corrida DESLIGADA",
+        log.warning("%s interruptor %s indisponivel (%s) — ciclo DESLIGADA",
                     LOG, CHAVE_ATIVA, e)
     _CACHE_ATIVA.update({"ativa": valor, "ate": agora + _TTL_ATIVA_S})
     if valor:
-        log.info("%s corrida de malha LIGADA", LOG)
+        log.info("%s ciclo de malha LIGADA", LOG)
     return valor
 
 
@@ -456,7 +456,7 @@ def corrida_aberta(cur, malha: str):
         row = cur.fetchone()
         return _como_dict(row) if row else None
     except Exception as e:  # noqa: BLE001 — leitura degrada larga (docstring do módulo)
-        log.warning("%s corrida aberta de %s indisponivel (%s) — seguindo sem",
+        log.warning("%s ciclo aberto de %s indisponivel (%s) — seguindo sem",
                     LOG, malha, e)
         return None
 
@@ -471,7 +471,7 @@ def corridas_abertas(cur) -> list:
         cur.execute(SQL_CORRIDAS_ABERTAS)
         return [_como_dict(r) for r in cur.fetchall()]
     except Exception as e:  # noqa: BLE001
-        log.warning("%s corridas abertas indisponiveis (%s) — card no fallback",
+        log.warning("%s ciclos abertos indisponiveis (%s) — card no fallback",
                     LOG, e)
         return []
 
@@ -484,13 +484,13 @@ def corrida(cur, corrida_id):
         row = cur.fetchone()
         return _como_dict(row) if row else None
     except Exception as e:  # noqa: BLE001
-        log.warning("%s corrida #%s indisponivel (%s) — seguindo sem",
+        log.warning("%s ciclo #%s indisponivel (%s) — seguindo sem",
                     LOG, corrida_id, e)
         return None
 
 
 # As corridas DONAS das linhas de um lote de pipelines num ODATE — a pergunta do
-# rerun (F8): "o que eu acabei de aposentar pertencia a que ciclo?".
+# rerun (F8): "o que eu acabei de aposentar pertencia o que ciclo?".
 #
 # A resposta vem do vínculo já carimbado na linha (`malha_execucao_id`), e não
 # de `corrida_da_data(malha, data)`: com duas corridas da mesma malha no mesmo
@@ -530,8 +530,8 @@ def corridas_das_linhas(cur, pipelines, data_ref) -> list:
         cur.execute(sql_corridas_das_linhas(len(alvos)), (data_ref, *alvos))
         return [_como_dict(r) for r in cur.fetchall()]
     except Exception as e:  # noqa: BLE001 — leitura degrada larga
-        log.warning("%s corridas das linhas de %d pipeline(s) em %s "
-                    "indisponiveis (%s) — nenhuma corrida tocada",
+        log.warning("%s ciclos das linhas de %d pipeline(s) em %s "
+                    "indisponiveis (%s) — nenhum ciclo tocada",
                     LOG, len(alvos), data_ref, e)
         return []
 
@@ -561,12 +561,12 @@ def corrida_aberta_do_pipeline(cur, pipeline: str) -> dict:
         cur.execute(SQL_ABERTAS_DO_PIPELINE, (pipeline,))
         corridas = [_como_dict(r) for r in cur.fetchall()]
     except Exception as e:  # noqa: BLE001
-        log.warning("%s corridas abertas de %s indisponiveis (%s) — seguindo sem",
+        log.warning("%s ciclos abertos de %s indisponiveis (%s) — seguindo sem",
                     LOG, pipeline, e)
         return {"corridas": [], "odate": None, "ambiguo": False}
     odates = {c["data_referencia"] for c in corridas}
     if len(odates) > 1:
-        log.warning("%s %s e membro de %d corridas abertas com ODATEs "
+        log.warning("%s %s e membro de %d ciclos abertos com ODATEs "
                     "diferentes — ambiguo, sem escolha",
                     LOG, pipeline, len(corridas))
         return {"corridas": corridas, "odate": None, "ambiguo": True}
@@ -627,7 +627,7 @@ def _odate_carimbado(cur, pipeline: str, run_id) -> dict:
 
 
 def _corrida_do_conf(cur, conf_id, pipeline: str):
-    """Degrau 1 — a corrida do conf, **se** aberta e de malha deste pipeline."""
+    """Degrau 1 — o ciclo do conf, **se** aberta e de malha deste pipeline."""
     try:
         alvo = int(str(conf_id).strip())
     except (TypeError, ValueError):
@@ -638,11 +638,11 @@ def _corrida_do_conf(cur, conf_id, pipeline: str):
         cur.execute(SQL_CORRIDA_DO_CONF, (alvo, pipeline))
         row = cur.fetchone()
     except Exception as e:  # noqa: BLE001 — leitura degrada larga
-        log.warning("%s corrida #%s do conf indisponivel (%s) — tratada como AUSENTE",
+        log.warning("%s ciclo #%s do conf indisponivel (%s) — tratada como AUSENTE",
                     LOG, alvo, e)
         return None
     if row is None:
-        log.warning("%s conf aponta a corrida #%s, que nao esta aberta ou nao e de "
+        log.warning("%s conf aponta o ciclo #%s, que nao esta aberta ou nao e de "
                     "malha de %s — tratado como AUSENTE (Decisao 37)",
                     LOG, alvo, pipeline)
         return None
@@ -650,7 +650,7 @@ def _corrida_do_conf(cur, conf_id, pipeline: str):
 
 
 def _dona_do_odate(cur, pipeline: str, data_ref, conf_id=None):
-    """A corrida DONA de uma data já decidida, ou None — nunca muda a data."""
+    """O ciclo DONA de uma data já decidida, ou None — nunca muda a data."""
     if conf_id is not None:
         c = _corrida_do_conf(cur, conf_id, pipeline)
         if c is not None and c["data_referencia"] == data_ref:
@@ -695,11 +695,11 @@ def odate(cur, pipeline: str, run_id=None, conf_id=None, herdada=None) -> dict:
         dona = (aberta["corridas"][0] if len(aberta["corridas"]) == 1
                 and aberta["odate"] == herdada else None)
         if aberta["ambiguo"]:
-            log.warning("%s %s tem corridas abertas com ODATEs diferentes, mas a "
+            log.warning("%s %s tem ciclos abertos com ODATEs diferentes, mas a "
                         "data %s veio herdada — a heranca prevalece",
                         LOG, pipeline, herdada)
         elif aberta["odate"] is not None and dona is None:
-            log.warning("%s %s: data herdada %s difere do ODATE %s da corrida "
+            log.warning("%s %s: data herdada %s difere do ODATE %s do ciclo "
                         "aberta — a heranca prevalece e a linha fica sem "
                         "proveniencia", LOG, pipeline, herdada, aberta["odate"])
         return {**vazio, "data": herdada,
@@ -710,13 +710,13 @@ def odate(cur, pipeline: str, run_id=None, conf_id=None, herdada=None) -> dict:
                                  for c in aberta["corridas"]))
         return {**vazio, "ambiguo": True, "degrau": DEGRAU_CORRIDA,
                 "detalhe": (f"{MOTIVO_ODATE_AMBIGUO}: {pipeline} e membro de "
-                            f"corridas abertas com ODATEs diferentes — {datas}. "
-                            f"Encerre a corrida que nao deveria estar aberta "
-                            f"(Malha ▸ Encerrar corrida) e dispare de novo")}
+                            f"ciclos abertos com ODATEs diferentes — {datas}. "
+                            f"Encerre o ciclo que nao deveria estar aberta "
+                            f"(Malha ▸ Encerrar ciclo) e dispare de novo")}
     if aberta["odate"] is not None:
         unica = aberta["corridas"][0] if len(aberta["corridas"]) == 1 else None
         if unica is None:
-            log.warning("%s %s e membro de %d corridas abertas no MESMO ODATE %s "
+            log.warning("%s %s e membro de %d ciclos abertos no MESMO ODATE %s "
                         "— data resolvida, proveniencia sem dono",
                         LOG, pipeline, len(aberta["corridas"]), aberta["odate"])
         return {**vazio, "data": aberta["odate"],
@@ -739,7 +739,7 @@ def membros(cur, corrida_id) -> list:
                  "ativo_na_abertura": bool(r[2]), "eh_raiz": bool(r[3])}
                 for r in cur.fetchall()]
     except Exception as e:  # noqa: BLE001
-        log.warning("%s membros da corrida #%s indisponiveis (%s)",
+        log.warning("%s membros do ciclo #%s indisponiveis (%s)",
                     LOG, corrida_id, e)
         return []
 
@@ -840,7 +840,7 @@ def abrir_corrida(cur, malha: str, odate, origem: str, *,
                 return nova
             # INSERT sem OUTPUT devolvido não deveria acontecer; tratar como
             # "não abri" é mais honesto que devolver um dict pela metade.
-            log.warning("%s abertura de %s nao devolveu a linha — sem corrida",
+            log.warning("%s abertura de %s nao devolveu a linha — sem ciclo",
                         LOG, malha)
             return None
         except Exception as e:  # noqa: BLE001 — três casos NOMEADOS, o resto sobe
@@ -858,7 +858,7 @@ def abrir_corrida(cur, malha: str, odate, origem: str, *,
                     return existente
                 # Fechou entre a violação e a releitura — a vaga do índice
                 # filtrado vagou; tentar de novo é a resposta certa.
-                log.info("%s corrida de %s fechou durante a abertura — "
+                log.info("%s ciclo de %s fechou durante a abertura — "
                          "tentando de novo (%s/%s)",
                          LOG, malha, tentativa, _TENTATIVAS_ABERTURA)
                 continue
@@ -868,11 +868,11 @@ def abrir_corrida(cur, malha: str, odate, origem: str, *,
                          LOG, malha, odate, tentativa, _TENTATIVAS_ABERTURA)
                 continue
             if _sem_085(e):
-                log.warning("%s 085 ausente (%s) — corrida de %s nao aberta",
+                log.warning("%s 085 ausente (%s) — ciclo de %s nao aberta",
                             LOG, e, malha)
                 return None
             raise
-    log.warning("%s abertura de %s desistiu apos %s tentativas — sem corrida "
+    log.warning("%s abertura de %s desistiu apos %s tentativas — sem ciclo "
                 "neste ciclo", LOG, malha, _TENTATIVAS_ABERTURA)
     return None
 
@@ -990,7 +990,7 @@ def vincular_execucao(cur, pipeline: str, data_ref, execution_id,
         return (cur.rowcount or 0) == 1
     except Exception as e:  # noqa: BLE001 — escrita degrada ESTREITA
         if _sem_085(e):
-            log.warning("%s 085 ausente (%s) — %s nao vinculado a corrida #%s",
+            log.warning("%s 085 ausente (%s) — %s nao vinculado o ciclo #%s",
                         LOG, e, pipeline, corrida_id)
             return False
         raise
@@ -1038,7 +1038,7 @@ def fechar_corrida(cur, corrida_id, desfecho: str, fechada_por: str,
         return (cur.rowcount or 0) == 1
     except Exception as e:  # noqa: BLE001 — escrita degrada ESTREITA
         if _sem_085(e):
-            log.warning("%s 085 ausente (%s) — corrida #%s nao fechada",
+            log.warning("%s 085 ausente (%s) — ciclo #%s nao fechada",
                         LOG, e, corrida_id)
             return False
         raise
@@ -1108,7 +1108,7 @@ def reabrir_corrida(cur, corrida_id, reaberta_por: str, motivo=None) -> bool:
         reabriu = (cur.rowcount or 0) == 1
     except Exception as e:  # noqa: BLE001 — escrita degrada ESTREITA
         if _sem_085(e):
-            log.warning("%s 085 ausente (%s) — corrida #%s nao reaberta",
+            log.warning("%s 085 ausente (%s) — ciclo #%s nao reaberta",
                         LOG, e, corrida_id)
             return False
         raise
@@ -1143,7 +1143,7 @@ def descartar_desfecho(cur, corrida_id) -> int:
 
     Ver `EVENTOS_DO_DESFECHO` para o porquê de isto não ser "apagar histórico":
     o desfecho anulado e a hora dele já foram para o `motivo` da corrida no
-    mesmo `UPDATE` que a reabriu, e a corrida é a casa da história do ciclo.
+    mesmo `UPDATE` que a reabriu, e a corrida é a casa do história do ciclo.
 
     Degrada: banco sem a 085 (ou sem a coluna no evento) só significa que não
     havia chave estendida para liberar — a reabertura, que é o gesto, já
@@ -1154,12 +1154,12 @@ def descartar_desfecho(cur, corrida_id) -> int:
                     (int(corrida_id), *EVENTOS_DO_DESFECHO))
         n = max(0, cur.rowcount or 0)
     except Exception as e:  # noqa: BLE001
-        log.warning("%s eventos do desfecho da corrida #%s nao descartados "
-                    "(%s) — a corrida reabriu; o card da proxima conclusao "
+        log.warning("%s eventos do desfecho do ciclo #%s nao descartados "
+                    "(%s) — o ciclo reabriu; o card da proxima conclusao "
                     "pode nao sair", LOG, corrida_id, e)
         return 0
     if n:
-        log.info("%s corrida #%s: %d evento(s) do desfecho anulado "
+        log.info("%s ciclo #%s: %d evento(s) do desfecho anulado "
                  "descartado(s) — a tentativa nova volta a poder avisar",
                  LOG, corrida_id, n)
     return n
@@ -1199,7 +1199,7 @@ def marcar_visto(cur, corrida_id, o_que: str) -> bool:
         return (cur.rowcount or 0) == 1
     except Exception as e:  # noqa: BLE001 — escrita degrada ESTREITA
         if _sem_085(e):
-            log.warning("%s 085 ausente (%s) — marcador %s da corrida #%s nao "
+            log.warning("%s 085 ausente (%s) — marcador %s do ciclo #%s nao "
                         "gravado", LOG, e, o_que, corrida_id)
             return False
         raise
@@ -1231,7 +1231,7 @@ EVENTO_ORFA = "EXECUCAO_ORFA"
 
 # Prefixos dos motivos carimbados NA LINHA de execução (Decisões 15 e 17). São
 # `chave` + texto: a chave é o que o `NOT LIKE` usa para não carimbar duas vezes
-# a mesma coisa a cada ciclo de 5 min, e o texto é o que o plantonista lê.
+# a mesma coisa o cada ciclo de 5 min, e o texto é o que o plantonista lê.
 MOTIVO_FORA_DA_CORRIDA = "FORA_DA_CORRIDA"
 MOTIVO_OUTRO_ODATE = "CORRIDA_ABERTA_DE_OUTRO_ODATE"
 
@@ -1256,9 +1256,9 @@ EVENTO_TETO_CREDITADO = "MALHA_TETO_CREDITADO"
 # editá-la depois de aplicada é no-op silencioso (§11.3).
 CHAVE_HEARTBEAT = "malha_corrida_guardia_visto_em"
 DESCRICAO_HEARTBEAT = (
-    "Carimbo do ultimo ciclo em que a guardia operou a corrida de malha "
+    "Carimbo do ultimo ciclo em que a guardia operou o ciclo de malha "
     "(gravado pela propria guardia, so com malha_corrida_ativa=1 e a 085 "
-    "presente). A API consulta este valor antes de abrir corrida pelo disparo.")
+    "presente). A API consulta este valor antes de abrir ciclo pelo disparo.")
 
 # Como se reconhece "o hold da 082/075 não está neste banco" — mesmo par de
 # condições de `_sem_085`, com outras marcas. Existe separado porque a resposta
@@ -1316,7 +1316,7 @@ def raizes_da_malha(cur, malha: str) -> list:
 #   • `e.malha_execucao_id = me.id` (sem olhar `fechada_em`) — a linha JÁ foi
 #     carimbada por uma corrida desta malha. É a perna que fecha o laço do
 #     sábado: o `PULADO` das 06:00 abre a corrida, ela fecha `SEM_TRABALHO` no
-#     mesmo ciclo, e sem esta perna o ciclo das 06:05 abriria a corrida #2, o
+#     mesmo ciclo, e sem este perna o ciclo das 06:05 abriria a corrida #2, o
 #     das 06:10 a #3, e o dia inteiro sairia com 288 corridas;
 #   • a linha caiu DENTRO do intervalo `[aberta_em, fechada_em]` de uma corrida
 #     FECHADA desta malha — a perna do membro compartilhado. `DEV_F10_A` é
@@ -1538,7 +1538,7 @@ def estado(cur, corrida: dict, dispensa_sem_linha=None) -> dict:
                     (odate, corrida_id, corrida["aberta_em"], corrida_id))
         linhas = cur.fetchall()
     except Exception as e:  # noqa: BLE001 — leitura degrada larga
-        log.warning("%s estado da corrida #%s indisponivel (%s) — nada a "
+        log.warning("%s estado do ciclo #%s indisponivel (%s) — nada a "
                     "fechar neste ciclo", LOG, corrida_id, e)
         return vazio
 
@@ -1592,7 +1592,7 @@ def estado(cur, corrida: dict, dispensa_sem_linha=None) -> dict:
         saida["fora_do_odate"] = [{"pipeline": r[0], "data": r[1]}
                                   for r in cur.fetchall()]
     except Exception as e:  # noqa: BLE001 — leitura degrada larga
-        log.warning("%s linhas fora do ODATE da corrida #%s indisponiveis "
+        log.warning("%s linhas fora do ODATE do ciclo #%s indisponiveis "
                     "(%s)", LOG, corrida_id, e)
     return saida
 
@@ -1628,7 +1628,7 @@ def aguardando_do_snapshot(cur, corrida: dict) -> list:
                     (int(corrida["id"]), corrida["data_referencia"]))
         return [r[0] for r in cur.fetchall()]
     except Exception as e:  # noqa: BLE001 — leitura degrada larga
-        log.warning("%s aguardando da corrida #%s indisponivel (%s) — "
+        log.warning("%s aguardando do ciclo #%s indisponivel (%s) — "
                     "fechamento adiado", LOG, corrida["id"], e)
         # [] diria "não há ninguém aguardando" e liberaria o fechamento com base
         # numa pergunta que não foi respondida. O chamador trata a marca abaixo
@@ -1679,7 +1679,7 @@ def relogios(cur, corrida: dict, carencia_min: int, quiescencia_min: int) -> dic
                                    int(quiescencia_min), int(corrida["id"])))
         row = cur.fetchone()
     except Exception as e:  # noqa: BLE001 — leitura degrada larga
-        log.warning("%s relogios da corrida #%s indisponiveis (%s) — nenhum "
+        log.warning("%s relogios do ciclo #%s indisponiveis (%s) — nenhum "
                     "desfecho por tempo neste ciclo", LOG, corrida["id"], e)
         row = None
     if not row:
@@ -1913,7 +1913,7 @@ def corrida_aberta_da_linha(cur, pipeline: str, data_ref):
     except Exception as e:  # noqa: BLE001
         if _sem_085(e):
             return None
-        log.warning("%s corrida aberta de %s em %s indisponivel (%s) — "
+        log.warning("%s ciclo aberto de %s em %s indisponivel (%s) — "
                     "fechamento adiado", LOG, pipeline, data_ref, e)
         return {"id": None, "malha_name": None, "data_referencia": None}
     if not row:
@@ -2000,7 +2000,7 @@ def marcar_heartbeat(cur, quem: str = "guardia") -> bool:
     `datetime.now().isoformat()` do processo, que no dev estaria 3h atrás.
 
     Só é chamado com o interruptor LIGADO e a 085 presente: o heartbeat responde
-    "a guardiã está OPERANDO a corrida", e não "a guardiã está viva". Com o
+    "a guardiã está OPERANDO o ciclo", e não "a guardiã está viva". Com o
     interruptor em 0 a resposta honesta à pergunta da F3 é NÃO."""
     try:
         cur.execute(SQL_HEARTBEAT_GRAVAR, (quem, CHAVE_HEARTBEAT))
@@ -2041,7 +2041,7 @@ def heartbeat_guardia(cur, minutos: int = 15) -> dict:
 # aberta ou fechada. Não é identidade — identidade é o `id` (Decisão 7) — é a
 # resposta a "de que corrida é o evento desta data?", e ela precisa continuar a
 # MESMA depois de a corrida fechar. Sem isso, o observador do nó Fim gravaria
-# `MALHA_CONCLUIDA` com a corrida no ciclo em que ela ainda está aberta e
+# `MALHA_CONCLUIDA` com o corrida no ciclo em que ela ainda está aberta e
 # gravaria de novo, com a corrida em NULL, no ciclo seguinte — chave diferente,
 # índice satisfeito, DOIS cards para a mesma malha no mesmo dia.
 SQL_CORRIDA_DA_DATA = (
@@ -2058,6 +2058,6 @@ def corrida_da_data(cur, malha: str, data_ref):
         row = cur.fetchone()
         return _como_dict(row) if row else None
     except Exception as e:  # noqa: BLE001 — leitura degrada larga
-        log.warning("%s corrida de %s em %s indisponivel (%s) — seguindo "
+        log.warning("%s ciclo de %s em %s indisponivel (%s) — seguindo "
                     "sem", LOG, malha, data_ref, e)
         return None
