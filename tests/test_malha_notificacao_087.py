@@ -171,3 +171,41 @@ def test_a_previa_sem_membros_nao_inventa_nada():
     """Malha recém-criada: o exemplo mostra vazio, não um nome fictício."""
     mapa = API.contexto_exemplo("NOVA", [])
     assert mapa["pipelines"] == "" and mapa["quantidade"] == 0
+
+
+# ═══════════════ 5. o campo só existe se o banco souber guardar ═════════════
+
+def test_a_tela_do_canal_da_malha_esta_ligada_ao_editor():
+    """O buraco que esta correção fecha: a coluna, a API e a guardiã existiam,
+    e NENHUMA tela tinha o campo.
+
+    É o mesmo defeito que a spec inteira combate — a API aceita e ninguém
+    preenche —, e ele passou porque o backend estava completo e verde. O teste
+    é sobre a FIAÇÃO: o editor lê `grupo_id` do detalhe e passa ao painel de
+    configuração da malha, e o painel o oferece.
+    """
+    editor = (_RAIZ / "ui-react/src/components/malhas/MalhaEditor.tsx").read_text()
+    assert "grupoId={data?.grupo_id ?? null}" in editor
+    # A CHAVE presente (e não um flag) é o que diz que a 087 passou — mesmo
+    # esquema do teto: sem a coluna o campo não aparece, em vez de aparecer e
+    # não gravar.
+    assert "temGrupo={data ? 'grupo_id' in data : false}" in editor
+
+    painel = (_RAIZ / "ui-react/src/components/malhas/AgendamentoInicioModal.tsx").read_text()
+    assert "Canal do Teams para os avisos desta malha" in painel
+    assert "canal geral (o de hoje)" in painel
+    # E ele só vai ao servidor quando MUDOU: mandar a chave em todo save faria
+    # um deploy sem a 087 responder `migration_087_pendente` para quem nem
+    # tocou no campo.
+    assert "...(grupoMudou ? { grupo_id: grupoNovo } : {})" in painel
+
+
+def test_o_no_notificacao_tem_porta_no_canvas():
+    """Duplo clique no nó — a MESMA porta que o Início já usava (Decisão 8).
+
+    Sem isto o modal existiria no código e não teria como ser aberto, que é
+    exatamente o estado em que o nó ficou desde a F14."""
+    editor = (_RAIZ / "ui-react/src/components/malhas/MalhaEditor.tsx").read_text()
+    assert "} else if (tipo === 'notificacao') {" in editor
+    assert "setNotifAberta(idNo)" in editor
+    assert "<NotificacaoMalhaModal" in editor

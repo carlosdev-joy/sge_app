@@ -132,10 +132,13 @@ interface Props {
   // global; `undefined` = a API não expõe a chave (deploy parcial) e o controle
   // não é oferecido — botão que não grava é pior que botão ausente.
   tetoHoras?: number | null
+  /** 087 — o canal do Teams desta malha (`etl_malha.grupo_id`). */
+  grupoId?: number | null
+  temGrupo?: boolean
   temTeto?: boolean
 }
 
-export function AgendamentoInicioModal({ malha, aberto, onClose, agendamento, raizes, equalizarData, tetoHoras, temTeto }: Props) {
+export function AgendamentoInicioModal({ malha, aberto, onClose, agendamento, raizes, equalizarData, tetoHoras, temTeto, grupoId, temGrupo }: Props) {
   // O corpo só monta com o modal aberto: o useState do form inicializa do
   // agendamento da malha NO MOUNT — reabrir remonta e recarrega, sem
   // setState em efeito (lint react-hooks/set-state-in-effect, a mesma lição
@@ -146,13 +149,14 @@ export function AgendamentoInicioModal({ malha, aberto, onClose, agendamento, ra
         <CorpoAgendamento malha={malha} onClose={onClose}
           agendamento={agendamento} raizes={raizes}
           equalizarData={equalizarData}
-          tetoHoras={tetoHoras} temTeto={temTeto} />
+          tetoHoras={tetoHoras} temTeto={temTeto}
+          grupoId={grupoId} temGrupo={temGrupo} />
       )}
     </Modal>
   )
 }
 
-function CorpoAgendamento({ malha, onClose, agendamento, raizes, equalizarData, tetoHoras, temTeto }: Omit<Props, 'aberto'>) {
+function CorpoAgendamento({ malha, onClose, agendamento, raizes, equalizarData, tetoHoras, temTeto, grupoId, temGrupo }: Omit<Props, 'aberto'>) {
   const qc = useQueryClient()
   const [form, setForm] = useState<FormAgendamento>(
     () => formDoAgendamento(agendamento))
@@ -167,6 +171,19 @@ function CorpoAgendamento({ malha, onClose, agendamento, raizes, equalizarData, 
   // F7: o limite de segurança da malha, como TEXTO — vazio significa "segue o
   // limite global", que é um estado legítimo e diferente de zero. Um `number`
   // aqui obrigaria a inventar um sentinela para o vazio.
+  // 087 — os canais JÁ CADASTRADOS (o mesmo catálogo do nó de Notificação das
+  // Etapas). Degrada para lista vazia e a tela diz que não há canal, em vez de
+  // um select vazio sem explicação.
+  const { data: gruposData } = useQuery<{ data: { id: number; nome: string; ativo: number | boolean }[] }>({
+    queryKey: ['msg-grupos'],
+    queryFn: () => apiFetch('/msg/grupos'),
+    enabled: !!temGrupo,
+    staleTime: 300_000,
+  })
+  const canais = (gruposData?.data ?? []).filter(g => !!g.ativo)
+
+  const [grupoLocal, setGrupoLocal] = useState<string>(
+    grupoId === null || grupoId === undefined ? '' : String(grupoId))
   const [tetoLocal, setTetoLocal] = useState(
     tetoHoras === null || tetoHoras === undefined ? '' : String(tetoHoras))
 
@@ -222,7 +239,9 @@ function CorpoAgendamento({ malha, onClose, agendamento, raizes, equalizarData, 
       // agendamento não pode escrever no contrato dela. Só vai se MUDOU.
       const tetoNovo = tetoLocal.trim() === '' ? null : Number(tetoLocal.trim())
       const tetoMudou = temTeto && tetoNovo !== (tetoHoras ?? null)
-      if (equalizarLocal !== !!Number(equalizarData ?? 0) || tetoMudou) {
+      const grupoNovo = grupoLocal.trim() === '' ? null : Number(grupoLocal.trim())
+      const grupoMudou = !!temGrupo && grupoNovo !== (grupoId ?? null)
+      if (equalizarLocal !== !!Number(equalizarData ?? 0) || tetoMudou || grupoMudou) {
         try {
           await apiFetch(`/malhas/${encodeURIComponent(malha)}`, {
             method: 'PATCH',
@@ -232,8 +251,18 @@ function CorpoAgendamento({ malha, onClose, agendamento, raizes, equalizarData, 
               // faria um deploy sem a 085 responder `migration_085_pendente`
               // para quem nem mexeu no campo.
               ...(tetoMudou ? { teto_horas: tetoNovo } : {}),
+              // Mesma regra do teto: a chave só vai quando MUDOU, senão um
+              // deploy sem a 087 responderia `migration_087_pendente` para quem
+              // nem tocou no campo.
+              ...(grupoMudou ? { grupo_id: grupoNovo } : {}),
             }),
           })
+          if (grupoMudou) {
+            const nome = canais.find(c => c.id === grupoNovo)?.nome
+            toast.info(grupoNovo === null
+              ? 'Avisos desta malha: voltam para o canal geral.'
+              : `Avisos desta malha: passam a sair no canal "${nome ?? grupoNovo}".`)
+          }
           if (tetoMudou) {
             toast.info(tetoNovo === null
               ? 'Limite de segurança da malha: volta a seguir o limite global. Vale do PRÓXIMO ciclo — o limite do ciclo em voo foi fixado quando ele abriu.'
@@ -511,6 +540,45 @@ function CorpoAgendamento({ malha, onClose, agendamento, raizes, equalizarData, 
                   segurada é devolvido ao limite. Em branco, vale o limite
                   global. Preencher aqui também faz a barra de limite aparecer
                   no painel desta malha.
+                </span>
+              </div>
+            )}
+
+            {/* 087 — o CANAL desta malha. Fica aqui, ao lado do limite, porque
+                os dois são configuração da MALHA inteira (e não do pipeline nem
+                do desenho). O que ele governa são os avisos AUTOMÁTICOS do
+                ciclo — falhou, fora do prazo, encerrado —, que são os que
+                acordam alguém; o nó Notificação tem canal próprio, na tela
+                dele. Em branco, tudo segue no canal geral, que é o
+                comportamento de sempre. */}
+            {temGrupo && (
+              <div className="flex flex-col gap-1 rounded-md border border-edge bg-canvas px-3 py-2">
+                <label className={labelCls} htmlFor="malha-grupo-teams">
+                  Canal do Teams para os avisos desta malha
+                </label>
+                <select
+                  id="malha-grupo-teams"
+                  value={grupoLocal}
+                  disabled={canais.length === 0}
+                  onChange={e => setGrupoLocal(e.target.value)}
+                  className={`${inputCls} w-72`}
+                >
+                  <option value="">canal geral (o de hoje)</option>
+                  {canais.map(c => (
+                    <option key={c.id} value={c.id}>{c.nome}</option>
+                  ))}
+                </select>
+                <span className="text-[11px] text-dim">
+                  {canais.length === 0 ? (
+                    <>Nenhum canal cadastrado — cadastre em <strong>Avisos</strong> para
+                    poder escolher aqui.</>
+                  ) : (
+                    <>Vale para os avisos automáticos do ciclo (falhou, fora do
+                    prazo, encerrado). O nó <strong>Notificação</strong> tem
+                    canal e mensagem próprios — dê duplo clique nele no desenho.
+                    Se o canal escolhido for inativado, os avisos voltam ao
+                    canal geral em vez de sumir.</>
+                  )}
                 </span>
               </div>
             )}
