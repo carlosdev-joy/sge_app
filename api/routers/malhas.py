@@ -90,6 +90,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import date, datetime, timedelta
 
@@ -331,6 +332,20 @@ def _colunas_081(cur) -> bool:
         return False
 
 
+def _coluna_grupo_id(cur) -> bool:
+    """True se `etl_malha.grupo_id` (migration 087) existe.
+
+    Mesmo guard das anteriores: sem a coluna a chave não vem, e a tela não
+    oferece um campo que o banco não sabe guardar — em vez de oferecer um que
+    aceita e descarta.
+    """
+    try:
+        cur.execute("SELECT COL_LENGTH('dbo.etl_malha', 'grupo_id')")
+        return cur.fetchone()[0] is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _coluna_teto_horas(cur) -> bool:
     """True se `etl_malha.teto_horas` (migration 085) existe.
 
@@ -480,18 +495,37 @@ def _validar_config_no(tipo, config):
     if config is None or tipo not in ("notificacao", "fim"):
         return
     if tipo == "notificacao":
-        extras = sorted(set(config) - {"titulo", "mensagem"})
+        # 087 — `grupo_id` (canal do catálogo) e `template_id` (modelo) entram
+        # aqui, e não numa tabela nova: são exatamente as chaves que o nó de
+        # Notificação das ETAPAS já usa, e reusar o vocabulário é o que permite
+        # reusar o painel de edição inteiro.
+        aceitas = {"titulo", "mensagem", "grupo_id", "template_id"}
+        extras = sorted(set(config) - aceitas)
         if extras:
             raise HTTPException(
                 status_code=422,
-                detail="config da Notificação aceita apenas 'titulo' e "
-                       f"'mensagem' — chave(s) desconhecida(s): {', '.join(extras)}")
+                detail="config da Notificação aceita apenas "
+                       + ", ".join(f"'{c}'" for c in sorted(aceitas))
+                       + f" — chave(s) desconhecida(s): {', '.join(extras)}")
         for chave in ("titulo", "mensagem"):
             v = config.get(chave)
             if v is not None and not isinstance(v, str):
                 raise HTTPException(
                     status_code=422,
                     detail=f"'{chave}' da Notificação deve ser texto")
+        for chave in ("grupo_id", "template_id"):
+            v = config.get(chave)
+            # `None` é legítimo e significa "sem escolha" — é assim que o
+            # operador DESFAZ a configuração pela tela. `bool` é recusado de
+            # propósito: em Python `True` é `int`, e um `grupo_id: true` vindo
+            # de um cliente desatento viraria o canal de id 1 em silêncio.
+            if v is None:
+                continue
+            if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"'{chave}' da Notificação deve ser o id de um "
+                           "cadastro (inteiro positivo) ou nulo")
         return
     extras = sorted(set(config) - {"notificar_teams"})
     if extras:
@@ -3695,18 +3729,20 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
         # coluna, degrada para 'horizontal' (o comportamento de sempre).
         tem_074 = _coluna_074(cur)
         # F2 (081): a virada da MALHA e a marca de equalização — aditivas, no
-        # mesmo esquema condicional da orientacao.
         tem_081 = _colunas_081(cur)
         # F7 (085): o limite de segurança POR MALHA. Aditivo pelo mesmo esquema
         # das anteriores — sem a 085 a chave simplesmente não vem, e a tela não
         # oferece um campo que o banco não sabe guardar.
         tem_teto = _coluna_teto_horas(cur)
+        # 087: o canal do Teams desta malha (o id; o nome vem do catálogo).
+        tem_grupo = _coluna_grupo_id(cur)
         cur.execute(
             "SELECT malha_name, descricao, CAST(ativo AS INT) AS ativo, "
             "criado_em, criado_por, atualizado_em"
             + (", orientacao" if tem_074 else "")
             + (", hora_virada, CAST(equalizar_data AS INT)" if tem_081 else "")
-            + (", teto_horas" if tem_teto else "") +
+            + (", teto_horas" if tem_teto else "")
+            + (", grupo_id" if tem_grupo else "") +
             " FROM dbo.etl_malha WHERE malha_name = ?",
             (malha_name,),
         )
@@ -3731,6 +3767,17 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
             _i085 = _i081 + (2 if tem_081 else 0)
             malha["teto_horas"] = (int(row[_i085])
                                    if row[_i085] is not None else None)
+        _i087 = (_i081 + (2 if tem_081 else 0) + (1 if tem_teto else 0))
+        # `len(row)` e não só `tem_grupo`: a sonda diz que a COLUNA existe, e a
+        # linha diz o que o SELECT de FATO trouxe. Um dublê de teste (ou um
+        # driver que ignore a coluna nova) faz as duas divergirem, e o índice
+        # posicional estoura levando junto a resposta inteira — inclusive as
+        # chaves antigas, que não têm nada a ver com esta fase.
+        if tem_grupo and len(row) > _i087:
+            # `None` é RESPOSTA — "esta malha segue o canal geral". A chave só
+            # some quando a coluna não existe.
+            malha["grupo_id"] = (int(row[_i087])
+                                 if row[_i087] is not None else None)
         # F10/F13: as tabelas da 075 habilitam nós e assinaturas — checadas UMA
         # vez por request; as colunas de agendamento (F13) têm guard próprio,
         # porque a 075 pode estar aplicada pela metade num deploy parcial.
@@ -6405,6 +6452,48 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
                             f"(use um inteiro de {mc.TETO_HORAS_MIN} a "
                             f"{mc.TETO_HORAS_MAX} horas, ou null para seguir o "
                             f"limite global)"))
+
+        # 087 — o canal do Teams DESTA malha. `null` é legítimo e significa
+        # "use o canal geral", que é o comportamento de hoje e o jeito de
+        # desfazer a escolha pela tela. Conferimos que o cadastro EXISTE aqui,
+        # e não só no envio: um id errado que só falha às 3h, em silêncio, no
+        # meio da madrugada, é o oposto de configurável.
+        tem_grupo = "grupo_id" in body
+        grupo_id = None
+        if tem_grupo and body.get("grupo_id") is not None:
+            bruto = body.get("grupo_id")
+            # `bool` recusado de propósito: em Python `True` é `int`, e um
+            # `grupo_id: true` viraria o canal de id 1 em silêncio.
+            if isinstance(bruto, bool) or not isinstance(bruto, int) or bruto <= 0:
+                _fechar_silencioso(conn)
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"grupo_id inválido: '{bruto}' (use o id de um canal "
+                           "cadastrado, ou null para seguir o canal geral)")
+            grupo_id = bruto
+            try:
+                cur.execute("SELECT nome, ativo FROM dbo.etl_msg_grupo WHERE id = ?",
+                            (grupo_id,))
+                canal = cur.fetchone()
+            except Exception as e:  # noqa: BLE001 — catálogo ausente não trava
+                log.warning("[MALHA] catalogo de canais indisponivel (%s) — "
+                            "grupo_id aceito sem conferencia", e)
+            else:
+                if canal is None:
+                    _fechar_silencioso(conn)
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"não existe canal cadastrado com o id {grupo_id}. "
+                               "Escolha um da lista, ou deixe em branco para "
+                               "seguir o canal geral.")
+                if not canal[1]:
+                    _fechar_silencioso(conn)
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"o canal '{canal[0]}' está inativo — os avisos "
+                               "desta malha cairiam no canal geral sem ninguém "
+                               "saber. Reative-o no cadastro ou escolha outro.")
+
         tem_081 = _colunas_081(cur)
 
         novo_nome = (body.get("novo_nome") or "").strip()
@@ -6528,6 +6617,7 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
         # ciclo), e reprojetar o teto de um ciclo em voo mudaria a régua no meio
         # do jogo. A resposta diz isso ao operador em vez de deixá-lo descobrir.
         migration_085_pendente = False
+        migration_087_pendente = False
         if tem_teto:
             if not mc.tabela_085_presente(cur):
                 migration_085_pendente = True
@@ -6539,10 +6629,27 @@ def update_malha(malha_name: str, body: dict = Body(default={}),
                     "atualizado_em = SYSDATETIME() WHERE malha_name = ?",
                     (teto_horas, atual))
 
+        # 087 — o canal, no mesmo gesto. Coluna ausente (deploy parcial) avisa e
+        # segue: o resto do PATCH não pode cair porque a 087 não passou.
+        if tem_grupo:
+            try:
+                cur.execute(
+                    "UPDATE dbo.etl_malha SET grupo_id = ?, "
+                    "atualizado_em = SYSDATETIME() WHERE malha_name = ?",
+                    (grupo_id, atual))
+            except Exception as e:  # noqa: BLE001
+                if "grupo_id" not in str(e):
+                    raise
+                migration_087_pendente = True
+                log.warning("[MALHA] migration 087 ausente — canal da malha "
+                            "'%s' não foi persistido", atual)
+
         conn.commit(); cur.close(); conn.close()
         # Chaves da orientação são CONDICIONAIS (aditivas): quem não mexeu nela
         # recebe a resposta de sempre, byte a byte.
         resp = {"ok": True, "malha_name": atual, "renomeada": renomeada}
+        if migration_087_pendente:
+            resp["migration_087_pendente"] = True
         # ADITIVO e só quando houve o quê dizer: a tela avisa que o ciclo em voo
         # acompanhou o nome novo. Banco sem a 085 (ou malha sem corrida aberta)
         # devolve a resposta de sempre, byte a byte.
@@ -6907,6 +7014,99 @@ def salvar_agendamento_malha(malha_name: str, body: dict = Body(default={}),
 # + espelho CSV + carimbo + dry_run) é a F11; o agendamento do Início é a F13;
 # os observadores (Notificação/Fim) são avaliados pela guardiã (F14) — aqui a
 # F14 só valida o config por tipo (_validar_config_no).
+
+@router.post("/malhas/{malha_name}/notificacao/previa", tags=["malhas"])
+def previa_notificacao(malha_name: str, body: dict = Body(default={}),
+                       _auth: dict = Depends(get_current_user)):
+    """Como a mensagem desta malha chega no Teams — 087.
+
+    A prévia existe por um motivo específico: mensagem com placeholder é código
+    que o operador escreve sem executar, e `{malha}` escrito `{Malha}` só
+    apareceria como texto cru no celular de quem está de plantão. Aqui ele vê
+    antes.
+
+    ⚠️ E ela renderiza pela MESMA função do envio (`ds_teams`), com o MESMO
+    mapa de contexto da guardiã. Uma prévia que monta o texto por outro caminho
+    é uma promessa que o Teams não cumpre — e o jeito de descobrir seria às 3h,
+    com o card errado já entregue.
+
+    Não envia nada e não grava nada: é `POST` porque recebe o rascunho que
+    ainda não foi salvo, não porque muda estado.
+    """
+    from services.msg_texto import contexto_exemplo, texto_da_notificacao
+
+    config = body.get("config") if isinstance(body.get("config"), dict) else {}
+    template_id = config.get("template_id")
+
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        malha = _malha_oficial(cur, malha_name)
+        if malha is None:
+            raise HTTPException(status_code=404,
+                                detail=f"Malha não encontrada: '{malha_name}'")
+        # Os membros REAIS da malha alimentam o exemplo: uma prévia com nomes
+        # inventados esconde justamente o caso que quebra — a malha de 40
+        # membros cujo `{pipelines}` estoura o limite da coluna.
+        try:
+            cur.execute(
+                "SELECT p.pipeline_name FROM dbo.etl_malha_pipeline p "
+                "WHERE p.malha_name = ? ORDER BY p.pipeline_name", (malha,))
+            membros = [r[0] for r in cur.fetchall()]
+        except Exception as e:  # noqa: BLE001 — a prévia nunca cai por isto
+            log.warning("[MALHA] membros indisponiveis para a previa (%s)", e)
+            membros = []
+
+        template = None
+        if template_id is not None:
+            try:
+                cur.execute(
+                    "SELECT titulo, corpo FROM dbo.etl_msg_template "
+                    "WHERE id = ? AND ativo = 1", (int(template_id),))
+                linha = cur.fetchone()
+                if linha:
+                    template = {"titulo": linha[0], "corpo": linha[1]}
+            except (TypeError, ValueError):
+                template = None
+            except Exception as e:  # noqa: BLE001
+                log.warning("[MALHA] modelo %s indisponivel na previa (%s)",
+                            template_id, e)
+        mapa = contexto_exemplo(malha, membros)
+        titulo, corpo = texto_da_notificacao(config, template, mapa)
+        return {
+            "titulo": titulo or "Notificação da malha",
+            "corpo": corpo or "",
+            # O que cada placeholder valeu NESTE exemplo — é o que permite ao
+            # operador entender por que o texto saiu como saiu, em vez de
+            # adivinhar.
+            "valores": mapa,
+            # Placeholder escrito errado fica intacto no texto de propósito
+            # (apagá-lo entregaria uma frase com um buraco). A tela avisa.
+            "desconhecidos": _placeholders_desconhecidos(titulo, corpo),
+        }
+    finally:
+        if conn is not None:
+            _fechar_silencioso(conn)
+
+
+_RX_PLACEHOLDER = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+
+
+def _placeholders_desconhecidos(*textos) -> list:
+    """Os `{nomes}` que sobraram sem valor — os que o operador escreveu errado.
+
+    Sobrar é o comportamento correto da interpolação (ver `ds_teams.interpolar`);
+    o que faltava era alguém DIZER, e a prévia é o lugar.
+    """
+    from services.msg_texto import PLACEHOLDERS_MALHA
+
+    achados = []
+    for texto in textos:
+        for nome in _RX_PLACEHOLDER.findall(str(texto or "")):
+            if nome not in PLACEHOLDERS_MALHA and nome not in achados:
+                achados.append(nome)
+    return achados
+
 
 @router.post("/malhas/{malha_name}/nos", tags=["malhas"])
 def add_no(malha_name: str, body: dict = Body(default={}),

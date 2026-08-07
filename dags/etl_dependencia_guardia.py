@@ -1346,21 +1346,56 @@ def _fechar_corridas_malha(conn, log) -> int:
 
 # ── Responsabilidade 7 — observadores de malha (F14 §5/§6) ──────────────────
 
-def _detalhe_notificacao(config: dict, malha: str, data_ref, upstream) -> str:
-    """Mensagem do evento MALHA_NOTIFICACAO, renderizada na DETECÇÃO com o
-    contexto em mãos (padrão da supervisão): título/mensagem do config do nó
-    + malha + a lista do upstream resumida (§5 passo 4). gravar_evento clipa
-    em 1000 — o resumo aqui é para o card sair legível, não para caber."""
-    cfg = config or {}
-    titulo = (str(cfg.get("titulo") or "")).strip() or "Notificação da malha"
-    mensagem = (str(cfg.get("mensagem") or "")).strip()
+def contexto_da_notificacao(malha: str, data_ref, upstream) -> dict:
+    """O que os placeholders do editor valem NESTA emissão.
+
+    Um mapa só, montado num lugar só, porque a PRÉVIA da tela e o CARD do
+    celular têm de sair da mesma conta — prévia que renderiza por outro caminho
+    é promessa que o Teams não cumpre, e o operador só descobre às 3h.
+
+    `{pipelines}` é resumido em 10 nomes: a coluna `detalhe` clipa em 1000 e
+    uma malha de 40 membros estouraria isso sozinha, cortando a frase do
+    operador pelo meio.
+    """
     resumo = ", ".join(upstream[:10])
     if len(upstream) > 10:
         resumo += f" (+{len(upstream) - 10})"
-    detalhe = (f"{titulo} — malha {malha}: todas as entradas com SUCESSO "
-               f"em {_iso(data_ref)} ({resumo})")
-    if mensagem:
-        detalhe += f" - {mensagem}"
+    return {"malha": malha, "data": _iso(data_ref), "pipelines": resumo,
+            "quantidade": len(upstream), "ciclo": f"ciclo de {_dia_curto(data_ref)}"}
+
+
+def _dia_curto(data_ref) -> str:
+    """`04/08` — o rótulo humano da Decisão 74, sem o ano."""
+    iso = _iso(data_ref)
+    partes = str(iso or "").split("-")
+    return f"{partes[2]}/{partes[1]}" if len(partes) == 3 else str(iso or "")
+
+
+def _detalhe_notificacao(config: dict, malha: str, data_ref, upstream,
+                         template: dict | None = None) -> str:
+    """Mensagem do evento MALHA_NOTIFICACAO, renderizada na DETECÇÃO com o
+    contexto em mãos (padrão da supervisão).
+
+    087 — o texto agora pode vir do CATÁLOGO (`etl_msg_template`, o mesmo que o
+    nó de Notificação das Etapas usa) e aceita placeholders. A precedência mora
+    em `ds_teams.texto_da_notificacao`: mensagem escrita no nó vence o corpo do
+    modelo, porque o modelo é ponto de partida e não camisa de força.
+
+    Sem nó configurado, sem modelo e sem texto, a frase automática de sempre
+    continua saindo: configurar é opcional, e malha nenhuma fica muda por não
+    ter sido configurada. `gravar_evento` clipa em 1000 — o resumo do contexto
+    é para o card sair legível, não para caber.
+    """
+    # Import tardio, no molde do `_notificar` abaixo: o módulo do Teams puxa
+    # `requests` e este arquivo é carregado pelo scheduler a cada varredura.
+    from utils.ds_teams import texto_da_notificacao
+
+    mapa = contexto_da_notificacao(malha, data_ref, upstream)
+    titulo, corpo = texto_da_notificacao(config or {}, template, mapa)
+    detalhe = (f"{titulo or 'Notificação da malha'} — malha {malha}: todas as "
+               f"entradas com SUCESSO em {_iso(data_ref)} ({mapa['pipelines']})")
+    if corpo:
+        detalhe += f" - {corpo}"
     return detalhe
 
 
@@ -1481,8 +1516,15 @@ def _observadores_malha(conn, agora: datetime, log, corrida_on: bool = False) ->
                     corrida_id = dona["id"] if dona else None
                 if obs["tipo"] == "notificacao":
                     tipo_ev, notificar = "MALHA_NOTIFICACAO", True
+                    # 087 — o modelo do catálogo, quando o nó apontou para um.
+                    # A leitura degrada para `None` (catálogo ausente, modelo
+                    # inativado ou apagado) e o texto cai no que está escrito no
+                    # próprio nó: um modelo removido não pode fazer o aviso
+                    # sumir.
+                    tpl = dep.template_de_mensagem(
+                        conn, (obs["config"] or {}).get("template_id"))
                     detalhe = _detalhe_notificacao(obs["config"], malha,
-                                                   data_ref, upstream)
+                                                   data_ref, upstream, tpl)
                 else:
                     tipo_ev = "MALHA_CONCLUIDA"
                     notificar = (obs["config"] or {}).get("notificar_teams") is True
@@ -1521,6 +1563,29 @@ def _notificar(conn, log, limite: int) -> int:
     if canal is None:
         log.info("[GUARDIA] sem canal do Teams — eventos só no painel")
         return 0
+
+    # 087 — o canal POR MALHA. O lote traz eventos de malhas diferentes, e cada
+    # uma pode ter escolhido o seu; resolvemos UMA vez por malha e guardamos,
+    # em vez de perguntar por evento: uma madrugada ruim manda 40 cards da
+    # mesma malha, e seriam 40 idas ao banco para a mesma resposta.
+    #
+    # `canal` (o global) segue sendo a rede: malha sem escolha, canal inativado
+    # ou sem webhook caem nele. É por isso que a checagem de "sem canal" acima
+    # continua abortando o lote — sem o global não há para onde degradar.
+    canal_por_malha: dict = {}
+
+    def _canal_do_evento(ev):
+        malha = (ev.get("malha") or "").strip()
+        if not malha:
+            return canal
+        if malha not in canal_por_malha:
+            try:
+                canal_por_malha[malha] = dep.canal_teams_da_malha(conn, malha) or canal
+            except Exception as e:  # noqa: BLE001 — o aviso nunca cai por isto
+                log.warning("[GUARDIA] canal da malha '%s' indisponivel (%s) — "
+                            "usando o canal geral", malha, e)
+                canal_por_malha[malha] = canal
+        return canal_por_malha[malha]
     # F11 (Decisão 69) — o endereço do app, lido UMA vez por lote: os cards de
     # malha ganham o botão que cai direto na corrida. Ausente/vazio devolve ''
     # e o card sai byte a byte como antes desta fase, sem botão e sem uma linha
@@ -1529,12 +1594,13 @@ def _notificar(conn, log, limite: int) -> int:
 
     enviados = 0
     for ev in eventos:
-        ok, motivo = enviar_card(canal["webhook_url"],
+        canal_ev = _canal_do_evento(ev)
+        ok, motivo = enviar_card(canal_ev["webhook_url"],
                                  montar_card_dependencia(ev, base_url))
         if not ok:
             log.warning("[GUARDIA] evento %s de %s não foi ao canal '%s': %s",
                         ev.get("tipo"), ev.get("pipeline"),
-                        canal.get("nome"), motivo)
+                        canal_ev.get("nome"), motivo)
             continue
         try:
             dep.marcar_notificado(conn, ev["id"])
@@ -1542,7 +1608,7 @@ def _notificar(conn, log, limite: int) -> int:
             enviados += 1
             log.info("[GUARDIA] %s de %s enviado ao canal '%s' (%s)",
                      ev.get("tipo"), ev.get("pipeline"),
-                     canal.get("nome"), motivo)
+                     canal_ev.get("nome"), motivo)
         except Exception as e:
             # Enviou mas não marcou: o próximo ciclo reenvia. Duplicar um
             # card é ruim, mas menos grave que perder o alerta.
