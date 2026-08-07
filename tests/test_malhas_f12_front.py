@@ -148,7 +148,7 @@ def test_a_marca_se_declara_leitura_de_tela_e_nao_alarme(front):
 
 # ═══════════ o número não é ETA, e o texto não deixa dúvida ════════════════
 
-_PROIBIDAS = ("previs", "estimat", "prognóst", "conclusão da corrida",
+_PROIBIDAS = ("previs", "estimat", "prognóst", "conclusão do ciclo",
               "vai terminar", "termina às")
 
 

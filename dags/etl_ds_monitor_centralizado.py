@@ -11,7 +11,7 @@ ARQUITETURA:
        em sequência — reutilizando a mesma conexão SSH (sem abrir/fechar).
     3. Para jobs que terminaram (OK/WARNING/ABORTED), chama `dsjob -logsum`
        (somente uma vez, ao final) e persiste o resultado final.
-    4. Persiste snapshots de estado em batch (uma transação por ciclo).
+    4. Persiste snapshots de estado em batch (um transação por ciclo).
 
 COMPARATIVO:
   Antes (polling por job): N_jobs × (duração / poll_interval) conexões SSH

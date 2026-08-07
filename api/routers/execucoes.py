@@ -636,12 +636,12 @@ async def _resolve_alvo_rerun(pipeline: str, *, exec_id: str, dag_run_id: str,
                 # "reexecutar" para quem clicou em PAUSAR seria a tela falando
                 # de outra coisa (visto na prova de UI). O default preserva,
                 # palavra por palavra, a mensagem que a F4 já entregava.
-                "mensagem": (f"Há {len(ident.get('candidatos') or [])} corridas de "
+                "mensagem": (f"Há {len(ident.get('candidatos') or [])} ciclos de "
                              f"'{oficial}' nesta data de referência. Escolha qual "
-                             f"{gesto} — {gesto} é um gesto sobre UMA corrida e "
+                             f"{gesto} — {gesto} é um gesto sobre UM ciclo e "
                              "não se escolhe por você."
                              if gesto != "reexecutar" else
-                             f"Há {len(ident.get('candidatos') or [])} corridas de "
+                             f"Há {len(ident.get('candidatos') or [])} ciclos de "
                              f"'{oficial}' nesta data de referência. Escolha qual "
                              "reexecutar — reexecutar é destrutivo e não se "
                              "escolhe por você."),
@@ -651,13 +651,13 @@ async def _resolve_alvo_rerun(pipeline: str, *, exec_id: str, dag_run_id: str,
         raise HTTPException(
             status_code=409,
             detail={"erro": "identidade_degradada",
-                    "mensagem": ("A corrida foi identificada por APROXIMAÇÃO "
+                    "mensagem": ("O ciclo foi identificada por APROXIMAÇÃO "
                                  "(migration 067 pendente). Reexecutar exige "
                                  "identidade exata.")})
     if ident.get("motivo") == ident_svc.SEM_LINHA_NA_DATA:
         raise HTTPException(
             status_code=404,
-            detail=f"Nenhuma corrida de '{oficial}' na data de referência.")
+            detail=f"Nenhum ciclo de '{oficial}' na data de referência.")
     return oficial, ident, data_ref
 
 
@@ -666,15 +666,15 @@ async def _resolve_alvo_rerun(pipeline: str, *, exec_id: str, dag_run_id: str,
 # dags/). Falar sempre em "migration 078" era a mentira do deploy parcial.
 AVISO_CASCATA_INDISPONIVEL = {
     "migration_078_pendente":
-        "migration 078 pendente — nenhuma corrida pôde ser reaberta; "
+        "migration 078 pendente — nenhum ciclo pôde ser reaberto; "
         "os dependentes NÃO vão rodar de novo",
     rerun_svc.CAP_AUSENTE:
-        "o motor de dependências deployado (dags/) ainda não entende corrida "
-        "reaberta — nenhuma corrida foi aposentada; os dependentes NÃO vão "
+        "o motor de dependências deployado (dags/) ainda não entende ciclo "
+        "reaberta — nenhum ciclo foi aposentada; os dependentes NÃO vão "
         "rodar de novo. Deploy de dags/ pendente",
     rerun_svc.CAP_DESCONHECIDA:
         "não foi possível confirmar se o motor deployado (dags/) entende "
-        "corrida reaberta — nada foi aposentado, para não deixar corrida "
+        "ciclo reaberto — nada foi aposentado, para não deixar ciclo "
         "carimbada sem reprocesso a caminho",
 }
 
@@ -701,7 +701,7 @@ def _corrida_operavel(cur, malha: str):
 
 def _frase_da_corrida(c: dict, sufixo: str) -> str:
     """Decisão 74 — a corrida se chama pela DATA, nunca pelo `#id`. O `#12` é
-    chave de banco; quem lê às 3h procura "a corrida de 2026-08-04".
+    chave de banco; quem lê às 3h procura "o ciclo de 2026-08-04".
 
     O rótulo vem de `_rotulo_corrida`, o MESMO da tela de malhas: duas grafias
     do mesmo ciclo (uma no toast do rerun, outra no painel) fariam o operador
@@ -769,7 +769,7 @@ def _efeito_na_corrida(cur, oficial: str, alvos: list, data_ref, usuario: str,
                     c, f"voltou a ABERTA (tentativa "
                        f"{recarregada.get('tentativas')}) — ela fecha de novo "
                        "quando o reprocesso terminar"))
-                log.info("[RERUN] corrida #%s da malha '%s' reaberta por %s",
+                log.info("[RERUN] ciclo #%s da malha '%s' reaberta por %s",
                          c["id"], c["malha_name"], usuario)
                 continue
             # Não reabriu. As duas causas têm conserto e leitura DIFERENTES, e
@@ -784,7 +784,7 @@ def _efeito_na_corrida(cur, oficial: str, alvos: list, data_ref, usuario: str,
                 porque = (f"o ciclo foi encerrado como {c['status']} e não "
                           "volta — o reprocesso roda fora dele")
             _evento_da_corrida(cur, c, "MALHA_REPROCESSO",
-                               f"{detalhe}: corrida NAO reaberta ({porque})")
+                               f"{detalhe}: ciclo NAO reaberto ({porque})")
             saida["corridas_com_reprocesso"].append({
                 "malha": c["malha_name"],
                 "data_referencia": _iso_data(c["data_referencia"]),
@@ -793,7 +793,7 @@ def _efeito_na_corrida(cur, oficial: str, alvos: list, data_ref, usuario: str,
             saida["avisos"].append(_frase_da_corrida(c, "NÃO foi reaberta: "
                                                     + porque))
         except Exception as e:  # noqa: BLE001 — o clear já aconteceu
-            log.warning("[RERUN] efeito na corrida da malha '%s' não aplicado: "
+            log.warning("[RERUN] efeito no ciclo da malha '%s' não aplicado: "
                         "%s", c.get("malha_name"), e)
             saida["avisos"].append(
                 f"o ciclo da malha '{c.get('malha_name')}' não pôde ser "
@@ -843,7 +843,7 @@ def _previa_da_corrida(cur, oficial: str, data_ref) -> dict | None:
         operavel, motivo_portao = _corrida_operavel(cur, c["malha_name"])
         if not operavel:
             log.info("[RERUN] prévia do ciclo da malha '%s' omitida (%s) — o "
-                     "rerun não vai tocar na corrida, e a tela não promete",
+                     "rerun não vai tocar no ciclo, e a tela não promete",
                      c["malha_name"], motivo_portao)
             return None
         if c["status"] == mc.STATUS_ABERTA:
@@ -1169,30 +1169,30 @@ def _aplicar_cascata(oficial: str, data_ref, task_id: str, dag_run_id: str,
                 # documentado na função).
                 if rerun_svc.reviver_corrida(cur, oficial, data_ref,
                                              dag_run_id) < 1:
-                    log.warning("[RERUN] corrida de '%s' em %s (run_id=%s) NAO "
+                    log.warning("[RERUN] ciclo de '%s' em %s (run_id=%s) NAO "
                                 "marcada como EXECUTANDO: nenhuma linha casou",
                                 oficial, data_ref, dag_run_id)
                     saida["avisos"].append(
-                        "a corrida deste pipeline não pôde ser marcada como em "
+                        "o ciclo deste pipeline não pôde ser marcada como em "
                         "execução (nenhuma linha com este identificador de "
-                        "corrida na data) — dependentes podem partir com o dado "
+                        "ciclo na data) — dependentes podem partir com o dado "
                         "anterior enquanto o reprocesso roda")
             except Exception as e:  # noqa: BLE001
-                saida["avisos"].append(f"corrida do pipeline não marcada como EXECUTANDO: {e}")
+                saida["avisos"].append(f"ciclo do pipeline não marcada como EXECUTANDO: {e}")
             try:
                 irmas = rerun_svc.aposentar_irmas(cur, oficial, data_ref,
                                                   dag_run_id, usuario)
                 saida["corridas_irmas_aposentadas"] = irmas
                 if irmas:
-                    log.info("[RERUN] %d corrida(s) irma(s) de '%s' em %s "
+                    log.info("[RERUN] %d ciclo(s) irma(s) de '%s' em %s "
                              "aposentada(s)", irmas, oficial, data_ref)
                     saida["avisos"].append(
-                        f"{irmas} outra(s) corrida(s) deste pipeline nesta data "
+                        f"{irmas} outra(s) ciclo(s) deste pipeline nesta data "
                         "foram aposentadas — só a reexecutada vale a partir de "
                         "agora")
             except Exception as e:  # noqa: BLE001
                 saida["avisos"].append(
-                    f"outras corridas do pipeline na data não aposentadas: {e}")
+                    f"outros ciclos do pipeline na data não aposentadas: {e}")
             if cascata:
                 info = rerun_svc.afetados(cur, oficial, data_ref)
                 alvos = info.get("com_corrida") or []
@@ -1218,7 +1218,7 @@ def _aplicar_cascata(oficial: str, data_ref, task_id: str, dag_run_id: str,
                     saida["avisos"].append(
                         AVISO_CASCATA_INDISPONIVEL.get(
                             info.get("razao_indisponivel"),
-                            "cascata indisponível neste ambiente — nenhuma corrida "
+                            "cascata indisponível neste ambiente — nenhum ciclo "
                             "pôde ser reaberta; os dependentes NÃO vão rodar de novo"))
                 if info.get("truncado"):
                     saida["avisos"].append(
@@ -1305,8 +1305,8 @@ async def rerun_from_task(body: dict = Body(default={}),
                 status_code=409,
                 detail={"erro": "corrida_sem_dag_run",
                         "mensagem": ("Não foi possível identificar o dag_run "
-                                     "desta corrida no Airflow — sem ele o clear "
-                                     "atingiria todas as corridas da DAG.")})
+                                     "deste ciclo no Airflow — sem ele o clear "
+                                     "atingiria todos os ciclos da DAG.")})
 
     async with get_airflow_client() as client:
         # 1. Resolver dag_run_id se não fornecido
@@ -1335,7 +1335,7 @@ async def rerun_from_task(body: dict = Body(default={}),
                 detail={"erro": "dag_pausada",
                         "mensagem": (f"O pipeline '{dag_id}' está PAUSADO no "
                                      "Airflow. Reexecutar agora limparia as "
-                                     "tarefas sem nada rodar, e a corrida "
+                                     "tarefas sem nada rodar, e o ciclo "
                                      "ficaria presa em execução bloqueando os "
                                      "dependentes. Ative o pipeline e "
                                      "reexecute.")})
@@ -1526,7 +1526,7 @@ async def criar_pausa(body: dict = Body(default={}),
             status_code=409,
             detail={"erro": "corrida_sem_execution_id",
                     "mensagem": ("Não foi possível identificar o execution_id "
-                                 "(ts_nodash) desta corrida — sem ele o portão "
+                                 "(ts_nodash) deste ciclo — sem ele o portão "
                                  "da etapa não tem como reconhecer a pausa.")})
     # O que vale contra o Airflow é o dag_run_id; guardá-lo agora é o que
     # permite CANCELAR a execução depois sem re-resolver identidade.
@@ -1756,9 +1756,9 @@ async def cancelar_pausa(pausa_id: int, body: dict = Body(default={}),
         raise HTTPException(
             status_code=409,
             detail={"erro": "corrida_sem_dag_run",
-                    "mensagem": ("Esta pausa não guarda o dag_run da corrida — "
+                    "mensagem": ("Esta pausa não guarda o dag_run do ciclo — "
                                  "sem ele não dá para cancelar a execução no "
-                                 "Airflow. Libere a pausa e pare a corrida pela "
+                                 "Airflow. Libere a pausa e pare o ciclo pela "
                                  "tela do Airflow.")})
     async with get_airflow_client() as client:
         r = await client.patch(f"/api/v1/dags/{dag_id}/dagRuns/{dag_run_id}",
@@ -1801,7 +1801,7 @@ async def cancelar_pausa(pausa_id: int, body: dict = Body(default={}),
              "observacao": obs, "dagrun_falhado": True})
         conn.commit()
     except Exception as e:  # noqa: BLE001
-        log.warning("[ESPERA] cancelamento da pausa %s: corrida falhada no "
+        log.warning("[ESPERA] cancelamento da pausa %s: ciclo falhada no "
                     "Airflow mas o registro falhou: %s", pausa_id, e)
     finally:
         for f in (getattr(cur, "close", None), getattr(conn, "close", None)):

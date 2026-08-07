@@ -1811,7 +1811,7 @@ alguém leve para uma reunião, e "corrida" no painel com "ciclo" no nó Fim e
 
 | Está no modelo | **Escrever na tela** |
 |---|---|
-| corrida / ciclo (as duas) | **corrida** — uma só, em todo lugar |
+| corrida / ciclo (as duas) | **ciclo** — uma só, em todo lugar. ⚠️ **A decisão foi INVERTIDA com o dono em 2026-08-06**, e o motivo é o mesmo que a criou: a tela misturava as duas na MESMA frase (*"ciclo aberto — esta **corrida** ainda não passou pelo Fim"*), e "corrida" em português puxa competição e pressa, não operação de carga. `corrida` continua sendo o nome no MODELO e no código (tabela, colunas, variáveis, componentes) — a mesma política desta tabela para `quiescencia`, `PULADO` e `orfa`: nome técnico dentro, português fora |
 | `#12` / `sequencia` / `id` | `corrida de 04/08`; e **só se `sequencia > 1`**, `2ª corrida de 04/08`. **`#` não aparece na interface** — hoje três numerações diferentes disputam essa notação (`id`, `sequencia`, `aberta_por='inicio:#12'`), e `#12` numa malha diária lê-se como "12ª tentativa hoje" |
 | quiescência | *"fecha 15 min após o último movimento"* |
 | teto / `teto_em` | *"limite de segurança (24h)"* |

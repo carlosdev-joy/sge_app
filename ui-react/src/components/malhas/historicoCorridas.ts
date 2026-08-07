@@ -87,8 +87,8 @@ string | null {
   // Com UMA corrida no período a fração não existe: "falhou 1 das últimas 1
   // corridas" é a frase que faz o leitor duvidar do número ao lado. O fato é
   // o mesmo e a frase é outra.
-  if (h.consideradas === 1) return 'falhou na última corrida'
-  return `falhou ${h.falhou} das últimas ${h.consideradas} corridas`
+  if (h.consideradas === 1) return 'falhou no último ciclo'
+  return `falhou ${h.falhou} dos últimos ${h.consideradas} ciclos`
 }
 
 /** `corrida anterior: 03/08 · concluída · 01:10 → 04:02` — ou `null`.
@@ -106,8 +106,8 @@ string | null {
   const a = h?.anterior
   if (!a) return null
   const dia = diaCurto(a.data_referencia) ?? a.data_referencia
-  const nome = a.sequencia > 1 ? `${a.sequencia}ª corrida de ${dia}` : dia
-  const partes = [`corrida anterior: ${nome}`, rotuloPassado(a.status, rotulo)]
+  const nome = a.sequencia > 1 ? `${a.sequencia}º ciclo de ${dia}` : dia
+  const partes = [`ciclo anterior: ${nome}`, rotuloPassado(a.status, rotulo)]
   // O intervalo é ABSOLUTO (`01:10 → 04:02`), como todo tempo de corrida
   // FECHADA (Decisão 60): "há 22h" sobre uma corrida que acabou seria o
   // relógio de uma coisa colado no rótulo de outra.
@@ -167,8 +167,8 @@ export function tituloDoBloco(
 ): string {
   const dia = diaCurto(c.data_referencia) ?? c.data_referencia
   const cabecalho = c.sequencia > 1
-    ? `${c.sequencia}ª corrida de ${dia}`
-    : `corrida de ${dia}`
+    ? `${c.sequencia}º ciclo de ${dia}`
+    : `ciclo de ${dia}`
   // O mesmo cuidado do `textoCorridaAnterior`: o bloco fala de uma corrida
   // datada, e "sem trabalho hoje" com a data de 09/08 ao lado é o presente
   // opinando sobre o passado.

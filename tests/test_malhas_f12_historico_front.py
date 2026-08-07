@@ -108,7 +108,7 @@ def test_dia_1_nenhuma_frase_desta_fase_e_renderizada(front):
 
     É o aceite que manda na fase inteira, e ele é de AUSÊNCIA: no dia do deploy
     o interruptor está em `0`, nenhuma corrida fechou ainda, e o card não pode
-    inventar "falhou 0 das últimas 0 corridas" nem "≈ 0%"."""
+    inventar "falhou 0 dos últimos 0 ciclos" nem "≈ 0%"."""
     d = _cenario(front, "dia_1_sem_historico")
     assert d["historico_falhas"] is None
     assert d["anterior"] is None
@@ -117,7 +117,7 @@ def test_dia_1_nenhuma_frase_desta_fase_e_renderizada(front):
     # E nada disso vaza por `title`/`aria-*`, que é por onde texto escapa.
     for onde in ("lido_card", "lido_badge", "titulo"):
         texto = d[onde]
-        for proibido in ("falhou", "corrida anterior", "%", "tiveram trabalho"):
+        for proibido in ("falhou", "ciclo anterior", "%", "tiveram trabalho"):
             assert proibido not in texto, \
                 f"{proibido!r} apareceu em {onde} no dia 1:\n{texto}"
 
@@ -137,7 +137,7 @@ def test_a_frase_do_card_conta_o_que_aconteceu(front):
     """O aceite literal do card. Ele responde "está pior que antes?" sem
     obrigar o gestor a abrir malha por malha às 8h."""
     d = _cenario(front, "falhou_2_de_7")
-    assert d["frase"] == "falhou 2 das últimas 7 corridas"
+    assert d["frase"] == "falhou 2 dos últimos 7 ciclos"
 
 
 def test_sem_falha_no_periodo_o_historico_se_cala(front):
@@ -147,7 +147,7 @@ def test_sem_falha_no_periodo_o_historico_se_cala(front):
     responde outra pergunta."""
     d = _cenario(front, "sem_falha_nenhuma_cala")
     assert d["frase"] is None
-    assert d["anterior"].startswith("corrida anterior: 04/08")
+    assert d["anterior"].startswith("ciclo anterior: 04/08")
 
 
 def test_o_denominador_e_o_do_servidor_nunca_a_janela_pedida(front):
@@ -155,18 +155,18 @@ def test_o_denominador_e_o_do_servidor_nunca_a_janela_pedida(front):
     "das últimas 7" sobre 4 corridas inventaria três madrugadas — o número
     certo com o denominador errado é a família de mentira desta spec."""
     assert _cenario(front, "malha_nova_denominador_do_servidor")["frase"] \
-        == "falhou 1 das últimas 4 corridas"
+        == "falhou 1 dos últimos 4 ciclos"
 
 
 def test_com_uma_corrida_so_a_fracao_nao_existe(front):
     """"falhou 1 das últimas 1 corridas" é a frase que faz o leitor duvidar do
     número ao lado. O fato é o mesmo e a frase é outra."""
     assert _cenario(front, "uma_corrida_so_no_singular")["frase"] \
-        == "falhou na última corrida"
+        == "falhou no último ciclo"
 
 
 def test_a_corrida_anterior_e_fato_com_hora_e_duracao(front):
-    """*"faixa — `corrida anterior: 03/08 · concluída · 01:10 → 04:02`"*.
+    """*"faixa — `corrida anterior: 03/08 · concluído · 01:10 → 04:02`"*.
 
     Exige `n = 1`, e não o piso `n ≥ 5` da duração típica: isto é REGISTRO, não
     mediana — e é a resposta mais direta a "está pior que ontem?".
@@ -174,7 +174,7 @@ def test_a_corrida_anterior_e_fato_com_hora_e_duracao(front):
     O formato é ABSOLUTO (Decisão 60): corrida fechada não ganha "há 22h"."""
     d = _cenario(front, "falhou_2_de_7")
     assert d["anterior"] == \
-        "corrida anterior: 04/08 · concluída · 01:10 → 04:02 · 2h52"
+        "ciclo anterior: 04/08 · concluído · 01:10 → 04:02 · 2h52"
 
 
 # ═══════════ `SEM_TRABALHO`: a terça âmbar × o sábado mudo ═════════════════
@@ -312,11 +312,11 @@ def test_a_corrida_anterior_nao_diz_hoje_sobre_anteontem(front):
     """O rótulo de `SEM_TRABALHO` é escrito no PRESENTE — "sem trabalho hoje" —
     porque nasceu para a pílula da corrida CORRENTE.
 
-    Reusado cru, ele escrevia *"corrida anterior: 03/08 · sem trabalho hoje"*:
+    Reusado cru, ele escrevia *"ciclo anterior: 03/08 · sem trabalho hoje"*:
     a palavra "hoje" afirmando algo sobre anteontem, e justamente na linha cujo
     trabalho é responder *"está pior que ontem?"*."""
     d = _cenario(front, "anterior_sem_trabalho_nao_diz_hoje")
-    assert d["anterior"] == ("corrida anterior: 03/08 · sem trabalho · "
+    assert d["anterior"] == ("ciclo anterior: 03/08 · sem trabalho · "
                              "01:00 → 01:02 · 2 min")
     assert "hoje" not in d["anterior"]
 
@@ -339,7 +339,7 @@ def test_origem_implicita_diz_sem_no_inicio_no_card(front):
     """*"malha `origem = implicita` → o card diz `sem nó Início`"* (Decisão 44).
 
     Nas 3 de 4 malhas sem Início o ODATE é "o que o primeiro membro achou", e
-    apresentá-lo como "o ODATE da corrida" lhe dá uma autoridade que ele não
+    apresentá-lo como "o ODATE do ciclo" lhe dá uma autoridade que ele não
     tem. A faixa complementa dizendo de QUAL raiz ele veio."""
     d = _cenario(front, "origem_implicita_diz_sem_no_inicio")
     assert d["origem"] == "sem nó Início"
@@ -365,13 +365,13 @@ def test_a_corrida_agendada_nao_ganha_linha_nenhuma(front):
 # ═══════════ o `title` do bloco da faixa (Decisões 42/67/68) ═══════════════
 
 def test_o_bloco_da_faixa_nomeia_quem_travou(front):
-    """*"`title` do bloco = `04/08 · concluída · 2h41 · travou: CARGA_A`"*.
+    """*"`title` do bloco = `04/08 · concluído · 2h41 · travou: CARGA_A`"*.
 
     É o que transforma dez quadradinhos coloridos em DIAGNÓSTICO: três
     madrugadas seguidas travando no mesmo membro é problema CRÔNICO e espera o
     horário comercial; nove verdes e uma vermelha é NOVIDADE e escala."""
     t = _cenario(front, "titulo_do_bloco_com_travado")
-    assert "corrida de 04/08" in t and "falhou" in t
+    assert "ciclo de 04/08" in t and "falhou" in t
     assert "01:10 → 03:51 · 2h41" in t
     assert "travou: CARGA_A" in t
 
@@ -391,7 +391,7 @@ def test_corrida_limpa_nao_inventa_travado(front):
     razão, e as duas leituras precisam continuar distinguíveis no payload."""
     t = _cenario(front, "titulo_do_bloco_sem_travou_apurado")
     assert "travou" not in t
-    assert "2ª corrida de 03/08 · concluída" in t
+    assert "2º ciclo de 03/08 · concluído" in t
 
 
 # ═══════════ Decisão 56b — o percentual de TEMPO ═══════════════════════════
@@ -508,7 +508,7 @@ def test_o_decorrido_do_percentual_respeita_os_dois_relogios(front):
 
     Com o navegador 3h atrás — o desvio MEDIDO no dev —, um `Date.now() −
     inicio` daria negativo e o número nasceria em 0% a madrugada inteira. E ele
-    ANDA entre refetches, senão o painel congelaria por 15 s a cada ciclo."""
+    ANDA entre refetches, senão o painel congelaria por 15 s o cada ciclo."""
     d = _cenario(front, "relogio_do_banco_mais_o_local")
     assert d["no_instante"]["pct"] == 29
     assert d["dez_min_depois"]["pct"] > d["no_instante"]["pct"]

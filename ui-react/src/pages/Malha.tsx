@@ -329,7 +329,7 @@ function MalhaCard({ malha, tempo, semDadosDeCorrida, onAcompanhar, onAbrir,
             <span className="truncate">{estilo!.rotulo}</span>
           </span>
         ) : (
-          <span className="italic" title="Nenhuma corrida registrada para os pipelines desta malha">
+          <span className="italic" title="Nenhum ciclo registrado para os pipelines desta malha">
             ▶ sem execução registrada
           </span>
         )}
@@ -351,7 +351,7 @@ function MalhaCard({ malha, tempo, semDadosDeCorrida, onAcompanhar, onAbrir,
             title="O registro do ciclo da malha ainda não está disponível neste ambiente — a migration 085 não foi aplicada, ou o servidor ainda é o anterior a esta versão. O que está na tela continua verdadeiro; o que falta é o ciclo."
           >
             <AlertTriangle size={11} className="shrink-0" />
-            sem dados de corrida — sistema em atualização
+            sem dados de ciclo — sistema em atualização
           </span>
         )}
         {criado && <span>📅 criada em {criado}</span>}
@@ -359,7 +359,7 @@ function MalhaCard({ malha, tempo, semDadosDeCorrida, onAcompanhar, onAbrir,
       {/* ── Decisão 72: as posições são FIXAS e `Acompanhar` existe SEMPRE ──
           Dois defeitos de bancada moram aqui. (i) O interruptor da corrida
           nasce em `0` (§11.2): no dia do deploy NENHUMA malha tem corrida, e um
-          botão que só existisse com corrida deixaria a fase inteira não
+          botão que só existisse com ciclo deixaria a fase inteira não
           testável — este leva à lente de execução da data corrente, que já
           funciona hoje. (ii) Botão que muda de lugar entre estados faz clicar
           em "Diagrama" no card 1 e acertar "Membros" no card 2; por isso nada
@@ -368,7 +368,7 @@ function MalhaCard({ malha, tempo, semDadosDeCorrida, onAcompanhar, onAbrir,
       <div className="flex flex-wrap gap-1.5 pt-2 border-t border-edge mt-auto">
         <Button
           size="sm" onClick={onAcompanhar}
-          title="Acompanhar a execução desta malha — a corrida em andamento, ou o dia corrente quando não há nenhuma"
+          title="Acompanhar a execução desta malha — o ciclo em andamento, ou o dia corrente quando não há nenhuma"
         >
           <Play size={12} /> Acompanhar
         </Button>
@@ -921,11 +921,11 @@ function MalhasView({ onAbrir, onAcompanhar }: {
         <Select
           value={estadoAtivo}
           onChange={e => setCorridaFiltro(e.target.value as EstadoCorrida | '')}
-          title="Filtrar pelo estado da corrida (o ciclo da malha)"
-          aria-label="Filtrar pelo estado da corrida"
+          title="Filtrar pelo estado do ciclo (o ciclo da malha)"
+          aria-label="Filtrar pelo estado do ciclo"
           className="w-52"
         >
-          <option value="">Todas as corridas</option>
+          <option value="">Todos os ciclos</option>
           {ESTADOS_CORRIDA
             .filter(def => def.chave !== 'concluida' || referencia)
             .map(def => (
@@ -957,8 +957,8 @@ function MalhasView({ onAbrir, onAcompanhar }: {
               className={`mr-1 text-[11px] ${fresco.velho && acompanhando
                 ? 'font-medium text-amber-700 dark:text-amber-400' : 'text-dim'}`}
               title={acompanhando
-                ? 'Esta lista se atualiza sozinha a cada 20 s enquanto houver corrida em andamento.'
-                : 'Sem corrida em andamento, a lista não se atualiza sozinha — use o botão ao lado.'}
+                ? 'Esta lista se atualiza sozinha a cada 20 s enquanto houver ciclo em andamento.'
+                : 'Sem ciclo em andamento, a lista não se atualiza sozinha — use o botão ao lado.'}
             >
               {fresco.velho && acompanhando ? '⚠ ' : '· '}
               {isFetching ? 'atualizando…' : `atualizado ${fresco.texto}`}
@@ -1039,7 +1039,7 @@ function MalhasView({ onAbrir, onAcompanhar }: {
                   + `${referencia.foraDaReferencia} malha`
                   + `${referencia.foraDaReferencia !== 1 ? 's' : ''} `
                   + `concluí${referencia.foraDaReferencia !== 1 ? 'ram' : 'u'} `
-                  + 'a corrida de uma data de referência anterior e fica'
+                  + 'o ciclo de uma data de referência anterior e fica'
                   + `${referencia.foraDaReferencia !== 1 ? 'm' : ''} fora desta `
                   + 'conta — o número bate, exato, com o relatório da '
                   + `referência ${referencia.curta}.`

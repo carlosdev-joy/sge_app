@@ -2,7 +2,7 @@
 F8 da spec docs/spec-malha-execucao.md — o rerun e os avisos.
 
 O que se prova aqui é a **tabela de decisão** que a F8 acrescenta, e ela é toda
-de router: dada a situação do ciclo, o gesto reabre, registra reprocesso ou só
+de router: dada o situação do ciclo, o gesto reabre, registra reprocesso ou só
 avisa. O comportamento de banco das peças que ela usa (`reabrir_corrida`,
 `descartar_desfecho`, `corridas_das_linhas`) já é provado contra o dublê
 interpretador de tests/test_malha_corrida.py, nas DUAS árvores — repeti-lo aqui
@@ -299,7 +299,7 @@ def test_o_efeito_no_ciclo_so_roda_com_corrida_aposentada(E, monkeypatch,
 @pytest.fixture
 def previa(E, monkeypatch):
     """A prévia com o portão do §11.1 ABERTO por padrão — o mesmo default do
-    `cenario`, e pelo mesmo motivo: o objeto do teste é a leitura do ciclo, não
+    `cenario`, e pelo mesmo motivo: o objeto do teste é o leitura do ciclo, não
     a matriz de deploy. Quem quer o portão FECHADO passa `portao=`."""
     def montar(mc_falso, *, portao=(True, None), pipeline="CARGA_A"):
         monkeypatch.setattr(E, "mc", mc_falso)
@@ -366,7 +366,7 @@ def test_previa_calada_quando_a_API_nao_pode_OPERAR_a_corrida(previa):
 
 def test_a_frase_chama_a_corrida_pela_DATA_nunca_pelo_id(E):
     frase = E._frase_da_corrida(_corrida(), "está em andamento")
-    assert "corrida de 2026-08-04" in frase and "M1" in frase
+    assert "ciclo de 2026-08-04" in frase and "M1" in frase
     assert "#" not in frase
 
 

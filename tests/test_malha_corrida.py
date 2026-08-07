@@ -8,7 +8,7 @@ paridade provada em tests/test_malha_corrida_paridade.py).
 
 POR QUE UM DUBLÊ QUE **INTERPRETA**, e não um mock que devolve resposta pronta:
 o que a F1 entrega é *comportamento contra invariante de banco*. Um mock que
-responde "já existe corrida" ao segundo `abrir_corrida` provaria apenas que o
+responde "já existe ciclo" ao segundo `abrir_corrida` provaria apenas que o
 mock foi programado; o que precisa ser provado é que o módulo reage certo a uma
 violação de `ux_malha_exec_aberta` que ele NÃO pediu — que é como o SQL Server
 responde quando outra ponta abriu primeiro. Por isso `Banco` abaixo é um SQL
@@ -616,7 +616,7 @@ class Cur:
                 "tentativas": c["tentativas"] + 1, "reaberta_em": db.agora,
                 "reaberta_por": reaberta_por,
                 # F8: o desfecho anulado e a HORA dele viram texto no `motivo`
-                # — é o que preserva a história do ciclo depois que os eventos
+                # — é o que preserva o história do ciclo depois que os eventos
                 # da tentativa 1 forem descartados. Composto a partir dos
                 # valores ANTERIORES ao UPDATE, como o SQL Server faz.
                 "motivo": _acumula_motivo(

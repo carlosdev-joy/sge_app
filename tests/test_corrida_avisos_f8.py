@@ -9,12 +9,12 @@ operador adiciona um membro às 3h, não o vê no denominador e conclui que a te
 está quebrada; inativa a malha achando que parou a madrugada, e ela continua
 andando; republica no meio do ciclo e metade dos membros roda com código novo.
 
-Recusar seria pior que calar: transformaria "esta malha tem ciclo em voo" em
+Recusar seria pior que calar: transformaria "este malha tem ciclo em voo" em
 "esta malha não pode ser editada por horas" — justamente quando o operador está
 acordado para preparar o ciclo seguinte.
 
 E a Finalização Manual (Decisão 22): ela mexia em três tabelas e **nenhuma
-delas era a 067**, que é a que o ciclo lê. Fechar a órfã era invisível para a
+delas era a 067**, que é o que o ciclo lê. Fechar a órfã era invisível para a
 malha, e o membro continuava `vivo` no denominador até o teto — 24h por padrão.
 """
 from __future__ import annotations
@@ -92,12 +92,12 @@ def test_cada_gesto_tem_a_SUA_consequencia(M, monkeypatch, gesto, trecho):
     aviso = M._aviso_ciclo_em_voo(object(), "M1", gesto)
     assert trecho in aviso
     # Decisão 74: a corrida se chama pela data; `#12` é chave de banco.
-    assert "corrida de 2026-08-04" in aviso and "#" not in aviso
+    assert "ciclo de 2026-08-04" in aviso and "#" not in aviso
 
 
 def test_a_segunda_corrida_do_dia_e_dita_pelo_ordinal(M, monkeypatch):
     monkeypatch.setattr(M, "mc", _McAviso(_corrida(seq=2)))
-    assert "2ª corrida de 2026-08-04" in M._aviso_ciclo_em_voo(
+    assert "2º ciclo de 2026-08-04" in M._aviso_ciclo_em_voo(
         object(), "M1", "inativar")
 
 
@@ -249,7 +249,7 @@ def test_add_membro_entra_no_cadastro_e_NAO_entra_no_snapshot(client,
     assert r.status_code == 200                       # avisa, nunca recusa
     # 1. a resposta DIZ.
     assert "só passa a contar a partir do próximo ciclo" in r.json()["aviso_ciclo"]
-    assert "corrida de 2026-08-04" in r.json()["aviso_ciclo"]
+    assert "ciclo de 2026-08-04" in r.json()["aviso_ciclo"]
     # 2. entrou no CADASTRO — o aviso não é uma recusa disfarçada.
     assert [(m["malha"], m["pipeline"]) for m in db.membros] == [("M1",
                                                                  "CARGA_A")]
@@ -277,7 +277,7 @@ def test_inativar_avisa_e_NAO_encerra_o_ciclo_em_voo(client, malha_com_ciclo):
     aviso = r.json()["aviso_ciclo"]
     assert "continua até fechar sozinha" in aviso
     assert "nenhum ciclo NOVO abre" in aviso
-    assert "Encerrar corrida" in aviso                # a saída existe e é dita
+    assert "Encerrar ciclo" in aviso                # a saída existe e é dita
     # A inativação aconteceu de verdade...
     assert db.malhas["M1"]["ativo"] == 0 and db.commits == 1
     # ...e a corrida em voo não foi tocada por este gesto.
@@ -565,7 +565,7 @@ _ROTULOS = (
 class _ConnFinalizacao:
     """A conexão da Finalização Manual, com a ORDEM dos gestos registrada.
 
-    O aceite diz "a corrida é reavaliada **no mesmo gesto**, sem esperar 5 min",
+    O aceite diz "o ciclo é reavaliada **no mesmo gesto**, sem esperar 5 min",
     e "mesmo gesto" aqui é literal: a linha da 067 tem de ser fechada DENTRO da
     transação que fecha os três logs, antes do `commit`. Depois do commit seria
     outra transação — e o estado que o operador veio desfazer (log fechado, mas
@@ -623,7 +623,7 @@ def test_a_orfa_fechada_a_mao_reavalia_o_ciclo_ANTES_do_commit(client,
 
     Três fatos, e o primeiro é o que nenhum teste de unidade alcança:
 
-      1. a linha que o ciclo lê é fechada na MESMA transação dos três logs —
+      1. a linha que o ciclo lê é fechado na MESMA transação dos três logs —
          a ordem observada termina em `linha_do_ciclo`, `commit`;
       2. o operador recebe o ciclo reavaliado na resposta do próprio clique:
          quem está em execução, o que falta e quantos concluíram. Sem isso ele

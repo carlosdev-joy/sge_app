@@ -8,7 +8,7 @@ O Início não disparou às 01:00 (DAG pausada, Airflow fora, agendamento
 quebrado). Às 8h o operador abre `/malha` e vê a corrida de ONTEM: verde,
 "concluída", com carimbo de frescor recente. **A malha que não rodou é a única
 que não aparece em lugar nenhum** — toda a camada de visibilidade pressupõe
-"a corrida existe", e a peça que sabe o que DEVERIA ter acontecido (o
+"o ciclo existe", e a peça que sabe o que DEVERIA ter acontecido (o
 agendamento) nunca foi comparada com o relógio.
 
 Por que o cálculo é do SERVIDOR, e o teste prova isso
@@ -20,7 +20,7 @@ O dublê põe o banco **3h à frente** do processo (`AGORA_BANCO` 10:00 ×
     régua). Uma implementação que comparasse a hora do cron com o relógio do
     BANCO publicaria 3h de atraso inventado — e o card acusaria a malha todo
     dia, no horário em que ela está saudável;
-  • a pergunta "alguma corrida abriu depois do previsto?" é comparada com
+  • a pergunta "algum ciclo abriu depois do previsto?" é comparada com
     `aberta_em`, que é coluna carimbada por `GETDATE()`. Aí o previsto TEM de
     ser convertido para a régua do banco antes da comparação (o `desvio_banco`
     da guardiã). Sem a conversão, uma corrida que abriu 10 min depois do
@@ -225,7 +225,7 @@ def test_corrida_do_dia_aberta_ANTES_do_horario_previsto_nao_e_alarme(client,
     previsto das 01:00.
 
     Sem esta trava o card exibia, na mesma caixa e em duas linhas seguidas,
-    *"nenhuma corrida de 05/08"* e *"anterior: corrida de 05/08 · em
+    *"nenhum ciclo de 05/08"* e *"anterior: corrida de 05/08 · em
     andamento"* — e escondia a barra de progresso, porque "não abriu" tem
     precedência no card. Alarme falso diário na malha que está rodando bem.
 

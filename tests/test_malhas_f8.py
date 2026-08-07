@@ -269,7 +269,7 @@ def test_criar_dependencia_ja_existente_e_idempotente(client, auth_editor):
 
 
 def test_ciclo_direto_422_com_a_mensagem_do_servidor(client, auth_editor):
-    """A→B gravada; B→A fecharia ciclo. O 422 traz a MENSAGEM EXATA do
+    """A→B gravada; B→O fecharia ciclo. O 422 traz a MENSAGEM EXATA do
     _check_circular da F1 — o MalhaEditor espelha este texto no cliente
     (aceite da F8: cliente e servidor com a mesma mensagem)."""
     db = FakeDb(pipelines=_pipes())
@@ -288,7 +288,7 @@ def test_ciclo_direto_422_com_a_mensagem_do_servidor(client, auth_editor):
 
 
 def test_ciclo_transitivo_422(client, auth_editor):
-    """A→B→C; C→A fecha o ciclo pela transitividade — o BFS da F1 olha o
+    """A→B→C; C→O fecha o ciclo pela transitividade — o BFS da F1 olha o
     grafo INTEIRO, não só a primeira aresta."""
     db = FakeDb(pipelines=_pipes())
     with _patch_db(db):

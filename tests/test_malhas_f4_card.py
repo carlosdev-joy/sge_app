@@ -616,7 +616,7 @@ def test_lista_gasta_duas_consultas_qualquer_que_seja_o_numero_de_malhas(
     """Aceite da F4 (+ a terceira da F12): o bloco da corrida custa um número
     FIXO de consultas de conjunto, e ele não cresce com a lista. A tela de
     acompanhamento faz refetch; 40 malhas × 1 consulta por malha seria o custo
-    multiplicado por 40 a cada ciclo de polling."""
+    multiplicado por 40 o cada ciclo de polling."""
     db = FakeDb(pipelines=_pipes())
     with _patch(db), _patch_agora():
         for i in range(quantas):
@@ -835,7 +835,7 @@ def test_corrida_recem_aberta_nao_nasce_com_o_chip_vermelho(client, auth):
         corrida = _card(client.get("/malhas"))["corrida"]
     assert corrida["status"] == "ABERTA"
     assert corrida["saude"] == "OK"          # azul, não âmbar, não vermelho
-    assert corrida["membros_travados"] == 0, "chip vermelho numa corrida de 30s"
+    assert corrida["membros_travados"] == 0, "chip vermelho numa ciclo de 30s"
     assert corrida["membros_nao_partiram"] == 7
     assert (corrida["membros_total"], corrida["membros_ok"]) == (7, 0)
     # e a informação continua inteira: quem ainda não partiu está nomeado
@@ -1020,7 +1020,7 @@ def test_dia_com_DUAS_corridas_nao_mistura_a_faixa_de_uma_com_o_canvas_das_duas(
 
     Com mais de uma corrida no dia o bloco SAI, e `corridas_no_dia` diz ao
     front que há uma escolha a oferecer (o ◀ ▶, que aplica a lente e recorta as
-    duas pontas juntas). Não é a mesma coisa que "este dia não teve corrida",
+    duas pontas juntas). Não é a mesma coisa que "este dia não teve ciclo",
     onde o bloco simplesmente não vem e não há ação nenhuma a sugerir."""
     db = FakeDb(pipelines=_pipes(), config={"dependencia_hora_virada": "00:00"})
     db.config[mc.CHAVE_ATIVA] = "0"
@@ -1037,7 +1037,7 @@ def test_dia_com_DUAS_corridas_nao_mistura_a_faixa_de_uma_com_o_canvas_das_duas(
         painel = client.get(
             "/malhas/M1/execucao?data_referencia=2026-08-05").json()
     assert "corrida" not in painel, \
-        "com duas corridas no dia, descrever UMA sobre a lista das DUAS é a mentira"
+        "com dois ciclos no dia, descrever UMA sobre a lista das DUAS é a mentira"
     assert painel["corridas_no_dia"] == 2
 
 
@@ -1251,7 +1251,7 @@ def test_sem_a_085_a_lente_responde_404_e_nao_500(client, auth):
 
 
 def test_malha_sem_corrida_nao_ganha_a_chave(client, auth):
-    """A degradação da Decisão 41 é POR MALHA: a que tem ciclo mostra o ciclo,
+    """A degradação da Decisão 41 é POR MALHA: o que tem ciclo mostra o ciclo,
     a que não tem cai no fallback — na MESMA lista."""
     db = FakeDb(pipelines=_pipes())
     with _patch(db), _patch_agora():

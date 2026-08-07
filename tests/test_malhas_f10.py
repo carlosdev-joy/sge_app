@@ -705,7 +705,7 @@ def test_grafia_do_pipeline_e_canonizada_na_aresta(client, auth_editor):
 # ── ciclo estrutural do desenho (F10) ────────────────────────────────────────
 
 def test_ciclo_atraves_de_nos_422(client, auth_editor):
-    """A→W1→B, B→W2: fechar W2→A cicla ATRAVÉS dos nós — na F11 o ciclo passa
+    """A→W1→B, B→W2: fechar W2→A cicla ATRAVÉS dos nós — no F11 o ciclo passa
     a ser validado sobre o conjunto PÓS-expansão (Decisão 15): o gesto criaria
     (A depende de B) contra a linha compilada (B depende de A), e o 422 traz a
     MENSAGEM CANÔNICA do BFS da F1 (a fronteira F10/F11 registrada no

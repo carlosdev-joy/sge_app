@@ -339,7 +339,7 @@ export const STATUS_CORRIDA: Record<string, EstiloCorrida> = {
     animado: true,
   },
   CONCLUIDA: {
-    rotulo: 'concluída',
+    rotulo: 'concluído',
     chip: 'bg-green-100 text-green-700 border-green-300 dark:bg-green-900/60 dark:text-green-300 dark:border-green-700',
     dot: 'bg-green-500',
     Icone: CheckCircle2,
@@ -351,7 +351,7 @@ export const STATUS_CORRIDA: Record<string, EstiloCorrida> = {
     Icone: XCircle,
   },
   EXPIRADA: {
-    rotulo: 'encerrada sem terminar',
+    rotulo: 'encerrado sem terminar',
     chip: CHIP_VERMELHO_CHEIO,
     dot: 'bg-red-500',
     Icone: TimerOff,
@@ -371,7 +371,7 @@ export const STATUS_CORRIDA: Record<string, EstiloCorrida> = {
   CANCELADA: {
     // Âmbar de CONTORNO, nunca cinza: é ação humana, e ela precisa ser
     // explicável no fechamento do mês (Decisão 67).
-    rotulo: 'encerrada pelo operador',
+    rotulo: 'encerrado pelo operador',
     chip: CHIP_AMBAR,
     dot: 'bg-amber-500',
     Icone: Ban,
@@ -478,11 +478,11 @@ export function estadoDaCorrida(c: CorridaApi): EstiloCorrida {
  *  não veio. */
 export function rotuloCorrida(c: CorridaCabecalho): string {
   const dia = diaCurto(c.data_referencia) ?? c.data_referencia
-  const nome = c.sequencia > 1 ? `${c.sequencia}ª corrida de ${dia}`
-    : `corrida de ${dia}`
+  const nome = c.sequencia > 1 ? `${c.sequencia}º ciclo de ${dia}`
+    : `ciclo de ${dia}`
   const estado = estiloCorrida(c.status).rotulo
   const hora = horaCurta(c.aberta_em)
-  return `${nome} · ${estado}${hora ? ` · aberta ${hora}` : ''}`
+  return `${nome} · ${estado}${hora ? ` · aberto ${hora}` : ''}`
 }
 
 /** `aberta_por` / `fechada_por` são formato de MÁQUINA — `'inicio:#12'`,
@@ -573,7 +573,7 @@ export function textoAlcance(p: PendenteCorrida): string | null {
 
 /** Quanto tempo um aviso pode ficar na fila antes de virar banner vermelho.
  *
- *  A guardiã drena a fila a cada ciclo (5 min). SEM esta carência, toda falha
+ *  A guardiã drena a fila o cada ciclo (5 min). SEM esta carência, toda falha
  *  de malha acenderia "ninguém foi avisado" por alguns minutos e apagaria
  *  sozinha — o alarme falso que a Decisão 26 proíbe, e que treinaria o
  *  operador a ignorar justamente o banner que existe para o caso em que o
@@ -679,7 +679,7 @@ function barraDaCorrida(c: CorridaApi, ok: number, total: number): BarraCorrida 
     segmentos,
     total,
     valorAtual: ok,
-    ariaLabel: 'progresso da corrida, em pipelines concluídos',
+    ariaLabel: 'progresso do ciclo, em pipelines concluídos',
     // Sem "%" em lugar nenhum, nem para o leitor de tela. O plural acompanha o
     // denominador, como no texto visível: "1 de 1 pipelines concluídos" seria
     // a única frase da tela em português errado, e ela é justamente a que só
@@ -787,7 +787,7 @@ export interface ResumoCorrida {
  *  máquina não vai à tela, e `MALHA_TETO_CREDITADO` é o pior deles: ele existe
  *  justamente para EXPLICAR um número que mudou. */
 export const ROTULO_EVENTO_CORRIDA: Record<string, string> = {
-  MALHA_FALHOU: 'falha na corrida',
+  MALHA_FALHOU: 'falha no ciclo',
   MALHA_ATRASADA: 'fora do prazo',
   MALHA_EXPIRADA: 'encerrada sem terminar',
   MALHA_ABORTADA: 'não chegou a começar',
@@ -859,8 +859,8 @@ export function resumoCorrida(
 
   const dia = diaCurto(c.data_referencia) ?? c.data_referencia
   const identidade = c.sequencia > 1
-    ? `${c.sequencia}ª corrida de ${dia}`
-    : `corrida de ${dia}`
+    ? `${c.sequencia}º ciclo de ${dia}`
+    : `ciclo de ${dia}`
 
   let texto: string | null = null
   // O decorrido do ciclo em voo, reusado pela BARRA DE LIMITE da F7: os dois
@@ -920,8 +920,8 @@ export function resumoCorrida(
       // que impede "2 de 2 · concluída, verde" numa malha de 7 em que alguém
       // inativou 5 na sexta-feira.
       const partes = [vazio
-        ? 'a corrida abriu sem membros ativos'
-        : plural(total, 'membro nesta corrida', 'membros nesta corrida')]
+        ? 'o ciclo abriu sem membros ativos'
+        : plural(total, 'membro neste ciclo', 'membros neste ciclo')]
       if (c.membros_dispensados) {
         partes.push(`${c.membros_dispensados} não `
           + `${c.membros_dispensados === 1 ? 'roda' : 'rodam'} hoje (regra de dia)`)
@@ -939,7 +939,7 @@ export function resumoCorrida(
       // o `??`, a faixa calava justamente sobre "2 de 2, concluída" — a mesma
       // omissão que a Decisão 53 existe para matar, um andar acima.
       fora = Math.max(0, (qtdCadastro ?? 0) - total, c.membros_inativos ?? 0)
-      if (fora > 0) partes.push(`${fora} fora desta corrida`)
+      if (fora > 0) partes.push(`${fora} fora deste ciclo`)
       membros = partes.join(' · ')
     }
   }
@@ -981,7 +981,7 @@ export function resumoCorrida(
       + (p.desde ? ` desde ${horaCurta(p.desde)}` : ''))
   }
   if (fora > 0) {
-    linhas.push(`${fora} pipeline(s) da malha ficaram fora desta corrida — `
+    linhas.push(`${fora} pipeline(s) da malha ficaram fora deste ciclo — `
       + 'inativos quando ela abriu, ou adicionados à malha depois')
   }
   const fechamento = fechando ? textoFechamento(c) : null
@@ -1127,22 +1127,22 @@ export function resumoEsperada(
   const cabecalho = `previsto para ${e.previsto_para}`
     + (atraso === null ? '' : ` · há ${textoDuracao(atraso)}`)
   const bloqueio = e.bloqueada_por_corrida_aberta
-    ? 'a corrida anterior continua aberta — enquanto ela não fechar, a próxima '
+    ? 'o ciclo anterior continua aberto — enquanto ela não fechar, a próxima '
       + 'não abre'
     : null
   const linhas = [
     `não abriu · ${cabecalho}`,
-    dia ? `nenhuma corrida de ${dia} foi registrada` : 'nenhuma corrida registrada',
+    dia ? `nenhum ciclo de ${dia} foi registrada` : 'nenhum ciclo registrado',
     `horário previsto: ${e.atrasada_desde ?? e.previsto_para}`,
   ]
   if (bloqueio) linhas.push(bloqueio)
-  linhas.push('O gatilho desta malha já venceu e nenhuma corrida abriu — '
+  linhas.push('O gatilho desta malha já venceu e nenhum ciclo abriu — '
     + 'verifique se a DAG do Início está ativa no Airflow.')
   return {
     estilo: ESTILO_NAO_ABRIU,
     faixa: FAIXA_AMBAR,
     cabecalho,
-    semCorrida: dia ? `nenhuma corrida de ${dia}` : 'nenhuma corrida registrada',
+    semCorrida: dia ? `nenhum ciclo de ${dia}` : 'nenhum ciclo registrado',
     bloqueio,
     titulo: linhas.join('\n'),
   }

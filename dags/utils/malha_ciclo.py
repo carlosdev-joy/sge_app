@@ -87,7 +87,7 @@ def virada_da_malha(conn, malha: str):
 def inicio_do_ciclo(agora: datetime, virada) -> datetime:
     """Instante da virada mais recente — o começo do ciclo corrente.
 
-    É o recorte que separa "a corrida de ontem, encerrada" (histórico legítimo)
+    É o recorte que separa "o ciclo de ontem, encerrada" (histórico legítimo)
     de "esta mesma madrugada com dois ODATEs". Sem ele, malha com histórico
     ficaria barrada para sempre."""
     v = virada if isinstance(virada, time) else time(0, 0)
@@ -165,7 +165,7 @@ def equalizar(conn, malha: str, data_ref, divergentes: list, quem: str) -> list:
                 (pipeline, data_ref))
             row = cur.fetchone()
             if row and int(row[0] or 0) > 0:
-                print(f"[MALHA] {pipeline} nao equalizado — ja tem corrida em {data_ref}")
+                print(f"[MALHA] {pipeline} nao equalizado — ja tem ciclo em {data_ref}")
                 continue
             cur.execute(
                 "UPDATE dbo.etl_pipeline_execucao "
@@ -186,7 +186,7 @@ def resumo(estado: dict) -> str:
     """Texto curto do que está segurando — vai para o motivo do PULADO."""
     partes = []
     if estado["em_aberto"]:
-        partes.append("corrida em andamento: " + ", ".join(
+        partes.append("ciclo em andamento: " + ", ".join(
             f"{p} ({s.lower()})" for p, _d, s in estado["em_aberto"][:3]))
     if estado["divergentes"]:
         partes.append("data de referencia divergente: " + ", ".join(

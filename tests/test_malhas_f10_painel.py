@@ -153,7 +153,7 @@ def test_o_aviso_preso_e_medido_entre_dois_carimbos_do_banco(front):
 
 
 def test_o_banner_de_fila_tem_carencia_para_nao_virar_alarme_falso(front):
-    """A guardiã drena a fila a cada ciclo de 5 min. SEM carência, toda falha
+    """A guardiã drena a fila o cada ciclo de 5 min. SEM carência, toda falha
     de malha acenderia "ninguém foi avisado" por alguns minutos e apagaria
     sozinha — o alarme falso que treina o operador a ignorar justamente o
     banner que existe para o webhook com 401 (Decisões 26/27)."""
@@ -235,7 +235,7 @@ def test_encerrar_corrida_existe_em_toda_corrida_aberta():
     `ABERTA · COM_FALHA` quando já se decidiu que a madrugada acabou. A única
     condição é `status === 'ABERTA'`."""
     fonte = _fonte("CabecalhoCorrida.tsx")
-    assert "Encerrar corrida…" in fonte
+    assert "Encerrar ciclo…" in fonte
     trecho = fonte.split("Zona 4", 1)[1].split("</Modal>", 1)[0]
     assert "{aberta && (" in trecho, (
         "o botão de encerrar deixou de ser guardado por `aberta` — ou a zona "
@@ -254,7 +254,7 @@ def test_a_confirmacao_do_encerramento_diz_a_consequencia():
     fonte = _fonte("CabecalhoCorrida.tsx")
     assert "Nenhum pipeline é interrompido" in fonte
     assert "CONTINUAM rodando" in fonte
-    assert "libera o disparo da próxima corrida" in fonte
+    assert "libera o disparo do próximo ciclo" in fonte
     # Motivo obrigatório (Decisão 32): sem ele o botão não confirma.
     assert "disabled={!motivo.trim()" in fonte
 
@@ -272,7 +272,7 @@ def test_existe_UM_mecanismo_de_navegacao_temporal():
         "o editor voltou a ter um seletor de data próprio — a navegação "
         "temporal é UMA só, e ela mora no SeletorCorrida")
     assert "ChevronLeft" not in editor and "ChevronRight" not in editor, (
-        "o ◀ ▶ por dia/corrida voltou ao editor")
+        "o ◀ ▶ por dia/ciclo voltou ao editor")
     seletor = _fonte("SeletorCorrida.tsx")
     assert 'type="date"' in seletor and "ir para…" in seletor
 
@@ -383,8 +383,8 @@ def test_a_barra_de_limite_so_existe_com_teto_configurado_na_malha():
     assert "{temLimite && (" in fonte
     # E a linha do gatilho não depende do teto — ela é o prazo por padrão.
     gatilho = fonte.split("{proximoGatilho && (", 1)[1][:500]
-    assert "a próxima corrida parte" in gatilho
-    assert "enquanto esta não fechar, ela não abre" in gatilho
+    assert "o próximo ciclo parte" in gatilho
+    assert "enquanto este não fechar, ele não abre" in gatilho
 
 
 def test_o_credito_de_retencao_nunca_e_silencioso():
@@ -406,7 +406,7 @@ def test_a_barra_de_limite_anuncia_LIMITE_e_nunca_progresso():
     fonte = _fonte("RelogioCorrida.tsx")
     assert "<Progress" in fonte
     assert "valorTexto={resumo.prazo ?? 'limite de segurança'}" in fonte
-    assert 'ariaLabel="limite de segurança da corrida"' in fonte
+    assert 'ariaLabel="limite de segurança do ciclo"' in fonte
     progress = (RAIZ / "ui-react" / "src" / "components" / "ui"
                 / "Progress.tsx").read_text(encoding="utf-8")
     assert "aria-valuetext={texto}" in progress

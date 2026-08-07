@@ -126,20 +126,20 @@ interface Props {
 const RAZOES: Record<string, string> = {
   migration_067_pendente:
     'a migration 067 não está aplicada neste ambiente — sem ela não há registro '
-    + 'de corrida por pipeline, e a cascata não tem como funcionar.',
+    + 'de ciclo por pipeline, e a cascata não tem como funcionar.',
   migration_078_pendente:
-    'a migration 078 não está aplicada neste ambiente — sem a marca de corrida '
+    'a migration 078 não está aplicada neste ambiente — sem o marca de ciclo '
     + 'substituída, o claim continua barrando o segundo disparo do dependente.',
   // As duas metades do deploy têm conserto diferente: uma é rodar migration,
   // a outra é deployar dags/. Dizer sempre "migration 078" era o que fazia a
   // tela mandar o operador conferir o que já estava certo.
   dags_desatualizado:
-    'o motor de dependências publicado (pasta dags/) ainda não entende corrida '
+    'o motor de dependências publicado (pasta dags/) ainda não entende ciclo '
     + 'reaberta — as migrations foram aplicadas, o deploy de dags/ não. '
-    + 'Reabrir agora aposentaria as corridas sem nada rodar de novo.',
+    + 'Reabrir agora aposentaria os ciclos sem nada rodar de novo.',
   capacidade_dags_desconhecida:
     'não foi possível conferir se o motor publicado (pasta dags/) entende '
-    + 'corrida reaberta. Enquanto isso a cascata fica indisponível — melhor do '
+    + 'ciclo reaberto. Enquanto isso a cascata fica indisponível — melhor do '
     + 'que prometer um reprocesso que pode não acontecer.',
   sem_data_referencia:
     'a data de referência desta execução não pôde ser determinada.',
@@ -286,8 +286,8 @@ export function ModalRerunEtapa({
 
         {p && !p.dag_run_id && (
           <Aviso tom="erro" icone={<AlertTriangle size={14} className="mt-0.5 shrink-0" />}>
-            Não foi possível identificar a corrida desta execução no Airflow.
-            Sem ela o comando atingiria todas as corridas da DAG — por isso a
+            Não foi possível identificar o ciclo desta execução no Airflow.
+            Sem ela o comando atingiria todos os ciclos da DAG — por isso a
             reexecução fica indisponível aqui.
           </Aviso>
         )}

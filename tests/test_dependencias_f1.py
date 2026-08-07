@@ -55,7 +55,7 @@ def test_virada_padrao_usa_a_data_do_calendario(dref):
 
 
 def test_virada_20h_junta_as_duas_pontas_da_meia_noite(dref):
-    """O caso que motivou a spec: 31/07 23:30 e 01/08 00:40, mesma corrida."""
+    """O caso que motivou a spec: 31/07 23:30 e 01/08 00:40, mesmo ciclo."""
     virada = time(20, 0)
     assert dref.calcular(datetime(2026, 7, 31, 23, 30), virada) == date(2026, 8, 1)
     assert dref.calcular(datetime(2026, 8, 1, 0, 40), virada) == date(2026, 8, 1)

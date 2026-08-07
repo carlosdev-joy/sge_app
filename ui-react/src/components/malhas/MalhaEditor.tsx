@@ -854,7 +854,7 @@ function MalhaEditorInner({
       `/malhas/${encodeURIComponent(malha)}/corridas?limite=30`
       + (dataRef ? `&data_referencia=${encodeURIComponent(dataRef)}` : '')),
     enabled: !!malha && emExecucao,
-    // Metade da cadência do painel: a LISTA de ciclos muda quando um ciclo
+    // Metade da cadência do painel: o LISTA de ciclos muda quando um ciclo
     // abre ou fecha (uma vez por madrugada), não a cada movimento de pipeline.
     // O react-query já não dispara o timer com a aba fora de foco.
     refetchInterval: 60_000,
@@ -1496,7 +1496,7 @@ function MalhaEditorInner({
         if (r.credito_teto) {
           toast.info(`O tempo em que a malha ficou segurada foi devolvido ao `
             + `limite de segurança: +${textoDuracao(r.credito_teto.minutos)}`
-            + ' — a corrida não expira por causa da retenção.')
+            + ' — o ciclo não expira por causa da retenção.')
         }
       }
       qc.invalidateQueries({ queryKey: ['malha', malha] })
@@ -1522,7 +1522,7 @@ function MalhaEditorInner({
       const r = await apiFetch<{ aviso?: string }>(
         `/malhas/${encodeURIComponent(malha)}/corridas/${corrida.id}/encerrar`,
         { method: 'POST', body: JSON.stringify({ motivo }) })
-      toast.success('Corrida encerrada — o disparo desta malha volta a funcionar.')
+      toast.success('Ciclo encerrado — o disparo desta malha volta a funcionar.')
       // O aviso do SERVIDOR não é engolido: é ele que diz o que NÃO aconteceu
       // ("os pipelines em execução continuam rodando"), e essa é a metade da
       // verdade que impede o operador de achar que "encerrar" é "matar".
@@ -1531,7 +1531,7 @@ function MalhaEditorInner({
       qc.invalidateQueries({ queryKey: ['malha-corridas', malha] })
       qc.invalidateQueries({ queryKey: ['malhas'] })
     } catch (err) {
-      toast.error((err as Error).message || 'Erro ao encerrar a corrida')
+      toast.error((err as Error).message || 'Erro ao encerrar o ciclo')
     } finally {
       setEncerrando(false)
     }
@@ -2427,7 +2427,7 @@ function MalhaEditorInner({
       )}
 
       {/* F1 da spec-malha-data-unica: o pipeline que tem predecessor E
-          agendamento próprio dispara FORA da malha — foi assim que a corrida
+          agendamento próprio dispara FORA da malha — foi assim que o ciclo
           da Carga_Vida saiu com metade dos membros num ODATE e metade em
           outro. Vale nos DOIS modos: na Execução é onde o estrago aparece. */}
       {membrosForaDaMalha.length > 0 && (
@@ -2641,7 +2641,7 @@ function MalhaEditorInner({
 
       <div className="flex min-h-0 flex-1">
         {/* ── F10: o painel lateral da CORRIDA (§9.5) ──────────────────────
-            Até aqui ele era "EVENTOS DA GUARDIÃ" — e corrida saudável não gera
+            Até aqui ele era "EVENTOS DA GUARDIÃ" — e ciclo saudável não gera
             evento, então ele ficava VAZIO justamente durante a corrida.
             Descobrir o que estava rodando era varrer o canvas com o olho
             procurando anel azul. Agora são três abas, com a inicial derivada
@@ -2661,7 +2661,7 @@ function MalhaEditorInner({
             /* Decisão 65 — o botão só existe quando a frase do efeito PODE ser
                escrita com certeza, e ela só pode com um ciclo ABERTO em foco:
                é dele que se afirma "esta reexecução entra nele e o relógio de
-               fechamento não reinicia". Sem corrida aberta o botão some e
+               fechamento não reinicia". Sem ciclo aberto o botão some e
                sobra `▶ etapas`, que é o que a própria Decisão 65 manda. */
             onReexecutar={podeExecutar && corrida?.status === 'ABERTA' && dataExibida
               ? (p => void abrirReexecucao(p))
@@ -3278,8 +3278,8 @@ function MalhaEditorInner({
                   </div>
                 )}
                 <span className="text-[11px] text-red-700/90 dark:text-red-300/90">
-                  A malha só parte do zero e com todos na mesma data. Encerre as
-                  corridas em aberto e iguale a data dos membros — o caso mais
+                  A malha só parte do zero e com todos na mesma data. Encerre os
+                  ciclos em aberto e iguale a data dos membros — o caso mais
                   comum é dependente que ainda dispara por agenda, resolvido por
                   <strong> Republicar pipelines</strong>.
                 </span>
@@ -3311,7 +3311,7 @@ function MalhaEditorInner({
                   )}
                   {r.tem_dependencia && (
                     <span
-                      title="O disparo manual não consulta a liberação — a corrida parte por cima do predecessor."
+                      title="O disparo manual não consulta a liberação — o ciclo parte por cima do predecessor."
                       className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px text-[10px] font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
                     >
                       tem dependência
@@ -3342,7 +3342,7 @@ function MalhaEditorInner({
             )}
             <p className="text-[11px] text-dim">
               O disparo é o mesmo gesto de "rodar pipeline", uma vez por raiz —
-              quem disparou fica registrado na corrida. Erros são reportados
+              quem disparou fica registrado no ciclo. Erros são reportados
               por raiz.
             </p>
             <div className="flex justify-end gap-2 pt-1">
@@ -3358,7 +3358,7 @@ function MalhaEditorInner({
                 loading={disparando}
                 disabled={disparo.bloqueado === true}
                 title={disparo.bloqueado
-                  ? 'A malha tem corrida em aberto ou data de referência divergente — resolva antes de disparar'
+                  ? 'A malha tem ciclo em aberto ou data de referência divergente — resolva antes de disparar'
                   : undefined}
               >
                 <Play size={13} /> Disparar {disparo.raizes.length === 1
@@ -3432,7 +3432,7 @@ function MalhaEditorInner({
             <p className="text-[11px] text-dim">
               A publicação roda no gerador de DAGs (etl_dag_factory) e leva de
               alguns segundos a poucos minutos. O andamento e os erros de cada
-              pipeline ficam na tela de Publicação. As corridas em andamento
+              pipeline ficam na tela de Publicação. Os ciclos em andamento
               não são interrompidas.
             </p>
             <div className="flex justify-end gap-2 pt-1">

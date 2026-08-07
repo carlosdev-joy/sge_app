@@ -431,7 +431,7 @@ def test_barra_cheia_com_dispensado_nao_encolhe_o_denominador(tela):
     card = _card(c)
     assert "3 de 4 · fechando" in card["textos"]
     assert card["barra"]["valuenow"] == 3 and card["barra"]["valuemax"] == 4
-    assert ("4 membros nesta corrida · 1 não roda hoje (regra de dia)"
+    assert ("4 membros neste ciclo · 1 não roda hoje (regra de dia)"
             in card["textos"])
     # a barra FECHA mesmo assim: o trilho hachurado ocupa o resto
     assert card["barra"]["larguras"] == ["75%", "25%"]
@@ -542,7 +542,7 @@ def test_nenhum_numero_de_maquina_chega_a_interface(tela):
     for nome in tela:
         assert not re.search(r"#\d", _cenario(tela, nome)["lido"]), nome
     # e o rótulo humano está lá, no lugar do número de máquina
-    assert "corrida de 05/08" in _card(_cenario(tela, "fechando"))["textos"]
+    assert "ciclo de 05/08" in _card(_cenario(tela, "fechando"))["textos"]
 
 
 # ══════════════ ACEITE 4 — EXPIRADA e CANCELADA ══════════════════════════════
@@ -563,8 +563,8 @@ def test_expirada_congela_a_barra_e_diz_parou_em(tela):
     assert card["barra"]["valuenow"] == 2 and card["barra"]["valuemax"] == 4
     assert card["barra"]["larguras"] == ["50%"]
     assert "1 travado" in card["textos"]
-    assert "encerrada sem terminar" in card["textos"]
-    _nao_diz_concluida(c["lido"], "a página da corrida expirada")
+    assert "encerrado sem terminar" in card["textos"]
+    _nao_diz_concluida(c["lido"], "o página do ciclo expirado")
 
 
 def test_cancelada_diz_quem_encerrou_e_por_que(tela):
@@ -583,7 +583,7 @@ def test_cancelada_diz_quem_encerrou_e_por_que(tela):
     # âmbar de CONTORNO, e não cinza: é ação humana e item de auditoria
     assert "amber" in card["classes"]
     assert "opacity-60" in card["classes"]
-    _nao_diz_concluida(c["lido"], "a página da corrida cancelada")
+    _nao_diz_concluida(c["lido"], "o página do ciclo cancelado")
 
 
 # ══════════════ ACEITE 5 — a corrida que NÃO ABRIU ═══════════════════════════
@@ -605,11 +605,11 @@ def test_o_card_que_nao_abriu_e_ambar_e_vem_primeiro_na_lista(tela):
     parou = _card(c, "ZZ_PAROU")
     assert "não abriu" in parou["textos"]
     assert "amber" in parou["classes"]
-    assert "nenhuma corrida de 05/08" in parou["textos"]
+    assert "nenhum ciclo de 05/08" in parou["textos"]
     # sem barra: não há o que preencher
     assert parou["barra"] is None
     # a corrida de ONTEM não some — vira contexto, não manchete
-    assert "↳ anterior: corrida de 04/08 · concluída" in parou["texto"]
+    assert "↳ anterior: ciclo de 04/08 · concluído" in parou["texto"]
     # e a que rodou continua contando a própria história
     assert _card(c, "AAA_RODOU")["barra"]["valuenow"] == 2
     # contador próprio na stats bar, em âmbar (Decisão 58)
@@ -674,7 +674,7 @@ def test_api_velha_faz_o_card_dizer_que_falta_informacao_sem_exceção(tela):
     card = _card(c)
     assert card["barra"] is None
     assert "(membro mais recente" in card["texto"]
-    assert "sem dados de corrida — sistema em atualização" in card["textos"]
+    assert "sem dados de ciclo — sistema em atualização" in card["textos"]
     _nao_diz_concluida(c["lido"], "a página contra a API velha")
     # ...e o botão da fase continua de pé: degradar não é perder a navegação
     assert card["acompanhar_existe"] and not card["acompanhar_desabilitado"]
@@ -690,7 +690,7 @@ def test_banco_sem_a_085_diz_a_mesma_frase_que_a_api_velha(tela):
     c = _cenario(tela, "sem_085")
     card = _card(c)
     assert card["barra"] is None
-    assert "sem dados de corrida — sistema em atualização" in card["textos"]
+    assert "sem dados de ciclo — sistema em atualização" in card["textos"]
     _nao_diz_concluida(c["lido"], "a página sem a 085")
 
 
@@ -774,7 +774,7 @@ def test_a_barra_do_card_tem_role_e_aria_em_pt_br(tela):
     assert barra["role"] == "progressbar"
     assert barra["valuemin"] == 0
     assert barra["valuenow"] == 3 and barra["valuemax"] == 3
-    assert barra["ariaLabel"] == "progresso da corrida, em pipelines concluídos"
+    assert barra["ariaLabel"] == "progresso do ciclo, em pipelines concluídos"
     # pt-BR de verdade, com acentuação
     assert "progresso" in barra["ariaLabel"] and "concluídos" in barra["ariaLabel"]
     assert barra["valuetext"] == "3 de 3 pipelines concluídos"

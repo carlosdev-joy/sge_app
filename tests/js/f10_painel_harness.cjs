@@ -144,7 +144,7 @@ async function main() {
 
   cenario('aviso_preso_na_fila', () => ({
     carencia_min: S.CARENCIA_FILA_AVISO_MIN,
-    // A guardiã drena a fila a cada ciclo de 5 min: um evento de 3 min atrás
+    // A guardiã drena a fila o cada ciclo de 5 min: um evento de 3 min atrás
     // NÃO é banner — seria o alarme falso que a Decisão 26 proíbe.
     recente: S.avisoPresoNaFila(
       [ev('MALHA_FALHOU', '2026-08-05 13:56:00', null)], APURADO_BANCO),

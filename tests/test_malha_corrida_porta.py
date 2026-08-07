@@ -200,7 +200,7 @@ class FakeDb(FakeDbF15):
     def abrir_corrida(self, malha, odate=ODATE, aberta_em=None, teto_horas=24,
                       membros=(), status="ABERTA"):
         """Corrida pré-existente (a que a guardiã teria aberto). Escrever a
-        linha direto é o certo aqui: o cenário é "a corrida JÁ estava lá", e
+        linha direto é o certo aqui: o cenário é "o ciclo JÁ estava lá", e
         fabricá-la pela API misturaria o que se prova com o que se prepara."""
         ab = aberta_em or self.agora_banco
         seq = 1 + max([c["sequencia"] for c in self.corridas
@@ -710,7 +710,7 @@ class FakeCur(FakeCurF15):
     def _snapshot_da_corrida(self, s, p):
         db = self.db
         if db.falhar_snapshot:
-            raise RuntimeError("deadlock simulado no snapshot da corrida (teste)")
+            raise RuntimeError("deadlock simulado no snapshot do ciclo (teste)")
         cid, malha = int(p[0]), p[-2]
         if "1 = 1" in s:
             conta = None                       # malha sem nó Fim: todos contam
@@ -1068,7 +1068,7 @@ def test_guardia_abre_entre_a_conferencia_e_o_insert_a_api_adere_e_recusa(
         client, auth_operador):
     """Decisão 14 — INSERT-first, nunca SELECT-then-INSERT.
 
-    A conferência "não há corrida aberta" e o INSERT são dois instantes, e a
+    A conferência "não há ciclo aberto" e o INSERT são dois instantes, e a
     guardiã pode abrir no vão (é uma janela real: as duas pontas consultam e
     decidem separadamente). O gatilho do dublê commita a corrida da guardiã
     exatamente aí. A resposta certa é a MESMA do 422 de sempre — disparar as
@@ -1090,7 +1090,7 @@ def test_guardia_abre_entre_a_conferencia_e_o_insert_a_api_adere_e_recusa(
     # Decisao 74: nomeia a corrida pelo DIA, e o "#" nao aparece — tres
     # numeracoes disputam essa notacao, e "#1" numa malha diaria le-se
     # como "1a tentativa hoje".
-    assert "corrida de" in detalhe and "M1" in detalhe
+    assert "ciclo de" in detalhe and "M1" in detalhe
     assert "#" not in detalhe
     assert fake.chamadas == []            # nenhuma raiz partiu por cima
     assert db.membros_corrida == []       # quem adere NÃO congela snapshot
@@ -1132,9 +1132,9 @@ def test_corrida_aberta_recusa_422_nomeando_a_corrida_e_a_saida(
         r = _disparar(client)
     assert r.status_code == 422, r.text
     detalhe = r.json()["detail"]
-    assert "corrida de" in detalhe and "M1" in detalhe
+    assert "ciclo de" in detalhe and "M1" in detalhe
     assert "#" not in detalhe   # Decisao 74
-    assert "Encerrar corrida" in detalhe
+    assert "Encerrar ciclo" in detalhe
     assert "não interrompe pipeline nenhum" in detalhe
     assert fake.chamadas == []            # nada foi disparado
     assert len(db.corridas) == 1          # e nada foi aberto
@@ -1236,7 +1236,7 @@ def test_teto_vencido_NAO_expira_com_membro_vivo(client, auth_operador):
     # o bloqueio de hoje NÃO enxerga essa linha (o pipeline não é mais membro):
     # quem recusa é o portão da corrida, e é isso que o teste prova
     assert r.status_code == 422, r.text
-    assert "corrida de" in r.json()["detail"]   # Decisao 74: dia, nao id
+    assert "ciclo de" in r.json()["detail"]   # Decisao 74: dia, nao id
     assert "#" not in r.json()["detail"]
     assert db.por_id(presa["id"])["status"] == "ABERTA"
     assert "MALHA_EXPIRADA" not in db.tipos_de_evento()
@@ -1518,7 +1518,7 @@ def test_encerrar_corrida_inexistente_404(client, auth_operador):
     assert r.status_code == 404
     # O id sai do texto (Decisao 74) e entra uma frase de acao: ecoar "999"
     # nao ajuda quem digitou errado; dizer onde achar a corrida, sim.
-    assert "escolha a corrida na lista" in r.json()["detail"]
+    assert "escolha o ciclo na lista" in r.json()["detail"]
     assert "#" not in r.json()["detail"]
 
 
@@ -1625,7 +1625,7 @@ def test_lista_recortada_por_data_ainda_mostra_a_corrida_aberta(
 
 
 def test_lista_sem_a_085_degrada_vazia(client, auth_operador):
-    """Leitura degrada LARGA: a falta do ciclo não pode tirar a tela do ar."""
+    """Leitura degrada LARGA: o falta do ciclo não pode tirar a tela do ar."""
     db = FakeDb(pipelines=_pipes(), com_085=False)
     with _patch_db(db):
         _monta_malha(client, "M1", ["RAIZ_A"])
@@ -1874,9 +1874,9 @@ def test_aborto_que_nao_passa_diz_ao_operador_o_que_fazer(client,
     orfa = [a for a in corpo["avisos"] if a.get("tipo") == "corrida_orfa"]
     assert len(orfa) == 1, corpo["avisos"]
     assert orfa[0]["nivel"] == "forte"
-    assert "corrida de" in orfa[0]["mensagem"]   # Decisao 74: dia, nao id
+    assert "ciclo de" in orfa[0]["mensagem"]   # Decisao 74: dia, nao id
     assert "#" not in orfa[0]["mensagem"]
-    assert "Encerrar corrida" in orfa[0]["mensagem"]
+    assert "Encerrar ciclo" in orfa[0]["mensagem"]
 
 
 def test_corrida_aberta_de_ODATE_antigo_nao_some_da_lista_paginada(
@@ -1999,7 +1999,7 @@ def test_malha_toda_regerada_nao_gera_aviso_nenhum(client, auth_operador):
 
 
 def test_interruptor_desligado_nao_sonda_nada(client, auth_operador):
-    """Com a corrida em 0, ninguém carimba ODATE pela corrida — dizer "sua DAG
+    """Com o ciclo em 0, ninguém carimba ODATE pelo ciclo — dizer "sua DAG
     não tem o carimbo" seria ruído puro, e ruído em todo disparo ensina a
     operação a ignorar a caixa de avisos inteira."""
     db = FakeDb(pipelines=_pipes(), config={mc.CHAVE_ATIVA: "0"})

@@ -113,9 +113,9 @@ def test_a_barra_tem_os_quatro_atributos_que_nenhuma_das_quatro_tinha(base):
     assert p["aria-valuenow"] == 4
     assert p["aria-valuemin"] == 0
     assert p["aria-valuemax"] == 7
-    assert p["aria-label"] == "progresso da corrida de 04/08 da malha CARGA_DIARIA"
+    assert p["aria-label"] == "progresso do ciclo de 04/08 da malha CARGA_DIARIA"
     # pt-BR de verdade, com acentuação — não é "progress" nem "progresso" solto
-    assert "corrida" in p["aria-label"]
+    assert "ciclo" in p["aria-label"]
 
 
 def test_os_segmentos_nao_falam_sozinhos(base):

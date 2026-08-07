@@ -133,7 +133,7 @@ def test_dia_1_a_lente_do_painel_tambem_se_cala(client, auth):
 # ═════════════════ `falhou X das últimas Y` ════════════════════════════════
 
 def test_a_janela_conta_desfechos_e_declara_o_denominador(client, auth):
-    """7 corridas fechadas antes da corrente, 2 delas com desfecho ruim."""
+    """7 ciclos fechados antes da corrente, 2 delas com desfecho ruim."""
     db = FakeDb(pipelines=_pipes())
     with _patch(db), _patch_agora():
         _monta_malha(client, "M1", MEMBROS)
@@ -227,7 +227,7 @@ def test_com_a_lente_numa_corrida_antiga_a_anterior_e_a_ANTERIOR_A_ELA(
 
     Clicar num bloco antigo da faixa é o gesto normal (`?corrida={id}`). Com um
     simples "a primeira da lista que não é a corrente", a faixa escreveria
-    "corrida anterior: 05/08" embaixo da corrida de 03/08 — chamando de
+    "ciclo anterior: 05/08" embaixo da corrida de 03/08 — chamando de
     anterior o que veio DEPOIS, e invertendo a resposta de "está pior que
     ontem?"."""
     db = FakeDb(pipelines=_pipes())
@@ -512,7 +512,7 @@ def test_a_janela_lida_e_maior_que_a_exibida():
 
 
 def test_o_historico_le_so_corrida_FECHADA():
-    """Corrida em voo não é histórico: contá-la como desfecho diria "falhou"
+    """Ciclo em voo não é histórico: contá-la como desfecho diria "falhou"
     sobre uma madrugada que ainda pode fechar verde."""
     assert "WHERE fechada_em IS NOT NULL" in malhas_router._SQL_HISTORICO
 

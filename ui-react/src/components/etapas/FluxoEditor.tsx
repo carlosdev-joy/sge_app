@@ -2182,8 +2182,8 @@ function FluxoEditorInner({
                   <Activity size={12} /> visão de execução — edição travada
                 </span>
                 {/* O aviso de trabalho não salvo NÃO some ao trocar de lente:
-                    quem editou o desenho, entrou na Execução para conferir uma
-                    corrida e saiu da tela perderia o rascunho em silêncio. O
+                    quem editou o desenho, entrou na Execução para conferir um
+                    ciclo e saiu da tela perderia o rascunho em silêncio. O
                     estado do canvas é preservado (mesmo componente); o que
                     faltava era dizer que ele existe. */}
                 {dirty && (
@@ -2257,9 +2257,9 @@ function FluxoEditorInner({
              na falta dela, a que a identidade resolveu e o canvas está
              desenhando. Descoberto na prova de UI: com 2 corridas no mesmo
              ODATE o pedido ia só com a data e voltava 409 "corrida ambígua",
-             mesmo com o operador olhando uma corrida concreta. Pausar o que
+             mesmo com o operador olhando um ciclo concreta. Pausar o que
              está na tela não é adivinhar: o banner âmbar declara qual é, e
-             trocar de corrida por lá troca o alvo junto. */
+             trocar de ciclo por lá troca o alvo junto. */
           runId={corridaEscolhida ?? execData?.identidade?.run_id ?? null}
           status={statusSelecionado}
           pausa={pausaSelecionada}

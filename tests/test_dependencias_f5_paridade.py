@@ -306,7 +306,7 @@ def test_pulado_intercalado_nao_mascara_sucesso(deps_dags):
 
 
 def test_sucesso_em_outra_data_nao_libera(deps_dags):
-    """D20: SUCESSO de ontem não conta para a corrida de hoje."""
+    """D20: SUCESSO de ontem não conta para o ciclo de hoje."""
     lib, falt = _liberado_nas_duas_arvores(deps_dags, _GRAFO, [
         ("PAI_A", _ONTEM, "SUCESSO"), ("PAI_B", _D, "SUCESSO")])
     assert lib is False and falt == ["PAI_A"]

@@ -214,7 +214,7 @@ function main() {
     const out = {}
     for (const saude of ['OK', 'COM_FALHA', 'SEM_PROGRESSO', 'ATRASADA']) {
       const tela = faixa({ saude, membros_travados: saude === 'OK' ? 0 : 1 })
-      const b = tela.botoes('Encerrar corrida…')
+      const b = tela.botoes('Encerrar ciclo…')
       out[`ABERTA:${saude}`] = {
         presente: b.length === 1,
         // HABILITADO é o aceite literal — um botão que aparece cinza é a
@@ -225,13 +225,13 @@ function main() {
     // E ele não existe em corrida FECHADA: não há o que encerrar.
     for (const status of ['CONCLUIDA', 'FALHA', 'EXPIRADA', 'CANCELADA']) {
       out[status] = { presente: faixa({ status, saude: null })
-        .botoes('Encerrar corrida…').length > 0 }
+        .botoes('Encerrar ciclo…').length > 0 }
     }
     // Sem permissão de execução o botão APARECE desabilitado, com o motivo —
     // esconder a saída de emergência faria o operador procurá-la onde ela não
     // está.
     const semPerm = faixa({}, { onEncerrar: undefined })
-      .botoes('Encerrar corrida…')
+      .botoes('Encerrar ciclo…')
     out['sem_permissao'] = {
       presente: semPerm.length === 1,
       habilitado: semPerm.length === 1 && !semPerm[0].props.disabled,
@@ -250,9 +250,9 @@ function main() {
       const tela = faixa(over)
       // Antes do clique não há confirmação nenhuma na tela.
       const antes = tela.texto
-      tela.clicar(tela.botoes('Encerrar corrida…')[0])
+      tela.clicar(tela.botoes('Encerrar ciclo…')[0])
       const depois = tela.texto
-      const confirmar = tela.botoes('Encerrar corrida').filter(
+      const confirmar = tela.botoes('Encerrar ciclo').filter(
         b => b.props.disabled !== undefined)
       out[nome] = {
         antes_tem_frase: /CONTINUAM rodando/.test(antes),
@@ -332,8 +332,8 @@ function main() {
       sem_teto: barras(semTeto),
       com_teto: barras(comTeto),
       // A linha do próximo gatilho é o prazo por PADRÃO: ela existe nos dois.
-      gatilho_sem_teto: /a próxima corrida parte/.test(semTeto.texto),
-      gatilho_com_teto: /a próxima corrida parte/.test(comTeto.texto),
+      gatilho_sem_teto: /o próximo ciclo parte/.test(semTeto.texto),
+      gatilho_com_teto: /o próximo ciclo parte/.test(comTeto.texto),
       texto_sem_teto: semTeto.texto,
       texto_com_teto: comTeto.texto,
       credito: comCredito.texto,
@@ -370,7 +370,7 @@ function main() {
     // A faixa do seletor, isolada: dois blocos, um por corrida.
     const so = mini.montar(seletor)
     const blocosNaTela = so.botoes().filter(b => b.props.title
-      && /corrida de/.test(b.props.title))
+      && /ciclo de/.test(b.props.title))
     so.clicar(blocosNaTela[0])
     return {
       texto: tela.texto,
@@ -425,7 +425,7 @@ function main() {
       onFocar: p => focados.push(p),
       onAbrirEtapas: p => etapas.push(p),
       onReexecutar: p => rerun.push(p),
-      fraseReexecucao: 'esta reexecução entra na corrida de 05/08 (em '
+      fraseReexecucao: 'esta reexecução entra no ciclo de 05/08 (em '
         + 'andamento); o relógio de fechamento NÃO reinicia por este gesto',
       respostaEm: LOCAL, agoraLocal: LOCAL,
     }))

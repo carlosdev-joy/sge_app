@@ -421,7 +421,7 @@ def liberado(conn, pipeline: str, data_ref: date, corrida=None):
         faltantes = [_faltante(r) for r in cur.fetchall()]
         if legado:
             print("[DEP] migration 078 ausente — liberacao segue a regra "
-                  "anterior (corrida substituida ainda conta como SUCESSO)")
+                  "anterior (ciclo substituida ainda conta como SUCESSO)")
         return (not faltantes), faltantes
     except Exception as e:  # noqa: BLE001 — D21: erro é NÃO liberado, nunca silêncio
         print(f"[DEP] condicao de {pipeline} indisponivel ({e}) — tratada como NAO liberada")
@@ -429,7 +429,7 @@ def liberado(conn, pipeline: str, data_ref: date, corrida=None):
 
 
 def _id_corrida(valor):
-    """`corrida` → int, ou None. Tolerante DE PROPÓSITO: um id ilegível é "não
+    """`ciclo` → int, ou None. Tolerante DE PROPÓSITO: um id ilegível é "não
     tenho corrida" (e o degrau 2 resolve), jamais uma exceção. Levantar aqui
     seria transformar um argumento malformado de UMA porta em "não liberado"
     para todos os dependentes daquele ciclo — a mesma catástrofe que a cascata
@@ -439,7 +439,7 @@ def _id_corrida(valor):
     try:
         return int(valor)
     except (TypeError, ValueError):
-        print(f"[DEP] id de corrida ilegivel ({valor!r}) — ignorado; o corte "
+        print(f"[DEP] id de ciclo ilegivel ({valor!r}) — ignorado; o corte "
               "sai da malha que assinou a dependencia ou da janela")
         return None
 
@@ -539,7 +539,7 @@ def reservar_corrida(conn, filho: str, data_ref: date, novo_run_id: str, origem:
         "AND e.status='AGUARDANDO_DEPENDENCIA'",
         (origem, filho, data_ref))
     if legado:
-        print("[DEP] migration 078 ausente — reabertura de corrida indisponivel; "
+        print("[DEP] migration 078 ausente — reabertura de ciclo indisponivel; "
               "claim segue a regra anterior")
     row = cur.fetchone()
     if row and row[0]:
@@ -578,7 +578,7 @@ def ordenar_corrida(conn, filho: str, data_ref: date, run_id: str, origem: str) 
 
     F4 (rerun com cascata): MESMO NOT EXISTS do claim, inclusive a cláusula
     `substituida_em IS NULL` — as duas portas têm de concordar sobre o que
-    conta como "já há corrida na data", senão a janela nao_iniciar_antes
+    conta como "já há ciclo na data", senão a janela nao_iniciar_antes
     contaria uma corrida aposentada e o push, não.
     """
     cur = conn.cursor()
@@ -605,7 +605,7 @@ def devolver_reserva(conn, filho: str, data_ref: date, run_id: str,
                      veio_de_adocao: bool) -> None:
     """Devolução da reserva quando o disparo LEVANTA (§3.3, D16) — e SÓ
     nesse caso. A guarda `status='EXECUTANDO' AND inicio IS NULL` é a
-    tradução de "corrida já adotada não é revertida" para o modelo com
+    tradução de "ciclo já adotada não é revertida" para o modelo com
     run_id (o texto original do D16 falava execution_id IS NULL porque vinha
     do modelo NULL, morto pelo contrato da F2).
 
@@ -632,7 +632,7 @@ def devolver_reserva(conn, filho: str, data_ref: date, run_id: str,
 
 
 # ═══════════════════ banco — F4 (guardiã) ═══════════════════════════════════
-# As perguntas do ciclo da guardiã (docs/retomada-f4-desenho.md §9). Mesmo
+# Os perguntas do ciclo da guardiã (docs/retomada-f4-desenho.md §9). Mesmo
 # contrato: conn pymssql (%s), chamador dono da transação. Nenhuma delas
 # decide liberação — a pergunta de liberação continua sendo SÓ `liberado()`.
 
@@ -993,7 +993,7 @@ def _exec_liberado(cur, params, params_seq=None):
                 raise
         if proximo == "seq_084":
             print("[DEP] migration 085 ausente — o corte do modo SEQUENCIA "
-                  "volta a ser a janela em horas (a corrida fica fora da conta)")
+                  "volta a ser a janela em horas (o ciclo fica fora da conta)")
             try:
                 cur.execute(SQL_LIBERADO_SEQ_084, (params_seq[0], params_seq[2]))
                 return True, False
@@ -1412,7 +1412,7 @@ def gravar_evento(conn, pipeline: str, data_ref: date, tipo: str,
         if _MARCA_085 not in str(e):
             raise
         print(f"[DEP] evento {tipo} de {pipeline}: banco sem a 085 ({e}) — "
-              f"gravado SEM a corrida #{corrida}")
+              f"gravado SEM o ciclo #{corrida}")
         cur = conn.cursor()
         cur.execute(_SQL_EVENTO[(bool(notificar), False)],
                     base + (pipeline, data_ref, tipo))
@@ -1572,7 +1572,7 @@ def app_base_url(conn) -> str:
     o plantão para um host que não responde, às 3h.
 
     NUNCA levanta: esta leitura acontece dentro do ciclo da guardiã, e a
-    guardiã não cai por causa de um enfeite de card. Lida uma vez por ciclo
+    guardiã não cai por causa de um enfeite de card. Lida um vez por ciclo
     (não por evento) — o lote de notificação é o último passo, e a chave não
     muda no meio dele."""
     try:

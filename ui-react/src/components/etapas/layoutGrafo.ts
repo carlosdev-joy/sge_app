@@ -147,7 +147,7 @@ function adjacencia(edges: ArestaGrafo[], invertida = false): Map<string, string
 }
 
 // Fecho transitivo a partir das sementes, andando por `adj`. DFS iterativo com
-// Set de visitados (o mesmo desenho da detecção de ciclo — termina em grafo com
+// Set de visitados (o mesmo desenho do detecção de ciclo — termina em grafo com
 // ciclo). As SEMENTES não entram no resultado, a menos que um ciclo as devolva:
 // "quem depende de mim" não me inclui, mas se eu dependo de mim mesmo, inclui.
 function alcance(adj: Map<string, string[]>, sementes: string[]): Set<string> {

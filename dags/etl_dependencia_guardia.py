@@ -318,10 +318,10 @@ def _fechar_dia_anterior(conn, agora: datetime, log, corrida_on: bool = False) -
                 aberta = mc.corrida_aberta_da_linha(conn, pipeline, data_ref)
                 if aberta is not None:
                     if aberta["id"] is None:
-                        log.warning("[GUARDIA] corrida de %s em %s indisponivel "
+                        log.warning("[GUARDIA] ciclo de %s em %s indisponivel "
                                     "— fechamento adiado", pipeline, data_ref)
                     else:
-                        log.info("[GUARDIA] %s em %s pertence a corrida ABERTA "
+                        log.info("[GUARDIA] %s em %s pertence ao ciclo ABERTO "
                                  "da malha '%s' — NAO fechado como NAO_LIBEROU "
                                  "(o ciclo ainda nao acabou)", pipeline,
                                  data_ref, aberta["malha_name"])
@@ -360,7 +360,7 @@ def _fechar_dia_anterior(conn, agora: datetime, log, corrida_on: bool = False) -
             # próximo ciclo repete (gravar_evento é idempotente pela chave).
             dep.gravar_evento(
                 conn, pipeline, data_ref, "NAO_LIBEROU",
-                f"corrida de {_iso(data_ref)} fechada sem liberar - {motivo}")
+                f"ciclo de {_iso(data_ref)} fechado sem liberar - {motivo}")
             if not dep.fechar_nao_liberou(conn, pipeline, data_ref, run_id, motivo):
                 _rollback(conn)  # desfaz o evento junto — outra ponta mexeu
                 continue
@@ -445,7 +445,7 @@ def _new_day(conn, agora: datetime, log) -> int:
             conn.commit()
             if criou:
                 ordenadas += 1
-                log.info("[GUARDIA] corrida de %s em %s ordenada", filho, data_ref)
+                log.info("[GUARDIA] ciclo de %s em %s ordenada", filho, data_ref)
             # criou == False: já havia corrida — nada se assume (D48)
         except Exception as e:
             _rollback(conn)
@@ -526,11 +526,11 @@ def _resgatar_em_execucao(conn, agora: datetime, intervalo: int, log) -> int:
                 # linha continua bloqueando, e dizer isso é o mínimo honesto.
                 if dep.gravar_evento(
                         conn, pipeline, data_ref, EVENTO_ORFA,
-                        f"corrida {run_id} em EXECUTANDO desde {_iso(inicio)} "
+                        f"ciclo {run_id} em EXECUTANDO desde {_iso(inicio)} "
                         "sem DagRun no Airflow - finalize pela tela de "
                         "Finalizacao Manual"):
                     tocadas += 1
-                    log.warning("[GUARDIA] corrida %s de %s sem DagRun — "
+                    log.warning("[GUARDIA] ciclo %s de %s sem DagRun — "
                                 "alertada", run_id, pipeline)
                 conn.commit()
                 continue
@@ -544,15 +544,15 @@ def _resgatar_em_execucao(conn, agora: datetime, intervalo: int, log) -> int:
                 # Nunca inventar verde: alerta e Finalização Manual.
                 if dep.gravar_evento(
                         conn, pipeline, data_ref, EVENTO_ORFA,
-                        f"corrida {run_id} ficou EXECUTANDO apesar de o DagRun "
-                        "ter concluido com sucesso - a corrida NAO foi fechada "
+                        f"ciclo {run_id} ficou EXECUTANDO apesar de o DagRun "
+                        "ter concluido com sucesso - o ciclo NAO foi fechado "
                         "automaticamente; use a Finalizacao Manual"):
                     tocadas += 1
-                    log.warning("[GUARDIA] corrida %s de %s: DagRun success "
+                    log.warning("[GUARDIA] ciclo %s de %s: DagRun success "
                                 "sem fecho — alertada", run_id, pipeline)
                 conn.commit()
                 continue
-            motivo = (f"corrida orfa: DagRun {run_id} terminou como FALHA no "
+            motivo = (f"ciclo orfa: DagRun {run_id} terminou como FALHA no "
                       "Airflow sem fechar a execucao (timeout do DagRun ou "
                       "worker interrompido) - fechada pela guardia")
             # Evento e fechamento na MESMA transação, pelo motivo do §6: a
@@ -560,14 +560,14 @@ def _resgatar_em_execucao(conn, agora: datetime, intervalo: int, log) -> int:
             # nada re-tentaria o evento perdido.
             dep.gravar_evento(
                 conn, pipeline, data_ref, EVENTO_ORFA,
-                f"corrida de {_iso(data_ref)} fechada como FALHA - {motivo}")
+                f"ciclo de {_iso(data_ref)} fechado como FALHA - {motivo}")
             if not dep.fechar_orfa_em_execucao(conn, pipeline, data_ref,
                                                run_id, motivo):
                 _rollback(conn)   # outra ponta fechou primeiro — o certo
                 continue
             conn.commit()
             tocadas += 1
-            log.warning("[GUARDIA] corrida orfa de %s em %s fechada como FALHA "
+            log.warning("[GUARDIA] ciclo orfa de %s em %s fechada como FALHA "
                         "(DagRun %s failed)", pipeline, data_ref, run_id)
         except Exception as e:
             _rollback(conn)
@@ -648,7 +648,7 @@ def _rede_seguranca(conn, agora: datetime, log) -> int:
                                          "guardia")
             conn.commit()   # commit imediato — contrato do claim
             if ganho is None:
-                log.info("[GUARDIA] %s já tem corrida em %s — outra ponta venceu",
+                log.info("[GUARDIA] %s já tem ciclo em %s — outra ponta venceu",
                          pipeline, data_ref)
                 continue    # push × guardiã: exatamente um vence (D18)
             # F7 (pendência 14) — a PROVENIÊNCIA, perguntada DEPOIS do claim
@@ -667,7 +667,7 @@ def _rede_seguranca(conn, agora: datetime, log) -> int:
                 corrida_id = mc.odate(conn, pipeline, run_id=ganho,
                                       herdada=data_ref).get("corrida_id")
             except Exception as e_prov:  # noqa: BLE001
-                log.warning("[GUARDIA] corrida de %s nao resolvida (%s) — "
+                log.warning("[GUARDIA] ciclo de %s nao resolvida (%s) — "
                             "disparo segue sem a proveniencia", pipeline, e_prov)
             try:
                 _trigger(pipeline, ganho,
@@ -830,14 +830,14 @@ def _corrida_habilitada(conn, log) -> bool:
 
     O cache do interruptor é limpo no começo de cada ciclo: `corrida_ativa` o
     memoriza por processo (a task do Airflow é curta), e sem a limpeza um worker
-    reaproveitado carregaria a chave antiga até morrer. Virar a chave passa a
+    reaproveitado carregaria a chave antiga até morrer. Virar a chave passa o
     valer no ciclo seguinte — que é o comportamento esperado de configuração.
     """
     mc.limpar_cache()
     if not mc.corrida_ativa(conn):
         return False
     if not mc.tabela_085_presente(conn):
-        log.warning("[GUARDIA] 085 ausente — corrida de malha nao operada "
+        log.warning("[GUARDIA] 085 ausente — ciclo de malha nao operada "
                     "neste ciclo; o restante do ciclo segue normal")
         return False
     return True
@@ -935,7 +935,7 @@ def _abrir_uma_corrida(conn, desenho: dict, origem: str, no_inicio,
         return None
     marcador = MARCADOR_CORRIDA.format(corrida["id"])
     if not corrida["odate_confere"]:
-        detalhe = (f"{mc.MOTIVO_OUTRO_ODATE}: corrida #{corrida['id']} de "
+        detalhe = (f"{mc.MOTIVO_OUTRO_ODATE}: ciclo #{corrida['id']} de "
                    f"{_iso(corrida['data_referencia'])} ainda aberta - o ciclo "
                    f"de {_iso(odate)} nao foi aberto e estas execucoes ficam "
                    f"fora dele")
@@ -957,7 +957,7 @@ def _abrir_uma_corrida(conn, desenho: dict, origem: str, no_inicio,
     # As raízes que partiram passam a pertencer à corrida. Além da honestidade
     # do card, é o que faz o laço CONVERGIR: a partida carimbada deixa de ser
     # candidata, e sem isso o PULADO de sábado abriria uma corrida a cada 5 min.
-    # Só o `lote` — as linhas do outro ODATE não pertencem a este ciclo.
+    # Só o `lote` — as linhas do outro ODATE não pertencem o este ciclo.
     for p in lote:
         mc.vincular_execucao(conn, p["pipeline"], p["data_referencia"],
                              p["execution_id"], corrida["id"])
@@ -966,7 +966,7 @@ def _abrir_uma_corrida(conn, desenho: dict, origem: str, no_inicio,
                           malha_execucao_id=corrida["id"])
     conn.commit()
     if corrida["nova"]:
-        log.info("[GUARDIA] corrida da malha '%s' aberta em %s (origem=%s, "
+        log.info("[GUARDIA] ciclo da malha '%s' aberta em %s (origem=%s, "
                  "ancora=%s, inicio recuado para %s)", malha, _iso(odate),
                  origem, ancora["pipeline"], ancora["momento"])
     return corrida
@@ -984,7 +984,7 @@ def _carimbar_fora_da_corrida(conn, desenho: dict, raizes, janela, teto,
     quê.
 
     Havendo corrida aberta, nada é carimbado: a linha pertence ao ciclo em voo
-    (o recorte de tempo da Decisão 23 já a conta), e dizer "fora da corrida"
+    (o recorte de tempo da Decisão 23 já a conta), e dizer "fora do ciclo"
     seria mentira gravada no banco.
     """
     malha = desenho["malha"]
@@ -994,7 +994,7 @@ def _carimbar_fora_da_corrida(conn, desenho: dict, raizes, janela, teto,
     if not fora:
         return 0
     texto = (f"{mc.MOTIVO_FORA_DA_CORRIDA}: a malha {malha} parte pelo no "
-             f"Inicio e nao havia corrida aberta - esta execucao rodou FORA do "
+             f"Inicio e nao havia ciclo aberto - esta execucao rodou FORA do "
              f"ciclo da malha")
     carimbadas = 0
     for o in mc.partidas_a_cobrir(conn, malha, fora, janela, teto):
@@ -1002,7 +1002,7 @@ def _carimbar_fora_da_corrida(conn, desenho: dict, raizes, janela, teto,
                               o["execution_id"], mc.MOTIVO_FORA_DA_CORRIDA,
                               texto):
             carimbadas += 1
-            log.warning("[GUARDIA] %s rodou FORA da corrida da malha '%s' em "
+            log.warning("[GUARDIA] %s rodou FORA do ciclo da malha '%s' em "
                         "%s — a malha tem no Inicio e nada abriu o ciclo",
                         o["pipeline"], malha, _iso(o["data_referencia"]))
     if carimbadas:
@@ -1021,7 +1021,7 @@ def _abrir_corridas_malha(conn, log) -> int:
         agora_banco = dep.agora_do_banco(conn)
     except Exception as e:  # noqa: BLE001
         log.warning("[GUARDIA] desenho das malhas indisponivel (%s) — nenhuma "
-                    "corrida aberta neste ciclo", e)
+                    "ciclo aberto neste ciclo", e)
         return 0
     abertas = 0
     for desenho in malhas:
@@ -1050,7 +1050,7 @@ def _abrir_corridas_malha(conn, log) -> int:
                                           log)
         except Exception as e:  # noqa: BLE001
             _rollback(conn)
-            log.warning("[GUARDIA] abertura da corrida da malha '%s' falhou "
+            log.warning("[GUARDIA] abertura do ciclo da malha '%s' falhou "
                         "(%s) — seguindo", malha, e)
     return abertas
 
@@ -1082,7 +1082,7 @@ def _fechar_uma_corrida(conn, corrida: dict, desfecho: str, tipo_evento,
         _rollback(conn)     # outra ponta fechou primeiro — o certo
         return False
     conn.commit()
-    log.info("[GUARDIA] corrida da malha '%s' em %s fechada como %s: %s",
+    log.info("[GUARDIA] ciclo da malha '%s' em %s fechada como %s: %s",
              corrida["malha_name"], _iso(corrida["data_referencia"]), desfecho,
              detalhe)
     return True
@@ -1110,7 +1110,7 @@ def _quiescencia_liberada(conn, corrida: dict, log) -> bool:
     """Guarda 1 das três (§6.5): nenhuma linha `AGUARDANDO_DEPENDENCIA` de
     membro desta corrida que `liberado()` aprove.
 
-    Sem ela a rede de segurança ainda vai disparar essa linha neste ciclo ou no
+    Sem ela a rede de segurança ainda vai disparar esse linha neste ciclo ou no
     próximo, e a corrida teria fechado no meio de si mesma. É a MESMA função
     `liberado()` do push — paridade por identidade de objeto, não por cópia.
 
@@ -1133,12 +1133,12 @@ def _quiescencia_liberada(conn, corrida: dict, log) -> bool:
         lib, faltantes = dep.liberado(conn, pipeline,
                                       corrida["data_referencia"], corrida["id"])
         if lib:
-            log.info("[GUARDIA] corrida da malha '%s': %s esta liberado e vai "
+            log.info("[GUARDIA] ciclo da malha '%s': %s esta liberado e vai "
                      "partir — fechamento adiado", corrida["malha_name"],
                      pipeline)
             return False
         if any(str(f).startswith(dep.ERRO_CONSULTA) for f in faltantes):
-            log.warning("[GUARDIA] corrida da malha '%s': condicao de %s "
+            log.warning("[GUARDIA] ciclo da malha '%s': condicao de %s "
                         "indisponivel — fechamento adiado",
                         corrida["malha_name"], pipeline)
             return False
@@ -1200,7 +1200,7 @@ def _fechar_corridas_malha(conn, log) -> int:
             # Encerrar corrida (§6.8). "Não consegui perguntar" nunca vira
             # "pode fechar", literal.
             if int(est.get("membros") or 0) == 0:
-                log.warning("[GUARDIA] estado da corrida da malha '%s' nao "
+                log.warning("[GUARDIA] estado do ciclo da malha '%s' nao "
                             "pode ser lido (snapshot vazio) — NENHUM desfecho "
                             "neste ciclo", malha)
                 continue
@@ -1215,7 +1215,7 @@ def _fechar_corridas_malha(conn, log) -> int:
                         if p["classe"] == "falhou"]
             if falhados and mc.marcar_visto(conn, corrida["id"], "falha"):
                 detalhe = ("falha em " + ", ".join(sorted(falhados))
-                           + f" - a corrida da malha {malha} em "
+                           + f" - o ciclo da malha {malha} em "
                            + _iso(corrida["data_referencia"])
                            + " esta comprometida")
                 dep.gravar_evento(conn, MARCADOR_CORRIDA.format(corrida["id"]),
@@ -1228,7 +1228,7 @@ def _fechar_corridas_malha(conn, log) -> int:
             if est["vivos"]:
                 if rel["teto_vencido"] and not retido and \
                         mc.marcar_visto(conn, corrida["id"], "atraso"):
-                    detalhe = ("teto da corrida vencido com "
+                    detalhe = ("teto do ciclo vencido com "
                                f"{len(est['vivos'])} pipeline(s) ainda em "
                                "execucao: " + ", ".join(est["vivos"][:10])
                                + " - nada foi encerrado e o disparo segue "
@@ -1279,7 +1279,7 @@ def _fechar_corridas_malha(conn, log) -> int:
                               "de rodar")
                     else:
                         detalhe = ("nenhum pipeline da malha registrou execucao "
-                                   "apos a carencia de partida - a corrida nao "
+                                   "apos a carencia de partida - o ciclo nao "
                                    "chegou a comecar")
                     if _fechar_uma_corrida(conn, corrida, "ABORTADA",
                                            "MALHA_ABORTADA", detalhe, log):
@@ -1292,7 +1292,7 @@ def _fechar_corridas_malha(conn, log) -> int:
                 continue
             if not rel["quiescente"]:
                 if rel["teto_vencido"]:
-                    detalhe = ("teto da corrida vencido sem nenhum pipeline em "
+                    detalhe = ("teto do ciclo vencido sem nenhum pipeline em "
                                "execucao - encerrada sem terminar; confira o "
                                "que ficou para tras")
                     if _fechar_uma_corrida(conn, corrida, "EXPIRADA",
@@ -1333,12 +1333,12 @@ def _fechar_corridas_malha(conn, log) -> int:
             # Nenhum vivo, nenhum pendente, nenhum OK e havia linha: só sobra
             # dispensado (o caso já tratado acima) — chegar aqui é sinal de
             # snapshot vazio com linha de membro removido do desenho.
-            log.warning("[GUARDIA] corrida da malha '%s' sem membro "
+            log.warning("[GUARDIA] ciclo da malha '%s' sem membro "
                         "classificavel — nada a fechar; confira o snapshot",
                         malha)
         except Exception as e:  # noqa: BLE001
             _rollback(conn)
-            log.warning("[GUARDIA] fechamento da corrida da malha '%s' nao "
+            log.warning("[GUARDIA] fechamento do ciclo da malha '%s' nao "
                         "concluido (%s) — nada persistido; proximo ciclo "
                         "repete", malha, e)
     return fechadas
@@ -1463,7 +1463,7 @@ def _observadores_malha(conn, agora: datetime, log, corrida_on: bool = False) ->
                     try:
                         if mc.estado(conn, aberta).get("vivos"):
                             log.info("[GUARDIA] no %s (malha '%s'): upstream "
-                                     "concluido, mas a corrida ainda tem "
+                                     "concluido, mas o ciclo ainda tem "
                                      "pipeline em execucao — card adiado",
                                      no_id, malha)
                             continue
@@ -1573,7 +1573,7 @@ def ciclo(**context) -> dict:
             log.warning("[GUARDIA] migration 067 ausente — ciclo encerrado")
             return {"migration_067": False}
         # O portão da corrida sobe ANTES da primeira responsabilidade (F7). Ele
-        # já era "uma vez por ciclo"; o que mudou é que a responsabilidade 1
+        # já era "um vez por ciclo"; o que mudou é que a responsabilidade 1
         # passou a depender dele — `_fechar_dia_anterior` não pode fechar como
         # NAO_LIBEROU a linha de uma corrida ABERTA (Decisão 31). Avaliá-lo no
         # meio do ciclo faria a primeira responsabilidade ler o cache do ciclo
@@ -1606,7 +1606,7 @@ def ciclo(**context) -> dict:
                              if corrida_on else 0)
         if corrida_on:
             # Heartbeat DEPOIS do trabalho: ele significa "a guardiã deste
-            # deploy OPEROU a corrida neste ciclo", que é a pergunta que a F3
+            # deploy OPEROU o corrida neste ciclo", que é a pergunta que a F3
             # faz antes de deixar a API abrir uma. Carimbá-lo antes diria
             # "cheguei", e "cheguei" não é o que a API precisa saber.
             # O commit fica na guarda junto com a escrita: `marcar_heartbeat`
@@ -1619,8 +1619,8 @@ def ciclo(**context) -> dict:
                 mc.marcar_heartbeat(conn)
                 conn.commit()
             except Exception as e:  # noqa: BLE001 — heartbeat nunca derruba o ciclo
-                log.warning("[GUARDIA] heartbeat da corrida nao gravado (%s); "
-                            "o ciclo segue e a API pode recusar abrir corrida "
+                log.warning("[GUARDIA] heartbeat do ciclo nao gravado (%s); "
+                            "o ciclo segue e a API pode recusar abrir ciclo "
                             "ate o proximo", e)
                 try:
                     conn.rollback()
@@ -1640,7 +1640,7 @@ def ciclo(**context) -> dict:
     # o critério de aceite da fase é literal — com `malha_corrida_ativa = 0` o
     # log da guardiã não muda de tamanho.
     if corrida_on:
-        log.info("[GUARDIA] corrida de malha: %d aberta(s), %d fechada(s).",
+        log.info("[GUARDIA] ciclo de malha: %d aberta(s), %d fechada(s).",
                  corridas_abertas, corridas_fechadas)
     return {"fechadas": fechadas, "ordenadas": ordenadas,
             "resgatadas": resgatadas, "orfas_em_execucao": orfas_exec,

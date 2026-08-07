@@ -152,7 +152,7 @@ def test_a_confirmacao_do_encerramento_diz_que_os_pipelines_continuam_rodando(te
         assert cena["antes_tem_frase"] is False, nome
         assert "Nenhum pipeline é interrompido" in cena["texto"], nome
         assert "CONTINUAM rodando" in cena["texto"], nome
-        assert "libera o disparo da próxima corrida" in cena["texto"], nome
+        assert "libera o disparo do próximo ciclo" in cena["texto"], nome
         # Decisão 32: motivo obrigatório — confirmar nasce travado.
         assert cena["confirmar_travado_sem_motivo"] is True, nome
     # O que MUDA por estado é só o texto (Decisão 62), e ele muda de verdade:
@@ -186,13 +186,13 @@ def test_malha_sem_teto_configurado_nao_desenha_barra_de_limite(tela):
 
     Sem teto configurado a faixa desenha UMA barra — a do progresso — e o prazo
     que ela mostra é o do PRÓXIMO GATILHO, que é o fato que decide o
-    escalonamento ("enquanto esta não fechar, ela não abre")."""
+    escalonamento ("enquanto este não fechar, ele não abre")."""
     d = _cena(tela, "barra_de_limite")
     rotulos = [b["label"] for b in d["sem_teto"]]
-    assert rotulos == ["progresso da corrida, em pipelines concluídos"], rotulos
+    assert rotulos == ["progresso do ciclo, em pipelines concluídos"], rotulos
     assert "limite de segurança" not in d["texto_sem_teto"]
     assert d["gatilho_sem_teto"] is True
-    assert "enquanto esta não fechar, ela não abre" in d["texto_sem_teto"]
+    assert "enquanto este não fechar, ele não abre" in d["texto_sem_teto"]
 
 
 def test_malha_com_teto_configurado_desenha_a_barra_sem_anunciar_percentual(tela):
@@ -205,9 +205,9 @@ def test_malha_com_teto_configurado_desenha_a_barra_sem_anunciar_percentual(tela
     texto diz **limite**, nunca "progresso" e nunca contagem de pipelines."""
     d = _cena(tela, "barra_de_limite")
     rotulos = [b["label"] for b in d["com_teto"]]
-    assert "limite de segurança da corrida" in rotulos, rotulos
+    assert "limite de segurança do ciclo" in rotulos, rotulos
     limite = next(b for b in d["com_teto"]
-                  if b["label"] == "limite de segurança da corrida")
+                  if b["label"] == "limite de segurança do ciclo")
     assert limite["valuetext"], (
         "a barra de limite ficou sem `aria-valuetext` — o leitor de tela volta "
         "a anunciar o percentual que a Decisão 56 proíbe")
@@ -245,7 +245,7 @@ def test_duas_corridas_no_mesmo_dia_viram_dois_blocos_num_so_mecanismo(tela):
 
     E trocar aplica a LENTE (`?corrida={id}`), nunca a data: é o que impede as
     duas de se sobreporem no mesmo canvas. O `title` de cada bloco distingue as
-    duas por SEQUÊNCIA em português ("2ª corrida de 05/08"), sem `#N`
+    duas por SEQUÊNCIA em português ("2º ciclo de 05/08"), sem `#N`
     (Decisão 74).
 
     ⚠️ O `title` GANHOU LINHAS na F12 (Decisões 67/68): além do nome e do
@@ -259,10 +259,10 @@ def test_duas_corridas_no_mesmo_dia_viram_dois_blocos_num_so_mecanismo(tela):
     d = _cena(tela, "dia_com_varias_corridas")
     assert d["blocos"] == 2, d["blocos"]
     assert [t.split("\n")[0] for t in d["titulos"]] == [
-        "2ª corrida de 05/08 · em andamento",
-        "corrida de 05/08 · concluída"]
-    assert d["rotulos"] == ["2ª corrida de 05/08 · em andamento · aberta 05:20",
-                            "corrida de 05/08 · concluída · aberta 01:10"]
+        "2º ciclo de 05/08 · em andamento",
+        "ciclo de 05/08 · concluído"]
+    assert d["rotulos"] == ["2º ciclo de 05/08 · em andamento · aberto 05:20",
+                            "ciclo de 05/08 · concluído · aberto 01:10"]
     for t in d["titulos"] + d["rotulos"]:
         assert "#" not in t
     # Clicar no bloco troca de CORRIDA (o id), não de data.
@@ -284,9 +284,9 @@ def test_o_dia_com_varias_corridas_manda_escolher_uma_em_vez_de_ficar_mudo(tela)
     assert "mistura" in d["texto"], (
         "a frase não diz que o DESENHO abaixo mistura as duas — sem isso o "
         "operador lê o canvas do dia como se fosse de um ciclo só")
-    # E ela não vaza para a lente sem ciclo nenhum: lá o texto é o de sempre.
+    # E ela não vaza para o lente sem ciclo nenhum: lá o texto é o de sempre.
     assert "este dia teve" not in d["mudo"]
-    assert "nenhuma corrida registrada" in d["mudo"]
+    assert "nenhum ciclo registrado" in d["mudo"]
 
 
 def test_o_menu_ir_para_data_abre_DENTRO_da_area_de_conteudo(tela):
@@ -366,7 +366,7 @@ def test_reexecutar_carrega_a_frase_do_efeito_na_corrida_em_voo(tela):
     d = _cena(tela, "um_clique_ate_o_problema")
     assert d["rerun"] == ["CARGA_A"], "o clique não chamou a prévia"
     frase = d["title_reexecutar"][0]
-    assert "entra na corrida" in frase
+    assert "entra no ciclo" in frase
     assert "NÃO reinicia" in frase
 
 
@@ -473,7 +473,7 @@ def test_o_marcador_de_OUTRA_corrida_nao_entra_na_aba_desta(client, auth):
             "pipeline_name": malhas_router.MARCADOR_CORRIDA.format(c["id"] + 77),
             "data_referencia": ODATE, "tipo": "MALHA_FALHOU",
             "detectado_em": AGORA_BANCO - timedelta(minutes=52),
-            "detalhe": "de outra corrida", "notificado_em": None})
+            "detalhe": "de outro ciclo", "notificado_em": None})
         painel = client.get(f"/malhas/M1/execucao?corrida={c['id']}").json()
     assert painel["eventos_corrida"] == []
     # E ele não cai em nenhuma das outras listas: chave que não resolve some.
@@ -543,9 +543,9 @@ def test_o_raio_nao_atravessa_o_snapshot_da_corrida_de_ONTEM(client, auth):
     pend = _pendentes(painel)
     assert pend["A"]["classe"] == "falhou"
     assert pend["A"]["alcance"] == 1, (
-        "o raio saiu do snapshot desta corrida: só `B` está parado atrás de "
+        "o raio saiu do snapshot deste ciclo: só `B` está parado atrás de "
         "`A` hoje — `OK1` só o alcança passando por `C`, que não é membro "
-        f"desta corrida (pendentes: { {k: v['alcance'] for k, v in pend.items()} })")
+        f"deste ciclo (pendentes: { {k: v['alcance'] for k, v in pend.items()} })")
     # E `OK1` continua sendo um pendente desta corrida — ele não sumiu da aba;
     # o que ele não é é "parado atrás de A".
     assert "OK1" in pend and pend["OK1"]["alcance"] == 0
@@ -588,7 +588,7 @@ def test_o_raio_nao_passa_por_membro_que_nao_estava_ativo_na_abertura(client,
     assert "B" not in pend, "o membro inativo na abertura virou pendente"
     assert pend["A"]["alcance"] == 0, (
         "o raio atravessou um membro que não estava ativo na abertura — `C` "
-        "não está parado por `A` nesta corrida")
+        "não está parado por `A` neste ciclo")
     assert painel["corrida"]["membros_total"] == 2      # Decisão 52, o mesmo eixo
 
 
@@ -630,7 +630,7 @@ def test_o_banner_de_hold_nao_depende_de_haver_ciclo(tela):
     O Início segurado é o que IMPEDE a corrida de abrir — então, no momento em
     que o operador mais precisa ler "a malha está parada porque alguém a
     segurou às 02:40", não havia ciclo nenhum e o banner não saía. A tela dizia
-    "nenhuma corrida registrada nesta lente" e calava sobre o cadeado.
+    "nenhum ciclo registrado nesta lente" e calava sobre o cadeado.
 
     É também o que torna a Decisão 66/2 testável com `malha_corrida_ativa = 0`
     (o estado do dev e o do dia do deploy), onde não existe corrida no banco."""
@@ -642,7 +642,7 @@ def test_o_banner_de_hold_nao_depende_de_haver_ciclo(tela):
     # A CONSEQUÊNCIA muda com o estado, porque as duas frases são diferentes:
     # sem ciclo o que está travado é a PARTIDA, não o avanço.
     assert "não parte no horário agendado" in d["sem_ciclo"]
-    assert "a corrida não avança" in d["com_ciclo"]
+    assert "o ciclo não avança" in d["com_ciclo"]
     # E o contraste: sem nó segurado não há banner nenhum.
     assert "segurado" not in d["sem_no_segurado"]
 

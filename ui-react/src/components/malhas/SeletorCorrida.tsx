@@ -99,7 +99,7 @@ export function SeletorCorrida({
           <div
             className="flex items-end gap-1"
             role="group"
-            aria-label="Últimas corridas desta malha"
+            aria-label="Últimas ciclos desta malha"
           >
             {blocos.map(c => {
               const estilo = estiloCorrida(c.status)
@@ -146,8 +146,8 @@ export function SeletorCorrida({
                 if (!c) return null
                 const dia = diaCurto(c.data_referencia) ?? c.data_referencia
                 const nome = c.sequencia > 1
-                  ? `${c.sequencia}ª corrida de ${dia}`
-                  : `corrida de ${dia}`
+                  ? `${c.sequencia}º ciclo de ${dia}`
+                  : `ciclo de ${dia}`
                 const h = horaCurta(c.aberta_em)
                 return h ? `${nome} · aberta ${h}` : nome
               })()}
@@ -166,7 +166,7 @@ export function SeletorCorrida({
           aria-haspopup="dialog"
           aria-expanded={menuAberto}
           aria-label="Ir para uma data de referência"
-          title="Ir para uma data de referência — o dia inteiro, sem lente de corrida"
+          title="Ir para uma data de referência — o dia inteiro, sem lente de ciclo"
           className="inline-flex items-center gap-1 rounded-md border border-edge bg-canvas px-1.5 py-0.5 text-[11px] text-dim transition-colors hover:text-ink"
         >
           <CalendarDays size={12} aria-hidden="true" /> ir para…

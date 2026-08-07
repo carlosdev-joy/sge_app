@@ -506,24 +506,24 @@ const RAZOES: Record<string, string> = {
     'Nenhuma execução deste pipeline nesta data de referência. O canvas mostra '
     + 'o desenho atual, com todas as etapas neutras.',
   sem_etapas_registradas:
-    'A corrida existe, mas nenhuma etapa registrou telemetria nesta execução.',
+    'O ciclo existe, mas nenhuma etapa registrou telemetria nesta execução.',
   run_id_nao_traduzivel:
-    'A corrida existe, mas não foi possível traduzir o identificador dela para '
+    'O ciclo existe, mas não foi possível traduzir o identificador dela para '
     + 'a chave da telemetria (o Airflow não respondeu).',
   sem_dag_run_correspondente:
-    'A corrida está registrada, mas o Airflow não tem mais o dag_run '
+    'O ciclo está registrado, mas o Airflow não tem mais o dag_run '
     + 'correspondente (run expurgado ou DAG recriada).',
   sem_execucao_para_ts:
-    'As etapas foram lidas, mas nenhuma corrida do pipeline casou com esta '
+    'As etapas foram lidas, mas nenhum ciclo do pipeline casou com esta '
     + 'execução — falta o lado do registro de pipeline.',
   migration_067_pendente:
     'migration 067 pendente neste ambiente — a resposta veio por aproximação '
     + 'sobre a telemetria das etapas.',
   airflow_indisponivel:
     'O Airflow não respondeu; sem ele não dá para fechar a identidade da '
-    + 'corrida. Nada foi escondido — o que falta é dito.',
+    + 'ciclo. Nada foi escondido — o que falta é dito.',
   ambiguo:
-    'Há mais de uma corrida nesta data e nenhuma pôde ser escolhida com '
+    'Há mais de um ciclo nesta data e nenhuma pôde ser escolhida com '
     + 'segurança.',
 }
 

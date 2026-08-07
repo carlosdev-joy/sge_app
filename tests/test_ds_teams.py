@@ -300,7 +300,7 @@ def _evento_corrida(**kw) -> dict:
     devolve. Sem '#' no detalhe, para as asserções de vazamento valerem."""
     base = {"id": 4321, "tipo": "MALHA_FALHOU", "pipeline": "#corrida:98765",
             "malha": "Carga_Vida", "data_ref": "2026-08-04",
-            "detalhe": ("Malha Carga_Vida, corrida de 04/08: 2 pendentes — "
+            "detalhe": ("Malha Carga_Vida, ciclo de 04/08: 2 pendentes — "
                         "CARGA_A (falhou 01:12), CARGA_B (esperando outro "
                         "pipeline)"),
             "detectado_em": "2026-08-04 01:12:30"}
@@ -368,16 +368,16 @@ def test_o_id_do_evento_tambem_fica_fora_do_card():
 
 def test_a_corrida_se_chama_pela_data():
     texto = _texto_do_card(montar_card_malha(_evento_corrida()))
-    assert "corrida de 04/08" in texto
+    assert "ciclo de 04/08" in texto
     assert "2026-08-04" in texto        # o ODATE por extenso segue nos fatos
 
 
 def test_a_segunda_corrida_do_dia_se_anuncia():
     """Decisão 74 — a ordinal só a partir da 2ª: "1ª corrida de 04/08" sugere
     que existe uma segunda, e numa malha diária isso é ruído todo dia."""
-    assert "2ª corrida de 04/08" in _texto_do_card(
+    assert "2º ciclo de 04/08" in _texto_do_card(
         montar_card_malha(_evento_corrida(sequencia=2)))
-    assert "1ª corrida" not in _texto_do_card(
+    assert "1º ciclo" not in _texto_do_card(
         montar_card_malha(_evento_corrida(sequencia=1)))
 
 
@@ -417,7 +417,7 @@ def test_evento_da_corrida_vira_card_de_malha_pelo_marcador():
     Se o roteamento não morasse aqui, o evento mais grave do produto sairia com
     subtítulo `#corrida:98765` — a chave técnica no lugar do nome da malha."""
     texto = _texto_do_card(montar_card_dependencia(_evento_corrida()))
-    assert "Carga_Vida · corrida de 04/08" in texto
+    assert "Carga_Vida · ciclo de 04/08" in texto
     assert "#corrida:" not in texto
 
 
@@ -446,7 +446,7 @@ def test_roteamento_nao_sequestra_os_eventos_de_no(tipo):
     assert "Data de referência: 2026-08-01" in texto
     # O card de NÓ não é o card da corrida: o de nó não fala em "corrida de
     # 01/08" (o componente do desenho não tem ordinal de ciclo).
-    assert "corrida de" not in texto
+    assert "ciclo de" not in texto
 
 
 # ── Pendência 11 do §18 — `#no:38` não vai ao celular ───────────────────────
@@ -492,7 +492,7 @@ def test_conclusao_do_fechamento_da_corrida_vai_pelo_card_da_malha():
         _evento_corrida(tipo="MALHA_CONCLUIDA", detalhe="Malha Carga_Vida "
                         "concluída em 2026-08-04 com 40 pipelines")))
     assert "Malha concluída" in texto
-    assert "Carga_Vida · corrida de 04/08" in texto
+    assert "Carga_Vida · ciclo de 04/08" in texto
     assert "#corrida:" not in texto
 
 
@@ -547,7 +547,7 @@ def test_data_em_formato_estranho_nao_derruba_o_card(data_ref):
 
 def test_sequencia_nao_numerica_nao_derruba_o_card():
     texto = _texto_do_card(montar_card_malha(_evento_corrida(sequencia="duas")))
-    assert "corrida de 04/08" in texto
+    assert "ciclo de 04/08" in texto
 
 
 def test_sem_trabalho_nao_parece_alerta():
@@ -725,7 +725,7 @@ def test_o_id_da_corrida_continua_FORA_do_texto_do_card():
     texto = _texto_do_card(montar_card_malha(
         _evento_corrida(corrida_id=98765), BASE))
     assert "98765" not in texto and "#" not in texto
-    assert "corrida de 04/08" in texto
+    assert "ciclo de 04/08" in texto
 
 
 def test_o_roteamento_repassa_o_endereco_para_o_card_da_corrida():
@@ -792,16 +792,16 @@ _CARD_DE_ANTES = {
                 {"type": "TextBlock", "text": "🚨 Malha falhou",
                  "size": "Large", "weight": "Bolder", "wrap": True,
                  "color": "Attention"},
-                {"type": "TextBlock", "text": "Carga_Vida · corrida de 04/08",
+                {"type": "TextBlock", "text": "Carga_Vida · ciclo de 04/08",
                  "wrap": True, "spacing": "None", "isSubtle": True},
                 {"type": "TextBlock",
-                 "text": ("Malha Carga_Vida, corrida de 04/08: 2 pendentes — "
+                 "text": ("Malha Carga_Vida, ciclo de 04/08: 2 pendentes — "
                           "CARGA_A (falhou 01:12), CARGA_B (esperando outro "
                           "pipeline)"),
                  "wrap": True, "spacing": "Medium"},
                 {"type": "TextBlock",
                  "text": ("O que fazer: Reprocesse a partir do pipeline que "
-                          "falhou. Os outros podem seguir rodando — a corrida "
+                          "falhou. Os outros podem seguir rodando — o ciclo "
                           "só fecha quando nada mais estiver em execução."),
                  "wrap": True, "spacing": "Medium", "isSubtle": True},
                 {"type": "FactSet", "spacing": "Medium", "facts": [

@@ -166,16 +166,16 @@ export function BarraExecucao({
 
       {dados?.migration_067_pendente && (
         <Banner tom="alerta" icone={<AlertTriangle size={14} className="shrink-0" />}>
-          migration 067 pendente — a corrida foi resolvida por APROXIMAÇÃO sobre
+          migration 067 pendente — o ciclo foi resolvida por APROXIMAÇÃO sobre
           a telemetria das etapas (agrupada pela janela do ODATE). Os horários
-          continuam sendo os reais das etapas; o que é aproximado é a associação
-          corrida ↔ data.
+          continuam sendo os reais das etapas; o que é aproximado é o associação
+          ciclo ↔ data.
         </Banner>
       )}
 
       {dados?.airflow_indisponivel && (
         <Banner tom="alerta" icone={<AlertTriangle size={14} className="shrink-0" />}>
-          O Airflow não respondeu — a identidade da corrida pode estar
+          O Airflow não respondeu — o identidade do ciclo pode estar
           incompleta. O que foi possível ler está na tela; nada foi inventado.
         </Banner>
       )}

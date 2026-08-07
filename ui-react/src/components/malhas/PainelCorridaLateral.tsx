@@ -276,7 +276,7 @@ export function PainelCorridaLateral({
               <p className="px-1 py-4 text-center text-[11px] leading-relaxed text-dim">
                 {corrida
                   ? 'Nada travando — os pendentes estão em dia.'
-                  : 'Sem corrida nesta lente: não há o que travar.'}
+                  : 'Sem ciclo nesta lente: não há o que travar.'}
               </p>
             )}
             {travando.map(p => {
@@ -374,7 +374,7 @@ export function PainelCorridaLateral({
         {/* ── EVENTOS ───────────────────────────────────────────────────── */}
         {aba === 'eventos' && (eventos.length === 0 ? (
           <p className="px-1 py-4 text-center text-[11px] leading-relaxed text-dim">
-            Nenhum evento nesta corrida.
+            Nenhum evento neste ciclo.
           </p>
         ) : eventos.map((ev, i) => (
           <div key={`${ev.rotulo}-${ev.criado_em}-${i}`}
@@ -414,7 +414,7 @@ export function PainelCorridaLateral({
         {corrida ? (
           <>
             <Activity size={11} className="shrink-0" aria-hidden="true" />
-            <span>o que esta corrida está fazendo</span>
+            <span>o que este ciclo está fazendo</span>
           </>
         ) : (
           <>

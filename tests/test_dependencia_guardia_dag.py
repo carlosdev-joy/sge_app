@@ -7,7 +7,7 @@ Mesma técnica do test_ds_supervisao_dag: o erro mais caro é o de import time
 módulo inteiro é executado com stubs — imports, Variables e montagem da DAG.
 
 O CICLO é exercitado com as perguntas ao banco stubadas função a função sobre
-o módulo REAL utils.dependencias (o que se testa aqui é a orquestração do
+o módulo REAL utils.dependencias (o que se testa aqui é o orquestração do
 ciclo: ordem, guardas, contadores e efeitos) e com as costuras de Airflow
 (_dag_pausada/_dagrun_existe/_trigger) e o relógio (_agora) injetados. As
 funções PURAS (candidatos, deadline, dia_permitido, montar_conf, novo_run_id)
@@ -456,7 +456,7 @@ def test_rede_perdedor_do_claim_nao_dispara(monkeypatch):
 
 def test_rede_trigger_que_levanta_devolve_a_reserva(monkeypatch):
     """D16 (metade F4): trigger levanta → devolver_reserva com os args
-    certos (linha adotada → veio_de_adocao=True) e o ciclo não quebra — a
+    certos (linha adotada → veio_de_adocao=True) e o ciclo não quebra — o
     varredura do ciclo seguinte É o retry."""
     devolucoes = []
 

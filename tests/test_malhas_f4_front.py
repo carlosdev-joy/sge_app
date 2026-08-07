@@ -242,7 +242,7 @@ def test_a_saude_manda_na_cor_enquanto_o_ciclo_esta_aberto(front):
                                              "SEM_PROGRESSO"))
     # corrida TERMINAL não herda saúde: o status já respondeu, e "concluída ·
     # com falha" seriam duas afirmações contraditórias na mesma linha
-    assert d["TERMINAL_COM_SAUDE"]["rotulo"] == "concluída"
+    assert d["TERMINAL_COM_SAUDE"]["rotulo"] == "concluído"
 
 
 def test_os_tres_vermelhos_se_distinguem_sem_a_cor(front):
@@ -284,7 +284,7 @@ def test_o_card_continua_dizendo_2_de_7_quando_a_guardia_pula_3(front):
     d = _cenario(front, "duas_de_sete_com_tres_pulados")
     assert d["contagem"] == "2 de 7 pipelines concluídos"
     assert "2 de 4" not in d["contagem"]
-    assert d["membros"] == ("7 membros nesta corrida · 3 não rodam hoje "
+    assert d["membros"] == ("7 membros neste ciclo · 3 não rodam hoje "
                             "(regra de dia)")
     assert d["vivos"] == "2 rodando"
 
@@ -295,7 +295,7 @@ def test_o_membro_inativado_na_sexta_nao_produz_um_sabado_verde_silencioso(front
     concluída", verde, com um número dando autoridade à mentira."""
     d = _cenario(front, "membro_inativado_na_sexta_aparece_no_card")
     assert d["contagem"] == "2 de 2 pipelines concluídos"
-    assert "5 fora desta corrida" in d["membros"]
+    assert "5 fora deste ciclo" in d["membros"]
     # corrida fechada usa o formato ABSOLUTO, nunca o relativo (§9.4)
     assert d["tempo"] == "01:10 → 04:02 · 2h52"
 
@@ -306,8 +306,8 @@ def test_a_faixa_do_painel_conta_a_mesma_subtracao_que_o_card(front):
 
     O card passa `qtd_pipelines` para `resumoCorrida`; a FAIXA do painel não
     tem o cadastro em mãos e chamava com dois argumentos. Resultado: o card
-    dizia "2 de 2 · 5 fora desta corrida" e a faixa, sobre a MESMA corrida na
-    mesma tela, dizia só "2 membros nesta corrida" — a omissão que a Decisão 53
+    dizia "2 de 2 · 5 fora deste ciclo" e a faixa, sobre a MESMA corrida na
+    mesma tela, dizia só "2 membros neste ciclo" — a omissão que a Decisão 53
     existe para matar, um andar acima.
 
     `membros_inativos` viaja no payload da corrida e é a segunda fonte. Vence a
@@ -315,7 +315,7 @@ def test_a_faixa_do_painel_conta_a_mesma_subtracao_que_o_card(front):
     abertura, e o snapshot pega quem já estava inativo — cada uma enxerga
     metade do fato."""
     d = _cenario(front, "a_faixa_do_painel_tambem_diz_quem_ficou_fora")
-    assert "5 fora desta corrida" in d["faixa"]
+    assert "5 fora deste ciclo" in d["faixa"]
     assert d["faixa"] == d["card"]
 
 
@@ -407,9 +407,9 @@ def test_duas_corridas_do_mesmo_dia_se_distinguem_no_texto(front):
     """Aceite da F4 — o ◀ ▶ anda por CORRIDA. Se as duas se chamassem "corrida
     de 05/08", navegar entre elas seria indistinguível de não navegar."""
     d = _cenario(front, "duas_corridas_do_mesmo_dia_tem_rotulos_distintos")
-    assert d["primeira"] == "corrida de 05/08 · falhou · aberta 01:10"
-    assert d["segunda"] == "2ª corrida de 05/08 · concluída · aberta 05:00"
-    assert d["identidades"] == ["corrida de 05/08", "2ª corrida de 05/08"]
+    assert d["primeira"] == "ciclo de 05/08 · falhou · aberto 01:10"
+    assert d["segunda"] == "2º ciclo de 05/08 · concluído · aberto 05:00"
+    assert d["identidades"] == ["ciclo de 05/08", "2º ciclo de 05/08"]
     # Decisão 74: o `#` do formato de máquina não aparece na interface — numa
     # malha diária "#12" lê-se como "12ª tentativa hoje", que é falso
     assert "#" not in "".join(d["identidades"] + [d["primeira"], d["segunda"]])
@@ -573,7 +573,7 @@ def test_o_no_FIM_no_canvas_nao_fica_verde_com_a_corrida_em_falha():
     Então o `MALHA_CONCLUIDA` que a corrida #1 de 04/08 emitiu às 04:02
     CONTINUA na resposta quando a lente está na corrida #2 do MESMO dia — o
     redisparo às 05h depois de um incidente, que é gesto diário e é o próprio
-    aceite "duas corridas no mesmo ODATE" desta fase.
+    aceite "dois ciclos no mesmo ODATE" desta fase.
 
     A API já parou de publicar `malha_concluida` nesse caso (o banner verde foi
     corrigido). O nó Fim lia o evento CRU: ficava verde, com o tooltip "malha

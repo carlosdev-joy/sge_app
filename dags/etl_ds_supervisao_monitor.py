@@ -3,7 +3,7 @@ etl_ds_supervisao_monitor.py
 
 Coleta da Supervisão de Jobs DataStage (F2 da spec docs/spec-supervisao-ds.md).
 
-O QUE FAZ, a cada ciclo:
+O QUE FAZ, o cada ciclo:
   1. Lê os jobs ativos de dbo.etl_ds_supervisao_job.
   2. Abre UMA conexão SSH e roda `dsjob -logsum -max N <projeto> <job>` para cada
      um, em sequência — mesmo padrão de economia do etl_ds_monitor_centralizado.
@@ -732,7 +732,7 @@ def coletar(**context) -> dict:
 
                 # Expansão profunda: desce nos níveis abaixo do supervisionado.
                 # Só para runs ainda NÃO expandidos e já terminados — run em
-                # andamento seria reexpandido a cada ciclo sem ganho.
+                # andamento seria reexpandido o cada ciclo sem ganho.
                 if not saidas[job.id][1]:
                     def _logsum_de(alvo: str, maxl_alvo: int, _job=job) -> tuple[str, str]:
                         c = (f"source {dshome}/dsenv && {dshome}/bin/dsjob -logsum "
@@ -812,7 +812,7 @@ def coletar(**context) -> dict:
                 cur, job, avaliar(job, runs, agora, estrutura), log,
                 runs=runs, mensagens=msgs, agora=agora, estrutura=estrutura)
 
-        # Envio ao Teams: acontece DEPOIS de toda a detecção do ciclo, para o
+        # Envio ao Teams: acontece DEPOIS de toda o detecção do ciclo, para o
         # lote sair de uma vez e na ordem em que os problemas apareceram.
         notificados = _notificar_pendentes(
             cur, log,

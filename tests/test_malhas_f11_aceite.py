@@ -405,7 +405,7 @@ def _pilula(cenario: dict, trecho: str) -> dict:
 
 def _filtro_de_corrida(cenario: dict) -> dict:
     achados = [f for f in cenario["filtros"]
-               if f["aria"] == "Filtrar pelo estado da corrida"]
+               if f["aria"] == "Filtrar pelo estado do ciclo"]
     assert len(achados) == 1, f"filtros na tela: {cenario['filtros']}"
     return achados[0]
 
@@ -439,7 +439,7 @@ def test_a_corrida_que_ABORTOU_nao_fica_invisivel(tela):
     Dashboard: a corrida que aborta à 01:00 ficava invisível às 8h em TODAS as
     superfícies. É o defeito que esta spec inteira existe para acabar, com
     roupa nova — e a tela não pode reintroduzi-lo justamente na fase que se
-    chama "onde a corrida chega antes da tela de Malha".
+    chama "onde o ciclo chega antes da tela de Malha".
 
     Ela entra em "Com falha" porque é lá que o operador procura o que exige
     ação agora."""
@@ -520,7 +520,7 @@ def test_o_filtro_de_corrida_existe_AO_LADO_do_de_situacao(tela):
     c = _cenario(tela, "madrugada")
     arias = [f["aria"] for f in c["filtros"]]
     assert "Filtrar por situação da malha" in arias
-    assert "Filtrar pelo estado da corrida" in arias
+    assert "Filtrar pelo estado do ciclo" in arias
 
 
 def test_os_cinco_estados_estao_no_filtro_na_ordem_da_gravidade(tela):
@@ -528,7 +528,7 @@ def test_os_cinco_estados_estao_no_filtro_na_ordem_da_gravidade(tela):
     lista em ordens diferentes fazem o olho procurar duas vezes."""
     c = _cenario(tela, "madrugada")
     opcoes = [o["rotulo"] for o in _filtro_de_corrida(c)["opcoes"]]
-    assert opcoes == ["Todas as corridas", "Rodando agora", "Com falha",
+    assert opcoes == ["Todos os ciclos", "Rodando agora", "Com falha",
                       "Fora do prazo", "Não abriram", "Concluídas (ref. 03/08)"]
 
 

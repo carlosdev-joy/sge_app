@@ -75,7 +75,7 @@ def factory():
 
 @pytest.fixture(scope="module")
 def mcr():
-    """O módulo da corrida REAL — o mesmo arquivo que vai para o servidor."""
+    """O módulo do ciclo REAL — o mesmo arquivo que vai para o servidor."""
     spec = importlib.util.spec_from_file_location(
         "utils_malha_corrida_cascata", _ROOT / "dags/utils/malha_corrida.py")
     mod = importlib.util.module_from_spec(spec)

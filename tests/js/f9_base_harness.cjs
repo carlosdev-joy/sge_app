@@ -124,7 +124,7 @@ async function main() {
     segmentos: segmentos(4, 2, 1),
     total: 7,
     valorAtual: 4,
-    ariaLabel: 'progresso da corrida de 04/08 da malha CARGA_DIARIA',
+    ariaLabel: 'progresso do ciclo de 04/08 da malha CARGA_DIARIA',
     altura: 'xs',
   }, over))
 

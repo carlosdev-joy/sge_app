@@ -524,7 +524,7 @@ def aplica_corrida(ident: dict, corrida) -> dict:
 
 def _candidato(linha: dict) -> dict:
     """Corrida candidata, no formato que vai para ``candidatos`` da identidade
-    (o suficiente para a tela dizer "há N corridas hoje; esta é a mais recente"
+    (o suficiente para a tela dizer "há N ciclos hoje; esta é a mais recente"
     e para o gesto da F4 oferecer a escolha).
 
     ``substituida_em`` viaja junto: sem ele, o aviso de ambiguidade lista duas
