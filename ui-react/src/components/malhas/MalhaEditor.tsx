@@ -246,6 +246,10 @@ interface MalhaDetalheApi {
   // está neste banco (deploy parcial) e o campo não é oferecido; `null` =
   // "segue o limite global", que é resposta, não ausência.
   teto_horas?: number | null
+  /** 087 — o canal do Teams desta malha (id de `etl_msg_grupo`). `null` é
+   *  RESPOSTA ("segue o canal geral"); a chave AUSENTE é "o banco não tem a
+   *  coluna", e aí a tela não oferece o campo. */
+  grupo_id?: number | null
   virada_divergente?: string[]
 }
 
@@ -3494,6 +3498,10 @@ function MalhaEditorInner({
         equalizarData={data?.equalizar_data}
         tetoHoras={data?.teto_horas ?? null}
         temTeto={data ? 'teto_horas' in data : false}
+        grupoId={data?.grupo_id ?? null}
+        // A CHAVE presente é o que diz que a 087 passou — mesmo esquema do
+        // teto. Sem ela o campo não aparece, em vez de aparecer e não gravar.
+        temGrupo={data ? 'grupo_id' in data : false}
       />
 
       {/* F10 (Decisão 65): a prévia da reexecução de um travado. Montada só
