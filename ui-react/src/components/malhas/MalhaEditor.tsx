@@ -86,6 +86,7 @@ import {
 import { COMPONENTE_META, type TipoComponente } from './componenteMeta'
 // F13: painel de agendamento do nó Início — o agendamento mora na MALHA
 // (Decisão 8); o nó é a porta.
+import { NotificacaoMalhaModal } from './NotificacaoMalhaModal'
 import { AgendamentoInicioModal } from './AgendamentoInicioModal'
 import {
   STATUS_EXECUCAO, ORDEM_LEGENDA,
@@ -701,6 +702,8 @@ function MalhaEditorInner({
   const [gesto, setGesto] = useState<GestoPendente | null>(null)
   // F13: painel de agendamento do nó Início (duplo clique ou botão).
   const [agendaAberta, setAgendaAberta] = useState(false)
+  // 087: o nó Notificação ganhou tela — canal, modelo e mensagem.
+  const [notifAberta, setNotifAberta] = useState<number | null>(null)
   const [gestoCarregando, setGestoCarregando] = useState(false)
   const [aplicandoGesto, setAplicandoGesto] = useState(false)
   const [prendendo, setPrendendo] = useState(false)
@@ -2799,8 +2802,14 @@ function MalhaEditorInner({
               // F13: duplo clique no Início abre o painel de agendamento —
               // o nó é a porta (Decisão 8); travado/sem 075 não abre.
               if (travado || nosIndisponiveis || !ehNo(node.id)) return
-              if (tipoDoNo.get(Number(node.id.slice(NO_PREFIX.length))) === 'inicio') {
+              const idNo = Number(node.id.slice(NO_PREFIX.length))
+              const tipo = tipoDoNo.get(idNo)
+              if (tipo === 'inicio') {
                 setAgendaAberta(true)
+              } else if (tipo === 'notificacao') {
+                // 087 — mesma porta do Início (Decisão 8): o nó É o acesso à
+                // configuração dele.
+                setNotifAberta(idNo)
               }
             }}
             colorMode={colorMode}
@@ -3455,6 +3464,27 @@ function MalhaEditorInner({
 
       {/* F13: painel de agendamento do nó Início — o agendamento é da MALHA
           (Decisão 8); salvar compila para as raízes com dry_run antes. */}
+      {/* 087 — a tela do nó Notificação. Renderizada só quando aberta: ela
+          consulta o catálogo de canais e a prévia, e nenhuma das duas pode
+          disparar por existir uma linha no JSX. */}
+      {notifAberta !== null && (
+        <NotificacaoMalhaModal
+          malha={malha}
+          config={(grafo?.nos.find(n => n.id === notifAberta)?.config ?? null) as never}
+          podeEditar={!travado && !readOnly}
+          onSalvar={async cfg => {
+            await apiFetch(
+              `/malhas/${encodeURIComponent(malha)}/nos/${notifAberta}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ config: cfg }),
+              })
+            toast.success('Notificação salva — vale do próximo aviso desta malha.')
+            qc.invalidateQueries({ queryKey: ['malha', malha] })
+          }}
+          onClose={() => setNotifAberta(null)}
+        />
+      )}
+
       <AgendamentoInicioModal
         malha={malha}
         aberto={agendaAberta}

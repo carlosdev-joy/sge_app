@@ -1560,6 +1560,77 @@ def canal_teams_supervisao(conn):
     return {"id": row[0], "webhook_url": row[1], "nome": row[2]}
 
 
+# ── O canal POR MALHA (migration 087) ───────────────────────────────────────
+# `MARCA_087` no molde de sempre: banco sem a coluna cai no canal global e o
+# ciclo segue. Deploy parcial não pode calar o Teams — o alarme mudo é pior que
+# o alarme no canal errado.
+_MARCA_087 = "grupo_id"
+
+
+def canal_teams_da_malha(conn, malha: str):
+    """O canal desta malha, ou `None` para "use o global".
+
+    A malha aponta para um canal JÁ CADASTRADO (`etl_msg_grupo`, o mesmo
+    catálogo do nó de Notificação das Etapas). Quem opera duas frentes recebia
+    tudo no mesmo lugar, e o alarme que importa se perdia no meio do que não
+    importa.
+
+    Devolve `None` em três casos DIFERENTES, e os três levam ao canal global de
+    propósito: malha sem canal escolhido, canal escolhido que foi INATIVADO, e
+    canal sem webhook preenchido. Nos dois últimos o aviso continua saindo —
+    num canal que talvez não seja o desejado, mas sai. Recusar aqui
+    transformaria um cadastro desfeito em silêncio de madrugada.
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT TOP 1 g.id, g.webhook_url, g.nome "
+            "FROM dbo.etl_malha m "
+            "JOIN dbo.etl_msg_grupo g ON g.id = m.grupo_id "
+            "WHERE m.malha_name = %s AND g.ativo = 1 "
+            "AND g.webhook_url IS NOT NULL AND LTRIM(RTRIM(g.webhook_url)) <> ''",
+            (malha,))
+        row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 — leitura degrada para o global
+        if _MARCA_087 not in str(e):
+            raise
+        print(f"{LOG} coluna grupo_id ausente ({e}) — canal global")
+        return None
+    if not row:
+        return None
+    return {"id": row[0], "webhook_url": row[1], "nome": row[2]}
+
+
+def template_de_mensagem(conn, template_id):
+    """O modelo do catálogo (`etl_msg_template`, migration 049/050), ou `None`.
+
+    Mesmo SELECT que o nó de Notificação das Etapas já emite no fonte gerado —
+    aqui ele mora em `utils/` porque a guardiã é quem pergunta, e SQL não entra
+    na DAG (Decisão 15). Modelo inativo ou inexistente devolve `None`, e o
+    chamador cai na mensagem escrita à mão: um modelo apagado não pode fazer o
+    aviso sumir.
+    """
+    if template_id is None:
+        return None
+    try:
+        tid = int(template_id)
+    except (TypeError, ValueError):
+        return None
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT titulo, corpo, facts, cor, botao_texto, botao_url "
+            "FROM dbo.etl_msg_template WHERE id = %s AND ativo = 1", (tid,))
+        row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 — catálogo ausente degrada
+        print(f"{LOG} modelo de mensagem indisponivel ({e}) — texto do no")
+        return None
+    if not row:
+        return None
+    return {"titulo": row[0], "corpo": row[1], "facts": row[2],
+            "cor": row[3], "botao_texto": row[4], "botao_url": row[5]}
+
+
 def app_base_url(conn) -> str:
     """Endereço base desta instalação do Orquestra (config `app_base_url`,
     migration 086) — a base do BOTÃO que os cards de malha levam para a

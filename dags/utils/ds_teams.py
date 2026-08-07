@@ -527,3 +527,52 @@ def enviar_card(webhook_url: str, card: dict, timeout: int = 15) -> tuple[bool, 
     if 200 <= resp.status_code < 300:
         return True, f"HTTP {resp.status_code}"
     return False, f"webhook respondeu HTTP {resp.status_code}"
+
+
+# ═══════════ A mensagem que o operador escreveu (migration 087) ═════════════
+# O nó de Notificação da MALHA passou a escolher canal e modelo do MESMO
+# catálogo que as Etapas já usam (`etl_msg_grupo` / `etl_msg_template`). A
+# interpolação mora aqui, e não no chamador, porque a PRÉVIA da tela e o CARD
+# do celular têm de sair da mesma função — uma prévia que renderiza por outro
+# caminho é uma promessa que o Teams não cumpre, e o operador só descobre às 3h.
+
+#: Os nomes que o editor oferece. `{ciclo}` é o rótulo humano da Decisão 74
+#: ("ciclo de 04/08"), nunca o id.
+PLACEHOLDERS_MALHA = ("malha", "data", "pipelines", "ciclo", "quantidade")
+
+
+def interpolar(texto, mapa: dict) -> str:
+    """Troca `{chave}` pelos valores do mapa.
+
+    Placeholder DESCONHECIDO fica intacto de propósito: quem escreveu `{jobs}`
+    achando que existe precisa ver `{jobs}` na prévia para descobrir o engano —
+    apagá-lo silenciosamente entregaria uma frase com um buraco onde deveria
+    haver informação. `None` vira string vazia (o valor existe e está vazio, que
+    é diferente de não existir).
+    """
+    saida = str(texto or "")
+    for chave, valor in (mapa or {}).items():
+        saida = saida.replace("{" + str(chave) + "}", "" if valor is None else str(valor))
+    return saida
+
+
+def texto_da_notificacao(config: dict, template: dict | None, mapa: dict) -> tuple:
+    """`(titulo, corpo)` já interpolados, na precedência do nó de Etapas.
+
+    A mensagem escrita NO NÓ vence o corpo do modelo — o modelo é ponto de
+    partida, não camisa de força, e quem ajustou o texto para uma malha
+    específica não pode ver o ajuste sumir porque alguém editou o modelo
+    compartilhado. Título segue a mesma regra.
+
+    Sem nó, sem modelo e sem texto, devolve `(None, None)` e o chamador mantém
+    a frase automática de sempre: a configuração é opcional, e malha nenhuma
+    fica muda por não ter sido configurada.
+    """
+    cfg = config or {}
+    tpl = template or {}
+    titulo = (str(cfg.get("titulo") or "").strip()
+              or str(tpl.get("titulo") or "").strip())
+    corpo = (str(cfg.get("mensagem") or "").strip()
+             or str(tpl.get("corpo") or "").strip())
+    return (interpolar(titulo, mapa) if titulo else None,
+            interpolar(corpo, mapa) if corpo else None)
