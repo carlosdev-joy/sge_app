@@ -325,7 +325,7 @@ def test_o_dia_com_varias_corridas_deixa_de_ser_mudo():
     deixava de mostrar a faixa: honesto, e mudo."""
     fonte = _fonte("CabecalhoCorrida.tsx")
     assert "corridasNoDia" in fonte
-    assert "escolha uma na faixa" in fonte
+    assert "escolha um na faixa" in fonte
     editor = _fonte("MalhaEditor.tsx")
     assert "corridasNoDia={execData?.corridas_no_dia ?? null}" in editor
 
