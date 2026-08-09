@@ -1323,10 +1323,17 @@ async def dags_inventario(_admin: dict = Depends(get_admin_user)):
                             "only_active": "false"})
                 r.raise_for_status()
                 data = r.json()
-                for d in data.get("dags", []):
+                pagina = data.get("dags", [])
+                for d in pagina:
                     if d.get("dag_id"):
                         vivas[d["dag_id"]] = d
-                offset += 100
+                # Avança pelo TAMANHO REAL da página, não pelo limit pedido:
+                # um AIRFLOW__API__MAXIMUM_PAGE_LIMIT abaixo de 100 devolveria
+                # páginas menores, e pular 100 fixo perderia DAGs — que
+                # apareceriam como "ausente no Airflow" falsamente.
+                if not pagina:
+                    break
+                offset += len(pagina)
                 if offset >= int(data.get("total_entries") or 0):
                     break
     except Exception as e:
