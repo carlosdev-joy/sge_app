@@ -10,7 +10,7 @@ import { Button } from '../components/ui/Button'
 import { Progress } from '../components/ui/Progress'
 import {
   RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock,
-  Activity, Layers, BarChart2, ChevronRight, FileText,
+  Activity, Layers, BarChart2, ChevronRight, FileText, ListChecks,
 } from 'lucide-react'
 import {
   LogDetailModal, AirflowLogModal, DsLogModal,
@@ -33,6 +33,10 @@ import type { DependenciaEstadoItem, DependenciasEstadoApi } from '../types/pipe
 interface KpiData {
   total_execucoes: number
   total_sucesso: number
+  /** Etapas (jobs) do dia — ausentes quando a API ainda é anterior à fase:
+   *  o card degrada para "—" em vez de sumir (posição fixa, Decisão 72). */
+  total_etapas?: number
+  total_etapas_ok?: number
   total_falha: number
   total_warning: number
   taxa_sucesso_pct: number
@@ -997,13 +1001,24 @@ export default function Dashboard() {
       {!isLoading && data && kpis && (
         <>
           {/* ── KPI Cards ── */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
             <KpiCard
               label="Execuções"
               value={kpis.total_execucoes}
               sub={date === todayBRT() ? 'hoje' : date}
               icon={<BarChart2 size={16} />}
               color="blue"
+            />
+            {/* A grandeza do dia: "Execuções" conta pipelines; este conta cada
+                ETAPA (job) que rodou. É o número que dá a dimensão real do que
+                a ferramenta processa numa madrugada. */}
+            <KpiCard
+              label="Etapas"
+              value={kpis.total_etapas ?? '—'}
+              sub={typeof kpis.total_etapas_ok === 'number'
+                ? `${kpis.total_etapas_ok} com sucesso` : undefined}
+              icon={<ListChecks size={16} />}
+              color="purple"
             />
             <KpiCard
               label="Sucesso"
