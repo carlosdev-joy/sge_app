@@ -157,6 +157,26 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
         base_taxa = total_exec - total_skipped
         taxa = round(total_sucesso * 100.0 / base_taxa, 1) if base_taxa else 0.0
 
+        # ── Etapas do dia ────────────────────────────────────────────────────
+        # "Execuções" conta pipelines; este conta cada ETAPA (job) que rodou no
+        # dia — a medida de grandeza do uso da ferramenta. Mesmo recorte do KPI
+        # de execuções: janela por start_time, só ambiente PROD, filtro de
+        # projeto. RUNNING conta no total (a etapa rodou no dia) e não no "com
+        # sucesso" — os dois números divergirem durante a madrugada é o
+        # comportamento certo, não um bug de contagem.
+        cur.execute(f"""
+            SELECT COUNT(*),
+                SUM(CASE WHEN e.status = 'SUCCESS' THEN 1 ELSE 0 END)
+            FROM dbo.etl_job_execution e
+            JOIN dbo.etl_pipeline p ON p.pipeline_name = e.pipeline
+            WHERE e.start_time >= ? AND e.start_time < ?
+              AND COALESCE(p.ambiente, 'PROD') = 'PROD'
+              {where_proj_alias}
+        """, [dt_ini, dt_fim] + ([fp] if fp else []))
+        row = cur.fetchone()
+        total_etapas    = int(row[0] or 0) if row else 0
+        total_etapas_ok = int(row[1] or 0) if row else 0
+
         cur.execute(f"""
             WITH execs AS (
                 SELECT execution_id, project, pipeline,
@@ -326,6 +346,7 @@ def get_dashboard(filter_project: Optional[str] = None, date_ref: Optional[str] 
         "date_ref": dr,
         "kpis": {
             "total_execucoes": total_exec, "total_sucesso": total_sucesso,
+            "total_etapas": total_etapas, "total_etapas_ok": total_etapas_ok,
             "total_falha": total_falha, "total_warning": total_warning,
             "taxa_sucesso_pct": taxa, "duracao_media_segundos": duracao_media,
             "fila_media_segundos": fila_media, "fila_max_segundos": fila_max,
