@@ -683,9 +683,15 @@ def test_o_dashboard_MOSTRA_a_corrida_e_o_clique_cai_nela(painel):
     nomes = [l["malha"] for l in c["corridas"]]
     assert nomes[:3] == ["ATRASADA_NA_REF", "QUEBROU", "RODANDO"]
     assert nomes[3:] == [f"OK_{i:02d}" for i in range(CONCLUIDAS)]
-    # O resumo do cabeçalho conta pelo MESMO predicado que pinta as linhas:
-    # não abriu + falhou = 2; a que roda saudável não é problema.
-    assert "2 de 15 com problema" in (c["cabecalho"] or "")
+    # O resumo do cabeçalho conta pelo MESMO predicado que pinta as linhas, e
+    # os ÂMBARES contam junto (o molde é o COM_ALERTA da Supervisão): não
+    # abriu + falhou + a RODANDO que está "sem sinal" há horas = 3.
+    assert "3 de 15 com problema" in (c["cabecalho"] or "")
+    # Na linha "não abriu", o ciclo ANTERIOR entra ROTULADO ("↳ anterior: …")
+    # — nunca o horário dele solto na ponta direita, que se leria como o ciclo
+    # de hoje na linha que afirma que hoje não abriu.
+    atrasada = next(l for l in c["corridas"] if l["malha"] == "ATRASADA_NA_REF")
+    assert "anterior:" in atrasada["texto"]
     corrida = _corrida_de(_PAYLOAD_ATUAL["madrugada"], "RODANDO")
     linha = next(l for l in c["corridas"] if l["malha"] == "RODANDO")
     assert linha["navegou"] == \
