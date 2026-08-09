@@ -792,7 +792,7 @@ export const ROTULO_EVENTO_CORRIDA: Record<string, string> = {
   MALHA_EXPIRADA: 'encerrada sem terminar',
   MALHA_ABORTADA: 'não chegou a começar',
   MALHA_CANCELADA: 'encerrada pelo operador',
-  MALHA_CONCLUIDA: 'corrida concluída',
+  MALHA_CONCLUIDA: 'ciclo concluído',
   MALHA_SEM_TRABALHO: 'sem trabalho hoje',
   MALHA_REPROCESSO: 'reprocesso',
   MALHA_TETO_CREDITADO: 'limite adiado por retenção',
@@ -968,7 +968,7 @@ export function resumoCorrida(
   const linhas: string[] = [`${rotulo} · ${identidade}`]
   if (texto) linhas.push(texto)
   if (contagem) linhas.push(contagem)
-  if (abriu) linhas.push(`aberta por ${abriu}`)
+  if (abriu) linhas.push(`aberto por ${abriu}`)
   // "não foi reaberta" nunca vira "1ª tentativa" (Decisão 74).
   if (c.tentativas > 1) {
     linhas.push(`reaberta ${c.tentativas - 1}x`
@@ -1127,12 +1127,12 @@ export function resumoEsperada(
   const cabecalho = `previsto para ${e.previsto_para}`
     + (atraso === null ? '' : ` · há ${textoDuracao(atraso)}`)
   const bloqueio = e.bloqueada_por_corrida_aberta
-    ? 'o ciclo anterior continua aberto — enquanto ela não fechar, a próxima '
+    ? 'o ciclo anterior continua aberto — enquanto ele não fechar, o próximo '
       + 'não abre'
     : null
   const linhas = [
     `não abriu · ${cabecalho}`,
-    dia ? `nenhum ciclo de ${dia} foi registrada` : 'nenhum ciclo registrado',
+    dia ? `nenhum ciclo de ${dia} foi registrado` : 'nenhum ciclo registrado',
     `horário previsto: ${e.atrasada_desde ?? e.previsto_para}`,
   ]
   if (bloqueio) linhas.push(bloqueio)

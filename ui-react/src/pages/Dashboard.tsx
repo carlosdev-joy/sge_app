@@ -1,8 +1,9 @@
 import { Fragment, useState, useMemo, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
 import { PageSpinner } from '../components/ui/Spinner'
+import { Badge } from '../components/ui/Badge'
 import { SupervisaoCard } from '../components/dashboard/SupervisaoCard'
 import { Select } from '../components/ui/Input'
 import { Button } from '../components/ui/Button'
@@ -592,7 +593,7 @@ function AguardandoDependenciaCard() {
   )
 }
 
-// ── Corrida de malha (F11, §9.8/Decisão 70) ────────────────────────────────
+// ── Execução de Malha (F11, §9.8/D70 — formato Supervisão desde 2026-08-09) ─
 //
 // O defeito que este bloco mata: o Dashboard é a tela em que o plantonista de
 // fato cai, e ela era CEGA para o ciclo da malha. Ele mostra pipeline a
@@ -603,43 +604,75 @@ function AguardandoDependenciaCard() {
 // MESMA cadência condicional da lista (`QUERY_MALHAS` + `cadenciaDaLista`).
 // Com as duas telas abertas o react-query serve as duas do mesmo payload; com
 // só esta, a cadência é a mesma da lista — e ZERO refetch quando não há corrida
-// aberta nem "não abriu" (Decisão 73).
+// aberta nem "não abriu" (Decisão 73). A inversão abaixo NÃO muda a cadência:
+// painel visível ≠ painel pollando.
 //
-// **Divergência declarada da §9.8:** a Decisão 70 diz "uma linha por corrida
-// `ABERTA`/`FALHA`", e ela foi escrita antes de a F9 existir. `não abriu` entra
-// junto porque é o PIOR modo de falha e o mais silencioso — a malha que não
-// rodou é a única que não aparece em lugar nenhum, e omiti-la aqui deixaria o
-// Dashboard mudo justamente sobre a linha que o card da lista põe no topo.
-//
-// A linha some inteira quando não há nada a dizer: um painel "0 corridas" fixo
-// no topo do Dashboard treina o olho a pular a região (Decisões 26/27).
+// **INVERSÃO (2026-08-09, decisão do usuário):** este painel nasceu sumindo
+// quando não havia "nada a dizer" (Decisões 26/27) e mostrando só o que estava
+// em voo ou mal. Ele passou ao formato do `SupervisaoCard`, pelo MESMO motivo
+// que criou a Supervisão: o primeiro processo DataStage está migrando para o
+// Orquestra, e "está tudo executando com sucesso" precisa ser AFIRMADO por uma
+// linha com rótulo — não deduzido da ausência de um painel que o operador
+// talvez nem saiba que existiria. TODAS as malhas ativas aparecem, sempre; o
+// cabeçalho resume ("N de M com problema" / "M sem problema"); a GRAVIDADE
+// continua mandando na ordem e a confirmação positiva fecha a lista.
 
 /** Os desfechos que exigem alguém AGORA — e o motivo de serem um conjunto
- *  nomeado em vez de uma lista de `||`: esta é a resposta a "o que aparece no
- *  Dashboard", e a pergunta volta toda vez que um desfecho novo nascer.
+ *  nomeado em vez de uma lista de `||`: esta é a resposta a "o que acende
+ *  vermelho no Dashboard", e a pergunta volta a cada desfecho novo.
  *
  *  `ABORTADA` entrou depois, pelo pior dos motivos: ela não casava filtro
  *  nenhum, não tinha contador e não estava aqui — a corrida que abortou à
  *  01:00 ficava invisível às 8h em TODAS as superfícies. */
 const DESFECHO_RUIM = new Set(['FALHA', 'ABORTADA', 'EXPIRADA'])
 
+/** O predicado do "N de M com problema" — e é o MESMO que pinta o fundo da
+ *  linha: o contador do cabeçalho e o vermelho das linhas não podem discordar
+ *  (a regra do `resumo`/`COM_ALERTA` do SupervisaoCard — que conta os âmbares
+ *  junto dos vermelhos, e é o molde seguido aqui).
+ *
+ *  `CANCELADA` fica FORA de propósito: encerramento pelo operador é decisão
+ *  humana registrada com motivo, não incidente — contá-la faria o badge
+ *  acusar problema sobre o gesto que RESOLVEU um. */
+const TEM_PROBLEMA = (m: ApiMalha): boolean => {
+  if (m.corrida_esperada) return true                    // não abriu
+  const c = m.corrida
+  if (!c) return false                                   // ausência ≠ incidente
+  if (DESFECHO_RUIM.has(c.status)) return true
+  // ABERTA com qualquer saúde ruim: falha detectada, fora do prazo (o par
+  // saude/teto é o MESMO do contador "Fora do prazo" da lista,
+  // `corridasDaLista`) ou sem sinal. "N sem problema" verde sobre uma malha
+  // com pílula âmbar seria o badge desmentindo a linha de baixo.
+  if (c.status === 'ABERTA' && (c.saude === 'COM_FALHA'
+    || c.saude === 'ATRASADA' || c.saude === 'SEM_PROGRESSO'
+    || c.teto_vencido === true)) return true
+  // SEM_TRABALHO num dia que costuma ter trabalho (Decisão 68): a malha "sem
+  // nada para fazer" numa terça em que as últimas terças rodaram é
+  // exatamente o silêncio que este painel existe para acusar.
+  return c.status === 'SEM_TRABALHO'
+    && m.historico?.dia_semana?.atipico === true
+}
+
 /** Ordem de GRAVIDADE, com desempate estável pelo nome — duas malhas no mesmo
- *  estado não podem trocar de lugar a cada refetch de 20 s. */
+ *  estado não podem trocar de lugar a cada refetch de 20 s. Com o painel
+ *  listando TODAS as ativas, a régua ganhou os degraus do fim: fechadas sem
+ *  drama e, por último, as sem ciclo nenhum. Nenhuma linha com problema
+ *  ordena abaixo de uma sadia — o degrau 2 herda o predicado do badge. */
 const PESO_CORRIDA = (m: ApiMalha): number => {
   if (m.corrida_esperada) return 0                       // não abriu
   const c = m.corrida
-  if (c?.status === 'FALHA') return 1
+  if (!c) return 5                                       // sem ciclo registrado
   // `ABORTADA` ao lado da falha: "não chegou a começar" é tão grave quanto
   // "começou e quebrou", e o operador precisa achá-la no mesmo lugar.
-  if (c?.status === 'ABORTADA') return 1
-  if (c?.status === 'ABERTA' && c?.saude === 'COM_FALHA') return 2
-  if (c?.status === 'EXPIRADA') return 2
-  return 3                                               // rodando saudável
+  if (c.status === 'FALHA' || c.status === 'ABORTADA') return 1
+  if (TEM_PROBLEMA(m)) return 2   // ABERTA doente · EXPIRADA · SEM_TRABALHO atípico
+  if (c.status === 'ABERTA') return 3                    // rodando saudável
+  return 4                                               // fechada sem drama
 }
 
 function CorridasDeMalhaCard() {
   const navigate = useNavigate()
-  const { data, dataUpdatedAt } = useQuery<MalhasResponse>({
+  const { data, dataUpdatedAt, isLoading, isError } = useQuery<MalhasResponse>({
     queryKey: QUERY_MALHAS,
     queryFn: () => apiFetch('/malhas'),
     refetchInterval: q => cadenciaDaLista(q.state.data?.malhas),
@@ -651,36 +684,87 @@ function CorridasDeMalhaCard() {
   const agora = useDecorrido(acompanhando)
   const tempo = useMemo(() => ({ respostaEm: dataUpdatedAt, agora }),
                         [dataUpdatedAt, agora])
-  // Os desfechos que exigem alguém agora. Conjunto nomeado (e não uma lista de
-  // `||`) porque ele é a resposta a "o que aparece no Dashboard", e essa
-  // pergunta vai voltar quando um desfecho novo nascer.
+  // Só as ATIVAS: malha inativada não roda, e uma linha eterna "sem ciclo
+  // registrado" sobre ela seria alarme sem ação possível. TODAS as ativas
+  // entram (inversão de 2026-08-09) — quem decide o topo é a gravidade.
   const linhas = useMemo(
-    () => malhas
-      // `ABORTADA` e `EXPIRADA` entram junto com `FALHA`: as três são
-      // desfechos ruins que pedem ação, e ficar de fora daqui significa que a
-      // corrida que abortou à 01:00 não aparece em NENHUMA superfície às 8h —
-      // nem no filtro da lista, nem no contador, nem aqui.
-      .filter(m => m.corrida_esperada || m.corrida?.status === 'ABERTA'
-        || DESFECHO_RUIM.has(m.corrida?.status ?? ''))
-      .slice()
+    () => malhas.filter(m => !!m.ativo).slice()
       .sort((a, b) => PESO_CORRIDA(a) - PESO_CORRIDA(b)
         || a.malha_name.localeCompare(b.malha_name, 'pt-BR')),
     [malhas])
-  if (linhas.length === 0) return null
+  const comProblema = useMemo(() => linhas.filter(TEM_PROBLEMA).length, [linhas])
+  // A MESMA degradação declarada do card da lista (Decisão 41): os dois jeitos
+  // de não haver ciclo neste ambiente (banco sem a 085, API anterior à fase)
+  // viram UMA frase — e o painel não finge que 40 malhas "sem ciclo" são fato.
+  const semDadosDeCorrida = data !== undefined
+    && (data.migration_085_pendente === true || data.corrida_suportada !== true)
+  // Falha de rede não deixa um bloco quebrado no meio do dashboard — o mesmo
+  // contrato do SupervisaoCard.
+  if (isError) return null
   return (
     <div className="bg-panel border border-edge rounded-xl overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-edge flex items-center justify-between gap-2">
+      <div className="px-4 py-2.5 border-b border-edge flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-semibold text-ink flex items-center gap-1.5">
-          <Layers size={14} /> Corridas de malha ({linhas.length})
+          <Layers size={14} /> Execução de Malha
         </h3>
-        <span className="text-[10px] text-dim">
+        {/* O resumo do SupervisaoCard, palavra por palavra: "N de M com
+            problema" vermelho, ou a confirmação positiva verde. Ele cala nas
+            degradações (carregando, sem dados de ciclo) — resumo sobre dado
+            que não existe é o painel mentindo com aritmética. */}
+        {!isLoading && linhas.length > 0 && !semDadosDeCorrida && (
+          <Badge value={comProblema > 0 ? 'error' : 'success'}>
+            {comProblema > 0
+              ? `${comProblema} de ${linhas.length} com problema`
+              : `${linhas.length} sem problema`}
+          </Badge>
+        )}
+        <span className="ml-auto text-[10px] text-dim">
           o ciclo da malha — clique para acompanhar
         </span>
       </div>
-      {linhas.map(m => (
-        <CorridaLinha key={m.malha_name} malha={m} tempo={tempo}
-          onAbrir={() => navigate(linkDaCorrida(m.malha_name, m.corrida?.id))} />
-      ))}
+      {isLoading && <p className="px-4 py-6 text-xs text-dim">Carregando…</p>}
+      {!isLoading && semDadosDeCorrida && linhas.length > 0 && (
+        <p
+          className="px-4 py-2 border-b border-edge/40 flex items-center gap-1.5 text-[11px] text-amber-700 dark:text-amber-400"
+          title="O registro do ciclo da malha ainda não está disponível neste ambiente — a migration 085 não foi aplicada, ou o servidor ainda é o anterior a esta versão."
+        >
+          <AlertTriangle size={11} className="shrink-0" />
+          sem dados de ciclo — sistema em atualização
+        </p>
+      )}
+      {!isLoading && linhas.length === 0 && (
+        // Lista vazia tem DUAS causas com frases diferentes: a migration 070
+        // ausente (a API degrada para lista vazia + flag — dizer "cadastre
+        // malhas" aqui seria mentira, a tela Malha nem deixa criar) e o
+        // cadastro vazio de verdade (o molde é o estado vazio do
+        // SupervisaoCard: lista vazia = cadastro vazio, não dia sem dados).
+        data?.migration_pendente === true ? (
+          <p className="px-4 py-6 flex items-center gap-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+            <AlertTriangle size={11} className="shrink-0" />
+            migration 070 pendente — as tabelas de malha ainda não existem
+            neste ambiente; peça o deploy para acompanhar as malhas aqui.
+          </p>
+        ) : (
+          <div className="px-4 py-8 flex flex-col items-center gap-1.5 text-center">
+            <p className="text-sm text-ink font-medium">Nenhuma malha ativa cadastrada</p>
+            <p className="text-xs text-dim">
+              Monte malhas na tela{' '}
+              <Link to="/malha" className="text-blue-600 dark:text-blue-400 underline underline-offset-2">
+                Malha
+              </Link>
+              {' '}para acompanhar o ciclo de cada uma aqui.
+            </p>
+          </div>
+        )
+      )}
+      {!isLoading && linhas.length > 0 && (
+        <ul className="divide-y divide-edge/60">
+          {linhas.map(m => (
+            <CorridaLinha key={m.malha_name} malha={m} tempo={tempo}
+              onAbrir={() => navigate(linkDaCorrida(m.malha_name, m.corrida?.id))} />
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
@@ -697,41 +781,86 @@ function CorridaLinha({ malha, tempo, onAbrir }: {
   // terceira superfície a contar a história do mesmo ciclo — e a primeira a
   // discordar das outras duas.
   const resumo = useMemo(
-    () => (corrida ? resumoCorrida(corrida, tempo, malha.qtd_pipelines) : null),
-    [corrida, tempo, malha.qtd_pipelines])
+    () => (corrida
+      ? resumoCorrida(corrida, tempo, malha.qtd_pipelines, malha.historico ?? null)
+      : null),
+    [corrida, tempo, malha.qtd_pipelines, malha.historico])
   const previsao = useMemo(
     () => (esperada ? resumoEsperada(esperada, tempo) : null),
     [esperada, tempo])
+  const alerta = TEM_PROBLEMA(malha)
   return (
-    <div
-      onClick={onAbrir}
-      title={previsao?.titulo ?? resumo?.titulo}
-      className="flex items-center gap-3 px-4 py-2.5 border-b border-edge/40 last:border-0 hover:bg-blue-50 dark:hover:bg-blue-900/10 transition-colors cursor-pointer"
+    <li
+      // O fundo avermelhado da linha com problema é o do SupervisaoCard — e o
+      // predicado é o MESMO do contador do cabeçalho, para os dois canais
+      // nunca discordarem.
+      className={alerta ? 'bg-red-50/40 dark:bg-red-900/10' : ''}
     >
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="font-mono text-xs font-medium text-ink truncate">
-            {malha.malha_name}
-          </span>
-          <CorridaBadge corrida={corrida} esperada={esperada} />
-        </div>
-        <div className="text-[10px] text-dim truncate">
-          {/* `x de y` — nunca "%" (Decisão 56) e nunca sem a subtração ao lado
-              (Decisão 53): "2 de 2 concluídos" num dia em que 5 dos 7 membros
-              foram inativados é a mentira que esta camada existe para matar. */}
-          {previsao
-            ? `${previsao.cabecalho} · ${previsao.semCorrida}`
-            : [resumo?.identidade, resumo?.contagem, resumo?.membros, resumo?.tempo]
-                .filter(Boolean).join(' · ')}
-        </div>
-        {(previsao?.bloqueio ?? resumo?.culpado) && (
-          <div className="text-[10px] font-medium text-red-600 dark:text-red-400 truncate">
-            ↳ {previsao?.bloqueio ?? resumo?.culpado}
+      <div
+        onClick={onAbrir}
+        title={previsao?.titulo ?? resumo?.titulo}
+        // Hover TRANSLÚCIDO (o do molde): um hover opaco cobriria o fundo
+        // avermelhado da linha com problema durante o gesto de clicar nela.
+        className="flex items-center gap-3 px-4 py-2.5 hover:bg-edge/30 transition-colors cursor-pointer"
+      >
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <span className="font-mono text-xs font-medium text-ink truncate">
+              {malha.malha_name}
+            </span>
+            {(corrida || esperada) ? (
+              <CorridaBadge corrida={corrida} esperada={esperada}
+                diaAtipico={!!resumo?.diaAtipico} />
+            ) : (
+              // Decisão 41: sem corrida e sem previsão a pílula cala — a
+              // ausência é dita com todas as letras, sem cor de estado.
+              <span className="text-[10px] italic text-dim">sem ciclo registrado</span>
+            )}
           </div>
+          <div className="text-[10px] text-dim truncate">
+            {/* `x de y` — nunca "%" (Decisão 56) e nunca sem a subtração ao
+                lado (Decisão 53): "2 de 2 concluídos" num dia em que 5 dos 7
+                membros foram inativados é a mentira que esta camada mata. */}
+            {previsao
+              ? `${previsao.cabecalho} · ${previsao.semCorrida}`
+              : [resumo?.identidade, resumo?.contagem, resumo?.membros]
+                  .filter(Boolean).join(' · ')}
+          </div>
+          {/* Na linha "não abriu", o ciclo ANTERIOR entra ROTULADO — nunca o
+              horário dele solto na ponta direita, que se leria como o ciclo
+              de hoje na linha que afirma que hoje não abriu (o molde é a
+              linha "↳ anterior:" do card da lista, F9). */}
+          {previsao && resumo && (
+            <div className="text-[10px] text-dim truncate opacity-80">
+              ↳ anterior: {resumo.identidade} · {resumo.estilo.rotulo}
+              {resumo.tempo ? ` · ${resumo.tempo}` : ''}
+            </div>
+          )}
+          {(previsao?.bloqueio ?? resumo?.culpado) && (
+            <div className="text-[10px] font-medium text-red-600 dark:text-red-400 truncate">
+              ↳ {previsao?.bloqueio ?? resumo?.culpado}
+            </div>
+          )}
+          {/* Decisão 68 — a frase do dia atípico É o segundo canal da pílula
+              âmbar de SEM_TRABALHO (contrato do CorridaBadge: quem escreve a
+              frase é o chamador; cor nunca é canal único). */}
+          {resumo?.diaAtipico && (
+            <div className="text-[10px] font-medium text-amber-700 dark:text-amber-400 truncate">
+              ⚠ {resumo.diaAtipico}
+            </div>
+          )}
+        </div>
+        {!previsao && resumo?.tempo && (
+          // O horário na ponta direita da linha, onde o SupervisaoCard o põe:
+          // aberta é o decorrido ("há 42 min"); fechada, `01:10 → 04:02 · 2h52`
+          // (Decisão 60 — um formato por estado, nunca os dois). Com previsão
+          // ("não abriu") ele NÃO sai aqui: seria o horário de ONTEM sem
+          // rótulo na linha de hoje — ele entra na linha "anterior" acima.
+          <span className="text-[11px] text-dim shrink-0">{resumo.tempo}</span>
         )}
+        <ChevronRight size={13} className="text-dim flex-shrink-0" />
       </div>
-      <ChevronRight size={13} className="text-dim flex-shrink-0" />
-    </div>
+    </li>
   )
 }
 
@@ -953,7 +1082,7 @@ export default function Dashboard() {
           precisa mostrar que um job DataStage supervisionado não rodou. */}
       <SupervisaoCard date={date} />
 
-      {/* ── Corridas de malha (F11/D70) ──
+      {/* ── Execução de Malha (F11/D70, formato Supervisão desde 2026-08-09) ──
           ACIMA de "Aguardando dependência" de propósito: a corrida é o ciclo
           inteiro, e o pipeline esperando predecessor é um detalhe DENTRO dela.
           Ler o detalhe antes do todo é como o plantão chega a "reprocessa o
