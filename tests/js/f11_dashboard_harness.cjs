@@ -373,8 +373,10 @@ function rodar(Dashboard, cenario) {
     corridas,
     dependencias,
     consultas,
-    // O card inteiro some quando não há nada a dizer (Decisões 26/27): um
-    // painel "0 corridas" fixo no topo treina o olho a pular a região.
+    // INVERSÃO (2026-08-09, formato Supervisão): o card não some mais quando
+    // não há problema — ele lista todas as malhas ativas com a confirmação
+    // positiva no cabeçalho ("N sem problema"). O flag continua existindo
+    // para o teste AFIRMAR a presença (antes afirmava a ausência).
     tem_card_de_corrida: !!(cardCorridas && cardCorridas.filhos.length),
     cabecalho: cardCorridas ? textoDe(cardCorridas).join(' ') : null,
     lido: tudoQueSeLe(raiz),

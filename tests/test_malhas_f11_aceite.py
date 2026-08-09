@@ -673,13 +673,19 @@ def test_o_dashboard_MOSTRA_a_corrida_e_o_clique_cai_nela(painel):
     ela era CEGA para o ciclo: mostra pipeline a pipeline, e a pergunta das 3h
     é "que MALHA está rodando, e ela está bem"."""
     c = _painel(painel, "dash_madrugada")
-    # Só o que está em voo ou mal: das 15 malhas da manhã, as 12 concluídas
-    # NÃO entram (um painel que lista tudo todo dia treina o olho a pular a
-    # região). E a ordem é a da GRAVIDADE, não a alfabética: primeiro a que
-    # não abriu (o pior modo de falha, e o mais silencioso), depois a que
-    # falhou, por último a que roda saudável.
-    assert [l["malha"] for l in c["corridas"]] == \
-        ["ATRASADA_NA_REF", "QUEBROU", "RODANDO"]
+    # INVERSÃO (2026-08-09, formato Supervisão): TODAS as 15 malhas ativas
+    # entram — as 12 concluídas inclusive, porque durante a migração
+    # DataStage → Orquestra "está tudo bem" precisa ser AFIRMADO por uma linha
+    # com rótulo, não deduzido da ausência. A GRAVIDADE continua mandando na
+    # ordem: primeiro a que não abriu (o pior modo de falha, e o mais
+    # silencioso), depois a que falhou, depois a que roda saudável — e a
+    # confirmação positiva fecha a lista, em ordem alfabética estável.
+    nomes = [l["malha"] for l in c["corridas"]]
+    assert nomes[:3] == ["ATRASADA_NA_REF", "QUEBROU", "RODANDO"]
+    assert nomes[3:] == [f"OK_{i:02d}" for i in range(CONCLUIDAS)]
+    # O resumo do cabeçalho conta pelo MESMO predicado que pinta as linhas:
+    # não abriu + falhou = 2; a que roda saudável não é problema.
+    assert "2 de 15 com problema" in (c["cabecalho"] or "")
     corrida = _corrida_de(_PAYLOAD_ATUAL["madrugada"], "RODANDO")
     linha = next(l for l in c["corridas"] if l["malha"] == "RODANDO")
     assert linha["navegou"] == \
@@ -711,10 +717,14 @@ def test_o_dashboard_le_a_MESMA_chave_e_a_MESMA_cadencia_da_lista(painel, tela):
     parado = _painel(painel, "dash_parado")
     das_malhas = [q for q in parado["consultas"] if q["chave"] == ["malhas"]]
     assert das_malhas[0]["cadencia"] is False
-    # e sem nada em voo o bloco SOME inteiro (Decisões 26/27): um painel
-    # "0 corridas" fixo no topo treina o olho a pular a região
-    assert parado["corridas"] == []
-    assert parado["tem_card_de_corrida"] is False
+    # INVERSÃO (2026-08-09, formato Supervisão): sem nada em voo o painel NÃO
+    # some mais — fica a confirmação positiva ("1 sem problema"), que é o
+    # aceite da migração DataStage → Orquestra. O que NÃO mudou é o custo:
+    # painel visível com ZERO refetch (a cadência `False` logo acima é a
+    # Decisão 73 intacta — visível ≠ pollando).
+    assert parado["tem_card_de_corrida"] is True
+    assert [l["malha"] for l in parado["corridas"]] == ["M1"]
+    assert "1 sem problema" in (parado["cabecalho"] or "")
 
 
 def test_o_link_de_dependencia_leva_a_malha_certa_com_modo_E_data(painel):
