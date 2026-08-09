@@ -968,7 +968,7 @@ export function resumoCorrida(
   const linhas: string[] = [`${rotulo} · ${identidade}`]
   if (texto) linhas.push(texto)
   if (contagem) linhas.push(contagem)
-  if (abriu) linhas.push(`aberta por ${abriu}`)
+  if (abriu) linhas.push(`aberto por ${abriu}`)
   // "não foi reaberta" nunca vira "1ª tentativa" (Decisão 74).
   if (c.tentativas > 1) {
     linhas.push(`reaberta ${c.tentativas - 1}x`

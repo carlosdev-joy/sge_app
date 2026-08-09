@@ -274,8 +274,8 @@ def test_nao_abriu_bloqueada_diz_que_e_a_de_ontem_que_segura(card):
     """Muda a AÇÃO: não é "o Airflow morreu", é "alguém precisa fechar a de
     ontem" — o ciclo aberto bloqueia a partida da próxima."""
     d = _cenario(card, "nao_abriu_bloqueada_pela_de_ontem")
-    assert d["bloqueio"] == ("o ciclo anterior continua aberto — enquanto ela "
-                             "não fechar, a próxima não abre")
+    assert d["bloqueio"] == ("o ciclo anterior continua aberto — enquanto ele "
+                             "não fechar, o próximo não abre")
 
 
 def test_o_atraso_anda_pelo_relogio_local_sobre_a_medida_do_servidor(card):

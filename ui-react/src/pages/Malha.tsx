@@ -1100,7 +1100,7 @@ function MalhasView({ onAbrir, onAcompanhar }: {
           <p className="font-semibold text-ink">Nenhuma malha para este filtro</p>
           <p className="text-sm text-dim mt-1 max-w-md">
             As {malhas.length} malha{malhas.length !== 1 ? 's' : ''} cadastrada{malhas.length !== 1 ? 's' : ''} continua{malhas.length !== 1 ? 'm' : ''} lá —
-            ajuste a busca, a situação ou o estado da corrida.
+            ajuste a busca, a situação ou o estado do ciclo.
           </p>
           <Button variant="secondary" className="mt-4" onClick={limparFiltros}>
             <X size={14} /> Limpar filtros

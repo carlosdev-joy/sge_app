@@ -3276,7 +3276,7 @@ function MalhaEditorInner({
                 </span>
                 {disparo.bloqueios.em_aberto.length > 0 && (
                   <div className="text-[11px] text-red-700 dark:text-red-300">
-                    <span className="font-semibold">Corrida em andamento:</span>{' '}
+                    <span className="font-semibold">Ciclo em andamento:</span>{' '}
                     {disparo.bloqueios.em_aberto.map(b =>
                       `${b.pipeline} (${b.status.toLowerCase()}, ${b.data_referencia})`
                     ).join(' · ')}

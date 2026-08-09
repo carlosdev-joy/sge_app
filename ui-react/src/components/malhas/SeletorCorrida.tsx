@@ -94,7 +94,7 @@ export function SeletorCorrida({
       {blocos.length > 0 && (
         <>
           <span className="text-[10px] font-semibold uppercase tracking-wider text-dim">
-            Corridas
+            Ciclos
           </span>
           <div
             className="flex items-end gap-1"
@@ -149,14 +149,14 @@ export function SeletorCorrida({
                   ? `${c.sequencia}º ciclo de ${dia}`
                   : `ciclo de ${dia}`
                 const h = horaCurta(c.aberta_em)
-                return h ? `${nome} · aberta ${h}` : nome
+                return h ? `${nome} · aberto ${h}` : nome
               })()}
             </span>
           )}
         </>
       )}
       {carregando && blocos.length === 0 && (
-        <span className="text-[11px] text-dim">carregando as corridas…</span>
+        <span className="text-[11px] text-dim">carregando os ciclos…</span>
       )}
 
       <div className="relative">
@@ -207,7 +207,7 @@ export function SeletorCorrida({
             </button>
             <p className="text-[10px] leading-snug text-dim">
               Navegar por data mostra o DIA INTEIRO. Se aquele dia teve mais de
-              uma corrida, escolha uma na faixa: descrever uma corrida sobre a
+              um ciclo, escolha um na faixa: descrever um ciclo sobre a
               lista do dia todo é o card mentindo com layout novo.
             </p>
           </div>

@@ -385,7 +385,7 @@ export function CabecalhoCorrida({
       >
         <div className="flex flex-col gap-3 text-sm text-ink">
           <p>
-            Isto fecha o ciclo da <strong>{resumo.identidade}</strong>
+            Isto fecha o <strong>{resumo.identidade}</strong>
             {resumo.tempo ? <> (<span>{resumo.tempo}</span>)</> : null} e{' '}
             <strong>libera o disparo do próximo ciclo desta malha</strong>.
           </p>
@@ -421,7 +421,7 @@ export function CabecalhoCorrida({
           )}
           <label className="flex flex-col gap-1 text-[13px]">
             <span className="font-medium">
-              Motivo (obrigatório — fica no histórico da corrida)
+              Motivo (obrigatório — fica no histórico do ciclo)
             </span>
             <textarea
               value={motivo}
@@ -432,7 +432,7 @@ export function CabecalhoCorrida({
               className="rounded-md border border-edge bg-canvas px-2 py-1.5 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-[#1A5FA8]/40"
             />
             <span className="text-[11px] text-dim">
-              No fechamento do mês, uma corrida cancelada sem razão registrada é
+              No fechamento do mês, um ciclo cancelado sem razão registrada é
               um buraco no histórico justamente no dia em que algo deu errado.
             </span>
           </label>

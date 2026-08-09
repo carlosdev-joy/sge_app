@@ -374,8 +374,8 @@ function main() {
     so.clicar(blocosNaTela[0])
     return {
       texto: tela.texto,
-      diz_quantas: /este dia teve 2 corridas/.test(tela.texto),
-      manda_escolher: /escolha uma/.test(tela.texto),
+      diz_quantas: /este dia teve 2 ciclos/.test(tela.texto),
+      manda_escolher: /escolha um/.test(tela.texto),
       // Sem `corridas_no_dia` a frase NÃO aparece: ela é sobre o dia com mais
       // de uma, e não sobre qualquer lente sem ciclo.
       mudo: mudo.texto,
