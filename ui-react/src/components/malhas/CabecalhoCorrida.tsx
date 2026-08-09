@@ -203,9 +203,9 @@ export function CabecalhoCorrida({
               DUAS madrugadas empilhadas no mesmo desenho. */}
           {corridasNoDia && corridasNoDia > 1 ? (
             <span className="font-medium text-amber-700 dark:text-amber-400">
-              este dia teve {corridasNoDia} corridas — escolha uma na faixa de
-              corridas para ver o ciclo separado (o desenho abaixo mistura
-              {corridasNoDia === 2 ? ' as duas' : ` as ${corridasNoDia}`})
+              este dia teve {corridasNoDia} ciclos — escolha um na faixa de
+              ciclos para ver o ciclo separado (o desenho abaixo mistura
+              {corridasNoDia === 2 ? ' os dois' : ` os ${corridasNoDia}`})
             </span>
           ) : (
             !sem085 && <span>nenhum ciclo registrado nesta lente</span>

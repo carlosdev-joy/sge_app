@@ -959,10 +959,11 @@ function MalhaEditorInner({
       // à tela — a tabela de eventos é chaveada por pipeline e a corrida não é
       // um pipeline, então o painel os descartava em silêncio. São eles que
       // explicam o que mudou no prazo: o aviso de atraso e o crédito de
-      // retenção (Decisão 61). O rótulo é "corrida", nunca o marcador
-      // `#corrida:{id}` (Decisão 74: nome de máquina não vai à tela).
+      // retenção (Decisão 61). O rótulo é "ciclo" (Decisão 74/#290: é o termo
+      // da tela), nunca o marcador `#corrida:{id}` — nome de máquina não vai à
+      // tela.
       ...(execData?.eventos_corrida ?? []).map(ev => ({
-        rotulo: 'corrida', ehNo: true,
+        rotulo: 'ciclo', ehNo: true,
         tipo: ev.tipo, criado_em: ev.criado_em,
         mensagem: ev.mensagem,
         ...('notificado_em' in ev ? { notificado_em: ev.notificado_em } : {}),
@@ -2413,7 +2414,7 @@ function MalhaEditorInner({
             {data?.hora_virada
               ? <> (<span className="font-mono">{data.hora_virada}</span>)</>
               : ' (virada global)'}
-            , então carimbam data de referência diferente na mesma corrida.{' '}
+            , então carimbam data de referência diferente no mesmo ciclo.{' '}
             <span className="font-mono text-[11px]">
               {data!.virada_divergente!.slice(0, 4).join(', ')}
               {data!.virada_divergente!.length > 4
@@ -2679,7 +2680,7 @@ function MalhaEditorInner({
                volta a mostrar só o decorrido. */
             tipicos={execData?.tipicos ?? null}
             fraseReexecucao={corrida?.status === 'ABERTA'
-              ? `Esta reexecução entra na ${resumo?.identidade ?? 'corrida em andamento'}`
+              ? `Esta reexecução entra no ${resumo?.identidade ?? 'ciclo em andamento'}`
                 + ' (em andamento) e o relógio de fechamento do ciclo NÃO'
                 + ' reinicia por este gesto. A prévia mostra o que será'
                 + ' reexecutado antes de confirmar.'

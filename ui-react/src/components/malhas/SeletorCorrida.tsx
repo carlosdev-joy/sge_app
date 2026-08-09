@@ -99,7 +99,7 @@ export function SeletorCorrida({
           <div
             className="flex items-end gap-1"
             role="group"
-            aria-label="Últimas ciclos desta malha"
+            aria-label="Últimos ciclos desta malha"
           >
             {blocos.map(c => {
               const estilo = estiloCorrida(c.status)

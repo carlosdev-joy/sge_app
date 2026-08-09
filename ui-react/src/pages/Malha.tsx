@@ -267,8 +267,15 @@ function MalhaCard({ malha, tempo, semDadosDeCorrida, onAcompanhar, onAbrir,
                   concordar, senão o card fica cinza com uma borda âmbar. */}
               <CorridaBadge corrida={corrida} diaAtipico={!!resumo.diaAtipico} />
               <span className="shrink-0 opacity-80">· {resumo.identidade}</span>
-              {resumo.tempo && <span className="truncate opacity-80">· {resumo.tempo}</span>}
             </div>
+            {/* O horário em linha PRÓPRIA, abaixo do status — espremido na
+                mesma linha do badge ele era a primeira coisa truncada, e
+                "quando começou / quando terminou" é a pergunta mais frequente
+                sobre um ciclo fechado. Aberto: decorrido; fechado: `01:10 →
+                04:02 · 2h52` (formatos da Decisão 60, um por estado). */}
+            {resumo.tempo && (
+              <span className="font-medium">🕒 {resumo.tempo}</span>
+            )}
             {/* A barra responde UMA coisa: quanto já ficou pronto. O travado
                 fica fora dela (Decisão 54) e o denominador não encolhe
                 (Decisão 52) — as duas regras moram no componente. */}
@@ -322,7 +329,7 @@ function MalhaCard({ malha, tempo, semDadosDeCorrida, onAcompanhar, onAbrir,
               + (formataDataHoraLonga(ultima.em) ? ` · ${formataDataHoraLonga(ultima.em)}` : '')
               + '\nEste é o status do MEMBRO que executou por último — não o da '
               + 'malha inteira. O ciclo da malha aparece aqui quando houver '
-              + 'corrida registrada.'}
+              + 'ciclo registrado.'}
           >
             <span className="shrink-0">▶ última execução: {formataDataHora(ultima.em) ?? '—'}</span>
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${estilo!.dot}`} />
