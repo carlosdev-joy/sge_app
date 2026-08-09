@@ -667,7 +667,7 @@ function CorridasDeMalhaCard() {
     <div className="bg-panel border border-edge rounded-xl overflow-hidden">
       <div className="px-4 py-2.5 border-b border-edge flex items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-ink flex items-center gap-1.5">
-          <Layers size={14} /> Corridas de malha ({linhas.length})
+          <Layers size={14} /> Execução de Malha ({linhas.length})
         </h3>
         <span className="text-[10px] text-dim">
           o ciclo da malha — clique para acompanhar
