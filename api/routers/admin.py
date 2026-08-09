@@ -1097,3 +1097,259 @@ async def test_webhook(body: dict = Body(default={}), _admin: dict = Depends(get
         # Nunca deixa virar 500 sem JSON — devolve o traceback para o Admin
         return {"ok": False, "erro": "Exceção interna no teste",
                 "traceback": traceback.format_exc()[-1500:]}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Inventário das DAGs do SISTEMA — GET /admin/dags/inventario
+#
+# O catálogo (funcionalidade/frequência em pt-BR) mora AQUI, no código: é
+# documentação viva, versionada junto das DAGs que descreve. O Airflow entra
+# como fonte do ESTADO ao vivo (presente/pausada/agendamento real) — e o
+# cruzamento é o valor do inventário: catalogada AUSENTE no Airflow é drift a
+# investigar; presente e NÃO catalogada é catálogo desatualizado (as duas
+# aparecem, nenhuma é escondida). As DAGs de pipeline (geradas pela fábrica em
+# dags/generated/) ficam FORA — o lugar delas é a tela Pipelines.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Ordem de exibição das categorias — o front respeita a ordem recebida.
+CATEGORIAS_DAGS = [
+    "Núcleo", "Monitoramento e alertas", "Consultas da aplicação (RPC)",
+    "Cadastro e gestão", "Cópia de Dados", "Linhagem e importação",
+    "não catalogada",
+]
+
+_RPC = "sob demanda — RPC da aplicação (resultado via XCom)"
+_APP = "sob demanda — disparada pela aplicação"
+
+CATALOGO_DAGS: dict = {
+    # ── Núcleo ──────────────────────────────────────────────────────────────
+    "etl_dag_factory": {
+        "categoria": "Núcleo",
+        "funcionalidade": "Fábrica de DAGs: gera e republica a DAG de cada "
+            "pipeline a partir do cadastro (aceita lista de alvos e force_all)",
+        "frequencia": "sob demanda — Publicar DAGs, Republicar pipelines e "
+            "gestos da aplicação",
+    },
+    "etl_dependencia_guardia": {
+        "categoria": "Núcleo",
+        "funcionalidade": "Guardiã de dependências e do ciclo da malha: ordena "
+            "o dia, redispara dependentes, abre/fecha o ciclo, vigia deadline "
+            "e avisa no Teams",
+        "frequencia": "a cada 5 min (Variable "
+            "DEPENDENCIA_GUARDIA_INTERVAL_MINUTES)",
+    },
+    # ── Monitoramento e alertas ─────────────────────────────────────────────
+    "etl_ds_supervisao_monitor": {
+        "categoria": "Monitoramento e alertas",
+        "funcionalidade": "Supervisão DataStage: coleta o logsum dos jobs "
+            "cadastrados, varre a árvore de filhos em largura e classifica o "
+            "dia (abortou, sucesso falso, não executou…)",
+        "frequencia": "a cada 15 min (Variable DS_SUPERVISAO_INTERVAL_MINUTES)",
+    },
+    "etl_ds_monitor_centralizado": {
+        "categoria": "Monitoramento e alertas",
+        "funcionalidade": "Monitor centralizado DataStage: acompanha os jobs "
+            "em execução disparados pelo Orquestra e grava o log de etapas",
+        "frequencia": "a cada 3 min (Variable MONITOR_INTERVAL_MINUTES)",
+    },
+    "etl_datastage_monitor": {
+        "categoria": "Monitoramento e alertas",
+        "funcionalidade": "Monitora um job DataStage específico em execução "
+            "(conf {project, job_name})",
+        "frequencia": _APP,
+    },
+    "etl_performance_monitor": {
+        "categoria": "Monitoramento e alertas",
+        "funcionalidade": "Monitor de performance: snapshots de execuções "
+            "longas (3h/6h/12h) que alimentam os alertas do Dashboard",
+        "frequencia": "de hora em hora (0 * * * *)",
+    },
+    "orquestra_sla_monitor": {
+        "categoria": "Monitoramento e alertas",
+        "funcionalidade": "Sentinela de SLA: alerta no Teams quando uma "
+            "execução estoura ou ameaça o SLA",
+        "frequencia": "a cada 5 min (*/5 * * * *)",
+    },
+    "orquestra_daily_report": {
+        "categoria": "Monitoramento e alertas",
+        "funcionalidade": "Relatório diário no Teams: resumo da janela noturna",
+        "frequencia": "diária às 07:00 (0 7 * * *)",
+    },
+    # ── Consultas da aplicação (RPC) ────────────────────────────────────────
+    "etl_app_config_query": {
+        "categoria": "Consultas da aplicação (RPC)",
+        "funcionalidade": "Busca parâmetros de configuração do Orquestra no banco",
+        "frequencia": _RPC,
+    },
+    "etl_catalogo_query": {
+        "categoria": "Consultas da aplicação (RPC)",
+        "funcionalidade": "Catálogo de dados: busca por tabela/arquivo e ranking",
+        "frequencia": _RPC,
+    },
+    "etl_job_execution_query": {
+        "categoria": "Consultas da aplicação (RPC)",
+        "funcionalidade": "Consulta paginada de logs de execução",
+        "frequencia": _RPC,
+    },
+    "etl_lineage_query": {
+        "categoria": "Consultas da aplicação (RPC)",
+        "funcionalidade": "Consulta de linhagem (job e pipeline) para a Governança",
+        "frequencia": _RPC,
+    },
+    "etl_pipeline_query": {
+        "categoria": "Consultas da aplicação (RPC)",
+        "funcionalidade": "Consulta paginada do cadastro de pipelines",
+        "frequencia": _RPC,
+    },
+    "etl_pipeline_audit_query": {
+        "categoria": "Consultas da aplicação (RPC)",
+        "funcionalidade": "Consulta da auditoria de alterações de pipelines",
+        "frequencia": _RPC,
+    },
+    "etl_pipeline_job_query": {
+        "categoria": "Consultas da aplicação (RPC)",
+        "funcionalidade": "Consulta paginada de jobs (etapas) de pipeline",
+        "frequencia": _RPC,
+    },
+    "etl_versao_query": {
+        "categoria": "Consultas da aplicação (RPC)",
+        "funcionalidade": "Consulta do histórico de versões do Orquestra",
+        "frequencia": _RPC,
+    },
+    # ── Cadastro e gestão ───────────────────────────────────────────────────
+    "etl_admin_manage": {
+        "categoria": "Cadastro e gestão",
+        "funcionalidade": "Operações administrativas restritas (limpezas e "
+            "gestos de manutenção disparados pelo Admin)",
+        "frequencia": _APP,
+    },
+    "etl_pipeline_register": {
+        "categoria": "Cadastro e gestão",
+        "funcionalidade": "Cria e atualiza o cadastro de um pipeline",
+        "frequencia": _APP,
+    },
+    "etl_pipeline_job_register": {
+        "categoria": "Cadastro e gestão",
+        "funcionalidade": "Cria e atualiza os jobs (etapas) de um pipeline",
+        "frequencia": _APP,
+    },
+    "etl_pipeline_job_reorder": {
+        "categoria": "Cadastro e gestão",
+        "funcionalidade": "Reordena as etapas de um pipeline",
+        "frequencia": _APP,
+    },
+    "etl_versao_register": {
+        "categoria": "Cadastro e gestão",
+        "funcionalidade": "CRUD do histórico de versões do Orquestra",
+        "frequencia": _APP,
+    },
+    # ── Cópia de Dados ──────────────────────────────────────────────────────
+    "etl_copy_exec": {
+        "categoria": "Cópia de Dados",
+        "funcionalidade": "Executa uma cópia de dados registrada entre "
+            "servidores SQL (conf {exec_id})",
+        "frequencia": _APP,
+    },
+    "etl_copy_introspect": {
+        "categoria": "Cópia de Dados",
+        "funcionalidade": "Introspecção de origem/destino da Cópia de Dados "
+            "(bancos, tabelas, colunas)",
+        "frequencia": _RPC,
+    },
+    # ── Linhagem e importação ───────────────────────────────────────────────
+    "etl_lineage_extract_dsx": {
+        "categoria": "Linhagem e importação",
+        "funcionalidade": "Extrai a linhagem de um job DataStage a partir do "
+            "arquivo .dsx",
+        "frequencia": _APP,
+    },
+    "etl_lineage_normalize": {
+        "categoria": "Linhagem e importação",
+        "funcionalidade": "Normaliza a linhagem legada (object_name = tabela real)",
+        "frequencia": _APP,
+    },
+    "etl_sequence_import_parse": {
+        "categoria": "Linhagem e importação",
+        "funcionalidade": "Importa uma sequence DataStage: extrai jobs, ordem "
+            "e linhagem para aprovação",
+        "frequencia": _APP,
+    },
+    "etl_sequence_import_approve": {
+        "categoria": "Linhagem e importação",
+        "funcionalidade": "Aprova a importação da sequence: move o staging "
+            "para as tabelas principais",
+        "frequencia": _APP,
+    },
+}
+# `orquestra_teste.py` fica FORA de propósito: não é DAG — é o script usado
+# como job_command no wizard (mora em dags/ só para os workers o enxergarem).
+
+
+def _dag_inventario_item(dag_id: str, cat: dict | None, viva: dict | None,
+                         airflow_ok: bool) -> dict:
+    """Uma linha do inventário — catálogo manda no texto, Airflow no estado."""
+    item = {
+        "dag_id": dag_id,
+        "funcionalidade": (cat or {}).get("funcionalidade")
+            or (viva or {}).get("description") or "—",
+        "frequencia": (cat or {}).get("frequencia") or "—",
+        "categoria": (cat or {}).get("categoria") or "não catalogada",
+        "catalogada": cat is not None,
+        # `None` = "não sei" (Airflow fora do ar) — o front mostra "—", nunca
+        # "ausente": afirmar ausência sem ter perguntado seria drift inventado.
+        "presente_no_airflow": (viva is not None) if airflow_ok else None,
+        "pausada": bool(viva.get("is_paused")) if viva else None,
+        "agendamento": None,
+    }
+    if viva:
+        si = viva.get("schedule_interval")
+        valor = si.get("value") if isinstance(si, dict) else si
+        item["agendamento"] = valor or viva.get("timetable_description") or None
+    return item
+
+
+@router.get("/admin/dags/inventario", tags=["admin"])
+async def dags_inventario(_admin: dict = Depends(get_admin_user)):
+    """Inventário das DAGs de sistema: catálogo curado × estado ao vivo."""
+    vivas: dict = {}
+    airflow_ok = True
+    try:
+        async with get_airflow_client() as client:
+            offset = 0
+            while True:
+                r = await client.get(
+                    "/api/v1/dags",
+                    params={"limit": 100, "offset": offset,
+                            "only_active": "false"})
+                r.raise_for_status()
+                data = r.json()
+                for d in data.get("dags", []):
+                    if d.get("dag_id"):
+                        vivas[d["dag_id"]] = d
+                offset += 100
+                if offset >= int(data.get("total_entries") or 0):
+                    break
+    except Exception as e:
+        # Airflow fora do ar não derruba o inventário: o catálogo continua
+        # valendo como documentação — só o ESTADO fica sem resposta, e isso
+        # é DITO (`airflow_disponivel: false`), não silenciado.
+        log.warning("[DAGS-INVENTARIO] Airflow indisponível: %s", e)
+        airflow_ok = False
+
+    itens = [_dag_inventario_item(d, CATALOGO_DAGS[d], vivas.get(d), airflow_ok)
+             for d in CATALOGO_DAGS]
+    if airflow_ok:
+        for dag_id, viva in vivas.items():
+            if dag_id in CATALOGO_DAGS:
+                continue
+            # DAG de pipeline (gerada pela fábrica) fica fora do inventário de
+            # sistema — o lugar dela é a tela Pipelines.
+            if "/generated/" in (viva.get("fileloc") or ""):
+                continue
+            itens.append(_dag_inventario_item(dag_id, None, viva, airflow_ok))
+
+    ordem = {c: i for i, c in enumerate(CATEGORIAS_DAGS)}
+    itens.sort(key=lambda i: (ordem.get(i["categoria"], len(ordem)),
+                              i["dag_id"]))
+    return {"airflow_disponivel": airflow_ok, "total": len(itens),
+            "dags": itens}
