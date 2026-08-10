@@ -1360,3 +1360,113 @@ async def dags_inventario(_admin: dict = Depends(get_admin_user)):
                               i["dag_id"]))
     return {"airflow_disponivel": airflow_ok, "total": len(itens),
             "dags": itens}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Sonda de diagnóstico do ServiceNow — POST /admin/servicenow/diagnostico
+#
+# BANCADA pré-spec (docs/spec-chamados-servicenow.md, PR #297): valida
+# credencial, acesso às 4 tabelas de chamado, grupos e volumetria ANTES de a
+# F1 existir. A credencial vive só na requisição: não é gravada em banco, em
+# config nem em log — o handler não loga o body. Restrita a admin.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_SN_TABELAS = ["incident", "sc_req_item", "sc_task", "change_request"]
+
+
+def _sn_url_valida(url: str) -> str:
+    """Só instância https de *.service-now.com — guarda anti-SSRF: este
+    endpoint faz GET autenticado para onde o body mandar."""
+    u = (url or "").strip().rstrip("/")
+    if not u.startswith("https://"):
+        raise HTTPException(status_code=422, detail="URL deve começar com https://")
+    host = u[len("https://"):].split("/")[0]
+    if not host.endswith(".service-now.com"):
+        raise HTTPException(status_code=422,
+                            detail="só instâncias *.service-now.com são aceitas")
+    return u
+
+
+@router.post("/admin/servicenow/diagnostico", tags=["admin"])
+async def servicenow_diagnostico(body: dict = Body(default={}),
+                                 _admin: dict = Depends(get_admin_user)):
+    """Sonda: auth → grupos → tabelas (estados reais) → volumetria do grupo."""
+    url = _sn_url_valida(body.get("url") or "")
+    usuario = (body.get("usuario") or "").strip()
+    senha = body.get("senha") or ""
+    grupo_busca = (body.get("grupo_busca") or "").strip()
+    grupo_nome = (body.get("grupo_nome") or "").strip()
+    if not usuario or not senha:
+        raise HTTPException(status_code=422, detail="usuario e senha são obrigatórios")
+
+    resultado: dict = {"url": url, "auth": None, "grupos": [],
+                       "tabelas": {}, "grupo_contagem": None}
+    async with httpx.AsyncClient(auth=(usuario, senha), timeout=20,
+                                 headers={"Accept": "application/json"}) as cli:
+        # ── 1. autenticação (sys_user_group é a tabela mais inócua) ─────────
+        try:
+            r = await cli.get(f"{url}/api/now/table/sys_user_group",
+                              params={"sysparm_limit": 1})
+            resultado["auth"] = {"status": r.status_code, "ok": r.status_code == 200}
+            if r.status_code == 401:
+                resultado["auth"]["motivo"] = "credencial recusada (401)"
+            elif r.status_code == 403:
+                resultado["auth"]["motivo"] = ("autenticou, mas sem permissão de "
+                                               "leitura em sys_user_group (403)")
+        except httpx.HTTPError as e:
+            resultado["auth"] = {"status": None, "ok": False,
+                                 "motivo": f"falha de rede: {type(e).__name__}"}
+            return resultado
+        if resultado["auth"]["status"] == 401:
+            return resultado  # sem credencial válida não há o que sondar
+
+        # ── 2. grupos que casam com a busca (achar o nome exato) ────────────
+        if grupo_busca:
+            try:
+                r = await cli.get(f"{url}/api/now/table/sys_user_group", params={
+                    "sysparm_query": f"nameLIKE{grupo_busca}",
+                    "sysparm_fields": "name,sys_id,active",
+                    "sysparm_limit": 15})
+                if r.status_code == 200:
+                    resultado["grupos"] = r.json().get("result", [])
+            except httpx.HTTPError:
+                pass
+
+        # ── 3. as 4 tabelas: acessível? estados REAIS? (pendência #3) ──────
+        for t in _SN_TABELAS:
+            item: dict = {"acessivel": False, "status": None,
+                          "total_ativos": None, "estados_exemplo": []}
+            try:
+                r = await cli.get(f"{url}/api/now/table/{t}", params={
+                    "sysparm_query": "active=true",
+                    "sysparm_fields": "state",
+                    "sysparm_display_value": "true",
+                    "sysparm_limit": 15})
+                item["status"] = r.status_code
+                if r.status_code == 200:
+                    item["acessivel"] = True
+                    total = r.headers.get("X-Total-Count")
+                    item["total_ativos"] = int(total) if total and total.isdigit() else None
+                    estados = [x.get("state") for x in r.json().get("result", [])]
+                    item["estados_exemplo"] = sorted({e for e in estados if e})
+            except httpx.HTTPError as e:
+                item["erro"] = type(e).__name__
+            resultado["tabelas"][t] = item
+
+        # ── 4. volumetria do grupo (nome exato, vindo do passo 2) ──────────
+        if grupo_nome:
+            cont: dict = {}
+            for t in _SN_TABELAS:
+                try:
+                    r = await cli.get(f"{url}/api/now/table/{t}", params={
+                        "sysparm_query": f"assignment_group.name={grupo_nome}^active=true",
+                        "sysparm_fields": "number", "sysparm_limit": 1})
+                    total = r.headers.get("X-Total-Count")
+                    if r.status_code == 200:
+                        cont[t] = int(total) if total and total.isdigit() else None
+                    else:
+                        cont[t] = None
+                except httpx.HTTPError:
+                    cont[t] = None
+            resultado["grupo_contagem"] = {"grupo": grupo_nome, "por_tabela": cont}
+    return resultado

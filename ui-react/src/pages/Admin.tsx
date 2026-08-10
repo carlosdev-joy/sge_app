@@ -3477,6 +3477,147 @@ function DagsInventarioTab() {
   )
 }
 
+// ── Sonda ServiceNow (bancada pré-spec dos chamados, PR #297) ────
+// Valida credencial, tabelas, grupos e volumetria ANTES de a F1 existir.
+// A credencial vive só na chamada: não é gravada nem logada em lugar nenhum.
+interface SnAuth { status: number | null; ok: boolean; motivo?: string }
+interface SnTabela { acessivel: boolean; status: number | null; total_ativos: number | null; estados_exemplo: string[]; erro?: string }
+interface SnDiagnostico {
+  url: string
+  auth: SnAuth | null
+  grupos: { name: string; sys_id: string; active: string }[]
+  tabelas: Record<string, SnTabela>
+  grupo_contagem: { grupo: string; por_tabela: Record<string, number | null> } | null
+}
+
+function SondaServiceNowTab() {
+  const [form, setForm] = useState({
+    url: 'https://cvpsnprod.service-now.com',
+    usuario: '', senha: '', grupo_busca: 'engenharia', grupo_nome: '',
+  })
+  const sonda = useMutation({
+    mutationFn: (f: typeof form) =>
+      apiFetch<SnDiagnostico>('/admin/servicenow/diagnostico', {
+        method: 'POST', body: JSON.stringify(f),
+      }),
+    onError: (e: Error) => toast.error(e.message),
+  })
+  const r = sonda.data
+  return (
+    <div className="flex flex-col gap-4 max-w-3xl">
+      <InfoBanner>
+        Sonda de diagnóstico da integração com o ServiceNow (pré-spec dos
+        chamados da engenharia). A credencial é usada SÓ nesta chamada — não é
+        armazenada em banco, em configuração nem em log. Fluxo: valide a
+        conexão, ache o nome exato do grupo na busca, cole-o no campo
+        "Grupo (nome exato)" e rode de novo para ver a volumetria.
+      </InfoBanner>
+      <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-3">
+        <Input label="Instância" value={form.url} className="w-full"
+          onChange={e => setForm({ ...form, url: e.target.value })} />
+        <div className="flex flex-wrap gap-3">
+          <Input label="Usuário" value={form.usuario} className="w-56" autoComplete="off"
+            onChange={e => setForm({ ...form, usuario: e.target.value })} />
+          <Input label="Senha" type="password" value={form.senha} className="w-56" autoComplete="new-password"
+            onChange={e => setForm({ ...form, senha: e.target.value })} />
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <Input label="Buscar grupos contendo…" value={form.grupo_busca} className="w-56"
+            onChange={e => setForm({ ...form, grupo_busca: e.target.value })} />
+          <Input label="Grupo (nome exato, p/ volumetria)" value={form.grupo_nome} className="w-72"
+            onChange={e => setForm({ ...form, grupo_nome: e.target.value })} />
+        </div>
+        <div className="flex justify-end">
+          <Button size="sm" onClick={() => sonda.mutate(form)} loading={sonda.isPending}
+            disabled={!form.usuario || !form.senha}>
+            <Zap size={13} /> Validar conexão
+          </Button>
+        </div>
+      </div>
+
+      {r && (
+        <div className="flex flex-col gap-3">
+          {/* Auth */}
+          <div className="bg-panel border border-edge rounded-lg p-3 flex items-center gap-2 text-sm">
+            <Badge value={r.auth?.ok ? 'success' : 'error'}>
+              {r.auth?.ok ? 'autenticado' : 'falhou'}
+            </Badge>
+            <span className="text-ink">
+              {r.auth?.ok ? `Conexão OK com ${r.url}` : (r.auth?.motivo ?? `HTTP ${r.auth?.status ?? '—'}`)}
+            </span>
+          </div>
+
+          {/* Grupos encontrados */}
+          {r.grupos.length > 0 && (
+            <div className="bg-panel border border-edge rounded-lg p-3">
+              <p className="text-xs font-semibold text-dim uppercase tracking-wider mb-2">
+                Grupos que casam com a busca — copie o nome EXATO
+              </p>
+              <ul className="flex flex-col gap-1 text-xs text-ink">
+                {r.grupos.map(g => (
+                  <li key={g.sys_id} className="flex items-center gap-2">
+                    <span className="font-mono">{g.name}</span>
+                    {String(g.active) !== 'true' && <Badge value="warning">inativo</Badge>}
+                    <button className="text-blue-600 dark:text-blue-400 underline underline-offset-2"
+                      onClick={() => setForm(f => ({ ...f, grupo_nome: g.name }))}>
+                      usar na volumetria
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {r.auth?.ok && r.grupos.length === 0 && (
+            <p className="text-xs text-dim">Nenhum grupo casou com a busca — tente outro termo.</p>
+          )}
+
+          {/* Tabelas */}
+          {r.auth?.ok && (
+            <div className="bg-panel border border-edge rounded-lg overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-dim text-left border-b border-edge/60">
+                    <th className="font-medium px-3 py-2">Tabela</th>
+                    <th className="font-medium px-3 py-2">Acesso</th>
+                    <th className="font-medium px-3 py-2">Ativos (total)</th>
+                    <th className="font-medium px-3 py-2">Estados vistos na amostra</th>
+                    {r.grupo_contagem && <th className="font-medium px-3 py-2">Do grupo</th>}
+                  </tr>
+                </thead>
+                <tbody className="text-ink">
+                  {Object.entries(r.tabelas).map(([nome, t]) => (
+                    <tr key={nome} className="border-b border-edge/40 last:border-0 align-top">
+                      <td className="px-3 py-2 font-mono">{nome}</td>
+                      <td className="px-3 py-2">
+                        <Badge value={t.acessivel ? 'success' : 'error'}>
+                          {t.acessivel ? 'ok' : `negado (${t.erro ?? t.status ?? '—'})`}
+                        </Badge>
+                      </td>
+                      <td className="px-3 py-2">{t.total_ativos ?? 'n/d'}</td>
+                      <td className="px-3 py-2">{t.estados_exemplo.join(' · ') || '—'}</td>
+                      {r.grupo_contagem && (
+                        <td className="px-3 py-2 font-semibold">
+                          {r.grupo_contagem.por_tabela[nome] ?? 'n/d'}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {r.grupo_contagem && (
+            <p className="text-xs text-dim">
+              Volumetria do grupo <span className="font-mono text-ink">{r.grupo_contagem.grupo}</span> —
+              chamados ativos por tabela (coluna "Do grupo").
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Navegação em 2 níveis: grupo (nível 1, sub-abas) → aba (nível 2, pílulas).
 const ADMIN_GROUPS = [
   { id: 'sistema', label: 'Sistema', tabs: [
@@ -3488,6 +3629,7 @@ const ADMIN_GROUPS = [
     { id: 'backlog', label: 'Backlog' },
     { id: 'servidor', label: 'Servidor' },
     { id: 'dags', label: 'Inventário de DAGs' },
+    { id: 'servicenow', label: 'ServiceNow (sonda)' },
     { id: 'monitor', label: 'Monitoramento' },
     { id: 'fluxo_ds', label: 'Fluxo DS' },
   ] },
@@ -3631,6 +3773,7 @@ export default function Admin() {
         {tab === 'backlog' && <BacklogTab />}
         {tab === 'servidor' && <ServidorTab />}
         {tab === 'dags' && <DagsInventarioTab />}
+        {tab === 'servicenow' && <SondaServiceNowTab />}
         {tab === 'monitor' && <MonitoramentoTab />}
         {tab === 'fluxo_ds' && <FluxoDsTab />}
         {tab === 'regen' && <RegenDagsTab />}
