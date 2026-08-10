@@ -206,9 +206,11 @@ h) Negativo: trocar a senha no Admin por uma errada e Sincronizar agora → sync
    ERRO nomeando 401, tela continua servindo o espelho anterior com aviso.
 
 ## 8. Pendências e decisões em aberto
-1. **Nome exato do(s) grupo(s) de atribuição** e **URL da instância** — usuário
-   vai verificar no portal (campo "Grupo de atribuição" de um chamado da
-   equipe).
+1. **URL da instância: `https://cvpsnprod.service-now.com`** (informada em
+   2026-08-10; alcançável da VPS — API responde 401 sem credencial, sem
+   bloqueio por IP). **Nome exato do(s) grupo(s) de atribuição**: a coletar
+   pela sonda de diagnóstico (branch `feat/sonda-servicenow`, aba
+   ServiceNow (sonda) no Admin do dev).
 2. **Tipo de autenticação da API** (Basic com usuário de integração é o
    assumido; se for OAuth, a F1 ganha o fluxo de token).
 3. **Valores reais de estado** das 4 tabelas na instância da empresa (conferir
