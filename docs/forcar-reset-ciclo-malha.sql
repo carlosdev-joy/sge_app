@@ -26,7 +26,30 @@
 --   5. Deixa o rastro em etl_dependencia_evento (DATA_EQUALIZADA) — com guarda
 --      NOT EXISTS: o Equalizar oficial grava o mesmo shape e o índice único
 --      ux_dep_evento_corrida derrubaria a transação inteira (o rastro por
---      linha já fica no `motivo` de cada ciclo tocado).
+--      linha já fica no `motivo` de cada ciclo tocado). Só roda com @limpar=0.
+--   6. Com @limpar = 1, REMOVE de vez o rastro do ciclo dos membros — para a
+--      corrida de validação partir de terreno raso, sem FALHA de ontem nos
+--      painéis nem aviso "já rodou (N)" nas raízes:
+--        • execuções dos membros com data >= @alvo OU inicio >= @corte;
+--        • eventos (etl_dependencia_evento) dos membros com data >= @alvo;
+--        • corridas da malha (etl_malha_execucao) com data >= @alvo — o
+--          snapshot etl_malha_execucao_membro cai junto (FK ON DELETE CASCADE);
+--        • telemetria POR JOB (etl_job_execution) dos membros com
+--          start_time >= meia-noite de @alvo — é ela que alimenta a tela
+--          Execuções, o dashboard e a Gestão de Falhas; sem este passo o
+--          "job com falha de ontem" continuaria aparecendo lá. O filtro é
+--          pela coluna `pipeline` da própria execução (job compartilhado
+--          entre pipelines não perde a telemetria dos vizinhos).
+--      Datas ANTERIORES a @alvo com inicio antigo são história legítima e
+--      ficam intactas nos dois modos. ⚠️ Logo: FALHA com ODATE anterior a
+--      @alvo só some se @alvo apontar para AQUELA data — para "limpar desde
+--      ontem", @alvo = a data de ontem (as travas e o recarimbo puxam o
+--      resto do ciclo para ela).
+--      ⚠️ Apagar eventos apaga também a MEMÓRIA DE DEDUP da guardiã: se uma
+--      condição de alerta ainda for verdadeira na data (ex.: hora-limite já
+--      estourada antes do disparo), o próximo ciclo de 5 min pode REENVIAR
+--      um card do Teams já enviado antes. Esperado; observe 1–2 ciclos da
+--      guardiã antes de disparar a validação.
 --
 -- O script é re-executável: rodar duas vezes não estoura índice nem duplica
 -- rastro — a segunda passada encontra tudo tratado e afeta 0 linhas.
@@ -62,6 +85,12 @@ DECLARE @quem  NVARCHAR(100) = N'forca-manual-validacao';
 -- 0 = SÓ o dry-run (nenhuma escrita). 1 = executa a força de verdade.
 -- Rode primeiro com 0, confira as listas, depois rode de novo com 1.
 DECLARE @executar BIT = 0;                           -- << AJUSTE AQUI
+-- 0 = preserva histórico (encerra/recarimba/aposenta — os painéis seguem
+--     mostrando as linhas, com motivo). 1 = APAGA execuções, eventos e
+--     corridas do ciclo (passo 6) — execução limpa, sem FALHA de ontem nas
+--     telas nem "já rodou (N)" nas raízes. Vale também para o dry-run
+--     (mostra as listas do que seria apagado).
+DECLARE @limpar BIT = 0;                             -- << AJUSTE AQUI
 
 -- O corte do ciclo corrente — a MESMA régua da trava de data divergente
 -- (_inicio_do_ciclo): virada global 'dependencia_hora_virada' da
@@ -126,6 +155,35 @@ PRINT '== Corridas ABERTAS da malha (serão CANCELADAS) ==';
 SELECT id, malha_name, data_referencia, sequencia, status, aberta_em
 FROM dbo.etl_malha_execucao
 WHERE malha_name = @malha AND fechada_em IS NULL;
+
+IF @limpar = 1
+BEGIN
+    PRINT '== @limpar=1: execuções que serão APAGADAS (inclui as FALHA de ontem) ==';
+    SELECT e.id, e.pipeline_name, e.data_referencia, e.status, e.inicio
+    FROM dbo.etl_pipeline_execucao e
+    JOIN dbo.etl_malha_pipeline mp ON mp.pipeline_name = e.pipeline_name
+    WHERE mp.malha_name = @malha
+      AND (e.data_referencia >= @alvo OR e.inicio >= @corte);
+
+    PRINT '== @limpar=1: eventos que serão APAGADOS ==';
+    SELECT ev.id, ev.pipeline_name, ev.data_referencia, ev.tipo
+    FROM dbo.etl_dependencia_evento ev
+    WHERE ev.pipeline_name IN (SELECT pipeline_name FROM dbo.etl_malha_pipeline
+                               WHERE malha_name = @malha)
+      AND ev.data_referencia >= @alvo;
+
+    PRINT '== @limpar=1: corridas da malha que serão APAGADAS (snapshot cai junto) ==';
+    SELECT id, data_referencia, sequencia, status, aberta_em, fechada_em
+    FROM dbo.etl_malha_execucao
+    WHERE malha_name = @malha AND data_referencia >= @alvo;
+
+    PRINT '== @limpar=1: telemetria por JOB que será APAGADA (tela Execuções) ==';
+    SELECT je.execution_id, je.pipeline, je.job_name, je.status, je.start_time
+    FROM dbo.etl_job_execution je
+    WHERE je.pipeline IN (SELECT pipeline_name FROM dbo.etl_malha_pipeline
+                          WHERE malha_name = @malha)
+      AND je.start_time >= CAST(@alvo AS DATETIME);
+END
 
 -- =============================================================================
 -- A FORÇA. Só roda com @executar = 1 — com 0, o script termina no dry-run.
@@ -224,23 +282,62 @@ PRINT CONCAT('passo 4 - corridas da malha canceladas: ', @@ROWCOUNT);
 --    A âncora é fixada ANTES da guarda: com o NOT EXISTS dentro do TOP 1, a
 --    guarda escolheria "o próximo membro sem evento" e cada re-execução
 --    rastejaria um evento novo pela malha, membro a membro.
-INSERT INTO dbo.etl_dependencia_evento (pipeline_name, data_referencia, tipo, detalhe)
-SELECT mp.pipeline_name, @alvo, 'DATA_EQUALIZADA',
-       CONCAT('malha ', @malha, ' (', @quem,
-              '): reset a forca — ciclos encerrados, datas equalizadas para ',
-              CONVERT(VARCHAR(10), @alvo, 23), ' e ciclos da data aposentados ',
-              'para corrida de validacao partir do zero')
-FROM dbo.etl_malha_pipeline mp
-WHERE mp.malha_name = @malha
-  AND mp.pipeline_name = (SELECT TOP 1 pipeline_name
-                          FROM dbo.etl_malha_pipeline
-                          WHERE malha_name = @malha
-                          ORDER BY pipeline_name)
-  AND NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento ev
-                  WHERE ev.pipeline_name = mp.pipeline_name
-                    AND ev.data_referencia = @alvo
-                    AND ev.tipo = 'DATA_EQUALIZADA');
-PRINT CONCAT('passo 5 - evento de rastro gravado: ', @@ROWCOUNT);
+--    Com @limpar = 1 não roda: o passo 6 apagaria o evento na sequência.
+IF @limpar = 0
+BEGIN
+    INSERT INTO dbo.etl_dependencia_evento (pipeline_name, data_referencia, tipo, detalhe)
+    SELECT mp.pipeline_name, @alvo, 'DATA_EQUALIZADA',
+           CONCAT('malha ', @malha, ' (', @quem,
+                  '): reset a forca — ciclos encerrados, datas equalizadas para ',
+                  CONVERT(VARCHAR(10), @alvo, 23), ' e ciclos da data aposentados ',
+                  'para corrida de validacao partir do zero')
+    FROM dbo.etl_malha_pipeline mp
+    WHERE mp.malha_name = @malha
+      AND mp.pipeline_name = (SELECT TOP 1 pipeline_name
+                              FROM dbo.etl_malha_pipeline
+                              WHERE malha_name = @malha
+                              ORDER BY pipeline_name)
+      AND NOT EXISTS (SELECT 1 FROM dbo.etl_dependencia_evento ev
+                      WHERE ev.pipeline_name = mp.pipeline_name
+                        AND ev.data_referencia = @alvo
+                        AND ev.tipo = 'DATA_EQUALIZADA');
+    PRINT CONCAT('passo 5 - evento de rastro gravado: ', @@ROWCOUNT);
+END
+
+-- 6) Limpeza (@limpar = 1): apaga o rastro do ciclo — execuções (inclusive as
+--    FALHA que o passo 1 acabou de carimbar), eventos e corridas da malha.
+--    Ordem: eventos → execuções → corridas (o snapshot de membros cai por
+--    cascade). Datas anteriores a @alvo com inicio antigo ficam intactas.
+IF @limpar = 1
+BEGIN
+    DELETE ev
+    FROM dbo.etl_dependencia_evento ev
+    WHERE ev.pipeline_name IN (SELECT pipeline_name FROM dbo.etl_malha_pipeline
+                               WHERE malha_name = @malha)
+      AND ev.data_referencia >= @alvo;
+    PRINT CONCAT('passo 6a - eventos apagados: ', @@ROWCOUNT);
+
+    DELETE e
+    FROM dbo.etl_pipeline_execucao e
+    JOIN dbo.etl_malha_pipeline mp ON mp.pipeline_name = e.pipeline_name
+    WHERE mp.malha_name = @malha
+      AND (e.data_referencia >= @alvo OR e.inicio >= @corte);
+    PRINT CONCAT('passo 6b - execucoes apagadas: ', @@ROWCOUNT);
+
+    DELETE FROM dbo.etl_malha_execucao
+    WHERE malha_name = @malha AND data_referencia >= @alvo;
+    PRINT CONCAT('passo 6c - corridas da malha apagadas: ', @@ROWCOUNT);
+
+    -- Telemetria por job: é onde a tela Execuções/Gestão de Falhas lê o "job
+    -- com falha". Sem FK nem trigger (conferido em sys.foreign_keys); janela
+    -- pela meia-noite de @alvo porque job não tem ODATE, só start_time.
+    DELETE je
+    FROM dbo.etl_job_execution je
+    WHERE je.pipeline IN (SELECT pipeline_name FROM dbo.etl_malha_pipeline
+                          WHERE malha_name = @malha)
+      AND je.start_time >= CAST(@alvo AS DATETIME);
+    PRINT CONCAT('passo 6d - telemetria por job apagada: ', @@ROWCOUNT);
+END
 
 COMMIT;
 PRINT '== COMMIT feito ==';
@@ -273,3 +370,23 @@ JOIN dbo.etl_malha_pipeline mp ON mp.pipeline_name = e.pipeline_name
 WHERE mp.malha_name = @malha
   AND e.data_referencia = @alvo
   AND e.substituida_em IS NULL;
+
+IF @limpar = 1
+BEGIN
+    PRINT '== Limpeza (deve dar 0 | 0 | 0 | 0): sobras de execuções, eventos, corridas e jobs ==';
+    SELECT
+        (SELECT COUNT(*) FROM dbo.etl_pipeline_execucao e
+         JOIN dbo.etl_malha_pipeline mp ON mp.pipeline_name = e.pipeline_name
+         WHERE mp.malha_name = @malha
+           AND (e.data_referencia >= @alvo OR e.inicio >= @corte)) AS execucoes,
+        (SELECT COUNT(*) FROM dbo.etl_dependencia_evento ev
+         WHERE ev.pipeline_name IN (SELECT pipeline_name FROM dbo.etl_malha_pipeline
+                                    WHERE malha_name = @malha)
+           AND ev.data_referencia >= @alvo) AS eventos,
+        (SELECT COUNT(*) FROM dbo.etl_malha_execucao
+         WHERE malha_name = @malha AND data_referencia >= @alvo) AS corridas,
+        (SELECT COUNT(*) FROM dbo.etl_job_execution je
+         WHERE je.pipeline IN (SELECT pipeline_name FROM dbo.etl_malha_pipeline
+                               WHERE malha_name = @malha)
+           AND je.start_time >= CAST(@alvo AS DATETIME)) AS jobs;
+END
