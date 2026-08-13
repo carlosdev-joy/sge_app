@@ -1387,6 +1387,38 @@ def _sn_url_valida(url: str) -> str:
     return u
 
 
+def _sn_proxy_efetivo(cli: httpx.AsyncClient, url: str) -> dict:
+    """O proxy que o httpx REALMENTE vai usar para esta URL.
+
+    Lê do transporte já resolvido em vez de reimplementar a regra: com
+    trust_env (o padrão) o httpx monta HTTPS_PROXY/HTTP_PROXY e aplica o
+    NO_PROXY sozinho, e uma segunda implementação aqui divergiria em
+    silêncio. Existe para a tela conseguir dizer POR QUE não há proxy —
+    variável ausente e host isento são causas opostas com o mesmo sintoma.
+    """
+    configurado = (os.environ.get("HTTPS_PROXY")
+                   or os.environ.get("https_proxy") or "").strip()
+    try:
+        pool = getattr(cli._transport_for_url(httpx.URL(url)), "_pool", None)
+        alvo = getattr(pool, "_proxy_url", None)
+    except Exception:            # API interna do httpx mudou — não derruba a sonda
+        return {"em_uso": None, "motivo": "não foi possível determinar"}
+    if alvo:
+        return {"em_uso": str(alvo), "motivo": None}
+    if configurado:
+        return {"em_uso": None,
+                "motivo": f"host isento pelo NO_PROXY (HTTPS_PROXY={configurado})"}
+    return {"em_uso": None,
+            "motivo": "HTTPS_PROXY não definida no container — conexão direta"}
+
+
+@router.get("/admin/servicenow/config", tags=["admin"])
+async def servicenow_config(_admin: dict = Depends(get_admin_user)):
+    """Instância padrão (SERVICENOW_URL do ambiente) para pré-preencher a
+    sonda. Só a URL — nunca houve credencial em variável de ambiente."""
+    return {"url": (os.environ.get("SERVICENOW_URL") or "").strip().rstrip("/")}
+
+
 @router.post("/admin/servicenow/diagnostico", tags=["admin"])
 async def servicenow_diagnostico(body: dict = Body(default={}),
                                  _admin: dict = Depends(get_admin_user)):
@@ -1400,12 +1432,15 @@ async def servicenow_diagnostico(body: dict = Body(default={}),
         raise HTTPException(status_code=422, detail="usuario e senha são obrigatórios")
 
     resultado: dict = {"url": url, "auth": None, "grupos": [],
-                       "tabelas": {}, "grupo_contagem": None}
-    _proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or None
-    _proxy_cfg = {"https://": _proxy} if _proxy else {}
+                       "tabelas": {}, "grupo_contagem": None, "proxy": None}
+    # Proxy corporativo: NÃO passar parâmetro. O httpx com trust_env (padrão)
+    # já lê HTTPS_PROXY/HTTP_PROXY do ambiente — e só assim o NO_PROXY é
+    # respeitado. Passar proxy=/proxies= explicitamente FORÇA o proxy até em
+    # host isento, e `proxies=` ainda some no httpx 0.28+. Quem injeta as
+    # variáveis no container é o docker-compose.yaml (serviço orquestra-api).
     async with httpx.AsyncClient(auth=(usuario, senha), timeout=20,
-                                 headers={"Accept": "application/json"},
-                                 proxies=_proxy_cfg) as cli:
+                                 headers={"Accept": "application/json"}) as cli:
+        resultado["proxy"] = _sn_proxy_efetivo(cli, url)
         # ── 1. autenticação (sys_user_group é a tabela mais inócua) ─────────
         try:
             r = await cli.get(f"{url}/api/now/table/sys_user_group",

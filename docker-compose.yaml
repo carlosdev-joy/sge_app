@@ -181,14 +181,22 @@ services:
       # com aviso "SSH não configurado" (não quebra).
       DS_SSH_HOST:      "${DS_SSH_HOST:-}"
       DS_SSH_PORT:      "${DS_SSH_PORT:-22}"
-      # Proxy corporativo para chamadas externas (ex: ServiceNow)
-      HTTPS_PROXY:      "${HTTPS_PROXY:-}"
-      HTTP_PROXY:       "${HTTP_PROXY:-}"
       DS_SSH_USER:      "${DS_SSH_USER:-}"
       DS_SSH_PASSWORD:  "${DS_SSH_PASSWORD:-}"
       DS_SSH_KEY_FILE:  "${DS_SSH_KEY_FILE:-}"
       DS_DSHOME:        "${DS_DSHOME:-/opt/IBM/InformationServer/Server/DSEngine}"
       CORS_ORIGINS:     "${CORS_ORIGINS:-http://orquestra.caixavidaeprevidencia.intranet,http://orquestra.caixavidaeprevidencia.intranet:8090,http://vmlnxprd083,http://vmlnxprd083:8090}"
+      # ── ServiceNow (sonda do Admin; espelho dos chamados na spec) ──────────
+      # Instância padrão da tela — só a URL. Credencial NUNCA vem daqui: a
+      # sonda a recebe na requisição e não a grava em lugar nenhum.
+      SERVICENOW_URL:   "${SERVICENOW_URL:-https://cvpsnprod.service-now.com}"
+      # Proxy corporativo das chamadas externas. O httpx lê estas variáveis
+      # sozinho (trust_env) — inclusive o NO_PROXY, que isenta os hosts
+      # internos. Vazias = conexão direta; a sonda mostra na tela qual proxy
+      # ficou em uso, para "sem proxy" não passar por "com proxy".
+      HTTPS_PROXY:      "${HTTPS_PROXY:-}"
+      HTTP_PROXY:       "${HTTP_PROXY:-}"
+      NO_PROXY:         "${NO_PROXY:-localhost,127.0.0.1,orquestra-api,airflow-webserver}"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags:ro
       - ${AIRFLOW_PROJ_DIR:-.}/dsx:/opt/airflow/dsx:ro
