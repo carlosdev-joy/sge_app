@@ -31,7 +31,7 @@ RAIZ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RAIZ / "dags"))
 
 from utils.servicenow_sync import (  # noqa: E402
-    COLUNAS_KANBAN, ESTADOS, TABELAS, TITULO_MAX,
+    CAMPOS, COLUNAS_KANBAN, ESTADOS, TABELAS, TITULO_MAX,
     K_PROXY, mapear_estado, normalizar, proxy_da_config, query_do_grupo,
     truncar_titulo,
     upsert_params, upsert_sql,
@@ -211,13 +211,23 @@ def test_upsert_tem_parametro_para_cada_placeholder():
 
 
 def test_upsert_ordem_chave_update_insert():
+    """1 chave + N do UPDATE + os MESMOS N do INSERT.
+
+    O tamanho é derivado, não fixo: campo novo no espelho não pode fazer este
+    teste falhar por contagem — ele existe para pegar DESLOCAMENTO, que é o
+    defeito silencioso (grava título na coluna de prioridade sem erro nenhum).
+    """
     linha = normalizar(_registro(), "incident", "incident", URL)
     p = upsert_params(linha)
     assert p[0] == linha["sys_id"], "o 1º parâmetro é a chave do MERGE"
-    # 1 chave + 13 do UPDATE + 13 do INSERT
-    assert len(p) == 27
-    assert p[1:14] == p[14:27], "UPDATE e INSERT recebem os mesmos valores"
-    assert p[1] == linha["numero"] and p[14] == linha["numero"]
+    assert (len(p) - 1) % 2 == 0, "UPDATE e INSERT precisam ter o mesmo tamanho"
+    n = (len(p) - 1) // 2
+    assert p[1:1 + n] == p[1 + n:], "UPDATE e INSERT recebem os mesmos valores"
+    assert p[1] == linha["numero"] and p[1 + n] == linha["numero"]
+    # A ordem do MERGE segue a ordem das colunas no INSERT: se alguém inserir
+    # um campo no meio de um e não do outro, o par acima ainda casaria — este
+    # ancora as pontas nos valores que a coluna espera.
+    assert p[n] == linha["pai_numero"], "o último campo do UPDATE é pai_numero"
 
 
 def test_upsert_usa_placeholder_do_pymssql():
@@ -280,3 +290,96 @@ def test_dag_imprime_a_rota_escolhida():
     no log, o diagnóstico volta a ser adivinhação."""
     fonte = (RAIZ / "dags" / "etl_servicenow_sync.py").read_text(encoding="utf-8")
     assert "conexão direta" in fonte and "via proxy" in fonte
+
+
+# ═══════════ 8. parentesco RITM ↔ task (migration 090) ══════════════════════
+# No ServiceNow todo RITM gera uma sc_task filha, e o espelho trazia as duas
+# como cards independentes — a fila contava cada trabalho DUAS vezes (113
+# itens para ~60 trabalhos). A ligação vem de `request_item`/`parent`, não do
+# título: a task nasce como "RITM0096880 - <assunto>", mas isso é convenção de
+# texto e quebra quando alguém mudar o padrão da instância.
+
+def _task(**kw):
+    """sc_task filha de um RITM, no formato display_value=all."""
+    base = _registro(
+        number={"display_value": "SCTASK0098628", "value": "SCTASK0098628"},
+        short_description={"display_value": "RITM0096880 - Inclusão de coluna",
+                           "value": "RITM0096880 - Inclusão de coluna"},
+        request_item={"display_value": "RITM0096880",
+                      "value": "74a24a128716479094b30e530cbb3539"},
+    )
+    base.update(kw)
+    return base
+
+
+def test_task_guarda_o_ritm_pai():
+    linha = normalizar(_task(), "sc_task", "task", URL)
+    assert linha["pai_numero"] == "RITM0096880", "o número é o que a tela mostra"
+    assert linha["pai_sys_id"] == "74a24a128716479094b30e530cbb3539", (
+        "o sys_id é o que dá join exato contra o espelho")
+
+
+def test_request_item_manda_sobre_parent():
+    """Numa sc_task de catálogo os dois vêm preenchidos, e é o request_item
+    que aponta para o RITM — o parent pode ser outra coisa na hierarquia."""
+    linha = normalizar(_task(parent={"display_value": "OUTRO0001", "value": "zzz"}),
+                       "sc_task", "task", URL)
+    assert linha["pai_numero"] == "RITM0096880"
+
+
+def test_parent_vale_quando_nao_ha_request_item():
+    """incident e change_request não têm request_item; usam parent."""
+    reg = _registro(parent={"display_value": "INC0001", "value": "abc"})
+    linha = normalizar(reg, "incident", "incident", URL)
+    assert linha["pai_numero"] == "INC0001"
+    assert linha["pai_sys_id"] == "abc"
+
+
+def test_chamado_sem_pai_fica_vazio_nao_none():
+    """RITM raiz não tem pai. Vazio (não None) porque a coluna é VARCHAR e o
+    upsert grava direto — e '' distingue 'não tem' de 'não sei'."""
+    linha = normalizar(_registro(), "incident", "incident", URL)
+    assert linha["pai_sys_id"] == "" and linha["pai_numero"] == ""
+
+
+def test_campo_de_pai_vazio_nao_vira_pai_fantasma():
+    """A API devolve o campo com display/value em branco quando não há pai —
+    gravar isso como pai criaria um vínculo para lugar nenhum."""
+    linha = normalizar(_registro(request_item={"display_value": "", "value": ""},
+                                 parent={"display_value": "", "value": ""}),
+                       "sc_task", "task", URL)
+    assert linha["pai_sys_id"] == "" and linha["pai_numero"] == ""
+
+
+def test_a_api_e_consultada_pelos_campos_de_parentesco():
+    """Sem pedir na query, a Table API não devolve — e o pai viria vazio para
+    todo mundo, com o espelho parecendo dizer 'ninguém tem pai'."""
+    assert "request_item" in CAMPOS and "parent" in CAMPOS
+
+
+# ═══════════ 9. o estado CRU, ao lado do rótulo ═════════════════════════════
+# `estado_origem` guarda "Pendente"; o mapa do kanban é por NÚMERO. Sem o
+# número gravado, corrigir um estado que caiu em 'outros' exige ir à API — e
+# quando dois números apontam para a mesma coluna (sc_task: '-5' e '1' → novo),
+# nem a API resolve, porque o display não diz qual é qual.
+
+def test_estado_cru_e_gravado_ao_lado_do_rotulo():
+    linha = normalizar(_registro(state={"display_value": "Pendente", "value": "-5"}),
+                       "sc_task", "task", URL)
+    assert linha["estado_cru"] == "-5", "o número precisa sobreviver ao espelho"
+    assert linha["estado_origem"] == "Pendente", "o rótulo continua, para a tela"
+
+
+def test_estado_cru_negativo_nao_e_perdido():
+    """'-5' tem sinal e o campo é VARCHAR: um corte ou conversão numérica aqui
+    quebraria justamente o valor que estamos investigando."""
+    linha = normalizar(_registro(state={"display_value": "X", "value": "-5"}),
+                       "sc_task", "task", URL)
+    assert linha["estado_cru"] == "-5"
+
+
+def test_estado_ausente_nao_quebra():
+    linha = normalizar(_registro(state={"display_value": "", "value": ""}),
+                       "incident", "incident", URL)
+    assert linha["estado_cru"] == ""
+    assert linha["estado_kanban"] == "outros"
