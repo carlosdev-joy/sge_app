@@ -24,6 +24,7 @@ from routers.airflow import get_airflow_client
 # conexão ainda não migrada): resolução host/porta + allowlist, consulta
 # direta com a credencial do app e fallback RPC pela DAG (BaseHook).
 from routers.copias import _consulta_direta, _introspect_via_dag, _server_da_conexao
+from services import servicenow
 from services.conn_crypto import decrypt_password, encrypt_password
 
 log = logging.getLogger("orquestra-api")
@@ -31,6 +32,25 @@ log = logging.getLogger("orquestra-api")
 router = APIRouter()
 
 FREEZE_MOTIVO = "Congelamento manual do ambiente"
+
+# Fragmentos de nome de chave que marcam um valor como segredo em
+# dbo.etl_app_config. No nível do módulo (e não dentro do handler) para poder
+# ser testado: é a única barreira entre um segredo e a listagem de config.
+_PADROES_SEGREDO = ("teams_webhook", "caixa_ia_api_key", "secret",
+                    "password", "token", "senha")
+
+
+def mask_secret(key: str, val):
+    """Valor de config → mascarado quando a CHAVE indica segredo.
+
+    `senha` está na lista por causa de servicenow_senha_enc, a credencial
+    executora do sync: sem ela a chave não casaria com nenhum outro padrão e
+    o token cifrado sairia inteiro no config_list.
+    """
+    k = (key or "").lower()
+    if val and any(p in k for p in _PADROES_SEGREDO):
+        return ("•••• " + str(val)[-4:]) if len(str(val)) > 4 else "••••"
+    return val
 
 # ── Conexões de Dados (Airflow Connections mssql) ────────────────────────────
 # conn_id restrito (sem ponto — mais rígido que o de copias) e host sem
@@ -135,13 +155,7 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
 
         if action == "config_list":
             cur.execute("SELECT config_key, config_value FROM dbo.etl_app_config ORDER BY config_key")
-            def _mask_secret(key: str, val):
-                k = (key or "").lower()
-                if val and (k.startswith("teams_webhook") or k.startswith("caixa_ia_api_key")
-                            or "secret" in k or "password" in k or "token" in k):
-                    return ("•••• " + str(val)[-4:]) if len(str(val)) > 4 else "••••"
-                return val
-            data = {k: _mask_secret(k, v) for k, v in cur.fetchall()}
+            data = {k: mask_secret(k, v) for k, v in cur.fetchall()}
             cur.close(); conn.close()
             return {"sucesso": True, "config": data}
 
@@ -314,6 +328,66 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             return {"sucesso": True,
                     "mensagem": f"Provedor respondeu em {ms} ms (modelo {modelo}).",
                     "detalhes": {"resposta": resposta[:200], "duracao_ms": ms}}
+
+        # ── ServiceNow: credencial executora do sync (config servicenow_*) ────
+        # Mesmo tratamento das caixa_ia_*: senha cifrada com o Fernet das
+        # conexões, nunca devolvida em claro, e a gravação não exige redigitar
+        # a senha para mudar só a URL ou o grupo.
+        elif action == "servicenow_get":
+            cfg = servicenow.load_config(cur)
+            cur.close(); conn.close()
+            return {"sucesso": True, "config": {
+                "url": cfg["url"], "usuario": cfg["usuario"],
+                "grupos": cfg["grupos"], "habilitado": cfg["habilitado"],
+                # A senha NUNCA volta, nem cifrada — a tela só precisa saber
+                # se existe uma para decidir entre "Salvar" e "Trocar senha".
+                "tem_senha": bool(cfg["senha_enc"]),
+                "configurado": servicenow.configurado(cfg),
+            }}
+
+        elif action == "servicenow_set":
+            url = servicenow.url_valida(body.get("url") or "")
+            usuario = (body.get("usuario") or "").strip()
+            grupos = (body.get("grupos") or "").strip()
+            habilitado = "1" if body.get("habilitado") else "0"
+            senha = body.get("senha")   # None/"" = manter a atual
+            if len(usuario) > 100:
+                raise HTTPException(status_code=422,
+                                    detail="usuário excede 100 caracteres")
+            if len(grupos) > 900:
+                raise HTTPException(status_code=422,
+                                    detail="lista de grupos longa demais para "
+                                           "etl_app_config.config_value")
+            valores = {servicenow.K_URL: url, servicenow.K_USUARIO: usuario,
+                       servicenow.K_GRUPOS: grupos,
+                       servicenow.K_HABILITADO: habilitado}
+            if isinstance(senha, str) and senha.strip():
+                token = encrypt_password(senha.strip())
+                if len(token) > 1000:   # config_value é VARCHAR(1000)
+                    raise HTTPException(status_code=422,
+                                        detail="Senha longa demais — o valor cifrado "
+                                               "excede os 1000 caracteres de "
+                                               "etl_app_config.config_value")
+                valores[servicenow.K_SENHA] = token
+            for k, v in valores.items():
+                cur.execute(
+                    "MERGE dbo.etl_app_config AS t "
+                    "USING (SELECT ? AS k) AS s ON t.config_key = s.k "
+                    "WHEN MATCHED THEN UPDATE SET config_value=?, updated_by=?, updated_at=GETDATE() "
+                    "WHEN NOT MATCHED THEN INSERT (config_key, config_value, descricao, updated_by, updated_at) "
+                    "  VALUES (s.k, ?, 'Integracao ServiceNow (chamados)', ?, GETDATE());",
+                    [k, v, requested_by, v, requested_by])
+            # Ligar sem credencial completa deixaria o sync agendado falhando
+            # de hora em hora — a recusa aqui é mais barata que o log vermelho.
+            if habilitado == "1":
+                cfg = servicenow.load_config(cur)
+                if not servicenow.configurado(cfg):
+                    conn.rollback(); cur.close(); conn.close()
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Informe URL, usuário e senha antes de habilitar o sync")
+            conn.commit(); cur.close(); conn.close()
+            return {"sucesso": True, "mensagem": "Configuração do ServiceNow salva."}
 
         # ── Permissões extras por usuário (etl_usuario_permissao, migration 060) ──
         elif action == "user_perm_list":
@@ -1371,68 +1445,56 @@ async def dags_inventario(_admin: dict = Depends(get_admin_user)):
 # config nem em log — o handler não loga o body. Restrita a admin.
 # ═══════════════════════════════════════════════════════════════════════════
 
-_SN_TABELAS = ["incident", "sc_req_item", "sc_task", "change_request"]
+_SN_TABELAS = list(servicenow.TABELAS)
 
-
-def _sn_url_valida(url: str) -> str:
-    """Só instância https de *.service-now.com — guarda anti-SSRF: este
-    endpoint faz GET autenticado para onde o body mandar."""
-    u = (url or "").strip().rstrip("/")
-    if not u.startswith("https://"):
-        raise HTTPException(status_code=422, detail="URL deve começar com https://")
-    host = u[len("https://"):].split("/")[0]
-    if not host.endswith(".service-now.com"):
-        raise HTTPException(status_code=422,
-                            detail="só instâncias *.service-now.com são aceitas")
-    return u
-
-
-def _sn_proxy_efetivo(cli: httpx.AsyncClient, url: str) -> dict:
-    """O proxy que o httpx REALMENTE vai usar para esta URL.
-
-    Lê do transporte já resolvido em vez de reimplementar a regra: com
-    trust_env (o padrão) o httpx monta HTTPS_PROXY/HTTP_PROXY e aplica o
-    NO_PROXY sozinho, e uma segunda implementação aqui divergiria em
-    silêncio. Existe para a tela conseguir dizer POR QUE não há proxy —
-    variável ausente e host isento são causas opostas com o mesmo sintoma.
-    """
-    configurado = (os.environ.get("HTTPS_PROXY")
-                   or os.environ.get("https_proxy") or "").strip()
-    try:
-        pool = getattr(cli._transport_for_url(httpx.URL(url)), "_pool", None)
-        alvo = getattr(pool, "_proxy_url", None)
-    except Exception:            # API interna do httpx mudou — não derruba a sonda
-        return {"em_uso": None, "motivo": "não foi possível determinar"}
-    if alvo:
-        return {"em_uso": str(alvo), "motivo": None}
-    if configurado:
-        return {"em_uso": None,
-                "motivo": f"host isento pelo NO_PROXY (HTTPS_PROXY={configurado})"}
-    return {"em_uso": None,
-            "motivo": "HTTPS_PROXY não definida no container — conexão direta"}
+# A lógica de domínio mora em services/servicenow.py (a DAG de sync também
+# precisa dela). Os nomes antigos seguem aqui como apelido para não quebrar
+# quem já importava de routers.admin.
+_sn_url_valida = servicenow.url_valida
+_sn_proxy_efetivo = servicenow.proxy_efetivo
 
 
 @router.get("/admin/servicenow/config", tags=["admin"])
 async def servicenow_config(_admin: dict = Depends(get_admin_user)):
-    """Instância padrão (SERVICENOW_URL do ambiente) para pré-preencher a
-    sonda. Só a URL — nunca houve credencial em variável de ambiente."""
-    return {"url": (os.environ.get("SERVICENOW_URL") or "").strip().rstrip("/")}
+    """Instância a exibir na sonda: a SALVA no banco tem precedência sobre o
+    default de ambiente (SERVICENOW_URL) — quem configurou pelo Admin manda.
+
+    Só a URL, e nunca a credencial: usuário/senha saem por `servicenow_get`,
+    com a senha mascarada.
+    """
+    cfg = servicenow.load_config()
+    return {"url": cfg["url"] or (os.environ.get("SERVICENOW_URL") or "").strip().rstrip("/")}
 
 
 @router.post("/admin/servicenow/diagnostico", tags=["admin"])
 async def servicenow_diagnostico(body: dict = Body(default={}),
                                  _admin: dict = Depends(get_admin_user)):
-    """Sonda: auth → grupos → tabelas (estados reais) → volumetria do grupo."""
-    url = _sn_url_valida(body.get("url") or "")
-    usuario = (body.get("usuario") or "").strip()
-    senha = body.get("senha") or ""
+    """Sonda: auth → grupos → tabelas (estados reais) → volumetria do grupo.
+
+    A credencial pode vir de dois lugares, e a diferença importa:
+      - do BODY: credencial de teste, usada só nesta chamada e nunca gravada
+        (é o modo de descobrir/validar uma credencial ANTES de salvar);
+      - da CONFIG (`usar_config: true`): a credencial executora salva, a mesma
+        que a DAG de sync usa — é assim que se testa o que roda de verdade.
+    Sem o segundo modo, "a sonda passa" e "o sync funciona" seriam perguntas
+    diferentes com a mesma resposta aparente.
+    """
+    if body.get("usar_config"):
+        cfg = servicenow.load_config()
+        url, usuario, senha = servicenow.credencial_executora(cfg)
+        url = _sn_url_valida(url)
+    else:
+        url = _sn_url_valida(body.get("url") or "")
+        usuario = (body.get("usuario") or "").strip()
+        senha = body.get("senha") or ""
     grupo_busca = (body.get("grupo_busca") or "").strip()
     grupo_nome = (body.get("grupo_nome") or "").strip()
     if not usuario or not senha:
         raise HTTPException(status_code=422, detail="usuario e senha são obrigatórios")
 
     resultado: dict = {"url": url, "auth": None, "grupos": [],
-                       "tabelas": {}, "grupo_contagem": None, "proxy": None}
+                       "tabelas": {}, "grupo_contagem": None, "proxy": None,
+                       "origem_credencial": "config" if body.get("usar_config") else "formulário"}
     # Proxy corporativo: NÃO passar parâmetro. O httpx com trust_env (padrão)
     # já lê HTTPS_PROXY/HTTP_PROXY do ambiente — e só assim o NO_PROXY é
     # respeitado. Passar proxy=/proxies= explicitamente FORÇA o proxy até em

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, type ReactNode } from 'react'
+import { useState, useRef, type ReactNode } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { Button } from '../components/ui/Button'
@@ -3489,52 +3489,165 @@ interface SnDiagnostico {
   tabelas: Record<string, SnTabela>
   grupo_contagem: { grupo: string; por_tabela: Record<string, number | null> } | null
   proxy: { em_uso: string | null; motivo: string | null } | null
+  origem_credencial: string
+}
+
+interface SnConfig {
+  url: string; usuario: string; grupos: string
+  habilitado: boolean; tem_senha: boolean; configurado: boolean
 }
 
 function SondaServiceNowTab() {
-  const [form, setForm] = useState({
-    url: '', usuario: '', senha: '', grupo_busca: 'engenharia', grupo_nome: '',
+  // Config EXECUTORA salva: é a credencial que a DAG de sync usa. A senha
+  // nunca volta do servidor — `tem_senha` só diz se existe uma guardada.
+  const cfgSalva = useQuery<{ config: SnConfig }>({
+    queryKey: ['servicenow-cfg'],
+    queryFn: () => adminPost('servicenow_get'),
   })
-  // Instância vem do ambiente (SERVICENOW_URL no compose), não de literal no
-  // código: trocar de instância vira ajuste de .env, sem rebuild do front.
-  const { data: cfg } = useQuery<{ url: string }>({
+  const cfg = cfgSalva.data?.config
+  // Instância da sonda: a salva manda; o ambiente (SERVICENOW_URL) é o default.
+  const { data: cfgEnv } = useQuery<{ url: string }>({
     queryKey: ['servicenow-config'],
     queryFn: () => apiFetch('/admin/servicenow/config'),
   })
-  useEffect(() => {
-    if (cfg?.url) setForm(f => (f.url ? f : { ...f, url: cfg.url }))
-  }, [cfg?.url])
+  // Os dois formulários são DERIVADOS de (servidor + edições locais), em vez
+  // de copiados para dentro de um estado por useEffect. Assim o valor salvo
+  // aparece assim que a query responde, sem render intermediário com campo
+  // vazio e sem o efeito de sincronização que o lint (com razão) recusa.
+  const [edits, setEdits] = useState<Partial<{
+    url: string; usuario: string; senha: string; grupos: string; habilitado: boolean
+  }>>({})
+  const cfgForm = {
+    url:        edits.url        ?? cfg?.url        ?? cfgEnv?.url ?? '',
+    usuario:    edits.usuario    ?? cfg?.usuario    ?? '',
+    senha:      edits.senha      ?? '',
+    grupos:     edits.grupos     ?? cfg?.grupos     ?? '',
+    habilitado: edits.habilitado ?? cfg?.habilitado ?? false,
+  }
+  const setCfgForm = (patch: Partial<typeof cfgForm>) =>
+    setEdits(e => ({ ...e, ...patch }))
+
+  const [sondaEdits, setSondaEdits] = useState<Partial<{
+    url: string; usuario: string; senha: string; grupo_busca: string; grupo_nome: string
+  }>>({})
+  const form = {
+    url:         sondaEdits.url         ?? cfg?.url ?? cfgEnv?.url ?? '',
+    usuario:     sondaEdits.usuario     ?? '',
+    senha:       sondaEdits.senha       ?? '',
+    grupo_busca: sondaEdits.grupo_busca ?? 'engenharia',
+    grupo_nome:  sondaEdits.grupo_nome  ?? '',
+  }
+  const setForm = (patch: Partial<typeof form>) =>
+    setSondaEdits(e => ({ ...e, ...patch }))
+
+  const [trocarSenha, setTrocarSenha] = useState(false)
+
+  const salvar = useMutation({
+    mutationFn: () => adminPost<{ mensagem?: string }>('servicenow_set', {
+      url: cfgForm.url, usuario: cfgForm.usuario, grupos: cfgForm.grupos,
+      habilitado: cfgForm.habilitado,
+      // string vazia = manter a senha atual; só envia quando o operador
+      // escolheu trocá-la de fato.
+      senha: trocarSenha ? cfgForm.senha : '',
+    }),
+    onSuccess: (d: { mensagem?: string }) => {
+      toast.success(d.mensagem ?? 'Configuração salva.')
+      setTrocarSenha(false)
+      // Descarta as edições locais: a partir daqui o formulário volta a
+      // espelhar o que o servidor confirmou ter gravado.
+      setEdits({})
+      cfgSalva.refetch()
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
   const sonda = useMutation({
-    mutationFn: (f: typeof form) =>
+    mutationFn: (payload: Record<string, unknown>) =>
       apiFetch<SnDiagnostico>('/admin/servicenow/diagnostico', {
-        method: 'POST', body: JSON.stringify(f),
+        method: 'POST', body: JSON.stringify(payload),
       }),
     onError: (e: Error) => toast.error(e.message),
   })
   const r = sonda.data
   return (
     <div className="flex flex-col gap-4 max-w-3xl">
+      {/* ── Credencial executora ─────────────────────────────────────── */}
+      <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-ink">Credencial executora</h3>
+          <Badge value={cfg?.configurado ? 'success' : 'warning'}>
+            {cfg?.configurado ? 'configurada' : 'incompleta'}
+          </Badge>
+        </div>
+        <p className="text-xs text-dim">
+          É esta credencial que a sincronização dos chamados usa para executar.
+          A senha é cifrada com a mesma chave das Conexões de Dados
+          (ORQUESTRA_CONN_KEY) e nunca volta para a tela.
+        </p>
+        <Input label="Instância" value={cfgForm.url} className="w-full"
+          placeholder="https://suainstancia.service-now.com"
+          onChange={e => setCfgForm({ url: e.target.value })} />
+        <div className="flex flex-wrap gap-3">
+          <Input label="Usuário de integração" value={cfgForm.usuario} className="w-56" autoComplete="off"
+            onChange={e => setCfgForm({ usuario: e.target.value })} />
+          {cfg?.tem_senha && !trocarSenha ? (
+            <div className="flex flex-col justify-end pb-0.5">
+              <span className="text-xs text-dim mb-1">Senha</span>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xs text-ink">••••••••</span>
+                <Button size="sm" variant="ghost" onClick={() => setTrocarSenha(true)}>
+                  Trocar senha
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Input label="Senha" type="password" value={cfgForm.senha} className="w-56"
+              autoComplete="new-password"
+              onChange={e => setCfgForm({ senha: e.target.value })} />
+          )}
+        </div>
+        <Input label="Grupo(s) de atribuição — separe por ;" value={cfgForm.grupos}
+          className="w-full" placeholder="Engenharia de Dados; Sustentação"
+          onChange={e => setCfgForm({ grupos: e.target.value })} />
+        <label className="flex items-center gap-1.5 text-xs text-ink">
+          <input type="checkbox" checked={cfgForm.habilitado}
+            onChange={e => setCfgForm({ habilitado: e.target.checked })} />
+          Sincronização agendada habilitada
+        </label>
+        <div className="flex justify-end gap-2">
+          <Button size="sm" variant="secondary" loading={sonda.isPending}
+            disabled={!cfg?.configurado}
+            onClick={() => sonda.mutate({ usar_config: true, grupo_nome: cfgForm.grupos.split(';')[0]?.trim() ?? '' })}>
+            <Zap size={13} /> Testar credencial salva
+          </Button>
+          <Button size="sm" onClick={() => salvar.mutate()} loading={salvar.isPending}
+            disabled={!cfgForm.url || !cfgForm.usuario}>
+            Salvar configuração
+          </Button>
+        </div>
+      </div>
+
+      {/* ── Sonda de descoberta ──────────────────────────────────────── */}
       <InfoBanner>
-        Sonda de diagnóstico da integração com o ServiceNow (pré-spec dos
-        chamados da engenharia). A credencial é usada SÓ nesta chamada — não é
-        armazenada em banco, em configuração nem em log. Fluxo: valide a
+        Sonda de diagnóstico: use para DESCOBRIR uma credencial ou o nome exato
+        do grupo antes de salvar acima. A credencial digitada aqui vale só nesta
+        chamada — não é gravada em banco, config nem log. Fluxo: valide a
         conexão, ache o nome exato do grupo na busca, cole-o no campo
         "Grupo (nome exato)" e rode de novo para ver a volumetria.
       </InfoBanner>
       <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-3">
         <Input label="Instância" value={form.url} className="w-full"
-          onChange={e => setForm({ ...form, url: e.target.value })} />
+          onChange={e => setForm({ url: e.target.value })} />
         <div className="flex flex-wrap gap-3">
           <Input label="Usuário" value={form.usuario} className="w-56" autoComplete="off"
-            onChange={e => setForm({ ...form, usuario: e.target.value })} />
+            onChange={e => setForm({ usuario: e.target.value })} />
           <Input label="Senha" type="password" value={form.senha} className="w-56" autoComplete="new-password"
-            onChange={e => setForm({ ...form, senha: e.target.value })} />
+            onChange={e => setForm({ senha: e.target.value })} />
         </div>
         <div className="flex flex-wrap gap-3">
           <Input label="Buscar grupos contendo…" value={form.grupo_busca} className="w-56"
-            onChange={e => setForm({ ...form, grupo_busca: e.target.value })} />
+            onChange={e => setForm({ grupo_busca: e.target.value })} />
           <Input label="Grupo (nome exato, p/ volumetria)" value={form.grupo_nome} className="w-72"
-            onChange={e => setForm({ ...form, grupo_nome: e.target.value })} />
+            onChange={e => setForm({ grupo_nome: e.target.value })} />
         </div>
         <div className="flex justify-end">
           <Button size="sm" onClick={() => sonda.mutate(form)} loading={sonda.isPending}
@@ -3554,6 +3667,9 @@ function SondaServiceNowTab() {
             <span className="text-ink">
               {r.auth?.ok ? `Conexão OK com ${r.url}` : (r.auth?.motivo ?? `HTTP ${r.auth?.status ?? '—'}`)}
             </span>
+            {/* Testar a credencial digitada e testar a que EXECUTA o sync são
+                perguntas diferentes — o resultado precisa dizer qual foi. */}
+            <Badge value="neutral">credencial: {r.origem_credencial}</Badge>
           </div>
 
           {/* Rota da chamada — sem isto, "com proxy" e "sem proxy" têm a
@@ -3581,7 +3697,7 @@ function SondaServiceNowTab() {
                     <span className="font-mono">{g.name}</span>
                     {String(g.active) !== 'true' && <Badge value="warning">inativo</Badge>}
                     <button className="text-blue-600 dark:text-blue-400 underline underline-offset-2"
-                      onClick={() => setForm(f => ({ ...f, grupo_nome: g.name }))}>
+                      onClick={() => setForm({ grupo_nome: g.name })}>
                       usar na volumetria
                     </button>
                   </li>
@@ -3651,7 +3767,7 @@ const ADMIN_GROUPS = [
     { id: 'backlog', label: 'Backlog' },
     { id: 'servidor', label: 'Servidor' },
     { id: 'dags', label: 'Inventário de DAGs' },
-    { id: 'servicenow', label: 'ServiceNow (sonda)' },
+    { id: 'servicenow', label: 'ServiceNow' },
     { id: 'monitor', label: 'Monitoramento' },
     { id: 'fluxo_ds', label: 'Fluxo DS' },
   ] },
