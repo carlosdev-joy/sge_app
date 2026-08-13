@@ -1213,6 +1213,15 @@ CATALOGO_DAGS: dict = {
             "DEPENDENCIA_GUARDIA_INTERVAL_MINUTES)",
     },
     # ── Monitoramento e alertas ─────────────────────────────────────────────
+    "etl_servicenow_sync": {
+        "categoria": "Monitoramento e alertas",
+        "funcionalidade": "Espelha os chamados do ServiceNow do(s) grupo(s) da "
+            "engenharia (incidentes, RITMs, tarefas e mudanças) para a tela de "
+            "Chamados; cada tabela sincroniza independente e o ciclo fica "
+            "registrado em etl_chamado_sync",
+        "frequencia": "a cada 3h (só com servicenow_habilitado=1 em "
+            "Admin > ServiceNow)",
+    },
     "etl_ds_supervisao_monitor": {
         "categoria": "Monitoramento e alertas",
         "funcionalidade": "Supervisão DataStage: coleta o logsum dos jobs "
