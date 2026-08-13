@@ -1258,8 +1258,13 @@ def test_fim_satisfeito_grava_malha_concluida_sem_card_por_default(monkeypatch):
     assert saida["observadores"] == 1
     p, t, det, notificar = gravados[0]
     assert (p, t, notificar) == ("#no:9", "MALHA_CONCLUIDA", False)
-    assert det == ("Malha M1 concluída na data 2026-08-03 — "
-                   "2 pipeline(s) com SUCESSO")
+    # O texto afirma o que ESTE observador verificou — os alimentadores diretos
+    # do Fim — e não a malha inteira. O número sempre foi `len(upstream)`, então
+    # a frase antiga ("Malha M1 concluída ... 2 pipeline(s) com SUCESSO")
+    # anunciava um ciclo de N membros a partir de 2, e o próprio número ao lado
+    # desmentia a palavra.
+    assert det == ("Os 2 pipeline(s) que alimentam o Fim da malha M1 "
+                   "concluíram na data 2026-08-03")
 
 
 def test_fim_com_notificar_teams_true_vai_a_fila(monkeypatch):

@@ -270,9 +270,14 @@ export function estiloEvento(tipo: string): string {
     // um aviso informativo. A partição é a MESMA do card do Teams
     // (dags/utils/ds_teams.py:64-74) e a MESMA da Decisão 59: o painel não
     // pode discordar do celular.
+    // `MALHA_DESFECHO_FALHA` (o veredito do fechamento, F0 da spec do ciclo
+    // fechado) veste a mesma cor do alerta porque diz a mesma coisa — o dia deu
+    // errado. Deixá-lo cair no `default` slate o poria ao lado de "sem trabalho
+    // hoje", que é o único informativo cinza desta camada.
     case 'MALHA_FALHOU':
     case 'MALHA_EXPIRADA':
     case 'MALHA_ABORTADA':
+    case 'MALHA_DESFECHO_FALHA':
       return 'bg-red-100 text-red-700 border-red-300 dark:bg-red-900/60 dark:text-red-300 dark:border-red-700'
     case 'MALHA_ATRASADA':
     case 'MALHA_CANCELADA':
@@ -793,6 +798,13 @@ export const ROTULO_EVENTO_CORRIDA: Record<string, string> = {
   MALHA_ABORTADA: 'não chegou a começar',
   MALHA_CANCELADA: 'encerrada pelo operador',
   MALHA_CONCLUIDA: 'ciclo concluído',
+  // O VEREDITO, que é coisa diferente do ALERTA. `MALHA_FALHOU` é o card do
+  // plantão e sai uma vez por ciclo, quase sempre na detecção — horas antes do
+  // fechamento. Este sai no fechamento, sempre, e é o que responde "a que horas
+  // este dia foi dado por perdido, e por quê": no ciclo da `Carga_Vida` de
+  // 12/08 a linha do tempo ia do alerta das 04:45 direto ao card das 23:00, sem
+  // nada sobre o desfecho das 07:13.
+  MALHA_DESFECHO_FALHA: 'ciclo encerrado em falha',
   MALHA_SEM_TRABALHO: 'sem trabalho hoje',
   MALHA_REPROCESSO: 'reprocesso',
   MALHA_TETO_CREDITADO: 'limite adiado por retenção',

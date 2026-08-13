@@ -707,7 +707,44 @@ def _frase_da_corrida(c: dict, sufixo: str) -> str:
     do mesmo ciclo (uma no toast do rerun, outra no painel) fariam o operador
     achar que são dois."""
     from routers.malhas import _rotulo_corrida
-    return f"a {_rotulo_corrida(c)} da malha '{c.get('malha_name')}' {sufixo}"
+    # "o", não "a": a Decisão 74 trocou o substantivo de `corrida` para `ciclo`
+    # na tela e o artigo ficou para trás — o operador lia "a ciclo de 12/08".
+    return f"o {_rotulo_corrida(c)} da malha '{c.get('malha_name')}' {sufixo}"
+
+
+def _frase_do_portao(motivo: str) -> str | None:
+    """O motivo do portão do §11.1 em português de operador, ou `None` quando a
+    recusa NÃO merece aviso.
+
+    A distinção é o ponto. Três dos quatro motivos são **anomalias de
+    ambiente** — a 085 que faltou, o `dags/` que ficou para trás no deploy, a
+    guardiã muda — e o operador precisa saber, porque cada uma tem conserto e
+    porque nenhuma delas aparece na tela de outro jeito. O quarto, o
+    interruptor em `0`, significa que a feature não existe naquele ambiente:
+    anunciar em todo rerun o que ela deixou de fazer seria ruído puro para quem
+    nem a usa. É a regra que
+    `test_interruptor_desligado_deixa_o_rerun_exatamente_como_antes` guarda.
+
+    Import tardio de `routers.malhas` pela mesma razão de `_corrida_operavel`:
+    aquele módulo importa este de volta.
+    """
+    from routers.malhas import (MOTIVO_GUARDIA_AUSENTE, MOTIVO_INTERRUPTOR,
+                                MOTIVO_SEM_085)
+    if motivo == MOTIVO_INTERRUPTOR:
+        return None
+    return {
+        MOTIVO_SEM_085:
+            "a migration 085 ainda não foi aplicada neste banco",
+        MOTIVO_GUARDIA_AUSENTE:
+            "a guardiã está sem sinal há tempo demais (DAG pausada, worker "
+            "fora do ar, ou interruptor desligado só no worker)",
+        rerun_svc.CAP_AUSENTE:
+            "o motor deployado (dags/) ainda não entende ciclo de malha — "
+            "deploy de dags/ pendente",
+        rerun_svc.CAP_DESCONHECIDA:
+            "não foi possível confirmar se o motor deployado (dags/) entende "
+            "ciclo de malha",
+    }.get(motivo, f"a API não pode operar o ciclo agora ({motivo})")
 
 
 def _efeito_na_corrida(cur, oficial: str, alvos: list, data_ref, usuario: str,
@@ -747,12 +784,27 @@ def _efeito_na_corrida(cur, oficial: str, alvos: list, data_ref, usuario: str,
                 log.info("[RERUN] ciclo da malha '%s' não operado pela API "
                          "(%s) — o rerun segue como antes da F8",
                          c["malha_name"], motivo_portao)
+                # A recusa era MUDA: `log.info` num arquivo que o operador não
+                # lê, e a resposta voltava idêntica à de um rerun que reabriu o
+                # ciclo. Ele via o gesto verde e o ciclo continuava em FALHA,
+                # sem nada explicando por quê — foi assim que o caso da
+                # `Carga_Vida` virou uma investigação de banco. O gesto segue
+                # acontecendo (o clear já foi feito no Airflow); o que muda é
+                # que agora ele DIZ o que não fez.
+                #
+                # `None` = recusa que não merece aviso (o interruptor
+                # desligado); ver `_frase_do_portao`.
+                frase_portao = _frase_do_portao(motivo_portao)
+                if frase_portao:
+                    saida["avisos"].append(_frase_da_corrida(
+                        c, "não foi tocado: " + frase_portao
+                        + " — o reprocesso roda, mas o ciclo continua como está"))
                 continue
             if c["status"] == mc.STATUS_ABERTA:
                 # Decisão 65: o botão só existe com a frase do efeito. Aqui ela
                 # é dita depois porque o gesto já aconteceu — a prévia diz antes.
                 saida["avisos"].append(_frase_da_corrida(
-                    c, "está em andamento: esta reexecução é contada nela, e o "
+                    c, "está em andamento: esta reexecução é contada nele, e o "
                        "relógio de fechamento do ciclo NÃO reinicia por este "
                        "gesto"))
                 continue
@@ -767,7 +819,7 @@ def _efeito_na_corrida(cur, oficial: str, alvos: list, data_ref, usuario: str,
                 })
                 saida["avisos"].append(_frase_da_corrida(
                     c, f"voltou a ABERTA (tentativa "
-                       f"{recarregada.get('tentativas')}) — ela fecha de novo "
+                       f"{recarregada.get('tentativas')}) — ele fecha de novo "
                        "quando o reprocesso terminar"))
                 log.info("[RERUN] ciclo #%s da malha '%s' reaberta por %s",
                          c["id"], c["malha_name"], usuario)
@@ -790,7 +842,7 @@ def _efeito_na_corrida(cur, oficial: str, alvos: list, data_ref, usuario: str,
                 "data_referencia": _iso_data(c["data_referencia"]),
                 "status": c["status"],
             })
-            saida["avisos"].append(_frase_da_corrida(c, "NÃO foi reaberta: "
+            saida["avisos"].append(_frase_da_corrida(c, "NÃO foi reaberto: "
                                                     + porque))
         except Exception as e:  # noqa: BLE001 — o clear já aconteceu
             log.warning("[RERUN] efeito no ciclo da malha '%s' não aplicado: "

@@ -214,7 +214,15 @@ def test_paridade_do_dominio_e_das_constantes(mcd):
                  # que delimitam o alcance do DELETE. Uma lista maior de um
                  # lado apagaria evento que o outro preserva.
                  "EVENTOS_DO_DESFECHO", "MARCA_EVENTO_CORRIDA",
-                 "MARCA_EVENTO_NO"):
+                 "MARCA_EVENTO_NO",
+                 # F0 da spec do ciclo fechado. `DESFECHOS_RUINS` é o caso mais
+                 # perigoso desta lista inteira: ela é a ÚNICA constante lida
+                 # pelo motor E pela API para a mesma decisão (o observador do
+                 # nó Fim de um lado, o numerador de "falhou N das últimas 7" do
+                 # outro). Divergir aqui faria o painel contar um dia como ruim
+                 # e o observador anunciá-lo como concluído — o defeito que a F0
+                 # existe para matar, de volta pela porta dos fundos.
+                 "DESFECHOS_RUINS", "EVENTO_DESFECHO_FALHA"):
         assert getattr(mcd, nome) == getattr(mca, nome), nome
     assert mcd._CAMPOS == CAMPOS       # e os dois batem com o contrato do dublê
 
@@ -227,6 +235,32 @@ def test_a_superficie_publica_e_a_mesma(mcd):
                 if not n.startswith("_") and callable(getattr(m, n))
                 and getattr(getattr(m, n), "__module__", None) == m.__name__}
     assert publicas(mcd) == publicas(mca)
+
+
+def test_a_assinatura_de_cada_publica_e_a_mesma(mcd):
+    """Nomes iguais não bastam: a divergência mora nos PARÂMETROS.
+
+    Achado da 2ª rodada de revisão da F0 (spec do ciclo fechado). Até ela, todo
+    parâmetro era posicional e obrigatório nas duas árvores, então a comparação
+    de nomes cobria tudo na prática. A F0 introduziu o primeiro OPCIONAL
+    (`sentinela_erro`, em `corrida_aberta` e `corrida_da_data`) — e o port da
+    API não tem chamador nenhum, existe só por paridade, de modo que removê-lo
+    de lá não quebraria teste nenhum. A divergência ficaria esperando o primeiro
+    consumidor da API que precisasse distinguir "não existe" de "não consegui
+    ler", e apareceria como card falso, não como erro.
+
+    O primeiro parâmetro é a divergência DELIBERADA do port (`conn` no motor
+    pymssql, `cur` na API pyodbc) e por isso sai da comparação.
+    """
+    import inspect
+    for nome in sorted(n for n in dir(mcd)
+                       if not n.startswith("_") and callable(getattr(mcd, n))
+                       and getattr(getattr(mcd, n), "__module__",
+                                   None) == mcd.__name__):
+        pd = list(inspect.signature(getattr(mcd, nome)).parameters.values())
+        pa = list(inspect.signature(getattr(mca, nome)).parameters.values())
+        assert [(p.name, p.default, p.kind) for p in pd[1:]] == \
+               [(p.name, p.default, p.kind) for p in pa[1:]], nome
 
 
 def test_o_canonico_esta_declarado_como_canonico():

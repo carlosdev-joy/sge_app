@@ -87,9 +87,9 @@ def _corrida(monkeypatch, **sobrescreve):
         "odate_da_abertura": lambda conn, m, momento: ODATE,
         "raizes_da_malha": lambda conn, m: [],
         "partidas_a_cobrir": lambda conn, m, pipes, datas, teto: [],
-        "corrida_aberta": lambda conn, m: None,
+        "corrida_aberta": lambda conn, m, sentinela_erro=None: None,
         "corridas_abertas": lambda conn: [],
-        "corrida_da_data": lambda conn, m, d: None,
+        "corrida_da_data": lambda conn, m, d, sentinela_erro=None: None,
         "abrir_corrida": lambda conn, *a, **k: None,
         "congelar_snapshot": lambda conn, cid, m, conta_para_fim=None: 0,
         "vincular_execucao": lambda conn, p, d, e, cid: True,
@@ -536,7 +536,7 @@ def test_com_corrida_aberta_o_membro_solto_nao_e_carimbado(monkeypatch):
     _corrida(monkeypatch,
              partidas_a_cobrir=lambda conn, m, pipes, datas, teto:
                  [_partida(pipeline="PIPE_B")] if list(pipes) == ["PIPE_B"] else [],
-             corrida_aberta=lambda conn, m: _corrida_dict(),
+             corrida_aberta=lambda conn, m, sentinela_erro=None: _corrida_dict(),
              carimbar_motivo=lambda conn, p, d, e, chave, texto:
                  carimbos.append(p) or True)
     GUARDIA.ciclo()
@@ -760,7 +760,12 @@ def test_uma_falha_com_o_resto_verde_fecha_FALHA_e_nao_inventa_verde(
     assert [f[1] for f in fechou] == ["FALHA"]
     tipos = [e["tipo"] for e in eventos]
     assert "MALHA_CONCLUIDA" not in tipos
-    assert tipos == ["MALHA_FALHOU"]
+    # `MALHA_FALHOU` é o card do plantão (sai na DETECÇÃO, uma vez por corrida)
+    # e `MALHA_DESFECHO_FALHA` é o rastro do VEREDITO, que passou a sair sempre
+    # que o card foi engolido pela Decisão 12. Antes, o fechamento nesse caminho
+    # não deixava nada: a aba Eventos do ciclo ia do alerta direto ao dia
+    # seguinte, sem registrar que o dia tinha sido sentenciado nem por quê.
+    assert tipos == ["MALHA_FALHOU", "MALHA_DESFECHO_FALHA"]
 
 
 def test_malha_falhou_sai_na_deteccao_e_uma_vez_so_em_muitos_ciclos(
@@ -1191,7 +1196,7 @@ def test_observador_usa_o_odate_da_corrida_aberta_e_carimba_o_id(monkeypatch):
            gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
                eventos.append((p, d, t, kw.get("malha_execucao_id"))) or True)
     _corrida(monkeypatch,
-             corrida_aberta=lambda conn, m: _corrida_dict(id=31,
+             corrida_aberta=lambda conn, m, sentinela_erro=None: _corrida_dict(id=31,
                                                           data_referencia=ONTEM))
     GUARDIA.ciclo()
     assert avaliadas == [ONTEM]          # só o ODATE da corrida, não {D-1, D}
@@ -1218,7 +1223,7 @@ def test_o_card_do_Fim_NAO_sai_com_pipeline_ainda_em_execucao(monkeypatch):
            gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
                eventos.append((p, t)) or True)
     _corrida(monkeypatch,
-             corrida_aberta=lambda conn, m: _corrida_dict(id=31),
+             corrida_aberta=lambda conn, m, sentinela_erro=None: _corrida_dict(id=31),
              estado=lambda conn, c, dispensa_sem_linha=None:
                  _estado(vivos=["PIPE_REPROCESSO"], ok=["PIPE_A"], linhas=2,
                          membros=2))
@@ -1236,11 +1241,193 @@ def test_o_card_do_Fim_SAI_quando_ninguem_mais_esta_correndo(monkeypatch):
            gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
                eventos.append((p, t)) or True)
     _corrida(monkeypatch,
-             corrida_aberta=lambda conn, m: _corrida_dict(id=31),
+             corrida_aberta=lambda conn, m, sentinela_erro=None: _corrida_dict(id=31),
              estado=lambda conn, c, dispensa_sem_linha=None:
                  _estado(ok=["PIPE_A", "PIPE_B"], linhas=2, membros=2))
     GUARDIA.ciclo()
     assert eventos == [("#no:18", "MALHA_CONCLUIDA")]
+
+
+def test_o_card_do_Fim_NAO_sai_sobre_ciclo_JA_FECHADO_que_deu_errado(
+        monkeypatch):
+    """O buraco da guarda de vivos, e o defeito que estava VIVO em produção.
+
+    A guarda do teste acima mora inteira dentro de `if aberta is not None:`.
+    Com o ciclo **fechado**, `corrida_aberta` devolve `None`, o bloco é pulado
+    e o observador anuncia conclusão sobre um dia encerrado em FALHA. E numa
+    malha COM nó Fim este observador é a **única** fonte do evento — o fechador
+    se cala de propósito quando `no_fim` existe —, então a única fonte era
+    justamente a que não tinha guarda.
+
+    Caso real que originou o teste (`Carga_Vida`, 2026-08-12): ciclo fechado
+    `FALHA` às 07:13 com dois membros que não partiram; às 23:00 o card
+    "Malha concluída" foi emitido, e num nó com `notificar_teams` ele chega ao
+    plantão como ✅ "Nada a fazer — a malha terminou o ciclo".
+
+    Adiar não serviria: ciclo fechado não muda sozinho. Aqui é DESISTIR do
+    card — quando o operador reavaliar o ciclo, ele volta a ABERTA, o descarte
+    limpa o desfecho anulado e o card sai pelo caminho normal.
+    """
+    for desfecho in GUARDIA.mc.DESFECHOS_RUINS:
+        eventos = []
+        _mundo(monkeypatch,
+               nos_observadores=lambda conn: [_OBSERVADOR],
+               pipelines_todos_sucesso=lambda conn, pipes, d: True,
+               gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
+                   eventos.append((p, t)) or True)
+        _corrida(monkeypatch,
+                 corrida_aberta=lambda conn, m, sentinela_erro=None: None,
+                 corrida_da_data=lambda conn, m, d, sentinela_erro=None, _s=desfecho:
+                     _corrida_dict(id=31, status=_s,
+                                   fechada_em=MOMENTO_ANCORA))
+        GUARDIA.ciclo()
+        assert eventos == [], (
+            f"o card do Fim saiu sobre um ciclo encerrado como {desfecho}")
+
+
+def test_o_card_do_Fim_SAI_sobre_ciclo_fechado_que_deu_CERTO(monkeypatch):
+    """O contraponto da guarda acima — sem ele, ela poderia ter emudecido o
+    observador em todo ciclo já fechado, inclusive nos que concluíram.
+
+    `CANCELADA` entra aqui de propósito: é desistência declarada por gente, não
+    um dia que deu errado, e por isso fica fora de `DESFECHOS_RUINS`.
+
+    Sem corrida ABERTA o observador cai no fallback da janela `{D-1, D}` e
+    avalia as duas datas — por isso o `pipelines_todos_sucesso` responde só por
+    `HOJE`, senão o cenário emitiria dois cards e esconderia o que se testa.
+    """
+    for desfecho in ("CONCLUIDA", "CANCELADA", "SEM_TRABALHO"):
+        eventos = []
+        _mundo(monkeypatch,
+               nos_observadores=lambda conn: [_OBSERVADOR],
+               pipelines_todos_sucesso=lambda conn, pipes, d: d == HOJE,
+               gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
+                   eventos.append((p, t, kw.get("malha_execucao_id"))) or True)
+        _corrida(monkeypatch,
+                 corrida_aberta=lambda conn, m, sentinela_erro=None: None,
+                 corrida_da_data=lambda conn, m, d, sentinela_erro=None, _s=desfecho:
+                     _corrida_dict(id=31, status=_s,
+                                   fechada_em=MOMENTO_ANCORA))
+        GUARDIA.ciclo()
+        assert eventos == [("#no:18", "MALHA_CONCLUIDA", 31)], (
+            f"o card do Fim não saiu sobre um ciclo encerrado como {desfecho}")
+
+
+def test_o_aviso_do_no_NOTIFICACAO_sai_mesmo_com_o_ciclo_em_FALHA(monkeypatch):
+    """A guarda acima é do Fim, e SÓ dele — achado da revisão adversarial.
+
+    O laço de observadores é compartilhado pelos dois tipos, e uma guarda posta
+    antes do `if obs["tipo"] == "notificacao"` emudeceria também o aviso. Mas os
+    contratos são diferentes: o do nó Notificação
+    (`docs/malha-componentes-desenho.md` §5) é "todos os `P ∈ U` concluíram na
+    data" — afirmação que continua VERDADEIRA quando o ciclo terminou mal por
+    outro ramo. O do Fim é "a malha terminou", e é só esse que o desfecho
+    desmente.
+
+    Cenário: malha em que o ramo A alimenta um nó Notificação e o ramo B (o que
+    conta para o Fim) falhou — a cronologia do `Carga_Vida`. O aviso do ramo A é
+    devido, e emudecê-lo seria perder informação para sempre, porque esta
+    cláusula desiste em vez de adiar.
+    """
+    notificacao = dict(_OBSERVADOR, no_id=2, tipo="notificacao",
+                       nos=[{"id": 2, "tipo": "notificacao"}],
+                       arestas=[{"origem_no": None, "origem_pipeline": "PIPE_A",
+                                 "destino_no": 2, "destino_pipeline": None}])
+    for desfecho in GUARDIA.mc.DESFECHOS_RUINS:
+        eventos = []
+        _mundo(monkeypatch,
+               nos_observadores=lambda conn: [notificacao],
+               pipelines_todos_sucesso=lambda conn, pipes, d: d == HOJE,
+               gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
+                   eventos.append((p, t, notificar,
+                                   kw.get("malha_execucao_id"))) or True)
+        _corrida(monkeypatch,
+                 corrida_aberta=lambda conn, m, sentinela_erro=None: None,
+                 corrida_da_data=lambda conn, m, d, sentinela_erro=None,
+                 _s=desfecho: _corrida_dict(id=31, status=_s,
+                                            fechada_em=MOMENTO_ANCORA))
+        GUARDIA.ciclo()
+        # O `31` importa tanto quanto o evento: o aviso tem de sair carimbado
+        # com o ciclo daquele ODATE. Sair com `malha_execucao_id` NULL daria
+        # duas chaves para o mesmo aviso — o defeito que a 085 pôs a corrida na
+        # chave para resolver.
+        assert eventos == [("#no:2", "MALHA_NOTIFICACAO", True, 31)], (
+            f"o aviso do nó Notificação foi emudecido num ciclo {desfecho}")
+
+
+def test_ciclo_ILEGIVEL_adia_o_card_em_vez_de_anunciar(monkeypatch):
+    """Achado da revisão adversarial: sem isto, a guarda nova era inerte.
+
+    `corrida_da_data` degrada LARGA — qualquer exceção (lock timeout às 3h,
+    deadlock, blip de rede) virava `None`, e `None` fazia a cláusula do desfecho
+    não rodar: o card falso saía exatamente no caso em que menos se sabe. Era o
+    oposto do vizinho `test_leitura_de_vivos_indisponivel_ADIA_...`, e com a
+    guardiã tentando a cada 5 min bastava um sorteio entre ~190 num dia como o
+    do incidente.
+
+    A terceira resposta (`ERRO_LEITURA`) separa "não existe ciclo nessa data",
+    em que o card é devido, de "não consegui perguntar", em que ele adia.
+    """
+    eventos = []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_OBSERVADOR],
+           pipelines_todos_sucesso=lambda conn, pipes, d: True,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
+               eventos.append((p, t)) or True)
+    _corrida(monkeypatch,
+             corrida_aberta=lambda conn, m, sentinela_erro=None: None,
+             corrida_da_data=lambda conn, m, d, sentinela_erro=None:
+                 sentinela_erro)
+    GUARDIA.ciclo()
+    assert eventos == [], "o card saiu sem saber o desfecho do ciclo"
+
+
+def test_ciclo_ABERTO_ilegivel_adia_em_vez_de_pular_a_guarda_de_vivos(
+        monkeypatch):
+    """A gêmea do teste acima, na leitura de cima — 2ª rodada da revisão.
+
+    A guarda de vivos pende de `corrida_aberta`. Enquanto ela degradava LARGA,
+    um lock timeout devolvia `None`, `aberta is not None` era falso e a guarda
+    **inteira** era pulada: o card "malha concluída" saía com pipeline ainda em
+    execução. Não por lógica errada — por leitura muda.
+
+    O cenário monta justamente o que a guarda existiria para barrar: há vivo, e
+    o `estado()` nem chega a ser consultado se o adiamento não acontecer.
+    """
+    eventos, consultas = [], []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_OBSERVADOR],
+           pipelines_todos_sucesso=lambda conn, pipes, d: True,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
+               eventos.append((p, t)) or True)
+    _corrida(monkeypatch,
+             corrida_aberta=lambda conn, m, sentinela_erro=None: sentinela_erro,
+             corrida_da_data=lambda conn, m, d, sentinela_erro=None:
+                 _corrida_dict(id=31),
+             estado=lambda conn, c, dispensa_sem_linha=None:
+                 consultas.append(c) or _estado(vivos=["PIPE_VIVO"],
+                                                ok=["PIPE_A"], linhas=2,
+                                                membros=2))
+    GUARDIA.ciclo()
+    assert eventos == [], "o card saiu sem saber se o ciclo estava aberto"
+
+
+def test_sem_ciclo_na_data_o_card_SAI_normalmente(monkeypatch):
+    """O contraponto do teste acima: `None` legítimo (a malha não teve ciclo
+    naquele ODATE) não pode ser confundido com falha de leitura, senão o
+    fallback da janela `{D-1, D}` — que é o caminho de toda malha sem Início —
+    ficaria mudo para sempre."""
+    eventos = []
+    _mundo(monkeypatch,
+           nos_observadores=lambda conn: [_OBSERVADOR],
+           pipelines_todos_sucesso=lambda conn, pipes, d: d == HOJE,
+           gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
+               eventos.append((p, t, kw.get("malha_execucao_id"))) or True)
+    _corrida(monkeypatch,
+             corrida_aberta=lambda conn, m, sentinela_erro=None: None,
+             corrida_da_data=lambda conn, m, d, sentinela_erro=None: None)
+    GUARDIA.ciclo()
+    assert eventos == [("#no:18", "MALHA_CONCLUIDA", None)]
 
 
 def test_leitura_de_vivos_indisponivel_ADIA_o_card_em_vez_de_afirmar(monkeypatch):
@@ -1261,7 +1448,7 @@ def test_leitura_de_vivos_indisponivel_ADIA_o_card_em_vez_de_afirmar(monkeypatch
            gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
                eventos.append((p, t)) or True)
     _corrida(monkeypatch,
-             corrida_aberta=lambda conn, m: _corrida_dict(id=31),
+             corrida_aberta=lambda conn, m, sentinela_erro=None: _corrida_dict(id=31),
              estado=_explode)
     saida = GUARDIA.ciclo()          # o ciclo SEGUE — observador não derruba
     assert eventos == []
@@ -1282,8 +1469,8 @@ def test_sem_corrida_aberta_a_janela_D_menos_1_e_D_volta_a_valer(monkeypatch):
            gravar_evento=lambda conn, p, d, t, det, notificar=True, **kw:
                eventos.append((d, kw.get("malha_execucao_id"))) or True)
     _corrida(monkeypatch,
-             corrida_aberta=lambda conn, m: None,
-             corrida_da_data=lambda conn, m, d:
+             corrida_aberta=lambda conn, m, sentinela_erro=None: None,
+             corrida_da_data=lambda conn, m, d, sentinela_erro=None:
                  _corrida_dict(id=31, fechada_em=AGORA_BANCO,
                                status="CONCLUIDA") if d == ODATE else None)
     GUARDIA.ciclo()
