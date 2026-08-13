@@ -361,8 +361,14 @@ k) **F4:** concluir manualmente um ciclo → aparece distinto nas sete superfíc
 **Em aberto:**
 5. Valor default da carência da F3 — sair do histórico real das malhas, não de
    palpite.
-6. `CONCLUIDA_MANUAL` entra em `_DESFECHOS_RUINS`, ou a frase da confiabilidade
+6. `CONCLUIDA_MANUAL` entra em `DESFECHOS_RUINS`, ou a frase da confiabilidade
    ganha um terceiro número ("falhou 2 · fechado após correção 1 de 7")?
+   ⚠️ **A F0 aumentou o peso desta pendência.** `DESFECHOS_RUINS` deixou de ser
+   só "o numerador de falhou N das últimas 7" e virou também **a mordaça do nó
+   Fim**: um desfecho fora da tupla faz o observador anunciar *"os N pipelines
+   que alimentam o Fim concluíram"* sobre um ciclo fechado à mão. A escolha da
+   F4 decide, portanto, **duas** coisas — a métrica e o anúncio —, e é preciso
+   dizer explicitamente qual comportamento se quer em cada uma.
 7. Pré-condição de falha **Resolvida** com `snow_ticket` em `etl_failure_ack`
    para o gesto da F4 — costura com a spec **#297** e é a única prova externa
    disponível. O campo já existe.

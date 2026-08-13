@@ -2752,7 +2752,12 @@ _LEITURA_HISTORICO = 12
 # malha em que o operador agiu certo parecer a malha que quebrou. Ela continua
 # no DENOMINADOR (foi uma corrida com trabalho), e o motivo dela aparece na
 # auditoria da Decisão 67, que é o lugar dela.
-_DESFECHOS_RUINS = ("FALHA", "EXPIRADA", "ABORTADA")
+# Fonte única no port (`services/malha_corrida.py`), porque o MOTOR passou a
+# precisar da mesma tupla: o observador do nó Fim a consulta antes de anunciar
+# conclusão sobre ciclo já fechado. Duas cópias divergiriam no primeiro desfecho
+# novo — e desfecho que não casa filtro nenhum é o defeito já vivido com
+# `ABORTADA` ("não tinha contador, ficava invisível às 8h").
+_DESFECHOS_RUINS = mc.DESFECHOS_RUINS
 # Quantas ocorrências do MESMO dia da semana precisam ter tido trabalho para
 # um `SEM_TRABALHO` de hoje virar âmbar. Quatro é um mês de terças: menos que
 # isso vira alarme por coincidência, e "as últimas 2 terças tiveram trabalho"
@@ -4913,10 +4918,10 @@ async def disparar_malha(malha_name: str, body: dict = Body(default={}),
                     "no": inicio["id"], "nivel": "forte",
                     "tipo": "corrida_orfa",
                     "mensagem": (
-                        f"nenhuma raiz partiu e a {_rotulo_corrida(corrida)} "
-                        f"NÃO pôde ser encerrada automaticamente — ela segue "
-                        f"aberta e vai recusar o próximo disparo desta malha. "
-                        f"Encerre-a em Malha ▸ Encerrar ciclo (com motivo) "
+                        f"nenhuma raiz partiu e o {_rotulo_corrida(corrida)} "
+                        f"NÃO pôde ser encerrado automaticamente — ele segue "
+                        f"aberto e vai recusar o próximo disparo desta malha. "
+                        f"Encerre-o em Malha ▸ Encerrar ciclo (com motivo) "
                         f"antes de disparar de novo; encerrar fecha o ciclo e "
                         f"não interrompe pipeline nenhum")})
         return resp_write
@@ -5005,7 +5010,7 @@ def encerrar_corrida(malha_name: str, corrida_id: int,
             _fechar_silencioso(conn)
             raise HTTPException(
                 status_code=422,
-                detail=f"A {_rotulo_corrida(corrida)} já foi encerrada em "
+                detail=f"O {_rotulo_corrida(corrida)} já foi encerrado em "
                        f"{_fmt_dt(corrida['fechada_em'])} como "
                        f"{corrida['status']}"
                        + (f" por {corrida['fechada_por']}"
@@ -5022,7 +5027,7 @@ def encerrar_corrida(malha_name: str, corrida_id: int,
             _fechar_silencioso(conn)
             raise HTTPException(
                 status_code=422,
-                detail=f"A {_rotulo_corrida(corrida)} foi encerrada por outra ponta "
+                detail=f"O {_rotulo_corrida(corrida)} foi encerrado por outra ponta "
                        f"enquanto esta tela pedia o encerramento. Recarregue a "
                        f"malha: o ciclo já está fechado.")
         _evento_da_corrida(cur, corrida, "MALHA_CANCELADA", detalhe)
@@ -5695,10 +5700,10 @@ def _msg_corrida_aberta(c: dict) -> str:
     """
     rotulo = _rotulo_corrida(c)
     return (
-        f"A malha '{c['malha_name']}' já tem a {rotulo} em andamento "
+        f"A malha '{c['malha_name']}' já tem o {rotulo} em andamento "
         f"desde {_fmt_dt(c['aberta_em'])}. Disparar agora abriria um SEGUNDO "
         f"ciclo por cima do que está em voo — é assim que a mesma malha termina "
-        f"metade num dia e metade em outro. Encerre a {rotulo} "
+        f"metade num dia e metade em outro. Encerre o {rotulo} "
         f"(Malha ▸ Encerrar ciclo, com motivo) e dispare de novo; encerrar "
         f"fecha o CICLO e não interrompe pipeline nenhum — o que já está "
         f"rodando continua rodando.")

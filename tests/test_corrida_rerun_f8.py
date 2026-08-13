@@ -207,6 +207,36 @@ def test_interruptor_desligado_deixa_o_rerun_exatamente_como_antes(cenario):
     assert saida["avisos"] == []
 
 
+@pytest.mark.parametrize("motivo,trecho", [
+    ("migration_085_pendente", "migration 085"),
+    ("guardia_sem_heartbeat", "guardiã está sem sinal"),
+    ("dags_desatualizado", "deploy de dags/ pendente"),
+    ("capacidade_dags_desconhecida", "não foi possível confirmar"),
+])
+def test_as_outras_recusas_do_portao_SAO_ditas_ao_operador(cenario, motivo,
+                                                           trecho):
+    """O contraponto do teste acima, e a distinção que ele guarda.
+
+    O interruptor em `0` significa "a feature não existe neste ambiente" —
+    anunciar em todo rerun o que ela deixou de fazer é ruído. As outras três
+    recusas são ANOMALIAS DE AMBIENTE: a 085 que ninguém aplicou, o `dags/` que
+    ficou para trás no deploy (a etapa 5 é padrão-NÃO, a 7 é automática — a
+    célula mais provável da matriz §11.1), a guardiã sem heartbeat. Cada uma
+    tem conserto, nenhuma aparece em outro lugar da tela, e calar sobre elas
+    entrega ao operador um rerun VERDE com o ciclo intacto em FALHA.
+
+    Foi exatamente esse silêncio que fez o caso `Carga_Vida` (2026-08-12) só
+    ser explicável com consulta ao banco.
+    """
+    mc = _McFalso([_corrida(status="FALHA")])
+    saida = cenario(mc, portao=(False, motivo))
+    assert mc.reaberturas == [] and mc.eventos == []
+    assert len(saida["avisos"]) == 1, "a recusa do portão ficou muda"
+    aviso = saida["avisos"][0]
+    assert trecho in aviso
+    assert "o reprocesso roda, mas o ciclo continua como está" in aviso
+
+
 def test_sem_a_085_o_efeito_nem_e_tentado(cenario):
     mc = _McFalso([_corrida()], tem_085=False)
     saida = cenario(mc)

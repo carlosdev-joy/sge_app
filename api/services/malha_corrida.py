@@ -77,7 +77,29 @@ MODOS_FECHAMENTO = ("fim", "quiescencia")
 # alguém (ou o teto) encerrou de propósito.
 REABREM = ("CONCLUIDA", "FALHA")
 
-# Os três eventos que a TENTATIVA encerrada deixou para trás e que a reabertura
+# Os desfechos em que o dia terminou MAL. Viviam só na API
+# (`routers/malhas.py::_DESFECHOS_RUINS`, o numerador de "falhou N das últimas
+# 7") e passam a morar aqui porque agora o MOTOR precisa deles: o observador do
+# nó Fim consulta esta tupla antes de anunciar conclusão sobre um ciclo já
+# fechado. `routers/malhas.py` passou a apontar para cá em vez de manter a
+# terceira cópia — as duas árvores deste port continuam sendo duas, e é o
+# teste de paridade que as mantém iguais (invariante 12).
+#
+# `CANCELADA` fica de fora de propósito (é desistência declarada por gente, não
+# um dia que deu errado) e `SEM_TRABALHO` também (não houve dia).
+DESFECHOS_RUINS = ("FALHA", "EXPIRADA", "ABORTADA")
+
+# O rastro do VEREDITO, separado do ALERTA. `MALHA_FALHOU` é o card do plantão e
+# sai UMA vez por corrida (Decisão 12, via `marcar_visto`) — quase sempre na
+# DETECÇÃO, horas antes do fechamento. O efeito colateral disso é que o
+# fechamento em FALHA não deixava rastro NENHUM na linha do tempo: quem abrisse
+# a aba Eventos do ciclo da `Carga_Vida` de 2026-08-12 via o alerta das 04:45 e
+# o card do nó Fim das 23:00, e nada sobre o desfecho das 07:13 — justamente o
+# que sentenciou o dia. Este tipo é só rastro, e sai com `notificar=False` para
+# não duplicar card no canal.
+EVENTO_DESFECHO_FALHA = "MALHA_DESFECHO_FALHA"
+
+# Os eventos que a TENTATIVA encerrada deixou para trás e que a reabertura
 # tem de descartar (F8). Não são "history of the world": são a mesma MEMÓRIA DE
 # EFEITO COLATERAL de `falha_vista_em`/`atraso_visto_em` (Decisão 12), só que
 # morando na tabela de eventos por causa da chave única `ux_dep_evento_corrida`
@@ -95,7 +117,11 @@ REABREM = ("CONCLUIDA", "FALHA")
 # `motivo` da própria corrida, escritos pelo `SQL_REABRIR` no mesmo statement.
 # A casa do história do ciclo é `etl_malha_execucao` (é ela que tem `tentativas`,
 # `reaberta_em/por` e `fechada_em`); a tabela de eventos é a fila de alerta.
-EVENTOS_DO_DESFECHO = ("MALHA_CONCLUIDA", "MALHA_FALHOU", "MALHA_ATRASADA")
+# `EVENTO_DESFECHO_FALHA` entra na lista pelo MESMO motivo dos outros três: ele
+# é do veredito da tentativa, e o veredito anulado não pode continuar na aba
+# Eventos falando pela tentativa nova — nem segurar a chave única contra ela.
+EVENTOS_DO_DESFECHO = ("MALHA_CONCLUIDA", "MALHA_FALHOU", "MALHA_ATRASADA",
+                       EVENTO_DESFECHO_FALHA)
 
 # Defaults e domínios das configs da 085. Fora do domínio volta ao default —
 # mesma regra de `janela_sequencia_horas`: teto 0 congelaria a malha para
@@ -439,7 +465,7 @@ SQL_MEMBROS = (
     "ORDER BY pipeline_name")
 
 
-def corrida_aberta(cur, malha: str):
+def corrida_aberta(cur, malha: str, sentinela_erro=None):
     """A corrida ABERTA da malha, ou None.
 
     A releitura é SEMPRE `malha_name = ? AND fechada_em IS NULL` — **jamais**
@@ -450,7 +476,16 @@ def corrida_aberta(cur, malha: str):
     `fechada_em IS NULL` é o MESMO predicado do índice filtrado
     `ux_malha_exec_aberta`, e o `CK_mexec_coerente` garante que ele e
     `status = 'ABERTA'` não podem discordar — por isso não se filtra por
-    status: seria uma segunda régua para o mesmo fato."""
+    status: seria uma segunda régua para o mesmo fato.
+
+    `sentinela_erro`: ver `corrida_da_data`. A leitura degrada LARGA e, para o
+    observador do nó Fim, "não consegui ler" chegava como "não há ciclo aberto"
+    — e é do ciclo aberto que pende a guarda de vivos. Um lock timeout aqui
+    pulava a guarda inteira e deixava sair o card "malha concluída" com
+    pipeline ainda em execução: exatamente o que
+    `test_o_card_do_Fim_NAO_sai_com_pipeline_ainda_em_execucao` existe para
+    matar, alcançável por degradação. As DUAS leituras que alimentam a mesma
+    decisão precisam da mesma régua, senão o princípio vale pela metade."""
     try:
         cur.execute(SQL_CORRIDA_ABERTA, (malha,))
         row = cur.fetchone()
@@ -458,7 +493,7 @@ def corrida_aberta(cur, malha: str):
     except Exception as e:  # noqa: BLE001 — leitura degrada larga (docstring do módulo)
         log.warning("%s ciclo aberto de %s indisponivel (%s) — seguindo sem",
                     LOG, malha, e)
-        return None
+        return sentinela_erro
 
 
 def corridas_abertas(cur) -> list:
@@ -2050,9 +2085,24 @@ SQL_CORRIDA_DA_DATA = (
     "ORDER BY sequencia DESC, id DESC")
 
 
-def corrida_da_data(cur, malha: str, data_ref):
+def corrida_da_data(cur, malha: str, data_ref, sentinela_erro=None):
     """A corrida mais recente da malha naquele ODATE, aberta ou fechada, ou
-    None."""
+    None.
+
+    `sentinela_erro` separa as DUAS causas de "None" para quem precisa delas
+    distintas: no default, "não existe ciclo nessa data" e "não consegui ler o
+    banco" chegam ao chamador com a mesma cara, e a degradação larga está
+    certa para quem só quer carimbar um id quando houver um.
+
+    Quem passa `ERRO_LEITURA` é o observador do nó Fim, e para ele a diferença
+    é entre ANUNCIAR e CALAR: com a leitura muda ele não sabe se o ciclo
+    terminou mal, e "não sei" não pode virar "pode anunciar". É a mesma régua
+    de `_quiescencia_liberada` ("não consegui perguntar" nunca vira "pode
+    fechar") e do teste `test_leitura_de_vivos_indisponivel_ADIA_o_card_em_vez
+    _de_afirmar`. Sem a terceira resposta, um lock timeout deixa escapar o card
+    falso — e a guardiã tenta a cada 5 min, o que num dia como o do incidente
+    `Carga_Vida` (~16h entre o fecho e o fim do trabalho) são ~190 sorteios.
+    """
     try:
         cur.execute(SQL_CORRIDA_DA_DATA, (malha, data_ref))
         row = cur.fetchone()
@@ -2060,4 +2110,4 @@ def corrida_da_data(cur, malha: str, data_ref):
     except Exception as e:  # noqa: BLE001 — leitura degrada larga
         log.warning("%s ciclo de %s em %s indisponivel (%s) — seguindo "
                     "sem", LOG, malha, data_ref, e)
-        return None
+        return sentinela_erro

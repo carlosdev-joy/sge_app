@@ -1070,14 +1070,28 @@ def _fechar_uma_corrida(conn, corrida: dict, desfecho: str, tipo_evento,
     ciclo da DETECÇÃO (Decisão 12), horas antes. `marcar_visto` é o árbitro em
     UMA operação — `rowcount = 0` significa "já saiu", e aí o fechamento
     acontece sem card repetido.
+
+    ⚠️ E era aí que o fechamento ficava MUDO. "Sem card repetido" virou "sem
+    rastro nenhum": com o alerta já emitido, o `tipo_evento` zerava e o
+    fechamento não deixava nada na aba Eventos — nem que o dia foi sentenciado,
+    nem quando, nem com que motivo. No ciclo #4 da `Carga_Vida` a linha do tempo
+    ia do alerta das 04:45 direto ao card do nó Fim das 23:00, e o desfecho das
+    07:13 — o fato mais importante do dia — não estava em lugar nenhum.
+    O card continua saindo uma vez só; o VEREDITO passa a sair sempre, com tipo
+    próprio e `notificar=False`: informa sem duplicar aviso no canal.
     """
     cid = corrida["id"]
+    rastro_do_desfecho = None
     if so_se_primeira_falha and not mc.marcar_visto(conn, cid, "falha"):
-        tipo_evento = None
+        tipo_evento, rastro_do_desfecho = None, mc.EVENTO_DESFECHO_FALHA
     if tipo_evento:
         dep.gravar_evento(conn, MARCADOR_CORRIDA.format(cid),
                           corrida["data_referencia"], tipo_evento, detalhe,
                           notificar=notificar, malha_execucao_id=cid)
+    if rastro_do_desfecho:
+        dep.gravar_evento(conn, MARCADOR_CORRIDA.format(cid),
+                          corrida["data_referencia"], rastro_do_desfecho,
+                          detalhe, notificar=False, malha_execucao_id=cid)
     if not mc.fechar_corrida(conn, cid, desfecho, FECHADA_POR, motivo=detalhe):
         _rollback(conn)     # outra ponta fechou primeiro — o certo
         return False
@@ -1473,7 +1487,21 @@ def _observadores_malha(conn, agora: datetime, log, corrida_on: bool = False) ->
                      else criado_em)
             data_corrente = calcular(agora, viradas[0])
             datas = (data_corrente - timedelta(days=1), data_corrente)
-            aberta = mc.corrida_aberta(conn, malha) if corrida_on else None
+            aberta = (mc.corrida_aberta(conn, malha,
+                                        sentinela_erro=mc.ERRO_LEITURA)
+                      if corrida_on else None)
+            if aberta == mc.ERRO_LEITURA:
+                # A gêmea da leitura logo abaixo, e o mesmo princípio: a guarda
+                # de vivos pende de `aberta`, então um lock timeout AQUI a
+                # pulava inteira e deixava sair "malha concluída" com pipeline
+                # em execução — o card que
+                # `test_o_card_do_Fim_NAO_sai_com_pipeline_ainda_em_execucao`
+                # existe para matar, alcançável por degradação em vez de por
+                # lógica. As duas leituras que alimentam a decisão precisam da
+                # mesma régua, senão o "não sei ⇒ não afirmo" vale pela metade.
+                log.warning("[GUARDIA] malha '%s': nao consegui ler o ciclo "
+                            "aberto — observadores adiados", malha)
+                continue
             if aberta is not None:
                 datas = (aberta["data_referencia"],)
             for data_ref in datas:
@@ -1494,6 +1522,34 @@ def _observadores_malha(conn, agora: datetime, log, corrida_on: bool = False) ->
                 # significa "a malha terminou", e afirmar isso com QUALQUER
                 # membro vivo é falso — venha ele de reprocesso ou de um ramo
                 # que não passa pelo Fim.
+                # A dona do ODATE é resolvida ANTES da guarda porque a guarda
+                # passou a depender dela. Com o ciclo FECHADO, `corrida_aberta`
+                # devolve `None` e o bloco abaixo era pulado INTEIRO — o
+                # observador anunciava conclusão sobre um dia encerrado em
+                # FALHA. E numa malha COM nó Fim este observador é a ÚNICA fonte
+                # do evento (o fechador se cala de propósito, ver
+                # `tipo = ... if corrida["no_fim"] is None else None` em
+                # `_fechar_corridas`): a única fonte era justamente a que não
+                # tinha guarda. Caso real: ciclo #4 da `Carga_Vida` fechado
+                # FALHA às 07:13 e "ciclo concluído" emitido às 23:00.
+                dona = None
+                if corrida_on:
+                    dona = (aberta if aberta is not None
+                            else mc.corrida_da_data(
+                                conn, malha, data_ref,
+                                sentinela_erro=mc.ERRO_LEITURA))
+                    if dona == mc.ERRO_LEITURA:
+                        # "Não sei o desfecho" não pode virar "pode anunciar" —
+                        # a mesma régua da leitura de vivos logo abaixo. Vale
+                        # para os DOIS tipos de observador: sem saber a corrida,
+                        # o evento sairia com `malha_execucao_id` NULL, chave
+                        # diferente da do caminho bom, e produziria DOIS cards
+                        # para a mesma conclusão (o defeito que a 085 pôs a
+                        # corrida na chave para resolver).
+                        log.warning("[GUARDIA] no %s (malha '%s'): nao consegui "
+                                    "ler o ciclo de %s — card adiado",
+                                    no_id, malha, _iso(data_ref))
+                        continue
                 if aberta is not None:
                     try:
                         if mc.estado(conn, aberta).get("vivos"):
@@ -1509,11 +1565,37 @@ def _observadores_malha(conn, agora: datetime, log, corrida_on: bool = False) ->
                                     "conferir se ha pipeline vivo (%s) — card "
                                     "adiado", no_id, malha, e)
                         continue
-                corrida_id = None
-                if corrida_on:
-                    dona = (aberta if aberta is not None
-                            else mc.corrida_da_data(conn, malha, data_ref))
-                    corrida_id = dona["id"] if dona else None
+                elif (obs["tipo"] != "notificacao" and dona is not None
+                      and str(dona.get("status") or "") in mc.DESFECHOS_RUINS):
+                    # O dia já foi julgado, e mal. "Os alimentadores do Fim
+                    # concluíram" continua verdade; "a malha concluiu" não é — e
+                    # entre os dois quem manda é o DESFECHO. Sem esta cláusula o
+                    # card ✅ ("Nada a fazer — a malha terminou o ciclo") sai
+                    # sobre o dia que o plantão passou a madrugada tentando
+                    # salvar. Adiar não resolveria: ciclo fechado não muda
+                    # sozinho — por isso aqui é DESISTIR do card, não adiá-lo.
+                    #
+                    # ⚠️ SÓ o Fim. O laço é compartilhado com o nó Notificação,
+                    # e o contrato dele (`docs/malha-componentes-desenho.md`
+                    # §5) é "todos os P ∈ U concluíram na data" — afirmação que
+                    # continua VERDADEIRA num ciclo que terminou mal por outro
+                    # ramo. Emudecê-lo aqui apagaria um aviso legítimo, e para
+                    # sempre (esta cláusula desiste, não adia). É o Fim que
+                    # significa "a malha terminou", e é só dele que o desfecho
+                    # discorda.
+                    #
+                    # Quando o operador reavaliar o ciclo (F1), ele volta a
+                    # ABERTA, `descartar_desfecho` limpa o desfecho anulado e o
+                    # card sai pelo caminho normal — com o ciclo já concluído.
+                    log.info("[GUARDIA] no %s (malha '%s'): upstream concluido, "
+                             "mas o ciclo de %s foi encerrado como %s — card "
+                             "NAO emitido", no_id, malha, _iso(data_ref),
+                             dona.get("status"))
+                    continue
+                # Interruptor desligado ou 085 ausente ⇒ `dona` é None e a
+                # cláusula acima não roda: sem o modelo do ciclo não há desfecho
+                # a consultar, e o observador degrada para o que era antes da F1.
+                corrida_id = dona["id"] if dona else None
                 if obs["tipo"] == "notificacao":
                     tipo_ev, notificar = "MALHA_NOTIFICACAO", True
                     # 087 — o modelo do catálogo, quando o nó apontou para um.
@@ -1528,9 +1610,18 @@ def _observadores_malha(conn, agora: datetime, log, corrida_on: bool = False) ->
                 else:
                     tipo_ev = "MALHA_CONCLUIDA"
                     notificar = (obs["config"] or {}).get("notificar_teams") is True
-                    detalhe = (f"Malha {malha} concluída na data "
-                               f"{_iso(data_ref)} — {len(upstream)} "
-                               "pipeline(s) com SUCESSO")
+                    # O texto afirma o que ESTE observador verificou, e nada
+                    # além: os alimentadores diretos do Fim concluíram. Antes
+                    # dizia "Malha X concluída — N pipeline(s) com SUCESSO", e o
+                    # N sempre foi o tamanho do `upstream` — não o total de
+                    # membros. Num ciclo de 13 membros com 2 alimentando o Fim,
+                    # a frase anunciava a malha inteira a partir de 2/13, e o
+                    # próprio número ao lado ("2") desmentia a palavra
+                    # ("concluída") para quem soubesse ler. "Ciclo concluído" é
+                    # afirmação do DESFECHO, e o desfecho é da corrida.
+                    detalhe = (f"Os {len(upstream)} pipeline(s) que alimentam o "
+                               f"Fim da malha {malha} concluíram na data "
+                               f"{_iso(data_ref)}")
                 if dep.gravar_evento(conn, f"#no:{no_id}", data_ref, tipo_ev,
                                      detalhe, notificar=notificar,
                                      malha_execucao_id=corrida_id):
