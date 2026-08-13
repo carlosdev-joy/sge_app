@@ -1,4 +1,4 @@
-import { useState, useRef, type ReactNode } from 'react'
+import { useState, useRef, useEffect, type ReactNode } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { Button } from '../components/ui/Button'
@@ -3488,13 +3488,22 @@ interface SnDiagnostico {
   grupos: { name: string; sys_id: string; active: string }[]
   tabelas: Record<string, SnTabela>
   grupo_contagem: { grupo: string; por_tabela: Record<string, number | null> } | null
+  proxy: { em_uso: string | null; motivo: string | null } | null
 }
 
 function SondaServiceNowTab() {
   const [form, setForm] = useState({
-    url: 'https://cvpsnprod.service-now.com',
-    usuario: '', senha: '', grupo_busca: 'engenharia', grupo_nome: '',
+    url: '', usuario: '', senha: '', grupo_busca: 'engenharia', grupo_nome: '',
   })
+  // Instância vem do ambiente (SERVICENOW_URL no compose), não de literal no
+  // código: trocar de instância vira ajuste de .env, sem rebuild do front.
+  const { data: cfg } = useQuery<{ url: string }>({
+    queryKey: ['servicenow-config'],
+    queryFn: () => apiFetch('/admin/servicenow/config'),
+  })
+  useEffect(() => {
+    if (cfg?.url) setForm(f => (f.url ? f : { ...f, url: cfg.url }))
+  }, [cfg?.url])
   const sonda = useMutation({
     mutationFn: (f: typeof form) =>
       apiFetch<SnDiagnostico>('/admin/servicenow/diagnostico', {
@@ -3546,6 +3555,19 @@ function SondaServiceNowTab() {
               {r.auth?.ok ? `Conexão OK com ${r.url}` : (r.auth?.motivo ?? `HTTP ${r.auth?.status ?? '—'}`)}
             </span>
           </div>
+
+          {/* Rota da chamada — sem isto, "com proxy" e "sem proxy" têm a
+              mesma cara na tela e a falha de rede vira adivinhação. */}
+          {r.proxy && (
+            <div className="bg-panel border border-edge rounded-lg p-3 flex items-center gap-2 text-sm">
+              <Badge value={r.proxy.em_uso ? 'info' : 'warning'}>
+                {r.proxy.em_uso ? 'via proxy' : 'conexão direta'}
+              </Badge>
+              <span className="text-ink font-mono text-xs">
+                {r.proxy.em_uso ?? r.proxy.motivo ?? '—'}
+              </span>
+            </div>
+          )}
 
           {/* Grupos encontrados */}
           {r.grupos.length > 0 && (
