@@ -40,6 +40,24 @@ COLUNAS_KANBAN = ("novo", "andamento", "aguardando", "resolvido", "outros")
 # Acima disto o carimbo de frescor vira âmbar: 2 ciclos de 3h perdidos.
 FRESCOR_ALERTA_HORAS = 6
 
+# Faixas de aging. Os limites são o MESMO contrato do destaque no card
+# (>3d atenção, >7d parado): duas réguas diferentes para a mesma pergunta
+# fariam a aba discordar do kanban ao lado.
+FAIXAS_AGING = (
+    ("0-3 dias", 0, 3),
+    ("4-7 dias", 4, 7),
+    ("8-14 dias", 8, 14),
+    ("mais de 14 dias", 15, None),
+)
+
+# Janela do fluxo de entradas × saídas.
+DIAS_FLUXO = 14
+
+# Quantos responsáveis o gráfico de carga mostra antes de dobrar o resto em
+# "outros". O corte é DITO na resposta — silenciar o que foi cortado faria a
+# soma do gráfico não bater com a fila.
+TOPO_RESPONSAVEIS = 10
+
 
 def _fmt_dt(v):
     return str(v)[:19] if v else None
@@ -145,3 +163,106 @@ def listar_chamados(incluir_inativos: int = 0,
                 "Nenhum chamado no grupo configurado. Se isso for inesperado, "
                 "confira o grupo em Admin > ServiceNow.")
     return resposta
+
+
+@router.get("/chamados/indicadores", tags=["chamados"])
+def indicadores(_auth: dict = Depends(get_current_user)):
+    """Agregados para a aba de Indicadores — contas feitas no SQL, não na tela.
+
+    Quatro leituras, cada uma respondendo a uma pergunta da gestão:
+      - aging por faixa      → "tem coisa velha parada?"
+      - tipo × estado        → "onde a fila está represada?"
+      - entradas × saídas    → "estamos ganhando ou perdendo da fila?"
+      - carga por responsável → "está distribuído?"
+
+    Todo total vem acompanhado do denominador: a regra da casa é que nenhuma
+    superfície mostre "%" sem o "x de y" ao lado, e o front só consegue montar
+    essa frase se o denominador chegar junto.
+    """
+    saida = {
+        "aging": [], "tipo_estado": {"tipos": [], "estados": list(COLUNAS_KANBAN),
+                                     "celulas": []},
+        "fluxo": [], "carga": [], "total_ativos": 0,
+        "responsaveis_ocultos": 0, "migration_ausente": False,
+    }
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+
+        # ── aging por faixa (só o que está na fila) ──────────────────────────
+        cur.execute(
+            "SELECT CASE "
+            "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 3 THEN '0-3 dias' "
+            "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 7 THEN '4-7 dias' "
+            "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 14 THEN '8-14 dias' "
+            "  ELSE 'mais de 14 dias' END AS faixa, COUNT(*) "
+            "FROM dbo.etl_chamado WHERE ativo = 1 AND aberto_em IS NOT NULL "
+            "GROUP BY CASE "
+            "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 3 THEN '0-3 dias' "
+            "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 7 THEN '4-7 dias' "
+            "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 14 THEN '8-14 dias' "
+            "  ELSE 'mais de 14 dias' END")
+        contagem = {linha[0]: linha[1] for linha in cur.fetchall()}
+        # Faixa sem chamado vem com 0 EXPLÍCITO e na ordem fixa: buraco no
+        # gráfico faria "nenhum chamado velho" parecer "não medi isso".
+        saida["aging"] = [{"faixa": nome, "total": contagem.get(nome, 0)}
+                          for nome, _i, _f in FAIXAS_AGING]
+
+        # ── tipo × estado ───────────────────────────────────────────────────
+        cur.execute(
+            "SELECT tipo, estado_kanban, COUNT(*) FROM dbo.etl_chamado "
+            "WHERE ativo = 1 GROUP BY tipo, estado_kanban")
+        celulas = [{"tipo": r[0], "estado": r[1], "total": r[2]}
+                   for r in cur.fetchall()]
+        saida["tipo_estado"] = {
+            "tipos": sorted({c["tipo"] for c in celulas}),
+            "estados": list(COLUNAS_KANBAN),
+            "celulas": celulas,
+        }
+
+        # ── entradas × saídas dos últimos 14 dias ───────────────────────────
+        cur.execute(
+            "SELECT CAST(aberto_em AS DATE), COUNT(*) FROM dbo.etl_chamado "
+            "WHERE aberto_em >= DATEADD(DAY, ?, CAST(GETDATE() AS DATE)) "
+            "GROUP BY CAST(aberto_em AS DATE)", [-(DIAS_FLUXO - 1)])
+        entradas = {str(r[0])[:10]: r[1] for r in cur.fetchall()}
+        cur.execute(
+            "SELECT CAST(encerrado_em AS DATE), COUNT(*) FROM dbo.etl_chamado "
+            "WHERE encerrado_em >= DATEADD(DAY, ?, CAST(GETDATE() AS DATE)) "
+            "GROUP BY CAST(encerrado_em AS DATE)", [-(DIAS_FLUXO - 1)])
+        saidas = {str(r[0])[:10]: r[1] for r in cur.fetchall()}
+        cur.execute("SELECT CAST(GETDATE() AS DATE)")
+        hoje = cur.fetchone()[0]
+        import datetime as _dt
+        if not isinstance(hoje, _dt.date):
+            hoje = _dt.date.fromisoformat(str(hoje)[:10])
+        # Todos os 14 dias, inclusive os sem movimento: dia sem encerramento é
+        # um ZERO dito, não uma lacuna na série (critério de aceite da spec).
+        saida["fluxo"] = [
+            {"dia": (d := str(hoje - _dt.timedelta(days=i))),
+             "entradas": entradas.get(d, 0), "saidas": saidas.get(d, 0)}
+            for i in range(DIAS_FLUXO - 1, -1, -1)
+        ]
+
+        # ── carga por responsável ───────────────────────────────────────────
+        cur.execute(
+            "SELECT ISNULL(NULLIF(LTRIM(RTRIM(atribuido_a)), ''), 'sem responsável'), "
+            "       COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
+            "GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(atribuido_a)), ''), 'sem responsável') "
+            "ORDER BY COUNT(*) DESC")
+        todos = [{"responsavel": r[0], "total": r[1]} for r in cur.fetchall()]
+        saida["carga"] = todos[:TOPO_RESPONSAVEIS]
+        saida["responsaveis_ocultos"] = max(0, len(todos) - TOPO_RESPONSAVEIS)
+
+        cur.execute("SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1")
+        saida["total_ativos"] = cur.fetchone()[0]
+        cur.close(); conn.close()
+    except Exception as e:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        log.warning("indicadores: espelho indisponível (%s: %s)", type(e).__name__, e)
+        saida["migration_ausente"] = True
+    return saida
