@@ -224,13 +224,17 @@ def test_credencial_executora_decifra():
 # ═══════════ 6. degradação e utilitários ════════════════════════════════════
 
 def test_load_config_sem_a_migration_nao_explode(monkeypatch):
-    """Ambiente sem a 088: config vazia e dita, nunca exceção."""
+    """Ambiente sem a 088/089: config vazia e dita, nunca exceção.
+
+    O `proxy: ""` faz parte do contrato de degradação: ambiente sem a
+    migration 089 precisa cair em rota DIRETA, não em KeyError no worker.
+    """
     def _quebra():
         raise RuntimeError("Invalid object name 'dbo.etl_app_config'")
     monkeypatch.setattr("services.servicenow.get_db_conn", _quebra)
     cfg = servicenow.load_config()
     assert cfg == {"url": "", "usuario": "", "senha_enc": "", "grupos": "",
-                   "habilitado": False}
+                   "habilitado": False, "proxy": ""}
     assert servicenow.configurado(cfg) is False
 
 
@@ -252,3 +256,75 @@ def test_habilitado_so_com_o_literal_um(banco, valor, esperado):
     no banco não podem ligar o sync agendado por acidente."""
     banco["cur"] = CursorFalso({servicenow.K_HABILITADO: valor})
     assert servicenow.load_config()["habilitado"] is esperado
+
+
+# ═══════════ 7. a rota de saída (proxy, migration 089) ══════════════════════
+# O sync roda no airflow-worker, que NÃO herda o HTTPS_PROXY do orquestra-api
+# — foi o "Connection reset by peer" nas quatro tabelas. A rota virou config
+# em vez de variável de ambiente porque variável só entra em container novo, e
+# recriar o worker mata as tasks em execução.
+
+def test_proxy_e_gravado_e_volta_na_leitura(admin_client, banco):
+    banco["cur"] = CursorFalso({})
+    r = admin_client.post("/admin", json={
+        "action": "servicenow_set", "url": ALVO, "usuario": "svc",
+        "senha": "x", "proxy": "http://webproxycvp.adcorp.intranet/"})
+    assert r.status_code == 200
+    gravadas = dict(banco["cur"].gravado)
+    assert gravadas[servicenow.K_PROXY] == "http://webproxycvp.adcorp.intranet/"
+
+
+def test_proxy_volta_em_claro_para_a_tela(admin_client, banco):
+    """Não é segredo — e é a PRIMEIRA coisa a conferir quando o sync dá erro
+    de rede. Mascarar aqui esconderia justamente o campo do diagnóstico."""
+    banco["cur"] = CursorFalso({servicenow.K_PROXY: "http://proxy:8080"})
+    cfg = admin_client.post("/admin", json={"action": "servicenow_get"}).json()
+    assert cfg["config"]["proxy"] == "http://proxy:8080"
+
+
+def test_proxy_vazio_e_aceito_e_significa_direto(admin_client, banco):
+    """Ambiente sem firewall de saída (o dev) grava vazio e funciona."""
+    banco["cur"] = CursorFalso({})
+    r = admin_client.post("/admin", json={
+        "action": "servicenow_set", "url": ALVO, "usuario": "svc", "proxy": ""})
+    assert r.status_code == 200
+    assert dict(banco["cur"].gravado)[servicenow.K_PROXY] == ""
+
+
+def test_proxy_sem_esquema_e_recusado(admin_client, banco):
+    """'webproxy:8080' sem http:// faz o httpx levantar erro de rede — o
+    mesmo sintoma de firewall, com causa que está na tela."""
+    banco["cur"] = CursorFalso({})
+    r = admin_client.post("/admin", json={
+        "action": "servicenow_set", "url": ALVO, "usuario": "svc",
+        "proxy": "webproxycvp.adcorp.intranet:8080"})
+    assert r.status_code == 422
+    assert not banco["cur"].gravado, "nada gravado com proxy recusado"
+
+
+def test_proxy_com_espaco_no_meio_e_recusado(admin_client, banco):
+    """Colar de um chat traz espaço invisível; o erro seria idêntico ao de
+    firewall e o operador caçaria a rede em vez do campo."""
+    banco["cur"] = CursorFalso({})
+    r = admin_client.post("/admin", json={
+        "action": "servicenow_set", "url": ALVO, "usuario": "svc",
+        "proxy": "http://web proxy:8080"})
+    assert r.status_code == 422
+
+
+@pytest.mark.parametrize("valor", ["ftp://proxy:21", "socks5://proxy:1080",
+                                   "file:///etc/passwd", "//proxy:8080"])
+def test_esquema_estranho_e_recusado(admin_client, banco, valor):
+    banco["cur"] = CursorFalso({})
+    r = admin_client.post("/admin", json={
+        "action": "servicenow_set", "url": ALVO, "usuario": "svc",
+        "proxy": valor})
+    assert r.status_code == 422
+
+
+def test_proxy_e_aparado_antes_de_gravar(admin_client, banco):
+    banco["cur"] = CursorFalso({})
+    admin_client.post("/admin", json={
+        "action": "servicenow_set", "url": ALVO, "usuario": "svc",
+        "proxy": "  http://proxy:8080  "})
+    assert dict(banco["cur"].gravado)[servicenow.K_PROXY] == "http://proxy:8080"

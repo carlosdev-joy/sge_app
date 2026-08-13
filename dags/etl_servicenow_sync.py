@@ -2,7 +2,13 @@
 etl_servicenow_sync.py
 
 Espelha os chamados do(s) grupo(s) da engenharia do ServiceNow no SQL Server
-(docs/spec-chamados-servicenow.md, F1/F2). A cada 3h, uma task só.
+(docs/spec-chamados-servicenow.md, F1/F2). A cada 15 min, uma task só.
+
+⚠️ **A cadência tem um par**: `FRESCOR_ALERTA_MINUTOS` em `api/routers/chamados.py`
+é quantos minutos de silêncio acendem o âmbar na tela, e só faz sentido em
+função deste cron (hoje ~4 ciclos). Mudar um sem o outro deixa o alerta surdo
+(cadência curta + limiar longo) ou histérico (cadência longa + limiar curto).
+`tests/test_servicenow_cadencia.py` prende os dois.
 
 Desenho, e o porquê de cada escolha:
 
@@ -29,7 +35,7 @@ Desenho, e o porquê de cada escolha:
 
   5. **Interruptor `servicenow_habilitado`**: em 0, o ciclo não chama nada,
      não grava espelho e sai dizendo por quê. Sem isto, uma instalação sem
-     credencial acumularia falha vermelha de 3 em 3 horas.
+     credencial acumularia falha vermelha a cada ciclo.
 
 ⚠️ Placeholder `%s` (pymssql) — esta é a árvore `dags/`. A `api/` usa `?`.
 """
@@ -44,7 +50,7 @@ from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 
 from utils.servicenow_sync import (
     CAMPOS, MAX_PAGINAS, MSSQL_CONN_ID, PAGINA, TABELAS,
-    normalizar, query_do_grupo, upsert_params, upsert_sql,
+    normalizar, proxy_da_config, query_do_grupo, upsert_params, upsert_sql,
 )
 
 # Chaves da config (espelham api/services/servicenow.py — a fonte é a mesma
@@ -99,14 +105,21 @@ def _buscar_tabela(cliente, url: str, tabela: str, query: str) -> list[dict]:
 @dag(
     dag_id="etl_servicenow_sync",
     description="Espelha os chamados do ServiceNow do grupo da engenharia",
-    schedule="0 */3 * * *",
+    # 15 min durante a equalização da fila (era 3h). Ao voltar a afrouxar,
+    # mexa TAMBÉM em FRESCOR_ALERTA_MINUTOS (api/routers/chamados.py) e nos
+    # dois valores abaixo — o teste de cadência recusa a combinação incoerente.
+    schedule="*/15 * * * *",
     start_date=pendulum.datetime(2026, 8, 1, tz="America/Sao_Paulo"),
     catchup=False,
     max_active_runs=1,
-    dagrun_timeout=_dt.timedelta(minutes=20),
+    # Teto e retry cabem DENTRO do intervalo: com max_active_runs=1, uma run
+    # que atravessasse o próximo slot empurraria a fila para sempre. Pior
+    # caso = 1ª tentativa + 2 min de espera + 2ª tentativa, e o teto corta em
+    # 10 min de qualquer jeito.
+    dagrun_timeout=_dt.timedelta(minutes=10),
     tags=["servicenow", "chamados", "sistema"],
     default_args={"owner": "orquestra", "retries": 1,
-                  "retry_delay": _dt.timedelta(minutes=5)},
+                  "retry_delay": _dt.timedelta(minutes=2)},
 )
 def etl_servicenow_sync():
 
@@ -163,9 +176,15 @@ def etl_servicenow_sync():
         contagens: dict = {}
         erros: list[str] = []
         tipos_ok: list[str] = []
-        # trust_env: HTTPS_PROXY/NO_PROXY vêm do ambiente do worker. NÃO passar
-        # proxy por parâmetro — isso faz o httpx ignorar o NO_PROXY (PR #304).
+        # Rota de saída. Ver proxy_da_config() para o porquê de vir da
+        # config e não de variável de ambiente do worker.
+        proxy = proxy_da_config(cfg)
+        print(f"[SN] Saída: {'via proxy ' + proxy if proxy else 'conexão direta'}")
+        # ⚠️ `proxy=` (singular). O worker roda httpx 0.28+, onde `proxies=` já
+        # não existe — a `api/` roda 0.27 e aceita os dois. Duas árvores, duas
+        # versões: o que compila lá não necessariamente importa aqui.
         with httpx.Client(auth=(usuario, senha), timeout=TIMEOUT_HTTP,
+                          proxy=proxy,
                           headers={"Accept": "application/json"}) as cliente:
             for tabela, tipo in TABELAS:
                 try:

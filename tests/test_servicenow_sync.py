@@ -32,7 +32,8 @@ sys.path.insert(0, str(RAIZ / "dags"))
 
 from utils.servicenow_sync import (  # noqa: E402
     COLUNAS_KANBAN, ESTADOS, TABELAS, TITULO_MAX,
-    mapear_estado, normalizar, query_do_grupo, truncar_titulo,
+    K_PROXY, mapear_estado, normalizar, proxy_da_config, query_do_grupo,
+    truncar_titulo,
     upsert_params, upsert_sql,
 )
 
@@ -235,3 +236,47 @@ def test_todas_as_tabelas_tem_mapa_de_estado():
     """Tabela sincronizada sem mapa jogaria TUDO em 'outros'."""
     for tabela, _tipo in TABELAS:
         assert tabela in ESTADOS, f"{tabela} sem mapeamento de estado"
+
+
+# ═══════════ 7. a rota de saída (proxy corporativo) ═════════════════════════
+# O worker do Airflow não herda o HTTPS_PROXY do orquestra-api, e por isso o
+# primeiro sync real morreu com "Connection reset by peer" nas quatro tabelas
+# em 1 segundo. A rota virou CONFIG (servicenow_proxy, migration 089) e não
+# variável de ambiente: variável só entra em container novo, e recriar o
+# worker mata as tasks em execução.
+
+def test_config_sem_a_chave_e_rota_direta():
+    """Ambiente sem a migration 089 não pode quebrar o sync: a ausência da
+    chave significa 'direto', que é como o dev sempre rodou."""
+    assert proxy_da_config({}) is None
+
+
+def test_proxy_vazio_e_rota_direta():
+    """O seed da 089 nasce vazio. Devolver '' em vez de None faria o httpx
+    tentar um proxy de endereço vazio — falha de rede com cara de firewall,
+    que é justamente o sintoma que este código existe para desambiguar."""
+    assert proxy_da_config({K_PROXY: ""}) is None
+
+
+def test_proxy_so_com_espacos_e_rota_direta():
+    assert proxy_da_config({K_PROXY: "   "}) is None
+
+
+def test_proxy_configurado_e_devolvido_sem_espacos():
+    cfg = {K_PROXY: "  http://webproxycvp.adcorp.intranet/  "}
+    assert proxy_da_config(cfg) == "http://webproxycvp.adcorp.intranet/"
+
+
+def test_proxy_nao_atrapalha_as_outras_chaves():
+    """A DAG lê tudo num SELECT LIKE 'servicenow%'. A chave nova entra no
+    mesmo dicionário e não pode ser confundida com URL nem com senha."""
+    cfg = {"servicenow_url": "https://x.service-now.com",
+           K_PROXY: "http://proxy:8080"}
+    assert proxy_da_config(cfg) == "http://proxy:8080"
+
+
+def test_dag_imprime_a_rota_escolhida():
+    """Proxy ausente e proxy errado dão o MESMO erro de rede. Sem esta linha
+    no log, o diagnóstico volta a ser adivinhação."""
+    fonte = (RAIZ / "dags" / "etl_servicenow_sync.py").read_text(encoding="utf-8")
+    assert "conexão direta" in fonte and "via proxy" in fonte

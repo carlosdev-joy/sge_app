@@ -27,8 +27,9 @@ K_USUARIO     = "servicenow_usuario"
 K_SENHA       = "servicenow_senha_enc"   # Fernet
 K_GRUPOS      = "servicenow_grupos"
 K_HABILITADO  = "servicenow_habilitado"  # '1' | '0'
+K_PROXY       = "servicenow_proxy"       # migration 089; vazio = rota direta
 
-TODAS_AS_CHAVES = (K_URL, K_USUARIO, K_SENHA, K_GRUPOS, K_HABILITADO)
+TODAS_AS_CHAVES = (K_URL, K_USUARIO, K_SENHA, K_GRUPOS, K_HABILITADO, K_PROXY)
 
 # Tabelas do ServiceNow que o espelho cobre.
 TABELAS = ("incident", "sc_req_item", "sc_task", "change_request")
@@ -50,6 +51,31 @@ def url_valida(url: str) -> str:
     return u
 
 
+def proxy_valido(bruto: str) -> str:
+    """Normaliza o proxy de saída. Vazio é LEGÍTIMO e significa rota direta.
+
+    Aceita http:// e https:// (proxy corporativo costuma ser http mesmo para
+    tráfego https — o CONNECT é que sobe o túnel). Recusa qualquer outro
+    esquema, e recusa espaço no meio: um valor colado com espaço invisível
+    daria `ConnectError` idêntico ao de firewall, e o operador passaria o dia
+    caçando a rede em vez do campo.
+    """
+    p = (bruto or "").strip()
+    if not p:
+        return ""
+    if not p.startswith(("http://", "https://")):
+        raise HTTPException(
+            status_code=422,
+            detail="Proxy deve começar com http:// ou https:// "
+                   "(ex.: http://webproxy.empresa.intranet:8080)")
+    if any(c.isspace() for c in p):
+        raise HTTPException(status_code=422,
+                            detail="Proxy não pode conter espaços")
+    if len(p) > 500:
+        raise HTTPException(status_code=422, detail="Proxy longo demais")
+    return p
+
+
 def parse_grupos(bruto: str) -> list[str]:
     """'A; B ;;C' → ['A', 'B', 'C']. Sem grupo = sem filtro de fila."""
     return [g.strip() for g in (bruto or "").split(";") if g.strip()]
@@ -65,7 +91,7 @@ def load_config(cur=None) -> dict:
     own_conn = cur is None
     conn = None
     cfg = {"url": "", "usuario": "", "senha_enc": "", "grupos": "",
-           "habilitado": False}
+           "habilitado": False, "proxy": ""}
     try:
         if own_conn:
             conn = get_db_conn(); cur = conn.cursor()
@@ -79,6 +105,7 @@ def load_config(cur=None) -> dict:
         cfg["senha_enc"]  = (linhas.get(K_SENHA) or "").strip()
         cfg["grupos"]     = (linhas.get(K_GRUPOS) or "").strip()
         cfg["habilitado"] = (linhas.get(K_HABILITADO) or "").strip() == "1"
+        cfg["proxy"]      = (linhas.get(K_PROXY) or "").strip()
     except Exception:
         pass  # tabela/chaves ausentes → config vazia, dita na tela
     finally:
