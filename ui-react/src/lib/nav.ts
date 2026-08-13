@@ -8,7 +8,7 @@ import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, Workflow, Blocks, ScrollText, Bell, ShieldAlert,
   Library, Network, Settings, Crosshair, ClipboardList, BarChart3, Terminal,
-  Rocket, Gauge, Copy, Cable, OctagonX, GitBranch, ShieldCheck,
+  Rocket, Gauge, Copy, Cable, OctagonX, GitBranch, ShieldCheck, Ticket,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 
@@ -48,6 +48,7 @@ export const NAV: NavItem[] = [
   { to: '/planos-ajuste', label: 'Planos de Ajuste',   icon: ClipboardList,   group: 'Governança & Dados', perm: 'tela_plano_ajuste' },
   { to: '/copia-dados',   label: 'Cópia de Dados',     icon: Copy,            group: 'Governança & Dados', perm: 'tela_copia_dados' },
   { to: '/inventario',    label: 'Inventário de Consumidores', icon: Cable,   group: 'Governança & Dados', perm: 'tela_inventario' },
+  { to: '/chamados',      label: 'Chamados',                   icon: Ticket,  group: 'Governança & Dados', perm: 'tela_chamados' },
   { to: '/powerbi',       label: 'Power BI',           icon: BarChart3,       group: 'BI',                 perm: 'tela_powerbi' },
   // Seção Caixa Seguro (src/caixa) — telas nativas em rotas próprias no
   // App.tsx (F9 da migração); navegação interna pelo MenuButton.

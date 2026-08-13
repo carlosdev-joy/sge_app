@@ -23,6 +23,7 @@ import Publicacao from './pages/Publicacao'
 import Performance from './pages/Performance'
 import CopiaDados from './pages/CopiaDados'
 import Inventario from './pages/Inventario'
+import Chamados from './pages/Chamados'
 import Finalizacao from './pages/Finalizacao'
 import Fluxos from './pages/Fluxos'
 import Monitoramento from './caixa/pages/Monitoramento'
@@ -84,6 +85,7 @@ const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/planos-ajuste': <PlanosAjuste />,
   '/copia-dados': <CopiaDados />,
   '/inventario': <Inventario />,
+  '/chamados':   <Chamados />,
   '/powerbi': <PowerBI />,
   '/ds-console': <DsConsole />,
   '/performance': <Performance />,
