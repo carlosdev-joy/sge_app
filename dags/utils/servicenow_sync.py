@@ -29,7 +29,12 @@ TABELAS = (
 # valor cru; pedimos os campos explicitamente para não trafegar o registro
 # inteiro (fila de ~50, mas o payload completo do ServiceNow é gordo).
 CAMPOS = ("sys_id,number,short_description,state,priority,assigned_to,"
-          "assignment_group,opened_at,sys_updated_on,closed_at,active")
+          "assignment_group,opened_at,sys_updated_on,closed_at,active,"
+          # Parentesco: no catálogo, `request_item` liga a sc_task ao RITM que
+          # a gerou; `parent` é o genérico das demais tabelas. Pedimos os dois
+          # e usamos o que vier — campo inexistente numa tabela é simplesmente
+          # omitido pela Table API, não dá erro.
+          "parent,request_item")
 
 # Limite da coluna titulo (NVARCHAR(400) na migration 088).
 TITULO_MAX = 400
@@ -128,12 +133,33 @@ def _cru(campo):
     return (campo or "").strip() if isinstance(campo, str) else ""
 
 
+def _pai(registro: dict) -> tuple[str, str]:
+    """(sys_id, numero) do chamado pai, ou ('', '') se não houver.
+
+    `request_item` manda sobre `parent`: numa sc_task de catálogo os dois
+    costumam vir preenchidos, e é o request_item que aponta para o RITM — o
+    parent pode apontar para outra coisa na hierarquia.
+
+    Com `sysparm_display_value=all` o campo de referência volta inteiro na
+    MESMA requisição: display_value é o número (RITM0096880), value é o
+    sys_id. Guardamos os dois — o sys_id dá join exato contra o espelho, o
+    número é o que a tela mostra. Sem chamada extra à API.
+    """
+    for campo in ("request_item", "parent"):
+        bruto = registro.get(campo)
+        sys_id, numero = _cru(bruto), _display(bruto)
+        if sys_id or numero:
+            return sys_id[:32], numero[:20]
+    return "", ""
+
+
 def normalizar(registro: dict, tabela: str, tipo: str, url_base: str) -> dict:
     """Registro cru da API → linha do espelho."""
     sys_id = _display(registro.get("sys_id")) or _cru(registro.get("sys_id"))
     estado_cru = _cru(registro.get("state"))
     ativo_bruto = (_cru(registro.get("active")) or "").lower()
     estado_kanban = mapear_estado(tabela, estado_cru)
+    pai_sys_id, pai_numero = _pai(registro)
     # `active` da origem manda; 'encerrado' também sai da fila mesmo que a
     # origem ainda diga ativo (estado terminal com active=true acontece).
     ativo = ativo_bruto == "true" and estado_kanban != FORA_DO_KANBAN
@@ -143,6 +169,13 @@ def normalizar(registro: dict, tabela: str, tipo: str, url_base: str) -> dict:
         "tipo": tipo,
         "titulo": truncar_titulo(_display(registro.get("short_description"))),
         "estado_origem": (_display(registro.get("state")) or estado_cru)[:60],
+        # O NÚMERO do estado, ao lado do rótulo. `estado_origem` guarda
+        # "Pendente"; o mapa do kanban é por número. Sem esta coluna, corrigir
+        # um estado que caiu em 'outros' exige ir perguntar à API — e quando
+        # dois números apontam para a mesma coluna, nem isso resolve.
+        "estado_cru": estado_cru[:20],
+        "pai_sys_id": pai_sys_id,
+        "pai_numero": pai_numero,
         "estado_kanban": estado_kanban if estado_kanban != FORA_DO_KANBAN else "resolvido",
         "prioridade": _display(registro.get("priority"))[:20],
         "atribuido_a": _display(registro.get("assigned_to"))[:120],
@@ -196,12 +229,15 @@ def upsert_sql() -> str:
         WHEN MATCHED THEN UPDATE SET
             numero=%s, tipo=%s, titulo=%s, estado_origem=%s, estado_kanban=%s,
             prioridade=%s, atribuido_a=%s, grupo=%s, aberto_em=%s,
-            atualizado_em=%s, encerrado_em=%s, ativo=%s, url=%s, sync_em=GETDATE()
+            atualizado_em=%s, encerrado_em=%s, ativo=%s, url=%s,
+            estado_cru=%s, pai_sys_id=%s, pai_numero=%s, sync_em=GETDATE()
         WHEN NOT MATCHED THEN INSERT
             (sys_id, numero, tipo, titulo, estado_origem, estado_kanban,
              prioridade, atribuido_a, grupo, aberto_em, atualizado_em,
-             encerrado_em, ativo, url, sync_em)
-            VALUES (s.sys_id, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, GETDATE());
+             encerrado_em, ativo, url, estado_cru, pai_sys_id, pai_numero,
+             sync_em)
+            VALUES (s.sys_id, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, GETDATE());
     """
 
 
@@ -211,5 +247,6 @@ def upsert_params(linha: dict) -> tuple:
               linha["estado_origem"], linha["estado_kanban"],
               linha["prioridade"], linha["atribuido_a"], linha["grupo"],
               linha["aberto_em"], linha["atualizado_em"], linha["encerrado_em"],
-              linha["ativo"], linha["url"])
+              linha["ativo"], linha["url"],
+              linha["estado_cru"], linha["pai_sys_id"], linha["pai_numero"])
     return (linha["sys_id"],) + campos + campos
