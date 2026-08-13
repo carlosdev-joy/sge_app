@@ -15,6 +15,8 @@ import { Badge } from '../components/ui/Badge'
 import { Input, Select } from '../components/ui/Input'
 import { Button } from '../components/ui/Button'
 import { PageSpinner } from '../components/ui/Spinner'
+import { Tabs } from '../components/ui/Tabs'
+import ChamadosIndicadores from './ChamadosIndicadores'
 import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
 
 // Aviso com tom próprio. O InfoBanner da casa é azul e DISPENSÁVEL — certo
@@ -190,6 +192,7 @@ export default function Chamados() {
   // Filtro client-side: a fila é de ordem de dezenas (a spec dimensionou ~50)
   // e a resposta já traz tudo — ida-e-volta ao servidor a cada tecla seria
   // latência sem ganho nenhum.
+  const [aba, setAba] = useState('fila')
   const [busca, setBusca] = useState('')
   const [fTipo, setFTipo] = useState('')
   const [fResponsavel, setFResponsavel] = useState('')
@@ -258,6 +261,13 @@ export default function Chamados() {
         </div>
       </div>
 
+      <Tabs active={aba} onChange={setAba} tabs={[
+        { id: 'fila', label: 'Fila' },
+        { id: 'indicadores', label: 'Indicadores' },
+      ]} />
+
+      {/* Os avisos de estado do espelho valem para as DUAS abas — um
+          indicador calculado sobre espelho quebrado engana igual. */}
       {d.migration_ausente && (
         <Aviso tom="warning">
           Sistema em atualização — o espelho de chamados ainda não está
@@ -275,13 +285,13 @@ export default function Chamados() {
         </Aviso>
       )}
 
-      {d.alerta_fila_vazia && (
+      {aba === 'fila' && d.alerta_fila_vazia && (
         <Aviso tom={d.ultimo_sync?.status === 'OK' ? 'info' : 'warning'}>
           {d.alerta_fila_vazia}
         </Aviso>
       )}
 
-      {!d.migration_ausente && d.total > 0 && (
+      {aba === 'fila' && !d.migration_ausente && d.total > 0 && (
         <div className="bg-panel border border-edge rounded-lg p-3 flex flex-wrap items-end gap-3">
           <div className="relative">
             <Input label="Buscar" value={busca} className="w-64 pl-7"
@@ -316,14 +326,14 @@ export default function Chamados() {
 
       {/* Filtro que zera a fila precisa dizer que foi o FILTRO — senão parece
           espelho vazio, e o operador vai procurar defeito na integração. */}
-      {temFiltro && filtrados.length === 0 && d.total > 0 && (
+      {aba === 'fila' && temFiltro && filtrados.length === 0 && d.total > 0 && (
         <Aviso tom="info">
           Nenhum chamado casa com os filtros atuais — a fila tem {d.total}{' '}
           chamado(s). Limpe os filtros para vê-la inteira.
         </Aviso>
       )}
 
-      {!d.migration_ausente && d.total > 0 && (
+      {aba === 'fila' && !d.migration_ausente && d.total > 0 && (
         <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-5">
           {d.colunas.map(coluna => {
             const daColuna = filtrados.filter(c => c.estado_kanban === coluna)
@@ -347,6 +357,8 @@ export default function Chamados() {
           })}
         </div>
       )}
+
+      {aba === 'indicadores' && !d.migration_ausente && <ChamadosIndicadores />}
     </div>
   )
 }
