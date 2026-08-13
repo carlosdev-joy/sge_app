@@ -22,6 +22,13 @@ import { InfoBanner } from '../components/ui/InfoBanner'
 const PROJETOS = ['BI_CVP', 'BI_VIDA', 'BI_PREVIDENCIA', 'BI_PRESTAMISTA']
 
 // Recursos RBAC (espelha RBAC_RECURSOS da UI legada).
+//
+// Esta é a lista que o Admin oferece em "Perfis e Permissões" e no modal de
+// permissões extras por usuário. Recurso que a migration concede mas que NÃO
+// está aqui vira permissão sem interruptor: quem já tem, tem; o admin não
+// consegue conceder a mais ninguém nem revogar (foi o caso de `tela_chamados`
+// entre as PRs #307 e esta). Toda `perm` do NAV precisa de entrada aqui —
+// tests/test_rbac_recursos_admin.py prende as duas listas.
 const RBAC_RECURSOS: [string, string][] = [
   ['tela_dashboard', 'Dashboard'], ['tela_pipelines', 'Pipelines'],
   ['tela_jobs', 'Etapas'], ['tela_logs', 'Logs'],
@@ -34,6 +41,7 @@ const RBAC_RECURSOS: [string, string][] = [
   ['tela_copia_dados', 'Cópia de Dados'],
   ['tela_inventario', 'Inventário de Consumidores'],
   ['tela_finalizacao', 'Finalizar Pipeline'],
+  ['tela_chamados', 'Chamados'],
   ['tela_caixa_seguro', 'Caixa Seguro'],
   ['caixa_seguro_operacional', 'Caixa Seguro — Operacional'],
   ['acao_executar', 'Executar/Rerun/Ack'],
