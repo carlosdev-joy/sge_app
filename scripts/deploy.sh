@@ -82,6 +82,15 @@ _modulos_auxiliares() {
     awk '$1 ~ /\/.*\.py$/ {print}'
 }
 
+# Da saída de `celery inspect active` (stdin), extrai "dag_id · task_id" por
+# linha. Para o Celery TODA task do Airflow se chama `execute_command`: o que
+# identifica o trabalho vive dentro de `args`, no meio de um dict cru. Sem
+# este resumo, a decisão de reiniciar seria tomada lendo um dump.
+_resumo_tasks_ativas() {
+    grep -oE "'tasks', 'run', '[^']+', '[^']+'" \
+        | sed "s/'tasks', 'run', //; s/'//g; s/, / · /"
+}
+
 # ── 3. UI React (única interface — servida na raiz /) ─────────
 mkdir -p "$AIRFLOW_DIR/ui-react/dist"
 rsync -av --delete "$TMP_DIR/ui-react/dist/" "$AIRFLOW_DIR/ui-react/dist/"
@@ -146,11 +155,22 @@ else
             echo "[DEPLOY]   Sem restart, o codigo novo NAO roda — e nada falha:"
             echo "[DEPLOY]   task verde, ciclo OK, efeito nenhum."
             echo ""
-            echo "[DEPLOY] Tasks em execucao AGORA no worker:"
-            docker compose -f "$AIRFLOW_DIR/docker-compose.yaml" exec -T airflow-worker \
+            echo "[DEPLOY] Tasks em execucao AGORA no worker (o que o restart derruba):"
+            ATIVAS=$(docker compose -f "$AIRFLOW_DIR/docker-compose.yaml" exec -T airflow-worker \
                 celery -A airflow.providers.celery.executors.celery_executor.app \
-                inspect active 2>/dev/null | sed 's/^/    /' \
-                || echo "    (nao foi possivel consultar — verifique manualmente antes de reiniciar)"
+                inspect active 2>/dev/null || true)
+            if [ -z "$ATIVAS" ]; then
+                echo "    (nao foi possivel consultar o worker — confira manualmente ANTES de reiniciar)"
+            elif echo "$ATIVAS" | grep -q -- "- empty -"; then
+                echo "    nenhuma — o worker esta ocioso, o restart e inofensivo."
+            else
+                echo "$ATIVAS" | _resumo_tasks_ativas | sed 's/^/    ▶ /' || true
+                # O dump cru fica disponivel: se a extracao acima nao casar
+                # (formato do comando mudou entre versoes), o operador ainda
+                # ve a verdade em vez de uma lista vazia enganosa.
+                echo "    ── saida completa do Celery ──"
+                echo "$ATIVAS" | sed 's/^/    /'
+            fi
             echo ""
             # Restart != recriar: o codigo vem do volume, entao NAO precisa de
             # imagem nova. Ainda assim derruba o que estiver rodando, por isso

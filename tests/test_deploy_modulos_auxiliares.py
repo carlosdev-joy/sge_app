@@ -132,3 +132,71 @@ def test_restart_nao_e_automatico():
     antes = bloco[:bloco.index(linha_restart)]
     assert "_confirmar" in antes, (
         "o restart do worker precisa estar sob _confirmar — ele derruba tasks")
+
+
+# ═══════════ 3. o resumo do que o restart vai derrubar ══════════════════════
+# Para o Celery TODA task do Airflow se chama `execute_command`: o dag_id e o
+# task_id vivem dentro de `args`, no meio de um dict cru. O operador precisa
+# decidir "reinicio agora?" — e decidir lendo um dump é decidir no escuro.
+
+def _resumir(saida_celery: str) -> list[str]:
+    """Roda `_resumo_tasks_ativas` do próprio deploy.sh sobre a saída dada."""
+    fonte = DEPLOY_SH.read_text(encoding="utf-8")
+    corpo = re.search(r"^_resumo_tasks_ativas\(\) \{.*?^\}", fonte, re.S | re.M)
+    assert corpo, "_resumo_tasks_ativas() sumiu de scripts/deploy.sh"
+    r = subprocess.run(
+        ["bash", "-c", f"{corpo.group(0)}\n_resumo_tasks_ativas"],
+        input=saida_celery, capture_output=True, text=True, timeout=30)
+    return [l.strip() for l in r.stdout.splitlines() if l.strip()]
+
+
+SAIDA_COM_DUAS = (
+    "->  celery@750110a0e0aa: OK\n"
+    "    * {'id': 'a1b2', 'name': 'airflow...execute_command', 'args': "
+    "\"[['airflow', 'tasks', 'run', 'etl_servicenow_sync', 'ciclo', "
+    "'scheduled__2026-08-13T19:15:00+00:00', '--local']]\", 'kwargs': '{}'}\n"
+    "    * {'id': 'c3d4', 'name': 'airflow...execute_command', 'args': "
+    "\"[['airflow', 'tasks', 'run', 'SEQSSDVIDA', 'job_carga_vida', "
+    "'manual__2026-08-13', '--local']]\", 'kwargs': '{}'}\n"
+    "\n1 node online.\n"
+)
+
+SAIDA_VAZIA = "->  celery@750110a0e0aa: OK\n    - empty -\n\n1 node online.\n"
+
+
+def test_resumo_nomeia_dag_e_task():
+    assert _resumir(SAIDA_COM_DUAS) == [
+        "etl_servicenow_sync · ciclo",
+        "SEQSSDVIDA · job_carga_vida",
+    ]
+
+
+def test_worker_ocioso_nao_inventa_task():
+    """'- empty -' precisa render lista vazia: uma linha fantasma aqui faria
+    o operador adiar um restart que era inofensivo."""
+    assert _resumir(SAIDA_VAZIA) == []
+
+
+def test_formato_desconhecido_nao_inventa_task():
+    """Se o comando mudar de forma entre versões do Airflow, o resumo fica
+    vazio — e o script imprime o dump cru logo abaixo, que é a rede de
+    segurança. O que NÃO pode é inventar uma linha errada."""
+    assert _resumir("->  celery@x: OK\n    * {'algo': 'diferente'}\n") == []
+
+
+def test_script_imprime_o_dump_cru_como_rede_de_seguranca():
+    """O resumo é conveniência; a verdade é a saída do Celery. Se um dia a
+    extração parar de casar, o operador não pode ficar com uma lista vazia
+    parecendo 'nada rodando'."""
+    fonte = DEPLOY_SH.read_text(encoding="utf-8")
+    bloco = fonte[fonte.index("_resumo_tasks_ativas | sed"):]
+    assert "saida completa do Celery" in bloco[:600], (
+        "o dump cru precisa continuar sendo impresso junto do resumo")
+
+
+def test_worker_inalcancavel_nao_passa_por_ocioso():
+    """Falha ao consultar e 'nada rodando' são a MESMA tela se o script não
+    separar — e uma delas autoriza um restart que a outra desaconselha."""
+    fonte = DEPLOY_SH.read_text(encoding="utf-8")
+    assert "nao foi possivel consultar" in fonte
+    assert "worker esta ocioso" in fonte
