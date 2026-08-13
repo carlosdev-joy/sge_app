@@ -8,7 +8,7 @@ import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, Workflow, Blocks, ScrollText, Bell, ShieldAlert,
   Library, Network, Settings, Crosshair, ClipboardList, BarChart3, Terminal,
-  Rocket, Gauge, Copy, Cable, OctagonX, GitBranch, ShieldCheck,
+  Rocket, Gauge, Copy, Cable, OctagonX, GitBranch, ShieldCheck, LifeBuoy,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 
@@ -33,6 +33,7 @@ export const NAV: NavItem[] = [
   { to: '/performance',   label: 'Performance',        icon: Gauge,           group: 'Operação',           perm: 'tela_performance' },
   { to: '/finalizacao',   label: 'Finalizar Pipeline', icon: OctagonX,        group: 'Operação',           perm: 'tela_finalizacao' },
   { to: '/avisos',        label: 'Avisos',             icon: Bell,            group: 'Operação' },
+  { to: '/chamados',      label: 'Chamados',           icon: LifeBuoy,        group: 'Operação',           perm: 'tela_chamados' },
   { to: '/pipelines',     label: 'Pipelines',          icon: Workflow,        group: 'Construção',         perm: 'tela_pipelines' },
   { to: '/jobs',          label: 'Etapas',             icon: Blocks,          group: 'Construção',         perm: 'tela_jobs' },
   // Mesma permissão de Etapas: /fluxos é o MESMO editor em tela dedicada
