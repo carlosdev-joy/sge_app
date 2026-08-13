@@ -1402,9 +1402,10 @@ async def servicenow_diagnostico(body: dict = Body(default={}),
     resultado: dict = {"url": url, "auth": None, "grupos": [],
                        "tabelas": {}, "grupo_contagem": None}
     _proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or None
+    _proxy_cfg = {"https://": _proxy} if _proxy else {}
     async with httpx.AsyncClient(auth=(usuario, senha), timeout=20,
                                  headers={"Accept": "application/json"},
-                                 proxy=_proxy) as cli:
+                                 proxies=_proxy_cfg) as cli:
         # ── 1. autenticação (sys_user_group é a tabela mais inócua) ─────────
         try:
             r = await cli.get(f"{url}/api/now/table/sys_user_group",
