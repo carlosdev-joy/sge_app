@@ -8,11 +8,14 @@
 //   1. "isso está atualizado?" → carimbo de frescor, âmbar quando atrasa;
 //   2. "por que está vazio?"   → fila zerada e integração quebrada mostram o
 //      mesmo nada, e só o último ciclo separa as duas.
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { Badge } from '../components/ui/Badge'
+import { Input, Select } from '../components/ui/Input'
+import { Button } from '../components/ui/Button'
 import { PageSpinner } from '../components/ui/Spinner'
-import { ExternalLink, LifeBuoy, RefreshCw } from 'lucide-react'
+import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
 
 // Aviso com tom próprio. O InfoBanner da casa é azul e DISPENSÁVEL — certo
 // para explicar a tela, errado para "a sincronização falhou": esse não pode
@@ -97,6 +100,31 @@ function textoIdade(dias: number | null): string {
   return `parado há ${dias} dias`
 }
 
+// Destaque progressivo da idade. NUNCA só cor: cada faixa tem rótulo textual
+// no card, senão a informação não existe para quem não distingue as cores
+// (e some por completo se a tela for impressa ou lida em preto e branco).
+const FAIXAS_IDADE = [
+  { min: 7, classe: 'text-red-600 dark:text-red-400 font-semibold', rotulo: 'parado' },
+  { min: 3, classe: 'text-amber-600 dark:text-yellow-400 font-medium', rotulo: 'atenção' },
+] as const
+
+function faixaIdade(dias: number | null) {
+  if (dias === null) return { classe: 'text-dim', rotulo: '' }
+  for (const f of FAIXAS_IDADE) {
+    if (dias > f.min) return { classe: f.classe, rotulo: f.rotulo }
+  }
+  return { classe: 'text-dim', rotulo: '' }
+}
+
+// Busca por texto: número, título e responsável. Case-insensitive e por
+// prefixo/trecho — "RITM00" precisa achar, e é assim que se procura na prática.
+function casaBusca(c: Chamado, termo: string): boolean {
+  const t = termo.trim().toLowerCase()
+  if (!t) return true
+  return [c.numero, c.titulo, c.atribuido_a, c.estado_origem]
+    .some(campo => (campo || '').toLowerCase().includes(t))
+}
+
 function frescor(sync: UltimoSync | null): { texto: string; tom: string } {
   if (!sync) return { texto: 'nunca sincronizado', tom: 'warning' }
   if (sync.em_andamento) return { texto: 'sincronização em andamento', tom: 'info' }
@@ -137,7 +165,14 @@ function CardChamado({ c }: { c: Chamado }) {
         <span className="truncate" title={c.atribuido_a || 'sem responsável'}>
           {c.atribuido_a || 'sem responsável'}
         </span>
-        <span title={textoIdade(c.idade_dias)} className="shrink-0">
+        {/* Idade: cor E rótulo. A cor sozinha não informa quem não a distingue. */}
+        <span title={textoIdade(c.idade_dias)}
+          className={`shrink-0 flex items-center gap-1 ${faixaIdade(c.idade_dias).classe}`}>
+          {faixaIdade(c.idade_dias).rotulo && (
+            <span className="uppercase tracking-wide text-[9px]">
+              {faixaIdade(c.idade_dias).rotulo}
+            </span>
+          )}
           {c.idade_dias !== null ? `${c.idade_dias}d` : '—'}
         </span>
       </div>
@@ -151,6 +186,41 @@ export default function Chamados() {
       queryKey: ['chamados'],
       queryFn: () => apiFetch('/chamados'),
     })
+
+  // Filtro client-side: a fila é de ordem de dezenas (a spec dimensionou ~50)
+  // e a resposta já traz tudo — ida-e-volta ao servidor a cada tecla seria
+  // latência sem ganho nenhum.
+  const [busca, setBusca] = useState('')
+  const [fTipo, setFTipo] = useState('')
+  const [fResponsavel, setFResponsavel] = useState('')
+  const [fPrioridade, setFPrioridade] = useState('')
+
+  const chamados = useMemo(() => data?.chamados ?? [], [data])
+
+  // As opções saem do que ESTÁ na fila, não de uma lista fixa: prioridade e
+  // responsável variam por instância, e uma lista fixa mostraria opção que
+  // não filtra nada (ou esconderia a que filtra).
+  const opcoes = useMemo(() => {
+    const unicos = (f: (c: Chamado) => string | null) =>
+      [...new Set(chamados.map(f).filter((v): v is string => !!v))].sort()
+    return {
+      tipos: unicos(c => c.tipo),
+      responsaveis: unicos(c => c.atribuido_a),
+      prioridades: unicos(c => c.prioridade),
+    }
+  }, [chamados])
+
+  const filtrados = useMemo(() => chamados.filter(c =>
+    (!fTipo || c.tipo === fTipo) &&
+    (!fResponsavel || c.atribuido_a === fResponsavel) &&
+    (!fPrioridade || c.prioridade === fPrioridade) &&
+    casaBusca(c, busca)
+  ), [chamados, fTipo, fResponsavel, fPrioridade, busca])
+
+  const temFiltro = !!(busca || fTipo || fResponsavel || fPrioridade)
+  const limpar = () => {
+    setBusca(''); setFTipo(''); setFResponsavel(''); setFPrioridade('')
+  }
 
   if (isLoading) return <PageSpinner />
 
@@ -173,7 +243,11 @@ export default function Chamados() {
         <div className="flex items-center gap-2">
           <LifeBuoy size={18} className="text-dim" />
           <h1 className="text-lg font-semibold text-ink">Chamados da Engenharia</h1>
-          <Badge value="neutral">{d.total} na fila</Badge>
+          {/* Com filtro ativo, "x de y" — nunca só o número filtrado, que
+              faria a fila parecer menor do que é. */}
+          <Badge value="neutral">
+            {temFiltro ? `${filtrados.length} de ${d.total}` : `${d.total} na fila`}
+          </Badge>
         </div>
         <div className="flex items-center gap-2">
           <Badge value={f.tom}>{f.texto}</Badge>
@@ -208,9 +282,51 @@ export default function Chamados() {
       )}
 
       {!d.migration_ausente && d.total > 0 && (
+        <div className="bg-panel border border-edge rounded-lg p-3 flex flex-wrap items-end gap-3">
+          <div className="relative">
+            <Input label="Buscar" value={busca} className="w-64 pl-7"
+              placeholder="número, título ou responsável"
+              onChange={e => setBusca(e.target.value)} />
+            <Search size={13} className="absolute left-2 bottom-2 text-dim pointer-events-none" />
+          </div>
+          <Select label="Tipo" value={fTipo} className="w-40"
+            onChange={e => setFTipo(e.target.value)}>
+            <option value="">todos</option>
+            {opcoes.tipos.map(t => (
+              <option key={t} value={t}>{ROTULO_TIPO[t] ?? t}</option>
+            ))}
+          </Select>
+          <Select label="Responsável" value={fResponsavel} className="w-52"
+            onChange={e => setFResponsavel(e.target.value)}>
+            <option value="">todos</option>
+            {opcoes.responsaveis.map(r => <option key={r} value={r}>{r}</option>)}
+          </Select>
+          <Select label="Prioridade" value={fPrioridade} className="w-44"
+            onChange={e => setFPrioridade(e.target.value)}>
+            <option value="">todas</option>
+            {opcoes.prioridades.map(p => <option key={p} value={p}>{p}</option>)}
+          </Select>
+          {temFiltro && (
+            <Button size="sm" variant="ghost" onClick={limpar}>
+              <X size={13} /> Limpar
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* Filtro que zera a fila precisa dizer que foi o FILTRO — senão parece
+          espelho vazio, e o operador vai procurar defeito na integração. */}
+      {temFiltro && filtrados.length === 0 && d.total > 0 && (
+        <Aviso tom="info">
+          Nenhum chamado casa com os filtros atuais — a fila tem {d.total}{' '}
+          chamado(s). Limpe os filtros para vê-la inteira.
+        </Aviso>
+      )}
+
+      {!d.migration_ausente && d.total > 0 && (
         <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-5">
           {d.colunas.map(coluna => {
-            const daColuna = d.chamados.filter(c => c.estado_kanban === coluna)
+            const daColuna = filtrados.filter(c => c.estado_kanban === coluna)
             return (
               <div key={coluna} className="flex flex-col gap-2 min-w-0">
                 <div className="flex items-center justify-between px-1">
