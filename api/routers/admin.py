@@ -1219,7 +1219,7 @@ CATALOGO_DAGS: dict = {
             "engenharia (incidentes, RITMs, tarefas e mudanças) para a tela de "
             "Chamados; cada tabela sincroniza independente e o ciclo fica "
             "registrado em etl_chamado_sync",
-        "frequencia": "a cada 3h (só com servicenow_habilitado=1 em "
+        "frequencia": "a cada 15 min (só com servicenow_habilitado=1 em "
             "Admin > ServiceNow)",
     },
     "etl_ds_supervisao_monitor": {

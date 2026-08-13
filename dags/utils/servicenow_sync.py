@@ -12,6 +12,7 @@ A árvore `api/` usa pyodbc (`?`). Trocar os dois dá "Incorrect syntax near '?'
 from __future__ import annotations
 
 import datetime as _dt
+import os
 
 # ── Constantes ANTES dos helpers (gotcha do dag_factory: helper que lê uma
 #    const definida abaixo quebra no parse da DAG). ─────────────────────────
@@ -148,6 +149,28 @@ def normalizar(registro: dict, tabela: str, tipo: str, url_base: str) -> dict:
         "ativo": 1 if ativo else 0,
         "url": f"{url_base}/nav_to.do?uri={tabela}.do?sys_id={sys_id}"[:500],
     }
+
+
+def proxy_configurado() -> str | None:
+    """Proxy de saída do sync (`SERVICENOW_PROXY`), ou None para rota direta.
+
+    A variável é PRÓPRIA em vez do `HTTPS_PROXY` do ambiente, e a diferença é
+    deliberada. O worker do Airflow executa TODA DAG do Orquestra, inclusive
+    os nós HttpCall de pipelines cadastrados pelos usuários, que apontam para
+    hosts internos. `HTTPS_PROXY` no worker valeria para todos eles, e o que
+    os protegeria seria o `NO_PROXY` estar completo — uma lista que ninguém
+    revisa até um pipeline de produção quebrar.
+
+    Este cliente httpx fala com UM host externo e mais nada, então passar o
+    proxy por parâmetro é seguro aqui: a ressalva da PR #304 (parâmetro faz o
+    httpx ignorar o `NO_PROXY`) só morde quando o mesmo cliente precisa
+    alcançar hosts internos, que não é o caso.
+
+    Vazio, só espaços ou ausente = None = conexão direta (é assim que o dev
+    roda). Quem chama IMPRIME a rota escolhida: "sem proxy" e "com proxy"
+    falhando dão o mesmo erro de rede, e só o log separa os dois.
+    """
+    return (os.getenv("SERVICENOW_PROXY") or "").strip() or None
 
 
 def query_do_grupo(grupos: list[str]) -> str:

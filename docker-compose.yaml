@@ -254,6 +254,20 @@ services:
       # Required to handle warm shutdown of the celery workers properly
       # See https://airflow.apache.org/docs/docker-stack/entrypoint.html#signal-propagation
       DUMB_INIT_SETSID: "0"
+      # ── Proxy corporativo do sync do ServiceNow ───────────────────────────
+      # É aqui que a DAG etl_servicenow_sync roda, e daqui a saída direta para
+      # a internet é cortada pela rede da Caixa (Connection reset by peer).
+      #
+      # ⚠️ Por que NÃO HTTPS_PROXY/HTTP_PROXY, como no orquestra-api: no worker
+      # elas valeriam para TODA chamada HTTP de TODA DAG — inclusive os nós
+      # HttpCall de pipelines cadastrados pelos usuários, que apontam para
+      # hosts internos. Um proxy indevido ali quebraria pipeline de produção,
+      # e a proteção seria o NO_PROXY estar completo — uma lista que ninguém
+      # revisa até quebrar. Variável de escopo próprio: risco de uma DAG só.
+      #
+      # Vazia = conexão direta (o dev alcança o ServiceNow sem proxy). A DAG
+      # imprime a rota que usou, para "sem proxy" não passar por "com proxy".
+      SERVICENOW_PROXY: "${SERVICENOW_PROXY:-${HTTPS_PROXY:-}}"
     restart: always
     depends_on:
       <<: *airflow-common-depends-on

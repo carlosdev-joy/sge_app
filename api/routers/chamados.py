@@ -1,8 +1,8 @@
 """api/routers/chamados.py — os chamados da engenharia (espelho do ServiceNow).
 
 Serve a tela /chamados a partir do espelho local (dbo.etl_chamado, migration
-088), populado pela DAG `etl_servicenow_sync` a cada 3h. Somente leitura: a v1
-não escreve no ServiceNow (decisão da spec).
+088), populado pela DAG `etl_servicenow_sync` a cada 15 min. Somente leitura:
+a v1 não escreve no ServiceNow (decisão da spec).
 
 Duas coisas que este router faz questão de DIZER, porque calar produziria o
 mesmo sintoma com causas opostas:
@@ -37,8 +37,14 @@ PERM_CHAMADOS = "tela_chamados"
 # A ordem aqui é a ordem das colunas na tela.
 COLUNAS_KANBAN = ("novo", "andamento", "aguardando", "resolvido", "outros")
 
-# Acima disto o carimbo de frescor vira âmbar: 2 ciclos de 3h perdidos.
-FRESCOR_ALERTA_HORAS = 6
+# Acima disto o carimbo de frescor vira âmbar. O número NÃO é absoluto: é
+# múltiplo da cadência da DAG (`schedule` em dags/etl_servicenow_sync.py).
+# Hoje: 60 min ≈ 4 ciclos de 15 min — silêncio longo o bastante para não
+# acender no primeiro tropeço, curto o bastante para não deixar o espelho
+# apodrecer meio turno. Com a cadência antiga (3h) eram 6h, pela MESMA regra.
+# Mudar a cadência sem mudar este número deixa o alerta surdo ou histérico;
+# tests/test_servicenow_cadencia.py recusa a combinação incoerente.
+FRESCOR_ALERTA_MINUTOS = 60
 
 # Faixas de aging. Os limites são o MESMO contrato do destaque no card
 # (>3d atenção, >7d parado): duas réguas diferentes para a mesma pergunta
@@ -88,7 +94,7 @@ def _ultimo_ciclo(cur) -> dict | None:
         # worker morto no meio, o segundo é a integração recusando.
         "em_andamento": linha[2] is None,
         "atrasado": bool(idade_min is not None
-                         and idade_min > FRESCOR_ALERTA_HORAS * 60),
+                         and idade_min > FRESCOR_ALERTA_MINUTOS),
     }
 
 

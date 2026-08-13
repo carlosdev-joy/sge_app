@@ -34,6 +34,7 @@ os.environ.setdefault("MSSQL_CONN_STR", "__mock__")
 from api.main import app  # noqa: E402
 
 from deps import get_current_user  # noqa: E402
+from routers.chamados import FRESCOR_ALERTA_MINUTOS  # noqa: E402
 
 # Colunas do SELECT de chamados, na ordem do router.
 def _chamado(numero="INC001", tipo="incident", estado="novo", ativo=1,
@@ -169,14 +170,19 @@ def test_sync_recente_nao_esta_atrasado(cliente, banco):
     assert cliente.get("/chamados").json()["ultimo_sync"]["atrasado"] is False
 
 
-def test_sync_de_sete_horas_esta_atrasado(cliente, banco):
-    """Acima de 6h são 2 ciclos de 3h perdidos."""
-    banco["cur"] = CursorFalso([_chamado()], _ciclo(idade_min=7 * 60))
+def test_sync_alem_do_limiar_esta_atrasado(cliente, banco):
+    """Um minuto além de FRESCOR_ALERTA_MINUTOS já é âmbar. O limiar é
+    múltiplo da cadência da DAG (test_servicenow_cadencia.py prende a
+    coerência) — por isso o teste é relativo à constante, e não a um número
+    fixo que ficaria para trás na próxima mudança de cadência."""
+    banco["cur"] = CursorFalso([_chamado()],
+                               _ciclo(idade_min=FRESCOR_ALERTA_MINUTOS + 1))
     assert cliente.get("/chamados").json()["ultimo_sync"]["atrasado"] is True
 
 
-def test_limite_de_seis_horas_ainda_nao_alerta(cliente, banco):
-    banco["cur"] = CursorFalso([_chamado()], _ciclo(idade_min=6 * 60))
+def test_limite_exato_ainda_nao_alerta(cliente, banco):
+    banco["cur"] = CursorFalso([_chamado()],
+                               _ciclo(idade_min=FRESCOR_ALERTA_MINUTOS))
     assert cliente.get("/chamados").json()["ultimo_sync"]["atrasado"] is False
 
 
