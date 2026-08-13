@@ -12,7 +12,6 @@ A árvore `api/` usa pyodbc (`?`). Trocar os dois dá "Incorrect syntax near '?'
 from __future__ import annotations
 
 import datetime as _dt
-import os
 
 # ── Constantes ANTES dos helpers (gotcha do dag_factory: helper que lê uma
 #    const definida abaixo quebra no parse da DAG). ─────────────────────────
@@ -34,6 +33,11 @@ CAMPOS = ("sys_id,number,short_description,state,priority,assigned_to,"
 
 # Limite da coluna titulo (NVARCHAR(400) na migration 088).
 TITULO_MAX = 400
+
+# Chave da rota de saída em etl_app_config (migration 089). O literal espelha
+# K_PROXY de api/services/servicenow.py — a fonte é a mesma tabela; duplicar
+# aqui evita a árvore dags/ importar de api/.
+K_PROXY = "servicenow_proxy"
 
 # Página da Table API. 100 é o teto confortável do endpoint sem timeout.
 PAGINA = 100
@@ -151,26 +155,25 @@ def normalizar(registro: dict, tabela: str, tipo: str, url_base: str) -> dict:
     }
 
 
-def proxy_configurado() -> str | None:
-    """Proxy de saída do sync (`SERVICENOW_PROXY`), ou None para rota direta.
+def proxy_da_config(cfg: dict) -> str | None:
+    """Proxy de saída do sync, vindo de `servicenow_proxy` (migration 089).
 
-    A variável é PRÓPRIA em vez do `HTTPS_PROXY` do ambiente, e a diferença é
-    deliberada. O worker do Airflow executa TODA DAG do Orquestra, inclusive
-    os nós HttpCall de pipelines cadastrados pelos usuários, que apontam para
-    hosts internos. `HTTPS_PROXY` no worker valeria para todos eles, e o que
-    os protegeria seria o `NO_PROXY` estar completo — uma lista que ninguém
-    revisa até um pipeline de produção quebrar.
+    **Config e não variável de ambiente**, de propósito. O worker do Airflow
+    já roda com o ambiente que tem: variável nova só entra em container NOVO,
+    e recriar o worker mata as tasks em execução — inclusive jobs DataStage,
+    que seguem vivos no DS enquanto o Airflow os dá por mortos. Pela config,
+    trocar a rota é editar um campo no Admin e esperar o próximo ciclo.
 
-    Este cliente httpx fala com UM host externo e mais nada, então passar o
-    proxy por parâmetro é seguro aqui: a ressalva da PR #304 (parâmetro faz o
-    httpx ignorar o `NO_PROXY`) só morde quando o mesmo cliente precisa
-    alcançar hosts internos, que não é o caso.
+    Passar o proxy por PARÂMETRO ao httpx (em vez de deixar o `trust_env`
+    ler HTTPS_PROXY) faz o cliente ignorar o `NO_PROXY` — a ressalva da
+    PR #304. Aqui isso é inofensivo: este cliente fala com UM host externo e
+    mais nada, então não existe host interno para o NO_PROXY isentar.
 
-    Vazio, só espaços ou ausente = None = conexão direta (é assim que o dev
-    roda). Quem chama IMPRIME a rota escolhida: "sem proxy" e "com proxy"
-    falhando dão o mesmo erro de rede, e só o log separa os dois.
+    Vazio ou só espaços = None = conexão direta (é assim que o dev roda).
+    Quem chama IMPRIME a rota escolhida: proxy ausente e proxy errado dão o
+    mesmo erro de rede, e só o log separa os dois.
     """
-    return (os.getenv("SERVICENOW_PROXY") or "").strip() or None
+    return (cfg.get(K_PROXY) or "").strip() or None
 
 
 def query_do_grupo(grupos: list[str]) -> str:

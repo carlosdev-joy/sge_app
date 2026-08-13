@@ -50,7 +50,7 @@ from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 
 from utils.servicenow_sync import (
     CAMPOS, MAX_PAGINAS, MSSQL_CONN_ID, PAGINA, TABELAS,
-    normalizar, proxy_configurado, query_do_grupo, upsert_params, upsert_sql,
+    normalizar, proxy_da_config, query_do_grupo, upsert_params, upsert_sql,
 )
 
 # Chaves da config (espelham api/services/servicenow.py — a fonte é a mesma
@@ -176,9 +176,9 @@ def etl_servicenow_sync():
         contagens: dict = {}
         erros: list[str] = []
         tipos_ok: list[str] = []
-        # Rota de saída. Ver proxy_configurado() para o porquê de ser uma
-        # variável própria em vez do HTTPS_PROXY do ambiente.
-        proxy = proxy_configurado()
+        # Rota de saída. Ver proxy_da_config() para o porquê de vir da
+        # config e não de variável de ambiente do worker.
+        proxy = proxy_da_config(cfg)
         print(f"[SN] Saída: {'via proxy ' + proxy if proxy else 'conexão direta'}")
         # ⚠️ `proxy=` (singular). O worker roda httpx 0.28+, onde `proxies=` já
         # não existe — a `api/` roda 0.27 e aceita os dois. Duas árvores, duas

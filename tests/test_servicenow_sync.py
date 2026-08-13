@@ -32,7 +32,8 @@ sys.path.insert(0, str(RAIZ / "dags"))
 
 from utils.servicenow_sync import (  # noqa: E402
     COLUNAS_KANBAN, ESTADOS, TABELAS, TITULO_MAX,
-    mapear_estado, normalizar, proxy_configurado, query_do_grupo, truncar_titulo,
+    K_PROXY, mapear_estado, normalizar, proxy_da_config, query_do_grupo,
+    truncar_titulo,
     upsert_params, upsert_sql,
 )
 
@@ -238,53 +239,40 @@ def test_todas_as_tabelas_tem_mapa_de_estado():
 
 
 # ═══════════ 7. a rota de saída (proxy corporativo) ═════════════════════════
-# O worker do Airflow NÃO herda HTTPS_PROXY (só o orquestra-api herda), e por
-# isso o primeiro sync real morreu com "Connection reset by peer" nas quatro
-# tabelas em 1 segundo. A rota passou a ser variável própria — estes testes
-# prendem o contrato dela.
+# O worker do Airflow não herda o HTTPS_PROXY do orquestra-api, e por isso o
+# primeiro sync real morreu com "Connection reset by peer" nas quatro tabelas
+# em 1 segundo. A rota virou CONFIG (servicenow_proxy, migration 089) e não
+# variável de ambiente: variável só entra em container novo, e recriar o
+# worker mata as tasks em execução.
 
-def test_sem_variavel_a_rota_e_direta(monkeypatch):
-    """Dev alcança o ServiceNow sem proxy: ausência não pode virar proxy ''."""
-    monkeypatch.delenv("SERVICENOW_PROXY", raising=False)
-    assert proxy_configurado() is None
-
-
-def test_variavel_vazia_e_rota_direta(monkeypatch):
-    """Compose sempre define a variável; vazia significa 'sem proxy'.
-
-    Devolver '' em vez de None faria o httpx tentar um proxy de endereço
-    vazio — falha de rede com cara de firewall, que é justamente o sintoma
-    que este código existe para desambiguar.
-    """
-    monkeypatch.setenv("SERVICENOW_PROXY", "")
-    assert proxy_configurado() is None
+def test_config_sem_a_chave_e_rota_direta():
+    """Ambiente sem a migration 089 não pode quebrar o sync: a ausência da
+    chave significa 'direto', que é como o dev sempre rodou."""
+    assert proxy_da_config({}) is None
 
 
-def test_variavel_so_com_espacos_e_rota_direta(monkeypatch):
-    monkeypatch.setenv("SERVICENOW_PROXY", "   ")
-    assert proxy_configurado() is None
+def test_proxy_vazio_e_rota_direta():
+    """O seed da 089 nasce vazio. Devolver '' em vez de None faria o httpx
+    tentar um proxy de endereço vazio — falha de rede com cara de firewall,
+    que é justamente o sintoma que este código existe para desambiguar."""
+    assert proxy_da_config({K_PROXY: ""}) is None
 
 
-def test_proxy_configurado_e_devolvido_sem_espacos(monkeypatch):
-    monkeypatch.setenv("SERVICENOW_PROXY", "  http://webproxycvp.adcorp.intranet/  ")
-    assert proxy_configurado() == "http://webproxycvp.adcorp.intranet/"
+def test_proxy_so_com_espacos_e_rota_direta():
+    assert proxy_da_config({K_PROXY: "   "}) is None
 
 
-def _codigo_da_dag() -> str:
-    """Fonte da DAG SEM as linhas de comentário — o comentário ao lado da
-    chamada explica por que `proxies=` não serve, e um assert ingênuo sobre o
-    arquivo inteiro casaria com a própria explicação."""
-    fonte = (RAIZ / "dags" / "etl_servicenow_sync.py").read_text(encoding="utf-8")
-    return "\n".join(l for l in fonte.splitlines()
-                     if not l.lstrip().startswith("#"))
+def test_proxy_configurado_e_devolvido_sem_espacos():
+    cfg = {K_PROXY: "  http://webproxycvp.adcorp.intranet/  "}
+    assert proxy_da_config(cfg) == "http://webproxycvp.adcorp.intranet/"
 
 
-def test_dag_passa_proxy_no_singular():
-    """`proxies=` (plural) foi removido no httpx 0.28, que é o do worker — a
-    api/ roda 0.27 e aceita os dois. O que compila lá quebraria aqui."""
-    codigo = _codigo_da_dag()
-    assert "proxy=proxy" in codigo, "a DAG não está passando a rota ao httpx"
-    assert "proxies=" not in codigo, "`proxies=` não existe no httpx do worker"
+def test_proxy_nao_atrapalha_as_outras_chaves():
+    """A DAG lê tudo num SELECT LIKE 'servicenow%'. A chave nova entra no
+    mesmo dicionário e não pode ser confundida com URL nem com senha."""
+    cfg = {"servicenow_url": "https://x.service-now.com",
+           K_PROXY: "http://proxy:8080"}
+    assert proxy_da_config(cfg) == "http://proxy:8080"
 
 
 def test_dag_imprime_a_rota_escolhida():

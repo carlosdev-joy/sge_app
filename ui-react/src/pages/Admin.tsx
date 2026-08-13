@@ -3501,7 +3501,7 @@ interface SnDiagnostico {
 }
 
 interface SnConfig {
-  url: string; usuario: string; grupos: string
+  url: string; usuario: string; grupos: string; proxy: string
   habilitado: boolean; tem_senha: boolean; configurado: boolean
 }
 
@@ -3523,13 +3523,15 @@ function SondaServiceNowTab() {
   // aparece assim que a query responde, sem render intermediário com campo
   // vazio e sem o efeito de sincronização que o lint (com razão) recusa.
   const [edits, setEdits] = useState<Partial<{
-    url: string; usuario: string; senha: string; grupos: string; habilitado: boolean
+    url: string; usuario: string; senha: string; grupos: string
+    proxy: string; habilitado: boolean
   }>>({})
   const cfgForm = {
     url:        edits.url        ?? cfg?.url        ?? cfgEnv?.url ?? '',
     usuario:    edits.usuario    ?? cfg?.usuario    ?? '',
     senha:      edits.senha      ?? '',
     grupos:     edits.grupos     ?? cfg?.grupos     ?? '',
+    proxy:      edits.proxy      ?? cfg?.proxy      ?? '',
     habilitado: edits.habilitado ?? cfg?.habilitado ?? false,
   }
   const setCfgForm = (patch: Partial<typeof cfgForm>) =>
@@ -3553,7 +3555,7 @@ function SondaServiceNowTab() {
   const salvar = useMutation({
     mutationFn: () => adminPost<{ mensagem?: string }>('servicenow_set', {
       url: cfgForm.url, usuario: cfgForm.usuario, grupos: cfgForm.grupos,
-      habilitado: cfgForm.habilitado,
+      proxy: cfgForm.proxy, habilitado: cfgForm.habilitado,
       // string vazia = manter a senha atual; só envia quando o operador
       // escolheu trocá-la de fato.
       senha: trocarSenha ? cfgForm.senha : '',
@@ -3616,6 +3618,13 @@ function SondaServiceNowTab() {
         <Input label="Grupo(s) de atribuição — separe por ;" value={cfgForm.grupos}
           className="w-full" placeholder="Engenharia de Dados; Sustentação"
           onChange={e => setCfgForm({ grupos: e.target.value })} />
+        {/* A sincronização roda no worker do Airflow, que NÃO herda o proxy do
+            container da API — por isso a rota é campo aqui, e não variável de
+            ambiente: mudar não exige recriar container nem derrubar job. */}
+        <Input label="Proxy de saída da sincronização" value={cfgForm.proxy}
+          className="w-full" placeholder="http://webproxy.empresa.intranet:8080"
+          ajuda="Vazio = conexão direta. Preencha em rede com firewall de saída — sem isto o sync falha com 'Connection reset by peer' nas quatro tabelas, enquanto o teste de credencial aqui embaixo continua passando (ele roda em outro container, que já tem proxy)."
+          onChange={e => setCfgForm({ proxy: e.target.value })} />
         <label className="flex items-center gap-1.5 text-xs text-ink">
           <input type="checkbox" checked={cfgForm.habilitado}
             onChange={e => setCfgForm({ habilitado: e.target.checked })} />

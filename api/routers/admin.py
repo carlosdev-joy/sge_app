@@ -339,6 +339,9 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             return {"sucesso": True, "config": {
                 "url": cfg["url"], "usuario": cfg["usuario"],
                 "grupos": cfg["grupos"], "habilitado": cfg["habilitado"],
+                # Proxy volta em claro de propósito: não é segredo, e é a
+                # primeira coisa a conferir quando o sync dá erro de rede.
+                "proxy": cfg["proxy"],
                 # A senha NUNCA volta, nem cifrada — a tela só precisa saber
                 # se existe uma para decidir entre "Salvar" e "Trocar senha".
                 "tem_senha": bool(cfg["senha_enc"]),
@@ -349,6 +352,7 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             url = servicenow.url_valida(body.get("url") or "")
             usuario = (body.get("usuario") or "").strip()
             grupos = (body.get("grupos") or "").strip()
+            proxy = servicenow.proxy_valido(body.get("proxy") or "")
             habilitado = "1" if body.get("habilitado") else "0"
             senha = body.get("senha")   # None/"" = manter a atual
             if len(usuario) > 100:
@@ -360,6 +364,7 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
                                            "etl_app_config.config_value")
             valores = {servicenow.K_URL: url, servicenow.K_USUARIO: usuario,
                        servicenow.K_GRUPOS: grupos,
+                       servicenow.K_PROXY: proxy,
                        servicenow.K_HABILITADO: habilitado}
             if isinstance(senha, str) and senha.strip():
                 token = encrypt_password(senha.strip())
