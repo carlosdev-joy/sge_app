@@ -31,8 +31,9 @@ RAIZ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RAIZ / "dags"))
 
 from utils.servicenow_sync import (  # noqa: E402
-    CAMPOS, COLUNAS_KANBAN, ESTADOS, TABELAS, TITULO_MAX,
-    K_PROXY, mapear_estado, normalizar, proxy_da_config, query_do_grupo,
+    CAMPOS, COLUNAS_KANBAN, DIAS_HISTORICO, ESTADOS, TABELAS, TITULO_MAX,
+    K_PROXY, mapear_estado, normalizar, pertence_ao_grupo,
+    proxy_da_config, query_do_grupo,
     truncar_titulo,
     upsert_params, upsert_sql,
 )
@@ -125,11 +126,13 @@ def test_sem_grupo_a_query_e_recusada():
 
 
 def test_query_de_um_grupo():
-    assert query_do_grupo(["Engenharia"]) == "assignment_group.name=Engenharia"
+    """Sem janela (dias=0) a query é só o grupo — o comportamento original."""
+    assert query_do_grupo(["Engenharia"], dias_historico=0) == \
+        "assignment_group.name=Engenharia"
 
 
 def test_query_de_varios_grupos_usa_or():
-    q = query_do_grupo(["Engenharia", "Sustentação"])
+    q = query_do_grupo(["Engenharia", "Sustentação"], dias_historico=0)
     assert q == "assignment_group.name=Engenharia^ORassignment_group.name=Sustentação"
 
 
@@ -435,3 +438,82 @@ def test_a_coluna_aguardando_tem_quem_a_ocupe():
         destinos = set(ESTADOS[tabela].values())
         assert "aguardando" in destinos, (
             f"{tabela} não tem nenhum estado mapeado para 'aguardando'")
+
+
+# ═══════════ 11. a janela de histórico (volume por ciclo) ═══════════════════
+# Medido em produção: o filtro só-por-grupo trazia 3.376 registros por ciclo
+# (103 incidents + 1.636 RITMs + 1.637 tasks) para uma fila ATIVA de 113 — o
+# histórico inteiro reescrito de 15 em 15 minutos, ~324 mil upserts e ~3.500
+# requisições diárias numa conta de serviço compartilhada com o Power BI.
+
+def test_janela_traz_ativos_E_recentes_nao_so_ativos():
+    """`active=true` sozinho quebraria os indicadores: entradas × saídas olha
+    14 dias e lê `encerrado_em`, que só existe se o chamado ainda estiver
+    vindo da API quando fecha."""
+    q = query_do_grupo(["G"])
+    assert "active=true" in q
+    assert "sys_updated_on>=" in q
+    assert "^OR" in q.split("active=true")[1], (
+        "o recorte precisa ser 'ativo OU recente', não 'ativo E recente'")
+
+
+def test_janela_maior_que_a_serie_dos_indicadores():
+    """DIAS_HISTORICO tem que cobrir DIAS_FLUXO (14) com folga: se a janela
+    encolher abaixo da série, o gráfico ganha buraco sem ninguém avisar."""
+    from routers.chamados import DIAS_FLUXO
+    assert DIAS_HISTORICO > DIAS_FLUXO
+
+
+def test_grupo_vem_antes_da_janela_na_query():
+    """Encoded query NÃO tem parênteses: `^` abre grupo AND e `^OR` encadeia
+    dentro do grupo corrente, com precedência POSICIONAL. Inverter a ordem
+    mudaria o sentido — e traria a fila da empresa inteira."""
+    q = query_do_grupo(["G1", "G2"])
+    assert q.index("assignment_group.name=G2") < q.index("active=true")
+
+
+def test_janela_zero_desliga_o_recorte():
+    """Escotilha de emergência: se o filtro se mostrar errado em produção,
+    dias_historico=0 devolve o comportamento anterior sem reverter código."""
+    assert query_do_grupo(["G"], dias_historico=0) == "assignment_group.name=G"
+
+
+# ═══════════ 12. a guarda contra a sintaxe do encoded query ═════════════════
+# Defesa em profundidade: se a leitura da precedência estiver errada — ou
+# mudar numa atualização da plataforma — a janela viraria um OR solto e o
+# espelho encheria com a fila da empresa. A resposta é conferida ANTES de
+# gravar, e o que não pertence ao grupo é descartado com aviso no log.
+
+def test_chamado_do_grupo_configurado_passa():
+    assert pertence_ao_grupo({"grupo": "TI_CVP_GERESD_ED"},
+                             ["TI_CVP_GERESD_ED"]) is True
+
+
+def test_chamado_de_outro_grupo_e_descartado():
+    assert pertence_ao_grupo({"grupo": "OUTRO_GRUPO"},
+                             ["TI_CVP_GERESD_ED"]) is False
+
+
+def test_comparacao_ignora_caixa_e_espacos():
+    """O nome vem do display_value da API; diferença de caixa ou espaço nas
+    pontas não pode descartar chamado legítimo."""
+    assert pertence_ao_grupo({"grupo": "  ti_cvp_geresd_ed "},
+                             ["TI_CVP_GERESD_ED"]) is True
+
+
+def test_chamado_sem_grupo_e_descartado():
+    """Registro sem grupo não casa com nenhum grupo configurado — e entrar
+    seria exatamente o vazamento que a guarda existe para impedir."""
+    assert pertence_ao_grupo({"grupo": ""}, ["G"]) is False
+    assert pertence_ao_grupo({}, ["G"]) is False
+
+
+def test_sem_grupos_configurados_a_guarda_nao_bloqueia():
+    """Quem chama já recusou esse caso antes (query_do_grupo levanta). Barrar
+    de novo aqui esconderia erro de CONFIGURAÇÃO atrás de uma fila vazia."""
+    assert pertence_ao_grupo({"grupo": "Qualquer"}, []) is True
+
+
+def test_qualquer_um_dos_grupos_configurados_serve():
+    grupos = ["Engenharia", "Sustentação"]
+    assert pertence_ao_grupo({"grupo": "Sustentação"}, grupos) is True

@@ -50,7 +50,8 @@ from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 
 from utils.servicenow_sync import (
     CAMPOS, MAX_PAGINAS, MSSQL_CONN_ID, PAGINA, TABELAS,
-    normalizar, proxy_da_config, query_do_grupo, upsert_params, upsert_sql,
+    normalizar, pertence_ao_grupo, proxy_da_config, query_do_grupo,
+    upsert_params, upsert_sql,
 )
 
 # Chaves da config (espelham api/services/servicenow.py — a fonte é a mesma
@@ -195,14 +196,29 @@ def etl_servicenow_sync():
                     contagens[tipo] = None
                     print(f"[SN] {tabela}: FALHOU — {e}")
                     continue
+                gravados, fora_do_grupo = 0, 0
                 for cru in registros:
                     linha = normalizar(cru, tabela, tipo, url)
                     if not linha["sys_id"]:
                         continue      # registro sem chave natural: ignorado
+                    # Guarda contra a sintaxe do encoded query (sem parênteses,
+                    # precedência posicional): se a janela de histórico virasse
+                    # um OR solto, viria a fila da empresa inteira. Conferir é
+                    # barato; descobrir depois que o espelho encheu, não.
+                    if not pertence_ao_grupo(linha, grupos):
+                        fora_do_grupo += 1
+                        continue
                     hook.run(upsert_sql(), parameters=upsert_params(linha))
-                contagens[tipo] = len(registros)
+                    gravados += 1
+                if fora_do_grupo:
+                    print(f"[SN] AVISO: {tabela} devolveu {fora_do_grupo} "
+                          f"chamado(s) FORA dos grupos {grupos} — descartados. "
+                          f"Confira o filtro em query_do_grupo().")
+                contagens[tipo] = gravados
                 tipos_ok.append(tipo)
-                print(f"[SN] {tabela}: {len(registros)} chamado(s) espelhado(s)")
+                print(f"[SN] {tabela}: {gravados} chamado(s) espelhado(s)"
+                      + (f" (de {len(registros)} devolvidos)"
+                         if gravados != len(registros) else ""))
 
         # Desativa o que sumiu da fila — SÓ nos tipos que sincronizaram bem.
         # Sem esse recorte, uma tabela negada por ACL zeraria a fila daquele

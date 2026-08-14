@@ -9,7 +9,8 @@
 //   2. "por que está vazio?"   → fila zerada e integração quebrada mostram o
 //      mesmo nada, e só o último ciclo separa as duas.
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { toast } from '../components/ui/Toast'
 import { apiFetch } from '../lib/api'
 import { Badge } from '../components/ui/Badge'
 import { Input, Select } from '../components/ui/Input'
@@ -17,7 +18,7 @@ import { Button } from '../components/ui/Button'
 import { PageSpinner } from '../components/ui/Spinner'
 import { Tabs } from '../components/ui/Tabs'
 import ChamadosIndicadores from './ChamadosIndicadores'
-import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
+import { ExternalLink, LifeBuoy, RefreshCw, Search, X, Zap } from 'lucide-react'
 
 // Aviso com tom próprio. O InfoBanner da casa é azul e DISPENSÁVEL — certo
 // para explicar a tela, errado para "a sincronização falhou": esse não pode
@@ -53,6 +54,12 @@ interface Chamado {
   url: string | null
   sync_em: string | null
   idade_dias: number | null
+  pai_sys_id: string
+  pai_numero: string
+  estado_cru: string
+  // Presente só nas RAÍZES: a sc_task que o RITM gerou vira linha DENTRO do
+  // card do pai, em vez de um segundo card com o mesmo trabalho.
+  filhos: Chamado[]
 }
 
 interface UltimoSync {
@@ -70,6 +77,9 @@ interface UltimoSync {
 
 interface RespostaChamados {
   chamados: Chamado[]
+  // Quantos REGISTROS vieram do espelho, antes do agrupamento. O card conta
+  // trabalhos; sem este denominador a fila pareceria ter encolhido sozinha.
+  registros: number
   colunas: string[]
   ultimo_sync: UltimoSync | null
   migration_ausente: boolean
@@ -123,8 +133,12 @@ function faixaIdade(dias: number | null) {
 function casaBusca(c: Chamado, termo: string): boolean {
   const t = termo.trim().toLowerCase()
   if (!t) return true
-  return [c.numero, c.titulo, c.atribuido_a, c.estado_origem]
-    .some(campo => (campo || '').toLowerCase().includes(t))
+  const campos = (x: Chamado) => [x.numero, x.titulo, x.atribuido_a, x.estado_origem]
+  // Os filhos entram na busca: quem digita o número da SCTASK precisa achar
+  // o card do RITM que a contém. Sem isto o agrupamento ESCONDERIA o card —
+  // o número existe na tela mas a busca por ele não acha nada.
+  const todos = [...campos(c), ...(c.filhos ?? []).flatMap(campos)]
+  return todos.some(campo => (campo || '').toLowerCase().includes(t))
 }
 
 function frescor(sync: UltimoSync | null): { texto: string; tom: string } {
@@ -178,6 +192,49 @@ function CardChamado({ c }: { c: Chamado }) {
           {c.idade_dias !== null ? `${c.idade_dias}d` : '—'}
         </span>
       </div>
+
+      {/* A execução, dentro do pedido.
+          No ServiceNow todo RITM gera uma sc_task filha. Antes eram DOIS
+          cards com o mesmo trabalho — a fila mostrava 113 itens para ~60
+          trabalhos. Agora a task é uma linha aqui dentro: some da contagem
+          sem sumir da vista, que é o ponto.
+          O estado dela aparece SEMPRE, mesmo igual ao do pai: é ele que
+          responde "o pedido está aberto, mas alguém já pegou?". */}
+      {c.filhos?.length > 0 && (
+        <div className="border-t border-edge/60 pt-1.5 mt-0.5 flex flex-col gap-1">
+          {c.filhos.map(f => (
+            <div key={f.sys_id} className="flex items-center gap-1.5 text-[10px]">
+              <span className="text-dim shrink-0">↳</span>
+              {f.url ? (
+                <a href={f.url} target="_blank" rel="noopener noreferrer"
+                  className="font-mono font-medium text-blue-600 dark:text-blue-400 shrink-0"
+                  title={`Abrir ${f.numero} no ServiceNow`}>
+                  {f.numero}
+                </a>
+              ) : (
+                <span className="font-mono font-medium text-ink shrink-0">{f.numero}</span>
+              )}
+              <Badge value="neutral">{ROTULO_TIPO[f.tipo] ?? f.tipo}</Badge>
+              <span className="text-dim truncate" title={
+                `${f.estado_origem || f.estado_kanban}`
+                + (f.atribuido_a ? ` · ${f.atribuido_a}` : '')
+                + (f.atribuido_a !== c.atribuido_a ? ' (responsável diferente do pedido)' : '')
+              }>
+                {f.estado_origem || f.estado_kanban}
+              </span>
+              {/* Responsável do filho só aparece quando DIFERE do pai —
+                  repetir o mesmo nome em toda linha seria ruído que esconde
+                  justamente o caso que importa. */}
+              {f.atribuido_a && f.atribuido_a !== c.atribuido_a && (
+                <span className="text-amber-700 dark:text-yellow-400 truncate shrink-0"
+                  title="Responsável da tarefa é diferente do responsável do pedido">
+                  {f.atribuido_a}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -192,6 +249,17 @@ export default function Chamados() {
   // Filtro client-side: a fila é de ordem de dezenas (a spec dimensionou ~50)
   // e a resposta já traz tudo — ida-e-volta ao servidor a cada tecla seria
   // latência sem ganho nenhum.
+  // Sincronizar agora: dispara o ciclo sem esperar o quarto de hora. O
+  // backend recusa antes de disparar quando a integração está desligada, sem
+  // credencial ou com a DAG pausada — os três casos em que um "disparado!"
+  // aqui seria mentira.
+  const sincronizar = useMutation({
+    mutationFn: () => apiFetch<{ mensagem?: string }>('/chamados/sincronizar',
+      { method: 'POST' }),
+    onSuccess: (d) => toast.success(d.mensagem ?? 'Sincronização disparada.'),
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   const [aba, setAba] = useState('fila')
   const [busca, setBusca] = useState('')
   const [fTipo, setFTipo] = useState('')
@@ -204,8 +272,11 @@ export default function Chamados() {
   // responsável variam por instância, e uma lista fixa mostraria opção que
   // não filtra nada (ou esconderia a que filtra).
   const opcoes = useMemo(() => {
+    // Pai e filhos: senão "Tarefa" sumiria da lista de tipos, e o operador
+    // não teria como filtrar por algo que está visível na tela.
+    const planos = chamados.flatMap(c => [c, ...(c.filhos ?? [])])
     const unicos = (f: (c: Chamado) => string | null) =>
-      [...new Set(chamados.map(f).filter((v): v is string => !!v))].sort()
+      [...new Set(planos.map(f).filter((v): v is string => !!v))].sort()
     return {
       tipos: unicos(c => c.tipo),
       responsaveis: unicos(c => c.atribuido_a),
@@ -213,12 +284,20 @@ export default function Chamados() {
     }
   }, [chamados])
 
-  const filtrados = useMemo(() => chamados.filter(c =>
-    (!fTipo || c.tipo === fTipo) &&
-    (!fResponsavel || c.atribuido_a === fResponsavel) &&
-    (!fPrioridade || c.prioridade === fPrioridade) &&
-    casaBusca(c, busca)
-  ), [chamados, fTipo, fResponsavel, fPrioridade, busca])
+  // O card representa o trabalho INTEIRO (pedido + execução), então um
+  // filtro casa se o pai OU qualquer filho casar. Filtrar por "Tarefa" com o
+  // card sendo do RITM esvaziaria a tela, e o operador concluiria que não há
+  // tarefa nenhuma — quando elas estão todas ali dentro.
+  const filtrados = useMemo(() => {
+    const casa = (c: Chamado, f: (x: Chamado) => boolean) =>
+      f(c) || (c.filhos ?? []).some(f)
+    return chamados.filter(c =>
+      (!fTipo || casa(c, x => x.tipo === fTipo)) &&
+      (!fResponsavel || casa(c, x => x.atribuido_a === fResponsavel)) &&
+      (!fPrioridade || casa(c, x => x.prioridade === fPrioridade)) &&
+      casaBusca(c, busca)
+    )
+  }, [chamados, fTipo, fResponsavel, fPrioridade, busca])
 
   const temFiltro = !!(busca || fTipo || fResponsavel || fPrioridade)
   const limpar = () => {
@@ -248,14 +327,33 @@ export default function Chamados() {
           <h1 className="text-lg font-semibold text-ink">Chamados da Engenharia</h1>
           {/* Com filtro ativo, "x de y" — nunca só o número filtrado, que
               faria a fila parecer menor do que é. */}
+          {/* O card é o TRABALHO (pedido + execução). Dizer só "60 na fila"
+              depois de a tela mostrar 113 faria parecer que sumiu chamado —
+              por isso o denominador de registros vai junto no title. */}
           <Badge value="neutral">
             {temFiltro ? `${filtrados.length} de ${d.total}` : `${d.total} na fila`}
           </Badge>
+          {d.registros > d.total && (
+            <span className="text-[10px] text-dim"
+              title={`${d.registros} registros no espelho: cada RITM e a tarefa que ele gerou aparecem juntos, num card só.`}>
+              {d.registros} registros
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <Badge value={f.tom}>{f.texto}</Badge>
+          {/* Sincronizar ≠ Recarregar, e a diferença precisa estar no rótulo:
+              um busca o ServiceNow (minutos), o outro relê o espelho local
+              (instantâneo). Sem isso o operador clica no errado e conclui que
+              o sistema não atualiza. */}
+          <Button size="sm" variant="secondary" loading={sincronizar.isPending}
+            onClick={() => sincronizar.mutate()}
+            title="Busca os chamados no ServiceNow agora, sem esperar o próximo ciclo (leva alguns minutos)">
+            <Zap size={13} /> Sincronizar agora
+          </Button>
           <button onClick={() => refetch()} disabled={isFetching}
-            className="text-dim hover:text-ink disabled:opacity-50" title="Recarregar">
+            className="text-dim hover:text-ink disabled:opacity-50"
+            title="Recarrega o espelho local (não busca no ServiceNow)">
             <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
           </button>
         </div>

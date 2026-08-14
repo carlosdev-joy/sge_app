@@ -51,6 +51,13 @@ PAGINA = 100
 # (filtro que não casa + API que ignora offset = laço eterno no worker).
 MAX_PAGINAS = 50
 
+# Janela do histórico trazido além do que está ATIVO, em dias. Precisa ser
+# MAIOR que DIAS_FLUXO (14, api/routers/chamados.py): os indicadores de
+# entradas × saídas olham 14 dias e leem `encerrado_em`, que só existe se o
+# chamado ainda estiver vindo da API quando fecha. 30 dá margem para o ciclo
+# falhar alguns dias seguidos sem abrir buraco na série.
+DIAS_HISTORICO = 30
+
 # ── Mapeamento estado → coluna do kanban ────────────────────────────────────
 # Valores CRUS da API (o `state` numérico), por tabela. Conferidos contra a
 # instância real pela sonda do Admin — o que NÃO estiver aqui cai em 'outros'
@@ -228,16 +235,61 @@ def proxy_da_config(cfg: dict) -> str | None:
     return (cfg.get(K_PROXY) or "").strip() or None
 
 
-def query_do_grupo(grupos: list[str]) -> str:
-    """sysparm_query filtrando por grupo de atribuição.
+def query_do_grupo(grupos: list[str], dias_historico: int = DIAS_HISTORICO) -> str:
+    """sysparm_query: grupo(s) de atribuição + janela de relevância.
 
     Sem grupo NÃO devolve query vazia: uma consulta sem filtro traria a fila
     da empresa inteira. Quem chama trata a lista vazia antes.
+
+    **A janela existe por volume.** Medido em produção: o filtro só-por-grupo
+    trazia 3.376 registros por ciclo (103 incidents + 1.636 RITMs + 1.637
+    tasks) para uma fila ATIVA de 113. Era o histórico inteiro do grupo,
+    reescrito de 15 em 15 minutos — ~324 mil upserts e ~3.500 requisições
+    diárias ao ServiceNow, numa conta de serviço compartilhada com o Power BI.
+
+    O recorte é `ativo OU mexido nos últimos N dias`, não apenas `ativo`:
+      • o que está na fila vem sempre, independente de idade;
+      • o que fechou recentemente continua vindo, porque os indicadores de
+        entradas × saídas olham 14 dias e precisam do `encerrado_em`;
+      • o que fechou há muito tempo PARA de ser reescrito — e não some da
+        tela: já está no espelho, e o que sai da consulta é marcado ativo=0
+        pela rotina de desativação, que é o comportamento correto.
+
+    ⚠️ Sintaxe do encoded query: `^` separa grupos AND e `^OR` encadeia dentro
+    do grupo corrente. Então `g=A^ORg=B^active=true^ORsys_updated_on>=X` lê
+    como `(g=A OU g=B) E (ativo OU mexido recentemente)`. Não existem
+    parênteses na linguagem — a ordem é o que agrupa.
     """
     if not grupos:
         raise ValueError("nenhum grupo configurado — o sync sem filtro traria "
                          "a fila da empresa inteira")
-    return "^OR".join(f"assignment_group.name={g}" for g in grupos)
+    filtro_grupo = "^OR".join(f"assignment_group.name={g}" for g in grupos)
+    if dias_historico <= 0:          # 0 = sem janela (o comportamento antigo)
+        return filtro_grupo
+    return (f"{filtro_grupo}"
+            f"^active=true"
+            f"^ORsys_updated_on>=javascript:gs.daysAgoStart({dias_historico})")
+
+
+def pertence_ao_grupo(linha: dict, grupos: list[str]) -> bool:
+    """O chamado é mesmo de um dos grupos configurados?
+
+    Guarda de defesa em profundidade contra a sintaxe do encoded query. O
+    ServiceNow não tem parênteses: `^` abre grupo AND, `^OR` encadeia dentro
+    do grupo corrente, e a precedência é POSICIONAL. Se essa leitura estiver
+    errada — ou mudar numa atualização da plataforma —, a janela de histórico
+    poderia virar um OR solto e o espelho encheria com a fila da empresa
+    inteira, que é exatamente o risco que `query_do_grupo` existe para evitar.
+
+    Aqui a resposta da API é conferida contra a configuração antes de gravar.
+    Sem grupo configurado devolve True: quem chama já recusou esse caso antes,
+    e recusar de novo aqui esconderia o erro de configuração atrás de uma
+    fila vazia.
+    """
+    if not grupos:
+        return True
+    alvo = (linha.get("grupo") or "").strip().casefold()
+    return any(alvo == g.strip().casefold() for g in grupos)
 
 
 def upsert_sql() -> str:

@@ -38,11 +38,19 @@ from routers.chamados import FRESCOR_ALERTA_MINUTOS  # noqa: E402
 
 # Colunas do SELECT de chamados, na ordem do router.
 def _chamado(numero="INC001", tipo="incident", estado="novo", ativo=1,
-             idade=3, titulo="Falha na carga", sys_id=None):
+             idade=3, titulo="Falha na carga", sys_id=None,
+             pai_sys_id="", pai_numero="", estado_cru="2",
+             responsavel="Fulano"):
+    """Uma linha do SELECT de /chamados, na ORDEM das colunas da query.
+
+    `pai_sys_id` vazio = trabalho raiz (RITM, incident). Preenchido = a
+    sc_task que o RITM gerou, que a resposta agrupa dentro do card do pai.
+    """
     return (sys_id or f"sid-{numero}", numero, tipo, titulo, "In Progress",
-            estado, "3 - Moderate", "Fulano", "Engenharia",
+            estado, "3 - Moderate", responsavel, "Engenharia",
             "2026-08-10 10:00:00", "2026-08-13 09:00:00", None, ativo,
-            "https://x.service-now.com/nav", "2026-08-13 12:00:00", idade)
+            "https://x.service-now.com/nav", "2026-08-13 12:00:00", idade,
+            pai_sys_id, pai_numero, estado_cru)
 
 
 def _ciclo(status="OK", idade_min=30, terminado="2026-08-13 12:05:00", erro=None):
@@ -224,3 +232,87 @@ def test_exige_autenticacao():
     """Sem override de auth a rota não pode responder 200."""
     with TestClient(app) as anonimo:
         assert anonimo.get("/chamados").status_code in (401, 403)
+
+
+# ═══════════ 8. o card é o TRABALHO, não o registro ════════════════════════
+# No ServiceNow todo RITM gera uma sc_task filha. A fila contava cada pedido
+# DUAS vezes — 113 itens para ~60 trabalhos, medidos em produção (49 de 49
+# tasks ativas com pai na fila). A task virou linha DENTRO do card do pai.
+
+def _ritm(numero="RITM0096880", sys_id="sid-ritm", **kw):
+    return _chamado(numero=numero, tipo="ritm", sys_id=sys_id, **kw)
+
+
+def _task(numero="SCTASK0098628", pai="sid-ritm", **kw):
+    return _chamado(numero=numero, tipo="task", sys_id=f"sid-{numero}",
+                    pai_sys_id=pai, pai_numero="RITM0096880", **kw)
+
+
+def test_task_vira_filho_do_ritm(cliente, banco):
+    banco["cur"] = CursorFalso([_ritm(), _task()], _ciclo())
+    d = cliente.get("/chamados").json()
+    assert len(d["chamados"]) == 1, "o par vira UM card"
+    card = d["chamados"][0]
+    assert card["numero"] == "RITM0096880"
+    assert [f["numero"] for f in card["filhos"]] == ["SCTASK0098628"]
+
+
+def test_total_conta_trabalhos_e_registros_conta_linhas(cliente, banco):
+    """Os dois números precisam existir: 'total' é o que a fila mostra e
+    'registros' é o denominador que impede a leitura de que sumiu chamado."""
+    banco["cur"] = CursorFalso([_ritm(), _task()], _ciclo())
+    d = cliente.get("/chamados").json()
+    assert d["total"] == 1
+    assert d["registros"] == 2
+
+
+def test_por_coluna_nao_conta_o_filho_duas_vezes(cliente, banco):
+    """O contador da coluna é do kanban, e o kanban mostra cards. Contar o
+    filho encheria a coluna com um trabalho que aparece uma vez só."""
+    banco["cur"] = CursorFalso([_ritm(estado="novo"), _task(estado="novo")],
+                               _ciclo())
+    d = cliente.get("/chamados").json()
+    assert d["por_coluna"]["novo"] == 1
+
+
+def test_task_orfa_continua_na_fila(cliente, banco):
+    """Pai fora do espelho é o caso REAL de task atribuída ao grupo cujo RITM
+    pertence a outro. Escondê-la perderia trabalho de vista — o oposto do que
+    o agrupamento existe para fazer."""
+    banco["cur"] = CursorFalso([_task(numero="SCTASK0000001", pai="sid-que-nao-existe")],
+                               _ciclo())
+    d = cliente.get("/chamados").json()
+    assert len(d["chamados"]) == 1
+    assert d["chamados"][0]["numero"] == "SCTASK0000001"
+    assert d["chamados"][0]["filhos"] == []
+
+
+def test_chamado_sem_pai_fica_na_raiz(cliente, banco):
+    banco["cur"] = CursorFalso([_chamado(numero="INC001")], _ciclo())
+    d = cliente.get("/chamados").json()
+    assert len(d["chamados"]) == 1 and d["chamados"][0]["filhos"] == []
+
+
+def test_auto_referente_nao_some_da_fila(cliente, banco):
+    """pai_sys_id == sys_id sumiria da fila inteira sem erro nenhum — o card
+    seria filho de si mesmo e nunca entraria na raiz."""
+    banco["cur"] = CursorFalso(
+        [_chamado(numero="INC009", sys_id="sid-x", pai_sys_id="sid-x")], _ciclo())
+    d = cliente.get("/chamados").json()
+    assert [c["numero"] for c in d["chamados"]] == ["INC009"]
+
+
+def test_varios_filhos_no_mesmo_pai(cliente, banco):
+    banco["cur"] = CursorFalso(
+        [_ritm(), _task(numero="SCTASK1"), _task(numero="SCTASK2")], _ciclo())
+    d = cliente.get("/chamados").json()
+    assert len(d["chamados"]) == 1
+    assert len(d["chamados"][0]["filhos"]) == 2
+
+
+def test_estado_cru_chega_na_tela(cliente, banco):
+    """Quando o card cai em 'Outros', é o número do estado que diz o que
+    cadastrar no mapa do kanban."""
+    banco["cur"] = CursorFalso([_chamado(estado="outros", estado_cru="-5")],
+                               _ciclo())
+    assert cliente.get("/chamados").json()["chamados"][0]["estado_cru"] == "-5"
