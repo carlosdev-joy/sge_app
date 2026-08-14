@@ -74,6 +74,23 @@ _mudancas() {  # $1 = origem/  $2 = destino/  $3.. = flags extras (ex.: --exclud
         | awk '$1 ~ /^[<>]f/ {print "    " $2}'
 }
 
+# Dos arquivos listados por _mudancas (stdin), quais são MÓDULOS auxiliares —
+# .py em SUBPASTA de dags/ (utils/, Orquestrador/…). Esses o worker Celery
+# serve de cache em memória e não recarregam sozinhos; .py na RAIZ de dags/ é
+# DAG, e o DagBag reprocessa a cada execução. Ver o bloco 5b para o porquê.
+_modulos_auxiliares() {
+    awk '$1 ~ /\/.*\.py$/ {print}'
+}
+
+# Da saída de `celery inspect active` (stdin), extrai "dag_id · task_id" por
+# linha. Para o Celery TODA task do Airflow se chama `execute_command`: o que
+# identifica o trabalho vive dentro de `args`, no meio de um dict cru. Sem
+# este resumo, a decisão de reiniciar seria tomada lendo um dump.
+_resumo_tasks_ativas() {
+    grep -oE "'tasks', 'run', '[^']+', '[^']+'" \
+        | sed "s/'tasks', 'run', //; s/'//g; s/, / · /"
+}
+
 # ── 3. UI React (única interface — servida na raiz /) ─────────
 mkdir -p "$AIRFLOW_DIR/ui-react/dist"
 rsync -av --delete "$TMP_DIR/ui-react/dist/" "$AIRFLOW_DIR/ui-react/dist/"
@@ -109,11 +126,63 @@ if [ -z "$MUD_DAGS" ]; then
 else
     echo "[DEPLOY] dags/ — arquivos que MUDARIAM (generated/ preservado):"
     echo "$MUD_DAGS"
-    if _confirmar "[DEPLOY] Aplicar as mudancas de dags/ acima? (o scheduler/worker recarrega pelo volume nas proximas execucoes)"; then
+    if _confirmar "[DEPLOY] Aplicar as mudancas de dags/ acima? (DAG na raiz recarrega sozinha; modulo em subpasta exige restart do worker — perguntado adiante)"; then
         rsync -avc --exclude=generated/ "$TMP_DIR/dags/" "$AIRFLOW_DIR/dags/"
         chown -R airflow:airflow "$AIRFLOW_DIR/dags/"
         chmod -R 777 "$AIRFLOW_DIR/dags/"
         echo "[DEPLOY] ✓ dags/ sincronizado"
+
+        # ── 5b. Módulo auxiliar mudou → o worker NÃO recarrega sozinho ──────
+        # O DagBag reprocessa o ARQUIVO DA DAG a cada execução (chega a apagá-lo
+        # de sys.modules antes). Mas o `from utils.x import y` lá dentro é um
+        # import comum: se o módulo já está em sys.modules do processo do worker
+        # Celery, o import devolve a versão EM MEMÓRIA, e os forks herdam esse
+        # cache. O arquivo no disco muda e ninguém consulta de novo.
+        #
+        # O estrago é mudo: nada falha, a task fica VERDE, o ciclo termina OK —
+        # e o código novo simplesmente não roda. Mordeu em 2026-08-13 (PR #312,
+        # que mexia só em dags/utils/): três ciclos depois do deploy gravando
+        # pelo código antigo, com log impecável.
+        #
+        # Heurística: .py na RAIZ de dags/ é DAG (recarrega); .py em subpasta é
+        # módulo importado (precisa de restart).
+        MOD_AUX=$(echo "$MUD_DAGS" | _modulos_auxiliares)
+        if [ -n "$MOD_AUX" ]; then
+            echo ""
+            echo "[DEPLOY] ⚠ Modulo(s) auxiliar(es) de dags/ mudaram:"
+            echo "$MOD_AUX"
+            echo "[DEPLOY]   O worker Celery serve estes de um CACHE em memoria."
+            echo "[DEPLOY]   Sem restart, o codigo novo NAO roda — e nada falha:"
+            echo "[DEPLOY]   task verde, ciclo OK, efeito nenhum."
+            echo ""
+            echo "[DEPLOY] Tasks em execucao AGORA no worker (o que o restart derruba):"
+            ATIVAS=$(docker compose -f "$AIRFLOW_DIR/docker-compose.yaml" exec -T airflow-worker \
+                celery -A airflow.providers.celery.executors.celery_executor.app \
+                inspect active 2>/dev/null || true)
+            if [ -z "$ATIVAS" ]; then
+                echo "    (nao foi possivel consultar o worker — confira manualmente ANTES de reiniciar)"
+            elif echo "$ATIVAS" | grep -q -- "- empty -"; then
+                echo "    nenhuma — o worker esta ocioso, o restart e inofensivo."
+            else
+                echo "$ATIVAS" | _resumo_tasks_ativas | sed 's/^/    ▶ /' || true
+                # O dump cru fica disponivel: se a extracao acima nao casar
+                # (formato do comando mudou entre versoes), o operador ainda
+                # ve a verdade em vez de uma lista vazia enganosa.
+                echo "    ── saida completa do Celery ──"
+                echo "$ATIVAS" | sed 's/^/    /'
+            fi
+            echo ""
+            # Restart != recriar: o codigo vem do volume, entao NAO precisa de
+            # imagem nova. Ainda assim derruba o que estiver rodando, por isso
+            # a pergunta (padrao NAO, como todo o resto deste script).
+            if _confirmar "[DEPLOY] Reiniciar o airflow-worker agora? (derruba tasks em execucao; NAO rebuilda imagem)"; then
+                docker compose -f "$AIRFLOW_DIR/docker-compose.yaml" restart airflow-worker
+                echo "[DEPLOY] ✓ airflow-worker reiniciado — o proximo ciclo usa o codigo novo"
+            else
+                echo "[DEPLOY] ⚠ worker NAO reiniciado — os modulos acima seguem em cache."
+                echo "[DEPLOY]   Quando houver janela:  docker compose restart airflow-worker"
+            fi
+        fi
     else
         echo "[DEPLOY] dags/ mantido como está."
     fi
