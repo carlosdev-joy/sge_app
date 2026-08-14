@@ -2,8 +2,11 @@
 // (F8). Card colapsável com resumo por status, filtros com sub-status,
 // alerta em lote e lista de propostas com ação por status — incluindo o
 // movimento de Emissão (sensitization_monitoring → emission_sent, estado
-// local). Todos os diálogos são os nativos das F3/F7/F8. Mock idêntico ao
-// original (17 propostas).
+// local). Todos os diálogos são os nativos das F3/F7/F8.
+//
+// A SEQUÊNCIA dos cards segue o desenho aprovado (sequencia_wkf.png): ordem,
+// nomes e o círculo de sinalização. O mock nasceu com 17 propostas e ganhou
+// 2 cópias para os status que o desenho trouxe sem registro nenhum.
 import { useState } from "react";
 import { ChevronDown, ChevronUp, Send } from "lucide-react";
 import { Button } from "../../components/ui/Button";
@@ -51,20 +54,59 @@ const mockWorkflowProposals: WorkflowProposal[] = [
   { id: "14", number: "80316460327417", insuredName: "Marcos Costa", status: "pending_dps", value: "R$ 2.800,00", product: "Vida Mulher", region: "Sul", ageRange: "50-65", broker: "Marcos", daysInPending: 5, date: "10/10/2025", indicatorId: "106575-5", agency: "303", cpf: "345.678.901-32", phone: "(11) 98765-4334", email: "marcos@example.com" },
   { id: "15", number: "80316460327418", insuredName: "Adriana Lima", status: "signed_proposal", value: "R$ 1.950,00", product: "Perda de Renda", region: "Nordeste", ageRange: "35-50", broker: "Adriana", daysInPending: 0, date: "09/10/2025", indicatorId: "106576-6", agency: "302", cpf: "456.789.012-43", phone: "(11) 98765-4335", email: "adriana@example.com", signedSubStatus: "payment_cycle", policy: "12345678" },
   { id: "16", number: "80316460327419", insuredName: "Ricardo Santos", status: "refund_scheduled", value: "R$ 2.300,00", product: "Vida Mulher", region: "Sul", ageRange: "40-55", broker: "Ricardo", daysInPending: 7, date: "08/10/2025", indicatorId: "106577-7", agency: "301", cpf: "567.890.123-54", phone: "(11) 98765-4336", email: "ricardo@example.com", declineReason: "Informações inconsistentes na documentação.", refundSubStatus: "pending_value", policy: "23456789" },
+  // ── Simulação dos dois status novos do desenho ────────────────────────────
+  // "Propostas Pagas" e "Propostas Emitidas" entraram na sequência sem
+  // nenhuma proposta no mock, e card zerado não deixa ver o layout nem
+  // exercitar o filtro. Estas duas são CÓPIAS de propostas existentes com o
+  // status trocado — mesmo formato de número, agência e produto do resto da
+  // base, para não destoarem na lista.
+  { id: "17", number: "80316460327420", insuredName: "Helena Martins", status: "paid", value: "R$ 2.050,00", product: "Vida Multipremiado", region: "Sudeste", ageRange: "30-45", broker: "Helena", daysInPending: 0, date: "07/10/2025", indicatorId: "106578-8", agency: "300", cpf: "678.901.234-65", phone: "(11) 98765-4338", email: "helena@example.com", paymentMethod: "debit", policy: "34567890" },
+  { id: "18", number: "80316460327421", insuredName: "Sergio Barbosa", status: "emission_sent", value: "R$ 1.720,00", product: "Vida Conforto", region: "Sul", ageRange: "40-55", broker: "Sergio", daysInPending: 0, date: "06/10/2025", indicatorId: "106579-9", agency: "299", cpf: "789.012.345-76", phone: "(11) 98765-4339", email: "sergio@example.com", policy: "45678901" },
 ];
 
-const statusInfo = [
+// ── Sequência do workflow ───────────────────────────────────────────────────
+// A ORDEM e os NOMES abaixo espelham o desenho aprovado (sequencia_wkf.png):
+// é a sequência que a operação segue, não uma lista alfabética nem a ordem em
+// que os status foram implementados.
+//
+// O `sinal` é o círculo à direita de cada card, e diz o que aquele número
+// EXIGE de quem olha:
+//   • atencao   (amarelo) — a proposta está parada esperando alguém agir;
+//   • sem_acao  (verde)   — seguiu o fluxo, nada a fazer;
+//   • acao      (vermelho)— saiu do fluxo e precisa de tratativa.
+//
+// A cor NUNCA vai sozinha: cada círculo carrega `title`/`aria-label` com a
+// frase inteira. Quem não distingue as cores — ou lê a tela impressa, ou usa
+// leitor — continua sabendo o que o card pede.
+type Sinal = "atencao" | "sem_acao" | "acao";
+
+const statusInfo: { value: string; label: string; sinal?: Sinal }[] = [
   { value: "all", label: "Todas as Propostas" },
-  { value: "pending_signature", label: "Aguardando Assinatura" },
-  { value: "approved", label: "Ass. e Sensibilizado" },
-  { value: "awaiting_payment", label: "Aguardando Pagamento" },
-  { value: "signed_proposal", label: "Proposta Assinada" },
-  { value: "pending_documentation", label: "Pendência Documental" },
-  { value: "pending_dps", label: "Pendência de DPS" },
-  { value: "sensitization_monitoring", label: "Monitoramento de Sensibilização" },
-  { value: "return_in_progress", label: "Devolução em Andamento" },
-  { value: "refund_scheduled", label: "Propostas Declinadas" },
+  { value: "pending_signature", label: "Aguardando Assinatura", sinal: "atencao" },
+  { value: "signed_proposal", label: "Proposta Assinada", sinal: "sem_acao" },
+  { value: "awaiting_payment", label: "Aguardando Pagamento", sinal: "atencao" },
+  { value: "paid", label: "Propostas Pagas", sinal: "sem_acao" },
+  { value: "pending_documentation", label: "Pendência Documental", sinal: "atencao" },
+  { value: "pending_dps", label: "Pendência de DPS", sinal: "atencao" },
+  { value: "emission_sent", label: "Propostas Emitidas", sinal: "sem_acao" },
+  { value: "refund_scheduled", label: "Propostas Declinadas", sinal: "acao" },
+  { value: "return_in_progress", label: "Devolução em Andamento", sinal: "atencao" },
+  { value: "sensitization_monitoring", label: "Monitoramento de Sensibilização", sinal: "sem_acao" },
 ];
+
+// Só a borda é colorida — o miolo fica vazado, como no desenho. Preenchido, o
+// círculo competiria com o número, que é a informação principal do card.
+const SINAL_CLASSE: Record<Sinal, string> = {
+  atencao:  "border-[#EAB308]",   // amarelo
+  sem_acao: "border-[#65A30D]",   // verde
+  acao:     "border-[#DC2626]",   // vermelho
+};
+
+const SINAL_TEXTO: Record<Sinal, string> = {
+  atencao:  "Atenção: propostas paradas aguardando ação",
+  sem_acao: "Sem ação necessária: seguiram o fluxo",
+  acao:     "Requer ação: saíram do fluxo e precisam de tratativa",
+};
 
 const documentSubStatusLabels: Record<string, string> = {
   incomplete: "Proposta incompleta",
@@ -86,6 +128,7 @@ const STATUS_BADGE: Record<string, string> = {
   declined: "bg-amber-500",
   emission_sent: "bg-blue-600",
   refund_scheduled: "bg-red-600",
+  paid: "bg-emerald-600",
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -100,6 +143,7 @@ const STATUS_LABELS: Record<string, string> = {
   declined: "Rejeitada",
   emission_sent: "Movimento de Emissão Enviado, Aguardando confirmação",
   refund_scheduled: "Propostas Declinadas",
+  paid: "Proposta Paga",
 };
 
 const PAYMENT_LABELS: Record<string, string> = { boleto: "Boleto", debit: "Débito em Conta", credit: "Crédito em Conta" };
@@ -131,6 +175,12 @@ export default function InlineWorkflow() {
     return_in_progress: 0,
     declined: 0,
     refund_scheduled: 0,
+    // Sem estas duas chaves o `counts[status] !== undefined` abaixo DESCARTA
+    // a proposta em silêncio, e os cards novos nasceriam zerados com dado no
+    // mock — o tipo de defeito que passa por "ainda não tem proposta nesse
+    // status" e ninguém investiga.
+    paid: 0,
+    emission_sent: 0,
   };
   mockWorkflowProposals.forEach((proposal) => {
     const currentStatus = proposalStatuses[proposal.id] || proposal.status;
@@ -203,7 +253,17 @@ export default function InlineWorkflow() {
                   }`}
                 >
                   <div className="text-xs font-medium text-center text-ink">{status.label}</div>
-                  <div className="text-xl font-bold text-center mt-1 text-ink">{counts[status.value]}</div>
+                  <div className="flex items-center justify-center gap-2 mt-1">
+                    <span className="text-xl font-bold text-ink">{counts[status.value]}</span>
+                    {status.sinal && (
+                      <span
+                        className={`h-4 w-4 rounded-full border-[3px] shrink-0 ${SINAL_CLASSE[status.sinal]}`}
+                        role="img"
+                        aria-label={SINAL_TEXTO[status.sinal]}
+                        title={SINAL_TEXTO[status.sinal]}
+                      />
+                    )}
+                  </div>
                 </button>
               ))}
             </div>

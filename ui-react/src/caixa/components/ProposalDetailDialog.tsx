@@ -29,6 +29,7 @@ export interface ProposalOrq {
     | "approved"
     | "declined"
     | "emission_sent"
+    | "paid"
     | "return_in_progress";
   value: string;
   indicatorId: string;
