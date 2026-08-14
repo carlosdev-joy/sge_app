@@ -261,29 +261,39 @@ export default function InlineWorkflow() {
                     setSelectedStatus(status.value);
                     setSelectedSubStatus("all");
                   }}
-                  className={`p-2 rounded-lg border-2 transition-all ${
+                  className={`relative p-2 rounded-lg border-2 transition-all ${
                     selectedStatus === status.value
                       ? "border-[#1A5FA8] bg-[#1A5FA8]/10"
                       : "border-edge hover:border-[#1A5FA8]/50"
                   }`}
                 >
+                  {/* Sinal no canto INFERIOR direito, FORA do fluxo.
+                      Duas razões, nesta ordem:
+                      1. no topo ele disputaria espaço com o rótulo, que é o
+                         elemento longo e de altura variável ("Monitoramento
+                         de Sensibilização" ocupa a largura toda); embaixo
+                         convive com o número, que é curto e centralizado;
+                      2. tira o ícone do fluxo e devolve ao número o centro
+                         do card. Antes os dois eram centralizados JUNTOS, e
+                         o número mudava de posição conforme tivesse 1 ou 2
+                         dígitos — numa fileira de dez cards, dançavam. */}
+                  {status.sinal && (() => {
+                    const Icone = SINAL_ICONE[status.sinal];
+                    return (
+                      <Icone
+                        className={`absolute bottom-1.5 right-1.5 h-3.5 w-3.5 ${SINAL_CLASSE[status.sinal]}`}
+                        strokeWidth={2}
+                        role="img"
+                        aria-label={SINAL_TEXTO[status.sinal]}
+                      >
+                        <title>{SINAL_TEXTO[status.sinal]}</title>
+                      </Icone>
+                    );
+                  })()}
+                  {/* Sem folga lateral: com o sinal embaixo, o rótulo usa a
+                      largura inteira e quebra em menos linhas. */}
                   <div className="text-xs font-medium text-center text-ink">{status.label}</div>
-                  <div className="flex items-center justify-center gap-2 mt-1">
-                    <span className="text-xl font-bold text-ink">{counts[status.value]}</span>
-                    {status.sinal && (() => {
-                      const Icone = SINAL_ICONE[status.sinal];
-                      return (
-                        <Icone
-                          className={`h-3.5 w-3.5 shrink-0 ${SINAL_CLASSE[status.sinal]}`}
-                          strokeWidth={2}
-                          role="img"
-                          aria-label={SINAL_TEXTO[status.sinal]}
-                        >
-                          <title>{SINAL_TEXTO[status.sinal]}</title>
-                        </Icone>
-                      );
-                    })()}
-                  </div>
+                  <div className="text-xl font-bold text-center mt-1 text-ink">{counts[status.value]}</div>
                 </button>
               ))}
             </div>
