@@ -33,20 +33,20 @@ RAIZ = Path(__file__).resolve().parents[1]
 TSX = RAIZ / "ui-react" / "src" / "caixa" / "components" / "InlineWorkflow.tsx"
 
 # A sequência do desenho, na ordem, com o sinal de cada etapa.
-#   atencao  (amarelo) — parada esperando alguém agir
-#   sem_acao (verde)   — seguiu o fluxo
-#   acao     (vermelho)— saiu do fluxo, precisa de tratativa
+#   aviso    (amarelo)  — parada esperando alguém agir
+#   perda    (vermelho) — negócio perdido
+#   positivo (verde)    — avançou no funil
 SEQUENCIA_DO_DESENHO = [
-    ("pending_signature",         "Aguardando Assinatura",             "atencao"),
-    ("signed_proposal",           "Proposta Assinada",                 "sem_acao"),
-    ("awaiting_payment",          "Aguardando Pagamento",              "atencao"),
-    ("paid",                      "Propostas Pagas",                   "sem_acao"),
-    ("pending_documentation",     "Pendência Documental",              "atencao"),
-    ("pending_dps",               "Pendência de DPS",                  "atencao"),
-    ("emission_sent",             "Propostas Emitidas",                "sem_acao"),
-    ("refund_scheduled",          "Propostas Declinadas",              "acao"),
-    ("return_in_progress",        "Devolução em Andamento",            "atencao"),
-    ("sensitization_monitoring",  "Monitoramento de Sensibilização",   "sem_acao"),
+    ("pending_signature",         "Aguardando Assinatura",             "aviso"),
+    ("signed_proposal",           "Proposta Assinada",                 "positivo"),
+    ("awaiting_payment",          "Aguardando Pagamento",              "aviso"),
+    ("paid",                      "Propostas Pagas",                   "positivo"),
+    ("pending_documentation",     "Pendência Documental",              "aviso"),
+    ("pending_dps",               "Pendência de DPS",                  "aviso"),
+    ("emission_sent",             "Propostas Emitidas",                "positivo"),
+    ("refund_scheduled",          "Propostas Declinadas",              "perda"),
+    ("return_in_progress",        "Devolução em Andamento",            "aviso"),
+    ("sensitization_monitoring",  "Monitoramento de Sensibilização",   "positivo"),
 ]
 
 
@@ -108,12 +108,34 @@ def test_nenhum_card_fica_sem_sinal():
 
 def test_a_cor_nunca_vai_sozinha():
     """Regra da casa: cor é reforço, nunca o único portador da informação.
-    Sem title/aria-label o círculo não existe para quem não distingue as
-    cores, usa leitor de tela ou imprime a página."""
+
+    Aqui isso tem TRÊS camadas — a forma do ícone (triângulo, seta caindo,
+    certo), que funciona até impressa em preto e branco; o `aria-label`, para
+    leitor de tela; e o `<title>`, para o tooltip do navegador.
+    """
     fonte = _fonte()
     assert "SINAL_TEXTO" in fonte
-    assert 'aria-label={SINAL_TEXTO[status.sinal]}' in fonte
-    assert 'title={SINAL_TEXTO[status.sinal]}' in fonte
+    assert "aria-label={SINAL_TEXTO[status.sinal]}" in fonte
+    assert "<title>{SINAL_TEXTO[status.sinal]}</title>" in fonte
+
+
+def test_cada_sinal_tem_icone_proprio():
+    """Três sinais, três formas distintas. Dois sinais com o mesmo ícone
+    deixariam a cor como única diferença — exatamente o que a régra acima
+    existe para impedir."""
+    bloco = re.search(r"const SINAL_ICONE.*?\};", _fonte(), re.S)
+    assert bloco, "SINAL_ICONE não encontrado"
+    icones = re.findall(r"(\w+):\s*(\w+),", bloco.group(0))
+    assert len(icones) == 3, f"esperados 3 sinais, achei {icones}"
+    formas = [i[1] for i in icones]
+    assert len(set(formas)) == 3, f"ícones repetidos entre sinais: {formas}"
+
+
+def test_o_icone_e_discreto():
+    """O número é a informação principal do card; o sinal qualifica. Ícone
+    grande demais inverteria a hierarquia — e foi o pedido explícito."""
+    fonte = _fonte()
+    assert "h-3.5 w-3.5" in fonte, "o ícone do sinal deveria ser pequeno (14px)"
 
 
 # ═══════════ 3. o defeito silencioso: contagem que descarta ═════════════════
