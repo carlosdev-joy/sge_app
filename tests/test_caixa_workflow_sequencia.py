@@ -138,6 +138,38 @@ def test_o_icone_e_discreto():
     assert "h-3.5 w-3.5" in fonte, "o ícone do sinal deveria ser pequeno (14px)"
 
 
+# ═══════════ 6. o sinal no canto — posição fixa, sem colisão ════════════════
+
+def test_o_sinal_fica_no_canto_inferior_direito():
+    """Padrão de card: posição fixa, o olho aprende onde procurar. E resolve
+    um efeito colateral do layout anterior — número e ícone centralizados
+    JUNTOS faziam o número mudar de lugar conforme tivesse 1 ou 2 dígitos."""
+    fonte = _fonte()
+    assert "absolute bottom-1.5 right-1.5" in fonte
+    assert 'className={`relative p-2 rounded-lg border-2' in fonte, (
+        "sem `relative` no botão, o absolute se ancora no ancestral errado e "
+        "o ícone vaza para fora do card")
+
+
+def test_o_numero_fica_sozinho_no_centro():
+    """O `flex` que agrupava número + ícone tinha que sair: mantido, o número
+    continuaria descentralizado mesmo com o ícone no canto."""
+    fonte = _fonte()
+    assert 'className="text-xl font-bold text-center mt-1 text-ink"' in fonte
+    assert "flex items-center justify-center gap-2 mt-1" not in fonte
+
+
+def test_o_sinal_nao_invade_a_faixa_do_rotulo():
+    """O rótulo é o elemento longo e de altura variável do card —
+    "Monitoramento de Sensibilização" ocupa a largura toda e quebra em
+    linhas. Sinal no TOPO passaria por baixo dele, sumindo justamente no
+    card cujo nome mais precisa ser lido. Embaixo, convive com o número,
+    que é curto e centralizado."""
+    fonte = _fonte()
+    assert "absolute top-" not in fonte, (
+        "sinal na faixa do rótulo: risco de colisão com os nomes longos")
+
+
 # ═══════════ 3. o defeito silencioso: contagem que descarta ═════════════════
 
 def test_todo_status_da_sequencia_conta():
