@@ -55,21 +55,40 @@ MAX_PAGINAS = 50
 # Valores CRUS da API (o `state` numérico), por tabela. Conferidos contra a
 # instância real pela sonda do Admin — o que NÃO estiver aqui cai em 'outros'
 # e APARECE na tela; nada some em silêncio (risco #3 da spec).
+# ✅ = valor CONFERIDO contra a instância cvpsnprod em 2026-08-13, pela coluna
+#      estado_cru do espelho (migration 090). Os demais seguem ASSUMIDOS da
+#      spec: quando aparecerem, `estado_cru` os revela sem palpite —
+#      SELECT tipo, estado_cru, estado_origem, estado_kanban, COUNT(*)
+#      FROM dbo.etl_chamado WHERE ativo=1 GROUP BY ...
 ESTADOS = {
     "incident": {
         "1": "novo", "2": "andamento", "3": "aguardando",
-        "6": "resolvido", "7": "encerrado", "8": "encerrado",
+        "6": "resolvido",                       # ✅ "Resolvido(a)"
+        "7": "encerrado", "8": "encerrado",
     },
     "sc_req_item": {
-        "1": "novo", "2": "andamento", "3": "aguardando",
-        "4": "aguardando", "5": "aguardando",
-        "6": "resolvido", "7": "encerrado",
+        # ⚠️ '-5' FALTAVA aqui: "Pendente" caía em 'outros'. A coluna
+        # Aguardando ficava vazia enquanto os pendentes se acumulavam fora
+        # dela — a tela dizia "não sei" sobre um estado corriqueiro.
+        "-5": "aguardando",                     # ✅ "Pendente"
+        "1": "novo",                            # ✅ "Em aberto"
+        "2": "andamento",                       # ✅ "Trabalho em andamento"
+        "3": "aguardando", "4": "aguardando", "5": "aguardando",
+        "6": "resolvido",                       # ✅ "Resolvido"
+        "7": "encerrado",
     },
     "sc_task": {
-        "-5": "novo", "1": "novo", "2": "andamento", "3": "resolvido",
-        "4": "encerrado", "7": "encerrado",
+        # ⚠️ '-5' apontava para 'novo' — pior que 'outros': o chamado PARADO
+        # esperando aparecia como recém-chegado, e ninguém desconfia de um
+        # card na coluna Novo. Erro que não parece erro.
+        "-5": "aguardando",                     # ✅ "Pendente"
+        "1": "novo",                            # ✅ "Em aberto"
+        "2": "andamento",                       # ✅ "Trabalho em andamento"
+        "3": "resolvido", "4": "encerrado", "7": "encerrado",
     },
     "change_request": {
+        # Nenhum change no grupo até agora (qtd_change=0 com ciclo OK, ou
+        # seja, fila vazia mesmo — não ACL). Tudo aqui segue assumido.
         "-5": "novo", "-4": "novo", "-3": "andamento", "-2": "andamento",
         "-1": "aguardando", "0": "resolvido", "3": "encerrado", "4": "encerrado",
     },
