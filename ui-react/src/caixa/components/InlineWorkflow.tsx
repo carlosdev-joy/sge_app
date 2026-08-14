@@ -9,7 +9,8 @@
 // (uma delas convertida de `approved` para `paid`, já que o card de origem
 // saiu do desenho) mais 1 cópia para "Propostas Emitidas".
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Send } from "lucide-react";
+import { ChevronDown, ChevronUp, CircleCheck, Send, TrendingDown, TriangleAlert } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Input";
 import { toast } from "../../components/ui/Toast";
@@ -72,43 +73,54 @@ const mockWorkflowProposals: WorkflowProposal[] = [
 // é a sequência que a operação segue, não uma lista alfabética nem a ordem em
 // que os status foram implementados.
 //
-// O `sinal` é o círculo à direita de cada card, e diz o que aquele número
-// EXIGE de quem olha:
-//   • atencao   (amarelo) — a proposta está parada esperando alguém agir;
-//   • sem_acao  (verde)   — seguiu o fluxo, nada a fazer;
-//   • acao      (vermelho)— saiu do fluxo e precisa de tratativa.
+// O `sinal` é o ícone à direita de cada card, e diz o que aquele número
+// significa para a operação:
+//   • aviso    (amarelo)  — parada esperando alguém agir;
+//   • perda    (vermelho) — negócio perdido;
+//   • positivo (verde)    — avançou no funil.
 //
-// A cor NUNCA vai sozinha: cada círculo carrega `title`/`aria-label` com a
-// frase inteira. Quem não distingue as cores — ou lê a tela impressa, ou usa
-// leitor — continua sabendo o que o card pede.
-type Sinal = "atencao" | "sem_acao" | "acao";
+// ÍCONE, não bolinha: a forma carrega o significado sozinha. Um triângulo de
+// alerta, uma seta caindo e um "certo" são lidos de relance mesmo em preto e
+// branco — a cor vira reforço, não a informação. E o `title`/`aria-label`
+// leva a frase inteira, para quem usa leitor de tela.
+//
+// Discretos de propósito (14px, traço fino, tom 500): o número é a
+// informação principal do card; o sinal qualifica, não compete.
+type Sinal = "aviso" | "perda" | "positivo";
 
 const statusInfo: { value: string; label: string; sinal?: Sinal }[] = [
   { value: "all", label: "Todas as Propostas" },
-  { value: "pending_signature", label: "Aguardando Assinatura", sinal: "atencao" },
-  { value: "signed_proposal", label: "Proposta Assinada", sinal: "sem_acao" },
-  { value: "awaiting_payment", label: "Aguardando Pagamento", sinal: "atencao" },
-  { value: "paid", label: "Propostas Pagas", sinal: "sem_acao" },
-  { value: "pending_documentation", label: "Pendência Documental", sinal: "atencao" },
-  { value: "pending_dps", label: "Pendência de DPS", sinal: "atencao" },
-  { value: "emission_sent", label: "Propostas Emitidas", sinal: "sem_acao" },
-  { value: "refund_scheduled", label: "Propostas Declinadas", sinal: "acao" },
-  { value: "return_in_progress", label: "Devolução em Andamento", sinal: "atencao" },
-  { value: "sensitization_monitoring", label: "Monitoramento de Sensibilização", sinal: "sem_acao" },
+  { value: "pending_signature", label: "Aguardando Assinatura", sinal: "aviso" },
+  { value: "signed_proposal", label: "Proposta Assinada", sinal: "positivo" },
+  { value: "awaiting_payment", label: "Aguardando Pagamento", sinal: "aviso" },
+  { value: "paid", label: "Propostas Pagas", sinal: "positivo" },
+  { value: "pending_documentation", label: "Pendência Documental", sinal: "aviso" },
+  { value: "pending_dps", label: "Pendência de DPS", sinal: "aviso" },
+  { value: "emission_sent", label: "Propostas Emitidas", sinal: "positivo" },
+  { value: "refund_scheduled", label: "Propostas Declinadas", sinal: "perda" },
+  { value: "return_in_progress", label: "Devolução em Andamento", sinal: "aviso" },
+  { value: "sensitization_monitoring", label: "Monitoramento de Sensibilização", sinal: "positivo" },
 ];
 
-// Só a borda é colorida — o miolo fica vazado, como no desenho. Preenchido, o
-// círculo competiria com o número, que é a informação principal do card.
+const SINAL_ICONE: Record<Sinal, LucideIcon> = {
+  aviso:    TriangleAlert,   // atenção: algo esperando
+  perda:    TrendingDown,    // negócio que caiu — não é "erro", é perda
+  positivo: CircleCheck,     // avançou
+};
+
+// Tom 500 nos três: forte o bastante para distinguir, fraco o bastante para
+// não brigar com o número ao lado. O dark: mantém o contraste no tema escuro,
+// onde o 500 puro fica apagado.
 const SINAL_CLASSE: Record<Sinal, string> = {
-  atencao:  "border-[#EAB308]",   // amarelo
-  sem_acao: "border-[#65A30D]",   // verde
-  acao:     "border-[#DC2626]",   // vermelho
+  aviso:    "text-amber-500 dark:text-amber-400",
+  perda:    "text-red-500 dark:text-red-400",
+  positivo: "text-emerald-500 dark:text-emerald-400",
 };
 
 const SINAL_TEXTO: Record<Sinal, string> = {
-  atencao:  "Atenção: propostas paradas aguardando ação",
-  sem_acao: "Sem ação necessária: seguiram o fluxo",
-  acao:     "Requer ação: saíram do fluxo e precisam de tratativa",
+  aviso:    "Aviso: propostas paradas aguardando ação",
+  perda:    "Perda: negócios que não seguiram adiante",
+  positivo: "Ação positiva: propostas que avançaram no funil",
 };
 
 const documentSubStatusLabels: Record<string, string> = {
@@ -258,14 +270,19 @@ export default function InlineWorkflow() {
                   <div className="text-xs font-medium text-center text-ink">{status.label}</div>
                   <div className="flex items-center justify-center gap-2 mt-1">
                     <span className="text-xl font-bold text-ink">{counts[status.value]}</span>
-                    {status.sinal && (
-                      <span
-                        className={`h-4 w-4 rounded-full border-[3px] shrink-0 ${SINAL_CLASSE[status.sinal]}`}
-                        role="img"
-                        aria-label={SINAL_TEXTO[status.sinal]}
-                        title={SINAL_TEXTO[status.sinal]}
-                      />
-                    )}
+                    {status.sinal && (() => {
+                      const Icone = SINAL_ICONE[status.sinal];
+                      return (
+                        <Icone
+                          className={`h-3.5 w-3.5 shrink-0 ${SINAL_CLASSE[status.sinal]}`}
+                          strokeWidth={2}
+                          role="img"
+                          aria-label={SINAL_TEXTO[status.sinal]}
+                        >
+                          <title>{SINAL_TEXTO[status.sinal]}</title>
+                        </Icone>
+                      );
+                    })()}
                   </div>
                 </button>
               ))}
