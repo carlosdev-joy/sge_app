@@ -5,8 +5,9 @@
 // local). Todos os diálogos são os nativos das F3/F7/F8.
 //
 // A SEQUÊNCIA dos cards segue o desenho aprovado (sequencia_wkf.png): ordem,
-// nomes e o círculo de sinalização. O mock nasceu com 17 propostas e ganhou
-// 2 cópias para os status que o desenho trouxe sem registro nenhum.
+// nomes e o círculo de sinalização. O mock tem 18 propostas: as 17 originais
+// (uma delas convertida de `approved` para `paid`, já que o card de origem
+// saiu do desenho) mais 1 cópia para "Propostas Emitidas".
 import { useState } from "react";
 import { ChevronDown, ChevronUp, Send } from "lucide-react";
 import { Button } from "../../components/ui/Button";
@@ -38,7 +39,7 @@ interface WorkflowProposal extends ProposalOrq {
 // Mesmo mock do InlineWorkflow original (17 propostas).
 const mockWorkflowProposals: WorkflowProposal[] = [
   { id: "1", number: "80316460327404", insuredName: "Maria Silva", status: "pending_signature", value: "R$ 2.200,00", product: "Perda de Renda", region: "Sul", ageRange: "45-60", broker: "Mariana", daysInPending: 5, date: "23/10/2025", indicatorId: "106562-2", agency: "316", cpf: "397.750.878-48", phone: "(11) 98765-4321", email: "maria@example.com" },
-  { id: "2", number: "80316460327405", insuredName: "João Santos", status: "approved", value: "R$ 1.800,00", product: "Vida Multipremiado", region: "Sudeste", ageRange: "30-40", broker: "João", daysInPending: 0, date: "22/10/2025", indicatorId: "106563-3", agency: "315", cpf: "123.456.789-00", phone: "(11) 98765-4322", email: "joao@example.com" },
+  { id: "2", number: "80316460327405", insuredName: "João Santos", status: "paid", value: "R$ 1.800,00", product: "Vida Multipremiado", region: "Sudeste", ageRange: "30-40", broker: "João", daysInPending: 0, date: "22/10/2025", indicatorId: "106563-3", agency: "315", cpf: "123.456.789-00", phone: "(11) 98765-4322", email: "joao@example.com" },
   { id: "3", number: "80316460327406", insuredName: "Ana Costa", status: "pending_documentation", value: "R$ 3.000,00", product: "Vida Mulher", region: "Sul", ageRange: "50-65", broker: "Ana", daysInPending: 8, date: "21/10/2025", indicatorId: "106564-4", agency: "314", cpf: "234.567.890-11", phone: "(11) 98765-4323", email: "ana@example.com", documentSubStatus: "incomplete" },
   { id: "4", number: "80316460327407", insuredName: "Carlos Oliveira", status: "pending_signature", value: "R$ 950,00", product: "Vida Conforto", region: "Nordeste", ageRange: "25-35", broker: "Carlos", daysInPending: 6, date: "20/10/2025", indicatorId: "106565-5", agency: "313", cpf: "345.678.901-22", phone: "(11) 98765-4324", email: "carlos@example.com" },
   { id: "5", number: "80316460327408", insuredName: "Fernanda Lima", status: "declined", value: "R$ 2.700,00", product: "Perda de Renda", region: "Centro-Oeste", ageRange: "35-50", broker: "Fernanda", daysInPending: 0, date: "19/10/2025", indicatorId: "106566-6", agency: "312", cpf: "456.789.012-33", phone: "(11) 98765-4325", email: "fernanda@example.com", declineReason: "Renda insuficiente para o valor solicitado. Perfil de risco não compatível com os critérios de aceitação." },
@@ -54,13 +55,15 @@ const mockWorkflowProposals: WorkflowProposal[] = [
   { id: "14", number: "80316460327417", insuredName: "Marcos Costa", status: "pending_dps", value: "R$ 2.800,00", product: "Vida Mulher", region: "Sul", ageRange: "50-65", broker: "Marcos", daysInPending: 5, date: "10/10/2025", indicatorId: "106575-5", agency: "303", cpf: "345.678.901-32", phone: "(11) 98765-4334", email: "marcos@example.com" },
   { id: "15", number: "80316460327418", insuredName: "Adriana Lima", status: "signed_proposal", value: "R$ 1.950,00", product: "Perda de Renda", region: "Nordeste", ageRange: "35-50", broker: "Adriana", daysInPending: 0, date: "09/10/2025", indicatorId: "106576-6", agency: "302", cpf: "456.789.012-43", phone: "(11) 98765-4335", email: "adriana@example.com", signedSubStatus: "payment_cycle", policy: "12345678" },
   { id: "16", number: "80316460327419", insuredName: "Ricardo Santos", status: "refund_scheduled", value: "R$ 2.300,00", product: "Vida Mulher", region: "Sul", ageRange: "40-55", broker: "Ricardo", daysInPending: 7, date: "08/10/2025", indicatorId: "106577-7", agency: "301", cpf: "567.890.123-54", phone: "(11) 98765-4336", email: "ricardo@example.com", declineReason: "Informações inconsistentes na documentação.", refundSubStatus: "pending_value", policy: "23456789" },
-  // ── Simulação dos dois status novos do desenho ────────────────────────────
-  // "Propostas Pagas" e "Propostas Emitidas" entraram na sequência sem
-  // nenhuma proposta no mock, e card zerado não deixa ver o layout nem
-  // exercitar o filtro. Estas duas são CÓPIAS de propostas existentes com o
-  // status trocado — mesmo formato de número, agência e produto do resto da
-  // base, para não destoarem na lista.
-  { id: "17", number: "80316460327420", insuredName: "Helena Martins", status: "paid", value: "R$ 2.050,00", product: "Vida Multipremiado", region: "Sudeste", ageRange: "30-45", broker: "Helena", daysInPending: 0, date: "07/10/2025", indicatorId: "106578-8", agency: "300", cpf: "678.901.234-65", phone: "(11) 98765-4338", email: "helena@example.com", paymentMethod: "debit", policy: "34567890" },
+  // ── Simulação de "Propostas Emitidas" ─────────────────────────────────────
+  // O status entrou na sequência sem nenhuma proposta no mock, e card zerado
+  // não deixa ver o layout nem exercitar o filtro. Esta é uma CÓPIA de uma
+  // proposta existente com o status trocado — mesmo formato de número,
+  // agência e produto do resto da base, para não destoar na lista.
+  //
+  // "Propostas Pagas" NÃO precisa de cópia: a proposta que estava em
+  // `approved` ("Ass. e Sensibilizado", card que saiu com o desenho) foi
+  // convertida, em vez de ficar órfã — visível só em "Todas as Propostas".
   { id: "18", number: "80316460327421", insuredName: "Sergio Barbosa", status: "emission_sent", value: "R$ 1.720,00", product: "Vida Conforto", region: "Sul", ageRange: "40-55", broker: "Sergio", daysInPending: 0, date: "06/10/2025", indicatorId: "106579-9", agency: "299", cpf: "789.012.345-76", phone: "(11) 98765-4339", email: "sergio@example.com", policy: "45678901" },
 ];
 

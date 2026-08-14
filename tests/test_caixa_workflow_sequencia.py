@@ -156,3 +156,40 @@ def test_os_dois_status_novos_ganharam_registro():
     fonte = _fonte()
     assert 'status: "paid"' in fonte
     assert 'status: "emission_sent"' in fonte
+
+
+# ═══════════ 5. proposta órfã — status no mock sem card na sequência ═══════
+# Regra estabelecida ao converter a `approved`: quando um card sai do
+# desenho, as propostas dele não podem ficar boiando. Órfã não aparece em
+# card nenhum e some de TODOS os filtros — só existe em "Todas as
+# Propostas", onde ninguém procura por status.
+
+# `declined` é a única órfã aceita, e é anterior a esta tela: o card
+# "Propostas Declinadas" aponta para `refund_scheduled`, não para ela.
+# Está aqui NOMEADA de propósito — órfã tolerada é decisão, órfã esquecida
+# é defeito, e a diferença precisa estar escrita.
+ORFAS_CONHECIDAS = {"declined"}
+
+
+def test_nenhuma_proposta_fica_sem_card():
+    fonte = _fonte()
+    bloco = re.search(r"const mockWorkflowProposals.*?\n\];", fonte, re.S)
+    assert bloco, "mock de propostas não encontrado"
+    no_mock = set(re.findall(r'status:\s*"(\w+)"', bloco.group(0)))
+    com_card = {v for v, _l, _s in _cards()}
+    orfas = no_mock - com_card - ORFAS_CONHECIDAS
+    assert not orfas, (
+        f"propostas em status sem card na sequência: {sorted(orfas)} — elas "
+        f"somem de todos os filtros e só aparecem em 'Todas as Propostas'. "
+        f"Converta para um status da sequência ou adicione o card.")
+
+
+def test_a_proposta_que_era_approved_virou_paga():
+    """Regressão da conversão: o card 'Ass. e Sensibilizado' saiu com o
+    desenho, e a proposta dele foi para 'Propostas Pagas' em vez de ficar
+    órfã. Um `approved` de volta no mock recria a órfã silenciosamente."""
+    fonte = _fonte()
+    bloco = re.search(r"const mockWorkflowProposals.*?\n\];", fonte, re.S)
+    assert 'status: "approved"' not in bloco.group(0), (
+        "voltou proposta em `approved`, que não tem card na sequência")
+    assert 'status: "paid"' in bloco.group(0)
