@@ -383,3 +383,55 @@ def test_estado_ausente_nao_quebra():
                        "incident", "incident", URL)
     assert linha["estado_cru"] == ""
     assert linha["estado_kanban"] == "outros"
+
+
+# ═══════════ 10. os estados MEDIDOS na instância (2026-08-13) ══════════════
+# Valores lidos da coluna estado_cru do espelho de produção (migration 090),
+# no grupo TI_CVP_GERESD_ED. Não são suposição: cada par abaixo apareceu com
+# contagem própria na consulta de conferência. É o teste que impede alguém de
+# "arrumar" o mapa de novo por dedução — foi assim que '-5' virou 'novo'.
+
+ESTADOS_MEDIDOS = [
+    # (tabela,        cru,   rótulo na origem,        coluna esperada)
+    ("incident",      "6",   "Resolvido(a)",          "resolvido"),
+    ("sc_req_item",   "1",   "Em aberto",             "novo"),
+    ("sc_req_item",   "2",   "Trabalho em andamento", "andamento"),
+    ("sc_req_item",   "6",   "Resolvido",             "resolvido"),
+    ("sc_req_item",   "-5",  "Pendente",              "aguardando"),
+    ("sc_task",       "1",   "Em aberto",             "novo"),
+    ("sc_task",       "2",   "Trabalho em andamento", "andamento"),
+    ("sc_task",       "-5",  "Pendente",              "aguardando"),
+]
+
+
+@pytest.mark.parametrize("tabela,cru,rotulo,esperado", ESTADOS_MEDIDOS)
+def test_estado_medido_cai_na_coluna_certa(tabela, cru, rotulo, esperado):
+    assert mapear_estado(tabela, cru) == esperado, (
+        f"{tabela}/{cru} ({rotulo}) deveria cair em '{esperado}'")
+
+
+def test_pendente_nao_volta_a_ser_novo():
+    """A regressão que estamos consertando, nomeada.
+
+    '-5' em sc_task apontava para 'novo': o chamado PARADO esperando aparecia
+    como recém-chegado. É pior que cair em 'outros' — 'outros' admite que não
+    sabe, e ninguém desconfia de um card na coluna Novo.
+    """
+    assert mapear_estado("sc_task", "-5") == "aguardando"
+    assert mapear_estado("sc_task", "-5") != "novo"
+
+
+def test_pendente_do_ritm_sai_de_outros():
+    """Em sc_req_item o '-5' nem existia no mapa: 'Pendente' caía em 'outros'
+    enquanto a coluna Aguardando ficava vazia."""
+    assert mapear_estado("sc_req_item", "-5") == "aguardando"
+
+
+def test_a_coluna_aguardando_tem_quem_a_ocupe():
+    """Coluna que nunca recebe ninguém é coluna que não deveria existir — ou,
+    como era o caso, sintoma de mapeamento errado. Cada tabela que o espelho
+    cobre precisa ter ao menos um estado apontando para 'aguardando'."""
+    for tabela, _tipo in TABELAS:
+        destinos = set(ESTADOS[tabela].values())
+        assert "aguardando" in destinos, (
+            f"{tabela} não tem nenhum estado mapeado para 'aguardando'")
