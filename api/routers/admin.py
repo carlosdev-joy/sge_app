@@ -409,6 +409,10 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
         # a senha para mudar só a URL ou o grupo.
         elif action == "servicenow_get":
             cfg = servicenow.load_config(cur)
+            # Lido ANTES do close — o cursor não sobrevive ao return.
+            cur.execute("SELECT config_key, config_value FROM dbo.etl_app_config "
+                        "WHERE config_key LIKE 'chamados_triagem%'")
+            triagem_cfg = {k: (v or "").strip() for k, v in cur.fetchall()}
             cur.close(); conn.close()
             return {"sucesso": True, "config": {
                 "url": cfg["url"], "usuario": cfg["usuario"],
@@ -420,6 +424,12 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
                 # se existe uma para decidir entre "Salvar" e "Trocar senha".
                 "tem_senha": bool(cfg["senha_enc"]),
                 "configurado": servicenow.configurado(cfg),
+                # Triagem por IA (migration 093). Interruptor PRÓPRIO, e não
+                # `caixa_ia_enabled`: aquele governa os assistentes do Caixa
+                # Seguro, e amarrar os dois faria desligar o Diego desligar a
+                # triagem de chamados, sem que ninguém tivesse pedido.
+                "triagem_habilitada": triagem_cfg.get("chamados_triagem_habilitada") == "1",
+                "triagem_lote": triagem_cfg.get("chamados_triagem_lote") or "20",
             }}
 
         elif action == "servicenow_set":
@@ -436,7 +446,28 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
                 raise HTTPException(status_code=422,
                                     detail="lista de grupos longa demais para "
                                            "etl_app_config.config_value")
-            valores = {servicenow.K_URL: url, servicenow.K_USUARIO: usuario,
+            # Triagem por IA: só entra em `valores` quando o campo VEIO no
+            # corpo. Gravar "0" por ausência desligaria a triagem em silêncio
+            # a cada salvamento feito por um bundle antigo em cache ou por um
+            # payload parcial — o mesmo cuidado que a senha já tem aqui.
+            #
+            # O teto de quantidade NÃO garante o tempo do ciclo (o gateway
+            # pode estar lento); quem protege o dagrun_timeout é o orçamento
+            # de ORCAMENTO_TRIAGEM_S dentro da própria task.
+            triagem_valores = {}
+            if "triagem_habilitada" in body:
+                triagem_valores["chamados_triagem_habilitada"] = (
+                    "1" if body.get("triagem_habilitada") else "0")
+            if "triagem_lote" in body:
+                try:
+                    triagem_valores["chamados_triagem_lote"] = str(
+                        max(1, min(int(body.get("triagem_lote") or 20), 200)))
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=422,
+                                        detail="triagem_lote precisa ser um número")
+
+            valores = {**triagem_valores,
+                       servicenow.K_URL: url, servicenow.K_USUARIO: usuario,
                        servicenow.K_GRUPOS: grupos,
                        servicenow.K_PROXY: proxy,
                        servicenow.K_HABILITADO: habilitado}

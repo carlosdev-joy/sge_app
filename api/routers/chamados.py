@@ -140,7 +140,9 @@ def listar_chamados(incluir_inativos: int = 0,
             "       encerrado_em, ativo, url, sync_em, "
             "       DATEDIFF(DAY, aberto_em, GETDATE()) AS idade_dias")
         novas = (", tipo_demanda, categoria_diaadia, objetos, demandante, "
-                 "  catalogo, prazo, sla_vencido")
+                 "  catalogo, prazo, sla_vencido, "
+                 "  veredito, suficiencia, resumo, lacunas, perguntas, "
+                 "  triagem_origem, triagem_em, triagem_erro")
         fim = (" FROM dbo.etl_chamado"
                + ("" if incluir_inativos else " WHERE ativo = 1")
                + " ORDER BY aberto_em DESC")
@@ -168,7 +170,8 @@ def listar_chamados(incluir_inativos: int = 0,
                 # Preenche o que a tela espera, com os mesmos defaults do
                 # caminho completo — o card mostra "não classificado" em vez
                 # de quebrar por campo ausente.
-                r = tuple(r) + (None, "", "", "", "", None, None)
+                r = tuple(r) + (None, "", "", "", "", None, None,
+                                None, None, "", "", "", None, None, "")
             resposta["chamados"].append({
                 "sys_id": r[0], "numero": r[1], "tipo": r[2], "titulo": r[3],
                 "estado_origem": r[4], "estado_kanban": r[5],
@@ -188,6 +191,22 @@ def listar_chamados(incluir_inativos: int = 0,
                 # None ≠ 0: "ninguém mediu o SLA" é diferente de "está no
                 # prazo", e a tela precisa poder calar sobre o primeiro.
                 "sla_vencido": None if r[22] is None else bool(r[22]),
+                # ── Triagem (migration 093) ──────────────────────────────
+                # `veredito` None = ainda não triado. Diferente de qualquer
+                # veredito: a tela não pode pintar de âmbar quem só não foi
+                # analisado ainda.
+                "veredito": r[23],
+                "suficiencia": r[24],
+                "resumo": r[25] or "",
+                # Lista, não bloco de texto: a tela renderiza uma por linha e
+                # não precisa saber como o banco guardou.
+                "lacunas": [x for x in (r[26] or "").split("\n") if x.strip()],
+                "perguntas": r[27] or "",
+                # A coluna que impede o engano: heurística mostrada como
+                # análise de IA é veredito em que ninguém pensou.
+                "triagem_origem": r[28] or "",
+                "triagem_em": _fmt_dt(r[29]),
+                "triagem_erro": r[30] or "",
             })
         resposta["ultimo_sync"] = _ultimo_ciclo(cur)
         cur.close(); conn.close(); conn = None
@@ -251,6 +270,10 @@ def indicadores(_auth: dict = Depends(get_current_user)):
         "por_tipo_demanda": [], "por_categoria": [], "categorias_ocultas": 0,
         "sem_categoria": 0, "resolvidos_periodo": 0,
         "dias_historico": DIAS_HISTORICO,
+        "triagem": [], "triagem_com_erro": 0, "triagem_sem_config": 0,
+        # true = as colunas das migrations 092/093 ainda não existem; o painel
+        # base continua servido.
+        "blocos_indisponiveis": False,
     }
     conn = None
     try:
@@ -321,46 +344,88 @@ def indicadores(_auth: dict = Depends(get_current_user)):
         saida["carga"] = todos[:TOPO_RESPONSAVEIS]
         saida["responsaveis_ocultos"] = max(0, len(todos) - TOPO_RESPONSAVEIS)
 
+        # Daqui para baixo, cada bloco depende de colunas que chegaram DEPOIS
+        # da 088. Eles rodam num try próprio: com a imagem da API no ar antes
+        # da etapa 6c, uma coluna ausente derrubaria o painel INTEIRO — aging,
+        # tipo × estado, fluxo e carga, que funcionam desde a 088 — e a tela
+        # mostraria só "sistema em atualização". O que falta é dito em
+        # `blocos_indisponiveis`; o resto continua servido.
         # ── por tipo de demanda (derivação da 092) ──────────────────────────
-        # ISNULL com rótulo em vez de descartar: chamado ainda não tocado pelo
-        # sync tem tipo_demanda NULL, e sumir do gráfico faria a soma não
-        # fechar com a fila — o operador não saberia se faltou dado ou
-        # classificação.
-        cur.execute(
-            "SELECT ISNULL(NULLIF(LTRIM(RTRIM(tipo_demanda)), ''), ?), COUNT(*) "
-            "FROM dbo.etl_chamado WHERE ativo = 1 "
-            "GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(tipo_demanda)), ''), ?) "
-            "ORDER BY COUNT(*) DESC",
-            [TIPO_NAO_CLASSIFICADO, TIPO_NAO_CLASSIFICADO])
-        saida["por_tipo_demanda"] = [{"tipo": r[0], "total": r[1]}
-                                     for r in cur.fetchall()]
+        try:
+            # ISNULL com rótulo em vez de descartar: chamado ainda não tocado pelo
+            # sync tem tipo_demanda NULL, e sumir do gráfico faria a soma não
+            # fechar com a fila — o operador não saberia se faltou dado ou
+            # classificação.
+            cur.execute(
+                "SELECT ISNULL(NULLIF(LTRIM(RTRIM(tipo_demanda)), ''), ?), COUNT(*) "
+                "FROM dbo.etl_chamado WHERE ativo = 1 "
+                "GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(tipo_demanda)), ''), ?) "
+                "ORDER BY COUNT(*) DESC",
+                [TIPO_NAO_CLASSIFICADO, TIPO_NAO_CLASSIFICADO])
+            saida["por_tipo_demanda"] = [{"tipo": r[0], "total": r[1]}
+                                         for r in cur.fetchall()]
 
-        # ── por categoria "dia a dia" ───────────────────────────────────────
-        # Aqui o vazio NÃO vira rótulo: sem marcação é ausência de
-        # classificação, não uma categoria. Ele sai como contador à parte,
-        # `sem_categoria`, para o denominador continuar visível.
-        cur.execute(
-            "SELECT LTRIM(RTRIM(categoria_diaadia)), COUNT(*) "
-            "FROM dbo.etl_chamado WHERE ativo = 1 "
-            "  AND NULLIF(LTRIM(RTRIM(categoria_diaadia)), '') IS NOT NULL "
-            "GROUP BY LTRIM(RTRIM(categoria_diaadia)) ORDER BY COUNT(*) DESC")
-        todas = [{"categoria": r[0], "total": r[1]} for r in cur.fetchall()]
-        # Corte com o resto DITO, como o gráfico de carga já faz. A categoria
-        # é texto livre digitado nas work notes: sem teto, cada erro de
-        # digitação vira uma barra permanente e o gráfico cresce sem limite.
-        saida["por_categoria"] = todas[:TOPO_CATEGORIAS]
-        saida["categorias_ocultas"] = max(0, len(todas) - TOPO_CATEGORIAS)
-        cur.execute(
-            "SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
-            "  AND NULLIF(LTRIM(RTRIM(categoria_diaadia)), '') IS NULL")
-        saida["sem_categoria"] = cur.fetchone()[0]
+            # ── por categoria "dia a dia" ───────────────────────────────────────
+            # Aqui o vazio NÃO vira rótulo: sem marcação é ausência de
+            # classificação, não uma categoria. Ele sai como contador à parte,
+            # `sem_categoria`, para o denominador continuar visível.
+            cur.execute(
+                "SELECT LTRIM(RTRIM(categoria_diaadia)), COUNT(*) "
+                "FROM dbo.etl_chamado WHERE ativo = 1 "
+                "  AND NULLIF(LTRIM(RTRIM(categoria_diaadia)), '') IS NOT NULL "
+                "GROUP BY LTRIM(RTRIM(categoria_diaadia)) ORDER BY COUNT(*) DESC")
+            todas = [{"categoria": r[0], "total": r[1]} for r in cur.fetchall()]
+            # Corte com o resto DITO, como o gráfico de carga já faz. A categoria
+            # é texto livre digitado nas work notes: sem teto, cada erro de
+            # digitação vira uma barra permanente e o gráfico cresce sem limite.
+            saida["por_categoria"] = todas[:TOPO_CATEGORIAS]
+            saida["categorias_ocultas"] = max(0, len(todas) - TOPO_CATEGORIAS)
+            cur.execute(
+                "SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
+                "  AND NULLIF(LTRIM(RTRIM(categoria_diaadia)), '') IS NULL")
+            saida["sem_categoria"] = cur.fetchone()[0]
 
-        # ── resolvidos da janela do histórico ───────────────────────────────
-        cur.execute(
-            "SELECT COUNT(*) FROM dbo.etl_chamado "
-            "WHERE encerrado_em >= DATEADD(DAY, ?, CAST(GETDATE() AS DATE))",
-            [-(DIAS_HISTORICO - 1)])
-        saida["resolvidos_periodo"] = cur.fetchone()[0]
+            # ── resolvidos da janela do histórico ───────────────────────────────
+            cur.execute(
+                "SELECT COUNT(*) FROM dbo.etl_chamado "
+                "WHERE encerrado_em >= DATEADD(DAY, ?, CAST(GETDATE() AS DATE))",
+                [-(DIAS_HISTORICO - 1)])
+            saida["resolvidos_periodo"] = cur.fetchone()[0]
+
+            # ── triagem: veredito × origem ──────────────────────────────────────
+            # As duas dimensões juntas, porque separadas mentem: "18 podem
+            # iniciar" soa como análise feita, quando pode ser a heurística
+            # respondendo por todos com o gateway fora do ar há dias.
+            cur.execute(
+                "SELECT ISNULL(veredito, 'não triado'), ISNULL(triagem_origem, ''), "
+                "       COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
+                "GROUP BY ISNULL(veredito, 'não triado'), ISNULL(triagem_origem, '')")
+            saida["triagem"] = [{"veredito": r[0], "origem": r[1], "total": r[2]}
+                                for r in cur.fetchall()]
+            # Quantos laudos registraram falha da IA — é o sinal de gateway doente
+            # que, sem esta conta, ficaria escondido num campo por chamado.
+            # Dois contadores, e não um: "ninguém configurou a chave" e "o gateway
+            # está doente" produzem o mesmo veredito heurístico, e um número só
+            # mandaria o operador investigar rede quando faltava preencher campo.
+            cur.execute(
+                "SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
+                "  AND triagem_erro LIKE 'falha:%'")
+            saida["triagem_com_erro"] = cur.fetchone()[0]
+            cur.execute(
+                "SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
+                "  AND triagem_erro LIKE 'config:%'")
+            saida["triagem_sem_config"] = cur.fetchone()[0]
+
+        except Exception as e:
+            log.warning("indicadores: bloco novo indisponível (%s: %s) — "
+                        "servindo o painel base", type(e).__name__, e)
+            saida["blocos_indisponiveis"] = True
+            # O cursor pode ter ficado num estado ruim depois do erro.
+            try:
+                cur.close()
+            except Exception:
+                pass
+            cur = conn.cursor()
 
         cur.execute("SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1")
         saida["total_ativos"] = cur.fetchone()[0]
@@ -372,6 +437,55 @@ def indicadores(_auth: dict = Depends(get_current_user)):
             except Exception:
                 pass
         log.warning("indicadores: espelho indisponível (%s: %s)", type(e).__name__, e)
+        saida["migration_ausente"] = True
+    return saida
+
+
+@router.get("/chamados/sugestoes", tags=["chamados"])
+def sugestoes(_auth: dict = Depends(get_current_user)):
+    """Quem costuma atender cada tipo de demanda — pelo histórico, não por IA.
+
+    O painel da estação sugeria responsável a partir de quem já tinha
+    resolvido coisa parecida. Aqui a conta é a mesma, feita em SQL: por tipo
+    de demanda, quem mais ENCERROU chamados nos últimos 90 dias.
+
+    Sai como SUGESTÃO e nada mais. Distribuir chamado é decisão de gestão, e
+    uma tela que atribuísse sozinha estaria trocando o julgamento de quem
+    conhece a equipe por uma contagem de frequência — que ignora férias,
+    carga atual e quem está aprendendo o quê.
+    """
+    saida = {"dias": 90, "sugestoes": [], "migration_ausente": False}
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        # Um responsável por tipo: o de maior contagem. ROW_NUMBER em vez de
+        # trazer tudo e decidir no Python — a ordenação por desempate fica
+        # explícita (mais recente ganha de mais antigo em caso de empate).
+        cur.execute(
+            "WITH conta AS ("
+            "  SELECT tipo_demanda, atribuido_a, COUNT(*) AS total, "
+            "         MAX(encerrado_em) AS ultimo "
+            "  FROM dbo.etl_chamado "
+            "  WHERE encerrado_em >= DATEADD(DAY, -90, GETDATE()) "
+            "    AND NULLIF(LTRIM(RTRIM(atribuido_a)), '') IS NOT NULL "
+            "    AND NULLIF(LTRIM(RTRIM(tipo_demanda)), '') IS NOT NULL "
+            "  GROUP BY tipo_demanda, atribuido_a), "
+            "ranqueado AS ("
+            "  SELECT *, ROW_NUMBER() OVER (PARTITION BY tipo_demanda "
+            "         ORDER BY total DESC, ultimo DESC) AS posicao FROM conta) "
+            "SELECT tipo_demanda, atribuido_a, total FROM ranqueado "
+            "WHERE posicao = 1 ORDER BY total DESC")
+        saida["sugestoes"] = [
+            {"tipo_demanda": r[0], "responsavel": r[1], "resolvidos": r[2]}
+            for r in cur.fetchall()]
+        cur.close(); conn.close()
+    except Exception as e:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        log.warning("sugestoes: espelho indisponível (%s: %s)", type(e).__name__, e)
         saida["migration_ausente"] = True
     return saida
 

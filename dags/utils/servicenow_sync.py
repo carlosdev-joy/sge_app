@@ -14,6 +14,9 @@ from __future__ import annotations
 import datetime as _dt
 
 from utils.chamado_derivacoes import derivar
+# A regra do corte mora em texto_sql: NVARCHAR conta unidades UTF-16,
+# e reescrever isso em cada módulo já produziu o mesmo defeito duas vezes.
+from utils.texto_sql import cortar as _cortar, unidades_utf16  # noqa: F401
 from utils.frescor_modulo import carimbar
 
 # Carimbo de frescor: a DAG confere se este módulo em memória é o do disco.
@@ -130,37 +133,6 @@ def mapear_estado(tabela: str, estado_cru) -> str:
     return ESTADOS.get(tabela, {}).get(str(estado_cru or "").strip(), "outros")
 
 
-def unidades_utf16(texto: str) -> int:
-    """Quantas unidades NVARCHAR o texto ocupa.
-
-    NVARCHAR(n) conta unidades UTF-16, não caracteres: emoji fora do BMP
-    (🙂, 🔥) ocupa DUAS. Medir com `len()` do Python deixa passar um texto de
-    4000 caracteres que ocupa 4300 unidades, e o SQL Server responde com
-    Msg 8152 no meio do ciclo — justamente o texto colado do Teams que a
-    migration 091 diz esperar.
-    """
-    return len(texto.encode("utf-16-le")) // 2
-
-
-def _cortar(texto: str, limite: int) -> str:
-    """Corta pelo limite REAL da coluna, sem partir um par substituto.
-
-    Iterar por caractere garante que um emoji nunca é cortado ao meio — o que
-    produziria texto inválido no banco.
-    """
-    if unidades_utf16(texto) <= limite:
-        return texto
-    alvo = limite - 1            # a reticência ocupa 1 unidade
-    saida, total = [], 0
-    for ch in texto:
-        custo = unidades_utf16(ch)
-        if total + custo > alvo:
-            break
-        saida.append(ch)
-        total += custo
-    return "".join(saida) + "…"
-
-
 def truncar_titulo(titulo, limite: int = TITULO_MAX) -> str:
     """Corta COM reticência: o operador precisa ver que faltou texto.
 
@@ -267,8 +239,8 @@ def normalizar(registro: dict, tabela: str, tipo: str, url_base: str) -> dict:
         "pai_numero": pai_numero,
         "estado_kanban": estado_kanban if estado_kanban != FORA_DO_KANBAN else "resolvido",
         "prioridade": _display(registro.get("priority"))[:20],
-        "atribuido_a": _display(registro.get("assigned_to"))[:120],
-        "grupo": _display(registro.get("assignment_group"))[:120],
+        "atribuido_a": _cortar(_display(registro.get("assigned_to")), 120),
+        "grupo": _cortar(_display(registro.get("assignment_group")), 120),
         "aberto_em": _data(_cru(registro.get("opened_at"))),
         "atualizado_em": _data(_cru(registro.get("sys_updated_on"))),
         "encerrado_em": _data(_cru(registro.get("closed_at"))),
@@ -281,8 +253,8 @@ def normalizar(registro: dict, tabela: str, tipo: str, url_base: str) -> dict:
                                    or _cru(registro.get("description"))),
         "work_notes": truncar_texto(_display(registro.get("work_notes"))
                                     or _cru(registro.get("work_notes"))),
-        "catalogo": _display(registro.get("cat_item"))[:200],
-        "demandante": _display(registro.get("requested_for"))[:120],
+        "catalogo": _cortar(_display(registro.get("cat_item")), 200),
+        "demandante": _cortar(_display(registro.get("requested_for")), 120),
         "prazo": _data(_cru(registro.get("estimated_delivery"))),
         "vencimento": _data(_cru(registro.get("due_date"))),
         "sla_vencido": _booleano(_cru(registro.get("u_sla_expired"))),

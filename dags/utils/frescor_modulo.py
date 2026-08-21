@@ -43,7 +43,8 @@ _REGISTRO: dict[str, dict] = {}
 
 # Módulos que DEVEM carimbar. Um nome aqui sem carimbo no registro significa
 # que o worker está servindo uma versão anterior à guarda.
-ESPERADOS = ("utils.servicenow_sync", "utils.chamado_derivacoes")
+ESPERADOS = ("utils.servicenow_sync", "utils.chamado_derivacoes",
+             "utils.triagem_ia")
 
 
 def carimbar(caminho_arquivo: str) -> None:

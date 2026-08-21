@@ -44,13 +44,21 @@ def _chamado(numero="INC001", tipo="incident", estado="novo", ativo=1,
              idade=3, titulo="Falha na carga", sys_id=None,
              tipo_demanda="Análise / investigação", categoria="", objetos="",
              demandante="Beltrano", catalogo="Consulta de dados",
-             prazo=None, sla_vencido=None):
+             prazo=None, sla_vencido=None,
+             # Triagem (migration 093). `veredito=None` é o estado REAL de
+             # quem ainda não passou pelo lote — e é diferente de qualquer
+             # veredito: a tela não pode pintar de âmbar quem só não foi
+             # analisado ainda.
+             veredito=None, suficiencia=None, resumo="", lacunas="",
+             perguntas="", triagem_origem="", triagem_em=None, triagem_erro=""):
     return (sys_id or f"sid-{numero}", numero, tipo, titulo, "In Progress",
             estado, "3 - Moderate", "Fulano", "Engenharia",
             "2026-08-10 10:00:00", "2026-08-13 09:00:00", None, ativo,
             "https://x.service-now.com/nav", "2026-08-13 12:00:00", idade,
             tipo_demanda, categoria, objetos, demandante, catalogo,
-            prazo, sla_vencido)
+            prazo, sla_vencido,
+            veredito, suficiencia, resumo, lacunas, perguntas,
+            triagem_origem, triagem_em, triagem_erro)
 
 
 def _ciclo(status="OK", idade_min=30, terminado="2026-08-13 12:05:00", erro=None):
@@ -383,3 +391,38 @@ def test_kanban_sobrevive_sem_as_colunas_novas(cliente, banco):
     assert d["derivacoes_pendentes"] is True, "a tela precisa saber o que falta"
     from routers.chamados import TIPO_NAO_CLASSIFICADO
     assert d["chamados"][0]["tipo_demanda"] == TIPO_NAO_CLASSIFICADO
+
+
+# ═══════════ 7. triagem na resposta (F4) ════════════════════════════════════
+
+def test_veredito_nao_triado_e_none_e_nao_rotulo(cliente, banco):
+    """"Ainda não analisado" e "analisado, precisa voltar" são estados
+    diferentes: a tela não pode pintar de âmbar quem só não passou pelo lote."""
+    banco["cur"] = CursorFalso([_chamado()], _ciclo())
+    c = cliente.get("/chamados").json()["chamados"][0]
+    assert c["veredito"] is None
+    assert c["triagem_origem"] == ""
+
+
+def test_laudo_da_triagem_chega_ao_card(cliente, banco):
+    banco["cur"] = CursorFalso([_chamado(
+        veredito="RETORNAR AO SOLICITANTE", suficiencia="parcial",
+        resumo="Tipo: extração | Objeto: DM_1",
+        lacunas="falta a fonte\nfalta critério",
+        perguntas="1. Qual a origem?", triagem_origem="ia",
+        triagem_em="2026-08-21 09:00:00")], _ciclo())
+    c = cliente.get("/chamados").json()["chamados"][0]
+    assert c["veredito"] == "RETORNAR AO SOLICITANTE"
+    assert c["lacunas"] == ["falta a fonte", "falta critério"]
+    assert c["triagem_origem"] == "ia"
+
+
+def test_origem_heuristica_chega_marcada(cliente, banco):
+    """A tela precisa DIZER quem julgou: heurística mostrada como IA é
+    veredito em que ninguém pensou."""
+    banco["cur"] = CursorFalso([_chamado(
+        veredito="PODE INICIAR", triagem_origem="heuristica",
+        triagem_erro="ConnectError: sem rota")], _ciclo())
+    c = cliente.get("/chamados").json()["chamados"][0]
+    assert c["triagem_origem"] == "heuristica"
+    assert "ConnectError" in c["triagem_erro"]

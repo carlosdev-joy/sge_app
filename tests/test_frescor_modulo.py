@@ -96,8 +96,11 @@ def test_modulos_reais_carimbam():
 
     import utils.chamado_derivacoes
     import utils.servicenow_sync
+    import utils.triagem_ia
     _limpa_registro()
-    importlib.reload(utils.chamado_derivacoes)
-    importlib.reload(utils.servicenow_sync)
+    # O reload cobre TODOS os ESPERADOS — módulo novo que entre na lista sem
+    # carimbar faria a guarda conferir o vazio e nunca acusar nada.
+    for mod in (utils.chamado_derivacoes, utils.servicenow_sync, utils.triagem_ia):
+        importlib.reload(mod)
     for nome in frescor_modulo.ESPERADOS:
         assert nome in frescor_modulo._REGISTRO, f"{nome} não carimbou no import"
