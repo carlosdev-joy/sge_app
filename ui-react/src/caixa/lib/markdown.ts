@@ -15,6 +15,13 @@
 // de HTML embutido, imagem ou link de referência. Nada aqui produz HTML: o
 // texto vem de um LLM, e construir elementos React (em vez de
 // dangerouslySetInnerHTML) é o que mantém a resposta como DADO, nunca markup.
+//
+// Limitações conhecidas, ditas para não parecerem descuido:
+//   • **lista aninhada é achatada** — a indentação some antes do casamento, e
+//     um recorte de dois níveis do modelo lê-se como um nível só. Nada se
+//     perde do texto, só a hierarquia;
+//   • uma frase com cano logo abaixo de uma tabela, SEM linha em branco entre
+//     elas, é absorvida como linha da tabela. É o que o GFM também faz.
 
 export type PedacoInline = {
   texto: string
@@ -36,12 +43,32 @@ export type BlocoMd =
 // alternativas na mesma expressão: rodar uma regex por marcação faria a de
 // itálico morder o miolo do negrito (`**a**` tem `*a*` dentro).
 //
-// Duas coisas que a expressão precisa acertar e que custaram um teste cada:
+// Três coisas que a expressão precisa acertar, e cada uma custou um teste:
+//
 //   • a ordem — `\*\*` ANTES de `\*`, senão o negrito nunca casa;
+//
 //   • o miolo do negrito aceita asterisco solto (`(?:[^*]|\*(?!\*))`), porque
 //     `**a *b* c**` é comum na resposta do modelo. Com `[^*]+` ali, o negrito
-//     inteiro deixava de casar e o operador via os asteriscos crus.
-const INLINE = /(\*\*(?:[^*]|\*(?!\*))+\*\*|__(?:[^_]|_(?!_))+__|\*[^*\n]+\*|_[^_\n]+_|`[^`\n]+`)/
+//     inteiro deixava de casar e o operador via os asteriscos crus;
+//
+//   • ⚠️ **`_` no meio de palavra NÃO é ênfase.** Sem a borda exigida abaixo,
+//     `NUM_CPF_CNPJ` era lido como `NUM` + itálico + `CNPJ` e chegava na tela
+//     como **`NUMCPFCNPJ`** — com os underscores apagados. O mesmo com
+//     `SEQSSDVIDA6SINISTRO_carga_diaria`. Estes assistentes falam de coluna,
+//     job e pipeline o tempo todo, então esse era o caso COMUM, e corrompia a
+//     bolha e o PDF juntos. A regra é a do GFM: `_` só abre/fecha ênfase
+//     quando não está entre caracteres de palavra.
+//
+//     O `*` tem a borda mais frouxa (o GFM permite `a*b*c`), mas ganhou a
+//     recusa de espaço logo depois da abertura: sem ela, `2 * 3 = 6 e 4 * 5`
+//     virava itálico do miolo e perdia os dois asteriscos.
+const NEGRITO = String.raw`\*\*(?:[^*]|\*(?!\*))+\*\*`
+const NEGRITO_ = String.raw`(?<![A-Za-z0-9])__(?:[^_]|_(?!_))+__(?![A-Za-z0-9])`
+const ITALICO = String.raw`\*(?![\s*])[^*\n]*[^\s*]\*|\*[^\s*]\*`
+const ITALICO_ = String.raw`(?<![A-Za-z0-9])_(?![\s_])[^_\n]*[^\s_]_(?![A-Za-z0-9])`
+const CODIGO = String.raw`\`[^\`\n]+\``
+const INLINE = new RegExp(
+  `(${NEGRITO}|${NEGRITO_}|${ITALICO}|${ITALICO_}|${CODIGO})`)
 
 export function inline(texto: string): PedacoInline[] {
   const partes: PedacoInline[] = []
@@ -77,13 +104,24 @@ export function textoDe(partes: PedacoInline[]): string {
 }
 
 // ── Tabela ──────────────────────────────────────────────────────────────────
-// Linha de tabela é a que tem cano nas duas pontas OU pelo menos um cano no
-// meio. O separador (`|---|:--:|`) é o que confirma que a linha anterior era
+// O separador (`|---|:--:|`) é o que confirma que a linha anterior era
 // cabeçalho: sem ele, um texto com cano viraria tabela de uma coluna só.
+//
+// ⚠️ Não basta o separador PARECER um: ele precisa ter o MESMO número de
+// células que o cabeçalho — é a regra do GFM, e é ela que impede o caso
+// `"Total | 10"` seguido de `"---"` (uma régua!) de virar tabela. Sem a
+// contagem, a régua era engolida e a frase virava um cabeçalho de duas
+// colunas.
 const SEPARADOR_TABELA = /^\|?[\s:|-]*-[\s:|-]*\|?$/
 
 function ehLinhaTabela(linha: string): boolean {
   return linha.includes('|') && linha.trim().length > 1
+}
+
+function ehSeparadorDe(linha: string, colunas: number): boolean {
+  const t = linha.trim()
+  return SEPARADOR_TABELA.test(t) && t.includes('-')
+    && celulas(t).length === colunas
 }
 
 function celulas(linha: string): string[] {
@@ -147,24 +185,30 @@ export function parseMarkdown(fonte: string): BlocoMd[] {
       continue
     }
 
-    // Tabela: precisa da linha separadora logo abaixo do cabeçalho.
+    // Tabela: precisa da linha separadora logo abaixo, com o MESMO número de
+    // células do cabeçalho (ver `ehSeparadorDe`).
     if (ehLinhaTabela(linha) && i + 1 < linhas.length
-        && SEPARADOR_TABELA.test(linhas[i + 1].trim())
-        && linhas[i + 1].includes('-')) {
+        && ehSeparadorDe(linhas[i + 1], celulas(linha).length)) {
       fecharParagrafo()
       const cabecalho = celulas(linha).map(inline)
-      const corpo: PedacoInline[][][] = []
+      const cru: string[][] = []
       i += 2
       while (i < linhas.length && ehLinhaTabela(linhas[i].trim())) {
-        const cols = celulas(linhas[i])
-        // Linha com menos colunas que o cabeçalho é completada, e não
-        // descartada: o modelo erra a contagem, e sumir com a linha apagaria
-        // um status da tabela sem ninguém notar.
-        while (cols.length < cabecalho.length) cols.push('')
-        corpo.push(cols.slice(0, cabecalho.length).map(inline))
+        cru.push(celulas(linhas[i]))
         i++
       }
-      i-- // o `for` avança
+      // O modelo erra a contagem de células nos DOIS sentidos, e as duas
+      // formas de errar apagariam dado sem ninguém notar: linha curta some da
+      // tabela, linha longa perde a última célula. Então a tabela cresce até
+      // caber a maior linha, e as curtas são completadas com vazio.
+      const colunas = Math.max(cabecalho.length, ...cru.map(l => l.length), 1)
+      while (cabecalho.length < colunas) cabecalho.push(inline(''))
+      const corpo: PedacoInline[][][] = []
+      for (const cols of cru) {
+        while (cols.length < colunas) cols.push('')
+        corpo.push(cols.map(inline))
+      }
+      i-- // o laço de fora avança; o `while` acima já parou na linha seguinte
       blocos.push({ tipo: 'tabela', cabecalho, linhas: corpo })
       continue
     }
@@ -218,8 +262,14 @@ const WINANSI_EXTRA = '€‚ƒ„†‡ˆ‰Š'
   + '‹ŒŽ‘’“”•–—˜'
   + '™š›œžŸ'
 
-/** Texto seguro para as fontes padrão do jsPDF — sem emoji, sem lixo. */
-export function textoParaPdf(texto: string): string {
+/** Texto seguro para as fontes padrão do jsPDF — sem emoji, sem lixo.
+ *
+ * `preservarEspacos` desliga a faxina de espaços. Bloco de código PRECISA
+ * dela desligada: a normalização existe só para fechar o buraco que o emoji
+ * removido deixa, e num `def f():\n    return 1` ela comia a indentação —
+ * o código saía do PDF desalinhado, que para código é sair errado.
+ */
+export function textoParaPdf(texto: string, preservarEspacos = false): string {
   let saida = texto ?? ''
   for (const [de, para] of TROCAS) saida = saida.replace(de, para)
   // O que sobrou fora da WinAnsi sai. Some o caractere, não a frase — e some
@@ -228,6 +278,7 @@ export function textoParaPdf(texto: string): string {
   for (const ch of saida) {
     if (ch <= 'ÿ' || WINANSI_EXTRA.includes(ch)) limpo += ch
   }
+  if (preservarEspacos) return limpo
   // Emoji removido costuma deixar espaço duplo e espaço antes de pontuação.
   return limpo.replace(/[^\S\n]{2,}/g, ' ').replace(/[^\S\n]+([,.;:!?])/g, '$1').trim()
 }

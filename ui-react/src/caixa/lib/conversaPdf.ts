@@ -54,6 +54,7 @@ export function montarConversaPdf(
   const escrever = (texto: string, op: {
     tamanho?: number; estilo?: "normal" | "bold" | "italic";
     recuo?: number; cor?: [number, number, number]; fonte?: string;
+    preservarEspacos?: boolean;
   } = {}) => {
     const tamanho = op.tamanho ?? 11;
     const recuo = op.recuo ?? 0;
@@ -62,7 +63,7 @@ export function montarConversaPdf(
     doc.setFontSize(tamanho);
     const [r, g, b] = op.cor ?? [50, 50, 50];
     doc.setTextColor(r, g, b);
-    const limpo = textoParaPdf(texto);
+    const limpo = textoParaPdf(texto, op.preservarEspacos);
     if (!limpo) return;
     for (const linha of doc.splitTextToSize(limpo, util - recuo)) {
       cabe(alturaLinha);
@@ -77,17 +78,39 @@ export function montarConversaPdf(
     doc.setFontSize(9); doc.setFont("helvetica", "normal");
     // Largura proporcional ao conteúdo mais longo de cada coluna: divisão
     // igual espremeria "Descrição" ao lado de "Status" e deixaria papel em
-    // branco na coluna curta. O piso evita coluna de 2mm.
+    // branco na coluna curta.
+    //
+    // ⚠️ O peso é TETADO. Sem o teto, uma célula de descrição com 400
+    // caracteres levava quase toda a largura e sobrava ~1,8mm para "Status":
+    // `larguras[j] - 3` ficava NEGATIVO, e `splitTextToSize` com largura
+    // negativa devolve uma letra por linha — o cabeçalho virava uma coluna
+    // vertical de letras por cima da vizinha. O teto e o piso abaixo garantem
+    // que toda coluna caiba entre MIN_COLUNA e o resto da página.
+    const MIN_COLUNA = 16;
+    const teto = Math.max(util - MIN_COLUNA * (colunas - 1), MIN_COLUNA);
     const pesos = b.cabecalho.map((c, j) => {
       const textos = [textoDe(c), ...b.linhas.map(l => textoDe(l[j] ?? []))];
-      return Math.max(...textos.map(t => doc.getTextWidth(textoParaPdf(t)) + 4), 14);
+      const bruto = Math.max(
+        ...textos.map(t => doc.getTextWidth(textoParaPdf(t)) + 4), MIN_COLUNA);
+      return Math.min(bruto, teto);
     });
     const soma = pesos.reduce((s, p) => s + p, 0) || 1;
-    const larguras = pesos.map(p => (p / soma) * util);
+    // Reparte o disponível pelos pesos e depois empurra cada coluna para o
+    // piso: a soma pode passar de `util` por poucos milímetros, e isso é
+    // preferível a uma coluna ilegível (a tabela encosta na margem).
+    const larguras = pesos.map(p => Math.max((p / soma) * util, MIN_COLUNA));
 
     const linha = (celulas: PedacoInline[][], cabecalho: boolean) => {
-      const porCelula = celulas.map((c, j) =>
-        doc.splitTextToSize(textoParaPdf(textoDe(c)), larguras[j] - 3));
+      // O estilo entra ANTES de medir: o jsPDF quebra o texto com a fonte
+      // ATIVA, e medir em redondo para desenhar em negrito (~5-8% mais largo)
+      // estoura a coluna. Sem isto, o cabeçalho era medido em redondo e cada
+      // linha herdava o estilo da última célula da linha anterior.
+      const porCelula = celulas.map((c, j) => {
+        doc.setFontSize(9);
+        doc.setFont("helvetica", cabecalho ? "bold" : estiloDe(c));
+        return doc.splitTextToSize(textoParaPdf(textoDe(c)),
+                                   Math.max(larguras[j] - 3, 4));
+      });
       const altura = Math.max(...porCelula.map(l => l.length)) * 4.6 + 2;
       cabe(altura + 2);
       let x = m;
@@ -149,7 +172,11 @@ export function montarConversaPdf(
           y += 4;
           break;
         case "codigo":
-          escrever(b.texto, { tamanho: 9, fonte: "courier", recuo: 4 });
+          // `preservarEspacos`: sem isso a faxina de espaços comeria a
+          // indentação, e código desalinhado é código errado.
+          escrever(b.texto, {
+            tamanho: 9, fonte: "courier", recuo: 4, preservarEspacos: true,
+          });
           y += 2;
           break;
         case "lista":

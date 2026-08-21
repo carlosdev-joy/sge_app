@@ -5,9 +5,14 @@
 // vira elemento React — nunca HTML por string: o texto vem de um LLM, e
 // dangerouslySetInnerHTML transformaria a resposta em markup executável.
 //
-// Todas as cores saem de `currentColor`/opacidade em vez de tom fixo: este
-// componente desenha dentro da bolha AZUL do assistente, e um `text-ink`
-// aqui sumiria no fundo — o mesmo texto precisa servir aos dois temas.
+// O texto herda a cor da bolha (`currentColor`), mas as BORDAS são brancas
+// com alfa, e isso é deliberado: este componente só desenha dentro da bolha
+// AZUL do assistente. `border-current/40` parecia mais elegante e não
+// funciona — o Tailwind v3 não gera a classe com alfa sobre `currentColor`,
+// ela é descartada em silêncio e a borda cai no cinza do preflight
+// (`#e5e7eb`), apagando a diferença entre o traço do cabeçalho e o das
+// linhas. Conferido no CSS gerado, não no que a documentação promete.
+import { useMemo } from 'react'
 import type { BlocoMd, PedacoInline } from '../lib/markdown'
 import { parseMarkdown } from '../lib/markdown'
 
@@ -46,7 +51,7 @@ function Bloco({ b }: { b: BlocoMd }) {
       )
 
     case 'separador':
-      return <hr className="border-0 border-t border-current opacity-25 my-1" />
+      return <hr className="border-0 border-t border-white/30 my-1" />
 
     case 'codigo':
       return (
@@ -76,7 +81,7 @@ function Bloco({ b }: { b: BlocoMd }) {
             <thead>
               <tr>
                 {b.cabecalho.map((c, i) => (
-                  <th key={i} className="text-left font-semibold align-top px-1.5 py-1 border-b border-current/40 whitespace-nowrap">
+                  <th key={i} className="text-left font-semibold align-top px-1.5 py-1 border-b border-white/50 whitespace-nowrap">
                     <Inline partes={c} />
                   </th>
                 ))}
@@ -86,7 +91,7 @@ function Bloco({ b }: { b: BlocoMd }) {
               {b.linhas.map((linha, i) => (
                 <tr key={i}>
                   {linha.map((celula, j) => (
-                    <td key={j} className="align-top px-1.5 py-1 border-b border-current/15">
+                    <td key={j} className="align-top px-1.5 py-1 border-b border-white/20">
                       <Inline partes={celula} />
                     </td>
                   ))}
@@ -103,7 +108,10 @@ function Bloco({ b }: { b: BlocoMd }) {
 }
 
 export default function MensagemMarkdown({ texto }: { texto: string }) {
-  const blocos = parseMarkdown(texto)
+  // `useMemo` porque o estado do campo de digitação mora no ChatAssistant:
+  // sem ele, CADA tecla digitada reprocessa a conversa inteira — tabelas
+  // grandes inclusive — antes de o React comparar a árvore.
+  const blocos = useMemo(() => parseMarkdown(texto), [texto])
   return (
     <div className="text-sm leading-snug flex flex-col gap-1.5 break-words">
       {blocos.map((b, i) => <Bloco key={i} b={b} />)}
