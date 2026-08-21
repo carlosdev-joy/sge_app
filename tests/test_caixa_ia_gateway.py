@@ -208,9 +208,17 @@ async def test_diagnostico_host_inalcancavel_fala_de_rota(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_diagnostico_com_proxy_culpa_o_proxy(monkeypatch):
-    """Mesmo erro de conexão, causa diferente: com proxy ligado a mensagem
-    tem de apontar o proxy, senão o operador vai depurar a rede."""
+    """Mesmo erro de conexão, causa diferente: quando o proxy ESTÁ no caminho
+    a mensagem tem de apontá-lo, senão o operador vai depurar a rede.
+
+    O gatilho é o proxy que o transporte resolveu — não a opção marcada na
+    tela. Com NO_PROXY isentando o host, a opção está ligada e o proxy não
+    entra em campo; culpá-lo ali seria mandar o operador para o lugar errado.
+    """
     monkeypatch.setenv("HTTPS_PROXY", "http://webproxy.empresa:8080")
+    monkeypatch.setattr(
+        "services.servicenow.proxy_efetivo",
+        lambda _cli, _url: {"em_uso": "http://webproxy.empresa:8080", "motivo": None})
     _instala(monkeypatch, httpx.ConnectError("recusado"))
     d = await caixa_ia.diagnosticar(_cfg(usa_proxy=True))
     assert d["etapa"] == "rede"
@@ -263,12 +271,23 @@ async def test_diagnostico_json_sem_texto_lista_as_chaves(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_diagnostico_nunca_levanta(monkeypatch):
-    """Erro inesperado vira laudo, não exceção."""
+    """Erro inesperado vira laudo, não exceção — e a etapa alcançada
+    SOBREVIVE. Trocá-la por 'inesperado' apagaria a informação mais útil do
+    laudo (onde o processo parou), que é o motivo de ele existir."""
     _instala(monkeypatch, RuntimeError("pane geral"))
     d = await caixa_ia.diagnosticar(_cfg())
     assert d["ok"] is False
-    assert d["etapa"] == "inesperado"
+    assert d["etapa"] == "rede", "o erro estourou durante a chamada de rede"
     assert "pane geral" in d["mensagem"]
+
+
+@pytest.mark.asyncio
+async def test_erro_antes_de_qualquer_etapa_vira_inesperado(monkeypatch):
+    """Só quando nem a primeira etapa foi alcançada o rótulo genérico vale."""
+    monkeypatch.setattr(caixa_ia, "_verificar_gateway",
+                        MagicMock(side_effect=RuntimeError("pane precoce")))
+    d = await caixa_ia.diagnosticar(_cfg())
+    assert d["etapa"] == "inesperado"
 
 
 # ── 4. contrato do provedor na configuração ──────────────────────────────
@@ -285,3 +304,92 @@ def test_extrai_texto_reconhece_os_dois_dialetos():
     t, f = caixa_ia.extrai_texto({"choices": [{"message": {"content": "oi"}}]})
     assert (t, "openai" in f) == ("oi", True)
     assert caixa_ia.extrai_texto({"nada": 1}) == ("", "")
+
+
+# ── 5. o que a revisão adversarial pegou ─────────────────────────────────
+# Cada teste aqui nasceu de um defeito real encontrado na revisão da F1: são
+# todos casos em que o laudo apontava o dono ERRADO do problema — que é a
+# única coisa que esta feature existe para fazer bem.
+
+@pytest.mark.asyncio
+async def test_chave_ilegivel_e_etapa_propria(monkeypatch):
+    """ORQUESTRA_CONN_KEY trocada levanta ANTES de qualquer rede. Sem etapa
+    própria, o laudo dizia 'o provedor recusou' sobre requisição que nunca
+    saiu do servidor."""
+    from fastapi import HTTPException
+
+    def _falha(_v):
+        raise HTTPException(status_code=500, detail="Senha cifrada ilegível")
+    monkeypatch.setattr(caixa_ia, "decrypt_password", _falha)
+    d = await caixa_ia.diagnosticar(_cfg())
+    assert d["etapa"] == "chave"
+    assert d["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_corpo_escalar_continua_na_etapa_formato(monkeypatch):
+    """Gateway que responde `5` com HTTP 200: o diagnóstico correto é
+    'formato'. Antes, o list(payload) estourava e a etapa virava
+    'inesperado', jogando fora o status HTTP e a etapa alcançada."""
+    _instala(monkeypatch, _resposta(5))
+    d = await caixa_ia.diagnosticar(_cfg())
+    assert d["etapa"] == "formato"
+    assert d["http_status"] == 200
+    assert "int" in d["mensagem"]
+
+
+@pytest.mark.asyncio
+async def test_proxy_vem_do_transporte_e_nao_da_configuracao(monkeypatch):
+    """A opção marcada não prova que o proxy foi usado: o NO_PROXY isenta o
+    host mesmo com trust_env ligado. Quem responde é o transporte montado."""
+    monkeypatch.setenv("HTTPS_PROXY", "http://webproxy.empresa:8080")
+    monkeypatch.setattr(
+        "services.servicenow.proxy_efetivo",
+        lambda _cli, _url: {"em_uso": None, "motivo": "host isento pelo NO_PROXY"})
+    _instala(monkeypatch, _resposta({"content": [{"text": "OK"}]}))
+    d = await caixa_ia.diagnosticar(_cfg(usa_proxy=True))
+    assert d["ok"] is True
+    assert d["proxy_em_uso"] is None
+    assert "NO_PROXY" in d["proxy_motivo"]
+
+
+@pytest.mark.asyncio
+async def test_proxy_em_uso_e_reportado(monkeypatch):
+    monkeypatch.setattr(
+        "services.servicenow.proxy_efetivo",
+        lambda _cli, _url: {"em_uso": "http://webproxy.empresa:8080", "motivo": None})
+    _instala(monkeypatch, _resposta({"content": [{"text": "OK"}]}))
+    d = await caixa_ia.diagnosticar(_cfg(usa_proxy=True))
+    assert d["proxy_em_uso"] == "http://webproxy.empresa:8080"
+
+
+@pytest.mark.asyncio
+async def test_https_recusado_menciona_certificado(monkeypatch):
+    """Com trust_env desligado o httpx ignora SSL_CERT_FILE, e um handshake
+    recusado chega como ConnectError. Culpar DNS aí manda o operador para o
+    time errado."""
+    _instala(monkeypatch, httpx.ConnectError("handshake"))
+    d = await caixa_ia.diagnosticar(_cfg(base_url="https://gw.empresa.intranet/api"))
+    assert d["etapa"] == "rede"
+    assert "certificado" in d["mensagem"].lower()
+
+
+def test_verificacao_tls_usa_ssl_cert_file(monkeypatch, tmp_path):
+    """A CA corporativa precisa continuar valendo mesmo sem trust_env."""
+    ca = tmp_path / "corp-ca.pem"
+    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+    assert caixa_ia._verificacao_tls() == str(ca)
+    monkeypatch.delenv("SSL_CERT_FILE")
+    assert caixa_ia._verificacao_tls() is True
+
+
+@pytest.mark.asyncio
+async def test_cliente_do_gateway_leva_o_verify(monkeypatch, tmp_path):
+    ca = tmp_path / "ca.pem"
+    ca.write_text("x")
+    monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+    _instala(monkeypatch, _resposta({"content": [{"text": "OK"}]}))
+    await caixa_ia.chat(_cfg(), "s", "m")
+    assert _ClienteFake.ultima.kwargs["verify"] == str(ca)

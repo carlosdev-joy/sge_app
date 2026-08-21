@@ -3813,6 +3813,7 @@ interface CaixaIAVerificacao {
 interface CaixaIADiagnostico {
   ok: boolean; etapa: string; mensagem: string; provedor: string; modelo: string
   endpoint: string; proxy_ambiente: string; usa_proxy: boolean; formato: string
+  proxy_em_uso: string | null; proxy_motivo: string | null
   resposta: string; http_status: number | null; latencia_ms: number | null
   verificado_em?: string; verificado_por?: string; persistido?: boolean
 }
@@ -3844,12 +3845,11 @@ function DiagnosticoIA({ d }: { d: CaixaIADiagnostico }) {
     ['Latência', d.latencia_ms != null ? `${d.latencia_ms} ms` : '—'],
     ['HTTP', d.http_status != null ? String(d.http_status) : '—'],
     ['Formato da resposta', d.formato || '—'],
-    // O proxy é a armadilha desta integração: dizer que ele existe no
-    // ambiente e que foi (ou não) usado evita caçar rede quando o problema
-    // é o desvio pelo proxy corporativo — ou o contrário.
-    ['Proxy', d.proxy_ambiente
-      ? (d.usa_proxy ? `${d.proxy_ambiente} (usado)` : `${d.proxy_ambiente} (ignorado — rota direta)`)
-      : 'nenhum no ambiente'],
+    // O proxy é a armadilha desta integração, e o valor vem do transporte que
+    // o httpx montou — não de deduzir pela configuração. As duas leituras
+    // divergem: NO_PROXY isenta o host mesmo com o proxy ligado, e os outros
+    // provedores atravessam o proxy mesmo com a opção desmarcada.
+    ['Proxy', d.proxy_em_uso ? `${d.proxy_em_uso} (em uso)` : (d.proxy_motivo || 'conexão direta')],
   ]
   return (
     <div className={`rounded-lg border p-3 flex flex-col gap-2 ${d.ok
@@ -3912,6 +3912,10 @@ function CaixaIAForm({ cfg }: { cfg: CaixaIAConfig }) {
       // visibilidade dos assistentes na sessão atual (src/caixa/lib/config.ts)
       queryClient.invalidateQueries({ queryKey: ['caixa-ia-status'] })
       setForm(f => ({ ...f, api_key: '' }))
+      // O laudo descreve a configuração que foi verificada. Depois de salvar
+      // outra, ele passa a descrever algo que não existe mais — e um painel
+      // vermelho sobre a configuração já corrigida assusta à toa.
+      setDiag(null)
     },
     onError: (e: Error) => toast.error(e.message),
   })
@@ -3946,7 +3950,7 @@ function CaixaIAForm({ cfg }: { cfg: CaixaIAConfig }) {
         </label>
 
         <div className="flex flex-wrap gap-3 items-end">
-          <Select label="Provedor" value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })} className="w-56">
+          <Select label="Provedor" value={form.provider} onChange={e => { setDiag(null); setForm({ ...form, provider: e.target.value }) }} className="w-56">
             <option value="anthropic">Anthropic (Claude)</option>
             <option value="openai_compat">OpenAI-compatível</option>
             <option value="caixa_gateway">Gateway de IA da Caixa (interno)</option>
@@ -3956,7 +3960,7 @@ function CaixaIAForm({ cfg }: { cfg: CaixaIAConfig }) {
         </div>
 
         {precisaBaseUrl && (
-          <Input label="Base URL" value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })}
+          <Input label="Base URL" value={form.base_url} onChange={e => { setDiag(null); setForm({ ...form, base_url: e.target.value }) }}
             placeholder={isGateway ? 'ex: http://servicos.empresa.intranet/api/claude' : 'ex: https://api.openai.com/v1'}
             ajuda={isGateway ? 'Sem /chat/completions no fim — o caminho é acrescentado na chamada.' : undefined}
             className="w-full" />

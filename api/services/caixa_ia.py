@@ -214,6 +214,27 @@ def proxy_do_ambiente() -> str:
     return ""
 
 
+def _verificacao_tls():
+    """O `verify` a usar quando o cliente roda com trust_env desligado.
+
+    `trust_env=False` desliga mais coisa que o proxy: o httpx só honra
+    SSL_CERT_FILE e SSL_CERT_DIR com trust_env ligado. Num gateway https com
+    CA corporativa entregue por essas variáveis, o handshake falharia como
+    `ConnectError` — e o laudo culparia DNS ou rota por um problema de
+    certificado, mandando o operador para o time errado. Lendo as variáveis
+    aqui, a confiança em CA fica igual à de quem usa trust_env, sem trazer o
+    proxy junto.
+    """
+    arquivo = (os.environ.get("SSL_CERT_FILE") or "").strip()
+    if arquivo and os.path.isfile(arquivo):
+        return arquivo
+    diretorio = (os.environ.get("SSL_CERT_DIR") or "").strip()
+    if diretorio and os.path.isdir(diretorio):
+        import ssl
+        return ssl.create_default_context(capath=diretorio)
+    return True
+
+
 def extrai_texto(payload: dict) -> tuple[str, str]:
     """Devolve (texto, formato) da resposta do gateway.
 
@@ -266,7 +287,8 @@ async def _chat_caixa_gateway(cfg: dict, api_key: str, model: str,
         # do container derrubaria a chamada. Quem precisar do proxy liga a
         # opção na config — o diagnóstico DIZ qual dos dois está valendo.
         async with httpx.AsyncClient(timeout=TIMEOUT_S,
-                                     trust_env=bool(cfg.get("usa_proxy"))) as client:
+                                     trust_env=bool(cfg.get("usa_proxy")),
+                                     verify=_verificacao_tls()) as client:
             r = await client.post(
                 f"{base_url}/chat/completions",
                 headers={"x-api-key": api_key, "Content-Type": "application/json"},
@@ -331,11 +353,34 @@ def _diag_base(cfg: dict) -> dict:
         "endpoint": endpoint,
         "proxy_ambiente": proxy_do_ambiente(),
         "usa_proxy": bool(cfg.get("usa_proxy")),
+        # Preenchidos com o proxy que o httpx REALMENTE resolveu, lendo o
+        # transporte montado. Deduzir a partir da flag e do ambiente erra nos
+        # dois sentidos: com NO_PROXY cobrindo o host, "usa proxy" vai direto;
+        # e anthropic/openai_compat rodam com trust_env ligado, então passam
+        # pelo proxy mesmo com a flag em 0.
+        "proxy_em_uso": None,
+        "proxy_motivo": None,
         "formato": "",
         "resposta": "",
         "http_status": None,
         "latencia_ms": None,
     }
+
+
+def _anota_proxy(diag: dict, cliente, url: str) -> None:
+    """Registra no laudo o proxy resolvido para esta URL.
+
+    Reusa `services.servicenow.proxy_efetivo` de propósito: ele lê o
+    transporte já montado pelo httpx, e o próprio docstring de lá avisa que
+    uma segunda implementação da regra divergiria em silêncio.
+    """
+    try:
+        from services.servicenow import proxy_efetivo
+        resultado = proxy_efetivo(cliente, url)
+        diag["proxy_em_uso"] = resultado.get("em_uso")
+        diag["proxy_motivo"] = resultado.get("motivo")
+    except Exception:
+        diag["proxy_motivo"] = "não foi possível determinar"
 
 
 async def diagnosticar(cfg: dict) -> dict:
@@ -363,15 +408,26 @@ async def diagnosticar(cfg: dict) -> dict:
         if provider == "caixa_gateway":
             await _verificar_gateway(cfg, diag)
         else:
+            # Os outros provedores saem com trust_env ligado (padrão do httpx
+            # e do SDK), então o proxy do ambiente VALE para eles — inclusive
+            # o NO_PROXY. Quem responde qual é o proxy é o transporte.
+            async with httpx.AsyncClient() as sonda:
+                _anota_proxy(diag, sonda, cfg.get("base_url")
+                             or "https://api.anthropic.com")
             texto, modelo = await chat(cfg, VERIF_SYSTEM, VERIF_USER)
             diag.update(ok=True, etapa="ok", modelo=modelo,
                         resposta=texto[:200], formato="SDK/provedor",
                         mensagem="Provedor respondeu.")
     except HTTPException as e:
-        diag["etapa"] = diag["etapa"] if diag["etapa"] != "config" else "provedor"
+        # A etapa que _verificar_gateway alcançou é o dado mais valioso do
+        # laudo: sobrescrevê-la com um rótulo genérico joga fora justamente o
+        # que esta função existe para dizer.
+        if diag["etapa"] == "config":
+            diag["etapa"] = "provedor"
         diag["mensagem"] = str(e.detail)
     except Exception as e:  # rede/erro inesperado nunca derruba a verificação
-        diag["etapa"] = "inesperado"
+        if diag["etapa"] == "config":
+            diag["etapa"] = "inesperado"
         diag["mensagem"] = f"{type(e).__name__}: {e}"
     diag["latencia_ms"] = int((_time.monotonic() - inicio) * 1000)
     return diag
@@ -379,6 +435,11 @@ async def diagnosticar(cfg: dict) -> dict:
 
 async def _verificar_gateway(cfg: dict, diag: dict) -> None:
     """Chamada crua ao gateway, preenchendo `diag` etapa a etapa."""
+    # A decifração vem ANTES de qualquer rede e tem etapa própria: uma
+    # ORQUESTRA_CONN_KEY trocada levanta aqui, e sem esta marcação o laudo
+    # diria "o provedor recusou" sobre uma requisição que nunca saiu do
+    # servidor — culpando exatamente o time errado.
+    diag["etapa"] = "chave"
     api_key = _api_key(cfg)
     model = diag["modelo"]
     base_url = cfg["base_url"]
@@ -387,7 +448,9 @@ async def _verificar_gateway(cfg: dict, diag: dict) -> None:
     diag["etapa"] = "rede"
     try:
         async with httpx.AsyncClient(timeout=VERIF_TIMEOUT_S,
-                                     trust_env=usa_proxy) as client:
+                                     trust_env=usa_proxy,
+                                     verify=_verificacao_tls()) as client:
+            _anota_proxy(diag, client, base_url)
             r = await client.post(
                 f"{base_url}/chat/completions",
                 headers={"x-api-key": api_key, "Content-Type": "application/json"},
@@ -403,10 +466,18 @@ async def _verificar_gateway(cfg: dict, diag: dict) -> None:
                             f"{VERIF_TIMEOUT_S}s — problema no gateway, não na rede.")
         return
     except httpx.ConnectError as e:
-        if usa_proxy and diag["proxy_ambiente"]:
+        if diag["proxy_em_uso"]:
             diag["mensagem"] = (f"Não conectou usando o proxy "
-                                f"{diag['proxy_ambiente']}. Para host interno, "
+                                f"{diag['proxy_em_uso']}. Para host interno, "
                                 f"desmarque 'usar proxy corporativo'. ({e})")
+        elif base_url.lower().startswith("https://"):
+            # Em https o ConnectError também cobre handshake TLS recusado —
+            # e mandar procurar DNS quando o problema é a CA corporativa faz
+            # o operador depurar a rede por horas.
+            diag["mensagem"] = (f"Não conectou ao host. Pode ser rota/DNS, ou o "
+                                f"certificado do gateway não ser aceito — confira "
+                                f"se a CA corporativa está no SSL_CERT_FILE do "
+                                f"container. ({e})")
         else:
             diag["mensagem"] = (f"Não conectou ao host. Nome não resolveu ou não "
                                 f"há rota até ele a partir do servidor. ({e})")
@@ -443,9 +514,16 @@ async def _verificar_gateway(cfg: dict, diag: dict) -> None:
         return
     texto, formato = extrai_texto(payload)
     if not texto:
+        # `list(payload)` só funciona em objeto: um JSON escalar (`5`) ou uma
+        # lista fariam a linha explodir e o laudo perderia a etapa 'formato'
+        # — justamente o diagnóstico correto deste caso.
+        if isinstance(payload, dict):
+            recebido = f"Chaves recebidas: {list(payload)[:8]}"
+        else:
+            recebido = f"O corpo veio como {type(payload).__name__}, não objeto."
         diag["mensagem"] = ("Conectou e autenticou, mas a resposta não traz texto "
                             "nem em content[].text nem em choices[].message.content. "
-                            f"Chaves recebidas: {list(payload)[:8]}")
+                            + recebido)
         return
 
     diag.update(ok=True, etapa="ok", resposta=texto[:200], formato=formato,

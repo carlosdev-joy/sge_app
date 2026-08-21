@@ -291,10 +291,15 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             if base_url and not base_url.lower().startswith(("http://", "https://")):
                 raise HTTPException(status_code=422, detail="base_url deve ser http(s)")
             api_key  = body.get("api_key")  # None = manter a atual; "" ignora
-            # A base_url é exigida na GRAVAÇÃO (e não só ao ativar): sem ela o
+            # Gateway da Caixa: base_url exigida em toda gravação — sem ela o
             # provedor não tem para onde chamar, e a verificação de conexão
             # falharia por configuração faltando, parecendo falha de rede.
-            if provider in caixa_ia.PROVIDERS_COM_BASE_URL and not base_url:
+            # openai_compat mantém a regra ANTIGA (só ao ativar): endurecer ali
+            # devolveria 422 a uma instalação que hoje tem base_url vazia com
+            # os assistentes desligados — inclusive na gravação que só quer
+            # mantê-los desligados.
+            if not base_url and (provider == "caixa_gateway"
+                                 or (body.get("enabled") and provider == "openai_compat")):
                 raise HTTPException(
                     status_code=422,
                     detail=("base_url é obrigatória no provedor "
@@ -308,7 +313,12 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
 
             valores = {caixa_ia.K_ENABLED: enabled, caixa_ia.K_PROVIDER: provider,
                        caixa_ia.K_MODEL: model, caixa_ia.K_BASE_URL: base_url,
-                       caixa_ia.K_USA_PROXY: usa_proxy}
+                       caixa_ia.K_USA_PROXY: usa_proxy,
+                       # O laudo vale para a configuração que foi verificada.
+                       # Mantê-lo depois de trocar provedor ou base_url deixa
+                       # um "conectado" verde na tela sobre uma configuração
+                       # que ninguém testou — e nada na tela o contradiz.
+                       caixa_ia.K_ULTIMA_VERIF: ""}
             if isinstance(api_key, str) and api_key.strip():
                 token = _enc(api_key.strip())
                 if len(token) > 1000:  # etl_app_config.config_value é VARCHAR(1000)
