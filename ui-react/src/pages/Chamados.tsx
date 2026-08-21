@@ -179,8 +179,12 @@ function CardChamado({ c }: { c: Chamado }) {
           não mostrava. O tipo aparece sempre; categoria e objetos só quando
           existem — chip vazio é ruído que ensina a ignorar a linha inteira. */}
       <div className="flex flex-wrap items-center gap-1 text-[10px]">
+        {/* O title NÃO afirma de onde veio o tipo: a dedução usa o título e,
+            em segunda mão, o catálogo, e o backend não devolve qual dos dois
+            casou. Atribuir a proveniência ao catálogo seria mentir sempre que
+            o título tiver vencido — que é o caso comum. */}
         <span className="px-1.5 py-0.5 rounded bg-panel border border-edge text-dim"
-          title={c.catalogo ? `Catálogo na origem: ${c.catalogo}` : 'Tipo deduzido do título'}>
+          title={`Tipo deduzido do título e do catálogo${c.catalogo ? ` · catálogo na origem: ${c.catalogo}` : ''}`}>
           {c.tipo_demanda}
         </span>
         {c.categoria_diaadia && (

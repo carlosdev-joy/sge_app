@@ -14,6 +14,12 @@ from __future__ import annotations
 import datetime as _dt
 
 from utils.chamado_derivacoes import derivar
+from utils.frescor_modulo import carimbar
+
+# Carimbo de frescor: a DAG confere se este módulo em memória é o do disco.
+# Ver utils/frescor_modulo.py — o worker Celery serve módulos auxiliares de
+# cache, e o código velho rodando não produz sintoma nenhum.
+carimbar(__file__)
 
 # ── Constantes ANTES dos helpers (gotcha do dag_factory: helper que lê uma
 #    const definida abaixo quebra no parse da DAG). ─────────────────────────
@@ -124,21 +130,50 @@ def mapear_estado(tabela: str, estado_cru) -> str:
     return ESTADOS.get(tabela, {}).get(str(estado_cru or "").strip(), "outros")
 
 
+def unidades_utf16(texto: str) -> int:
+    """Quantas unidades NVARCHAR o texto ocupa.
+
+    NVARCHAR(n) conta unidades UTF-16, não caracteres: emoji fora do BMP
+    (🙂, 🔥) ocupa DUAS. Medir com `len()` do Python deixa passar um texto de
+    4000 caracteres que ocupa 4300 unidades, e o SQL Server responde com
+    Msg 8152 no meio do ciclo — justamente o texto colado do Teams que a
+    migration 091 diz esperar.
+    """
+    return len(texto.encode("utf-16-le")) // 2
+
+
+def _cortar(texto: str, limite: int) -> str:
+    """Corta pelo limite REAL da coluna, sem partir um par substituto.
+
+    Iterar por caractere garante que um emoji nunca é cortado ao meio — o que
+    produziria texto inválido no banco.
+    """
+    if unidades_utf16(texto) <= limite:
+        return texto
+    alvo = limite - 1            # a reticência ocupa 1 unidade
+    saida, total = [], 0
+    for ch in texto:
+        custo = unidades_utf16(ch)
+        if total + custo > alvo:
+            break
+        saida.append(ch)
+        total += custo
+    return "".join(saida) + "…"
+
+
 def truncar_titulo(titulo, limite: int = TITULO_MAX) -> str:
     """Corta COM reticência: o operador precisa ver que faltou texto.
 
     Truncar calado já mordeu antes (VARCHAR estourado, PR #161) — aqui o corte
     é explícito e a marca fica visível no card.
     """
-    t = (titulo or "").strip()
-    return t if len(t) <= limite else t[:limite - 1] + "…"
+    return _cortar((titulo or "").strip(), limite)
 
 
 def truncar_texto(texto, limite: int = TEXTO_MAX) -> str:
     """Mesma regra do título, para descrição e work notes: corta COM
     reticência. O leitor precisa saber que o texto continua no ServiceNow."""
-    t = (texto or "").strip()
-    return t if len(t) <= limite else t[:limite - 1] + "…"
+    return _cortar((texto or "").strip(), limite)
 
 
 def _booleano(valor):

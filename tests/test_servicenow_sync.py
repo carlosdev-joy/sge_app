@@ -106,10 +106,19 @@ def test_titulo_no_limite_exato_nao_trunca():
     assert truncar_titulo("y" * TITULO_MAX) == "y" * TITULO_MAX
 
 
-def test_titulo_com_acento_e_emoji_conta_caracteres():
-    """NVARCHAR guarda caractere, não byte — o limite é em caracteres."""
-    texto = "ção🔥" * 200
-    assert len(truncar_titulo(texto)) == TITULO_MAX
+def test_titulo_com_acento_e_emoji_respeita_o_limite_da_coluna():
+    """NVARCHAR(n) conta unidades UTF-16, não caracteres Python.
+
+    Este teste media `len()` e passava — enquanto o texto gerado ocupava MAIS
+    de 400 unidades no banco, porque 🔥 fora do BMP vale 2. O `len()` == 400
+    era um verde que não provava o que dizia provar: quem cobra é o SQL
+    Server, com Msg 8152 no meio do ciclo.
+    """
+    from utils.servicenow_sync import unidades_utf16
+    saida = truncar_titulo("ção🔥" * 200)
+    assert unidades_utf16(saida) <= TITULO_MAX
+    assert len(saida) < TITULO_MAX, (
+        "com emoji, cabem MENOS caracteres que o limite da coluna")
 
 
 def test_titulo_vazio_nao_quebra():
@@ -532,3 +541,30 @@ def test_normalizar_entrega_todos_os_campos_do_upsert():
     linha = normalizar(_registro(), "incident", "incident", URL)
     faltando = [c for c in CAMPOS_UPSERT if c not in linha]
     assert not faltando, f"normalizar() não devolve: {faltando}"
+
+
+# ═══════════ 9. o limite é da COLUNA, não do Python ═════════════════════════
+
+def test_truncamento_conta_unidades_utf16():
+    """NVARCHAR(n) conta unidades UTF-16: emoji fora do BMP ocupa DUAS. Medir
+    com len() deixa passar 4000 caracteres que ocupam 4300 unidades, e o SQL
+    Server responde Msg 8152 no meio do ciclo — com o texto colado do Teams
+    que a migration 091 diz esperar."""
+    from utils.servicenow_sync import TEXTO_MAX, truncar_texto, unidades_utf16
+    texto = "a" * 3500 + "🙂" * 300 + "b" * 500
+    saida = truncar_texto(texto)
+    assert unidades_utf16(saida) <= TEXTO_MAX
+    assert saida.endswith("…")
+
+
+def test_truncamento_nao_parte_emoji_ao_meio():
+    """Cortar dentro de um par substituto produz texto inválido no banco."""
+    from utils.servicenow_sync import truncar_texto, unidades_utf16
+    saida = truncar_texto("🙂" * 50, limite=11)
+    assert unidades_utf16(saida) <= 11
+    assert saida.encode("utf-16-le").decode("utf-16-le") == saida
+
+
+def test_titulo_com_emoji_respeita_o_limite_da_coluna():
+    from utils.servicenow_sync import TITULO_MAX, unidades_utf16
+    assert unidades_utf16(truncar_titulo("ção🔥" * 200)) <= TITULO_MAX

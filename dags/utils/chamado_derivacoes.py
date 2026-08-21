@@ -24,6 +24,12 @@ from __future__ import annotations
 
 import re
 
+from utils.frescor_modulo import carimbar
+
+# Ver utils/frescor_modulo.py: sem este carimbo, uma versão antiga deste
+# módulo em cache no worker derivaria tudo pelo código velho, em silêncio.
+carimbar(__file__)
+
 # Ordem importa: o primeiro que casar vence. "inclusão de coluna" antes de
 # "ajuste em tabela" porque um pedido de coluna nova costuma citar os dois.
 TIPOS = (
@@ -71,7 +77,12 @@ OBJETOS_LIMITE = 3
 # (`TB_[A-Z_]+`): lá, `TB_CLIENTE2` era capturado como `TB_CLIENTE` — nome de
 # outra tabela, que existe. Recorte silencioso que aponta para o objeto
 # errado é pior que não capturar nada.
+#
+# A borda à ESQUERDA é tão necessária quanto o sufixo: sem ela,
+# `DBTB_VENDAS` casa `TB_VENDAS` e `ADM_123_X` casa `DM_123_X` — nomes de
+# objetos que existem e não são os do texto. Mesmo defeito, outro lado.
 _OBJETOS = re.compile(
+    r"(?<![A-Za-z0-9_])"
     r"(?:DMDB\d+\.\.[A-Z_0-9]+|DM_\d+_[A-Z_0-9]+"
     r"|TB_[A-Z_0-9]+|VW_[A-Z_0-9]+|PRC_[A-Z_0-9]+)",
     re.IGNORECASE)
@@ -79,7 +90,14 @@ _OBJETOS = re.compile(
 # "dia a dia - bug" → bug. O travessão pode ser hífen ou en-dash: quem digita
 # no ServiceNow usa os dois, e aceitar só um jogaria metade das marcações no
 # balde genérico.
-_DIAADIA_COM_CATEGORIA = re.compile(r"dia\s+a\s+dia\s*[-–]\s*(.+)", re.IGNORECASE)
+#
+# Depois do travessão vem `[^\S\n]*` — espaço em branco EXCETO quebra de
+# linha. Com `\s*`, um "dia a dia -" no fim da linha faz a captura pular para
+# a linha seguinte e a frase inteira do técnico vira "categoria", enchendo o
+# gráfico de barras de uso único. (O `.splitlines()[0]` adiante não protegia
+# disso: `.` já não casa `\n`.)
+_DIAADIA_COM_CATEGORIA = re.compile(r"dia\s+a\s+dia[^\S\n]*[-–][^\S\n]*(.+)",
+                                    re.IGNORECASE)
 _DIAADIA_SOLTO = re.compile(r"\bdia\s+a\s+dia\b", re.IGNORECASE)
 
 CATEGORIA_GERAL = "geral"
@@ -111,12 +129,13 @@ def categoria_diaadia(work_notes: str) -> str:
     texto = str(work_notes or "")
     achado = _DIAADIA_COM_CATEGORIA.search(texto)
     if achado:
-        # `.strip('.')` porque a marcação costuma terminar a frase.
-        categoria = achado.group(1).strip().rstrip(".").lower()
-        # Só a primeira linha: o journal concatena entradas, e sem o corte a
-        # categoria viraria o histórico inteiro do chamado.
-        categoria = categoria.splitlines()[0].strip() if categoria else ""
-        return categoria[:CATEGORIA_MAX]
+        # `.rstrip('.')` porque a marcação costuma terminar a frase.
+        categoria = achado.group(1).strip().rstrip(".").strip().lower()
+        if categoria:
+            return categoria[:CATEGORIA_MAX]
+        # "dia a dia - ." é marcação sem categoria, não ausência de
+        # marcação: devolver vazio aqui mandaria o chamado para o balde de
+        # "ninguém classificou", contrariando a regra deste módulo.
     if _DIAADIA_SOLTO.search(texto):
         return CATEGORIA_GERAL
     return ""

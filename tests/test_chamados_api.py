@@ -304,10 +304,13 @@ class CursorHistorico:
         pass
 
 
-def _resolvido(numero="RITM0001", dias=2):
+def _resolvido(numero="RITM0001", dias=2, ativo=0):
+    # `ativo` na última posição: no espelho, "Resolvido" mantém ativo=1 — só
+    # 'encerrado' tira da fila. O default 0 é o caso do chamado que realmente
+    # saiu; o teste do 1 cobre o que ainda aparece no kanban.
     return (numero, "ritm", "Extração concluída", "Fulano", "Beltrano",
             "Extração de dados", "bug", "2026-08-19 17:00:00",
-            "https://x.service-now.com/nav", dias)
+            "https://x.service-now.com/nav", dias, ativo)
 
 
 def test_historico_devolve_os_resolvidos(cliente, banco):
@@ -333,3 +336,50 @@ def test_historico_sem_migration_degrada(cliente, banco):
     assert r.status_code == 200
     assert r.json()["migration_ausente"] is True
     assert r.json()["chamados"] == []
+
+
+def test_resolvido_que_continua_na_fila_e_marcado(cliente, banco):
+    """No espelho, "Resolvido" mantém ativo=1 — só 'encerrado' tira da fila.
+    Sem esta marca, o mesmo chamado apareceria na coluna Resolvido do kanban
+    e numa seção que afirma listar o que SAIU da fila."""
+    banco["cur"] = CursorHistorico([_resolvido(ativo=1), _resolvido("RITM0002", ativo=0)])
+    r = cliente.get("/chamados/historico").json()
+    assert r["ainda_na_fila"] == 1
+    assert r["chamados"][0]["ainda_na_fila"] is True
+    assert r["chamados"][1]["ainda_na_fila"] is False
+
+
+def test_kanban_sobrevive_sem_as_colunas_novas(cliente, banco):
+    """Migrations (6c) e rebuild da API são passos separados. Com a imagem
+    nova e a 091/092 ainda não aplicadas, um SELECT único apagaria a tela
+    INTEIRA por causa dos chips novos — uma tela que já funcionava."""
+    class CursorSemColunasNovas:
+        """Falha no SELECT que pede as colunas novas; serve o resto."""
+
+        def __init__(self, chamados):
+            self.chamados = chamados
+            self._servir = None
+
+        def execute(self, sql, params=None):
+            if "tipo_demanda" in sql:
+                raise RuntimeError("Invalid column name 'tipo_demanda'")
+            self._servir = "ciclo" if "etl_chamado_sync" in sql else "chamados"
+            return self
+
+        def fetchall(self):
+            # A tupla base tem 16 colunas — sem as sete da 091/092.
+            return [c[:16] for c in self.chamados]
+
+        def fetchone(self):
+            return _ciclo()
+
+        def close(self):
+            pass
+
+    banco["cur"] = CursorSemColunasNovas([_chamado()])
+    d = cliente.get("/chamados").json()
+    assert d["migration_ausente"] is False, "a fila continua servida"
+    assert d["total"] == 1
+    assert d["derivacoes_pendentes"] is True, "a tela precisa saber o que falta"
+    from routers.chamados import TIPO_NAO_CLASSIFICADO
+    assert d["chamados"][0]["tipo_demanda"] == TIPO_NAO_CLASSIFICADO

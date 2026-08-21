@@ -179,3 +179,27 @@ def test_normalizar_ja_traz_as_derivacoes():
     assert linha["objetos"] == "DM_9_TESTE"
     for campo in ("tipo_demanda", "categoria_diaadia", "objetos"):
         assert campo in CAMPOS_UPSERT, f"{campo} precisa entrar no MERGE"
+
+
+# ═══════════ 5. o que a revisão adversarial pegou ═══════════════════════════
+
+def test_travessao_no_fim_da_linha_nao_captura_a_linha_seguinte():
+    """`\\s*` depois do travessão casava quebra de linha: a frase inteira do
+    técnico virava 'categoria' e enchia o gráfico de barras de uso único."""
+    notas = "dia a dia -\nFavor verificar a tabela DM_123 conforme combinado"
+    assert categoria_diaadia(notas) == CATEGORIA_GERAL
+
+
+def test_marcacao_com_categoria_vazia_vira_geral():
+    """'dia a dia - .' é marcação SEM categoria, não ausência de marcação."""
+    assert categoria_diaadia("dia a dia - .") == CATEGORIA_GERAL
+
+
+def test_objeto_precisa_de_borda_a_esquerda():
+    """Sem borda à esquerda, `DBTB_VENDAS` virava `TB_VENDAS` — nome de outro
+    objeto, que existe. O mesmo defeito do sufixo, do outro lado."""
+    assert objetos_citados("reprocessar DBTB_VENDAS hoje") == ""
+    assert objetos_citados("ver ADM_123_X depois") == ""
+    assert objetos_citados("ajustar sub_vw_teste") == ""
+    # E o caso legítimo continua capturado:
+    assert objetos_citados("ajustar a TB_VENDAS hoje") == "TB_VENDAS"

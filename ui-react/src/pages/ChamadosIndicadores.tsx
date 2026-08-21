@@ -42,6 +42,7 @@ export interface RespostaIndicadores {
   // Agregações portadas do painel da estação (F3).
   por_tipo_demanda: PorTipoDemanda[]
   por_categoria: PorCategoria[]
+  categorias_ocultas: number
   sem_categoria: number
   resolvidos_periodo: number
   dias_historico: number
@@ -58,6 +59,7 @@ export interface Resolvido {
   encerrado_em: string | null
   url: string | null
   dias_ate_resolver: number | null
+  ainda_na_fila: boolean
 }
 
 const ROTULO_TIPO: Record<string, string> = {
@@ -258,12 +260,26 @@ function FluxoDiario({ dias }: { dias: DiaFluxo[] }) {
 
 /** Os resolvidos da janela — o trabalho que o kanban deixa de mostrar. */
 function HistoricoResolvidos({ dias }: { dias: number }) {
-  const { data, isLoading, isError } = useQuery<{ chamados: Resolvido[]; total: number }>({
+  const { data, isLoading, isError } = useQuery<{
+    chamados: Resolvido[]; total: number; ainda_na_fila: number; migration_ausente: boolean
+  }>({
     queryKey: ['chamados-historico', dias],
     queryFn: () => apiFetch(`/chamados/historico?dias=${dias}`),
   })
   if (isLoading) return <p className="text-[11px] text-dim">Carregando…</p>
   if (isError || !data) return <p className="text-[11px] text-dim">Não foi possível carregar o histórico.</p>
+  // O endpoint devolve 200 com lista vazia quando o banco falha, então
+  // `isError` não pega esse caso: sem esta checagem a seção afirmaria "nada
+  // foi encerrado" — uma frase FALSA — enquanto o cabeçalho acima, vindo de
+  // outra consulta, diz que houve encerramentos.
+  if (data.migration_ausente) {
+    return (
+      <p className="text-[11px] text-amber-700 dark:text-amber-400">
+        Não foi possível ler o histórico agora — isto não quer dizer que nada
+        foi encerrado no período.
+      </p>
+    )
+  }
   if (!data.total) {
     // Vazio DITO: sem esta frase, a seção em branco parece falha de carga.
     return <p className="text-[11px] text-dim">Nenhum chamado encerrado no período.</p>
@@ -288,6 +304,15 @@ function HistoricoResolvidos({ dias }: { dias: number }) {
                   ? <a href={c.url} target="_blank" rel="noopener noreferrer"
                       className="font-mono text-blue-600 dark:text-blue-400">{c.numero}</a>
                   : <span className="font-mono text-ink">{c.numero}</span>}
+                {/* No espelho, "Resolvido" continua ativo=1: só 'encerrado'
+                    tira da fila. Sem esta marca, o mesmo chamado apareceria
+                    aqui e na coluna Resolvido do kanban, e a seção estaria
+                    afirmando que ele saiu. */}
+                {c.ainda_na_fila && (
+                  <span className="ml-1 text-[10px] text-dim" title="Encerrado na origem, mas ainda aparece na coluna Resolvido do kanban">
+                    (ainda na fila)
+                  </span>
+                )}
                 <p className="text-dim leading-snug">{c.titulo || '(sem título)'}</p>
               </td>
               <td className="py-1 pr-3 align-top text-dim">
@@ -368,11 +393,17 @@ export default function ChamadosIndicadores() {
       </Painel>
 
       <Painel titulo="Categorias do dia a dia"
-        descricao={d.sem_categoria > 0
-          // O denominador é dito: sem ele, um gráfico com 4 chamados
-          // classificados pareceria a fila inteira.
-          ? `Marcação feita nas work notes. ${d.sem_categoria} de ${d.total_ativos} chamado(s) da fila ainda não têm marcação.`
-          : 'Marcação "dia a dia" feita pela equipe nas work notes.'}>
+        // O denominador é dito, e o corte também: sem eles, um gráfico com 4
+        // chamados classificados pareceria a fila inteira.
+        descricao={[
+          'Marcação "dia a dia" feita pela equipe nas work notes.',
+          d.sem_categoria > 0
+            ? `${d.sem_categoria} de ${d.total_ativos} chamado(s) da fila ainda não têm marcação.`
+            : '',
+          d.categorias_ocultas > 0
+            ? `Outras ${d.categorias_ocultas} categoria(s) ficaram fora do gráfico.`
+            : '',
+        ].filter(Boolean).join(' ')}>
         {d.por_categoria.length
           ? <BarrasHorizontais total={d.total_ativos}
               itens={d.por_categoria.map(c => ({ rotulo: c.categoria, valor: c.total }))} />
