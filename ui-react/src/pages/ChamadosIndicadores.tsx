@@ -28,6 +28,9 @@ interface Celula { tipo: string; estado: string; total: number }
 interface DiaFluxo { dia: string; entradas: number; saidas: number }
 interface Carga { responsavel: string; total: number }
 
+interface PorTipoDemanda { tipo: string; total: number }
+interface PorCategoria { categoria: string; total: number }
+
 export interface RespostaIndicadores {
   aging: FaixaAging[]
   tipo_estado: { tipos: string[]; estados: string[]; celulas: Celula[] }
@@ -36,6 +39,25 @@ export interface RespostaIndicadores {
   total_ativos: number
   responsaveis_ocultos: number
   migration_ausente: boolean
+  // Agregações portadas do painel da estação (F3).
+  por_tipo_demanda: PorTipoDemanda[]
+  por_categoria: PorCategoria[]
+  sem_categoria: number
+  resolvidos_periodo: number
+  dias_historico: number
+}
+
+export interface Resolvido {
+  numero: string
+  tipo: string
+  titulo: string | null
+  atribuido_a: string
+  demandante: string
+  tipo_demanda: string
+  categoria_diaadia: string
+  encerrado_em: string | null
+  url: string | null
+  dias_ate_resolver: number | null
 }
 
 const ROTULO_TIPO: Record<string, string> = {
@@ -234,6 +256,59 @@ function FluxoDiario({ dias }: { dias: DiaFluxo[] }) {
   )
 }
 
+/** Os resolvidos da janela — o trabalho que o kanban deixa de mostrar. */
+function HistoricoResolvidos({ dias }: { dias: number }) {
+  const { data, isLoading, isError } = useQuery<{ chamados: Resolvido[]; total: number }>({
+    queryKey: ['chamados-historico', dias],
+    queryFn: () => apiFetch(`/chamados/historico?dias=${dias}`),
+  })
+  if (isLoading) return <p className="text-[11px] text-dim">Carregando…</p>
+  if (isError || !data) return <p className="text-[11px] text-dim">Não foi possível carregar o histórico.</p>
+  if (!data.total) {
+    // Vazio DITO: sem esta frase, a seção em branco parece falha de carga.
+    return <p className="text-[11px] text-dim">Nenhum chamado encerrado no período.</p>
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-dim text-left">
+            <th className="font-medium py-1 pr-3">Chamado</th>
+            <th className="font-medium py-1 pr-3">Tipo de demanda</th>
+            <th className="font-medium py-1 pr-3">Responsável</th>
+            <th className="font-medium py-1 pr-3 text-right">Dias</th>
+            <th className="font-medium py-1">Encerrado</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.chamados.map(c => (
+            <tr key={c.numero} className="border-t border-edge">
+              <td className="py-1 pr-3 align-top">
+                {c.url
+                  ? <a href={c.url} target="_blank" rel="noopener noreferrer"
+                      className="font-mono text-blue-600 dark:text-blue-400">{c.numero}</a>
+                  : <span className="font-mono text-ink">{c.numero}</span>}
+                <p className="text-dim leading-snug">{c.titulo || '(sem título)'}</p>
+              </td>
+              <td className="py-1 pr-3 align-top text-dim">
+                {c.tipo_demanda}
+                {c.categoria_diaadia && <span className="text-dim"> · {c.categoria_diaadia}</span>}
+              </td>
+              <td className="py-1 pr-3 align-top text-dim">{c.atribuido_a || '—'}</td>
+              {/* Negativo é possível quando as datas da origem discordam: mostrar
+                  o absurdo é melhor que escondê-lo com um max(0, …). */}
+              <td className="py-1 pr-3 align-top text-right text-ink">
+                {c.dias_ate_resolver ?? '—'}
+              </td>
+              <td className="py-1 align-top text-dim">{c.encerrado_em?.slice(0, 10) ?? '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export default function ChamadosIndicadores() {
   const { data, isLoading, isError, error } = useQuery<RespostaIndicadores>({
     queryKey: ['chamados-indicadores'],
@@ -285,6 +360,39 @@ export default function ChamadosIndicadores() {
         <BarrasHorizontais total={d.total_ativos}
           itens={d.carga.map(c => ({ rotulo: c.responsavel, valor: c.total }))} />
       </Painel>
+
+      <Painel titulo="O que a fila está pedindo"
+        descricao="Tipo de demanda deduzido do título e do catálogo de cada chamado aberto.">
+        <BarrasHorizontais total={d.total_ativos}
+          itens={d.por_tipo_demanda.map(t => ({ rotulo: t.tipo, valor: t.total }))} />
+      </Painel>
+
+      <Painel titulo="Categorias do dia a dia"
+        descricao={d.sem_categoria > 0
+          // O denominador é dito: sem ele, um gráfico com 4 chamados
+          // classificados pareceria a fila inteira.
+          ? `Marcação feita nas work notes. ${d.sem_categoria} de ${d.total_ativos} chamado(s) da fila ainda não têm marcação.`
+          : 'Marcação "dia a dia" feita pela equipe nas work notes.'}>
+        {d.por_categoria.length
+          ? <BarrasHorizontais total={d.total_ativos}
+              itens={d.por_categoria.map(c => ({ rotulo: c.categoria, valor: c.total }))} />
+          : <p className="text-[11px] text-dim">
+              Nenhum chamado da fila tem marcação de dia a dia nas work notes.
+            </p>}
+      </Painel>
+
+      <section className="bg-panel border border-edge rounded-lg p-4 flex flex-col gap-3 lg:col-span-2">
+        <div>
+          <h2 className="text-sm font-semibold text-ink">
+            Resolvidos nos últimos {d.dias_historico} dias
+          </h2>
+          <p className="text-[11px] text-dim">
+            {d.resolvidos_periodo} chamado(s) encerrados — o trabalho que sai da fila
+            e some do kanban.
+          </p>
+        </div>
+        <HistoricoResolvidos dias={d.dias_historico} />
+      </section>
     </div>
   )
 }

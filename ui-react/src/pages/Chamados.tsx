@@ -53,6 +53,18 @@ interface Chamado {
   url: string | null
   sync_em: string | null
   idade_dias: number | null
+  // Derivadas na ingestão (migrations 091/092). `tipo_demanda` nunca chega
+  // vazio: o backend devolve rótulo explícito para o que o sync ainda não
+  // classificou, senão o card teria de inventar o que escrever.
+  tipo_demanda: string
+  categoria_diaadia: string
+  objetos: string
+  demandante: string
+  catalogo: string
+  prazo: string | null
+  // null = ninguém mediu o SLA; false = mediu e está no prazo. Estados
+  // diferentes, e o card só fala quando há o que dizer.
+  sla_vencido: boolean | null
 }
 
 interface UltimoSync {
@@ -163,8 +175,37 @@ function CardChamado({ c }: { c: Chamado }) {
           </span>
         )}
       </div>
+      {/* Derivações: o que o painel da estação lia nas entrelinhas e a tela
+          não mostrava. O tipo aparece sempre; categoria e objetos só quando
+          existem — chip vazio é ruído que ensina a ignorar a linha inteira. */}
+      <div className="flex flex-wrap items-center gap-1 text-[10px]">
+        <span className="px-1.5 py-0.5 rounded bg-panel border border-edge text-dim"
+          title={c.catalogo ? `Catálogo na origem: ${c.catalogo}` : 'Tipo deduzido do título'}>
+          {c.tipo_demanda}
+        </span>
+        {c.categoria_diaadia && (
+          <span className="px-1.5 py-0.5 rounded bg-panel border border-edge text-dim"
+            title="Categoria marcada nas work notes (dia a dia)">
+            {c.categoria_diaadia}
+          </span>
+        )}
+        {c.objetos && (
+          <span className="font-mono text-dim truncate max-w-full"
+            title={`Objetos citados: ${c.objetos}`}>
+            {c.objetos}
+          </span>
+        )}
+        {c.sla_vencido === true && (
+          <span className="px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-300"
+            title="O ServiceNow marcou este chamado com SLA vencido">
+            SLA vencido
+          </span>
+        )}
+      </div>
       <div className="flex items-center justify-between gap-2 text-[11px] text-dim">
-        <span className="truncate" title={c.atribuido_a || 'sem responsável'}>
+        <span className="truncate" title={c.demandante
+          ? `Responsável: ${c.atribuido_a || 'sem responsável'} · Demandante: ${c.demandante}`
+          : (c.atribuido_a || 'sem responsável')}>
           {c.atribuido_a || 'sem responsável'}
         </span>
         {/* Idade: cor E rótulo. A cor sozinha não informa quem não a distingue. */}
