@@ -16,6 +16,7 @@ import { Input, Select } from '../components/ui/Input'
 import { Button } from '../components/ui/Button'
 import { PageSpinner } from '../components/ui/Spinner'
 import { Tabs } from '../components/ui/Tabs'
+import { Modal } from '../components/ui/Modal'
 import ChamadosIndicadores from './ChamadosIndicadores'
 import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
 
@@ -65,6 +66,19 @@ interface Chamado {
   // null = ninguém mediu o SLA; false = mediu e está no prazo. Estados
   // diferentes, e o card só fala quando há o que dizer.
   sla_vencido: boolean | null
+  // Triagem (migration 093). `veredito: null` = ainda não analisado — que é
+  // diferente de qualquer veredito: card não analisado não pode ser pintado
+  // como se tivesse sido reprovado.
+  veredito: string | null
+  suficiencia: string | null
+  resumo: string
+  lacunas: string[]
+  perguntas: string
+  // 'ia' | 'heuristica' | ''. A tela DIZ quem julgou: heurística mostrada
+  // como análise de IA é veredito em que ninguém pensou.
+  triagem_origem: string
+  triagem_em: string | null
+  triagem_erro: string
 }
 
 interface UltimoSync {
@@ -150,7 +164,86 @@ function frescor(sync: UltimoSync | null): { texto: string; tom: string } {
   return { texto, tom: sync.atrasado ? 'warning' : 'success' }
 }
 
+// O veredito colore o card, então o mapa é fechado: valor fora dele não
+// ganha cor nem significado — por isso o backend recusa veredito que a IA
+// invente, e aqui o desconhecido cai no neutro em vez de sumir.
+const ESTILO_VEREDITO: Record<string, { classe: string; curto: string }> = {
+  'PODE INICIAR': {
+    classe: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300',
+    curto: 'pode iniciar',
+  },
+  'RETORNAR AO SOLICITANTE': {
+    classe: 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300',
+    curto: 'retornar',
+  },
+}
+
+/** O laudo inteiro, para ler e copiar. */
+function ModalTriagem({ c, aoFechar }: { c: Chamado; aoFechar: () => void }) {
+  const heuristica = c.triagem_origem === 'heuristica'
+  return (
+    <Modal open onClose={aoFechar} title={`Triagem · ${c.numero}`} size="lg">
+      <div className="flex flex-col gap-3 text-[12px]">
+        {/* A PRIMEIRA coisa do modal é quem julgou. Um laudo heurístico lido
+            como análise de IA leva o operador a confiar num julgamento que
+            ninguém fez — e a heurística só mediu sinais do texto. */}
+        <div className={`rounded-md px-3 py-2 ${heuristica
+          ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200'
+          : 'bg-panel text-ink'}`}>
+          {heuristica ? (
+            <>
+              <strong>Análise automática por regra de texto</strong> — a IA não
+              respondeu, então este veredito vem de heurística: ela mede sinais
+              da descrição, não lê o pedido.
+              {c.triagem_erro && <span className="block text-[11px] mt-1">Motivo: {c.triagem_erro}</span>}
+            </>
+          ) : (
+            <><strong>Análise por IA</strong>{c.triagem_em ? ` · ${c.triagem_em}` : ''}</>
+          )}
+        </div>
+
+        {c.resumo && <p className="text-ink">{c.resumo}</p>}
+
+        {c.lacunas.length > 0 && (
+          <div>
+            <h4 className="text-[11px] font-semibold text-dim uppercase tracking-wide">
+              Lacunas identificadas
+            </h4>
+            <ul className="list-disc pl-4 text-ink">
+              {c.lacunas.map((l, i) => <li key={i}>{l}</li>)}
+            </ul>
+          </div>
+        )}
+
+        {c.perguntas && (
+          <div>
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="text-[11px] font-semibold text-dim uppercase tracking-wide">
+                Perguntas sugeridas
+              </h4>
+              {/* Copiar, e não enviar: devolver chamado pela automação é
+                  decisão de outra spec. Quem fala com o solicitante é uma
+                  pessoa. */}
+              <Button variant="secondary" size="sm"
+                onClick={() => navigator.clipboard?.writeText(c.perguntas)}>
+                Copiar
+              </Button>
+            </div>
+            <pre className="whitespace-pre-wrap text-ink font-sans">{c.perguntas}</pre>
+          </div>
+        )}
+
+        {!c.resumo && !c.lacunas.length && !c.perguntas && (
+          <p className="text-dim">Este chamado ainda não tem laudo de triagem.</p>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
 function CardChamado({ c }: { c: Chamado }) {
+  const [verLaudo, setVerLaudo] = useState(false)
+  const estilo = c.veredito ? ESTILO_VEREDITO[c.veredito] : undefined
   return (
     <div className="bg-canvas border border-edge rounded-md p-2.5 flex flex-col gap-1.5 shadow-sm">
       <div className="flex items-center justify-between gap-2">
@@ -205,7 +298,22 @@ function CardChamado({ c }: { c: Chamado }) {
             SLA vencido
           </span>
         )}
+        {/* Veredito: só aparece quando existe. Card não analisado fica SEM
+            selo — pintá-lo de âmbar diria que ele foi reprovado. */}
+        {estilo && (
+          <button type="button" onClick={() => setVerLaudo(true)}
+            className={`px-1.5 py-0.5 rounded ${estilo.classe}`}
+            title={c.triagem_origem === 'heuristica'
+              ? 'Veredito por regra de texto (a IA não respondeu) — clique para ver'
+              : 'Veredito da análise por IA — clique para ver o laudo'}>
+            {estilo.curto}
+            {/* O til marca o que veio da heurística. Sem esta marca, os dois
+                vereditos têm exatamente a mesma cara no card. */}
+            {c.triagem_origem === 'heuristica' && <span aria-hidden> ~</span>}
+          </button>
+        )}
       </div>
+      {verLaudo && <ModalTriagem c={c} aoFechar={() => setVerLaudo(false)} />}
       <div className="flex items-center justify-between gap-2 text-[11px] text-dim">
         <span className="truncate" title={c.demandante
           ? `Responsável: ${c.atribuido_a || 'sem responsável'} · Demandante: ${c.demandante}`

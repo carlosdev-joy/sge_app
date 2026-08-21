@@ -274,7 +274,77 @@ def etl_servicenow_sync():
         return {"status": "PARCIAL" if erros else "OK", "total": total,
                 "contagens": contagens, "desativados": desativados}
 
-    ciclo()
+    @task
+    def triagem(_anterior=None) -> dict:
+        """Classifica os chamados novos ou alterados: dá para começar?
+
+        Task SEPARADA do ciclo de espelho, de propósito. Ela fala com outro
+        sistema (o gateway de IA) e falha por outros motivos; junto do sync,
+        um gateway fora do ar pintaria de vermelho a sincronização — que
+        funcionou — e o operador perderia a distinção entre "os chamados não
+        chegaram" e "os chamados chegaram, mas não foram analisados".
+
+        Nunca falha: sem gateway, o veredito sai da heurística. O que a task
+        NÃO faz é fingir que a análise foi de IA (ver triagem_origem).
+        """
+        from utils.triagem_ia import (
+            config_da_triagem, pendentes, params_gravar, sql_candidatos,
+            sql_gravar, triar,
+        )
+
+        hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
+        linhas = hook.get_records(
+            "SELECT config_key, config_value FROM dbo.etl_app_config "
+            "WHERE config_key LIKE 'caixa_ia%' OR config_key LIKE 'chamados_triagem%'")
+        conf = config_da_triagem({k: (v or "").strip() for k, v in (linhas or [])})
+
+        if not conf["habilitada"]:
+            print("[TRIAGEM] desligada (chamados_triagem_habilitada=0) — "
+                  "ligue em Admin > ServiceNow.")
+            return {"status": "DESABILITADA", "triados": 0}
+
+        api_key = ""
+        if conf["api_key_enc"]:
+            try:
+                api_key = _decifrar(conf["api_key_enc"])
+            except Exception as e:
+                # Chave ilegível não pode parar a triagem: ela segue pela
+                # heurística, e o motivo fica gravado em cada laudo.
+                print(f"[TRIAGEM] chave de API ilegível ({e}) — heurística.")
+
+        try:
+            candidatos = hook.get_records(sql_candidatos())
+        except Exception as e:
+            # Colunas da 093 ainda não aplicadas é o caso esperado aqui.
+            print(f"[TRIAGEM] não foi possível ler a fila: {e}")
+            return {"status": "ERRO", "triados": 0, "erro": str(e)[:400]}
+
+        fila = pendentes(candidatos or [], conf["lote"])
+        if not fila:
+            print("[TRIAGEM] nada a triar — a fila viva está toda analisada.")
+            return {"status": "OK", "triados": 0}
+
+        por_origem: dict = {}
+        for chamado in fila:
+            laudo = triar(chamado, conf, api_key)
+            por_origem[laudo["origem"]] = por_origem.get(laudo["origem"], 0) + 1
+            hook.run(sql_gravar(),
+                     parameters=params_gravar(laudo, chamado["hash"],
+                                              chamado["sys_id"]))
+            marca = laudo["origem"].upper()
+            print(f"[TRIAGEM] {chamado['numero']}: {laudo['veredito']} ({marca})"
+                  + (f" — {laudo['erro']}" if laudo["erro"] else ""))
+
+        restantes = max(0, len(candidatos or []) - len(fila))
+        print(f"[TRIAGEM] {len(fila)} analisado(s): {por_origem}. "
+              f"{restantes} candidato(s) ficaram para o próximo ciclo.")
+        return {"status": "OK", "triados": len(fila), "por_origem": por_origem,
+                "restantes": restantes}
+
+    # A triagem roda DEPOIS do espelho: analisar antes do sync usaria o texto
+    # do ciclo passado. Encadeada pelo retorno, e não por >>, para que uma
+    # falha do sync não dispare a triagem sobre dados que não chegaram.
+    triagem(ciclo())
 
 
 etl_servicenow_sync()

@@ -3503,6 +3503,9 @@ interface SnDiagnostico {
 interface SnConfig {
   url: string; usuario: string; grupos: string; proxy: string
   habilitado: boolean; tem_senha: boolean; configurado: boolean
+  // Triagem por IA (migration 093): interruptor PRÓPRIO, separado do
+  // caixa_ia_enabled, que governa só os assistentes do Caixa Seguro.
+  triagem_habilitada: boolean; triagem_lote: string
 }
 
 function SondaServiceNowTab() {
@@ -3525,6 +3528,7 @@ function SondaServiceNowTab() {
   const [edits, setEdits] = useState<Partial<{
     url: string; usuario: string; senha: string; grupos: string
     proxy: string; habilitado: boolean
+    triagem_habilitada: boolean; triagem_lote: string
   }>>({})
   const cfgForm = {
     url:        edits.url        ?? cfg?.url        ?? cfgEnv?.url ?? '',
@@ -3533,6 +3537,8 @@ function SondaServiceNowTab() {
     grupos:     edits.grupos     ?? cfg?.grupos     ?? '',
     proxy:      edits.proxy      ?? cfg?.proxy      ?? '',
     habilitado: edits.habilitado ?? cfg?.habilitado ?? false,
+    triagem_habilitada: edits.triagem_habilitada ?? cfg?.triagem_habilitada ?? false,
+    triagem_lote: edits.triagem_lote ?? cfg?.triagem_lote ?? '20',
   }
   const setCfgForm = (patch: Partial<typeof cfgForm>) =>
     setEdits(e => ({ ...e, ...patch }))
@@ -3556,6 +3562,8 @@ function SondaServiceNowTab() {
     mutationFn: () => adminPost<{ mensagem?: string }>('servicenow_set', {
       url: cfgForm.url, usuario: cfgForm.usuario, grupos: cfgForm.grupos,
       proxy: cfgForm.proxy, habilitado: cfgForm.habilitado,
+      triagem_habilitada: cfgForm.triagem_habilitada,
+      triagem_lote: cfgForm.triagem_lote,
       // string vazia = manter a senha atual; só envia quando o operador
       // escolheu trocá-la de fato.
       senha: trocarSenha ? cfgForm.senha : '',
@@ -3630,6 +3638,29 @@ function SondaServiceNowTab() {
             onChange={e => setCfgForm({ habilitado: e.target.checked })} />
           Sincronização agendada habilitada
         </label>
+
+        {/* Triagem por IA — interruptor SEPARADO do provedor. Desligar aqui
+            não desliga os assistentes do Caixa Seguro, e vice-versa. */}
+        <div className="border-t border-edge pt-3 flex flex-col gap-2">
+          <label className="flex items-center gap-1.5 text-xs text-ink">
+            <input type="checkbox" checked={cfgForm.triagem_habilitada}
+              onChange={e => setCfgForm({ triagem_habilitada: e.target.checked })} />
+            Triagem dos chamados por IA
+          </label>
+          <p className="text-[11px] text-dim">
+            Classifica cada chamado em <strong>pode iniciar</strong> ou{' '}
+            <strong>retornar ao solicitante</strong>, com as lacunas e as perguntas
+            a devolver. Usa o provedor configurado em <em>Caixa Seguro IA</em>.
+            {' '}Desligada, a fila continua sendo classificada por regra de texto —
+            e a tela marca esses vereditos como automáticos, para ninguém confundir
+            com análise de IA.
+          </p>
+          <Input label="Chamados analisados por ciclo" type="number" className="w-56"
+            value={cfgForm.triagem_lote}
+            ajuda="A triagem roda dentro do ciclo de 15 min, que tem teto de 10 min. Lote grande demais faz o sync estourar o tempo."
+            onChange={e => setCfgForm({ triagem_lote: e.target.value })} />
+        </div>
+
         <div className="flex justify-end gap-2">
           <Button size="sm" variant="secondary" loading={sonda.isPending}
             disabled={!cfg?.configurado}

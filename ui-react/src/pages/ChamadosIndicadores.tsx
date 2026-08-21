@@ -43,6 +43,8 @@ export interface RespostaIndicadores {
   por_tipo_demanda: PorTipoDemanda[]
   por_categoria: PorCategoria[]
   categorias_ocultas: number
+  triagem: { veredito: string; origem: string; total: number }[]
+  triagem_com_erro: number
   sem_categoria: number
   resolvidos_periodo: number
   dias_historico: number
@@ -384,6 +386,28 @@ export default function ChamadosIndicadores() {
           : 'Chamados abertos por responsável.'}>
         <BarrasHorizontais total={d.total_ativos}
           itens={d.carga.map(c => ({ rotulo: c.responsavel, valor: c.total }))} />
+      </Painel>
+
+      <Painel titulo="Triagem da fila"
+        descricao={d.triagem_com_erro > 0
+          // O erro é dito no cabeçalho, não escondido num campo por chamado:
+          // "18 podem iniciar" soa como análise feita, quando pode ser a
+          // heurística respondendo por todos com o gateway fora do ar.
+          ? `Veredito por chamado aberto. ⚠ ${d.triagem_com_erro} laudo(s) registraram falha da IA — esses vereditos vieram da regra de texto.`
+          : 'Veredito por chamado aberto, com a origem de cada análise.'}>
+        {d.triagem.length
+          ? <BarrasHorizontais total={d.total_ativos}
+              itens={d.triagem.map(t => ({
+                // Veredito e origem no MESMO rótulo: separá-los deixaria o
+                // leitor supor que todo veredito veio de IA.
+                rotulo: t.origem === 'heuristica'
+                  ? `${t.veredito} (por regra)`
+                  : t.origem === 'ia' ? `${t.veredito} (IA)` : t.veredito,
+                valor: t.total,
+              }))} />
+          : <p className="text-[11px] text-dim">
+              Nenhum chamado triado ainda. Ligue a triagem em Admin &gt; ServiceNow.
+            </p>}
       </Painel>
 
       <Painel titulo="O que a fila está pedindo"
