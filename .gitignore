@@ -81,3 +81,9 @@ logs/
 ## runtime, nunca entram no git — o deploy.sh já as exclui do rsync, e o
 ## harness da retomada (docs/retomada-harness-dev.md §8) exigia esta linha.
 dags/generated/
+
+## Pacote offline do Claude Code (scripts/claude-offline): o binário tem
+## ~339 MB e o .tar.gz 91 MB — artefato de release, nunca do git.
+scripts/claude-offline/dist/
+scripts/claude-offline/cache/
+scripts/claude-offline/trabalho/
