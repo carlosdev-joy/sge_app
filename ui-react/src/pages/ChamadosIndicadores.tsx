@@ -369,6 +369,14 @@ export default function ChamadosIndicadores() {
 
   return (
     <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
+      {/* A unidade da aba, dita uma vez. Todo "x de y" daqui conta TRABALHOS
+          — o pedido com a tarefa dentro —, a mesma unidade da aba Fila. Sem
+          esta linha, quem soubesse que o espelho tem 113 registros acharia
+          que o painel perdeu chamado. */}
+      <p className="lg:col-span-2 text-[11px] text-dim -mb-1">
+        Os números abaixo contam <strong className="text-ink">trabalhos</strong>:
+        cada pedido e a tarefa que ele gerou valem um, como na aba Fila.
+      </p>
       {/* O painel base (aging, tipo × estado, fluxo, carga) continua servido
           mesmo sem as colunas novas — mas o que falta precisa ser DITO, senão
           os painéis ausentes parecem dados zerados. */}

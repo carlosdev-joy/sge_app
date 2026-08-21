@@ -125,6 +125,44 @@ def _agrupar_por_pai(chamados: list[dict]) -> list[dict]:
     return raizes
 
 
+# O MESMO recorte da fila, em SQL — para quem só CONTA.
+#
+# A fila agrupa em Python porque a tela precisa dos dois registros (o pai vira
+# card, o filho vira linha). As agregações não mostram o filho, então trazer a
+# tabela inteira para contar linha em Python seria desperdício — elas cortam no
+# banco.
+#
+# São dois caminhos para a mesma regra, e é por isso que existe o teste de
+# paridade: sem ele a aba Indicadores diria 113 enquanto a Fila diz 60, e as
+# duas pareceriam certas. As três recusas de `_agrupar_por_pai` estão aqui,
+# uma a uma — o `pai.sys_id <> ...sys_id` é a auto-referência, o bloco de
+# dentro é o "só quem tem pai RAIZ vira filho", e a ausência de pai no escopo
+# (órfã) simplesmente não casa o EXISTS.
+#
+# `sys_id` é NOT NULL (migration 088). Se um dia deixasse de ser, este NOT
+# EXISTS continuaria correto — foi para isso que ele veio no lugar de um
+# `NOT IN`, que devolve conjunto VAZIO quando a subconsulta tem um NULL.
+def _so_trabalhos(entre_ativos: bool = True) -> str:
+    """Predicado SQL: exclui o filho cujo pai está no mesmo escopo."""
+    # O pai só conta se estiver no MESMO recorte que a agregação olha — é o
+    # que o Python faz, porque lá o dicionário de pais é montado da lista já
+    # filtrada. Um pai encerrado não pode engolir o filho de uma conta que só
+    # olha ativos.
+    escopo = " AND pai.ativo = 1" if entre_ativos else ""
+    escopo_avo = " AND avo.ativo = 1" if entre_ativos else ""
+    return (
+        " AND NOT EXISTS ("
+        "   SELECT 1 FROM dbo.etl_chamado AS pai"
+        "   WHERE pai.sys_id = dbo.etl_chamado.pai_sys_id"
+        "     AND pai.sys_id <> dbo.etl_chamado.sys_id"
+        f"    {escopo}"
+        "     AND (pai.pai_sys_id IS NULL OR pai.pai_sys_id = ''"
+        "          OR pai.pai_sys_id = pai.sys_id"
+        "          OR NOT EXISTS (SELECT 1 FROM dbo.etl_chamado AS avo"
+        f"                        WHERE avo.sys_id = pai.pai_sys_id{escopo_avo})))"
+    )
+
+
 def _fmt_dt(v):
     return str(v)[:19] if v else None
 
@@ -364,7 +402,8 @@ def indicadores(_auth: dict = Depends(get_current_user)):
             "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 14 THEN '8-14 dias' "
             "  ELSE 'mais de 14 dias' END AS faixa, COUNT(*) "
             "FROM dbo.etl_chamado WHERE ativo = 1 AND aberto_em IS NOT NULL "
-            "GROUP BY CASE "
+            + _so_trabalhos() +
+            " GROUP BY CASE "
             "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 3 THEN '0-3 dias' "
             "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 7 THEN '4-7 dias' "
             "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 14 THEN '8-14 dias' "
@@ -378,7 +417,8 @@ def indicadores(_auth: dict = Depends(get_current_user)):
         # ── tipo × estado ───────────────────────────────────────────────────
         cur.execute(
             "SELECT tipo, estado_kanban, COUNT(*) FROM dbo.etl_chamado "
-            "WHERE ativo = 1 GROUP BY tipo, estado_kanban")
+            "WHERE ativo = 1" + _so_trabalhos() +
+            " GROUP BY tipo, estado_kanban")
         celulas = [{"tipo": r[0], "estado": r[1], "total": r[2]}
                    for r in cur.fetchall()]
         saida["tipo_estado"] = {
@@ -391,12 +431,16 @@ def indicadores(_auth: dict = Depends(get_current_user)):
         cur.execute(
             "SELECT CAST(aberto_em AS DATE), COUNT(*) FROM dbo.etl_chamado "
             "WHERE aberto_em >= DATEADD(DAY, ?, CAST(GETDATE() AS DATE)) "
-            "GROUP BY CAST(aberto_em AS DATE)", [-(DIAS_FLUXO - 1)])
+            # Histórico: o pai pode já ter saído da fila, então o recorte
+            # olha o espelho INTEIRO, não só os ativos.
+            + _so_trabalhos(entre_ativos=False) +
+            " GROUP BY CAST(aberto_em AS DATE)", [-(DIAS_FLUXO - 1)])
         entradas = {str(r[0])[:10]: r[1] for r in cur.fetchall()}
         cur.execute(
             "SELECT CAST(encerrado_em AS DATE), COUNT(*) FROM dbo.etl_chamado "
             "WHERE encerrado_em >= DATEADD(DAY, ?, CAST(GETDATE() AS DATE)) "
-            "GROUP BY CAST(encerrado_em AS DATE)", [-(DIAS_FLUXO - 1)])
+            + _so_trabalhos(entre_ativos=False) +
+            " GROUP BY CAST(encerrado_em AS DATE)", [-(DIAS_FLUXO - 1)])
         saidas = {str(r[0])[:10]: r[1] for r in cur.fetchall()}
         cur.execute("SELECT CAST(GETDATE() AS DATE)")
         hoje = cur.fetchone()[0]
@@ -415,7 +459,8 @@ def indicadores(_auth: dict = Depends(get_current_user)):
         cur.execute(
             "SELECT ISNULL(NULLIF(LTRIM(RTRIM(atribuido_a)), ''), 'sem responsável'), "
             "       COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
-            "GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(atribuido_a)), ''), 'sem responsável') "
+            + _so_trabalhos() +
+            " GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(atribuido_a)), ''), 'sem responsável') "
             "ORDER BY COUNT(*) DESC")
         todos = [{"responsavel": r[0], "total": r[1]} for r in cur.fetchall()]
         saida["carga"] = todos[:TOPO_RESPONSAVEIS]
@@ -436,7 +481,8 @@ def indicadores(_auth: dict = Depends(get_current_user)):
             cur.execute(
                 "SELECT ISNULL(NULLIF(LTRIM(RTRIM(tipo_demanda)), ''), ?), COUNT(*) "
                 "FROM dbo.etl_chamado WHERE ativo = 1 "
-                "GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(tipo_demanda)), ''), ?) "
+                + _so_trabalhos() +
+                " GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(tipo_demanda)), ''), ?) "
                 "ORDER BY COUNT(*) DESC",
                 [TIPO_NAO_CLASSIFICADO, TIPO_NAO_CLASSIFICADO])
             saida["por_tipo_demanda"] = [{"tipo": r[0], "total": r[1]}
@@ -450,7 +496,8 @@ def indicadores(_auth: dict = Depends(get_current_user)):
                 "SELECT LTRIM(RTRIM(categoria_diaadia)), COUNT(*) "
                 "FROM dbo.etl_chamado WHERE ativo = 1 "
                 "  AND NULLIF(LTRIM(RTRIM(categoria_diaadia)), '') IS NOT NULL "
-                "GROUP BY LTRIM(RTRIM(categoria_diaadia)) ORDER BY COUNT(*) DESC")
+                + _so_trabalhos() +
+                " GROUP BY LTRIM(RTRIM(categoria_diaadia)) ORDER BY COUNT(*) DESC")
             todas = [{"categoria": r[0], "total": r[1]} for r in cur.fetchall()]
             # Corte com o resto DITO, como o gráfico de carga já faz. A categoria
             # é texto livre digitado nas work notes: sem teto, cada erro de
@@ -459,13 +506,15 @@ def indicadores(_auth: dict = Depends(get_current_user)):
             saida["categorias_ocultas"] = max(0, len(todas) - TOPO_CATEGORIAS)
             cur.execute(
                 "SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
-                "  AND NULLIF(LTRIM(RTRIM(categoria_diaadia)), '') IS NULL")
+                "  AND NULLIF(LTRIM(RTRIM(categoria_diaadia)), '') IS NULL"
+                + _so_trabalhos())
             saida["sem_categoria"] = cur.fetchone()[0]
 
             # ── resolvidos da janela do histórico ───────────────────────────────
             cur.execute(
                 "SELECT COUNT(*) FROM dbo.etl_chamado "
-                "WHERE encerrado_em >= DATEADD(DAY, ?, CAST(GETDATE() AS DATE))",
+                "WHERE encerrado_em >= DATEADD(DAY, ?, CAST(GETDATE() AS DATE))"
+                + _so_trabalhos(entre_ativos=False),
                 [-(DIAS_HISTORICO - 1)])
             saida["resolvidos_periodo"] = cur.fetchone()[0]
 
@@ -476,7 +525,8 @@ def indicadores(_auth: dict = Depends(get_current_user)):
             cur.execute(
                 "SELECT ISNULL(veredito, 'não triado'), ISNULL(triagem_origem, ''), "
                 "       COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
-                "GROUP BY ISNULL(veredito, 'não triado'), ISNULL(triagem_origem, '')")
+                + _so_trabalhos() +
+                " GROUP BY ISNULL(veredito, 'não triado'), ISNULL(triagem_origem, '')")
             saida["triagem"] = [{"veredito": r[0], "origem": r[1], "total": r[2]}
                                 for r in cur.fetchall()]
             # Quantos laudos registraram falha da IA — é o sinal de gateway doente
@@ -486,11 +536,11 @@ def indicadores(_auth: dict = Depends(get_current_user)):
             # mandaria o operador investigar rede quando faltava preencher campo.
             cur.execute(
                 "SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
-                "  AND triagem_erro LIKE 'falha:%'")
+                "  AND triagem_erro LIKE 'falha:%'" + _so_trabalhos())
             saida["triagem_com_erro"] = cur.fetchone()[0]
             cur.execute(
                 "SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
-                "  AND triagem_erro LIKE 'config:%'")
+                "  AND triagem_erro LIKE 'config:%'" + _so_trabalhos())
             saida["triagem_sem_config"] = cur.fetchone()[0]
 
         except Exception as e:
@@ -504,7 +554,8 @@ def indicadores(_auth: dict = Depends(get_current_user)):
                 pass
             cur = conn.cursor()
 
-        cur.execute("SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1")
+        cur.execute("SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1"
+                    + _so_trabalhos())
         saida["total_ativos"] = cur.fetchone()[0]
         cur.close(); conn.close()
     except Exception as e:
@@ -546,6 +597,7 @@ def sugestoes(_auth: dict = Depends(get_current_user)):
             "  WHERE encerrado_em >= DATEADD(DAY, -90, GETDATE()) "
             "    AND NULLIF(LTRIM(RTRIM(atribuido_a)), '') IS NOT NULL "
             "    AND NULLIF(LTRIM(RTRIM(tipo_demanda)), '') IS NOT NULL "
+            + _so_trabalhos(entre_ativos=False) +
             "  GROUP BY tipo_demanda, atribuido_a), "
             "ranqueado AS ("
             "  SELECT *, ROW_NUMBER() OVER (PARTITION BY tipo_demanda "
@@ -599,7 +651,9 @@ def historico(dias: int = DIAS_HISTORICO,
             "       ativo "
             "FROM dbo.etl_chamado "
             "WHERE encerrado_em >= DATEADD(DAY, ?, CAST(GETDATE() AS DATE)) "
-            "ORDER BY encerrado_em DESC", [-(dias - 1)])
+            # O pai pode ter saído da fila; o recorte olha o espelho inteiro.
+            + _so_trabalhos(entre_ativos=False) +
+            " ORDER BY encerrado_em DESC", [-(dias - 1)])
         for r in cur.fetchall():
             saida["chamados"].append({
                 "numero": r[0], "tipo": r[1], "titulo": r[2],
