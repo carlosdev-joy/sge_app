@@ -64,6 +64,21 @@ DIAS_FLUXO = 14
 # soma do gráfico não bater com a fila.
 TOPO_RESPONSAVEIS = 10
 
+# Janela do histórico de resolvidos. 10 dias é o que o painel da estação usa:
+# o suficiente para "o que saiu esta semana e a passada" sem virar relatório.
+DIAS_HISTORICO = 10
+
+# Rótulo de quem o sync ainda não classificou — as linhas gravadas ANTES da
+# migration 092 têm tipo_demanda NULL até o próximo ciclo tocá-las. Some no
+# gráfico seria pior: a soma não fecharia com o total da fila e ninguém saberia
+# se faltou dado ou faltou classificação.
+TIPO_NAO_CLASSIFICADO = "não classificado"
+
+# Teto do gráfico de categorias, pela mesma razão de TOPO_RESPONSAVEIS: a
+# categoria vem de texto livre nas work notes, e sem corte cada variação de
+# digitação vira uma barra permanente. O resto é DITO, nunca silenciado.
+TOPO_CATEGORIAS = 10
+
 
 def _fmt_dt(v):
     return str(v)[:19] if v else None
@@ -108,21 +123,52 @@ def listar_chamados(incluir_inativos: int = 0,
         "chamados": [], "colunas": list(COLUNAS_KANBAN), "ultimo_sync": None,
         "migration_ausente": False, "total": 0, "por_coluna": {},
         "alerta_fila_vazia": None,
+        # true = o espelho responde, mas as colunas das migrations 091/092
+        # ainda não existem. A fila continua servida; os chips é que faltam.
+        "derivacoes_pendentes": False,
     }
     conn = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
-        sql = (
+        # As colunas de CONTEÚDO (descricao, work_notes) ficam de fora de
+        # propósito: elas carregam nome de pessoa e dado de cliente, a fila
+        # inteira viaja nesta resposta, e a tela mostra o card — não o texto.
+        # O que sai daqui são as DERIVAÇÕES, que é o que o card usa.
+        base = (
             "SELECT sys_id, numero, tipo, titulo, estado_origem, estado_kanban, "
             "       prioridade, atribuido_a, grupo, aberto_em, atualizado_em, "
             "       encerrado_em, ativo, url, sync_em, "
-            "       DATEDIFF(DAY, aberto_em, GETDATE()) AS idade_dias "
-            "FROM dbo.etl_chamado")
-        if not incluir_inativos:
-            sql += " WHERE ativo = 1"
-        sql += " ORDER BY aberto_em DESC"
-        cur.execute(sql)
-        for r in cur.fetchall():
+            "       DATEDIFF(DAY, aberto_em, GETDATE()) AS idade_dias")
+        novas = (", tipo_demanda, categoria_diaadia, objetos, demandante, "
+                 "  catalogo, prazo, sla_vencido")
+        fim = (" FROM dbo.etl_chamado"
+               + ("" if incluir_inativos else " WHERE ativo = 1")
+               + " ORDER BY aberto_em DESC")
+
+        # Duas tentativas, e não uma. As migrations (etapa 6c do deploy) e o
+        # rebuild da API são passos separados: com a imagem nova e a 091/092
+        # ainda não aplicadas, um SELECT único faria o kanban INTEIRO — que já
+        # funcionava — virar "sistema em atualização" por causa dos chips
+        # novos. A tela velha continua de pé; só os campos novos faltam.
+        linhas, tem_derivacoes = [], True
+        try:
+            cur.execute(base + novas + fim)
+            linhas = cur.fetchall()
+        except Exception as e:
+            log.warning("chamados: colunas novas ausentes (%s) — servindo o "
+                        "espelho sem as derivações", type(e).__name__)
+            tem_derivacoes = False
+            cur.close(); cur = conn.cursor()
+            cur.execute(base + fim)
+            linhas = cur.fetchall()
+        resposta["derivacoes_pendentes"] = not tem_derivacoes
+
+        for r in linhas:
+            if not tem_derivacoes:
+                # Preenche o que a tela espera, com os mesmos defaults do
+                # caminho completo — o card mostra "não classificado" em vez
+                # de quebrar por campo ausente.
+                r = tuple(r) + (None, "", "", "", "", None, None)
             resposta["chamados"].append({
                 "sys_id": r[0], "numero": r[1], "tipo": r[2], "titulo": r[3],
                 "estado_origem": r[4], "estado_kanban": r[5],
@@ -131,6 +177,17 @@ def listar_chamados(incluir_inativos: int = 0,
                 "encerrado_em": _fmt_dt(r[11]), "ativo": bool(r[12]),
                 "url": r[13], "sync_em": _fmt_dt(r[14]),
                 "idade_dias": r[15] if r[15] is not None else None,
+                # Derivadas (migration 092). NULL vira o rótulo explícito: o
+                # card não pode ficar sem tipo enquanto o sync não passa.
+                "tipo_demanda": r[16] or TIPO_NAO_CLASSIFICADO,
+                "categoria_diaadia": r[17] or "",
+                "objetos": r[18] or "",
+                "demandante": r[19] or "",
+                "catalogo": r[20] or "",
+                "prazo": _fmt_dt(r[21]),
+                # None ≠ 0: "ninguém mediu o SLA" é diferente de "está no
+                # prazo", e a tela precisa poder calar sobre o primeiro.
+                "sla_vencido": None if r[22] is None else bool(r[22]),
             })
         resposta["ultimo_sync"] = _ultimo_ciclo(cur)
         cur.close(); conn.close(); conn = None
@@ -190,6 +247,10 @@ def indicadores(_auth: dict = Depends(get_current_user)):
                                      "celulas": []},
         "fluxo": [], "carga": [], "total_ativos": 0,
         "responsaveis_ocultos": 0, "migration_ausente": False,
+        # Agregações portadas do painel da estação (F3).
+        "por_tipo_demanda": [], "por_categoria": [], "categorias_ocultas": 0,
+        "sem_categoria": 0, "resolvidos_periodo": 0,
+        "dias_historico": DIAS_HISTORICO,
     }
     conn = None
     try:
@@ -260,6 +321,47 @@ def indicadores(_auth: dict = Depends(get_current_user)):
         saida["carga"] = todos[:TOPO_RESPONSAVEIS]
         saida["responsaveis_ocultos"] = max(0, len(todos) - TOPO_RESPONSAVEIS)
 
+        # ── por tipo de demanda (derivação da 092) ──────────────────────────
+        # ISNULL com rótulo em vez de descartar: chamado ainda não tocado pelo
+        # sync tem tipo_demanda NULL, e sumir do gráfico faria a soma não
+        # fechar com a fila — o operador não saberia se faltou dado ou
+        # classificação.
+        cur.execute(
+            "SELECT ISNULL(NULLIF(LTRIM(RTRIM(tipo_demanda)), ''), ?), COUNT(*) "
+            "FROM dbo.etl_chamado WHERE ativo = 1 "
+            "GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(tipo_demanda)), ''), ?) "
+            "ORDER BY COUNT(*) DESC",
+            [TIPO_NAO_CLASSIFICADO, TIPO_NAO_CLASSIFICADO])
+        saida["por_tipo_demanda"] = [{"tipo": r[0], "total": r[1]}
+                                     for r in cur.fetchall()]
+
+        # ── por categoria "dia a dia" ───────────────────────────────────────
+        # Aqui o vazio NÃO vira rótulo: sem marcação é ausência de
+        # classificação, não uma categoria. Ele sai como contador à parte,
+        # `sem_categoria`, para o denominador continuar visível.
+        cur.execute(
+            "SELECT LTRIM(RTRIM(categoria_diaadia)), COUNT(*) "
+            "FROM dbo.etl_chamado WHERE ativo = 1 "
+            "  AND NULLIF(LTRIM(RTRIM(categoria_diaadia)), '') IS NOT NULL "
+            "GROUP BY LTRIM(RTRIM(categoria_diaadia)) ORDER BY COUNT(*) DESC")
+        todas = [{"categoria": r[0], "total": r[1]} for r in cur.fetchall()]
+        # Corte com o resto DITO, como o gráfico de carga já faz. A categoria
+        # é texto livre digitado nas work notes: sem teto, cada erro de
+        # digitação vira uma barra permanente e o gráfico cresce sem limite.
+        saida["por_categoria"] = todas[:TOPO_CATEGORIAS]
+        saida["categorias_ocultas"] = max(0, len(todas) - TOPO_CATEGORIAS)
+        cur.execute(
+            "SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
+            "  AND NULLIF(LTRIM(RTRIM(categoria_diaadia)), '') IS NULL")
+        saida["sem_categoria"] = cur.fetchone()[0]
+
+        # ── resolvidos da janela do histórico ───────────────────────────────
+        cur.execute(
+            "SELECT COUNT(*) FROM dbo.etl_chamado "
+            "WHERE encerrado_em >= DATEADD(DAY, ?, CAST(GETDATE() AS DATE))",
+            [-(DIAS_HISTORICO - 1)])
+        saida["resolvidos_periodo"] = cur.fetchone()[0]
+
         cur.execute("SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1")
         saida["total_ativos"] = cur.fetchone()[0]
         cur.close(); conn.close()
@@ -270,5 +372,69 @@ def indicadores(_auth: dict = Depends(get_current_user)):
             except Exception:
                 pass
         log.warning("indicadores: espelho indisponível (%s: %s)", type(e).__name__, e)
+        saida["migration_ausente"] = True
+    return saida
+
+
+@router.get("/chamados/historico", tags=["chamados"])
+def historico(dias: int = DIAS_HISTORICO,
+              _auth: dict = Depends(get_current_user)):
+    """Os chamados RESOLVIDOS na janela — o que o kanban não mostra.
+
+    A tela vive da fila viva, e o que foi resolvido sai dela (ativo=0). O
+    resultado é que o trabalho entregue fica invisível: a equipe olha o painel
+    e vê só o que falta. O painel da estação resolvia isso com uma seção de
+    resolvidos dos últimos 10 dias, e é ela que este endpoint serve.
+
+    Também é o insumo do "quem costuma atender o quê" — por isso o responsável
+    vem junto.
+    """
+    # Teto e piso: o parâmetro vem da URL, e uma janela de 3650 dias varreria o
+    # espelho inteiro a cada abertura da tela.
+    #
+    # Sem `or DIAS_HISTORICO`: zero é falsy, e o `or` transformaria `dias=0`
+    # no padrão de 10 em vez de no mínimo de 1 — silenciosamente devolvendo
+    # dez vezes mais do que foi pedido. O default já vem da assinatura.
+    dias = max(1, min(int(dias), 90))
+    saida = {"dias": dias, "chamados": [], "total": 0,
+             "ainda_na_fila": 0, "migration_ausente": False}
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT numero, tipo, titulo, atribuido_a, demandante, "
+            "       tipo_demanda, categoria_diaadia, encerrado_em, url, "
+            "       DATEDIFF(DAY, aberto_em, encerrado_em) AS dias_ate_resolver, "
+            "       ativo "
+            "FROM dbo.etl_chamado "
+            "WHERE encerrado_em >= DATEADD(DAY, ?, CAST(GETDATE() AS DATE)) "
+            "ORDER BY encerrado_em DESC", [-(dias - 1)])
+        for r in cur.fetchall():
+            saida["chamados"].append({
+                "numero": r[0], "tipo": r[1], "titulo": r[2],
+                "atribuido_a": r[3] or "", "demandante": r[4] or "",
+                "tipo_demanda": r[5] or TIPO_NAO_CLASSIFICADO,
+                "categoria_diaadia": r[6] or "",
+                "encerrado_em": _fmt_dt(r[7]), "url": r[8],
+                # Pode ser negativo se as datas da origem discordarem; melhor
+                # mostrar o absurdo do que escondê-lo com um max(0, …).
+                "dias_ate_resolver": r[9] if r[9] is not None else None,
+                # "Resolvido" mantém ativo=1 no espelho — só 'encerrado' tira
+                # da fila. Sem este campo, um chamado apareceria ao mesmo
+                # tempo na coluna Resolvido do kanban e numa seção que se diz
+                # "o que saiu da fila". A tela marca esses.
+                "ainda_na_fila": bool(r[10]),
+            })
+        saida["ainda_na_fila"] = sum(1 for c in saida["chamados"]
+                                     if c["ainda_na_fila"])
+        saida["total"] = len(saida["chamados"])
+        cur.close(); conn.close()
+    except Exception as e:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        log.warning("historico: espelho indisponível (%s: %s)", type(e).__name__, e)
         saida["migration_ausente"] = True
     return saida

@@ -48,6 +48,7 @@ import pendulum
 from airflow.decorators import dag, task
 from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 
+from utils.frescor_modulo import conferir
 from utils.servicenow_sync import (
     CAMPOS, MAX_PAGINAS, MSSQL_CONN_ID, PAGINA, TABELAS,
     normalizar, proxy_da_config, query_do_grupo, upsert_params, upsert_sql,
@@ -176,6 +177,17 @@ def etl_servicenow_sync():
         contagens: dict = {}
         erros: list[str] = []
         tipos_ok: list[str] = []
+
+        # ── O worker está mesmo rodando o código que foi deployado? ─────────
+        # Este arquivo (DAG na raiz de dags/) é reprocessado a cada execução,
+        # mas os módulos de utils/ vêm do cache em memória do worker Celery.
+        # A conferência entra em `erros` de propósito: assim o ciclo fecha com
+        # status ERRO e a MENSAGEM APARECE NA TELA, em vez de morrer num log
+        # que ninguém abre. O sync continua — dado velho gravado é melhor que
+        # nenhum —, mas para de se dizer saudável.
+        for aviso in conferir():
+            print(aviso)
+            erros.append(aviso)
         # Rota de saída. Ver proxy_da_config() para o porquê de vir da
         # config e não de variável de ambiente do worker.
         proxy = proxy_da_config(cfg)
@@ -183,9 +195,17 @@ def etl_servicenow_sync():
         # ⚠️ `proxy=` (singular). O worker roda httpx 0.28+, onde `proxies=` já
         # não existe — a `api/` roda 0.27 e aceita os dois. Duas árvores, duas
         # versões: o que compila lá não necessariamente importa aqui.
-        with httpx.Client(auth=(usuario, senha), timeout=TIMEOUT_HTTP,
-                          proxy=proxy,
-                          headers={"Accept": "application/json"}) as cliente:
+        # A CONSTRUÇÃO do cliente também pode falhar (proxy malformado, por
+        # exemplo) — e falhar aqui, sem fechar o ciclo, deixaria a linha órfã
+        # em "em andamento" para sempre.
+        try:
+            _cliente = httpx.Client(auth=(usuario, senha), timeout=TIMEOUT_HTTP,
+                                    proxy=proxy,
+                                    headers={"Accept": "application/json"})
+        except Exception as e:
+            _fechar("ERRO", contagens, None, f"cliente HTTP: {type(e).__name__} {e}")
+            raise
+        with _cliente as cliente:
             for tabela, tipo in TABELAS:
                 try:
                     registros = _buscar_tabela(cliente, url, tabela, query)
@@ -195,11 +215,25 @@ def etl_servicenow_sync():
                     contagens[tipo] = None
                     print(f"[SN] {tabela}: FALHOU — {e}")
                     continue
-                for cru in registros:
-                    linha = normalizar(cru, tabela, tipo, url)
-                    if not linha["sys_id"]:
-                        continue      # registro sem chave natural: ignorado
-                    hook.run(upsert_sql(), parameters=upsert_params(linha))
+                try:
+                    for cru in registros:
+                        linha = normalizar(cru, tabela, tipo, url)
+                        if not linha["sys_id"]:
+                            continue  # registro sem chave natural: ignorado
+                        hook.run(upsert_sql(), parameters=upsert_params(linha))
+                except Exception as e:
+                    # A GRAVAÇÃO falha por motivos diferentes da busca, e o mais
+                    # provável deles é coluna que ainda não existe: as migrations
+                    # (etapa 6c) e o deploy de dags/ (etapa 5) são passos
+                    # SEPARADOS, e nada obriga a ordem entre eles. Sem este
+                    # tratamento a exceção escapa da task e a linha do ciclo fica
+                    # com terminado_em NULL para sempre — a tela lê "em
+                    # andamento" e nunca aprende a causa (o factory_log órfão da
+                    # PR #234, de novo).
+                    erros.append(f"{tabela} (gravação): {type(e).__name__} {e}")
+                    contagens[tipo] = None
+                    print(f"[SN] {tabela}: FALHOU ao gravar — {e}")
+                    continue
                 contagens[tipo] = len(registros)
                 tipos_ok.append(tipo)
                 print(f"[SN] {tabela}: {len(registros)} chamado(s) espelhado(s)")
@@ -209,16 +243,23 @@ def etl_servicenow_sync():
         # tipo e a tela mostraria "tudo resolvido" (falso verde do risco #4).
         desativados = 0
         if tipos_ok:
-            marcadores = ",".join(["%s"] * len(tipos_ok))
-            hook.run(
-                f"UPDATE dbo.etl_chamado SET ativo=0 "
-                f"WHERE ativo=1 AND tipo IN ({marcadores}) AND sync_em < %s",
-                parameters=(*tipos_ok, inicio))
-            linha = hook.get_first(
-                f"SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo=0 AND "
-                f"tipo IN ({marcadores}) AND sync_em < %s",
-                parameters=(*tipos_ok, inicio))
-            desativados = (linha or [0])[0]
+            try:
+                marcadores = ",".join(["%s"] * len(tipos_ok))
+                hook.run(
+                    f"UPDATE dbo.etl_chamado SET ativo=0 "
+                    f"WHERE ativo=1 AND tipo IN ({marcadores}) AND sync_em < %s",
+                    parameters=(*tipos_ok, inicio))
+                linha = hook.get_first(
+                    f"SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo=0 AND "
+                    f"tipo IN ({marcadores}) AND sync_em < %s",
+                    parameters=(*tipos_ok, inicio))
+                desativados = (linha or [0])[0]
+            except Exception as e:
+                # Falhar aqui não pode apagar o trabalho já gravado nem deixar
+                # o ciclo sem fechar: vira erro registrado, e o espelho fica
+                # com fila possivelmente desatualizada — dito, não escondido.
+                erros.append(f"desativação: {type(e).__name__} {e}")
+                print(f"[SN] Desativação FALHOU — {e}")
 
         total = sum(v for v in contagens.values() if v is not None)
         if erros and not tipos_ok:

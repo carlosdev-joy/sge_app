@@ -13,6 +13,14 @@ from __future__ import annotations
 
 import datetime as _dt
 
+from utils.chamado_derivacoes import derivar
+from utils.frescor_modulo import carimbar
+
+# Carimbo de frescor: a DAG confere se este módulo em memória é o do disco.
+# Ver utils/frescor_modulo.py — o worker Celery serve módulos auxiliares de
+# cache, e o código velho rodando não produz sintoma nenhum.
+carimbar(__file__)
+
 # ── Constantes ANTES dos helpers (gotcha do dag_factory: helper que lê uma
 #    const definida abaixo quebra no parse da DAG). ─────────────────────────
 MSSQL_CONN_ID = "SQL14_DMDB41"
@@ -34,10 +42,21 @@ CAMPOS = ("sys_id,number,short_description,state,priority,assigned_to,"
           # a gerou; `parent` é o genérico das demais tabelas. Pedimos os dois
           # e usamos o que vier — campo inexistente numa tabela é simplesmente
           # omitido pela Table API, não dá erro.
-          "parent,request_item")
+          "parent,request_item,"
+          # Conteúdo (migration 091): sem descrição e work notes não há
+          # triagem possível — nem por IA nem por heurística. `u_sla_expired`
+          # é campo customizado da instância; se não existir na tabela, a
+          # Table API apenas o omite.
+          "description,work_notes,cat_item,requested_for,"
+          "estimated_delivery,due_date,u_sla_expired")
 
 # Limite da coluna titulo (NVARCHAR(400) na migration 088).
 TITULO_MAX = 400
+
+# Limite de descricao e work_notes (NVARCHAR(4000) na migration 091). A
+# triagem lê bem menos que isso (o painel usa 1500 e 2000), então o corte não
+# tira informação de decisão — e ele é explícito, com reticência.
+TEXTO_MAX = 4000
 
 # Chave da rota de saída em etl_app_config (migration 089). O literal espelha
 # K_PROXY de api/services/servicenow.py — a fonte é a mesma tabela; duplicar
@@ -111,14 +130,65 @@ def mapear_estado(tabela: str, estado_cru) -> str:
     return ESTADOS.get(tabela, {}).get(str(estado_cru or "").strip(), "outros")
 
 
+def unidades_utf16(texto: str) -> int:
+    """Quantas unidades NVARCHAR o texto ocupa.
+
+    NVARCHAR(n) conta unidades UTF-16, não caracteres: emoji fora do BMP
+    (🙂, 🔥) ocupa DUAS. Medir com `len()` do Python deixa passar um texto de
+    4000 caracteres que ocupa 4300 unidades, e o SQL Server responde com
+    Msg 8152 no meio do ciclo — justamente o texto colado do Teams que a
+    migration 091 diz esperar.
+    """
+    return len(texto.encode("utf-16-le")) // 2
+
+
+def _cortar(texto: str, limite: int) -> str:
+    """Corta pelo limite REAL da coluna, sem partir um par substituto.
+
+    Iterar por caractere garante que um emoji nunca é cortado ao meio — o que
+    produziria texto inválido no banco.
+    """
+    if unidades_utf16(texto) <= limite:
+        return texto
+    alvo = limite - 1            # a reticência ocupa 1 unidade
+    saida, total = [], 0
+    for ch in texto:
+        custo = unidades_utf16(ch)
+        if total + custo > alvo:
+            break
+        saida.append(ch)
+        total += custo
+    return "".join(saida) + "…"
+
+
 def truncar_titulo(titulo, limite: int = TITULO_MAX) -> str:
     """Corta COM reticência: o operador precisa ver que faltou texto.
 
     Truncar calado já mordeu antes (VARCHAR estourado, PR #161) — aqui o corte
     é explícito e a marca fica visível no card.
     """
-    t = (titulo or "").strip()
-    return t if len(t) <= limite else t[:limite - 1] + "…"
+    return _cortar((titulo or "").strip(), limite)
+
+
+def truncar_texto(texto, limite: int = TEXTO_MAX) -> str:
+    """Mesma regra do título, para descrição e work notes: corta COM
+    reticência. O leitor precisa saber que o texto continua no ServiceNow."""
+    return _cortar((texto or "").strip(), limite)
+
+
+def _booleano(valor):
+    """'true'/'false' da API → 1/0; ausente → None.
+
+    None e 0 não são a mesma coisa: `u_sla_expired` é campo customizado e não
+    existe em toda tabela. Colapsar ausência em 0 faria a tela dizer "está no
+    prazo" sobre chamado cujo SLA ninguém mediu.
+    """
+    texto = (valor or "").strip().lower()
+    if texto in ("true", "1"):
+        return 1
+    if texto in ("false", "0"):
+        return 0
+    return None
 
 
 def _data(valor):
@@ -182,7 +252,7 @@ def normalizar(registro: dict, tabela: str, tipo: str, url_base: str) -> dict:
     # `active` da origem manda; 'encerrado' também sai da fila mesmo que a
     # origem ainda diga ativo (estado terminal com active=true acontece).
     ativo = ativo_bruto == "true" and estado_kanban != FORA_DO_KANBAN
-    return {
+    linha = {
         "sys_id": sys_id,
         "numero": _display(registro.get("number"))[:20],
         "tipo": tipo,
@@ -204,7 +274,24 @@ def normalizar(registro: dict, tabela: str, tipo: str, url_base: str) -> dict:
         "encerrado_em": _data(_cru(registro.get("closed_at"))),
         "ativo": 1 if ativo else 0,
         "url": f"{url_base}/nav_to.do?uri={tabela}.do?sys_id={sys_id}"[:500],
+        # ── Conteúdo (migration 091) ────────────────────────────────────
+        # `description` e `work_notes` vêm como texto puro; nas referências
+        # (`cat_item`, `requested_for`) o que interessa é o display_value.
+        "descricao": truncar_texto(_display(registro.get("description"))
+                                   or _cru(registro.get("description"))),
+        "work_notes": truncar_texto(_display(registro.get("work_notes"))
+                                    or _cru(registro.get("work_notes"))),
+        "catalogo": _display(registro.get("cat_item"))[:200],
+        "demandante": _display(registro.get("requested_for"))[:120],
+        "prazo": _data(_cru(registro.get("estimated_delivery"))),
+        "vencimento": _data(_cru(registro.get("due_date"))),
+        "sla_vencido": _booleano(_cru(registro.get("u_sla_expired"))),
     }
+    # Derivações (migration 092) na INGESTÃO, não na leitura: regex por linha
+    # a cada request faria a tela pagar o custo toda vez e — pior — o
+    # resultado variaria conforme a versão do código que respondeu.
+    linha.update(derivar(linha))
+    return linha
 
 
 def proxy_da_config(cfg: dict) -> str | None:
@@ -240,32 +327,40 @@ def query_do_grupo(grupos: list[str]) -> str:
     return "^OR".join(f"assignment_group.name={g}" for g in grupos)
 
 
+# A ordem desta tupla é a ÚNICA fonte da ordem dos campos no MERGE: o SQL e os
+# parâmetros são montados a partir dela. Antes, a lista aparecia três vezes
+# escrita à mão (UPDATE, INSERT e params) e acrescentar uma coluna significava
+# acertar as três — errar uma grava o valor na coluna vizinha, sem erro nenhum
+# no log.
+CAMPOS_UPSERT = (
+    "numero", "tipo", "titulo", "estado_origem", "estado_kanban",
+    "prioridade", "atribuido_a", "grupo", "aberto_em", "atualizado_em",
+    "encerrado_em", "ativo", "url", "estado_cru", "pai_sys_id", "pai_numero",
+    # migration 091
+    "descricao", "work_notes", "catalogo", "demandante", "prazo",
+    "vencimento", "sla_vencido",
+    # migration 092 — derivadas na ingestão
+    "tipo_demanda", "categoria_diaadia", "objetos",
+)
+
+
 def upsert_sql() -> str:
     """MERGE por sys_id — placeholder %s (pymssql, árvore dags/)."""
-    return """
+    atribuicoes = ", ".join(f"{c}=%s" for c in CAMPOS_UPSERT)
+    colunas = ", ".join(CAMPOS_UPSERT)
+    valores = ", ".join(["%s"] * len(CAMPOS_UPSERT))
+    return f"""
         MERGE dbo.etl_chamado AS t
         USING (SELECT %s AS sys_id) AS s ON t.sys_id = s.sys_id
         WHEN MATCHED THEN UPDATE SET
-            numero=%s, tipo=%s, titulo=%s, estado_origem=%s, estado_kanban=%s,
-            prioridade=%s, atribuido_a=%s, grupo=%s, aberto_em=%s,
-            atualizado_em=%s, encerrado_em=%s, ativo=%s, url=%s,
-            estado_cru=%s, pai_sys_id=%s, pai_numero=%s, sync_em=GETDATE()
+            {atribuicoes}, sync_em=GETDATE()
         WHEN NOT MATCHED THEN INSERT
-            (sys_id, numero, tipo, titulo, estado_origem, estado_kanban,
-             prioridade, atribuido_a, grupo, aberto_em, atualizado_em,
-             encerrado_em, ativo, url, estado_cru, pai_sys_id, pai_numero,
-             sync_em)
-            VALUES (s.sys_id, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, GETDATE());
+            (sys_id, {colunas}, sync_em)
+            VALUES (s.sys_id, {valores}, GETDATE());
     """
 
 
 def upsert_params(linha: dict) -> tuple:
     """Os parâmetros do MERGE, na ordem: chave + UPDATE + INSERT."""
-    campos = (linha["numero"], linha["tipo"], linha["titulo"],
-              linha["estado_origem"], linha["estado_kanban"],
-              linha["prioridade"], linha["atribuido_a"], linha["grupo"],
-              linha["aberto_em"], linha["atualizado_em"], linha["encerrado_em"],
-              linha["ativo"], linha["url"],
-              linha["estado_cru"], linha["pai_sys_id"], linha["pai_numero"])
+    campos = tuple(linha[c] for c in CAMPOS_UPSERT)
     return (linha["sys_id"],) + campos + campos

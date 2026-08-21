@@ -37,12 +37,20 @@ from deps import get_current_user  # noqa: E402
 from routers.chamados import FRESCOR_ALERTA_MINUTOS  # noqa: E402
 
 # Colunas do SELECT de chamados, na ordem do router.
+# As sete últimas chegaram com as migrations 091 e 092 (conteúdo do chamado e
+# derivações). `tipo_demanda=None` é o caso REAL de linha que o sync ainda não
+# tocou depois da migration — o router precisa devolver um rótulo, e não None.
 def _chamado(numero="INC001", tipo="incident", estado="novo", ativo=1,
-             idade=3, titulo="Falha na carga", sys_id=None):
+             idade=3, titulo="Falha na carga", sys_id=None,
+             tipo_demanda="Análise / investigação", categoria="", objetos="",
+             demandante="Beltrano", catalogo="Consulta de dados",
+             prazo=None, sla_vencido=None):
     return (sys_id or f"sid-{numero}", numero, tipo, titulo, "In Progress",
             estado, "3 - Moderate", "Fulano", "Engenharia",
             "2026-08-10 10:00:00", "2026-08-13 09:00:00", None, ativo,
-            "https://x.service-now.com/nav", "2026-08-13 12:00:00", idade)
+            "https://x.service-now.com/nav", "2026-08-13 12:00:00", idade,
+            tipo_demanda, categoria, objetos, demandante, catalogo,
+            prazo, sla_vencido)
 
 
 def _ciclo(status="OK", idade_min=30, terminado="2026-08-13 12:05:00", erro=None):
@@ -224,3 +232,154 @@ def test_exige_autenticacao():
     """Sem override de auth a rota não pode responder 200."""
     with TestClient(app) as anonimo:
         assert anonimo.get("/chamados").status_code in (401, 403)
+
+
+# ═══════════ 5. conteúdo e derivações na resposta (F3) ══════════════════════
+# O card passa a mostrar tipo de demanda, categoria e objetos citados. O que
+# estes testes prendem é que a tela nunca recebe NULL onde precisa de rótulo,
+# e que o texto sensível NÃO viaja na listagem.
+
+def test_derivacoes_chegam_ao_card(cliente, banco):
+    banco["cur"] = CursorFalso(
+        [_chamado(tipo_demanda="Extração de dados", categoria="bug",
+                  objetos="TB_CLIENTE, VW_SALDO")], _ciclo())
+    c = cliente.get("/chamados").json()["chamados"][0]
+    assert c["tipo_demanda"] == "Extração de dados"
+    assert c["categoria_diaadia"] == "bug"
+    assert c["objetos"] == "TB_CLIENTE, VW_SALDO"
+    assert c["demandante"] == "Beltrano"
+
+
+def test_tipo_nulo_vira_rotulo_e_nao_none(cliente, banco):
+    """Linha gravada antes da 092 tem tipo_demanda NULL até o sync passar. A
+    tela não pode receber None e ter de inventar o que escrever no card."""
+    from routers.chamados import TIPO_NAO_CLASSIFICADO
+    banco["cur"] = CursorFalso([_chamado(tipo_demanda=None)], _ciclo())
+    c = cliente.get("/chamados").json()["chamados"][0]
+    assert c["tipo_demanda"] == TIPO_NAO_CLASSIFICADO
+
+
+def test_sla_distingue_ausente_de_no_prazo(cliente, banco):
+    """None ('ninguém mediu') e False ('mediu, está no prazo') são estados
+    diferentes — a tela precisa poder calar sobre o primeiro."""
+    banco["cur"] = CursorFalso([_chamado(sla_vencido=None)], _ciclo())
+    assert cliente.get("/chamados").json()["chamados"][0]["sla_vencido"] is None
+    banco["cur"] = CursorFalso([_chamado(sla_vencido=0)], _ciclo())
+    assert cliente.get("/chamados").json()["chamados"][0]["sla_vencido"] is False
+    banco["cur"] = CursorFalso([_chamado(sla_vencido=1)], _ciclo())
+    assert cliente.get("/chamados").json()["chamados"][0]["sla_vencido"] is True
+
+
+def test_listagem_nao_devolve_descricao_nem_work_notes(cliente, banco):
+    """Texto de chamado carrega nome de pessoa e dado de cliente, e a fila
+    INTEIRA viaja nesta resposta. O card usa as derivações, não o texto."""
+    banco["cur"] = CursorFalso([_chamado()], _ciclo())
+    c = cliente.get("/chamados").json()["chamados"][0]
+    assert "descricao" not in c
+    assert "work_notes" not in c
+
+
+# ═══════════ 6. histórico de resolvidos ═════════════════════════════════════
+# O kanban só mostra a fila viva: o que foi resolvido sai dela e o trabalho
+# entregue fica invisível. Esta é a seção que o painel da estação tinha.
+
+class CursorHistorico:
+    """Guarda os parâmetros para provar o recorte da janela."""
+
+    def __init__(self, linhas):
+        self.linhas = linhas
+        self.params = None
+
+    def execute(self, sql, params=None):
+        self.params = params
+        return self
+
+    def fetchall(self):
+        return list(self.linhas)
+
+    def fetchone(self):
+        return (len(self.linhas),)
+
+    def close(self):
+        pass
+
+
+def _resolvido(numero="RITM0001", dias=2, ativo=0):
+    # `ativo` na última posição: no espelho, "Resolvido" mantém ativo=1 — só
+    # 'encerrado' tira da fila. O default 0 é o caso do chamado que realmente
+    # saiu; o teste do 1 cobre o que ainda aparece no kanban.
+    return (numero, "ritm", "Extração concluída", "Fulano", "Beltrano",
+            "Extração de dados", "bug", "2026-08-19 17:00:00",
+            "https://x.service-now.com/nav", dias, ativo)
+
+
+def test_historico_devolve_os_resolvidos(cliente, banco):
+    banco["cur"] = CursorHistorico([_resolvido(), _resolvido("RITM0002")])
+    r = cliente.get("/chamados/historico").json()
+    assert r["total"] == 2
+    assert r["dias"] == 10, "a janela padrão é a do painel: 10 dias"
+    assert r["chamados"][0]["numero"] == "RITM0001"
+    assert r["chamados"][0]["dias_ate_resolver"] == 2
+
+
+def test_historico_limita_a_janela_pedida(cliente, banco):
+    """Janela sem teto varreria o espelho inteiro a cada abertura da tela."""
+    banco["cur"] = CursorHistorico([])
+    assert cliente.get("/chamados/historico?dias=9999").json()["dias"] == 90
+    assert cliente.get("/chamados/historico?dias=0").json()["dias"] == 1
+
+
+def test_historico_sem_migration_degrada(cliente, banco):
+    """Tabela ausente não pode dar tela branca — a regra da casa."""
+    banco["cur"] = CursorFalso([], None, explode=True)
+    r = cliente.get("/chamados/historico")
+    assert r.status_code == 200
+    assert r.json()["migration_ausente"] is True
+    assert r.json()["chamados"] == []
+
+
+def test_resolvido_que_continua_na_fila_e_marcado(cliente, banco):
+    """No espelho, "Resolvido" mantém ativo=1 — só 'encerrado' tira da fila.
+    Sem esta marca, o mesmo chamado apareceria na coluna Resolvido do kanban
+    e numa seção que afirma listar o que SAIU da fila."""
+    banco["cur"] = CursorHistorico([_resolvido(ativo=1), _resolvido("RITM0002", ativo=0)])
+    r = cliente.get("/chamados/historico").json()
+    assert r["ainda_na_fila"] == 1
+    assert r["chamados"][0]["ainda_na_fila"] is True
+    assert r["chamados"][1]["ainda_na_fila"] is False
+
+
+def test_kanban_sobrevive_sem_as_colunas_novas(cliente, banco):
+    """Migrations (6c) e rebuild da API são passos separados. Com a imagem
+    nova e a 091/092 ainda não aplicadas, um SELECT único apagaria a tela
+    INTEIRA por causa dos chips novos — uma tela que já funcionava."""
+    class CursorSemColunasNovas:
+        """Falha no SELECT que pede as colunas novas; serve o resto."""
+
+        def __init__(self, chamados):
+            self.chamados = chamados
+            self._servir = None
+
+        def execute(self, sql, params=None):
+            if "tipo_demanda" in sql:
+                raise RuntimeError("Invalid column name 'tipo_demanda'")
+            self._servir = "ciclo" if "etl_chamado_sync" in sql else "chamados"
+            return self
+
+        def fetchall(self):
+            # A tupla base tem 16 colunas — sem as sete da 091/092.
+            return [c[:16] for c in self.chamados]
+
+        def fetchone(self):
+            return _ciclo()
+
+        def close(self):
+            pass
+
+    banco["cur"] = CursorSemColunasNovas([_chamado()])
+    d = cliente.get("/chamados").json()
+    assert d["migration_ausente"] is False, "a fila continua servida"
+    assert d["total"] == 1
+    assert d["derivacoes_pendentes"] is True, "a tela precisa saber o que falta"
+    from routers.chamados import TIPO_NAO_CLASSIFICADO
+    assert d["chamados"][0]["tipo_demanda"] == TIPO_NAO_CLASSIFICADO

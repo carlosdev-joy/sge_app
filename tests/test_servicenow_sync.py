@@ -106,10 +106,19 @@ def test_titulo_no_limite_exato_nao_trunca():
     assert truncar_titulo("y" * TITULO_MAX) == "y" * TITULO_MAX
 
 
-def test_titulo_com_acento_e_emoji_conta_caracteres():
-    """NVARCHAR guarda caractere, não byte — o limite é em caracteres."""
-    texto = "ção🔥" * 200
-    assert len(truncar_titulo(texto)) == TITULO_MAX
+def test_titulo_com_acento_e_emoji_respeita_o_limite_da_coluna():
+    """NVARCHAR(n) conta unidades UTF-16, não caracteres Python.
+
+    Este teste media `len()` e passava — enquanto o texto gerado ocupava MAIS
+    de 400 unidades no banco, porque 🔥 fora do BMP vale 2. O `len()` == 400
+    era um verde que não provava o que dizia provar: quem cobra é o SQL
+    Server, com Msg 8152 no meio do ciclo.
+    """
+    from utils.servicenow_sync import unidades_utf16
+    saida = truncar_titulo("ção🔥" * 200)
+    assert unidades_utf16(saida) <= TITULO_MAX
+    assert len(saida) < TITULO_MAX, (
+        "com emoji, cabem MENOS caracteres que o limite da coluna")
 
 
 def test_titulo_vazio_nao_quebra():
@@ -227,7 +236,12 @@ def test_upsert_ordem_chave_update_insert():
     # A ordem do MERGE segue a ordem das colunas no INSERT: se alguém inserir
     # um campo no meio de um e não do outro, o par acima ainda casaria — este
     # ancora as pontas nos valores que a coluna espera.
-    assert p[n] == linha["pai_numero"], "o último campo do UPDATE é pai_numero"
+    #
+    # A âncora é o NOME literal da última coluna, de propósito: derivá-la de
+    # CAMPOS_UPSERT faria o teste concordar com qualquer reordenação. Campo
+    # novo no fim ⇒ atualize esta linha conscientemente (foi o que a
+    # migration 091 exigiu, quando o último campo deixou de ser pai_numero).
+    assert p[n] == linha["objetos"], "o último campo do UPDATE é objetos"
 
 
 def test_upsert_usa_placeholder_do_pymssql():
@@ -435,3 +449,122 @@ def test_a_coluna_aguardando_tem_quem_a_ocupe():
         destinos = set(ESTADOS[tabela].values())
         assert "aguardando" in destinos, (
             f"{tabela} não tem nenhum estado mapeado para 'aguardando'")
+
+
+# ═══════════ 8. conteúdo do chamado (migration 091, F2) ═════════════════════
+# Sem descrição e work notes não há triagem — nem por IA nem por heurística.
+# O que estes testes prendem é o caminho do dado da API até a coluna, e as
+# duas formas de perdê-lo em silêncio: campo que a origem não manda, e texto
+# grande que estoura a coluna.
+
+def test_campos_de_conteudo_sao_pedidos_a_api():
+    """Coluna nova sem campo no sysparm_fields = coluna NULL para sempre,
+    com o ciclo VERDE. O pedido à API é parte do contrato."""
+    for campo in ("description", "work_notes", "cat_item", "requested_for",
+                  "estimated_delivery", "due_date", "u_sla_expired"):
+        assert campo in CAMPOS, f"{campo} precisa estar no sysparm_fields"
+
+
+def test_conteudo_chega_ao_espelho():
+    linha = normalizar(_registro(
+        description={"display_value": "Preciso da tabela DM_123", "value": "Preciso da tabela DM_123"},
+        work_notes={"display_value": "dia a dia - bug", "value": "dia a dia - bug"},
+        cat_item={"display_value": "Extração de dados", "value": "c1"},
+        requested_for={"display_value": "Jeferson Bortoletto", "value": "u9"},
+        estimated_delivery={"display_value": "20/08/2026", "value": "2026-08-20 00:00:00"},
+        due_date={"display_value": "22/08/2026", "value": "2026-08-22 00:00:00"},
+        u_sla_expired={"display_value": "false", "value": "false"},
+    ), "sc_req_item", "ritm", URL)
+    assert linha["descricao"] == "Preciso da tabela DM_123"
+    assert linha["work_notes"] == "dia a dia - bug"
+    assert linha["catalogo"] == "Extração de dados"
+    assert linha["demandante"] == "Jeferson Bortoletto"
+    assert linha["prazo"] == _dt.datetime(2026, 8, 20, 0, 0)
+    assert linha["vencimento"] == _dt.datetime(2026, 8, 22, 0, 0)
+    assert linha["sla_vencido"] == 0
+
+
+def test_conteudo_ausente_nao_quebra_e_vira_vazio():
+    """incident não tem cat_item nem u_sla_expired: a Table API simplesmente
+    omite o campo. Isso não pode derrubar a normalização."""
+    linha = normalizar(_registro(), "incident", "incident", URL)
+    assert linha["descricao"] == ""
+    assert linha["catalogo"] == ""
+    assert linha["prazo"] is None
+    assert linha["sla_vencido"] is None, "ausente é None, nunca 0"
+
+
+def test_sla_vencido_distingue_ausente_de_falso():
+    """None ('ninguém mediu') e 0 ('mediu e está no prazo') são estados
+    diferentes; colapsá-los faria a tela afirmar o que não sabe."""
+    from utils.servicenow_sync import _booleano
+    assert _booleano("true") == 1
+    assert _booleano("false") == 0
+    assert _booleano("") is None
+    assert _booleano(None) is None
+
+
+def test_texto_longo_e_cortado_com_reticencia():
+    from utils.servicenow_sync import TEXTO_MAX, truncar_texto
+    gigante = "x" * (TEXTO_MAX + 500)
+    cortado = truncar_texto(gigante)
+    assert len(cortado) == TEXTO_MAX
+    assert cortado.endswith("…"), "o corte precisa ser visível"
+
+
+def test_descricao_gigante_cabe_na_coluna():
+    """NVARCHAR(4000): estourar aqui é erro de gravação no meio do ciclo."""
+    from utils.servicenow_sync import TEXTO_MAX
+    enorme = "detalhe " * 2000
+    linha = normalizar(_registro(
+        description={"display_value": enorme, "value": enorme},
+        work_notes={"display_value": enorme, "value": enorme},
+    ), "incident", "incident", URL)
+    assert len(linha["descricao"]) <= TEXTO_MAX
+    assert len(linha["work_notes"]) <= TEXTO_MAX
+
+
+def test_upsert_grava_os_campos_novos():
+    """O MERGE precisa carregar as colunas da 091 — campo normalizado que não
+    entra no upsert é trabalho jogado fora, e a coluna fica NULL."""
+    from utils.servicenow_sync import CAMPOS_UPSERT
+    for campo in ("descricao", "work_notes", "catalogo", "demandante",
+                  "prazo", "vencimento", "sla_vencido"):
+        assert campo in CAMPOS_UPSERT
+        assert f"{campo}=%s" in upsert_sql(), f"{campo} ausente no UPDATE"
+
+
+def test_normalizar_entrega_todos_os_campos_do_upsert():
+    """A ponte entre normalizar() e CAMPOS_UPSERT: campo listado num e não no
+    outro dá KeyError no meio do ciclo, com metade da fila já gravada."""
+    from utils.servicenow_sync import CAMPOS_UPSERT
+    linha = normalizar(_registro(), "incident", "incident", URL)
+    faltando = [c for c in CAMPOS_UPSERT if c not in linha]
+    assert not faltando, f"normalizar() não devolve: {faltando}"
+
+
+# ═══════════ 9. o limite é da COLUNA, não do Python ═════════════════════════
+
+def test_truncamento_conta_unidades_utf16():
+    """NVARCHAR(n) conta unidades UTF-16: emoji fora do BMP ocupa DUAS. Medir
+    com len() deixa passar 4000 caracteres que ocupam 4300 unidades, e o SQL
+    Server responde Msg 8152 no meio do ciclo — com o texto colado do Teams
+    que a migration 091 diz esperar."""
+    from utils.servicenow_sync import TEXTO_MAX, truncar_texto, unidades_utf16
+    texto = "a" * 3500 + "🙂" * 300 + "b" * 500
+    saida = truncar_texto(texto)
+    assert unidades_utf16(saida) <= TEXTO_MAX
+    assert saida.endswith("…")
+
+
+def test_truncamento_nao_parte_emoji_ao_meio():
+    """Cortar dentro de um par substituto produz texto inválido no banco."""
+    from utils.servicenow_sync import truncar_texto, unidades_utf16
+    saida = truncar_texto("🙂" * 50, limite=11)
+    assert unidades_utf16(saida) <= 11
+    assert saida.encode("utf-16-le").decode("utf-16-le") == saida
+
+
+def test_titulo_com_emoji_respeita_o_limite_da_coluna():
+    from utils.servicenow_sync import TITULO_MAX, unidades_utf16
+    assert unidades_utf16(truncar_titulo("ção🔥" * 200)) <= TITULO_MAX
