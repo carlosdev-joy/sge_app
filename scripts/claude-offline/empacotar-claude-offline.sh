@@ -7,23 +7,28 @@
 # nativo, verifica a assinatura GPG do manifesto e o SHA256 do
 # binário, e produz um .tar.gz auto-contido para transporte.
 #
-# Uso: bash empacotar-claude-offline.sh [plataforma] [versão]
+# Uso: bash empacotar-claude-offline.sh [versão] [plataforma]
+#   versão:     stable (padrão) | latest | 2.1.238
 #   plataforma: linux-x64 (padrão) | linux-arm64
 #               | linux-x64-musl | linux-arm64-musl
-#   versão:     stable (padrão) | latest | 2.1.238
+#
+# A ordem dos argumentos é a MESMA de scripts/instalar-claude.sh
+# (versão primeiro): invertida entre os dois, a troca falha com uma
+# mensagem que aponta para o lugar errado.
 #
 # O pacote NÃO entra no git: o binário tem ~339 MB e o GitHub
 # recusa arquivo acima de 100 MB.
 # =============================================================
 set -e
 
-PLATAFORMA="${1:-linux-x64}"
-ALVO="${2:-stable}"
+ALVO="${1:-stable}"
+PLATAFORMA="${2:-linux-x64}"
 
 BASE_URL="https://downloads.claude.ai/claude-code-releases"
 CHAVE_URL="https://downloads.claude.ai/keys/claude-code.asc"
 # Fingerprint da chave de release da Anthropic — publicada na documentação.
-# Se este valor não bater com o da chave baixada, o pacote NÃO é montado.
+# O manifesto precisa estar assinado POR ELA (ver o VALIDSIG adiante),
+# senão o pacote não é montado.
 FINGERPRINT="31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
 
 AQUI="$(cd "$(dirname "$0")" && pwd)"
@@ -61,20 +66,22 @@ GNUPG_TMP="$TRABALHO/gnupg"
 rm -rf "$GNUPG_TMP"; mkdir -p -m 700 "$GNUPG_TMP"
 gpg --homedir "$GNUPG_TMP" --batch --quiet --import "$PKG/claude-code.asc"
 
-FP_LIDO=$(gpg --homedir "$GNUPG_TMP" --batch --with-colons --fingerprint \
-          | awk -F: '/^fpr:/ {print $10; exit}')
-if [ "$FP_LIDO" != "$FINGERPRINT" ]; then
-    echo "[EMPACOTA] ERRO: fingerprint da chave não confere." >&2
-    echo "           esperado: $FINGERPRINT" >&2
-    echo "           recebido: $FP_LIDO" >&2
+# A checagem é feita no VALIDSIG do --status-fd, e não comparando o
+# primeiro fingerprint do chaveiro: `gpg --verify` aceita assinatura de
+# QUALQUER chave importada, e o .asc vem da rede — a mesma rede que o
+# pin existe para desconfiar. Um .asc adulterado traria a chave legítima
+# em primeiro lugar (satisfazendo a comparação) e a do atacante em
+# segundo, assinando um manifesto forjado. O VALIDSIG diz qual chave
+# assinou ESTA assinatura, então o pin passa a valer de verdade.
+STATUS=$(gpg --homedir "$GNUPG_TMP" --batch --status-fd 1 --verify \
+         "$PKG/manifest.json.sig" "$PKG/manifest.json" 2>/dev/null || true)
+if ! printf '%s\n' "$STATUS" | grep '^\[GNUPG:\] VALIDSIG ' | grep -q "$FINGERPRINT"; then
+    echo "[EMPACOTA] ERRO: o manifesto não está assinado pela chave de release da Anthropic." >&2
+    echo "           esperado VALIDSIG com: $FINGERPRINT" >&2
+    printf '%s\n' "$STATUS" | grep '^\[GNUPG:\]' >&2 || true
     exit 1
 fi
-echo "[EMPACOTA] ✓ chave de release confere ($FINGERPRINT)"
-
-gpg --homedir "$GNUPG_TMP" --batch --verify \
-    "$PKG/manifest.json.sig" "$PKG/manifest.json" 2>/dev/null \
-  || { echo "[EMPACOTA] ERRO: assinatura do manifesto inválida." >&2; exit 1; }
-echo "[EMPACOTA] ✓ assinatura do manifesto válida"
+echo "[EMPACOTA] ✓ manifesto assinado pela chave $FINGERPRINT"
 
 # ── 4. Checksum da plataforma escolhida ───────────────────────
 # jq quando existe; senão, um recorte simples do JSON de uma linha.

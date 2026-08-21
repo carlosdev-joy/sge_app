@@ -50,10 +50,25 @@ instalador offline, que:
 - revalida o SHA256 do binário, pegando corrupção de transporte;
 - instala em `~/.local/share/claude/versions/<versão>`, com atalho em
   `~/.local/bin/claude`;
-- grava `~/.claude/settings.json` com o auto-update desligado e o proxy/CA que
-  encontrar no ambiente — **um `settings.json` que já exista nunca é
-  sobrescrito**, o script mostra o bloco a acrescentar;
-- testa `api.anthropic.com` e diz, na cara, se o caminho de rede não existe.
+- grava `~/.claude/settings.json` **com modo 600** (pode conter a senha do
+  proxy), com o auto-update desligado e o proxy/CA que encontrar no ambiente —
+  **um `settings.json` que já exista nunca é sobrescrito**, o script mostra o
+  bloco a acrescentar;
+- sonda `api.anthropic.com` e diz, na cara, se o caminho de rede não existe.
+
+Sobre a sonda: ela pede `GET /v1/models` **sem credencial** e exige a resposta
+`401` com `authentication_error` no corpo. Não basta "veio um código HTTP" —
+num proxy corporativo, o `407` de autenticação exigida e a página de bloqueio
+(`403`, ou `200` com HTML) também são respostas HTTP, e o Claude Code não
+funciona em nenhuma delas. Cada caso é reportado com o que fazer.
+
+O que as conferências do pacote provam: binário, manifesto, assinatura e o
+próprio instalador viajam no **mesmo** `.tar.gz`. Quem altera o pacote altera os
+quatro juntos, então elas provam **integridade de transporte** (arquivo
+truncado, byte trocado no `scp`), não autenticidade. A autenticidade é conferida
+no empacotamento, contra a chave de release da Anthropic. Para a garantia ponta
+a ponta, compare o `.sha256` publicado na release com o gerado no
+empacotamento.
 
 A instalação é **por usuário**: cada operador que for usar roda o script no
 próprio login.
@@ -79,14 +94,22 @@ qualquer shell que o tenha iniciado primeiro — ou nenhum. O bloco `env` do
 ## 5. Gerar o pacote (máquina com internet)
 
 ```bash
-bash scripts/claude-offline/empacotar-claude-offline.sh linux-x64 stable
+bash scripts/claude-offline/empacotar-claude-offline.sh stable linux-x64
 ```
 
-O script resolve a versão do canal, baixa o manifesto, **confere a assinatura
-GPG** (fingerprint `31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE`) e o
-SHA256 do binário, e fecha `dist/claude-code-<versão>-<plataforma>.tar.gz`
-(~91 MB) com o `.sha256` ao lado. Publique os dois como assets de uma release
-com a tag `claude-code-<versão>`.
+Os dois scripts recebem os argumentos na **mesma ordem — versão primeiro,
+plataforma depois** —, para que trocá-los não vire um erro que aponta o lugar
+errado.
+
+O script resolve a versão do canal, baixa o manifesto, exige que ele esteja
+**assinado pela chave de release da Anthropic** (fingerprint
+`31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE`, conferido na linha
+`VALIDSIG` do próprio GPG — e não comparando a primeira chave do chaveiro, que
+um `.asc` adulterado satisfaria com a chave legítima em primeiro lugar e a do
+atacante em segundo), confere o SHA256 do binário e fecha
+`dist/claude-code-<versão>-<plataforma>.tar.gz` (~91 MB) com o `.sha256` ao
+lado. Publique os dois como assets de uma release com a tag
+`claude-code-<versão>`.
 
 Plataformas aceitas: `linux-x64` (padrão), `linux-arm64`, `linux-x64-musl`,
 `linux-arm64-musl`. O canal `stable` fica cerca de uma semana atrás do `latest`

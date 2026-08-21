@@ -52,9 +52,15 @@ curl -fsSL -o "$ARQ.sha256" "$URL.sha256"
 
 # O .sha256 foi gerado com o nome puro do arquivo, então basta
 # conferir na pasta onde ele está.
+#
+# Alcance: o .sha256 vem da MESMA release que o .tar.gz, então isto pega
+# download truncado ou corrompido — não prova que a release é legítima.
+# A conferência de autenticidade acontece no empacotamento (assinatura
+# GPG do manifesto da Anthropic); aqui confia-se na release do próprio
+# repositório, o mesmo lugar de onde o deploy.sh já traz o código.
 sha256sum -c "$ARQ.sha256" \
   || { echo "[CLAUDE] ERRO: SHA256 não confere — download corrompido." >&2; exit 1; }
-echo "[CLAUDE] ✓ pacote íntegro"
+echo "[CLAUDE] ✓ download íntegro"
 
 tar -xzf "$ARQ"
 cd "claude-code-$VERSAO-$PLATAFORMA"

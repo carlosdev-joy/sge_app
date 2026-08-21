@@ -11,8 +11,10 @@ cd claude-code-<versão>-<plataforma>
 bash instalar.sh
 ```
 
-Rode como **o usuário que vai usar o Claude Code** — nunca com `sudo`. Tudo é
-instalado no HOME desse usuário:
+Rode como **o usuário que vai usar o Claude Code** — nunca com `sudo`, que
+instalaria no HOME do root. Rodar logado como root é permitido (containers,
+servidores operados só por root) e o instalador avisa que a instalação vale
+apenas para o root. Tudo é instalado no HOME de quem executa:
 
 - binário → `~/.local/share/claude/versions/<versão>`
 - atalho  → `~/.local/bin/claude`
@@ -48,11 +50,17 @@ servidor sem saída, ele abre e não responde. Libere no firewall/proxy:
 Atrás de proxy corporativo, exporte antes de abrir o `claude`:
 
 ```bash
-export HTTPS_PROXY=http://usuario:senha@proxy.empresa:8080
+export HTTPS_PROXY=http://proxy.empresa:8080
 export NO_PROXY="localhost,127.0.0.1,.empresa.local"
 # quando o proxy inspeciona TLS (Zscaler, Falcon e afins):
 export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-corporativa.pem
 ```
+
+Se o proxy exigir autenticação, a senha vai na URL
+(`http://usuario:senha@proxy.empresa:8080`) e o instalador a copia para
+`~/.claude/settings.json` — arquivo que ele cria com modo 600 e avisa na tela.
+Ainda assim root e as rotinas de backup leem esse arquivo: prefira pedir ao time
+de rede uma exceção sem autenticação para o servidor.
 
 Se a CA corporativa já estiver no truststore do sistema, o binário nativo a lê
 sozinho — `NODE_EXTRA_CA_CERTS` só é necessário quando não está.
