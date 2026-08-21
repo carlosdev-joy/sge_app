@@ -265,3 +265,63 @@ def test_extrair_json_recusa_lista_e_escalar():
 def test_laudo_da_ia_recusa_veredito_fora_da_lista():
     assert laudo_da_ia({"veredito": "quem sabe"}, "m") is None
     assert laudo_da_ia({}, "m") is None
+
+
+# ═══════════ 6. o que a revisão adversarial pegou ═══════════════════════════
+
+def test_falha_da_ia_e_configuracao_sao_erros_DIFERENTES(monkeypatch):
+    """"Ninguém configurou a chave" e "o gateway está doente" produzem o mesmo
+    veredito heurístico. Sem prefixos distintos, o painel chamaria os dois de
+    "falha da IA" e mandaria investigar rede quando faltava preencher campo."""
+    from utils.triagem_ia import ERRO_CONFIG, ERRO_FALHA
+    laudo = triar(CHAMADO, dict(CONF_LIGADA, habilitada=False), "chave")
+    assert laudo["erro"].startswith(ERRO_CONFIG)
+
+    _resposta_ia(monkeypatch, "", erro="ConnectError")
+    laudo = triar(CHAMADO, CONF_LIGADA, "chave")
+    assert laudo["erro"].startswith(ERRO_FALHA)
+
+
+def _linha_completa(sys_id, texto, hash_gravado, origem="", erro=""):
+    return (sys_id, "RITM1", "titulo", texto, "notas", "cat", hash_gravado,
+            origem, erro)
+
+
+def test_laudo_heuristico_por_FALHA_volta_para_a_fila():
+    """O congelamento silencioso: gateway cai por 20 min, dezenas de chamados
+    recebem laudo heurístico, o gateway volta — e eles nunca são reanalisados,
+    porque o texto deles não muda mais."""
+    h = texto_para_hash("desc", "notas", "titulo")
+    fila = pendentes([_linha_completa("a", "desc", h, "heuristica",
+                                      "falha: ConnectError")], 20)
+    assert len(fila) == 1
+    assert fila[0]["reanalise"] is True
+
+
+def test_laudo_heuristico_por_CONFIGURACAO_nao_reenfileira():
+    """Com a triagem desligada, re-tentar a cada ciclo seria só gastar o lote
+    sem chance de resultado diferente."""
+    h = texto_para_hash("desc", "notas", "titulo")
+    assert pendentes([_linha_completa("a", "desc", h, "heuristica",
+                                      "config: triagem por IA desligada")], 20) == []
+
+
+def test_laudo_de_ia_bom_nao_reenfileira():
+    h = texto_para_hash("desc", "notas", "titulo")
+    assert pendentes([_linha_completa("a", "desc", h, "ia", "")], 20) == []
+
+
+def test_candidatos_priorizam_nunca_triado_depois_falha():
+    from utils.triagem_ia import sql_candidatos
+    sql = sql_candidatos()
+    assert "triagem_hash IS NULL THEN 0" in sql
+    assert "triagem_erro LIKE 'falha:%' THEN 1" in sql
+
+
+def test_cortes_do_laudo_contam_unidades_utf16():
+    """Saída de LLM vem com emoji: `[:400]` estoura NVARCHAR(400) com Msg 8152
+    no meio do lote — e, com o try/except da gravação, derruba o laudo."""
+    from utils.texto_sql import unidades_utf16
+    from utils.triagem_ia import RESUMO_MAX
+    laudo = triagem_heuristica("🙂" * 500, "desc")
+    assert unidades_utf16(laudo["resumo"]) <= RESUMO_MAX

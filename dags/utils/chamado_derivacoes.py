@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 
 from utils.frescor_modulo import carimbar
+from utils.texto_sql import cortar
 
 # Ver utils/frescor_modulo.py: sem este carimbo, uma versão antiga deste
 # módulo em cache no worker derivaria tudo pelo código velho, em silêncio.
@@ -114,8 +115,8 @@ def tipo_demanda(titulo: str, catalogo: str = "") -> str:
         texto = fonte.lower()
         for chave, rotulo in TIPOS:
             if chave in texto:
-                return rotulo[:TIPO_MAX]
-    return TIPO_PADRAO
+                return cortar(rotulo, TIPO_MAX)
+    return cortar(TIPO_PADRAO, TIPO_MAX)
 
 
 def categoria_diaadia(work_notes: str) -> str:
@@ -132,7 +133,7 @@ def categoria_diaadia(work_notes: str) -> str:
         # `.rstrip('.')` porque a marcação costuma terminar a frase.
         categoria = achado.group(1).strip().rstrip(".").strip().lower()
         if categoria:
-            return categoria[:CATEGORIA_MAX]
+            return cortar(categoria, CATEGORIA_MAX)
         # "dia a dia - ." é marcação sem categoria, não ausência de
         # marcação: devolver vazio aqui mandaria o chamado para o balde de
         # "ninguém classificou", contrariando a regra deste módulo.
@@ -152,7 +153,7 @@ def objetos_citados(descricao: str, limite: int = OBJETOS_LIMITE) -> str:
     # dict.fromkeys preserva a ordem e tira repetido — o mesmo objeto costuma
     # ser citado várias vezes no mesmo texto.
     unicos = list(dict.fromkeys(a.upper() for a in achados))[:limite]
-    return ", ".join(unicos)[:OBJETOS_MAX]
+    return cortar(", ".join(unicos), OBJETOS_MAX)
 
 
 def derivar(linha: dict) -> dict:

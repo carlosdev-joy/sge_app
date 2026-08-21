@@ -30,6 +30,9 @@ import json
 import re
 
 from utils.frescor_modulo import carimbar
+# Corte por unidades UTF-16: saída de LLM vem com emoji, e um
+# `[:400]` estoura NVARCHAR(400) com Msg 8152 no meio do lote.
+from utils.texto_sql import cortar
 
 carimbar(__file__)
 
@@ -54,6 +57,13 @@ VEREDITOS = (VEREDITO_OK, VEREDITO_RETORNAR)
 
 ORIGEM_IA = "ia"
 ORIGEM_HEURISTICA = "heuristica"
+
+# Prefixos do campo `triagem_erro`. Existem porque "ninguém configurou a
+# chave" e "o gateway está doente" produzem o MESMO veredito heurístico — e
+# um painel que chame os dois de "falha da IA" manda o operador investigar
+# rede quando faltava preencher um campo.
+ERRO_CONFIG = "config: "
+ERRO_FALHA = "falha: "
 
 # Limites das colunas (migration 093).
 RESUMO_MAX = 400
@@ -132,15 +142,15 @@ def triagem_heuristica(titulo: str, descricao: str, motivo_erro: str = "") -> di
     return {
         "veredito": VEREDITO_OK if nivel == "suficiente" else VEREDITO_RETORNAR,
         "suficiencia": nivel,
-        "resumo": (titulo or "")[:RESUMO_MAX],
-        "entendimento": obs[:ENTENDIMENTO_MAX],
-        "lacunas": "" if nivel == "suficiente" else obs[:LACUNAS_MAX],
+        "resumo": cortar(titulo, RESUMO_MAX),
+        "entendimento": cortar(obs, ENTENDIMENTO_MAX),
+        "lacunas": "" if nivel == "suficiente" else cortar(obs, LACUNAS_MAX),
         # A heurística NÃO inventa perguntas: ela não leu o pedido, apenas
         # mediu sinais do texto. Pergunta genérica gera ruído no chamado.
         "perguntas": "",
         "origem": ORIGEM_HEURISTICA,
         "modelo": "",
-        "erro": (motivo_erro or "")[:ERRO_MAX],
+        "erro": cortar(motivo_erro, ERRO_MAX),
     }
 
 
@@ -248,15 +258,15 @@ def laudo_da_ia(obj: dict, modelo: str) -> dict | None:
     return {
         "veredito": veredito,
         "suficiencia": suficiencia,
-        "resumo": str(obj.get("resumo") or "").strip()[:RESUMO_MAX],
-        "entendimento": str(obj.get("entendimento") or "").strip()[:ENTENDIMENTO_MAX],
-        "lacunas": lacunas[:LACUNAS_MAX],
+        "resumo": cortar(str(obj.get("resumo") or ""), RESUMO_MAX),
+        "entendimento": cortar(str(obj.get("entendimento") or ""), ENTENDIMENTO_MAX),
+        "lacunas": cortar(lacunas, LACUNAS_MAX),
         # Pergunta só faz sentido quando o veredito manda devolver: numa
         # aprovação, ela vira ruído colado num chamado que já pode andar.
         "perguntas": ("" if veredito == VEREDITO_OK
-                      else _linhas(obj.get("perguntas"))[:PERGUNTAS_MAX]),
+                      else cortar(_linhas(obj.get("perguntas")), PERGUNTAS_MAX)),
         "origem": ORIGEM_IA,
-        "modelo": (modelo or "")[:60],
+        "modelo": cortar(modelo, 60),
         "erro": "",
     }
 
@@ -330,21 +340,21 @@ def triar(chamado: dict, conf: dict, api_key: str) -> dict:
     descricao = chamado.get("descricao") or ""
 
     if not conf["habilitada"] or not api_key:
-        return triagem_heuristica(titulo, descricao,
-                                  "triagem por IA desligada" if not conf["habilitada"]
-                                  else "sem chave de API configurada")
+        motivo = ("triagem por IA desligada" if not conf["habilitada"]
+                  else "sem chave de API configurada")
+        return triagem_heuristica(titulo, descricao, ERRO_CONFIG + motivo)
     resposta, erro = chamar_gateway(conf, api_key, montar_prompt(chamado))
     if erro:
-        return triagem_heuristica(titulo, descricao, erro)
+        return triagem_heuristica(titulo, descricao, ERRO_FALHA + erro)
     obj = extrair_json(resposta)
     if obj is None:
-        return triagem_heuristica(titulo, descricao,
-                                  "resposta da IA não continha JSON válido")
+        return triagem_heuristica(
+            titulo, descricao, ERRO_FALHA + "resposta da IA não continha JSON válido")
     laudo = laudo_da_ia(obj, conf["modelo"])
     if laudo is None:
         return triagem_heuristica(
             titulo, descricao,
-            f"veredito inesperado da IA: {str(obj.get('veredito'))[:60]!r}")
+            ERRO_FALHA + f"veredito inesperado da IA: {str(obj.get('veredito'))[:60]!r}")
     return laudo
 
 
@@ -364,10 +374,12 @@ def sql_candidatos() -> str:
     """
     return """
         SELECT sys_id, numero, titulo, descricao, work_notes, catalogo,
-               triagem_hash
+               triagem_hash, triagem_origem, triagem_erro
         FROM dbo.etl_chamado
         WHERE ativo = 1
-        ORDER BY CASE WHEN triagem_hash IS NULL THEN 0 ELSE 1 END,
+        ORDER BY CASE WHEN triagem_hash IS NULL THEN 0
+                      WHEN triagem_erro LIKE 'falha:%' THEN 1
+                      ELSE 2 END,
                  aberto_em DESC
     """
 
@@ -387,9 +399,16 @@ def pendentes(linhas, limite: int) -> list[dict]:
         }
         atual = texto_para_hash(chamado["descricao"], chamado["work_notes"],
                                 chamado["titulo"])
-        if (r[6] or "") == atual:
-            continue          # já triado com este mesmo texto
+        erro_anterior = (r[8] if len(r) > 8 else "") or ""
+        # Texto igual E laudo bom ⇒ nada a fazer. Mas um laudo que caiu na
+        # heurística por FALHA da IA precisa voltar à fila quando o gateway
+        # voltar: sem isto, uma queda de 20 minutos congelaria dezenas de
+        # chamados no veredito automático PARA SEMPRE, já que o texto deles
+        # nunca mais muda.
+        if (r[6] or "") == atual and not erro_anterior.startswith("falha:"):
+            continue
         chamado["hash"] = atual
+        chamado["reanalise"] = bool(erro_anterior.startswith("falha:"))
         fila.append(chamado)
         if len(fila) >= limite:
             break

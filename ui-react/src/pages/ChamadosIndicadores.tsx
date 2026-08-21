@@ -44,7 +44,12 @@ export interface RespostaIndicadores {
   por_categoria: PorCategoria[]
   categorias_ocultas: number
   triagem: { veredito: string; origem: string; total: number }[]
+  // Dois contadores separados: gateway doente e chave nunca configurada
+  // produzem o mesmo veredito heurístico, e chamar os dois de "falha da IA"
+  // manda o operador investigar rede quando faltava preencher um campo.
   triagem_com_erro: number
+  triagem_sem_config: number
+  blocos_indisponiveis: boolean
   sem_categoria: number
   resolvidos_periodo: number
   dias_historico: number
@@ -364,6 +369,18 @@ export default function ChamadosIndicadores() {
 
   return (
     <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
+      {/* O painel base (aging, tipo × estado, fluxo, carga) continua servido
+          mesmo sem as colunas novas — mas o que falta precisa ser DITO, senão
+          os painéis ausentes parecem dados zerados. */}
+      {d.blocos_indisponiveis && (
+        <div className="lg:col-span-2 border border-amber-200 dark:border-yellow-800
+          bg-amber-50 dark:bg-yellow-900/20 text-amber-800 dark:text-yellow-200
+          rounded-lg px-4 py-3 text-[12px]">
+          Os indicadores de triagem e classificação não estão disponíveis: as
+          migrations desta versão ainda não foram aplicadas. Os demais painéis
+          seguem com os dados de sempre.
+        </div>
+      )}
       <Painel titulo="Idade dos chamados na fila"
         descricao={`Quanto tempo os ${d.total_ativos} chamados abertos estão esperando.`}>
         <BarrasHorizontais total={d.total_ativos}
@@ -389,12 +406,18 @@ export default function ChamadosIndicadores() {
       </Painel>
 
       <Painel titulo="Triagem da fila"
-        descricao={d.triagem_com_erro > 0
-          // O erro é dito no cabeçalho, não escondido num campo por chamado:
-          // "18 podem iniciar" soa como análise feita, quando pode ser a
-          // heurística respondendo por todos com o gateway fora do ar.
-          ? `Veredito por chamado aberto. ⚠ ${d.triagem_com_erro} laudo(s) registraram falha da IA — esses vereditos vieram da regra de texto.`
-          : 'Veredito por chamado aberto, com a origem de cada análise.'}>
+        // O estado é dito no cabeçalho, não escondido num campo por chamado:
+        // "18 podem iniciar" soa como análise feita, quando pode ser a
+        // heurística respondendo por todos.
+        descricao={[
+          'Veredito por chamado aberto, com a origem de cada análise.',
+          d.triagem_com_erro > 0
+            ? `⚠ ${d.triagem_com_erro} laudo(s) falharam ao consultar a IA — esses vereditos vieram da regra de texto.`
+            : '',
+          d.triagem_sem_config > 0
+            ? `${d.triagem_sem_config} laudo(s) saíram por regra de texto porque a triagem por IA não está configurada — não é falha do gateway.`
+            : '',
+        ].filter(Boolean).join(' ')}>
         {d.triagem.length
           ? <BarrasHorizontais total={d.total_ativos}
               itens={d.triagem.map(t => ({

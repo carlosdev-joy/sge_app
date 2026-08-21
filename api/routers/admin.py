@@ -372,18 +372,27 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
                 raise HTTPException(status_code=422,
                                     detail="lista de grupos longa demais para "
                                            "etl_app_config.config_value")
-            # Triagem por IA: interruptor e tamanho do lote. O teto de 200
-            # existe porque o lote roda DENTRO do ciclo de 15 min, que tem
-            # dagrun_timeout de 10 — lote grande demais faz o sync estourar.
-            triagem_hab = "1" if body.get("triagem_habilitada") else "0"
-            try:
-                triagem_lote = str(max(1, min(int(body.get("triagem_lote") or 20), 200)))
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=422,
-                                    detail="triagem_lote precisa ser um número")
+            # Triagem por IA: só entra em `valores` quando o campo VEIO no
+            # corpo. Gravar "0" por ausência desligaria a triagem em silêncio
+            # a cada salvamento feito por um bundle antigo em cache ou por um
+            # payload parcial — o mesmo cuidado que a senha já tem aqui.
+            #
+            # O teto de quantidade NÃO garante o tempo do ciclo (o gateway
+            # pode estar lento); quem protege o dagrun_timeout é o orçamento
+            # de ORCAMENTO_TRIAGEM_S dentro da própria task.
+            triagem_valores = {}
+            if "triagem_habilitada" in body:
+                triagem_valores["chamados_triagem_habilitada"] = (
+                    "1" if body.get("triagem_habilitada") else "0")
+            if "triagem_lote" in body:
+                try:
+                    triagem_valores["chamados_triagem_lote"] = str(
+                        max(1, min(int(body.get("triagem_lote") or 20), 200)))
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=422,
+                                        detail="triagem_lote precisa ser um número")
 
-            valores = {"chamados_triagem_habilitada": triagem_hab,
-                       "chamados_triagem_lote": triagem_lote,
+            valores = {**triagem_valores,
                        servicenow.K_URL: url, servicenow.K_USUARIO: usuario,
                        servicenow.K_GRUPOS: grupos,
                        servicenow.K_PROXY: proxy,

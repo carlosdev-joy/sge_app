@@ -62,6 +62,12 @@ K_HABILITADO = "servicenow_habilitado"
 
 TIMEOUT_HTTP = 30
 
+# Teto de tempo do lote de triagem, DENTRO do dagrun_timeout de 10 min da DAG.
+# 5 min deixa folga para o ciclo de espelho que roda antes. O teto de
+# QUANTIDADE (chamados_triagem_lote) não protege sozinho: 20 chamados × 45 s
+# de timeout já passam de 10 min se o gateway estiver lento.
+ORCAMENTO_TRIAGEM_S = 300
+
 
 def _ler_config(hook) -> dict:
     linhas = hook.get_records(
@@ -287,10 +293,19 @@ def etl_servicenow_sync():
         Nunca falha: sem gateway, o veredito sai da heurística. O que a task
         NÃO faz é fingir que a análise foi de IA (ver triagem_origem).
         """
+        import time as _time
+
         from utils.triagem_ia import (
             config_da_triagem, pendentes, params_gravar, sql_candidatos,
             sql_gravar, triar,
         )
+
+        # A guarda de frescor precisa rodar AQUI também: utils.triagem_ia só
+        # é importado nesta task, e a conferência feita na task do espelho
+        # roda noutro processo, onde este módulo nem está em sys.modules —
+        # ou seja, lá ela é inerte justamente para o módulo mais novo.
+        for aviso in conferir():
+            print(aviso)
 
         hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
         linhas = hook.get_records(
@@ -325,21 +340,49 @@ def etl_servicenow_sync():
             return {"status": "OK", "triados": 0}
 
         por_origem: dict = {}
+        falhas_ao_gravar = 0
+        inicio_lote = _time.monotonic()
+        analisados = 0
+
         for chamado in fila:
+            # ORÇAMENTO DE TEMPO, e não só teto de quantidade. Cada chamada
+            # tem timeout de TIMEOUT_S; um gateway LENTO (não fora do ar) com
+            # lote grande estouraria o dagrun_timeout de 10 min da DAG — e,
+            # com max_active_runs=1, levaria junto o sync do espelho. O que
+            # não couber fica para o próximo ciclo, que vem em 15 min.
+            if _time.monotonic() - inicio_lote > ORCAMENTO_TRIAGEM_S:
+                print(f"[TRIAGEM] orçamento de {ORCAMENTO_TRIAGEM_S}s esgotado — "
+                      f"o restante fica para o próximo ciclo.")
+                break
+
             laudo = triar(chamado, conf, api_key)
             por_origem[laudo["origem"]] = por_origem.get(laudo["origem"], 0) + 1
-            hook.run(sql_gravar(),
-                     parameters=params_gravar(laudo, chamado["hash"],
-                                              chamado["sys_id"]))
+            try:
+                hook.run(sql_gravar(),
+                         parameters=params_gravar(laudo, chamado["hash"],
+                                                  chamado["sys_id"]))
+            except Exception as e:
+                # A task promete "nunca falha". Sem esta guarda, um UPDATE que
+                # levanta (coluna da 093 ausente, valor estourando o tamanho)
+                # deixaria SEM laudo todos os chamados seguintes do lote.
+                falhas_ao_gravar += 1
+                print(f"[TRIAGEM] {chamado['numero']}: FALHOU ao gravar — {e}")
+                continue
+            analisados += 1
             marca = laudo["origem"].upper()
             print(f"[TRIAGEM] {chamado['numero']}: {laudo['veredito']} ({marca})"
                   + (f" — {laudo['erro']}" if laudo["erro"] else ""))
 
-        restantes = max(0, len(candidatos or []) - len(fila))
-        print(f"[TRIAGEM] {len(fila)} analisado(s): {por_origem}. "
-              f"{restantes} candidato(s) ficaram para o próximo ciclo.")
-        return {"status": "OK", "triados": len(fila), "por_origem": por_origem,
-                "restantes": restantes}
+        # `fila` já é só o que PRECISA de triagem — `candidatos` é a fila viva
+        # inteira. Usar o segundo aqui diria "48 pendentes" sobre uma fila
+        # toda analisada, e quem lê o log aumentaria o lote à toa.
+        restantes = max(0, len(fila) - analisados - falhas_ao_gravar)
+        print(f"[TRIAGEM] {analisados} analisado(s): {por_origem}. "
+              f"{restantes} pendente(s) para o próximo ciclo"
+              + (f"; {falhas_ao_gravar} falha(s) ao gravar." if falhas_ao_gravar
+                 else "."))
+        return {"status": "OK", "triados": analisados, "por_origem": por_origem,
+                "restantes": restantes, "falhas_ao_gravar": falhas_ao_gravar}
 
     # A triagem roda DEPOIS do espelho: analisar antes do sync usaria o texto
     # do ciclo passado. Encadeada pelo retorno, e não por >>, para que uma

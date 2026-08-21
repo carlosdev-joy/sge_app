@@ -102,6 +102,10 @@ interface RespostaChamados {
   total: number
   por_coluna: Record<string, number>
   alerta_fila_vazia: string | null
+  // true = o espelho responde, mas as colunas novas ainda não existem. Sem
+  // dizer isso, a tela mostraria "não classificado" em 100% dos cards e
+  // ninguém saberia se faltou dado ou faltou classificação.
+  derivacoes_pendentes: boolean
 }
 
 const ROTULO_COLUNA: Record<string, string> = {
@@ -178,9 +182,20 @@ const ESTILO_VEREDITO: Record<string, { classe: string; curto: string }> = {
   },
 }
 
+interface Sugestao { tipo_demanda: string; responsavel: string; resolvidos: number }
+
 /** O laudo inteiro, para ler e copiar. */
 function ModalTriagem({ c, aoFechar }: { c: Chamado; aoFechar: () => void }) {
   const heuristica = c.triagem_origem === 'heuristica'
+  // Quem costuma atender este tipo — histórico de 90 dias, não IA. Carregado
+  // só quando o modal abre: é informação de apoio à decisão de quem lê o
+  // laudo, não algo que a fila inteira precise pagar para renderizar.
+  const { data: sugestoes } = useQuery<{ sugestoes: Sugestao[]; dias: number }>({
+    queryKey: ['chamados-sugestoes'],
+    queryFn: () => apiFetch('/chamados/sugestoes'),
+    staleTime: 5 * 60 * 1000,
+  })
+  const sugestao = sugestoes?.sugestoes.find(s => s.tipo_demanda === c.tipo_demanda)
   return (
     <Modal open onClose={aoFechar} title={`Triagem · ${c.numero}`} size="lg">
       <div className="flex flex-col gap-3 text-[12px]">
@@ -235,6 +250,17 @@ function ModalTriagem({ c, aoFechar }: { c: Chamado; aoFechar: () => void }) {
 
         {!c.resumo && !c.lacunas.length && !c.perguntas && (
           <p className="text-dim">Este chamado ainda não tem laudo de triagem.</p>
+        )}
+
+        {/* SUGESTÃO, e o texto diz isso. Distribuir chamado é decisão de
+            gestão: a contagem não sabe de férias, carga atual nem de quem
+            está aprendendo o quê. */}
+        {sugestao && sugestao.responsavel !== c.atribuido_a && (
+          <p className="text-[11px] text-dim border-t border-edge pt-2">
+            Quem mais resolveu “{c.tipo_demanda}” nos últimos {sugestoes?.dias ?? 90} dias:{' '}
+            <strong className="text-ink">{sugestao.responsavel}</strong> ({sugestao.resolvidos}).
+            É histórico, não atribuição.
+          </p>
         )}
       </div>
     </Modal>
@@ -441,6 +467,17 @@ export default function Chamados() {
       {aba === 'fila' && d.alerta_fila_vazia && (
         <Aviso tom={d.ultimo_sync?.status === 'OK' ? 'info' : 'warning'}>
           {d.alerta_fila_vazia}
+        </Aviso>
+      )}
+
+      {/* Sem este aviso, os cards apareceriam com "não classificado" em todos
+          os campos novos e ninguém saberia se faltou dado ou classificação —
+          o mesmo "vazio × quebrado" que o resto da tela evita. */}
+      {d.derivacoes_pendentes && (
+        <Aviso tom="warning">
+          A fila está sendo servida, mas os campos de triagem e classificação
+          ainda não existem no banco — as migrations desta versão não foram
+          aplicadas. Os cards aparecem sem tipo, categoria e veredito.
         </Aviso>
       )}
 
