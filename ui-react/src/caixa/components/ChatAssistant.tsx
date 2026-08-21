@@ -10,6 +10,8 @@ import { Button } from "../../components/ui/Button";
 import { toast } from "../../components/ui/Toast";
 import { apiFetch } from "../../lib/api";
 import { useAssistentesIA, CHAT_ENDPOINT, type ConversaHistorico } from "../lib/config";
+import MensagemMarkdown from "./MensagemMarkdown";
+import { montarConversaPdf } from "../lib/conversaPdf";
 
 type Assistente = "diego" | "lari" | "leo";
 
@@ -92,25 +94,16 @@ export default function ChatAssistant({ assistente, nome, avatar, pageContext, s
     }
   };
 
+  // O PDF desenha os MESMOS blocos que a bolha (markdown.ts), e não o texto
+  // cru: antes ele exportava `## Status`, `**Emitida**` e as tabelas em canos,
+  // e os emoji viravam lixo ("📋" saía "Ø=ÜË") porque as fontes padrão do
+  // jsPDF escrevem em WinAnsi. O desenho mora em conversaPdf.ts — de lá ele
+  // pode ser PROVADO gerando um arquivo de verdade, coisa que dentro de um
+  // onClick não dava.
   const exportPDF = () => {
     try {
       const doc = new jsPDF();
-      const w = doc.internal.pageSize.getWidth();
-      const m = 20;
-      let y = m;
-      doc.setFontSize(16); doc.setTextColor(26, 95, 168);
-      doc.text(`Conversa com ${nome}`, m, y); y += 8;
-      doc.setFontSize(10); doc.setTextColor(100);
-      doc.text(`Exportado em: ${new Date().toLocaleString("pt-BR")}`, m, y); y += 12;
-      doc.setFontSize(11);
-      messages.forEach((mm) => {
-        if (y > 270) { doc.addPage(); y = m; }
-        doc.setFont("helvetica", "bold"); doc.setTextColor(mm.sender === "user" ? 50 : 26, mm.sender === "user" ? 50 : 95, mm.sender === "user" ? 50 : 168);
-        doc.text(mm.sender === "user" ? "Você:" : `${nome}:`, m, y); y += 6;
-        doc.setFont("helvetica", "normal"); doc.setTextColor(50);
-        const lines = doc.splitTextToSize(mm.text, w - 2 * m);
-        doc.text(lines, m, y); y += lines.length * 6 + 8;
-      });
+      montarConversaPdf(doc, { nome, mensagens: messages });
       doc.save(`${assistente}-conversa-${Date.now()}.pdf`);
       toast.success("Conversa exportada em PDF.");
     } catch (e) {
@@ -183,8 +176,13 @@ export default function ChatAssistant({ assistente, nome, avatar, pageContext, s
           {messages.map((mm) => (
             <div key={mm.id} className={`flex ${mm.sender === "user" ? "justify-end" : "justify-start gap-2"}`}>
               {mm.sender === "assistant" && <img src={avatar} alt={nome} className="h-7 w-7 rounded-full bg-edge/60 p-0.5 object-cover shrink-0" />}
-              <div className={`max-w-[80%] rounded-lg p-3 ${mm.sender === "user" ? "bg-canvas border border-edge text-ink" : "bg-[#1A5FA8] text-white"}`}>
-                <p className="text-sm whitespace-pre-wrap">{mm.text}</p>
+              <div className={`min-w-0 max-w-[80%] rounded-lg p-3 ${mm.sender === "user" ? "bg-canvas border border-edge text-ink" : "bg-[#1A5FA8] text-white"}`}>
+                {/* Markdown só na resposta do assistente. O que a pessoa
+                    digitou aparece como digitou — interpretar o texto DELA
+                    esconderia caracteres que ela quis mandar. */}
+                {mm.sender === "assistant"
+                  ? <MensagemMarkdown texto={mm.text} />
+                  : <p className="text-sm whitespace-pre-wrap">{mm.text}</p>}
                 <p className={`text-[10px] mt-1 ${mm.sender === "user" ? "text-dim" : "text-white/70"}`}>
                   {mm.timestamp.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
                 </p>
