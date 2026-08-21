@@ -256,10 +256,22 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             from services import caixa_ia
             cfg = caixa_ia.load_config(cur)
             cur.close(); conn.close()
+            # A última verificação volta junto com a config para a tela nascer
+            # já dizendo se a conexão estava de pé — sem exigir um clique só
+            # para descobrir o que já se sabia.
+            ultima = None
+            if cfg["ultima_verificacao"]:
+                try:
+                    ultima = json.loads(cfg["ultima_verificacao"])
+                except Exception:
+                    ultima = None
             return {"sucesso": True, "config": {
                 "enabled": cfg["enabled"], "provider": cfg["provider"],
                 "model": cfg["model"], "base_url": cfg["base_url"],
                 "api_key_set": bool(cfg["api_key_enc"]),
+                "usa_proxy": cfg["usa_proxy"],
+                "proxy_ambiente": caixa_ia.proxy_do_ambiente(),
+                "ultima_verificacao": ultima,
             }}
 
         elif action == "caixa_ia_set":
@@ -279,12 +291,34 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             if base_url and not base_url.lower().startswith(("http://", "https://")):
                 raise HTTPException(status_code=422, detail="base_url deve ser http(s)")
             api_key  = body.get("api_key")  # None = manter a atual; "" ignora
-            if body.get("enabled") and provider == "openai_compat" and not base_url:
-                raise HTTPException(status_code=422,
-                                    detail="base_url é obrigatória no provedor OpenAI-compatível")
+            # Gateway da Caixa: base_url exigida em toda gravação — sem ela o
+            # provedor não tem para onde chamar, e a verificação de conexão
+            # falharia por configuração faltando, parecendo falha de rede.
+            # openai_compat mantém a regra ANTIGA (só ao ativar): endurecer ali
+            # devolveria 422 a uma instalação que hoje tem base_url vazia com
+            # os assistentes desligados — inclusive na gravação que só quer
+            # mantê-los desligados.
+            if not base_url and (provider == "caixa_gateway"
+                                 or (body.get("enabled") and provider == "openai_compat")):
+                raise HTTPException(
+                    status_code=422,
+                    detail=("base_url é obrigatória no provedor "
+                            + ("OpenAI-compatível" if provider == "openai_compat"
+                               else "Gateway da Caixa")))
+            # Só o gateway interno tem a opção de proxy; nos demais o httpx já
+            # lê o ambiente, e guardar '1' aqui daria a impressão de um
+            # interruptor que não liga coisa nenhuma.
+            usa_proxy = "1" if (provider == "caixa_gateway"
+                                and body.get("usa_proxy")) else "0"
 
             valores = {caixa_ia.K_ENABLED: enabled, caixa_ia.K_PROVIDER: provider,
-                       caixa_ia.K_MODEL: model, caixa_ia.K_BASE_URL: base_url}
+                       caixa_ia.K_MODEL: model, caixa_ia.K_BASE_URL: base_url,
+                       caixa_ia.K_USA_PROXY: usa_proxy,
+                       # O laudo vale para a configuração que foi verificada.
+                       # Mantê-lo depois de trocar provedor ou base_url deixa
+                       # um "conectado" verde na tela sobre uma configuração
+                       # que ninguém testou — e nada na tela o contradiz.
+                       caixa_ia.K_ULTIMA_VERIF: ""}
             if isinstance(api_key, str) and api_key.strip():
                 token = _enc(api_key.strip())
                 if len(token) > 1000:  # etl_app_config.config_value é VARCHAR(1000)
@@ -328,6 +362,46 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             return {"sucesso": True,
                     "mensagem": f"Provedor respondeu em {ms} ms (modelo {modelo}).",
                     "detalhes": {"resposta": resposta[:200], "duracao_ms": ms}}
+
+        elif action == "caixa_ia_verificar":
+            # Verificação COM diagnóstico: diferente de caixa_ia_test, não
+            # levanta em falha — devolve 200 com o laudo. Erro HTTP viraria
+            # toast vermelho genérico, e a pergunta aqui não é "deu certo?" e
+            # sim "onde parou?".
+            from services import caixa_ia
+            cfg = caixa_ia.load_config(cur)
+            cur.close(); conn.close()
+            diag = await caixa_ia.diagnosticar(cfg)
+            diag["verificado_em"] = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            diag["verificado_por"] = requested_by
+
+            # Persistido em forma curta: etl_app_config.config_value é
+            # VARCHAR(1000), e o laudo inteiro (resposta do modelo incluída)
+            # não cabe. O que fica é o que a tela precisa mostrar ao abrir.
+            resumo = {"quando": diag["verificado_em"], "ok": diag["ok"],
+                      "etapa": diag["etapa"], "provedor": diag["provedor"],
+                      "modelo": diag["modelo"], "latencia_ms": diag["latencia_ms"],
+                      "por": requested_by, "mensagem": (diag["mensagem"] or "")[:300]}
+            try:
+                conn2 = get_db_conn(); cur2 = conn2.cursor()
+                cur2.execute(
+                    "MERGE dbo.etl_app_config AS t "
+                    "USING (SELECT ? AS k) AS s ON t.config_key = s.k "
+                    "WHEN MATCHED THEN UPDATE SET config_value=?, updated_by=?, updated_at=GETDATE() "
+                    "WHEN NOT MATCHED THEN INSERT (config_key, config_value, descricao, updated_by, updated_at) "
+                    "  VALUES (s.k, ?, 'Ultima verificacao de conexao da IA', ?, GETDATE());",
+                    [caixa_ia.K_ULTIMA_VERIF, json.dumps(resumo, ensure_ascii=False),
+                     requested_by, json.dumps(resumo, ensure_ascii=False), requested_by])
+                conn2.commit(); cur2.close(); conn2.close()
+            except Exception as e:
+                # Não poder GRAVAR o laudo não invalida o laudo: a tela recebe
+                # o resultado e um aviso de que ele não ficará após o refresh.
+                log.warning("caixa_ia_verificar: laudo não persistido (%s: %s)",
+                            type(e).__name__, e)
+                diag["persistido"] = False
+            else:
+                diag["persistido"] = True
+            return {"sucesso": True, "diagnostico": diag}
 
         # ── ServiceNow: credencial executora do sync (config servicenow_*) ────
         # Mesmo tratamento das caixa_ia_*: senha cifrada com o Fernet das
