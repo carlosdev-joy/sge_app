@@ -50,15 +50,20 @@ def _chamado(numero="INC001", tipo="incident", estado="novo", ativo=1,
              # veredito: a tela não pode pintar de âmbar quem só não foi
              # analisado ainda.
              veredito=None, suficiencia=None, resumo="", lacunas="",
-             perguntas="", triagem_origem="", triagem_em=None, triagem_erro=""):
+             perguntas="", triagem_origem="", triagem_em=None, triagem_erro="",
+             # Parentesco (migration 090). Vazio = raiz, que é o caso da
+             # maioria dos registros e o padrão certo para os outros testes.
+             pai_sys_id="", pai_numero="", estado_cru="1",
+             responsavel="Fulano"):
     return (sys_id or f"sid-{numero}", numero, tipo, titulo, "In Progress",
-            estado, "3 - Moderate", "Fulano", "Engenharia",
+            estado, "3 - Moderate", responsavel, "Engenharia",
             "2026-08-10 10:00:00", "2026-08-13 09:00:00", None, ativo,
             "https://x.service-now.com/nav", "2026-08-13 12:00:00", idade,
             tipo_demanda, categoria, objetos, demandante, catalogo,
             prazo, sla_vencido,
             veredito, suficiencia, resumo, lacunas, perguntas,
-            triagem_origem, triagem_em, triagem_erro)
+            triagem_origem, triagem_em, triagem_erro,
+            pai_sys_id, pai_numero, estado_cru)
 
 
 def _ciclo(status="OK", idade_min=30, terminado="2026-08-13 12:05:00", erro=None):
@@ -426,3 +431,159 @@ def test_origem_heuristica_chega_marcada(cliente, banco):
     c = cliente.get("/chamados").json()["chamados"][0]
     assert c["triagem_origem"] == "heuristica"
     assert "ConnectError" in c["triagem_erro"]
+
+
+# ═══════════ 8. um card por trabalho (RITM × SCTASK) ════════════════════════
+# Todo RITM do catálogo gera uma sc_task, e o espelho traz as duas: a fila
+# mostrava 113 registros para ~60 trabalhos. O filho vira linha DENTRO do card
+# do pai. O que estes testes prendem é o outro lado da moeda — o agrupamento
+# não pode fazer card NENHUM sumir da fila, que seria trocar duplicação por
+# invisibilidade.
+
+def _ritm(numero="RITM001", **kw):
+    return _chamado(numero=numero, tipo="ritm", **kw)
+
+
+def _task(numero="SCTASK001", pai="sid-RITM001", pai_numero="RITM001", **kw):
+    return _chamado(numero=numero, tipo="task",
+                    pai_sys_id=pai, pai_numero=pai_numero, **kw)
+
+
+def test_a_task_vira_linha_dentro_do_card_do_ritm(cliente, banco):
+    banco["cur"] = CursorFalso([_ritm(), _task()], _ciclo())
+    d = cliente.get("/chamados").json()
+    assert d["total"] == 1, "um trabalho, não dois"
+    assert d["registros"] == 2, "o denominador continua dizendo a verdade"
+    card = d["chamados"][0]
+    assert card["numero"] == "RITM001"
+    assert [f["numero"] for f in card["filhos"]] == ["SCTASK001"]
+    assert card["filhos"][0]["pai_numero"] == "RITM001"
+
+
+def test_o_card_conta_uma_vez_so_na_coluna(cliente, banco):
+    """A contagem do cabeçalho da coluna é a do card, não a dos registros."""
+    banco["cur"] = CursorFalso(
+        [_ritm(estado="andamento"), _task(estado="andamento")], _ciclo())
+    d = cliente.get("/chamados").json()
+    assert d["por_coluna"]["andamento"] == 1
+    assert sum(d["por_coluna"].values()) == d["total"]
+
+
+def test_task_orfa_continua_sendo_card(cliente, banco):
+    """`pai_sys_id` apontando para fora do espelho. A regra da instância diz
+    que não deveria acontecer — se acontecer, é sintoma do filtro de grupo, e
+    esconder o sintoma perderia trabalho de vista."""
+    banco["cur"] = CursorFalso([_task(pai="sid-de-outro-grupo")], _ciclo())
+    d = cliente.get("/chamados").json()
+    assert d["total"] == 1 and d["registros"] == 1
+    assert d["chamados"][0]["numero"] == "SCTASK001"
+    assert d["chamados"][0]["filhos"] == []
+
+
+def test_auto_referencia_nao_faz_o_card_sumir(cliente, banco):
+    """`pai_sys_id == sys_id`: sem a guarda, o card entraria em si mesmo e
+    desapareceria da fila inteira, sem erro nenhum."""
+    banco["cur"] = CursorFalso(
+        [_chamado(numero="RITM009", sys_id="sid-x", pai_sys_id="sid-x")],
+        _ciclo())
+    d = cliente.get("/chamados").json()
+    assert d["total"] == 1
+    assert d["chamados"][0]["numero"] == "RITM009"
+
+
+def test_ciclo_entre_dois_nao_esvazia_a_fila(cliente, banco):
+    """A→B e B→A. Se cada um entrasse no outro, os DOIS sairiam das raízes e a
+    fila ficaria vazia com o espelho cheio. Filho é só quem tem pai RAIZ."""
+    banco["cur"] = CursorFalso([
+        _chamado(numero="A", sys_id="sid-A", pai_sys_id="sid-B"),
+        _chamado(numero="B", sys_id="sid-B", pai_sys_id="sid-A"),
+    ], _ciclo())
+    d = cliente.get("/chamados").json()
+    assert d["total"] == 2, "nenhum dos dois pode sumir"
+    assert {c["numero"] for c in d["chamados"]} == {"A", "B"}
+
+
+def test_cadeia_de_tres_niveis_nao_perde_o_do_meio(cliente, banco):
+    """A ← B ← C. O agrupamento é de UM nível: B entra em A, e C — cujo pai
+    não é raiz — fica na raiz em vez de sumir dentro de um card que já é
+    filho de outro."""
+    banco["cur"] = CursorFalso([
+        _chamado(numero="A", sys_id="sid-A"),
+        _chamado(numero="B", sys_id="sid-B", pai_sys_id="sid-A"),
+        _chamado(numero="C", sys_id="sid-C", pai_sys_id="sid-B"),
+    ], _ciclo())
+    d = cliente.get("/chamados").json()
+    assert d["registros"] == 3
+    raizes = {c["numero"]: c for c in d["chamados"]}
+    assert set(raizes) == {"A", "C"}
+    assert [f["numero"] for f in raizes["A"]["filhos"]] == ["B"]
+
+
+def test_filho_que_vem_antes_do_pai_na_ordem_e_agrupado(cliente, banco):
+    """A query ordena por abertura: a task pode chegar antes do RITM. O
+    agrupamento roda depois da lista inteira montada, justamente por isso."""
+    banco["cur"] = CursorFalso([_task(), _ritm()], _ciclo())
+    d = cliente.get("/chamados").json()
+    assert d["total"] == 1
+    assert d["chamados"][0]["numero"] == "RITM001"
+
+
+def test_a_ordem_das_raizes_e_dos_filhos_e_preservada(cliente, banco):
+    banco["cur"] = CursorFalso([
+        _ritm(numero="RITM001", sys_id="sid-RITM001"),
+        _task(numero="SCTASK001"),
+        _task(numero="SCTASK002"),
+        _ritm(numero="RITM002", sys_id="sid-RITM002"),
+    ], _ciclo())
+    d = cliente.get("/chamados").json()
+    assert [c["numero"] for c in d["chamados"]] == ["RITM001", "RITM002"]
+    assert [f["numero"] for f in d["chamados"][0]["filhos"]] == [
+        "SCTASK001", "SCTASK002"]
+
+
+def test_parentesco_e_estado_cru_chegam_na_resposta(cliente, banco):
+    banco["cur"] = CursorFalso([_task(pai="sid-fora", estado_cru="-5")], _ciclo())
+    c = cliente.get("/chamados").json()["chamados"][0]
+    assert c["pai_sys_id"] == "sid-fora"
+    assert c["pai_numero"] == "RITM001"
+    assert c["estado_cru"] == "-5", "o número do estado precisa sobreviver"
+
+
+def test_sem_a_migration_090_a_fila_sai_plana_e_servida(cliente, banco):
+    """O degrau "imagem nova + migrations pendentes": sem as colunas do
+    parentesco a fila NÃO pode virar 'sistema em atualização' — ela volta a
+    ser exatamente o que era antes desta fase."""
+    class CursorSemParentesco:
+        def __init__(self, chamados):
+            self.chamados = chamados
+
+        def execute(self, sql, params=None):
+            if "pai_sys_id" in sql:
+                raise RuntimeError("Invalid column name 'pai_sys_id'")
+            return self
+
+        def fetchall(self):
+            return [c[:16] for c in self.chamados]
+
+        def fetchone(self):
+            return _ciclo()
+
+        def close(self):
+            pass
+
+    banco["cur"] = CursorSemParentesco([_ritm(), _task()])
+    d = cliente.get("/chamados").json()
+    assert d["migration_ausente"] is False
+    assert d["total"] == 2, "fila plana: os dois cards, como antes"
+    assert d["registros"] == 2
+    assert all(c["filhos"] == [] for c in d["chamados"])
+    assert all(c["pai_sys_id"] == "" for c in d["chamados"])
+
+
+def test_registros_e_total_sao_iguais_quando_nao_ha_parentesco(cliente, banco):
+    """Fila só de incidents: o denominador não pode inventar diferença — a
+    tela usa `registros > total` para decidir se mostra o segundo número."""
+    banco["cur"] = CursorFalso([_chamado(numero="INC1"), _chamado(numero="INC2")],
+                               _ciclo())
+    d = cliente.get("/chamados").json()
+    assert d["registros"] == d["total"] == 2

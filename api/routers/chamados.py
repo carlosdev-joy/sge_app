@@ -80,6 +80,51 @@ TIPO_NAO_CLASSIFICADO = "não classificado"
 TOPO_CATEGORIAS = 10
 
 
+# ── O card é o TRABALHO, não o registro ─────────────────────────────────────
+# No ServiceNow todo RITM do catálogo gera uma sc_task filha. O espelho traz as
+# duas, e a fila contava cada pedido DUAS vezes: 113 registros para ~60
+# trabalhos, medidos em produção (49 de 49 tasks ativas com o pai na fila).
+#
+# O recorte não pode ser um WHERE: a tela mostra o pai COMO card e o filho
+# DENTRO dele, então os dois registros precisam chegar. Por isso o agrupamento
+# é em Python — e por isso as agregações, que só contam, fazem o mesmo recorte
+# em SQL (F2 da spec, com teste de paridade entre os dois caminhos).
+def _agrupar_por_pai(chamados: list[dict]) -> list[dict]:
+    """Filho vai para dentro do card do pai; o resto continua na raiz.
+
+    Preserva a ordem original das raízes (a query já ordena por abertura) e a
+    dos filhos dentro de cada card.
+
+    Três coisas que este agrupamento se recusa a fazer, porque cada uma
+    sumiria com trabalho da fila sem erro nenhum:
+
+      1. **auto-referência** (`pai_sys_id == sys_id`) não vira filho de si
+         mesmo — o card desapareceria da tela inteira;
+      2. **um nível, e só um.** Filho é quem tem pai que é RAIZ. Uma cadeia
+         A→B→C, ou um ciclo A↔B, deixaria os dois primeiros sem card se cada
+         um entrasse no outro; aqui eles ficam na raiz, visíveis;
+      3. **órfã continua card.** `pai_sys_id` preenchido apontando para fora
+         do espelho é trabalho real (a regra da instância diz que não deveria
+         acontecer — então, se acontecer, é sintoma do filtro de grupo, e
+         esconder o sintoma é o oposto do que esta tela existe para fazer).
+    """
+    por_sys_id = {c["sys_id"]: c for c in chamados if c.get("sys_id")}
+
+    def pai_de(c: dict) -> dict | None:
+        p = por_sys_id.get((c.get("pai_sys_id") or "").strip())
+        return p if p is not None and p is not c else None
+
+    sem_pai = {c["sys_id"] for c in chamados if pai_de(c) is None}
+    raizes: list[dict] = []
+    for c in chamados:
+        p = pai_de(c)
+        if p is not None and p["sys_id"] in sem_pai:
+            p.setdefault("filhos", []).append(c)
+        else:
+            raizes.append(c)
+    return raizes
+
+
 def _fmt_dt(v):
     return str(v)[:19] if v else None
 
@@ -123,7 +168,12 @@ def listar_chamados(incluir_inativos: int = 0,
         "chamados": [], "colunas": list(COLUNAS_KANBAN), "ultimo_sync": None,
         "migration_ausente": False, "total": 0, "por_coluna": {},
         "alerta_fila_vazia": None,
-        # true = o espelho responde, mas as colunas das migrations 091/092
+        # O denominador honesto: quantos REGISTROS vieram do espelho, antes de
+        # o filho entrar no card do pai. `total` conta trabalhos. Sem os dois
+        # números a fila pareceria ter encolhido sozinha — 113 vira 60 e
+        # ninguém sabe se sumiu chamado.
+        "registros": 0,
+        # true = o espelho responde, mas as colunas das migrations 090/091/092
         # ainda não existem. A fila continua servida; os chips é que faltam.
         "derivacoes_pendentes": False,
     }
@@ -142,7 +192,15 @@ def listar_chamados(incluir_inativos: int = 0,
         novas = (", tipo_demanda, categoria_diaadia, objetos, demandante, "
                  "  catalogo, prazo, sla_vencido, "
                  "  veredito, suficiencia, resumo, lacunas, perguntas, "
-                 "  triagem_origem, triagem_em, triagem_erro")
+                 "  triagem_origem, triagem_em, triagem_erro, "
+                 # Parentesco e estado cru vêm da migration 090 — ANTERIOR às
+                 # outras deste bloco. Entram aqui mesmo assim, e não no
+                 # `base`, porque o que este bloco protege é o degrau
+                 # "imagem nova + migrations pendentes": sem ele a fila
+                 # inteira viraria "sistema em atualização". O preço é servir
+                 # a fila plana num ambiente que tenha a 090 e não tenha a
+                 # 091 — degrau que nenhum ambiente habita por muito tempo.
+                 "  pai_sys_id, pai_numero, estado_cru")
         fim = (" FROM dbo.etl_chamado"
                + ("" if incluir_inativos else " WHERE ativo = 1")
                + " ORDER BY aberto_em DESC")
@@ -171,7 +229,10 @@ def listar_chamados(incluir_inativos: int = 0,
                 # caminho completo — o card mostra "não classificado" em vez
                 # de quebrar por campo ausente.
                 r = tuple(r) + (None, "", "", "", "", None, None,
-                                None, None, "", "", "", None, None, "")
+                                None, None, "", "", "", None, None, "",
+                                # Sem parentesco a fila sai PLANA, que é
+                                # exatamente como ela era antes desta fase.
+                                "", "", "")
             resposta["chamados"].append({
                 "sys_id": r[0], "numero": r[1], "tipo": r[2], "titulo": r[3],
                 "estado_origem": r[4], "estado_kanban": r[5],
@@ -207,7 +268,20 @@ def listar_chamados(incluir_inativos: int = 0,
                 "triagem_origem": r[28] or "",
                 "triagem_em": _fmt_dt(r[29]),
                 "triagem_erro": r[30] or "",
+                # ── Parentesco (migration 090) ───────────────────────────
+                # O sys_id dá o join exato; o número é o que a tela mostra.
+                "pai_sys_id": r[31] or "",
+                "pai_numero": r[32] or "",
+                # O NÚMERO do estado, ao lado do rótulo: quando o card cai em
+                # "Outros", é ele que diz o que cadastrar no mapa do kanban.
+                "estado_cru": r[33] or "",
+                # Preenchido só nas RAÍZES, pelo agrupamento logo abaixo.
+                "filhos": [],
             })
+        # O agrupamento vem DEPOIS da montagem da lista inteira: um filho pode
+        # aparecer antes do pai na ordem por abertura.
+        resposta["registros"] = len(resposta["chamados"])
+        resposta["chamados"] = _agrupar_por_pai(resposta["chamados"])
         resposta["ultimo_sync"] = _ultimo_ciclo(cur)
         cur.close(); conn.close(); conn = None
     except Exception as e:
@@ -223,6 +297,9 @@ def listar_chamados(incluir_inativos: int = 0,
         resposta["migration_ausente"] = True
         return resposta
 
+    # `total` e `por_coluna` contam TRABALHOS (as raízes) — o card aparece uma
+    # vez só, na coluna do estado do pedido. O contador de registros do espelho
+    # é `registros`, e a tela mostra os dois.
     resposta["total"] = len(resposta["chamados"])
     for coluna in COLUNAS_KANBAN:
         resposta["por_coluna"][coluna] = sum(
