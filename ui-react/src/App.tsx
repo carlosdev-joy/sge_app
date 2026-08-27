@@ -7,14 +7,17 @@ import { useAuthStore, readLegacyToken } from './store/auth'
 import { AppShell } from './components/layout/AppShell'
 import Login from './pages/Login'
 import Admin from './pages/Admin'
-
-// Telas já migradas para React são montadas abaixo. As demais permanecem na UI
-// legada (raiz) — ver src/lib/nav.ts. Mantemos os imports das páginas prontas
-// fora do bundle de rotas até que cada uma seja validada e ativada.
+import Chamados from './pages/Chamados'
+import Dashboard from './pages/Dashboard'
+import Jobs from './pages/Jobs'
+import Logs from './pages/Logs'
+import DSMonitor from './pages/DSMonitor'
+import Governanca from './pages/Governanca'
+import Malha from './pages/Malha'
+import Pipelines from './pages/Pipelines'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
-  // Sem sessão React nem legada → manda para o login centralizado (UI legada, raiz).
   if (!token && !readLegacyToken()) {
     window.location.href = '/'
     return null
@@ -22,8 +25,6 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
-// Adota a sessão da UI legada (orq_session) na primeira entrada no /v2, para
-// evitar login duplicado. Busca /me com o token legado e popula a store.
 function useLegacySessionBridge() {
   const { token, setAuth } = useAuthStore()
   const [ready, setReady] = useState(!!token)
@@ -35,7 +36,7 @@ function useLegacySessionBridge() {
     let cancelled = false
     apiFetch<any>('/me')
       .then((user) => { if (!cancelled) setAuth(user, legacy) })
-      .catch(() => { /* token legado inválido — PrivateRoute trata o redirect */ })
+      .catch(() => {})
       .finally(() => { if (!cancelled) setReady(true) })
     return () => { cancelled = true }
   }, [token, setAuth])
@@ -49,15 +50,22 @@ export default function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter basename="/v2">
+      <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<PrivateRoute><AppShell /></PrivateRoute>}>
-            <Route index element={<Navigate to="/admin" replace />} />
+            <Route index element={<Navigate to="/chamados" replace />} />
+            <Route path="chamados/*" element={<Chamados />} />
             <Route path="admin/*" element={<Admin />} />
+            <Route path="dashboard" element={<Dashboard />} />
+            <Route path="jobs" element={<Jobs />} />
+            <Route path="logs" element={<Logs />} />
+            <Route path="ds-monitor" element={<DSMonitor />} />
+            <Route path="governanca" element={<Governanca />} />
+            <Route path="malha" element={<Malha />} />
+            <Route path="pipelines" element={<Pipelines />} />
           </Route>
-          {/* Telas ainda não migradas caem na raiz (UI legada) */}
-          <Route path="*" element={<Navigate to="/admin" replace />} />
+          <Route path="*" element={<Navigate to="/chamados" replace />} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>

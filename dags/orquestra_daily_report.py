@@ -46,11 +46,14 @@ def gerar_relatorio(**context):
     row = hook.get_first("""
         WITH execs AS (
             SELECT e.execution_id, e.pipeline,
-                COALESCE(SUM(e.duration_seconds), 0) AS dur,
+                DATEDIFF(SECOND, MIN(e.start_time),
+                         MAX(COALESCE(e.end_time, GETDATE()))) AS dur,
                 CASE
                     WHEN SUM(CASE WHEN e.status='FAILED'  THEN 1 ELSE 0 END) > 0 THEN 'FAILED'
                     WHEN SUM(CASE WHEN e.status='WARNING' THEN 1 ELSE 0 END) > 0 THEN 'WARNING'
                     WHEN SUM(CASE WHEN e.status='RUNNING' THEN 1 ELSE 0 END) > 0 THEN 'RUNNING'
+                    WHEN SUM(CASE WHEN e.status='SUCCESS' THEN 1 ELSE 0 END) > 0 THEN 'SUCCESS'
+                    WHEN SUM(CASE WHEN e.status='SKIPPED' THEN 1 ELSE 0 END) > 0 THEN 'SKIPPED'
                     ELSE 'SUCCESS'
                 END AS status_geral
             FROM dbo.etl_job_execution e
@@ -63,10 +66,12 @@ def gerar_relatorio(**context):
             SUM(CASE WHEN status_geral='SUCCESS' THEN 1 ELSE 0 END),
             SUM(CASE WHEN status_geral='FAILED'  THEN 1 ELSE 0 END),
             SUM(CASE WHEN status_geral='WARNING' THEN 1 ELSE 0 END),
-            SUM(CASE WHEN status_geral='RUNNING' THEN 1 ELSE 0 END)
+            SUM(CASE WHEN status_geral='RUNNING' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status_geral='SKIPPED' THEN 1 ELSE 0 END)
         FROM execs
     """)
-    total, ok, falhas, warns, running = [int(v or 0) for v in (row or (0, 0, 0, 0, 0))]
+    total, ok, falhas, warns, running, skipped = [
+        int(v or 0) for v in (row or (0, 0, 0, 0, 0, 0))]
 
     # SLAs estourados nas últimas 24h
     sla_row = hook.get_first(
@@ -90,7 +95,10 @@ def gerar_relatorio(**context):
     slow_rows = hook.get_records("""
         SELECT TOP 5 pipeline, MAX(dur) AS max_dur
         FROM (
-            SELECT e.pipeline, e.execution_id, COALESCE(SUM(e.duration_seconds),0) AS dur
+            -- Relógio de parede: a SOMA inflava pipelines com jobs paralelos.
+            SELECT e.pipeline, e.execution_id,
+                   DATEDIFF(SECOND, MIN(e.start_time),
+                            MAX(COALESCE(e.end_time, GETDATE()))) AS dur
             FROM dbo.etl_job_execution e
             WHERE e.start_time >= DATEADD(HOUR, -24, GETDATE())
             GROUP BY e.pipeline, e.execution_id
@@ -99,7 +107,10 @@ def gerar_relatorio(**context):
         ORDER BY MAX(dur) DESC
     """) or []
 
-    taxa = round(ok * 100.0 / total, 1) if total else 0.0
+    # Execuções 100% puladas (decisão) não entram na taxa — não são sucesso nem
+    # falha; contam num fato próprio quando existirem.
+    base_taxa = total - skipped
+    taxa = round(ok * 100.0 / base_taxa, 1) if base_taxa else 0.0
     if falhas == 0 and sla_breaches == 0:
         icon, color, headline = "🟢", "Good", "Janela noturna sem falhas"
     elif falhas > 0:
@@ -116,6 +127,8 @@ def gerar_relatorio(**context):
         _fact("Em execução",      running),
         _fact("SLAs estourados",  sla_breaches),
     ]
+    if skipped:
+        facts.append(_fact("Puladas (decisão)", skipped))
     if failed_rows:
         facts.append(_fact("Pipelines com falha", ", ".join(r[0] for r in failed_rows[:10])))
     for i, (pname, dur) in enumerate(slow_rows, 1):

@@ -55,6 +55,7 @@ def monitorar_performance(**context):
             SELECT 1
             FROM dbo.etl_pipeline_performance_snapshot
             WHERE execution_id = %s
+              AND pipeline = %s
               AND alerta_horas = %s
               AND CAST(snapshot_at AS DATE) = CAST(GETDATE() AS DATE)
         )
@@ -70,6 +71,9 @@ def monitorar_performance(**context):
         # Insere um snapshot por limiar atingido (3/6/12), mantendo histórico
         for limiar in LIMIARES:
             if elapsed_h >= limiar:
+                # Dedupe escopado por pipeline TAMBÉM: execution_id (ts_nodash)
+                # colide entre pipelines do mesmo tick — sem o pipeline, a 2ª
+                # pipeline colidida perdia os alertas 3h/6h/12h do dia.
                 params = (
                     pipeline,
                     project,
@@ -77,6 +81,7 @@ def monitorar_performance(**context):
                     limiar,
                     int(elapsed_seconds or 0),
                     exec_id,
+                    pipeline,
                     limiar,
                 )
                 hook.run(insert_sql, parameters=params)

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from typing import Optional
 
 # ── Variável de ambiente para localização dos arquivos .dsx ──────
@@ -28,6 +29,12 @@ try:
     _DEFAULT_DSX_DIR = Variable.get("DSX_BASE_DIR", default_var=_DEFAULT_DSX_DIR)
 except Exception:
     pass
+
+# ── Cache de parsing por arquivo (chave = path, invalida por mtime) ──
+# Usado pela busca de impacto por campo: evita reparsear o mesmo .dsx a cada
+# consulta. Protegido por lock — seguro sob a API multithread.
+_PARSE_LOCK = threading.Lock()
+_PARSE_CACHE: dict[str, tuple[float, dict[str, list[dict]]]] = {}
 
 # ── De-para: StageType bruto → categoria de direção ──────────────
 _TRANSFORM_TYPES: frozenset[str] = frozenset({
@@ -64,6 +71,36 @@ _COL_SKIP: frozenset[str] = frozenset({
     "RejectFromLink", "RejectThreshold", "RejectNumber",
     "RejectUsesPercentage", "SupportedVariants",
 })
+
+# ── De-para: SqlType (código ODBC do DataStage) → nome legível ────
+_SQL_TYPE_MAP: dict[int, str] = {
+    1: "CHAR", 12: "VARCHAR", -1: "LONGVARCHAR",
+    -8: "NCHAR", -9: "NVARCHAR", -10: "LONGNVARCHAR",
+    2: "NUMERIC", 3: "DECIMAL",
+    4: "INTEGER", 5: "SMALLINT", -5: "BIGINT", -6: "TINYINT",
+    6: "FLOAT", 7: "REAL", 8: "DOUBLE", -7: "BIT",
+    9: "DATE", 10: "TIME", 11: "TIMESTAMP",
+    91: "DATE", 92: "TIME", 93: "TIMESTAMP",
+    -2: "BINARY", -3: "VARBINARY", -4: "LONGVARBINARY",
+}
+
+# Categorias de tipo (nomes em maiúsculas) para filtros de datatype
+_TEXT_TYPE_NAMES: frozenset[str] = frozenset({
+    "CHAR", "VARCHAR", "LONGVARCHAR", "NCHAR", "NVARCHAR",
+    "LONGNVARCHAR", "WCHAR", "WVARCHAR", "TEXT", "STRING",
+})
+_NUMERIC_TYPE_NAMES: frozenset[str] = frozenset({
+    "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "DECIMAL",
+    "NUMERIC", "FLOAT", "REAL", "DOUBLE", "BIT",
+})
+
+# Padrões de pasta/categoria de backup a ignorar na varredura
+# (substring, case-insensitive). Ex.: "\\Jobs\\Projetos\\Coberturas\\bckp"
+_BACKUP_PATTERNS: tuple[str, ...] = ("backup", "bckp", "bkp", "bkup")
+
+# Jobs "cópia" (duplicatas geradas no DataStage, ex.: CopyOfX) — em geral não
+# usados no dia a dia. Detectado no nome do job ou na pasta (substring, lower).
+_COPY_PATTERNS: tuple[str, ...] = ("copyof", "copy of", "copy_of", "copy-of", "cópia", "copia")
 
 # ── Regex compiladas (seguras — aplicadas em blocos pequenos) ────
 _RE_DSX_ESCAPE  = re.compile(r'\\\(([0-9A-Fa-f]{2})\)')
@@ -111,6 +148,258 @@ class DSXEngine:
     # Alias mantido para retrocompatibilidade
     def buscar_linhagem(self, nome_projeto: str, nome_job: str) -> dict:
         return self.extrair(nome_projeto, nome_job)
+
+    # ── Listagem de arquivos .dsx disponíveis ───────────────────
+    def listar_dsx(self) -> list[str]:
+        """Nomes de projeto (arquivo .dsx sem extensão) disponíveis no diretório base."""
+        try:
+            nomes = [f[:-4] for f in os.listdir(self.diretorio_base)
+                     if f.lower().endswith(".dsx")]
+        except OSError:
+            return []
+        return sorted(nomes, key=str.lower)
+
+    # ── Listagem de jobs de um .dsx ─────────────────────────────
+    def listar_jobs(self, project_name: str) -> dict:
+        """Lista todos os jobs (DSJOB) declarados no arquivo .dsx do projeto."""
+        jobs_stages = self._load_jobs_cached(project_name)
+        if isinstance(jobs_stages, dict) and jobs_stages.get("erro"):
+            return jobs_stages
+        return {
+            "sucesso": True,
+            "project_name": project_name,
+            "dsx_file": f"{project_name}.dsx",
+            "jobs": sorted(jobs_stages.keys(), key=str.lower),
+        }
+
+    # ── Listagem de pastas (categorias) de um .dsx ──────────────
+    def listar_pastas(self, project_name: str) -> dict:
+        """Pastas (Category) distintas do .dsx, com a contagem de jobs em cada."""
+        jobs_data = self._load_jobs_cached(project_name)
+        if isinstance(jobs_data, dict) and jobs_data.get("erro"):
+            return jobs_data
+        counts: dict[str, int] = {}
+        for d in jobs_data.values():
+            cat = d.get("category") or ""
+            counts[cat] = counts.get(cat, 0) + 1
+        pastas = [{"category": c, "total_jobs": n} for c, n in counts.items()]
+        pastas.sort(key=lambda x: x["category"].lower())
+        return {
+            "sucesso": True,
+            "project_name": project_name,
+            "dsx_file": f"{project_name}.dsx",
+            "pastas": pastas,
+        }
+
+    # ── Busca de impacto por campo (varredura do .dsx) ──────────
+    def buscar_campo(self, project_name: str, termo: str,
+                     exato: bool = False, tipos=None,
+                     excluir: bool = False, incluir_bkp: bool = False,
+                     incluir_copy: bool = False, alvo: str = "coluna",
+                     pasta: str = "") -> dict:
+        """
+        Varre TODOS os jobs do .dsx do projeto e retorna onde o campo aparece,
+        com o datatype de cada coluna que casou.
+
+        Busca tipo LIKE (substring, case-insensitive) por padrão — útil quando
+        não há padrão de nomenclatura (ex.: 'CNPJ' casa NUM_CNPJ, CPF_CNPJ…).
+        Com exato=True, casa apenas igualdade exata (case-insensitive).
+
+        Filtro de datatype (opcional):
+          tipos   — iterável de nomes de tipo (ex.: ['VARCHAR','CHAR'])
+          excluir — False: só colunas cujo tipo ESTÁ em `tipos`
+                    True:  só colunas cujo tipo NÃO está em `tipos`
+          (ex.: tipos=['VARCHAR','CHAR'], excluir=True → todo CNPJ que NÃO é texto)
+
+        incluir_bkp — False (padrão): ignora jobs em pastas de backup
+                      (categoria com bkp/bckp/backup); True: inclui esses jobs.
+        incluir_copy — False (padrão): ignora jobs cópia (ex.: CopyOf...);
+                       True: inclui esses jobs.
+        alvo — onde procurar o termo:
+               'coluna'  (padrão) — nomes de coluna (aplica filtro de datatype)
+               'tabela'  — nomes de tabela (FROM/JOIN do SQL)
+               'arquivo' — nomes de arquivo/dataset
+               'tabela_arquivo' — tabela ou arquivo
+        """
+        termo_norm = (termo or "").strip().lower()
+        if not termo_norm:
+            return {"erro": "O termo de busca é obrigatório."}
+
+        alvo = (alvo or "coluna").strip().lower()
+        if alvo not in ("coluna", "tabela", "arquivo", "tabela_arquivo"):
+            alvo = "coluna"
+
+        pasta_norm = (pasta or "").strip().lower()
+
+        jobs_data = self._load_jobs_cached(project_name)
+        if isinstance(jobs_data, dict) and jobs_data.get("erro"):
+            return jobs_data
+
+        tipos_set = {str(t).strip().upper() for t in (tipos or []) if str(t).strip()}
+
+        def _match_nome(name: str) -> bool:
+            c = (name or "").lower()
+            return c == termo_norm if exato else termo_norm in c
+
+        def _match_tipo(col: dict) -> bool:
+            if not tipos_set:
+                return True
+            tname = (col.get("type_name") or "").upper()
+            if not tname:               # tipo desconhecido → não confirma o filtro
+                return False
+            return (tname not in tipos_set) if excluir else (tname in tipos_set)
+
+        jobs_out: list[dict] = []
+        total_ocorrencias = 0
+        jobs_considerados = 0
+        jobs_bkp_ignorados = 0
+        jobs_copy_ignorados = 0
+        for job_name in sorted(jobs_data, key=str.lower):
+            category = jobs_data[job_name].get("category") or ""
+            if pasta_norm and pasta_norm not in category.lower():
+                continue  # fora da pasta filtrada — nem entra na contagem
+            if not incluir_bkp and self._is_backup_category(category):
+                jobs_bkp_ignorados += 1
+                continue
+            if not incluir_copy and self._is_copy_job(job_name, category):
+                jobs_copy_ignorados += 1
+                continue
+            jobs_considerados += 1
+
+            ocorrencias = []
+            for stage in jobs_data[job_name].get("stages") or []:
+                cols_detail = stage.get("columns_detail") or []
+                matched_columns: list[dict] = []
+                matched_objs: list[str] = []
+
+                if alvo == "coluna":
+                    matched_columns = [c for c in cols_detail
+                                       if _match_nome(c.get("name")) and _match_tipo(c)]
+                    n_match = len(matched_columns)
+                else:
+                    if alvo in ("tabela", "tabela_arquivo"):
+                        for t in (stage.get("sql_expression") or "").split("\n"):
+                            t = t.strip()
+                            if t and _match_nome(t):
+                                matched_objs.append(t)
+                    if alvo in ("arquivo", "tabela_arquivo"):
+                        fp = stage.get("file_path")
+                        if fp and _match_nome(fp):
+                            matched_objs.append(fp)
+                    matched_objs = list(dict.fromkeys(matched_objs))  # dedup preservando ordem
+                    n_match = len(matched_objs)
+
+                if n_match == 0:
+                    continue
+                detalhe = (stage.get("sql_expression") or stage.get("file_path") or "")
+                if detalhe:
+                    detalhe = detalhe.replace("\n", ", ")
+                ocorrencias.append({
+                    "stage_name":      stage.get("stage_name"),
+                    "direction":       stage.get("direction"),
+                    "object_name":     stage.get("object_name"),
+                    "object_type":     stage.get("object_type"),
+                    "stage_type_raw":  stage.get("stage_type_raw"),
+                    "database_name":   stage.get("database_name"),
+                    "detalhe":         detalhe,
+                    "matched_columns": matched_columns,
+                    "matched_objs":    matched_objs,
+                    "total_columns":   len(cols_detail),
+                })
+            if ocorrencias:
+                total_ocorrencias += sum(
+                    len(o["matched_columns"]) + len(o["matched_objs"]) for o in ocorrencias)
+                jobs_out.append({"job_name": job_name, "category": category,
+                                 "ocorrencias": ocorrencias})
+
+        return {
+            "sucesso":                True,
+            "project_name":           project_name,
+            "dsx_file":               f"{project_name}.dsx",
+            "termo":                  termo,
+            "alvo":                   alvo,
+            "filtro_pasta":           pasta,
+            "exato":                  exato,
+            "filtro_tipos":           sorted(tipos_set),
+            "filtro_excluir":         excluir,
+            "incluir_bkp":            incluir_bkp,
+            "incluir_copy":           incluir_copy,
+            "jobs_bkp_ignorados":     jobs_bkp_ignorados,
+            "jobs_copy_ignorados":    jobs_copy_ignorados,
+            "total_jobs_dsx":         jobs_considerados,
+            "total_jobs_impactados":  len(jobs_out),
+            "total_ocorrencias":      total_ocorrencias,
+            "jobs":                   jobs_out,
+        }
+
+    # ── Iteração dos blocos de job (BEGIN DSJOB … próximo) ───────
+    def _iter_job_blocks(self, content: str):
+        """Gera (job_name, job_block) para cada BEGIN DSJOB no conteúdo."""
+        marker = "BEGIN DSJOB"
+        idx = content.find(marker)
+        while idx >= 0:
+            nxt = content.find(marker, idx + len(marker))
+            end = nxt if nxt > 0 else len(content)
+            block = content[idx:end]
+            m = re.search(r'Identifier\s+"([^"]+)"', block)
+            if m:
+                yield m.group(1), block
+            idx = nxt
+
+    def _job_category(self, block: str) -> str:
+        """Pasta/categoria do job no DataStage (ex.: \\Jobs\\Projetos\\Coberturas)."""
+        m = re.search(r'^\s*Category\s+"([^"]*)"', block, re.MULTILINE)
+        return m.group(1) if m else ""
+
+    @staticmethod
+    def _is_backup_category(category: str) -> bool:
+        """True se a categoria do job aparenta ser pasta de backup (bkp/bckp/backup)."""
+        low = (category or "").lower()
+        return any(p in low for p in _BACKUP_PATTERNS)
+
+    @staticmethod
+    def _is_copy_job(job_name: str, category: str = "") -> bool:
+        """True se o job aparenta ser uma cópia (ex.: CopyOf...) — nome ou pasta."""
+        name = (job_name or "").lower()
+        cat = (category or "").lower()
+        return any(p in name or p in cat for p in _COPY_PATTERNS)
+
+    # ── Parsing de todos os jobs com cache por mtime ────────────
+    def _load_jobs_cached(self, project_name: str):
+        """Lê e parseia todos os jobs do .dsx; cache invalidado pelo mtime.
+
+        Retorna dict {job_name: {"category": str, "stages": [...]}}.
+        """
+        dsx_file = f"{project_name}.dsx"
+        path = os.path.join(self.diretorio_base, dsx_file)
+        if not os.path.exists(path):
+            return {"erro": f"Arquivo '{dsx_file}' não encontrado em '{self.diretorio_base}'."}
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError as exc:
+            return {"erro": f"Erro ao acessar '{dsx_file}': {exc}"}
+
+        with _PARSE_LOCK:
+            cached = _PARSE_CACHE.get(path)
+            if cached and cached[0] == mtime:
+                return cached[1]
+
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                content = fh.read()
+        except OSError as exc:
+            return {"erro": f"Erro ao ler '{dsx_file}': {exc}"}
+
+        jobs_data: dict[str, dict] = {}
+        for job_name, block in self._iter_job_blocks(content):
+            jobs_data[job_name] = {
+                "category": self._job_category(block),
+                "stages":   self._parse_stages(block, project_name, job_name, dsx_file),
+            }
+
+        with _PARSE_LOCK:
+            _PARSE_CACHE[path] = (mtime, jobs_data)
+        return jobs_data
 
     # ── Extração do bloco do job ────────────────────────────────
     def _extract_job_block(self, content: str, job_name: str) -> Optional[str]:
@@ -264,9 +553,10 @@ class DSXEngine:
                 file_path = file_path.replace("\\", "/").split("/")[-1] or file_path
             object_type = "Arquivo"
 
-        # Colunas para todos os tipos: OutputPins primeiro, InputPins como fallback
-        columns = (self._extract_columns_from_pin(output_pin_content) or
-                   self._extract_columns_from_pin(input_pin_content))
+        # Colunas (com datatype): OutputPins primeiro, InputPins como fallback
+        columns_detail = (self._extract_columns_detail_from_pin(output_pin_content) or
+                          self._extract_columns_detail_from_pin(input_pin_content))
+        columns = [c["name"] for c in columns_detail]
 
         return {
             "project_name":      project_name,
@@ -283,6 +573,7 @@ class DSXEngine:
             "extracted_at":      now,
             "extraction_method": "dsx_auto",
             "columns":           columns,
+            "columns_detail":    columns_detail,
         }
 
     # ── Colunas dos OutputPins ───────────────────────────────────
@@ -301,33 +592,75 @@ class DSXEngine:
         return content
 
     def _extract_columns_from_pin(self, pin_content: str) -> list[str]:
+        """Nomes de coluna (retrocompat) — derivados de _extract_columns_detail_from_pin."""
+        return [c["name"] for c in self._extract_columns_detail_from_pin(pin_content)]
+
+    def _mk_col(self, name: str, sql_type, precision, scale, nullable) -> dict:
+        """Monta o dict de uma coluna com tipo legível.
+
+        sql_type pode ser int (código ODBC) ou str (texto vindo de XML).
         """
-        Extrai nomes de colunas do conteúdo de OutputPin records.
+        if isinstance(sql_type, int):
+            type_name = _SQL_TYPE_MAP.get(sql_type, f"SQL({sql_type})")
+            code = sql_type
+        elif isinstance(sql_type, str) and sql_type.strip():
+            type_name = sql_type.strip().upper()
+            code = None
+        else:
+            type_name = None
+            code = None
+        return {
+            "name":      name,
+            "sql_type":  code,
+            "type_name": type_name,
+            "precision": precision,
+            "scale":     scale,
+            "nullable":  nullable,
+        }
+
+    def _extract_columns_detail_from_pin(self, pin_content: str) -> list[dict]:
+        """
+        Extrai colunas (nome + datatype) do conteúdo de pin records.
         Suporta:
-          1. DSSUBRECORD com Name + SqlType (ODBCConnectorPX)
-          2. <Column name="..."> XML
+          1. DSSUBRECORD com Name + SqlType/Precision/Scale/Nullable (ODBCConnectorPX)
+          2. <Column name="..."> XML (tipo opcional via atributo)
         """
         if not pin_content:
             return []
 
-        # 1. XML <Column name="...">
-        cols = re.findall(r"<Column[^>]+\bname=\"([^\"]+)\"", pin_content, re.IGNORECASE)
-        if cols:
-            return cols
+        # 1. XML <Column name="..." ...>
+        detail: list[dict] = []
+        for tag in re.findall(r"<Column\b[^>]*>", pin_content, re.IGNORECASE):
+            nm = re.search(r'\bname="([^"]+)"', tag, re.IGNORECASE)
+            if not nm:
+                continue
+            tp = re.search(r'\b(?:sqlType|type|datatype)="([^"]+)"', tag, re.IGNORECASE)
+            detail.append(self._mk_col(nm.group(1), tp.group(1) if tp else None,
+                                       None, None, None))
+        if detail:
+            return detail
 
-        # 2. DSSUBRECORD com Name + (SqlType | Precision) — formato ODBCConnectorPX
-        col_names: list[str] = []
+        # 2. DSSUBRECORD com Name + SqlType/Precision/Scale/Nullable
         sub_blocks = re.split(r"BEGIN DSSUBRECORD|END DSSUBRECORD", pin_content)
         for block in sub_blocks:
             if "SqlType" not in block and "Precision" not in block:
                 continue
             nm = re.search(r'^\s*Name\s+"([^"]+)"', block, re.MULTILINE)
-            if nm:
-                name = nm.group(1)
-                if name not in _COL_SKIP:
-                    col_names.append(name)
+            if not nm or nm.group(1) in _COL_SKIP:
+                continue
+            st = re.search(r'^\s*SqlType\s+"(-?\d+)"', block, re.MULTILINE)
+            pr = re.search(r'^\s*Precision\s+"(-?\d+)"', block, re.MULTILINE)
+            sc = re.search(r'^\s*Scale\s+"(-?\d+)"', block, re.MULTILINE)
+            nl = re.search(r'^\s*Nullable\s+"(-?\d+)"', block, re.MULTILINE)
+            detail.append(self._mk_col(
+                nm.group(1),
+                int(st.group(1)) if st else None,
+                int(pr.group(1)) if pr else None,
+                int(sc.group(1)) if sc else None,
+                (nl.group(1) == "1") if nl else None,
+            ))
 
-        return col_names
+        return detail
 
     # ── Direção do stage ────────────────────────────────────────
     def _infer_direction(self, rec: str, stage_type: str) -> str:

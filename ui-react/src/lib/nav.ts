@@ -9,15 +9,16 @@
 // vire `migrated` para true aqui. Nada mais precisa mudar no shell.
 
 export interface NavItem {
-  to: string          // rota React (basename /v2 já aplicado pelo router)
+  to: string
   label: string
-  legacyHref: string  // para onde mandar quando ainda não migrada (UI legada)
+  legacyHref: string
   migrated: boolean
   adminOnly?: boolean
 }
 
 export const NAV: NavItem[] = [
   { to: '/dashboard',  label: 'Dashboard',  legacyHref: '/', migrated: false },
+  { to: '/chamados',   label: 'Chamados',   legacyHref: '/', migrated: true },
   { to: '/pipelines',  label: 'Pipelines',  legacyHref: '/', migrated: false },
   { to: '/jobs',       label: 'Jobs',       legacyHref: '/', migrated: false },
   { to: '/logs',       label: 'Logs',       legacyHref: '/', migrated: false },
