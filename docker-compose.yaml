@@ -72,6 +72,15 @@ x-airflow-common:
     AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
 
     AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW__CORE__FERNET_KEY:-}'
+    # Chave compartilhada por TODOS os containers — sem isso cada container gera
+    # a própria chave ao iniciar, o webserver rejeita os tokens JWT do worker
+    # com 403 FORBIDDEN ao tentar ler logs de tasks via porta 8793.
+    AIRFLOW__WEBSERVER__SECRET_KEY: '${AIRFLOW__WEBSERVER__SECRET_KEY:-}'
+    # Chave (Fernet) das senhas de dbo.etl_conexao — o worker decifra ao
+    # resolver conexões (dags/utils/conn_resolver.py). PRECISA ser a mesma
+    # do orquestra-api. Gere com:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    ORQUESTRA_CONN_KEY: '${ORQUESTRA_CONN_KEY:-}'
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
@@ -130,12 +139,18 @@ services:
     image: nginx:1.27
     container_name: airflow-ui
     ports:
-      - "${UI_PORT:-80}:80"
+      # Publica APENAS na 8090 (porta do VIP/domínio OFICIAL
+      # orquestra.caixavidaeprevidencia.intranet → :8090).
+      # A 80 (acesso direto pelo nome do host) foi removida de propósito, para
+      # existir só o link oficial — evita link "cru" não-oficial circulando.
+      - "${UI_PORT_VIP:-8090}:80"
     volumes:
-      # UI legada na raiz; UI React (migração incremental) no sub-path /v2.
-      - ${AIRFLOW_PROJ_DIR:-.}/ui:/usr/share/nginx/html
-      - ${AIRFLOW_PROJ_DIR:-.}/ui-react/dist:/usr/share/nginx/html/v2
-      - ${AIRFLOW_PROJ_DIR:-.}/ui/nginx.conf:/etc/nginx/nginx.conf
+      - ${AIRFLOW_PROJ_DIR:-.}/ui-react/dist:/usr/share/nginx/html
+      - ${AIRFLOW_PROJ_DIR:-.}/config/nginx.conf:/etc/nginx/nginx.conf
+      # Branding persistente (logo da empresa) — fora do dist, servido em /branding/.
+      # Colocado manualmente no servidor e IGNORADO pelo git → o deploy nunca
+      # sobrescreve. Read-only: o nginx só lê.
+      - ${AIRFLOW_PROJ_DIR:-.}/branding:/usr/share/nginx/branding:ro
     restart: always
 
   orquestra-api:
@@ -150,12 +165,46 @@ services:
       AIRFLOW_USER:     "${AIRFLOW_WWW_USER_USERNAME:-airflow}"
       AIRFLOW_PASSWORD: "${AIRFLOW_WWW_USER_PASSWORD:-airflow}"
       DAGS_FOLDER:      "/opt/airflow/dags"
+      # URL do Airflow para os botões "Ver no Airflow" (abrem no navegador do usuário).
+      # Domínio próprio do Airflow (VIP). NÃO pode ser localhost nem ter /home ou barra final.
+      # Sobrepõe-se pelo valor em Admin → Configurações (etl_app_config).
+      AIRFLOW_UI_URL:   "${AIRFLOW_UI_URL:-https://airflow.caixavidaeprevidencia.intranet}"
       MSSQL_CONN_STR:   "${MSSQL_CONN_STR:-}"
+      # Chave (Fernet) das senhas de dbo.etl_conexao (services/conn_crypto.py)
+      # — a MESMA dos containers do Airflow (x-airflow-common acima).
+      ORQUESTRA_CONN_KEY: "${ORQUESTRA_CONN_KEY:-}"
+      # Mesmo fuso dos containers do Airflow: sem isto a API calcula o ODATE
+      # corrente (visão de execução da malha, F9) em UTC e, entre 21:00 e
+      # 23:59 de Brasília, a data de referência default nasceria no dia
+      # SEGUINTE — e divergiria do ODATE que as DAGs gravam (achado da
+      # revisão adversarial da F9).
+      TZ: "America/Sao_Paulo"
       DSX_BASE_DIR:     "/opt/airflow/dsx"
-      CORS_ORIGINS:     "${CORS_ORIGINS:-http://vmlnxprd083}"
+      # Console DataStage (Admin): SSH read-only para rodar `dsjob` no Unix.
+      # Defina no .env do host. Sem DS_SSH_HOST/DS_SSH_USER, o console degrada
+      # com aviso "SSH não configurado" (não quebra).
+      DS_SSH_HOST:      "${DS_SSH_HOST:-}"
+      DS_SSH_PORT:      "${DS_SSH_PORT:-22}"
+      DS_SSH_USER:      "${DS_SSH_USER:-}"
+      DS_SSH_PASSWORD:  "${DS_SSH_PASSWORD:-}"
+      DS_SSH_KEY_FILE:  "${DS_SSH_KEY_FILE:-}"
+      DS_DSHOME:        "${DS_DSHOME:-/opt/IBM/InformationServer/Server/DSEngine}"
+      CORS_ORIGINS:     "${CORS_ORIGINS:-http://orquestra.caixavidaeprevidencia.intranet,http://orquestra.caixavidaeprevidencia.intranet:8090,http://vmlnxprd083,http://vmlnxprd083:8090}"
+      # ── ServiceNow (sonda do Admin; espelho dos chamados na spec) ──────────
+      # Instância padrão da tela — só a URL. Credencial NUNCA vem daqui: a
+      # sonda a recebe na requisição e não a grava em lugar nenhum.
+      SERVICENOW_URL:   "${SERVICENOW_URL:-https://cvpsnprod.service-now.com}"
+      # Proxy corporativo das chamadas externas. O httpx lê estas variáveis
+      # sozinho (trust_env) — inclusive o NO_PROXY, que isenta os hosts
+      # internos. Vazias = conexão direta; a sonda mostra na tela qual proxy
+      # ficou em uso, para "sem proxy" não passar por "com proxy".
+      HTTPS_PROXY:      "${HTTPS_PROXY:-}"
+      HTTP_PROXY:       "${HTTP_PROXY:-}"
+      NO_PROXY:         "${NO_PROXY:-localhost,127.0.0.1,orquestra-api,airflow-webserver}"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags:ro
       - ${AIRFLOW_PROJ_DIR:-.}/dsx:/opt/airflow/dsx:ro
+      - ${AIRFLOW_PROJ_DIR:-.}/api:/app:ro
     restart: unless-stopped
     depends_on:
       - airflow-webserver
