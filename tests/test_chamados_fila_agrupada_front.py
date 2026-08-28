@@ -139,6 +139,12 @@ def test_a_contagem_da_fila_e_de_trabalhos(cen: dict) -> None:
     assert cen["contagem"] == 2
 
 
+# O rodapé do card (idade e prazo) é afirmado em tests/test_kanban_rodape_card.py,
+# que RENDERIZA o componente. A versão que morava aqui procurava `{vivo &&` no
+# fonte e passou verde com o defeito de pé: o arquivo tinha duas ocorrências, e
+# sabotar uma deixava a outra satisfazendo a busca.
+
+
 def test_a_regra_mora_em_modulo_proprio_e_a_tela_a_usa() -> None:
     """Anti-drift: inline no JSX, a recusa volta a ser invisível."""
     assert FONTE.is_file(), "lib/filaChamados.ts sumiu"

@@ -17,14 +17,19 @@ const RAIZ = path.resolve(__dirname, '..', '..')
 const UI = path.join(RAIZ, 'ui-react')
 const { transform } = require(path.join(UI, 'node_modules', 'sucrase'))
 
-const fonte = fs.readFileSync(
-  path.join(UI, 'src', 'lib', 'dashboardChamados.ts'), 'utf8')
-const js = transform(fonte, { transforms: ['typescript', 'imports'] }).code
-
+// Dois módulos: a aritmética de prazo saiu para `prazoChamados` quando o
+// kanban da Fila passou a mostrar o prazo no card. Os dois são transpilados
+// para o mesmo diretório temporário, e o `require` relativo entre eles
+// resolve sozinho.
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dash-'))
-const arquivo = path.join(tmp, 'dashboardChamados.cjs')
-fs.writeFileSync(arquivo, js)
-const L = require(arquivo)
+for (const nome of ['prazoChamados', 'dashboardChamados']) {
+  const fonte = fs.readFileSync(
+    path.join(UI, 'src', 'lib', `${nome}.ts`), 'utf8')
+  const js = transform(fonte, { transforms: ['typescript', 'imports'] }).code
+  fs.writeFileSync(path.join(tmp, `${nome}.js`), js)
+}
+const L = { ...require(path.join(tmp, 'prazoChamados.js')),
+            ...require(path.join(tmp, 'dashboardChamados.js')) }
 
 const HOJE = new Date(2026, 7, 28)          // 28/08/2026, meia-noite local
 const c = (extra) => Object.assign(

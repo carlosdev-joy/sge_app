@@ -30,6 +30,7 @@ const arquivo = path.join(tmp, 'filaChamados.cjs')
 fs.writeFileSync(arquivo, js)
 const { separarFila } = require(arquivo)
 
+
 const ritm = (id) => ({ sys_id: id, tipo: 'ritm', pai_sys_id: null })
 const task = (id, pai) => ({ sys_id: id, tipo: 'task', pai_sys_id: pai })
 
