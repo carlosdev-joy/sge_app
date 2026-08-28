@@ -200,3 +200,91 @@ def test_worker_inalcancavel_nao_passa_por_ocioso():
     fonte = DEPLOY_SH.read_text(encoding="utf-8")
     assert "nao foi possivel consultar" in fonte
     assert "worker esta ocioso" in fonte
+
+
+# ═══════════ Os DOIS scripts precisam concordar ═════════════════════════════
+#
+# Descoberto em 2026-08-28, ao preparar o deploy que mexe em `dags/utils/`:
+# `scripts/deploy_prod.sh` dizia, para QUALQUER mudança em `dags/`,
+#
+#     "DAGs atualizadas via volume — scheduler pega automaticamente
+#      (nenhum restart necessário)"
+#
+# Verdade para o ARQUIVO da DAG. **Mentira para os módulos que ela importa** —
+# exatamente o caso que a PR #312 pagou com uma hora e meia de diagnóstico.
+#
+# O `/opt/git/deploy.sh` já tratava isso desde a #313. Ter dois scripts de
+# deploy com conselhos OPOSTOS é pior que ter só um: quem rodar o errado faz um
+# deploy que parece completo e não é, e o sintoma (task verde com código
+# antigo) não aponta para o deploy.
+
+PROD = RAIZ / "scripts" / "deploy_prod.sh"
+
+
+def _fonte_prod() -> str:
+    return PROD.read_text(encoding="utf-8")
+
+
+def _prod_sem_comentarios() -> str:
+    """O script sem as linhas de comentário.
+
+    ⚠️ O comentário que EXPLICA o erro corrigido cita a frase errada — e a
+    primeira versão de `test_o_deploy_prod_nao_afirma_mais_que_nao_ha_restart`
+    acusou o próprio aviso. É a terceira vez que este falso positivo aparece
+    neste repo (`test_migration_nao_usa_indice_filtrado` e a varredura de
+    classes de grade foram as outras): comentário que documenta um padrão
+    contém o padrão.
+    """
+    return "\n".join(
+        linha for linha in _fonte_prod().splitlines()
+        if not linha.lstrip().startswith("#"))
+
+
+def test_o_deploy_prod_distingue_modulo_de_dag() -> None:
+    """Sem a distinção, ele volta a prometer que nada precisa de restart."""
+    fonte = _fonte_prod()
+    assert "MODULO_CHANGED" in fonte
+    assert r"^dags/.+/.+\.py$" in fonte, (
+        "o padrão precisa exigir uma SUBPASTA: `dags/x.py` é DAG (recarrega "
+        "sozinha), `dags/utils/x.py` é módulo (o worker cacheia)")
+
+
+def test_o_deploy_prod_nao_afirma_mais_que_nao_ha_restart() -> None:
+    """A frase exata que estava errada não pode voltar."""
+    assert "nenhum restart necessário" not in _prod_sem_comentarios()
+
+
+def test_o_deploy_prod_oferece_o_restart_do_worker() -> None:
+    """Detectar sem oferecer a correção deixa o operador com um aviso e
+    nenhuma ação — que é como um aviso vira ruído."""
+    fonte = _fonte_prod()
+    assert "docker compose restart airflow-worker" in fonte
+    assert "read -r -p" in fonte, "pergunta explícita, não restart automático"
+
+
+def test_o_restart_do_worker_nao_e_automatico_no_deploy_prod() -> None:
+    """Ele DERRUBA tasks em execução. Mesma regra do `deploy.sh`: padrão não,
+    pergunta explícita — e o script diz quantas tasks o restart interrompe."""
+    fonte = _fonte_prod()
+    assert "inspect active" in fonte, "o operador precisa saber o que perde"
+    # A resposta vazia (só Enter) NÃO pode reiniciar.
+    assert "[s/N]" in fonte
+
+
+@pytest.mark.parametrize("caminho,e_modulo", [
+    ("dags/utils/servicenow_sync.py", True),
+    ("dags/Orquestrador/x.py", True),
+    ("dags/etl_servicenow_delta.py", False),
+    ("dags/utils/leiame.md", False),
+    ("api/routers/chamados.py", False),
+])
+def test_o_padrao_do_deploy_prod_classifica_como_o_deploy_sh(
+        caminho: str, e_modulo: bool) -> None:
+    """O padrão é exercitado EM BASH, contra os mesmos caminhos que o teste do
+    `deploy.sh` usa — reimplementar a regex em Python passaria verde mesmo com
+    o script quebrado."""
+    r = subprocess.run(
+        ["bash", "-c",
+         f'echo "{caminho}" | grep -qE "^dags/.+/.+\\.py$" && echo SIM || echo NAO'],
+        capture_output=True, text=True, timeout=30)
+    assert r.stdout.strip() == ("SIM" if e_modulo else "NAO")
