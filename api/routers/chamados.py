@@ -199,8 +199,8 @@ def _fmt_dt(v):
     return str(v)[:19] if v else None
 
 
-def _ultimo_ciclo(cur) -> dict | None:
-    """O ciclo mais recente — a fonte do frescor e do 'por que está vazio'."""
+def _ciclo_da_tabela_antiga(cur) -> dict | None:
+    """O último ciclo da `etl_chamado_sync` — a tabela da DAG `sync`."""
     cur.execute(
         "SELECT TOP 1 id, iniciado_em, terminado_em, status, qtd_incident, "
         "       qtd_ritm, qtd_task, qtd_change, qtd_desativados, erro, "
@@ -209,23 +209,91 @@ def _ultimo_ciclo(cur) -> dict | None:
     linha = cur.fetchone()
     if not linha:
         return None
-    idade_min = linha[10] if linha[10] is not None else None
     return {
-        "id": linha[0],
-        "iniciado_em": _fmt_dt(linha[1]),
-        "terminado_em": _fmt_dt(linha[2]),
+        "id": linha[0], "fonte": "sync",
+        "iniciado_em": _fmt_dt(linha[1]), "terminado_em": _fmt_dt(linha[2]),
         "status": linha[3],
         "quantidades": {"incident": linha[4], "ritm": linha[5],
                         "task": linha[6], "change": linha[7]},
-        "desativados": linha[8],
-        "erro": linha[9],
-        "idade_minutos": idade_min,
-        # "nunca terminou" é diferente de "terminou com erro": o primeiro é
-        # worker morto no meio, o segundo é a integração recusando.
-        "em_andamento": linha[2] is None,
-        "atrasado": bool(idade_min is not None
-                         and idade_min > FRESCOR_ALERTA_MINUTOS),
+        "desativados": linha[8], "erro": linha[9],
+        "idade_minutos": linha[10] if linha[10] is not None else None,
+        "_ordem": linha[1],
     }
+
+
+def _ciclo_da_tabela_nova(cur) -> dict | None:
+    """O último ciclo da `etl_chamado_ciclo` — as DAGs `delta` e `full`.
+
+    A `delta` roda a cada 5 minutos e é a que mantém o espelho vivo; a `full`,
+    uma vez por dia. Nenhuma das duas escreve na `etl_chamado_sync`.
+    """
+    cur.execute(
+        "SELECT TOP 1 id, iniciado_em, terminado_em, status, qtd_chamados, "
+        "       qtd_desativados, erro, modo, "
+        "       DATEDIFF(MINUTE, iniciado_em, GETDATE()) AS idade_min "
+        "FROM dbo.etl_chamado_ciclo ORDER BY iniciado_em DESC")
+    linha = cur.fetchone()
+    if not linha:
+        return None
+    return {
+        "id": linha[0], "fonte": linha[7] or "ciclo",
+        "iniciado_em": _fmt_dt(linha[1]), "terminado_em": _fmt_dt(linha[2]),
+        "status": linha[3],
+        # A tabela nova conta o TOTAL, não por tipo. A tela mostra o que
+        # existe; inventar zeros por tipo diria que não há incidente nenhum.
+        "quantidades": {"chamados": linha[4]},
+        "desativados": linha[5], "erro": linha[6],
+        "idade_minutos": linha[8] if linha[8] is not None else None,
+        "_ordem": linha[1],
+    }
+
+
+def _ultimo_ciclo(cur) -> dict | None:
+    """O ciclo MAIS RECENTE entre as duas tabelas de sincronização.
+
+    ⚠️ POR QUE DUAS. O módulo tem duas gerações de motor convivendo:
+
+      * `etl_servicenow_sync`  (15 min) grava em `dbo.etl_chamado_sync`;
+      * `etl_servicenow_delta` (5 min)  grava em `dbo.etl_chamado_ciclo`;
+      * `etl_servicenow_full`  (diária) grava nas DUAS.
+
+    Este carimbo lia SÓ a tabela antiga. Onde a `sync` foi desligada em favor
+    da `delta` — que é o desenho novo —, a tela passou a dizer "sincronizado há
+    117h" com o espelho sendo atualizado a cada 5 minutos. O número não estava
+    errado sobre a tabela que ele lia; ele estava respondendo a pergunta errada.
+
+    E o dano não é cosmético: `atrasado` alimenta o aviso âmbar de "integração
+    parada", e um alarme que dispara sozinho todo dia é o que ensina a ignorar
+    o dia em que ela realmente parar.
+
+    Cada leitura degrada SEPARADO: a tabela nova chegou na migration 096 e a
+    antiga pode já ter sido descontinuada. Faltar uma não pode calar a outra —
+    seria trocar um carimbo velho por carimbo nenhum.
+    """
+    candidatos = []
+    for leitura in (_ciclo_da_tabela_nova, _ciclo_da_tabela_antiga):
+        try:
+            ciclo = leitura(cur)
+        except Exception as e:      # noqa: BLE001 — tabela ausente é esperado
+            log.warning("frescor: %s indisponível (%s: %s)",
+                        leitura.__name__, type(e).__name__, e)
+            continue
+        if ciclo:
+            candidatos.append(ciclo)
+
+    if not candidatos:
+        return None
+
+    # O mais recente vence. `_ordem` é o `iniciado_em` CRU (datetime), e não a
+    # string formatada: comparar "13/08/2026" com "05/09/2026" como texto
+    # ordenaria por dia do mês.
+    escolhido = max(candidatos, key=lambda c: c["_ordem"])
+    escolhido.pop("_ordem", None)
+    idade_min = escolhido["idade_minutos"]
+    escolhido["em_andamento"] = escolhido["terminado_em"] is None
+    escolhido["atrasado"] = bool(idade_min is not None
+                                 and idade_min > FRESCOR_ALERTA_MINUTOS)
+    return escolhido
 
 
 @router.get("/chamados", tags=["chamados"])
@@ -784,6 +852,58 @@ def historico(dias: int = DIAS_HISTORICO,
 # nenhum para avisar.
 # ═══════════════════════════════════════════════════════════════════════════
 
+# ⚠️ AS DUAS PONTAS JUNTAS, E NO NÍVEL DO MÓDULO.
+#
+# A lista de colunas e a montagem do dicionário são uma correspondência POR
+# POSIÇÃO, e ela já quebrou: o `SELECT` passou a trazer `demandante` na posição
+# 9 e o dicionário continuou gravando em `tipo_demanda`. Nada falhou — a
+# consulta rodou, a rota devolveu 200, o JSON veio completo. A tela lia
+# `c.demandante`, não achava, e em JavaScript campo ausente é `undefined`:
+# `undefined || 'sem solicitante'` RENDERIZAVA O TEXTO DE AUSÊNCIA em toda
+# linha, afirmando "sem solicitante" sobre 55 chamados que têm um.
+#
+# `tsc` não pega (tupla de banco não tem tipo) e o teste de front não pega (o
+# dublê monta o objeto à mão). Separadas por 20 linhas dentro da rota, as duas
+# só eram comparáveis por leitura atenta. Aqui elas são vizinhas — e
+# `tests/test_chamados_frescor_e_solicitante.py` exercita a correspondência.
+_COLS_PAINEL = (
+    # ⚠️ `demandante` no lugar de `tipo_demanda`. O tipo de demanda é
+    # DERIVADO do título e chega repetindo o que o título já diz ("BI e
+    # Dados - Inclusão de coluna" → "Inclusão de coluna"): ele ocupava
+    # espaço sem acrescentar leitura. O solicitante, não — ele é a única
+    # forma de saber DE QUEM é o pedido sem abrir o chamado.
+    "sys_id, numero, titulo, atribuido_a, estado_kanban, "
+    "prazo, aberto_em, url, sla_vencido, demandante, atribuido_a_email, "
+    # As duas datas do fim, porque elas NÃO são a mesma coisa.
+    #
+    # No ServiceNow, "Resolvido" ainda não é "Encerrado": `closed_at` — o
+    # nosso `encerrado_em` — só é preenchido no encerramento definitivo.
+    # Medido no dev: dos 21 resolvidos ativos, ZERO tinham `encerrado_em`.
+    # Mostrar só ele deixaria a coluna de datas vazia justamente no cartão
+    # que o gestor quer conferir.
+    #
+    # `atualizado_em` é a data da última mudança — para um chamado
+    # resolvido, é quando ele foi resolvido, salvo comentário posterior.
+    # A tela recebe as DUAS e diz qual está mostrando; escolher uma e
+    # chamá-la de "resolvido em" afirmaria uma data que pode não ser.
+    "encerrado_em, atualizado_em"
+)
+
+
+def _linha_do_painel(r) -> dict:
+    """Uma linha de `_COLS_PAINEL` no formato que a tela lê."""
+    return {
+        "sys_id": r[0], "numero": r[1], "titulo": r[2],
+        "atribuido_a": r[3] or "", "estado_kanban": r[4],
+        "prazo": _fmt_dt(r[5]), "aberto_em": _fmt_dt(r[6]),
+        "url": r[7], "sla_vencido": bool(r[8]) if r[8] is not None else None,
+        "demandante": r[9] or "",
+        "atribuido_a_email": r[10] or "",
+        "encerrado_em": _fmt_dt(r[11]),
+        "atualizado_em": _fmt_dt(r[12]),
+    }
+
+
 @router.get("/chamados/dashboard", tags=["chamados"])
 def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
     """Painel estratégico — 8 grupos de chamados para visão executiva/operacional.
@@ -821,44 +941,10 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
         _filtro = ""
         _p = []
 
-    # Campos retornados em cada chamado do modal
-    _COLS = (
-        # ⚠️ `demandante` no lugar de `tipo_demanda`. O tipo de demanda é
-        # DERIVADO do título e chega repetindo o que o título já diz ("BI e
-        # Dados - Inclusão de coluna" → "Inclusão de coluna"): ele ocupava
-        # espaço sem acrescentar leitura. O solicitante, não — ele é a única
-        # forma de saber DE QUEM é o pedido sem abrir o chamado.
-        "sys_id, numero, titulo, atribuido_a, estado_kanban, "
-        "prazo, aberto_em, url, sla_vencido, demandante, atribuido_a_email, "
-        # As duas datas do fim, porque elas NÃO são a mesma coisa.
-        #
-        # No ServiceNow, "Resolvido" ainda não é "Encerrado": `closed_at` — o
-        # nosso `encerrado_em` — só é preenchido no encerramento definitivo.
-        # Medido no dev: dos 21 resolvidos ativos, ZERO tinham `encerrado_em`.
-        # Mostrar só ele deixaria a coluna de datas vazia justamente no cartão
-        # que o gestor quer conferir.
-        #
-        # `atualizado_em` é a data da última mudança — para um chamado
-        # resolvido, é quando ele foi resolvido, salvo comentário posterior.
-        # A tela recebe as DUAS e diz qual está mostrando; escolher uma e
-        # chamá-la de "resolvido em" afirmaria uma data que pode não ser.
-        "encerrado_em, atualizado_em"
-    )
-
-    def _rows(cur):
-        return [
-            {
-                "sys_id": r[0], "numero": r[1], "titulo": r[2],
-                "atribuido_a": r[3] or "", "estado_kanban": r[4],
-                "prazo": _fmt_dt(r[5]), "aberto_em": _fmt_dt(r[6]),
-                "url": r[7], "sla_vencido": bool(r[8]) if r[8] is not None else None,
-                "tipo_demanda": r[9] or TIPO_NAO_CLASSIFICADO,
-                "atribuido_a_email": r[10] or "",
-                "encerrado_em": _fmt_dt(r[11]),
-                "atualizado_em": _fmt_dt(r[12]),
-            }
-            for r in cur.fetchall()
-        ]
+    def _rows(cur) -> list[dict]:
+        """Os chamados de um bloco. A correspondência posição↔chave mora em
+        `_linha_do_painel`, ao lado de `_COLS_PAINEL` — ver o porquê lá."""
+        return [_linha_do_painel(r) for r in cur.fetchall()]
 
     # O MESMO recorte do resto do módulo. Produção usa `tipo != 'task'`, que
     # descarta TODA tarefa — inclusive a ÓRFÃ, que a fila mostra como card.
@@ -897,7 +983,7 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
 
         # ── backlog: abertos/novos (coluna "Novo" do kanban) ───────────────────
         cur.execute(
-            f"SELECT {_COLS} {_BASE}"
+            f"SELECT {_COLS_PAINEL} {_BASE}"
             f"  AND estado_kanban='novo'{_filtro}"
             "  ORDER BY aberto_em ASC", _p)
         saida["backlog"]["chamados"] = _rows(cur)
@@ -905,7 +991,7 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
 
         # ── abertas: entradas de hoje (aberto_em = hoje) ────────────────────
         cur.execute(
-            f"SELECT {_COLS} {_BASE}"
+            f"SELECT {_COLS_PAINEL} {_BASE}"
             f"  AND CAST(aberto_em AS DATE) = CAST(GETDATE() AS DATE){_filtro}"
             "  ORDER BY aberto_em DESC", _p)
         saida["abertas"]["chamados"] = _rows(cur)
@@ -913,7 +999,7 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
 
         # ── andamento ────────────────────────────────────────────────────────
         cur.execute(
-            f"SELECT {_COLS} {_BASE}"
+            f"SELECT {_COLS_PAINEL} {_BASE}"
             f"  AND estado_kanban='andamento'{_filtro}"
             "  ORDER BY aberto_em ASC", _p)
         saida["andamento"]["chamados"] = _rows(cur)
@@ -921,7 +1007,7 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
 
         # ── pendentes: aguardando ────────────────────────────────────────────
         cur.execute(
-            f"SELECT {_COLS} {_BASE}"
+            f"SELECT {_COLS_PAINEL} {_BASE}"
             f"  AND estado_kanban='aguardando'{_filtro}"
             "  ORDER BY aberto_em ASC", _p)
         saida["pendentes"]["chamados"] = _rows(cur)
@@ -929,7 +1015,7 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
 
         # ── sem analista ─────────────────────────────────────────────────────
         cur.execute(
-            f"SELECT {_COLS} {_BASE}"
+            f"SELECT {_COLS_PAINEL} {_BASE}"
             f"  AND NULLIF(LTRIM(RTRIM(atribuido_a)),'') IS NULL{_filtro}"
             "  ORDER BY aberto_em ASC", _p)
         saida["sem_analista"]["chamados"] = _rows(cur)
@@ -937,7 +1023,7 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
 
         # ── resolvidas hoje: encerradas/resolvidas com encerrado_em = hoje ─────
         cur.execute(
-            f"SELECT {_COLS} FROM dbo.etl_chamado WHERE 1=1"
+            f"SELECT {_COLS_PAINEL} FROM dbo.etl_chamado WHERE 1=1"
             + _so_trabalhos()
             + f"  AND estado_kanban IN ('resolvido','encerrado')"
             f"  AND CAST(encerrado_em AS DATE) = CAST(GETDATE() AS DATE){_filtro}"
@@ -955,7 +1041,7 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
         # última atualização. Ordenar só por `encerrado_em` colocaria os 21
         # resolvidos — todos sem essa data — numa ordem arbitrária.
         cur.execute(
-            f"SELECT {_COLS} {_BASE}"
+            f"SELECT {_COLS_PAINEL} {_BASE}"
             f"  AND estado_kanban='resolvido'{_filtro}"
             "  ORDER BY COALESCE(encerrado_em, atualizado_em) DESC", _p)
         saida["resolvidas"]["chamados"] = _rows(cur)
@@ -963,7 +1049,7 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
 
         # ── vencem hoje ──────────────────────────────────────────────────────
         cur.execute(
-            f"SELECT {_COLS} {_BASE}"
+            f"SELECT {_COLS_PAINEL} {_BASE}"
             f"  AND estado_kanban NOT IN ('resolvido','encerrado','outros')"
             f"  AND CAST(prazo AS DATE) = CAST(GETDATE() AS DATE){_filtro}"
             "  ORDER BY prazo ASC", _p)
@@ -972,7 +1058,7 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
 
         # ── vencem nos próximos dias (amanhã até a próxima sexta) ───────────
         cur.execute(
-            f"SELECT {_COLS} {_BASE}"
+            f"SELECT {_COLS_PAINEL} {_BASE}"
             f"  AND estado_kanban NOT IN ('resolvido','encerrado','outros')"
             f"  AND prazo IS NOT NULL"
             f"  AND CAST(prazo AS DATE) > CAST(GETDATE() AS DATE)"
@@ -983,7 +1069,7 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
 
         # ── vencidas: prazo < hoje ───────────────────────────────────────────
         cur.execute(
-            f"SELECT {_COLS} {_BASE}"
+            f"SELECT {_COLS_PAINEL} {_BASE}"
             f"  AND estado_kanban NOT IN ('resolvido','encerrado','outros')"
             f"  AND prazo IS NOT NULL"
             f"  AND CAST(prazo AS DATE) < CAST(GETDATE() AS DATE){_filtro}"
