@@ -56,6 +56,11 @@ const cenarios = {
   // de fingir que não acontece.
   pai_fora_da_fila: resumo(separarFila([ritm('R1'), task('T2', 'R-INEXISTENTE')])),
 
+  // Auto-referência: a task aponta para si mesma. Se ela saísse, seria filha
+  // de si própria — sumiria da fila E das contas, sem nada avisar. Dado
+  // corrompido tem de APARECER.
+  auto_referencia: resumo(separarFila([ritm('R1'), task('T7', 'T7')])),
+
   // Ordem não importa: filho antes do pai dá o mesmo resultado.
   filho_antes_do_pai: resumo(separarFila([task('T1', 'R1'), ritm('R1')])),
 

@@ -36,7 +36,15 @@ export function separarFila<T extends ItemFila>(todos: T[]): FilaSeparada<T> {
     // `pai_sys_id` vazio conta como ausente: o sync grava '' quando o campo
     // não vem da API. Tratar '' como valor faria TODO chamado ter pai, e a
     // fila inteira desapareceria — sem erro nenhum.
-    if (c.tipo === 'task' && c.pai_sys_id) {
+    //
+    // A auto-referência (`pai_sys_id === sys_id`) também não faz a task sair:
+    // ela seria filha de si mesma, sumiria da fila E das contas, e nada
+    // avisaria. É dado corrompido, e dado corrompido tem de aparecer.
+    //
+    // ⚠️ Esta regra tem par em SQL — `_so_trabalhos()` em
+    // api/routers/chamados.py, que é o que as agregações usam. As duas
+    // precisam concordar, e `tests/test_chamados_paridade.py` é quem cobra.
+    if (c.tipo === 'task' && c.pai_sys_id && c.pai_sys_id !== c.sys_id) {
       const lista = filhasPorPai.get(c.pai_sys_id)
       if (lista) lista.push(c)
       else filhasPorPai.set(c.pai_sys_id, [c])

@@ -92,6 +92,19 @@ def test_string_vazia_do_sync_conta_como_sem_pai(cen: dict) -> None:
     assert c["filhas"] == {}
 
 
+def test_auto_referencia_continua_card(cen: dict) -> None:
+    """Task que aponta para si mesma não pode sumir.
+
+    Seria filha de si própria: fora da fila e fora das contas, sem nada
+    avisar. É dado corrompido — e dado corrompido tem de aparecer. A mesma
+    recusa existe no predicado SQL (`_so_trabalhos`), e
+    tests/test_chamados_paridade.py cobra que as duas concordem.
+    """
+    c = cen["auto_referencia"]
+    assert set(c["cards"]) == {"R1", "T7"}
+    assert c["filhas"] == {}
+
+
 def test_ordem_de_chegada_nao_muda_o_resultado(cen: dict) -> None:
     assert cen["filho_antes_do_pai"] == cen["par_ritm_task"]
 
