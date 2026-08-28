@@ -20,6 +20,7 @@ import { Modal } from '../components/ui/Modal'
 import ChamadosIndicadores from './ChamadosIndicadores'
 import ChamadosDashboard from './ChamadosDashboard'
 import { ChamadoDetalheModal } from '../components/chamados/ChamadoDetalheModal'
+import { RodapeCard } from '../components/chamados/RodapeCard'
 import { separarFila } from '../lib/filaChamados'
 import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
 
@@ -360,23 +361,8 @@ function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
         )}
       </div>
       {verLaudo && <ModalTriagem c={c} aoFechar={() => setVerLaudo(false)} />}
-      <div className="flex items-center justify-between gap-2 text-[11px] text-dim">
-        <span className="truncate" title={c.demandante
-          ? `Responsável: ${c.atribuido_a || 'sem responsável'} · Demandante: ${c.demandante}`
-          : (c.atribuido_a || 'sem responsável')}>
-          {c.atribuido_a || 'sem responsável'}
-        </span>
-        {/* Idade: cor E rótulo. A cor sozinha não informa quem não a distingue. */}
-        <span title={textoIdade(c.idade_dias)}
-          className={`shrink-0 flex items-center gap-1 ${faixaIdade(c.idade_dias).classe}`}>
-          {faixaIdade(c.idade_dias).rotulo && (
-            <span className="uppercase tracking-wide text-[9px]">
-              {faixaIdade(c.idade_dias).rotulo}
-            </span>
-          )}
-          {c.idade_dias !== null ? `${c.idade_dias}d` : '—'}
-        </span>
-      </div>
+      <RodapeCard c={c} textoIdade={textoIdade} faixaIdade={faixaIdade} />
+
       {/* As tarefas do pedido. Elas saíram da contagem de cards, mas NÃO da
           vista: some da fila é diferente de sumir do sistema, e o estado da
           task é o que responde "o pedido está aberto, mas alguém já pegou?".

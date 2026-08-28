@@ -25,10 +25,11 @@ import {
   PlayCircle, X,
 } from 'lucide-react'
 import {
-  ORDEM_FILA, ORDEM_PRAZO, bloco, contaPorPrazo, contaPorResponsavel,
-  dataDoFim, dataDoPrazo, mostraPrazo, rotuloDoPrazo,
+  ORDEM_FILA, ORDEM_PRAZO, bloco, contaPorPrazo, contaPorResponsavel, dataDoFim,
   type BlocoDoPainel, type ChamadoDoPainel,
 } from '../lib/dashboardChamados'
+// A aritmética de prazo serve às DUAS abas — mora em `prazoChamados`.
+import { dataDoPrazo, mostraPrazo, rotuloDoPrazo } from '../lib/prazoChamados'
 
 const VISOES = [
   { id: 'geral', rotulo: 'Geral', ajuda: 'toda a fila ativa' },
