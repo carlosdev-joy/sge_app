@@ -11,6 +11,7 @@
 // estivesse no toque — não tinha como saber que havia o que ver. Affordance que
 // só existe no hover é affordance que não existe.
 import { ExternalLink, FileText } from 'lucide-react'
+import { NumeroChamado } from './NumeroChamado'
 
 const AJUDA = 'Ver descrição, histórico de notas e anexos deste chamado'
 
@@ -23,7 +24,10 @@ export function CabecalhoCard({ numero, titulo, url, aoAbrirDetalhe }: {
   return (
     <>
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-xs font-semibold text-ink">{numero}</span>
+        {/* O número vem com o botão de copiar: levar um número a outra pessoa
+            é o gesto mais comum daqui, e redigitar erra — `RITM0103367` e
+            `RITM0103387` diferem por um caractere. */}
+        <NumeroChamado numero={numero} className="text-xs font-semibold text-ink" />
         <div className="flex items-center gap-2 shrink-0">
           {/* Ícone E palavra. Ícone sozinho vira adivinhação: "lupa" pode ser
               buscar, ampliar ou inspecionar, e quem chega na tela pela

@@ -21,6 +21,7 @@ import ChamadosIndicadores from './ChamadosIndicadores'
 import ChamadosDashboard from './ChamadosDashboard'
 import { ChamadoDetalheModal } from '../components/chamados/ChamadoDetalheModal'
 import { CabecalhoCard } from '../components/chamados/CabecalhoCard'
+import { NumeroChamado } from '../components/chamados/NumeroChamado'
 import { RodapeCard } from '../components/chamados/RodapeCard'
 import { separarFila } from '../lib/filaChamados'
 import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
@@ -363,7 +364,9 @@ function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
             <div key={f.sys_id}
               className="flex items-center gap-1.5 text-[10px] text-dim">
               <span aria-hidden className="shrink-0">↳</span>
-              <span className="font-mono shrink-0">{f.numero}</span>
+              {/* O número da TASK também se copia: é ele que se cita ao
+                  perguntar de uma tarefa a quem a executa. */}
+              <NumeroChamado numero={f.numero} className="shrink-0" />
               <span className="px-1 py-px rounded bg-panel border border-edge shrink-0">
                 {ROTULO_COLUNA[f.estado_kanban] ?? f.estado_kanban}
               </span>

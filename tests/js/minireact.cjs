@@ -165,6 +165,23 @@ function montar(elemento) {
     clicar(no) {
       if (!no || !no.props.onClick) throw new Error('nó sem onClick')
       no.props.onClick({ target: {}, stopPropagation() {}, preventDefault() {} })
+      return api.sincronizar()
+    },
+    /** Dispara um handler qualquer (`onPointerDown`, `onChange`…) pelo nome. */
+    disparar(no, nome, evento) {
+      if (!no || !no.props[nome]) throw new Error(`nó sem ${nome}`)
+      no.props[nome](Object.assign(
+        { target: {}, stopPropagation() {}, preventDefault() {} }, evento))
+      return api.sincronizar()
+    },
+    /** Re-renderiza enquanto houver estado sujo.
+     *
+     *  Existe separado do `clicar` por causa do handler ASSÍNCRONO: quando o
+     *  `onClick` é `async`, o `setState` acontece DEPOIS que ele retorna, e o
+     *  laço do `clicar` já rodou. O teste então faz `clicar` → `await` →
+     *  `sincronizar`. Sem isto, a bancada afirmaria que a tela não mudou
+     *  quando o que aconteceu foi ela ter olhado cedo demais. */
+    sincronizar() {
       let voltas = 0
       while (sujo && voltas++ < 20) refazer()
       return api

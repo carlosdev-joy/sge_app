@@ -1178,6 +1178,98 @@ def tasks_do_ritm(sys_id: str, _auth: dict = Depends(get_current_user)):
     return saida
 
 
+# A nota, como a tela recebe. `origem_numero` só vem preenchido quando a nota
+# NÃO é do chamado aberto — é ele que deixa a tela dizer "via SCTASK…".
+def _linha_nota(r, proprio: str, numero_por_sys_id: dict) -> dict:
+    dono = r[6]
+    return {
+        "sys_id_nota": r[0], "autor": r[1], "autor_email": r[2],
+        "criado_em": str(r[3]) if r[3] else None,
+        "texto": r[4], "tipo": r[5],
+        "origem_propria": dono == proprio,
+        "origem_numero": None if dono == proprio else numero_por_sys_id.get(dono),
+    }
+
+
+def _notas_do_chamado(conn, sys_id: str) -> list[dict]:
+    """As notas do chamado E das suas tarefas, numa lista só.
+
+    ⚠️ POR QUE JUNTAR. No ServiceNow a anotação costuma ser escrita na SCTASK,
+    e o Orquestra não mostra a task como card — ela é uma linha dentro do card
+    do pedido. Ler só o RITM, então, é ler o chamado sem o histórico de quem o
+    executou. Sondado na instância: a nota humana aparece ora no pai
+    (RITM0100124) ora na task (RITM0103367), sem regra que permita escolher um
+    lado de antemão.
+
+    A MESMA nota costuma existir dos dois lados (o ServiceNow espelha). O dedupe
+    é por (data, tipo, texto), e a cópia do PRÓPRIO chamado ganha: dizer "via
+    SCTASK…" numa nota que também está no pedido seria atribuição errada.
+
+    Ordem: mais recente primeiro. Ao abrir um chamado, o que se quer ler é o que
+    acabou de acontecer, não o que foi escrito há três semanas.
+    """
+    cur = conn.cursor()
+    try:
+        # O parentesco chegou na migration 090. Onde ela ainda não passou, esta
+        # consulta falha — e o chamado não pode perder as PRÓPRIAS notas por
+        # causa de uma coluna que só serve para trazer as das filhas.
+        try:
+            # ⚠️ Colunas INLINE, não montadas por f-string: o varredor
+            # anti-drift de `test_chamados_paridade` lê os literais do AST, e
+            # uma query montada em pedaços chega até ele picada — ele deixaria
+            # de reconhecer o que está sendo consultado.
+            cur.execute(
+                "SELECT n.sys_id_nota, n.autor, n.autor_email, n.criado_em, "
+                "       n.texto, n.tipo, n.sys_id_chamado, c.numero "
+                "FROM dbo.etl_chamado_nota n "
+                "JOIN dbo.etl_chamado c ON c.sys_id = n.sys_id_chamado "
+                "WHERE n.sys_id_chamado = ? "
+                "   OR n.sys_id_chamado IN ("
+                "        SELECT f.sys_id FROM dbo.etl_chamado f "
+                "        WHERE f.pai_sys_id = ? AND f.sys_id <> f.pai_sys_id) "
+                "ORDER BY n.criado_em DESC", [sys_id, sys_id])
+            linhas = cur.fetchall()
+        except Exception as e:
+            log.warning("detalhe: sem parentesco nas notas (%s: %s) — "
+                        "trazendo só as do próprio chamado",
+                        type(e).__name__, e)
+            cur.close()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT n.sys_id_nota, n.autor, n.autor_email, n.criado_em, "
+                "       n.texto, n.tipo, n.sys_id_chamado, "
+                "       CAST(NULL AS NVARCHAR(40)) "
+                "FROM dbo.etl_chamado_nota n WHERE n.sys_id_chamado = ? "
+                "ORDER BY n.criado_em DESC", [sys_id])
+            linhas = cur.fetchall()
+    finally:
+        try:
+            cur.close()
+        except Exception:      # noqa: BLE001 — fechar cursor não derruba rota
+            pass
+
+    numero_por_sys_id = {r[6]: r[7] for r in linhas}
+    vistas: set = set()
+    saida: list[dict] = []
+    # Duas passadas: as do PRÓPRIO chamado primeiro, para que sejam elas a
+    # ocupar a vaga quando a mesma nota existe dos dois lados.
+    for so_proprias in (True, False):
+        for r in linhas:
+            if (r[6] == sys_id) is not so_proprias:
+                continue
+            marca = (str(r[3]), r[5], (r[4] or "").strip())
+            if marca in vistas:
+                continue
+            vistas.add(marca)
+            saida.append(_linha_nota(r, sys_id, numero_por_sys_id))
+
+    # As duas passadas quebraram a ordem cronológica; refaz. Nota sem data vai
+    # para o FIM: no topo, ela empurraria para baixo a que acabou de ser escrita.
+    saida.sort(key=lambda n: n["criado_em"] or "", reverse=True)
+    saida.sort(key=lambda n: n["criado_em"] is None)
+    return saida
+
+
 @router.get("/chamados/{sys_id}/detalhe", tags=["chamados"])
 def chamado_detalhe(sys_id: str, _auth: dict = Depends(get_current_user)):
     """Detalhe completo de um chamado: dados + notas + anexos."""
@@ -1216,16 +1308,7 @@ def chamado_detalhe(sys_id: str, _auth: dict = Depends(get_current_user)):
         # conclui a primeira.
         notas, anexos, faltando = [], [], False
         try:
-            cur.execute(
-                "SELECT sys_id_nota, autor, autor_email, criado_em, texto, tipo "
-                "FROM dbo.etl_chamado_nota WHERE sys_id_chamado=? "
-                "ORDER BY criado_em", [sys_id])
-            notas = [
-                {"sys_id_nota": r[0], "autor": r[1], "autor_email": r[2],
-                 "criado_em": str(r[3]) if r[3] else None,
-                 "texto": r[4], "tipo": r[5]}
-                for r in cur.fetchall()
-            ]
+            notas = _notas_do_chamado(conn, sys_id)
         except Exception as e:
             log.warning("detalhe: notas indisponíveis (%s: %s)",
                         type(e).__name__, e)

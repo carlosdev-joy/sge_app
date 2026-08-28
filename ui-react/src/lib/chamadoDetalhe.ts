@@ -11,6 +11,10 @@ export interface NotaChamado {
   texto: string | null
   /** 'work_notes' (interna) | 'comments' (visível ao solicitante). */
   tipo: string | null
+  /** false = a nota veio de uma TAREFA do chamado, não dele mesmo. */
+  origem_propria?: boolean
+  /** O número da task de onde a nota veio. Nulo quando é do próprio chamado. */
+  origem_numero?: string | null
 }
 
 export interface AnexoChamado {

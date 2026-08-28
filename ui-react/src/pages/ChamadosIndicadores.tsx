@@ -21,6 +21,9 @@
 // rótulo direto.
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { ExternalLink } from 'lucide-react'
+import { NumeroChamado } from '../components/chamados/NumeroChamado'
+import { TabelaChamados } from '../components/chamados/TabelaChamados'
 import { apiFetch } from '../lib/api'
 import { PageSpinner } from '../components/ui/Spinner'
 // A linguagem visual das abas de Chamados mora em components/chamados/graficos
@@ -241,52 +244,74 @@ function HistoricoResolvidos({ dias }: { dias: number }) {
     return <p className="text-[11px] text-dim">Nenhum chamado encerrado no período.</p>
   }
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-[11px]">
-        <thead>
-          <tr className="text-dim text-left">
-            <th className="font-medium py-1 pr-3">Chamado</th>
-            <th className="font-medium py-1 pr-3">Tipo de demanda</th>
-            <th className="font-medium py-1 pr-3">Responsável</th>
-            <th className="font-medium py-1 pr-3 text-right">Dias</th>
-            <th className="font-medium py-1">Encerrado</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.chamados.map(c => (
-            <tr key={c.numero} className="border-t border-edge">
-              <td className="py-1 pr-3 align-top">
-                {c.url
-                  ? <a href={c.url} target="_blank" rel="noopener noreferrer"
-                      className="font-mono text-blue-600 dark:text-blue-400">{c.numero}</a>
-                  : <span className="font-mono text-ink">{c.numero}</span>}
-                {/* No espelho, "Resolvido" continua ativo=1: só 'encerrado'
-                    tira da fila. Sem esta marca, o mesmo chamado apareceria
-                    aqui e na coluna Resolvido do kanban, e a seção estaria
-                    afirmando que ele saiu. */}
-                {c.ainda_na_fila && (
-                  <span className="ml-1 text-[10px] text-dim" title="Encerrado na origem, mas ainda aparece na coluna Resolvido do kanban">
-                    (ainda na fila)
-                  </span>
-                )}
-                <p className="text-dim leading-snug">{c.titulo || '(sem título)'}</p>
-              </td>
-              <td className="py-1 pr-3 align-top text-dim">
-                {c.tipo_demanda}
-                {c.categoria_diaadia && <span className="text-dim"> · {c.categoria_diaadia}</span>}
-              </td>
-              <td className="py-1 pr-3 align-top text-dim">{c.atribuido_a || '—'}</td>
-              {/* Negativo é possível quando as datas da origem discordam: mostrar
-                  o absurdo é melhor que escondê-lo com um max(0, …). */}
-              <td className="py-1 pr-3 align-top text-right text-ink">
-                {c.dias_ate_resolver ?? '—'}
-              </td>
-              <td className="py-1 align-top text-dim">{c.encerrado_em?.slice(0, 10) ?? '—'}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <TabelaChamados id="indicadores-resolvidos" itens={data.chamados}
+      chaveDe={c => c.numero} vazio="Nenhum chamado encerrado no período."
+      colunas={[
+        {
+          chave: 'numero', rotulo: 'Chamado', largura: 180, minima: 120,
+          titulo: c => c.numero,
+          conteudo: c => (
+            <span className="flex items-center gap-1.5 min-w-0">
+              <NumeroChamado numero={c.numero} />
+              {c.url && (
+                <a href={c.url} target="_blank" rel="noopener noreferrer"
+                  className="text-blue-600 dark:text-blue-400 shrink-0"
+                  title="Abrir no ServiceNow (nova aba)">
+                  <ExternalLink size={11} />
+                </a>
+              )}
+              {/* No espelho, "Resolvido" continua ativo=1: só 'encerrado' tira
+                  da fila. Sem esta marca, o mesmo chamado apareceria aqui e na
+                  coluna Resolvido do kanban, e a seção estaria afirmando que
+                  ele saiu. */}
+              {c.ainda_na_fila && (
+                <span className="text-[10px] text-dim shrink-0"
+                  title="Encerrado na origem, mas ainda aparece na coluna Resolvido do kanban">
+                  (ainda na fila)
+                </span>
+              )}
+            </span>
+          ),
+        },
+        {
+          chave: 'titulo', rotulo: 'Título', largura: 300, minima: 120,
+          titulo: c => c.titulo || '(sem título)',
+          conteudo: c => <span className="text-dim">{c.titulo || '(sem título)'}</span>,
+        },
+        {
+          chave: 'demanda', rotulo: 'Tipo de demanda', largura: 190, minima: 100,
+          titulo: c => c.categoria_diaadia
+            ? `${c.tipo_demanda} · ${c.categoria_diaadia}` : c.tipo_demanda,
+          conteudo: c => (
+            <span className="text-dim">
+              {c.tipo_demanda}
+              {c.categoria_diaadia && <span> · {c.categoria_diaadia}</span>}
+            </span>
+          ),
+        },
+        {
+          chave: 'responsavel', rotulo: 'Responsável', largura: 180, minima: 100,
+          titulo: c => c.atribuido_a || 'sem responsável',
+          conteudo: c => (
+            <span className={c.atribuido_a ? 'text-dim' : 'text-dim italic'}>
+              {c.atribuido_a || 'sem responsável'}
+            </span>
+          ),
+        },
+        {
+          chave: 'dias', rotulo: 'Dias', largura: 70, minima: 48, direita: true,
+          // Negativo é possível quando as datas da origem discordam: mostrar o
+          // absurdo é melhor que escondê-lo com um max(0, …).
+          conteudo: c => <span className="text-ink tabular-nums">{c.dias_ate_resolver ?? '—'}</span>,
+        },
+        {
+          chave: 'encerrado', rotulo: 'Encerrado', largura: 110, minima: 90,
+          titulo: c => c.encerrado_em || '',
+          conteudo: c => (
+            <span className="text-dim tabular-nums">{c.encerrado_em?.slice(0, 10) ?? '—'}</span>
+          ),
+        },
+      ]} />
   )
 }
 

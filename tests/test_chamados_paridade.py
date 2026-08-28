@@ -205,6 +205,11 @@ SEM_RECORTE_POR_DESIGN = {
     "SELECT sys_id, numero, tipo, titulo, descricao, estado_kanban",
     # Notas e anexos de UM chamado, buscados por sys_id do pai.
     "SELECT sys_id_nota, autor, autor_email, criado_em, texto, tipo",
+    # As notas do chamado E das suas TAREFAS. O join com `etl_chamado` existe
+    # para trazer o número de onde a nota veio, e as linhas que ele precisa
+    # alcançar são justamente as tarefas que o recorte remove: aplicá-lo aqui
+    # apagaria a atribuição ("via SCTASK…") que a tela mostra.
+    "SELECT n.sys_id_nota, n.autor, n.autor_email, n.criado_em, ",
     "SELECT sys_id_anexo, nome_arquivo, mime_type, tamanho_bytes, criado_em",
     # O proxy de anexo resolve UMA url a partir do id do anexo.
     "SELECT url_download, nome_arquivo, mime_type",

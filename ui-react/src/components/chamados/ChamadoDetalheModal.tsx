@@ -10,6 +10,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ExternalLink, Paperclip } from 'lucide-react'
 import { apiFetch } from '../../lib/api'
 import { Modal } from '../ui/Modal'
+import { NumeroChamado } from './NumeroChamado'
 import { Spinner } from '../ui/Spinner'
 import {
   dataHoraDaNota, rotuloDaNota, tamanhoLegivel,
@@ -33,6 +34,17 @@ function Nota({ nota }: { nota: NotaChamado }) {
         <span className="text-dim px-1 py-px rounded bg-panel border border-edge">
           {rotuloDaNota(nota.tipo)}
         </span>
+        {/* De ONDE a nota veio. No ServiceNow a anotação costuma ser escrita
+            na SCTASK, e o Orquestra não mostra a task como card — ela é uma
+            linha dentro do card do pedido. Trazer a nota sem dizer isso faria
+            parecer que o pedido foi anotado, e é a tarefa que o foi. */}
+        {nota.origem_propria === false && nota.origem_numero && (
+          <span data-origem className="text-dim px-1 py-px rounded
+            bg-panel border border-edge"
+            title={`Anotação registrada na tarefa ${nota.origem_numero}`}>
+            via {nota.origem_numero}
+          </span>
+        )}
       </div>
       {/* `whitespace-pre-wrap`: as notas do ServiceNow vêm com quebras de
           linha que carregam sentido — lista de passos, saída de comando. */}
@@ -106,6 +118,12 @@ export function ChamadoDetalheModal({ sysId, numero, aoFechar }: {
             </div>
           )}
 
+          {/* O número copiável DENTRO do corpo, e não só no título do modal:
+              o título é texto do `Modal` da casa, e é justamente daqui — com o
+              chamado aberto na frente — que alguém leva o número para pedir
+              contexto a outra pessoa. */}
+          <NumeroChamado numero={numero} className="text-xs" />
+
           {c && (
             <>
               <p className="text-sm text-ink leading-snug">
@@ -142,6 +160,13 @@ export function ChamadoDetalheModal({ sysId, numero, aoFechar }: {
             <h3 className="text-[10px] font-semibold text-dim uppercase tracking-wider">
               Histórico de notas{data.notas.length ? ` (${data.notas.length})` : ''}
             </h3>
+            {/* A ordem é dita: sem isso, quem lê a primeira nota não sabe se
+                está vendo o começo da história ou o fim dela. */}
+            {data.notas.length > 1 && (
+              <p className="text-[10px] text-dim -mt-1">
+                mais recentes primeiro · inclui as anotações das tarefas
+              </p>
+            )}
             {data.notas.length === 0 ? (
               <p className="text-xs text-dim">
                 {data.migration_ausente

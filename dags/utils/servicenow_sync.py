@@ -12,6 +12,9 @@ A árvore `api/` usa pyodbc (`?`). Trocar os dois dá "Incorrect syntax near '?'
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
+import re
+import unicodedata
 
 from utils.chamado_derivacoes import derivar
 # A regra do corte mora em texto_sql: NVARCHAR conta unidades UTF-16,
@@ -27,6 +30,11 @@ carimbar(__file__)
 # ── Constantes ANTES dos helpers (gotcha do dag_factory: helper que lê uma
 #    const definida abaixo quebra no parse da DAG). ─────────────────────────
 MSSQL_CONN_ID = "SQL14_DMDB41"
+
+# Quantos chamados por consulta de notas. A URL leva os sys_ids no
+# `sysparm_query`, então o lote é limitado pelo TAMANHO DA URL, não pela API:
+# 50 × 33 caracteres ≈ 1,7 KB, folgado para qualquer proxy.
+LOTE_NOTAS = 50
 
 # As 4 tabelas do ServiceNow e o tipo curto que o espelho guarda.
 TABELAS = (
@@ -454,28 +462,164 @@ def query_delta(grupos: list[str], desde: _dt.datetime) -> str:
     return f"{grupo_parte}^sys_updated_on>={desde_str}"
 
 
-def buscar_notas(cliente, url: str, sys_id: str) -> list[dict]:
-    """sys_journal_field para um chamado. Apenas work_notes."""
-    endpoint = (f"{url}/api/now/table/sys_journal_field"
-                f"?sysparm_query=element_id={sys_id}^element=work_notes"
-                f"^ORDERBYcreated_on&sysparm_display_value=all"
-                f"&sysparm_fields=sys_id,element_id,sys_created_by,"
-                f"sys_created_on,value,element")
+# ── As anotações ────────────────────────────────────────────────────────────
+#
+# ⚠️ ESTE CÓDIGO CONSULTAVA `sys_journal_field` E NUNCA TROUXE UMA LINHA.
+# A conta de integração não lê essa tabela, e o ServiceNow responde **200 com
+# lista vazia** em vez de 403. Resultado: a DAG ficava verde, o ciclo gravava
+# `qtd_notas=0` e a tela dizia "nenhuma anotação" — indistinguível de um chamado
+# que realmente não tem notas. Sondado contra a instância real (2026-08-28):
+#
+#     journal element=work_notes   HTTP 200  itens=0
+#     journal sem filtro           HTTP 200  itens=0
+#     work_notes/comments no registro  HTTP 200  itens=1   ← o conteúdo está aqui
+#
+# O conteúdo vem nos campos `work_notes` e `comments` do próprio registro, como
+# um DIÁRIO concatenado: um cabeçalho por entrada, mais recente primeiro.
+
+# `dd/mm/aaaa hh:mm:ss - Autor (Rótulo)`. O rótulo vem traduzido pela instância.
+_CABECALHO_NOTA = re.compile(
+    r"^(\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2}) - (.*?) \(([^()]*)\)\s*$")
+
+# Mapa FECHADO de rótulo para o tipo que a tela conhece. Sem acento e em
+# minúsculas na chave: a instância decide o idioma, e um rótulo desconhecido cai
+# no campo de origem em vez de virar um tipo inventado.
+_TIPO_DA_NOTA = {
+    "anotacoes de trabalho": "work_notes",
+    "anotacao de trabalho": "work_notes",
+    "work notes": "work_notes",
+    "comentarios": "comments",
+    "comentario": "comments",
+    "comments": "comments",
+    "additional comments": "comments",
+}
+
+# O aviso que a integração escreve do outro lado quando alguém anota. Ele NÃO
+# traz conteúdo — é só o anúncio de que houve uma anotação na task/solicitação
+# irmã, e a nota de verdade chega espelhada como entrada própria.
+_ANUNCIO_INTEGRACAO = re.compile(
+    r"^(coment[áa]rio adicionado n[ao] |anota[çc][ãa]o de trabalho adicionada n[ao] )",
+    re.IGNORECASE)
+
+
+def _sem_acento(texto: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFD", texto)
+        if unicodedata.category(c) != "Mn")
+
+
+def _data_do_diario(texto: str):
+    """'28/08/2026 11:59:04' → datetime. O diário vem em display value."""
+    for formato in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return _dt.datetime.strptime(texto.strip(), formato)
+        except ValueError:
+            continue
+    return None
+
+
+def _id_da_nota(sys_id_chamado: str, criado_em, tipo: str, texto: str) -> str:
+    """Identidade estável de uma nota do diário.
+
+    A PK da tabela é `sys_id_nota` e o diário concatenado NÃO traz sys_id
+    nenhum. Sem um id determinístico, cada ciclo inseriria as mesmas notas de
+    novo — o MERGE precisa reconhecer o que já gravou. Por isso o id sai do
+    CONTEÚDO: mesma nota, mesmo id, em toda execução.
+    """
+    marca = "|".join([sys_id_chamado, str(criado_em or ""), tipo, texto or ""])
+    return hashlib.sha256(marca.encode("utf-8")).hexdigest()[:32]
+
+
+def parsear_diario(texto, campo: str, sys_id_chamado: str) -> list[dict]:
+    """Quebra o diário concatenado de `work_notes`/`comments` em notas.
+
+    O que entra é isto, com as entradas separadas por linha em branco:
+
+        28/08/2026 11:59:04 - Cristiane Gomes de Moura (Anotações de trabalho)
+        iniciativa
+        visão 360
+
+    Texto que não casa com nenhum cabeçalho volta como UMA nota sem autor nem
+    data, em vez de ser descartado: conteúdo perdido em silêncio é pior que
+    conteúdo mal atribuído — o operador ainda consegue ler e julgar.
+    """
+    bruto = (texto or "").strip()
+    if not bruto:
+        return []
+
+    entradas: list[dict] = []
+    atual = None
+    for linha in bruto.splitlines():
+        m = _CABECALHO_NOTA.match(linha.strip())
+        if m:
+            if atual:
+                entradas.append(atual)
+            rotulo = _sem_acento(m.group(3).strip().lower())
+            atual = {
+                "criado_em": _data_do_diario(m.group(1)),
+                "autor": _cortar(m.group(2).strip(), 120),
+                "tipo": _TIPO_DA_NOTA.get(rotulo, campo)[:20],
+                "linhas": [],
+            }
+        elif atual is not None:
+            atual["linhas"].append(linha)
+        elif linha.strip():
+            # Texto ANTES de qualquer cabeçalho: formato que não conhecemos.
+            atual = {"criado_em": None, "autor": "", "tipo": campo[:20],
+                     "linhas": [linha]}
+    if atual:
+        entradas.append(atual)
+
+    notas = []
+    for e in entradas:
+        corpo = "\n".join(e.pop("linhas")).strip()
+        # O anúncio da integração sem corpo próprio é RUÍDO: a nota de verdade
+        # chega espelhada como entrada própria, com o autor humano. Mantido
+        # quando traz texto — aí ele pode ser a única cópia que temos.
+        if _ANUNCIO_INTEGRACAO.match(corpo):
+            resto = _ANUNCIO_INTEGRACAO.sub("", corpo, count=1)
+            if not resto.split(":", 1)[-1].strip():
+                continue
+        if not corpo:
+            continue
+        e["texto"] = truncar_texto(corpo)
+        e["sys_id_chamado"] = sys_id_chamado[:32]
+        e["autor_email"] = ""
+        e["sys_id_nota"] = _id_da_nota(
+            sys_id_chamado, e["criado_em"], e["tipo"], e["texto"])
+        notas.append(e)
+    return notas
+
+
+def buscar_notas_em_lote(cliente, url: str, sys_ids: list[str]) -> list[dict]:
+    """As notas de vários chamados, numa chamada só.
+
+    Lê pela tabela-mãe `task`: `incident`, `sc_req_item` e `sc_task` herdam dela,
+    e `work_notes`/`comments` moram nela. Uma consulta em vez de uma por tipo —
+    e, com `sys_idIN`, uma para o lote inteiro em vez de uma por chamado.
+    """
+    alvos = [s for s in sys_ids if s]
+    if not alvos:
+        return []
+    endpoint = (f"{url}/api/now/table/task"
+                f"?sysparm_query=sys_idIN{','.join(alvos)}"
+                f"&sysparm_display_value=true&sysparm_limit={len(alvos)}"
+                f"&sysparm_fields=sys_id,work_notes,comments")
     resp = cliente.get(endpoint)
     resp.raise_for_status()
     notas = []
     for r in resp.json().get("result", []):
-        sys_id_nota = _cru(r.get("sys_id")) or _display(r.get("sys_id"))
-        notas.append({
-            "sys_id_nota": sys_id_nota[:32],
-            "sys_id_chamado": sys_id[:32],
-            "autor": _cortar(_display(r.get("sys_created_by")), 120),
-            "autor_email": "",  # sys_journal_field não expõe email diretamente
-            "criado_em": _data(_cru(r.get("sys_created_on"))),
-            "texto": truncar_texto(_cru(r.get("value"))),
-            "tipo": (_cru(r.get("element")) or "work_notes")[:20],
-        })
+        sys_id = (r.get("sys_id") or "")[:32]
+        if not sys_id:
+            continue
+        for campo in ("work_notes", "comments"):
+            notas.extend(parsear_diario(r.get(campo), campo, sys_id))
     return notas
+
+
+def buscar_notas(cliente, url: str, sys_id: str) -> list[dict]:
+    """As notas de UM chamado. Mantida para quem chama um a um."""
+    return buscar_notas_em_lote(cliente, url, [sys_id])
 
 
 def buscar_anexos(cliente, url: str, sys_id: str) -> list[dict]:
