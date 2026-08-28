@@ -26,7 +26,7 @@ import {
 } from 'lucide-react'
 import {
   ORDEM_FILA, ORDEM_PRAZO, bloco, contaPorPrazo, contaPorResponsavel,
-  dataDoPrazo, mostraPrazo, rotuloDoPrazo,
+  dataDoFim, dataDoPrazo, mostraPrazo, rotuloDoPrazo,
   type BlocoDoPainel, type ChamadoDoPainel,
 } from '../lib/dashboardChamados'
 
@@ -61,7 +61,9 @@ const TOM_PRAZO: Record<string, string> = {
 }
 
 /** A lista do bloco aberto. */
-function ListaDoBloco({ chamados }: { chamados: ChamadoDoPainel[] }) {
+function ListaDoBloco({ chamados, resolvidos = false }: {
+  chamados: ChamadoDoPainel[]; resolvidos?: boolean
+}) {
   if (!chamados.length) {
     return <p className="text-xs text-dim">Nenhum chamado nesta categoria.</p>
   }
@@ -70,7 +72,11 @@ function ListaDoBloco({ chamados }: { chamados: ChamadoDoPainel[] }) {
       {chamados.map(c => {
         // Chamado finalizado não mostra prazo: "vencido há 40 dias" num
         // resolvido é ruído que ensina a ignorar o aviso.
-        const mostra = mostraPrazo(c.estado_kanban)
+        // No cartão de resolvidos a data que importa é a do FIM, não a do
+        // prazo: é ela que deixa conferir o número — "22 resolvidos" só
+        // significa alguma coisa quando dá para ver quando saíram.
+        const fim = resolvidos ? dataDoFim(c) : null
+        const mostra = !resolvidos && mostraPrazo(c.estado_kanban)
         const prazo = mostra ? rotuloDoPrazo(c.prazo) : null
         const data = mostra ? dataDoPrazo(c.prazo) : null
         return (
@@ -101,6 +107,19 @@ function ListaDoBloco({ chamados }: { chamados: ChamadoDoPainel[] }) {
             {prazo && (
               <span className={`shrink-0 w-24 text-right tabular-nums ${TOM_PRAZO[prazo.tom]}`}>
                 {prazo.texto}
+              </span>
+            )}
+            {/* A data do fim, e o que ela É. O til marca a aproximação: sem
+                ele, "resolvido em 27/08" seria afirmação, e no ServiceNow o
+                `closed_at` de um resolvido costuma estar vazio — a data
+                mostrada é a da última atualização. */}
+            {fim && (
+              <span className="shrink-0 w-32 text-right text-dim tabular-nums"
+                title={fim.exata
+                  ? 'Data de encerramento do chamado'
+                  : 'Última atualização — no ServiceNow, "Resolvido" ainda não '
+                    + 'preenche a data de encerramento'}>
+                {fim.exata ? '' : '~'}{fim.data}
               </span>
             )}
           </li>
@@ -236,7 +255,8 @@ export default function ChamadosDashboard() {
               <X size={14} />
             </button>
           </div>
-          <ListaDoBloco chamados={selecionado.chamados} />
+          <ListaDoBloco chamados={selecionado.chamados}
+            resolvidos={aberto === 'resolvidas' || aberto === 'resolvidas_hoje'} />
         </Painel>
       )}
     </div>

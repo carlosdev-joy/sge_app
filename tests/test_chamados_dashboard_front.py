@@ -145,6 +145,23 @@ def test_sem_prazo_e_categoria_propria(cen: dict) -> None:
                             ["fora do prazo", 1]]
 
 
+# ═══════════ 3b. a data do fim ══════════════════════════════════════════════
+
+def test_a_data_do_fim_diz_o_que_ela_e(cen: dict) -> None:
+    """`encerrado_em` é afirmação; `atualizado_em` é aproximação.
+
+    Chamar a última atualização de "resolvido em" afirma uma data que pode
+    não ser — basta um comentário depois da resolução. A tela marca a
+    diferença com um til, e o `title` explica.
+    """
+    assert cen["fim_exato"] == {"data": "27/08/2026", "exata": True}
+    assert cen["fim_aproximado"] == {"data": "28/08/2026", "exata": False}
+
+
+def test_sem_data_nenhuma_a_tela_cala(cen: dict) -> None:
+    assert cen["fim_sem_data"] is None
+
+
 # ═══════════ 4. leitura dos blocos ══════════════════════════════════════════
 
 def test_o_bloco_chega_com_rotulo_cor_total_e_lista(cen: dict) -> None:

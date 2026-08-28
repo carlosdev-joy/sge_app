@@ -28,6 +28,36 @@ export interface ChamadoDoPainel {
   sla_vencido: boolean | null
   tipo_demanda: string | null
   atribuido_a_email: string | null
+  // As duas datas do fim. No ServiceNow "Resolvido" ainda não é "Encerrado":
+  // `encerrado_em` (closed_at) costuma vir vazio em chamado resolvido, e
+  // `atualizado_em` é a última mudança — que, para um resolvido, é a
+  // resolução, salvo comentário posterior.
+  encerrado_em: string | null
+  atualizado_em: string | null
+}
+
+export interface DataDoFim {
+  data: string
+  /** true = é `encerrado_em`; false = é a última atualização. */
+  exata: boolean
+}
+
+/**
+ * Quando o chamado saiu da fila, e o quanto disso é afirmação.
+ *
+ * Devolve também SE a data é a de encerramento ou a última atualização, porque
+ * a tela precisa dizer qual está mostrando: chamar "atualizado em" de
+ * "resolvido em" afirma uma data que pode não ser — bastou um comentário
+ * depois da resolução para ela estar errada. E devolver `null` em vez do
+ * fallback deixaria a coluna vazia justamente no cartão que existe para ser
+ * conferido (dos 21 resolvidos no dev, ZERO tinham `encerrado_em`).
+ */
+export function dataDoFim(c: Pick<ChamadoDoPainel, 'encerrado_em' | 'atualizado_em'>): DataDoFim | null {
+  const exata = dataDoPrazo(c.encerrado_em)
+  if (exata) return { data: exata, exata: true }
+  const aproximada = dataDoPrazo(c.atualizado_em)
+  if (aproximada) return { data: aproximada, exata: false }
+  return null
 }
 
 export interface BlocoDoPainel {

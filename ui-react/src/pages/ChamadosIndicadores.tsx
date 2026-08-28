@@ -47,6 +47,8 @@ export interface RespostaIndicadores {
   responsavel: string | null
   responsaveis: Responsavel[]
   aging: FaixaAging[]
+  /** Ativos que ainda NÃO foram resolvidos — o denominador do aging. */
+  total_em_fila: number
   tipo_estado: { tipos: string[]; estados: string[]; celulas: Celula[] }
   fluxo: DiaFluxo[]
   carga: Carga[]
@@ -371,9 +373,16 @@ export default function ChamadosIndicadores() {
           seguem com os dados de sempre.
         </div>
       )}
+      {/* O denominador aqui é `total_em_fila`, e NÃO `total_ativos`: o aging
+          exclui quem já foi resolvido, porque a pergunta é "tem coisa velha
+          PARADA?" e ela existe para priorizar. Com o total geral, o "x de y"
+          diria "27 de 56" — vinte e sete velhos sobre uma fila que inclui o
+          trabalho já feito. */}
       <Painel titulo="Idade dos chamados na fila"
-        descricao={`Quanto tempo os ${d.total_ativos} chamados abertos estão esperando.`}>
-        <BarrasHorizontais total={d.total_ativos}
+        descricao={`Há quanto tempo os ${d.total_em_fila} chamados ainda não `
+          + `resolvidos estão esperando. Resolvidos ficam de fora: eles não `
+          + `estão parados, estão prontos.`}>
+        <BarrasHorizontais total={d.total_em_fila}
           itens={d.aging.map(a => ({ rotulo: a.faixa, valor: a.total }))} />
       </Painel>
 

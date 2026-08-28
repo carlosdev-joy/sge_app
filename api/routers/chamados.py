@@ -371,6 +371,8 @@ def indicadores(responsavel: str | None = None,
         # o seletor e para DIZER que está filtrando: número filtrado sem aviso
         # é a mesma armadilha do total que não bate com a lista.
         "responsavel": (responsavel or "").strip() or None, "responsaveis": [],
+        # Denominador do aging: ativos que ainda NÃO foram resolvidos.
+        "total_em_fila": 0,
         "aging": [], "tipo_estado": {"tipos": [], "estados": list(COLUNAS_KANBAN),
                                      "celulas": []},
         "fluxo": [], "carga": [], "total_ativos": 0,
@@ -400,6 +402,14 @@ def indicadores(responsavel: str | None = None,
             "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 14 THEN '8-14 dias' "
             "  ELSE 'mais de 14 dias' END AS faixa, COUNT(*) "
             "FROM dbo.etl_chamado WHERE ativo = 1 AND aberto_em IS NOT NULL "
+            # ⚠️ Chamado RESOLVIDO sai do aging.
+            #
+            # A pergunta aqui é "tem coisa velha parada?", e ela existe para
+            # priorizar. Um chamado resolvido há 40 dias não está parado —
+            # está pronto. Contá-lo enchia a faixa "mais de 14 dias" com
+            # trabalho FEITO, e a barra mais alarmante do painel passava a
+            # medir justamente o que ninguém precisa olhar.
+            "  AND estado_kanban NOT IN ('resolvido','encerrado') "
             + _so_trabalhos() + _fr +
             "GROUP BY CASE "
             "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 3 THEN '0-3 dias' "
@@ -407,6 +417,11 @@ def indicadores(responsavel: str | None = None,
             "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 14 THEN '8-14 dias' "
             "  ELSE 'mais de 14 dias' END", _frp)
         contagem = {linha[0]: linha[1] for linha in cur.fetchall()}
+        # O denominador do "x de y" do aging é o MESMO recorte do numerador.
+        # Com `total_ativos` (que inclui os resolvidos), "8 de 56" seria oito
+        # velhos sobre uma fila que ele não mediu — e a soma das faixas não
+        # fecharia com o total ao lado.
+        saida["total_em_fila"] = sum(contagem.values())
         # Faixa sem chamado vem com 0 EXPLÍCITO e na ordem fixa: buraco no
         # gráfico faria "nenhum chamado velho" parecer "não medi isso".
         saida["aging"] = [{"faixa": nome, "total": contagem.get(nome, 0)}
@@ -777,7 +792,20 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
     # Campos retornados em cada chamado do modal
     _COLS = (
         "sys_id, numero, titulo, atribuido_a, estado_kanban, "
-        "prazo, aberto_em, url, sla_vencido, tipo_demanda, atribuido_a_email"
+        "prazo, aberto_em, url, sla_vencido, tipo_demanda, atribuido_a_email, "
+        # As duas datas do fim, porque elas NÃO são a mesma coisa.
+        #
+        # No ServiceNow, "Resolvido" ainda não é "Encerrado": `closed_at` — o
+        # nosso `encerrado_em` — só é preenchido no encerramento definitivo.
+        # Medido no dev: dos 21 resolvidos ativos, ZERO tinham `encerrado_em`.
+        # Mostrar só ele deixaria a coluna de datas vazia justamente no cartão
+        # que o gestor quer conferir.
+        #
+        # `atualizado_em` é a data da última mudança — para um chamado
+        # resolvido, é quando ele foi resolvido, salvo comentário posterior.
+        # A tela recebe as DUAS e diz qual está mostrando; escolher uma e
+        # chamá-la de "resolvido em" afirmaria uma data que pode não ser.
+        "encerrado_em, atualizado_em"
     )
 
     def _rows(cur):
@@ -789,6 +817,8 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
                 "url": r[7], "sla_vencido": bool(r[8]) if r[8] is not None else None,
                 "tipo_demanda": r[9] or TIPO_NAO_CLASSIFICADO,
                 "atribuido_a_email": r[10] or "",
+                "encerrado_em": _fmt_dt(r[11]),
+                "atualizado_em": _fmt_dt(r[12]),
             }
             for r in cur.fetchall()
         ]
@@ -879,10 +909,18 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
         saida["resolvidas_hoje"]["total"] = len(saida["resolvidas_hoje"]["chamados"])
 
         # ── resolvidas: estado resolvido ainda ativo ─────────────────────────
+        # Do mais RECENTE: o cartão responde "o que a equipe entregou", e a
+        # leitura natural é começar pelo que acabou de sair. Por `aberto_em`,
+        # o topo da lista era o chamado mais ANTIGO — que costuma ser o que
+        # menos ajuda a validar o número.
+        #
+        # Ordena pela data que EXISTE: `encerrado_em` quando houver, senão a
+        # última atualização. Ordenar só por `encerrado_em` colocaria os 21
+        # resolvidos — todos sem essa data — numa ordem arbitrária.
         cur.execute(
             f"SELECT {_COLS} {_BASE}"
             f"  AND estado_kanban='resolvido'{_filtro}"
-            "  ORDER BY aberto_em ASC", _p)
+            "  ORDER BY COALESCE(encerrado_em, atualizado_em) DESC", _p)
         saida["resolvidas"]["chamados"] = _rows(cur)
         saida["resolvidas"]["total"] = len(saida["resolvidas"]["chamados"])
 

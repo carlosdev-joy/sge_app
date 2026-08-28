@@ -30,7 +30,8 @@ const HOJE = new Date(2026, 7, 28)          // 28/08/2026, meia-noite local
 const c = (extra) => Object.assign(
   { sys_id: 'x', numero: 'RITM1', titulo: 't', atribuido_a: null,
     estado_kanban: 'novo', prazo: null, aberto_em: null, url: null,
-    sla_vencido: null, tipo_demanda: null, atribuido_a_email: null }, extra)
+    sla_vencido: null, tipo_demanda: null, atribuido_a_email: null,
+    encerrado_em: null, atualizado_em: null }, extra)
 
 const cenarios = {
   // ── dias até o prazo ──────────────────────────────────────────────────────
@@ -77,6 +78,15 @@ const cenarios = {
     c({ prazo: '2026-08-20' }),   // fora
     c({}),                        // sem prazo
   ], HOJE).map(f => [f.rotulo, f.valor]),
+
+  // ── a data do fim, e o quanto ela é afirmação ────────────────────────────
+  fim_exato: L.dataDoFim({ encerrado_em: '2026-08-27 10:00:00',
+                           atualizado_em: '2026-08-28 12:00:00' }),
+  // O caso REAL: resolvido no ServiceNow não preenche closed_at. Dos 21
+  // resolvidos ativos no dev, ZERO tinham `encerrado_em`.
+  fim_aproximado: L.dataDoFim({ encerrado_em: null,
+                                atualizado_em: '2026-08-28 12:35:28' }),
+  fim_sem_data: L.dataDoFim({ encerrado_em: null, atualizado_em: null }),
 
   // ── leitura dos blocos da resposta ────────────────────────────────────────
   bloco_ok: (() => {

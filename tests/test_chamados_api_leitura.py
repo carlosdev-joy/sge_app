@@ -291,3 +291,58 @@ def test_espaco_em_branco_nao_vira_filtro(cliente, banco_ate_o_fim):
     corpo = cliente.get("/chamados/indicadores?responsavel=%20%20").json()
     assert corpo["responsavel"] is None
     assert "atribuido_a = ?" not in " ".join(banco_ate_o_fim["cur"].sqls)
+
+
+# ═══════════ 6. o aging mede quem AINDA espera ══════════════════════════════
+
+def test_o_aging_nao_conta_quem_ja_foi_resolvido(cliente, banco_ate_o_fim):
+    """A pergunta é "tem coisa velha PARADA?", e ela existe para priorizar.
+
+    Um chamado resolvido há 40 dias não está parado — está pronto. Contá-lo
+    enchia a faixa "mais de 14 dias" com trabalho FEITO, e a barra mais
+    alarmante do painel passava a medir justamente o que ninguém precisa
+    olhar. Medido no dev: 35 esperando de verdade contra 56 ativos.
+    """
+    cliente.get("/chamados/indicadores")
+    aging = [s for s in banco_ate_o_fim["cur"].sqls if "0-3 dias" in s]
+    assert aging, "a consulta do aging sumiu"
+    assert "estado_kanban NOT IN ('resolvido','encerrado')" in aging[0]
+
+
+def test_o_denominador_do_aging_e_o_mesmo_recorte(cliente, banco_ate_o_fim):
+    """Com `total_ativos`, o "x de y" diria "27 de 56" — vinte e sete velhos
+    sobre uma fila que inclui o trabalho já feito, e a soma das faixas não
+    fecharia com o total ao lado."""
+    corpo = cliente.get("/chamados/indicadores").json()
+    assert "total_em_fila" in corpo
+    assert corpo["total_em_fila"] == sum(f["total"] for f in corpo["aging"])
+
+
+# ═══════════ 7. o cartão de resolvidos se deixa conferir ════════════════════
+
+def test_resolvidas_vem_do_mais_recente(cliente, banco_ate_o_fim):
+    """A leitura natural de "o que a equipe entregou" começa pelo que saiu.
+
+    Por `aberto_em ASC`, o topo era o chamado mais ANTIGO — que é o que menos
+    ajuda a validar o número.
+    """
+    cliente.get("/chamados/dashboard?visao=geral")
+    q = [s for s in banco_ate_o_fim["cur"].sqls
+         if "estado_kanban='resolvido'" in s and "resolvido','encerrado'" not in s]
+    assert q, "a consulta de resolvidas sumiu"
+    assert "COALESCE(encerrado_em, atualizado_em) DESC" in q[0], (
+        "ordenar só por encerrado_em deixaria os resolvidos — que não têm "
+        "essa data — numa ordem arbitrária")
+
+
+def test_o_painel_traz_as_duas_datas_do_fim(cliente, banco_ate_o_fim):
+    """`encerrado_em` E `atualizado_em`.
+
+    No ServiceNow "Resolvido" ainda não é "Encerrado": `closed_at` só é
+    preenchido no encerramento definitivo — dos 21 resolvidos ativos no dev,
+    ZERO tinham. Trazer só ele deixaria a coluna de datas vazia justamente no
+    cartão que existe para ser conferido.
+    """
+    cliente.get("/chamados/dashboard?visao=geral")
+    q = [s for s in banco_ate_o_fim["cur"].sqls if "estado_kanban='resolvido'" in s]
+    assert "encerrado_em, atualizado_em" in q[0]
