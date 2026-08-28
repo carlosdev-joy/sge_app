@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from db import get_db_conn
 from deps import get_current_user
@@ -412,15 +412,33 @@ def indicadores(_auth: dict = Depends(get_current_user)):
             # sync tem tipo_demanda NULL, e sumir do gráfico faria a soma não
             # fechar com a fila — o operador não saberia se faltou dado ou
             # classificação.
+            # ⚠️ O rótulo do vazio é aplicado no PYTHON, não no SQL.
+            #
+            # A versão anterior fazia `GROUP BY ISNULL(expr, ?)` — com
+            # PARÂMETRO dentro do GROUP BY. O SQL Server recusa: o valor não é
+            # conhecido em tempo de compilação, então a expressão do GROUP BY
+            # não é reconhecida como a mesma do SELECT, e a consulta morre com
+            # "Column 'tipo_demanda' is invalid in the select list because it
+            # is not contained in either an aggregate function or the GROUP BY
+            # clause".
+            #
+            # O estrago era mudo: a exceção caía no `except` deste bloco
+            # inteiro, e a resposta seguia "servindo o painel base". Os chips
+            # de tipo, categoria, sem_categoria, resolvidos do período e os
+            # três da triagem simplesmente não apareciam — sem erro na tela,
+            # sem número errado, sem nada. Só o log sabia.
+            #
+            # Descoberto em 2026-08-28 rodando contra o banco do dev: os
+            # testes com cursor dublê não executam SQL, e por isso passavam.
             cur.execute(
-                "SELECT ISNULL(NULLIF(LTRIM(RTRIM(tipo_demanda)), ''), ?), COUNT(*) "
+                "SELECT NULLIF(LTRIM(RTRIM(tipo_demanda)), ''), COUNT(*) "
                 "FROM dbo.etl_chamado WHERE ativo = 1 "
                 + _so_trabalhos() +
-                "GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(tipo_demanda)), ''), ?) "
-                "ORDER BY COUNT(*) DESC",
-                [TIPO_NAO_CLASSIFICADO, TIPO_NAO_CLASSIFICADO])
-            saida["por_tipo_demanda"] = [{"tipo": r[0], "total": r[1]}
-                                         for r in cur.fetchall()]
+                "GROUP BY NULLIF(LTRIM(RTRIM(tipo_demanda)), '') "
+                "ORDER BY COUNT(*) DESC")
+            saida["por_tipo_demanda"] = [
+                {"tipo": r[0] or TIPO_NAO_CLASSIFICADO, "total": r[1]}
+                for r in cur.fetchall()]
 
             # ── por categoria "dia a dia" ───────────────────────────────────────
             # Aqui o vazio NÃO vira rótulo: sem marcação é ausência de
@@ -620,6 +638,359 @@ def historico(dias: int = DIAS_HISTORICO,
     return saida
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Leitura — dashboard, histórico de indicadores e catálogo de categorias.
+#
+# ⚠️ ORDEM IMPORTA. `/chamados/indicadores/historico` tem DOIS segmentos e
+# precisa ser declarada ANTES de `/chamados/{sys_id}/...`: o FastAPI casa na
+# ordem, e ali `indicadores` casaria com `{sys_id}` e `historico` com o
+# segmento final. A rota responderia 200 com o corpo errado — sem erro
+# nenhum para avisar.
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/chamados/dashboard", tags=["chamados"])
+def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
+    """Painel estratégico — 8 grupos de chamados para visão executiva/operacional.
+
+    `visao=geral`   → toda a fila ativa (tipo != task).
+    `visao=proprio` → filtrado pelo email do usuário logado (migration 093:
+                      atribuido_a_email = email), com fallback para LIKE por
+                      nome enquanto registros sem email forem sincronizados.
+
+    Cada grupo traz `total` e `chamados` — a lista completa para o modal da
+    tela. Nenhuma paginação: o maior grupo (backlog) tem ~37 itens; trazer tudo
+    em um round-trip é mais rápido do que abrir um segundo request ao clicar.
+    """
+    # Filtro "Meu painel" — usa email exato quando disponível (migration 093),
+    # cai em LIKE por nome como fallback para registros ainda sem email sincronizado.
+    email_proprio = ""
+    nome_proprio = ""
+    if visao == "proprio":
+        email_proprio = (_auth.get("email") or "").strip()
+        fn = (_auth.get("primeiro_nome") or "").strip()
+        ln = (_auth.get("ultimo_nome") or "").strip()
+        nome_proprio = f"{fn} {ln}".strip()
+
+    if visao in ("diaadia", "iniciativa"):
+        _cat = "dia a dia" if visao == "diaadia" else "iniciativa"
+        _filtro = " AND categoria_diaadia = ?"
+        _p = [_cat]
+    elif email_proprio:
+        _filtro = " AND atribuido_a_email = ?"
+        _p = [email_proprio]
+    elif nome_proprio:
+        _filtro = " AND atribuido_a LIKE ?"
+        _p = [f"%{nome_proprio}%"]
+    else:
+        _filtro = ""
+        _p = []
+
+    # Campos retornados em cada chamado do modal
+    _COLS = (
+        "sys_id, numero, titulo, atribuido_a, estado_kanban, "
+        "prazo, aberto_em, url, sla_vencido, tipo_demanda, atribuido_a_email"
+    )
+
+    def _rows(cur):
+        return [
+            {
+                "sys_id": r[0], "numero": r[1], "titulo": r[2],
+                "atribuido_a": r[3] or "", "estado_kanban": r[4],
+                "prazo": _fmt_dt(r[5]), "aberto_em": _fmt_dt(r[6]),
+                "url": r[7], "sla_vencido": bool(r[8]) if r[8] is not None else None,
+                "tipo_demanda": r[9] or TIPO_NAO_CLASSIFICADO,
+                "atribuido_a_email": r[10] or "",
+            }
+            for r in cur.fetchall()
+        ]
+
+    # O MESMO recorte do resto do módulo. Produção usa `tipo != 'task'`, que
+    # descarta TODA tarefa — inclusive a ÓRFÃ, que a fila mostra como card.
+    # Com os dois convivendo, no dia em que aparecer uma órfã o dashboard diria
+    # um número e a tela ao lado outro, e os dois pareceriam certos.
+    _BASE = "FROM dbo.etl_chamado WHERE ativo=1" + _so_trabalhos()
+
+    grupos = {
+        "backlog":           ("backlog",           "Demandas Backlog",         "amber"),
+        "abertas":           ("abertas",           "Abertas",                  "amber"),
+        "resolvidas_hoje":   ("resolvidas_hoje",   "Resolvidas hoje",          "green"),
+        "andamento":         ("andamento",         "Em Andamento",             "indigo"),
+        "pendentes":         ("pendentes",         "Pendentes",                "neutral"),
+        "sem_analista":      ("sem_analista",      "Backlog Sem Analista",     "amber"),
+        "resolvidas":        ("resolvidas",        "Resolvidas",               "green"),
+        "vencem_hoje":       ("vencem_hoje",       "Vencem Hoje",              "red"),
+        "vencem_semana":     ("vencem_semana",     "Vencem essa semana",       "orange"),
+        "vencidas":          ("vencidas",          "Vencidas",                 "red"),
+    }
+
+    saida: dict = {
+        "visao": visao,
+        "nome_proprio": nome_proprio or None,
+        "migration_ausente": False,
+    }
+    for k, (_, label, cor) in grupos.items():
+        saida[k] = {"label": label, "cor": cor, "total": 0, "chamados": []}
+
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+
+        # ── backlog: abertos/novos (coluna "Novo" do kanban) ───────────────────
+        cur.execute(
+            f"SELECT {_COLS} {_BASE}"
+            f"  AND estado_kanban='novo'{_filtro}"
+            "  ORDER BY aberto_em ASC", _p)
+        saida["backlog"]["chamados"] = _rows(cur)
+        saida["backlog"]["total"] = len(saida["backlog"]["chamados"])
+
+        # ── abertas: entradas de hoje (aberto_em = hoje) ────────────────────
+        cur.execute(
+            f"SELECT {_COLS} {_BASE}"
+            f"  AND CAST(aberto_em AS DATE) = CAST(GETDATE() AS DATE){_filtro}"
+            "  ORDER BY aberto_em DESC", _p)
+        saida["abertas"]["chamados"] = _rows(cur)
+        saida["abertas"]["total"] = len(saida["abertas"]["chamados"])
+
+        # ── andamento ────────────────────────────────────────────────────────
+        cur.execute(
+            f"SELECT {_COLS} {_BASE}"
+            f"  AND estado_kanban='andamento'{_filtro}"
+            "  ORDER BY aberto_em ASC", _p)
+        saida["andamento"]["chamados"] = _rows(cur)
+        saida["andamento"]["total"] = len(saida["andamento"]["chamados"])
+
+        # ── pendentes: aguardando ────────────────────────────────────────────
+        cur.execute(
+            f"SELECT {_COLS} {_BASE}"
+            f"  AND estado_kanban='aguardando'{_filtro}"
+            "  ORDER BY aberto_em ASC", _p)
+        saida["pendentes"]["chamados"] = _rows(cur)
+        saida["pendentes"]["total"] = len(saida["pendentes"]["chamados"])
+
+        # ── sem analista ─────────────────────────────────────────────────────
+        cur.execute(
+            f"SELECT {_COLS} {_BASE}"
+            f"  AND NULLIF(LTRIM(RTRIM(atribuido_a)),'') IS NULL{_filtro}"
+            "  ORDER BY aberto_em ASC", _p)
+        saida["sem_analista"]["chamados"] = _rows(cur)
+        saida["sem_analista"]["total"] = len(saida["sem_analista"]["chamados"])
+
+        # ── resolvidas hoje: encerradas/resolvidas com encerrado_em = hoje ─────
+        cur.execute(
+            f"SELECT {_COLS} FROM dbo.etl_chamado WHERE 1=1"
+            + _so_trabalhos()
+            + f"  AND estado_kanban IN ('resolvido','encerrado')"
+            f"  AND CAST(encerrado_em AS DATE) = CAST(GETDATE() AS DATE){_filtro}"
+            "  ORDER BY encerrado_em DESC", _p)
+        saida["resolvidas_hoje"]["chamados"] = _rows(cur)
+        saida["resolvidas_hoje"]["total"] = len(saida["resolvidas_hoje"]["chamados"])
+
+        # ── resolvidas: estado resolvido ainda ativo ─────────────────────────
+        cur.execute(
+            f"SELECT {_COLS} {_BASE}"
+            f"  AND estado_kanban='resolvido'{_filtro}"
+            "  ORDER BY aberto_em ASC", _p)
+        saida["resolvidas"]["chamados"] = _rows(cur)
+        saida["resolvidas"]["total"] = len(saida["resolvidas"]["chamados"])
+
+        # ── vencem hoje ──────────────────────────────────────────────────────
+        cur.execute(
+            f"SELECT {_COLS} {_BASE}"
+            f"  AND estado_kanban NOT IN ('resolvido','encerrado','outros')"
+            f"  AND CAST(prazo AS DATE) = CAST(GETDATE() AS DATE){_filtro}"
+            "  ORDER BY prazo ASC", _p)
+        saida["vencem_hoje"]["chamados"] = _rows(cur)
+        saida["vencem_hoje"]["total"] = len(saida["vencem_hoje"]["chamados"])
+
+        # ── vencem essa semana (amanhã até sexta-feira) ──────────────────────
+        cur.execute(
+            f"SELECT {_COLS} {_BASE}"
+            f"  AND estado_kanban NOT IN ('resolvido','encerrado','outros')"
+            f"  AND prazo IS NOT NULL"
+            f"  AND CAST(prazo AS DATE) > CAST(GETDATE() AS DATE)"
+            f"  AND CAST(prazo AS DATE) <= DATEADD(DAY, 6-DATEPART(WEEKDAY, GETDATE()), CAST(GETDATE() AS DATE)){_filtro}"
+            "  ORDER BY prazo ASC", _p)
+        saida["vencem_semana"]["chamados"] = _rows(cur)
+        saida["vencem_semana"]["total"] = len(saida["vencem_semana"]["chamados"])
+
+        # ── vencidas: prazo < hoje ───────────────────────────────────────────
+        cur.execute(
+            f"SELECT {_COLS} {_BASE}"
+            f"  AND estado_kanban NOT IN ('resolvido','encerrado','outros')"
+            f"  AND prazo IS NOT NULL"
+            f"  AND CAST(prazo AS DATE) < CAST(GETDATE() AS DATE){_filtro}"
+            "  ORDER BY prazo ASC", _p)
+        saida["vencidas"]["chamados"] = _rows(cur)
+        saida["vencidas"]["total"] = len(saida["vencidas"]["chamados"])
+
+        # ── fluxo do dia: entradas x saídas ─────────────────────────────────
+        _p_base = _p if _filtro else []
+        cur.execute(
+            "SELECT COUNT(*) FROM dbo.etl_chamado"
+            + " WHERE 1=1"
+            + _so_trabalhos()
+            + f"  AND CAST(aberto_em AS DATE) = CAST(GETDATE() AS DATE){_filtro}", _p)
+        entradas = cur.fetchone()[0]
+        cur.execute(
+            "SELECT COUNT(*) FROM dbo.etl_chamado"
+            + " WHERE 1=1"
+            + _so_trabalhos()
+            + f"  AND estado_kanban IN ('resolvido','encerrado')"
+            + f"  AND CAST(encerrado_em AS DATE) = CAST(GETDATE() AS DATE){_filtro}", _p)
+        saidas = cur.fetchone()[0]
+        saida["fluxo_hoje"] = {"entradas": entradas, "saidas": saidas}
+
+        # ── total fila = mesmo critério do kanban: ativo=1 sem tasks ─────────
+        cur.execute(
+            f"SELECT COUNT(*) {_BASE}{_filtro}", _p)
+        saida["total_fila"] = cur.fetchone()[0]
+
+        cur.close(); conn.close()
+    except Exception as e:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        log.warning("dashboard: espelho indisponível (%s: %s)", type(e).__name__, e)
+        saida["migration_ausente"] = True
+    return saida
+
+
+# IMPORTANTE: /chamados/indicadores/historico é declarada ANTES de
+# /chamados/{sys_id}/... para evitar conflito de matching (FastAPI lê rotas em
+# ordem; "indicadores" casaria com {sys_id} e "historico" com "tasks").
+
+
+@router.get("/chamados/indicadores/historico", tags=["chamados"])
+def indicadores_historico(periodo: str = "30d", grupo: str | None = None,
+                          _auth: dict = Depends(get_current_user)):
+    """Histórico de snapshots de indicadores operacionais."""
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+
+        if periodo == "hoje":
+            trunc = "DATEPART(hour, s.capturado_em)"
+            janela = "s.capturado_em >= DATEADD(DAY, -1, GETDATE())"
+        elif periodo == "historico":
+            trunc = "DATEPART(week, s.capturado_em)"
+            janela = "1=1"
+        else:  # 30d (default)
+            trunc = "CAST(s.capturado_em AS DATE)"
+            janela = "s.capturado_em >= DATEADD(DAY, -30, GETDATE())"
+
+        cur.execute(f"""
+            SELECT TOP 500
+                MIN(s.capturado_em),
+                AVG(CAST(s.total_ativos AS DECIMAL(8,1))),
+                AVG(CAST(s.novo AS DECIMAL(8,1))),
+                AVG(CAST(s.andamento AS DECIMAL(8,1))),
+                AVG(CAST(s.aguardando AS DECIMAL(8,1))),
+                AVG(CAST(s.resolvido AS DECIMAL(8,1))),
+                AVG(CAST(s.outros AS DECIMAL(8,1))),
+                AVG(CAST(s.sla_vencidos AS DECIMAL(8,1))),
+                AVG(s.idade_media_dias),
+                AVG(s.tempo_medio_resolucao_horas),
+                AVG(CAST(s.qtd_encerrados_7d AS DECIMAL(8,1))),
+                AVG(CAST(s.qtd_abertos_7d AS DECIMAL(8,1))),
+                AVG(CAST(s.qtd_iniciativas_abertas AS DECIMAL(8,1)))
+            FROM dbo.etl_indicador_snapshot s
+            WHERE {janela}
+            GROUP BY {trunc}
+            ORDER BY 1 DESC
+        """)
+        snapshots = [
+            {"capturado_em": str(r[0]), "total_ativos": r[1], "novo": r[2],
+             "andamento": r[3], "aguardando": r[4], "resolvido": r[5],
+             "outros": r[6], "sla_vencidos": r[7], "idade_media_dias": r[8],
+             "tempo_medio_resolucao_horas": r[9], "qtd_encerrados_7d": r[10],
+             "qtd_abertos_7d": r[11], "qtd_iniciativas_abertas": r[12]}
+            for r in cur.fetchall()
+        ]
+
+        cur.execute("SELECT MAX(id) FROM dbo.etl_indicador_snapshot")
+        ultimo_id = (cur.fetchone() or (None,))[0]
+
+        por_analista = []
+        por_grupo = []
+        if ultimo_id:
+            cur.execute(
+                "SELECT atribuido_a, atribuido_a_email, total_ativos, "
+                "  sla_vencidos, idade_media_dias "
+                "FROM dbo.etl_indicador_snapshot_analista "
+                "WHERE id_snapshot=? ORDER BY total_ativos DESC", [ultimo_id])
+            por_analista = [
+                {"atribuido_a": r[0], "atribuido_a_email": r[1],
+                 "total_ativos": r[2], "sla_vencidos": r[3],
+                 "idade_media_dias": r[4]}
+                for r in cur.fetchall()
+            ]
+            filtro_grupo = "AND grupo=?" if grupo else ""
+            params_g = [ultimo_id, grupo] if grupo else [ultimo_id]
+            cur.execute(
+                f"SELECT grupo, total_ativos, sla_vencidos, idade_media_dias "
+                f"FROM dbo.etl_indicador_snapshot_grupo "
+                f"WHERE id_snapshot=? {filtro_grupo} ORDER BY total_ativos DESC",
+                params_g)
+            por_grupo = [
+                {"grupo": r[0], "total_ativos": r[1], "sla_vencidos": r[2],
+                 "idade_media_dias": r[3]}
+                for r in cur.fetchall()
+            ]
+
+        cur.execute(
+            "SELECT metrica, valor_meta, grupo FROM dbo.etl_indicador_meta "
+            "WHERE periodo_fim IS NULL OR periodo_fim >= CAST(GETDATE() AS DATE)")
+        metas = [
+            {"metrica": r[0], "valor_meta": float(r[1]), "grupo": r[2]}
+            for r in cur.fetchall()
+        ]
+
+        cur.close(); conn.close()
+        return {"snapshots": snapshots, "por_analista": por_analista,
+                "por_grupo": por_grupo, "metas": metas}
+    except Exception as e:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+        log.warning("indicadores_historico: erro (%s: %s)", type(e).__name__, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/chamados/categorias", tags=["chamados"])
+def listar_categorias(_auth: dict = Depends(get_current_user)):
+    """Categorias ativas para classificação de chamados (ex.: dia a dia, iniciativa).
+
+    Devolve ENVELOPE, e não a lista pura como a versão de produção: sem
+    `migration_ausente`, "a consulta falhou" e "não há categoria cadastrada"
+    chegam à tela como o mesmo `[]` — e o operador conclui a segunda coisa.
+    É o mesmo contrato das outras rotas deste módulo.
+    """
+    saida: dict = {"categorias": [], "migration_ausente": False}
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT id, slug, label, descricao, padrao "
+            "FROM dbo.etl_sn_categoria "
+            "ORDER BY padrao DESC, label")
+        saida["categorias"] = [
+            {"id": r[0], "slug": r[1], "label": r[2],
+             "descricao": r[3] or "", "padrao": bool(r[4])}
+            for r in cur.fetchall()]
+        cur.close(); conn.close()
+    except Exception as e:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        log.warning("categorias: indisponível (%s: %s)", type(e).__name__, e)
+        saida["migration_ausente"] = True
+    return saida
+
+
 # IMPORTANTE: esta rota tem DOIS segmentos (`/chamados/<algo>/tasks`), então
 # não disputa com `/chamados/indicadores`, `/chamados/sugestoes` nem
 # `/chamados/historico`, que têm um só. A disputa apareceria no dia em que
@@ -674,3 +1045,152 @@ def tasks_do_ritm(sys_id: str, _auth: dict = Depends(get_current_user)):
                     type(e).__name__, e)
         saida["migration_ausente"] = True
     return saida
+
+
+@router.get("/chamados/{sys_id}/detalhe", tags=["chamados"])
+def chamado_detalhe(sys_id: str, _auth: dict = Depends(get_current_user)):
+    """Detalhe completo de um chamado: dados + notas + anexos."""
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT sys_id, numero, tipo, titulo, descricao, estado_kanban, "
+            "  atribuido_a, atribuido_a_email, grupo, aberto_em, url, "
+            "  ISNULL(tem_anexo,0), ISNULL(sla_vencido,0), prazo "
+            "FROM dbo.etl_chamado WHERE sys_id=?", [sys_id])
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail="chamado não encontrado")
+
+        chamado = {
+            "sys_id": row[0], "numero": row[1], "tipo": row[2],
+            "titulo": row[3], "descricao": row[4], "estado_kanban": row[5],
+            "atribuido_a": row[6], "atribuido_a_email": row[7], "grupo": row[8],
+            "aberto_em": str(row[9]) if row[9] else None, "url": row[10],
+            "tem_anexo": bool(row[11]), "sla_vencido": bool(row[12]),
+            "prazo": str(row[13]) if row[13] else None,
+        }
+
+        # Notas e anexos degradam SEPARADO do chamado.
+        #
+        # Eles vivem em tabelas que chegaram depois (094/095). Num ambiente que
+        # subiu a API nova antes das migrations — que é o intervalo NORMAL do
+        # deploy, entre a etapa 6c e o rebuild — um try único derrubaria o
+        # detalhe INTEIRO, inclusive o que já funcionava. A tela perderia o
+        # chamado por causa de uma lista vazia.
+        #
+        # `migration_ausente` diz qual das duas coisas aconteceu: sem ela, "não
+        # há nota" e "não consegui ler as notas" chegam iguais, e quem lê
+        # conclui a primeira.
+        notas, anexos, faltando = [], [], False
+        try:
+            cur.execute(
+                "SELECT sys_id_nota, autor, autor_email, criado_em, texto, tipo "
+                "FROM dbo.etl_chamado_nota WHERE sys_id_chamado=? "
+                "ORDER BY criado_em", [sys_id])
+            notas = [
+                {"sys_id_nota": r[0], "autor": r[1], "autor_email": r[2],
+                 "criado_em": str(r[3]) if r[3] else None,
+                 "texto": r[4], "tipo": r[5]}
+                for r in cur.fetchall()
+            ]
+        except Exception as e:
+            log.warning("detalhe: notas indisponíveis (%s: %s)",
+                        type(e).__name__, e)
+            faltando = True
+            cur.close(); cur = conn.cursor()
+
+        try:
+            cur.execute(
+                "SELECT sys_id_anexo, nome_arquivo, mime_type, tamanho_bytes, criado_em "
+                "FROM dbo.etl_chamado_anexo WHERE sys_id_chamado=? "
+                "ORDER BY criado_em", [sys_id])
+            anexos = [
+                {"sys_id_anexo": r[0], "nome_arquivo": r[1], "mime_type": r[2],
+                 "tamanho_bytes": r[3],
+                 "url_proxy": f"/chamados/{sys_id}/anexos/{r[0]}",
+                 "criado_em": str(r[4]) if r[4] else None}
+                for r in cur.fetchall()
+            ]
+        except Exception as e:
+            log.warning("detalhe: anexos indisponíveis (%s: %s)",
+                        type(e).__name__, e)
+            faltando = True
+
+        cur.close(); conn.close()
+        return {"chamado": chamado, "notas": notas, "anexos": anexos,
+                "migration_ausente": faltando}
+    except HTTPException:
+        raise
+    except Exception as e:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+        # Espelho indisponível AVISA, como no resto do módulo. 500 aqui daria
+        # tela branca em cima de um chamado que o operador acabou de clicar, e
+        # ele não teria como saber se o problema é o chamado ou o sistema.
+        # (O 404 de "chamado não existe" sobe pelo `except HTTPException`
+        # acima — aquilo é resposta, não falha.)
+        log.warning("chamado_detalhe: espelho indisponível (%s: %s)",
+                    type(e).__name__, e)
+        return {"chamado": None, "notas": [], "anexos": [],
+                "migration_ausente": True}
+
+
+@router.get("/chamados/{sys_id}/anexos/{sys_id_anexo}", tags=["chamados"])
+def chamado_anexo_proxy(sys_id: str, sys_id_anexo: str,
+                        _auth: dict = Depends(get_current_user)):
+    """Proxy de download de anexo — credencial lida do banco a cada request."""
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT url_download, nome_arquivo, mime_type "
+            "FROM dbo.etl_chamado_anexo "
+            "WHERE sys_id_anexo=? AND sys_id_chamado=?",
+            [sys_id_anexo, sys_id])
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=404, detail="anexo não encontrado")
+        url_dl, nome_arquivo, mime_type = row[0], row[1], row[2]
+
+        # credencial lida a cada request — sem cache
+        cur.execute(
+            "SELECT config_key, config_value FROM dbo.etl_app_config "
+            "WHERE config_key IN ('servicenow_url','servicenow_usuario',"
+            "'servicenow_senha_enc')")
+        cfg = dict(cur.fetchall())
+        cur.close(); conn.close(); conn = None
+        usuario = cfg.get("servicenow_usuario", "")
+        senha = decrypt_password(cfg.get("servicenow_senha_enc", ""))
+
+        with _httpx.Client(auth=(usuario, senha), timeout=30,
+                           follow_redirects=True) as cli:
+            try:
+                sn_resp = cli.get(url_dl)
+                sn_resp.raise_for_status()
+            except Exception as e:
+                raise HTTPException(status_code=502,
+                                     detail=f"ServiceNow indisponível: {e}")
+
+        headers = {}
+        mime = mime_type or sn_resp.headers.get("content-type", "application/octet-stream")
+        if not mime.startswith("image/"):
+            nome_safe = (nome_arquivo or "arquivo").replace('"', '')
+            headers["Content-Disposition"] = f'attachment; filename="{nome_safe}"'
+
+        return _StreamingResponse(
+            iter([sn_resp.content]), media_type=mime, headers=headers)
+    except HTTPException:
+        raise
+    except Exception as e:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+        log.warning("chamado_anexo_proxy: erro (%s: %s)", type(e).__name__, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Admin ServiceNow ──────────────────────────────────────────────────────────
