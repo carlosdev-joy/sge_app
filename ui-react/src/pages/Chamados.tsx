@@ -18,6 +18,7 @@ import { PageSpinner } from '../components/ui/Spinner'
 import { Tabs } from '../components/ui/Tabs'
 import { Modal } from '../components/ui/Modal'
 import ChamadosIndicadores from './ChamadosIndicadores'
+import { separarFila } from '../lib/filaChamados'
 import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
 
 // Aviso com tom próprio. O InfoBanner da casa é azul e DISPENSÁVEL — certo
@@ -79,6 +80,12 @@ interface Chamado {
   triagem_origem: string
   triagem_em: string | null
   triagem_erro: string
+  // Parentesco (migration 090). Presente na sc_task, nulo no RITM. É por ele
+  // que a tela sabe que a tarefa já está representada pelo card do pedido —
+  // e null/ausente mantém a linha como card, que é o certo para a órfã e para
+  // o ambiente sem a migration.
+  pai_sys_id: string | null
+  pai_numero: string | null
 }
 
 interface UltimoSync {
@@ -267,7 +274,7 @@ function ModalTriagem({ c, aoFechar }: { c: Chamado; aoFechar: () => void }) {
   )
 }
 
-function CardChamado({ c }: { c: Chamado }) {
+function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
   const [verLaudo, setVerLaudo] = useState(false)
   const estilo = c.veredito ? ESTILO_VEREDITO[c.veredito] : undefined
   return (
@@ -357,6 +364,38 @@ function CardChamado({ c }: { c: Chamado }) {
           {c.idade_dias !== null ? `${c.idade_dias}d` : '—'}
         </span>
       </div>
+      {/* As tarefas do pedido. Elas saíram da contagem de cards, mas NÃO da
+          vista: some da fila é diferente de sumir do sistema, e o estado da
+          task é o que responde "o pedido está aberto, mas alguém já pegou?".
+          O responsável só aparece quando DIFERE do pai — é assim que a
+          premissa "mesmo responsável" mostra que quebrou, antes de virar
+          dúvida no gráfico de carga. */}
+      {filhas.length > 0 && (
+        <div className="flex flex-col gap-0.5 pt-1 border-t border-edge">
+          {filhas.map(f => (
+            <div key={f.sys_id}
+              className="flex items-center gap-1.5 text-[10px] text-dim">
+              <span aria-hidden className="shrink-0">↳</span>
+              <span className="font-mono shrink-0">{f.numero}</span>
+              <span className="px-1 py-px rounded bg-panel border border-edge shrink-0">
+                {ROTULO_COLUNA[f.estado_kanban] ?? f.estado_kanban}
+              </span>
+              {f.atribuido_a && f.atribuido_a !== c.atribuido_a && (
+                <span className="truncate" title={`Responsável da tarefa: ${f.atribuido_a}`}>
+                  {f.atribuido_a}
+                </span>
+              )}
+              {f.url && (
+                <a href={f.url} target="_blank" rel="noopener noreferrer"
+                  className="text-blue-600 dark:text-blue-400 shrink-0 ml-auto"
+                  title="Abrir a tarefa no ServiceNow">
+                  <ExternalLink size={10} />
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -377,27 +416,44 @@ export default function Chamados() {
   const [fResponsavel, setFResponsavel] = useState('')
   const [fPrioridade, setFPrioridade] = useState('')
 
-  const chamados = useMemo(() => data?.chamados ?? [], [data])
+  const todos = useMemo(() => data?.chamados ?? [], [data])
+
+  // O card é o TRABALHO: a tarefa vira linha dentro do card do pedido. A regra
+  // (e a recusa que ela protege — órfã continua card) mora em `lib/filaChamados`.
+  // As filhas saem da lista que já chegou: uma requisição por card seriam
+  // dezenas a cada abertura da tela.
+  const { cards: chamados, filhasPorPai } = useMemo(
+    () => separarFila(todos), [todos])
 
   // As opções saem do que ESTÁ na fila, não de uma lista fixa: prioridade e
   // responsável variam por instância, e uma lista fixa mostraria opção que
   // não filtra nada (ou esconderia a que filtra).
+  //
+  // Olham o card E as filhas (`todos`, não `chamados`): a tarefa continua
+  // visível na tela, então "Tarefa" precisa continuar na lista de tipos, e o
+  // responsável que só aparece numa task precisa ser filtrável.
   const opcoes = useMemo(() => {
     const unicos = (f: (c: Chamado) => string | null) =>
-      [...new Set(chamados.map(f).filter((v): v is string => !!v))].sort()
+      [...new Set(todos.map(f).filter((v): v is string => !!v))].sort()
     return {
       tipos: unicos(c => c.tipo),
       responsaveis: unicos(c => c.atribuido_a),
       prioridades: unicos(c => c.prioridade),
     }
-  }, [chamados])
+  }, [todos])
 
-  const filtrados = useMemo(() => chamados.filter(c =>
-    (!fTipo || c.tipo === fTipo) &&
-    (!fResponsavel || c.atribuido_a === fResponsavel) &&
-    (!fPrioridade || c.prioridade === fPrioridade) &&
-    casaBusca(c, busca)
-  ), [chamados, fTipo, fResponsavel, fPrioridade, busca])
+  // O filtro casa contra o card e suas filhas. Sem isso, o número da SCTASK
+  // estaria na tela e a busca por ele não acharia nada — e filtrar por
+  // "Tarefa" esvaziaria a fila inteira, porque nenhum CARD é uma task.
+  const filtrados = useMemo(() => {
+    const casa = (c: Chamado) =>
+      (!fTipo || c.tipo === fTipo) &&
+      (!fResponsavel || c.atribuido_a === fResponsavel) &&
+      (!fPrioridade || c.prioridade === fPrioridade) &&
+      casaBusca(c, busca)
+    return chamados.filter(c =>
+      casa(c) || (filhasPorPai.get(c.sys_id) ?? []).some(casa))
+  }, [chamados, filhasPorPai, fTipo, fResponsavel, fPrioridade, busca])
 
   const temFiltro = !!(busca || fTipo || fResponsavel || fPrioridade)
   const limpar = () => {
@@ -428,7 +484,13 @@ export default function Chamados() {
           {/* Com filtro ativo, "x de y" — nunca só o número filtrado, que
               faria a fila parecer menor do que é. */}
           <Badge value="neutral">
-            {temFiltro ? `${filtrados.length} de ${d.total}` : `${d.total} na fila`}
+            {/* Conta TRABALHOS, não registros: `d.total` vem da API e inclui
+                as tarefas que já estão representadas no card do pai. Dizer 95
+                com 59 cards na tela é a mesma incoerência que esta fase veio
+                fechar, só que no rodapé. */}
+            {temFiltro
+              ? `${filtrados.length} de ${chamados.length}`
+              : `${chamados.length} na fila`}
           </Badge>
         </div>
         <div className="flex items-center gap-2">
@@ -518,7 +580,7 @@ export default function Chamados() {
           espelho vazio, e o operador vai procurar defeito na integração. */}
       {aba === 'fila' && temFiltro && filtrados.length === 0 && d.total > 0 && (
         <Aviso tom="info">
-          Nenhum chamado casa com os filtros atuais — a fila tem {d.total}{' '}
+          Nenhum chamado casa com os filtros atuais — a fila tem {chamados.length}{' '}
           chamado(s). Limpe os filtros para vê-la inteira.
         </Aviso>
       )}
@@ -539,7 +601,10 @@ export default function Chamados() {
                   {daColuna.length === 0 ? (
                     <p className="text-[11px] text-dim px-1 py-2">nenhum</p>
                   ) : (
-                    daColuna.map(c => <CardChamado key={c.sys_id} c={c} />)
+                    daColuna.map(c => (
+                      <CardChamado key={c.sys_id} c={c}
+                        filhas={filhasPorPai.get(c.sys_id)} />
+                    ))
                   )}
                 </div>
               </div>

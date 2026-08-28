@@ -142,7 +142,12 @@ def listar_chamados(incluir_inativos: int = 0,
         novas = (", tipo_demanda, categoria_diaadia, objetos, demandante, "
                  "  catalogo, prazo, sla_vencido, "
                  "  veredito, suficiencia, resumo, lacunas, perguntas, "
-                 "  triagem_origem, triagem_em, triagem_erro")
+                 "  triagem_origem, triagem_em, triagem_erro, "
+                 # Parentesco (migration 090). Vem no bloco DEGRADÁVEL, junto
+                 # com as 091/092: num ambiente sem a 090 a fila continua
+                 # servida — plana, com a task como card solto, que é como
+                 # sempre foi — em vez de virar "sistema em atualização".
+                 "  pai_sys_id, pai_numero")
         fim = (" FROM dbo.etl_chamado"
                + ("" if incluir_inativos else " WHERE ativo = 1")
                + " ORDER BY aberto_em DESC")
@@ -171,7 +176,10 @@ def listar_chamados(incluir_inativos: int = 0,
                 # caminho completo — o card mostra "não classificado" em vez
                 # de quebrar por campo ausente.
                 r = tuple(r) + (None, "", "", "", "", None, None,
-                                None, None, "", "", "", None, None, "")
+                                None, None, "", "", "", None, None, "",
+                                # pai_sys_id, pai_numero: sem a 090 não há
+                                # parentesco, e a fila serve plana.
+                                None, None)
             resposta["chamados"].append({
                 "sys_id": r[0], "numero": r[1], "tipo": r[2], "titulo": r[3],
                 "estado_origem": r[4], "estado_kanban": r[5],
@@ -207,6 +215,14 @@ def listar_chamados(incluir_inativos: int = 0,
                 "triagem_origem": r[28] or "",
                 "triagem_em": _fmt_dt(r[29]),
                 "triagem_erro": r[30] or "",
+                # ── Parentesco (migration 090) ───────────────────────────
+                # Todo RITM do catálogo gera uma sc_task, e as duas chegam
+                # aqui como linhas irmãs. É por este campo que a tela sabe
+                # que a task já está representada pelo card do pai.
+                # String vazia é tratada como ausente: o sync grava '' —
+                # e não NULL — quando o campo não vem da API.
+                "pai_sys_id": (r[31] or None),
+                "pai_numero": (r[32] or None),
             })
         resposta["ultimo_sync"] = _ultimo_ciclo(cur)
         cur.close(); conn.close(); conn = None
@@ -550,5 +566,61 @@ def historico(dias: int = DIAS_HISTORICO,
             except Exception:
                 pass
         log.warning("historico: espelho indisponível (%s: %s)", type(e).__name__, e)
+        saida["migration_ausente"] = True
+    return saida
+
+
+# IMPORTANTE: esta rota tem DOIS segmentos (`/chamados/<algo>/tasks`), então
+# não disputa com `/chamados/indicadores`, `/chamados/sugestoes` nem
+# `/chamados/historico`, que têm um só. A disputa apareceria no dia em que
+# entrar uma rota de dois segmentos começando por literal — `/chamados/
+# indicadores/historico` é o caso conhecido: ali `indicadores` casaria com
+# `{sys_id}` e `historico` com `tasks`. Quando essa rota vier, ela precisa ser
+# declarada ANTES desta.
+@router.get("/chamados/{sys_id}/tasks", tags=["chamados"])
+def tasks_do_ritm(sys_id: str, _auth: dict = Depends(get_current_user)):
+    """As SCTASKs de um RITM — o trabalho que o card do pai representa.
+
+    Inclui INATIVAS de propósito: a fila mostra o pedido vivo, mas quem abre um
+    RITM quer ver a execução inteira, inclusive a task já encerrada. Filtrar
+    aqui esconderia metade da história de quem foi ao card justamente para
+    entendê-la.
+    """
+    saida: dict = {"sys_id": sys_id, "tasks": [], "total": 0,
+                   "migration_ausente": False}
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT sys_id, numero, tipo, titulo, estado_kanban, prioridade, "
+            "       atribuido_a, grupo, aberto_em, atualizado_em, encerrado_em, "
+            "       ativo, url, sync_em "
+            "FROM dbo.etl_chamado "
+            "WHERE pai_sys_id = ? "
+            "ORDER BY aberto_em DESC",
+            [sys_id])
+        for r in cur.fetchall():
+            saida["tasks"].append({
+                "sys_id": r[0], "numero": r[1], "tipo": r[2], "titulo": r[3],
+                "estado_kanban": r[4], "prioridade": r[5],
+                "atribuido_a": r[6] or "", "grupo": r[7] or "",
+                "aberto_em": _fmt_dt(r[8]), "atualizado_em": _fmt_dt(r[9]),
+                "encerrado_em": _fmt_dt(r[10]), "ativo": bool(r[11]),
+                "url": r[12], "sync_em": _fmt_dt(r[13]),
+            })
+        saida["total"] = len(saida["tasks"])
+        cur.close(); conn.close()
+    except Exception as e:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        # Sem a migration 090 não existe `pai_sys_id` e a consulta falha. A
+        # tela precisa saber disso para não anunciar "nenhuma tarefa" — que
+        # seria uma afirmação, e falsa — quando o que houve foi ausência de
+        # coluna.
+        log.warning("tasks_do_ritm: espelho indisponível (%s: %s)",
+                    type(e).__name__, e)
         saida["migration_ausente"] = True
     return saida

@@ -50,7 +50,11 @@ def _chamado(numero="INC001", tipo="incident", estado="novo", ativo=1,
              # veredito: a tela não pode pintar de âmbar quem só não foi
              # analisado ainda.
              veredito=None, suficiencia=None, resumo="", lacunas="",
-             perguntas="", triagem_origem="", triagem_em=None, triagem_erro=""):
+             perguntas="", triagem_origem="", triagem_em=None, triagem_erro="",
+             # Parentesco (migration 090). O sync grava '' — e não NULL —
+             # quando o campo não vem da API, então o default aqui é o valor
+             # REAL de um RITM, não o NULL de laboratório.
+             pai_sys_id="", pai_numero=""):
     return (sys_id or f"sid-{numero}", numero, tipo, titulo, "In Progress",
             estado, "3 - Moderate", "Fulano", "Engenharia",
             "2026-08-10 10:00:00", "2026-08-13 09:00:00", None, ativo,
@@ -58,7 +62,8 @@ def _chamado(numero="INC001", tipo="incident", estado="novo", ativo=1,
             tipo_demanda, categoria, objetos, demandante, catalogo,
             prazo, sla_vencido,
             veredito, suficiencia, resumo, lacunas, perguntas,
-            triagem_origem, triagem_em, triagem_erro)
+            triagem_origem, triagem_em, triagem_erro,
+            pai_sys_id, pai_numero)
 
 
 def _ciclo(status="OK", idade_min=30, terminado="2026-08-13 12:05:00", erro=None):
