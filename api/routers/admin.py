@@ -1296,9 +1296,14 @@ async def test_webhook(body: dict = Body(default={}), _admin: dict = Depends(get
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Ordem de exibição das categorias — o front respeita a ordem recebida.
+# A ordem desta lista é a ordem das seções na tela do inventário.
+# "Manutenção" entrou com a etl_log_cleanup: faxina de log não é núcleo (não
+# faz o produto funcionar) nem monitoramento (não observa nada) — e enfiá-la
+# numa categoria vizinha faria a seção mentir sobre o que agrupa.
 CATEGORIAS_DAGS = [
     "Núcleo", "Monitoramento e alertas", "Consultas da aplicação (RPC)",
     "Cadastro e gestão", "Cópia de Dados", "Linhagem e importação",
+    "Manutenção",
     "não catalogada",
 ]
 
@@ -1331,6 +1336,31 @@ CATALOGO_DAGS: dict = {
             "registrado em etl_chamado_sync",
         "frequencia": "a cada 15 min (só com servicenow_habilitado=1 em "
             "Admin > ServiceNow)",
+    },
+    "etl_servicenow_delta": {
+        "categoria": "Monitoramento e alertas",
+        "funcionalidade": "Carga INCREMENTAL dos chamados: traz só o que mudou "
+            "desde o último ciclo OK, com as notas e os anexos de cada chamado "
+            "tocado. É o que mantém a fila fresca sem varrer a instância "
+            "inteira; o ciclo fica registrado em etl_chamado_ciclo",
+        "frequencia": "a cada 15 min (só com servicenow_habilitado=1 em "
+            "Admin > ServiceNow); também sob demanda pelo Admin",
+    },
+    "etl_servicenow_full": {
+        "categoria": "Monitoramento e alertas",
+        "funcionalidade": "Carga COMPLETA dos chamados do(s) grupo(s): a "
+            "reconciliação que pega o que o delta não viu — chamado alterado "
+            "fora da janela, registro que voltou a ficar ativo, campo mudado "
+            "sem tocar sys_updated_on. Também captura o snapshot de "
+            "indicadores do dia",
+        "frequencia": "diária, de madrugada (só com servicenow_habilitado=1)",
+    },
+    "etl_log_cleanup": {
+        "categoria": "Manutenção",
+        "funcionalidade": "Faxina dos logs de execução do Airflow: apaga o que "
+            "passou da retenção, para o disco do servidor não encher em "
+            "silêncio e derrubar o scheduler junto",
+        "frequencia": "diária",
     },
     "etl_ds_supervisao_monitor": {
         "categoria": "Monitoramento e alertas",

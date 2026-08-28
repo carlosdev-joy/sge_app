@@ -568,3 +568,59 @@ def test_truncamento_nao_parte_emoji_ao_meio():
 def test_titulo_com_emoji_respeita_o_limite_da_coluna():
     from utils.servicenow_sync import TITULO_MAX, unidades_utf16
     assert unidades_utf16(truncar_titulo("ção🔥" * 200)) <= TITULO_MAX
+
+
+# ═══════════ estados terminais do sc_req_item ═══════════════════════════════
+# Portado da F1: a correção que produção já tinha e a main não.
+
+def test_ritm_closed_complete_e_terminal_e_nao_aguardando():
+    """`state=3` em sc_req_item é "Closed Complete": CONCLUÍDO.
+
+    A main mapeava para 'aguardando'. Medido no espelho do dev em 2026-08-28:
+    **1472 RITMs** "Encerrado concluído" carregavam esse rótulo. Eles têm
+    ativo=0, então não poluíam a FILA — o estrago estava nas contas que
+    agrupam por estado_kanban sobre o espelho inteiro (histórico, entradas ×
+    saídas, resolvidos do período), onde chamado concluído era somado como
+    chamado esperando alguém.
+
+    'encerrado' é FORA_DO_KANBAN: sai da fila e continua no espelho, que é
+    exatamente o que um pedido concluído deve fazer.
+    """
+    assert mapear_estado("sc_req_item", "3") == "encerrado"
+    assert mapear_estado("sc_req_item", 3) == "encerrado"
+
+
+def test_o_terminal_do_ritm_nao_contaminou_as_outras_tabelas():
+    """Cada tabela tem seu próprio mapa — `3` significa coisas diferentes.
+
+    Em sc_task, `3` é "Closed Complete" e o espelho o trata como 'resolvido'
+    (fica na fila, na coluna Resolvido); em incident, `3` é "On Hold". Aplicar
+    a correção do RITM às outras moveria card em silêncio.
+    """
+    assert mapear_estado("sc_task", "3") == "resolvido"
+    assert mapear_estado("incident", "3") == "aguardando"
+
+
+def test_ritm_closed_incomplete_tambem_e_terminal():
+    """`4` é "Closed Incomplete": encerrado SEM entregar — e encerrado é final.
+
+    Ficava em 'aguardando' pelo mesmo motivo que o `3`. Depois de corrigir só
+    o `3`, a coluna caiu de 1568 para 96 no espelho do dev — e **84 dos 96**
+    eram estes. Produção também erra este: a correção de lá parou no `3`.
+    """
+    assert mapear_estado("sc_req_item", "4") == "encerrado"
+
+
+def test_o_que_sobra_em_aguardando_e_o_que_a_palavra_quer_dizer():
+    """`-5` é "Pendente" — pedido vivo, parado esperando alguém. É o único que
+    deve pintar a coluna Aguardando; foram 12 no espelho do dev, contra os 96
+    de antes desta correção."""
+    assert mapear_estado("sc_req_item", "-5") == "aguardando"
+    assert mapear_estado("sc_req_item", "2") == "andamento"
+    assert mapear_estado("sc_req_item", "1") == "novo"
+
+
+def test_o_estado_nao_visto_fica_como_estava():
+    """`5` não apareceu no espelho, e mexer em estado que não se viu é palpite
+    — o mesmo palpite que pôs o `3` e o `4` em 'aguardando'."""
+    assert mapear_estado("sc_req_item", "5") == "aguardando"

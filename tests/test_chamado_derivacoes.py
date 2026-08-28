@@ -7,9 +7,19 @@ testes prendem:
      'Demanda técnica'. String vazia faria a soma do gráfico por tipo não
      fechar com o total da fila, e ninguém saberia dizer se faltou dado ou
      faltou classificação.
-  2. **"Sem marcação" ≠ "geral".** Chamado que ninguém classificou devolve
-     vazio; chamado marcado como dia a dia sem categoria devolve 'geral'.
-     Colapsar os dois inventaria classificação que ninguém fez.
+  2. **"Sem marcação" ≠ marcado.** Chamado que ninguém classificou devolve
+     vazio. Colapsar os dois inventaria classificação que ninguém fez.
+
+     ⚠️ A SEMÂNTICA MUDOU no porte do motor de produção (F1). Antes, a
+     subcategoria escrita à mão virava o valor ("dia a dia - bug" → 'bug') e a
+     marcação sem subcategoria virava 'geral'. Agora são DOIS baldes fixos —
+     'dia a dia' e 'iniciativa' — e a subcategoria é ignorada.
+
+     O que se ganha: a detecção de 'iniciativa', que não existia, e o filtro
+     por IGUALDADE que as visões do dashboard usam ('dia a dia' literal). O
+     que se perde: a granularidade da subcategoria, medida em 4 chamados de
+     3439 no espelho do dev (2026-08-28) — e os 22 marcados como 'geral' não
+     casavam com filtro nenhum do dashboard.
   3. **O journal não vira categoria.** As work notes concatenam entradas: sem
      cortar na primeira linha, a "categoria" viraria o histórico inteiro.
   4. **Objeto repetido conta uma vez** e a ordem do texto é preservada.
@@ -25,8 +35,8 @@ RAIZ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RAIZ / "dags"))
 
 from utils.chamado_derivacoes import (  # noqa: E402
-    CATEGORIA_GERAL, OBJETOS_LIMITE, TIPO_MAX, TIPO_PADRAO,
-    categoria_diaadia, derivar, objetos_citados, tipo_demanda,
+    CATEGORIA_DIAADIA, CATEGORIA_INICIATIVA, OBJETOS_LIMITE, TIPO_MAX,
+    TIPO_PADRAO, categoria_diaadia, derivar, objetos_citados, tipo_demanda,
 )
 
 
@@ -70,19 +80,41 @@ def test_tipo_cabe_na_coluna():
 
 # ═══════════ 2. categoria "dia a dia" ═══════════════════════════════════════
 
-def test_categoria_com_rotulo():
-    assert categoria_diaadia("dia a dia - bug") == "bug"
-    assert categoria_diaadia("Dia a Dia - Ajuste Pontual") == "ajuste pontual"
+def test_marcacao_com_subcategoria_cai_no_balde_dia_a_dia():
+    """A subcategoria é ignorada: o balde é 'dia a dia', ponto.
+
+    É o que as visões do dashboard filtram — por igualdade, não por LIKE.
+    """
+    assert categoria_diaadia("dia a dia - bug") == CATEGORIA_DIAADIA
+    assert categoria_diaadia("Dia a Dia - Ajuste Pontual") == CATEGORIA_DIAADIA
+
+
+def test_iniciativa_e_reconhecida():
+    """Capacidade que a versão anterior não tinha: sem ela, a visão
+    'Iniciativas' do dashboard fica permanentemente vazia."""
+    assert categoria_diaadia("chamado da iniciativa de modernização") \
+        == CATEGORIA_INICIATIVA
+    assert categoria_diaadia("INICIATIVA estratégica 2026") == CATEGORIA_INICIATIVA
+
+
+def test_dia_a_dia_prevalece_sobre_iniciativa():
+    """Nota que cita as duas: 'dia a dia' é o balde operacional e vem antes.
+
+    Sem uma ordem definida, o mesmo texto cairia num balde ou noutro conforme
+    a implementação — e o total das duas visões não fecharia com a fila.
+    """
+    assert categoria_diaadia("dia a dia - apoio à iniciativa X") \
+        == CATEGORIA_DIAADIA
 
 
 def test_categoria_aceita_travessao_longo():
     """Quem digita no ServiceNow usa hífen e en-dash; aceitar só um jogaria
     metade das marcações no balde genérico."""
-    assert categoria_diaadia("dia a dia – bug") == "bug"
+    assert categoria_diaadia("dia a dia – bug") == CATEGORIA_DIAADIA
 
 
-def test_marcacao_sem_categoria_vira_geral():
-    assert categoria_diaadia("resolvido no dia a dia") == CATEGORIA_GERAL
+def test_marcacao_sem_subcategoria_tambem_e_dia_a_dia():
+    assert categoria_diaadia("resolvido no dia a dia") == CATEGORIA_DIAADIA
 
 
 def test_sem_marcacao_fica_vazio():
@@ -97,11 +129,32 @@ def test_categoria_para_na_primeira_linha():
     """O journal concatena entradas — sem o corte, a categoria viraria o
     histórico inteiro do chamado."""
     notas = "dia a dia - bug\n2026-08-13 Fulano escreveu:\noutra coisa qualquer"
-    assert categoria_diaadia(notas) == "bug"
+    assert categoria_diaadia(notas) == CATEGORIA_DIAADIA
 
 
-def test_categoria_perde_o_ponto_final():
-    assert categoria_diaadia("dia a dia - melhoria.") == "melhoria"
+def test_a_categoria_e_sempre_um_dos_tres_valores():
+    """Substitui os testes de captura de subcategoria, que deixaram de existir.
+
+    Antes, o valor era texto livre vindo das work notes, e três testes
+    protegiam contra ele arrastar coisa demais (ponto final, quebra de linha,
+    marcação vazia). Agora o valor é FECHADO — e é isso que precisa ser
+    afirmado, porque é a garantia de que o filtro por igualdade do dashboard
+    nunca erra o alvo.
+    """
+    permitidos = {"", CATEGORIA_DIAADIA, CATEGORIA_INICIATIVA}
+    amostras = [
+        "dia a dia - melhoria.",
+        "dia a dia -\nFavor verificar a tabela DM_123 conforme combinado",
+        "dia a dia - .",
+        "resolvido no dia a dia",
+        "iniciativa de modernização",
+        "Chamado seguindo o rito normal",
+        "", None,
+    ]
+    for texto in amostras:
+        assert categoria_diaadia(texto) in permitidos, (
+            f"{texto!r} produziu categoria fora do conjunto fechado — o "
+            f"filtro do dashboard compara por IGUALDADE e não acharia nada")
 
 
 # ═══════════ 3. objetos técnicos citados ════════════════════════════════════
@@ -145,7 +198,7 @@ def test_derivar_devolve_as_tres_colunas():
     })
     assert saida == {
         "tipo_demanda": "Extração de dados",
-        "categoria_diaadia": "bug",
+        "categoria_diaadia": CATEGORIA_DIAADIA,
         "objetos": "DM_123_VIDA",
     }
 
@@ -175,7 +228,7 @@ def test_normalizar_ja_traz_as_derivacoes():
     }
     linha = normalizar(registro, "sc_req_item", "ritm", "https://x.service-now.com")
     assert linha["tipo_demanda"] == "Inclusão de coluna/campo"
-    assert linha["categoria_diaadia"] == "melhoria"
+    assert linha["categoria_diaadia"] == CATEGORIA_DIAADIA
     assert linha["objetos"] == "DM_9_TESTE"
     for campo in ("tipo_demanda", "categoria_diaadia", "objetos"):
         assert campo in CAMPOS_UPSERT, f"{campo} precisa entrar no MERGE"
@@ -183,18 +236,22 @@ def test_normalizar_ja_traz_as_derivacoes():
 
 # ═══════════ 5. o que a revisão adversarial pegou ═══════════════════════════
 
-def test_travessao_no_fim_da_linha_nao_captura_a_linha_seguinte():
-    """`\\s*` depois do travessão casava quebra de linha: a frase inteira do
-    técnico virava 'categoria' e enchia o gráfico de barras de uso único."""
+def test_a_nota_inteira_nunca_vira_categoria():
+    """O defeito que os testes antigos protegiam, afirmado do lado de fora.
+
+    Com a captura de subcategoria, "dia a dia -" no fim da linha fazia a frase
+    seguinte INTEIRA virar categoria, enchendo o gráfico de barras de uso
+    único. A regra nova não captura nada — mas o risco merece registro: se
+    alguém reintroduzir a captura, isto reprova.
+    """
     notas = "dia a dia -\nFavor verificar a tabela DM_123 conforme combinado"
-    assert categoria_diaadia(notas) == CATEGORIA_GERAL
+    assert categoria_diaadia(notas) == CATEGORIA_DIAADIA
+    assert "DM_123" not in categoria_diaadia(notas)
 
 
-def test_marcacao_com_categoria_vazia_vira_geral():
-    """'dia a dia - .' é marcação SEM categoria, não ausência de marcação."""
-    assert categoria_diaadia("dia a dia - .") == CATEGORIA_GERAL
-
-
+def test_marcacao_com_subcategoria_vazia_continua_marcada():
+    """"dia a dia - ." é marcação SEM subcategoria, não ausência de marcação."""
+    assert categoria_diaadia("dia a dia - .") == CATEGORIA_DIAADIA
 def test_objeto_precisa_de_borda_a_esquerda():
     """Sem borda à esquerda, `DBTB_VENDAS` virava `TB_VENDAS` — nome de outro
     objeto, que existe. O mesmo defeito do sufixo, do outro lado."""
