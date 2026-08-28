@@ -549,3 +549,47 @@ def test_as_grades_sao_escritas_por_extenso() -> None:
     assert not montadas, (
         "classe de grade montada por interpolação: o Tailwind não a gera, "
         f"e a grade some em silêncio — {montadas}")
+
+
+# ═══════════ 10. o filtro por solicitante ═══════════════════════════════════
+#
+# "uma informação que precisamos colocar no card, no modal e nas tabelas, e
+#  filtros no kanban, o nome do solicitante."
+
+def test_o_seletor_lista_os_solicitantes_da_fila(cen: dict) -> None:
+    """Sem repetir, sem vazios e em ordem de GENTE.
+
+    ⚠️ `localeCompare('pt-BR')`, não `.sort()`. Em ordem binária "Ávila"
+    (Á = U+00C1) cai DEPOIS de "Zeca", e o nome some do fim de uma lista que o
+    usuário lê de cima para baixo. Uma versão anterior deste teste só tinha
+    nomes ASCII: as duas ordenações davam o mesmo resultado, e a sabotagem que
+    trocava uma pela outra passou verde."""
+    assert cen["kanban"]["solicitantes_do_seletor"] == [
+        "Ana Paula", "Ávila Souza", "Zeca Pagodinho"]
+
+
+def test_filtrar_por_solicitante_acha_o_pedido_dele(cen: dict) -> None:
+    """A pergunta "o que o Fulano do negócio já pediu?" não tinha resposta na
+    tela — só a de "o que o Fulano da equipe está tocando"."""
+    assert cen["kanban"]["sol_acha"] is True
+    assert cen["kanban"]["sol_recusa_outro"] is False
+    assert cen["kanban"]["sol_recusa_vazio"] is False
+
+
+def test_o_solicitante_e_do_CARD_e_nao_da_tarefa(cen: dict) -> None:
+    """⚠️ No ServiceNow o solicitante é campo da `sc_req_item` e do `incident`,
+    NÃO da `sc_task`. Casar pela filha faria o filtro procurar num campo que
+    nunca é preenchido — medido em dev: 0 de 34 tarefas com solicitante."""
+    assert cen["kanban"]["sol_nao_casa_pela_filha"] is False
+
+
+def test_espacos_ao_redor_do_nome_nao_impedem_o_casamento(cen: dict) -> None:
+    """O espelho guarda o que o ServiceNow manda, e nome com espaço à direita
+    aconteceria de virar um solicitante "diferente" no seletor."""
+    assert cen["kanban"]["sol_apara_espacos"] is True
+
+
+def test_o_filtro_de_solicitante_conta_como_filtro_ativo(cen: dict) -> None:
+    """Senão o botão Limpar não aparece, e o usuário fica com a fila recortada
+    sem saber como desfazer."""
+    assert cen["kanban"]["ativo_com_solicitante"] is True

@@ -823,8 +823,13 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
 
     # Campos retornados em cada chamado do modal
     _COLS = (
+        # ⚠️ `demandante` no lugar de `tipo_demanda`. O tipo de demanda é
+        # DERIVADO do título e chega repetindo o que o título já diz ("BI e
+        # Dados - Inclusão de coluna" → "Inclusão de coluna"): ele ocupava
+        # espaço sem acrescentar leitura. O solicitante, não — ele é a única
+        # forma de saber DE QUEM é o pedido sem abrir o chamado.
         "sys_id, numero, titulo, atribuido_a, estado_kanban, "
-        "prazo, aberto_em, url, sla_vencido, tipo_demanda, atribuido_a_email, "
+        "prazo, aberto_em, url, sla_vencido, demandante, atribuido_a_email, "
         # As duas datas do fim, porque elas NÃO são a mesma coisa.
         #
         # No ServiceNow, "Resolvido" ainda não é "Encerrado": `closed_at` — o
@@ -1311,7 +1316,8 @@ def chamado_detalhe(sys_id: str, _auth: dict = Depends(get_current_user)):
         cur.execute(
             "SELECT sys_id, numero, tipo, titulo, descricao, estado_kanban, "
             "  atribuido_a, atribuido_a_email, grupo, aberto_em, url, "
-            "  ISNULL(tem_anexo,0), ISNULL(sla_vencido,0), prazo "
+            "  ISNULL(tem_anexo,0), ISNULL(sla_vencido,0), prazo, "
+            "  demandante "
             "FROM dbo.etl_chamado WHERE sys_id=?", [sys_id])
         row = cur.fetchone()
         if not row:
@@ -1325,6 +1331,10 @@ def chamado_detalhe(sys_id: str, _auth: dict = Depends(get_current_user)):
             "aberto_em": str(row[9]) if row[9] else None, "url": row[10],
             "tem_anexo": bool(row[11]), "sla_vencido": bool(row[12]),
             "prazo": str(row[13]) if row[13] else None,
+            # Quem PEDIU. Sem isso, o detalhe respondia "quem está tocando" e
+            # nunca "para quem é" — e é a segunda pergunta de quem abre um
+            # chamado que não reconhece.
+            "demandante": row[14] or "",
         }
 
         # Notas e anexos degradam SEPARADO do chamado.

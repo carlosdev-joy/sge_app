@@ -37,6 +37,8 @@ export interface ChamadoDoDetalhe {
   estado_origem: string | null
   atribuido_a: string | null
   atribuido_a_email: string | null
+  /** Quem PEDIU — `requested_for` no RITM, `caller_id` no incidente. */
+  demandante?: string | null
   grupo: string | null
   aberto_em: string | null
   url: string | null

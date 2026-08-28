@@ -38,10 +38,23 @@ export function RodapeCard({ c, textoIdade, faixaIdade }: {
 
   return (
     <>
+      {/* QUEM PEDIU, em linha própria. Antes ele existia só no `title` do
+          responsável — quer dizer: só para quem passasse o mouse, e não para
+          quem estivesse no toque ou lendo a fila de relance. São duas pessoas
+          diferentes e as duas importam: uma para saber a quem cobrar, a outra
+          para saber a quem responder. */}
+      {c.demandante && (
+        <div data-solicitante
+          className="flex items-baseline gap-1 text-[11px] min-w-0">
+          <span className="text-dim shrink-0">de</span>
+          <span className="text-ink truncate" title={`Solicitante: ${c.demandante}`}>
+            {c.demandante}
+          </span>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-2 text-[11px] text-dim">
-        <span className="truncate" title={c.demandante
-          ? `Responsável: ${c.atribuido_a || 'sem responsável'} · Demandante: ${c.demandante}`
-          : (c.atribuido_a || 'sem responsável')}>
+        <span className="truncate"
+          title={`Responsável: ${c.atribuido_a || 'sem responsável'}`}>
           {c.atribuido_a || 'sem responsável'}
         </span>
         {/* Idade: cor E rótulo. A cor sozinha não informa quem não a distingue. */}

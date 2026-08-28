@@ -133,6 +133,10 @@ export function ChamadoDetalheModal({ sysId, numero, aoFechar }: {
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1">
                 <Campo rotulo="Estado"
                   valor={ROTULO_ESTADO[c.estado_kanban] ?? c.estado_kanban} />
+                {/* Solicitante ANTES do responsável: ao abrir um chamado que
+                    não se reconhece, a primeira pergunta é "de quem é isto?" —
+                    a de "quem está tocando" vem depois. */}
+                <Campo rotulo="Solicitante" valor={c.demandante} />
                 <Campo rotulo="Responsável" valor={c.atribuido_a} />
                 <Campo rotulo="Grupo" valor={c.grupo} />
                 <Campo rotulo="Aberto em" valor={dataHoraDaNota(c.aberto_em)} />

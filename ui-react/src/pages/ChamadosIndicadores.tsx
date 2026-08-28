@@ -281,13 +281,25 @@ function HistoricoResolvidos({ dias }: { dias: number }) {
           conteudo: c => <span className="text-dim">{c.titulo || '(sem título)'}</span>,
         },
         {
-          chave: 'demanda', rotulo: 'Tipo de demanda', largura: 190, minima: 100,
-          titulo: c => c.categoria_diaadia
-            ? `${c.tipo_demanda} · ${c.categoria_diaadia}` : c.tipo_demanda,
+          // ⚠️ Era "Tipo de demanda". Ele é DERIVADO do título e chegava
+          // repetindo o que a coluna Título já mostra ("BI e Dados - Inclusão
+          // de coluna" → "Inclusão de coluna"). No lugar dele, o SOLICITANTE,
+          // que não aparecia em lugar nenhum desta tabela.
+          // A categoria fica: ela não vem do título, vem das work notes.
+          chave: 'solicitante', rotulo: 'Solicitante', largura: 190, minima: 100,
+          titulo: c => c.demandante || 'sem solicitante',
           conteudo: c => (
-            <span className="text-dim">
-              {c.tipo_demanda}
-              {c.categoria_diaadia && <span> · {c.categoria_diaadia}</span>}
+            <span className={c.demandante ? 'text-dim' : 'text-dim italic'}>
+              {c.demandante || 'sem solicitante'}
+            </span>
+          ),
+        },
+        {
+          chave: 'categoria', rotulo: 'Categoria', largura: 130, minima: 90,
+          titulo: c => c.categoria_diaadia || 'sem marcação',
+          conteudo: c => (
+            <span className={c.categoria_diaadia ? 'text-dim' : 'text-dim italic'}>
+              {c.categoria_diaadia || 'sem marcação'}
             </span>
           ),
         },

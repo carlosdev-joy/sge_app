@@ -32,7 +32,8 @@ export interface ChamadoDoPainel {
   aberto_em: string | null
   url: string | null
   sla_vencido: boolean | null
-  tipo_demanda: string | null
+  /** Quem pediu. Substituiu `tipo_demanda`, que repetia o título. */
+  demandante: string | null
   atribuido_a_email: string | null
   // As duas datas do fim. No ServiceNow "Resolvido" ainda não é "Encerrado":
   // `encerrado_em` (closed_at) costuma vir vazio em chamado resolvido, e
