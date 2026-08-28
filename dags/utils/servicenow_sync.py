@@ -107,7 +107,19 @@ ESTADOS = {
         # o estrago é nas contas que agrupam por estado_kanban sobre o
         # espelho INTEIRO (histórico, entradas × saídas, resolvidos):
         # lá, chamado concluído era contado como esperando alguém.
-        "3": "encerrado", "4": "aguardando", "5": "aguardando",
+        # `4` é "Closed Incomplete": encerrado SEM entregar. Também é estado
+        # FINAL — o pedido não volta a andar. Ficava em 'aguardando' junto com
+        # o `3`, e pelo mesmo motivo: 84 RITMs "Encerrado incompleto" no
+        # espelho do dev (2026-08-28) contados como pedido esperando alguém.
+        #
+        # Produção também erra este: a correção de lá parou no `3`. Depois de
+        # arrumar o `3`, a coluna caiu de 1568 para 96 — e 84 dos 96 eram
+        # exatamente estes. O que sobra em 'aguardando' são os 12 `-5`
+        # ("Pendente"), que é o que a palavra quer dizer.
+        #
+        # O `5` fica como está: não apareceu no espelho, e mexer em estado que
+        # não se viu é palpite — o mesmo palpite que pôs o `3` e o `4` aqui.
+        "3": "encerrado", "4": "encerrado", "5": "aguardando",
         "6": "resolvido",                       # ✅ "Resolvido"
         "7": "encerrado",
     },

@@ -601,11 +601,26 @@ def test_o_terminal_do_ritm_nao_contaminou_as_outras_tabelas():
     assert mapear_estado("incident", "3") == "aguardando"
 
 
-def test_estados_de_espera_do_ritm_continuam_na_fila():
-    """A correção do `3` não pode arrastar os vizinhos: `-5` e `2` seguem
-    vivos, e `4`/`5` seguem como espera — mexer neles esvaziaria a coluna
-    Aguardando sem que ninguém tivesse pedido isso."""
+def test_ritm_closed_incomplete_tambem_e_terminal():
+    """`4` é "Closed Incomplete": encerrado SEM entregar — e encerrado é final.
+
+    Ficava em 'aguardando' pelo mesmo motivo que o `3`. Depois de corrigir só
+    o `3`, a coluna caiu de 1568 para 96 no espelho do dev — e **84 dos 96**
+    eram estes. Produção também erra este: a correção de lá parou no `3`.
+    """
+    assert mapear_estado("sc_req_item", "4") == "encerrado"
+
+
+def test_o_que_sobra_em_aguardando_e_o_que_a_palavra_quer_dizer():
+    """`-5` é "Pendente" — pedido vivo, parado esperando alguém. É o único que
+    deve pintar a coluna Aguardando; foram 12 no espelho do dev, contra os 96
+    de antes desta correção."""
     assert mapear_estado("sc_req_item", "-5") == "aguardando"
     assert mapear_estado("sc_req_item", "2") == "andamento"
-    assert mapear_estado("sc_req_item", "4") == "aguardando"
+    assert mapear_estado("sc_req_item", "1") == "novo"
+
+
+def test_o_estado_nao_visto_fica_como_estava():
+    """`5` não apareceu no espelho, e mexer em estado que não se viu é palpite
+    — o mesmo palpite que pôs o `3` e o `4` em 'aguardando'."""
     assert mapear_estado("sc_req_item", "5") == "aguardando"
