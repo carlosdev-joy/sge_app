@@ -58,6 +58,16 @@ echo "$CHANGED_FILES" | grep -q "^api/"      && API_CHANGED=true  || true
 echo "$CHANGED_FILES" | grep -q "^ui/"       && UI_CHANGED=true   || true
 echo "$CHANGED_FILES" | grep -q "^ui-react/dist/" && UIREACT_CHANGED=true || true
 echo "$CHANGED_FILES" | grep -q "^dags/"     && DAGS_CHANGED=true || true
+# ⚠️ .py em SUBPASTA de dags/ (utils/, Orquestrador/…) é MÓDULO, não DAG.
+# O arquivo da DAG o DagBag reprocessa a cada execução — chega a apagá-lo de
+# `sys.modules` antes. O `from utils.x import y` lá dentro é import comum: se o
+# módulo já está no `sys.modules` do processo do worker Celery, o import
+# devolve a versão EM MEMÓRIA, e os forks herdam esse cache.
+# Mordeu em 2026-08-13 (PR #312, que mexia SÓ em dags/utils/): três ciclos do
+# sync rodaram depois do deploy — todos VERDES, log impecável — gravando pelo
+# código antigo. Uma hora e meia para achar um módulo em cache.
+MODULO_CHANGED=false
+echo "$CHANGED_FILES" | grep -qE "^dags/.+/.+\.py$" && MODULO_CHANGED=true || true
 echo "$CHANGED_FILES" | grep -q "^sql/migrations/" && SQL_CHANGED=true || true
 # Mudança na definição de infra (volumes/portas/imagem) exige recriar o container.
 echo "$CHANGED_FILES" | grep -q "^docker-compose.ya\?ml$" && COMPOSE_CHANGED=true || true
@@ -66,6 +76,7 @@ echo "      api/            mudou: $API_CHANGED"
 echo "      ui/             mudou: $UI_CHANGED"
 echo "      ui-react/dist/  mudou: $UIREACT_CHANGED"
 echo "      dags/           mudou: $DAGS_CHANGED"
+echo "      dags/*/*.py     mudou: $MODULO_CHANGED  (modulo auxiliar — worker cacheia)"
 echo "      migrations/     mudou: $SQL_CHANGED"
 echo "      docker-compose  mudou: $COMPOSE_CHANGED"
 echo ""
@@ -95,8 +106,50 @@ elif [ "$UI_CHANGED" = "true" ] || [ "$UIREACT_CHANGED" = "true" ]; then
 fi
 
 if [ "$DAGS_CHANGED" = "true" ]; then
-  echo "      → DAGs atualizadas via volume — scheduler pega automaticamente"
-  echo "        (nenhum restart necessário)"
+  echo "      → Arquivos de DAG atualizados via volume — o scheduler reprocessa"
+  echo "        sozinho a cada execução."
+fi
+
+# ⚠️ ESTA SEÇÃO CORRIGE UMA AFIRMAÇÃO FALSA. Até 2026-08-28 o script dizia
+# "nenhum restart necessário" para QUALQUER mudança em dags/ — o que é verdade
+# para o arquivo da DAG e MENTIRA para os módulos que ela importa. O
+# `/opt/git/deploy.sh` já tratava isso corretamente desde a #313; ter dois
+# scripts com conselhos opostos é pior que não ter o segundo.
+if [ "$MODULO_CHANGED" = "true" ]; then
+  echo ""
+  echo "  ╔══════════════════════════════════════════════════════════════╗"
+  echo "  ║  MODULO AUXILIAR MUDOU — o worker Celery serve de CACHE      ║"
+  echo "  ╚══════════════════════════════════════════════════════════════╝"
+  echo "$CHANGED_FILES" | grep -E "^dags/.+/.+\.py$" | sed 's/^/      /'
+  echo ""
+  echo "      Sem reiniciar o worker, a task roda VERDE com o codigo ANTIGO."
+  echo ""
+  echo "      Tasks em execucao AGORA (o que o restart derruba):"
+  ATIVAS=$(docker compose exec -T airflow-worker \
+             celery -A airflow.providers.celery.executors.celery_executor.app \
+             inspect active 2>/dev/null | grep -c "task_id" || echo "?")
+  if [ "$ATIVAS" = "?" ]; then
+    echo "        (nao foi possivel consultar — confira ANTES de reiniciar)"
+  elif [ "$ATIVAS" = "0" ]; then
+    echo "        nenhuma — o worker esta ocioso, o restart e inofensivo."
+  else
+    echo "        $ATIVAS task(s) — o restart as INTERROMPE."
+  fi
+  echo ""
+  # Padrao NAO reinicia: derruba task em execucao. Regra da casa — acao
+  # destrutiva pede confirmacao explicita.
+  read -r -p "      Reiniciar o airflow-worker agora? [s/N] " RESP
+  case "$RESP" in
+    [sS]|[sS][iI][mM])
+      docker compose restart airflow-worker
+      echo "      ✓ airflow-worker reiniciado"
+      ;;
+    *)
+      echo "      ⚠ NAO reiniciado. Rode quando puder:"
+      echo "          docker compose restart airflow-worker"
+      echo "        Ate la, as DAGs rodam com o codigo ANTIGO destes modulos."
+      ;;
+  esac
 fi
 
 if [ "$API_CHANGED" = "false" ] && [ "$UI_CHANGED" = "false" ] \
