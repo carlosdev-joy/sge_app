@@ -326,9 +326,54 @@ anti-drift que varre as queries sem o recorte (o das branches preservadas
 `feat/chamados-card-por-trabalho` e `feat/chamados-indicadores-trabalho`, que não foram
 apagadas).
 
-### F6 — Fecho: manual, smoke e aceitação
+### F6 — Fecho: manual, smoke e aceitação — ✅ **ENTREGUE**
 
-Manual do usuário, roteiro de smoke (§7.2) e a revisão adversarial única de fim de spec.
+* **Manual do usuário** — `docs/manual-chamados.md`.
+* **Smoke** — `scripts/smoke_chamados.sh`: 11 verificações MEDIDAS, não uma
+  lista para conferir a olho. Conferir "os Indicadores batem com a Fila" lendo
+  dois números em telas diferentes é o próprio modo de falso verde que esta
+  spec catalogou.
+* **Revisão adversarial** — abaixo.
+
+#### O que a revisão adversarial encontrou
+
+**Confirmado em ordem:** as 19 rotas exigem autenticação e as 9 de `/admin`
+exigem `acao_admin` (risco #2, fechado); nenhum `NOT IN` com subconsulta
+(risco da F5); o proxy de anexo exige o par (anexo, chamado); os parâmetros
+posicionais casam com os `?` em todas as consultas, inclusive com o filtro de
+responsável de N nomes.
+
+**Defeito 1 — `total` e `por_coluna` de `/chamados` contavam REGISTROS.**
+Era uma entrega da F5 ("o `total` coerente com o recorte") que ficou por fazer.
+Medido em dev: `total` 90 para 57 trabalhos, `novo` 34 onde a tela mostra 17 —
+quase o dobro. A tela não exibe nenhum dos dois (usa `total` só como `> 0` e
+conta as colunas por si), então nada aparecia errado; qualquer outro consumidor
+lia o número duplicado. A contagem passou a vir do banco com `_so_trabalhos()`
+— e **não** de um filtro em Python, que seria uma terceira cópia da regra.
+
+**Defeito 2 — a idade do frescor misturava dois relógios.** ⚠️ **Achado pelo
+SMOKE, não por teste** — nenhum teste pegava, porque todo dublê responde com o
+mesmo relógio. `iniciado_em` é gravado pelo worker do Airflow; a conta usava
+`DATEDIFF(…, GETDATE())`, o relógio do SQL Server. No dev os containers estão
+em fusos diferentes (worker `-03`, banco `UTC`), e o carimbo dizia **180
+minutos** para um ciclo de **1 minuto** — com o aviso âmbar de "integração
+parada" disparando para sempre.
+
+⚠️ A correção **não** foi gravar `iniciado_em` com `GETDATE()`, que seria o
+caminho óbvio: `ultimo_delta_em()` usa esse mesmo `MAX(iniciado_em)` como
+início da janela que pergunta ao ServiceNow o que mudou. Empurrada 3h para a
+frente, ela pediria registros alterados depois de um instante **futuro** — e
+não traria nada, com a DAG verde. A idade passou a ser calculada em Python.
+
+#### Fio solto declarado (não corrigido, precisa de decisão)
+
+`aberto_em` e `encerrado_em` vêm do **ServiceNow** e são comparados com
+`GETDATE()` em `idade_dias`, no aging, no fluxo e no histórico. É a mesma
+mistura de relógios do defeito 2, num terceiro fuso — o da instância. O impacto
+é menor porque a granularidade ali é de **dias** (`DATEDIFF(DAY, …)`), então só
+morde perto da virada do dia. Corrigir exige saber em que fuso a instância
+devolve as datas — pergunta para quem administra o ServiceNow, não para o
+código.
 
 ## 6. Riscos
 
@@ -414,7 +459,10 @@ cur.execute('SELECT t.name,i.name,i.type_desc,i.is_unique,i.is_primary_key,c.nam
 - [x] ~~DDL das 9 tabelas — bloqueava a F0~~. Resolvido pelo `000_schema_completo.sql`
       da segunda foto (`fe1376b`): 81 tabelas idempotentes, as 9 presentes. **Nenhuma
       pendência trava trabalho agora.**
-- [ ] Rodar a §7.1 no banco de produção para saber se a divergência da F5 já é fato
+- [x] ~~Rodar a §7.1 para saber se a divergência da F5 já é fato~~ — rodada em
+      dev (2026-08-28): **zero órfãs** e os dois recortes dão 57. A divergência
+      é hipótese, não fato. O passo [4] do `smoke_chamados.sh` mede isso a cada
+      execução, então a resposta deixa de depender de alguém lembrar de rodar.
 - [x] ~~Quem alimenta `etl_indicador_*`~~ — o próprio `servicenow_sync.py` grava os três
       snapshots (`etl_indicador_snapshot`, `_analista`, `_grupo`) no fim do ciclo. Isso
       **acopla F0 e F1**: o motor insere nas tabelas que a F0 cria, então a F1 não fecha

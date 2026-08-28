@@ -276,3 +276,175 @@ def test_nenhuma_query_usa_parametro_no_group_by() -> None:
         "parâmetro dentro do GROUP BY — o SQL Server recusa e o bloco inteiro "
         "degrada em silêncio:\n" +
         "\n".join(f"  linha {ln}: {tr}…" for ln, tr in problemas))
+
+
+# ═══════════ 5. `total` e `por_coluna` contam TRABALHOS ═════════════════════
+#
+# Achado na revisão adversarial de fecho da spec do porte (F6). A §5 da spec já
+# apontava — "o campo `total` da resposta de `/chamados` é `len(chamados)`, ou
+# seja, conta as tasks com pai também" — e a entrega da F5 pedia "o `total`
+# coerente com o recorte". Ficou por fazer.
+#
+# Medido no banco de dev ANTES da correção:
+#
+#     total       90   ← registros           (a tela mostra 57)
+#     novo        34   ← registros           (a tela mostra 17)
+#     andamento   21   ← registros           (a tela mostra 11)
+#
+# Quase o dobro em algumas colunas. A tela não exibia nenhum dos dois (usa
+# `total` só como `> 0` e conta as colunas por si), então NADA aparecia errado
+# — e qualquer outro consumidor da API lia o número duplicado.
+#
+# ⚠️ A conta vem do BANCO, com `_so_trabalhos()`. Filtrar a lista em Python
+# seria uma TERCEIRA cópia da regra (o SQL aqui, o `separarFila` no front) — o
+# padrão de duas listas à mão que este módulo já pagou caro.
+
+def test_a_contagem_por_coluna_usa_o_recorte_de_trabalhos() -> None:
+    """A consulta que alimenta `por_coluna` precisa levar `_so_trabalhos()`.
+
+    Sem ele, ela conta a sc_task DUAS vezes: uma como registro e outra dentro
+    do card do pedido que a representa."""
+    fonte = FONTE.read_text(encoding="utf-8")
+    inicio = fonte.index('"SELECT estado_kanban, COUNT(*) FROM dbo.etl_chamado "')
+    trecho = fonte[inicio:fonte.index("GROUP BY estado_kanban", inicio)]
+    assert "_so_trabalhos()" in trecho, (
+        "a contagem por coluna sem o recorte conta registros, não trabalhos")
+    assert "ativo = 1" in trecho, "e só a fila VIVA"
+
+
+def test_o_total_sai_da_contagem_e_nao_do_tamanho_da_lista() -> None:
+    """`len(chamados)` conta os registros — e a lista traz o espelho inteiro
+    de propósito, porque a tela precisa da sc_task para desenhá-la como linha
+    dentro do card. Medido em dev: 90 registros para 57 trabalhos."""
+    fonte = FONTE.read_text(encoding="utf-8")
+    assert 'resposta["total"] = sum(por_coluna.values())' in fonte
+    # A contagem em Python continua existindo como FALLBACK — e só isso.
+    assert fonte.count('resposta["total"] = len(resposta["chamados"])') == 1
+    posicao = fonte.index('resposta["total"] = len(resposta["chamados"])')
+    contexto = fonte[posicao - 400:posicao]
+    assert "_contagem_do_banco" in contexto, (
+        "a contagem por registros só pode rodar quando a do banco falhou")
+
+
+def test_toda_consulta_tem_um_parametro_para_cada_interrogacao() -> None:
+    """⚠️ Invariante que ficou mais frágil quando o filtro de responsável
+    passou a aceitar VÁRIOS nomes (`IN (?, ?, ?)`).
+
+    O pyodbc casa parâmetro por POSIÇÃO. Um `?` a mais que a lista levanta
+    erro; um a menos desloca TODOS os valores seguintes — e aí a consulta roda,
+    devolve linhas, e as linhas são de outro recorte. Sem exceção nenhuma.
+
+    ⚠️ ESTE TESTE RODA A ROTA. Uma primeira versão varria o fonte com regex e
+    só alcançava as consultas de literal ÚNICO — que neste módulo são a
+    minoria: as arriscadas são montadas por concatenação (`"…" +
+    _so_trabalhos() + _fr + "…"`), e é justamente o `_fr` que contribui um
+    número VARIÁVEL de `?`. A sabotagem de um `?` a mais passou verde. Aqui a
+    conta é feita sobre o SQL que realmente chegou ao driver.
+    """
+    from fastapi.testclient import TestClient
+    from api.main import app
+    from deps import get_current_user
+    from routers import chamados as rota
+
+    class CursorQueConfere:
+        def __init__(self):
+            self.violacoes: list[tuple[str, int, int]] = []
+
+        def execute(self, sql, params=None):
+            n = 0 if params is None else len(params)
+            if sql.count("?") != n:
+                self.violacoes.append((sql, sql.count("?"), n))
+            return self
+
+        def fetchall(self):
+            return []
+
+        def fetchone(self):
+            # Tupla longa: as rotas leem posições variadas do `fetchone`, e um
+            # None aborta a rota antes de emitir as consultas seguintes — que
+            # são exatamente as que este teste precisa ver.
+            return (0,) * 40
+
+        def close(self):
+            pass
+
+    cur = CursorQueConfere()
+
+    class ConexaoFalsa:
+        def cursor(self):
+            return cur
+
+        def close(self):
+            pass
+
+    app.dependency_overrides[get_current_user] = lambda: {
+        "matricula": "U1", "perfil": "admin",
+        "permissoes": ["tela_chamados"]}
+    original = rota.get_db_conn
+    rota.get_db_conn = lambda: ConexaoFalsa()
+    try:
+        cliente = TestClient(app)
+        # Com UM nome, com DOIS e com "sem responsável" no meio: é a variação
+        # do número de `?` do filtro que este teste existe para cobrir.
+        cliente.get("/chamados")
+        cliente.get("/chamados/indicadores")
+        cliente.get("/chamados/indicadores?responsavel=Ana")
+        cliente.get("/chamados/indicadores?responsavel=Ana&responsavel=Bruno")
+        cliente.get("/chamados/indicadores?responsavel=Ana"
+                    "&responsavel=sem%20respons%C3%A1vel")
+        cliente.get("/chamados/dashboard?visao=geral")
+        cliente.get("/chamados/historico?dias=30")
+    finally:
+        rota.get_db_conn = original
+        app.dependency_overrides.clear()
+
+    assert cur.violacoes == [], (
+        "consultas com `?` e parâmetros em número diferente:\n"
+        + "\n".join(f"  {s[:90]}… → {q} `?` para {p} parâmetro(s)"
+                     for s, q, p in cur.violacoes[:5]))
+
+
+def test_o_teste_da_invariante_realmente_roda_consultas() -> None:
+    """O teste do teste: se as rotas pararem de ser exercitadas (import
+    quebrado, override que não pega), a invariante passa verde sem ter olhado
+    consulta nenhuma."""
+    from fastapi.testclient import TestClient
+    from api.main import app
+    from deps import get_current_user
+    from routers import chamados as rota
+
+    vistas: list[str] = []
+
+    class CursorQueRegistra:
+        def execute(self, sql, params=None):
+            vistas.append(sql)
+            return self
+
+        def fetchall(self):
+            return []
+
+        def fetchone(self):
+            return (0,) * 40
+
+        def close(self):
+            pass
+
+    class ConexaoFalsa:
+        def cursor(self):
+            return CursorQueRegistra()
+
+        def close(self):
+            pass
+
+    app.dependency_overrides[get_current_user] = lambda: {
+        "matricula": "U1", "perfil": "admin", "permissoes": ["tela_chamados"]}
+    original = rota.get_db_conn
+    rota.get_db_conn = lambda: ConexaoFalsa()
+    try:
+        TestClient(app).get("/chamados/indicadores?responsavel=Ana")
+    finally:
+        rota.get_db_conn = original
+        app.dependency_overrides.clear()
+
+    assert len(vistas) >= 5, f"só {len(vistas)} consulta(s) — a rota não rodou"
+    assert any("?" in s for s in vistas), "nenhuma consulta parametrizada"

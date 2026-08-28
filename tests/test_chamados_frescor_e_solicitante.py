@@ -83,20 +83,23 @@ class CursorDoFrescor:
         return self.nova if self._alvo == "nova" else self.antiga
 
 
-def _linha_nova(iniciado, idade_min, status="OK", terminado=True, qtd=3443):
+def _linha_nova(iniciado, idade_min=None, status="OK", terminado=True, qtd=3443):
     # id, iniciado_em, terminado_em, status, qtd_chamados, qtd_desativados,
-    # erro, modo, idade_min
+    # erro, modo.  ⚠️ SEM coluna de idade: ela é calculada em Python — ver
+    # `test_a_idade_nao_vem_do_relogio_do_BANCO`.
     return (10, iniciado, iniciado if terminado else None, status, qtd, 0,
-            None, "delta", idade_min)
+            None, "delta")
 
 
-def _linha_antiga(iniciado, idade_min, status="OK"):
+def _linha_antiga(iniciado, idade_min=None, status="OK"):
     # id, iniciado_em, terminado_em, status, qtd_incident, qtd_ritm, qtd_task,
-    # qtd_change, qtd_desativados, erro, idade_min
-    return (7, iniciado, iniciado, status, 2, 55, 34, 0, 0, None, idade_min)
+    # qtd_change, qtd_desativados, erro
+    return (7, iniciado, iniciado, status, 2, 55, 34, 0, 0, None)
 
 
-AGORA = dt.datetime(2026, 8, 28, 20, 0, 0)
+# As datas são RELATIVAS a agora: a idade passou a ser calculada com o relógio
+# do processo, então uma data fixa envelheceria a cada dia que passa.
+AGORA = dt.datetime.now()
 HA_5_MIN = AGORA - dt.timedelta(minutes=5)
 HA_117_H = AGORA - dt.timedelta(hours=117)
 
@@ -137,11 +140,14 @@ def test_a_escolha_nao_depende_do_FORMATO_da_data(monkeypatch) -> None:
     esse dia a acontecer agora."""
     monkeypatch.setattr(mod, "_fmt_dt",
                         lambda v: v.strftime("%d/%m/%Y %H:%M") if v else None)
-    fim_do_mes = dt.datetime(2026, 8, 28, 20, 0, 0)        # "28/08/…"
-    inicio_do_seguinte = dt.datetime(2026, 9, 5, 8, 0, 0)  # "05/09/…" — menor!
-    cur = CursorDoFrescor(nova=_linha_nova(inicio_do_seguinte, 10),
-                          antiga=_linha_antiga(fim_do_mes, 11000))
-    assert mod._ultimo_ciclo(cur)["idade_minutos"] == 10, (
+    # Duas datas PASSADAS em que o texto inverte a ordem: em "dd/mm",
+    # "05/08" < "28/07" — mas 5 de agosto é DEPOIS de 28 de julho.
+    mais_nova = dt.datetime(2026, 8, 5, 8, 0, 0)    # "05/08/…"
+    mais_velha = dt.datetime(2026, 7, 28, 20, 0, 0)  # "28/07/…" — maior no texto
+    cur = CursorDoFrescor(nova=_linha_nova(mais_nova),
+                          antiga=_linha_antiga(mais_velha))
+    escolhido = mod._ultimo_ciclo(cur)
+    assert escolhido["fonte"] == "delta", (
         "escolheu o ciclo mais VELHO — a comparação caiu no texto formatado")
 
 
@@ -248,3 +254,63 @@ def test_solicitante_ausente_vira_string_vazia_e_nao_None() -> None:
     linha = list(range(13))
     linha[9] = None
     assert mod._linha_do_painel(tuple(linha))["demandante"] == ""
+
+
+# ═══════════ 3. a idade não mistura dois relógios ═══════════════════════════
+#
+# ⚠️ ACHADO PELO SMOKE, não por teste — e nenhum teste pegava.
+#
+# `iniciado_em` é gravado pelo worker do Airflow com o relógio DELE; a conta
+# usava `DATEDIFF(…, GETDATE())`, que é o relógio do SQL SERVER. Medido no dev:
+#
+#     worker      2026-08-28 20:25 -03
+#     sqlserver   2026-08-28 23:25 UTC
+#     ciclo real  1 minuto atrás  →  o carimbo dizia 180 minutos
+#
+# O aviso âmbar de "integração parada" disparava PARA SEMPRE, com a
+# sincronização rodando a cada 5 minutos. E alarme que dispara sozinho é o que
+# ensina a ignorar o dia em que ela realmente parar.
+
+def test_a_idade_nao_vem_do_relogio_do_BANCO() -> None:
+    """A consulta não pede mais `DATEDIFF(…, GETDATE())`.
+
+    Enquanto ela pedir, a idade depende de os dois containers estarem no mesmo
+    fuso — e o do banco não é uma aplicação, é infraestrutura."""
+    fonte = (RAIZ / "api" / "routers" / "chamados.py").read_text(encoding="utf-8")
+    codigo = "\n".join(l for l in fonte.splitlines()
+                       if not l.lstrip().startswith("#"))
+    assert "DATEDIFF(MINUTE, iniciado_em, GETDATE())" not in codigo
+
+
+def test_a_idade_e_calculada_a_partir_do_iniciado_em() -> None:
+    """Um ciclo de 5 minutos atrás precisa dizer ~5, não o desvio de fuso."""
+    cur = CursorDoFrescor(nova=_linha_nova(dt.datetime.now()
+                                           - dt.timedelta(minutes=5)))
+    assert mod._ultimo_ciclo(cur)["idade_minutos"] == 5
+
+
+def test_ciclo_de_agora_tem_idade_zero() -> None:
+    cur = CursorDoFrescor(nova=_linha_nova(dt.datetime.now()))
+    assert mod._ultimo_ciclo(cur)["idade_minutos"] == 0
+
+
+def test_ciclo_no_FUTURO_nao_vira_idade_negativa() -> None:
+    """Relógios em desacordo entre quem grava e quem lê. A tela não tem como
+    agir sobre isso — "sincronizado há -180 min" só pareceria defeito da tela.
+    Vira zero, e o LOG guarda o aviso."""
+    cur = CursorDoFrescor(nova=_linha_nova(dt.datetime.now()
+                                           + dt.timedelta(hours=3)))
+    assert mod._ultimo_ciclo(cur)["idade_minutos"] == 0
+
+
+def test_a_idade_aceita_data_em_texto() -> None:
+    """Nem todo driver devolve `datetime`; alguns devolvem string ISO."""
+    quando = (dt.datetime.now() - dt.timedelta(minutes=7)).isoformat(" ")[:19]
+    cur = CursorDoFrescor(nova=_linha_nova(quando))
+    assert mod._ultimo_ciclo(cur)["idade_minutos"] == 7
+
+
+def test_sem_data_a_idade_e_None_e_nao_zero() -> None:
+    """Zero diria "sincronizado agora" sobre um ciclo sem data nenhuma."""
+    assert mod._idade_em_minutos(None) is None
+    assert mod._idade_em_minutos("texto que não é data") is None

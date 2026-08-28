@@ -67,8 +67,17 @@ def _chamado(numero="INC001", tipo="incident", estado="novo", ativo=1,
 
 
 def _ciclo(status="OK", idade_min=30, terminado="2026-08-13 12:05:00", erro=None):
-    return (7, "2026-08-13 12:00:00", terminado, status, 10, 3, 2, 1, 0,
-            erro, idade_min)
+    """Uma linha de `etl_chamado_sync` com a idade PEDIDA.
+
+    ⚠️ `iniciado_em` é calculado a partir de `idade_min`, e não fixo. A idade do
+    frescor passou a ser computada em Python sobre esta coluna — antes vinha do
+    `DATEDIFF(…, GETDATE())` do banco, que misturava o relógio do worker
+    (quem grava) com o do SQL Server (quem conta) e inventava o desvio de fuso
+    como idade. Com data fixa aqui, todo ciclo nasceria "atrasado há meses".
+    """
+    import datetime as _d
+    iniciado = _d.datetime.now() - _d.timedelta(minutes=idade_min)
+    return (7, iniciado, terminado, status, 10, 3, 2, 1, 0, erro)
 
 
 class CursorFalso:
