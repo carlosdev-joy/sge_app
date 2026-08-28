@@ -12,9 +12,14 @@
 // Gomes…" para sempre. Sem biblioteca de grid: o deploy da Caixa é OFFLINE, com
 // wheels — um pacote novo custaria rede que a instalação não tem.
 import { useRef, useState } from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import {
-  LARGURA_MINIMA, larguraDasColunas, lerLarguras, novaLargura, salvarLarguras,
+  LARGURA_MINIMA, fatiar, larguraDasColunas, lerLarguras, novaLargura,
+  salvarLarguras,
 } from '../../lib/tabelaChamados'
+
+/** Linhas por página. Dez cabem na tela sem rolar junto com o resto. */
+export const POR_PAGINA = 10
 
 export interface ColunaTabela<T> {
   chave: string
@@ -29,16 +34,21 @@ export interface ColunaTabela<T> {
   titulo?: (item: T) => string
 }
 
-export function TabelaChamados<T>({ id, colunas, itens, chaveDe, vazio }: {
+export function TabelaChamados<T>({
+  id, colunas, itens, chaveDe, vazio, porPagina = POR_PAGINA,
+}: {
   /** Identidade da tabela — é por ela que a largura escolhida é lembrada. */
   id: string
   colunas: ColunaTabela<T>[]
   itens: T[]
   chaveDe: (item: T) => string
   vazio: string
+  /** 0 desliga a paginação — para tabela que já nasce curta. */
+  porPagina?: number
 }) {
   const [larguras, setLarguras] = useState<Record<string, number>>(
     () => larguraDasColunas(colunas, lerLarguras(id)))
+  const [pagina, setPagina] = useState(0)
   // O arrasto em curso. Em `ref` porque ele muda a cada pixel do ponteiro e
   // não deve, sozinho, disparar render.
   const arrasto = useRef<{ chave: string; x: number; largura: number } | null>(null)
@@ -73,10 +83,20 @@ export function TabelaChamados<T>({ id, colunas, itens, chaveDe, vazio }: {
 
   if (!itens.length) return <p className="text-xs text-dim">{vazio}</p>
 
+  // ⚠️ A página é CORRIGIDA, não obedecida: a lista muda por baixo do estado
+  // (o usuário filtra, o bloco do painel troca) e uma página que sobrou de uma
+  // lista maior renderizaria a tabela VAZIA — indistinguível de "não há nada".
+  const paginado = porPagina > 0
+  const f = fatiar(itens.length, pagina, porPagina || itens.length)
+  const visiveis = paginado ? itens.slice(f.inicio, f.fim) : itens
+
   return (
-    // A tabela larga rola DENTRO do seu container. Sem isto, arrastar uma
-    // coluna para além da tela empurraria a página inteira na horizontal.
-    <div className="overflow-x-auto">
+    <div className="flex flex-col">
+      {/* A tabela larga rola DENTRO do seu container. Sem isto, arrastar uma
+          coluna para além da tela empurraria a página inteira na horizontal.
+          A régua da paginação fica FORA dele: dentro, ela sairia da vista
+          justamente quando o usuário arrasta uma coluna para a direita. */}
+      <div className="overflow-x-auto">
       <table className="text-xs border-collapse"
         style={{ tableLayout: 'fixed', width: 'max-content', minWidth: '100%' }}>
         <colgroup>
@@ -101,7 +121,7 @@ export function TabelaChamados<T>({ id, colunas, itens, chaveDe, vazio }: {
           </tr>
         </thead>
         <tbody>
-          {itens.map(item => (
+          {visiveis.map(item => (
             <tr key={chaveDe(item)} className="border-b border-edge last:border-0">
               {colunas.map(c => (
                 // ⚠️ A célula é renderizada SEMPRE, mesmo vazia. É o que
@@ -116,6 +136,40 @@ export function TabelaChamados<T>({ id, colunas, itens, chaveDe, vazio }: {
           ))}
         </tbody>
       </table>
+      </div>
+
+      {/* A régua da paginação DIZ o intervalo e o total. "Página 2 de 5"
+          sozinho não responde "quantos são?", e é essa a pergunta de quem abriu
+          a lista para conferir um número do painel. */}
+      {paginado && f.paginas > 1 && (
+        <div className="flex items-center justify-between gap-3 pt-2 text-[11px]">
+          <span className="text-dim tabular-nums">
+            {f.primeiro}–{f.ultimo} de {itens.length}
+          </span>
+          <div className="flex items-center gap-1">
+            <button type="button" data-pagina-anterior
+              onClick={() => setPagina(f.pagina - 1)} disabled={f.pagina === 0}
+              className="flex items-center gap-0.5 px-1.5 py-0.5 rounded border
+                border-edge text-dim hover:text-ink disabled:opacity-40
+                disabled:cursor-not-allowed"
+              title="Página anterior">
+              <ChevronLeft size={12} /> anterior
+            </button>
+            <span className="text-dim tabular-nums px-1">
+              {f.pagina + 1}/{f.paginas}
+            </span>
+            <button type="button" data-pagina-proxima
+              onClick={() => setPagina(f.pagina + 1)}
+              disabled={f.pagina >= f.paginas - 1}
+              className="flex items-center gap-0.5 px-1.5 py-0.5 rounded border
+                border-edge text-dim hover:text-ink disabled:opacity-40
+                disabled:cursor-not-allowed"
+              title="Próxima página">
+              próxima <ChevronRight size={12} />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

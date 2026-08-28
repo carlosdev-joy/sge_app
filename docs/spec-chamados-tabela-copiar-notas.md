@@ -211,3 +211,72 @@ módulo — e, para cada teste novo, a **sabotagem** correspondente conferida.
 | F1 | uma célula vazia deixa de ocupar a coluna; o arrasto não muda a largura |
 | F2 | o botão some; a falha da API de clipboard passa em silêncio |
 | F3 | o eco volta a ser contado; a nota da task some do pai; o parser perde a última entrada do diário |
+
+---
+
+# Segunda rodada — filtros, badge e paginação
+
+Pedidos que vieram ao usar a tela com a primeira rodada no ar.
+
+## F4 — Os filtros do kanban
+
+* **Tipo sem "Tarefa".** A tarefa não é um item da fila — é uma linha dentro do
+  card do pedido —, então o seletor oferecia um recorte que a tela não
+  representa. Os tipos passam a sair dos **cards**.
+  ⚠️ Consequência assumida: uma task **órfã** vira card e deixa de ser
+  alcançável por este filtro. Ela continua na fila, no "todos" e na busca —
+  some do seletor, não da tela. (Em dev, hoje: **zero** tasks órfãs.)
+* **Categoria** — Dia a dia · Iniciativa · Sem marcação · todas. Lista
+  **fechada**: a derivação (`chamado_derivacoes`) só produz esses dois valores,
+  e um seletor alimentado pelo banco mostraria erro de digitação como opção.
+* **Sem atribuição** no filtro de responsável — o recorte do que ninguém pegou.
+* **Badge de categoria no card**, com cor **e** palavra. Sem marcação **não**
+  ganha badge: chip "sem marcação" em metade da fila é ruído que ensina a
+  ignorar a linha inteira — quem procura o que falta classificar tem o filtro.
+
+⚠️ **Tipo, categoria e "sem atribuição" falam do CARD**; busca, responsável
+nomeado e prioridade continuam alcançando as tarefas dentro dele. Sem essa
+separação, um card sem categoria apareceria filtrado como "iniciativa" **sem
+badge nenhum** (porque a tarefa tinha a marca), e um pedido atribuído com uma
+tarefa sem dono apareceria como "sem atribuição".
+
+Medido em dev: **nenhum** RITM sem marcação tem tarefa marcada — o card basta.
+
+## F5 — "Categorias do dia a dia" vira "Categoria"
+
+O nome estava errado por dois motivos: a classificação é **categoria** (dia a
+dia *é* uma delas, ao lado de iniciativa), e o gráfico escondia o terceiro
+grupo — o dos **sem marcação** —, que é o maior e o único acionável. Com ele de
+fora, um gráfico com 18 classificados parecia a fila inteira, e a única pista
+era uma frase na descrição.
+
+## F6 — Paginação, 10 por página
+
+Em `TabelaChamados`, então vale para os **dois** lugares de uma vez.
+
+⚠️ A página é **corrigida**, não obedecida: ela vive em estado e a lista muda
+por baixo dela (o usuário filtra, o bloco do painel troca). Obedecer uma página
+3 sobre uma lista que encolheu para 4 itens renderiza tabela **vazia** —
+indistinguível de "não há nada aqui".
+
+A régua diz o **intervalo e o total** ("11–20 de 25"): "página 2 de 3" sozinho
+não responde "quantos são?", que é a pergunta de quem abriu a lista para
+conferir um número do painel.
+
+## F7 — Responsáveis por marcação múltipla
+
+A gestão compara duas ou três pessoas; com seletor único isso vira olhar uma,
+guardar o número de cabeça, olhar a outra — apagando justamente o número que se
+queria comparar.
+
+* `_filtro_responsavel` passa a aceitar lista, com os nomes em `IN (?, …)` e
+  "sem responsável" como **condição** (`IS NULL`), somados por **OR**.
+* ⚠️ A cláusula vai **parentizada**. Sem os parênteses, `AND a OR b` faz o OR
+  engolir todo o WHERE anterior — inclusive `ativo = 1` e o recorte de
+  trabalhos —, e a aba passaria a contar encerrados sem nada mudar de aparência.
+* A URL **repete** o parâmetro (`?responsavel=A&responsavel=B`). Juntar com
+  vírgula produziria um nome "A,B", que não casa com ninguém — e a resposta
+  viria vazia parecendo "estas pessoas não têm chamados".
+* O aviso de recorte vem do **estado local**, não da resposta: com
+  `placeholderData` a tela ainda mostra os dados anteriores enquanto a consulta
+  corre, e ler o filtro da resposta deixaria o aviso um passo atrás.

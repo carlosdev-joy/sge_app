@@ -22,8 +22,11 @@ const mini = require(path.join(__dirname, 'minireact.cjs'))
 const ENTRADAS = [
   'components/chamados/TabelaChamados.tsx',
   'components/chamados/NumeroChamado.tsx',
+  'components/chamados/FiltroResponsaveis.tsx',
   'lib/copiar.ts',
   'lib/tabelaChamados.ts',
+  'lib/filtroResponsaveis.ts',
+  'lib/filtrosKanban.ts',
 ]
 
 function resolverRelativo(deDir, especificador) {
@@ -99,8 +102,11 @@ preparar(tmp)
 shims(tmp)
 const { TabelaChamados } = require(path.join(tmp, 'components/chamados/TabelaChamados.js'))
 const { NumeroChamado } = require(path.join(tmp, 'components/chamados/NumeroChamado.js'))
+const { FiltroResponsaveis } = require(path.join(tmp, 'components/chamados/FiltroResponsaveis.js'))
 const { copiarTexto } = require(path.join(tmp, 'lib/copiar.js'))
 const alturas = require(path.join(tmp, 'lib/tabelaChamados.js'))
+const fr = require(path.join(tmp, 'lib/filtroResponsaveis.js'))
+const fk = require(path.join(tmp, 'lib/filtrosKanban.js'))
 
 const el = (tipo, props) => mini.criar(tipo, props)
 const achar = (tela, atributo) =>
@@ -258,8 +264,191 @@ const puras = {
   salvaAbaixoDoMinimo: alturas.larguraDasColunas(COLUNAS, { responsavel: 10 }),
 }
 
+// ── 4. paginação ───────────────────────────────────────────────────────────
+const MUITOS = Array.from({ length: 25 }, (_, i) => ({
+  sys_id: `s${i}`, numero: `RITM${String(i).padStart(7, '0')}`,
+  atribuido_a: `Pessoa ${i}`, prazo: null,
+}))
+
+function montarPaginada(itens, porPagina) {
+  return mini.montar(el(TabelaChamados, {
+    id: 'paginada', colunas: COLUNAS, itens, chaveDe: c => c.sys_id,
+    vazio: 'vazio', porPagina,
+  }))
+}
+
+const numerosNaTela = (tela) => tela.achar(n => n.tag === 'tr').slice(1)
+  .map(l => textoDe(l.filhos.filter(f => f.tag === 'td')[0]).trim())
+
+const regua = (tela) => {
+  const anterior = achar(tela, 'data-pagina-anterior')[0]
+  const proxima = achar(tela, 'data-pagina-proxima')[0]
+  return {
+    temRegua: !!anterior && !!proxima,
+    texto: tela.texto,
+    linhas: numerosNaTela(tela).length,
+    primeiro: numerosNaTela(tela)[0] || null,
+    anteriorDesligado: anterior ? !!anterior.props.disabled : null,
+    proximaDesligada: proxima ? !!proxima.props.disabled : null,
+  }
+}
+
+const p1 = montarPaginada(MUITOS, 10)
+const pagina1 = regua(p1)
+p1.clicar(achar(p1, 'data-pagina-proxima')[0])
+const pagina2 = regua(p1)
+p1.clicar(achar(p1, 'data-pagina-proxima')[0])
+const pagina3 = regua(p1)
+
+// A lista ENCOLHE debaixo do estado (o usuário filtrou): a página 3 não existe
+// mais, e obedecê-la renderizaria uma tabela vazia.
+const p2 = montarPaginada(MUITOS, 10)
+p2.clicar(achar(p2, 'data-pagina-proxima')[0])
+p2.clicar(achar(p2, 'data-pagina-proxima')[0])
+const encolheu = regua(mini.montar(el(TabelaChamados, {
+  id: 'paginada', colunas: COLUNAS, itens: MUITOS.slice(0, 4),
+  chaveDe: c => c.sys_id, vazio: 'vazio', porPagina: 10,
+})))
+
+// ── 5. o filtro de responsáveis, com marcação múltipla ─────────────────────
+const OPCOES = [
+  { nome: 'Ana', total: 12 }, { nome: 'Bruno', total: 7 },
+  { nome: 'sem responsável', total: 3 },
+]
+
+function filtro(escolhidos) {
+  const mudancas = []
+  const tela = mini.montar(el(FiltroResponsaveis, {
+    opcoes: OPCOES, escolhidos, totalGeral: 22,
+    aoMudar: (nomes) => mudancas.push(nomes),
+  }))
+  const caixas = achar(tela, 'data-opcao')
+  const marcar = (nome) => {
+    const linha = caixas.find(n => n.props['data-opcao'] === nome)
+    const caixa = linha.filhos.find(f => f.tag === 'input')
+    caixa.props.onChange({ target: { checked: !caixa.props.checked } })
+    return mudancas[mudancas.length - 1]
+  }
+  return {
+    // Só o PRIMEIRO span do gatilho: o `textoDe` do `<summary>` inteiro
+    // colaria o resumo com o número do contador ao lado ("Ana1").
+    resumo: textoDe(tela.achar(n => n.tag === 'summary')[0]
+      .filhos.find(f => f.tag === 'span')).trim(),
+    contagem: achar(tela, 'data-contagem').length
+      ? textoDe(achar(tela, 'data-contagem')[0]).trim() : null,
+    opcoes: caixas.map(n => n.props['data-opcao']),
+    marcadas: caixas.filter(n => n.filhos.some(f => f.tag === 'input' && f.props.checked))
+      .map(n => n.props['data-opcao']),
+    aoMarcarAna: marcar('Ana'),
+    aoMarcarSemDono: marcar('sem responsável'),
+    aoLimpar: (() => {
+      tela.clicar(achar(tela, 'data-limpar')[0])
+      return mudancas[mudancas.length - 1]
+    })(),
+  }
+}
+
+// ── 6. os filtros do kanban ────────────────────────────────────────────────
+const card = (extra) => Object.assign({
+  numero: 'RITM0000001', tipo: 'ritm', titulo: 'Carga diária',
+  estado_origem: null, atribuido_a: 'Ana', prioridade: '3 - Moderado',
+  categoria_diaadia: '',
+}, extra)
+const task = (extra) => card(Object.assign(
+  { numero: 'SCTASK0000009', tipo: 'task' }, extra))
+
+const F = (extra) => Object.assign({}, fk.SEM_FILTRO, extra)
+const casa = (c, filhas, f) => fk.casaFiltros(c, filhas, f)
+
+const kanban = {
+  tipos_do_seletor: fk.tiposDisponiveis([
+    card({}), card({ tipo: 'incident' }), task({}), card({ tipo: 'ritm' }),
+  ]),
+  tipos_sem_cards: fk.tiposDisponiveis([]),
+  // categoria
+  cat_diaadia_acha: casa(card({ categoria_diaadia: 'dia a dia' }), [],
+                         F({ categoria: 'dia a dia' })),
+  cat_diaadia_recusa_iniciativa: casa(card({ categoria_diaadia: 'iniciativa' }), [],
+                                      F({ categoria: 'dia a dia' })),
+  cat_sem_marcacao_acha: casa(card({ categoria_diaadia: '' }), [],
+                              F({ categoria: fk.SEM_MARCACAO })),
+  cat_sem_marcacao_recusa_marcado: casa(card({ categoria_diaadia: 'iniciativa' }), [],
+                                        F({ categoria: fk.SEM_MARCACAO })),
+  // ⚠️ a categoria é do CARD: casar pela filha traria card sem badge nenhum
+  cat_nao_casa_pela_filha: casa(card({ categoria_diaadia: '' }),
+                                [task({ categoria_diaadia: 'iniciativa' })],
+                                F({ categoria: 'iniciativa' })),
+  // sem atribuição
+  sem_dono_acha: casa(card({ atribuido_a: null }), [], F({ responsavel: fk.SEM_ATRIBUICAO })),
+  sem_dono_recusa_atribuido: casa(card({ atribuido_a: 'Ana' }), [],
+                                  F({ responsavel: fk.SEM_ATRIBUICAO })),
+  // ⚠️ card COM dono e task SEM dono não é "sem atribuição"
+  sem_dono_ignora_filha: casa(card({ atribuido_a: 'Ana' }), [task({ atribuido_a: null })],
+                              F({ responsavel: fk.SEM_ATRIBUICAO })),
+  sem_dono_aceita_vazio: casa(card({ atribuido_a: '  ' }), [],
+                              F({ responsavel: fk.SEM_ATRIBUICAO })),
+  // responsável nomeado: casa pela FILHA também
+  resp_pela_filha: casa(card({ atribuido_a: 'Ana' }), [task({ atribuido_a: 'Bruno' })],
+                        F({ responsavel: 'Bruno' })),
+  // busca alcança o número da task
+  busca_pela_filha: casa(card({}), [task({ numero: 'SCTASK0105181' })],
+                         F({ busca: 'sctask01051' })),
+  // tipo é do CARD, não da filha
+  tipo_nao_casa_pela_filha: casa(card({ tipo: 'ritm' }), [task({})], F({ tipo: 'task' })),
+  tipo_do_card: casa(card({ tipo: 'incident' }), [], F({ tipo: 'incident' })),
+  // combinação: os filtros se somam (E), não se substituem
+  combinado_ok: casa(card({ categoria_diaadia: 'iniciativa', atribuido_a: 'Ana' }), [],
+                     F({ categoria: 'iniciativa', responsavel: 'Ana' })),
+  combinado_recusa: casa(card({ categoria_diaadia: 'iniciativa', atribuido_a: 'Bruno' }), [],
+                         F({ categoria: 'iniciativa', responsavel: 'Ana' })),
+  sem_filtro_passa_tudo: casa(card({ atribuido_a: null, categoria_diaadia: '' }), [], F({})),
+  ativo_vazio: fk.algumFiltroAtivo(F({})),
+  ativo_com_categoria: fk.algumFiltroAtivo(F({ categoria: fk.SEM_MARCACAO })),
+}
+
 async function principal() {
   const cenarios = {
+    paginacao: { pagina1, pagina2, pagina3, encolheu,
+      desligada: regua(montarPaginada(MUITOS, 0)),
+      curta: regua(montarPaginada(MUITOS.slice(0, 4), 10)),
+      fatias: {
+        primeira: alturas.fatiar(25, 0, 10),
+        ultima: alturas.fatiar(25, 2, 10),
+        alem_do_fim: alturas.fatiar(25, 9, 10),
+        negativa: alturas.fatiar(25, -3, 10),
+        vazia: alturas.fatiar(0, 0, 10),
+        exata: alturas.fatiar(20, 1, 10),
+      },
+    },
+    filtro_responsaveis: {
+      nenhum: filtro([]),
+      um: filtro(['Ana']),
+      dois: filtro(['Ana', 'Bruno']),
+      tres: filtro(['Ana', 'Bruno', 'sem responsável']),
+      vazio: (() => {
+        const t = mini.montar(el(FiltroResponsaveis, {
+          opcoes: [], escolhidos: [], totalGeral: 0, aoMudar: () => {},
+        }))
+        return { texto: t.texto }
+      })(),
+      puras: {
+        url_vazia: fr.urlIndicadores([]),
+        url_um: fr.urlIndicadores(['Ana']),
+        url_dois: fr.urlIndicadores(['Ana', 'Bruno']),
+        url_acentuada: fr.urlIndicadores(['sem responsável']),
+        url_ignora_brancos: fr.urlIndicadores(['  ', 'Ana ']),
+        resumo_nenhum: fr.resumoDoFiltro([], 42),
+        resumo_um: fr.resumoDoFiltro(['Ana'], 42),
+        resumo_dois: fr.resumoDoFiltro(['Ana', 'Bruno'], 42),
+        resumo_tres: fr.resumoDoFiltro(['Ana', 'Bruno', 'Caio'], 42),
+        aviso_nenhum: fr.avisoDoFiltro([]),
+        aviso_um: fr.avisoDoFiltro(['Ana']),
+        aviso_tres: fr.avisoDoFiltro(['Ana', 'Bruno', 'Caio']),
+        alternar_marca: fr.alternar(['Ana'], 'Bruno'),
+        alternar_desmarca: fr.alternar(['Ana', 'Bruno'], 'Ana'),
+      },
+    },
+    kanban,
     tabela: {
       antes,
       depoisDeArrastar: durante,

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from db import get_db_conn
 from deps import get_admin_user, get_current_user
@@ -137,27 +137,54 @@ def _proxima_sexta() -> str:
             f"CAST(GETDATE() AS DATE))")
 
 
-def _filtro_responsavel(nome: str | None) -> tuple[str, list]:
+def _filtro_responsavel(nomes) -> tuple[str, list]:
     """Recorte por responsável — o filtro único da aba de Indicadores.
 
     Vale para TODAS as agregações da aba, e é por isso que devolve o par
     (sql, params) em vez de cada consulta montar o seu: filtro que alcança
-    metade das contas produz uma aba onde o aging fala de uma pessoa e o
-    fluxo de todas — com os dois números parecendo certos.
+    metade das contas produz uma aba onde o aging fala de uma pessoa e o fluxo
+    de todas — com os dois números parecendo certos.
 
-    O `?` entra sempre no FIM do WHERE. As três consultas que já têm parâmetro
-    o usam antes, na janela de dias, então a ordem posicional do pyodbc
-    continua correta.
+    Aceita VÁRIOS nomes: a gestão compara duas ou três pessoas de uma vez, e
+    olhar uma por vez obriga a guardar o número anterior de cabeça. Recebe
+    lista ou string única — a segunda forma é a que a URL antiga mandava.
+
+    `sem responsável` é uma CONDIÇÃO, não um valor: o banco guarda NULL ou
+    vazio, e comparar com o rótulo da tela não acharia ninguém. Por isso ele
+    entra sem `?` e se soma aos nomes com OR — marcar "Fulano" e "sem
+    responsável" pergunta pelos dois conjuntos, não pela interseção vazia.
+
+    Os `?` entram sempre no FIM do WHERE. As três consultas que já têm
+    parâmetro o usam antes, na janela de dias, então a ordem posicional do
+    pyodbc continua correta.
     """
-    alvo = (nome or "").strip()
-    if not alvo:
+    if nomes is None:
+        crus = []
+    elif isinstance(nomes, str):
+        crus = [nomes]
+    else:
+        crus = list(nomes)
+
+    alvos, sem_dono = [], False
+    for cru in crus:
+        alvo = (cru or "").strip()
+        if not alvo:
+            continue
+        if alvo == SEM_RESPONSAVEL:
+            sem_dono = True
+        elif alvo not in alvos:
+            alvos.append(alvo)
+
+    if not alvos and not sem_dono:
         return "", []
-    if alvo == SEM_RESPONSAVEL:
-        # Sem `?`: é uma condição, não um valor. Comparar com a string
-        # "sem responsável" não acharia ninguém — ela é rótulo da tela, e o
-        # banco guarda NULL ou vazio.
-        return " AND NULLIF(LTRIM(RTRIM(atribuido_a)), '') IS NULL ", []
-    return " AND atribuido_a = ? ", [alvo]
+
+    partes = []
+    if alvos:
+        marcas = ", ".join("?" for _ in alvos)
+        partes.append(f"atribuido_a IN ({marcas})")
+    if sem_dono:
+        partes.append("NULLIF(LTRIM(RTRIM(atribuido_a)), '') IS NULL")
+    return f" AND ({' OR '.join(partes)}) ", alvos
 
 
 def _so_trabalhos() -> str:
@@ -352,7 +379,7 @@ def listar_chamados(incluir_inativos: int = 0,
 
 
 @router.get("/chamados/indicadores", tags=["chamados"])
-def indicadores(responsavel: str | None = None,
+def indicadores(responsavel: list[str] | None = Query(default=None),
                 _auth: dict = Depends(get_current_user)):
     """Agregados para a aba de Indicadores — contas feitas no SQL, não na tela.
 
@@ -370,7 +397,10 @@ def indicadores(responsavel: str | None = None,
         # O filtro em vigor e as opções — a tela precisa dos dois para desenhar
         # o seletor e para DIZER que está filtrando: número filtrado sem aviso
         # é a mesma armadilha do total que não bate com a lista.
-        "responsavel": (responsavel or "").strip() or None, "responsaveis": [],
+        # `responsaveis_filtrados` é lista porque o filtro passou a aceitar
+        # vários. `responsavel` continua, com o primeiro nome, para não quebrar
+        # quem já lia a chave — a tela nova usa a lista.
+        "responsavel": None, "responsaveis_filtrados": [], "responsaveis": [],
         # Denominador do aging: ativos que ainda NÃO foram resolvidos.
         "total_em_fila": 0,
         "aging": [], "tipo_estado": {"tipos": [], "estados": list(COLUNAS_KANBAN),
@@ -388,7 +418,9 @@ def indicadores(responsavel: str | None = None,
     }
     # O filtro vale para TODAS as contas desta aba — ver `_filtro_responsavel`.
     _fr, _frp = _filtro_responsavel(responsavel)
-    saida["responsavel"] = (responsavel or "").strip() or None
+    _escolhidos = [n.strip() for n in (responsavel or []) if (n or "").strip()]
+    saida["responsaveis_filtrados"] = _escolhidos
+    saida["responsavel"] = _escolhidos[0] if len(_escolhidos) == 1 else None
 
     conn = None
     try:

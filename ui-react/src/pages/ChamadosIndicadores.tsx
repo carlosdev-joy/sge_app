@@ -22,7 +22,9 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ExternalLink } from 'lucide-react'
+import { FiltroResponsaveis } from '../components/chamados/FiltroResponsaveis'
 import { NumeroChamado } from '../components/chamados/NumeroChamado'
+import { avisoDoFiltro, urlIndicadores } from '../lib/filtroResponsaveis'
 import { TabelaChamados } from '../components/chamados/TabelaChamados'
 import { apiFetch } from '../lib/api'
 import { PageSpinner } from '../components/ui/Spinner'
@@ -319,13 +321,17 @@ export default function ChamadosIndicadores() {
   // Um filtro só, para TODA a análise da aba. Ele vai para o servidor porque
   // é lá que as contas são feitas: filtrar a lista no cliente deixaria os
   // totais falando da fila inteira enquanto os gráficos falam de uma pessoa.
-  const [responsavel, setResponsavel] = useState('')
+  //
+  // Vários nomes de uma vez: a gestão compara duas ou três pessoas, e com um
+  // seletor único isso vira olhar uma, guardar o número de cabeça, olhar a
+  // outra — apagando justamente o número que se queria comparar.
+  const [responsaveis, setResponsaveis] = useState<string[]>([])
 
   const { data, isLoading, isError, error } = useQuery<RespostaIndicadores>({
-    queryKey: ['chamados-indicadores', responsavel],
-    queryFn: () => apiFetch(
-      `/chamados/indicadores${responsavel
-        ? `?responsavel=${encodeURIComponent(responsavel)}` : ''}`),
+    // A chave leva a lista JÁ SERIALIZADA: um array novo a cada render tem
+    // identidade nova, e o react-query refaria a consulta sem parar.
+    queryKey: ['chamados-indicadores', responsaveis.join('|')],
+    queryFn: () => apiFetch(urlIndicadores(responsaveis)),
     // Mantém o gráfico anterior na tela enquanto o novo carrega: sem isso, a
     // aba pisca em branco a cada troca de responsável e perde-se a comparação
     // que a pessoa estava fazendo.
@@ -352,34 +358,40 @@ export default function ChamadosIndicadores() {
     )
   }
 
+  // As três fatias da categoria, na mesma barra. "Sem marcação" entra como
+  // grupo próprio — ele não é uma categoria que alguém escolheu, é a ausência
+  // de escolha; mas é o maior balde da fila e o único que pede ação, e deixá-lo
+  // fora do gráfico fazia o denominador mentir.
+  const categorias = [
+    ...d.por_categoria,
+    ...(d.sem_categoria > 0
+      ? [{ categoria: 'sem marcação', total: d.sem_categoria }]
+      : []),
+  ].sort((a, b) => b.total - a.total)
+
   return (
     <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
       {/* O filtro que vale para a aba inteira. Fica no topo, e não dentro de
           um painel, porque ele não pertence a nenhum deles: pertence a todos. */}
       <div className="lg:col-span-2 flex flex-wrap items-center gap-2">
-        <label htmlFor="filtro-responsavel" className="text-xs text-dim">
-          Responsável
-        </label>
-        <select id="filtro-responsavel" value={responsavel}
-          onChange={e => setResponsavel(e.target.value)}
-          className="bg-canvas border border-edge rounded-md text-xs px-2 py-1
-            text-ink min-w-56">
-          <option value="">todos ({d.total_ativos})</option>
-          {(d.responsaveis ?? []).map(r => (
-            /* O total ao lado do nome: quem analisa escolhe melhor vendo
-               "Fulano (12)" do que uma lista de nomes soltos. */
-            <option key={r.nome} value={r.nome}>{r.nome} ({r.total})</option>
-          ))}
-        </select>
+        <span className="text-xs text-dim">Responsável</span>
+        <FiltroResponsaveis opcoes={d.responsaveis ?? []}
+          escolhidos={responsaveis} aoMudar={setResponsaveis}
+          totalGeral={d.total_ativos} />
         {/* O aviso existe porque TODO número da aba muda com o filtro. Sem
-            ele, um print desta tela vira "a fila tem 16 chamados". */}
-        {d.responsavel && (
+            ele, um print desta tela vira "a fila tem 16 chamados".
+            ⚠️ Vem do estado LOCAL, não da resposta: com `placeholderData` a
+            tela ainda mostra os dados anteriores enquanto a consulta nova
+            corre, e ler o filtro da resposta faria o aviso ficar um passo
+            atrás — dizendo "apenas de Ana" sobre números que já são de Ana e
+            Bruno. */}
+        {responsaveis.length > 0 && (
           <span className="text-[11px] text-amber-700 dark:text-yellow-400">
-            todos os números abaixo são apenas de {d.responsavel}
+            {avisoDoFiltro(responsaveis)}
           </span>
         )}
-        {d.responsavel && (
-          <button type="button" onClick={() => setResponsavel('')}
+        {responsaveis.length > 0 && (
+          <button type="button" onClick={() => setResponsaveis([])}
             className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline">
             limpar
           </button>
@@ -463,23 +475,25 @@ export default function ChamadosIndicadores() {
           itens={d.por_tipo_demanda.map(t => ({ rotulo: t.tipo, valor: t.total }))} />
       </Painel>
 
-      <Painel titulo="Categorias do dia a dia"
-        // O denominador é dito, e o corte também: sem eles, um gráfico com 4
-        // chamados classificados pareceria a fila inteira.
+      {/* ⚠️ O painel se chamava "Categorias do dia a dia" e mostrava só as
+          categorias MARCADAS. O nome estava errado por dois motivos: a
+          classificação é "categoria" (dia a dia É uma delas, ao lado de
+          iniciativa), e o gráfico escondia o terceiro grupo — o dos chamados
+          sem marcação —, que é justamente o maior e o único acionável.
+          Com ele de fora, um gráfico com 18 classificados parecia a fila
+          inteira, e a única pista era uma frase na descrição. */}
+      <Painel titulo="Categoria"
         descricao={[
-          'Marcação "dia a dia" feita pela equipe nas work notes.',
-          d.sem_categoria > 0
-            ? `${d.sem_categoria} de ${d.total_ativos} chamado(s) da fila ainda não têm marcação.`
-            : '',
+          'Marcação feita pela equipe nas work notes.',
           d.categorias_ocultas > 0
             ? `Outras ${d.categorias_ocultas} categoria(s) ficaram fora do gráfico.`
             : '',
         ].filter(Boolean).join(' ')}>
-        {d.por_categoria.length
+        {categorias.length
           ? <BarrasHorizontais total={d.total_ativos}
-              itens={d.por_categoria.map(c => ({ rotulo: c.categoria, valor: c.total }))} />
+              itens={categorias.map(c => ({ rotulo: c.categoria, valor: c.total }))} />
           : <p className="text-[11px] text-dim">
-              Nenhum chamado da fila tem marcação de dia a dia nas work notes.
+              Nenhum chamado na fila.
             </p>}
       </Painel>
 

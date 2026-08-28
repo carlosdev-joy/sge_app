@@ -52,6 +52,41 @@ export function larguraDasColunas(
   return saida
 }
 
+export interface Fatia {
+  /** A página realmente mostrada, já corrigida. */
+  pagina: number
+  paginas: number
+  /** Posição do primeiro e do último item, 1-based, para dizer na tela. */
+  primeiro: number
+  ultimo: number
+  inicio: number
+  fim: number
+}
+
+/**
+ * Qual pedaço da lista aparece.
+ *
+ * ⚠️ A página pedida é CORRIGIDA em vez de obedecida. Ela vive em estado, e a
+ * lista debaixo dela muda por fora — o usuário filtra, o bloco do painel troca,
+ * a consulta volta com menos linhas. Uma página 5 sobre uma lista que encolheu
+ * para 12 itens renderiza uma tabela VAZIA, que é indistinguível de "não há
+ * nada aqui" — e o usuário conclui a segunda.
+ */
+export function fatiar(total: number, pagina: number, porPagina: number): Fatia {
+  const tamanho = Math.max(1, Math.floor(porPagina) || 1)
+  const paginas = Math.max(1, Math.ceil(total / tamanho))
+  const atual = Math.min(Math.max(0, Math.floor(pagina) || 0), paginas - 1)
+  const inicio = atual * tamanho
+  const fim = Math.min(total, inicio + tamanho)
+  return {
+    pagina: atual, paginas, inicio, fim,
+    // Lista vazia não tem "item 1 de 0": o primeiro vira 0 e a tela não
+    // afirma uma posição que não existe.
+    primeiro: total ? inicio + 1 : 0,
+    ultimo: fim,
+  }
+}
+
 const PREFIXO = 'orquestra.tabela.'
 
 /**

@@ -24,6 +24,12 @@ import { CabecalhoCard } from '../components/chamados/CabecalhoCard'
 import { NumeroChamado } from '../components/chamados/NumeroChamado'
 import { RodapeCard } from '../components/chamados/RodapeCard'
 import { separarFila } from '../lib/filaChamados'
+// Os filtros da fila moram em `filtrosKanban` — é lá que a decisão de quem
+// entra e quem some fica alcançável por teste.
+import {
+  CATEGORIAS, SEM_ATRIBUICAO, SEM_MARCACAO, algumFiltroAtivo, casaFiltros,
+  tiposDisponiveis,
+} from '../lib/filtrosKanban'
 import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
 
 // Aviso com tom próprio. O InfoBanner da casa é azul e DISPENSÁVEL — certo
@@ -128,6 +134,15 @@ const ROTULO_COLUNA: Record<string, string> = {
   outros: 'Outros',
 }
 
+// O badge da categoria. Cor E palavra: cor sozinha não informa quem não a
+// distingue, nem sobrevive a uma impressão em preto e branco.
+const TOM_CATEGORIA: Record<string, string> = {
+  'dia a dia': 'bg-sky-100 text-sky-800 dark:bg-sky-950/60 dark:text-sky-300 '
+    + 'border-sky-200 dark:border-sky-900',
+  iniciativa: 'bg-violet-100 text-violet-800 dark:bg-violet-950/60 '
+    + 'dark:text-violet-300 border-violet-200 dark:border-violet-900',
+}
+
 const ROTULO_TIPO: Record<string, string> = {
   incident: 'Incidente',
   ritm: 'RITM',
@@ -158,15 +173,6 @@ function faixaIdade(dias: number | null) {
     if (dias > f.min) return { classe: f.classe, rotulo: f.rotulo }
   }
   return { classe: 'text-dim', rotulo: '' }
-}
-
-// Busca por texto: número, título e responsável. Case-insensitive e por
-// prefixo/trecho — "RITM00" precisa achar, e é assim que se procura na prática.
-function casaBusca(c: Chamado, termo: string): boolean {
-  const t = termo.trim().toLowerCase()
-  if (!t) return true
-  return [c.numero, c.titulo, c.atribuido_a, c.estado_origem]
-    .some(campo => (campo || '').toLowerCase().includes(t))
 }
 
 function frescor(sync: UltimoSync | null): { texto: string; tom: string } {
@@ -316,9 +322,19 @@ function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
           title={`Tipo deduzido do título e do catálogo${c.catalogo ? ` · catálogo na origem: ${c.catalogo}` : ''}`}>
           {c.tipo_demanda}
         </span>
+        {/* A CATEGORIA em destaque, e não como mais um chip cinza ao lado do
+            tipo. Ela é o recorte pelo qual a gestão lê a fila — dia a dia é
+            operação, iniciativa é projeto —, e no meio dos chips neutros ela
+            desaparecia. Cor E palavra: cor sozinha não informa quem não a
+            distingue, nem sobrevive a uma impressão em preto e branco.
+            Sem marcação NÃO ganha badge: chip "sem marcação" em metade da fila
+            é ruído que ensina a ignorar a linha inteira — quem procura o que
+            falta classificar tem o filtro "Sem marcação" acima. */}
         {c.categoria_diaadia && (
-          <span className="px-1.5 py-0.5 rounded bg-panel border border-edge text-dim"
-            title="Categoria marcada nas work notes (dia a dia)">
+          <span className={`px-1.5 py-0.5 rounded border font-medium
+            ${TOM_CATEGORIA[c.categoria_diaadia]
+              ?? 'bg-panel border-edge text-dim'}`}
+            title={`Categoria marcada pela equipe nas work notes: ${c.categoria_diaadia}`}>
             {c.categoria_diaadia}
           </span>
         )}
@@ -405,6 +421,7 @@ export default function Chamados() {
   const [fTipo, setFTipo] = useState('')
   const [fResponsavel, setFResponsavel] = useState('')
   const [fPrioridade, setFPrioridade] = useState('')
+  const [fCategoria, setFCategoria] = useState('')
 
   const todos = useMemo(() => data?.chamados ?? [], [data])
 
@@ -426,28 +443,30 @@ export default function Chamados() {
     const unicos = (f: (c: Chamado) => string | null) =>
       [...new Set(todos.map(f).filter((v): v is string => !!v))].sort()
     return {
-      tipos: unicos(c => c.tipo),
+      // Os tipos saem dos CARDS e sem 'task' — ver `tiposDisponiveis`.
+      tipos: tiposDisponiveis(chamados),
       responsaveis: unicos(c => c.atribuido_a),
       prioridades: unicos(c => c.prioridade),
     }
-  }, [todos])
+  }, [todos, chamados])
 
   // O filtro casa contra o card e suas filhas. Sem isso, o número da SCTASK
   // estaria na tela e a busca por ele não acharia nada — e filtrar por
   // "Tarefa" esvaziaria a fila inteira, porque nenhum CARD é uma task.
-  const filtrados = useMemo(() => {
-    const casa = (c: Chamado) =>
-      (!fTipo || c.tipo === fTipo) &&
-      (!fResponsavel || c.atribuido_a === fResponsavel) &&
-      (!fPrioridade || c.prioridade === fPrioridade) &&
-      casaBusca(c, busca)
-    return chamados.filter(c =>
-      casa(c) || (filhasPorPai.get(c.sys_id) ?? []).some(casa))
-  }, [chamados, filhasPorPai, fTipo, fResponsavel, fPrioridade, busca])
+  const filtros = useMemo(
+    () => ({ busca, tipo: fTipo, responsavel: fResponsavel,
+             prioridade: fPrioridade, categoria: fCategoria }),
+    [busca, fTipo, fResponsavel, fPrioridade, fCategoria])
 
-  const temFiltro = !!(busca || fTipo || fResponsavel || fPrioridade)
+  const filtrados = useMemo(
+    () => chamados.filter(c =>
+      casaFiltros(c, filhasPorPai.get(c.sys_id) ?? [], filtros)),
+    [chamados, filhasPorPai, filtros])
+
+  const temFiltro = algumFiltroAtivo(filtros)
   const limpar = () => {
     setBusca(''); setFTipo(''); setFResponsavel(''); setFPrioridade('')
+    setFCategoria('')
   }
 
   if (isLoading) return <PageSpinner />
@@ -549,9 +568,22 @@ export default function Chamados() {
               <option key={t} value={t}>{ROTULO_TIPO[t] ?? t}</option>
             ))}
           </Select>
+          <Select label="Categoria" value={fCategoria} className="w-44"
+            onChange={e => setFCategoria(e.target.value)}>
+            <option value="">todas</option>
+            {CATEGORIAS.map(c => (
+              <option key={c.valor} value={c.valor}>{c.rotulo}</option>
+            ))}
+            {/* "Sem marcação" é o recorte mais acionável dos três: é a lista
+                do que ainda precisa ser classificado pela equipe. */}
+            <option value={SEM_MARCACAO}>Sem marcação</option>
+          </Select>
           <Select label="Responsável" value={fResponsavel} className="w-52"
             onChange={e => setFResponsavel(e.target.value)}>
             <option value="">todos</option>
+            {/* Sem dono é o que pede ação: chamado que ninguém pegou não
+                aparece na carga de ninguém e some da conversa. */}
+            <option value={SEM_ATRIBUICAO}>sem atribuição</option>
             {opcoes.responsaveis.map(r => <option key={r} value={r}>{r}</option>)}
           </Select>
           <Select label="Prioridade" value={fPrioridade} className="w-44"
