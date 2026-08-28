@@ -18,8 +18,8 @@ from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 
 from utils.frescor_modulo import conferir
 from utils.servicenow_sync import (
-    CAMPOS, MAX_PAGINAS, MSSQL_CONN_ID, PAGINA, TABELAS,
-    buscar_anexos, buscar_notas,
+    CAMPOS, LOTE_NOTAS, MAX_PAGINAS, MSSQL_CONN_ID, PAGINA, TABELAS,
+    buscar_anexos, buscar_notas_em_lote,
     capturar_snapshot,
     grupos_ativos,
     normalizar, proxy_da_config,
@@ -186,10 +186,19 @@ def etl_servicenow_delta():
         sql_anx = upsert_anexo_sql()
 
         with httpx.Client(auth=(usuario, senha), proxy=proxy, timeout=30) as cli:
-            for sys_id in sys_ids:
-                for nota in buscar_notas(cli, url_base, sys_id):
+            # As notas vêm EM LOTE. Elas moram nos campos `work_notes` e
+            # `comments` do próprio registro (a tabela `sys_journal_field` é
+            # inacessível para esta conta — ver `parsear_diario`), e a tabela-mãe
+            # `task` aceita `sys_idIN`: uma chamada por lote em vez de uma por
+            # chamado, que numa carga cheia é a diferença entre minutos e horas.
+            for inicio in range(0, len(sys_ids), LOTE_NOTAS):
+                for nota in buscar_notas_em_lote(
+                        cli, url_base, sys_ids[inicio:inicio + LOTE_NOTAS]):
                     cur.execute(sql_nota, upsert_nota_params(nota))
                     qtd_notas += 1
+                conn.commit()
+
+            for sys_id in sys_ids:
                 anexos = buscar_anexos(cli, url_base, sys_id)
                 for anx in anexos:
                     cur.execute(sql_anx, upsert_anexo_params(anx))

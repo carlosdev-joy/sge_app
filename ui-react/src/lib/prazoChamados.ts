@@ -78,5 +78,22 @@ export function rotuloDoPrazo(prazo: string | null | undefined,
  * aviso — e o aviso existe para o que ainda dá para fazer algo.
  */
 export function mostraPrazo(estadoKanban: string): boolean {
-  return estadoKanban !== 'resolvido' && estadoKanban !== 'encerrado'
+  return emCurso(estadoKanban)
+}
+
+/** As colunas em que o chamado JÁ TERMINOU. */
+export const ESTADOS_TERMINAIS = ['resolvido', 'encerrado'] as const
+
+/**
+ * O chamado ainda está em curso?
+ *
+ * ⚠️ Fonte ÚNICA da pergunta "isto ainda espera alguma coisa?". Ela decide
+ * coisas diferentes em lugares diferentes — se o card mostra prazo e idade, se
+ * o incidente sobe para o topo da coluna, se ele fica destacado — e uma
+ * segunda lista de estados terminais à mão significaria um lugar parando de
+ * alertar enquanto o outro continua, sem nada na tela denunciando.
+ */
+export function emCurso(estadoKanban: string): boolean {
+  return !ESTADOS_TERMINAIS.includes(
+    (estadoKanban || '').trim() as typeof ESTADOS_TERMINAIS[number])
 }

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from db import get_db_conn
 from deps import get_admin_user, get_current_user
@@ -137,27 +137,54 @@ def _proxima_sexta() -> str:
             f"CAST(GETDATE() AS DATE))")
 
 
-def _filtro_responsavel(nome: str | None) -> tuple[str, list]:
+def _filtro_responsavel(nomes) -> tuple[str, list]:
     """Recorte por responsável — o filtro único da aba de Indicadores.
 
     Vale para TODAS as agregações da aba, e é por isso que devolve o par
     (sql, params) em vez de cada consulta montar o seu: filtro que alcança
-    metade das contas produz uma aba onde o aging fala de uma pessoa e o
-    fluxo de todas — com os dois números parecendo certos.
+    metade das contas produz uma aba onde o aging fala de uma pessoa e o fluxo
+    de todas — com os dois números parecendo certos.
 
-    O `?` entra sempre no FIM do WHERE. As três consultas que já têm parâmetro
-    o usam antes, na janela de dias, então a ordem posicional do pyodbc
-    continua correta.
+    Aceita VÁRIOS nomes: a gestão compara duas ou três pessoas de uma vez, e
+    olhar uma por vez obriga a guardar o número anterior de cabeça. Recebe
+    lista ou string única — a segunda forma é a que a URL antiga mandava.
+
+    `sem responsável` é uma CONDIÇÃO, não um valor: o banco guarda NULL ou
+    vazio, e comparar com o rótulo da tela não acharia ninguém. Por isso ele
+    entra sem `?` e se soma aos nomes com OR — marcar "Fulano" e "sem
+    responsável" pergunta pelos dois conjuntos, não pela interseção vazia.
+
+    Os `?` entram sempre no FIM do WHERE. As três consultas que já têm
+    parâmetro o usam antes, na janela de dias, então a ordem posicional do
+    pyodbc continua correta.
     """
-    alvo = (nome or "").strip()
-    if not alvo:
+    if nomes is None:
+        crus = []
+    elif isinstance(nomes, str):
+        crus = [nomes]
+    else:
+        crus = list(nomes)
+
+    alvos, sem_dono = [], False
+    for cru in crus:
+        alvo = (cru or "").strip()
+        if not alvo:
+            continue
+        if alvo == SEM_RESPONSAVEL:
+            sem_dono = True
+        elif alvo not in alvos:
+            alvos.append(alvo)
+
+    if not alvos and not sem_dono:
         return "", []
-    if alvo == SEM_RESPONSAVEL:
-        # Sem `?`: é uma condição, não um valor. Comparar com a string
-        # "sem responsável" não acharia ninguém — ela é rótulo da tela, e o
-        # banco guarda NULL ou vazio.
-        return " AND NULLIF(LTRIM(RTRIM(atribuido_a)), '') IS NULL ", []
-    return " AND atribuido_a = ? ", [alvo]
+
+    partes = []
+    if alvos:
+        marcas = ", ".join("?" for _ in alvos)
+        partes.append(f"atribuido_a IN ({marcas})")
+    if sem_dono:
+        partes.append("NULLIF(LTRIM(RTRIM(atribuido_a)), '') IS NULL")
+    return f" AND ({' OR '.join(partes)}) ", alvos
 
 
 def _so_trabalhos() -> str:
@@ -352,7 +379,7 @@ def listar_chamados(incluir_inativos: int = 0,
 
 
 @router.get("/chamados/indicadores", tags=["chamados"])
-def indicadores(responsavel: str | None = None,
+def indicadores(responsavel: list[str] | None = Query(default=None),
                 _auth: dict = Depends(get_current_user)):
     """Agregados para a aba de Indicadores — contas feitas no SQL, não na tela.
 
@@ -370,7 +397,10 @@ def indicadores(responsavel: str | None = None,
         # O filtro em vigor e as opções — a tela precisa dos dois para desenhar
         # o seletor e para DIZER que está filtrando: número filtrado sem aviso
         # é a mesma armadilha do total que não bate com a lista.
-        "responsavel": (responsavel or "").strip() or None, "responsaveis": [],
+        # `responsaveis_filtrados` é lista porque o filtro passou a aceitar
+        # vários. `responsavel` continua, com o primeiro nome, para não quebrar
+        # quem já lia a chave — a tela nova usa a lista.
+        "responsavel": None, "responsaveis_filtrados": [], "responsaveis": [],
         # Denominador do aging: ativos que ainda NÃO foram resolvidos.
         "total_em_fila": 0,
         "aging": [], "tipo_estado": {"tipos": [], "estados": list(COLUNAS_KANBAN),
@@ -388,7 +418,9 @@ def indicadores(responsavel: str | None = None,
     }
     # O filtro vale para TODAS as contas desta aba — ver `_filtro_responsavel`.
     _fr, _frp = _filtro_responsavel(responsavel)
-    saida["responsavel"] = (responsavel or "").strip() or None
+    _escolhidos = [n.strip() for n in (responsavel or []) if (n or "").strip()]
+    saida["responsaveis_filtrados"] = _escolhidos
+    saida["responsavel"] = _escolhidos[0] if len(_escolhidos) == 1 else None
 
     conn = None
     try:
@@ -1178,6 +1210,98 @@ def tasks_do_ritm(sys_id: str, _auth: dict = Depends(get_current_user)):
     return saida
 
 
+# A nota, como a tela recebe. `origem_numero` só vem preenchido quando a nota
+# NÃO é do chamado aberto — é ele que deixa a tela dizer "via SCTASK…".
+def _linha_nota(r, proprio: str, numero_por_sys_id: dict) -> dict:
+    dono = r[6]
+    return {
+        "sys_id_nota": r[0], "autor": r[1], "autor_email": r[2],
+        "criado_em": str(r[3]) if r[3] else None,
+        "texto": r[4], "tipo": r[5],
+        "origem_propria": dono == proprio,
+        "origem_numero": None if dono == proprio else numero_por_sys_id.get(dono),
+    }
+
+
+def _notas_do_chamado(conn, sys_id: str) -> list[dict]:
+    """As notas do chamado E das suas tarefas, numa lista só.
+
+    ⚠️ POR QUE JUNTAR. No ServiceNow a anotação costuma ser escrita na SCTASK,
+    e o Orquestra não mostra a task como card — ela é uma linha dentro do card
+    do pedido. Ler só o RITM, então, é ler o chamado sem o histórico de quem o
+    executou. Sondado na instância: a nota humana aparece ora no pai
+    (RITM0100124) ora na task (RITM0103367), sem regra que permita escolher um
+    lado de antemão.
+
+    A MESMA nota costuma existir dos dois lados (o ServiceNow espelha). O dedupe
+    é por (data, tipo, texto), e a cópia do PRÓPRIO chamado ganha: dizer "via
+    SCTASK…" numa nota que também está no pedido seria atribuição errada.
+
+    Ordem: mais recente primeiro. Ao abrir um chamado, o que se quer ler é o que
+    acabou de acontecer, não o que foi escrito há três semanas.
+    """
+    cur = conn.cursor()
+    try:
+        # O parentesco chegou na migration 090. Onde ela ainda não passou, esta
+        # consulta falha — e o chamado não pode perder as PRÓPRIAS notas por
+        # causa de uma coluna que só serve para trazer as das filhas.
+        try:
+            # ⚠️ Colunas INLINE, não montadas por f-string: o varredor
+            # anti-drift de `test_chamados_paridade` lê os literais do AST, e
+            # uma query montada em pedaços chega até ele picada — ele deixaria
+            # de reconhecer o que está sendo consultado.
+            cur.execute(
+                "SELECT n.sys_id_nota, n.autor, n.autor_email, n.criado_em, "
+                "       n.texto, n.tipo, n.sys_id_chamado, c.numero "
+                "FROM dbo.etl_chamado_nota n "
+                "JOIN dbo.etl_chamado c ON c.sys_id = n.sys_id_chamado "
+                "WHERE n.sys_id_chamado = ? "
+                "   OR n.sys_id_chamado IN ("
+                "        SELECT f.sys_id FROM dbo.etl_chamado f "
+                "        WHERE f.pai_sys_id = ? AND f.sys_id <> f.pai_sys_id) "
+                "ORDER BY n.criado_em DESC", [sys_id, sys_id])
+            linhas = cur.fetchall()
+        except Exception as e:
+            log.warning("detalhe: sem parentesco nas notas (%s: %s) — "
+                        "trazendo só as do próprio chamado",
+                        type(e).__name__, e)
+            cur.close()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT n.sys_id_nota, n.autor, n.autor_email, n.criado_em, "
+                "       n.texto, n.tipo, n.sys_id_chamado, "
+                "       CAST(NULL AS NVARCHAR(40)) "
+                "FROM dbo.etl_chamado_nota n WHERE n.sys_id_chamado = ? "
+                "ORDER BY n.criado_em DESC", [sys_id])
+            linhas = cur.fetchall()
+    finally:
+        try:
+            cur.close()
+        except Exception:      # noqa: BLE001 — fechar cursor não derruba rota
+            pass
+
+    numero_por_sys_id = {r[6]: r[7] for r in linhas}
+    vistas: set = set()
+    saida: list[dict] = []
+    # Duas passadas: as do PRÓPRIO chamado primeiro, para que sejam elas a
+    # ocupar a vaga quando a mesma nota existe dos dois lados.
+    for so_proprias in (True, False):
+        for r in linhas:
+            if (r[6] == sys_id) is not so_proprias:
+                continue
+            marca = (str(r[3]), r[5], (r[4] or "").strip())
+            if marca in vistas:
+                continue
+            vistas.add(marca)
+            saida.append(_linha_nota(r, sys_id, numero_por_sys_id))
+
+    # As duas passadas quebraram a ordem cronológica; refaz. Nota sem data vai
+    # para o FIM: no topo, ela empurraria para baixo a que acabou de ser escrita.
+    saida.sort(key=lambda n: n["criado_em"] or "", reverse=True)
+    saida.sort(key=lambda n: n["criado_em"] is None)
+    return saida
+
+
 @router.get("/chamados/{sys_id}/detalhe", tags=["chamados"])
 def chamado_detalhe(sys_id: str, _auth: dict = Depends(get_current_user)):
     """Detalhe completo de um chamado: dados + notas + anexos."""
@@ -1216,16 +1340,7 @@ def chamado_detalhe(sys_id: str, _auth: dict = Depends(get_current_user)):
         # conclui a primeira.
         notas, anexos, faltando = [], [], False
         try:
-            cur.execute(
-                "SELECT sys_id_nota, autor, autor_email, criado_em, texto, tipo "
-                "FROM dbo.etl_chamado_nota WHERE sys_id_chamado=? "
-                "ORDER BY criado_em", [sys_id])
-            notas = [
-                {"sys_id_nota": r[0], "autor": r[1], "autor_email": r[2],
-                 "criado_em": str(r[3]) if r[3] else None,
-                 "texto": r[4], "tipo": r[5]}
-                for r in cur.fetchall()
-            ]
+            notas = _notas_do_chamado(conn, sys_id)
         except Exception as e:
             log.warning("detalhe: notas indisponíveis (%s: %s)",
                         type(e).__name__, e)

@@ -242,10 +242,16 @@ def test_o_filtro_alcanca_todas_as_agregacoes(cliente, banco_ate_o_fim):
     que a F5 fechou, só que dentro da mesma tela.
     """
     cliente.get("/chamados/indicadores?responsavel=Fulano")
+    # ⚠️ O trecho procurado vem da PRÓPRIA função, não escrito à mão: quando o
+    # filtro passou a aceitar vários nomes, a forma mudou de `atribuido_a = ?`
+    # para `atribuido_a IN (?)` — e um literal aqui teria acusado as consultas
+    # de ignorar um filtro que elas carregavam.
+    recorte, _ = mod._filtro_responsavel(["Fulano"])
+    recorte = recorte.strip()
     sobre_o_espelho = [s for s in banco_ate_o_fim["cur"].sqls
                        if "dbo.etl_chamado" in s and "GETDATE()) AS DATE)" not in s]
     sem_filtro = [s for s in sobre_o_espelho
-                  if "WHERE ativo = 1" in s and "atribuido_a = ?" not in s
+                  if "WHERE ativo = 1" in s and recorte not in s
                   # a consulta das OPÇÕES do seletor é a única que não filtra,
                   # de propósito: com o filtro, o seletor ficaria com uma opção
                   # só e não haveria como trocar

@@ -105,22 +105,43 @@ def _resposta(payload):
 
 
 def test_a_nota_chega_normalizada():
+    """⚠️ ESTE TESTE FOI REESCRITO — a versão anterior AFIRMAVA O DEFEITO.
+
+    Ela alimentava o dublê com a resposta de `sys_journal_field` e conferia que
+    o motor a normalizava. O motor fazia isso corretamente; só que essa tabela é
+    **inacessível para a conta de integração** e responde 200 com lista VAZIA.
+    O teste passava verde sobre um caminho que, em produção, nunca trouxe uma
+    linha — e `dbo.etl_chamado_nota` ficou com zero registros o tempo todo.
+
+    Agora o dublê devolve o que a instância REALMENTE devolve: o diário
+    concatenado nos campos do próprio registro. Ver
+    `tests/test_chamados_notas_diario.py` para o parser em detalhe.
+    """
     cliente = _resposta([{
-        "sys_id": {"value": "NOTA001", "display_value": "NOTA001"},
-        "element_id": {"value": "SYS001", "display_value": "SYS001"},
-        "sys_created_by": {"value": "joao.silva", "display_value": "João Silva"},
-        "sys_created_on": {"value": "2026-08-22 10:00:00",
-                           "display_value": "22/08/2026 10:00:00"},
-        "value": {"value": "texto da nota", "display_value": "texto da nota"},
-        "element": {"value": "work_notes", "display_value": "work_notes"},
+        "sys_id": "SYS001",
+        "work_notes": ("22/08/2026 10:00:00 - João Silva (Anotações de trabalho)\n"
+                       "texto da nota"),
+        "comments": "",
     }])
     notas = buscar_notas(cliente, "https://x.service-now.com", "SYS001")
     assert len(notas) == 1
     n = notas[0]
-    assert n["sys_id_nota"] == "NOTA001"
     assert n["sys_id_chamado"] == "SYS001"
     assert n["tipo"] == "work_notes"
-    assert "João Silva" in (n["autor"] or "")
+    assert n["autor"] == "João Silva"
+    assert n["texto"] == "texto da nota"
+    # O id é derivado do conteúdo: o diário não traz sys_id de nota nenhum.
+    assert len(n["sys_id_nota"]) == 32
+
+
+def test_a_nota_nao_vem_mais_da_tabela_inacessivel():
+    """A regressão que este módulo precisa impedir: voltar ao journal devolve
+    o silêncio de 200-com-lista-vazia que escondeu as notas desde sempre."""
+    cliente = _resposta([])
+    buscar_notas(cliente, "https://x.service-now.com", "SYS001")
+    url = cliente.get.call_args[0][0]
+    assert "sys_journal_field" not in url
+    assert "/api/now/table/task" in url
 
 
 def test_sem_nota_devolve_lista_vazia_e_nao_explode():

@@ -21,8 +21,21 @@ import ChamadosIndicadores from './ChamadosIndicadores'
 import ChamadosDashboard from './ChamadosDashboard'
 import { ChamadoDetalheModal } from '../components/chamados/ChamadoDetalheModal'
 import { CabecalhoCard } from '../components/chamados/CabecalhoCard'
+import { NumeroChamado } from '../components/chamados/NumeroChamado'
 import { RodapeCard } from '../components/chamados/RodapeCard'
 import { separarFila } from '../lib/filaChamados'
+// Os filtros da fila moram em `filtrosKanban` — é lá que a decisão de quem
+// entra e quem some fica alcançável por teste.
+import {
+  CATEGORIAS, SEM_ATRIBUICAO, SEM_MARCACAO, algumFiltroAtivo, casaFiltros,
+  destacaIncidente, ordenarColuna, tiposDisponiveis,
+} from '../lib/filtrosKanban'
+// A aparência do quadro — superfície do card e tom da raia — mora em
+// `estiloKanban`: foi num TOKEN que estava o defeito, e token errado não
+// aparece em teste de comportamento.
+import {
+  CLASSE_RAIA, classeDaGrade, classeDoCard, raiasVisiveis, tomDaColuna,
+} from '../lib/estiloKanban'
 import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
 
 // Aviso com tom próprio. O InfoBanner da casa é azul e DISPENSÁVEL — certo
@@ -127,6 +140,15 @@ const ROTULO_COLUNA: Record<string, string> = {
   outros: 'Outros',
 }
 
+// O badge da categoria. Cor E palavra: cor sozinha não informa quem não a
+// distingue, nem sobrevive a uma impressão em preto e branco.
+const TOM_CATEGORIA: Record<string, string> = {
+  'dia a dia': 'bg-sky-100 text-sky-800 dark:bg-sky-950/60 dark:text-sky-300 '
+    + 'border-sky-200 dark:border-sky-900',
+  iniciativa: 'bg-violet-100 text-violet-800 dark:bg-violet-950/60 '
+    + 'dark:text-violet-300 border-violet-200 dark:border-violet-900',
+}
+
 const ROTULO_TIPO: Record<string, string> = {
   incident: 'Incidente',
   ritm: 'RITM',
@@ -157,15 +179,6 @@ function faixaIdade(dias: number | null) {
     if (dias > f.min) return { classe: f.classe, rotulo: f.rotulo }
   }
   return { classe: 'text-dim', rotulo: '' }
-}
-
-// Busca por texto: número, título e responsável. Case-insensitive e por
-// prefixo/trecho — "RITM00" precisa achar, e é assim que se procura na prática.
-function casaBusca(c: Chamado, termo: string): boolean {
-  const t = termo.trim().toLowerCase()
-  if (!t) return true
-  return [c.numero, c.titulo, c.atribuido_a, c.estado_origem]
-    .some(campo => (campo || '').toLowerCase().includes(t))
 }
 
 function frescor(sync: UltimoSync | null): { texto: string; tom: string } {
@@ -279,45 +292,73 @@ function ModalTriagem({ c, aoFechar }: { c: Chamado; aoFechar: () => void }) {
 }
 
 function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
+  // Incidente é INTERRUPÇÃO: alguma coisa que funcionava parou. No meio de
+  // pedidos de trabalho planejado ele some — e some justamente quando é o que
+  // deveria ser lido primeiro. O destaque acaba no resolvido: alarme sobre
+  // trabalho FEITO não pede ação e ensina a ignorar os outros.
+  const urgente = destacaIncidente(c)
   const [verLaudo, setVerLaudo] = useState(false)
   // O conteúdo do chamado — descrição, notas e anexos. O gesto que abre isto,
   // e o porquê de ele ser anunciado, moram em `CabecalhoCard`.
   const [verDetalhe, setVerDetalhe] = useState(false)
   const estilo = c.veredito ? ESTILO_VEREDITO[c.veredito] : undefined
   return (
-    <div className="bg-canvas border border-edge rounded-md p-2.5 flex flex-col gap-1.5 shadow-sm">
+    <div data-urgente={urgente || undefined} className={classeDoCard(urgente)}>
+      {/* A marca do incidente como BARRA sobreposta, não como borda grossa:
+          borda muda o tamanho da caixa e desalinha o card dos vizinhos. */}
+      {urgente && (
+        <span aria-hidden
+          className="absolute left-0 top-0 bottom-0 w-1 rounded-l-lg
+            bg-red-500 dark:bg-red-500" />
+      )}
       <CabecalhoCard numero={c.numero} titulo={c.titulo} url={c.url}
         aoAbrirDetalhe={() => setVerDetalhe(true)} />
       {verDetalhe && (
         <ChamadoDetalheModal sysId={c.sys_id} numero={c.numero}
           aoFechar={() => setVerDetalhe(false)} />
       )}
-      <div className="flex flex-wrap items-center gap-1">
-        <Badge value="neutral">{ROTULO_TIPO[c.tipo] ?? c.tipo}</Badge>
-        {c.prioridade && <Badge value="neutral">{c.prioridade}</Badge>}
-        {/* estado_origem no title: quando o card cai em "Outros", é ele que
-            explica por quê — o valor cru que o ServiceNow devolveu. */}
-        {c.estado_origem && (
-          <span className="text-[10px] text-dim" title={`Estado na origem: ${c.estado_origem}`}>
-            {c.estado_origem}
+      {/* UMA fileira de marcas, não duas. Antes eram duas linhas de chips
+          empilhadas — o que dava ao card a silhueta de formulário e fazia a
+          coluna parecer uma pilha de retângulos. O conteúdo é o MESMO: nada
+          saiu, tudo passou a fluir na mesma linha, quebrando quando precisa.
+          Todos com a mesma altura e o mesmo raio, para o olho ler "marcas" em
+          vez de "elementos diferentes". */}
+      <div className="flex flex-wrap items-center gap-1 text-[10px]">
+        {/* O rótulo do tipo carrega o tom. Cor sozinha não informa quem não a
+            distingue: aqui a palavra "Incidente" continua sendo o que diz o
+            que é, e o vermelho só reforça. */}
+        <span className={`px-2 py-0.5 rounded-full border font-medium ${urgente
+          ? 'bg-red-100 text-red-700 border-red-300 dark:bg-red-900/50 '
+            + 'dark:text-red-300 dark:border-red-800'
+          : 'bg-canvas text-dim border-edge'}`}>
+          {ROTULO_TIPO[c.tipo] ?? c.tipo}
+        </span>
+        {c.prioridade && (
+          <span className="px-2 py-0.5 rounded-full bg-canvas border border-edge text-dim">
+            {c.prioridade}
           </span>
         )}
-      </div>
-      {/* Derivações: o que o painel da estação lia nas entrelinhas e a tela
-          não mostrava. O tipo aparece sempre; categoria e objetos só quando
-          existem — chip vazio é ruído que ensina a ignorar a linha inteira. */}
-      <div className="flex flex-wrap items-center gap-1 text-[10px]">
         {/* O title NÃO afirma de onde veio o tipo: a dedução usa o título e,
             em segunda mão, o catálogo, e o backend não devolve qual dos dois
             casou. Atribuir a proveniência ao catálogo seria mentir sempre que
             o título tiver vencido — que é o caso comum. */}
-        <span className="px-1.5 py-0.5 rounded bg-panel border border-edge text-dim"
+        <span className="px-2 py-0.5 rounded-full bg-canvas border border-edge text-dim"
           title={`Tipo deduzido do título e do catálogo${c.catalogo ? ` · catálogo na origem: ${c.catalogo}` : ''}`}>
           {c.tipo_demanda}
         </span>
+        {/* A CATEGORIA em destaque, e não como mais um chip cinza ao lado do
+            tipo. Ela é o recorte pelo qual a gestão lê a fila — dia a dia é
+            operação, iniciativa é projeto —, e no meio dos chips neutros ela
+            desaparecia. Cor E palavra: cor sozinha não informa quem não a
+            distingue, nem sobrevive a uma impressão em preto e branco.
+            Sem marcação NÃO ganha badge: chip "sem marcação" em metade da fila
+            é ruído que ensina a ignorar a linha inteira — quem procura o que
+            falta classificar tem o filtro "Sem marcação" acima. */}
         {c.categoria_diaadia && (
-          <span className="px-1.5 py-0.5 rounded bg-panel border border-edge text-dim"
-            title="Categoria marcada nas work notes (dia a dia)">
+          <span className={`px-2 py-0.5 rounded-full border font-medium
+            ${TOM_CATEGORIA[c.categoria_diaadia]
+              ?? 'bg-canvas border-edge text-dim'}`}
+            title={`Categoria marcada pela equipe nas work notes: ${c.categoria_diaadia}`}>
             {c.categoria_diaadia}
           </span>
         )}
@@ -327,8 +368,18 @@ function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
             {c.objetos}
           </span>
         )}
+        {/* estado_origem sem moldura: ele é CONTEXTO, não classificação —
+            quando o card cai em "Outros", é ele que explica por quê. Com
+            moldura, competiria com as marcas que pedem leitura. */}
+        {c.estado_origem && (
+          <span className="text-dim" title={`Estado na origem: ${c.estado_origem}`}>
+            {c.estado_origem}
+          </span>
+        )}
         {c.sla_vencido === true && (
-          <span className="px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-300"
+          <span className="px-2 py-0.5 rounded-full border border-red-300
+            dark:border-red-800 bg-red-100 dark:bg-red-950/60
+            text-red-700 dark:text-red-300 font-medium"
             title="O ServiceNow marcou este chamado com SLA vencido">
             SLA vencido
           </span>
@@ -337,7 +388,7 @@ function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
             selo — pintá-lo de âmbar diria que ele foi reprovado. */}
         {estilo && (
           <button type="button" onClick={() => setVerLaudo(true)}
-            className={`px-1.5 py-0.5 rounded ${estilo.classe}`}
+            className={`px-2 py-0.5 rounded-full border ${estilo.classe}`}
             title={c.triagem_origem === 'heuristica'
               ? 'Veredito por regra de texto (a IA não respondeu) — clique para ver'
               : 'Veredito da análise por IA — clique para ver o laudo'}>
@@ -358,13 +409,17 @@ function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
           premissa "mesmo responsável" mostra que quebrou, antes de virar
           dúvida no gráfico de carga. */}
       {filhas.length > 0 && (
-        <div className="flex flex-col gap-0.5 pt-1 border-t border-edge">
+        <div className="flex flex-col gap-0.5 -mx-1 px-1 pt-2 border-t border-edge">
           {filhas.map(f => (
             <div key={f.sys_id}
-              className="flex items-center gap-1.5 text-[10px] text-dim">
+              className="flex items-center gap-1.5 text-[10px] text-dim
+                rounded px-1 py-0.5 hover:bg-canvas">
               <span aria-hidden className="shrink-0">↳</span>
-              <span className="font-mono shrink-0">{f.numero}</span>
-              <span className="px-1 py-px rounded bg-panel border border-edge shrink-0">
+              {/* O número da TASK também se copia: é ele que se cita ao
+                  perguntar de uma tarefa a quem a executa. */}
+              <NumeroChamado numero={f.numero} className="shrink-0" />
+              <span className="px-1.5 py-px rounded-full bg-canvas border
+                border-edge shrink-0">
                 {ROTULO_COLUNA[f.estado_kanban] ?? f.estado_kanban}
               </span>
               {f.atribuido_a && f.atribuido_a !== c.atribuido_a && (
@@ -402,6 +457,7 @@ export default function Chamados() {
   const [fTipo, setFTipo] = useState('')
   const [fResponsavel, setFResponsavel] = useState('')
   const [fPrioridade, setFPrioridade] = useState('')
+  const [fCategoria, setFCategoria] = useState('')
 
   const todos = useMemo(() => data?.chamados ?? [], [data])
 
@@ -423,28 +479,49 @@ export default function Chamados() {
     const unicos = (f: (c: Chamado) => string | null) =>
       [...new Set(todos.map(f).filter((v): v is string => !!v))].sort()
     return {
-      tipos: unicos(c => c.tipo),
+      // Os tipos saem dos CARDS e sem 'task' — ver `tiposDisponiveis`.
+      tipos: tiposDisponiveis(chamados),
       responsaveis: unicos(c => c.atribuido_a),
       prioridades: unicos(c => c.prioridade),
     }
-  }, [todos])
+  }, [todos, chamados])
 
   // O filtro casa contra o card e suas filhas. Sem isso, o número da SCTASK
   // estaria na tela e a busca por ele não acharia nada — e filtrar por
   // "Tarefa" esvaziaria a fila inteira, porque nenhum CARD é uma task.
-  const filtrados = useMemo(() => {
-    const casa = (c: Chamado) =>
-      (!fTipo || c.tipo === fTipo) &&
-      (!fResponsavel || c.atribuido_a === fResponsavel) &&
-      (!fPrioridade || c.prioridade === fPrioridade) &&
-      casaBusca(c, busca)
-    return chamados.filter(c =>
-      casa(c) || (filhasPorPai.get(c.sys_id) ?? []).some(casa))
-  }, [chamados, filhasPorPai, fTipo, fResponsavel, fPrioridade, busca])
+  const filtros = useMemo(
+    () => ({ busca, tipo: fTipo, responsavel: fResponsavel,
+             prioridade: fPrioridade, categoria: fCategoria }),
+    [busca, fTipo, fResponsavel, fPrioridade, fCategoria])
 
-  const temFiltro = !!(busca || fTipo || fResponsavel || fPrioridade)
+  const filtrados = useMemo(
+    () => chamados.filter(c =>
+      casaFiltros(c, filhasPorPai.get(c.sys_id) ?? [], filtros)),
+    [chamados, filhasPorPai, filtros])
+
+  // Quantos cards em cada coluna, DEPOIS do filtro. É esta conta que decide se
+  // a raia "Outros" aparece, e é a mesma que o cabeçalho de cada raia mostra.
+  const porColuna = useMemo(() => {
+    const mapa = new Map<string, Chamado[]>()
+    for (const c of filtrados) {
+      const lista = mapa.get(c.estado_kanban)
+      if (lista) lista.push(c)
+      else mapa.set(c.estado_kanban, [c])
+    }
+    return mapa
+  }, [filtrados])
+
+  // `data`, e não `d`: os hooks correm ANTES das guardas de carregamento, e
+  // `d` só existe depois delas.
+  const raias = useMemo(
+    () => raiasVisiveis(data?.colunas ?? [],
+                        col => (porColuna.get(col) ?? []).length),
+    [data?.colunas, porColuna])
+
+  const temFiltro = algumFiltroAtivo(filtros)
   const limpar = () => {
     setBusca(''); setFTipo(''); setFResponsavel(''); setFPrioridade('')
+    setFCategoria('')
   }
 
   if (isLoading) return <PageSpinner />
@@ -546,9 +623,22 @@ export default function Chamados() {
               <option key={t} value={t}>{ROTULO_TIPO[t] ?? t}</option>
             ))}
           </Select>
+          <Select label="Categoria" value={fCategoria} className="w-44"
+            onChange={e => setFCategoria(e.target.value)}>
+            <option value="">todas</option>
+            {CATEGORIAS.map(c => (
+              <option key={c.valor} value={c.valor}>{c.rotulo}</option>
+            ))}
+            {/* "Sem marcação" é o recorte mais acionável dos três: é a lista
+                do que ainda precisa ser classificado pela equipe. */}
+            <option value={SEM_MARCACAO}>Sem marcação</option>
+          </Select>
           <Select label="Responsável" value={fResponsavel} className="w-52"
             onChange={e => setFResponsavel(e.target.value)}>
             <option value="">todos</option>
+            {/* Sem dono é o que pede ação: chamado que ninguém pegou não
+                aparece na carga de ninguém e some da conversa. */}
+            <option value={SEM_ATRIBUICAO}>sem atribuição</option>
             {opcoes.responsaveis.map(r => <option key={r} value={r}>{r}</option>)}
           </Select>
           <Select label="Prioridade" value={fPrioridade} className="w-44"
@@ -574,20 +664,47 @@ export default function Chamados() {
       )}
 
       {aba === 'fila' && !d.migration_ausente && d.total > 0 && (
-        <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-5">
-          {d.colunas.map(coluna => {
-            const daColuna = filtrados.filter(c => c.estado_kanban === coluna)
+        // "Outros" só aparece quando tem card, e a grade se ajusta ao número
+        // de raias — ver `raiasVisiveis`. Sem ajustar a grade, esconder uma
+        // coluna deixaria um vão do tamanho dela no fim do quadro.
+        <div className={classeDaGrade(raias.length)}>
+          {raias.map(coluna => {
+            // Incidentes em curso no TOPO. Quem abre o kanban lê de cima para
+            // baixo e para quando acha o que procura — um incidente na décima
+            // posição de uma coluna que rola é um incidente que ninguém viu.
+            const daColuna = ordenarColuna(porColuna.get(coluna) ?? [])
             return (
-              <div key={coluna} className="flex flex-col gap-2 min-w-0">
-                <div className="flex items-center justify-between px-1">
-                  <h2 className="text-xs font-semibold text-dim uppercase tracking-wider">
-                    {ROTULO_COLUNA[coluna] ?? coluna}
-                  </h2>
-                  <span className="text-xs text-dim">{daColuna.length}</span>
+              // ⚠️ A RAIA. Antes a coluna não tinha superfície nenhuma: os
+              // cards flutuavam direto sobre o fundo da página, sem nada que
+              // dissesse onde uma coluna termina e a outra começa. Somado ao
+              // card pintado com a cor do próprio fundo, era a leitura de
+              // "quadrados jogados". Ver `estiloKanban`.
+              <div key={coluna} className={CLASSE_RAIA}>
+                <div className="flex items-center justify-between gap-2 px-3 py-2
+                  border-b border-edge">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {/* O ponto NÃO carrega informação sozinho — o nome está do
+                        lado. Ele serve de marco para achar a raia certa sem
+                        reler os cinco títulos. */}
+                    <span aria-hidden
+                      className={`w-2 h-2 rounded-full shrink-0 ${tomDaColuna(coluna)}`} />
+                    <h2 className="text-[11px] font-semibold text-ink uppercase
+                      tracking-wider truncate">
+                      {ROTULO_COLUNA[coluna] ?? coluna}
+                    </h2>
+                  </div>
+                  {/* A contagem numa pílula: solta, ela se confundia com o
+                      texto do título ao lado. */}
+                  <span className="shrink-0 text-[11px] text-dim tabular-nums
+                    px-2 py-0.5 rounded-full bg-panel border border-edge">
+                    {daColuna.length}
+                  </span>
                 </div>
-                <div className="flex flex-col gap-2">
+                <div className="flex flex-col gap-2 p-2">
                   {daColuna.length === 0 ? (
-                    <p className="text-[11px] text-dim px-1 py-2">nenhum</p>
+                    <p className="text-[11px] text-dim px-1 py-3 text-center">
+                      nenhum
+                    </p>
                   ) : (
                     daColuna.map(c => (
                       <CardChamado key={c.sys_id} c={c}

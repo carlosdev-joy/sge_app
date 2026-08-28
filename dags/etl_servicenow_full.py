@@ -18,8 +18,8 @@ from airflow.decorators import dag, task
 from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 
 from utils.servicenow_sync import (
-    CAMPOS, MAX_PAGINAS, MSSQL_CONN_ID, PAGINA, TABELAS,
-    buscar_anexos, buscar_notas,
+    CAMPOS, LOTE_NOTAS, MAX_PAGINAS, MSSQL_CONN_ID, PAGINA, TABELAS,
+    buscar_anexos, buscar_notas_em_lote,
     capturar_snapshot,
     grupos_ativos, query_do_grupo,
     normalizar, proxy_da_config,
@@ -223,10 +223,20 @@ def etl_servicenow_full():
         with httpx.Client(auth=(usuario, senha), timeout=30,
                           proxy=proxy,
                           headers={"Accept": "application/json"}) as cli:
-            for sys_id in todos:
-                for nota in buscar_notas(cli, url_base, sys_id):
+            # As notas vêm EM LOTE. Elas moram nos campos `work_notes` e
+            # `comments` do próprio registro (a tabela `sys_journal_field` é
+            # inacessível para esta conta — ver `parsear_diario`), e a tabela-mãe
+            # `task` aceita `sys_idIN`: uma chamada por lote em vez de uma por
+            # chamado. Na carga CHEIA, com milhares de chamados, é a diferença
+            # entre minutos e horas.
+            for inicio in range(0, len(todos), LOTE_NOTAS):
+                for nota in buscar_notas_em_lote(
+                        cli, url_base, todos[inicio:inicio + LOTE_NOTAS]):
                     cur.execute(sql_nota, upsert_nota_params(nota))
                     qtd_notas += 1
+                conn.commit()
+
+            for sys_id in todos:
                 anexos = buscar_anexos(cli, url_base, sys_id)
                 for anx in anexos:
                     cur.execute(sql_anx, upsert_anexo_params(anx))
