@@ -49,6 +49,17 @@ const cenarios = {
   rotulo_no_prazo:     L.rotuloDoPrazo('2026-09-02', HOJE),
   rotulo_sem_prazo:    L.rotuloDoPrazo(null, HOJE),
 
+  // ── a data do prazo, para conferir a olho ────────────────────────────────
+  // O formato que a API manda de verdade: "2026-08-28 11:43:30".
+  data_com_hora:       L.dataDoPrazo('2026-08-28 11:43:30'),
+  data_so_dia:         L.dataDoPrazo('2026-08-28'),
+  // ISO com Z: `new Date` leria como UTC e, à noite no fuso de Brasília,
+  // devolveria o DIA ANTERIOR. A leitura textual não cai nisso.
+  data_iso_utc:        L.dataDoPrazo('2026-08-28T23:30:00Z'),
+  data_nula:           L.dataDoPrazo(null),
+  data_vazia:          L.dataDoPrazo(''),
+  data_ilegivel:       L.dataDoPrazo('em breve'),
+
   // ── quem mostra prazo ─────────────────────────────────────────────────────
   mostra_novo:         L.mostraPrazo('novo'),
   mostra_aguardando:   L.mostraPrazo('aguardando'),

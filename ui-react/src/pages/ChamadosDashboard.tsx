@@ -26,7 +26,7 @@ import {
 } from 'lucide-react'
 import {
   ORDEM_FILA, ORDEM_PRAZO, bloco, contaPorPrazo, contaPorResponsavel,
-  mostraPrazo, rotuloDoPrazo,
+  dataDoPrazo, mostraPrazo, rotuloDoPrazo,
   type BlocoDoPainel, type ChamadoDoPainel,
 } from '../lib/dashboardChamados'
 
@@ -61,9 +61,7 @@ const TOM_PRAZO: Record<string, string> = {
 }
 
 /** A lista do bloco aberto. */
-function ListaDoBloco({ chamados, comPrazo }: {
-  chamados: ChamadoDoPainel[]; comPrazo: boolean
-}) {
+function ListaDoBloco({ chamados }: { chamados: ChamadoDoPainel[] }) {
   if (!chamados.length) {
     return <p className="text-xs text-dim">Nenhum chamado nesta categoria.</p>
   }
@@ -72,8 +70,9 @@ function ListaDoBloco({ chamados, comPrazo }: {
       {chamados.map(c => {
         // Chamado finalizado não mostra prazo: "vencido há 40 dias" num
         // resolvido é ruído que ensina a ignorar o aviso.
-        const prazo = comPrazo && mostraPrazo(c.estado_kanban)
-          ? rotuloDoPrazo(c.prazo) : null
+        const mostra = mostraPrazo(c.estado_kanban)
+        const prazo = mostra ? rotuloDoPrazo(c.prazo) : null
+        const data = mostra ? dataDoPrazo(c.prazo) : null
         return (
           <li key={c.sys_id}
             className="flex items-baseline gap-2 text-xs py-1 border-b border-edge last:border-0">
@@ -85,11 +84,20 @@ function ListaDoBloco({ chamados, comPrazo }: {
             <span className="text-ink truncate flex-1 min-w-0" title={c.titulo || ''}>
               {c.titulo || '(sem título)'}
             </span>
-            <span className="text-dim shrink-0 w-36 truncate text-right"
+            <span className="text-dim shrink-0 w-32 truncate text-right"
               title={c.atribuido_a || 'sem responsável'}>
               {c.atribuido_a || 'sem responsável'}
             </span>
-            {/* O prazo em PALAVRAS, não só em cor. */}
+            {/* A DATA e o prazo em palavras, lado a lado.
+                A data existe para conferir a olho — sem ela, "vence hoje" só
+                pode ser verificado indo ao ServiceNow. E as palavras existem
+                porque a data sozinha obriga quem lê a fazer a conta. */}
+            {data && (
+              <span className="shrink-0 w-24 text-right text-dim tabular-nums"
+                title="Prazo do chamado">
+                {data}
+              </span>
+            )}
             {prazo && (
               <span className={`shrink-0 w-24 text-right tabular-nums ${TOM_PRAZO[prazo.tom]}`}>
                 {prazo.texto}
@@ -228,8 +236,7 @@ export default function ChamadosDashboard() {
               <X size={14} />
             </button>
           </div>
-          <ListaDoBloco chamados={selecionado.chamados}
-            comPrazo={(ORDEM_PRAZO as readonly string[]).includes(aberto as string)} />
+          <ListaDoBloco chamados={selecionado.chamados} />
         </Painel>
       )}
     </div>

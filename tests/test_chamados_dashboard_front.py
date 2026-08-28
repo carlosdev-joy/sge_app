@@ -103,6 +103,35 @@ def test_chamado_finalizado_nao_mostra_prazo(cen: dict) -> None:
     assert cen["mostra_encerrado"] is False
 
 
+# ═══════════ 2b. a data do prazo ════════════════════════════════════════════
+
+def test_a_data_sai_em_dia_mes_ano(cen: dict) -> None:
+    """A data existe para conferir a olho.
+
+    Sem ela, "vence hoje" só pode ser verificado indo ao ServiceNow — e o
+    ponto do painel é justamente não precisar ir.
+    """
+    assert cen["data_com_hora"] == "28/08/2026"
+    assert cen["data_so_dia"] == "28/08/2026"
+
+
+def test_a_data_nao_anda_para_tras_por_causa_de_fuso(cen: dict) -> None:
+    """`new Date('...Z')` lido à noite em Brasília devolve o DIA ANTERIOR.
+
+    O chamado que vence dia 28 apareceria como 27, e o operador conferiria um
+    prazo que não existe. A leitura é textual — hora não muda o dia em que
+    vence.
+    """
+    assert cen["data_iso_utc"] == "28/08/2026"
+
+
+def test_sem_prazo_a_tela_cala(cen: dict) -> None:
+    """Data inventada é pior que data ausente: uma some, a outra engana."""
+    assert cen["data_nula"] is None
+    assert cen["data_vazia"] is None
+    assert cen["data_ilegivel"] is None
+
+
 # ═══════════ 3. as contagens ═══════════════════════════════════════════════════
 
 def test_responsavel_em_branco_conta_como_sem_dono(cen: dict) -> None:

@@ -59,6 +59,26 @@ export function diasAteOPrazo(prazo: string | null | undefined,
   return Math.round((meiaNoite(hoje).getTime() - meiaNoite(d).getTime()) / MS_DIA)
 }
 
+/**
+ * A data do prazo em dd/mm/aaaa. `null` quando não há prazo ou não dá para ler.
+ *
+ * Formatada aqui, e não com `toLocaleDateString`, por dois motivos: o resultado
+ * do `toLocale` muda com a máquina de quem abre a tela — e uma tela que mostra
+ * 08/28/2026 para um e 28/08/2026 para outro não serve para conferir prazo —
+ * e porque a API manda "2026-08-28 11:43:30", que o `new Date` de alguns
+ * navegadores lê como UTC e devolve o DIA ANTERIOR à noite.
+ *
+ * Por isso a leitura é textual: os dez primeiros caracteres são a data, e é
+ * só o que interessa. Hora de vencimento não muda o dia em que vence.
+ */
+export function dataDoPrazo(prazo: string | null | undefined): string | null {
+  if (!prazo) return null
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(prazo.trim())
+  if (!m) return null
+  return `${m[3]}/${m[2]}/${m[1]}`
+}
+
+
 export interface RotuloPrazo {
   texto: string
   tom: 'atrasado' | 'hoje' | 'no prazo'
