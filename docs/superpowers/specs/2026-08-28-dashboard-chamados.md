@@ -268,7 +268,112 @@ O `<select>` de categorias exibe apenas as categorias que têm **ao menos um cha
 
 ---
 
-## 11. API — campos necessários por chamado
+## 11. Regra de exclusão de tasks — detalhamento crítico
+
+Esta é a regra que garante que os totais batem certinho. **Implementar errado aqui quebra todos os contadores.**
+
+### 11.1 A regra exata (frontend)
+
+```js
+// Filtro aplicado ANTES de qualquer visão ou grupo
+const chs = (rawData.chamados || []).filter(e => !(e.tipo === "task" && e.pai_sys_id))
+```
+
+Leitura: **excluir** um registro somente se ele for `tipo="task"` **E** tiver `pai_sys_id` preenchido. Qualquer outra combinação é incluída.
+
+### 11.2 Tabela de decisão — o que é incluído ou excluído
+
+| `tipo` | `pai_sys_id` | Incluído? | Motivo |
+|---|---|---|---|
+| `"incident"` | `null` | ✅ | Incident normal |
+| `"ritm"` | `null` | ✅ | RITM independente (maioria) |
+| `"ritm"` | preenchido | ✅ | RITM com pai (ex: RITM0100279 cujo pai não existe em `etl_chamado`) — **a regra não exclui ritm** |
+| `"task"` | preenchido | ❌ | SCTASK filha de um RITM — excluída da fila principal |
+| `"task"` | `null` | ✅ | Task órfã sem RITM pai — **seria incluída** (hipotético, não ocorre hoje) |
+| `"change"` | qualquer | ✅ | Tipo mudança |
+
+**A condição é AND**: ambas precisam ser verdadeiras para excluir. Trocar por OR ou verificar só `tipo` quebra o cálculo.
+
+### 11.3 Estado atual de produção (verificado em 2026-08-28)
+
+```
+Total em etl_chamado (ativo=1):   97
+  → incident:  1  (todas sem pai)
+  → ritm:     59  (58 sem pai + 1 com pai fora do banco)
+  → task:     37  (todas com pai = todas excluídas da fila principal)
+
+Após filtro frontend:             60  (1 + 59 = 60)
+```
+
+Os 37 SCTASKs são excluídas da fila principal — aparecem **somente** dentro do card RITM pai, na seção expandida de tarefas.
+
+### 11.4 Onde o mesmo filtro é aplicado
+
+O filtro `!(tipo==="task" && pai_sys_id)` é aplicado **em dois lugares** independentes:
+
+| Contexto | Variável | Uso |
+|---|---|---|
+| Dashboard (`DshPanel`) | `todos` (via `useMemo`) | Base de todos os grupos e contadores |
+| Kanban | `g` (via `useMemo`) | Lista base do kanban, filtros de coluna e dropdowns |
+
+Ambos partem do mesmo `GET /chamados` — que retorna **todos** os tipos incluindo tasks. O filtro é exclusivamente client-side.
+
+### 11.5 Como as tasks aparecem na tela
+
+As SCTASKs **não somem** da interface — elas aparecem dentro do card do RITM pai:
+
+```
+[Card RITM0092677]
+  SCTASK0094713  ...  aguardando
+```
+
+Isso acontece via chamada separada: `GET /chamados/{sys_id}/tasks` (habilitada somente quando `e.tipo === "ritm"`). O endpoint busca todos os registros com `pai_sys_id = sys_id`, incluindo inativos.
+
+Campos retornados pelo endpoint de tasks:
+`sys_id`, `numero`, `tipo`, `titulo`, `estado_kanban`, `prioridade`, `atribuido_a`, `grupo`, `aberto_em`, `atualizado_em`, `encerrado_em`, `ativo`, `url`, `sync_em`
+
+Renderização de cada task no card:
+- Número em azul (link para ServiceNow se `url` preenchido)
+- Título truncado
+- `estado_kanban` à direita
+- Exibidas somente tasks com `ativo = true` (`wE_lista = tasks.filter(t => t.ativo)`)
+
+### 11.6 Consequência nos contadores do dashboard
+
+Os grupos calculados em `D` usam a variável `todos` (já filtrada). Portanto:
+
+- **backlog, andamento, pendentes, resolvidas** → nunca contam tasks filhas
+- **vencem_hoje, vencem_semana, vencidas** → nunca contam tasks filhas
+- **total_fila** = `ativos.length` onde `ativos = todos.filter(ativo && !encerrado)`
+
+Verificação cruzada com banco (2026-08-28):
+
+| Contador | Valor esperado |
+|---|---|
+| total_fila | 60 |
+| backlog | 24 |
+| andamento | 7 |
+| pendentes | 6 |
+| resolvidos | 1598 (todos — inclui encerrados) |
+| vencem_hoje | 14 |
+| vencem_semana | 0 |
+| vencidas | 2 |
+
+### 11.7 Regra de "Meu painel" sobre tasks
+
+No modo `p === "proprio"`:
+
+```js
+chs.filter(e => e.atribuido_a && e.atribuido_a.trim())
+```
+
+`chs` já foi filtrado removendo tasks com pai. Portanto "Meu painel" mostra RITMs e incidents com responsável preenchido — **nunca tasks individuais**.
+
+---
+
+## 12. API — campos necessários por chamado
+
+> Nota: a seção 11 acima descreve como o campo `pai_sys_id` é consumido pelo frontend. A API retorna o campo conforme documentado abaixo.
 
 O endpoint `GET /chamados` deve retornar por chamado:
 
