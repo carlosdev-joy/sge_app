@@ -28,7 +28,7 @@ import { separarFila } from '../lib/filaChamados'
 // entra e quem some fica alcançável por teste.
 import {
   CATEGORIAS, SEM_ATRIBUICAO, SEM_MARCACAO, algumFiltroAtivo, casaFiltros,
-  tiposDisponiveis,
+  destacaIncidente, ordenarColuna, tiposDisponiveis,
 } from '../lib/filtrosKanban'
 import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
 
@@ -286,13 +286,23 @@ function ModalTriagem({ c, aoFechar }: { c: Chamado; aoFechar: () => void }) {
 }
 
 function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
+  // Incidente é INTERRUPÇÃO: alguma coisa que funcionava parou. No meio de
+  // pedidos de trabalho planejado ele some — e some justamente quando é o que
+  // deveria ser lido primeiro. O destaque acaba no resolvido: alarme sobre
+  // trabalho FEITO não pede ação e ensina a ignorar os outros.
+  const urgente = destacaIncidente(c)
   const [verLaudo, setVerLaudo] = useState(false)
   // O conteúdo do chamado — descrição, notas e anexos. O gesto que abre isto,
   // e o porquê de ele ser anunciado, moram em `CabecalhoCard`.
   const [verDetalhe, setVerDetalhe] = useState(false)
   const estilo = c.veredito ? ESTILO_VEREDITO[c.veredito] : undefined
   return (
-    <div className="bg-canvas border border-edge rounded-md p-2.5 flex flex-col gap-1.5 shadow-sm">
+    <div data-urgente={urgente || undefined}
+      className={`rounded-md p-2.5 flex flex-col gap-1.5 shadow-sm border
+        ${urgente
+          ? 'bg-red-50 dark:bg-red-950/30 border-red-300 dark:border-red-800 '
+            + 'border-l-4 border-l-red-500 dark:border-l-red-500'
+          : 'bg-canvas border-edge'}`}>
       <CabecalhoCard numero={c.numero} titulo={c.titulo} url={c.url}
         aoAbrirDetalhe={() => setVerDetalhe(true)} />
       {verDetalhe && (
@@ -300,7 +310,12 @@ function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
           aoFechar={() => setVerDetalhe(false)} />
       )}
       <div className="flex flex-wrap items-center gap-1">
-        <Badge value="neutral">{ROTULO_TIPO[c.tipo] ?? c.tipo}</Badge>
+        {/* O rótulo do tipo carrega o tom. Cor sozinha não informa quem não a
+            distingue: aqui a palavra "Incidente" continua sendo o que diz o
+            que é, e o vermelho só reforça. */}
+        <Badge value={urgente ? 'error' : 'neutral'}>
+          {ROTULO_TIPO[c.tipo] ?? c.tipo}
+        </Badge>
         {c.prioridade && <Badge value="neutral">{c.prioridade}</Badge>}
         {/* estado_origem no title: quando o card cai em "Outros", é ele que
             explica por quê — o valor cru que o ServiceNow devolveu. */}
@@ -611,7 +626,11 @@ export default function Chamados() {
       {aba === 'fila' && !d.migration_ausente && d.total > 0 && (
         <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-5">
           {d.colunas.map(coluna => {
-            const daColuna = filtrados.filter(c => c.estado_kanban === coluna)
+            // Incidentes em curso no TOPO. Quem abre o kanban lê de cima para
+            // baixo e para quando acha o que procura — um incidente na décima
+            // posição de uma coluna que rola é um incidente que ninguém viu.
+            const daColuna = ordenarColuna(
+              filtrados.filter(c => c.estado_kanban === coluna))
             return (
               <div key={coluna} className="flex flex-col gap-2 min-w-0">
                 <div className="flex items-center justify-between px-1">

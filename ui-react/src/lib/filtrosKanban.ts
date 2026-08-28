@@ -1,10 +1,13 @@
-// Os filtros da fila do kanban — quem entra e quem some.
+// Os filtros e a ORDEM da fila do kanban — quem entra, quem some, quem vem
+// primeiro.
 //
 // Fora da página porque é AQUI que mora a decisão, e dentro de
 // `pages/Chamados.tsx` ela era inalcançável para teste (a página importa
 // react-query). Filtro errado não quebra a tela: ele mostra menos, e "menos"
 // é indistinguível de "é isso que existe" — o operador conclui que a fila
 // esvaziou.
+
+import { emCurso } from './prazoChamados'
 
 /** O que os filtros precisam saber de um chamado. */
 export interface ChamadoFiltravel {
@@ -118,4 +121,48 @@ export function casaFiltros(
     && casaBusca(c, f.busca)
 
   return casaLinha(card) || filhas.some(casaLinha)
+}
+
+
+// ── A ordem dentro da coluna ────────────────────────────────────────────────
+
+/** O mínimo para decidir a ordem e o destaque. */
+export interface ChamadoOrdenavel {
+  tipo: string
+  estado_kanban: string
+}
+
+/**
+ * Este card recebe destaque de incidente?
+ *
+ * Incidente é interrupção: alguma coisa que funcionava parou. Ele compete por
+ * atenção com pedidos de trabalho planejado, e no meio deles some.
+ *
+ * ⚠️ O destaque acaba quando o chamado termina. Alarme sobre trabalho FEITO
+ * não pede ação nenhuma — e é o que ensina a ignorar os outros, inclusive os
+ * que pedem. Mesma razão pela qual o rodapé cala idade e prazo no resolvido.
+ */
+export function destacaIncidente(c: ChamadoOrdenavel): boolean {
+  return (c.tipo || '').trim() === 'incident' && emCurso(c.estado_kanban)
+}
+
+/**
+ * A ordem dos cards dentro de uma coluna: incidentes em curso primeiro.
+ *
+ * Quem abre o kanban lê de cima para baixo e para quando acha o que procura —
+ * um incidente na décima posição de uma coluna que rola é um incidente que
+ * ninguém viu.
+ *
+ * A ordenação é ESTÁVEL (garantido pelo `sort` desde o ES2019): dentro de cada
+ * grupo, a ordem que veio do servidor é preservada. Sem isso, dois cards
+ * "iguais" trocariam de lugar entre renderizações e a fila dançaria sob o olho
+ * de quem está lendo.
+ *
+ * Não recebe o nome da coluna de propósito: cada card carrega o próprio
+ * `estado_kanban`, e conferir por card faz a regra continuar certa mesmo que
+ * um dia a coluna passe a misturar estados.
+ */
+export function ordenarColuna<T extends ChamadoOrdenavel>(cards: T[]): T[] {
+  return [...cards].sort(
+    (a, b) => Number(destacaIncidente(b)) - Number(destacaIncidente(a)))
 }

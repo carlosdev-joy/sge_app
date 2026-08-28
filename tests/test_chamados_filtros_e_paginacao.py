@@ -270,6 +270,118 @@ def test_lista_sem_ninguem_diz_isso(cen: dict) -> None:
     assert "Nenhum responsável" in cen["filtro_responsaveis"]["vazio"]["texto"]
 
 
+# ═══════════ 6b. a caixa FECHA — o defeito relatado ═════════════════════════
+#
+# "quando escolho qualquer opção o modal não some ao clicar fora, ele fica
+#  travado ocupando a tela e só com atualização de tela que some mas ai não
+#  consigo valir os dados."
+#
+# ⚠️ A primeira versão usava `<details>`, com o argumento de que ele dispensava
+# tratar o clique-fora. O argumento estava ERRADO: `<details>` fecha só pelo
+# próprio gatilho. A caixa ficava sobre o conteúdo — e o conteúdo é justamente
+# o que a pessoa acabou de filtrar para ver.
+
+def test_a_caixa_comeca_fechada(cen: dict) -> None:
+    """Caixa aberta ao carregar a aba tampa os indicadores antes do primeiro
+    clique."""
+    assert cen["filtro_responsaveis"]["um"]["comecaFechada"] is True
+
+
+def test_clicar_fora_fecha(cen: dict) -> None:
+    """O gesto que faltava. Sem ele, a saída era recarregar a página — e o
+    filtro se perdia junto, que é o que impedia conferir os dados."""
+    f = cen["filtro_responsaveis"]["fechamento"]
+    assert f["temFundo"] is True, "precisa existir uma camada que capture o clique"
+    assert f["depoisDoFundo"] is False
+
+
+def test_esc_fecha(cen: dict) -> None:
+    """Quem está no teclado não tem "clicar fora"."""
+    assert cen["filtro_responsaveis"]["fechamento"]["depoisDoEsc"] is False
+
+
+def test_outra_tecla_nao_fecha(cen: dict) -> None:
+    """Fechar em qualquer tecla derrubaria a caixa quando a pessoa navega com
+    Tab ou Espaço entre as opções."""
+    assert cen["filtro_responsaveis"]["fechamento"]["depoisDeOutraTecla"] is True
+
+
+def test_o_botao_fechar_existe_e_funciona(cen: dict) -> None:
+    """O clique fora funciona, mas não se anuncia — quem não o descobriu fica
+    preso à caixa, que foi exatamente o relato."""
+    f = cen["filtro_responsaveis"]["fechamento"]
+    assert f["temBotaoFechar"] is True
+    assert f["depoisDoBotaoFechar"] is False
+
+
+def test_o_gatilho_alterna(cen: dict) -> None:
+    assert cen["filtro_responsaveis"]["fechamento"]["depoisDoGatilhoDeNovo"] is False
+
+
+def test_marcar_uma_opcao_NAO_fecha(cen: dict) -> None:
+    """O filtro é de múltipla escolha: fechar a cada marca obrigaria a reabrir
+    para cada nome, e o pedido era justamente comparar várias pessoas."""
+    assert cen["filtro_responsaveis"]["fechamento"]["aoMarcarContinuaAberta"] is True
+
+
+# ═══════════ 6c. incidente: destaque e topo da fila ═════════════════════════
+#
+# "quando for incidente o card deve ter um destaque e sempre deve estar no
+#  inicio da fila que ele estiver, pois ele deve ser prioridade, ele só perde
+#  este destaque e top da fila quando vai para resolvido."
+
+@pytest.mark.parametrize("caso", [
+    "destaca_incidente_novo", "destaca_incidente_andamento",
+    "destaca_incidente_aguardando",
+])
+def test_incidente_em_curso_recebe_destaque(cen: dict, caso: str) -> None:
+    """Incidente é INTERRUPÇÃO: alguma coisa que funcionava parou. No meio de
+    pedidos de trabalho planejado ele some — e some justamente quando é o que
+    deveria ser lido primeiro."""
+    assert cen["kanban"][caso] is True
+
+
+@pytest.mark.parametrize("caso", [
+    "destaca_incidente_resolvido", "destaca_incidente_encerrado",
+])
+def test_incidente_terminado_perde_o_destaque(cen: dict, caso: str) -> None:
+    """Alarme sobre trabalho FEITO não pede ação nenhuma — e é o que ensina a
+    ignorar os outros, inclusive os que pedem. Mesma razão pela qual o rodapé
+    cala idade e prazo no resolvido."""
+    assert cen["kanban"][caso] is False
+
+
+@pytest.mark.parametrize("caso", ["destaca_ritm", "destaca_task"])
+def test_o_que_nao_e_incidente_nao_recebe_destaque(cen: dict, caso: str) -> None:
+    """Destaque em tudo é destaque em nada."""
+    assert cen["kanban"][caso] is False
+
+
+def test_o_incidente_vai_para_o_topo_da_coluna(cen: dict) -> None:
+    """Quem abre o kanban lê de cima para baixo e para quando acha o que
+    procura — um incidente na décima posição de uma coluna que rola é um
+    incidente que ninguém viu."""
+    assert cen["kanban"]["ordem_incidente_sobe"] == ["I1", "R1", "R2", "R3"]
+
+
+def test_a_ordem_dentro_de_cada_grupo_e_preservada(cen: dict) -> None:
+    """Ordenação instável faz dois cards "iguais" trocarem de lugar entre
+    renderizações — e a fila dança sob o olho de quem está lendo."""
+    assert cen["kanban"]["ordem_estavel"] == ["I1", "I2", "R1", "R2", "R3"]
+
+
+def test_na_coluna_de_resolvidos_o_incidente_nao_sobe(cen: dict) -> None:
+    """Ele já terminou: subir ao topo daria a ele uma atenção que nada pede."""
+    assert cen["kanban"]["ordem_resolvido_nao_sobe"] == ["R1", "I1", "R2"]
+
+
+def test_ordenar_nao_altera_a_lista_recebida(cen: dict) -> None:
+    """Mutar o array do `useMemo` faria a fila mudar de ordem entre
+    renderizações sem que nada a tivesse reordenado."""
+    assert cen["kanban"]["ordem_nao_muta"] == ["R1", "I1"]
+    assert cen["kanban"]["ordem_vazia"] == 0
+
+
 # ═══════════ 7. a URL que carrega o recorte ═════════════════════════════════
 
 @pytest.mark.parametrize("caso,esperado", [

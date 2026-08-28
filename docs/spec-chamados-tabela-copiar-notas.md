@@ -280,3 +280,62 @@ queria comparar.
 * O aviso de recorte vem do **estado local**, não da resposta: com
   `placeholderData` a tela ainda mostra os dados anteriores enquanto a consulta
   corre, e ler o filtro da resposta deixaria o aviso um passo atrás.
+
+## F8 — Correção: a caixa de responsáveis travava a tela
+
+> "no filtro de responsavel por nome quando escolho qualquer opção o modal não
+> some ao clicar fora, ele fica travado ocupando a tela e só com atualização de
+> tela que some mas ai não consigo valir os dados."
+
+⚠️ **Defeito introduzido pela F7, com um argumento errado por escrito.** A
+escolha do `<details>` foi justificada assim: *"não precisa de listener de
+clique-fora — que é onde um menu feito à mão costuma quebrar"*. Só que
+`<details>` fecha **apenas pelo próprio gatilho**. Depois de marcar um nome, a
+caixa ficava sobre o conteúdo — e o conteúdo é justamente o que a pessoa acabou
+de filtrar para ver. A saída era recarregar a página, o que levava o filtro
+junto.
+
+A correção não é "não usar `<details>`". É que uma camada flutuante precisa de
+uma forma de fechar que **não exija acertar o gatilho de novo**, e são três —
+nenhuma opcional:
+
+* **clicar fora**, por uma camada `fixed inset-0` invisível **abaixo** da caixa;
+* **Esc**, para quem está no teclado e não tem "fora" para clicar;
+* o **gatilho**, que continua alternando — mais um "fechar" **dito**, porque o
+  clique fora funciona mas não se anuncia.
+
+**Marcar uma opção NÃO fecha**: o filtro é de múltipla escolha, e fechar a cada
+marca obrigaria a reabrir para cada nome — matando o que a F7 entregou.
+
+## F9 — Incidente: destaque e topo da fila
+
+> "quando for incidente o card deve ter um destaque e sempre deve estar no
+> inicio da fila que ele estiver, pois ele deve ser prioridade, ele só perde
+> este destaque e top da fila quando vai para resolvido."
+
+Incidente é **interrupção**: alguma coisa que funcionava parou. No meio de
+pedidos de trabalho planejado ele some — e some justamente quando é o que
+deveria ser lido primeiro. Quem abre o kanban lê de cima para baixo e para
+quando acha o que procura; um incidente na décima posição de uma coluna que
+rola é um incidente que ninguém viu.
+
+* **Destaque**: borda esquerda e fundo próprios, **mais** o rótulo "Incidente"
+  em tom de alerta. Cor nunca sozinha.
+* **Topo da coluna**, com ordenação **estável** — dentro de cada grupo a ordem
+  do servidor é preservada, senão dois cards "iguais" trocam de lugar entre
+  renderizações e a fila dança sob o olho de quem lê.
+* **Acaba no resolvido**, como pedido — e pela mesma razão que o rodapé cala
+  idade e prazo: alarme sobre trabalho FEITO não pede ação nenhuma, e é o que
+  ensina a ignorar os outros.
+
+⚠️ "Ainda em curso" passou a ter **um dono só** (`emCurso`, em
+`prazoChamados`), de onde `mostraPrazo` também bebe. Uma segunda lista de
+estados terminais à mão significaria um lugar parando de alertar enquanto o
+outro continua, sem nada na tela denunciando — o mesmo padrão do
+`RBAC_RECURSOS`.
+
+**Limite assumido:** o destaque é testado na DECISÃO (`destacaIncidente`,
+`ordenarColuna`), não no card renderizado. `CardChamado` vive dentro de
+`pages/Chamados.tsx`, que importa react-query, e nenhuma bancada o monta. A
+ligação entre a decisão e a classe do card é uma expressão só, coberta por
+`tsc -b` e conferida a olho em dev.

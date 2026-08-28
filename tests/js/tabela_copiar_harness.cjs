@@ -316,12 +316,22 @@ const OPCOES = [
   { nome: 'sem responsável', total: 3 },
 ]
 
-function filtro(escolhidos) {
+// A caixa começa FECHADA: abrir é o primeiro gesto, como na tela.
+function abrir(escolhidos, opcoes = OPCOES) {
   const mudancas = []
   const tela = mini.montar(el(FiltroResponsaveis, {
-    opcoes: OPCOES, escolhidos, totalGeral: 22,
+    opcoes, escolhidos, totalGeral: 22,
     aoMudar: (nomes) => mudancas.push(nomes),
   }))
+  const fechada = achar(tela, 'data-caixa').length === 0
+  tela.clicar(achar(tela, 'data-gatilho')[0])
+  return { tela, mudancas, comecaFechada: fechada }
+}
+
+const estaAberta = (tela) => achar(tela, 'data-caixa').length > 0
+
+function filtro(escolhidos) {
+  const { tela, mudancas, comecaFechada } = abrir(escolhidos)
   const caixas = achar(tela, 'data-opcao')
   const marcar = (nome) => {
     const linha = caixas.find(n => n.props['data-opcao'] === nome)
@@ -330,9 +340,10 @@ function filtro(escolhidos) {
     return mudancas[mudancas.length - 1]
   }
   return {
-    // Só o PRIMEIRO span do gatilho: o `textoDe` do `<summary>` inteiro
-    // colaria o resumo com o número do contador ao lado ("Ana1").
-    resumo: textoDe(tela.achar(n => n.tag === 'summary')[0]
+    comecaFechada,
+    // Só o PRIMEIRO span do gatilho: o `textoDe` do botão inteiro colaria o
+    // resumo com o número do contador ao lado ("Ana1").
+    resumo: textoDe(achar(tela, 'data-gatilho')[0]
       .filhos.find(f => f.tag === 'span')).trim(),
     contagem: achar(tela, 'data-contagem').length
       ? textoDe(achar(tela, 'data-contagem')[0]).trim() : null,
@@ -402,6 +413,48 @@ const kanban = {
   combinado_recusa: casa(card({ categoria_diaadia: 'iniciativa', atribuido_a: 'Bruno' }), [],
                          F({ categoria: 'iniciativa', responsavel: 'Ana' })),
   sem_filtro_passa_tudo: casa(card({ atribuido_a: null, categoria_diaadia: '' }), [], F({})),
+  // ── incidente: destaque e topo da fila ──────────────────────────────────
+  destaca_incidente_novo: fk.destacaIncidente({ tipo: 'incident', estado_kanban: 'novo' }),
+  destaca_incidente_andamento: fk.destacaIncidente({ tipo: 'incident', estado_kanban: 'andamento' }),
+  destaca_incidente_aguardando: fk.destacaIncidente({ tipo: 'incident', estado_kanban: 'aguardando' }),
+  // ⚠️ perde o destaque ao terminar: alarme sobre trabalho FEITO não pede ação
+  destaca_incidente_resolvido: fk.destacaIncidente({ tipo: 'incident', estado_kanban: 'resolvido' }),
+  destaca_incidente_encerrado: fk.destacaIncidente({ tipo: 'incident', estado_kanban: 'encerrado' }),
+  destaca_ritm: fk.destacaIncidente({ tipo: 'ritm', estado_kanban: 'novo' }),
+  destaca_task: fk.destacaIncidente({ tipo: 'task', estado_kanban: 'novo' }),
+
+  ordem_incidente_sobe: fk.ordenarColuna([
+    { numero: 'R1', tipo: 'ritm', estado_kanban: 'novo' },
+    { numero: 'R2', tipo: 'ritm', estado_kanban: 'novo' },
+    { numero: 'I1', tipo: 'incident', estado_kanban: 'novo' },
+    { numero: 'R3', tipo: 'ritm', estado_kanban: 'novo' },
+  ]).map(c => c.numero),
+  // Estável: dentro de cada grupo, a ordem do servidor é preservada.
+  ordem_estavel: fk.ordenarColuna([
+    { numero: 'R1', tipo: 'ritm', estado_kanban: 'novo' },
+    { numero: 'I1', tipo: 'incident', estado_kanban: 'novo' },
+    { numero: 'R2', tipo: 'ritm', estado_kanban: 'novo' },
+    { numero: 'I2', tipo: 'incident', estado_kanban: 'novo' },
+    { numero: 'R3', tipo: 'ritm', estado_kanban: 'novo' },
+  ]).map(c => c.numero),
+  // Na coluna de resolvidos o incidente NÃO sobe: ele já terminou.
+  ordem_resolvido_nao_sobe: fk.ordenarColuna([
+    { numero: 'R1', tipo: 'ritm', estado_kanban: 'resolvido' },
+    { numero: 'I1', tipo: 'incident', estado_kanban: 'resolvido' },
+    { numero: 'R2', tipo: 'ritm', estado_kanban: 'resolvido' },
+  ]).map(c => c.numero),
+  ordem_vazia: fk.ordenarColuna([]).length,
+  // Não muda a lista recebida: mutar o array do `useMemo` faria a fila mudar
+  // de ordem entre renderizações sem nada tê-la reordenado.
+  ordem_nao_muta: (() => {
+    const original = [
+      { numero: 'R1', tipo: 'ritm', estado_kanban: 'novo' },
+      { numero: 'I1', tipo: 'incident', estado_kanban: 'novo' },
+    ]
+    fk.ordenarColuna(original)
+    return original.map(c => c.numero)
+  })(),
+
   ativo_vazio: fk.algumFiltroAtivo(F({})),
   ativo_com_categoria: fk.algumFiltroAtivo(F({ categoria: fk.SEM_MARCACAO })),
 }
@@ -426,10 +479,58 @@ async function principal() {
       dois: filtro(['Ana', 'Bruno']),
       tres: filtro(['Ana', 'Bruno', 'sem responsável']),
       vazio: (() => {
-        const t = mini.montar(el(FiltroResponsaveis, {
-          opcoes: [], escolhidos: [], totalGeral: 0, aoMudar: () => {},
-        }))
-        return { texto: t.texto }
+        const { tela } = abrir([], [])
+        return { texto: tela.texto }
+      })(),
+      // ⚠️ O DEFEITO RELATADO: a caixa ficava aberta sobre a tela e só sumia
+      // com um recarregamento — que levava o filtro junto.
+      fechamento: (() => {
+        // Clica SE o nó existir. Sem esta guarda, a ausência do fundo derruba
+        // a bancada inteira com "nó sem onClick", e a suíte reporta um erro de
+        // infraestrutura no lugar do defeito que ela deveria nomear.
+        const clicarSeHouver = (tela, marca) => {
+          const no = achar(tela, marca)[0]
+          if (no) tela.clicar(no)
+          return !!no
+        }
+
+        const fundo = abrir(['Ana'])
+        const achouFundo = clicarSeHouver(fundo.tela, 'data-fundo')
+
+        const esc = abrir(['Ana'])
+        const raiz = esc.tela.achar(n => n.props && n.props.onKeyDown)[0]
+        esc.tela.disparar(raiz, 'onKeyDown', { key: 'Escape' })
+
+        const outraTecla = abrir(['Ana'])
+        outraTecla.tela.disparar(
+          outraTecla.tela.achar(n => n.props && n.props.onKeyDown)[0],
+          'onKeyDown', { key: 'a' })
+
+        const botao = abrir(['Ana'])
+        const achouFechar = clicarSeHouver(botao.tela, 'data-fechar')
+
+        const gatilho = abrir(['Ana'])
+        gatilho.tela.clicar(achar(gatilho.tela, 'data-gatilho')[0])
+
+        // Marcar NÃO fecha: o filtro é de múltipla escolha, e fechar a cada
+        // marca obrigaria a reabrir para cada nome.
+        const marcando = abrir(['Ana'])
+        const linha = achar(marcando.tela, 'data-opcao')
+          .find(n => n.props['data-opcao'] === 'Bruno')
+        const caixa = linha.filhos.find(f => f.tag === 'input')
+        caixa.props.onChange({ target: { checked: true } })
+        marcando.tela.sincronizar()
+
+        return {
+          temFundo: achouFundo,
+          temBotaoFechar: achouFechar,
+          depoisDoFundo: estaAberta(fundo.tela),
+          depoisDoEsc: estaAberta(esc.tela),
+          depoisDeOutraTecla: estaAberta(outraTecla.tela),
+          depoisDoBotaoFechar: estaAberta(botao.tela),
+          depoisDoGatilhoDeNovo: estaAberta(gatilho.tela),
+          aoMarcarContinuaAberta: estaAberta(marcando.tela),
+        }
       })(),
       puras: {
         url_vazia: fr.urlIndicadores([]),
