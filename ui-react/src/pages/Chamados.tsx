@@ -19,6 +19,7 @@ import { Tabs } from '../components/ui/Tabs'
 import { Modal } from '../components/ui/Modal'
 import ChamadosIndicadores from './ChamadosIndicadores'
 import ChamadosDashboard from './ChamadosDashboard'
+import { ChamadoDetalheModal } from '../components/chamados/ChamadoDetalheModal'
 import { separarFila } from '../lib/filaChamados'
 import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
 
@@ -277,6 +278,9 @@ function ModalTriagem({ c, aoFechar }: { c: Chamado; aoFechar: () => void }) {
 
 function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
   const [verLaudo, setVerLaudo] = useState(false)
+  // O conteúdo do chamado — descrição, notas e anexos. Abre pelo título, e
+  // não por um botão "detalhes": o título é o que a pessoa já ia clicar.
+  const [verDetalhe, setVerDetalhe] = useState(false)
   const estilo = c.veredito ? ESTILO_VEREDITO[c.veredito] : undefined
   return (
     <div className="bg-canvas border border-edge rounded-md p-2.5 flex flex-col gap-1.5 shadow-sm">
@@ -290,7 +294,15 @@ function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
           </a>
         )}
       </div>
-      <p className="text-xs text-ink leading-snug">{c.titulo || '(sem título)'}</p>
+      <button type="button" onClick={() => setVerDetalhe(true)}
+        className="text-xs text-ink leading-snug text-left hover:underline"
+        title="Ver descrição, notas e anexos">
+        {c.titulo || '(sem título)'}
+      </button>
+      {verDetalhe && (
+        <ChamadoDetalheModal sysId={c.sys_id} numero={c.numero}
+          aoFechar={() => setVerDetalhe(false)} />
+      )}
       <div className="flex flex-wrap items-center gap-1">
         <Badge value="neutral">{ROTULO_TIPO[c.tipo] ?? c.tipo}</Badge>
         {c.prioridade && <Badge value="neutral">{c.prioridade}</Badge>}
