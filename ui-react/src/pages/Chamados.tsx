@@ -33,7 +33,9 @@ import {
 // A aparência do quadro — superfície do card e tom da raia — mora em
 // `estiloKanban`: foi num TOKEN que estava o defeito, e token errado não
 // aparece em teste de comportamento.
-import { CLASSE_RAIA, classeDoCard, tomDaColuna } from '../lib/estiloKanban'
+import {
+  CLASSE_RAIA, classeDaGrade, classeDoCard, raiasVisiveis, tomDaColuna,
+} from '../lib/estiloKanban'
 import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
 
 // Aviso com tom próprio. O InfoBanner da casa é azul e DISPENSÁVEL — certo
@@ -497,6 +499,25 @@ export default function Chamados() {
       casaFiltros(c, filhasPorPai.get(c.sys_id) ?? [], filtros)),
     [chamados, filhasPorPai, filtros])
 
+  // Quantos cards em cada coluna, DEPOIS do filtro. É esta conta que decide se
+  // a raia "Outros" aparece, e é a mesma que o cabeçalho de cada raia mostra.
+  const porColuna = useMemo(() => {
+    const mapa = new Map<string, Chamado[]>()
+    for (const c of filtrados) {
+      const lista = mapa.get(c.estado_kanban)
+      if (lista) lista.push(c)
+      else mapa.set(c.estado_kanban, [c])
+    }
+    return mapa
+  }, [filtrados])
+
+  // `data`, e não `d`: os hooks correm ANTES das guardas de carregamento, e
+  // `d` só existe depois delas.
+  const raias = useMemo(
+    () => raiasVisiveis(data?.colunas ?? [],
+                        col => (porColuna.get(col) ?? []).length),
+    [data?.colunas, porColuna])
+
   const temFiltro = algumFiltroAtivo(filtros)
   const limpar = () => {
     setBusca(''); setFTipo(''); setFResponsavel(''); setFPrioridade('')
@@ -643,13 +664,15 @@ export default function Chamados() {
       )}
 
       {aba === 'fila' && !d.migration_ausente && d.total > 0 && (
-        <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-5">
-          {d.colunas.map(coluna => {
+        // "Outros" só aparece quando tem card, e a grade se ajusta ao número
+        // de raias — ver `raiasVisiveis`. Sem ajustar a grade, esconder uma
+        // coluna deixaria um vão do tamanho dela no fim do quadro.
+        <div className={classeDaGrade(raias.length)}>
+          {raias.map(coluna => {
             // Incidentes em curso no TOPO. Quem abre o kanban lê de cima para
             // baixo e para quando acha o que procura — um incidente na décima
             // posição de uma coluna que rola é um incidente que ninguém viu.
-            const daColuna = ordenarColuna(
-              filtrados.filter(c => c.estado_kanban === coluna))
+            const daColuna = ordenarColuna(porColuna.get(coluna) ?? [])
             return (
               // ⚠️ A RAIA. Antes a coluna não tinha superfície nenhuma: os
               // cards flutuavam direto sobre o fundo da página, sem nada que

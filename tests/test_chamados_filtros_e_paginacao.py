@@ -25,6 +25,7 @@ Sem Node ou sem `node_modules` a suíte SALTA em vez de falhar.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -472,3 +473,79 @@ def test_toda_coluna_do_kanban_tem_tom(cen: dict) -> None:
     queda a esconderia atrás do cinza."""
     assert cen["kanban"]["colunas_com_tom"] == [
         "aguardando", "andamento", "novo", "outros", "resolvido"]
+
+
+# ═══════════ 9. a raia "Outros" só quando tem card ══════════════════════════
+#
+# "a raia Outros só fica visivel quando houver card não categorizado que caiu
+#  ali, caso contrario não aparece, permitindo melhor visibildiade dos demais
+#  campos."
+
+def test_outros_aparece_quando_tem_card(cen: dict) -> None:
+    """Ela é a coluna de ANOMALIA: um estado que o mapa fechado do ServiceNow
+    não conhece cai ali em vez de sumir da fila. Com card, ela precisa ser
+    vista."""
+    assert cen["kanban"]["raias_com_outros_cheio"] == [
+        "novo", "andamento", "aguardando", "resolvido", "outros"]
+
+
+def test_outros_some_quando_vazia(cen: dict) -> None:
+    """Vazia ela não informa nada — é a ausência de anomalia, que é o estado
+    normal — e cobrava um quinto da largura da tela para dizer "nenhum"."""
+    assert cen["kanban"]["raias_com_outros_vazio"] == [
+        "novo", "andamento", "aguardando", "resolvido"]
+
+
+def test_as_raias_de_ETAPA_continuam_mesmo_vazias(cen: dict) -> None:
+    """⚠️ A regra vale só para "Outros". "Em andamento" vazia é INFORMAÇÃO:
+    ninguém pegou nada. Sumir com a coluna esconderia o fato — e o quadro
+    mudaria de forma a cada sincronização, o que é pior que uma coluna vazia."""
+    assert cen["kanban"]["raias_com_etapa_vazia"] == [
+        "novo", "andamento", "aguardando", "resolvido"]
+
+
+def test_backend_sem_a_coluna_outros_nao_quebra(cen: dict) -> None:
+    """As colunas vêm da resposta; a regra não pode supor que "outros" está
+    lá."""
+    assert cen["kanban"]["raias_sem_outros_no_backend"] == ["novo", "andamento"]
+    assert cen["kanban"]["raias_vazias"] == []
+
+
+@pytest.mark.parametrize("caso,esperado", [
+    ("grade_5", "xl:grid-cols-5"),
+    ("grade_4", "xl:grid-cols-4"),
+    ("grade_1", "grid-cols-1"),
+    # Número fora da faixa cai na grade de 5 em vez de ficar sem grade nenhuma.
+    ("grade_fora_da_faixa", "xl:grid-cols-5"),
+])
+def test_a_grade_acompanha_o_numero_de_raias(
+        cen: dict, caso: str, esperado: str) -> None:
+    """Sem ajustar a grade, esconder uma coluna deixaria um VÃO do tamanho dela
+    no fim do quadro — que é o oposto de "melhor visibilidade dos demais"."""
+    assert esperado in cen["kanban"][caso]
+
+
+def test_as_grades_sao_escritas_por_extenso() -> None:
+    """⚠️ ESTE TESTE OLHA O FONTE, E É O ÚNICO QUE PODE.
+
+    O Tailwind varre o CÓDIGO à procura das classes que usa. Um
+    `xl:grid-cols-${n}` montado em tempo de execução produz exatamente a mesma
+    STRING que a versão correta — mas a classe nunca entrou no CSS gerado, e a
+    grade não acontece: sem erro nenhum, o quadro vira uma coluna só.
+
+    Uma versão anterior deste teste procurava `${` no VALOR devolvido pela
+    função. O template já estava avaliado ali: o teste não podia falhar, e
+    passou verde com a sabotagem de pé. Peso morto disfarçado de guarda.
+    """
+    fonte = (RAIZ / "ui-react" / "src" / "lib" / "estiloKanban.ts").read_text(
+        encoding="utf-8")
+    # ⚠️ SEM OS COMENTÁRIOS. O comentário que ADVERTE contra o padrão contém o
+    # padrão — e a primeira versão desta varredura acusou o próprio aviso. É o
+    # mesmo falso positivo que `test_migration_nao_usa_indice_filtrado` já
+    # havia pago neste repo.
+    codigo = re.sub(r"/\*.*?\*/", "", fonte, flags=re.S)
+    codigo = re.sub(r"//[^\n]*", "", codigo)
+    montadas = re.findall(r"grid-cols-\$\{|grid-rows-\$\{", codigo)
+    assert not montadas, (
+        "classe de grade montada por interpolação: o Tailwind não a gera, "
+        f"e a grade some em silêncio — {montadas}")

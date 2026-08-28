@@ -379,3 +379,27 @@ O estilo saiu para `lib/estiloKanban` porque **defeito de token não aparece em
 teste de comportamento**: a tela renderiza, os dados estão certos, e o card só
 não se distingue do fundo. Agora a escolha do token é uma afirmação
 verificável — e a sabotagem que devolve `bg-canvas` derruba o teste.
+
+## F11 — A raia "Outros" só quando tem card
+
+> "a raia Outros só fica visivel quando houver card não categorizado que caiu
+> ali, caso contrario não aparece, permitindo melhor visibildiade dos demais."
+
+"Outros" é a coluna de **anomalia**: o mapa de estados do ServiceNow é fechado,
+e um estado que ele não conhece cai ali em vez de sumir da fila. Vazia, ela não
+informa nada — é a *ausência* de anomalia, que é o estado normal — e cobrava um
+quinto da largura da tela para dizer "nenhum" o tempo todo.
+
+⚠️ **A regra vale só para ela.** As outras quatro são **etapas**: "Em
+andamento" vazia é informação (ninguém pegou nada), e sumir com a coluna
+esconderia o fato — além de fazer o quadro mudar de forma a cada sincronização,
+o que é pior que uma coluna vazia.
+
+A conta é sobre o que está **visível** (já filtrado): uma raia vazia por causa
+do filtro é uma raia sem nada a mostrar, e o usuário sabe que filtrou.
+
+**A grade acompanha.** Sem isso, esconder a coluna deixaria um vão do tamanho
+dela no fim do quadro — o oposto de "melhor visibilidade dos demais". As
+classes de grade são escritas **por extenso**: o Tailwind varre o fonte, e um
+`xl:grid-cols-${n}` montado em tempo de execução não entra no CSS gerado — a
+grade não acontece, sem erro nenhum, e o quadro vira uma coluna só.

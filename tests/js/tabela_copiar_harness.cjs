@@ -465,6 +465,27 @@ const kanban = {
   tom_desconhecido: est.tomDaColuna('coluna_que_o_backend_inventou'),
   colunas_com_tom: Object.keys(est.TOM_COLUNA).sort(),
 
+  // ── quais raias aparecem ────────────────────────────────────────────────
+  raias_com_outros_cheio: est.raiasVisiveis(
+    ['novo', 'andamento', 'aguardando', 'resolvido', 'outros'],
+    (col) => (col === 'outros' ? 2 : 5)),
+  raias_com_outros_vazio: est.raiasVisiveis(
+    ['novo', 'andamento', 'aguardando', 'resolvido', 'outros'],
+    (col) => (col === 'outros' ? 0 : 5)),
+  // ⚠️ As raias de ETAPA continuam mesmo vazias: "Em andamento" sem nada é
+  // informação (ninguém pegou), e sumir com a coluna esconderia o fato.
+  raias_com_etapa_vazia: est.raiasVisiveis(
+    ['novo', 'andamento', 'aguardando', 'resolvido', 'outros'],
+    () => 0),
+  raias_sem_outros_no_backend: est.raiasVisiveis(
+    ['novo', 'andamento'], () => 0),
+  raias_vazias: est.raiasVisiveis([], () => 0),
+
+  grade_5: est.classeDaGrade(5),
+  grade_4: est.classeDaGrade(4),
+  grade_1: est.classeDaGrade(1),
+  grade_fora_da_faixa: est.classeDaGrade(99),
+
   ativo_vazio: fk.algumFiltroAtivo(F({})),
   ativo_com_categoria: fk.algumFiltroAtivo(F({ categoria: fk.SEM_MARCACAO })),
 }
