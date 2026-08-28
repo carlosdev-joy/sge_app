@@ -19,6 +19,7 @@
 // Duas regras que valem em todos os quatro: nenhuma percentagem aparece sem o
 // "x de y" ao lado, e nenhuma série é identificada só por cor — há legenda e
 // rótulo direto.
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { PageSpinner } from '../components/ui/Spinner'
@@ -37,7 +38,14 @@ interface Carga { responsavel: string; total: number }
 interface PorTipoDemanda { tipo: string; total: number }
 interface PorCategoria { categoria: string; total: number }
 
+export interface Responsavel { nome: string; total: number }
+
 export interface RespostaIndicadores {
+  // O filtro em vigor e as opções. A tela precisa dos dois: um para desenhar
+  // o seletor, outro para DIZER que está filtrando — número filtrado sem
+  // aviso é a mesma armadilha do total que não bate com a lista.
+  responsavel: string | null
+  responsaveis: Responsavel[]
   aging: FaixaAging[]
   tipo_estado: { tipos: string[]; estados: string[]; celulas: Celula[] }
   fluxo: DiaFluxo[]
@@ -281,9 +289,20 @@ function HistoricoResolvidos({ dias }: { dias: number }) {
 }
 
 export default function ChamadosIndicadores() {
+  // Um filtro só, para TODA a análise da aba. Ele vai para o servidor porque
+  // é lá que as contas são feitas: filtrar a lista no cliente deixaria os
+  // totais falando da fila inteira enquanto os gráficos falam de uma pessoa.
+  const [responsavel, setResponsavel] = useState('')
+
   const { data, isLoading, isError, error } = useQuery<RespostaIndicadores>({
-    queryKey: ['chamados-indicadores'],
-    queryFn: () => apiFetch('/chamados/indicadores'),
+    queryKey: ['chamados-indicadores', responsavel],
+    queryFn: () => apiFetch(
+      `/chamados/indicadores${responsavel
+        ? `?responsavel=${encodeURIComponent(responsavel)}` : ''}`),
+    // Mantém o gráfico anterior na tela enquanto o novo carrega: sem isso, a
+    // aba pisca em branco a cada troca de responsável e perde-se a comparação
+    // que a pessoa estava fazendo.
+    placeholderData: anterior => anterior,
   })
 
   if (isLoading) return <PageSpinner />
@@ -308,6 +327,38 @@ export default function ChamadosIndicadores() {
 
   return (
     <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
+      {/* O filtro que vale para a aba inteira. Fica no topo, e não dentro de
+          um painel, porque ele não pertence a nenhum deles: pertence a todos. */}
+      <div className="lg:col-span-2 flex flex-wrap items-center gap-2">
+        <label htmlFor="filtro-responsavel" className="text-xs text-dim">
+          Responsável
+        </label>
+        <select id="filtro-responsavel" value={responsavel}
+          onChange={e => setResponsavel(e.target.value)}
+          className="bg-canvas border border-edge rounded-md text-xs px-2 py-1
+            text-ink min-w-56">
+          <option value="">todos ({d.total_ativos})</option>
+          {(d.responsaveis ?? []).map(r => (
+            /* O total ao lado do nome: quem analisa escolhe melhor vendo
+               "Fulano (12)" do que uma lista de nomes soltos. */
+            <option key={r.nome} value={r.nome}>{r.nome} ({r.total})</option>
+          ))}
+        </select>
+        {/* O aviso existe porque TODO número da aba muda com o filtro. Sem
+            ele, um print desta tela vira "a fila tem 16 chamados". */}
+        {d.responsavel && (
+          <span className="text-[11px] text-amber-700 dark:text-yellow-400">
+            todos os números abaixo são apenas de {d.responsavel}
+          </span>
+        )}
+        {d.responsavel && (
+          <button type="button" onClick={() => setResponsavel('')}
+            className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline">
+            limpar
+          </button>
+        )}
+      </div>
+
       {/* O painel base (aging, tipo × estado, fluxo, carga) continua servido
           mesmo sem as colunas novas — mas o que falta precisa ser DITO, senão
           os painéis ausentes parecem dados zerados. */}

@@ -74,6 +74,11 @@ DIAS_HISTORICO = 10
 # se faltou dado ou faltou classificação.
 TIPO_NAO_CLASSIFICADO = "não classificado"
 
+# O balde de quem não tem ninguém. Precisa de nome próprio porque a tela o
+# oferece no seletor: "sem responsável" é o que o gestor procura primeiro
+# quando abre a análise, e um seletor que não o ofereça esconde o problema.
+SEM_RESPONSAVEL = "sem responsável"
+
 # Teto do gráfico de categorias, pela mesma razão de TOPO_RESPONSAVEIS: a
 # categoria vem de texto livre nas work notes, e sem corte cada variação de
 # digitação vira uma barra permanente. O resto é DITO, nunca silenciado.
@@ -130,6 +135,29 @@ def _proxima_sexta() -> str:
     # senão o cartão nasce vazio no dia em que ele mais importa.
     return (f"DATEADD(DAY, CASE WHEN {dias} = 0 THEN 7 ELSE {dias} END, "
             f"CAST(GETDATE() AS DATE))")
+
+
+def _filtro_responsavel(nome: str | None) -> tuple[str, list]:
+    """Recorte por responsável — o filtro único da aba de Indicadores.
+
+    Vale para TODAS as agregações da aba, e é por isso que devolve o par
+    (sql, params) em vez de cada consulta montar o seu: filtro que alcança
+    metade das contas produz uma aba onde o aging fala de uma pessoa e o
+    fluxo de todas — com os dois números parecendo certos.
+
+    O `?` entra sempre no FIM do WHERE. As três consultas que já têm parâmetro
+    o usam antes, na janela de dias, então a ordem posicional do pyodbc
+    continua correta.
+    """
+    alvo = (nome or "").strip()
+    if not alvo:
+        return "", []
+    if alvo == SEM_RESPONSAVEL:
+        # Sem `?`: é uma condição, não um valor. Comparar com a string
+        # "sem responsável" não acharia ninguém — ela é rótulo da tela, e o
+        # banco guarda NULL ou vazio.
+        return " AND NULLIF(LTRIM(RTRIM(atribuido_a)), '') IS NULL ", []
+    return " AND atribuido_a = ? ", [alvo]
 
 
 def _so_trabalhos() -> str:
@@ -324,7 +352,8 @@ def listar_chamados(incluir_inativos: int = 0,
 
 
 @router.get("/chamados/indicadores", tags=["chamados"])
-def indicadores(_auth: dict = Depends(get_current_user)):
+def indicadores(responsavel: str | None = None,
+                _auth: dict = Depends(get_current_user)):
     """Agregados para a aba de Indicadores — contas feitas no SQL, não na tela.
 
     Quatro leituras, cada uma respondendo a uma pergunta da gestão:
@@ -338,6 +367,10 @@ def indicadores(_auth: dict = Depends(get_current_user)):
     essa frase se o denominador chegar junto.
     """
     saida = {
+        # O filtro em vigor e as opções — a tela precisa dos dois para desenhar
+        # o seletor e para DIZER que está filtrando: número filtrado sem aviso
+        # é a mesma armadilha do total que não bate com a lista.
+        "responsavel": (responsavel or "").strip() or None, "responsaveis": [],
         "aging": [], "tipo_estado": {"tipos": [], "estados": list(COLUNAS_KANBAN),
                                      "celulas": []},
         "fluxo": [], "carga": [], "total_ativos": 0,
@@ -351,6 +384,10 @@ def indicadores(_auth: dict = Depends(get_current_user)):
         # base continua servido.
         "blocos_indisponiveis": False,
     }
+    # O filtro vale para TODAS as contas desta aba — ver `_filtro_responsavel`.
+    _fr, _frp = _filtro_responsavel(responsavel)
+    saida["responsavel"] = (responsavel or "").strip() or None
+
     conn = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -363,12 +400,12 @@ def indicadores(_auth: dict = Depends(get_current_user)):
             "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 14 THEN '8-14 dias' "
             "  ELSE 'mais de 14 dias' END AS faixa, COUNT(*) "
             "FROM dbo.etl_chamado WHERE ativo = 1 AND aberto_em IS NOT NULL "
-            + _so_trabalhos() +
+            + _so_trabalhos() + _fr +
             "GROUP BY CASE "
             "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 3 THEN '0-3 dias' "
             "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 7 THEN '4-7 dias' "
             "  WHEN DATEDIFF(DAY, aberto_em, GETDATE()) <= 14 THEN '8-14 dias' "
-            "  ELSE 'mais de 14 dias' END")
+            "  ELSE 'mais de 14 dias' END", _frp)
         contagem = {linha[0]: linha[1] for linha in cur.fetchall()}
         # Faixa sem chamado vem com 0 EXPLÍCITO e na ordem fixa: buraco no
         # gráfico faria "nenhum chamado velho" parecer "não medi isso".
@@ -379,8 +416,8 @@ def indicadores(_auth: dict = Depends(get_current_user)):
         cur.execute(
             "SELECT tipo, estado_kanban, COUNT(*) FROM dbo.etl_chamado "
             "WHERE ativo = 1 "
-            + _so_trabalhos() +
-            "GROUP BY tipo, estado_kanban")
+            + _so_trabalhos() + _fr +
+            "GROUP BY tipo, estado_kanban", _frp)
         celulas = [{"tipo": r[0], "estado": r[1], "total": r[2]}
                    for r in cur.fetchall()]
         saida["tipo_estado"] = {
@@ -393,14 +430,14 @@ def indicadores(_auth: dict = Depends(get_current_user)):
         cur.execute(
             "SELECT CAST(aberto_em AS DATE), COUNT(*) FROM dbo.etl_chamado "
             "WHERE aberto_em >= DATEADD(DAY, ?, CAST(GETDATE() AS DATE)) "
-            + _so_trabalhos() +
-            "GROUP BY CAST(aberto_em AS DATE)", [-(DIAS_FLUXO - 1)])
+            + _so_trabalhos() + _fr +
+            "GROUP BY CAST(aberto_em AS DATE)", [-(DIAS_FLUXO - 1)] + _frp)
         entradas = {str(r[0])[:10]: r[1] for r in cur.fetchall()}
         cur.execute(
             "SELECT CAST(encerrado_em AS DATE), COUNT(*) FROM dbo.etl_chamado "
             "WHERE encerrado_em >= DATEADD(DAY, ?, CAST(GETDATE() AS DATE)) "
-            + _so_trabalhos() +
-            "GROUP BY CAST(encerrado_em AS DATE)", [-(DIAS_FLUXO - 1)])
+            + _so_trabalhos() + _fr +
+            "GROUP BY CAST(encerrado_em AS DATE)", [-(DIAS_FLUXO - 1)] + _frp)
         saidas = {str(r[0])[:10]: r[1] for r in cur.fetchall()}
         cur.execute("SELECT CAST(GETDATE() AS DATE)")
         hoje = cur.fetchone()[0]
@@ -419,9 +456,9 @@ def indicadores(_auth: dict = Depends(get_current_user)):
         cur.execute(
             "SELECT ISNULL(NULLIF(LTRIM(RTRIM(atribuido_a)), ''), 'sem responsável'), "
             "       COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
-            + _so_trabalhos() +
+            + _so_trabalhos() + _fr +
             "GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(atribuido_a)), ''), 'sem responsável') "
-            "ORDER BY COUNT(*) DESC")
+            "ORDER BY COUNT(*) DESC", _frp)
         todos = [{"responsavel": r[0], "total": r[1]} for r in cur.fetchall()]
         saida["carga"] = todos[:TOPO_RESPONSAVEIS]
         saida["responsaveis_ocultos"] = max(0, len(todos) - TOPO_RESPONSAVEIS)
@@ -459,9 +496,9 @@ def indicadores(_auth: dict = Depends(get_current_user)):
             cur.execute(
                 "SELECT NULLIF(LTRIM(RTRIM(tipo_demanda)), ''), COUNT(*) "
                 "FROM dbo.etl_chamado WHERE ativo = 1 "
-                + _so_trabalhos() +
+                + _so_trabalhos() + _fr +
                 "GROUP BY NULLIF(LTRIM(RTRIM(tipo_demanda)), '') "
-                "ORDER BY COUNT(*) DESC")
+                "ORDER BY COUNT(*) DESC", _frp)
             saida["por_tipo_demanda"] = [
                 {"tipo": r[0] or TIPO_NAO_CLASSIFICADO, "total": r[1]}
                 for r in cur.fetchall()]
@@ -473,9 +510,9 @@ def indicadores(_auth: dict = Depends(get_current_user)):
             cur.execute(
                 "SELECT LTRIM(RTRIM(categoria_diaadia)), COUNT(*) "
                 "FROM dbo.etl_chamado WHERE ativo = 1 "
-                + _so_trabalhos() +
+                + _so_trabalhos() + _fr +
                 "  AND NULLIF(LTRIM(RTRIM(categoria_diaadia)), '') IS NOT NULL "
-                "GROUP BY LTRIM(RTRIM(categoria_diaadia)) ORDER BY COUNT(*) DESC")
+                "GROUP BY LTRIM(RTRIM(categoria_diaadia)) ORDER BY COUNT(*) DESC", _frp)
             todas = [{"categoria": r[0], "total": r[1]} for r in cur.fetchall()]
             # Corte com o resto DITO, como o gráfico de carga já faz. A categoria
             # é texto livre digitado nas work notes: sem teto, cada erro de
@@ -484,8 +521,8 @@ def indicadores(_auth: dict = Depends(get_current_user)):
             saida["categorias_ocultas"] = max(0, len(todas) - TOPO_CATEGORIAS)
             cur.execute(
                 "SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
-                + _so_trabalhos() +
-                "  AND NULLIF(LTRIM(RTRIM(categoria_diaadia)), '') IS NULL")
+                + _so_trabalhos() + _fr +
+                "  AND NULLIF(LTRIM(RTRIM(categoria_diaadia)), '') IS NULL", _frp)
             saida["sem_categoria"] = cur.fetchone()[0]
 
             # ── resolvidos da janela do histórico ───────────────────────────────
@@ -503,8 +540,8 @@ def indicadores(_auth: dict = Depends(get_current_user)):
             cur.execute(
                 "SELECT ISNULL(veredito, 'não triado'), ISNULL(triagem_origem, ''), "
                 "       COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
-                + _so_trabalhos() +
-                "GROUP BY ISNULL(veredito, 'não triado'), ISNULL(triagem_origem, '')")
+                + _so_trabalhos() + _fr +
+                "GROUP BY ISNULL(veredito, 'não triado'), ISNULL(triagem_origem, '')", _frp)
             saida["triagem"] = [{"veredito": r[0], "origem": r[1], "total": r[2]}
                                 for r in cur.fetchall()]
             # Quantos laudos registraram falha da IA — é o sinal de gateway doente
@@ -514,13 +551,13 @@ def indicadores(_auth: dict = Depends(get_current_user)):
             # mandaria o operador investigar rede quando faltava preencher campo.
             cur.execute(
                 "SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
-                + _so_trabalhos() +
-                "  AND triagem_erro LIKE 'falha:%'")
+                + _so_trabalhos() + _fr +
+                "  AND triagem_erro LIKE 'falha:%'", _frp)
             saida["triagem_com_erro"] = cur.fetchone()[0]
             cur.execute(
                 "SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1 "
-                + _so_trabalhos() +
-                "  AND triagem_erro LIKE 'config:%'")
+                + _so_trabalhos() + _fr +
+                "  AND triagem_erro LIKE 'config:%'", _frp)
             saida["triagem_sem_config"] = cur.fetchone()[0]
 
         except Exception as e:
@@ -534,9 +571,35 @@ def indicadores(_auth: dict = Depends(get_current_user)):
                 pass
             cur = conn.cursor()
 
+        # `total_ativos` é o denominador de todos os "x de y" desta aba, e por
+        # isso acompanha o filtro: sem ele, filtrar por uma pessoa mostraria
+        # "3 de 57" — três dela sobre a fila inteira, uma fração que não
+        # significa nada.
         cur.execute("SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1"
-                    + _so_trabalhos())
+                    + _so_trabalhos() + _fr, _frp)
         saida["total_ativos"] = cur.fetchone()[0]
+
+        # ── as opções do seletor ─────────────────────────────────────────────
+        # ⚠️ SEM o filtro aplicado (`_fr` fica de fora de propósito). Com ele,
+        # escolher uma pessoa deixaria o seletor com uma opção só e não haveria
+        # como voltar nem trocar: a tela prenderia quem analisa na escolha que
+        # acabou de fazer.
+        #
+        # O total de cada um vem junto — quem vai analisar escolhe melhor
+        # vendo "Fulano (12)" do que uma lista de nomes soltos.
+        # O rótulo do vazio é aplicado no PYTHON. `GROUP BY ISNULL(expr, ?)`
+        # é recusado pelo SQL Server — o mesmo defeito que derrubava o bloco
+        # de tipo de demanda em silêncio, e que o anti-drift
+        # `test_nenhuma_query_usa_parametro_no_group_by` pegou aqui também.
+        cur.execute(
+            "SELECT NULLIF(LTRIM(RTRIM(atribuido_a)), ''), COUNT(*) "
+            "FROM dbo.etl_chamado WHERE ativo = 1"
+            + _so_trabalhos() +
+            "GROUP BY NULLIF(LTRIM(RTRIM(atribuido_a)), '') "
+            "ORDER BY COUNT(*) DESC")
+        saida["responsaveis"] = [{"nome": r[0] or SEM_RESPONSAVEL, "total": r[1]}
+                                 for r in cur.fetchall()]
+
         cur.close(); conn.close()
     except Exception as e:
         if conn is not None:
