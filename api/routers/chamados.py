@@ -106,6 +106,32 @@ TOPO_CATEGORIAS = 10
 # NUNCA `NOT IN`: com um NULL na subconsulta ele devolve conjunto vazio, e a
 # conta inteira viraria zero sem erro. Aqui não há subconsulta — e é para que
 # continue assim que o teste `test_o_predicado_nao_usa_not_in` existe.
+# O fim da janela dos "próximos dias": a PRÓXIMA sexta-feira, sempre à frente.
+#
+# ⚠️ DOIS DEFEITOS MORARAM AQUI, e os dois davam número plausível:
+#
+# 1. `DATEADD(DAY, 6-DATEPART(WEEKDAY, GETDATE()), …)` devolvia HOJE quando
+#    hoje era sexta. O balde é `prazo > hoje AND prazo <= fim`, então virava
+#    condição IMPOSSÍVEL: toda sexta-feira o cartão zerava, e os chamados que
+#    venciam na semana seguinte não apareciam em cartão nenhum. Medido em
+#    2026-08-28 (uma sexta): 14 venciam hoje, 16 depois, e o cartão dizia 0.
+#    A spec de origem tinha a proteção — o `|| 7` do JavaScript — e ela se
+#    perdeu na tradução para SQL.
+# 2. `DATEPART(WEEKDAY)` depende de `SET DATEFIRST`, que varia por sessão e
+#    por idioma do login. A mesma consulta daria janelas diferentes conforme
+#    quem conecta. `DATEDIFF(DAY, 0, data) % 7` não depende de configuração
+#    nenhuma: o dia 0 do SQL Server (1900-01-01) foi uma SEGUNDA-feira, então
+#    0=segunda … 4=sexta … 6=domingo, sempre.
+def _proxima_sexta() -> str:
+    """Expressão SQL: a próxima sexta-feira, nunca hoje."""
+    idx = "DATEDIFF(DAY, 0, GETDATE()) % 7"          # 0=segunda … 4=sexta
+    dias = f"((4 - ({idx}) + 7) % 7)"
+    # 0 significa "hoje é sexta" — e aí a janela vai para a sexta seguinte,
+    # senão o cartão nasce vazio no dia em que ele mais importa.
+    return (f"DATEADD(DAY, CASE WHEN {dias} = 0 THEN 7 ELSE {dias} END, "
+            f"CAST(GETDATE() AS DATE))")
+
+
 def _so_trabalhos() -> str:
     """Predicado SQL: a tarefa já representada pelo card do pai não conta."""
     return (" AND NOT (tipo = 'task' "
@@ -719,7 +745,11 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
         "sem_analista":      ("sem_analista",      "Backlog Sem Analista",     "amber"),
         "resolvidas":        ("resolvidas",        "Resolvidas",               "green"),
         "vencem_hoje":       ("vencem_hoje",       "Vencem Hoje",              "red"),
-        "vencem_semana":     ("vencem_semana",     "Vencem essa semana",       "orange"),
+        # "essa semana" mentia duas vezes: o cartão EXCLUI hoje (que tem cartão
+        # próprio ao lado, e somar os dois contaria o mesmo chamado duas vezes)
+        # e, quando hoje é sexta, a janela é a semana QUE VEM. "Próximos dias"
+        # é o que o cartão realmente mostra, em qualquer dia da semana.
+        "vencem_semana":     ("vencem_semana",     "Vencem nos próximos dias", "orange"),
         "vencidas":          ("vencidas",          "Vencidas",                 "red"),
     }
 
@@ -802,13 +832,13 @@ def dashboard(visao: str = "geral", _auth: dict = Depends(get_current_user)):
         saida["vencem_hoje"]["chamados"] = _rows(cur)
         saida["vencem_hoje"]["total"] = len(saida["vencem_hoje"]["chamados"])
 
-        # ── vencem essa semana (amanhã até sexta-feira) ──────────────────────
+        # ── vencem nos próximos dias (amanhã até a próxima sexta) ───────────
         cur.execute(
             f"SELECT {_COLS} {_BASE}"
             f"  AND estado_kanban NOT IN ('resolvido','encerrado','outros')"
             f"  AND prazo IS NOT NULL"
             f"  AND CAST(prazo AS DATE) > CAST(GETDATE() AS DATE)"
-            f"  AND CAST(prazo AS DATE) <= DATEADD(DAY, 6-DATEPART(WEEKDAY, GETDATE()), CAST(GETDATE() AS DATE)){_filtro}"
+            f"  AND CAST(prazo AS DATE) <= {_proxima_sexta()}{_filtro}"
             "  ORDER BY prazo ASC", _p)
         saida["vencem_semana"]["chamados"] = _rows(cur)
         saida["vencem_semana"]["total"] = len(saida["vencem_semana"]["chamados"])
