@@ -365,7 +365,7 @@ function filtro(escolhidos) {
 const card = (extra) => Object.assign({
   numero: 'RITM0000001', tipo: 'ritm', titulo: 'Carga diária',
   estado_origem: null, atribuido_a: 'Ana', prioridade: '3 - Moderado',
-  categoria_diaadia: '',
+  categoria_diaadia: '', demandante: 'Thieser Leal',
 }, extra)
 const task = (extra) => card(Object.assign(
   { numero: 'SCTASK0000009', tipo: 'task' }, extra))
@@ -485,6 +485,31 @@ const kanban = {
   grade_4: est.classeDaGrade(4),
   grade_1: est.classeDaGrade(1),
   grade_fora_da_faixa: est.classeDaGrade(99),
+
+  // ── o solicitante ───────────────────────────────────────────────────────
+  // ⚠️ COM ACENTO, de propósito. A primeira versão desta lista só tinha nomes
+  // ASCII, e `.sort()` binário dava o mesmo resultado que `localeCompare` — a
+  // sabotagem que trocava um pelo outro passou VERDE. Em ordem binária,
+  // "Ávila" (Á = U+00C1) cai DEPOIS de "Zeca", que é o erro que se quer pegar.
+  solicitantes_do_seletor: fk.solicitantesDisponiveis([
+    card({ demandante: 'Zeca Pagodinho' }), card({ demandante: 'Ávila Souza' }),
+    card({ demandante: 'Ana Paula' }), card({ demandante: '' }),
+    card({ demandante: 'Ana Paula' }), card({ demandante: '  ' }),
+  ]),
+  sol_acha: casa(card({ demandante: 'Ana Paula' }), [],
+                 F({ solicitante: 'Ana Paula' })),
+  sol_recusa_outro: casa(card({ demandante: 'Thieser Leal' }), [],
+                         F({ solicitante: 'Ana Paula' })),
+  sol_recusa_vazio: casa(card({ demandante: '' }), [],
+                         F({ solicitante: 'Ana Paula' })),
+  // ⚠️ A tarefa NÃO tem solicitante no ServiceNow: casar pela filha faria o
+  // filtro procurar num campo que nunca é preenchido.
+  sol_nao_casa_pela_filha: casa(card({ demandante: '' }),
+                                [task({ demandante: 'Ana Paula' })],
+                                F({ solicitante: 'Ana Paula' })),
+  sol_apara_espacos: casa(card({ demandante: ' Ana Paula ' }), [],
+                          F({ solicitante: 'Ana Paula' })),
+  ativo_com_solicitante: fk.algumFiltroAtivo(F({ solicitante: 'Ana Paula' })),
 
   ativo_vazio: fk.algumFiltroAtivo(F({})),
   ativo_com_categoria: fk.algumFiltroAtivo(F({ categoria: fk.SEM_MARCACAO })),

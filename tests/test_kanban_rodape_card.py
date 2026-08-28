@@ -110,3 +110,39 @@ def test_sem_responsavel_e_dito_e_nao_deixado_em_branco(cen: dict) -> None:
     """Espaço vazio no lugar do nome parece falha de carregamento; o texto
     diz que o chamado não tem dono — que é a informação."""
     assert "sem responsável" in cen["sem_responsavel"]["texto"]
+
+
+# ═══════════ 4. o solicitante ═══════════════════════════════════════════════
+#
+# "uma informação que precisamos colocar no card, no modal e nas tabelas, e
+#  filtros no kanban, o nome do solicitante."
+
+@pytest.mark.parametrize("estado", VIVOS + TERMINADOS)
+def test_o_solicitante_aparece_no_card(cen: dict, estado: str) -> None:
+    """⚠️ Ele existia SÓ no `title` do responsável — quer dizer: só para quem
+    passasse o mouse, e não para quem estivesse no toque ou lendo a fila de
+    relance. Affordance de hover é o mesmo problema que o modal de detalhe
+    pagou nesta spec.
+
+    Vale em TODAS as colunas, inclusive nas terminadas: saber de quem era o
+    pedido continua importando depois de resolvido — é a quem se responde."""
+    c = cen[estado]
+    assert c["temSolicitante"] is True
+    assert "Thieser Leal de Sousa" in c["texto"]
+
+
+def test_o_solicitante_e_o_responsavel_sao_pessoas_diferentes(cen: dict) -> None:
+    """Uma para saber a quem cobrar, a outra a quem responder. Mostrar só uma
+    delas responde metade da pergunta de quem olha a fila."""
+    c = cen["solicitante_e_responsavel_distintos"]
+    assert "Thieser Leal de Sousa" in c["texto"]
+    assert "Kenzo Matsuzaki" in c["texto"]
+
+
+def test_sem_solicitante_a_linha_nao_aparece(cen: dict) -> None:
+    """A tarefa não carrega solicitante no ServiceNow (é campo da
+    `sc_req_item` e do `incident`), então a ausência é COMUM — uma linha "de —"
+    em metade da fila seria ruído que ensina a ignorar a linha inteira."""
+    c = cen["sem_solicitante"]
+    assert c["temSolicitante"] is False
+    assert c["temIdade"] is True, "o resto do rodapé continua"

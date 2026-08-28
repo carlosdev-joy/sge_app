@@ -28,7 +28,7 @@ import { separarFila } from '../lib/filaChamados'
 // entra e quem some fica alcançável por teste.
 import {
   CATEGORIAS, SEM_ATRIBUICAO, SEM_MARCACAO, algumFiltroAtivo, casaFiltros,
-  destacaIncidente, ordenarColuna, tiposDisponiveis,
+  destacaIncidente, ordenarColuna, solicitantesDisponiveis, tiposDisponiveis,
 } from '../lib/filtrosKanban'
 // A aparência do quadro — superfície do card e tom da raia — mora em
 // `estiloKanban`: foi num TOKEN que estava o defeito, e token errado não
@@ -338,14 +338,14 @@ function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
             {c.prioridade}
           </span>
         )}
-        {/* O title NÃO afirma de onde veio o tipo: a dedução usa o título e,
-            em segunda mão, o catálogo, e o backend não devolve qual dos dois
-            casou. Atribuir a proveniência ao catálogo seria mentir sempre que
-            o título tiver vencido — que é o caso comum. */}
-        <span className="px-2 py-0.5 rounded-full bg-canvas border border-edge text-dim"
-          title={`Tipo deduzido do título e do catálogo${c.catalogo ? ` · catálogo na origem: ${c.catalogo}` : ''}`}>
-          {c.tipo_demanda}
-        </span>
+        {/* ⚠️ O CHIP DE "TIPO DE DEMANDA" SAIU DAQUI.
+            Ele é DERIVADO do título, e chegava repetindo o que o título logo
+            acima já dizia: "BI e Dados - Inclusão de coluna" virava o chip
+            "Inclusão de coluna". Duas vezes a mesma informação, ocupando a
+            linha que agora leva o solicitante — que não estava em lugar
+            nenhum do card.
+            O campo continua no espelho e nos indicadores ("O que a fila está
+            pedindo"), onde ele AGREGA em vez de repetir. */}
         {/* A CATEGORIA em destaque, e não como mais um chip cinza ao lado do
             tipo. Ela é o recorte pelo qual a gestão lê a fila — dia a dia é
             operação, iniciativa é projeto —, e no meio dos chips neutros ela
@@ -458,6 +458,7 @@ export default function Chamados() {
   const [fResponsavel, setFResponsavel] = useState('')
   const [fPrioridade, setFPrioridade] = useState('')
   const [fCategoria, setFCategoria] = useState('')
+  const [fSolicitante, setFSolicitante] = useState('')
 
   const todos = useMemo(() => data?.chamados ?? [], [data])
 
@@ -483,6 +484,7 @@ export default function Chamados() {
       tipos: tiposDisponiveis(chamados),
       responsaveis: unicos(c => c.atribuido_a),
       prioridades: unicos(c => c.prioridade),
+      solicitantes: solicitantesDisponiveis(chamados),
     }
   }, [todos, chamados])
 
@@ -491,8 +493,9 @@ export default function Chamados() {
   // "Tarefa" esvaziaria a fila inteira, porque nenhum CARD é uma task.
   const filtros = useMemo(
     () => ({ busca, tipo: fTipo, responsavel: fResponsavel,
-             prioridade: fPrioridade, categoria: fCategoria }),
-    [busca, fTipo, fResponsavel, fPrioridade, fCategoria])
+             prioridade: fPrioridade, categoria: fCategoria,
+             solicitante: fSolicitante }),
+    [busca, fTipo, fResponsavel, fPrioridade, fCategoria, fSolicitante])
 
   const filtrados = useMemo(
     () => chamados.filter(c =>
@@ -521,7 +524,7 @@ export default function Chamados() {
   const temFiltro = algumFiltroAtivo(filtros)
   const limpar = () => {
     setBusca(''); setFTipo(''); setFResponsavel(''); setFPrioridade('')
-    setFCategoria('')
+    setFCategoria(''); setFSolicitante('')
   }
 
   if (isLoading) return <PageSpinner />
@@ -640,6 +643,14 @@ export default function Chamados() {
                 aparece na carga de ninguém e some da conversa. */}
             <option value={SEM_ATRIBUICAO}>sem atribuição</option>
             {opcoes.responsaveis.map(r => <option key={r} value={r}>{r}</option>)}
+          </Select>
+          {/* Quem PEDIU. A pergunta "o que o Fulano do negócio já pediu?" não
+              tinha resposta na tela — só a de "o que o Fulano da equipe está
+              tocando". */}
+          <Select label="Solicitante" value={fSolicitante} className="w-52"
+            onChange={e => setFSolicitante(e.target.value)}>
+            <option value="">todos</option>
+            {opcoes.solicitantes.map(s => <option key={s} value={s}>{s}</option>)}
           </Select>
           <Select label="Prioridade" value={fPrioridade} className="w-44"
             onChange={e => setFPrioridade(e.target.value)}>

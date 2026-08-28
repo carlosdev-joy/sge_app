@@ -18,6 +18,8 @@ export interface ChamadoFiltravel {
   atribuido_a: string | null
   prioridade: string | null
   categoria_diaadia: string
+  /** Quem PEDIU. `requested_for` no RITM, `caller_id` no incidente. */
+  demandante: string
 }
 
 // Valores-sentinela. Precisam ser diferentes de "todos" (string vazia) e de
@@ -41,14 +43,30 @@ export interface FiltrosKanban {
   responsavel: string
   prioridade: string
   categoria: string
+  solicitante: string
 }
 
 export const SEM_FILTRO: FiltrosKanban = {
   busca: '', tipo: '', responsavel: '', prioridade: '', categoria: '',
+  solicitante: '',
 }
 
 export function algumFiltroAtivo(f: FiltrosKanban): boolean {
-  return !!(f.busca || f.tipo || f.responsavel || f.prioridade || f.categoria)
+  return !!(f.busca || f.tipo || f.responsavel || f.prioridade || f.categoria
+    || f.solicitante)
+}
+
+/**
+ * Os solicitantes que o seletor oferece.
+ *
+ * Saem dos CARDS, e não de `todos`: a tarefa não carrega solicitante (no
+ * ServiceNow ele é campo da `sc_req_item` e do `incident`, não da `sc_task`),
+ * então varrer as filhas só acrescentaria vazios.
+ */
+export function solicitantesDisponiveis(cards: ChamadoFiltravel[]): string[] {
+  return [...new Set(cards.map(c => (c.demandante || '').trim()))]
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, 'pt-BR'))
 }
 
 /**
@@ -111,6 +129,12 @@ export function casaFiltros(
   }
 
   if (f.responsavel === SEM_ATRIBUICAO && (card.atribuido_a || '').trim()) {
+    return false
+  }
+
+  // O solicitante é do CARD. A tarefa não tem esse campo no ServiceNow —
+  // procurar nela devolveria sempre vazio e o filtro não acharia nada.
+  if (f.solicitante && (card.demandante || '').trim() !== f.solicitante) {
     return false
   }
 

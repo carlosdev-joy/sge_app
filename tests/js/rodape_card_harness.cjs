@@ -98,13 +98,16 @@ const faixaIdade = (d) => d === null ? { classe: '', rotulo: '' }
 const el = (tipo, props) => mini.criar(tipo, props)
 const montar = (c) => mini.montar(el(RodapeCard, { c, textoIdade, faixaIdade }))
 const chamado = (extra) => Object.assign(
-  { estado_kanban: 'novo', atribuido_a: 'Fulano', demandante: null,
+  { estado_kanban: 'novo', atribuido_a: 'Fulano',
+    demandante: 'Thieser Leal de Sousa',
     idade_dias: 12, prazo: '2026-09-02 10:00:00' }, extra)
 
 const olhar = (tela) => ({
   texto: tela.texto,
   temIdade: tela.achar(n => n.props && n.props['data-idade'] !== undefined).length > 0,
   temPrazo: tela.achar(n => n.props && n.props['data-prazo'] !== undefined).length > 0,
+  temSolicitante:
+    tela.achar(n => n.props && n.props['data-solicitante'] !== undefined).length > 0,
 })
 
 const cenarios = {
@@ -123,6 +126,12 @@ const cenarios = {
 
   // Sem responsável: o rodapé DIZ isso em vez de ficar em branco.
   sem_responsavel:  olhar(montar(chamado({ atribuido_a: null }))),
+
+  // O SOLICITANTE — quem pediu. Ele e o responsável são pessoas diferentes, e
+  // as duas importam: uma para saber a quem cobrar, a outra a quem responder.
+  sem_solicitante:  olhar(montar(chamado({ demandante: null }))),
+  solicitante_e_responsavel_distintos: olhar(montar(chamado({
+    demandante: 'Thieser Leal de Sousa', atribuido_a: 'Kenzo Matsuzaki' }))),
 }
 
 fs.rmSync(tmp, { recursive: true, force: true })

@@ -22,6 +22,9 @@ const TOM_PRAZO: Record<string, string> = {
 }
 
 const SEM_DONO = 'sem responsável'
+// A tarefa não carrega solicitante no ServiceNow, e o incidente usa outro
+// campo: a ausência é comum e precisa ser DITA, não deixada em branco.
+const SEM_SOLICITANTE = 'sem solicitante'
 
 export function ListaDoBloco({ chamados, resolvidos = false, aoAbrir }: {
   chamados: ChamadoDoPainel[]; resolvidos?: boolean
@@ -52,6 +55,17 @@ export function ListaDoBloco({ chamados, resolvidos = false, aoAbrir }: {
       chave: 'titulo', rotulo: 'Título', largura: 340, minima: 120,
       titulo: c => c.titulo || '(sem título)',
       conteudo: c => <span className="text-ink">{c.titulo || '(sem título)'}</span>,
+    },
+    {
+      // Quem PEDIU, ao lado de quem ATENDE. São perguntas diferentes, e a
+      // tabela respondia só a segunda.
+      chave: 'solicitante', rotulo: 'Solicitante', largura: 190, minima: 100,
+      titulo: c => c.demandante || SEM_SOLICITANTE,
+      conteudo: c => (
+        <span className={c.demandante ? 'text-ink' : 'text-dim italic'}>
+          {c.demandante || SEM_SOLICITANTE}
+        </span>
+      ),
     },
     {
       chave: 'responsavel', rotulo: 'Responsável', largura: 190, minima: 100,

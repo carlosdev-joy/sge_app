@@ -624,3 +624,54 @@ def test_o_estado_nao_visto_fica_como_estava():
     """`5` não apareceu no espelho, e mexer em estado que não se viu é palpite
     — o mesmo palpite que pôs o `3` e o `4` em 'aguardando'."""
     assert mapear_estado("sc_req_item", "5") == "aguardando"
+
+
+# ═══════════ O SOLICITANTE ══════════════════════════════════════════════════
+#
+# "uma informação que precisamos colocar no card… o nome do solicitante."
+#
+# ⚠️ O nome do campo MUDA POR TABELA: a `sc_req_item` guarda em
+# `requested_for`, o `incident` em `caller_id`. Lendo só o primeiro, todo
+# incidente ficava sem solicitante — medido em dev antes da correção: 0 de 2
+# incidentes preenchidos, contra 55 de 55 RITMs.
+
+def _ref(nome):
+    """Referência como a Table API devolve: display_value + value."""
+    return {"display_value": nome, "value": "sys_user_abc"}
+
+
+def test_o_ritm_traz_o_solicitante_de_requested_for():
+    linha = normalizar(_registro(requested_for=_ref("Thieser Leal de Sousa")),
+                       "sc_req_item", "ritm", "https://x.service-now.com")
+    assert linha["demandante"] == "Thieser Leal de Sousa"
+
+
+def test_o_incidente_traz_o_solicitante_de_caller_id():
+    """O DEFEITO. `incident` não tem `requested_for`."""
+    linha = normalizar(_registro(caller_id=_ref("Tiago Henrique Gatto")),
+                       "incident", "incident", "https://x.service-now.com")
+    assert linha["demandante"] == "Tiago Henrique Gatto"
+
+
+def test_requested_for_tem_precedencia_sobre_caller_id():
+    """Onde os dois existem, quem PEDIU é o `requested_for` — o `caller_id`
+    pode ser quem ligou para abrir em nome de outra pessoa."""
+    linha = normalizar(
+        _registro(requested_for=_ref("Quem Pediu"), caller_id=_ref("Quem Ligou")),
+        "sc_req_item", "ritm", "https://x.service-now.com")
+    assert linha["demandante"] == "Quem Pediu"
+
+
+def test_sem_nenhum_dos_dois_o_solicitante_fica_vazio():
+    """A tarefa não tem o campo. Vazio é resposta — a tela DIZ "sem
+    solicitante" em vez de inventar um."""
+    linha = normalizar(_registro(), "sc_task", "task", "https://x.service-now.com")
+    assert linha["demandante"] == ""
+
+
+def test_o_campo_do_solicitante_e_pedido_na_consulta():
+    """Normalizar certo não basta: se `caller_id` não estiver na lista de
+    `sysparm_fields`, a API nunca o devolve e a normalização recebe vazio —
+    com a DAG verde e a coluna em branco."""
+    assert "caller_id" in CAMPOS
+    assert "requested_for" in CAMPOS

@@ -58,7 +58,7 @@ CAMPOS = ("sys_id,number,short_description,state,priority,assigned_to,"
           # triagem possível — nem por IA nem por heurística. `u_sla_expired`
           # é campo customizado da instância; se não existir na tabela, a
           # Table API apenas o omite.
-          "description,work_notes,cat_item,requested_for,"
+          "description,work_notes,cat_item,requested_for,caller_id,"
           "estimated_delivery,due_date,u_sla_expired,"
           # O e-mail do analista: o dashboard filtra "Meu painel" por
           # IGUALDADE, e não por LIKE sobre o nome — nome do meio,
@@ -291,7 +291,15 @@ def normalizar(registro: dict, tabela: str, tipo: str, url_base: str) -> dict:
         "work_notes": truncar_texto(_display(registro.get("work_notes"))
                                     or _cru(registro.get("work_notes"))),
         "catalogo": _cortar(_display(registro.get("cat_item")), 200),
-        "demandante": _cortar(_display(registro.get("requested_for")), 120),
+        # ⚠️ O SOLICITANTE tem nome de campo DIFERENTE por tabela: a
+        # `sc_req_item` guarda em `requested_for`, e o `incident` em
+        # `caller_id`. Lendo só o primeiro, todo incidente ficava sem
+        # solicitante — medido em dev: 0 de 2 incidentes preenchidos, contra
+        # 55 de 55 RITMs. `opened_by` fica de fora de propósito: quem ABRE
+        # pode ser o atendente registrando por telefone, e não quem PEDIU.
+        "demandante": _cortar(
+            _display(registro.get("requested_for"))
+            or _display(registro.get("caller_id")), 120),
         "prazo": _data(_cru(registro.get("estimated_delivery"))),
         "vencimento": _data(_cru(registro.get("due_date"))),
         "sla_vencido": _booleano(_cru(registro.get("u_sla_expired"))),
