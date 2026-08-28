@@ -20,6 +20,7 @@ import { Modal } from '../components/ui/Modal'
 import ChamadosIndicadores from './ChamadosIndicadores'
 import ChamadosDashboard from './ChamadosDashboard'
 import { ChamadoDetalheModal } from '../components/chamados/ChamadoDetalheModal'
+import { CabecalhoCard } from '../components/chamados/CabecalhoCard'
 import { RodapeCard } from '../components/chamados/RodapeCard'
 import { separarFila } from '../lib/filaChamados'
 import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
@@ -279,27 +280,14 @@ function ModalTriagem({ c, aoFechar }: { c: Chamado; aoFechar: () => void }) {
 
 function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
   const [verLaudo, setVerLaudo] = useState(false)
-  // O conteúdo do chamado — descrição, notas e anexos. Abre pelo título, e
-  // não por um botão "detalhes": o título é o que a pessoa já ia clicar.
+  // O conteúdo do chamado — descrição, notas e anexos. O gesto que abre isto,
+  // e o porquê de ele ser anunciado, moram em `CabecalhoCard`.
   const [verDetalhe, setVerDetalhe] = useState(false)
   const estilo = c.veredito ? ESTILO_VEREDITO[c.veredito] : undefined
   return (
     <div className="bg-canvas border border-edge rounded-md p-2.5 flex flex-col gap-1.5 shadow-sm">
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-xs font-semibold text-ink">{c.numero}</span>
-        {c.url && (
-          <a href={c.url} target="_blank" rel="noopener noreferrer"
-            className="text-blue-600 dark:text-blue-400 shrink-0"
-            title="Abrir no ServiceNow">
-            <ExternalLink size={12} />
-          </a>
-        )}
-      </div>
-      <button type="button" onClick={() => setVerDetalhe(true)}
-        className="text-xs text-ink leading-snug text-left hover:underline"
-        title="Ver descrição, notas e anexos">
-        {c.titulo || '(sem título)'}
-      </button>
+      <CabecalhoCard numero={c.numero} titulo={c.titulo} url={c.url}
+        aoAbrirDetalhe={() => setVerDetalhe(true)} />
       {verDetalhe && (
         <ChamadoDetalheModal sysId={c.sys_id} numero={c.numero}
           aoFechar={() => setVerDetalhe(false)} />
