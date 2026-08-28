@@ -18,6 +18,7 @@ import { PageSpinner } from '../components/ui/Spinner'
 import { Tabs } from '../components/ui/Tabs'
 import { Modal } from '../components/ui/Modal'
 import ChamadosIndicadores from './ChamadosIndicadores'
+import ChamadosDashboard from './ChamadosDashboard'
 import { separarFila } from '../lib/filaChamados'
 import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
 
@@ -505,6 +506,7 @@ export default function Chamados() {
       <Tabs active={aba} onChange={setAba} tabs={[
         { id: 'fila', label: 'Fila' },
         { id: 'indicadores', label: 'Indicadores' },
+        { id: 'dashboard', label: 'Dashboard' },
       ]} />
 
       {/* Os avisos de estado do espelho valem para as DUAS abas — um
@@ -614,6 +616,12 @@ export default function Chamados() {
       )}
 
       {aba === 'indicadores' && !d.migration_ausente && <ChamadosIndicadores />}
+
+      {/* O painel busca a própria resposta (`/chamados/dashboard`), com os
+          blocos já recortados no banco pela MESMA regra da fila. Ele tem o
+          próprio aviso de espelho indisponível, então não depende do `d`
+          desta tela — se dependesse, uma fila vazia esconderia o painel. */}
+      {aba === 'dashboard' && <ChamadosDashboard />}
     </div>
   )
 }

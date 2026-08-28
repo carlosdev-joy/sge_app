@@ -22,6 +22,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { PageSpinner } from '../components/ui/Spinner'
+// A linguagem visual das abas de Chamados mora em components/chamados/graficos
+// — a aba Dashboard usa as mesmas formas, e duas cópias divergiriam.
+import { BarrasHorizontais, Painel } from '../components/chamados/graficos'
+import {
+  SERIE_ENTRADAS, SERIE_SAIDAS, passoRampa, xDeY,
+} from '../components/chamados/escalas'
 
 interface FaixaAging { faixa: string; total: number }
 interface Celula { tipo: string; estado: string; total: number }
@@ -78,73 +84,6 @@ const ROTULO_ESTADO: Record<string, string> = {
 }
 
 // Rampa sequencial de uma hue (azul), clara → escura. Mais escuro = mais alto.
-const RAMPA = ['#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#2a78d6', '#1c5cab']
-
-// Séries categóricas do fluxo. Slots 1 e 2 da paleta validada.
-const SERIE_ENTRADAS = '#2a78d6'
-const SERIE_SAIDAS = '#eb6834'
-
-function passoRampa(valor: number, maximo: number): string {
-  if (maximo <= 0 || valor <= 0) return RAMPA[0]
-  const i = Math.min(RAMPA.length - 1,
-    Math.max(1, Math.round((valor / maximo) * (RAMPA.length - 1))))
-  return RAMPA[i]
-}
-
-// "3 de 12 (25%)" — a regra da casa: percentagem nunca sozinha.
-function xDeY(parte: number, total: number): string {
-  if (!total) return `${parte}`
-  return `${parte} de ${total} (${Math.round((parte / total) * 100)}%)`
-}
-
-function Painel({ titulo, descricao, children }: {
-  titulo: string; descricao: string; children: React.ReactNode
-}) {
-  return (
-    <section className="bg-panel border border-edge rounded-lg p-4 flex flex-col gap-3">
-      <div>
-        <h2 className="text-sm font-semibold text-ink">{titulo}</h2>
-        <p className="text-[11px] text-dim">{descricao}</p>
-      </div>
-      {children}
-    </section>
-  )
-}
-
-/** Barras horizontais com rótulo direto — serve aging e carga. */
-function BarrasHorizontais({ itens, total }: {
-  itens: { rotulo: string; valor: number }[]; total: number
-}) {
-  const maximo = Math.max(1, ...itens.map(i => i.valor))
-  if (itens.length === 0) {
-    return <p className="text-xs text-dim">nenhum chamado na fila</p>
-  }
-  return (
-    <div className="flex flex-col gap-1.5">
-      {itens.map(i => (
-        <div key={i.rotulo} className="flex items-center gap-2 text-xs">
-          <span className="w-36 shrink-0 text-dim truncate" title={i.rotulo}>
-            {i.rotulo}
-          </span>
-          <div className="flex-1 min-w-0 h-4 flex items-center">
-            <svg width="100%" height="16" role="img"
-              aria-label={`${i.rotulo}: ${xDeY(i.valor, total)}`}>
-              {/* 4px de raio na ponta do dado, ancorada na linha de base */}
-              <rect x="0" y="3" rx="4" ry="4" height="10"
-                width={`${(i.valor / maximo) * 100}%`}
-                fill={passoRampa(i.valor, maximo)} />
-            </svg>
-          </div>
-          {/* Valor em token de texto, nunca na cor da série */}
-          <span className="w-28 shrink-0 text-right text-ink tabular-nums">
-            {xDeY(i.valor, total)}
-          </span>
-        </div>
-      ))}
-    </div>
-  )
-}
-
 /** Heatmap tipo × estado. Grade de magnitude → uma hue sequencial. */
 function MapaTipoEstado({ dados, total }: {
   dados: RespostaIndicadores['tipo_estado']; total: number
