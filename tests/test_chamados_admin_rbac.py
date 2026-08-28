@@ -130,3 +130,81 @@ def test_nenhuma_rota_admin_do_modulo_usa_so_autenticacao():
             faltando.append(caminhos[0])
     assert not faltando, (
         "rotas /admin/servicenow sem get_admin_user: " + ", ".join(faltando))
+
+
+# ═══════════ Nenhuma rota do módulo fica sem autenticação ═══════════════════
+#
+# Acrescentado na revisão adversarial de fecho da spec (F6). O risco #2 da spec
+# era "rotas admin sem permissão — exposição viva hoje", fechado pela F3. Este
+# teste impede a REGRESSÃO: uma rota nova sem `Depends` não quebra nada, não
+# aparece em teste nenhum, e fica aberta.
+#
+# ⚠️ A verificação é por AST, não por regex. Uma primeira tentativa usou regex
+# sobre a linha do `def` e acusou as 19 rotas — porque assinatura de várias
+# linhas põe o `Depends(...)` na linha seguinte. Alarme falso é pior que
+# nenhum: ele treina quem lê a suíte a ignorar a saída.
+
+def _rotas_do_modulo():
+    """(método, caminho, tem_depends) para cada rota do arquivo."""
+    import ast
+    arvore = ast.parse(FONTE.read_text(encoding="utf-8"))
+    saida = []
+    for no in ast.walk(arvore):
+        if not isinstance(no, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        decs = [d for d in no.decorator_list
+                if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+                and isinstance(d.func.value, ast.Name)
+                and d.func.value.id == "router"]
+        if not decs:
+            continue
+        # `Depends` em QUALQUER default da assinatura, inclusive kwonly.
+        defaults = list(no.args.defaults) + [d for d in no.args.kw_defaults if d]
+        tem = any(isinstance(d, ast.Call)
+                  and getattr(d.func, "id", "") == "Depends"
+                  for d in defaults)
+        caminho = decs[0].args[0].value if decs[0].args else "?"
+        saida.append((decs[0].func.attr.upper(), caminho, tem))
+    return saida
+
+
+def test_ha_rotas_para_analisar() -> None:
+    """Piso: um parser que deixa de achar rotas passa verde para sempre."""
+    assert len(_rotas_do_modulo()) >= 15
+
+
+def test_toda_rota_exige_autenticacao() -> None:
+    """Rota sem `Depends` responde a qualquer um. Não quebra, não aparece em
+    teste nenhum, e fica aberta."""
+    abertas = [f"{m} {c}" for m, c, tem in _rotas_do_modulo() if not tem]
+    assert not abertas, "rotas sem autenticação:\n  " + "\n  ".join(abertas)
+
+
+def test_toda_rota_admin_exige_acao_admin() -> None:
+    """`get_current_user` autentica mas não autoriza: um operador logado
+    passaria. As rotas `/admin/` precisam do `get_admin_user`."""
+    import ast
+    fonte = FONTE.read_text(encoding="utf-8")
+    arvore = ast.parse(fonte)
+    fracas = []
+    for no in ast.walk(arvore):
+        if not isinstance(no, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        decs = [d for d in no.decorator_list
+                if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+                and isinstance(d.func.value, ast.Name)
+                and d.func.value.id == "router"]
+        if not decs or not decs[0].args:
+            continue
+        caminho = decs[0].args[0].value
+        if not str(caminho).startswith("/admin"):
+            continue
+        defaults = list(no.args.defaults) + [d for d in no.args.kw_defaults if d]
+        usa_admin = any(
+            isinstance(d, ast.Call) and getattr(d.func, "id", "") == "Depends"
+            and any(getattr(a, "id", "") == "get_admin_user" for a in d.args)
+            for d in defaults)
+        if not usa_admin:
+            fracas.append(f"{decs[0].func.attr.upper()} {caminho}")
+    assert not fracas, ("rotas /admin sem `get_admin_user`:\n  "
+                        + "\n  ".join(fracas))

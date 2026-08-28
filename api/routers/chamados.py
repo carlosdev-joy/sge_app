@@ -21,6 +21,7 @@ vazias — a tela avisa "sistema em atualização" em vez de dar tela branca.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -199,12 +200,58 @@ def _fmt_dt(v):
     return str(v)[:19] if v else None
 
 
+def _idade_em_minutos(iniciado) -> int | None:
+    """Há quantos minutos o ciclo começou.
+
+    ⚠️ CALCULADA EM PYTHON, E NÃO COM `DATEDIFF(…, GETDATE())`.
+
+    `iniciado_em` é gravado pelo worker do Airflow a partir do relógio DELE
+    (`datetime.now()`); `GETDATE()` devolve o relógio do SQL SERVER. Onde os
+    dois containers não estão no mesmo fuso, a conta mistura duas grandezas e
+    inventa a diferença como idade. Medido no dev em 2026-08-28:
+
+        worker      2026-08-28 20:25 -03
+        sqlserver   2026-08-28 23:25 UTC
+        ciclo real  1 minuto atrás  →  o carimbo dizia 180 minutos
+
+    E o dano não para no texto: `atrasado` alimenta o aviso âmbar de
+    "integração parada", que passava a disparar PARA SEMPRE — com a
+    sincronização rodando a cada 5 minutos.
+
+    ⚠️ POR QUE NÃO CONSERTAR NO GRAVADOR. A saída óbvia seria gravar
+    `iniciado_em` com `GETDATE()`, unificando no relógio do banco. Ela QUEBRA a
+    coleta: `ultimo_delta_em()` usa esse mesmo `MAX(iniciado_em)` como início da
+    janela que pergunta ao ServiceNow o que mudou. Empurrado 3h para a frente,
+    o delta passaria a pedir registros alterados depois de um instante FUTURO —
+    e não traria nada, com a DAG verde.
+
+    Aqui a comparação fica entre o relógio do worker (que gravou) e o do
+    container da API (que lê) — dois contêineres de aplicação, construídos da
+    mesma base e no mesmo fuso. Não é uma suposição livre: é a suposição
+    MENOR, e a de aplicação-contra-banco era a maior.
+    """
+    if not iniciado:
+        return None
+    if isinstance(iniciado, str):
+        try:
+            iniciado = _dt.datetime.fromisoformat(iniciado[:19])
+        except ValueError:
+            return None
+    minutos = int((_dt.datetime.now() - iniciado).total_seconds() // 60)
+    if minutos < 0:
+        # Ciclo no futuro = relógios em desacordo. A tela não tem como agir
+        # sobre isso; o log tem. Mostrar "há -180 min" só pareceria defeito.
+        log.warning("frescor: ciclo %s minutos no futuro — relógios em "
+                    "desacordo entre quem grava e quem lê", -minutos)
+        return 0
+    return minutos
+
+
 def _ciclo_da_tabela_antiga(cur) -> dict | None:
     """O último ciclo da `etl_chamado_sync` — a tabela da DAG `sync`."""
     cur.execute(
         "SELECT TOP 1 id, iniciado_em, terminado_em, status, qtd_incident, "
-        "       qtd_ritm, qtd_task, qtd_change, qtd_desativados, erro, "
-        "       DATEDIFF(MINUTE, iniciado_em, GETDATE()) AS idade_min "
+        "       qtd_ritm, qtd_task, qtd_change, qtd_desativados, erro "
         "FROM dbo.etl_chamado_sync ORDER BY iniciado_em DESC")
     linha = cur.fetchone()
     if not linha:
@@ -216,7 +263,7 @@ def _ciclo_da_tabela_antiga(cur) -> dict | None:
         "quantidades": {"incident": linha[4], "ritm": linha[5],
                         "task": linha[6], "change": linha[7]},
         "desativados": linha[8], "erro": linha[9],
-        "idade_minutos": linha[10] if linha[10] is not None else None,
+        "idade_minutos": _idade_em_minutos(linha[1]),
         "_ordem": linha[1],
     }
 
@@ -229,8 +276,7 @@ def _ciclo_da_tabela_nova(cur) -> dict | None:
     """
     cur.execute(
         "SELECT TOP 1 id, iniciado_em, terminado_em, status, qtd_chamados, "
-        "       qtd_desativados, erro, modo, "
-        "       DATEDIFF(MINUTE, iniciado_em, GETDATE()) AS idade_min "
+        "       qtd_desativados, erro, modo "
         "FROM dbo.etl_chamado_ciclo ORDER BY iniciado_em DESC")
     linha = cur.fetchone()
     if not linha:
@@ -243,7 +289,7 @@ def _ciclo_da_tabela_nova(cur) -> dict | None:
         # existe; inventar zeros por tipo diria que não há incidente nenhum.
         "quantidades": {"chamados": linha[4]},
         "desativados": linha[5], "erro": linha[6],
-        "idade_minutos": linha[8] if linha[8] is not None else None,
+        "idade_minutos": _idade_em_minutos(linha[1]),
         "_ordem": linha[1],
     }
 
@@ -408,6 +454,39 @@ def listar_chamados(incluir_inativos: int = 0,
                 "pai_numero": (r[32] or None),
             })
         resposta["ultimo_sync"] = _ultimo_ciclo(cur)
+
+        # ⚠️ `total` e `por_coluna` contam TRABALHOS, não registros.
+        #
+        # A LISTA acima traz o espelho inteiro de propósito: a tela precisa da
+        # sc_task para desenhá-la como linha DENTRO do card do pedido. Mas
+        # contar `len(chamados)` conta a task duas vezes — uma como registro,
+        # outra dentro do card que a representa. Medido em dev: 90 registros
+        # para 57 trabalhos, e `novo` com 34 onde a tela mostra 17. Quase o
+        # dobro em algumas colunas.
+        #
+        # A tela não exibia esses dois campos (usa `total` só como `> 0` e
+        # conta as colunas por si), então nada aparecia errado — mas qualquer
+        # outro consumidor da API lia o número do jeito errado, e era isto que
+        # a F5 da spec pedia e não foi feito.
+        #
+        # A conta vem do BANCO, com `_so_trabalhos()`, e não de um filtro em
+        # Python sobre a lista: a regra já existe em dois lugares (o SQL aqui e
+        # o `separarFila` do front), e uma TERCEIRA cópia à mão é o padrão que
+        # este módulo já pagou caro — duas listas que divergem em silêncio.
+        try:
+            cur.execute(
+                "SELECT estado_kanban, COUNT(*) FROM dbo.etl_chamado "
+                "WHERE ativo = 1 " + _so_trabalhos() +
+                "GROUP BY estado_kanban")
+            por_coluna = {estado: qtd for estado, qtd in cur.fetchall()}
+            resposta["por_coluna"] = {c: por_coluna.get(c, 0)
+                                      for c in COLUNAS_KANBAN}
+            resposta["total"] = sum(por_coluna.values())
+            resposta["_contagem_do_banco"] = True
+        except Exception as e:      # noqa: BLE001 — degrada para a contagem antiga
+            log.warning("chamados: contagem de trabalhos indisponível (%s: %s)",
+                        type(e).__name__, e)
+
         cur.close(); conn.close(); conn = None
     except Exception as e:
         if conn is not None:
@@ -422,10 +501,14 @@ def listar_chamados(incluir_inativos: int = 0,
         resposta["migration_ausente"] = True
         return resposta
 
-    resposta["total"] = len(resposta["chamados"])
-    for coluna in COLUNAS_KANBAN:
-        resposta["por_coluna"][coluna] = sum(
-            1 for c in resposta["chamados"] if c["estado_kanban"] == coluna)
+    # Fallback: só se a contagem do banco não veio (espelho meio indisponível).
+    # Conta REGISTROS — é menos certo que a contagem de trabalhos, mas melhor
+    # que devolver zero e a tela concluir "fila vazia".
+    if not resposta.pop("_contagem_do_banco", False):
+        resposta["total"] = len(resposta["chamados"])
+        for coluna in COLUNAS_KANBAN:
+            resposta["por_coluna"][coluna] = sum(
+                1 for c in resposta["chamados"] if c["estado_kanban"] == coluna)
 
     # Fila vazia com sync OK é notícia boa; fila vazia com sync em ERRO (ou
     # sem sync nenhum) é a integração quebrada com cara de "tudo resolvido".
