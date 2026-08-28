@@ -121,6 +121,51 @@ no banco foi a nossa. Portar a `089` de produção criaria uma segunda coluna pa
 fato, com um índice a mais e nenhum leitor — a próxima pessoa que abrir a tabela teria
 que descobrir sozinha qual das duas vale.
 
+
+### 4.3 🔴 A `main` tem um defeito que produção já corrigiu — mapa de estados
+
+Terceira foto (`7b95dd5`). Em `dags/utils/servicenow_sync.py`, tabela `sc_req_item`,
+estado cru `"3"`:
+
+| | Mapeia `"3"` para | Efeito na tela |
+|---|---|---|
+| `main` (hoje) | `aguardando` | RITM **concluído** fica parado na coluna Aguardando, para sempre |
+| produção | `encerrado` | sai da fila (`ativo=0`) e continua no espelho para os indicadores |
+
+No ServiceNow, `sc_req_item` state `3` é **Closed Complete**. O comentário de produção
+registra a apuração: *"Confirmado em 2026-08-21: RITMs encerrados caíam em 'outros' e
+desapareciam da tela em vez de aparecer na coluna Resolvido."*
+
+**Produção está certa e a `main` está errada.** O porte traz essa correção — e ao trazer,
+revisar também o `"4"` (Closed Incomplete), que a `main` e a produção mapeiam para
+`aguardando`: pelo padrão do ServiceNow ele também é estado final.
+
+### 4.4 O seed da configuração — e o que não pode ir para o repositório público
+
+A terceira foto trouxe `099_servicenow_config_seed.sql` (MERGE idempotente, `WHEN NOT
+MATCHED` apenas — não sobrescreve config existente) e um `.env.example`. **O desenho da
+credencial está correto:** a senha não fica em env nem em migration; vai cifrada com
+Fernet (`ORQUESTRA_CONN_KEY`) em `dbo.etl_app_config`, gravada pela tela
+Admin > ServiceNow. As chaves são `servicenow_url`, `servicenow_usuario`,
+`servicenow_senha_enc`, `servicenow_habilitado`, `servicenow_proxy` e
+`servicenow_grupos`.
+
+⚠️ Mas os dois arquivos levam **valores reais de infraestrutura** para um repositório
+**público**: host e base do SQL Server, usuário do banco, a conta de serviço do
+ServiceNow, o endereço do **proxy corporativo interno** e o nome do grupo. Não há senha
+em lugar nenhum — o que existe é o mapa que torna uma senha útil.
+
+**No porte, o seed entra com valores vazios**; os reais chegam pela tela Admin (que é o
+próprio desenho documentado) ou pelo `.env` do servidor, que é gitignored.
+
+### 4.5 `spec/spec_089_ritm_sctask.md` — documento superado
+
+A terceira foto trouxe também a spec que originou a `089_chamados_parent`. Ela propõe
+`parent_sys_id` e um endpoint `/chamados/{sys_id}/tasks` lendo por essa coluna. O que
+venceu no banco foi `pai_sys_id` (nossa `090`), e o endpoint de produção lê por ele.
+Fica como registro histórico: **não é backlog**.
+
+
 ## 5. Fases
 
 ### F0 — As 9 tabelas viram migrations `094`+ ✅ **destravada**
@@ -142,6 +187,7 @@ assunto, renumerada a partir da `094`, rastreada em `dbo.etl_schema_version`.
 `servicenow_sync.py`, `chamado_derivacoes.py`, `etl_servicenow_full.py`,
 `etl_servicenow_delta.py`, `etl_log_cleanup.py`, `.airflowignore`.
 
+- **Traz a correção do mapa de estados (§4.3)** — é defeito vivo na `main`.
 - Placeholders `%s` (pymssql) — `dags/` e `api/` usam dialetos diferentes, e trocar dá
   "Incorrect syntax near '?'" com a task **verde**, porque o `try/except` engole.
 - Os 11 testes migram para `tests/`, em pt-BR, **mesclados** com os 4 homônimos que já
@@ -179,6 +225,15 @@ O padrão do repositório para isso é `Depends(get_admin_user)` (`api/deps.py`,
 
 `Chamados.tsx`, `ChamadoDetalheModal.tsx`, `lib/chamado.ts`, adaptados aos componentes
 atuais (a tela da foto foi escrita contra a base de junho).
+
+**A tela ganha a 3ª aba, Dashboard** (a `main` tem só Fila e Indicadores) — e ela precisa
+ser corrigida ao entrar: o componente lê `d.backlog` como número, mas a rota devolve
+`{label, cor, total, chamados}`. Objeto como filho não renderiza. A API já entrega **10
+blocos com a lista de chamados dentro** (backlog, abertas, resolvidas_hoje, andamento,
+pendentes, sem_analista, resolvidas, vencem_hoje, vencem_semana, vencidas) e **4 visões**
+(`geral`, `proprio`, `diaadia`, `iniciativa`); a tela consome 4 números de uma visão só.
+Confirmado que é essa versão que está no ar: as strings do fonte estão no bundle que o
+`index.html` de produção referencia.
 
 - `RBAC_RECURSOS` é uma segunda lista à mão: tela que entra só no NAV vira permissão
   **sem interruptor** no cadastro de perfis (aconteceu com `tela_chamados`).
