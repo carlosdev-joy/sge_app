@@ -72,7 +72,19 @@ def _ciclo(status="OK", idade_min=30, terminado="2026-08-13 12:05:00", erro=None
 
 
 class CursorFalso:
-    """Devolve a lista de chamados no 1º SELECT e o ciclo no 2º."""
+    """Devolve a lista de chamados no SELECT da fila e o ciclo no do frescor.
+
+    ⚠️ O frescor consulta DUAS tabelas desde 2026-08-28 — `etl_chamado_ciclo`
+    (DAGs `delta`/`full`) e `etl_chamado_sync` (DAG `sync`) — e fica com o ciclo
+    mais recente. Este dublê responde só pela ANTIGA: `_ciclo()` monta uma linha
+    no formato dela (11 colunas), e devolver a mesma tupla para a consulta da
+    tabela nova faria o `idade_min` ser lido da posição errada — foi assim que
+    estes testes falharam quando a segunda consulta entrou.
+
+    Os testes DA ESCOLHA entre as duas moram em
+    `tests/test_chamados_frescor_e_solicitante.py`, com um dublê que responde
+    diferente para cada tabela. Aqui o assunto é o frescor em si.
+    """
 
     def __init__(self, chamados, ciclo=None, explode=False):
         self.chamados = chamados
@@ -83,14 +95,21 @@ class CursorFalso:
     def execute(self, sql, params=None):
         if self.explode:
             raise RuntimeError("Invalid object name 'dbo.etl_chamado'")
-        self._proximo = "ciclo" if "etl_chamado_sync" in sql else "chamados"
+        if "etl_chamado_ciclo" in sql:
+            self._proximo = "ciclo_novo"
+        elif "etl_chamado_sync" in sql:
+            self._proximo = "ciclo"
+        else:
+            self._proximo = "chamados"
         return self
 
     def fetchall(self):
         return list(self.chamados)
 
     def fetchone(self):
-        return self.ciclo
+        # A tabela nova responde VAZIO neste dublê: sem ciclo lá, o frescor
+        # cai na antiga, que é o que estes testes exercitam.
+        return self.ciclo if self._proximo == "ciclo" else None
 
     def close(self):
         pass
